@@ -418,12 +418,24 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 			c.bufferPod.completedOutputTokens = atomic.LoadInt64(&snap.completedOutputTokens)
 			c.bufferPod.pendingLoadUtilization.Store(snap.pendingLoadUtilization.Load())
 			c.bufferPod.statsGeneration = snap.statsGeneration
+			// Same-IP resume means this pod never actually stopped serving, so its
+			// slow-start ramp (see readySince in pod.go) must not restart either --
+			// otherwise a transient flap would make an already-warm pod look newly
+			// cold to LeastRequestTopKRouter, same failure mode this whole resume
+			// path exists to prevent for runningRequests.
+			c.bufferPod.readySince = atomic.LoadInt64(&snap.readySince)
 			resumed = true
 		}
 	}
 	if !resumed {
 		c.bufferPod.statsGeneration = c.nextStatsGeneration.Add(1)
+		c.bufferPod.readySince = time.Now().UnixNano()
 	}
+	// Track the running max regardless of resumed vs. fresh: a resumed readySince is always
+	// <= the current max already (it was set no later than this same call, previously), so
+	// this is a no-op for that branch and a real update for the fresh one. Safe to do before
+	// the LoadOrStore race below resolves -- see the race-loser cleanup branch's comment.
+	storeIfGreater(&c.lastPodReadySince, c.bufferPod.readySince)
 
 	metaPod, loaded := c.metaPods.LoadOrStore(key, c.bufferPod)
 	if !loaded {
@@ -432,13 +444,35 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 		// An entry already existed, so this buffer wasn't consumed and will
 		// be reused for an unrelated pod on some future call -- clear any
 		// counters just seeded onto it so they don't leak into that pod.
+		// lastPodReadySince is deliberately NOT rolled back here: the storeIfGreater call
+		// above already reflects a genuine add attempt at that real wall-clock moment
+		// (whichever of the two racing adds it was), so it stays correct either way.
 		c.bufferPod.runningRequests = 0
 		c.bufferPod.completedRequests = 0
 		c.bufferPod.completedOutputTokens = 0
 		c.bufferPod.pendingLoadUtilization.Store(0)
 		c.bufferPod.statsGeneration = 0
+		c.bufferPod.readySince = 0
 	}
 	return metaPod
+}
+
+// storeIfGreater atomically sets *addr to val if val is greater than the current value,
+// retrying under concurrent writers so the largest value observed always wins regardless of
+// goroutine scheduling order -- a plain unconditional Store could let an earlier timestamp
+// overwrite a later one if two addPodLocked calls for different pod keys (each serialized only
+// by its own podStatsLockFor stripe, not a single global lock) race. Used to maintain
+// lastPodReadySince as a running max.
+func storeIfGreater(addr *atomic.Int64, val int64) {
+	for {
+		cur := addr.Load()
+		if val <= cur {
+			return
+		}
+		if addr.CompareAndSwap(cur, val) {
+			return
+		}
+	}
 }
 
 func (c *Store) addPodAndModelMappingLockedByName(podName, namespace, modelName string) {
@@ -496,6 +530,7 @@ type deletedPodSnapshot struct {
 	completedRequests      int64  // atomic
 	completedOutputTokens  int64  // atomic
 	pendingLoadUtilization atomic_ext.Float64
+	readySince             int64 // atomic; see Pod.readySince
 	deletedAt              time.Time
 }
 
@@ -525,6 +560,7 @@ func (c *Store) deletePodLocked(podName, podNamespace string) *Pod {
 		}
 		snap.completedOutputTokens = atomic.LoadInt64(&metaPod.completedOutputTokens)
 		snap.pendingLoadUtilization.Store(metaPod.pendingLoadUtilization.Load())
+		snap.readySince = atomic.LoadInt64(&metaPod.readySince)
 		c.recentlyDeletedPods.Store(key, snap)
 		c.pruneExpiredDeletedPodSnapshotsLocked()
 	}

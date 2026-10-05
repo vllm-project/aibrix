@@ -161,13 +161,26 @@ func ResolveExclusiveStrategy(algStr string) (string, bool) {
 	return cfg.Items[0].Name, true
 }
 
-// autoBlendLoadBalanceWeight/autoBlendLeastRequestWeight control the silent multi-strategy
+// autoBlendLoadBalanceWeight/autoBlendLeastRequestTopKWeight control the silent multi-strategy
 // blend appendLoadBalanceBlend adds behind every request's chosen strategy. Setting the
 // load-balance weight to 0 disables the whole feature, matching ParseMultiRouterConfig's own
 // "weight 0 means skip" convention.
+//
+// autoBlendLeastRequestTopKWeight blends in least-request-top-k, not plain least-request: plain
+// least-request's ScoreAll always favors the single global-minimum pod, so when several
+// independent gateway replicas each read the same Redis-backed running-request counter and pick
+// that same strict minimum, they can all route their next request there simultaneously (the
+// counter's HINCRBY is fire-and-forget with respect to the request path -- see
+// cache_running_requests.go's overlaySelfRunningRequests doc comment -- so none of the other
+// gateways see each other's just-issued increments in time). least-request-top-k avoids this by
+// scoring only the K least-loaded, within-epsilon-of-minimum pods, with fresh per-request random
+// jitter (see its ScoreAll doc comment) so the blended argmax doesn't consistently land on the
+// same pod. It implements types.PodScorer, which is what lets it join the weighted sum with
+// load-balance's score. The env var and the profile's autoBlend.leastRequestWeight keep their
+// least-request names: they are deployed configuration, and only the scorer behind them changed.
 var (
-	autoBlendLoadBalanceWeight  = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT", 1)
-	autoBlendLeastRequestWeight = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT", 1)
+	autoBlendLoadBalanceWeight      = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT", 1)
+	autoBlendLeastRequestTopKWeight = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT", 1)
 )
 
 // autoBlendPrefixCacheWeight/autoBlendPrefixCacheLoadBalanceWeight set the default blend ratio
@@ -246,17 +259,17 @@ func mentionedAlgorithmNames(algStr string) map[string]bool {
 
 // appendLoadBalanceBlend silently expands algStr into a hidden multi-strategy composite that
 // also scores pods on load-balance's capacity-aware pending_time, so no single strategy can
-// keep steering traffic at an already-hot pod. least-request is appended alongside it (unless
-// already present) purely so multi-port/data-parallel pod routing keeps working: the
-// multi-strategy router's port selection only engages when "least-request" is one of the
-// configured scorers (see setTargetPortIfNeeded) — except when prefix-cache is one of the
-// caller's strategies: prefix-cache already accounts for pod load via the gateway's
-// ApplyLoadImbalanceGate and its own stddev-based candidate filtering
-// (getTargetPodFromMatchedPodsFromCounts), so also blending in least-request as a full scoring
-// participant would double-count "current load" against prefix-cache's own cache-affinity
-// signal (load-balance and least-request are both direct functions of the same running-request
-// metric, so they aren't independent votes) and can override cache locality far more readily
-// than intended. For prefix-cache, only load-balance is blended in.
+// keep steering traffic at an already-hot pod. least-request-top-k is appended alongside it
+// (unless least-request or least-request-top-k is already present) so that multi-port/data-parallel
+// pod routing keeps working: the multi-strategy router's port selection only engages when one of
+// those two is among the configured scorers (see setTargetPortIfNeeded) — except when
+// prefix-cache is one of the caller's strategies: prefix-cache already accounts for pod load
+// via the gateway's ApplyLoadImbalanceGate and its own stddev-based candidate filtering
+// (getTargetPodFromMatchedPodsFromCounts), so also blending in least-request-top-k as a full
+// scoring participant would double-count "current load" against prefix-cache's own
+// cache-affinity signal (load-balance and least-request-top-k are both direct functions of the
+// same running-request metric, so they aren't independent votes) and can override cache
+// locality far more readily than intended. For prefix-cache, only load-balance is blended in.
 //
 // A bare "session-affinity" request gets no auto-blend at all (see the early return below):
 // unlike prefix-cache's graded cache-hit score, session-affinity's ScoreAll is binary (1 for
@@ -269,7 +282,7 @@ func mentionedAlgorithmNames(algStr string) map[string]bool {
 //
 // One tradeoff of the prefix-cache exception: a prefix-cache request against
 // multi-port/data-parallel pods won't get setTargetPortIfNeeded's port selection, since that
-// lookup requires least-request to be one of the configured scorers.
+// lookup requires least-request or least-request-top-k to be one of the configured scorers.
 //
 // cfg is algStr's own already-parsed config, passed in by the caller (Select) so algStr isn't
 // parsed twice per request.
@@ -333,8 +346,12 @@ func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig, weights autoB
 			blended += fmt.Sprintf(",%s:%d", RouterLoadBalance, weights.loadBalance)
 		}
 	}
-	if !includesPrefixCache && !includesSessionAffinity && !mentioned[string(RouterLeastRequest)] && weights.leastRequest > 0 {
-		blended += fmt.Sprintf(",%s:%d", RouterLeastRequest, weights.leastRequest)
+	// Checks both names: a caller who explicitly asked for plain "least-request" shouldn't also
+	// get least-request-top-k silently layered in as a second, redundant load-count scorer.
+	if !includesPrefixCache && !includesSessionAffinity &&
+		!mentioned[string(RouterLeastRequest)] && !mentioned[string(RouterLeastRequestTopK)] &&
+		weights.leastRequest > 0 {
+		blended += fmt.Sprintf(",%s:%d", RouterLeastRequestTopK, weights.leastRequest)
 	}
 	if blended == algStr {
 		return "", false
@@ -410,17 +427,29 @@ func (m *multiStrategyRouter) setTargetPortIfNeeded(ctx *types.RoutingContext, r
 	if !isMultiPortPods(readyPodList.All()) {
 		return
 	}
-	scorer, ok := m.scorers[string(RouterLeastRequest)]
-	if !ok {
+	c := m.portSelectionCache()
+	if c == nil {
 		return
 	}
-	leastRequest, ok := scorer.(*leastRequestRouter)
-	if !ok {
-		return
-	}
-	if port := selectTargetPortForPodWithLeastRequestCount(leastRequest.cache, targetPod, readyPodList.ListPortsForPod()); port != 0 {
+	if port := selectTargetPortForPodWithLeastRequestCount(c, targetPod, readyPodList.ListPortsForPod()); port != 0 {
 		ctx.SetTargetPort(port)
 	}
+}
+
+// portSelectionCache returns the cache backing whichever of least-request-top-k or least-request
+// is configured on m, or nil if neither is present.
+func (m *multiStrategyRouter) portSelectionCache() cache.Cache {
+	if scorer, ok := m.scorers[string(RouterLeastRequestTopK)]; ok {
+		if topK, ok := scorer.(*LeastRequestTopKRouter); ok {
+			return topK.cache
+		}
+	}
+	if scorer, ok := m.scorers[string(RouterLeastRequest)]; ok {
+		if leastRequest, ok := scorer.(*leastRequestRouter); ok {
+			return leastRequest.cache
+		}
+	}
+	return nil
 }
 
 // PostRouteUpdate lets m satisfy types.PostRouteUpdater itself, so a caller that bypasses
@@ -750,6 +779,7 @@ func NewRouterManagerWithCacheAndPrefixIndexer(c cache.Cache, indexer *prefixcac
 	// (for example, SLO providers still resolve their configured cache).
 	rm.RegisterProvider(RouterRandom, RandomRouterProviderFunc)
 	rm.Register(RouterLeastRequest, func() (types.Router, error) { return NewLeastRequestRouterWithCache(c) })
+	rm.Register(RouterLeastRequestTopK, func() (types.Router, error) { return NewLeastRequestTopKRouterWithCache(c), nil })
 	rm.Register(RouterLeastKvCache, func() (types.Router, error) { return NewLeastKvCacheRouterWithCache(c) })
 	rm.Register(RouterLeastLatency, func() (types.Router, error) { return NewLeastLatencyRouterWithCache(c) })
 	rm.Register(RouterLoadBalance, func() (types.Router, error) { return NewLoadBalanceRouterWithCache(c) })
@@ -818,14 +848,14 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 
 	if cfgErr == nil {
 		// Silently blend in load-balance's capacity-aware scoring (and, when needed,
-		// least-request for multi-port support) behind whatever strategy the caller asked
+		// least-request-top-k for multi-port support) behind whatever strategy the caller asked
 		// for. The caller never sees this: ctx.Algorithm/algStr below is untouched, so
 		// headers, Validate(), and error messages all still reflect the original strategy
 		// name.
 		weights := effectiveAutoBlendWeights(ctx)
 		blended, ok := appendLoadBalanceBlend(algStr, cfg, weights)
 		if klog.V(4).Enabled() {
-			klog.V(4).Infof("routing select: algStr=%q autoBlendLoadBalanceWeight=%d autoBlendLeastRequestWeight=%d autoBlendPrefixCacheWeight=%d autoBlendPrefixCacheLoadBalanceWeight=%d blend_ok=%v blended=%q",
+			klog.V(4).Infof("routing select: algStr=%q autoBlendLoadBalanceWeight=%d autoBlendLeastRequestTopKWeight=%d autoBlendPrefixCacheWeight=%d autoBlendPrefixCacheLoadBalanceWeight=%d blend_ok=%v blended=%q",
 				algStr, weights.loadBalance, weights.leastRequest, weights.prefixCache, weights.prefixCacheLoadBalance, ok, blended)
 		}
 		if ok {

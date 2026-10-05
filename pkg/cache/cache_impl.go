@@ -291,6 +291,37 @@ func (c *Store) runningRequestsWithLocalFallback(pods []*v1.Pod, live map[string
 	return result
 }
 
+// GetPodsReadySince implements PodReadySinceProvider. Pure local read -- a straight loop
+// over c.metaPods; no Redis, no pipelining needed since there's no I/O to amortize (unlike
+// GetPodsRunningRequests's Redis pipeline in readPodsRunningRequests). Ramp state is
+// deliberately gateway-local: every gateway's own informer observes the same pod-Ready
+// event at roughly the same wall-clock time, so there's nothing to reconcile across gateways.
+func (c *Store) GetPodsReadySince(pods []*v1.Pod) (map[string]int64, error) {
+	result := make(map[string]int64, len(pods))
+	for _, pod := range pods {
+		if pod == nil {
+			continue
+		}
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		metaPod, ok := c.metaPods.Load(podKey)
+		if !ok {
+			continue
+		}
+		result[podKey] = atomic.LoadInt64(&metaPod.readySince)
+	}
+	return result, nil
+}
+
+// LatestPodReadySince implements PodReadySinceProvider. A single atomic load of the running max
+// maintained by addPodLocked (see lastPodReadySince in cache_init.go) -- deliberately not derived
+// from a scan over c.metaPods, since the whole point is to avoid per-pod work on the common,
+// nothing-is-ramping path.
+func (c *Store) LatestPodReadySince() int64 {
+	return c.lastPodReadySince.Load()
+}
+
+var _ PodReadySinceProvider = (*Store)(nil)
+
 // AddRequestCount tracks new request initiation.
 // If ctx is provided,  AddRequestCount can be called multiple times for the same request.
 //

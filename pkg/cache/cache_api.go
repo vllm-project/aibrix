@@ -105,6 +105,31 @@ type ModelClaimStatusProvider interface {
 	ModelClaimStatus(modelName string) (phase, reason string, found bool)
 }
 
+// PodReadySinceProvider is an optional cache extension exposing when each pod most recently
+// became newly-eligible for routing (see readySince in pod.go). Not embedded in MetricCache/
+// Cache: several test fakes implement those interfaces directly rather than by embedding, and
+// this is a narrow, single-consumer concept (LeastRequestTopKRouter's ramp-decay adjustment).
+// Callers type-assert for this interface (mirroring ModelClaimBindingProvider) and treat a
+// failed assertion as "no ramp info for any pod".
+type PodReadySinceProvider interface {
+	// GetPodsReadySince returns each found pod's readySince (UnixNano; 0 if never set), keyed by
+	// utils.GeneratePodKey. Pods not found in the cache are omitted. Missing/zero means "no ramp
+	// info, apply no penalty" -- the OPPOSITE default polarity from GetPodsRunningRequests
+	// (missing there means running-count 0). Pure local read: no Redis, ramp state is never
+	// cross-gateway-shared.
+	GetPodsReadySince(pods []*v1.Pod) (map[string]int64, error)
+
+	// LatestPodReadySince returns the most recent readySince (UnixNano) this gateway has
+	// observed across every pod it has ever added or resumed, or 0 if none. O(1): a single
+	// atomic load, no per-pod work. Callers use this to cheaply rule out "nothing anywhere is
+	// currently within its ramp window" -- if now minus this value already exceeds the ramp
+	// window, every individual pod's readySince is even older, so none can be ramping -- before
+	// paying for a full GetPodsReadySince call. This matters because the ramp adjustment runs on
+	// every routing decision by default, and in steady state (fleet fully warmed up) it should
+	// do effectively no work.
+	LatestPodReadySince() int64
+}
+
 // MetricCache defines operations for metric data caching
 type MetricCache interface {
 	// GetMetricValueByPod returns the last-written metric slot for a pod (scraped engine

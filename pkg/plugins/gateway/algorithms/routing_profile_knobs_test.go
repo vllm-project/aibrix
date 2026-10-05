@@ -426,7 +426,7 @@ func TestAutoBlendWeightsHonorProfileOverrides(t *testing.T) {
 	require.NoError(t, err)
 	blended, ok = appendLoadBalanceBlend("least-latency", otherCfg, weights)
 	assert.True(t, ok)
-	assert.Equal(t, "least-latency,load-balance:2,least-request:3", blended)
+	assert.Equal(t, "least-latency,load-balance:2,least-request-top-k:3", blended)
 
 	// A profile weight of 0 disables the hidden blend for its own requests only.
 	off := routingOverridesContext(t, `{"autoBlend":{"loadBalanceWeight":0}}`)

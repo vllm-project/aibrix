@@ -156,6 +156,7 @@ General load balancing
 
 * ``random``: routes to a randomly selected pod. Suitable as a baseline or when all pods are equivalent.
 * ``least-request``: routes to the pod with the fewest in-flight requests.
+* ``least-request-top-k``: like ``least-request``, but picks uniformly at random among the ready pods that are both among the ``K`` least-loaded and within ``epsilon`` requests of the least-loaded pod, so several gateway replicas deciding at the same moment don't all send their next request to the same pod. A newly ready pod gets a temporary ramp penalty that decays over a window, so it isn't flooded before it warms up. Tuned with ``AIBRIX_ROUTING_LEAST_REQUEST_TOP_K`` (default ``5``), ``AIBRIX_ROUTING_LEAST_REQUEST_TOP_K_EPSILON`` (default ``4``) and ``AIBRIX_ROUTING_LEAST_REQUEST_TOP_K_RAMP_WINDOW`` (default ``300s``, ``0`` disables the ramp); see ``pkg/plugins/gateway/ENV_VARS.md``.
 * ``least-busy-time``: routes to the pod with the least cumulative busy processing time.
 * ``least-latency``: routes to the pod with the lowest average processing latency.
 * ``least-kv-cache``: routes to the pod with the smallest KV cache occupancy (least VRAM used).
@@ -236,7 +237,7 @@ Auto-blended capacity awareness
 This auto-blend is **enabled by default** — no opt-in is required. Every strategy above, except
 the exclusive ones (``pd``, ``slo``/``slo-*``), ``external``, an explicit standalone ``load-balance``
 selection, and a bare ``session-affinity`` selection, silently gets ``load-balance``'s
-capacity-aware scoring blended in behind the scenes — and ``least-request`` too, when the
+capacity-aware scoring blended in behind the scenes — and ``least-request-top-k`` too, when the
 selected strategy doesn't already route by request count, to keep multi-port/data-parallel pod
 routing working under the blend. The caller never sees this: ``ctx.Algorithm``, response
 headers, and ``Validate()`` all still reflect exactly the strategy that was requested. This
@@ -244,7 +245,7 @@ keeps any single strategy from steering traffic at an already-hot pod even outsi
 load-imbalance gate described above. Both blend weights default to ``1`` (see
 ``pkg/plugins/gateway/ENV_VARS.md``); set ``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0`` to
 disable it. A bare ``prefix-cache`` request instead uses a 5:4 (1.25:1) lean toward cache
-affinity over ``load-balance`` and does not receive ``least-request``, so cache locality wins an
+affinity over ``load-balance`` and does not receive ``least-request-top-k``, so cache locality wins an
 exact-tie disagreement. ``session-affinity`` gets no auto-blend at all: its scoring is binary
 (the resolved pod vs. everything else), so any load-balance weight small enough to still lose an
 exact tie could never override the pin either — blending it in would be dead weight, not a
@@ -929,7 +930,7 @@ can therefore be routed with different thresholds by selecting different profile
      - Weight of the load-balance scorer blended behind every non-exclusive strategy. ``0`` disables the auto-blend for this profile's requests.
    * - ``autoBlend.leastRequestWeight``
      - ``AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT``
-     - Weight of the least-request scorer the auto-blend adds for multi-port pods.
+     - Weight of the ``least-request-top-k`` scorer the auto-blend adds. The key keeps its ``leastRequest`` name for compatibility.
    * - ``autoBlend.prefixCacheWeight``
      - ``AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT``
      - Prefix-cache weight of the dedicated prefix-cache/load-balance ratio a bare ``prefix-cache`` request gets. ``0`` is rejected.

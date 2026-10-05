@@ -111,6 +111,15 @@ type Store struct {
 	// stale completion cannot match a later generation of the same pod key.
 	nextStatsGeneration atomic.Int64
 
+	// lastPodReadySince is the most recent readySince (UnixNano; see Pod.readySince) observed
+	// across every pod this gateway has ever added or resumed -- a running max, updated in
+	// addPodLocked via storeIfGreater. LeastRequestTopKRouter's ramp adjustment (which runs on
+	// every routing decision, since it's enabled by default) uses this as a single atomic-load
+	// short-circuit: if the most recent readySince anywhere is already older than the ramp
+	// window, no pod anywhere can currently be ramping, so the full per-pod GetPodsReadySince
+	// read and floor computation can be skipped entirely. See LatestPodReadySince.
+	lastPodReadySince atomic.Int64
+
 	// podStatsMu stripes per-pod-key locks (see podStatsLockFor in cache_trace.go),
 	// synchronizing running-request counter mutations (addPodStats/donePodStats) against
 	// the pod delete/re-add resume cycle (deletePodLocked/addPodLocked in informers.go)
