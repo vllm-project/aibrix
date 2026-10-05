@@ -42,6 +42,7 @@ type KubernetesProvider struct {
 	watchModelAdapters bool
 	// watchModelClaims adds ModelClaim objects to what is watched.
 	watchModelClaims bool
+	modelListHealth  *ModelListHealth
 }
 
 // NewKubernetesProvider creates a new Kubernetes discovery provider.
@@ -62,6 +63,18 @@ func (p *KubernetesProvider) WithModelClaims() *KubernetesProvider {
 	return p
 }
 
+// WithModelListHealth enables on-demand verification of the model-list cache.
+// A positive maxAge is required; callers select the bound they need.
+func (p *KubernetesProvider) WithModelListHealth(maxAge time.Duration) *KubernetesProvider {
+	p.modelListHealth = newModelListHealth(maxAge)
+	return p
+}
+
+// ModelListHealth returns the verification state after WatchApplied starts.
+func (p *KubernetesProvider) ModelListHealth() *ModelListHealth {
+	return p.modelListHealth
+}
+
 // Type returns the provider type identifier.
 func (p *KubernetesProvider) Type() string {
 	return "kubernetes"
@@ -71,6 +84,40 @@ func (p *KubernetesProvider) Type() string {
 // Watch returns once the initial sync and reconcile are complete. After return,
 // informer callbacks continue delivering ongoing changes asynchronously.
 func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{}) error {
+	return p.watch(func(ev WatchEvent) bool {
+		handler(ev)
+		return true
+	}, stopCh)
+}
+
+// WatchApplied is Watch with a handler that reports whether a cache event was
+// applied. Use it when model-list verification is enabled.
+func (p *KubernetesProvider) WatchApplied(handler func(WatchEvent) bool, stopCh <-chan struct{}) error {
+	return p.watch(handler, stopCh)
+}
+
+func (p *KubernetesProvider) configureModelListHealth(k8sClientSet kubernetes.Interface, crdClientSet v1alpha1.Interface) {
+	health := p.modelListHealth
+	if health == nil {
+		return
+	}
+	health.snapshot = func(ctx context.Context) (sourceVersions, error) {
+		pods, err := listPodVersions(ctx, k8sClientSet)
+		if err != nil {
+			return sourceVersions{}, err
+		}
+		adapters := make(map[string]objectVersion)
+		if p.watchModelAdapters {
+			adapters, err = listAdapterVersions(ctx, crdClientSet)
+			if err != nil {
+				return sourceVersions{}, err
+			}
+		}
+		return sourceVersions{pods: pods, adapters: adapters}, nil
+	}
+}
+
+func (p *KubernetesProvider) watch(handler func(WatchEvent) bool, stopCh <-chan struct{}) error {
 	if err := v1alpha1scheme.AddToScheme(scheme.Scheme); err != nil {
 		return err
 	}
@@ -87,8 +134,9 @@ func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{})
 	var modelInformer cache.SharedIndexInformer
 	var claimInformer cache.SharedIndexInformer
 	var crdFactory crdinformers.SharedInformerFactory
+	var crdClientSet v1alpha1.Interface
 	if p.watchModelAdapters || p.watchModelClaims {
-		crdClientSet, err := v1alpha1.NewForConfig(p.config)
+		crdClientSet, err = v1alpha1.NewForConfig(p.config)
 		if err != nil {
 			return err
 		}
@@ -100,16 +148,25 @@ func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{})
 			claimInformer = crdFactory.Model().V1alpha1().ModelClaims().Informer()
 		}
 	}
+	p.configureModelListHealth(k8sClientSet, crdClientSet)
 
 	// Wire handler directly into informer callbacks.
 	// Events flow from the start — including during the initial list phase.
-	registerHandlers := func(inf cache.SharedIndexInformer) error {
-		_, err := inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	var requiredHandlers []cache.ResourceEventHandlerRegistration
+	registerHandlers := func(inf cache.SharedIndexInformer, required bool) error {
+		deliver := func(ev WatchEvent) {
+			if required && p.modelListHealth != nil {
+				p.modelListHealth.Apply(ev, handler)
+			} else {
+				handler(ev)
+			}
+		}
+		registration, err := inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				handler(WatchEvent{Type: EventAdd, Object: obj})
+				deliver(WatchEvent{Type: EventAdd, Object: obj})
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
-				handler(WatchEvent{Type: EventUpdate, Object: newObj, OldObject: oldObj})
+				deliver(WatchEvent{Type: EventUpdate, Object: newObj, OldObject: oldObj})
 			},
 			DeleteFunc: func(obj interface{}) {
 				// Unwrap tombstones — K8s informers may deliver
@@ -117,22 +174,34 @@ func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{})
 				if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
 					obj = tombstone.Obj
 				}
-				handler(WatchEvent{Type: EventDelete, Object: obj})
+				deliver(WatchEvent{Type: EventDelete, Object: obj})
 			},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		if required && p.modelListHealth != nil {
+			requiredHandlers = append(requiredHandlers, registration)
+			if err := inf.SetWatchErrorHandler(func(_ *cache.Reflector, watchErr error) {
+				p.modelListHealth.Invalidate()
+				klog.ErrorS(watchErr, "Model-list discovery watch failed")
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
-	if err := registerHandlers(podInformer); err != nil {
+	if err := registerHandlers(podInformer, true); err != nil {
 		return err
 	}
 	if modelInformer != nil {
-		if err := registerHandlers(modelInformer); err != nil {
+		if err := registerHandlers(modelInformer, true); err != nil {
 			return err
 		}
 	}
 	if claimInformer != nil {
-		if err := registerHandlers(claimInformer); err != nil {
+		if err := registerHandlers(claimInformer, false); err != nil {
 			return err
 		}
 	}
@@ -152,6 +221,9 @@ func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{})
 	if modelInformer != nil {
 		requiredSync = append(requiredSync, modelInformer.HasSynced)
 	}
+	for _, registration := range requiredHandlers {
+		requiredSync = append(requiredSync, registration.HasSynced)
+	}
 	if !cache.WaitForCacheSync(stopCh, requiredSync...) {
 		return errors.New("timed out waiting for caches to sync")
 	}
@@ -166,7 +238,12 @@ func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{})
 		adapters := modelInformer.GetStore().List()
 		adapterCount = len(adapters)
 		for _, obj := range adapters {
-			handler(WatchEvent{Type: EventAdd, Object: obj})
+			ev := WatchEvent{Type: EventAdd, Object: obj}
+			if p.modelListHealth != nil {
+				p.modelListHealth.Apply(ev, handler)
+			} else {
+				handler(ev)
+			}
 		}
 	}
 

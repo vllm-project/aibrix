@@ -29,6 +29,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc/filters"
@@ -78,6 +79,7 @@ type modelDiscoveryOptions struct {
 	watchModelAdapters bool
 	watchModelClaims   bool
 	listMode           string
+	maxAge             time.Duration
 }
 
 func (o *modelDiscoveryOptions) addFlags(fs *flag.FlagSet) {
@@ -87,11 +89,16 @@ func (o *modelDiscoveryOptions) addFlags(fs *flag.FlagSet) {
 		"List and watch ModelClaim resources and use their Pod bindings in Kubernetes discovery.")
 	fs.StringVar(&o.listMode, "model-list-mode", string(gateway.ModelListKnown),
 		"Models returned by /v1/models: known or ready-pods.")
+	fs.DurationVar(&o.maxAge, "model-list-discovery-max-age", 0,
+		"Maximum age of a verified Kubernetes model-list snapshot; 0 disables verification.")
 }
 
 func (o modelDiscoveryOptions) validate() error {
 	if o.listMode != string(gateway.ModelListKnown) && o.listMode != string(gateway.ModelListReadyPods) {
 		return fmt.Errorf("invalid --model-list-mode %q: expected known or ready-pods", o.listMode)
+	}
+	if o.maxAge < 0 {
+		return fmt.Errorf("--model-list-discovery-max-age must be nonnegative")
 	}
 	return nil
 }
@@ -102,6 +109,25 @@ func (o modelDiscoveryOptions) kubernetesProvider(config *rest.Config) *discover
 		provider = provider.WithModelClaims()
 	}
 	return provider
+}
+
+func startEarlyModelListGate(enabled bool, addr string) (*gateway.ModelListGate, error) {
+	if !enabled {
+		return nil, nil
+	}
+	gate := &gateway.ModelListGate{}
+	if err := gate.StartHTTPServer(addr); err != nil {
+		return nil, err
+	}
+	return gate, nil
+}
+
+func startGatewayHTTPServer(gate *gateway.ModelListGate, server *gateway.Server, addr string) error {
+	if gate != nil {
+		gate.SetServer(server)
+		return nil
+	}
+	return server.StartHTTPServer(addr)
 }
 
 func (o *kubeAPIOptions) addFlags(fs *flag.FlagSet) {
@@ -235,6 +261,11 @@ func main() {
 		}
 		discoveryProvider = modelDiscovery.kubernetesProvider(config)
 	}
+	modelListGate, err := startEarlyModelListGate(modelDiscovery.maxAge > 0, httpAddr)
+	if err != nil {
+		klog.Fatalf("Failed to start model-list HTTP server: %v", err)
+	}
+	defer modelListGate.Shutdown()
 
 	// Initialize cache
 	kvSyncEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheKVEventSyncEnabled, false)
@@ -247,6 +278,7 @@ func main() {
 		ModelRouterProvider:          routing.ModelRouterFactory,
 		DiscoveryProvider:            discoveryProvider,
 		DisableModelClaimPodBindings: !standalone && !modelDiscovery.watchModelClaims,
+		ModelListMaxAge:              modelDiscovery.maxAge,
 	})
 
 	lis, err := net.Listen("tcp", grpcAddr)
@@ -258,6 +290,7 @@ func main() {
 		DisableRateLimiting: utils.LoadEnvBool(envDisableRateLimiting, false),
 		PriorityTier:        utils.LoadEnvBool(envPriorityTierEnabled, false),
 		ModelListMode:       gateway.ModelListMode(modelDiscovery.listMode),
+		VerifyModelList:     modelDiscovery.maxAge > 0,
 	})
 
 	stateSyncEnabled := utils.LoadEnvBool("AIBRIX_STATESYNC_ENABLED", false)
@@ -273,7 +306,7 @@ func main() {
 		klog.InfoS("statesync disabled; set AIBRIX_STATESYNC_ENABLED=true to enable cross-replica state sync")
 	}
 
-	if err := gatewayServer.StartHTTPServer(httpAddr); err != nil {
+	if err := startGatewayHTTPServer(modelListGate, gatewayServer, httpAddr); err != nil {
 		klog.Fatalf("Failed to start HTTP server: %v", err)
 	}
 	klog.Infof("Started HTTP server on %s", httpAddr)
@@ -330,6 +363,7 @@ func main() {
 			syncManager.Stop()
 		}
 		gatewayServer.Shutdown()
+		modelListGate.Shutdown()
 		s.GracefulStop()
 		if otelEnabled {
 			telApp.Shutdown()

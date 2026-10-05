@@ -82,8 +82,36 @@ from deployments that leave it enabled.
 model-name list. ``ready-pods`` includes a name when at least one associated
 Pod has an IP, is Ready, and is neither terminating nor draining. This Pod
 check does not verify an adapter's load status, HTTPRoute acceptance, or a
-complete prefill/decode pair. An empty cache returns an empty list; this mode
-does not report ongoing Kubernetes discovery failures.
+complete prefill/decode pair. An empty cache returns an empty list.
+
+To require a recent Kubernetes discovery snapshot before returning the list,
+set a positive ``--model-list-discovery-max-age`` duration. For example:
+
+.. code-block:: yaml
+
+    containers:
+      - name: gateway-plugin
+        args:
+          - --model-list-mode=ready-pods
+          - --model-list-discovery-max-age=5m
+
+The duration is the maximum age of a successful verification, not a polling
+interval; zero (the default) preserves the existing behavior. The first list
+request, and the first request after that age expires, obtains a current,
+paginated Kubernetes LIST of Pods and enabled ModelAdapters and compares it
+with events already applied to the gateway cache. Only one verification runs
+at a time. A failed or mismatched LIST, a request timeout, or a reported watch
+error invalidates the previous proof. The endpoint returns HTTP 503 with a
+``service_unavailable`` error until a later verification succeeds; retries
+after failure are limited to once every five seconds. A healthy installation
+with no models still returns HTTP 200 with an empty list. Each gateway replica
+performs its own verification, so choose the duration with API-server load in
+mind. The verification request has a ten-second timeout.
+
+With verification enabled, the plugin opens its HTTP listener before initial
+discovery completes and returns the same 503 while its cache is unavailable.
+This only covers requests that reach the plugin; when no gateway process or
+ready Service endpoint is reachable, the front proxy controls the response.
 
 The gateway plugin serves ``GET /v1/models`` on its HTTP port. The standard
 Kubernetes Envoy route still sends this path to the metadata service; route

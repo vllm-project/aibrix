@@ -17,6 +17,7 @@ limitations under the License.
 package discovery
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -39,6 +40,61 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/client/clientset/versioned/fake"
 )
+
+func TestKubernetesProviderVerificationDetectsSilentWatchLoss(t *testing.T) {
+	var deleted atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/pods") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("watch") == "true" {
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			return
+		}
+		list := &v1.PodList{
+			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PodList"},
+			ListMeta: metav1.ListMeta{ResourceVersion: "10"},
+		}
+		if !deleted.Load() {
+			list.Items = []v1.Pod{{ObjectMeta: metav1.ObjectMeta{
+				Namespace: "default", Name: "served", UID: "one", ResourceVersion: "10",
+			}}}
+		}
+		_ = json.NewEncoder(w).Encode(list)
+	}))
+	stopCh := make(chan struct{})
+	t.Cleanup(func() {
+		close(stopCh)
+		server.CloseClientConnections()
+		server.Close()
+	})
+
+	provider := NewKubernetesProvider(&rest.Config{Host: server.URL}).
+		WithModelAdapters(false).WithModelListHealth(time.Minute)
+	result := make(chan error, 1)
+	go func() {
+		result <- provider.WatchApplied(func(WatchEvent) bool { return true }, stopCh)
+	}()
+	select {
+	case err := <-result:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider did not finish initial handler sync")
+	}
+	h := provider.ModelListHealth()
+	require.NoError(t, h.EnsureVerified(context.Background()))
+	deleted.Store(true) // The API server changed, but the watch sent no delete.
+	h.mu.Lock()
+	h.lastVerified = time.Now().Add(-time.Minute)
+	h.mu.Unlock()
+	require.ErrorIs(t, h.EnsureVerified(context.Background()), ErrModelListDiscoveryUnavailable)
+	_, ok := h.ModelsIfHealthy(func() []string { return []string{"served"} })
+	assert.False(t, ok)
+}
 
 func TestCanListModelClaims(t *testing.T) {
 	claims := schema.GroupResource{Group: "model.aibrix.ai", Resource: "modelclaims"}

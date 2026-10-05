@@ -17,6 +17,8 @@ limitations under the License.
 package cache
 
 import (
+	"context"
+
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -89,6 +91,12 @@ type ModelCache interface {
 // cache snapshot.
 type ReadyModelCache interface {
 	ListModelsWithReadyPods() []string
+}
+
+// VerifiedModelCache is an optional gateway extension. It obtains a bounded
+// discovery proof before returning a model list when verification is enabled.
+type VerifiedModelCache interface {
+	ListModelsVerified(ctx context.Context, readyPods bool) ([]string, error)
 }
 
 // ModelClaimBindingProvider is an optional cache extension used by the

@@ -17,7 +17,9 @@ limitations under the License.
 package gateway
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -28,6 +30,54 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+type verifiedModelListTestCache struct {
+	*cache.Store
+	models []string
+	err    error
+}
+
+func (c *verifiedModelListTestCache) ListModelsVerified(_ context.Context, _ bool) ([]string, error) {
+	return c.models, c.err
+}
+
+func TestHandleListModelsVerificationFailure(t *testing.T) {
+	verified := &verifiedModelListTestCache{
+		Store: cache.NewForTest(),
+		err:   errors.New("internal Kubernetes permission details"),
+	}
+	server := NewServerWithOptions(nil, nil, nil, ServerOptions{
+		Cache: verified, VerifyModelList: true,
+	})
+	response := httptest.NewRecorder()
+	server.handleListModels(response, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+	require.Equal(t, "application/json", response.Header().Get("Content-Type"))
+	assert.JSONEq(t, `{"error":{"message":"model discovery is unavailable","type":"overloaded_error","code":"service_unavailable","param":null}}`, response.Body.String())
+	assert.NotContains(t, response.Body.String(), "permission details")
+
+	verified.err = nil
+	verified.models = []string{"ready-model"}
+	response = httptest.NewRecorder()
+	server.handleListModels(response, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	require.Equal(t, http.StatusOK, response.Code)
+	assert.JSONEq(t, `{"object":"list","data":[{"id":"ready-model","object":"model","created":0,"owned_by":"aibrix"}]}`, response.Body.String())
+}
+
+func TestModelListGateDuringInitialDiscovery(t *testing.T) {
+	gate := &ModelListGate{}
+	request := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	response := httptest.NewRecorder()
+	gate.handleListModels(response, request)
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+	assert.JSONEq(t, `{"error":{"message":"model discovery is unavailable","type":"overloaded_error","code":"service_unavailable","param":null}}`, response.Body.String())
+
+	gate.SetServer(NewServerWithOptions(nil, nil, nil, ServerOptions{Cache: cache.NewForTest()}))
+	response = httptest.NewRecorder()
+	gate.handleListModels(response, request)
+	require.Equal(t, http.StatusOK, response.Code)
+	assert.JSONEq(t, `{"object":"list","data":[]}`, response.Body.String())
+}
 
 func TestHandleListModelsMode(t *testing.T) {
 	cache.InitForTest()
