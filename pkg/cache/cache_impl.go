@@ -95,7 +95,7 @@ func (c *Store) ListModelsWithReadyPods() []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	models := make([]string, 0)
+	models := make([]string, 0, c.metaModels.Len())
 	c.metaModels.Range(func(name string, meta *Model) bool {
 		for _, pod := range meta.Pods.Array().All() {
 			if pod != nil && utils.FilterReadyPod(pod) {
