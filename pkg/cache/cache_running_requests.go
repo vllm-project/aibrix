@@ -48,12 +48,6 @@ const (
 	// can't leak goroutines. Writes are fire-and-forget with respect to the request
 	// path, so this can be generous.
 	runningRequestsWriteTimeout = 1 * time.Second
-	// runningRequestsReadTimeout bounds each read (GetPodRunningRequests /
-	// GetPodsRunningRequests), which DOES sit on the request/admission/scrape path
-	// synchronously. Kept short so a slow or unreachable Redis degrades routing
-	// quality (falls back to the local atomic counter) rather than adding seconds of
-	// latency to every request.
-	runningRequestsReadTimeout = 100 * time.Millisecond
 	// runningRequestsLivenessHeartbeatInterval is how often each gateway instance
 	// refreshes its own entry in runningRequestsGatewaysKey, independent of request
 	// traffic (so a gateway that is alive but has zero in-flight requests anywhere
@@ -84,6 +78,18 @@ const (
 	// already treats as garbage-collectable.
 	runningRequestsFieldPruneWindow = runningRequestsTTL
 )
+
+// runningRequestsReadTimeout bounds each read (GetPodRunningRequests /
+// GetPodsRunningRequests) and the admission round trip in admitRunningRequest, all of
+// which sit on the request/admission/scrape path synchronously. Kept short so a slow or
+// unreachable Redis degrades routing quality (falls back to the local atomic counter)
+// rather than adding seconds of latency to every request.
+//
+// A var rather than a const only so tests can widen it: a test that drives many
+// concurrent admissions against a single-threaded test Redis can exhaust a budget this
+// short, and admitRunningRequest's documented fail-open path then admits past the cap
+// for a reason that test is not about. Production never reassigns it.
+var runningRequestsReadTimeout = 100 * time.Millisecond
 
 // newRunningRequestsGatewayInstanceID derives the identity this process uses for its
 // hash field / liveness ZSET member from podName, salted with this process's start
