@@ -375,6 +375,9 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 		recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonNoPods)
 		return nil
 	}
+	// The pool's runtimes are read concurrently first; the loop then takes
+	// each reading in turn.
+	readings.readUnread(ctx, pods)
 	for i := range pods {
 		pod := &pods[i]
 		snapshot, err := readings.of(ctx, pod)

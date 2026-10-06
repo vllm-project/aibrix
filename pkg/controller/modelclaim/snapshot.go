@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"context"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -82,9 +83,15 @@ func (rr *runtimeReadings) fresh(ctx context.Context, pod *corev1.Pod) (*Runtime
 	return rr.of(ctx, pod)
 }
 
+// parallelReadings bounds how many runtimes ofPods reads at once.
+const parallelReadings = 16
+
 // ofPods returns the readings of several pods by pod name. A pod whose runtime
-// did not answer is simply absent.
+// did not answer is simply absent. The pods this pass has not read yet are read
+// concurrently, so a pass waits for its slowest runtime rather than for the sum
+// of them.
 func (rr *runtimeReadings) ofPods(ctx context.Context, pods []corev1.Pod) map[string]*RuntimeSnapshot {
+	rr.readUnread(ctx, pods)
 	snapshots := make(map[string]*RuntimeSnapshot, len(pods))
 	for i := range pods {
 		snapshot, err := rr.of(ctx, &pods[i])
@@ -94,6 +101,42 @@ func (rr *runtimeReadings) ofPods(ctx context.Context, pods []corev1.Pod) map[st
 		snapshots[pods[i].Name] = snapshot
 	}
 	return snapshots
+}
+
+// readUnread reads, concurrently, the runtimes of the pods that have no reading
+// in this pass yet. With fewer than two such pods it does nothing, and of reads
+// the pod when it is asked for.
+func (rr *runtimeReadings) readUnread(ctx context.Context, pods []corev1.Pod) {
+	unread := make([]*corev1.Pod, 0, len(pods))
+	seen := make(map[string]bool, len(pods))
+	for i := range pods {
+		if _, found := rr.byPod[pods[i].Name]; found || seen[pods[i].Name] {
+			continue
+		}
+		seen[pods[i].Name] = true
+		unread = append(unread, &pods[i])
+	}
+	if len(unread) < 2 {
+		return
+	}
+	readings := make([]runtimeReading, len(unread))
+	changes := rr.changes
+	slots := make(chan struct{}, parallelReadings)
+	var wg sync.WaitGroup
+	for i, pod := range unread {
+		wg.Add(1)
+		slots <- struct{}{}
+		go func(i int, pod *corev1.Pod) {
+			defer wg.Done()
+			defer func() { <-slots }()
+			snapshot, err := rr.runtime.Snapshot(ctx, pod.Status.PodIP, DefaultRuntimePort)
+			readings[i] = runtimeReading{snapshot: snapshot, err: err, changes: changes}
+		}(i, pod)
+	}
+	wg.Wait()
+	for i, pod := range unread {
+		rr.byPod[pod.Name] = readings[i]
+	}
 }
 
 // replace puts in the reading a step took after changing a runtime.

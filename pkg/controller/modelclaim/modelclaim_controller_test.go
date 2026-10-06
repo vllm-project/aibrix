@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,6 +60,8 @@ const (
 // fakeRuntime is an in-process RuntimeClient that records calls and hands out
 // monotonic ports, so the reconcile loop can be tested without a real runtime.
 type fakeRuntime struct {
+	// mu guards the reads of runtimes, which a pass may make side by side.
+	mu              sync.Mutex
 	activateCalls   []ActivateRequest
 	deactivateCalls []DeactivateRequest
 	kvLimitCalls    []SetKVLimitRequest
@@ -213,6 +216,8 @@ func (f *fakeRuntime) ListModels(_ context.Context, _ string, _ int) ([]ModelInf
 }
 
 func (f *fakeRuntime) Snapshot(_ context.Context, podIP string, _ int) (*RuntimeSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.snapshotCalls++
 	if f.snapshotCallsTo == nil {
 		f.snapshotCallsTo = map[string]int{}
