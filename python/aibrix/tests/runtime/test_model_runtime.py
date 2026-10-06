@@ -557,8 +557,8 @@ def test_write_kv_limit_waits_for_the_lock_the_engine_takes(tmp_path):
 
 
 def test_vllm_lifecycle_controls_use_checked_localhost_requests(monkeypatch):
-    import httpx
 
+    import aibrix.runtime.model_runtime as runtime_module
     from aibrix.runtime.model_runtime import ModelInstance, SubprocessEngineLauncher
 
     calls = []
@@ -571,7 +571,9 @@ def test_vllm_lifecycle_controls_use_checked_localhost_requests(monkeypatch):
         calls.append({"url": url, "timeout": timeout})
         return _Response()
 
-    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(
+        runtime_module, "_localhost", lambda: SimpleNamespace(post=fake_post)
+    )
     inst = ModelInstance(model_name="m1", port=30123, ipc_name="kvc_m1")
     launcher = SubprocessEngineLauncher()
 
@@ -1107,7 +1109,6 @@ def test_snapshot_reports_hbm_peak_for_engine_process_tree(monkeypatch):
 
 
 def test_engine_request_activity_accepts_vllm_metric_name_variants(monkeypatch):
-    import httpx
 
     import aibrix.runtime.model_runtime as runtime_module
 
@@ -1122,7 +1123,11 @@ vllm:request_success_total{model_name=\"m1\",finished_reason=\"length\"} 7
         def raise_for_status(self):
             return None
 
-    monkeypatch.setattr(httpx, "get", lambda url, timeout: Response())
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: Response()),
+    )
     inst = runtime_module.ModelInstance(
         model_name="m1",
         port=20000,
@@ -1139,7 +1144,6 @@ vllm:request_success_total{model_name=\"m1\",finished_reason=\"length\"} 7
 
 
 def test_engine_request_activity_finds_its_metrics_among_all_others(monkeypatch):
-    import httpx
 
     import aibrix.runtime.model_runtime as runtime_module
 
@@ -1169,7 +1173,11 @@ vllm:request_success_created{finished_reason=\"stop\",model_name=\"m1\"} 1.7e9
         def raise_for_status(self):
             return None
 
-    monkeypatch.setattr(httpx, "get", lambda url, timeout: Response())
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: Response()),
+    )
     inst = runtime_module.ModelInstance(
         model_name="m1", port=20000, ipc_name="kvc_m1", proc=object()
     )
@@ -1213,8 +1221,105 @@ def test_snapshot_asks_the_engines_side_by_side(monkeypatch):
     assert all(m["requests_running"] == 1 for m in models)
 
 
+def test_the_engines_on_a_pod_are_asked_through_one_client(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_LOCALHOST", None)
+
+    assert runtime_module._localhost() is runtime_module._localhost()
+
+
+class _SlowSleepLauncher(MockEngineLauncher):
+    """Holds a sleep until the test lets it finish."""
+
+    def __init__(self):
+        super().__init__()
+        self.falling_asleep = threading.Event()
+        self.let_it_finish = threading.Event()
+
+    def sleep(self, inst, level):
+        self.falling_asleep.set()
+        assert self.let_it_finish.wait(5)
+        super().sleep(inst, level)
+
+
+def _agent_with_a_slow_sleep(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda ipc_name: None)
+    launcher = _SlowSleepLauncher()
+    agent = ModelRuntime(launcher)
+    agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    sleeper = threading.Thread(
+        target=lambda: agent.sleep("m1", level=1, operation_id="op-1")
+    )
+    sleeper.start()
+    assert launcher.falling_asleep.wait(5)
+    return agent, launcher, sleeper
+
+
+def test_a_snapshot_does_not_wait_for_an_engine_to_fall_asleep(monkeypatch):
+    agent, launcher, sleeper = _agent_with_a_slow_sleep(monkeypatch)
+    taken = threading.Event()
+    threading.Thread(target=lambda: (agent.snapshot(), taken.set())).start()
+    try:
+        assert taken.wait(2), "a snapshot waited for the sleep"
+    finally:
+        launcher.let_it_finish.set()
+    sleeper.join(5)
+
+    assert agent.list_models()[0].phase == "sleeping"
+
+
+def test_a_change_of_an_engine_waits_for_its_sleep(monkeypatch):
+    agent, launcher, sleeper = _agent_with_a_slow_sleep(monkeypatch)
+    stopped = threading.Event()
+    stopper = threading.Thread(target=lambda: (agent.deactivate("m1"), stopped.set()))
+    stopper.start()
+    try:
+        assert not stopped.wait(0.2), "a deactivate ran while the engine fell asleep"
+    finally:
+        launcher.let_it_finish.set()
+    sleeper.join(5)
+    stopper.join(5)
+
+    assert stopped.is_set()
+    assert launcher.slept == [("m1", 1)]
+    assert launcher.stopped == ["m1"]
+    assert agent.list_models() == []
+
+
+def test_a_snapshot_does_not_wait_for_a_health_probe(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda ipc_name: None)
+    agent = make_agent()
+    agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    probing, answer, calls = threading.Event(), threading.Event(), []
+
+    def first_probe_is_slow(inst):
+        calls.append(inst.model_name)
+        if len(calls) == 1:
+            probing.set()
+            answer.wait(5)
+        return True
+
+    monkeypatch.setattr(runtime_module, "instance_ready", first_probe_is_slow)
+    supervisor = threading.Thread(target=agent.supervise_once)
+    supervisor.start()
+    assert probing.wait(5)
+    taken = threading.Event()
+    threading.Thread(target=lambda: (agent.snapshot(), taken.set())).start()
+    try:
+        assert taken.wait(2), "a snapshot waited for the supervisor's health probe"
+    finally:
+        answer.set()
+    supervisor.join(5)
+
+
 def test_engine_request_activity_scrapes_external_runtime_mock(monkeypatch):
-    import httpx
 
     import aibrix.runtime.model_runtime as runtime_module
 
@@ -1229,7 +1334,11 @@ vllm:request_success_total{model_name=\"m1\"} 7
 
     monkeypatch.setenv("AIBRIX_MODEL_RUNTIME_MOCK", "1")
     monkeypatch.setenv("AIBRIX_MODEL_RUNTIME_MOCK_EXTERNAL_ENGINES", "1")
-    monkeypatch.setattr(httpx, "get", lambda url, timeout: Response())
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: Response()),
+    )
     inst = runtime_module.ModelInstance(
         model_name="m1",
         port=20000,
@@ -1246,7 +1355,6 @@ vllm:request_success_total{model_name=\"m1\"} 7
 
 
 def test_engine_request_activity_ignores_other_models_from_shared_metrics(monkeypatch):
-    import httpx
 
     import aibrix.runtime.model_runtime as runtime_module
 
@@ -1262,7 +1370,11 @@ vllm:request_success_total{model_name=\"m2\",finished_reason=\"stop\"} 17
         def raise_for_status(self):
             return None
 
-    monkeypatch.setattr(httpx, "get", lambda url, timeout: Response())
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: Response()),
+    )
     inst = runtime_module.ModelInstance(
         model_name="m1",
         port=20000,
@@ -1552,38 +1664,47 @@ def test_instance_ready_live_process_probes_health(monkeypatch):
 
 
 def test_engine_ready_health_200(monkeypatch):
-    import httpx
 
+    import aibrix.runtime.model_runtime as runtime_module
     from aibrix.runtime.model_runtime import engine_ready
 
     class _Resp:
         status_code = 200
 
-    monkeypatch.setattr(httpx, "get", lambda url, timeout: _Resp())
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: _Resp()),
+    )
     assert engine_ready(29000) is True
 
 
 def test_engine_ready_non_200(monkeypatch):
-    import httpx
 
+    import aibrix.runtime.model_runtime as runtime_module
     from aibrix.runtime.model_runtime import engine_ready
 
     class _Resp:
         status_code = 503
 
-    monkeypatch.setattr(httpx, "get", lambda url, timeout: _Resp())
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: _Resp()),
+    )
     assert engine_ready(29000) is False
 
 
 def test_engine_ready_connection_refused(monkeypatch):
     import httpx
 
+    import aibrix.runtime.model_runtime as runtime_module
     from aibrix.runtime.model_runtime import engine_ready
 
     def boom(url, timeout):
         raise httpx.ConnectError("connection refused")
 
-    monkeypatch.setattr(httpx, "get", boom)
+    monkeypatch.setattr(runtime_module, "_localhost", lambda: SimpleNamespace(get=boom))
     assert engine_ready(29000) is False, "still-booting engine reads as not ready"
 
 
