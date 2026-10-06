@@ -594,6 +594,66 @@ def test_vllm_lifecycle_controls_use_checked_localhost_requests(monkeypatch):
     ]
 
 
+class _VLLMSleeps:
+    """A vLLM that answers each sleep request with the next status code given,
+    or raises the next exception given."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.asked = []
+
+    def post(self, url, timeout):
+        import httpx
+
+        self.asked.append(url)
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return httpx.Response(answer, request=httpx.Request("POST", url))
+
+
+def _launcher_asking(monkeypatch, vllm):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_localhost", lambda: vllm)
+    monkeypatch.setattr(runtime_module.time, "sleep", lambda seconds: None)
+    inst = runtime_module.ModelInstance(model_name="m1", port=30123, ipc_name="kvc_m1")
+    return runtime_module.SubprocessEngineLauncher(), inst
+
+
+def test_a_sleep_vllm_failed_is_asked_for_again(monkeypatch):
+    vllm = _VLLMSleeps(500, 200)
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    launcher.sleep(inst, level=1)
+
+    assert vllm.asked == ["http://127.0.0.1:30123/sleep?level=1"] * 2
+
+
+def test_a_sleep_vllm_keeps_failing_fails(monkeypatch):
+    import httpx
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    vllm = _VLLMSleeps(*[500] * runtime_module.VLLM_SLEEP_ATTEMPTS)
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        launcher.sleep(inst, level=1)
+    assert len(vllm.asked) == runtime_module.VLLM_SLEEP_ATTEMPTS
+
+
+def test_a_sleep_vllm_did_not_answer_is_not_asked_for_again(monkeypatch):
+    import httpx
+
+    vllm = _VLLMSleeps(httpx.ReadTimeout("no answer"))
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    with pytest.raises(httpx.ReadTimeout):
+        launcher.sleep(inst, level=1)
+    assert len(vllm.asked) == 1
+
+
 def test_subprocess_launcher_stops_group_after_api_server_exits(monkeypatch):
     from aibrix.runtime.model_runtime import ModelInstance, SubprocessEngineLauncher
 

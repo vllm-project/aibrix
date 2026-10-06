@@ -634,6 +634,8 @@ class AdoptedProcess:
 # Qwen3-32B-FP8 on an H20. The controller waits 60 seconds for the runtime, so
 # one call stays below that.
 VLLM_SLEEP_WAKE_TIMEOUT_SECONDS = 50.0
+# How many times a sleep that vLLM answers with an error is asked for.
+VLLM_SLEEP_ATTEMPTS = 3
 
 
 _LOCALHOST: Any = None
@@ -914,7 +916,22 @@ class SubprocessEngineLauncher(EngineLauncher):
             pass
 
     def sleep(self, inst, level):
-        _vllm_control_post(inst.port, f"/sleep?level={level}")
+        import httpx
+
+        for attempt in range(1, VLLM_SLEEP_ATTEMPTS + 1):
+            try:
+                _vllm_control_post(inst.port, f"/sleep?level={level}")
+                return
+            except httpx.HTTPStatusError:
+                # vLLM fails a sleep when the card has less free memory after
+                # it than before, which another engine on the card can cause
+                # while this engine's weights are being offloaded. The weights
+                # are then offloaded, but vLLM still holds the engine awake,
+                # and a wake would leave them offloaded. Asked again, vLLM
+                # finishes the sleep, since there is nothing left to offload.
+                if attempt == VLLM_SLEEP_ATTEMPTS:
+                    raise
+                time.sleep(1.0)
 
     def wake(self, inst):
         _vllm_control_post(inst.port, "/wake_up")
