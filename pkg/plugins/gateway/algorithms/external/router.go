@@ -186,6 +186,9 @@ func (r *externalRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	switch decision.decision {
 	case externalDecisionSelected:
 		r.metrics.requests.WithLabelValues(externalOutcomeSelected).Inc()
+		// v1alpha1 is single-target routing: apply exactly one validated Pod and
+		// port. P/D pairing and dispatch remain the responsibility of the
+		// dedicated pd router, not this external decision.
 		ctx.SetTargetPort(decision.targetPort)
 		ctx.SetTargetPod(decision.targetPod)
 		return ctx.TargetAddress(), nil

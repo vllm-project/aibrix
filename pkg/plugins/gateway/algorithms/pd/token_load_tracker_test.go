@@ -1000,3 +1000,117 @@ func TestTokenLoadTracker_PruneKeepsDecodeGrowthOfOutstandingCharges(t *testing.
 		assert.Falsef(t, tracked, "%s: an idle pod's growth aggregate is pruned with its counter", pod)
 	}
 }
+
+// DecodeLedgerState reports the decode counter, the outstanding charges and
+// the sum of their charge times as Unix seconds, the absolute form another
+// replica can add to its own ledger.
+func TestTokenLoadTracker_DecodeLedgerState(t *testing.T) {
+	tr, clock := newTestTokenLoadTracker(t, TokenLoadConfig{})
+	start := clock.Now()
+
+	tokens, charges, sumAt := tr.DecodeLedgerState("ns/decode-0")
+	assert.Zero(t, tokens)
+	assert.Zero(t, charges)
+	assert.Zero(t, sumAt)
+
+	tr.AcquireDecodeWithTTL("a", "ns/decode-0", 1000, 0)
+	clock.Advance(10 * time.Second)
+	tr.AcquireDecodeWithTTL("b", "ns/decode-0", 500, 0)
+
+	tokens, charges, sumAt = tr.DecodeLedgerState("ns/decode-0")
+	assert.Equal(t, 1500.0, tokens)
+	assert.EqualValues(t, 2, charges)
+	startUnix := float64(start.UnixNano()) / float64(time.Second)
+	assert.InDelta(t, 2*startUnix+10, sumAt, 1e-3)
+
+	tr.ReleaseDecode("a")
+	tokens, charges, sumAt = tr.DecodeLedgerState("ns/decode-0")
+	assert.Equal(t, 500.0, tokens)
+	assert.EqualValues(t, 1, charges)
+	assert.InDelta(t, startUnix+10, sumAt, 1e-3)
+
+	tr.ReleaseDecode("b")
+	tokens, charges, sumAt = tr.DecodeLedgerState("ns/decode-0")
+	assert.Zero(t, tokens)
+	assert.Zero(t, charges)
+	assert.Zero(t, sumAt)
+}
+
+// The decode ledger listener hears about every change to a pod's ledger: a
+// charge, a release (but not a repeated one), both pods of a re-acquire, and a
+// TTL sweep.
+func TestTokenLoadTracker_DecodeLedgerListener(t *testing.T) {
+	tr, clock := newTestTokenLoadTracker(t, TokenLoadConfig{})
+	var mu sync.Mutex
+	var heard []string
+	tr.SetDecodeLedgerListener(func(podKey string) {
+		mu.Lock()
+		heard = append(heard, podKey)
+		mu.Unlock()
+	})
+	take := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := heard
+		heard = nil
+		return out
+	}
+
+	tr.AcquireDecodeWithTTL("r1", "ns/decode-0", 100, 0)
+	assert.Equal(t, []string{"ns/decode-0"}, take())
+
+	tr.ReleaseDecode("r1")
+	tr.ReleaseDecode("r1")
+	assert.Equal(t, []string{"ns/decode-0"}, take(), "a repeated release changes nothing")
+
+	tr.AcquireDecodeWithTTL("r2", "ns/decode-0", 100, 0)
+	tr.AcquireDecodeWithTTL("r2", "ns/decode-1", 100, 0)
+	assert.Equal(t, []string{"ns/decode-0", "ns/decode-0", "ns/decode-1"}, take(),
+		"a re-acquire releases the earlier pod and charges the new one")
+
+	tr.AcquireDecodeWithTTL("r3", "ns/decode-2", 100, time.Second)
+	take()
+	clock.Advance(2 * time.Second)
+	tr.sweepExpired()
+	assert.Equal(t, []string{"ns/decode-2"}, take(), "the TTL sweep releases through the same path")
+
+	tr.SetDecodeLedgerListener(nil)
+	tr.AcquireDecodeWithTTL("r4", "ns/decode-0", 100, 0)
+	assert.Empty(t, take())
+}
+
+// DecodeLedgerState reads tokens, charges and charge times together: under
+// concurrent charges and releases of 100 tokens each, every state it returns
+// has exactly 100 tokens per outstanding charge.
+func TestTokenLoadTracker_DecodeLedgerStateIsConsistent(t *testing.T) {
+	tr := newTokenLoadTracker(TokenLoadConfig{}, time.Now)
+	t.Cleanup(tr.Close)
+	const pod = "ns/decode-0"
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < 2000; i++ {
+				id := fmt.Sprintf("w%d-%d", w, i)
+				tr.AcquireDecodeWithTTL(id, pod, 100, 0)
+				tr.ReleaseDecode(id)
+			}
+		}(w)
+	}
+	go func() { wg.Wait(); close(stop) }()
+
+	reads := 0
+	for {
+		select {
+		case <-stop:
+			require.Greater(t, reads, 0)
+			return
+		default:
+		}
+		tokens, charges, _ := tr.DecodeLedgerState(pod)
+		require.Equalf(t, 100*float64(charges), tokens, "torn read: %v tokens for %d charges", tokens, charges)
+		reads++
+	}
+}

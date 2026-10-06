@@ -18,6 +18,7 @@ package cache
 
 import (
 	"fmt"
+	"sort"
 	"sync/atomic"
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -85,6 +86,27 @@ func (c *Store) ListPodsByModel(modelName string) (types.PodList, error) {
 //	[]string: Slice of model names
 func (c *Store) ListModels() []string {
 	return c.metaModels.Keys()
+}
+
+// ListModelsWithReadyPods returns names with at least one ready, addressable,
+// non-terminating, non-draining Pod. The cache lock keeps model membership and
+// Pod updates in the same snapshot while the list is built.
+func (c *Store) ListModelsWithReadyPods() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	models := make([]string, 0, c.metaModels.Len())
+	c.metaModels.Range(func(name string, meta *Model) bool {
+		for _, pod := range meta.Pods.Array().All() {
+			if pod != nil && utils.FilterReadyPod(pod) {
+				models = append(models, name)
+				break
+			}
+		}
+		return true
+	})
+	sort.Strings(models)
+	return models
 }
 
 // HasModel checks if a model exists in the cache
@@ -244,7 +266,12 @@ func (c *Store) GetPodRunningRequests(podName, podNamespace string) (int64, erro
 // is already applied. A missing key means the pod was nil or not in metaPods -- treat as 0.
 // Do not treat a missing key as "read the local counter again."
 func (c *Store) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {
-	live := c.readPodsRunningRequests(pods)
+	return c.runningRequestsWithLocalFallback(pods, c.readPodsRunningRequests(pods)), nil
+}
+
+// runningRequestsWithLocalFallback keys live by pod and fills in this gateway's
+// local atomic for every pod live has no count for.
+func (c *Store) runningRequestsWithLocalFallback(pods []*v1.Pod, live map[string]int64) map[string]int64 {
 	result := make(map[string]int64, len(pods))
 	for _, pod := range pods {
 		if pod == nil {
@@ -261,7 +288,7 @@ func (c *Store) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error)
 		}
 		result[podKey] = int64(atomic.LoadInt32(&metaPod.runningRequests))
 	}
-	return result, nil
+	return result
 }
 
 // AddRequestCount tracks new request initiation.

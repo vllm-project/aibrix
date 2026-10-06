@@ -84,6 +84,7 @@ type Server struct {
 	gatewayClient       gatewayapi.Interface
 	requestCountTracker map[string]int
 	cache               cache.Cache
+	modelListMode       ModelListMode
 	routerManager       *routing.RouterManager
 	inFlightObserver    func(int)
 	wakeRequester       modelWakeRequester
@@ -156,6 +157,16 @@ type processState struct {
 	inferenceSpan       trace.Span // routing completion to final response body
 	firstRespSpan       trace.Span // routing completion to first response body chunk
 	toLastRespSpan      trace.Span // first response body chunk to stream completion
+
+	// prefillSucceededSeen records that the PD prefill-success wakeup has been
+	// observed. Same closed-channel hazard as prefillFailFastDone: the edge is
+	// only needed to make the loop arm its decode watchdog once, after which
+	// the success is readable from the leg's timestamp.
+	prefillSucceededSeen bool
+	// watchdog is the stream's one-shot decode watchdog timer, re-armed on
+	// every pass of the loop from decodeWatchdogDeadline. Nil until a stream
+	// arms one, which only an SGLang PD request ever does.
+	watchdog *time.Timer
 }
 
 var podName = os.Getenv("POD_NAME")
@@ -242,10 +253,22 @@ func httpRouteCacheTTL() time.Duration {
 	return defaultHTTPRouteCacheTTL
 }
 
+// ModelListMode selects which models the gateway HTTP endpoint lists.
+type ModelListMode string
+
+const (
+	// ModelListKnown preserves the existing behavior: every name in the cache.
+	ModelListKnown ModelListMode = "known"
+	// ModelListReadyPods includes names with at least one ready Pod.
+	ModelListReadyPods ModelListMode = "ready-pods"
+)
+
 // ServerOptions configures optional dependencies for a Server.
 type ServerOptions struct {
 	Cache         cache.Cache
 	RouterManager *routing.RouterManager
+	// ModelListMode defaults to ModelListKnown.
+	ModelListMode ModelListMode
 	// DisableRateLimiting disables AIBrix user and model quota enforcement while
 	// leaving Redis available to other gateway features.
 	DisableRateLimiting bool
@@ -275,6 +298,19 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		if err != nil {
 			panic(err)
 		}
+	}
+	mode := options.ModelListMode
+	if mode == "" {
+		mode = ModelListKnown
+	}
+	switch mode {
+	case ModelListKnown:
+	case ModelListReadyPods:
+		if _, ok := c.(cache.ReadyModelCache); !ok {
+			panic("ready-pods model listing requires a cache that supports ready model snapshots")
+		}
+	default:
+		panic(fmt.Sprintf("unsupported model list mode %q", mode))
 	}
 	var r ratelimiter.RateLimiter
 	var mr ratelimiter.RateLimiter
@@ -312,9 +348,10 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		gatewayClient:       gatewayClient,
 		requestCountTracker: map[string]int{},
 		cache:               c,
+		modelListMode:       mode,
 		routerManager:       routerManager,
 		inFlightObserver:    options.InFlightObserver,
-		wakeRequester:       newRuntimeModelWakeRequester(nil, defaultModelClaimRuntimePort),
+		wakeRequester:       newRuntimeModelWakeRequester(nil, defaultModelClaimRuntimePort, client),
 		httprouteCacheTTL:   httpRouteCacheTTL(),
 		httprouteErrorTTL:   defaultHTTPRouteErrorTTL,
 		shutdownCh:          shutdown,
@@ -383,6 +420,12 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) (err err
 		}
 	}()
 
+	// Every return from the loop, terminal or not, leaves at most one armed
+	// decode watchdog timer behind, and a pending timer keeps its entry in the
+	// runtime's timer heap until it fires. Idempotent and nil-safe, so streams
+	// that never armed one pay nothing.
+	defer st.stopDecodeWatchdog()
+
 	klog.InfoS("processing request", "requestID", st.requestID)
 	labels := map[string]string{"pod_name": podName}
 	metrics.EmitMetricToPrometheus(&types.RoutingContext{}, nil, metrics.GatewayRequestTotal, &metrics.SimpleMetricValue{Value: 1.0}, labels)
@@ -444,6 +487,27 @@ func (s *Server) processOnce(srv extProcPb.ExternalProcessor_ProcessServer, st *
 		prefillFailed = st.routerCtx.PrefillFailed()
 	}
 
+	// Arm the prefill-success wakeup on the same terms. It carries no decision
+	// of its own: it exists so that the loop, parked on Envoy's messages, wakes
+	// up at the instant the decode watchdog becomes armable and re-enters the
+	// select with its timer running.
+	var prefillSucceeded <-chan struct{}
+	if !st.prefillSucceededSeen {
+		prefillSucceeded = st.routerCtx.PrefillSucceeded()
+	}
+
+	// And the watchdog itself, recomputed from the leg on every pass so that
+	// the decode pod's first message and the completed response disarm it. A
+	// nil channel when nothing is armed - the non-PD case, and every PD request
+	// before its prefill leg has finished.
+	var decodeWatchdog <-chan time.Time
+	deadline, phase := st.decodeWatchdogDeadline()
+	if deadline.IsZero() {
+		st.stopDecodeWatchdog()
+	} else {
+		decodeWatchdog = st.armDecodeWatchdog(time.Until(deadline))
+	}
+
 	// ctx.Done() is intentionally omitted here: gRPC unblocks Recv when the
 	// stream context is cancelled, so handleRecvError handles that path.
 	// preRecvCheck covers the case where ctx is already done before we spawn.
@@ -478,6 +542,34 @@ func (s *Server) processOnce(srv extProcPb.ExternalProcessor_ProcessServer, st *
 			// messages has been recorded and the after_response half applies.
 			st.prefillFailFastDone = true
 			return s.handlePrefillFailFast(srv, st)
+		}
+	case <-prefillSucceeded:
+		// The prefill leg landed, so the decode pod now owes this request a
+		// response. Nothing to decide here: returning re-enters processOnce,
+		// which arms the watchdog deadline computed from the leg.
+		st.prefillSucceededSeen = true
+		return nil
+	case <-decodeWatchdog:
+		// A message that has already arrived wins the tie, for the same reason
+		// it does on a prefill failure: it is the decode pod answering, which
+		// is exactly what the watchdog was waiting for.
+		select {
+		case r := <-st.recvCh:
+			st.recvCh = nil
+			if r.err != nil {
+				return s.handleRecvError(st, r.err)
+			}
+			req = r.req
+		default:
+			// Recheck the deadline against the clock before acting. A timer
+			// that fired between Stop() and its (non-blocking) drain on an
+			// earlier pass would otherwise kill a healthy stream early; here
+			// it costs one extra pass of the loop, which re-arms for the
+			// remaining time.
+			if fresh, _ := st.decodeWatchdogDeadline(); fresh.IsZero() || time.Now().Before(fresh) {
+				return nil
+			}
+			return s.handleDecodeWatchdog(srv, st, phase)
 		}
 	case <-s.shutdownCh:
 		if st.model != "" {
@@ -945,7 +1037,12 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		Data   []modelObject `json:"data"`
 	}
 
-	models := s.cache.ListModels()
+	var models []string
+	if s.modelListMode == ModelListReadyPods {
+		models = s.cache.(cache.ReadyModelCache).ListModelsWithReadyPods()
+	} else {
+		models = s.cache.ListModels()
+	}
 	data := make([]modelObject, len(models))
 	for i, m := range models {
 		data[i] = modelObject{ID: m, Object: "model", Created: 0, OwnedBy: "aibrix"}

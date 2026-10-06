@@ -368,12 +368,34 @@ func GetModelPortForPod(requestID string, pod *v1.Pod) int64 {
 	return modelPort
 }
 
+// ModelClaimRoute is the value of a warm pod's annotation for one claim, as
+// the controller writes it and the gateway reads it.
+type ModelClaimRoute struct {
+	Model         string `json:"model"`
+	Port          int    `json:"port"`
+	State         string `json:"state,omitempty"`
+	WakeByRequest bool   `json:"wakeByRequest,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+}
+
 // ModelClaimBinding is the runtime-observed route state carried by one warm
 // pod annotation. Port 0 is known but non-routable.
 type ModelClaimBinding struct {
 	Model string
 	Port  int
 	State string
+	// Claim is the ModelClaim the binding belongs to, named by the
+	// annotation key.
+	Claim string
+	// WakeByRequest says that the controller wakes this engine when asked.
+	// A request for it while it sleeps is then written on the pod as a wake
+	// request, rather than sent to the runtime. An older controller does not
+	// set it, and wakes nothing itself.
+	WakeByRequest bool
+	// Reason says more than State about why the model is not served, such as
+	// WaitingForRoom while a wake waits for room, or Moving while the claim
+	// moves to another pod. It is empty when the state says it all.
+	Reason string
 }
 
 // ModelClaimBindingsFromPod parses modelclaim.aibrix.ai/* annotations on a
@@ -388,11 +410,7 @@ func ModelClaimBindingsFromPod(pod *v1.Pod) map[string]ModelClaimBinding {
 		if !strings.HasPrefix(key, constants.ModelClaimPodAnnotationPrefix) {
 			continue
 		}
-		var entry struct {
-			Model string `json:"model"`
-			Port  int    `json:"port"`
-			State string `json:"state,omitempty"`
-		}
+		var entry ModelClaimRoute
 		if err := json.Unmarshal([]byte(value), &entry); err != nil || entry.Model == "" ||
 			entry.Port < 0 || entry.Port > 65535 {
 			klog.Warningf("pod %s has malformed ModelClaim annotation %q=%q", pod.Name, key, value)
@@ -416,9 +434,12 @@ func ModelClaimBindingsFromPod(pod *v1.Pod) map[string]ModelClaimBinding {
 			out = make(map[string]ModelClaimBinding)
 		}
 		out[entry.Model] = ModelClaimBinding{
-			Model: entry.Model,
-			Port:  entry.Port,
-			State: entry.State,
+			Model:         entry.Model,
+			Port:          entry.Port,
+			State:         entry.State,
+			Claim:         strings.TrimPrefix(key, constants.ModelClaimPodAnnotationPrefix),
+			WakeByRequest: entry.WakeByRequest,
+			Reason:        entry.Reason,
 		}
 	}
 	return out

@@ -201,6 +201,10 @@ type TokenLoadTracker struct {
 	// epoch is the origin of the charge times summed in decodeInflight. Keeping
 	// them relative to it keeps the float64 sums small and exact enough.
 	epoch time.Time
+
+	// decodeListener, when set, is called with a pod key after every change to
+	// that pod's decode ledger (see SetDecodeLedgerListener).
+	decodeListener atomic.Pointer[func(podKey string)]
 }
 
 // tokenLoadEntry records one AcquirePrefill so the releases subtract exactly
@@ -543,7 +547,8 @@ func (t *TokenLoadTracker) AcquireDecodeWithTTL(requestID, podKey string, cost f
 		t.releaseDecode(requestID, old)
 	}
 	t.addDecode(podKey, cost)
-	t.addDecodeInflight(podKey, 1, entry.acquiredAt)
+	t.addDecodeInflight(podKey, 1, entry.acquiredAt, cost)
+	t.notifyDecode(podKey)
 	klog.V(4).InfoS("token_load_decode_acquired", "request_id", requestID, "pod", podKey, "cost", cost)
 }
 
@@ -563,8 +568,9 @@ func (t *TokenLoadTracker) releaseDecode(requestID string, entry *decodeLoadEntr
 		return
 	}
 	t.addDecode(entry.podKey, -entry.cost)
-	t.addDecodeInflight(entry.podKey, -1, entry.acquiredAt)
+	t.addDecodeInflight(entry.podKey, -1, entry.acquiredAt, entry.cost)
 	t.decodeEntries.CompareAndDelete(requestID, entry)
+	t.notifyDecode(entry.podKey)
 	klog.V(4).InfoS("token_load_decode_released", "request_id", requestID, "pod", entry.podKey, "cost", entry.cost)
 }
 
@@ -582,6 +588,10 @@ type decodeInflight struct {
 	// sumAt is the sum of the outstanding charges' times, in seconds since the
 	// tracker's epoch.
 	sumAt float64
+	// tokens is the sum of the outstanding charges' costs: the decode counter,
+	// kept here as well so DecodeLedgerState can read it together with n and
+	// sumAt under one lock.
+	tokens float64
 }
 
 // DecodeGrowth estimates the output the requests outstanding on the pod
@@ -612,11 +622,49 @@ func (t *TokenLoadTracker) sinceEpoch(ts time.Time) float64 {
 	return ts.Sub(t.epoch).Seconds()
 }
 
+// DecodeLedgerState returns the pod's charged decode tokens, its number of
+// outstanding decode charges and the sum of their charge times as Unix seconds
+// on the tracker's clock: what another gateway replica needs to add this
+// replica's ledger, growth included, to its own. The three values are read
+// together, so a charge or release in progress is either fully in them or not.
+func (t *TokenLoadTracker) DecodeLedgerState(podKey string) (tokens float64, charges int64, sumChargedAt float64) {
+	v, ok := t.decodeInflight.Load(podKey)
+	if !ok {
+		return 0, 0, 0
+	}
+	agg := v.(*decodeInflight)
+	agg.mu.Lock()
+	n, sumAt, tokens := agg.n, agg.sumAt, agg.tokens
+	agg.mu.Unlock()
+	if n <= 0 {
+		return 0, 0, 0
+	}
+	epoch := float64(t.epoch.Unix()) + float64(t.epoch.Nanosecond())/1e9
+	return tokens, n, sumAt + float64(n)*epoch
+}
+
+// SetDecodeLedgerListener registers fn to be called with a pod key after every
+// change to that pod's decode ledger: a charge, a release, a re-acquire and a
+// TTL sweep. fn runs on the caller's path and must not block. nil unregisters.
+func (t *TokenLoadTracker) SetDecodeLedgerListener(fn func(podKey string)) {
+	if fn == nil {
+		t.decodeListener.Store(nil)
+		return
+	}
+	t.decodeListener.Store(&fn)
+}
+
+func (t *TokenLoadTracker) notifyDecode(podKey string) {
+	if fn := t.decodeListener.Load(); fn != nil {
+		(*fn)(podKey)
+	}
+}
+
 // addDecodeInflight adds delta (+1 on a charge, -1 on its release) to the pod's
-// outstanding count and moves the charge time in or out of the sum. Like the
-// counters, it runs under the shared lock so the janitor cannot prune the
-// aggregate in between.
-func (t *TokenLoadTracker) addDecodeInflight(podKey string, delta int64, at time.Time) {
+// outstanding count and moves the charge's time and cost in or out of the sums.
+// Like the counters, it runs under the shared lock so the janitor cannot prune
+// the aggregate in between.
+func (t *TokenLoadTracker) addDecodeInflight(podKey string, delta int64, at time.Time, cost float64) {
 	t.countersMu.RLock()
 	defer t.countersMu.RUnlock()
 	v, ok := t.decodeInflight.Load(podKey)
@@ -628,9 +676,10 @@ func (t *TokenLoadTracker) addDecodeInflight(podKey string, delta int64, at time
 	defer agg.mu.Unlock()
 	agg.n += delta
 	agg.sumAt += float64(delta) * t.sinceEpoch(at)
+	agg.tokens += float64(delta) * cost
 	if agg.n <= 0 {
 		// Reset instead of carrying float error into the next charge.
-		agg.n, agg.sumAt = 0, 0
+		agg.n, agg.sumAt, agg.tokens = 0, 0, 0
 	}
 }
 

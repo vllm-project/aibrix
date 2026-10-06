@@ -793,3 +793,100 @@ def test_pooling_rejects_non_list_messages(monkeypatch):
         )
         assert response.status_code == 400, bad_messages
         assert response.get_json()["error"]["param"] == "messages"
+
+
+CHOICE_QUESTION = {
+    "id": "pick",
+    "type": "choice",
+    "question": "Which replica?",
+    "options": [{"name": "a"}, {"name": "b", "description": {"load": "low"}}],
+}
+
+
+def test_decisions_answers_each_question_type(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = post_json(
+        client,
+        "/v1/decisions",
+        {
+            "model": "m",
+            "input": "route this request",
+            "questions": [
+                CHOICE_QUESTION,
+                {"id": "rate", "type": "score", "question": "How good?", "levels": ["bad", "ok", "good"]},
+                {"id": "ok", "type": "yes_no", "question": "Is it fine?"},
+            ],
+        },
+        request_id="decisions-types",
+    )
+
+    assert response.status_code == 200, response.get_json()
+    body = response.get_json()
+    assert body["object"] == "decisions"
+    assert body["model"] == "m"
+    assert set(body["answers"]) == {"pick", "rate", "ok"}
+    assert body["answers"]["pick"]["choice"] == "a"
+    assert set(body["answers"]["pick"]["probabilities"]) == {"a", "b"}
+    assert body["answers"]["rate"]["score"] == pytest.approx(1.0)
+    assert set(body["answers"]["ok"]["probabilities"]) == {"yes", "no"}
+    assert "choice" not in body["answers"]["ok"]
+    # The gateway meters this on the language response path: prompt only, nothing generated.
+    usage = body["usage"]
+    assert usage["prompt_tokens"] > 0
+    assert usage["completion_tokens"] == 0
+    assert usage["total_tokens"] == usage["prompt_tokens"]
+
+
+def test_decisions_accepts_string_object_and_array_input(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    for name, input_value in [
+        ("string", "hello"),
+        ("object", {"a": 1}),
+        ("array", ["x", {"y": 2}]),
+    ]:
+        response = post_json(
+            client,
+            "/v1/decisions",
+            {"model": "m", "input": input_value, "questions": [CHOICE_QUESTION]},
+            request_id=f"decisions-input-{name}",
+        )
+        assert response.status_code == 200, (name, response.get_json())
+
+
+def test_decisions_rejects_bad_requests(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    bad_requests = [
+        ("missing input", {"model": "m", "questions": [CHOICE_QUESTION]}, "input"),
+        ("blank input", {"model": "m", "input": "  ", "questions": [CHOICE_QUESTION]}, "input"),
+        ("empty object input", {"model": "m", "input": {}, "questions": [CHOICE_QUESTION]}, "input"),
+        ("number input", {"model": "m", "input": 42, "questions": [CHOICE_QUESTION]}, "input"),
+        ("missing questions", {"model": "m", "input": "x"}, "questions"),
+        ("empty questions", {"model": "m", "input": "x", "questions": []}, "questions"),
+        (
+            "one option",
+            {"model": "m", "input": "x", "questions": [{**CHOICE_QUESTION, "options": [{"name": "a"}]}]},
+            "questions",
+        ),
+        (
+            "duplicate question ids",
+            {"model": "m", "input": "x", "questions": [CHOICE_QUESTION, CHOICE_QUESTION]},
+            "questions",
+        ),
+        (
+            "unknown question type",
+            {"model": "m", "input": "x", "questions": [{**CHOICE_QUESTION, "type": "rank"}]},
+            "questions",
+        ),
+        # SGLang forbids extra fields, so a client cannot ask this endpoint to stream.
+        ("stream is not a field", {"model": "m", "input": "x", "questions": [CHOICE_QUESTION], "stream": True}, "stream"),
+    ]
+    for name, payload, param in bad_requests:
+        response = post_json(client, "/v1/decisions", payload, request_id=f"decisions-bad-{name}")
+        assert response.status_code == 400, (name, response.get_json())
+        assert response.get_json()["error"]["param"] == param, name

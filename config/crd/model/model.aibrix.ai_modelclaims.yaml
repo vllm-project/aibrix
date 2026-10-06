@@ -175,6 +175,8 @@ spec:
                     port:
                       format: int32
                       type: integer
+                    reason:
+                      type: string
                   required:
                   - pod
                   type: object

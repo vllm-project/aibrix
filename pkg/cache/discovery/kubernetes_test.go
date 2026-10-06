@@ -17,13 +17,24 @@ limitations under the License.
 package discovery
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/rest"
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/vllm-project/aibrix/pkg/client/clientset/versioned/fake"
@@ -50,6 +61,97 @@ func TestCanListModelClaims(t *testing.T) {
 					func(k8stesting.Action) (bool, runtime.Object, error) { return true, nil, tc.err })
 			}
 			assert.Equal(t, tc.want, canListModelClaims(client))
+		})
+	}
+}
+
+func TestKubernetesProviderQueriesOnlyEnabledResources(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		watchAdapters bool
+		watchClaims   bool
+		useDefaults   bool
+	}{
+		{name: "default adapters", watchAdapters: true, useDefaults: true},
+		{name: "pods only"},
+		{name: "claims only", watchClaims: true},
+		{name: "both resources", watchAdapters: true, watchClaims: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var adapterRequests, claimRequests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				adapterRequest := strings.HasSuffix(r.URL.Path, "/modeladapters")
+				claimRequest := strings.HasSuffix(r.URL.Path, "/modelclaims")
+				if adapterRequest {
+					adapterRequests.Add(1)
+				}
+				if claimRequest {
+					claimRequests.Add(1)
+				}
+				if (adapterRequest && !tc.watchAdapters) || (claimRequest && !tc.watchClaims) {
+					http.Error(w, "resource is unavailable", http.StatusForbidden)
+					return
+				}
+				if r.URL.Query().Get("watch") == "true" {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					w.(http.Flusher).Flush()
+					<-r.Context().Done()
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/pods"):
+					_ = json.NewEncoder(w).Encode(&v1.PodList{
+						TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PodList"},
+						ListMeta: metav1.ListMeta{ResourceVersion: "1"},
+					})
+				case strings.HasSuffix(r.URL.Path, "/modeladapters"):
+					_ = json.NewEncoder(w).Encode(&modelv1alpha1.ModelAdapterList{
+						TypeMeta: metav1.TypeMeta{APIVersion: "model.aibrix.ai/v1alpha1", Kind: "ModelAdapterList"},
+						ListMeta: metav1.ListMeta{ResourceVersion: "1"},
+					})
+				case strings.HasSuffix(r.URL.Path, "/modelclaims"):
+					_ = json.NewEncoder(w).Encode(&modelv1alpha1.ModelClaimList{
+						TypeMeta: metav1.TypeMeta{APIVersion: "model.aibrix.ai/v1alpha1", Kind: "ModelClaimList"},
+						ListMeta: metav1.ListMeta{ResourceVersion: "1"},
+					})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			stopCh := make(chan struct{})
+			t.Cleanup(func() {
+				close(stopCh)
+				server.CloseClientConnections()
+				server.Close()
+			})
+
+			provider := NewKubernetesProvider(&rest.Config{Host: server.URL})
+			if !tc.useDefaults {
+				provider.WithModelAdapters(tc.watchAdapters)
+			}
+			if tc.watchClaims {
+				provider.WithModelClaims()
+			}
+			result := make(chan error, 1)
+			go func() { result <- provider.Watch(func(WatchEvent) {}, stopCh) }()
+			select {
+			case err := <-result:
+				require.NoError(t, err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("Kubernetes provider did not finish initial sync")
+			}
+			if tc.watchAdapters {
+				assert.Positive(t, adapterRequests.Load())
+			} else {
+				assert.Zero(t, adapterRequests.Load(), "disabled adapters must not be queried")
+			}
+			if tc.watchClaims {
+				assert.Positive(t, claimRequests.Load())
+			} else {
+				assert.Zero(t, claimRequests.Load(), "disabled claims must not be queried")
+			}
 		})
 	}
 }

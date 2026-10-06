@@ -36,6 +36,10 @@ const (
 	// prefill leg of a PD request failed, so the failure is distinguishable
 	// from a 5xx the decode pod produced itself.
 	HeaderErrorPDPrefill = "x-error-pd-prefill"
+	// HeaderErrorPDDecode marks a response the gateway generated because the
+	// decode leg of a PD request stopped responding after its prefill leg
+	// succeeded (the decode watchdog).
+	HeaderErrorPDDecode = "x-error-pd-decode"
 
 	// Model & Deployment Headers
 	HeaderErrorNoModelInRequest = "x-error-no-model-in-request"
@@ -135,6 +139,9 @@ const (
 	PathAudioTranslations   = "/v1/audio/translations"
 	PathRerank              = "/v1/rerank"
 	PathClassify            = "/v1/classify"
+	// PathDecisions is SGLang's typed-question scoring endpoint (choice, score, yes_no).
+	// It does not stream and generates no tokens.
+	PathDecisions = "/v1/decisions"
 	// PathVideos and PathVideosSync are vLLM-Omni's native Videos API (multipart/form-data),
 	// distinct from the OpenAI/Sora-shaped PathVideoGenerations (JSON) above. PathVideos also
 	// covers its GET/DELETE sub-resources (/v1/videos/{id}, /v1/videos/{id}/content) via

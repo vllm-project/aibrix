@@ -202,31 +202,49 @@ func (s *Server) failStreamOnPrefillFailure(srv extProcPb.ExternalProcessor_Proc
 		// carry, so this response can be tied to the gateway and engine logs.
 		HeaderRequestID, st.requestID)
 
+	return s.failStreamWithResponse(srv, st, resp, statusCode, prefillFailFastStatus,
+		status.Errorf(codes.Aborted, "pd prefill leg failed (%s): %s", failure.Class, message))
+}
+
+// failStreamWithResponse sends resp, an ImmediateResponse answering a request
+// the gateway has given up on, does the terminal bookkeeping, and returns
+// closeErr for the caller to end the ext_proc stream with. See
+// failStreamOnPrefillFailure for why a stream is failed with both.
+//
+// reason is the status label of the failed-request counter.
+func (s *Server) failStreamWithResponse(srv extProcPb.ExternalProcessor_ProcessServer, st *processState,
+	resp *extProcPb.ProcessingResponse, statusCode envoyTypePb.StatusCode, reason string, closeErr error) error {
 	// sendProcessingResponse owns the send-failure accounting, so a client that
 	// is already gone still unwinds through exactly one path.
 	if err := s.sendProcessingResponse(srv, st, resp); err != nil {
 		return err
 	}
 
-	s.emitPrefillFailFastCounters(st, statusCode)
+	s.emitStreamFailureCounters(st, statusCode, reason)
 
 	// Same terminal bookkeeping as every other early return in the loop:
 	// finishRequestCount is idempotent (Process's deferred fallback runs it
 	// too) and must run while routerCtx is still owned by this processState.
 	s.finishRequestCount(st)
 
-	return status.Errorf(codes.Aborted, "pd prefill leg failed (%s): %s", failure.Class, message)
+	return closeErr
 }
 
 // emitPrefillFailFastCounters mirrors the counter handleProcessingRequest emits
 // for any other ImmediateResponse, so a fail-fast shows up as a failed request
 // and never as gateway_request_success.
 func (s *Server) emitPrefillFailFastCounters(st *processState, statusCode envoyTypePb.StatusCode) {
+	s.emitStreamFailureCounters(st, statusCode, prefillFailFastStatus)
+}
+
+// emitStreamFailureCounters counts a stream the gateway failed on its own
+// initiative as a failed request, under reason as its status label.
+func (s *Server) emitStreamFailureCounters(st *processState, statusCode envoyTypePb.StatusCode, reason string) {
 	if st.model == "" {
 		return
 	}
 	s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model,
-		prefillFailFastStatus, strconv.Itoa(int(statusCode)), st.routerCtx)
+		reason, strconv.Itoa(int(statusCode)), st.routerCtx)
 }
 
 // prefillFailureStatusCode maps a prefill failure class onto the status the

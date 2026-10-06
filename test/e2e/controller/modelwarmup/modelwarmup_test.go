@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +76,125 @@ func TestModelWarmupPreloadsImageForPullNeverPod(t *testing.T) {
 	env.waitForWarmupSucceeded(t, ctx, warmup, 1)
 	env.waitForSucceededJobsAndPods(t, ctx, warmup.Name, []string{node.Name})
 	env.verifyPullNeverPod(t, ctx, node.Name)
+}
+
+func TestModelWarmupRunsCombinedImagePreloadAndCustomActions(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	env := newTestEnvironment(t, ctx)
+	node := env.readyWarmupNodes(t, ctx, 1)[0]
+
+	cacheMount := corev1.VolumeMount{Name: "cache", MountPath: "/cache"}
+	precheckCommand := []string{
+		"python", "-c", "import os; assert os.path.isdir('/cache'); open('/cache/precheck', 'w').close()",
+	}
+	prepareCommand := []string{"python", "-c", "from pathlib import Path; assert Path('/cache/precheck').is_file()"}
+	warmup := &modelapi.ModelWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: "combined-actions", Namespace: env.namespace},
+		Spec: modelapi.ModelWarmupSpec{
+			Targets: []modelapi.ModelWarmupTarget{{
+				Nodes: &modelapi.ModelWarmupNodesTarget{Names: []string{node.Name}},
+			}},
+			ImagePreload: modelapi.ModelWarmupImagePreload{Images: []modelapi.ModelWarmupImage{{
+				Image:           testImage,
+				Command:         successfulWarmupCommand(),
+				ImagePullPolicy: corev1.PullIfNotPresent,
+			}}},
+			Custom: &modelapi.ModelWarmupCustomAction{
+				InitContainers: []corev1.Container{{
+					Name:         "precheck",
+					Image:        testImage,
+					Command:      slices.Clone(precheckCommand),
+					VolumeMounts: []corev1.VolumeMount{cacheMount},
+				}},
+				Containers: []corev1.Container{{
+					Name:         "prepare",
+					Image:        testImage,
+					Command:      slices.Clone(prepareCommand),
+					VolumeMounts: []corev1.VolumeMount{cacheMount},
+				}},
+				Volumes: []corev1.Volume{{
+					Name: "cache",
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				}},
+			},
+		},
+	}
+	if err := env.apiClient.Create(ctx, warmup); err != nil {
+		t.Fatal(err)
+	}
+
+	env.waitForWarmupSucceeded(t, ctx, warmup, 1)
+	env.waitForSucceededJobsAndPods(t, ctx, warmup.Name, []string{node.Name})
+
+	selector, err := env.warmupJobSelector(ctx, warmup.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := env.kube.BatchV1().Jobs(env.namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 1 {
+		t.Fatalf("got %d Jobs, want 1", len(jobs.Items))
+	}
+	job := jobs.Items[0]
+	pod := job.Spec.Template.Spec
+	if job.Annotations[modelwarmup.TargetNodeAnnotationKey] != node.Name {
+		t.Fatalf("Job target node annotation = %q, want %q", job.Annotations[modelwarmup.TargetNodeAnnotationKey], node.Name)
+	}
+	if job.Annotations[modelwarmup.WarmupNameAnnotationKey] != warmup.Name {
+		t.Fatalf("Job warmup name annotation = %q, want %q",
+			job.Annotations[modelwarmup.WarmupNameAnnotationKey], warmup.Name)
+	}
+	if len(pod.InitContainers) != 1 || pod.InitContainers[0].Name != "precheck" {
+		t.Fatalf("Job init containers = %+v, want precheck", pod.InitContainers)
+	}
+	if len(pod.Containers) != 2 || pod.Containers[0].Name != "image-0" || pod.Containers[1].Name != "prepare" {
+		t.Fatalf("Job containers = %+v, want image-0 then prepare", pod.Containers)
+	}
+	if pod.Containers[0].Image != testImage || !slices.Equal(pod.Containers[0].Command, successfulWarmupCommand()) ||
+		pod.Containers[0].ImagePullPolicy != corev1.PullIfNotPresent {
+		t.Fatalf("image-0 container = %+v, want image %q, successful command, and PullIfNotPresent",
+			pod.Containers[0], testImage)
+	}
+	if pod.InitContainers[0].Image != testImage || !slices.Equal(pod.InitContainers[0].Command, precheckCommand) ||
+		pod.Containers[1].Image != testImage || !slices.Equal(pod.Containers[1].Command, prepareCommand) {
+		t.Fatalf("custom containers = init:%+v regular:%+v, want precheck and prepare commands",
+			pod.InitContainers[0], pod.Containers[1])
+	}
+	if len(pod.Volumes) != 1 || pod.Volumes[0].Name != "cache" || pod.Volumes[0].EmptyDir == nil {
+		t.Fatalf("Job volumes = %+v, want cache emptyDir", pod.Volumes)
+	}
+	if len(pod.InitContainers[0].VolumeMounts) != 1 || pod.InitContainers[0].VolumeMounts[0] != cacheMount ||
+		len(pod.Containers[1].VolumeMounts) != 1 || pod.Containers[1].VolumeMounts[0] != cacheMount {
+		t.Fatalf("custom container cache mounts = init:%+v regular:%+v, want %+v",
+			pod.InitContainers[0].VolumeMounts, pod.Containers[1].VolumeMounts, cacheMount)
+	}
+	assertModelWarmupJobPlacementAndSafety(t, pod, node.Name)
+}
+
+func assertModelWarmupJobPlacementAndSafety(t *testing.T, pod corev1.PodSpec, nodeName string) {
+	t.Helper()
+	if pod.NodeName != "" || pod.Affinity == nil || pod.Affinity.NodeAffinity == nil ||
+		pod.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		t.Fatalf("Job node placement = nodeName:%q affinity:%+v, want required node affinity", pod.NodeName, pod.Affinity)
+	}
+	terms := pod.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+	if len(terms) != 1 || len(terms[0].MatchFields) != 1 || terms[0].MatchFields[0].Key != "metadata.name" ||
+		terms[0].MatchFields[0].Operator != corev1.NodeSelectorOpIn || len(terms[0].MatchFields[0].Values) != 1 ||
+		terms[0].MatchFields[0].Values[0] != nodeName {
+		t.Fatalf("Job node affinity terms = %+v, want node %q", terms, nodeName)
+	}
+	imageSecurity := pod.Containers[0].SecurityContext
+	if pod.RestartPolicy != corev1.RestartPolicyNever ||
+		pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken ||
+		imageSecurity == nil || imageSecurity.AllowPrivilegeEscalation == nil || *imageSecurity.AllowPrivilegeEscalation {
+		t.Fatalf("Job controller invariants = restart:%q automount:%v image security context:%+v",
+			pod.RestartPolicy, pod.AutomountServiceAccountToken, imageSecurity)
+	}
 }
 
 func TestModelWarmupDeduplicatesNodeNameAndSelector(t *testing.T) {
@@ -787,6 +907,21 @@ func TestModelWarmupWebhookRejectsInvalidSpecs(t *testing.T) {
 				w.Spec.ImagePreload.Images,
 				w.Spec.ImagePreload.Images[0],
 			)
+		},
+		"custom container restart policy": func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom = &modelapi.ModelWarmupCustomAction{Containers: []corev1.Container{{
+				Name: "warm", Image: testImage,
+				RestartPolicy: ptr.To(corev1.ContainerRestartPolicyAlways),
+			}}}
+		},
+		"custom volume with multiple sources": func(w *modelapi.ModelWarmup) {
+			w.Spec.Custom = &modelapi.ModelWarmupCustomAction{
+				Containers: []corev1.Container{{Name: "warm", Image: testImage}},
+				Volumes: []corev1.Volume{{Name: "cache", VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+					HostPath: &corev1.HostPathVolumeSource{Path: "/var/lib/models"},
+				}}},
+			}
 		},
 	}
 	for name, mutate := range cases {

@@ -28,6 +28,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/util/expectation"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -119,10 +120,17 @@ func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl
 
 	rsNeedsSync := r.Expectations.SatisfiedExpectations(rsKey)
 	// fetch current ray cluster associated with this replicaset
+	if replicaset.Spec.Selector == nil {
+		return ctrl.Result{}, fmt.Errorf("replicaset %s/%s has no selector", replicaset.Namespace, replicaset.Name)
+	}
+	selector, err := metav1.LabelSelectorAsSelector(replicaset.Spec.Selector)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("replicaset %s/%s has invalid label selector: %v", replicaset.Namespace, replicaset.Name, err)
+	}
 	rayClusterList := &rayclusterv1.RayClusterList{}
 	ListOps := []client.ListOption{
 		client.InNamespace(replicaset.Namespace),
-		client.MatchingLabels(replicaset.Spec.Selector.MatchLabels),
+		client.MatchingLabelsSelector{Selector: selector},
 	}
 
 	if err := r.List(ctx, rayClusterList, ListOps...); err != nil {
@@ -130,8 +138,8 @@ func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl
 		return ctrl.Result{}, err
 	}
 
-	// ignore inactive clusters.
-	filteredClusters := filterActiveClusters(rayClusterList.Items)
+	// ignore clusters controlled by another object, and inactive clusters.
+	filteredClusters := filterActiveClusters(filterOwnedClusters(replicaset, rayClusterList.Items))
 
 	// manage replica differences
 	var scaleError error

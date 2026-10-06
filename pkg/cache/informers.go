@@ -110,12 +110,19 @@ func getModelNameFromPod(pod *v1.Pod) (string, bool) {
 	return constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
 }
 
+func (c *Store) modelClaimBindingsFromPod(pod *v1.Pod) map[string]utils.ModelClaimBinding {
+	if c.disableModelClaimBindings {
+		return nil
+	}
+	return utils.ModelClaimBindingsFromPod(pod)
+}
+
 func (c *Store) addPod(obj interface{}) {
 	pod := obj.(*v1.Pod)
 	// Track pods that serve a model either through the standard deployment label
 	// or through ModelClaim runtime annotations.
 	modelName, ok := getModelNameFromPod(pod)
-	modelClaims := utils.ModelClaimBindingsFromPod(pod)
+	modelClaims := c.modelClaimBindingsFromPod(pod)
 	if !ok && len(modelClaims) == 0 {
 		klog.V(4).InfoS("ignored pod without model label or annotation", "name", pod.Name)
 		return
@@ -135,7 +142,7 @@ func (c *Store) addPod(obj interface{}) {
 	}
 	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 	for servedModel, binding := range modelClaims {
-		c.modelClaims.set(podKey, servedModel, binding.Port, binding.State)
+		c.modelClaims.set(podKey, servedModel, binding)
 		if binding.Port > 0 {
 			c.addPodAndModelMappingLocked(metaPod, servedModel)
 		}
@@ -165,7 +172,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	_, oldOk := getModelNameFromPod(oldPod)
 	_, existed := c.metaPods.Load(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name)) // Make sure nothing left.
 	newModelName, newOk := getModelNameFromPod(newPod)
-	newModelClaims := utils.ModelClaimBindingsFromPod(newPod)
+	newModelClaims := c.modelClaimBindingsFromPod(newPod)
 	newHasModelInfo := newOk || len(newModelClaims) > 0
 
 	if !oldOk && !existed && !newHasModelInfo {
@@ -206,7 +213,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 		}
 		newPodKey := utils.GeneratePodKey(newPod.Namespace, newPod.Name)
 		for servedModel, binding := range newModelClaims {
-			c.modelClaims.set(newPodKey, servedModel, binding.Port, binding.State)
+			c.modelClaims.set(newPodKey, servedModel, binding)
 			if binding.Port > 0 {
 				c.addPodAndModelMappingLocked(metaPod, servedModel)
 			}
@@ -234,13 +241,13 @@ func (c *Store) deletePod(obj interface{}) {
 		pod = obj
 		namespace, name = obj.Namespace, obj.Name
 		_, hasModelInfo = getModelNameFromPod(obj)
-		hasModelInfo = hasModelInfo || len(utils.ModelClaimsFromPod(obj)) > 0
+		hasModelInfo = hasModelInfo || len(c.modelClaimBindingsFromPod(obj)) > 0
 	case cache.DeletedFinalStateUnknown:
 		if p, ok := obj.Obj.(*v1.Pod); ok {
 			pod = p
 			namespace, name = p.Namespace, p.Name
 			_, hasModelInfo = getModelNameFromPod(p)
-			hasModelInfo = hasModelInfo || len(utils.ModelClaimsFromPod(p)) > 0
+			hasModelInfo = hasModelInfo || len(c.modelClaimBindingsFromPod(p)) > 0
 			break
 		}
 

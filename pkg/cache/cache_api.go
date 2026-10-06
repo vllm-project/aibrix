@@ -19,6 +19,7 @@ package cache
 import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -83,11 +84,18 @@ type ModelCache interface {
 	ModelBaseModel(modelName string) (string, bool)
 }
 
+// ReadyModelCache is an optional model-list extension. It returns model names
+// with at least one Pod passing the gateway's Pod readiness predicate in one
+// cache snapshot.
+type ReadyModelCache interface {
+	ListModelsWithReadyPods() []string
+}
+
 // ModelClaimBindingProvider is an optional cache extension used by the
 // gateway when a ModelClaim is known but intentionally non-routable. Dormant
 // bindings stay separate from ModelCache so normal routing never sees port 0.
 type ModelClaimBindingProvider interface {
-	ModelClaimBinding(modelName string) (pod *v1.Pod, port int, state string, found bool)
+	ModelClaimBinding(modelName string) (pod *v1.Pod, binding utils.ModelClaimBinding, found bool)
 }
 
 // ModelClaimStatusProvider is implemented by caches that watch ModelClaim

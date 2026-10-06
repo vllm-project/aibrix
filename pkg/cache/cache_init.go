@@ -62,6 +62,11 @@ type InitOptions struct {
 	// If set, it will be used instead of Kubernetes informers.
 	// This enables standalone/development mode without Kubernetes.
 	DiscoveryProvider discovery.Provider
+
+	// DisableModelClaimPodBindings omits models advertised only through
+	// ModelClaim runtime annotations on Pods. Use with a provider that does
+	// not watch ModelClaims when claim discovery is disabled.
+	DisableModelClaimPodBindings bool
 }
 
 const (
@@ -78,6 +83,8 @@ type Store struct {
 	redisClient         *redis.Client           // Redis client instance
 	prometheusApi       prometheusv1.API        // Prometheus API client
 	modelRouterProvider ModelRouterProviderFunc // Function to get model router
+
+	disableModelClaimBindings bool // Whether to ignore ModelClaim Pod annotations
 
 	// Metrics related fields
 	subscribers          []metrics.MetricSubscriber    // List of metric subscribers
@@ -176,6 +183,9 @@ type Store struct {
 	// heartbeat completes, which just reproduces pre-sync (assume-synced) behavior
 	// for that one tick.
 	runningRequestsClockOffsetMillis atomic.Int64
+	// decodeLedger publishes this gateway's token_load decode ledger to Redis once
+	// a router registers it (see PublishDecodeLedger); nil until then.
+	decodeLedger atomic.Pointer[decodeLedgerPublisher]
 }
 
 // Get retrieves the cache instance
@@ -398,6 +408,7 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 
 		// Create store with provided dependencies
 		store = New(opts.RedisClient, initPrometheusAPI(config), opts.ModelRouterProvider)
+		store.disableModelClaimBindings = opts.DisableModelClaimPodBindings
 
 		// Initialize service discovery — all modes go through the Provider interface
 		provider := opts.DiscoveryProvider
@@ -723,6 +734,11 @@ func (s *Store) Close() {
 
 	// Clean up KV event sync resources
 	s.cleanupKVEventSync()
+
+	// Stop publishing the decode ledger.
+	if p := s.decodeLedger.Load(); p != nil {
+		p.close()
+	}
 
 	// Other cleanup can be added here in the future
 }

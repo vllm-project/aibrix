@@ -18,6 +18,8 @@ on:
       - 'go.sum'
       - 'Makefile'
       - '.golangci.yml'
+      - '!**/*.md'
+      - '!**/*.rst'
   pull_request:
     branches: [ "main" ]
     paths:
@@ -34,6 +36,8 @@ on:
       - 'go.sum'
       - 'Makefile'
       - '.golangci.yml'
+      - '!**/*.md'
+      - '!**/*.rst'
 
 # Cancel superseded pull-request runs so the newest push starts first.
 concurrency:

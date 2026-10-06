@@ -342,6 +342,175 @@ def test_wake_restores_active_phase_and_readiness():
     assert launcher.woken == ["m1"]
 
 
+GIB = 1 << 30
+
+
+def _readings(*maps):
+    """Stand in for gpu_memory_observation, giving these per-process readings
+    in turn, and the last one from then on."""
+    calls = []
+
+    def observe():
+        calls.append(None)
+        return [], maps[min(len(calls), len(maps)) - 1]
+
+    return observe
+
+
+def test_sleeping_footprint_matches_the_engines_own_processes():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    before = {100: {"GPU-0": 19 * GIB}, 200: {"GPU-0": 18 * GIB}}
+    after = {100: {"GPU-0": 2 * GIB}, 200: {"GPU-0": 18 * GIB}}
+
+    assert sleeping_footprint_bytes({100}, before, after) == 2 * GIB
+
+
+def test_sleeping_footprint_finds_the_engine_by_its_drop_under_host_pids():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    # NVML reports host PIDs, so none of the engine's own PIDs appear. The
+    # neighbour on the card mapped one more KV page at the same moment.
+    before = {900: {"GPU-0": 19 * GIB}, 901: {"GPU-0": 18 * GIB}}
+    after = {900: {"GPU-0": 2 * GIB}, 901: {"GPU-0": 18 * GIB + 128 * 2**20}}
+
+    assert sleeping_footprint_bytes({100, 101}, before, after) == 2 * GIB
+
+
+def test_sleeping_footprint_is_unknown_when_no_drop_stands_out():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    before = {900: {"GPU-0": 19 * GIB}, 901: {"GPU-0": 18 * GIB}}
+    after = {900: {"GPU-0": 2 * GIB}, 901: {"GPU-0": 6 * GIB}}
+
+    assert sleeping_footprint_bytes({100}, before, after) is None
+
+
+def test_sleeping_footprint_is_unknown_for_a_small_drop_or_a_zero_reading():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    small = sleeping_footprint_bytes(
+        {100}, {100: {"GPU-0": 2 * GIB}}, {100: {"GPU-0": 2 * GIB - 2**20}}
+    )
+    # Some drivers report zero for every process in a container.
+    zero = sleeping_footprint_bytes(
+        {100},
+        {100: {"GPU-0": 0}, 900: {"GPU-0": 0}},
+        {100: {"GPU-0": 0}, 900: {"GPU-0": 0}},
+    )
+
+    assert small is None
+    assert zero is None
+
+
+def test_sleeping_footprint_never_takes_another_process_drop_for_the_engines():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    # The engine's own process is found, but its memory has not fallen like a
+    # sleep yet. Another process fell far more at the same moment. Its figure
+    # would charge the engine too little, so there is none.
+    before = {100: {"GPU-0": 6 * GIB}, 900: {"GPU-0": 19 * GIB}}
+    after = {100: {"GPU-0": 6 * GIB - 512 * 2**20}, 900: {"GPU-0": 2 * GIB}}
+
+    assert sleeping_footprint_bytes({100}, before, after) is None
+
+
+def test_sleeping_footprint_is_unknown_when_the_engines_process_is_gone():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    before = {100: {"GPU-0": 19 * GIB}, 900: {"GPU-0": 18 * GIB}}
+    after = {900: {"GPU-0": 2 * GIB}}
+
+    assert sleeping_footprint_bytes({100}, before, after) is None
+
+
+def test_sleeping_footprint_is_unknown_for_an_engine_on_two_cards():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    before = {100: {"GPU-0": 19 * GIB}, 101: {"GPU-1": 19 * GIB}}
+    after = {100: {"GPU-0": 2 * GIB}, 101: {"GPU-1": 2 * GIB}}
+
+    assert sleeping_footprint_bytes({100, 101}, before, after) is None
+
+
+def test_sleep_records_the_footprint_and_wake_forgets_it(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent = make_agent()
+    inst = agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    monkeypatch.setattr(
+        runtime_module,
+        "gpu_memory_observation",
+        _readings({inst.pid: {"GPU-0": 19 * GIB}}, {inst.pid: {"GPU-0": 2 * GIB}}),
+    )
+    monkeypatch.setattr(runtime_module, "process_tree_pids", lambda pid: {pid})
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda ipc_name: None)
+    monkeypatch.setattr(
+        runtime_module,
+        "engine_request_activity",
+        lambda inst: runtime_module.EngineRequestActivity(),
+    )
+
+    agent.sleep("m1", level=1, operation_id="sleep-1")
+
+    assert inst.sleeping_footprint_bytes == 2 * GIB
+    assert agent.snapshot()["models"][0]["sleeping_footprint_bytes"] == 2 * GIB
+
+    agent.wake("m1", operation_id="wake-1")
+
+    assert inst.sleeping_footprint_bytes is None
+    assert agent.snapshot()["models"][0]["sleeping_footprint_bytes"] is None
+
+
+def test_a_failed_wake_forgets_the_footprint(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    class _FailingWakeLauncher(MockEngineLauncher):
+        def wake(self, inst):
+            raise RuntimeError("vllm wake failed")
+
+    agent = ModelRuntime(_FailingWakeLauncher())
+    inst = agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    monkeypatch.setattr(
+        runtime_module,
+        "gpu_memory_observation",
+        _readings({inst.pid: {"GPU-0": 19 * GIB}}, {inst.pid: {"GPU-0": 2 * GIB}}),
+    )
+    monkeypatch.setattr(runtime_module, "process_tree_pids", lambda pid: {pid})
+    agent.sleep("m1", level=1, operation_id="sleep-1")
+
+    with pytest.raises(RuntimeError, match="vllm wake failed"):
+        agent.wake("m1", operation_id="wake-1")
+
+    # vLLM may have taken memory back before it failed.
+    assert inst.phase == "sleeping"
+    assert inst.sleeping_footprint_bytes is None
+
+
+def test_registry_keeps_the_footprint_of_a_sleeping_engine():
+    agent = make_agent()
+    inst = agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    inst.phase = "sleeping"
+    inst.sleeping_footprint_bytes = 2 * GIB
+
+    record = agent._registry_record(inst)
+    restored = agent._instance_from_registry_record(record)
+
+    assert record["sleeping_footprint_bytes"] == 2 * GIB
+    assert restored is not None
+    assert restored.sleeping_footprint_bytes == 2 * GIB
+    # A reading that cannot be used is dropped, and the engine is kept.
+    for unusable in ("2147483648", -1, 0, True):
+        restored = agent._instance_from_registry_record(
+            {**record, "sleeping_footprint_bytes": unusable}
+        )
+        assert restored is not None
+        assert restored.sleeping_footprint_bytes is None
+    awake = agent._instance_from_registry_record({**record, "phase": "active"})
+    assert awake is not None
+    assert awake.sleeping_footprint_bytes is None
+
+
 def test_kvctl_controller_uses_checked_limit_command(monkeypatch):
     import subprocess
 
@@ -629,6 +798,40 @@ def test_endpoints_activate_list_deactivate():
     assert all(m["model_name"] != "ep1" for m in listed["models"])
 
 
+def test_wake_endpoint_reports_a_wake_that_failed(monkeypatch):
+    client = _make_test_client()
+    import aibrix.runtime.model_runtime as runtime_module
+
+    def wake_that_fails(model_name, operation_id):
+        raise RuntimeError("the engine did not come back")
+
+    monkeypatch.setattr(runtime_module.get_model_runtime(), "wake", wake_that_fails)
+
+    resp = client.post(
+        "/v1/runtime/models/wake",
+        json={"model_name": "ep1", "operation_id": "op-1"},
+    )
+
+    # The controller tells this report from a bare server error, which a proxy
+    # on the way could send as well.
+    assert resp.status_code == 500
+    body = resp.json()
+    assert body["status"] == "error"
+    assert body["model_name"] == "ep1"
+    assert "did not come back" in body["message"]
+
+
+def test_wake_endpoint_still_refuses_a_model_it_does_not_run():
+    client = _make_test_client()
+
+    resp = client.post(
+        "/v1/runtime/models/wake",
+        json={"model_name": "nobody-runs-this", "operation_id": "op-2"},
+    )
+
+    assert resp.status_code == 404, resp.text
+
+
 def test_activate_endpoint_rejects_mismatched_vllm_parallelism(monkeypatch):
     import aibrix.runtime.model_runtime as runtime_module
 
@@ -834,6 +1037,7 @@ def test_snapshot_reports_runtime_state(monkeypatch, tmp_path):
         "kv_used_bytes": 25,
         "kv_capacity_bytes": 100,
         "hbm_peak_bytes": 0,
+        "sleeping_footprint_bytes": None,
         "request_metrics_observed": True,
         "requests_running": 2,
         "requests_waiting": 1,

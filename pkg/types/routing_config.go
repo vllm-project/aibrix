@@ -133,6 +133,13 @@ type PDProfileConfig struct {
 	// single attempt.
 	DecodeAbortTimeout    *int `json:"decodeAbortTimeout,omitempty"`
 	DecodeAbortRetryDelay *int `json:"decodeAbortRetryDelay,omitempty"`
+	// DecodeFirstResponseTimeout and DecodeResponseTimeout override
+	// AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT and AIBRIX_DECODE_RESPONSE_TIMEOUT:
+	// the decode watchdog's wait for the first message from the decode pod
+	// after the prefill leg succeeded, for streaming and non-streaming requests
+	// respectively. Zero disables the watchdog for that mode.
+	DecodeFirstResponseTimeout *int `json:"decodeFirstResponseTimeout,omitempty"`
+	DecodeResponseTimeout      *int `json:"decodeResponseTimeout,omitempty"`
 	// PrefillRequestTimeout overrides AIBRIX_PREFILL_REQUEST_TIMEOUT.
 	PrefillRequestTimeout *int `json:"prefillRequestTimeout,omitempty"`
 	// PrefillLoadImbalanceMinSpread, DecodeLoadImbalanceMinSpread,

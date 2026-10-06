@@ -17,17 +17,118 @@ limitations under the License.
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/cache/discovery"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 )
+
+func TestModelDiscoveryFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		args         []string
+		wantAdapters bool
+		wantClaims   bool
+		wantMode     gateway.ModelListMode
+		wantError    string
+	}{
+		{name: "defaults", wantAdapters: true, wantClaims: true, wantMode: gateway.ModelListKnown},
+		{
+			name: "pods only", args: []string{
+				"--watch-model-adapters=false", "--watch-model-claims=false", "--model-list-mode=ready-pods",
+			}, wantMode: gateway.ModelListReadyPods,
+		},
+		{
+			name: "adapters disabled", args: []string{"--watch-model-adapters=false"},
+			wantClaims: true, wantMode: gateway.ModelListKnown,
+		},
+		{
+			name: "claims disabled", args: []string{"--watch-model-claims=false"},
+			wantAdapters: true, wantMode: gateway.ModelListKnown,
+		},
+		{
+			name: "invalid mode", args: []string{"--model-list-mode=unavailable"},
+			wantAdapters: true, wantClaims: true, wantError: "invalid --model-list-mode",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var options modelDiscoveryOptions
+			fs := flag.NewFlagSet(t.Name(), flag.ContinueOnError)
+			options.addFlags(fs)
+			require.NoError(t, fs.Parse(tc.args))
+			if tc.wantError != "" {
+				require.ErrorContains(t, options.validate(), tc.wantError)
+				return
+			}
+			require.NoError(t, options.validate())
+			require.Equal(t, tc.wantAdapters, options.watchModelAdapters)
+			require.Equal(t, tc.wantClaims, options.watchModelClaims)
+			require.Equal(t, tc.wantMode, gateway.ModelListMode(options.listMode))
+		})
+	}
+}
+
+func TestPodsOnlyFlagsStartDiscoveryWithoutCRDAccess(t *testing.T) {
+	var options modelDiscoveryOptions
+	fs := flag.NewFlagSet(t.Name(), flag.ContinueOnError)
+	options.addFlags(fs)
+	require.NoError(t, fs.Parse([]string{
+		"--watch-model-adapters=false", "--watch-model-claims=false", "--model-list-mode=ready-pods",
+	}))
+	require.NoError(t, options.validate())
+
+	var crdRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/pods") {
+			crdRequests.Add(1)
+			http.Error(w, "custom resources are unavailable", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("watch") == "true" {
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			return
+		}
+		_ = json.NewEncoder(w).Encode(&v1.PodList{
+			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PodList"},
+			ListMeta: metav1.ListMeta{ResourceVersion: "1"},
+		})
+	}))
+	stopCh := make(chan struct{})
+	t.Cleanup(func() {
+		close(stopCh)
+		server.CloseClientConnections()
+		server.Close()
+	})
+
+	result := make(chan error, 1)
+	go func() {
+		result <- options.kubernetesProvider(&rest.Config{Host: server.URL}).Watch(func(discovery.WatchEvent) {}, stopCh)
+	}()
+	select {
+	case err := <-result:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("pods-only discovery did not finish initial sync")
+	}
+	require.Zero(t, crdRequests.Load(), "pods-only mode must not query custom resources")
+}
 
 func TestKubeAPIFlags(t *testing.T) {
 	tests := []struct {

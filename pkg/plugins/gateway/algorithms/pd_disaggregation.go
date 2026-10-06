@@ -99,6 +99,10 @@ var (
 	aibrixPromptLengthBucketing bool = utils.LoadEnvBool("AIBRIX_PROMPT_LENGTH_BUCKETING", false)
 	// add an estimate of the output generated so far to the token_load decode score
 	aibrixDecodeTokenLoadOutputGrowth bool = utils.LoadEnvBool("AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH", true)
+	// aibrixTokenLoadSharedLedger shares the token_load decode ledger with the
+	// other gateway replicas through Redis when Redis is configured; false keeps
+	// it local to this process.
+	aibrixTokenLoadSharedLedger bool = utils.LoadEnvBool("AIBRIX_TOKEN_LOAD_SHARED_LEDGER", true)
 	// KV transfer backend: "shfs" (GPU/SHFS) or "nixl" (Neuron)
 	aibrixKVConnectorType string = utils.LoadEnv("AIBRIX_KV_CONNECTOR_TYPE", KVConnectorTypeSHFS)
 	// prefill pod scoring strategy: "prefix_cache", "least_request", "conductor" or "token_load"
@@ -230,6 +234,9 @@ func (r *pdRouter) effectiveScorePolicies(routingCtx *types.RoutingContext) (pd.
 }
 
 type pdRouter struct {
+	// sharedDecodeLedger is set when the decode ledger is shared with the other
+	// gateway replicas (see AIBRIX_TOKEN_LOAD_SHARED_LEDGER).
+	sharedDecodeLedger    sharedDecodeLedgerCache
 	cache                 cache.Cache
 	prefillPolicy         pd.PrefillScorePolicy
 	decodePolicy          pd.DecodeScorePolicy
@@ -405,6 +412,7 @@ func NewPDRouterWithCacheAndPrefixIndexer(c cache.Cache, sharedPrefixTable *pref
 	// Request completion is only observable through the cache's request
 	// tracker callbacks; that is where the resident-KV charge is released.
 	c.RegisterRequestTracker(r)
+	r.shareDecodeLedger()
 
 	r.startPrefixUpdater()
 	return r, nil
@@ -776,7 +784,12 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 		}
 	}
 
-	targetPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage := r.loadImbalanceSelectDecodePod(routingCtx, decodePods)
+	var remoteDecodeLedger map[string]cache.RemoteDecodeLoad
+	var remoteOut *map[string]cache.RemoteDecodeLoad
+	if r.sharedDecodeLedger != nil && pd.UsesDecodeTokenLoad(decodePol) {
+		remoteOut = &remoteDecodeLedger
+	}
+	targetPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage := r.loadImbalanceSelectDecodePodWithLedger(routingCtx, decodePods, remoteOut)
 	targetPod = decodeFastPathPick(routingCtx, targetPod, decodePol)
 	if targetPod != nil {
 		decodePods = []*v1.Pod{targetPod}
@@ -808,7 +821,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	}
 
 	prefillScores, maxPrefillScore, prefixHashes := r.scorePreparedPrefillPods(routingCtx, prefillPods, prefillScorer)
-	decodeRun := r.scoreDecodePods(routingCtx, decodePods, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage, decodePol)
+	decodeRun := r.scoreDecodePodsWithLedger(routingCtx, decodePods, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage, decodePol, remoteDecodeLedger)
 	selectedPrefill, selectedDecode, err := r.finalPDScore(routingCtx, prefixHashes, prefillScores, maxPrefillScore, decodeRun)
 	if err != nil {
 		return nil, nil, err
@@ -929,6 +942,14 @@ func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequest
 // prefillPods to the selected pod's roleset. KV cache headroom uses KVCacheUsagePerc
 // (missing metric is treated as 0% usage = 100% free).
 func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filteredDecodePods []*v1.Pod) (*v1.Pod, float64, float64, float64, map[string]float64, map[string]float64, map[string]float64) {
+	return r.loadImbalanceSelectDecodePodWithLedger(ctx, filteredDecodePods, nil)
+}
+
+// loadImbalanceSelectDecodePodWithLedger is loadImbalanceSelectDecodePod that,
+// when remoteLedger is not nil, also reads the decode ledger the other gateway
+// replicas hold on each pod into it, in the same Redis round trip as the
+// running-request counts.
+func (r *pdRouter) loadImbalanceSelectDecodePodWithLedger(ctx *types.RoutingContext, filteredDecodePods []*v1.Pod, remoteLedger *map[string]cache.RemoteDecodeLoad) (*v1.Pod, float64, float64, float64, map[string]float64, map[string]float64, map[string]float64) {
 	spreads := ctx.PDOverrides().Spreads
 	loadMinSpread := spreads.DecodeLoadImbalanceMinSpread
 	throughputMinSpread := spreads.DecodeThroughputImbalanceMinSpread
@@ -954,7 +975,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 	// GetMetricValueByPod(RealtimeNumRequestsRunning) per pod: that metric slot is a
 	// periodically synced cache that, between scrape ticks, only reflects this
 	// gateway's local view.
-	runningReqCounts, runningErr := r.cache.GetPodsRunningRequests(filteredDecodePods)
+	runningReqCounts, runningErr := r.decodeRunningRequests(filteredDecodePods, remoteLedger)
 
 	for _, pod := range filteredDecodePods {
 		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
@@ -1177,6 +1198,17 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 	maxRequestCount float64, maxThroughput float64, maxFreeGPUUsage float64,
 	podRequestCounts map[string]float64, podThroughputs map[string]float64, podFreeGpuUsage map[string]float64,
 	policy pd.DecodeScorePolicy) pd.DecodeScoreRun {
+	return r.scoreDecodePodsWithLedger(routingCtx, filteredDecodePods, maxRequestCount, maxThroughput, maxFreeGPUUsage,
+		podRequestCounts, podThroughputs, podFreeGpuUsage, policy, nil)
+}
+
+// scoreDecodePodsWithLedger is scoreDecodePods with the decode ledger the other
+// gateway replicas hold on each pod (nil when it is not shared): token_load adds
+// it to this replica's own.
+func (r *pdRouter) scoreDecodePodsWithLedger(routingCtx *types.RoutingContext, filteredDecodePods []*v1.Pod,
+	maxRequestCount float64, maxThroughput float64, maxFreeGPUUsage float64,
+	podRequestCounts map[string]float64, podThroughputs map[string]float64, podFreeGpuUsage map[string]float64,
+	policy pd.DecodeScorePolicy, remoteLedger map[string]cache.RemoteDecodeLoad) pd.DecodeScoreRun {
 	if policy == nil {
 		policy = r.decodePolicy
 	}
@@ -1254,7 +1286,7 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 			MaxFreeGPUUsage: maxFreeGPUUsage,
 		}
 		if usesDecodeTokenLoad && r.tokenLoadTracker != nil {
-			in.DecodeTokens = r.tokenLoadTracker.GetDecodeLoad(podKey) + r.tokenLoadTracker.DecodeGrowth(podKey, decodeRates[podKey])
+			in.DecodeTokens = r.decodeTokenLoad(podKey, decodeRates[podKey], remoteLedger)
 		}
 
 		decodeScore := policy.ScoreDecodePod(routingCtx, pod, in)
@@ -1688,4 +1720,63 @@ func ValidateAndGetLLMEngine(pods []*v1.Pod) (string, error) {
 	}
 
 	return firstEngine, nil
+}
+
+// sharedDecodeLedgerCache is implemented by caches that can share the
+// token_load decode ledger across gateway replicas (cache.Store with Redis).
+type sharedDecodeLedgerCache interface {
+	SharedDecodeLedgerAvailable() bool
+	PublishDecodeLedger(provider cache.DecodeLedgerProvider) func(podKey string)
+	GetPodsRunningRequestsAndDecodeLedger(pods []*v1.Pod) (map[string]int64, map[string]cache.RemoteDecodeLoad, error)
+}
+
+// shareDecodeLedger publishes the decode ledger to the other gateway replicas
+// and reads theirs, when AIBRIX_TOKEN_LOAD_SHARED_LEDGER is on and the cache
+// can share it. It does not depend on the default decode policy: a model's
+// config profile can select token_load per request (routingConfig), which is
+// also why the tracker always exists. Until something charges the decode
+// ledger, the publisher has nothing to write.
+func (r *pdRouter) shareDecodeLedger() {
+	if !aibrixTokenLoadSharedLedger || r.tokenLoadTracker == nil {
+		return
+	}
+	shared, ok := r.cache.(sharedDecodeLedgerCache)
+	if !ok || !shared.SharedDecodeLedgerAvailable() {
+		return
+	}
+	tracker := r.tokenLoadTracker
+	notify := shared.PublishDecodeLedger(func(podKey string) cache.DecodeLedgerState {
+		tokens, charges, sumChargedAt := tracker.DecodeLedgerState(podKey)
+		return cache.DecodeLedgerState{Tokens: tokens, Charges: charges, SumChargedAt: sumChargedAt}
+	})
+	tracker.SetDecodeLedgerListener(notify)
+	r.sharedDecodeLedger = shared
+	klog.InfoS("pd_router token_load decode ledger is shared across gateway replicas")
+}
+
+// decodeRunningRequests reads the live running-request counts of pods and, when
+// remoteLedger is not nil, the other replicas' decode ledgers in the same round
+// trip.
+func (r *pdRouter) decodeRunningRequests(pods []*v1.Pod, remoteLedger *map[string]cache.RemoteDecodeLoad) (map[string]int64, error) {
+	if remoteLedger == nil || r.sharedDecodeLedger == nil {
+		return r.cache.GetPodsRunningRequests(pods)
+	}
+	counts, ledger, err := r.sharedDecodeLedger.GetPodsRunningRequestsAndDecodeLedger(pods)
+	*remoteLedger = ledger
+	return counts, err
+}
+
+// decodeTokenLoad is the token_load decode load of the pod identified by
+// podKey: this replica's charged prompt tokens and their estimated output, plus
+// the same for the other replicas' charges when the ledger is shared. rate is
+// the per-request decode rate (see decodeTokenLoadRates).
+func (r *pdRouter) decodeTokenLoad(podKey string, rate float64, remoteLedger map[string]cache.RemoteDecodeLoad) float64 {
+	load := r.tokenLoadTracker.GetDecodeLoad(podKey) + r.tokenLoadTracker.DecodeGrowth(podKey, rate)
+	if remote, ok := remoteLedger[podKey]; ok {
+		load += remote.Tokens
+		if rate > 0 {
+			load += rate * remote.Elapsed
+		}
+	}
+	return load
 }

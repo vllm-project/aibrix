@@ -4,14 +4,18 @@ info:
   version: v1alpha1
   description: |
     Terminal replica selection after AIBrix Gateway has discovered and filtered
-    a safe candidate set. Candidate metrics are observational snapshots.
+    a safe candidate set. A successful invocation selects exactly one target
+    Pod and port. Candidate metrics are observational snapshots. This version
+    does not orchestrate prefill/decode pairing, KV transfer, or handoff.
 paths:
   /v1alpha1/select:
     post:
       operationId: selectReplica
       description: |
-        Select one replica from the request-local candidate snapshot. The
-        operation cannot change the model or return an arbitrary address.
+        Select exactly one replica from the request-local candidate snapshot.
+        The operation cannot change the model or return an arbitrary address.
+        Candidate attributes may describe prefill/decode roles, but this
+        single-target operation does not execute P/D disaggregation.
       parameters:
         - name: X-Request-Id
           in: header
@@ -60,7 +64,7 @@ paths:
                           kvCacheUsage: 0.48
       responses:
         '200':
-          description: A valid policy decision.
+          description: A valid policy decision. Selected authorizes exactly one target.
           content:
             application/vnd.aibrix.external-routing+json;version=v1alpha1:
               schema:
@@ -241,7 +245,7 @@ components:
           properties:
             decision:
               enum: [Selected, NoDecision, Denied]
-              description: Selected is valid in both modes, NoDecision only in Advisory, and Denied only in Authoritative.
+              description: Selected authorizes exactly one target and is valid in both modes; NoDecision is valid only in Advisory, and Denied only in Authoritative.
             target:
               $ref: '#/components/schemas/Target'
             reason:

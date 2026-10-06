@@ -38,13 +38,21 @@ import (
 // KubernetesProvider implements Provider using Kubernetes informers.
 type KubernetesProvider struct {
 	config *rest.Config
+	// watchModelAdapters keeps the existing adapter discovery behavior by default.
+	watchModelAdapters bool
 	// watchModelClaims adds ModelClaim objects to what is watched.
 	watchModelClaims bool
 }
 
 // NewKubernetesProvider creates a new Kubernetes discovery provider.
 func NewKubernetesProvider(config *rest.Config) *KubernetesProvider {
-	return &KubernetesProvider{config: config}
+	return &KubernetesProvider{config: config, watchModelAdapters: true}
+}
+
+// WithModelAdapters controls whether the provider lists and watches ModelAdapters.
+func (p *KubernetesProvider) WithModelAdapters(enabled bool) *KubernetesProvider {
+	p.watchModelAdapters = enabled
+	return p
 }
 
 // WithModelClaims makes the provider watch ModelClaim objects as well. The
@@ -72,20 +80,25 @@ func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{})
 		return err
 	}
 
-	crdClientSet, err := v1alpha1.NewForConfig(p.config)
-	if err != nil {
-		return err
-	}
-
 	// Currently watches all pods cluster-wide (same as the old initCacheInformers).
 	factory := informers.NewSharedInformerFactoryWithOptions(k8sClientSet, 0)
-	crdFactory := crdinformers.NewSharedInformerFactoryWithOptions(crdClientSet, 0)
 
 	podInformer := factory.Core().V1().Pods().Informer()
-	modelInformer := crdFactory.Model().V1alpha1().ModelAdapters().Informer()
+	var modelInformer cache.SharedIndexInformer
 	var claimInformer cache.SharedIndexInformer
-	if p.watchModelClaims && canListModelClaims(crdClientSet) {
-		claimInformer = crdFactory.Model().V1alpha1().ModelClaims().Informer()
+	var crdFactory crdinformers.SharedInformerFactory
+	if p.watchModelAdapters || p.watchModelClaims {
+		crdClientSet, err := v1alpha1.NewForConfig(p.config)
+		if err != nil {
+			return err
+		}
+		crdFactory = crdinformers.NewSharedInformerFactoryWithOptions(crdClientSet, 0)
+		if p.watchModelAdapters {
+			modelInformer = crdFactory.Model().V1alpha1().ModelAdapters().Informer()
+		}
+		if p.watchModelClaims && canListModelClaims(crdClientSet) {
+			claimInformer = crdFactory.Model().V1alpha1().ModelClaims().Informer()
+		}
 	}
 
 	// Wire handler directly into informer callbacks.
@@ -113,8 +126,10 @@ func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{})
 	if err := registerHandlers(podInformer); err != nil {
 		return err
 	}
-	if err := registerHandlers(modelInformer); err != nil {
-		return err
+	if modelInformer != nil {
+		if err := registerHandlers(modelInformer); err != nil {
+			return err
+		}
 	}
 	if claimInformer != nil {
 		if err := registerHandlers(claimInformer); err != nil {
@@ -125,13 +140,19 @@ func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{})
 	// Start informers and wait for initial list+sync.
 	// During this phase, AddFunc fires for each existing object.
 	factory.Start(stopCh)
-	crdFactory.Start(stopCh)
+	if crdFactory != nil {
+		crdFactory.Start(stopCh)
+	}
 
 	// ModelClaims are left out of the wait. They only tell a model that is
 	// claimed but not placed yet from one that nobody serves. A gateway whose
 	// role cannot list them yet should still start, and answer for such a
 	// model as it did before.
-	if !cache.WaitForCacheSync(stopCh, podInformer.HasSynced, modelInformer.HasSynced) {
+	requiredSync := []cache.InformerSynced{podInformer.HasSynced}
+	if modelInformer != nil {
+		requiredSync = append(requiredSync, modelInformer.HasSynced)
+	}
+	if !cache.WaitForCacheSync(stopCh, requiredSync...) {
 		return errors.New("timed out waiting for caches to sync")
 	}
 
@@ -140,13 +161,17 @@ func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{})
 	// A ModelAdapter's AddFunc may fire before its pods' AddFunc, causing
 	// the pod-model mapping to be missed. Re-emitting adapters after sync
 	// ensures all mappings are established (addModelAdapter is idempotent).
-	adapters := modelInformer.GetStore().List()
-	for _, obj := range adapters {
-		handler(WatchEvent{Type: EventAdd, Object: obj})
+	adapterCount := 0
+	if modelInformer != nil {
+		adapters := modelInformer.GetStore().List()
+		adapterCount = len(adapters)
+		for _, obj := range adapters {
+			handler(WatchEvent{Type: EventAdd, Object: obj})
+		}
 	}
 
 	klog.InfoS("Kubernetes discovery provider initialized",
-		"pods", len(podInformer.GetStore().List()), "modelAdapters", len(adapters))
+		"pods", len(podInformer.GetStore().List()), "modelAdapters", adapterCount)
 
 	return nil
 }

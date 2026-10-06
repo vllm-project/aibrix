@@ -288,7 +288,7 @@ generated_tokens = rate × Σ over outstanding charges (now − routed_at)
 rate = AvgGenerationThroughputToksPerS / running requests   (mean of the other pods if unknown)
 ```
 
-`generated_tokens` estimates the output the pod's outstanding requests have produced so far (it sits in the decode KV too); `pd.TokenLoadTracker.DecodeGrowth` computes it in O(1) per pod from the count and the summed charge times of the outstanding charges. `AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH=false` scores prompt tokens only. The cold-start score does not apply to `token_load`: a pod without metrics is scored from the ledger like any other. The decode load-imbalance fast path is skipped under `token_load` (it still runs to fill the metric maps): it picks by request count, throughput or drain rate, and the pod holding one long prompt has the fewest requests. The ledger is local to each gateway replica.
+`generated_tokens` estimates the output the pod's outstanding requests have produced so far (it sits in the decode KV too); `pd.TokenLoadTracker.DecodeGrowth` computes it in O(1) per pod from the count and the summed charge times of the outstanding charges. `AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH=false` scores prompt tokens only. The cold-start score does not apply to `token_load`: a pod without metrics is scored from the ledger like any other. The decode load-imbalance fast path is skipped under `token_load` (it still runs to fill the metric maps): it picks by request count, throughput or drain rate, and the pod holding one long prompt has the fewest requests. With Redis configured, the decode ledger is shared across gateway replicas (`AIBRIX_TOKEN_LOAD_SHARED_LEDGER`, default on): each replica publishes its per-pod charges, count and summed charge times under its instance ID (`cache.Store.PublishDecodeLedger`), and `scoreDecodePods` adds the other live replicas' values, read with the running-request counts (`GetPodsRunningRequestsAndDecodeLedger`). Without Redis the ledger is local to each replica.
 
 ### Config profile overrides for PD score policies
 
@@ -519,6 +519,34 @@ only recorded and logged. TRT generation-first instead resets the stream even
 after headers, because TRT can send SSE headers before KV is available; it does not
 attempt to replace the already-started response.
 
+### PD Decode Watchdog
+
+Fail-fast covers a prefill leg that dies. The opposite case is a prefill leg
+that *succeeds* and a decode pod that then never answers: in SGLang the prefill
+call only returns once the decode pod has taken the KV transfer, so from that
+point the decode pod owes the client a response. If its scheduler dies or wedges,
+the client would otherwise hang until Envoy's route timeout.
+
+```
+Prefill leg succeeds (async worker)
+   │
+   └─► mark the PD leg state (MarkPrefillSucceeded) ──► wake the ext_proc stream
+                                                        │
+                                  arm a timer: FIRST_RESPONSE (stream) / RESPONSE (non-stream)
+                                                        │
+          decode response headers arrive ──► disarm     │
+                                                        ▼ timer fires
+                              504 ImmediateResponse, header x-error-pd-decode: true
+                              gRPC DeadlineExceeded close
+                              POST /abort_request {"rid": ...} to decode (goroutine, once)
+```
+
+The watchdog runs only for requests with a gateway-owned `rid` (SGLang). Its
+timeouts are `AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT` (streaming, default `60`) and
+`AIBRIX_DECODE_RESPONSE_TIMEOUT` (non-streaming, default `0`, i.e. off, since the
+decode pod only answers a non-streaming request once the whole generation is
+done).
+
 ---
 
 ## Request Trackers
@@ -684,6 +712,13 @@ Metrics: `pd_bucket_serve_band_total` and `pd_bucket_serve_prompt_tokens_total` 
 | `AIBRIX_DECODE_ABORT_TIMEOUT` | `3` | Per-attempt timeout in seconds of the `/abort_request` call to the decode pod. `0` disables decode aborts; the client is still failed fast |
 | `AIBRIX_DECODE_ABORT_RETRY_DELAY` | `2` | Delay in seconds before the second abort attempt. `0` sends a single attempt |
 
+### PD Decode Watchdog
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT` | `60` | Seconds a streaming SGLang request waits, after its prefill leg succeeded, for the first message from the decode pod. `0` disables |
+| `AIBRIX_DECODE_RESPONSE_TIMEOUT` | `0` | Same for a non-streaming request, where the first message is the finished answer. `0` (default) disables |
+
 ### TensorRT-LLM
 
 | Variable | Default | Description |
@@ -718,7 +753,8 @@ SGLang uses a bootstrap mechanism for prefill/decode coordination. The port is r
 | `PDSelectedPrefillPodTotal` | Prefill pod selected (per pod label) |
 | `PDSelectedDecodePodTotal` | Decode pod selected (per pod label) |
 | `gateway_pd_prefill_failure_total{class,stage}` | A terminal prefill failure reached the client-facing handler. `stage` is `before_response` (the client was failed fast) or `after_response` (the decode leg had already started answering) |
-| `gateway_pd_decode_abort_total{prefill_failure_class,result}` | One decode abort attempt. `result` is `ok`, `error`, `skipped_streaming`, `skipped_disabled`, `skipped_no_rid` or `skipped_no_target` |
+| `gateway_pd_decode_abort_total{prefill_failure_class,result}` | One decode abort attempt. `result` is `ok`, `error`, `skipped_streaming`, `skipped_disabled`, `skipped_no_rid` or `skipped_no_target`. `prefill_failure_class` is `watchdog_first_response` for an abort sent by the decode watchdog |
+| `gateway_pd_decode_watchdog_total{phase}` | The decode watchdog failed a request whose decode pod stopped responding. `phase` is `first_response` |
 
 ---
 
@@ -729,6 +765,7 @@ SGLang uses a bootstrap mechanism for prefill/decode coordination. The port is r
 | `prefill-target-pod` | Name of the selected prefill pod |
 | `prefill-target-pod-ip` | IP of the selected prefill pod |
 | `x-error-pd-prefill` | `true`, on the error response the gateway generates when the PD prefill leg failed |
+| `x-error-pd-decode` | `true`, on the error response the gateway generates when the decode watchdog fired |
 
 ---
 

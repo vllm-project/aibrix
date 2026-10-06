@@ -196,8 +196,13 @@ func fitsTopology(pod corev1.Pod, ledger podLedger, instanceGPUs int64) bool {
 // itself: how much it holds, and how much of that the instances on it take.
 // Without it the ledger is real in the controller and invisible in kubectl.
 func cardAccount(ledger podLedger, takenBytes int64, taken string) string {
-	return fmt.Sprintf("the card holds %s, and %s of it is %s %d instance(s)",
+	account := fmt.Sprintf("the card holds %s, and %s of it is %s %d instance(s)",
 		gibibytes(ledger.hbmUsableBytes), gibibytes(takenBytes), taken, len(ledger.engines))
+	if ledger.reservedBytes > 0 {
+		account += fmt.Sprintf("; %s more is held for another model that room is being made for",
+			gibibytes(ledger.reservedBytes))
+	}
+	return account
 }
 
 // noPlacementMessage says why no pod was chosen for a claim.
@@ -211,6 +216,32 @@ func noPlacementMessage(selectErr error, admissible []corev1.Pod, refusals []pod
 		return summarizeRefusals(refusals, minimumReserveBytes)
 	}
 	return selectErr.Error()
+}
+
+// tooLargeForEveryCard reports whether no candidate could ever hold a model
+// that needs minimumReserveBytes on a card, even with nothing else on it. It
+// also returns how much the best of them offers on a card. A pod with several
+// cards offers what its smallest card holds. That is only known when every
+// candidate has cards and every card was measured. A pod without cards, or one
+// whose cards nobody measured, might hold the model.
+func tooLargeForEveryCard(
+	candidates []corev1.Pod,
+	ledgers map[string]podLedger,
+	minimumReserveBytes int64,
+) (int64, bool) {
+	if len(candidates) == 0 {
+		return 0, false
+	}
+	largest := int64(0)
+	for i := range candidates {
+		ledger := ledgers[candidates[i].Name]
+		if !podHasGPUs(candidates[i], ledger.accelerators) || ledger.hbmUsableBytes <= 0 ||
+			ledger.hbmUsableBytes >= minimumReserveBytes {
+			return 0, false
+		}
+		largest = max(largest, ledger.hbmUsableBytes)
+	}
+	return largest, true
 }
 
 // withoutPod returns pods less the one named, leaving the slice it was given

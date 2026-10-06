@@ -27,6 +27,7 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -138,6 +139,71 @@ func (f *ModelClaimFixture) CreateWarmPod(namespace, name, pool string) *corev1.
 	return pod
 }
 
+// CreatePoolPod creates a running pool pod that belongs to a Deployment, through
+// a ReplicaSet, as a warm pool's pods do. The Deployment carries the given pool
+// policy.
+func (f *ModelClaimFixture) CreatePoolPod(namespace, name, pool, policy string) *corev1.Pod {
+	ginkgo.GinkgoHelper()
+	labels := map[string]string{
+		constants.ModelPoolLabelName:    pool,
+		constants.ModelPoolLabelEnabled: constants.ModelPoolLabelEnabledValue,
+	}
+	template := corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{Labels: labels},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "runtime", Image: "aibrix-runtime"}}},
+	}
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        name,
+			Namespace:   namespace,
+			Annotations: map[string]string{constants.ModelPoolPolicyAnnotationKey: policy},
+		},
+		Spec: appsv1.DeploymentSpec{Selector: &metav1.LabelSelector{MatchLabels: labels}, Template: template},
+	}
+	gomega.Expect(f.client.Create(f.ctx, deployment)).To(gomega.Succeed())
+	replicaSet := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name + "-rs",
+			Namespace: namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(deployment, appsv1.SchemeGroupVersion.WithKind("Deployment")),
+			},
+		},
+		Spec: appsv1.ReplicaSetSpec{Selector: &metav1.LabelSelector{MatchLabels: labels}, Template: template},
+	}
+	gomega.Expect(f.client.Create(f.ctx, replicaSet)).To(gomega.Succeed())
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name + "-pod",
+			Namespace: namespace,
+			Labels:    labels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(replicaSet, appsv1.SchemeGroupVersion.WithKind("ReplicaSet")),
+			},
+		},
+		Spec: template.Spec,
+	}
+	gomega.Expect(f.client.Create(f.ctx, pod)).To(gomega.Succeed())
+	pod.Status.Phase = corev1.PodRunning
+	pod.Status.PodIP = f.runtime.IP()
+	gomega.Expect(f.client.Status().Update(f.ctx, pod)).To(gomega.Succeed())
+	return pod
+}
+
+// RequestWake writes a wake request for a claim on a pod, as the gateway does
+// for a request that finds the claim's engine asleep.
+func (f *ModelClaimFixture) RequestWake(namespace, podName, claimName string) {
+	ginkgo.GinkgoHelper()
+	pod := &corev1.Pod{}
+	gomega.Expect(f.client.Get(f.ctx, types.NamespacedName{Namespace: namespace, Name: podName}, pod)).To(gomega.Succeed())
+	patch := client.MergeFrom(pod.DeepCopy())
+	if pod.Annotations == nil {
+		pod.Annotations = map[string]string{}
+	}
+	pod.Annotations[constants.ModelClaimWakeAnnotationPrefix+claimName] = time.Now().UTC().Format(time.RFC3339)
+	gomega.Expect(f.client.Patch(f.ctx, pod, patch)).To(gomega.Succeed())
+}
+
 // GetClaim retrieves the latest claim using the supplied polling assertions.
 func (f *ModelClaimFixture) GetClaim(g gomega.Gomega, claim *modelapi.ModelClaim) *modelapi.ModelClaim {
 	ginkgo.GinkgoHelper()
@@ -225,11 +291,21 @@ type FakeModelClaimRuntime struct {
 	defaultPhase string
 	defaultReady bool
 	failures     int
+	wakeFailures int
 	nextPort     int32
 
 	activateCalls   []modelclaimcontroller.ActivateRequest
 	deactivateCalls []modelclaimcontroller.DeactivateRequest
+	wakeCalls       []modelclaimcontroller.WakeRequest
+	sleepCalls      []modelclaimcontroller.SleepRequest
 	models          map[string]modelclaimcontroller.RuntimeSnapshotModel
+
+	// cardBytes is the size of the one card the runtime reports, and zero for
+	// none. Without a card nothing is accounted for, as on a CPU pool.
+	cardBytes int64
+	// sleepingFootprintBytes is what an engine holds after it goes to sleep,
+	// and zero for a memory the runtime could not measure.
+	sleepingFootprintBytes int64
 }
 
 // IP returns the address used by fixture pods to reach the runtime.
@@ -246,6 +322,12 @@ func (f *FakeModelClaimRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request
 		f.handleActivate(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/runtime/models/deactivate":
 		f.handleDeactivate(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/runtime/models/wake":
+		f.handleWake(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/runtime/models/sleep":
+		f.handleSleep(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/runtime/models/kv-limit":
+		f.handleKVLimit(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/runtime/snapshot":
 		f.handleSnapshot(w)
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/runtime/models":
@@ -283,7 +365,7 @@ func (f *FakeModelClaimRuntime) handleActivate(w http.ResponseWriter, r *http.Re
 	}
 	port := f.nextPort
 	f.nextPort++
-	f.models[uid] = modelclaimcontroller.RuntimeSnapshotModel{
+	model := modelclaimcontroller.RuntimeSnapshotModel{
 		ModelName:   req.ModelName,
 		ArtifactURL: req.ArtifactURL,
 		ClaimRef:    req.ClaimRef,
@@ -293,11 +375,119 @@ func (f *FakeModelClaimRuntime) handleActivate(w http.ResponseWriter, r *http.Re
 		Alive:       f.defaultPhase != "failed",
 		Ready:       f.defaultReady,
 	}
+	if f.cardBytes > 0 {
+		// On a card the engine maps nothing yet, and serves no request. Its
+		// request metrics are read, so the pool policy can tell it is idle.
+		completed := int64(0)
+		model.RequestMetricsObserved = true
+		model.RequestSuccessTotal = &completed
+	}
+	f.models[uid] = model
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(modelclaimcontroller.ActivateResponse{
 		Status: "success", ModelName: req.ModelName, Port: port, IPCName: req.IPCName,
 	})
+}
+
+// handleWake wakes the sleeping engines serving the model, as the runtime does:
+// they serve again at once here, with no boot to wait for.
+func (f *FakeModelClaimRuntime) handleWake(w http.ResponseWriter, r *http.Request) {
+	req := modelclaimcontroller.WakeRequest{}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.wakeCalls = append(f.wakeCalls, req)
+	if f.wakeFailures > 0 {
+		f.wakeFailures--
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(modelclaimcontroller.RuntimeOperationResponse{
+			Status: "error", ModelName: req.ModelName, OperationID: req.OperationID,
+		})
+		return
+	}
+	applied := false
+	for uid, model := range f.models {
+		if model.ModelName == req.ModelName && model.Phase == "sleeping" {
+			model.Phase = "active"
+			model.Ready = true
+			model.SleepingFootprintBytes = nil
+			f.models[uid] = model
+			applied = true
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(modelclaimcontroller.RuntimeOperationResponse{
+		Status: "success", ModelName: req.ModelName, OperationID: req.OperationID, Applied: applied, Phase: "active",
+	})
+}
+
+// handleSleep puts the engines serving the model to sleep, as the runtime does,
+// and has each hold the sleeping footprint the fixture sets.
+func (f *FakeModelClaimRuntime) handleSleep(w http.ResponseWriter, r *http.Request) {
+	req := modelclaimcontroller.SleepRequest{}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sleepCalls = append(f.sleepCalls, req)
+	applied := false
+	for uid, model := range f.models {
+		if model.ModelName == req.ModelName && model.Phase == "active" {
+			model.Phase = "sleeping"
+			model.Ready = false
+			model.SleepingFootprintBytes = f.footprintLocked()
+			f.models[uid] = model
+			applied = true
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(modelclaimcontroller.RuntimeOperationResponse{
+		Status: "success", ModelName: req.ModelName, OperationID: req.OperationID, Applied: applied, Phase: "sleeping",
+	})
+}
+
+// handleKVLimit writes a KV limit into the engines serving the model, which
+// their snapshot then reports.
+func (f *FakeModelClaimRuntime) handleKVLimit(w http.ResponseWriter, r *http.Request) {
+	req := modelclaimcontroller.SetKVLimitRequest{}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	phase := ""
+	for uid, model := range f.models {
+		if model.ModelName == req.ModelName {
+			model.KVCapacityBytes = req.LimitBytes
+			f.models[uid] = model
+			phase = model.Phase
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(modelclaimcontroller.RuntimeOperationResponse{
+		Status: "success", ModelName: req.ModelName, OperationID: req.OperationID, Applied: true, Phase: phase,
+	})
+}
+
+// footprintLocked is the sleeping footprint an engine reports, or nil when
+// the fixture sets none. The caller holds f.mu.
+func (f *FakeModelClaimRuntime) footprintLocked() *int64 {
+	if f.sleepingFootprintBytes <= 0 {
+		return nil
+	}
+	footprint := f.sleepingFootprintBytes
+	return &footprint
 }
 
 func (f *FakeModelClaimRuntime) handleDeactivate(w http.ResponseWriter, r *http.Request) {
@@ -324,12 +514,19 @@ func (f *FakeModelClaimRuntime) handleSnapshot(w http.ResponseWriter) {
 	for _, model := range f.models {
 		models = append(models, model)
 	}
+	var accelerators []modelclaimcontroller.RuntimeAcceleratorSnapshot
+	if f.cardBytes > 0 {
+		accelerators = []modelclaimcontroller.RuntimeAcceleratorSnapshot{{
+			ID: "GPU-0", HBMTotalBytes: f.cardBytes, HBMUsableBytes: f.cardBytes,
+		}}
+	}
 	f.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(modelclaimcontroller.RuntimeSnapshot{
-		ObservedAt: time.Now(),
-		Models:     models,
+		ObservedAt:   time.Now(),
+		Accelerators: accelerators,
+		Models:       models,
 	})
 }
 
@@ -370,7 +567,17 @@ func (f *FakeModelClaimRuntime) FailNextActivations(count int) {
 	f.failures = count
 }
 
+// FailNextWakes makes the next count wake requests fail, as a runtime does
+// when vLLM cannot wake its engine.
+func (f *FakeModelClaimRuntime) FailNextWakes(count int) {
+	ginkgo.GinkgoHelper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.wakeFailures = count
+}
+
 // SetClaimState updates the runtime state for an already activated claim UID.
+// An engine set asleep holds the sleeping footprint the fixture sets.
 func (f *FakeModelClaimRuntime) SetClaimState(uid, phase string, ready bool, lastError string) {
 	ginkgo.GinkgoHelper()
 	f.mu.Lock()
@@ -381,7 +588,36 @@ func (f *FakeModelClaimRuntime) SetClaimState(uid, phase string, ready bool, las
 	model.Ready = ready
 	model.Alive = phase != "failed"
 	model.LastError = lastError
+	model.SleepingFootprintBytes = nil
+	if phase == "sleeping" {
+		model.SleepingFootprintBytes = f.footprintLocked()
+	}
 	f.models[uid] = model
+}
+
+// SetCard has the runtime report one card of the given size, which every
+// placement on its pod is then accounted against.
+func (f *FakeModelClaimRuntime) SetCard(bytes int64) {
+	ginkgo.GinkgoHelper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cardBytes = bytes
+}
+
+// SetSleepingFootprint sets what an engine holds once it is asleep.
+func (f *FakeModelClaimRuntime) SetSleepingFootprint(bytes int64) {
+	ginkgo.GinkgoHelper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sleepingFootprintBytes = bytes
+}
+
+// SleepRequests returns a copy of the recorded sleep requests.
+func (f *FakeModelClaimRuntime) SleepRequests() []modelclaimcontroller.SleepRequest {
+	ginkgo.GinkgoHelper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]modelclaimcontroller.SleepRequest(nil), f.sleepCalls...)
 }
 
 // ActivateCallCount returns the total number of activation attempts, including failures.
@@ -398,6 +634,14 @@ func (f *FakeModelClaimRuntime) DeactivateRequests() []modelclaimcontroller.Deac
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]modelclaimcontroller.DeactivateRequest(nil), f.deactivateCalls...)
+}
+
+// WakeRequests returns a defensive copy of the recorded wake requests.
+func (f *FakeModelClaimRuntime) WakeRequests() []modelclaimcontroller.WakeRequest {
+	ginkgo.GinkgoHelper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]modelclaimcontroller.WakeRequest(nil), f.wakeCalls...)
 }
 
 // ClaimUIDs returns the unique claim UIDs recorded in activation requests.

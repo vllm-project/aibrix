@@ -23,6 +23,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stype "k8s.io/apimachinery/pkg/types"
@@ -55,9 +56,12 @@ type MockCache struct {
 }
 
 type mockModelClaimBinding struct {
-	pod   *v1.Pod
-	port  int
-	state string
+	pod           *v1.Pod
+	port          int
+	state         string
+	claim         string
+	wakeByRequest bool
+	reason        string
 }
 
 type mockModelClaimStatus struct {
@@ -65,9 +69,12 @@ type mockModelClaimStatus struct {
 	reason string
 }
 
-func (m *MockCache) ModelClaimBinding(model string) (*v1.Pod, int, string, bool) {
+func (m *MockCache) ModelClaimBinding(model string) (*v1.Pod, utils.ModelClaimBinding, bool) {
 	binding, found := m.modelClaimBindings[model]
-	return binding.pod, binding.port, binding.state, found
+	return binding.pod, utils.ModelClaimBinding{
+		Model: model, Port: binding.port, State: binding.state,
+		Claim: binding.claim, WakeByRequest: binding.wakeByRequest, Reason: binding.reason,
+	}, found
 }
 
 func (m *MockCache) ModelClaimStatus(model string) (string, string, bool) {

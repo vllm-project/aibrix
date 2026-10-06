@@ -27,6 +27,7 @@ type ModelWarmupSpecApplyConfiguration struct {
 	Mode         *v1alpha1.ModelWarmupMode                  `json:"mode,omitempty"`
 	Targets      []ModelWarmupTargetApplyConfiguration      `json:"targets,omitempty"`
 	ImagePreload *ModelWarmupImagePreloadApplyConfiguration `json:"imagePreload,omitempty"`
+	Custom       *ModelWarmupCustomActionApplyConfiguration `json:"custom,omitempty"`
 	Policies     *ModelWarmupPoliciesApplyConfiguration     `json:"policies,omitempty"`
 }
 
@@ -62,6 +63,14 @@ func (b *ModelWarmupSpecApplyConfiguration) WithTargets(values ...*ModelWarmupTa
 // If called multiple times, the ImagePreload field is set to the value of the last call.
 func (b *ModelWarmupSpecApplyConfiguration) WithImagePreload(value *ModelWarmupImagePreloadApplyConfiguration) *ModelWarmupSpecApplyConfiguration {
 	b.ImagePreload = value
+	return b
+}
+
+// WithCustom sets the Custom field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Custom field is set to the value of the last call.
+func (b *ModelWarmupSpecApplyConfiguration) WithCustom(value *ModelWarmupCustomActionApplyConfiguration) *ModelWarmupSpecApplyConfiguration {
+	b.Custom = value
 	return b
 }
 

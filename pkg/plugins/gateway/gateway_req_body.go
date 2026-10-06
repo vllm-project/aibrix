@@ -337,15 +337,16 @@ func getEngineBasedPathRewrite(requestPath string, pods []*v1.Pod) string {
 func (s *Server) validateModelAvailability(requestID, model string) (types.PodList, *extProcPb.ProcessingResponse) {
 	if !s.cache.HasModel(model) {
 		if provider, ok := s.cache.(cache.ModelClaimBindingProvider); ok {
-			if pod, _, state, found := provider.ModelClaimBinding(model); found {
+			if pod, binding, found := provider.ModelClaimBinding(model); found {
+				state := binding.State
 				klog.InfoS("ModelClaim is known but not routable", "requestID", requestID, "model", model, "state", state)
 				if state == constants.ModelClaimRoutingStateSleeping && s.wakeRequester != nil {
-					s.wakeRequester.RequestWake(pod, model)
+					s.wakeRequester.RequestWake(pod, binding)
 				}
 				// The controller gets past every state a pod carries by itself.
 				// An engine that failed for good is moved to another pod once
 				// one can take it, so its client is asked to retry as well.
-				return nil, modelClaimRetryResponse(model, state, "", true)
+				return nil, modelClaimRetryResponse(model, state, binding.Reason, true)
 			}
 		}
 		// A claim that no pod advertises yet has not been placed. Its model is
@@ -391,7 +392,7 @@ func modelClaimRetryResponse(model, state, reason string, retry bool) *extProcPb
 	if retry {
 		headers = append(headers, &configPb.HeaderValueOption{
 			Header: &configPb.HeaderValue{
-				Key: "Retry-After", RawValue: []byte(strconv.Itoa(modelClaimRetryAfterSeconds)),
+				Key: "Retry-After", RawValue: []byte(strconv.Itoa(modelClaimRetryAfter(reason))),
 			},
 		})
 		message += "; retry shortly"
@@ -402,13 +403,34 @@ func modelClaimRetryResponse(model, state, reason string, retry bool) *extProcPb
 }
 
 // modelClaimReasonsNotRetried are the reasons the controller does not get past
-// by itself: the claim has to be changed first. Waiting does not help, so a
-// client is not asked to retry. The controller tries any other refusal again,
-// including a failed activation, and it moves a claim whose engine failed for
-// good to another pod once one can take it.
+// by itself: the claim or its pool has to be changed first. Waiting does not
+// help, so a client is not asked to retry. The controller tries any other
+// refusal again, including a failed activation, and it moves a claim whose
+// engine failed for good to another pod once one can take it.
 var modelClaimReasonsNotRetried = map[string]struct{}{
-	"InvalidEngineConfig": {},
-	"InvalidPerGPU":       {},
+	constants.ModelClaimReasonTooLargeForAnyCard: {},
+	"InvalidEngineConfig":                        {},
+	"InvalidPerGPU":                              {},
+}
+
+// modelClaimRetryAfterByReason is how long a client is asked to wait, by the
+// reason the controller gives, when that is longer than a wake or a start
+// takes. A wake that waits for room, and a claim that room is made for, wait
+// for other engines to go to sleep first. A move starts the engine again on
+// another pod.
+var modelClaimRetryAfterByReason = map[string]int{
+	constants.ModelClaimRouteReasonWaitingForRoom: 20,
+	constants.ModelClaimReasonMakingRoom:          20,
+	constants.ModelClaimRouteReasonMoving:         30,
+}
+
+// modelClaimRetryAfter is the Retry-After, in seconds, for a claim the
+// controller gives this reason for.
+func modelClaimRetryAfter(reason string) int {
+	if seconds, found := modelClaimRetryAfterByReason[reason]; found {
+		return seconds
+	}
+	return modelClaimRetryAfterSeconds
 }
 
 func modelClaimRetried(reason string) bool {

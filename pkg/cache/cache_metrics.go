@@ -747,6 +747,9 @@ func (c *Store) updateModelReplicaMetrics() {
 }
 
 func (c *Store) aggregateMetrics() {
+	if c.metrics == nil {
+		c.metrics = make(map[string]any)
+	}
 	for _, subscriber := range c.subscribers {
 		for _, metric := range subscriber.SubscribedMetrics() {
 			if _, exists := c.metrics[metric]; !exists {
