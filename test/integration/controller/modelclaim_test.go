@@ -24,8 +24,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	modelapi "github.com/vllm-project/aibrix/api/model/v1alpha1"
@@ -214,6 +216,41 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
 		fixture.ExpectEvent(claim, corev1.EventTypeWarning, "InvalidPerGPU")
 		gomega.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(0))
+	})
+
+	ginkgo.It("takes a change of perGPU and refuses a change of anything else", func() {
+		claim := fixture.CreateClaim(ns.Name, "claim-immutable", "pool-a", nil, map[string]string{"--max-model-len": "4096"})
+
+		changes := map[string]func(*modelapi.ModelClaimSpec){
+			"modelName": func(spec *modelapi.ModelClaimSpec) { spec.ModelName = ptr.To("another-model") },
+			"podSelector": func(spec *modelapi.ModelClaimSpec) {
+				spec.PodSelector = &metav1.LabelSelector{MatchLabels: map[string]string{constants.ModelPoolLabelName: "pool-b"}}
+			},
+			"artifactURL": func(spec *modelapi.ModelClaimSpec) { spec.ArtifactURL = "huggingface://integration/another" },
+			"engine":      func(spec *modelapi.ModelClaimSpec) { spec.Engine = "sglang" },
+			"engineConfig": func(spec *modelapi.ModelClaimSpec) {
+				spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Args: map[string]string{"--max-model-len": "8192"}}
+			},
+		}
+		for field, change := range changes {
+			changed := claim.DeepCopy()
+			change(&changed.Spec)
+			err := k8sClient.Patch(ctx, changed, client.MergeFrom(claim))
+			gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "a change of %s: %v", field, err)
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring(field + " is immutable"))
+		}
+		withoutConfig := claim.DeepCopy()
+		withoutConfig.Spec.EngineConfig = nil
+		err := k8sClient.Patch(ctx, withoutConfig, client.MergeFrom(claim))
+		gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "removing engineConfig: %v", err)
+
+		resized := claim.DeepCopy()
+		resized.Spec.PerGPU.MaximumFootprint = resource.MustParse("2Gi")
+		gomega.Expect(k8sClient.Patch(ctx, resized, client.MergeFrom(claim))).To(gomega.Succeed())
+		latest := &modelapi.ModelClaim{}
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(claim), latest)).To(gomega.Succeed())
+		gomega.Expect(latest.Spec.PerGPU.MaximumFootprint.String()).To(gomega.Equal("2Gi"))
+		gomega.Expect(latest.Spec.ArtifactURL).To(gomega.Equal(claim.Spec.ArtifactURL))
 	})
 
 	ginkgo.It("records activation failure and retries to Active", func() {

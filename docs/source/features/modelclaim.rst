@@ -275,6 +275,11 @@ Do not set ``--gpu-memory-utilization``. kvcached owns elastic KV-cache
 allocation, and the ModelClaim path rejects that flag. Data parallelism is not
 supported; ``--data-parallel-size`` must remain 1.
 
+Only ``perGPU`` can be changed after a claim is created. The other fields
+decide which engine runs and where, and the engine is started with them only
+once, so the API server rejects any change to them. To change one, create a
+new ModelClaim.
+
 Declare what a model costs on a card
 ------------------------------------
 
@@ -565,7 +570,10 @@ ModelClaim status summarizes the lifecycle:
    * - Status
      - Meaning
    * - ``Pending`` / ``Scheduling``
-     - The claim is new or the controller is selecting a compatible Pod.
+     - The claim is new or the controller is selecting a compatible Pod. A
+       claim that loses its last engine, for example with its Pod, is
+       ``Pending`` again until it is placed, and its ``Ready`` condition is
+       ``False`` with reason ``NotPlaced``.
    * - ``Loading`` / ``Activating``
      - The runtime is downloading or starting the engine. It remains
        non-routable with port 0. While the engine boots, the controller looks
@@ -682,9 +690,13 @@ The fields mean:
 
 ``lifecycle.sleepAfterSeconds``
    How long a vLLM engine must have complete, initialized, and idle request
-   observations before sleep level 1 is applied. It may be left out when
-   ``noWakeReserveWhileAsleep`` is true. No engine is then put to sleep for
-   being idle, only to make room.
+   observations before sleep level 1 is applied. An engine's idle time starts
+   no earlier than when it was last routed, so an engine that has just woken is
+   not idle before its route is back. Before an engine sleeps, its route is
+   taken back and it is read again. If it is serving a request, or has
+   completed one since it was last read, it stays awake and its route is put
+   back. The field may be left out when ``noWakeReserveWhileAsleep`` is true.
+   No engine is then put to sleep for being idle, only to make room.
 
 ``lifecycle.noWakeReserveWhileAsleep``
    By default, a model that sleeps keeps a wake reserve. The footprint and
@@ -861,13 +873,25 @@ compatible Pod. There is no live migration or transparent preservation of
 in-flight requests.
 
 The controller reads each runtime's snapshot with a 10-second deadline. A read
-normally takes a fraction of a second. It can take longer for two reasons. The
-runtime probes its engines one after another, for about 1.5 seconds each. Before
-that, a read waits for the runtime's lock. The runtime holds that lock while it
-checks its engines, for about 1 second each. It also holds the lock while it
-starts an engine, puts one to sleep, wakes one or writes a KV limit. So a read
-of a Pod with five busy engines can take longer than the deadline. Calls that
-change state, such as starting an engine, wait up to 60 seconds.
+normally takes a fraction of a second, because the runtime asks its engines
+concurrently and does not wait for an engine that is being started, put to
+sleep or woken. The runtime still changes the engines of a Pod one at a time.
+Calls that change state, such as starting an engine, wait up to 60 seconds. The
+runtime gives vLLM up to 50 seconds to put an engine to sleep or wake it, since
+a first sleep copies the model's weights to host memory. vLLM can fail a sleep
+after it has offloaded the weights, when another engine on the card takes
+memory at the same time. The runtime then tries again, up to three attempts in
+all. With nothing left to offload, the next attempt normally completes the
+sleep.
+
+vLLM aborts the requests an engine is serving when it sleeps. So before a
+sleep, the runtime asks vLLM to stop taking new requests and waits up to one
+second for the engine to finish the requests it is serving. A request that
+reached the engine just before the sleep then still completes. An engine that
+is still serving after that second is not idle, so the runtime lets it take
+requests again and refuses the sleep with HTTP 409. The controller then gives
+the engine its route back. If vLLM cannot pause the engine, the sleep goes
+ahead.
 
 A runtime that does not answer in time is left alone for 10 seconds, which is
 one round. Calls to it fail at once until then, so one runtime that stopped
@@ -1158,6 +1182,15 @@ Agent restarted but engines also disappeared
 
 Cleanup
 -------
+
+When a claim is deleted, its engine finishes the requests it is serving before
+it stops. The controller takes the claim's route back first and keeps the
+engine running for 5 seconds while the gateway stops sending it requests. It
+then waits until the engine has no running or waiting request, up to 90
+seconds after the deletion, and raises a ``DrainTimedOut`` Event if it has to
+stop the engine with requests left. An engine that is asleep, starting or
+failed is stopped at once. The claim is removed once its engines have been
+asked to stop.
 
 Delete claims before the warm pool so the finalizer can stop their engines and
 remove routing annotations:

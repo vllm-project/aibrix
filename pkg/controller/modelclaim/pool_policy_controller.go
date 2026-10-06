@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
@@ -373,6 +375,9 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 		recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonNoPods)
 		return nil
 	}
+	// The pool's runtimes are read concurrently first; the loop then takes
+	// each reading in turn.
+	readings.readUnread(ctx, pods)
 	for i := range pods {
 		pod := &pods[i]
 		snapshot, err := readings.of(ctx, pod)
@@ -546,18 +551,21 @@ func (r *ModelClaimReconciler) reconcilePoolIdleSleep(
 		if !found || !activity.Initialized || activity.Active {
 			continue
 		}
+		claim := claimForRuntimeSnapshot(claims, model)
+		if claim == nil || !isVLLMModel(claim) {
+			continue
+		}
 		idleSince := activity.LastActive
 		if model.LastTransition != nil && model.LastTransition.After(idleSince) {
 			idleSince = *model.LastTransition
+		}
+		if routed := routedSince(claim); routed.After(idleSince) {
+			idleSince = routed
 		}
 		if idleSince.IsZero() || manager.now().Sub(idleSince) < idleAfter {
 			continue
 		}
 
-		claim := claimForRuntimeSnapshot(claims, model)
-		if claim == nil || !isVLLMModel(claim) {
-			continue
-		}
 		port, active := activeClaimInstancePort(claim, pod.Name)
 		if !active {
 			continue
@@ -567,7 +575,12 @@ func (r *ModelClaimReconciler) reconcilePoolIdleSleep(
 			source.key.String(), pod.UID, snapshotActivityKey(model), idleSince.UnixNano(),
 		)
 		if err := r.putEngineToSleep(ctx, claim, pod, port, model.ModelName, operationID, readings); err != nil {
-			klog.ErrorS(err, "pool lifecycle policy could not sleep idle engine", "pod", klog.KObj(pod), "model", model.ModelName)
+			if errors.Is(err, errEngineServing) {
+				klog.V(2).InfoS("pool lifecycle policy leaves an engine awake that serves a request",
+					"pod", klog.KObj(pod), "model", model.ModelName)
+			} else {
+				klog.ErrorS(err, "pool lifecycle policy could not sleep idle engine", "pod", klog.KObj(pod), "model", model.ModelName)
+			}
 			continue
 		}
 		asleep := r.sleptEngine(ctx, pod, claim, readings)
@@ -580,10 +593,19 @@ func (r *ModelClaimReconciler) reconcilePoolIdleSleep(
 	}
 }
 
+// errEngineServing is why an engine found idle is left awake: a request reached
+// it before its route was taken back, and a sleep would hold that request up,
+// or abort it.
+var errEngineServing = errors.New("the engine serves a request")
+
 // putEngineToSleep takes a claim's engine on a pod off its route, puts it to
 // sleep at level 1, and records the instance as sleeping. The route is taken
-// back first, so no request is routed to an engine going to sleep. A route
-// taken back for a sleep that failed is put back.
+// back first, so no request is routed to an engine going to sleep. A request
+// may have reached the engine after the reading that found it idle. So the
+// engine is read again once its route is taken back, and one that serves is
+// left awake. The runtime also refuses the sleep when the engine is still
+// serving a second after it stopped taking new requests. A route taken back for
+// a sleep that did not happen is put back.
 func (r *ModelClaimReconciler) putEngineToSleep(
 	ctx context.Context,
 	claim *modelv1alpha1.ModelClaim,
@@ -595,21 +617,61 @@ func (r *ModelClaimReconciler) putEngineToSleep(
 	if err := r.annotateWarmPodWithState(ctx, claim, pod, 0, constants.ModelClaimRoutingStateSleeping, ""); err != nil {
 		return fmt.Errorf("take the route back: %w", err)
 	}
+	putRouteBack := func() {
+		if err := r.annotateWarmPodWithState(
+			ctx, claim, pod, port, constants.ModelClaimRoutingStateActive, "",
+		); err != nil {
+			klog.ErrorS(err, "could not put a route back after a sleep that did not happen",
+				"pod", klog.KObj(pod), "model", modelName)
+		}
+	}
+	readings.forget(pod.Name)
+	if err := r.engineIsQuiet(ctx, pod, claim, modelName, readings); err != nil {
+		putRouteBack()
+		return err
+	}
 	_, err := r.Runtime.Sleep(ctx, pod.Status.PodIP, DefaultRuntimePort, &SleepRequest{
 		ModelName: modelName, Level: 1, OperationID: operationID,
 	})
 	readings.forget(pod.Name)
 	if err != nil {
-		if restoreErr := r.annotateWarmPodWithState(
-			ctx, claim, pod, port, constants.ModelClaimRoutingStateActive, "",
-		); restoreErr != nil {
-			klog.ErrorS(restoreErr, "could not put a route back after a sleep that failed",
-				"pod", klog.KObj(pod), "model", modelName)
-		}
+		putRouteBack()
 		return fmt.Errorf("sleep: %w", err)
 	}
 	if err := r.markClaimInstanceSleeping(ctx, claim, pod.Name); err != nil {
 		return fmt.Errorf("record the sleep: %w", err)
+	}
+	return nil
+}
+
+// engineIsQuiet reads an engine again and reports errEngineServing when it has
+// a request running or waiting, has completed one since the pool policy last
+// read it, or when its requests could not be read. An engine the reading does
+// not show cannot be put to sleep either.
+func (r *ModelClaimReconciler) engineIsQuiet(
+	ctx context.Context,
+	pod *corev1.Pod,
+	claim *modelv1alpha1.ModelClaim,
+	modelName string,
+	readings *runtimeReadings,
+) error {
+	snapshot, err := readings.of(ctx, pod)
+	if err != nil {
+		return fmt.Errorf("read the engine again: %w", err)
+	}
+	model := snapshotModelForClaim(snapshot, claim, modelName)
+	if model == nil {
+		return fmt.Errorf("the runtime no longer lists model %s", modelName)
+	}
+	if !model.RequestMetricsObserved || model.RequestsRunning > 0 || model.RequestsWaiting > 0 {
+		return errEngineServing
+	}
+	// A request can start and end between two readings of the pool policy, and
+	// the idle timer then still counts from before it. So this reading counts
+	// as one of the policy's, and an engine that completed a request since the
+	// last one is busy.
+	if activity, observed := r.poolPolicyManager().observe(poolActivityKey(pod, *model), *model); observed && activity.Active {
+		return errEngineServing
 	}
 	return nil
 }
@@ -736,6 +798,18 @@ func claimForRuntimeSnapshot(
 		}
 	}
 	return nil
+}
+
+// routedSince is when a claim's engine was last routed, as its Ready condition
+// says, and zero when the claim is not Ready. An engine counts as idle only from
+// then. Until its route is in place no request can reach it, so an engine that
+// woke well before it was routed is not idle for that time.
+func routedSince(pm *modelv1alpha1.ModelClaim) time.Time {
+	ready := meta.FindStatusCondition(pm.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
+	if ready == nil || ready.Status != metav1.ConditionTrue {
+		return time.Time{}
+	}
+	return ready.LastTransitionTime.Time
 }
 
 func activeClaimInstancePort(pm *modelv1alpha1.ModelClaim, podName string) (int32, bool) {

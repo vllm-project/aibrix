@@ -671,6 +671,50 @@ func TestWakeRequestsEnqueueTheirClaimAlone(t *testing.T) {
 	assert.False(t, notOnlyWakeRequests().Update(event.UpdateEvent{ObjectOld: asked, ObjectNew: takenBack}))
 }
 
+func TestRouteChangesEnqueueOnlyTheClaimsOnTheirPod(t *testing.T) {
+	podA := warmPod("warm-a", "b300-pool-a", true, corev1.PodRunning)
+	podB := warmPod("warm-b", "b300-pool-a", true, corev1.PodRunning)
+	onPod := func(name, pod string) *modelv1alpha1.ModelClaim {
+		claim := sampleModelClaim()
+		claim.Name = name
+		if pod != "" {
+			claim.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: pod, Port: 20000}}
+		}
+		return claim
+	}
+	r, _ := newReconciler(t, podA, podB,
+		onPod("first-on-a", podA.Name), onPod("second-on-a", podA.Name), onPod("on-b", podB.Name), onPod("waiting", ""))
+
+	podA.ResourceVersion = "1"
+	routed := podA.DeepCopy()
+	routed.ResourceVersion = "2"
+	routed.Annotations = map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + "first-on-a": `{"model":"first-on-a","port":20000,"state":"active"}`,
+	}
+	change := event.UpdateEvent{ObjectOld: podA, ObjectNew: routed}
+	assert.False(t, notOnlyAnnotationsChanged().Update(change), "a route alone does not enqueue every claim in the namespace")
+	assert.True(t, onlyAnnotationsChanged().Update(change))
+	assert.ElementsMatch(t, []reconcile.Request{
+		{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: "first-on-a"}},
+		{NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: "second-on-a"}},
+	}, enqueueModelClaimsOnPod(r.Client)(context.Background(), routed))
+
+	relabeled := routed.DeepCopy()
+	relabeled.ResourceVersion = "3"
+	relabeled.Labels["extra"] = "yes"
+	change = event.UpdateEvent{ObjectOld: routed, ObjectNew: relabeled}
+	assert.True(t, notOnlyAnnotationsChanged().Update(change))
+	assert.False(t, onlyAnnotationsChanged().Update(change))
+
+	unready := routed.DeepCopy()
+	unready.ResourceVersion = "4"
+	unready.Status.Conditions = append(unready.Status.Conditions,
+		corev1.PodCondition{Type: corev1.PodReady, Status: corev1.ConditionFalse})
+	change = event.UpdateEvent{ObjectOld: routed, ObjectNew: unready}
+	assert.True(t, notOnlyAnnotationsChanged().Update(change), "readiness changes where a claim can go")
+	assert.False(t, onlyAnnotationsChanged().Update(change))
+}
+
 func TestDeannotateWarmPodTakesTheWakeRequestWithTheRoute(t *testing.T) {
 	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
 	pod.Annotations = map[string]string{

@@ -30,6 +30,12 @@ import (
 // kvcached. Multiple ModelClaims may share one GPU.
 
 // ModelClaimSpec defines the desired state of ModelClaim.
+//
+// Only perGPU can be changed after a claim is created. The other fields decide
+// which engine runs and where, and the engine is started with them only once,
+// so a change would never reach it. To change one, create a new ModelClaim.
+// +kubebuilder:validation:XValidation:rule="has(self.modelName) == has(oldSelf.modelName) && (!has(self.modelName) || self.modelName == oldSelf.modelName)",message="modelName is immutable; create a new ModelClaim instead",fieldPath=".modelName"
+// +kubebuilder:validation:XValidation:rule="has(self.engineConfig) == has(oldSelf.engineConfig) && (!has(self.engineConfig) || self.engineConfig == oldSelf.engineConfig)",message="engineConfig is immutable; create a new ModelClaim instead",fieldPath=".engineConfig"
 type ModelClaimSpec struct {
 	// ModelName is the served model identifier that clients address in requests
 	// (e.g. the `model` field of an OpenAI-style request). Defaults to the
@@ -41,17 +47,20 @@ type ModelClaimSpec struct {
 	// attached to. It typically matches `pool.aibrix.ai/name=<pool>`. Candidate
 	// pods must also advertise the enabled warm-pool label.
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="podSelector is immutable; create a new ModelClaim instead"
 	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 
 	// ArtifactURL is the address of the model weights to download. Multiple
 	// protocols are supported, e.g. s3://, gcs://, huggingface://.
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="artifactURL is immutable; create a new ModelClaim instead"
 	ArtifactURL string `json:"artifactURL,omitempty"`
 
 	// Engine is the inference engine used to serve this model.
 	// +optional
 	// +kubebuilder:default=vllm
 	// +kubebuilder:validation:Enum=vllm;sglang
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="engine is immutable; create a new ModelClaim instead"
 	Engine string `json:"engine,omitempty"`
 
 	// Replicas is the desired number of active engine instances for this model

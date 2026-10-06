@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,6 +60,8 @@ const (
 // fakeRuntime is an in-process RuntimeClient that records calls and hands out
 // monotonic ports, so the reconcile loop can be tested without a real runtime.
 type fakeRuntime struct {
+	// mu guards the reads of runtimes, which a pass may make side by side.
+	mu              sync.Mutex
 	activateCalls   []ActivateRequest
 	deactivateCalls []DeactivateRequest
 	kvLimitCalls    []SetKVLimitRequest
@@ -213,6 +216,8 @@ func (f *fakeRuntime) ListModels(_ context.Context, _ string, _ int) ([]ModelInf
 }
 
 func (f *fakeRuntime) Snapshot(_ context.Context, podIP string, _ int) (*RuntimeSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.snapshotCalls++
 	if f.snapshotCallsTo == nil {
 		f.snapshotCallsTo = map[string]int{}
@@ -724,6 +729,188 @@ func TestReconcilePoolPoliciesUsesRuntimeTransitionAsWakeGrace(t *testing.T) {
 	now = now.Add(31 * time.Second)
 	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
 	assert.Len(t, runtime.sleepCalls, 1)
+}
+
+func TestReconcilePoolPoliciesCountsIdleTimeFromWhenTheEngineWasRouted(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	deployment, replicaSet, pod := warmPoolObjects(`{"lifecycle":{"sleepAfterSeconds":60}}`)
+	pod.UID = types.UID("warm-uid")
+	claim := sampleModelClaim()
+	claim.UID = types.UID("claim-uid")
+	claim.Status.Phase = modelv1alpha1.ModelClaimActive
+	claim.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: pod.Name, Port: 20000, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	// The engine woke long ago, and the controller routed it only later.
+	claim.Status.Conditions = []metav1.Condition{{
+		Type: string(modelv1alpha1.ModelClaimConditionReady), Status: metav1.ConditionTrue,
+		Reason: "ModelClaimActive", LastTransitionTime: metav1.NewTime(now.Add(90 * time.Second)),
+	}}
+
+	r, runtime := newReconciler(t, deployment, replicaSet, pod, claim)
+	r.PoolPolicy = newPoolPolicyManager(func() time.Time { return now })
+	requestSuccessTotal := int64(10)
+	woke := now.Add(-10 * time.Minute)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0"}},
+			Models: []RuntimeSnapshotModel{{
+				ModelName: "qwen2-7b", Port: 20000, IPCName: "kvc_qwen2-7b",
+				Phase: runtimePhaseActive, Alive: true, Ready: true,
+				LastTransition:         &woke,
+				RequestMetricsObserved: true, RequestSuccessTotal: &requestSuccessTotal,
+				ClaimRef: &ModelClaimRef{Namespace: claim.Namespace, Name: claim.Name, UID: string(claim.UID)},
+			}},
+		},
+	}
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+	now = now.Add(120 * time.Second)
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+	assert.Empty(t, runtime.sleepCalls, "no request could reach the engine before it was routed 30 s ago")
+
+	now = now.Add(31 * time.Second)
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+	assert.Len(t, runtime.sleepCalls, 1)
+}
+
+// requestsArriveFrom shows a request running on every engine from the given
+// snapshot read on, counted from one: a request that reached an engine after
+// the reading that found it idle.
+type requestsArriveFrom struct {
+	*fakeRuntime
+	from  int
+	reads int
+}
+
+func (f *requestsArriveFrom) Snapshot(ctx context.Context, podIP string, port int) (*RuntimeSnapshot, error) {
+	f.reads++
+	snapshot, err := f.fakeRuntime.Snapshot(ctx, podIP, port)
+	if err != nil || snapshot == nil || f.reads < f.from {
+		return snapshot, err
+	}
+	busy := *snapshot
+	busy.Models = append([]RuntimeSnapshotModel(nil), snapshot.Models...)
+	for i := range busy.Models {
+		busy.Models[i].RequestsRunning = 1
+	}
+	return &busy, nil
+}
+
+func TestReconcilePoolPoliciesLeavesAwakeAnEngineThatARequestReachedBeforeItsSleep(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	deployment, replicaSet, pod := warmPoolObjects(`{"lifecycle":{"sleepAfterSeconds":60}}`)
+	pod.UID = types.UID("warm-uid")
+	claim := sampleModelClaim()
+	claim.UID = types.UID("claim-uid")
+	claim.Status.Phase = modelv1alpha1.ModelClaimActive
+	claim.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: pod.Name, Port: 20000, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+
+	r, runtime := newReconciler(t, deployment, replicaSet, pod, claim)
+	// The first two reads find the engine idle; by the third, which comes
+	// after its route is taken back, a request runs on it.
+	r.Runtime = &requestsArriveFrom{fakeRuntime: runtime, from: 3}
+	r.PoolPolicy = newPoolPolicyManager(func() time.Time { return now })
+	requestSuccessTotal := int64(10)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 500}},
+			Models: []RuntimeSnapshotModel{{
+				ModelName: "qwen2-7b", Port: 20000,
+				Phase: runtimePhaseActive, Alive: true, Ready: true,
+				RequestMetricsObserved: true, RequestSuccessTotal: &requestSuccessTotal,
+				ClaimRef: &ModelClaimRef{Namespace: claim.Namespace, Name: claim.Name, UID: string(claim.UID)},
+			}},
+		},
+	}
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+	now = now.Add(61 * time.Second)
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+
+	assert.Empty(t, runtime.sleepCalls, "a sleep would abort the request")
+	gotClaim := getModel(t, r, claim.Name)
+	require.Len(t, gotClaim.Status.Instances, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, gotClaim.Status.Instances[0].Phase)
+	gotPod := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{
+		Namespace: testNamespace, Name: pod.Name,
+	}, gotPod))
+	annotation := gotPod.Annotations[constants.ModelClaimPodAnnotationPrefix+claim.Name]
+	assert.Contains(t, annotation, `"port":20000`)
+	assert.Contains(t, annotation, `"state":"active"`)
+}
+
+// requestsCompleteFrom answers each read from its from-th on with one more
+// request completed than the snapshot holds, and none running.
+type requestsCompleteFrom struct {
+	*fakeRuntime
+	from  int
+	reads int
+}
+
+func (f *requestsCompleteFrom) Snapshot(ctx context.Context, podIP string, port int) (*RuntimeSnapshot, error) {
+	f.reads++
+	snapshot, err := f.fakeRuntime.Snapshot(ctx, podIP, port)
+	if err != nil || snapshot == nil || f.reads < f.from {
+		return snapshot, err
+	}
+	served := *snapshot
+	served.Models = append([]RuntimeSnapshotModel(nil), snapshot.Models...)
+	for i := range served.Models {
+		if total := served.Models[i].RequestSuccessTotal; total != nil {
+			completed := *total + 1
+			served.Models[i].RequestSuccessTotal = &completed
+		}
+	}
+	return &served, nil
+}
+
+func TestReconcilePoolPoliciesLeavesAwakeAnEngineThatServedARequestSinceItWasLastRead(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	deployment, replicaSet, pod := warmPoolObjects(`{"lifecycle":{"sleepAfterSeconds":60}}`)
+	pod.UID = types.UID("warm-uid")
+	claim := sampleModelClaim()
+	claim.UID = types.UID("claim-uid")
+	claim.Status.Phase = modelv1alpha1.ModelClaimActive
+	claim.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: pod.Name, Port: 20000, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+
+	r, runtime := newReconciler(t, deployment, replicaSet, pod, claim)
+	// The first two reads find the engine idle. A request runs and ends after
+	// the second, so the third, which comes after the route is taken back,
+	// finds one more completed and none running.
+	r.Runtime = &requestsCompleteFrom{fakeRuntime: runtime, from: 3}
+	r.PoolPolicy = newPoolPolicyManager(func() time.Time { return now })
+	requestSuccessTotal := int64(10)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 500}},
+			Models: []RuntimeSnapshotModel{{
+				ModelName: "qwen2-7b", Port: 20000,
+				Phase: runtimePhaseActive, Alive: true, Ready: true,
+				RequestMetricsObserved: true, RequestSuccessTotal: &requestSuccessTotal,
+				ClaimRef: &ModelClaimRef{Namespace: claim.Namespace, Name: claim.Name, UID: string(claim.UID)},
+			}},
+		},
+	}
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+	now = now.Add(61 * time.Second)
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+
+	assert.Empty(t, runtime.sleepCalls, "the engine served a request a moment ago")
+	gotPod := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{
+		Namespace: testNamespace, Name: pod.Name,
+	}, gotPod))
+	assert.Contains(t, gotPod.Annotations[constants.ModelClaimPodAnnotationPrefix+claim.Name], `"state":"active"`)
+	last, known := r.PoolPolicy.lastActive(poolActivityKey(pod, runtime.snapshots[pod.Status.PodIP].Models[0]))
+	require.True(t, known)
+	assert.Equal(t, now, last, "the engine counts as idle from the request it served")
 }
 
 func reconcileOnce(t *testing.T, r *ModelClaimReconciler, name string) {
@@ -1460,6 +1647,34 @@ func TestReconcileActivateFailureSetsFailed(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 }
 
+// TestReconcileTakesReadyBackFromAClaimThatLostItsLastEngine checks a claim
+// whose only engine's pod is gone, and which cannot be placed again. It serves
+// nowhere, so its Ready condition has to say so.
+func TestReconcileTakesReadyBackFromAClaimThatLostItsLastEngine(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Status.Phase = modelv1alpha1.ModelClaimActive
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-gone", Port: 20000, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+		Type:    string(modelv1alpha1.ModelClaimConditionReady),
+		Status:  metav1.ConditionTrue,
+		Reason:  "ModelClaimActive",
+		Message: "model is active on at least one warm pod",
+	})
+	r, _ := newReconciler(t, pm)
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimPending, got.Status.Phase)
+	assert.Empty(t, got.Status.Instances)
+	ready := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
+	require.NotNil(t, ready)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
+	assert.Equal(t, "NotPlaced", ready.Reason)
+}
+
 // TestReconcileWaitsForARuntimeThatIsNotCalled checks a claim whose only pod
 // has a runtime that did not answer in time a short while ago. The call to
 // start the engine is not sent, so no activation failed: the claim waits as it
@@ -1647,11 +1862,11 @@ func TestReconcileDeletionRemovesRoutingAnnotation(t *testing.T) {
 }
 
 // TestReconcileDeletionDeactivates verifies deletion stops instances and drops
-// the finalizer.
+// the finalizer, once the gateway has had time to stop routing.
 func TestReconcileDeletionDeactivates(t *testing.T) {
-	now := metav1.Now()
+	deleted := metav1.NewTime(time.Now().Add(-deletionDrainGrace))
 	pm := withFinalizer(sampleModelClaim())
-	pm.DeletionTimestamp = &now
+	pm.DeletionTimestamp = &deleted
 	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{
 		{Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive},
 	}
@@ -1669,6 +1884,96 @@ func TestReconcileDeletionDeactivates(t *testing.T) {
 	err := r.Get(context.Background(),
 		types.NamespacedName{Namespace: testNamespace, Name: pm.Name}, got)
 	assert.True(t, err != nil || !controllerutil.ContainsFinalizer(got, ModelClaimFinalizer))
+}
+
+// deletingClaim is the sample claim, deleted at the given time, with its engine
+// active on warm-1.
+func deletingClaim(deleted time.Time) *modelv1alpha1.ModelClaim {
+	pm := withFinalizer(sampleModelClaim())
+	at := metav1.NewTime(deleted)
+	pm.DeletionTimestamp = &at
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive},
+	}
+	return pm
+}
+
+// servingEngine is the engine of a claim, with requests running.
+func servingEngine(pm *modelv1alpha1.ModelClaim, running int64) RuntimeSnapshotModel {
+	engine := engineHolding(servedModelName(pm), 0, 0)
+	engine.RequestsRunning = running
+	return engine
+}
+
+func TestReconcileDeletionGivesTheGatewayTimeToStopRouting(t *testing.T) {
+	now := time.Date(2026, time.October, 6, 2, 0, 0, 0, time.UTC)
+	pm := deletingClaim(now)
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Annotations = map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + pm.Name: `{"model":"qwen2-7b","port":9001}`,
+	}
+	r, runtime := newReconciler(t, pm, pod)
+	r.Now = func() time.Time { return now }
+
+	assert.Equal(t, deletionDrainGrace, reconcileFor(t, r, pm.Name))
+
+	assert.Empty(t, runtime.deactivateCalls, "the engine may still get what the gateway sent it")
+	got := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, got))
+	assert.NotContains(t, got.Annotations, constants.ModelClaimPodAnnotationPrefix+pm.Name)
+	assert.True(t, controllerutil.ContainsFinalizer(getModel(t, r, pm.Name), ModelClaimFinalizer))
+}
+
+func TestReconcileDeletionWaitsForTheRequestsAnEngineServes(t *testing.T) {
+	now := time.Date(2026, time.October, 6, 2, 0, 0, 0, time.UTC)
+	pm := deletingClaim(now.Add(-deletionDrainGrace))
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	r, runtime := newReconciler(t, pm, pod)
+	r.Now = func() time.Time { return now }
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {Models: []RuntimeSnapshotModel{servingEngine(pm, 1)}},
+	}
+
+	assert.Equal(t, deletionDrainPoll, reconcileFor(t, r, pm.Name))
+	assert.Empty(t, runtime.deactivateCalls, "a request still runs")
+
+	runtime.snapshots[pod.Status.PodIP].Models[0].RequestsRunning = 0
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.deactivateCalls, 1)
+	got := &modelv1alpha1.ModelClaim{}
+	err := r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: pm.Name}, got)
+	assert.True(t, err != nil || !controllerutil.ContainsFinalizer(got, ModelClaimFinalizer))
+}
+
+func TestReconcileDeletionStopsAnEngineThatOutlastsTheDrain(t *testing.T) {
+	now := time.Date(2026, time.October, 6, 2, 0, 0, 0, time.UTC)
+	pm := deletingClaim(now.Add(-deletionDrainTimeout))
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	r, runtime := newReconciler(t, pm, pod)
+	r.Now = func() time.Time { return now }
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {Models: []RuntimeSnapshotModel{servingEngine(pm, 2)}},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.deactivateCalls, 1)
+	assert.Contains(t, strings.Join(drainEvents(t, r), "\n"), "DrainTimedOut")
+}
+
+func TestReconcileDeletionStopsAnEngineThatDidNotServeAtOnce(t *testing.T) {
+	now := time.Date(2026, time.October, 6, 2, 0, 0, 0, time.UTC)
+	pm := deletingClaim(now)
+	pm.Status.Instances[0].Phase = modelv1alpha1.ModelClaimSleeping
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	r, runtime := newReconciler(t, pm, pod)
+	r.Now = func() time.Time { return now }
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.deactivateCalls, 1, "a sleeping engine serves nothing")
 }
 
 // claimWithCost is the sample claim plus a declared per-GPU cost.

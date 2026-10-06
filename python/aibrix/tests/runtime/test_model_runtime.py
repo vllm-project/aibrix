@@ -511,28 +511,72 @@ def test_registry_keeps_the_footprint_of_a_sleeping_engine():
     assert awake.sleeping_footprint_bytes is None
 
 
-def test_kvctl_controller_uses_checked_limit_command(monkeypatch):
-    import subprocess
+def test_write_kv_limit_sets_the_limit_and_keeps_what_the_engine_wrote(tmp_path):
+    import struct
 
-    from aibrix.runtime.model_runtime import KvctlController
+    from aibrix.runtime.model_runtime import read_kv_segment, write_kv_limit
 
-    calls = []
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
+    (tmp_path / "kvc_m1").write_bytes(struct.pack("<3q", 100, 40, 10))
 
-    KvctlController().set_limit("kvc_m1", 4096)
+    assert write_kv_limit("kvc_m1", 4096, shm_dir=str(tmp_path))
+    assert read_kv_segment("kvc_m1", shm_dir=str(tmp_path)) == (4096, 40, 10)
 
-    assert calls == [
-        ((["kvctl", "limit", "kvc_m1", "4096"],), {"check": True, "timeout": 10})
-    ]
+
+def test_write_kv_limit_leaves_a_missing_segment_alone(tmp_path):
+    from aibrix.runtime.model_runtime import write_kv_limit
+
+    assert not write_kv_limit("kvc_missing", 4096, shm_dir=str(tmp_path))
+    assert not (tmp_path / "kvc_missing").exists()
+
+
+def test_write_kv_limit_waits_for_the_lock_the_engine_takes(tmp_path):
+    import fcntl
+    import struct
+
+    from aibrix.runtime.model_runtime import read_kv_segment, write_kv_limit
+
+    segment = tmp_path / "kvc_m1"
+    segment.write_bytes(struct.pack("<3q", 100, 40, 10))
+    written = threading.Event()
+
+    def write():
+        if write_kv_limit("kvc_m1", 4096, shm_dir=str(tmp_path)):
+            written.set()
+
+    with open(segment, "r+b") as engine:
+        # kvcached rewrites the whole struct under an exclusive flock.
+        fcntl.flock(engine, fcntl.LOCK_EX)
+        writer = threading.Thread(target=write)
+        writer.start()
+        assert not written.wait(0.2)
+        fcntl.flock(engine, fcntl.LOCK_UN)
+    writer.join(timeout=5)
+
+    assert written.is_set()
+    assert read_kv_segment("kvc_m1", shm_dir=str(tmp_path)) == (4096, 40, 10)
+
+
+def test_write_kv_limit_gives_up_on_a_lock_that_stays_held(tmp_path, monkeypatch):
+    import fcntl
+    import struct
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.model_runtime import read_kv_segment, write_kv_limit
+
+    monkeypatch.setattr(runtime_module, "KV_LIMIT_LOCK_TIMEOUT_SECONDS", 0.1)
+    segment = tmp_path / "kvc_m1"
+    segment.write_bytes(struct.pack("<3q", 100, 40, 10))
+    with open(segment, "r+b") as engine:
+        fcntl.flock(engine, fcntl.LOCK_EX)
+        with pytest.raises(TimeoutError, match="kvc_m1"):
+            write_kv_limit("kvc_m1", 4096, shm_dir=str(tmp_path))
+
+    assert read_kv_segment("kvc_m1", shm_dir=str(tmp_path)) == (100, 40, 10)
 
 
 def test_vllm_lifecycle_controls_use_checked_localhost_requests(monkeypatch):
-    import httpx
 
+    import aibrix.runtime.model_runtime as runtime_module
     from aibrix.runtime.model_runtime import ModelInstance, SubprocessEngineLauncher
 
     calls = []
@@ -545,7 +589,9 @@ def test_vllm_lifecycle_controls_use_checked_localhost_requests(monkeypatch):
         calls.append({"url": url, "timeout": timeout})
         return _Response()
 
-    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(
+        runtime_module, "_localhost", lambda: SimpleNamespace(post=fake_post)
+    )
     inst = ModelInstance(model_name="m1", port=30123, ipc_name="kvc_m1")
     launcher = SubprocessEngineLauncher()
 
@@ -554,16 +600,129 @@ def test_vllm_lifecycle_controls_use_checked_localhost_requests(monkeypatch):
 
     assert calls == [
         {
+            "url": "http://127.0.0.1:30123/sleep?level=0&mode=wait",
+            "timeout": 1.0,
+            "checked": True,
+        },
+        {
             "url": "http://127.0.0.1:30123/sleep?level=2",
-            "timeout": 10.0,
+            "timeout": 50.0,
             "checked": True,
         },
         {
             "url": "http://127.0.0.1:30123/wake_up",
-            "timeout": 10.0,
+            "timeout": 50.0,
             "checked": True,
         },
     ]
+
+
+class _VLLMSleeps:
+    """A vLLM that answers each sleep request with the next status code given,
+    or raises the next exception given."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.asked = []
+
+    def post(self, url, timeout):
+        import httpx
+
+        self.asked.append(url)
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return httpx.Response(answer, request=httpx.Request("POST", url))
+
+
+def _launcher_asking(monkeypatch, vllm):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_localhost", lambda: vllm)
+    monkeypatch.setattr(runtime_module.time, "sleep", lambda seconds: None)
+    inst = runtime_module.ModelInstance(model_name="m1", port=30123, ipc_name="kvc_m1")
+    return runtime_module.SubprocessEngineLauncher(), inst
+
+
+_DRAIN = "http://127.0.0.1:30123/sleep?level=0&mode=wait"
+_SLEEP = "http://127.0.0.1:30123/sleep?level=1"
+
+
+def test_a_sleep_lets_the_requests_an_engine_serves_finish_first(monkeypatch):
+    vllm = _VLLMSleeps(200, 200)
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    launcher.sleep(inst, level=1)
+
+    assert vllm.asked == [_DRAIN, _SLEEP]
+
+
+def test_an_engine_that_still_serves_is_not_put_to_sleep(monkeypatch):
+    import httpx
+
+    from aibrix.runtime.model_runtime import EngineServingError
+
+    vllm = _VLLMSleeps(httpx.ReadTimeout("still serving"), 200)
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    with pytest.raises(EngineServingError):
+        launcher.sleep(inst, level=1)
+
+    assert vllm.asked == [_DRAIN, "http://127.0.0.1:30123/wake_up?tags=scheduling"]
+
+
+def test_an_engine_that_cannot_pause_is_put_to_sleep(monkeypatch):
+    vllm = _VLLMSleeps(400, 200)
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    launcher.sleep(inst, level=1)
+
+    assert vllm.asked == [_DRAIN, _SLEEP]
+
+
+def test_a_refused_sleep_is_a_conflict():
+    from fastapi import HTTPException
+
+    from aibrix.runtime.model_runtime import EngineServingError
+    from aibrix.runtime.model_runtime_api import _control_error
+
+    with pytest.raises(HTTPException) as refused:
+        _control_error(EngineServingError("model m1 still serves requests"))
+
+    assert refused.value.status_code == 409
+
+
+def test_a_sleep_vllm_failed_is_asked_for_again(monkeypatch):
+    vllm = _VLLMSleeps(200, 500, 200)
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    launcher.sleep(inst, level=1)
+
+    assert vllm.asked == [_DRAIN, _SLEEP, _SLEEP]
+
+
+def test_a_sleep_vllm_keeps_failing_fails(monkeypatch):
+    import httpx
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    vllm = _VLLMSleeps(200, *[500] * runtime_module.VLLM_SLEEP_ATTEMPTS)
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        launcher.sleep(inst, level=1)
+    assert vllm.asked == [_DRAIN] + [_SLEEP] * runtime_module.VLLM_SLEEP_ATTEMPTS
+
+
+def test_a_sleep_vllm_did_not_answer_is_not_asked_for_again(monkeypatch):
+    import httpx
+
+    vllm = _VLLMSleeps(200, httpx.ReadTimeout("no answer"))
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    with pytest.raises(httpx.ReadTimeout):
+        launcher.sleep(inst, level=1)
+    assert vllm.asked == [_DRAIN, _SLEEP]
 
 
 def test_subprocess_launcher_stops_group_after_api_server_exits(monkeypatch):
@@ -726,7 +885,7 @@ def test_explicit_port_and_ipc_respected():
 
 def test_activate_sanitizes_ipc_name():
     # kvcached normalizes the IPC name (dots/slashes -> '-'); the agent must do
-    # the same so kvctl targets the segment the engine actually creates.
+    # the same so limit writes target the segment the engine actually creates.
     agent = make_agent()
     inst = agent.activate(model_name="qwen3-0.6b", artifact_url="hf://x")
     assert inst.ipc_name == "kvc_qwen3-0-6b"
@@ -1081,7 +1240,6 @@ def test_snapshot_reports_hbm_peak_for_engine_process_tree(monkeypatch):
 
 
 def test_engine_request_activity_accepts_vllm_metric_name_variants(monkeypatch):
-    import httpx
 
     import aibrix.runtime.model_runtime as runtime_module
 
@@ -1096,7 +1254,11 @@ vllm:request_success_total{model_name=\"m1\",finished_reason=\"length\"} 7
         def raise_for_status(self):
             return None
 
-    monkeypatch.setattr(httpx, "get", lambda url, timeout: Response())
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: Response()),
+    )
     inst = runtime_module.ModelInstance(
         model_name="m1",
         port=20000,
@@ -1112,8 +1274,213 @@ vllm:request_success_total{model_name=\"m1\",finished_reason=\"length\"} 7
     assert activity.request_success_total == 12
 
 
+def test_engine_request_activity_finds_its_metrics_among_all_others(monkeypatch):
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    class Response:
+        text = """# HELP vllm:time_to_first_token_seconds Histogram of TTFT.
+# TYPE vllm:time_to_first_token_seconds histogram
+vllm:time_to_first_token_seconds_bucket{le=\"0.1\",model_name=\"m1\"} 4.0
+vllm:time_to_first_token_seconds_bucket{le=\"+Inf\",model_name=\"m1\"} 9.0
+vllm:time_to_first_token_seconds_count{model_name=\"m1\"} 9.0
+vllm:time_to_first_token_seconds_sum{model_name=\"m1\"} 1.5
+# HELP vllm:num_requests_running Number of requests in model execution batches.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{engine=\"0\",model_name=\"m1\"} 2.0
+# HELP vllm:kv_cache_usage_perc KV-cache usage.
+# TYPE vllm:kv_cache_usage_perc gauge
+vllm:kv_cache_usage_perc{engine=\"0\",model_name=\"m1\"} 0.25
+# HELP vllm:num_requests_waiting Number of requests waiting to be processed.
+# TYPE vllm:num_requests_waiting gauge
+vllm:num_requests_waiting{engine=\"0\",model_name=\"m1\"} 1.0
+# HELP vllm:request_success_total Count of successfully processed requests.
+# TYPE vllm:request_success_total counter
+vllm:request_success_total{finished_reason=\"stop\",model_name=\"m1\"} 5.0
+vllm:request_success_total{finished_reason=\"length\",model_name=\"m1\"} 7.0
+vllm:request_success_created{finished_reason=\"stop\",model_name=\"m1\"} 1.7e9
+"""
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: Response()),
+    )
+    inst = runtime_module.ModelInstance(
+        model_name="m1", port=20000, ipc_name="kvc_m1", proc=object()
+    )
+
+    activity = runtime_module.engine_request_activity(inst)
+
+    assert activity.observed is True
+    assert activity.requests_running == 2
+    assert activity.requests_waiting == 1
+    assert activity.request_success_total == 12
+
+
+def test_snapshot_asks_the_engines_side_by_side(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent = make_agent()
+    agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    agent.activate(model_name="m2", artifact_url="hf://Org/M2")
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda ipc_name: None)
+    both_asked = threading.Barrier(2, timeout=2)
+
+    def answer_once_both_are_asked(inst):
+        # Asked one after another, the first engine waits alone and gives up.
+        try:
+            both_asked.wait()
+        except threading.BrokenBarrierError:
+            return runtime_module.EngineRequestActivity()
+        return runtime_module.EngineRequestActivity(
+            observed=True, requests_running=1, requests_waiting=0
+        )
+
+    monkeypatch.setattr(
+        runtime_module, "engine_request_activity", answer_once_both_are_asked
+    )
+
+    models = agent.snapshot()["models"]
+
+    assert [m["model_name"] for m in models] == ["m1", "m2"]
+    assert all(m["request_metrics_observed"] for m in models)
+    assert all(m["requests_running"] == 1 for m in models)
+
+
+def test_the_engines_on_a_pod_are_asked_through_one_client(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_LOCALHOST", None)
+
+    assert runtime_module._localhost() is runtime_module._localhost()
+
+
+class _SlowSleepLauncher(MockEngineLauncher):
+    """Holds a sleep until the test lets it finish."""
+
+    def __init__(self):
+        super().__init__()
+        self.falling_asleep = threading.Event()
+        self.let_it_finish = threading.Event()
+
+    def sleep(self, inst, level):
+        self.falling_asleep.set()
+        assert self.let_it_finish.wait(5)
+        super().sleep(inst, level)
+
+
+def _agent_with_a_slow_sleep(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda ipc_name: None)
+    launcher = _SlowSleepLauncher()
+    agent = ModelRuntime(launcher)
+    agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    sleeper = threading.Thread(
+        target=lambda: agent.sleep("m1", level=1, operation_id="op-1")
+    )
+    sleeper.start()
+    assert launcher.falling_asleep.wait(5)
+    return agent, launcher, sleeper
+
+
+def test_a_snapshot_does_not_wait_for_an_engine_to_fall_asleep(monkeypatch):
+    agent, launcher, sleeper = _agent_with_a_slow_sleep(monkeypatch)
+    taken = threading.Event()
+    threading.Thread(target=lambda: (agent.snapshot(), taken.set())).start()
+    try:
+        assert taken.wait(2), "a snapshot waited for the sleep"
+    finally:
+        launcher.let_it_finish.set()
+    sleeper.join(5)
+
+    assert agent.list_models()[0].phase == "sleeping"
+
+
+def test_a_change_of_an_engine_waits_for_its_sleep(monkeypatch):
+    agent, launcher, sleeper = _agent_with_a_slow_sleep(monkeypatch)
+    stopped = threading.Event()
+    stopper = threading.Thread(target=lambda: (agent.deactivate("m1"), stopped.set()))
+    stopper.start()
+    try:
+        assert not stopped.wait(0.2), "a deactivate ran while the engine fell asleep"
+    finally:
+        launcher.let_it_finish.set()
+    sleeper.join(5)
+    stopper.join(5)
+
+    assert stopped.is_set()
+    assert launcher.slept == [("m1", 1)]
+    assert launcher.stopped == ["m1"]
+    assert agent.list_models() == []
+
+
+def test_a_snapshot_does_not_wait_for_a_kv_limit_write(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda ipc_name: None)
+    writing, let_it_finish = threading.Event(), threading.Event()
+
+    class _SlowKVController:
+        def set_limit(self, ipc_name, limit_bytes):
+            writing.set()
+            assert let_it_finish.wait(5)
+
+    agent = ModelRuntime(MockEngineLauncher(), kv_controller=_SlowKVController())
+    agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    writer = threading.Thread(
+        target=lambda: agent.set_kv_limit("m1", 4096, operation_id="limit-1")
+    )
+    writer.start()
+    assert writing.wait(5)
+    taken = threading.Event()
+    threading.Thread(target=lambda: (agent.snapshot(), taken.set())).start()
+    try:
+        assert taken.wait(2), "a snapshot waited for a KV limit write"
+    finally:
+        let_it_finish.set()
+    writer.join(5)
+
+    assert agent.snapshot_metrics().kv_limit_applied_bytes == {"m1": 4096}
+
+
+def test_a_snapshot_does_not_wait_for_a_health_probe(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda ipc_name: None)
+    agent = make_agent()
+    agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    probing, answer, calls = threading.Event(), threading.Event(), []
+
+    def first_probe_is_slow(inst):
+        calls.append(inst.model_name)
+        if len(calls) == 1:
+            probing.set()
+            answer.wait(5)
+        return True
+
+    monkeypatch.setattr(runtime_module, "instance_ready", first_probe_is_slow)
+    supervisor = threading.Thread(target=agent.supervise_once)
+    supervisor.start()
+    assert probing.wait(5)
+    taken = threading.Event()
+    threading.Thread(target=lambda: (agent.snapshot(), taken.set())).start()
+    try:
+        assert taken.wait(2), "a snapshot waited for the supervisor's health probe"
+    finally:
+        answer.set()
+    supervisor.join(5)
+
+
 def test_engine_request_activity_scrapes_external_runtime_mock(monkeypatch):
-    import httpx
 
     import aibrix.runtime.model_runtime as runtime_module
 
@@ -1128,7 +1495,11 @@ vllm:request_success_total{model_name=\"m1\"} 7
 
     monkeypatch.setenv("AIBRIX_MODEL_RUNTIME_MOCK", "1")
     monkeypatch.setenv("AIBRIX_MODEL_RUNTIME_MOCK_EXTERNAL_ENGINES", "1")
-    monkeypatch.setattr(httpx, "get", lambda url, timeout: Response())
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: Response()),
+    )
     inst = runtime_module.ModelInstance(
         model_name="m1",
         port=20000,
@@ -1145,7 +1516,6 @@ vllm:request_success_total{model_name=\"m1\"} 7
 
 
 def test_engine_request_activity_ignores_other_models_from_shared_metrics(monkeypatch):
-    import httpx
 
     import aibrix.runtime.model_runtime as runtime_module
 
@@ -1161,7 +1531,11 @@ vllm:request_success_total{model_name=\"m2\",finished_reason=\"stop\"} 17
         def raise_for_status(self):
             return None
 
-    monkeypatch.setattr(httpx, "get", lambda url, timeout: Response())
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: Response()),
+    )
     inst = runtime_module.ModelInstance(
         model_name="m1",
         port=20000,
@@ -1451,38 +1825,47 @@ def test_instance_ready_live_process_probes_health(monkeypatch):
 
 
 def test_engine_ready_health_200(monkeypatch):
-    import httpx
 
+    import aibrix.runtime.model_runtime as runtime_module
     from aibrix.runtime.model_runtime import engine_ready
 
     class _Resp:
         status_code = 200
 
-    monkeypatch.setattr(httpx, "get", lambda url, timeout: _Resp())
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: _Resp()),
+    )
     assert engine_ready(29000) is True
 
 
 def test_engine_ready_non_200(monkeypatch):
-    import httpx
 
+    import aibrix.runtime.model_runtime as runtime_module
     from aibrix.runtime.model_runtime import engine_ready
 
     class _Resp:
         status_code = 503
 
-    monkeypatch.setattr(httpx, "get", lambda url, timeout: _Resp())
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: _Resp()),
+    )
     assert engine_ready(29000) is False
 
 
 def test_engine_ready_connection_refused(monkeypatch):
     import httpx
 
+    import aibrix.runtime.model_runtime as runtime_module
     from aibrix.runtime.model_runtime import engine_ready
 
     def boom(url, timeout):
         raise httpx.ConnectError("connection refused")
 
-    monkeypatch.setattr(httpx, "get", boom)
+    monkeypatch.setattr(runtime_module, "_localhost", lambda: SimpleNamespace(get=boom))
     assert engine_ready(29000) is False, "still-booting engine reads as not ready"
 
 

@@ -19,7 +19,10 @@ package modelclaim
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,11 +33,14 @@ import (
 // asked.
 type countingRuntime struct {
 	fakeRuntime
+	mu    sync.Mutex
 	reads int
 	err   error
 }
 
 func (c *countingRuntime) Snapshot(_ context.Context, _ string, _ int) (*RuntimeSnapshot, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.reads++
 	if c.err != nil {
 		return nil, c.err
@@ -201,4 +207,48 @@ func TestPlacementStateLeavesAPodUnsizedWhenCardCountMissesParallelism(t *testin
 
 	assert.False(t, state.MemoryKnown)
 	assert.False(t, state.HBMUsableKnown)
+}
+
+// rendezvousRuntime answers a read only once every runtime it expects is being
+// read, so reads made one after another time out.
+type rendezvousRuntime struct {
+	fakeRuntime
+	arrived sync.WaitGroup
+}
+
+func (r *rendezvousRuntime) Snapshot(_ context.Context, podIP string, _ int) (*RuntimeSnapshot, error) {
+	r.arrived.Done()
+	done := make(chan struct{})
+	go func() {
+		r.arrived.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return &RuntimeSnapshot{Models: []RuntimeSnapshotModel{{ModelName: podIP}}}, nil
+	case <-time.After(2 * time.Second):
+		return nil, errors.New("read alone")
+	}
+}
+
+func TestRuntimeReadingsReadSeveralRuntimesSideBySide(t *testing.T) {
+	pods := []corev1.Pod{
+		*warmPod("warm-1", "pool", true, corev1.PodRunning),
+		*warmPod("warm-2", "pool", true, corev1.PodRunning),
+		*warmPod("warm-3", "pool", true, corev1.PodRunning),
+	}
+	for i := range pods {
+		pods[i].Status.PodIP = fmt.Sprintf("10.0.0.%d", i+1)
+	}
+	runtime := &rendezvousRuntime{}
+	runtime.arrived.Add(len(pods))
+	readings := newRuntimeReadings(runtime)
+
+	snapshots := readings.ofPods(context.Background(), pods)
+
+	require.Len(t, snapshots, len(pods))
+	for i := range pods {
+		assert.Equal(t, pods[i].Status.PodIP, snapshots[pods[i].Name].Models[0].ModelName,
+			"each reading belongs to its own pod")
+	}
 }

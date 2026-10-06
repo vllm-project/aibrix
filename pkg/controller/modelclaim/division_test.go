@@ -1242,6 +1242,8 @@ type unreadablePods struct {
 
 func (u *unreadablePods) Snapshot(ctx context.Context, podIP string, port int) (*RuntimeSnapshot, error) {
 	if u.pods[podIP] {
+		u.mu.Lock()
+		defer u.mu.Unlock()
 		u.snapshotCalls++
 		if u.snapshotCallsTo == nil {
 			u.snapshotCallsTo = map[string]int{}

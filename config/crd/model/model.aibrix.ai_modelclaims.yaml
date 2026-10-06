@@ -49,12 +49,18 @@ spec:
             properties:
               artifactURL:
                 type: string
+                x-kubernetes-validations:
+                - message: artifactURL is immutable; create a new ModelClaim instead
+                  rule: self == oldSelf
               engine:
                 default: vllm
                 enum:
                 - vllm
                 - sglang
                 type: string
+                x-kubernetes-validations:
+                - message: engine is immutable; create a new ModelClaim instead
+                  rule: self == oldSelf
               engineConfig:
                 properties:
                   args:
@@ -108,6 +114,9 @@ spec:
                     type: object
                 type: object
                 x-kubernetes-map-type: atomic
+                x-kubernetes-validations:
+                - message: podSelector is immutable; create a new ModelClaim instead
+                  rule: self == oldSelf
               replicas:
                 default: 1
                 format: int32
@@ -118,6 +127,15 @@ spec:
             - artifactURL
             - podSelector
             type: object
+            x-kubernetes-validations:
+            - fieldPath: .modelName
+              message: modelName is immutable; create a new ModelClaim instead
+              rule: has(self.modelName) == has(oldSelf.modelName) && (!has(self.modelName)
+                || self.modelName == oldSelf.modelName)
+            - fieldPath: .engineConfig
+              message: engineConfig is immutable; create a new ModelClaim instead
+              rule: has(self.engineConfig) == has(oldSelf.engineConfig) && (!has(self.engineConfig)
+                || self.engineConfig == oldSelf.engineConfig)
           status:
             properties:
               candidates:

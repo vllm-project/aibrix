@@ -33,6 +33,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -165,7 +166,12 @@ func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 		// attach as soon as an eligible pod appears.
 		Watches(&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(enqueueModelClaimsForPod(mgr.GetClient())),
-			builder.WithPredicates(modelPoolPodFilter(), notOnlyWakeRequests())).
+			builder.WithPredicates(modelPoolPodFilter(), notOnlyAnnotationsChanged())).
+		// A route is an annotation of the pod its engine runs on, written by
+		// the claim's own pass. Only the claims on that pod are looked at again.
+		Watches(&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(enqueueModelClaimsOnPod(mgr.GetClient())),
+			builder.WithPredicates(modelPoolPodFilter(), onlyAnnotationsChanged(), notOnlyWakeRequests())).
 		// A request to wake a sleeping engine concerns its claim alone.
 		Watches(&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(enqueueRequestedWakes),
@@ -204,18 +210,8 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Handle deletion: deactivate attached instances, then drop the finalizer.
 	if !pm.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(pm, ModelClaimFinalizer) {
-			r.deactivateInstances(ctx, pm)
-			clearClaimMetrics(pm.Namespace, servedModelName(pm))
-			r.forgetClaim(req.NamespacedName)
-			controllerutil.RemoveFinalizer(pm, ModelClaimFinalizer)
-			if err := r.Update(ctx, pm); err != nil {
-				return requeueOnConflict(err)
-			}
-		}
-		return ctrl.Result{}, nil
+		return r.finalize(ctx, pm, req.NamespacedName)
 	}
 
 	// Ensure the finalizer is present before doing any external-effecting work.
@@ -598,6 +594,18 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 		})
 	default:
 		pm.Status.Phase = modelv1alpha1.ModelClaimPending
+		// No engine is placed, so a claim that had one serves nowhere now,
+		// whatever its Ready condition said. Its Scheduled condition says why
+		// it waits. A claim that never had an engine has no Ready condition.
+		ready := meta.FindStatusCondition(pm.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
+		if ready != nil && ready.Status != metav1.ConditionFalse {
+			meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+				Type:    string(modelv1alpha1.ModelClaimConditionReady),
+				Status:  metav1.ConditionFalse,
+				Reason:  "NotPlaced",
+				Message: "no engine is placed for the model; the Scheduled condition says why",
+			})
+		}
 	}
 }
 
@@ -2039,6 +2047,87 @@ func (r *ModelClaimReconciler) scaleDown(
 	}
 }
 
+// finalize drains and stops the engines of a deleted claim, then drops its
+// finalizer.
+func (r *ModelClaimReconciler) finalize(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	key types.NamespacedName,
+) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(pm, ModelClaimFinalizer) {
+		return ctrl.Result{}, nil
+	}
+	if wait := r.drainBeforeStop(ctx, pm); wait > 0 {
+		return ctrl.Result{RequeueAfter: wait}, nil
+	}
+	r.deactivateInstances(ctx, pm)
+	clearClaimMetrics(pm.Namespace, servedModelName(pm))
+	r.forgetClaim(key)
+	controllerutil.RemoveFinalizer(pm, ModelClaimFinalizer)
+	if err := r.Update(ctx, pm); err != nil {
+		return requeueOnConflict(err)
+	}
+	return ctrl.Result{}, nil
+}
+
+const (
+	// deletionDrainGrace is how long the engine of a deleted claim that served
+	// keeps running after its route is taken back, before it may be stopped:
+	// the time the gateway takes to stop sending it requests.
+	deletionDrainGrace = 5 * time.Second
+	// deletionDrainTimeout is how long after the deletion the engine is given
+	// to finish the requests it serves.
+	deletionDrainTimeout = 90 * time.Second
+	// deletionDrainPoll is how often a draining engine is read again.
+	deletionDrainPoll = time.Second
+)
+
+// drainBeforeStop takes the routes of a deleted claim back, and reports how long
+// to wait before its engines are stopped, or zero when they may be stopped now.
+// An engine that served goes on for deletionDrainGrace, so that the gateway
+// stops sending it requests, and then for as long as it has a request running
+// or waiting, up to deletionDrainTimeout after the deletion. One whose runtime
+// cannot be read is stopped after deletionDrainGrace. An engine that did not
+// serve is stopped at once.
+func (r *ModelClaimReconciler) drainBeforeStop(ctx context.Context, pm *modelv1alpha1.ModelClaim) time.Duration {
+	served := false
+	for _, inst := range pm.Status.Instances {
+		r.deannotateWarmPod(ctx, pm.Namespace, inst.Pod, pm.Name)
+		served = served || inst.Phase == modelv1alpha1.ModelClaimActive
+	}
+	if !served {
+		return 0
+	}
+	since := r.now().Sub(pm.DeletionTimestamp.Time)
+	if since < deletionDrainGrace {
+		return deletionDrainGrace - since
+	}
+	for _, inst := range pm.Status.Instances {
+		if inst.Phase != modelv1alpha1.ModelClaimActive {
+			continue
+		}
+		ip := r.podIP(ctx, pm.Namespace, inst.Pod)
+		if ip == "" {
+			continue
+		}
+		snapshot, err := r.Runtime.Snapshot(ctx, ip, DefaultRuntimePort)
+		if err != nil {
+			continue
+		}
+		model := snapshotModelForClaim(snapshot, pm, servedModelName(pm))
+		if model == nil || !model.RequestMetricsObserved || model.RequestsRunning+model.RequestsWaiting <= 0 {
+			continue
+		}
+		if since < deletionDrainTimeout {
+			return deletionDrainPoll
+		}
+		r.Recorder.Eventf(pm, corev1.EventTypeWarning, "DrainTimedOut",
+			"model %s is stopped on pod %s with %d request(s) still running or waiting, %s after its deletion",
+			servedModelName(pm), inst.Pod, model.RequestsRunning+model.RequestsWaiting, deletionDrainTimeout)
+	}
+	return 0
+}
+
 // deactivateInstances best-effort stops every engine instance of the model,
 // used on deletion before the finalizer is removed.
 func (r *ModelClaimReconciler) deactivateInstances(ctx context.Context, pm *modelv1alpha1.ModelClaim) {
@@ -2109,6 +2198,72 @@ func modelPoolPodFilter() predicate.Predicate {
 		UpdateFunc:  func(e event.UpdateEvent) bool { return isModelPoolPod(e.ObjectNew.GetLabels()) },
 		DeleteFunc:  func(e event.DeleteEvent) bool { return isModelPoolPod(e.Object.GetLabels()) },
 		GenericFunc: func(e event.GenericEvent) bool { return isModelPoolPod(e.Object.GetLabels()) },
+	}
+}
+
+// annotationsAloneDiffer reports whether two versions of a pod differ in their
+// annotations and in nothing else.
+func annotationsAloneDiffer(oldPod, newPod *corev1.Pod) bool {
+	before, after := oldPod.DeepCopy(), newPod.DeepCopy()
+	for _, pod := range []*corev1.Pod{before, after} {
+		pod.Annotations = nil
+		pod.ResourceVersion = ""
+		pod.ManagedFields = nil
+	}
+	return equality.Semantic.DeepEqual(before, after)
+}
+
+// notOnlyAnnotationsChanged passes the pod events that may change where a claim
+// can go: a pod that joins or leaves, and an update of more than its
+// annotations, such as its labels, its address or its readiness.
+func notOnlyAnnotationsChanged() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldPod, okOld := e.ObjectOld.(*corev1.Pod)
+			newPod, okNew := e.ObjectNew.(*corev1.Pod)
+			return !okOld || !okNew || !annotationsAloneDiffer(oldPod, newPod)
+		},
+	}
+}
+
+// onlyAnnotationsChanged passes the updates of a pod that changed its
+// annotations and nothing else.
+func onlyAnnotationsChanged() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return false },
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldPod, okOld := e.ObjectOld.(*corev1.Pod)
+			newPod, okNew := e.ObjectNew.(*corev1.Pod)
+			return okOld && okNew && annotationsAloneDiffer(oldPod, newPod)
+		},
+	}
+}
+
+// enqueueModelClaimsOnPod re-reconciles the claims that record an instance on a
+// pod whose annotations changed. A route change does not make the other claims
+// look again. Room that a change frees reaches the waiting claims through the
+// claims' own watch.
+func enqueueModelClaimsOnPod(c client.Client) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		list := &modelv1alpha1.ModelClaimList{}
+		if err := c.List(ctx, list, client.InNamespace(obj.GetNamespace())); err != nil {
+			klog.ErrorS(err, "unable to list model claims in namespace", "namespace", obj.GetNamespace())
+			return nil
+		}
+		var requests []reconcile.Request
+		for i := range list.Items {
+			for _, instance := range list.Items[i].Status.Instances {
+				if instance.Pod == obj.GetName() {
+					requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{
+						Namespace: list.Items[i].Namespace, Name: list.Items[i].Name,
+					}})
+					break
+				}
+			}
+		}
+		return requests
 	}
 }
 
