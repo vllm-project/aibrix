@@ -594,16 +594,18 @@ func (r *ModelClaimReconciler) reconcilePoolIdleSleep(
 }
 
 // errEngineServing is why an engine found idle is left awake: a request reached
-// it before its route was taken back, and a sleep would abort that request.
+// it before its route was taken back, and a sleep would hold that request up,
+// or abort it.
 var errEngineServing = errors.New("the engine serves a request")
 
 // putEngineToSleep takes a claim's engine on a pod off its route, puts it to
 // sleep at level 1, and records the instance as sleeping. The route is taken
 // back first, so no request is routed to an engine going to sleep. A request
-// may have reached the engine after the reading that found it idle, and vLLM
-// aborts what an engine serves when it sleeps. So the engine is read again once
-// its route is taken back, and one that serves is left awake. A route taken
-// back for a sleep that did not happen is put back.
+// may have reached the engine after the reading that found it idle. So the
+// engine is read again once its route is taken back, and one that serves is
+// left awake. The runtime also refuses the sleep when the engine is still
+// serving a second after it stopped taking new requests. A route taken back for
+// a sleep that did not happen is put back.
 func (r *ModelClaimReconciler) putEngineToSleep(
 	ctx context.Context,
 	claim *modelv1alpha1.ModelClaim,

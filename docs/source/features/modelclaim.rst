@@ -687,14 +687,13 @@ The fields mean:
 
 ``lifecycle.sleepAfterSeconds``
    How long a vLLM engine must have complete, initialized, and idle request
-   observations before sleep level 1 is applied. Idle time counts from when
-   the engine was last routed, so an engine that woke is not idle until its
-   route is back. Before an engine sleeps, its route is taken back and it is
-   read again. One that serves a request by then is left awake, since a sleep
-   would abort that request. So is one that has completed a request since it
-   was last read, as it was not idle after all. It may be left out when
-   ``noWakeReserveWhileAsleep`` is true. No engine is then put to sleep for
-   being idle, only to make room.
+   observations before sleep level 1 is applied. An engine's idle time starts
+   no earlier than when it was last routed, so an engine that has just woken is
+   not idle before its route is back. Before an engine sleeps, its route is
+   taken back and it is read again. If it is serving a request, or has
+   completed one since it was last read, it stays awake and its route is put
+   back. The field may be left out when ``noWakeReserveWhileAsleep`` is true.
+   No engine is then put to sleep for being idle, only to make room.
 
 ``lifecycle.noWakeReserveWhileAsleep``
    By default, a model that sleeps keeps a wake reserve. The footprint and
@@ -881,6 +880,15 @@ after it has offloaded the weights, when another engine on the card takes
 memory at the same time. The runtime then tries again, up to three attempts in
 all. With nothing left to offload, the next attempt normally completes the
 sleep.
+
+vLLM aborts the requests an engine is serving when it sleeps. So before a
+sleep, the runtime asks vLLM to stop taking new requests and waits up to one
+second for the engine to finish the requests it is serving. A request that
+reached the engine just before the sleep then still completes. An engine that
+is still serving after that second is not idle, so the runtime lets it take
+requests again and refuses the sleep with HTTP 409. The controller then gives
+the engine its route back. If vLLM cannot pause the engine, the sleep goes
+ahead.
 
 A runtime that does not answer in time is left alone for 10 seconds, which is
 one round. Calls to it fail at once until then, so one runtime that stopped

@@ -582,6 +582,11 @@ def test_vllm_lifecycle_controls_use_checked_localhost_requests(monkeypatch):
 
     assert calls == [
         {
+            "url": "http://127.0.0.1:30123/sleep?level=0&mode=wait",
+            "timeout": 1.0,
+            "checked": True,
+        },
+        {
             "url": "http://127.0.0.1:30123/sleep?level=2",
             "timeout": 50.0,
             "checked": True,
@@ -621,13 +626,61 @@ def _launcher_asking(monkeypatch, vllm):
     return runtime_module.SubprocessEngineLauncher(), inst
 
 
-def test_a_sleep_vllm_failed_is_asked_for_again(monkeypatch):
-    vllm = _VLLMSleeps(500, 200)
+_DRAIN = "http://127.0.0.1:30123/sleep?level=0&mode=wait"
+_SLEEP = "http://127.0.0.1:30123/sleep?level=1"
+
+
+def test_a_sleep_lets_the_requests_an_engine_serves_finish_first(monkeypatch):
+    vllm = _VLLMSleeps(200, 200)
     launcher, inst = _launcher_asking(monkeypatch, vllm)
 
     launcher.sleep(inst, level=1)
 
-    assert vllm.asked == ["http://127.0.0.1:30123/sleep?level=1"] * 2
+    assert vllm.asked == [_DRAIN, _SLEEP]
+
+
+def test_an_engine_that_still_serves_is_not_put_to_sleep(monkeypatch):
+    import httpx
+
+    from aibrix.runtime.model_runtime import EngineServingError
+
+    vllm = _VLLMSleeps(httpx.ReadTimeout("still serving"), 200)
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    with pytest.raises(EngineServingError):
+        launcher.sleep(inst, level=1)
+
+    assert vllm.asked == [_DRAIN, "http://127.0.0.1:30123/wake_up?tags=scheduling"]
+
+
+def test_an_engine_that_cannot_pause_is_put_to_sleep(monkeypatch):
+    vllm = _VLLMSleeps(400, 200)
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    launcher.sleep(inst, level=1)
+
+    assert vllm.asked == [_DRAIN, _SLEEP]
+
+
+def test_a_refused_sleep_is_a_conflict():
+    from fastapi import HTTPException
+
+    from aibrix.runtime.model_runtime import EngineServingError
+    from aibrix.runtime.model_runtime_api import _control_error
+
+    with pytest.raises(HTTPException) as refused:
+        _control_error(EngineServingError("model m1 still serves requests"))
+
+    assert refused.value.status_code == 409
+
+
+def test_a_sleep_vllm_failed_is_asked_for_again(monkeypatch):
+    vllm = _VLLMSleeps(200, 500, 200)
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    launcher.sleep(inst, level=1)
+
+    assert vllm.asked == [_DRAIN, _SLEEP, _SLEEP]
 
 
 def test_a_sleep_vllm_keeps_failing_fails(monkeypatch):
@@ -635,23 +688,23 @@ def test_a_sleep_vllm_keeps_failing_fails(monkeypatch):
 
     import aibrix.runtime.model_runtime as runtime_module
 
-    vllm = _VLLMSleeps(*[500] * runtime_module.VLLM_SLEEP_ATTEMPTS)
+    vllm = _VLLMSleeps(200, *[500] * runtime_module.VLLM_SLEEP_ATTEMPTS)
     launcher, inst = _launcher_asking(monkeypatch, vllm)
 
     with pytest.raises(httpx.HTTPStatusError):
         launcher.sleep(inst, level=1)
-    assert len(vllm.asked) == runtime_module.VLLM_SLEEP_ATTEMPTS
+    assert vllm.asked == [_DRAIN] + [_SLEEP] * runtime_module.VLLM_SLEEP_ATTEMPTS
 
 
 def test_a_sleep_vllm_did_not_answer_is_not_asked_for_again(monkeypatch):
     import httpx
 
-    vllm = _VLLMSleeps(httpx.ReadTimeout("no answer"))
+    vllm = _VLLMSleeps(200, httpx.ReadTimeout("no answer"))
     launcher, inst = _launcher_asking(monkeypatch, vllm)
 
     with pytest.raises(httpx.ReadTimeout):
         launcher.sleep(inst, level=1)
-    assert len(vllm.asked) == 1
+    assert vllm.asked == [_DRAIN, _SLEEP]
 
 
 def test_subprocess_launcher_stops_group_after_api_server_exits(monkeypatch):

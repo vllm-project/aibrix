@@ -139,6 +139,10 @@ class UnsupportedModelControlError(RuntimeError):
     """Raised when an engine does not implement a requested lifecycle control."""
 
 
+class EngineServingError(RuntimeError):
+    """Raised when an engine asked to sleep is still serving requests."""
+
+
 @dataclass(frozen=True)
 class EngineRequestActivity:
     """A point-in-time request observation from one engine's metrics endpoint.
@@ -636,6 +640,9 @@ class AdoptedProcess:
 VLLM_SLEEP_WAKE_TIMEOUT_SECONDS = 50.0
 # How many times a sleep that vLLM answers with an error is asked for.
 VLLM_SLEEP_ATTEMPTS = 3
+# How long a sleep waits for an engine to finish the requests it is serving. An
+# engine still serving after that is not idle, and is not put to sleep.
+VLLM_SLEEP_DRAIN_SECONDS = 1.0
 
 
 _LOCALHOST: Any = None
@@ -656,11 +663,11 @@ def _localhost() -> Any:
     return _LOCALHOST
 
 
-def _vllm_control_post(port: int, path: str) -> None:
+def _vllm_control_post(
+    port: int, path: str, timeout: float = VLLM_SLEEP_WAKE_TIMEOUT_SECONDS
+) -> None:
     """Invoke a vLLM development lifecycle endpoint through localhost only."""
-    response = _localhost().post(
-        f"http://127.0.0.1:{port}{path}", timeout=VLLM_SLEEP_WAKE_TIMEOUT_SECONDS
-    )
+    response = _localhost().post(f"http://127.0.0.1:{port}{path}", timeout=timeout)
     response.raise_for_status()
 
 
@@ -918,6 +925,25 @@ class SubprocessEngineLauncher(EngineLauncher):
     def sleep(self, inst, level):
         import httpx
 
+        # vLLM aborts the requests an engine is serving when it sleeps. A
+        # request can reach the engine after the controller last read it, and
+        # no metric shows it while its first prompt chunk runs. So vLLM is
+        # first asked to stop taking new requests and to finish the ones it is
+        # serving. An engine that has not finished them within
+        # VLLM_SLEEP_DRAIN_SECONDS is not idle: it takes requests again,
+        # including any that arrived meanwhile, and is not put to sleep. An
+        # engine that cannot pause is put to sleep at once.
+        try:
+            _vllm_control_post(
+                inst.port, "/sleep?level=0&mode=wait", timeout=VLLM_SLEEP_DRAIN_SECONDS
+            )
+        except httpx.TimeoutException:
+            _vllm_control_post(inst.port, "/wake_up?tags=scheduling")
+            raise EngineServingError(
+                f"model {inst.model_name} is still serving requests, so it is not put to sleep"
+            )
+        except httpx.HTTPError:
+            pass
         for attempt in range(1, VLLM_SLEEP_ATTEMPTS + 1):
             try:
                 _vllm_control_post(inst.port, f"/sleep?level={level}")

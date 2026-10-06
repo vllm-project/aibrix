@@ -38,6 +38,7 @@ from aibrix.openapi.protocol import (
     WakeRuntimeModelRequest,
 )
 from aibrix.runtime.model_runtime import (
+    EngineServingError,
     ModelNotFoundError,
     RuntimeOperationResult,
     UnsupportedModelControlError,
@@ -121,7 +122,7 @@ def _operation_response(result: RuntimeOperationResult) -> JSONResponse:
 def _control_error(exc: Exception) -> None:
     if isinstance(exc, ModelNotFoundError):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    if isinstance(exc, UnsupportedModelControlError):
+    if isinstance(exc, (UnsupportedModelControlError, EngineServingError)):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     raise exc
 
