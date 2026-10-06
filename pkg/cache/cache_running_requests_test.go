@@ -201,6 +201,17 @@ func TestAdmitRunningRequest_FailsOpenToLocalCountWhenRedisNil(t *testing.T) {
 // Redis script specifically so this cannot happen. Fire far more concurrent callers than
 // the limit and assert that exactly limit of them get in, not more.
 func TestAdmitRunningRequest_ConcurrentCallsNeverExceedLimit(t *testing.T) {
+	// admitRunningRequest falls back to a local-only decision when its Redis round trip
+	// errors (see its doc comment). That fail-open path is not what this test is about,
+	// and with every caller reporting localRunning=0 it admits every caller that hits
+	// it, so a single expired round trip turns this assertion into a flake. The
+	// production budget is short enough that 50 concurrent callers against one Redis
+	// can exhaust it whenever the rest of the suite competes for CPU -- widen it here
+	// to keep the test about the script's atomicity, which is what it documents.
+	oldReadTimeout := runningRequestsReadTimeout
+	runningRequestsReadTimeout = 30 * time.Second
+	t.Cleanup(func() { runningRequestsReadTimeout = oldReadTimeout })
+
 	client := newTestRunningRequestsClient(t)
 	store := &Store{redisClient: client}
 	seedLiveGateway(t, client)
