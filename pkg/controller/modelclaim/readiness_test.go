@@ -400,7 +400,8 @@ func TestAWithdrawnRouteStartsTheNextPassOfItsClaim(t *testing.T) {
 
 	change := event.UpdateEvent{ObjectOld: routed, ObjectNew: withdrawn}
 	require.True(t, modelPoolPodFilter().Update(change))
-	assert.Contains(t, enqueueModelClaimsForPod(r.Client)(context.Background(), withdrawn), reconcile.Request{
+	require.True(t, onlyAnnotationsChanged().Update(change), "the route is written as an annotation")
+	assert.Contains(t, enqueueModelClaimsOnPod(r.Client)(context.Background(), withdrawn), reconcile.Request{
 		NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: pm.Name},
 	})
 

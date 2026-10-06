@@ -33,6 +33,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -165,7 +166,12 @@ func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 		// attach as soon as an eligible pod appears.
 		Watches(&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(enqueueModelClaimsForPod(mgr.GetClient())),
-			builder.WithPredicates(modelPoolPodFilter(), notOnlyWakeRequests())).
+			builder.WithPredicates(modelPoolPodFilter(), notOnlyAnnotationsChanged())).
+		// A route is an annotation of the pod its engine runs on, written by
+		// the claim's own pass. Only the claims on that pod are looked at again.
+		Watches(&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(enqueueModelClaimsOnPod(mgr.GetClient())),
+			builder.WithPredicates(modelPoolPodFilter(), onlyAnnotationsChanged(), notOnlyWakeRequests())).
 		// A request to wake a sleeping engine concerns its claim alone.
 		Watches(&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(enqueueRequestedWakes),
@@ -2109,6 +2115,72 @@ func modelPoolPodFilter() predicate.Predicate {
 		UpdateFunc:  func(e event.UpdateEvent) bool { return isModelPoolPod(e.ObjectNew.GetLabels()) },
 		DeleteFunc:  func(e event.DeleteEvent) bool { return isModelPoolPod(e.Object.GetLabels()) },
 		GenericFunc: func(e event.GenericEvent) bool { return isModelPoolPod(e.Object.GetLabels()) },
+	}
+}
+
+// annotationsAloneDiffer reports whether two versions of a pod differ in their
+// annotations and in nothing else.
+func annotationsAloneDiffer(oldPod, newPod *corev1.Pod) bool {
+	before, after := oldPod.DeepCopy(), newPod.DeepCopy()
+	for _, pod := range []*corev1.Pod{before, after} {
+		pod.Annotations = nil
+		pod.ResourceVersion = ""
+		pod.ManagedFields = nil
+	}
+	return equality.Semantic.DeepEqual(before, after)
+}
+
+// notOnlyAnnotationsChanged passes the pod events that may change where a claim
+// can go: a pod that joins or leaves, and an update of more than its
+// annotations, such as its labels, its address or its readiness.
+func notOnlyAnnotationsChanged() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldPod, okOld := e.ObjectOld.(*corev1.Pod)
+			newPod, okNew := e.ObjectNew.(*corev1.Pod)
+			return !okOld || !okNew || !annotationsAloneDiffer(oldPod, newPod)
+		},
+	}
+}
+
+// onlyAnnotationsChanged passes the updates of a pod that changed its
+// annotations and nothing else.
+func onlyAnnotationsChanged() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return false },
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldPod, okOld := e.ObjectOld.(*corev1.Pod)
+			newPod, okNew := e.ObjectNew.(*corev1.Pod)
+			return okOld && okNew && annotationsAloneDiffer(oldPod, newPod)
+		},
+	}
+}
+
+// enqueueModelClaimsOnPod re-reconciles the claims that record an instance on a
+// pod whose annotations changed. A route change does not make the other claims
+// look again. Room that a change frees reaches the waiting claims through the
+// claims' own watch.
+func enqueueModelClaimsOnPod(c client.Client) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		list := &modelv1alpha1.ModelClaimList{}
+		if err := c.List(ctx, list, client.InNamespace(obj.GetNamespace())); err != nil {
+			klog.ErrorS(err, "unable to list model claims in namespace", "namespace", obj.GetNamespace())
+			return nil
+		}
+		var requests []reconcile.Request
+		for i := range list.Items {
+			for _, instance := range list.Items[i].Status.Instances {
+				if instance.Pod == obj.GetName() {
+					requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{
+						Namespace: list.Items[i].Namespace, Name: list.Items[i].Name,
+					}})
+					break
+				}
+			}
+		}
+		return requests
 	}
 }
 
