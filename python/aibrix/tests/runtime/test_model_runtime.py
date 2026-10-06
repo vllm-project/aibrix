@@ -511,23 +511,49 @@ def test_registry_keeps_the_footprint_of_a_sleeping_engine():
     assert awake.sleeping_footprint_bytes is None
 
 
-def test_kvctl_controller_uses_checked_limit_command(monkeypatch):
-    import subprocess
+def test_write_kv_limit_sets_the_limit_and_keeps_what_the_engine_wrote(tmp_path):
+    import struct
 
-    from aibrix.runtime.model_runtime import KvctlController
+    from aibrix.runtime.model_runtime import read_kv_segment, write_kv_limit
 
-    calls = []
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
+    (tmp_path / "kvc_m1").write_bytes(struct.pack("<3q", 100, 40, 10))
 
-    KvctlController().set_limit("kvc_m1", 4096)
+    assert write_kv_limit("kvc_m1", 4096, shm_dir=str(tmp_path))
+    assert read_kv_segment("kvc_m1", shm_dir=str(tmp_path)) == (4096, 40, 10)
 
-    assert calls == [
-        ((["kvctl", "limit", "kvc_m1", "4096"],), {"check": True, "timeout": 10})
-    ]
+
+def test_write_kv_limit_leaves_a_missing_segment_alone(tmp_path):
+    from aibrix.runtime.model_runtime import write_kv_limit
+
+    assert not write_kv_limit("kvc_missing", 4096, shm_dir=str(tmp_path))
+    assert not (tmp_path / "kvc_missing").exists()
+
+
+def test_write_kv_limit_waits_for_the_lock_the_engine_takes(tmp_path):
+    import fcntl
+    import struct
+
+    from aibrix.runtime.model_runtime import read_kv_segment, write_kv_limit
+
+    segment = tmp_path / "kvc_m1"
+    segment.write_bytes(struct.pack("<3q", 100, 40, 10))
+    written = threading.Event()
+
+    def write():
+        if write_kv_limit("kvc_m1", 4096, shm_dir=str(tmp_path)):
+            written.set()
+
+    with open(segment, "r+b") as engine:
+        # kvcached rewrites the whole struct under an exclusive flock.
+        fcntl.flock(engine, fcntl.LOCK_EX)
+        writer = threading.Thread(target=write)
+        writer.start()
+        assert not written.wait(0.2)
+        fcntl.flock(engine, fcntl.LOCK_UN)
+    writer.join(timeout=5)
+
+    assert written.is_set()
+    assert read_kv_segment("kvc_m1", shm_dir=str(tmp_path)) == (4096, 40, 10)
 
 
 def test_vllm_lifecycle_controls_use_checked_localhost_requests(monkeypatch):
@@ -726,7 +752,7 @@ def test_explicit_port_and_ipc_respected():
 
 def test_activate_sanitizes_ipc_name():
     # kvcached normalizes the IPC name (dots/slashes -> '-'); the agent must do
-    # the same so kvctl targets the segment the engine actually creates.
+    # the same so limit writes target the segment the engine actually creates.
     agent = make_agent()
     inst = agent.activate(model_name="qwen3-0.6b", artifact_url="hf://x")
     assert inst.ipc_name == "kvc_qwen3-0-6b"

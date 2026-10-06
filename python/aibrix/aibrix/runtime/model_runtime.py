@@ -47,7 +47,7 @@ def sanitize_ipc_name(name: str) -> str:
     """Match kvcached's KVCACHED_IPC_NAME normalization: characters outside
     [A-Za-z0-9_-] become '-'. Verified on real hardware that kvcached rewrites
     e.g. "kvc_qwen3-0.6b" to "kvc_qwen3-0-6b"; without sanitizing on our side,
-    kvctl operations would target a different segment than the engine created.
+    limit writes would target a different segment than the engine created.
     """
     return re.sub(r"[^A-Za-z0-9_-]", "-", name)
 
@@ -191,17 +191,17 @@ class KVController(ABC):
         """Set the kvcached limit for one normalized IPC segment."""
 
 
-class KvctlController(KVController):
-    """Production kvcached control plane backed by the kvctl CLI."""
+class SharedMemoryKVController(KVController):
+    """Production kvcached control plane: writes a limit into the engine's
+    kvcached segment, as `kvctl limit` does, without starting kvctl. Starting
+    it imports kvcached, which takes over a second, and the runtime holds its
+    lock while it sets a limit."""
 
     def set_limit(self, ipc_name: str, limit_bytes: int) -> None:
-        import subprocess
-
-        subprocess.run(
-            ["kvctl", "limit", ipc_name, str(limit_bytes)],
-            check=True,
-            timeout=10,
-        )
+        if not write_kv_limit(ipc_name, limit_bytes):
+            logger.warning(
+                "kvcached segment %s not found; its limit was not set", ipc_name
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -760,6 +760,29 @@ def read_kv_segment(ipc_name: str, shm_dir: str = "/dev/shm"):
         return None
 
 
+def write_kv_limit(ipc_name: str, limit_bytes: int, shm_dir: str = "/dev/shm") -> bool:
+    """Set total_size, the first field of a model's kvcached segment, the way
+    kvcached's own update_kv_cache_limit does: under an exclusive flock on the
+    segment file. The engine takes the same lock to rewrite the struct with
+    what it uses, so neither write is lost. Returns False, and writes nothing,
+    when the segment does not exist, as kvctl leaves a missing segment alone.
+    """
+    import fcntl
+    import struct
+
+    path = os.path.join(shm_dir, ipc_name)
+    try:
+        fd = os.open(path, os.O_RDWR)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.pwrite(fd, struct.pack("<q", limit_bytes), 0)
+    finally:
+        os.close(fd)
+    return True
+
+
 class SubprocessEngineLauncher(EngineLauncher):
     """Spawns a real vLLM/SGLang process with kvcached enabled, each in its own
     session (process group) so the kvcached IPC names do not collide."""
@@ -997,7 +1020,7 @@ class ModelRuntime:
         if supervisor_interval_seconds <= 0:
             raise ValueError("supervisor_interval_seconds must be positive")
         self._launcher = launcher
-        self._kv_controller = kv_controller or KvctlController()
+        self._kv_controller = kv_controller or SharedMemoryKVController()
         self._models: Dict[str, ModelInstance] = {}
         self._lock = threading.RLock()
         self._port_lo, self._port_hi = port_range
@@ -1878,7 +1901,7 @@ def get_model_runtime() -> ModelRuntime:
         else:
             _AGENT = ModelRuntime(
                 SubprocessEngineLauncher(),
-                kv_controller=KvctlController(),
+                kv_controller=SharedMemoryKVController(),
                 registry=EngineRegistry(
                     os.environ.get(
                         "AIBRIX_ENGINE_REGISTRY_PATH", _DEFAULT_ENGINE_REGISTRY_PATH
