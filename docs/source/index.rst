@@ -81,6 +81,7 @@ Documentation
    designs/aibrix-autoscaler.rst
    designs/aibrix-kvcache-offloading-framework.rst
    designs/aibrix-stormservice.rst
+   designs/gateway-model-list-discovery-health.rst
 
 .. toctree::
    :maxdepth: 1

@@ -67,6 +67,10 @@ type InitOptions struct {
 	// ModelClaim runtime annotations on Pods. Use with a provider that does
 	// not watch ModelClaims when claim discovery is disabled.
 	DisableModelClaimPodBindings bool
+
+	// ModelListMaxAge enables on-demand Kubernetes discovery verification for
+	// the gateway model list when positive. Zero preserves the existing behavior.
+	ModelListMaxAge time.Duration
 }
 
 const (
@@ -168,6 +172,9 @@ type Store struct {
 
 	// modelReplicaEmitted tracks pods currently exported via model_replicas for stale-series cleanup.
 	modelReplicaEmitted utils.SyncMap[string, modelReplicaState]
+
+	// modelListHealth is set only for opt-in Kubernetes model-list verification.
+	modelListHealth *discovery.ModelListHealth
 
 	// runningRequestsPendingPrunes is Redis hash key -> gateway IDs that a read
 	// excluded from a live sum. Reads only enqueue; heartbeat hygiene drains this
@@ -426,6 +433,16 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 			}
 			provider = kubernetesProvider
 		}
+		if opts.ModelListMaxAge > 0 {
+			switch selected := provider.(type) {
+			case *discovery.KubernetesProvider:
+				selected.WithModelListHealth(opts.ModelListMaxAge)
+			case *discovery.StaticProvider:
+				// Static discovery has no continuing watch after its file is loaded.
+			default:
+				klog.Fatalf("Model-list verification is unsupported by discovery provider %q", provider.Type())
+			}
+		}
 		if err := initDiscoveryProvider(store, provider, stopCh); err != nil {
 			klog.Fatalf("Failed to initialize discovery provider: %v", err)
 		}
@@ -511,15 +528,25 @@ func initMetricsCache(store *Store, stopCh <-chan struct{}) {
 // initDiscoveryProvider initializes the cache using a discovery provider.
 // All initial state and ongoing changes are delivered through Watch().
 func initDiscoveryProvider(store *Store, provider discovery.Provider, stopCh <-chan struct{}) error {
-	if err := provider.Watch(func(ev discovery.WatchEvent) {
-		handleDiscoveryObject(store, ev.Type, ev.Object, ev.OldObject)
-	}, stopCh); err != nil {
+	apply := func(ev discovery.WatchEvent) bool {
+		return handleDiscoveryObject(store, ev.Type, ev.Object, ev.OldObject)
+	}
+	var err error
+	if kubernetesProvider, ok := provider.(*discovery.KubernetesProvider); ok && kubernetesProvider.ModelListHealth() != nil {
+		err = kubernetesProvider.WatchApplied(apply, stopCh)
+		if err == nil {
+			store.modelListHealth = kubernetesProvider.ModelListHealth()
+		}
+	} else {
+		err = provider.Watch(func(ev discovery.WatchEvent) { apply(ev) }, stopCh)
+	}
+	if err != nil {
 		return fmt.Errorf("failed to initialize discovery provider: %w", err)
 	}
 	return nil
 }
 
-func handleDiscoveryObject(store *Store, evType discovery.EventType, obj, oldObj any) {
+func handleDiscoveryObject(store *Store, evType discovery.EventType, obj, oldObj any) bool {
 	switch o := obj.(type) {
 	case *v1.Pod:
 		switch evType {
@@ -529,7 +556,7 @@ func handleDiscoveryObject(store *Store, evType discovery.EventType, obj, oldObj
 			oldPod, ok := oldObj.(*v1.Pod)
 			if !ok {
 				klog.Errorf("Pod update event for %s/%s with incorrect old object type: %T", o.Namespace, o.Name, oldObj)
-				return
+				return false
 			}
 			store.updatePod(oldPod, o)
 		case discovery.EventDelete:
@@ -543,7 +570,7 @@ func handleDiscoveryObject(store *Store, evType discovery.EventType, obj, oldObj
 			oldAdapter, ok := oldObj.(*modelv1alpha1.ModelAdapter)
 			if !ok {
 				klog.Errorf("ModelAdapter update event for %s/%s with incorrect old object type: %T", o.Namespace, o.Name, oldObj)
-				return
+				return false
 			}
 			store.updateModelAdapter(oldAdapter, o)
 		case discovery.EventDelete:
@@ -558,7 +585,9 @@ func handleDiscoveryObject(store *Store, evType discovery.EventType, obj, oldObj
 		}
 	default:
 		klog.Warningf("Discovery event with unknown object type: %T", obj)
+		return false
 	}
+	return true
 }
 
 // initMetricsCache initializes metrics cache update loop

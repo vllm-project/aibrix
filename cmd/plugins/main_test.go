@@ -44,6 +44,7 @@ func TestModelDiscoveryFlags(t *testing.T) {
 		wantAdapters bool
 		wantClaims   bool
 		wantMode     gateway.ModelListMode
+		wantMaxAge   time.Duration
 		wantError    string
 	}{
 		{name: "defaults", wantAdapters: true, wantClaims: true, wantMode: gateway.ModelListKnown},
@@ -64,6 +65,14 @@ func TestModelDiscoveryFlags(t *testing.T) {
 			name: "invalid mode", args: []string{"--model-list-mode=unavailable"},
 			wantAdapters: true, wantClaims: true, wantError: "invalid --model-list-mode",
 		},
+		{
+			name: "verified list", args: []string{"--model-list-discovery-max-age=5m"},
+			wantAdapters: true, wantClaims: true, wantMode: gateway.ModelListKnown, wantMaxAge: 5 * time.Minute,
+		},
+		{
+			name: "negative verification age", args: []string{"--model-list-discovery-max-age=-1s"},
+			wantAdapters: true, wantClaims: true, wantError: "--model-list-discovery-max-age must be nonnegative",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var options modelDiscoveryOptions
@@ -78,6 +87,7 @@ func TestModelDiscoveryFlags(t *testing.T) {
 			require.Equal(t, tc.wantAdapters, options.watchModelAdapters)
 			require.Equal(t, tc.wantClaims, options.watchModelClaims)
 			require.Equal(t, tc.wantMode, gateway.ModelListMode(options.listMode))
+			require.Equal(t, tc.wantMaxAge, options.maxAge)
 		})
 	}
 }

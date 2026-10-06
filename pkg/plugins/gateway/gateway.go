@@ -85,6 +85,7 @@ type Server struct {
 	requestCountTracker map[string]int
 	cache               cache.Cache
 	modelListMode       ModelListMode
+	verifyModelList     bool
 	routerManager       *routing.RouterManager
 	inFlightObserver    func(int)
 	wakeRequester       modelWakeRequester
@@ -269,6 +270,9 @@ type ServerOptions struct {
 	RouterManager *routing.RouterManager
 	// ModelListMode defaults to ModelListKnown.
 	ModelListMode ModelListMode
+	// VerifyModelList returns 503 when a current discovery snapshot cannot be
+	// established. Off by default for compatibility.
+	VerifyModelList bool
 	// DisableRateLimiting disables AIBrix user and model quota enforcement while
 	// leaving Redis available to other gateway features.
 	DisableRateLimiting bool
@@ -312,6 +316,11 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 	default:
 		panic(fmt.Sprintf("unsupported model list mode %q", mode))
 	}
+	if options.VerifyModelList {
+		if _, ok := c.(cache.VerifiedModelCache); !ok {
+			panic("verified model listing requires a cache that supports discovery verification")
+		}
+	}
 	var r ratelimiter.RateLimiter
 	var mr ratelimiter.RateLimiter
 	if redisClient != nil && !options.DisableRateLimiting {
@@ -349,6 +358,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		requestCountTracker: map[string]int{},
 		cache:               c,
 		modelListMode:       mode,
+		verifyModelList:     options.VerifyModelList,
 		routerManager:       routerManager,
 		inFlightObserver:    options.InFlightObserver,
 		wakeRequester:       newRuntimeModelWakeRequester(nil, defaultModelClaimRuntimePort, client),
@@ -992,17 +1002,25 @@ func (s *Server) StartHTTPServer(addr string) error {
 	if s.httpServer != nil {
 		return nil
 	}
+	server, err := startModelListHTTPServer(addr, s.handleListModels)
+	if err != nil {
+		return err
+	}
+	s.httpServer = server
+	return nil
+}
 
+func startModelListHTTPServer(addr string, handler http.HandlerFunc) (*http.Server, error) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
-	mux.HandleFunc("/v1/models", s.handleListModels)
+	mux.HandleFunc("/v1/models", handler)
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %v", addr, err)
+		return nil, fmt.Errorf("failed to listen on %s: %v", addr, err)
 	}
 
-	s.httpServer = &http.Server{
+	server := &http.Server{
 		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -1010,12 +1028,12 @@ func (s *Server) StartHTTPServer(addr string) error {
 
 	klog.InfoS("Starting HTTP server", "address", addr)
 	go func() {
-		if err := s.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+		if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
 			klog.ErrorS(err, "Failed to start HTTP server")
 		}
 	}()
 
-	return nil
+	return server, nil
 }
 
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
@@ -1038,7 +1056,15 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var models []string
-	if s.modelListMode == ModelListReadyPods {
+	if s.verifyModelList {
+		var err error
+		models, err = s.cache.(cache.VerifiedModelCache).ListModelsVerified(r.Context(), s.modelListMode == ModelListReadyPods)
+		if err != nil {
+			klog.ErrorS(err, "Model-list discovery verification failed")
+			writeModelListUnavailable(w)
+			return
+		}
+	} else if s.modelListMode == ModelListReadyPods {
 		models = s.cache.(cache.ReadyModelCache).ListModelsWithReadyPods()
 	} else {
 		models = s.cache.ListModels()
