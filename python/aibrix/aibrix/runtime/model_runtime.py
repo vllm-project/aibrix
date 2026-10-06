@@ -631,11 +631,20 @@ class AdoptedProcess:
         return None
 
 
+# How long vLLM is given to put an engine to sleep or wake it. A first sleep
+# copies the model's weights to host memory, which took 11.7 s for
+# Qwen3-32B-FP8 on an H20. The controller waits 60 seconds for the runtime, so
+# one call stays below that.
+VLLM_SLEEP_WAKE_TIMEOUT_SECONDS = 50.0
+
+
 def _vllm_control_post(port: int, path: str) -> None:
     """Invoke a vLLM development lifecycle endpoint through localhost only."""
     import httpx
 
-    response = httpx.post(f"http://127.0.0.1:{port}{path}", timeout=10.0)
+    response = httpx.post(
+        f"http://127.0.0.1:{port}{path}", timeout=VLLM_SLEEP_WAKE_TIMEOUT_SECONDS
+    )
     response.raise_for_status()
 
 

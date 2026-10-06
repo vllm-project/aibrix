@@ -555,12 +555,12 @@ def test_vllm_lifecycle_controls_use_checked_localhost_requests(monkeypatch):
     assert calls == [
         {
             "url": "http://127.0.0.1:30123/sleep?level=2",
-            "timeout": 10.0,
+            "timeout": 50.0,
             "checked": True,
         },
         {
             "url": "http://127.0.0.1:30123/wake_up",
-            "timeout": 10.0,
+            "timeout": 50.0,
             "checked": True,
         },
     ]

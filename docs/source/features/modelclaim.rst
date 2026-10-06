@@ -867,7 +867,10 @@ that, a read waits for the runtime's lock. The runtime holds that lock while it
 checks its engines, for about 1 second each. It also holds the lock while it
 starts an engine, puts one to sleep, wakes one or writes a KV limit. So a read
 of a Pod with five busy engines can take longer than the deadline. Calls that
-change state, such as starting an engine, wait up to 60 seconds.
+change state, such as starting an engine, wait up to 60 seconds. The runtime
+gives vLLM up to 50 seconds to put an engine to sleep or to wake it. A first
+sleep copies the model's weights to host memory, which takes tens of seconds
+for a large model, and reads of that runtime wait for it.
 
 A runtime that does not answer in time is left alone for 10 seconds, which is
 one round. Calls to it fail at once until then, so one runtime that stopped
