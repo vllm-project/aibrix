@@ -26,6 +26,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
@@ -480,6 +481,298 @@ func TestAddPodAfterDeleteGracePeriodExpiryDoesNotPreserveRunningRequests(t *tes
 	newMetaPod, ok := cache.metaPods.Load(key)
 	assert.True(t, ok)
 	assert.Equal(t, int32(0), atomic.LoadInt32(&newMetaPod.runningRequests))
+}
+
+// TestAddPodSetsReadySinceOnFreshAdd covers readySince (see pod.go), the timestamp
+// LeastRequestTopKRouter's ramp-decay adjustment reads via GetPodsReadySince: a genuinely new
+// pod (no matching recentlyDeletedPods snapshot) must get a fresh readySince at add time.
+func TestAddPodSetsReadySinceOnFreshAdd(t *testing.T) {
+	const (
+		modelName = "test-model"
+		namespace = "default"
+		podName   = "decode-0"
+	)
+
+	cache := NewForTest()
+	before := time.Now()
+	cache.addPod(requestTrackerTestPod(podName, namespace, modelName, "10.0.0.1"))
+	after := time.Now()
+
+	metaPod, ok := cache.metaPods.Load(namespace + "/" + podName)
+	require.True(t, ok)
+	readySince := time.Unix(0, metaPod.readySince.Load())
+	assert.False(t, readySince.Before(before), "readySince must not predate the add")
+	assert.False(t, readySince.After(after), "readySince must not postdate the add")
+}
+
+// readySince starts when the pod is first observed routable (utils.FilterReadyPod), not when it
+// is added: the cache holds pods from creation, and a pod that sits Pending or NotReady for
+// longer than the ramp window would otherwise reach its first routing decision with the ramp
+// already decayed to nothing.
+func TestAddPodNotYetRoutableHasNoReadySince(t *testing.T) {
+	const (
+		modelName = "test-model"
+		namespace = "default"
+		podName   = "decode-0"
+	)
+
+	tests := []struct {
+		name   string
+		mutate func(pod *v1.Pod)
+	}{
+		{name: "no IP yet", mutate: func(pod *v1.Pod) { pod.Status.PodIP = "" }},
+		{name: "Ready condition false", mutate: func(pod *v1.Pod) { pod.Status.Conditions[0].Status = v1.ConditionFalse }},
+		{name: "terminating", mutate: func(pod *v1.Pod) {
+			now := metav1.Now()
+			pod.DeletionTimestamp = &now
+		}},
+		{name: "draining", mutate: func(pod *v1.Pod) {
+			pod.Annotations = map[string]string{constants.PodDrainingAnnotationKey: "true"}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cache := NewForTest()
+			pod := requestTrackerTestPod(podName, namespace, modelName, "10.0.0.1")
+			tt.mutate(pod)
+
+			cache.addPod(pod)
+
+			metaPod, ok := cache.metaPods.Load(namespace + "/" + podName)
+			require.True(t, ok)
+			assert.Zero(t, metaPod.readySince.Load(), "a pod routing cannot see yet has no ramp clock")
+			assert.Zero(t, cache.LatestPodReadySince(), "and must not advance the running max")
+		})
+	}
+}
+
+// The update that makes a pod routable starts its ramp clock. updatePod is a delete + re-add, and
+// a same-IP re-add resumes the pod's snapshot, so this is the path that used to carry the
+// add-time stamp straight through a long Pending -> Ready wait.
+func TestUpdatePodBecomingRoutableStampsReadySinceAtThatTransition(t *testing.T) {
+	const (
+		modelName = "test-model"
+		namespace = "default"
+		podName   = "decode-0"
+	)
+
+	tests := []struct {
+		name      string
+		pendingIP string
+	}{
+		{name: "IP already assigned while NotReady", pendingIP: "10.0.0.1"},
+		{name: "IP assigned together with Ready", pendingIP: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cache := NewForTest()
+			pending := requestTrackerTestPod(podName, namespace, modelName, tt.pendingIP)
+			pending.Status.Conditions[0].Status = v1.ConditionFalse
+			cache.addPod(pending)
+			pendingMeta, ok := cache.metaPods.Load(namespace + "/" + podName)
+			require.True(t, ok)
+			require.Zero(t, pendingMeta.readySince.Load(), "Pending pod has no ramp clock")
+
+			ready := requestTrackerTestPod(podName, namespace, modelName, "10.0.0.1")
+			before := time.Now()
+			cache.updatePod(pending, ready)
+			after := time.Now()
+
+			metaPod, ok := cache.metaPods.Load(namespace + "/" + podName)
+			require.True(t, ok)
+			readySince := time.Unix(0, metaPod.readySince.Load())
+			assert.False(t, readySince.Before(before) || readySince.After(after),
+				"the ramp clock must start at the update that made the pod routable")
+			assert.Equal(t, metaPod.readySince.Load(), cache.LatestPodReadySince())
+		})
+	}
+}
+
+// A Ready flap on an unchanged IP must not restart the ramp: the engine behind it never went
+// away, so treating it as cold would send a warm pod the same ramp penalty as a new one.
+func TestReadyFlapOnSameIPKeepsReadySince(t *testing.T) {
+	const (
+		modelName = "test-model"
+		namespace = "default"
+		podName   = "decode-0"
+		podIP     = "10.0.0.1"
+	)
+
+	cache := NewForTest()
+	ready := requestTrackerTestPod(podName, namespace, modelName, podIP)
+	cache.addPod(ready)
+	metaPod, ok := cache.metaPods.Load(namespace + "/" + podName)
+	require.True(t, ok)
+	origReadySince := metaPod.readySince.Load()
+	require.NotZero(t, origReadySince)
+
+	notReady := requestTrackerTestPod(podName, namespace, modelName, podIP)
+	notReady.Status.Conditions[0].Status = v1.ConditionFalse
+	cache.updatePod(ready, notReady)
+	metaPod, ok = cache.metaPods.Load(namespace + "/" + podName)
+	require.True(t, ok)
+	assert.Equal(t, origReadySince, metaPod.readySince.Load(), "going NotReady keeps the clock")
+
+	readyAgain := requestTrackerTestPod(podName, namespace, modelName, podIP)
+	cache.updatePod(notReady, readyAgain)
+	metaPod, ok = cache.metaPods.Load(namespace + "/" + podName)
+	require.True(t, ok)
+	assert.Equal(t, origReadySince, metaPod.readySince.Load(), "coming back Ready does not restart it")
+}
+
+// TestAddPodAfterFlakyDeleteWithSameIPPreservesReadySince is the readySince companion to
+// TestAddPodAfterFlakyDeleteWithSameIPPreservesRunningRequests: a same-IP re-add within the
+// grace period means the pod never actually stopped serving, so its ramp must not restart --
+// otherwise a transient health-check flap would make an already-warm pod look newly cold to
+// LeastRequestTopKRouter, piling new traffic onto it exactly as if it had just been created.
+func TestAddPodAfterFlakyDeleteWithSameIPPreservesReadySince(t *testing.T) {
+	const (
+		modelName = "test-model"
+		namespace = "default"
+		podName   = "decode-0"
+		podIP     = "10.0.0.1"
+	)
+
+	cache := NewForTest()
+	cache.addPod(requestTrackerTestPod(podName, namespace, modelName, podIP))
+	oldMetaPod, ok := cache.metaPods.Load(namespace + "/" + podName)
+	require.True(t, ok)
+	origReadySince := oldMetaPod.readySince.Load()
+	require.NotZero(t, origReadySince)
+
+	cache.deletePod(requestTrackerTestPod(podName, namespace, modelName, podIP))
+	cache.addPod(requestTrackerTestPod(podName, namespace, modelName, podIP))
+
+	newMetaPod, ok := cache.metaPods.Load(namespace + "/" + podName)
+	require.True(t, ok)
+	assert.NotSame(t, oldMetaPod, newMetaPod)
+	assert.Equal(t, origReadySince, newMetaPod.readySince.Load(),
+		"a same-IP re-add within the grace period must resume the original readySince, not restart the ramp")
+}
+
+// TestAddPodAfterSameNamePodRecreationResetsReadySince is the readySince companion to
+// TestDoneRequestCountAfterSameNamePodRecreationDoesNotDecrementNewPod: a re-add at a
+// different IP is a genuinely different backend process, which must start its ramp fresh
+// rather than inherit a stale, unrelated readySince.
+func TestAddPodAfterSameNamePodRecreationResetsReadySince(t *testing.T) {
+	const (
+		modelName = "test-model"
+		namespace = "default"
+		podName   = "decode-0"
+	)
+
+	cache := NewForTest()
+	cache.addPod(requestTrackerTestPod(podName, namespace, modelName, "10.0.0.1"))
+	oldMetaPod, ok := cache.metaPods.Load(namespace + "/" + podName)
+	require.True(t, ok)
+
+	cache.deletePod(requestTrackerTestPod(podName, namespace, modelName, "10.0.0.1"))
+	before := time.Now()
+	cache.addPod(requestTrackerTestPod(podName, namespace, modelName, "10.0.0.2"))
+	after := time.Now()
+
+	newMetaPod, ok := cache.metaPods.Load(namespace + "/" + podName)
+	require.True(t, ok)
+	assert.NotSame(t, oldMetaPod, newMetaPod)
+	newReadySince := time.Unix(0, newMetaPod.readySince.Load())
+	assert.False(t, newReadySince.Before(before) || newReadySince.After(after),
+		"a different-IP re-add is a different backend and must get a fresh readySince")
+}
+
+// TestAddPodAfterDeleteGracePeriodExpiryResetsReadySince is the readySince companion to
+// TestAddPodAfterDeleteGracePeriodExpiryDoesNotPreserveRunningRequests: a pod key gone longer
+// than recentlyDeletedPodGracePeriod is presumed genuinely dead, so a later re-add must not
+// resurrect a stale ramp state either.
+func TestAddPodAfterDeleteGracePeriodExpiryResetsReadySince(t *testing.T) {
+	const (
+		modelName = "test-model"
+		namespace = "default"
+		podName   = "decode-0"
+		podIP     = "10.0.0.1"
+	)
+
+	cache := NewForTest()
+	pod := requestTrackerTestPod(podName, namespace, modelName, podIP)
+	cache.addPod(pod)
+	cache.deletePod(pod)
+
+	key := namespace + "/" + podName
+	snap, ok := cache.recentlyDeletedPods.Load(key)
+	require.True(t, ok)
+	snap.deletedAt = snap.deletedAt.Add(-recentlyDeletedPodGracePeriod)
+	cache.recentlyDeletedPods.Store(key, snap)
+
+	before := time.Now()
+	cache.addPod(requestTrackerTestPod(podName, namespace, modelName, podIP))
+	after := time.Now()
+
+	newMetaPod, ok := cache.metaPods.Load(key)
+	require.True(t, ok)
+	newReadySince := time.Unix(0, newMetaPod.readySince.Load())
+	assert.False(t, newReadySince.Before(before) || newReadySince.After(after),
+		"a re-add past the grace period must not resurrect the expired snapshot's readySince")
+}
+
+// TestGetPodsReadySince covers the PodReadySinceProvider implementation directly: correct
+// values for known pods, correct keying by utils.GeneratePodKey (not bare pod name -- getting
+// this wrong would silently break LeastRequestTopKRouter's lookups), and omission of pods
+// the cache doesn't know about.
+func TestGetPodsReadySince(t *testing.T) {
+	const (
+		modelName = "test-model"
+		namespace = "default"
+	)
+
+	cache := NewForTest()
+	podA := requestTrackerTestPod("podA", namespace, modelName, "10.0.0.1")
+	cache.addPod(podA)
+	metaPodA, ok := cache.metaPods.Load(namespace + "/podA")
+	require.True(t, ok)
+	wantReadySince := metaPodA.readySince.Load()
+	require.NotZero(t, wantReadySince)
+
+	unknownPod := requestTrackerTestPod("podUnknown", namespace, modelName, "10.0.0.9")
+
+	result, err := cache.GetPodsReadySince([]*v1.Pod{podA, unknownPod})
+
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int64{namespace + "/podA": wantReadySince}, result,
+		"result must be keyed by utils.GeneratePodKey and omit pods the cache does not know")
+}
+
+// TestLatestPodReadySince covers the O(1) running-max LeastRequestTopKRouter's ramp adjustment
+// relies on to skip per-pod work once nothing anywhere is ramping (see storeIfGreater in
+// informers.go): starts at 0, tracks the max across adds of different pods, and -- critically --
+// a same-IP flaky re-add resuming an OLDER readySince must never pull the running max backward.
+func TestLatestPodReadySince(t *testing.T) {
+	const (
+		modelName = "test-model"
+		namespace = "default"
+	)
+
+	cache := NewForTest()
+	assert.Zero(t, cache.LatestPodReadySince(), "no pods added yet")
+
+	cache.addPod(requestTrackerTestPod("podA", namespace, modelName, "10.0.0.1"))
+	metaPodA, ok := cache.metaPods.Load(namespace + "/podA")
+	require.True(t, ok)
+	readySinceA := metaPodA.readySince.Load()
+	assert.Equal(t, readySinceA, cache.LatestPodReadySince())
+
+	// podB is added strictly after podA, so it becomes the new max.
+	cache.addPod(requestTrackerTestPod("podB", namespace, modelName, "10.0.0.2"))
+	metaPodB, ok := cache.metaPods.Load(namespace + "/podB")
+	require.True(t, ok)
+	readySinceB := metaPodB.readySince.Load()
+	require.Greater(t, readySinceB, readySinceA, "test assumes wall-clock time advanced between adds")
+	assert.Equal(t, readySinceB, cache.LatestPodReadySince())
+
+	// A same-IP flaky re-add of podA resumes its original (older) readySince -- the running max
+	// must stay at podB's newer value, not regress to podA's resumed one.
+	cache.deletePod(requestTrackerTestPod("podA", namespace, modelName, "10.0.0.1"))
+	cache.addPod(requestTrackerTestPod("podA", namespace, modelName, "10.0.0.1"))
+	assert.Equal(t, readySinceB, cache.LatestPodReadySince(),
+		"resuming an older readySince on re-add must not pull the running max backward")
 }
 
 func TestDoneRequestWithNilContextCleansPreviouslyAddedPodStats(t *testing.T) {

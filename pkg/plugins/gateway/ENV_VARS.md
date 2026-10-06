@@ -124,9 +124,41 @@ The five `AIBRIX_LOAD_BALANCE_*` gate and score variables can also be set per re
 
 ---
 
+## Least-Request Top-K Router (`algorithms/least_request_top_k.go`)
+
+Strategy name `least-request-top-k`. Plain `least-request` always resolves to the single
+least-loaded pod, so when several gateway replicas read the same Redis-backed running-request
+counter and decide at the same moment, they can all send their next request to that pod. This
+router instead picks uniformly at random among the ready pods that are both among the `K`
+least-loaded and within `epsilon` requests of the least-loaded pod's count. It is also a scorer
+(`ScoreAll`), so it can be blended with other strategies; it is the load-count scorer that the
+[auto-blend](#router-selection--auto-blend-algorithmsroutergo) appends by default, so the variables below
+apply to every auto-blended request, not only to requests that name this strategy.
+
+A pod that has just become eligible reads as count `0` and would otherwise be the sole eligible
+candidate until it catches up. To prevent that, a pod's effective count is raised by a penalty
+that starts at the lowest count among the already-warm pods and decays linearly to `0` over the
+ramp window. The window is measured from when this gateway first sees the pod routable (Ready,
+with an IP, not terminating or draining), not from when the pod was created, so time spent
+Pending or loading a model does not use it up. Ramp state is local to each gateway; a gateway
+that has just restarted sees every pod as new, so with no warm pod to compare against it applies
+no penalty until some pods age out of the window. The clock is kept, not restarted, when a pod
+flaps NotReady or is re-added with the same IP within 60 seconds; a new IP, or a longer gap, starts
+it over.
+
+| Variable | Type | Default | Description | Source |
+|---|---|---|---|---|
+| `AIBRIX_ROUTING_LEAST_REQUEST_TOP_K` | int | `5` | `K`: how many of the least-loaded ready pods are eligible. Should be at least the number of gateway replicas deciding concurrently. Must be positive; any other value falls back to the default. | [algorithms/least_request_top_k.go](algorithms/least_request_top_k.go) |
+| `AIBRIX_ROUTING_LEAST_REQUEST_TOP_K_EPSILON` | int | `4` | A pod is eligible only if its count is within this many requests of the least-loaded pod's. Combined with `K` as an AND. Must be positive; any other value falls back to the default. The default is a starting point, not a validated one: tune it to the deployment's typical running-request count. | [algorithms/least_request_top_k.go](algorithms/least_request_top_k.go) |
+| `AIBRIX_ROUTING_LEAST_REQUEST_TOP_K_RAMP_WINDOW` | duration | `300s` | Window over which a newly routable pod's ramp penalty decays to `0`, counted from the first time the gateway sees the pod routable. `0` disables the ramp. Any other non-positive or unparseable value falls back to the default. | [algorithms/least_request_top_k.go](algorithms/least_request_top_k.go) |
+
+These are read once at startup and are environment-only (no `routingConfig` override).
+
+---
+
 ## Router Selection / Auto-Blend (`algorithms/router.go`)
 
-`RouterManager.Select` silently blends `load-balance` (and, when needed, `least-request`)
+`RouterManager.Select` silently blends `load-balance` and [`least-request-top-k`](#least-request-top-k-router-algorithmsleast_request_top_kgo)
 behind whatever strategy a caller actually asked for, so no single strategy can keep steering
 traffic at an already-hot pod even without going through the central load-imbalance gate above.
 The caller never sees this: `ctx.Algorithm`, response headers, and `Validate()` all continue to
@@ -137,13 +169,13 @@ reflect exactly what was requested. The blend is skipped entirely for exclusive 
 any load-balance weight below its own could never change the outcome anyway — blending it in
 would be dead weight at best. A bare `prefix-cache` request, whose scoring is graded rather than
 binary, still uses a 5:4 (1.25:1) ratio against `load-balance` instead of the flat weight-1
-append, and does not receive `least-request`, so the cache-affinity signal wins an exact-tie
+append, and does not receive `least-request-top-k`, so the cache-affinity signal wins an exact-tie
 disagreement without masking real load imbalance.
 
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
 | `AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT` | int | `1` | Weight coefficient for the silently-appended `load-balance` scorer. Set to `0` to disable the whole auto-blend feature. | [algorithms/router.go](algorithms/router.go) |
-| `AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT` | int | `1` | Weight coefficient for the silently-appended `least-request` scorer (only added when not already present; needed so multi-port/data-parallel pod routing keeps working under the blend). Set to `0` to omit it from the blend. | [algorithms/router.go](algorithms/router.go) |
+| `AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT` | int | `1` | Weight coefficient for the silently-appended `least-request-top-k` scorer. It is added only when neither `least-request` nor `least-request-top-k` is already in the strategy (an explicit weight of `0` on either also suppresses it), and is needed so multi-port/data-parallel pod routing keeps working under the blend. Plain `least-request` is not used here because every gateway replica would score the same single least-loaded pod best. The variable keeps its `LEAST_REQUEST` name for compatibility. Set to `0` to omit it from the blend. | [algorithms/router.go](algorithms/router.go) |
 | `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT` | int | `5` | Primary weight used when auto-blending a bare `prefix-cache` request. With the matching load-balance weight this is a 5:4 (1.25:1) lean toward cache affinity. | [algorithms/router.go](algorithms/router.go) |
 | `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT` | int | `4` | `load-balance` weight paired with `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT` for a bare `prefix-cache` request. | [algorithms/router.go](algorithms/router.go) |
 

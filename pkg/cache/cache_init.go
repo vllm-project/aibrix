@@ -111,6 +111,10 @@ type Store struct {
 	// stale completion cannot match a later generation of the same pod key.
 	nextStatsGeneration atomic.Int64
 
+	// lastPodReadySince is the running max of Pod.readySince (see storeIfGreater), which backs
+	// LatestPodReadySince's O(1) check for whether any pod can still be ramping.
+	lastPodReadySince atomic.Int64
+
 	// podStatsMu stripes per-pod-key locks (see podStatsLockFor in cache_trace.go),
 	// synchronizing running-request counter mutations (addPodStats/donePodStats) against
 	// the pod delete/re-add resume cycle (deletePodLocked/addPodLocked in informers.go)

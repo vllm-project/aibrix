@@ -105,6 +105,22 @@ type ModelClaimStatusProvider interface {
 	ModelClaimStatus(modelName string) (phase, reason string, found bool)
 }
 
+// PodReadySinceProvider is an optional cache extension exposing when this gateway first saw each
+// pod routable (see readySince in pod.go). Callers type-assert for it, like
+// ModelClaimBindingProvider, and treat a failed assertion as "no ramp info"; it stays off Cache
+// so test fakes that implement Cache directly don't have to add it.
+type PodReadySinceProvider interface {
+	// GetPodsReadySince returns readySince (UnixNano; 0 if never routable) keyed by
+	// utils.GeneratePodKey. Pods not in the cache are omitted. Missing or 0 means "no penalty",
+	// the opposite default to GetPodsRunningRequests. A local read, never shared across gateways.
+	GetPodsReadySince(pods []*v1.Pod) (map[string]int64, error)
+
+	// LatestPodReadySince returns the newest readySince across all pods, or 0, in one atomic
+	// load. If now minus it is already past the ramp window, no pod can be ramping, so callers
+	// can skip GetPodsReadySince on every routing decision once the fleet is warm.
+	LatestPodReadySince() int64
+}
+
 // MetricCache defines operations for metric data caching
 type MetricCache interface {
 	// GetMetricValueByPod returns the last-written metric slot for a pod (scraped engine

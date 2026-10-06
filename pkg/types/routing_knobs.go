@@ -144,8 +144,10 @@ type AutoBlendOverrides struct {
 	// LoadBalanceWeight is the weight of the auto-blended load-balance scorer.
 	// 0 disables the auto-blend for the request.
 	LoadBalanceWeight int
-	// LeastRequestWeight is the weight of the least-request scorer the
-	// auto-blend adds for multi-port pods. 0 disables that addition.
+	// LeastRequestWeight is the weight of the least-request-top-k scorer the
+	// auto-blend adds. 0 disables that addition. The name is the deployed
+	// configuration key (env var and profile field) and predates the scorer
+	// switching from plain least-request.
 	LeastRequestWeight int
 	// PrefixCacheWeight is the prefix-cache weight of the dedicated
 	// prefix-cache/load-balance ratio a bare "prefix-cache" request gets.

@@ -107,6 +107,19 @@ type po2FakeCache struct {
 	// portRunning is the per-port realtime metric of data-parallel pods, by "<pod>/<port>".
 	portRunning map[string]float64
 
+	// readySince backs GetPodsReadySince (UnixNano by pod name) and LatestPodReadySince (the max
+	// of these values). A pod not in it is missing from GetPodsReadySince's result, same "no
+	// ramp info" semantics as a pod the cache does not know about. nil by default, which makes
+	// LatestPodReadySince report 0 -- applyRampAdjustment's early exit then skips
+	// GetPodsReadySince entirely, exercising that no-op path for every test that doesn't
+	// populate readySince, without needing to opt out of anything.
+	readySince map[string]int64
+
+	// readySinceCalls counts GetPodsReadySince invocations, so tests can assert
+	// applyRampAdjustment's LatestPodReadySince early exit actually skipped the per-pod call
+	// rather than merely producing the same end result via the slow path.
+	readySinceCalls int
+
 	batches [][]string // pod names of every GetPodsRunningRequests call, in order
 }
 
@@ -129,6 +142,31 @@ func (c *po2FakeCache) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64,
 		}
 	}
 	return counts, nil
+}
+
+func (c *po2FakeCache) GetPodsReadySince(pods []*v1.Pod) (map[string]int64, error) {
+	c.readySinceCalls++
+	result := make(map[string]int64, len(pods))
+	for _, pod := range pods {
+		if v, ok := c.readySince[pod.Name]; ok {
+			result[utils.GeneratePodKey(pod.Namespace, pod.Name)] = v
+		}
+	}
+	return result, nil
+}
+
+// LatestPodReadySince is the other half of cache.PodReadySinceProvider: the real *Store
+// implementation reports a maintained running max in O(1); this fake computes the same value
+// directly from readySince each call, which is fine at test scale and keeps the fake's behavior
+// obviously correct by construction rather than needing its own separate upkeep.
+func (c *po2FakeCache) LatestPodReadySince() int64 {
+	var latest int64
+	for _, v := range c.readySince {
+		if v > latest {
+			latest = v
+		}
+	}
+	return latest
 }
 
 func (c *po2FakeCache) GetMetricValueByPod(podName, _, metricName string) (metrics.MetricValue, error) {

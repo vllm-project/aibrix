@@ -86,7 +86,7 @@ func processRoutingOverrides() *types.RoutingOverrides {
 		VTC: vtc.EnvOverrides(),
 		AutoBlend: types.AutoBlendOverrides{
 			LoadBalanceWeight:            autoBlendLoadBalanceWeight,
-			LeastRequestWeight:           autoBlendLeastRequestWeight,
+			LeastRequestWeight:           autoBlendLeastRequestTopKWeight,
 			PrefixCacheWeight:            autoBlendPrefixCacheWeight,
 			PrefixCacheLoadBalanceWeight: autoBlendPrefixCacheLoadBalanceWeight,
 		},
