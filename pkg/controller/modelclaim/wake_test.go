@@ -713,6 +713,12 @@ func TestRouteChangesEnqueueOnlyTheClaimsOnTheirPod(t *testing.T) {
 	change = event.UpdateEvent{ObjectOld: routed, ObjectNew: unready}
 	assert.True(t, notOnlyAnnotationsChanged().Update(change), "readiness changes where a claim can go")
 	assert.False(t, onlyAnnotationsChanged().Update(change))
+
+	resynced := routed.DeepCopy()
+	resynced.ResourceVersion = "5"
+	change = event.UpdateEvent{ObjectOld: routed, ObjectNew: resynced}
+	assert.False(t, notOnlyAnnotationsChanged().Update(change), "an update that changes nothing enqueues no claim")
+	assert.False(t, onlyAnnotationsChanged().Update(change))
 }
 
 func TestDeannotateWarmPodTakesTheWakeRequestWithTheRoute(t *testing.T) {
