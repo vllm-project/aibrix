@@ -514,20 +514,26 @@ at once. An engine whose memory asleep could not be measured keeps its reserve,
 and its claim raises a ``SleepingFootprintUnknown`` Warning.
 
 In such a pool, a new claim that no Pod has room for can have room made for it.
-Room is made for one claim in a pool at a time, the one that has waited
-longest. The controller picks the Pod where the fewest engines would have to
-sleep, the ones idle longest, as told by what each engine held the last time it
-slept. Where that is not known for an engine, it picks the Pod nearest to
-fitting the claim, and decides again once that engine has slept. It puts the
-engines to sleep one at a time, once each has been idle for
-``sleepToMakeRoomAfterSeconds``, and their claims raise ``SleptToMakeRoom``
-Events. Meanwhile, the claim's ``Scheduled`` condition says ``MakingRoom``, and
-the claim raises a ``MakingRoom`` Event. The Pod is held for the claim for up
-to two minutes, or until the claim is deleted. No other claim is placed in that
-room, and the card does not lend it out as KV. A wake on that card waits, and
-puts no engine there to sleep. The claim is placed once the room is there. A
-Pod with nothing left to put to sleep is let go, and the claim waits for room
-as before.
+Room is made for one claim in a pool at a time: the claim that has waited
+longest among those that room can be made for. A claim that no room can be
+made for on any Pod puts no engine to sleep and does not hold up the claims
+behind it. Kueue calls this order ``BestEffortFIFO``. The controller picks the
+Pod where the fewest engines would have to sleep, the ones idle longest, as
+told by what each engine held the last time it slept. Where that is not known
+for an engine, it picks the Pod nearest to fitting the claim, and decides
+again once that engine has slept. It puts the engines to sleep one at a time,
+once each has been idle for ``sleepToMakeRoomAfterSeconds``, and their claims
+raise ``SleptToMakeRoom`` Events. Meanwhile, the claim's ``Scheduled``
+condition says ``MakingRoom``, and the claim raises a ``MakingRoom`` Event. The
+Pod is held for the claim for up to two minutes, or until the claim is
+deleted. During that time, no other new claim is placed in that room or takes
+its turn, and the card does not lend the room out as KV. Requests to wake
+sleeping engines still go first, because clients are waiting for them while a
+new claim has not served yet. Such a request may wake into that room or put an
+engine there to sleep, and no room is made for a new claim on a card where a
+wake request can be met. The claim is placed once the room is there. A Pod
+with nothing left to put to sleep is let go, and the claim waits for room as
+before.
 
 A failed instance does free its seat. The runtime stops an engine once its
 restarts run out, and reports it as not alive. The account then charges the
@@ -785,9 +791,17 @@ neighbour may be put to sleep once it has been idle for
 ``sleepToMakeRoomAfterSeconds``. Its claim raises a ``SleptToMakeRoom`` Event,
 which names the model the room is made for. A neighbour that serves is never
 put to sleep, so a wake beside busy neighbours moves, or waits until one of
-them has been idle long enough. Only the oldest request on a card makes room.
-No room is made on a card where the memory of a sleeping engine could not be
-measured, since another sleep there would most likely free nothing.
+them has been idle long enough.
+
+Wake requests on a card are handled in the order they were made, and each one
+counts the room that the earlier requests on the card will take. A request
+that fits wakes at once. The first request that needs room made gets it, and
+later requests that also need room wait behind it. A request that would not
+fit even with every idle neighbour asleep puts no neighbour to sleep and does
+not hold up the requests after it. It waits until it fits or room can be made
+for it, or until it expires. No room is made on a card where the memory of a
+sleeping engine could not be measured, since another sleep there would most
+likely free nothing.
 
 An engine that cannot wake where it is moves, when another Pod can take its
 claim. That is an engine whose card is promised more than it has, and one whose

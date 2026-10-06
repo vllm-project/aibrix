@@ -455,15 +455,145 @@ func TestReconcilePutsTheNeighbourIdleLongestToSleepToMakeRoomForAWake(t *testin
 	assert.Equal(t, "waker", runtime.wakeCalls[0].ModelName)
 }
 
-func TestReconcilePutsNoNeighbourToSleepForAWakeOnACardHeldForAnotherClaim(t *testing.T) {
+func TestReconcileMakesRoomForAWakeOnACardHeldForANewClaim(t *testing.T) {
 	r, runtime, pod := crowdedCard(t, keepNoWakeReserve)
 	// Room is being made on this card for a new claim, and the card is held
-	// for it.
+	// for it. A request to wake an engine goes first.
 	require.True(t, r.reservations().hold(cardOf(pod), "new", 400, r.now()))
 
 	reconcileOnce(t, r, "waker")
 
-	assert.Empty(t, runtime.sleepCalls, "the room is the new claim's")
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
+}
+
+// queued is an engine on the card of queueCard: awake, and last seen busy at
+// idleSince, or asleep holding 60 bytes. A request asks to wake it at askedAt,
+// when that is set.
+type queued struct {
+	name             string
+	footprint, floor int64
+	asleep           bool
+	askedAt          string
+	idleSince        time.Time
+}
+
+// queueCard is a card of the given size in a pool that keeps no wake reserve,
+// with the engines given. The engines awake are given in the order the pool
+// policy saw them. The clocks read 08:00:05. A sleep leaves an engine holding
+// 60 bytes.
+func queueCard(t *testing.T, size int64, engines ...queued) (*ModelClaimReconciler, *fakeRuntime) {
+	t.Helper()
+	deployment, replicaSet, pod := warmPoolObjects(keepNoWakeReserve)
+	pod.UID = types.UID("warm-uid")
+	pod.Annotations = map[string]string{}
+	objects := []client.Object{deployment, replicaSet, pod}
+	var models []RuntimeSnapshotModel
+	for i, q := range engines {
+		claim := withFinalizer(claimOnPod(q.name, pod.Name, modelv1alpha1.ModelClaimActive, q.footprint, q.floor))
+		claim.UID = types.UID(q.name + "-uid")
+		claim.Status.Instances[0].Port = int32(9001 + i)
+		claim.Status.Instances[0].KVLimitBytes = 100
+		engine := engineHolding(q.name, 50, 100)
+		engine.Port = int32(9001 + i)
+		engine.ClaimRef = &ModelClaimRef{Namespace: testNamespace, Name: q.name, UID: string(claim.UID)}
+		total := int64(10)
+		engine.RequestSuccessTotal = &total
+		if q.asleep {
+			claim.Status.Instances[0].Phase = modelv1alpha1.ModelClaimSleeping
+			claim.Status.Instances[0].KVLimitBytes = 20
+			engine.Phase = runtimePhaseSleeping
+			engine.Ready = false
+			engine.KVUsedBytes, engine.KVCapacityBytes = 20, 20
+			engine.SleepingFootprintBytes = bytesOf(60)
+		}
+		if q.askedAt != "" {
+			pod.Annotations[constants.ModelClaimWakeAnnotationPrefix+q.name] = q.askedAt
+		}
+		objects = append(objects, claim)
+		models = append(models, engine)
+	}
+	r, runtime := newReconciler(t, objects...)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: sizedPodSnapshots(pod.Name, size, models...)[pod.Name]}
+	now := time.Date(2026, time.October, 1, 7, 0, 0, 0, time.UTC)
+	r.PoolPolicy = newPoolPolicyManager(func() time.Time { return now })
+	for i, q := range engines {
+		if q.asleep {
+			continue
+		}
+		now = q.idleSince
+		_, observed := r.PoolPolicy.observeSnapshot(pod, &RuntimeSnapshot{Models: models[i : i+1]})
+		require.True(t, observed)
+	}
+	now = time.Date(2026, time.October, 1, 8, 0, 5, 0, time.UTC)
+	r.Now = func() time.Time { return now }
+	runtime.onSleep = func(req *SleepRequest) {
+		models := runtime.snapshots[pod.Status.PodIP].Models
+		for i := range models {
+			if models[i].ModelName == req.ModelName {
+				models[i].Phase = runtimePhaseSleeping
+				models[i].Ready = false
+				models[i].SleepingFootprintBytes = bytesOf(60)
+			}
+		}
+	}
+	return r, runtime
+}
+
+var at0800 = time.Date(2026, time.October, 1, 8, 0, 0, 0, time.UTC)
+
+func TestReconcileWakesAnEngineBehindARequestNoRoomCanBeMadeFor(t *testing.T) {
+	// "big" asked first, but its card cannot take it back even with "busy"
+	// asleep, and "busy" is not idle anyway. It does not hold up "waker",
+	// which the card has room for.
+	r, runtime := queueCard(t, 1000,
+		queued{name: "busy", footprint: 300, floor: 100, idleSince: at0800},
+		queued{name: "big", footprint: 800, floor: 100, asleep: true, askedAt: "2026-10-01T07:59:00Z"},
+		queued{name: "waker", footprint: 300, floor: 100, asleep: true, askedAt: "2026-10-01T08:00:00Z"})
+
+	reconcileOnce(t, r, "waker")
+
+	assert.Empty(t, runtime.sleepCalls)
+	require.Len(t, runtime.wakeCalls, 1)
+	assert.Equal(t, "waker", runtime.wakeCalls[0].ModelName)
+
+	reconcileOnce(t, r, "big")
+
+	assert.Empty(t, runtime.sleepCalls, "no sleep would give big room")
+	assert.Equal(t, instanceReasonWaitingForRoom, getModel(t, r, "big").Status.Instances[0].Reason)
+}
+
+func TestReconcileLeavesTheRoomToAnEarlierRequestThatRoomCanBeMadeFor(t *testing.T) {
+	// "b" asked first, and putting "a" to sleep makes room for it. The room is
+	// b's, so "waker" waits behind it rather than putting a to sleep for itself.
+	r, runtime := queueCard(t, 800,
+		queued{name: "a", footprint: 300, floor: 100, idleSince: at0758},
+		queued{name: "b", footprint: 300, floor: 100, asleep: true, askedAt: "2026-10-01T07:59:00Z"},
+		queued{name: "waker", footprint: 300, floor: 100, asleep: true, askedAt: "2026-10-01T08:00:00Z"})
+
+	reconcileOnce(t, r, "waker")
+
+	assert.Empty(t, runtime.sleepCalls)
+	assert.Empty(t, runtime.wakeCalls)
+	assert.Equal(t, instanceReasonWaitingForRoom, getModel(t, r, "waker").Status.Instances[0].Reason)
+
+	reconcileOnce(t, r, "b")
+
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
+}
+
+func TestReconcileMakesNoRoomForAWakeThatSleepsCannotMakeRoomFor(t *testing.T) {
+	// "a" held 300 bytes the last time it slept, so its sleep gives back 100,
+	// and "waker" needs 300 more than the card has.
+	r, runtime := queueCard(t, 1000,
+		queued{name: "a", footprint: 300, floor: 100, idleSince: at0758},
+		queued{name: "waker", footprint: 800, floor: 100, asleep: true, askedAt: "2026-10-01T08:00:00Z"})
+	r.footprints().note(getModel(t, r, "a"), 300)
+
+	reconcileOnce(t, r, "waker")
+
+	assert.Empty(t, runtime.sleepCalls, "a's sleep would not give waker room")
 	assert.Empty(t, runtime.wakeCalls)
 	assert.Equal(t, instanceReasonWaitingForRoom, getModel(t, r, "waker").Status.Instances[0].Reason)
 }
@@ -482,13 +612,6 @@ func TestReconcilePutsNoNeighbourToSleepWhereASleepGivesNoRoomBack(t *testing.T)
 			}},
 		"neighbours that have not idled long enough": {
 			policy: `{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepToMakeRoomAfterSeconds":600}}`},
-		"an older request on the card": {policy: keepNoWakeReserve,
-			setUp: func(r *ModelClaimReconciler, _ *fakeRuntime, pod *corev1.Pod) {
-				latest := &corev1.Pod{}
-				require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(pod), latest))
-				latest.Annotations[constants.ModelClaimWakeAnnotationPrefix+"b"] = "2026-10-01T07:59:00Z"
-				require.NoError(t, r.Update(context.Background(), latest))
-			}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, runtime, pod := crowdedCard(t, tc.policy)

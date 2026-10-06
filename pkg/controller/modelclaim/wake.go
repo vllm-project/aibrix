@@ -131,9 +131,9 @@ func (r *ModelClaimReconciler) wakeRequested(
 			claims, listErr = r.listClaimsForAccount(ctx, pm.Namespace)
 			listed = true
 		}
-		ledgers := podLedgersFrom(claims, listErr, pods, readings.ofPods(ctx, pods), r.podsWithoutWakeReserve(ctx, pods))
-		r.reservations().takeFrom(ledgers, pm.Namespace, pm.Name, r.now())
-		return ledgers
+		// The room held on a card for a new claim is not taken off: a request
+		// to wake an engine goes before a claim that has not served yet.
+		return podLedgersFrom(claims, listErr, pods, readings.ofPods(ctx, pods), r.podsWithoutWakeReserve(ctx, pods))
 	}
 	for i := range pm.Status.Instances {
 		inst := &pm.Status.Instances[i]
@@ -183,17 +183,22 @@ func (r *ModelClaimReconciler) wakeRequested(
 			r.waitForRoom(ctx, pm, inst, pod, "its card cannot be accounted for: "+ledger.blocked)
 			continue
 		}
-		if ledger.judgeable && (ledger.maximumRoomBytes() < 0 || ledger.heldRoomBytes() < 0) {
+		turn := wakeNow
+		if ledger.judgeable {
+			turn, ledger = r.wakeTurnOn(ctx, pm, pod, ledger, readings)
+		}
+		if turn != wakeNow {
 			// The card has no room for it. Its neighbours' floors leave none,
 			// or they hold KV beyond their floors, which the card lent them
 			// while the engine slept. A smaller limit would not make a busy
 			// neighbour give that KV back: kvcached keeps a page while any
 			// block on it is in use, and an engine keeps what finished
 			// requests used as its prefix cache. Only a sleep gives an
-			// engine's memory back. So the first request on the card puts the
-			// neighbour idle longest to sleep, one a pass, while a sleep gives
-			// room back. A neighbour that serves is left alone.
-			if firstToWakeOn(pod, pm.Name) && r.sleepToMakeRoom(ctx, pm, pod, ledger, readings) {
+			// engine's memory back. So the first request on the card that
+			// room can be made for puts the neighbour idle longest to sleep,
+			// one a pass, while a sleep gives room back. A neighbour that
+			// serves is left alone.
+			if turn == wakeMakesRoom && r.sleepToMakeRoom(ctx, pm, pod, ledger, readings) {
 				r.waitForRoom(ctx, pm, inst, pod, promisedMoreThanItHas)
 				woke = true
 				continue
@@ -278,21 +283,123 @@ func (r *ModelClaimReconciler) waitForRoom(
 // promisedMoreThanItHas says why an engine waits on a card that cannot take it.
 const promisedMoreThanItHas = "its card is promised more than it has"
 
-// firstToWakeOn reports whether a claim's request is the oldest wake request on
-// its pod. Only the oldest makes room on a card. Two requests that each put a
-// neighbour to sleep for themselves would take one card's room twice. Any
-// request may still wake its engine when the card already has room for it:
-// every request puts its engine's reserve back, so no wake takes the room
-// another one waits for.
-func firstToWakeOn(pod *corev1.Pod, claimName string) bool {
-	mine := pod.Annotations[constants.ModelClaimWakeAnnotationPrefix+claimName]
-	for key, at := range pod.Annotations {
-		other, isWake := strings.CutPrefix(key, constants.ModelClaimWakeAnnotationPrefix)
-		if isWake && other != claimName && askedBefore(at, other, mine, claimName) {
-			return false
+// wakeTurn is where a request to wake an engine stands on its card.
+type wakeTurn int
+
+const (
+	// wakeNow is a request the card has room for.
+	wakeNow wakeTurn = iota
+	// wakeMakesRoom is the first request on the card that room can be made
+	// for, by putting idle engines there to sleep.
+	wakeMakesRoom
+	// wakeWaitsBehind is a request that room can be made for once an earlier
+	// one has been made room for.
+	wakeWaitsBehind
+	// wakeCannotFit is a request that no room can be made for on its card now,
+	// even by putting every idle engine there to sleep.
+	wakeCannotFit
+)
+
+// wakeTurnOn decides where a claim's request to wake its engine stands on its
+// card, and returns the account to judge the wake by.
+//
+// The requests on a card are taken in the order they were asked, as Kueue's
+// BestEffortFIFO takes workloads. Each is judged with the reserves of the
+// requests before it that the card can meet, and without those of the ones
+// asked after it. A request the card has room for wakes. The first one that
+// room can be made for, by putting idle engines on the card to sleep, makes
+// room, and keeps the room it is owed, so that no later request takes it. Two
+// requests that each put a neighbour to sleep for themselves would take one
+// card's room twice. A request that no room can be made for does not hold up
+// the ones behind it: it is charged only what its engine holds asleep, and it
+// waits until it fits or room can be made for it, or until it expires.
+//
+// Only an engine whose reserve the account gave back while it slept can be
+// judged this way. Any other is charged its whole seat whether a request asks
+// for it or not.
+func (r *ModelClaimReconciler) wakeTurnOn(
+	ctx context.Context,
+	waker *modelv1alpha1.ModelClaim,
+	pod *corev1.Pod,
+	ledger podLedger,
+	readings *runtimeReadings,
+) (wakeTurn, podLedger) {
+	asleep := map[string]bool{}
+	for _, engine := range ledger.engines {
+		if engine.asleep {
+			asleep[engine.claimName] = true
 		}
 	}
-	return true
+	type request struct{ claim, at string }
+	var requests []request
+	for key, at := range pod.Annotations {
+		claim, isWake := strings.CutPrefix(key, constants.ModelClaimWakeAnnotationPrefix)
+		if isWake && (asleep[claim] || claim == waker.Name) {
+			requests = append(requests, request{claim, at})
+		}
+	}
+	sort.Slice(requests, func(i, j int) bool {
+		return askedBefore(requests[i].at, requests[i].claim, requests[j].at, requests[j].claim)
+	})
+	judged := ledger
+	for _, req := range requests {
+		judged = judged.withWakeReserve(req.claim, false)
+	}
+	lifecycle, canMakeRoom := r.roomCanBeMadeOn(ctx, waker, pod, ledger)
+	var idle []idleEngine
+	if canMakeRoom {
+		idle = r.idleEngines(ctx, waker, pod, lifecycle.sleepToMakeRoomAfter(), readings)
+	}
+	roomMade := false
+	for _, req := range requests {
+		withIt := judged.withWakeReserve(req.claim, true)
+		turn := wakeCannotFit
+		switch {
+		case withIt.maximumRoomBytes() >= 0 && withIt.heldRoomBytes() >= 0:
+			turn = wakeNow
+		case canMakeRoom && r.sleepsMakeRoom(withIt, idle, 0):
+			turn = wakeMakesRoom
+			if roomMade {
+				turn = wakeWaitsBehind
+			}
+			roomMade = true
+		}
+		if req.claim == waker.Name {
+			return turn, withIt
+		}
+		if turn != wakeCannotFit {
+			judged = withIt
+		}
+	}
+	return wakeCannotFit, ledger
+}
+
+// sleepsMakeRoom reports whether putting every engine of a list to sleep would
+// leave a card with need bytes of room. An engine that has been seen asleep
+// gives back what it is charged, less what it held then. One that has not is
+// counted at what it is charged, the most it could give back.
+func (r *ModelClaimReconciler) sleepsMakeRoom(ledger podLedger, sleepers []idleEngine, need int64) bool {
+	charged := make(map[string]engineOnPod, len(ledger.engines))
+	for _, engine := range ledger.engines {
+		charged[engine.claimName] = engine
+	}
+	floors, holding := ledger.maximumRoomBytes()-need, ledger.heldRoomBytes()-need
+	if floors >= 0 && holding >= 0 {
+		return true
+	}
+	for _, sleeper := range sleepers {
+		engine, found := charged[sleeper.claim.Name]
+		if !found {
+			continue
+		}
+		asleep, _ := r.footprints().seenAsleep(sleeper.claim)
+		floors += engine.minimumReserveBytes() - asleep
+		holding += engine.heldBytes() - asleep
+		if floors >= 0 && holding >= 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // askedBefore orders two wake requests by when they were asked, then by claim

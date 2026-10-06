@@ -166,6 +166,38 @@ func TestReconcileMakesRoomForANewClaimByPuttingTheIdlestToSleep(t *testing.T) {
 	assert.False(t, held, "the card is let go once the claim is placed")
 }
 
+func TestReconcileMakesRoomForANewerClaimWhenNoneCanBeMadeForTheOlder(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+	// "huge" has waited longest, but needs more than the whole card.
+	huge := withFinalizer(claimOnPod("huge", "", modelv1alpha1.ModelClaimActive, 1000, 100))
+	huge.Status.Instances = nil
+	huge.CreationTimestamp = metav1.NewTime(at0758)
+	require.NoError(t, r.Create(context.Background(), huge))
+	newClaim(t, r, "x", at0759)
+
+	reconcileOnce(t, r, "huge")
+
+	assert.Empty(t, runtime.sleepCalls, "no sleep would give huge room")
+
+	reconcileOnce(t, r, "x")
+
+	require.Len(t, runtime.sleepCalls, 1, "huge does not hold x up")
+	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
+}
+
+func TestReconcileLeavesACardToARequestToWakeAnEngine(t *testing.T) {
+	r, runtime := queueCard(t, 1000,
+		queued{name: "a", footprint: 300, floor: 100, idleSince: at0758},
+		queued{name: "waker", footprint: 300, floor: 100, asleep: true, askedAt: "2026-10-01T08:00:00Z"})
+	newClaim(t, r, "x", at0759)
+
+	reconcileOnce(t, r, "x")
+
+	assert.Empty(t, runtime.sleepCalls, "the card has room for waker, and the room is its")
+	assert.Empty(t, getModel(t, r, "x").Status.Instances)
+}
+
 func TestReconcileLetsTheCardGoWhenTheSleepThatMakesRoomFails(t *testing.T) {
 	r, runtime := servingPool(t, keepNoWakeReserve, 1,
 		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})

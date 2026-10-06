@@ -254,6 +254,30 @@ func (l podLedger) heldRoomBytes() int64 {
 	return l.hbmUsableBytes - l.totalHeldBytes - l.reservedBytes
 }
 
+// withWakeReserve returns the account with the wake reserve of a claim's
+// sleeping engine put back, or taken off again. Only an engine whose reserve
+// the account gave back while it slept has one to take off. The engines are
+// copied, so the account it came from is left as it was.
+func (l podLedger) withWakeReserve(claimName string, asked bool) podLedger {
+	engines := make([]engineOnPod, len(l.engines))
+	copy(engines, l.engines)
+	for i := range engines {
+		engine := &engines[i]
+		if engine.claimName != claimName || engine.wakeReserveAsked == asked ||
+			(!engine.wakeReserveAsked && !engine.withoutWakeReserve) {
+			continue
+		}
+		l.totalMinimumReserveBytes -= engine.minimumReserveBytes()
+		l.totalHeldBytes -= engine.heldBytes()
+		engine.wakeReserveAsked = asked
+		engine.withoutWakeReserve = !asked
+		l.totalMinimumReserveBytes += engine.minimumReserveBytes()
+		l.totalHeldBytes += engine.heldBytes()
+	}
+	l.engines = engines
+	return l
+}
+
 // withHole marks an account that cannot be trusted, keeping the first cause
 // found: one reason an operator can act on beats a list that grows with the
 // pool.
