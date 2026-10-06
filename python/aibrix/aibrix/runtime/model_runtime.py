@@ -662,6 +662,23 @@ _request_success_metrics = {
     "vllm:num_requests_success_total",
     "vllm_num_requests_success_total",
 }
+# An engine's /metrics page can hold the metrics of every engine on the Pod,
+# about 200 KB with seven engines, and parsing all of it takes about as long as
+# fetching it. Only the lines of the request metrics above are parsed.
+_REQUEST_METRIC_STEMS = (
+    "num_requests_running",
+    "num_requests_waiting",
+    "request_success",
+    "num_requests_success",
+)
+
+
+def _request_metric_lines(text: str) -> str:
+    return "\n".join(
+        line
+        for line in text.splitlines()
+        if any(stem in line for stem in _REQUEST_METRIC_STEMS)
+    )
 
 
 def _external_runtime_mock_enabled() -> bool:
@@ -697,7 +714,9 @@ def engine_request_activity(inst: "ModelInstance") -> EngineRequestActivity:
     values = {"running": 0.0, "waiting": 0.0, "success": 0.0}
     found = {"running": False, "waiting": False, "success": False}
     try:
-        for family in text_string_to_metric_families(response.text):
+        for family in text_string_to_metric_families(
+            _request_metric_lines(response.text)
+        ):
             for sample in family.samples:
                 if sample.labels.get("model_name") != inst.model_name:
                     continue
@@ -721,6 +740,31 @@ def engine_request_activity(inst: "ModelInstance") -> EngineRequestActivity:
             max(0, int(values["success"])) if found["success"] else None
         ),
     )
+
+
+def _probe_engines(
+    instances: List["ModelInstance"], alive: Dict[int, bool]
+) -> Dict[int, tuple[EngineRequestActivity, bool]]:
+    """Ask each engine what requests it has and whether it is ready, all at
+    once. Each answer waits on the engine's own HTTP server, about a tenth of a
+    second for a serving vLLM engine, so a pod's engines are asked concurrently.
+    """
+
+    def probe(inst: "ModelInstance") -> tuple[EngineRequestActivity, bool]:
+        activity = (
+            engine_request_activity(inst)
+            if alive[id(inst)]
+            else EngineRequestActivity()
+        )
+        return activity, instance_ready(inst)
+
+    if len(instances) < 2:
+        return {id(inst): probe(inst) for inst in instances}
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=len(instances)) as pool:
+        answers = list(pool.map(probe, instances))
+    return {id(inst): answer for inst, answer in zip(instances, answers)}
 
 
 def instance_ready(inst: "ModelInstance") -> bool:
@@ -1774,6 +1818,8 @@ class ModelRuntime:
                     "hbm_free_bytes": 0,
                 }
             ]
+        alive = {id(inst): self._instance_alive(inst) for inst in instances}
+        probes = _probe_engines(instances, alive)
         models = []
         for inst in instances:
             segment = read_kv_segment(inst.ipc_name)
@@ -1782,10 +1828,7 @@ class ModelRuntime:
             else:
                 total, used, prealloc = segment
                 kv_used, kv_capacity = used + prealloc, total
-            alive = self._instance_alive(inst)
-            activity = (
-                engine_request_activity(inst) if alive else EngineRequestActivity()
-            )
+            activity, ready = probes[id(inst)]
             models.append(
                 {
                     "model_name": inst.model_name,
@@ -1794,8 +1837,8 @@ class ModelRuntime:
                     "port": inst.port,
                     "ipc_name": inst.ipc_name,
                     "phase": inst.phase,
-                    "alive": alive,
-                    "ready": instance_ready(inst),
+                    "alive": alive[id(inst)],
+                    "ready": ready,
                     "restart_count": inst.restart_count,
                     "last_error": inst.last_error,
                     "last_transition": inst.last_transition,

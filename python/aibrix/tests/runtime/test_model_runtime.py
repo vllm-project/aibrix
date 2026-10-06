@@ -1138,6 +1138,81 @@ vllm:request_success_total{model_name=\"m1\",finished_reason=\"length\"} 7
     assert activity.request_success_total == 12
 
 
+def test_engine_request_activity_finds_its_metrics_among_all_others(monkeypatch):
+    import httpx
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    class Response:
+        text = """# HELP vllm:time_to_first_token_seconds Histogram of TTFT.
+# TYPE vllm:time_to_first_token_seconds histogram
+vllm:time_to_first_token_seconds_bucket{le=\"0.1\",model_name=\"m1\"} 4.0
+vllm:time_to_first_token_seconds_bucket{le=\"+Inf\",model_name=\"m1\"} 9.0
+vllm:time_to_first_token_seconds_count{model_name=\"m1\"} 9.0
+vllm:time_to_first_token_seconds_sum{model_name=\"m1\"} 1.5
+# HELP vllm:num_requests_running Number of requests in model execution batches.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{engine=\"0\",model_name=\"m1\"} 2.0
+# HELP vllm:kv_cache_usage_perc KV-cache usage.
+# TYPE vllm:kv_cache_usage_perc gauge
+vllm:kv_cache_usage_perc{engine=\"0\",model_name=\"m1\"} 0.25
+# HELP vllm:num_requests_waiting Number of requests waiting to be processed.
+# TYPE vllm:num_requests_waiting gauge
+vllm:num_requests_waiting{engine=\"0\",model_name=\"m1\"} 1.0
+# HELP vllm:request_success_total Count of successfully processed requests.
+# TYPE vllm:request_success_total counter
+vllm:request_success_total{finished_reason=\"stop\",model_name=\"m1\"} 5.0
+vllm:request_success_total{finished_reason=\"length\",model_name=\"m1\"} 7.0
+vllm:request_success_created{finished_reason=\"stop\",model_name=\"m1\"} 1.7e9
+"""
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: Response())
+    inst = runtime_module.ModelInstance(
+        model_name="m1", port=20000, ipc_name="kvc_m1", proc=object()
+    )
+
+    activity = runtime_module.engine_request_activity(inst)
+
+    assert activity.observed is True
+    assert activity.requests_running == 2
+    assert activity.requests_waiting == 1
+    assert activity.request_success_total == 12
+
+
+def test_snapshot_asks_the_engines_side_by_side(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent = make_agent()
+    agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    agent.activate(model_name="m2", artifact_url="hf://Org/M2")
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda ipc_name: None)
+    both_asked = threading.Barrier(2, timeout=2)
+
+    def answer_once_both_are_asked(inst):
+        # Asked one after another, the first engine waits alone and gives up.
+        try:
+            both_asked.wait()
+        except threading.BrokenBarrierError:
+            return runtime_module.EngineRequestActivity()
+        return runtime_module.EngineRequestActivity(
+            observed=True, requests_running=1, requests_waiting=0
+        )
+
+    monkeypatch.setattr(
+        runtime_module, "engine_request_activity", answer_once_both_are_asked
+    )
+
+    models = agent.snapshot()["models"]
+
+    assert [m["model_name"] for m in models] == ["m1", "m2"]
+    assert all(m["request_metrics_observed"] for m in models)
+    assert all(m["requests_running"] == 1 for m in models)
+
+
 def test_engine_request_activity_scrapes_external_runtime_mock(monkeypatch):
     import httpx
 
