@@ -658,6 +658,46 @@ func TestReconcilePoolPoliciesSleepsIdleSingleReplica(t *testing.T) {
 	assert.Contains(t, annotation, `"state":"sleeping"`)
 }
 
+func TestReconcilePoolPoliciesSleepsAnIdleEngineOnAPodWithTwoCards(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	deployment, replicaSet, pod := warmPoolObjects(`{"lifecycle":{"sleepAfterSeconds":60}}`)
+	pod.UID = types.UID("warm-uid")
+	claim := sampleModelClaim()
+	claim.UID = types.UID("claim-uid")
+	claim.Spec.EngineConfig = &modelv1alpha1.ModelClaimEngineConfig{Args: map[string]string{"--tensor-parallel-size": "2"}}
+	claim.Status.Phase = modelv1alpha1.ModelClaimActive
+	claim.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: pod.Name, Port: 20000, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+
+	r, runtime := newReconciler(t, deployment, replicaSet, pod, claim)
+	r.PoolPolicy = newPoolPolicyManager(func() time.Time { return now })
+	requestSuccessTotal := int64(10)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {
+			Accelerators: []RuntimeAcceleratorSnapshot{
+				{ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 500},
+				{ID: "GPU-1", HBMTotalBytes: 1000, HBMFreeBytes: 500},
+			},
+			Models: []RuntimeSnapshotModel{{
+				ModelName: "qwen2-7b", Port: 20000,
+				Phase: runtimePhaseActive, Alive: true, Ready: true,
+				RequestMetricsObserved: true, RequestSuccessTotal: &requestSuccessTotal,
+				ClaimRef: &ModelClaimRef{Namespace: claim.Namespace, Name: claim.Name, UID: string(claim.UID)},
+			}},
+		},
+	}
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+	require.Empty(t, runtime.sleepCalls)
+
+	now = now.Add(61 * time.Second)
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+
+	require.Len(t, runtime.sleepCalls, 1, "an engine on two cards sleeps when idle, as one on one card does")
+	assert.Equal(t, modelv1alpha1.ModelClaimSleeping, getModel(t, r, claim.Name).Status.Instances[0].Phase)
+}
+
 func TestReconcilePoolPoliciesLeavesAnIdleEngineAwakeWithoutASleepWindow(t *testing.T) {
 	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
 	deployment, replicaSet, pod := warmPoolObjects(`{"lifecycle":{"noWakeReserveWhileAsleep":true}}`)

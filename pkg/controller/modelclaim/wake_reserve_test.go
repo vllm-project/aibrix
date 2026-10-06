@@ -88,7 +88,7 @@ func TestLedgerKeepsAWakeReserveWhenItIsNeeded(t *testing.T) {
 	}
 }
 
-func TestLedgerKeepsAWakeReserveOnAPodWithMoreThanOneCard(t *testing.T) {
+func TestLedgerChargesASleeperOnAPodWithMoreThanOneCardWhatItHolds(t *testing.T) {
 	deployment, replicaSet, pod := warmPoolObjects(keepNoWakeReserve)
 	sleeper := claimOnPod("sleeper", pod.Name, modelv1alpha1.ModelClaimSleeping, 300, 100)
 	engine := engineHolding("sleeper", 20, 100)
@@ -105,7 +105,7 @@ func TestLedgerKeepsAWakeReserveOnAPodWithMoreThanOneCard(t *testing.T) {
 
 	require.True(t, found)
 	require.True(t, ledger.judgeable, ledger.blocked)
-	assert.Equal(t, int64(600), ledger.maximumRoomBytes(), "charged its footprint and floor")
+	assert.Equal(t, int64(940), ledger.maximumRoomBytes(), "charged the 60 bytes its runtime measured on its heaviest card")
 }
 
 func TestLedgerChargesASleeperThatHoldsMoreThanItsSeatWhatItHolds(t *testing.T) {

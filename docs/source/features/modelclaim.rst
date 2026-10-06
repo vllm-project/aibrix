@@ -554,9 +554,9 @@ use:
        --pipeline-parallel-size: "1"
 
 Do not use one four-GPU pool to mix TP=1, TP=2, and TP=4 claims. Create one
-topology-homogeneous pool per shape. Automatic request-driven KV policy and
-idle sleep are currently limited to single-GPU runtime Pods, even though the
-fixed TP/PP activation path is supported.
+topology-homogeneous pool per shape. The automatic request-driven KV policy is
+currently limited to single-GPU runtime Pods. Idle sleep and sleeping to make
+room also work on Pods with several GPUs.
 
 Inspect actual runtime state
 ----------------------------
@@ -944,22 +944,23 @@ Runtime metrics include:
 * ``aibrix:modelclaim_sleeping_footprint_bytes{model}``.
 
 A sleeping engine reports the memory it still holds, as the runtime measured
-it right after the sleep. The runtime reads the card just before and just after
-it puts an engine to sleep. It matches the engine's own processes first, and
-then takes only their memory. When that did not fall like a sleep, or when it
-is on more than one card, there is no figure. Some drivers report host process
-IDs to a container, and then nothing matches. The runtime then takes the
-process whose memory fell by far the most, since a sleep gives back the
-engine's weights. It puts one engine to sleep at a time. When neither way
-works, or when the driver reports zero for every process, the engine reports
-no figure. The figure is cleared when the engine wakes, and when
-a wake fails.
+it right after the sleep. The runtime reads the cards just before and just
+after it puts an engine to sleep, and takes the memory of the engine's own
+processes. If that did not drop as a sleep would, there is no figure. Some
+drivers report host process IDs to a container, and then nothing matches. The
+runtime then takes, on each card, the process whose memory dropped by far the
+most, since a sleep gives back the engine's weights and the runtime puts one
+engine to sleep at a time. An engine on several cards, under tensor or
+pipeline parallelism, reports what it holds on its heaviest card, and no
+figure if one of its cards gives none. There is no figure either when the
+driver reports zero for every process. The figure is cleared when the engine
+wakes, and when a wake fails.
 
 HBM attribution is best effort, and is otherwise used for observation.
 Admission works from the cost a claim declares and the size the runtime
 measures for a card. The one exception is a sleeping engine in a pool that
-keeps no wake reserve, on a Pod with one card, which is charged the sleeping
-footprint its runtime measured. Ranking puts a Pod that already has the
+keeps no wake reserve, which is charged the sleeping footprint its runtime
+measured. Ranking puts a Pod that already has the
 artifact first, then orders the admitted Pods by the room their account shows.
 Free memory only breaks a tie between two cards whose account shows the same
 room, because it moves with traffic.
