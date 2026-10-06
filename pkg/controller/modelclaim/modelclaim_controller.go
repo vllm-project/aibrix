@@ -2087,8 +2087,8 @@ const (
 // An engine that served goes on for deletionDrainGrace, so that the gateway
 // stops sending it requests, and then for as long as it has a request running
 // or waiting, up to deletionDrainTimeout after the deletion. One whose runtime
-// cannot be read is stopped after deletionDrainGrace. An engine that did not
-// serve is stopped at once.
+// cannot be read, or shows no request metrics for it, is stopped after
+// deletionDrainGrace. An engine that did not serve is stopped at once.
 func (r *ModelClaimReconciler) drainBeforeStop(ctx context.Context, pm *modelv1alpha1.ModelClaim) time.Duration {
 	served := false
 	for _, inst := range pm.Status.Instances {

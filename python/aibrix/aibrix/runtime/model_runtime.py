@@ -1143,13 +1143,13 @@ class ModelRuntime:
         self._launcher = launcher
         self._kv_controller = kv_controller or SharedMemoryKVController()
         self._models: Dict[str, ModelInstance] = {}
-        # _lock guards the records of the engines, and is held only while they
-        # are read or changed. A snapshot takes it for a moment, so it never
-        # waits for an engine. _operation_lock is taken first by every change
-        # of an engine (activate, deactivate, KV limit, sleep, wake and the
-        # supervisor), so changes happen one at a time. The slow parts of
-        # a change, its calls to the engine and its NVML readings, run without
-        # _lock.
+        # _lock guards the records of the engines. Sleeps, wakes, KV-limit
+        # writes and health probes do their slow work without it, so a
+        # snapshot does not wait for them. Activate and deactivate hold it
+        # while they start or stop an engine, which is quick unless the
+        # weights have to be downloaded first. _operation_lock is taken first
+        # by every change of an engine (activate, deactivate, KV limit, sleep,
+        # wake and the supervisor), so changes happen one at a time.
         self._lock = threading.RLock()
         self._operation_lock = threading.RLock()
         self._port_lo, self._port_hi = port_range
