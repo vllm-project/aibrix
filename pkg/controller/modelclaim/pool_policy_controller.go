@@ -643,8 +643,9 @@ func (r *ModelClaimReconciler) putEngineToSleep(
 }
 
 // engineIsQuiet reads an engine again and reports errEngineServing when it has
-// a request running or waiting, or when its requests could not be read. An
-// engine the reading does not show cannot be put to sleep either.
+// a request running or waiting, has completed one since the pool policy last
+// read it, or when its requests could not be read. An engine the reading does
+// not show cannot be put to sleep either.
 func (r *ModelClaimReconciler) engineIsQuiet(
 	ctx context.Context,
 	pod *corev1.Pod,
@@ -661,6 +662,13 @@ func (r *ModelClaimReconciler) engineIsQuiet(
 		return fmt.Errorf("the runtime no longer lists model %s", modelName)
 	}
 	if !model.RequestMetricsObserved || model.RequestsRunning > 0 || model.RequestsWaiting > 0 {
+		return errEngineServing
+	}
+	// A request can start and end between two readings of the pool policy, and
+	// the idle timer then still counts from before it. So this reading counts
+	// as one of the policy's, and an engine that completed a request since the
+	// last one is busy.
+	if activity, observed := r.poolPolicyManager().observe(poolActivityKey(pod, *model), *model); observed && activity.Active {
 		return errEngineServing
 	}
 	return nil

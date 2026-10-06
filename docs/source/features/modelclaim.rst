@@ -686,7 +686,8 @@ The fields mean:
    the engine was last routed, so an engine that woke is not idle until its
    route is back. Before an engine sleeps, its route is taken back and it is
    read again. One that serves a request by then is left awake, since a sleep
-   would abort that request. It may be left out when
+   would abort that request. So is one that has completed a request since it
+   was last read, as it was not idle after all. It may be left out when
    ``noWakeReserveWhileAsleep`` is true. No engine is then put to sleep for
    being idle, only to make room.
 
