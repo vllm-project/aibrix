@@ -682,7 +682,11 @@ The fields mean:
 
 ``lifecycle.sleepAfterSeconds``
    How long a vLLM engine must have complete, initialized, and idle request
-   observations before sleep level 1 is applied. It may be left out when
+   observations before sleep level 1 is applied. Idle time counts from when
+   the engine was last routed, so an engine that woke is not idle until its
+   route is back. Before an engine sleeps, its route is taken back and it is
+   read again. One that serves a request by then is left awake, since a sleep
+   would abort that request. It may be left out when
    ``noWakeReserveWhileAsleep`` is true. No engine is then put to sleep for
    being idle, only to make room.
 

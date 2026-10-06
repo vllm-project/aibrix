@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -373,8 +374,13 @@ func (r *ModelClaimReconciler) putIdleEngineToSleep(
 	operationID := fmt.Sprintf("make-room/%s/%s/%s/%d",
 		pod.UID, snapshotActivityKey(idle.model), forClaim.UID, idle.idleSince.UnixNano())
 	if err := r.putEngineToSleep(ctx, idle.claim, pod, idle.port, idle.model.ModelName, operationID, readings); err != nil {
-		klog.ErrorS(err, "could not put an idle engine to sleep to make room",
-			"pod", klog.KObj(pod), "model", idle.model.ModelName, "for", forClaim.Name)
+		if errors.Is(err, errEngineServing) {
+			klog.V(2).InfoS("an engine found idle serves a request, so it is left awake",
+				"pod", klog.KObj(pod), "model", idle.model.ModelName, "for", forClaim.Name)
+		} else {
+			klog.ErrorS(err, "could not put an idle engine to sleep to make room",
+				"pod", klog.KObj(pod), "model", idle.model.ModelName, "for", forClaim.Name)
+		}
 		return false
 	}
 	asleep := r.sleptEngine(ctx, pod, idle.claim, readings)
@@ -400,9 +406,10 @@ type idleEngine struct {
 // idleEngines lists the engines on a pod that may be put to sleep to make room
 // for a claim, the one idle longest first. Such an engine is awake and routed,
 // has no request running or waiting, and has been idle for at least idleFor.
-// Idle time counts from when the pool policy last saw the engine busy, or from
-// the engine's last change of phase when that is later, as the idle timer
-// counts it. An engine the pool policy has not seen yet is not known to be idle.
+// Idle time counts from when the pool policy last saw the engine busy, from the
+// engine's last change of phase, or from when it was last routed, whichever is
+// latest, as the idle timer counts it. An engine the pool policy has not seen
+// yet is not known to be idle.
 func (r *ModelClaimReconciler) idleEngines(
 	ctx context.Context,
 	forClaim *modelv1alpha1.ModelClaim,
@@ -439,6 +446,9 @@ func (r *ModelClaimReconciler) idleEngines(
 		}
 		if model.LastTransition != nil && model.LastTransition.After(idleSince) {
 			idleSince = *model.LastTransition
+		}
+		if routed := routedSince(claim); routed.After(idleSince) {
+			idleSince = routed
 		}
 		if manager.now().Sub(idleSince) < idleFor {
 			continue

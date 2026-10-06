@@ -726,6 +726,118 @@ func TestReconcilePoolPoliciesUsesRuntimeTransitionAsWakeGrace(t *testing.T) {
 	assert.Len(t, runtime.sleepCalls, 1)
 }
 
+func TestReconcilePoolPoliciesCountsIdleTimeFromWhenTheEngineWasRouted(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	deployment, replicaSet, pod := warmPoolObjects(`{"lifecycle":{"sleepAfterSeconds":60}}`)
+	pod.UID = types.UID("warm-uid")
+	claim := sampleModelClaim()
+	claim.UID = types.UID("claim-uid")
+	claim.Status.Phase = modelv1alpha1.ModelClaimActive
+	claim.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: pod.Name, Port: 20000, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	// The engine woke long ago, and the controller routed it only later.
+	claim.Status.Conditions = []metav1.Condition{{
+		Type: string(modelv1alpha1.ModelClaimConditionReady), Status: metav1.ConditionTrue,
+		Reason: "ModelClaimActive", LastTransitionTime: metav1.NewTime(now.Add(90 * time.Second)),
+	}}
+
+	r, runtime := newReconciler(t, deployment, replicaSet, pod, claim)
+	r.PoolPolicy = newPoolPolicyManager(func() time.Time { return now })
+	requestSuccessTotal := int64(10)
+	woke := now.Add(-10 * time.Minute)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0"}},
+			Models: []RuntimeSnapshotModel{{
+				ModelName: "qwen2-7b", Port: 20000, IPCName: "kvc_qwen2-7b",
+				Phase: runtimePhaseActive, Alive: true, Ready: true,
+				LastTransition:         &woke,
+				RequestMetricsObserved: true, RequestSuccessTotal: &requestSuccessTotal,
+				ClaimRef: &ModelClaimRef{Namespace: claim.Namespace, Name: claim.Name, UID: string(claim.UID)},
+			}},
+		},
+	}
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+	now = now.Add(120 * time.Second)
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+	assert.Empty(t, runtime.sleepCalls, "no request could reach the engine before it was routed 30 s ago")
+
+	now = now.Add(31 * time.Second)
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+	assert.Len(t, runtime.sleepCalls, 1)
+}
+
+// requestsArriveFrom shows a request running on every engine from the given
+// snapshot read on, counted from one: a request that reached an engine after
+// the reading that found it idle.
+type requestsArriveFrom struct {
+	*fakeRuntime
+	from  int
+	reads int
+}
+
+func (f *requestsArriveFrom) Snapshot(ctx context.Context, podIP string, port int) (*RuntimeSnapshot, error) {
+	f.reads++
+	snapshot, err := f.fakeRuntime.Snapshot(ctx, podIP, port)
+	if err != nil || snapshot == nil || f.reads < f.from {
+		return snapshot, err
+	}
+	busy := *snapshot
+	busy.Models = append([]RuntimeSnapshotModel(nil), snapshot.Models...)
+	for i := range busy.Models {
+		busy.Models[i].RequestsRunning = 1
+	}
+	return &busy, nil
+}
+
+func TestReconcilePoolPoliciesLeavesAwakeAnEngineThatARequestReachedBeforeItsSleep(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	deployment, replicaSet, pod := warmPoolObjects(`{"lifecycle":{"sleepAfterSeconds":60}}`)
+	pod.UID = types.UID("warm-uid")
+	claim := sampleModelClaim()
+	claim.UID = types.UID("claim-uid")
+	claim.Status.Phase = modelv1alpha1.ModelClaimActive
+	claim.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: pod.Name, Port: 20000, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+
+	r, runtime := newReconciler(t, deployment, replicaSet, pod, claim)
+	// The first two reads find the engine idle; by the third, which comes
+	// after its route is taken back, a request runs on it.
+	r.Runtime = &requestsArriveFrom{fakeRuntime: runtime, from: 3}
+	r.PoolPolicy = newPoolPolicyManager(func() time.Time { return now })
+	requestSuccessTotal := int64(10)
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {
+			Accelerators: []RuntimeAcceleratorSnapshot{{ID: "GPU-0", HBMTotalBytes: 1000, HBMFreeBytes: 500}},
+			Models: []RuntimeSnapshotModel{{
+				ModelName: "qwen2-7b", Port: 20000,
+				Phase: runtimePhaseActive, Alive: true, Ready: true,
+				RequestMetricsObserved: true, RequestSuccessTotal: &requestSuccessTotal,
+				ClaimRef: &ModelClaimRef{Namespace: claim.Namespace, Name: claim.Name, UID: string(claim.UID)},
+			}},
+		},
+	}
+
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+	now = now.Add(61 * time.Second)
+	r.reconcilePoolPolicies(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+
+	assert.Empty(t, runtime.sleepCalls, "a sleep would abort the request")
+	gotClaim := getModel(t, r, claim.Name)
+	require.Len(t, gotClaim.Status.Instances, 1)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, gotClaim.Status.Instances[0].Phase)
+	gotPod := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{
+		Namespace: testNamespace, Name: pod.Name,
+	}, gotPod))
+	annotation := gotPod.Annotations[constants.ModelClaimPodAnnotationPrefix+claim.Name]
+	assert.Contains(t, annotation, `"port":20000`)
+	assert.Contains(t, annotation, `"state":"active"`)
+}
+
 func reconcileOnce(t *testing.T, r *ModelClaimReconciler, name string) {
 	t.Helper()
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
