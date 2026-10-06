@@ -158,6 +158,77 @@ def test_decisions(base_url: str, result: TestResult, api_key: str):
         result.add_fail("Decisions (error: missing input)", f"Expected 400, got {status}")
 
 
+def test_systemone(base_url: str, result: TestResult, api_key: str):
+    """Test the SGLang System One endpoint."""
+    print("\n--- Testing System One Endpoint ---")
+
+    questions = {
+        "team": {
+            "type": "choice",
+            "instructions": "Which team?",
+            "criteria": {"billing": None, "support": "Bugs or integration problems"},
+        },
+        "urgent": {"type": "noul", "instructions": "The customer needs an answer today."},
+    }
+
+    # System One - string state
+    status, data = make_request(
+        base_url,
+        "/v1/systemone",
+        method="POST",
+        data={"model": "test-model", "state": "Stripe keeps failing.", "questions": questions},
+        api_key=api_key,
+    )
+    if status == 200 and set(data.get("answers", {})) == {"team", "urgent"}:
+        usage = data.get("usage", {})
+        # The engine reports input and output tokens and no total; the gateway derives it.
+        if usage.get("input_tokens", 0) > 0 and "total_tokens" not in usage:
+            result.add_pass("System One (string state)", f"Input tokens: {usage.get('input_tokens')}")
+        else:
+            result.add_fail("System One (string state)", f"Unexpected usage: {usage}")
+    else:
+        result.add_fail("System One (string state)", f"Status {status}: {data}")
+
+    # System One - object state
+    status, data = make_request(
+        base_url,
+        "/v1/systemone",
+        method="POST",
+        data={"model": "test-model", "state": {"load": [1, 2]}, "questions": questions},
+        api_key=api_key,
+    )
+    if status == 200 and "answers" in data:
+        result.add_pass("System One (object state)")
+    else:
+        result.add_fail("System One (object state)", f"Status {status}: {data}")
+
+    # System One - empty questions (the mock mirrors SGLang's 422 for a schema error)
+    status, data = make_request(
+        base_url,
+        "/v1/systemone",
+        method="POST",
+        data={"model": "test-model", "state": "Stripe keeps failing.", "questions": {}},
+        api_key=api_key,
+    )
+    if status == 422:
+        result.add_pass("System One (error: empty questions)")
+    else:
+        result.add_fail("System One (error: empty questions)", f"Expected 422, got {status}")
+
+    # System One - missing state
+    status, data = make_request(
+        base_url,
+        "/v1/systemone",
+        method="POST",
+        data={"model": "test-model", "questions": questions},
+        api_key=api_key,
+    )
+    if status == 422:
+        result.add_pass("System One (error: missing state)")
+    else:
+        result.add_fail("System One (error: missing state)", f"Expected 422, got {status}")
+
+
 def test_connection(base_url: str) -> bool:
     """Test if the server is reachable."""
     try:
@@ -206,6 +277,7 @@ def main():
 
     # Run tests
     test_decisions(args.base_url, result, args.api_key)
+    test_systemone(args.base_url, result, args.api_key)
 
     # Print summary
     success = result.summary()

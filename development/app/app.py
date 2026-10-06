@@ -2658,6 +2658,140 @@ def decisions():
         )
 
 
+_SYSTEMONE_QUESTION_FIELDS = {"type", "instructions", "criteria"}
+# /v1/decisions fields that SGLang refuses by name on /v1/systemone rather than ignoring.
+_SYSTEMONE_REFUSED_FIELDS = ("temperature", "prompt_format_version", "return_prompt_token_ids")
+
+
+def _validate_systemone_question(question):
+    """Return (names, legend, error) for one question; names are the answer labels in order."""
+    if not isinstance(question, dict):
+        return None, None, "a question must be an object"
+    extra = sorted(set(question) - _SYSTEMONE_QUESTION_FIELDS)
+    if extra:
+        return None, None, f"Extra inputs are not permitted: {', '.join(extra)}"
+    instructions = question.get("instructions")
+    if instructions is not None and not isinstance(instructions, (str, dict, list)):
+        return None, None, "'instructions' must be a string, object, or array"
+    criteria = question.get("criteria")
+    qtype = question.get("type")
+    if qtype == "noul":
+        if criteria is not None and (not isinstance(criteria, dict) or set(criteria) - {"true", "false"}):
+            return None, None, "noul 'criteria' may only hold 'true' and 'false'"
+        if all(_is_blank_decision_text(v) for v in [instructions, *(criteria or {}).values()]):
+            return None, None, "a noul question needs instructions or a true or false description to decide on"
+        return ["yes", "no"], None, None
+    if qtype == "choice":
+        if not isinstance(criteria, dict) or not 1 <= len(criteria) <= 255:
+            return None, None, "'criteria' must map 1 to 255 option names to descriptions"
+        names = list(criteria)
+        if not all(n.strip() for n in names):
+            return None, None, "option names must be non-blank"
+        if len({n.strip().casefold() for n in names}) != len(names):
+            return None, None, "option names must be distinct"
+        return names, dict(criteria), None
+    if qtype == "score":
+        if not isinstance(criteria, list) or not 1 <= len(criteria) <= 10:
+            return None, None, "'criteria' must list 1 to 10 levels"
+        if not all(isinstance(v, (str, dict, list)) and not _is_blank_decision_text(v) for v in criteria):
+            return None, None, "every level must be a non-blank string, object, or array"
+        names = [str(i) for i in range(len(criteria))]
+        return names, dict(zip(names, criteria)), None
+    return None, None, "question 'type' must be one of noul, choice, score"
+
+
+@app.route("/v1/systemone", methods=["POST"])
+@auth_required
+def systemone():
+    """
+    Simulates SGLang's /v1/systemone endpoint: the System One compatible form of
+    /v1/decisions, with a `state` and a map of noul, choice, and score questions
+    keyed by caller ids. Mirrors SGLang's request checks (unknown top-level
+    fields are ignored, an empty `state` is accepted, schema errors are 422) and
+    its response shape. Probabilities are uniform. Usage reports input_tokens
+    and output_tokens with no total_tokens, like the engine, so the gateway has
+    to derive the total to meter it.
+    """
+    try:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return create_error_response("request body must be a JSON object", status_code=422)
+
+        for field in _SYSTEMONE_REFUSED_FIELDS:
+            if data.get(field) is not None:
+                return create_error_response(
+                    f"{field} is not part of this API, use /v1/decisions for it", param=field, status_code=422
+                )
+
+        model = data.get("model")
+        if not isinstance(model, str):
+            return create_error_response("'model' must be a string", param="model", status_code=422)
+
+        state = data.get("state")
+        if not isinstance(state, (str, dict, list)):
+            return create_error_response(
+                "'state' must be a string, object, or array", param="state", status_code=422
+            )
+
+        questions = data.get("questions")
+        if not isinstance(questions, dict) or not questions:
+            return create_error_response(
+                "'questions' must be a non-empty object", param="questions", status_code=422
+            )
+
+        state_tokens = get_token_count(_decision_text(state))
+        answers = {}
+        input_tokens = 0
+        for question_id, question in questions.items():
+            names, legend, error = _validate_systemone_question(question)
+            if error:
+                return create_error_response(
+                    f"question {question_id!r}: {error}", param="questions", status_code=422
+                )
+
+            probability = 1.0 / len(names)
+            confidence = 1.0 if len(names) == 1 else 0.0
+            probabilities = {name: probability for name in names}
+            if question["type"] == "noul":
+                answer = {"type": "noul", "noul": probability, "x_label_mass": 1.0}
+            elif question["type"] == "choice":
+                answer = {
+                    "type": "choice",
+                    "choice": names[0],
+                    "confidence": confidence,
+                    "probabilities": probabilities,
+                    "x_label_mass": 1.0,
+                }
+            else:
+                answer = {
+                    "type": "score",
+                    "score": sum(i * probability for i in range(len(names))),
+                    "confidence": confidence,
+                    "legend": legend,
+                    "probabilities": probabilities,
+                    "x_label_mass": 1.0,
+                }
+            answers[question_id] = answer
+            # Each question is scored against its own prompt, so the state counts once per question.
+            input_tokens += state_tokens + get_token_count(_decision_text(question))
+
+        # SGLang reports the served model's name here, whatever name the request used.
+        response = {
+            "model": model,
+            "answers": answers,
+            "usage": {"input_tokens": input_tokens, "output_tokens": 0},
+        }
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in systemone endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
 @app.route("/detokenize", methods=["POST"])
 @auth_required
 def detokenize():

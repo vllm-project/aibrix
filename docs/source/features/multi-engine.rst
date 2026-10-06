@@ -407,7 +407,57 @@ What differs from the other endpoints:
 
 The gateway does not check the engine, so a decisions request for a model served by another engine
 is forwarded and fails at the pod. Only route it to ``model.aibrix.ai/engine: sglang`` models.
-SGLang's ``/v1/systemone`` endpoint is not routed by the gateway.
+
+SGLang System One API
+---------------------
+
+SGLang's ``POST /v1/systemone`` serves the same decisions in the System One request shape: a
+``state`` and a map of ``noul``, ``choice`` and ``score`` questions keyed by your own ids. The
+gateway routes it to the pods of the requested model, like ``/v1/decisions``:
+
+.. code-block:: bash
+
+    curl http://${GATEWAY}/v1/systemone \
+      -H "Authorization: Bearer ${API_KEY}" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "model": "deepseek-llm-7b-chat",
+        "state": "The customer reports a double charge on their last invoice.",
+        "questions": {
+          "team": {
+            "type": "choice",
+            "instructions": "Which team should handle this?",
+            "criteria": {"billing": null, "support": "Bugs or integration problems"}
+          },
+          "urgent": {"type": "noul", "instructions": "The customer needs an answer today."}
+        }
+      }'
+
+What differs from ``/v1/decisions``:
+
+- ``model`` is required and must be a model the gateway serves. SGLang accepts any name, but the
+  gateway selects a pod with it, so a model that is not deployed is rejected with ``400``
+  ``model_not_found``. A client library that sends a default model name, such as the TypeSafe
+  SDKs' ``jev-latest``, has to be told to send your model's name instead.
+- ``state`` is required and may be a string, an object or an array. Unlike a decisions ``input`` it
+  may be empty, because SGLang accepts an empty state. The gateway uses it, with objects and arrays
+  compacted to JSON text, as the routing text for prefix-cache-aware routing: SGLang puts the state
+  at the head of every question's prompt, so it is the part the questions share. A pod serving a
+  decision checkpoint renders an object state with spaces after the JSON separators, so the routing
+  text then differs from the prompt by whitespace; this only affects the cache-affinity estimate.
+- ``questions`` must be a non-empty object keyed by your ids. An array, the ``/v1/decisions``
+  shape, is rejected with ``400``. The question schema itself is validated by SGLang.
+- There is no streaming and no generation. Usage reports ``input_tokens``, which counts the prompt
+  of every question, so the state is counted once per question, and ``output_tokens`` at ``0``.
+  There is no ``total_tokens``: the gateway counts input plus output as the total for rate-limit
+  and request metrics, and forwards the usage block unchanged.
+- ``images`` are forwarded as sent, with the same ``bufferLimit`` caveat as for ``/v1/decisions``.
+- The TypeSafe SDKs time out after 10 seconds and retry. Each retry reaches the gateway as a
+  separate request, so request counts and token usage include the retries.
+
+The same engine caveat applies: a request for a model served by another engine is forwarded and
+fails at the pod. SGLang also serves the route only for models with a Jinja chat template; its
+decision-models documentation lists what it refuses.
 
 Adding New Engines
 ------------------

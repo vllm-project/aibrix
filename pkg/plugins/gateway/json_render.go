@@ -27,10 +27,10 @@ import (
 
 // renderJSONLikePython re-renders a JSON document the way Python's
 // json.dumps(json.loads(doc), ensure_ascii=False, separators=(",", ":")) does, which is how
-// SGLang turns a structured /v1/decisions "input" into prompt text. Parsing and
-// re-serializing, rather than only stripping whitespace, matters because the result is the
-// text the router hashes: "你" and "你", or 1e0 and 1.0, are the same prompt to the
-// engine and must hash the same here.
+// SGLang turns a structured /v1/decisions "input" or /v1/systemone "state" into prompt
+// text. Parsing and re-serializing, rather than only stripping whitespace, matters because
+// the result is the text the router hashes: "你" and "你", or 1e0 and 1.0, are the same
+// prompt to the engine and must hash the same here.
 //
 // Matched: key order, string escaping (only quotes, backslashes and control characters are
 // escaped; everything else is emitted raw), integers (arbitrary precision, "-0" becomes

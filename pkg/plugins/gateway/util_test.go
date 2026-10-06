@@ -1684,6 +1684,199 @@ func Test_ValidateRequestBody_Decisions(t *testing.T) {
 	}
 }
 
+func Test_ValidateRequestBody_SystemOne(t *testing.T) {
+	const questions = `{"team": {"type": "choice", "instructions": "Which team?", "criteria": {"billing": null, "support": "Bugs"}}}`
+
+	testCases := []struct {
+		message     string
+		requestPath string // defaults to PathSystemOne
+		requestBody string
+		model       string
+		messages    string
+		statusCode  envoyTypePb.StatusCode
+		param       string
+	}{
+		{
+			message:     "/v1/systemone string state",
+			requestBody: `{"model": "decider", "state": "stripe integration keeps failing", "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    "stripe integration keeps failing",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone object state is compacted to JSON text",
+			requestBody: `{"model": "decider", "state": {"a": 1,  "b": ["x", "y"]}, "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    `{"a":1,"b":["x","y"]}`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone array state is compacted to JSON text",
+			requestBody: `{"model": "decider", "state": [ {"role": "user"}, "text" ], "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    `[{"role":"user"},"text"]`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone object state is rendered like SGLang: escapes decoded, floats normalized",
+			requestBody: `{"model": "decider", "state": {"text": "你", "n": 1e0}, "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    `{"text":"你","n":1.0}`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone routes on state, not on question text",
+			requestBody: `{"model": "decider", "state": "shared prefix", "questions": {"q": {"type": "noul", "instructions": "Is it urgent?"}}}`,
+			model:       "decider",
+			messages:    "shared prefix",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone empty string state is accepted, as SGLang accepts it",
+			requestBody: `{"model": "decider", "state": "", "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    "",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone empty object state is accepted",
+			requestBody: `{"model": "decider", "state": {}, "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    "{}",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone blank question id is accepted",
+			requestBody: `{"model": "decider", "state": "x", "questions": {"": {"type": "noul", "instructions": "Is it?"}}}`,
+			model:       "decider",
+			messages:    "x",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone images and unknown top-level fields are forwarded, not inspected",
+			requestBody: `{"model": "decider", "state": "describe", "images": ["data:image/png;base64,AAAA", {"url": "https://example.com/a.png"}], "chat_template_kwargs": {"enable_thinking": false}, "extra": 1, "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    "describe",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone query string does not break path matching",
+			requestPath: PathSystemOne + "?api-version=1",
+			requestBody: `{"model": "decider", "state": "pick", "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    "pick",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone missing model",
+			requestBody: `{"state": "pick", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/systemone empty model",
+			requestBody: `{"model": "", "state": "pick", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/systemone whitespace-only model",
+			requestBody: `{"model": "  ", "state": "pick", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/systemone missing state",
+			requestBody: `{"model": "decider", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "state",
+		},
+		{
+			message:     "/v1/systemone null state",
+			requestBody: `{"model": "decider", "state": null, "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "state",
+		},
+		{
+			message:     "/v1/systemone number state",
+			requestBody: `{"model": "decider", "state": 42, "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "state",
+		},
+		{
+			message:     "/v1/systemone boolean state",
+			requestBody: `{"model": "decider", "state": true, "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "state",
+		},
+		{
+			message:     "/v1/systemone missing questions",
+			requestBody: `{"model": "decider", "state": "pick"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
+		},
+		{
+			message:     "/v1/systemone null questions",
+			requestBody: `{"model": "decider", "state": "pick", "questions": null}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
+		},
+		{
+			message:     "/v1/systemone empty questions",
+			requestBody: `{"model": "decider", "state": "pick", "questions": {}}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
+		},
+		{
+			message:     "/v1/systemone questions as an array, the /v1/decisions shape",
+			requestBody: `{"model": "decider", "state": "pick", "questions": [{"id": "q1", "type": "yes_no", "question": "Is it?"}]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
+		},
+		{
+			message:     "/v1/systemone invalid json",
+			requestBody: `{"model": "decider", "state": "pick"`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.message, func(t *testing.T) {
+			requestPath := tt.requestPath
+			if requestPath == "" {
+				requestPath = PathSystemOne
+			}
+			model, messages, prefixText, stream, errRes := validateRequestBody("test-request-id", requestPath, []byte(tt.requestBody), utils.User{})
+
+			// System One never streams and never carries a separate prefix text.
+			assert.False(t, stream)
+			assert.Empty(t, prefixText)
+
+			if tt.statusCode == envoyTypePb.StatusCode_OK {
+				assert.Nil(t, errRes)
+				assert.Equal(t, tt.model, model)
+				assert.Equal(t, tt.messages, messages)
+				return
+			}
+
+			if !assert.NotNil(t, errRes) {
+				return
+			}
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, model)
+			assert.Empty(t, messages)
+
+			var errResponse map[string]any
+			require.NoError(t, sonic.Unmarshal([]byte(errRes.GetImmediateResponse().GetBody()), &errResponse))
+			errObj, ok := errResponse["error"].(map[string]any)
+			require.True(t, ok, "response should have an 'error' object")
+			if tt.param != "" {
+				assert.Equal(t, tt.param, errObj["param"])
+			}
+		})
+	}
+}
+
 func Test_ValidateRequestBody_Responses(t *testing.T) {
 	testCases := []struct {
 		message     string

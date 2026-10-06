@@ -204,6 +204,8 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		model, message, errRes = validateClassifyRequest(requestID, requestBody)
 	case PathDecisions:
 		model, message, errRes = validateDecisionsRequest(requestID, requestBody)
+	case PathSystemOne:
+		model, message, errRes = validateSystemOneRequest(requestID, requestBody)
 	case PathTokenize:
 		model, message, errRes = validateTokenizeRequest(requestID, requestBody)
 	case PathPooling:
@@ -730,6 +732,53 @@ func validateDecisionsRequest(requestID string, requestBody []byte) (model, mess
 	return
 }
 
+// validateSystemOneRequest parses and validates an SGLang /v1/systemone request body.
+// Unlike a decisions "input", "state" may be blank: SGLang accepts an empty state, so the
+// gateway does not refuse what the engine would answer. The question schema is left to the
+// engine.
+//
+// The routing message is the state alone: SGLang puts it at the head of every question's
+// prompt, so it is the prefix that prefix-cache-aware routing should see.
+// nolint:nakedret
+func validateSystemOneRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	var req struct {
+		Model     string          `json:"model"`
+		State     json.RawMessage `json:"state"`
+		Questions json.RawMessage `json:"questions"`
+	}
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		// The body can hold customer text or base64 images, so log its size, not its content.
+		klog.ErrorS(nil, "error to unmarshal systemone object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if strings.TrimSpace(req.Model) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	state := bytes.TrimSpace(req.State)
+	if len(state) == 0 || string(state) == jsonNull {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'state' is a required property", "", "state", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	text, _, ok := decisionText(state)
+	if !ok {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'state' must be a string, object, or array", "", "state", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	var questions map[string]json.RawMessage
+	if err := sonic.Unmarshal(req.Questions, &questions); err != nil || len(questions) == 0 {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'questions' is a required property and must be a non-empty object", "", "questions", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	model, message = req.Model, text
+	return
+}
+
 // jsonParseReason returns why sonic rejected a body without the excerpt of the body that its
 // error text embeds (a syntax error quotes the bytes around the failure, a type mismatch
 // quotes the offending value), so the result is safe to log.
@@ -742,32 +791,41 @@ func jsonParseReason(err error) string {
 }
 
 // decisionsInputText renders a /v1/decisions "input" value (a string, object, or array)
-// to text and returns an error message when it is not one of those or is blank. An object
-// or array is re-serialized as compact JSON the way SGLang renders it into the prompt (see
-// renderJSONLikePython); SGLang treats an empty or whitespace-only string, object, or array
-// as blank.
+// to text and returns an error message when it is not one of those or is blank.
 func decisionsInputText(input []byte) (text, errMsg string) {
-	const typeMsg = "'input' must be a string, object, or array"
-	switch input[0] {
+	text, blank, ok := decisionText(input)
+	switch {
+	case !ok:
+		return "", "'input' must be a string, object, or array"
+	case blank:
+		return "", "'input' cannot be blank"
+	}
+	return text, ""
+}
+
+// decisionText renders a JSON string, object, or array, the type SGLang calls a decision
+// text, to the text SGLang puts in the prompt. An object or array is re-serialized as compact
+// JSON the way SGLang does (see renderJSONLikePython). blank reports what SGLang treats as
+// blank: an empty or whitespace-only string, or an empty object or array. ok is false for
+// any other JSON type or a value that does not parse.
+func decisionText(value []byte) (text string, blank, ok bool) {
+	if len(value) == 0 {
+		return "", false, false
+	}
+	switch value[0] {
 	case '"':
-		if err := sonic.Unmarshal(input, &text); err != nil {
-			return "", typeMsg
+		if err := sonic.Unmarshal(value, &text); err != nil {
+			return "", false, false
 		}
-		if strings.TrimSpace(text) == "" {
-			return "", "'input' cannot be blank"
-		}
-		return text, ""
+		return text, strings.TrimSpace(text) == "", true
 	case '{', '[':
-		rendered, err := renderJSONLikePython(input)
+		rendered, err := renderJSONLikePython(value)
 		if err != nil {
-			return "", typeMsg
+			return "", false, false
 		}
-		if rendered == "{}" || rendered == "[]" {
-			return "", "'input' cannot be blank"
-		}
-		return rendered, ""
+		return rendered, rendered == "{}" || rendered == "[]", true
 	default:
-		return "", typeMsg
+		return "", false, false
 	}
 }
 
