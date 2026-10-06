@@ -167,6 +167,10 @@ type PodPlacementState struct {
 	HBMFreeBytes   int64
 	KVUsedBytes    int64
 	ModelCount     int
+	// AwakeCount is how many of the pod's engines are awake, serving or
+	// starting. The engines on a card share its compute, and a sleeping one
+	// takes none.
+	AwakeCount int
 	// HBMUsableBytes is how much of this pod's GPU memory can ever hold an
 	// engine, and HBMUsableKnown separates a card with nothing left from a card
 	// nobody could measure. A pod with several cards is described by its
@@ -209,6 +213,9 @@ func placementStateFromSnapshot(snapshot *RuntimeSnapshot, artifactURL string, p
 	}
 	state.HBMUsableBytes, state.HBMUsableKnown = snapshot.hbmUsableBytes()
 	for _, model := range snapshot.Models {
+		if model.Phase != runtimePhaseSleeping && model.Phase != runtimePhaseFailed && model.Phase != runtimePhaseStopping {
+			state.AwakeCount++
+		}
 		// An engine with no KV allocator to read reports a negative figure. It
 		// has mapped nothing, so it adds nothing here.
 		if model.KVUsedBytes < 0 {

@@ -3373,13 +3373,16 @@ func TestReconcilePlacesAndRoutesOnAPodWhoseRuntimeReportsAnUnsizedCard(t *testi
 
 func TestReconcileTriesTheNextPodWhenACardCannotBeDivided(t *testing.T) {
 	pm := claimWithCost(20<<30, 4<<30)
-	// warm-1 is the roomier card and is tried first, but the engine on it will
-	// not take the smaller limit that would make the room.
+	// Each card has one engine awake. warm-1 is the roomier card and is tried
+	// first, but the engine on it will not take the smaller limit that would
+	// make the room. The one on warm-2 holds no more than its floor.
 	roomy, roomySnapshot := sizedWarmPod("warm-1", "10.0.0.1", 90<<30)
 	neighbour := claimOnPod("neighbour", roomy.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
 	roomySnapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 2<<30, 76<<30)}
 	other, otherSnapshot := sizedWarmPod("warm-2", "10.0.0.2", 60<<30)
-	r, runtime := newReconciler(t, pm, neighbour, roomy, other)
+	quiet := claimOnPod("quiet", other.Name, modelv1alpha1.ModelClaimActive, 20<<30, 4<<30)
+	otherSnapshot.Models = []RuntimeSnapshotModel{engineHolding("quiet", 2<<30, 4<<30)}
+	r, runtime := newReconciler(t, pm, neighbour, roomy, other, quiet)
 	runtime.snapshots = map[string]*RuntimeSnapshot{
 		roomy.Status.PodIP: roomySnapshot,
 		other.Status.PodIP: otherSnapshot,

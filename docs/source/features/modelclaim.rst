@@ -974,10 +974,16 @@ HBM attribution is best effort, and is otherwise used for observation.
 Admission works from the cost a claim declares and the size the runtime
 measures for a card. The one exception is a sleeping engine in a pool that
 keeps no wake reserve, which is charged the sleeping footprint its runtime
-measured. Ranking puts a Pod that already has the
-artifact first, then orders the admitted Pods by the room their account shows.
-Free memory only breaks a tie between two cards whose account shows the same
-room, because it moves with traffic.
+measured.
+
+Ranking puts a Pod that already has the artifact first. Among the admitted
+Pods, it then prefers the one with the fewest engines awake (serving or
+starting), because the engines on a card share its compute and a sleeping
+engine uses none. It then orders them by the room their account shows. Free
+memory only breaks a tie between two cards whose account shows the same room,
+because it moves with traffic. Placement cannot tell which models will be
+busy, so two busy models can still share a card. To keep such models apart,
+give them pools of their own through ``podSelector``.
 
 Troubleshooting
 ---------------
