@@ -570,7 +570,10 @@ ModelClaim status summarizes the lifecycle:
    * - Status
      - Meaning
    * - ``Pending`` / ``Scheduling``
-     - The claim is new or the controller is selecting a compatible Pod.
+     - The claim is new or the controller is selecting a compatible Pod. A
+       claim that loses its last engine, for example with its Pod, is
+       ``Pending`` again until it is placed, and its ``Ready`` condition is
+       ``False`` with reason ``NotPlaced``.
    * - ``Loading`` / ``Activating``
      - The runtime is downloading or starting the engine. It remains
        non-routable with port 0. While the engine boots, the controller looks

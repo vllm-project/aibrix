@@ -604,6 +604,18 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 		})
 	default:
 		pm.Status.Phase = modelv1alpha1.ModelClaimPending
+		// No engine is placed, so a claim that had one serves nowhere now,
+		// whatever its Ready condition said. Its Scheduled condition says why
+		// it waits. A claim that never had an engine has no Ready condition.
+		ready := meta.FindStatusCondition(pm.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
+		if ready != nil && ready.Status != metav1.ConditionFalse {
+			meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+				Type:    string(modelv1alpha1.ModelClaimConditionReady),
+				Status:  metav1.ConditionFalse,
+				Reason:  "NotPlaced",
+				Message: "no engine is placed for the model; the Scheduled condition says why",
+			})
+		}
 	}
 }
 

@@ -1647,6 +1647,34 @@ func TestReconcileActivateFailureSetsFailed(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 }
 
+// TestReconcileTakesReadyBackFromAClaimThatLostItsLastEngine checks a claim
+// whose only engine's pod is gone, and which cannot be placed again. It serves
+// nowhere, so its Ready condition has to say so.
+func TestReconcileTakesReadyBackFromAClaimThatLostItsLastEngine(t *testing.T) {
+	pm := withFinalizer(sampleModelClaim())
+	pm.Status.Phase = modelv1alpha1.ModelClaimActive
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: "warm-gone", Port: 20000, Phase: modelv1alpha1.ModelClaimActive,
+	}}
+	meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+		Type:    string(modelv1alpha1.ModelClaimConditionReady),
+		Status:  metav1.ConditionTrue,
+		Reason:  "ModelClaimActive",
+		Message: "model is active on at least one warm pod",
+	})
+	r, _ := newReconciler(t, pm)
+
+	reconcileOnce(t, r, pm.Name)
+
+	got := getModel(t, r, pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimPending, got.Status.Phase)
+	assert.Empty(t, got.Status.Instances)
+	ready := meta.FindStatusCondition(got.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
+	require.NotNil(t, ready)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
+	assert.Equal(t, "NotPlaced", ready.Reason)
+}
+
 // TestReconcileWaitsForARuntimeThatIsNotCalled checks a claim whose only pod
 // has a runtime that did not answer in time a short while ago. The call to
 // start the engine is not sent, so no activation failed: the claim waits as it
