@@ -1183,6 +1183,15 @@ Agent restarted but engines also disappeared
 Cleanup
 -------
 
+When a claim is deleted, its engine finishes the requests it is serving before
+it stops. The controller takes the claim's route back first and keeps the
+engine running for 5 seconds while the gateway stops sending it requests. It
+then waits until the engine has no running or waiting request, up to 90
+seconds after the deletion, and raises a ``DrainTimedOut`` Event if it has to
+stop the engine with requests left. An engine that is asleep, starting or
+failed is stopped at once. The claim is removed once its engines have been
+asked to stop.
+
 Delete claims before the warm pool so the finalizer can stop their engines and
 remove routing annotations:
 

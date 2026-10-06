@@ -1862,11 +1862,11 @@ func TestReconcileDeletionRemovesRoutingAnnotation(t *testing.T) {
 }
 
 // TestReconcileDeletionDeactivates verifies deletion stops instances and drops
-// the finalizer.
+// the finalizer, once the gateway has had time to stop routing.
 func TestReconcileDeletionDeactivates(t *testing.T) {
-	now := metav1.Now()
+	deleted := metav1.NewTime(time.Now().Add(-deletionDrainGrace))
 	pm := withFinalizer(sampleModelClaim())
-	pm.DeletionTimestamp = &now
+	pm.DeletionTimestamp = &deleted
 	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{
 		{Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive},
 	}
@@ -1884,6 +1884,96 @@ func TestReconcileDeletionDeactivates(t *testing.T) {
 	err := r.Get(context.Background(),
 		types.NamespacedName{Namespace: testNamespace, Name: pm.Name}, got)
 	assert.True(t, err != nil || !controllerutil.ContainsFinalizer(got, ModelClaimFinalizer))
+}
+
+// deletingClaim is the sample claim, deleted at the given time, with its engine
+// active on warm-1.
+func deletingClaim(deleted time.Time) *modelv1alpha1.ModelClaim {
+	pm := withFinalizer(sampleModelClaim())
+	at := metav1.NewTime(deleted)
+	pm.DeletionTimestamp = &at
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: "warm-1", Port: 9001, Phase: modelv1alpha1.ModelClaimActive},
+	}
+	return pm
+}
+
+// servingEngine is the engine of a claim, with requests running.
+func servingEngine(pm *modelv1alpha1.ModelClaim, running int64) RuntimeSnapshotModel {
+	engine := engineHolding(servedModelName(pm), 0, 0)
+	engine.RequestsRunning = running
+	return engine
+}
+
+func TestReconcileDeletionGivesTheGatewayTimeToStopRouting(t *testing.T) {
+	now := time.Date(2026, time.October, 6, 2, 0, 0, 0, time.UTC)
+	pm := deletingClaim(now)
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod.Annotations = map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + pm.Name: `{"model":"qwen2-7b","port":9001}`,
+	}
+	r, runtime := newReconciler(t, pm, pod)
+	r.Now = func() time.Time { return now }
+
+	assert.Equal(t, deletionDrainGrace, reconcileFor(t, r, pm.Name))
+
+	assert.Empty(t, runtime.deactivateCalls, "the engine may still get what the gateway sent it")
+	got := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, got))
+	assert.NotContains(t, got.Annotations, constants.ModelClaimPodAnnotationPrefix+pm.Name)
+	assert.True(t, controllerutil.ContainsFinalizer(getModel(t, r, pm.Name), ModelClaimFinalizer))
+}
+
+func TestReconcileDeletionWaitsForTheRequestsAnEngineServes(t *testing.T) {
+	now := time.Date(2026, time.October, 6, 2, 0, 0, 0, time.UTC)
+	pm := deletingClaim(now.Add(-deletionDrainGrace))
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	r, runtime := newReconciler(t, pm, pod)
+	r.Now = func() time.Time { return now }
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {Models: []RuntimeSnapshotModel{servingEngine(pm, 1)}},
+	}
+
+	assert.Equal(t, deletionDrainPoll, reconcileFor(t, r, pm.Name))
+	assert.Empty(t, runtime.deactivateCalls, "a request still runs")
+
+	runtime.snapshots[pod.Status.PodIP].Models[0].RequestsRunning = 0
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.deactivateCalls, 1)
+	got := &modelv1alpha1.ModelClaim{}
+	err := r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: pm.Name}, got)
+	assert.True(t, err != nil || !controllerutil.ContainsFinalizer(got, ModelClaimFinalizer))
+}
+
+func TestReconcileDeletionStopsAnEngineThatOutlastsTheDrain(t *testing.T) {
+	now := time.Date(2026, time.October, 6, 2, 0, 0, 0, time.UTC)
+	pm := deletingClaim(now.Add(-deletionDrainTimeout))
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	r, runtime := newReconciler(t, pm, pod)
+	r.Now = func() time.Time { return now }
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {Models: []RuntimeSnapshotModel{servingEngine(pm, 2)}},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.deactivateCalls, 1)
+	assert.Contains(t, strings.Join(drainEvents(t, r), "\n"), "DrainTimedOut")
+}
+
+func TestReconcileDeletionStopsAnEngineThatDidNotServeAtOnce(t *testing.T) {
+	now := time.Date(2026, time.October, 6, 2, 0, 0, 0, time.UTC)
+	pm := deletingClaim(now)
+	pm.Status.Instances[0].Phase = modelv1alpha1.ModelClaimSleeping
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	r, runtime := newReconciler(t, pm, pod)
+	r.Now = func() time.Time { return now }
+
+	reconcileOnce(t, r, pm.Name)
+
+	require.Len(t, runtime.deactivateCalls, 1, "a sleeping engine serves nothing")
 }
 
 // claimWithCost is the sample claim plus a declared per-GPU cost.

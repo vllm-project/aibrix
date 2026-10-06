@@ -210,18 +210,8 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Handle deletion: deactivate attached instances, then drop the finalizer.
 	if !pm.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(pm, ModelClaimFinalizer) {
-			r.deactivateInstances(ctx, pm)
-			clearClaimMetrics(pm.Namespace, servedModelName(pm))
-			r.forgetClaim(req.NamespacedName)
-			controllerutil.RemoveFinalizer(pm, ModelClaimFinalizer)
-			if err := r.Update(ctx, pm); err != nil {
-				return requeueOnConflict(err)
-			}
-		}
-		return ctrl.Result{}, nil
+		return r.finalize(ctx, pm, req.NamespacedName)
 	}
 
 	// Ensure the finalizer is present before doing any external-effecting work.
@@ -2055,6 +2045,87 @@ func (r *ModelClaimReconciler) scaleDown(
 		}
 		pm.Status.Instances = pm.Status.Instances[:idx]
 	}
+}
+
+// finalize drains and stops the engines of a deleted claim, then drops its
+// finalizer.
+func (r *ModelClaimReconciler) finalize(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	key types.NamespacedName,
+) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(pm, ModelClaimFinalizer) {
+		return ctrl.Result{}, nil
+	}
+	if wait := r.drainBeforeStop(ctx, pm); wait > 0 {
+		return ctrl.Result{RequeueAfter: wait}, nil
+	}
+	r.deactivateInstances(ctx, pm)
+	clearClaimMetrics(pm.Namespace, servedModelName(pm))
+	r.forgetClaim(key)
+	controllerutil.RemoveFinalizer(pm, ModelClaimFinalizer)
+	if err := r.Update(ctx, pm); err != nil {
+		return requeueOnConflict(err)
+	}
+	return ctrl.Result{}, nil
+}
+
+const (
+	// deletionDrainGrace is how long the engine of a deleted claim that served
+	// keeps running after its route is taken back, before it may be stopped:
+	// the time the gateway takes to stop sending it requests.
+	deletionDrainGrace = 5 * time.Second
+	// deletionDrainTimeout is how long after the deletion the engine is given
+	// to finish the requests it serves.
+	deletionDrainTimeout = 90 * time.Second
+	// deletionDrainPoll is how often a draining engine is read again.
+	deletionDrainPoll = time.Second
+)
+
+// drainBeforeStop takes the routes of a deleted claim back, and reports how long
+// to wait before its engines are stopped, or zero when they may be stopped now.
+// An engine that served goes on for deletionDrainGrace, so that the gateway
+// stops sending it requests, and then for as long as it has a request running
+// or waiting, up to deletionDrainTimeout after the deletion. One whose runtime
+// cannot be read is stopped after deletionDrainGrace. An engine that did not
+// serve is stopped at once.
+func (r *ModelClaimReconciler) drainBeforeStop(ctx context.Context, pm *modelv1alpha1.ModelClaim) time.Duration {
+	served := false
+	for _, inst := range pm.Status.Instances {
+		r.deannotateWarmPod(ctx, pm.Namespace, inst.Pod, pm.Name)
+		served = served || inst.Phase == modelv1alpha1.ModelClaimActive
+	}
+	if !served {
+		return 0
+	}
+	since := r.now().Sub(pm.DeletionTimestamp.Time)
+	if since < deletionDrainGrace {
+		return deletionDrainGrace - since
+	}
+	for _, inst := range pm.Status.Instances {
+		if inst.Phase != modelv1alpha1.ModelClaimActive {
+			continue
+		}
+		ip := r.podIP(ctx, pm.Namespace, inst.Pod)
+		if ip == "" {
+			continue
+		}
+		snapshot, err := r.Runtime.Snapshot(ctx, ip, DefaultRuntimePort)
+		if err != nil {
+			continue
+		}
+		model := snapshotModelForClaim(snapshot, pm, servedModelName(pm))
+		if model == nil || !model.RequestMetricsObserved || model.RequestsRunning+model.RequestsWaiting <= 0 {
+			continue
+		}
+		if since < deletionDrainTimeout {
+			return deletionDrainPoll
+		}
+		r.Recorder.Eventf(pm, corev1.EventTypeWarning, "DrainTimedOut",
+			"model %s is stopped on pod %s with %d request(s) still running or waiting, %s after its deletion",
+			servedModelName(pm), inst.Pod, model.RequestsRunning+model.RequestsWaiting, deletionDrainTimeout)
+	}
+	return 0
 }
 
 // deactivateInstances best-effort stops every engine instance of the model,
