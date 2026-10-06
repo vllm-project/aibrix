@@ -865,16 +865,16 @@ compatible Pod. There is no live migration or transparent preservation of
 in-flight requests.
 
 The controller reads each runtime's snapshot with a 10-second deadline. A read
-normally takes a fraction of a second. It can take longer for two reasons. The
-runtime probes its engines one after another, for about 1.5 seconds each. Before
-that, a read waits for the runtime's lock. The runtime holds that lock while it
-checks its engines, for about 1 second each. It also holds the lock while it
-starts an engine, puts one to sleep, wakes one or writes a KV limit. So a read
-of a Pod with five busy engines can take longer than the deadline. Calls that
-change state, such as starting an engine, wait up to 60 seconds. The runtime
-gives vLLM up to 50 seconds to put an engine to sleep or to wake it. A first
-sleep copies the model's weights to host memory, which takes tens of seconds
-for a large model, and reads of that runtime wait for it.
+normally takes a fraction of a second, because the runtime asks its engines
+concurrently and does not wait for an engine that is being started, put to
+sleep or woken. The runtime still changes the engines of a Pod one at a time.
+Calls that change state, such as starting an engine, wait up to 60 seconds. The
+runtime gives vLLM up to 50 seconds to put an engine to sleep or wake it, since
+a first sleep copies the model's weights to host memory. vLLM can fail a sleep
+after it has offloaded the weights, when another engine on the card takes
+memory at the same time. The runtime then tries again, up to three attempts in
+all. With nothing left to offload, the next attempt normally completes the
+sleep.
 
 A runtime that does not answer in time is left alone for 10 seconds, which is
 one round. Calls to it fail at once until then, so one runtime that stopped
