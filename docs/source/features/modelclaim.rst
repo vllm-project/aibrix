@@ -275,6 +275,11 @@ Do not set ``--gpu-memory-utilization``. kvcached owns elastic KV-cache
 allocation, and the ModelClaim path rejects that flag. Data parallelism is not
 supported; ``--data-parallel-size`` must remain 1.
 
+Only ``perGPU`` can be changed after a claim is created. The other fields
+decide which engine runs and where, and the engine is started with them only
+once, so the API server rejects any change to them. To change one, create a
+new ModelClaim.
+
 Declare what a model costs on a card
 ------------------------------------
 
