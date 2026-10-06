@@ -198,8 +198,8 @@ class KVController(ABC):
 class SharedMemoryKVController(KVController):
     """Production kvcached control plane: writes a limit into the engine's
     kvcached segment, as `kvctl limit` does, without starting kvctl. Starting
-    it imports kvcached, which takes over a second, and the runtime holds its
-    lock while it sets a limit."""
+    it imports kvcached, which takes over a second, and every other change of
+    an engine on the Pod waits while a limit is set."""
 
     def set_limit(self, ipc_name: str, limit_bytes: int) -> None:
         if not write_kv_limit(ipc_name, limit_bytes):
@@ -828,12 +828,20 @@ def read_kv_segment(ipc_name: str, shm_dir: str = "/dev/shm"):
         return None
 
 
+# How long write_kv_limit waits for a segment's lock. The engine holds it only
+# while it rewrites a small struct, so a lock held this long means something is
+# stuck, and the write fails rather than wait for it.
+KV_LIMIT_LOCK_TIMEOUT_SECONDS = 5.0
+
+
 def write_kv_limit(ipc_name: str, limit_bytes: int, shm_dir: str = "/dev/shm") -> bool:
     """Set total_size, the first field of a model's kvcached segment, the way
     kvcached's own update_kv_cache_limit does: under an exclusive flock on the
     segment file. The engine takes the same lock to rewrite the struct with
     what it uses, so neither write is lost. Returns False, and writes nothing,
     when the segment does not exist, as kvctl leaves a missing segment alone.
+    Raises TimeoutError, and writes nothing, when the lock stays held for
+    KV_LIMIT_LOCK_TIMEOUT_SECONDS.
     """
     import fcntl
     import struct
@@ -844,7 +852,18 @@ def write_kv_limit(ipc_name: str, limit_bytes: int, shm_dir: str = "/dev/shm") -
     except FileNotFoundError:
         return False
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        deadline = time.monotonic() + KV_LIMIT_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"kvcached segment {ipc_name} stayed locked for "
+                        f"{KV_LIMIT_LOCK_TIMEOUT_SECONDS:g} seconds"
+                    )
+                time.sleep(0.01)
         os.pwrite(fd, struct.pack("<q", limit_bytes), 0)
     finally:
         os.close(fd)
@@ -1674,31 +1693,40 @@ class ModelRuntime:
             raise ValueError("limit_bytes must be non-negative")
         if not operation_id:
             raise ValueError("operation_id must not be empty")
-        with self._operation_lock, self._lock:
-            inst = self._require_instance(model_name)
-            self._kv_limit_requested_bytes[model_name] = limit_bytes
-            if self._operation_completed(inst, "kv-limit", operation_id):
-                self._increment_metric(self._kv_limit_outcomes, (model_name, "skipped"))
-                return RuntimeOperationResult(
-                    model_name=model_name,
-                    operation_id=operation_id,
-                    applied=False,
-                    phase=inst.phase,
-                )
+        with self._operation_lock:
+            with self._lock:
+                inst = self._require_instance(model_name)
+                self._kv_limit_requested_bytes[model_name] = limit_bytes
+                if self._operation_completed(inst, "kv-limit", operation_id):
+                    self._increment_metric(
+                        self._kv_limit_outcomes, (model_name, "skipped")
+                    )
+                    return RuntimeOperationResult(
+                        model_name=model_name,
+                        operation_id=operation_id,
+                        applied=False,
+                        phase=inst.phase,
+                    )
+            # The write may wait for the lock the engine takes on its segment, so
+            # it runs without _lock, and a snapshot never waits for it.
             try:
                 self._kv_controller.set_limit(inst.ipc_name, limit_bytes)
             except Exception:
-                self._increment_metric(self._kv_limit_outcomes, (model_name, "failed"))
+                with self._lock:
+                    self._increment_metric(
+                        self._kv_limit_outcomes, (model_name, "failed")
+                    )
                 raise
-            self._kv_limit_applied_bytes[model_name] = limit_bytes
-            self._increment_metric(self._kv_limit_outcomes, (model_name, "applied"))
-            self._remember_operation(inst, "kv-limit", operation_id)
-            return RuntimeOperationResult(
-                model_name=model_name,
-                operation_id=operation_id,
-                applied=True,
-                phase=inst.phase,
-            )
+            with self._lock:
+                self._kv_limit_applied_bytes[model_name] = limit_bytes
+                self._increment_metric(self._kv_limit_outcomes, (model_name, "applied"))
+                self._remember_operation(inst, "kv-limit", operation_id)
+                return RuntimeOperationResult(
+                    model_name=model_name,
+                    operation_id=operation_id,
+                    applied=True,
+                    phase=inst.phase,
+                )
 
     def sleep(
         self, model_name: str, *, level: int, operation_id: str

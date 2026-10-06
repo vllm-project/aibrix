@@ -556,6 +556,24 @@ def test_write_kv_limit_waits_for_the_lock_the_engine_takes(tmp_path):
     assert read_kv_segment("kvc_m1", shm_dir=str(tmp_path)) == (4096, 40, 10)
 
 
+def test_write_kv_limit_gives_up_on_a_lock_that_stays_held(tmp_path, monkeypatch):
+    import fcntl
+    import struct
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.model_runtime import read_kv_segment, write_kv_limit
+
+    monkeypatch.setattr(runtime_module, "KV_LIMIT_LOCK_TIMEOUT_SECONDS", 0.1)
+    segment = tmp_path / "kvc_m1"
+    segment.write_bytes(struct.pack("<3q", 100, 40, 10))
+    with open(segment, "r+b") as engine:
+        fcntl.flock(engine, fcntl.LOCK_EX)
+        with pytest.raises(TimeoutError, match="kvc_m1"):
+            write_kv_limit("kvc_m1", 4096, shm_dir=str(tmp_path))
+
+    assert read_kv_segment("kvc_m1", shm_dir=str(tmp_path)) == (100, 40, 10)
+
+
 def test_vllm_lifecycle_controls_use_checked_localhost_requests(monkeypatch):
 
     import aibrix.runtime.model_runtime as runtime_module
@@ -1401,6 +1419,36 @@ def test_a_change_of_an_engine_waits_for_its_sleep(monkeypatch):
     assert launcher.slept == [("m1", 1)]
     assert launcher.stopped == ["m1"]
     assert agent.list_models() == []
+
+
+def test_a_snapshot_does_not_wait_for_a_kv_limit_write(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda ipc_name: None)
+    writing, let_it_finish = threading.Event(), threading.Event()
+
+    class _SlowKVController:
+        def set_limit(self, ipc_name, limit_bytes):
+            writing.set()
+            assert let_it_finish.wait(5)
+
+    agent = ModelRuntime(MockEngineLauncher(), kv_controller=_SlowKVController())
+    agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    writer = threading.Thread(
+        target=lambda: agent.set_kv_limit("m1", 4096, operation_id="limit-1")
+    )
+    writer.start()
+    assert writing.wait(5)
+    taken = threading.Event()
+    threading.Thread(target=lambda: (agent.snapshot(), taken.set())).start()
+    try:
+        assert taken.wait(2), "a snapshot waited for a KV limit write"
+    finally:
+        let_it_finish.set()
+    writer.join(5)
+
+    assert agent.snapshot_metrics().kv_limit_applied_bytes == {"m1": 4096}
 
 
 def test_a_snapshot_does_not_wait_for_a_health_probe(monkeypatch):
