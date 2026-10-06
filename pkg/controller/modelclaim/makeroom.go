@@ -237,7 +237,8 @@ func betterPlan(plan, than roomPlan) bool {
 // when no room can be made for the claim now.
 //
 // Room is made for one claim in a pool at a time: the one that has waited
-// longest. It is made in a pool that keeps no wake reserve, on the pod where
+// longest of those that room can be made for, as firstToMakeRoomFor says. It
+// is made in a pool that keeps no wake reserve, on the pod where
 // the fewest engines would have to sleep, the ones idle longest, as told by
 // what each held the last time it slept. Where that is not known, it is made
 // first on the pod nearest to fitting. That card is
@@ -255,7 +256,7 @@ func (r *ModelClaimReconciler) makeRoomToPlace(
 	readings *runtimeReadings,
 ) (string, bool) {
 	now := r.now()
-	if !r.waitedLongest(ctx, pm, candidates) {
+	if !r.firstToMakeRoomFor(ctx, pm, candidates, ledgers, readings) {
 		return "", false
 	}
 	seat := perGPU.minimumReserveBytes()
@@ -316,7 +317,13 @@ func (r *ModelClaimReconciler) planRoom(
 		return roomPlan{}, false
 	}
 	lifecycle, can := r.roomCanBeMadeOn(ctx, pm, pod, ledger)
-	if !can {
+	if !can || r.wakeWaitsOn(ctx, pod, ledger, readings) {
+		return roomPlan{}, false
+	}
+	idle := r.idleEngines(ctx, pm, pod, lifecycle.sleepToMakeRoomAfter(), readings)
+	// No sleep is made for a claim that even every idle engine asleep would
+	// leave without room.
+	if !r.sleepsMakeRoom(ledger, idle, seat) {
 		return roomPlan{}, false
 	}
 	charged := make(map[string]engineOnPod, len(ledger.engines))
@@ -325,7 +332,7 @@ func (r *ModelClaimReconciler) planRoom(
 	}
 	floors, holding := ledger.maximumRoomBytes(), ledger.heldRoomBytes()
 	plan := roomPlan{pod: pod, room: holding}
-	for _, sleeper := range r.idleEngines(ctx, pm, pod, lifecycle.sleepToMakeRoomAfter(), readings) {
+	for _, sleeper := range idle {
 		engine, found := charged[sleeper.claim.Name]
 		if !found {
 			// An engine the account does not know of is left out. The ones
@@ -347,19 +354,89 @@ func (r *ModelClaimReconciler) planRoom(
 	return roomPlan{}, false
 }
 
-// waitedLongest reports whether a claim has waited longest of the claims that
-// wait for a card in its pool: the claims in its namespace that select one of
-// its candidate pods, and still miss an instance. A claim whose last start
-// failed is not among them, this one included, as room does not help it. The
-// claims are listed as the account lists them: the cache can miss an instance
-// recorded a moment ago, and a claim just placed would then seem to wait.
-func (r *ModelClaimReconciler) waitedLongest(ctx context.Context, pm *modelv1alpha1.ModelClaim, candidates []corev1.Pod) bool {
-	if pm.Status.Phase == modelv1alpha1.ModelClaimFailed {
+// firstToMakeRoomFor reports whether room is to be made for a claim now. It is
+// the claim that has waited longest of those that room can be made for, as
+// Kueue's BestEffortFIFO admits workloads: a claim that has waited longer, but
+// that no room can be made for on any pod now, does not hold up the ones behind
+// it. A claim that holds a card keeps its turn, so that the room made for it is
+// not taken by a claim behind it. The claims that wait are the ones
+// waitingClaims lists.
+func (r *ModelClaimReconciler) firstToMakeRoomFor(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	candidates []corev1.Pod,
+	ledgers map[string]podLedger,
+	readings *runtimeReadings,
+) bool {
+	now := r.now()
+	if _, holding := r.reservations().heldFor(pm.Namespace, pm.Name, now); holding {
+		return true
+	}
+	waiting, listed := r.waitingClaims(ctx, pm, candidates)
+	if !listed {
 		return false
+	}
+	for i := range waiting {
+		claim := &waiting[i]
+		if claim.Name == pm.Name {
+			return true
+		}
+		if _, holding := r.reservations().heldFor(claim.Namespace, claim.Name, now); holding {
+			return false
+		}
+		perGPU, err := perGPUBytesOf(claim)
+		if err != nil {
+			continue
+		}
+		for j := range candidates {
+			pod := &candidates[j]
+			if !selects(claim, pod) {
+				continue
+			}
+			if _, found := r.planRoom(ctx, claim, pod, ledgers[pod.Name], perGPU.minimumReserveBytes(), readings); found {
+				return false
+			}
+		}
+	}
+	return false
+}
+
+// wakeWaitsOn reports whether a request to wake a sleeping engine on a card can
+// be met there, now or once room is made. Such a card is left to that request:
+// a request to wake an engine goes before a claim that has not served yet.
+func (r *ModelClaimReconciler) wakeWaitsOn(ctx context.Context, pod *corev1.Pod, ledger podLedger, readings *runtimeReadings) bool {
+	for _, engine := range ledger.engines {
+		if !engine.asleep || !wakeAsked(pod, engine.claimName) {
+			continue
+		}
+		waker := &modelv1alpha1.ModelClaim{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: engine.claimName}, waker); err != nil {
+			continue
+		}
+		if turn, _ := r.wakeTurnOn(ctx, waker, pod, ledger, readings); turn != wakeCannotFit {
+			return true
+		}
+	}
+	return false
+}
+
+// waitingClaims lists, oldest first, the claims that wait for a card in a
+// claim's pool: the claims in its namespace that select one of its candidate
+// pods, and still miss an instance. A claim whose last start failed is not
+// among them, the given one included, as room does not help it. The claims are
+// listed as the account lists them: the cache can miss an instance recorded a
+// moment ago, and a claim just placed would then seem to wait.
+func (r *ModelClaimReconciler) waitingClaims(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	candidates []corev1.Pod,
+) ([]modelv1alpha1.ModelClaim, bool) {
+	if pm.Status.Phase == modelv1alpha1.ModelClaimFailed {
+		return nil, false
 	}
 	claims, err := r.listClaimsForAccount(ctx, pm.Namespace)
 	if err != nil {
-		return false
+		return nil, false
 	}
 	var waiting []modelv1alpha1.ModelClaim
 	for i := range claims.Items {
@@ -375,7 +452,12 @@ func (r *ModelClaimReconciler) waitedLongest(ctx context.Context, pm *modelv1alp
 		waiting = append(waiting, claim)
 	}
 	oldestFirst(waiting)
-	return len(waiting) > 0 && waiting[0].Name == pm.Name
+	return waiting, true
+}
+
+// selects reports whether a claim selects a pod.
+func selects(claim *modelv1alpha1.ModelClaim, pod *corev1.Pod) bool {
+	return selectsAny(claim, []corev1.Pod{*pod})
 }
 
 // selectsAny reports whether a claim selects any of the pods.

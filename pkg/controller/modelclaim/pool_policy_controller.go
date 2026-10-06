@@ -391,78 +391,12 @@ func (r *ModelClaimReconciler) reconcilePoolPolicy(
 			klog.V(4).InfoS("pool policy received empty runtime snapshot", "pod", klog.KObj(pod))
 			continue
 		}
-		if len(snapshot.Accelerators) != 1 {
-			// Dynamic KV limits remain held to the verified single-GPU contract
-			// until multi-GPU kvcached accounting is tested.
-			recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonUnsupportedTopology)
-			klog.V(4).InfoS("pool policy skips non-single-GPU runtime", "pod", klog.KObj(pod))
-			continue
-		}
 		decisionTime := snapshot.ObservedAt
 		if decisionTime.IsZero() {
 			decisionTime = manager.now()
 		}
 		activities, observed := manager.observeSnapshot(pod, snapshot)
-		if source.policy.Reclaim != nil && r.claimHoldsAKVLimitOn(ctx, pod) {
-			// A claim that declares its per-GPU cost has its engines held to a
-			// limit derived from that declaration, and the health loop writes
-			// that limit back whenever it finds another one in force. Two
-			// writers on one segment would only overwrite each other, so the
-			// declaration wins and the annotation stands down for this Pod.
-			recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonClaimHeldLimits)
-			klog.V(4).InfoS("pool KV policy stands down where a claim holds the limit", "pod", klog.KObj(pod))
-		} else if source.policy.Reclaim != nil && !observed {
-			recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonIncompleteMetrics)
-			klog.V(4).InfoS("pool KV policy waits for complete request observations", "pod", klog.KObj(pod))
-		} else if source.policy.Reclaim != nil {
-			models := modelsForKVPolicy(snapshot, activities)
-			targets, err := computePoolKVTargets(
-				source.policy.Reclaim.CapacityBytes,
-				source.policy.Reclaim.GuaranteedFloorPercent,
-				models,
-			)
-			if err != nil {
-				recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonUnsafePlan)
-				klog.V(4).InfoS("pool policy did not produce a safe KV plan", "pod", klog.KObj(pod), "err", err)
-			} else {
-				applied, failed := 0, 0
-				for _, model := range snapshot.Models {
-					target, found := targets[model.ModelName]
-					if !found || target == model.KVCapacityBytes {
-						continue
-					}
-					operationID := fmt.Sprintf(
-						"pool-policy-kv/%s/%s/%s/%d/%d",
-						source.key.String(), pod.UID, snapshotActivityKey(model), target, decisionTime.UnixNano(),
-					)
-					response, err := r.Runtime.SetKVLimit(ctx, pod.Status.PodIP, DefaultRuntimePort, &SetKVLimitRequest{
-						ModelName: model.ModelName, LimitBytes: target, OperationID: operationID,
-					})
-					switch {
-					case err != nil:
-						failed++
-						recordPolicyAction(source.key, policyActionSetKVLimit, policyResultFailed, policyReasonRuntimeError)
-						klog.ErrorS(err, "pool policy could not apply KV limit", "pod", klog.KObj(pod), "model", model.ModelName, "target", target)
-					case response == nil || !response.Applied:
-						recordPolicyAction(source.key, policyActionSetKVLimit, policyResultSkipped, policyReasonNoChange)
-					default:
-						applied++
-						recordPolicyAction(source.key, policyActionSetKVLimit, policyResultApplied, policyReasonApplied)
-					}
-				}
-				if applied > 0 || failed > 0 {
-					readings.forget(pod.Name)
-				}
-				switch {
-				case failed > 0:
-					recordPolicyEvaluation(source.key, policyResultFailed, policyReasonRuntimeError)
-				case applied > 0:
-					recordPolicyEvaluation(source.key, policyResultApplied, policyReasonApplied)
-				default:
-					recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonNoChange)
-				}
-			}
-		}
+		r.reconcilePoolKVPolicy(ctx, source, pod, snapshot, activities, observed, decisionTime, readings)
 		if source.policy.Lifecycle != nil && !observed {
 			klog.V(4).InfoS("pool lifecycle policy waits for complete request observations", "pod", klog.KObj(pod))
 		} else if source.policy.Lifecycle != nil && source.policy.Lifecycle.SleepAfterSeconds > 0 {
@@ -502,6 +436,85 @@ func (m *poolPolicyManager) observeSnapshot(
 		return nil, false
 	}
 	return activities, true
+}
+
+// reconcilePoolKVPolicy applies a pool's KV reclaim policy to one of its pods.
+func (r *ModelClaimReconciler) reconcilePoolKVPolicy(
+	ctx context.Context,
+	source *poolPolicySource,
+	pod *corev1.Pod,
+	snapshot *RuntimeSnapshot,
+	activities map[string]poolRequestActivity,
+	observed bool,
+	decisionTime time.Time,
+	readings *runtimeReadings,
+) {
+	if source.policy.Reclaim != nil && len(snapshot.Accelerators) != 1 {
+		// Dynamic KV limits remain held to the verified single-GPU contract
+		// until multi-GPU kvcached accounting is tested. The engines on
+		// such a pod are still observed, and put to sleep when idle.
+		recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonUnsupportedTopology)
+		klog.V(4).InfoS("pool KV policy skips non-single-GPU runtime", "pod", klog.KObj(pod))
+	} else if source.policy.Reclaim != nil && r.claimHoldsAKVLimitOn(ctx, pod) {
+		// A claim that declares its per-GPU cost has its engines held to a
+		// limit derived from that declaration, and the health loop writes
+		// that limit back whenever it finds another one in force. Two
+		// writers on one segment would only overwrite each other, so the
+		// declaration wins and the annotation stands down for this Pod.
+		recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonClaimHeldLimits)
+		klog.V(4).InfoS("pool KV policy stands down where a claim holds the limit", "pod", klog.KObj(pod))
+	} else if source.policy.Reclaim != nil && !observed {
+		recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonIncompleteMetrics)
+		klog.V(4).InfoS("pool KV policy waits for complete request observations", "pod", klog.KObj(pod))
+	} else if source.policy.Reclaim != nil {
+		models := modelsForKVPolicy(snapshot, activities)
+		targets, err := computePoolKVTargets(
+			source.policy.Reclaim.CapacityBytes,
+			source.policy.Reclaim.GuaranteedFloorPercent,
+			models,
+		)
+		if err != nil {
+			recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonUnsafePlan)
+			klog.V(4).InfoS("pool policy did not produce a safe KV plan", "pod", klog.KObj(pod), "err", err)
+		} else {
+			applied, failed := 0, 0
+			for _, model := range snapshot.Models {
+				target, found := targets[model.ModelName]
+				if !found || target == model.KVCapacityBytes {
+					continue
+				}
+				operationID := fmt.Sprintf(
+					"pool-policy-kv/%s/%s/%s/%d/%d",
+					source.key.String(), pod.UID, snapshotActivityKey(model), target, decisionTime.UnixNano(),
+				)
+				response, err := r.Runtime.SetKVLimit(ctx, pod.Status.PodIP, DefaultRuntimePort, &SetKVLimitRequest{
+					ModelName: model.ModelName, LimitBytes: target, OperationID: operationID,
+				})
+				switch {
+				case err != nil:
+					failed++
+					recordPolicyAction(source.key, policyActionSetKVLimit, policyResultFailed, policyReasonRuntimeError)
+					klog.ErrorS(err, "pool policy could not apply KV limit", "pod", klog.KObj(pod), "model", model.ModelName, "target", target)
+				case response == nil || !response.Applied:
+					recordPolicyAction(source.key, policyActionSetKVLimit, policyResultSkipped, policyReasonNoChange)
+				default:
+					applied++
+					recordPolicyAction(source.key, policyActionSetKVLimit, policyResultApplied, policyReasonApplied)
+				}
+			}
+			if applied > 0 || failed > 0 {
+				readings.forget(pod.Name)
+			}
+			switch {
+			case failed > 0:
+				recordPolicyEvaluation(source.key, policyResultFailed, policyReasonRuntimeError)
+			case applied > 0:
+				recordPolicyEvaluation(source.key, policyResultApplied, policyReasonApplied)
+			default:
+				recordPolicyEvaluation(source.key, policyResultSkipped, policyReasonNoChange)
+			}
+		}
+	}
 }
 
 func modelsForKVPolicy(

@@ -368,6 +368,12 @@ func placementStateLess(a, b PodPlacementState) bool {
 	if a.MaximumRoomKnown != b.MaximumRoomKnown {
 		return a.MaximumRoomKnown
 	}
+	// The engines on a card share its compute, so of two cards that both take
+	// the model, the one with fewer engines awake goes first, as KServe
+	// ModelMesh prefers the instance with the fewest models. Room then decides.
+	if a.SnapshotKnown && a.AwakeCount != b.AwakeCount {
+		return a.AwakeCount < b.AwakeCount
+	}
 	if a.MaximumRoomKnown && a.MaximumRoomBytes != b.MaximumRoomBytes {
 		return a.MaximumRoomBytes > b.MaximumRoomBytes
 	}

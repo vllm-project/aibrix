@@ -254,6 +254,30 @@ func (l podLedger) heldRoomBytes() int64 {
 	return l.hbmUsableBytes - l.totalHeldBytes - l.reservedBytes
 }
 
+// withWakeReserve returns the account with the wake reserve of a claim's
+// sleeping engine put back, or taken off again. Only an engine whose reserve
+// the account gave back while it slept has one to take off. The engines are
+// copied, so the account it came from is left as it was.
+func (l podLedger) withWakeReserve(claimName string, asked bool) podLedger {
+	engines := make([]engineOnPod, len(l.engines))
+	copy(engines, l.engines)
+	for i := range engines {
+		engine := &engines[i]
+		if engine.claimName != claimName || engine.wakeReserveAsked == asked ||
+			(!engine.wakeReserveAsked && !engine.withoutWakeReserve) {
+			continue
+		}
+		l.totalMinimumReserveBytes -= engine.minimumReserveBytes()
+		l.totalHeldBytes -= engine.heldBytes()
+		engine.wakeReserveAsked = asked
+		engine.withoutWakeReserve = !asked
+		l.totalMinimumReserveBytes += engine.minimumReserveBytes()
+		l.totalHeldBytes += engine.heldBytes()
+	}
+	l.engines = engines
+	return l
+}
+
 // withHole marks an account that cannot be trusted, keeping the first cause
 // found: one reason an operator can act on beats a list that grows with the
 // pool.
@@ -434,15 +458,12 @@ func podLedgersFrom(
 				continue
 			}
 			// A sleeping engine whose pool keeps no wake reserve is charged
-			// only what its runtime measured it to hold asleep. A request to
-			// wake it puts the reserve back at once, so the room is its own
-			// again from then on. An engine whose memory asleep is not known
-			// keeps its reserve, since nothing says how much of it is free.
-			// So does one on a pod with more than one card: the runtime
-			// measures one card, and the pool policy makes no room on such
-			// a pod either.
-			keepsNone := withoutWakeReserve[instance.Pod] && engine.sleepingFootprintBytes > 0 &&
-				ledger.accelerators == 1
+			// only what its runtime measured it to hold asleep, on its
+			// heaviest card when it has several. A request to wake it puts
+			// the reserve back at once, so the room is its own again from
+			// then on. An engine whose memory asleep is not known keeps its
+			// reserve, since nothing says how much of it is free.
+			keepsNone := withoutWakeReserve[instance.Pod] && engine.sleepingFootprintBytes > 0
 			asked := wakeAsked(pods[instance.Pod], claim.Name)
 			engine.withoutWakeReserve = keepsNone && !asked
 			engine.wakeReserveAsked = keepsNone && asked

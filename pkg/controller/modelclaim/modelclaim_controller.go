@@ -2087,8 +2087,8 @@ const (
 // An engine that served goes on for deletionDrainGrace, so that the gateway
 // stops sending it requests, and then for as long as it has a request running
 // or waiting, up to deletionDrainTimeout after the deletion. One whose runtime
-// cannot be read is stopped after deletionDrainGrace. An engine that did not
-// serve is stopped at once.
+// cannot be read, or shows no request metrics for it, is stopped after
+// deletionDrainGrace. An engine that did not serve is stopped at once.
 func (r *ModelClaimReconciler) drainBeforeStop(ctx context.Context, pm *modelv1alpha1.ModelClaim) time.Duration {
 	served := false
 	for _, inst := range pm.Status.Instances {
@@ -2201,9 +2201,10 @@ func modelPoolPodFilter() predicate.Predicate {
 	}
 }
 
-// annotationsAloneDiffer reports whether two versions of a pod differ in their
-// annotations and in nothing else.
-func annotationsAloneDiffer(oldPod, newPod *corev1.Pod) bool {
+// sameApartFromAnnotations reports whether two versions of a pod are the same
+// apart from their annotations. The resource version and the managed fields
+// change with every write, so they are left out too.
+func sameApartFromAnnotations(oldPod, newPod *corev1.Pod) bool {
 	before, after := oldPod.DeepCopy(), newPod.DeepCopy()
 	for _, pod := range []*corev1.Pod{before, after} {
 		pod.Annotations = nil
@@ -2221,7 +2222,7 @@ func notOnlyAnnotationsChanged() predicate.Predicate {
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			oldPod, okOld := e.ObjectOld.(*corev1.Pod)
 			newPod, okNew := e.ObjectNew.(*corev1.Pod)
-			return !okOld || !okNew || !annotationsAloneDiffer(oldPod, newPod)
+			return !okOld || !okNew || !sameApartFromAnnotations(oldPod, newPod)
 		},
 	}
 }
@@ -2236,7 +2237,8 @@ func onlyAnnotationsChanged() predicate.Predicate {
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			oldPod, okOld := e.ObjectOld.(*corev1.Pod)
 			newPod, okNew := e.ObjectNew.(*corev1.Pod)
-			return okOld && okNew && annotationsAloneDiffer(oldPod, newPod)
+			return okOld && okNew && sameApartFromAnnotations(oldPod, newPod) &&
+				!equality.Semantic.DeepEqual(oldPod.Annotations, newPod.Annotations)
 		},
 	}
 }

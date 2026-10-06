@@ -298,6 +298,38 @@ func TestRankingPrefersTheCardWithTheMostRoomNotTheMostFreeMemory(t *testing.T) 
 	assert.False(t, placementStateLess(states["tight"], states["roomy"]))
 }
 
+func TestRankingPrefersTheCardWithFewerEnginesAwakeBeforeRoom(t *testing.T) {
+	// "crowded" has more room, but three engines awake share its compute.
+	states := map[string]PodPlacementState{
+		"crowded": {SnapshotKnown: true, MemoryKnown: true, AwakeCount: 3, ModelCount: 3},
+		"quiet":   {SnapshotKnown: true, MemoryKnown: true, AwakeCount: 1, ModelCount: 3},
+	}
+	ledgers := map[string]podLedger{
+		"crowded": {judgeable: true, hbmUsableBytes: 1000, totalMinimumReserveBytes: 300},
+		"quiet":   {judgeable: true, hbmUsableBytes: 1000, totalMinimumReserveBytes: 600},
+	}
+
+	rankByRoom(states, ledgers)
+
+	assert.True(t, placementStateLess(states["quiet"], states["crowded"]))
+	assert.False(t, placementStateLess(states["crowded"], states["quiet"]))
+}
+
+func TestPlacementStateCountsTheEnginesAwake(t *testing.T) {
+	snapshot := &RuntimeSnapshot{Models: []RuntimeSnapshotModel{
+		{ModelName: "serving", Phase: runtimePhaseActive},
+		{ModelName: "starting", Phase: "booting"},
+		{ModelName: "asleep", Phase: runtimePhaseSleeping},
+		{ModelName: "failed", Phase: runtimePhaseFailed},
+		{ModelName: "stopping", Phase: runtimePhaseStopping},
+	}}
+
+	state := placementStateFromSnapshot(snapshot, "hf://Org/M1", 1)
+
+	assert.Equal(t, 2, state.AwakeCount)
+	assert.Equal(t, 5, state.ModelCount)
+}
+
 func TestRankingPutsACardWithoutAnAccountLast(t *testing.T) {
 	states := map[string]PodPlacementState{
 		"judged":  {SnapshotKnown: true, MemoryKnown: true},

@@ -424,13 +424,55 @@ def test_sleeping_footprint_is_unknown_when_the_engines_process_is_gone():
     assert sleeping_footprint_bytes({100}, before, after) is None
 
 
-def test_sleeping_footprint_is_unknown_for_an_engine_on_two_cards():
+def test_sleeping_footprint_of_an_engine_on_two_cards_is_its_heaviest_card():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    # One worker on each card, and a neighbour engine on both.
+    before = {
+        100: {"GPU-0": 19 * GIB},
+        101: {"GPU-1": 19 * GIB},
+        200: {"GPU-0": 9 * GIB},
+        201: {"GPU-1": 9 * GIB},
+    }
+    after = {
+        100: {"GPU-0": 2 * GIB},
+        101: {"GPU-1": 3 * GIB},
+        200: {"GPU-0": 9 * GIB},
+        201: {"GPU-1": 9 * GIB},
+    }
+
+    assert sleeping_footprint_bytes({100, 101}, before, after) == 3 * GIB
+
+
+def test_sleeping_footprint_of_an_engine_on_two_cards_under_host_pids():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    before = {
+        900: {"GPU-0": 19 * GIB},
+        901: {"GPU-1": 19 * GIB},
+        902: {"GPU-0": 9 * GIB},
+        903: {"GPU-1": 9 * GIB},
+    }
+    after = {
+        900: {"GPU-0": 2 * GIB},
+        901: {"GPU-1": 3 * GIB},
+        902: {"GPU-0": 9 * GIB + 128 * 2**20},
+        903: {"GPU-1": 9 * GIB},
+    }
+
+    assert sleeping_footprint_bytes({100, 101}, before, after) == 3 * GIB
+
+
+def test_sleeping_footprint_is_unknown_when_one_of_two_cards_did_not_fall():
     from aibrix.runtime.model_runtime import sleeping_footprint_bytes
 
     before = {100: {"GPU-0": 19 * GIB}, 101: {"GPU-1": 19 * GIB}}
-    after = {100: {"GPU-0": 2 * GIB}, 101: {"GPU-1": 2 * GIB}}
+    after = {100: {"GPU-0": 2 * GIB}, 101: {"GPU-1": 19 * GIB}}
+    host_before = {900: {"GPU-0": 19 * GIB}, 901: {"GPU-1": 19 * GIB}}
+    host_after = {900: {"GPU-0": 2 * GIB}, 901: {"GPU-1": 19 * GIB}}
 
     assert sleeping_footprint_bytes({100, 101}, before, after) is None
+    assert sleeping_footprint_bytes({100, 101}, host_before, host_after) is None
 
 
 def test_sleep_records_the_footprint_and_wake_forgets_it(monkeypatch):

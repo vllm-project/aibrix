@@ -443,7 +443,8 @@ def sleeping_footprint_bytes(
     before: Dict[int, Dict[str, int]],
     after: Dict[int, Dict[str, int]],
 ) -> Optional[int]:
-    """Return the GPU memory an engine holds right after it went to sleep.
+    """Return the GPU memory an engine holds on a card right after it went to
+    sleep.
 
     ``before`` and ``after`` are NVML's per-process readings, keyed by process
     ID and GPU UUID, taken just before the engine was asked to sleep and just
@@ -452,18 +453,22 @@ def sleeping_footprint_bytes(
     The engine's own processes are matched first. That works when the driver
     reports processes in this container's PID namespace. Some drivers report
     host PIDs instead, and then nothing matches. The engine is then told apart
-    by what the sleep did: it gave back its weights, so its process is the one
-    whose memory fell by far the most. The runtime puts one engine to sleep at
-    a time, so no other process on the card falls like that in the same moment.
-    Only that process is counted then. An engine on one card keeps its GPU
-    memory in one process, its engine core, so that is all of it.
+    by what the sleep did: it gave back its weights, so on each card its
+    process is the one whose memory fell by far the most. The runtime puts one
+    engine to sleep at a time, so no other process on the card falls like that
+    in the same moment. Only that process is counted then. An engine keeps its
+    GPU memory on a card in one process: its engine core, or under tensor or
+    pipeline parallelism the worker on that card.
 
     When the engine's own processes are found, their memory is the answer, or
     there is none. Another process's drop is never taken for theirs, even when
     theirs has not fallen like a sleep yet: a figure too small would give the
     rest of the engine's reservation to other models, while no figure keeps
-    it. An engine whose processes hold memory on more than one card has no
-    single figure either.
+    it.
+
+    An engine on several cards is read on each of them, and holds what it
+    holds on the heaviest one, as a claim declares its cost for the heaviest
+    device. A card on which it cannot be told leaves no figure.
 
     A drop too small, or one that does not stand out from the next one, says
     nothing, and the reading is unknown. So is a reading of zero: an engine
@@ -490,30 +495,34 @@ def sleeping_footprint_bytes(
     held_before = tree_on(before)
     held_after = tree_on(after)
     if held_before or held_after:
-        accelerators = set(held_before) | set(held_after)
-        if len(accelerators) != 1:
-            return None
-        (accelerator,) = accelerators
-        before_sleep = held_before.get(accelerator, 0)
-        after_sleep = held_after.get(accelerator, 0)
-        if falls_like_a_sleep(before_sleep, after_sleep):
-            return after_sleep
-        return None
+        held = []
+        for accelerator in set(held_before) | set(held_after):
+            before_sleep = held_before.get(accelerator, 0)
+            after_sleep = held_after.get(accelerator, 0)
+            if not falls_like_a_sleep(before_sleep, after_sleep):
+                return None
+            held.append(after_sleep)
+        return max(held)
 
-    drops = []
+    drops_on: Dict[str, list[tuple[int, int, int]]] = {}
     for pid, readings in after.items():
-        for accelerator, held in readings.items():
+        for accelerator, held_now in readings.items():
             was = before.get(pid, {}).get(accelerator)
             if was is not None:
-                drops.append((was - held, was, held))
-    if not drops:
+                drops_on.setdefault(accelerator, []).append(
+                    (was - held_now, was, held_now)
+                )
+    if not drops_on:
         return None
-    drops.sort(reverse=True)
-    _, was, held = drops[0]
-    runner_up = drops[1][0] if len(drops) > 1 else 0
-    if falls_like_a_sleep(was, held, runner_up):
-        return held
-    return None
+    held = []
+    for drops in drops_on.values():
+        drops.sort(reverse=True)
+        _, was, held_now = drops[0]
+        runner_up = drops[1][0] if len(drops) > 1 else 0
+        if not falls_like_a_sleep(was, held_now, runner_up):
+            return None
+        held.append(held_now)
+    return max(held)
 
 
 def write_cache_marker(
@@ -1143,13 +1152,13 @@ class ModelRuntime:
         self._launcher = launcher
         self._kv_controller = kv_controller or SharedMemoryKVController()
         self._models: Dict[str, ModelInstance] = {}
-        # _lock guards the records of the engines, and is held only while they
-        # are read or changed. A snapshot takes it for a moment, so it never
-        # waits for an engine. _operation_lock is taken first by every change
-        # of an engine (activate, deactivate, KV limit, sleep, wake and the
-        # supervisor), so changes happen one at a time. The slow parts of
-        # a change, its calls to the engine and its NVML readings, run without
-        # _lock.
+        # _lock guards the records of the engines. Sleeps, wakes, KV-limit
+        # writes and health probes do their slow work without it, so a
+        # snapshot does not wait for them. Activate and deactivate hold it
+        # while they start or stop an engine, which is quick unless the
+        # weights have to be downloaded first. _operation_lock is taken first
+        # by every change of an engine (activate, deactivate, KV limit, sleep,
+        # wake and the supervisor), so changes happen one at a time.
         self._lock = threading.RLock()
         self._operation_lock = threading.RLock()
         self._port_lo, self._port_hi = port_range
