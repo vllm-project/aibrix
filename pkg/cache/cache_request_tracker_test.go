@@ -759,12 +759,18 @@ func TestLatestPodReadySince(t *testing.T) {
 	readySinceA := metaPodA.readySince.Load()
 	assert.Equal(t, readySinceA, cache.LatestPodReadySince())
 
-	// podB is added strictly after podA, so it becomes the new max.
+	// podB is added strictly after podA, so it becomes the new max. readySince is a
+	// wall-clock reading (see informers.go), and a coarse clock can hand two adds in the
+	// same tick the same nanosecond, so wait for the clock to move on rather than assuming
+	// that it did.
+	require.Eventually(t, func() bool {
+		return time.Now().UnixNano() > readySinceA
+	}, 2*time.Second, time.Millisecond, "the wall clock must advance for podB to outrank podA")
 	cache.addPod(requestTrackerTestPod("podB", namespace, modelName, "10.0.0.2"))
 	metaPodB, ok := cache.metaPods.Load(namespace + "/podB")
 	require.True(t, ok)
 	readySinceB := metaPodB.readySince.Load()
-	require.Greater(t, readySinceB, readySinceA, "test assumes wall-clock time advanced between adds")
+	require.Greater(t, readySinceB, readySinceA, "podB's fresh readySince must outrank podA's")
 	assert.Equal(t, readySinceB, cache.LatestPodReadySince())
 
 	// A same-IP flaky re-add of podA resumes its original (older) readySince -- the running max
