@@ -571,24 +571,6 @@ func cleanupLifecycleResources(
 			t.Logf("delete ModelClaim %s: %v", name, err)
 		}
 	}
-	claimsErr := wait.PollUntilContextTimeout(ctx, time.Second, 20*time.Second, true,
-		func(ctx context.Context) (bool, error) {
-			for _, name := range []string{lifecycleIdleClaim, lifecycleBusyClaim} {
-				_, err := claims.Get(ctx, name, metav1.GetOptions{})
-				if err == nil {
-					return false, nil
-				}
-				if !apierrors.IsNotFound(err) {
-					return false, err
-				}
-			}
-			return true, nil
-		})
-	if requireComplete {
-		require.NoError(t, claimsErr, "timed out waiting for ModelClaim lifecycle claims to be deleted")
-	} else if claimsErr != nil {
-		t.Logf("wait for stale ModelClaim lifecycle claims: %v", claimsErr)
-	}
 	err := k8sClient.AppsV1().Deployments(lifecycleNamespace).Delete(
 		ctx, lifecycleDeploymentName, metav1.DeleteOptions{},
 	)
@@ -615,6 +597,27 @@ func cleanupLifecycleResources(
 		require.NoError(t, err, "timed out waiting for ModelClaim lifecycle pool pods to be deleted")
 	} else if err != nil {
 		t.Logf("wait for stale ModelClaim lifecycle pool pods: %v", err)
+	}
+	// An Active engine may report an in-flight request forever in this mock
+	// pool. Removing its pod ends that drain without waiting for the controller's
+	// 90-second safety timeout, after which the finalizer can complete.
+	claimsErr := wait.PollUntilContextTimeout(ctx, time.Second, 20*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			for _, name := range []string{lifecycleIdleClaim, lifecycleBusyClaim} {
+				_, err := claims.Get(ctx, name, metav1.GetOptions{})
+				if err == nil {
+					return false, nil
+				}
+				if !apierrors.IsNotFound(err) {
+					return false, err
+				}
+			}
+			return true, nil
+		})
+	if requireComplete {
+		require.NoError(t, claimsErr, "timed out waiting for ModelClaim lifecycle claims to be deleted")
+	} else if claimsErr != nil {
+		t.Logf("wait for stale ModelClaim lifecycle claims: %v", claimsErr)
 	}
 }
 

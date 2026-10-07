@@ -69,19 +69,19 @@ func TestModelClaimDeletionCleansRuntimeAndGateway(t *testing.T) {
 	)
 	require.NoError(t, err)
 	pod := waitForLifecyclePoolPod(t, ctx, k8sClient)
-	createLifecycleClaim(t, ctx, aibrixClient, lifecycleBusyClaim, lifecycleBusyModel)
+	createLifecycleClaim(t, ctx, aibrixClient, lifecycleIdleClaim, lifecycleIdleModel)
 	waitForLifecycleClaimPhase(
-		t, ctx, aibrixClient, lifecycleBusyClaim, modelv1alpha1.ModelClaimActive,
+		t, ctx, aibrixClient, lifecycleIdleClaim, modelv1alpha1.ModelClaimActive,
 	)
-	waitForLifecycleModelStatus(t, lifecycleBusyModel, http.StatusOK, 30*time.Second)
+	waitForLifecycleModelStatus(t, lifecycleIdleModel, http.StatusOK, 30*time.Second)
 
 	require.NoError(t, aibrixClient.ModelV1alpha1().ModelClaims(lifecycleNamespace).Delete(
-		ctx, lifecycleBusyClaim, metav1.DeleteOptions{},
+		ctx, lifecycleIdleClaim, metav1.DeleteOptions{},
 	))
-	waitForLifecycleRouteAbsent(t, ctx, k8sClient, pod.Name, lifecycleBusyClaim)
-	waitForLifecycleRuntimeModelAbsent(t, ctx, k8sClient, pod.Name, lifecycleBusyModel)
-	waitForLifecycleClaimDeleted(t, ctx, aibrixClient, lifecycleBusyClaim)
-	waitForLifecycleModelStatus(t, lifecycleBusyModel, http.StatusBadRequest, 60*time.Second)
+	waitForLifecycleRouteAbsent(t, ctx, k8sClient, pod.Name, lifecycleIdleClaim)
+	waitForLifecycleRuntimeModelAbsent(t, ctx, k8sClient, pod.Name, lifecycleIdleModel)
+	waitForLifecycleClaimDeleted(t, ctx, aibrixClient, lifecycleIdleClaim)
+	waitForLifecycleModelStatus(t, lifecycleIdleModel, http.StatusBadRequest, 60*time.Second)
 }
 
 func TestModelClaimRecoversAfterPoolPodReplacement(t *testing.T) {
