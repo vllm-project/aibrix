@@ -53,10 +53,11 @@ type ModelClaimFixture struct {
 func NewModelClaimFixture(ctx context.Context, c client.Client, timeout, interval time.Duration) *ModelClaimFixture {
 	ginkgo.GinkgoHelper()
 	fake := &FakeModelClaimRuntime{
-		defaultPhase: "active",
-		defaultReady: true,
-		nextPort:     19000,
-		models:       map[string]modelclaimcontroller.RuntimeSnapshotModel{},
+		defaultPhase:       "active",
+		defaultReady:       true,
+		nextPort:           19000,
+		models:             map[string]modelclaimcontroller.RuntimeSnapshotModel{},
+		applyKVLimitWrites: true,
 	}
 	fake.ip = FindBindableNonLoopbackIPv4(modelclaimcontroller.DefaultRuntimePort)
 	fake.server = StartFixedPortHTTPServer(
@@ -121,6 +122,22 @@ func (f *ModelClaimFixture) CreateClaim(
 // CreateWarmPod creates a running pool pod pointing to the fixture runtime.
 func (f *ModelClaimFixture) CreateWarmPod(namespace, name, pool string) *corev1.Pod {
 	ginkgo.GinkgoHelper()
+	pod := f.CreateWarmPodPending(namespace, name, pool, 0)
+	f.MarkWarmPodRunning(pod)
+	return pod
+}
+
+// CreateWarmPodPending creates a pool pod without making it a runtime
+// candidate. Tests can change the same object to Running with a Pod IP to
+// exercise the controller's Pod update watch.
+func (f *ModelClaimFixture) CreateWarmPodPending(namespace, name, pool string, gpuCount int64) *corev1.Pod {
+	ginkgo.GinkgoHelper()
+	resources := corev1.ResourceRequirements{}
+	if gpuCount > 0 {
+		resources.Limits = corev1.ResourceList{
+			corev1.ResourceName("nvidia.com/gpu"): *resource.NewQuantity(gpuCount, resource.DecimalSI),
+		}
+	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -130,13 +147,23 @@ func (f *ModelClaimFixture) CreateWarmPod(namespace, name, pool string) *corev1.
 				constants.ModelPoolLabelEnabled: constants.ModelPoolLabelEnabledValue,
 			},
 		},
-		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "runtime", Image: "aibrix-runtime"}}},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name: "runtime", Image: "aibrix-runtime", Resources: resources,
+		}}},
 	}
 	gomega.Expect(f.client.Create(f.ctx, pod)).To(gomega.Succeed())
-	pod.Status.Phase = corev1.PodRunning
-	pod.Status.PodIP = f.runtime.IP()
-	gomega.Expect(f.client.Status().Update(f.ctx, pod)).To(gomega.Succeed())
 	return pod
+}
+
+// MarkWarmPodRunning makes a previously-created pool pod eligible for model
+// placement without replacing it.
+func (f *ModelClaimFixture) MarkWarmPodRunning(pod *corev1.Pod) {
+	ginkgo.GinkgoHelper()
+	latest := &corev1.Pod{}
+	gomega.Expect(f.client.Get(f.ctx, client.ObjectKeyFromObject(pod), latest)).To(gomega.Succeed())
+	latest.Status.Phase = corev1.PodRunning
+	latest.Status.PodIP = f.runtime.IP()
+	gomega.Expect(f.client.Status().Update(f.ctx, latest)).To(gomega.Succeed())
 }
 
 // CreatePoolPod creates a running pool pod that belongs to a Deployment, through
@@ -298,11 +325,16 @@ type FakeModelClaimRuntime struct {
 	deactivateCalls []modelclaimcontroller.DeactivateRequest
 	wakeCalls       []modelclaimcontroller.WakeRequest
 	sleepCalls      []modelclaimcontroller.SleepRequest
+	kvLimitCalls    []modelclaimcontroller.SetKVLimitRequest
 	models          map[string]modelclaimcontroller.RuntimeSnapshotModel
 
-	// cardBytes is the size of the one card the runtime reports, and zero for
-	// none. Without a card nothing is accounted for, as on a CPU pool.
-	cardBytes int64
+	// cardBytes are the sizes of the cards the runtime reports. Without a card
+	// nothing is accounted for, as on a CPU pool.
+	cardBytes []int64
+	// applyKVLimitWrites controls whether a successful write is visible in the
+	// next snapshot. Turning it off models a write that the allocator has not
+	// reflected yet.
+	applyKVLimitWrites bool
 	// sleepingFootprintBytes is what an engine holds after it goes to sleep,
 	// and zero for a memory the runtime could not measure.
 	sleepingFootprintBytes int64
@@ -375,7 +407,7 @@ func (f *FakeModelClaimRuntime) handleActivate(w http.ResponseWriter, r *http.Re
 		Alive:       f.defaultPhase != "failed",
 		Ready:       f.defaultReady,
 	}
-	if f.cardBytes > 0 {
+	if len(f.cardBytes) > 0 {
 		// On a card the engine maps nothing yet, and serves no request. Its
 		// request metrics are read, so the pool policy can tell it is idle.
 		completed := int64(0)
@@ -466,10 +498,13 @@ func (f *FakeModelClaimRuntime) handleKVLimit(w http.ResponseWriter, r *http.Req
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.kvLimitCalls = append(f.kvLimitCalls, req)
 	phase := ""
 	for uid, model := range f.models {
 		if model.ModelName == req.ModelName {
-			model.KVCapacityBytes = req.LimitBytes
+			if f.applyKVLimitWrites {
+				model.KVCapacityBytes = req.LimitBytes
+			}
 			f.models[uid] = model
 			phase = model.Phase
 		}
@@ -514,11 +549,11 @@ func (f *FakeModelClaimRuntime) handleSnapshot(w http.ResponseWriter) {
 	for _, model := range f.models {
 		models = append(models, model)
 	}
-	var accelerators []modelclaimcontroller.RuntimeAcceleratorSnapshot
-	if f.cardBytes > 0 {
-		accelerators = []modelclaimcontroller.RuntimeAcceleratorSnapshot{{
-			ID: "GPU-0", HBMTotalBytes: f.cardBytes, HBMUsableBytes: f.cardBytes,
-		}}
+	accelerators := make([]modelclaimcontroller.RuntimeAcceleratorSnapshot, 0, len(f.cardBytes))
+	for i, bytes := range f.cardBytes {
+		accelerators = append(accelerators, modelclaimcontroller.RuntimeAcceleratorSnapshot{
+			ID: fmt.Sprintf("GPU-%d", i), HBMTotalBytes: bytes, HBMUsableBytes: bytes,
+		})
 	}
 	f.mu.Unlock()
 
@@ -595,13 +630,61 @@ func (f *FakeModelClaimRuntime) SetClaimState(uid, phase string, ready bool, las
 	f.models[uid] = model
 }
 
-// SetCard has the runtime report one card of the given size, which every
-// placement on its pod is then accounted against.
+// SetCard has the runtime report one card of the given size.
 func (f *FakeModelClaimRuntime) SetCard(bytes int64) {
+	f.SetCards(bytes)
+}
+
+// SetCards has the runtime report cards of the given sizes.
+func (f *FakeModelClaimRuntime) SetCards(sizes ...int64) {
 	ginkgo.GinkgoHelper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.cardBytes = bytes
+	f.cardBytes = append([]int64(nil), sizes...)
+}
+
+// SetKVLimitReadBack controls whether a successful KV-limit write changes the
+// capacity returned by subsequent snapshots.
+func (f *FakeModelClaimRuntime) SetKVLimitReadBack(enabled bool) {
+	ginkgo.GinkgoHelper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.applyKVLimitWrites = enabled
+}
+
+// KVLimitRequests returns a defensive copy of the recorded KV-limit requests.
+func (f *FakeModelClaimRuntime) KVLimitRequests() []modelclaimcontroller.SetKVLimitRequest {
+	ginkgo.GinkgoHelper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]modelclaimcontroller.SetKVLimitRequest(nil), f.kvLimitCalls...)
+}
+
+// SetClaimKV changes the KV usage and capacity reported for an activated claim.
+func (f *FakeModelClaimRuntime) SetClaimKV(uid string, used, capacity int64) {
+	ginkgo.GinkgoHelper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	model, found := f.models[uid]
+	gomega.Expect(found).To(gomega.BeTrue(), "fake runtime has no model for claim UID %s", uid)
+	model.KVUsedBytes = used
+	model.KVCapacityBytes = capacity
+	f.models[uid] = model
+}
+
+// SetClaimRequests changes the request counts reported for an activated claim.
+func (f *FakeModelClaimRuntime) SetClaimRequests(uid string, running, waiting int64) {
+	ginkgo.GinkgoHelper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	model, found := f.models[uid]
+	gomega.Expect(found).To(gomega.BeTrue(), "fake runtime has no model for claim UID %s", uid)
+	completed := int64(0)
+	model.RequestMetricsObserved = true
+	model.RequestsRunning = running
+	model.RequestsWaiting = waiting
+	model.RequestSuccessTotal = &completed
+	f.models[uid] = model
 }
 
 // SetSleepingFootprint sets what an engine holds once it is asleep.

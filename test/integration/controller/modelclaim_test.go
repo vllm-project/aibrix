@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"strings"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
@@ -26,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -171,6 +173,146 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
 	})
 
+	ginkgo.It("places a pending claim when its existing warm pod becomes runnable", func() {
+		fixture.Runtime().SetDefaultState("active", true)
+		pod := fixture.CreateWarmPodPending(ns.Name, "warm-becoming-ready", "pool-a", 0)
+		claim := fixture.CreateClaim(ns.Name, "claim-becoming-ready", "pool-a", nil, nil)
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, claim)
+			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimPending))
+			g.Expect(latest.Status.Candidates).To(gomega.Equal(int32(0)))
+			g.Expect(latest.Status.Instances).To(gomega.BeEmpty())
+			scheduled := meta.FindStatusCondition(
+				latest.Status.Conditions,
+				string(modelapi.ModelClaimConditionTypeScheduled),
+			)
+			g.Expect(scheduled).NotTo(gomega.BeNil())
+			g.Expect(scheduled.Status).To(gomega.Equal(metav1.ConditionFalse))
+			g.Expect(scheduled.Reason).To(gomega.Equal("NoMatchingPods"))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		gomega.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(0))
+
+		fixture.MarkWarmPodRunning(pod)
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, claim)
+			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			g.Expect(latest.Status.Candidates).To(gomega.Equal(int32(1)))
+			g.Expect(latest.Status.Instances).To(gomega.HaveLen(1))
+			g.Expect(latest.Status.Instances[0].Pod).To(gomega.Equal(pod.Name))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		gomega.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(1))
+	})
+
+	ginkgo.It("places a parallel model only on a pod with the required GPU topology", func() {
+		fixture.Runtime().SetCards(8<<30, 8<<30)
+		fixture.Runtime().SetDefaultState("active", true)
+		oneGPU := fixture.CreateWarmPodPending(ns.Name, "warm-one-gpu", "pool-parallel", 1)
+		fixture.MarkWarmPodRunning(oneGPU)
+		claim := fixture.CreateClaim(ns.Name, "claim-parallel", "pool-parallel", nil, map[string]string{
+			"--tensor-parallel-size": "2",
+		})
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, claim)
+			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimPending))
+			g.Expect(latest.Status.Candidates).To(gomega.Equal(int32(0)))
+			g.Expect(latest.Status.Instances).To(gomega.BeEmpty())
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		gomega.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(0))
+
+		twoGPU := fixture.CreateWarmPodPending(ns.Name, "warm-two-gpu", "pool-parallel", 2)
+		fixture.MarkWarmPodRunning(twoGPU)
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, claim)
+			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			g.Expect(latest.Status.Candidates).To(gomega.Equal(int32(1)))
+			g.Expect(latest.Status.Instances).To(gomega.HaveLen(1))
+			g.Expect(latest.Status.Instances[0].Pod).To(gomega.Equal(twoGPU.Name))
+			oldPod := &corev1.Pod{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oneGPU), oldPod)).To(gomega.Succeed())
+			g.Expect(oldPod.Annotations).NotTo(gomega.HaveKey(
+				constants.ModelClaimPodAnnotationPrefix + claim.Name,
+			))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+	})
+
+	ginkgo.It("distinguishes temporary lack of room from a model too large for every card", func() {
+		fixture.Runtime().SetDefaultState("active", true)
+		fixture.Runtime().SetCard(4 << 30)
+		temporaryPod := fixture.CreateWarmPodPending(ns.Name, "warm-temporary-room", "pool-temporary-room", 1)
+		fixture.MarkWarmPodRunning(temporaryPod)
+		createClaim := func(name, pool, footprint, floor string) *modelapi.ModelClaim {
+			claim := &modelapi.ModelClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns.Name},
+				Spec: modelapi.ModelClaimSpec{
+					PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+						constants.ModelPoolLabelName: pool,
+					}},
+					ArtifactURL: "huggingface://integration/" + name,
+					Engine:      "vllm",
+					PerGPU: &modelapi.ModelClaimPerGPU{
+						MaximumFootprint: resource.MustParse(footprint),
+						KVFloor:          resource.MustParse(floor),
+					},
+				},
+			}
+			gomega.Expect(k8sClient.Create(ctx, claim)).To(gomega.Succeed())
+			return claim
+		}
+
+		occupant := createClaim("claim-occupant", "pool-temporary-room", "3Gi", "1Gi")
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.GetClaim(g, occupant).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		waiting := createClaim("claim-waiting-room", "pool-temporary-room", "1Gi", "1Gi")
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, waiting)
+			scheduled := meta.FindStatusCondition(
+				latest.Status.Conditions,
+				string(modelapi.ModelClaimConditionTypeScheduled),
+			)
+			g.Expect(scheduled).NotTo(gomega.BeNil())
+			g.Expect(scheduled.Status).To(gomega.Equal(metav1.ConditionFalse))
+			g.Expect(scheduled.Reason).To(gomega.Equal("NoMatchingPods"))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+		gomega.Expect(k8sClient.Delete(ctx, occupant)).To(gomega.Succeed())
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.GetClaim(g, waiting).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+		}, 2*modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		gomega.Expect(k8sClient.Delete(ctx, waiting)).To(gomega.Succeed())
+		gomega.Eventually(func() bool {
+			err := k8sClient.Get(ctx, client.ObjectKeyFromObject(waiting), &modelapi.ModelClaim{})
+			return apierrors.IsNotFound(err)
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.BeTrue())
+
+		fixture.Runtime().SetCard(2 << 30)
+		tooLargePod := fixture.CreateWarmPodPending(ns.Name, "warm-too-small", "pool-too-large", 1)
+		fixture.MarkWarmPodRunning(tooLargePod)
+		tooLarge := createClaim("claim-too-large", "pool-too-large", "2Gi", "1Gi")
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, tooLarge)
+			scheduled := meta.FindStatusCondition(
+				latest.Status.Conditions,
+				string(modelapi.ModelClaimConditionTypeScheduled),
+			)
+			g.Expect(scheduled).NotTo(gomega.BeNil())
+			g.Expect(scheduled.Status).To(gomega.Equal(metav1.ConditionFalse))
+			g.Expect(scheduled.Reason).To(gomega.Equal(constants.ModelClaimReasonTooLargeForAnyCard))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+		fixture.Runtime().SetCard(8 << 30)
+		largePod := fixture.CreateWarmPodPending(ns.Name, "warm-large-enough", "pool-too-large", 1)
+		fixture.MarkWarmPodRunning(largePod)
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, tooLarge)
+			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			g.Expect(latest.Status.Instances).To(gomega.HaveLen(1))
+		}, 2*modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+	})
+
 	ginkgo.It("surfaces invalid engine configuration without contacting the runtime", func() {
 		_ = fixture.CreateWarmPod(ns.Name, "warm-invalid", "pool-a")
 		claim := fixture.CreateClaim(ns.Name, "claim-invalid", "pool-a", nil, map[string]string{
@@ -216,6 +358,165 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
 		fixture.ExpectEvent(claim, corev1.EventTypeWarning, "InvalidPerGPU")
 		gomega.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(0))
+	})
+
+	ginkgo.It("enforces ModelClaim defaults and schema validation", func() {
+		validClaim := func(name string) *modelapi.ModelClaim {
+			return &modelapi.ModelClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns.Name},
+				Spec: modelapi.ModelClaimSpec{
+					PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+						constants.ModelPoolLabelName: "pool-a",
+					}},
+					ArtifactURL: "huggingface://integration/" + name,
+					PerGPU: &modelapi.ModelClaimPerGPU{
+						MaximumFootprint: resource.MustParse("1Gi"),
+						KVFloor:          resource.MustParse("1Gi"),
+					},
+				},
+			}
+		}
+
+		defaults := validClaim("claim-defaults")
+		gomega.Expect(k8sClient.Create(ctx, defaults)).To(gomega.Succeed())
+		stored := &modelapi.ModelClaim{}
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(defaults), stored)).To(gomega.Succeed())
+		gomega.Expect(stored.Spec.Engine).To(gomega.Equal("vllm"))
+		gomega.Expect(stored.Spec.Replicas).NotTo(gomega.BeNil())
+		gomega.Expect(*stored.Spec.Replicas).To(gomega.Equal(int32(1)))
+
+		invalid := []struct {
+			name   string
+			change func(*modelapi.ModelClaim)
+		}{
+			{name: "engine", change: func(claim *modelapi.ModelClaim) { claim.Spec.Engine = "unknown" }},
+			{name: "replicas-zero", change: func(claim *modelapi.ModelClaim) { claim.Spec.Replicas = ptr.To[int32](0) }},
+			{name: "replicas-two", change: func(claim *modelapi.ModelClaim) { claim.Spec.Replicas = ptr.To[int32](2) }},
+			{name: "pod-selector", change: func(claim *modelapi.ModelClaim) { claim.Spec.PodSelector = nil }},
+			{name: "artifact-url", change: func(claim *modelapi.ModelClaim) { claim.Spec.ArtifactURL = "" }},
+		}
+		for _, tc := range invalid {
+			claim := validClaim("claim-invalid-" + tc.name)
+			tc.change(claim)
+			err := k8sClient.Create(ctx, claim)
+			gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "%s: %v", tc.name, err)
+		}
+
+		for _, missing := range []string{"maximumFootprint", "kvFloor"} {
+			perGPU := map[string]any{"maximumFootprint": "1Gi", "kvFloor": "1Gi"}
+			delete(perGPU, missing)
+			claim := &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": modelapi.GroupVersion.String(),
+				"kind":       "ModelClaim",
+				"metadata": map[string]any{
+					"name":      "claim-missing-" + strings.ToLower(missing),
+					"namespace": ns.Name,
+				},
+				"spec": map[string]any{
+					"podSelector": map[string]any{"matchLabels": map[string]any{
+						constants.ModelPoolLabelName: "pool-a",
+					}},
+					"artifactURL": "huggingface://integration/missing-field",
+					"perGPU":      perGPU,
+				},
+			}}
+			err := k8sClient.Create(ctx, claim)
+			gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "%s: %v", missing, err)
+		}
+	})
+
+	ginkgo.It("does not activate claims with unusable per-GPU declarations", func() {
+		_ = fixture.CreateWarmPod(ns.Name, "warm-invalid-per-gpu", "pool-a")
+		cases := []struct {
+			name, footprint, floor, field string
+		}{
+			{name: "zero-footprint", footprint: "0", floor: "1Gi", field: "maximumFootprint"},
+			{name: "negative-floor", footprint: "1Gi", floor: "-1Gi", field: "kvFloor"},
+			{name: "oversized-footprint", footprint: "2Pi", floor: "1Gi", field: "maximumFootprint"},
+		}
+		for _, tc := range cases {
+			claim := &modelapi.ModelClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: "claim-" + tc.name, Namespace: ns.Name},
+				Spec: modelapi.ModelClaimSpec{
+					PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+						constants.ModelPoolLabelName: "pool-a",
+					}},
+					ArtifactURL: "huggingface://integration/" + tc.name,
+					Engine:      "vllm",
+					PerGPU: &modelapi.ModelClaimPerGPU{
+						MaximumFootprint: resource.MustParse(tc.footprint),
+						KVFloor:          resource.MustParse(tc.floor),
+					},
+				},
+			}
+			gomega.Expect(k8sClient.Create(ctx, claim)).To(gomega.Succeed())
+			gomega.Eventually(func(g gomega.Gomega) {
+				latest := fixture.GetClaim(g, claim)
+				g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimPending))
+				g.Expect(latest.Status.Instances).To(gomega.BeEmpty())
+				scheduled := meta.FindStatusCondition(
+					latest.Status.Conditions,
+					string(modelapi.ModelClaimConditionTypeScheduled),
+				)
+				g.Expect(scheduled).NotTo(gomega.BeNil())
+				g.Expect(scheduled.Status).To(gomega.Equal(metav1.ConditionFalse))
+				g.Expect(scheduled.Reason).To(gomega.Equal("InvalidPerGPU"))
+				g.Expect(scheduled.Message).To(gomega.ContainSubstring(tc.field))
+			}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		}
+		gomega.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(0))
+	})
+
+	ginkgo.It("places a refused claim after its per-GPU declaration is corrected", func() {
+		fixture.Runtime().SetDefaultState("active", true)
+		_ = fixture.CreateWarmPod(ns.Name, "warm-corrected-per-gpu", "pool-a")
+		claim := &modelapi.ModelClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "claim-corrected-per-gpu", Namespace: ns.Name},
+			Spec: modelapi.ModelClaimSpec{
+				PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+					constants.ModelPoolLabelName: "pool-a",
+				}},
+				ArtifactURL: "huggingface://integration/corrected-per-gpu",
+				Engine:      "vllm",
+				PerGPU: &modelapi.ModelClaimPerGPU{
+					MaximumFootprint: resource.MustParse("0"),
+					KVFloor:          resource.MustParse("1Gi"),
+				},
+			},
+		}
+		gomega.Expect(k8sClient.Create(ctx, claim)).To(gomega.Succeed())
+		originalUID := claim.UID
+		originalGeneration := claim.Generation
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, claim)
+			scheduled := meta.FindStatusCondition(
+				latest.Status.Conditions,
+				string(modelapi.ModelClaimConditionTypeScheduled),
+			)
+			g.Expect(scheduled).NotTo(gomega.BeNil())
+			g.Expect(scheduled.Reason).To(gomega.Equal("InvalidPerGPU"))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+		latest := &modelapi.ModelClaim{}
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(claim), latest)).To(gomega.Succeed())
+		patch := client.MergeFrom(latest.DeepCopy())
+		latest.Spec.PerGPU.MaximumFootprint = resource.MustParse("1Gi")
+		gomega.Expect(k8sClient.Patch(ctx, latest, patch)).To(gomega.Succeed())
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			updated := fixture.GetClaim(g, claim)
+			g.Expect(updated.UID).To(gomega.Equal(originalUID))
+			g.Expect(updated.Generation).To(gomega.BeNumerically(">", originalGeneration))
+			g.Expect(updated.Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			scheduled := meta.FindStatusCondition(
+				updated.Status.Conditions,
+				string(modelapi.ModelClaimConditionTypeScheduled),
+			)
+			g.Expect(scheduled).NotTo(gomega.BeNil())
+			g.Expect(scheduled.Status).To(gomega.Equal(metav1.ConditionTrue))
+			g.Expect(scheduled.Reason).To(gomega.Equal("Placed"))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		gomega.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(1))
 	})
 
 	ginkgo.It("takes a change of perGPU and refuses a change of anything else", func() {
@@ -551,6 +852,117 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 			latestPod := &corev1.Pod{}
 			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), latestPod)).To(gomega.Succeed())
 			g.Expect(latestPod.Annotations).NotTo(gomega.HaveKey(constants.ModelClaimPodAnnotationPrefix + claim.Name))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+	})
+
+	ginkgo.It("keeps a card-backed engine off the route until its KV limit reads back", func() {
+		fixture.Runtime().SetCard(8 << 30)
+		fixture.Runtime().SetDefaultState("active", true)
+		fixture.Runtime().SetKVLimitReadBack(false)
+		pod := fixture.CreateWarmPodPending(ns.Name, "warm-kv-gate", "pool-kv", 1)
+		fixture.MarkWarmPodRunning(pod)
+		claim := fixture.CreateClaim(ns.Name, "claim-kv-gate", "pool-kv", nil, nil)
+
+		var recordedLimit int64
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, claim)
+			g.Expect(latest.Status.Instances).To(gomega.HaveLen(1))
+			recordedLimit = latest.Status.Instances[0].KVLimitBytes
+			g.Expect(recordedLimit).To(gomega.BeNumerically(">", 0))
+			g.Expect(latest.Status.ReadyReplicas).To(gomega.Equal(int32(0)))
+			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimActivating))
+			fixture.ExpectRoute(
+				g, ns.Name, pod.Name, claim.Name,
+				0, constants.ModelClaimRoutingStateActivating,
+			)
+			requests := fixture.Runtime().KVLimitRequests()
+			g.Expect(requests).NotTo(gomega.BeEmpty())
+			g.Expect(requests[len(requests)-1].LimitBytes).To(gomega.Equal(recordedLimit))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+		fixture.Runtime().SetKVLimitReadBack(true)
+		fixture.Runtime().SetClaimKV(string(claim.UID), 0, recordedLimit)
+		fixture.TriggerReconcile(claim)
+
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, claim)
+			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			g.Expect(latest.Status.ReadyReplicas).To(gomega.Equal(int32(1)))
+			fixture.ExpectRoute(
+				g, ns.Name, pod.Name, claim.Name,
+				latest.Status.Instances[0].Port, constants.ModelClaimRoutingStateActive,
+			)
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+	})
+
+	ginkgo.It("de-routes an unhealthy active engine and restores the same instance", func() {
+		fixture.Runtime().SetDefaultState("active", true)
+		pod := fixture.CreateWarmPod(ns.Name, "warm-health", "pool-a")
+		claim := fixture.CreateClaim(ns.Name, "claim-health", "pool-a", nil, nil)
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.GetClaim(g, claim).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		activationCalls := fixture.Runtime().ActivateCallCount()
+
+		fixture.Runtime().SetClaimState(string(claim.UID), "active", false, "")
+		fixture.TriggerReconcile(claim)
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, claim)
+			g.Expect(latest.Status.Phase).NotTo(gomega.Equal(modelapi.ModelClaimActive))
+			g.Expect(latest.Status.ReadyReplicas).To(gomega.Equal(int32(0)))
+			g.Expect(latest.Status.Instances).To(gomega.HaveLen(1))
+			fixture.ExpectRoute(
+				g, ns.Name, pod.Name, claim.Name,
+				0, constants.ModelClaimRoutingStateActivating,
+			)
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+		fixture.Runtime().SetClaimState(string(claim.UID), "active", true, "")
+		fixture.TriggerReconcile(claim)
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, claim)
+			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			g.Expect(latest.Status.ReadyReplicas).To(gomega.Equal(int32(1)))
+			g.Expect(latest.Status.Instances).To(gomega.HaveLen(1))
+			g.Expect(latest.Status.Instances[0].Pod).To(gomega.Equal(pod.Name))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		gomega.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(activationCalls))
+	})
+
+	ginkgo.It("removes routing before draining and stopping a deleted claim", func() {
+		fixture.Runtime().SetDefaultState("active", true)
+		pod := fixture.CreateWarmPod(ns.Name, "warm-drain", "pool-a")
+		claim := fixture.CreateClaim(ns.Name, "claim-drain", "pool-a", nil, nil)
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.GetClaim(g, claim).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		fixture.Runtime().SetClaimRequests(string(claim.UID), 1, 0)
+
+		gomega.Expect(k8sClient.Delete(ctx, claim)).To(gomega.Succeed())
+		gomega.Eventually(func(g gomega.Gomega) {
+			latestPod := &corev1.Pod{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), latestPod)).To(gomega.Succeed())
+			g.Expect(latestPod.Annotations).NotTo(gomega.HaveKey(
+				constants.ModelClaimPodAnnotationPrefix + claim.Name,
+			))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+		latest := &modelapi.ModelClaim{}
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(claim), latest)).To(gomega.Succeed())
+		gomega.Expect(latest.DeletionTimestamp.IsZero()).To(gomega.BeFalse())
+		gomega.Expect(latest.Finalizers).To(gomega.ContainElement(modelclaimcontroller.ModelClaimFinalizer))
+		gomega.Expect(fixture.Runtime().DeactivateRequests()).To(gomega.BeEmpty())
+
+		fixture.Runtime().SetClaimRequests(string(claim.UID), 0, 0)
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.Runtime().DeactivateRequests()).To(gomega.ContainElement(
+				modelclaimcontroller.DeactivateRequest{
+					ModelName: claim.Name,
+					Mode:      modelclaimcontroller.DeactivateStop,
+				},
+			))
+			err := k8sClient.Get(ctx, client.ObjectKeyFromObject(claim), &modelapi.ModelClaim{})
+			g.Expect(apierrors.IsNotFound(err)).To(gomega.BeTrue(), "claim deletion: %v", err)
 		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
 	})
 
