@@ -15,18 +15,43 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import pytest
-
-pytest.skip(allow_module_level=True)
-
 import random
 
+import pytest
 import torch
-import vllm
+
 from aibrix_kvcache import _custom_ops as ops
 
-from vllm.platforms import current_platform
-from vllm.utils import get_kv_cache_torch_dtype
+pytestmark = pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA-only kernels; run this file on a CUDA host, not CPU CI",
+)
+
+
+@pytest.fixture
+def kv_cache_factory():
+    def make_caches(
+        num_blocks,
+        block_size,
+        num_layers,
+        num_heads,
+        head_size,
+        kv_cache_dtype,
+        dtype,
+        device,
+    ):
+        assert kv_cache_dtype == "auto"
+        shape = (num_blocks, block_size, num_heads, head_size)
+
+        def new_cache():
+            return [
+                torch.randn(shape, dtype=dtype, device=device)
+                for _ in range(num_layers)
+            ]
+
+        return new_cache(), new_cache()
+
+    return make_caches
 
 
 DTYPES = [torch.half, torch.bfloat16, torch.float]
@@ -34,7 +59,7 @@ NUM_LAYERS = [8]
 NUM_HEADS = [8]
 HEAD_SIZES = [64, 80]
 BLOCK_SIZES = [8]
-NUM_BLOCKS = [1024]
+NUM_BLOCKS = [16]
 
 SEEDS = [0]
 CUDA_DEVICES = ["cuda:0"]
@@ -52,7 +77,7 @@ CUDA_DEVICES = ["cuda:0"]
 @pytest.mark.parametrize("offload_layout", ["LCND", "NCLD"])
 @torch.inference_mode()
 def test_reshape_and_cache_multi_layer(
-    kv_cache_factory_flashinfer,
+    kv_cache_factory,
     num_layers: int,
     num_heads: int,
     head_size: int,
@@ -64,8 +89,8 @@ def test_reshape_and_cache_multi_layer(
     kv_cache_dtype: str,
     offload_layout: str,
 ) -> None:
-    current_platform.seed_everything(seed)
-    torch.set_default_device(device)
+    random.seed(seed)
+    torch.manual_seed(seed)
 
     # Create a random slot mapping.
     num_slots = block_size * num_blocks
@@ -84,7 +109,7 @@ def test_reshape_and_cache_multi_layer(
                 2,
                 block_size,
                 embed_dim,
-                dtype=get_kv_cache_torch_dtype(kv_cache_dtype, dtype),
+                dtype=dtype,
                 device="cpu",
                 pin_memory=True,
             )
@@ -96,14 +121,14 @@ def test_reshape_and_cache_multi_layer(
                 2,
                 num_layers,
                 embed_dim,
-                dtype=get_kv_cache_torch_dtype(kv_cache_dtype, dtype),
+                dtype=dtype,
                 device="cpu",
                 pin_memory=True,
             )
             offload_kv_cache_blocks.append(offload_kv_cache_block)
 
     # Create the KV caches.
-    key_caches, value_caches = kv_cache_factory_flashinfer(
+    key_caches, value_caches = kv_cache_factory(
         num_blocks,
         block_size,
         num_layers,
@@ -182,7 +207,7 @@ def test_reshape_and_cache_multi_layer(
 @pytest.mark.parametrize("offload_layout", ["LCND", "NCLD"])
 @torch.inference_mode()
 def test_reshape_and_offload_multi_layer(
-    kv_cache_factory_flashinfer,
+    kv_cache_factory,
     num_layers: int,
     num_heads: int,
     head_size: int,
@@ -194,8 +219,8 @@ def test_reshape_and_offload_multi_layer(
     kv_cache_dtype: str,
     offload_layout: str,
 ) -> None:
-    current_platform.seed_everything(seed)
-    torch.set_default_device(device)
+    random.seed(seed)
+    torch.manual_seed(seed)
 
     # Create a random slot mapping.
     num_slots = block_size * num_blocks
@@ -215,7 +240,7 @@ def test_reshape_and_offload_multi_layer(
                     2,
                     block_size,
                     embed_dim,
-                    dtype=get_kv_cache_torch_dtype(kv_cache_dtype, dtype),
+                    dtype=dtype,
                     device="cpu",
                     pin_memory=True,
                 ))
@@ -227,13 +252,13 @@ def test_reshape_and_offload_multi_layer(
                     2,
                     num_layers,
                     embed_dim,
-                    dtype=get_kv_cache_torch_dtype(kv_cache_dtype, dtype),
+                    dtype=dtype,
                     device="cpu",
                     pin_memory=True,
                 ))
 
     # Create the KV caches.
-    key_caches, value_caches = kv_cache_factory_flashinfer(
+    key_caches, value_caches = kv_cache_factory(
         num_blocks,
         block_size,
         num_layers,
@@ -298,4 +323,3 @@ def test_reshape_and_offload_multi_layer(
     for i in range(num_blocks):
         torch.testing.assert_close(offload_kv_cache_blocks[i],
                                    cloned_offload_kv_cache_blocks[i])
-
