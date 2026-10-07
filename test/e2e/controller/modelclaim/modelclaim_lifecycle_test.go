@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +34,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -64,6 +66,11 @@ type lifecycleRuntimeSnapshot struct {
 		Alive                  bool   `json:"alive"`
 		Ready                  bool   `json:"ready"`
 		RequestMetricsObserved bool   `json:"request_metrics_observed"`
+		ClaimRef               *struct {
+			Namespace string `json:"namespace"`
+			Name      string `json:"name"`
+			UID       string `json:"uid"`
+		} `json:"claim_ref"`
 	} `json:"models"`
 }
 
@@ -78,14 +85,14 @@ func TestModelClaimLifecycleAndRequestWake(t *testing.T) {
 	t.Cleanup(cancel)
 	k8sClient, aibrixClient := initializeClient(ctx, t)
 
-	cleanupLifecycleResources(t, k8sClient, aibrixClient)
+	cleanupLifecycleResources(t, k8sClient, aibrixClient, false)
 	deployment := lifecyclePoolDeployment()
 	_, err := k8sClient.AppsV1().Deployments(lifecycleNamespace).Create(
 		ctx, deployment, metav1.CreateOptions{},
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		cleanupLifecycleResources(t, k8sClient, aibrixClient)
+		cleanupLifecycleResources(t, k8sClient, aibrixClient, true)
 	})
 
 	pod := waitForLifecyclePoolPod(t, ctx, k8sClient)
@@ -231,16 +238,27 @@ func createLifecycleClaim(
 	client *modelclient.Clientset,
 	name string,
 	model string,
-) {
+) *modelv1alpha1.ModelClaim {
+	return createLifecycleClaimInPool(t, ctx, client, name, model, lifecyclePoolName)
+}
+
+func createLifecycleClaimInPool(
+	t *testing.T,
+	ctx context.Context,
+	client *modelclient.Clientset,
+	name string,
+	model string,
+	pool string,
+) *modelv1alpha1.ModelClaim {
 	t.Helper()
-	_, err := client.ModelV1alpha1().ModelClaims(lifecycleNamespace).Create(
+	claim, err := client.ModelV1alpha1().ModelClaims(lifecycleNamespace).Create(
 		ctx,
 		&modelv1alpha1.ModelClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: lifecycleNamespace},
 			Spec: modelv1alpha1.ModelClaimSpec{
 				ModelName: ptr.To(model),
 				PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
-					constants.ModelPoolLabelName: lifecyclePoolName,
+					constants.ModelPoolLabelName: pool,
 				}},
 				ArtifactURL: "huggingface://aibrix/" + model,
 				Engine:      "vllm",
@@ -254,6 +272,7 @@ func createLifecycleClaim(
 		metav1.CreateOptions{},
 	)
 	require.NoError(t, err)
+	return claim
 }
 
 func waitForLifecyclePoolPod(
@@ -261,12 +280,21 @@ func waitForLifecyclePoolPod(
 	ctx context.Context,
 	client *kubernetes.Clientset,
 ) *corev1.Pod {
+	return waitForLifecyclePoolPodWithApp(t, ctx, client, lifecycleDeploymentName)
+}
+
+func waitForLifecyclePoolPodWithApp(
+	t *testing.T,
+	ctx context.Context,
+	client *kubernetes.Clientset,
+	app string,
+) *corev1.Pod {
 	t.Helper()
 	var readyPod *corev1.Pod
 	err := wait.PollUntilContextTimeout(ctx, time.Second, 90*time.Second, true,
 		func(ctx context.Context) (bool, error) {
 			pods, err := client.CoreV1().Pods(lifecycleNamespace).List(ctx, metav1.ListOptions{
-				LabelSelector: "app=" + lifecycleDeploymentName,
+				LabelSelector: "app=" + app,
 			})
 			if err != nil || len(pods.Items) != 1 {
 				return false, err
@@ -293,22 +321,92 @@ func waitForLifecycleClaimPhase(
 ) *modelv1alpha1.ModelClaim {
 	t.Helper()
 	var latest *modelv1alpha1.ModelClaim
+	var lastErr error
 	err := wait.PollUntilContextTimeout(ctx, time.Second, 90*time.Second, true,
 		func(ctx context.Context) (bool, error) {
 			claim, err := client.ModelV1alpha1().ModelClaims(lifecycleNamespace).Get(
 				ctx, name, metav1.GetOptions{},
 			)
 			if err != nil {
-				return false, err
+				lastErr = err
+				return false, nil
 			}
+			lastErr = nil
 			latest = claim
 			if claim.Status.Phase == modelv1alpha1.ModelClaimFailed && expected != claim.Status.Phase {
 				return false, fmt.Errorf("ModelClaim %s entered Failed: %+v", name, claim.Status.Conditions)
 			}
 			return claim.Status.Phase == expected, nil
 		})
-	require.NoError(t, err, "ModelClaim %s did not reach %s; latest=%+v", name, expected, latest)
+	require.NoError(t, err, "ModelClaim %s did not reach %s; latest=%+v last error=%v", name, expected, latest, lastErr)
 	return latest
+}
+
+func waitForLifecycleClaimOnPod(
+	t *testing.T,
+	ctx context.Context,
+	client *modelclient.Clientset,
+	name, podName string,
+) *modelv1alpha1.ModelClaim {
+	t.Helper()
+	var latest *modelv1alpha1.ModelClaim
+	var lastErr error
+	err := wait.PollUntilContextTimeout(ctx, time.Second, 90*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			claim, err := client.ModelV1alpha1().ModelClaims(lifecycleNamespace).Get(
+				ctx, name, metav1.GetOptions{},
+			)
+			if err != nil {
+				lastErr = err
+				return false, nil
+			}
+			lastErr = nil
+			latest = claim
+			return claim.Status.Phase == modelv1alpha1.ModelClaimActive &&
+				len(claim.Status.Instances) == 1 &&
+				claim.Status.Instances[0].Pod == podName, nil
+		})
+	require.NoError(
+		t, err, "ModelClaim %s did not become Active on pod %s; latest=%+v last error=%v",
+		name, podName, latest, lastErr,
+	)
+	return latest
+}
+
+func waitForLifecycleRouteBinding(
+	t *testing.T,
+	ctx context.Context,
+	client *kubernetes.Clientset,
+	podName, claimName string,
+	expected lifecycleRouteBinding,
+) {
+	t.Helper()
+	var last lifecycleRouteBinding
+	var lastRaw string
+	var lastErr error
+	err := wait.PollUntilContextTimeout(ctx, time.Second, 60*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			pod, err := client.CoreV1().Pods(lifecycleNamespace).Get(ctx, podName, metav1.GetOptions{})
+			if err != nil {
+				lastErr = err
+				return false, nil
+			}
+			lastErr = nil
+			lastRaw = pod.Annotations[constants.ModelClaimPodAnnotationPrefix+claimName]
+			if lastRaw == "" {
+				return false, nil
+			}
+			if err := json.Unmarshal([]byte(lastRaw), &last); err != nil {
+				lastErr = err
+				return false, nil
+			}
+			lastErr = nil
+			return last == expected, nil
+		})
+	require.NoError(
+		t, err, "route for claim %s on pod %s did not converge: got=%+v raw=%s want=%+v last error=%v",
+		claimName, podName, last, lastRaw, expected, lastErr,
+	)
 }
 
 func assertLifecycleRouteBinding(
@@ -418,6 +516,31 @@ func waitForLifecycleModelStatus(t *testing.T, model string, expected int, timeo
 	)
 }
 
+func waitForLifecycleModelPending(t *testing.T, model string, timeout time.Duration) {
+	t.Helper()
+	var lastStatus int
+	var lastBody, retryAfter string
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second, timeout, true,
+		func(context.Context) (bool, error) {
+			response, body, err := sendLifecycleModelRequest(model)
+			if err != nil {
+				lastBody = err.Error()
+				return false, nil
+			}
+			lastStatus = response.StatusCode
+			lastBody = string(body)
+			retryAfter = response.Header.Get("Retry-After")
+			_ = response.Body.Close()
+			return lastStatus == http.StatusServiceUnavailable &&
+				strings.Contains(lastBody, "model "+model+" is pending ("), nil
+		})
+	require.NoError(
+		t, err, "model %s was not answered as pending; last status=%d body=%s",
+		model, lastStatus, lastBody,
+	)
+	assert.Equal(t, "10", retryAfter)
+}
+
 func assertLifecycleWakeResponse(t *testing.T, model string, timeout time.Duration) {
 	t.Helper()
 	var lastStatus int
@@ -447,18 +570,55 @@ func cleanupLifecycleResources(
 	t *testing.T,
 	k8sClient *kubernetes.Clientset,
 	aibrixClient *modelclient.Clientset,
+	requireComplete bool,
 ) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	claims := aibrixClient.ModelV1alpha1().ModelClaims(lifecycleNamespace)
 	for _, name := range []string{lifecycleIdleClaim, lifecycleBusyClaim} {
 		err := claims.Delete(ctx, name, metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
+			if requireComplete {
+				assert.NoError(t, err, "delete ModelClaim %s", name)
+			}
 			t.Logf("delete ModelClaim %s: %v", name, err)
 		}
 	}
-	_ = wait.PollUntilContextTimeout(ctx, time.Second, 20*time.Second, true,
+	err := k8sClient.AppsV1().Deployments(lifecycleNamespace).Delete(
+		ctx, lifecycleDeploymentName, metav1.DeleteOptions{},
+	)
+	if err != nil && !apierrors.IsNotFound(err) {
+		if requireComplete {
+			assert.NoError(t, err, "delete ModelClaim lifecycle Deployment")
+		}
+		t.Logf("delete ModelClaim lifecycle Deployment: %v", err)
+	}
+	deploymentErr := wait.PollUntilContextTimeout(ctx, time.Second, 10*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			_, err := k8sClient.AppsV1().Deployments(lifecycleNamespace).Get(
+				ctx, lifecycleDeploymentName, metav1.GetOptions{},
+			)
+			if apierrors.IsNotFound(err) {
+				return true, nil
+			}
+			return false, err
+		})
+	if requireComplete {
+		assert.NoError(t, deploymentErr, "timed out waiting for ModelClaim lifecycle Deployment to be deleted")
+	} else if deploymentErr != nil {
+		t.Logf("wait for stale ModelClaim lifecycle Deployment: %v", deploymentErr)
+	}
+	err = waitForLifecyclePoolPodsDeleted(ctx, k8sClient, time.Second)
+	if requireComplete {
+		assert.NoError(t, err, "timed out waiting for ModelClaim lifecycle pool pods to be deleted")
+	} else if err != nil {
+		t.Logf("wait for stale ModelClaim lifecycle pool pods: %v", err)
+	}
+	// An Active engine may report an in-flight request forever in this mock
+	// pool. Removing its pod ends that drain without waiting for the controller's
+	// 90-second safety timeout, after which the finalizer can complete.
+	claimsErr := wait.PollUntilContextTimeout(ctx, time.Second, 20*time.Second, true,
 		func(ctx context.Context) (bool, error) {
 			for _, name := range []string{lifecycleIdleClaim, lifecycleBusyClaim} {
 				_, err := claims.Get(ctx, name, metav1.GetOptions{})
@@ -471,24 +631,131 @@ func cleanupLifecycleResources(
 			}
 			return true, nil
 		})
-	err := k8sClient.AppsV1().Deployments(lifecycleNamespace).Delete(
-		ctx, lifecycleDeploymentName, metav1.DeleteOptions{},
-	)
-	if err != nil && !apierrors.IsNotFound(err) {
-		t.Logf("delete ModelClaim lifecycle Deployment: %v", err)
+	if requireComplete {
+		assert.NoError(t, claimsErr, "timed out waiting for ModelClaim lifecycle claims to be deleted")
+	} else if claimsErr != nil {
+		t.Logf("wait for stale ModelClaim lifecycle claims: %v", claimsErr)
 	}
-	_ = wait.PollUntilContextTimeout(ctx, time.Second, 10*time.Second, true,
+}
+
+func waitForLifecycleClaimDeleted(
+	t *testing.T,
+	ctx context.Context,
+	client *modelclient.Clientset,
+	name string,
+) {
+	t.Helper()
+	var lastErr error
+	err := wait.PollUntilContextTimeout(ctx, time.Second, 60*time.Second, true,
 		func(ctx context.Context) (bool, error) {
-			_, err := k8sClient.AppsV1().Deployments(lifecycleNamespace).Get(
-				ctx, lifecycleDeploymentName, metav1.GetOptions{},
+			_, lastErr = client.ModelV1alpha1().ModelClaims(lifecycleNamespace).Get(
+				ctx, name, metav1.GetOptions{},
 			)
-			if apierrors.IsNotFound(err) {
-				return true, nil
-			}
-			return false, err
+			return apierrors.IsNotFound(lastErr), nil
 		})
-	err = waitForLifecyclePoolPodsDeleted(ctx, k8sClient, time.Second)
-	require.NoError(t, err, "timed out waiting for ModelClaim lifecycle pool pods to be deleted")
+	require.NoError(t, err, "ModelClaim %s was not deleted; last error=%v", name, lastErr)
+}
+
+func waitForLifecycleRouteAbsent(
+	t *testing.T,
+	ctx context.Context,
+	client *kubernetes.Clientset,
+	podName, claimName string,
+) {
+	t.Helper()
+	var lastAnnotations map[string]string
+	var lastErr error
+	err := wait.PollUntilContextTimeout(ctx, time.Second, 60*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			pod, err := client.CoreV1().Pods(lifecycleNamespace).Get(ctx, podName, metav1.GetOptions{})
+			if err != nil {
+				if apierrors.IsNotFound(err) {
+					return true, nil
+				}
+				lastErr = err
+				return false, nil
+			}
+			lastErr = nil
+			lastAnnotations = pod.Annotations
+			_, found := pod.Annotations[constants.ModelClaimPodAnnotationPrefix+claimName]
+			return !found, nil
+		})
+	require.NoError(t, err, "route for claim %s remained on pod %s; annotations=%v last error=%v",
+		claimName, podName, lastAnnotations, lastErr)
+}
+
+func waitForLifecycleRuntimeModelAbsent(
+	t *testing.T,
+	ctx context.Context,
+	client *kubernetes.Clientset,
+	podName, modelName string,
+) {
+	t.Helper()
+	var last lifecycleRuntimeSnapshot
+	var lastErr error
+	err := wait.PollUntilContextTimeout(ctx, time.Second, 60*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			raw, err := client.CoreV1().Pods(lifecycleNamespace).ProxyGet(
+				"http", podName, fmt.Sprint(lifecycleRuntimePort), "v1/runtime/snapshot", nil,
+			).DoRaw(ctx)
+			if err != nil {
+				lastErr = err
+				return false, nil
+			}
+			if err := json.Unmarshal(raw, &last); err != nil {
+				lastErr = err
+				return false, nil
+			}
+			lastErr = nil
+			for _, observed := range last.Models {
+				if observed.ModelName == modelName {
+					return false, nil
+				}
+			}
+			return true, nil
+		})
+	require.NoError(t, err, "runtime on pod %s still reports model %s: %+v; last error=%v",
+		podName, modelName, last.Models, lastErr)
+}
+
+func waitForLifecycleDeploymentPodReplacement(
+	t *testing.T,
+	ctx context.Context,
+	client *kubernetes.Clientset,
+	oldUID types.UID,
+) *corev1.Pod {
+	t.Helper()
+	var last []corev1.Pod
+	var replacement *corev1.Pod
+	var lastErr error
+	err := wait.PollUntilContextTimeout(ctx, time.Second, 90*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			pods, err := client.CoreV1().Pods(lifecycleNamespace).List(ctx, metav1.ListOptions{
+				LabelSelector: "app=" + lifecycleDeploymentName,
+			})
+			if err != nil {
+				lastErr = err
+				return false, nil
+			}
+			lastErr = nil
+			last = pods.Items
+			for i := range pods.Items {
+				pod := &pods.Items[i]
+				if pod.UID == oldUID {
+					continue
+				}
+				for _, condition := range pod.Status.Conditions {
+					if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+						replacement = pod.DeepCopy()
+						return true, nil
+					}
+				}
+			}
+			return false, nil
+		})
+	require.NoError(t, err, "lifecycle pool pod was not replaced; old UID=%s pods=%+v last error=%v",
+		oldUID, last, lastErr)
+	return replacement
 }
 
 func waitForLifecyclePoolPodsDeleted(
