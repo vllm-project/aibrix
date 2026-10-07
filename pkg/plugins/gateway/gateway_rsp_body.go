@@ -594,6 +594,14 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 			"target_pod", targetPod.Name,
 			"outstanding_request_count", outstandingRequestCount)
 	}
+	// Same keys and values as request_start, so a request's start and end lines can be
+	// filtered by strategy without joining them. Omitted when routing is delegated to the
+	// HTTPRoute (RouterNotSet), as request_start omits them too. resolved_strategy is the
+	// actual (possibly load-balance/least-request-top-k blended) composite RouterManager.Select
+	// used -- see ResolvedStrategy's doc comment.
+	if routingCtx.Algorithm != "" {
+		fields = append(fields, "routing_strategy", routingCtx.Algorithm, "resolved_strategy", routingCtx.ResolvedStrategy)
+	}
 
 	ttft := arrival.Sub(routingCtx.RequestTime)
 	if routingCtx.Stream && !routingCtx.FirstTokenTime.IsZero() {

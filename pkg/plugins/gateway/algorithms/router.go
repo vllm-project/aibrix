@@ -852,6 +852,7 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 		}
 		if ok {
 			if router, blendedOK := rm.tryAutoBlend(ctx, algStr, cfg, blended); blendedOK {
+				ctx.ResolvedStrategy = blended
 				return router, nil
 			}
 		}
@@ -859,6 +860,7 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 		if len(cfg.Items) > 1 {
 			multiRouter, err := rm.getOrCreateMultiStrategyRouter(algStr, cfg, ctx)
 			if err == nil {
+				ctx.ResolvedStrategy = algStr
 				return multiRouter, nil
 			}
 			// If multi-router initialization fails (e.g. strategy doesn't implement ScoreAll),
@@ -881,7 +883,11 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 	rm.routerMu.RLock()
 	defer rm.routerMu.RUnlock()
 	if provider, ok := rm.routerFactory[types.RoutingAlgorithm(algStr)]; ok {
-		return provider(ctx)
+		router, err := provider(ctx)
+		if err == nil {
+			ctx.ResolvedStrategy = algStr
+		}
+		return router, err
 	} else {
 		// Return an error rather than falling back to random to preserve 400 Bad Request
 		return nil, fmt.Errorf("unsupported router strategy: %s", algStr)

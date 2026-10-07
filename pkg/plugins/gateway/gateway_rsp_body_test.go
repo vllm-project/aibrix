@@ -1620,6 +1620,42 @@ func TestRequestEndHelper_SkipsTTFTForNonStreaming(t *testing.T) {
 	}
 }
 
+func TestRequestEndHelper_LogsRoutingAndResolvedStrategy(t *testing.T) {
+	fieldValue := func(fields []interface{}, key string) (interface{}, bool) {
+		for i := 0; i+1 < len(fields); i += 2 {
+			if fields[i] == key {
+				return fields[i+1], true
+			}
+		}
+		return nil, false
+	}
+
+	t.Run("blended", func(t *testing.T) {
+		routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("least-kv-cache"), "test-model", "", "req-1", "")
+		routerCtx.ResolvedStrategy = "least-kv-cache,load-balance:1,least-request-top-k:1"
+
+		fields := (&Server{}).requestEndHelper(routerCtx, time.Now(), 100, 50, 150)
+
+		got, ok := fieldValue(fields, "routing_strategy")
+		assert.True(t, ok)
+		assert.Equal(t, types.RoutingAlgorithm("least-kv-cache"), got, "routing_strategy stays what the caller asked for")
+		got, ok = fieldValue(fields, "resolved_strategy")
+		assert.True(t, ok)
+		assert.Equal(t, "least-kv-cache,load-balance:1,least-request-top-k:1", got)
+	})
+
+	t.Run("omitted when the request was never routed", func(t *testing.T) {
+		routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(""), "test-model", "", "req-3", "")
+
+		fields := (&Server{}).requestEndHelper(routerCtx, time.Now(), 100, 50, 150)
+
+		_, ok := fieldValue(fields, "routing_strategy")
+		assert.False(t, ok)
+		_, ok = fieldValue(fields, "resolved_strategy")
+		assert.False(t, ok)
+	})
+}
+
 // TestHandleResponseBody_VideoCreateRegistersAndRewritesID drives the create
 // path through the real entry point, since only HandleResponseBody decides
 // whether a response body is a video job response at all.

@@ -805,6 +805,7 @@ func TestSelectSkipsAutoBlendForNonScorerPrimary(t *testing.T) {
 		assert.False(t, isMulti, "random must not be silently blended")
 		_, isRandom := router.(*randomRouter)
 		assert.True(t, isRandom)
+		assert.Equal(t, string(RouterRandom), ctx.ResolvedStrategy, "an unblended request resolves to the strategy it asked for")
 	}
 
 	rm.routerMu.RLock()
@@ -840,12 +841,63 @@ func TestSelectRetriesAutoBlendAfterTransientConstructError(t *testing.T) {
 	_, isMulti := router1.(*multiStrategyRouter)
 	assert.False(t, isMulti)
 	assert.Same(t, primary, router1)
+	assert.Equal(t, "blendable-primary", ctx1.ResolvedStrategy, "a failed blend routes the primary alone, so no blend is reported")
 
 	ctx2 := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("blendable-primary"), testModelName, "hello", "req-transient-2", "")
 	router2, err := rm.Select(ctx2)
 	assert.NoError(t, err)
 	_, isMulti = router2.(*multiStrategyRouter)
 	assert.True(t, isMulti, "transient construct error must not be remembered")
+	assert.Equal(t, "blendable-primary,load-balance:1,least-request-top-k:1", ctx2.ResolvedStrategy)
+}
+
+// Select must overwrite, not accumulate, the resolved strategy: a context that was blended once
+// and is then routed unblended must not keep reporting the earlier blend.
+func TestSelectResolvedStrategyReflectsLatestSelect(t *testing.T) {
+	withAutoBlendWeights(t, 1, 1)
+	rm := NewRouterManager()
+	rm.RegisterProvider(types.RoutingAlgorithm("blendable-primary"), func(_ *types.RoutingContext) (types.Router, error) {
+		return &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityMost}}, nil
+	})
+	registerBlendScorers(rm)
+
+	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("blendable-primary"), testModelName, "hello", "req-stale-blend", "")
+	_, err := rm.Select(ctx)
+	assert.NoError(t, err)
+	assert.Equal(t, "blendable-primary,load-balance:1,least-request-top-k:1", ctx.ResolvedStrategy)
+
+	ctx.Algorithm = types.RoutingAlgorithm("blendable-primary,load-balance:0,least-request-top-k:0")
+	_, err = rm.Select(ctx)
+	assert.NoError(t, err)
+	assert.Equal(t, "blendable-primary", ctx.ResolvedStrategy)
+}
+
+// A multi-strategy request that already names every scorer the blend would add is routed as
+// asked, so the resolved strategy is the caller's own string.
+func TestSelectResolvedStrategyEqualsAlgorithmWhenNothingToBlend(t *testing.T) {
+	withAutoBlendWeights(t, 1, 1)
+	rm := NewRouterManager()
+	rm.RegisterProvider(types.RoutingAlgorithm("blendable-primary"), func(_ *types.RoutingContext) (types.Router, error) {
+		return &fakeScoreableRouter{fakeScorer: fakeScorer{polarity: types.PolarityMost}}, nil
+	})
+	registerBlendScorers(rm)
+
+	const algStr = "blendable-primary:2,load-balance:1,least-request:1"
+	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algStr), testModelName, "hello", "req-resolved-multi", "")
+	router, err := rm.Select(ctx)
+	assert.NoError(t, err)
+	_, isMulti := router.(*multiStrategyRouter)
+	assert.True(t, isMulti)
+	assert.Equal(t, algStr, ctx.ResolvedStrategy)
+	assert.Equal(t, types.RoutingAlgorithm(algStr), ctx.Algorithm)
+}
+
+func TestSelectLeavesResolvedStrategyEmptyOnError(t *testing.T) {
+	rm := NewRouterManager()
+	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("no-such-strategy"), testModelName, "hello", "req-resolved-err", "")
+	_, err := rm.Select(ctx)
+	assert.Error(t, err)
+	assert.Empty(t, ctx.ResolvedStrategy)
 }
 
 func TestSelectAutoBlendsWhenPrimaryIsPodScorer(t *testing.T) {
@@ -866,6 +918,8 @@ func TestSelectAutoBlendsWhenPrimaryIsPodScorer(t *testing.T) {
 	assert.Contains(t, multi.scorers, string(RouterLeastRequestTopK))
 	assert.NotContains(t, multi.scorers, string(RouterLeastRequest), "the blend uses least-request-top-k, not plain least-request")
 	assert.Contains(t, multi.scorers, "blendable-primary")
+	assert.Equal(t, "blendable-primary,load-balance:1,least-request-top-k:1", ctx.ResolvedStrategy)
+	assert.Equal(t, types.RoutingAlgorithm("blendable-primary"), ctx.Algorithm, "the requested algorithm must stay untouched")
 }
 
 func TestSelectPrefixCacheBlendExcludesLeastRequest(t *testing.T) {
@@ -889,6 +943,9 @@ func TestSelectPrefixCacheBlendExcludesLeastRequest(t *testing.T) {
 		{Name: string(RouterPrefixCache), Coefficient: autoBlendPrefixCacheWeight},
 		{Name: string(RouterLoadBalance), Coefficient: autoBlendPrefixCacheLoadBalanceWeight},
 	}, multi.config.Items)
+	assert.Equal(t, fmt.Sprintf("prefix-cache:%d,load-balance:%d",
+		autoBlendPrefixCacheWeight, autoBlendPrefixCacheLoadBalanceWeight), ctx.ResolvedStrategy)
+	assert.Equal(t, RouterPrefixCache, ctx.Algorithm, "the requested algorithm must stay untouched")
 }
 
 func TestSelectSessionAffinityGetsNoAutoBlend(t *testing.T) {
@@ -906,6 +963,7 @@ func TestSelectSessionAffinityGetsNoAutoBlend(t *testing.T) {
 	_, isMulti := router.(*multiStrategyRouter)
 	assert.False(t, isMulti, "a bare session-affinity request must run its own Route()/ScoreAll() unblended: its binary scoring means any load-balance weight below its own would never change the outcome, so blending it in would be dead weight at best")
 	assert.Same(t, sessionAffinity, router)
+	assert.Equal(t, string(RouterSessionAffinity), ctx.ResolvedStrategy)
 }
 
 func TestLookupReturnsSessionAffinitySingleton(t *testing.T) {

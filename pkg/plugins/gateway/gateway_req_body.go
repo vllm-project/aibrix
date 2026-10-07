@@ -222,6 +222,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 			)
 		}
 		klog.InfoS("request_start", "request_id", requestID, "request_path", requestPath, "model", model, "stream", stream, "routing_strategy", routingAlgorithm,
+			"resolved_strategy", routingCtx.ResolvedStrategy,
 			"target_pod", targetPodName, "target_pod_ip", targetPodIP, "outstanding_requests", request_count, "routing_time_taken", routingDelay)
 	}
 
