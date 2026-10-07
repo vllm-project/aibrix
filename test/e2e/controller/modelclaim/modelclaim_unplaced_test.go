@@ -19,11 +19,9 @@ package e2e
 import (
 	"context"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -85,28 +83,8 @@ func TestModelClaimNotPlacedYetIsRetryable(t *testing.T) {
 	})
 
 	// The reason is whatever the controller gives on the claim's Scheduled
-	// condition, so only the phase is checked.
-	var lastStatus int
-	var lastBody, retryAfter string
-	err = wait.PollUntilContextTimeout(ctx, time.Second, 60*time.Second, true,
-		func(context.Context) (bool, error) {
-			response, body, err := sendLifecycleModelRequest(unplacedModel)
-			if err != nil {
-				lastBody = err.Error()
-				return false, nil
-			}
-			lastStatus = response.StatusCode
-			lastBody = string(body)
-			retryAfter = response.Header.Get("Retry-After")
-			_ = response.Body.Close()
-			return lastStatus == http.StatusServiceUnavailable &&
-				strings.Contains(lastBody, "model "+unplacedModel+" is pending ("), nil
-		})
-	require.NoError(
-		t, err, "model %s was not answered as pending; last status=%d body=%s",
-		unplacedModel, lastStatus, lastBody,
-	)
-	assert.Equal(t, "10", retryAfter)
+	// condition, so only the pending gateway contract is checked.
+	waitForLifecycleModelPending(t, unplacedModel, 60*time.Second)
 
 	require.NoError(t, claims.Delete(ctx, unplacedClaim, metav1.DeleteOptions{}))
 	waitForLifecycleModelStatus(t, unplacedModel, http.StatusBadRequest, 60*time.Second)
