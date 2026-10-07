@@ -321,21 +321,24 @@ func waitForLifecycleClaimPhase(
 ) *modelv1alpha1.ModelClaim {
 	t.Helper()
 	var latest *modelv1alpha1.ModelClaim
+	var lastErr error
 	err := wait.PollUntilContextTimeout(ctx, time.Second, 90*time.Second, true,
 		func(ctx context.Context) (bool, error) {
 			claim, err := client.ModelV1alpha1().ModelClaims(lifecycleNamespace).Get(
 				ctx, name, metav1.GetOptions{},
 			)
 			if err != nil {
-				return false, err
+				lastErr = err
+				return false, nil
 			}
+			lastErr = nil
 			latest = claim
 			if claim.Status.Phase == modelv1alpha1.ModelClaimFailed && expected != claim.Status.Phase {
 				return false, fmt.Errorf("ModelClaim %s entered Failed: %+v", name, claim.Status.Conditions)
 			}
 			return claim.Status.Phase == expected, nil
 		})
-	require.NoError(t, err, "ModelClaim %s did not reach %s; latest=%+v", name, expected, latest)
+	require.NoError(t, err, "ModelClaim %s did not reach %s; latest=%+v last error=%v", name, expected, latest, lastErr)
 	return latest
 }
 
@@ -347,22 +350,25 @@ func waitForLifecycleClaimOnPod(
 ) *modelv1alpha1.ModelClaim {
 	t.Helper()
 	var latest *modelv1alpha1.ModelClaim
+	var lastErr error
 	err := wait.PollUntilContextTimeout(ctx, time.Second, 90*time.Second, true,
 		func(ctx context.Context) (bool, error) {
 			claim, err := client.ModelV1alpha1().ModelClaims(lifecycleNamespace).Get(
 				ctx, name, metav1.GetOptions{},
 			)
 			if err != nil {
-				return false, err
+				lastErr = err
+				return false, nil
 			}
+			lastErr = nil
 			latest = claim
 			return claim.Status.Phase == modelv1alpha1.ModelClaimActive &&
 				len(claim.Status.Instances) == 1 &&
 				claim.Status.Instances[0].Pod == podName, nil
 		})
 	require.NoError(
-		t, err, "ModelClaim %s did not become Active on pod %s; latest=%+v",
-		name, podName, latest,
+		t, err, "ModelClaim %s did not become Active on pod %s; latest=%+v last error=%v",
+		name, podName, latest, lastErr,
 	)
 	return latest
 }
@@ -377,24 +383,29 @@ func waitForLifecycleRouteBinding(
 	t.Helper()
 	var last lifecycleRouteBinding
 	var lastRaw string
+	var lastErr error
 	err := wait.PollUntilContextTimeout(ctx, time.Second, 60*time.Second, true,
 		func(ctx context.Context) (bool, error) {
 			pod, err := client.CoreV1().Pods(lifecycleNamespace).Get(ctx, podName, metav1.GetOptions{})
 			if err != nil {
-				return false, err
+				lastErr = err
+				return false, nil
 			}
+			lastErr = nil
 			lastRaw = pod.Annotations[constants.ModelClaimPodAnnotationPrefix+claimName]
 			if lastRaw == "" {
 				return false, nil
 			}
 			if err := json.Unmarshal([]byte(lastRaw), &last); err != nil {
-				return false, err
+				lastErr = err
+				return false, nil
 			}
+			lastErr = nil
 			return last == expected, nil
 		})
 	require.NoError(
-		t, err, "route for claim %s on pod %s did not converge: got=%+v raw=%s want=%+v",
-		claimName, podName, last, lastRaw, expected,
+		t, err, "route for claim %s on pod %s did not converge: got=%+v raw=%s want=%+v last error=%v",
+		claimName, podName, last, lastRaw, expected, lastErr,
 	)
 }
 
@@ -568,6 +579,9 @@ func cleanupLifecycleResources(
 	for _, name := range []string{lifecycleIdleClaim, lifecycleBusyClaim} {
 		err := claims.Delete(ctx, name, metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
+			if requireComplete {
+				assert.NoError(t, err, "delete ModelClaim %s", name)
+			}
 			t.Logf("delete ModelClaim %s: %v", name, err)
 		}
 	}
@@ -575,6 +589,9 @@ func cleanupLifecycleResources(
 		ctx, lifecycleDeploymentName, metav1.DeleteOptions{},
 	)
 	if err != nil && !apierrors.IsNotFound(err) {
+		if requireComplete {
+			assert.NoError(t, err, "delete ModelClaim lifecycle Deployment")
+		}
 		t.Logf("delete ModelClaim lifecycle Deployment: %v", err)
 	}
 	deploymentErr := wait.PollUntilContextTimeout(ctx, time.Second, 10*time.Second, true,
@@ -588,13 +605,13 @@ func cleanupLifecycleResources(
 			return false, err
 		})
 	if requireComplete {
-		require.NoError(t, deploymentErr, "timed out waiting for ModelClaim lifecycle Deployment to be deleted")
+		assert.NoError(t, deploymentErr, "timed out waiting for ModelClaim lifecycle Deployment to be deleted")
 	} else if deploymentErr != nil {
 		t.Logf("wait for stale ModelClaim lifecycle Deployment: %v", deploymentErr)
 	}
 	err = waitForLifecyclePoolPodsDeleted(ctx, k8sClient, time.Second)
 	if requireComplete {
-		require.NoError(t, err, "timed out waiting for ModelClaim lifecycle pool pods to be deleted")
+		assert.NoError(t, err, "timed out waiting for ModelClaim lifecycle pool pods to be deleted")
 	} else if err != nil {
 		t.Logf("wait for stale ModelClaim lifecycle pool pods: %v", err)
 	}
@@ -615,7 +632,7 @@ func cleanupLifecycleResources(
 			return true, nil
 		})
 	if requireComplete {
-		require.NoError(t, claimsErr, "timed out waiting for ModelClaim lifecycle claims to be deleted")
+		assert.NoError(t, claimsErr, "timed out waiting for ModelClaim lifecycle claims to be deleted")
 	} else if claimsErr != nil {
 		t.Logf("wait for stale ModelClaim lifecycle claims: %v", claimsErr)
 	}
@@ -647,17 +664,24 @@ func waitForLifecycleRouteAbsent(
 ) {
 	t.Helper()
 	var lastAnnotations map[string]string
+	var lastErr error
 	err := wait.PollUntilContextTimeout(ctx, time.Second, 60*time.Second, true,
 		func(ctx context.Context) (bool, error) {
 			pod, err := client.CoreV1().Pods(lifecycleNamespace).Get(ctx, podName, metav1.GetOptions{})
 			if err != nil {
-				return false, err
+				if apierrors.IsNotFound(err) {
+					return true, nil
+				}
+				lastErr = err
+				return false, nil
 			}
+			lastErr = nil
 			lastAnnotations = pod.Annotations
 			_, found := pod.Annotations[constants.ModelClaimPodAnnotationPrefix+claimName]
 			return !found, nil
 		})
-	require.NoError(t, err, "route for claim %s remained on pod %s; annotations=%v", claimName, podName, lastAnnotations)
+	require.NoError(t, err, "route for claim %s remained on pod %s; annotations=%v last error=%v",
+		claimName, podName, lastAnnotations, lastErr)
 }
 
 func waitForLifecycleRuntimeModelAbsent(
@@ -668,17 +692,21 @@ func waitForLifecycleRuntimeModelAbsent(
 ) {
 	t.Helper()
 	var last lifecycleRuntimeSnapshot
+	var lastErr error
 	err := wait.PollUntilContextTimeout(ctx, time.Second, 60*time.Second, true,
 		func(ctx context.Context) (bool, error) {
 			raw, err := client.CoreV1().Pods(lifecycleNamespace).ProxyGet(
 				"http", podName, fmt.Sprint(lifecycleRuntimePort), "v1/runtime/snapshot", nil,
 			).DoRaw(ctx)
 			if err != nil {
-				return false, err
+				lastErr = err
+				return false, nil
 			}
 			if err := json.Unmarshal(raw, &last); err != nil {
-				return false, err
+				lastErr = err
+				return false, nil
 			}
+			lastErr = nil
 			for _, observed := range last.Models {
 				if observed.ModelName == modelName {
 					return false, nil
@@ -686,7 +714,8 @@ func waitForLifecycleRuntimeModelAbsent(
 			}
 			return true, nil
 		})
-	require.NoError(t, err, "runtime on pod %s still reports model %s: %+v", podName, modelName, last.Models)
+	require.NoError(t, err, "runtime on pod %s still reports model %s: %+v; last error=%v",
+		podName, modelName, last.Models, lastErr)
 }
 
 func waitForLifecycleDeploymentPodReplacement(
@@ -698,14 +727,17 @@ func waitForLifecycleDeploymentPodReplacement(
 	t.Helper()
 	var last []corev1.Pod
 	var replacement *corev1.Pod
+	var lastErr error
 	err := wait.PollUntilContextTimeout(ctx, time.Second, 90*time.Second, true,
 		func(ctx context.Context) (bool, error) {
 			pods, err := client.CoreV1().Pods(lifecycleNamespace).List(ctx, metav1.ListOptions{
 				LabelSelector: "app=" + lifecycleDeploymentName,
 			})
 			if err != nil {
-				return false, err
+				lastErr = err
+				return false, nil
 			}
+			lastErr = nil
 			last = pods.Items
 			for i := range pods.Items {
 				pod := &pods.Items[i]
@@ -721,7 +753,8 @@ func waitForLifecycleDeploymentPodReplacement(
 			}
 			return false, nil
 		})
-	require.NoError(t, err, "lifecycle pool pod was not replaced; old UID=%s pods=%+v", oldUID, last)
+	require.NoError(t, err, "lifecycle pool pod was not replaced; old UID=%s pods=%+v last error=%v",
+		oldUID, last, lastErr)
 	return replacement
 }
 

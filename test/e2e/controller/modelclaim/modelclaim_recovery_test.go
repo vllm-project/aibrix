@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -120,17 +121,36 @@ func TestModelClaimRecoversAfterPoolPodReplacement(t *testing.T) {
 	})
 	waitForLifecycleModelStatus(t, lifecycleBusyModel, http.StatusOK, 60*time.Second)
 
-	pods, err := k8sClient.CoreV1().Pods(lifecycleNamespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app=" + lifecycleDeploymentName,
-	})
-	require.NoError(t, err)
-	routed := 0
-	for i := range pods.Items {
-		if _, found := pods.Items[i].Annotations[constants.ModelClaimPodAnnotationPrefix+lifecycleBusyClaim]; found {
-			routed++
-		}
-	}
-	assert.Equal(t, 1, routed)
+	var lastPodNames []string
+	var lastRouted int
+	var oldPresent bool
+	var lastListErr error
+	err = wait.PollUntilContextTimeout(ctx, time.Second, 60*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			pods, err := k8sClient.CoreV1().Pods(lifecycleNamespace).List(ctx, metav1.ListOptions{
+				LabelSelector: "app=" + lifecycleDeploymentName,
+			})
+			if err != nil {
+				lastListErr = err
+				return false, nil
+			}
+			lastListErr = nil
+			lastPodNames = lastPodNames[:0]
+			lastRouted = 0
+			oldPresent = false
+			for i := range pods.Items {
+				pod := &pods.Items[i]
+				lastPodNames = append(lastPodNames, pod.Name)
+				oldPresent = oldPresent || pod.UID == oldPod.UID
+				if _, found := pod.Annotations[constants.ModelClaimPodAnnotationPrefix+lifecycleBusyClaim]; found {
+					lastRouted++
+				}
+			}
+			return !oldPresent && lastRouted == 1, nil
+		})
+	require.NoError(t, err,
+		"old pod or duplicate route remained: pods=%v oldPresent=%t routed=%d last error=%v",
+		lastPodNames, oldPresent, lastRouted, lastListErr)
 }
 
 func TestModelClaimDeletionKeepsColocatedModelServing(t *testing.T) {

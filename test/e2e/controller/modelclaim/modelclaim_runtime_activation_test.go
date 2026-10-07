@@ -66,17 +66,21 @@ func TestModelClaimDrivesRuntimeMockActivationAndDeactivation(t *testing.T) {
 	)
 
 	var last lifecycleRuntimeSnapshot
+	var lastErr error
 	err = wait.PollUntilContextTimeout(ctx, time.Second, 60*time.Second, true,
 		func(ctx context.Context) (bool, error) {
 			raw, err := k8sClient.CoreV1().Pods(lifecycleNamespace).ProxyGet(
 				"http", pod.Name, fmt.Sprint(lifecycleRuntimePort), "v1/runtime/snapshot", nil,
 			).DoRaw(ctx)
 			if err != nil {
-				return false, err
+				lastErr = err
+				return false, nil
 			}
 			if err := json.Unmarshal(raw, &last); err != nil {
-				return false, err
+				lastErr = err
+				return false, nil
 			}
+			lastErr = nil
 			for _, observed := range last.Models {
 				if observed.ModelName != runtimeOnlyModel || observed.ClaimRef == nil {
 					continue
@@ -87,7 +91,7 @@ func TestModelClaimDrivesRuntimeMockActivationAndDeactivation(t *testing.T) {
 			}
 			return false, nil
 		})
-	require.NoError(t, err, "runtime never recorded claim activation: %+v", last.Models)
+	require.NoError(t, err, "runtime never recorded claim activation: %+v; last error=%v", last.Models, lastErr)
 
 	require.NoError(t, aibrixClient.ModelV1alpha1().ModelClaims(lifecycleNamespace).Delete(
 		ctx, runtimeOnlyClaim, metav1.DeleteOptions{},
@@ -143,7 +147,7 @@ func cleanupRuntimeOnlyResources(
 	err := claims.Delete(ctx, runtimeOnlyClaim, metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		if requireComplete {
-			require.NoError(t, err)
+			assert.NoError(t, err)
 		}
 		t.Logf("delete runtime-only ModelClaim: %v", err)
 	}
@@ -153,7 +157,7 @@ func cleanupRuntimeOnlyResources(
 			return apierrors.IsNotFound(err), nil
 		})
 	if requireComplete {
-		require.NoError(t, claimErr, "runtime-only ModelClaim was not deleted")
+		assert.NoError(t, claimErr, "runtime-only ModelClaim was not deleted")
 	} else if claimErr != nil {
 		t.Logf("wait for stale runtime-only ModelClaim: %v", claimErr)
 	}
@@ -163,7 +167,7 @@ func cleanupRuntimeOnlyResources(
 	)
 	if err != nil && !apierrors.IsNotFound(err) {
 		if requireComplete {
-			require.NoError(t, err)
+			assert.NoError(t, err)
 		}
 		t.Logf("delete runtime-only Deployment: %v", err)
 	}
@@ -175,25 +179,28 @@ func cleanupRuntimeOnlyResources(
 			return apierrors.IsNotFound(err), nil
 		})
 	if requireComplete {
-		require.NoError(t, deploymentErr, "runtime-only Deployment was not deleted")
+		assert.NoError(t, deploymentErr, "runtime-only Deployment was not deleted")
 	} else if deploymentErr != nil {
 		t.Logf("wait for stale runtime-only Deployment: %v", deploymentErr)
 	}
 
 	var lastPods []corev1.Pod
+	var lastPodsErr error
 	podsErr := wait.PollUntilContextTimeout(ctx, time.Second, 10*time.Second, true,
 		func(ctx context.Context) (bool, error) {
 			pods, err := k8sClient.CoreV1().Pods(lifecycleNamespace).List(ctx, metav1.ListOptions{
 				LabelSelector: "app=" + runtimeOnlyDeployment,
 			})
 			if err != nil {
-				return false, err
+				lastPodsErr = err
+				return false, nil
 			}
+			lastPodsErr = nil
 			lastPods = pods.Items
 			return len(pods.Items) == 0, nil
 		})
 	if requireComplete {
-		require.NoError(t, podsErr, "runtime-only Pods remain after cleanup: %+v", lastPods)
+		assert.NoError(t, podsErr, "runtime-only Pods remain after cleanup: %+v; last error=%v", lastPods, lastPodsErr)
 		assert.Empty(t, lastPods)
 	} else if podsErr != nil {
 		t.Logf("wait for stale runtime-only Pods: %v", podsErr)
