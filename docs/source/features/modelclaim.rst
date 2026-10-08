@@ -195,6 +195,54 @@ Apply the pool and wait for the runtime agent:
    kubectl rollout status deployment/warm-runtime-pool-b300 --timeout=10m
    kubectl get pods -l claim.model.aibrix.ai/pool=b300-pool-a -o wide
 
+Labels and annotations
+----------------------
+
+ModelClaim uses these keys. You set the first four on the warm pool. AIBrix
+writes the others, so leave them alone.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 22 12 36
+
+   * - Key
+     - Kind and object
+     - Set by
+     - Purpose
+   * - ``claim.model.aibrix.ai/enabled: "true"``
+     - Label on warm-pool Pods
+     - You
+     - Makes a Pod a candidate for placement.
+   * - ``claim.model.aibrix.ai/pool``
+     - Label on the warm-pool Deployment and Pods
+     - You
+     - Names the pool. Claims select it in ``podSelector``. The controller
+       reacts to a change of a Pod at once only when the Pod has both labels.
+       The ServiceMonitor turns it into the ``pool`` metric label.
+   * - ``claim.model.aibrix.ai/pool-policy``
+     - Annotation on the warm-pool Deployment
+     - You
+     - The pool policy, as JSON. See `Enable automatic KV and sleep policy`_.
+   * - ``aibrix.ai/metrics: modelclaim-runtime``
+     - Label on the warm-pool metrics Service
+     - You
+     - Lets the ModelClaim ServiceMonitor find the Service.
+   * - ``route.claim.model.aibrix.ai/<claim>``
+     - Annotation on a warm-pool Pod
+     - Controller
+     - The claim's route on that Pod, as JSON with ``model``, ``port`` and
+       ``state``. The gateway routes requests by it.
+   * - ``wake.modelclaim.aibrix.ai/<claim>``
+     - Annotation on a warm-pool Pod
+     - Gateway
+     - The time a request asked for the claim's sleeping engine. The controller
+       wakes the engine, and removes the annotation once the engine serves, or
+       after five minutes if it could not.
+   * - ``model.aibrix.ai/modelclaim-finalizer``
+     - Finalizer on ModelClaims
+     - Controller
+     - Keeps a deleted claim until its engines are drained and stopped.
+
 Create ModelClaims
 ------------------
 
