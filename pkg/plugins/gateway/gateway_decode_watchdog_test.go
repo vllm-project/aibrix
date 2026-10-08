@@ -558,3 +558,63 @@ func TestDecodeWatchdogDoesNotLeakAcrossStreams(t *testing.T) {
 	assert.LessOrEqual(t, after, before+2,
 		"goroutines leaked: %d before, %d after 20 watchdog streams", before, after)
 }
+
+// TestDecodeWatchdogArmedAfterNonTerminalPrefillFailure: an SGLang prefill leg
+// that answered 200 with a body the gateway could not parse is recorded as a
+// bad_response failure, which fail-fast ignores because the KV transfer
+// completed. The prefill goroutine then marks the leg succeeded as well, and
+// the watchdog must still catch a decode pod that never answers.
+func TestDecodeWatchdogArmedAfterNonTerminalPrefillFailure(t *testing.T) {
+	counters := captureCounters(t)
+	recorder, decodeAddr := newWatchdogAbortRecorder(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s, _ := newFailFastServer(t)
+	srv := newWatchdogProcessServer(ctx, 4)
+	st := newWatchdogState(ctx, watchdogTestRID, decodeAddr,
+		types.PDWatchdogOverrides{FirstResponseTimeout: 150 * time.Millisecond})
+	leg := st.routerCtx.PDLeg()
+
+	done := make(chan error, 1)
+	go func() { done <- runProcessLoop(s, srv, st) }()
+
+	// The order of the prefill goroutine: the failure first, then the success.
+	time.Sleep(50 * time.Millisecond)
+	leg.SetPrefillFailure(&types.PrefillFailure{Class: pd.PrefillFailureBadResponse, Message: "not json"})
+	time.Sleep(50 * time.Millisecond)
+	leg.MarkPrefillSucceeded()
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watchdog did not fire after a non-terminal prefill failure")
+	}
+	grpcStatus, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.DeadlineExceeded, grpcStatus.Code())
+
+	sent := srv.sentResponses()
+	require.Len(t, sent, 1)
+	immediate := sent[0].GetImmediateResponse()
+	require.NotNil(t, immediate)
+	assert.Equal(t, envoyTypePb.StatusCode_GatewayTimeout, immediate.GetStatus().GetCode())
+	assert.Contains(t, immediate.GetBody(), "did not start responding")
+
+	assert.Equal(t, watchdogTestRID, gjson.Get(recorder.wait(t, 5*time.Second), "rid").String())
+	awaitAbortsCounted(t, counters, 1)
+	select {
+	case <-leg.AbortDone():
+	case <-time.After(time.Second):
+		t.Fatal("AbortDone was not closed after the watchdog abort finished")
+	}
+
+	emitted := counters()
+	_, failFast := findCounter(emitted, metrics.GatewayPDPrefillFailureTotal)
+	assert.False(t, failFast, "fail-fast must leave a non-terminal prefill failure alone")
+	watchdog, ok := findCounter(emitted, metrics.GatewayPDDecodeWatchdogTotal)
+	require.True(t, ok, "expected %s to be emitted", metrics.GatewayPDDecodeWatchdogTotal)
+	assert.Equal(t, decodeWatchdogPhaseFirstResponse, watchdog.labels["phase"])
+}

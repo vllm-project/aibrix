@@ -122,6 +122,9 @@ func TestTRTAsyncPrefillFailures(t *testing.T) {
 			}
 			require.Eventually(t, func() bool { return exec.tracker.GetPrefillRequestCountsForPod(podKey) == 0 }, 5*time.Second, time.Millisecond)
 			assert.Zero(t, aborts.Load())
+			// Every class is terminal under reset-after-headers, bad_response
+			// included, so none of them may look like a prefill success.
+			assert.True(t, ctx.PrefillSucceededAt().IsZero())
 			active, _ := exec.tokenLoad.GetLoad(podKey)
 			assert.Zero(t, active)
 			if class == pd.PrefillFailureCanceled || class == pd.PrefillFailureTimeout {

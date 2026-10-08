@@ -49,7 +49,7 @@ const (
 	GatewayPrefillOutstandingRequests = "gateway_prefill_outstanding_requests"
 
 	// counter to track the decode-leg aborts the gateway fires when the
-	// prefill leg of a PD request fails
+	// prefill leg of a PD request fails or the decode watchdog gives up on it
 	GatewayPDDecodeAbortTotal = "gateway_pd_decode_abort_total"
 
 	// counter to track client-facing fail-fast actions taken on a PD prefill failure
@@ -163,7 +163,7 @@ var (
 			MetricType: MetricType{
 				Raw: Counter,
 			},
-			Description: "Total number of decode-leg aborts attempted by the gateway after a PD prefill failure, by prefill failure class and abort result",
+			Description: "Total number of decode-leg aborts attempted by the gateway after a PD prefill failure or a decode watchdog timeout, by prefill failure class (or watchdog trigger) and abort result",
 		},
 		GatewayPDPrefillFailureTotal: {
 			MetricScope:  PodMetricScope,

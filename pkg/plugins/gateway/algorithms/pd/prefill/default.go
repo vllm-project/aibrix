@@ -215,6 +215,16 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 					"prefill_pod_ip", prefillPodIP,
 					"prefill_failure_class", failure.ClassOrEmpty(),
 					"elapsed", time.Since(requestTime))
+				if failure != nil && !pd.PrefillFailureIsTerminalFor(failure.Class, policy.ResetAfterHeaders) {
+					// A non-terminal failure (SGLang bad_response) is a 200 the
+					// gateway could not parse: the KV transfer completed, so the
+					// decode pod owes the client a response exactly as after a
+					// success, and fail-fast leaves the request alone. Start the
+					// decode watchdog anyway, or a decode pod that wedges now is
+					// only noticed at Envoy's route timeout. Not a success for
+					// the metrics, though.
+					leg.MarkPrefillSucceeded()
+				}
 				return
 			}
 
