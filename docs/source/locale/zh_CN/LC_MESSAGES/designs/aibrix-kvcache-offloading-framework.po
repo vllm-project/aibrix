@@ -1,0 +1,895 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:5
+msgid "AIBrix KVCache Offloading Framework"
+msgstr "AIBrix KVCache Offloading Framework"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:7
+msgid ""
+"The rising demand for large language models has intensified the need for "
+"efficient memory management and caching to optimize inference performance"
+" and reduce costs. In multi-round use cases like chatbots and agent-based"
+" systems, overlapping token sequences lead to redundant computations "
+"during the prefill phase, wasting resources and limiting throughput."
+msgstr ""
+"大语言模型需求上升，使高效内存管理与缓存对优化推理性能、降低成本更加关键。"
+"在聊天机器人和智能体等多轮场景中，重叠的 token 序列会在 prefill 阶段造成重复计算，浪费资源并限制吞吐。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:9
+msgid ""
+"Many inference engines, such as `vLLM <https://github.com/vllm-"
+"project/vllm>`_, use built-in KV caching to mitigate this issue, "
+"leveraging idle HBM and DRAM. However, single-node KV caches face key "
+"limitations: constrained memory capacity, engine-specific storage that "
+"prevents sharing across instances, and difficulty supporting scenarios "
+"like KV migration and prefill-decode disaggregation."
+msgstr ""
+"许多推理引擎（如 `vLLM <https://github.com/vllm-project/vllm>`_ ）使用内置 KV 缓存缓解该问题，利用空闲 "
+"HBM 和 DRAM。但单节点 KV 缓存有明显限制：内存容量受限、存储与引擎绑定导致实例间无法共享，以及难以支持 KV 迁移和 Prefill/Decode "
+"分离等场景。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:11
+msgid ""
+"With AIBrix v0.3.0, we introduce a **production-ready KVCache Offloading "
+"Framework**, which enables efficient memory tiering and low-overhead "
+"cross-engine reuse. By default, the framework leverages **L1 DRAM-based "
+"caching**, which already provides significant performance improvements by"
+" offloading GPU memory pressure without incurring high latency. For "
+"scenarios requiring **multi-node sharing or larger-scale reuse**, AIBrix "
+"allows users to optionally enable **L2 remote caching**, unlocking the "
+"benefits of a distributed KV cache layer."
+msgstr ""
+"AIBrix v0.3.0 引入了 **可用于生产的 KVCache Offloading Framework** ，支持高效内存分层和低开销跨引擎复用。默认使用 "
+"**基于 DRAM 的 L1Cache** ，通过卸载 GPU 内存压力即可显著提升性能，且不会引入高延迟。若需要 **多节点共享或更大规模复用** "
+"，可选择启用 **L2 远程缓存** ，使用分布式 KVCache 层。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:13
+msgid "aibrix-kvcache-offloading-arch-overview"
+msgstr "aibrix-kvcache-offloading-arch-overview"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:18
+msgid "**Figure 1. AIBrix KVCache Offloading Framework**"
+msgstr "**图 1. AIBrix KVCache Offloading Framework**"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:20
+msgid ""
+"As shown in Figure 1, on the data plane, it integrates tightly with "
+"inference engines (e.g., vLLM) via *AIBrix Offloading Connector*, which "
+"employs optimized CUDA kernels to significantly accelerate data movement "
+"between GPU and CPU. For memory scalability, its multi-tiered cache "
+"manager dynamically balances workloads across storage layers, alleviating"
+" GPU memory capacity limits while minimizing latency penalties. The "
+"framework supports pluggable eviction policies (e.g., LRU, `S3FIFO "
+"<https://blog.jasony.me/system/cache/2023/08/01/s3fifo>`_) and diverse "
+"backend storage options (e.g., `InfiniStore "
+"<https://github.com/bytedance/InfiniStore>`_), enabling selective KV "
+"cache offloading to reduce network and PCIe contention. Crucially, its "
+"cache placement module can coordinate with the centralized distributed KV"
+" cache cluster manager to maximize global KV cache utilization. This "
+"enables cross-engine KV reuse and ensures cluster-wide resource "
+"efficiency, transforming isolated KV cache instances into a scalable, "
+"shared KV cache infrastructure."
+msgstr ""
+"如图 1 所示，数据面通过 *AIBrix Offloading Connector* 与推理引擎（如 vLLM）紧密集成，该连接器使用优化的 "
+"CUDA kernel 加速 GPU 与 CPU 之间的数据搬运。为扩展内存，多层缓存管理器在各存储层之间动态均衡负载，缓解 GPU 内存容量限制，同时尽量降低延迟代价。框架支持可插拔淘汰策略（如 "
+"LRU、`S3FIFO <https://blog.jasony.me/system/cache/2023/08/01/s3fifo>`_ ）以及多种后端存储（如 "
+"`InfiniStore <https://github.com/bytedance/InfiniStore>`_ ），可选择性卸载 KVCache，以减少网络和 "
+"PCIe 争用。更关键的是，缓存放置模块可与集中式分布式 KVCache 集群管理器协同，最大化全局 KVCache 利用率。这支持跨引擎 KV "
+"复用，并保证集群范围的资源效率，将孤立的 KVCache 实例转变为可扩展的共享 KVCache 基础设施。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:23
+msgid "L1 Engine DRAM Cache Management"
+msgstr "L1 引擎 DRAM 缓存管理"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:25
+msgid ""
+"The growing demands of modern models and increasing context lengths in "
+"LLM inference have led to KV caches consuming progressively more GPU "
+"memory, pushing against the hardware limits of even the most advanced "
+"GPUs. Recent systems like `Dynamo <https://github.com/ai-"
+"dynamo/dynamo>`_, `LMCache <https://github.com/LMCache/LMCache>`_, and "
+"`MoonCake <https://github.com/kvcache-ai/Mooncake>`_ have developed "
+"solutions that offload KV cache to external memory hierarchies, spanning "
+"from CPU memory to SSDs. :ref:`kvcache-offloading` supports the "
+"offloading of KV cache to CPU memory as well by only enabling its DRAM-"
+"backed ``L1Cache``. While this approach does not enable KV cache sharing "
+"across multiple engines, it eliminates the complexity of distributed KV "
+"cache setup and configuration. More importantly, by leveraging the "
+"significantly larger capacity of CPU memory, this method delivers "
+"substantial performance gains —- making it an ideal solution for use "
+"cases that prioritize scalable KV cache capacity over cross-engine KV "
+"reuse."
+msgstr ""
+"现代模型规模与 LLM 推理上下文长度不断增加，使 KVCache 占用越来越多 GPU 内存，即使最先进的 GPU 也接近硬件上限。近期系统如 "
+"`Dynamo <https://github.com/ai-dynamo/dynamo>`_ 、`LMCache <https://github.com/LMCache/LMCache>`_ "
+"和 `MoonCake <https://github.com/kvcache-ai/Mooncake>`_ 已将 KVCache 卸载到从 CPU "
+"内存到 SSD 的外部存储层次。:ref:`kvcache-offloading` 也可以仅启用基于 DRAM 的 ``L1Cache`` ，将 "
+"KVCache 卸载到 CPU 内存。该方式不支持跨引擎共享 KVCache，但省去了分布式 KVCache 的部署与配置复杂度。更重要的是，借助 "
+"CPU 内存显著更大的容量，该方法能带来明显性能收益——适合优先扩展 KVCache 容量、而非跨引擎 KV 复用的场景。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:29
+msgid "L2 Distributed KVCache and Cross-Engine KV Reuse"
+msgstr "L2 分布式 KVCache 与跨引擎 KV 复用"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:31
+msgid ""
+"The growing demand for large language models has significantly increased "
+"the need for expansive KV cache capacity. While CPU memory offloading "
+"effectively addresses moderate scaling needs, production environments "
+"handling massive-scale, dynamic workloads require even greater "
+"scalability -- particularly when memory needs exceed single-node "
+"capacities. To address this, AIBrix enables distributed KV cache services"
+" as its ``L2Cache`` backends, which can scale horizontally across "
+"multiple nodes to meet capacity demands."
+msgstr ""
+"大语言模型需求增长显著提高了对更大 KVCache 容量的要求。"
+"CPU 内存卸载能满足中等规模扩展，但处理超大规模、动态负载的生产环境需要更强扩展性——"
+"尤其当内存需求超过单节点容量时。"
+"为此，AIBrix 将分布式 KVCache 服务作为 ``L2Cache`` 后端，可跨多个节点水平扩展以满足容量需求。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:33
+msgid ""
+"In the meantime, as LLM deployments scale across multiple engines in the "
+"cluster, the redundancy of KV caches across engines introduces "
+"substantial inefficiencies. Repeated computations of common prompt "
+"prefixes waste GPU cycles and HBM bandwidth. AIBrix solves this challenge"
+" by enabling efficient **cross-engine KV reuse** through a high-"
+"performance, shared distributed KV cache, optimizing resource utilization"
+" at scale."
+msgstr ""
+"同时，当集群中多个引擎部署 LLM 时，引擎间 KVCache 冗余会带来显著低效。重复计算公共 prompt 前缀会浪费 GPU 周期和 HBM "
+"带宽。AIBrix 通过高性能、共享的分布式 KVCache 实现高效 **跨引擎 KV 复用** ，在规模化场景下优化资源利用率。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:35
+msgid "aibrix-infinistore-arch-overview"
+msgstr "aibrix-infinistore-arch-overview"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:42
+msgid "Adding New KVCache Backends"
+msgstr "添加新的 KVCache 后端"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:44
+msgid ""
+"New KVCache backends can be easily added by implementing the "
+"``Connector`` interface:"
+msgstr "实现 ``Connector`` 接口即可添加新的 KVCache 后端："
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:229
+msgid ""
+"Please refer to the `existing connectors <https://github.com/vllm-"
+"project/aibrix/tree/main/python/aibrix_kvcache/aibrix_kvcache/l2/connectors>`_"
+" for more details."
+msgstr ""
+"更多细节请参考 `existing connectors <https://github.com/vllm-project/aibrix/tree/main/python/aibrix_kvcache/aibrix_kvcache/l2/connectors>`_ "
+"。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:234
+msgid "Environment Variables Reference"
+msgstr "环境变量参考"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:236
+msgid ""
+"This section describes all available environment variables for AIBrix "
+"KVCache Offloading Framework."
+msgstr "本节说明 AIBrix KVCache Offloading Framework 的全部可用环境变量。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:239
+msgid "Core Configuration"
+msgstr "核心配置"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:245
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:286
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:315
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:353
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:379
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:408
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:431
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:454
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:470
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:492
+msgid "Variable"
+msgstr "变量"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:246
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:287
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:316
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:354
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:380
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:409
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:432
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:455
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:471
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:493
+msgid "Default"
+msgstr "默认值"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:247
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:288
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:317
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:355
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:381
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:410
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:433
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:456
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:472
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:494
+msgid "Description"
+msgstr "说明"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:248
+msgid "AIBRIX_KV_CACHE_OL_CHUNK_SIZE"
+msgstr "AIBRIX_KV_CACHE_OL_CHUNK_SIZE"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:249
+msgid "\"512\""
+msgstr "\"512\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:250
+msgid "Chunk size for operations."
+msgstr "操作的 chunk 大小。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:251
+msgid "AIBRIX_KV_CACHE_OL_BLOCK_SIZE"
+msgstr "AIBRIX_KV_CACHE_OL_BLOCK_SIZE"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:252
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:255
+msgid "\"-1\""
+msgstr "\"-1\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:253
+msgid ""
+"Number of tokens in a kvcache block (the finest IO granularity). Defaults"
+" to -1, which means to use engine's block size."
+msgstr "一个 KVCache block 中的 token 数（最细 IO 粒度）。默认 -1，表示使用引擎的 block size。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:254
+msgid "AIBRIX_KV_CACHE_OL_MAX_SEQ_LEN"
+msgstr "AIBRIX_KV_CACHE_OL_MAX_SEQ_LEN"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:256
+msgid ""
+"Maximum sequence length. Defaults to -1, which means no limit. If set, "
+"tokens beyond this length will be ignored."
+msgstr "最大序列长度。默认 -1 表示不限制。若设置，超出该长度的 token 会被忽略。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:257
+msgid "AIBRIX_KV_CACHE_OL_TIME_MEASUREMENT_ENABLED"
+msgstr "AIBRIX_KV_CACHE_OL_TIME_MEASUREMENT_ENABLED"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:258
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:261
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:290
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:302
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:392
+msgid "\"1\""
+msgstr "\"1\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:259
+msgid "Enable time measurement."
+msgstr "启用时间测量。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:260
+msgid "AIBRIX_KV_CACHE_OL_BREAKDOWN_MEASUREMENT_ENABLED"
+msgstr "AIBRIX_KV_CACHE_OL_BREAKDOWN_MEASUREMENT_ENABLED"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:262
+msgid "Enable breakdown measurement."
+msgstr "启用分项测量。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:263
+msgid "AIBRIX_KV_CACHE_OL_DOUBLE_GET_THRESHOLD"
+msgstr "AIBRIX_KV_CACHE_OL_DOUBLE_GET_THRESHOLD"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:264
+msgid "\"4,0.1\""
+msgstr "\"4,0.1\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:265
+msgid ""
+"Controls when to issue a second get request to L2 cache. First value is "
+"minimum missing blocks, second is ratio threshold."
+msgstr "控制何时向 L2Cache 发起第二次 get。第一个值是最少缺失 block 数，第二个值是比例阈值。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:266
+msgid "AIBRIX_KV_CACHE_OL_TOKEN_VALIDATION_ENABLED"
+msgstr "AIBRIX_KV_CACHE_OL_TOKEN_VALIDATION_ENABLED"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:267
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:273
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:337
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:441
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:474
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:477
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:480
+msgid "\"0\""
+msgstr "\"0\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:268
+msgid ""
+"Whether to validate tokens in L2 cache. Disabling uses tighter memory "
+"layout."
+msgstr "是否校验 L2Cache 中的 token。关闭后使用更紧凑的内存布局。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:269
+msgid "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE"
+msgstr "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:270
+msgid "\"::/0\""
+msgstr "\"::/0\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:271
+msgid ""
+"Valid GID range (CIDR format). Similar to NVSHMEM_IB_ADDR_RANGE for "
+"NVSHMEM."
+msgstr "有效 GID 范围（CIDR 格式）。类似于 NVSHMEM 的 NVSHMEM_IB_ADDR_RANGE。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:272
+msgid "AIBRIX_KV_CACHE_OL_PROFILING_ENABLED"
+msgstr "AIBRIX_KV_CACHE_OL_PROFILING_ENABLED"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:274
+msgid "Enable profiling."
+msgstr "启用性能剖析。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:275
+msgid "AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS"
+msgstr "AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:276
+msgid "\"http://0.0.0.0:4040\""
+msgstr "\"http://0.0.0.0:4040\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:277
+msgid ""
+"Profiling server address. Profiling server is responsible for collecting "
+"profiling data and displaying it in a web UI."
+msgstr "性能剖析服务器地址。该服务器负责收集剖析数据并在 Web UI 中展示。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:280
+msgid "L1 Cache Configuration"
+msgstr "L1Cache 配置"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:289
+msgid "AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED"
+msgstr "AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:291
+msgid "Enable L1 cache."
+msgstr "启用 L1Cache。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:292
+msgid "AIBRIX_KV_CACHE_OL_L1_CACHE_EVICTION_POLICY"
+msgstr "AIBRIX_KV_CACHE_OL_L1_CACHE_EVICTION_POLICY"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:293
+msgid "\"S3FIFO\""
+msgstr "\"S3FIFO\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:294
+msgid "Eviction policy for L1 cache (\"S3FIFO\", \"LRU\", or \"FIFO\")"
+msgstr "L1Cache 淘汰策略（\"S3FIFO\"、\"LRU\" 或 \"FIFO\"）"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:295
+msgid "AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB"
+msgstr "AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:296
+msgid "\"10\""
+msgstr "\"10\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:297
+msgid "L1 cache capacity in GB."
+msgstr "L1Cache 容量，单位 GB。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:298
+msgid "AIBRIX_KV_CACHE_OL_DEVICE"
+msgstr "AIBRIX_KV_CACHE_OL_DEVICE"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:299
+msgid "\"cpu\""
+msgstr "\"cpu\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:300
+msgid "Device to use for cache operations (\"cpu\" or \"cuda\")"
+msgstr "缓存操作使用的设备（\"cpu\" 或 \"cuda\"）"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:301
+msgid "AIBRIX_KV_CACHE_OL_S3FIFO_SMALL_TO_MAIN_PROMO_THRESHOLD"
+msgstr "AIBRIX_KV_CACHE_OL_S3FIFO_SMALL_TO_MAIN_PROMO_THRESHOLD"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:303
+msgid "S3FIFO eviction policy: promotion threshold from small to main queue."
+msgstr "S3FIFO 淘汰策略：从 small 队列晋升到 main 队列的阈值。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:304
+msgid "AIBRIX_KV_CACHE_OL_S3FIFO_SMALL_FIFO_CAPACITY_RATIO"
+msgstr "AIBRIX_KV_CACHE_OL_S3FIFO_SMALL_FIFO_CAPACITY_RATIO"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:305
+msgid "0.3"
+msgstr "0.3"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:306
+msgid "S3FIFO eviction policy: capacity ratio for small FIFO."
+msgstr "S3FIFO 淘汰策略：small FIFO 的容量比例。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:309
+msgid "L2 Cache Configuration"
+msgstr "L2Cache 配置"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:318
+msgid "AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"
+msgstr "AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:319
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:357
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:363
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:366
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:398
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:444
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:458
+msgid "\"\""
+msgstr "\"\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:320
+msgid "Backend for L2 cache."
+msgstr "L2Cache 后端。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:321
+msgid "AIBRIX_KV_CACHE_OL_L2_CACHE_NAMESPACE"
+msgstr "AIBRIX_KV_CACHE_OL_L2_CACHE_NAMESPACE"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:322
+msgid "\"aibrix\""
+msgstr "\"aibrix\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:323
+msgid "Namespace for L2 cache."
+msgstr "L2Cache 命名空间。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:324
+msgid "AIBRIX_KV_CACHE_OL_L2_CACHE_OP_BATCH"
+msgstr "AIBRIX_KV_CACHE_OL_L2_CACHE_OP_BATCH"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:325
+msgid "\"32\""
+msgstr "\"32\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:326
+msgid "Operation batch size."
+msgstr "操作批大小。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:327
+msgid "AIBRIX_KV_CACHE_OL_L2_CACHE_PER_TOKEN_TIMEOUT_MS"
+msgstr "AIBRIX_KV_CACHE_OL_L2_CACHE_PER_TOKEN_TIMEOUT_MS"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:328
+msgid "\"20\""
+msgstr "\"20\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:329
+msgid "Per-token timeout in milliseconds."
+msgstr "每 token 超时时间，单位毫秒。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:330
+msgid "AIBRIX_KV_CACHE_OL_L2_CACHE_KEY_BUILDER"
+msgstr "AIBRIX_KV_CACHE_OL_L2_CACHE_KEY_BUILDER"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:331
+msgid "\"ROLLING_HASH\""
+msgstr "\"ROLLING_HASH\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:332
+msgid "Key builder for L2 cache (\"RAW\", \"ROLLING_HASH\", or \"SIMPLE_HASH\")"
+msgstr "L2Cache 的 key 构建器（\"RAW\"、\"ROLLING_HASH\" 或 \"SIMPLE_HASH\"）"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:333
+msgid "AIBRIX_KV_CACHE_OL_L2_CACHE_INGESTION_TYPE"
+msgstr "AIBRIX_KV_CACHE_OL_L2_CACHE_INGESTION_TYPE"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:334
+msgid "\"HOT\""
+msgstr "\"HOT\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:335
+msgid "Ingestion type (\"ALL\", \"HOT\", or \"EVICTED\")."
+msgstr "写入类型（\"ALL\"、\"HOT\" 或 \"EVICTED\"）。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:336
+msgid "AIBRIX_KV_CACHE_OL_L2_CACHE_INGESTION_MAX_INFLIGHT_TOKENS"
+msgstr "AIBRIX_KV_CACHE_OL_L2_CACHE_INGESTION_MAX_INFLIGHT_TOKENS"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:338
+msgid "Max inflight writes (0 for synchronous)."
+msgstr "最大进行中写操作数（0 表示同步）。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:339
+msgid "AIBRIX_KV_CACHE_OL_L2_CACHE_NUM_ASYNC_WORKERS"
+msgstr "AIBRIX_KV_CACHE_OL_L2_CACHE_NUM_ASYNC_WORKERS"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:340
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:514
+msgid "\"8\""
+msgstr "\"8\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:341
+msgid "Number of async workers."
+msgstr "异步 worker 数量。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:342
+msgid "AIBRIX_KV_CACHE_OL_L2_CACHE_PLACEMENT_POLICY"
+msgstr "AIBRIX_KV_CACHE_OL_L2_CACHE_PLACEMENT_POLICY"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:343
+msgid "\"SIMPLE\""
+msgstr "\"SIMPLE\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:344
+msgid "Placement policy (only applicable if using meta service)."
+msgstr "放置策略（仅在使用 meta service 时适用）。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:347
+msgid "Meta Service Configuration"
+msgstr "Meta Service 配置"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:356
+msgid "AIBRIX_KV_CACHE_OL_META_SERVICE_BACKEND"
+msgstr "AIBRIX_KV_CACHE_OL_META_SERVICE_BACKEND"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:358
+msgid ""
+"Backend for meta service. If meta service backend is not set, L2 cache "
+"backend will use direct mode to access the given cache server. Otherwise,"
+" we will get membership information from meta service and construct the "
+"L2 cache cluster."
+msgstr ""
+"meta service 后端。未设置时，L2Cache 后端以 direct 模式访问给定缓存服务器；"
+"否则从 meta service 获取成员信息并构建 L2Cache 集群。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:359
+msgid "AIBRIX_KV_CACHE_OL_META_SERVICE_REFRESH_INTERVAL_S"
+msgstr "AIBRIX_KV_CACHE_OL_META_SERVICE_REFRESH_INTERVAL_S"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:360
+msgid "\"30\""
+msgstr "\"30\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:361
+msgid "Refresh interval in seconds."
+msgstr "刷新间隔，单位秒。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:362
+msgid "AIBRIX_KV_CACHE_OL_META_SERVICE_URL"
+msgstr "AIBRIX_KV_CACHE_OL_META_SERVICE_URL"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:364
+msgid "URL for meta service."
+msgstr "meta service 的 URL。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:365
+msgid "AIBRIX_KV_CACHE_OL_META_SERVICE_CLUSTER_META_KEY"
+msgstr "AIBRIX_KV_CACHE_OL_META_SERVICE_CLUSTER_META_KEY"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:367
+msgid "Cluster meta key."
+msgstr "集群 meta key。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:370
+msgid "Connector Configurations"
+msgstr "连接器配置"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:373
+msgid "InfiniStore Connector Configuration"
+msgstr "InfiniStore 连接器配置"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:382
+msgid "AIBRIX_KV_CACHE_OL_INFINISTORE_HOST_ADDR"
+msgstr "AIBRIX_KV_CACHE_OL_INFINISTORE_HOST_ADDR"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:383
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:412
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:418
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:435
+msgid "\"127.0.0.1\""
+msgstr "\"127.0.0.1\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:384
+msgid "Host address."
+msgstr "主机地址。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:385
+msgid "AIBRIX_KV_CACHE_OL_INFINISTORE_SERVICE_PORT"
+msgstr "AIBRIX_KV_CACHE_OL_INFINISTORE_SERVICE_PORT"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:386
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:421
+msgid "\"12345\""
+msgstr "\"12345\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:387
+msgid "Service port."
+msgstr "服务端口。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:388
+msgid "AIBRIX_KV_CACHE_OL_INFINISTORE_CONNECTION_TYPE"
+msgstr "AIBRIX_KV_CACHE_OL_INFINISTORE_CONNECTION_TYPE"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:389
+msgid "\"RDMA\""
+msgstr "\"RDMA\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:390
+msgid "Connection type."
+msgstr "连接类型。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:391
+msgid "AIBRIX_KV_CACHE_OL_INFINISTORE_IB_PORT"
+msgstr "AIBRIX_KV_CACHE_OL_INFINISTORE_IB_PORT"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:393
+msgid "IB port."
+msgstr "IB 端口。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:394
+msgid "AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE"
+msgstr "AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:395
+msgid "\"Ethernet\""
+msgstr "\"Ethernet\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:396
+msgid "Link type."
+msgstr "链路类型。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:397
+msgid "AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST"
+msgstr "AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:399
+msgid ""
+"Visible device list. Since 0.2.42, InfiniStore supports RDMA GID index in"
+" client config, users can specify the GID index of each device in this "
+"format: \"mlx5_0:gid0,mlx5_1:gid1,mlx5_2:gid2\""
+msgstr ""
+"可见设备列表。自 0.2.42 起，InfiniStore 在客户端配置中支持 RDMA GID 索引，"
+"可用如下格式为每个设备指定 GID 索引：\"mlx5_0:gid0,mlx5_1:gid1,mlx5_2:gid2\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:402
+msgid "HPKV Connector Configuration"
+msgstr "HPKV 连接器配置"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:411
+msgid "AIBRIX_KV_CACHE_OL_HPKV_REMOTE_ADDR"
+msgstr "AIBRIX_KV_CACHE_OL_HPKV_REMOTE_ADDR"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:413
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:436
+msgid "Remote address."
+msgstr "远端地址。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:414
+msgid "AIBRIX_KV_CACHE_OL_HPKV_REMOTE_PORT"
+msgstr "AIBRIX_KV_CACHE_OL_HPKV_REMOTE_PORT"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:415
+msgid "\"12346\""
+msgstr "\"12346\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:416
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:439
+msgid "Remote port."
+msgstr "远端端口。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:417
+msgid "AIBRIX_KV_CACHE_OL_HPKV_LOCAL_ADDR"
+msgstr "AIBRIX_KV_CACHE_OL_HPKV_LOCAL_ADDR"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:419
+msgid "Local address."
+msgstr "本地地址。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:420
+msgid "AIBRIX_KV_CACHE_OL_HPKV_LOCAL_PORT"
+msgstr "AIBRIX_KV_CACHE_OL_HPKV_LOCAL_PORT"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:422
+msgid "Local port."
+msgstr "本地端口。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:425
+msgid "PrisKV Connector Configuration"
+msgstr "PrisKV 连接器配置"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:434
+msgid "AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_ADDR"
+msgstr "AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_ADDR"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:437
+msgid "AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_PORT"
+msgstr "AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_PORT"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:438
+msgid "\"6379\""
+msgstr "\"6379\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:440
+msgid "AIBRIX_KV_CACHE_OL_PRISKV_USE_MPUT_MGET"
+msgstr "AIBRIX_KV_CACHE_OL_PRISKV_USE_MPUT_MGET"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:442
+msgid "Enable MPUT/MGET."
+msgstr "启用 MPUT/MGET。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:443
+msgid "AIBRIX_KV_CACHE_OL_PRISKV_PASSWORD"
+msgstr "AIBRIX_KV_CACHE_OL_PRISKV_PASSWORD"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:445
+msgid "Password."
+msgstr "密码。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:448
+msgid "EIC Connector Configuration"
+msgstr "EIC 连接器配置"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:457
+msgid "AIBRIX_KV_CACHE_OL_EIC_CONFIG_FILE"
+msgstr "AIBRIX_KV_CACHE_OL_EIC_CONFIG_FILE"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:459
+msgid "EIC config file."
+msgstr "EIC 配置文件。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:462
+msgid "Mock Connector Configuration"
+msgstr "Mock 连接器配置"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:464
+msgid "Mock connector is used for testing and profiling purposes."
+msgstr "Mock 连接器用于测试和性能剖析。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:473
+msgid "AIBRIX_KV_CACHE_OL_MOCK_USE_RDMA"
+msgstr "AIBRIX_KV_CACHE_OL_MOCK_USE_RDMA"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:475
+msgid "Use RDMA in mock connector."
+msgstr "在 mock 连接器中使用 RDMA。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:476
+msgid "AIBRIX_KV_CACHE_OL_MOCK_USE_MPUT_MGET"
+msgstr "AIBRIX_KV_CACHE_OL_MOCK_USE_MPUT_MGET"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:478
+msgid "Use MPUT/MGET in mock connector."
+msgstr "在 mock 连接器中使用 MPUT/MGET。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:479
+msgid "AIBRIX_KV_CACHE_OL_MOCK_USE_NOOP"
+msgstr "AIBRIX_KV_CACHE_OL_MOCK_USE_NOOP"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:481
+msgid "Use NOOP for all operations. Useful for profiling the framework overhead."
+msgstr "所有操作使用 NOOP。用于剖析框架开销。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:484
+msgid "RocksDB Connector Configuration"
+msgstr "RocksDB 连接器配置"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:486
+msgid "RocksDB connector is used for testing purposes."
+msgstr "RocksDB 连接器用于测试。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:495
+msgid "AIBRIX_KV_CACHE_OL_ROCKSDB_ROOT"
+msgstr "AIBRIX_KV_CACHE_OL_ROCKSDB_ROOT"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:496
+msgid "\"~/.kv_cache_ol/rocksdb\""
+msgstr "\"~/.kv_cache_ol/rocksdb\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:497
+msgid "Root directory for RocksDB."
+msgstr "RocksDB 根目录。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:498
+msgid "AIBRIX_KV_CACHE_OL_ROCKSDB_TTL_S"
+msgstr "AIBRIX_KV_CACHE_OL_ROCKSDB_TTL_S"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:499
+msgid "\"600\""
+msgstr "\"600\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:500
+msgid "TTL in seconds."
+msgstr "TTL，单位秒。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:501
+msgid "AIBRIX_KV_CACHE_OL_ROCKSDB_WRITE_BUFFER_SIZE"
+msgstr "AIBRIX_KV_CACHE_OL_ROCKSDB_WRITE_BUFFER_SIZE"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:502
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:505
+msgid "\"67108864\""
+msgstr "\"67108864\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:503
+msgid "Write buffer size. Default 64MB."
+msgstr "写缓冲区大小。默认 64MB。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:504
+msgid "AIBRIX_KV_CACHE_OL_ROCKSDB_TARGET_FILE_SIZE_BASE"
+msgstr "AIBRIX_KV_CACHE_OL_ROCKSDB_TARGET_FILE_SIZE_BASE"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:506
+msgid "Target file size base. Default 64MB."
+msgstr "目标文件大小基数。默认 64MB。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:507
+msgid "AIBRIX_KV_CACHE_OL_ROCKSDB_MAX_WRITE_BUFFER_NUMBER"
+msgstr "AIBRIX_KV_CACHE_OL_ROCKSDB_MAX_WRITE_BUFFER_NUMBER"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:508
+msgid "\"3\""
+msgstr "\"3\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:509
+msgid "Max write buffers."
+msgstr "最大写缓冲区数量。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:510
+msgid "AIBRIX_KV_CACHE_OL_ROCKSDB_MAX_TOTAL_WAL_SIZE"
+msgstr "AIBRIX_KV_CACHE_OL_ROCKSDB_MAX_TOTAL_WAL_SIZE"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:511
+msgid "\"134217728\""
+msgstr "\"134217728\""
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:512
+msgid "Max total WAL size. Default 128MB."
+msgstr "WAL 总大小上限。默认 128MB。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:513
+msgid "AIBRIX_KV_CACHE_OL_ROCKSDB_MAX_BACKGROUND_JOBS"
+msgstr "AIBRIX_KV_CACHE_OL_ROCKSDB_MAX_BACKGROUND_JOBS"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:515
+msgid "Max background jobs."
+msgstr "最大后台任务数。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:519
+msgid ":doc:`../features/kvcache-offloading`"
+msgstr ":doc:`../features/kvcache-offloading`"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:520
+msgid "Deploying and configuring distributed KV cache."
+msgstr "部署并配置分布式 KVCache。"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:521
+msgid ":doc:`../features/kv-event-sync`"
+msgstr ":doc:`../features/kv-event-sync`"
+
+#: ../../source/designs/aibrix-kvcache-offloading-framework.rst:522
+msgid "Synchronizing KV cache events with the gateway."
+msgstr "与网关同步 KVCache 事件。"

@@ -1,0 +1,229 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/development/release.rst:5
+msgid "Release"
+msgstr "发布"
+
+#: ../../source/development/release.rst:8
+msgid "This document is for release team only. Feel free to skip it."
+msgstr "本文档仅面向发布团队。如不相关可跳过。"
+
+#: ../../source/development/release.rst:10
+msgid ""
+"This process outlines the steps required to create and publish a release "
+"for AIBrix Github project. Follow these steps to ensure a smooth and "
+"consistent release cycle."
+msgstr ""
+"本流程说明为 AIBrix GitHub 项目创建并发布版本所需的步骤。请按这些步骤操作，以确保发布周期顺畅一致。"
+
+#: ../../source/development/release.rst:14
+msgid "Prepare the code"
+msgstr "准备代码"
+
+#: ../../source/development/release.rst:17
+msgid "Option 1 RC version release"
+msgstr "方案 1：RC 版本发布"
+
+#: ../../source/development/release.rst:19
+msgid ""
+"For RC release like ``v0.4.0-rc.2``, there's no need to checkout a new "
+"branch, Let's cut the tag & release directly against ``main`` branch."
+msgstr ""
+"对于 ``v0.4.0-rc.2`` 这类 RC 发布，无需检出新分支，直接在 ``main`` 分支打 tag 并发布即可。"
+
+#: ../../source/development/release.rst:24
+msgid "Option 2 minor version release"
+msgstr "方案 2：次版本发布"
+
+#: ../../source/development/release.rst:26
+msgid ""
+"For new minor version release like ``v0.3.0``, please checkout a new "
+"branch named ``release-0.3``."
+msgstr "对于 ``v0.3.0`` 这类新的次版本发布，请检出名为 ``release-0.3`` 的新分支。"
+
+#: ../../source/development/release.rst:35
+msgid ""
+"Here we assume ``origin`` points to upstream, if it doesn't, other "
+"remotes like ``upstream`` should be right remote to push to."
+msgstr ""
+"这里假设 ``origin`` 指向上游仓库；如果不是，应推送到 ``upstream`` 等正确的远程。"
+
+#: ../../source/development/release.rst:38
+msgid "Option 3: patch version release"
+msgstr "方案 3：补丁版本发布"
+
+#: ../../source/development/release.rst:40
+msgid ""
+"Bug fixes should be merged on ``main`` first. Then cherry-pick the bugfix"
+" to target release branch like ``release-0.3``. However, the fix may not "
+"able to be cherry-picked to ``release-0.3`` due to conflicts. If that's "
+"the case, cut PR to release branch directly. For patch version like "
+"``v0.3.1``, please reuse the release branch ``release-0.3``, it should be"
+" created earlier from the minor version release. for patch release, we do"
+" not rebase ``main`` because it will introduce new features. All fixes "
+"have to be cherry-picked or cut PR against ``release-0.3`` directly."
+msgstr ""
+"缺陷修复应先合并到 ``main`` 。然后将修复 cherry-pick 到目标发布分支，例如 ``release-0.3`` 。不过，由于冲突，修复可能无法 "
+"cherry-pick 到 ``release-0.3`` 。此时请直接向发布分支提交 PR。对于 ``v0.3.1`` 这类补丁版本，请复用发布分支 "
+"``release-0.3`` ，该分支应在次版本发布时已创建。补丁发布不要 rebase ``main`` ，因为会引入新功能。所有修复必须 "
+"cherry-pick，或直接针对 ``release-0.3`` 提交 PR。"
+
+#: ../../source/development/release.rst:46
+msgid "Performance Regression Testing against RC release"
+msgstr "针对 RC 发布的性能回归测试"
+
+#: ../../source/development/release.rst:48
+msgid ""
+"The ``test/regression/`` directory contains benchmark configurations for "
+"release testing:"
+msgstr "``test/regression/`` 目录包含用于发布测试的基准配置："
+
+#: ../../source/development/release.rst:50
+msgid "**v0.2.1/**: performance benchmark baseline"
+msgstr "**v0.2.1/** ：性能基准基线"
+
+#: ../../source/development/release.rst:51
+msgid "**v0.3.0/**: KV cache variants"
+msgstr "**v0.3.0/** ：KV cache 变体"
+
+#: ../../source/development/release.rst:52
+msgid "**v0.4.0/**: Helm-based templates for SGLang/VLLM testing"
+msgstr "**v0.4.0/** ：用于 SGLang/VLLM 测试的 Helm 模板"
+
+#: ../../source/development/release.rst:54
+msgid ""
+"Before each release, run performance benchmarks using configurations in "
+"``test/regression/vX.Y.Z/``."
+msgstr "每次发布前，使用 ``test/regression/vX.Y.Z/`` 中的配置运行性能基准测试。"
+
+#: ../../source/development/release.rst:57
+msgid ""
+"It's recommended to build specific test cases for each release since the "
+"focus is different. It's also important to keep the test cases up-to-date"
+" with the latest release so we can also use previous tests cases against "
+"new versions."
+msgstr ""
+"建议为每次发布构建专门的测试用例，因为关注点不同。同时要让测试用例与最新发布保持同步，"
+"以便也能用先前的测试用例验证新版本。"
+
+#: ../../source/development/release.rst:61
+msgid "Release new version"
+msgstr "发布新版本"
+
+#: ../../source/development/release.rst:63
+msgid ""
+"Make sure the manifest images tags and updated and python version is "
+"updated. A sample PR is `Cut v0.4.0-rc.2 release <https://github.com"
+"/vllm-project/aibrix/pull/1373>`_. Merge the PR."
+msgstr ""
+"确保清单中的镜像标签已更新，且 Python 版本已更新。示例 PR 见 `Cut v0.4.0-rc.2 release <https://github.com/vllm-project/aibrix/pull/1373>`_ "
+"。合并该 PR。"
+
+#: ../../source/development/release.rst:67
+msgid ""
+"container image actually is not built yet, we preserve the tag name and "
+"it would be built later once the tag is created."
+msgstr "容器镜像此时尚未构建，我们先保留标签名，待 tag 创建后再构建。"
+
+#: ../../source/development/release.rst:71
+msgid "Create the tag and push to remote"
+msgstr "创建 tag 并推送到远程"
+
+#: ../../source/development/release.rst:73
+msgid "for rc release:"
+msgstr "RC 发布："
+
+#: ../../source/development/release.rst:87
+msgid "for official release:"
+msgstr "正式发布："
+
+#: ../../source/development/release.rst:102
+msgid "Monitor the release pipeline"
+msgstr "监控发布流水线"
+
+#: ../../source/development/release.rst:104
+msgid ""
+"After pushing the tag, the release pipeline (e.g., CI/CD workflows) "
+"should automatically begin. This may include: - Running tests and "
+"validations - Building manifest artifacts - Building container image and "
+"push to the registry - Building python library and upload to PyPI"
+msgstr ""
+"推送 tag 后，发布流水线（例如 CI/CD 工作流）应自动开始。可能包括： - 运行测试与校验 - 构建清单产物 - 构建容器镜像并"
+"推送到仓库 - 构建 Python 库并上传到 PyPI"
+
+#: ../../source/development/release.rst:110
+msgid "Monitor the pipeline's progress to ensure it completes successfully"
+msgstr "监控流水线进度，确保其成功完成"
+
+#: ../../source/development/release.rst:112
+#: ../../source/development/release.rst:117
+#: ../../source/development/release.rst:130
+msgid "draft-release"
+msgstr "draft-release"
+
+#: ../../source/development/release.rst:123
+msgid "Publish the release on Github"
+msgstr "在 GitHub 上发布版本"
+
+#: ../../source/development/release.rst:125
+msgid ""
+"Release pipeline will cut a draft pre-release in `Github Releases "
+"<https://github.com/vllm-project/aibrix/releases>`_. Go to the "
+"\"Releases\" section in the repository, select the draft release "
+"corresponding to the tag you created. Include release notes summarizing "
+"the changes (new features, bug fixes, breaking changes, etc.). Optionally"
+" attach binaries, documentation, or other assets. In the end, let's "
+"publish the release."
+msgstr ""
+"发布流水线会在 `Github Releases "
+"<https://github.com/vllm-project/aibrix/releases>`_ 中生成草稿预发布。"
+"进入仓库的 \"Releases\" 部分，选择与所创建 tag 对应的草稿发布。"
+"填写发布说明，概括变更（新功能、缺陷修复、破坏性变更等）。可选附加二进制、文档或其他资源。"
+"最后发布该版本。"
+
+#: ../../source/development/release.rst:136
+msgid "Sync images to Volcano Engine Container Registry"
+msgstr "将镜像同步到火山引擎容器镜像服务"
+
+#: ../../source/development/release.rst:138
+msgid ""
+"Currently, release pipeline only push images to dockerhub. In order to "
+"use them in VKE, we need to retag the images and push to VKE Container "
+"Registry."
+msgstr ""
+"目前发布流水线只将镜像推送到 Docker Hub。要在 VKE 中使用，需要重新打标签并推送到 VKE 容器镜像服务。"
+
+#: ../../source/development/release.rst:142
+msgid ""
+"It requires you to use a machine that have both VKE and Dockerhub access."
+" Do not forget to get the temporary credential and login the registry "
+"service before pushing."
+msgstr ""
+"需要使用同时具备 VKE 和 Docker Hub 访问权限的机器。"
+"推送前不要忘记获取临时凭证并登录镜像仓库服务。"
+
+#: ../../source/development/release.rst:152
+msgid "Update released tags in main branch docs"
+msgstr "在 main 分支文档中更新已发布标签"
+
+#: ../../source/development/release.rst:154
+msgid "A sample PR is `here <https://github.com/vllm-project/aibrix/pull/378>`_."
+msgstr "示例 PR 见 `此处 <https://github.com/vllm-project/aibrix/pull/378>`_ 。"

@@ -1,0 +1,164 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/getting_started/quickstart.rst:5
+msgid "Quickstart"
+msgstr "快速开始"
+
+#: ../../source/getting_started/quickstart.rst:8
+msgid "Installing AIBrix in your Kubernetes Cluster"
+msgstr "在 Kubernetes 集群中安装 AIBrix"
+
+#: ../../source/getting_started/quickstart.rst:11
+msgid "Install AIBrix Components"
+msgstr "安装 AIBrix 组件"
+
+#: ../../source/getting_started/quickstart.rst:13
+msgid ""
+"Get your kubernetes cluster ready, run following commands to install "
+"aibrix components in your cluster."
+msgstr ""
+"准备好 Kubernetes 集群后，运行以下命令在集群中安装 aibrix 组件。"
+
+#: ../../source/getting_started/quickstart.rst:16
+msgid ""
+"If you just want to install specific components or specific version, "
+"please check installation guidance for more installation options. AIBrix "
+"also provides the helm chart way, check installation guidance for more "
+"details."
+msgstr ""
+"如果只想安装特定组件或特定版本，请查看安装指南了解更多安装选项。"
+"AIBrix 也提供 Helm chart 安装方式，详情见安装指南。"
+
+#: ../../source/getting_started/quickstart.rst:25
+msgid ""
+"Wait for few minutes and run `kubectl get pods -n aibrix-system` to check"
+" pod status util they are ready."
+msgstr ""
+"等待几分钟，然后运行 `kubectl get pods -n aibrix-system` 检查 pod 状态，直到就绪。"
+
+#: ../../source/getting_started/quickstart.rst:39
+msgid "Deploy base model"
+msgstr "部署基座模型"
+
+#: ../../source/getting_started/quickstart.rst:41
+msgid "Save yaml as `model.yaml` and run `kubectl apply -f model.yaml`."
+msgstr "将 yaml 保存为 `model.yaml` ，然后运行 `kubectl apply -f model.yaml` 。"
+
+#: ../../source/getting_started/quickstart.rst:46
+msgid "Ensure that:"
+msgstr "请确保："
+
+#: ../../source/getting_started/quickstart.rst:48
+msgid ""
+"The `Service` name matches the `model.aibrix.ai/name` label value in the "
+"`Deployment`."
+msgstr ""
+"`Service` 名称与 `Deployment` 中的 `model.aibrix.ai/name` 标签值一致。"
+
+#: ../../source/getting_started/quickstart.rst:49
+msgid ""
+"The `--served-model-name` argument value in the `Deployment` command is "
+"also consistent with the `Service` name and `model.aibrix.ai/name` label."
+msgstr ""
+"`Deployment` 命令中的 `--served-model-name` 参数值也要与 `Service` 名称和 "
+"`model.aibrix.ai/name` 标签一致。"
+
+#: ../../source/getting_started/quickstart.rst:52
+msgid "Deploy Prefill-Decode (PD) Disaggregation Model"
+msgstr "部署 Prefill-Decode（PD）分离模型"
+
+#: ../../source/getting_started/quickstart.rst:54
+msgid "Save yaml as `pd-model.yaml` and run `kubectl apply -f pd-model.yaml`."
+msgstr "将 yaml 保存为 `pd-model.yaml` ，然后运行 `kubectl apply -f pd-model.yaml` 。"
+
+#: ../../source/getting_started/quickstart.rst:61
+msgid ""
+"We use an AIBrix-enhanced vLLM image with KVCache and NIXL support for "
+"disaggregated inference. For detailed information about available images,"
+" compatibility, and build instructions, see :ref:`container-images`."
+msgstr ""
+"我们使用带有 KVCache 和 NIXL 支持的 AIBrix 增强版 vLLM 镜像来做分离式推理。关于可用镜像、兼容性和构建说明，参见 :ref:`container-images` "
+"。"
+
+#: ../../source/getting_started/quickstart.rst:64
+msgid "Invoke the model endpoint using gateway API"
+msgstr "通过网关 API 调用模型端点"
+
+#: ../../source/getting_started/quickstart.rst:66
+msgid ""
+"Depending on where you deployed the AIBrix, you can use either of the "
+"following options to query the gateway."
+msgstr ""
+"根据 AIBrix 的部署位置，可以使用以下任一方式查询网关。"
+
+#: ../../source/getting_started/quickstart.rst:80
+msgid ""
+"Some cloud provider like AWS EKS expose the endpoint at hostname field, "
+"if that case, you should use ``.status.loadBalancer.ingress[0].hostname``"
+" instead."
+msgstr ""
+"部分云厂商（如 AWS EKS）在 hostname 字段暴露端点。若是这种情况，应改用 ``.status.loadBalancer.ingress[0].hostname`` "
+"。"
+
+#: ../../source/getting_started/quickstart.rst:112
+msgid ""
+"To test PD disaggregation, add the ``routing-strategy`` header to ``pd``."
+" For example:"
+msgstr "要测试 PD 分离，将 ``routing-strategy`` 请求头设为 ``pd`` 。例如："
+
+#: ../../source/getting_started/quickstart.rst:185
+msgid ""
+"If you meet problems exposing external IPs, feel free to debug with "
+"following commands. `101.18.0.4` is the ip of the gateway service."
+msgstr ""
+"如果暴露外部 IP 遇到问题，可用以下命令调试。`101.18.0.4` 是网关服务的 IP。"
+
+#: ../../source/getting_started/quickstart.rst:194
+msgid ""
+"For advanced development usage, please refer to the :ref:`development` "
+"section."
+msgstr "高级开发用法请参见 :ref:`development` 一节。"
+
+#: ../../source/getting_started/quickstart.rst:196
+msgid "What's next?"
+msgstr "下一步"
+
+#: ../../source/getting_started/quickstart.rst:199
+msgid ""
+":doc:`installation/installation`: production installation for your "
+"platform"
+msgstr ":doc:`installation/installation` ：面向你所用平台的生产安装"
+
+#: ../../source/getting_started/quickstart.rst:200
+msgid ""
+":doc:`../features/gateway-plugins`: choose a routing strategy for your "
+"workload"
+msgstr ":doc:`../features/gateway-plugins` ：为工作负载选择路由策略"
+
+#: ../../source/getting_started/quickstart.rst:201
+msgid ""
+":doc:`../features/autoscaling/autoscaling`: scale replicas on inference "
+"metrics"
+msgstr ":doc:`../features/autoscaling/autoscaling` ：基于推理指标扩缩副本"
+
+#: ../../source/getting_started/quickstart.rst:202
+msgid ":doc:`../production/observability`: see what the system is doing"
+msgstr ":doc:`../production/observability` ：了解系统正在做什么"

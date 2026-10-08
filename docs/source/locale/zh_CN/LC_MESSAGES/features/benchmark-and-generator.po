@@ -1,0 +1,454 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/features/benchmark-and-generator.rst:5
+msgid "Benchmark and Workload Generator"
+msgstr "基准测试与工作负载生成器"
+
+#: ../../source/features/benchmark-and-generator.rst:6
+msgid ""
+"`AIBrix Benchmark <https://github.com/vllm-"
+"project/aibrix/tree/main/benchmarks>`_ contains the following components:"
+msgstr ""
+"`AIBrix Benchmark <https://github.com/vllm-"
+"project/aibrix/tree/main/benchmarks>`_ 包含以下组件："
+
+#: ../../source/features/benchmark-and-generator.rst:8
+msgid "Dataset (Prompt) Generation"
+msgstr "数据集（Prompt）生成"
+
+#: ../../source/features/benchmark-and-generator.rst:9
+msgid "Workload Generation"
+msgstr "工作负载生成"
+
+#: ../../source/features/benchmark-and-generator.rst:10
+msgid "Benchmark Client"
+msgstr "基准客户端"
+
+#: ../../source/features/benchmark-and-generator.rst:11
+msgid "Benchmark Scenarios (Work-in-progress)"
+msgstr "基准场景（开发中）"
+
+#: ../../source/features/benchmark-and-generator.rst:13
+msgid ""
+"The diagram below shows the end-to-end steps of AIBrix benchmarks. Our "
+"components are highlighted as green rectangles in this diagram."
+msgstr "下图展示 AIBrix 基准测试的端到端步骤。图中绿色矩形高亮的是我们的组件。"
+
+#: ../../source/features/benchmark-and-generator.rst:15
+msgid "benchmark-component-doc"
+msgstr "benchmark-component-doc"
+
+#: ../../source/features/benchmark-and-generator.rst:21
+msgid ""
+"At its core, the AIBrix benchmark framework is built around a cleanly "
+"decoupled architecture: dataset generation, workload shaping, and "
+"benchmark execution. Each component can be customized independently, "
+"making it easy to plug in your own prompt logs, traffic traces, or "
+"experimental workloads—whether you're working on a new model deployment, "
+"scaling policy, or runtime optimization."
+msgstr ""
+"AIBrix 基准框架的核心是清晰解耦的架构：数据集生成、工作负载整形和基准执行。"
+"每个组件可独立定制，便于接入你自己的 prompt 日志、流量追踪或实验工作负载——"
+"无论你在做新的模型部署、扩缩策略还是运行时优化。"
+
+#: ../../source/features/benchmark-and-generator.rst:24
+msgid "Run AIBrix Benchmark End-to-End"
+msgstr "端到端运行 AIBrix Benchmark"
+
+#: ../../source/features/benchmark-and-generator.rst:27
+msgid ""
+"The benchmark script `benchmark.py <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/benchmark.py>`_ performs all steps up"
+" to the AIBrix workload format and triggers the benchmark client without "
+"setting up the benchmark environment for different scenarios. It assumes "
+"that AIBrix is already set up and expects a fully responsive endpoint."
+msgstr ""
+"基准脚本 `benchmark.py <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/benchmark.py>`_ 执行直到 AIBrix "
+"工作负载格式的所有步骤，并触发基准客户端，而不会为不同场景搭建基准环境。"
+"它假定 AIBrix 已经就绪，并期望端点完全可响应。"
+
+#: ../../source/features/benchmark-and-generator.rst:29
+msgid ""
+"For detailed usage and how to configure parameters, please refer to this "
+"`README <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/README.md>`_ for explaination in "
+"depth."
+msgstr ""
+"详细用法和参数配置请参见该 `README <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/README.md>`_ 的深入说明。"
+
+#: ../../source/features/benchmark-and-generator.rst:31
+msgid ""
+"First, make sure you have configured your API key as well as your "
+"endpoint like this:"
+msgstr "首先，确保已按如下方式配置 API key 和端点："
+
+#: ../../source/features/benchmark-and-generator.rst:39
+msgid "To run all steps using the default setting, try:"
+msgstr "使用默认设置运行全部步骤，可尝试："
+
+#: ../../source/features/benchmark-and-generator.rst:46
+msgid ""
+"If the script completes successfully, you should see something similar to"
+" the following output:"
+msgstr "若脚本成功完成，应看到类似如下输出："
+
+#: ../../source/features/benchmark-and-generator.rst:68
+msgid ""
+"All configuration files should be specified in a .yaml file. You can find"
+" an example configuration file `here <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_."
+msgstr ""
+"所有配置文件应在 .yaml 文件中指定。示例配置文件见 `here <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_ "
+"。"
+
+#: ../../source/features/benchmark-and-generator.rst:70
+msgid ""
+"To override the default configuration, use the `--override` flag. For "
+"example, to override the target model and the number of sessions in the "
+"dataset generation phase, use:"
+msgstr ""
+"要覆盖默认配置，使用 `--override` 标志。例如，要覆盖数据集生成阶段的目标模型和会话数，使用："
+
+#: ../../source/features/benchmark-and-generator.rst:80
+msgid "Run Dataset Generator"
+msgstr "运行数据集生成器"
+
+#: ../../source/features/benchmark-and-generator.rst:82
+msgid "benchmark-component-dataset-generator"
+msgstr "benchmark-component-dataset-generator"
+
+#: ../../source/features/benchmark-and-generator.rst:87
+msgid ""
+"The goal of AIBrix's dataset generator is to generate a prompt dataset or"
+" convert an existing dataset to a format that can be sampled from by the "
+"workload generator. The AIBrix dataset generator generates synthetic "
+"prompts that follow certain application patterns (i.e., cache sharing) or"
+" converts time-series traces (e.g., Open-source LLM trace like ShareGPT) "
+"to a standard dataset format. A synthetic dataset needs to be in one of "
+"the two formats:"
+msgstr ""
+"AIBrix 数据集生成器的目标是生成 prompt 数据集，或将现有数据集转换为工作负载生成器可采样的格式。"
+"AIBrix 数据集生成器可生成遵循特定应用模式（即 cache sharing）的合成 prompt，"
+"或将时序追踪（例如 ShareGPT 这类开源 LLM trace）转换为标准数据集格式。"
+"合成数据集需要是以下两种格式之一："
+
+#: ../../source/features/benchmark-and-generator.rst:90
+msgid "Plain format (no sessions)"
+msgstr "普通格式（无会话）"
+
+#: ../../source/features/benchmark-and-generator.rst:98
+msgid "Session format"
+msgstr "会话格式"
+
+#: ../../source/features/benchmark-and-generator.rst:105
+msgid ""
+"The dataset generator either generates a prompt dataset or converts an "
+"existing dataset which belongs to one of the two formats above."
+msgstr "数据集生成器要么生成 prompt 数据集，要么将现有数据集转换为上述两种格式之一。"
+
+#: ../../source/features/benchmark-and-generator.rst:107
+msgid "To run dataset generation, do:"
+msgstr "运行数据集生成："
+
+#: ../../source/features/benchmark-and-generator.rst:114
+msgid "Currently, we support four types of datasets:"
+msgstr "目前支持四种数据集："
+
+#: ../../source/features/benchmark-and-generator.rst:116
+msgid ""
+"**1. Controlled Synthetic Sharing** - This type allows users to generate "
+"a cache sharing *plain-format* dataset with *controlled prompt token "
+"length* and *controlled prefix sharing length*, as well as a controlled "
+"number of prefixes (i.e., sessions). To tune the prompt token length and "
+"shared length, set configuration variables under "
+"```dataset_configs.synthetic_shared``` in the `configuration file "
+"<https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_."
+msgstr ""
+"**1. Controlled Synthetic Sharing** - 该类型允许用户生成 cache sharing 的 "
+"*plain-format* 数据集，具有 *受控的 prompt token 长度* 和 *受控的前缀共享长度*，"
+"以及受控的前缀数量（即会话数）。要调整 prompt token 长度和共享长度，"
+"请在 `configuration file <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_ 中的 "
+"```dataset_configs.synthetic_shared``` 下设置配置变量。"
+
+#: ../../source/features/benchmark-and-generator.rst:119
+msgid ""
+"**2. Multiturn Synthetic** - Multiturn synthetic data generation produces"
+" a *sessioned-format* dataset. Each session ID maps to a *controlled "
+"number of prompts* per session and *controlled prompt lengths*. These "
+"variables are under the ```dataset_configs.synthetic_multiturn``` in the "
+"`configuration file <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_."
+msgstr ""
+"**2. Multiturn Synthetic** - 多轮合成数据生成产生 *sessioned-format* 数据集。"
+"每个会话 ID 映射到每个会话 *受控的 prompt 数量* 和 *受控的 prompt 长度*。"
+"这些变量位于 `configuration file <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_ 中的 "
+"```dataset_configs.synthetic_multiturn``` 下。"
+
+#: ../../source/features/benchmark-and-generator.rst:122
+msgid ""
+"**3. ShareGPT** - This generation type converts the ShareGPT dataset to a"
+" *sessioned-format* dataset that has session_id, prompts, and "
+"completions. Configuration variables are under `dataset_configs.sharegpt`"
+" in the `configuration file <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_."
+msgstr ""
+"**3. ShareGPT** - 该生成类型将 ShareGPT 数据集转换为含 session_id、prompts 和 "
+"completions 的 *sessioned-format* 数据集。配置变量位于 `configuration file "
+"<https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_ 中的 "
+"`dataset_configs.sharegpt` 下。"
+
+#: ../../source/features/benchmark-and-generator.rst:125
+msgid ""
+"**4. Client trace** - This generation type converts client output into a "
+"*plain-format* dataset. Configuration variables are under the "
+"`dataset_configs.client_trace` in the `configuration file "
+"<https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_."
+msgstr ""
+"**4. Client trace** - 该生成类型将客户端输出转换为 *plain-format* 数据集。配置变量位于 "
+"`configuration file <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_ 中的 "
+"`dataset_configs.client_trace` 下。"
+
+#: ../../source/features/benchmark-and-generator.rst:128
+msgid ""
+"The first two types generate synthetic prompts, while the latter two "
+"convert external data sources or benchmark data."
+msgstr "前两种生成合成 prompt，后两种转换外部数据源或基准数据。"
+
+#: ../../source/features/benchmark-and-generator.rst:130
+msgid ""
+"To set the type of dataset to be generated, set the environment variable "
+"`prompt_type` in the configuration file to one of the following values: "
+"```synthetic_multiturn```, ```synthetic_shared```, ```sharegpt```, "
+"```client_trace```."
+msgstr ""
+"要设置生成的数据集类型，将配置文件中的环境变量 `prompt_type` 设为以下取值之一："
+"```synthetic_multiturn```、```synthetic_shared```、```sharegpt```、"
+"```client_trace```。"
+
+#: ../../source/features/benchmark-and-generator.rst:132
+msgid ""
+"For details of the dataset generator, check out the `dataset_generator "
+"<https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/generator/dataset_generator>`_ "
+"directory."
+msgstr ""
+"数据集生成器的细节见 `dataset_generator <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/generator/dataset_generator>`_ 目录。"
+
+#: ../../source/features/benchmark-and-generator.rst:135
+msgid "Run Workload Generator"
+msgstr "运行工作负载生成器"
+
+#: ../../source/features/benchmark-and-generator.rst:137
+#: ../../source/features/benchmark-and-generator.rst:199
+msgid "benchmark-component-workload-generator"
+msgstr "benchmark-component-workload-generator"
+
+#: ../../source/features/benchmark-and-generator.rst:143
+msgid ""
+"The goal of AIBrix's workload generator is to perform workload shaping. "
+"The workload generator specifies the timing and requests to be dispatched"
+" by the benchmark client. A workload generator accepts either "
+"trace/metrics files (where either time and requests are specified, or "
+"QPS/input/output volume are specified) or user-specified static or "
+"dynamic load patterns. The workload generator will sample the workload "
+"based on a dataset in one of the two formats discussed in the dataset "
+"generator section. There are four types of workloads the generator "
+"currently supports:"
+msgstr ""
+"AIBrix 工作负载生成器的目标是进行工作负载整形。工作负载生成器指定基准客户端要分发的时间和请求。"
+"工作负载生成器接受 trace/metrics 文件（指定时间和请求，或指定 QPS/输入/输出量），"
+"或用户指定的静态或动态负载模式。工作负载生成器会基于数据集生成器一节中讨论的两种格式之一采样工作负载。"
+"生成器目前支持四种工作负载："
+
+#: ../../source/features/benchmark-and-generator.rst:145
+msgid "**1. The \"constant\" and \"synthetic\" workload type**"
+msgstr "**1. \"constant\" 和 \"synthetic\" 工作负载类型**"
+
+#: ../../source/features/benchmark-and-generator.rst:147
+msgid ""
+"The workload generator can produce two types of *synthetic load "
+"patterns*, with multiple workload configurations that can be manually "
+"tuned (e.g., traffic/QPS distribution, input request token length "
+"distribution, output token length distribution, maximum concurrent "
+"sessions, etc.):"
+msgstr ""
+"工作负载生成器可产生两种 *合成负载模式*，并有多项可手动调整的工作负载配置"
+"（例如流量/QPS 分布、输入请求 token 长度分布、输出 token 长度分布、最大并发会话数等）："
+
+#: ../../source/features/benchmark-and-generator.rst:148
+msgid ""
+"Constant load (**constant**): The mean load (QPS/input length/output "
+"length) stays constant with controllable fluctuation. Configuration "
+"variables are under the `workload_configs.constant` in the `configuration"
+" file <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_."
+msgstr ""
+"恒定负载（**constant** ）：平均负载（QPS/输入长度/输出长度）保持恒定，波动可控。配置变量位于 `configuration file "
+"<https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_ "
+"中的 `workload_configs.constant` 下。"
+
+#: ../../source/features/benchmark-and-generator.rst:149
+msgid ""
+"Synthetic fluctuation load (**synthetic**): The loads (QPS/input "
+"length/output length) fluctuate based on configurable parameters. "
+"Configuration variables are under the `workload_configs.synthetic` in the"
+" `configuration file <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_."
+msgstr ""
+"合成波动负载（**synthetic** ）：负载（QPS/输入长度/输出长度）根据可配置参数波动。配置变量位于 `configuration "
+"file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_ "
+"中的 `workload_configs.synthetic` 下。"
+
+#: ../../source/features/benchmark-and-generator.rst:151
+msgid "**2. The \"stat\" workload type**"
+msgstr "**2. \"stat\" 工作负载类型**"
+
+#: ../../source/features/benchmark-and-generator.rst:153
+msgid ""
+"For *metrics files (e.g., .csv files exported from Grafana dashboard)*, "
+"the workload generator will generate the QPS/input length/output length "
+"distribution that follows the collected time-series metrics specified in "
+"the file. The actual prompts used in the workload will be based on one of"
+" the synthetic datasets generated by the previous section. Configuration "
+"variables are under the `workload_configs.stat` in the `configuration "
+"file <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_."
+msgstr ""
+"对 *指标文件（例如从 Grafana dashboard 导出的 .csv 文件）*，工作负载生成器会生成遵循文件中"
+"所指定采集时序指标的 QPS/输入长度/输出长度分布。工作负载中实际使用的 prompt 基于上一节生成的"
+"合成数据集之一。配置变量位于 `configuration file <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_ 中的 `workload_configs.stat` 下。"
+
+#: ../../source/features/benchmark-and-generator.rst:155
+msgid "**3. The \"azure\" workload type**"
+msgstr "**3. \"azure\" 工作负载类型**"
+
+#: ../../source/features/benchmark-and-generator.rst:157
+msgid ""
+"For a trace (e.g., `Azure LLM trace "
+"<https://github.com/Azure/AzurePublicDataset/blob/master/data/AzureLLMInferenceTrace_conv.csv>`_),"
+" both the requests and timestamps associated with the requests are "
+"provided, and the workload generator will generate a workload that simply"
+" replays requests based on the timestamp. Configuration variables are "
+"under the `workload_configs.azure` in the `configuration file "
+"<https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_."
+msgstr ""
+"对 trace（例如 `Azure LLM trace <https://github.com/Azure/AzurePublicDataset/blob/master/data/AzureLLMInferenceTrace_conv.csv>`_ "
+"），同时提供请求及其关联时间戳，工作负载生成器会生成按时间戳回放请求的工作负载。配置变量位于 `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_ "
+"中的 `workload_configs.azure` 下。"
+
+#: ../../source/features/benchmark-and-generator.rst:159
+msgid "**4. The \"mooncake\" workload type**"
+msgstr "**4. \"mooncake\" 工作负载类型**"
+
+#: ../../source/features/benchmark-and-generator.rst:161
+msgid ""
+"For a `Mooncake LLM trace <https://github.com/kvcache-"
+"ai/Mooncake/tree/main/FAST25-release/traces>`_, the request input/output,"
+" the cache block ID along with timestamps associated with the requests "
+"are provided, and the workload generator will generate a workload that "
+"simulates requests following the same traffic pattern. Configuration "
+"variables are under the `workload_configs.mooncake` in the `configuration"
+" file <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_."
+msgstr ""
+"对 `Mooncake LLM trace <https://github.com/kvcache-ai/Mooncake/tree/main/FAST25-release/traces>`_ "
+"，提供请求输入/输出、cache block ID 以及请求关联时间戳，工作负载生成器会生成遵循相同流量模式的模拟请求工作负载。配置变量位于 `configuration "
+"file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_ "
+"中的 `workload_configs.mooncake` 下。"
+
+#: ../../source/features/benchmark-and-generator.rst:163
+msgid "The workload generator can be run by:"
+msgstr "可通过如下方式运行工作负载生成器："
+
+#: ../../source/features/benchmark-and-generator.rst:169
+msgid ""
+"The workload generator will generate a workload file in the "
+"`output/workload` directory. The file will look like this:"
+msgstr "工作负载生成器会在 `output/workload` 目录生成工作负载文件。文件类似如下："
+
+#: ../../source/features/benchmark-and-generator.rst:192
+msgid ""
+"To choose a different workload type, set the environment variable "
+"`workload_type` in the configuration file to one of the following values:"
+" ```constant```, ```synthetic```, ```stat```, ```azure```, "
+"```mooncake```."
+msgstr ""
+"要选择不同的工作负载类型，将配置文件中的环境变量 `workload_type` 设为以下取值之一："
+"```constant```、```synthetic```、```stat```、```azure```、```mooncake```。"
+
+#: ../../source/features/benchmark-and-generator.rst:194
+msgid ""
+"For details of the workload generator, check out the `workload_generator "
+"<https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/generator/workload_generator>`_ "
+"directory."
+msgstr ""
+"工作负载生成器的细节见 `workload_generator <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/generator/workload_generator>`_ 目录。"
+
+#: ../../source/features/benchmark-and-generator.rst:197
+msgid "Run Benchmark Client"
+msgstr "运行基准客户端"
+
+#: ../../source/features/benchmark-and-generator.rst:204
+msgid ""
+"The benchmark client supports both batch and streaming modes. Streaming "
+"mode supports intra-request metrics like TTFT/TPOT. Configure the "
+"endpoint and target model via `config.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_ or command line "
+"arguments."
+msgstr ""
+"基准客户端支持批处理和流式两种模式。流式模式支持 TTFT/TPOT 等请求内指标。"
+"通过 `config.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_ 或命令行参数配置端点和目标模型。"
+
+#: ../../source/features/benchmark-and-generator.rst:206
+msgid "The benchmark client can be run using:"
+msgstr "可通过如下方式运行基准客户端："
+
+#: ../../source/features/benchmark-and-generator.rst:213
+msgid "Run Analysis"
+msgstr "运行分析"
+
+#: ../../source/features/benchmark-and-generator.rst:215
+msgid "Run analysis on the benchmark results using:"
+msgstr "使用如下方式对基准结果运行分析："
+
+#: ../../source/features/benchmark-and-generator.rst:221
+msgid ""
+"Configure the path and performance target via `config.yaml "
+"<https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_ or command line "
+"arguments."
+msgstr ""
+"通过 `config.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/benchmarks/config.yaml>`_ 或命令行参数配置路径和性能目标。"

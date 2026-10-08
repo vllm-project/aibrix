@@ -1,0 +1,520 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/production/console.rst:5
+msgid "AIBrix Console"
+msgstr "AIBrix Console"
+
+#: ../../source/production/console.rst:7
+msgid ""
+"AIBrix Console is an optional web control plane for AIBrix. It provides a"
+" UI for model deployment workflows, OpenAI-compatible batch jobs, and "
+"playground traffic against an AIBrix gateway. The same workflows remain "
+"available through Kubernetes resources and APIs, so the Console can be "
+"introduced independently."
+msgstr ""
+"AIBrix Console 是 AIBrix 的可选 Web 控制面。它为模型部署工作流、兼容 OpenAI 的批处理任务，"
+"以及面向 AIBrix 网关的 playground 流量提供 UI。相同工作流仍可通过 Kubernetes 资源和 API 使用，"
+"因此可以独立引入 Console。"
+
+#: ../../source/production/console.rst:12
+msgid "The Console is made of three parts:"
+msgstr "Console 由三部分组成："
+
+#: ../../source/production/console.rst:14
+msgid "a React frontend in ``apps/console/web``"
+msgstr "位于 ``apps/console/web`` 的 React 前端"
+
+#: ../../source/production/console.rst:15
+msgid "a Go backend in ``cmd/console`` and ``apps/console/api``"
+msgstr "位于 ``cmd/console`` 和 ``apps/console/api`` 的 Go 后端"
+
+#: ../../source/production/console.rst:16
+msgid ""
+"integrations with the Metadata Service (MDS), the AIBrix gateway, and a "
+"persistent Console store"
+msgstr "与 Metadata Service（MDS）、AIBrix 网关以及持久化 Console 存储的集成"
+
+#: ../../source/production/console.rst:20
+msgid "Run locally"
+msgstr "本地运行"
+
+#: ../../source/production/console.rst:22
+msgid "Build the backend from the repository root:"
+msgstr "在仓库根目录构建后端："
+
+#: ../../source/production/console.rst:28
+msgid "Start the backend in development auth mode:"
+msgstr "以开发认证模式启动后端："
+
+#: ../../source/production/console.rst:39
+msgid "Start the frontend development server:"
+msgstr "启动前端开发服务器："
+
+#: ../../source/production/console.rst:47
+msgid ""
+"The frontend development server listens on ``http://localhost:3000``. The"
+" backend REST API listens on ``http://localhost:8080`` by default."
+msgstr ""
+"前端开发服务器监听 ``http://localhost:3000`` 。后端 REST API 默认监听 ``http://localhost:8080`` "
+"。"
+
+#: ../../source/production/console.rst:51
+msgid "Serve a production frontend build"
+msgstr "提供生产前端构建"
+
+#: ../../source/production/console.rst:53
+msgid "Build the frontend assets and serve them from the Go backend:"
+msgstr "构建前端资源并由 Go 后端提供服务："
+
+#: ../../source/production/console.rst:72
+msgid ""
+"Use a stable ``STORE_URI``, ``SESSION_SECRET``, and "
+"``SECRETS_ENCRYPTION_KEY`` for any environment where user sessions, "
+"credentials, or job history must survive process restarts."
+msgstr ""
+"在用户会话、凭据或任务历史需要在进程重启后保留的环境中，请使用稳定的 ``STORE_URI`` 、``SESSION_SECRET`` 和 ``SECRETS_ENCRYPTION_KEY`` "
+"。"
+
+#: ../../source/production/console.rst:77
+msgid "Storage"
+msgstr "存储"
+
+#: ../../source/production/console.rst:79
+msgid ""
+"The Console backend stores users, sessions, templates, job metadata, and "
+"secrets in the configured store. Set the store with ``STORE_URI``:"
+msgstr ""
+"Console 后端将用户、会话、模板、任务元数据和密钥存储在所配置的 store 中。使用 ``STORE_URI`` 设置存储："
+
+#: ../../source/production/console.rst:85
+msgid "Store"
+msgstr "存储"
+
+#: ../../source/production/console.rst:86
+msgid "URI example"
+msgstr "URI 示例"
+
+#: ../../source/production/console.rst:87
+msgid "Use case"
+msgstr "适用场景"
+
+#: ../../source/production/console.rst:88
+msgid "SQLite"
+msgstr "SQLite"
+
+#: ../../source/production/console.rst:89
+msgid "``sqlite:/var/lib/aibrix/console.db``"
+msgstr "``sqlite:/var/lib/aibrix/console.db``"
+
+#: ../../source/production/console.rst:90
+msgid "Single-instance deployments and local testing"
+msgstr "单实例部署与本地测试"
+
+#: ../../source/production/console.rst:91
+msgid "In-memory"
+msgstr "内存"
+
+#: ../../source/production/console.rst:92
+msgid "``memory://`` or ``sqlite::memory:``"
+msgstr "``memory://`` 或 ``sqlite::memory:``"
+
+#: ../../source/production/console.rst:93
+msgid "Short-lived development only"
+msgstr "仅适用于短期开发"
+
+#: ../../source/production/console.rst:94
+msgid "MySQL"
+msgstr "MySQL"
+
+#: ../../source/production/console.rst:95
+msgid "``mysql://user:pass@host:3306/aibrix``"
+msgstr "``mysql://user:pass@host:3306/aibrix``"
+
+#: ../../source/production/console.rst:96
+msgid "Shared or production deployments"
+msgstr "共享或生产部署"
+
+#: ../../source/production/console.rst:98
+msgid ""
+"SQLite paths under ``/tmp`` are convenient for local testing but are not "
+"appropriate for durable environments."
+msgstr "``/tmp`` 下的 SQLite 路径便于本地测试，但不适合需要持久化的环境。"
+
+#: ../../source/production/console.rst:102
+msgid "Authentication"
+msgstr "认证"
+
+#: ../../source/production/console.rst:104
+msgid "Set ``AUTH_MODE`` to choose how users sign in."
+msgstr "设置 ``AUTH_MODE`` 以选择用户登录方式。"
+
+#: ../../source/production/console.rst:109
+msgid "Mode"
+msgstr "模式"
+
+#: ../../source/production/console.rst:110
+msgid "Required settings"
+msgstr "必需配置"
+
+#: ../../source/production/console.rst:111
+msgid "Notes"
+msgstr "说明"
+
+#: ../../source/production/console.rst:112
+msgid "``dev``"
+msgstr "``dev``"
+
+#: ../../source/production/console.rst:113
+msgid "none"
+msgstr "无"
+
+#: ../../source/production/console.rst:114
+msgid "Uses ``DEV_USER_NAME`` and ``DEV_USER_EMAIL``. Intended for local use."
+msgstr "使用 ``DEV_USER_NAME`` 和 ``DEV_USER_EMAIL`` 。仅用于本地。"
+
+#: ../../source/production/console.rst:115
+msgid "``basic``"
+msgstr "``basic``"
+
+#: ../../source/production/console.rst:116
+msgid ""
+"``BASIC_USERNAME``, ``BASIC_PASSWORD``, ``SESSION_SECRET``, "
+"``SECRETS_ENCRYPTION_KEY``"
+msgstr ""
+"``BASIC_USERNAME``, ``BASIC_PASSWORD``, ``SESSION_SECRET``, "
+"``SECRETS_ENCRYPTION_KEY``"
+
+#: ../../source/production/console.rst:118
+msgid "Simple password login for restricted environments."
+msgstr "适用于受限环境的简单密码登录。"
+
+#: ../../source/production/console.rst:119
+msgid "``oidc``"
+msgstr "``oidc``"
+
+#: ../../source/production/console.rst:120
+msgid ""
+"``OIDC_ISSUER_URL``, ``OIDC_CLIENT_ID``, ``OIDC_REDIRECT_URL``, "
+"``SESSION_SECRET``, ``SECRETS_ENCRYPTION_KEY``"
+msgstr ""
+"``OIDC_ISSUER_URL``, ``OIDC_CLIENT_ID``, ``OIDC_REDIRECT_URL``, "
+"``SESSION_SECRET``, ``SECRETS_ENCRYPTION_KEY``"
+
+#: ../../source/production/console.rst:122
+msgid ""
+"Use an external identity provider. ``OIDC_CLIENT_SECRET`` is required "
+"when the provider or signing algorithm requires it."
+msgstr "使用外部身份提供方。当提供方或签名算法需要时，必须设置 ``OIDC_CLIENT_SECRET`` 。"
+
+#: ../../source/production/console.rst:125
+msgid "Example OIDC configuration:"
+msgstr "OIDC 配置示例："
+
+#: ../../source/production/console.rst:138
+msgid ""
+"Register the redirect URL with the identity provider. For production, "
+"serve the Console over HTTPS and keep ``SESSION_SECRET`` and "
+"``SECRETS_ENCRYPTION_KEY`` stable across restarts."
+msgstr ""
+"在身份提供方处注册重定向 URL。生产环境请通过 HTTPS 提供 Console，并在重启后保持 "
+"``SESSION_SECRET`` 和 ``SECRETS_ENCRYPTION_KEY`` 稳定不变。"
+
+#: ../../source/production/console.rst:142
+msgid "OIDC authorization can be restricted with these settings:"
+msgstr "可通过以下设置限制 OIDC 授权："
+
+#: ../../source/production/console.rst:144
+msgid ""
+"``OIDC_GROUPS_CLAIM``: JWT claim used to read groups. Defaults to "
+"``groups``."
+msgstr "``OIDC_GROUPS_CLAIM`` ：用于读取组的 JWT claim。默认为 ``groups`` 。"
+
+#: ../../source/production/console.rst:146
+msgid "``OIDC_ADMIN_GROUPS``: comma-separated groups that receive admin access."
+msgstr "``OIDC_ADMIN_GROUPS`` ：获得管理员权限的组，逗号分隔。"
+
+#: ../../source/production/console.rst:147
+msgid ""
+"``OIDC_ADMIN_EMAILS``: comma-separated email addresses that receive admin"
+" access."
+msgstr "``OIDC_ADMIN_EMAILS`` ：获得管理员权限的电子邮件地址，逗号分隔。"
+
+#: ../../source/production/console.rst:149
+msgid "``OIDC_SIGNING_ALG``: token signing algorithm. Defaults to ``RS256``."
+msgstr "``OIDC_SIGNING_ALG`` ：令牌签名算法。默认为 ``RS256`` 。"
+
+#: ../../source/production/console.rst:152
+msgid "Configuration reference"
+msgstr "配置参考"
+
+#: ../../source/production/console.rst:157
+msgid "Setting"
+msgstr "配置项"
+
+#: ../../source/production/console.rst:158
+msgid "Default"
+msgstr "默认值"
+
+#: ../../source/production/console.rst:159
+#: ../../source/production/console.rst:227
+msgid "Purpose"
+msgstr "用途"
+
+#: ../../source/production/console.rst:160
+msgid "``HTTP_ADDR``"
+msgstr "``HTTP_ADDR``"
+
+#: ../../source/production/console.rst:161
+msgid "``:8080``"
+msgstr "``:8080``"
+
+#: ../../source/production/console.rst:162
+msgid "Backend HTTP and REST API address. Also available as ``--http-addr``."
+msgstr "后端 HTTP 与 REST API 地址。也可通过 ``--http-addr`` 设置。"
+
+#: ../../source/production/console.rst:164
+msgid "``GRPC_ADDR``"
+msgstr "``GRPC_ADDR``"
+
+#: ../../source/production/console.rst:165
+msgid "``:50060``"
+msgstr "``:50060``"
+
+#: ../../source/production/console.rst:166
+msgid "Backend gRPC address. Also available as ``--grpc-addr``."
+msgstr "后端 gRPC 地址。也可通过 ``--grpc-addr`` 设置。"
+
+#: ../../source/production/console.rst:167
+msgid "``STORE_URI``"
+msgstr "``STORE_URI``"
+
+#: ../../source/production/console.rst:168
+msgid "``sqlite:/tmp/aibrix-console.db``"
+msgstr "``sqlite:/tmp/aibrix-console.db``"
+
+#: ../../source/production/console.rst:169
+msgid "Console database connection string. Also available as ``--store-uri``."
+msgstr "Console 数据库连接字符串。也可通过 ``--store-uri`` 设置。"
+
+#: ../../source/production/console.rst:171
+msgid "``METADATA_SERVICE_URL``"
+msgstr "``METADATA_SERVICE_URL``"
+
+#: ../../source/production/console.rst:172
+msgid "``http://localhost:8090``"
+msgstr "``http://localhost:8090``"
+
+#: ../../source/production/console.rst:173
+msgid "MDS endpoint used for files and OpenAI-compatible batch APIs."
+msgstr "用于文件和兼容 OpenAI 的批处理 API 的 MDS 端点。"
+
+#: ../../source/production/console.rst:174
+msgid "``GATEWAY_ENDPOINT``"
+msgstr "``GATEWAY_ENDPOINT``"
+
+#: ../../source/production/console.rst:175
+msgid "``http://localhost:8888``"
+msgstr "``http://localhost:8888``"
+
+#: ../../source/production/console.rst:176
+msgid ""
+"AIBrix gateway endpoint used by the playground and inference flows. Also "
+"available as ``--gateway-endpoint``."
+msgstr "playground 与推理流程使用的 AIBrix 网关端点。也可通过 ``--gateway-endpoint`` 设置。"
+
+#: ../../source/production/console.rst:178
+msgid "``DEFAULT_BATCH_MODEL_DEPLOYMENT_TEMPLATE``"
+msgstr "``DEFAULT_BATCH_MODEL_DEPLOYMENT_TEMPLATE``"
+
+#: ../../source/production/console.rst:179
+#: ../../source/production/console.rst:192
+#: ../../source/production/console.rst:195
+msgid "empty"
+msgstr "空"
+
+#: ../../source/production/console.rst:180
+msgid "Default model deployment template name for Console-created batch jobs."
+msgstr "Console 创建的批处理任务所用的默认模型部署模板名称。"
+
+#: ../../source/production/console.rst:181
+msgid "``PROVISIONER``"
+msgstr "``PROVISIONER``"
+
+#: ../../source/production/console.rst:182
+msgid "``kubernetes``"
+msgstr "``kubernetes``"
+
+#: ../../source/production/console.rst:183
+msgid ""
+"Batch resource provisioner. Supported values include ``kubernetes``, "
+"``runpod``, and ``lambdaCloud``. See :ref:`batch_resource_manager`."
+msgstr ""
+"批处理资源供给器。支持的值包括 ``kubernetes`` 、``runpod`` 和 ``lambdaCloud`` 。参见 :ref:`batch_resource_manager` "
+"。"
+
+#: ../../source/production/console.rst:185
+msgid "``PLANNING_POLICY``"
+msgstr "``PLANNING_POLICY``"
+
+#: ../../source/production/console.rst:186
+msgid "``simple``"
+msgstr "``simple``"
+
+#: ../../source/production/console.rst:187
+msgid "Planning policy used by the batch resource manager."
+msgstr "批处理资源管理器使用的规划策略。"
+
+#: ../../source/production/console.rst:188
+msgid "``PLANNER_WORKER_COUNT``"
+msgstr "``PLANNER_WORKER_COUNT``"
+
+#: ../../source/production/console.rst:189
+msgid "``10``"
+msgstr "``10``"
+
+#: ../../source/production/console.rst:190
+msgid "Number of planner workers for batch scheduling."
+msgstr "用于批处理调度的 planner worker 数量。"
+
+#: ../../source/production/console.rst:191
+msgid "``STATIC_FILES_DIR``"
+msgstr "``STATIC_FILES_DIR``"
+
+#: ../../source/production/console.rst:193
+msgid "Directory that contains the built Console frontend assets."
+msgstr "包含已构建 Console 前端资源的目录。"
+
+#: ../../source/production/console.rst:194
+msgid "``ALLOWED_ORIGINS``"
+msgstr "``ALLOWED_ORIGINS``"
+
+#: ../../source/production/console.rst:196
+msgid "Comma-separated CORS origins for browser clients."
+msgstr "浏览器客户端的 CORS 来源，逗号分隔。"
+
+#: ../../source/production/console.rst:197
+msgid "``DEV_MODE``"
+msgstr "``DEV_MODE``"
+
+#: ../../source/production/console.rst:198
+msgid "``false``"
+msgstr "``false``"
+
+#: ../../source/production/console.rst:199
+msgid ""
+"Enables development-oriented backend behavior and logging. Also available"
+" as ``--dev-mode``."
+msgstr "启用面向开发的后端行为与日志。也可通过 ``--dev-mode`` 设置。"
+
+#: ../../source/production/console.rst:203
+msgid "Batch workflow"
+msgstr "批处理工作流"
+
+#: ../../source/production/console.rst:205
+msgid ""
+"The Console batch workflow uses the same backend concepts as the Batch "
+"API and Batch Resource Manager:"
+msgstr "Console 批处理工作流使用与 Batch API 和 Batch Resource Manager 相同的后端概念："
+
+#: ../../source/production/console.rst:208
+msgid "Create or select a model deployment template."
+msgstr "创建或选择模型部署模板。"
+
+#: ../../source/production/console.rst:209
+msgid "Upload or select an input JSONL file through MDS."
+msgstr "通过 MDS 上传或选择输入 JSONL 文件。"
+
+#: ../../source/production/console.rst:210
+msgid "Create a batch job from the Console."
+msgstr "从 Console 创建批处理任务。"
+
+#: ../../source/production/console.rst:211
+msgid "The Console stores the job metadata and submits the batch request to MDS."
+msgstr "Console 存储任务元数据，并向 MDS 提交批处理请求。"
+
+#: ../../source/production/console.rst:212
+msgid "The planner and resource manager provision resources when configured."
+msgstr "在已配置时，planner 和资源管理器会供给资源。"
+
+#: ../../source/production/console.rst:213
+msgid "Monitor job status and download output or error files after completion."
+msgstr "监控任务状态，完成后下载输出或错误文件。"
+
+#: ../../source/production/console.rst:215
+msgid ""
+"For the underlying API and resource planning behavior, see "
+":ref:`batch_api`, :ref:`batch_model_deployment_templates`, and "
+":ref:`batch_resource_manager`."
+msgstr ""
+"底层 API 与资源规划行为参见 :ref:`batch_api` 、:ref:`batch_model_deployment_templates` "
+"和 :ref:`batch_resource_manager` 。"
+
+#: ../../source/production/console.rst:219
+msgid "Feature flags"
+msgstr "功能开关"
+
+#: ../../source/production/console.rst:221
+msgid "The web frontend uses build-time feature flags:"
+msgstr "Web 前端使用构建时功能开关："
+
+#: ../../source/production/console.rst:226
+msgid "Flag"
+msgstr "Flag"
+
+#: ../../source/production/console.rst:228
+msgid "``VITE_ENABLE_DEPLOYMENTS``"
+msgstr "``VITE_ENABLE_DEPLOYMENTS``"
+
+#: ../../source/production/console.rst:229
+msgid "Enables deployment management UI."
+msgstr "启用部署管理 UI。"
+
+#: ../../source/production/console.rst:230
+msgid "``VITE_ENABLE_PLAYGROUND``"
+msgstr "``VITE_ENABLE_PLAYGROUND``"
+
+#: ../../source/production/console.rst:231
+msgid "Enables the playground UI."
+msgstr "启用 playground UI。"
+
+#: ../../source/production/console.rst:233
+msgid ""
+"Both flags are enabled by default when running the frontend development "
+"server. Production builds should set them explicitly so the generated "
+"assets match the intended Console surface:"
+msgstr ""
+"运行前端开发服务器时，这两个开关默认启用。生产构建应显式设置它们，使生成的资源与预期的 Console 界面一致："
+
+#: ../../source/production/console.rst:241
+msgid "What's next?"
+msgstr "下一步？"
+
+#: ../../source/production/console.rst:244
+msgid ":doc:`observability`: metrics and dashboards behind the Console views"
+msgstr ":doc:`observability` ：控制台视图背后的指标与仪表盘"
+
+#: ../../source/production/console.rst:245
+msgid ":doc:`model-deployment`: deploy the models the Console manages"
+msgstr ":doc:`model-deployment` ：部署 Console 所管理的模型"
+
+#: ../../source/production/console.rst:246
+msgid ":doc:`../features/batch-api`: submit and track offline batch jobs"
+msgstr ":doc:`../features/batch-api` ：提交并跟踪离线批处理任务"
