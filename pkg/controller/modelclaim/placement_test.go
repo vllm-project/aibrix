@@ -204,22 +204,6 @@ func TestUniformLocality_AlwaysZero(t *testing.T) {
 	assert.Zero(t, uniformLocality{}.Cost("m", "any-node"))
 }
 
-func TestPruneDeadInstances(t *testing.T) {
-	pm := &modelv1alpha1.ModelClaim{}
-	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{
-		{Pod: "alive", Port: 20000},
-		{Pod: "gone", Port: 20001},
-	}
-	pruneDeadInstances(pm, []corev1.Pod{namedPod("alive")})
-	require.Len(t, pm.Status.Instances, 1)
-	assert.Equal(t, "alive", pm.Status.Instances[0].Pod,
-		"instance on a vanished warm pod must be dropped so re-activation can run")
-
-	// No candidates at all: every instance is stale.
-	pruneDeadInstances(pm, nil)
-	assert.Empty(t, pm.Status.Instances)
-}
-
 func gpuPod(name string) corev1.Pod {
 	pod := namedPod(name)
 	pod.Spec.Containers = []corev1.Container{{

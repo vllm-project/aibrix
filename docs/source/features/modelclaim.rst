@@ -197,7 +197,9 @@ What its fields do:
 
 ``claim.model.aibrix.ai/pool`` and ``claim.model.aibrix.ai/enabled`` labels
    Claims select a pool by its ``pool`` label. The controller places claims
-   only on Pods that also have ``enabled: "true"``.
+   only on Pods that also have ``enabled: "true"``. A claim already on a Pod
+   stays there when the Pod loses either label, until the Pod stops running
+   or is deleted.
 
 ``nvidia.com/gpu``
    The number of GPUs in each Pod. A vLLM claim runs only on Pods whose GPU
