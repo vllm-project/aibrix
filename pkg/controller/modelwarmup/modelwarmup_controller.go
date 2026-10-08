@@ -215,8 +215,8 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		created = append(created, job)
 		active++
 	}
-	jobsForTTL := make([]batchv1.Job, len(jobs.Items), len(jobs.Items)+len(created))
-	copy(jobsForTTL, jobs.Items)
+	jobsForTTL := make([]batchv1.Job, 0, len(jobs.Items)+len(created))
+	jobsForTTL = append(jobsForTTL, jobs.Items...)
 	for _, job := range created {
 		if job != nil {
 			jobsForTTL = append(jobsForTTL, *job)

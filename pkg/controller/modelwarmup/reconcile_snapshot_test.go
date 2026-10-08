@@ -250,6 +250,28 @@ func TestResolveTargetsFromNodes(t *testing.T) {
 		}},
 	}
 
+	t.Run("rejects nil inputs", func(t *testing.T) {
+		for name, warmupAndNamespace := range map[string]struct {
+			warmup    *modelv1alpha1.ModelWarmup
+			namespace *corev1.Namespace
+		}{
+			"warmup":    {warmup: nil, namespace: namespace},
+			"namespace": {warmup: &modelv1alpha1.ModelWarmup{}, namespace: nil},
+		} {
+			t.Run(name, func(t *testing.T) {
+				targets, missing, err := resolveTargetsFromNodes(
+					warmupAndNamespace.warmup,
+					warmupAndNamespace.namespace,
+					nodes,
+				)
+
+				require.Nil(t, targets)
+				require.Nil(t, missing)
+				require.ErrorContains(t, err, "modelwarmup and namespace must not be nil")
+			})
+		}
+	})
+
 	t.Run("explicit only captures node identity", func(t *testing.T) {
 		warmup := &modelv1alpha1.ModelWarmup{Spec: modelv1alpha1.ModelWarmupSpec{Targets: []modelv1alpha1.ModelWarmupTarget{{
 			Nodes: &modelv1alpha1.ModelWarmupNodesTarget{Names: []string{"node-b"}},

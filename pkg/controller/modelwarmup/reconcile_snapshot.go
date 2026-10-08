@@ -108,6 +108,10 @@ func resolveTargetsFromNodes(
 	namespace *corev1.Namespace,
 	nodes []corev1.Node,
 ) (map[string]resolvedTarget, map[string]string, error) {
+	if w == nil || namespace == nil {
+		return nil, nil, fmt.Errorf("modelwarmup and namespace must not be nil")
+	}
+
 	nodesByName := make(map[string]*corev1.Node, len(nodes))
 	for i := range nodes {
 		nodesByName[nodes[i].Name] = &nodes[i]
