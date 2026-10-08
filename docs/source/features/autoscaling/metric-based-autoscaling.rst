@@ -127,9 +127,10 @@ overrides the base ``spec.minReplicas`` and/or ``spec.maxReplicas``.
 
 If ``timezone`` is omitted, schedules are evaluated in UTC. When set,
 ``timezone`` must be a valid IANA timezone such as
-``America/Los_Angeles``. If ``daysOfWeek`` is omitted, the schedule applies
-every day. When set, ``daysOfWeek`` accepts English three-letter weekday names
-such as ``Mon`` through ``Sun``.
+``America/Los_Angeles``. Boundaries such as ``09:00`` use local clock time
+even on daylight saving transition days. If ``daysOfWeek`` is omitted, the
+schedule applies every day. When set, ``daysOfWeek`` accepts English
+three-letter weekday names such as ``Mon`` through ``Sun``.
 
 Scheduled entries may set either ``minReplicas``, ``maxReplicas``, or both. A
 partial override inherits the missing bound from the base PodAutoscaler spec.
