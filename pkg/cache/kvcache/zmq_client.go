@@ -21,11 +21,16 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sync"
+	"syscall"
 	"time"
 
 	zmq "github.com/pebbe/zmq4"
 	"k8s.io/klog/v2"
 )
+
+// replayEndSeq is the sequence number of the message that ends a replay reply
+// (ZmqEventPublisher.END_SEQ in vLLM's vllm/distributed/kv_events.py).
+const replayEndSeq int64 = -1
 
 // ZMQClient manages ZMQ connections to vLLM KV event publishers
 type ZMQClient struct {
@@ -106,24 +111,10 @@ func (c *ZMQClient) Connect() error {
 	}
 
 	// Create DEALER socket for replay (to communicate with ROUTER)
-	replaySocket, err := zmq.NewSocket(zmq.DEALER)
+	replaySocket, err := c.newReplaySocket()
 	if err != nil {
 		_ = subSocket.Close()
-		return fmt.Errorf("failed to create DEALER socket: %w", err)
-	}
-
-	// Enable IPv6 for dual-stack support
-	if err := replaySocket.SetIpv6(true); err != nil {
-		_ = subSocket.Close()
-		_ = replaySocket.Close()
-		return fmt.Errorf("failed to enable IPv6 on DEALER socket: %w", err)
-	}
-
-	replayEndpoint := formatZMQTCPEndpoint(c.config.PodIP, c.config.RouterPort)
-	if err := replaySocket.Connect(replayEndpoint); err != nil {
-		_ = subSocket.Close()
-		_ = replaySocket.Close()
-		return fmt.Errorf("failed to connect to replay endpoint: %w", err)
+		return err
 	}
 
 	c.subSocket = subSocket
@@ -137,6 +128,29 @@ func (c *ZMQClient) Connect() error {
 	c.metrics.IncrementConnectionCount()
 
 	return nil
+}
+
+// newReplaySocket creates the DEALER socket for replay requests and connects
+// it to the publisher's ROUTER.
+func (c *ZMQClient) newReplaySocket() (*zmq.Socket, error) {
+	replaySocket, err := zmq.NewSocket(zmq.DEALER)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create DEALER socket: %w", err)
+	}
+
+	// Enable IPv6 for dual-stack support
+	if err := replaySocket.SetIpv6(true); err != nil {
+		_ = replaySocket.Close()
+		return nil, fmt.Errorf("failed to enable IPv6 on DEALER socket: %w", err)
+	}
+
+	replayEndpoint := formatZMQTCPEndpoint(c.config.PodIP, c.config.RouterPort)
+	if err := replaySocket.Connect(replayEndpoint); err != nil {
+		_ = replaySocket.Close()
+		return nil, fmt.Errorf("failed to connect to replay endpoint: %w", err)
+	}
+
+	return replaySocket, nil
 }
 
 // Start begins event consumption
@@ -335,11 +349,27 @@ func (c *ZMQClient) processMessage() error {
 		c.metrics.IncrementMissedEvents(missedCount)
 	}
 
+	numEvents, err := c.applyEventBatch(seq, payload)
+	if err != nil {
+		return err
+	}
+
+	klog.V(5).Infof("Processed event batch %d from %s (topic=%s, %d events)",
+		seq, c.config.PodKey, string(topic), numEvents)
+
+	return nil
+}
+
+// applyEventBatch decodes an event batch, hands its events to the event
+// handler and records seq as the last processed sequence. Live and replayed
+// batches both go through it. A batch that fails to decode is not applied and
+// leaves lastSeq unchanged.
+func (c *ZMQClient) applyEventBatch(seq int64, payload []byte) (int, error) {
 	// Decode event batch with metadata
 	batch, err := DecodeEventBatch(payload, c.config.ModelName, c.config.PodKey)
 	if err != nil {
 		c.metrics.IncrementErrorCount("decode")
-		return fmt.Errorf("failed to decode event batch: %w", err)
+		return 0, fmt.Errorf("failed to decode event batch: %w", err)
 	}
 
 	// Process each event
@@ -360,13 +390,13 @@ func (c *ZMQClient) processMessage() error {
 	c.lastSeq = seq
 	c.mu.Unlock()
 
-	klog.V(5).Infof("Processed event batch %d from %s (topic=%s, %d events)",
-		seq, c.config.PodKey, string(topic), len(batch.Events))
-
-	return nil
+	return len(batch.Events), nil
 }
 
-// requestReplay requests event replay from a specific sequence
+// requestReplay asks the publisher to resend its buffered batches from fromSeq
+// on and applies them. vLLM's ZmqEventPublisher._service_replay answers with
+// one message per buffered batch with sequence >= fromSeq, then an end marker
+// with sequence END_SEQ (-1).
 func (c *ZMQClient) requestReplay(fromSeq int64) error {
 	c.mu.RLock()
 	socket := c.replaySocket
@@ -384,23 +414,99 @@ func (c *ZMQClient) requestReplay(fromSeq int64) error {
 
 	// Send replay request as multipart message: [empty_delimiter, start_seq_bytes]
 	if _, err := socket.SendMessage([]byte{}, reqData); err != nil {
+		c.metrics.IncrementReplayFailure()
 		return fmt.Errorf("failed to send replay request: %w", err)
 	}
+	c.metrics.IncrementReplayCount()
 
-	// Set receive timeout
-	_ = socket.SetRcvtimeo(c.config.ReplayTimeout)
-
-	// Receive response
-	resp, err := socket.RecvBytes(0)
+	applied, err := c.receiveReplay(socket)
 	if err != nil {
-		return fmt.Errorf("failed to receive replay response: %w", err)
+		c.metrics.IncrementReplayFailure()
+		// The rest of this reply can still arrive. Replace the socket so that
+		// it is not read as the reply to the next request.
+		c.resetReplaySocket(socket)
+		return fmt.Errorf("replay from seq %d stopped after %d batches: %w", fromSeq, applied, err)
 	}
 
-	klog.Infof("Successfully requested replay from seq %d for %s (response: %d bytes)",
-		fromSeq, c.config.PodKey, len(resp))
-
-	c.metrics.IncrementReplayCount()
+	klog.Infof("Replayed %d event batches from seq %d for %s", applied, fromSeq, c.config.PodKey)
+	c.metrics.IncrementReplaySuccess()
 	return nil
+}
+
+// receiveReplay reads replay messages until the end marker and applies each
+// batch newer than lastSeq, in order. The whole reply must arrive within
+// ReplayTimeout. It returns the number of batches applied.
+func (c *ZMQClient) receiveReplay(socket *zmq.Socket) (int, error) {
+	deadline := time.Now().Add(c.config.ReplayTimeout)
+	applied := 0
+
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return applied, fmt.Errorf("timed out after %v waiting for the end of the replay",
+				c.config.ReplayTimeout)
+		}
+		_ = socket.SetRcvtimeo(remaining)
+
+		frames, err := socket.RecvMessageBytes(0)
+		if err != nil {
+			if zmq.AsErrno(err) == zmq.Errno(syscall.EAGAIN) {
+				// Receive timeout; the deadline check above reports it
+				continue
+			}
+			return applied, fmt.Errorf("failed to receive replay message: %w", err)
+		}
+
+		// vLLM v0.26 and later send [empty_delimiter, topic, sequence, payload];
+		// earlier versions send [empty_delimiter, sequence, payload]
+		if len(frames) != 3 && len(frames) != 4 {
+			return applied, fmt.Errorf("invalid replay message: %d frames", len(frames))
+		}
+		seqBytes, payload := frames[len(frames)-2], frames[len(frames)-1]
+		if len(seqBytes) != 8 {
+			return applied, fmt.Errorf("invalid sequence bytes length: %d", len(seqBytes))
+		}
+		seq := int64(binary.BigEndian.Uint64(seqBytes))
+		if seq == replayEndSeq {
+			return applied, nil
+		}
+
+		if lastSeq := c.GetLastSequence(); seq <= lastSeq {
+			klog.V(5).Infof("Skipping replayed event batch %d from %s (last=%d)",
+				seq, c.config.PodKey, lastSeq)
+			continue
+		}
+
+		if _, err := c.applyEventBatch(seq, payload); err != nil {
+			return applied, err
+		}
+		applied++
+	}
+}
+
+// resetReplaySocket closes the replay socket after a failed replay and opens
+// a new one. Frames of the abandoned reply that arrive later are dropped with
+// the old socket.
+func (c *ZMQClient) resetReplaySocket(old *zmq.Socket) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.replaySocket != old {
+		// Already closed or replaced by Connect or Stop
+		return
+	}
+
+	// Linger 0 also drops the request if the publisher has not taken it yet
+	_ = old.SetLinger(0)
+	_ = old.Close()
+	c.replaySocket = nil
+
+	replaySocket, err := c.newReplaySocket()
+	if err != nil {
+		klog.Errorf("Failed to recreate replay socket for %s: %v", c.config.PodKey, err)
+		return
+	}
+	c.replaySocket = replaySocket
 }
 
 // markDisconnected marks the client as disconnected
