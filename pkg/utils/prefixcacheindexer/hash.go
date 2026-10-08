@@ -251,3 +251,10 @@ func getPrefixHashes(seed uint64, tokens []byte) []uint64 {
 func (c *PrefixHashTable) GetPrefixHashes(tokens []byte) []uint64 {
 	return getPrefixHashes(c.seed, tokens)
 }
+
+// Len returns the number of cached prefix blocks.
+func (c *PrefixHashTable) Len() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.store.Len()
+}
