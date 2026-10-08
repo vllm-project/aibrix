@@ -275,9 +275,10 @@ func (s parsedSchedule) nextTransitionAfter(now time.Time) (time.Time, bool) {
 		if !s.weekdays[base.Weekday()] {
 			continue
 		}
+		year, month, dayOfMonth := base.Date()
 		for _, minute := range []int{s.startMinute, s.endMinute} {
 			// Elapsed hours from midnight can differ from local clock time across DST.
-			candidate := time.Date(base.Year(), base.Month(), base.Day(), minute/60, minute%60, 0, 0, s.location)
+			candidate := time.Date(year, month, dayOfMonth, minute/60, minute%60, 0, 0, s.location)
 			if candidate.After(local) {
 				return candidate.In(time.UTC), true
 			}
