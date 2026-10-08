@@ -18,9 +18,9 @@ spec:
     scheme: http
     interval: 15s
     relabelings:
-    # Kubernetes label pool.aibrix.ai/name is not a valid Prometheus label name.
-    # Attach it as the bounded `pool` label for dashboard variables.
+    # Kubernetes label claim.model.aibrix.ai/pool is not a valid Prometheus
+    # label name. Attach it as the bounded `pool` label for dashboard variables.
     - action: replace
       sourceLabels:
-      - __meta_kubernetes_pod_label_pool_aibrix_ai_name
+      - __meta_kubernetes_pod_label_claim_model_aibrix_ai_pool
       targetLabel: pool

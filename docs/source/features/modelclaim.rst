@@ -148,11 +148,11 @@ Service:
 
 Before applying it, review these fields:
 
-``pool.aibrix.ai/name``
+``claim.model.aibrix.ai/pool``
    The logical pool selected by ModelClaims. Put the label on both the
    Deployment and Pod template.
 
-``pool.aibrix.ai/enabled: "true"``
+``claim.model.aibrix.ai/enabled: "true"``
    Required on candidate Pods. Removing or changing it keeps the Pod out of
    ModelClaim placement. A Pod wakes a waiting claim, as described under
    Troubleshooting, only while it carries both labels.
@@ -193,7 +193,7 @@ Apply the pool and wait for the runtime agent:
 
    kubectl apply -f samples/modelclaim/warm-runtime-pool.yaml
    kubectl rollout status deployment/warm-runtime-pool-b300 --timeout=10m
-   kubectl get pods -l pool.aibrix.ai/name=b300-pool-a -o wide
+   kubectl get pods -l claim.model.aibrix.ai/pool=b300-pool-a -o wide
 
 Create ModelClaims
 ------------------
@@ -604,11 +604,11 @@ Inspect claim status and the routing annotation:
 
    kubectl get modelclaim qwen3-0-6b -o yaml
 
-   POD=$(kubectl get pod -l pool.aibrix.ai/name=b300-pool-a \
+   POD=$(kubectl get pod -l claim.model.aibrix.ai/pool=b300-pool-a \
      -o jsonpath='{.items[0].metadata.name}')
    kubectl get pod "$POD" -o json \
      | jq '.metadata.annotations
-       | with_entries(select(.key | startswith("modelclaim.aibrix.ai/")))'
+       | with_entries(select(.key | startswith("route.claim.model.aibrix.ai/")))'
 
 An annotation has this form:
 
@@ -679,7 +679,7 @@ pool Deployment. It does not add fields to ModelClaim.
 .. code-block:: bash
 
    kubectl annotate deployment warm-runtime-pool-b300 \
-     'pool.aibrix.ai/policy={"reclaim":{"mode":"kv-first","capacityBytes":4294967296,"guaranteedFloorPercent":20},"lifecycle":{"sleepAfterSeconds":60}}' \
+     'claim.model.aibrix.ai/pool-policy={"reclaim":{"mode":"kv-first","capacityBytes":4294967296,"guaranteedFloorPercent":20},"lifecycle":{"sleepAfterSeconds":60}}' \
      --overwrite
 
 The fields mean:
@@ -727,7 +727,7 @@ has, a wake waits or moves rather than overrun the card.
 .. code-block:: bash
 
    kubectl annotate deployment warm-runtime-pool-b300 \
-     'pool.aibrix.ai/policy={"lifecycle":{"sleepAfterSeconds":300,"noWakeReserveWhileAsleep":true}}' \
+     'claim.model.aibrix.ai/pool-policy={"lifecycle":{"sleepAfterSeconds":300,"noWakeReserveWhileAsleep":true}}' \
      --overwrite
 
 The controller distributes remaining KV capacity among active models using
@@ -990,8 +990,8 @@ Troubleshooting
 
 Claim remains ``Scheduling`` with zero candidates
    Confirm that the Pod is Running, has a Pod IP, matches ``podSelector``, and
-   has ``pool.aibrix.ai/enabled: "true"``. For vLLM, confirm that TP times PP
-   exactly matches the Pod-visible GPU count.
+   has ``claim.model.aibrix.ai/enabled: "true"``. For vLLM, confirm that TP
+   times PP exactly matches the Pod-visible GPU count.
 
 Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    Candidates exist, but no card can be shown to have room for
@@ -1170,10 +1170,10 @@ A routable model becomes non-routable with ``KVLimitNotHeld``
    raised when the KV segment of the engine cannot be read. Nothing is written
    then.
 
-   On a Pod that carries both ``pool.aibrix.ai`` labels, the change to the Pod
-   starts the next pass at once. So the route is normally back within a few
-   seconds. On a Pod without ``pool.aibrix.ai/name``, it is back on the
-   claim's next pass, 10 seconds later at most.
+   On a Pod that carries both ``claim.model.aibrix.ai`` labels, the change to
+   the Pod starts the next pass at once. So the route is normally back within a
+   few seconds. On a Pod without ``claim.model.aibrix.ai/pool``, it is back on
+   the claim's next pass, 10 seconds later at most.
 
 Activation rejects ``--gpu-memory-utilization``
    Remove the flag. The kvcached framework replaces the engine's fixed

@@ -43,14 +43,14 @@ const (
 	// ModelPoolLabelName identifies the warm GPU pool a pod belongs to. A warm GPU
 	// pool is an ordinary Deployment of pre-warmed GPU-host pods; ModelClaims
 	// are bin-packed onto pods sharing the same pool name.
-	// Example: "pool.aibrix.ai/name": "b300-pool-a"
-	ModelPoolLabelName = "pool.aibrix.ai/name"
+	// Example: "claim.model.aibrix.ai/pool": "b300-pool-a"
+	ModelPoolLabelName = "claim.model.aibrix.ai/pool"
 
 	// ModelPoolLabelEnabled marks a pod as a warm GPU pool member that accepts dynamic
 	// ModelClaim attachments (the GPU/CUDA context and the kvcached KV pool are
 	// reserved and the runtime sidecar is ready). Analogous to ModelLabelAdapterEnabled.
-	// Example: "pool.aibrix.ai/enabled": "true"
-	ModelPoolLabelEnabled = "pool.aibrix.ai/enabled"
+	// Example: "claim.model.aibrix.ai/enabled": "true"
+	ModelPoolLabelEnabled = "claim.model.aibrix.ai/enabled"
 
 	// ModelPoolLabelEnabledValue is the enabled value for ModelPoolLabelEnabled.
 	ModelPoolLabelEnabledValue = "true"
@@ -58,8 +58,8 @@ const (
 	// ModelPoolPolicyAnnotationKey holds one JSON pool policy on the warm
 	// Deployment metadata. It intentionally avoids a separate policy CRD while
 	// keeping the configuration scoped to the pool that owns the GPU pods.
-	// Example: "pool.aibrix.ai/policy": '{"reclaim":{"mode":"kv-first","capacityBytes":17179869184}}'
-	ModelPoolPolicyAnnotationKey = "pool.aibrix.ai/policy"
+	// Example: "claim.model.aibrix.ai/pool-policy": '{"reclaim":{"mode":"kv-first","capacityBytes":17179869184}}'
+	ModelPoolPolicyAnnotationKey = "claim.model.aibrix.ai/pool-policy"
 
 	// ModelClaimPodAnnotationPrefix marks, on a warm GPU pod, that a ModelClaim
 	// has been activated on it. The key is suffixed with the ModelClaim object
@@ -70,9 +70,9 @@ const (
 	// One key per ModelClaim avoids multi-writer races on a shared annotation.
 	// The gateway cache reads these to make active models routable and retain
 	// sleeping port-0 bindings for request-triggered wake.
-	// Example: "modelclaim.aibrix.ai/qwen2-7b":
+	// Example: "route.claim.model.aibrix.ai/qwen2-7b":
 	// '{"model":"qwen2-7b-instruct","port":9001,"state":"active"}'
-	ModelClaimPodAnnotationPrefix = "modelclaim.aibrix.ai/"
+	ModelClaimPodAnnotationPrefix = "route.claim.model.aibrix.ai/"
 
 	// ModelClaimWakeAnnotationPrefix marks, on the warm pod that holds a
 	// sleeping engine, that a request has asked for that engine's model. The
