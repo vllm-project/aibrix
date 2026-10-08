@@ -171,138 +171,10 @@ func parseEventArray(arr []interface{}) (KVEvent, error) {
 	switch tag {
 
 	case EventTypeBlockStored:
-		// Minimum = 5 fields
-		if len(arr) < 5 {
-			return nil, fmt.Errorf("BlockStored requires at least 5 fields, got %d", len(arr))
-		}
-
-		// 1: block_hashes
-		blockHashes, err := toBlockHashSlice(arr[1])
-		if err != nil {
-			return nil, fmt.Errorf("invalid block_hashes: %w", err)
-		}
-
-		// 2: parent_block_hash
-		parentHash, err := toBlockHashPtr(arr[2])
-		if err != nil {
-			return nil, fmt.Errorf("invalid parent_block_hash: %w", err)
-		}
-
-		// 3: token_ids
-		rawTokenIDs, ok := arr[3].([]interface{})
-		if !ok {
-			return nil, fmt.Errorf("invalid token_ids type: %T", arr[3])
-		}
-
-		// 4: block_size (required)
-		blockSize, err := parseInt(arr[4])
-		if err != nil {
-			return nil, fmt.Errorf("invalid block_size: %w", err)
-		}
-
-		// Flatten tokenIDs into []uint32
-		tokenIDs := make([]uint32, len(rawTokenIDs))
-		for i, v := range rawTokenIDs {
-			n, err := parseUint32(v)
-			if err != nil {
-				return nil, fmt.Errorf("token_ids[%d]: %w", i, err)
-			}
-			tokenIDs[i] = n
-		}
-
-		// Convert directly to [][]byte grouped by blockSize
-		tokens, err := convertTokenIDs(tokenIDs, blockSize)
-		if err != nil {
-			return nil, err
-		}
-
-		ev := &BlockStoredEvent{
-			Type:            EventTypeBlockStored,
-			BlockHashes:     blockHashes,
-			ParentBlockHash: parentHash,
-			TokenIDs:        tokens,
-		}
-
-		// Optional fields added by newer vLLM builds. msgspec omit_defaults may
-		// drop trailing ones, so read by position with bounds checks and leave
-		// the rest nil.
-		if len(arr) > 5 {
-			if ev.LoraID, err = toInt64Ptr(arr[5]); err != nil {
-				return nil, fmt.Errorf("invalid lora_id: %w", err)
-			}
-		}
-		if len(arr) > 6 {
-			if ev.Medium, err = toStringPtr(arr[6]); err != nil {
-				return nil, fmt.Errorf("invalid medium: %w", err)
-			}
-		}
-		if len(arr) > 7 {
-			if ev.LoraName, err = toStringPtr(arr[7]); err != nil {
-				return nil, fmt.Errorf("invalid lora_name: %w", err)
-			}
-		}
-		if len(arr) > 8 {
-			if ev.ExtraKeys, err = toExtraKeys(arr[8]); err != nil {
-				return nil, fmt.Errorf("invalid extra_keys: %w", err)
-			}
-		}
-		if len(arr) > 9 {
-			if ev.GroupIdx, err = toInt64Ptr(arr[9]); err != nil {
-				return nil, fmt.Errorf("invalid group_idx: %w", err)
-			}
-		}
-		if len(arr) > 10 {
-			if ev.KVCacheSpecKind, err = toStringPtr(arr[10]); err != nil {
-				return nil, fmt.Errorf("invalid kv_cache_spec_kind: %w", err)
-			}
-		}
-		if len(arr) > 11 {
-			if ev.KVCacheSpecSlidingWindow, err = toInt64Ptr(arr[11]); err != nil {
-				return nil, fmt.Errorf("invalid kv_cache_spec_sliding_window: %w", err)
-			}
-		}
-		if len(arr) > 12 {
-			if ev.Locality, err = toStringPtr(arr[12]); err != nil {
-				return nil, fmt.Errorf("invalid locality: %w", err)
-			}
-		}
-
-		return ev, nil
+		return parseBlockStoredArray(arr)
 
 	case EventTypeBlockRemoved:
-		if len(arr) < 2 {
-			return nil, fmt.Errorf("BlockRemoved expects ≥2 fields, got %d", len(arr))
-		}
-
-		blockHashes, err := toBlockHashSlice(arr[1])
-		if err != nil {
-			return nil, fmt.Errorf("invalid block_hashes: %w", err)
-		}
-
-		ev := &BlockRemovedEvent{
-			Type:        tag,
-			BlockHashes: blockHashes,
-		}
-
-		// BlockRemoved carries [tag, block_hashes, medium, group_idx, locality]
-		// in newer vLLM builds. Read by position with bounds checks.
-		if len(arr) > 2 {
-			if ev.Medium, err = toStringPtr(arr[2]); err != nil {
-				return nil, fmt.Errorf("invalid medium: %w", err)
-			}
-		}
-		if len(arr) > 3 {
-			if ev.GroupIdx, err = toInt64Ptr(arr[3]); err != nil {
-				return nil, fmt.Errorf("invalid group_idx: %w", err)
-			}
-		}
-		if len(arr) > 4 {
-			if ev.Locality, err = toStringPtr(arr[4]); err != nil {
-				return nil, fmt.Errorf("invalid locality: %w", err)
-			}
-		}
-
-		return ev, nil
+		return parseBlockRemovedArray(arr)
 
 	case EventTypeAllCleared:
 		return &AllBlocksClearedEvent{
@@ -312,6 +184,144 @@ func parseEventArray(arr []interface{}) (KVEvent, error) {
 	default:
 		return nil, fmt.Errorf("unknown event type: %s", tag)
 	}
+}
+
+// parseBlockStoredArray parses an array-encoded BlockStored event.
+func parseBlockStoredArray(arr []interface{}) (KVEvent, error) {
+	// Minimum = 5 fields
+	if len(arr) < 5 {
+		return nil, fmt.Errorf("BlockStored requires at least 5 fields, got %d", len(arr))
+	}
+
+	// 1: block_hashes
+	blockHashes, err := toBlockHashSlice(arr[1])
+	if err != nil {
+		return nil, fmt.Errorf("invalid block_hashes: %w", err)
+	}
+
+	// 2: parent_block_hash
+	parentHash, err := toBlockHashPtr(arr[2])
+	if err != nil {
+		return nil, fmt.Errorf("invalid parent_block_hash: %w", err)
+	}
+
+	// 3: token_ids
+	rawTokenIDs, ok := arr[3].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid token_ids type: %T", arr[3])
+	}
+
+	// 4: block_size (required)
+	blockSize, err := parseInt(arr[4])
+	if err != nil {
+		return nil, fmt.Errorf("invalid block_size: %w", err)
+	}
+
+	// Flatten tokenIDs into []uint32
+	tokenIDs := make([]uint32, len(rawTokenIDs))
+	for i, v := range rawTokenIDs {
+		n, err := parseUint32(v)
+		if err != nil {
+			return nil, fmt.Errorf("token_ids[%d]: %w", i, err)
+		}
+		tokenIDs[i] = n
+	}
+
+	// Convert directly to [][]byte grouped by blockSize
+	tokens, err := convertTokenIDs(tokenIDs, blockSize)
+	if err != nil {
+		return nil, err
+	}
+
+	ev := &BlockStoredEvent{
+		Type:            EventTypeBlockStored,
+		BlockHashes:     blockHashes,
+		ParentBlockHash: parentHash,
+		TokenIDs:        tokens,
+	}
+
+	// Optional fields added by newer vLLM builds. msgspec omit_defaults may
+	// drop trailing ones, so read by position with bounds checks and leave
+	// the rest nil.
+	if len(arr) > 5 {
+		if ev.LoraID, err = toInt64Ptr(arr[5]); err != nil {
+			return nil, fmt.Errorf("invalid lora_id: %w", err)
+		}
+	}
+	if len(arr) > 6 {
+		if ev.Medium, err = toStringPtr(arr[6]); err != nil {
+			return nil, fmt.Errorf("invalid medium: %w", err)
+		}
+	}
+	if len(arr) > 7 {
+		if ev.LoraName, err = toStringPtr(arr[7]); err != nil {
+			return nil, fmt.Errorf("invalid lora_name: %w", err)
+		}
+	}
+	if len(arr) > 8 {
+		if ev.ExtraKeys, err = toExtraKeys(arr[8]); err != nil {
+			return nil, fmt.Errorf("invalid extra_keys: %w", err)
+		}
+	}
+	if len(arr) > 9 {
+		if ev.GroupIdx, err = toInt64Ptr(arr[9]); err != nil {
+			return nil, fmt.Errorf("invalid group_idx: %w", err)
+		}
+	}
+	if len(arr) > 10 {
+		if ev.KVCacheSpecKind, err = toStringPtr(arr[10]); err != nil {
+			return nil, fmt.Errorf("invalid kv_cache_spec_kind: %w", err)
+		}
+	}
+	if len(arr) > 11 {
+		if ev.KVCacheSpecSlidingWindow, err = toInt64Ptr(arr[11]); err != nil {
+			return nil, fmt.Errorf("invalid kv_cache_spec_sliding_window: %w", err)
+		}
+	}
+	if len(arr) > 12 {
+		if ev.Locality, err = toStringPtr(arr[12]); err != nil {
+			return nil, fmt.Errorf("invalid locality: %w", err)
+		}
+	}
+
+	return ev, nil
+}
+
+// parseBlockRemovedArray parses an array-encoded BlockRemoved event.
+func parseBlockRemovedArray(arr []interface{}) (KVEvent, error) {
+	if len(arr) < 2 {
+		return nil, fmt.Errorf("BlockRemoved expects ≥2 fields, got %d", len(arr))
+	}
+
+	blockHashes, err := toBlockHashSlice(arr[1])
+	if err != nil {
+		return nil, fmt.Errorf("invalid block_hashes: %w", err)
+	}
+
+	ev := &BlockRemovedEvent{
+		Type:        EventTypeBlockRemoved,
+		BlockHashes: blockHashes,
+	}
+
+	// BlockRemoved carries [tag, block_hashes, medium, group_idx, locality]
+	// in newer vLLM builds. Read by position with bounds checks.
+	if len(arr) > 2 {
+		if ev.Medium, err = toStringPtr(arr[2]); err != nil {
+			return nil, fmt.Errorf("invalid medium: %w", err)
+		}
+	}
+	if len(arr) > 3 {
+		if ev.GroupIdx, err = toInt64Ptr(arr[3]); err != nil {
+			return nil, fmt.Errorf("invalid group_idx: %w", err)
+		}
+	}
+	if len(arr) > 4 {
+		if ev.Locality, err = toStringPtr(arr[4]); err != nil {
+			return nil, fmt.Errorf("invalid locality: %w", err)
+		}
+	}
+
+	return ev, nil
 }
 
 // parseEventMap parses a single event encoded as a msgpack map (vLLM's
