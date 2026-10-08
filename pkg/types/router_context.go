@@ -108,7 +108,16 @@ type PostRouteUpdater interface {
 type RoutingContext struct {
 	context.Context
 	Algorithm RoutingAlgorithm
-	Model     string
+	// ResolvedStrategy is the actual multi-strategy composite RouterManager.Select
+	// constructed for this request, including the silent load-balance/least-request-top-k
+	// auto-blend when one was added (see appendLoadBalanceBlend) -- e.g.
+	// "least-kv-cache,load-balance:1,least-request-top-k:1" for a plain "least-kv-cache"
+	// Algorithm. Equal to string(Algorithm) when nothing was blended in, and empty until
+	// Select runs (RouterNotSet requests, or a request that errors before selectTargetPod).
+	// Algorithm itself is never rewritten to this -- headers, Validate(), and error
+	// messages must keep reflecting exactly what the caller asked for.
+	ResolvedStrategy string
+	Model            string
 	// BaseModel is the served base-model name when Model is a LoRA adapter.
 	// Empty for base-model requests.
 	BaseModel      string
@@ -486,6 +495,9 @@ func (r *RoutingContext) getError() (err error) {
 func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, model, message, requestID, user string) {
 	r.Context = ctx
 	r.Algorithm = algorithms
+	// Select sets this only on success, so a pooled context must not hand the previous
+	// request's composite to one that never reaches Select.
+	r.ResolvedStrategy = ""
 	r.Model = model
 	r.BaseModel = ""
 	r.Engine = ""
