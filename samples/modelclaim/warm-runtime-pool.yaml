@@ -20,9 +20,10 @@ spec:
     spec:
       containers:
         - name: aibrix-runtime
-          # This image must be built on a kvcached-enabled vLLM base image.
+          # The published image is built on a kvcached-enabled vLLM base, and a
+          # custom image must be too.
           # The runtime sidecar starts the per-ModelClaim engine processes.
-          image: aibrix/kvcached-runtime:dev
+          image: aibrix/kvcached-runtime:nightly
           imagePullPolicy: IfNotPresent
           ports:
             - name: runtime

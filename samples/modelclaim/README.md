@@ -6,8 +6,8 @@ same Pod. The AIBrix Gateway routes requests by served model name to the port
 assigned to that engine.
 
 Run all commands from the repository root. This guide assumes the Kubernetes
-cluster, GPU support, AIBrix control plane, Gateway, ModelClaim CRD, and
-`aibrix/kvcached-runtime:dev` image are already available.
+cluster, GPU support, AIBrix control plane, Gateway, and ModelClaim CRD are
+already available.
 
 For API details, automatic pool policies, extended failure tests, and
 performance experiments, see the
@@ -38,10 +38,11 @@ Client ──> Envoy Gateway ──> Gateway plugin┘
 ```
 
 The sample deploys one container named `aibrix-runtime`, using the image
-`aibrix/kvcached-runtime:dev`. That image layers the AIBrix Runtime Agent on a
-kvcached-enabled vLLM base image. kvcached is therefore not a separate Pod or
-sidecar. The Runtime Agent starts one child engine process per ModelClaim, and
-each child enables kvcached with a unique shared-memory IPC name.
+`aibrix/kvcached-runtime:nightly` that CI publishes from `main`. That image
+layers the AIBrix Runtime Agent on a kvcached-enabled vLLM base image.
+kvcached is therefore not a separate Pod or sidecar. The Runtime Agent starts
+one child engine process per ModelClaim, and each child enables kvcached with
+a unique shared-memory IPC name.
 
 The Runtime Agent itself keeps `ENABLE_KVCACHED=false` and
 `KVCACHED_AUTOPATCH=0`. It does not serve inference and should not create an

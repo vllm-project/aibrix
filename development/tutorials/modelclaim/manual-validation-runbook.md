@@ -104,9 +104,10 @@ printf 'commit=%s\n' "$TEST_COMMIT" | tee /tmp/modelclaim-test-build.txt
 ## 3. Install the Control Plane and Build the Runtime
 
 The normal merged-feature path uses the public controller and gateway nightly
-images from `main`. Build only the dedicated experimental kvcached runtime as
-`dev`, which matches the sample manifest. It is intentionally not part of the
-public nightly image workflow.
+images from `main`. The sample's `aibrix/kvcached-runtime:nightly` is built
+from `main` as well, which may not be the commit under test. So build the
+kvcached runtime from the commit under test as `dev`, and deploy the warm pool
+with it in section 4.
 
 ```bash
 IMAGE_TAG=dev IS_MAIN_BRANCH=false make docker-build-kvcached-runtime
@@ -155,7 +156,8 @@ Start without an automatic policy so manual controls can be tested in
 isolation:
 
 ```bash
-kubectl apply -f samples/modelclaim/warm-runtime-pool.yaml
+sed 's#aibrix/kvcached-runtime:nightly#aibrix/kvcached-runtime:dev#' \
+  samples/modelclaim/warm-runtime-pool.yaml | kubectl apply -f -
 kubectl rollout status deployment/warm-runtime-pool-b300 --timeout=10m
 
 export NAMESPACE=default
