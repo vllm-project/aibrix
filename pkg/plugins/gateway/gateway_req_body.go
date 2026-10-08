@@ -215,6 +215,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 				attribute.String("request_path", requestPath),
 				attribute.String("model", model),
 				attribute.Bool("stream", stream),
+				attribute.String("resolved_strategy", routingCtx.ResolvedStrategy),
 				attribute.String("target_pod", targetPodName),
 				attribute.String("target_pod_ip", targetPodIP),
 				attribute.Float64("outstanding_requests_at_start", request_count),

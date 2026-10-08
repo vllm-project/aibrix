@@ -881,8 +881,9 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 
 	// Legacy Single strategy fallback
 	rm.routerMu.RLock()
-	defer rm.routerMu.RUnlock()
-	if provider, ok := rm.routerFactory[types.RoutingAlgorithm(algStr)]; ok {
+	provider, ok := rm.routerFactory[types.RoutingAlgorithm(algStr)]
+	rm.routerMu.RUnlock()
+	if ok {
 		router, err := provider(ctx)
 		if err == nil {
 			ctx.ResolvedStrategy = algStr
