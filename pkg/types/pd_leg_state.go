@@ -117,11 +117,11 @@ type PDLegState struct {
 	prefillFailed chan struct{}
 
 	// prefillSucceededNanos is when the prefill leg came back 200, as unix
-	// nanoseconds, or 0 while it is still in flight (or failed). In SGLang
-	// disaggregation the prefill pod only answers once the decode pod has taken
-	// the KV transfer, so this instant is also the moment from which the decode
-	// pod owes the client a response: it is the origin of the decode watchdog's
-	// first-response deadline.
+	// nanoseconds, or 0 while it is still in flight (or failed terminally). In
+	// SGLang disaggregation the prefill pod only answers once the decode pod has
+	// taken the KV transfer, so this instant is also the moment from which the
+	// decode pod owes the client a response: it is the origin of the decode
+	// watchdog's first-response deadline.
 	prefillSucceededNanos atomic.Int64
 
 	// prefillSucceeded is the wakeup edge for prefillSucceededNanos, the mirror
@@ -378,7 +378,9 @@ func (l *PDLegState) PrefillFailed() <-chan struct{} {
 //
 // For an SGLang PD request this is the point at which the decode pod has taken
 // the KV transfer and owes the client a response, which is what the decode
-// watchdog times.
+// watchdog times. A non-terminal prefill failure (a 200 whose body the gateway
+// could not parse) marks it too, next to the recorded failure: the KV transfer
+// completed all the same.
 func (l *PDLegState) MarkPrefillSucceeded() {
 	if l == nil {
 		return

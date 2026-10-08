@@ -328,6 +328,11 @@ between chunks instead: a stream that goes silent for
 gets the same abort. It is armed only for requests that carry a gateway-owned
 `rid`, i.e. SGLang PD requests.
 
+A prefill leg that answered `200` with a body the gateway could not parse
+(`bad_response`) counts as succeeded for the watchdog: the KV transfer completed
+all the same, so fail-fast leaves the request alone and the watchdog times the
+decode pod from that answer.
+
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT` | int (seconds) | `60` | **Streaming requests only** (`"stream": true`). Time to first token: how long the decode pod is given to send its first response body chunk, measured from the moment the prefill leg returned successfully. Response headers alone do not count. On expiry the client gets a `504` (`did not start responding within …`), or a cut stream if the headers already went out. `0` disables the watchdog for streaming requests. |

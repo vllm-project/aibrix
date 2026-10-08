@@ -160,7 +160,8 @@ func TestAsyncPrefillFailureRecordsFailureAndAbortsDecodeLeg(t *testing.T) {
 }
 
 // A 200 with an unparseable body means the KV transfer completed: the failure
-// is recorded, but the decode leg must be left alone.
+// is recorded, but the decode leg must be left alone, and its decode watchdog
+// must start just as after a success.
 func TestAsyncPrefillBadResponseDoesNotAbortDecodeLeg(t *testing.T) {
 	prefillSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -178,6 +179,12 @@ func TestAsyncPrefillBadResponseDoesNotAbortDecodeLeg(t *testing.T) {
 
 	assert.Eventually(t, func() bool { return ctx.PrefillFailure() != nil }, 2*time.Second, 10*time.Millisecond)
 	assert.Equal(t, pd.PrefillFailureBadResponse, ctx.PrefillFailure().Class)
+	select {
+	case <-ctx.PrefillSucceeded():
+	case <-time.After(2 * time.Second):
+		t.Fatal("a bad_response prefill never armed the decode watchdog")
+	}
+	assert.False(t, ctx.PrefillSucceededAt().IsZero())
 	sink.none(t, 300*time.Millisecond)
 }
 
@@ -200,6 +207,8 @@ func TestAsyncPrefillTransportFailureIsTerminal(t *testing.T) {
 	assert.Equal(t, pd.PrefillFailureTransport, ctx.PrefillFailure().Class)
 	assert.True(t, pd.PrefillFailureIsTerminal(ctx.PrefillFailure().Class))
 	assert.Equal(t, ctx.PDRequestID(), gjson.Get(sink.wait(t, 5*time.Second), "rid").String())
+	assert.True(t, ctx.PrefillSucceededAt().IsZero(),
+		"a terminal failure is handled by fail-fast and must not arm the decode watchdog")
 }
 
 // TestPrefillGoroutineFailureAfterContextReuseDoesNotTouchNewRequest is the
