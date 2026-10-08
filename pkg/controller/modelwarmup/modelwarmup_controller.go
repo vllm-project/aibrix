@@ -206,7 +206,7 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return ctrl.Result{}, nil
 }
 
-func withinTargetLimit(targets map[string][]string, missing map[string]string) bool {
+func withinTargetLimit(targets map[string]resolvedTarget, missing map[string]string) bool {
 	return len(targets)+len(missing) <= modelv1alpha1.MaxModelWarmupTargets
 }
 
@@ -277,7 +277,7 @@ func (r *ModelWarmupReconciler) cleanupStaleJobs(
 	ctx context.Context,
 	warmup *modelv1alpha1.ModelWarmup,
 	revision string,
-	targets map[string][]string,
+	targets map[string]resolvedTarget,
 ) error {
 	var jobs batchv1.JobList
 	if err := r.List(ctx, &jobs, client.InNamespace(warmup.Namespace), client.MatchingLabels{
@@ -310,53 +310,16 @@ func (r *ModelWarmupReconciler) cleanupStaleJobs(
 func (r *ModelWarmupReconciler) resolveTargets(
 	ctx context.Context,
 	warmup *modelv1alpha1.ModelWarmup,
-) (map[string][]string, map[string]string, error) {
-	targets, missing := map[string][]string{}, map[string]string{}
+) (map[string]resolvedTarget, map[string]string, error) {
 	var namespace corev1.Namespace
 	if err := r.Get(ctx, types.NamespacedName{Name: warmup.Namespace}, &namespace); err != nil {
 		return nil, nil, err
 	}
-	for i, target := range warmup.Spec.Targets {
-		source := fmt.Sprintf("target[%d]", i)
-		if target.Nodes != nil {
-			for _, name := range target.Nodes.Names {
-				var node corev1.Node
-				if err := r.Get(ctx, types.NamespacedName{Name: name}, &node); err != nil {
-					if apierrors.IsNotFound(err) {
-						missing[name] = "NodeNotFound"
-						continue
-					}
-					return nil, nil, err
-				}
-				if !isNodeAuthorized(&namespace, &node) {
-					missing[name] = "NodeNotAuthorized"
-					continue
-				}
-				targets[name] = append(targets[name], source)
-			}
-		}
-		if target.NodeSelector != nil {
-			selector, err := metav1.LabelSelectorAsSelector(target.NodeSelector)
-			if err != nil {
-				return nil, nil, err
-			}
-			var nodes corev1.NodeList
-			if err := r.List(ctx, &nodes, client.MatchingLabelsSelector{Selector: selector}); err != nil {
-				return nil, nil, err
-			}
-			for _, node := range nodes.Items {
-				if !isNodeAuthorized(&namespace, &node) {
-					missing[node.Name] = "NodeNotAuthorized"
-					continue
-				}
-				targets[node.Name] = append(targets[node.Name], source)
-			}
-		}
+	var nodes corev1.NodeList
+	if err := r.List(ctx, &nodes); err != nil {
+		return nil, nil, err
 	}
-	for name := range targets {
-		sort.Strings(targets[name])
-	}
-	return targets, missing, nil
+	return resolveTargetsFromNodes(warmup, &namespace, nodes.Items)
 }
 
 func isNodeAuthorized(namespace *corev1.Namespace, node *corev1.Node) bool {
@@ -573,7 +536,7 @@ func (r *ModelWarmupReconciler) updateStatus(
 	ctx context.Context,
 	w *modelv1alpha1.ModelWarmup,
 	revision string,
-	targets map[string][]string,
+	targets map[string]resolvedTarget,
 	missing map[string]string,
 	limitReason, limitMessage string,
 ) (ctrl.Result, error) {
@@ -605,7 +568,8 @@ func (r *ModelWarmupReconciler) updateStatus(
 	}
 	details := make([]modelv1alpha1.ModelWarmupTargetStatus, 0, len(targets)+len(missing))
 	active, pending, succeeded, failed := int32(0), int32(0), int32(0), int32(0)
-	for node, sources := range targets {
+	for node, target := range targets {
+		sources := target.Sources
 		item := modelv1alpha1.ModelWarmupTargetStatus{
 			NodeName: node, Source: primarySource(sources), SourceCount: int32(len(sources)), Revision: revision,
 			Phase: modelv1alpha1.ModelWarmupTargetPending, Message: boundedDiagnostic("waiting for a warmup job"),

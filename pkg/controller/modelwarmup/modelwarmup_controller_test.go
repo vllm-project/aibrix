@@ -346,7 +346,8 @@ func TestUpdateStatusUsesCustomSuccessReason(t *testing.T) {
 			r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
 				WithStatusSubresource(warmup).WithObjects(warmup, job).Build()}
 
-			_, err := r.updateStatus(context.Background(), warmup, "rev", map[string][]string{"node-a": {"target[0]"}}, nil, "", "")
+			_, err := r.updateStatus(context.Background(), warmup, "rev",
+				testResolvedTargets(map[string][]string{"node-a": {"target[0]"}}), nil, "", "")
 			require.NoError(t, err)
 			complete := mustCondition(warmup.Status.Conditions, "Complete")
 			if custom == nil {
@@ -408,7 +409,7 @@ func TestUpdateStatusPreservesJobFailureDiagnostics(t *testing.T) {
 	require.NoError(t, batchv1.AddToScheme(scheme))
 	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(warmup).WithObjects(warmup, job).Build()}
-	targets := map[string][]string{"node-a": {"target[0]"}}
+	targets := testResolvedTargets(map[string][]string{"node-a": {"target[0]"}})
 	_, err := r.updateStatus(context.Background(), warmup, "rev", targets, nil, "", "")
 	require.NoError(t, err)
 	require.Equal(t, "BackoffLimitExceeded", warmup.Status.Targets[0].Reason)
@@ -436,8 +437,8 @@ func TestResolveTargetsDeduplicatesAndPreservesStableSources(t *testing.T) {
 	targets, missing, err := r.resolveTargets(context.Background(), warmup)
 	require.NoError(t, err)
 	require.Empty(t, missing)
-	require.Equal(t, []string{"target[0]", "target[1]"}, targets["node-a"])
-	require.Equal(t, []string{"target[0]", "target[1]"}, targets["node-b"])
+	require.Equal(t, []string{"target[0]", "target[1]"}, targets["node-a"].Sources)
+	require.Equal(t, []string{"target[0]", "target[1]"}, targets["node-b"].Sources)
 }
 
 func TestResolveTargetsReportsMissingExplicitNode(t *testing.T) {
@@ -480,9 +481,10 @@ func TestResolveTargetsRejectsUnauthorizedNodes(t *testing.T) {
 }
 
 func TestTargetLimitIncludesMissingNodes(t *testing.T) {
-	targets := make(map[string][]string, modelv1alpha1.MaxModelWarmupTargets)
+	targets := make(map[string]resolvedTarget, modelv1alpha1.MaxModelWarmupTargets)
 	for i := 0; i < modelv1alpha1.MaxModelWarmupTargets; i++ {
-		targets[fmt.Sprintf("node-%d", i)] = []string{"target[0]"}
+		name := fmt.Sprintf("node-%d", i)
+		targets[name] = resolvedTarget{NodeName: name, Sources: []string{"target[0]"}}
 	}
 	require.True(t, withinTargetLimit(targets, nil))
 	require.False(t, withinTargetLimit(targets, map[string]string{"missing": "NodeNotFound"}))
@@ -605,7 +607,7 @@ func TestCleanupStaleJobsDeletesRunningAndKeepsCompleted(t *testing.T) {
 	require.NoError(t, batchv1.AddToScheme(scheme))
 	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
 		WithObjects(running, completed, retrying).Build()}
-	targets := map[string][]string{"node-b": {"target[0]"}}
+	targets := testResolvedTargets(map[string][]string{"node-b": {"target[0]"}})
 	require.NoError(t, r.cleanupStaleJobs(context.Background(), warmup, "new", targets))
 	require.Error(t, r.Get(context.Background(), client.ObjectKeyFromObject(running), &batchv1.Job{}))
 	require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(completed), &batchv1.Job{}))
@@ -662,7 +664,7 @@ func TestRetryingJobRemainsActiveUntilTerminalFailure(t *testing.T) {
 		context.Background(),
 		warmup,
 		"rev",
-		map[string][]string{"node-a": {"target[0]"}},
+		testResolvedTargets(map[string][]string{"node-a": {"target[0]"}}),
 		nil,
 		"",
 		"",
@@ -723,7 +725,7 @@ func TestUpdateStatusPreservesAndUpdatesTargetTransitionTime(t *testing.T) {
 	require.NoError(t, batchv1.AddToScheme(scheme))
 	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(warmup).WithObjects(warmup).Build()}
-	targets := map[string][]string{"node-a": {"target[0]"}}
+	targets := testResolvedTargets(map[string][]string{"node-a": {"target[0]"}})
 	_, err := r.updateStatus(context.Background(), warmup, "rev", targets, nil, "", "")
 	require.NoError(t, err)
 	first := *warmup.Status.Targets[0].LastTransitionTime
@@ -796,9 +798,10 @@ func TestUpdateStatusRetainsFailedDetailsBeforePendingWhenTruncated(t *testing.T
 	require.NoError(t, batchv1.AddToScheme(scheme))
 	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(warmup).WithObjects(warmup).Build()}
-	targets := make(map[string][]string, modelv1alpha1.MaxModelWarmupTargetDetails)
+	targets := make(map[string]resolvedTarget, modelv1alpha1.MaxModelWarmupTargetDetails)
 	for i := 0; i < modelv1alpha1.MaxModelWarmupTargetDetails; i++ {
-		targets[fmt.Sprintf("node-%04d", i)] = []string{"target[0]"}
+		name := fmt.Sprintf("node-%04d", i)
+		targets[name] = resolvedTarget{NodeName: name, Sources: []string{"target[0]"}}
 	}
 
 	_, err := r.updateStatus(context.Background(), warmup, "rev", targets,
@@ -860,6 +863,14 @@ func validWarmupForControllerTest(namespace, name string) *modelv1alpha1.ModelWa
 				Image: "busybox:1.36", Command: []string{"true"},
 			}}},
 		}}
+}
+
+func testResolvedTargets(sourcesByNode map[string][]string) map[string]resolvedTarget {
+	targets := make(map[string]resolvedTarget, len(sourcesByNode))
+	for node, sources := range sourcesByNode {
+		targets[node] = resolvedTarget{NodeName: node, Sources: sources}
+	}
+	return targets
 }
 
 func mustCondition(conditions []metav1.Condition, typ string) metav1.Condition {
