@@ -100,8 +100,11 @@ def activate_runtime_model(request: ActivateRuntimeModelRequest):
     )
 
 
+# sync def: deactivate waits for the runtime's locks, which an activation that
+# downloads weights or a sleep can hold for a minute. Run on the event loop, that
+# wait would stall every other endpoint of the runtime; run it in a threadpool.
 @model_runtime_router.post("/v1/runtime/models/deactivate")
-async def deactivate_runtime_model(request: DeactivateRuntimeModelRequest):
+def deactivate_runtime_model(request: DeactivateRuntimeModelRequest):
     """Deactivate a model by stopping its engine process."""
     get_model_runtime().deactivate(request.model_name, mode=request.mode)
     return JSONResponse(content={"status": "success"}, status_code=200)

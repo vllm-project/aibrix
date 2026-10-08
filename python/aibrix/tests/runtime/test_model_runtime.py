@@ -999,6 +999,68 @@ def test_endpoints_activate_list_deactivate():
     assert all(m["model_name"] != "ep1" for m in listed["models"])
 
 
+def test_a_deactivate_that_waits_does_not_stall_the_other_endpoints():
+    # A deactivate waits for the runtime's operation lock, which an activation
+    # that downloads weights, or a sleep, can hold for a minute. Waiting on the
+    # event loop would hold up every other endpoint until the lock is released,
+    # the controller's snapshot reads included.
+    import asyncio
+
+    import httpx
+
+    client = _make_test_client()
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent = runtime_module.get_model_runtime()
+    agent.activate(model_name="m1", artifact_url="hf://x")
+
+    held = threading.Event()
+    released = threading.Event()
+
+    def hold_operation_lock():
+        with agent._operation_lock:
+            held.set()
+            released.wait(10)
+
+    holder = threading.Thread(target=hold_operation_lock)
+    holder.start()
+    assert held.wait(5)
+    # The lock is let go after a while either way, so a deactivate that blocks
+    # the event loop makes this test fail rather than hang.
+    letting_go = threading.Timer(5.0, released.set)
+    letting_go.start()
+
+    async def deactivate_while_listing():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://runtime"
+        ) as http:
+            stopping = asyncio.create_task(
+                http.post(
+                    "/v1/runtime/models/deactivate",
+                    json={"model_name": "m1", "mode": "stop"},
+                )
+            )
+            # Give the deactivate time to reach the lock and wait there.
+            await asyncio.sleep(0.2)
+            listed = await http.get("/v1/runtime/models")
+            listed_while_held = not released.is_set()
+            released.set()
+            return listed, listed_while_held, await stopping
+
+    try:
+        listed, listed_while_held, stopped = asyncio.run(deactivate_while_listing())
+    finally:
+        released.set()
+        letting_go.cancel()
+        holder.join(5)
+
+    assert listed.status_code == 200
+    assert listed_while_held, "the listing waited for the deactivate's lock"
+    assert stopped.status_code == 200
+    assert agent.list_models() == []
+
+
 def test_wake_endpoint_reports_a_wake_that_failed(monkeypatch):
     client = _make_test_client()
     import aibrix.runtime.model_runtime as runtime_module
