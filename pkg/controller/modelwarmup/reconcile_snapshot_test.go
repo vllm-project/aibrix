@@ -98,7 +98,7 @@ func TestResolveTargetsFromNodes(t *testing.T) {
 		}, targets)
 	})
 
-	t.Run("union deduplicates nodes and sorts sources", func(t *testing.T) {
+	t.Run("union deduplicates nodes, preserves source multiplicity, and sorts sources", func(t *testing.T) {
 		targetSpecs := make([]modelv1alpha1.ModelWarmupTarget, 11)
 		targetSpecs[2].Nodes = &modelv1alpha1.ModelWarmupNodesTarget{Names: []string{"node-a", "node-a"}}
 		targetSpecs[10].NodeSelector = &metav1.LabelSelector{MatchLabels: map[string]string{"group": "gpu"}}
@@ -109,7 +109,7 @@ func TestResolveTargetsFromNodes(t *testing.T) {
 		require.NoError(t, err)
 		require.Empty(t, missing)
 		require.Equal(t, map[string]resolvedTarget{
-			"node-a": {NodeName: "node-a", NodeUID: types.UID("uid-a"), Sources: []string{"target[10]", "target[2]"}},
+			"node-a": {NodeName: "node-a", NodeUID: types.UID("uid-a"), Sources: []string{"target[10]", "target[2]", "target[2]"}},
 			"node-b": {NodeName: "node-b", NodeUID: types.UID("uid-b"), Sources: []string{"target[10]"}},
 		}, targets)
 	})

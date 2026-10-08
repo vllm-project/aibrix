@@ -50,12 +50,6 @@ func resolveTargetsFromNodes(
 		target := targets[node.Name]
 		target.NodeName = node.Name
 		target.NodeUID = node.UID
-		for _, existing := range target.Sources {
-			if existing == source {
-				targets[node.Name] = target
-				return
-			}
-		}
 		target.Sources = append(target.Sources, source)
 		targets[node.Name] = target
 	}
