@@ -31,6 +31,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -39,6 +41,139 @@ import (
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 )
+
+func TestReconcileReportsCreatedJobsWithoutRelisting(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+
+	require.NoError(t, err)
+	require.Zero(t, result)
+	require.Equal(t, 1, counting.nodeLists)
+	require.Equal(t, 1, counting.jobLists)
+	require.Zero(t, counting.jobGets)
+	updated := &modelv1alpha1.ModelWarmup{}
+	require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+	require.Equal(t, modelv1alpha1.ModelWarmupRunning, updated.Status.Phase)
+	require.Equal(t, int32(1), updated.Status.ActiveNodes)
+	require.Len(t, updated.Status.Targets, 1)
+	require.Equal(t, modelv1alpha1.ModelWarmupTargetRunning, updated.Status.Targets[0].Phase)
+	require.NotEmpty(t, updated.Status.Targets[0].JobName)
+}
+
+func TestReconcileSkipsSemanticNoopStatusWrite(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}
+
+	_, err := r.Reconcile(context.Background(), request)
+	require.NoError(t, err)
+	_, err = r.Reconcile(context.Background(), request)
+
+	require.NoError(t, err)
+	require.Equal(t, 1, counting.statusUpdates)
+}
+
+func TestReconcileWritesChangedStatus(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}
+	require.NoError(t, reconcileOnce(r, request))
+	var jobs batchv1.JobList
+	require.NoError(t, counting.Client.List(context.Background(), &jobs))
+	require.Len(t, jobs.Items, 1)
+	job := jobs.Items[0].DeepCopy()
+	job.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	require.NoError(t, counting.Client.Status().Update(context.Background(), job))
+
+	_, err := r.Reconcile(context.Background(), request)
+
+	require.NoError(t, err)
+	require.Equal(t, 2, counting.statusUpdates)
+	updated := &modelv1alpha1.ModelWarmup{}
+	require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+	require.Equal(t, modelv1alpha1.ModelWarmupSucceeded, updated.Status.Phase)
+}
+
+func TestReconcileReturnsStatusConflict(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes)
+	counting.statusUpdateErr = apierrors.NewConflict(
+		schema.GroupResource{Group: modelv1alpha1.GroupVersion.Group, Resource: "modelwarmups"},
+		warmup.Name,
+		fmt.Errorf("status changed"),
+	)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+
+	require.Error(t, err)
+	require.True(t, apierrors.IsConflict(err))
+	require.Equal(t, 1, counting.statusUpdates)
+}
+
+func TestReconcileDiagnosesForeignJobNameCollision(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+	revision := revisionFor(warmup)
+	foreign := (&ModelWarmupReconciler{}).jobFor(warmup, nodes[0].Name, revision)
+	foreign.OwnerReferences = []metav1.OwnerReference{{UID: "foreign-uid", Controller: ptr.To(true)}}
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes, foreign)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "is not controlled by ModelWarmup")
+	require.Contains(t, err.Error(), foreign.Name)
+	require.Equal(t, 1, counting.createCalls)
+	require.Equal(t, 1, counting.jobGets)
+}
+
+func TestReconcileUsesConstantSnapshotReads(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 400)
+	warmup.Spec.Targets = []modelv1alpha1.ModelWarmupTarget{
+		{NodeSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"group": "all"}}},
+		{NodeSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"group": "all"}}},
+	}
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, counting.modelWarmupGets)
+	require.Equal(t, 1, counting.namespaceGets)
+	require.Equal(t, 1, counting.nodeLists)
+	require.Equal(t, 1, counting.jobLists)
+	require.Zero(t, counting.jobGets)
+}
+
+func TestReconcileAppliesTTLFromOwnedJobSnapshot(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+	revision := revisionFor(warmup)
+	targetJob := (&ModelWarmupReconciler{}).jobFor(warmup, nodes[0].Name, revision)
+	removedTargetJob := (&ModelWarmupReconciler{}).jobFor(warmup, "removed-node", revision)
+	for _, job := range []*batchv1.Job{targetJob, removedTargetJob} {
+		require.NoError(t, ctrl.SetControllerReference(warmup, job, scheme))
+		job.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	}
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes, targetJob, removedTargetJob)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+
+	require.NoError(t, err)
+	for _, original := range []*batchv1.Job{targetJob, removedTargetJob} {
+		updated := &batchv1.Job{}
+		require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(original), updated))
+		require.Equal(t, ptr.To(modelv1alpha1.DefaultModelWarmupTTLSecondsAfterFinished),
+			updated.Spec.TTLSecondsAfterFinished)
+	}
+}
 
 func TestJobForBuildsSafeNodePinnedTemplate(t *testing.T) {
 	warmup := &modelv1alpha1.ModelWarmup{
@@ -347,7 +482,8 @@ func TestUpdateStatusUsesCustomSuccessReason(t *testing.T) {
 				WithStatusSubresource(warmup).WithObjects(warmup, job).Build()}
 
 			_, err := r.updateStatus(context.Background(), warmup, "rev",
-				testResolvedTargets(map[string][]string{"node-a": {"target[0]"}}), nil, "", "")
+				testResolvedTargets(map[string][]string{"node-a": {"target[0]"}}), nil,
+				[]batchv1.Job{*job}, []batchv1.Job{*job}, "", "")
 			require.NoError(t, err)
 			complete := mustCondition(warmup.Status.Conditions, "Complete")
 			if custom == nil {
@@ -361,8 +497,9 @@ func TestUpdateStatusUsesCustomSuccessReason(t *testing.T) {
 
 func TestSetConditionKeepsConditionsMutuallyExclusive(t *testing.T) {
 	warmup := &modelv1alpha1.ModelWarmup{}
-	setCondition(warmup, "Complete", metav1.ConditionTrue, "Complete", "done")
-	setCondition(warmup, "Degraded", metav1.ConditionTrue, "Failed", "failed")
+	now := time.Now()
+	setCondition(warmup, "Complete", metav1.ConditionTrue, "Complete", "done", now)
+	setCondition(warmup, "Degraded", metav1.ConditionTrue, "Failed", "failed", now)
 
 	require.Len(t, warmup.Status.Conditions, 3)
 	for _, condition := range warmup.Status.Conditions {
@@ -410,7 +547,8 @@ func TestUpdateStatusPreservesJobFailureDiagnostics(t *testing.T) {
 	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(warmup).WithObjects(warmup, job).Build()}
 	targets := testResolvedTargets(map[string][]string{"node-a": {"target[0]"}})
-	_, err := r.updateStatus(context.Background(), warmup, "rev", targets, nil, "", "")
+	_, err := r.updateStatus(context.Background(), warmup, "rev", targets, nil,
+		[]batchv1.Job{*job}, []batchv1.Job{*job}, "", "")
 	require.NoError(t, err)
 	require.Equal(t, "BackoffLimitExceeded", warmup.Status.Targets[0].Reason)
 	require.Equal(t, "image pull failed", warmup.Status.Targets[0].Message)
@@ -585,11 +723,9 @@ func TestJobNameSeparatesWarmupsWithTheSameTruncatedPrefix(t *testing.T) {
 }
 
 func TestCleanupStaleJobsDeletesRunningAndKeepsCompleted(t *testing.T) {
-	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
-		Name: "warmup", Namespace: "default", UID: "warmup-uid",
-	}}
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
 	running := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{Name: "running", Namespace: "default",
+		ObjectMeta: metav1.ObjectMeta{Name: "running", Namespace: warmup.Namespace,
 			Labels:          map[string]string{WarmupLabelKey: string(warmup.UID), RevisionLabelKey: "old"},
 			OwnerReferences: []metav1.OwnerReference{controllerOwnerReference(warmup)}},
 		Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{NodeName: "node-a"}}},
@@ -603,36 +739,35 @@ func TestCleanupStaleJobsDeletesRunningAndKeepsCompleted(t *testing.T) {
 	retrying := running.DeepCopy()
 	retrying.Name = "retrying"
 	retrying.Status.Failed = 1
-	scheme := runtime.NewScheme()
-	require.NoError(t, batchv1.AddToScheme(scheme))
-	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(running, completed, retrying).Build()}
-	targets := testResolvedTargets(map[string][]string{"node-b": {"target[0]"}})
-	require.NoError(t, r.cleanupStaleJobs(context.Background(), warmup, "new", targets))
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes, running, completed, retrying)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+
+	require.NoError(t, err)
 	require.Error(t, r.Get(context.Background(), client.ObjectKeyFromObject(running), &batchv1.Job{}))
 	require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(completed), &batchv1.Job{}))
 	require.Error(t, r.Get(context.Background(), client.ObjectKeyFromObject(retrying), &batchv1.Job{}))
-	err := r.Get(context.Background(), client.ObjectKeyFromObject(running), &batchv1.Job{})
+	err = r.Get(context.Background(), client.ObjectKeyFromObject(running), &batchv1.Job{})
 	require.Error(t, err)
 	require.True(t, apierrors.IsNotFound(err))
+	require.Zero(t, counting.createCalls, "deleted active stale jobs consume this round's capacity")
 }
 
 func TestCleanupStaleJobsNeverDeletesForeignLabeledJobs(t *testing.T) {
-	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
-		Name: "warmup", Namespace: "default", UID: "warmup-uid",
-	}}
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
 	foreign := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
-		Name: "foreign", Namespace: "default",
+		Name: "foreign", Namespace: warmup.Namespace,
 		Labels: map[string]string{WarmupLabelKey: string(warmup.UID), RevisionLabelKey: "old"},
 		OwnerReferences: []metav1.OwnerReference{{
 			UID: "foreign-uid", Controller: ptr.To(true),
 		}},
 	}}
-	scheme := runtime.NewScheme()
-	require.NoError(t, batchv1.AddToScheme(scheme))
-	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(foreign).Build()}
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes, foreign)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
 
-	require.NoError(t, r.cleanupStaleJobs(context.Background(), warmup, "new", nil))
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+	require.NoError(t, err)
 	require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(foreign), &batchv1.Job{}))
 }
 
@@ -657,15 +792,17 @@ func TestRetryingJobRemainsActiveUntilTerminalFailure(t *testing.T) {
 	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(warmup).WithObjects(warmup, job).Build()}
 
-	active, err := r.activeJobs(context.Background(), warmup, "rev")
-	require.NoError(t, err)
-	require.Equal(t, int32(1), active)
-	_, err = r.updateStatus(
+	targets := testResolvedTargets(map[string][]string{"node-a": {"target[0]"}})
+	snapshot := buildReconcileSnapshot(warmup, "rev", targets, nil, []batchv1.Job{*job})
+	require.Equal(t, int32(1), snapshot.ActiveJobs)
+	_, err := r.updateStatus(
 		context.Background(),
 		warmup,
 		"rev",
-		testResolvedTargets(map[string][]string{"node-a": {"target[0]"}}),
+		targets,
 		nil,
+		snapshot.jobsForStatus(nil),
+		[]batchv1.Job{*job},
 		"",
 		"",
 	)
@@ -686,14 +823,15 @@ func TestActiveJobsIgnoresForeignLabeledJobs(t *testing.T) {
 	foreign := owned.DeepCopy()
 	foreign.Name = "foreign"
 	foreign.OwnerReferences = []metav1.OwnerReference{{UID: "foreign-uid", Controller: ptr.To(true)}}
-	scheme := runtime.NewScheme()
-	require.NoError(t, batchv1.AddToScheme(scheme))
-	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(owned, foreign).Build()}
 
-	active, err := r.activeJobs(context.Background(), warmup, "rev")
-	require.NoError(t, err)
-	require.Equal(t, int32(1), active)
+	snapshot := buildReconcileSnapshot(
+		warmup,
+		"rev",
+		testResolvedTargets(map[string][]string{"node-a": {"target[0]"}}),
+		nil,
+		[]batchv1.Job{*owned, *foreign},
+	)
+	require.Equal(t, int32(1), snapshot.ActiveJobs)
 }
 
 func TestUpdateStatusWaitsWhenSelectorResolvesNoTargets(t *testing.T) {
@@ -706,7 +844,7 @@ func TestUpdateStatusWaitsWhenSelectorResolvesNoTargets(t *testing.T) {
 	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(warmup).WithObjects(warmup).Build()}
 
-	_, err := r.updateStatus(context.Background(), warmup, "rev", nil, nil, "", "")
+	_, err := r.updateStatus(context.Background(), warmup, "rev", nil, nil, nil, nil, "", "")
 	require.NoError(t, err)
 	require.Equal(t, modelv1alpha1.ModelWarmupPending, warmup.Status.Phase)
 	require.Nil(t, warmup.Status.CompletionTime)
@@ -726,10 +864,10 @@ func TestUpdateStatusPreservesAndUpdatesTargetTransitionTime(t *testing.T) {
 	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(warmup).WithObjects(warmup).Build()}
 	targets := testResolvedTargets(map[string][]string{"node-a": {"target[0]"}})
-	_, err := r.updateStatus(context.Background(), warmup, "rev", targets, nil, "", "")
+	_, err := r.updateStatus(context.Background(), warmup, "rev", targets, nil, nil, nil, "", "")
 	require.NoError(t, err)
 	first := *warmup.Status.Targets[0].LastTransitionTime
-	_, err = r.updateStatus(context.Background(), warmup, "rev", targets, nil, "", "")
+	_, err = r.updateStatus(context.Background(), warmup, "rev", targets, nil, nil, nil, "", "")
 	require.NoError(t, err)
 	require.Equal(t, first, *warmup.Status.Targets[0].LastTransitionTime)
 	require.Equal(t, metav1.ConditionFalse, mustCondition(warmup.Status.Conditions, "Complete").Status)
@@ -744,7 +882,8 @@ func TestUpdateStatusPreservesAndUpdatesTargetTransitionTime(t *testing.T) {
 		}}},
 	}
 	require.NoError(t, r.Create(context.Background(), job))
-	_, err = r.updateStatus(context.Background(), warmup, "rev", targets, nil, "", "")
+	_, err = r.updateStatus(context.Background(), warmup, "rev", targets, nil,
+		[]batchv1.Job{*job}, []batchv1.Job{*job}, "", "")
 	require.NoError(t, err)
 	require.Empty(t, warmup.Status.Targets)
 	require.Equal(t, metav1.ConditionTrue, mustCondition(warmup.Status.Conditions, "Complete").Status)
@@ -768,7 +907,7 @@ func TestUpdateStatusBoundsDetailsAndSerializedSize(t *testing.T) {
 		missing[fmt.Sprintf("node-%04d", i)] = "NodeNotFound"
 	}
 
-	_, err := r.updateStatus(context.Background(), warmup, "rev", nil, missing, "", "")
+	_, err := r.updateStatus(context.Background(), warmup, "rev", nil, missing, nil, nil, "", "")
 	require.NoError(t, err)
 	require.Len(t, warmup.Status.Targets, modelv1alpha1.MaxModelWarmupTargetDetails)
 	require.EqualValues(t, modelv1alpha1.MaxModelWarmupTargets-modelv1alpha1.MaxModelWarmupTargetDetails,
@@ -805,7 +944,7 @@ func TestUpdateStatusRetainsFailedDetailsBeforePendingWhenTruncated(t *testing.T
 	}
 
 	_, err := r.updateStatus(context.Background(), warmup, "rev", targets,
-		map[string]string{"zzz-failed": "NodeNotFound"}, "", "")
+		map[string]string{"zzz-failed": "NodeNotFound"}, nil, nil, "", "")
 	require.NoError(t, err)
 	require.EqualValues(t, modelv1alpha1.MaxModelWarmupTargetDetails+1, warmup.Status.DesiredNodes)
 	require.Equal(t, int32(1), warmup.Status.FailedNodes)
@@ -884,4 +1023,138 @@ func mustCondition(conditions []metav1.Condition, typ string) metav1.Condition {
 
 func controllerOwnerReference(warmup *modelv1alpha1.ModelWarmup) metav1.OwnerReference {
 	return metav1.OwnerReference{UID: warmup.UID, Controller: ptr.To(true)}
+}
+
+type countingModelWarmupClient struct {
+	client.Client
+	modelWarmupGets int
+	namespaceGets   int
+	jobGets         int
+	nodeLists       int
+	jobLists        int
+	createCalls     int
+	statusUpdates   int
+	statusUpdateErr error
+}
+
+func newCountingModelWarmupClient(
+	scheme *runtime.Scheme,
+	warmup *modelv1alpha1.ModelWarmup,
+	namespace *corev1.Namespace,
+	nodes []corev1.Node,
+	extra ...client.Object,
+) *countingModelWarmupClient {
+	objects := make([]client.Object, 0, 2+len(nodes)+len(extra))
+	objects = append(objects, warmup, namespace)
+	for i := range nodes {
+		objects = append(objects, &nodes[i])
+	}
+	objects = append(objects, extra...)
+	base := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(warmup, &batchv1.Job{}).
+		WithObjects(objects...).Build()
+	return &countingModelWarmupClient{Client: base}
+}
+
+func (c *countingModelWarmupClient) Get(
+	ctx context.Context,
+	key client.ObjectKey,
+	obj client.Object,
+	opts ...client.GetOption,
+) error {
+	switch obj.(type) {
+	case *modelv1alpha1.ModelWarmup:
+		c.modelWarmupGets++
+	case *corev1.Namespace:
+		c.namespaceGets++
+	case *batchv1.Job:
+		c.jobGets++
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+func (c *countingModelWarmupClient) List(
+	ctx context.Context,
+	list client.ObjectList,
+	opts ...client.ListOption,
+) error {
+	switch list.(type) {
+	case *corev1.NodeList:
+		c.nodeLists++
+	case *batchv1.JobList:
+		c.jobLists++
+	}
+	return c.Client.List(ctx, list, opts...)
+}
+
+func (c *countingModelWarmupClient) Status() client.SubResourceWriter {
+	return &countingStatusWriter{SubResourceWriter: c.Client.Status(), client: c}
+}
+
+func (c *countingModelWarmupClient) Create(
+	ctx context.Context,
+	obj client.Object,
+	opts ...client.CreateOption,
+) error {
+	c.createCalls++
+	return c.Client.Create(ctx, obj, opts...)
+}
+
+type countingStatusWriter struct {
+	client.SubResourceWriter
+	client *countingModelWarmupClient
+}
+
+func (w *countingStatusWriter) Update(
+	ctx context.Context,
+	obj client.Object,
+	opts ...client.SubResourceUpdateOption,
+) error {
+	w.client.statusUpdates++
+	if w.client.statusUpdateErr != nil {
+		return w.client.statusUpdateErr
+	}
+	return w.SubResourceWriter.Update(ctx, obj, opts...)
+}
+
+func reconcileTestObjects(
+	t *testing.T,
+	nodeCount int,
+) (*modelv1alpha1.ModelWarmup, *corev1.Namespace, []corev1.Node, *runtime.Scheme) {
+	t.Helper()
+	warmup := validWarmupForControllerTest("tenant", "warmup")
+	warmup.UID = "warmup-uid"
+	warmup.Spec.Policies = &modelv1alpha1.ModelWarmupPolicies{Parallelism: ptr.To[int32](1)}
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: warmup.Namespace,
+		Labels: map[string]string{
+			ResourcePoolLabelKey: "warm",
+		},
+	}}
+	nodes := make([]corev1.Node, 0, nodeCount)
+	for i := 0; i < nodeCount; i++ {
+		name := fmt.Sprintf("node-%03d", i)
+		if i == 0 {
+			name = "node-a"
+		}
+		nodes = append(nodes, corev1.Node{ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			UID:  types.UID("uid-" + name),
+			Labels: map[string]string{
+				"group":               "all",
+				ResourcePoolLabelKey:  "warm",
+				WarmupEnabledLabelKey: WarmupEnabledLabelValue,
+			},
+		}})
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, modelv1alpha1.AddToScheme(scheme))
+	require.NoError(t, batchv1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	return warmup, namespace, nodes, scheme
+}
+
+func reconcileOnce(r *ModelWarmupReconciler, request ctrl.Request) error {
+	_, err := r.Reconcile(context.Background(), request)
+	return err
 }

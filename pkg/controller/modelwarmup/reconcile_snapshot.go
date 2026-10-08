@@ -22,6 +22,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
@@ -42,6 +43,10 @@ type reconcileSnapshot struct {
 	StaleActiveJobs []batchv1.Job
 	ActiveJobs      int32
 	MissingNodes    []string
+}
+
+func modelWarmupStatusEqual(left, right modelv1alpha1.ModelWarmupStatus) bool {
+	return apiequality.Semantic.DeepEqual(left, right)
 }
 
 func buildReconcileSnapshot(

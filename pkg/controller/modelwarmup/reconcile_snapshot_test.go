@@ -19,6 +19,7 @@ package modelwarmup
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	batchv1 "k8s.io/api/batch/v1"
@@ -127,6 +128,18 @@ func TestReconcileSnapshotJobsForStatusIncludesCreatedJobs(t *testing.T) {
 	jobs := snapshot.jobsForStatus([]*batchv1.Job{created})
 
 	require.ElementsMatch(t, []batchv1.Job{*existing, *created}, jobs)
+}
+
+func TestModelWarmupStatusEqualUsesKubernetesSemanticEquality(t *testing.T) {
+	instant := time.Date(2026, time.October, 8, 9, 0, 0, 0, time.UTC)
+	leftTime := metav1.NewTime(instant)
+	rightTime := metav1.NewTime(instant.In(time.FixedZone("UTC+8", 8*60*60)))
+	left := modelv1alpha1.ModelWarmupStatus{StartTime: &leftTime}
+	right := modelv1alpha1.ModelWarmupStatus{StartTime: &rightTime}
+
+	require.True(t, modelWarmupStatusEqual(left, right))
+	right.Phase = modelv1alpha1.ModelWarmupRunning
+	require.False(t, modelWarmupStatusEqual(left, right))
 }
 
 func snapshotWarmup() *modelv1alpha1.ModelWarmup {
