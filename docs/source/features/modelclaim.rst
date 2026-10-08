@@ -260,8 +260,8 @@ Do not set ``--gpu-memory-utilization``. kvcached owns elastic KV-cache
 allocation, and the ModelClaim path rejects that flag. Data parallelism is not
 supported; ``--data-parallel-size`` must remain 1.
 
-Configure TP and PP pools
--------------------------
+Configure TP, PP, and PCP pools
+-------------------------------
 
 ModelClaim uses a deliberately simple fixed-topology rule for vLLM:
 
@@ -269,6 +269,11 @@ ModelClaim uses a deliberately simple fixed-topology rule for vLLM:
 
    tensor-parallel-size * pipeline-parallel-size * prefill-context-parallel-size
      == GPUs visible to the warm runtime Pod
+
+Decode context parallelism (DCP) reuses ranks already counted by this topology,
+so ``--decode-context-parallel-size`` does not increase the Pod GPU count.
+ModelClaim ignores this flag when sizing the pool; vLLM validates its DCP
+configuration when the engine starts.
 
 For a TP=2 model, create a separate pool whose Pods each request two GPUs, then
 use:

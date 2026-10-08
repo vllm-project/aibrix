@@ -51,11 +51,6 @@ func vllmParallelism(config *modelv1alpha1.ModelClaimEngineConfig) (int64, error
 	if err != nil {
 		return 0, err
 	}
-	// DCP reuses ranks from the TP/PCP topology, so validate it without
-	// including it in the fixed GPU group size.
-	if _, err := positiveEngineArg(args, "--decode-context-parallel-size"); err != nil {
-		return 0, err
-	}
 	data, err := positiveEngineArg(args, "--data-parallel-size")
 	if err != nil {
 		return 0, err

@@ -43,10 +43,10 @@ func TestVLLMParallelismIncludesPrefillContextParallelism(t *testing.T) {
 			want: 8,
 		},
 		{
-			name: "decode context reuses existing ranks",
+			name: "decode context is ignored for GPU sizing",
 			args: map[string]string{
 				"--tensor-parallel-size":         "4",
-				"--decode-context-parallel-size": "2",
+				"--decode-context-parallel-size": "not-a-number",
 			},
 			want: 4,
 		},
@@ -61,19 +61,12 @@ func TestVLLMParallelismIncludesPrefillContextParallelism(t *testing.T) {
 	}
 }
 
-func TestVLLMParallelismRejectsInvalidContextParallelism(t *testing.T) {
-	for _, name := range []string{
-		"--prefill-context-parallel-size",
-		"--decode-context-parallel-size",
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, err := vllmParallelism(&modelv1alpha1.ModelClaimEngineConfig{
-				Args: map[string]string{name: "0"},
-			})
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), name+" must be a positive integer")
-		})
-	}
+func TestVLLMParallelismRejectsInvalidPrefillContextParallelism(t *testing.T) {
+	_, err := vllmParallelism(&modelv1alpha1.ModelClaimEngineConfig{
+		Args: map[string]string{"--prefill-context-parallel-size": "0"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--prefill-context-parallel-size must be a positive integer")
 }
 
 func TestVLLMParallelismRejectsPrefillContextOverflow(t *testing.T) {

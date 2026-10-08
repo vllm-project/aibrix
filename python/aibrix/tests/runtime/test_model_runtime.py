@@ -381,12 +381,29 @@ def test_vllm_parallelism_defaults_and_combines_tp_pp_pcp():
                     "--tensor-parallel-size": "2",
                     "--pipeline-parallel-size": "2",
                     "--prefill-context-parallel-size": "2",
-                    "--decode-context-parallel-size": "4",
+                    "--decode-context-parallel-size": "2",
                 }
             },
             None,
         )
         == 8
+    )
+
+
+def test_vllm_parallelism_ignores_decode_context_for_gpu_sizing():
+    from aibrix.runtime.model_runtime import vllm_parallelism
+
+    assert (
+        vllm_parallelism(
+            {
+                "args": {
+                    "--tensor-parallel-size": "4",
+                    "--decode-context-parallel-size": "not-a-number",
+                }
+            },
+            None,
+        )
+        == 4
     )
 
 
@@ -396,7 +413,6 @@ def test_vllm_parallelism_defaults_and_combines_tp_pp_pcp():
         {"--tensor-parallel-size": "0"},
         {"--pipeline-parallel-size": "not-a-number"},
         {"--prefill-context-parallel-size": "0"},
-        {"--decode-context-parallel-size": "not-a-number"},
         {"--data-parallel-size": "2"},
     ],
 )
