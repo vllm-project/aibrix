@@ -64,7 +64,8 @@ You need:
 * an existing Kubernetes cluster with NVIDIA GPUs and the NVIDIA device
   plugin;
 * the latest AIBrix nightly control plane from the ``main`` branch;
-* a kvcached-compatible image for the selected engine;
+* the published kvcached runtime image for vLLM, or your own build on
+  another base image;
 * enough host memory for vLLM sleep level 1 and enough ``/dev/shm`` capacity
   for kvcached metadata and IPC;
 * a node-local or otherwise persistent model-weight cache;
@@ -95,15 +96,20 @@ Nightly tags are mutable. For a repeatable experiment, record the AIBrix
 commit and resolved controller and gateway image digests together with the
 runtime image digest.
 
-Build the experimental runtime image
-------------------------------------
+Get the runtime image
+---------------------
 
-Only the kvcached runtime agent image needs a feature-specific build. Its
-dedicated target is intentionally not part of ``docker-build-all``,
-``docker-push-all``, or the public nightly image workflow.
+The warm pool runs the kvcached runtime image. CI builds it on every push to
+``main`` and publishes it on Docker Hub as ``aibrix/kvcached-runtime:nightly``,
+also tagged with the commit's full SHA. It is not part of AIBrix releases. The
+image adds the AIBrix runtime agent to
+``ghcr.io/ovg-project/kvcached-vllm:kvcached-v0.1.6-vllm-v0.30.0``, which
+provides vLLM and kvcached. It is built for ``linux/amd64`` only. The warm-pool
+sample uses the nightly image, so no build is needed.
 
-Use the same current ``main`` checkout used by the nightly installation. Build
-the image and push it to a registry accessible from the cluster:
+To use another base image, for example an older kvcached-vLLM release, build
+the runtime image yourself from the same ``main`` checkout as the control
+plane, and push it to a registry that the cluster can reach:
 
 .. code-block:: bash
 
@@ -111,30 +117,19 @@ the image and push it to a registry accessible from the cluster:
    cd aibrix
 
    export AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/your-organization/aibrix
+   export KVCACHED_RUNTIME_BASE_IMAGE=ghcr.io/ovg-project/kvcached-vllm:kvcached-v0.1.5-vllm-v0.19.0
    export IMAGE_TAG="$(git rev-parse HEAD)"
 
    IS_MAIN_BRANCH=false make docker-build-kvcached-runtime
    IS_MAIN_BRANCH=false make docker-push-kvcached-runtime
 
-``KVCACHED_RUNTIME_BASE_IMAGE`` defaults to
-``ghcr.io/ovg-project/kvcached-vllm:latest``. Pin it to a tested digest or tag
-for a reproducible deployment:
+Then set the image in the warm-pool manifest to
+``${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/kvcached-runtime:${IMAGE_TAG}``.
 
-.. code-block:: bash
-
-   KVCACHED_RUNTIME_BASE_IMAGE=ghcr.io/ovg-project/kvcached-vllm@sha256:<digest> \
-   IMAGE_TAG=modelclaim-test IS_MAIN_BRANCH=false \
-     make docker-build-kvcached-runtime
-
-The default base image contains vLLM. The runtime launcher also has an SGLang
-path, but using ``engine: sglang`` requires a custom base image that contains a
-compatible SGLang and kvcached integration. Automatic idle sleep currently
-applies only to vLLM.
-
-Update the warm-pool manifest to use
-``${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/kvcached-runtime:${IMAGE_TAG}``. Keep
-the runtime source revision aligned with the nightly control plane revision
-used for the test.
+``KVCACHED_RUNTIME_BASE_IMAGE`` defaults to the base of the published image.
+The runtime launcher also has an SGLang path, but using ``engine: sglang``
+requires a base image that contains a compatible SGLang and kvcached
+integration. Automatic idle sleep currently applies only to vLLM.
 
 Create a warm runtime pool
 --------------------------
@@ -158,8 +153,8 @@ Before applying it, review these fields:
    Troubleshooting, only while it carries both labels.
 
 ``image``
-   Replace ``aibrix/kvcached-runtime:dev`` when using a remote registry or a
-   pinned image.
+   The sample uses ``aibrix/kvcached-runtime:nightly``. To pin the runtime,
+   replace the tag with a full commit SHA, or use your own build.
 
 ``nvidia.com/gpu``
    Defines the fixed topology for this pool. Every Pod in one pool should
@@ -345,7 +340,8 @@ A pool from before ``perGPU`` is moved over in this order:
 
 1. Apply the new CRD. An older CRD drops ``perGPU`` from a claim that is
    applied, and ``helm upgrade`` does not replace a CRD.
-2. Rebuild the runtime image from the same revision, and roll the warm pools.
+2. Update the warm pools to the runtime image of the same revision, for
+   example the one tagged with that commit's full SHA.
    A runtime from before ``perGPU`` does not report what a card can hold. No
    claim is placed on its Pods, and the refusal says that the runtime is older
    than the controller. Engines that already run keep their routes.

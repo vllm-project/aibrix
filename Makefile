@@ -5,7 +5,7 @@ IMAGE_TAG ?= ${GIT_COMMIT_HASH}  # Use git commit hash as default image tag
 # Image URL to use all building/pushing image targets
 AIBRIX_CONTAINER_REGISTRY_NAMESPACE ?= aibrix
 DOCKERFILE_PATH ?= build/container
-KVCACHED_RUNTIME_BASE_IMAGE ?= ghcr.io/ovg-project/kvcached-vllm:latest
+KVCACHED_RUNTIME_BASE_IMAGE ?= ghcr.io/ovg-project/kvcached-vllm:kvcached-v0.1.6-vllm-v0.30.0
 IMAGES := controller-manager gateway-plugins runtime metadata-service
 AIBRIX_IMAGES := $(foreach img,$(IMAGES),$(AIBRIX_CONTAINER_REGISTRY_NAMESPACE)/$(img):nightly)
 
