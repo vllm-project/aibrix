@@ -31,20 +31,27 @@ limitations under the License.
 //
 // The watchdog gives that wait a deadline, in two phases:
 //
-//   - First response: once the prefill leg succeeded and while nothing has come
-//     back from the decode pod, the stream fails the request after a per-mode
-//     timeout. Nothing is armed before the prefill leg succeeds: the prefill
-//     call has its own timeout, and its failure is fail-fast's.
-//   - Stream idle: once the decode pod has started answering, every message
-//     from it pushes the deadline out by AIBRIX_DECODE_STREAM_IDLE_TIMEOUT, so
+//   - First response: once the prefill leg succeeded and until the first
+//     response body chunk comes back from the decode pod, the stream fails the
+//     request after a per-mode timeout. Nothing is armed before the prefill leg
+//     succeeds: the prefill call has its own timeout, and its failure is
+//     fail-fast's.
+//   - Stream idle (streaming requests only): from the first chunk on, every
+//     chunk pushes the deadline out by AIBRIX_DECODE_STREAM_IDLE_TIMEOUT, so
 //     only a stream that goes silent mid-generation is killed.
 //
-// The budget depends on what the first message from the decode pod means. On a
-// streaming request it is the first token, so AIBRIX_DECODE_FIRST_RESPONSE_-
-// TIMEOUT measures time-to-first-token and 60s is generous. On a non-streaming
-// request the engine sends the response headers only once the whole generation
-// is finished, so the same wait is the entire decode; that mode has its own
-// AIBRIX_DECODE_RESPONSE_TIMEOUT, off by default.
+// The first phase ends on a body chunk, not on the response headers, because
+// the headers say nothing about the first token. SGLang serves a streaming
+// completion as a Starlette StreamingResponse, which sends the headers before
+// it starts iterating the generator; a decode pod that wedges before its first
+// token still delivers them. On a streaming request the first chunk is the
+// first token, so AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT measures time-to-first-
+// token and 60s is generous - the same instant the gateway's
+// llm.time_to_first_response_chunk span ends on. On a non-streaming request the
+// engine answers only once the whole generation is finished, so the same wait
+// is the entire decode; that mode has its own AIBRIX_DECODE_RESPONSE_TIMEOUT,
+// off by default. Once its body arrives there is nothing left to be idle
+// between, so stream idle is not armed for it.
 //
 // The watchdog is armed only for a request that carries a gateway-owned rid
 // (leg.RID() != ""), i.e. only for SGLang PD. Every other stream selects on
@@ -86,10 +93,10 @@ const (
 // The routers own an http.Client because they also send the prefill leg; the
 // gateway Server has none, and the abort is the only outbound call the stream
 // side makes, so one package-level client with the routers' pooling settings
-// is enough. Its Timeout is only a backstop: every abort carries its own
-// AIBRIX_DECODE_ABORT_TIMEOUT deadline.
+// is enough. Like the routers' client it sets no Timeout: every abort carries
+// its own AIBRIX_DECODE_ABORT_TIMEOUT deadline on the request context, and a
+// client-level Timeout would silently cap a longer per-profile value.
 var decodeAbortClient = &http.Client{
-	Timeout: 30 * time.Second,
 	Transport: &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
@@ -101,7 +108,7 @@ var decodeAbortClient = &http.Client{
 // stream; a non-positive value disables it.
 //
 // The two modes are not the same measurement, so they cannot share a number:
-// for a streaming response the first ext_proc message is the first token, for a
+// for a streaming response the first body chunk is the first token, for a
 // non-streaming one it is the finished answer.
 func (st *processState) decodeFirstMessageTimeout() time.Duration {
 	watchdog := st.routerCtx.PDOverrides().Watchdog
@@ -116,7 +123,7 @@ func (st *processState) decodeFirstMessageTimeout() time.Duration {
 //
 // It is recomputed from the leg on every pass of the loop rather than kept as
 // state, so every event that changes the answer - the prefill leg succeeding,
-// the decode pod's first message, every later chunk, the response completing -
+// the decode pod's first chunk, every later chunk, the response completing -
 // re-arms or disarms the timer by construction, with no separate bookkeeping to
 // keep in sync.
 func (st *processState) decodeWatchdogDeadline() (time.Time, string) {
@@ -127,7 +134,9 @@ func (st *processState) decodeWatchdogDeadline() (time.Time, string) {
 		return time.Time{}, ""
 	}
 
-	if !leg.DecodeResponded() {
+	last := leg.LastDecodeChunk()
+	if last.IsZero() {
+		// No body chunk yet, whether or not the headers already came back.
 		succeededAt := leg.PrefillSucceededAt()
 		timeout := st.decodeFirstMessageTimeout()
 		if succeededAt.IsZero() || timeout <= 0 {
@@ -137,16 +146,8 @@ func (st *processState) decodeWatchdogDeadline() (time.Time, string) {
 	}
 
 	timeout := st.routerCtx.PDOverrides().Watchdog.StreamIdleTimeout
-	if timeout <= 0 {
+	if !st.stream || timeout <= 0 {
 		return time.Time{}, ""
-	}
-	last := leg.LastActivity()
-	if last.IsZero() {
-		// MarkActivity runs next to MarkDecodeResponded on every response
-		// message, so this is only reachable when something marked the leg
-		// directly. Measure from now: the alternative, an epoch-zero deadline,
-		// would fire the watchdog instantly on a healthy stream.
-		last = time.Now()
 	}
 	return last.Add(timeout), decodeWatchdogPhaseStreamIdle
 }
@@ -191,15 +192,16 @@ func (st *processState) stopDecodeWatchdog() {
 // this PD request has stopped talking. It aborts the decode leg, fails the
 // client and returns the error that ends the ext_proc stream.
 //
-// The two phases differ only in what the client can still be told:
+// What the client can still be told depends on whether the decode pod's
+// response headers already went downstream, not on the phase:
 //
-//   - First response: nothing has been written to the client yet, so the
-//     gateway answers it the same way a prefill fail-fast does - an
+//   - Nothing sent yet (first response, before the headers): the gateway
+//     answers the client the same way a prefill fail-fast does - an
 //     ImmediateResponse with 504 and the usual OpenAI-shaped body, then a gRPC
 //     error close. See failStreamOnPrefillFailure for why both are sent.
-//   - Stream idle: the decode pod already wrote headers (and possibly chunks)
-//     to the client, so an ImmediateResponse cannot replace a response that is
-//     half-delivered. The stream is closed with codes.DeadlineExceeded instead:
+//   - Headers sent (first response after the headers, or stream idle): an
+//     ImmediateResponse cannot replace a response whose status line is already
+//     on its way. The stream is closed with codes.DeadlineExceeded instead:
 //     with failure_mode_allow: false, which is what the Envoy configuration in
 //     this repo uses, a failed ext_proc stream makes Envoy reset the downstream
 //     and the upstream connection. The client sees a truncated response and a
@@ -209,9 +211,11 @@ func (s *Server) handleDecodeWatchdog(srv extProcPb.ExternalProcessor_ProcessSer
 	leg := st.routerCtx.PDLeg()
 	decodeAddr, decodePod := leg.DecodeTarget()
 
+	headersSent := leg.DecodeResponded()
+
 	trigger := pd.AbortTriggerWatchdogStreamIdle
 	timeout := st.routerCtx.PDOverrides().Watchdog.StreamIdleTimeout
-	elapsed := time.Since(leg.LastActivity())
+	elapsed := time.Since(leg.LastDecodeChunk())
 	if phase == decodeWatchdogPhaseFirstResponse {
 		trigger = pd.AbortTriggerWatchdogFirstResponse
 		timeout = st.decodeFirstMessageTimeout()
@@ -226,7 +230,8 @@ func (s *Server) handleDecodeWatchdog(srv extProcPb.ExternalProcessor_ProcessSer
 		"phase", phase,
 		"elapsed", elapsed,
 		"timeout", timeout,
-		"stream", st.stream)
+		"stream", st.stream,
+		"headers_sent", headersSent)
 
 	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: st.model}, nil,
 		metrics.GatewayPDDecodeWatchdogTotal, &metrics.SimpleMetricValue{Value: 1.0},
@@ -238,7 +243,7 @@ func (s *Server) handleDecodeWatchdog(srv extProcPb.ExternalProcessor_ProcessSer
 	// stream ends.
 	pd.AbortDecodeLegOnWatchdog(decodeAbortClient, leg, st.requestID, st.model, trigger)
 
-	if phase == decodeWatchdogPhaseFirstResponse {
+	if !headersSent {
 		// What the missing message was: a first token on a streaming request,
 		// the finished answer on a non-streaming one. The phase label stays
 		// first_response either way, and the log line already carries "stream".
@@ -255,10 +260,13 @@ func (s *Server) handleDecodeWatchdog(srv extProcPb.ExternalProcessor_ProcessSer
 			status.Errorf(codes.DeadlineExceeded, "pd decode leg sent nothing within %s", timeout))
 	}
 
-	// Stream idle: the response is already on its way to the client, so there
-	// is nothing to send - only the same terminal bookkeeping every failed
-	// stream does, and the close that resets both connections.
+	// The response is already on its way to the client, so there is nothing to
+	// send - only the same terminal bookkeeping every failed stream does, and
+	// the close that resets both connections.
 	s.emitStreamFailureCounters(st, envoyTypePb.StatusCode_GatewayTimeout, decodeWatchdogStatus)
 	s.finishRequestCount(st)
+	if phase == decodeWatchdogPhaseFirstResponse {
+		return status.Errorf(codes.DeadlineExceeded, "pd decode leg sent headers but no body within %s", timeout)
+	}
 	return status.Errorf(codes.DeadlineExceeded, "pd decode leg stopped sending for %s", timeout)
 }

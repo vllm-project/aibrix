@@ -507,11 +507,11 @@ func (s *Server) processOnce(srv extProcPb.ExternalProcessor_ProcessServer, st *
 	}
 
 	// And the watchdog itself, recomputed from the leg on every pass so that
-	// the decode pod's first message and the completed response disarm it. A
-	// nil channel when nothing is armed - the non-PD case, and every PD request
+	// every chunk from the decode pod moves it and the completed response
+	// disarms it. A nil channel when nothing is armed - the non-PD case, and every PD request
 	// before its prefill leg has finished.
 	var decodeWatchdog <-chan time.Time
-	deadline, phase := st.decodeWatchdogDeadline()
+	deadline, _ := st.decodeWatchdogDeadline()
 	if deadline.IsZero() {
 		st.stopDecodeWatchdog()
 	} else {
@@ -575,11 +575,13 @@ func (s *Server) processOnce(srv extProcPb.ExternalProcessor_ProcessServer, st *
 			// that fired between Stop() and its (non-blocking) drain on an
 			// earlier pass would otherwise kill a healthy stream early; here
 			// it costs one extra pass of the loop, which re-arms for the
-			// remaining time.
-			if fresh, _ := st.decodeWatchdogDeadline(); fresh.IsZero() || time.Now().Before(fresh) {
+			// remaining time. The phase is taken from the same recheck, so
+			// the kill is reported for the deadline that actually expired.
+			fresh, freshPhase := st.decodeWatchdogDeadline()
+			if fresh.IsZero() || time.Now().Before(fresh) {
 				return nil
 			}
-			return s.handleDecodeWatchdog(srv, st, phase)
+			return s.handleDecodeWatchdog(srv, st, freshPhase)
 		}
 	case <-s.shutdownCh:
 		if st.model != "" {
@@ -714,9 +716,6 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		// failure must not abort it, and must not fail a stream the client is
 		// already being served on.
 		st.routerCtx.MarkDecodeResponded()
-		// Also the decode watchdog's activity clock: from here it watches for
-		// silence between messages rather than for a first response at all.
-		st.routerCtx.MarkActivity()
 		resp, st.isRespError, st.respErrorCode = s.HandleResponseHeaders(st.ctx, st.routerCtx, st.requestID, st.model, req)
 		st.lastRespHeaders = resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
 		if st.isRespError {
@@ -730,8 +729,11 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		// configured without the response-header callback delivers body chunks
 		// as the first sign of life from the decode pod.
 		st.routerCtx.MarkDecodeResponded()
-		// Every chunk re-arms the decode watchdog's stream-idle deadline.
-		st.routerCtx.MarkActivity()
+		// The decode watchdog's clock. Headers alone do not stop the first-
+		// response phase, since an engine can flush them before its first
+		// token; the first chunk does, and every chunk after it re-arms the
+		// stream-idle deadline.
+		st.routerCtx.MarkDecodeChunk()
 		// Stop collecting on the first response body chunk.
 		if st.firstRespSpan != nil {
 			st.firstRespSpan.End()

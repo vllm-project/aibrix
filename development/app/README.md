@@ -168,6 +168,13 @@ first chunk, i.e. a pod that started answering and then went silent. It has
 the same 30 second limit, invalid values return HTTP 400, and
 `x-aibrix-mock-delay-role` scopes it to one leg in the same way.
 
+`x-aibrix-mock-first-token-stall-ms` holds a streaming chat completion after its
+response headers and before its first chunk, i.e. a pod that accepted the
+request and never produced a token. This is the shape a real streaming engine
+shows the gateway: an ASGI `StreamingResponse` sends its headers before it
+starts iterating the body. Same limit, validation and role scoping as the
+stream stall.
+
 `POST /abort_request` mocks the SGLang endpoint the gateway calls on the decode
 pod when a PD prefill leg failed. It takes `{"rid": "..."}`, answers `200`, and
 records the abort under that rid so a test can assert which request the gateway

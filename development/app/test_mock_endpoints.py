@@ -682,6 +682,40 @@ def test_stream_stall_holds_the_stream_after_its_first_chunk(monkeypatch):
     response.close()
 
 
+def test_first_token_stall_holds_the_stream_before_its_first_chunk(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+    events = []
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: events.append(("sleep", seconds)))
+
+    response = client.post(
+        "/v1/chat/completions",
+        data=json.dumps({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        }).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "X-Request-ID": "first-token-stall",
+            "X-Aibrix-Mock-First-Token-Stall-Ms": "1500",
+        },
+        buffered=False,
+    )
+
+    # The status line and headers are out before anything is generated.
+    assert response.status_code == 200
+    assert response.mimetype == "text/event-stream"
+    assert events == []
+    chunks = response.iter_encoded()
+    assert next(chunks) == b""
+    assert events == []
+    first = next(chunks)
+    assert events[0] == ("sleep", 1.5), "the stall must come before the first chunk"
+    assert b'"role": "assistant"' in first
+    response.close()
+
+
 def test_legacy_omni_image_and_audio_shapes_remain_available(monkeypatch):
     module = load_mock_module(monkeypatch)
     client = module.app.test_client()

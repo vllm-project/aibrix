@@ -818,6 +818,7 @@ def _recorded_completion(path):
                 fault = parse_fault_headers(request.headers, role)
                 g._aibrix_completion_delay_ms = fault.delay_ms
                 g._aibrix_stream_stall_ms = fault.stream_stall_ms
+                g._aibrix_first_token_stall_ms = fault.first_token_stall_ms
                 if fault.validation_status_code != 200:
                     return make_response(
                         create_error_response(
@@ -930,6 +931,7 @@ def _recorded_completion(path):
             g._aibrix_completion_payload = None
             g._aibrix_completion_delay_ms = 0
             g._aibrix_stream_stall_ms = 0
+            g._aibrix_first_token_stall_ms = 0
             contract, role, engine = _mock_pd_config()
             request_id = request.headers.get("X-Request-ID")
 
@@ -1425,6 +1427,7 @@ def chat_completions():
         if stream:
             # Read in the request context; the generator runs after it is gone.
             stream_stall_ms = g.get("_aibrix_stream_stall_ms", 0)
+            first_token_stall_ms = g.get("_aibrix_first_token_stall_ms", 0)
 
             def generate():
                 completion_id = "chatcmpl-" + "".join(
@@ -1433,6 +1436,13 @@ def chat_completions():
                         k=20,
                     )
                 )
+
+                # x-aibrix-mock-first-token-stall-ms: the response headers go
+                # out, then the pod goes silent before its first chunk. The
+                # empty yield is what makes the server flush the headers.
+                if first_token_stall_ms:
+                    yield ""
+                    time.sleep(first_token_stall_ms / 1000.0)
 
                 # First chunk with role
                 role_chunk = {

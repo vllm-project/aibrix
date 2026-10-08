@@ -32,21 +32,23 @@ import (
 
 const (
 	// defaultDecodeFirstResponseTimeout bounds, for a streaming request, the
-	// wait for the decode pod's first message after the prefill leg succeeded.
+	// wait for the decode pod's first token - its first response body chunk -
+	// after the prefill leg succeeded.
 	// Generous: it has to cover a decode pod that is merely queued behind a
 	// long batch, not one that is dead.
 	defaultDecodeFirstResponseTimeout = 60
 
 	// defaultDecodeResponseTimeout is 0, i.e. the watchdog is off for
-	// non-streaming requests. There the first message from the decode pod is
+	// non-streaming requests. There the first body chunk from the decode pod is
 	// the finished answer, so the budget has to cover a whole generation, whose
 	// length is set by the caller's max_tokens and the pod's throughput. Any
 	// default would kill somebody's legitimate long answer.
 	defaultDecodeResponseTimeout = 0
 
-	// defaultDecodeStreamIdleTimeout bounds the gap between two messages from a
-	// decode pod that has started answering. A healthy stream sends a chunk per
-	// token or per few tokens, so a gap of minutes means the pod is stuck.
+	// defaultDecodeStreamIdleTimeout bounds the gap between two body chunks of
+	// a streaming response once the first one arrived. A healthy stream sends a
+	// chunk per token or per few tokens, so a gap of minutes means the pod is
+	// stuck.
 	defaultDecodeStreamIdleTimeout = 120
 )
 
@@ -55,13 +57,14 @@ const (
 // label of gateway_pd_decode_abort_total - because a counter's label set is
 // fixed at registration and that counter predates the watchdog.
 const (
-	// AbortTriggerWatchdogFirstResponse: the decode pod sent nothing after the
-	// prefill leg succeeded (AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT, or
-	// AIBRIX_DECODE_RESPONSE_TIMEOUT for a non-streaming request).
+	// AbortTriggerWatchdogFirstResponse: the decode pod sent no response body
+	// after the prefill leg succeeded, whether or not it sent headers
+	// (AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT, or AIBRIX_DECODE_RESPONSE_TIMEOUT
+	// for a non-streaming request).
 	AbortTriggerWatchdogFirstResponse = "watchdog_first_response"
 
-	// AbortTriggerWatchdogStreamIdle: the decode pod started answering and then
-	// went silent for AIBRIX_DECODE_STREAM_IDLE_TIMEOUT.
+	// AbortTriggerWatchdogStreamIdle: the decode pod started streaming tokens
+	// and then went silent for AIBRIX_DECODE_STREAM_IDLE_TIMEOUT.
 	AbortTriggerWatchdogStreamIdle = "watchdog_stream_idle"
 )
 

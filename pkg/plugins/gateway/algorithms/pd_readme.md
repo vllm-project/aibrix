@@ -534,22 +534,26 @@ Prefill leg succeeds (async worker)
                                                         │
                                   arm a timer: FIRST_RESPONSE (stream) / RESPONSE (non-stream)
                                                         │
-          decode response headers arrive ──► switch to  │
-          every later message ──► re-arm   STREAM_IDLE  │
+          response headers ──► no change (sent before the first token)
+          first body chunk ──► switch to STREAM_IDLE    │ (streaming only)
+          every later chunk ──► re-arm STREAM_IDLE      │
                                                         ▼ timer fires
-             before the first message:  504 ImmediateResponse, header x-error-pd-decode: true
-                                        + gRPC DeadlineExceeded close
-             after it (stream idle):    gRPC DeadlineExceeded close only (Envoy resets
-                                        the half-delivered response)
-             both:                      POST /abort_request {"rid": ...} to decode (goroutine, once)
+             before any headers:  504 ImmediateResponse, header x-error-pd-decode: true
+                                  + gRPC DeadlineExceeded close
+             after the headers:   gRPC DeadlineExceeded close only (Envoy resets
+                                  the response the client already started reading)
+             always:              POST /abort_request {"rid": ...} to decode (goroutine, once)
 ```
 
 The watchdog runs only for requests with a gateway-owned `rid` (SGLang). Its
 timeouts are `AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT` (streaming, default `60`) and
 `AIBRIX_DECODE_RESPONSE_TIMEOUT` (non-streaming, default `0`, i.e. off, since the
 decode pod only answers a non-streaming request once the whole generation is
-done). Once the decode pod has answered, `AIBRIX_DECODE_STREAM_IDLE_TIMEOUT`
-(default `120`) bounds the gap between two of its messages.
+done). Both run until the first response body chunk: SGLang's streaming
+endpoint sends its headers before the first token, so the headers prove nothing.
+From the first chunk of a streaming response on,
+`AIBRIX_DECODE_STREAM_IDLE_TIMEOUT` (default `120`) bounds the gap between two
+chunks.
 
 ---
 
@@ -720,9 +724,9 @@ Metrics: `pd_bucket_serve_band_total` and `pd_bucket_serve_prompt_tokens_total` 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT` | `60` | Seconds a streaming SGLang request waits, after its prefill leg succeeded, for the first message from the decode pod. `0` disables |
-| `AIBRIX_DECODE_RESPONSE_TIMEOUT` | `0` | Same for a non-streaming request, where the first message is the finished answer. `0` (default) disables |
-| `AIBRIX_DECODE_STREAM_IDLE_TIMEOUT` | `120` | Longest gap allowed between two messages once the decode pod has started answering. `0` disables |
+| `AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT` | `60` | Seconds a streaming SGLang request waits, after its prefill leg succeeded, for the first response body chunk (first token) from the decode pod. `0` disables |
+| `AIBRIX_DECODE_RESPONSE_TIMEOUT` | `0` | Same for a non-streaming request, where the first body chunk is the finished answer. `0` (default) disables |
+| `AIBRIX_DECODE_STREAM_IDLE_TIMEOUT` | `120` | Longest gap allowed between two body chunks of a streaming response once the first one arrived. `0` disables |
 
 ### TensorRT-LLM
 

@@ -132,11 +132,13 @@ type PDLegState struct {
 	// MarkPrefillSucceeded call wins the CAS on prefillSucceededNanos.
 	prefillSucceeded chan struct{}
 
-	// lastActivityNanos is the last time anything came back from the decode pod
-	// (response headers, a body chunk), as unix nanoseconds, or 0 when nothing
-	// has. It is the origin of the decode watchdog's stream-idle deadline, so
-	// it is refreshed on every message rather than only on the first one.
-	lastActivityNanos atomic.Int64
+	// lastChunkNanos is when the decode pod last sent a response body chunk, as
+	// unix nanoseconds, or 0 while it has sent none. Response headers do not
+	// count: a streaming engine can flush them as soon as it accepts the
+	// request, before it has produced a token. So 0 means the decode watchdog is
+	// still in its first-response phase, and from the first chunk on this is
+	// the origin of the stream-idle deadline, refreshed on every chunk.
+	lastChunkNanos atomic.Int64
 
 	// decodeTarget is where the decode leg of this request was sent, captured
 	// on the request path by the PD router. The prefill goroutine needs it to
@@ -415,10 +417,10 @@ func (l *PDLegState) PrefillSucceededAt() time.Time {
 	return time.Unix(0, nanos)
 }
 
-// MarkActivity records that something came back from the decode pod just now.
-// Called for every ext_proc response message, so it is deliberately a single
-// atomic store.
-func (l *PDLegState) MarkActivity() {
+// MarkDecodeChunk records that a response body chunk came back from the decode
+// pod just now. Called for every chunk, so it is deliberately a single atomic
+// store.
+func (l *PDLegState) MarkDecodeChunk() {
 	if l == nil {
 		return
 	}
@@ -426,16 +428,16 @@ func (l *PDLegState) MarkActivity() {
 	if at == 0 {
 		at = 1
 	}
-	l.lastActivityNanos.Store(at)
+	l.lastChunkNanos.Store(at)
 }
 
-// LastActivity returns when the decode pod last sent anything, or the zero time
-// when it never has.
-func (l *PDLegState) LastActivity() time.Time {
+// LastDecodeChunk returns when the decode pod last sent a response body chunk,
+// or the zero time when it has sent none.
+func (l *PDLegState) LastDecodeChunk() time.Time {
 	if l == nil {
 		return time.Time{}
 	}
-	nanos := l.lastActivityNanos.Load()
+	nanos := l.lastChunkNanos.Load()
 	if nanos == 0 {
 		return time.Time{}
 	}
@@ -571,16 +573,16 @@ func (r *RoutingContext) PrefillSucceededAt() time.Time {
 	return r.PDLeg().PrefillSucceededAt()
 }
 
-// MarkActivity records that the decode pod of the current incarnation sent
-// something just now. Nil-safe, like every other leg accessor.
-func (r *RoutingContext) MarkActivity() {
-	r.PDLeg().MarkActivity()
+// MarkDecodeChunk records that the decode pod of the current incarnation sent a
+// response body chunk just now. Nil-safe, like every other leg accessor.
+func (r *RoutingContext) MarkDecodeChunk() {
+	r.PDLeg().MarkDecodeChunk()
 }
 
-// LastActivity returns when the decode pod of the current incarnation last sent
-// anything, or the zero time.
-func (r *RoutingContext) LastActivity() time.Time {
-	return r.PDLeg().LastActivity()
+// LastDecodeChunk returns when the decode pod of the current incarnation last
+// sent a response body chunk, or the zero time.
+func (r *RoutingContext) LastDecodeChunk() time.Time {
+	return r.PDLeg().LastDecodeChunk()
 }
 
 // SetDecodeTarget records where the decode leg of this request was sent.

@@ -62,6 +62,9 @@ class FaultParseResult(NamedTuple):
     metadata: FrozenDict
     # Milliseconds a streaming response is held after its first chunk.
     stream_stall_ms: int = 0
+    # Milliseconds a streaming response is held after its headers, before its
+    # first chunk.
+    first_token_stall_ms: int = 0
 
 
 def parse_fault_headers(headers, role):
@@ -97,29 +100,37 @@ def parse_fault_headers(headers, role):
             )
 
     # x-aibrix-mock-stream-stall-ms holds a streaming response after its first
-    # chunk, i.e. a pod that started answering and then went silent. Same bounds
-    # as the delay.
-    stall_value = normalized_headers.get("x-aibrix-mock-stream-stall-ms")
-    if "x-aibrix-mock-stream-stall-ms" not in normalized_headers:
-        stream_stall_ms = 0
-    else:
+    # chunk, i.e. a pod that started answering and then went silent.
+    # x-aibrix-mock-first-token-stall-ms holds it after its headers and before
+    # its first chunk, i.e. a pod that accepted the request and never produced a
+    # token: an ASGI streaming response sends its headers before it starts
+    # iterating the body. Same bounds as the delay.
+    stalls = {}
+    for header in ("x-aibrix-mock-stream-stall-ms", "x-aibrix-mock-first-token-stall-ms"):
+        if header not in normalized_headers:
+            stalls[header] = 0
+            continue
+        stall_value = normalized_headers[header]
         try:
-            stream_stall_ms = int(stall_value)
+            stall_ms = int(stall_value)
         except (TypeError, ValueError):
-            stream_stall_ms = -1
+            stall_ms = -1
         if (
             isinstance(stall_value, bool)
-            or str(stall_value) != str(stream_stall_ms)
-            or not 0 <= stream_stall_ms <= MAX_FAULT_DELAY_MS
+            or str(stall_value) != str(stall_ms)
+            or not 0 <= stall_ms <= MAX_FAULT_DELAY_MS
         ):
             return FaultParseResult(
                 delay_ms=0,
                 injected_status_code=None,
                 validation_status_code=400,
-                metadata=FrozenDict(error="invalid x-aibrix-mock-stream-stall-ms"),
+                metadata=FrozenDict(error=f"invalid {header}"),
             )
+        stalls[header] = stall_ms
+    stream_stall_ms = stalls["x-aibrix-mock-stream-stall-ms"]
+    first_token_stall_ms = stalls["x-aibrix-mock-first-token-stall-ms"]
 
-    # x-aibrix-mock-delay-role scopes the delay and the stall to one PD leg.
+    # x-aibrix-mock-delay-role scopes the delay and the stalls to one PD leg.
     # Without it they apply to whichever leg receives the request, which is both
     # of them for a disaggregated request: the gateway forwards client headers
     # to the prefill and the decode pod alike.
@@ -135,6 +146,7 @@ def parse_fault_headers(headers, role):
         if delay_role != role:
             delay_ms = 0
             stream_stall_ms = 0
+            first_token_stall_ms = 0
 
     fail_value = normalized_headers.get("x-aibrix-mock-fail")
     fail_matches = (
@@ -148,6 +160,7 @@ def parse_fault_headers(headers, role):
         validation_status_code=200,
         metadata=FrozenDict(),
         stream_stall_ms=stream_stall_ms,
+        first_token_stall_ms=first_token_stall_ms,
     )
 
 
