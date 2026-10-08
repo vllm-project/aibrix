@@ -7,7 +7,7 @@ spec:
   modelName: qwen3-0.6b
   podSelector:
     matchLabels:
-      pool.aibrix.ai/name: b300-pool-a
+      claim.model.aibrix.ai/pool: b300-pool-a
   artifactURL: huggingface://Qwen/Qwen3-0.6B
   engine: vllm
   replicas: 1
@@ -28,7 +28,7 @@ spec:
   modelName: qwen2.5-0.5b
   podSelector:
     matchLabels:
-      pool.aibrix.ai/name: b300-pool-a
+      claim.model.aibrix.ai/pool: b300-pool-a
   artifactURL: huggingface://Qwen/Qwen2.5-0.5B-Instruct
   engine: vllm
   replicas: 1

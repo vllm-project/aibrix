@@ -245,8 +245,8 @@ msgid "Before applying it, review these fields:"
 msgstr "应用前请检查以下字段："
 
 #: ../../source/features/modelclaim.rst:150
-msgid "``pool.aibrix.ai/name``"
-msgstr "``pool.aibrix.ai/name``"
+msgid "``claim.model.aibrix.ai/pool``"
+msgstr "``claim.model.aibrix.ai/pool``"
 
 #: ../../source/features/modelclaim.rst:151
 msgid ""
@@ -255,8 +255,8 @@ msgid ""
 msgstr "ModelClaim 选择的逻辑池。请将该标签同时打在 Deployment 和 Pod 模板上。"
 
 #: ../../source/features/modelclaim.rst:154
-msgid "``pool.aibrix.ai/enabled: \"true\"``"
-msgstr "``pool.aibrix.ai/enabled: \"true\"``"
+msgid "``claim.model.aibrix.ai/enabled: \"true\"``"
+msgstr "``claim.model.aibrix.ai/enabled: \"true\"``"
 
 #: ../../source/features/modelclaim.rst:155
 msgid ""
@@ -795,10 +795,10 @@ msgstr "Claim 一直处于 ``Scheduling`` 且候选为零"
 #: ../../source/features/modelclaim.rst:481
 msgid ""
 "Confirm that the Pod is Running, has a Pod IP, matches ``podSelector``, "
-"and has ``pool.aibrix.ai/enabled: \"true\"``. For vLLM, confirm that TP "
+"and has ``claim.model.aibrix.ai/enabled: \"true\"``. For vLLM, confirm that TP "
 "times PP exactly matches the Pod-visible GPU count."
 msgstr ""
-"确认 Pod 处于 Running、有 Pod IP、匹配 ``podSelector`` ，且带有 ``pool.aibrix.ai/enabled: "
+"确认 Pod 处于 Running、有 Pod IP、匹配 ``podSelector`` ，且带有 ``claim.model.aibrix.ai/enabled: "
 "\"true\"`` 。对于 vLLM，确认 TP 乘以 PP 恰好等于 Pod 可见 GPU 数量。"
 
 #: ../../source/features/modelclaim.rst:485

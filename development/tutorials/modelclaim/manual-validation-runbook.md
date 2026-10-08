@@ -209,7 +209,7 @@ curl -fsS localhost:8080/v1/runtime/snapshot \
 kubectl get modelclaims -o yaml >"$EVIDENCE/modelclaims-active.yaml"
 kubectl get pod "$POD" -o json \
   | tee "$EVIDENCE/warm-pod-active.json" \
-  | jq '.metadata.annotations | with_entries(select(.key | startswith("modelclaim.aibrix.ai/")))'
+  | jq '.metadata.annotations | with_entries(select(.key | startswith("route.claim.model.aibrix.ai/")))'
 kubectl exec "$POD" -c aibrix-runtime -- \
   cat /var/run/aibrix/engines.json \
   | tee "$EVIDENCE/registry-active.json" | jq .
@@ -269,7 +269,7 @@ spec:
   modelName: invalid-replicas
   podSelector:
     matchLabels:
-      pool.aibrix.ai/name: b300-pool-a
+      claim.model.aibrix.ai/pool: b300-pool-a
   artifactURL: huggingface://Qwen/Qwen3-0.6B
   engine: vllm
   perGPU:
@@ -292,7 +292,7 @@ spec:
   modelName: invalid-fixed-kv
   podSelector:
     matchLabels:
-      pool.aibrix.ai/name: b300-pool-a
+      claim.model.aibrix.ai/pool: b300-pool-a
   artifactURL: huggingface://Qwen/Qwen3-0.6B
   engine: vllm
   perGPU:
@@ -322,7 +322,7 @@ spec:
   modelName: invalid-topology
   podSelector:
     matchLabels:
-      pool.aibrix.ai/name: b300-pool-a
+      claim.model.aibrix.ai/pool: b300-pool-a
   artifactURL: huggingface://Qwen/Qwen3-0.6B
   engine: vllm
   perGPU:
@@ -422,7 +422,7 @@ Enable reclaim without lifecycle actions:
 
 ```bash
 kubectl annotate deployment/warm-runtime-pool-b300 \
-  'pool.aibrix.ai/policy={"reclaim":{"mode":"kv-first","capacityBytes":4294967296,"guaranteedFloorPercent":20}}' \
+  'claim.model.aibrix.ai/pool-policy={"reclaim":{"mode":"kv-first","capacityBytes":4294967296,"guaranteedFloorPercent":20}}' \
   --overwrite
 ```
 
@@ -505,7 +505,7 @@ Enable the lifecycle sibling. Keep Qwen2.5 active while Qwen3 is idle:
 POLICY='{"reclaim":{"mode":"kv-first","capacityBytes":4294967296,'
 POLICY+='"guaranteedFloorPercent":20},"lifecycle":{"sleepAfterSeconds":60}}'
 kubectl annotate deployment/warm-runtime-pool-b300 \
-  "pool.aibrix.ai/policy=$POLICY" --overwrite
+  "claim.model.aibrix.ai/pool-policy=$POLICY" --overwrite
 
 (
   while true; do
@@ -527,7 +527,7 @@ kubectl wait --for=jsonpath='{.status.phase}'=Sleeping \
 curl -fsS localhost:8080/v1/runtime/snapshot \
   | tee "$EVIDENCE/snapshot-sleeping.json" | jq .
 kubectl get pod "$POD" -o json \
-  | jq '.metadata.annotations["modelclaim.aibrix.ai/qwen3-0-6b"]'
+  | jq '.metadata.annotations["route.claim.model.aibrix.ai/qwen3-0-6b"]'
 kubectl exec "$POD" -c aibrix-runtime -- \
   nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader \
   >"$EVIDENCE/process-hbm-after-sleep.txt"
@@ -595,7 +595,7 @@ Disable automatic sleep while injecting faults, ensure both claims are
 
 ```bash
 kubectl annotate deployment/warm-runtime-pool-b300 \
-  'pool.aibrix.ai/policy={"reclaim":{"mode":"kv-first","capacityBytes":4294967296,"guaranteedFloorPercent":20}}' \
+  'claim.model.aibrix.ai/pool-policy={"reclaim":{"mode":"kv-first","capacityBytes":4294967296,"guaranteedFloorPercent":20}}' \
   --overwrite
 kubectl wait --for=jsonpath='{.status.phase}'=Active \
   modelclaim/qwen3-0-6b --timeout=5m

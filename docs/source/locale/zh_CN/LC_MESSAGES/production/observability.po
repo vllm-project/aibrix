@@ -120,11 +120,11 @@ msgid ""
 "`/metrics` endpoint. Services must be labeled ``aibrix.ai/metrics: "
 "modelclaim-runtime`` (see ``samples/modelclaim/warm-runtime-pool.yaml``)."
 " The monitor attaches a bounded ``pool`` label from "
-"``pool.aibrix.ai/name``."
+"``claim.model.aibrix.ai/pool``."
 msgstr ""
 "**ModelClaim Runtime** - 抓取 warm-pool `aibrix-runtime` sidecar 的 `/metrics` "
 "端点。Service 必须带有标签 ``aibrix.ai/metrics: modelclaim-runtime`` （参见 ``samples/modelclaim/warm-runtime-pool.yaml`` "
-"）。该 monitor 会从 ``pool.aibrix.ai/name`` 附加有界的 ``pool`` 标签。"
+"）。该 monitor 会从 ``claim.model.aibrix.ai/pool`` 附加有界的 ``pool`` 标签。"
 
 #: ../../source/production/observability.rst:66
 msgid "Import Grafana Dashboard"

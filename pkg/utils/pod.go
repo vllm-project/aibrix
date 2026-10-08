@@ -398,9 +398,9 @@ type ModelClaimBinding struct {
 	Reason string
 }
 
-// ModelClaimBindingsFromPod parses modelclaim.aibrix.ai/* annotations on a
-// warm runtime pod. State is additive: legacy annotations infer active from a
-// positive port and activating from port 0.
+// ModelClaimBindingsFromPod parses route.claim.model.aibrix.ai/* annotations
+// on a warm runtime pod. State is additive: legacy annotations infer active
+// from a positive port and activating from port 0.
 func ModelClaimBindingsFromPod(pod *v1.Pod) map[string]ModelClaimBinding {
 	if pod == nil || len(pod.Annotations) == 0 {
 		return nil

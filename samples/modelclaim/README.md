@@ -111,7 +111,7 @@ Inspect the routing annotations written by the controller:
 ```bash
 kubectl -n "$NAMESPACE" get pod "$POD" -o json \
   | jq '.metadata.annotations
-      | with_entries(select(.key | startswith("modelclaim.aibrix.ai/")))'
+      | with_entries(select(.key | startswith("route.claim.model.aibrix.ai/")))'
 ```
 
 An active entry has the served model name, a non-zero engine port, and
@@ -338,7 +338,7 @@ kubectl -n "$NAMESPACE" get pod "$POD" --show-labels
 ```
 
 The Pod must match the claim's `podSelector` and have
-`pool.aibrix.ai/enabled: "true"`.
+`claim.model.aibrix.ai/enabled: "true"`.
 
 Then read the claim's `Scheduled` condition, which says why it waits:
 
@@ -411,5 +411,5 @@ Confirm that the sample resources are gone:
 ```bash
 kubectl -n "$NAMESPACE" get modelclaims
 kubectl -n "$NAMESPACE" get deployment,service \
-  -l pool.aibrix.ai/name=b300-pool-a
+  -l claim.model.aibrix.ai/pool=b300-pool-a
 ```

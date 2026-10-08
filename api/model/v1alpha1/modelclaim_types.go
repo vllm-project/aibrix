@@ -44,8 +44,8 @@ type ModelClaimSpec struct {
 	ModelName *string `json:"modelName,omitempty"`
 
 	// PodSelector is a label query selecting the warm GPU pods this model may be
-	// attached to. It typically matches `pool.aibrix.ai/name=<pool>`. Candidate
-	// pods must also advertise the enabled warm-pool label.
+	// attached to. It typically matches `claim.model.aibrix.ai/pool=<pool>`.
+	// Candidate pods must also advertise the enabled warm-pool label.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="podSelector is immutable; create a new ModelClaim instead"
 	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
@@ -265,6 +265,7 @@ const (
 // +kubebuilder:printcolumn:name="Engine",type=string,JSONPath=`.spec.engine`
 // +kubebuilder:printcolumn:name="Artifact",type=string,JSONPath=`.spec.artifactURL`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.size() <= 63",message="name must be at most 63 characters, since it is part of an annotation key on the warm-pool Pod"
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // ModelClaim is the Schema for the modelclaims API.
