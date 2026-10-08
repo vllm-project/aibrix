@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"sort"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -32,6 +33,69 @@ type resolvedTarget struct {
 	NodeName string
 	NodeUID  types.UID
 	Sources  []string
+}
+
+type reconcileSnapshot struct {
+	Targets         map[string]resolvedTarget
+	Missing         map[string]string
+	JobsByNode      map[string]batchv1.Job
+	StaleActiveJobs []batchv1.Job
+	ActiveJobs      int32
+	MissingNodes    []string
+}
+
+func buildReconcileSnapshot(
+	w *modelv1alpha1.ModelWarmup,
+	revision string,
+	targets map[string]resolvedTarget,
+	missing map[string]string,
+	jobs []batchv1.Job,
+) reconcileSnapshot {
+	snapshot := reconcileSnapshot{
+		Targets:    targets,
+		Missing:    missing,
+		JobsByNode: make(map[string]batchv1.Job),
+	}
+	for i := range jobs {
+		job := &jobs[i]
+		if !metav1.IsControlledBy(job, w) {
+			continue
+		}
+		node := targetNodeForJob(job)
+		_, targetExists := targets[node]
+		currentRevision := job.Labels[RevisionLabelKey] == revision
+		terminal := isJobComplete(job) || isJobFailed(job)
+
+		if currentRevision && targetExists {
+			snapshot.JobsByNode[node] = *job
+		}
+		if !terminal && (!currentRevision || !targetExists) {
+			snapshot.StaleActiveJobs = append(snapshot.StaleActiveJobs, *job)
+		}
+		if job.DeletionTimestamp == nil && !terminal {
+			snapshot.ActiveJobs++
+		}
+	}
+	for node := range targets {
+		if _, exists := snapshot.JobsByNode[node]; !exists {
+			snapshot.MissingNodes = append(snapshot.MissingNodes, node)
+		}
+	}
+	sort.Strings(snapshot.MissingNodes)
+	return snapshot
+}
+
+func (s reconcileSnapshot) jobsForStatus(created []*batchv1.Job) []batchv1.Job {
+	jobs := make([]batchv1.Job, 0, len(s.JobsByNode)+len(created))
+	for _, job := range s.JobsByNode {
+		jobs = append(jobs, job)
+	}
+	for _, job := range created {
+		if job != nil {
+			jobs = append(jobs, *job)
+		}
+	}
+	return jobs
 }
 
 func resolveTargetsFromNodes(

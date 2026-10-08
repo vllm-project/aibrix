@@ -17,15 +17,183 @@ limitations under the License.
 package modelwarmup
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 )
+
+func TestBuildReconcileSnapshotIndexesOwnedJobs(t *testing.T) {
+	warmup := snapshotWarmup()
+	targets := testResolvedTargets(map[string][]string{
+		"node-a": {"target[0]"},
+		"node-b": {"target[0]"},
+	})
+	running := snapshotJob(warmup, "running", "node-a", "rev")
+	completed := snapshotJob(warmup, "completed", "node-b", "rev")
+	completed.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+
+	snapshot := buildReconcileSnapshot(warmup, "rev", targets, nil, []batchv1.Job{*running, *completed})
+
+	require.Equal(t, targets, snapshot.Targets)
+	require.Empty(t, snapshot.Missing)
+	require.Equal(t, map[string]batchv1.Job{
+		"node-a": *running,
+		"node-b": *completed,
+	}, snapshot.JobsByNode)
+	require.Empty(t, snapshot.StaleActiveJobs)
+	require.Equal(t, int32(1), snapshot.ActiveJobs)
+	require.Empty(t, snapshot.MissingNodes)
+}
+
+func TestBuildReconcileSnapshotIgnoresForeignLabeledJobs(t *testing.T) {
+	warmup := snapshotWarmup()
+	targets := testResolvedTargets(map[string][]string{"node-a": {"target[0]"}})
+	foreign := snapshotJob(warmup, "foreign", "node-a", "rev")
+	foreign.OwnerReferences = []metav1.OwnerReference{{UID: "different-warmup", Controller: ptr.To(true)}}
+
+	snapshot := buildReconcileSnapshot(warmup, "rev", targets, nil, []batchv1.Job{*foreign})
+
+	require.Empty(t, snapshot.JobsByNode)
+	require.Empty(t, snapshot.StaleActiveJobs)
+	require.Zero(t, snapshot.ActiveJobs)
+	require.Equal(t, []string{"node-a"}, snapshot.MissingNodes)
+}
+
+func TestBuildReconcileSnapshotClassifiesStaleActiveJobs(t *testing.T) {
+	warmup := snapshotWarmup()
+	targets := testResolvedTargets(map[string][]string{"node-a": {"target[0]"}})
+	oldRevision := snapshotJob(warmup, "old-revision", "node-a", "old")
+	removedTarget := snapshotJob(warmup, "removed-target", "node-b", "rev")
+
+	snapshot := buildReconcileSnapshot(warmup, "rev", targets, nil, []batchv1.Job{*oldRevision, *removedTarget})
+
+	require.Empty(t, snapshot.JobsByNode)
+	require.Equal(t, []batchv1.Job{*oldRevision, *removedTarget}, snapshot.StaleActiveJobs)
+	require.Equal(t, int32(2), snapshot.ActiveJobs)
+	require.Equal(t, []string{"node-a"}, snapshot.MissingNodes)
+}
+
+func TestBuildReconcileSnapshotPreservesTerminalStaleJobs(t *testing.T) {
+	warmup := snapshotWarmup()
+	targets := testResolvedTargets(map[string][]string{"node-a": {"target[0]"}})
+	completed := snapshotJob(warmup, "old-completed", "node-a", "old")
+	completed.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	failed := snapshotJob(warmup, "removed-failed", "node-b", "rev")
+	failed.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: corev1.ConditionTrue}}
+
+	snapshot := buildReconcileSnapshot(warmup, "rev", targets, nil, []batchv1.Job{*completed, *failed})
+
+	require.Empty(t, snapshot.JobsByNode)
+	require.Empty(t, snapshot.StaleActiveJobs)
+	require.Zero(t, snapshot.ActiveJobs)
+	require.Equal(t, []string{"node-a"}, snapshot.MissingNodes)
+}
+
+func TestBuildReconcileSnapshotCalculatesMissingNodesAndCapacity(t *testing.T) {
+	warmup := snapshotWarmup()
+	targets := testResolvedTargets(map[string][]string{
+		"node-a": {"target[0]"},
+		"node-b": {"target[0]"},
+		"node-c": {"target[0]"},
+		"node-e": {"target[0]"},
+	})
+	running := snapshotJob(warmup, "running", "node-a", "rev")
+	completed := snapshotJob(warmup, "completed", "node-b", "rev")
+	completed.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	stale := snapshotJob(warmup, "stale", "node-d", "old")
+
+	snapshot := buildReconcileSnapshot(warmup, "rev", targets, map[string]string{"missing-node": "NodeNotFound"}, []batchv1.Job{*running, *completed, *stale})
+
+	require.Equal(t, map[string]string{"missing-node": "NodeNotFound"}, snapshot.Missing)
+	require.Equal(t, []string{"node-c", "node-e"}, snapshot.MissingNodes)
+	require.Equal(t, []batchv1.Job{*stale}, snapshot.StaleActiveJobs)
+	require.Equal(t, int32(2), snapshot.ActiveJobs)
+}
+
+func TestReconcileSnapshotJobsForStatusIncludesCreatedJobs(t *testing.T) {
+	warmup := snapshotWarmup()
+	existing := snapshotJob(warmup, "existing", "node-a", "rev")
+	created := snapshotJob(warmup, "created", "node-b", "rev")
+	snapshot := reconcileSnapshot{JobsByNode: map[string]batchv1.Job{"node-a": *existing}}
+
+	jobs := snapshot.jobsForStatus([]*batchv1.Job{created})
+
+	require.ElementsMatch(t, []batchv1.Job{*existing, *created}, jobs)
+}
+
+func snapshotWarmup() *modelv1alpha1.ModelWarmup {
+	return &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
+		Name: "warmup", Namespace: "default", UID: "warmup-uid",
+	}}
+}
+
+func snapshotJob(warmup *modelv1alpha1.ModelWarmup, name, node, revision string) *batchv1.Job {
+	return &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+		Name: name,
+		Labels: map[string]string{
+			WarmupLabelKey: string(warmup.UID), RevisionLabelKey: revision,
+		},
+		Annotations:     map[string]string{TargetNodeAnnotationKey: node},
+		OwnerReferences: []metav1.OwnerReference{{UID: warmup.UID, Controller: ptr.To(true)}},
+	}}
+}
+
+func BenchmarkBuildReconcileSnapshot(b *testing.B) {
+	for _, benchmark := range []struct {
+		name     string
+		nodes    int
+		jobs     int
+		jobState func(*batchv1.Job, int)
+	}{
+		{name: "100-nodes-100-jobs", nodes: 100, jobs: 100},
+		{name: "1000-nodes-0-jobs", nodes: 1000},
+		{name: "1000-nodes-1000-completed-jobs", nodes: 1000, jobs: 1000, jobState: func(job *batchv1.Job, _ int) {
+			job.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+		}},
+		{name: "1000-nodes-mixed-jobs", nodes: 1000, jobs: 1000, jobState: func(job *batchv1.Job, index int) {
+			switch index % 4 {
+			case 1:
+				job.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+			case 2:
+				job.Labels[RevisionLabelKey] = "old"
+			case 3:
+				job.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: corev1.ConditionTrue}}
+			}
+		}},
+	} {
+		b.Run(benchmark.name, func(b *testing.B) {
+			warmup := snapshotWarmup()
+			targets := make(map[string]resolvedTarget, benchmark.nodes)
+			jobs := make([]batchv1.Job, 0, benchmark.jobs)
+			for i := 0; i < benchmark.nodes; i++ {
+				node := fmt.Sprintf("node-%04d", i)
+				targets[node] = resolvedTarget{NodeName: node, Sources: []string{"target[0]"}}
+			}
+			for i := 0; i < benchmark.jobs; i++ {
+				node := fmt.Sprintf("node-%04d", i)
+				job := snapshotJob(warmup, fmt.Sprintf("job-%04d", i), node, "rev")
+				if benchmark.jobState != nil {
+					benchmark.jobState(job, i)
+				}
+				jobs = append(jobs, *job)
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = buildReconcileSnapshot(warmup, "rev", targets, nil, jobs)
+			}
+		})
+	}
+}
 
 func TestResolveTargetsFromNodes(t *testing.T) {
 	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
