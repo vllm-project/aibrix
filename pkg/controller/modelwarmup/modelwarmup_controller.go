@@ -198,6 +198,10 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 					return ctrl.Result{}, fmt.Errorf("job %s/%s already exists and is not controlled by ModelWarmup %s",
 						existing.Namespace, existing.Name, warmup.Name)
 				}
+				if existing.Labels[WarmupLabelKey] != string(warmup.UID) ||
+					existing.Labels[RevisionLabelKey] != revision {
+					continue
+				}
 				created = append(created, existing.DeepCopy())
 				if existing.DeletionTimestamp == nil && !isJobComplete(&existing) && !isJobFailed(&existing) {
 					active++

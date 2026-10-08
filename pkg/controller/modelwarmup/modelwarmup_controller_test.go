@@ -133,6 +133,120 @@ func TestReconcileDiagnosesForeignJobNameCollision(t *testing.T) {
 	require.Equal(t, 1, counting.jobGets)
 }
 
+func TestReconcileOwnedCollisionWithWrongWarmupLabelRemainsExcluded(t *testing.T) {
+	for name, mutateLabels := range map[string]func(*batchv1.Job){
+		"missing": func(job *batchv1.Job) { delete(job.Labels, WarmupLabelKey) },
+		"changed": func(job *batchv1.Job) { job.Labels[WarmupLabelKey] = "different-warmup" },
+	} {
+		t.Run(name+"/status-and-ttl", func(t *testing.T) {
+			warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+			revision := revisionFor(warmup)
+			collision := (&ModelWarmupReconciler{}).jobFor(warmup, nodes[0].Name, revision)
+			require.NoError(t, ctrl.SetControllerReference(warmup, collision, scheme))
+			mutateLabels(collision)
+			collision.Status.Conditions = []batchv1.JobCondition{{
+				Type: batchv1.JobComplete, Status: corev1.ConditionTrue,
+			}}
+			counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes, collision)
+			r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+			_, err := r.Reconcile(context.Background(), ctrl.Request{
+				NamespacedName: client.ObjectKeyFromObject(warmup),
+			})
+
+			require.NoError(t, err)
+			updated := &modelv1alpha1.ModelWarmup{}
+			require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+			require.Equal(t, modelv1alpha1.ModelWarmupRunning, updated.Status.Phase)
+			require.Zero(t, updated.Status.ActiveNodes)
+			require.Zero(t, updated.Status.SucceededNodes)
+			target := mustTargetStatus(updated.Status.Targets, nodes[0].Name)
+			require.Equal(t, modelv1alpha1.ModelWarmupTargetPending, target.Phase)
+			require.Empty(t, target.JobName)
+			persisted := &batchv1.Job{}
+			require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(collision), persisted))
+			require.Nil(t, persisted.Spec.TTLSecondsAfterFinished)
+		})
+
+		t.Run(name+"/capacity", func(t *testing.T) {
+			warmup, namespace, nodes, scheme := reconcileTestObjects(t, 2)
+			warmup.Spec.Targets[0].Nodes.Names = []string{nodes[0].Name, nodes[1].Name}
+			revision := revisionFor(warmup)
+			collision := (&ModelWarmupReconciler{}).jobFor(warmup, nodes[1].Name, revision)
+			require.NoError(t, ctrl.SetControllerReference(warmup, collision, scheme))
+			mutateLabels(collision)
+			counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes, collision)
+			r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+			_, err := r.Reconcile(context.Background(), ctrl.Request{
+				NamespacedName: client.ObjectKeyFromObject(warmup),
+			})
+
+			require.NoError(t, err)
+			require.Equal(t, 2, counting.createCalls, "ineligible collision must not consume capacity")
+			updated := &modelv1alpha1.ModelWarmup{}
+			require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+			require.Equal(t, int32(1), updated.Status.ActiveNodes)
+			require.Equal(t, modelv1alpha1.ModelWarmupTargetRunning,
+				mustTargetStatus(updated.Status.Targets, nodes[0].Name).Phase)
+			require.Equal(t, modelv1alpha1.ModelWarmupTargetPending,
+				mustTargetStatus(updated.Status.Targets, nodes[1].Name).Phase)
+		})
+	}
+}
+
+func TestReconcileEligibleOwnedCollisionFromCacheLagIsFoldedIn(t *testing.T) {
+	t.Run("status and ttl", func(t *testing.T) {
+		warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+		revision := revisionFor(warmup)
+		collision := (&ModelWarmupReconciler{}).jobFor(warmup, nodes[0].Name, revision)
+		require.NoError(t, ctrl.SetControllerReference(warmup, collision, scheme))
+		collision.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+		counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes, collision)
+		counting.omitJobsFromList = map[string]struct{}{collision.Name: {}}
+		r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+		_, err := r.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: client.ObjectKeyFromObject(warmup),
+		})
+
+		require.NoError(t, err)
+		updated := &modelv1alpha1.ModelWarmup{}
+		require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+		require.Equal(t, modelv1alpha1.ModelWarmupSucceeded, updated.Status.Phase)
+		require.Equal(t, int32(1), updated.Status.SucceededNodes)
+		persisted := &batchv1.Job{}
+		require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(collision), persisted))
+		require.Equal(t, ptr.To(modelv1alpha1.DefaultModelWarmupTTLSecondsAfterFinished),
+			persisted.Spec.TTLSecondsAfterFinished)
+	})
+
+	t.Run("active capacity", func(t *testing.T) {
+		warmup, namespace, nodes, scheme := reconcileTestObjects(t, 2)
+		warmup.Spec.Targets[0].Nodes.Names = []string{nodes[0].Name, nodes[1].Name}
+		revision := revisionFor(warmup)
+		collision := (&ModelWarmupReconciler{}).jobFor(warmup, nodes[1].Name, revision)
+		require.NoError(t, ctrl.SetControllerReference(warmup, collision, scheme))
+		counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes, collision)
+		counting.omitJobsFromList = map[string]struct{}{collision.Name: {}}
+		r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+		_, err := r.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: client.ObjectKeyFromObject(warmup),
+		})
+
+		require.NoError(t, err)
+		require.Equal(t, 1, counting.createCalls, "eligible active collision must consume capacity")
+		updated := &modelv1alpha1.ModelWarmup{}
+		require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+		require.Equal(t, int32(1), updated.Status.ActiveNodes)
+		require.Equal(t, modelv1alpha1.ModelWarmupTargetRunning,
+			mustTargetStatus(updated.Status.Targets, nodes[1].Name).Phase)
+		require.Equal(t, modelv1alpha1.ModelWarmupTargetPending,
+			mustTargetStatus(updated.Status.Targets, nodes[0].Name).Phase)
+	})
+}
+
 func TestReconcileUsesConstantSnapshotReads(t *testing.T) {
 	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 400)
 	warmup.Spec.Targets = []modelv1alpha1.ModelWarmupTarget{
@@ -1021,20 +1135,33 @@ func mustCondition(conditions []metav1.Condition, typ string) metav1.Condition {
 	panic("condition not found")
 }
 
+func mustTargetStatus(
+	targets []modelv1alpha1.ModelWarmupTargetStatus,
+	node string,
+) modelv1alpha1.ModelWarmupTargetStatus {
+	for _, target := range targets {
+		if target.NodeName == node {
+			return target
+		}
+	}
+	panic("target status not found")
+}
+
 func controllerOwnerReference(warmup *modelv1alpha1.ModelWarmup) metav1.OwnerReference {
 	return metav1.OwnerReference{UID: warmup.UID, Controller: ptr.To(true)}
 }
 
 type countingModelWarmupClient struct {
 	client.Client
-	modelWarmupGets int
-	namespaceGets   int
-	jobGets         int
-	nodeLists       int
-	jobLists        int
-	createCalls     int
-	statusUpdates   int
-	statusUpdateErr error
+	modelWarmupGets  int
+	namespaceGets    int
+	jobGets          int
+	nodeLists        int
+	jobLists         int
+	createCalls      int
+	statusUpdates    int
+	statusUpdateErr  error
+	omitJobsFromList map[string]struct{}
 }
 
 func newCountingModelWarmupClient(
@@ -1084,7 +1211,21 @@ func (c *countingModelWarmupClient) List(
 	case *batchv1.JobList:
 		c.jobLists++
 	}
-	return c.Client.List(ctx, list, opts...)
+	if err := c.Client.List(ctx, list, opts...); err != nil {
+		return err
+	}
+	jobs, ok := list.(*batchv1.JobList)
+	if !ok || len(c.omitJobsFromList) == 0 {
+		return nil
+	}
+	visible := jobs.Items[:0]
+	for i := range jobs.Items {
+		if _, omitted := c.omitJobsFromList[jobs.Items[i].Name]; !omitted {
+			visible = append(visible, jobs.Items[i])
+		}
+	}
+	jobs.Items = visible
+	return nil
 }
 
 func (c *countingModelWarmupClient) Status() client.SubResourceWriter {
