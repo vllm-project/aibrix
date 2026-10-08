@@ -1,65 +1,99 @@
 # AIBrix Python Services
 #
-# Unified image for all AIBrix Python services from python/aibrix/
-# Built as aibrix/runtime and tagged as aibrix/metadata-service
+# Unified source for AIBrix Python services from python/aibrix/.
 #
-# Entry points(see pyproject.yaml for details):
-#   - aibrix_runtime
-#   - aibrix_metadata
-#   - aibrix_batch_worker
-#   - aibrix_download
+# Build targets (--target):
+#   runtime          – aibrix/runtime image.  Installs only the core deps
+#                      needed by aibrix_runtime, aibrix_batch_worker,
+#                      aibrix_download, and aibrix_metadata entry points.
+#                      Heavy scientific-computing packages (numpy, pandas,
+#                      matplotlib, PuLP, Dash …) are NOT installed here.
+#   metadata-service – aibrix/metadata-service image.  Builds on top of the
+#                      shared base and additionally installs the gpu-optimizer
+#                      extra so the GPU Optimizer service can run here.
+#
+# Entry points (see pyproject.toml for details):
+#   - aibrix_runtime          (runtime target)
+#   - aibrix_metadata         (metadata-service target)
+#   - aibrix_batch_worker     (runtime target)
+#   - aibrix_download         (runtime target)
+#   - aibrix_openai_frontend  (runtime target)
 
 # There is a python upstream issue and we switch 3.11 to 3.11.11, check aibrix/issues/959 for more details.
 ARG PYTHON_VERSION=3.11.11
 ARG BASE_IMAGE=python:${PYTHON_VERSION}-slim-bookworm
 
-# Builder stage
+# ─── Builder stage ──────────────────────────────────────────────────────────
 FROM ${BASE_IMAGE} AS builder
 
 WORKDIR /app
 
 ARG POETRY_VERSION=1.8.3
 
-# Install dependencies
+# Install build dependencies
 RUN apt-get update \
     && apt-get install -y python3-dev build-essential \
     && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-    
+
 # Install Poetry
 RUN python3 -m pip install poetry==${POETRY_VERSION}
 
-# Copy the runtime source
+# Copy the source files required by Poetry
 COPY python/aibrix/poetry.lock python/aibrix/pyproject.toml python/aibrix/ /app/
 
-# Install dependencies and build package
-# Exclude profiling group to avoid installing transformers, pandas, matplotlib, etc.
-# The installer runs serially: Poetry uninstalls and reinstalls on every update,
-# and with parallel installs two updates can race on a `.dist-info` directory
-# the other one just removed (python-poetry/poetry#8159).
+# Build the wheel that will be installed in the final stages.
+# Exclude the profiling and dev groups; the gpu-optimizer extra is not
+# installed by default. The installer runs serially: Poetry uninstalls and
+# reinstalls on every update, and with parallel installs two updates can race
+# on a .dist-info directory the other one just removed (python-poetry/poetry#8159).
 RUN poetry config virtualenvs.create false \
     && poetry config installer.parallel false \
     && poetry install --no-interaction --without profiling --without dev \
     && poetry build -f wheel
 
-# Final stage
-FROM ${BASE_IMAGE}
+# ─── Runtime base stage (no GPU optimizer deps) ─────────────────────────────
+FROM ${BASE_IMAGE} AS runtime-base
 
 WORKDIR /app
 
 COPY --from=builder /app/dist/*.whl ./
 
-# Install build dependencies and clean up in one step (avoiding creating another new layer)
-# procps grep mawk are for batch worker to kill llm engine
+# Install build dependencies and clean up in one step (avoid creating extra layers).
+# procps grep mawk are for batch worker to kill the llm engine process.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc python3-dev mawk procps grep  \
+    && apt-get install -y --no-install-recommends gcc python3-dev mawk procps grep \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir ./*.whl \
     && rm -f ./*.whl \
     && apt-get purge -y gcc python3-dev \
     && apt-get autoremove -y \
-    && pip cache purge || true
+    && (pip cache purge || true)
 
-# Set entrypoint for Runtime
+# ─── runtime target ─────────────────────────────────────────────────────────
+FROM runtime-base AS runtime
+
+# Set entrypoint for Runtime (aibrix/runtime image)
 ENTRYPOINT ["aibrix_runtime"]
+
+# ─── metadata-service target ─────────────────────────────────────────────────
+# Installs the gpu-optimizer extra on top of the shared base so that the
+# GPU Optimizer service can run from the aibrix/metadata-service image.
+FROM runtime-base AS metadata-service
+
+COPY --from=builder /app/dist/*.whl ./
+
+# xxhash (pulled in by incdbscan) has no cp311 wheel and builds from source,
+# so gcc is installed for this step and purged in the same layer.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc python3-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir "$(ls ./*.whl)[gpu-optimizer]" \
+    && rm -f ./*.whl \
+    && apt-get purge -y gcc python3-dev \
+    && apt-get autoremove -y
+
+# Set entrypoint for Metadata Service (aibrix/metadata-service image)
+ENTRYPOINT ["aibrix_metadata"]

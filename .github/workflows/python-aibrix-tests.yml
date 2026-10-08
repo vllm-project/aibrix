@@ -46,7 +46,7 @@ jobs:
           # (python-poetry/poetry#8159).
           poetry config virtualenvs.create false
           poetry config installer.parallel false
-          poetry install --no-root --with dev
+          poetry install --no-root --with dev --extras gpu-optimizer
       - name: Run Ruff
         run: |
           cd python/aibrix
