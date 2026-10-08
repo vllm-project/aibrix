@@ -165,6 +165,7 @@ func resolveRoutingOverrides(cfg *types.RoutingConfig) *types.RoutingOverrides {
 		set(applySeconds(&ov.PD.Abort.RetryDelay, "pd.decodeAbortRetryDelay", p.DecodeAbortRetryDelay, nonNegative[int]))
 		set(applySeconds(&ov.PD.Watchdog.FirstResponseTimeout, "pd.decodeFirstResponseTimeout", p.DecodeFirstResponseTimeout, nonNegative[int]))
 		set(applySeconds(&ov.PD.Watchdog.ResponseTimeout, "pd.decodeResponseTimeout", p.DecodeResponseTimeout, nonNegative[int]))
+		set(applySeconds(&ov.PD.Watchdog.StreamIdleTimeout, "pd.decodeStreamIdleTimeout", p.DecodeStreamIdleTimeout, nonNegative[int]))
 		set(applySeconds(&ov.PD.PrefillRequestTimeout, "pd.prefillRequestTimeout", p.PrefillRequestTimeout, positive[int]))
 		set(apply(&ov.PD.Spreads.PrefillLoadImbalanceMinSpread, "pd.prefillLoadImbalanceMinSpread", p.PrefillLoadImbalanceMinSpread, positive[int32]))
 		set(apply(&ov.PD.Spreads.DecodeLoadImbalanceMinSpread, "pd.decodeLoadImbalanceMinSpread", p.DecodeLoadImbalanceMinSpread, positive[float64]))

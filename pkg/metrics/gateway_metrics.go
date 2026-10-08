@@ -179,7 +179,7 @@ var (
 			MetricType: MetricType{
 				Raw: Counter,
 			},
-			Description: "Total number of PD decode legs the gateway failed because the decode pod stopped responding, by watchdog phase",
+			Description: "Total number of PD decode legs the gateway failed because the decode pod stopped responding, by watchdog phase (first_response, stream_idle)",
 		},
 		PDTokenLoadActiveTokens: {
 			MetricScope:  PodMetricScope,

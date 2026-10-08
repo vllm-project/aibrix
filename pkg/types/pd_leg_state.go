@@ -132,6 +132,14 @@ type PDLegState struct {
 	// MarkPrefillSucceeded call wins the CAS on prefillSucceededNanos.
 	prefillSucceeded chan struct{}
 
+	// lastChunkNanos is when the decode pod last sent a response body chunk, as
+	// unix nanoseconds, or 0 while it has sent none. Response headers do not
+	// count: a streaming engine can flush them as soon as it accepts the
+	// request, before it has produced a token. So 0 means the decode watchdog is
+	// still in its first-response phase, and from the first chunk on this is
+	// the origin of the stream-idle deadline, refreshed on every chunk.
+	lastChunkNanos atomic.Int64
+
 	// decodeTarget is where the decode leg of this request was sent, captured
 	// on the request path by the PD router. The prefill goroutine needs it to
 	// abort a decode leg whose KV will never arrive, and cannot derive it
@@ -409,6 +417,33 @@ func (l *PDLegState) PrefillSucceededAt() time.Time {
 	return time.Unix(0, nanos)
 }
 
+// MarkDecodeChunk records that a response body chunk came back from the decode
+// pod just now. Called for every chunk, so it is deliberately a single atomic
+// store.
+func (l *PDLegState) MarkDecodeChunk() {
+	if l == nil {
+		return
+	}
+	at := time.Now().UnixNano()
+	if at == 0 {
+		at = 1
+	}
+	l.lastChunkNanos.Store(at)
+}
+
+// LastDecodeChunk returns when the decode pod last sent a response body chunk,
+// or the zero time when it has sent none.
+func (l *PDLegState) LastDecodeChunk() time.Time {
+	if l == nil {
+		return time.Time{}
+	}
+	nanos := l.lastChunkNanos.Load()
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
+}
+
 // SetDecodeTarget records the address and pod name of the decode leg, so a
 // prefill failure can be aimed at the pod that is waiting for the KV transfer.
 func (l *PDLegState) SetDecodeTarget(addr, podName string) {
@@ -536,6 +571,18 @@ func (r *RoutingContext) PrefillSucceeded() <-chan struct{} {
 // succeeded, or the zero time.
 func (r *RoutingContext) PrefillSucceededAt() time.Time {
 	return r.PDLeg().PrefillSucceededAt()
+}
+
+// MarkDecodeChunk records that the decode pod of the current incarnation sent a
+// response body chunk just now. Nil-safe, like every other leg accessor.
+func (r *RoutingContext) MarkDecodeChunk() {
+	r.PDLeg().MarkDecodeChunk()
+}
+
+// LastDecodeChunk returns when the decode pod of the current incarnation last
+// sent a response body chunk, or the zero time.
+func (r *RoutingContext) LastDecodeChunk() time.Time {
+	return r.PDLeg().LastDecodeChunk()
 }
 
 // SetDecodeTarget records where the decode leg of this request was sent.

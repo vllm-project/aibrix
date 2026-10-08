@@ -164,17 +164,28 @@ SGLang Decode Watchdog
 With SGLang, the prefill request only returns once the decode pod has taken the KV
 transfer, so from then on the decode pod owes the client a response. If the decode
 pod stops answering (for example its scheduler crashed or hung), the gateway fails
-the request instead of leaving the client waiting for Envoy's route timeout: it
-answers ``504`` with the ``x-error-pd-decode: true`` header, closes the stream, and
-asks the decode pod to drop the request through ``/abort_request``.
+the request instead of leaving the client waiting for Envoy's route timeout, and
+asks the decode pod to drop the request through ``/abort_request``. If no response
+headers have reached the client yet, it answers ``504`` with the
+``x-error-pd-decode: true`` header. Otherwise it cuts the stream short: the client
+sees a ``200`` with a truncated body and a stream error, not an error body.
 
 * ``AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT`` (default ``60``): seconds a streaming
-  request waits for the decode pod's first message after the prefill succeeded.
+  request waits for the decode pod's first token (its first response body chunk)
+  after the prefill succeeded. SGLang sends the response headers of a stream
+  before the first token, so the headers alone do not stop this timer.
 * ``AIBRIX_DECODE_RESPONSE_TIMEOUT`` (default ``0``, disabled): the same bound for a
   non-streaming request. The decode pod only answers such a request when the whole
   generation is done, so a safe value depends on ``max_tokens`` and decode throughput.
+* ``AIBRIX_DECODE_STREAM_IDLE_TIMEOUT`` (default ``120``): streaming requests only.
+  Once the first token arrived, the longest gap allowed between two chunks before
+  the gateway cuts the stream short and aborts the decode request.
 
-``0`` disables either one. Both can also be set per config profile (see below).
+``gateway_request_model_fail_total{status="pd_decode_watchdog"}`` counts every
+request the watchdog failed, with ``status_code="504"`` even when the client saw a
+cut ``200`` stream.
+
+``0`` disables any of them. All three can also be set per config profile (see below).
 
 
 Step 1 — Label Your Pods
@@ -365,7 +376,8 @@ weights (``decodeLBWeightRunning``, ``decodeLBWeightThroughput``), the token-loa
 (``tokenLoadKVWeight``, ``tokenLoadRequestCost``, ``tokenLoadTTLSeconds``,
 ``tokenLoadSessionTTLSeconds``), ``hybridCacheLoadFactor``, ``minMatchPct``, the abort
 timeout and retry delay (``decodeAbortTimeout``, ``decodeAbortRetryDelay``), and the decode
-watchdog timeouts (``decodeFirstResponseTimeout``, ``decodeResponseTimeout``). Each one overrides
+watchdog timeouts (``decodeFirstResponseTimeout``, ``decodeResponseTimeout``,
+``decodeStreamIdleTimeout``). Each one overrides
 the matching gateway environment variable for that profile only; unset fields keep the
 environment default. See the Config Profiles section of `Gateway Plugins <gateway-plugins.html>`_
 for the full list.

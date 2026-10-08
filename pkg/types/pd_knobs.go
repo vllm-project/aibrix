@@ -71,11 +71,15 @@ type PDAbortOverrides struct {
 // after the prefill leg succeeded. Zero disables the matching phase.
 type PDWatchdogOverrides struct {
 	// FirstResponseTimeout bounds, for a streaming request, the wait between
-	// the prefill leg succeeding and the first message from the decode pod.
+	// the prefill leg succeeding and the first response body chunk from the
+	// decode pod, i.e. its first token. Response headers do not end the wait.
 	FirstResponseTimeout time.Duration
 	// ResponseTimeout is the same bound for a non-streaming request, where the
-	// first message from the decode pod is the finished answer.
+	// first body chunk from the decode pod is the finished answer.
 	ResponseTimeout time.Duration
+	// StreamIdleTimeout bounds, for a streaming request, the gap between two
+	// response body chunks from the decode pod once the first one arrived.
+	StreamIdleTimeout time.Duration
 }
 
 // PDSpreadOverrides mirrors the four load-imbalance thresholds of the prefill
