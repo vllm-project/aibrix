@@ -6,7 +6,7 @@ This file captures repository-specific guidance for AI coding agents working in 
 
 ```bash
 # Install development dependencies
-poetry install --no-root --with dev,gpu_optimizer
+poetry install --no-root --with dev --extras gpu-optimizer
 
 # Development install inside the Poetry environment
 poetry run pip install -e .

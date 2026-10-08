@@ -40,7 +40,7 @@ Before contributing your code, please run the following commands to ensure that 
 
 ```bash
 # install dependencies
-poetry install --no-root --with dev,gpu_optimizer
+poetry install --no-root --with dev --extras gpu-optimizer
 
 # linting, formatting and type checking
 bash ./scripts/format.sh

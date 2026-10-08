@@ -303,7 +303,7 @@ docker-build-kvcached-runtime: ## Build the kvcached-enabled ModelClaim runtime 
 	if [ "${IS_MAIN_BRANCH}" = "true" ]; then $(CONTAINER_TOOL) tag ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/kvcached-runtime:${IMAGE_TAG} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/kvcached-runtime:nightly; fi
 
 .PHONY: docker-build-metadata-service
-docker-build-metadata-service: ## Build docker image with the metadata-service (same as runtime but different tag).
+docker-build-metadata-service: ## Build docker image with the metadata-service (runtime plus GPU optimizer deps).
 	$(call build_and_tag,metadata-service,Dockerfile.python,metadata-service)
 
 .PHONY: docker-build-kvcache-watcher

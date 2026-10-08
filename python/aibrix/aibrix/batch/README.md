@@ -261,7 +261,7 @@ rm -f /tmp/test-batch-job.yaml /tmp/batch_input.jsonl
 
 ```bash
 # Install dependencies
-poetry install --no-root --with dev,gpu_optimizer
+poetry install --no-root --with dev --extras gpu-optimizer
 
 # Run batch-specific tests
 pytest tests/ -k batch
