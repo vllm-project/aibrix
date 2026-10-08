@@ -554,6 +554,30 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 		gomega.Expect(latest.Spec.ArtifactURL).To(gomega.Equal(claim.Spec.ArtifactURL))
 	})
 
+	ginkgo.It("routes a claim whose name has 63 characters and refuses a longer name", func() {
+		fixture.Runtime().SetDefaultState("active", true)
+		pod := fixture.CreateWarmPod(ns.Name, "warm-long-name", "pool-a")
+		claim := fixture.CreateClaim(ns.Name, strings.Repeat("m", 63), "pool-a", nil, nil)
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, claim)
+			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			g.Expect(latest.Status.Instances).To(gomega.HaveLen(1))
+			fixture.ExpectRoute(
+				g, ns.Name, pod.Name, claim.Name,
+				latest.Status.Instances[0].Port,
+				constants.ModelClaimRoutingStateActive,
+			)
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+		longer := &modelapi.ModelClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: claim.Name + "m", Namespace: ns.Name},
+			Spec:       *claim.Spec.DeepCopy(),
+		}
+		err := k8sClient.Create(ctx, longer)
+		gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "a 64-character name: %v", err)
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("at most 63 characters"))
+	})
+
 	ginkgo.It("records activation failure and retries to Active", func() {
 		fixture.Runtime().SetDefaultState("active", true)
 		fixture.Runtime().FailNextActivations(1)

@@ -265,6 +265,7 @@ const (
 // +kubebuilder:printcolumn:name="Engine",type=string,JSONPath=`.spec.engine`
 // +kubebuilder:printcolumn:name="Artifact",type=string,JSONPath=`.spec.artifactURL`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.size() <= 63",message="name must be at most 63 characters, since it is part of an annotation key on the warm-pool Pod"
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // ModelClaim is the Schema for the modelclaims API.

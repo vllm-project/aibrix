@@ -63,8 +63,9 @@ const (
 
 	// ModelClaimPodAnnotationPrefix marks, on a warm GPU pod, that a ModelClaim
 	// has been activated on it. The key is suffixed with the ModelClaim object
-	// name (a DNS name, so always annotation-key-safe) and the value is a JSON
-	// object {"model":"<servedModelName>","port":<port>,"state":"<state>"}.
+	// name, which the CRD limits to the 63 characters that the name part of a
+	// key may have. The value is a JSON object
+	// {"model":"<servedModelName>","port":<port>,"state":"<state>"}.
 	// A controller that wakes sleeping engines itself also writes
 	// "wakeByRequest":true there.
 	// One key per ModelClaim avoids multi-writer races on a shared annotation.

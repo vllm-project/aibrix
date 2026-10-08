@@ -280,6 +280,10 @@ decide which engine runs and where, and the engine is started with them only
 once, so the API server rejects any change to them. To change one, create a
 new ModelClaim.
 
+A ModelClaim's name can be at most 63 characters long. It becomes the name part
+of annotation keys on the warm-pool Pod, and Kubernetes allows at most 63
+characters there.
+
 Declare what a model costs on a card
 ------------------------------------
 

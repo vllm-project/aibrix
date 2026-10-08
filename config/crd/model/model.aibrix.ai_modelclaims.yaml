@@ -206,6 +206,10 @@ spec:
                 type: integer
             type: object
         type: object
+        x-kubernetes-validations:
+        - message: name must be at most 63 characters, since it is part of an annotation
+            key on the warm-pool Pod
+          rule: self.metadata.name.size() <= 63
     served: true
     storage: true
     subresources:
