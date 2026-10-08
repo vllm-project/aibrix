@@ -25,6 +25,20 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestPrefixHashTableLen(t *testing.T) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 1
+
+	cache := NewPrefixHashTable()
+	assert.Equal(t, 0, cache.Len())
+
+	tokens := []byte{1, 2, 3}
+	hashes := cache.GetPrefixHashes(tokens)
+	cache.AddPrefix(hashes, "m", "ns/pod")
+	assert.Equal(t, len(hashes), cache.Len())
+}
+
 func Test_PrefixHashTableE2E(t *testing.T) {
 	originalBlockSize := prefixCacheBlockSize
 	defer func() { prefixCacheBlockSize = originalBlockSize }()
