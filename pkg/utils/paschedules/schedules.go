@@ -276,7 +276,8 @@ func (s parsedSchedule) nextTransitionAfter(now time.Time) (time.Time, bool) {
 			continue
 		}
 		for _, minute := range []int{s.startMinute, s.endMinute} {
-			candidate := base.Add(time.Duration(minute) * time.Minute)
+			// Elapsed hours from midnight can differ from local clock time across DST.
+			candidate := time.Date(base.Year(), base.Month(), base.Day(), minute/60, minute%60, 0, 0, s.location)
 			if candidate.After(local) {
 				return candidate.In(time.UTC), true
 			}

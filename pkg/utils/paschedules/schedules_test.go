@@ -232,6 +232,42 @@ func TestNextTransition(t *testing.T) {
 	assert.Equal(t, 8*time.Hour+30*time.Minute, next)
 }
 
+func TestNextTransitionAcrossDaylightSavingChanges(t *testing.T) {
+	pa := scheduledPA([]autoscalingv1alpha1.PodAutoscalerSchedule{{
+		Name:        "morning",
+		Timezone:    "America/New_York",
+		DaysOfWeek:  []string{"Sun"},
+		StartTime:   "09:00",
+		EndTime:     "10:00",
+		MinReplicas: ptr.To[int32](2),
+	}})
+	tests := []struct {
+		name string
+		now  string
+		next string
+	}{
+		{"spring start", "2026-03-08T12:30:00Z", "2026-03-08T13:00:00Z"},
+		{"spring end", "2026-03-08T13:30:00Z", "2026-03-08T14:00:00Z"},
+		{"autumn start", "2026-11-01T12:30:00Z", "2026-11-01T14:00:00Z"},
+		{"autumn end", "2026-11-01T14:30:00Z", "2026-11-01T15:00:00Z"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := mustTime(tt.now)
+			next, ok, err := NextTransition(pa, now)
+			require.NoError(t, err)
+			require.True(t, ok)
+			assert.Equal(t, mustTime(tt.next), now.Add(next))
+
+			before, err := Resolve(pa, now.Add(next-time.Second))
+			require.NoError(t, err)
+			after, err := Resolve(pa, now.Add(next))
+			require.NoError(t, err)
+			assert.NotEqual(t, before.ActiveSchedule, after.ActiveSchedule)
+		})
+	}
+}
+
 func scheduledPA(schedules []autoscalingv1alpha1.PodAutoscalerSchedule) *autoscalingv1alpha1.PodAutoscaler {
 	return &autoscalingv1alpha1.PodAutoscaler{
 		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
