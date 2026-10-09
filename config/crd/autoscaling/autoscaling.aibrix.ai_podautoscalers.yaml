@@ -215,6 +215,22 @@ spec:
               desiredScale:
                 format: int32
                 type: integer
+              elasticEPScaling:
+                properties:
+                  inProgress:
+                    type: boolean
+                  lastTransitionTime:
+                    format: date-time
+                    type: string
+                  observedEngines:
+                    format: int32
+                    type: integer
+                  scalingEngines:
+                    format: int32
+                    type: integer
+                required:
+                - inProgress
+                type: object
               lastScaleTime:
                 format: date-time
                 type: string
