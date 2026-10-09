@@ -96,7 +96,7 @@ Verify the command against the exact image tag or digest before creating a
 ModelWarmup; other engines and distroless images may expose different binaries.
 
 ``model-download.yaml`` is custom-only. It uses the public
-``aibrix/runtime:v0.7.0`` image to run ``aibrix_download`` for the small public
+``aibrix/runtime:v0.8.0-rc.1`` image to run ``aibrix_download`` for the small public
 ``sshleifer/tiny-gpt2`` artifact and writes it to a node-local cache:
 
 .. literalinclude:: ../../../samples/modelwarmup/model-download.yaml

@@ -66,13 +66,13 @@ kubectl apply -k config/default
 Install stable distribution
 ```shell
 # Install component dependencies
-kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-dependency-v0.7.0.yaml" --server-side
+kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.8.0-rc.1/aibrix-dependency-v0.8.0-rc.1.yaml" --server-side
 
 # Install AIBrix CRDs (separate from the operator so uninstalls don't wipe user CRs)
-kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-core-crds-v0.7.0.yaml" --server-side
+kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.8.0-rc.1/aibrix-core-crds-v0.8.0-rc.1.yaml" --server-side
 
 # Install aibrix components
-kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-core-v0.7.0.yaml"
+kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.8.0-rc.1/aibrix-core-v0.8.0-rc.1.yaml"
 ```
 
 ## Documentation
