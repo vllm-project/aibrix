@@ -185,7 +185,7 @@ func TestRayClusterFleetPauseResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create paused Fleet: %v", err)
 	}
-	if err := harness.ensureNoChildren(ctx, fleet.UID, 10*time.Second); err != nil {
+	if err := harness.ensureNoChildren(ctx, fleet.UID, 5*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if err := harness.updateFleet(ctx, fleet.Name, func(current *orchestrationv1alpha1.RayClusterFleet) {
@@ -197,7 +197,7 @@ func TestRayClusterFleetPauseResume(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("update paused Fleet: %v", err)
 	}
-	if err := harness.ensureNoChildren(ctx, fleet.UID, 10*time.Second); err != nil {
+	if err := harness.ensureNoChildren(ctx, fleet.UID, 5*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if err := harness.updateFleet(ctx, fleet.Name, func(current *orchestrationv1alpha1.RayClusterFleet) {
