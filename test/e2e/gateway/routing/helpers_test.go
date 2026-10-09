@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -53,7 +54,8 @@ const maxPodDiscoveryRequests = 30
 // one, so the result holds only pods the gateway can reach and each of them has seen traffic.
 func discoverRoutablePods(t *testing.T) []string {
 	t.Helper()
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 	pods, err := framework.InitializeKubernetesClient(t).CoreV1().Pods(e2eConfig.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "model.aibrix.ai/name=" + modelName,
 	})
