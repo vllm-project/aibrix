@@ -83,10 +83,11 @@ type responsesReqMinimal struct {
 }
 
 // contentItem holds the raw JSON "content" field of a chat message or a Responses API
-// input item. It is shared by chatReqMinimal.Messages, parseChatMessages, and
-// parseResponsesInput.
+// input item, plus the "tool_calls" of an assistant chat message. It is shared by
+// chatReqMinimal.Messages, parseChatMessages, and parseResponsesInput.
 type contentItem struct {
-	Content json.RawMessage `json:"content"`
+	Content   json.RawMessage `json:"content"`
+	ToolCalls json.RawMessage `json:"tool_calls"`
 }
 
 // engineNativeReqMinimal captures the fields needed to route a vLLM engine-native
@@ -114,7 +115,10 @@ type embeddingReqMinimal struct {
 
 // parseChatMessages extracts a single concatenated text string from the minimal
 // chat request messages. For simple string content it unquotes the JSON string
-// directly; for array/object content it writes the raw JSON bytes.
+// directly; for array/object content it writes the raw JSON bytes. A null content
+// contributes nothing. An assistant message's tool_calls are written as raw JSON
+// after its content: the engine renders them into the prompt, so they belong in the
+// text used for prefix matching and prompt-length estimates.
 func parseChatMessages(requestID string, msgs []contentItem) (string, *extProcPb.ProcessingResponse) {
 	if len(msgs) == 0 {
 		klog.ErrorS(nil, "no messages in the request body", "requestID", requestID)
@@ -125,25 +129,44 @@ func parseChatMessages(requestID string, msgs []contentItem) (string, *extProcPb
 	var builder strings.Builder
 	growHint := len(msgs) - 1 // space separators
 	for _, m := range msgs {
-		growHint += len(m.Content)
+		growHint += len(m.Content) + len(m.ToolCalls) + 1
 	}
 	builder.Grow(growHint)
 	for i, m := range msgs {
 		if i > 0 {
 			builder.WriteByte(' ')
 		}
-		if len(m.Content) > 0 && m.Content[0] == '"' {
-			// Simple string content: JSON-unquote it without allocating an interface.
-			var s string
-			if err := sonic.Unmarshal(m.Content, &s); err == nil {
-				builder.WriteString(s)
-				continue
-			}
+		hasContent := len(m.Content) > 0 && string(m.Content) != jsonNull
+		if hasContent {
+			writeChatContent(&builder, m.Content)
 		}
-		// Array or object content parts: write raw JSON.
-		builder.Write(m.Content)
+		if hasToolCalls(m.ToolCalls) {
+			if hasContent {
+				builder.WriteByte(' ')
+			}
+			builder.Write(m.ToolCalls)
+		}
 	}
 	return builder.String(), nil
+}
+
+// hasToolCalls reports whether a message's raw "tool_calls" holds at least one call.
+func hasToolCalls(raw json.RawMessage) bool {
+	return len(raw) > 0 && string(raw) != jsonNull && string(raw) != "[]"
+}
+
+// writeChatContent appends one message's content to the routing text.
+func writeChatContent(builder *strings.Builder, content json.RawMessage) {
+	if content[0] == '"' {
+		// Simple string content: JSON-unquote it without allocating an interface.
+		var s string
+		if err := sonic.Unmarshal(content, &s); err == nil {
+			builder.WriteString(s)
+			return
+		}
+	}
+	// Array or object content parts: write raw JSON.
+	builder.Write(content)
 }
 
 // parseResponsesInput extracts a single concatenated text string from a Responses

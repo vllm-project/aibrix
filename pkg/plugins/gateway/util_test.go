@@ -118,6 +118,32 @@ func Test_ValidateRequestBody(t *testing.T) {
 			statusCode: envoyTypePb.StatusCode_OK,
 		},
 		{
+			message:     "/v1/chat/completions assistant tool_calls with null content",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "user", "content": "hi"},{"role": "assistant", "content": null, "tool_calls": [{"id":"c1","type":"function","function":{"name":"f","arguments":"{\"x\":1}"}}]}]}`),
+			model:       "llama2-7b",
+			// A null content adds nothing; the tool calls are written as raw JSON.
+			messages:   "hi [{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"x\\\":1}\"}}]",
+			statusCode: envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions assistant tool_calls after string content",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "assistant", "content": "calling f", "tool_calls": [{"id":"c1"}]},{"role": "tool", "content": "done"}]}`),
+			model:       "llama2-7b",
+			messages:    "calling f [{\"id\":\"c1\"}] done",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions null content and empty tool_calls add nothing",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "user", "content": "hi"},{"role": "assistant", "content": null, "tool_calls": []},{"role": "assistant", "content": null, "tool_calls": null}]}`),
+			model:       "llama2-7b",
+			// Each message keeps its separator, as an empty string content does.
+			messages:   "hi  ",
+			statusCode: envoyTypePb.StatusCode_OK,
+		},
+		{
 			message:     "/v1/chat/completions json unmarhsal valid messages with stop string param",
 			requestPath: "/v1/chat/completions",
 			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}], "stop": "stop"}`),
