@@ -1,0 +1,159 @@
+# Simplified Chinese translations for AIBrix documentation.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-09 09:56+0800\n"
+"PO-Revision-Date: 2026-10-09 00:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:5
+msgid "Predictive Autoscaling"
+msgstr "预测性自动扩缩容"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:7
+msgid "Reactive autoscaling waits for the metric to move before it adds replicas, which costs at least one pod start-up time of headroom. Predictive autoscaling closes part of that gap: it projects the metric trend of the observation window forward and, in ``Auto`` mode, uses the projection as a floor for scale-up. The reactive decision is never replaced, and a projection never scales a workload down."
+msgstr "响应式自动扩缩容会等到指标发生变化后才增加副本，因此至少需要预留一个 Pod 启动时间的余量。预测性自动扩缩容可缩小部分差距：它根据观测窗口内的指标趋势向前预测，并在 ``Auto`` 模式下将预测结果作为扩容下限。响应式决策始终保留，预测结果也绝不会缩减工作负载。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:13
+msgid "The feature is opt-in through ``spec.predictive``. When the block is absent nothing in this page applies. Today the block is accepted and validated only: applying it writes no ``status.predictive`` and changes no replica count. The controller that consumes these fields lands in a follow-up."
+msgstr "此功能通过 ``spec.predictive`` 显式启用。未配置该字段块时，本页内容均不适用。目前该字段块仅会被接受和校验：应用后不会写入 ``status.predictive``，也不会更改副本数。使用这些字段的控制器将在后续版本中提供。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:19
+msgid "Modes"
+msgstr "模式"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:25
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:55
+msgid "``mode``"
+msgstr "``mode``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:26
+msgid "Behaviour"
+msgstr "行为"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:27
+msgid "``Preview``"
+msgstr "``Preview``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:28
+msgid "The controller computes the projection and records it in ``status.predictive``, but the replica decision stays exactly as it is without the block. Use it to watch what the projection would have asked for before trusting it. This is the default when ``mode`` is omitted."
+msgstr "控制器会计算预测结果并将其记录在 ``status.predictive`` 中，但副本决策与未配置该字段块时完全相同。可先通过此模式观察预测结果会请求多少副本，再决定是否采用。这是省略 ``mode`` 时的默认模式。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:32
+msgid "``Auto``"
+msgstr "``Auto``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:33
+msgid "The projection is converted into a replica count and used as a floor: ``final = max(reactive, projected)``. It can raise a scale-up, never trigger or lower a scale-down."
+msgstr "预测结果会转换为副本数并作为下限：``final = max(reactive, projected)``。它可以提高扩容幅度，但绝不会触发缩容或降低缩容后的副本数。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:45
+msgid "Status"
+msgstr "状态"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:47
+msgid "``status.predictive`` reports the last evaluation:"
+msgstr "``status.predictive`` 报告最近一次评估结果："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:53
+msgid "Field"
+msgstr "字段"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:54
+msgid "Meaning"
+msgstr "含义"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:56
+msgid "Effective mode of the evaluation, after defaulting to ``Preview``."
+msgstr "应用 ``Preview`` 默认值后，此次评估实际使用的模式。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:57
+msgid "``metric``"
+msgstr "``metric``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:58
+msgid "``targetMetric`` of the source the evaluation was derived from."
+msgstr "此次评估所依据来源的 ``targetMetric``。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:59
+msgid "``observedValue``"
+msgstr "``observedValue``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:60
+msgid "Mean of the samples used by the fit, as a decimal string in the same unit as the metric sample and ``targetValue``."
+msgstr "拟合所用样本的平均值，以十进制字符串表示，单位与指标样本及 ``targetValue`` 相同。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:62
+msgid "``predictedValue``"
+msgstr "``predictedValue``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:63
+msgid "Value of the fitted line at ``now + horizonSeconds``, as a decimal string in the same unit as the metric sample and ``targetValue``."
+msgstr "拟合直线在 ``now + horizonSeconds`` 时刻的值，以十进制字符串表示，单位与指标样本及 ``targetValue`` 相同。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:65
+msgid "``predictedReplicas``"
+msgstr "``predictedReplicas``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:66
+msgid "Replica count the projection alone asks for."
+msgstr "仅由预测结果请求的副本数。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:67
+msgid "``reactiveReplicas``"
+msgstr "``reactiveReplicas``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:68
+msgid "Replica count the reactive path selected in the same round, before the predictive floor."
+msgstr "同一轮中响应式路径选出的副本数，尚未应用预测下限。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:69
+msgid "``wouldBeReplicas``"
+msgstr "``wouldBeReplicas``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:70
+msgid "Replica count the same round would apply in ``Auto``, after the same caps, bounds and cooldown. In ``Auto`` it equals the applied count; in ``Preview`` it shows whether ``Auto`` would change the decision."
+msgstr "同一轮在 ``Auto`` 模式下经过相同的上限、边界和冷却处理后将应用的副本数。在 ``Auto`` 模式下，它等于实际应用的副本数；在 ``Preview`` 模式下，它用于显示 ``Auto`` 是否会改变决策。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:73
+msgid "``lastUpdated``"
+msgstr "``lastUpdated``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:74
+msgid "When the prediction was computed."
+msgstr "计算预测结果的时间。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:76
+msgid "The block is removed when ``spec.predictive`` is removed."
+msgstr "移除 ``spec.predictive`` 时，该状态字段块也会被移除。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:79
+msgid "Example"
+msgstr "示例"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:85
+msgid "Limitations"
+msgstr "限制"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:87
+msgid "Predictive scaling is not supported with ``scalingStrategy: HPA``. The HPA strategy delegates the decision to a native ``HorizontalPodAutoscaler`` resource, which has no channel to receive the projection, so the combination is rejected by the validating webhook."
+msgstr "预测性扩缩容不支持与 ``scalingStrategy: HPA`` 搭配使用。HPA 策略将决策委托给原生 ``HorizontalPodAutoscaler`` 资源，而该资源没有接收预测结果的通道，因此校验 Webhook 会拒绝这种组合。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:90
+msgid "The projection uses the ``observeWindowSeconds`` window even when KPA is in panic mode. The panic window stays a reactive signal, and the projection is deliberately the slower of the two."
+msgstr "即使 KPA 处于 panic 模式，预测仍使用 ``observeWindowSeconds`` 窗口。panic 窗口仍作为响应式信号，而预测窗口会特意保持为两者中较慢的一个。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/autoscaling/predictive-autoscaling.rst:93
+msgid "The projection is linear. Traffic with a strong daily shape still benefits from ``schedules``, which set bounds rather than a trend."
+msgstr "预测采用线性模型。对于具有明显日周期的流量，仍适合使用 ``schedules``；它设置的是边界，而不是趋势。"
