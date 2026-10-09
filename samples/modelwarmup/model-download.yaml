@@ -21,7 +21,7 @@ spec:
         type: DirectoryOrCreate
     containers:
     - name: download-tiny-gpt2
-      image: aibrix/runtime:v0.7.0
+      image: aibrix/runtime:v0.8.0-rc.1
       imagePullPolicy: IfNotPresent
       command: ["aibrix_download"]
       args:

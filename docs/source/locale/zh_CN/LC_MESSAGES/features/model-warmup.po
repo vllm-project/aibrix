@@ -78,8 +78,8 @@ msgid "Verify the command against the exact image tag or digest before creating 
 msgstr "创建 ModelWarmup 前，请针对确切的镜像标签或摘要验证该命令；其他引擎和 distroless 镜像可能提供不同的可执行文件。"
 
 #: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:98
-msgid "``model-download.yaml`` is custom-only. It uses the public ``aibrix/runtime:v0.7.0`` image to run ``aibrix_download`` for the small public ``sshleifer/tiny-gpt2`` artifact and writes it to a node-local cache:"
-msgstr "``model-download.yaml`` 仅包含自定义操作。它使用公开的 ``aibrix/runtime:v0.7.0`` 镜像运行 ``aibrix_download``，下载小型公开制品 ``sshleifer/tiny-gpt2`` 并将其写入节点本地缓存："
+msgid "``model-download.yaml`` is custom-only. It uses the public ``aibrix/runtime:v0.8.0-rc.1`` image to run ``aibrix_download`` for the small public ``sshleifer/tiny-gpt2`` artifact and writes it to a node-local cache:"
+msgstr "``model-download.yaml`` 仅包含自定义操作。它使用公开的 ``aibrix/runtime:v0.8.0-rc.1`` 镜像运行 ``aibrix_download``，下载小型公开制品 ``sshleifer/tiny-gpt2`` 并将其写入节点本地缓存："
 
 #: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:106
 msgid "``node-precheck.yaml`` checks cache write access and at least 1 GiB free space. ``gpu-precheck.yaml`` runs ``nvidia-smi`` with an ``nvidia.com/gpu: \"1\"`` limit and therefore requires a GPU node with the NVIDIA device plugin."

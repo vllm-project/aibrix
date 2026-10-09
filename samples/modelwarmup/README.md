@@ -25,7 +25,7 @@ Nodes. Do not grant arbitrary users permission to create ModelWarmups that can
 target pools or mount host paths they do not administer.
 
 The lightweight samples use public `busybox:1.36`,
-`aibrix/runtime:v0.7.0`, `nvidia/cuda:12.4.1-base-ubuntu22.04`, and
+`aibrix/runtime:v0.8.0-rc.1`, `nvidia/cuda:12.4.1-base-ubuntu22.04`, and
 `sshleifer/tiny-gpt2`. The opt-in engine examples use
 `vllm/vllm-openai:v0.10.2`, `lmsysorg/sglang:v0.5.5.post3`, and
 `Qwen/Qwen3-0.6B`. Production users should pin image and model digests and use
