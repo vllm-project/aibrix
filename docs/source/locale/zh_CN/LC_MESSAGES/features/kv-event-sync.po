@@ -1,0 +1,512 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/features/kv-event-sync.rst:3
+msgid "KV Cache Events Synchronization"
+msgstr "KV Cache 事件同步"
+
+#: ../../source/features/kv-event-sync.rst:6
+msgid "Overview"
+msgstr "概述"
+
+#: ../../source/features/kv-event-sync.rst:8
+msgid ""
+"KV Cache Event Synchronization is a feature that enables multiple vLLM "
+"instances to share key-value cache states through ZMQ-based event "
+"publishing. This improves prefix cache hit rates and reduces redundant "
+"computation by allowing the AIBrix gateway to make intelligent routing "
+"decisions based on real-time cache state."
+msgstr ""
+"KV Cache 事件同步使多个 vLLM 实例通过基于 ZMQ 的事件发布共享 key-value cache 状态。AIBrix 网关据此根据实时 cache 状态做智能路由，从而提高 prefix cache 命中率并减少重复计算。"
+
+#: ../../source/features/kv-event-sync.rst:11
+msgid "Architecture"
+msgstr "架构"
+
+#: ../../source/features/kv-event-sync.rst:13
+msgid "The KV event synchronization system consists of:"
+msgstr "KV 事件同步系统由以下部分组成："
+
+#: ../../source/features/kv-event-sync.rst:15
+msgid "**vLLM Instances**: Publish KV cache events via ZMQ pub/sub pattern"
+msgstr "**vLLM 实例** ：通过 ZMQ pub/sub 模式发布 KV cache 事件"
+
+#: ../../source/features/kv-event-sync.rst:16
+msgid "**AIBrix Cache**: Manages subscriptions and processes events"
+msgstr "**AIBrix Cache** ：管理订阅并处理事件"
+
+#: ../../source/features/kv-event-sync.rst:17
+msgid "**Sync Prefix Cache Indexer**: Maintains global prefix cache state"
+msgstr "**Sync Prefix Cache Indexer** ：维护全局 prefix cache 状态"
+
+#: ../../source/features/kv-event-sync.rst:18
+msgid "**Gateway Router**: Uses cache state for intelligent routing decisions"
+msgstr "**网关路由器** ：根据 cache 状态做智能路由决策"
+
+#: ../../source/features/kv-event-sync.rst:21
+msgid "Event Flow"
+msgstr "事件流程"
+
+#: ../../source/features/kv-event-sync.rst:29
+msgid "The system uses a two-stage initialization:"
+msgstr "系统采用两阶段初始化："
+
+#: ../../source/features/kv-event-sync.rst:31
+msgid ""
+"**Cache Initialization**: Using ``InitWithOptions`` pattern with "
+"``EnableKVSync=true``"
+msgstr "**Cache 初始化** ：使用 ``InitWithOptions`` 模式，并设置 ``EnableKVSync=true``"
+
+#: ../../source/features/kv-event-sync.rst:32
+msgid "**KV Event Manager**: Automatically created when conditions are met"
+msgstr "**KV Event Manager** ：条件满足时自动创建"
+
+#: ../../source/features/kv-event-sync.rst:35
+msgid "Requirements"
+msgstr "要求"
+
+#: ../../source/features/kv-event-sync.rst:37
+msgid "vLLM version 0.7.0 or later with KV cache events support"
+msgstr "vLLM 0.7.0 或更高版本，且支持 KV cache 事件"
+
+#: ../../source/features/kv-event-sync.rst:38
+msgid "AIBrix gateway-plugins built with ZMQ support (``-tags=\"zmq\"``)"
+msgstr "带 ZMQ 支持构建的 AIBrix gateway-plugins（``-tags=\"zmq\"`` ）"
+
+#: ../../source/features/kv-event-sync.rst:39
+msgid "ZMQ library (libzmq3-dev) installed on gateway nodes"
+msgstr "网关节点已安装 ZMQ 库（libzmq3-dev）"
+
+#: ../../source/features/kv-event-sync.rst:40
+msgid "Remote tokenizer enabled (strict prerequisite)"
+msgstr "已启用 remote tokenizer（硬性前置条件）"
+
+#: ../../source/features/kv-event-sync.rst:41
+msgid "Redis client configured (for production deployments)"
+msgstr "已配置 Redis 客户端（生产部署）"
+
+#: ../../source/features/kv-event-sync.rst:44
+msgid ""
+"KV event sync has a strict dependency on remote tokenizer to ensure "
+"consistent tokenization between gateway and vLLM instances. The system "
+"will not initialize if remote tokenizer is disabled."
+msgstr ""
+"KV 事件同步严格依赖 remote tokenizer，以保证网关与 vLLM 实例之间的 tokenization 一致。若 remote tokenizer 未启用，系统不会初始化。"
+
+#: ../../source/features/kv-event-sync.rst:47
+msgid "Configuration"
+msgstr "配置"
+
+#: ../../source/features/kv-event-sync.rst:50
+msgid "Environment Variables"
+msgstr "环境变量"
+
+#: ../../source/features/kv-event-sync.rst:56
+#: ../../source/features/kv-event-sync.rst:205
+msgid "Variable"
+msgstr "变量"
+
+#: ../../source/features/kv-event-sync.rst:57
+#: ../../source/features/kv-event-sync.rst:206
+msgid "Default"
+msgstr "默认值"
+
+#: ../../source/features/kv-event-sync.rst:58
+#: ../../source/features/kv-event-sync.rst:78
+#: ../../source/features/kv-event-sync.rst:207
+msgid "Description"
+msgstr "说明"
+
+#: ../../source/features/kv-event-sync.rst:59
+msgid "``AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED``"
+msgstr "``AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED``"
+
+#: ../../source/features/kv-event-sync.rst:60
+#: ../../source/features/kv-event-sync.rst:63
+msgid "``false``"
+msgstr "``false``"
+
+#: ../../source/features/kv-event-sync.rst:61
+msgid "Enable KV event synchronization"
+msgstr "启用 KV 事件同步"
+
+#: ../../source/features/kv-event-sync.rst:62
+msgid "``AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER``"
+msgstr "``AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER``"
+
+#: ../../source/features/kv-event-sync.rst:64
+msgid "Must be ``true`` for KV sync"
+msgstr "KV 同步时必须为 ``true``"
+
+#: ../../source/features/kv-event-sync.rst:65
+msgid "``AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT``"
+msgstr "``AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT``"
+
+#: ../../source/features/kv-event-sync.rst:67
+msgid "vLLM service endpoint"
+msgstr "vLLM 服务端点"
+
+#: ../../source/features/kv-event-sync.rst:70
+msgid "Pod Labels"
+msgstr "Pod 标签"
+
+#: ../../source/features/kv-event-sync.rst:76
+msgid "Label"
+msgstr "标签"
+
+#: ../../source/features/kv-event-sync.rst:77
+msgid "Value"
+msgstr "值"
+
+#: ../../source/features/kv-event-sync.rst:79
+msgid "``model.aibrix.ai/kv-events-enabled``"
+msgstr "``model.aibrix.ai/kv-events-enabled``"
+
+#: ../../source/features/kv-event-sync.rst:80
+msgid "``true``"
+msgstr "``true``"
+
+#: ../../source/features/kv-event-sync.rst:81
+msgid "Enable KV events for this pod"
+msgstr "为此 Pod 启用 KV 事件"
+
+#: ../../source/features/kv-event-sync.rst:82
+msgid "``model.aibrix.ai/lora-id``"
+msgstr "``model.aibrix.ai/lora-id``"
+
+#: ../../source/features/kv-event-sync.rst:83
+msgid "string"
+msgstr "string"
+
+#: ../../source/features/kv-event-sync.rst:84
+msgid "LoRA adapter ID (optional)"
+msgstr "LoRA adapter ID（可选）"
+
+#: ../../source/features/kv-event-sync.rst:87
+msgid "vLLM Configuration"
+msgstr "vLLM 配置"
+
+#: ../../source/features/kv-event-sync.rst:89
+msgid "Add these arguments to your vLLM container:"
+msgstr "向 vLLM 容器添加以下参数："
+
+#: ../../source/features/kv-event-sync.rst:100
+msgid "Add corresponding ports:"
+msgstr "添加对应端口："
+
+#: ../../source/features/kv-event-sync.rst:113
+msgid "Deployment"
+msgstr "部署"
+
+#: ../../source/features/kv-event-sync.rst:116
+msgid "Quick Start"
+msgstr "快速开始"
+
+#: ../../source/features/kv-event-sync.rst:118
+msgid "**Enable Remote Tokenizer** (mandatory prerequisite)::"
+msgstr "**启用 Remote Tokenizer** （强制前置条件）::"
+
+#: ../../source/features/kv-event-sync.rst:124
+msgid "**Enable KV Event Sync**::"
+msgstr "**启用 KV 事件同步**::"
+
+#: ../../source/features/kv-event-sync.rst:129
+msgid "**Deploy vLLM with KV Events**:"
+msgstr "**部署带 KV 事件的 vLLM** ："
+
+#: ../../source/features/kv-event-sync.rst:153
+msgid "Build Considerations"
+msgstr "构建说明"
+
+#: ../../source/features/kv-event-sync.rst:155
+msgid "AIBrix uses conditional compilation to manage ZMQ dependencies:"
+msgstr "AIBrix 使用条件编译管理 ZMQ 依赖："
+
+#: ../../source/features/kv-event-sync.rst:157
+msgid "**Components requiring ZMQ support:**"
+msgstr "**需要 ZMQ 支持的组件：**"
+
+#: ../../source/features/kv-event-sync.rst:159
+msgid "``gateway-plugins``: Main component for KV event sync"
+msgstr "``gateway-plugins`` ：KV 事件同步的主要组件"
+
+#: ../../source/features/kv-event-sync.rst:160
+msgid "``kvcache-watcher``: Optional component for cache monitoring"
+msgstr "``kvcache-watcher`` ：可选的 cache 监控组件"
+
+#: ../../source/features/kv-event-sync.rst:162
+msgid "**Build commands:**"
+msgstr "**构建命令：**"
+
+#: ../../source/features/kv-event-sync.rst:172
+msgid "**Components that do NOT require ZMQ:**"
+msgstr "**不需要 ZMQ 的组件：**"
+
+#: ../../source/features/kv-event-sync.rst:174
+msgid "``controller-manager``: Uses default build"
+msgstr "``controller-manager`` ：使用默认构建"
+
+#: ../../source/features/kv-event-sync.rst:175
+msgid "``metadata-service``: Uses default build"
+msgstr "``metadata-service`` ：使用默认构建"
+
+#: ../../source/features/kv-event-sync.rst:176
+msgid "``runtime``: Python component, no ZMQ needed"
+msgstr "``runtime`` ：Python 组件，不需要 ZMQ"
+
+#: ../../source/features/kv-event-sync.rst:179
+msgid "Routing Behavior"
+msgstr "路由行为"
+
+#: ../../source/features/kv-event-sync.rst:181
+msgid ""
+"The KV sync router applies the same prefix-match-with-stddev-filter "
+"selection logic as the standard prefix-cache router. It does not apply a "
+"load-imbalance gate itself — that concern is handled centrally by the "
+"gateway, which applies the load-balance router's "
+"(``algorithms/load_balance.go``) ``ApplyLoadImbalanceGate`` once ahead of"
+" whichever strategy actually routes the request, KV sync included."
+msgstr ""
+"KV sync 路由器使用与标准 prefix-cache 路由器相同的 prefix-match-with-stddev-filter 选择逻辑。它自身不应用负载不均衡门控——该逻辑由网关集中处理：网关在实际执行任一路由策略（含 "
+"KV sync）之前，先调用一次 load-balance 路由器（``algorithms/load_balance.go`` ）的 ``ApplyLoadImbalanceGate`` "
+"。"
+
+#: ../../source/features/kv-event-sync.rst:187
+msgid "**Prefix match with stddev filter**"
+msgstr "**带标准差过滤的前缀匹配**"
+
+#: ../../source/features/kv-event-sync.rst:189
+msgid ""
+"Pods are matched against the sync indexer and sorted by prefix-match "
+"percentage (descending), then by running requests (ascending). The first "
+"pod satisfying:"
+msgstr "Pod 对照 sync indexer 匹配，先按前缀匹配百分比降序、再按正在处理的请求数升序排序。选取第一个满足以下条件的 Pod："
+
+#: ../../source/features/kv-event-sync.rst:196
+msgid ""
+"is selected. If no matched pod meets the threshold, the router falls back"
+" to the globally least-loaded ready pod."
+msgstr "若没有匹配的 Pod 达到阈值，路由器回退到全局负载最低的就绪 Pod。"
+
+#: ../../source/features/kv-event-sync.rst:199
+msgid "Relevant environment variables:"
+msgstr "相关环境变量："
+
+#: ../../source/features/kv-event-sync.rst:208
+msgid "``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``"
+msgstr "``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``"
+
+#: ../../source/features/kv-event-sync.rst:209
+msgid "``1``"
+msgstr "``1``"
+
+#: ../../source/features/kv-event-sync.rst:210
+msgid ""
+"Controls how aggressively overloaded cache-holding pods are skipped "
+"during selection."
+msgstr "控制选择时跳过过载且持有 cache 的 Pod 的激进程度。"
+
+#: ../../source/features/kv-event-sync.rst:213
+msgid "Event Types"
+msgstr "事件类型"
+
+#: ../../source/features/kv-event-sync.rst:216
+msgid "BlockStoredEvent"
+msgstr "BlockStoredEvent"
+
+#: ../../source/features/kv-event-sync.rst:218
+msgid "Published when new KV cache blocks are stored:"
+msgstr "新的 KV cache block 被存储时发布："
+
+#: ../../source/features/kv-event-sync.rst:232
+msgid "BlockRemovedEvent"
+msgstr "BlockRemovedEvent"
+
+#: ../../source/features/kv-event-sync.rst:234
+msgid "Published when blocks are removed from cache:"
+msgstr "block 从 cache 中移除时发布："
+
+#: ../../source/features/kv-event-sync.rst:246
+msgid "Troubleshooting"
+msgstr "故障排查"
+
+#: ../../source/features/kv-event-sync.rst:249
+msgid "Initialization Failures"
+msgstr "初始化失败"
+
+#: ../../source/features/kv-event-sync.rst:251
+msgid "**Check initialization logs**::"
+msgstr "**查看初始化日志**::"
+
+#: ../../source/features/kv-event-sync.rst:255
+msgid "**Verify remote tokenizer**::"
+msgstr "**验证 remote tokenizer**::"
+
+#: ../../source/features/kv-event-sync.rst:261
+msgid "Events Not Publishing"
+msgstr "事件未发布"
+
+#: ../../source/features/kv-event-sync.rst:263
+msgid "**Check vLLM logs**::"
+msgstr "**查看 vLLM 日志**::"
+
+#: ../../source/features/kv-event-sync.rst:267
+msgid "**Verify ZMQ connectivity**::"
+msgstr "**验证 ZMQ 连通性**::"
+
+#: ../../source/features/kv-event-sync.rst:271
+msgid "**Check ZMQ build support**::"
+msgstr "**检查 ZMQ 构建支持**::"
+
+#: ../../source/features/kv-event-sync.rst:276
+msgid "Connection Issues"
+msgstr "连接问题"
+
+#: ../../source/features/kv-event-sync.rst:278
+msgid "**Verify pod labels**::"
+msgstr "**验证 Pod 标签**::"
+
+#: ../../source/features/kv-event-sync.rst:282
+msgid "**Check network policies**:"
+msgstr "**检查网络策略** ："
+
+#: ../../source/features/kv-event-sync.rst:284
+msgid "Ensure ports 5557-5558 are accessible"
+msgstr "确保端口 5557-5558 可访问"
+
+#: ../../source/features/kv-event-sync.rst:285
+msgid "No blocking NetworkPolicies"
+msgstr "没有会阻断的 NetworkPolicy"
+
+#: ../../source/features/kv-event-sync.rst:287
+msgid "**Validate tokenizer**::"
+msgstr "**验证 tokenizer**::"
+
+#: ../../source/features/kv-event-sync.rst:292
+msgid "Performance Tuning"
+msgstr "性能调优"
+
+#: ../../source/features/kv-event-sync.rst:294
+msgid "**High Memory Usage**: Reduce buffer steps in vLLM"
+msgstr "**内存占用高** ：减少 vLLM 中的 buffer steps"
+
+#: ../../source/features/kv-event-sync.rst:295
+msgid "**Event Processing Lag**: Adjust batch size and polling timeout"
+msgstr "**事件处理滞后** ：调整 batch size 和轮询超时"
+
+#: ../../source/features/kv-event-sync.rst:296
+msgid "**Network Overhead**: ~1MB/s per pod at high load"
+msgstr "**网络开销** ：高负载时每个 Pod 约 1MB/s"
+
+#: ../../source/features/kv-event-sync.rst:299
+msgid "Migration from Existing Deployments"
+msgstr "从现有部署迁移"
+
+#: ../../source/features/kv-event-sync.rst:302
+msgid "Enable on Existing vLLM"
+msgstr "在现有 vLLM 上启用"
+
+#: ../../source/features/kv-event-sync.rst:304
+msgid "Add labels::"
+msgstr "添加标签::"
+
+#: ../../source/features/kv-event-sync.rst:308
+msgid "Update deployment with KV event args (see Configuration section)"
+msgstr "用 KV 事件参数更新 Deployment（见配置一节）"
+
+#: ../../source/features/kv-event-sync.rst:310
+msgid "Restart pods::"
+msgstr "重启 Pod::"
+
+#: ../../source/features/kv-event-sync.rst:315
+msgid "Rollback"
+msgstr "回滚"
+
+#: ../../source/features/kv-event-sync.rst:317
+msgid "To disable KV event sync::"
+msgstr "禁用 KV 事件同步::"
+
+#: ../../source/features/kv-event-sync.rst:327
+msgid "Best Practices"
+msgstr "最佳实践"
+
+#: ../../source/features/kv-event-sync.rst:329
+msgid "**Deployment Order**:"
+msgstr "**部署顺序** ："
+
+#: ../../source/features/kv-event-sync.rst:331
+msgid "Enable remote tokenizer first and verify it's working"
+msgstr "先启用 remote tokenizer 并确认其正常工作"
+
+#: ../../source/features/kv-event-sync.rst:332
+msgid "Deploy vLLM with KV events configuration"
+msgstr "部署带 KV 事件配置的 vLLM"
+
+#: ../../source/features/kv-event-sync.rst:333
+msgid "Enable KV sync in gateway last"
+msgstr "最后在网关启用 KV 同步"
+
+#: ../../source/features/kv-event-sync.rst:335
+msgid "**Monitoring**:"
+msgstr "**监控** ："
+
+#: ../../source/features/kv-event-sync.rst:337
+msgid "Enable prefix cache metrics for visibility"
+msgstr "启用 prefix cache 指标以便观察"
+
+#: ../../source/features/kv-event-sync.rst:338
+msgid "Monitor ZMQ connection status in logs"
+msgstr "在日志中监控 ZMQ 连接状态"
+
+#: ../../source/features/kv-event-sync.rst:339
+msgid "Track prefix cache hit rates in Grafana"
+msgstr "在 Grafana 中跟踪 prefix cache 命中率"
+
+#: ../../source/features/kv-event-sync.rst:341
+msgid "**Resource Planning**:"
+msgstr "**资源规划** ："
+
+#: ../../source/features/kv-event-sync.rst:343
+msgid "ZMQ traffic: ~1MB/s per vLLM pod at high load"
+msgstr "ZMQ 流量：高负载时每个 vLLM Pod 约 1MB/s"
+
+#: ../../source/features/kv-event-sync.rst:344
+msgid "Memory: Sync indexer uses ~64 bytes per prefix entry"
+msgstr "内存：sync indexer 每个前缀条目约 64 字节"
+
+#: ../../source/features/kv-event-sync.rst:345
+msgid "CPU: Minimal overhead (<1% per pod)"
+msgstr "CPU：开销很小（每个 Pod <1%）"
+
+#: ../../source/features/kv-event-sync.rst:347
+msgid "**Production Considerations**:"
+msgstr "**生产环境注意事项** ："
+
+#: ../../source/features/kv-event-sync.rst:349
+msgid "Use dedicated network for ZMQ traffic if possible"
+msgstr "如有可能，为 ZMQ 流量使用专用网络"
+
+#: ../../source/features/kv-event-sync.rst:350
+msgid "Configure appropriate timeouts based on network latency"
+msgstr "根据网络延迟配置合适的超时"
+
+#: ../../source/features/kv-event-sync.rst:351
+msgid "Plan for graceful degradation if KV sync fails"
+msgstr "规划 KV 同步失败时的优雅降级"

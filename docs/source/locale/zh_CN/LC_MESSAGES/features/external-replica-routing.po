@@ -1,0 +1,685 @@
+# Chinese translations for AIBrix.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-09 09:56+0800\n"
+"PO-Revision-Date: 2026-10-09 00:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:5
+msgid "External Replica Routing"
+msgstr "外部副本路由"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:7
+msgid ""
+"The ``external`` strategy delegates replica selection to an operator-run "
+"HTTP service after AIBrix has resolved the requested model and filtered "
+"unsafe replicas. It does not perform semantic or cross-model routing, and"
+" it never sends prompts, request bodies, credentials, arbitrary client "
+"headers, or pod addresses."
+msgstr ""
+"AIBrix 解析请求的模型并过滤不安全的副本后，``external`` 策略会将副本选择委托给由"
+"运维人员运行的 HTTP 服务。该策略不执行语义路由或跨模型路由，也绝不会发送提示词、"
+"请求正文、凭据、任意客户端标头或 Pod 地址。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:13
+msgid ""
+"The protocol is alpha. Download the normative :download:`OpenAPI 3.1 "
+"contract <../_static/openapi/external-replica-selection-v1alpha1.yaml>`."
+msgstr ""
+"该协议处于 alpha 阶段。请下载规范性 :download:`OpenAPI 3.1 合约 "
+"<../_static/openapi/external-replica-selection-v1alpha1.yaml>`。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:17
+msgid "Current scope: single-target routing"
+msgstr "当前范围：单目标路由"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:19
+msgid ""
+"The ``routing.aibrix.ai/v1alpha1`` contract selects exactly one target "
+"Pod and port per invocation. A candidate may expose a ``prefill`` or "
+"``decode`` role as an allowlisted attribute, but that attribute is only "
+"an input to the single-target decision. The ``external`` strategy does "
+"not select a P/D pair, run the prefill leg, transfer KV state, align a "
+"role set, or dispatch the decode leg. Use the built-in ``pd`` strategy "
+"for the current P/D disaggregation flow; external control of that paired "
+"workflow is future scope."
+msgstr ""
+"``routing.aibrix.ai/v1alpha1`` 合约每次调用只选择一个目标 Pod 和端口。候选项可将 "
+"``prefill`` 或 ``decode`` 角色作为允许列表中的属性公开，但该属性仅作为单目标决策"
+"的输入。``external`` 策略不会选择 P/D 对、运行预填充阶段、传输 KV 状态、对齐角色集"
+"或分派解码阶段。当前的 P/D 分离流程请使用内置 ``pd`` 策略；由外部控制这一配对工作流"
+"属于未来范围。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:28
+msgid "Request flow"
+msgstr "请求流程"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:30
+msgid ""
+"The external decision service participates only in replica selection. "
+"Gateway retains candidate discovery and filtering, validates the returned"
+" target, performs final admission and accounting, and returns the "
+"selected target to Envoy. Inference traffic continues to flow directly "
+"between Envoy and the selected inference Pod."
+msgstr ""
+"外部决策服务仅参与副本选择。Gateway 仍负责候选项发现和过滤、验证返回的目标、执行"
+"最终准入和计量，并将选中的目标返回给 Envoy。推理流量仍直接在 Envoy 与选中的推理 "
+"Pod 之间流动。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:61
+msgid "Candidate discovery"
+msgstr "候选项发现"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:63
+msgid ""
+"Gateway resolves the model from the inference request, then reads "
+"candidate Pods from its Kubernetes informer-backed cache. Pods are "
+"indexed by the AIBrix model label or annotation, and warm-pool Pods are "
+"also indexed through their ModelClaim bindings. Gateway then applies "
+"readiness, routability, ``external-filter``, replica-inflight and "
+"configured load filters before the external router receives the snapshot."
+msgstr ""
+"Gateway 从推理请求中解析模型，然后从由 Kubernetes informer 支持的缓存中读取候选 "
+"Pod。Pod 按 AIBrix 模型标签或注解建立索引，热池 Pod 还会通过其 ModelClaim 绑定建立"
+"索引。在外部路由器收到快照前，Gateway 随后会应用就绪性、可路由性、``external-filter``、"
+"副本在途请求数和已配置的负载过滤器。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:70
+msgid ""
+"Backend candidate discovery does not read Kubernetes Service "
+"``Endpoints``/``EndpointSlice`` objects. Gateway retains each candidate "
+"Pod and resolves its Pod IP and model-specific serving port locally; a "
+"ModelClaim port of zero remains non-routable. The operator-configured "
+"external decision URL may itself point to a Kubernetes Service, as in the"
+" sample, but that Service is the decision-service transport and is not "
+"the source of backend candidates."
+msgstr ""
+"后端候选项发现不会读取 Kubernetes Service 的 ``Endpoints``/``EndpointSlice`` 对象。"
+"Gateway 保留每个候选 Pod，并在本地解析其 Pod IP 和特定于模型的服务端口；端口为零的 "
+"ModelClaim 仍不可路由。运维人员配置的外部决策 URL 本身可以像示例中一样指向某个 "
+"Kubernetes Service，但该 Service 是决策服务的传输通道，而非后端候选项的来源。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:78
+msgid "Policy modes"
+msgstr "策略模式"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:80
+msgid ""
+"``Advisory`` optimizes placement. A single candidate with one port keeps "
+"the local fast path. ``Selected`` uses the validated target and "
+"``NoDecision`` runs the configured fallback. ``Denied`` is invalid in "
+"this mode."
+msgstr ""
+"``Advisory`` 用于优化放置。仅有一个端口的单个候选项继续使用本地快速路径。"
+"``Selected`` 使用已验证的目标，``NoDecision`` 运行已配置的回退路由。``Denied`` 在此模式"
+"下无效。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:84
+msgid ""
+"``Authoritative`` enforces business or compliance policy. It calls the "
+"service even for one candidate. ``Denied`` returns an AIBrix-owned HTTP "
+"403 response with code ``external_policy_denied`` and never reaches an "
+"inference backend. Authoritative requires ``FailClosed``; ``NoDecision`` "
+"is invalid."
+msgstr ""
+"``Authoritative`` 强制执行业务或合规策略。即使只有一个候选项，它也会调用服务。"
+"``Denied`` 返回由 AIBrix 生成、代码为 ``external_policy_denied`` 的 HTTP 403 响应，且"
+"绝不会到达推理后端。Authoritative 要求使用 ``FailClosed``；``NoDecision`` 无效。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:89
+msgid ""
+"System failures follow the explicit failure mode. ``FailOpen`` invokes "
+"the configured local fallback. ``FailClosed`` returns HTTP 503 with code "
+"``external_router_unavailable``. Caller cancellation never falls back. "
+"The external reason is diagnostic and is never copied to the client "
+"response."
+msgstr ""
+"系统故障遵循显式配置的故障模式。``FailOpen`` 调用已配置的本地回退路由。``FailClosed`` "
+"返回代码为 ``external_router_unavailable`` 的 HTTP 503 响应。调用方取消请求时绝不回退。"
+"外部原因仅用于诊断，绝不会复制到客户端响应中。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:95
+msgid "Configuration"
+msgstr "配置"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:97
+msgid ""
+"The endpoint, policy mode, and failure mode are process-level settings. "
+"An unset endpoint disables the strategy."
+msgstr "端点、策略模式和故障模式均为进程级设置。未设置端点时，此策略将被禁用。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:104
+msgid "Variable"
+msgstr "变量"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:105
+msgid "Default"
+msgstr "默认值"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:106
+msgid "Meaning"
+msgstr "含义"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:107
+msgid "``AIBRIX_EXTERNAL_ROUTER_ENDPOINT``"
+msgstr "``AIBRIX_EXTERNAL_ROUTER_ENDPOINT``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:108
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:139
+msgid "unset"
+msgstr "未设置"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:109
+msgid "Complete static HTTP or HTTPS operation URL."
+msgstr "完整的静态 HTTP 或 HTTPS 操作 URL。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:110
+msgid "``AIBRIX_EXTERNAL_ROUTER_POLICY_MODE``"
+msgstr "``AIBRIX_EXTERNAL_ROUTER_POLICY_MODE``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:111
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:114
+msgid "required"
+msgstr "必填"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:112
+msgid "``Advisory`` or ``Authoritative``."
+msgstr "``Advisory`` 或 ``Authoritative``。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:113
+msgid "``AIBRIX_EXTERNAL_ROUTER_FAILURE_MODE``"
+msgstr "``AIBRIX_EXTERNAL_ROUTER_FAILURE_MODE``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:115
+msgid "``FailOpen`` or ``FailClosed``."
+msgstr "``FailOpen`` 或 ``FailClosed``。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:116
+msgid "``AIBRIX_EXTERNAL_ROUTER_FALLBACK``"
+msgstr "``AIBRIX_EXTERNAL_ROUTER_FALLBACK``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:117
+msgid "required for Advisory/FailOpen"
+msgstr "Advisory/FailOpen 模式下必填"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:118
+msgid ""
+"Registered local non-exclusive router other than ``external``. ``pd`` and"
+" ``slo*`` are rejected because they require dedicated preprocessing."
+msgstr ""
+"除 ``external`` 外已注册的本地非独占路由器。``pd`` 和 ``slo*`` 会被拒绝，因为它们需要"
+"专用预处理。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:120
+msgid "``AIBRIX_EXTERNAL_ROUTER_TIMEOUT``"
+msgstr "``AIBRIX_EXTERNAL_ROUTER_TIMEOUT``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:121
+msgid "``10ms``"
+msgstr "``10ms``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:122
+msgid "Deadline for one HTTP decision exchange."
+msgstr "一次 HTTP 决策交互的截止时间。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:123
+msgid "``AIBRIX_EXTERNAL_ROUTER_MAX_INFLIGHT``"
+msgstr "``AIBRIX_EXTERNAL_ROUTER_MAX_INFLIGHT``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:124
+msgid "``256``"
+msgstr "``256``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:125
+msgid "Non-blocking per-process bulkhead capacity."
+msgstr "每个进程的非阻塞舱壁容量。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:126
+msgid "``AIBRIX_EXTERNAL_ROUTER_MAX_REQUEST_BYTES``"
+msgstr "``AIBRIX_EXTERNAL_ROUTER_MAX_REQUEST_BYTES``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:127
+msgid "``256KiB``"
+msgstr "``256KiB``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:128
+msgid "Maximum encoded request."
+msgstr "编码后请求的最大大小。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:129
+msgid "``AIBRIX_EXTERNAL_ROUTER_MAX_RESPONSE_BYTES``"
+msgstr "``AIBRIX_EXTERNAL_ROUTER_MAX_RESPONSE_BYTES``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:130
+msgid "``64KiB``"
+msgstr "``64KiB``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:131
+msgid "Maximum response or Problem Details body."
+msgstr "响应或 Problem Details 正文的最大大小。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:132
+msgid "``AIBRIX_EXTERNAL_ROUTER_FAILURE_THRESHOLD``"
+msgstr "``AIBRIX_EXTERNAL_ROUTER_FAILURE_THRESHOLD``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:133
+msgid "``5``"
+msgstr "``5``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:134
+msgid "Consecutive attempted-exchange failures before opening."
+msgstr "熔断器开启前连续尝试交互的失败次数。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:135
+msgid "``AIBRIX_EXTERNAL_ROUTER_OPEN_DURATION``"
+msgstr "``AIBRIX_EXTERNAL_ROUTER_OPEN_DURATION``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:136
+msgid "``1s``"
+msgstr "``1s``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:137
+msgid "Open interval before one half-open probe."
+msgstr "执行一次半开探测前保持开启状态的时长。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:138
+msgid "``AIBRIX_EXTERNAL_ROUTER_AUTH_TOKEN_FILE``"
+msgstr "``AIBRIX_EXTERNAL_ROUTER_AUTH_TOKEN_FILE``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:140
+msgid "Optional bearer-token file loaded once at startup."
+msgstr "可选的 bearer token 文件，在启动时加载一次。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:141
+msgid "``AIBRIX_EXTERNAL_ROUTER_CANDIDATE_ATTRIBUTES``"
+msgstr "``AIBRIX_EXTERNAL_ROUTER_CANDIDATE_ATTRIBUTES``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:142
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:145
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:148
+msgid "empty"
+msgstr "空"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:143
+msgid "Comma-separated pod-label keys safe to send."
+msgstr "可安全发送的 Pod 标签键，以逗号分隔。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:144
+msgid "``AIBRIX_EXTERNAL_ROUTER_CANDIDATE_METRICS``"
+msgstr "``AIBRIX_EXTERNAL_ROUTER_CANDIDATE_METRICS``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:146
+msgid "``runningRequests``, ``engineUtilization``, and/or ``kvCacheUsage``."
+msgstr "``runningRequests``、``engineUtilization`` 和/或 ``kvCacheUsage``。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:147
+msgid "``AIBRIX_EXTERNAL_ROUTER_POLICY_ATTRIBUTES``"
+msgstr "``AIBRIX_EXTERNAL_ROUTER_POLICY_ATTRIBUTES``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:149
+msgid ""
+"Downstream extension-point allowlist for trusted in-process policy names."
+" Upstream AIBrix has no built-in producer."
+msgstr ""
+"可信进程内策略名称的下游扩展点允许列表。上游 AIBrix 没有内置的值提供方。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:152
+msgid ""
+"Invalid enabled configuration fails Gateway startup. "
+"Authoritative+FailOpen, Advisory without fallback, "
+"recursive/unregistered/exclusive fallback, URL userinfo, fragments, "
+"unknown metrics, invalid limits, and empty token files are rejected."
+msgstr ""
+"启用的配置无效会导致 Gateway 启动失败。系统会拒绝 Authoritative+FailOpen、未配置回退"
+"路由的 Advisory、递归/未注册/独占的回退路由、URL 用户信息、片段、未知指标、无效限制"
+"以及空 token 文件。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:157
+msgid ""
+"``AIBRIX_EXTERNAL_ROUTER_POLICY_ATTRIBUTES`` does not derive values from "
+"the request by itself. Upstream AIBrix currently has no production caller"
+" of ``RoutingContext.SetTrustedPolicyAttribute``; downstream integrations"
+" must populate validated identity or configuration values in-process "
+"before routing. Setting only the allowlist therefore produces no "
+"``policyContext.attributes``."
+msgstr ""
+"``AIBRIX_EXTERNAL_ROUTER_POLICY_ATTRIBUTES`` 本身不会从请求中派生值。上游 AIBrix "
+"目前没有在生产代码中调用 ``RoutingContext.SetTrustedPolicyAttribute``；下游集成必须在路由"
+"前于进程内填充经过验证的身份或配置值。因此，仅设置允许列表不会产生 "
+"``policyContext.attributes``。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:164
+msgid "Protocol"
+msgstr "协议"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:166
+msgid ""
+"Gateway sends POST with this media type in both ``Content-Type`` and "
+"``Accept``:"
+msgstr "Gateway 发送 POST 请求，并在 ``Content-Type`` 和 ``Accept`` 中使用以下媒体类型："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:172
+msgid ""
+"The configured endpoint is the complete operation URL; Gateway does not "
+"append a path. ``X-Request-Id`` equals ``metadata.requestId``. Gateway "
+"also propagates a valid current W3C ``traceparent`` when available and "
+"sends ``Authorization: Bearer <token>`` only when "
+"``AIBRIX_EXTERNAL_ROUTER_AUTH_TOKEN_FILE`` is set. It never forwards the "
+"inference client's authorization or arbitrary headers."
+msgstr ""
+"配置的端点是完整的操作 URL；Gateway 不会追加路径。``X-Request-Id`` 等于 "
+"``metadata.requestId``。如果存在有效的当前 W3C ``traceparent``，Gateway 也会传播它，"
+"并且仅在设置 ``AIBRIX_EXTERNAL_ROUTER_AUTH_TOKEN_FILE`` 时发送 ``Authorization: Bearer "
+"<token>``。它绝不会转发推理客户端的授权信息或任意标头。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:178
+msgid ""
+"A request contains sorted candidate IDs and ports. Optional attributes "
+"and metrics are omitted when they are not configured or available, never "
+"encoded as ``null``."
+msgstr ""
+"请求包含已排序的候选项 ID 和端口。未配置或不可用的可选属性和指标会被省略，绝不会编码"
+"为 ``null``。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:207
+msgid "Request fields have these meanings:"
+msgstr "请求字段的含义如下："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:209
+msgid ""
+"``apiVersion`` and ``kind`` are fixed to ``routing.aibrix.ai/v1alpha1`` "
+"and ``ReplicaSelectionRequest``."
+msgstr "``apiVersion`` 和 ``kind`` 固定为 ``routing.aibrix.ai/v1alpha1`` 和 ``ReplicaSelectionRequest``。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:211
+msgid ""
+"``metadata.requestId`` is a non-empty correlation ID of at most 256 UTF-8"
+" bytes. The response must echo it exactly."
+msgstr ""
+"``metadata.requestId`` 是非空的关联 ID，长度不超过 256 个 UTF-8 字节。响应必须原样"
+"回显该 ID。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:213
+msgid ""
+"``spec.model`` is the model already resolved by Gateway. The service "
+"cannot change it."
+msgstr "``spec.model`` 是 Gateway 已解析的模型。服务不能更改它。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:215
+msgid ""
+"``spec.policyMode`` is the process-configured ``Advisory`` or "
+"``Authoritative`` mode."
+msgstr "``spec.policyMode`` 是进程所配置的 ``Advisory`` 或 ``Authoritative`` 模式。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:217
+msgid ""
+"``spec.policyContext.attributes`` contains at most 32 trusted, operator-"
+"allowlisted values. Raw client headers do not populate it."
+msgstr ""
+"``spec.policyContext.attributes`` 最多包含 32 个可信且经运维人员列入允许列表的值。原始"
+"客户端标头不会填充此字段。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:219
+msgid ""
+"``spec.candidates`` is a non-empty request-local snapshot sorted by "
+"``namespace/pod-name``. Candidate order has no preference semantics."
+msgstr ""
+"``spec.candidates`` 是按 ``namespace/pod-name`` 排序的非空请求本地快照。候选项顺序"
+"不表示任何偏好。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:221
+msgid ""
+"``candidates[].id`` is the exact ``namespace/pod-name`` identity that a "
+"response may select. ``ports`` is the sorted, unique set of locally "
+"routable ports in the range 1-65535."
+msgstr ""
+"``candidates[].id`` 是响应可以选择的精确 ``namespace/pod-name`` 标识。``ports`` 是"
+"经过排序、去重且可在本地路由的端口集合，范围为 1-65535。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:224
+msgid ""
+"``candidates[].attributes`` contains only pod-label keys in "
+"``AIBRIX_EXTERNAL_ROUTER_CANDIDATE_ATTRIBUTES``."
+msgstr ""
+"``candidates[].attributes`` 仅包含 ``AIBRIX_EXTERNAL_ROUTER_CANDIDATE_ATTRIBUTES`` "
+"中的 Pod 标签键。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:227
+msgid ""
+"Candidate metrics are fixed typed fields selected through "
+"``AIBRIX_EXTERNAL_ROUTER_CANDIDATE_METRICS``. They are observational "
+"cache snapshots, not reservations or a linearizable load view:"
+msgstr ""
+"候选项指标是通过 ``AIBRIX_EXTERNAL_ROUTER_CANDIDATE_METRICS`` 选择的固定类型字段。它们"
+"是观测性的缓存快照，而不是资源预留或可线性化的负载视图："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:231
+msgid ""
+"``runningRequests`` is a non-negative, pod-wide live count from one "
+"batched Gateway cache read. It is not a per-port or per-rank value."
+msgstr ""
+"``runningRequests`` 是通过一次 Gateway 缓存批量读取获得的非负 Pod 级实时计数，并非"
+"按端口或按 rank 统计的值。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:233
+msgid ""
+"``engineUtilization`` is a finite ratio in ``[0,1]`` from the requested "
+"model's cached engine metric. It is currently populated only for engines "
+"that expose the mapped metric, including xLLM; otherwise it is omitted."
+msgstr ""
+"``engineUtilization`` 是从所请求模型的缓存引擎指标获取的 ``[0,1]`` 范围内有限比率。"
+"目前仅对公开相应映射指标的引擎（包括 xLLM）填充该字段；否则省略。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:236
+msgid ""
+"``kvCacheUsage`` is a finite ratio in ``[0,1]`` from cached "
+"``KVCacheUsagePerc``; ``1.0`` means full."
+msgstr ""
+"``kvCacheUsage`` 是从缓存的 ``KVCacheUsagePerc`` 获取的 ``[0,1]`` 范围内有限比率；"
+"``1.0`` 表示已满。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:239
+msgid ""
+"Missing, non-finite, negative, or above-one optional metric values are "
+"omitted individually without failing routing. Gateway does not scrape "
+"engines or make a per-candidate network call to populate them."
+msgstr ""
+"缺失、非有限、负数或大于一的可选指标值会分别被省略，而不会导致路由失败。Gateway "
+"不会抓取引擎指标，也不会为填充这些值而逐个候选项发起网络调用。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:243
+msgid ""
+"A selected response must echo the request ID. Gateway rejects candidates "
+"and ports that were not present in the exact request."
+msgstr "选中目标的响应必须回显请求 ID。Gateway 会拒绝未在该请求中出现的候选项和端口。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:258
+msgid ""
+"``target.id`` must occur in the exact candidate snapshot. ``target.port``"
+" must belong to that candidate; it may be omitted only when the candidate"
+" advertised exactly one port. The service cannot return an address or "
+"URL."
+msgstr ""
+"``target.id`` 必须存在于该候选项快照中。``target.port`` 必须属于该候选项；仅当候选项"
+"恰好公布一个端口时才可省略。服务不能返回地址或 URL。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:262
+msgid ""
+"``NoDecision`` is valid only in Advisory mode and runs the configured "
+"fallback:"
+msgstr "``NoDecision`` 仅在 Advisory 模式下有效，并运行已配置的回退路由："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:276
+msgid ""
+"``Denied`` is valid only in Authoritative mode and returns the fixed "
+"Gateway HTTP 403 response without reaching a backend:"
+msgstr "``Denied`` 仅在 Authoritative 模式下有效，并返回固定的 Gateway HTTP 403 响应，而不会到达后端："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:294
+msgid ""
+"``NoDecision`` and ``Denied`` omit ``target``. ``decisionId`` and "
+"``reason`` are optional strings of at most 256 UTF-8 bytes; the external "
+"reason is never copied to the inference client response."
+msgstr ""
+"``NoDecision`` 和 ``Denied`` 省略 ``target``。``decisionId`` 和 ``reason`` 是长度"
+"不超过 256 个 UTF-8 字节的可选字符串；外部原因绝不会复制到推理客户端响应中。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:298
+msgid ""
+"Only HTTP 200 with the exact protocol media type is a decision. Gateway "
+"rejects empty bodies, malformed JSON, duplicate object members, trailing "
+"JSON values, missing or null required fields, mismatched request IDs, "
+"illegal decisions, and targets outside the request snapshot. Unknown "
+"response fields are ignored for additive alpha evolution. Redirects, "
+"compression, and automatic retries are disabled."
+msgstr ""
+"只有使用准确协议媒体类型的 HTTP 200 响应才算作决策。Gateway 会拒绝空正文、格式错误"
+"的 JSON、重复的对象成员、尾随 JSON 值、缺失或为 null 的必填字段、不匹配的请求 ID、"
+"非法决策以及请求快照之外的目标。为支持 alpha 阶段的增量演进，未知响应字段会被忽略。"
+"重定向、压缩和自动重试均被禁用。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:306
+msgid "Security and operations"
+msgstr "安全与运维"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:308
+msgid ""
+"The endpoint URL and credentials are process-controlled and cannot be "
+"supplied or overridden by a client. The ``external`` strategy still "
+"participates in the normal routing-strategy resolution order, including "
+"the generic ``routing-strategy`` request header unless an operator locks "
+"or otherwise controls strategy selection. Do not use that header as an "
+"authorization boundary."
+msgstr ""
+"端点 URL 和凭据由进程控制，客户端无法提供或覆盖。除非运维人员锁定或以其他方式控制"
+"策略选择，否则 ``external`` 策略仍参与正常的路由策略解析顺序，包括通用的 "
+"``routing-strategy`` 请求标头。请勿将该标头用作授权边界。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:315
+msgid ""
+"Use a Kubernetes Service, NetworkPolicy, least-privilege bearer token, "
+"and HTTPS where required. The decision service must coordinate its own "
+"state across replicas. Gateway candidate membership, address resolution, "
+"final admission and request accounting remain local. Bulkheads and "
+"circuit breakers are deliberately process-local to each Gateway replica."
+msgstr ""
+"根据需要使用 Kubernetes Service、NetworkPolicy、最小权限 bearer token 和 HTTPS。"
+"决策服务必须自行协调各副本间的状态。Gateway 的候选项成员关系、地址解析、最终准入和"
+"请求计量仍在本地完成。舱壁和熔断器特意保持为每个 Gateway 副本的进程本地机制。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:321
+msgid "Monitor these low-cardinality metrics:"
+msgstr "监控以下低基数指标："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:323
+#, python-brace-format
+msgid "``aibrix_gateway_external_router_requests_total{outcome}``"
+msgstr "``aibrix_gateway_external_router_requests_total{outcome}``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:324
+#, python-brace-format
+msgid "``aibrix_gateway_external_router_fallback_total{reason}``"
+msgstr "``aibrix_gateway_external_router_fallback_total{reason}``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:325
+msgid "``aibrix_gateway_external_router_duration_seconds``"
+msgstr "``aibrix_gateway_external_router_duration_seconds``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:326
+msgid "``aibrix_gateway_external_router_inflight``"
+msgstr "``aibrix_gateway_external_router_inflight``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:327
+#, python-brace-format
+msgid "``aibrix_gateway_external_router_circuit_state{state}``"
+msgstr "``aibrix_gateway_external_router_circuit_state{state}``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:329
+msgid ""
+"The fallback counter records each invocation attempt before the local "
+"router runs, so both successful and failed fallbacks are visible."
+msgstr ""
+"回退计数器会在本地路由器运行前记录每次调用尝试，因此成功和失败的回退均可观测。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:332
+msgid ""
+"Start with an Advisory canary, compare fallback and latency rates, then "
+"move to Authoritative only after denial and service-availability tests "
+"pass. Roll back by removing ``external`` from routing selection or "
+"unsetting the endpoint and restarting Gateway."
+msgstr ""
+"先从 Advisory 金丝雀部署开始，比较回退率和延迟率；仅在拒绝与服务可用性测试通过后，"
+"再迁移到 Authoritative。回滚时，可从路由选择中移除 ``external``，或取消设置端点并"
+"重启 Gateway。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:338
+msgid "Troubleshooting"
+msgstr "故障排查"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:340
+msgid ""
+"HTTP 403 with ``external_policy_denied`` is a valid Authoritative denial,"
+" not an external-service outage."
+msgstr ""
+"带有 ``external_policy_denied`` 的 HTTP 403 是有效的 Authoritative 拒绝，并非外部服务"
+"中断。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:342
+msgid ""
+"HTTP 503 with ``external_router_unavailable`` means FailClosed handled a "
+"system or protocol failure. Check the bounded Gateway error log, external"
+" request and fallback counters, latency, and circuit state."
+msgstr ""
+"带有 ``external_router_unavailable`` 的 HTTP 503 表示 FailClosed 处理了系统或协议"
+"故障。请检查长度受限的 Gateway 错误日志、外部请求及回退计数器、延迟和熔断器状态。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:345
+msgid ""
+"If an allowlisted attribute or metric is absent, verify the environment "
+"allowlist and its trusted/cache data source. Absence does not fail "
+"routing."
+msgstr ""
+"如果允许列表中的属性或指标缺失，请验证环境允许列表及其可信/缓存数据源。缺失不会导致"
+"路由失败。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:347
+msgid ""
+"Repeated ``open`` circuit state usually indicates transport, timeout, "
+"non-200, media-type, JSON, request-ID, or target-validation failures."
+msgstr ""
+"熔断器反复处于 ``open`` 状态通常表示传输、超时、非 200 响应、媒体类型、JSON、请求 "
+"ID 或目标验证失败。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:349
+msgid ""
+"A decision service must return the candidate ID exactly as supplied, "
+"including namespace, and must select only an advertised port."
+msgstr "决策服务必须原样返回所提供的候选项 ID（包括命名空间），且只能选择已公布的端口。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:353
+msgid "Sample"
+msgstr "示例"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/external-replica-routing.rst:355
+msgid ""
+"See the runnable sample under ``samples/external-replica-router/`` for "
+"preferred-zone and premium-accelerator rules with deterministic tie-"
+"breaking. Trusted policy attributes must be populated by validated in-"
+"process code; do not copy raw tenant or authorization headers into them."
+msgstr ""
+"请参阅 ``samples/external-replica-router/`` 下可运行的示例，其中包含采用确定性决胜规则"
+"的首选可用区和高端加速器规则。可信策略属性必须由经过验证的进程内代码填充；请勿将原始"
+"租户或授权标头复制到其中。"

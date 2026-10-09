@@ -1,0 +1,454 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/production/gateway.rst:5
+msgid "Deploying Gateway"
+msgstr "部署网关"
+
+#: ../../source/production/gateway.rst:7
+msgid ""
+"This guide covers production deployment configuration for the AIBrix "
+"gateway components."
+msgstr "本指南介绍 AIBrix 网关组件的生产部署配置。"
+
+#: ../../source/production/gateway.rst:10
+msgid "Configuring Resources and Replica Count"
+msgstr "配置资源与副本数"
+
+#: ../../source/production/gateway.rst:12
+msgid ""
+"For production deployments, we recommend tuning replica counts and "
+"resource allocations for both the **Gateway Plugin** and the **Envoy "
+"Proxy** data plane."
+msgstr ""
+"生产部署中，建议同时调整 **Gateway Plugin** 和 **Envoy "
+"Proxy** 数据面的副本数与资源分配。"
+
+#: ../../source/production/gateway.rst:16
+msgid "Gateway Plugin"
+msgstr "Gateway Plugin"
+
+#: ../../source/production/gateway.rst:18
+msgid ""
+"The gateway plugin (``gatewayPlugin``) handles request routing logic and "
+"external processing. Set ``replicaCount`` and container resources in your"
+" ``values.yaml`` override:"
+msgstr ""
+"网关插件（``gatewayPlugin`` ）负责请求路由逻辑和外部处理。在 ``values.yaml`` 覆盖文件中设置 ``replicaCount`` "
+"和容器资源："
+
+#: ../../source/production/gateway.rst:35
+msgid "Envoy Proxy"
+msgstr "Envoy Proxy"
+
+#: ../../source/production/gateway.rst:37
+msgid ""
+"The Envoy proxy (``gateway.envoyProxy``) is the data-plane component "
+"managed by Envoy Gateway. Set ``replicas`` and per-container resources as"
+" follows:"
+msgstr ""
+"Envoy 代理（``gateway.envoyProxy`` ）是由 Envoy Gateway 管理的数据面组件。按如下方式设置 ``replicas`` "
+"和每个容器的资源："
+
+#: ../../source/production/gateway.rst:56
+msgid "Enabling Redis for Multi-Replica Deployments"
+msgstr "为多副本部署启用 Redis"
+
+#: ../../source/production/gateway.rst:58
+msgid ""
+"When running more than one gateway plugin replica, shared state is "
+"required so that all instances agree on routing decisions (e.g. prefix-"
+"cache block assignments, rate-limit counters). Two settings must both be "
+"configured:"
+msgstr ""
+"运行多个网关插件副本时，需要共享状态，以使所有实例对路由决策达成一致（例如 prefix-cache 块分配、限流计数器）。"
+"必须同时配置以下两项："
+
+#: ../../source/production/gateway.rst:62
+msgid ""
+"**Connect to Redis** — the gateway plugin reads the ``REDIS_HOST`` "
+"environment variable at startup. If the variable is unset or Redis is "
+"unreachable, each replica operates with in-process state only, which "
+"causes inconsistent routing across pods."
+msgstr ""
+"**连接 Redis** — 网关插件在启动时读取 ``REDIS_HOST`` "
+"环境变量。如果未设置该变量或 Redis 不可达，每个副本仅使用进程内状态，会导致各 Pod 之间路由不一致。"
+
+#: ../../source/production/gateway.rst:66
+msgid ""
+"**Enable cross-replica state sync** — setting "
+"``AIBRIX_STATESYNC_ENABLED=true`` activates the Redis-backed delta-sync "
+"mechanism that propagates prefix-cache state across replicas. Without "
+"this flag, the gateway connects to Redis for other purposes (e.g. rate "
+"limiting) but **does not** synchronize prefix-cache routing state between"
+" pods, so multi-replica ``prefix-cache`` routing will still produce "
+"inconsistent decisions."
+msgstr ""
+"**启用跨副本状态同步** — 设置 "
+"``AIBRIX_STATESYNC_ENABLED=true`` 会启用基于 Redis 的增量同步机制，在副本间传播 prefix-cache 状态。"
+"没有该标志时，网关仍会为其他用途（例如限流）连接 Redis，但 **不会** 在 Pod 之间同步 prefix-cache 路由状态，"
+"因此多副本 ``prefix-cache`` 路由仍会产生不一致的决策。"
+
+#: ../../source/production/gateway.rst:72
+msgid "Enable both by updating your ``values.yaml`` override:"
+msgstr "通过更新 ``values.yaml`` 覆盖文件同时启用这两项："
+
+#: ../../source/production/gateway.rst:85
+msgid ""
+"The Helm chart sets ``REDIS_HOST`` automatically from "
+"``gatewayPlugin.dependencies.redis.host``, defaulting to ``<release-name"
+">-redis-master`` when the field is empty. For an external Redis cluster, "
+"set ``host`` to the service hostname or IP of your Redis endpoint."
+msgstr ""
+"Helm chart 会根据 ``gatewayPlugin.dependencies.redis.host`` 自动设置 ``REDIS_HOST`` "
+"，该字段为空时默认为 ``<release-name>-redis-master`` 。对于外部 Redis 集群，将 ``host`` 设置为 "
+"Redis 端点的服务主机名或 IP。"
+
+#: ../../source/production/gateway.rst:90
+msgid ""
+"``AIBRIX_STATESYNC_ENABLED`` defaults to ``false``. It must be explicitly"
+" set to ``true`` for cross-replica state sync to activate. Omitting this "
+"flag is the most common cause of inconsistent ``prefix-cache`` routing "
+"when scaling the gateway plugin beyond one replica."
+msgstr ""
+"``AIBRIX_STATESYNC_ENABLED`` 默认为 ``false`` 。必须显式设置为 ``true`` 才会启用跨副本状态同步。将网关插件扩展到多个副本时，漏设该标志是 "
+"``prefix-cache`` 路由不一致最常见的原因。"
+
+#: ../../source/production/gateway.rst:95
+msgid "Sizing Redis"
+msgstr "为 Redis 规划容量"
+
+#: ../../source/production/gateway.rst:97
+msgid ""
+"The bundled Redis instance is deployed under ``metadata.redis``. For "
+"production workloads with multiple gateway plugin replicas, increase its "
+"CPU, memory, and (if using persistence) storage from the defaults:"
+msgstr ""
+"内置 Redis 实例部署在 ``metadata.redis`` 下。对于使用多个网关插件副本的生产负载，"
+"请在默认值基础上提高其 CPU、内存，以及（若使用持久化）存储："
+
+#: ../../source/production/gateway.rst:115
+msgid ""
+"The right sizing depends on request throughput and the number of distinct"
+" prefix-cache keys in flight. As a starting point, allocate roughly **1 "
+"GiB of memory per 1 000 concurrent requests** and increase CPU if Redis "
+"becomes a latency bottleneck (monitor "
+"``redis_commands_duration_seconds``)."
+msgstr ""
+"合适的容量取决于请求吞吐量和进行中的不同 prefix-cache key 数量。作为起点，大约按 **每 1 000 个并发请求 1 GiB "
+"内存** 分配；如果 Redis 成为延迟瓶颈，再增加 CPU（监控 ``redis_commands_duration_seconds`` ）。"
+
+#: ../../source/production/gateway.rst:120
+msgid ""
+"If you are using an externally managed Redis (e.g. AWS ElastiCache, "
+"Google Memorystore), set ``gatewayPlugin.dependencies.redis.host`` to the"
+" external endpoint and remove the ``metadata.redis`` block from your "
+"override — the chart will not deploy its own Redis when a custom host is "
+"provided."
+msgstr ""
+"如果使用外部托管 Redis（例如 AWS ElastiCache、Google Memorystore），将 "
+"``gatewayPlugin.dependencies.redis.host`` 设置为外部端点，并从覆盖文件中删除 ``metadata.redis`` "
+"块 — 提供自定义 host 时，chart 不会部署自带 Redis。"
+
+#: ../../source/production/gateway.rst:126
+msgid "Configuring Buffer Limits, Connections, and QPS"
+msgstr "配置缓冲区限制、连接与 QPS"
+
+#: ../../source/production/gateway.rst:128
+msgid ""
+"AIBrix exposes three policy knobs under ``gateway`` to control how "
+"traffic flows between clients, the Envoy proxy, and backend pods."
+msgstr ""
+"AIBrix 在 ``gateway`` 下提供三个策略开关，用于控制客户端、Envoy 代理与后端 Pod 之间的流量。"
+
+#: ../../source/production/gateway.rst:132
+msgid "Client Traffic Policy"
+msgstr "客户端流量策略"
+
+#: ../../source/production/gateway.rst:134
+msgid ""
+"``clientTrafficPolicy`` governs connections and request sizes arriving "
+"from external clients:"
+msgstr "``clientTrafficPolicy`` 控制来自外部客户端的连接和请求大小："
+
+#: ../../source/production/gateway.rst:136
+msgid ""
+"**bufferLimit** — maximum bytes buffered per request/response body "
+"(input/output size). The default ``4194304`` is 4 MiB. Increase this if "
+"your workloads send large prompts or receive large completions."
+msgstr ""
+"**bufferLimit** — 每个请求/响应体缓冲的最大字节数（输入/输出大小）。默认 ``4194304`` 为 4 MiB。"
+"如果工作负载发送较大 prompt 或接收较大 completion，请增大该值。"
+
+#: ../../source/production/gateway.rst:139
+msgid ""
+"**connectionLimit** — maximum simultaneous TCP connections accepted by "
+"the proxy."
+msgstr "**connectionLimit** — 代理接受的最大同时 TCP 连接数。"
+
+#: ../../source/production/gateway.rst:140
+msgid ""
+"**http2.maxConcurrentStreams** — maximum concurrent HTTP/2 streams per "
+"connection from a client."
+msgstr "**http2.maxConcurrentStreams** — 每个来自客户端的连接上的最大并发 HTTP/2 流数。"
+
+#: ../../source/production/gateway.rst:154
+msgid "Backend Traffic Policy"
+msgstr "后端流量策略"
+
+#: ../../source/production/gateway.rst:156
+msgid ""
+"``backendTrafficPolicy`` controls how Envoy distributes load across "
+"backend pods and limits the blast radius of a single slow or failing pod:"
+msgstr ""
+"``backendTrafficPolicy`` 控制 Envoy 如何在后端 Pod 之间分配负载，并限制单个缓慢或故障 Pod 的影响范围："
+
+#: ../../source/production/gateway.rst:159
+msgid ""
+"**circuitBreaker.maxConnections** — maximum TCP connections to a single "
+"backend pod."
+msgstr "**circuitBreaker.maxConnections** — 到单个后端 Pod 的最大 TCP 连接数。"
+
+#: ../../source/production/gateway.rst:160
+msgid ""
+"**circuitBreaker.maxParallelRequests** — maximum in-flight requests to a "
+"single backend pod (effective QPS cap when combined with latency)."
+msgstr ""
+"**circuitBreaker.maxParallelRequests** — 到单个后端 Pod 的最大进行中请求数（结合延迟时相当于有效 QPS 上限）。"
+
+#: ../../source/production/gateway.rst:161
+msgid ""
+"**circuitBreaker.maxPendingRequests** — maximum requests queued waiting "
+"for a connection to a backend pod."
+msgstr "**circuitBreaker.maxPendingRequests** — 等待连接到后端 Pod 的最大排队请求数。"
+
+#: ../../source/production/gateway.rst:162
+msgid ""
+"**circuitBreaker.maxParallelRetries** — maximum concurrent retries to a "
+"backend pod."
+msgstr "**circuitBreaker.maxParallelRetries** — 到后端 Pod 的最大并发重试数。"
+
+#: ../../source/production/gateway.rst:163
+msgid ""
+"**circuitBreaker.maxRequestsPerConnection** — maximum requests served on "
+"a single connection before it is recycled."
+msgstr "**circuitBreaker.maxRequestsPerConnection** — 单条连接在回收前可服务的最大请求数。"
+
+#: ../../source/production/gateway.rst:164
+msgid ""
+"**http2.maxConcurrentStreams** — maximum concurrent HTTP/2 streams per "
+"connection to a backend pod."
+msgstr "**http2.maxConcurrentStreams** — 到后端 Pod 的每个连接上的最大并发 HTTP/2 流数。"
+
+#: ../../source/production/gateway.rst:180
+msgid "Envoy Patch Policy"
+msgstr "Envoy Patch Policy"
+
+#: ../../source/production/gateway.rst:182
+msgid ""
+"``envoyPatchPolicy`` provides lower-level overrides applied directly to "
+"the Envoy xDS configuration, covering route timeouts and the limits for "
+"the original-destination cluster:"
+msgstr ""
+"``envoyPatchPolicy`` 提供直接作用于 Envoy xDS 配置的更底层覆盖，涵盖路由超时和 original-destination "
+"集群的限制："
+
+#: ../../source/production/gateway.rst:185
+msgid ""
+"**route.timeout** — maximum duration Envoy waits for a backend response. "
+"Increase this for long-running inference requests."
+msgstr "**route.timeout** — Envoy 等待后端响应的最长时间。对长时间推理请求请增大该值。"
+
+#: ../../source/production/gateway.rst:187
+msgid ""
+"**route.connectTimeout** — maximum time to establish a TCP connection to "
+"a backend pod."
+msgstr "**route.connectTimeout** — 与后端 Pod 建立 TCP 连接的最长时间。"
+
+#: ../../source/production/gateway.rst:188
+msgid ""
+"**circuitBreakers.maxConnections / maxRequests / maxPendingRequests** — "
+"same semantics as the backend traffic policy above but applied at the "
+"Envoy cluster level."
+msgstr ""
+"**circuitBreakers.maxConnections / maxRequests / maxPendingRequests** — "
+"语义与上述后端流量策略相同，但作用于 Envoy 集群级别。"
+
+#: ../../source/production/gateway.rst:204
+msgid "Choosing a Routing Strategy"
+msgstr "选择路由策略"
+
+#: ../../source/production/gateway.rst:206
+msgid ""
+"If no ``routing-strategy`` header is provided, the gateway defaults to "
+"``random`` routing."
+msgstr "如果未提供 ``routing-strategy`` 头，网关默认使用 ``random`` 路由。"
+
+#: ../../source/production/gateway.rst:219
+msgid ""
+"For production workloads we recommend selecting a strategy based on your "
+"traffic pattern:"
+msgstr "对于生产负载，建议根据流量模式选择策略："
+
+#: ../../source/production/gateway.rst:221
+msgid ""
+"**Multi-turn conversations or workloads with prompt prefix overlap — "
+"use** ``prefix-cache``"
+msgstr "**多轮对话或 prompt 前缀重叠的负载 — 使用** ``prefix-cache``"
+
+#: ../../source/production/gateway.rst:223
+msgid ""
+"When requests share a common prompt prefix (e.g. a system prompt, few-"
+"shot examples, or conversation history), ``prefix-cache`` routes each "
+"request to the pod that already holds the matching KV-cache blocks in GPU"
+" memory, reducing redundant computation and improving latency. See "
+"`prefix cache routing details "
+"<../../../pkg/plugins/gateway/algorithms/prefix_cache_readme.md>`_ for "
+"algorithm internals and configuration options."
+msgstr ""
+"当请求共享相同 prompt 前缀（例如 system prompt、few-shot 示例或对话历史）时，``prefix-cache`` 会将每个请求路由到 "
+"GPU 内存中已持有匹配 KV-cache 块的 Pod，减少重复计算并改善延迟。算法内部与配置选项见 `prefix cache routing "
+"details <../../../pkg/plugins/gateway/algorithms/prefix_cache_readme.md>`_ "
+"。"
+
+#: ../../source/production/gateway.rst:243
+msgid "**Independent requests with no prefix overlap — use** ``least-request``"
+msgstr "**无前缀重叠的独立请求 — 使用** ``least-request``"
+
+#: ../../source/production/gateway.rst:245
+msgid ""
+"When each request has a unique prompt and there is no KV-cache reuse "
+"benefit, ``least-request`` distributes load evenly by always routing to "
+"the pod with the fewest in-flight requests."
+msgstr ""
+"当每个请求的 prompt 都不同且无法从 KV-cache 复用中获益时，``least-request`` "
+"始终路由到进行中请求最少的 Pod，从而均匀分配负载。"
+
+#: ../../source/production/gateway.rst:259
+msgid "**High-throughput workloads requiring compute separation — use** ``pd``"
+msgstr "**需要计算分离的高吞吐负载 — 使用** ``pd``"
+
+#: ../../source/production/gateway.rst:261
+msgid ""
+"Prefill-Decode (PD) disaggregation splits the two phases of LLM inference"
+" across dedicated pods: prefill pods process the prompt and decode pods "
+"generate tokens. This allows each pod type to be sized and scaled "
+"independently, improving GPU utilization at high request volumes."
+msgstr ""
+"Prefill-Decode（PD）分离将 LLM 推理的两个阶段拆分到专用 Pod：prefill Pod 处理 prompt，decode Pod "
+"生成 token。这样可以对每种 Pod 独立规划容量和扩缩容，在高请求量下提升 GPU 利用率。"
+
+#: ../../source/production/gateway.rst:276
+msgid ""
+"See `prefill-decode disaggregation details "
+"<../../../pkg/plugins/gateway/algorithms/pd_readme.md>`_ for deployment "
+"requirements and configuration options."
+msgstr ""
+"部署要求与配置选项见 `prefill-decode disaggregation details <../../../pkg/plugins/gateway/algorithms/pd_readme.md>`_ "
+"。"
+
+#: ../../source/production/gateway.rst:280
+msgid ""
+"``random`` is suitable for testing and low-traffic scenarios where "
+"routing quality is not critical. For any production deployment, "
+"explicitly set ``routing-strategy`` to avoid relying on the default."
+msgstr "``random`` 适用于测试和低流量、对路由质量要求不高的场景。任何生产部署都应显式设置 ``routing-strategy`` ，避免依赖默认值。"
+
+#: ../../source/production/gateway.rst:285
+msgid "Draining Pods"
+msgstr "排空 Pod"
+
+#: ../../source/production/gateway.rst:287
+msgid ""
+"The gateway excludes Pods annotated with ``aibrix.ai/draining=true`` from"
+" its ready-pod routing candidates. RoleSet and PodSet controllers set "
+"this annotation before deleting serving Pods when a role configures "
+"``drain.timeoutSeconds > 0``. This gives the gateway time to stop "
+"assigning new requests before the controller removes the Pod."
+msgstr ""
+"网关会将带有 ``aibrix.ai/draining=true`` 注解的 Pod 排除出就绪 Pod 路由候选。"
+"当某个 role 配置了 ``drain.timeoutSeconds > 0`` 时，RoleSet 和 PodSet 控制器会在删除服务 Pod 之前设置该注解。"
+"这给网关时间停止分配新请求，然后再由控制器移除该 Pod。"
+
+#: ../../source/production/gateway.rst:293
+msgid "The gateway treats the drain annotation as a routing signal only:"
+msgstr "网关仅将排空注解视为路由信号："
+
+#: ../../source/production/gateway.rst:311
+msgid ""
+"The controller owns the timeout and deletion decision. The gateway does "
+"not parse ``drain-start-time`` and does not emit drain lifecycle events."
+msgstr "超时与删除决策由控制器负责。网关不解析 ``drain-start-time`` ，也不发出排空生命周期事件。"
+
+#: ../../source/production/gateway.rst:315
+msgid "Per-Model Routing Configuration"
+msgstr "按模型配置路由"
+
+#: ../../source/production/gateway.rst:317
+msgid ""
+"When a single gateway deployment serves multiple models, you may need "
+"different routing strategies per model — for example, ``prefix-cache`` "
+"for a chat model and ``pd`` for a batch-inference model. AIBrix supports "
+"this through **Model Config Profiles**, which let you attach a routing "
+"configuration directly to each model's pods via an annotation and select "
+"a profile at request time using the ``config-profile`` header."
+msgstr ""
+"当单个网关部署服务多个模型时，可能需要按模型使用不同路由策略 — 例如聊天模型用 ``prefix-cache`` ，批处理推理模型用 ``pd`` "
+"。AIBrix 通过 **Model Config Profiles** 支持这一点：可用注解将路由配置直接附加到每个模型的 Pod，并在请求时通过 "
+"``config-profile`` 头选择 profile。"
+
+#: ../../source/production/gateway.rst:335
+msgid ""
+"If the ``config-profile`` header is omitted, the model's "
+"``defaultProfile`` is used. This allows the same gateway to enforce "
+"different routing strategies, prompt-length bucketing, and PD modes per "
+"model without deploying separate gateway instances."
+msgstr ""
+"如果省略 ``config-profile`` 头，则使用该模型的 ``defaultProfile`` 。这样同一网关可按模型实施不同的路由策略、prompt "
+"长度分桶和 PD 模式，而无需部署单独的网关实例。"
+
+#: ../../source/production/gateway.rst:339
+msgid ""
+"For config profile setup and the full annotation schema see "
+":ref:`config_profiles` in the Gateway Routing guide. For production "
+"guidance including RPS limiting see :ref:`model_deployment_production`."
+msgstr ""
+"配置 profile 的设置和完整注解 schema 见网关路由指南中的 :ref:`config_profiles` 。包含 RPS 限制在内的生产指导见 "
+":ref:`model_deployment_production` 。"
+
+#: ../../source/production/gateway.rst:341
+msgid "What's next?"
+msgstr "下一步？"
+
+#: ../../source/production/gateway.rst:344
+msgid ":doc:`model-deployment`: deploy models behind this gateway"
+msgstr ":doc:`model-deployment` ：在该网关后部署模型"
+
+#: ../../source/production/gateway.rst:345
+msgid ":doc:`observability`: gateway metrics and dashboards"
+msgstr ":doc:`observability` ：网关指标与仪表盘"
+
+#: ../../source/production/gateway.rst:346
+msgid ":doc:`../features/pd-disaggregation`: split prefill from decode"
+msgstr ":doc:`../features/pd-disaggregation` ：将 prefill 与 decode 分离"
+
+#: ../../source/production/gateway.rst:347
+msgid ":doc:`../designs/aibrix-router`: how routing decisions are made"
+msgstr ":doc:`../designs/aibrix-router` ：路由决策如何产生"

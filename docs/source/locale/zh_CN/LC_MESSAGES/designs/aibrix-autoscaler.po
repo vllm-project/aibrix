@@ -1,0 +1,352 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/designs/aibrix-autoscaler.rst:5
+msgid "AIBrix Autoscaler"
+msgstr "AIBrix Autoscaler"
+
+#: ../../source/designs/aibrix-autoscaler.rst:8
+msgid "Overview"
+msgstr "概述"
+
+#: ../../source/designs/aibrix-autoscaler.rst:10
+msgid ""
+"AIBrix provides a comprehensive autoscaling framework tailored for large "
+"language model (LLM) serving on Kubernetes (K8s). It supports multiple "
+"scaling paradigms, integrating native Kubernetes components with "
+"enhancements specifically designed for LLM workloads. This enables users "
+"to flexibly choose the most appropriate autoscaler for their workload "
+"patterns and cost-performance objectives."
+msgstr ""
+"AIBrix 提供面向 Kubernetes（K8s）上大语言模型（LLM）推理服务的自动扩缩容框架。"
+"它支持多种扩缩容范式，将原生 Kubernetes 组件与针对 LLM 工作负载的增强能力结合，"
+"便于按负载模式和成本性能目标选择合适的扩缩容器。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:15
+msgid "Supported Autoscaling Mechanisms"
+msgstr "支持的自动扩缩容机制"
+
+#: ../../source/designs/aibrix-autoscaler.rst:17
+msgid ""
+"AIBrix currently implements **two distinct categories of autoscaling "
+"mechanisms**, each suited to different needs:"
+msgstr "AIBrix 当前实现了 **两类自动扩缩容机制** ，分别适用于不同需求："
+
+#: ../../source/designs/aibrix-autoscaler.rst:19
+msgid "**Metrics-based Autoscaling**"
+msgstr "**基于指标的自动扩缩容**"
+
+#: ../../source/designs/aibrix-autoscaler.rst:21
+msgid ""
+"This family relies on runtime metrics (like CPU/GPU utilization, "
+"concurrent requests, or token throughput) to make scaling decisions. It "
+"reacts immediately to observed changes in system load."
+msgstr ""
+"该类机制依赖运行时指标（如 CPU/GPU 利用率、并发请求数或 token 吞吐）做扩缩容决策，"
+"对观测到的系统负载变化立即响应。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:24
+msgid ""
+"**HPA (Horizontal Pod Autoscaler)** The standard Kubernetes HPA scales "
+"pod replicas based on CPU, memory, or custom metrics. Best suited for "
+"generic workloads with stable utilization patterns."
+msgstr ""
+"**HPA（Horizontal Pod Autoscaler）** 标准 Kubernetes HPA 基于 CPU、内存或自定义指标扩缩 Pod 副本。"
+"最适合利用率模式稳定的通用工作负载。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:28
+msgid ""
+"**KPA (Knative Pod Autoscaler)** Uses a dual-window approach (stable + "
+"panic) to enable rapid scale-up on sudden traffic spikes. AIBrix enhances"
+" this by fetching metrics internally instead of relying solely on "
+"Prometheus scraping."
+msgstr ""
+"**KPA（Knative Pod Autoscaler）** 采用双窗口（stable + panic）在突发流量时快速扩容。"
+"AIBrix 在此基础上改为内部拉取指标，而不只依赖 Prometheus 抓取。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:32
+msgid ""
+"**APA (Advanced Pod Autoscaler)** AIBrix’s own scaler designed "
+"specifically for LLM workloads. Adds fluctuation tolerance to reduce "
+"oscillations and is evolving to incorporate profiling-informed scaling."
+msgstr ""
+"**APA（Advanced Pod Autoscaler）** AIBrix 面向 LLM 工作负载的原生扩缩容器。"
+"增加波动容忍以减少振荡，并逐步引入基于性能剖析的扩缩容。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:36
+msgid "**Optimizer-based Autoscaling**"
+msgstr "**基于优化器的自动扩缩容**"
+
+#: ../../source/designs/aibrix-autoscaler.rst:38
+msgid ""
+"This is a fundamentally different approach that does *not* depend on "
+"online metric thresholds. Instead, it leverages **offline profiling "
+"data** and **optimization solvers** to proactively determine optimal "
+"resource allocation. It includes (1) LLM Request Monitoring and (2) GPU "
+"Optimizer. The following figure shows the overall architecture. First, "
+"the LLM Request Monitoring component is responsible for monitoring past "
+"inference requests and their request patterns. Second, the GPU Optimizer "
+"component is responsible for calculating the optimal GPU number "
+"recommendation based on the request patterns and sending the "
+"recommendation to the K8s KPA."
+msgstr ""
+"这是一种本质不同的方法，*不*依赖在线指标阈值。"
+"它利用 **离线剖析数据** 和 **优化求解器** 主动确定最优资源分配。"
+"包含 (1) LLM 请求监控和 (2) GPU Optimizer。下图给出整体架构。"
+"首先，LLM 请求监控组件负责观测历史推理请求及其模式。"
+"其次，GPU Optimizer 基于请求模式计算最优 GPU 数量建议，并将建议发送给 K8s KPA。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:42
+msgid "optimizer-based-podautoscaler"
+msgstr "optimizer-based-podautoscaler"
+
+#: ../../source/designs/aibrix-autoscaler.rst:47
+msgid "This method is particularly suited for:"
+msgstr "该方法尤其适合："
+
+#: ../../source/designs/aibrix-autoscaler.rst:49
+msgid "Scheduled or tidal workloads with known patterns."
+msgstr "具有已知模式的定时或潮汐型工作负载。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:50
+msgid ""
+"Heterogeneous GPU setups where optimal cost-performance balancing is "
+"required."
+msgstr "需要在成本与性能之间取得最优平衡的异构 GPU 环境。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:51
+msgid ""
+"SLO-driven environments that benefit from planning resources before the "
+"load actually arrives."
+msgstr "需要在负载到达前规划资源的 SLO 驱动环境。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:55
+msgid "Type"
+msgstr "类型"
+
+#: ../../source/designs/aibrix-autoscaler.rst:55
+msgid "Description"
+msgstr "说明"
+
+#: ../../source/designs/aibrix-autoscaler.rst:55
+msgid "Best suited for"
+msgstr "最适用场景"
+
+#: ../../source/designs/aibrix-autoscaler.rst:57
+msgid "HPA"
+msgstr "HPA"
+
+#: ../../source/designs/aibrix-autoscaler.rst:57
+msgid "Standard Kubernetes HPA scaling pods based on CPU/memory/custom metrics."
+msgstr "标准 Kubernetes HPA，基于 CPU/内存/自定义指标扩缩 Pod。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:57
+msgid "Generic workloads with steady utilization."
+msgstr "利用率稳定的通用工作负载。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:60
+msgid "KPA"
+msgstr "KPA"
+
+#: ../../source/designs/aibrix-autoscaler.rst:60
+msgid "Knative-style scaler with stable & panic windows"
+msgstr "带 stable 与 panic 窗口的 Knative 风格扩缩容器"
+
+#: ../../source/designs/aibrix-autoscaler.rst:60
+msgid "Burst-prone, unpredictable traffic patterns."
+msgstr "易突发、不可预测的流量模式。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:62
+msgid "APA"
+msgstr "APA"
+
+#: ../../source/designs/aibrix-autoscaler.rst:62
+msgid ""
+"AIBrix’s native scaler for LLM, with tolerance buffers to minimize "
+"thrashing."
+msgstr "AIBrix 面向 LLM 的原生扩缩容器，带容忍缓冲以减少抖动。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:62
+msgid "LLM workloads requiring stability, fine-grained optimizations."
+msgstr "需要稳定性与细粒度优化的 LLM 工作负载。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:65
+msgid "Optimizer-based"
+msgstr "基于优化器"
+
+#: ../../source/designs/aibrix-autoscaler.rst:65
+msgid ""
+"Plans scaling using offline profiling + solver, without relying on live "
+"metric thresholds."
+msgstr "利用离线剖析与求解器规划扩缩容，不依赖实时指标阈值。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:65
+msgid ""
+"Scheduled workloads, multi-GPU cost/SLO optimization, proactive scaling "
+"needs."
+msgstr "定时工作负载、多 GPU 成本/SLO 优化、需要主动扩缩容的场景。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:70
+msgid "Example Scenarios"
+msgstr "示例场景"
+
+#: ../../source/designs/aibrix-autoscaler.rst:72
+msgid "**HPA**: Scaling a demonstration deployment purely on CPU utilization."
+msgstr "**HPA** ：仅基于 CPU 利用率扩缩演示部署。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:73
+msgid ""
+"**KPA**: Handling short-term spikes for a ``vllm``-backed Llama2-7b model"
+" with aggressive panic scaling."
+msgstr "**KPA** ：对 ``vllm`` 后端的 Llama2-7b 模型使用激进 panic 扩容，应对短时流量尖峰。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:74
+msgid ""
+"**APA**: Applying fluctuation tolerance to reduce scale oscillations for "
+"latency-sensitive LLM services."
+msgstr "**APA** ：对延迟敏感的 LLM 服务应用波动容忍，减少扩缩振荡。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:75
+msgid ""
+"**Optimizer-based**: Using offline profiling results plus an optimization"
+" model to proactively scale GPUs ahead of a large scheduled campaign, "
+"minimizing costs while safeguarding SLOs."
+msgstr "**基于优化器** ：结合离线剖析结果与优化模型，在大规模定时活动前主动扩容 GPU，在保障 SLO 的同时降低成本。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:78
+msgid "Scaling Approaches"
+msgstr "扩缩容方法"
+
+#: ../../source/designs/aibrix-autoscaler.rst:80
+msgid "These autoscaling mechanisms broadly cover two methodologies:"
+msgstr "上述自动扩缩容机制大致覆盖两种方法论："
+
+#: ../../source/designs/aibrix-autoscaler.rst:82
+msgid ""
+"**Reactive Autoscaling** Observes current system metrics and reacts by "
+"scaling resources up or down immediately. This includes all metrics-based"
+" approaches: HPA, KPA, APA."
+msgstr ""
+"**反应式自动扩缩容** 观测当前系统指标并立即扩容或缩容。"
+"包括所有基于指标的方法：HPA、KPA、APA。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:86
+msgid ""
+"**Proactive Autoscaling** Makes decisions based on forecasts or offline-"
+"derived optimal plans, scaling ahead of time rather than waiting for "
+"metrics to cross thresholds. This is embodied by AIBrix’s optimizer-based"
+" approach, which uses workload profiles, cost models, and solvers to plan"
+" the best scaling actions."
+msgstr ""
+"**主动式自动扩缩容** 基于预测或离线得出的最优计划做决策，提前扩缩容，而不是等待指标越过阈值。"
+"AIBrix 基于优化器的方法即属于此类，它使用工作负载画像、成本模型和求解器来规划最佳扩缩容动作。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:93
+msgid "Metrics"
+msgstr "指标"
+
+#: ../../source/designs/aibrix-autoscaler.rst:95
+msgid ""
+"The AIBrix autoscaling framework integrates tightly with the serving "
+"layer, directly consuming metrics exposed by engines like ``vllm``."
+msgstr ""
+"AIBrix 自动扩缩容框架与服务层紧密集成，直接消费 ``vllm`` 等引擎暴露的指标。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:98
+msgid ""
+"Examples of metrics the autoscaler can consume. These are AIBrix's "
+"engine-neutral names, which the controller maps to the engine's own "
+"metric (for vLLM, ``num_requests_waiting`` becomes "
+"``vllm:num_requests_waiting``):"
+msgstr ""
+"自动扩缩容器可消费的指标示例。这些是 AIBrix 的引擎无关名称，控制器会映射到各引擎自身的指标（对 vLLM，``num_requests_waiting`` "
+"会映射为 ``vllm:num_requests_waiting`` ）："
+
+#: ../../source/designs/aibrix-autoscaler.rst:102
+msgid "``num_requests_running`` / ``num_requests_waiting``"
+msgstr "``num_requests_running`` / ``num_requests_waiting``"
+
+#: ../../source/designs/aibrix-autoscaler.rst:103
+msgid "``gpu_cache_usage_perc``"
+msgstr "``gpu_cache_usage_perc``"
+
+#: ../../source/designs/aibrix-autoscaler.rst:104
+msgid "``time_to_first_token_seconds``"
+msgstr "``time_to_first_token_seconds``"
+
+#: ../../source/designs/aibrix-autoscaler.rst:105
+msgid "``e2e_request_latency_seconds``"
+msgstr "``e2e_request_latency_seconds``"
+
+#: ../../source/designs/aibrix-autoscaler.rst:106
+msgid ""
+"``vllm:deployment_replicas`` (produced by the GPU optimizer rather than "
+"the engine)"
+msgstr "``vllm:deployment_replicas`` （由 GPU Optimizer 产生，而非引擎）"
+
+#: ../../source/designs/aibrix-autoscaler.rst:108
+msgid ""
+"For the full list, including what each name maps to for SGLang, xLLM and "
+"TRT-LLM, see the metric table in :doc:`../features/multi-engine`, and the"
+" `vLLM Metrics Documentation "
+"<https://docs.vllm.ai/en/stable/serving/metrics.html>`_."
+msgstr ""
+"完整列表（含各名称在 SGLang、xLLM 和 TRT-LLM 上的映射）见 :doc:`../features/multi-engine` "
+"中的指标表，以及 `vLLM Metrics Documentation <https://docs.vllm.ai/en/stable/serving/metrics.html>`_ "
+"。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:112
+msgid "Extending or Selecting Autoscalers"
+msgstr "扩展或选择扩缩容器"
+
+#: ../../source/designs/aibrix-autoscaler.rst:114
+msgid ""
+"AIBrix lets you declaratively select your desired autoscaler type in "
+"deployment specifications. This makes it easy to experiment with "
+"different strategies or integrate new autoscaling plugins as your "
+"infrastructure evolves."
+msgstr ""
+"AIBrix 允许在部署规格中以声明方式选择所需的扩缩容器类型。"
+"便于试验不同策略，或随基础设施演进接入新的自动扩缩容插件。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:117
+msgid "Future improvements include:"
+msgstr "后续改进包括："
+
+#: ../../source/designs/aibrix-autoscaler.rst:119
+msgid ""
+"Adding integer linear programming (ILP) based scheduling to enable even "
+"more advanced optimizer-driven planning."
+msgstr "加入基于整数线性规划（ILP）的调度，以支持更高级的优化器驱动规划。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:120
+msgid ""
+"Combining proactive (optimizer-based) and reactive (metrics-based) "
+"mechanisms into hybrid autoscalers for maximum robustness and efficiency."
+msgstr ""
+"将主动（基于优化器）与反应式（基于指标）机制结合为混合扩缩容器，以兼顾稳健性与效率。"
+
+#: ../../source/designs/aibrix-autoscaler.rst:125
+msgid ":doc:`../features/autoscaling/autoscaling`"
+msgstr ":doc:`../features/autoscaling/autoscaling`"
+
+#: ../../source/designs/aibrix-autoscaler.rst:126
+msgid "Configuring PodAutoscaler with HPA, KPA, and APA strategies."
+msgstr "使用 HPA、KPA 和 APA 策略配置 PodAutoscaler。"

@@ -1,0 +1,410 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/production/model-deployment.rst:5
+msgid "Production Model Deployments"
+msgstr "生产模型部署"
+
+#: ../../source/production/model-deployment.rst:7
+msgid ""
+"This guide covers what to check before a model deployment goes to "
+"production: required labels, choosing a routing strategy, capping model-"
+"level throughput, configuring readiness, and sizing replicas."
+msgstr ""
+"本指南说明模型部署进入生产前需要检查的内容：必需标签、选择路由策略、限制模型级吞吐、配置就绪探针，以及规划副本规模。"
+
+#: ../../source/production/model-deployment.rst:12
+msgid "On this page"
+msgstr "本页内容"
+
+#: ../../source/production/model-deployment.rst:15
+msgid "Required Labels and Annotations"
+msgstr "必需标签与注解"
+
+#: ../../source/production/model-deployment.rst:17
+msgid ""
+"Every pod template that AIBrix manages needs at minimum two labels. "
+"Without them the gateway cannot route traffic to the pod."
+msgstr "AIBrix 管理的每个 Pod 模板至少需要两个标签。缺少它们时，网关无法将流量路由到该 Pod。"
+
+#: ../../source/production/model-deployment.rst:23
+msgid "Label"
+msgstr "标签"
+
+#: ../../source/production/model-deployment.rst:24
+msgid "Description"
+msgstr "说明"
+
+#: ../../source/production/model-deployment.rst:25
+msgid "``model.aibrix.ai/name: <model-name>``"
+msgstr "``model.aibrix.ai/name: <model-name>``"
+
+#: ../../source/production/model-deployment.rst:26
+msgid ""
+"The model identifier clients send in the ``model`` field of their "
+"requests. Must be unique per model."
+msgstr "客户端在请求 ``model`` 字段中发送的模型标识符。每个模型必须唯一。"
+
+#: ../../source/production/model-deployment.rst:27
+msgid "``model.aibrix.ai/port: \"<port>\"``"
+msgstr "``model.aibrix.ai/port: \"<port>\"``"
+
+#: ../../source/production/model-deployment.rst:28
+msgid "The container port the inference server listens on (e.g. ``\"8000\"``)."
+msgstr "推理服务器监听的容器端口（例如 ``\"8000\"`` ）。"
+
+#: ../../source/production/model-deployment.rst:31
+msgid "Choosing a Routing Strategy"
+msgstr "选择路由策略"
+
+#: ../../source/production/model-deployment.rst:33
+msgid ""
+"Set the default routing strategy for a model via the config annotation "
+"rather than relying on the global env default. This makes the intent "
+"explicit and allows different models to use different strategies."
+msgstr ""
+"通过配置注解为模型设置默认路由策略，而不要依赖全局环境变量默认值。这样意图更明确，并允许不同模型使用不同策略。"
+
+#: ../../source/production/model-deployment.rst:45
+msgid "A practical starting point for common workload types:"
+msgstr "常见负载类型的实用起点："
+
+#: ../../source/production/model-deployment.rst:51
+msgid "Workload"
+msgstr "负载"
+
+#: ../../source/production/model-deployment.rst:52
+msgid "Recommended strategy"
+msgstr "推荐策略"
+
+#: ../../source/production/model-deployment.rst:53
+msgid "Multi-turn chat (shared system prompts)"
+msgstr "多轮对话（共享 system prompt）"
+
+#: ../../source/production/model-deployment.rst:54
+msgid ""
+"``prefix-cache`` — routes repeat prefixes to pods that already hold the "
+"KV cache."
+msgstr "``prefix-cache`` — 将重复前缀路由到已持有 KV cache 的 Pod。"
+
+#: ../../source/production/model-deployment.rst:55
+msgid "Independent requests (batch, summarization)"
+msgstr "独立请求（批处理、摘要）"
+
+#: ../../source/production/model-deployment.rst:56
+msgid "``least-request`` — evenly distributes load across pods."
+msgstr "``least-request`` — 在 Pod 之间均匀分配负载。"
+
+#: ../../source/production/model-deployment.rst:57
+msgid "Latency-sensitive interactive"
+msgstr "对延迟敏感的交互式负载"
+
+#: ../../source/production/model-deployment.rst:58
+msgid "``least-latency`` — routes to the pod with the lowest recent latency."
+msgstr "``least-latency`` — 路由到近期延迟最低的 Pod。"
+
+#: ../../source/production/model-deployment.rst:59
+msgid "High-throughput inference"
+msgstr "高吞吐推理"
+
+#: ../../source/production/model-deployment.rst:60
+msgid "``pd`` — separates prefill and decode for maximum GPU utilization."
+msgstr "``pd`` — 分离 prefill 与 decode，以最大化 GPU 利用率。"
+
+#: ../../source/production/model-deployment.rst:61
+msgid "Multi-user SLO enforcement"
+msgstr "多用户 SLO 保障"
+
+#: ../../source/production/model-deployment.rst:62
+msgid "``vtc-basic`` — balances fairness across users while keeping pods loaded."
+msgstr "``vtc-basic`` — 在保持 Pod 负载的同时平衡用户间公平性。"
+
+#: ../../source/production/model-deployment.rst:64
+msgid ""
+"See the `Deploying Gateway <gateway.html>`_ guide for the full strategy "
+"list."
+msgstr "完整策略列表见 `Deploying Gateway <gateway.html>`_ 指南。"
+
+#: ../../source/production/model-deployment.rst:68
+msgid "Config Profiles for Production"
+msgstr "生产环境的 Config Profile"
+
+#: ../../source/production/model-deployment.rst:70
+msgid ""
+"Config profiles let a single model deployment serve multiple traffic "
+"classes without separate deployments. A common pattern for production is "
+"to define a profile per client type:"
+msgstr ""
+"Config profile 使单个模型部署可以服务多种流量类别，而无需单独部署。生产环境的常见做法是按客户端类型定义 profile："
+
+#: ../../source/production/model-deployment.rst:91
+msgid "Clients select a profile with the ``config-profile`` request header:"
+msgstr "客户端通过 ``config-profile`` 请求头选择 profile："
+
+#: ../../source/production/model-deployment.rst:100
+msgid "If no header is set, the ``defaultProfile`` is used."
+msgstr "如果未设置该头，则使用 ``defaultProfile`` 。"
+
+#: ../../source/production/model-deployment.rst:104
+msgid "Capping Model Throughput (RPS Limiting)"
+msgstr "限制模型吞吐（RPS 限制）"
+
+#: ../../source/production/model-deployment.rst:107
+msgid "What it is"
+msgstr "它是什么"
+
+#: ../../source/production/model-deployment.rst:109
+msgid ""
+"``requestsPerSecond`` sets a hard cap on how many requests per second the"
+" gateway will forward to a given model. Requests that exceed the limit "
+"are rejected immediately with HTTP ``429 Too Many Requests`` before any "
+"routing or inference work is done."
+msgstr ""
+"``requestsPerSecond`` 为网关向指定模型转发的每秒请求数设置硬上限。超出限制的请求会立即以 HTTP "
+"``429 Too Many Requests`` 拒绝，不会进行任何路由或推理。"
+
+#: ../../source/production/model-deployment.rst:111
+msgid ""
+"This is a **model-level** cap (all users combined), distinct from the "
+"per-user RPM/TPM limits. Use it to:"
+msgstr "这是 **模型级** 上限（所有用户合计），不同于按用户的 RPM/TPM 限制。可用于："
+
+#: ../../source/production/model-deployment.rst:113
+msgid "Protect a model from accidental traffic spikes."
+msgstr "保护模型免受意外流量尖峰影响。"
+
+#: ../../source/production/model-deployment.rst:114
+msgid "Enforce a cost budget (GPU-hours) for a model in a shared cluster."
+msgstr "在共享集群中为模型执行成本预算（GPU 小时）。"
+
+#: ../../source/production/model-deployment.rst:115
+msgid "Guarantee headroom for higher-priority models on the same gateway."
+msgstr "为同一网关上更高优先级的模型预留余量。"
+
+#: ../../source/production/model-deployment.rst:118
+msgid "How to configure it"
+msgstr "如何配置"
+
+#: ../../source/production/model-deployment.rst:120
+msgid ""
+"Add ``requestsPerSecond`` to the relevant profile in the model's config "
+"annotation:"
+msgstr "在模型配置注解的相应 profile 中添加 ``requestsPerSecond`` ："
+
+#: ../../source/production/model-deployment.rst:135
+msgid "To apply different limits per traffic class, set it per profile:"
+msgstr "要按流量类别应用不同限制，请按 profile 分别设置："
+
+#: ../../source/production/model-deployment.rst:155
+msgid ""
+"Here, interactive traffic (``default`` profile) is capped at 100 RPS "
+"while batch traffic is limited to 20 RPS."
+msgstr "此处，交互流量（``default`` profile）上限为 100 RPS，批处理流量限制为 20 RPS。"
+
+#: ../../source/production/model-deployment.rst:158
+msgid "What clients see when the limit is hit"
+msgstr "达到限制时客户端看到的内容"
+
+#: ../../source/production/model-deployment.rst:160
+msgid "The gateway returns:"
+msgstr "网关返回："
+
+#: ../../source/production/model-deployment.rst:170
+msgid "How it works internally"
+msgstr "内部工作方式"
+
+#: ../../source/production/model-deployment.rst:172
+msgid ""
+"The counter is stored in Redis and incremented atomically on each "
+"request. The 1-second window resets automatically. If routing fails after"
+" the counter is incremented (e.g. no ready pods), the increment is rolled"
+" back so failed requests do not consume quota."
+msgstr ""
+"计数器存储在 Redis 中，并在每次请求时原子递增。1 秒窗口会自动重置。如果计数器递增后路由失败（例如没有就绪 Pod），"
+"该增量会回滚，因此失败请求不会消耗配额。"
+
+#: ../../source/production/model-deployment.rst:175
+msgid ""
+"``requestsPerSecond`` requires Redis to be enabled on the gateway plugin."
+" Without Redis, the counter is in-process and is not shared across "
+"gateway replicas. See the `Deploying Gateway <gateway.html>`_ guide — "
+"Enabling Redis for Multi-Replica Deployments."
+msgstr ""
+"``requestsPerSecond`` 要求在网关插件上启用 Redis。"
+"没有 Redis 时，计数器位于进程内，不会在网关副本之间共享。参见 `Deploying Gateway <gateway.html>`_ 指南 — "
+"为多副本部署启用 Redis。"
+
+#: ../../source/production/model-deployment.rst:177
+msgid "Omit ``requestsPerSecond`` or set it to ``0`` to disable the limit."
+msgstr "省略 ``requestsPerSecond`` 或将其设为 ``0`` 可禁用该限制。"
+
+#: ../../source/production/model-deployment.rst:181
+msgid "Readiness and Health"
+msgstr "就绪与健康"
+
+#: ../../source/production/model-deployment.rst:183
+msgid ""
+"The gateway only routes to pods that Kubernetes considers **Ready**. "
+"Ensure your pod's readiness probe waits for the inference server to fully"
+" load the model before marking the pod ready. For large models this can "
+"take several minutes."
+msgstr ""
+"网关只路由到 Kubernetes 视为 **Ready** 的 Pod。"
+"请确保 Pod 的就绪探针在将 Pod 标记为就绪之前，等待推理服务器完成模型加载。大型模型可能需要数分钟。"
+
+#: ../../source/production/model-deployment.rst:185
+msgid "A practical readiness probe for vLLM:"
+msgstr "适用于 vLLM 的实用就绪探针："
+
+#: ../../source/production/model-deployment.rst:197
+msgid ""
+"If a pod fails its readiness probe after previously being ready (e.g. due"
+" to OOM), the gateway stops routing to it immediately without dropping "
+"in-flight requests."
+msgstr ""
+"如果 Pod 曾经就绪后就绪探针失败（例如因 OOM），网关会立即停止向其路由，但不会丢弃进行中的请求。"
+
+#: ../../source/production/model-deployment.rst:201
+msgid "Replica Sizing"
+msgstr "副本规模规划"
+
+#: ../../source/production/model-deployment.rst:203
+msgid "There is no universal formula, but a useful starting point:"
+msgstr "没有通用公式，但以下起点较为实用："
+
+#: ../../source/production/model-deployment.rst:205
+msgid ""
+"**Measure single-replica capacity** — run a short load test at increasing"
+" QPS until latency or error rate degrades. Note the sustainable QPS."
+msgstr "**测量单副本容量** — 以递增 QPS 运行短期负载测试，直到延迟或错误率劣化。记录可持续 QPS。"
+
+#: ../../source/production/model-deployment.rst:206
+msgid ""
+"**Apply a safety margin** — target 60–70% of the measured peak to leave "
+"room for spikes."
+msgstr "**预留安全余量** — 以测得峰值的 60–70% 为目标，为尖峰留出空间。"
+
+#: ../../source/production/model-deployment.rst:207
+msgid ""
+"**Add replicas** — ``replicas = ceil(target_QPS / "
+"sustainable_QPS_per_replica)``."
+msgstr "**增加副本** — ``replicas = ceil(target_QPS / sustainable_QPS_per_replica)`` 。"
+
+#: ../../source/production/model-deployment.rst:209
+msgid ""
+"For PD deployments, size prefill and decode pods separately: prefill pods"
+" are compute-bound (add more for high-input-token workloads), decode pods"
+" are memory-bandwidth-bound (add more for long-output workloads)."
+msgstr ""
+"对于 PD 部署，请分别规划 prefill 和 decode Pod 规模：prefill Pod 受计算限制（高输入 token 负载需增加更多），"
+"decode Pod 受内存带宽限制（长输出负载需增加更多）。"
+
+#: ../../source/production/model-deployment.rst:213
+msgid "Rolling Updates"
+msgstr "滚动更新"
+
+#: ../../source/production/model-deployment.rst:215
+msgid ""
+"LLM pods take a long time to start. Configure ``maxUnavailable: 0`` and "
+"``maxSurge: 1`` (or higher) to ensure capacity is not lost during "
+"rollouts:"
+msgstr "LLM Pod 启动较慢。配置 ``maxUnavailable: 0`` 和 ``maxSurge: 1`` （或更高），以确保滚动发布期间不损失容量："
+
+#: ../../source/production/model-deployment.rst:226
+msgid ""
+"With ``maxUnavailable: 0``, Kubernetes only terminates an old pod after "
+"the new pod passes its readiness probe. This prevents the gateway from "
+"routing to a pod that has not finished loading the model."
+msgstr ""
+"设置 ``maxUnavailable: 0`` 时，Kubernetes 仅在新 Pod 通过就绪探针后才会终止旧 Pod。"
+"这可防止网关将流量路由到尚未完成模型加载的 Pod。"
+
+#: ../../source/production/model-deployment.rst:228
+msgid ""
+"For PD deployments, update prefill and decode pods in separate rollouts —"
+" updating both simultaneously can temporarily leave some rolesets "
+"incomplete, causing the gateway to skip them."
+msgstr ""
+"对于 PD 部署，请分别滚动更新 prefill 和 decode Pod —"
+" 同时更新两者可能暂时导致部分 RoleSet 不完整，从而使网关跳过它们。"
+
+#: ../../source/production/model-deployment.rst:232
+msgid "Observability Checklist"
+msgstr "可观测性检查清单"
+
+#: ../../source/production/model-deployment.rst:234
+msgid "Before shipping to production, ensure you have visibility into:"
+msgstr "上线生产前，请确保能够观察到："
+
+#: ../../source/production/model-deployment.rst:236
+msgid ""
+"**Request rate per model** — ``aibrix_gateway_requests_total`` counter, "
+"broken down by ``model`` label."
+msgstr "**每个模型的请求速率** — ``aibrix_gateway_requests_total`` 计数器，按 ``model`` 标签分解。"
+
+#: ../../source/production/model-deployment.rst:237
+msgid "**Routing latency** — time between request arrival and pod selection."
+msgstr "**路由延迟** — 从请求到达至选定 Pod 的时间。"
+
+#: ../../source/production/model-deployment.rst:238
+msgid ""
+"**RPS limit rejections** — watch for ``x-error-model-rps-exceeded`` "
+"response headers or the corresponding metric."
+msgstr "**RPS 限制拒绝** — 关注 ``x-error-model-rps-exceeded`` 响应头或对应指标。"
+
+#: ../../source/production/model-deployment.rst:239
+msgid ""
+"**Pod readiness churn** — alerts on pods that flip between Ready and "
+"NotReady indicate OOM or instability."
+msgstr "**Pod 就绪抖动** — 对在 Ready 与 NotReady 之间切换的 Pod 告警，通常表示 OOM 或不稳定。"
+
+#: ../../source/production/model-deployment.rst:240
+msgid ""
+"**Prefill timeout rate** (PD only) — ``pd-prefill-request-error`` log "
+"entries; a high rate suggests prefill pods are overloaded."
+msgstr ""
+"**Prefill 超时率** （仅 PD） — ``pd-prefill-request-error`` 日志条目；比率偏高表明 prefill "
+"Pod 过载。"
+
+#: ../../source/production/model-deployment.rst:242
+msgid ""
+"See the `Observability <observability.html>`_ guide for the full metrics "
+"reference."
+msgstr "完整指标参考见 `Observability <observability.html>`_ 指南。"
+
+#: ../../source/production/model-deployment.rst:244
+msgid "What's next?"
+msgstr "下一步？"
+
+#: ../../source/production/model-deployment.rst:247
+msgid ":doc:`gateway`: production gateway configuration"
+msgstr ":doc:`gateway` ：生产网关配置"
+
+#: ../../source/production/model-deployment.rst:248
+msgid ":doc:`observability`: full metrics reference"
+msgstr ":doc:`observability` ：完整指标参考"
+
+#: ../../source/production/model-deployment.rst:249
+msgid ":doc:`../features/autoscaling/autoscaling`: autoscale the deployment"
+msgstr ":doc:`../features/autoscaling/autoscaling` ：对部署进行自动扩缩容"
+
+#: ../../source/production/model-deployment.rst:250
+msgid ":doc:`../features/kvcache-offloading`: reduce prefill cost with KV reuse"
+msgstr ":doc:`../features/kvcache-offloading` ：通过 KV 复用降低 prefill 成本"

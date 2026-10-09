@@ -6,8 +6,8 @@ same Pod. The AIBrix Gateway routes requests by served model name to the port
 assigned to that engine.
 
 Run all commands from the repository root. This guide assumes the Kubernetes
-cluster, GPU support, AIBrix control plane, Gateway, ModelClaim CRD, and
-`aibrix/kvcached-runtime:dev` image are already available.
+cluster, GPU support, AIBrix control plane, Gateway, and ModelClaim CRD are
+already available.
 
 For API details, automatic pool policies, extended failure tests, and
 performance experiments, see the
@@ -38,10 +38,11 @@ Client ──> Envoy Gateway ──> Gateway plugin┘
 ```
 
 The sample deploys one container named `aibrix-runtime`, using the image
-`aibrix/kvcached-runtime:dev`. That image layers the AIBrix Runtime Agent on a
-kvcached-enabled vLLM base image. kvcached is therefore not a separate Pod or
-sidecar. The Runtime Agent starts one child engine process per ModelClaim, and
-each child enables kvcached with a unique shared-memory IPC name.
+`aibrix/kvcached-runtime:nightly` that CI publishes from `main`. That image
+layers the AIBrix Runtime Agent on a kvcached-enabled vLLM base image.
+kvcached is therefore not a separate Pod or sidecar. The Runtime Agent starts
+one child engine process per ModelClaim, and each child enables kvcached with
+a unique shared-memory IPC name.
 
 The Runtime Agent itself keeps `ENABLE_KVCACHED=false` and
 `KVCACHED_AUTOPATCH=0`. It does not serve inference and should not create an
@@ -110,7 +111,7 @@ Inspect the routing annotations written by the controller:
 ```bash
 kubectl -n "$NAMESPACE" get pod "$POD" -o json \
   | jq '.metadata.annotations
-      | with_entries(select(.key | startswith("modelclaim.aibrix.ai/")))'
+      | with_entries(select(.key | startswith("route.claim.model.aibrix.ai/")))'
 ```
 
 An active entry has the served model name, a non-zero engine port, and
@@ -337,7 +338,7 @@ kubectl -n "$NAMESPACE" get pod "$POD" --show-labels
 ```
 
 The Pod must match the claim's `podSelector` and have
-`pool.aibrix.ai/enabled: "true"`.
+`claim.model.aibrix.ai/enabled: "true"`.
 
 Then read the claim's `Scheduled` condition, which says why it waits:
 
@@ -410,5 +411,5 @@ Confirm that the sample resources are gone:
 ```bash
 kubectl -n "$NAMESPACE" get modelclaims
 kubectl -n "$NAMESPACE" get deployment,service \
-  -l pool.aibrix.ai/name=b300-pool-a
+  -l claim.model.aibrix.ai/pool=b300-pool-a
 ```

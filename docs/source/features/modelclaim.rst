@@ -64,7 +64,8 @@ You need:
 * an existing Kubernetes cluster with NVIDIA GPUs and the NVIDIA device
   plugin;
 * the latest AIBrix nightly control plane from the ``main`` branch;
-* a kvcached-compatible image for the selected engine;
+* the published kvcached runtime image for vLLM, or your own build on
+  another base image;
 * enough host memory for vLLM sleep level 1 and enough ``/dev/shm`` capacity
   for kvcached metadata and IPC;
 * a node-local or otherwise persistent model-weight cache;
@@ -95,15 +96,20 @@ Nightly tags are mutable. For a repeatable experiment, record the AIBrix
 commit and resolved controller and gateway image digests together with the
 runtime image digest.
 
-Build the experimental runtime image
-------------------------------------
+Get the runtime image
+---------------------
 
-Only the kvcached runtime agent image needs a feature-specific build. Its
-dedicated target is intentionally not part of ``docker-build-all``,
-``docker-push-all``, or the public nightly image workflow.
+The warm pool runs the kvcached runtime image. CI builds it on every push to
+``main`` and publishes it on Docker Hub as ``aibrix/kvcached-runtime:nightly``,
+also tagged with the commit's full SHA. It is not part of AIBrix releases. The
+image adds the AIBrix runtime agent to
+``ghcr.io/ovg-project/kvcached-vllm:kvcached-v0.1.6-vllm-v0.30.0``, which
+provides vLLM and kvcached. It is built for ``linux/amd64`` only. The warm-pool
+sample uses the nightly image, so no build is needed.
 
-Use the same current ``main`` checkout used by the nightly installation. Build
-the image and push it to a registry accessible from the cluster:
+To use another base image, for example an older kvcached-vLLM release, build
+the runtime image yourself from the same ``main`` checkout as the control
+plane, and push it to a registry that the cluster can reach:
 
 .. code-block:: bash
 
@@ -111,30 +117,19 @@ the image and push it to a registry accessible from the cluster:
    cd aibrix
 
    export AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/your-organization/aibrix
+   export KVCACHED_RUNTIME_BASE_IMAGE=ghcr.io/ovg-project/kvcached-vllm:kvcached-v0.1.5-vllm-v0.19.0
    export IMAGE_TAG="$(git rev-parse HEAD)"
 
    IS_MAIN_BRANCH=false make docker-build-kvcached-runtime
    IS_MAIN_BRANCH=false make docker-push-kvcached-runtime
 
-``KVCACHED_RUNTIME_BASE_IMAGE`` defaults to
-``ghcr.io/ovg-project/kvcached-vllm:latest``. Pin it to a tested digest or tag
-for a reproducible deployment:
+Then set the image in the warm-pool manifest to
+``${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/kvcached-runtime:${IMAGE_TAG}``.
 
-.. code-block:: bash
-
-   KVCACHED_RUNTIME_BASE_IMAGE=ghcr.io/ovg-project/kvcached-vllm@sha256:<digest> \
-   IMAGE_TAG=modelclaim-test IS_MAIN_BRANCH=false \
-     make docker-build-kvcached-runtime
-
-The default base image contains vLLM. The runtime launcher also has an SGLang
-path, but using ``engine: sglang`` requires a custom base image that contains a
-compatible SGLang and kvcached integration. Automatic idle sleep currently
-applies only to vLLM.
-
-Update the warm-pool manifest to use
-``${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/kvcached-runtime:${IMAGE_TAG}``. Keep
-the runtime source revision aligned with the nightly control plane revision
-used for the test.
+``KVCACHED_RUNTIME_BASE_IMAGE`` defaults to the base of the published image.
+The runtime launcher also has an SGLang path, but using ``engine: sglang``
+requires a base image that contains a compatible SGLang and kvcached
+integration. Automatic idle sleep currently applies only to vLLM.
 
 Create a warm runtime pool
 --------------------------
@@ -148,18 +143,18 @@ Service:
 
 Before applying it, review these fields:
 
-``pool.aibrix.ai/name``
+``claim.model.aibrix.ai/pool``
    The logical pool selected by ModelClaims. Put the label on both the
    Deployment and Pod template.
 
-``pool.aibrix.ai/enabled: "true"``
+``claim.model.aibrix.ai/enabled: "true"``
    Required on candidate Pods. Removing or changing it keeps the Pod out of
    ModelClaim placement. A Pod wakes a waiting claim, as described under
    Troubleshooting, only while it carries both labels.
 
 ``image``
-   Replace ``aibrix/kvcached-runtime:dev`` when using a remote registry or a
-   pinned image.
+   The sample uses ``aibrix/kvcached-runtime:nightly``. To pin the runtime,
+   replace the tag with a full commit SHA, or use your own build.
 
 ``nvidia.com/gpu``
    Defines the fixed topology for this pool. Every Pod in one pool should
@@ -193,7 +188,55 @@ Apply the pool and wait for the runtime agent:
 
    kubectl apply -f samples/modelclaim/warm-runtime-pool.yaml
    kubectl rollout status deployment/warm-runtime-pool-b300 --timeout=10m
-   kubectl get pods -l pool.aibrix.ai/name=b300-pool-a -o wide
+   kubectl get pods -l claim.model.aibrix.ai/pool=b300-pool-a -o wide
+
+Labels and annotations
+----------------------
+
+ModelClaim uses these keys. You set the first four on the warm pool. AIBrix
+writes the others, so leave them alone.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 22 12 36
+
+   * - Key
+     - Kind and object
+     - Set by
+     - Purpose
+   * - ``claim.model.aibrix.ai/enabled: "true"``
+     - Label on warm-pool Pods
+     - You
+     - Makes a Pod a candidate for placement.
+   * - ``claim.model.aibrix.ai/pool``
+     - Label on the warm-pool Deployment and Pods
+     - You
+     - Names the pool. Claims select it in ``podSelector``. The controller
+       reacts to a change of a Pod at once only when the Pod has both labels.
+       The ServiceMonitor turns it into the ``pool`` metric label.
+   * - ``claim.model.aibrix.ai/pool-policy``
+     - Annotation on the warm-pool Deployment
+     - You
+     - The pool policy, as JSON. See `Enable automatic KV and sleep policy`_.
+   * - ``aibrix.ai/metrics: modelclaim-runtime``
+     - Label on the warm-pool metrics Service
+     - You
+     - Lets the ModelClaim ServiceMonitor find the Service.
+   * - ``route.claim.model.aibrix.ai/<claim>``
+     - Annotation on a warm-pool Pod
+     - Controller
+     - The claim's route on that Pod, as JSON with ``model``, ``port`` and
+       ``state``. The gateway routes requests by it.
+   * - ``wake.modelclaim.aibrix.ai/<claim>``
+     - Annotation on a warm-pool Pod
+     - Gateway
+     - The time a request asked for the claim's sleeping engine. The controller
+       wakes the engine, and removes the annotation once the engine serves, or
+       after five minutes if it could not.
+   * - ``model.aibrix.ai/modelclaim-finalizer``
+     - Finalizer on ModelClaims
+     - Controller
+     - Keeps a deleted claim until its engines are drained and stopped.
 
 Create ModelClaims
 ------------------
@@ -280,6 +323,10 @@ decide which engine runs and where, and the engine is started with them only
 once, so the API server rejects any change to them. To change one, create a
 new ModelClaim.
 
+A ModelClaim's name can be at most 63 characters long. It becomes the name part
+of annotation keys on the warm-pool Pod, and Kubernetes allows at most 63
+characters there.
+
 Declare what a model costs on a card
 ------------------------------------
 
@@ -345,7 +392,8 @@ A pool from before ``perGPU`` is moved over in this order:
 
 1. Apply the new CRD. An older CRD drops ``perGPU`` from a claim that is
    applied, and ``helm upgrade`` does not replace a CRD.
-2. Rebuild the runtime image from the same revision, and roll the warm pools.
+2. Update the warm pools to the runtime image of the same revision, for
+   example the one tagged with that commit's full SHA.
    A runtime from before ``perGPU`` does not report what a card can hold. No
    claim is placed on its Pods, and the refusal says that the runtime is older
    than the controller. Engines that already run keep their routes.
@@ -604,11 +652,11 @@ Inspect claim status and the routing annotation:
 
    kubectl get modelclaim qwen3-0-6b -o yaml
 
-   POD=$(kubectl get pod -l pool.aibrix.ai/name=b300-pool-a \
+   POD=$(kubectl get pod -l claim.model.aibrix.ai/pool=b300-pool-a \
      -o jsonpath='{.items[0].metadata.name}')
    kubectl get pod "$POD" -o json \
      | jq '.metadata.annotations
-       | with_entries(select(.key | startswith("modelclaim.aibrix.ai/")))'
+       | with_entries(select(.key | startswith("route.claim.model.aibrix.ai/")))'
 
 An annotation has this form:
 
@@ -679,7 +727,7 @@ pool Deployment. It does not add fields to ModelClaim.
 .. code-block:: bash
 
    kubectl annotate deployment warm-runtime-pool-b300 \
-     'pool.aibrix.ai/policy={"reclaim":{"mode":"kv-first","capacityBytes":4294967296,"guaranteedFloorPercent":20},"lifecycle":{"sleepAfterSeconds":60}}' \
+     'claim.model.aibrix.ai/pool-policy={"reclaim":{"mode":"kv-first","capacityBytes":4294967296,"guaranteedFloorPercent":20},"lifecycle":{"sleepAfterSeconds":60}}' \
      --overwrite
 
 The fields mean:
@@ -727,7 +775,7 @@ has, a wake waits or moves rather than overrun the card.
 .. code-block:: bash
 
    kubectl annotate deployment warm-runtime-pool-b300 \
-     'pool.aibrix.ai/policy={"lifecycle":{"sleepAfterSeconds":300,"noWakeReserveWhileAsleep":true}}' \
+     'claim.model.aibrix.ai/pool-policy={"lifecycle":{"sleepAfterSeconds":300,"noWakeReserveWhileAsleep":true}}' \
      --overwrite
 
 The controller distributes remaining KV capacity among active models using
@@ -1039,8 +1087,8 @@ Troubleshooting
 
 Claim remains ``Scheduling`` with zero candidates
    Confirm that the Pod is Running, has a Pod IP, matches ``podSelector``, and
-   has ``pool.aibrix.ai/enabled: "true"``. For vLLM, confirm that TP times PP
-   exactly matches the Pod-visible GPU count.
+   has ``claim.model.aibrix.ai/enabled: "true"``. For vLLM, confirm that TP
+   times PP exactly matches the Pod-visible GPU count.
 
 Claim remains ``Pending`` with ``NoMatchingPods`` about GPU memory
    Candidates exist, but no card can be shown to have room for
@@ -1219,10 +1267,10 @@ A routable model becomes non-routable with ``KVLimitNotHeld``
    raised when the KV segment of the engine cannot be read. Nothing is written
    then.
 
-   On a Pod that carries both ``pool.aibrix.ai`` labels, the change to the Pod
-   starts the next pass at once. So the route is normally back within a few
-   seconds. On a Pod without ``pool.aibrix.ai/name``, it is back on the
-   claim's next pass, 10 seconds later at most.
+   On a Pod that carries both ``claim.model.aibrix.ai`` labels, the change to
+   the Pod starts the next pass at once. So the route is normally back within a
+   few seconds. On a Pod without ``claim.model.aibrix.ai/pool``, it is back on
+   the claim's next pass, 10 seconds later at most.
 
 Activation rejects ``--gpu-memory-utilization``
    Remove the flag. The kvcached framework replaces the engine's fixed

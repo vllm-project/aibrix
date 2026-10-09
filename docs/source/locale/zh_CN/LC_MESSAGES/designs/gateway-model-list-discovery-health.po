@@ -1,0 +1,138 @@
+# Chinese translations for AIBrix documentation.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-09 09:56+0800\n"
+"PO-Revision-Date: 2026-10-09 00:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:5
+msgid "Gateway Model List Discovery Health"
+msgstr "网关模型列表发现健康状态"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:7
+msgid "This is a proposal for review. It describes an optional reliability mode for the gateway's ``GET /v1/models`` handler. It works with the existing known-model list and the optional Ready-Pod list, and only checks discovery sources that are enabled. Configuration names and error fields below are candidates, not released interfaces."
+msgstr "本文是供评审的提案，描述网关 ``GET /v1/models`` 处理程序的一种可选可靠性模式。该模式与现有的已知模型列表及可选的 Ready Pod 列表配合工作，并且只检查已启用的发现源。下述配置名称和错误字段均为候选设计，而非已经发布的接口。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:14
+msgid "Problem"
+msgstr "问题"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:16
+msgid "The gateway currently returns cached names even when it cannot establish that discovery has completed or remained current. A successful empty list and a failed Kubernetes list therefore look the same to an API client. Initial discovery also blocks startup before the gateway's HTTP listener is opened. The handler cannot report a service error while that listener is absent."
+msgstr "目前，即使网关无法确认发现过程已经完成或结果仍为最新，也会返回缓存中的名称。因此，对 API 客户端而言，成功获得空列表与 Kubernetes 列表请求失败看起来完全相同。初始发现还会在网关打开 HTTP 监听器之前阻塞启动。监听器不存在时，处理程序无法报告服务错误。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:23
+msgid "Proposed behavior"
+msgstr "提议的行为"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:25
+msgid "The mode is opt-in so existing users retain the current listing contract. When enabled, ``GET /v1/models`` returns a complete list only while the enabled, required discovery sources have a verified snapshot. Otherwise it returns HTTP 503 with the gateway's JSON error envelope, the existing ``service_unavailable`` code, and a fixed public message. Internal Kubernetes errors appear only in logs. A healthy installation with no models still returns HTTP 200 and an empty ``data`` list."
+msgstr "该模式需要显式启用，因此现有用户仍保留当前的列表契约。启用后，只有已启用且必需的发现源具有经过验证的快照时，``GET /v1/models`` 才会返回完整列表。否则，它会返回 HTTP 503，并使用网关的 JSON 错误封装、现有的 ``service_unavailable`` 代码和固定的公开消息。Kubernetes 内部错误只会出现在日志中。没有任何模型的健康安装仍返回 HTTP 200 和空的 ``data`` 列表。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:33
+msgid "Kubernetes Pods are always required. ModelAdapters are required only when their discovery is enabled. ModelClaims remain advisory for this endpoint: the claim informer describes unplaced claims for inference errors but does not itself add a model to the list. Pod runtime annotations that advertise claim-backed models are covered by the Pod source. Disabled sources cause no API calls and do not affect model-list health. Static discovery becomes healthy after its configuration is loaded; it has no continuing watch."
+msgstr "Kubernetes Pod 始终是必需的。仅当启用 ModelAdapter 发现时，ModelAdapter 才是必需的。对于此端点，ModelClaim 仍只提供辅助信息：claim informer 会描述用于推理错误的未放置 claim，但其本身不会向列表添加模型。用于公布 claim 支持模型的 Pod 运行时注解由 Pod 发现源负责。已禁用的发现源不会发起 API 调用，也不会影响模型列表的健康状态。静态发现会在配置加载后变为健康，且没有持续运行的 watch。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:41
+msgid "For the opt-in mode, the proposed states are:"
+msgstr "对于这一显式启用模式，提议的状态如下："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:43
+msgid "**Starting:** required informer stores and their registered event handlers have not completed the initial list and delivery. Return 503."
+msgstr "**Starting：** 必需的 informer 存储及其已注册事件处理程序尚未完成初始列表获取和事件投递。返回 503。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:45
+msgid "**Healthy:** initial synchronization has completed and a complete current LIST matched the required events applied to the derived cache within the configured maximum age. Return the selected model-list mode's result."
+msgstr "**Healthy：** 初始同步已经完成，并且在配置的最大时效期内，一次完整的当前 LIST 与已应用到派生缓存的必需事件相匹配。返回所选模型列表模式的结果。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:48
+msgid "**Untrustworthy:** verification fails, an event cannot be applied, a watch error invalidates the last proof, or the proof expires. Return 503 until a new verification succeeds."
+msgstr "**Untrustworthy：** 验证失败、事件无法应用、watch 错误使上一次证明失效，或证明过期。在新的验证成功之前返回 503。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:51
+msgid "**Recovering:** the request that initiates a new verification waits for it; other requests either share the result or return 503 during the retry delay."
+msgstr "**Recovering：** 发起新验证的请求会等待验证完成；其他请求要么共享验证结果，要么在重试延迟期间返回 503。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:54
+msgid "The list response and health state must come from one cache snapshot. A health check followed by an unrelated cache read could return partial data during an update."
+msgstr "列表响应和健康状态必须来自同一个缓存快照。先进行健康检查、再单独读取缓存，可能会在更新期间返回不完整的数据。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:59
+msgid "Watch-led detection and recovery"
+msgstr "以 watch 为主导的检测与恢复"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:61
+msgid "Use the existing client-go informers for normal event delivery. Keep the ``ResourceEventHandlerRegistration`` from each required informer and wait for its ``HasSynced`` result, as well as the informer's initial ``HasSynced``. The registration proves that the handler has received the initial items; the informer result alone does not."
+msgstr "使用现有的 client-go informer 进行常规事件投递。保留每个必需 informer 的 ``ResourceEventHandlerRegistration``，并等待其 ``HasSynced`` 结果以及 informer 初始的 ``HasSynced``。该注册项能够证明处理程序已收到初始对象；仅凭 informer 的结果无法证明这一点。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:67
+msgid "Register ``SetWatchErrorHandler`` on each required informer so reported ``ListAndWatch`` errors invalidate the last proof. That callback cannot be the only signal: client-go can close and restart a watch without invoking it. The maximum proof age and on-demand LIST detect stale derived state even when a watch stalls silently. Client-go retains responsibility for normal watch restart and resource-version recovery."
+msgstr "在每个必需的 informer 上注册 ``SetWatchErrorHandler``，使上报的 ``ListAndWatch`` 错误能够令上一次证明失效。但该回调不能作为唯一信号：client-go 可能会关闭并重新启动 watch，而不调用该回调。即使 watch 无声停滞，证明的最大时效和按需 LIST 也能检测出过期的派生状态。常规 watch 重启和资源版本恢复仍由 client-go 负责。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:74
+msgid "The Kubernetes provider owns applied-object versions and verification state under one lock. Required event handlers run while holding that lock, and the gateway reads health and model names through the same barrier. The existing ``Provider.Watch`` signature remains usable by static and future discovery providers. Health evidence refers to events actually applied to the derived cache, rather than only to events received by the informer."
+msgstr "Kubernetes provider 在同一把锁的保护下管理已应用对象的版本和验证状态。必需的事件处理程序持有该锁运行，网关也通过同一同步屏障读取健康状态和模型名称。现有的 ``Provider.Watch`` 签名仍可供静态及未来的发现 provider 使用。健康证据所指的是实际应用到派生缓存的事件，而不只是 informer 收到的事件。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:81
+msgid "An informer resync only replays local contents. ``HasSynced`` proves initial delivery, not continuing freshness. A successful API ping proves reachability, not that the model cache has caught up. Likewise, a quiet healthy cluster may have no object events, and Kubernetes does not promise watch bookmarks at a fixed interval or at all. A pure event/error-driven mode can therefore detect observed failures, but cannot promise to detect a silent stall within a fixed time bound."
+msgstr "informer resync 只会重放本地内容。``HasSynced`` 能证明初始投递已完成，但不能证明数据持续保持最新。API ping 成功只能证明服务可达，不能证明模型缓存已追上最新状态。同样，平静且健康的集群可能没有对象事件，而 Kubernetes 并不保证以固定间隔发送 watch bookmark，甚至不保证一定发送。因此，纯事件/错误驱动模式可以检测到已观测的故障，却无法保证在固定时限内检测到无声停滞。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:89
+msgid "For a bounded silent-stall guarantee, a request whose previous verification has expired obtains independent progress evidence before returning a list. The selected minimal implementation uses an opt-in positive maximum age and an on-demand current LIST of each required source. The LIST is paginated and bounded by one request timeout. Compare namespace, name, UID, and resource version with the provider's record of events applied to the derived cache. One verification runs at a time per gateway instance; callers arriving after an unsuccessful verification receive 503 until a bounded retry delay expires. There is no periodic verification worker and no API request on the usual already-verified response path. When no client asks for the list, no extra LIST is performed. The first request after expiry may wait for verification; it never returns an unverified 200."
+msgstr "为了在有限时间内保证检测无声停滞，上一次验证已过期的请求会在返回列表前获取独立的进度证据。选定的最小实现采用需显式启用的正数最大时效，并按需对每个必需发现源执行当前 LIST。LIST 采用分页，并受单次请求超时限制。将命名空间、名称、UID 和资源版本与 provider 对已应用到派生缓存之事件的记录进行比较。每个网关实例同一时间只运行一次验证；验证失败后到达的调用方会收到 503，直到有限的重试延迟结束。系统没有周期性验证工作程序，通常已经验证的响应路径也不会发起 API 请求。没有客户端请求列表时，不会执行额外的 LIST。过期后的首个请求可能会等待验证，但绝不会返回未经验证的 200。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:102
+msgid "Other mechanisms remain possible if the on-demand LIST cost is too high:"
+msgstr "如果按需 LIST 的成本过高，仍可考虑其他机制："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:104
+msgid "**Reconcile after watch loss or reconnect.** Reuse client-go's LIST/watch recovery where it gives an authoritative replacement and wait for handler completion. This avoids routine extra LISTs, but an otherwise silent, permanently stuck watch needs a separate finite detection bound. The `pinned client-go reflector`_ already times out and restarts watches; its default minimum timeout is five minutes, and a restart from the last resource version alone is not proof that the derived cache has caught up."
+msgstr "**在 watch 丢失或重连后进行协调。** 在 client-go 的 LIST/watch 恢复能够提供权威替代数据时复用该机制，并等待处理程序完成。这样可以避免例行执行额外的 LIST，但对于除此之外毫无异常信号、永久卡住的 watch，仍需单独设置有限的检测时限。固定版本的 `pinned client-go reflector`_ 已经会在超时后重启 watch；其默认最短超时时间为五分钟，并且仅从最后一个资源版本重启，无法证明派生缓存已经追上最新状态。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:111
+msgid "**Streaming-list checkpoint where supported.** A watch with ``sendInitialEvents=true`` and an initial-events-end bookmark can form a snapshot barrier without a separate LIST request; see `streaming lists`_. Its server and client support, fallback behavior, and delivery into this handler must be tested. In the pinned client-go version the `WatchListClient feature`_ is disabled by default, so this cannot be assumed available to all installations."
+msgstr "**在支持时使用流式列表检查点。** 设置了 ``sendInitialEvents=true`` 且带有初始事件结束 bookmark 的 watch 可以在无需单独 LIST 请求的情况下形成快照屏障；参见 `streaming lists`_。必须测试服务器端和客户端支持、回退行为，以及向此处理程序的投递。在固定的 client-go 版本中，`WatchListClient feature`_ 默认禁用，因此不能假定所有安装都可使用该机制。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:119
+msgid "Normal discovery remains informer driven. Watch errors invalidate the last verification immediately; the next model-list request must verify again. An inconsistent LIST returns 503 even if a watch appears connected. On a later matching LIST, recovery is complete only after the corresponding handler events have been applied. A bounded guarantee still needs some independent evidence in a quiet cluster; watch events and `optional bookmarks`_ alone do not supply it. The maximum age, request timeout, and load budget need representative failure and scale tests before a default opt-in configuration is recommended."
+msgstr "常规发现仍由 informer 驱动。watch 错误会立即使上一次验证失效；下一次模型列表请求必须重新验证。即使 watch 看似已连接，只要 LIST 不一致，就会返回 503。后续 LIST 再次匹配时，只有对应的处理程序事件均已应用，恢复才算完成。在平静的集群中，要提供有界保证仍需要某种独立证据；仅靠 watch 事件和 `optional bookmarks`_ 无法提供这种证据。在推荐默认的显式启用配置之前，需要针对最大时效、请求超时和负载预算开展有代表性的故障测试与规模测试。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:135
+msgid "Startup and delivery"
+msgstr "启动与服务交付"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:137
+msgid "In this mode, open the model-list HTTP listener with an initially unavailable handler before waiting for Kubernetes discovery. After cache initialization, delegate to the normal gateway handler, which still returns 503 until a matching current snapshot is obtained. Keep inference routing and the gRPC readiness check unavailable until initial discovery succeeds. Configuration errors that cannot be retried remain startup errors. When no gateway process or ready Service endpoint exists, the proxy owns the response; this in-process handler cannot format it."
+msgstr "在此模式下，先使用初始状态为不可用的处理程序打开模型列表 HTTP 监听器，再等待 Kubernetes 发现。缓存初始化后，将请求委托给常规网关处理程序；在获得匹配的当前快照之前，该程序仍会返回 503。在初始发现成功前，推理路由和 gRPC 就绪检查应保持不可用。无法重试的配置错误仍属于启动错误。当网关进程或就绪的 Service 端点不存在时，响应由代理负责；这个进程内处理程序无法对其进行格式化。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:147
+msgid "Compatibility and tests"
+msgstr "兼容性与测试"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:149
+msgid "Without the opt-in mode, current known-model and ready-Pod listing, startup, static discovery, and other cache consumers keep their existing behavior. An explicitly selected dynamic provider that cannot report the required health evidence should fail configuration validation rather than silently claim to be healthy."
+msgstr "未启用该模式时，当前的已知模型与 Ready Pod 列表、启动、静态发现以及其他缓存使用方均保持现有行为。对于显式选择但无法报告所需健康证据的动态 provider，应使配置校验失败，而不是静默地宣称其健康。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:155
+msgid "Focused tests should cover initial informer and handler synchronization; reported watch errors; a Pod removal missed by a silently stalled watch; quiet clusters; failed and incomplete recovery; pagination and request timeout; adapter discovery enabled and disabled; concurrent cache events and requests; and the exact HTTP 200/503 JSON responses. A Kubernetes integration test should verify the recovery path through the public handler. The race detector should cover the cache, discovery, gateway, and startup packages touched by the implementation."
+msgstr "专项测试应覆盖：informer 和处理程序的初始同步；已上报的 watch 错误；因 watch 无声停滞而遗漏的 Pod 删除；平静集群；失败和未完成的恢复；分页与请求超时；启用和禁用 adapter 发现；并发的缓存事件与请求；以及精确的 HTTP 200/503 JSON 响应。Kubernetes 集成测试应通过公开处理程序验证恢复路径。竞态检测器应覆盖该实现涉及的缓存、发现、网关和启动软件包。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:165
+msgid "Review decisions"
+msgstr "评审决策"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/designs/gateway-model-list-discovery-health.rst:167
+msgid "Before merge, reviewers need to agree on the opt-in default, which sources are required for this endpoint, the freshness guarantee and its verification cost, the error envelope, early listener startup, and how future dynamic providers supply equivalent health evidence. This document records the candidate contract for that discussion; it does not claim maintainer approval."
+msgstr "合并前，评审者需要就以下事项达成一致：显式启用模式的默认设置、此端点需要哪些发现源、新鲜度保证及其验证成本、错误封装、提前启动监听器，以及未来的动态 provider 如何提供等效的健康证据。本文记录用于该讨论的候选契约，并不表示维护者已经批准。"

@@ -1,0 +1,486 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/features/brixbench.rst:5
+msgid "Brixbench"
+msgstr "BrixBench"
+
+#: ../../source/features/brixbench.rst:7
+msgid ""
+"``brixbench`` is a Go test based benchmark harness for comparing AIBrix-"
+"routed serving paths with direct-engine baselines. It uses reproducible "
+"scenario YAML files, runs benchmark clients inside the target Kubernetes "
+"cluster, and stores shared result artifacts for later analysis."
+msgstr ""
+"``brixbench`` 是基于 Go test 的基准测试框架，用于比较 AIBrix 路由的推理路径与直连引擎基线。"
+"它使用可复现的场景 YAML 文件，在目标 Kubernetes 集群内运行基准客户端，并保存共享结果产物供后续分析。"
+
+#: ../../source/features/brixbench.rst:12
+msgid ""
+"Use ``brixbench`` when you want to compare AIBrix gateway behavior, "
+"routing configuration, release versions, source commits, or direct vLLM "
+"baselines under repeatable benchmark scenarios."
+msgstr "当你要在可重复的基准场景下比较 AIBrix 网关行为、路由配置、发行版本、源码 commit 或直连 vLLM 基线时，使用 ``brixbench`` 。"
+
+#: ../../source/features/brixbench.rst:16
+msgid ""
+"For the older Python benchmark, dataset generator, and workload "
+"generator, see :doc:`benchmark-and-generator`."
+msgstr "更早的 Python 基准、数据集生成器和工作负载生成器见 :doc:`benchmark-and-generator` 。"
+
+#: ../../source/features/brixbench.rst:21
+msgid "Requirements"
+msgstr "要求"
+
+#: ../../source/features/brixbench.rst:23
+msgid "Before running benchmarks, make sure the local environment has:"
+msgstr "运行基准测试前，请确保本地环境具备："
+
+#: ../../source/features/brixbench.rst:25
+msgid "Go 1.22 or newer."
+msgstr "Go 1.22 或更高版本。"
+
+#: ../../source/features/brixbench.rst:26
+msgid "``kubectl`` on ``PATH``."
+msgstr "``PATH`` 上有 ``kubectl`` 。"
+
+#: ../../source/features/brixbench.rst:27
+msgid ""
+"Access to the target Kubernetes cluster through the active kubeconfig "
+"context."
+msgstr "通过当前 kubeconfig context 访问目标 Kubernetes 集群。"
+
+#: ../../source/features/brixbench.rst:29
+msgid ""
+"Permission to create, update, list, watch, and delete resources in the "
+"benchmark namespace."
+msgstr "在基准命名空间中创建、更新、列出、监视和删除资源的权限。"
+
+#: ../../source/features/brixbench.rst:31
+msgid ""
+"Optional: ``uv``, ``.venv``, and ``matplotlib`` for comparison figure "
+"generation."
+msgstr "可选：用于生成对比图的 ``uv`` 、``.venv`` 和 ``matplotlib`` 。"
+
+#: ../../source/features/brixbench.rst:34
+msgid "Quick cluster preflight:"
+msgstr "集群快速预检："
+
+#: ../../source/features/brixbench.rst:45
+msgid "Core Concepts"
+msgstr "核心概念"
+
+#: ../../source/features/brixbench.rst:47
+msgid ""
+"Each benchmark run is driven by a scenario file under "
+"``brixbench/benchmark/testdata/scenarios/``. A scenario contains one or "
+"more test cases. Each test case wires together three kinds of inputs:"
+msgstr ""
+"每次基准运行由 ``brixbench/benchmark/testdata/scenarios/`` 下的场景文件驱动。"
+"一个场景包含一个或多个测试用例。每个测试用例组合三类输入："
+
+#: ../../source/features/brixbench.rst:51
+msgid ""
+"``engine.manifest``: Kubernetes workload manifest for the model serving "
+"path."
+msgstr "``engine.manifest`` ：模型推理路径的 Kubernetes 工作负载清单。"
+
+#: ../../source/features/brixbench.rst:53
+msgid "``benchmark``: request workload YAML consumed by the benchmark client."
+msgstr "``benchmark`` ：基准客户端消费的请求工作负载 YAML。"
+
+#: ../../source/features/brixbench.rst:54
+msgid ""
+"``gateway``: optional AIBrix gateway image, environment, or resource "
+"overrides."
+msgstr "``gateway`` ：可选的 AIBrix 网关镜像、环境或资源覆盖。"
+
+#: ../../source/features/brixbench.rst:57
+msgid ""
+"The runner deploys the selected serving path, waits for readiness, runs "
+"the benchmark client in the cluster, persists artifacts, and then tears "
+"down the run-scoped benchmark namespace."
+msgstr ""
+"运行器部署所选推理路径，等待就绪，在集群中运行基准客户端，持久化产物，然后拆除本次运行范围的基准命名空间。"
+
+#: ../../source/features/brixbench.rst:61
+msgid ""
+"By default, the runner resets the benchmark namespace before each test "
+"case and cleans it up after the case finishes. Set "
+"``BENCHMARK_RESET_BEFORE_TEST=false`` or pass ``-benchmark.reset=false`` "
+"to reuse the existing benchmark namespace at the start of a case. Set "
+"``BENCHMARK_CLEANUP_AFTER_TEST=false`` or pass "
+"``-benchmark.cleanup=false`` to leave resources in place after a test "
+"case finishes."
+msgstr ""
+"默认情况下，运行器在每个测试用例前重置基准命名空间，并在用例结束后清理。设置 ``BENCHMARK_RESET_BEFORE_TEST=false`` "
+"或传入 ``-benchmark.reset=false`` ，可在用例开始时复用现有基准命名空间。设置 ``BENCHMARK_CLEANUP_AFTER_TEST=false`` "
+"或传入 ``-benchmark.cleanup=false`` ，可在测试用例结束后保留资源。"
+
+#: ../../source/features/brixbench.rst:71
+msgid "Scenario Files"
+msgstr "场景文件"
+
+#: ../../source/features/brixbench.rst:73
+msgid ""
+"Scenario files define the benchmark cases to run and the deployment "
+"inputs for each case."
+msgstr "场景文件定义要运行的基准用例以及每个用例的部署输入。"
+
+#: ../../source/features/brixbench.rst:76
+msgid "Example:"
+msgstr "示例："
+
+#: ../../source/features/brixbench.rst:96
+msgid "Important scenario fields:"
+msgstr "重要的场景字段："
+
+#: ../../source/features/brixbench.rst:102
+msgid "Field"
+msgstr "字段"
+
+#: ../../source/features/brixbench.rst:103
+msgid "Meaning"
+msgstr "含义"
+
+#: ../../source/features/brixbench.rst:104
+msgid "``provider: aibrix``"
+msgstr "``provider: aibrix``"
+
+#: ../../source/features/brixbench.rst:105
+msgid "Use the AIBrix deployer."
+msgstr "使用 AIBrix 部署器。"
+
+#: ../../source/features/brixbench.rst:106
+msgid "``provider: null``"
+msgstr "``provider: null``"
+
+#: ../../source/features/brixbench.rst:107
+msgid "Use the plain vLLM direct baseline."
+msgstr "使用普通 vLLM 直连基线。"
+
+#: ../../source/features/brixbench.rst:108
+msgid "``fullstack: false``"
+msgstr "``fullstack: false``"
+
+#: ../../source/features/brixbench.rst:109
+msgid ""
+"Reuse an existing shared AIBrix control plane and update only run-scoped "
+"workloads and gateway overrides."
+msgstr "复用现有共享 AIBrix 控制面，仅更新本次运行范围的工作负载和网关覆盖。"
+
+#: ../../source/features/brixbench.rst:111
+msgid "``fullstack: true``"
+msgstr "``fullstack: true``"
+
+#: ../../source/features/brixbench.rst:112
+msgid ""
+"Reinstall the AIBrix control plane from the checked-out workspace and "
+"Helm chart."
+msgstr "从已检出的工作区和 Helm chart 重新安装 AIBrix 控制面。"
+
+#: ../../source/features/brixbench.rst:114
+msgid "``version``, ``commit``, or ``localPath``"
+msgstr "``version`` 、``commit`` 或 ``localPath``"
+
+#: ../../source/features/brixbench.rst:115
+msgid ""
+"Select the AIBrix release, source revision, or local source tree used by "
+"the test case."
+msgstr "选择测试用例使用的 AIBrix 发行版、源码修订或本地源码树。"
+
+#: ../../source/features/brixbench.rst:117
+msgid "``engine.type``"
+msgstr "``engine.type``"
+
+#: ../../source/features/brixbench.rst:118
+msgid "Serving engine type. The supported benchmark paths currently use ``vllm``."
+msgstr "推理引擎类型。当前支持的基准路径使用 ``vllm`` 。"
+
+#: ../../source/features/brixbench.rst:120
+msgid "``engine.manifest``"
+msgstr "``engine.manifest``"
+
+#: ../../source/features/brixbench.rst:121
+msgid "Kubernetes model deployment manifest."
+msgstr "Kubernetes 模型部署清单。"
+
+#: ../../source/features/brixbench.rst:122
+msgid "``benchmark``"
+msgstr "``benchmark``"
+
+#: ../../source/features/brixbench.rst:123
+msgid "Request workload configuration consumed by the benchmark client."
+msgstr "基准客户端消费的请求工作负载配置。"
+
+#: ../../source/features/brixbench.rst:127
+msgid "Benchmark Workload Config"
+msgstr "基准工作负载配置"
+
+#: ../../source/features/brixbench.rst:129
+msgid ""
+"The ``benchmark`` field points to request-side workload YAML. This is "
+"where RPS, concurrency, arrival rate, dataset shape, and routing-specific"
+" benchmark settings live. It is separate from ``engine.manifest``, which "
+"only describes how to deploy the model workload."
+msgstr ""
+"``benchmark`` 字段指向请求侧工作负载 YAML。RPS、并发、到达率、数据集形态以及路由相关基准设置都在这里。"
+"它与 ``engine.manifest`` 分开，后者只描述如何部署模型工作负载。"
+
+#: ../../source/features/brixbench.rst:134
+msgid "Example benchmark config:"
+msgstr "基准配置示例："
+
+#: ../../source/features/brixbench.rst:167
+msgid "Key request-side fields:"
+msgstr "关键请求侧字段："
+
+#: ../../source/features/brixbench.rst:169
+msgid ""
+"``base-url``: gateway or direct service endpoint used by the benchmark "
+"client. The runner can override this with the resolved serving endpoint "
+"at runtime."
+msgstr "``base-url`` ：基准客户端使用的网关或直连服务端点。运行器可在运行时用解析后的推理端点覆盖该值。"
+
+#: ../../source/features/brixbench.rst:172
+msgid ""
+"``endpoint``: OpenAI-compatible API path, such as "
+"``/v1/chat/completions``."
+msgstr "``endpoint`` ：兼容 OpenAI 的 API 路径，例如 ``/v1/chat/completions`` 。"
+
+#: ../../source/features/brixbench.rst:174
+msgid "``model``: served model name sent in benchmark requests."
+msgstr "``model`` ：基准请求中发送的已服务模型名称。"
+
+#: ../../source/features/brixbench.rst:175
+msgid "``num-prompts``: total number of benchmark requests."
+msgstr "``num-prompts`` ：基准请求总数。"
+
+#: ../../source/features/brixbench.rst:176
+msgid ""
+"``request-rate``: target request arrival rate used by ``vllm bench "
+"serve``."
+msgstr "``request-rate`` ：``vllm bench serve`` 使用的目标请求到达率。"
+
+#: ../../source/features/brixbench.rst:178
+msgid "``concurrency``: maximum in-flight request concurrency."
+msgstr "``concurrency`` ：最大在途请求并发。"
+
+#: ../../source/features/brixbench.rst:179
+msgid ""
+"``dataset-name``: workload generator, such as ``random`` or "
+"``prefix_repetition``."
+msgstr "``dataset-name`` ：工作负载生成器，例如 ``random`` 或 ``prefix_repetition`` 。"
+
+#: ../../source/features/brixbench.rst:181
+msgid ""
+"``goodput``: optional latency SLO expression used by ``vllm bench`` "
+"reporting."
+msgstr "``goodput`` ：可选的延迟 SLO 表达式，供 ``vllm bench`` 报告使用。"
+
+#: ../../source/features/brixbench.rst:183
+msgid ""
+"``routing-strategy``: optional routing label for routing-specific "
+"benchmark cases."
+msgstr "``routing-strategy`` ：可选的路由标签，用于路由相关基准用例。"
+
+#: ../../source/features/brixbench.rst:185
+msgid ""
+"``prefix-repetition-*``: prefix-repetition dataset shape for shared-"
+"prefix workload tests."
+msgstr "``prefix-repetition-*`` ：共享前缀工作负载测试用的 prefix-repetition 数据集形态。"
+
+#: ../../source/features/brixbench.rst:188
+msgid "Existing request workload examples:"
+msgstr "现有请求工作负载示例："
+
+#: ../../source/features/brixbench.rst:190
+msgid "``brixbench/benchmark/testdata/benchmarks/vllm-chat-smoke.yaml``"
+msgstr "``brixbench/benchmark/testdata/benchmarks/vllm-chat-smoke.yaml``"
+
+#: ../../source/features/brixbench.rst:191
+msgid "``brixbench/benchmark/testdata/benchmarks/vllm-chat-smoke-pd.yaml``"
+msgstr "``brixbench/benchmark/testdata/benchmarks/vllm-chat-smoke-pd.yaml``"
+
+#: ../../source/features/brixbench.rst:192
+msgid "``brixbench/benchmark/testdata/benchmarks/routing/*.yaml``"
+msgstr "``brixbench/benchmark/testdata/benchmarks/routing/*.yaml``"
+
+#: ../../source/features/brixbench.rst:196
+msgid "Running Benchmarks"
+msgstr "运行基准测试"
+
+#: ../../source/features/brixbench.rst:198
+msgid "Run from the ``brixbench/`` directory."
+msgstr "从 ``brixbench/`` 目录运行。"
+
+#: ../../source/features/brixbench.rst:200
+msgid "Run the scenario selected by ``BENCHMARK_SCENARIO``:"
+msgstr "运行 ``BENCHMARK_SCENARIO`` 所选场景："
+
+#: ../../source/features/brixbench.rst:207
+msgid "Run one scenario directly:"
+msgstr "直接运行一个场景："
+
+#: ../../source/features/brixbench.rst:214
+msgid "Keep resources after the run for inspection:"
+msgstr "运行后保留资源以便检查："
+
+#: ../../source/features/brixbench.rst:222
+msgid "Reuse existing benchmark namespace resources and keep them after the run:"
+msgstr "复用现有基准命名空间资源，并在运行后保留："
+
+#: ../../source/features/brixbench.rst:230
+msgid "Run a single test case:"
+msgstr "运行单个测试用例："
+
+#: ../../source/features/brixbench.rst:240
+msgid "Deployment Inputs"
+msgstr "部署输入"
+
+#: ../../source/features/brixbench.rst:242
+msgid "For ``provider: aibrix``, the runner supports these source modes:"
+msgstr "对 ``provider: aibrix`` ，运行器支持以下源模式："
+
+#: ../../source/features/brixbench.rst:244
+msgid "``version``: download release artifacts on demand into ``.tmp/releases/``."
+msgstr "``version`` ：按需将发行产物下载到 ``.tmp/releases/`` 。"
+
+#: ../../source/features/brixbench.rst:245
+msgid ""
+"``commit``: check out the requested AIBrix source revision and use the "
+"workspace chart and overlays."
+msgstr "``commit`` ：检出请求的 AIBrix 源码修订，并使用工作区 chart 和 overlays。"
+
+#: ../../source/features/brixbench.rst:247
+msgid ""
+"``localPath``: stage a local AIBrix source tree and use its workspace "
+"chart and overlays."
+msgstr "``localPath`` ：暂存本地 AIBrix 源码树，并使用其工作区 chart 和 overlays。"
+
+#: ../../source/features/brixbench.rst:250
+msgid ""
+"The benchmark suite should not check in large generated AIBrix core or "
+"dependency manifests. Version-based runs should use downloaded release "
+"artifacts, and source-based runs should use the checked-out workspace and"
+" Helm chart path."
+msgstr ""
+"基准套件不应提交大型生成的 AIBrix 核心或依赖清单。基于版本的运行应使用下载的发行产物，"
+"基于源码的运行应使用已检出的工作区和 Helm chart 路径。"
+
+#: ../../source/features/brixbench.rst:257
+msgid "Metrics Export"
+msgstr "指标导出"
+
+#: ../../source/features/brixbench.rst:259
+msgid "Metrics export is disabled by default."
+msgstr "指标导出默认关闭。"
+
+#: ../../source/features/brixbench.rst:261
+msgid ""
+"Without ``BENCHMARK_PUSHGATEWAY_URL``, the runner skips external metric "
+"export."
+msgstr "未设置 ``BENCHMARK_PUSHGATEWAY_URL`` 时，运行器跳过外部指标导出。"
+
+#: ../../source/features/brixbench.rst:263
+msgid ""
+"With ``BENCHMARK_PUSHGATEWAY_URL``, the runner enables the Pushgateway "
+"exporter."
+msgstr "设置 ``BENCHMARK_PUSHGATEWAY_URL`` 时，运行器启用 Pushgateway 导出器。"
+
+#: ../../source/features/brixbench.rst:265
+msgid ""
+"The current Pushgateway exporter returns an explicit not-implemented "
+"error until real export behavior is implemented."
+msgstr "当前 Pushgateway 导出器在真正的导出行为实现之前会返回明确的未实现错误。"
+
+#: ../../source/features/brixbench.rst:270
+msgid "Artifacts"
+msgstr "产物"
+
+#: ../../source/features/brixbench.rst:272
+msgid "Run artifacts are written under:"
+msgstr "运行产物写入："
+
+#: ../../source/features/brixbench.rst:278
+msgid "Typical artifacts include:"
+msgstr "典型产物包括："
+
+#: ../../source/features/brixbench.rst:280
+msgid "``metadata.json``"
+msgstr "``metadata.json``"
+
+#: ../../source/features/brixbench.rst:281
+msgid "``summary.json``"
+msgstr "``summary.json``"
+
+#: ../../source/features/brixbench.rst:282
+msgid "``summary.csv``"
+msgstr "``summary.csv``"
+
+#: ../../source/features/brixbench.rst:283
+msgid "per-case ``bench_results.json``"
+msgstr "每个用例的 ``bench_results.json``"
+
+#: ../../source/features/brixbench.rst:284
+msgid "per-case ``vllm-bench-client.log``"
+msgstr "每个用例的 ``vllm-bench-client.log``"
+
+#: ../../source/features/brixbench.rst:285
+msgid "per-case ``vllm-bench-pod.yaml``"
+msgstr "每个用例的 ``vllm-bench-pod.yaml``"
+
+#: ../../source/features/brixbench.rst:286
+msgid "optional comparison figures under ``figures/``"
+msgstr "``figures/`` 下可选的对比图"
+
+#: ../../source/features/brixbench.rst:290
+msgid "Optional Figure Generation"
+msgstr "可选图表生成"
+
+#: ../../source/features/brixbench.rst:292
+msgid ""
+"If ``brixbench/.venv/bin/python`` and ``matplotlib`` are available, the "
+"Go runner generates figures automatically after writing the scenario "
+"summary."
+msgstr ""
+"若 ``brixbench/.venv/bin/python`` 和 ``matplotlib`` 可用，Go 运行器在写入场景摘要后会自动生成图表。"
+
+#: ../../source/features/brixbench.rst:295
+msgid "Manual setup:"
+msgstr "手动设置："
+
+#: ../../source/features/brixbench.rst:303
+msgid "Manual regeneration:"
+msgstr "手动重新生成："
+
+#: ../../source/features/brixbench.rst:312
+msgid "Troubleshooting"
+msgstr "故障排查"
+
+#: ../../source/features/brixbench.rst:314
+msgid "If a run stalls before benchmark execution, check pending model pods:"
+msgstr "若运行在基准执行前卡住，检查处于 pending 的模型 pods："
+
+#: ../../source/features/brixbench.rst:321
+msgid ""
+"Common causes include insufficient GPU capacity or a missing shared "
+"AIBrix control plane when using ``fullstack: false``."
+msgstr "常见原因包括 GPU 容量不足，或使用 ``fullstack: false`` 时缺少共享 AIBrix 控制面。"

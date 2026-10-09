@@ -4,8 +4,8 @@ metadata:
   name: warm-runtime-pool-b300
   namespace: default
   labels:
-    pool.aibrix.ai/name: b300-pool-a
-    pool.aibrix.ai/enabled: "true"
+    claim.model.aibrix.ai/pool: b300-pool-a
+    claim.model.aibrix.ai/enabled: "true"
 spec:
   replicas: 1
   selector:
@@ -15,14 +15,15 @@ spec:
     metadata:
       labels:
         app: warm-runtime-pool-b300
-        pool.aibrix.ai/name: b300-pool-a
-        pool.aibrix.ai/enabled: "true"
+        claim.model.aibrix.ai/pool: b300-pool-a
+        claim.model.aibrix.ai/enabled: "true"
     spec:
       containers:
         - name: aibrix-runtime
-          # This image must be built on a kvcached-enabled vLLM base image.
+          # The published image is built on a kvcached-enabled vLLM base, and a
+          # custom image must be too.
           # The runtime sidecar starts the per-ModelClaim engine processes.
-          image: aibrix/kvcached-runtime:dev
+          image: aibrix/kvcached-runtime:nightly
           imagePullPolicy: IfNotPresent
           ports:
             - name: runtime
@@ -77,8 +78,8 @@ metadata:
   namespace: default
   labels:
     app: warm-runtime-pool-b300
-    pool.aibrix.ai/name: b300-pool-a
-    pool.aibrix.ai/enabled: "true"
+    claim.model.aibrix.ai/pool: b300-pool-a
+    claim.model.aibrix.ai/enabled: "true"
     aibrix.ai/metrics: modelclaim-runtime
 spec:
   selector:
