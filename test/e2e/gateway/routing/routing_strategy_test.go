@@ -31,9 +31,10 @@ import (
 
 // prefixCacheWarmUpDelay must exceed two full statesync periods so that all
 // gateway replicas have had time to push and pull prefix-cache state via Redis.
-// The default sync period is 10s; worst-case propagation is push (≤10s) +
-// pull on the peer (≤10s) = 20s, so 30s gives a comfortable 10s buffer.
-const prefixCacheWarmUpDelay = 30 * time.Second
+// The E2E gateway sets AIBRIX_STATESYNC_SYNC_PERIOD=1s
+// (config/test/gateway/vtc-test-env-patch.yaml); worst-case propagation is push (≤1s) +
+// pull on the peer (≤1s) plus jitter, so 5s gives a comfortable buffer.
+const prefixCacheWarmUpDelay = 5 * time.Second
 
 func TestStrategyRequiresCache(t *testing.T) {
 	req := "this is test message"
@@ -264,7 +265,7 @@ func TestPrefixCacheRoutingConsistency(t *testing.T) {
 
 	// Confirm routing has converged on all gateway replicas before asserting
 	// majority consistency. With multiple gateway pods each pulling state on their
-	// own 10s cycle, the warm-up delay should be sufficient, but we add an
+	// own sync cycle, the warm-up delay should be sufficient, but we add an
 	// extra Eventually check as a safety net.
 	require.Eventually(t, func() bool {
 		return getTargetPodFromChatCompletion(t, msg, "prefix-cache") == warmPod

@@ -55,6 +55,10 @@ const (
 	roleSetInPlaceImageV2       = "aibrix/inplace-e2e:v2"
 	roleSetInPlaceMissingImage  = "aibrix/inplace-e2e:missing"
 
+	// The test image's sleep runs as PID 1 and ignores SIGTERM, so without a short grace period
+	// every Pod deletion and in-place container restart waits the default 30s for SIGKILL.
+	roleSetPodTerminationGracePeriodSeconds = int64(1)
+
 	roleSetDrainE2EEnv = "AIBRIX_ROLESET_DRAIN_E2E"
 
 	roleSetHistoricalNodeE2EEnv                  = "AIBRIX_ROLESET_HISTORICAL_NODE_E2E"
@@ -366,6 +370,7 @@ func createRoleSet(
 				Labels: map[string]string{"app": name},
 			},
 			Spec: corev1.PodSpec{
+				TerminationGracePeriodSeconds: ptr.To(roleSetPodTerminationGracePeriodSeconds),
 				Containers: []corev1.Container{{
 					Name:            roleSetInPlaceContainerName,
 					Image:           image,
@@ -427,6 +432,7 @@ func createHistoricalNodeRoleSet(
 				Labels: map[string]string{"app": name},
 			},
 			Spec: corev1.PodSpec{
+				TerminationGracePeriodSeconds: ptr.To(roleSetPodTerminationGracePeriodSeconds),
 				Containers: []corev1.Container{{
 					Name:            roleSetInPlaceContainerName,
 					Image:           roleSetInPlaceImageV1,
@@ -477,6 +483,7 @@ func createDrainRoleSet(
 				Labels: map[string]string{"app": name},
 			},
 			Spec: corev1.PodSpec{
+				TerminationGracePeriodSeconds: ptr.To(roleSetPodTerminationGracePeriodSeconds),
 				Containers: []corev1.Container{{
 					Name:            roleSetInPlaceContainerName,
 					Image:           image,

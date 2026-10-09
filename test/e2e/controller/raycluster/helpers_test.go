@@ -53,6 +53,10 @@ const (
 	rayClusterControllerSelector       = "control-plane=controller-manager"
 )
 
+// The head container's sleep runs as PID 1 and ignores SIGTERM, so without a short grace period
+// every Pod deletion waits the default 30s for SIGKILL.
+const rayClusterPodTerminationGracePeriodSeconds = int64(1)
+
 type rayClusterHarness struct {
 	namespace        string
 	kubeClient       kubernetes.Interface
@@ -389,6 +393,7 @@ func newRayClusterFleet(namespace, name string, replicas int32, paused bool) *or
 						Template: corev1.PodTemplateSpec{
 							ObjectMeta: metav1.ObjectMeta{Labels: labels},
 							Spec: corev1.PodSpec{
+								TerminationGracePeriodSeconds: ptr.To(rayClusterPodTerminationGracePeriodSeconds),
 								Containers: []corev1.Container{{
 									Name:            "ray-head",
 									Image:           rayClusterE2EImage,

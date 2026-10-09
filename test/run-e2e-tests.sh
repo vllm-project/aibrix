@@ -193,6 +193,11 @@ case "$AIBRIX_E2E_SUITE" in
     ;;
 esac
 
+# -p also limits concurrent compile actions, so building under -p 1 is serial. Build every
+# test binary in parallel first; -run='^$' matches no tests.
+echo "Building $AIBRIX_E2E_SUITE e2e test binaries..."
+go test -count=1 -run='^$' "${E2E_PACKAGES[@]}"
+
 echo "Running $AIBRIX_E2E_SUITE e2e suite..."
 # E2E packages share one cluster, fixed mock resources, and Redis state. Keep package
 # execution serial even when a suite grows new subdirectories.

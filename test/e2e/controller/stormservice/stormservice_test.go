@@ -307,7 +307,7 @@ func TestStormServiceProgressDeadlineRecovery(t *testing.T) {
 	}
 	t.Cleanup(cleanup)
 
-	if _, err := h.stormServices.Create(ctx, newDeadlineStormService(namespace, name, 30), metav1.CreateOptions{}); err != nil {
+	if _, err := h.stormServices.Create(ctx, newDeadlineStormService(namespace, name, 15), metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create deadline StormService %s/%s: %v", namespace, name, err)
 	}
 	if _, err := h.waitForRoleSets(ctx, name, 1); err != nil {
