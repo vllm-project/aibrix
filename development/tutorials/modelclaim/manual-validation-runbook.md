@@ -520,7 +520,7 @@ Delete the claims before the pool, so the controller can stop their engines:
 kubectl -n "$NS" delete -f samples/modelclaim/modelclaims.yaml --wait=false
 kubectl -n "$NS" wait --for=delete modelclaim/qwen3-0-6b modelclaim/qwen25-0-5b --timeout=3m
 kubectl -n "$NS" get pod "$POD" -o json \
-  | jq '[.metadata.annotations | keys[] | select(startswith("route.claim.model.aibrix.ai/"))]'
+  | jq '[(.metadata.annotations // {}) | keys[] | select(startswith("route.claim.model.aibrix.ai/"))]'
 no_engines() { [[ $(snapshot | jq '.models | length') == 0 ]]; }
 eventually 60 no_engines
 kubectl -n "$NS" delete -f samples/modelclaim/warm-runtime-pool.yaml

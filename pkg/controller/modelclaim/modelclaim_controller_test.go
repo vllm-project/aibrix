@@ -319,6 +319,92 @@ func sampleModelClaim() *modelv1alpha1.ModelClaim {
 	}
 }
 
+// An instance whose pod is no longer a candidate stays while the pod still
+// runs, here one that lost its enabled label: its engine still serves the
+// claim, so its route and wake request stay and nothing is stopped. An
+// instance whose pod is gone is dropped, so that the claim is placed again.
+func TestDropLostInstancesKeepsAnInstanceOnAPodThatStillRuns(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: "staying", Port: 20000, Phase: modelv1alpha1.ModelClaimActive},
+		{Pod: "left", Port: 20001, Phase: modelv1alpha1.ModelClaimActive},
+		{Pod: "gone", Port: 20002, Phase: modelv1alpha1.ModelClaimActive},
+	}
+	staying := warmPod("staying", "b300-pool-a", true, corev1.PodRunning)
+	left := warmPod("left", "b300-pool-a", false, corev1.PodRunning)
+	route := `{"model":"m","port":20001,"state":"active"}`
+	left.Annotations = map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + pm.Name:  route,
+		constants.ModelClaimWakeAnnotationPrefix + pm.Name: "2026-10-08T00:00:00Z",
+	}
+	r, runtime := newReconciler(t, pm, staying, left)
+
+	r.dropLostInstances(context.Background(), pm, []corev1.Pod{*staying})
+
+	require.Len(t, pm.Status.Instances, 2)
+	assert.Equal(t, "staying", pm.Status.Instances[0].Pod)
+	assert.Equal(t, "left", pm.Status.Instances[1].Pod)
+	got := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(left), got))
+	assert.Equal(t, route, got.Annotations[constants.ModelClaimPodAnnotationPrefix+pm.Name])
+	assert.Contains(t, got.Annotations, constants.ModelClaimWakeAnnotationPrefix+pm.Name)
+	assert.Empty(t, runtime.deactivateCalls)
+}
+
+// A pod that cannot be read says nothing about its engine, so its instance
+// stays until a later pass can tell.
+func TestDropLostInstancesKeepsAnInstanceWhosePodCannotBeRead(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: "unreadable", Port: 20001, Phase: modelv1alpha1.ModelClaimActive},
+	}
+	r, runtime := newReconciler(t, pm, warmPod("unreadable", "b300-pool-a", false, corev1.PodRunning))
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object,
+			opts ...client.GetOption) error {
+			if key.Name == "unreadable" {
+				return errors.New("the API server timed out")
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+
+	r.dropLostInstances(context.Background(), pm, nil)
+
+	require.Len(t, pm.Status.Instances, 1)
+	assert.Equal(t, "unreadable", pm.Status.Instances[0].Pod)
+	assert.Empty(t, runtime.deactivateCalls)
+}
+
+// On a pod that does not run, or is being deleted, the engine stops with the
+// pod. Only the claim's route is taken off it.
+func TestDropLostInstancesOnlyTakesTheRouteOffAPodThatDoesNotRun(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{
+		{Pod: "failed", Port: 20001, Phase: modelv1alpha1.ModelClaimActive},
+		{Pod: "deleting", Port: 20002, Phase: modelv1alpha1.ModelClaimActive},
+	}
+	route := map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + pm.Name: `{"model":"m","port":20001,"state":"active"}`,
+	}
+	failed := warmPod("failed", "b300-pool-a", true, corev1.PodFailed)
+	failed.Annotations = route
+	deleting := warmPod("deleting", "b300-pool-a", true, corev1.PodRunning)
+	deleting.Annotations = map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + pm.Name: `{"model":"m","port":20002,"state":"active"}`,
+	}
+	deleting.Finalizers = []string{"test/hold"}
+	deleting.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+	r, runtime := newReconciler(t, pm, failed, deleting)
+
+	r.dropLostInstances(context.Background(), pm, nil)
+
+	assert.Empty(t, pm.Status.Instances)
+	assert.Empty(t, routeOf(t, r, "failed", pm.Name))
+	assert.Empty(t, routeOf(t, r, "deleting", pm.Name))
+	assert.Empty(t, runtime.deactivateCalls)
+}
+
 func newReconciler(t *testing.T, objs ...client.Object) (*ModelClaimReconciler, *fakeRuntime) {
 	t.Helper()
 	scheme := testScheme(t)

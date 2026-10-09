@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -251,7 +252,7 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	recorded := len(pm.Status.Instances)
-	pruneDeadInstances(pm, candidates)
+	r.dropLostInstances(ctx, pm, candidates)
 	if len(pm.Status.Instances) < recorded {
 		// A wait is for the instance that could not be placed. A claim that
 		// has lost an instance needs another one, so it starts over.
@@ -474,25 +475,50 @@ func (r *ModelClaimReconciler) listCandidateWarmPods(ctx context.Context, pm *mo
 	return candidates, nil
 }
 
-// pruneDeadInstances drops status instances whose warm pod is no longer a live
-// candidate (deleted or replaced). Without this, a recreated warm pod would
-// never be re-activated: desired == len(stale instances), so the model silently
-// stops being served after pod churn. The pod is gone, so there is no runtime
-// to deactivate and no annotation left to clean; dropping the record is the
-// reconcile-correct move; the normal activation path then re-places the model
-// (and, with the node weight cache, prefers the node already holding weights).
-func pruneDeadInstances(pm *modelv1alpha1.ModelClaim, candidates []corev1.Pod) {
+// dropLostInstances drops the status instances whose warm pod no longer runs
+// their engine. Without this, a recreated warm pod would never be re-activated:
+// desired == len(stale instances), so the model silently stops being served
+// after pod churn. The normal activation path then re-places the model (and,
+// with the node weight cache, prefers the node already holding weights).
+//
+// A candidate is a pod where a new instance may go. A pod that is no longer
+// one, because it left the pool or lost its enabled label, keeps the instances
+// it has while it still runs: their engines still serve the claim there, and
+// dropping them would place the claim again while the old engine kept running
+// and kept its route.
+func (r *ModelClaimReconciler) dropLostInstances(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	candidates []corev1.Pod,
+) {
 	alive := make(map[string]bool, len(candidates))
 	for i := range candidates {
 		alive[candidates[i].Name] = true
 	}
 	kept := pm.Status.Instances[:0]
 	for _, inst := range pm.Status.Instances {
-		if alive[inst.Pod] {
+		if alive[inst.Pod] || r.stillRuns(ctx, pm, inst.Pod) {
 			kept = append(kept, inst)
 		}
 	}
 	pm.Status.Instances = kept
+}
+
+// stillRuns says whether a pod that is no longer a candidate still runs the
+// claim's engine. A pod that is gone took the engine with it. One that does not
+// run, or is being deleted, loses the claim's route and wake request, since the
+// engine stops with the pod. A pod that cannot be read keeps its instance until
+// a later pass can tell.
+func (r *ModelClaimReconciler) stillRuns(ctx context.Context, pm *modelv1alpha1.ModelClaim, podName string) bool {
+	pod := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: pm.Namespace, Name: podName}, pod); err != nil {
+		return !apierrors.IsNotFound(err)
+	}
+	if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" && pod.DeletionTimestamp.IsZero() {
+		return true
+	}
+	r.deannotateWarmPod(ctx, pm.Namespace, podName, pm.Name)
+	return false
 }
 
 // setStatusFields refreshes candidate/desired counts and the Initialized
@@ -2181,23 +2207,30 @@ func instancePods(pm *modelv1alpha1.ModelClaim) map[string]bool {
 	return pods
 }
 
-// modelPoolPodFilter restricts pod events to GPU pool members so the
-// controller only reacts to pods that can host ModelClaims.
+// modelPoolPodFilter passes the events of the pods that matter to claims: the
+// members of a pool, where new instances may go, and any pod that carries a
+// claim's route, which still runs an instance after it has left its pool. An
+// update passes when either version of the pod matters, so a pod that leaves
+// its pool is seen leaving.
 func modelPoolPodFilter() predicate.Predicate {
-	isModelPoolPod := func(labels map[string]string) bool {
-		if labels == nil {
-			return false
+	matters := func(obj client.Object) bool {
+		labels := obj.GetLabels()
+		if _, ok := labels[constants.ModelPoolLabelName]; ok &&
+			labels[constants.ModelPoolLabelEnabled] == constants.ModelPoolLabelEnabledValue {
+			return true
 		}
-		if _, ok := labels[constants.ModelPoolLabelName]; !ok {
-			return false
+		for key := range obj.GetAnnotations() {
+			if strings.HasPrefix(key, constants.ModelClaimPodAnnotationPrefix) {
+				return true
+			}
 		}
-		return labels[constants.ModelPoolLabelEnabled] == constants.ModelPoolLabelEnabledValue
+		return false
 	}
 	return predicate.Funcs{
-		CreateFunc:  func(e event.CreateEvent) bool { return isModelPoolPod(e.Object.GetLabels()) },
-		UpdateFunc:  func(e event.UpdateEvent) bool { return isModelPoolPod(e.ObjectNew.GetLabels()) },
-		DeleteFunc:  func(e event.DeleteEvent) bool { return isModelPoolPod(e.Object.GetLabels()) },
-		GenericFunc: func(e event.GenericEvent) bool { return isModelPoolPod(e.Object.GetLabels()) },
+		CreateFunc:  func(e event.CreateEvent) bool { return matters(e.Object) },
+		UpdateFunc:  func(e event.UpdateEvent) bool { return matters(e.ObjectNew) || matters(e.ObjectOld) },
+		DeleteFunc:  func(e event.DeleteEvent) bool { return matters(e.Object) },
+		GenericFunc: func(e event.GenericEvent) bool { return matters(e.Object) },
 	}
 }
 

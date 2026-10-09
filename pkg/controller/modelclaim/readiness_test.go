@@ -405,18 +405,24 @@ func TestAWithdrawnRouteStartsTheNextPassOfItsClaim(t *testing.T) {
 		NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: pm.Name},
 	})
 
-	// Without the name of its pool, the changes of a pod start nothing, and
-	// the claim's own pace is all there is. The same holds for a pod that is
-	// not enabled.
+	// A pod that leaves its pool, by losing the name of its pool or by not
+	// being enabled any more, still carries the claim's route, so its changes
+	// still start the claim's pass, also once both versions are out of the
+	// pool. A pod with neither the pool's labels nor a route starts nothing.
 	unnamed := withdrawn.DeepCopy()
 	delete(unnamed.Labels, constants.ModelPoolLabelName)
-	assert.False(t, modelPoolPodFilter().Update(event.UpdateEvent{ObjectOld: routed, ObjectNew: unnamed}))
+	assert.True(t, modelPoolPodFilter().Update(event.UpdateEvent{ObjectOld: routed, ObjectNew: unnamed}))
 	disabled := withdrawn.DeepCopy()
 	disabled.Labels[constants.ModelPoolLabelEnabled] = "false"
-	assert.False(t, modelPoolPodFilter().Update(event.UpdateEvent{ObjectOld: routed, ObjectNew: disabled}))
+	assert.True(t, modelPoolPodFilter().Update(event.UpdateEvent{ObjectOld: routed, ObjectNew: disabled}))
 	removed := withdrawn.DeepCopy()
 	delete(removed.Labels, constants.ModelPoolLabelEnabled)
-	assert.False(t, modelPoolPodFilter().Update(event.UpdateEvent{ObjectOld: routed, ObjectNew: removed}))
+	assert.True(t, modelPoolPodFilter().Update(event.UpdateEvent{ObjectOld: removed, ObjectNew: removed}))
+	assert.True(t, modelPoolPodFilter().Delete(event.DeleteEvent{Object: removed}))
+	unrouted := removed.DeepCopy()
+	unrouted.Annotations = nil
+	assert.False(t, modelPoolPodFilter().Update(event.UpdateEvent{ObjectOld: unrouted, ObjectNew: unrouted}))
+	assert.False(t, modelPoolPodFilter().Delete(event.DeleteEvent{Object: unrouted}))
 }
 
 // A boot is watched from the moment it is dated to the end of the window, and
