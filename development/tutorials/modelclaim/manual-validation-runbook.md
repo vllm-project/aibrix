@@ -1,912 +1,598 @@
-# ModelClaim Manual GPU Validation Runbook
+# ModelClaim Validation Runbook
 
-This is the single manual acceptance procedure for the merged ModelClaim
-stack. It is organized by observable capability rather than implementation
-phase. Record the source revision used to build the runtime and the actual
-control-plane image digests used by the cluster.
-For direct, control-plane-independent T1-T7 checks of kvcached and vLLM sleep,
-use the [upstream mechanism test guide](kvcached-vllm-sleep-test-guide.md).
+This runbook checks ModelClaim end to end on real GPUs: placement and card
+division, sleep and wake, and recovery from engine faults. Run it before a
+release, or after a change to the controller, the gateway or the runtime. Each
+check lists its commands and pass criteria, every wait is bounded, and the
+commands save evidence under one directory.
 
-The default path assumes SSH access to an existing Lambda A10 host with a
-working single-node minikube cluster. The run deploys one warm runtime Pod and
-two independent single-GPU vLLM engines:
+The checks need one node with an NVIDIA GPU of at least 24 GB. The optional
+TP=2 check needs a second GPU. Use a cluster you may disrupt: check R3 kills an
+engine until it fails for good.
 
-- `Qwen/Qwen3-0.6B`, served as `qwen3-0.6b`;
-- `Qwen/Qwen2.5-0.5B-Instruct`, served as `qwen2.5-0.5b`;
-- kvcached owns elastic KV allocation, so neither engine uses
-  `--gpu-memory-utilization`;
-- `ModelClaim.spec.replicas` is optional and only the value `1` is supported;
-- the pool policy is one JSON annotation on the warm-pool Deployment.
+A passing run does not show that the feature improves throughput or latency,
+that a KV limit prevents OOM under heavy load, or anything about SGLang.
 
-## What This Run Establishes
+## 1. Set Up
 
-The required acceptance sequence establishes:
-
-1. activation, readiness gating, per-model routing, snapshot reporting, and
-   deletion cleanup;
-2. two co-resident engines with independent ports, IPC names, and failure
-   domains;
-3. idempotent KV-limit, sleep, and wake control operations;
-4. request-driven KV **limit** redistribution and idle sleep/request wake;
-5. agent restart with engine re-adoption, isolated engine restart, and local
-   restart-budget exhaustion.
-
-The following claims require the optional load experiments later in this
-document and must not be inferred from a successful functional run:
-
-- that a selected KV limit prevents OOM for every workload;
-- that 3.2/0.8 GiB is physically occupied HBM rather than a configured
-  kvcached capacity limit;
-- that the policy improves throughput, TTFT, TPOT, goodput, SM activity, or
-  cost;
-- that current HBM observations provide hard admission control.
-
-## Acceptance Matrix
-
-| ID | Capability | Gate | Existing evidence | Pass condition |
-|---|---|---|---|---|
-| F1 | Activation, observation, density | required | A10 passed | both models ready; distinct port/IPC/PID |
-| F2 | Direct and gateway inference | required | A10 passed | both models return HTTP 200 |
-| F3 | API and topology validation | required | A10 passed | fixed-KV flag fails; TP=2 stays off one GPU |
-| F4 | Manual controls | required | A10 passed | KV limit, sleep, and wake are idempotent |
-| P1 | Dynamic KV policy | not on a GPU | control passed | demand moves limits safely in both directions |
-| P2 | Idle sleep and request wake | required | A10 passed | route removed, retryable 503, route restored |
-| R1 | Agent re-adoption | required | A10 passed | agent changes; engine PID/port/IPC do not |
-| R2 | Engine crash isolation | required | A10 passed | target restarts; peer remains available |
-| R3 | Terminal local failure | extended | A10 passed | target becomes `Failed`; peer remains available |
-| S1 | KV pressure behavior | optional | **not run** | chosen load completes without engine OOM/restart |
-| B1 | Policy benefit | optional | **not run** | repeated data supports the stated metric claim |
-
-Use bounded polling for every wait. A timeout is a failed or inconclusive test,
-not a reason to add an arbitrary long sleep.
-
-## 1. Existing Cluster Preflight
-
-The normal path reuses an existing Lambda GPU cluster. It does not create,
-restart, or terminate the Lambda instance or minikube cluster. Use
-[Appendix A](#appendix-a-optional-lambda-cluster-setup) only when no reusable
-cluster is available.
-
-On the Lambda host, confirm that the existing cluster and GPU are ready:
-
-```bash
-nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
-minikube status
-kubectl cluster-info
-kubectl wait --for=condition=Ready node --all --timeout=5m
-
-export TEST_NODE=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')
-export GPU_COUNT=$(kubectl get node "$TEST_NODE" \
-  -o jsonpath='{.status.allocatable.nvidia\.com/gpu}')
-test "${GPU_COUNT:-0}" -ge 1
-kubectl get pods -A
-```
-
-Stop if the context points to a shared production cluster, the GPU is already
-reserved by another test, or the cluster owner has not approved disruptive
-fault injection. Section R3 intentionally drives one engine to terminal
-failure.
-
-## 2. Prepare the Revision and Evidence
-
-Clone or update the repository on the Lambda host, then record the exact
-revision before building anything:
+### Revision and evidence
 
 ```bash
 git clone https://github.com/vllm-project/aibrix.git
 cd aibrix
 git checkout <commit-or-branch>
 export TEST_COMMIT=$(git rev-parse HEAD)
-git status --short
-printf 'commit=%s\n' "$TEST_COMMIT" | tee /tmp/modelclaim-test-build.txt
+export NS=default
+export RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-${TEST_COMMIT:0:12}"
+export EVIDENCE="$HOME/modelclaim-evidence/$RUN_ID"
+mkdir -p "$EVIDENCE"
+git show -s --format=fuller HEAD >"$EVIDENCE/commit.txt"
 ```
 
-## 3. Install the Control Plane and Build the Runtime
+The samples create their objects in the `default` namespace, and every command
+below names it.
 
-The normal merged-feature path uses the public controller and gateway nightly
-images from `main`. The sample's `aibrix/kvcached-runtime:nightly` is built
-from `main` as well, which may not be the commit under test. So build the
-kvcached runtime from the commit under test as `dev`, and deploy the warm pool
-with it in section 4.
+### Control plane
 
-```bash
-IMAGE_TAG=dev IS_MAIN_BRANCH=false make docker-build-kvcached-runtime
-docker save aibrix/kvcached-runtime:dev | docker exec -i minikube docker load
-```
-
-Install the current CRD and standard nightly control plane, then wait for the
-relevant components. If the reusable cluster is centrally managed and already
-current, these apply operations are idempotent.
+`config/default` installs the nightly controller and gateway built from
+`main`. To test changes that are not on `main`, build and deploy your own
+images instead.
 
 ```bash
 kubectl apply -k config/dependency --server-side
 kubectl apply -k config/crd --server-side
 kubectl apply -k config/default
-
-kubectl -n aibrix-system rollout status \
-  deployment/aibrix-controller-manager --timeout=10m
-kubectl -n aibrix-system rollout status \
-  deployment/aibrix-gateway-plugins --timeout=10m
-kubectl get pods -A
-```
-
-Building custom controller or gateway images is required only when validating
-unmerged control-plane changes; that is outside the normal merged-feature
-acceptance path.
-
-Create an evidence directory and record versions. Never store cloud
-credentials in it.
-
-```bash
-export RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-${TEST_COMMIT:0:12}"
-export EVIDENCE="$HOME/modelclaim-evidence/$RUN_ID"
-mkdir -p "$EVIDENCE"
-git show -s --format=fuller HEAD >"$EVIDENCE/commit.txt"
-kubectl version >"$EVIDENCE/kubectl-version.txt"
-minikube version >"$EVIDENCE/minikube-version.txt"
-nvidia-smi -q >"$EVIDENCE/nvidia-smi-before.txt"
+kubectl -n aibrix-system rollout status deployment/aibrix-controller-manager --timeout=10m
+kubectl -n aibrix-system rollout status deployment/aibrix-gateway-plugins --timeout=10m
 kubectl -n aibrix-system get pods \
   -o custom-columns='POD:.metadata.name,IMAGE:.spec.containers[*].image,IMAGE_ID:.status.containerStatuses[*].imageID' \
   >"$EVIDENCE/control-plane-images.txt"
 ```
 
-## 4. Deploy the Warm Pool
+### Runtime image
 
-Start without an automatic policy so manual controls can be tested in
-isolation:
+The warm-pool sample uses `aibrix/kvcached-runtime:nightly`, which is built
+from `main`. To test another commit, build the runtime from it. Then make the
+image available to the node, for example with `minikube image load`, or push
+it to a registry the node can reach:
 
 ```bash
-sed 's#aibrix/kvcached-runtime:nightly#aibrix/kvcached-runtime:dev#' \
-  samples/modelclaim/warm-runtime-pool.yaml | kubectl apply -f -
-kubectl rollout status deployment/warm-runtime-pool-b300 --timeout=10m
-
-export NAMESPACE=default
-export POD=$(kubectl -n "$NAMESPACE" get pod \
-  -l app=warm-runtime-pool-b300 \
-  -o jsonpath='{.items[0].metadata.name}')
-kubectl -n "$NAMESPACE" exec "$POD" -c aibrix-runtime -- nvidia-smi -L
+IMAGE_TAG=dev IS_MAIN_BRANCH=false make docker-build-kvcached-runtime
+export RUNTIME_IMAGE=aibrix/kvcached-runtime:dev
 ```
 
-In a second terminal, keep the runtime port-forward running:
+Otherwise, use the nightly image:
 
 ```bash
-POD=$(kubectl -n default get pod -l app=warm-runtime-pool-b300 \
-  -o jsonpath='{.items[0].metadata.name}')
-kubectl -n default port-forward "pod/$POD" 8080:8080
+export RUNTIME_IMAGE=aibrix/kvcached-runtime:nightly
 ```
 
-In a third terminal, expose Envoy using its stable ownership labels rather
-than a generated Service suffix:
+### Warm pool
 
 ```bash
-export ENVOY_SERVICE=$(kubectl -n envoy-gateway-system get service \
+sed "s#aibrix/kvcached-runtime:nightly#$RUNTIME_IMAGE#" samples/modelclaim/warm-runtime-pool.yaml \
+  | kubectl -n "$NS" apply -f -
+kubectl -n "$NS" rollout status deployment/warm-runtime-pool --timeout=15m
+export POD=$(kubectl -n "$NS" get pod -l app=warm-runtime-pool -o jsonpath='{.items[0].metadata.name}')
+```
+
+Keep a port-forward to Envoy running in another terminal:
+
+```bash
+ENVOY=$(kubectl -n envoy-gateway-system get service \
   --selector=gateway.envoyproxy.io/owning-gateway-namespace=aibrix-system,gateway.envoyproxy.io/owning-gateway-name=aibrix-eg \
   -o jsonpath='{.items[0].metadata.name}')
-test -n "$ENVOY_SERVICE"
-kubectl -n envoy-gateway-system port-forward \
-  "service/$ENVOY_SERVICE" 8888:80
+kubectl -n envoy-gateway-system port-forward "service/$ENVOY" 8888:80
 ```
 
-## 5. Functional Acceptance
+### Helpers
 
-### F1: Activation, Readiness, and Routing
-
-Apply the sample claims and wait independently for each model:
+Define these in the main terminal:
 
 ```bash
-kubectl apply -f samples/modelclaim/modelclaims.yaml
-kubectl wait --for=jsonpath='{.status.phase}'=Active \
-  modelclaim/qwen3-0-6b --timeout=15m
-kubectl wait --for=jsonpath='{.status.phase}'=Active \
-  modelclaim/qwen25-0-5b --timeout=15m
+GIB=$((1024 ** 3))
+runtime() {
+  local path=$1; shift
+  kubectl -n "$NS" exec "$POD" -c aibrix-runtime -- curl -fsS "localhost:8080$path" "$@"
+}
+snapshot() { runtime /v1/runtime/snapshot; }
+model() { snapshot | jq --arg m "$1" '.models[] | select(.model_name == $m)'; }
+registry() {
+  kubectl -n "$NS" exec "$POD" -c aibrix-runtime -- cat /var/run/aibrix/engines.json
+}
+pid() { registry | jq -r --arg m "$1" '.engines[] | select(.model_name == $m) | .pid'; }
+annotation() {
+  kubectl -n "$NS" get pod "$POD" -o json | jq -r --arg k "$1" '.metadata.annotations[$k] // empty'
+}
+route() { annotation "route.claim.model.aibrix.ai/$1"; }
+wake_request() { annotation "wake.modelclaim.aibrix.ai/$1"; }
+conditions() {
+  kubectl -n "$NS" get modelclaim "$1" \
+    -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason}: {.message}{"\n"}{end}'
+}
+record() {
+  kubectl -n "$NS" get modelclaim "$1" -o jsonpath='{.status.instances[0].kvLimitBytes}'
+}
+events() {
+  kubectl -n "$NS" get events --sort-by=.lastTimestamp \
+    --field-selector "involvedObject.kind=ModelClaim,involvedObject.name=$1" \
+    -o custom-columns='TIME:.lastTimestamp,TYPE:.type,REASON:.reason,MESSAGE:.message'
+}
+chat() {
+  curl -sS -o /dev/null -w '%{http_code}\n' localhost:8888/v1/chat/completions \
+    -H 'Content-Type: application/json' -H 'routing-strategy: random' \
+    -d "{\"model\":\"$1\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":8}"
+}
+serves() { [[ $(chat "$1") == 200 ]]; }
+wait_phase() { kubectl -n "$NS" wait --for=jsonpath='{.status.phase}'="$2" "modelclaim/$1" --timeout="${3:-10m}"; }
+wait_reason() {
+  kubectl -n "$NS" wait --for=jsonpath="{.status.conditions[?(@.type==\"$2\")].reason}=$3" \
+    "modelclaim/$1" --timeout="${4:-2m}"
+}
+eventually() {
+  local deadline=$((SECONDS + $1)); shift
+  until "$@"; do (( SECONDS < deadline )) || return 1; sleep 2; done
+}
+claim() {
+  kubectl -n "$NS" apply -f - <<EOF
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelClaim
+metadata:
+  name: $1
+spec:
+  podSelector:
+    matchLabels:
+      claim.model.aibrix.ai/pool: pool-a
+  artifactURL: huggingface://Qwen/Qwen2.5-0.5B-Instruct
+$2
+EOF
+}
 ```
 
-Capture actual state:
+`runtime` calls the runtime agent from inside the Pod, since a port-forward to
+the agent would end when R1 kills it. `claim` creates a claim on the sample
+pool. Its second argument holds more spec fields, indented by two spaces.
+
+## 2. Activation and Routing
+
+### A1: Two models share the GPU
 
 ```bash
-curl -fsS localhost:8080/v1/runtime/snapshot \
-  | tee "$EVIDENCE/snapshot-active.json" | jq .
-kubectl get modelclaims -o yaml >"$EVIDENCE/modelclaims-active.yaml"
-kubectl get pod "$POD" -o json \
-  | tee "$EVIDENCE/warm-pod-active.json" \
-  | jq '.metadata.annotations | with_entries(select(.key | startswith("route.claim.model.aibrix.ai/")))'
-kubectl exec "$POD" -c aibrix-runtime -- \
-  cat /var/run/aibrix/engines.json \
-  | tee "$EVIDENCE/registry-active.json" | jq .
+kubectl -n "$NS" apply -f samples/modelclaim/modelclaims.yaml
+wait_phase qwen3-0-6b Active 15m
+wait_phase qwen25-0-5b Active 15m
+export CARD=$(snapshot | jq '[.accelerators[].hbm_usable_bytes] | min')
+snapshot >"$EVIDENCE/a1-snapshot.json"
+kubectl -n "$NS" get modelclaims -o yaml >"$EVIDENCE/a1-claims.yaml"
+for m in qwen3-0.6b qwen2.5-0.5b; do
+  model "$m" | jq '{model_name, phase, alive, ready, port, ipc_name, kv_capacity_bytes}'
+done
+route qwen3-0-6b; route qwen25-0-5b
+registry | tee "$EVIDENCE/a1-registry.json" | jq '.engines[] | {model_name, pid, port, ipc_name}'
 ```
+
+`CARD` is the usable memory of the GPU, which the controller divides among the
+engines on it.
 
 Pass criteria:
 
-- both claim and instance phases are `Active`, with `readyReplicas: 1`;
-- both runtime models have `alive:true`, `ready:true`, and `phase:"active"`;
-- each Pod annotation has `state:"active"` and a non-zero port;
-- the two engines have distinct PIDs, ports, and normalized IPC names;
-- the snapshot contains accelerator HBM fields, per-model HBM/KV fields, and
-  request activity fields.
+- both claims are `Active` with `readyReplicas: 1`, and each has one instance
+  on the warm Pod;
+- both engines are `active`, alive and ready, with distinct PIDs, ports and IPC
+  names;
+- each route reads `{"model": ..., "port": <engine port>, "state": "active",
+  "wakeByRequest": true}`.
 
-### F2: Direct and Gateway Inference
-
-Query each engine directly from the warm Pod:
+### A2: Requests reach each engine
 
 ```bash
-for model in qwen3-0.6b qwen2.5-0.5b; do
-  port=$(curl -fsS localhost:8080/v1/runtime/snapshot \
-    | jq -er --arg model "$model" \
-      '.models[] | select(.model_name == $model) | .port')
-  kubectl exec "$POD" -c aibrix-runtime -- curl -fsS \
-    "http://127.0.0.1:${port}/v1/chat/completions" \
+for m in qwen3-0.6b qwen2.5-0.5b; do
+  port=$(model "$m" | jq -r .port)
+  kubectl -n "$NS" exec "$POD" -c aibrix-runtime -- curl -fsS "http://127.0.0.1:$port/v1/chat/completions" \
     -H 'Content-Type: application/json' \
-    -d "{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":16}" \
+    -d "{\"model\":\"$m\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":8}" \
     | jq -e '.choices | length > 0'
+  eventually 60 serves "$m"
 done
+[[ $(chat does-not-exist) == 400 ]]
 ```
 
-Then query both through Envoy:
+Pass criteria: both models answer directly and through the gateway, and the
+gateway answers 400 for a model it does not know.
+
+## 3. Validation
+
+Each claim below must not run.
 
 ```bash
-for model in qwen3-0.6b qwen2.5-0.5b; do
-  curl -fsS http://127.0.0.1:8888/v1/chat/completions \
-    -H 'Content-Type: application/json' \
-    -H 'routing-strategy: random' \
-    -d "{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":16}" \
-    | jq -e '.choices | length > 0'
-done
+# V1: only one replica is allowed, so the API server refuses this claim.
+! claim two-replicas "  replicas: 2
+  perGPU: {maximumFootprint: 6Gi, kvFloor: 1Gi}"
+
+# V2: a name longer than 63 characters is refused.
+! claim "$(printf 'm%.0s' {1..64})" "  perGPU: {maximumFootprint: 6Gi, kvFloor: 1Gi}"
+
+# V3: kvcached owns the KV memory, so a fixed vLLM allocation fails the claim.
+claim fixed-kv "  perGPU: {maximumFootprint: 6Gi, kvFloor: 1Gi}
+  engineConfig: {args: {\"--gpu-memory-utilization\": \"0.45\"}}"
+wait_phase fixed-kv Failed 1m
+wait_reason fixed-kv Ready InvalidEngineConfig
+
+# V4: a claim that declares no per-GPU cost is not placed.
+claim no-cost ""
+wait_reason no-cost Scheduled InvalidPerGPU
+
+# V5: a TP=2 claim needs a two-GPU Pod, so the one-GPU Pod is no candidate.
+claim tp2-on-one-gpu "  perGPU: {maximumFootprint: 6Gi, kvFloor: 1Gi}
+  engineConfig: {args: {\"--tensor-parallel-size\": \"2\"}}"
+wait_reason tp2-on-one-gpu Scheduled NoMatchingPods
+
+# V6: a claim larger than the card is refused for good.
+claim too-large "  perGPU: {maximumFootprint: $((2 * CARD)), kvFloor: 1Gi}"
+wait_reason too-large Scheduled TooLargeForAnyCard
+
+# V7: only perGPU may change after a claim is created.
+! kubectl -n "$NS" patch modelclaim qwen3-0-6b --type merge \
+  -p '{"spec":{"artifactURL":"huggingface://Qwen/Qwen2.5-0.5B-Instruct"}}'
+
+kubectl -n "$NS" get modelclaim no-cost tp2-on-one-gpu too-large \
+  -o custom-columns='NAME:.metadata.name,PHASE:.status.phase'
+snapshot | jq '[.models[].model_name]'
+kubectl -n "$NS" delete modelclaim fixed-kv no-cost tp2-on-one-gpu too-large
 ```
 
-### F3: API and Fixed-Topology Validation
+Pass criteria: every command succeeds, `no-cost`, `tp2-on-one-gpu` and
+`too-large` stay `Pending`, and the snapshot lists only the two sample models.
 
-`replicas` may be omitted and defaults to one. A value other than one must be
-rejected by API validation. Also verify that kvcached claims reject vLLM's
-fixed KV allocator flag before activation:
+## 4. Card Division
+
+### C1: The card is divided among the engines
+
+Each engine's KV limit is its share of the card. The declared footprints and
+the limits add up to the whole card. The sample declares a 6 GiB footprint for
+each model.
 
 ```bash
-if kubectl apply -f - <<'YAML'
-apiVersion: model.aibrix.ai/v1alpha1
-kind: ModelClaim
-metadata:
-  name: invalid-replicas
-spec:
-  modelName: invalid-replicas
-  podSelector:
-    matchLabels:
-      claim.model.aibrix.ai/pool: b300-pool-a
-  artifactURL: huggingface://Qwen/Qwen3-0.6B
-  engine: vllm
-  perGPU:
-    maximumFootprint: 6Gi
-    kvFloor: 1Gi
-  replicas: 2
-YAML
-then
-  echo 'replicas=2 was accepted unexpectedly' >&2
-  kubectl delete modelclaim invalid-replicas --ignore-not-found
-  false
-fi
-
-kubectl apply -f - <<'YAML'
-apiVersion: model.aibrix.ai/v1alpha1
-kind: ModelClaim
-metadata:
-  name: invalid-fixed-kv
-spec:
-  modelName: invalid-fixed-kv
-  podSelector:
-    matchLabels:
-      claim.model.aibrix.ai/pool: b300-pool-a
-  artifactURL: huggingface://Qwen/Qwen3-0.6B
-  engine: vllm
-  perGPU:
-    maximumFootprint: 6Gi
-    kvFloor: 1Gi
-  engineConfig:
-    args:
-      --gpu-memory-utilization: "0.45"
-YAML
-kubectl wait --for=jsonpath='{.status.phase}'=Failed \
-  modelclaim/invalid-fixed-kv --timeout=1m
-kubectl get modelclaim invalid-fixed-kv -o json \
-  | jq -e '.status.conditions[] | select(.reason == "InvalidEngineConfig")'
-kubectl delete modelclaim invalid-fixed-kv
+LIMITS=$(( $(record qwen3-0-6b) + $(record qwen25-0-5b) ))
+echo "card $CARD, limits $LIMITS"
+[[ $((LIMITS + 2 * 6 * GIB)) == "$CARD" ]]
+[[ $(model qwen3-0.6b | jq .kv_capacity_bytes) == $(record qwen3-0-6b) ]]
+[[ $(model qwen2.5-0.5b | jq .kv_capacity_bytes) == $(record qwen25-0-5b) ]]
 ```
 
-On this one-GPU Pod, a temporary TP=2 claim must remain unassigned and must not
-appear in the runtime snapshot:
+Pass criteria: all three comparisons hold.
+
+### C2: A claim waits for room
+
+The new claim needs 1 GiB more than the card has left. It is placed once
+another claim gives its room back.
 
 ```bash
-kubectl apply -f - <<'YAML'
-apiVersion: model.aibrix.ai/v1alpha1
-kind: ModelClaim
-metadata:
-  name: invalid-topology
-spec:
-  modelName: invalid-topology
-  podSelector:
-    matchLabels:
-      claim.model.aibrix.ai/pool: b300-pool-a
-  artifactURL: huggingface://Qwen/Qwen3-0.6B
-  engine: vllm
-  perGPU:
-    maximumFootprint: 6Gi
-    kvFloor: 1Gi
-  engineConfig:
-    args:
-      --tensor-parallel-size: "2"
-      --pipeline-parallel-size: "1"
-YAML
-
-violation=0
-deadline=$((SECONDS + 30))
-while (( SECONDS < deadline )); do
-  if [[ -n $(kubectl get modelclaim invalid-topology \
-      -o jsonpath='{.status.instances}' 2>/dev/null) ]] || \
-      curl -fsS localhost:8080/v1/runtime/snapshot \
-      | jq -e '.models[] | select(.model_name == "invalid-topology")' \
-        >/dev/null; then
-    violation=1
-    break
-  fi
-  sleep 2
-done
-[[ "$violation" == 0 ]]
-kubectl delete modelclaim invalid-topology
+claim waits-for-room "  perGPU: {maximumFootprint: $((CARD - 14 * GIB)), kvFloor: 1Gi}"
+wait_reason waits-for-room Scheduled NoMatchingPods
+kubectl -n "$NS" get modelclaim waits-for-room \
+  -o jsonpath='{.status.conditions[?(@.type=="Scheduled")].message}{"\n"}'
+[[ $(chat waits-for-room) == 503 ]]
+kubectl -n "$NS" delete modelclaim qwen25-0-5b
+wait_phase waits-for-room Active 15m
+eventually 60 serves waits-for-room
+kubectl -n "$NS" delete modelclaim waits-for-room
+kubectl -n "$NS" apply -f samples/modelclaim/modelclaims.yaml
+wait_phase qwen25-0-5b Active 15m
 ```
 
-A positive TP=2 test requires a separate warm pool whose Pod requests exactly
-two GPUs. Do not mix TP=1 and TP=2 engines in one pool.
+Pass criteria: while the card is full, the claim stays `Pending` and the
+gateway answers 503. Its `Scheduled` message says how much it needs and how
+much the Pod has free. Once `qwen25-0-5b` is deleted, the claim becomes
+`Active` and serves.
 
-### F4: Idempotent Manual Controls
+### C3: A limit changed behind the controller's back is put back
 
-Use a unique operation ID per intended state transition. Repeating the same
-request must return `applied:false`:
+Raise one engine above its recorded limit through the runtime API, sending the
+same operation ID twice:
 
 ```bash
-for attempt in 1 2; do
-  curl -fsS localhost:8080/v1/runtime/models/kv-limit \
-    -H 'Content-Type: application/json' \
-    -d "{\"model_name\":\"qwen3-0.6b\",\"limit_bytes\":1073741824,\"operation_id\":\"${RUN_ID}-limit-1\"}" \
-    | tee "$EVIDENCE/manual-limit-${attempt}.json" | jq .
+for i in 1 2; do
+  runtime /v1/runtime/models/kv-limit -H 'Content-Type: application/json' \
+    -d "{\"model_name\":\"qwen3-0.6b\",\"limit_bytes\":$(( $(record qwen3-0-6b) + GIB )),\"operation_id\":\"$RUN_ID-c3\"}" \
+    | tee "$EVIDENCE/c3-write-$i.json"
 done
-
-for attempt in 1 2; do
-  curl -fsS localhost:8080/v1/runtime/models/sleep \
-    -H 'Content-Type: application/json' \
-    -d "{\"model_name\":\"qwen3-0.6b\",\"level\":1,\"operation_id\":\"${RUN_ID}-sleep-1\"}" \
-    | tee "$EVIDENCE/manual-sleep-${attempt}.json" | jq .
-done
-kubectl wait --for=jsonpath='{.status.phase}'=Sleeping \
-  modelclaim/qwen3-0-6b --timeout=2m
-
-for attempt in 1 2; do
-  curl -fsS localhost:8080/v1/runtime/models/wake \
-    -H 'Content-Type: application/json' \
-    -d "{\"model_name\":\"qwen3-0.6b\",\"operation_id\":\"${RUN_ID}-wake-1\"}" \
-    | tee "$EVIDENCE/manual-wake-${attempt}.json" | jq .
-done
-kubectl wait --for=jsonpath='{.status.phase}'=Active \
-  modelclaim/qwen3-0-6b --timeout=5m
-
-jq -e '.applied == true' "$EVIDENCE/manual-limit-1.json"
-jq -e '.applied == false' "$EVIDENCE/manual-limit-2.json"
-jq -e '.applied == true' "$EVIDENCE/manual-sleep-1.json"
-jq -e '.applied == false' "$EVIDENCE/manual-sleep-2.json"
-jq -e '.applied == true' "$EVIDENCE/manual-wake-1.json"
-jq -e '.applied == false' "$EVIDENCE/manual-wake-2.json"
+jq -e '.applied == true' "$EVIDENCE/c3-write-1.json"
+jq -e '.applied == false' "$EVIDENCE/c3-write-2.json"
+at_record() { [[ $(model qwen3-0.6b | jq .kv_capacity_bytes) == $(record qwen3-0-6b) ]]; }
+eventually 60 at_record
+eventually 60 serves qwen3-0.6b
+events qwen3-0-6b >"$EVIDENCE/c3-events.txt"
 ```
 
-While sleeping, the assignment remains but claim status is `Sleeping`,
-`readyReplicas` is zero or omitted, and the route is
-`port:0/state:"sleeping"`. A route becomes active again only after runtime
-readiness.
+Pass criteria: the first write applies and the repeat does not, and within a
+minute the engine is back at its recorded limit and serves. If the claim's own
+check saw the change first, the claim shows `KVLimitNotHeld` and then
+`KVLimitSet` Events, and the route was not active in between. If the card's
+next division saw it first, the limit is put back without an Event.
 
-## 6. Pool Policy Acceptance
+## 5. Sleep and Wake
 
-### P1: Request-Driven KV Limit Redistribution
+### S1: An idle model goes to sleep
 
-> **On a GPU, this check no longer applies.** The `reclaim` policy stands down
-> on a Pod where a claim records its own KV limit, and every claim placed on a
-> card does. The limits then do not follow the annotation, and the waits below
-> time out. Check how the card was divided instead:
->
-> ```bash
-> kubectl get modelclaims \
->   -o custom-columns='NAME:.metadata.name,KVLIMIT:.status.instances[0].kvLimitBytes'
-> curl -fsS localhost:8080/v1/runtime/snapshot \
->   | jq '{usable: .accelerators[0].hbm_usable_bytes, engines: [.models[] | {model_name, kv_capacity_bytes}]}'
-> ```
->
-> Each claim's `kvLimitBytes` has to equal its engine's `kv_capacity_bytes`.
-> The declared `maximumFootprint` of both claims plus both limits has to come
-> to `usable`.
-
-Enable reclaim without lifecycle actions:
+Keep `qwen2.5-0.5b` busy and leave `qwen3-0.6b` idle:
 
 ```bash
-kubectl annotate deployment/warm-runtime-pool-b300 \
-  'claim.model.aibrix.ai/pool-policy={"reclaim":{"mode":"kv-first","capacityBytes":4294967296,"guaranteedFloorPercent":20}}' \
-  --overwrite
-```
-
-Establish demand for only Qwen3, then poll until the controller applies a safe
-plan:
-
-```bash
-export PORT_A=$(curl -fsS localhost:8080/v1/runtime/snapshot \
-  | jq -er '.models[] | select(.model_name == "qwen3-0.6b") | .port')
-export PORT_B=$(curl -fsS localhost:8080/v1/runtime/snapshot \
-  | jq -er '.models[] | select(.model_name == "qwen2.5-0.5b") | .port')
-
-for _ in $(seq 1 20); do
-  kubectl exec "$POD" -c aibrix-runtime -- curl -fsS \
-    "http://127.0.0.1:${PORT_A}/v1/completions" \
-    -H 'Content-Type: application/json' \
-    -d '{"model":"qwen3-0.6b","prompt":"Explain KV pooling briefly.","max_tokens":32}' \
-    >/dev/null
-done
-
-deadline=$((SECONDS + 90))
-while (( SECONDS < deadline )); do
-  snapshot=$(curl -fsS localhost:8080/v1/runtime/snapshot)
-  a=$(jq -r '.models[] | select(.model_name == "qwen3-0.6b") | .kv_capacity_bytes' <<<"$snapshot")
-  b=$(jq -r '.models[] | select(.model_name == "qwen2.5-0.5b") | .kv_capacity_bytes' <<<"$snapshot")
-  (( a > b )) && break
-  sleep 2
-done
-(( a > b ))
-printf '%s\n' "$snapshot" | tee "$EVIDENCE/kv-qwen3-hot.json" | jq .
-```
-
-Move demand to Qwen2.5 and require the limits to reverse:
-
-```bash
-for _ in $(seq 1 20); do
-  kubectl exec "$POD" -c aibrix-runtime -- curl -fsS \
-    "http://127.0.0.1:${PORT_B}/v1/completions" \
-    -H 'Content-Type: application/json' \
-    -d '{"model":"qwen2.5-0.5b","prompt":"Explain KV pooling briefly.","max_tokens":32}' \
-    >/dev/null
-done
-
-deadline=$((SECONDS + 90))
-while (( SECONDS < deadline )); do
-  snapshot=$(curl -fsS localhost:8080/v1/runtime/snapshot)
-  a=$(jq -r '.models[] | select(.model_name == "qwen3-0.6b") | .kv_capacity_bytes' <<<"$snapshot")
-  b=$(jq -r '.models[] | select(.model_name == "qwen2.5-0.5b") | .kv_capacity_bytes' <<<"$snapshot")
-  (( b > a )) && break
-  sleep 2
-done
-(( b > a ))
-printf '%s\n' "$snapshot" | tee "$EVIDENCE/kv-qwen25-hot.json" | jq .
-kubectl exec "$POD" -c aibrix-runtime -- kvctl list \
-  | tee "$EVIDENCE/kvctl-after-policy.txt"
+kubectl -n "$NS" annotate deployment/warm-runtime-pool --overwrite \
+  'claim.model.aibrix.ai/pool-policy={"lifecycle":{"sleepAfterSeconds":60}}'
+( while sleep 10; do chat qwen2.5-0.5b >/dev/null; done ) &
+KEEPALIVE=$!
+wait_phase qwen3-0-6b Sleeping 5m
+model qwen3-0.6b | tee "$EVIDENCE/s1-sleeping.json" | jq '{phase, ready, sleeping_footprint_bytes}'
+route qwen3-0-6b
+events qwen3-0-6b | tail -3
 ```
 
 Pass criteria:
 
-- only the model receiving requests gains `request_success_total` in that
-  observation window;
-- both limits remain at or above the larger of observed KV use and the
-  configured floor;
-- the hot model receives the safe remainder and the direction reverses when
-  demand reverses;
-- snapshot and `kvctl list` agree;
-- controller logs contain no policy-application error.
+- `qwen3-0-6b` is `Sleeping`, with Ready reason `EngineSleeping` and a
+  `Sleeping` Event that names the idle time;
+- its route reads `"state": "sleeping"` with port 0, and the engine is
+  `sleeping` in the snapshot;
+- `qwen25-0-5b` stays `Active`.
 
-When both observed uses are below the floor, a 4 GiB budget with a 20% floor
-normally yields 3,435,973,837 and 858,993,459 bytes. This proves only that the
-limit actuator and policy loop work in both directions. It does not prove that
-either engine occupies that much HBM, experiences KV pressure, avoids OOM, or
-runs faster.
+`sleeping_footprint_bytes` is what the sleeping engine still holds on the GPU.
+It is null when the runtime cannot attribute GPU memory to the engine's
+processes. S3 and S4 need a reading.
 
-### P2: Idle Sleep and Request-Triggered Wake
+### S2: A request wakes it
 
-Enable the lifecycle sibling. Keep Qwen2.5 active while Qwen3 is idle:
+Send 20 requests at once, then retry until the model answers:
 
 ```bash
-POLICY='{"reclaim":{"mode":"kv-first","capacityBytes":4294967296,'
-POLICY+='"guaranteedFloorPercent":20},"lifecycle":{"sleepAfterSeconds":60}}'
-kubectl annotate deployment/warm-runtime-pool-b300 \
-  "claim.model.aibrix.ai/pool-policy=$POLICY" --overwrite
-
-(
-  while true; do
-    kubectl exec "$POD" -c aibrix-runtime -- curl -fsS \
-      "http://127.0.0.1:${PORT_B}/v1/completions" \
-      -H 'Content-Type: application/json' \
-      -d '{"model":"qwen2.5-0.5b","prompt":"keep alive","max_tokens":4}' \
-      >/dev/null || exit
-    sleep 10
-  done
-) &
-export PEER_KEEPALIVE_PID=$!
-
-kubectl exec "$POD" -c aibrix-runtime -- \
-  nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader \
-  >"$EVIDENCE/process-hbm-before-sleep.txt"
-kubectl wait --for=jsonpath='{.status.phase}'=Sleeping \
-  modelclaim/qwen3-0-6b --timeout=3m
-curl -fsS localhost:8080/v1/runtime/snapshot \
-  | tee "$EVIDENCE/snapshot-sleeping.json" | jq .
-kubectl get pod "$POD" -o json \
-  | jq '.metadata.annotations["route.claim.model.aibrix.ai/qwen3-0-6b"]'
-kubectl exec "$POD" -c aibrix-runtime -- \
-  nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader \
-  >"$EVIDENCE/process-hbm-after-sleep.txt"
-```
-
-The target must be `Sleeping`, not routable, and lower its current process HBM
-after vLLM level-1 sleep. The peer must remain `Active` and continue serving.
-
-Send 20 concurrent requests to the sleeping model. Each observed request
-before readiness must receive 503; the first response includes
-`Retry-After: 10`, and concurrent wake attempts are deduplicated:
-
-```bash
-seq 1 20 | xargs -P20 -I{} sh -c '
-  curl -sS -D "'$EVIDENCE'/wake-{}.headers" \
-    -o "'$EVIDENCE'/wake-{}.body" -w "%{http_code}\n" \
-    http://127.0.0.1:8888/v1/chat/completions \
-    -H "Content-Type: application/json" \
-    -H "routing-strategy: random" \
-    -d "{\"model\":\"qwen3-0.6b\",\"messages\":[{\"role\":\"user\",\"content\":\"wake\"}],\"max_tokens\":8}"
-' | tee "$EVIDENCE/wake-statuses.txt"
-grep -qi '^Retry-After: 10' "$EVIDENCE"/wake-*.headers
-```
-
-Retry with a deadline until the route is ready:
-
-```bash
-deadline=$((SECONDS + 300))
-code=000
-while (( SECONDS < deadline )); do
-  code=$(curl -sS -o "$EVIDENCE/wake-retry.json" -w '%{http_code}' \
-    http://127.0.0.1:8888/v1/chat/completions \
-    -H 'Content-Type: application/json' \
-    -H 'routing-strategy: random' \
-    -d '{"model":"qwen3-0.6b","messages":[{"role":"user","content":"awake?"}],"max_tokens":8}')
-  [[ "$code" == 200 ]] && break
-  sleep 2
+pids=()
+for i in $(seq 20); do
+  curl -sS -o /dev/null -D "$EVIDENCE/s2-$i.headers" localhost:8888/v1/chat/completions \
+    -H 'Content-Type: application/json' -H 'routing-strategy: random' \
+    -d '{"model":"qwen3-0.6b","messages":[{"role":"user","content":"wake"}],"max_tokens":8}' &
+  pids+=($!)
 done
-[[ "$code" == 200 ]]
-kubectl wait --for=jsonpath='{.status.phase}'=Active \
-  modelclaim/qwen3-0-6b --timeout=2m
-wake_count=$(kubectl -n aibrix-system logs \
-  deployment/aibrix-gateway-plugins --since=5m \
-  | grep 'ModelClaim request-triggered wake completed' \
-  | grep -c 'qwen3-0.6b')
-[[ "$wake_count" == 1 ]]
-
-unknown=$(curl -sS -o "$EVIDENCE/unknown-model.json" -w '%{http_code}' \
-  http://127.0.0.1:8888/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -H 'routing-strategy: random' \
-  -d '{"model":"does-not-exist","messages":[{"role":"user","content":"test"}],"max_tokens":1}')
-[[ "$unknown" == 400 ]]
-kill "$PEER_KEEPALIVE_PID"
-```
-
-The gateway does not hold the original request. Its contract is an immediate,
-retryable 503 while waking, followed by a successful client retry after the
-controller restores the real port.
-
-## 7. Runtime Reliability Acceptance
-
-Disable automatic sleep while injecting faults, ensure both claims are
-`Active`, then save a new baseline registry and snapshot.
-
-```bash
-kubectl annotate deployment/warm-runtime-pool-b300 \
-  'claim.model.aibrix.ai/pool-policy={"reclaim":{"mode":"kv-first","capacityBytes":4294967296,"guaranteedFloorPercent":20}}' \
-  --overwrite
-kubectl wait --for=jsonpath='{.status.phase}'=Active \
-  modelclaim/qwen3-0-6b --timeout=5m
-kubectl wait --for=jsonpath='{.status.phase}'=Active \
-  modelclaim/qwen25-0-5b --timeout=5m
-kubectl exec "$POD" -c aibrix-runtime -- \
-  cat /var/run/aibrix/engines.json \
-  | tee "$EVIDENCE/registry-before-faults.json" | jq .
-```
-
-### R1: Agent Restart and Engine Re-adoption
-
-Inspect the process tree and identify the `aibrix_runtime` agent child, not
-`tini`, the supervisor shell, or a vLLM engine:
-
-```bash
-kubectl exec "$POD" -c aibrix-runtime -- ps -eo pid,ppid,pgid,args
-export AGENT_PID=<aibrix_runtime-pid>
-kubectl exec "$POD" -c aibrix-runtime -- kill -KILL "$AGENT_PID"
-```
-
-Poll for the runtime API to return, then compare the registry:
-
-```bash
-deadline=$((SECONDS + 60))
-until curl -fsS localhost:8080/v1/runtime/snapshot >/dev/null; do
-  (( SECONDS >= deadline )) && exit 1
-  sleep 1
-done
-kubectl exec "$POD" -c aibrix-runtime -- \
-  cat /var/run/aibrix/engines.json \
-  | tee "$EVIDENCE/registry-after-agent-restart.json" | jq .
-```
-
-Pass criteria: the supervisor launches a new agent, both engines are re-adopted
-with the same PID, port, and IPC name, no duplicate engine appears, and both
-claims remain or return `Active` without restarting the Pod.
-
-### R2: Isolated Engine Crash and Local Restart
-
-Choose Qwen3 as the target and Qwen2.5 as the peer:
-
-```bash
-export TARGET_MODEL=qwen3-0.6b
-export TARGET_PID=$(kubectl exec "$POD" -c aibrix-runtime -- \
-  cat /var/run/aibrix/engines.json \
-  | jq -er --arg model "$TARGET_MODEL" \
-    '.engines[] | select(.model_name == $model) | .pid')
-kubectl exec "$POD" -c aibrix-runtime -- kill -KILL "$TARGET_PID"
-```
-
-During restart, the target must be de-routed with `port:0`; the peer must keep
-serving. The old process group must disappear before replacement:
-
-```bash
-kubectl exec "$POD" -c aibrix-runtime -- ps -eo pgid= \
-  | awk -v pgid="$TARGET_PID" \
-    '$1 == pgid {found=1} END {exit found ? 1 : 0}'
-
-kubectl exec "$POD" -c aibrix-runtime -- curl -fsS \
-  "http://127.0.0.1:${PORT_B}/v1/completions" \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"qwen2.5-0.5b","prompt":"peer health","max_tokens":8}' \
-  | jq -e '.choices | length > 0'
-
-kubectl wait --for=jsonpath='{.status.phase}'=Active \
-  modelclaim/qwen3-0-6b --timeout=5m
-kubectl exec "$POD" -c aibrix-runtime -- \
-  cat /var/run/aibrix/engines.json \
-  | tee "$EVIDENCE/registry-after-engine-restart.json" | jq .
-```
-
-The target gets a new PID with the same port and IPC name and an incremented
-`restart_count`. The peer keeps its PID and restart count.
-
-### R3: Terminal Local Failure (Extended and Destructive)
-
-Run this last. Repeatedly kill the target only after its previous replacement
-is fully `Active`. Backoff is 2, 4, 8, 16, and 32 seconds. After the process
-launched by the fifth local restart dies, no further local launch occurs.
-
-R2 consumed the first crash and left `restart_count:1`. Drive restart counts
-2 through 5, always obtaining the current PID after convergence, then kill the
-count-5 process once more:
-
-```bash
-for expected_restart in 2 3 4 5; do
-  kubectl wait --for=jsonpath='{.status.phase}'=Active \
-    modelclaim/qwen3-0-6b --timeout=5m
-  current_pid=$(kubectl exec "$POD" -c aibrix-runtime -- \
-    cat /var/run/aibrix/engines.json \
-    | jq -er '.engines[] | select(.model_name == "qwen3-0.6b") | .pid')
-  kubectl exec "$POD" -c aibrix-runtime -- kill -KILL "$current_pid"
-
-  deadline=$((SECONDS + 300))
-  until curl -fsS localhost:8080/v1/runtime/snapshot \
-    | jq -e --argjson count "$expected_restart" \
-      '.models[] | select(.model_name == "qwen3-0.6b" and .phase == "active" and .restart_count == $count)' \
-      >/dev/null; do
-    (( SECONDS >= deadline )) && exit 1
-    sleep 2
-  done
-done
-
-current_pid=$(kubectl exec "$POD" -c aibrix-runtime -- \
-  cat /var/run/aibrix/engines.json \
-  | jq -er '.engines[] | select(.model_name == "qwen3-0.6b") | .pid')
-kubectl exec "$POD" -c aibrix-runtime -- kill -KILL "$current_pid"
-kubectl wait --for=jsonpath='{.status.phase}'=Failed \
-  modelclaim/qwen3-0-6b --timeout=2m
+wait "${pids[@]}"
+grep -h '^HTTP' "$EVIDENCE"/s2-*.headers | sort | uniq -c
+grep -il '^Retry-After: 10' "$EVIDENCE"/s2-*.headers | wc -l
+wake_request qwen3-0-6b
+eventually 300 serves qwen3-0.6b
+wait_phase qwen3-0-6b Active 2m
+events qwen3-0-6b | tail -4
+kubectl -n aibrix-system logs -l app=gateway-plugins -c gateway-plugin --since=10m --tail=-1 \
+  | grep -c 'asked the controller to wake a ModelClaim'
+wake_request qwen3-0-6b
 ```
 
 Pass criteria:
 
-- runtime target: `phase:"failed"`, `alive:false`, `ready:false`,
-  `restart_count:5`, and non-empty `last_error`;
-- claim and instance phase: `Failed`;
-- Ready condition: `False` with reason `EngineFailed`;
-- target route: `port:0/state:"failed"`;
-- the peer continues returning HTTP 200.
+- every request got 503 with `Retry-After: 10`;
+- the Pod carries one wake request, `wake.modelclaim.aibrix.ai/qwen3-0-6b`,
+  holding the time of the first request, and the gateway logged it once;
+- the claim shows `Waking` and then `Woken` Events, a retry returns 200, and
+  the wake request is gone once the claim is `Active`.
 
-Capture the final state:
+### S3: A sleeping model gives its room back, and gets it back
 
-```bash
-curl -fsS localhost:8080/v1/runtime/snapshot \
-  | tee "$EVIDENCE/snapshot-terminal-failure.json" | jq .
-kubectl get modelclaim qwen3-0-6b -o yaml \
-  >"$EVIDENCE/modelclaim-terminal-failure.yaml"
-kubectl get pod "$POD" -o json \
-  >"$EVIDENCE/warm-pod-terminal-failure.json"
-kubectl logs "$POD" -c aibrix-runtime \
-  >"$EVIDENCE/runtime.log"
-kubectl -n aibrix-system logs deployment/aibrix-controller-manager \
-  >"$EVIDENCE/controller.log"
-kubectl -n aibrix-system logs deployment/aibrix-gateway-plugins \
-  >"$EVIDENCE/gateway.log"
-```
-
-This is local fault convergence only. The current implementation does not move
-a terminally failed claim to another warm Pod.
-
-## 8. Optional KV Pressure Acceptance
-
-Run this before R3, or recreate the failed claim first. It validates one
-recorded workload, not an OOM-proof guarantee for arbitrary models and inputs.
-
-1. Set both models to a fixed 2 GiB baseline with unique manual operation IDs.
-2. Port-forward both engine ports from the warm Pod.
-3. Drive concurrent long-context requests until `kv_used_bytes` approaches the
-   configured limit.
-4. Repeat with a 0.8 GiB target limit and then a 3.2 GiB target limit.
-5. Record request success/error counts, waiting requests, preemptions or
-   recomputations, latency, KV use/capacity, engine restarts, and GPU HBM.
-
-Under a restrictive KV limit, expected engine behavior is increased queueing,
-preemption, or recomputation when supported by the engine. Client timeouts or
-rejections are possible. The acceptance condition for a chosen workload is
-that the engine remains alive without a CUDA OOM or runtime restart and that
-all observed degradation is recorded. A failed request is not silently counted
-as a pass.
-
-## 9. Optional Policy Benefit Benchmark
-
-> **On a GPU, the dynamic arm measures nothing.** The `reclaim` policy stands
-> down where a claim records its own KV limit, as in P1.
-
-Do not publish a performance or utilization claim without this comparison.
-Use the same cached weights, engine arguments, prompt trace, warmup, arrival
-rates, and run duration for both configurations:
-
-1. **Fixed baseline:** remove the reclaim annotation and manually set 2/2 GiB.
-2. **Dynamic policy:** restore the 4 GiB reclaim policy with a 20% floor.
-3. Replay a skewed trace against both engines, then reverse the skew.
-4. Repeat each configuration at least three times in alternating order.
-5. Save detailed request results and one-second GPU telemetry.
-
-The kvcached runtime image contains the matching vLLM benchmark client. Follow
-the [vLLM bench serve CLI reference](https://docs.vllm.ai/en/stable/cli/bench/serve/),
-disable kvcached autopatch in the client process, and confirm image-specific
-flags with `vllm bench serve --help`. A representative direct-engine
-invocation is:
+With `noWakeReserveWhileAsleep`, a sleeping engine counts only at what it
+holds asleep, so a claim that needs 3 GiB more than the card has left fits.
+When the sleeper is asked for again, the controller puts an idle neighbour to
+sleep to make room for it.
 
 ```bash
-ENABLE_KVCACHED=false KVCACHED_AUTOPATCH=0 vllm bench serve \
-  --backend openai-chat \
-  --base-url http://127.0.0.1:20000 \
-  --endpoint /v1/chat/completions \
-  --model qwen3-0.6b \
-  --dataset-name random \
-  --random-input-len 1024 \
-  --random-output-len 128 \
-  --num-prompts 200 \
-  --request-rate 4 \
-  --percentile-metrics ttft,tpot,e2el \
-  --metric-percentiles 50,95,99 \
-  --save-result --save-detailed \
-  --result-dir "$EVIDENCE/benchmark"
+kubectl -n "$NS" annotate deployment/warm-runtime-pool --overwrite \
+  'claim.model.aibrix.ai/pool-policy={"lifecycle":{"sleepAfterSeconds":3600,"noWakeReserveWhileAsleep":true,"sleepToMakeRoomAfterSeconds":30}}'
+kill "$KEEPALIVE"
+for i in 1 2; do
+  runtime /v1/runtime/models/sleep -H 'Content-Type: application/json' \
+    -d "{\"model_name\":\"qwen3-0.6b\",\"level\":1,\"operation_id\":\"$RUN_ID-s3\"}" \
+    | tee "$EVIDENCE/s3-sleep-$i.json"
+done
+jq -e '.applied == true' "$EVIDENCE/s3-sleep-1.json"
+jq -e '.applied == false' "$EVIDENCE/s3-sleep-2.json"
+wait_phase qwen3-0-6b Sleeping 2m
+model qwen3-0.6b | jq .sleeping_footprint_bytes
+
+claim fits-after-release "  perGPU: {maximumFootprint: $((CARD - 12 * GIB)), kvFloor: 1Gi}"
+wait_phase fits-after-release Active 15m
+
+[[ $(chat qwen3-0.6b) == 503 ]]
+eventually 300 serves qwen3-0.6b
+for c in qwen3-0-6b qwen25-0-5b fits-after-release; do events "$c" | tail -4; done \
+  | tee "$EVIDENCE/s3-events.txt"
 ```
 
-Collect at least:
+Pass criteria:
 
-- completed and failed requests, request and token throughput;
-- p50/p95/p99 TTFT, TPOT, and end-to-end latency;
-- SLO goodput for a declared TTFT/TPOT threshold;
-- KV used/capacity, waiting requests, preemptions/recomputations;
-- HBM, SM active, memory activity, and power over time;
-- sleep/wake count and wake latency if lifecycle policy is included.
+- the first sleep call applies and the repeat does not;
+- `fits-after-release` becomes `Active` while `qwen3-0-6b` sleeps;
+- the wake waits first: `qwen3-0-6b` shows a `WaitingForRoom` Event;
+- one idle neighbour gets a `SleptToMakeRoom` Event, and then `qwen3-0-6b`
+  wakes and answers 200.
 
-Report confidence intervals or at least median and range across repetitions.
-Capacity limits switching in the intended direction is a functional result,
-not a benefit result. If confidence intervals overlap or errors increase, state
-that the test found no demonstrated benefit for that workload.
-
-## Reference Functional Result
-
-The required functional sequence was exercised on 2026-07-16 on one Lambda
-A10 with minikube, Qwen3-0.6B, and Qwen2.5-0.5B-Instruct. It covered
-activation, gateway HTTP 200, dual-model co-residency, manual operation
-idempotency, agent re-adoption, isolated engine restart, terminal local failure,
-automatic idle sleep, request-triggered wake, peer isolation, and cleanup.
-
-Hardware- and version-specific observations from that run were:
-
-- Qwen3 process HBM changed from 3134 to 1932 MiB after level-1 sleep;
-- Qwen2.5 process HBM changed from 2516 to 1514 MiB after level-1 sleep;
-- 20 concurrent requests to a sleeping model returned 503 and produced one
-  deduplicated wake operation, then a retry returned 200;
-- the 4 GiB configured KV budget changed 2/2 -> 3.2/0.8 GiB and then
-  0.8/3.2 GiB as observed request demand reversed.
-
-These are reference functional observations. No KV saturation test or
-baseline-versus-policy performance experiment was completed in that run, so
-they do not establish OOM safety, throughput improvement, latency improvement,
-SM utilization improvement, or cost reduction.
-
-## Troubleshooting Guardrails
-
-- Keep `ENABLE_KVCACHED=false` and `KVCACHED_AUTOPATCH=0` on the runtime
-  sidecar. The launcher enables kvcached only in child engine processes;
-  autopatching the agent can import CUDA/vLLM state and cause an empty-log OOM.
-- Every engine needs a unique normalized IPC name. Prefer `[a-z0-9_]`; dots and
-  other characters may be normalized by kvcached.
-- Do not add `--gpu-memory-utilization`. A kvcached pool controls elastic KV
-  capacity through the runtime API and `kvctl`.
-- vLLM sleep requires both `VLLM_SERVER_DEV_MODE=1` and
-  `--enable-sleep-mode`; the dedicated runtime launcher supplies both.
-- Keep a sufficiently large memory-backed `/dev/shm`. The sample uses 16 GiB.
-- Level-1 sleep keeps weights in host DRAM. Check node DRAM before increasing
-  resident-model density, especially for larger models.
-- HBM release can lag the sleep response by several seconds. The first request
-  after wake can include rebuild overhead; use later requests for steady-state
-  latency.
-- Automatic reclaim/lifecycle policy currently applies only to verified
-  single-GPU vLLM pools. Multi-GPU and SGLang runtimes are skipped.
-- `hbm_peak_bytes` and free-HBM fields are advisory placement observations,
-  not hard capacity reservations or launch guarantees.
-
-## 10. Test Resource Cleanup
-
-Delete claims before the pool so finalizers can stop engines cleanly:
+This holds when the sleeping engine holds less than 4 GiB, as its footprint
+reading shows. Clean up, and wake both sample models:
 
 ```bash
-kubectl delete -f samples/modelclaim/modelclaims.yaml --ignore-not-found
-kubectl wait --for=delete modelclaim/qwen3-0-6b --timeout=5m || true
-kubectl wait --for=delete modelclaim/qwen25-0-5b --timeout=5m || true
-kubectl delete -f samples/modelclaim/warm-runtime-pool.yaml --ignore-not-found
-kubectl get modelclaims,pods -A >"$EVIDENCE/cluster-after-cleanup.txt"
+kubectl -n "$NS" delete modelclaim fits-after-release
+eventually 300 serves qwen3-0.6b
+eventually 300 serves qwen2.5-0.5b
 ```
 
-Do not run `minikube delete`, stop the host, or terminate the Lambda instance
-when using the normal reusable-cluster path. If this run created an ephemeral
-instance through Appendix A, complete the additional teardown recorded there.
+### S4: The controller makes room for a new claim
+
+Both models are awake. Wait until they have been idle for 30 seconds. Then a
+new claim that needs 3 GiB more than the card has left makes the controller
+put one of them to sleep.
+
+```bash
+sleep 40
+claim needs-room "  perGPU: {maximumFootprint: $((CARD - 12 * GIB)), kvFloor: 1Gi}"
+wait_phase needs-room Active 15m
+events needs-room | tee "$EVIDENCE/s4-events.txt"
+for c in qwen3-0-6b qwen25-0-5b; do events "$c" | tail -3; done \
+  | tee -a "$EVIDENCE/s4-events.txt"
+kubectl -n "$NS" delete modelclaim needs-room
+kubectl -n "$NS" annotate deployment/warm-runtime-pool 'claim.model.aibrix.ai/pool-policy-'
+eventually 300 serves qwen3-0.6b
+eventually 300 serves qwen2.5-0.5b
+```
+
+Pass criteria: `needs-room` shows a `MakingRoom` Event that names the model put
+to sleep, that model shows `SleptToMakeRoom`, and `needs-room` becomes
+`Active`. The last two commands wake the sleeping model again.
+
+## 6. Runtime Reliability
+
+Both claims are `Active`, and the pool has no policy.
+
+### R1: The agent restarts and adopts its engines
+
+```bash
+registry >"$EVIDENCE/r1-before.json"
+AGENT_PID=$(kubectl -n "$NS" exec "$POD" -c aibrix-runtime -- ps -eo pid,args \
+  | awk '/aibrix\.app/ {print $1; exit}')
+kubectl -n "$NS" exec "$POD" -c aibrix-runtime -- kill -KILL "$AGENT_PID"
+eventually 60 snapshot >/dev/null
+registry >"$EVIDENCE/r1-after.json"
+diff <(jq -S '[.engines[] | {model_name, pid, port, ipc_name}]' "$EVIDENCE/r1-before.json") \
+     <(jq -S '[.engines[] | {model_name, pid, port, ipc_name}]' "$EVIDENCE/r1-after.json")
+```
+
+Pass criteria: a new agent answers within a minute, both engines keep their
+PID, port and IPC name, no engine is duplicated, and both claims stay `Active`.
+
+### R2: One engine crashes and restarts alone
+
+```bash
+OLD_PID=$(pid qwen3-0.6b)
+kubectl -n "$NS" exec "$POD" -c aibrix-runtime -- kill -KILL "$OLD_PID"
+not_active() { [[ $(route qwen3-0-6b | jq -r .state) != active ]]; }
+eventually 30 not_active
+serves qwen2.5-0.5b
+wait_phase qwen3-0-6b Active 5m
+echo "pid $OLD_PID -> $(pid qwen3-0.6b)"
+model qwen3-0.6b | jq '{port, ipc_name, restart_count}'
+```
+
+Pass criteria: while `qwen3-0.6b` restarts, its route is not active and
+`qwen2.5-0.5b` keeps serving. It comes back with a new PID, the same port and
+IPC name, and `restart_count: 1`.
+
+### R3: An engine that keeps crashing fails for good
+
+The runtime restarts an engine after 2, 4, 8, 16 and 32 seconds, five times in
+the engine's life. Kill it each time it is back, then once more:
+
+```bash
+for count in 2 3 4 5; do
+  wait_phase qwen3-0-6b Active 5m
+  kubectl -n "$NS" exec "$POD" -c aibrix-runtime -- kill -KILL "$(pid qwen3-0.6b)"
+  restarted() { [[ $(model qwen3-0.6b | jq "select(.phase == \"active\") | .restart_count") == "$count" ]]; }
+  eventually 300 restarted
+done
+wait_phase qwen3-0-6b Active 5m
+kubectl -n "$NS" exec "$POD" -c aibrix-runtime -- kill -KILL "$(pid qwen3-0.6b)"
+wait_phase qwen3-0-6b Failed 2m
+model qwen3-0.6b | jq '{phase, alive, restart_count, last_error}'
+route qwen3-0-6b
+conditions qwen3-0-6b
+events qwen3-0-6b | tail -4
+serves qwen2.5-0.5b
+```
+
+Pass criteria:
+
+- the engine is `failed`, not alive, with `restart_count: 5` and a
+  `last_error`;
+- the claim is `Failed`, with Ready reason `EngineFailed`, and its route reads
+  `"state": "failed"` with port 0;
+- with no other warm Pod, the `Scheduled` condition says the model cannot move
+  from the failed Pod. With one, the controller moves the claim there instead
+  (`Rescheduled`);
+- `qwen2.5-0.5b` keeps serving.
+
+## 7. Deletion
+
+Delete the claims before the pool, so the controller can stop their engines:
+
+```bash
+kubectl -n "$NS" delete -f samples/modelclaim/modelclaims.yaml --wait=false
+kubectl -n "$NS" wait --for=delete modelclaim/qwen3-0-6b modelclaim/qwen25-0-5b --timeout=3m
+kubectl -n "$NS" get pod "$POD" -o json \
+  | jq '[.metadata.annotations | keys[] | select(startswith("route.claim.model.aibrix.ai/"))]'
+no_engines() { [[ $(snapshot | jq '.models | length') == 0 ]]; }
+eventually 60 no_engines
+kubectl -n "$NS" delete -f samples/modelclaim/warm-runtime-pool.yaml
+```
+
+Pass criteria: both claims are gone within three minutes, the Pod has no route
+left, and the runtime has no engine. A serving engine is given up to 90
+seconds to finish its requests before it is stopped.
+
+## 8. Optional: A TP=2 Pool
+
+This needs a node with two free GPUs. Create a second pool whose Pod requests
+two GPUs, and a TP=2 claim for it:
+
+```bash
+sed -e "s#aibrix/kvcached-runtime:nightly#$RUNTIME_IMAGE#" -e 's/pool-a/tp2-pool/' \
+    -e 's/warm-runtime-pool/warm-runtime-pool-tp2/' -e 's#nvidia.com/gpu: "1"#nvidia.com/gpu: "2"#' \
+    samples/modelclaim/warm-runtime-pool.yaml | kubectl -n "$NS" apply -f -
+kubectl -n "$NS" rollout status deployment/warm-runtime-pool-tp2 --timeout=15m
+kubectl -n "$NS" apply -f - <<'EOF'
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelClaim
+metadata:
+  name: qwen25-tp2
+spec:
+  podSelector:
+    matchLabels:
+      claim.model.aibrix.ai/pool: tp2-pool
+  artifactURL: huggingface://Qwen/Qwen2.5-0.5B-Instruct
+  perGPU: {maximumFootprint: 6Gi, kvFloor: 1Gi}
+  engineConfig:
+    args: {"--tensor-parallel-size": "2", "--max-model-len": "2048"}
+EOF
+wait_phase qwen25-tp2 Active 15m
+eventually 60 serves qwen25-tp2
+kubectl -n "$NS" delete modelclaim qwen25-tp2
+kubectl -n "$NS" delete deployment warm-runtime-pool-tp2
+kubectl -n "$NS" delete service warm-runtime-pool-tp2-metrics
+```
+
+Pass criteria: the claim becomes `Active` on the two-GPU Pod and serves.
 
 ## Result Record
 
-| ID | Result | Evidence or key number | Notes |
+| ID | Check | Result | Evidence or key numbers |
 |---|---|---|---|
-| F1 activation/observation/density | pass / fail | startup; PIDs/ports/IPCs ___ | |
-| F2 direct/gateway inference | pass / fail | HTTP results ___ | |
-| F3 validation/topology | pass / fail | reasons ___ | |
-| F4 manual idempotency | pass / fail | second `applied:false` ___ | |
-| P1 dynamic KV limits | pass / fail | A/B limits both directions ___ | limit only |
-| P2 sleep/wake | pass / fail | HBM delta ___; wake ___ s | |
-| R1 agent re-adoption | pass / fail | unchanged engine PIDs ___ | |
-| R2 engine isolation | pass / fail | restart count ___ | |
-| R3 terminal failure | pass / fail / skipped | final state ___ | destructive |
-| S1 KV pressure | pass / fail / not run | load and limit ___ | no generalization |
-| B1 policy benefit | pass / fail / not run | repeated metrics ___ | no claim if not run |
-| Kubernetes resource cleanup | pass / fail | claims and pool absent ___ | mandatory |
-| Ephemeral instance cleanup | pass / fail / not applicable | instance absent at ___ UTC | conditional |
+| A1 | two models share the GPU | pass / fail | PIDs, ports, IPC names |
+| A2 | requests reach each engine | pass / fail | |
+| V1-V7 | validation | pass / fail | |
+| C1 | card division | pass / fail | card, limits |
+| C2 | waiting for room | pass / fail | |
+| C3 | limit put back | pass / fail | Events |
+| S1 | idle sleep | pass / fail | sleeping footprint |
+| S2 | wake on request | pass / fail | 503 count, wake request time |
+| S3 | room given back and made | pass / fail | Events |
+| S4 | room made for a new claim | pass / fail | Events |
+| R1 | agent restart | pass / fail | |
+| R2 | engine crash | pass / fail | restart count |
+| R3 | terminal failure | pass / fail / skipped | |
+| D | deletion | pass / fail | |
+| TP2 | TP=2 pool | pass / fail / not run | |
 
-## Appendix A: Optional Lambda Cluster Setup
+## Notes
 
-Use this appendix only when an existing Lambda GPU cluster is unavailable.
-The main acceptance procedure does not require creating a new instance.
-
-1. Provision one A10 instance using the Lambda console or API and a temporary
-   SSH key. Record the instance ID, owner, creation time, and teardown deadline
-   outside the repository.
-2. Arm an independent expiration or watchdog immediately. Never place a cloud
-   API key in the repository, shell history, evidence directory, or logs.
-3. Follow the
-   [AIBrix Lambda Cloud guide](https://aibrix.readthedocs.io/latest/getting_started/installation/lambda.html)
-   through NVIDIA container runtime and minikube setup. Skip any release-pinned
-   AIBrix installation; section 3 installs the current nightly control plane.
-4. Run the preflight checks in section 1 before continuing.
-5. After section 10, delete the ephemeral minikube cluster, terminate the exact
-   instance through the Lambda console or API, and verify that its instance ID
-   is absent. Delete the temporary SSH key afterward.
-
-Never use `shutdown`, `poweroff`, or an OS halt as cloud cleanup. Those actions
-do not terminate the billable Lambda resource. Consult the
-[Lambda Cloud API documentation](https://docs.lambda.ai/public-cloud/cloud-api/)
-for API-based lifecycle operations.
+- Keep `ENABLE_KVCACHED=false` and `KVCACHED_AUTOPATCH=0` on the runtime
+  container. The runtime enables kvcached only in each engine process.
+- Do not pass `--gpu-memory-utilization`; kvcached owns the KV memory.
+- Level-1 sleep keeps a model's weights in host memory, and ModelClaim does not
+  account for host memory. Check the node's free memory before you put many
+  models to sleep on it.
+- Where the runtime cannot attribute GPU memory to an engine's processes, the
+  sleeping footprint reads null, and a sleeping engine keeps its whole reserve.
+- The controller's Kubernetes client drops a claim's Events after 25 in a burst,
+  then lets one through every five minutes. Late in a run, a busy claim can
+  miss an Event. Its phase, conditions and route still show what happened.

@@ -20,8 +20,8 @@ that otherwise differ from engine to engine:
   start, sleep, wake and deactivate engine processes in a shared pod.
 
 The runtime does not proxy inference traffic: Envoy forwards requests straight to the engine
-container. The only contact the gateway has with the runtime is the wake call it makes for a
-sleeping ModelClaim engine. Most deployments do not need the runtime. Install it when you use
+container. To wake a sleeping ModelClaim engine, the gateway asks the ModelClaim controller,
+which calls the runtime. Most deployments do not need the runtime. Install it when you use
 dynamic LoRA loading or ModelClaim.
 
 How it works
@@ -43,8 +43,8 @@ How it works
 * The controller manager flag ``--enable-runtime-sidecar`` only affects the ModelAdapter
   (LoRA) controller. With it on, that controller uses the runtime API on ``8080`` when a
   container named ``aibrix-runtime`` is present and the engine's own API on ``8000`` otherwise;
-  with it off (the default) it always calls the engine. The ModelClaim controller and the
-  gateway's wake path always use the runtime on ``8080``, regardless of the flag.
+  with it off (the default) it always calls the engine. The ModelClaim controller always uses
+  the runtime on ``8080``, regardless of the flag.
 * Metrics are collected on each scrape: the runtime fetches the engine's metrics page, applies
   the standardization rules for ``INFERENCE_ENGINE`` and serves the result. Rule sets for
   ``sglang`` and ``trtllm`` exist in the code, but the runtime only starts with
