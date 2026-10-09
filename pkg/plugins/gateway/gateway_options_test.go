@@ -17,9 +17,12 @@ limitations under the License.
 package gateway
 
 import (
+	"sync/atomic"
 	"testing"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/types"
 )
 
 func TestNewServerWithOptionsUsesInjectedCache(t *testing.T) {
@@ -47,6 +50,29 @@ func TestNewServerInitializesGlobalRouterManager(t *testing.T) {
 		t.Fatal("NewServer() must retain the initialized global router manager")
 	}
 	assertProductionStrategiesRegistered(t, server)
+}
+
+// countingRouter is a no-op router for counting constructor calls.
+type countingRouter struct{}
+
+func (countingRouter) Route(*types.RoutingContext, types.PodList) (string, error) { return "", nil }
+
+// A server on the global router manager constructs each router once.
+// Initializing the manager twice built two PD routers, each with its own
+// token-load tracker, request-tracker registration and shared-ledger publisher.
+func TestNewServerConstructsGlobalRoutersOnce(t *testing.T) {
+	cache.InitForTest()
+	var constructed atomic.Int32
+	routing.Register(types.RoutingAlgorithm("test-construct-once"), func() (types.Router, error) {
+		constructed.Add(1)
+		return countingRouter{}, nil
+	})
+
+	NewServer(nil, nil, nil)
+
+	if got := constructed.Load(); got != 1 {
+		t.Fatalf("router constructed %d times, want 1", got)
+	}
 }
 
 func assertProductionStrategiesRegistered(t *testing.T, server *Server) {
