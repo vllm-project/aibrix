@@ -314,3 +314,22 @@ func TestPrefixCacheHashSeed(t *testing.T) {
 		assert.NotEqual(t, a, b)
 	})
 }
+
+func TestMatchPercentDoesNotDropToZero(t *testing.T) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 1
+
+	cache := NewPrefixHashTable()
+	tokens := make([]byte, 101)
+	for i := range tokens {
+		tokens[i] = byte(i)
+	}
+	hashes := cache.GetPrefixHashes(tokens)
+	assert.Len(t, hashes, 101)
+
+	const pod = "ns/pod-a"
+	cache.AddPrefix(hashes[:1], "m", pod)
+	matched, _ := cache.MatchPrefix(tokens, "m", map[string]struct{}{pod: {}})
+	assert.Equal(t, 1, matched[pod])
+}

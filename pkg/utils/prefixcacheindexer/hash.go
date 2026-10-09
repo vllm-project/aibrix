@@ -157,6 +157,11 @@ func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, r
 		}
 
 		prefixMatchPercent := (i + 1) * 100 / len(prefixHashes)
+		// Integer division drops a real hit on a long prompt to 0, which then
+		// ties with pods that matched nothing. Keep the hit visible.
+		if prefixMatchPercent == 0 {
+			prefixMatchPercent = 1
+		}
 		if !matchPods(blockPods, readyPods, prefixMatchPods, prefixMatchPercent) {
 			break
 		}
