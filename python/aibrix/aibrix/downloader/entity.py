@@ -167,14 +167,13 @@ class DownloadModel:
             # Scan recursively: files in nested repo folders (e.g. "LLM/config.json")
             # keep their relative path under the cache dir, so their lock and
             # metadata files live in nested directories too.
-            for suffix in (".lock", ".metadata"):
-                for path in Path(cache_dir).rglob(f"*{suffix}"):
-                    # A repo folder such as "assets.metadata/" becomes a cache
-                    # directory with a matching name; it is not a tracked file.
-                    if not path.is_file():
-                        continue
-                    relative = path.relative_to(cache_dir).as_posix()
-                    filenames.add(relative[: -len(suffix)])
+            for path in cache_dir.rglob("*"):
+                # A repo folder such as "assets.metadata/" becomes a cache
+                # directory with a matching name; it is not a tracked file.
+                if path.suffix not in (".lock", ".metadata") or not path.is_file():
+                    continue
+                relative = path.relative_to(cache_dir).as_posix()
+                filenames.add(relative[: -len(path.suffix)])
 
         download_files = [
             get_local_download_paths(
