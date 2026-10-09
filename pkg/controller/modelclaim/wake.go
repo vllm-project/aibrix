@@ -160,7 +160,7 @@ func (r *ModelClaimReconciler) wakeRequested(
 			// asking again. One that outlives its lifetime is taken back
 			// quietly, since the wake was carried out, so an engine that never
 			// finishes booting leaves no request behind.
-			if r.wakeRequestExpired(pod, key, requestedAt) {
+			if !ensuresAwake(pm) && r.wakeRequestExpired(pod, key, requestedAt) {
 				r.takeBackWakeRequest(ctx, pod, key)
 			}
 			continue
@@ -171,7 +171,7 @@ func (r *ModelClaimReconciler) wakeRequested(
 		if pod.Status.PodIP == "" {
 			continue
 		}
-		if r.wakeRequestExpired(pod, key, requestedAt) {
+		if !ensuresAwake(pm) && r.wakeRequestExpired(pod, key, requestedAt) {
 			r.Recorder.Eventf(pm, corev1.EventTypeWarning, "WakeRequestExpired",
 				"model %s stays asleep on pod %s: it could not be woken within %s of the request",
 				served, pod.Name, wakeRequestLifetime)
@@ -224,6 +224,9 @@ func (r *ModelClaimReconciler) wakeRequested(
 		// One operation per request, so the runtime applies a request once
 		// however many passes see it.
 		operationID := fmt.Sprintf("controller-wake/%s/%s/%s", pod.UID, pm.UID, requestedAt)
+		if request, owned := policyWakeOnPod(pm, pod); owned {
+			operationID = request.OperationID
+		}
 		var resp *RuntimeOperationResponse
 		resp, err = r.Runtime.Wake(ctx, pod.Status.PodIP, DefaultRuntimePort, &WakeRequest{
 			ModelName:   served,
@@ -231,6 +234,7 @@ func (r *ModelClaimReconciler) wakeRequested(
 		})
 		readings.forget(pod.Name)
 		if err != nil && !refusedByRuntime(err) {
+			r.notePolicyWakeFailure(pm, inst, pod, err)
 			// Nothing is known to have failed. The request stays, and a later
 			// pass asks again, or sees the engine wake.
 			klog.InfoS("wake not answered; asking again on a later pass",
@@ -247,8 +251,14 @@ func (r *ModelClaimReconciler) wakeRequested(
 			}
 			r.Recorder.Eventf(pm, corev1.EventTypeWarning, "WakeFailed",
 				"model %s could not be woken on pod %s, and no other pod can take it: %v", served, pod.Name, err)
+			if ensuresAwake(pm) {
+				inst.Reason = instanceReasonWakeFailed
+			}
 			r.takeBackWakeRequest(ctx, pod, key)
 			continue
+		}
+		if inst.Reason == instanceReasonWakeFailed {
+			inst.Reason = ""
 		}
 		// A pass that asks again before the engine is seen to wake gets the same
 		// operation back, which the runtime does not apply twice. Only the call
@@ -543,7 +553,7 @@ func (r *ModelClaimReconciler) idleEngines(
 			continue
 		}
 		claim := claimForRuntimeSnapshot(claims, model)
-		if claim == nil || claim.Name == forClaim.Name || !isVLLMModel(claim) {
+		if claim == nil || claim.Name == forClaim.Name || !isVLLMModel(claim) || neverSleeps(claim) {
 			continue
 		}
 		port, active := activeClaimInstancePort(claim, pod.Name)
@@ -862,6 +872,8 @@ func bindingReason(inst *modelv1alpha1.ModelClaimInstance) string {
 	switch {
 	case inst.Phase == modelv1alpha1.ModelClaimSleeping && inst.Reason == instanceReasonWaitingForRoom:
 		return readyReasonWaitingForRoom
+	case inst.Phase == modelv1alpha1.ModelClaimSleeping && inst.Reason == instanceReasonWakeFailed:
+		return instanceReasonWakeFailed
 	case inst.Phase == modelv1alpha1.ModelClaimFailed && movingReason(inst.Reason):
 		return readyReasonMoving
 	}
@@ -872,6 +884,7 @@ func bindingReason(inst *modelv1alpha1.ModelClaimInstance) string {
 func (r *ModelClaimReconciler) takeBackWakeRequest(ctx context.Context, pod *corev1.Pod, key string) {
 	patch := client.MergeFrom(pod.DeepCopy())
 	delete(pod.Annotations, key)
+	delete(pod.Annotations, constants.ModelClaimPolicyWakeAnnotationPrefix+strings.TrimPrefix(key, constants.ModelClaimWakeAnnotationPrefix))
 	if err := r.Patch(ctx, pod, patch); err != nil {
 		klog.ErrorS(err, "could not take back a wake request", "pod", klog.KObj(pod), "annotation", key)
 	}

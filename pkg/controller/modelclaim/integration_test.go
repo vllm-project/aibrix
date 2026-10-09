@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -130,6 +131,38 @@ func TestModelClaimControllerIntegration(t *testing.T) {
 	val := gotPod.Annotations[constants.ModelClaimPodAnnotationPrefix+"qwen2-7b"]
 	assert.Contains(t, val, `"model":"qwen2-7b"`)
 	assert.Contains(t, val, fmt.Sprintf(`"port":%d`, got.Status.Instances[0].Port))
+
+	// An actual API server rejects the oscillating inherited sleep policy.
+	err = k8sClient.Patch(ctx, got, client.RawPatch(types.MergePatchType,
+		[]byte(`{"spec":{"residencyPolicy":{"sleepPolicy":{"mode":"PoolDefault"},"wakePolicy":{"mode":"EnsureAwake"}}}}`)))
+	require.True(t, apierrors.IsInvalid(err), "EnsureAwake must require an explicit Never policy: %v", err)
+
+	// The runtime goes to sleep, and OnDemand does not wake it without traffic.
+	runtimeClient := r.Runtime.(*fakeRuntime)
+	port := got.Status.Instances[0].Port
+	runtimeClient.models["qwen2-7b"] = ModelInfo{ModelName: "qwen2-7b", Port: port, Phase: "sleeping"}
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	require.Empty(t, runtimeClient.wakeCalls)
+
+	require.NoError(t, k8sClient.Get(ctx, req.NamespacedName, got))
+	require.NoError(t, k8sClient.Patch(ctx, got, client.RawPatch(types.MergePatchType,
+		[]byte(`{"spec":{"residencyPolicy":{"sleepPolicy":{"mode":"Never"},"wakePolicy":{"mode":"EnsureAwake"}}}}`))))
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	require.Len(t, runtimeClient.wakeCalls, 1)
+	require.NoError(t, k8sClient.Get(ctx, req.NamespacedName, got))
+	assert.Equal(t, modelv1alpha1.ModelClaimSleeping, got.Status.Phase)
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(gotPod), gotPod))
+	assert.Contains(t, gotPod.Annotations[constants.ModelClaimPodAnnotationPrefix+got.Name], `"port":0`)
+
+	runtimeClient.models["qwen2-7b"] = ModelInfo{ModelName: "qwen2-7b", Port: port, Phase: "active"}
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	require.NoError(t, k8sClient.Get(ctx, req.NamespacedName, got))
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Phase)
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(gotPod), gotPod))
+	assert.Contains(t, gotPod.Annotations[constants.ModelClaimPodAnnotationPrefix+got.Name], fmt.Sprintf(`"port":%d`, port))
 
 	// Deleting the ModelClaim deactivates and removes the routing annotation.
 	require.NoError(t, k8sClient.Delete(ctx, got))

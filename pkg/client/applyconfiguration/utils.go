@@ -71,10 +71,16 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationmodelv1alpha1.ModelClaimInstanceApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimPerGPU"):
 		return &applyconfigurationmodelv1alpha1.ModelClaimPerGPUApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimResidencyPolicy"):
+		return &applyconfigurationmodelv1alpha1.ModelClaimResidencyPolicyApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimSleepPolicy"):
+		return &applyconfigurationmodelv1alpha1.ModelClaimSleepPolicyApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimSpec"):
 		return &applyconfigurationmodelv1alpha1.ModelClaimSpecApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimStatus"):
 		return &applyconfigurationmodelv1alpha1.ModelClaimStatusApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimWakePolicy"):
+		return &applyconfigurationmodelv1alpha1.ModelClaimWakePolicyApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmup"):
 		return &applyconfigurationmodelv1alpha1.ModelWarmupApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupCustomAction"):
