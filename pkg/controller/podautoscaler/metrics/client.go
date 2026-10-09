@@ -304,6 +304,20 @@ func (c *MetricsClient) GetEnhancedStats(metricKey types.MetricKey, now time.Tim
 	return windowStats, historyStats, nil
 }
 
+// GetMetricSeries returns the recorded samples of a metricKey. Predictive
+// scaling fits this series instead of the window statistics, which only expose
+// aggregates.
+func (c *MetricsClient) GetMetricSeries(metricKey types.MetricKey) []types.MetricPoint {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	history := c.stableHistory[metricKey.String()]
+	if history == nil {
+		return nil
+	}
+	return history.Snapshot()
+}
+
 // TODO(Jeffwan): support tend and condidence later
 
 // GetTrendAnalysis calculates trend direction and velocity (stubbed - returns zeros)
