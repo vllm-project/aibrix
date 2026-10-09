@@ -67,6 +67,13 @@ func TestNewServerConstructsGlobalRoutersOnce(t *testing.T) {
 		constructed.Add(1)
 		return countingRouter{}, nil
 	})
+	// The router manager has no way to remove a registration; once the test is
+	// done, swap in a constructor that no longer touches this test's counter.
+	t.Cleanup(func() {
+		routing.Register(types.RoutingAlgorithm("test-construct-once"), func() (types.Router, error) {
+			return countingRouter{}, nil
+		})
+	})
 
 	NewServer(nil, nil, nil)
 
