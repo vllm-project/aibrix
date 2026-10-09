@@ -128,6 +128,11 @@ class DownloadModel:
     @property
     def status(self):
         all_status = [file.status for file in self.download_files]
+        # The model directory exists, but no file has been tracked yet, e.g.
+        # a first download attempt failed before fetching anything.
+        if not all_status:
+            return ModelDownloadStatus.NOT_EXIST
+
         if all(status == FileDownloadStatus.DOWNLOADED for status in all_status):
             return ModelDownloadStatus.DOWNLOADED
 

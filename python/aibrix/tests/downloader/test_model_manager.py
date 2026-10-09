@@ -94,6 +94,18 @@ def test_interrupted_nested_download_is_resumed(tmp_path: Path):
     assert card.source == "huggingface"
 
 
+def test_empty_model_directory_starts_a_download(tmp_path: Path):
+    # A download creates the model directory before it tracks any file, so a
+    # failed first attempt can leave the directory empty.
+    tmp_path.joinpath(MODEL_URI).mkdir(parents=True)
+
+    card = _download(tmp_path)
+
+    assert len(RecordingProcess.instances) == 1
+    assert RecordingProcess.instances[0].started
+    assert card.model_status == "downloading"
+
+
 def test_complete_nested_download_is_not_restarted(tmp_path: Path):
     _prepare_hf_model(tmp_path, interrupted=False)
 
