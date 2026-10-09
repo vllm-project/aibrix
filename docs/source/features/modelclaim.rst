@@ -801,7 +801,7 @@ Sleeping request behavior
 -------------------------
 
 Declarative wake policy (draft)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``spec.residencyPolicy.wakePolicy.mode`` can select ``OnDemand`` or
 ``EnsureAwake``. ``OnDemand`` retains the request-triggered controller wake
@@ -839,7 +839,7 @@ independent.
 
    This draft stages the smallest sleep-policy dependency needed for safe wake
    reconciliation. Only ``PoolDefault`` and ``Never`` are admitted here.
-   ``AfterIdle`` and ``idleTimeout`` are not implemented or admitted; the
+   ``AfterIdle`` is not admitted and ``idleTimeout`` is not exposed; the
    per-claim sleep contract and its idle-timeout controller belong to
    `issue #2924 <https://github.com/vllm-project/aibrix/issues/2924>`_. Its
    future default wake mode is ``OnDemand``. The API contract must be reconciled
