@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -2206,23 +2207,30 @@ func instancePods(pm *modelv1alpha1.ModelClaim) map[string]bool {
 	return pods
 }
 
-// modelPoolPodFilter restricts pod events to GPU pool members so the
-// controller only reacts to pods that can host ModelClaims.
+// modelPoolPodFilter passes the events of the pods that matter to claims: the
+// members of a pool, where new instances may go, and any pod that carries a
+// claim's route, which still runs an instance after it has left its pool. An
+// update passes when either version of the pod matters, so a pod that leaves
+// its pool is seen leaving.
 func modelPoolPodFilter() predicate.Predicate {
-	isModelPoolPod := func(labels map[string]string) bool {
-		if labels == nil {
-			return false
+	matters := func(obj client.Object) bool {
+		labels := obj.GetLabels()
+		if _, ok := labels[constants.ModelPoolLabelName]; ok &&
+			labels[constants.ModelPoolLabelEnabled] == constants.ModelPoolLabelEnabledValue {
+			return true
 		}
-		if _, ok := labels[constants.ModelPoolLabelName]; !ok {
-			return false
+		for key := range obj.GetAnnotations() {
+			if strings.HasPrefix(key, constants.ModelClaimPodAnnotationPrefix) {
+				return true
+			}
 		}
-		return labels[constants.ModelPoolLabelEnabled] == constants.ModelPoolLabelEnabledValue
+		return false
 	}
 	return predicate.Funcs{
-		CreateFunc:  func(e event.CreateEvent) bool { return isModelPoolPod(e.Object.GetLabels()) },
-		UpdateFunc:  func(e event.UpdateEvent) bool { return isModelPoolPod(e.ObjectNew.GetLabels()) },
-		DeleteFunc:  func(e event.DeleteEvent) bool { return isModelPoolPod(e.Object.GetLabels()) },
-		GenericFunc: func(e event.GenericEvent) bool { return isModelPoolPod(e.Object.GetLabels()) },
+		CreateFunc:  func(e event.CreateEvent) bool { return matters(e.Object) },
+		UpdateFunc:  func(e event.UpdateEvent) bool { return matters(e.ObjectNew) || matters(e.ObjectOld) },
+		DeleteFunc:  func(e event.DeleteEvent) bool { return matters(e.Object) },
+		GenericFunc: func(e event.GenericEvent) bool { return matters(e.Object) },
 	}
 }
 
