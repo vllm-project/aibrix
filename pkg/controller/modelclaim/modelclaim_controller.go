@@ -396,6 +396,9 @@ func (r *ModelClaimReconciler) reconcileHealthAndWakes(
 	readings *runtimeReadings,
 ) (bool, error) {
 	booting := r.reconcileInstanceHealth(ctx, pm, readings)
+	if err := r.reconcilePolicyWakeRequests(ctx, pm); err != nil {
+		return booting, err
+	}
 	// An engine woken in this pass boots from now on, so the claim is looked
 	// at again as soon as a booting engine is.
 	woke, err := r.wakeRequested(ctx, pm, candidates, readings)
@@ -520,6 +523,7 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 	failed := 0
 	moving := 0
 	waiting := 0
+	wakeFailed := 0
 	for i := range pm.Status.Instances {
 		inst := &pm.Status.Instances[i]
 		if inst.Phase == modelv1alpha1.ModelClaimActive {
@@ -529,6 +533,9 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 			sleeping++
 			if inst.Reason == instanceReasonWaitingForRoom {
 				waiting++
+			}
+			if inst.Reason == instanceReasonWakeFailed {
+				wakeFailed++
 			}
 		}
 		if inst.Phase == modelv1alpha1.ModelClaimFailed {
@@ -573,6 +580,14 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 			Status:  metav1.ConditionFalse,
 			Reason:  readyReasonWaitingForRoom,
 			Message: "a request asked for the model, and its card cannot take it back yet",
+		})
+	case sleeping > 0 && wakeFailed > 0:
+		pm.Status.Phase = modelv1alpha1.ModelClaimSleeping
+		meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+			Type:    string(modelv1alpha1.ModelClaimConditionReady),
+			Status:  metav1.ConditionFalse,
+			Reason:  instanceReasonWakeFailed,
+			Message: "one or more sleeping engines could not wake; the controller will retry",
 		})
 	case sleeping > 0:
 		pm.Status.Phase = modelv1alpha1.ModelClaimSleeping
