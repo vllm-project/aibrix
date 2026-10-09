@@ -20,7 +20,7 @@ limitations under the License.
 //   - StaticProvider: loads endpoints from a YAML config file (for standalone/Docker mode)
 //   - KubernetesProvider: watches Pods and ModelAdapters via K8s informers
 //
-// TODO: Add ConsulProvider, EtcdProvider.
+// TODO: Add ConsulProvider.
 package discovery
 
 // EventType represents the type of a watch event.

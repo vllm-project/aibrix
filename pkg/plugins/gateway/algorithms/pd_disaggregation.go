@@ -28,6 +28,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	controllerconstants "github.com/vllm-project/aibrix/pkg/controller/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
@@ -48,8 +49,8 @@ const (
 	SGLangEngine                 string                 = "sglang"
 	TensorRTLLM                  string                 = "trtllm"
 	LLMEngineIdentifier          string                 = constants.ModelLabelEngine
-	PDRoleSetIdentifier          string                 = "roleset-name"
-	PDRoleIdentifier             string                 = "role-name"
+	PDRoleSetIdentifier          string                 = controllerconstants.RoleSetNameLabelKey
+	PDRoleIdentifier             string                 = controllerconstants.RoleNameLabelKey
 	PDRolePrefill                string                 = "prefill"
 	PDRoleDecode                 string                 = "decode"
 	RoleReplicaIndex             string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"

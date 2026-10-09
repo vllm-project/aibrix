@@ -334,7 +334,7 @@ ZMQ Build Errors
    export CGO_ENABLED=1
 
    # Build with explicit tags
-   go build -tags="zmq" -v ./cmd/plugins/main.go
+   go build -tags="zmq" -v ./cmd/plugins
 
 Kind Cluster Issues
 ~~~~~~~~~~~~~~~~~~~

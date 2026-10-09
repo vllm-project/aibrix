@@ -16,19 +16,20 @@ limitations under the License.
 package utils
 
 import (
-	"sort"
 	"sync"
 
 	v1 "k8s.io/api/core/v1"
 )
 
-// PodArray is a simple implementation of types.PodList indexed by deployment names
+// PodArray is a simple implementation of types.PodList indexed by deployment names.
+// Pods and the returned slices are read-only after publication. Lazy indexing
+// never changes the shared backing array.
 type PodArray struct {
 	Pods []*v1.Pod
 
 	deployments      []string
 	podsByDeployment map[string][]*v1.Pod
-	mu               sync.Mutex
+	indexOnce        sync.Once
 }
 
 func (arr *PodArray) Len() int {
@@ -50,9 +51,7 @@ func (arr *PodArray) ListByIndex(deploymentName string) []*v1.Pod {
 		return nil
 	}
 
-	if arr.podsByDeployment == nil {
-		arr.initDeployments()
-	}
+	arr.indexOnce.Do(arr.initDeployments)
 
 	return arr.podsByDeployment[deploymentName]
 }
@@ -62,59 +61,25 @@ func (arr *PodArray) Indexes() []string {
 		return nil
 	}
 
-	if arr.podsByDeployment == nil {
-		arr.initDeployments()
-	}
+	arr.indexOnce.Do(arr.initDeployments)
 
 	return arr.deployments
 }
 
 func (arr *PodArray) initDeployments() {
-	arr.mu.Lock()
-	defer arr.mu.Unlock()
-
-	if arr.podsByDeployment != nil {
-		return
-	}
-
-	// Sort by deploymentName
-	podClasses := make(map[string]int)
-	podIndexes := make(map[string]int, len(arr.Pods))
-	seen := 0
+	podsByDeployment := make(map[string][]*v1.Pod)
+	var deployments []string
 	for _, pod := range arr.Pods {
-		deploymentName := DeploymentNameFromPod(pod) // Count "" in.
-		idx, ok := podClasses[deploymentName]
-		if !ok {
-			idx = seen
-			podClasses[deploymentName] = seen
-			seen++
+		deployment := DeploymentNameFromPod(pod)
+		if _, exists := podsByDeployment[deployment]; !exists {
+			deployments = append(deployments, deployment)
 		}
-		podIndexes[pod.Name] = idx
+		podsByDeployment[deployment] = append(podsByDeployment[deployment], pod)
 	}
-	// Sort by podClasses
-	sort.Slice(arr.Pods, func(i, j int) bool {
-		return podIndexes[arr.Pods[i].Name] < podIndexes[arr.Pods[j].Name]
-	})
-
-	// Split and map Pods to deployments
-	podsByDeployment := make(map[string][]*v1.Pod, len(podClasses))
-	deployments := make([]string, 0, len(podClasses))
-	offset := 0
-	lastClass := podIndexes[arr.Pods[0].Name]
-	lastDeploymentName := DeploymentNameFromPod(arr.Pods[0])
-	for i, pod := range arr.Pods {
-		if podIndexes[pod.Name] != lastClass {
-			podsByDeployment[lastDeploymentName] = arr.Pods[offset:i]
-			offset = i
-			lastClass = podIndexes[pod.Name]
-			deployments = append(deployments, lastDeploymentName)
-			lastDeploymentName = DeploymentNameFromPod(pod)
-		}
+	// A single deployment can share the already immutable snapshot.
+	if len(deployments) == 1 {
+		podsByDeployment[deployments[0]] = arr.Pods
 	}
-	podsByDeployment[lastDeploymentName] = arr.Pods[offset:]
-	deployments = append(deployments, lastDeploymentName)
-
-	// Set arr.podsByDeployment at last
 	arr.deployments = deployments
 	arr.podsByDeployment = podsByDeployment
 }
