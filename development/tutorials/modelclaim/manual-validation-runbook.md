@@ -72,8 +72,8 @@ export RUNTIME_IMAGE=aibrix/kvcached-runtime:nightly
 ```bash
 sed "s#aibrix/kvcached-runtime:nightly#$RUNTIME_IMAGE#" samples/modelclaim/warm-runtime-pool.yaml \
   | kubectl -n "$NS" apply -f -
-kubectl -n "$NS" rollout status deployment/warm-runtime-pool-b300 --timeout=15m
-export POD=$(kubectl -n "$NS" get pod -l app=warm-runtime-pool-b300 -o jsonpath='{.items[0].metadata.name}')
+kubectl -n "$NS" rollout status deployment/warm-runtime-pool --timeout=15m
+export POD=$(kubectl -n "$NS" get pod -l app=warm-runtime-pool -o jsonpath='{.items[0].metadata.name}')
 ```
 
 Keep a port-forward to Envoy running in another terminal:
@@ -142,7 +142,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      claim.model.aibrix.ai/pool: b300-pool-a
+      claim.model.aibrix.ai/pool: pool-a
   artifactURL: huggingface://Qwen/Qwen2.5-0.5B-Instruct
 $2
 EOF
@@ -318,7 +318,7 @@ next division saw it first, the limit is put back without an Event.
 Keep `qwen2.5-0.5b` busy and leave `qwen3-0.6b` idle:
 
 ```bash
-kubectl -n "$NS" annotate deployment/warm-runtime-pool-b300 --overwrite \
+kubectl -n "$NS" annotate deployment/warm-runtime-pool --overwrite \
   'claim.model.aibrix.ai/pool-policy={"lifecycle":{"sleepAfterSeconds":60}}'
 ( while sleep 10; do chat qwen2.5-0.5b >/dev/null; done ) &
 KEEPALIVE=$!
@@ -380,7 +380,7 @@ When the sleeper is asked for again, the controller puts an idle neighbour to
 sleep to make room for it.
 
 ```bash
-kubectl -n "$NS" annotate deployment/warm-runtime-pool-b300 --overwrite \
+kubectl -n "$NS" annotate deployment/warm-runtime-pool --overwrite \
   'claim.model.aibrix.ai/pool-policy={"lifecycle":{"sleepAfterSeconds":3600,"noWakeReserveWhileAsleep":true,"sleepToMakeRoomAfterSeconds":30}}'
 kill "$KEEPALIVE"
 for i in 1 2; do
@@ -433,7 +433,7 @@ events needs-room | tee "$EVIDENCE/s4-events.txt"
 for c in qwen3-0-6b qwen25-0-5b; do events "$c" | tail -3; done \
   | tee -a "$EVIDENCE/s4-events.txt"
 kubectl -n "$NS" delete modelclaim needs-room
-kubectl -n "$NS" annotate deployment/warm-runtime-pool-b300 'claim.model.aibrix.ai/pool-policy-'
+kubectl -n "$NS" annotate deployment/warm-runtime-pool 'claim.model.aibrix.ai/pool-policy-'
 eventually 300 serves qwen3-0.6b
 eventually 300 serves qwen2.5-0.5b
 ```
@@ -536,8 +536,8 @@ This needs a node with two free GPUs. Create a second pool whose Pod requests
 two GPUs, and a TP=2 claim for it:
 
 ```bash
-sed -e "s#aibrix/kvcached-runtime:nightly#$RUNTIME_IMAGE#" -e 's/b300-pool-a/tp2-pool/' \
-    -e 's/warm-runtime-pool-b300/warm-runtime-pool-tp2/' -e 's#nvidia.com/gpu: "1"#nvidia.com/gpu: "2"#' \
+sed -e "s#aibrix/kvcached-runtime:nightly#$RUNTIME_IMAGE#" -e 's/pool-a/tp2-pool/' \
+    -e 's/warm-runtime-pool/warm-runtime-pool-tp2/' -e 's#nvidia.com/gpu: "1"#nvidia.com/gpu: "2"#' \
     samples/modelclaim/warm-runtime-pool.yaml | kubectl -n "$NS" apply -f -
 kubectl -n "$NS" rollout status deployment/warm-runtime-pool-tp2 --timeout=15m
 kubectl -n "$NS" apply -f - <<'EOF'

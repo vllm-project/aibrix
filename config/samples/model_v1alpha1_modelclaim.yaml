@@ -1,8 +1,8 @@
-# A ModelClaim attaches to a warm GPU pool: an ordinary Deployment of
-# pre-warmed GPU-host pods labelled `claim.model.aibrix.ai/pool: <pool>` and
-# `claim.model.aibrix.ai/enabled: "true"`. The controller bin-packs this
-# model onto a pod and serves it as its own engine process, sharing the pod's
-# elastic KV cache (kvcached) with other ModelClaims.
+# A ModelClaim runs a model in a warm pool: Pods that run the kvcached runtime
+# and carry the labels `claim.model.aibrix.ai/pool: <pool>` and
+# `claim.model.aibrix.ai/enabled: "true"`. The controller starts the model as
+# its own engine process, on a Pod whose GPU has room for it, alongside other
+# ModelClaims.
 apiVersion: model.aibrix.ai/v1alpha1
 kind: ModelClaim
 metadata:
@@ -11,19 +11,18 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: qwen2-7b-sample
 spec:
-  # Served model name clients address; defaults to metadata.name when omitted.
+  # The model name clients send; defaults to metadata.name.
   modelName: qwen2-7b-instruct
-  # Select the warm GPU pool to attach to.
+  # Selects the warm pool.
   podSelector:
     matchLabels:
-      claim.model.aibrix.ai/pool: b300-pool-a
+      claim.model.aibrix.ai/pool: pool-a
   artifactURL: huggingface://Qwen/Qwen2-7B-Instruct
   engine: vllm
   replicas: 1
-  # What one instance of this model costs on one card. Both figures come from
-  # a run of this model with these engine arguments; nothing derives them from
-  # the artifact. Declaring more than an instance needs wastes room and is
-  # safe, declaring less is not.
+  # What one instance needs on one GPU. Measure both figures for your model
+  # and engine arguments. Declaring more than it needs wastes room and is
+  # safe; declaring less is not.
   perGPU:
     maximumFootprint: 20Gi   # weights, CUDA graphs and allocator retention
-    kvFloor: 2Gi             # enough to serve one request of the maximum length
+    kvFloor: 2Gi             # the KV cache for one request of the maximum length

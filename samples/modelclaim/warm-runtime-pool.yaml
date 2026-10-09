@@ -1,28 +1,30 @@
+# A warm pool for ModelClaim: one Pod with one GPU. Claims select it by the
+# claim.model.aibrix.ai/pool label.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: warm-runtime-pool-b300
+  name: warm-runtime-pool
   namespace: default
   labels:
-    claim.model.aibrix.ai/pool: b300-pool-a
+    claim.model.aibrix.ai/pool: pool-a
     claim.model.aibrix.ai/enabled: "true"
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: warm-runtime-pool-b300
+      app: warm-runtime-pool
   template:
     metadata:
       labels:
-        app: warm-runtime-pool-b300
-        claim.model.aibrix.ai/pool: b300-pool-a
+        app: warm-runtime-pool
+        claim.model.aibrix.ai/pool: pool-a
         claim.model.aibrix.ai/enabled: "true"
     spec:
       containers:
         - name: aibrix-runtime
-          # The published image is built on a kvcached-enabled vLLM base, and a
-          # custom image must be too.
-          # The runtime sidecar starts the per-ModelClaim engine processes.
+          # The runtime agent, vLLM and kvcached. The agent starts one engine
+          # process for each claim placed on this Pod. Pin the tag to the full
+          # SHA of the commit your control plane runs.
           image: aibrix/kvcached-runtime:nightly
           imagePullPolicy: IfNotPresent
           ports:
@@ -35,18 +37,20 @@ spec:
             initialDelaySeconds: 3
             periodSeconds: 5
           env:
-            - name: AIBRIX_MODEL_RUNTIME_MOCK
-              value: "0"
             - name: ENABLE_KVCACHED
-              # The image includes kvcached and kvctl, but the runtime agent
-              # must not be autopatched. The launcher enables kvcached with a
-              # unique IPC name for each child engine process.
+              # The agent must not load kvcached itself. It turns kvcached on
+              # in each engine it starts.
               value: "false"
             - name: KVCACHED_AUTOPATCH
               value: "0"
             - name: AIBRIX_WEIGHT_CACHE_DIR
               value: /root/.cache/huggingface
           resources:
+            requests:
+              # A sleeping engine keeps its model's weights in host memory, and
+              # ModelClaim does not account for host memory. Request enough for
+              # all the models on this Pod asleep at once.
+              memory: 16Gi
             limits:
               nvidia.com/gpu: "1"
           volumeMounts:
@@ -61,29 +65,29 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 16Gi
+        # Weights downloaded by the engines stay on the node, for the next Pod.
         - name: hf-cache
           hostPath:
             path: /var/cache/aibrix/huggingface
             type: DirectoryOrCreate
+        # The agent's list of engines, which it reads again after a restart.
         - name: engine-registry
           emptyDir: {}
 ---
-# Exposes the runtime sidecar /metrics endpoint for the ModelClaim Grafana
-# dashboard. Label aibrix.ai/metrics=modelclaim-runtime matches
+# Exposes the runtime's /metrics for the ModelClaim ServiceMonitor in
 # observability/monitor/service_monitor_modelclaim_runtime.yaml.
 apiVersion: v1
 kind: Service
 metadata:
-  name: warm-runtime-pool-b300-metrics
+  name: warm-runtime-pool-metrics
   namespace: default
   labels:
-    app: warm-runtime-pool-b300
-    claim.model.aibrix.ai/pool: b300-pool-a
-    claim.model.aibrix.ai/enabled: "true"
+    app: warm-runtime-pool
+    claim.model.aibrix.ai/pool: pool-a
     aibrix.ai/metrics: modelclaim-runtime
 spec:
   selector:
-    app: warm-runtime-pool-b300
+    app: warm-runtime-pool
   ports:
     - name: runtime
       port: 8080
