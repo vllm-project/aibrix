@@ -41,7 +41,7 @@ type BlockStored struct {
 	// per-adapter index isolation; not yet consumed by the index key.
 	LoraName string
 	// GroupIdx is the KV-cache group for hybrid-attention models (-1 when
-	// unspecified). Reserved for per-group index isolation.
+	// unspecified). The index tracks each group separately.
 	GroupIdx int64
 
 	// Source pod that stored these blocks
@@ -57,10 +57,11 @@ type BlockRemoved struct {
 	ModelName string
 	LoraID    int64 // -1 for no adapter
 
-	// Medium is the storage tier the blocks live on ("GPU"/"CPU"/"STORAGE").
+	// Medium is the storage tier the blocks were removed from
+	// ("GPU"/"CPU"/"STORAGE"). Copies on other tiers stay indexed.
 	Medium string
 	// GroupIdx is the KV-cache group for hybrid-attention models (-1 when
-	// unspecified).
+	// unspecified). Other groups holding the blocks stay indexed.
 	GroupIdx int64
 
 	// Source pod that removed these blocks (optional)
