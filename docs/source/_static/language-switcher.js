@@ -1,31 +1,32 @@
 (function () {
-  function englishSegment(path) {
-    if (/readthedocs/.test(window.location.host) || /\/en\//.test(path)) {
-      return "en";
-    }
-    return "html";
-  }
+  function rewritePath(path, target, hosted) {
+    var localEnglish = "/build/html/";
+    var localChinese = "/build/html/zh-cn/";
+    var hostedChinese = /^\/([^/]+)\/zh-cn(?=\/|$)/;
+    var rootChinese = /^\/zh-cn(?=\/|$)/;
 
-  // Prefer RTD language prefixes and Sphinx local build dirs so we do not
-  // rewrite unrelated path segments that happen to contain "html" or "en".
-  function rewritePath(path, slugs, target) {
-    var dest = target === "en" ? englishSegment(path) : target;
-    var rtdMatch = path.match(/^\/([^/]+)\//);
-    if (rtdMatch && slugs.indexOf(rtdMatch[1]) !== -1) {
-      return path.replace(/^\/[^/]+\//, "/" + dest + "/");
+    if (target === "en") {
+      if (path.indexOf(localChinese) !== -1) {
+        return path.replace(localChinese, localEnglish);
+      }
+      if (hosted) {
+        return path.replace(hostedChinese, "/$1");
+      }
+      return path.replace(rootChinese, "");
     }
-    var localMatch = path.match(/\/build\/([^/]+)\//);
-    if (localMatch && slugs.indexOf(localMatch[1]) !== -1) {
-      return path.replace(/\/build\/[^/]+\//, "/build/" + dest + "/");
+    if (path.indexOf(localEnglish) !== -1) {
+      return path.replace(localEnglish, localChinese);
     }
-    var re = new RegExp("/(" + slugs.join("|") + ")/");
-    if (re.test(path)) {
-      return path.replace(re, "/" + dest + "/");
+    if (hosted) {
+      if (hostedChinese.test(path)) {
+        return path;
+      }
+      return path.replace(/^\/([^/]+)(\/|$)/, "/$1/zh-cn$2");
     }
-    if (dest !== "en" && dest !== "html") {
-      return path.replace(/^\//, "/" + dest + "/");
+    if (rootChinese.test(path)) {
+      return path;
     }
-    return path;
+    return path.replace(/^\//, "/zh-cn/");
   }
 
   function switchUrl(loc, path) {
@@ -42,16 +43,18 @@
       return;
     }
 
-    var slugs = Array.prototype.map.call(selects[0].options, function (option) {
-      return option.value;
-    });
-    slugs.push("html");
-
     Array.prototype.forEach.call(selects, function (select) {
       select.addEventListener("change", function () {
         var loc = window.location;
         loc.assign(
-          switchUrl(loc, rewritePath(loc.pathname, slugs, select.value))
+          switchUrl(
+            loc,
+            rewritePath(
+              loc.pathname,
+              select.value,
+              select.dataset.hosted === "true"
+            )
+          )
         );
       });
     });

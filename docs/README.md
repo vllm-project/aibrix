@@ -7,13 +7,15 @@ Make sure that your python conda environment is setup correctly. The following i
 pip install -r requirements-docs.txt
 ```
 
-## Compile html pages
+## Compile HTML pages
 
 ```
-make html
+make html-all
 ```
 
-Now the html pages should be generated at "docs/build/html/index.html". You can open this html page with your web browser as our project front page.
+The English pages are generated at `docs/build/html`, and the Chinese pages
+are generated at `docs/build/html/zh-cn`. Use `make html` when only the English
+pages are needed, or `make html-zh` to rebuild only the Chinese pages.
 
 Chinese catalogs are under `source/locale/zh_CN`. After English RST changes:
 
@@ -21,20 +23,31 @@ Chinese catalogs are under `source/locale/zh_CN`. After English RST changes:
 make update-po
 ```
 
-Preview Chinese HTML at `docs/build/zh-cn`:
+Preview Chinese HTML at `docs/build/html/zh-cn`:
 
 ```
 make html-zh
 ```
 
-To exercise the English / 中文 navbar switcher locally, serve the `docs/build` directory over HTTP (opening `file://` pages also works after the switcher fix, but an HTTP server matches Read the Docs more closely):
+To exercise the English / 中文 navbar switcher locally, serve the
+`docs/build/html` directory over HTTP:
 
 ```
-python -m http.server -d build 8000
+python3 -m http.server -d build/html 8000
 ```
 
-Then open `http://127.0.0.1:8000/html/` and `http://127.0.0.1:8000/zh-cn/`.
+Then open `http://127.0.0.1:8000/` and
+`http://127.0.0.1:8000/zh-cn/`.
 
-### Read the Docs Chinese project
+Run the language switcher path tests from the repository root:
 
-Hosted Chinese pages need a separate Read the Docs project (same repo, language **Chinese Simplified**) linked from the main project's **Translations** settings. After that project builds successfully, set `AIBRIX_DOCS_SHOW_ZH=1` in the main project's RTD environment variables so the navbar offers 中文 on English pages.
+```
+node --test docs/tests/language-switcher.test.js
+```
+
+### Read the Docs deployment
+
+The Read the Docs build publishes both languages from the same project. English
+is served from the version root, such as `/latest/`, and Chinese is nested at
+`/latest/zh-cn/`. No separate translation project or environment variable is
+required.
