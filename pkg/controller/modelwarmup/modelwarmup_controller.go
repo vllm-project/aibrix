@@ -145,6 +145,13 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 	klog.V(4).InfoS("resolved ModelWarmup targets", "modelWarmup", req.NamespacedName,
 		"revision", revision, "targets", len(targets), "missing", len(missing))
+	var jobs batchv1.JobList
+	if err := r.List(ctx, &jobs, client.InNamespace(warmup.Namespace), client.MatchingLabels{
+		WarmupLabelKey: string(warmup.UID),
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
+	snapshot := buildReconcileSnapshot(warmup, revision, targets, missing, jobs.Items)
 	if !withinTargetLimit(targets, missing) {
 		message := fmt.Sprintf(
 			"resolved %d targets; maximum is %d",
@@ -152,61 +159,78 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			modelv1alpha1.MaxModelWarmupTargets,
 		)
 		return r.updateStatus(
-			ctx, warmup, revision, targets, missing, "TargetLimitExceeded", message,
+			ctx, warmup, revision, targets, missing, snapshot.jobsForStatus(nil), jobs.Items,
+			"TargetLimitExceeded", message,
 		)
 	}
-	if err := r.cleanupStaleJobs(ctx, warmup, revision, targets); err != nil {
-		return ctrl.Result{}, err
-	}
-	active, err := r.activeJobs(ctx, warmup, revision)
-	if err != nil {
-		return ctrl.Result{}, err
+	for i := range snapshot.StaleActiveJobs {
+		job := &snapshot.StaleActiveJobs[i]
+		if err := r.Delete(ctx, job); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+		klog.V(3).InfoS("deleted stale ModelWarmup Job", "modelWarmup",
+			client.ObjectKeyFromObject(warmup), "job", job.Name,
+			"jobRevision", job.Labels[RevisionLabelKey], "currentRevision", revision)
 	}
 	policies := effectiveWarmupPolicies(warmup)
 	klog.V(4).InfoS("reconciling ModelWarmup Job capacity", "modelWarmup", req.NamespacedName,
-		"revision", revision, "activeJobs", active, "parallelism", policies.parallelism)
-	nodes := make([]string, 0, len(targets))
-	for node := range targets {
-		nodes = append(nodes, node)
-	}
-	sort.Strings(nodes)
-	for _, node := range nodes {
+		"revision", revision, "activeJobs", snapshot.ActiveJobs, "parallelism", policies.parallelism)
+	active := snapshot.ActiveJobs
+	created := make([]*batchv1.Job, 0, len(snapshot.MissingNodes))
+	for _, node := range snapshot.MissingNodes {
 		if active >= policies.parallelism {
 			klog.V(4).InfoS("deferring ModelWarmup target because parallelism is exhausted",
 				"modelWarmup", req.NamespacedName, "node", node, "parallelism", policies.parallelism)
 			break
 		}
 		job := r.jobFor(warmup, node, revision)
-		var existing batchv1.Job
-		if err := r.Get(ctx, client.ObjectKeyFromObject(job), &existing); err == nil {
-			if !metav1.IsControlledBy(&existing, warmup) {
-				return ctrl.Result{}, fmt.Errorf("job %s/%s already exists and is not controlled by ModelWarmup %s",
-					existing.Namespace, existing.Name, warmup.Name)
-			}
-			klog.V(5).InfoS("ModelWarmup Job already exists", "modelWarmup", req.NamespacedName,
-				"node", node, "job", job.Name, "revision", revision)
-			continue
-		} else if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
-		}
 		if err := ctrl.SetControllerReference(warmup, job, r.Scheme); err != nil {
 			return ctrl.Result{}, err
 		}
 		if err := r.Create(ctx, job); err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				var existing batchv1.Job
+				if getErr := r.Get(ctx, client.ObjectKeyFromObject(job), &existing); getErr != nil {
+					return ctrl.Result{}, fmt.Errorf("diagnose existing ModelWarmup Job %s/%s: %w",
+						job.Namespace, job.Name, getErr)
+				}
+				if !metav1.IsControlledBy(&existing, warmup) {
+					return ctrl.Result{}, fmt.Errorf("job %s/%s already exists and is not controlled by ModelWarmup %s",
+						existing.Namespace, existing.Name, warmup.Name)
+				}
+				if existing.Labels[WarmupLabelKey] != string(warmup.UID) ||
+					existing.Labels[RevisionLabelKey] != revision {
+					continue
+				}
+				created = append(created, existing.DeepCopy())
+				if existing.DeletionTimestamp == nil && !isJobComplete(&existing) && !isJobFailed(&existing) {
+					active++
+				}
+				continue
+			}
 			return ctrl.Result{}, fmt.Errorf("create ModelWarmup Job %s/%s: %w", job.Namespace, job.Name, err)
 		}
 		klog.V(3).InfoS("created ModelWarmup Job", "modelWarmup", req.NamespacedName,
 			"node", node, "job", job.Name, "revision", revision)
+		created = append(created, job)
 		active++
 	}
-	result, err := r.updateStatus(ctx, warmup, revision, targets, missing, "", "")
+	jobsForTTL := make([]batchv1.Job, 0, len(jobs.Items)+len(created))
+	jobsForTTL = append(jobsForTTL, jobs.Items...)
+	for _, job := range created {
+		if job != nil {
+			jobsForTTL = append(jobsForTTL, *job)
+		}
+	}
+	result, err := r.updateStatus(ctx, warmup, revision, targets, missing,
+		snapshot.jobsForStatus(created), jobsForTTL, "", "")
 	if err != nil {
 		return result, err
 	}
 	return ctrl.Result{}, nil
 }
 
-func withinTargetLimit(targets map[string][]string, missing map[string]string) bool {
+func withinTargetLimit(targets map[string]resolvedTarget, missing map[string]string) bool {
 	return len(targets)+len(missing) <= modelv1alpha1.MaxModelWarmupTargets
 }
 
@@ -249,114 +273,19 @@ func effectiveWarmupPolicies(w *modelv1alpha1.ModelWarmup) warmupPolicies {
 	return result
 }
 
-func (r *ModelWarmupReconciler) activeJobs(
-	ctx context.Context,
-	warmup *modelv1alpha1.ModelWarmup,
-	revision string,
-) (int32, error) {
-	var jobs batchv1.JobList
-	if err := r.List(ctx, &jobs, client.InNamespace(warmup.Namespace), client.MatchingLabels{
-		WarmupLabelKey:   string(warmup.UID),
-		RevisionLabelKey: revision,
-	}); err != nil {
-		return 0, err
-	}
-	var active int32
-	for _, job := range jobs.Items {
-		if !metav1.IsControlledBy(&job, warmup) {
-			continue
-		}
-		if job.DeletionTimestamp == nil && !isJobComplete(&job) && !isJobFailed(&job) {
-			active++
-		}
-	}
-	return active, nil
-}
-
-func (r *ModelWarmupReconciler) cleanupStaleJobs(
-	ctx context.Context,
-	warmup *modelv1alpha1.ModelWarmup,
-	revision string,
-	targets map[string][]string,
-) error {
-	var jobs batchv1.JobList
-	if err := r.List(ctx, &jobs, client.InNamespace(warmup.Namespace), client.MatchingLabels{
-		WarmupLabelKey: string(warmup.UID),
-	}); err != nil {
-		return err
-	}
-	for i := range jobs.Items {
-		job := &jobs.Items[i]
-		if !metav1.IsControlledBy(job, warmup) {
-			continue
-		}
-		if isJobComplete(job) || isJobFailed(job) {
-			continue
-		}
-		_, targetExists := targets[targetNodeForJob(job)]
-		if job.Labels[RevisionLabelKey] == revision && targetExists {
-			continue
-		}
-		if err := r.Delete(ctx, job); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-		klog.V(3).InfoS("deleted stale ModelWarmup Job", "modelWarmup",
-			client.ObjectKeyFromObject(warmup), "job", job.Name,
-			"jobRevision", job.Labels[RevisionLabelKey], "currentRevision", revision)
-	}
-	return nil
-}
-
 func (r *ModelWarmupReconciler) resolveTargets(
 	ctx context.Context,
 	warmup *modelv1alpha1.ModelWarmup,
-) (map[string][]string, map[string]string, error) {
-	targets, missing := map[string][]string{}, map[string]string{}
+) (map[string]resolvedTarget, map[string]string, error) {
 	var namespace corev1.Namespace
 	if err := r.Get(ctx, types.NamespacedName{Name: warmup.Namespace}, &namespace); err != nil {
 		return nil, nil, err
 	}
-	for i, target := range warmup.Spec.Targets {
-		source := fmt.Sprintf("target[%d]", i)
-		if target.Nodes != nil {
-			for _, name := range target.Nodes.Names {
-				var node corev1.Node
-				if err := r.Get(ctx, types.NamespacedName{Name: name}, &node); err != nil {
-					if apierrors.IsNotFound(err) {
-						missing[name] = "NodeNotFound"
-						continue
-					}
-					return nil, nil, err
-				}
-				if !isNodeAuthorized(&namespace, &node) {
-					missing[name] = "NodeNotAuthorized"
-					continue
-				}
-				targets[name] = append(targets[name], source)
-			}
-		}
-		if target.NodeSelector != nil {
-			selector, err := metav1.LabelSelectorAsSelector(target.NodeSelector)
-			if err != nil {
-				return nil, nil, err
-			}
-			var nodes corev1.NodeList
-			if err := r.List(ctx, &nodes, client.MatchingLabelsSelector{Selector: selector}); err != nil {
-				return nil, nil, err
-			}
-			for _, node := range nodes.Items {
-				if !isNodeAuthorized(&namespace, &node) {
-					missing[node.Name] = "NodeNotAuthorized"
-					continue
-				}
-				targets[node.Name] = append(targets[node.Name], source)
-			}
-		}
+	var nodes corev1.NodeList
+	if err := r.List(ctx, &nodes); err != nil {
+		return nil, nil, err
 	}
-	for name := range targets {
-		sort.Strings(targets[name])
-	}
-	return targets, missing, nil
+	return resolveTargetsFromNodes(warmup, &namespace, nodes.Items)
 }
 
 func isNodeAuthorized(namespace *corev1.Namespace, node *corev1.Node) bool {
@@ -573,39 +502,34 @@ func (r *ModelWarmupReconciler) updateStatus(
 	ctx context.Context,
 	w *modelv1alpha1.ModelWarmup,
 	revision string,
-	targets map[string][]string,
+	targets map[string]resolvedTarget,
 	missing map[string]string,
+	statusJobs []batchv1.Job,
+	ttlJobs []batchv1.Job,
 	limitReason, limitMessage string,
 ) (ctrl.Result, error) {
-	previousTargets := make(map[string]modelv1alpha1.ModelWarmupTargetStatus, len(w.Status.Targets))
-	for _, target := range w.Status.Targets {
+	desired := w.DeepCopy()
+	previousTargets := make(map[string]modelv1alpha1.ModelWarmupTargetStatus, len(desired.Status.Targets))
+	for _, target := range desired.Status.Targets {
 		previousTargets[target.NodeName] = target
 	}
 	now := time.Now()
-	if w.Status.StartTime == nil {
+	if desired.Status.StartTime == nil {
 		start := metav1.NewTime(now)
-		w.Status.StartTime = &start
-		w.Status.CompletionTime = nil
+		desired.Status.StartTime = &start
+		desired.Status.CompletionTime = nil
 	}
 
-	var jobs batchv1.JobList
-	if err := r.List(
-		ctx, &jobs, client.InNamespace(w.Namespace), client.MatchingLabels{
-			WarmupLabelKey:   string(w.UID),
-			RevisionLabelKey: revision,
-		},
-	); err != nil {
-		return ctrl.Result{}, err
-	}
 	byNode := map[string]batchv1.Job{}
-	for _, job := range jobs.Items {
-		if metav1.IsControlledBy(&job, w) {
+	for _, job := range statusJobs {
+		if job.Labels[RevisionLabelKey] == revision && metav1.IsControlledBy(&job, desired) {
 			byNode[targetNodeForJob(&job)] = job
 		}
 	}
 	details := make([]modelv1alpha1.ModelWarmupTargetStatus, 0, len(targets)+len(missing))
 	active, pending, succeeded, failed := int32(0), int32(0), int32(0), int32(0)
-	for node, sources := range targets {
+	for node, target := range targets {
+		sources := target.Sources
 		item := modelv1alpha1.ModelWarmupTargetStatus{
 			NodeName: node, Source: primarySource(sources), SourceCount: int32(len(sources)), Revision: revision,
 			Phase: modelv1alpha1.ModelWarmupTargetPending, Message: boundedDiagnostic("waiting for a warmup job"),
@@ -661,56 +585,61 @@ func (r *ModelWarmupReconciler) updateStatus(
 		omitted = len(details) - modelv1alpha1.MaxModelWarmupTargetDetails
 		details = details[:modelv1alpha1.MaxModelWarmupTargetDetails]
 	}
-	w.Status.ObservedRevision = revision
-	w.Status.DesiredNodes = int32(len(targets) + len(missing))
-	w.Status.ActiveNodes = active
-	w.Status.SucceededNodes = succeeded
-	w.Status.FailedNodes = failed
-	w.Status.OmittedTargetDetails = int32(omitted)
-	w.Status.Targets = details
+	desired.Status.ObservedRevision = revision
+	desired.Status.DesiredNodes = int32(len(targets) + len(missing))
+	desired.Status.ActiveNodes = active
+	desired.Status.SucceededNodes = succeeded
+	desired.Status.FailedNodes = failed
+	desired.Status.OmittedTargetDetails = int32(omitted)
+	desired.Status.Targets = details
 	if limitReason != "" {
-		w.Status.Phase = modelv1alpha1.ModelWarmupFailed
-		setCompletionTime(w)
-		setCondition(w, "Degraded", metav1.ConditionTrue, limitReason, limitMessage)
-	} else if w.Status.DesiredNodes == 0 {
-		w.Status.Phase = modelv1alpha1.ModelWarmupPending
-		w.Status.CompletionTime = nil
+		desired.Status.Phase = modelv1alpha1.ModelWarmupFailed
+		setCompletionTime(desired, now)
+		setCondition(desired, "Degraded", metav1.ConditionTrue, limitReason, limitMessage, now)
+	} else if desired.Status.DesiredNodes == 0 {
+		desired.Status.Phase = modelv1alpha1.ModelWarmupPending
+		desired.Status.CompletionTime = nil
 		setCondition(
-			w,
+			desired,
 			"Progressing",
 			metav1.ConditionTrue,
 			"NoTargetsResolved",
 			"waiting for target nodes to match the configured selectors",
+			now,
 		)
 	} else if active+pending > 0 {
-		w.Status.Phase = modelv1alpha1.ModelWarmupRunning
-		w.Status.CompletionTime = nil
-		setCondition(w, "Progressing", metav1.ConditionTrue, "JobsRunning", "waiting for warmup jobs")
+		desired.Status.Phase = modelv1alpha1.ModelWarmupRunning
+		desired.Status.CompletionTime = nil
+		setCondition(desired, "Progressing", metav1.ConditionTrue, "JobsRunning", "waiting for warmup jobs", now)
 	} else if failed > 0 {
 		if succeeded == 0 {
-			w.Status.Phase = modelv1alpha1.ModelWarmupFailed
+			desired.Status.Phase = modelv1alpha1.ModelWarmupFailed
 		} else {
-			w.Status.Phase = modelv1alpha1.ModelWarmupDegraded
+			desired.Status.Phase = modelv1alpha1.ModelWarmupDegraded
 		}
-		setCompletionTime(w)
-		setCondition(w, "Degraded", metav1.ConditionTrue, "NodeFailed", "one or more warmup jobs failed")
-	} else if succeeded == w.Status.DesiredNodes {
-		w.Status.Phase = modelv1alpha1.ModelWarmupSucceeded
-		setCompletionTime(w)
-		setCondition(w, "Complete", metav1.ConditionTrue, successReason(w), "all target jobs succeeded")
+		setCompletionTime(desired, now)
+		setCondition(desired, "Degraded", metav1.ConditionTrue, "NodeFailed", "one or more warmup jobs failed", now)
+	} else if succeeded == desired.Status.DesiredNodes {
+		desired.Status.Phase = modelv1alpha1.ModelWarmupSucceeded
+		setCompletionTime(desired, now)
+		setCondition(desired, "Complete", metav1.ConditionTrue, successReason(desired), "all target jobs succeeded", now)
 	} else {
-		w.Status.Phase = modelv1alpha1.ModelWarmupRunning
-		w.Status.CompletionTime = nil
-		setCondition(w, "Progressing", metav1.ConditionTrue, "JobsRunning", "waiting for warmup jobs")
+		desired.Status.Phase = modelv1alpha1.ModelWarmupRunning
+		desired.Status.CompletionTime = nil
+		setCondition(desired, "Progressing", metav1.ConditionTrue, "JobsRunning", "waiting for warmup jobs", now)
 	}
-	if isTerminalPhase(w.Status.Phase) {
-		if err := r.applyFinishedJobTTL(ctx, w, revision); err != nil {
+	if isTerminalPhase(desired.Status.Phase) {
+		if err := r.applyFinishedJobTTL(ctx, desired, revision, ttlJobs); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
-	if err := r.Status().Update(ctx, w); err != nil {
+	if modelWarmupStatusEqual(w.Status, desired.Status) {
+		return ctrl.Result{}, nil
+	}
+	if err := r.Status().Update(ctx, desired); err != nil {
 		return ctrl.Result{}, err
 	}
+	desired.DeepCopyInto(w)
 	return ctrl.Result{}, nil
 }
 
@@ -806,17 +735,13 @@ func (r *ModelWarmupReconciler) applyFinishedJobTTL(
 	ctx context.Context,
 	warmup *modelv1alpha1.ModelWarmup,
 	revision string,
+	jobs []batchv1.Job,
 ) error {
-	var jobs batchv1.JobList
-	if err := r.List(ctx, &jobs, client.InNamespace(warmup.Namespace), client.MatchingLabels{
-		WarmupLabelKey: string(warmup.UID), RevisionLabelKey: revision,
-	}); err != nil {
-		return err
-	}
 	ttl := effectiveWarmupPolicies(warmup).ttlSecondsAfterFinished
-	for i := range jobs.Items {
-		job := &jobs.Items[i]
-		if !metav1.IsControlledBy(job, warmup) || (!isJobComplete(job) && !isJobFailed(job)) {
+	for i := range jobs {
+		job := &jobs[i]
+		if job.Labels[RevisionLabelKey] != revision || !metav1.IsControlledBy(job, warmup) ||
+			(!isJobComplete(job) && !isJobFailed(job)) {
 			continue
 		}
 		if job.Spec.TTLSecondsAfterFinished != nil && *job.Spec.TTLSecondsAfterFinished == ttl {
@@ -840,10 +765,10 @@ func preserveTargetTransition(item *modelv1alpha1.ModelWarmupTargetStatus, previ
 	item.LastTransitionTime = &transition
 }
 
-func setCompletionTime(w *modelv1alpha1.ModelWarmup) {
+func setCompletionTime(w *modelv1alpha1.ModelWarmup, now time.Time) {
 	if w.Status.CompletionTime == nil {
-		now := metav1.Now()
-		w.Status.CompletionTime = &now
+		completion := metav1.NewTime(now)
+		w.Status.CompletionTime = &completion
 	}
 }
 
@@ -852,8 +777,9 @@ func setCondition(
 	conditionType string,
 	status metav1.ConditionStatus,
 	reason, message string,
+	now time.Time,
 ) {
-	now := metav1.Now()
+	transition := metav1.NewTime(now)
 	conditions := make([]metav1.Condition, 0, 3)
 	for _, typ := range []string{"Complete", "Progressing", "Degraded"} {
 		desiredStatus := metav1.ConditionFalse
@@ -862,7 +788,7 @@ func setCondition(
 			desiredStatus, desiredReason, desiredMessage = status, reason, message
 		}
 		condition := metav1.Condition{Type: typ, Status: desiredStatus, Reason: desiredReason,
-			Message: desiredMessage, ObservedGeneration: w.Generation, LastTransitionTime: now}
+			Message: desiredMessage, ObservedGeneration: w.Generation, LastTransitionTime: transition}
 		if old := meta.FindStatusCondition(w.Status.Conditions, typ); old != nil && old.Status == condition.Status &&
 			old.Reason == condition.Reason && old.Message == condition.Message {
 			condition.LastTransitionTime = old.LastTransitionTime
