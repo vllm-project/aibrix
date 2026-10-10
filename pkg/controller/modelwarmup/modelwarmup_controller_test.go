@@ -61,6 +61,11 @@ func TestReconcileReportsCreatedJobsWithoutRelisting(t *testing.T) {
 	require.Len(t, updated.Status.Targets, 1)
 	require.Equal(t, modelv1alpha1.ModelWarmupTargetRunning, updated.Status.Targets[0].Phase)
 	require.NotEmpty(t, updated.Status.Targets[0].JobName)
+	var jobs batchv1.JobList
+	require.NoError(t, counting.Client.List(context.Background(), &jobs, client.InNamespace(warmup.Namespace)))
+	require.Len(t, jobs.Items, 1)
+	require.Equal(t, string(nodes[0].UID), jobs.Items[0].Annotations[TargetNodeUIDAnnotationKey])
+	require.NotContains(t, jobs.Items[0].Annotations, AttemptAnnotationKey)
 }
 
 func TestReconcileSkipsSemanticNoopStatusWrite(t *testing.T) {
@@ -820,6 +825,31 @@ func TestJobNamePreservesNodeAndRevisionSuffix(t *testing.T) {
 	require.True(t, strings.HasSuffix(second.Name,
 		"-"+shortHash(string(warmup.UID))+"-"+shortHash("node-b")+"-"+revision))
 	require.NotEqual(t, first.Name, second.Name)
+}
+
+func TestJobForTargetPreservesAttemptOneNameAndRecordsIdentity(t *testing.T) {
+	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
+		Name: strings.Repeat("warmup-", 20), Namespace: "default", UID: "warmup-uid",
+	}}
+	target := resolvedTarget{NodeName: strings.Repeat("node-", 60), NodeUID: types.UID("node-uid")}
+	revision := "123456789abc"
+
+	once := (&ModelWarmupReconciler{}).jobForTarget(warmup, target, revision, 0)
+	first := (&ModelWarmupReconciler{}).jobForTarget(warmup, target, revision, 1)
+	second := (&ModelWarmupReconciler{}).jobForTarget(warmup, target, revision, 2)
+	eleventh := (&ModelWarmupReconciler{}).jobForTarget(warmup, target, revision, 11)
+
+	require.Equal(t, modelWarmupJobName(warmup.Name, string(warmup.UID), target.NodeName, revision), once.Name)
+	require.Equal(t, once.Name, first.Name)
+	require.Equal(t, "node-uid", once.Annotations[TargetNodeUIDAnnotationKey])
+	require.NotContains(t, once.Annotations, AttemptAnnotationKey)
+	require.Equal(t, "1", first.Annotations[AttemptAnnotationKey])
+	require.Equal(t, "2", second.Annotations[AttemptAnnotationKey])
+	require.Equal(t, "11", eleventh.Annotations[AttemptAnnotationKey])
+	require.True(t, strings.HasSuffix(second.Name, "-a2"))
+	require.True(t, strings.HasSuffix(eleventh.Name, "-a11"))
+	require.LessOrEqual(t, len(second.Name), 63)
+	require.LessOrEqual(t, len(eleventh.Name), 63)
 }
 
 func TestJobNameSeparatesWarmupsWithTheSameTruncatedPrefix(t *testing.T) {

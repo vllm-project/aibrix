@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -62,6 +63,10 @@ const (
 	RevisionLabelKey = "model.aibrix.ai/revision"
 	// TargetNodeAnnotationKey records the exact node targeted by an owned Job.
 	TargetNodeAnnotationKey = "model.aibrix.ai/target-node"
+	// TargetNodeUIDAnnotationKey records the Kubernetes identity of the target Node.
+	TargetNodeUIDAnnotationKey = "model.aibrix.ai/target-node-uid"
+	// AttemptAnnotationKey records the one-based Continuous Job attempt.
+	AttemptAnnotationKey = "model.aibrix.ai/attempt"
 
 	// WarmupEnabledLabelKey opts a Node into ModelWarmup scheduling when its
 	// value is WarmupEnabledLabelValue.
@@ -183,7 +188,7 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				"modelWarmup", req.NamespacedName, "node", node, "parallelism", policies.parallelism)
 			break
 		}
-		job := r.jobFor(warmup, node, revision)
+		job := r.jobForTarget(warmup, snapshot.Targets[node], revision, 0)
 		if err := ctrl.SetControllerReference(warmup, job, r.Scheme); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -456,6 +461,21 @@ func (r *ModelWarmupReconciler) jobFor(w *modelv1alpha1.ModelWarmup, node, revis
 	}
 }
 
+func (r *ModelWarmupReconciler) jobForTarget(
+	w *modelv1alpha1.ModelWarmup,
+	target resolvedTarget,
+	revision string,
+	attempt int32,
+) *batchv1.Job {
+	job := r.jobFor(w, target.NodeName, revision)
+	job.Annotations[TargetNodeUIDAnnotationKey] = string(target.NodeUID)
+	if attempt > 0 {
+		job.Annotations[AttemptAnnotationKey] = strconv.FormatInt(int64(attempt), 10)
+		job.Name = modelWarmupJobNameForAttempt(w.Name, string(w.UID), target.NodeName, revision, attempt)
+	}
+	return job
+}
+
 func copyContainers(containers []corev1.Container) []corev1.Container {
 	if len(containers) == 0 {
 		return nil
@@ -722,7 +742,15 @@ func jobFailureDetails(job *batchv1.Job) (string, string) {
 }
 
 func modelWarmupJobName(warmupName, warmupUID, node, revision string) string {
-	suffix := fmt.Sprintf("-%s-%s-%s", shortHash(warmupUID), shortHash(node), revision)
+	return modelWarmupJobNameForAttempt(warmupName, warmupUID, node, revision, 1)
+}
+
+func modelWarmupJobNameForAttempt(warmupName, warmupUID, node, revision string, attempt int32) string {
+	attemptSuffix := ""
+	if attempt > 1 {
+		attemptSuffix = fmt.Sprintf("-a%d", attempt)
+	}
+	suffix := fmt.Sprintf("-%s-%s-%s%s", shortHash(warmupUID), shortHash(node), revision, attemptSuffix)
 	prefix := warmupName
 	if len(prefix)+len(suffix) > 63 {
 		prefix = prefix[:63-len(suffix)]
