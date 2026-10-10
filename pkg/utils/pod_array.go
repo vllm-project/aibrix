@@ -77,7 +77,8 @@ func (arr *PodArray) initDeployments() {
 		return
 	}
 
-	// Sort by deploymentName
+	// Sort by deploymentName. Pods are keyed by namespace/name: a pod name is only
+	// unique within its namespace.
 	podClasses := make(map[string]int)
 	podIndexes := make(map[string]int, len(arr.Pods))
 	seen := 0
@@ -89,24 +90,26 @@ func (arr *PodArray) initDeployments() {
 			podClasses[deploymentName] = seen
 			seen++
 		}
-		podIndexes[pod.Name] = idx
+		podIndexes[GeneratePodKey(pod.Namespace, pod.Name)] = idx
 	}
 	// Sort by podClasses
 	sort.Slice(arr.Pods, func(i, j int) bool {
-		return podIndexes[arr.Pods[i].Name] < podIndexes[arr.Pods[j].Name]
+		return podIndexes[GeneratePodKey(arr.Pods[i].Namespace, arr.Pods[i].Name)] <
+			podIndexes[GeneratePodKey(arr.Pods[j].Namespace, arr.Pods[j].Name)]
 	})
 
 	// Split and map Pods to deployments
 	podsByDeployment := make(map[string][]*v1.Pod, len(podClasses))
 	deployments := make([]string, 0, len(podClasses))
 	offset := 0
-	lastClass := podIndexes[arr.Pods[0].Name]
+	lastClass := podIndexes[GeneratePodKey(arr.Pods[0].Namespace, arr.Pods[0].Name)]
 	lastDeploymentName := DeploymentNameFromPod(arr.Pods[0])
 	for i, pod := range arr.Pods {
-		if podIndexes[pod.Name] != lastClass {
+		podIdx := podIndexes[GeneratePodKey(pod.Namespace, pod.Name)]
+		if podIdx != lastClass {
 			podsByDeployment[lastDeploymentName] = arr.Pods[offset:i]
 			offset = i
-			lastClass = podIndexes[pod.Name]
+			lastClass = podIdx
 			deployments = append(deployments, lastDeploymentName)
 			lastDeploymentName = DeploymentNameFromPod(pod)
 		}
