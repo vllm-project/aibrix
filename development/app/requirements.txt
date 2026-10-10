@@ -3,6 +3,4 @@ flask
 Flask-HTTPAuth==4.8.1
 PyYAML==6.0.2
 tiktoken
-
-# Optional: only needed when running in Kubernetes
-# kubernetes
+kubernetes

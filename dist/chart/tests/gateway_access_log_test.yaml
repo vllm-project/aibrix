@@ -1,0 +1,111 @@
+suite: Test Gateway Diagnostic Access Logs
+templates:
+  - gateway-instance/gateway.yaml
+tests:
+  - it: should leave default logging and telemetry absent when both features are disabled
+    set:
+      gateway.envoyProxy.accessLog.enabled: false
+      openTelemetry.enable: false
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    asserts:
+      - notExists:
+          path: spec.telemetry
+
+  - it: should enable diagnostic logs without enabling tracing
+    release:
+      name: aibrix
+      namespace: aibrix-system
+    set:
+      gateway.envoyProxy.accessLog.enabled: true
+      openTelemetry.enable: false
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    asserts:
+      - notExists:
+          path: spec.telemetry.tracing
+      - equal:
+          path: spec.telemetry.accessLog.disable
+          value: false
+      - lengthEqual:
+          path: spec.telemetry.accessLog.settings
+          count: 1
+      - equal:
+          path: spec.telemetry.accessLog.settings[0].format.type
+          value: JSON
+      - equal:
+          path: spec.telemetry.accessLog.settings[0].sinks[0].file.path
+          value: /dev/stdout
+      - equal:
+          path: spec.telemetry.accessLog.settings[0].format.json.request_duration_ms
+          value: "%REQUEST_DURATION%"
+      - equal:
+          path: spec.telemetry.accessLog.settings[0].format.json.ext_proc_request_body_total_latency_us
+          value: "%FILTER_STATE(envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-extension-policy/extproc/0:FIELD:request_body_total_latency_us)%"
+      - equal:
+          path: spec.telemetry.accessLog.settings[0].format.json.ext_proc_response_header_latency_us
+          value: "%FILTER_STATE(envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-extension-policy/extproc/0:FIELD:response_header_latency_us)%"
+      - equal:
+          path: spec.telemetry.accessLog.settings[0].format.json.duration
+          value: "%DURATION%"
+
+  - it: should preserve tracing alongside access logs
+    set:
+      gateway.envoyProxy.accessLog.enabled: true
+      openTelemetry.enable: true
+      openTelemetry.host: otel.example
+      openTelemetry.serviceName: ""
+      openTelemetry.samplingRate: 25
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    asserts:
+      - exists:
+          path: spec.telemetry.accessLog.settings
+      - equal:
+          path: spec.telemetry.tracing.samplingRate
+          value: 25
+      - equal:
+          path: spec.telemetry.tracing.provider.host
+          value: otel.example
+
+  - it: should preserve tracing when diagnostic logging is disabled
+    set:
+      gateway.envoyProxy.accessLog.enabled: false
+      openTelemetry.enable: true
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    asserts:
+      - notExists:
+          path: spec.telemetry.accessLog
+      - exists:
+          path: spec.telemetry.tracing
+
+  - it: should derive the filter key from namespace and fullname override
+    release:
+      namespace: load-test
+    set:
+      fullnameOverride: inference
+      gateway.envoyProxy.accessLog.enabled: true
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    asserts:
+      - equal:
+          path: spec.telemetry.accessLog.settings[0].format.json.ext_proc_request_header_latency_us
+          value: "%FILTER_STATE(envoy.filters.http.ext_proc/envoyextensionpolicy/load-test/inference-gateway-plugins-extension-policy/extproc/0:FIELD:request_header_latency_us)%"
+
+  - it: should allow a custom ext_proc filter key
+    set:
+      gateway.envoyProxy.accessLog.enabled: true
+      gateway.envoyProxy.accessLog.extProcFilterName: custom-ext-proc
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    asserts:
+      - equal:
+          path: spec.telemetry.accessLog.settings[0].format.json.ext_proc_request_header_latency_us
+          value: "%FILTER_STATE(custom-ext-proc:FIELD:request_header_latency_us)%"

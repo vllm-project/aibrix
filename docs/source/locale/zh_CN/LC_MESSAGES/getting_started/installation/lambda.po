@@ -1,0 +1,339 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/getting_started/installation/lambda.rst:5
+msgid "Lambda Cloud"
+msgstr "Lambda Cloud"
+
+#: ../../source/getting_started/installation/lambda.rst:7
+msgid ""
+"This guide provides a step-by-step tutorial to deploy AIBrix on a single-"
+"node Lambda instance for testing purposes. The setup includes installing "
+"dependencies, verifying the installation, setting up the cluster, and "
+"deploying AIBrix components."
+msgstr ""
+"本指南逐步说明如何在单节点 Lambda 实例上部署 AIBrix 以供测试。步骤包括安装依赖、"
+"验证安装、搭建集群以及部署 AIBrix 组件。"
+
+#: ../../source/getting_started/installation/lambda.rst:10
+msgid "Prerequisites"
+msgstr "前置条件"
+
+#: ../../source/getting_started/installation/lambda.rst:13
+msgid "1. Get a Lambda Cloud instance"
+msgstr "1. 获取 Lambda Cloud 实例"
+
+#: ../../source/getting_started/installation/lambda.rst:15
+msgid ""
+"You can follow `lambda cloud docs <https://docs.lambdalabs.com/>`_ to "
+"launch an instance."
+msgstr "可按照 `lambda cloud docs <https://docs.lambdalabs.com/>`_ 启动实例。"
+
+#: ../../source/getting_started/installation/lambda.rst:17
+msgid "lambda-cloud-instance"
+msgstr "lambda-cloud-instance"
+
+#: ../../source/getting_started/installation/lambda.rst:22
+msgid ""
+"After launching the instance, you can get the instance's IP address and "
+"ssh into the instance."
+msgstr "启动实例后，可获取实例 IP 并用 ssh 登录。"
+
+#: ../../source/getting_started/installation/lambda.rst:24
+msgid "lambda-cloud-ssh"
+msgstr "lambda-cloud-ssh"
+
+#: ../../source/getting_started/installation/lambda.rst:29
+msgid "You can also enter the Jupyter notebook without managing SSH keys."
+msgstr "也可以不管理 SSH 密钥，直接进入 Jupyter notebook。"
+
+#: ../../source/getting_started/installation/lambda.rst:32
+msgid "2. Clone AIBrix code base"
+msgstr "2. 克隆 AIBrix 代码库"
+
+#: ../../source/getting_started/installation/lambda.rst:34
+msgid "Clone the AIBrix code base to your local machine:"
+msgstr "将 AIBrix 代码库克隆到本机："
+
+#: ../../source/getting_started/installation/lambda.rst:43
+msgid "3. Install Dependencies"
+msgstr "3. 安装依赖"
+
+#: ../../source/getting_started/installation/lambda.rst:45
+msgid ""
+"Run the following script to install the necessary dependencies including "
+"`nvkind`, `minikube`, `kubectl`, `Helm`, `Go`, and the `NVIDIA Container "
+"Toolkit`."
+msgstr ""
+"运行以下脚本安装必要依赖，包括 `nvkind` 、`minikube` 、`kubectl` 、`Helm` 、`Go` 和 `NVIDIA "
+"Container Toolkit` 。"
+
+#: ../../source/getting_started/installation/lambda.rst:51
+#: ../../source/getting_started/installation/lambda.rst:80
+#: ../../source/getting_started/installation/lambda.rst:211
+msgid "**Summary:**"
+msgstr "**摘要：**"
+
+#: ../../source/getting_started/installation/lambda.rst:53
+msgid "Installs required system packages (`jq`, `Go`, `kubectl`, `kind`, `Helm`)"
+msgstr "安装所需系统软件包（`jq` 、`Go` 、`kubectl` 、`kind` 、`Helm` ）"
+
+#: ../../source/getting_started/installation/lambda.rst:54
+msgid ""
+"Installs `nvkind` and `minikube` (custom Kubernetes-in-Docker with GPU "
+"support)"
+msgstr "安装 `nvkind` 和 `minikube` （支持 GPU 的自定义 Kubernetes-in-Docker）"
+
+#: ../../source/getting_started/installation/lambda.rst:55
+msgid "Configures the NVIDIA Container Toolkit"
+msgstr "配置 NVIDIA Container Toolkit"
+
+#: ../../source/getting_started/installation/lambda.rst:56
+msgid "Updates Docker settings for GPU compatibility"
+msgstr "更新 Docker 设置以兼容 GPU"
+
+#: ../../source/getting_started/installation/lambda.rst:63
+msgid "Once completed, restart your terminal or run:"
+msgstr "完成后重启终端，或运行："
+
+#: ../../source/getting_started/installation/lambda.rst:70
+msgid "4. Verify GPU container runtime"
+msgstr "4. 验证 GPU 容器运行时"
+
+#: ../../source/getting_started/installation/lambda.rst:72
+msgid ""
+"The path for the following script assumes that you are in the root "
+"directory of the AIBrix repository."
+msgstr "以下脚本的路径假定当前位于 AIBrix 仓库根目录。"
+
+#: ../../source/getting_started/installation/lambda.rst:74
+msgid ""
+"Run the following script to ensure that the NVIDIA drivers and Docker "
+"integration are correctly configured:"
+msgstr "运行以下脚本，确认 NVIDIA 驱动和 Docker 集成配置正确："
+
+#: ../../source/getting_started/installation/lambda.rst:82
+msgid "Runs `nvidia-smi` to check GPU availability"
+msgstr "运行 `nvidia-smi` 检查 GPU 是否可用"
+
+#: ../../source/getting_started/installation/lambda.rst:83
+msgid "Runs a Docker container with NVIDIA runtime to verify GPU detection"
+msgstr "使用 NVIDIA runtime 运行 Docker 容器，验证能否检测到 GPU"
+
+#: ../../source/getting_started/installation/lambda.rst:84
+msgid "Ensures that GPU devices are accessible within containers"
+msgstr "确认容器内可以访问 GPU 设备"
+
+#: ../../source/getting_started/installation/lambda.rst:86
+msgid "If all checks pass successfully like below, proceed to the next step."
+msgstr "如果如下所示全部检查通过，继续下一步。"
+
+#: ../../source/getting_started/installation/lambda.rst:95
+msgid "Setup Kubernetes Environments"
+msgstr "搭建 Kubernetes 环境"
+
+#: ../../source/getting_started/installation/lambda.rst:97
+msgid "We provide two ways to set up the environment:"
+msgstr "我们提供两种搭建环境的方式："
+
+#: ../../source/getting_started/installation/lambda.rst:99
+msgid ""
+"**Minikube** (Recommended): Minikube is the recommended option for local "
+"testing and development. It provides a stable, single-node Kubernetes "
+"cluster."
+msgstr "**Minikube** （推荐）：Minikube 是本地测试和开发的推荐选项。它提供稳定的单节点 Kubernetes 集群。"
+
+#: ../../source/getting_started/installation/lambda.rst:100
+msgid ""
+"**Kind**: Kind can also be used, but due to the container-based nature of"
+" Kind clusters, we often observe that containers unexpectedly receive "
+"`SIGTERM` signals.(see `issue#683 <https://github.com/vllm-"
+"project/aibrix/issues/683>`_ and `issue#684 <https://github.com/vllm-"
+"project/aibrix/issues/684>`_)."
+msgstr ""
+"**Kind** ：也可以使用 Kind，但由于 Kind 集群基于容器，我们经常观察到容器会意外收到 `SIGTERM` 信号。（参见 `issue#683 "
+"<https://github.com/vllm-project/aibrix/issues/683>`_ 和 `issue#684 <https://github.com/vllm-project/aibrix/issues/684>`_ "
+"）。"
+
+#: ../../source/getting_started/installation/lambda.rst:103
+msgid ""
+"The root cause has not yet been fully determined. Therefore, we recommend"
+" using Minikube whenever possible for a more stable experience."
+msgstr "根因尚未完全确定。因此建议尽可能使用 Minikube，以获得更稳定的体验。"
+
+#: ../../source/getting_started/installation/lambda.rst:107
+msgid "MiniKube"
+msgstr "MiniKube"
+
+#: ../../source/getting_started/installation/lambda.rst:110
+msgid "1. Create a `minikube` Cluster"
+msgstr "1. 创建 `minikube` 集群"
+
+#: ../../source/getting_started/installation/lambda.rst:112
+msgid "First, ensure that your non-root user has `docker` permission:"
+msgstr "首先确认非 root 用户具有 `docker` 权限："
+
+#: ../../source/getting_started/installation/lambda.rst:119
+msgid "Create a Kubernetes cluster using minikube:"
+msgstr "使用 minikube 创建 Kubernetes 集群："
+
+#: ../../source/getting_started/installation/lambda.rst:146
+msgid ""
+"If you meet problems setup the cluster and enable the GPU support, check "
+"`Using NVIDIA GPUs with minikube "
+"<https://minikube.sigs.k8s.io/docs/tutorials/nvidia/>`_ for more details."
+msgstr ""
+"如果搭建集群并启用 GPU 支持时遇到问题，参见 `Using NVIDIA GPUs with minikube <https://minikube.sigs.k8s.io/docs/tutorials/nvidia/>`_ "
+"。"
+
+#: ../../source/getting_started/installation/lambda.rst:147
+msgid ""
+"GPU operator will be automatially installed along with the cluster setup,"
+" we do not need to install it separately."
+msgstr "GPU operator 会随集群搭建自动安装，无需单独安装。"
+
+#: ../../source/getting_started/installation/lambda.rst:150
+msgid "2. Enable LoadBalancer service in minikube"
+msgstr "2. 在 minikube 中启用 LoadBalancer 服务"
+
+#: ../../source/getting_started/installation/lambda.rst:152
+msgid ""
+"Services of type LoadBalancer can be exposed via the `minikube tunnel` "
+"command. It must be run in a separate terminal window to keep the "
+"`LoadBalancer` running. Check `LoadBalancer access "
+"<https://minikube.sigs.k8s.io/docs/handbook/accessing/>`_ for more "
+"details."
+msgstr ""
+"LoadBalancer 类型的服务可通过 `minikube tunnel` 命令暴露。必须在单独的终端窗口中运行，以保持 `LoadBalancer` "
+"可用。详情见 `LoadBalancer access <https://minikube.sigs.k8s.io/docs/handbook/accessing/>`_ "
+"。"
+
+#: ../../source/getting_started/installation/lambda.rst:155
+msgid "Run the tunnel in a separate terminal and do not close this window."
+msgstr "在单独的终端中运行 tunnel，不要关闭该窗口。"
+
+#: ../../source/getting_started/installation/lambda.rst:174
+msgid "3. Delete the minikube cluster"
+msgstr "3. 删除 minikube 集群"
+
+#: ../../source/getting_started/installation/lambda.rst:176
+msgid "Once you've done testing, you can delete the `minikube` cluster:"
+msgstr "测试完成后，可以删除 `minikube` 集群："
+
+#: ../../source/getting_started/installation/lambda.rst:184
+msgid "Kind"
+msgstr "Kind"
+
+#: ../../source/getting_started/installation/lambda.rst:187
+msgid "1. Create a `nvkind` Cluster"
+msgstr "1. 创建 `nvkind` 集群"
+
+#: ../../source/getting_started/installation/lambda.rst:189
+msgid "Create a Kubernetes cluster using nvkind:"
+msgstr "使用 nvkind 创建 Kubernetes 集群："
+
+#: ../../source/getting_started/installation/lambda.rst:195
+msgid ""
+"This will set up a single-node cluster with GPU support. Make sure you "
+"see `Ready` status for the node:"
+msgstr "这将搭建支持 GPU 的单节点集群。确认节点状态为 `Ready` ："
+
+#: ../../source/getting_started/installation/lambda.rst:203
+msgid "2. Setup NVIDIA GPU Operator"
+msgstr "2. 安装 NVIDIA GPU Operator"
+
+#: ../../source/getting_started/installation/lambda.rst:205
+msgid ""
+"Run the following script to install the NVIDIA GPU Operator and configure"
+" the cloud provider:"
+msgstr "运行以下脚本安装 NVIDIA GPU Operator 并配置 cloud provider："
+
+#: ../../source/getting_started/installation/lambda.rst:213
+msgid "Installs the NVIDIA GPU Operator using Helm"
+msgstr "使用 Helm 安装 NVIDIA GPU Operator"
+
+#: ../../source/getting_started/installation/lambda.rst:214
+msgid "Installs the Cloud Provider Kind (`cloud-provider-kind`)"
+msgstr "安装 Cloud Provider Kind（`cloud-provider-kind` ）"
+
+#: ../../source/getting_started/installation/lambda.rst:215
+msgid "Runs `cloud-provider-kind` in the background for cloud integration"
+msgstr "在后台运行 `cloud-provider-kind` 以进行云集成"
+
+#: ../../source/getting_started/installation/lambda.rst:219
+msgid "3. Delete Lambda Kind Cluster"
+msgstr "3. 删除 Lambda Kind 集群"
+
+#: ../../source/getting_started/installation/lambda.rst:221
+msgid "Once you've done testing, you can delete the `nvkind` cluster:"
+msgstr "测试完成后，可以删除 `nvkind` 集群："
+
+#: ../../source/getting_started/installation/lambda.rst:232
+msgid "Install AIBrix"
+msgstr "安装 AIBrix"
+
+#: ../../source/getting_started/installation/lambda.rst:234
+msgid "Once the cluster is up and running, install AIBrix components:"
+msgstr "集群就绪后，安装 AIBrix 组件："
+
+#: ../../source/getting_started/installation/lambda.rst:236
+msgid "**Install dependencies:**"
+msgstr "**安装依赖：**"
+
+#: ../../source/getting_started/installation/lambda.rst:246
+msgid "Verify that the AIBrix components are installed successfully:"
+msgstr "确认 AIBrix 组件安装成功："
+
+#: ../../source/getting_started/installation/lambda.rst:253
+msgid "Now, you can follow :doc:`../quickstart` to deploy your models."
+msgstr "现在可以按照 :doc:`../quickstart` 部署模型。"
+
+#: ../../source/getting_started/installation/lambda.rst:257
+msgid "Conclusion"
+msgstr "小结"
+
+#: ../../source/getting_started/installation/lambda.rst:258
+msgid ""
+"You have successfully deployed AIBrix on a single-node Lambda instance. "
+"This setup allows for efficient testing and debugging of AIBrix "
+"components in a local environment."
+msgstr ""
+"你已在单节点 Lambda 实例上成功部署 AIBrix。该环境便于在本地高效测试和调试 "
+"AIBrix 组件。"
+
+#: ../../source/getting_started/installation/lambda.rst:260
+msgid "If you encounter issues, ensure that:"
+msgstr "如果遇到问题，请确认："
+
+#: ../../source/getting_started/installation/lambda.rst:262
+msgid "The NVIDIA GPU Operator is correctly installed"
+msgstr "NVIDIA GPU Operator 已正确安装"
+
+#: ../../source/getting_started/installation/lambda.rst:263
+msgid "The cluster has GPU resources available (`kubectl describe nodes`)"
+msgstr "集群有可用 GPU 资源（`kubectl describe nodes` ）"
+
+#: ../../source/getting_started/installation/lambda.rst:264
+msgid "Docker and Kubernetes configurations match GPU compatibility requirements"
+msgstr "Docker 和 Kubernetes 配置满足 GPU 兼容性要求"
+
+#: ../../source/getting_started/installation/lambda.rst:266
+msgid "Happy Testing!"
+msgstr "祝测试顺利！"

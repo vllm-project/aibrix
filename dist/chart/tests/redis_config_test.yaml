@@ -25,6 +25,30 @@ tests:
             name: REDIS_PORT
             value: "3796"
 ---
+suite: Test Built-in Redis Image Configuration
+templates:
+  - metadata-service/redis.yaml
+tests:
+  - it: should use the versioned Redis image without pulling it on every start
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: redis:7.4
+        documentIndex: 0
+      - equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: IfNotPresent
+        documentIndex: 0
+
+  - it: should allow overriding the Redis image pull policy
+    set:
+      metadata.redis.container.image.imagePullPolicy: Never
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: Never
+        documentIndex: 0
+---
 suite: Test Redis Dependency Passwd Logic
 templates:
   - metadata-service/redis.yaml

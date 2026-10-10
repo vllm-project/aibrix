@@ -47,7 +47,7 @@ spec:
             # vLLM 0.11 enables KV ZMQ via VllmConfig only through --kv-events-config (JSON).
             # Plain VLLM_* env vars for this are not read by upstream vLLM — without this, no publisher runs.
             - --kv-events-config
-            - '{"enable_kv_cache_events":true,"publisher":"zmq","endpoint":"tcp://*:5557","replay_endpoint":"tcp://*:5559"}'
+            - '{"enable_kv_cache_events":true,"publisher":"zmq","endpoint":"tcp://*:5557","replay_endpoint":"tcp://*:5558"}'
           ports:
             - containerPort: 8000
               protocol: TCP
@@ -55,7 +55,7 @@ spec:
             - containerPort: 5557
               protocol: TCP
               name: kv-events
-            - containerPort: 5559
+            - containerPort: 5558
               protocol: TCP
               name: kv-replay
           readinessProbe:
@@ -115,7 +115,7 @@ spec:
       protocol: TCP
       targetPort: kv-events
     - name: kv-replay
-      port: 5559
+      port: 5558
       protocol: TCP
       targetPort: kv-replay
   selector:

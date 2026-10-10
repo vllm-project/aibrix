@@ -28,9 +28,9 @@ import (
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
-	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -45,6 +45,15 @@ var (
 	ErrFallbackNotRegistered = errors.New("fallback router not registered")
 	defaultRM                = NewRouterManager()
 )
+
+// DefaultRouterManager returns the production process-wide router manager.
+func DefaultRouterManager() *RouterManager { return defaultRM }
+
+// maxWeightCoefficient is the largest weight coefficient a routing string may
+// carry. The auto-blend weight parser enforces the same bound, so a
+// profile-provided weight above it cannot produce a blend string the router
+// then refuses to parse.
+const maxWeightCoefficient = 1000000
 
 // RouterItem represents a single routing algorithm and its weight coefficient for multi-router config.
 type RouterItem struct {
@@ -98,7 +107,7 @@ func ParseMultiRouterConfig(routerStr string) (*MultiRouterConfig, error) {
 			if err != nil {
 				return nil, fmt.Errorf("invalid weight coefficient in: %s (must be an integer)", part)
 			}
-			if parsedCoef < 0 || parsedCoef > 1000000 {
+			if parsedCoef < 0 || parsedCoef > maxWeightCoefficient {
 				return nil, fmt.Errorf("weight coefficient out of bounds [0, 1000000] in: %s", part)
 			}
 			coefInt = parsedCoef
@@ -152,13 +161,18 @@ func ResolveExclusiveStrategy(algStr string) (string, bool) {
 	return cfg.Items[0].Name, true
 }
 
-// autoBlendLoadBalanceWeight/autoBlendLeastRequestWeight control the silent multi-strategy
+// autoBlendLoadBalanceWeight/autoBlendLeastRequestTopKWeight control the silent multi-strategy
 // blend appendLoadBalanceBlend adds behind every request's chosen strategy. Setting the
 // load-balance weight to 0 disables the whole feature, matching ParseMultiRouterConfig's own
 // "weight 0 means skip" convention.
+//
+// autoBlendLeastRequestTopKWeight weights least-request-top-k, not plain least-request: plain
+// least-request's ScoreAll gives every gateway replica the same single best pod (see
+// leastRequestTopKCandidates). The env var and the profile's autoBlend.leastRequestWeight keep
+// their least-request names because they are deployed configuration.
 var (
-	autoBlendLoadBalanceWeight  = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT", 1)
-	autoBlendLeastRequestWeight = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT", 1)
+	autoBlendLoadBalanceWeight      = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT", 1)
+	autoBlendLeastRequestTopKWeight = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT", 1)
 )
 
 // autoBlendPrefixCacheWeight/autoBlendPrefixCacheLoadBalanceWeight set the default blend ratio
@@ -175,6 +189,30 @@ var (
 	autoBlendPrefixCacheWeight            = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT", 5)
 	autoBlendPrefixCacheLoadBalanceWeight = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT", 4)
 )
+
+// autoBlendWeights carries the effective auto-blend weights of one request: the
+// environment defaults above with the model config profile's overrides applied.
+type autoBlendWeights struct {
+	loadBalance            int
+	leastRequest           int
+	prefixCache            int
+	prefixCacheLoadBalance int
+}
+
+// effectiveAutoBlendWeights resolves the auto-blend weights of this request. It
+// runs before appendLoadBalanceBlend builds the blend string, which is also the
+// multiRouterCache key, so requests whose profile carries different weights end
+// up on different - and separately weight-configured - composite routers. A nil
+// routingCtx leaves every weight at its environment default.
+func effectiveAutoBlendWeights(routingCtx *types.RoutingContext) autoBlendWeights {
+	weights := routingCtx.RoutingOverrides().AutoBlend
+	return autoBlendWeights{
+		loadBalance:            weights.LoadBalanceWeight,
+		leastRequest:           weights.LeastRequestWeight,
+		prefixCache:            weights.PrefixCacheWeight,
+		prefixCacheLoadBalance: weights.PrefixCacheLoadBalanceWeight,
+	}
+}
 
 // maxCachedAlgorithmStrings bounds how many distinct algorithm-string keys
 // RouterManager.multiRouterCache and unblendableLogged will retain. Both maps are keyed by the
@@ -213,21 +251,30 @@ func mentionedAlgorithmNames(algStr string) map[string]bool {
 
 // appendLoadBalanceBlend silently expands algStr into a hidden multi-strategy composite that
 // also scores pods on load-balance's capacity-aware pending_time, so no single strategy can
-// keep steering traffic at an already-hot pod. least-request is appended alongside it (unless
-// already present) purely so multi-port/data-parallel pod routing keeps working: the
-// multi-strategy router's port selection only engages when "least-request" is one of the
-// configured scorers (see setTargetPortIfNeeded) — except when prefix-cache is one of the
-// caller's strategies: prefix-cache already accounts for pod load via the gateway's
-// ApplyLoadImbalanceGate and its own stddev-based candidate filtering
-// (getTargetPodFromMatchedPodsFromCounts), so also blending in least-request as a full scoring
-// participant would double-count "current load" against prefix-cache's own cache-affinity
-// signal (load-balance and least-request are both direct functions of the same running-request
-// metric, so they aren't independent votes) and can override cache locality far more readily
-// than intended. For prefix-cache, only load-balance is blended in.
+// keep steering traffic at an already-hot pod. least-request-top-k is appended alongside it
+// (unless least-request or least-request-top-k is already present) so that multi-port/data-parallel
+// pod routing keeps working: the multi-strategy router's port selection only engages when one of
+// those two is among the configured scorers (see setTargetPortIfNeeded) — except when
+// prefix-cache is one of the caller's strategies: prefix-cache already accounts for pod load
+// via the gateway's ApplyLoadImbalanceGate and its own stddev-based candidate filtering
+// (getTargetPodFromMatchedPodsFromCounts), so also blending in least-request-top-k as a full
+// scoring participant would double-count "current load" against prefix-cache's own
+// cache-affinity signal (load-balance and least-request-top-k are both direct functions of the
+// same running-request metric, so they aren't independent votes) and can override cache
+// locality far more readily than intended. For prefix-cache, only load-balance is blended in.
 //
-// One tradeoff of that exception: a prefix-cache request against multi-port/data-parallel pods
-// won't get setTargetPortIfNeeded's port selection, since that lookup requires least-request to
-// be one of the configured scorers.
+// A bare "session-affinity" request gets no auto-blend at all (see the early return below):
+// unlike prefix-cache's graded cache-hit score, session-affinity's ScoreAll is binary (1 for
+// the resolved pod, 0 for everything else), so any load-balance weight strictly below the
+// session-affinity weight can never flip the outcome — the blend would either always be
+// overridden by the pin (dead weight) or, at high enough weight, silently defeat the pin
+// caller code explicitly asked for. Neither is a useful default, so session-affinity keeps
+// running its own Route()/ScoreAll() unblended, the same way load-balance and the exclusive
+// strategies do.
+//
+// One tradeoff of the prefix-cache exception: a prefix-cache request against
+// multi-port/data-parallel pods won't get setTargetPortIfNeeded's port selection, since that
+// lookup requires least-request or least-request-top-k to be one of the configured scorers.
 //
 // cfg is algStr's own already-parsed config, passed in by the caller (Select) so algStr isn't
 // parsed twice per request.
@@ -238,19 +285,26 @@ func mentionedAlgorithmNames(algStr string) map[string]bool {
 //
 // Returns ok=false when there's nothing to add: the blend is disabled, algStr already resolves
 // to an exclusive strategy (pd, slo*) that manages its own pod selection and must not be
-// blended with anything else, or algStr is already the standalone "load-balance" strategy
-// (which must keep running its own Route(), not a blend).
-func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig) (string, bool) {
-	if autoBlendLoadBalanceWeight <= 0 {
+// blended with anything else, or algStr is already the standalone "load-balance" or
+// "session-affinity" strategy (both of which must keep running their own Route(), not a blend).
+//
+// weights holds the effective weights of this request (see effectiveAutoBlendWeights): the
+// environment defaults, or the values the request's model config profile set.
+func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig, weights autoBlendWeights) (string, bool) {
+	if weights.loadBalance <= 0 {
 		return "", false
 	}
 
-	if len(cfg.Items) == 1 && (isExclusiveStrategyName(cfg.Items[0].Name) || cfg.Items[0].Name == string(RouterLoadBalance)) {
+	if len(cfg.Items) == 1 && (isExclusiveStrategyName(cfg.Items[0].Name) ||
+		cfg.Items[0].Name == string(RouterExternal) ||
+		cfg.Items[0].Name == string(RouterLoadBalance) ||
+		cfg.Items[0].Name == string(RouterSessionAffinity)) {
 		// Exclusive strategies (pd, slo*) manage their own pod selection and must not be
 		// blended. An explicit, standalone "load-balance" selection is also left alone: it
 		// already runs load-balance's own Route() (pending-time minimization + KV-cache
 		// tie-break), so blending in least-request here would silently replace that with
-		// generic weighted soft-scoring instead.
+		// generic weighted soft-scoring instead. A standalone "session-affinity" selection is
+		// left alone too, for the binary-scoring reason in the function doc above.
 		return "", false
 	}
 
@@ -260,10 +314,13 @@ func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig) (string, bool
 	mentioned := mentionedAlgorithmNames(algStr)
 
 	includesPrefixCache := false
+	includesSessionAffinity := false
 	for _, item := range cfg.Items {
-		if item.Name == string(RouterPrefixCache) {
+		switch item.Name {
+		case string(RouterPrefixCache):
 			includesPrefixCache = true
-			break
+		case string(RouterSessionAffinity):
+			includesSessionAffinity = true
 		}
 	}
 
@@ -276,13 +333,17 @@ func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig) (string, bool
 	blended := algStr
 	if !mentioned[string(RouterLoadBalance)] {
 		if prefixCacheOnly {
-			blended = fmt.Sprintf("%s:%d,%s:%d", RouterPrefixCache, autoBlendPrefixCacheWeight, RouterLoadBalance, autoBlendPrefixCacheLoadBalanceWeight)
+			blended = fmt.Sprintf("%s:%d,%s:%d", RouterPrefixCache, weights.prefixCache, RouterLoadBalance, weights.prefixCacheLoadBalance)
 		} else {
-			blended += fmt.Sprintf(",%s:%d", RouterLoadBalance, autoBlendLoadBalanceWeight)
+			blended += fmt.Sprintf(",%s:%d", RouterLoadBalance, weights.loadBalance)
 		}
 	}
-	if !includesPrefixCache && !mentioned[string(RouterLeastRequest)] && autoBlendLeastRequestWeight > 0 {
-		blended += fmt.Sprintf(",%s:%d", RouterLeastRequest, autoBlendLeastRequestWeight)
+	// Checks both names: a caller who explicitly asked for plain "least-request" shouldn't also
+	// get least-request-top-k silently layered in as a second, redundant load-count scorer.
+	if !includesPrefixCache && !includesSessionAffinity &&
+		!mentioned[string(RouterLeastRequest)] && !mentioned[string(RouterLeastRequestTopK)] &&
+		weights.leastRequest > 0 {
+		blended += fmt.Sprintf(",%s:%d", RouterLeastRequestTopK, weights.leastRequest)
 	}
 	if blended == algStr {
 		return "", false
@@ -358,17 +419,39 @@ func (m *multiStrategyRouter) setTargetPortIfNeeded(ctx *types.RoutingContext, r
 	if !isMultiPortPods(readyPodList.All()) {
 		return
 	}
-	scorer, ok := m.scorers[string(RouterLeastRequest)]
-	if !ok {
+	c := m.portSelectionCache()
+	if c == nil {
 		return
 	}
-	leastRequest, ok := scorer.(*leastRequestRouter)
-	if !ok {
-		return
-	}
-	if port := selectTargetPortForPodWithLeastRequestCount(leastRequest.cache, targetPod, readyPodList.ListPortsForPod()); port != 0 {
+	if port := selectTargetPortForPodWithLeastRequestCount(c, targetPod, readyPodList.ListPortsForPod()); port != 0 {
 		ctx.SetTargetPort(port)
 	}
+}
+
+// portSelectionCache returns the cache backing whichever of least-request-top-k or least-request
+// is configured on m, or nil if neither is present.
+func (m *multiStrategyRouter) portSelectionCache() cache.Cache {
+	if scorer, ok := m.scorers[string(RouterLeastRequestTopK)]; ok {
+		if topK, ok := scorer.(*LeastRequestTopKRouter); ok {
+			return topK.cache
+		}
+	}
+	if scorer, ok := m.scorers[string(RouterLeastRequest)]; ok {
+		if leastRequest, ok := scorer.(*leastRequestRouter); ok {
+			return leastRequest.cache
+		}
+	}
+	return nil
+}
+
+// PostRouteUpdate lets m satisfy types.PostRouteUpdater itself, so a caller that bypasses
+// Route() for a target pod it already picked by other means (e.g. the gateway's
+// single-ready-pod fast path in selectTargetPod) can still fan the update out to every
+// wrapped strategy that needs it (e.g. session-affinity's Redis pin), the same way Route
+// does via runPostRouteUpdates for the pods it scores itself.
+func (m *multiStrategyRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) error {
+	m.runPostRouteUpdates(ctx, readyPodList, targetPod)
+	return nil
 }
 
 func (m *multiStrategyRouter) runPostRouteUpdates(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) {
@@ -489,8 +572,8 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 			}
 			outstandingStr := "N/A"
 			if cacheErr == nil {
-				if v, err := c.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning); err == nil && v != nil {
-					outstandingStr = fmt.Sprintf("%.0f", v.GetSimpleValue())
+				if count, err := c.GetPodRunningRequests(pod.Name, pod.Namespace); err == nil {
+					outstandingStr = fmt.Sprintf("%d", count)
 				}
 			}
 			fmt.Fprintf(&logBuilder, "  [%s] Pod: %-30s | FinalScore: %.4f | Outstanding: %-4s | Details: %s\n",
@@ -624,6 +707,7 @@ type RouterManager struct {
 	routerDoneInit    context.CancelFunc
 	routerFactory     map[types.RoutingAlgorithm]types.RouterProviderFunc
 	routerConstructor map[types.RoutingAlgorithm]types.RouterProviderRegistrationFunc
+	initErrors        map[types.RoutingAlgorithm]error
 	// multiRouterCache is keyed by (possibly blended) algorithm string; both it and
 	// unblendableLogged below are capped at maxCachedAlgorithmStrings since the key is
 	// client-controlled and neither map is otherwise evicted.
@@ -641,8 +725,65 @@ func NewRouterManager() *RouterManager {
 	rm.routerInited, rm.routerDoneInit = context.WithTimeout(context.Background(), 5*time.Second)
 	rm.routerFactory = make(map[types.RoutingAlgorithm]types.RouterProviderFunc)
 	rm.routerConstructor = make(map[types.RoutingAlgorithm]types.RouterProviderRegistrationFunc)
+	rm.initErrors = make(map[types.RoutingAlgorithm]error)
 	rm.multiRouterCache = make(map[string]*multiStrategyRouter)
 	rm.unblendableLogged = make(map[string]struct{})
+	return rm
+}
+
+// NewRouterManagerWithDefaults creates an isolated manager with the standard
+// Gateway routing constructors. Unlike Init, it does not mutate the process
+// global manager.
+func NewRouterManagerWithDefaults() *RouterManager {
+	return newIsolatedRouterManager()
+}
+
+func newIsolatedRouterManager() *RouterManager {
+	rm := NewRouterManager()
+	defaultRM.routerMu.RLock()
+	defer defaultRM.routerMu.RUnlock()
+	for algorithm, constructor := range defaultRM.routerConstructor {
+		rm.routerConstructor[algorithm] = constructor
+	}
+	for algorithm, provider := range defaultRM.routerFactory {
+		rm.routerFactory[algorithm] = provider
+	}
+	return rm
+}
+
+// NewRouterManagerWithCache creates an isolated manager whose cache-backed
+// constructors capture c instead of consulting the process-global cache.
+func NewRouterManagerWithCache(c cache.Cache) *RouterManager {
+	return NewRouterManagerWithCacheAndPrefixIndexer(c, nil)
+}
+
+// NewRouterManagerWithCacheAndPrefixIndexer creates an isolated manager whose
+// cache-backed constructors capture c and whose prefix-cache constructor uses
+// indexer when it is non-nil. A nil indexer preserves the default per-manager
+// prefix table behavior.
+func NewRouterManagerWithCacheAndPrefixIndexer(c cache.Cache, indexer *prefixcacheindexer.PrefixHashTable) *RouterManager {
+	if indexer == nil {
+		indexer = prefixcacheindexer.NewPrefixHashTable()
+	}
+	rm := newIsolatedRouterManager()
+	// The cache-backed strategies registered below capture c. All other registrations are
+	// copied from the production manager and retain their original dependencies
+	// (for example, SLO providers still resolve their configured cache).
+	rm.RegisterProvider(RouterRandom, RandomRouterProviderFunc)
+	rm.Register(RouterLeastRequest, func() (types.Router, error) { return NewLeastRequestRouterWithCache(c) })
+	rm.Register(RouterLeastRequestTopK, func() (types.Router, error) { return NewLeastRequestTopKRouterWithCache(c), nil })
+	rm.Register(RouterLeastKvCache, func() (types.Router, error) { return NewLeastKvCacheRouterWithCache(c) })
+	rm.Register(RouterLeastLatency, func() (types.Router, error) { return NewLeastLatencyRouterWithCache(c) })
+	rm.Register(RouterLoadBalance, func() (types.Router, error) { return NewLoadBalanceRouterWithCache(c) })
+	rm.Register(RouterPrefixCache, func() (types.Router, error) {
+		return NewPrefixCacheRouterWithOptions(c, indexer)
+	})
+	rm.Register(RouterPD, func() (types.Router, error) {
+		return NewPDRouterWithCacheAndPrefixIndexer(c, indexer)
+	})
+	rm.Register(RouterExternal, func() (types.Router, error) {
+		return newExternalRouterWithCacheAndSelector(c, rm.Select)
+	})
 	return rm
 }
 
@@ -660,14 +801,18 @@ func (rm *RouterManager) Validate(algorithms string) (types.RoutingAlgorithm, bo
 	// Validate each strategy in the configuration
 	for _, item := range cfg.Items {
 		provider, ok := rm.routerFactory[types.RoutingAlgorithm(item.Name)]
-		if !ok {
+		// Register keeps the algorithm key when construction fails and stores a nil
+		// provider so InitializationError can report the cause. Such a router is
+		// known but unavailable and must not pass validation.
+		if !ok || provider == nil {
 			return RouterNotSet, false
 		}
 		if len(cfg.Items) > 1 {
-			if provider == nil {
-				return RouterNotSet, false
-			}
-			router, err := provider(types.RoutingAlgorithm(algorithms).NewContext(context.Background(), "", "", "validate", ""))
+			// NewContext uses a sync.Pool. Validation providers only inspect this
+			// temporary context, so return it immediately after the call.
+			validationCtx := types.RoutingAlgorithm(algorithms).NewContext(context.Background(), "", "", "validate", "")
+			router, err := provider(validationCtx)
+			validationCtx.Delete()
 			if err != nil {
 				return RouterNotSet, false
 			}
@@ -695,14 +840,19 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 
 	if cfgErr == nil {
 		// Silently blend in load-balance's capacity-aware scoring (and, when needed,
-		// least-request for multi-port support) behind whatever strategy the caller asked
+		// least-request-top-k for multi-port support) behind whatever strategy the caller asked
 		// for. The caller never sees this: ctx.Algorithm/algStr below is untouched, so
 		// headers, Validate(), and error messages all still reflect the original strategy
 		// name.
-		blended, ok := appendLoadBalanceBlend(algStr, cfg)
-		klog.V(4).Infof("routing select: algStr=%q autoBlendLoadBalanceWeight=%d autoBlendLeastRequestWeight=%d blend_ok=%v blended=%q", algStr, autoBlendLoadBalanceWeight, autoBlendLeastRequestWeight, ok, blended)
+		weights := effectiveAutoBlendWeights(ctx)
+		blended, ok := appendLoadBalanceBlend(algStr, cfg, weights)
+		if klog.V(4).Enabled() {
+			klog.V(4).Infof("routing select: algStr=%q autoBlendLoadBalanceWeight=%d autoBlendLeastRequestTopKWeight=%d autoBlendPrefixCacheWeight=%d autoBlendPrefixCacheLoadBalanceWeight=%d blend_ok=%v blended=%q",
+				algStr, weights.loadBalance, weights.leastRequest, weights.prefixCache, weights.prefixCacheLoadBalance, ok, blended)
+		}
 		if ok {
 			if router, blendedOK := rm.tryAutoBlend(ctx, algStr, cfg, blended); blendedOK {
+				ctx.ResolvedStrategy = blended
 				return router, nil
 			}
 		}
@@ -710,6 +860,7 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 		if len(cfg.Items) > 1 {
 			multiRouter, err := rm.getOrCreateMultiStrategyRouter(algStr, cfg, ctx)
 			if err == nil {
+				ctx.ResolvedStrategy = algStr
 				return multiRouter, nil
 			}
 			// If multi-router initialization fails (e.g. strategy doesn't implement ScoreAll),
@@ -730,9 +881,14 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 
 	// Legacy Single strategy fallback
 	rm.routerMu.RLock()
-	defer rm.routerMu.RUnlock()
-	if provider, ok := rm.routerFactory[types.RoutingAlgorithm(algStr)]; ok {
-		return provider(ctx)
+	provider, ok := rm.routerFactory[types.RoutingAlgorithm(algStr)]
+	rm.routerMu.RUnlock()
+	if ok {
+		router, err := provider(ctx)
+		if err == nil {
+			ctx.ResolvedStrategy = algStr
+		}
+		return router, err
 	} else {
 		// Return an error rather than falling back to random to preserve 400 Bad Request
 		return nil, fmt.Errorf("unsupported router strategy: %s", algStr)
@@ -740,6 +896,28 @@ func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error)
 }
 func Select(ctx *types.RoutingContext) (types.Router, error) {
 	return defaultRM.Select(ctx)
+}
+
+// Lookup returns algorithm's constructed singleton router, as registered via
+// Register/RegisterProvider and built by Init. It exists for callers (like
+// the gateway server) that need the concrete instance directly -- for
+// example to start a router's own background maintenance loop -- rather than
+// going through Select's per-request algorithm resolution and blending. The
+// probe context mirrors Validate's: providers built via Register ignore it
+// entirely, since they already constructed their singleton at Init time, but
+// it's supplied anyway so a ctx-dependent provider (e.g. SLO's) never sees a
+// nil pointer.
+func (rm *RouterManager) Lookup(algorithm types.RoutingAlgorithm) (types.Router, error) {
+	rm.routerMu.RLock()
+	provider, ok := rm.routerFactory[algorithm]
+	rm.routerMu.RUnlock()
+	if !ok || provider == nil {
+		return nil, fmt.Errorf("unsupported or uninitialized router strategy: %s", algorithm)
+	}
+	return provider(algorithm.NewContext(context.Background(), "", "", "lookup", ""))
+}
+func Lookup(algorithm types.RoutingAlgorithm) (types.Router, error) {
+	return defaultRM.Lookup(algorithm)
 }
 
 // tryAutoBlend attempts to construct the silent load-balance composite for algStr. origCfg is
@@ -870,9 +1048,15 @@ func (rm *RouterManager) Register(algorithm types.RoutingAlgorithm, constructor 
 	rm.routerConstructor[algorithm] = func() types.RouterProviderFunc {
 		router, err := constructor()
 		if err != nil {
-			klog.Errorf("Failed to construct router for %s: %v", algorithm, err)
+			rm.initErrors[algorithm] = err
+			if errors.Is(err, ErrExternalRouterDisabled) {
+				klog.V(4).Infof("Optional router %s is disabled", algorithm)
+			} else {
+				klog.Errorf("Failed to construct router for %s: %v", algorithm, err)
+			}
 			return nil
 		}
+		delete(rm.initErrors, algorithm)
 		return func(_ *types.RoutingContext) (types.Router, error) {
 			return router, nil
 		}
@@ -923,13 +1107,50 @@ func SetFallback(router types.Router, fallback types.RoutingAlgorithm) error {
 func (rm *RouterManager) Init() {
 	rm.routerMu.Lock()
 	defer rm.routerMu.Unlock()
+	rm.initErrors = make(map[types.RoutingAlgorithm]error)
 	for algorithm, constructor := range rm.routerConstructor {
 		rm.routerFactory[algorithm] = constructor()
 		klog.V(4).Infof("Registered router for %s", algorithm)
 	}
+	// External fallback names are process configuration and must resolve during
+	// initialization. Leaving a constructed external router with a missing
+	// fallback would defer an operator error to the request path.
+	if provider := rm.routerFactory[RouterExternal]; provider != nil {
+		// The provider probe reads immutable external configuration only. Its
+		// synthetic context is pooled and must not escape initialization.
+		probeCtx := RouterExternal.NewContext(context.Background(), "", "", "init", "")
+		router, err := provider(probeCtx)
+		probeCtx.Delete()
+		if err != nil {
+			rm.initErrors[RouterExternal] = err
+			rm.routerFactory[RouterExternal] = nil
+		} else if configured, ok := router.(interface{ ConfiguredFallback() types.RoutingAlgorithm }); ok {
+			fallback := configured.ConfiguredFallback()
+			if fallback != "" && (fallback == RouterExternal || rm.routerFactory[fallback] == nil || isExclusiveStrategyName(string(fallback))) {
+				var initErr error
+				if isExclusiveStrategyName(string(fallback)) {
+					initErr = fmt.Errorf("fallback %s is an exclusive router that requires Gateway preprocessing", fallback)
+				} else {
+					initErr = fmt.Errorf("fallback %s is not a registered local router", fallback)
+				}
+				klog.Errorf("Failed to initialize external router: %v", initErr)
+				rm.initErrors[RouterExternal] = initErr
+				rm.routerFactory[RouterExternal] = nil
+			}
+		}
+	}
 	rm.multiRouterCache = make(map[string]*multiStrategyRouter)
 	rm.unblendableLogged = make(map[string]struct{})
 	rm.routerDoneInit()
+}
+
+// InitializationError reports the most recent constructor failure for a
+// strategy. Disabled optional routers may use a sentinel error that callers
+// explicitly ignore; invalid enabled configuration remains fail-fast.
+func (rm *RouterManager) InitializationError(algorithm types.RoutingAlgorithm) error {
+	rm.routerMu.RLock()
+	defer rm.routerMu.RUnlock()
+	return rm.initErrors[algorithm]
 }
 func Init() {
 	defaultRM.Init()

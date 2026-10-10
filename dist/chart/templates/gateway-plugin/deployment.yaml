@@ -74,6 +74,12 @@ spec:
         - name: gateway-plugin
           image: {{ .Values.gatewayPlugin.container.image.repository }}:{{ .Values.gatewayPlugin.container.image.tag }}
           imagePullPolicy: {{ .Values.gatewayPlugin.container.image.imagePullPolicy | default "IfNotPresent" }}
+          # Optional API server client throttling (client-go defaults shown).
+          # Both values must be greater than zero and apply to the core
+          # Kubernetes and Gateway API clients, each with its own limiter.
+          # args:
+          #   - --kube-api-qps=5
+          #   - --kube-api-burst=10
           ports:
             - name: gateway
               containerPort: 50052

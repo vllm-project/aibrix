@@ -20,11 +20,13 @@ Tests the storage factory functionality for creating different storage types.
 
 import tempfile
 from pathlib import Path
+from unittest.mock import ANY, patch
 
 import pytest
 
 from aibrix.storage import (
     LocalStorage,
+    S3Storage,
     StorageConfig,
     StorageListOrdering,
     StorageType,
@@ -90,18 +92,37 @@ class TestStorageFactory:
         with pytest.raises(ValueError, match="bucket_name is required"):
             create_storage(StorageType.S3)
 
-    @pytest.mark.skip(reason="S3 accessibility check can fail on local SSL setup")
     def test_create_s3_storage_with_params(self):
-        """Test creating S3 storage with parameters."""
-        # This will fail due to invalid credentials, but tests parameter passing
-        with pytest.raises(ValueError, match="not accessible"):
-            create_storage(
+        """Test that the factory passes S3 parameters without network access."""
+        # Stay above the minimum pool size of 10 so the supplied value is preserved.
+        config = StorageConfig(max_concurrency=17)
+        with patch("aibrix.storage.s3.boto3.Session") as mock_session:
+            storage = create_storage(
                 StorageType.S3,
                 bucket_name="test-bucket",
                 region_name="us-east-1",
+                endpoint_url="https://s3.example.test",
                 aws_access_key_id="fake-key",
                 aws_secret_access_key="fake-secret",
+                config=config,
             )
+
+        assert isinstance(storage, S3Storage)
+        assert storage.bucket_name == "test-bucket"
+        assert storage.config is config
+        mock_session.assert_called_once_with(
+            aws_access_key_id="fake-key", aws_secret_access_key="fake-secret"
+        )
+        mock_client = mock_session.return_value.client
+        mock_client.assert_called_once_with(
+            "s3", endpoint_url="https://s3.example.test", config=ANY
+        )
+        client_config = mock_client.call_args.kwargs["config"]
+        assert client_config.region_name == "us-east-1"
+        assert client_config.max_pool_connections == config.max_concurrency
+        mock_client.return_value.head_bucket.assert_called_once_with(
+            Bucket="test-bucket"
+        )
 
     def test_create_tos_storage_missing_params(self):
         """Test that TOS storage creation fails without required parameters."""

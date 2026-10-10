@@ -23,13 +23,16 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/webhook"
+	webhookutils "github.com/vllm-project/aibrix/test/utils/webhook"
 	"github.com/vllm-project/aibrix/test/utils/wrapper"
 )
 
@@ -41,18 +44,12 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 	var ns *corev1.Namespace
 
 	ginkgo.BeforeEach(func() {
-		// Create test namespace before each test.
-		ns = &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "test-ns-",
-			},
-		}
-
-		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+		ns = nil
+		ns = webhookutils.CreateNamespace(ctx, k8sClient, "test-ns-")
 	})
 
 	ginkgo.AfterEach(func() {
-		gomega.Expect(k8sClient.Delete(ctx, ns)).To(gomega.Succeed())
+		webhookutils.DeleteNamespace(ctx, k8sClient, ns)
 		var stormservices orchestrationapi.StormServiceList
 		gomega.Expect(k8sClient.List(ctx, &stormservices)).To(gomega.Succeed())
 
@@ -441,6 +438,46 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 		gomega.Expect(k8sClient.Update(ctx, stormService)).ShouldNot(gomega.Succeed())
 	})
 
+	ginkgo.It("rejects /scale above one replica for explicit Pooled mode", func() {
+		stormService := wrapper.MakeStormService("pooled-scale-subresource").
+			Namespace(ns.Name).
+			WithDefaultConfiguration().
+			Mode(orchestrationapi.StormServicePooledMode).
+			Obj()
+		gomega.Expect(k8sClient.Create(ctx, stormService)).To(gomega.Succeed())
+
+		err := updateStormServiceScale(stormService, 3)
+		gomega.Expect(err).Should(gomega.HaveOccurred())
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("Pooled"))
+	})
+
+	ginkgo.It("allows /scale above one replica for explicit Replica mode", func() {
+		stormService := wrapper.MakeStormService("replica-scale-subresource").
+			Namespace(ns.Name).
+			WithDefaultConfiguration().
+			Mode(orchestrationapi.StormServiceReplicaMode).
+			Replicas(ptr.To(int32(1))).
+			Obj()
+		gomega.Expect(k8sClient.Create(ctx, stormService)).To(gomega.Succeed())
+
+		gomega.Expect(updateStormServiceScale(stormService, 3)).To(gomega.Succeed())
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(stormService), stormService)).To(gomega.Succeed())
+		gomega.Expect(stormService.Spec.Replicas).To(gomega.Equal(ptr.To(int32(3))))
+	})
+
+	ginkgo.It("allows /scale above one replica when mode is omitted", func() {
+		stormService := wrapper.MakeStormService("inferred-scale-subresource").
+			Namespace(ns.Name).
+			WithDefaultConfiguration().
+			Replicas(ptr.To(int32(1))).
+			Obj()
+		gomega.Expect(k8sClient.Create(ctx, stormService)).To(gomega.Succeed())
+
+		gomega.Expect(updateStormServiceScale(stormService, 3)).To(gomega.Succeed())
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(stormService), stormService)).To(gomega.Succeed())
+		gomega.Expect(stormService.Spec.Replicas).To(gomega.Equal(ptr.To(int32(3))))
+	})
+
 	ginkgo.It("rejects an update that makes the Volcano gang invalid", func() {
 		stormService := gangStormService("gang-update-invalid", ns.Name,
 			volcanoStrategy(3, map[string]int32{"master": 1, "worker": 2}), nil)
@@ -461,6 +498,17 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 		gomega.Expect(k8sClient.Update(ctx, stormService)).To(gomega.Succeed())
 	})
 })
+
+// updateStormServiceScale writes spec.replicas through the /scale subresource,
+// the same path used by kubectl scale and HPA.
+func updateStormServiceScale(stormService *orchestrationapi.StormService, replicas int32) error {
+	scale := &autoscalingv1.Scale{}
+	if err := k8sClient.SubResource("scale").Get(ctx, stormService, scale); err != nil {
+		return err
+	}
+	scale.Spec.Replicas = replicas
+	return k8sClient.SubResource("scale").Update(ctx, stormService, client.WithSubResourceBody(scale))
+}
 
 // volcanoStrategy returns a scheduling strategy that gang schedules through Volcano.
 func volcanoStrategy(minMember int32, minTaskMember map[string]int32) *orchestrationapi.SchedulingStrategy {

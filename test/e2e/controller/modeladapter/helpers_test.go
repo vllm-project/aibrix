@@ -26,5 +26,6 @@ var (
 	initializeClient        = framework.InitializeClient
 	createOpenAIClient      = framework.NewOpenAIClient
 	validateAllPodsAreReady = framework.ValidateAllPodsAreReady
+	waitForInference        = framework.WaitForInference
 	validateInference       = framework.ValidateInference
 )

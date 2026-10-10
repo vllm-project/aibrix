@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -44,7 +45,7 @@ type TreeNode struct {
 	isLeaf        bool
 	contextLength int // total length from root to this node
 	depth         int
-	modelToPods   map[string]map[string]time.Time // model -> {podName -> lastAccessTime}
+	modelToPods   map[string]map[string]time.Time // model -> {pod key (namespace/name) -> lastAccessTime}
 }
 
 // GetModelToPods returns a deep copy of the model-to-pods mapping.
@@ -430,7 +431,7 @@ func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.P
 	node.mu.RUnlock()
 	if podsCopy != nil {
 		for _, pod := range pods {
-			if _, ok := podsCopy[pod.Name]; ok {
+			if _, ok := podsCopy[utils.GeneratePodKey(pod.Namespace, pod.Name)]; ok {
 				if matchedPods == nil {
 					matchedPods = make([]*v1.Pod, 0, len(pods))
 				}

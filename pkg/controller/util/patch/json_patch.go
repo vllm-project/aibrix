@@ -51,7 +51,7 @@ type JSONPatchItem struct {
 }
 
 func NewJSONPatch(items ...JSONPatchItem) *JSONPatch {
-	res := make(JSONPatch, len(items))
+	res := make(JSONPatch, 0, len(items))
 	res = append(res, items...)
 	return &res
 }

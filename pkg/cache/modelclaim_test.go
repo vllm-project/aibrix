@@ -24,7 +24,10 @@ import (
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/cache/discovery"
 	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
@@ -110,15 +113,14 @@ func TestModelClaimPortZeroHasNoRoutableBackend(t *testing.T) {
 	_, err := c.ListPodsByModel("m-sleeping")
 	assert.Error(t, err)
 
-	provider, ok := any(c).(interface {
-		ModelClaimBinding(string) (*v1.Pod, int, string, bool)
-	})
+	provider, ok := any(c).(ModelClaimBindingProvider)
 	require.True(t, ok, "cache must expose non-routable ModelClaim bindings")
-	boundPod, port, state, found := provider.ModelClaimBinding("m-sleeping")
+	boundPod, binding, found := provider.ModelClaimBinding("m-sleeping")
 	require.True(t, found)
 	assert.Equal(t, pod.Name, boundPod.Name)
-	assert.Zero(t, port)
-	assert.Equal(t, constants.ModelClaimRoutingStateSleeping, state)
+	assert.Zero(t, binding.Port)
+	assert.Equal(t, constants.ModelClaimRoutingStateSleeping, binding.State)
+	assert.Equal(t, "sleeping", binding.Claim)
 }
 
 func TestModelClaimBindingTracksAnnotationUpdatesAndDeletion(t *testing.T) {
@@ -126,27 +128,27 @@ func TestModelClaimBindingTracksAnnotationUpdatesAndDeletion(t *testing.T) {
 	active := warmModelClaimPod("p1", "default", map[string]int{"m": 9001})
 	c.addPod(active)
 
-	provider, ok := any(c).(interface {
-		ModelClaimBinding(string) (*v1.Pod, int, string, bool)
-	})
+	provider, ok := any(c).(ModelClaimBindingProvider)
 	require.True(t, ok, "cache must expose ModelClaim bindings")
-	_, port, state, found := provider.ModelClaimBinding("m")
+	_, binding, found := provider.ModelClaimBinding("m")
 	require.True(t, found)
-	assert.Equal(t, 9001, port)
-	assert.Equal(t, constants.ModelClaimRoutingStateActive, state)
+	assert.Equal(t, 9001, binding.Port)
+	assert.Equal(t, constants.ModelClaimRoutingStateActive, binding.State)
 
 	sleeping := warmModelClaimPod("p1", "default", nil)
 	sleeping.Annotations[constants.ModelClaimPodAnnotationPrefix+"sleeping"] =
-		`{"model":"m","port":0,"state":"sleeping"}`
+		`{"model":"m","port":0,"state":"sleeping","wakeByRequest":true}`
 	c.updatePod(active, sleeping)
-	_, port, state, found = provider.ModelClaimBinding("m")
+	_, binding, found = provider.ModelClaimBinding("m")
 	require.True(t, found)
-	assert.Zero(t, port)
-	assert.Equal(t, constants.ModelClaimRoutingStateSleeping, state)
+	assert.Zero(t, binding.Port)
+	assert.Equal(t, constants.ModelClaimRoutingStateSleeping, binding.State)
+	assert.Equal(t, "sleeping", binding.Claim)
+	assert.True(t, binding.WakeByRequest)
 	assert.False(t, c.HasModel("m"))
 
 	c.deletePod(sleeping)
-	_, _, _, found = provider.ModelClaimBinding("m")
+	_, _, found = provider.ModelClaimBinding("m")
 	assert.False(t, found)
 }
 
@@ -172,4 +174,111 @@ func TestModelClaimStateClearedOnPodDelete(t *testing.T) {
 
 	c.deletePod(pod)
 	assert.False(t, c.HasModel("m"))
+}
+
+// pendingModelClaim is a claim the controller has not placed: its Scheduled
+// condition is False, and no pod advertises it.
+func pendingModelClaim(namespace, name, served string) *modelv1alpha1.ModelClaim {
+	claim := &modelv1alpha1.ModelClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Status: modelv1alpha1.ModelClaimStatus{
+			Phase: modelv1alpha1.ModelClaimPending,
+			Conditions: []metav1.Condition{{
+				Type:   string(modelv1alpha1.ModelClaimConditionTypeScheduled),
+				Status: metav1.ConditionFalse,
+				Reason: "NoMatchingPods",
+			}},
+		},
+	}
+	if served != "" {
+		claim.Spec.ModelName = ptr.To(served)
+	}
+	return claim
+}
+
+func TestModelClaimStatusKnowsAClaimNoPodAdvertises(t *testing.T) {
+	c := NewForTest()
+	handleDiscoveryObject(c, discovery.EventAdd, pendingModelClaim("default", "qwen-claim", "qwen"), nil)
+
+	// No pod serves the model, so it is not routable, but it is claimed.
+	assert.False(t, c.HasModel("qwen"))
+	phase, reason, found := c.ModelClaimStatus("qwen")
+	require.True(t, found)
+	assert.Equal(t, string(modelv1alpha1.ModelClaimPending), phase)
+	assert.Equal(t, "NoMatchingPods", reason)
+	_, _, found = c.ModelClaimStatus("qwen-claim")
+	assert.False(t, found, "a claim is known by the name it serves")
+}
+
+func TestModelClaimStatusFallsBackToTheClaimName(t *testing.T) {
+	c := NewForTest()
+	handleDiscoveryObject(c, discovery.EventAdd, pendingModelClaim("default", "gate-a", ""), nil)
+
+	_, _, found := c.ModelClaimStatus("gate-a")
+	assert.True(t, found)
+}
+
+func TestModelClaimStatusFollowsUpdatesAndDeletion(t *testing.T) {
+	c := NewForTest()
+	pending := pendingModelClaim("default", "qwen-claim", "qwen")
+	handleDiscoveryObject(c, discovery.EventAdd, pending, nil)
+
+	// Activation failed. As the controller writes it, Scheduled stays False
+	// from the earlier refusal, and Ready says why the claim failed.
+	failed := pending.DeepCopy()
+	failed.Status.Phase = modelv1alpha1.ModelClaimFailed
+	failed.Status.Conditions = append(failed.Status.Conditions, metav1.Condition{
+		Type: string(modelv1alpha1.ModelClaimConditionReady), Status: metav1.ConditionFalse, Reason: "ActivateFailed",
+	})
+	handleDiscoveryObject(c, discovery.EventUpdate, failed, pending)
+	phase, reason, found := c.ModelClaimStatus("qwen")
+	require.True(t, found)
+	assert.Equal(t, string(modelv1alpha1.ModelClaimFailed), phase)
+	assert.Equal(t, "ActivateFailed", reason)
+
+	// The served name changes: only the new one is claimed.
+	renamed := failed.DeepCopy()
+	renamed.Spec.ModelName = ptr.To("qwen2")
+	handleDiscoveryObject(c, discovery.EventUpdate, renamed, failed)
+	_, _, found = c.ModelClaimStatus("qwen")
+	assert.False(t, found)
+	_, _, found = c.ModelClaimStatus("qwen2")
+	assert.True(t, found)
+
+	handleDiscoveryObject(c, discovery.EventDelete, renamed, nil)
+	_, _, found = c.ModelClaimStatus("qwen2")
+	assert.False(t, found)
+}
+
+func TestModelClaimStatusForgetsAClaimBeingDeleted(t *testing.T) {
+	c := NewForTest()
+	pending := pendingModelClaim("default", "qwen-claim", "qwen")
+	handleDiscoveryObject(c, discovery.EventAdd, pending, nil)
+
+	deleting := pending.DeepCopy()
+	now := metav1.Now()
+	deleting.DeletionTimestamp = &now
+	handleDiscoveryObject(c, discovery.EventUpdate, deleting, pending)
+
+	_, _, found := c.ModelClaimStatus("qwen")
+	assert.False(t, found, "the model a claim being deleted served is going away")
+}
+
+func TestModelClaimStatusWithOneNameClaimedTwice(t *testing.T) {
+	c := NewForTest()
+	first := pendingModelClaim("team-a", "qwen-claim", "qwen")
+	second := pendingModelClaim("team-b", "qwen-claim", "qwen")
+	second.Status.Conditions[0].Reason = "InvalidEngineConfig"
+	handleDiscoveryObject(c, discovery.EventAdd, second, nil)
+	handleDiscoveryObject(c, discovery.EventAdd, first, nil)
+
+	// The first by namespace and name answers, as for bindings.
+	_, reason, found := c.ModelClaimStatus("qwen")
+	require.True(t, found)
+	assert.Equal(t, "NoMatchingPods", reason)
+
+	handleDiscoveryObject(c, discovery.EventDelete, first, nil)
+	_, reason, found = c.ModelClaimStatus("qwen")
+	require.True(t, found)
+	assert.Equal(t, "InvalidEngineConfig", reason)
 }

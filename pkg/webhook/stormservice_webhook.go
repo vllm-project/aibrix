@@ -18,18 +18,23 @@ package webhook
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -38,12 +43,63 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
+const stormServiceScaleWebhookPath = "/validate-orchestration-aibrix-ai-v1alpha1-stormservice-scale"
+
 // SetupStormServiceWebhookWithManager registers the webhook for StormService in the manager.
 func SetupStormServiceWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&orchestrationv1alpha1.StormService{}).
+	if err := ctrl.NewWebhookManagedBy(mgr).For(&orchestrationv1alpha1.StormService{}).
 		WithValidator(&StormServiceCustomDefaulter{}).
 		WithDefaulter(&StormServiceCustomDefaulter{}).
-		Complete()
+		Complete(); err != nil {
+		return err
+	}
+	// kubectl scale, HPA, and other external autoscalers write spec.replicas through
+	// the /scale subresource, which does not invoke the main StormService validator.
+	mgr.GetWebhookServer().Register(stormServiceScaleWebhookPath, &admission.Webhook{
+		Handler: &StormServiceScaleValidator{Reader: mgr.GetAPIReader()},
+	})
+	return nil
+}
+
+//+kubebuilder:webhook:path=/validate-orchestration-aibrix-ai-v1alpha1-stormservice-scale,mutating=false,failurePolicy=ignore,sideEffects=None,groups=orchestration.aibrix.ai,resources=stormservices/scale,verbs=update,versions=v1alpha1,name=vstormservicescale.kb.io,admissionReviewVersions=v1
+
+// StormServiceScaleValidator rejects /scale updates that would set spec.replicas > 1
+// on a StormService with a declared mode of Pooled. Omitted mode is left alone so
+// inferred pooled objects can still scale spec.replicas, matching validateStormServiceMode.
+type StormServiceScaleValidator struct {
+	Reader client.Reader
+}
+
+var _ admission.Handler = &StormServiceScaleValidator{}
+
+// Handle implements admission.Handler for the StormService /scale subresource.
+func (v *StormServiceScaleValidator) Handle(ctx context.Context, req admission.Request) admission.Response {
+	scale := &autoscalingv1.Scale{}
+	if err := json.Unmarshal(req.Object.Raw, scale); err != nil {
+		return admission.Errored(http.StatusBadRequest, fmt.Errorf("failed to decode Scale: %w", err))
+	}
+
+	stormService := &orchestrationv1alpha1.StormService{}
+	if err := v.Reader.Get(ctx, types.NamespacedName{Name: req.Name, Namespace: req.Namespace}, stormService); err != nil {
+		if apierrors.IsNotFound(err) {
+			return admission.Errored(http.StatusNotFound, err)
+		}
+		return admission.Errored(http.StatusInternalServerError, fmt.Errorf("failed to get StormService %s/%s: %w", req.Namespace, req.Name, err))
+	}
+
+	if err := validateStormServiceScale(stormService, scale.Spec.Replicas); err != nil {
+		return admission.Denied(err.Error())
+	}
+	return admission.Allowed("")
+}
+
+// validateStormServiceScale applies the proposed replica count onto a copy of the
+// parent StormService and reuses validateStormServiceMode. That keeps /scale on
+// the same declared-mode rule as create/update and does not pin inferred mode.
+func validateStormServiceScale(stormService *orchestrationv1alpha1.StormService, replicas int32) error {
+	proposed := stormService.DeepCopy()
+	proposed.Spec.Replicas = &replicas
+	return validateStormServiceMode(proposed)
 }
 
 type StormServiceCustomDefaulter struct {
@@ -275,7 +331,8 @@ func schedulingConfigChanged(oldSpec, newSpec *orchestrationv1alpha1.RoleSetSpec
 // declared mode instead (see EffectiveUpdateStrategyType in the stormservice controller).
 //
 // Only an explicitly declared spec.mode is checked, so objects that rely on the inferred
-// mode keep scaling spec.replicas and choosing updateStrategy.type freely.
+// mode keep scaling spec.replicas and choosing updateStrategy.type freely. The /scale
+// subresource validator reuses this helper so kubectl scale and HPA follow the same rule.
 func validateStormServiceMode(stormService *orchestrationv1alpha1.StormService) error {
 	switch stormService.Spec.Mode {
 	case orchestrationv1alpha1.StormServicePooledMode:

@@ -97,6 +97,7 @@ def _make_fake_tos_client_for_force_download_test():
     class FakeTosClient:
         def __init__(self):
             self.download_calls = 0
+            self.download_kwargs = None
 
         def head_bucket(self, bucket):
             return {}
@@ -113,6 +114,7 @@ def _make_fake_tos_client_for_force_download_test():
 
         def download_file(self, bucket, key, file_path, task_num, **kwargs):
             self.download_calls += 1
+            self.download_kwargs = kwargs
             Path(file_path).parent.mkdir(parents=True, exist_ok=True)
             Path(file_path).write_bytes(b"data")
 
@@ -165,3 +167,32 @@ def test_tos_v1_force_download_override_bypasses_exist_check(mock_tos, tmp_path)
     d.download_model(local_path=str(tmp_path))
 
     assert fake_client.download_calls == 1
+
+
+@pytest.mark.parametrize(
+    "env_part_size, override, expected",
+    [
+        (8 * 1024 * 1024, None, 8 * 1024 * 1024),
+        (8 * 1024 * 1024, 16 * 1024 * 1024, 16 * 1024 * 1024),
+        (None, None, None),
+    ],
+)
+@mock.patch(TOS_MODULE)
+def test_tos_v1_part_size(mock_tos, tmp_path, env_part_size, override, expected):
+    # The TOS SDK fails on part_size=None, so it must only be passed when set.
+    fake_client = _make_fake_tos_client_for_force_download_test()
+    mock_tos.TosClientV2.return_value = fake_client
+
+    with mock.patch(f"{ENVS_MODULE}.DOWNLOADER_PART_CHUNKSIZE", env_part_size):
+        d = TOSDownloaderV1(
+            "tos://bucket/file.txt",
+            model_name="m",
+            download_extra_config=DownloadExtraConfig(part_chunksize=override),
+        )
+        d.download_model(local_path=str(tmp_path))
+
+    assert fake_client.download_calls == 1
+    if expected is None:
+        assert "part_size" not in fake_client.download_kwargs
+    else:
+        assert fake_client.download_kwargs["part_size"] == expected

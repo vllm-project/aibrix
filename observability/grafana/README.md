@@ -65,7 +65,7 @@ Note the naming split: Go controller metrics use underscores
 ### Enable runtime scraping
 
 ```bash
-# ServiceMonitor (attaches bounded `pool` label from pool.aibrix.ai/name)
+# ServiceMonitor (attaches bounded `pool` label from claim.model.aibrix.ai/pool)
 kubectl apply -f observability/monitor/service_monitor_modelclaim_runtime.yaml
 
 # Sample warm pool includes a Service labeled aibrix.ai/metrics=modelclaim-runtime
@@ -74,10 +74,10 @@ kubectl apply -f samples/modelclaim/warm-runtime-pool.yaml
 
 Dashboard variables cascade as **namespace → pool → pod → model**. The `pool`
 label is produced by the ServiceMonitor relabel rule (Prometheus cannot use
-`pool.aibrix.ai/name` as a label name). The **Pool Policy Valid** tile is keyed
-by `namespace`/`deployment` (not `pool`/`pod`/`model`), so it follows only the
-`namespace` variable and reports the worst-case validity across warm-pool
-Deployments in the selected namespace(s).
+`claim.model.aibrix.ai/pool` as a label name). The **Pool Policy Valid** tile
+is keyed by `namespace`/`deployment` (not `pool`/`pod`/`model`), so it follows
+only the `namespace` variable and reports the worst-case validity across
+warm-pool Deployments in the selected namespace(s).
 
 ### Operational panels
 

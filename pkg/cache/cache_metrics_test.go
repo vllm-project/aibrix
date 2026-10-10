@@ -17,9 +17,11 @@ package cache
 import (
 	"encoding/base64"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,6 +36,21 @@ import (
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 )
+
+type staticMetricSubscriber []string
+
+func (s staticMetricSubscriber) SubscribedMetrics() []string {
+	return []string(s)
+}
+
+func TestAddSubscriberInitializesMetricSet(t *testing.T) {
+	store := &Store{}
+	require.NotPanics(t, func() {
+		store.AddSubscriber(staticMetricSubscriber{"metric-a", "metric-b"})
+	})
+	require.Equal(t, "yes", store.metrics["metric-a"])
+	require.Equal(t, "yes", store.metrics["metric-b"])
+}
 
 func TestCleanupOldSnapshots(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -230,10 +247,24 @@ func TestMetricRoleFilters(t *testing.T) {
 }
 
 func TestShouldSkipMetric(t *testing.T) {
-	require.True(t, shouldSkipMetric("llm-prefill-0", metrics.TimePerOutputTokenSeconds))
-	require.True(t, shouldSkipMetric("llm-decode-0", metrics.TimeToFirstTokenSeconds))
-	require.False(t, shouldSkipMetric("llm-prefill-0", metrics.TimeToFirstTokenSeconds))
-	require.False(t, shouldSkipMetric("llm-decode-0", metrics.TimePerOutputTokenSeconds))
+	named := func(name string) *v1.Pod { return &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name}} }
+	labeled := func(role string) *v1.Pod {
+		return &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "model-127-0-0-1-2", Labels: map[string]string{pdRoleIdentifier: role}}}
+	}
+
+	require.True(t, shouldSkipMetric(named("llm-prefill-0"), metrics.TimePerOutputTokenSeconds))
+	require.True(t, shouldSkipMetric(named("llm-decode-0"), metrics.TimeToFirstTokenSeconds))
+	require.False(t, shouldSkipMetric(named("llm-prefill-0"), metrics.TimeToFirstTokenSeconds))
+	require.False(t, shouldSkipMetric(named("llm-decode-0"), metrics.TimePerOutputTokenSeconds))
+
+	// Static-discovery pods carry the role only in the label.
+	require.True(t, shouldSkipMetric(labeled("prefill"), metrics.TimePerOutputTokenSeconds))
+	require.True(t, shouldSkipMetric(labeled("decode"), metrics.TimeToFirstTokenSeconds))
+	require.False(t, shouldSkipMetric(labeled("prefill"), metrics.TimeToFirstTokenSeconds))
+	require.False(t, shouldSkipMetric(labeled("decode"), metrics.TimePerOutputTokenSeconds))
+
+	require.False(t, shouldSkipMetric(named("model-127-0-0-1-2"), metrics.TimeToFirstTokenSeconds))
+	require.False(t, shouldSkipMetric(nil, metrics.TimeToFirstTokenSeconds))
 }
 
 func TestBuildMetricLabels(t *testing.T) {
@@ -943,4 +974,219 @@ func newReadyMetricsPod(name, uid string) *Pod {
 		},
 		Models: utils.NewRegistry[string](),
 	}
+}
+
+// seedCompletedOutputTokensHistory plants a rate-window baseline so calculateRate1m has a
+// snapshot far enough in the past (it discards windows shorter than 10s) without sleeping.
+func seedCompletedOutputTokensHistory(t *testing.T, pod *Pod, baseline float64, age time.Duration) {
+	t.Helper()
+	key := rateHistoryKey(pod, "", "completed_output_tokens")
+	rateCalculator.mu.Lock()
+	rateCalculator.history[key] = []MetricSnapshot{{Value: baseline, Timestamp: time.Now().Add(-age)}}
+	rateCalculator.mu.Unlock()
+	t.Cleanup(func() {
+		rateCalculator.mu.Lock()
+		delete(rateCalculator.history, key)
+		rateCalculator.mu.Unlock()
+	})
+}
+
+func TestUpdateRealtimeOutputTokenRateEWMA(t *testing.T) {
+	c := &Store{}
+	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "ewma-pod", Namespace: "default"}}}
+	seedCompletedOutputTokensHistory(t, pod, 0, 30*time.Second)
+
+	// 3000 tokens over the 30s window = 100 tokens/s. The first sample seeds the EWMA as is.
+	atomic.StoreInt64(&pod.completedOutputTokens, 3000)
+	c.updateRealtimeOutputTokenRateEWMA(pod)
+	v, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
+	require.True(t, ok)
+	require.InDelta(t, 100, v.GetSimpleValue(), 1)
+
+	// A higher window rate (~200 tokens/s) moves the estimate only part of the way toward it.
+	atomic.StoreInt64(&pod.completedOutputTokens, 6000)
+	c.updateRealtimeOutputTokenRateEWMA(pod)
+	v, ok = pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
+	require.True(t, ok)
+	alpha := 1 - math.Exp(-podMetricRefreshInterval.Seconds()/outputTokenRateEWMATau.Seconds())
+	want := alpha*200 + (1-alpha)*100
+	require.InDelta(t, want, v.GetSimpleValue(), 2)
+	require.Greater(t, v.GetSimpleValue(), 100.0)
+	require.Less(t, v.GetSimpleValue(), 200.0)
+}
+
+// A window with no completed output tokens says nothing about capacity, so the previous
+// estimate must survive instead of decaying to zero.
+func TestUpdateRealtimeOutputTokenRateEWMA_IdleKeepsPreviousEstimate(t *testing.T) {
+	c := &Store{}
+	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "idle-ewma-pod", Namespace: "default"}}}
+	seedCompletedOutputTokensHistory(t, pod, 500, 30*time.Second)
+	atomic.StoreInt64(&pod.completedOutputTokens, 500) // no new tokens in the window
+	require.NoError(t, c.updatePodRecord(pod, "", metrics.RealtimeOutputTokenRateEWMA, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: 123}))
+
+	c.updateRealtimeOutputTokenRateEWMA(pod)
+
+	v, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
+	require.True(t, ok)
+	require.Equal(t, 123.0, v.GetSimpleValue())
+}
+
+func TestUpdateRealtimeOutputTokenRateEWMA_NoHistoryStoresNothing(t *testing.T) {
+	c := &Store{}
+	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "cold-ewma-pod", Namespace: "default"}}}
+	t.Cleanup(func() {
+		rateCalculator.mu.Lock()
+		delete(rateCalculator.history, rateHistoryKey(pod, "", "completed_output_tokens"))
+		rateCalculator.mu.Unlock()
+	})
+	atomic.StoreInt64(&pod.completedOutputTokens, 1000)
+
+	c.updateRealtimeOutputTokenRateEWMA(pod)
+
+	_, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
+	require.False(t, ok, "a single sample has no window, so no capacity estimate yet")
+}
+
+func namespacedTestPod(namespace, name string) *Pod {
+	return &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}}
+}
+
+// purgeRateHistory drops the rate history of the given pods when the test ends.
+func purgeRateHistory(t *testing.T, pods ...*Pod) {
+	t.Helper()
+	t.Cleanup(func() {
+		for _, pod := range pods {
+			rateCalculator.PurgeEntriesForPod(pod.Namespace, pod.Name)
+		}
+	})
+}
+
+// Same-named pods in different namespaces must keep separate rate histories. Sharing
+// one would compute a pod's rate against the other pod's counter.
+func TestCalculatePerSecondRate_SameNameInTwoNamespaces(t *testing.T) {
+	c := &Store{}
+	podA := namespacedTestPod("team-a", "decode-0")
+	podB := namespacedTestPod("team-b", "decode-0")
+	purgeRateHistory(t, podA, podB)
+
+	require.Equal(t, -1.0, c.calculatePerSecondRate(podA, "m", "gen_tokens", 100000))
+	// team-b has no history of its own yet, so it has no rate.
+	require.Equal(t, -1.0, c.calculatePerSecondRate(podB, "m", "gen_tokens", 500))
+
+	rateCalculator.mu.RLock()
+	defer rateCalculator.mu.RUnlock()
+	require.Equal(t, []float64{100000}, snapshotValues(rateCalculator.history[rateHistoryKey(podA, "m", "gen_tokens")]))
+	require.Equal(t, []float64{500}, snapshotValues(rateCalculator.history[rateHistoryKey(podB, "m", "gen_tokens")]))
+}
+
+func TestCalculateRate1m_SameNameInTwoNamespaces(t *testing.T) {
+	c := &Store{}
+	podA := namespacedTestPod("team-a", "decode-0")
+	podB := namespacedTestPod("team-b", "decode-0")
+	purgeRateHistory(t, podA, podB)
+
+	// Seed a 30s-old baseline for team-a only.
+	seededAt := time.Now().Add(-30 * time.Second)
+	rateCalculator.mu.Lock()
+	rateCalculator.history[rateHistoryKey(podA, "", "completed_requests")] = []MetricSnapshot{{Value: 1000, Timestamp: seededAt}}
+	rateCalculator.mu.Unlock()
+
+	// team-b's much smaller counter must not be read as a counter reset of team-a's.
+	require.Equal(t, -1.0, c.calculateRate1m(podB, "completed_requests", 5))
+	// team-a's rate is still computed against its own baseline: 3000 over the time since
+	// the seed. Bracket the elapsed time so a slow run cannot fail the check.
+	before := time.Since(seededAt).Seconds()
+	rate := c.calculateRate1m(podA, "completed_requests", 4000)
+	after := time.Since(seededAt).Seconds()
+	require.GreaterOrEqual(t, rate, 3000/after)
+	require.LessOrEqual(t, rate, 3000/before)
+}
+
+func TestPurgeEntriesForPod_NamespaceScoped(t *testing.T) {
+	c := &Store{}
+	podA := namespacedTestPod("team-a", "decode-0")
+	podB := namespacedTestPod("team-b", "decode-0")
+	podA2 := namespacedTestPod("team-a", "decode-00") // name shares a prefix with podA
+	purgeRateHistory(t, podA, podB, podA2)
+
+	for _, pod := range []*Pod{podA, podB, podA2} {
+		c.calculatePerSecondRate(pod, "m", "gen_tokens", 1)
+		c.calculateRate1m(pod, "completed_requests", 1)
+	}
+
+	rateCalculator.PurgeEntriesForPod("team-a", "decode-0")
+
+	rateCalculator.mu.RLock()
+	defer rateCalculator.mu.RUnlock()
+	require.NotContains(t, rateCalculator.history, rateHistoryKey(podA, "m", "gen_tokens"))
+	require.NotContains(t, rateCalculator.history, rateHistoryKey(podA, "", "completed_requests"))
+	for _, pod := range []*Pod{podB, podA2} {
+		require.Contains(t, rateCalculator.history, rateHistoryKey(pod, "m", "gen_tokens"))
+		require.Contains(t, rateCalculator.history, rateHistoryKey(pod, "", "completed_requests"))
+	}
+}
+
+func snapshotValues(history []MetricSnapshot) []float64 {
+	values := make([]float64, len(history))
+	for i, s := range history {
+		values[i] = s.Value
+	}
+	return values
+}
+
+func TestPDRole(t *testing.T) {
+	pod := func(name string, labels map[string]string) *v1.Pod {
+		return &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels}}
+	}
+	cases := []struct {
+		name string
+		pod  *v1.Pod
+		want string
+	}{
+		{"label decode, name without role (static discovery)", pod("qwen-127-0-0-1-2", map[string]string{pdRoleIdentifier: "decode"}), "decode"},
+		{"label prefill, name without role", pod("qwen-127-0-0-1-1", map[string]string{pdRoleIdentifier: "prefill"}), "prefill"},
+		{"label wins over the name", pod("prefill-cache-decode-0", map[string]string{pdRoleIdentifier: "decode"}), "decode"},
+		{"no label: name fallback, decode", pod("rs-decode-abcde", nil), "decode"},
+		{"no label: name fallback, prefill", pod("rs-prefill-abcde", nil), "prefill"},
+		{"other label value: name fallback", pod("rs-decode-abcde", map[string]string{pdRoleIdentifier: "worker"}), "decode"},
+		{"neither", pod("vllm-0", map[string]string{pdRoleIdentifier: "worker"}), ""},
+		{"nil pod", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, pdRole(tc.pod))
+		})
+	}
+}
+
+// A decode pod from static discovery is named after its address, not its role. Its
+// generation throughput must still be derived from the role-name label.
+func TestUpdateThroughputToksPerS_UsesRoleLabel(t *testing.T) {
+	c := &Store{}
+	decode := newReadyMetricsPod("model-127-0-0-1-2", "uid-decode")
+	decode.Labels[pdRoleIdentifier] = "decode"
+	prefill := newReadyMetricsPod("model-127-0-0-1-1", "uid-prefill")
+	prefill.Labels[pdRoleIdentifier] = "prefill"
+	purgeRateHistory(t, decode, prefill)
+
+	// Seed a baseline one second back instead of sleeping between two scrapes.
+	seededAt := time.Now().Add(-time.Second)
+	rateCalculator.mu.Lock()
+	rateCalculator.history[rateHistoryKey(decode, "model", metrics.GenerationTokenTotal)] = []MetricSnapshot{{Value: 1000, Timestamp: seededAt}}
+	rateCalculator.history[rateHistoryKey(prefill, "model", metrics.PromptTokenTotal)] = []MetricSnapshot{{Value: 1000, Timestamp: seededAt}}
+	rateCalculator.mu.Unlock()
+
+	c.updateThroughputToksPerS(decode, "model", metrics.GenerationTokenTotal, &metrics.SimpleMetricValue{Value: 1100})
+	c.updateThroughputToksPerS(prefill, "model", metrics.PromptTokenTotal, &metrics.SimpleMetricValue{Value: 1100})
+
+	gen, ok := decode.ModelMetrics.Load(c.getPodModelMetricName("model", metrics.AvgGenerationThroughputToksPerS))
+	require.True(t, ok, "the decode pod must get a generation throughput")
+	require.InDelta(t, 100.0, gen.GetSimpleValue(), 5.0)
+	prompt, ok := prefill.ModelMetrics.Load(c.getPodModelMetricName("model", metrics.AvgPromptThroughputToksPerS))
+	require.True(t, ok, "the prefill pod must get a prompt throughput")
+	require.InDelta(t, 100.0, prompt.GetSimpleValue(), 5.0)
+
+	// A role only gets the rate of its own counter.
+	_, ok = decode.ModelMetrics.Load(c.getPodModelMetricName("model", metrics.AvgPromptThroughputToksPerS))
+	require.False(t, ok)
 }

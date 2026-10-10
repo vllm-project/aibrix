@@ -186,6 +186,32 @@ func TestClearDirtyForSync_ClearsDirtySet(t *testing.T) {
 	assert.Nil(t, deleted)
 }
 
+func TestClearDirtyForSync_KeepsBlocksChangedAfterGetDelta(t *testing.T) {
+	cache, hashes := newTableWithBlocks(t)
+
+	updated, _, err := cache.GetDeltaForSync(context.Background())
+	require.NoError(t, err)
+	require.Len(t, updated, len(hashes))
+
+	// Requests routed while the delta is being pushed: one adds a new block,
+	// the other changes a block that is already in the pushed delta.
+	newHashes := cache.GetPrefixHashes([]byte{9, 10, 11, 12})
+	cache.AddPrefix(newHashes, "model1", "pod1")
+	cache.AddPrefix(hashes[:1], "model1", "pod2")
+
+	require.NoError(t, cache.ClearDirtyForSync(context.Background()))
+
+	updated, _, err = cache.GetDeltaForSync(context.Background())
+	require.NoError(t, err)
+	require.Len(t, updated, 2)
+	assert.Contains(t, updated, strconv.FormatUint(newHashes[0], 10))
+	require.Contains(t, updated, strconv.FormatUint(hashes[0], 10))
+
+	block, err := decodeBlock(updated[strconv.FormatUint(hashes[0], 10)])
+	require.NoError(t, err)
+	assert.Contains(t, block.modelToPods["model1"], "pod2")
+}
+
 // ApplyRemoteForSync
 
 func TestApplyRemoteForSync_NewBlock(t *testing.T) {

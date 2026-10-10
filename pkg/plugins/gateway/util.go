@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"mime/multipart"
 	"os"
@@ -34,6 +35,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/packages/param"
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -45,6 +47,8 @@ import (
 var (
 	POD_NAME = os.Getenv("POD_NAME")
 )
+
+const jsonNull = "null"
 
 // chatReqMinimal is a lightweight alternative to openai.ChatCompletionNewParams used
 // in validateRequestBody. It avoids the reflection-heavy apijson decoder and gjson
@@ -60,7 +64,10 @@ type chatReqMinimal struct {
 	StreamOptions struct {
 		IncludeUsage bool `json:"include_usage"`
 	} `json:"stream_options"`
-	Messages []contentItem `json:"messages"`
+	Messages []contentItem   `json:"messages"`
+	System   json.RawMessage `json:"system"`
+	// Tools is kept raw and only canonicalized into the prefix-match text.
+	Tools json.RawMessage `json:"tools"`
 }
 
 // responsesReqMinimal captures the fields needed to route and validate an OpenAI
@@ -68,9 +75,11 @@ type chatReqMinimal struct {
 // be either a plain string or an array of input items; it is parsed lazily in
 // parseResponsesInput. Stream uses *bool to distinguish "absent" from "stream: false".
 type responsesReqMinimal struct {
-	Model  string          `json:"model"`
-	Stream *bool           `json:"stream"`
-	Input  json.RawMessage `json:"input"`
+	Model        string          `json:"model"`
+	Stream       *bool           `json:"stream"`
+	Input        json.RawMessage `json:"input"`
+	Instructions json.RawMessage `json:"instructions"`
+	Tools        json.RawMessage `json:"tools"`
 }
 
 // contentItem holds the raw JSON "content" field of a chat message or a Responses API
@@ -78,6 +87,21 @@ type responsesReqMinimal struct {
 // parseResponsesInput.
 type contentItem struct {
 	Content json.RawMessage `json:"content"`
+}
+
+// engineNativeReqMinimal captures the fields needed to route a vLLM engine-native
+// request (/tokenize, /pooling): the completion form carries "prompt" (tokenize)
+// or "input" (pooling), the chat form "messages". Prompt, input, and messages all
+// stay raw JSON so a wrongly-typed value reaches the engine's validator instead of
+// failing this unmarshal -- in particular a non-array "messages" on a
+// completion-form body (an ignored extra) must not reject a valid "input".
+type engineNativeReqMinimal struct {
+	Model          string          `json:"model"`
+	Prompt         json.RawMessage `json:"prompt"`
+	Input          json.RawMessage `json:"input"`
+	Messages       json.RawMessage `json:"messages"`
+	Stream         json.RawMessage `json:"stream"`
+	EncodingFormat json.RawMessage `json:"encoding_format"`
 }
 
 // embeddingReqMinimal captures the embedding fields needed for validation in a
@@ -127,7 +151,7 @@ func parseChatMessages(requestID string, msgs []contentItem) (string, *extProcPb
 // array of input items whose "content" is itself a string or an array of content
 // parts; in all cases we reuse the same text-extraction strategy as chat messages.
 func parseResponsesInput(requestID string, input json.RawMessage) (string, *extProcPb.ProcessingResponse) {
-	if len(input) == 0 || string(input) == "null" {
+	if len(input) == 0 || string(input) == jsonNull {
 		klog.ErrorS(nil, "no input in the request body", "requestID", requestID)
 		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
 	}
@@ -157,12 +181,17 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 
 // validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.
 // The per-path parsing is delegated to dedicated validate* helpers to keep this dispatcher simple.
-func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
-	switch requestPath {
+//
+// prefixText is the text prefix-matching policies should hash when it differs from
+// message (see RoutingContext.PrefixMatchText); it is empty otherwise.
+// nolint:nakedret
+func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message, prefixText string, stream bool, errRes *extProcPb.ProcessingResponse) {
+	path := pathWithoutQuery(requestPath)
+	switch path {
 	case PathChatCompletions, PathMessages:
-		model, message, stream, errRes = validateChatRequest(requestID, requestPath, requestBody, user)
+		model, message, prefixText, stream, errRes = validateChatRequest(requestID, path, requestBody, user)
 	case PathResponses:
-		model, message, stream, errRes = validateResponsesRequest(requestID, requestBody)
+		model, message, prefixText, stream, errRes = validateResponsesRequest(requestID, requestBody)
 	case PathCompletions:
 		model, message, stream, errRes = validateCompletionRequest(requestID, requestBody)
 	case PathEmbeddings:
@@ -173,6 +202,14 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		model, message, errRes = validateRerankRequest(requestID, requestBody)
 	case PathClassify:
 		model, message, errRes = validateClassifyRequest(requestID, requestBody)
+	case PathDecisions:
+		model, message, errRes = validateDecisionsRequest(requestID, requestBody)
+	case PathSystemOne:
+		model, message, errRes = validateSystemOneRequest(requestID, requestBody)
+	case PathTokenize:
+		model, message, errRes = validateTokenizeRequest(requestID, requestBody)
+	case PathPooling:
+		model, message, errRes = validatePoolingRequest(requestID, requestBody)
 	case PathAudioTranscriptions, PathAudioTranslations:
 		// Audio endpoints require multipart/form-data content-type, not JSON
 		// This case handles the error when JSON is sent to audio endpoints
@@ -190,7 +227,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 
 // validateChatRequest parses and validates a chat completions (or Anthropic-style messages) request body.
 // nolint:nakedret
-func validateChatRequest(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
+func validateChatRequest(requestID, requestPath string, requestBody []byte, user utils.User) (model, message, prefixText string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	// Single-pass minimal unmarshal: avoids the openai SDK's reflection-heavy
 	// apijson decoder and gjson parsing, and eliminates the previous redundant
 	// map[string]json.RawMessage unmarshal used only for stream-field detection.
@@ -204,6 +241,11 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 	if message, errRes = parseChatMessages(requestID, req.Messages); errRes != nil {
 		return
 	}
+	systemText := ""
+	if requestPath == PathMessages {
+		systemText = requestPromptText(requestID, req.System)
+	}
+	prefixText = combinePrefixText(message, systemText, canonicalToolsText(requestID, req.Tools))
 	if req.Stream != nil {
 		stream = *req.Stream
 		// stream_options.include_usage is an OpenAI-specific field; Anthropic-style
@@ -220,7 +262,7 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 
 // validateResponsesRequest parses and validates an OpenAI Responses API (/v1/responses) request body.
 // nolint:nakedret
-func validateResponsesRequest(requestID string, requestBody []byte) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
+func validateResponsesRequest(requestID string, requestBody []byte) (model, message, prefixText string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	// OpenAI Responses API. Unlike chat completions, the Responses API always
 	// emits usage in the terminal streaming event, so there is no stream_options
 	// .include_usage requirement to enforce for TPM-limited users.
@@ -239,6 +281,11 @@ func validateResponsesRequest(requestID string, requestBody []byte) (model, mess
 	if message, errRes = parseResponsesInput(requestID, req.Input); errRes != nil {
 		return
 	}
+	prefixText = combinePrefixText(
+		message,
+		requestPromptText(requestID, req.Instructions),
+		canonicalToolsText(requestID, req.Tools),
+	)
 	if req.Stream != nil {
 		stream = *req.Stream
 	}
@@ -475,12 +522,106 @@ func validateRerankRequest(requestID string, requestBody []byte) (model, message
 	return
 }
 
+// validateTokenizeRequest parses and validates a vLLM /tokenize request body. Only "model"
+// is required - the gateway needs it to route, though vLLM itself treats it as optional -
+// and the rest of the schema is left to the engine. Nothing is metered: no tokens are generated.
+// nolint:nakedret
+func validateTokenizeRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	return validateEngineNativeRequest(requestID, "tokenize", false, requestBody)
+}
+
+// validatePoolingRequest parses and validates a vLLM /pooling request body. Only "model"
+// is required - the one field the gateway routes on - and the rest of the schema is left
+// to the engine. Stream is rejected when present and true, as for embeddings: pooling
+// never streams, and a stream=true body would otherwise be forwarded just to fail in the
+// engine with a less specific error. The octet-stream encoding formats (bytes, bytes_only)
+// are rejected at the edge too, because the language response path cannot meter them.
+// nolint:nakedret
+func validatePoolingRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	return validateEngineNativeRequest(requestID, "pooling", true, requestBody)
+}
+
+// validateEngineNativeRequest is the shared validator for vLLM engine-native paths
+// (/tokenize, /pooling), whose request bodies are a union of a completion form
+// ("prompt" for tokenize, "input" for pooling) and a chat form ("messages").
+// Only "model" is required - the one field the gateway routes on; a body without
+// any input field still reaches the engine, which owns that error. The routing
+// message is best-effort: parseChatMessages unquotes a JSON string and writes any
+// other JSON value (array, token ids) as raw bytes, so the whole input value becomes
+// one content item rather than being expanded into several.
+// nolint:nakedret
+func validateEngineNativeRequest(requestID, endpoint string, pooling bool, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	var req engineNativeReqMinimal
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		klog.ErrorS(err, "error to unmarshal "+endpoint+" object", "requestID", requestID, "requestBody", string(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if req.Model == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	model = req.Model
+
+	// Select the completion field by endpoint: tokenize reads "prompt", pooling
+	// reads "input". The other completion field is an ignored extra on that path
+	// (vLLM's OpenAIBaseModel is extra="allow"), so it must not win the routing
+	// key. The chat form ("messages") is the fallback for both.
+	completionField := req.Input
+	if !pooling {
+		completionField = req.Prompt
+	}
+
+	// Best-effort routing key: the completion form's raw field first, then the
+	// chat form's messages. Messages is held as raw JSON and parsed only when it
+	// is the chosen field, so a non-array value on a completion-form body cannot
+	// fail this unmarshal.
+	switch {
+	case len(completionField) > 0 && string(completionField) != jsonNull:
+		message, errRes = parseChatMessages(requestID, []contentItem{{Content: completionField}})
+	case len(req.Messages) > 0 && string(req.Messages) != jsonNull:
+		var msgs []contentItem
+		if err := sonic.Unmarshal(req.Messages, &msgs); err != nil {
+			// Non-array messages on a messages-only body: no routing key, but the
+			// engine owns the schema error, so forward without one.
+			klog.ErrorS(err, "error to unmarshal "+endpoint+" messages", "requestID", requestID)
+			break
+		}
+		message, errRes = parseChatMessages(requestID, msgs)
+	}
+	if errRes != nil {
+		return
+	}
+
+	// Non-streaming engine paths reject stream at the edge, like embeddings;
+	// tokenize has no stream field, and a stray one is left to the engine.
+	if pooling && len(req.Stream) > 0 {
+		var streamBool bool
+		if err := sonic.Unmarshal(req.Stream, &streamBool); err != nil || streamBool {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for pooling", "", "stream", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+	}
+
+	// vLLM's other two pooling encoding formats (bytes, bytes_only) return
+	// application/octet-stream, which the language response path cannot meter;
+	// reject them at the edge and keep JSON pooling (float, base64) on that path.
+	if pooling && len(req.EncodingFormat) > 0 {
+		var enc string
+		if err := sonic.Unmarshal(req.EncodingFormat, &enc); err == nil && (enc == "bytes" || enc == "bytes_only") {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "encoding_format 'bytes' and 'bytes_only' are not supported for pooling", "", "encoding_format", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+	}
+	return
+}
+
 // pathWithoutQuery strips the query string from an Envoy :path value. HTTP/2
 // :path includes both path and query (RFC 7540), so exact/prefix matchers must
 // cut on '?' before comparing.
 func pathWithoutQuery(requestPath string) string {
-	path, _, _ := strings.Cut(requestPath, "?")
-	return path
+	return utils.PathWithoutQuery(requestPath)
 }
 
 // isMultipartFormPath returns true if requestPath is an endpoint whose request
@@ -514,7 +655,7 @@ func validateClassifyRequest(requestID string, requestBody []byte) (model, messa
 		return
 	}
 
-	if len(req.Input) == 0 || string(req.Input) == "null" {
+	if len(req.Input) == 0 || string(req.Input) == jsonNull {
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -544,6 +685,150 @@ func validateClassifyRequest(requestID string, requestBody []byte) (model, messa
 	return
 }
 
+// validateDecisionsRequest parses and validates an SGLang /v1/decisions request body.
+// "model" is required although SGLang treats it as optional, because the gateway routes on
+// it. "input" and a non-empty "questions" array are required too, so a body the engine would
+// reject fails at the edge; the question schema is left to the engine.
+//
+// The routing message is "input" alone: SGLang renders it ahead of the questions, so it is
+// the shared prefix that prefix-cache-aware routing should see.
+// nolint:nakedret
+func validateDecisionsRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	var req struct {
+		Model     string          `json:"model"`
+		Input     json.RawMessage `json:"input"`
+		Questions json.RawMessage `json:"questions"`
+	}
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		// The body can hold customer text or base64 images, so log its size, not its content.
+		klog.ErrorS(nil, "error to unmarshal decisions object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if strings.TrimSpace(req.Model) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	input := bytes.TrimSpace(req.Input)
+	if len(input) == 0 || string(input) == jsonNull {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	text, errMsg := decisionsInputText(input)
+	if errMsg != "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, errMsg, "", "input", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	var questions []json.RawMessage
+	if err := sonic.Unmarshal(req.Questions, &questions); err != nil || len(questions) == 0 {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'questions' is a required property and must be a non-empty array", "", "questions", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	model, message = req.Model, text
+	return
+}
+
+// validateSystemOneRequest parses and validates an SGLang /v1/systemone request body.
+// Unlike a decisions "input", "state" may be blank: SGLang accepts an empty state, so the
+// gateway does not refuse what the engine would answer. The question schema is left to the
+// engine.
+//
+// The routing message is the state alone: SGLang puts it at the head of every question's
+// prompt, so it is the prefix that prefix-cache-aware routing should see.
+// nolint:nakedret
+func validateSystemOneRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	var req struct {
+		Model     string          `json:"model"`
+		State     json.RawMessage `json:"state"`
+		Questions json.RawMessage `json:"questions"`
+	}
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		// The body can hold customer text or base64 images, so log its size, not its content.
+		klog.ErrorS(nil, "error to unmarshal systemone object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if strings.TrimSpace(req.Model) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	state := bytes.TrimSpace(req.State)
+	if len(state) == 0 || string(state) == jsonNull {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'state' is a required property", "", "state", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	text, _, ok := decisionText(state)
+	if !ok {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'state' must be a string, object, or array", "", "state", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	var questions map[string]json.RawMessage
+	if err := sonic.Unmarshal(req.Questions, &questions); err != nil || len(questions) == 0 {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'questions' is a required property and must be a non-empty object", "", "questions", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	model, message = req.Model, text
+	return
+}
+
+// jsonParseReason returns why sonic rejected a body without the excerpt of the body that its
+// error text embeds (a syntax error quotes the bytes around the failure, a type mismatch
+// quotes the offending value), so the result is safe to log.
+func jsonParseReason(err error) string {
+	var withMessage interface{ Message() string }
+	if errors.As(err, &withMessage) {
+		return withMessage.Message()
+	}
+	return "invalid JSON body"
+}
+
+// decisionsInputText renders a /v1/decisions "input" value (a string, object, or array)
+// to text and returns an error message when it is not one of those or is blank.
+func decisionsInputText(input []byte) (text, errMsg string) {
+	text, blank, ok := decisionText(input)
+	switch {
+	case !ok:
+		return "", "'input' must be a string, object, or array"
+	case blank:
+		return "", "'input' cannot be blank"
+	}
+	return text, ""
+}
+
+// decisionText renders a JSON string, object, or array, the type SGLang calls a decision
+// text, to the text SGLang puts in the prompt. An object or array is re-serialized as compact
+// JSON the way SGLang does (see renderJSONLikePython). blank reports what SGLang treats as
+// blank: an empty or whitespace-only string, or an empty object or array. ok is false for
+// any other JSON type or a value that does not parse.
+func decisionText(value []byte) (text string, blank, ok bool) {
+	if len(value) == 0 {
+		return "", false, false
+	}
+	switch value[0] {
+	case '"':
+		if err := sonic.Unmarshal(value, &text); err != nil {
+			return "", false, false
+		}
+		return text, strings.TrimSpace(text) == "", true
+	case '{', '[':
+		rendered, err := renderJSONLikePython(value)
+		if err != nil {
+			return "", false, false
+		}
+		return rendered, rendered == "{}" || rendered == "[]", true
+	default:
+		return "", false, false
+	}
+}
+
 // isMultipartRequest returns true if the content type indicates multipart form data
 func isMultipartRequest(contentType string) bool {
 	if contentType == "" {
@@ -558,8 +843,8 @@ func isMultipartRequest(contentType string) bool {
 //
 // requestPath is used to skip the "stream" field for vLLM-Omni's Videos API
 // (PathVideos, PathVideosSync): video creation is an async job -- HandleResponseBody
-// relies on stream being false there to reach recordVideoJobPodFromResponse, so a
-// stray stream=true field (e.g. from an SDK reusing a generic multipart helper across
+// relies on stream being false there to reach handleVideoJobResponseBody, so a stray
+// stream=true field (e.g. from an SDK reusing a generic multipart helper across
 // audio/video calls) must not be allowed to route the response down the SSE branch
 // instead.
 // nolint:nakedret
@@ -659,6 +944,56 @@ func validateStreamOptions(requestID string, user utils.User, stream *bool, stre
 	return nil
 }
 
+// warnIfReplicaInflightBelowRPS logs when requestsInflight is set tighter than
+// requestsPerSecondPerReplica. The two are independent limits set by the user on purpose
+// (e.g. "at most 3 concurrent, and also no more than 5 rps"), so this only surfaces the
+// resulting RPS ceiling being practically unreachable -- it must never silently raise the
+// concurrency cap the user configured.
+func warnIfReplicaInflightBelowRPS(routingCtx *types.RoutingContext, inflight int64, replicaRPS float64) {
+	if inflight <= 0 || replicaRPS <= 0 || float64(inflight) >= replicaRPS {
+		return
+	}
+	klog.InfoS("requestsInflight below requestsPerSecondPerReplica; replica RPS ceiling may be unreachable",
+		"requestID", routingCtx.RequestID, "model", routingCtx.Model,
+		"requestsInflight", inflight, "replicaRPS", replicaRPS)
+}
+
+// maxRateWindowSeconds bounds the window rpsToLimitWindow will derive for sub-1 rps values,
+// so a near-zero rps doesn't produce an unbounded Redis key TTL / bucket lifetime.
+const maxRateWindowSeconds = 3600
+
+// rpsRoundingEpsilon absorbs floating-point representation error (e.g. 0.2*10 evaluates to
+// 1.9999999999999998, and 1/0.5 can land a hair under 2) so a rate that is really an exact
+// integer, or an exact reciprocal, isn't pushed down a bucket by float noise. It's small
+// enough that no genuinely fractional rps (e.g. 1.6, or 0.18) is affected.
+const rpsRoundingEpsilon = 1e-9
+
+// rpsToLimitWindow converts a (possibly fractional) requests-per-second rate into a
+// (limit, windowSeconds) pair suitable for the fixed-window rate limiter: limit requests
+// are allowed per windowSeconds-second window. Both branches round towards a lower delivered
+// rate, never a higher one, so the derived pair never admits more than the configured rps.
+//   - rps >= 1 uses a 1-second window with limit = floor(rps): e.g. 1.6 -> 1 req/s, not 2.
+//   - 0 < rps < 1 is expressed as "1 request every N seconds", i.e. limit = 1 over a
+//     windowSeconds-second window, with windowSeconds = ceil(1/rps) so the delivered rate is
+//     never faster than what was configured (e.g. 0.18 -> every 6s, not every 5s).
+//   - rps <= 0 disables the limit (limit = 0, windowSeconds = 0).
+func rpsToLimitWindow(rps float64) (limit int64, windowSeconds int64) {
+	if rps <= 0 {
+		return 0, 0
+	}
+	if rps >= 1 {
+		return int64(math.Floor(rps + rpsRoundingEpsilon)), 1
+	}
+	windowSeconds = int64(math.Ceil(1/rps - rpsRoundingEpsilon))
+	if windowSeconds < 1 {
+		windowSeconds = 1
+	}
+	if windowSeconds > maxRateWindowSeconds {
+		windowSeconds = maxRateWindowSeconds
+	}
+	return 1, windowSeconds
+}
+
 // applyConfigProfile resolves the model config from the pod annotation
 // (model.aibrix.ai/config) and applies the selected profile plus the model-wide
 // locked routing strategy onto routingCtx.ConfigProfile.
@@ -666,21 +1001,57 @@ func validateStreamOptions(requestID string, user utils.User, stream *bool, stre
 //     defaultProfile (or "default") in the JSON.
 //   - config-profile: auto evaluates request-local hints in profile routingConfig
 //     and resolves to a concrete profile before routing strategy derivation.
+//   - authoritativeRoutingPolicy clears the client routing controls before profile
+//     resolution, so the existing default-profile and routing-precedence behavior
+//     applies as if the client had not sent those headers.
 //   - lockedRoutingStrategy (top-level) is applied even when no profile resolves, so a
 //     model-wide lock cannot be bypassed by selecting a profile or sending a header.
+//   - The profile's requestsPerSecondPerReplica, if set, always takes precedence over the
+//     resolved profile's requestsPerSecond: the effective limit becomes
+//     requestsPerSecondPerReplica times the model's current routable replica count, and the
+//     routing strategy is forced to least-request so traffic is balanced evenly enough
+//     across replicas for that per-replica figure to hold in aggregate.
+//   - The profile's requestsInflight, if set, is a per-replica concurrency cap, and (like
+//     requestsPerSecondPerReplica) forces the routing strategy to least-request so the
+//     per-pod cap actually gets enforced -- selectTargetPod only runs, and thus only applies
+//     the cap, when a routing strategy resolves to something other than RouterNotSet.
+//     requestsInflight and requestsPerSecondPerReplica are independent, user-configured
+//     limits: when inflight is set below the resolved replica RPS, it is left as configured
+//     (only logged via warnIfReplicaInflightBelowRPS) rather than raised, since silently
+//     loosening the concurrency cap the user set would defeat its purpose. Unlike
+//     RequestsPerSecond, neither requestsPerSecondPerReplica nor requestsInflight has an
+//     env-var form: both are configured directly in the profile.
 func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 	if routingCtx == nil {
 		return
 	}
+	cfg := configprofiles.ResolveModelConfig(pods)
+	if cfg == nil {
+		return
+	}
+	if cfg.AuthoritativeRoutingPolicy {
+		routingCtx.ReqConfigProfile = ""
+		delete(routingCtx.ReqHeaders, HeaderRoutingStrategy)
+		delete(routingCtx.ReqHeaders, HeaderExternalFilter)
+	}
+
 	reqConfigProfile := routingCtx.ReqConfigProfile
 	var features configprofiles.RequestFeatures
 	if strings.EqualFold(strings.TrimSpace(reqConfigProfile), "auto") {
 		features = buildConfigProfileRequestFeatures(routingCtx)
 	}
-	profile, profileName, locked := configprofiles.ResolveConfigForRequest(pods, reqConfigProfile, features)
-	if profile == nil && locked == "" {
+	profile, profileName, locked := cfg.ResolveForRequest(reqConfigProfile, features)
+
+	var replicaRPS float64
+	var inflight int64
+	if profile != nil {
+		replicaRPS = profile.RequestsPerSecondPerReplica
+		inflight = profile.RequestsInflight
+	}
+	if profile == nil && locked == "" && !cfg.AuthoritativeRoutingPolicy && replicaRPS <= 0 && inflight <= 0 {
 		return
 	}
+
 	if strings.EqualFold(strings.TrimSpace(reqConfigProfile), "auto") && profileName != "" {
 		routingCtx.ReqConfigProfile = profileName
 		if routingCtx.RespHeaders == nil {
@@ -688,13 +1059,35 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 		}
 		routingCtx.RespHeaders[HeaderAIBrixConfigProfile] = profileName
 	}
-	cp := &types.ResolvedConfigProfile{LockedRoutingStrategy: locked}
+	cp := &types.ResolvedConfigProfile{
+		LockedRoutingStrategy:      locked,
+		AuthoritativeRoutingPolicy: cfg.AuthoritativeRoutingPolicy,
+	}
 	if profile != nil {
 		cp.RoutingStrategy = profile.RoutingStrategy
 		cp.RoutingConfig = profile.RoutingConfig
+		cp.Routing = configprofiles.ParseRoutingConfig(profile.RoutingConfig)
 		cp.RequestsPerSecond = profile.RequestsPerSecond
+		cp.TTFTThresholdS = profile.TTFTThresholdS
 	}
 	routingCtx.ConfigProfile = cp
+
+	if replicaRPS > 0 {
+		replicas := int64(utils.CountRoutablePods(pods))
+		limit, windowSeconds := rpsToLimitWindow(replicaRPS * float64(replicas))
+		routingCtx.ConfigProfile.RequestsPerSecond = limit
+		routingCtx.ConfigProfile.RateWindowSeconds = windowSeconds
+		routingCtx.ConfigProfile.RoutingStrategy = string(routing.RouterLeastRequest)
+		klog.V(4).InfoS("applied requestsPerSecondPerReplica to config profile", "requestID", routingCtx.RequestID, "model", routingCtx.Model,
+			"replicaRPS", replicaRPS, "replicas", replicas, "limit", limit, "windowSeconds", windowSeconds)
+	}
+
+	if inflight > 0 {
+		warnIfReplicaInflightBelowRPS(routingCtx, inflight, replicaRPS)
+		routingCtx.ConfigProfile.RequestsInflight = inflight
+		routingCtx.ConfigProfile.RoutingStrategy = string(routing.RouterLeastRequest)
+		klog.V(4).InfoS("applied requestsInflight to config profile", "requestID", routingCtx.RequestID, "model", routingCtx.Model, "requestsInflight", inflight)
+	}
 }
 
 func buildConfigProfileRequestFeatures(routingCtx *types.RoutingContext) configprofiles.RequestFeatures {
@@ -871,9 +1264,19 @@ func generateErrorMessageWithHTTPCode(message string, httpStatusCode int, errorC
 // errorCode and param are optional (pass "" for null). Unlike buildErrorResponseWithBody,
 // it builds the body from the supplied fields and does not add a Content-Type header.
 func buildErrorResponse(statusCode envoyTypePb.StatusCode, errBody, errorCode, param string, headers ...string) *extProcPb.ProcessingResponse {
+	return buildErrorResponseWithType(statusCode, errBody, "", errorCode, param, headers...)
+}
+
+// buildErrorResponseWithType is buildErrorResponse with an explicit OpenAI error.type.
+// Empty errorType falls back to the HTTP-status mapping used by generateErrorMessageWithHTTPCode.
+func buildErrorResponseWithType(statusCode envoyTypePb.StatusCode, errBody, errorType, errorCode, param string, headers ...string) *extProcPb.ProcessingResponse {
+	body := generateErrorMessageWithHTTPCode(errBody, int(statusCode), errorCode, param)
+	if errorType != "" {
+		body = generateErrorMessage(errBody, errorType, errorCode, param)
+	}
 	return immediateErrorResponse(
 		statusCode,
-		generateErrorMessageWithHTTPCode(errBody, int(statusCode), errorCode, param),
+		body,
 		buildEnvoyProxyHeaders([]*configPb.HeaderValueOption{}, headers...),
 	)
 }

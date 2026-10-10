@@ -18,24 +18,36 @@ How It Works
 
 A vLLM-Omni pod is started the same way as any other model in AIBrix — a ``Deployment`` labeled with ``model.aibrix.ai/name`` and a matching ``Service`` — with one difference: passing ``--omni`` to ``vllm serve``. That flag auto-detects the model's task from its architecture and exposes the matching OpenAI-compatible endpoint (``/v1/images/generations``, ``/v1/audio/speech``, ``/v1/videos``, ...).
 
-The stock gateway already matches ``/v1/videos`` on the reserved HTTPRoute (so requests reach ext_proc before a ``model`` header exists) and uses 600s Envoy / ext_proc / model-HTTPRoute timeouts so synchronous generation can finish. If you installed an older AIBrix release, add a PathPrefix ``/v1/videos`` match to ``aibrix-reserved-router`` and set ``AIBRIX_GATEWAY_TIMEOUT_SECONDS=600`` on the controller-manager.
+The stock gateway already matches ``/v1/videos`` on its own reserved HTTPRoutes (so requests reach ext_proc before a ``model`` header exists) and uses 600s Envoy / ext_proc / model-HTTPRoute timeouts so synchronous generation can finish. The Videos API gets routes of its own — ``aibrix-reserved-router-videos`` for the JSON endpoints and ``aibrix-reserved-router-videos-streaming`` for ``/v1/videos/sync`` and ``/v1/videos/{id}/content`` — because those two groups need opposite ext_proc response-body modes; see the troubleshooting note on truncated responses below. If you installed an older AIBrix release, apply both routes with their ``EnvoyExtensionPolicy`` objects (``config/gateway/gateway-plugin``) and set ``AIBRIX_GATEWAY_TIMEOUT_SECONDS=600`` on the controller-manager.
 
-Video generation needs a bit more from the gateway than a stateless chat completion does. Because a generated video is written to local disk on whichever pod created it, the gateway has to remember that pod-to-job mapping and route follow-up calls back to the exact same pod:
+Video generation needs a bit more from the gateway than a stateless chat completion does. Because a generated video is written to local disk on whichever pod created it, the gateway has to remember which pod owns each job and route follow-up calls back to that exact pod. It does so through an asynchronous-job registry: on a successful create it mints its own opaque **public job ID** and hands that to the client instead of the engine's ID, keeping the backend ID and the owning pod's identity to itself.
 
 .. code-block:: text
 
     POST /v1/videos              ──►  gateway selects a pod for the model (least-request,
                                        even without an explicit routing-strategy header)
-                                       gateway records: video_id → owning pod
+                                       gateway registers: public job ID → owner, model,
+                                       backend job ID, owning pod (namespace/name/UID)
+                                       response "id" is rewritten to the public job ID
 
-    GET  /v1/videos/{id}         ──►  pinned back to the owning pod (only it has the job)
-    GET  /v1/videos/{id}/content ──►  pinned back to the owning pod
-    DELETE /v1/videos/{id}       ──►  pinned back to the owning pod, mapping evicted
+    GET  /v1/videos/{id}         ──►  public ID resolved, path rewritten to the backend ID,
+                                       pinned back to the owning pod; the response "id" is
+                                       rewritten back to the public ID
+    GET  /v1/videos/{id}/content ──►  same resolve + pin; the body streams through untouched
+    DELETE /v1/videos/{id}       ──►  same resolve + pin; the record is deleted once the
+                                       backend answers 2xx or 404
 
-    GET  /v1/videos?model=X      ──►  gateway fans out to every ready pod for X and merges
-                                       their individual job lists (no single owning pod for "list")
+    GET  /v1/videos              ──►  answered by the gateway from its own registry: the
+                                       caller's job catalog. No backend call, no ``model``
+                                       query parameter, no backend IDs.
 
-This mapping is kept in-memory per gateway replica and, when the gateway is configured with Redis, written through to Redis too — so a job created via one gateway replica can still be polled or fetched through a different replica. An unknown, expired, or no-longer-live video ID returns ``404`` rather than routing nowhere.
+Records are read from and written to Redis on every operation — there is no per-replica job cache and so no reconciliation window: any replica can serve a follow-up for a job another replica created. Without Redis (local development, a single replica) the registry falls back to process-local storage, and jobs are lost when that replica restarts.
+
+Each record is owner-scoped. The owner is derived from the request's ``user`` header (``scope:user:<name>``); requests without one share ``scope:shared``. A bearer token is not an identity: it authenticates the request but never names a principal. ``GET``/``DELETE`` and the catalog require an exact scope match, and ``scope:shared`` is not a wildcard — so a missing job and someone else's job are both an indistinguishable ``404``.
+
+Resolution also verifies the recorded pod's UID against the informer cache. If the pod is gone, terminating, or has been recreated under a new UID, the job it held is unrecoverable: the record is dropped and the call returns ``404``. A pod that is merely NotReady, or has no routable address yet, keeps its record and returns a retryable ``503``.
+
+Records expire with the backend's own ``expires_at`` when the create response provides one, and after 7 days otherwise — a backend expiry is honoured as given, never stretched to the default, so a create whose ``expires_at`` has already passed is refused with ``503`` rather than registered for a week. Expired records are absent from both lookups and the catalog.
 
 ``POST /v1/videos/sync`` and image/audio endpoints don't need any of this: they're a single request/response, so ordinary model-based routing is enough.
 
@@ -140,13 +152,14 @@ Step 3 — Generate a Video Synchronously
 Step 4 — Generate a Video Asynchronously
 --------------------------------------------
 
-For longer generations, ``POST /v1/videos`` returns immediately with a job ID while generation continues in the background — poll for status and fetch the result once it's done.
+For longer generations, ``POST /v1/videos`` returns immediately with a job ID while generation continues in the background — poll for status and fetch the result once it's done. The ID you get back is the gateway's own opaque public job ID (``aibrixjob-...``), not the engine's; use it everywhere below.
 
 **Submit the job:**
 
 .. code-block:: bash
 
-    video_id=$(curl -s "$BASE/v1/videos" \
+    job_id=$(curl -s "$BASE/v1/videos" \
+      -H "user: alice" \
       -F "model=wan21-vace-13b" \
       -F "prompt=A drone shot flying over a misty mountain range at sunrise" \
       -F "negative_prompt=blurry, low quality, distorted, static, flickering, artifacts" \
@@ -160,14 +173,16 @@ For longer generations, ``POST /v1/videos`` returns immediately with a job ID wh
       -F "seed=42" \
       | jq -r '.id')
 
-    echo "video_id=$video_id"
+    echo "job_id=$job_id"
 
-The raw response (before extracting ``.id``) looks like this. The same shape is returned by the poll step below, with ``status``, ``progress``, and ``completed_at`` updated as generation proceeds:
+The ``user`` header is what scopes the job: every follow-up call below must send the same value, or the gateway will answer ``404`` — a job belonging to another scope is indistinguishable from one that does not exist. Omit it consistently and the job lands in the shared scope instead.
+
+The raw response (before extracting ``.id``) looks like this — note that ``id`` is the gateway's public job ID, substituted for the engine's. The same shape is returned by the poll step below, with ``status``, ``progress``, and ``completed_at`` updated as generation proceeds:
 
 .. code-block:: json
 
     {
-      "id": "video_gen_cf8bcaf5bccc43f6926a689c9bb7312a",
+      "id": "aibrixjob-9f2c1d7ab34e5f6081924c3d5e7f8a0b",
       "object": "video",
       "model": "wan21-vace-13b",
       "prompt": "A drone shot flying over a misty mountain range at sunrise",
@@ -189,29 +204,55 @@ The raw response (before extracting ``.id``) looks like this. The same shape is 
       "action": null
     }
 
-**Poll status** until it reports ``completed`` or ``failed``. This request is transparently pinned to the pod that created the job, regardless of which pod would normally be picked by the gateway's routing policy:
+**Poll status** until it reports ``completed`` or ``failed``. The gateway resolves the public ID and transparently pins the request to the pod that created the job, regardless of which pod would normally be picked by its routing policy:
 
 .. code-block:: bash
 
-    watch -n 15 "curl -s $BASE/v1/videos/$video_id | jq ."
+    watch -n 15 "curl -s -H 'user: alice' $BASE/v1/videos/$job_id | jq ."
 
 **Download the result** once ``completed``:
 
 .. code-block:: bash
 
-    curl -L "$BASE/v1/videos/${video_id}/content" -o output.mp4
+    curl -L -H "user: alice" "$BASE/v1/videos/${job_id}/content" -o output.mp4
 
-**List all jobs for a model** instead of polling one by ID (``model`` is required):
+**List your jobs** instead of polling one by ID. This is the gateway's own catalog for your scope, so no ``model`` parameter is needed. It follows the OpenAI Videos cursor shape: ``limit`` is 1--100 (default 20), ``order`` is ``asc`` or ``desc`` (default ``desc``), and ``after`` is the ``last_id`` from the previous page:
+
+The ``after`` value is a live catalog cursor: the referenced job must still
+exist in the same owner scope. If that job is deleted or expires before the next
+page is requested, the gateway returns ``400 invalid video list cursor or
+parameters``. Restart the listing without ``after``; a public job ID intentionally
+contains no creation timestamp from which the deleted position could be recovered.
 
 .. code-block:: bash
 
-    curl -s "$BASE/v1/videos?model=wan21-vace-13b" | jq .
+    curl -s -H "user: alice" "$BASE/v1/videos?limit=20&order=desc" | jq .
 
-**Delete a job** once you no longer need it:
+.. code-block:: json
+
+    {
+      "object": "list",
+      "first_id": "aibrixjob-9f2c1d7ab34e5f6081924c3d5e7f8a0b",
+      "has_more": false,
+      "last_id": "aibrixjob-9f2c1d7ab34e5f6081924c3d5e7f8a0b",
+      "data": [
+        {
+          "id": "aibrixjob-9f2c1d7ab34e5f6081924c3d5e7f8a0b",
+          "object": "video",
+          "model": "wan21-vace-13b",
+          "created_at": 1788892979,
+          "expires_at": 1789497779
+        }
+      ]
+    }
+
+The catalog reports what the gateway knows: the job's identity, model, and retention window. It does not call the backend, so it carries no live ``status`` or ``progress`` — poll the job by ID for those. Video endpoint paths are exact; ``/v1/videos/`` and other trailing-slash variants return ``404``.
+
+**Delete a job** once you no longer need it. The record is removed once the backend confirms the delete (``2xx``) or reports it already gone (``404``); a backend ``5xx`` leaves the record in place so you can retry:
 
 .. code-block:: bash
 
-    curl -X DELETE "$BASE/v1/videos/${video_id}"
+    curl -X DELETE -H "user: alice" "$BASE/v1/videos/${job_id}"
 
 ----
 
@@ -227,43 +268,59 @@ Endpoint Reference
      - Behavior
    * - ``/v1/videos``
      - POST
-     - Create an async video generation job. Returns a job ID immediately.
+     - Create an async video generation job. Returns a public job ID immediately, registered against the pod that created it. If the job cannot be registered, the call fails with ``503`` and no ID is handed out.
    * - ``/v1/videos``
      - GET
-     - List jobs for a model. Requires a ``model`` query parameter; fans out across every ready pod for that model.
+     - List your own jobs from the gateway's registry. Supports OpenAI-style ``after``, ``limit`` (1--100), and ``order`` (``asc``/``desc``); never calls a backend. A deleted or expired ``after`` cursor returns 400, and the client must restart from the first page.
    * - ``/v1/videos/sync``
      - POST
-     - Create a job and block until it completes; returns the video bytes directly.
+     - Create a job and block until it completes; returns the video bytes directly. Not registered — there is no follow-up call to route.
    * - ``/v1/videos/{id}``
      - GET
-     - Poll a job's status. Pinned to the pod that created it.
+     - Poll a job's status. Pinned to the pod that created it; the response ``id`` is the public one.
    * - ``/v1/videos/{id}/content``
      - GET
-     - Download the completed video. Pinned to the pod that created it.
+     - Download the completed video. Pinned to the pod that created it; the body streams through unbuffered.
    * - ``/v1/videos/{id}``
      - DELETE
-     - Delete a job and its stored video. Pinned to the pod that created it; the mapping is evicted after a 2xx or 404 response so a failed delete can still be retried.
+     - Delete a job and its stored video. Pinned to the pod that created it; the record is removed after a 2xx or 404 response so a failed delete can still be retried.
 
 ----
 
 Troubleshooting
 ----------------
 
-**``GET``/``DELETE`` on a video ID returns 404**
+**``GET``/``DELETE`` on a job ID returns 404**
 
-The job ID is unknown to the gateway, has passed its retention window, or its owning pod is no longer ready (e.g. it was rescheduled). Once a pod is gone, the video it generated is gone with it — resubmit the job.
+The ID is unknown to the gateway, has passed its retention window, belongs to a different ``user`` scope than the one on this request, or its owning pod is gone (deleted, terminating, or recreated under a new UID). Once a pod is gone, the video it generated is gone with it — resubmit the job. Note that "not yours" and "does not exist" are deliberately the same answer, so check the ``user`` header before assuming the job expired.
+
+**``GET``/``DELETE`` on a job ID returns 503**
+
+Either the owning pod is temporarily unroutable (NotReady, or no address yet) or the registry's store is unreachable. Both are retryable and the record is kept: retry the call. A ``503`` from ``POST /v1/videos`` means the job could not be registered — the backend may have started work that is now unreachable, so resubmit.
 
 **``POST /v1/videos/sync`` returns 504 / ext_proc timeout**
 
-Synchronous generation can take several minutes. Current AIBrix defaults are 600s for the reserved-router ext_proc ``messageTimeout``, the ORIGINAL_DST route, and model HTTPRoutes (``AIBRIX_GATEWAY_TIMEOUT_SECONDS``). Older installs used 60s/120s and will abort first; raise those three timeouts to at least 600s.
+Synchronous generation can take several minutes. Current AIBrix defaults are 600s for every reserved router's ext_proc ``messageTimeout`` (including the two Videos routes), the ORIGINAL_DST route, and model HTTPRoutes (``AIBRIX_GATEWAY_TIMEOUT_SECONDS``). Older installs used 60s/120s and will abort first; raise those three timeouts to at least 600s.
 
-**``GET /v1/videos`` (list) returns 400**
+**``GET /v1/videos`` returns fewer jobs than expected**
 
-The ``model`` query parameter is required — the gateway needs it to know which pods to fan out to: ``curl -s "$BASE/v1/videos?model=wan21-vace-13b"``.
+The catalog is scoped to the request's ``user`` header, so jobs submitted under a different value (or with no header at all) are not listed. It also lists nothing the gateway did not register: jobs created directly against a pod, and jobs whose retention window has passed, are absent.
 
 **Job created on one gateway replica can't be found via another**
 
-This cross-replica lookup relies on AIBrix's gateway being configured with Redis. Without Redis, the video-job-to-pod mapping only lives in the replica that handled the ``POST /v1/videos`` call.
+Cross-replica lookup relies on AIBrix's gateway being configured with Redis. Without it the registry is process-local, so the job only exists in the replica that handled the ``POST /v1/videos`` call — and is lost if that replica restarts.
+
+**Video job responses arrive truncated or the client hangs**
+
+The gateway rewrites the job ID inside the create and status responses, so those two bodies leave ext_proc at a different length than they arrived. It waits for the whole body, rewrites it, and drops the upstream ``content-length`` so Envoy re-derives it. That depends on the Videos JSON endpoints riding their own route, ``aibrix-reserved-router-videos``, whose ``EnvoyExtensionPolicy`` sets ``spec.extProc[].processingMode.response.body: Buffered``. An install that removed response-body processing, or that restores ``content-length`` in a later filter, will truncate the rewritten body.
+
+Buffered is what makes the create guarantee real, not just the rewrite: ext_proc holds the response at its headers until the buffered body has been processed, so a backend ``201`` cannot reach the client before the job is durably registered — which is what lets a failed registration still answer ``503``.
+
+The mode has to come from that route's configuration. The pinned Envoy Gateway (v1.2.8) has no ``allowModeOverride`` field on ``EnvoyExtensionPolicy`` and never sets ext_proc's ``allow_mode_override``, so a per-request ``ModeOverride`` from the gateway plugin would be silently ignored; do not add such a field on that version.
+
+Route selection happens twice per request, and both passes matter. The gateway pins a request by answering with ``routing-strategy``/``target-pod`` headers and clearing Envoy's route cache, so the request re-matches the ``EnvoyPatchPolicy`` pinning routes in ``config/gateway/gateway.yaml`` before it leaves for the pod — and the route picked on that second pass is the one Envoy uses for the response. Those pinning routes therefore come in three flavours, one per Videos route family, each enabling the same ext_proc filter its path route did. A single catch-all pinning route would hand every pinned Videos response to the shared, streamed filter, which both loses the buffering and delivers the response to the plugin as a second stream with no request context.
+
+The two endpoints whose bodies must never be buffered — ``/v1/videos/sync`` and ``/v1/videos/{id}/content`` — are matched separately by ``aibrix-reserved-router-videos-streaming`` (an ``Exact`` and a ``RegularExpression`` match, both of which outrank the ``PathPrefix`` ``/v1/videos`` route in Envoy Gateway's match ordering) and keep ``response.body: Streamed``. Neither carries a job ID to rewrite. The shared ``aibrix-reserved-router`` also stays ``Streamed``, because SSE completions have to be forwarded chunk by chunk.
 
 **Pod takes a long time to become ready**
 

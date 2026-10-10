@@ -42,6 +42,9 @@ python test_openai_endpoints.py
 
 # Test vLLM-specific endpoints (uses HTTP client)
 python test_vllm_endpoints.py
+
+# Test SGLang-specific endpoints (uses HTTP client)
+python test_sglang_endpoints.py
 ```
 
 You can also specify a custom base URL:
@@ -49,6 +52,7 @@ You can also specify a custom base URL:
 ```bash
 python test_openai_endpoints.py --base-url http://localhost:8000/v1
 python test_vllm_endpoints.py --base-url http://localhost:8000
+python test_sglang_endpoints.py --base-url http://localhost:8000
 ```
 
 ### Testing PD contracts locally
@@ -138,10 +142,43 @@ curl -sS -i -X POST http://127.0.0.1:8000/v1/chat/completions \
   -H 'x-request-id: local-delay-1' \
   -H 'x-aibrix-mock-delay-ms: 200' \
   -d '{"model":"llama2-7b","messages":[{"role":"user","content":"wait"}]}'
+
+# Delay only the leg handled by a process with MOCK_PD_ROLE=decode.
+curl -sS -i -X POST http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'x-request-id: local-delay-2' \
+  -H 'x-aibrix-mock-delay-ms: 5000' \
+  -H 'x-aibrix-mock-delay-role: decode' \
+  -d '{"model":"llama2-7b","messages":[{"role":"user","content":"wait"}]}'
 ```
 
 Matching `fail` requests return HTTP 500 and invalid delay values return HTTP
-400. Both outcomes are recorded. The delay limit is 30 seconds.
+400. Both outcomes are recorded. Use `x-aibrix-mock-fail: backend` for a non-PD
+mock deployment; `prefill` and `decode` remain role-specific. The delay limit
+is 30 seconds.
+
+`x-aibrix-mock-delay-ms` alone applies to whichever leg receives the request,
+which for a disaggregated request is both of them: the gateway forwards client
+headers to the prefill and the decode pod alike. `x-aibrix-mock-delay-role`
+(`prefill` or `decode`) restricts the delay to one leg, so a test can hold one
+leg while the other answers immediately. An unknown role returns HTTP 400.
+
+`x-aibrix-mock-stream-stall-ms` holds a streaming chat completion after its
+first chunk, i.e. a pod that started answering and then went silent. It has
+the same 30 second limit, invalid values return HTTP 400, and
+`x-aibrix-mock-delay-role` scopes it to one leg in the same way.
+
+`x-aibrix-mock-first-token-stall-ms` holds a streaming chat completion after its
+response headers and before its first chunk, i.e. a pod that accepted the
+request and never produced a token. This is the shape a real streaming engine
+shows the gateway: an ASGI `StreamingResponse` sends its headers before it
+starts iterating the body. Same limit, validation and role scoping as the
+stream stall.
+
+`POST /abort_request` mocks the SGLang endpoint the gateway calls on the decode
+pod when a PD prefill leg failed. It takes `{"rid": "..."}`, answers `200`, and
+records the abort under that rid so a test can assert which request the gateway
+cancelled; a request without a rid is rejected with HTTP 400.
 
 ### PD mock deployment in Kubernetes
 
@@ -374,14 +411,55 @@ curl http://localhost:8000/v1/chat/completions \
 - `/v1/unload_lora_adapter` - Unload a LoRA adapter
 - `/tokenize` - Tokenize text
 - `/detokenize` - Detokenize tokens
+- `/pooling` - Pooling models (embed/classify/score; string, array, or pre-tokenized input)
 - `/load` - Server load metrics
 - `/version` - Version info
 - `/metrics` - Prometheus metrics
+
+### SGLang-Specific Endpoints
+- `/v1/decisions` - Typed choice, score, and yes/no questions about an input (string, object, or array), answered without generation; usage reports prompt tokens only
+- `/v1/systemone` - The same decisions in the System One request shape: a `state` (string, object, or array) and a map of `noul`, `choice`, and `score` questions keyed by id; usage reports `input_tokens` and `output_tokens` with no total
 
 ### Health/Utility Endpoints
 - `/health` - Health check
 - `/ready` - Ready check
 - `/ping` - Ping check
+
+
+### Elastic EP Endpoints
+
+The mock engine serves the elastic EP state surface that the PodAutoscaler
+observes (issue #2288):
+
+- `POST /is_scaling_elastic_ep` - Answers `200 {"is_scaling_elastic_ep": false}` while idle.
+- `GET /debug/elastic_ep` - Read the simulated scaling state.
+- `POST /debug/elastic_ep` - Drive the simulated scaling state.
+
+While a scaling window is active, every request that is not under `/debug/`
+answers the upstream 503 payload
+`{"error": "The model is currently scaling. Please try again later."}`,
+matching the vLLM elastic EP middleware, which blocks all HTTP requests while
+a scaling commit is in flight.
+
+```bash
+# Simulate a scaling commit that expires after 5 seconds.
+curl -s -X POST http://localhost:8000/debug/elastic_ep \
+  -H "Content-Type: application/json" \
+  -d '{"scaling": true, "duration_seconds": 5}'
+
+# The probe now answers 503, which the PodAutoscaler records as scaling.
+curl -i -X POST http://localhost:8000/is_scaling_elastic_ep
+
+# Hold the window until it is cleared.
+curl -s -X POST http://localhost:8000/debug/elastic_ep \
+  -H "Content-Type: application/json" \
+  -d '{"scaling": true}'
+curl -s -X POST http://localhost:8000/debug/elastic_ep \
+  -H "Content-Type: application/json" \
+  -d '{"scaling": false}'
+```
+
+The surface is covered by `test_elastic_ep.py`.
 
 
 ## How to test AIBrix features

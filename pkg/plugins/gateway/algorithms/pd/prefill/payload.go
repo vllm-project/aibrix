@@ -19,7 +19,7 @@ package prefill
 import (
 	"fmt"
 
-	"github.com/bytedance/sonic"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
@@ -28,52 +28,35 @@ import (
 // PreparePayload transforms routingCtx.ReqBody into a prefill-specific payload
 // ready to be POSTed to the prefill pod.
 //
-// When the handler implements RawPrefillPayloadPreparer, the handler fully owns
-// payload construction — it must inject engine-specific bootstrap fields, apply
-// the common prefill constraints (max_tokens=1, max_completion_tokens=1,
-// stream=false, no stream_options, no min_tokens), and side-effect
-// routingCtx.ReqBody with the decode body. This path avoids re-serializing
-// nested fields and preserves byte-level ordering of messages, tools, etc.
+// The client body is validated as a JSON object, passed to
+// handler.AugmentPrefillRequest for engine-specific field injection, and the
+// common prefill constraints (max_tokens=1, max_completion_tokens=1,
+// stream=false, no stream_options, no min_tokens) are applied on top with
+// top-level sjson edits. Nested fields (messages, tools, …) are never
+// re-serialised, so their byte ordering is identical in the original, prefill
+// and decode bodies and prompt_token_ids stay stable across requests.
 //
-// Otherwise, the fallback path unmarshals the body into map[string]any, calls
-// handler.AugmentPrefillRequest for engine-specific field injection, then
-// applies the common constraints before re-marshaling.
+// routingCtx.ReqBody is only changed by handlers that need a modified decode
+// body (SGLang bootstrap fields); for every other engine the decode pod
+// receives the client body untouched.
 //
 // This function is exported so pdRouter can expose a thin backward-compat wrapper
 // for tests that call preparePrefillPayload directly.
 func PreparePayload(routingCtx *types.RoutingContext, pod *v1.Pod, llmEngine string, handler engine.EngineHandler) ([]byte, error) {
-	// Engines that implement RawPrefillPayloadPreparer mutate only top-level
-	// fields on the original JSON bytes, preserving the byte ordering of all
-	// nested objects (messages, tools, …). This keeps prompt_token_ids stable
-	// across prefill, decode, and repeated requests.
-	if rawPreparer, ok := handler.(engine.RawPrefillPayloadPreparer); ok {
-		return rawPreparer.PreparePrefillPayload(routingCtx, pod)
+	if err := pd.ValidateJSONObject(routingCtx.ReqBody, "prefill request body"); err != nil {
+		return nil, &engine.InvalidRequestError{Message: err.Error()}
 	}
 
-	var completionRequest map[string]any
-	if err := sonic.Unmarshal(routingCtx.ReqBody, &completionRequest); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal prefill request body: %w", err)
-	}
-	if completionRequest == nil {
-		completionRequest = make(map[string]any)
-	}
-
-	if err := handler.AugmentPrefillRequest(routingCtx, pod, completionRequest); err != nil {
+	payload, err := handler.AugmentPrefillRequest(routingCtx, pod, routingCtx.ReqBody)
+	if err != nil {
 		return nil, fmt.Errorf("failed to augment prefill request for %s: %w", llmEngine, err)
 	}
 
 	// Constrain the prefill to a single token so the pod returns immediately
 	// after completing the KV-cache fill without generating any real output.
-	completionRequest["max_tokens"] = 1
-	if llmEngine == trtllmEngine {
-		// TRT-LLM uses max_tokens only; max_completion_tokens is not supported.
-		delete(completionRequest, "max_completion_tokens")
-	} else {
-		completionRequest["max_completion_tokens"] = 1
+	payload, err = pd.ApplyPrefillControlFields(payload, llmEngine)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply prefill control fields for %s: %w", llmEngine, err)
 	}
-	completionRequest["stream"] = false
-	delete(completionRequest, "stream_options")
-	delete(completionRequest, "min_tokens")
-
-	return sonic.Marshal(completionRequest)
+	return payload, nil
 }

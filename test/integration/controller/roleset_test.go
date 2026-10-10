@@ -37,6 +37,7 @@ import (
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	aibrixconst "github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
+	controllerutils "github.com/vllm-project/aibrix/test/utils/controller"
 	"github.com/vllm-project/aibrix/test/utils/validation"
 	"github.com/vllm-project/aibrix/test/utils/wrapper"
 )
@@ -64,20 +65,12 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 	}
 
 	ginkgo.BeforeEach(func() {
-		ns = &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "test-roleset-",
-			},
-		}
-		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
-		// Ensure namespace is fully created
-		gomega.Eventually(func() error {
-			return k8sClient.Get(ctx, client.ObjectKeyFromObject(ns), ns)
-		}, time.Second*3).Should(gomega.Succeed())
+		ns = nil
+		ns = controllerutils.CreateNamespace(ctx, k8sClient, "test-roleset-", 3*time.Second)
 	})
 
 	ginkgo.AfterEach(func() {
-		gomega.Expect(k8sClient.Delete(ctx, ns)).To(gomega.Succeed())
+		controllerutils.DeleteNamespace(ctx, k8sClient, ns)
 	})
 
 	// testValidatingCase defines a test case with initial setup and a series of updates
@@ -1094,13 +1087,15 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 		gomega.Expect(preferred).To(gomega.Equal(0))
 		gomega.Expect(required).To(gomega.Equal(0))
 
-		latest := &orchestrationapi.RoleSet{}
-		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
-		latest.Spec.TopologyPolicy = &orchestrationapi.TopologyPolicy{
-			Scope: orchestrationapi.TopologyRoleSetScope,
-			Key:   "kubernetes.io/hostname",
-		}
-		gomega.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.RoleSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
+			latest.Spec.TopologyPolicy = &orchestrationapi.TopologyPolicy{
+				Scope: orchestrationapi.TopologyRoleSetScope,
+				Key:   "kubernetes.io/hostname",
+			}
+			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
 
 		pods = waitForTopologyRolePods(ns.Name, rs.Name, role.Name, 1)
 		none, preferred, required = countPodsByTopologyAffinity(pods, "kubernetes.io/hostname", map[string]string{
@@ -1120,9 +1115,13 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 		gomega.Expect(preferred).To(gomega.Equal(1))
 		gomega.Expect(required).To(gomega.Equal(0))
 
-		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
-		latest.Spec.TopologyPolicy.Mode = orchestrationapi.TopologyPolicyRequired
-		gomega.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := &orchestrationapi.RoleSet{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
+			g.Expect(latest.Spec.TopologyPolicy).ToNot(gomega.BeNil())
+			latest.Spec.TopologyPolicy.Mode = orchestrationapi.TopologyPolicyRequired
+			g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
+		}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
 
 		pods = waitForTopologyRolePods(ns.Name, rs.Name, role.Name, 1)
 		none, preferred, required = countPodsByTopologyAffinity(pods, "kubernetes.io/hostname", map[string]string{
@@ -1148,17 +1147,12 @@ var _ = ginkgo.Describe("RoleSet historical-node replacement scheduling", func()
 	var ns *corev1.Namespace
 
 	ginkgo.BeforeEach(func() {
-		ns = &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{GenerateName: "test-roleset-history-"},
-		}
-		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
-		gomega.Eventually(func() error {
-			return k8sClient.Get(ctx, client.ObjectKeyFromObject(ns), ns)
-		}, time.Second*3).Should(gomega.Succeed())
+		ns = nil
+		ns = controllerutils.CreateNamespace(ctx, k8sClient, "test-roleset-history-", 3*time.Second)
 	})
 
 	ginkgo.AfterEach(func() {
-		gomega.Expect(k8sClient.Delete(ctx, ns)).To(gomega.Succeed())
+		controllerutils.DeleteNamespace(ctx, k8sClient, ns)
 	})
 
 	ginkgo.It("uses annotation-backed stateful slot history after delete-before-create", func() {

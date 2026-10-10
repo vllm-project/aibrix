@@ -1,0 +1,450 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/features/heterogeneous-gpu.rst:5
+msgid "Heterogeneous GPU Inference (Experimental)"
+msgstr "异构 GPU 推理（实验性）"
+
+#: ../../source/features/heterogeneous-gpu.rst:7
+msgid ""
+"Heterogeneous GPU Inference is a feature that enables users to utilize "
+"different types of GPUs for deploying the same model. This feature "
+"addresses two primary challenges associated with Large Language Model "
+"(LLM) inference: (1) As the demand for large-scale model inference "
+"increases, ensuring consistent GPU availability has become a challenge, "
+"particularly within regions where identical GPU types are often "
+"unavailable due to capacity constraints. (2) Users may seek to "
+"incorporate lower-cost, lower-performance GPUs to reduce overall "
+"expenses."
+msgstr ""
+"异构 GPU 推理允许使用不同类型的 GPU 部署同一模型。该特性针对大语言模型（LLM）推理中的两个主要问题：（1）随着大规模模型推理需求增长，保证 GPU 供应一致变得困难，尤其在容量受限、同类型 GPU 经常不可用的区域。（2）用户可能希望引入成本更低、性能较低的 GPU 以降低总体费用。"
+
+#: ../../source/features/heterogeneous-gpu.rst:10
+msgid "Design Overview"
+msgstr "设计概览"
+
+#: ../../source/features/heterogeneous-gpu.rst:12
+msgid ""
+"There are three main components in Heterogeneous GPU Inference Feature: "
+"(1) LLM Request Monitoring, (2) Heterogeneous GPU Optimizer, (3) Request "
+"Routing. The following figure shows the overall architecture. First, LLM "
+"Request Monitoring component is responsible for monitoring the past "
+"inference requests and their request patterns. Second, Heterogeneous GPU "
+"Optimizer component is responsible for selecting the optimal GPU type and"
+" the corresponding GPU count. Third, Request Routing component is "
+"responsible for routing the request to the optimal GPU."
+msgstr ""
+"异构 GPU 推理包含三个主要组件：（1）LLM 请求监控，（2）异构 GPU Optimizer，（3）请求路由。下图展示整体架构。首先，LLM 请求监控负责观察历史推理请求及其模式。其次，异构 GPU Optimizer 负责选择最优 GPU 类型及对应数量。第三，请求路由负责将请求路由到最优 GPU。"
+
+#: ../../source/features/heterogeneous-gpu.rst:14
+msgid "heterogeneous-gpu-diagram"
+msgstr "heterogeneous-gpu-diagram"
+
+#: ../../source/features/heterogeneous-gpu.rst:20
+msgid ""
+"This feature is the heterogeneous form of :doc:`autoscaling/optimizer-"
+"based-autoscaling`: the same GPU optimizer, fed one benchmark profile per"
+" GPU type, decides how many replicas of each type to run. Read that page "
+"first for the request-tracing and profiling workflow; this page covers "
+"what is specific to mixing GPU types."
+msgstr ""
+"该特性是 :doc:`autoscaling/optimizer-based-autoscaling` 的异构形态：同一 GPU optimizer 为每种 GPU 类型提供一份基准 profile，并据此决定各类型运行多少副本。请先阅读该页了解请求追踪与 profiling 流程；本页仅说明混用 GPU 类型时的差异。"
+
+#: ../../source/features/heterogeneous-gpu.rst:26
+msgid "Prerequisites"
+msgstr "前置条件"
+
+#: ../../source/features/heterogeneous-gpu.rst:28
+msgid ""
+"One ``Deployment`` per GPU type, all carrying the same "
+"``model.aibrix.ai/name`` label and each pinned to its GPU type through "
+"node selectors or affinity. The gateway treats them as one model."
+msgstr ""
+"每种 GPU 类型对应一个 ``Deployment`` ，均带有相同的 ``model.aibrix.ai/name`` 标签，并通过节点选择器或亲和性绑定到对应 "
+"GPU 类型。网关将其视为同一模型。"
+
+#: ../../source/features/heterogeneous-gpu.rst:31
+msgid ""
+"One ``PodAutoscaler`` per deployment, each reading the optimizer's metric"
+" for its own deployment."
+msgstr "每个 Deployment 对应一个 ``PodAutoscaler`` ，各自读取 optimizer 针对该 Deployment 的指标。"
+
+#: ../../source/features/heterogeneous-gpu.rst:33
+msgid ""
+"Request tracing enabled on the gateway plugin and the ``aibrix`` Python "
+"package installed locally for benchmarking, as described in "
+":doc:`autoscaling/optimizer-based-autoscaling`."
+msgstr ""
+"网关插件已启用请求追踪，并且本机已安装用于基准测试的 ``aibrix`` Python 包，详见 :doc:`autoscaling/optimizer-based-autoscaling` "
+"。"
+
+#: ../../source/features/heterogeneous-gpu.rst:35
+msgid ""
+"For SLO-aware routing across the GPU types, profiling data for each "
+"workload on each GPU type (see `Routing Support`_)."
+msgstr ""
+"若要在 GPU 类型之间做 SLO 感知路由，需要每种工作负载在每种 GPU 类型上的 profiling 数据（见 `Routing Support`_ "
+"）。"
+
+#: ../../source/features/heterogeneous-gpu.rst:39
+msgid "Example"
+msgstr "示例"
+
+#: ../../source/features/heterogeneous-gpu.rst:41
+msgid ""
+"**Preparation: Enable related components, including request tracking at "
+"the gateway.**"
+msgstr "**准备：启用相关组件，包括网关上的请求追踪。**"
+
+#: ../../source/features/heterogeneous-gpu.rst:50
+msgid ""
+"Alternatively, you can enable the feature by editing the gateway plugin "
+"deployment using ``kubectl edit deployment aibrix-gateway-plugins -n "
+"aibrix-system`` and append env."
+msgstr ""
+"也可以用 ``kubectl edit deployment aibrix-gateway-plugins -n aibrix-system`` 编辑网关插件 Deployment，并追加环境变量来启用该特性。"
+
+#: ../../source/features/heterogeneous-gpu.rst:63
+msgid "**Step 1: Deploy the heterogeneous deployments.**"
+msgstr "**步骤 1：部署异构 Deployment。**"
+
+#: ../../source/features/heterogeneous-gpu.rst:65
+msgid ""
+"One deployment and corresponding PodAutoscaler should be deployed for "
+"each GPU type. See `sample heterogeneous configuration "
+"<https://github.com/vllm-"
+"project/aibrix/tree/main/samples/heterogeneous>`_ for an example of "
+"heterogeneous configuration composed of two GPU types. The following "
+"command deploys heterogeneous deployments using L20 and V100 GPUs."
+msgstr ""
+"每种 GPU 类型应部署一个 Deployment 及对应的 PodAutoscaler。两种 GPU 类型组成的异构配置示例见 `sample "
+"heterogeneous configuration <https://github.com/vllm-project/aibrix/tree/main/samples/heterogeneous>`_ "
+"。以下命令使用 L20 和 V100 GPU 部署异构 Deployment。"
+
+#: ../../source/features/heterogeneous-gpu.rst:73
+msgid ""
+"The sample is a kustomization that creates one Service and two "
+"deployments, ``deepseek-coder-7b-l20`` (4 replicas) and ``deepseek-coder-"
+"7b-v100`` (0 replicas), each pinned to its GPU type through node affinity"
+" on the ``machine.cluster.vke.volcengine.com/gpu-name`` label. Adjust the"
+" affinity and replica counts to your cluster. The output below comes from"
+" a test environment with one pod per GPU type:"
+msgstr ""
+"该示例是一个 kustomization，会创建 1 个 Service 和 2 个 Deployment：``deepseek-coder-7b-l20`` "
+"（4 副本）和 ``deepseek-coder-7b-v100`` （0 副本），各自通过 ``machine.cluster.vke.volcengine.com/gpu-name`` "
+"标签的节点亲和性绑定到对应 GPU 类型。请按集群情况调整亲和性与副本数。以下输出来自每种 GPU 类型各有一个 Pod 的测试环境："
+
+#: ../../source/features/heterogeneous-gpu.rst:86
+msgid ""
+"Incoming requests are routed through the gateway and directed to the "
+"optimal pod based on request patterns:"
+msgstr "入站请求经网关路由，并根据请求模式定向到最优 Pod："
+
+#: ../../source/features/heterogeneous-gpu.rst:95
+msgid "**Step 2: Install aibrix python module.**"
+msgstr "**步骤 2：安装 aibrix Python 模块。**"
+
+#: ../../source/features/heterogeneous-gpu.rst:101
+msgid ""
+"The GPU Optimizer runs continuously in the background, dynamically "
+"adjusting GPU allocation for each model based on workload patterns. Note "
+"that GPU optimizer requires offline inference performance benchmark data "
+"for each type of GPU on each specific LLM model."
+msgstr ""
+"GPU Optimizer 在后台持续运行，根据负载模式动态调整每个模型的 GPU 分配。注意：GPU optimizer 需要每种 GPU 在每个具体 LLM 模型上的离线推理性能基准数据。"
+
+#: ../../source/features/heterogeneous-gpu.rst:104
+msgid ""
+"If local heterogeneous deployments is used, you can find the prepared "
+"benchmark data under "
+"`python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/ "
+"<https://github.com/vllm-"
+"project/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/>`_"
+" and skip Step 3. See :ref:`Development` for details on deploying a local"
+" heterogeneous deployments."
+msgstr ""
+"若使用本地异构部署，可在 `python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/ "
+"<https://github.com/vllm-project/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/>`_ "
+"找到已准备的基准数据并跳过步骤 3。本地异构部署详见 :ref:`Development` 。"
+
+#: ../../source/features/heterogeneous-gpu.rst:106
+msgid "**Step 3: Benchmark model.**"
+msgstr "**步骤 3：对模型做基准测试。**"
+
+#: ../../source/features/heterogeneous-gpu.rst:108
+msgid ""
+"For each type of GPU, run ``aibrix_benchmark``. See `benchmark.sh "
+"<https://github.com/vllm-"
+"project/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/benchmark.sh>`_"
+" for more options."
+msgstr ""
+"对每种 GPU 运行 ``aibrix_benchmark`` 。更多选项见 `benchmark.sh <https://github.com/vllm-project/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/benchmark.sh>`_ "
+"。"
+
+#: ../../source/features/heterogeneous-gpu.rst:116
+msgid "**Step 4: Decide SLO and generate profile.**"
+msgstr "**步骤 4：确定 SLO 并生成 profile。**"
+
+#: ../../source/features/heterogeneous-gpu.rst:118
+msgid "Run ``aibrix_gen_profile -h`` for help."
+msgstr "运行 ``aibrix_gen_profile -h`` 查看帮助。"
+
+#: ../../source/features/heterogeneous-gpu.rst:127
+msgid ""
+"Now the GPU Optimizer is ready to work. You should observe that the "
+"number of workload pods changes in response to the requests sent to the "
+"gateway. Once the GPU optimizer finishes the scaling optimization, the "
+"output of the GPU optimizer is passed to PodAutoscaler as a metricSource "
+"via a designated HTTP endpoint for the final scaling decision.  The "
+"following is an example of PodAutoscaler spec."
+msgstr ""
+"此时 GPU Optimizer 已可工作。向网关发送请求后，应能观察到工作负载 Pod 数量随之变化。GPU optimizer 完成扩缩容优化后，其输出会作为 metricSource，经指定 HTTP 端点传给 PodAutoscaler 以做出最终扩缩容决策。以下是 PodAutoscaler spec 示例。"
+
+#: ../../source/features/heterogeneous-gpu.rst:129
+msgid "A simple example of PodAutoscaler spec for v100 GPU is as follows:"
+msgstr "v100 GPU 的简单 PodAutoscaler spec 示例如下："
+
+#: ../../source/features/heterogeneous-gpu.rst:135
+msgid "Miscellaneous"
+msgstr "其他说明"
+
+#: ../../source/features/heterogeneous-gpu.rst:137
+msgid ""
+"A new label label ``model.aibrix.ai/min_replicas`` is added to specifies "
+"the minimum number of replicas to maintain when there is no workload. We "
+"recommend setting this to 1 for at least one Deployment spec to ensure "
+"there is always one READY pod available. For example, while the GPU "
+"optimizer might recommend 0 replicas for an v100 GPU during periods of no"
+" activity, setting ``model.aibrix.ai/min_replicas: \"1\"`` will maintain "
+"one v100 replica. This label only affects the system when there is no "
+"workload - it is ignored when there are active requests."
+msgstr ""
+"新增标签 ``model.aibrix.ai/min_replicas`` ，用于指定无负载时要维持的最小副本数。建议至少在一个 Deployment "
+"spec 中将其设为 1，以确保始终有一个 READY Pod。例如，无活动时 GPU optimizer 可能建议 v100 GPU 为 0 "
+"副本，设置 ``model.aibrix.ai/min_replicas: \"1\"`` 仍会保留一个 v100 副本。该标签仅在无负载时生效，有活跃请求时会被忽略。"
+
+#: ../../source/features/heterogeneous-gpu.rst:150
+#, python-brace-format
+msgid ""
+"Important: The ``minReplicas`` field in the PodAutoscaler spec must be "
+"set to 0 to allow proper scaling behavior. Setting it to any value "
+"greater than 0 will interfere with the GPU optimizer's scaling decisions."
+" For instance, if the GPU optimizer determines an optimal configuration "
+"of ``{v100: 0, l20: 4}`` but the v100 PodAutoscaler has ``minReplicas: "
+"1``, the system won't be able to scale the v100 down to 0 as recommended."
+msgstr ""
+"重要：PodAutoscaler spec 中的 ``minReplicas`` 必须设为 0，扩缩容才能按预期工作。设为大于 0 的值会干扰 "
+"GPU optimizer 的扩缩容决策。例如，若 GPU optimizer 给出最优配置 ``{v100: 0, l20: 4}`` ，而 "
+"v100 的 PodAutoscaler 设置了 ``minReplicas: 1`` ，系统将无法按建议将 v100 缩到 0。"
+
+#: ../../source/features/heterogeneous-gpu.rst:153
+msgid "Configuration reference"
+msgstr "配置参考"
+
+#: ../../source/features/heterogeneous-gpu.rst:159
+msgid "Setting"
+msgstr "配置项"
+
+#: ../../source/features/heterogeneous-gpu.rst:160
+msgid "Meaning"
+msgstr "含义"
+
+#: ../../source/features/heterogeneous-gpu.rst:161
+msgid ""
+"``AIBRIX_GPU_OPTIMIZER_TRACING_FLAG`` (gateway plugin env, default "
+"``false``)"
+msgstr "``AIBRIX_GPU_OPTIMIZER_TRACING_FLAG`` （网关插件环境变量，默认 ``false`` ）"
+
+#: ../../source/features/heterogeneous-gpu.rst:162
+msgid "Records per-request token statistics for the optimizer. Required."
+msgstr "为 optimizer 记录每请求 token 统计。必需。"
+
+#: ../../source/features/heterogeneous-gpu.rst:163
+msgid "``model.aibrix.ai/name`` (label on every deployment)"
+msgstr "``model.aibrix.ai/name`` （每个 Deployment 上的标签）"
+
+#: ../../source/features/heterogeneous-gpu.rst:164
+msgid ""
+"The shared model name. Must match the ``model`` used when profiles were "
+"stored."
+msgstr "共享模型名。必须与存储 profile 时使用的 ``model`` 一致。"
+
+#: ../../source/features/heterogeneous-gpu.rst:165
+msgid "``model.aibrix.ai/min_replicas`` (label on a deployment)"
+msgstr "``model.aibrix.ai/min_replicas`` （Deployment 上的标签）"
+
+#: ../../source/features/heterogeneous-gpu.rst:166
+msgid ""
+"Replicas to keep for that GPU type when there is no traffic. Set it to "
+"``\"1\"`` on at least one deployment so the model always has a ready pod."
+msgstr "无流量时该 GPU 类型保留的副本数。至少在一个 Deployment 上设为 ``\"1\"`` ，以确保模型始终有就绪 Pod。"
+
+#: ../../source/features/heterogeneous-gpu.rst:168
+msgid "``spec.minReplicas: 0`` (on each PodAutoscaler)"
+msgstr "``spec.minReplicas: 0`` （每个 PodAutoscaler）"
+
+#: ../../source/features/heterogeneous-gpu.rst:169
+msgid ""
+"Required. Any higher value prevents the optimizer from scaling that GPU "
+"type to zero."
+msgstr "必需。设为更高值会阻止 optimizer 将该 GPU 类型缩到 0。"
+
+#: ../../source/features/heterogeneous-gpu.rst:170
+msgid "``aibrix_gen_profile ... --cost <n>``"
+msgstr "``aibrix_gen_profile ... --cost <n>``"
+
+#: ../../source/features/heterogeneous-gpu.rst:171
+msgid ""
+"Relative cost of the GPU type. The optimizer minimises total cost, so "
+"give each GPU type its own value."
+msgstr "该 GPU 类型的相对成本。optimizer 会最小化总成本，因此每种 GPU 类型应设置各自的值。"
+
+#: ../../source/features/heterogeneous-gpu.rst:173
+msgid "``routing-strategy: slo`` (request header)"
+msgstr "``routing-strategy: slo`` （请求头）"
+
+#: ../../source/features/heterogeneous-gpu.rst:174
+msgid ""
+"Turn on SLO-aware routing for the request. Variants: ``slo-pack-load``, "
+"``slo-least-load``, ``slo-least-load-pulling`` (the default for ``slo``)."
+msgstr ""
+"为该请求启用 SLO 感知路由。变体：``slo-pack-load`` 、``slo-least-load`` 、``slo-least-load-pulling`` "
+"（``slo`` 的默认值）。"
+
+#: ../../source/features/heterogeneous-gpu.rst:178
+msgid "Routing Support"
+msgstr "路由支持"
+
+#: ../../source/features/heterogeneous-gpu.rst:180
+msgid ""
+"During the performance evaluation, we observed that the existing routing "
+"policy does not adequately account for the varying serving capacities of "
+"heterogeneous GPUs. Specifically, the subsequent plot illustrates that "
+"the current routing strategy fails to adhere to the specified Service "
+"Level Objective (SLO)."
+msgstr ""
+"性能评估中发现，现有路由策略未能充分反映异构 GPU 不同的服务能力。下图表明当前路由策略无法满足指定的服务水平目标（SLO）。"
+
+#: ../../source/features/heterogeneous-gpu.rst:182
+#: ../../source/features/heterogeneous-gpu.rst:214
+#: ../../source/features/heterogeneous-gpu.rst:227
+msgid "SLO Routing Motivation Plot"
+msgstr "SLO 路由动机图"
+
+#: ../../source/features/heterogeneous-gpu.rst:187
+msgid "The experimental configuration is as follows:"
+msgstr "实验配置如下："
+
+#: ../../source/features/heterogeneous-gpu.rst:189
+msgid "SLO: P99 latency per token ≤ 0.05 seconds."
+msgstr "SLO：每 token 的 P99 延迟 ≤ 0.05 秒。"
+
+#: ../../source/features/heterogeneous-gpu.rst:190
+msgid ""
+"Workloads: A mixed workload comprising `ShareGPT "
+"<https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered>`_"
+" (7 RPS) and CodeGeneration tasks (4 RPS), characterized by long prompts "
+"(over 4K tokens) and short responses (32-64 tokens)."
+msgstr ""
+"工作负载：由 `ShareGPT <https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered>`_ "
+"（7 RPS）和 CodeGeneration 任务（4 RPS）组成的混合负载，特征为长 prompt（超过 4K token）和短响应（32-64 "
+"token）。"
+
+#: ../../source/features/heterogeneous-gpu.rst:191
+msgid ""
+"GPUs: A heterogeneous GPU environment consisting of NVIDIA A10 and NVIDIA"
+" L20 GPUs."
+msgstr "GPU：由 NVIDIA A10 和 NVIDIA L20 组成的异构 GPU 环境。"
+
+#: ../../source/features/heterogeneous-gpu.rst:193
+msgid ""
+"Our experiments indicate that an ideal routing scenario (Oracle) would "
+"assign ShareGPT workloads exclusively to A10 GPUs and CodeGeneration "
+"workloads exclusively to L20 GPUs. However, the existing routing policy "
+"(woRouting) randomly distributes requests between A10 and L20 GPUs, "
+"failing to replicate this ideal scenario. For comparative purposes, we "
+"also evaluated a scenario where all requests are handled solely by the "
+"more capable L20 GPUs (Scalar). Results demonstrated that although GPU "
+"optimizers can identify an optimal GPU configuration (Oracle Cost), the "
+"current routing policy results in significant performance degradation, "
+"queue accumulation at the gateway, unstable GPU configurations, and "
+"consistent violations of the SLO."
+msgstr ""
+"实验表明，理想路由场景（Oracle）会将 ShareGPT 负载全部交给 A10 GPU，将 CodeGeneration 负载全部交给 L20 GPU。现有路由策略（woRouting）则在 A10 与 L20 之间随机分配请求，无法复现该理想场景。作为对比，还评估了全部请求仅由能力更强的 L20 GPU 处理的场景（Scalar）。结果表明，尽管 GPU optimizer 能找出最优 GPU 配置（Oracle Cost），当前路由策略仍会导致明显性能下降、网关排队积压、GPU 配置不稳定，并持续违反 SLO。"
+
+#: ../../source/features/heterogeneous-gpu.rst:195
+msgid ""
+"SLO routing policy was introduced in version v0.4.0 to address "
+"performance issues in heterogeneous GPU deployments. Requests must "
+"explicitly specify the ``routing-strategy: slo`` header to enable the SLO"
+" routing policy. Additionally, profiling data for each workload on each "
+"GPU is required to activate this policy effectively."
+msgstr ""
+"SLO 路由策略在 v0.4.0 引入，用于解决异构 GPU 部署中的性能问题。请求必须显式指定 ``routing-strategy: slo`` 请求头才能启用该策略。此外，每种工作负载在每种 GPU 上的 profiling 数据也是有效启用该策略所必需的。"
+
+#: ../../source/features/heterogeneous-gpu.rst:197
+msgid "An example request applying the SLO routing policy is shown below:"
+msgstr "应用 SLO 路由策略的请求示例如下："
+
+#: ../../source/features/heterogeneous-gpu.rst:212
+msgid ""
+"In the same experimental settings, the SLO routing policy demonstrated "
+"its capability to achieve the targeted performance objectives."
+msgstr "在相同实验设置下，SLO 路由策略能够达到目标性能。"
+
+#: ../../source/features/heterogeneous-gpu.rst:219
+msgid ""
+"The SLO routing policy currently supports three variations: ``slo-pack-"
+"load``, ``slo-least-load``, and ``slo-least-load-pulling``(default policy"
+" when ``slo`` is specified). Each variation routes requests to GPUs "
+"likely to meet their respective SLOs but differ in handling requests "
+"among GPUs of the same type:"
+msgstr ""
+"SLO 路由策略目前支持三种变体：``slo-pack-load`` 、``slo-least-load`` 和 ``slo-least-load-pulling`` "
+"（指定 ``slo`` 时的默认策略）。各变体都会将请求路由到更可能满足对应 SLO 的 GPU，但在同类型 GPU 之间的分配方式不同："
+
+#: ../../source/features/heterogeneous-gpu.rst:221
+msgid ""
+"``slo-pack-load``: Prefers consolidating requests onto a single GPU if "
+"profiling suggests no SLO violation."
+msgstr "``slo-pack-load`` ：若 profiling 表明不会违反 SLO，优先将请求集中到单个 GPU。"
+
+#: ../../source/features/heterogeneous-gpu.rst:222
+msgid ""
+"``slo-least-load``: Prefers routing requests to the least-loaded GPU of "
+"the same type, ignoring SLO violation predictions from profiling."
+msgstr "``slo-least-load`` ：优先将请求路由到同类型中负载最低的 GPU，忽略 profiling 对 SLO 违反的预测。"
+
+#: ../../source/features/heterogeneous-gpu.rst:223
+msgid ""
+"``slo-least-load-pulling``: Prefers routing requests to the least-loaded "
+"GPU of the same type. Requests predicted to violate the SLO are queued at"
+" the gateway and rejected if the SLO has already been breached."
+msgstr ""
+"``slo-least-load-pulling`` ：优先将请求路由到同类型中负载最低的 GPU。预测会违反 SLO 的请求在网关排队，若 SLO "
+"已被突破则拒绝。"
+
+#: ../../source/features/heterogeneous-gpu.rst:225
+msgid ""
+"The following figure compares the performance of the ``slo/slo-least-"
+"load-pulling`` and ``slo-pack-load`` variations. ``least-request`` policy"
+" is used as the baseline for a fair comparison."
+msgstr ""
+"下图比较 ``slo/slo-least-load-pulling`` 与 ``slo-pack-load`` 变体的性能。以 ``least-request`` 策略作为公平对比的基线。"

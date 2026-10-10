@@ -1,0 +1,330 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/development/development.rst:5
+msgid "Development"
+msgstr "开发"
+
+#: ../../source/development/development.rst:8
+msgid "Source Code Development"
+msgstr "源码开发"
+
+#: ../../source/development/development.rst:11
+msgid "Build from Source"
+msgstr "从源码构建"
+
+#: ../../source/development/development.rst:13
+msgid "Build all binaries:"
+msgstr "构建全部二进制："
+
+#: ../../source/development/development.rst:19
+msgid "Build specific components:"
+msgstr "构建指定组件："
+
+#: ../../source/development/development.rst:33
+msgid "Code Generation"
+msgstr "代码生成"
+
+#: ../../source/development/development.rst:35
+msgid "After modifying APIs or custom resources:"
+msgstr "修改 API 或自定义资源后："
+
+#: ../../source/development/development.rst:46
+msgid "Code Quality"
+msgstr "代码质量"
+
+#: ../../source/development/development.rst:48
+msgid "Run linter to check code style and catch issues:"
+msgstr "运行 linter 检查代码风格并发现问题："
+
+#: ../../source/development/development.rst:59
+msgid "Testing Framework"
+msgstr "测试框架"
+
+#: ../../source/development/development.rst:61
+msgid ""
+"AIBrix includes a comprehensive testing suite with unit tests, "
+"integration tests, and end-to-end tests."
+msgstr "AIBrix 提供完整测试套件，包括单元测试、集成测试和端到端测试。"
+
+#: ../../source/development/development.rst:64
+msgid "Development Workflow"
+msgstr "开发工作流"
+
+#: ../../source/development/development.rst:66
+msgid "**Write tests first** - Add unit/integration tests for new features"
+msgstr "**先写测试** - 为新功能添加单元/集成测试"
+
+#: ../../source/development/development.rst:67
+msgid "**Run locally** - Use ``make test`` and ``make test-integration``"
+msgstr "**本地运行** - 使用 ``make test`` 和 ``make test-integration``"
+
+#: ../../source/development/development.rst:68
+msgid "**E2E validation** - Run ``make test-e2e`` before submitting changes"
+msgstr "**E2E 验证** - 提交变更前运行 ``make test-e2e``"
+
+#: ../../source/development/development.rst:71
+msgid "Unit Tests"
+msgstr "单元测试"
+
+#: ../../source/development/development.rst:73
+msgid "Unit tests are located alongside source code (``*_test.go`` files):"
+msgstr "单元测试与源码放在一起（``*_test.go`` 文件）："
+
+#: ../../source/development/development.rst:84
+msgid "Integration Tests"
+msgstr "集成测试"
+
+#: ../../source/development/development.rst:86
+msgid "Integration tests use Ginkgo framework to test component interactions:"
+msgstr "集成测试使用 Ginkgo 框架验证组件交互："
+
+#: ../../source/development/development.rst:99
+msgid "End-to-End Tests"
+msgstr "端到端测试"
+
+#: ../../source/development/development.rst:101
+msgid ""
+"E2E tests validate complete AIBrix functionality against a running "
+"Kubernetes cluster."
+msgstr "E2E 测试在运行中的 Kubernetes 集群上验证完整的 AIBrix 功能。"
+
+#: ../../source/development/development.rst:103
+msgid "**Development Environment (Local Testing):**"
+msgstr "**开发环境（本地测试）：**"
+
+#: ../../source/development/development.rst:105
+msgid "For local development where cluster and AIBrix are already running:"
+msgstr "适用于集群和 AIBrix 已在运行的本地开发："
+
+#: ../../source/development/development.rst:107
+msgid "Prerequisites for Development Mode:"
+msgstr "开发模式前置条件："
+
+#: ../../source/development/development.rst:109
+msgid "Kubernetes cluster is running and accessible"
+msgstr "Kubernetes 集群正在运行且可访问"
+
+#: ../../source/development/development.rst:110
+msgid "AIBrix is deployed and healthy"
+msgstr "AIBrix 已部署且健康"
+
+#: ../../source/development/development.rst:122
+msgid "**CI Environment (Automated Testing):**"
+msgstr "**CI 环境（自动化测试）：**"
+
+#: ../../source/development/development.rst:124
+msgid "For CI pipelines that need full cluster setup and teardown:"
+msgstr "适用于需要完整集群创建与清理的 CI 流水线："
+
+#: ../../source/development/development.rst:134
+msgid ""
+"Environment Variables: - ``KIND_E2E=true`` - Creates Kind cluster with "
+"proper configuration - ``INSTALL_AIBRIX=true`` - Builds images, installs "
+"dependencies, and deploys AIBrix - ``SKIP_KUBECTL_INSTALL=true`` - Skip "
+"kubectl installation (default: true) - ``SKIP_KIND_INSTALL=true`` - Skip "
+"Kind installation (default: true)"
+msgstr ""
+"环境变量： - ``KIND_E2E=true`` - 创建配置正确的 Kind 集群 - ``INSTALL_AIBRIX=true`` - 构建镜像、安装"
+"依赖并部署 AIBrix - ``SKIP_KUBECTL_INSTALL=true`` - 跳过 "
+"kubectl 安装（默认：true） - ``SKIP_KIND_INSTALL=true`` - 跳过 "
+"Kind 安装（默认：true）"
+
+#: ../../source/development/development.rst:141
+msgid "Container Images and Deployment"
+msgstr "容器镜像与部署"
+
+#: ../../source/development/development.rst:144
+msgid "Building Container Images"
+msgstr "构建容器镜像"
+
+#: ../../source/development/development.rst:146
+msgid ""
+"We encourage contributors to build and test AIBrix on local dev "
+"environment for most cases. If you use Macbook, `Docker for Desktop "
+"<https://www.docker.com/products/docker-desktop/>`_ is the most "
+"convenient tool to use."
+msgstr ""
+"多数情况下，我们鼓励贡献者在本地开发环境构建并测试 AIBrix。如果使用 Macbook，`Docker for Desktop "
+"<https://www.docker.com/products/docker-desktop/>`_ 是最方便的工具。"
+
+#: ../../source/development/development.rst:149
+msgid "Build ``nightly`` docker images:"
+msgstr "构建 ``nightly`` Docker 镜像："
+
+#: ../../source/development/development.rst:159
+msgid "Quick Deployment to Dev Environment"
+msgstr "快速部署到开发环境"
+
+#: ../../source/development/development.rst:161
+msgid ""
+"Run following command to quickly deploy the latest code changes to your "
+"dev kubernetes environment:"
+msgstr "运行以下命令，将最新代码变更快速部署到开发用 Kubernetes 环境："
+
+#: ../../source/development/development.rst:168
+msgid "If you want to clean up everything and reinstall the latest code:"
+msgstr "如果要清理全部内容并重新安装最新代码："
+
+#: ../../source/development/development.rst:176
+msgid "Complete Development Setup with Kind"
+msgstr "使用 Kind 完成完整开发环境搭建"
+
+#: ../../source/development/development.rst:178
+msgid "For a complete local development environment with monitoring:"
+msgstr "如需带监控的完整本地开发环境："
+
+#: ../../source/development/development.rst:195
+msgid "Manual Testing with CPU-only vLLM"
+msgstr "使用仅 CPU 的 vLLM 进行手动测试"
+
+#: ../../source/development/development.rst:197
+msgid ""
+"This section explains how to manually test AIBrix with vLLM in a local "
+"Kubernetes cluster using CPU-only environments (e.g., for macOS or Linux "
+"dev)."
+msgstr ""
+"本节说明如何在仅 CPU 环境（例如 macOS 或 Linux 开发机）的本地 Kubernetes 集群中，"
+"使用 vLLM 手动测试 AIBrix。"
+
+#: ../../source/development/development.rst:200
+msgid "Setup Local Environment"
+msgstr "搭建本地环境"
+
+#: ../../source/development/development.rst:202
+msgid "Download model locally using Hugging Face CLI:"
+msgstr "使用 Hugging Face CLI 在本地下载模型："
+
+#: ../../source/development/development.rst:208
+msgid ""
+"Start local cluster with kind (edit ``kind-config.yaml`` to mount your "
+"model cache):"
+msgstr "使用 kind 启动本地集群（编辑 ``kind-config.yaml`` 以挂载模型缓存）："
+
+#: ../../source/development/development.rst:214
+msgid "Build and load images:"
+msgstr "构建并加载镜像："
+
+#: ../../source/development/development.rst:221
+msgid "Load CPU environment image for your platform:"
+msgstr "为你的平台加载 CPU 环境镜像："
+
+#: ../../source/development/development.rst:223
+#: ../../source/development/development.rst:242
+msgid "**For macOS:**"
+msgstr "**macOS：**"
+
+#: ../../source/development/development.rst:230
+#: ../../source/development/development.rst:248
+msgid "**For Linux:**"
+msgstr "**Linux：**"
+
+#: ../../source/development/development.rst:238
+msgid "Deploy and Test vLLM Model"
+msgstr "部署并测试 vLLM 模型"
+
+#: ../../source/development/development.rst:240
+msgid "Deploy vLLM model in kind cluster:"
+msgstr "在 kind 集群中部署 vLLM 模型："
+
+#: ../../source/development/development.rst:254
+msgid "Access model endpoint:"
+msgstr "访问模型端点："
+
+#: ../../source/development/development.rst:260
+msgid "Query locally:"
+msgstr "在本地查询："
+
+#: ../../source/development/development.rst:275
+msgid "Practical Notes"
+msgstr "实用说明"
+
+#: ../../source/development/development.rst:277
+msgid ""
+"``vllm-cpu-env`` is ideal for development and debugging. Inference "
+"latency will be high due to CPU-only backend."
+msgstr "``vllm-cpu-env`` 适合开发和调试。由于仅使用 CPU 后端，推理延迟会较高。"
+
+#: ../../source/development/development.rst:278
+msgid ""
+"Be sure to mount your Hugging Face model cache directory, or the "
+"container will re-download it online."
+msgstr "请务必挂载 Hugging Face 模型缓存目录，否则容器会在线重新下载。"
+
+#: ../../source/development/development.rst:279
+msgid "Confirm both ``runtime`` and ``env`` images are loaded into kind."
+msgstr "确认 ``runtime`` 和 ``env`` 镜像都已加载到 kind。"
+
+#: ../../source/development/development.rst:280
+msgid "Use ``kubectl logs`` or ``kubectl exec`` to debug model pod issues."
+msgstr "使用 ``kubectl logs`` 或 ``kubectl exec`` 调试模型 Pod 问题。"
+
+#: ../../source/development/development.rst:283
+msgid "Debugging"
+msgstr "调试"
+
+#: ../../source/development/development.rst:286
+msgid "Debugging Gateway IPs"
+msgstr "调试网关 IP"
+
+#: ../../source/development/development.rst:297
+msgid ""
+"Please also follow `debugging guidelines "
+"<https://aibrix.readthedocs.io/latest/features/gateway-plugins.html"
+"#debugging-guidelines>`_."
+msgstr ""
+"也请遵循 `调试指南 <https://aibrix.readthedocs.io/latest/features/gateway-plugins.html#debugging-guidelines>`_ "
+"。"
+
+#: ../../source/development/development.rst:300
+msgid "Mocked CPU App"
+msgstr "模拟 CPU 应用"
+
+#: ../../source/development/development.rst:302
+msgid ""
+"In order to run the control plane and data plane e2e in development "
+"environments, we build a mocked app to mock a model server. Now, it "
+"supports basic model inference, metrics and lora feature. Feel free to "
+"enrich the features. Check ``development`` folder for more details."
+msgstr ""
+"为了在开发环境中运行控制面和数据面的端到端流程，我们构建了一个模拟应用来模拟模型服务。"
+"目前支持基础模型推理、指标和 LoRA 功能。欢迎扩充功能。更多细节见 ``development`` 目录。"
+
+#: ../../source/development/development.rst:306
+msgid "GPU Testing Environment"
+msgstr "GPU 测试环境"
+
+#: ../../source/development/development.rst:308
+msgid ""
+"If you need to test the model in real GPU environment, we highly "
+"recommend `Lambda Labs <https://lambdalabs.com/>`_ platform to install "
+"and test kind based deployment."
+msgstr ""
+"如果需要在真实 GPU 环境中测试模型，我们强烈建议使用 `Lambda Labs <https://lambdalabs.com/>`_ "
+"平台安装并测试基于 kind 的部署。"
+
+#: ../../source/development/development.rst:311
+msgid ""
+"Kind itself doesn't support GPU yet. In order to use the kind version "
+"with GPU support, feel free to checkout `nvkind "
+"<https://github.com/klueska/nvkind>`_."
+msgstr ""
+"Kind 本身尚不支持 GPU。如需带 GPU 支持的 kind 版本，可查看 `nvkind <https://github.com/klueska/nvkind>`_ "
+"。"

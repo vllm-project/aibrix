@@ -113,6 +113,7 @@ func (c *PrefixHashTable) GetDeltaForSync(ctx context.Context) (updated map[stri
 	// encoding. Block.modelToPods contains maps (reference types), so a deep
 	// copy is required before releasing the lock.
 	c.mu.RLock()
+	c.deltaSeq.Store(c.dirtySeq)
 	if len(c.dirtyIds) == 0 {
 		c.mu.RUnlock()
 		return nil, nil, nil
@@ -168,11 +169,17 @@ func copyBlock(b Block) Block {
 	return out
 }
 
-// ClearDirtyForSync clears the dirty set after a successful delta push.
+// ClearDirtyForSync clears the blocks returned by the last GetDeltaForSync after
+// a successful delta push. Blocks changed after that call stay dirty.
 func (c *PrefixHashTable) ClearDirtyForSync(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.dirtyIds = make(map[string]struct{})
+	pushed := c.deltaSeq.Load()
+	for id, seq := range c.dirtyIds {
+		if seq <= pushed {
+			delete(c.dirtyIds, id)
+		}
+	}
 	return nil
 }
 

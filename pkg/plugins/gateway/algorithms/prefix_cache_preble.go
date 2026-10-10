@@ -62,8 +62,8 @@ type SlidingWindowHistogram struct {
 	timestamps                 []histogramEntry
 	numPods                    int
 	podAllocations             map[*prefixcacheindexer.TreeNode]map[int]bool
-	currentDecodeLengthsPerPod map[string]int       // pod name -> total decode length
-	avgTimePerTokenPerPod      map[string][]float64 // pod name -> list of time/token measurements
+	currentDecodeLengthsPerPod map[string]int       // pod key (namespace/name) -> total decode length
+	avgTimePerTokenPerPod      map[string][]float64 // pod key (namespace/name) -> list of time/token measurements
 	perNodeTotalDecodeLengths  map[*prefixcacheindexer.TreeNode]int
 	// currentPrefillCostPerPod   map[string]float64 // pod name -> prefill cost
 	// perNodePrefillCost         map[*prefixcacheindexer.TreeNode]float64
@@ -200,7 +200,10 @@ func calculateAttnQuadV100(numTokens int, seqLen *int) float64 {
 	return attnQuad / 1000.0
 }
 
-func (h *SlidingWindowHistogram) getPrefillCost(node *prefixcacheindexer.TreeNode) float64 {
+// getPrefillCost estimates the prefill time of one prefix-cache node under the
+// GPU model this request assumes. gpu is the environment default unless the
+// request's model config profile overrides it.
+func (h *SlidingWindowHistogram) getPrefillCost(node *prefixcacheindexer.TreeNode, gpu string) float64 {
 	missRate := 1.0
 	if h.promptTokens[node] > 0 {
 		missRate = 1.0 - (float64(h.hitTokens[node]) / float64(h.promptTokens[node]))
@@ -208,24 +211,24 @@ func (h *SlidingWindowHistogram) getPrefillCost(node *prefixcacheindexer.TreeNod
 	numTokens := node.NumTokens()
 	contextLength := node.ContextLength()
 	baseTime := 0.0
-	switch targetGPU {
+	switch gpu {
 	case "A6000":
 		baseTime = mistral7BA6000LinearTime(numTokens) + mistral7BA6000AttentionTime(1, contextLength, numTokens)
 	case "V100":
 		baseTime = mistral7BV100LinearTime(numTokens) + mistral7BV100AttentionTime(1, contextLength, numTokens)
 	default:
-		klog.Warningf("Unknown target GPU: %s. Assume V100 as default", targetGPU)
+		klog.Warningf("Unknown target GPU: %s. Assume V100 as default", gpu)
 		baseTime = mistral7BV100LinearTime(numTokens) + mistral7BV100AttentionTime(1, contextLength, numTokens)
 	}
 
 	attnQuad := 0.0
-	switch targetGPU {
+	switch gpu {
 	case "A6000":
 		attnQuad = calculateAttnQuadA6000(numTokens, nil)
 	case "V100":
 		attnQuad = calculateAttnQuadV100(numTokens, nil)
 	default:
-		klog.Warningf("Unknown target GPU: %s. Assume V100 as default", targetGPU)
+		klog.Warningf("Unknown target GPU: %s. Assume V100 as default", gpu)
 		attnQuad = calculateAttnQuadV100(numTokens, nil)
 	}
 	prefillTime := (baseTime + attnQuad) / 0.9
@@ -349,12 +352,12 @@ func (h *SlidingWindowHistogram) getSimplePrefillCost(node *prefixcacheindexer.T
 	return missRate * float64(h.nodeToCount[node]) * prefillTime
 }
 
-func (h *SlidingWindowHistogram) getNodeCost(node *prefixcacheindexer.TreeNode, podName string) float64 {
+func (h *SlidingWindowHistogram) getNodeCost(node *prefixcacheindexer.TreeNode, podKey string, gpu string) float64 {
 	// prefillCost := h.getSimplePrefillCost(node)
-	prefillCost := h.getPrefillCost(node)
+	prefillCost := h.getPrefillCost(node, gpu)
 	// Get median time per token for the pod
 	timePerToken := 0.15 // default value
-	if times, ok := h.avgTimePerTokenPerPod[podName]; ok && len(times) > 0 {
+	if times, ok := h.avgTimePerTokenPerPod[podKey]; ok && len(times) > 0 {
 		sort.Float64s(times)
 		timePerToken = times[len(times)/2] // median
 	}
@@ -363,7 +366,10 @@ func (h *SlidingWindowHistogram) getNodeCost(node *prefixcacheindexer.TreeNode, 
 	return prefillCost + decodeCost
 }
 
-func (h *SlidingWindowHistogram) getCurrentAllocationCostPerPod() map[string]float64 {
+// getCurrentAllocationCostPerPod estimates the current allocation cost of every
+// pod, keyed by pod key (namespace/name). gpu is the GPU model the cost estimator assumes, as passed to
+// getPrefillCost.
+func (h *SlidingWindowHistogram) getCurrentAllocationCostPerPod(gpu string) map[string]float64 {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -371,18 +377,20 @@ func (h *SlidingWindowHistogram) getCurrentAllocationCostPerPod() map[string]flo
 	for node := range h.histogram {
 		// Iterate through all models and their pods for this node
 		for _, modelPods := range node.GetModelToPods() {
-			for podName := range modelPods {
-				costs[podName] += h.getNodeCost(node, podName)
+			for podKey := range modelPods {
+				costs[podKey] += h.getNodeCost(node, podKey, gpu)
 			}
 		}
 	}
 	return costs
 }
 
+// updatePodSet drops pods that are no longer ready from the prefix tree and the
+// histogram. The tree and the histogram identify pods by pod key (namespace/name).
 func (p *prefixCacheAndLoadRouter) updatePodSet(readyPods []*v1.Pod) {
 	currentPodSet := make(map[string]bool)
 	for _, pod := range readyPods {
-		currentPodSet[pod.Name] = true
+		currentPodSet[utils.GeneratePodKey(pod.Namespace, pod.Name)] = true
 	}
 	allNodes := p.cache.GetAllNodes()
 	podsChanged := false
@@ -413,10 +421,10 @@ func (p *prefixCacheAndLoadRouter) updatePodSet(readyPods []*v1.Pod) {
 		h.numPods = len(currentPodSet)
 
 		// Clean up pod-specific maps
-		for podName := range h.currentDecodeLengthsPerPod {
-			if !currentPodSet[podName] {
-				delete(h.currentDecodeLengthsPerPod, podName)
-				delete(h.avgTimePerTokenPerPod, podName)
+		for podKey := range h.currentDecodeLengthsPerPod {
+			if !currentPodSet[podKey] {
+				delete(h.currentDecodeLengthsPerPod, podKey)
+				delete(h.avgTimePerTokenPerPod, podKey)
 			}
 		}
 
@@ -445,24 +453,18 @@ func (p *prefixCacheAndLoadRouter) updatePodSet(readyPods []*v1.Pod) {
 	}
 }
 
-func readyPodsByName(readyPods []*v1.Pod) map[string]*v1.Pod {
-	indexed := make(map[string]*v1.Pod, len(readyPods))
-	for _, pod := range readyPods {
-		indexed[pod.Name] = pod
-	}
-	return indexed
-}
-
-func collectMatchedReadyPods(modelPods map[string]time.Time, readyPodsByName map[string]*v1.Pod) ([]*v1.Pod, []string) {
+// collectMatchedReadyPods returns the ready pods among modelPods, a tree node's
+// pods for one model keyed by pod key, together with their pod keys.
+func collectMatchedReadyPods(modelPods map[string]time.Time, readyPodsByKey map[string]*v1.Pod) ([]*v1.Pod, []string) {
 	matchedPods := make([]*v1.Pod, 0, len(modelPods))
-	matchedPodNames := make([]string, 0, len(modelPods))
-	for podName := range modelPods {
-		if pod, exists := readyPodsByName[podName]; exists {
+	matchedPodKeys := make([]string, 0, len(modelPods))
+	for podKey := range modelPods {
+		if pod, exists := readyPodsByKey[podKey]; exists {
 			matchedPods = append(matchedPods, pod)
-			matchedPodNames = append(matchedPodNames, podName)
+			matchedPodKeys = append(matchedPodKeys, podKey)
 		}
 	}
-	return matchedPods, matchedPodNames
+	return matchedPods, matchedPodKeys
 }
 
 func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
@@ -481,19 +483,19 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 		klog.InfoS("Request processing", "requestID", ctx.RequestID, "updatePodSet", p.numPods)
 	}
 
-	tokens, err := utils.TokenizeInputText(ctx.Message)
+	tokens, err := utils.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
 		klog.Errorf("requestID: %s, Tokenization failed: %v", ctx.RequestID, err)
 		return "", err
 	}
 
 	node, matchedTokens, _ := p.cache.AddPrefix(tokens, ctx.Model, "")
-	readyPodsMap := readyPodsByName(readyPods)
+	readyPodsMap := podsByKey(readyPods)
 
 	var matchedPods []*v1.Pod
-	var matchedPodsNames []string
+	var matchedPodKeys []string
 	if modelPods, ok := node.GetModelToPods()[ctx.Model]; ok {
-		matchedPods, matchedPodsNames = collectMatchedReadyPods(modelPods, readyPodsMap)
+		matchedPods, matchedPodKeys = collectMatchedReadyPods(modelPods, readyPodsMap)
 	}
 
 	var targetPod *v1.Pod
@@ -502,7 +504,7 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 		matchRatio = float64(len(matchedTokens)) / float64(len(tokens))
 	}
 	prefixRoutingThreshold := 0.5
-	klog.InfoS("Prefix cache match statistics", "requestID", ctx.RequestID, "matchedTokens", len(matchedTokens), "totalTokens", len(tokens), "matchingRatio", matchRatio*100, "matchedPodsNamesCount", len(matchedPods), "matchedPodsNames", matchedPodsNames)
+	klog.InfoS("Prefix cache match statistics", "requestID", ctx.RequestID, "matchedTokens", len(matchedTokens), "totalTokens", len(tokens), "matchingRatio", matchRatio*100, "matchedPodsCount", len(matchedPods), "matchedPodKeys", matchedPodKeys)
 
 	if matchRatio > prefixRoutingThreshold {
 		klog.InfoS("Do prefix-aware routing", "requestID", ctx.RequestID, "matchRatio", matchRatio, "threshold", prefixRoutingThreshold)
@@ -552,10 +554,11 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 
 	if targetPod == nil {
 		klog.InfoS("Do cost model based routing", "requestID", ctx.RequestID, "matchRatio", matchRatio*100, "matchedPodsCount", len(matchedPods))
-		podCosts := p.histogram.getCurrentAllocationCostPerPod()
+		gpu := ctx.RoutingOverrides().Preble.TargetGPU
+		podCosts := p.histogram.getCurrentAllocationCostPerPod(gpu)
 		minCost := math.MaxFloat64
 		for _, pod := range readyPods {
-			cost := podCosts[pod.Name]
+			cost := podCosts[utils.GeneratePodKey(pod.Namespace, pod.Name)]
 			klog.InfoS("Pod cost", "podName", pod.Name, "cost", cost)
 			if cost < minCost {
 				minCost = cost
@@ -595,19 +598,21 @@ func (p *prefixCacheAndLoadRouter) PostRouteUpdate(ctx *types.RoutingContext, re
 		p.podsMu.Unlock()
 	}
 
-	tokens, err := utils.TokenizeInputText(ctx.Message)
+	tokens, err := utils.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
 		return err
 	}
 
 	node, _, _ := p.cache.AddPrefix(tokens, ctx.Model, "")
+	targetPodKey := utils.GeneratePodKey(targetPod.Namespace, targetPod.Name)
 	currentNode := node
 	for currentNode != nil {
-		currentNode.AddOrUpdatePodForModel(ctx.Model, targetPod.Name, time.Now())
+		currentNode.AddOrUpdatePodForModel(ctx.Model, targetPodKey, time.Now())
 		currentNode = currentNode.GetParent()
 	}
 
-	p.histogram.update(time.Now(), node, node, targetPod.Name, decodingLength)
+	decodeLen := ctx.RoutingOverrides().Preble.DecodingLength
+	p.histogram.update(time.Now(), node, node, targetPodKey, decodeLen)
 	return nil
 }
 
@@ -631,7 +636,7 @@ func (p *prefixCacheAndLoadRouter) ScoreAll(ctx *types.RoutingContext, readyPodL
 		p.podsMu.Unlock()
 	}
 
-	tokens, err := utils.TokenizeInputText(ctx.Message)
+	tokens, err := utils.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -642,7 +647,7 @@ func (p *prefixCacheAndLoadRouter) ScoreAll(ctx *types.RoutingContext, readyPodL
 		matchRatio = float64(len(matchedTokens)) / float64(len(tokens))
 	}
 	prefixRoutingThreshold := 0.5
-	readyPodsMap := readyPodsByName(readyPods)
+	readyPodsMap := podsByKey(readyPods)
 
 	if matchRatio > prefixRoutingThreshold {
 		var prefixMatches []prefixMatch
@@ -668,13 +673,13 @@ func (p *prefixCacheAndLoadRouter) ScoreAll(ctx *types.RoutingContext, readyPodL
 
 		if len(prefixMatches) > 0 {
 			longestMatch := prefixMatches[0]
-			matchedPodsSet := make(map[string]bool)
+			matchedPodsSet := make(map[*v1.Pod]bool)
 			for _, pod := range longestMatch.pods {
-				matchedPodsSet[pod.Name] = true
+				matchedPodsSet[pod] = true
 			}
 
 			for i, pod := range readyPods {
-				if matchedPodsSet[pod.Name] {
+				if matchedPodsSet[pod] {
 					load := p.histogram.getPodLoad(pod)
 					// Smaller load is better, so we use load as score (polarity is least)
 					scores[i] = float64(load)
@@ -688,9 +693,10 @@ func (p *prefixCacheAndLoadRouter) ScoreAll(ctx *types.RoutingContext, readyPodL
 	}
 
 	// Cost model based routing
-	podCosts := p.histogram.getCurrentAllocationCostPerPod()
+	gpu := ctx.RoutingOverrides().Preble.TargetGPU
+	podCosts := p.histogram.getCurrentAllocationCostPerPod(gpu)
 	for i, pod := range readyPods {
-		cost := podCosts[pod.Name]
+		cost := podCosts[utils.GeneratePodKey(pod.Namespace, pod.Name)]
 		scores[i] = cost
 		scored[i] = true
 	}
@@ -708,9 +714,10 @@ func (h *SlidingWindowHistogram) getPodLoad(pod *v1.Pod) int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	load := 0
+	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 	for node, count := range h.nodeToCount {
 		for _, podMap := range node.GetModelToPods() {
-			if _, exists := podMap[pod.Name]; exists {
+			if _, exists := podMap[podKey]; exists {
 				load += count
 				break // Found this pod in this node, no need to check other models
 			}
@@ -719,8 +726,8 @@ func (h *SlidingWindowHistogram) getPodLoad(pod *v1.Pod) int {
 	return load
 }
 
-// Update histogram to use pod name instead of pod ID
-func (h *SlidingWindowHistogram) update(timestamp time.Time, node, leafNode *prefixcacheindexer.TreeNode, podName string, decodingLength int) {
+// update records a request routed to the pod with podKey (namespace/name).
+func (h *SlidingWindowHistogram) update(timestamp time.Time, node, leafNode *prefixcacheindexer.TreeNode, podKey string, decodingLength int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -743,6 +750,6 @@ func (h *SlidingWindowHistogram) update(timestamp time.Time, node, leafNode *pre
 	// h.currentPrefillCostPerPod[podName] += newCost
 	// h.perNodePrefillCost[node] = newCost
 
-	h.currentDecodeLengthsPerPod[podName] += decodingLength
+	h.currentDecodeLengthsPerPod[podKey] += decodingLength
 	h.perNodeTotalDecodeLengths[node] += decodingLength
 }

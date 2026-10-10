@@ -61,7 +61,9 @@ if [ -n "$INSTALL_AIBRIX" ]; then
   make docker-build-all
   kind load docker-image aibrix/controller-manager:nightly aibrix/gateway-plugins:nightly aibrix/metadata-service:nightly aibrix/runtime:nightly
 
-  if [ "$AIBRIX_ROLESET_INPLACE_E2E" = "true" ]; then
+  if [ "$AIBRIX_E2E_SUITE" = "all" ] || [ "$AIBRIX_E2E_SUITE" = "controller" ]; then
+    # StormService lifecycle tests are part of the controller suite and always
+    # require these two small local images. RoleSet in-place tests reuse them.
     docker build \
       --build-arg INPLACE_E2E_VERSION=v1 \
       -t aibrix/inplace-e2e:v1 \
@@ -74,6 +76,13 @@ if [ -n "$INSTALL_AIBRIX" ]; then
       test/e2e/controller/roleset/inplace-image
     kind load docker-image aibrix/inplace-e2e:v1 aibrix/inplace-e2e:v2
   fi
+
+  # config/test always installs this fixture, so every install path must make
+  # its image available even when the selected suite does not run its tests.
+  docker build -t aibrix/external-router-e2e:nightly \
+    -f test/e2e/gateway/routing/testdata/external-router/Dockerfile \
+    test/e2e/gateway/routing/testdata/external-router
+  kind load docker-image aibrix/external-router-e2e:nightly
 
   kubectl apply -k config/dependency --server-side
   kubectl apply -k config/test
@@ -112,6 +121,10 @@ start_port_forwards() {
   kubectl port-forward svc/llama2-7b 8000:8000 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
   kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
   kubectl -n aibrix-system port-forward service/aibrix-redis-master 6379:6379 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
+  if [ "$AIBRIX_E2E_SUITE" = "all" ] || [ "$AIBRIX_E2E_SUITE" = "gateway" ]; then
+    kubectl -n aibrix-system port-forward service/external-router-e2e 18080:8080 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
+    export AIBRIX_E2E_EXTERNAL_ROUTER_ADMIN_URL=http://127.0.0.1:18080
+  fi
 }
 
 # Comprehensive cleanup function that handles both k8s resources and port forwards
@@ -179,6 +192,11 @@ case "$AIBRIX_E2E_SUITE" in
     exit 2
     ;;
 esac
+
+# -p also limits concurrent compile actions, so building under -p 1 is serial. Build every
+# test binary in parallel first; -run='^$' matches no tests.
+echo "Building $AIBRIX_E2E_SUITE e2e test binaries..."
+go test -count=1 -run='^$' "${E2E_PACKAGES[@]}"
 
 echo "Running $AIBRIX_E2E_SUITE e2e suite..."
 # E2E packages share one cluster, fixed mock resources, and Redis state. Keep package

@@ -1,0 +1,1508 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/features/pd-disaggregation.rst:5
+msgid "Prefill-Decode Disaggregation (PD)"
+msgstr "Prefill/Decode 分离（PD）"
+
+#: ../../source/features/pd-disaggregation.rst:7
+msgid ""
+"Modern LLM inference workloads are rarely uniform. Some requests contain "
+"long prompts that benefit from specialized execution pipelines, while "
+"others are short and interactive. Designing infrastructure that "
+"efficiently handles both types of requests can be challenging."
+msgstr ""
+"现代 LLM 推理负载很少是均一的。有些请求包含长 prompt，适合专用执行流水线；另一些"
+"则短且交互式。要设计能高效处理这两类请求的基础设施并不容易。"
+
+#: ../../source/features/pd-disaggregation.rst:9
+msgid ""
+"AIBrix addresses this with intelligent routing across different types of "
+"inference pods within the same deployment. Instead of forcing operators "
+"to choose one architecture or maintain separate deployments, AIBrix runs "
+"both approaches together and automatically decides which pod should "
+"handle each request."
+msgstr ""
+"AIBrix 通过在同一部署内对不同类型推理 Pod 做智能路由来解决这个问题。不必强迫运维"
+"只选一种架构或维护多套部署，AIBrix 可以同时运行两种方式，并自动决定每个请求由哪个"
+" Pod 处理。"
+
+#: ../../source/features/pd-disaggregation.rst:11
+msgid ""
+"LLM inference has two distinct phases. **Prefill** processes the entire "
+"input prompt in one shot — it is compute-intensive and fast. **Decode** "
+"generates output tokens one at a time — it is memory-bandwidth-bound and "
+"slow. In a standard deployment, both phases run on the same GPU, causing "
+"them to compete for resources."
+msgstr ""
+"LLM 推理有两个不同阶段。**Prefill** 一次性处理整个输入 prompt，计算密集且快。"
+"**Decode** 逐个生成输出 token，受内存带宽限制且慢。标准部署中两个阶段跑在同一块 "
+"GPU 上，会互相争抢资源。"
+
+#: ../../source/features/pd-disaggregation.rst:13
+msgid ""
+"**PD disaggregation** separates these phases onto dedicated pods, so each"
+" can be sized, tuned, and scaled independently. The result is higher GPU "
+"utilization and lower latency at scale."
+msgstr ""
+"**Prefill/Decode 分离** 把这两个阶段放到专用 Pod 上，从而可以独立定容、调参和"
+"扩缩容。结果是规模化时更高的 GPU 利用率和更低的延迟。"
+
+#: ../../source/features/pd-disaggregation.rst:15
+msgid ""
+"**Standard inference pods** run both phases end-to-end on a single GPU. "
+"They handle short interactive requests efficiently and absorb overflow "
+"traffic when PD resources are busy."
+msgstr ""
+"**标准推理 Pod** 在单块 GPU 上端到端运行两个阶段。它们能高效处理短交互请求，并在 "
+"PD 资源繁忙时吸收溢出流量。"
+
+#: ../../source/features/pd-disaggregation.rst:20
+msgid "On this page"
+msgstr "本页内容"
+
+#: ../../source/features/pd-disaggregation.rst:23
+msgid "Intelligent Routing Across Pod Types"
+msgstr "跨 Pod 类型的智能路由"
+
+#: ../../source/features/pd-disaggregation.rst:25
+msgid "Each pod type serves a different role:"
+msgstr "每种 Pod 承担不同角色："
+
+#: ../../source/features/pd-disaggregation.rst:27
+msgid ""
+"**Prefill/Decode pods** — Designed for workloads where separating prefill"
+" and decode stages improves efficiency. Particularly effective for long "
+"prompts or workloads dominated by heavy prompt processing."
+msgstr ""
+"**Prefill/Decode Pod** — 面向分离 prefill 与 decode 阶段能提升效率的负载。对长 "
+"prompt 或以重度 prompt 处理为主的负载尤其有效。"
+
+#: ../../source/features/pd-disaggregation.rst:28
+msgid ""
+"**Standard inference pods** — Execute the entire request lifecycle within"
+" a single process. Well suited for short prompts and interactive "
+"requests, and act as a safety valve when PD resources are saturated."
+msgstr ""
+"**标准推理 Pod** — 在单个进程内执行完整请求生命周期。适合短 prompt 和交互请求，"
+"并在 PD 资源饱和时充当安全阀。"
+
+#: ../../source/features/pd-disaggregation.rst:30
+msgid ""
+"The AIBrix gateway continuously evaluates system conditions and routes "
+"each request to the best available pod:"
+msgstr "AIBrix 网关持续评估系统状况，并把每个请求路由到当前最佳可用 Pod："
+
+#: ../../source/features/pd-disaggregation.rst:52
+msgid ""
+"The routing decision incorporates several signals: current pod load, "
+"queue depth, pod availability, and scoring logic used to rank candidate "
+"pods. This allows AIBrix to distribute traffic efficiently while "
+"maintaining stable latency."
+msgstr ""
+"路由决策会综合多个信号：当前 Pod 负载、队列深度、Pod 可用性，以及用于给候选 Pod "
+"排序的打分逻辑。从而在保持延迟稳定的同时高效分发流量。"
+
+#: ../../source/features/pd-disaggregation.rst:54
+msgid "**Key benefits:**"
+msgstr "**主要收益：**"
+
+#: ../../source/features/pd-disaggregation.rst:56
+msgid ""
+"**Optimized handling of mixed workloads** — Long prompts are routed to "
+"prefill/decode pods; short requests are handled efficiently by standard "
+"inference pods."
+msgstr ""
+"**优化混合负载处理** — 长 prompt 路由到 Prefill/Decode Pod；短请求由标准推理 "
+"Pod 高效处理。"
+
+#: ../../source/features/pd-disaggregation.rst:57
+msgid ""
+"**Graceful handling of traffic spikes** — Standard inference pods absorb "
+"overflow traffic when PD resources are saturated."
+msgstr "**平稳应对流量尖峰** — PD 资源饱和时，标准推理 Pod 吸收溢出流量。"
+
+#: ../../source/features/pd-disaggregation.rst:58
+msgid ""
+"**Single deployment architecture** — Run multiple execution models for "
+"the same model without managing separate clusters."
+msgstr "**单一部署架构** — 为同一模型运行多种执行模式，无需管理独立集群。"
+
+#: ../../source/features/pd-disaggregation.rst:59
+msgid ""
+"**Dynamic routing decisions** — Traffic is distributed based on real-time"
+" system conditions instead of static configuration."
+msgstr "**动态路由决策** — 按实时系统状况分发流量，而不是静态配置。"
+
+#: ../../source/features/pd-disaggregation.rst:60
+msgid ""
+"**Improved GPU utilization** — Requests are balanced across available "
+"pods to maximize throughput and efficiency."
+msgstr "**更高 GPU 利用率** — 在可用 Pod 之间均衡请求，以最大化吞吐和效率。"
+
+#: ../../source/features/pd-disaggregation.rst:64
+msgid "How PD Disaggregation Works"
+msgstr "Prefill/Decode 分离如何工作"
+
+#: ../../source/features/pd-disaggregation.rst:85
+msgid ""
+"The gateway routes the request to a **prefill pod**, which processes the "
+"prompt and computes the KV cache."
+msgstr "网关把请求路由到 **prefill Pod** ，由其处理 prompt 并计算 KV cache。"
+
+#: ../../source/features/pd-disaggregation.rst:86
+msgid ""
+"The KV cache is transferred to a **decode pod** via a high-speed "
+"interconnect (SHFS for GPU, NIXL for Neuron)."
+msgstr "KV cache 通过高速互联传到 **decode Pod** （GPU 用 SHFS，Neuron 用 NIXL）。"
+
+#: ../../source/features/pd-disaggregation.rst:87
+msgid "The decode pod streams the generated tokens back to the client."
+msgstr "decode Pod 将生成的 token 流式返回给客户端。"
+
+#: ../../source/features/pd-disaggregation.rst:89
+msgid ""
+"If no complete prefill/decode pair is available for the request's prompt "
+"length — for example the prompt is outside all configured buckets, or the"
+" matching roleset is incomplete because a decode pod is down — the "
+"request falls back to a **standard inference pod** (``combined: true``) "
+"that runs both phases locally, when one is configured and its prompt-"
+"length range matches."
+msgstr ""
+"若该请求的 prompt 长度没有完整的 prefill/decode 配对可用——例如 prompt 超出所有已配置分桶，或匹配的 roleset "
+"因 decode Pod 宕机而不完整——则在已配置且 prompt 长度范围匹配时，请求会回退到本地同时运行两个阶段的 **标准推理 Pod** "
+"（``combined: true`` ）。"
+
+#: ../../source/features/pd-disaggregation.rst:93
+msgid "Supported Engines"
+msgstr "支持的引擎"
+
+#: ../../source/features/pd-disaggregation.rst:99
+msgid "Engine"
+msgstr "引擎"
+
+#: ../../source/features/pd-disaggregation.rst:100
+msgid "Label value"
+msgstr "标签值"
+
+#: ../../source/features/pd-disaggregation.rst:101
+msgid "Notes"
+msgstr "说明"
+
+#: ../../source/features/pd-disaggregation.rst:102
+msgid "vLLM"
+msgstr "vLLM"
+
+#: ../../source/features/pd-disaggregation.rst:103
+msgid "``vllm``"
+msgstr "``vllm``"
+
+#: ../../source/features/pd-disaggregation.rst:104
+msgid "Default. No extra labels required."
+msgstr "默认。无需额外标签。"
+
+#: ../../source/features/pd-disaggregation.rst:105
+msgid "SGLang"
+msgstr "SGLang"
+
+#: ../../source/features/pd-disaggregation.rst:106
+msgid "``sglang``"
+msgstr "``sglang``"
+
+#: ../../source/features/pd-disaggregation.rst:107
+msgid ""
+"Requires ``model.aibrix.ai/sglang-bootstrap-port`` annotation (default: "
+"``8998``)."
+msgstr "需要 ``model.aibrix.ai/sglang-bootstrap-port`` 注解（默认：``8998`` ）。"
+
+#: ../../source/features/pd-disaggregation.rst:108
+msgid "TensorRT-LLM"
+msgstr "TensorRT-LLM"
+
+#: ../../source/features/pd-disaggregation.rst:109
+msgid "``trtllm``"
+msgstr "``trtllm``"
+
+#: ../../source/features/pd-disaggregation.rst:110
+msgid "Uses NIXL KV transfer backend (``AIBRIX_KV_CONNECTOR_TYPE=nixl``)."
+msgstr "使用 NIXL KV 传输后端（``AIBRIX_KV_CONNECTOR_TYPE=nixl`` ）。"
+
+#: ../../source/features/pd-disaggregation.rst:112
+msgid "Set the engine on each pod with the ``model.aibrix.ai/engine`` label."
+msgstr "在每个 Pod 上用 ``model.aibrix.ai/engine`` 标签设置引擎。"
+
+#: ../../source/features/pd-disaggregation.rst:116
+msgid "Step 1 — Label Your Pods"
+msgstr "步骤 1 — 给 Pod 打标签"
+
+#: ../../source/features/pd-disaggregation.rst:118
+msgid "The gateway identifies the role of each pod using two labels:"
+msgstr "网关用两个标签识别每个 Pod 的角色："
+
+#: ../../source/features/pd-disaggregation.rst:124
+msgid "Label"
+msgstr "标签"
+
+#: ../../source/features/pd-disaggregation.rst:125
+msgid "Value"
+msgstr "值"
+
+#: ../../source/features/pd-disaggregation.rst:126
+msgid "Purpose"
+msgstr "用途"
+
+#: ../../source/features/pd-disaggregation.rst:127
+msgid "``role-name``"
+msgstr "``role-name``"
+
+#: ../../source/features/pd-disaggregation.rst:128
+msgid "``prefill``, ``decode``, or another value (e.g. ``all``)"
+msgstr "``prefill`` 、``decode`` ，或其他值（例如 ``all`` ）"
+
+#: ../../source/features/pd-disaggregation.rst:129
+msgid ""
+"Tells the gateway which phase this pod handles. Standard inference pods "
+"use a role other than ``prefill``/``decode`` (or omit ``role-name``) and "
+"set ``combined: true`` in ``routingConfig``."
+msgstr ""
+"告诉网关该 Pod 处理哪个阶段。标准推理 Pod 使用 ``prefill``/``decode`` 以外的角色（或省略 ``role-name`` "
+"），并在 ``routingConfig`` 中设置 ``combined: true`` 。"
+
+#: ../../source/features/pd-disaggregation.rst:130
+msgid "``roleset-name``"
+msgstr "``roleset-name``"
+
+#: ../../source/features/pd-disaggregation.rst:131
+msgid "any string (e.g. ``group-0``)"
+msgstr "任意字符串（例如 ``group-0`` ）"
+
+#: ../../source/features/pd-disaggregation.rst:132
+msgid ""
+"Groups a prefill pod and a decode pod into a **pair**. The gateway only "
+"uses pairs where both prefill and decode pods are present."
+msgstr "把一个 prefill Pod 和一个 decode Pod 组成 **配对** 。网关只使用 prefill 和 decode 都存在的配对。"
+
+#: ../../source/features/pd-disaggregation.rst:134
+msgid "A prefill pod template looks like this:"
+msgstr "prefill Pod 模板如下："
+
+#: ../../source/features/pd-disaggregation.rst:146
+msgid "A decode pod template looks like this:"
+msgstr "decode Pod 模板如下："
+
+#: ../../source/features/pd-disaggregation.rst:159
+msgid ""
+"Both pods in a pair must share the same ``roleset-name``. If a roleset "
+"has only a prefill pod or only a decode pod, the gateway skips that "
+"entire roleset."
+msgstr ""
+"同一配对中的两个 Pod 必须共享相同的 ``roleset-name`` 。若某个 roleset 只有 prefill Pod 或只有 decode "
+"Pod，网关会跳过整个 roleset。"
+
+#: ../../source/features/pd-disaggregation.rst:163
+msgid "Step 2 — Enable PD Routing"
+msgstr "步骤 2 — 启用 PD 路由"
+
+#: ../../source/features/pd-disaggregation.rst:165
+msgid ""
+"Set ``routing-strategy: pd`` on individual requests, or configure it as "
+"the default via the model config annotation (recommended for production):"
+msgstr "在单个请求上设置 ``routing-strategy: pd`` ，或通过模型配置注解设为默认（生产环境建议后者）："
+
+#: ../../source/features/pd-disaggregation.rst:175
+msgid ""
+"To make ``pd`` the default for a model, add the config annotation to the "
+"pod template (see `Config Profiles <gateway-plugins.html#config-"
+"profiles>`_ in the Gateway Routing guide):"
+msgstr ""
+"要把 ``pd`` 设为某模型的默认策略，请在 Pod 模板上添加配置注解（见网关路由指南中的 `Config Profiles <gateway-plugins.html#config-profiles>`_ "
+"）："
+
+#: ../../source/features/pd-disaggregation.rst:187
+msgid ""
+"To prevent clients from overriding ``pd`` with a ``routing-strategy`` "
+"header (e.g. ``random``), pin it model-wide with "
+"``lockedRoutingStrategy``:"
+msgstr ""
+"若要防止客户端用 ``routing-strategy`` 头（例如 ``random`` ）覆盖 ``pd`` ，请用 ``lockedRoutingStrategy`` "
+"在模型范围内锁定："
+
+#: ../../source/features/pd-disaggregation.rst:204
+msgid "Step 3 — Add Standard Inference Pods (Optional)"
+msgstr "步骤 3 — 添加标准推理 Pod（可选）"
+
+#: ../../source/features/pd-disaggregation.rst:207
+msgid ""
+"Standard inference pods are entirely optional. A pure prefill/decode "
+"deployment works without them. Think of them as a power-up: they unlock a"
+" second execution path that the gateway can exploit to absorb overflow, "
+"handle workloads outside your configured prompt-length buckets, and "
+"smooth out traffic spikes — all without spinning up a separate deployment"
+" or changing a single line of client code."
+msgstr ""
+"标准推理 Pod 完全可选。纯 Prefill/Decode 部署没有它们也能工作。可以把它们看作增强："
+"它们解锁第二条执行路径，网关可用它吸收溢出、处理超出已配置 prompt 长度分桶的负载，"
+"并平滑流量尖峰——无需另起一套部署，也不必改一行客户端代码。"
+
+#: ../../source/features/pd-disaggregation.rst:209
+msgid ""
+"Adding standard inference pods turns a rigid two-tier pipeline into a "
+"self-healing, adaptive system. When PD capacity is saturated or a request"
+" falls outside the bucket ranges you've configured, the gateway "
+"automatically falls back to a standard inference pod and keeps the "
+"request moving rather than rejecting it or queueing indefinitely. The "
+"result is higher effective throughput, more consistent tail latency, and "
+"a gentler on-ramp for teams migrating incrementally from a standard "
+"deployment to full PD disaggregation."
+msgstr ""
+"加入标准推理 Pod 后，刚性的两层流水线会变成可自愈、自适应的系统。当 PD 容量饱和，"
+"或请求落在已配置分桶范围之外时，网关会自动回退到标准推理 Pod，让请求继续前进，而不是"
+"拒绝或无限排队。结果是更高的有效吞吐、更稳定的尾延迟，以及从标准部署逐步迁移到完整 "
+"Prefill/Decode 分离时更平缓的过渡。"
+
+#: ../../source/features/pd-disaggregation.rst:211
+msgid ""
+"Standard inference pods run both prefill and decode on a single GPU. They"
+" serve as overflow capacity when:"
+msgstr "标准推理 Pod 在单块 GPU 上同时运行 prefill 和 decode。在以下情况作为溢出容量："
+
+#: ../../source/features/pd-disaggregation.rst:213
+msgid "The request's prompt length falls outside all configured PD buckets."
+msgstr "请求的 prompt 长度超出所有已配置的 PD 分桶。"
+
+#: ../../source/features/pd-disaggregation.rst:214
+msgid ""
+"The matching PD roleset is incomplete (for example, a decode pod is "
+"unavailable)."
+msgstr "匹配的 PD roleset 不完整（例如 decode Pod 不可用）。"
+
+#: ../../source/features/pd-disaggregation.rst:215
+msgid ""
+"All prefill/decode pairs are at capacity (load-imbalance routing may "
+"select a combined pod)."
+msgstr "所有 prefill/decode 配对都已满载（负载不均衡路由可能选择 combined Pod）。"
+
+#: ../../source/features/pd-disaggregation.rst:216
+msgid ""
+"You want a gradual migration path (run standard inference pods alongside "
+"disaggregated pairs)."
+msgstr "需要渐进迁移路径（标准推理 Pod 与分离配对并行运行）。"
+
+#: ../../source/features/pd-disaggregation.rst:218
+msgid ""
+"**To configure a standard inference pod**, set ``combined: true`` in the "
+"pod's ``routingConfig`` annotation and enable prompt-length bucketing on "
+"the gateway:"
+msgstr ""
+"**要配置标准推理 Pod** ，请在该 Pod 的 ``routingConfig`` 注解中设置 ``combined: true`` ，并在网关上启用 "
+"prompt 长度分桶："
+
+#: ../../source/features/pd-disaggregation.rst:239
+msgid ""
+"Enable prompt-length bucketing on the gateway plugin (add to its "
+"environment):"
+msgstr "在网关插件上启用 prompt 长度分桶（加入其环境变量）："
+
+#: ../../source/features/pd-disaggregation.rst:248
+msgid ""
+"With bucketing enabled, the gateway considers a standard inference pod as"
+" a candidate only when the request's prompt length falls within the pod's"
+" configured range (see below). Without a range configured, a standard "
+"inference pod accepts any prompt length."
+msgstr ""
+"启用分桶后，仅当请求的 prompt 长度落在该 Pod 配置范围内时，网关才会把标准推理 Pod "
+"视为候选（见下文）。未配置范围时，标准推理 Pod 接受任意 prompt 长度。"
+
+#: ../../source/features/pd-disaggregation.rst:252
+msgid "Prompt-Length Bucketing"
+msgstr "Prompt 长度分桶"
+
+#: ../../source/features/pd-disaggregation.rst:254
+msgid ""
+"Bucketing lets you assign different pods to different prompt-length "
+"ranges. This is useful when:"
+msgstr "分桶可以把不同 Pod 分配给不同 prompt 长度范围。适用于："
+
+#: ../../source/features/pd-disaggregation.rst:256
+msgid "Short prompts are compute-cheap and can share a pod."
+msgstr "短 prompt 计算开销小，可以共享一个 Pod。"
+
+#: ../../source/features/pd-disaggregation.rst:257
+msgid "Long prompts need dedicated resources."
+msgstr "长 prompt 需要专用资源。"
+
+#: ../../source/features/pd-disaggregation.rst:258
+msgid ""
+"You want to prevent long-prompt requests from starving short-prompt "
+"traffic."
+msgstr "希望避免长 prompt 请求饿死短 prompt 流量。"
+
+#: ../../source/features/pd-disaggregation.rst:260
+msgid "Configure the range in the pod's ``routingConfig``:"
+msgstr "在 Pod 的 ``routingConfig`` 中配置范围："
+
+#: ../../source/features/pd-disaggregation.rst:282
+msgid "Field (inside ``routingConfig``)"
+msgstr "字段（位于 ``routingConfig`` 内）"
+
+#: ../../source/features/pd-disaggregation.rst:283
+#: ../../source/features/pd-disaggregation.rst:415
+#: ../../source/features/pd-disaggregation.rst:488
+#: ../../source/features/pd-disaggregation.rst:651
+msgid "Description"
+msgstr "说明"
+
+#: ../../source/features/pd-disaggregation.rst:284
+msgid "``promptLenBucketMinLength``"
+msgstr "``promptLenBucketMinLength``"
+
+#: ../../source/features/pd-disaggregation.rst:285
+msgid "Minimum prompt token length (inclusive) this pod handles. Default: ``0``."
+msgstr "该 Pod 处理的最小 prompt token 长度（含）。默认：``0`` 。"
+
+#: ../../source/features/pd-disaggregation.rst:286
+msgid "``promptLenBucketMaxLength``"
+msgstr "``promptLenBucketMaxLength``"
+
+#: ../../source/features/pd-disaggregation.rst:287
+msgid ""
+"Maximum prompt token length (inclusive) this pod handles. Default: "
+"unlimited. Set to ``0`` for unlimited."
+msgstr "该 Pod 处理的最大 prompt token 长度（含）。默认不限。设为 ``0`` 表示不限。"
+
+#: ../../source/features/pd-disaggregation.rst:288
+msgid "``combined``"
+msgstr "``combined``"
+
+#: ../../source/features/pd-disaggregation.rst:289
+msgid ""
+"``true`` = this pod is a standard inference pod (runs both prefill and "
+"decode). Default: ``false``."
+msgstr "``true`` = 该 Pod 是标准推理 Pod（同时运行 prefill 和 decode）。默认：``false`` 。"
+
+#: ../../source/features/pd-disaggregation.rst:290
+msgid "``prefillScorePolicy``"
+msgstr "``prefillScorePolicy``"
+
+#: ../../source/features/pd-disaggregation.rst:291
+msgid ""
+"How to score prefill pods. ``prefix_cache`` (default), ``least_request``,"
+" ``conductor``, ``token_load``, or ``hybrid_cache_load``."
+msgstr ""
+"如何给 prefill Pod 打分。``prefix_cache`` （默认）、``least_request`` 、``conductor`` "
+"、``token_load`` 或 ``hybrid_cache_load`` 。"
+
+#: ../../source/features/pd-disaggregation.rst:292
+msgid "``decodeScorePolicy``"
+msgstr "``decodeScorePolicy``"
+
+#: ../../source/features/pd-disaggregation.rst:293
+msgid ""
+"How to score decode pods. ``load_balancing`` (default), "
+"``least_request``, or ``conductor``."
+msgstr "如何给 decode Pod 打分。``load_balancing`` （默认）、``least_request`` 或 ``conductor`` 。"
+
+#: ../../source/features/pd-disaggregation.rst:296
+msgid ""
+"Bucketing only takes effect when ``AIBRIX_PROMPT_LENGTH_BUCKETING=true`` "
+"is set on the gateway plugin."
+msgstr "仅当网关插件设置 ``AIBRIX_PROMPT_LENGTH_BUCKETING=true`` 时，分桶才会生效。"
+
+#: ../../source/features/pd-disaggregation.rst:300
+msgid "Conductor Scoring Policy"
+msgstr "Conductor 打分策略"
+
+#: ../../source/features/pd-disaggregation.rst:302
+msgid ""
+"The ``conductor`` scoring policy selects pods by estimating latency for "
+"both prefill and decode phases, combining real-time metrics with workload"
+" characteristics."
+msgstr ""
+"``conductor`` 打分策略通过估计 prefill 和 decode 两个阶段的延迟来选择 Pod，并把"
+"实时指标与负载特征结合起来。"
+
+#: ../../source/features/pd-disaggregation.rst:304
+msgid "**Prefill Scoring**"
+msgstr "**Prefill 打分**"
+
+#: ../../source/features/pd-disaggregation.rst:306
+msgid "Estimates Time To First Token (TTFT) by considering:"
+msgstr "通过以下因素估计 Time To First Token（TTFT）："
+
+#: ../../source/features/pd-disaggregation.rst:308
+msgid "**Queue time** — Time waiting behind currently running requests"
+msgstr "**排队时间** — 排在当前正在运行请求之后的等待时间"
+
+#: ../../source/features/pd-disaggregation.rst:309
+msgid "**Prefix time** — Time to process tokens already in the KV prefix cache"
+msgstr "**前缀时间** — 处理已在 KV prefix cache 中的 token 所需时间"
+
+#: ../../source/features/pd-disaggregation.rst:310
+msgid ""
+"**Prefill time** — Time to compute tokens that do not match the cache "
+"(accounts for attention complexity)"
+msgstr "**Prefill 时间** — 计算未命中 cache 的 token 所需时间（计入 attention 复杂度）"
+
+#: ../../source/features/pd-disaggregation.rst:312
+msgid "**Decode Scoring**"
+msgstr "**Decode 打分**"
+
+#: ../../source/features/pd-disaggregation.rst:314
+msgid "Estimates Time Between Tokens (TBT) by considering:"
+msgstr "通过以下因素估计 Time Between Tokens（TBT）："
+
+#: ../../source/features/pd-disaggregation.rst:316
+msgid "**Current throughput** — Derived from real-time generation metrics"
+msgstr "**当前吞吐** — 由实时生成指标推导"
+
+#: ../../source/features/pd-disaggregation.rst:317
+msgid "**Batch scaling** — TBT increases as batch size grows"
+msgstr "**批处理放大** — 批大小增大时 TBT 上升"
+
+#: ../../source/features/pd-disaggregation.rst:318
+msgid "**GPU pressure** — Applies a penalty when cache usage exceeds 90%"
+msgstr "**GPU 压力** — cache 使用率超过 90% 时施加惩罚"
+
+#: ../../source/features/pd-disaggregation.rst:320
+#: ../../source/features/pd-disaggregation.rst:388
+#: ../../source/features/pd-disaggregation.rst:463
+msgid "**Configuration**"
+msgstr "**配置**"
+
+#: ../../source/features/pd-disaggregation.rst:322
+msgid "Enable conductor via the routing config:"
+msgstr "通过路由配置启用 conductor："
+
+#: ../../source/features/pd-disaggregation.rst:340
+msgid ""
+"Or set gateway-wide via ``AIBRIX_PREFILL_SCORE_POLICY`` and "
+"``AIBRIX_DECODE_SCORE_POLICY``."
+msgstr ""
+"或通过 ``AIBRIX_PREFILL_SCORE_POLICY`` 和 ``AIBRIX_DECODE_SCORE_POLICY`` 做网关"
+"范围设置。"
+
+#: ../../source/features/pd-disaggregation.rst:342
+msgid "**When to use conductor:**"
+msgstr "**何时使用 conductor：**"
+
+#: ../../source/features/pd-disaggregation.rst:344
+msgid "You want routing based on predicted latency rather than just request count"
+msgstr "希望基于预测延迟而不仅仅是请求数来路由"
+
+#: ../../source/features/pd-disaggregation.rst:345
+msgid "Your workload has variable prompt lengths and mixed cache-hit patterns"
+msgstr "负载的 prompt 长度多变，且 cache 命中模式混合"
+
+#: ../../source/features/pd-disaggregation.rst:346
+msgid "You need to account for GPU memory pressure in decode routing"
+msgstr "需要在 decode 路由中考虑 GPU 内存压力"
+
+#: ../../source/features/pd-disaggregation.rst:352
+msgid "Token Load Scoring Policy"
+msgstr "Token Load 打分策略"
+
+#: ../../source/features/pd-disaggregation.rst:354
+msgid ""
+"The ``token_load`` prefill scoring policy spreads prefill work by prompt "
+"size instead of by request count. ``least_request`` treats a 100-token "
+"prompt and a 30,000-token prompt as the same unit of load, so a pod that "
+"drew a few long prompts keeps receiving new requests until its count "
+"catches up with its neighbours. Under a mix of short and long prompts "
+"this shows up as a long TTFT tail on the pods that hold the long prompts."
+" ``token_load`` charges each request by its estimated prompt tokens, so "
+"one long prompt counts as much as many short ones."
+msgstr ""
+"``token_load`` prefill 打分策略按 prompt 大小而不是请求数来分摊 prefill 工作。"
+"``least_request`` 把 100 token 的 prompt 和 30,000 token 的 prompt 视为同一单位"
+"负载，因此拿到几个长 prompt 的 Pod 会继续接收新请求，直到其计数赶上邻居。在短长 "
+"prompt 混合时，这会表现为持有长 prompt 的 Pod 出现较长的 TTFT 尾部。``token_load`` "
+"按估计的 prompt token 向每个请求计费，因此一个长 prompt 等价于多个短 prompt。"
+
+#: ../../source/features/pd-disaggregation.rst:356
+msgid "**Scoring**"
+msgstr "**打分**"
+
+#: ../../source/features/pd-disaggregation.rst:358
+msgid ""
+"The router keeps two per-pod counters and scores each prefill pod as "
+"(lower is better):"
+msgstr "路由器为每个 Pod 维护两个计数器，并按以下方式给每个 prefill Pod 打分（越低越好）："
+
+#: ../../source/features/pd-disaggregation.rst:364
+msgid ""
+"``active_tokens`` — prompt tokens of the prefill requests the pod is "
+"computing right now."
+msgstr "``active_tokens`` — 该 Pod 当前正在计算的 prefill 请求的 prompt token。"
+
+#: ../../source/features/pd-disaggregation.rst:365
+msgid ""
+"``kv_tokens`` — prompt tokens whose KV cache is still resident on the pod"
+" because the decode pod has not finished with the request yet. Weighted "
+"by ``kv_weight`` (``AIBRIX_TOKEN_LOAD_KV_WEIGHT``, default ``0.3``) since"
+" resident KV costs the pod less than active compute."
+msgstr ""
+"``kv_tokens`` — 因 decode Pod 尚未完成请求而仍驻留在该 Pod 上的 KV cache 对应的 prompt token。按 "
+"``kv_weight`` （``AIBRIX_TOKEN_LOAD_KV_WEIGHT`` ，默认 ``0.3`` ）加权，因为驻留 KV 对该 "
+"Pod 的代价低于活跃计算。"
+
+#: ../../source/features/pd-disaggregation.rst:367
+msgid ""
+"Each request is charged ``request_cost + new_tokens``, where "
+"``request_cost`` (``AIBRIX_TOKEN_LOAD_REQUEST_COST``, default ``3500``) "
+"models the fixed scheduling and KV-transfer work that does not scale with"
+" prompt length, and ``new_tokens`` is the part of the prompt the pod "
+"actually has to compute. ``prompt_tokens`` is estimated as one token per "
+"four bytes of request body; ``new_tokens`` is derived from it by the "
+"first rule that applies:"
+msgstr ""
+"每个请求计费为 ``request_cost + new_tokens`` ，其中 ``request_cost`` （``AIBRIX_TOKEN_LOAD_REQUEST_COST`` "
+"，默认 ``3500`` ）建模不随 prompt 长度变化的固定调度和 KV 传输开销，``new_tokens`` 是该 Pod 实际必须计算的 "
+"prompt 部分。``prompt_tokens`` 按请求体每四字节一个 token 估计；``new_tokens`` 按第一条适用规则从中推导："
+
+#: ../../source/features/pd-disaggregation.rst:369
+msgid ""
+"**Session delta.** If the request carries an ``x-aibrix-session-key`` "
+"header (the caller-owned opaque key also used by ``session-affinity`` "
+"routing; not the gateway-issued ``x-session-id``) and the gateway has "
+"seen a shorter prompt for that key (and model) recently, the charge is "
+"the growth since that prompt. Each turn of a chat resends the whole "
+"history, but an engine that still holds the conversation's KV cache only "
+"computes the new turn: charging the whole prompt again would make a long "
+"conversation look several times more expensive than it is. The rule "
+"assumes the earlier turns are reachable from whichever prefill pod is "
+"selected, through a shared or tiered KV store, sticky routing or the "
+"pod's own prefix cache; if your prefill pods only have a local prefix "
+"cache and the router may move a conversation between them, do not send "
+"the key, or set ``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS=0`` to turn the "
+"rule off, and rely on rule 2. The last prompt size of a key is kept for "
+"``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS`` (default ``1800``); keys longer"
+" than 256 bytes are ignored, and at most "
+"``AIBRIX_TOKEN_LOAD_MAX_SESSIONS`` (default ``100000``) keys are "
+"remembered at once, so a client cannot grow the table without bound. Once"
+" the table is full, new keys are charged by rules 2 and 3 until the "
+"janitor forgets idle ones."
+msgstr ""
+"**会话增量。** 若请求带有 ``x-aibrix-session-key`` 头（调用方持有的不透明键，也用于 ``session-affinity`` "
+"路由；不是网关签发的 ``x-session-id`` ），且网关最近见过该键（及模型）对应的更短 prompt，则计费为相对该 prompt "
+"的增量。多轮对话每一轮都会重发完整历史，但若引擎仍持有对话的 KV cache，则只需计算新一轮：若再次对整个 prompt 计费，长对话会显得比实际贵数倍。该规则假设先前轮次可从所选任意 "
+"prefill Pod 到达，途径共享或分层 KV 存储、粘性路由或 Pod 自身的 prefix cache；若 prefill Pod 只有本地 "
+"prefix cache，且路由器可能在它们之间迁移对话，请不要发送该键，或设置 ``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS=0`` "
+"关闭该规则，并依赖规则 2。某个键的上次 prompt 大小会保留 ``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS`` "
+"（默认 ``1800`` ）秒；超过 256 字节的键会被忽略，同时最多记住 ``AIBRIX_TOKEN_LOAD_MAX_SESSIONS`` "
+"（默认 ``100000`` ）个键，因此客户端无法无界扩大该表。表满后，新键按规则 2 和 3 计费，直到清理器忘记空闲项。"
+
+#: ../../source/features/pd-disaggregation.rst:370
+msgid ""
+"**Prefix match.** If the scoring policy looked the prompt up in the "
+"prefix cache (``hybrid_cache_load``), the charge is ``prompt_tokens × (1 "
+"− match_percent / 100)``."
+msgstr ""
+"**前缀匹配。** 若打分策略在 prefix cache 中查找了该 prompt（``hybrid_cache_load`` ），则计费为 "
+"``prompt_tokens × (1 − match_percent / 100)`` 。"
+
+#: ../../source/features/pd-disaggregation.rst:371
+msgid ""
+"**Whole prompt.** Otherwise the whole prompt is charged. ``token_load`` "
+"itself does not consult the prefix cache, so without a session header "
+"this is what it charges."
+msgstr ""
+"**整个 prompt。** 否则对整个 prompt 计费。``token_load`` 本身不查询 prefix cache，"
+"因此没有会话头时就按这种方式计费。"
+
+#: ../../source/features/pd-disaggregation.rst:373
+msgid "**Charge lifecycle**"
+msgstr "**计费生命周期**"
+
+#: ../../source/features/pd-disaggregation.rst:375
+msgid ""
+"The request is charged to the selected prefill pod in the same critical "
+"section as the selection itself, so concurrent selections see each "
+"other's charges."
+msgstr ""
+"请求会在与选择本身相同的临界区内计入所选 prefill Pod，因此并发选择能看到彼此的计费。"
+
+#: ../../source/features/pd-disaggregation.rst:376
+msgid ""
+"When the prefill HTTP call returns, the ``active_tokens`` part is "
+"released; ``kv_tokens`` stays."
+msgstr "prefill HTTP 调用返回后，释放 ``active_tokens`` 部分；``kv_tokens`` 保留。"
+
+#: ../../source/features/pd-disaggregation.rst:377
+msgid ""
+"When the request completes (or the prefill call fails), the ``kv_tokens``"
+" part is released too."
+msgstr "请求完成（或 prefill 调用失败）时，``kv_tokens`` 部分也会释放。"
+
+#: ../../source/features/pd-disaggregation.rst:379
+msgid ""
+"A charge whose release never arrives is force-released after "
+"``AIBRIX_TOKEN_LOAD_TTL_SECONDS`` (default ``3600``) with a warning log, "
+"so a leaked entry cannot pin load on a pod indefinitely. Releases are "
+"idempotent and the counters never go below zero. The same janitor, which "
+"runs once a minute, drops the counters and metric series of any pod that "
+"has been at zero load and untouched for a whole minute, so prefill pods "
+"that come and go under autoscaling or rollouts do not accumulate on the "
+"gateway; the next charge re-creates the pod from zero."
+msgstr ""
+"若某次计费始终未收到释放，会在 ``AIBRIX_TOKEN_LOAD_TTL_SECONDS`` （默认 ``3600`` ）秒后强制释放并打警告日志，以免泄漏项无限占用某个 "
+"Pod 的负载。释放是幂等的，计数器不会低于零。同一清理器每分钟运行一次，会丢掉已连续一整分钟处于零负载且未被触及的 Pod 的计数器和指标序列，因此自动扩缩容或滚动发布中来去的 "
+"prefill Pod 不会在网关上堆积；下一次计费会从零重新创建该 Pod。"
+
+#: ../../source/features/pd-disaggregation.rst:381
+msgid "**Metrics**"
+msgstr "**指标**"
+
+#: ../../source/features/pd-disaggregation.rst:383
+msgid ""
+"The gateway exports the two counters per prefill pod as gauges labelled "
+"by ``pod_name``:"
+msgstr "网关按每个 prefill Pod 导出这两个计数器，作为带 ``pod_name`` 标签的 gauge："
+
+#: ../../source/features/pd-disaggregation.rst:385
+msgid "``pd_token_load_active_tokens``"
+msgstr "``pd_token_load_active_tokens``"
+
+#: ../../source/features/pd-disaggregation.rst:386
+msgid "``pd_token_load_kv_tokens``"
+msgstr "``pd_token_load_kv_tokens``"
+
+#: ../../source/features/pd-disaggregation.rst:390
+msgid "Enable ``token_load`` via the routing config:"
+msgstr "通过路由配置启用 ``token_load`` ："
+
+#: ../../source/features/pd-disaggregation.rst:407
+msgid ""
+"Or set gateway-wide via ``AIBRIX_PREFILL_SCORE_POLICY=token_load``. The "
+"tunables are gateway-wide environment variables:"
+msgstr ""
+"或通过 ``AIBRIX_PREFILL_SCORE_POLICY=token_load`` 做网关范围设置。可调参数是网关"
+"范围环境变量："
+
+#: ../../source/features/pd-disaggregation.rst:413
+#: ../../source/features/pd-disaggregation.rst:486
+#: ../../source/features/pd-disaggregation.rst:649
+msgid "Variable"
+msgstr "变量"
+
+#: ../../source/features/pd-disaggregation.rst:414
+#: ../../source/features/pd-disaggregation.rst:487
+#: ../../source/features/pd-disaggregation.rst:650
+msgid "Default"
+msgstr "默认值"
+
+#: ../../source/features/pd-disaggregation.rst:416
+#: ../../source/features/pd-disaggregation.rst:661
+msgid "``AIBRIX_TOKEN_LOAD_KV_WEIGHT``"
+msgstr "``AIBRIX_TOKEN_LOAD_KV_WEIGHT``"
+
+#: ../../source/features/pd-disaggregation.rst:417
+#: ../../source/features/pd-disaggregation.rst:662
+msgid "``0.3``"
+msgstr "``0.3``"
+
+#: ../../source/features/pd-disaggregation.rst:418
+msgid "Weight of resident KV tokens in the score."
+msgstr "驻留 KV token 在分数中的权重。"
+
+#: ../../source/features/pd-disaggregation.rst:419
+#: ../../source/features/pd-disaggregation.rst:664
+msgid "``AIBRIX_TOKEN_LOAD_REQUEST_COST``"
+msgstr "``AIBRIX_TOKEN_LOAD_REQUEST_COST``"
+
+#: ../../source/features/pd-disaggregation.rst:420
+#: ../../source/features/pd-disaggregation.rst:665
+msgid "``3500``"
+msgstr "``3500``"
+
+#: ../../source/features/pd-disaggregation.rst:421
+msgid "Fixed per-request cost added to every charge, in tokens."
+msgstr "每次计费都加上的固定每请求成本，单位为 token。"
+
+#: ../../source/features/pd-disaggregation.rst:422
+#: ../../source/features/pd-disaggregation.rst:667
+msgid "``AIBRIX_TOKEN_LOAD_TTL_SECONDS``"
+msgstr "``AIBRIX_TOKEN_LOAD_TTL_SECONDS``"
+
+#: ../../source/features/pd-disaggregation.rst:423
+#: ../../source/features/pd-disaggregation.rst:668
+msgid "``3600``"
+msgstr "``3600``"
+
+#: ../../source/features/pd-disaggregation.rst:424
+msgid "Maximum age of an outstanding charge before it is force-released."
+msgstr "未完成计费在强制释放前的最大存活时间。"
+
+#: ../../source/features/pd-disaggregation.rst:425
+#: ../../source/features/pd-disaggregation.rst:670
+msgid "``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS``"
+msgstr "``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS``"
+
+#: ../../source/features/pd-disaggregation.rst:426
+#: ../../source/features/pd-disaggregation.rst:671
+msgid "``1800``"
+msgstr "``1800``"
+
+#: ../../source/features/pd-disaggregation.rst:427
+msgid ""
+"How long the last prompt size of a session is remembered for the session-"
+"delta charge. ``0`` turns the session-delta rule off."
+msgstr "为会话增量计费记住会话上次 prompt 大小的时长。``0`` 关闭会话增量规则。"
+
+#: ../../source/features/pd-disaggregation.rst:428
+#: ../../source/features/pd-disaggregation.rst:673
+msgid "``AIBRIX_TOKEN_LOAD_MAX_SESSIONS``"
+msgstr "``AIBRIX_TOKEN_LOAD_MAX_SESSIONS``"
+
+#: ../../source/features/pd-disaggregation.rst:429
+#: ../../source/features/pd-disaggregation.rst:674
+msgid "``100000``"
+msgstr "``100000``"
+
+#: ../../source/features/pd-disaggregation.rst:430
+msgid ""
+"Maximum number of sessions remembered at once; new sessions beyond it are"
+" charged without a delta."
+msgstr "同时记住的最大会话数；超出后的新会话不计增量。"
+
+#: ../../source/features/pd-disaggregation.rst:432
+msgid "**When to use token_load:**"
+msgstr "**何时使用 token_load：**"
+
+#: ../../source/features/pd-disaggregation.rst:434
+msgid ""
+"Your prompt lengths vary widely (for example agentic or RAG traffic mixed"
+" with short chat) and you see a TTFT tail on some prefill pods under "
+"``least_request``"
+msgstr ""
+"prompt 长度差异很大（例如 agentic 或 RAG 流量与短对话混合），且在 ``least_request`` "
+"下部分 prefill Pod 出现 TTFT 尾部"
+
+#: ../../source/features/pd-disaggregation.rst:435
+msgid ""
+"Prefix-cache locality matters less than balancing prefill compute, or "
+"your prefix cache hit rate is low"
+msgstr "prefix cache 局部性不如均衡 prefill 计算重要，或 prefix cache 命中率较低"
+
+#: ../../source/features/pd-disaggregation.rst:437
+msgid ""
+"If prefix-cache locality does matter, use :ref:`hybrid_cache_load <pd-"
+"hybrid-cache-load-policy>` instead, which keeps this ledger and adds the "
+"cache lookup on top."
+msgstr ""
+"若 prefix cache 局部性确实重要，请改用 :ref:`hybrid_cache_load <pd-hybrid-cache-load-policy>` "
+"，它保留该账本并叠加 cache 查找。"
+
+#: ../../source/features/pd-disaggregation.rst:442
+msgid "Hybrid Cache-Load Scoring Policy"
+msgstr "Hybrid Cache-Load 打分策略"
+
+#: ../../source/features/pd-disaggregation.rst:444
+msgid ""
+"``hybrid_cache_load`` combines the prefix-cache lookup of "
+"``prefix_cache`` with the token ledger of ``token_load``. "
+"``prefix_cache`` always prefers the pod that holds the prompt's prefix, "
+"even when that pod is buried under long prompts and an idle neighbour "
+"would answer sooner; ``token_load`` ignores the cache and recomputes "
+"prefixes another pod already holds. The hybrid policy lets the cache "
+"decide between idle pods and the load decide between busy ones."
+msgstr ""
+"``hybrid_cache_load`` 把 ``prefix_cache`` 的 prefix cache 查找与 ``token_load`` "
+"的 token 账本结合起来。``prefix_cache`` 总是偏好持有该 prompt 前缀的 Pod，即使该 "
+"Pod 被长 prompt 压住、空闲邻居会更快应答；``token_load`` 忽略 cache，并重新计算"
+"另一 Pod 已持有的前缀。混合策略让 cache 在空闲 Pod 之间做决定，让负载在繁忙 Pod "
+"之间做决定。"
+
+#: ../../source/features/pd-disaggregation.rst:453
+msgid ""
+"where ``load = active_tokens + kv_weight × kv_tokens`` is the same ledger"
+" ``token_load`` reads and ``factor`` is "
+"``AIBRIX_HYBRID_CACHE_LOAD_FACTOR`` (default ``0.5``). Lower is better."
+msgstr ""
+"其中 ``load = active_tokens + kv_weight × kv_tokens`` 与 ``token_load`` 读取的账本相同，``factor`` "
+"为 ``AIBRIX_HYBRID_CACHE_LOAD_FACTOR`` （默认 ``0.5`` ）。越低越好。"
+
+#: ../../source/features/pd-disaggregation.rst:455
+msgid ""
+"On idle pods every score is a bare discount below 1, so the pod with the "
+"best prefix match wins outright."
+msgstr "在空闲 Pod 上，每个分数都是低于 1 的纯折扣，因此前缀匹配最好的 Pod 直接胜出。"
+
+#: ../../source/features/pd-disaggregation.rst:456
+msgid ""
+"On busy pods the match only discounts the load. With the default factor a"
+" full match halves a pod's load, so a pod holding the prefix loses once "
+"it carries more than twice the load of an idle neighbour."
+msgstr ""
+"在繁忙 Pod 上，匹配只对负载打折。默认 factor 下，完全匹配会把 Pod 负载减半，因此"
+"持有前缀的 Pod 一旦负载超过空闲邻居的两倍就会落败。"
+
+#: ../../source/features/pd-disaggregation.rst:457
+msgid ""
+"The square keeps small matches from moving the decision: a 30 % match "
+"discounts by 4.5 %, a 70 % match by 24.5 %."
+msgstr "平方项避免小匹配左右决策：30% 匹配只打 4.5% 折扣，70% 匹配打 24.5% 折扣。"
+
+#: ../../source/features/pd-disaggregation.rst:459
+#, python-format
+msgid ""
+"**Minimum match.** Prompts that share only a system prompt or a few "
+"template tokens would otherwise all attract to the pod that served the "
+"first of them. ``AIBRIX_MIN_MATCH_PCT`` (default ``0``, i.e. off) treats "
+"any match below the threshold as no match, both in the score and in the "
+"``new_tokens`` charge. A value between ``30`` and ``60`` is a reasonable "
+"starting point when your system prompt is a small part of a typical "
+"request. The same variable also applies to ``prefix_cache`` scoring "
+"(there is no ``new_tokens`` charge there), where the effect is larger: "
+"its cache term spans ``10.0`` against a load term of ``1.0``, so without "
+"a threshold a 1 % incidental match outweighs the whole load range and the"
+" pod that served the first of a burst of cold prompts attracts the rest "
+"of the burst."
+msgstr ""
+"**最小匹配。** 若多个 prompt 只共享 system prompt 或少量模板 token，否则它们会全部被吸引到处理了其中第一个的 "
+"Pod。``AIBRIX_MIN_MATCH_PCT`` （默认 ``0`` ，即关闭）会把低于阈值的匹配视为无匹配，同时作用于分数和 ``new_tokens`` "
+"计费。当 system prompt 只占典型请求的一小部分时，``30`` 到 ``60`` 是合理起点。同一变量也适用于 ``prefix_cache`` "
+"打分（那里没有 ``new_tokens`` 计费），影响更大：其 cache 项跨度为 ``10.0`` ，负载项为 ``1.0`` ，因此没有阈值时，1 "
+"% incidental 匹配就会压过整个负载范围，处理了一波冷 prompt 中第一个的 Pod 会把该波后续请求都吸走。"
+
+#: ../../source/features/pd-disaggregation.rst:461
+msgid ""
+"The charge lifecycle, the metrics and the ``AIBRIX_TOKEN_LOAD_*`` "
+"tunables are those of :ref:`token_load <pd-token-load-policy>`; the "
+"prefix-match rule of the ``new_tokens`` estimate applies, so a pod that "
+"already holds most of the prompt is charged only for the rest. Like "
+"``prefix_cache``, the policy needs a tokenizer "
+"(``AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE``) and warms the prefix index with "
+"the selected pod after each request."
+msgstr ""
+"计费生命周期、指标和 ``AIBRIX_TOKEN_LOAD_*`` 可调参数与 :ref:`token_load <pd-token-load-policy>` "
+"相同；``new_tokens`` 估计的前缀匹配规则适用，因此已持有大部分 prompt 的 Pod 只对剩余部分计费。与 ``prefix_cache`` "
+"一样，该策略需要 tokenizer（``AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE`` ），并在每次请求后用所选 Pod "
+"预热 prefix 索引。"
+
+#: ../../source/features/pd-disaggregation.rst:480
+msgid "Or set gateway-wide via ``AIBRIX_PREFILL_SCORE_POLICY=hybrid_cache_load``."
+msgstr "或通过 ``AIBRIX_PREFILL_SCORE_POLICY=hybrid_cache_load`` 做网关范围设置。"
+
+#: ../../source/features/pd-disaggregation.rst:489
+#: ../../source/features/pd-disaggregation.rst:676
+msgid "``AIBRIX_HYBRID_CACHE_LOAD_FACTOR``"
+msgstr "``AIBRIX_HYBRID_CACHE_LOAD_FACTOR``"
+
+#: ../../source/features/pd-disaggregation.rst:490
+#: ../../source/features/pd-disaggregation.rst:677
+msgid "``0.5``"
+msgstr "``0.5``"
+
+#: ../../source/features/pd-disaggregation.rst:491
+msgid ""
+"Discount a full prefix match applies to a pod's load, ``0`` to ``1``. "
+"Higher values favour cache affinity over balance; at ``1`` a fully "
+"matched pod scores ``0`` and always wins."
+msgstr ""
+"完全前缀匹配对 Pod 负载应用的折扣，``0`` 到 ``1`` 。值越高越偏向 cache 亲和而非均衡；为 ``1`` 时完全匹配的 Pod "
+"得分为 ``0`` 并总是胜出。"
+
+#: ../../source/features/pd-disaggregation.rst:492
+#: ../../source/features/pd-disaggregation.rst:679
+msgid "``AIBRIX_MIN_MATCH_PCT``"
+msgstr "``AIBRIX_MIN_MATCH_PCT``"
+
+#: ../../source/features/pd-disaggregation.rst:493
+#: ../../source/features/pd-disaggregation.rst:680
+#: ../../source/features/pd-disaggregation.rst:707
+msgid "``0``"
+msgstr "``0``"
+
+#: ../../source/features/pd-disaggregation.rst:494
+msgid ""
+"Prefix-match percentage below which a match is ignored, ``0`` to ``100``."
+" ``0`` disables the threshold. Also honoured by ``prefix_cache``."
+msgstr "低于该百分比的前缀匹配会被忽略，``0`` 到 ``100`` 。``0`` 关闭阈值。``prefix_cache`` 也会遵守。"
+
+#: ../../source/features/pd-disaggregation.rst:496
+msgid "**When to use hybrid_cache_load:**"
+msgstr "**何时使用 hybrid_cache_load：**"
+
+#: ../../source/features/pd-disaggregation.rst:498
+msgid ""
+"Multi-turn or shared-prefix traffic where prefix-cache hits are worth "
+"chasing, but prompt lengths vary enough that ``prefix_cache`` leaves some"
+" pods with a TTFT tail"
+msgstr ""
+"多轮或共享前缀流量中，prefix cache 命中值得追逐，但 prompt 长度变化大到 "
+"``prefix_cache`` 会让部分 Pod 出现 TTFT 尾部"
+
+#: ../../source/features/pd-disaggregation.rst:499
+msgid ""
+"You already run ``token_load`` and want cache affinity back without "
+"giving up the load balance"
+msgstr "已经在跑 ``token_load`` ，希望找回 cache 亲和且不放弃负载均衡"
+
+#: ../../source/features/pd-disaggregation.rst:503
+msgid "Complete Example"
+msgstr "完整示例"
+
+#: ../../source/features/pd-disaggregation.rst:505
+msgid ""
+"This example shows a three-tier setup: prefill + decode pods for short "
+"prompts, and standard inference pods for long prompts or overflow."
+msgstr ""
+"该示例展示三层设置：短 prompt 用 prefill + decode Pod，长 prompt 或溢出用标准推理 "
+"Pod。"
+
+#: ../../source/features/pd-disaggregation.rst:507
+msgid "**Prefill pod** (short prompts: 0–2048 tokens):"
+msgstr "**Prefill Pod** （短 prompt：0–2048 token）："
+
+#: ../../source/features/pd-disaggregation.rst:532
+msgid "**Decode pod** (paired with the prefill pod above):"
+msgstr "**Decode Pod** （与上面的 prefill Pod 配对）："
+
+#: ../../source/features/pd-disaggregation.rst:557
+msgid "**Standard inference pod** (long prompts: 2048+ tokens, and overflow):"
+msgstr "**标准推理 Pod** （长 prompt：2048+ token，以及溢出）："
+
+#: ../../source/features/pd-disaggregation.rst:580
+msgid "**Gateway plugin** (enable bucketing):"
+msgstr "**网关插件** （启用分桶）："
+
+#: ../../source/features/pd-disaggregation.rst:591
+msgid "Pod Selection Algorithm"
+msgstr "Pod 选择算法"
+
+#: ../../source/features/pd-disaggregation.rst:593
+msgid ""
+"Once pods are partitioned into prefill, decode, and combined slices, the "
+"gateway selects the best target through a cascade of checks. Bucketing "
+"(when ``AIBRIX_PROMPT_LENGTH_BUCKETING=true``) runs first; load-imbalance"
+" and scoring steps run only when a PD pair is still in play."
+msgstr ""
+"Pod 被划分为 prefill、decode 和 combined 切片后，网关通过级联检查选择最佳目标。分桶（当 ``AIBRIX_PROMPT_LENGTH_BUCKETING=true`` "
+"）最先运行；仅当 PD 配对仍在候选中时，才运行负载不均衡和打分步骤。"
+
+#: ../../source/features/pd-disaggregation.rst:595
+msgid "**Step 0 — Prompt-length bucketing (optional)**"
+msgstr "**步骤 0 — Prompt 长度分桶（可选）**"
+
+#: ../../source/features/pd-disaggregation.rst:597
+msgid ""
+"When bucketing is enabled, each roleset contributes to the bucket-"
+"filtered pool only when **both** its prefill and decode pods declare a "
+"range that includes the request's prompt length. Incomplete rolesets "
+"(missing decode or prefill) are skipped. If no complete bucket-matched "
+"pair exists — including when a decode pod is down in the matching bucket "
+"— the gateway routes to a ``combined: true`` pod whose range includes the"
+" prompt, or returns an error if none is available. When a bucket match "
+"exists but PD pods are heavily loaded while a combined pod is idle, "
+"``shouldPickCombined()`` may select the combined pod instead."
+msgstr ""
+"启用分桶时，仅当 roleset 的 prefill 和 decode Pod **都** 声明了包含该请求 prompt "
+"长度的范围时，该 roleset 才会进入分桶过滤池。不完整的 roleset（缺少 decode 或 "
+"prefill）会被跳过。若不存在完整的分桶匹配配对——包括匹配分桶中 decode Pod 宕机——"
+"网关会路由到范围包含该 prompt 的 ``combined: true`` Pod；若没有可用则返回错误。"
+"当分桶匹配存在，但 PD Pod 负载很重而 combined Pod 空闲时，``shouldPickCombined()`` "
+"可能改选 combined Pod。"
+
+#: ../../source/features/pd-disaggregation.rst:599
+msgid "**Step 1 — Prefill load-imbalance fast path**"
+msgstr "**步骤 1 — Prefill 负载不均衡快速路径**"
+
+#: ../../source/features/pd-disaggregation.rst:601
+msgid ""
+"If the difference between the maximum and minimum number of outstanding "
+"prefill requests across prefill pods exceeds "
+"``AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD``, the gateway routes the "
+"prefill phase to the single least-loaded prefill pod and aligns the "
+"decode candidates to the same roleset."
+msgstr ""
+"若各 prefill Pod 上未完成 prefill 请求数的最大值与最小值之差超过 ``AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD`` "
+"，网关会把 prefill 阶段路由到负载最低的单个 prefill Pod，并把 decode 候选对齐到同一 roleset。"
+
+#: ../../source/features/pd-disaggregation.rst:603
+msgid "**Step 2 — Decode load-imbalance fast path**"
+msgstr "**步骤 2 — Decode 负载不均衡快速路径**"
+
+#: ../../source/features/pd-disaggregation.rst:605
+msgid ""
+"Three ordered checks run against decode pods. The first that fires "
+"selects a single decode pod and aligns the prefill candidates to its "
+"roleset. Steps 1 and 2 are independent: both can fire on the same request"
+" if both sides are imbalanced."
+msgstr ""
+"对 decode Pod 按顺序做三次检查。最先触发的一次会选出单个 decode Pod，并把 prefill "
+"候选对齐到其 roleset。步骤 1 和 2 相互独立：若两侧都不均衡，同一请求上两者都可以触发。"
+
+#: ../../source/features/pd-disaggregation.rst:607
+msgid ""
+"*Request count spread* — If ``max(running + pending) − min`` across "
+"metric-bearing pods ≥ ``AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD``, route "
+"to the least-loaded pod. Pods without ``RealtimeNumRequestsRunning`` are "
+"excluded from the spread to avoid thundering-herd on freshly restarted "
+"pods; their pending-decode count is still tracked for the scoring step."
+msgstr ""
+"*请求数差* — 若带指标 Pod 上 ``max(running + pending) − min`` ≥ ``AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD`` "
+"，则路由到负载最低的 Pod。没有 ``RealtimeNumRequestsRunning`` 的 Pod 不参与该差值计算，以免刚重启的 Pod "
+"被惊群；其 pending-decode 计数仍会在打分步骤中跟踪。"
+
+#: ../../source/features/pd-disaggregation.rst:609
+msgid ""
+"*Throughput spread* — If ``max(throughput) − min`` across metric-bearing "
+"pods > ``AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD``, route to the "
+"lowest-throughput pod."
+msgstr ""
+"*吞吐差* — 若带指标 Pod 上 ``max(throughput) − min`` > ``AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD`` "
+"，则路由到吞吐最低的 Pod。"
+
+#: ../../source/features/pd-disaggregation.rst:611
+msgid ""
+"*Drain-rate score* — If all pods report a positive ``drain_rate``, score "
+"each pod as ``effective_running_reqs / drain_rate``. If ``max_score / "
+"min_score`` exceeds ``AIBRIX_DECODE_SCORE_RATIO_THRESHOLD``, route to the"
+" pod with the lowest score (fastest estimated queue drain)."
+msgstr ""
+"*排空速率分数* — 若所有 Pod 都报告正的 ``drain_rate`` ，则每个 Pod 打分为 ``effective_running_reqs "
+"/ drain_rate`` 。若 ``max_score / min_score`` 超过 ``AIBRIX_DECODE_SCORE_RATIO_THRESHOLD`` "
+"，则路由到分数最低的 Pod（估计队列排空最快）。"
+
+#: ../../source/features/pd-disaggregation.rst:613
+msgid "**Step 3 — Prefill scoring**"
+msgstr "**步骤 3 — Prefill 打分**"
+
+#: ../../source/features/pd-disaggregation.rst:615
+msgid ""
+"Each prefill pod is scored by the selected policy. Pods with a request "
+"count more than ``N`` standard deviations above the mean are skipped (``N"
+" = AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``). The lowest-scoring "
+"pod per roleset is kept as the roleset's prefill candidate."
+msgstr ""
+"每个 prefill Pod 按所选策略打分。请求数高于均值超过 ``N`` 个标准差的 Pod 会被跳过（``N = AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR`` "
+"）。每个 roleset 保留分数最低的 Pod 作为该 roleset 的 prefill 候选。"
+
+#: ../../source/features/pd-disaggregation.rst:617
+msgid ""
+"``prefix_cache`` (default): ``score = (100 − prefix_match_percent) × 0.1 "
+"+ req_count / max_req_count`` — lower score means more cache hits and "
+"less load. Matches below ``AIBRIX_MIN_MATCH_PCT`` count as ``0``."
+msgstr ""
+"``prefix_cache`` （默认）：``score = (100 − prefix_match_percent) × 0.1 + req_count "
+"/ max_req_count`` — 分数越低表示 cache 命中越多、负载越低。低于 ``AIBRIX_MIN_MATCH_PCT`` 的匹配计为 "
+"``0`` 。"
+
+#: ../../source/features/pd-disaggregation.rst:618
+msgid "``least_request``: ``score = req_count``."
+msgstr "``least_request`` ：``score = req_count`` 。"
+
+#: ../../source/features/pd-disaggregation.rst:619
+msgid ""
+"``token_load``: ``score = active_tokens + kv_weight × kv_tokens`` — the "
+"token-weighted load the router has charged to the pod; see :ref:`Token "
+"Load Scoring Policy <pd-token-load-policy>`."
+msgstr ""
+"``token_load`` ：``score = active_tokens + kv_weight × kv_tokens`` — 路由器已计入该 "
+"Pod 的按 token 加权负载；见 :ref:`Token Load Scoring Policy <pd-token-load-policy>` "
+"。"
+
+#: ../../source/features/pd-disaggregation.rst:620
+msgid ""
+"``hybrid_cache_load``: ``score = load × (1 − (prefix_match_percent / "
+"100)² × factor)``, or just the discount when the pod is idle — cache "
+"affinity decides between idle pods, load between busy ones; see "
+":ref:`Hybrid Cache-Load Scoring Policy <pd-hybrid-cache-load-policy>`."
+msgstr ""
+"``hybrid_cache_load`` ：``score = load × (1 − (prefix_match_percent / 100)² "
+"× factor)`` ，Pod 空闲时则仅为折扣——空闲 Pod 之间由 cache 亲和决定，繁忙 Pod 之间由负载决定；见 :ref:`Hybrid "
+"Cache-Load Scoring Policy <pd-hybrid-cache-load-policy>` 。"
+
+#: ../../source/features/pd-disaggregation.rst:622
+msgid "**Step 4 — Decode scoring**"
+msgstr "**步骤 4 — Decode 打分**"
+
+#: ../../source/features/pd-disaggregation.rst:624
+msgid ""
+"Each decode pod is scored by the selected policy. Pods without "
+"``RealtimeNumRequestsRunning`` receive a cold-start score (``1.0 + "
+"pending_decode_count``) when at least one sibling pod already has "
+"metrics, so they compete fairly without attracting all traffic "
+"immediately."
+msgstr ""
+"每个 decode Pod 按所选策略打分。没有 ``RealtimeNumRequestsRunning`` 的 Pod，在至少一个兄弟 Pod "
+"已有指标时，会得到冷启动分数（``1.0 + pending_decode_count`` ），从而能公平竞争，又不会立刻吸走全部流量。"
+
+#: ../../source/features/pd-disaggregation.rst:626
+msgid ""
+"``load_balancing`` (default): ``score = (w_run × norm_reqs + w_thru × (1 "
+"− norm_throughput)) / norm_free_gpu``, where norms are relative to the "
+"batch maximum; lower is better."
+msgstr ""
+"``load_balancing`` （默认）：``score = (w_run × norm_reqs + w_thru × (1 − norm_throughput)) "
+"/ norm_free_gpu`` ，其中归一化相对本批最大值；越低越好。"
+
+#: ../../source/features/pd-disaggregation.rst:627
+msgid "``least_request``: ``score = running_reqs + pending_decode_count``."
+msgstr "``least_request`` ：``score = running_reqs + pending_decode_count`` 。"
+
+#: ../../source/features/pd-disaggregation.rst:629
+msgid "**Step 5 — Final pair selection**"
+msgstr "**步骤 5 — 最终配对选择**"
+
+#: ../../source/features/pd-disaggregation.rst:631
+msgid ""
+"For each roleset with both a prefill and decode candidate, the gateway "
+"computes:"
+msgstr "对同时有 prefill 和 decode 候选的每个 roleset，网关计算："
+
+#: ../../source/features/pd-disaggregation.rst:637
+msgid ""
+"The roleset with the lowest combined score wins. The selected prefill and"
+" decode pods always come from the same roleset."
+msgstr "综合分数最低的 roleset 胜出。所选 prefill 和 decode Pod 始终来自同一 roleset。"
+
+#: ../../source/features/pd-disaggregation.rst:641
+msgid "Environment Variables"
+msgstr "环境变量"
+
+#: ../../source/features/pd-disaggregation.rst:643
+msgid "These are set on the **gateway plugin** deployment."
+msgstr "这些变量设置在 **网关插件** 的 deployment 上。"
+
+#: ../../source/features/pd-disaggregation.rst:652
+msgid "``AIBRIX_PROMPT_LENGTH_BUCKETING``"
+msgstr "``AIBRIX_PROMPT_LENGTH_BUCKETING``"
+
+#: ../../source/features/pd-disaggregation.rst:653
+msgid "``false``"
+msgstr "``false``"
+
+#: ../../source/features/pd-disaggregation.rst:654
+msgid ""
+"Enable prompt-length bucket matching for prefill, decode, and standard "
+"inference pods."
+msgstr "为 prefill、decode 和标准推理 Pod 启用 prompt 长度分桶匹配。"
+
+#: ../../source/features/pd-disaggregation.rst:655
+msgid "``AIBRIX_PREFILL_REQUEST_TIMEOUT``"
+msgstr "``AIBRIX_PREFILL_REQUEST_TIMEOUT``"
+
+#: ../../source/features/pd-disaggregation.rst:656
+msgid "``30``"
+msgstr "``30``"
+
+#: ../../source/features/pd-disaggregation.rst:657
+msgid "Seconds before a prefill request to a prefill pod times out."
+msgstr "发往 prefill Pod 的 prefill 请求超时秒数。"
+
+#: ../../source/features/pd-disaggregation.rst:658
+msgid "``AIBRIX_PREFILL_SCORE_POLICY``"
+msgstr "``AIBRIX_PREFILL_SCORE_POLICY``"
+
+#: ../../source/features/pd-disaggregation.rst:659
+msgid "``prefix_cache``"
+msgstr "``prefix_cache``"
+
+#: ../../source/features/pd-disaggregation.rst:660
+msgid ""
+"Default scoring policy for selecting prefill pods. ``prefix_cache``, "
+"``least_request``, ``conductor``, ``token_load``, or "
+"``hybrid_cache_load``."
+msgstr ""
+"选择 prefill Pod 的默认打分策略。``prefix_cache`` 、``least_request`` 、``conductor`` "
+"、``token_load`` 或 ``hybrid_cache_load`` 。"
+
+#: ../../source/features/pd-disaggregation.rst:663
+msgid ""
+"``token_load`` and ``hybrid_cache_load``. Weight of resident KV tokens in"
+" the prefill score. Must be positive."
+msgstr "``token_load`` 和 ``hybrid_cache_load`` 。驻留 KV token 在 prefill 分数中的权重。必须为正。"
+
+#: ../../source/features/pd-disaggregation.rst:666
+msgid ""
+"``token_load`` and ``hybrid_cache_load``. Fixed per-request cost, in "
+"tokens, added to every prefill charge. Must be positive."
+msgstr ""
+"``token_load`` 和 ``hybrid_cache_load`` 。每次 prefill 计费都加上的固定每请求成本，单位为 token。必须为正。"
+
+#: ../../source/features/pd-disaggregation.rst:669
+msgid ""
+"``token_load`` and ``hybrid_cache_load``. Charges older than this are "
+"force-released and logged; must exceed the longest legitimate request. "
+"Must be positive."
+msgstr "``token_load`` 和 ``hybrid_cache_load`` 。超过该时长的计费会被强制释放并记录日志；必须大于最长合法请求。必须为正。"
+
+#: ../../source/features/pd-disaggregation.rst:672
+msgid ""
+"``token_load`` and ``hybrid_cache_load``. How long the last prompt size "
+"of an ``x-aibrix-session-key`` session is remembered for the session-"
+"delta charge. ``0`` turns the session-delta rule off; otherwise must be "
+"positive."
+msgstr ""
+"``token_load`` 和 ``hybrid_cache_load`` 。为会话增量计费记住 ``x-aibrix-session-key`` "
+"会话上次 prompt 大小的时长。``0`` 关闭会话增量规则；否则必须为正。"
+
+#: ../../source/features/pd-disaggregation.rst:675
+msgid ""
+"``token_load`` and ``hybrid_cache_load``. Maximum number of sessions "
+"remembered at once for the session-delta charge. Must be positive."
+msgstr "``token_load`` 和 ``hybrid_cache_load`` 。会话增量计费同时记住的最大会话数。必须为正。"
+
+#: ../../source/features/pd-disaggregation.rst:678
+msgid ""
+"``hybrid_cache_load`` only. Discount a full prefix match applies to a "
+"pod's token load, ``0`` to ``1``. ``1`` makes a fully matched pod always "
+"win; ``0`` turns the discount off."
+msgstr ""
+"仅 ``hybrid_cache_load`` 。完全前缀匹配对 Pod token 负载应用的折扣，``0`` 到 ``1`` 。``1`` "
+"使完全匹配的 Pod 总是胜出；``0`` 关闭折扣。"
+
+#: ../../source/features/pd-disaggregation.rst:681
+msgid ""
+"``prefix_cache`` and ``hybrid_cache_load``. Prefix matches below this "
+"percentage are ignored, ``0`` to ``100``. ``0`` disables the threshold."
+msgstr ""
+"``prefix_cache`` 和 ``hybrid_cache_load`` 。低于该百分比的前缀匹配会被忽略，``0`` 到 ``100`` "
+"。``0`` 关闭阈值。"
+
+#: ../../source/features/pd-disaggregation.rst:682
+msgid "``AIBRIX_DECODE_SCORE_POLICY``"
+msgstr "``AIBRIX_DECODE_SCORE_POLICY``"
+
+#: ../../source/features/pd-disaggregation.rst:683
+msgid "``load_balancing``"
+msgstr "``load_balancing``"
+
+#: ../../source/features/pd-disaggregation.rst:684
+msgid ""
+"Default scoring policy for selecting decode pods. ``load_balancing``, "
+"``least_request``, or ``conductor``."
+msgstr "选择 decode Pod 的默认打分策略。``load_balancing`` 、``least_request`` 或 ``conductor`` 。"
+
+#: ../../source/features/pd-disaggregation.rst:685
+msgid "``AIBRIX_KV_CONNECTOR_TYPE``"
+msgstr "``AIBRIX_KV_CONNECTOR_TYPE``"
+
+#: ../../source/features/pd-disaggregation.rst:686
+msgid "``shfs``"
+msgstr "``shfs``"
+
+#: ../../source/features/pd-disaggregation.rst:687
+msgid ""
+"KV transfer backend. ``shfs`` for GPU (SHFS/KVCacheManager), ``nixl`` for"
+" Neuron (TensorRT-LLM)."
+msgstr "KV 传输后端。GPU 用 ``shfs`` （SHFS/KVCacheManager），Neuron 用 ``nixl`` （TensorRT-LLM）。"
+
+#: ../../source/features/pd-disaggregation.rst:688
+msgid "``AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD``"
+msgstr "``AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD``"
+
+#: ../../source/features/pd-disaggregation.rst:689
+#: ../../source/features/pd-disaggregation.rst:692
+msgid "``16``"
+msgstr "``16``"
+
+#: ../../source/features/pd-disaggregation.rst:690
+msgid ""
+"Minimum request-count spread between prefill pods before load-imbalance "
+"routing kicks in."
+msgstr "prefill Pod 之间触发负载不均衡路由所需的最小请求数差。"
+
+#: ../../source/features/pd-disaggregation.rst:691
+msgid "``AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD``"
+msgstr "``AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD``"
+
+#: ../../source/features/pd-disaggregation.rst:693
+msgid ""
+"Minimum ``(max − min)`` running request count spread between decode pods "
+"before request-count load-imbalance routing kicks in."
+msgstr "decode Pod 之间触发按请求数的负载不均衡路由所需的最小 ``(max − min)`` 运行请求数差。"
+
+#: ../../source/features/pd-disaggregation.rst:694
+msgid "``AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD``"
+msgstr "``AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD``"
+
+#: ../../source/features/pd-disaggregation.rst:695
+msgid "``2048``"
+msgstr "``2048``"
+
+#: ../../source/features/pd-disaggregation.rst:696
+msgid ""
+"Minimum ``(max − min)`` token throughput spread (tok/s) between decode "
+"pods before throughput-based load-imbalance routing kicks in."
+msgstr "decode Pod 之间触发按吞吐的负载不均衡路由所需的最小 ``(max − min)`` token 吞吐差（tok/s）。"
+
+#: ../../source/features/pd-disaggregation.rst:697
+msgid "``AIBRIX_DECODE_SCORE_RATIO_THRESHOLD``"
+msgstr "``AIBRIX_DECODE_SCORE_RATIO_THRESHOLD``"
+
+#: ../../source/features/pd-disaggregation.rst:698
+msgid "``1.5``"
+msgstr "``1.5``"
+
+#: ../../source/features/pd-disaggregation.rst:699
+msgid ""
+"``max_drain_score / min_drain_score`` ratio above which the drain-rate "
+"routing fast path is triggered. Score for each pod is "
+"``effective_running_reqs / drain_rate``."
+msgstr ""
+"触发排空速率路由快速路径的 ``max_drain_score / min_drain_score`` 比值。每个 Pod 的分数为 ``effective_running_reqs "
+"/ drain_rate`` 。"
+
+#: ../../source/features/pd-disaggregation.rst:700
+msgid "``AIBRIX_DECODE_LB_WEIGHT_RUNNING``"
+msgstr "``AIBRIX_DECODE_LB_WEIGHT_RUNNING``"
+
+#: ../../source/features/pd-disaggregation.rst:701
+#: ../../source/features/pd-disaggregation.rst:704
+msgid "``1.0``"
+msgstr "``1.0``"
+
+#: ../../source/features/pd-disaggregation.rst:702
+msgid ""
+"Weight applied to the normalized running-request term in the "
+"``load_balancing`` decode score numerator."
+msgstr "``load_balancing`` decode 分数分子中，归一化运行请求项的权重。"
+
+#: ../../source/features/pd-disaggregation.rst:703
+msgid "``AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT``"
+msgstr "``AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT``"
+
+#: ../../source/features/pd-disaggregation.rst:705
+msgid ""
+"Weight applied to the normalized inverse-throughput term in the "
+"``load_balancing`` decode score numerator."
+msgstr "``load_balancing`` decode 分数分子中，归一化逆吞吐项的权重。"
+
+#: ../../source/features/pd-disaggregation.rst:706
+msgid "``AIBRIX_TRT_MACHINE_ID``"
+msgstr "``AIBRIX_TRT_MACHINE_ID``"
+
+#: ../../source/features/pd-disaggregation.rst:708
+msgid ""
+"10-bit machine ID used in Snowflake-style ``disagg_request_id`` "
+"generation for TensorRT-LLM (valid range: ``[0, 1024)``)."
+msgstr ""
+"用于 TensorRT-LLM 的 Snowflake 风格 ``disagg_request_id`` 生成的 10 位机器 ID（有效范围：``[0, "
+"1024)`` ）。"
+
+#: ../../source/features/pd-disaggregation.rst:712
+msgid ":doc:`../designs/aibrix-stormservice`"
+msgstr ":doc:`../designs/aibrix-stormservice`"
+
+#: ../../source/features/pd-disaggregation.rst:713
+msgid "StormService, the orchestration layer behind PD disaggregation."
+msgstr "StormService，Prefill/Decode 分离背后的编排层。"

@@ -37,6 +37,7 @@ import (
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	controllerutils "github.com/vllm-project/aibrix/test/utils/controller"
 	"github.com/vllm-project/aibrix/test/utils/wrapper"
 )
 
@@ -50,22 +51,16 @@ var _ = ginkgo.Describe("ModelRouter controller test", func() {
 	var ns *corev1.Namespace
 
 	ginkgo.BeforeEach(func() {
+		ns = nil
 		ensureAibrixSystemNamespace()
-		ns = &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "test-modelrouter-",
-			},
-		}
-		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
-		gomega.Eventually(func() error {
-			return k8sClient.Get(ctx, client.ObjectKeyFromObject(ns), ns)
-		}, time.Second*3).Should(gomega.Succeed())
+		ns = controllerutils.CreateNamespace(ctx, k8sClient, "test-modelrouter-", 3*time.Second)
 	})
 
 	ginkgo.AfterEach(func() {
-		cleanupHTTPRoutesInAibrixSystem(ns.Name)
-		err := k8sClient.Delete(ctx, ns)
-		gomega.Expect(client.IgnoreNotFound(err)).To(gomega.Succeed())
+		if ns != nil {
+			cleanupHTTPRoutesInAibrixSystem(ns.Name)
+		}
+		controllerutils.DeleteNamespace(ctx, k8sClient, ns)
 	})
 
 	ginkgo.It("creates an HTTPRoute from Deployment, ModelAdapter, and RayClusterFleet informer events", func() {
@@ -116,6 +111,26 @@ var _ = ginkgo.Describe("ModelRouter controller test", func() {
 		_ = waitForReferenceGrant(ns.Name)
 
 		gomega.Expect(k8sClient.Delete(ctx, deploy)).To(gomega.Succeed())
+		waitForHTTPRouteDeleted(modelName)
+		waitForReferenceGrantDeleted(ns.Name)
+	})
+
+	ginkgo.It("keeps the HTTPRoute while another deployment serves the same model", func() {
+		modelName := uniqueModelName(ns.Name, "shared")
+		first := createModelDeployment(ns.Name, "shared-deploy-l20", modelName, nil)
+		second := createModelDeployment(ns.Name, "shared-deploy-v100", modelName, nil)
+		_ = waitForHTTPRoute(modelName)
+		_ = waitForReferenceGrant(ns.Name)
+
+		gomega.Expect(k8sClient.Delete(ctx, first)).To(gomega.Succeed())
+		gomega.Consistently(func() error {
+			return k8sClient.Get(ctx, client.ObjectKey{
+				Namespace: aibrixSystemNS,
+				Name:      utils.ModelRouterName(modelName),
+			}, &gatewayv1.HTTPRoute{})
+		}, time.Second*2, modelRouterInterval).Should(gomega.Succeed())
+
+		gomega.Expect(k8sClient.Delete(ctx, second)).To(gomega.Succeed())
 		waitForHTTPRouteDeleted(modelName)
 		waitForReferenceGrantDeleted(ns.Name)
 	})

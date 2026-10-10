@@ -49,12 +49,18 @@ spec:
             properties:
               artifactURL:
                 type: string
+                x-kubernetes-validations:
+                - message: artifactURL is immutable; create a new ModelClaim instead
+                  rule: self == oldSelf
               engine:
                 default: vllm
                 enum:
                 - vllm
                 - sglang
                 type: string
+                x-kubernetes-validations:
+                - message: engine is immutable; create a new ModelClaim instead
+                  rule: self == oldSelf
               engineConfig:
                 properties:
                   args:
@@ -64,6 +70,24 @@ spec:
                 type: object
               modelName:
                 type: string
+              perGPU:
+                properties:
+                  kvFloor:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  maximumFootprint:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                required:
+                - kvFloor
+                - maximumFootprint
+                type: object
               podSelector:
                 properties:
                   matchExpressions:
@@ -90,6 +114,9 @@ spec:
                     type: object
                 type: object
                 x-kubernetes-map-type: atomic
+                x-kubernetes-validations:
+                - message: podSelector is immutable; create a new ModelClaim instead
+                  rule: self == oldSelf
               replicas:
                 default: 1
                 format: int32
@@ -100,6 +127,15 @@ spec:
             - artifactURL
             - podSelector
             type: object
+            x-kubernetes-validations:
+            - fieldPath: .modelName
+              message: modelName is immutable; create a new ModelClaim instead
+              rule: has(self.modelName) == has(oldSelf.modelName) && (!has(self.modelName)
+                || self.modelName == oldSelf.modelName)
+            - fieldPath: .engineConfig
+              message: engineConfig is immutable; create a new ModelClaim instead
+              rule: has(self.engineConfig) == has(oldSelf.engineConfig) && (!has(self.engineConfig)
+                || self.engineConfig == oldSelf.engineConfig)
           status:
             properties:
               candidates:
@@ -147,6 +183,9 @@ spec:
               instances:
                 items:
                   properties:
+                    kvLimitBytes:
+                      format: int64
+                      type: integer
                     phase:
                       type: string
                     pod:
@@ -154,6 +193,8 @@ spec:
                     port:
                       format: int32
                       type: integer
+                    reason:
+                      type: string
                   required:
                   - pod
                   type: object
@@ -165,6 +206,10 @@ spec:
                 type: integer
             type: object
         type: object
+        x-kubernetes-validations:
+        - message: name must be at most 63 characters, since it is part of an annotation
+            key on the warm-pool Pod
+          rule: self.metadata.name.size() <= 63
     served: true
     storage: true
     subresources:

@@ -169,7 +169,7 @@ class LocalStorage(BaseStorage2):
                     f.flush()
                     os.fsync(f.fileno())
             else:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
                     f.write(str(reader))
                     f.flush()
                     os.fsync(f.fileno())
@@ -538,7 +538,7 @@ class LocalStorage(BaseStorage2):
             dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
         )
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
                 json.dump(data, f)
                 f.flush()
                 os.fsync(f.fileno())

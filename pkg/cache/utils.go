@@ -20,11 +20,11 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
@@ -139,12 +139,15 @@ func mergeLabelPairs(primaryNames, primaryValues, secondaryNames, secondaryValue
 	return outNames, outValues
 }
 
-func shouldSkipMetric(podName string, metricName string) bool {
-	if strings.Contains(podName, "prefill") && isDecodeOnlyMetric(metricName) {
-		return true
-	}
-	if strings.Contains(podName, "decode") && isPrefillOnlyMetric(metricName) {
-		return true
+// shouldSkipMetric reports whether a PD pod exposes a metric that only makes
+// sense for the other role. The role comes from pdRole, the same detection
+// the throughput rates use.
+func shouldSkipMetric(pod *v1.Pod, metricName string) bool {
+	switch pdRole(pod) {
+	case "prefill":
+		return isDecodeOnlyMetric(metricName)
+	case "decode":
+		return isPrefillOnlyMetric(metricName)
 	}
 	return false
 }
@@ -178,7 +181,7 @@ func isDecodeOnlyMetric(metricName string) bool {
 // calculatePerSecondRate calculates the per-second rate for a given metric
 // Returns the rate in units per second, or -1 if insufficient data
 func (c *Store) calculatePerSecondRate(pod *Pod, modelName, metricName string, currentValue float64) float64 {
-	key := fmt.Sprintf("%s/%s/%s", pod.Name, modelName, metricName)
+	key := rateHistoryKey(pod, modelName, metricName)
 	now := time.Now()
 
 	rateCalculator.mu.Lock()
@@ -233,7 +236,7 @@ func (c *Store) calculatePerSecondRate(pod *Pod, modelName, metricName string, c
 // 1 minute ago; if less than 1 minute of history exists, the oldest available
 // snapshot is used. Returns -1 when insufficient data is available.
 func (c *Store) calculateRate1m(pod *Pod, metricName string, currentValue float64) float64 {
-	key := fmt.Sprintf("%s//%s", pod.Name, metricName)
+	key := rateHistoryKey(pod, "", metricName)
 	now := time.Now()
 
 	const (

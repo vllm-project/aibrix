@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 // assertPDDisaggregation sends a single PD-routed chat completion for the given model and
@@ -132,10 +133,7 @@ func assertPDDisaggregationAfterPodDeletion(t *testing.T, roleLabel, modelName, 
 		t.Logf("%s pod %s has been recreated and cluster is back to %d pods", roleLabel, podToDelete, initialCount)
 	})
 
-	// Give the gateway time to detect the pod is gone and re-converge on the
-	// remaining roleset before asserting on individual requests below.
-	time.Sleep(3 * time.Second)
-	waitForPDDisaggregationRouting(t, modelName)
+	waitForPDDisaggregationExcludingPod(t, modelName, roleLabel, podToDelete, prompt)
 
 	var dst *http.Response
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
@@ -162,6 +160,48 @@ func assertPDDisaggregationAfterPodDeletion(t *testing.T, roleLabel, modelName, 
 		}
 		t.Logf("request %d — prefill: %s, decode: %s", i, prefillPod, decodePod)
 	}
+}
+
+// waitForPDDisaggregationExcludingPod waits for the gateway to route several
+// successful requests without selecting the Pod removed by the test. A Pod
+// Ready condition can precede informer and EndpointSlice convergence, so a
+// fixed sleep is insufficient here.
+func waitForPDDisaggregationExcludingPod(t *testing.T, modelName, roleLabel, excludedPod, prompt string) {
+	t.Helper()
+	var dst *http.Response
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "pd", option.WithResponseInto(&dst))
+	consecutive := 0
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second, 2*time.Minute, true,
+		func(ctx context.Context) (bool, error) {
+			_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+				Messages: []openai.ChatCompletionMessageParamUnion{
+					openai.UserMessage(prompt),
+				},
+				Model: modelName,
+			})
+			if err != nil {
+				consecutive = 0
+				t.Logf("waiting for PD routing to exclude pod %s: %v", excludedPod, err)
+				return false, nil
+			}
+
+			prefillPod := dst.Header.Get("prefill-target-pod")
+			decodePod := dst.Header.Get("target-pod")
+			selected := decodePod
+			if roleLabel == "prefill" {
+				selected = prefillPod
+			}
+			if prefillPod == "" || decodePod == "" || prefillPod == decodePod || selected == excludedPod {
+				consecutive = 0
+				t.Logf("waiting for gateway to exclude %s; prefill=%s decode=%s", excludedPod, prefillPod, decodePod)
+				return false, nil
+			}
+
+			consecutive++
+			t.Logf("PD routing excludes %s (%d/3 consecutive)", excludedPod, consecutive)
+			return consecutive >= 3, nil
+		})
+	require.NoError(t, err, "gateway continued selecting deleted %s pod %s", roleLabel, excludedPod)
 }
 
 // TestPDDisaggregationVLLMMultipleRequests sends several requests to verify that the

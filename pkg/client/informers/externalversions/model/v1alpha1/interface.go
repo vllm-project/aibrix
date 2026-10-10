@@ -27,6 +27,8 @@ type Interface interface {
 	ModelAdapters() ModelAdapterInformer
 	// ModelClaims returns a ModelClaimInformer.
 	ModelClaims() ModelClaimInformer
+	// ModelWarmups returns a ModelWarmupInformer.
+	ModelWarmups() ModelWarmupInformer
 }
 
 type version struct {
@@ -48,4 +50,9 @@ func (v *version) ModelAdapters() ModelAdapterInformer {
 // ModelClaims returns a ModelClaimInformer.
 func (v *version) ModelClaims() ModelClaimInformer {
 	return &modelClaimInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// ModelWarmups returns a ModelWarmupInformer.
+func (v *version) ModelWarmups() ModelWarmupInformer {
+	return &modelWarmupInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }

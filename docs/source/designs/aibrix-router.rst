@@ -71,7 +71,7 @@ AIBrix ships with a set of built-in algorithms, each optimized for different wor
 * ``least-kv-cache``: routes to the pod with the smallest current KV cache occupancy (least VRAM used).
 * ``least-gpu-cache``: routes to the pod with the lowest GPU cache utilization.
 * ``least-utilization``: routes to the pod with the lowest overall utilization score.
-* ``load-balance``: capacity-aware weighted least-request routing. Scores each pod as ``running_requests / drain_rate`` (pending time), where ``drain_rate`` is the observed request completion rate. Selects the pod with the lowest pending time, breaking ties using least combined GPU+CPU KV-cache usage (falling back to a random pick if cache metrics are unavailable for the tied pods) — the same secondary-signal pattern ``prefix-cache`` uses to break ties in prefix-match percentage via request count. Falls back to uniform capacity when drain-rate metrics are unavailable. Its load-imbalance gate, which restricts candidates to the least-loaded pods when load is severely skewed, is applied centrally by the gateway ahead of whichever strategy actually routes each request — not just when ``load-balance`` itself is selected (see ``pkg/plugins/gateway/ENV_VARS.md``).
+* ``load-balance``: capacity-aware weighted least-request routing. Scores each pod as ``(running_requests + λ·queued_requests) / EWMA(output_tokens_per_second) × (1 + α·(1 − kv_free)²)`` and selects the pod with the lowest score. The token rate is the gateway-observed rate at which the pod completes output tokens (so faster hardware is learned dynamically and receives proportionally more traffic), and ``kv_free`` is the pod's free KV-cache fraction. ``λ`` defaults to ``0`` (the running count already includes requests queued in the engine) and ``α`` to ``2``. A pod with less than 10% free KV cache scores ``+Inf`` and is skipped; if every pod is below that threshold the request still routes, to the pod with the most KV headroom. The three knobs are ``AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT``, ``AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA`` and ``AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE``. A pod whose engine reports no KV-cache usage, or reports ``NaN``, is treated as fully free (no penalty and no guardrail). Ties are broken using least combined GPU+CPU KV-cache usage (falling back to a random pick if cache metrics are unavailable for the tied pods). A pod with no token-rate estimate yet is scored at the mean estimate of the others (uniform capacity when none has one). See ``pkg/plugins/gateway/algorithms/load_balance.md``. Its load-imbalance gate, which restricts candidates to the least-loaded pods when load is severely skewed, is applied centrally by the gateway ahead of whichever strategy actually routes each request — not just when ``load-balance`` itself is selected (see ``pkg/plugins/gateway/ENV_VARS.md``).
 * ``throughput``: routes to the pod that has processed the fewest total weighted tokens, favoring underloaded pods.
 * ``power-of-two``: applies the power-of-two choices algorithm — samples two pods and selects the better one.
 
@@ -98,15 +98,20 @@ AIBrix ships with a set of built-in algorithms, each optimized for different wor
 
 **Auto-blended capacity awareness**
 
-Every strategy above, except the exclusive ones (``pd``, ``slo``/``slo-*``) and an explicit
-standalone ``load-balance`` selection, silently gets ``load-balance``'s capacity-aware scoring
-blended in behind the scenes — and ``least-request`` too, when the selected strategy doesn't
-already route by request count, to keep multi-port/data-parallel pod routing working under the
-blend. The caller never sees this: ``ctx.Algorithm``, response headers, and ``Validate()`` all
-still reflect exactly the strategy that was requested. This keeps any single strategy from
-steering traffic at an already-hot pod even outside the load-imbalance gate described above. Set
+Every strategy above, except the exclusive ones (``pd``, ``slo``/``slo-*``), an explicit
+standalone ``load-balance`` selection, and a bare ``session-affinity`` selection, silently gets
+``load-balance``'s capacity-aware scoring blended in behind the scenes — and ``least-request``
+too, when the selected strategy doesn't already route by request count, to keep
+multi-port/data-parallel pod routing working under the blend. The caller never sees this:
+``ctx.Algorithm``, response headers, and ``Validate()`` all still reflect exactly the strategy
+that was requested. This keeps any single strategy from steering traffic at an already-hot pod
+even outside the load-imbalance gate described above. Set
 ``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0`` to disable it (see
-``pkg/plugins/gateway/ENV_VARS.md``).
+``pkg/plugins/gateway/ENV_VARS.md``). A bare ``prefix-cache`` request uses a 5:4 (1.25:1) lean
+toward cache affinity over ``load-balance`` instead of the flat weight-1 append, and does not
+receive ``least-request``. ``session-affinity`` gets no auto-blend at all: its scoring is binary
+(the resolved pod vs. everything else), so a smaller load-balance weight could never change the
+outcome anyway — it keeps running its own ``Route()``/``ScoreAll()`` unblended.
 
 
 How to Extend Routing Algorithms

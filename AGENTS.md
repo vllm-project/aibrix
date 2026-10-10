@@ -116,6 +116,13 @@ requires it.
   relevant issue, and describe the tests actually run.
 - Update user or developer documentation when behavior, configuration, API,
   deployment, or CLI usage changes.
+- When changing any `docs/source/**/*.rst` file, update the corresponding
+  `docs/source/locale/zh_CN/LC_MESSAGES/**/*.po` catalog in the same change,
+  including added, modified, and removed content. Do not leave new or changed
+  documentation falling back to English on the Chinese site.
+- Before submitting an RST documentation change, run `make html-all` from
+  `docs/` and confirm that both the English and Simplified Chinese HTML builds
+  succeed.
 - Large design changes should be discussed before implementation and recorded
   in the appropriate documentation area.
 - Review every generated or AI-assisted change yourself; do not submit code

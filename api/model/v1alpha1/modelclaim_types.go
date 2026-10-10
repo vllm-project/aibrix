@@ -16,7 +16,10 @@ limitations under the License.
 
 package v1alpha1
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
@@ -27,6 +30,12 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // kvcached. Multiple ModelClaims may share one GPU.
 
 // ModelClaimSpec defines the desired state of ModelClaim.
+//
+// Only perGPU can be changed after a claim is created. The other fields decide
+// which engine runs and where, and the engine is started with them only once,
+// so a change would never reach it. To change one, create a new ModelClaim.
+// +kubebuilder:validation:XValidation:rule="has(self.modelName) == has(oldSelf.modelName) && (!has(self.modelName) || self.modelName == oldSelf.modelName)",message="modelName is immutable; create a new ModelClaim instead",fieldPath=".modelName"
+// +kubebuilder:validation:XValidation:rule="has(self.engineConfig) == has(oldSelf.engineConfig) && (!has(self.engineConfig) || self.engineConfig == oldSelf.engineConfig)",message="engineConfig is immutable; create a new ModelClaim instead",fieldPath=".engineConfig"
 type ModelClaimSpec struct {
 	// ModelName is the served model identifier that clients address in requests
 	// (e.g. the `model` field of an OpenAI-style request). Defaults to the
@@ -35,20 +44,23 @@ type ModelClaimSpec struct {
 	ModelName *string `json:"modelName,omitempty"`
 
 	// PodSelector is a label query selecting the warm GPU pods this model may be
-	// attached to. It typically matches `pool.aibrix.ai/name=<pool>`. Candidate
-	// pods must also advertise the enabled warm-pool label.
+	// attached to. It typically matches `claim.model.aibrix.ai/pool=<pool>`.
+	// Candidate pods must also advertise the enabled warm-pool label.
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="podSelector is immutable; create a new ModelClaim instead"
 	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 
 	// ArtifactURL is the address of the model weights to download. Multiple
 	// protocols are supported, e.g. s3://, gcs://, huggingface://.
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="artifactURL is immutable; create a new ModelClaim instead"
 	ArtifactURL string `json:"artifactURL,omitempty"`
 
 	// Engine is the inference engine used to serve this model.
 	// +optional
 	// +kubebuilder:default=vllm
 	// +kubebuilder:validation:Enum=vllm;sglang
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="engine is immutable; create a new ModelClaim instead"
 	Engine string `json:"engine,omitempty"`
 
 	// Replicas is the desired number of active engine instances for this model
@@ -65,6 +77,63 @@ type ModelClaimSpec struct {
 	// CLI flags to their values, e.g. {"--max-model-len": "2048"}.
 	// +optional
 	EngineConfig *ModelClaimEngineConfig `json:"engineConfig,omitempty"`
+
+	// PerGPU declares what one instance of this model costs on a single GPU.
+	// Placement uses it to keep a card from being promised more memory than it
+	// has, and to divide the card between the models on it, so a model is
+	// neither started where it cannot fit nor left at its floor while the card
+	// has room to spare.
+	//
+	// A claim without it is not placed. There is no figure the control plane
+	// could put here in its place: what an engine holds beyond its weights does
+	// not follow from the artifact, so a claim that does not say is a card that
+	// cannot be accounted for, and one such claim makes its whole card unusable
+	// to every other.
+	//
+	// Both figures have to be positive, and no more than 1Pi. A figure below
+	// 1Mi also has to be a whole number of bytes, and a larger one is rounded
+	// up to whole bytes. A claim whose declaration is missing or cannot be
+	// used is not placed, and its Scheduled condition says which figure is
+	// wrong.
+	//
+	// The schema leaves it optional, and the controller refuses the claim
+	// instead. A claim stored before this field existed has to stay valid. A
+	// required field would fail such a claim on its next update. Without CRD
+	// validation ratcheting, its finalizer could then never be removed. A
+	// missing declaration reads as missing rather than as a cost of zero.
+	// +optional
+	PerGPU *ModelClaimPerGPU `json:"perGPU,omitempty"`
+}
+
+// ModelClaimPerGPU is what one instance of a model costs on one GPU.
+//
+// Both figures describe a single device rather than the whole model, because a
+// card is what an instance has to fit on. With tensor or pipeline parallelism
+// they describe the heaviest device: tensor parallelism makes the question
+// moot, since every rank holds the same slice, while pipeline stages are not
+// equal and one of them costs more than the rest. Declaring more than an
+// instance needs wastes room and is safe; declaring less is not.
+type ModelClaimPerGPU struct {
+	// MaximumFootprint is the largest non-KV GPU memory one instance holds on a
+	// device: weights, captured CUDA graphs, activation workspaces and
+	// allocator retention. It cannot be derived from the artifact size, because
+	// most of the gap between the two is allocator retention that does not
+	// scale with the weights, so it has to come from a run of this model with
+	// these engine arguments.
+	//
+	// A quantity, so it reads as `30Gi` rather than as a count of bytes nobody
+	// can check by eye.
+	// +kubebuilder:validation:Required
+	MaximumFootprint resource.Quantity `json:"maximumFootprint"`
+
+	// KVFloor is the KV cache one instance must keep on a device to serve at
+	// all: enough for one request of the engine's maximum model length at this
+	// model's bytes per token, rounded up to the KV allocator's page
+	// granularity. Placement holds this much for the instance for as long as it
+	// is awake. It holds this much while the instance sleeps too, unless the
+	// pool keeps no wake reserve.
+	// +kubebuilder:validation:Required
+	KVFloor resource.Quantity `json:"kvFloor"`
 }
 
 // ModelClaimEngineConfig describes engine-specific startup options.
@@ -118,6 +187,31 @@ type ModelClaimInstance struct {
 	// Phase is the per-instance lifecycle phase.
 	// +optional
 	Phase ModelClaimPhase `json:"phase,omitempty"`
+
+	// KVLimitBytes is the KV cache limit this instance's engine is meant to run
+	// under: the most KV memory it may map on each of its GPUs. The controller
+	// records it when it places the instance, before the engine starts, and
+	// then writes it to the engine.
+	//
+	// It is a record of intent. The engine obeys the limit held in its own KV
+	// allocator, and the two differ until a write lands, or after an engine
+	// restart puts the allocator's default back. It is unset when no card was
+	// divided for the instance: on a pod without a GPU, and for an instance
+	// placed before its claim declared a per-GPU cost.
+	// +optional
+	KVLimitBytes int64 `json:"kvLimitBytes,omitempty"`
+
+	// Reason says why the instance stands where it does, when its phase alone
+	// does not. The controller sets it, and clears it once it no longer holds.
+	//
+	//   - WaitingForRoom: the engine sleeps, a request has asked for it, and its
+	//     card cannot take it back yet.
+	//   - NoRoomToWake: the engine slept, and its card could not take it back,
+	//     so the claim is being moved to another pod.
+	//   - WakeFailed: the runtime could not wake the engine, so the claim is
+	//     being moved to another pod.
+	// +optional
+	Reason string `json:"reason,omitempty"`
 }
 
 // ModelClaimStatus defines the observed state of ModelClaim.
@@ -171,6 +265,7 @@ const (
 // +kubebuilder:printcolumn:name="Engine",type=string,JSONPath=`.spec.engine`
 // +kubebuilder:printcolumn:name="Artifact",type=string,JSONPath=`.spec.artifactURL`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.size() <= 63",message="name must be at most 63 characters, since it is part of an annotation key on the warm-pool Pod"
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // ModelClaim is the Schema for the modelclaims API.

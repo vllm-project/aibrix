@@ -9,7 +9,7 @@ RUN ${PYTHON_BIN} -m pip show torch | awk '/Version/{print $2}' | sed 's/+.*$//'
 FROM docker.io/pytorch/manylinux2_28-builder:cuda12.1 AS builder
 
 ARG AIBRIX_REPO=https://github.com/vllm-project/aibrix
-ARG AIBRIX_BRANCH=v0.7.0
+ARG AIBRIX_BRANCH=v0.8.0-rc.1
 ARG PYTHON_BIN=python
 
 ENV PATH="/opt/python/cp312-cp312/bin:${PATH}"

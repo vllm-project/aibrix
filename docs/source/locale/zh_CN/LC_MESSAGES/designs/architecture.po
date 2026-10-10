@@ -1,0 +1,127 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/designs/architecture.rst:5
+msgid "AIBrix Architecture"
+msgstr "AIBrix 架构"
+
+#: ../../source/designs/architecture.rst:7
+msgid ""
+"An overview of AIBrix’s architecture. This guide introduces the AIBrix "
+"ecosystem and explains how its components integrate into the LLM "
+"inference lifecycle."
+msgstr ""
+"本文概述 AIBrix 架构，介绍 AIBrix 生态系统，并说明各组件如何融入 LLM "
+"推理生命周期。"
+
+#: ../../source/designs/architecture.rst:9
+msgid ""
+"The following diagram gives an overview of the AIBrix Ecosystem and how "
+"it relates to the wider Kubernetes and LLM landscapes."
+msgstr ""
+"下图概览 AIBrix 生态系统，以及它与更广泛的 Kubernetes 和 LLM 生态之间的关系。"
+
+#: ../../source/designs/architecture.rst:11
+msgid "aibrix-architecture-v1"
+msgstr "aibrix-architecture-v1"
+
+#: ../../source/designs/architecture.rst:16
+msgid ""
+"AIBrix contains both :strong:`control plane` components and :strong:`data"
+" plane` components. The components of the control plane manage the "
+"registration of model metadata, autoscaling, model adapter registration, "
+"and enforce various types of policies. Data plane components provide "
+"configurable components for dispatching, scheduling, and serving "
+"inference requests, enabling flexible and high-performance model "
+"execution."
+msgstr ""
+"AIBrix 同时包含 :strong:`控制面` 组件和 :strong:`数据面` "
+"组件。控制面负责模型元数据注册、自动扩缩容、模型适配器注册，并执行各类策略。"
+"数据面提供可配置的分发、调度与推理请求服务组件，以支持灵活、高性能的模型执行。"
+
+#: ../../source/designs/architecture.rst:19
+msgid "AIBrix Control Plane"
+msgstr "AIBrix 控制面"
+
+#: ../../source/designs/architecture.rst:21
+msgid "AIBrix currently provides several control plane components."
+msgstr "AIBrix 当前提供以下控制面组件。"
+
+#: ../../source/designs/architecture.rst:23
+msgid ""
+":strong:`Model Adapter (Lora) controller`: enables multi-LoRA-per-pod "
+"deployments, significantly improving scalability and resource efficiency."
+msgstr ":strong:`Model Adapter (LoRA) 控制器` ：支持单个 Pod 部署多个 LoRA，显著提升可扩展性与资源利用率。"
+
+#: ../../source/designs/architecture.rst:24
+msgid ""
+":strong:`RayClusterFleet`: orchestrates multi-node inference, ensuring "
+"optimal performance across distributed environments."
+msgstr ":strong:`RayClusterFleet` ：编排多节点推理，确保分布式环境下的性能。"
+
+#: ../../source/designs/architecture.rst:25
+msgid ""
+":strong:`LLM-Specific Autoscale`: enables real-time, second-level "
+"scaling, leveraging KV cache utilization and inference-aware metrics to "
+"dynamically optimize resource allocation"
+msgstr ":strong:`LLM 专用自动扩缩容` ：基于 KVCache 利用率与推理相关指标，实现秒级实时扩缩容，动态优化资源分配"
+
+#: ../../source/designs/architecture.rst:26
+msgid ""
+":strong:`GPU Optimizer`: a profiler based optimizer which optimizes "
+"heterogeneous serving, dynamically adjusting allocations to maximize "
+"cost-efficiency while maintaining service guarantee"
+msgstr ":strong:`GPU Optimizer` ：基于性能剖析的优化器，面向异构推理服务动态调整资源分配，在满足服务保障的同时提升成本效率"
+
+#: ../../source/designs/architecture.rst:27
+msgid ""
+":strong:`AI Engine Runtime`: a lightweight sidecar that offloads "
+"management tasks, enforces policies, and abstracts engine interactions."
+msgstr ":strong:`AI Engine Runtime` ：轻量 sidecar，卸载管理任务、执行策略，并抽象与推理引擎的交互。"
+
+#: ../../source/designs/architecture.rst:28
+msgid ""
+":strong:`Accelerator Diagnose Tools`: provides automated failure "
+"detection and mock-up testing to improve fault resilience."
+msgstr ":strong:`加速器诊断工具` ：提供自动化故障检测与模拟测试，提升故障韧性。"
+
+#: ../../source/designs/architecture.rst:32
+msgid "AIBrix Data Plane"
+msgstr "AIBrix 数据面"
+
+#: ../../source/designs/architecture.rst:34
+msgid "AIBrix currently provides several data plane components:"
+msgstr "AIBrix 当前提供以下数据面组件："
+
+#: ../../source/designs/architecture.rst:36
+msgid ""
+":strong:`Request Router`: serves as the central request dispatcher, "
+"enforcing fairness policies, rate control (TPM/RPM), and workload "
+"isolation."
+msgstr ":strong:`请求路由器` ：作为中心请求分发器，执行公平性策略、速率控制（TPM/RPM）以及工作负载隔离。"
+
+#: ../../source/designs/architecture.rst:37
+msgid ""
+":strong:`Distributed KV Cache Runtime`: provides scalable, low-latency "
+"cache access across nodes. By enabling KV cache reuse, it reduces "
+"redundant computation and improves token generation efficiency."
+msgstr ""
+":strong:`分布式 KVCache 运行时` ：在节点间提供可扩展、低延迟的缓存访问。通过复用 KVCache，减少重复计算并提升 token "
+"生成效率。"

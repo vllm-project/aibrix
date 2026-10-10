@@ -8,7 +8,7 @@ Package `ratelimiter` provides a distributed, Redis-backed fixed-window rate lim
 type RateLimiter interface {
     Get(ctx context.Context, key string) (int64, error)
     GetLimit(ctx context.Context, key string) (int64, error)
-    Incr(ctx context.Context, key string, val int64) (int64, error)
+    Incr(ctx context.Context, key string, val int64, window ...time.Duration) (int64, error)
 }
 ```
 
@@ -16,7 +16,7 @@ type RateLimiter interface {
 |------------|-------------|
 | `Get`      | Returns the current counter value for a key in the active time window. |
 | `GetLimit` | Returns the configured maximum for a key (used for limit lookups, not window counters). |
-| `Incr`     | Atomically increments the counter by `val` and returns the new value. Sets the key TTL to the window size. |
+| `Incr`     | Atomically increments the counter by `val` and returns the new value. The first write sets the key TTL to the window size; later writes do not extend it. |
 
 ## Implementations
 
@@ -24,18 +24,10 @@ type RateLimiter interface {
 
 A fixed-window counter backed by Redis. Suitable for cluster-wide enforcement when multiple gateway replicas share the same Redis instance.
 
-**Key scheme:** `{name}:{key}:{timebin}`
-
-The time bin is computed as:
-
-```
-timebin = (time.Now().Unix() / windowSeconds) % 64
-```
-
-This cycles through 64 buckets, so at most 64 keys exist per logical counter. The TTL on each key is set to `windowSize`, so stale bins expire automatically.
+**Counter key scheme:** `{name}:{key}:{windowMilliseconds}:counter`. The key is stable for each configured window duration and separate from the static `{name}:{key}` key used by `GetLimit`. The counter expires `windowSize` after its first write, and the next write starts a new window. This window is independent of wall-clock bucket boundaries.
 
 - Minimum `windowSize` is 1 second (smaller values are clamped up).
-- `Incr` uses a Redis pipeline (`INCRBY` + `EXPIRE`) for atomicity within a single round-trip.
+- `Incr` uses a Redis Lua script to increment and set the TTL atomically on the first write.
 - A missing key (`redis.Nil`) is treated as `0`, not an error.
 
 ### `noopRateLimiter` — `NewNoopRateLimiter()`
@@ -55,11 +47,11 @@ The separate `name` prefix ensures the two limiters' keys never collide in Redis
 
 ### Per-user limits (RPM / TPM)
 
-Keys follow the pattern `aibrix:{username}_{RPM|TPM}_CURRENT:{timebin}`. Limits are read from the user record resolved during request header processing.
+Counter keys follow the pattern `aibrix:{username}_{RPM|TPM}_CURRENT:60000:counter`. Limits are read from the user record resolved during request header processing.
 
 ### Per-model RPS
 
-Keys follow the pattern `aibrix_model:{modelName}_MODEL_RPS_CURRENT:{timebin}`. The RPS limit is configured per model via the `requestsPerSecond` field in a config profile:
+Counter keys follow the pattern `aibrix_model:{modelName}_MODEL_RPS_CURRENT:{windowMilliseconds}:counter`. The RPS limit is configured per model via the `requestsPerSecond` field in a config profile:
 
 ```json
 {
@@ -86,3 +78,7 @@ Per-model RPS enforcement is handled in `HandleRequestBody` via `enforceModelRPS
 3. **Success path** — after routing succeeds and request accounting is attached, compensation is disabled, so the pre-charge remains counted.
 
 Using incr-then-check (rather than check-then-increment) means the `INCRBY` is the sole gate. Because Redis processes `INCRBY` atomically, each concurrent caller receives a unique sequential result — eliminating the TOCTOU race that would otherwise allow over-admission during the check→increment window.
+
+### Upgrading from wall-clock bucket keys
+
+The counter key format changed from `{name}:{key}:{timebin}` to `{name}:{key}:{windowMilliseconds}:counter`. Existing bucket keys expire on their own TTL, but the new limiter does not read their counts. A deployment therefore starts a new counter window for each key. During a rolling upgrade, old and new gateway instances count requests separately and may collectively admit more than the configured limit. Deployments that require uninterrupted strict limits should avoid serving rate-limited traffic from both versions at the same time; a cutover to the new version still starts fresh counters.

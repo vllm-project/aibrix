@@ -56,6 +56,10 @@ const (
 	// EnvPrefixCacheRemoteTokenizerEndpoint specifies the remote tokenizer service endpoint
 	// Format: "http://service:port" - required when using remote tokenizer
 	EnvPrefixCacheRemoteTokenizerEndpoint = "AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT"
+
+	// EnvPrefixCacheIncludeTools controls whether the chat request "tools" field is part
+	// of the text used for prefix matching. Defaults to true.
+	EnvPrefixCacheIncludeTools = "AIBRIX_PREFIX_CACHE_INCLUDE_TOOLS"
 )
 
 // Helper functions for KV Event Sync labels

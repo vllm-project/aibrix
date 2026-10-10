@@ -108,6 +108,7 @@ router falls back to the global least-loaded pod across all ready pods.
 | `AIBRIX_PREFIX_CACHE_BLOCK_NUMBER` | Maximum number of prefix cache blocks tracked per pod. | `200000` |
 | `AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR` | `load_factor` in `mean + load_factor × σ`. Higher value tolerates more load on a high-cache-hit pod. | `1` |
 | `AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED` | Enable KV sync routing mode (requires remote tokenizer). | `false` |
+| `AIBRIX_PREFIX_CACHE_INCLUDE_TOOLS` | Prepend the canonicalized chat request `tools` to the prompt text before hashing, so requests that share messages but carry different tools do not look like a full prefix match. Token estimates keep using the messages only. KV-sync mode tokenizing through the remote chat template forwards the raw `tools` to the tokenizer regardless of this flag, so the template places them. Set to `false` to hash the messages only. | `true` |
 
 See [ENV_VARS.md](../ENV_VARS.md#load-balance-router-algorithmsload_balancego) for the
 load-imbalance gate's `AIBRIX_LOAD_BALANCE_IMBALANCE_FACTOR` /

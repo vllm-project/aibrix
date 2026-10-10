@@ -51,6 +51,34 @@ vllm_time_to_first_token_seconds_sum{model_name="meta-llama/Llama-2-7b-chat-hf"}
 vllm_time_to_first_token_seconds_count{model_name="meta-llama/Llama-2-7b-chat-hf"} 5.0
 `
 
+// mockVllmSleepStateMetrics deliberately lists the "awake" instance last, the
+// order a naive Metric[0] read would get wrong: vLLM registers the three
+// sleep_state series in "awake", "weights_offloaded", "discard_all" order
+// today, but nothing in the Prometheus exposition format guarantees a scrape
+// preserves that, and this fixture must not rely on it either. The first
+// listed instance (weights_offloaded=1.0) also deliberately differs from the
+// correct awake=0.0 answer: a fixture whose first instance happens to share
+// the awake series' value would pass even without label filtering.
+const mockVllmSleepStateMetrics = `# HELP vllm:engine_sleep_state Engine sleep state.
+# TYPE vllm:engine_sleep_state gauge
+vllm:engine_sleep_state{model_name="meta-llama/Llama-2-7b-chat-hf",sleep_state="weights_offloaded"} 1.0
+vllm:engine_sleep_state{model_name="meta-llama/Llama-2-7b-chat-hf",sleep_state="discard_all"} 0.0
+vllm:engine_sleep_state{model_name="meta-llama/Llama-2-7b-chat-hf",sleep_state="awake"} 0.0
+`
+
+// mockVllmSleepLevel2Metrics is the same family as mockVllmSleepStateMetrics
+// but at sleep level 2 (discard_all=1, awake=0), with discard_all listed
+// last. aggregateModelMetric's gauge folding keeps whichever instance a
+// scrape lists last; without a label filter in the model-scoped path,
+// discard_all=1 folding in last would read as "awake" (1 == awake's own
+// truthy encoding) and hide the very state this metric exists to report.
+const mockVllmSleepLevel2Metrics = `# HELP vllm:engine_sleep_state Engine sleep state.
+# TYPE vllm:engine_sleep_state gauge
+vllm:engine_sleep_state{model_name="meta-llama/Llama-2-7b-chat-hf",sleep_state="awake"} 0.0
+vllm:engine_sleep_state{model_name="meta-llama/Llama-2-7b-chat-hf",sleep_state="weights_offloaded"} 0.0
+vllm:engine_sleep_state{model_name="meta-llama/Llama-2-7b-chat-hf",sleep_state="discard_all"} 1.0
+`
+
 const mockSglangMetrics = `# HELP sglang_running_requests Number of running requests.
 # TYPE sglang_running_requests gauge
 sglang_running_requests{model_name="meta-llama/Llama-2-7b-chat-hf"} 1.0
@@ -277,6 +305,67 @@ func TestEngineMetricsFetcher_FetchTypedMetric(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestEngineMetricsFetcher_FetchTypedMetric_SleepStateLabelFilter covers the
+// label-filtered read path (RequiredLabelKey/RequiredLabelValue) that
+// EngineSleepState relies on: vllm:engine_sleep_state reports three instances
+// under the same name, distinguished only by the sleep_state label, and the
+// mock fixture lists "awake" last so a Metric[0] read (the previous,
+// unfiltered behavior) would return the wrong series.
+func TestEngineMetricsFetcher_FetchTypedMetric_SleepStateLabelFilter(t *testing.T) {
+	setupMockMetrics()
+
+	server := setupMockServer(mockVllmSleepStateMetrics, 200, 0)
+	defer server.Close()
+
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+	fetcher := NewEngineMetricsFetcher()
+
+	value, err := fetcher.FetchTypedMetric(context.Background(), endpoint, "vllm", "test-pod", EngineSleepState)
+	require.NoError(t, err)
+	require.NotNil(t, value)
+	assert.Equal(t, 0.0, value.GetSimpleValue(), "must read the awake=0 series, not whichever instance the scrape listed first")
+}
+
+// TestEngineMetricsFetcher_FetchAllTypedMetrics_SleepStateLabelFilter covers
+// the path the cache worker actually calls for EngineSleepState: it is
+// registered as PodModelMetricScope, so FetchAllTypedMetrics dispatches to
+// parseModelMetricsFromFamily, not parseMetricFromFamily / FetchTypedMetric
+// above. That model-scoped path folds same-named instances per model_name
+// with aggregateModelMetric, which for a gauge keeps whichever instance a
+// scrape lists last; without RequiredLabelKey filtering there too, the
+// backstop this metric feeds stays scrape-order dependent, the exact bug it
+// exists to fix (review on #2735).
+func TestEngineMetricsFetcher_FetchAllTypedMetrics_SleepStateLabelFilter(t *testing.T) {
+	setupMockMetrics()
+	fetcher := NewEngineMetricsFetcher()
+	ctx := context.Background()
+	const key = "meta-llama/Llama-2-7b-chat-hf/engine_sleep_state"
+
+	t.Run("awake listed last, weights_offloaded first", func(t *testing.T) {
+		server := setupMockServer(mockVllmSleepStateMetrics, 200, 0)
+		defer server.Close()
+		endpoint := strings.TrimPrefix(server.URL, "http://")
+
+		result, err := fetcher.FetchAllTypedMetrics(ctx, endpoint, "vllm", "test-pod", []string{EngineSleepState})
+		require.NoError(t, err)
+		require.Contains(t, result.ModelMetrics, key)
+		assert.Equal(t, 0.0, result.ModelMetrics[key].GetSimpleValue(),
+			"must read the awake series regardless of which instance the scrape lists last")
+	})
+
+	t.Run("sleep level 2, discard_all listed last", func(t *testing.T) {
+		server := setupMockServer(mockVllmSleepLevel2Metrics, 200, 0)
+		defer server.Close()
+		endpoint := strings.TrimPrefix(server.URL, "http://")
+
+		result, err := fetcher.FetchAllTypedMetrics(ctx, endpoint, "vllm", "test-pod", []string{EngineSleepState})
+		require.NoError(t, err)
+		require.Contains(t, result.ModelMetrics, key)
+		assert.Equal(t, 0.0, result.ModelMetrics[key].GetSimpleValue(),
+			"discard_all=1 folding in last must not read as awake=1: the engine is asleep at level 2")
+	})
 }
 
 func TestEngineMetricsFetcher_FetchAllTypedMetrics(t *testing.T) {

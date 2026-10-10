@@ -5,7 +5,7 @@ IMAGE_TAG ?= ${GIT_COMMIT_HASH}  # Use git commit hash as default image tag
 # Image URL to use all building/pushing image targets
 AIBRIX_CONTAINER_REGISTRY_NAMESPACE ?= aibrix
 DOCKERFILE_PATH ?= build/container
-KVCACHED_RUNTIME_BASE_IMAGE ?= ghcr.io/ovg-project/kvcached-vllm:latest
+KVCACHED_RUNTIME_BASE_IMAGE ?= ghcr.io/ovg-project/kvcached-vllm:kvcached-v0.1.6-vllm-v0.30.0
 IMAGES := controller-manager gateway-plugins runtime metadata-service
 AIBRIX_IMAGES := $(foreach img,$(IMAGES),$(AIBRIX_CONTAINER_REGISTRY_NAMESPACE)/$(img):nightly)
 
@@ -61,6 +61,7 @@ GINKGO_VERSION ?= $(shell go list -m -f '{{.Version}}' github.com/onsi/ginkgo/v2
 INTEGRATION_ROOT ?= ./test/integration
 INTEGRATION_WEBHOOK_TARGET ?= $(INTEGRATION_ROOT)/webhook/...
 INTEGRATION_CONTROLLER_TARGET ?= $(INTEGRATION_ROOT)/controller/...
+INTEGRATION_GATEWAY_TARGET ?= $(INTEGRATION_ROOT)/gateway/...
 INTEGRATION_TARGET ?= $(INTEGRATION_ROOT)/...
 
 GINKGO = $(shell pwd)/bin/ginkgo
@@ -110,7 +111,7 @@ sync-crds-to-helm: manifests
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
 	./hack/update-codegen.sh go $(PROJECT_DIR)/bin
 
 .PHONY: update-codegen
@@ -141,6 +142,10 @@ test: manifests generate fmt vet envtest ## Run unit tests.
 	@echo "Running unit tests only..."
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v '/e2e\|/integration') -coverprofile cover.out
 
+.PHONY: test-zmq
+test-zmq: ## Run tests that require ZMQ support.
+	CGO_ENABLED=1 go test -tags=zmq ./pkg/kvevent/... ./pkg/cache/... -count=1
+
 .PHONY: test-code-coverage
 test-code-coverage: test
 	$(GO_TEST_COVERAGE) --config=./.github/.testcoverage.yml
@@ -149,7 +154,7 @@ test-code-coverage: test
 test-race-condition: manifests generate fmt vet envtest ## Run tests with race detection enabled.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test -race $$(go list ./... | grep -v '/e2e\|/integration')
 
-.PHONY: test-integration test-integration-webhook test-integration-controller
+.PHONY: test-integration test-integration-webhook test-integration-controller test-integration-gateway
 test-integration: manifests fmt vet envtest ginkgo
 	@echo "Running all integration tests..."
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
@@ -165,10 +170,29 @@ test-integration-controller: manifests fmt vet envtest ginkgo
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 	$(GINKGO) --junit-report=junit.controller.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_CONTROLLER_TARGET)
 
+test-integration-gateway: manifests fmt vet envtest ginkgo
+	@echo "Running gateway integration tests only..."
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+	$(GINKGO) --junit-report=junit.gateway.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_GATEWAY_TARGET)
+
+.PHONY: test-integration-tagged
+test-integration-tagged: manifests envtest ## Run Go tests behind the integration build tag.
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+	go test -tags=integration ./pkg/controller/modelclaim/... ./pkg/controller/kvcache/backends/... -count=1
+
 # Utilize Kind or modify the e2e tests to load the image locally, enabling compatibility with other vendors.
 .PHONY: test-e2e  # Run the e2e tests against a Kind k8s instance that is spun up.
 test-e2e:
 	./test/run-e2e-tests.sh
+
+.PHONY: test-e2e-stormservice-volcano
+test-e2e-stormservice-volcano: ## Run the StormService Volcano gang scheduling e2e against a prepared cluster.
+	AIBRIX_STORMSERVICE_VOLCANO_E2E=true go test ./test/e2e/controller/stormservice \
+		-run '^TestStormServiceVolcanoGangScheduling$$' -v -count=1 -timeout 10m
+
+.PHONY: test-install-smoke
+test-install-smoke:
+	go test ./test/e2e/installation -v -count=1 -timeout 10m
 
 .PHONY: test-e2e-external-metrics
 test-e2e-external-metrics: ## Run external metrics autoscaler e2e against local minikube.
@@ -257,7 +281,7 @@ run: manifests generate fmt vet ## Run a controller from your host.
 IS_MAIN_BRANCH ?= true
 
 define build_and_tag
-	$(CONTAINER_TOOL) build -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${IMAGE_TAG} -f ${DOCKERFILE_PATH}/$(2) .
+	$(CONTAINER_TOOL) build $(if $(3),--target $(3),) -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${IMAGE_TAG} -f ${DOCKERFILE_PATH}/$(2) .
 	if [ "${IS_MAIN_BRANCH}" = "true" ]; then $(CONTAINER_TOOL) tag ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${IMAGE_TAG} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):nightly; fi
 endef
 
@@ -280,7 +304,7 @@ docker-build-gateway-plugins: ## Build docker image with the gateway plugins.
 
 .PHONY: docker-build-runtime
 docker-build-runtime: ## Build docker image with the AI Runtime.
-	$(call build_and_tag,runtime,Dockerfile.python)
+	$(call build_and_tag,runtime,Dockerfile.python,runtime)
 
 .PHONY: docker-build-kvcached-runtime
 docker-build-kvcached-runtime: ## Build the kvcached-enabled ModelClaim runtime image.
@@ -288,8 +312,8 @@ docker-build-kvcached-runtime: ## Build the kvcached-enabled ModelClaim runtime 
 	if [ "${IS_MAIN_BRANCH}" = "true" ]; then $(CONTAINER_TOOL) tag ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/kvcached-runtime:${IMAGE_TAG} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/kvcached-runtime:nightly; fi
 
 .PHONY: docker-build-metadata-service
-docker-build-metadata-service: ## Build docker image with the metadata-service (same as runtime but different tag).
-	$(call build_and_tag,metadata-service,Dockerfile.python)
+docker-build-metadata-service: ## Build docker image with the metadata-service (runtime plus GPU optimizer deps).
+	$(call build_and_tag,metadata-service,Dockerfile.python,metadata-service)
 
 .PHONY: docker-build-kvcache-watcher
 docker-build-kvcache-watcher: ## Build docker image with the kvcache-watcher.

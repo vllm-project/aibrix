@@ -23,6 +23,7 @@ spec:
       containers:
         - name: master
           image: {{ .Values.metadata.redis.container.image.repository }}:{{ .Values.metadata.redis.container.image.tag }}
+          imagePullPolicy: {{ .Values.metadata.redis.container.image.imagePullPolicy }}
           ports:
             - containerPort: 6379
           resources: {{ toYaml .Values.metadata.redis.container.resources | nindent 12 }}

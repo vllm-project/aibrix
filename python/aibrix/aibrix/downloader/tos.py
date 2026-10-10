@@ -197,7 +197,12 @@ class TOSDownloaderV1(BaseDownloader):
         )
         task_num = num_threads if enable_range else 1
 
-        download_kwargs = {"part_size": self.download_extra_config.part_chunksize}
+        part_size = (
+            self.download_extra_config.part_chunksize or envs.DOWNLOADER_PART_CHUNKSIZE
+        )
+        download_kwargs = {}
+        if part_size is not None:
+            download_kwargs["part_size"] = part_size
 
         # download file
         total_length = meta_data.content_length

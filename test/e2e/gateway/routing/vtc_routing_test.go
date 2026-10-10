@@ -149,20 +149,7 @@ func cleanupVTCUsers(t *testing.T) {
 }
 
 func getAvailablePods(t *testing.T) {
-	availablePods = []string{}
-
-	allPodsMap := make(map[string]bool)
-	for i := 0; i < 30; i++ {
-		pod := getTargetPodFromChatCompletion(t, fmt.Sprintf("Pod discovery request %d", i), "random")
-		if pod != "" {
-			allPodsMap[pod] = true
-		}
-	}
-
-	for pod := range allPodsMap {
-		availablePods = append(availablePods, pod)
-	}
-
+	availablePods = discoverRoutablePods(t)
 	t.Logf("Discovered %d pods using random routing", len(availablePods))
 }
 

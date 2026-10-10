@@ -50,6 +50,16 @@ var (
 	ttftThreshold = time.Duration(utils.LoadEnvInt("AIBRIX_TTFT_THRESHOLD_S", defaultTTFTThreshold)) * time.Second
 )
 
+// effectiveTTFTThreshold returns the first-token delay threshold for this request:
+// the model config profile's ttftThresholdS when set, otherwise the process-wide
+// AIBRIX_TTFT_THRESHOLD_S default.
+func effectiveTTFTThreshold(routingCtx *types.RoutingContext) time.Duration {
+	if routingCtx != nil && routingCtx.ConfigProfile != nil && routingCtx.ConfigProfile.TTFTThresholdS > 0 {
+		return time.Duration(routingCtx.ConfigProfile.TTFTThresholdS) * time.Second
+	}
+	return ttftThreshold
+}
+
 type OpenAIResponse struct {
 	Model string `json:"model"`
 	// Usage carries token accounting. The Chat Completions/Completions APIs report
@@ -279,11 +289,11 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 			if processingRes != nil {
 				return processingRes, complete, usage
 			}
-		} else if pathWithoutQuery(routerCtx.ReqPath) == PathVideos {
-			// Exact match only: excludes /v1/videos/sync (no follow-up calls to pin)
-			// and /v1/videos/{id} sub-resource responses (already routed by
-			// handleVideoJobSubResource, nothing new to record).
-			s.recordVideoJobPodFromResponse(ctx, requestID, routerCtx, b)
+		} else if videoResp, videoComplete, handled := s.handleVideoJobResponseBody(ctx, requestID, routerCtx, b); handled {
+			// Video create/status responses carry ids the client must never see, so
+			// they are held and rewritten instead of forwarded as-is. /content and
+			// /v1/videos/sync are not handled here: they keep streaming untouched.
+			return videoResp, videoComplete, usage
 		}
 	}
 
@@ -343,6 +353,7 @@ func isLanguageRequest(requestPath string) bool {
 		PathVideos,
 		PathAudioTranscriptions,
 		PathAudioTranslations,
+		PathTokenize,
 	}
 	for _, prefix := range nonLanguagePrefixes {
 		if strings.HasPrefix(requestPath, prefix) {
@@ -436,6 +447,12 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 		}
 		if res.Usage.TotalTokens != nil {
 			totalTokens = *res.Usage.TotalTokens
+		} else {
+			// Some engines report no total (SGLang's /v1/systemone sends only
+			// input_tokens/output_tokens). HandleResponseBody skips TPM accounting and
+			// request_end for a zero total, so derive it rather than leave the request
+			// unmetered. An explicit total_tokens, even 0, is trusted as sent.
+			totalTokens = promptTokens + completionTokens
 		}
 	}
 	return
@@ -577,6 +594,14 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 			"target_pod", targetPod.Name,
 			"outstanding_request_count", outstandingRequestCount)
 	}
+	// Same keys and values as request_start, so a request's start and end lines can be
+	// filtered by strategy without joining them. Omitted when routing is delegated to the
+	// HTTPRoute (RouterNotSet), as request_start omits them too. resolved_strategy is the
+	// actual (possibly load-balance/least-request-top-k blended) composite RouterManager.Select
+	// used -- see ResolvedStrategy's doc comment.
+	if routingCtx.Algorithm != "" {
+		fields = append(fields, "routing_strategy", routingCtx.Algorithm, "resolved_strategy", routingCtx.ResolvedStrategy)
+	}
 
 	ttft := arrival.Sub(routingCtx.RequestTime)
 	if routingCtx.Stream && !routingCtx.FirstTokenTime.IsZero() {
@@ -617,7 +642,7 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 				tpot := time.Duration(decodeTime.Nanoseconds() / completionTokens)
 				metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTPOTBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(tpot)})
 			}
-			if ttft > ttftThreshold {
+			if ttft > effectiveTTFTThreshold(routingCtx) {
 				metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayFirstTokenDelayOver1sTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{
 					"request_id": requestID,
 					"p_bucket":   pBucket, "c_bucket": cBucket,

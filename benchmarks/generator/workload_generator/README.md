@@ -279,7 +279,7 @@ python -m generator.workload_generator.workload_generator \
     --output-dir "output"
 ```
 
-Use [client](../client/README.md) to test the generated trace locally. 
+Use [client](../../client/README.md) to test the generated trace locally. 
 
 
 

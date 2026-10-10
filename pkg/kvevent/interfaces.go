@@ -79,6 +79,16 @@ type BlockStoredEvent struct {
 	SourcePod       string
 	ParentBlockHash *int64
 	Tokens          [][]byte // Converted from [][]int32 TokenIDs
+
+	// Medium is the storage tier the blocks live on ("GPU"/"CPU"/"STORAGE";
+	// empty when the publisher does not emit it). Used for tier-aware scoring.
+	Medium string
+	// LoraName is the canonical adapter id ("" = base model). Reserved for
+	// per-adapter index isolation.
+	LoraName string
+	// GroupIdx is the KV-cache group for hybrid-attention models (-1 when
+	// unspecified). The index tracks each group separately.
+	GroupIdx int64
 }
 
 type BlockRemovedEvent struct {
@@ -86,4 +96,11 @@ type BlockRemovedEvent struct {
 	ModelName   string
 	LoraID      int64
 	SourcePod   string
+
+	// Medium is the storage tier the blocks were removed from
+	// ("GPU"/"CPU"/"STORAGE"). Copies on other tiers stay indexed.
+	Medium string
+	// GroupIdx is the KV-cache group for hybrid-attention models (-1 when
+	// unspecified). Other groups holding the blocks stay indexed.
+	GroupIdx int64
 }

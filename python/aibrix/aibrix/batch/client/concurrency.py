@@ -21,7 +21,7 @@ or job-progress dependency.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import ceil, floor
+from math import ceil, floor, ldexp
 from time import monotonic
 from typing import Any, Optional, Protocol, runtime_checkable
 
@@ -345,10 +345,13 @@ class LLMAdaptiveConcurrencyController:
         if self._backoff_error_count < self._settings.failure_backoff_after:
             return
         exponent = self._backoff_error_count - self._settings.failure_backoff_after
-        delay = min(
-            self._settings.failure_backoff_base_seconds * (2**exponent),
-            self._settings.failure_backoff_max_seconds,
-        )
+        # Scale the float directly: constructing 2**exponent can overflow its
+        # conversion to float before the configured cap is applied.
+        try:
+            delay = ldexp(self._settings.failure_backoff_base_seconds, exponent)
+        except OverflowError:
+            delay = self._settings.failure_backoff_max_seconds
+        delay = min(delay, self._settings.failure_backoff_max_seconds)
         self._backoff_until = max(self._backoff_until, monotonic() + delay)
 
 

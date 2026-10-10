@@ -20,6 +20,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +31,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -53,7 +57,7 @@ func (m *mockRateLimiter) GetLimit(ctx context.Context, key string) (int64, erro
 	return args.Get(0).(int64), args.Error(1)
 }
 
-func (m *mockRateLimiter) Incr(ctx context.Context, key string, val int64) (int64, error) {
+func (m *mockRateLimiter) Incr(ctx context.Context, key string, val int64, window ...time.Duration) (int64, error) {
 	args := m.Called(ctx, key, val)
 	return args.Get(0).(int64), args.Error(1)
 }
@@ -123,6 +127,26 @@ func TestIsLanguageRequest(t *testing.T) {
 			name:        "videos content download is not language",
 			requestPath: "/v1/videos/video_gen_abc123/content",
 			want:        false,
+		},
+		{
+			name:        "tokenize is not language",
+			requestPath: "/tokenize",
+			want:        false,
+		},
+		{
+			name:        "pooling is language",
+			requestPath: "/pooling",
+			want:        true,
+		},
+		{
+			name:        "decisions is language",
+			requestPath: "/v1/decisions",
+			want:        true,
+		},
+		{
+			name:        "systemone is language",
+			requestPath: "/v1/systemone",
+			want:        true,
 		},
 		{
 			name:        "empty path is language",
@@ -258,6 +282,115 @@ func TestProcessLanguageResponse_ValidFullResponse(t *testing.T) {
 	assert.Equal(t, int64(5), completionTokens)
 	assert.Equal(t, int64(15), totalTokens)
 	assert.Nil(t, res) // No error response for valid case
+}
+
+// TestProcessLanguageResponse_DecisionsResponse locks in that SGLang's /v1/decisions body
+// needs no special handling: it carries "model" and a usage block of prompt_tokens and
+// total_tokens (equal, nothing is generated), so it is metered like any language response.
+func TestProcessLanguageResponse_DecisionsResponse(t *testing.T) {
+	requestID := "test-decisions-" + time.Now().Format("150405.000")
+	body := []byte(`{"object": "decisions", "model": "decider", "prompt_format_version": 1, "answers": {"q1": {"type": "choice", "probabilities": {"a": 0.7, "b": 0.3}, "label_mass": 0.99, "choice": "a"}}, "usage": {"prompt_tokens": 42, "completion_tokens": 0, "total_tokens": 42}}`)
+
+	req := &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{
+			Body:        body,
+			EndOfStream: true,
+		},
+	}
+
+	res, complete, promptTokens, completionTokens, totalTokens := processLanguageResponse(requestID, req)
+
+	assert.False(t, complete)
+	assert.Nil(t, res)
+	assert.Equal(t, int64(42), promptTokens)
+	assert.Equal(t, int64(0), completionTokens)
+	assert.Equal(t, int64(42), totalTokens)
+}
+
+// systemOneResponseBody is SGLang's /v1/systemone body: "model" and a usage block of
+// input_tokens/output_tokens only, with no total_tokens.
+const systemOneResponseBody = `{"model": "decider", "answers": {"team": {"type": "choice", "choice": "billing", "confidence": 0.8, "probabilities": {"billing": 0.9, "support": 0.1}, "x_label_mass": 0.99}}, "usage": {"input_tokens": 120, "output_tokens": 0}}`
+
+// TestProcessLanguageResponse_SystemOneResponse locks in that a usage block without
+// total_tokens is still metered: the prompt count comes from input_tokens and the total
+// is derived, because HandleResponseBody skips accounting for a zero total.
+func TestProcessLanguageResponse_SystemOneResponse(t *testing.T) {
+	requestID := "test-systemone-" + time.Now().Format("150405.000")
+
+	req := &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{
+			Body:        []byte(systemOneResponseBody),
+			EndOfStream: true,
+		},
+	}
+
+	res, complete, promptTokens, completionTokens, totalTokens := processLanguageResponse(requestID, req)
+
+	assert.False(t, complete)
+	assert.Nil(t, res)
+	assert.Equal(t, int64(120), promptTokens)
+	assert.Equal(t, int64(0), completionTokens)
+	assert.Equal(t, int64(120), totalTokens)
+}
+
+func TestProcessLanguageResponse_TotalTokens(t *testing.T) {
+	tests := []struct {
+		name                      string
+		usage                     string
+		prompt, completion, total int64
+	}{
+		{
+			name:       "derived from prompt and completion when absent",
+			usage:      `{"prompt_tokens": 10, "completion_tokens": 5}`,
+			prompt:     10,
+			completion: 5,
+			total:      15,
+		},
+		{
+			name:       "derived from input and output aliases when absent",
+			usage:      `{"input_tokens": 7, "output_tokens": 3}`,
+			prompt:     7,
+			completion: 3,
+			total:      10,
+		},
+		{
+			name:       "explicit total is kept even when it differs from the sum",
+			usage:      `{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 20}`,
+			prompt:     10,
+			completion: 5,
+			total:      20,
+		},
+		{
+			name:       "explicit zero total is not overridden",
+			usage:      `{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 0}`,
+			prompt:     10,
+			completion: 5,
+			total:      0,
+		},
+		{
+			name:  "empty usage stays unmetered",
+			usage: `{}`,
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requestID := fmt.Sprintf("test-total-tokens-%d-%s", i, time.Now().Format("150405.000"))
+			req := &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        []byte(`{"model": "m", "usage": ` + tt.usage + `}`),
+					EndOfStream: true,
+				},
+			}
+
+			res, _, promptTokens, completionTokens, totalTokens := processLanguageResponse(requestID, req)
+
+			assert.Nil(t, res)
+			assert.Equal(t, tt.prompt, promptTokens)
+			assert.Equal(t, tt.completion, completionTokens)
+			assert.Equal(t, tt.total, totalTokens)
+		})
+	}
 }
 
 func TestProcessLanguageResponse_InvalidJSON(t *testing.T) {
@@ -772,6 +905,46 @@ func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
 	assert.True(t, foundTPM, "expected HeaderUpdateTPM in response")
 	assert.True(t, foundRPM, "expected HeaderUpdateRPM in response")
 	assert.True(t, foundReqID, "expected request-id in response")
+	mockRL.AssertExpectations(t)
+}
+
+// TestHandleResponseBody_SystemOneIsMetered is the end-to-end half of the total_tokens
+// derivation: without it a /v1/systemone response never reaches TPM accounting.
+func TestHandleResponseBody_SystemOneIsMetered(t *testing.T) {
+	mockRL := &mockRateLimiter{}
+	mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(120)).Return(int64(500), nil)
+
+	server := &Server{
+		ratelimiter: mockRL,
+	}
+
+	requestID := "test-req-systemone-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "decider", "", requestID, "test-user")
+	routerCtx.ReqPath = PathSystemOne
+	routerCtx.RequestTime = time.Now()
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(systemOneResponseBody),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 42, "decider", false, false)
+
+	assert.True(t, complete)
+	assert.NotNil(t, resp)
+	assert.Equal(t, TokenUsage{PromptTokens: 120, CompletionTokens: 0, TotalTokens: 120}, usage)
+	foundTPM := false
+	for _, h := range resp.GetResponseBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
+		if h.Header.Key == HeaderUpdateTPM {
+			foundTPM = true
+			assert.Equal(t, []byte("500"), h.Header.RawValue)
+		}
+	}
+	assert.True(t, foundTPM, "expected HeaderUpdateTPM in response")
 	mockRL.AssertExpectations(t)
 }
 
@@ -1444,5 +1617,148 @@ func TestRequestEndHelper_SkipsTTFTForNonStreaming(t *testing.T) {
 
 	for _, name := range counterCalls {
 		assert.NotEqual(t, metrics.GatewayTTFTBucketTotal, name)
+	}
+}
+
+func TestRequestEndHelper_LogsRoutingAndResolvedStrategy(t *testing.T) {
+	fieldValue := func(fields []interface{}, key string) (interface{}, bool) {
+		for i := 0; i+1 < len(fields); i += 2 {
+			if fields[i] == key {
+				return fields[i+1], true
+			}
+		}
+		return nil, false
+	}
+
+	t.Run("blended", func(t *testing.T) {
+		routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("least-kv-cache"), "test-model", "", "req-1", "")
+		routerCtx.ResolvedStrategy = "least-kv-cache,load-balance:1,least-request-top-k:1"
+
+		fields := (&Server{}).requestEndHelper(routerCtx, time.Now(), 100, 50, 150)
+
+		got, ok := fieldValue(fields, "routing_strategy")
+		assert.True(t, ok)
+		assert.Equal(t, types.RoutingAlgorithm("least-kv-cache"), got, "routing_strategy stays what the caller asked for")
+		got, ok = fieldValue(fields, "resolved_strategy")
+		assert.True(t, ok)
+		assert.Equal(t, "least-kv-cache,load-balance:1,least-request-top-k:1", got)
+	})
+
+	t.Run("omitted when the request was never routed", func(t *testing.T) {
+		routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(""), "test-model", "", "req-3", "")
+
+		fields := (&Server{}).requestEndHelper(routerCtx, time.Now(), 100, 50, 150)
+
+		_, ok := fieldValue(fields, "routing_strategy")
+		assert.False(t, ok)
+		_, ok = fieldValue(fields, "resolved_strategy")
+		assert.False(t, ok)
+	})
+}
+
+// TestHandleResponseBody_VideoCreateRegistersAndRewritesID drives the create
+// path through the real entry point, since only HandleResponseBody decides
+// whether a response body is a video job response at all.
+func TestHandleResponseBody_VideoCreateRegistersAndRewritesID(t *testing.T) {
+	s, mockCache, registry := newTestVideoJobServer(t)
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "wan2.1-vace-1.3b", "", "req-create", "")
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodPost}
+	routerCtx.ReqPath = PathVideos
+	routerCtx.SetTargetPod(pod)
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"id":"video_gen_abc","status":"queued"}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, _, _ := s.HandleResponseBody(context.Background(), routerCtx, "req-create", req, utils.User{}, 0, "wan2.1-vace-1.3b", false, false)
+
+	body := resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody()
+	publicJobID := gjson.GetBytes(body, "id").String()
+	assert.True(t, strings.HasPrefix(publicJobID, asyncJobPublicIDPrefix), "client must never see the backend id: %s", publicJobID)
+	assert.Equal(t, "queued", gjson.GetBytes(body, "status").String())
+
+	record, err := listTestAsyncJobs(context.Background(), registry, asyncJobOwnerShared, asyncJobTypeVideo)
+	require.NoError(t, err)
+	require.Len(t, record, 1)
+	assert.Equal(t, publicJobID, record[0].PublicJobID)
+	assert.Equal(t, "video_gen_abc", record[0].BackendJobID)
+	mockCache.AssertExpectations(t)
+}
+
+// TestHandleResponseBody_VideoStatusRewritesIDBackToPublic: the backend answers
+// a status poll with its own id, which the client has never seen and cannot use.
+func TestHandleResponseBody_VideoStatusRewritesIDBackToPublic(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+		readyPod("pod-a", "ns-a", "10.0.0.5"))
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "wan2.1-vace-1.3b", "", "req-status", "")
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"id":"video_gen_abc","status":"completed"}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, _, _ := s.HandleResponseBody(context.Background(), routerCtx, "req-status", req, utils.User{}, 0, "wan2.1-vace-1.3b", false, false)
+
+	body := resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody()
+	assert.Equal(t, record.PublicJobID, gjson.GetBytes(body, "id").String())
+	assert.Equal(t, "completed", gjson.GetBytes(body, "status").String())
+}
+
+// TestHandleResponseBody_VideoContentStaysStreaming guards the one video
+// response that must never be buffered: the video file itself.
+func TestHandleResponseBody_VideoContentStaysStreaming(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+		readyPod("pod-a", "ns-a", "10.0.0.5"))
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "wan2.1-vace-1.3b", "", "req-content", "")
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID + "/content"
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte{0x00, 0x00, 0x00, 0x18},
+				EndOfStream: false,
+			},
+		},
+	}
+
+	resp, _, _ := s.HandleResponseBody(context.Background(), routerCtx, "req-content", req, utils.User{}, 0, "wan2.1-vace-1.3b", false, false)
+
+	assert.Nil(t, resp.GetResponseBody().GetResponse().GetBodyMutation())
+	assert.False(t, HasRequestBuffers("req-content"))
+}
+
+func TestEffectiveTTFTThreshold(t *testing.T) {
+	if got := effectiveTTFTThreshold(nil); got != ttftThreshold {
+		t.Errorf("effectiveTTFTThreshold(nil) = %v, want env default %v", got, ttftThreshold)
+	}
+	rc := &types.RoutingContext{}
+	if got := effectiveTTFTThreshold(rc); got != ttftThreshold {
+		t.Errorf("effectiveTTFTThreshold(no profile) = %v, want env default %v", got, ttftThreshold)
+	}
+	rc.ConfigProfile = &types.ResolvedConfigProfile{TTFTThresholdS: 2}
+	if got := effectiveTTFTThreshold(rc); got != 2*time.Second {
+		t.Errorf("effectiveTTFTThreshold(profile=2s) = %v, want 2s", got)
+	}
+	rc.ConfigProfile.TTFTThresholdS = 0
+	if got := effectiveTTFTThreshold(rc); got != ttftThreshold {
+		t.Errorf("effectiveTTFTThreshold(profile=0) = %v, want env default %v", got, ttftThreshold)
 	}
 }

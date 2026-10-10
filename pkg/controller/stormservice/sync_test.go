@@ -23,8 +23,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
@@ -484,15 +487,23 @@ func newPooledStormServiceWithSurge(maxSurge int32) *orchestrationv1alpha1.Storm
 // pooledRoleSet returns a RoleSet owned by newPooledStormServiceWithSurge's object at the
 // given revision. Terminating RoleSets carry a DeletionTimestamp plus a finalizer so the
 // fake client keeps them around, mirroring a RoleSet that is still tearing down.
-func pooledRoleSet(name, revision string, terminating bool) *orchestrationv1alpha1.RoleSet {
+func pooledRoleSet(owner *orchestrationv1alpha1.StormService, name, revision string, terminating bool) *orchestrationv1alpha1.RoleSet {
 	rs := &orchestrationv1alpha1.RoleSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: "default",
+			Namespace: owner.Namespace,
 			Labels: map[string]string{
 				"app":                                  "pooled-storm",
-				constants.StormServiceNameLabelKey:     "pooled-storm",
+				constants.StormServiceNameLabelKey:     owner.Name,
 				constants.StormServiceRevisionLabelKey: revision,
+			},
+			// renderRoleSet stamps a controller reference on every RoleSet it
+			// creates, and the lookup only returns RoleSets the StormService owns.
+			// The owner is passed in so the reference is tied to the object under
+			// test rather than to a UID that happens to match.
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(owner,
+					orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.StormServiceKind)),
 			},
 		},
 	}
@@ -515,6 +526,10 @@ func TestScalingPooledModeNeverCreatesSecondRoleSet(t *testing.T) {
 
 	const revision = "pooled-storm-rev1"
 
+	// One StormService shared by the fixtures and the reconcile below, so the
+	// controller reference on each RoleSet belongs to the object under test.
+	stormService := newPooledStormServiceWithSurge(2)
+
 	tests := []struct {
 		name             string
 		existingRoleSets []*orchestrationv1alpha1.RoleSet
@@ -523,7 +538,7 @@ func TestScalingPooledModeNeverCreatesSecondRoleSet(t *testing.T) {
 	}{
 		{
 			name:             "steady state keeps the single roleset",
-			existingRoleSets: []*orchestrationv1alpha1.RoleSet{pooledRoleSet("pooled-storm-roleset-a", revision, false)},
+			existingRoleSets: []*orchestrationv1alpha1.RoleSet{pooledRoleSet(stormService, "pooled-storm-roleset-a", revision, false)},
 			wantScaling:      false,
 			wantRoleSets:     1,
 		},
@@ -538,7 +553,7 @@ func TestScalingPooledModeNeverCreatesSecondRoleSet(t *testing.T) {
 			// updateStrategy.type, scaling() created a replacement RoleSet while the
 			// old one was still terminating, so two RoleSets existed at once.
 			name:             "no replacement is surged while the old roleset terminates",
-			existingRoleSets: []*orchestrationv1alpha1.RoleSet{pooledRoleSet("pooled-storm-roleset-a", revision, true)},
+			existingRoleSets: []*orchestrationv1alpha1.RoleSet{pooledRoleSet(stormService, "pooled-storm-roleset-a", revision, true)},
 			wantScaling:      false,
 			wantRoleSets:     1,
 		},
@@ -560,7 +575,6 @@ func TestScalingPooledModeNeverCreatesSecondRoleSet(t *testing.T) {
 				EventRecorder: &record.FakeRecorder{},
 			}
 
-			stormService := newPooledStormServiceWithSurge(2)
 			cr := &appsv1.ControllerRevision{
 				ObjectMeta: metav1.ObjectMeta{Name: revision, Namespace: "default"},
 				Revision:   1,
@@ -671,4 +685,60 @@ func TestScalingNilReplicasResolvesToDefault(t *testing.T) {
 	if len(roleSetList.Items) != 1 {
 		t.Fatalf("expected 1 roleSet for an omitted spec.replicas, got %d", len(roleSetList.Items))
 	}
+}
+
+// TestFinalizeOnlyDeletesOwnedRoleSets covers deletion of a StormService whose
+// selector labels are also used by a StormService in another namespace. finalize
+// deletes every RoleSet the lookup returns, so a cluster-wide lookup would delete
+// the other namespace's running RoleSets and, because that namespace's controller
+// recreates them, would never observe an empty list and never drop its finalizer.
+func TestFinalizeOnlyDeletesOwnedRoleSets(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = orchestrationv1alpha1.AddToScheme(scheme)
+
+	appLabels := map[string]string{"app": "shared-label"}
+	victim := stormServiceFor("svc-a", "team-a", appLabels)
+	foreignRoleSet := roleSetFor("svc-a-roleset", victim, appLabels)
+
+	deleting := stormServiceFor("svc-b", "team-b", appLabels)
+	deleting.Finalizers = []string{StormServiceFinalizer}
+	deleting.DeletionTimestamp = ptr.To(metav1.Now())
+	ownRoleSet := roleSetFor("svc-b-roleset", deleting, appLabels)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(deleting, victim, foreignRoleSet, ownRoleSet).
+		Build()
+
+	r := &StormServiceReconciler{Client: fakeClient}
+
+	// First pass: the StormService still owns a RoleSet, so finalize deletes it and
+	// reports that it is not done yet.
+	done, err := r.finalize(context.TODO(), deleting)
+	assert.NoError(t, err)
+	assert.False(t, done)
+
+	remaining := &orchestrationv1alpha1.RoleSetList{}
+	assert.NoError(t, fakeClient.List(context.TODO(), remaining))
+	assert.Len(t, remaining.Items, 1)
+	assert.Equal(t, "svc-a-roleset", remaining.Items[0].Name)
+	assert.Equal(t, "team-a", remaining.Items[0].Namespace)
+
+	// Second pass: nothing owned is left, so the finalizer is removed and the
+	// foreign RoleSet is still untouched.
+	done, err = r.finalize(context.TODO(), deleting)
+	assert.NoError(t, err)
+	assert.True(t, done)
+
+	assert.NoError(t, fakeClient.List(context.TODO(), remaining))
+	assert.Len(t, remaining.Items, 1)
+	assert.Equal(t, "svc-a-roleset", remaining.Items[0].Name)
+
+	// Dropping the last finalizer on an object that already carries a
+	// DeletionTimestamp lets the fake client reap it, so a completed finalize
+	// leaves nothing behind. A patch that never landed would leave the
+	// StormService readable with its finalizer still attached.
+	updated := &orchestrationv1alpha1.StormService{}
+	err = fakeClient.Get(context.TODO(), client.ObjectKey{Namespace: "team-b", Name: "svc-b"}, updated)
+	assert.True(t, apierrors.IsNotFound(err), "expected the finalizer to be removed, got err=%v finalizers=%v", err, updated.Finalizers)
 }

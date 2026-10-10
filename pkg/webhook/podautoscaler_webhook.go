@@ -134,6 +134,7 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 	allErrs = append(allErrs, validateSchedules(pa, specPath)...)
 	allErrs = append(allErrs, validateScalingStrategy(pa, specPath)...)
 	allErrs = append(allErrs, validateMetricsSources(pa, specPath)...)
+	allErrs = append(allErrs, validatePredictive(pa, specPath)...)
 
 	if len(allErrs) == 0 {
 		return nil
@@ -319,6 +320,40 @@ func validateResourceMetricSource(ms *autoscalingv1alpha1.MetricSource, msPath *
 			field.Forbidden(msPath.Child("protocolType"), "not allowed for metricSourceType=resource"),
 		)
 	}
+	return errs
+}
+
+// validatePredictive checks the predictive block. The mode and horizon bounds
+// are also enforced by the CRD schema; validating them here keeps the error
+// messages consistent with the rest of the spec validation.
+func validatePredictive(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) field.ErrorList {
+	spec := pa.Spec.Predictive
+	if spec == nil {
+		return nil
+	}
+
+	var errs field.ErrorList
+	predictivePath := specPath.Child("predictive")
+
+	if pa.Spec.ScalingStrategy == autoscalingv1alpha1.HPA {
+		errs = append(errs, field.Forbidden(predictivePath,
+			"not supported with scalingStrategy=HPA; the HPA strategy delegates the decision to the native HPA resource"))
+	}
+
+	if spec.Mode != "" &&
+		spec.Mode != autoscalingv1alpha1.PredictiveModePreview &&
+		spec.Mode != autoscalingv1alpha1.PredictiveModeAuto {
+		errs = append(errs, field.NotSupported(predictivePath.Child("mode"), spec.Mode, []string{
+			string(autoscalingv1alpha1.PredictiveModePreview),
+			string(autoscalingv1alpha1.PredictiveModeAuto),
+		}))
+	}
+
+	if spec.HorizonSeconds != nil && (*spec.HorizonSeconds < 1 || *spec.HorizonSeconds > maxMetricWindowSeconds) {
+		errs = append(errs, field.Invalid(predictivePath.Child("horizonSeconds"), *spec.HorizonSeconds,
+			fmt.Sprintf("must be between 1 and %d", maxMetricWindowSeconds)))
+	}
+
 	return errs
 }
 

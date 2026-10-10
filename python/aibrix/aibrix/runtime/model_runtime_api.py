@@ -38,6 +38,7 @@ from aibrix.openapi.protocol import (
     WakeRuntimeModelRequest,
 )
 from aibrix.runtime.model_runtime import (
+    EngineServingError,
     ModelNotFoundError,
     RuntimeOperationResult,
     UnsupportedModelControlError,
@@ -99,8 +100,11 @@ def activate_runtime_model(request: ActivateRuntimeModelRequest):
     )
 
 
+# sync def: deactivate waits for the runtime's locks, which an activation that
+# downloads weights or a sleep can hold for a minute. Run on the event loop, that
+# wait would stall every other endpoint of the runtime; run it in a threadpool.
 @model_runtime_router.post("/v1/runtime/models/deactivate")
-async def deactivate_runtime_model(request: DeactivateRuntimeModelRequest):
+def deactivate_runtime_model(request: DeactivateRuntimeModelRequest):
     """Deactivate a model by stopping its engine process."""
     get_model_runtime().deactivate(request.model_name, mode=request.mode)
     return JSONResponse(content={"status": "success"}, status_code=200)
@@ -121,7 +125,7 @@ def _operation_response(result: RuntimeOperationResult) -> JSONResponse:
 def _control_error(exc: Exception) -> None:
     if isinstance(exc, ModelNotFoundError):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    if isinstance(exc, UnsupportedModelControlError):
+    if isinstance(exc, (UnsupportedModelControlError, EngineServingError)):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     raise exc
 
@@ -156,14 +160,29 @@ def sleep_runtime_model(request: SleepRuntimeModelRequest):
 
 @model_runtime_router.post("/v1/runtime/models/wake")
 def wake_runtime_model(request: WakeRuntimeModelRequest):
-    """Wake a vLLM model through the sidecar's controller-only API."""
+    """Wake a vLLM model through the sidecar's controller-only API.
+
+    A wake that fails here is reported as such, in the body. The controller
+    then knows that the runtime failed to wake the engine. A bare server error
+    could also come from a proxy on the way, and the controller asks again.
+    """
     try:
         result = get_model_runtime().wake(
             request.model_name,
             operation_id=request.operation_id,
         )
-    except Exception as exc:
+    except (ModelNotFoundError, UnsupportedModelControlError) as exc:
         _control_error(exc)
+    except Exception as exc:
+        logger.error(f"failed to wake model {request.model_name}: {exc}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "model_name": request.model_name,
+                "message": str(exc),
+            },
+        )
     return _operation_response(result)
 
 

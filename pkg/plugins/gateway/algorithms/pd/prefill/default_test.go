@@ -22,9 +22,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
@@ -40,7 +42,7 @@ func TestExecuteHTTPSkipsEnvoyPseudoHeaders(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	exec := NewDefaultExecutor(srv.Client(), pd.NewPrefillRequestTracker(), 5).(*DefaultExecutor)
+	exec := NewDefaultExecutor(srv.Client(), pd.NewPrefillRequestTracker()).(*DefaultExecutor)
 	got, err := exec.executeHTTP(srv.URL, &types.RoutingContext{
 		Context:   context.Background(),
 		RequestID: "req-1",
@@ -49,9 +51,9 @@ func TestExecuteHTTPSkipsEnvoyPseudoHeaders(t *testing.T) {
 			"authorization":    "Bearer test",
 			"routing-strategy": "pd",
 		},
-	}, []byte(`{"model":"m"}`))
+	}, []byte(`{"model":"m"}`), 5*time.Second)
 	require.NoError(t, err)
-	assert.Equal(t, true, got["ok"])
+	assert.True(t, gjson.GetBytes(got, "ok").Bool())
 	assert.Empty(t, gotMethod, "HTTP/2 pseudo-headers must not be forwarded")
 	assert.Equal(t, "Bearer test", gotAuth)
 	assert.Equal(t, "pd", gotStrategy)

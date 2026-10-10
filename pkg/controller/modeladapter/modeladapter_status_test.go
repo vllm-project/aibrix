@@ -384,3 +384,70 @@ func TestDoReconcileAllPodsGoneAfterRunning(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, NoReadyPodsReason, cond.Reason)
 }
+
+func TestGetActivePodsForModelAdapterHonorsFullSelector(t *testing.T) {
+	readySince := time.Now().Add(-time.Minute)
+
+	stable := newStatusTestPod("stable", true, readySince)
+	stable.Labels = map[string]string{"model": "base", "tier": "stable"}
+	canary := newStatusTestPod("canary", true, readySince)
+	canary.Labels = map[string]string{"model": "base", "tier": "canary"}
+	other := newStatusTestPod("other", true, readySince)
+	other.Labels = map[string]string{"model": "other"}
+
+	tests := []struct {
+		name     string
+		selector *metav1.LabelSelector
+		want     []string
+	}{
+		{
+			name: "matchExpressions only",
+			selector: &metav1.LabelSelector{
+				MatchExpressions: []metav1.LabelSelectorRequirement{
+					{Key: "model", Operator: metav1.LabelSelectorOpIn, Values: []string{"base"}},
+				},
+			},
+			want: []string{"canary", "stable"},
+		},
+		{
+			name: "matchLabels and matchExpressions are ANDed",
+			selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"model": "base"},
+				MatchExpressions: []metav1.LabelSelectorRequirement{
+					{Key: "tier", Operator: metav1.LabelSelectorOpNotIn, Values: []string{"canary"}},
+				},
+			},
+			want: []string{"stable"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newStatusTestReconciler(t, stable.DeepCopy(), canary.DeepCopy(), other.DeepCopy())
+			instance := newStatusTestAdapter(nil)
+			instance.Spec.PodSelector = tt.selector
+
+			pods, err := r.getActivePodsForModelAdapter(context.Background(), instance)
+			require.NoError(t, err)
+
+			got := make([]string, 0, len(pods))
+			for _, p := range pods {
+				got = append(got, p.Name)
+			}
+			assert.ElementsMatch(t, tt.want, got)
+		})
+	}
+}
+
+func TestGetActivePodsForModelAdapterRejectsInvalidSelector(t *testing.T) {
+	r := newStatusTestReconciler(t)
+	instance := newStatusTestAdapter(nil)
+	instance.Spec.PodSelector = &metav1.LabelSelector{
+		MatchExpressions: []metav1.LabelSelectorRequirement{
+			{Key: "model", Operator: metav1.LabelSelectorOpIn}, // In requires values
+		},
+	}
+
+	_, err := r.getActivePodsForModelAdapter(context.Background(), instance)
+	assert.Error(t, err)
+}

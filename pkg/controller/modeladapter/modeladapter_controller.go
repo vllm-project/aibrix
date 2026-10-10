@@ -66,7 +66,7 @@ const (
 	DefaultResyncInterval = 10 * time.Second
 
 	// Retry configuration constants
-	MaxLoadingRetries       = 5
+	MaxLoadingRetries       = 6
 	RetryBackoffSeconds     = 5
 	PodReadinessTimeoutSecs = 60
 	HTTPTimeoutSeconds      = 30
@@ -586,10 +586,15 @@ func (r *ModelAdapterReconciler) clearModelAdapterInstanceList(ctx context.Conte
 
 // getActivePodsForModelAdapter retrieves all pods matching the selector and filters them to only include active ones
 func (r *ModelAdapterReconciler) getActivePodsForModelAdapter(ctx context.Context, instance *modelv1alpha1.ModelAdapter) ([]corev1.Pod, error) {
+	selector, err := metav1.LabelSelectorAsSelector(instance.Spec.PodSelector)
+	if err != nil {
+		return nil, fmt.Errorf("model adapter %s/%s has invalid pod selector: %w",
+			instance.Namespace, instance.Name, err)
+	}
 	podList := &corev1.PodList{}
 	listOpts := []client.ListOption{
 		client.InNamespace(instance.GetNamespace()),
-		client.MatchingLabels(instance.Spec.PodSelector.MatchLabels),
+		client.MatchingLabelsSelector{Selector: selector},
 	}
 
 	// List all pods matching the label selector
@@ -1186,10 +1191,11 @@ func (r *ModelAdapterReconciler) tryLoadModelAdapterOnPod(ctx context.Context, i
 		return false, true, fmt.Errorf("waiting for exponential backoff: %v", backoffDuration)
 	}
 
-	// Check max retries
+	// Cap the retry count so the annotation stops growing; the load is still
+	// attempted below, on the saturated backoff.
 	if retryCount >= MaxLoadingRetries {
-		klog.InfoS("Max retries exceeded for pod", "pod", pod.Name)
-		return false, false, fmt.Errorf("max retries (%d) exceeded", MaxLoadingRetries)
+		retryCount = MaxLoadingRetries
+		klog.V(4).InfoS("Retry count at cap, retrying on max backoff", "pod", pod.Name, "retryCount", retryCount)
 	}
 
 	_, exists, err := r.loraClient.LoadAdapter(ctx, instance, pod)

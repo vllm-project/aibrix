@@ -18,6 +18,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -54,6 +55,20 @@ func TestWaitForLifecyclePoolPodsDeleted(t *testing.T) {
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, listCalls, 3)
 	assert.Equal(t, "app="+lifecycleDeploymentName, selector)
+}
+
+func TestWaitForLifecyclePoolPodsDeletedReturnsListError(t *testing.T) {
+	client := k8sfake.NewSimpleClientset()
+	want := errors.New("pod list failed")
+	client.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, want
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err := waitForLifecyclePoolPodsDeleted(ctx, client, time.Millisecond)
+
+	require.ErrorIs(t, err, want)
 }
 
 func TestLifecyclePoolDeploymentTerminatesPromptly(t *testing.T) {

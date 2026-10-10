@@ -1,0 +1,311 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/community/community.rst:5
+msgid "Community"
+msgstr "社区"
+
+#: ../../source/community/community.rst:8
+msgid "AIBrix Slack Channels"
+msgstr "AIBrix Slack 频道"
+
+#: ../../source/community/community.rst:10
+msgid ""
+"We use the vLLM Slack `#AIBrix <https://vllm-"
+"dev.slack.com/archives/C08EQ883CSV>`_ for informal discussions among "
+"users and contributors. Join the channels to start conversations and get "
+"support from the community."
+msgstr ""
+"我们使用 vLLM Slack `#AIBrix <https://vllm-"
+"dev.slack.com/archives/C08EQ883CSV>`_ 供用户和贡献者进行非正式讨论。"
+"加入频道即可发起交流，并从社区获得支持。"
+
+#: ../../source/community/community.rst:15
+msgid "AiBrix Mailing List"
+msgstr "AIBrix 邮件列表"
+
+#: ../../source/community/community.rst:17
+msgid ""
+"The official AIBrix mailing list is hosted on Google Groups at "
+"`maintainers@aibrix.ai <maintainers@aibrix.ai>`_."
+msgstr ""
+"官方 AIBrix 邮件列表托管在 Google Groups，地址为 `maintainers@aibrix.ai <maintainers@aibrix.ai>`_ "
+"。"
+
+#: ../../source/community/community.rst:21
+msgid "Becoming a Maintainer"
+msgstr "成为维护者"
+
+#: ../../source/community/community.rst:23
+msgid ""
+"We appreciate contributors who consistently help improve AIBrix. If "
+"you’ve been actively contributing, consider becoming a **Maintainer** — a"
+" role with broader responsibilities and deeper involvement in the "
+"project."
+msgstr ""
+"我们感谢持续帮助改进 AIBrix 的贡献者。如果你一直在积极贡献，可以考虑成为 **维护者** —"
+" 该角色承担更广的职责，并更深入地参与项目。"
+
+#: ../../source/community/community.rst:26
+msgid "What is a Maintainer?"
+msgstr "什么是维护者？"
+
+#: ../../source/community/community.rst:28
+msgid ""
+"Maintainers play a key role in keeping AIBrix healthy and growing. They "
+"help with:"
+msgstr "维护者在保持 AIBrix 健康发展和持续成长方面起着关键作用。他们协助："
+
+#: ../../source/community/community.rst:30
+msgid "Reviewing and merging Pull Requests"
+msgstr "审查并合并 Pull Request"
+
+#: ../../source/community/community.rst:31
+msgid "Triaging issues and managing labels"
+msgstr "分流 issue 并管理标签"
+
+#: ../../source/community/community.rst:32
+msgid "Shaping the project roadmap and priorities"
+msgstr "规划项目路线图与优先级"
+
+#: ../../source/community/community.rst:33
+msgid "Supporting new contributors and community members"
+msgstr "支持新贡献者和社区成员"
+
+#: ../../source/community/community.rst:34
+msgid "Ensuring code quality and consistency across the codebase"
+msgstr "确保代码库的代码质量与一致性"
+
+#: ../../source/community/community.rst:37
+msgid "Promotion Criteria"
+msgstr "晋升标准"
+
+#: ../../source/community/community.rst:39
+msgid ""
+"We promote contributors to maintainers based on merit and sustained "
+"contribution. Here's what we look for:"
+msgstr "我们基于贡献质量与持续性将贡献者晋升为维护者。我们关注以下几点："
+
+#: ../../source/community/community.rst:41
+msgid ""
+"**Consistent Contributions**: You’ve submitted several high-quality PRs "
+"(code or docs) that have been merged."
+msgstr "**持续贡献** ：你已提交并合并了若干高质量 PR（代码或文档）。"
+
+#: ../../source/community/community.rst:42
+msgid ""
+"**Helpful Reviews**: You’ve reviewed and commented constructively on "
+"other contributors' PRs."
+msgstr "**有帮助的审查** ：你对其他贡献者的 PR 进行过审查并给出建设性意见。"
+
+#: ../../source/community/community.rst:43
+msgid ""
+"**Community Engagement**: You actively participate in GitHub issues, "
+"Slack discussions, or RFC reviews."
+msgstr "**社区参与** ：你积极参与 GitHub issue、Slack 讨论或 RFC 评审。"
+
+#: ../../source/community/community.rst:44
+msgid ""
+"**Responsibility and Ownership**: You demonstrate initiative in "
+"identifying problems and proposing improvements."
+msgstr "**责任感与主人翁意识** ：你主动发现问题并提出改进。"
+
+#: ../../source/community/community.rst:46
+msgid ""
+"There is no strict rule on the number of contributions — we evaluate "
+"holistically."
+msgstr "对贡献数量没有硬性规定 — 我们进行综合评估。"
+
+#: ../../source/community/community.rst:49
+msgid "How to Become a Maintainer"
+msgstr "如何成为维护者"
+
+#: ../../source/community/community.rst:51
+msgid ""
+"If you meet the above criteria and are interested in taking on the "
+"maintainer role:"
+msgstr "如果你满足上述条件，并有意承担维护者职责："
+
+#: ../../source/community/community.rst:53
+msgid "Let us know! You can:"
+msgstr "请告知我们！你可以："
+
+#: ../../source/community/community.rst:55
+msgid "Open a GitHub discussion or issue to express interest."
+msgstr "开启 GitHub discussion 或 issue 表达意向。"
+
+#: ../../source/community/community.rst:56
+msgid ""
+"Reach out to existing maintainers in Slack `#AIBrix <https://vllm-"
+"dev.slack.com/archives/C08EQ883CSV>`_ or by `maintainers@aibrix.ai "
+"<maintainers@aibrix.ai>`_ ."
+msgstr ""
+"在 Slack `#AIBrix <https://vllm-"
+"dev.slack.com/archives/C08EQ883CSV>`_ 联系现有维护者，或发送邮件至 "
+"`maintainers@aibrix.ai <maintainers@aibrix.ai>`_ 。"
+
+#: ../../source/community/community.rst:58
+msgid ""
+"We'll initiate a lightweight evaluation based on your recent "
+"contributions, engagement, and readiness to take on responsibilities."
+msgstr "我们将根据你近期的贡献、参与度以及承担责任的准备情况，进行一次轻量评估。"
+
+#: ../../source/community/community.rst:60
+msgid "Once approved, we'll:"
+msgstr "获批后，我们将："
+
+#: ../../source/community/community.rst:62
+msgid "Grant you write access to the repository."
+msgstr "授予你仓库写权限。"
+
+#: ../../source/community/community.rst:63
+msgid "Add you to the `@aibrix-maintainers` team."
+msgstr "将你加入 `@aibrix-maintainers` 团队。"
+
+#: ../../source/community/community.rst:64
+msgid "Invite you to internal roadmap discussions if applicable."
+msgstr "在适用情况下邀请你参加内部路线图讨论。"
+
+#: ../../source/community/community.rst:66
+msgid ""
+"Open source is a marathon, not a sprint. If you ever need to step back "
+"temporarily or permanently:"
+msgstr "开源是一场马拉松，而不是冲刺。如果你需要暂时或永久退出："
+
+#: ../../source/community/community.rst:68
+msgid "Just let us know — no hard feelings."
+msgstr "只需告知我们 — 完全没有关系。"
+
+#: ../../source/community/community.rst:69
+msgid "You can always return when you're ready."
+msgstr "准备好后随时可以回来。"
+
+#: ../../source/community/community.rst:71
+msgid "Thank you for helping us grow AIBrix together!"
+msgstr "感谢你与我们一起推动 AIBrix 成长！"
+
+#: ../../source/community/community.rst:75
+msgid "Maintainers & Areas of Focus"
+msgstr "维护者与关注领域"
+
+#: ../../source/community/community.rst:77
+msgid ""
+"For technical support or collaborative development, feel free to @mention"
+" the corresponding maintainers:"
+msgstr "如需技术支持或协作开发，欢迎 @mention 对应维护者："
+
+#: ../../source/community/community.rst:80
+msgid "Maintainers"
+msgstr "维护者"
+
+#: ../../source/community/community.rst:80
+#: ../../source/community/community.rst:102
+msgid "Focus Areas"
+msgstr "关注领域"
+
+#: ../../source/community/community.rst:82
+msgid "`@Jeffwan <https://github.com/Jeffwan>`_"
+msgstr "`@Jeffwan <https://github.com/Jeffwan>`_"
+
+#: ../../source/community/community.rst:82
+msgid "Overall architecture and orchestration"
+msgstr "整体架构与编排"
+
+#: ../../source/community/community.rst:84
+msgid "`@varungup90 <https://github.com/varungup90>`_"
+msgstr "`@varungup90 <https://github.com/varungup90>`_"
+
+#: ../../source/community/community.rst:84
+msgid "Gateway architecture and routing algorithms"
+msgstr "网关架构与路由算法"
+
+#: ../../source/community/community.rst:86
+msgid "`@DwyaneShi <https://github.com/DwyaneShi>`_"
+msgstr "`@DwyaneShi <https://github.com/DwyaneShi>`_"
+
+#: ../../source/community/community.rst:86
+msgid "KVCache Offloading, Disaggregation"
+msgstr "KVCache Offloading、Disaggregation"
+
+#: ../../source/community/community.rst:88
+msgid "`@zhangjyr <https://github.com/zhangjyr>`_"
+msgstr "`@zhangjyr <https://github.com/zhangjyr>`_"
+
+#: ../../source/community/community.rst:88
+msgid "Heterogenous and routing"
+msgstr "异构与路由"
+
+#: ../../source/community/community.rst:90
+msgid "`@happyandslow <https://github.com/happyandslow>`_"
+msgstr "`@happyandslow <https://github.com/happyandslow>`_"
+
+#: ../../source/community/community.rst:90
+msgid "Benchmark and research collaboration"
+msgstr "基准测试与研究合作"
+
+#: ../../source/community/community.rst:92
+msgid "`@nwangfw <https://github.com/nwangfw>`_"
+msgstr "`@nwangfw <https://github.com/nwangfw>`_"
+
+#: ../../source/community/community.rst:92
+msgid "Autoscaling"
+msgstr "Autoscaling"
+
+#: ../../source/community/community.rst:94
+msgid "`@xunzhuo <https://github.com/xunzhuo>`_"
+msgstr "`@xunzhuo <https://github.com/xunzhuo>`_"
+
+#: ../../source/community/community.rst:94
+msgid "Gateway architecture and routing performance"
+msgstr "网关架构与路由性能"
+
+#: ../../source/community/community.rst:96
+msgid "`@googs1025 <https://github.com/googs1025>`_"
+msgstr "`@googs1025 <https://github.com/googs1025>`_"
+
+#: ../../source/community/community.rst:96
+msgid "Control Plane Features and Stability"
+msgstr "控制面功能与稳定性"
+
+#: ../../source/community/community.rst:99
+msgid ""
+"Emeritus Maintainers will also participate in design reviews, feel free "
+"to @mention them if needed."
+msgstr "荣誉维护者也会参与设计评审，如有需要可随时 @mention 他们。"
+
+#: ../../source/community/community.rst:102
+msgid "Emeritus Maintainers"
+msgstr "荣誉维护者"
+
+#: ../../source/community/community.rst:104
+msgid "`@brosoul <https://github.com/brosoul>`_"
+msgstr "`@brosoul <https://github.com/brosoul>`_"
+
+#: ../../source/community/community.rst:104
+msgid "AI runtime and model loading acceleration"
+msgstr "AI Runtime 与模型加载加速"
+
+#: ../../source/community/community.rst:106
+msgid "`@kr11 <https://github.com/kr11>`_"
+msgstr "`@kr11 <https://github.com/kr11>`_"
+
+#: ../../source/community/community.rst:106
+msgid "Autoscaling algorithms"
+msgstr "自动扩缩容算法"

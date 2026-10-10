@@ -88,6 +88,9 @@ const (
 	RealtimeNumRequestsRunning         = "realtime_num_requests_running"
 	RealtimeNormalizedPendings         = "realtime_normalized_pendings"
 	RealtimeRunningRequestsDrainRate1m = "realtime_running_requests_drain_rate_1m"
+	// RealtimeOutputTokenRateEWMA is the smoothed rate, in tokens/sec, at which a pod completes
+	// output tokens (pod-scoped, gateway-tracked). It is the capacity signal of the load-balance router.
+	RealtimeOutputTokenRateEWMA = "realtime_output_token_rate_ewma"
 
 	// ModelReplicas tracks ready engine pods backing a model (1 per routable pod).
 	ModelReplicas = "model_replicas"
@@ -155,7 +158,19 @@ var (
 			EngineMetricsNameMapping: map[string]string{
 				EngineNameVLLM: "vllm:engine_sleep_state",
 			},
-			Description: "Engine sleep state; awake = 0 means engine is sleeping; awake = 1 means engine is awake; weights_offloaded = 1 means sleep level 1; discard_all = 1 means sleep level 2.",
+			// vLLM reports this as one gauge family with three instances per
+			// pod, distinguished only by the sleep_state label ("awake",
+			// "weights_offloaded", "discard_all"), each its own 0/1 series.
+			// This scope routes through parseModelMetricsFromFamily, which
+			// (like the pod-scoped parseMetricFromFamily) applies this filter
+			// before folding same-named instances; without it, whichever
+			// instance a scrape lists last would win, which is not
+			// guaranteed to be any particular one. Filtering to
+			// sleep_state=awake gets the one series that answers "is this
+			// engine currently sleeping".
+			RequiredLabelKey:   "sleep_state",
+			RequiredLabelValue: "awake",
+			Description:        "Engine sleep state; awake = 0 means engine is sleeping; awake = 1 means engine is awake; weights_offloaded = 1 means sleep level 1; discard_all = 1 means sleep level 2.",
 		},
 		HTTPRequestTotal: {
 			MetricScope:  PodModelMetricScope,

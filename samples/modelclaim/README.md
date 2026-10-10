@@ -1,51 +1,34 @@
-# ModelClaim High-Density Runtime Pool
+# ModelClaim Samples
 
-These examples attach two `ModelClaim` objects to one warm GPU runtime pool.
-Each claim is started by the `aibrix-runtime` sidecar as a separate
-kvcached-enabled engine process; the gateway routes by served model name.
+These samples run two small Qwen models in one warm GPU Pod, in the `default`
+namespace:
 
-See the [ModelClaim feature guide](../../docs/source/features/modelclaim.rst)
-for deployment, API, lifecycle, policy, and troubleshooting details.
+- `warm-runtime-pool.yaml` creates a warm pool of one Pod with one GPU, and a
+  Service for the runtime's metrics.
+- `modelclaims.yaml` creates two ModelClaims that share the Pod's GPU.
 
-The runtime image must be layered on a kvcached-enabled vLLM image. The
-controller uses the runtime's snapshot endpoint to prefer an existing weight
-cache and lower live memory pressure when it chooses among warm pods.
-Keep kvcached autopatch disabled for the runtime sidecar process itself; the
-launcher enables it only for the child engine process it starts.
+Each claim declares a 6 GiB footprint and a 1 GiB KV floor on the GPU, so the
+GPU needs at least 14 GiB, and the Pod requests 16 GiB of host memory. From the
+repository root:
 
 ```bash
 kubectl apply -f samples/modelclaim/warm-runtime-pool.yaml
+kubectl -n default rollout status deployment/warm-runtime-pool --timeout=15m
 kubectl apply -f samples/modelclaim/modelclaims.yaml
-
-kubectl get modelclaims -w
-kubectl get pods -l pool.aibrix.ai/name=b300-pool-a \
-  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations}{"\n"}{end}'
+kubectl -n default get modelclaims -w
 ```
 
-The warm-pool sample includes a metrics `Service` labeled
-`aibrix.ai/metrics=modelclaim-runtime`. Apply
-`observability/monitor/service_monitor_modelclaim_runtime.yaml` and import
-`observability/grafana/AIBrix_ModelClaim_Runtime_Dashboard.json` to monitor
-lifecycle, resident density, KV use, and HBM peak. See
-[`observability/grafana/README.md`](../../observability/grafana/README.md) for
-the metric contract and import steps.
+Both claims become `Active` once their engines are ready. The
+[ModelClaim guide](https://aibrix.readthedocs.io/latest/features/modelclaim.html)
+explains how to send requests and let idle models sleep, what the samples set,
+and the limitations of ModelClaim. The
+[validation runbook](../../development/tutorials/modelclaim/manual-validation-runbook.md)
+checks the feature on real GPUs with these samples.
 
-The controller writes `modelclaim.aibrix.ai/<claim-name>` annotations with
-`{"model":"<served-name>","port":<engine-port>,"state":"<state>"}`. `port:0`
-means the claim is known but not routable. It is used while an engine is
-activating, unhealthy, sleeping, or failed. The controller restores the real
-engine port only after the runtime reports `active` and ready.
+Delete the claims before the pool, so that the controller can stop their
+engines:
 
-`engineConfig.args` is the structured pass-through for engine flags. It does
-not express GPU resources or parallelism. With kvcached enabled, do not add
-`--gpu-memory-utilization`; kvcached owns elastic KV allocation.
-
-An optional JSON policy on the warm-pool Deployment drives request-based KV
-limit redistribution and idle sleep. A request for a sleeping model triggers
-an asynchronous wake and receives HTTP 503 with `Retry-After`; the gateway does
-not hold the original request.
-
-This sample uses one GPU and independent single-GPU engines. Fixed TP/PP is
-supported only in a separate topology-homogeneous pool whose Pod GPU limit
-equals `TP x PP`. `ModelClaim.spec.replicas` is optional and currently accepts
-only one.
+```bash
+kubectl delete -f samples/modelclaim/modelclaims.yaml
+kubectl delete -f samples/modelclaim/warm-runtime-pool.yaml
+```

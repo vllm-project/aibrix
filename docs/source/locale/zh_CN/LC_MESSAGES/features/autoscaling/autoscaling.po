@@ -1,0 +1,334 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/features/autoscaling/autoscaling.rst:3
+msgid "Autoscaling"
+msgstr "自动扩缩容"
+
+#: ../../source/features/autoscaling/autoscaling.rst:5
+msgid ""
+"Autoscaling is crucial for deploying Large Language Model (LLM) services "
+"on Kubernetes (K8s), as timely scaling up handles peaks in request "
+"traffic, and scaling down conserves resources when demand wanes."
+msgstr ""
+"在 Kubernetes（K8s）上部署大语言模型（LLM）服务时，自动扩缩容至关重要："
+"及时扩容可应对请求流量高峰，需求回落时缩容可节省资源。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:7
+msgid ""
+"AIBrix ships one custom resource for this, ``PodAutoscaler`` in the "
+"``autoscaling.aibrix.ai/v1alpha1`` API group, and several algorithms "
+"behind it. This page explains how the pieces fit together and which page "
+"to read next. The two child pages hold the full configuration and "
+"examples."
+msgstr ""
+"AIBrix 为此提供一个自定义资源：``autoscaling.aibrix.ai/v1alpha1`` API 组中的 ``PodAutoscaler`` "
+"，以及其后的多种算法。本页说明各部分如何协作以及接下来应阅读哪一页。完整配置与示例见两个子页面。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:18
+msgid "How it works"
+msgstr "工作原理"
+
+#: ../../source/features/autoscaling/autoscaling.rst:29
+msgid ""
+"You create a ``PodAutoscaler`` that points at a workload through "
+"``scaleTargetRef``. The target can be a ``Deployment``, a "
+"``StormService`` (optionally one role of it, through "
+"``subTargetSelector.roleName``), or a ``RayClusterFleet``."
+msgstr ""
+"创建 ``PodAutoscaler`` ，通过 ``scaleTargetRef`` 指向工作负载。目标可以是 ``Deployment`` "
+"、``StormService`` （可通过 ``subTargetSelector.roleName`` 指定其中一个角色），或 ``RayClusterFleet`` "
+"。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:32
+msgid ""
+"The controller collects the metric named in ``metricsSources``. With "
+"``metricSourceType: pod`` it scrapes every pod of the target at the given"
+" ``port`` and ``path``. With ``metricSourceType: external`` it reads a "
+"single HTTP endpoint instead, which is how the GPU optimizer hands its "
+"recommendation to the autoscaler."
+msgstr ""
+"控制器采集 ``metricsSources`` 中指定的指标。``metricSourceType: pod`` 时，"
+"会在给定的 ``port`` 和 ``path`` 上抓取目标的每个 pod。"
+"``metricSourceType: external`` 时则读取单个 HTTP 端点，这是 GPU optimizer "
+"向自动扩缩容器传递建议的方式。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:36
+msgid ""
+"The algorithm selected by ``scalingStrategy`` (``HPA``, ``KPA`` or "
+"``APA``) turns the observed value and ``targetValue`` into a desired "
+"replica count, using ``observeWindowSeconds`` and, for KPA, "
+"``panicWindowSeconds`` as its windows."
+msgstr ""
+"``scalingStrategy`` 所选算法（``HPA`` 、``KPA`` 或 ``APA`` ）将观测值和 ``targetValue`` "
+"转换为期望副本数，使用 ``observeWindowSeconds`` 作为窗口；对 KPA 还会使用 ``panicWindowSeconds`` "
+"。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:39
+msgid ""
+"The result is clamped to ``minReplicas`` and ``maxReplicas``, or to the "
+"bounds of a matching entry in ``schedules`` when one is active, and "
+"written to the target."
+msgstr ""
+"结果会被限制在 ``minReplicas`` 和 ``maxReplicas`` 范围内；若有匹配且生效的 "
+"``schedules`` 条目，则使用该条目的边界，然后写入目标。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:43
+msgid "Choosing a strategy"
+msgstr "选择策略"
+
+#: ../../source/features/autoscaling/autoscaling.rst:49
+msgid "Strategy"
+msgstr "策略"
+
+#: ../../source/features/autoscaling/autoscaling.rst:50
+msgid "How it decides"
+msgstr "决策方式"
+
+#: ../../source/features/autoscaling/autoscaling.rst:51
+msgid "Use it when"
+msgstr "适用场景"
+
+#: ../../source/features/autoscaling/autoscaling.rst:52
+msgid "``HPA``"
+msgstr "``HPA``"
+
+#: ../../source/features/autoscaling/autoscaling.rst:53
+msgid ""
+"Same algorithm as the Kubernetes HorizontalPodAutoscaler, applied to the "
+"metric you choose."
+msgstr "与 Kubernetes HorizontalPodAutoscaler 相同的算法，作用于你选择的指标。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:55
+msgid "Traffic is steady and you want the most familiar behaviour."
+msgstr "流量平稳，且希望使用最熟悉的行为。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:56
+msgid "``KPA``"
+msgstr "``KPA``"
+
+#: ../../source/features/autoscaling/autoscaling.rst:57
+msgid ""
+"Knative-style: a long stable window plus a short panic window that scales"
+" up fast when the panic window crosses the threshold. Metrics are fetched"
+" by AIBrix directly rather than through Prometheus, which shortens "
+"reaction time."
+msgstr ""
+"Knative 风格：较长的稳定窗口加上较短的 panic 窗口；当 panic 窗口越过阈值时快速扩容。"
+"指标由 AIBrix 直接获取，而非通过 Prometheus，从而缩短反应时间。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:60
+msgid "Bursty or unpredictable traffic where scale-up latency matters most."
+msgstr "突发或不可预测的流量，扩容延迟最为关键。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:61
+msgid "``APA``"
+msgstr "``APA``"
+
+#: ../../source/features/autoscaling/autoscaling.rst:62
+msgid ""
+"AIBrix's own algorithm. Like HPA but with a fluctuation tolerance that "
+"must be exceeded before any scaling happens, which suppresses "
+"oscillation."
+msgstr ""
+"AIBrix 自有算法。类似 HPA，但带有波动容差，必须超过该容差才会扩缩容，从而抑制振荡。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:64
+msgid "Latency-sensitive services that must not thrash between replica counts."
+msgstr "对延迟敏感、且不能在副本数之间频繁抖动的服务。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:65
+msgid "Optimizer-based"
+msgstr "基于优化器"
+
+#: ../../source/features/autoscaling/autoscaling.rst:66
+msgid ""
+"Not a ``scalingStrategy`` value. The GPU optimizer computes the replica "
+"count from offline benchmark profiles and an SLO, then exposes it as a "
+"metric that a ``KPA`` PodAutoscaler consumes through an ``external`` "
+"metric source."
+msgstr ""
+"不是 ``scalingStrategy`` 的取值。GPU optimizer 根据离线基准配置文件和 SLO 计算副本数，"
+"然后将其作为指标暴露；``KPA`` PodAutoscaler 通过 ``external`` 指标源消费该指标。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:69
+msgid ""
+"You have benchmark data per GPU type, an explicit latency SLO, or a mix "
+"of GPU types to balance for cost. See :doc:`optimizer-based-autoscaling` "
+"and :doc:`../heterogeneous-gpu`."
+msgstr ""
+"你有按 GPU 类型划分的基准数据、明确的延迟 SLO，或需要在多种 GPU 类型之间做成本均衡。参见 :doc:`optimizer-based-autoscaling` "
+"和 :doc:`../heterogeneous-gpu` 。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:74
+msgid "Metric sources"
+msgstr "指标源"
+
+#: ../../source/features/autoscaling/autoscaling.rst:76
+msgid ""
+"``metricSourceType`` accepts ``pod``, ``external``, ``resource`` and "
+"``custom``. ``domain`` is a deprecated alias of ``external`` kept for "
+"manifests written before the rename. The two the documentation and "
+"samples use are:"
+msgstr ""
+"``metricSourceType`` 接受 ``pod`` 、``external`` 、``resource`` 和 ``custom`` "
+"。``domain`` 是 ``external`` 的已弃用别名，保留用于重命名前编写的清单。文档和示例使用的两种是："
+
+#: ../../source/features/autoscaling/autoscaling.rst:80
+msgid ""
+"``pod``: scrape each target pod. Validation requires ``port``, ``path`` "
+"and ``protocolType``, but only ``port`` shapes the request: the "
+"controller always scrapes plain HTTP at the path implied by the pod's "
+"``model.aibrix.ai/engine`` label (``/metrics``, or "
+"``/prometheus/metrics`` for ``trtllm``), and ``path`` does not override "
+"it. Set ``targetMetric`` to one of AIBrix's engine-neutral metric names, "
+"such as ``num_requests_waiting`` or ``gpu_cache_usage_perc``. AIBrix "
+"translates the name to what the pod's engine actually exports "
+"(``vllm:num_requests_waiting`` for vLLM, ``sglang:num_queue_reqs`` for "
+"SGLang), so do not use the raw engine names here."
+msgstr ""
+"``pod`` ：抓取每个目标 pod。校验要求 ``port`` 、``path`` 和 ``protocolType`` ，但只有 ``port`` "
+"影响请求形态：控制器始终以普通 HTTP 抓取由 pod 的 ``model.aibrix.ai/engine`` 标签所隐含的路径（``/metrics`` "
+"，对 ``trtllm`` 则为 ``/prometheus/metrics`` ），``path`` 不会覆盖它。将 ``targetMetric`` "
+"设为 AIBrix 的引擎无关指标名之一，例如 ``num_requests_waiting`` 或 ``gpu_cache_usage_perc`` "
+"。AIBrix 会将该名称转换为 pod 引擎实际导出的名称（vLLM 为 ``vllm:num_requests_waiting`` ，SGLang "
+"为 ``sglang:num_queue_reqs`` ），因此不要在此处使用引擎原始名称。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:88
+msgid ""
+"``external``: read one HTTP endpoint instead of the pods. ``endpoint`` is"
+" the host and port, and ``path`` and ``protocolType`` are required "
+"alongside it. The fetcher requests ``<protocolType>://<endpoint>/<path>``"
+" and reads ``targetMetric`` from the response by its literal Prometheus "
+"name, with no registry translation. This is the shape the GPU optimizer "
+"sample uses; see :doc:`optimizer-based-autoscaling`. If ``endpoint`` is "
+"left empty, the controller queries the Kubernetes ``external.metrics`` "
+"API for ``targetMetric`` instead."
+msgstr ""
+"``external`` ：读取一个 HTTP 端点而非 pod。``endpoint`` 是主机和端口，同时必须提供 ``path`` 和 ``protocolType`` "
+"。抓取器请求 ``<protocolType>://<endpoint>/<path>`` ，并按字面 Prometheus 名称从响应中读取 "
+"``targetMetric`` ，不做注册表转换。这是 GPU optimizer 示例使用的形态；参见 :doc:`optimizer-based-autoscaling` "
+"。若 ``endpoint`` 留空，控制器改为向 Kubernetes ``external.metrics`` API 查询 ``targetMetric`` "
+"。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:95
+msgid ""
+"For the engine-neutral names and what each engine exports for them, see "
+"the table in :doc:`../multi-engine`."
+msgstr "引擎无关名称以及各引擎对应导出的指标，见 :doc:`../multi-engine` 中的表格。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:99
+msgid "PodAutoscaler spec at a glance"
+msgstr "PodAutoscaler spec 一览"
+
+#: ../../source/features/autoscaling/autoscaling.rst:105
+msgid "Field"
+msgstr "字段"
+
+#: ../../source/features/autoscaling/autoscaling.rst:106
+msgid "Meaning"
+msgstr "含义"
+
+#: ../../source/features/autoscaling/autoscaling.rst:107
+msgid "``scaleTargetRef``"
+msgstr "``scaleTargetRef``"
+
+#: ../../source/features/autoscaling/autoscaling.rst:108
+msgid ""
+"``apiVersion``, ``kind`` and ``name`` of the workload to scale. The name "
+"must match the workload exactly."
+msgstr "要扩缩容的工作负载的 ``apiVersion`` 、``kind`` 和 ``name`` 。名称必须与工作负载完全一致。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:110
+msgid "``subTargetSelector.roleName``"
+msgstr "``subTargetSelector.roleName``"
+
+#: ../../source/features/autoscaling/autoscaling.rst:111
+msgid "When the target is a ``StormService``, scale only this role."
+msgstr "当目标是 ``StormService`` 时，只扩缩容该角色。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:112
+msgid "``scalingStrategy``"
+msgstr "``scalingStrategy``"
+
+#: ../../source/features/autoscaling/autoscaling.rst:113
+msgid "``HPA``, ``KPA`` or ``APA``."
+msgstr "``HPA`` 、``KPA`` 或 ``APA`` 。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:114
+msgid "``minReplicas`` / ``maxReplicas``"
+msgstr "``minReplicas`` / ``maxReplicas``"
+
+#: ../../source/features/autoscaling/autoscaling.rst:115
+msgid "Hard bounds on the result. ``maxReplicas`` is required."
+msgstr "结果的硬性边界。``maxReplicas`` 为必填。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:116
+msgid "``metricsSources[]``"
+msgstr "``metricsSources[]``"
+
+#: ../../source/features/autoscaling/autoscaling.rst:117
+msgid ""
+"One or more of ``metricSourceType``, ``protocolType``, ``endpoint``, "
+"``path``, ``port``, ``targetMetric``, ``targetValue``. Several sources "
+"can be combined; see *Multi-Metric Based Autoscaling* in :doc:`metric-"
+"based-autoscaling`."
+msgstr ""
+"一项或多项 ``metricSourceType`` 、``protocolType`` 、``endpoint`` 、``path`` 、``port`` "
+"、``targetMetric`` 、``targetValue`` 。可以组合多个源；参见 :doc:`metric-based-autoscaling` "
+"中的 *基于多指标的自动扩缩容*。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:120
+msgid "``observeWindowSeconds`` / ``panicWindowSeconds``"
+msgstr "``observeWindowSeconds`` / ``panicWindowSeconds``"
+
+#: ../../source/features/autoscaling/autoscaling.rst:121
+msgid "Metric windows. ``panicWindowSeconds`` only applies to ``KPA``."
+msgstr "指标窗口。``panicWindowSeconds`` 仅适用于 ``KPA`` 。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:122
+msgid "``schedules[]``"
+msgstr "``schedules[]``"
+
+#: ../../source/features/autoscaling/autoscaling.rst:123
+msgid ""
+"Time-boxed overrides of ``minReplicas`` and ``maxReplicas`` with "
+"``name``, ``timezone``, ``daysOfWeek``, ``startTime`` and ``endTime``."
+msgstr ""
+"带时间范围的 ``minReplicas`` 和 ``maxReplicas`` 覆盖，包含 ``name`` 、``timezone`` 、``daysOfWeek`` "
+"、``startTime`` 和 ``endTime`` 。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:126
+msgid ""
+"Algorithm tunables that are not part of the spec, such as KPA's scale-"
+"down delay or APA's tolerance, are set through annotations on the "
+"``PodAutoscaler``. The full annotation list and worked YAML examples for "
+"every strategy live in :doc:`metric-based-autoscaling`."
+msgstr ""
+"不属于 spec 的算法调参（例如 KPA 的缩容延迟或 APA 的容差）通过 ``PodAutoscaler`` 上的注解设置。完整注解列表以及各策略的 "
+"YAML 示例见 :doc:`metric-based-autoscaling` 。"
+
+#: ../../source/features/autoscaling/autoscaling.rst:132
+msgid ":doc:`../../designs/aibrix-autoscaler`"
+msgstr ":doc:`../../designs/aibrix-autoscaler`"
+
+#: ../../source/features/autoscaling/autoscaling.rst:133
+msgid "Internal design of the AIBrix autoscaler."
+msgstr "AIBrix 自动扩缩容器的内部设计。"

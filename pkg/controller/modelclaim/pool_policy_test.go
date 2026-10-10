@@ -18,9 +18,11 @@ package modelclaim
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -56,6 +58,52 @@ func TestParsePoolPolicyRejectsNonPositiveSleepWindow(t *testing.T) {
 	assert.Nil(t, policy)
 	assert.Contains(t, err.Error(), "sleepAfterSeconds must be positive")
 	assert.Equal(t, poolPolicyErrorInvalidSleep, poolPolicyErrorClass(err))
+}
+
+func TestParsePoolPolicyTakesALifecycleThatOnlyKeepsNoWakeReserve(t *testing.T) {
+	policy, err := parsePoolPolicy(`{"lifecycle":{"noWakeReserveWhileAsleep":true}}`)
+
+	require.NoError(t, err)
+	require.NotNil(t, policy.Lifecycle)
+	assert.True(t, policy.Lifecycle.NoWakeReserveWhileAsleep)
+	assert.Zero(t, policy.Lifecycle.SleepAfterSeconds, "no engine is put to sleep for being idle")
+	assert.Equal(t, 30*time.Second, policy.Lifecycle.sleepToMakeRoomAfter())
+}
+
+func TestParsePoolPolicyRejectsALifecycleThatCannotWork(t *testing.T) {
+	for raw, want := range map[string]string{
+		`{"lifecycle":{}}`: "sleepAfterSeconds must be positive",
+		`{"lifecycle":{"noWakeReserveWhileAsleep":false}}`:                                  "sleepAfterSeconds must be positive",
+		`{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepAfterSeconds":-1}}`:            "sleepAfterSeconds must be positive",
+		`{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepToMakeRoomAfterSeconds":0}}`:   "sleepToMakeRoomAfterSeconds must be positive",
+		`{"lifecycle":{"sleepAfterSeconds":60,"sleepToMakeRoomAfterSeconds":61}}`:           "must not be more than lifecycle.sleepAfterSeconds",
+		`{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepToMakeRoomAfterSeconds":-30}}`: "sleepToMakeRoomAfterSeconds must be positive",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			policy, err := parsePoolPolicy(raw)
+
+			require.Error(t, err)
+			assert.Nil(t, policy)
+			assert.Contains(t, err.Error(), want)
+			assert.Equal(t, poolPolicyErrorInvalidSleep, poolPolicyErrorClass(err))
+		})
+	}
+}
+
+func TestSleepToMakeRoomAfterDefaultsToNoMoreThanTheSleepWindow(t *testing.T) {
+	for raw, want := range map[string]time.Duration{
+		`{"lifecycle":{"sleepAfterSeconds":300}}`: 30 * time.Second,
+		// A policy written before this field existed stays valid.
+		`{"lifecycle":{"sleepAfterSeconds":20}}`:                                   20 * time.Second,
+		`{"lifecycle":{"sleepAfterSeconds":300,"sleepToMakeRoomAfterSeconds":45}}`: 45 * time.Second,
+		// The same rule as the default: no longer than the sleep window.
+		`{"lifecycle":{"sleepAfterSeconds":60,"sleepToMakeRoomAfterSeconds":60}}`: 60 * time.Second,
+	} {
+		policy, err := parsePoolPolicy(raw)
+
+		require.NoError(t, err, raw)
+		assert.Equal(t, want, policy.Lifecycle.sleepToMakeRoomAfter(), raw)
+	}
 }
 
 func TestParsePoolPolicyClassifiesConfigurationErrors(t *testing.T) {
@@ -175,4 +223,90 @@ func TestModelsForKVPolicyRejectsIncompleteCapacityObservation(t *testing.T) {
 	})
 
 	assert.Nil(t, models, "a partial KV observation must not produce a limit plan")
+}
+
+func TestPoolPolicyManagerDropsActivityOfPodsThatStopReporting(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	manager := newPoolPolicyManager(func() time.Time { return now })
+	pool := types.NamespacedName{Namespace: "default", Name: "warm-pool"}
+	total := int64(10)
+	model := RuntimeSnapshotModel{RequestMetricsObserved: true, RequestSuccessTotal: &total}
+
+	_, observed := manager.observe("old-pod/model", model)
+	require.True(t, observed)
+
+	// A rollout replaces the pod: only the new one is observed from now on.
+	now = now.Add(4 * time.Minute)
+	_, observed = manager.observe("new-pod/model", model)
+	require.True(t, observed)
+	manager.begin(pool)
+	assert.Len(t, manager.activity, 2, "records inside the retention window stay")
+
+	now = now.Add(2 * time.Minute)
+	_, observed = manager.observe("new-pod/model", model)
+	require.True(t, observed)
+	manager.begin(pool)
+	assert.Contains(t, manager.activity, "new-pod/model")
+	assert.NotContains(t, manager.activity, "old-pod/model")
+}
+
+func TestPoolPolicyManagerKeepsTheBaselineOfAnObservedPod(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	manager := newPoolPolicyManager(func() time.Time { return now })
+	pool := types.NamespacedName{Namespace: "default", Name: "warm-pool"}
+	total := int64(10)
+	model := RuntimeSnapshotModel{RequestMetricsObserved: true, RequestSuccessTotal: &total}
+
+	for i := 0; i < 30; i++ { // observed every interval for five minutes
+		_, _ = manager.observe("pod/model", model)
+		manager.begin(pool)
+		now = now.Add(DefaultRequeueDuration)
+	}
+	total = 12
+	activity, observed := manager.observe("pod/model", model)
+
+	require.True(t, observed)
+	assert.True(t, activity.Initialized, "a live pod keeps its counter baseline")
+	assert.Equal(t, int64(2), activity.CompletionDelta)
+}
+
+func TestPoolPolicyManagerSweepsAtMostOncePerInterval(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	manager := newPoolPolicyManager(func() time.Time { return now })
+	pool := types.NamespacedName{Namespace: "default", Name: "warm-pool"}
+	total := int64(1)
+	model := RuntimeSnapshotModel{RequestMetricsObserved: true, RequestSuccessTotal: &total}
+
+	manager.begin(pool)
+	_, _ = manager.observe("stale/model", model)
+	now = now.Add(poolActivityRetention + time.Second)
+	manager.lastSweep = now.Add(-poolActivitySweepInterval / 2) // swept 30s ago
+
+	manager.begin(pool)
+	assert.Contains(t, manager.activity, "stale/model", "a sweep inside the interval is skipped")
+
+	now = now.Add(poolActivitySweepInterval)
+	manager.begin(pool)
+	assert.NotContains(t, manager.activity, "stale/model")
+}
+
+func TestObserveSnapshotRecordsTheEnginesItCanRead(t *testing.T) {
+	now := time.Date(2026, time.October, 1, 8, 0, 0, 0, time.UTC)
+	manager := newPoolPolicyManager(func() time.Time { return now })
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	unread := engineHolding("unread", 10, 100)
+	unread.RequestMetricsObserved = false
+	completed := int64(7)
+	read := engineHolding("read", 10, 100)
+	read.RequestSuccessTotal = &completed
+
+	activities, complete := manager.observeSnapshot(pod, &RuntimeSnapshot{
+		Models: []RuntimeSnapshotModel{unread, read},
+	})
+
+	assert.False(t, complete, "the pod's policies wait for a round that reads every engine")
+	assert.Nil(t, activities)
+	seen, recorded := manager.lastActive(poolActivityKey(pod, read))
+	require.True(t, recorded, "an engine beside one that could not be read is still recorded")
+	assert.Equal(t, now, seen)
 }

@@ -24,6 +24,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	modelapi "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	webhookutils "github.com/vllm-project/aibrix/test/utils/webhook"
 	"github.com/vllm-project/aibrix/test/utils/wrapper"
 )
 
@@ -31,17 +32,12 @@ var _ = ginkgo.Describe("modelAdapter default and validation", func() {
 	var ns *corev1.Namespace
 
 	ginkgo.BeforeEach(func() {
-		// Create test namespace before each test.
-		ns = &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "test-ns-",
-			},
-		}
-		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+		ns = nil
+		ns = webhookutils.CreateNamespace(ctx, k8sClient, "test-ns-")
 	})
 
 	ginkgo.AfterEach(func() {
-		gomega.Expect(k8sClient.Delete(ctx, ns)).To(gomega.Succeed())
+		webhookutils.DeleteNamespace(ctx, k8sClient, ns)
 		var adapters modelapi.ModelAdapterList
 		gomega.Expect(k8sClient.List(ctx, &adapters)).To(gomega.Succeed())
 

@@ -94,6 +94,9 @@ Integration tests use Ginkgo framework to test component interactions:
     make test-integration-controller
     make test-integration-webhook
 
+    # Run Go tests behind the integration build tag (envtest)
+    make test-integration-tagged
+
 
 End-to-End Tests
 ~~~~~~~~~~~~~~~~

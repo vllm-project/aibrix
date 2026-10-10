@@ -43,14 +43,14 @@ const (
 	// ModelPoolLabelName identifies the warm GPU pool a pod belongs to. A warm GPU
 	// pool is an ordinary Deployment of pre-warmed GPU-host pods; ModelClaims
 	// are bin-packed onto pods sharing the same pool name.
-	// Example: "pool.aibrix.ai/name": "b300-pool-a"
-	ModelPoolLabelName = "pool.aibrix.ai/name"
+	// Example: "claim.model.aibrix.ai/pool": "b300-pool-a"
+	ModelPoolLabelName = "claim.model.aibrix.ai/pool"
 
 	// ModelPoolLabelEnabled marks a pod as a warm GPU pool member that accepts dynamic
 	// ModelClaim attachments (the GPU/CUDA context and the kvcached KV pool are
 	// reserved and the runtime sidecar is ready). Analogous to ModelLabelAdapterEnabled.
-	// Example: "pool.aibrix.ai/enabled": "true"
-	ModelPoolLabelEnabled = "pool.aibrix.ai/enabled"
+	// Example: "claim.model.aibrix.ai/enabled": "true"
+	ModelPoolLabelEnabled = "claim.model.aibrix.ai/enabled"
 
 	// ModelPoolLabelEnabledValue is the enabled value for ModelPoolLabelEnabled.
 	ModelPoolLabelEnabledValue = "true"
@@ -58,19 +58,31 @@ const (
 	// ModelPoolPolicyAnnotationKey holds one JSON pool policy on the warm
 	// Deployment metadata. It intentionally avoids a separate policy CRD while
 	// keeping the configuration scoped to the pool that owns the GPU pods.
-	// Example: "pool.aibrix.ai/policy": '{"reclaim":{"mode":"kv-first","capacityBytes":17179869184}}'
-	ModelPoolPolicyAnnotationKey = "pool.aibrix.ai/policy"
+	// Example: "claim.model.aibrix.ai/pool-policy": '{"reclaim":{"mode":"kv-first","capacityBytes":17179869184}}'
+	ModelPoolPolicyAnnotationKey = "claim.model.aibrix.ai/pool-policy"
 
 	// ModelClaimPodAnnotationPrefix marks, on a warm GPU pod, that a ModelClaim
 	// has been activated on it. The key is suffixed with the ModelClaim object
-	// name (a DNS name, so always annotation-key-safe) and the value is a JSON
-	// object {"model":"<servedModelName>","port":<port>,"state":"<state>"}.
+	// name, which the CRD limits to the 63 characters that the name part of a
+	// key may have. The value is a JSON object
+	// {"model":"<servedModelName>","port":<port>,"state":"<state>"}.
+	// A controller that wakes sleeping engines itself also writes
+	// "wakeByRequest":true there.
 	// One key per ModelClaim avoids multi-writer races on a shared annotation.
 	// The gateway cache reads these to make active models routable and retain
 	// sleeping port-0 bindings for request-triggered wake.
-	// Example: "modelclaim.aibrix.ai/qwen2-7b":
+	// Example: "route.claim.model.aibrix.ai/qwen2-7b":
 	// '{"model":"qwen2-7b-instruct","port":9001,"state":"active"}'
-	ModelClaimPodAnnotationPrefix = "modelclaim.aibrix.ai/"
+	ModelClaimPodAnnotationPrefix = "route.claim.model.aibrix.ai/"
+
+	// ModelClaimWakeAnnotationPrefix marks, on the warm pod that holds a
+	// sleeping engine, that a request has asked for that engine's model. The
+	// key is suffixed with the ModelClaim object name, and the value is the
+	// time of the request, in RFC 3339. The gateway writes it, and the
+	// controller wakes the engine and removes it. Its prefix is not
+	// ModelClaimPodAnnotationPrefix, so it is never read as a binding.
+	// Example: "wake.modelclaim.aibrix.ai/qwen2-7b": "2026-10-01T08:00:00Z"
+	ModelClaimWakeAnnotationPrefix = "wake.modelclaim.aibrix.ai/"
 
 	// ModelClaim routing states are observed runtime states carried alongside
 	// the per-model port. They let the gateway distinguish a sleeping engine
@@ -79,6 +91,24 @@ const (
 	ModelClaimRoutingStateActivating = "activating"
 	ModelClaimRoutingStateSleeping   = "sleeping"
 	ModelClaimRoutingStateFailed     = "failed"
+
+	// ModelClaimReasonTooLargeForAnyCard is the reason of a claim's Scheduled
+	// condition when no card in its pool could hold it, even empty. Waiting
+	// does not help, so the gateway does not ask its clients to retry.
+	ModelClaimReasonTooLargeForAnyCard = "TooLargeForAnyCard"
+
+	// ModelClaim route reasons say more than a routing state about why a model
+	// is not served. The controller writes them on the route and on the claim's
+	// Ready condition, and the gateway tells its clients how long to wait by
+	// them. A request waits for room to wake the engine, or the claim moves to
+	// another pod.
+	ModelClaimRouteReasonWaitingForRoom = "WaitingForRoom"
+	ModelClaimRouteReasonMoving         = "Moving"
+
+	// ModelClaimReasonMakingRoom is the reason of a claim's Scheduled condition
+	// while idle engines are put to sleep to make room for it. The gateway
+	// tells a client how long to wait by it as well.
+	ModelClaimReasonMakingRoom = "MakingRoom"
 )
 
 const (

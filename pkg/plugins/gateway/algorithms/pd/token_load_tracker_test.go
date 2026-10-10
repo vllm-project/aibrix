@@ -536,7 +536,7 @@ func TestTokenLoadTracker_JanitorReleasesStaleCharges(t *testing.T) {
 	klog.Flush()
 	assert.Contains(t, logs.String(), "force-releasing stale charge")
 	assert.Contains(t, logs.String(), "request_id=stale")
-	assert.Contains(t, logs.String(), "pod_name=pod-a")
+	assert.Contains(t, logs.String(), "pod=pod-a")
 
 	// A sweep after the normal release of "fresh" finds nothing.
 	tr.ReleaseAll("fresh")
@@ -597,10 +597,11 @@ func TestTokenLoadTracker_JanitorDisabledWithZeroTTL(t *testing.T) {
 	assertLoad(t, tr, "pod-a", 1000, 1000)
 }
 
-// tokenLoadSeriesPublished reports whether the default registry currently
-// exports a series of metricName for pod.
-func tokenLoadSeriesPublished(t *testing.T, metricName, pod string) bool {
+// tokenLoadSeries returns the value of the series of metricName published
+// for the pod key pod, and whether the default registry exports one.
+func tokenLoadSeries(t *testing.T, metricName, pod string) (float64, bool) {
 	t.Helper()
+	want := tokenLoadGaugeLabelValues(pod)
 	families, err := prometheus.DefaultGatherer.Gather()
 	require.NoError(t, err)
 	for _, family := range families {
@@ -608,14 +609,24 @@ func tokenLoadSeriesPublished(t *testing.T, metricName, pod string) bool {
 			continue
 		}
 		for _, m := range family.GetMetric() {
+			labels := map[string]string{}
 			for _, label := range m.GetLabel() {
-				if label.GetName() == "pod_name" && label.GetValue() == pod {
-					return true
-				}
+				labels[label.GetName()] = label.GetValue()
+			}
+			if len(labels) == 2 && labels["namespace"] == want[0] && labels["pod_name"] == want[1] {
+				return m.GetGauge().GetValue(), true
 			}
 		}
 	}
-	return false
+	return 0, false
+}
+
+// tokenLoadSeriesPublished reports whether the default registry currently
+// exports a series of metricName for the pod key pod.
+func tokenLoadSeriesPublished(t *testing.T, metricName, pod string) bool {
+	t.Helper()
+	_, ok := tokenLoadSeries(t, metricName, pod)
+	return ok
 }
 
 func assertPodTracked(t *testing.T, tr *TokenLoadTracker, pod string, want bool) {
@@ -670,6 +681,51 @@ func TestTokenLoadTracker_JanitorPrunesIdlePods(t *testing.T) {
 	assert.Equal(t, 0, tr.pruneIdle())
 	assert.Equal(t, 1, tr.pruneIdle())
 	assertPodTracked(t, tr, "prune-b", false)
+}
+
+// TestTokenLoadTracker_SameNameInTwoNamespaces: pods are keyed by
+// namespace/name, so same-named pods in two namespaces keep separate counters
+// and separate gauge series, labelled with the namespace and the bare pod
+// name, and pruning one leaves the other in place.
+func TestTokenLoadTracker_SameNameInTwoNamespaces(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, testTokenLoadConfig())
+	const podA, podB = "ns-a/same-prefill", "ns-b/same-prefill"
+
+	tr.AcquirePrefill("req-a", podA, 1000)
+	assertLoad(t, tr, podA, 1000, 1000)
+	assertLoad(t, tr, podB, 0, 0)
+	assert.Equal(t, float64(0), tr.GetPriority(podB))
+
+	tr.AcquirePrefill("req-b", podB, 10)
+	assertLoad(t, tr, podA, 1000, 1000)
+	assertLoad(t, tr, podB, 10, 10)
+	for pod, want := range map[string]float64{podA: 1000, podB: 10} {
+		for _, metricName := range []string{metrics.PDTokenLoadActiveTokens, metrics.PDTokenLoadKVTokens} {
+			got, ok := tokenLoadSeries(t, metricName, pod)
+			require.Truef(t, ok, "%s series for %s", metricName, pod)
+			assert.Equalf(t, want, got, "%s series for %s", metricName, pod)
+		}
+	}
+
+	// Only ns-a's pod goes idle; two sweeps prune it and keep ns-b's.
+	tr.ReleaseAll("req-a")
+	assert.Equal(t, 0, tr.pruneIdle())
+	assert.Equal(t, 1, tr.pruneIdle())
+	assertPodTracked(t, tr, podA, false)
+	assertPodTracked(t, tr, podB, true)
+	assertLoad(t, tr, podB, 10, 10)
+
+	tr.ReleaseAll("req-b")
+	assert.Equal(t, 0, tr.pruneIdle())
+	assert.Equal(t, 1, tr.pruneIdle())
+	assertPodTracked(t, tr, podB, false)
+}
+
+func TestTokenLoadGaugeLabelValues(t *testing.T) {
+	assert.Equal(t, []string{"default", "prefill-0"}, tokenLoadGaugeLabelValues("default/prefill-0"))
+	assert.Equal(t, []string{"", "prefill-0"}, tokenLoadGaugeLabelValues("prefill-0"))
+	// Not a "namespace/name" key: the whole key is kept as the pod name.
+	assert.Equal(t, []string{"", "a/b/c"}, tokenLoadGaugeLabelValues("a/b/c"))
 }
 
 func TestTokenLoadTracker_JanitorPrunesAfterForceRelease(t *testing.T) {
@@ -780,4 +836,281 @@ func TestTokenLoadTracker_ConcurrentChargesBalance(t *testing.T) {
 	count := 0
 	tr.entries.Range(func(_, _ any) bool { count++; return true })
 	require.Equal(t, 0, count, "every request must be forgotten after release")
+}
+
+func TestTokenLoadTracker_DecodeLifecycle(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	tr.AcquireDecodeWithTTL("req-1", "decode-a", 100, time.Minute)
+	tr.AcquireDecodeWithTTL("req-2", "decode-a", 40, time.Minute)
+	tr.AcquireDecodeWithTTL("req-3", "decode-b", 7, time.Minute)
+	assert.Equal(t, float64(140), tr.GetDecodeLoad("decode-a"))
+	assert.Equal(t, float64(7), tr.GetDecodeLoad("decode-b"))
+	assert.Equal(t, float64(0), tr.GetDecodeLoad("decode-unknown"))
+	// The decode ledger is separate from the prefill counters.
+	assertLoad(t, tr, "decode-a", 0, 0)
+
+	tr.ReleaseDecode("req-1")
+	tr.ReleaseDecode("req-1") // repeated release is a no-op
+	tr.ReleaseDecode("never-charged")
+	assert.Equal(t, float64(40), tr.GetDecodeLoad("decode-a"))
+
+	// ReleaseAll, the router's terminal path, drops the decode charge too.
+	tr.ReleaseAll("req-2")
+	tr.ReleaseAll("req-3")
+	assert.Equal(t, float64(0), tr.GetDecodeLoad("decode-a"))
+	assert.Equal(t, float64(0), tr.GetDecodeLoad("decode-b"))
+	_, tracked := tr.decodeEntries.Load("req-2")
+	assert.False(t, tracked, "a released decode charge is forgotten")
+}
+
+func TestTokenLoadTracker_DecodeAndPrefillChargesAreIndependent(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	// One request charges its prefill pod and its decode pod.
+	tr.AcquirePrefill("req-1", "prefill-a", 100)
+	tr.AcquireDecodeWithTTL("req-1", "decode-a", 150, time.Minute)
+
+	// The prefill call returning releases only the active prefill part.
+	tr.ReleaseTokens("req-1")
+	assertLoad(t, tr, "prefill-a", 0, 100)
+	assert.Equal(t, float64(150), tr.GetDecodeLoad("decode-a"))
+
+	tr.ReleaseAll("req-1")
+	assertLoad(t, tr, "prefill-a", 0, 0)
+	assert.Equal(t, float64(0), tr.GetDecodeLoad("decode-a"))
+}
+
+func TestTokenLoadTracker_DecodeReacquireReplacesCharge(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	tr.AcquireDecodeWithTTL("req-1", "decode-a", 100, time.Minute)
+	tr.AcquireDecodeWithTTL("req-1", "decode-b", 30, time.Minute)
+	assert.Equal(t, float64(0), tr.GetDecodeLoad("decode-a"), "the earlier charge is released")
+	assert.Equal(t, float64(30), tr.GetDecodeLoad("decode-b"))
+
+	tr.ReleaseDecode("req-1")
+	assert.Equal(t, float64(0), tr.GetDecodeLoad("decode-b"))
+}
+
+func TestTokenLoadTracker_JanitorReleasesStaleDecodeCharges(t *testing.T) {
+	tr, clock := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	tr.AcquireDecodeWithTTL("stale", "decode-a", 100, time.Minute)
+	tr.AcquireDecodeWithTTL("pinned", "decode-a", 5, 0) // ttl 0: never swept
+	clock.Advance(30 * time.Second)
+	tr.AcquireDecodeWithTTL("fresh", "decode-a", 10, time.Minute)
+
+	clock.Advance(45 * time.Second)
+	assert.Equal(t, 1, tr.sweepExpired(), "only the charge older than its TTL is released")
+	assert.Equal(t, float64(15), tr.GetDecodeLoad("decode-a"))
+
+	// The normal release arriving after the sweep does not subtract again.
+	tr.ReleaseDecode("stale")
+	assert.Equal(t, float64(15), tr.GetDecodeLoad("decode-a"))
+}
+
+func TestTokenLoadTracker_JanitorPrunesIdleDecodePods(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	tr.AcquireDecodeWithTTL("req-1", "decode-prune", 100, time.Minute)
+	tr.AcquireDecodeWithTTL("req-2", "decode-busy", 100, time.Minute)
+	tr.ReleaseDecode("req-1")
+	assert.True(t, tokenLoadSeriesPublished(t, metrics.PDTokenLoadDecodeTokens, "decode-prune"))
+
+	// Written since the last sweep: only observed idle.
+	assert.Equal(t, 0, tr.pruneIdle())
+	_, tracked := tr.decodeTokens.Load("decode-prune")
+	assert.True(t, tracked)
+
+	// A full quiet interval at zero prunes the counter and its series; a pod
+	// with a decode charge outstanding is kept.
+	assert.Equal(t, 1, tr.pruneIdle())
+	_, tracked = tr.decodeTokens.Load("decode-prune")
+	assert.False(t, tracked)
+	assert.False(t, tokenLoadSeriesPublished(t, metrics.PDTokenLoadDecodeTokens, "decode-prune"))
+	_, tracked = tr.decodeTokens.Load("decode-busy")
+	assert.True(t, tracked)
+	assert.Equal(t, float64(100), tr.GetDecodeLoad("decode-busy"))
+}
+
+func TestTokenLoadTracker_DecodeGrowth(t *testing.T) {
+	tr, clock := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	assert.Equal(t, 0.0, tr.DecodeGrowth("decode-a", 10), "unknown pod")
+
+	tr.AcquireDecodeWithTTL("req-1", "decode-a", 100, time.Minute)
+	clock.Advance(10 * time.Second)
+	tr.AcquireDecodeWithTTL("req-2", "decode-a", 50, time.Minute)
+	clock.Advance(5 * time.Second)
+
+	// req-1 has run 15s and req-2 5s: 20 request-seconds at 2 tokens/s.
+	assert.Equal(t, 40.0, tr.DecodeGrowth("decode-a", 2))
+	assert.Equal(t, 0.0, tr.DecodeGrowth("decode-a", 0), "no rate, no growth")
+	assert.Equal(t, 0.0, tr.DecodeGrowth("decode-b", 2), "growth is per pod")
+	assert.Equal(t, 150.0, tr.GetDecodeLoad("decode-a"), "the prompt ledger is unchanged")
+
+	// A completed request stops growing.
+	tr.ReleaseDecode("req-1")
+	assert.Equal(t, 10.0, tr.DecodeGrowth("decode-a", 2))
+	tr.ReleaseDecode("req-1") // repeated release changes nothing
+	assert.Equal(t, 10.0, tr.DecodeGrowth("decode-a", 2))
+
+	tr.ReleaseAll("req-2")
+	assert.Equal(t, 0.0, tr.DecodeGrowth("decode-a", 2))
+}
+
+func TestTokenLoadTracker_DecodeGrowthFollowsReacquireAndSweep(t *testing.T) {
+	tr, clock := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	tr.AcquireDecodeWithTTL("req-1", "decode-a", 100, time.Minute)
+	clock.Advance(10 * time.Second)
+	// Re-acquire moves the request to decode-b and restarts its clock.
+	tr.AcquireDecodeWithTTL("req-1", "decode-b", 100, time.Minute)
+	clock.Advance(2 * time.Second)
+	assert.Equal(t, 0.0, tr.DecodeGrowth("decode-a", 1))
+	assert.Equal(t, 2.0, tr.DecodeGrowth("decode-b", 1))
+
+	// The TTL sweep releases the stale charge, and its growth with it.
+	clock.Advance(2 * time.Minute)
+	assert.Equal(t, 1, tr.sweepExpired())
+	assert.Equal(t, 0.0, tr.DecodeGrowth("decode-b", 1))
+}
+
+func TestTokenLoadTracker_PruneKeepsDecodeGrowthOfOutstandingCharges(t *testing.T) {
+	tr, clock := newTestTokenLoadTracker(t, testTokenLoadConfig())
+
+	// A zero-cost charge leaves the decode counter at 0, but it is outstanding
+	// and still generating: pruning the counter must not drop its growth.
+	tr.AcquireDecodeWithTTL("req-empty", "decode-a", 0, time.Minute)
+	assert.Equal(t, 0, tr.pruneIdle())
+	assert.Equal(t, 1, tr.pruneIdle())
+	clock.Advance(4 * time.Second)
+	assert.Equal(t, 4.0, tr.DecodeGrowth("decode-a", 1))
+
+	// Once nothing is outstanding, both pods are idle and their aggregates go
+	// with their counters.
+	tr.ReleaseDecode("req-empty")
+	tr.AcquireDecodeWithTTL("req-other", "decode-b", 10, time.Minute)
+	tr.ReleaseDecode("req-other")
+	assert.Equal(t, 0, tr.pruneIdle())
+	assert.Equal(t, 2, tr.pruneIdle())
+	for _, pod := range []string{"decode-a", "decode-b"} {
+		_, tracked := tr.decodeInflight.Load(pod)
+		assert.Falsef(t, tracked, "%s: an idle pod's growth aggregate is pruned with its counter", pod)
+	}
+}
+
+// DecodeLedgerState reports the decode counter, the outstanding charges and
+// the sum of their charge times as Unix seconds, the absolute form another
+// replica can add to its own ledger.
+func TestTokenLoadTracker_DecodeLedgerState(t *testing.T) {
+	tr, clock := newTestTokenLoadTracker(t, TokenLoadConfig{})
+	start := clock.Now()
+
+	tokens, charges, sumAt := tr.DecodeLedgerState("ns/decode-0")
+	assert.Zero(t, tokens)
+	assert.Zero(t, charges)
+	assert.Zero(t, sumAt)
+
+	tr.AcquireDecodeWithTTL("a", "ns/decode-0", 1000, 0)
+	clock.Advance(10 * time.Second)
+	tr.AcquireDecodeWithTTL("b", "ns/decode-0", 500, 0)
+
+	tokens, charges, sumAt = tr.DecodeLedgerState("ns/decode-0")
+	assert.Equal(t, 1500.0, tokens)
+	assert.EqualValues(t, 2, charges)
+	startUnix := float64(start.UnixNano()) / float64(time.Second)
+	assert.InDelta(t, 2*startUnix+10, sumAt, 1e-3)
+
+	tr.ReleaseDecode("a")
+	tokens, charges, sumAt = tr.DecodeLedgerState("ns/decode-0")
+	assert.Equal(t, 500.0, tokens)
+	assert.EqualValues(t, 1, charges)
+	assert.InDelta(t, startUnix+10, sumAt, 1e-3)
+
+	tr.ReleaseDecode("b")
+	tokens, charges, sumAt = tr.DecodeLedgerState("ns/decode-0")
+	assert.Zero(t, tokens)
+	assert.Zero(t, charges)
+	assert.Zero(t, sumAt)
+}
+
+// The decode ledger listener hears about every change to a pod's ledger: a
+// charge, a release (but not a repeated one), both pods of a re-acquire, and a
+// TTL sweep.
+func TestTokenLoadTracker_DecodeLedgerListener(t *testing.T) {
+	tr, clock := newTestTokenLoadTracker(t, TokenLoadConfig{})
+	var mu sync.Mutex
+	var heard []string
+	tr.SetDecodeLedgerListener(func(podKey string) {
+		mu.Lock()
+		heard = append(heard, podKey)
+		mu.Unlock()
+	})
+	take := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := heard
+		heard = nil
+		return out
+	}
+
+	tr.AcquireDecodeWithTTL("r1", "ns/decode-0", 100, 0)
+	assert.Equal(t, []string{"ns/decode-0"}, take())
+
+	tr.ReleaseDecode("r1")
+	tr.ReleaseDecode("r1")
+	assert.Equal(t, []string{"ns/decode-0"}, take(), "a repeated release changes nothing")
+
+	tr.AcquireDecodeWithTTL("r2", "ns/decode-0", 100, 0)
+	tr.AcquireDecodeWithTTL("r2", "ns/decode-1", 100, 0)
+	assert.Equal(t, []string{"ns/decode-0", "ns/decode-0", "ns/decode-1"}, take(),
+		"a re-acquire releases the earlier pod and charges the new one")
+
+	tr.AcquireDecodeWithTTL("r3", "ns/decode-2", 100, time.Second)
+	take()
+	clock.Advance(2 * time.Second)
+	tr.sweepExpired()
+	assert.Equal(t, []string{"ns/decode-2"}, take(), "the TTL sweep releases through the same path")
+
+	tr.SetDecodeLedgerListener(nil)
+	tr.AcquireDecodeWithTTL("r4", "ns/decode-0", 100, 0)
+	assert.Empty(t, take())
+}
+
+// DecodeLedgerState reads tokens, charges and charge times together: under
+// concurrent charges and releases of 100 tokens each, every state it returns
+// has exactly 100 tokens per outstanding charge.
+func TestTokenLoadTracker_DecodeLedgerStateIsConsistent(t *testing.T) {
+	tr := newTokenLoadTracker(TokenLoadConfig{}, time.Now)
+	t.Cleanup(tr.Close)
+	const pod = "ns/decode-0"
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < 2000; i++ {
+				id := fmt.Sprintf("w%d-%d", w, i)
+				tr.AcquireDecodeWithTTL(id, pod, 100, 0)
+				tr.ReleaseDecode(id)
+			}
+		}(w)
+	}
+	go func() { wg.Wait(); close(stop) }()
+
+	reads := 0
+	for {
+		select {
+		case <-stop:
+			require.Greater(t, reads, 0)
+			return
+		default:
+		}
+		tokens, charges, _ := tr.DecodeLedgerState(pod)
+		require.Equalf(t, 100*float64(charges), tokens, "torn read: %v tokens for %d charges", tokens, charges)
+		reads++
+	}
 }

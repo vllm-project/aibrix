@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
@@ -41,6 +42,7 @@ type hybridTestFixture struct {
 	policy  PrefillScorePolicy
 	table   *prefixcacheindexer.PrefixHashTable
 	tracker *TokenLoadTracker
+	cfg     HybridCacheLoadConfig
 	pods    []*v1.Pod
 	ready   map[string]struct{}
 }
@@ -50,12 +52,13 @@ func newHybridTestFixture(t *testing.T, cfg HybridCacheLoadConfig, podNames ...s
 	f := &hybridTestFixture{
 		table:   prefixcacheindexer.NewPrefixHashTable(),
 		tracker: newTokenLoadTracker(TokenLoadConfig{KVWeight: 0.5}, nil),
+		cfg:     cfg,
 		ready:   map[string]struct{}{},
 	}
-	f.policy = NewHybridCacheLoadPrefillPolicy(tokenizer.NewCharacterTokenizer(), f.table, f.tracker, cfg)
+	f.policy = NewHybridCacheLoadPrefillPolicy(tokenizer.NewCharacterTokenizer(), f.table, f.tracker)
 	for _, name := range podNames {
 		f.pods = append(f.pods, tokenLoadTestPod(name))
-		f.ready[name] = struct{}{}
+		f.ready[utils.GeneratePodKey(testNamespace, name)] = struct{}{}
 	}
 	return f
 }
@@ -68,12 +71,21 @@ func (f *hybridTestFixture) seedPrefix(t *testing.T, pod string, matchPct int) {
 	require.NoError(t, err)
 	_, hashes := f.table.MatchPrefix(tokens, testModelName, nil)
 	require.Len(t, hashes, 10)
-	f.table.AddPrefix(hashes[:len(hashes)*matchPct/100], testModelName, pod)
+	f.table.AddPrefix(hashes[:len(hashes)*matchPct/100], testModelName, utils.GeneratePodKey(testNamespace, pod))
 }
 
+// prepare resolves the fixture's configuration as the request's overrides, the
+// way the PD router parks a profile's values on the request path. The KV weight
+// matches the tracker's own configuration so the two knobs stay comparable.
 func (f *hybridTestFixture) prepare(t *testing.T) PrefillScorer {
 	t.Helper()
 	ctx := types.NewRoutingContext(context.Background(), "pd", testModelName, hybridTestMessage, "req-1", "")
+	overrides := types.PDOverrides{
+		HybridCacheLoadFactor: f.cfg.Factor,
+		MinMatchPct:           f.cfg.MinMatchPct,
+		TokenLoad:             types.PDTokenLoadOverrides{KVWeight: 0.5},
+	}
+	ctx.SetPDOverrides(&overrides)
 	scorer, err := f.policy.Prepare(ctx, f.pods, f.ready)
 	require.NoError(t, err)
 	return scorer
@@ -98,10 +110,10 @@ func TestHybridCacheLoadPrefillPolicy_IdlePodsFollowThePrefix(t *testing.T) {
 	assert.Equal(t, 1-0.25*0.5, scorer.ScorePod(f.pods[1], 0, 0), "50 % match: 1 − 0.5² × factor")
 	assert.Equal(t, 1-0.5, scorer.ScorePod(f.pods[2], 0, 0), "100 % match: 1 − factor")
 
-	assert.Equal(t, 0, PrefixMatchPercent(scorer, "cold"))
-	assert.Equal(t, 50, PrefixMatchPercent(scorer, "half"))
-	assert.Equal(t, 100, PrefixMatchPercent(scorer, "hot"))
-	assert.Equal(t, 0, PrefixMatchPercent(scorer, "unknown-pod"), "the lookup ran, so an unlisted pod is a 0 % match, not unknown")
+	assert.Equal(t, 0, PrefixMatchPercent(scorer, utils.GeneratePodKey(testNamespace, "cold")))
+	assert.Equal(t, 50, PrefixMatchPercent(scorer, utils.GeneratePodKey(testNamespace, "half")))
+	assert.Equal(t, 100, PrefixMatchPercent(scorer, utils.GeneratePodKey(testNamespace, "hot")))
+	assert.Equal(t, 0, PrefixMatchPercent(scorer, utils.GeneratePodKey(testNamespace, "unknown-pod")), "the lookup ran, so an unlisted pod is a 0 % match, not unknown")
 }
 
 // TestHybridCacheLoadPrefillPolicy_LoadOutweighsPrefix: a pod holding the
@@ -110,7 +122,7 @@ func TestHybridCacheLoadPrefillPolicy_IdlePodsFollowThePrefix(t *testing.T) {
 func TestHybridCacheLoadPrefillPolicy_LoadOutweighsPrefix(t *testing.T) {
 	f := newHybridTestFixture(t, hybridTestConfig, "idle", "hot")
 	f.seedPrefix(t, "hot", 100)
-	f.tracker.AcquirePrefill("long", "hot", 8000) // priority 8000 + 0.5 × 8000
+	f.tracker.AcquirePrefill("long", utils.GeneratePodKey(testNamespace, "hot"), 8000) // priority 8000 + 0.5 × 8000
 
 	scorer := f.prepare(t)
 	assert.Equal(t, float64(1), scorer.ScorePod(f.pods[0], 0, 0))
@@ -118,7 +130,7 @@ func TestHybridCacheLoadPrefillPolicy_LoadOutweighsPrefix(t *testing.T) {
 
 	// Barely loaded (below one token) still counts as idle.
 	f.tracker.ReleaseAll("long")
-	f.tracker.AcquirePrefill("tiny", "hot", 0.5)
+	f.tracker.AcquirePrefill("tiny", utils.GeneratePodKey(testNamespace, "hot"), 0.5)
 	assert.Equal(t, 0.5, scorer.ScorePod(f.pods[1], 1, 1))
 }
 
@@ -132,8 +144,8 @@ func TestHybridCacheLoadPrefillPolicy_MinMatchClamp(t *testing.T) {
 	scorer := f.prepare(t)
 	assert.Equal(t, float64(1), scorer.ScorePod(f.pods[0], 0, 0), "a match below the threshold is no match")
 	assert.InDelta(t, 1-0.36*0.5, scorer.ScorePod(f.pods[1], 0, 0), 1e-9, "a match at the threshold counts")
-	assert.Equal(t, 0, PrefixMatchPercent(scorer, "weak"), "the charge sees the same clamped match as the score")
-	assert.Equal(t, 60, PrefixMatchPercent(scorer, "strong"))
+	assert.Equal(t, 0, PrefixMatchPercent(scorer, utils.GeneratePodKey(testNamespace, "weak")), "the charge sees the same clamped match as the score")
+	assert.Equal(t, 60, PrefixMatchPercent(scorer, utils.GeneratePodKey(testNamespace, "strong")))
 }
 
 func TestClampMinMatch(t *testing.T) {
@@ -157,9 +169,9 @@ func TestClampMinMatch(t *testing.T) {
 
 func TestHybridCacheLoadPrefillPolicy_NilTrackerScoresByPrefixOnly(t *testing.T) {
 	table := prefixcacheindexer.NewPrefixHashTable()
-	policy := NewHybridCacheLoadPrefillPolicy(tokenizer.NewCharacterTokenizer(), table, nil, hybridTestConfig)
+	policy := NewHybridCacheLoadPrefillPolicy(tokenizer.NewCharacterTokenizer(), table, nil)
 	ctx := types.NewRoutingContext(context.Background(), "pd", testModelName, hybridTestMessage, "req-1", "")
-	scorer, err := policy.Prepare(ctx, nil, map[string]struct{}{"pod-a": {}})
+	scorer, err := policy.Prepare(ctx, nil, map[string]struct{}{utils.GeneratePodKey(testNamespace, "pod-a"): {}})
 	require.NoError(t, err)
 	assert.Equal(t, float64(1), scorer.ScorePod(tokenLoadTestPod("pod-a"), 3, 3))
 }

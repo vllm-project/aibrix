@@ -31,6 +31,7 @@ type PodAutoscalerStatusApplyConfiguration struct {
 	Conditions      []metav1.ConditionApplyConfiguration     `json:"conditions,omitempty"`
 	ScalingHistory  []ScalingDecisionApplyConfiguration      `json:"scalingHistory,omitempty"`
 	ScheduledBounds *ScheduledBoundsStatusApplyConfiguration `json:"scheduledBounds,omitempty"`
+	Predictive      *PredictiveStatusApplyConfiguration      `json:"predictive,omitempty"`
 }
 
 // PodAutoscalerStatusApplyConfiguration constructs a declarative configuration of the PodAutoscalerStatus type for use with
@@ -94,5 +95,13 @@ func (b *PodAutoscalerStatusApplyConfiguration) WithScalingHistory(values ...*Sc
 // If called multiple times, the ScheduledBounds field is set to the value of the last call.
 func (b *PodAutoscalerStatusApplyConfiguration) WithScheduledBounds(value *ScheduledBoundsStatusApplyConfiguration) *PodAutoscalerStatusApplyConfiguration {
 	b.ScheduledBounds = value
+	return b
+}
+
+// WithPredictive sets the Predictive field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Predictive field is set to the value of the last call.
+func (b *PodAutoscalerStatusApplyConfiguration) WithPredictive(value *PredictiveStatusApplyConfiguration) *PodAutoscalerStatusApplyConfiguration {
+	b.Predictive = value
 	return b
 }

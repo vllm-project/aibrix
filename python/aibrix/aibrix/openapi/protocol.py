@@ -227,6 +227,11 @@ class RuntimeAcceleratorSnapshot(NoProtectedBaseModel):
     id: str
     hbm_total_bytes: int
     hbm_free_bytes: int
+    # What an engine can ever take on this card: the total less the driver's
+    # own reservation. Unlike hbm_free_bytes it does not move with traffic, so
+    # the control plane can size a card by it. -1 when the card could not be
+    # measured, which a mock runtime also reports.
+    hbm_usable_bytes: int = -1
 
 
 class RuntimeSnapshotModel(NoProtectedBaseModel):
@@ -251,6 +256,10 @@ class RuntimeSnapshotModel(NoProtectedBaseModel):
     # accelerator. This is an observation for placement ranking, not an
     # allocation guarantee.
     hbm_peak_bytes: int = 0
+    # GPU memory the engine still held right after it last went to sleep. Only
+    # a sleeping engine reports it, and None means the reading could not be
+    # attributed to the engine.
+    sleeping_footprint_bytes: Optional[int] = None
     # Per-engine request activity is read by the sidecar from localhost. False
     # means policy must not infer that an engine is idle from unavailable metrics.
     request_metrics_observed: bool = False

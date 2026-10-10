@@ -147,6 +147,11 @@ if remote, ok := tok.(interface {
 
 ### Chat Tokenization
 
+Import `encoding/json` for the chat examples. `ChatMessage.Content` is a
+`json.RawMessage`: text must be encoded as a JSON string, including its surrounding
+quotes. For text from a variable, use `json.Marshal` to handle escaping. Content-part
+arrays can also be passed as JSON for multimodal messages.
+
 ```go
 // Chat tokenization requires type assertion to access advanced features
 if extended, ok := tok.(interface {
@@ -157,8 +162,8 @@ if extended, ok := tok.(interface {
     chatInput := tokenizer.TokenizeInput{
         Type: tokenizer.ChatInput,
         Messages: []tokenizer.ChatMessage{
-            {Role: "system", Content: "You are a helpful assistant."},
-            {Role: "user", Content: "What is the weather today?"},
+            {Role: "system", Content: json.RawMessage(`"You are a helpful assistant."`)},
+            {Role: "user", Content: json.RawMessage(`"What is the weather today?"`)},
         },
         AddGenerationPrompt: true,
     }
@@ -167,6 +172,7 @@ if extended, ok := tok.(interface {
     if err != nil {
         log.Fatal(err)
     }
+    fmt.Printf("Token count: %d\n", result.Count)
 }
 ```
 
@@ -327,8 +333,8 @@ type TokenizeResult struct {
 #### ChatMessage
 ```go
 type ChatMessage struct {
-    Role    string // "system", "user", "assistant"
-    Content string // Message content
+    Role    string          // "system", "user", "assistant"
+    Content json.RawMessage // JSON string or content-part array
 }
 ```
 

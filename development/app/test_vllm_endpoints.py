@@ -332,6 +332,89 @@ def test_tokenization(base_url: str, result: TestResult):
         result.add_fail("Detokenize (error: missing tokens)", f"Expected 400, got {status}")
 
 
+def test_pooling(base_url: str, result: TestResult):
+    """Test pooling endpoint."""
+    print("\n--- Testing Pooling Endpoint ---")
+
+    # Pooling - string input
+    status, data = make_request(
+        base_url,
+        "/pooling",
+        method="POST",
+        data={"model": "test-model", "input": "Hello world, this is a test."},
+    )
+    if status == 200 and "data" in data and "usage" in data:
+        result.add_pass("Pooling (string input)", f"Pooled items: {len(data.get('data', []))}")
+    else:
+        result.add_fail("Pooling (string input)", f"Status {status}: {data}")
+
+    # Pooling - array of strings
+    status, data = make_request(
+        base_url,
+        "/pooling",
+        method="POST",
+        data={"model": "test-model", "input": ["first input", "second input"]},
+    )
+    if status == 200 and len(data.get("data", [])) == 2:
+        result.add_pass("Pooling (array input)", f"Pooled items: {len(data.get('data', []))}")
+    else:
+        result.add_fail("Pooling (array input)", f"Status {status}: {data}")
+
+    # Pooling - pre-tokenized input
+    status, data = make_request(
+        base_url,
+        "/pooling",
+        method="POST",
+        data={"model": "test-model", "input": [100, 101, 102, 103]},
+    )
+    if status == 200 and "usage" in data:
+        result.add_pass(
+            "Pooling (pre-tokenized input)",
+            f"Prompt tokens: {data.get('usage', {}).get('prompt_tokens')}",
+        )
+    else:
+        result.add_fail("Pooling (pre-tokenized input)", f"Status {status}: {data}")
+
+    # Pooling - chat form (messages instead of input)
+    status, data = make_request(
+        base_url,
+        "/pooling",
+        method="POST",
+        data={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hello world"}],
+        },
+    )
+    if status == 200 and "data" in data and "usage" in data:
+        result.add_pass("Pooling (chat form)", f"Pooled items: {len(data.get('data', []))}")
+    else:
+        result.add_fail("Pooling (chat form)", f"Status {status}: {data}")
+
+    # Pooling - missing model
+    status, data = make_request(
+        base_url,
+        "/pooling",
+        method="POST",
+        data={"input": "Hello world"},
+    )
+    if status == 400:
+        result.add_pass("Pooling (error: missing model)")
+    else:
+        result.add_fail("Pooling (error: missing model)", f"Expected 400, got {status}")
+
+    # Pooling - bad input shape
+    status, data = make_request(
+        base_url,
+        "/pooling",
+        method="POST",
+        data={"model": "test-model", "input": 42},
+    )
+    if status == 400:
+        result.add_pass("Pooling (error: bad input shape)")
+    else:
+        result.add_fail("Pooling (error: bad input shape)", f"Expected 400, got {status}")
+
+
 def test_server_load(base_url: str, result: TestResult):
     """Test server load endpoint."""
     print("\n--- Testing Server Load Endpoint ---")
@@ -406,6 +489,7 @@ def main():
     test_lora_adapters(args.base_url, result)
     test_lora_adapters_errors(args.base_url, result)
     test_tokenization(args.base_url, result)
+    test_pooling(args.base_url, result)
     test_server_load(args.base_url, result)
     test_metrics(args.base_url, result)
 

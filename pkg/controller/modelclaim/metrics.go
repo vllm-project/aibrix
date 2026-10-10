@@ -48,6 +48,7 @@ const (
 	policyReasonNoChange            = "no_change"
 	policyReasonRuntimeError        = "runtime_error"
 	policyReasonInternalError       = "internal_error"
+	policyReasonClaimHeldLimits     = "claim_held_limits"
 
 	policyActionSetKVLimit = "set_kv_limit"
 )
@@ -70,6 +71,7 @@ var boundedPolicyReasons = map[string]struct{}{
 	policyReasonNoChange:            {},
 	policyReasonRuntimeError:        {},
 	policyReasonInternalError:       {},
+	policyReasonClaimHeldLimits:     {},
 }
 
 // ModelClaim control-plane observability. These metrics are purely additive:

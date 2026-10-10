@@ -435,6 +435,13 @@ def test_fault_header_for_other_role_does_not_fail(role, fail_value):
     assert result.metadata == {}
 
 
+def test_backend_fault_header_matches_non_pd_backend():
+    result = parse_fault_headers({"x-aibrix-mock-fail": "backend"}, "")
+
+    assert result.injected_status_code == 500
+    assert result.validation_status_code == 200
+
+
 @pytest.mark.parametrize("fail_value", ["", "worker", "PREFILL", "true", None])
 def test_invalid_fail_header_is_ignored(fail_value):
     result = parse_fault_headers({"x-aibrix-mock-fail": fail_value}, "prefill")
@@ -462,6 +469,37 @@ def test_invalid_delay_header_returns_bad_request_metadata(delay_value):
     assert result.delay_ms == 0
     assert result.injected_status_code is None
     assert result.metadata["error"] == "invalid x-aibrix-mock-delay-ms"
+
+
+def test_delay_role_header_scopes_the_delay_to_one_leg():
+    headers = {"x-aibrix-mock-delay-ms": "5000", "x-aibrix-mock-delay-role": "decode"}
+
+    decode = parse_fault_headers(headers, "decode")
+    prefill = parse_fault_headers(headers, "prefill")
+
+    assert decode.delay_ms == 5000
+    assert prefill.delay_ms == 0
+    assert decode.validation_status_code == 200
+    assert prefill.validation_status_code == 200
+
+
+def test_delay_role_header_is_optional():
+    headers = {"x-aibrix-mock-delay-ms": "25"}
+
+    assert parse_fault_headers(headers, "prefill").delay_ms == 25
+    assert parse_fault_headers(headers, "decode").delay_ms == 25
+
+
+@pytest.mark.parametrize("delay_role", ["both", "", "PREFILL", None])
+def test_invalid_delay_role_header_returns_bad_request_metadata(delay_role):
+    result = parse_fault_headers(
+        {"x-aibrix-mock-delay-ms": "25", "x-aibrix-mock-delay-role": delay_role},
+        "prefill",
+    )
+
+    assert result.validation_status_code == 400
+    assert result.delay_ms == 0
+    assert result.metadata["error"] == "invalid x-aibrix-mock-delay-role"
 
 
 def test_fault_parse_result_is_immutable_and_parser_does_not_mutate_headers():
@@ -526,3 +564,36 @@ def test_fault_result_metadata_rejects_reinitialization():
         result.metadata.__init__({"error": "changed"})
     assert result.metadata == {"error": "invalid x-aibrix-mock-delay-ms"}
     json.dumps(result._asdict())
+
+
+def test_stream_stall_header_is_parsed_and_scoped_by_delay_role():
+    headers = {"x-aibrix-mock-stream-stall-ms": "5000", "x-aibrix-mock-delay-role": "decode"}
+
+    assert parse_fault_headers(headers, "decode").stream_stall_ms == 5000
+    assert parse_fault_headers(headers, "prefill").stream_stall_ms == 0
+    assert parse_fault_headers({}, "decode").stream_stall_ms == 0
+
+
+@pytest.mark.parametrize("value", ["abc", "-1", "30001", "1.5"])
+def test_invalid_stream_stall_is_rejected(value):
+    result = parse_fault_headers({"x-aibrix-mock-stream-stall-ms": value}, "decode")
+
+    assert result.validation_status_code == 400
+    assert result.metadata == {"error": "invalid x-aibrix-mock-stream-stall-ms"}
+
+
+def test_first_token_stall_header_is_parsed_and_scoped_by_delay_role():
+    headers = {"x-aibrix-mock-first-token-stall-ms": "5000", "x-aibrix-mock-delay-role": "decode"}
+
+    assert parse_fault_headers(headers, "decode").first_token_stall_ms == 5000
+    assert parse_fault_headers(headers, "decode").stream_stall_ms == 0
+    assert parse_fault_headers(headers, "prefill").first_token_stall_ms == 0
+    assert parse_fault_headers({}, "decode").first_token_stall_ms == 0
+
+
+@pytest.mark.parametrize("value", ["abc", "-1", "30001", "1.5"])
+def test_invalid_first_token_stall_is_rejected(value):
+    result = parse_fault_headers({"x-aibrix-mock-first-token-stall-ms": value}, "decode")
+
+    assert result.validation_status_code == 400
+    assert result.metadata == {"error": "invalid x-aibrix-mock-first-token-stall-ms"}

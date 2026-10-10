@@ -21,9 +21,8 @@ import (
 	"math/rand"
 	"strconv"
 
-	"github.com/bytedance/sonic"
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
 )
@@ -46,96 +45,88 @@ type SGLangHandler struct{}
 func (h *SGLangHandler) Name() string  { return "sglang" }
 func (h *SGLangHandler) IsAsync() bool { return true }
 
-// AugmentPrefillRequest injects bootstrap_host, bootstrap_port, and a random
-// bootstrap_room. It also propagates these fields into routingCtx.ReqBody so
-// the decode pod receives the bootstrap address.
+// AugmentPrefillRequest overwrites bootstrap_host, bootstrap_port, a random
+// bootstrap_room and the gateway-owned rid on the client body with sjson, so
+// that every nested field (messages, tools, …) is preserved at the byte level.
+// The resulting decode body is stored in routingCtx.ReqBody and returned as the
+// prefill base body; the caller applies the common prefill constraints on top
+// of it, so both legs carry the same rid. On error routingCtx.ReqBody is left
+// unchanged.
 //
-// This method is retained for EngineHandler compliance and direct callers.
-// The normal PreparePayload path uses PreparePrefillPayload instead, which
-// avoids re-serializing the entire request and keeps nested field order stable.
+// ValidateRequest is already called in Route() before this method is invoked,
+// so duplicate controlled fields have been rejected by then.
 func (h *SGLangHandler) AugmentPrefillRequest(
 	routingCtx *types.RoutingContext,
 	pod *v1.Pod,
-	completionRequest map[string]any,
-) error {
+	body []byte,
+) ([]byte, error) {
 	host, port, room := sglangBootstrapFields(pod)
-	completionRequest["bootstrap_host"] = host
-	completionRequest["bootstrap_port"] = port
-	completionRequest["bootstrap_room"] = room
-
-	// Propagate bootstrap fields to the decode request body so the decode pod
-	// can locate the prefill pod's bootstrap server.
-	reqBody, err := sonic.Marshal(completionRequest)
+	// One rid for both legs: it is what /abort_request matches on when the
+	// prefill leg fails and the decode leg has to be cancelled.
+	rid := NewPDRequestID(routingCtx.RequestID)
+	decodeBody, err := sglangDecodeBody(body, host, port, room, rid)
 	if err != nil {
-		return fmt.Errorf("failed to marshal SGLang prefill request body: %w", err)
+		return nil, fmt.Errorf("failed to prepare SGLang request bodies: %w", err)
 	}
-	routingCtx.ReqBody = reqBody
-	return nil
+	routingCtx.ReqBody = decodeBody
+	// Recorded only once the bodies were produced successfully, so the gateway
+	// never holds a rid that no engine leg has seen.
+	routingCtx.SetPDRequestID(rid)
+	return decodeBody, nil
 }
 
 // sglangBootstrapFields returns the three bootstrap parameters injected into
-// both the prefill and decode request bodies. Centralised so that
-// AugmentPrefillRequest and PreparePrefillPayload can never diverge.
+// both the prefill and decode request bodies.
 func sglangBootstrapFields(pod *v1.Pod) (host string, port int64, room int64) {
 	return pod.Status.PodIP, sglangBootstrapPortFor(pod), rand.Int63n(1<<63 - 1)
 }
 
-// sglangControlledFields lists all top-level keys that the gateway sets or
-// deletes on the decode/prefill bodies. A client request must not contain
-// duplicates of these keys; if it does, the request is rejected to prevent a
-// client-supplied value from surviving and overriding the gateway's value.
-var sglangControlledFields = []string{
-	"bootstrap_host",
-	"bootstrap_port",
-	"bootstrap_room",
-	"max_tokens",
-	"max_completion_tokens",
-	"stream",
-	"stream_options",
-	"min_tokens",
-}
+// sglangBootstrapFieldNames are the top-level keys AugmentPrefillRequest
+// writes on both the prefill and decode bodies. "rid" is one of them: the
+// gateway owns the engine-visible request id of a PD request (see
+// NewPDRequestID) and overwrites whatever the client sent, so a body that
+// repeats the key is ambiguous and must be rejected.
+var sglangBootstrapFieldNames = []string{"bootstrap_host", "bootstrap_port", "bootstrap_room", "rid"}
 
-// sglangControlledSet is a set for O(1) lookup of controlled field names.
-var sglangControlledSet = func() map[string]bool {
-	m := make(map[string]bool, len(sglangControlledFields))
-	for _, f := range sglangControlledFields {
-		m[f] = true
-	}
-	return m
-}()
+// ControlledFields returns the SGLang bootstrap keys; the common prefill
+// control keys are added by ValidateRequest.
+func (h *SGLangHandler) ControlledFields() []string { return sglangBootstrapFieldNames }
 
 // ValidateSGLangRequest checks the request body for conditions that would make
 // SGLang PD routing unsafe or ambiguous. It returns *InvalidRequestError when
 // the request contains duplicate top-level controlled fields or is not a valid
 // JSON object, so the gateway layer can map the error to HTTP 400.
 //
-// This function must be called before both the separate-PD prefill path and
-// the combined-pod path to ensure consistent validation regardless of routing.
+// It is the SGLang-specific form of ValidateRequest and is kept for callers
+// that validate outside Route().
 func ValidateSGLangRequest(body []byte) error {
-	if !gjson.ValidBytes(body) {
-		return &InvalidRequestError{Message: "SGLang request body is not valid JSON"}
-	}
-	result := gjson.ParseBytes(body)
-	if !result.IsObject() {
-		return &InvalidRequestError{Message: "SGLang request body is not a JSON object"}
-	}
+	return validateRequestBody(body, sglangBootstrapFieldNames, "SGLang request body")
+}
 
-	// Scan the root object once, counting only controlled fields.
-	counts := make(map[string]int, len(sglangControlledFields))
-	result.ForEach(func(key, _ gjson.Result) bool {
-		if sglangControlledSet[key.String()] {
-			counts[key.String()]++
-		}
-		return true
-	})
-	for _, field := range sglangControlledFields {
-		if counts[field] > 1 {
-			return &InvalidRequestError{
-				Message: fmt.Sprintf("duplicate top-level key %q in SGLang request body", field),
-			}
-		}
+// sglangDecodeBody returns the client body with bootstrap_host/port/room and
+// the gateway-owned rid overwritten. Only these four top-level keys change; all
+// other bytes of originalBody are preserved.
+//
+// A client-supplied rid is deliberately overwritten: the gateway owns the
+// abort lifecycle of a PD request, and a rid it does not control can be
+// duplicated across attempts (poisoning the engine's in-flight request state)
+// or be a prefix of another live rid, turning one abort into a fan-out.
+func sglangDecodeBody(originalBody []byte, bootstrapHost string, bootstrapPort, bootstrapRoom int64, rid string) ([]byte, error) {
+	// Defense-in-depth: callers (Route → PreparePayload) are required to
+	// validate the body first, but this guard prevents sjson from silently
+	// producing invalid output if a future caller bypasses validation.
+	if !gjson.ValidBytes(originalBody) || !gjson.ParseBytes(originalBody).IsObject() {
+		return nil, &InvalidRequestError{Message: "SGLang prefill request body is not a JSON object"}
 	}
-	return nil
+	if rid == "" {
+		return nil, fmt.Errorf("empty rid for SGLang request bodies")
+	}
+	return pd.NewJSONEditor(originalBody).
+		Set("bootstrap_host", bootstrapHost).
+		Set("bootstrap_port", bootstrapPort).
+		Set("bootstrap_room", bootstrapRoom).
+		Set("rid", rid).
+		Result()
 }
 
 // prepareSGLangRequestBodies derives the decode and prefill request bodies from
@@ -143,87 +134,30 @@ func ValidateSGLangRequest(body []byte) error {
 // nested fields (messages, tools, …) are preserved at the byte level so that
 // prompt_token_ids remain stable across prefill, decode, and repeated requests.
 //
-// The decode body is the client body with bootstrap_host/port/room overwritten.
-// The prefill body is derived from the decode body with max_tokens=1,
-// max_completion_tokens=1, stream=false, stream_options and min_tokens removed.
-// The caller supplies a single bootstrapRoom that is shared between both bodies.
+// The decode body is the client body with bootstrap_host/port/room and rid
+// overwritten. The prefill body is derived from the decode body with
+// max_tokens=1, max_completion_tokens=1, stream=false, stream_options and
+// min_tokens removed. The caller supplies a single bootstrapRoom and a single
+// rid that are shared between both bodies.
 //
-// Callers must call ValidateSGLangRequest before this function to ensure no
-// duplicate controlled fields are present.
+// This mirrors what PreparePayload produces through AugmentPrefillRequest and
+// is kept as a single-call helper for tests and direct callers.
 func prepareSGLangRequestBodies(
 	originalBody []byte,
 	bootstrapHost string,
 	bootstrapPort int64,
 	bootstrapRoom int64,
+	rid string,
 ) (prefillBody, decodeBody []byte, err error) {
-	// Defense-in-depth: callers (Route → PreparePrefillPayload) are required to
-	// call ValidateSGLangRequest first, but this guard prevents sjson from
-	// silently producing invalid output if a future caller bypasses validation.
-	if !gjson.ValidBytes(originalBody) || !gjson.ParseBytes(originalBody).IsObject() {
-		return nil, nil, &InvalidRequestError{Message: "SGLang prefill request body is not a JSON object"}
-	}
-
-	// --- Decode body: overwrite bootstrap fields ---
-	decodeBody = originalBody
-	decodeBody, err = sjson.SetBytes(decodeBody, "bootstrap_host", bootstrapHost)
+	decodeBody, err = sglangDecodeBody(originalBody, bootstrapHost, bootstrapPort, bootstrapRoom, rid)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to set bootstrap_host: %w", err)
+		return nil, nil, err
 	}
-	decodeBody, err = sjson.SetBytes(decodeBody, "bootstrap_port", bootstrapPort)
+	prefillBody, err = pd.ApplyPrefillControlFields(decodeBody, "sglang")
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to set bootstrap_port: %w", err)
+		return nil, nil, err
 	}
-	decodeBody, err = sjson.SetBytes(decodeBody, "bootstrap_room", bootstrapRoom)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to set bootstrap_room: %w", err)
-	}
-
-	// --- Prefill body: derive from decode body, apply prefill constraints ---
-	prefillBody = decodeBody
-	prefillBody, err = sjson.SetBytes(prefillBody, "max_tokens", 1)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to set max_tokens: %w", err)
-	}
-	prefillBody, err = sjson.SetBytes(prefillBody, "max_completion_tokens", 1)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to set max_completion_tokens: %w", err)
-	}
-	prefillBody, err = sjson.SetBytes(prefillBody, "stream", false)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to set stream: %w", err)
-	}
-	prefillBody, err = sjson.DeleteBytes(prefillBody, "stream_options")
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to delete stream_options: %w", err)
-	}
-	prefillBody, err = sjson.DeleteBytes(prefillBody, "min_tokens")
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to delete min_tokens: %w", err)
-	}
-
 	return prefillBody, decodeBody, nil
-}
-
-// PreparePrefillPayload implements RawPrefillPayloadPreparer. It uses
-// sjson/gjson to mutate only top-level fields, preserving the byte ordering of
-// all nested objects. On success it updates routingCtx.ReqBody to the decode
-// body (so the decode pod receives the bootstrap address) and returns the
-// prefill body. On error, routingCtx.ReqBody is left unchanged.
-func (h *SGLangHandler) PreparePrefillPayload(
-	routingCtx *types.RoutingContext,
-	pod *v1.Pod,
-) ([]byte, error) {
-	// ValidateSGLangRequest is already called in Route() before this method
-	// is invoked. We skip re-validation here to avoid a redundant O(n) scan
-	// of the request body on the hot path.
-	host, port, room := sglangBootstrapFields(pod)
-	prefillBody, decodeBody, err := prepareSGLangRequestBodies(
-		routingCtx.ReqBody, host, port, room)
-	if err != nil {
-		return nil, fmt.Errorf("failed to prepare SGLang request bodies: %w", err)
-	}
-	routingCtx.ReqBody = decodeBody
-	return prefillBody, nil
 }
 
 // MergePrefillResponse is a no-op for SGLang: the bootstrap handshake is
@@ -231,7 +165,7 @@ func (h *SGLangHandler) PreparePrefillPayload(
 // into the decode request.
 func (h *SGLangHandler) MergePrefillResponse(
 	_ *types.RoutingContext,
-	_ map[string]any,
+	_ []byte,
 	_ *v1.Pod,
 ) error {
 	return nil

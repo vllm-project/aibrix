@@ -1,0 +1,351 @@
+# Simplified Chinese translations for AIBrix documentation.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-09 09:56+0800\n"
+"PO-Revision-Date: 2026-10-09 00:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:5
+msgid "Agentic Routing"
+msgstr "智能体路由"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:7
+msgid "Agentic applications often generate multiple inference requests as part of the same logical session. These requests may come from multi-turn conversations, parallel tool calls, sub-agents, retries, or background tasks."
+msgstr "智能体应用通常会在同一逻辑会话中生成多个推理请求。这些请求可能来自多轮对话、并行工具调用、子智能体、重试或后台任务。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:11
+msgid "AIBrix's session-affinity routing strategy keeps related requests on the same inference pod whenever possible. This improves KV-cache reuse and avoids repeatedly rebuilding the same context on different pods."
+msgstr "AIBrix 的会话亲和性路由策略会尽可能将相关请求保留在同一个推理 Pod 上。这可提高 KV-cache 复用率，并避免在不同 Pod 上反复重建相同的上下文。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:15
+msgid "AIBrix supports two ways to maintain session affinity:"
+msgstr "AIBrix 支持两种维持会话亲和性的方式："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:17
+msgid "``x-session-id`` — gateway-issued affinity for sequential, multi-turn requests."
+msgstr "``x-session-id`` — 由网关签发，适用于顺序发送的多轮请求。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:18
+msgid "``x-aibrix-session-key`` — caller-provided affinity for concurrent and agentic requests."
+msgstr "``x-aibrix-session-key`` — 由调用方提供，适用于并发请求和智能体请求。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:22
+msgid "On this page"
+msgstr "本页内容"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:25
+msgid "Choose a session affinity mechanism"
+msgstr "选择会话亲和性机制"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:27
+msgid "The right mechanism depends on how your application sends requests."
+msgstr "合适的机制取决于应用发送请求的方式。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:34
+msgid "``x-session-id``"
+msgstr "``x-session-id``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:35
+msgid "``x-aibrix-session-key``"
+msgstr "``x-aibrix-session-key``"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:36
+msgid "Managed by"
+msgstr "管理方"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:37
+msgid "AIBrix Gateway"
+msgstr "AIBrix Gateway"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:38
+msgid "Application"
+msgstr "应用"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:39
+msgid "Provided through"
+msgstr "提供方式"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:40
+msgid "Response header, then request header"
+msgstr "先通过响应标头，再通过请求标头"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:41
+msgid "Request header"
+msgstr "请求标头"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:42
+msgid "Available from"
+msgstr "开始可用的请求"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:43
+msgid "Second request"
+msgstr "第二个请求"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:44
+msgid "First request"
+msgstr "第一个请求"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:45
+msgid "Value"
+msgstr "值"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:46
+msgid "Encoded backend address"
+msgstr "编码后的后端地址"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:47
+msgid "Opaque application identifier"
+msgstr "不透明的应用标识符"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:48
+msgid "Best for"
+msgstr "最适用于"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:49
+msgid "Sequential multi-turn conversations"
+msgstr "顺序发送的多轮对话"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:50
+msgid "Concurrent agentic requests"
+msgstr "并发智能体请求"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:52
+msgid "Both mechanisms are available with the ``session-affinity`` routing strategy."
+msgstr "``session-affinity`` 路由策略支持这两种机制。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:55
+msgid "Neither ``x-session-id`` nor ``x-aibrix-session-key`` is a security token. Do not use either header for authentication or authorization."
+msgstr "``x-session-id`` 和 ``x-aibrix-session-key`` 都不是安全令牌。请勿使用这两个标头进行身份验证或授权。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:59
+msgid "Sequential requests with ``x-session-id``"
+msgstr "使用 ``x-session-id`` 的顺序请求"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:61
+msgid "For sequential workloads such as multi-turn chat, the application does not need to create or manage a session identifier."
+msgstr "对于多轮聊天等顺序工作负载，应用无需创建或管理会话标识符。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:64
+msgid "The first request is sent normally. AIBrix selects a ready inference pod and returns an ``x-session-id`` in the response header. The application then includes that value in subsequent requests, allowing AIBrix to route them back to the same pod."
+msgstr "第一个请求按常规方式发送。AIBrix 会选择一个就绪的推理 Pod，并在响应标头中返回 ``x-session-id``。随后，应用在后续请求中携带该值，使 AIBrix 能够将这些请求路由回同一个 Pod。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:68
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:118
+msgid "The flow is:"
+msgstr "流程如下："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:70
+msgid "Send the first request without ``x-session-id``."
+msgstr "发送第一个请求时不携带 ``x-session-id``。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:71
+msgid "Read ``x-session-id`` from the response header."
+msgstr "从响应标头读取 ``x-session-id``。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:72
+msgid "Include the same ``x-session-id`` in subsequent requests."
+msgstr "在后续请求中携带同一个 ``x-session-id``。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:73
+msgid "AIBrix routes those requests to the same pod while it remains available."
+msgstr "只要该 Pod 仍然可用，AIBrix 就会将这些请求路由到同一个 Pod。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:75
+msgid "If the selected pod is scaled down, evicted, or otherwise unavailable, AIBrix transparently selects another ready pod and returns a new ``x-session-id``."
+msgstr "如果所选 Pod 被缩容、驱逐或因其他原因不可用，AIBrix 会透明地选择另一个就绪 Pod，并返回新的 ``x-session-id``。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:78
+msgid "Session affinity using the gateway-issued x-session-id"
+msgstr "使用网关签发的 x-session-id 实现会话亲和性"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:82
+msgid "Session-based routing with x-session-id: the gateway picks a pod on the first request, returns its address as x-session-id, and reuses it for follow-up requests."
+msgstr "使用 x-session-id 的会话路由：网关在第一个请求中选择一个 Pod，将其地址作为 x-session-id 返回，并在后续请求中复用该地址。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:87
+msgid "``x-session-id`` encodes the selected pod's network location (``IP:Port``) as a base64 value. Applications should treat the value as opaque and simply return it unchanged."
+msgstr "``x-session-id`` 将所选 Pod 的网络位置（``IP:Port``）编码为 base64 值。应用应将该值视为不透明值，并直接原样返回。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:91
+msgid "Concurrent agentic requests with ``x-aibrix-session-key``"
+msgstr "使用 ``x-aibrix-session-key`` 的并发智能体请求"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:93
+msgid "Agentic workloads are different from ordinary multi-turn chat. A single agent run may issue several requests concurrently, for example:"
+msgstr "智能体工作负载不同于普通的多轮聊天。单次智能体运行可能会并发发出多个请求，例如："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:96
+msgid "parallel tool calls,"
+msgstr "并行工具调用，"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:97
+msgid "sub-agent execution,"
+msgstr "子智能体执行，"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:98
+msgid "reasoning branches,"
+msgstr "推理分支，"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:99
+msgid "speculative retries, or"
+msgstr "推测性重试，或"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:100
+msgid "background tasks."
+msgstr "后台任务。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:102
+msgid "These requests may start before any previous request has completed. As a result, there may be no gateway-issued ``x-session-id`` available yet."
+msgstr "这些请求可能在此前任何请求完成之前就已开始。因此，此时可能还没有可用的、由网关签发的 ``x-session-id``。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:105
+msgid "For these workloads, provide a stable ``x-aibrix-session-key`` with every related request."
+msgstr "对于这类工作负载，请在每个相关请求中提供稳定的 ``x-aibrix-session-key``。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:107
+msgid "The value can be an identifier your application already has, such as a conversation ID, agent-run ID, or workflow ID:"
+msgstr "该值可以使用应用已有的标识符，例如对话 ID、智能体运行 ID 或工作流 ID："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:114
+msgid "Requests carrying the same session key are consistently mapped to the same ready pod whenever possible. This allows parallel requests from the same agent run to benefit from the same warm KV cache."
+msgstr "携带相同会话键的请求会尽可能稳定地映射到同一个就绪 Pod。这样，同一次智能体运行中的并行请求便可利用同一个已预热的 KV cache。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:120
+msgid "Choose a stable identifier for the agent run or conversation."
+msgstr "为智能体运行或对话选择一个稳定的标识符。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:121
+msgid "Send it as ``x-aibrix-session-key`` from the very first request."
+msgstr "从第一个请求开始，就将其作为 ``x-aibrix-session-key`` 发送。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:122
+msgid "Use the same value for every related request."
+msgstr "所有相关请求均使用同一个值。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:123
+msgid "AIBrix consistently maps the key to the same ready inference pod."
+msgstr "AIBrix 会将该键稳定地映射到同一个就绪推理 Pod。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:125
+msgid "Agentic routing using x-aibrix-session-key"
+msgstr "使用 x-aibrix-session-key 的智能体路由"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:129
+msgid "Agentic routing with x-aibrix-session-key: concurrent tool calls and sub-agent requests sharing one session key are routed to the same pod."
+msgstr "使用 x-aibrix-session-key 的智能体路由：共享同一会话键的并发工具调用和子智能体请求会被路由到同一个 Pod。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:132
+msgid "Unlike ``x-session-id``, ``x-aibrix-session-key`` does not expose the backend address and is not returned in the response. It is entirely owned by the caller."
+msgstr "与 ``x-session-id`` 不同，``x-aibrix-session-key`` 不会暴露后端地址，也不会在响应中返回。它完全由调用方管理。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:136
+msgid "Keep ``x-aibrix-session-key`` short. Keys longer than 256 bytes are treated as unset and the request falls back to the normal session-affinity resolution behavior."
+msgstr "请保持 ``x-aibrix-session-key`` 简短。超过 256 字节的键会被视为未设置，请求将回退到常规的会话亲和性解析行为。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:140
+msgid "Quick start"
+msgstr "快速入门"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:143
+msgid "Sequential multi-turn chat"
+msgstr "顺序多轮聊天"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:145
+msgid "Send the first request normally:"
+msgstr "按常规方式发送第一个请求："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:159
+msgid "The response contains an ``x-session-id`` header:"
+msgstr "响应中包含 ``x-session-id`` 标头："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:166
+msgid "Include that value in the next request:"
+msgstr "在下一个请求中携带该值："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:182
+msgid "Agentic and concurrent requests"
+msgstr "智能体请求和并发请求"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:184
+msgid "For agentic workloads, provide your own stable session key from the first request:"
+msgstr "对于智能体工作负载，请从第一个请求开始提供自有的稳定会话键："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:199
+msgid "Every tool call, sub-agent request, or other inference request belonging to the same agent run should send:"
+msgstr "属于同一次智能体运行的每个工具调用、子智能体请求或其他推理请求都应发送："
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:206
+msgid "AIBrix then attempts to route all of those requests to the same ready pod."
+msgstr "随后，AIBrix 会尝试将所有这些请求路由到同一个就绪 Pod。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:209
+msgid "Staying sticky across gateway plugin replicas"
+msgstr "跨网关插件副本保持粘性"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:211
+msgid "AIBrix Gateway typically runs multiple replicas for high availability and scalability. Because requests from the same session may reach different gateway replicas, AIBrix uses Redis to share session-to-pod mappings across gateways and keep the session consistently routed to the same pod."
+msgstr "AIBrix Gateway 通常运行多个副本，以提供高可用性和可扩展性。由于同一会话的请求可能到达不同的网关副本，AIBrix 使用 Redis 在各网关之间共享会话到 Pod 的映射，使同一会话能够一致地路由到同一个 Pod。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:215
+msgid "When Redis is configured through ``REDIS_HOST``, session-key mappings are shared across gateway replicas automatically, so every replica converges on the same pod for a given session key."
+msgstr "通过 ``REDIS_HOST`` 配置 Redis 后，会话键映射会自动在网关副本之间共享，因此对于给定的会话键，每个副本最终都会选择同一个 Pod。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:218
+msgid "For example, an agent run may send its first request through replica A and its next request through replica B. Both replicas can use the shared Redis mapping to resolve the same ``x-aibrix-session-key`` to the same inference pod."
+msgstr "例如，某次智能体运行可能通过副本 A 发送第一个请求，再通过副本 B 发送下一个请求。两个副本都可以利用共享的 Redis 映射，将同一个 ``x-aibrix-session-key`` 解析到同一个推理 Pod。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:222
+msgid "Without Redis, ``x-aibrix-session-key`` still maps deterministically via rendezvous hashing over the current ready pod set. Replicas do not keep a local pin, so they agree as long as they see the same pods."
+msgstr "没有 Redis 时，``x-aibrix-session-key`` 仍会通过当前就绪 Pod 集合上的 rendezvous 哈希进行确定性映射。各副本不会保留本地固定映射，因此只要它们看到的 Pod 相同，映射结果就会一致。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:226
+msgid "Session mappings stored in Redis use a 1-hour sliding idle expiration. Each use refreshes the TTL, so active sessions remain available while abandoned sessions are eventually removed."
+msgstr "Redis 中存储的会话映射采用 1 小时的滑动空闲过期时间。每次使用都会刷新 TTL，因此活跃会话会保持可用，而废弃会话最终会被移除。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:229
+msgid "See :doc:`../production/gateway` for Redis configuration."
+msgstr "有关 Redis 配置，请参阅 :doc:`../production/gateway`。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:232
+msgid "Reusing the session key with PD disaggregation"
+msgstr "在 PD 分离中复用会话键"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:234
+msgid "``x-aibrix-session-key`` can also be reused by AIBrix's :doc:`pd-disaggregation` routing."
+msgstr "AIBrix 的 :doc:`pd-disaggregation` 路由也可以复用 ``x-aibrix-session-key``。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:236
+msgid "The ``token_load`` and ``hybrid_cache_load`` prefill scoring policies use the session key to recognize requests belonging to the same multi-turn conversation. This allows the policies to account for newly added tokens instead of repeatedly charging the full accumulated prompt."
+msgstr "``token_load`` 和 ``hybrid_cache_load`` prefill 评分策略使用会话键识别属于同一多轮对话的请求。这样，这些策略只需计入新增 token，而无需反复计入完整的累计 prompt。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:240
+msgid "If your agent framework already provides ``x-aibrix-session-key`` for session affinity, no additional session identifier is required for these PD routing policies."
+msgstr "如果智能体框架已经提供 ``x-aibrix-session-key`` 来实现会话亲和性，则这些 PD 路由策略无需额外的会话标识符。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:245
+msgid ":doc:`gateway-plugins`"
+msgstr ":doc:`gateway-plugins`"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:246
+msgid "Full gateway routing strategy reference, including supported routing headers."
+msgstr "完整的网关路由策略参考，包括支持的路由标头。"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:248
+msgid ":doc:`../production/gateway`"
+msgstr ":doc:`../production/gateway`"
+
+#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/agentic-routing.rst:249
+msgid "Configure Redis for multi-replica AIBrix Gateway deployments."
+msgstr "为多副本 AIBrix Gateway 部署配置 Redis。"

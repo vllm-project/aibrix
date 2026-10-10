@@ -19,11 +19,11 @@ limitations under the License.
 
 /*
 Integration test for the external connection migration path.
-Requires a running Kubernetes cluster (e.g., minikube) with:
-- The KVCache CRD installed
-- A secret "valkey-credentials" in the default namespace
+Runs against a kube-apiserver started by envtest, so no cluster is needed.
 
 Run with:
+  make test-integration-tagged
+or, with the envtest binaries in bin/ (`make envtest`):
   go test -tags=integration -run TestMigrationPath ./pkg/controller/kvcache/backends/ -v
 */
 
@@ -32,6 +32,8 @@ package backends
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	goruntime "runtime"
 	"testing"
 	"time"
 
@@ -44,20 +46,20 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
 func setupRealClient(t *testing.T) client.Client {
 	t.Helper()
 
-	// Use default kubeconfig (minikube sets this up)
-	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	configOverrides := &clientcmd.ConfigOverrides{}
-	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
-
-	cfg, err := kubeConfig.ClientConfig()
-	require.NoError(t, err, "failed to load kubeconfig — is minikube running?")
+	testEnv := &envtest.Environment{
+		BinaryAssetsDirectory: filepath.Join("..", "..", "..", "..", "bin", "k8s",
+			fmt.Sprintf("1.29.0-%s-%s", goruntime.GOOS, goruntime.GOARCH)),
+	}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err, "failed to start envtest")
+	t.Cleanup(func() { _ = testEnv.Stop() })
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
@@ -65,6 +67,12 @@ func setupRealClient(t *testing.T) client.Client {
 
 	c, err := client.New(cfg, client.Options{Scheme: scheme})
 	require.NoError(t, err, "failed to create Kubernetes client")
+
+	// The external connection in TestMigrationPath_CleanupInClusterRedis refers to this secret.
+	require.NoError(t, c.Create(context.Background(), &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "valkey-credentials", Namespace: "default"},
+		Data:       map[string][]byte{"password": []byte("test")},
+	}))
 
 	return c
 }

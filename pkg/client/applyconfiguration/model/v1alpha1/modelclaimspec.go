@@ -30,6 +30,7 @@ type ModelClaimSpecApplyConfiguration struct {
 	Engine       *string                                   `json:"engine,omitempty"`
 	Replicas     *int32                                    `json:"replicas,omitempty"`
 	EngineConfig *ModelClaimEngineConfigApplyConfiguration `json:"engineConfig,omitempty"`
+	PerGPU       *ModelClaimPerGPUApplyConfiguration       `json:"perGPU,omitempty"`
 }
 
 // ModelClaimSpecApplyConfiguration constructs a declarative configuration of the ModelClaimSpec type for use with
@@ -83,5 +84,13 @@ func (b *ModelClaimSpecApplyConfiguration) WithReplicas(value int32) *ModelClaim
 // If called multiple times, the EngineConfig field is set to the value of the last call.
 func (b *ModelClaimSpecApplyConfiguration) WithEngineConfig(value *ModelClaimEngineConfigApplyConfiguration) *ModelClaimSpecApplyConfiguration {
 	b.EngineConfig = value
+	return b
+}
+
+// WithPerGPU sets the PerGPU field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the PerGPU field is set to the value of the last call.
+func (b *ModelClaimSpecApplyConfiguration) WithPerGPU(value *ModelClaimPerGPUApplyConfiguration) *ModelClaimSpecApplyConfiguration {
+	b.PerGPU = value
 	return b
 }
