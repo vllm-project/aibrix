@@ -345,3 +345,26 @@ def test_incidental_cache_entries_are_ignored(tmp_path: Path):
             model_base_dir.joinpath(name) for name, _ in files
         }
         assert model.status == ModelDownloadStatus.DOWNLOADED
+
+
+def test_empty_model_directory_is_not_downloaded(tmp_path: Path):
+    src = RemoteSource.HUGGINGFACE
+    model_name = "org/model"
+    tmp_path.joinpath(model_name).mkdir(parents=True)
+
+    model = DownloadModel.infer_from_model_path(tmp_path, model_name, src)
+    assert model is not None
+    assert model.download_files == []
+    assert model.status == ModelDownloadStatus.NOT_EXIST
+
+
+def test_empty_model_cache_is_listed_as_not_exist(tmp_path: Path):
+    src = RemoteSource.HUGGINGFACE
+    model_name = "org/model"
+    cache_sub_dir = (DOWNLOAD_CACHE_DIR % src.value).strip("/")
+    tmp_path.joinpath(model_name, cache_sub_dir).mkdir(parents=True)
+
+    models = DownloadModel.infer_from_local_path(tmp_path)
+    assert [(m.model_name, m.status) for m in models] == [
+        (model_name, ModelDownloadStatus.NOT_EXIST)
+    ]
