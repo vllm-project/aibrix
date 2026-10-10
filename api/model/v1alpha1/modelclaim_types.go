@@ -31,7 +31,7 @@ import (
 
 // ModelClaimSpec defines the desired state of ModelClaim.
 //
-// Only perGPU can be changed after a claim is created. The other fields decide
+// PerGPU and residencyPolicy can be changed after a claim is created. The other fields decide
 // which engine runs and where, and the engine is started with them only once,
 // so a change would never reach it. To change one, create a new ModelClaim.
 // +kubebuilder:validation:XValidation:rule="has(self.modelName) == has(oldSelf.modelName) && (!has(self.modelName) || self.modelName == oldSelf.modelName)",message="modelName is immutable; create a new ModelClaim instead",fieldPath=".modelName"
@@ -103,7 +103,58 @@ type ModelClaimSpec struct {
 	// missing declaration reads as missing rather than as a cost of zero.
 	// +optional
 	PerGPU *ModelClaimPerGPU `json:"perGPU,omitempty"`
+
+	// ResidencyPolicy controls automatic sleep and the signal that wakes an
+	// engine. Omitted, the pool lifecycle and request-driven wake are retained.
+	// This field is mutable so an already-sleeping claim can become EnsureAwake.
+	// +optional
+	ResidencyPolicy *ModelClaimResidencyPolicy `json:"residencyPolicy,omitempty"`
 }
+
+// ModelClaimResidencyPolicy separates the decisions to sleep and to wake.
+// EnsureAwake requires Never: inheriting a pool's idle sleep would oscillate.
+// +kubebuilder:validation:XValidation:rule="!has(self.wakePolicy) || self.wakePolicy.mode != 'EnsureAwake' || (has(self.sleepPolicy) && self.sleepPolicy.mode == 'Never')",message="EnsureAwake requires sleepPolicy.mode Never to prevent sleep/wake oscillation",fieldPath=".wakePolicy"
+type ModelClaimResidencyPolicy struct {
+	// SleepPolicy overrides automatic sleep only; pool KV reclaim is independent.
+	// +optional
+	SleepPolicy *ModelClaimSleepPolicy `json:"sleepPolicy,omitempty"`
+	// WakePolicy defaults to EnsureAwake for Never and OnDemand otherwise.
+	// +optional
+	WakePolicy *ModelClaimWakePolicy `json:"wakePolicy,omitempty"`
+}
+
+// ModelClaimSleepPolicy stages the dependency needed for safe wake policies.
+// Per-claim AfterIdle and idleTimeout are reserved for the Sleep Policy track.
+type ModelClaimSleepPolicy struct {
+	// Mode is PoolDefault (inherit pool lifecycle) or Never (exclude the claim
+	// from idle sleep and sleep to make room).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=PoolDefault;Never
+	Mode ModelClaimSleepPolicyMode `json:"mode"`
+}
+
+type ModelClaimSleepPolicyMode string
+
+const (
+	ModelClaimSleepPoolDefault ModelClaimSleepPolicyMode = "PoolDefault"
+	ModelClaimSleepNever       ModelClaimSleepPolicyMode = "Never"
+)
+
+// ModelClaimWakePolicy selects when a sleeping engine is restored.
+type ModelClaimWakePolicy struct {
+	// Mode selects request-driven wake or proactive readiness convergence.
+	// Scheduled wake is reserved for a follow-up and is not accepted yet.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=OnDemand;EnsureAwake
+	Mode ModelClaimWakePolicyMode `json:"mode"`
+}
+
+type ModelClaimWakePolicyMode string
+
+const (
+	ModelClaimWakeOnDemand    ModelClaimWakePolicyMode = "OnDemand"
+	ModelClaimWakeEnsureAwake ModelClaimWakePolicyMode = "EnsureAwake"
+)
 
 // ModelClaimPerGPU is what one instance of a model costs on one GPU.
 //

@@ -140,6 +140,46 @@ func TestModelClaimLifecycleAndRequestWake(t *testing.T) {
 	waitForLifecycleModelStatus(t, lifecycleBusyModel, http.StatusOK, 10*time.Second)
 }
 
+// Changing a sleeping claim's desired policy restores service without sending
+// an inference request. The existing request-wake test above covers OnDemand.
+func TestModelClaimEnsureAwakeWithoutTraffic(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	k8sClient, aibrixClient := initializeClient(ctx, t)
+	cleanupLifecycleResources(t, k8sClient, aibrixClient, false)
+	_, err := k8sClient.AppsV1().Deployments(lifecycleNamespace).Create(ctx, lifecyclePoolDeployment(), metav1.CreateOptions{})
+	require.NoError(t, err)
+	t.Cleanup(func() { cleanupLifecycleResources(t, k8sClient, aibrixClient, true) })
+	pod := waitForLifecyclePoolPod(t, ctx, k8sClient)
+	createLifecycleClaim(t, ctx, aibrixClient, lifecycleIdleClaim, lifecycleIdleModel)
+	asleep := waitForLifecycleClaimPhase(t, ctx, aibrixClient, lifecycleIdleClaim, modelv1alpha1.ModelClaimSleeping)
+	require.Len(t, asleep.Status.Instances, 1)
+	port := asleep.Status.Instances[0].Port
+	assertLifecycleRouteBinding(t, ctx, k8sClient, pod.Name, lifecycleIdleClaim,
+		lifecycleRouteBinding{Model: lifecycleIdleModel, Port: 0, State: constants.ModelClaimRoutingStateSleeping})
+
+	_, err = aibrixClient.ModelV1alpha1().ModelClaims(lifecycleNamespace).Patch(ctx, lifecycleIdleClaim,
+		types.MergePatchType, []byte(`{"spec":{"residencyPolicy":{"sleepPolicy":{"mode":"Never"},"wakePolicy":{"mode":"EnsureAwake"}}}}`), metav1.PatchOptions{})
+	require.NoError(t, err)
+	awake := waitForLifecycleClaimPhase(t, ctx, aibrixClient, lifecycleIdleClaim, modelv1alpha1.ModelClaimActive)
+	assert.Equal(t, int32(1), awake.Status.ReadyReplicas)
+	assertLifecycleRouteBinding(t, ctx, k8sClient, pod.Name, lifecycleIdleClaim,
+		lifecycleRouteBinding{Model: lifecycleIdleModel, Port: port, State: constants.ModelClaimRoutingStateActive})
+	snapshot := getLifecycleRuntimeSnapshot(t, ctx, k8sClient, pod.Name)
+	assertLifecycleSnapshotModel(t, snapshot, lifecycleIdleModel, port, "active", true, true)
+
+	// Poll through several pool idle windows to catch sleep/wake oscillation.
+	deadline := time.Now().Add(20 * time.Second)
+	require.NoError(t, wait.PollUntilContextTimeout(ctx, time.Second, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+		claim, err := aibrixClient.ModelV1alpha1().ModelClaims(lifecycleNamespace).Get(ctx, lifecycleIdleClaim, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		require.Equal(t, modelv1alpha1.ModelClaimActive, claim.Status.Phase)
+		return time.Now().After(deadline), nil
+	}))
+}
+
 func lifecyclePoolDeployment() *appsv1.Deployment {
 	labels := map[string]string{
 		"app":                           lifecycleDeploymentName,

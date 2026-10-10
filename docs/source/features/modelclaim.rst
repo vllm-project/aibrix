@@ -520,6 +520,58 @@ from the deletion to finish the requests in progress, and asks the runtime
 agent to stop it. A sleeping or starting engine is stopped at once. Delete
 claims before their pool, so that the controller can stop their engines.
 
+Declarative wake policy (draft)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``spec.residencyPolicy.wakePolicy.mode`` can select ``OnDemand`` or
+``EnsureAwake``. ``OnDemand`` retains the request-triggered controller wake
+described below. ``EnsureAwake`` restores an engine observed Sleeping without
+waiting for an inference request:
+
+.. code-block:: yaml
+
+   spec:
+     residencyPolicy:
+       sleepPolicy:
+         mode: Never
+       wakePolicy:
+         mode: EnsureAwake
+
+Wake admission still checks the GPU memory ledger and arranges neighbouring
+engines' KV limits before calling the existing runtime Wake API. A successful
+Wake call does not restore routing: the port remains zero until the runtime
+snapshot reports the engine ready and the controller's normal health checks
+permit routing. Transport failures retry the persisted operation without
+declaring that it failed: an unanswered operation may already have applied.
+Runtime refusals reuse the existing replacement path. When no other pod can
+take the model, policy wakes retry with a persisted exponential backoff from
+10 seconds to 5 minutes and raise a failure Event only when entering the
+failure state. The Ready condition continues to explain the unavailability.
+Client wake requests take precedence over background policy wakes, even if
+the policy request was queued first. Requests waiting for capacity remain
+queued; after the engine starts booting, the normal request lifetime applies.
+
+An absent wake policy resolves to ``OnDemand`` for an absent sleep policy or
+``PoolDefault``, and to ``EnsureAwake`` for ``Never``. An explicit ``OnDemand``
+can be combined with ``Never`` to disable automatic sleep while retaining
+request-driven recovery from an external sleep. ``EnsureAwake`` requires an
+explicit ``Never`` sleep policy: inheriting an idle-sleep pool would otherwise
+cause repeated sleeping and waking. ``Never`` excludes the claim from both
+automatic idle sleep and sleeping to make room, while keeping pool KV reclaim
+independent.
+
+.. warning::
+
+   This draft stages the smallest sleep-policy dependency needed for safe wake
+   reconciliation. Only ``PoolDefault`` and ``Never`` are admitted here.
+   ``AfterIdle`` is not admitted and ``idleTimeout`` is not exposed; the
+   per-claim sleep contract and its idle-timeout controller belong to
+   `issue #2924 <https://github.com/vllm-project/aibrix/issues/2924>`_. Its
+   future default wake mode is ``OnDemand``. The API contract must be reconciled
+   with that issue and the residency design before this draft can merge.
+   ``Scheduled`` wake is reserved for a follow-up and is not admitted.
+
+
 Status
 ------
 

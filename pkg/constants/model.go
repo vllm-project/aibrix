@@ -78,11 +78,15 @@ const (
 	// ModelClaimWakeAnnotationPrefix marks, on the warm pod that holds a
 	// sleeping engine, that a request has asked for that engine's model. The
 	// key is suffixed with the ModelClaim object name, and the value is the
-	// time of the request, in RFC 3339. The gateway writes it, and the
+	// time of the request, in RFC 3339. The gateway or wake policy writes it, and the
 	// controller wakes the engine and removes it. Its prefix is not
 	// ModelClaimPodAnnotationPrefix, so it is never read as a binding.
 	// Example: "wake.modelclaim.aibrix.ai/qwen2-7b": "2026-10-01T08:00:00Z"
 	ModelClaimWakeAnnotationPrefix = "wake.modelclaim.aibrix.ai/"
+
+	// ModelClaimPolicyWakeAnnotationPrefix keeps the operation ID of a
+	// controller-created wake across retries and restarts, by claim name.
+	ModelClaimPolicyWakeAnnotationPrefix = "policy-wake.modelclaim.aibrix.ai/"
 
 	// ModelClaim routing states are observed runtime states carried alongside
 	// the per-model port. They let the gateway distinguish a sleeping engine
