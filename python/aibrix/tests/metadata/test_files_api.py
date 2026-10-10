@@ -257,17 +257,6 @@ class TestUploadErrors:
             )
             assert response.status_code == 422
 
-    @pytest.mark.xfail(
-        reason=(
-            "Reader.size_limiter only checks before reads, and a single "
-            "read-all (bytes_to_read=-1, bytes_read=0) trivially passes "
-            "(0 + 0 <= limit), so an oversize payload uploaded in one "
-            "shot bypasses the limit. Tracking as a separate fix in the "
-            "storage Reader; this case is kept to lock in the wire "
-            "contract once the limiter is corrected."
-        ),
-        strict=True,
-    )
     def test_upload_rejects_oversized_file(self, monkeypatch):
         monkeypatch.setattr(metadata_settings, "MAX_FILE_SIZE", 16)
         with TestClient(create_test_app()) as client:
