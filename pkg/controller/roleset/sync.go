@@ -138,7 +138,7 @@ func (r *RoleSetReconciler) calculateStatus(ctx context.Context, rs *orchestrati
 			continue
 		} else {
 			newStatus.Roles = append(newStatus.Roles, *roleStatus)
-			if roleStatus.ReadyReplicas < *role.Replicas {
+			if roleStatus.ReadyReplicas < getRoleReplicas(&role) {
 				notReadyRoles = append(notReadyRoles, role.Name)
 			}
 		}
