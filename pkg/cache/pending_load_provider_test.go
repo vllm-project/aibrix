@@ -74,6 +74,7 @@ func TestPendingLoadProviderGetConsumptionReportsProfileErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			provider := newPendingLoadProvider(profileCache{profile: tt.profile})
 			ctx := types.NewRoutingContext(context.Background(), "test", "model", "hello world", "req-1", "")
+			defer ctx.Delete()
 			ctx.SetOutputPredictor(fixedOutputPredictor{out: 2})
 
 			consumption, err := provider.GetConsumption(ctx, &v1.Pod{})
