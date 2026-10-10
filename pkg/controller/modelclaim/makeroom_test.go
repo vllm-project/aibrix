@@ -484,30 +484,40 @@ func TestSleepingFootprintsTellAClaimFromALaterOneOfTheSameName(t *testing.T) {
 // reports one card. A claim that runs on two cannot run there, however much
 // room is made, so no engine is put to sleep for it.
 func TestReconcileMakesNoRoomOnAPodWhoseCardsDoNotSuitTheClaim(t *testing.T) {
-	r, runtime := servingPool(t, keepNoWakeReserve, 1,
-		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
-	ctx := context.Background()
-	pod := &corev1.Pod{}
-	require.NoError(t, r.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, pod))
-	for i := range pod.Spec.Containers {
-		delete(pod.Spec.Containers[i].Resources.Limits, nvidiaGPUResourceName)
-		delete(pod.Spec.Containers[i].Resources.Requests, nvidiaGPUResourceName)
+	for _, tt := range []struct {
+		name string
+		args map[string]string
+	}{
+		{name: "tensor parallelism", args: map[string]string{"--tensor-parallel-size": "2"}},
+		{name: "prefill context parallelism", args: map[string]string{"--prefill-context-parallel-size": "2"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r, runtime := servingPool(t, keepNoWakeReserve, 1,
+				serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+			ctx := context.Background()
+			pod := &corev1.Pod{}
+			require.NoError(t, r.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, pod))
+			for i := range pod.Spec.Containers {
+				delete(pod.Spec.Containers[i].Resources.Limits, nvidiaGPUResourceName)
+				delete(pod.Spec.Containers[i].Resources.Requests, nvidiaGPUResourceName)
+			}
+			require.NoError(t, r.Update(ctx, pod))
+			runtime.snapshots[pod.Status.PodIP].Accelerators[0].HBMTotalBytes = 1000
+			claim := withFinalizer(claimOnPod("x", "", modelv1alpha1.ModelClaimActive, 300, 100))
+			claim.Status.Instances = nil
+			claim.Spec.EngineConfig = &modelv1alpha1.ModelClaimEngineConfig{Args: tt.args}
+			claim.CreationTimestamp = metav1.NewTime(at0759)
+			require.NoError(t, r.Create(ctx, claim))
+
+			reconcileOnce(t, r, "x")
+
+			assert.Empty(t, runtime.sleepCalls)
+			assert.Empty(t, runtime.activateCalls)
+			scheduled := scheduledOf(t, r, "x")
+			assert.Equal(t, "NoMatchingPods", scheduled.Reason)
+			assert.Contains(t, scheduled.Message, "warm-1 reports 1 GPU(s), and the model runs on 2")
+			_, held := r.reservations().heldFor(testNamespace, "x", r.now())
+			assert.False(t, held)
+		})
 	}
-	require.NoError(t, r.Update(ctx, pod))
-	runtime.snapshots[pod.Status.PodIP].Accelerators[0].HBMTotalBytes = 1000
-	claim := withFinalizer(claimOnPod("x", "", modelv1alpha1.ModelClaimActive, 300, 100))
-	claim.Status.Instances = nil
-	claim.Spec.EngineConfig = &modelv1alpha1.ModelClaimEngineConfig{Args: map[string]string{"--tensor-parallel-size": "2"}}
-	claim.CreationTimestamp = metav1.NewTime(at0759)
-	require.NoError(t, r.Create(ctx, claim))
-
-	reconcileOnce(t, r, "x")
-
-	assert.Empty(t, runtime.sleepCalls)
-	assert.Empty(t, runtime.activateCalls)
-	scheduled := scheduledOf(t, r, "x")
-	assert.Equal(t, "NoMatchingPods", scheduled.Reason)
-	assert.Contains(t, scheduled.Message, "warm-1 reports 1 GPU(s), and the model runs on 2")
-	_, held := r.reservations().heldFor(testNamespace, "x", r.now())
-	assert.False(t, held)
 }

@@ -56,9 +56,9 @@ Limitations
 * **One engine per claim.** ``replicas`` must be 1, so a claim runs one engine
   on one Pod.
 * **Tested setups.** ModelClaim has been tested with vLLM on NVIDIA H20 GPUs,
-  with tensor parallelism 1 and 2 in one Pod. Pipeline parallelism, tensor
-  parallelism above 2, Pods with more than two GPUs and other GPU types have
-  not been tested. Data parallelism is not supported.
+  with tensor parallelism 1 and 2 in one Pod. Pipeline and prefill context
+  parallelism, tensor parallelism above 2, Pods with more than two GPUs and
+  other GPU types have not been tested. Data parallelism is not supported.
 * **One GPU layout per pool.** A vLLM claim must use all the GPUs of its Pod,
   so models with different parallelism go in separate pools.
 * **Host memory is not managed.** ModelClaim puts engines to sleep with vLLM's
@@ -203,9 +203,15 @@ What its fields do:
 
 ``nvidia.com/gpu``
    The number of GPUs in each Pod. A vLLM claim runs only on Pods whose GPU
-   count equals its tensor parallel size times its pipeline parallel size. For
-   a model that needs two GPUs, create another pool whose Pods request two, and
-   give the claim ``--tensor-parallel-size: "2"``.
+   count equals its tensor parallel size times its pipeline parallel size times
+   its prefill context parallel size (TP × PP × PCP). Omitted sizes default to
+   1. For a model that needs two GPUs, create another pool whose Pods request
+   two, and give the claim ``--tensor-parallel-size: "2"``. Setting
+   ``--prefill-context-parallel-size: "2"`` as well requires four GPUs per Pod.
+
+   Decode context parallelism (DCP) reuses ranks in that GPU group, so
+   ``--decode-context-parallel-size`` does not increase the Pod GPU count.
+   ModelClaim does not validate DCP; vLLM checks that argument when it starts.
 
 ``image``
    ``aibrix/kvcached-runtime`` contains the runtime agent, vLLM and kvcached,
@@ -320,8 +326,8 @@ Declare what a model needs on a GPU
 The controller places a claim only on a Pod whose GPU has room for its
 ``maximumFootprint`` plus its ``kvFloor``. Engines already on that GPU count
 with their footprints and their KV caches, and each KV cache counts as at
-least its KV floor. With tensor or pipeline parallelism, give the figures for
-the GPU that holds the most.
+least its KV floor. With tensor, pipeline or prefill context parallelism, give
+the figures for the GPU that holds the most.
 
 The controller does not measure models, so measure them yourself:
 
