@@ -16,6 +16,7 @@ import time
 import uuid
 from enum import Enum
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import Field
@@ -132,6 +133,34 @@ def _create_error_response(
     """Create OpenAI-compatible error response."""
     error_data = {"message": message, "type": error_type, "param": param, "code": code}
     return {"error": error_data}
+
+
+def _header_safe_filename(filename: str) -> str:
+    """Return a filename that is safe to place in an HTTP header value.
+
+    Uploaded filenames are arbitrary Unicode, but response header values
+    must be latin-1 encodable (Starlette raises ``UnicodeEncodeError``
+    otherwise). Percent-encode anything outside ASCII so a download or
+    HEAD request for a valid file never turns into a 500.
+    """
+    if filename.isascii():
+        return filename
+    return quote(filename, safe="")
+
+
+def _content_disposition(filename: str) -> str:
+    """Build an attachment ``Content-Disposition`` value for a download.
+
+    The plain ``filename=`` carries an ASCII fallback for legacy clients,
+    while the RFC 5987 ``filename*=UTF-8''`` form preserves the original
+    Unicode name. Both are latin-1 encodable, so the response header stays
+    valid regardless of the uploaded filename.
+    """
+    ascii_fallback = filename.encode("ascii", "ignore").decode("ascii") or "file"
+    return (
+        f'attachment; filename="{ascii_fallback}"; '
+        f"filename*=UTF-8''{quote(filename, safe='')}"
+    )
 
 
 @router.post("/", include_in_schema=False)
@@ -378,7 +407,7 @@ async def retrieve_file_content(request: Request, file_id: str) -> Response:
         return Response(
             content=file_content,
             media_type=content_type,
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
+            headers={"Content-Disposition": _content_disposition(filename)},
         )
 
     except FileNotFoundError:
@@ -527,7 +556,7 @@ async def head_file_metadata(request: Request, file_id: str) -> Response:
         headers = {
             "Content-Length": str(head_object.content_length),
             "X-File-ID": file_id,
-            "X-File-Name": filename,
+            "X-File-Name": _header_safe_filename(filename),
             "X-File-Created-At": str(created_at),
             "X-File-Status": FileStatus.UPLOADED.value,
         }
