@@ -18,6 +18,7 @@ package roleset
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -785,6 +786,57 @@ func TestStatelessRoleSyncer_Rollout(t *testing.T) {
 			assert.Equal(t, expectedNetChange, netChange,
 				"Expected net change: %d, actual: %d (create: %d, delete: %d)",
 				expectedNetChange, netChange, tt.expectedCreate, tt.expectedDelete)
+		})
+	}
+}
+
+func TestSyncPodsUpdateBudgets(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name                     string
+		maxSurge, maxUnavailable *intstr.IntOrString
+		invalidValue             string
+		created, deleted         int
+	}{
+		{"invalid maxUnavailable", intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromString("25x")), "25x", 0, 0},
+		{"invalid maxSurge", intStrPtr(intstr.FromString("bad-surge")), intStrPtr(intstr.FromInt(1)), "bad-surge", 0, 0},
+		{"valid percentage", intStrPtr(intstr.FromInt(1)), intStrPtr(intstr.FromString("25%")), "", 1, 1},
+		{"omitted budgets", nil, nil, "", 0, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			roleSet := newTestRoleSet("test-roleset", "test-ns")
+			role := newTestRoleSpec("worker", 4, tt.maxSurge, tt.maxUnavailable)
+			objects := make([]client.Object, 4)
+			originalNames := make(map[string]bool, 4)
+			for i := range objects {
+				name := fmt.Sprintf("old-pod-%d", i)
+				objects[i] = newTestPodWithHash(name, roleSet.Namespace, true, false, oldHash)
+				originalNames[name] = true
+			}
+			fakeClient := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(objects...).Build()
+			roleSet.Spec.Roles = []orchestrationv1alpha1.RoleSpec{*role}
+			reconciler := &RoleSetReconciler{Client: fakeClient}
+			_, err := reconciler.syncPods(ctx, roleSet)
+			if tt.invalidValue != "" {
+				assert.ErrorContains(t, err, tt.invalidValue)
+				assert.ErrorContains(t, err, role.Name)
+			} else {
+				assert.NoError(t, err)
+			}
+			finalPods := &v1.PodList{}
+			require.NoError(t, fakeClient.List(ctx, finalPods))
+			created, remaining := 0, 0
+			for _, pod := range finalPods.Items {
+				if originalNames[pod.Name] {
+					remaining++
+					assert.Nil(t, pod.DeletionTimestamp)
+				} else {
+					created++
+				}
+			}
+			assert.Equal(t, tt.created, created, "pods created")
+			assert.Equal(t, tt.deleted, len(originalNames)-remaining, "pods deleted")
 		})
 	}
 }
