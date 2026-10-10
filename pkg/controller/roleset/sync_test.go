@@ -33,6 +33,10 @@ import (
 )
 
 func TestCalculateStatusRoleReplicas(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
 	tests := []struct {
 		name      string
 		replicas  *int32
@@ -45,9 +49,6 @@ func TestCalculateStatusRoleReplicas(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			scheme := runtime.NewScheme()
-			require.NoError(t, corev1.AddToScheme(scheme))
-			require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
 			rs := &orchestrationv1alpha1.RoleSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "rs", Namespace: "default"},
 				Spec: orchestrationv1alpha1.RoleSetSpec{
