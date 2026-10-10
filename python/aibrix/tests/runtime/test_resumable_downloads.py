@@ -256,7 +256,11 @@ class TestDownloadArtifactSentinel:
 # ---------------------------------------------------------------------------
 
 
-def _install_fake_boto3(monkeypatch: pytest.MonkeyPatch, downloaded_files: List):
+def _install_fake_boto3(
+    monkeypatch: pytest.MonkeyPatch,
+    downloaded_files: List,
+    object_keys: Optional[List[str]] = None,
+):
     """Install a fake boto3 module that records download_file calls."""
     fake_boto3 = types.ModuleType("boto3")
     fake_botocore = types.ModuleType("botocore")
@@ -271,11 +275,10 @@ def _install_fake_boto3(monkeypatch: pytest.MonkeyPatch, downloaded_files: List)
             return self
 
         def paginate(self, Bucket, Prefix):
+            keys = object_keys if object_keys is not None else [f"{Prefix}weights.bin"]
             return [
                 {
-                    "Contents": [
-                        {"Key": f"{Prefix}weights.bin"},
-                    ]
+                    "Contents": [{"Key": key} for key in keys],
                 }
             ]
 
@@ -283,16 +286,57 @@ def _install_fake_boto3(monkeypatch: pytest.MonkeyPatch, downloaded_files: List)
             downloaded_files.append(path)
             # Actually write a file so os.replace can work
             with open(path, "wb") as f:
-                f.write(b"\x00" * 4)
+                f.write(b"" if key.endswith("/") else b"\x00" * 4)
 
-    setattr(fake_boto3, "client", lambda svc, **kw: FakeS3Client())
+    client = FakeS3Client()
+    setattr(fake_boto3, "client", lambda svc, **kw: client)
 
     monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
     monkeypatch.setitem(sys.modules, "botocore", fake_botocore)
     monkeypatch.setitem(sys.modules, "botocore.exceptions", fake_exceptions)
+    return client
 
 
 class TestS3AtomicWrites:
+    @pytest.mark.parametrize("with_markers", [True, False])
+    def test_directory_with_nested_file(self, tmp_path, monkeypatch, with_markers):
+        prefix = "models/prefix/"
+        weight = f"{prefix}subdir/weights.bin"
+        keys = [prefix, f"{prefix}subdir/", weight] if with_markers else [weight]
+        downloaded = []
+        client = _install_fake_boto3(monkeypatch, downloaded, object_keys=keys)
+
+        S3ArtifactDownloader()._download_s3_directory(
+            client, "my-bucket", prefix, str(tmp_path)
+        )
+
+        assert (tmp_path / "subdir").is_dir()
+        assert (tmp_path / "subdir" / "weights.bin").read_bytes() == b"\x00" * 4
+        assert downloaded == [str(tmp_path / "subdir" / "weights.bin.part")]
+        assert not list(tmp_path.rglob("*.part"))
+
+    @pytest.mark.parametrize("nested_marker", [True, False])
+    def test_directory_with_only_markers_raises(
+        self, tmp_path, monkeypatch, nested_marker
+    ):
+        prefix = "models/prefix/"
+        keys = [prefix, f"{prefix}subdir/"] if nested_marker else [prefix]
+        downloaded = []
+        client = _install_fake_boto3(monkeypatch, downloaded, object_keys=keys)
+
+        with pytest.raises(FileNotFoundError) as exc:
+            S3ArtifactDownloader()._download_s3_directory(
+                client, "my-bucket", prefix, str(tmp_path)
+            )
+
+        assert (
+            str(exc.value)
+            == f"No objects found under S3 prefix: s3://my-bucket/{prefix}"
+        )
+        assert downloaded == []
+        assert (tmp_path / "subdir").is_dir() == nested_marker
+        assert not list(tmp_path.rglob("*.part"))
+
     def test_single_file_uses_part_then_renames(self, tmp_path, monkeypatch):
         downloaded = []
         _install_fake_boto3(monkeypatch, downloaded)
@@ -349,7 +393,11 @@ class TestS3AtomicWrites:
 # ---------------------------------------------------------------------------
 
 
-def _install_fake_gcs(monkeypatch: pytest.MonkeyPatch, downloaded_files: List):
+def _install_fake_gcs(
+    monkeypatch: pytest.MonkeyPatch,
+    downloaded_files: List,
+    object_keys: Optional[List[str]] = None,
+):
     """Install a fake google.cloud.storage module."""
     fake_google = types.ModuleType("google")
     fake_google_cloud = types.ModuleType("google.cloud")
@@ -365,14 +413,15 @@ def _install_fake_gcs(monkeypatch: pytest.MonkeyPatch, downloaded_files: List):
         def download_to_filename(self, path):
             downloaded_files.append(path)
             with open(path, "wb") as f:
-                f.write(b"\x00" * 4)
+                f.write(b"" if self.name.endswith("/") else b"\x00" * 4)
 
     class FakeBucket:
         def __init__(self, name):
             self._name = name
 
         def list_blobs(self, prefix=""):
-            return [FakeBlob(f"{prefix}weights.bin")]
+            keys = object_keys if object_keys is not None else [f"{prefix}weights.bin"]
+            return [FakeBlob(key) for key in keys]
 
         def blob(self, name):
             return FakeBlob(name)
@@ -394,6 +443,46 @@ def _install_fake_gcs(monkeypatch: pytest.MonkeyPatch, downloaded_files: List):
 
 
 class TestGCSAtomicWrites:
+    @pytest.mark.parametrize("with_markers", [True, False])
+    def test_directory_with_nested_file(self, tmp_path, monkeypatch, with_markers):
+        prefix = "models/prefix/"
+        weight = f"{prefix}subdir/weights.bin"
+        keys = [prefix, f"{prefix}subdir/", weight] if with_markers else [weight]
+        downloaded = []
+        _install_fake_gcs(monkeypatch, downloaded, object_keys=keys)
+
+        result = GCSArtifactDownloader()._download_sync(
+            f"gs://my-bucket/{prefix}", str(tmp_path)
+        )
+
+        assert result == str(tmp_path)
+        assert (tmp_path / "subdir").is_dir()
+        assert (tmp_path / "subdir" / "weights.bin").read_bytes() == b"\x00" * 4
+        assert downloaded == [str(tmp_path / "subdir" / "weights.bin.part")]
+        assert not list(tmp_path.rglob("*.part"))
+
+    @pytest.mark.parametrize("nested_marker", [True, False])
+    def test_directory_with_only_markers_raises(
+        self, tmp_path, monkeypatch, nested_marker
+    ):
+        prefix = "models/prefix/"
+        keys = [prefix, f"{prefix}subdir/"] if nested_marker else [prefix]
+        downloaded = []
+        _install_fake_gcs(monkeypatch, downloaded, object_keys=keys)
+
+        with pytest.raises(FileNotFoundError) as exc:
+            GCSArtifactDownloader()._download_sync(
+                f"gs://my-bucket/{prefix}", str(tmp_path)
+            )
+
+        assert (
+            str(exc.value)
+            == f"No objects found under GCS prefix: gs://my-bucket/{prefix}"
+        )
+        assert downloaded == []
+        assert (tmp_path / "subdir").is_dir() == nested_marker
+        assert not list(tmp_path.rglob("*.part"))
+
     def test_directory_uses_part_then_renames(self, tmp_path, monkeypatch):
         downloaded = []
         _install_fake_gcs(monkeypatch, downloaded)
