@@ -240,10 +240,12 @@ func withinTargetLimit(targets map[string]resolvedTarget, missing map[string]str
 }
 
 type warmupPolicies struct {
-	parallelism             int32
-	jobTimeoutSeconds       int64
-	retryLimit              int32
-	ttlSecondsAfterFinished int32
+	parallelism                    int32
+	jobTimeoutSeconds              int64
+	retryLimit                     int32
+	ttlSecondsAfterFinished        int32
+	continuousRetryLimit           int32
+	continuousRetryIntervalSeconds int64
 }
 
 func effectiveMode(w *modelv1alpha1.ModelWarmup) modelv1alpha1.ModelWarmupMode {
@@ -255,10 +257,12 @@ func effectiveMode(w *modelv1alpha1.ModelWarmup) modelv1alpha1.ModelWarmupMode {
 
 func effectiveWarmupPolicies(w *modelv1alpha1.ModelWarmup) warmupPolicies {
 	result := warmupPolicies{
-		parallelism:             modelv1alpha1.DefaultModelWarmupParallelism,
-		jobTimeoutSeconds:       modelv1alpha1.DefaultModelWarmupJobTimeoutSeconds,
-		retryLimit:              modelv1alpha1.DefaultModelWarmupRetryLimit,
-		ttlSecondsAfterFinished: modelv1alpha1.DefaultModelWarmupTTLSecondsAfterFinished,
+		parallelism:                    modelv1alpha1.DefaultModelWarmupParallelism,
+		jobTimeoutSeconds:              modelv1alpha1.DefaultModelWarmupJobTimeoutSeconds,
+		retryLimit:                     modelv1alpha1.DefaultModelWarmupRetryLimit,
+		ttlSecondsAfterFinished:        modelv1alpha1.DefaultModelWarmupTTLSecondsAfterFinished,
+		continuousRetryLimit:           modelv1alpha1.DefaultModelWarmupContinuousRetryLimit,
+		continuousRetryIntervalSeconds: modelv1alpha1.DefaultModelWarmupContinuousRetryInterval,
 	}
 	if w.Spec.Policies == nil {
 		return result
@@ -274,6 +278,12 @@ func effectiveWarmupPolicies(w *modelv1alpha1.ModelWarmup) warmupPolicies {
 	}
 	if w.Spec.Policies.TTLSecondsAfterFinished != nil {
 		result.ttlSecondsAfterFinished = *w.Spec.Policies.TTLSecondsAfterFinished
+	}
+	if w.Spec.Policies.ContinuousRetryLimit != nil {
+		result.continuousRetryLimit = *w.Spec.Policies.ContinuousRetryLimit
+	}
+	if w.Spec.Policies.ContinuousRetryIntervalSeconds != nil {
+		result.continuousRetryIntervalSeconds = *w.Spec.Policies.ContinuousRetryIntervalSeconds
 	}
 	return result
 }
