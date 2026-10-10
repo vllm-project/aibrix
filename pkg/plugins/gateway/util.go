@@ -317,10 +317,13 @@ func validateCompletionRequest(requestID string, requestBody []byte) (model, mes
 // model-specific token IDs.
 func completionPromptText(requestID string, prompt json.RawMessage) string {
 	raw := bytes.TrimSpace(prompt)
-	if len(raw) > 0 && raw[0] == '[' {
-		var prompts []string
-		if err := sonic.Unmarshal(raw, &prompts); err == nil {
-			return strings.Join(prompts, " ")
+	if len(raw) > 1 && raw[0] == '[' {
+		firstElement := bytes.TrimSpace(raw[1:])
+		if len(firstElement) > 0 && firstElement[0] == '"' {
+			var prompts []string
+			if err := sonic.Unmarshal(raw, &prompts); err == nil {
+				return strings.Join(prompts, " ")
+			}
 		}
 	}
 	return requestPromptText(requestID, raw)

@@ -93,6 +93,14 @@ func Test_ValidateRequestBody(t *testing.T) {
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
 		{
+			message:     "/v1/completions string array prompt with whitespace",
+			requestPath: PathCompletions,
+			requestBody: []byte(`{"model":"llama2-7b","prompt":[  "hello","world"]}`),
+			model:       "llama2-7b",
+			messages:    "hello world",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
 			message:     "/v1/completions token ID prompt",
 			requestPath: PathCompletions,
 			requestBody: []byte(`{"model":"llama2-7b","prompt":[1,2,3]}`),
