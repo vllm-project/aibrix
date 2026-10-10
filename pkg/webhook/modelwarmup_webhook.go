@@ -68,9 +68,11 @@ func (w *ModelWarmupWebhook) ValidateDelete(_ context.Context, _ runtime.Object)
 func validateModelWarmup(warmup *modelapi.ModelWarmup) error {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
-	if warmup.Spec.Mode != "" && warmup.Spec.Mode != modelapi.ModelWarmupModeOnce {
+	if warmup.Spec.Mode != "" && warmup.Spec.Mode != modelapi.ModelWarmupModeOnce &&
+		warmup.Spec.Mode != modelapi.ModelWarmupModeContinuous {
 		allErrs = append(allErrs, field.NotSupported(
-			specPath.Child("mode"), warmup.Spec.Mode, []string{string(modelapi.ModelWarmupModeOnce)},
+			specPath.Child("mode"), warmup.Spec.Mode,
+			[]string{string(modelapi.ModelWarmupModeOnce), string(modelapi.ModelWarmupModeContinuous)},
 		))
 	}
 	explicitNodes := map[string]struct{}{}
@@ -178,7 +180,7 @@ func validateModelWarmup(warmup *modelapi.ModelWarmup) error {
 			specPath, "at least one of imagePreload.images or custom.containers is required",
 		))
 	}
-	allErrs = append(allErrs, validateModelWarmupPolicies(warmup.Spec.Policies)...)
+	allErrs = append(allErrs, validateModelWarmupPolicies(warmup.Spec.Mode, warmup.Spec.Policies)...)
 	return allErrs.ToAggregate()
 }
 
@@ -330,7 +332,7 @@ func validateModelWarmupVolumeReferences(
 	return allErrs
 }
 
-func validateModelWarmupPolicies(policies *modelapi.ModelWarmupPolicies) field.ErrorList {
+func validateModelWarmupPolicies(mode modelapi.ModelWarmupMode, policies *modelapi.ModelWarmupPolicies) field.ErrorList {
 	if policies == nil {
 		return nil
 	}
@@ -345,6 +347,45 @@ func validateModelWarmupPolicies(policies *modelapi.ModelWarmupPolicies) field.E
 		allErrs = append(allErrs, field.Invalid(
 			field.NewPath("spec", "policies", "retryLimit"), *policies.RetryLimit,
 			"must be greater than or equal to zero",
+		))
+	}
+	continuous := mode == modelapi.ModelWarmupModeContinuous
+	if policies.ContinuousRetryLimit != nil {
+		switch {
+		case !continuous:
+			allErrs = append(allErrs, field.Forbidden(
+				field.NewPath("spec", "policies", "continuousRetryLimit"),
+				"only supported in Continuous mode",
+			))
+		case *policies.ContinuousRetryLimit < 0:
+			allErrs = append(allErrs, field.Invalid(
+				field.NewPath("spec", "policies", "continuousRetryLimit"), *policies.ContinuousRetryLimit,
+				"must be greater than or equal to zero",
+			))
+		case *policies.ContinuousRetryLimit > modelapi.MaxModelWarmupContinuousRetryLimit:
+			allErrs = append(allErrs, field.Invalid(
+				field.NewPath("spec", "policies", "continuousRetryLimit"), *policies.ContinuousRetryLimit,
+				fmt.Sprintf("must be less than or equal to %d", modelapi.MaxModelWarmupContinuousRetryLimit),
+			))
+		}
+	}
+	if policies.ContinuousRetryIntervalSeconds != nil {
+		switch {
+		case !continuous:
+			allErrs = append(allErrs, field.Forbidden(
+				field.NewPath("spec", "policies", "continuousRetryIntervalSeconds"),
+				"only supported in Continuous mode",
+			))
+		case *policies.ContinuousRetryIntervalSeconds <= 0:
+			allErrs = append(allErrs, positivePolicyError(
+				"continuousRetryIntervalSeconds", *policies.ContinuousRetryIntervalSeconds,
+			))
+		}
+	}
+	if continuous && policies.TTLSecondsAfterFinished != nil {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "policies", "ttlSecondsAfterFinished"),
+			"not supported in Continuous mode",
 		))
 	}
 	if policies.TTLSecondsAfterFinished != nil && *policies.TTLSecondsAfterFinished <= 0 {

@@ -26,6 +26,9 @@ const (
 	DefaultModelWarmupJobTimeoutSeconds       int64 = 1800
 	DefaultModelWarmupRetryLimit              int32 = 2
 	DefaultModelWarmupTTLSecondsAfterFinished int32 = 3600
+	DefaultModelWarmupContinuousRetryLimit    int32 = 2
+	DefaultModelWarmupContinuousRetryInterval int64 = 300
+	MaxModelWarmupContinuousRetryLimit        int32 = 10
 	MaxModelWarmupTargets                           = 1000
 	MaxModelWarmupTargetDetails                     = 256
 	MaxModelWarmupDiagnosticLength                  = 1024
@@ -43,12 +46,13 @@ const (
 type ModelWarmupMode string
 
 const (
-	ModelWarmupModeOnce ModelWarmupMode = "Once"
+	ModelWarmupModeOnce       ModelWarmupMode = "Once"
+	ModelWarmupModeContinuous ModelWarmupMode = "Continuous"
 )
 
 type ModelWarmupSpec struct {
-	// Mode controls the warmup lifecycle. Omission means Once. Continuous is
-	// reserved for a future API revision.
+	// Mode controls the warmup lifecycle. Omission means Once. Continuous keeps
+	// reconciling the current authorized target set as Node membership changes.
 	// +optional
 	Mode ModelWarmupMode `json:"mode,omitempty"`
 
@@ -139,6 +143,17 @@ type ModelWarmupPolicies struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	RetryLimit *int32 `json:"retryLimit,omitempty"`
+	// ContinuousRetryLimit is the number of additional Jobs allowed after the
+	// first Job reaches terminal failure in Continuous mode.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=10
+	ContinuousRetryLimit *int32 `json:"continuousRetryLimit,omitempty"`
+	// ContinuousRetryIntervalSeconds is the fixed delay between terminally
+	// failed Job attempts in Continuous mode.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	ContinuousRetryIntervalSeconds *int64 `json:"continuousRetryIntervalSeconds,omitempty"`
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	TTLSecondsAfterFinished *int32 `json:"ttlSecondsAfterFinished,omitempty"`
@@ -152,6 +167,7 @@ const (
 	ModelWarmupSucceeded ModelWarmupPhase = "Succeeded"
 	ModelWarmupFailed    ModelWarmupPhase = "Failed"
 	ModelWarmupDegraded  ModelWarmupPhase = "Degraded"
+	ModelWarmupReady     ModelWarmupPhase = "Ready"
 )
 
 type ModelWarmupTargetPhase string
@@ -173,6 +189,9 @@ type ModelWarmupTargetStatus struct {
 	Revision string `json:"revision,omitempty"`
 	// +optional
 	JobName string `json:"jobName,omitempty"`
+	// Attempt is one-based for Jobs managed in Continuous mode.
+	// +optional
+	Attempt int32 `json:"attempt,omitempty"`
 	// +optional
 	Phase ModelWarmupTargetPhase `json:"phase,omitempty"`
 	// +optional
@@ -206,6 +225,10 @@ type ModelWarmupStatus struct {
 	StartTime *metav1.Time `json:"startTime,omitempty"`
 	// +optional
 	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
+	// LastConvergedTime records the most recent transition into Ready for a
+	// Continuous ModelWarmup.
+	// +optional
+	LastConvergedTime *metav1.Time `json:"lastConvergedTime,omitempty"`
 	// +optional
 	Targets []ModelWarmupTargetStatus `json:"targets,omitempty"`
 	// +patchMergeKey=type

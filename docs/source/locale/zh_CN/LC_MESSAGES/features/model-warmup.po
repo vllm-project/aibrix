@@ -4,9 +4,9 @@
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: AIBrix\n"
+"Project-Id-Version:  AIBrix\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-09 09:56+0800\n"
+"POT-Creation-Date: 2026-10-10 18:56+0800\n"
 "PO-Revision-Date: 2026-10-09 00:00+0800\n"
 "Last-Translator: AIBrix Team\n"
 "Language: zh_CN\n"
@@ -17,193 +17,231 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: Babel 2.18.0\n"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:5
+#: ../../source/features/model-warmup.rst:5
 msgid "ModelWarmup"
 msgstr "ModelWarmup"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:7
-msgid "``ModelWarmup`` performs a finite ``Once`` warmup Job on each selected Kubernetes node. A resource can be image-only, custom-only, or combined: image entries make the runtime pull an image and run a safe finite command; custom actions can check a node or download an artifact; a combined action does both. It does not start an inference engine or gate workloads."
-msgstr "``ModelWarmup`` 会在每个选定的 Kubernetes 节点上执行一次有限的 ``Once`` 预热 Job。资源可以仅包含镜像、仅包含自定义操作，也可以将二者组合：镜像条目会让容器运行时拉取镜像并运行一条可安全结束的命令；自定义操作可以检查节点或下载制品；组合操作则同时完成这两项工作。它不会启动推理引擎，也不会用作工作负载门禁。"
+#: ../../source/features/model-warmup.rst:7
+msgid "``ModelWarmup`` supports a finite ``Once`` lifecycle and a long-lived ``Continuous`` lifecycle on selected Kubernetes nodes. A resource can be image-only, custom-only, or combined: image entries make the runtime pull an image and run a safe finite command; custom actions can check a node or download an artifact; a combined action does both. It does not start an inference engine or gate workloads."
+msgstr "``ModelWarmup`` 在选定的 Kubernetes 节点上支持有限的 ``Once`` 生命周期和长期运行的 ``Continuous`` 生命周期。资源可以仅包含镜像、仅包含自定义操作，也可以将二者组合：镜像条目会让容器运行时拉取镜像并运行一条可安全结束的命令；自定义操作可以检查节点或下载制品；组合操作则同时完成这两项工作。它不会启动推理引擎，也不会用作工作负载门禁。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:14
+#: ../../source/features/model-warmup.rst:15
 msgid "Workflow and data flow"
 msgstr "工作流程与数据流"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:26
+#: ../../source/features/model-warmup.rst:27
 msgid "Every target receives a node-pinned Job. Custom init containers run in their declared order. Once they succeed, the controller-generated image containers and ``custom.containers`` are regular containers and may run concurrently. All of them must terminate successfully for that node Job to succeed. ``status`` remains an aggregate observation of the generated Jobs rather than a separate per-container execution API."
 msgstr "每个目标都会收到一个固定到该节点的 Job。自定义 init 容器按声明顺序运行。它们成功后，由控制器生成的镜像容器和 ``custom.containers`` 都作为普通容器运行，并且可以并发执行。只有所有容器都成功终止，该节点的 Job 才会成功。``status`` 仍是对已生成 Job 的聚合观测，而不是独立的逐容器执行 API。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:34
+#: ../../source/features/model-warmup.rst:35
 msgid "Targeting and execution"
 msgstr "目标选择与执行"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:36
+#: ../../source/features/model-warmup.rst:37
 msgid "Targets can combine explicit node names and non-empty label selectors. The controller takes their union and deduplicates nodes. While a ``Once`` operation is not terminal, Node create and label events add newly matched nodes. After Succeeded, Failed, or Degraded, later nodes are ignored."
 msgstr "目标可以同时使用显式节点名称和非空标签选择器。控制器会取二者的并集并对节点去重。在 ``Once`` 操作尚未进入终态时，Node 创建和标签事件会加入新匹配的节点。进入 Succeeded、Failed 或 Degraded 状态后，后续节点将被忽略。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:41
+#: ../../source/features/model-warmup.rst:42
+msgid "``Continuous`` keeps reconciling the current authorized target set. A newly matching Node receives a Job, while a Node that leaves the selector or authorization boundary has its owned Job removed. Coverage is identified by the Node UID, so a replacement Node with the same name is warmed again. A Node that leaves and later rejoins also starts a new coverage cycle."
+msgstr "``Continuous`` 会持续协调当前已授权的目标集合。新匹配的 Node 会获得一个 Job；当 Node 离开选择器范围或授权边界时，其所属 Job 会被删除。覆盖记录通过 Node UID 标识，因此名称相同的替换 Node 仍会重新预热。Node 离开后再次加入时，也会启动新的覆盖周期。"
+
+#: ../../source/features/model-warmup.rst:48
 msgid "The namespace and target nodes must share the ``resource-pool.aibrix.ai/name`` label, and nodes must opt in with ``model.aibrix.ai/warmup-enabled=true``. Control-plane nodes are excluded. ``parallelism`` limits simultaneously active Jobs, and ``jobTimeoutSeconds`` applies after a Job is created. ``retryLimit`` and ``ttlSecondsAfterFinished`` bound retry and retention behavior."
 msgstr "命名空间和目标节点必须具有相同的 ``resource-pool.aibrix.ai/name`` 标签，并且节点必须通过 ``model.aibrix.ai/warmup-enabled=true`` 明确加入。控制平面节点会被排除。``parallelism`` 限制同时处于活跃状态的 Job 数量，``jobTimeoutSeconds`` 从 Job 创建后开始生效。``retryLimit`` 和 ``ttlSecondsAfterFinished`` 分别约束重试和保留行为。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:48
+#: ../../source/features/model-warmup.rst:55
+msgid "This authorization applies to both lifecycle modes. If the Namespace has no non-empty resource-pool label, matching Nodes are not authorized. ``Once`` reports unavailable or unauthorized configured targets and does not reopen after reaching a terminal phase. ``Continuous`` remains ``Pending`` with ``Ready=False`` and reason ``NamespacePoolNotConfigured``; after the label is added or corrected, it automatically resolves the current targets. If Nodes exist but their names, pool labels, or warmup opt-in do not authorize them, the Continuous Ready condition uses ``TargetsUnavailableOrUnauthorized``. Inspect both sides of the authorization boundary with:"
+msgstr "此授权规则同时适用于两种生命周期模式。如果 Namespace 没有非空的资源池标签，匹配的 Node 不会获得授权。``Once`` 会报告不可用或未授权的已配置目标，并且进入终态后不会重新打开。``Continuous`` 会保持 ``Pending``，其 ``Ready=False`` condition 的 reason 为 ``NamespacePoolNotConfigured``；添加或修正标签后，它会自动重新解析当前目标。如果 Node 存在，但名称、资源池标签或 warmup 显式启用设置未能授权这些 Node，Continuous 的 Ready condition 会使用 ``TargetsUnavailableOrUnauthorized``。可以使用以下命令检查授权边界两侧："
+
+#: ../../source/features/model-warmup.rst:55
+msgid "For ``Continuous``, ``retryLimit`` still controls retries inside one Kubernetes Job. ``continuousRetryLimit`` controls the number of additional Jobs after a terminal failure, and ``continuousRetryIntervalSeconds`` controls the fixed delay between those attempts. Automatic retries stop after that budget is exhausted. Deleting the retained failed Job explicitly starts a new bounded retry cycle."
+msgstr "对于 ``Continuous``，``retryLimit`` 仍控制单个 Kubernetes Job 内部的重试。``continuousRetryLimit`` 控制终态失败后允许创建的额外 Job 数量，``continuousRetryIntervalSeconds`` 控制这些尝试之间的固定间隔。重试预算耗尽后会停止自动重试。显式删除保留的失败 Job 会启动一个新的有限重试周期。"
+
+#: ../../source/features/model-warmup.rst:62
+msgid "Successful Continuous Jobs are retained as the per-Node coverage record and must not use ``ttlSecondsAfterFinished``. Deleting a retained successful Job requests a replay. ``Ready`` means all current targets have succeeded; ``lastConvergedTime`` records the most recent transition into Ready, and ``completionTime`` remains unset. Pending, running, and failed target details remain bounded even when aggregate counters cover a larger target set."
+msgstr "成功的 Continuous Job 会作为逐 Node 覆盖记录保留，并且不能使用 ``ttlSecondsAfterFinished``。删除保留的成功 Job 表示请求重新执行。``Ready`` 表示所有当前目标均已成功；``lastConvergedTime`` 记录最近一次进入 Ready 的时间，而 ``completionTime`` 始终不设置。即使聚合计数覆盖更大的目标集合，pending、running 和 failed 目标详情仍保持有界。"
+
+#: ../../source/features/model-warmup.rst:69
 msgid "ModelWarmup does not infer tolerations from the target Node. A Node with a ``NoSchedule`` or ``NoExecute`` taint remains subject to normal Kubernetes scheduling policy. Image-only actions request no GPU, while a custom container can explicitly request a device such as ``nvidia.com/gpu``."
 msgstr "ModelWarmup 不会根据目标 Node 推断容忍度。带有 ``NoSchedule`` 或 ``NoExecute`` 污点的 Node 仍遵循常规 Kubernetes 调度策略。仅镜像操作不会请求 GPU，而自定义容器可以显式请求 ``nvidia.com/gpu`` 等设备。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:54
+#: ../../source/features/model-warmup.rst:75
 msgid "API fields"
 msgstr "API 字段"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:56
+#: ../../source/features/model-warmup.rst:77
 msgid "``spec.imagePreload.images`` accepts image, command, optional args, and pull policy. Every image entry needs a command that exits safely after the image is pulled. ``spec.custom`` accepts the following Pod-template fragments:"
 msgstr "``spec.imagePreload.images`` 接受镜像、命令、可选参数和拉取策略。每个镜像条目都需要提供一条在镜像拉取完成后可安全退出的命令。``spec.custom`` 接受以下 Pod 模板片段："
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:68
+#: ../../source/features/model-warmup.rst:89
 msgid "Container names must be unique across generated image containers and custom containers, and volume mounts must name a declared ``custom.volumes`` entry. At least one image preload or custom regular container is required; init-only actions cannot complete a ModelWarmup by themselves."
 msgstr "在生成的镜像容器和自定义容器之间，容器名称必须唯一；卷挂载必须引用已声明的 ``custom.volumes`` 条目。必须至少有一个镜像预加载项或自定义普通容器；仅包含 init 操作无法独立完成 ModelWarmup。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:74
+#: ../../source/features/model-warmup.rst:95
 msgid "Examples"
 msgstr "示例"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:76
+#: ../../source/features/model-warmup.rst:97
 msgid "The image-only sample is unchanged and remains compatible with the original v1 behavior:"
 msgstr "仅镜像示例保持不变，并继续兼容原有的 v1 行为："
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:83
+#: ../../source/features/model-warmup.rst:104
+msgid "The Continuous sample keeps a resource pool covered as Nodes join or are replaced:"
+msgstr "Continuous 示例会在 Node 加入或被替换时持续覆盖资源池："
+
+#: ../../source/features/model-warmup.rst:111
 msgid "Each image-only entry must use a command that exits successfully without starting the inference server. The BusyBox sample uses ``sh -c \"exit 0\"``. For the public ``vllm/vllm-openai`` image, its CLI can print help and exit:"
 msgstr "每个仅镜像条目都必须使用一条能够成功退出且不会启动推理服务器的命令。BusyBox 示例使用 ``sh -c \"exit 0\"``。对于公开的 ``vllm/vllm-openai`` 镜像，可以让其 CLI 打印帮助后退出："
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:95
+#: ../../source/features/model-warmup.rst:123
 msgid "Verify the command against the exact image tag or digest before creating a ModelWarmup; other engines and distroless images may expose different binaries."
 msgstr "创建 ModelWarmup 前，请针对确切的镜像标签或摘要验证该命令；其他引擎和 distroless 镜像可能提供不同的可执行文件。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:98
+#: ../../source/features/model-warmup.rst:126
 msgid "``model-download.yaml`` is custom-only. It uses the public ``aibrix/runtime:v0.8.0-rc.1`` image to run ``aibrix_download`` for the small public ``sshleifer/tiny-gpt2`` artifact and writes it to a node-local cache:"
 msgstr "``model-download.yaml`` 仅包含自定义操作。它使用公开的 ``aibrix/runtime:v0.8.0-rc.1`` 镜像运行 ``aibrix_download``，下载小型公开制品 ``sshleifer/tiny-gpt2`` 并将其写入节点本地缓存："
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:106
+#: ../../source/features/model-warmup.rst:134
 msgid "``node-precheck.yaml`` checks cache write access and at least 1 GiB free space. ``gpu-precheck.yaml`` runs ``nvidia-smi`` with an ``nvidia.com/gpu: \"1\"`` limit and therefore requires a GPU node with the NVIDIA device plugin."
 msgstr "``node-precheck.yaml`` 检查缓存写入权限以及是否至少有 1 GiB 可用空间。``gpu-precheck.yaml`` 在设置 ``nvidia.com/gpu: \"1\"`` 限制的情况下运行 ``nvidia-smi``，因此需要一个装有 NVIDIA device plugin 的 GPU 节点。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:110
+#: ../../source/features/model-warmup.rst:138
 msgid "Two large, opt-in examples combine real engine images with a ``Qwen/Qwen3-0.6B`` download. Their init containers verify writable storage, 10 GiB free disk, two CPUs, 4 GiB available memory, and Hugging Face DNS:"
 msgstr "另外两个需显式启用的大型示例将真实引擎镜像与 ``Qwen/Qwen3-0.6B`` 下载组合使用。它们的 init 容器会验证存储可写、磁盘有 10 GiB 可用空间、具有两个 CPU、4 GiB 可用内存，并检查 Hugging Face DNS："
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:122
+#: ../../source/features/model-warmup.rst:150
 msgid "The examples preload pinned vLLM or SGLang images while the custom regular container downloads the model into a separate node-local cache. Restrict the selector to the intended nodes; two nodes are sufficient for a smoke test. They prepare caches only and do not start an inference server. See the sample directory README for apply commands and prerequisites."
 msgstr "这些示例会预加载固定版本的 vLLM 或 SGLang 镜像，同时由自定义普通容器将模型下载到单独的节点本地缓存。请将选择器限制在预期节点范围内；冒烟测试使用两个节点即可。它们只准备缓存，不会启动推理服务器。应用命令和前提条件请参阅示例目录中的 README。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:129
+#: ../../source/features/model-warmup.rst:157
 msgid "Security and cache durability"
 msgstr "安全性与缓存持久性"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:131
+#: ../../source/features/model-warmup.rst:159
 msgid "The namespace-to-node resource-pool label plus explicit node opt-in form the scheduling authorization boundary. They do not make arbitrary custom actions safe. Custom actions receive exactly the volumes, images, and resource requests declared in the resource, so creation permission is sensitive. Use least-privilege RBAC and dedicated target pools; restrict who can create ModelWarmups that use ``hostPath`` or privileged settings."
 msgstr "命名空间与节点之间的资源池标签，加上节点的显式加入，共同构成调度授权边界。但这些机制并不能保证任意自定义操作都是安全的。自定义操作会获得资源中声明的全部卷、镜像和资源请求，因此创建权限十分敏感。请使用最小权限 RBAC 和专用目标池，并限制哪些主体可以创建使用 ``hostPath`` 或特权设置的 ModelWarmup。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:138
+#: ../../source/features/model-warmup.rst:166
 msgid "Automatic service-account token mounting is disabled, but explicit projected ``serviceAccountToken`` volumes are allowed and use the Pod's service account permissions (normally the namespace default service account). Secret volumes can also expose namespace credentials. Keep service-account permissions minimal and restrict which token and secret volumes ModelWarmup authors may request."
 msgstr "自动挂载服务账户令牌已禁用，但允许显式投射的 ``serviceAccountToken`` 卷，并会使用 Pod 的服务账户权限（通常是命名空间的默认服务账户）。Secret 卷也可能暴露命名空间凭据。请尽量缩减服务账户权限，并限制 ModelWarmup 创建者可以请求哪些令牌卷和 Secret 卷。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:144
+#: ../../source/features/model-warmup.rst:172
 msgid "ModelWarmup admission does not perform full native Job/Pod validation. If the API server rejects Job creation, the controller logs the error and requeues it. With no Job to inspect, bounded Job diagnostics and ModelWarmup failure status may not record that rejection; check controller logs when progress stalls."
 msgstr "ModelWarmup 准入不会执行完整的原生 Job/Pod 校验。如果 API server 拒绝创建 Job，控制器会记录错误并将其重新入队。由于没有可供检查的 Job，有界 Job 诊断和 ModelWarmup 失败状态可能不会记录该拒绝；进度停滞时请检查控制器日志。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:149
+#: ../../source/features/model-warmup.rst:177
 msgid "The bundled cache samples use ``hostPath`` at ``/var/lib/aibrix/models`` with ``DirectoryOrCreate``. That exposes a node filesystem path to the Job and may be disallowed by Pod Security admission. The samples do not require privileged containers; do not broaden privilege, host networking, PID namespaces, or host mount scope solely to run them."
 msgstr "随附的缓存示例在 ``/var/lib/aibrix/models`` 路径使用类型为 ``DirectoryOrCreate`` 的 ``hostPath``。这会向 Job 暴露节点文件系统路径，可能被 Pod Security 准入禁止。示例不需要特权容器；请勿仅为运行这些示例而扩大特权、主机网络、PID 命名空间或主机挂载范围。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:155
-msgid "``Succeeded`` is a point-in-time aggregate Job result. Kubelet or runtime image garbage collection can evict pulled images, and node replacement, cleanup, or storage failures can remove host-path model artifacts. Use immutable image and model references when reproducibility matters, and retain a durable artifact source for production workloads."
-msgstr "``Succeeded`` 是某一时点的聚合 Job 结果。Kubelet 或容器运行时的镜像垃圾回收可能清除已拉取的镜像，而节点替换、清理或存储故障可能移除主机路径中的模型制品。需要可重现性时，请使用不可变的镜像和模型引用，并为生产工作负载保留持久的制品来源。"
+#: ../../source/features/model-warmup.rst:183
+msgid "``Succeeded`` and ``Ready`` are point-in-time aggregate Job results. Kubelet or runtime image garbage collection can evict pulled images, and node replacement, cleanup, or storage failures can remove host-path model artifacts. Use immutable image and model references when reproducibility matters, and retain a durable artifact source for production workloads."
+msgstr "``Succeeded`` 和 ``Ready`` 是某一时点的聚合 Job 结果。Kubelet 或容器运行时的镜像垃圾回收可能清除已拉取的镜像，而节点替换、清理或存储故障可能移除主机路径中的模型制品。需要可重现性时，请使用不可变的镜像和模型引用，并为生产工作负载保留持久的制品来源。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:162
+#: ../../source/features/model-warmup.rst:190
 msgid "Labels and annotations"
 msgstr "标签与注解"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:164
+#: ../../source/features/model-warmup.rst:192
 msgid "ModelWarmup metadata keys"
 msgstr "ModelWarmup 元数据键"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:167
+#: ../../source/features/model-warmup.rst:195
 msgid "Key"
 msgstr "键"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:168
+#: ../../source/features/model-warmup.rst:196
 msgid "Object"
 msgstr "对象"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:169
+#: ../../source/features/model-warmup.rst:197
 msgid "Purpose"
 msgstr "用途"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:170
+#: ../../source/features/model-warmup.rst:198
 msgid "``resource-pool.aibrix.ai/name``"
 msgstr "``resource-pool.aibrix.ai/name``"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:171
+#: ../../source/features/model-warmup.rst:199
 msgid "Namespace and Node"
 msgstr "Namespace 和 Node"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:172
+#: ../../source/features/model-warmup.rst:200
 msgid "Authorizes a Node only when its non-empty pool value equals the ModelWarmup namespace pool value. Cluster administrators manage it."
 msgstr "仅当 Node 的非空池值等于 ModelWarmup 所在命名空间的池值时，才授权该 Node。此标签由集群管理员管理。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:174
+#: ../../source/features/model-warmup.rst:202
 msgid "``model.aibrix.ai/warmup-enabled``"
 msgstr "``model.aibrix.ai/warmup-enabled``"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:175
+#: ../../source/features/model-warmup.rst:203
 msgid "Node"
 msgstr "Node"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:176
+#: ../../source/features/model-warmup.rst:204
 msgid "A value of ``true`` explicitly opts the Node into warmup scheduling."
 msgstr "值为 ``true`` 时，表示该 Node 明确加入预热调度。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:177
+#: ../../source/features/model-warmup.rst:205
 msgid "``model.aibrix.ai/warmup``"
 msgstr "``model.aibrix.ai/warmup``"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:178
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:181
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:185
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:188
+#: ../../source/features/model-warmup.rst:206
+#: ../../source/features/model-warmup.rst:209
+#: ../../source/features/model-warmup.rst:213
+#: ../../source/features/model-warmup.rst:216
+#: ../../source/features/model-warmup.rst:220
+#: ../../source/features/model-warmup.rst:224
 msgid "Job"
 msgstr "Job"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:179
+#: ../../source/features/model-warmup.rst:207
 msgid "Controller-managed label containing the owning ModelWarmup UID."
 msgstr "由控制器管理的标签，包含所属 ModelWarmup 的 UID。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:180
+#: ../../source/features/model-warmup.rst:208
 msgid "``model.aibrix.ai/warmup-name``"
 msgstr "``model.aibrix.ai/warmup-name``"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:182
+#: ../../source/features/model-warmup.rst:210
 msgid "Controller-managed annotation containing the human-readable ModelWarmup name."
 msgstr "由控制器管理的注解，包含人类可读的 ModelWarmup 名称。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:184
+#: ../../source/features/model-warmup.rst:212
 msgid "``model.aibrix.ai/revision``"
 msgstr "``model.aibrix.ai/revision``"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:186
+#: ../../source/features/model-warmup.rst:214
 msgid "Controller-managed label identifying the immutable workload revision."
 msgstr "由控制器管理的标签，用于标识不可变的工作负载修订版本。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:187
+#: ../../source/features/model-warmup.rst:215
 msgid "``model.aibrix.ai/target-node``"
 msgstr "``model.aibrix.ai/target-node``"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:189
-msgid "Controller-managed annotation recording the exact authorized target Node. Users do not set these Job metadata keys."
-msgstr "由控制器管理的注解，记录获得授权的确切目标 Node。用户不应设置这些 Job 元数据键。"
+#: ../../source/features/model-warmup.rst:217
+msgid "Controller-managed annotation recording the exact authorized target Node name."
+msgstr "由控制器管理的注解，记录获得授权的确切目标 Node 名称。"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:193
+#: ../../source/features/model-warmup.rst:219
+msgid "``model.aibrix.ai/target-node-uid``"
+msgstr "``model.aibrix.ai/target-node-uid``"
+
+#: ../../source/features/model-warmup.rst:221
+msgid "Controller-managed annotation recording the target Node identity used by Continuous coverage."
+msgstr "由控制器管理的注解，记录 Continuous 覆盖所使用的目标 Node 身份。"
+
+#: ../../source/features/model-warmup.rst:223
+msgid "``model.aibrix.ai/attempt``"
+msgstr "``model.aibrix.ai/attempt``"
+
+#: ../../source/features/model-warmup.rst:225
+msgid "Controller-managed, one-based Continuous Job attempt. Users do not set these Job metadata keys."
+msgstr "由控制器管理、从 1 开始计数的 Continuous Job 尝试次数。用户不应设置这些 Job 元数据键。"
+
+#: ../../source/features/model-warmup.rst:229
 msgid "Scope"
 msgstr "范围"
 
-#: ../../../../Users/zhenyu.jiang/go/src/golanglearning/new_project/aibrix/docs/source/features/model-warmup.rst:195
-msgid "The spec is immutable after creation; create another resource for another Once operation. Separate pipeline stages, arbitrary lifecycle hooks, workload or rollout gating, autoscaler mutation, and workload-derived targets remain out of scope. Custom actions are finite Job work, not a general-purpose deployment or orchestration framework."
-msgstr "spec 创建后不可变；如需执行另一次 Once 操作，请创建新的资源。独立的流水线阶段、任意生命周期钩子、工作负载或发布门禁、自动扩缩容器变更，以及从工作负载派生目标，仍不在支持范围内。自定义操作是有限的 Job 工作，而非通用部署或编排框架。"
+#: ../../source/features/model-warmup.rst:231
+msgid "The spec is immutable after creation; create another resource to change an action, selector, or lifecycle policy. Separate pipeline stages, arbitrary lifecycle hooks, workload or rollout gating, autoscaler mutation, and workload-derived targets remain out of scope. Custom actions are finite Job work, not a general-purpose deployment or orchestration framework."
+msgstr "spec 创建后不可变；如需更改操作、选择器或生命周期策略，请创建新的资源。独立的流水线阶段、任意生命周期钩子、工作负载或发布门禁、自动扩缩容器变更，以及从工作负载派生目标，仍不在支持范围内。自定义操作是有限的 Job 工作，而非通用部署或编排框架。"

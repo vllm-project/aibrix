@@ -30,6 +30,7 @@ type ModelWarmupTargetStatusApplyConfiguration struct {
 	SourceCount        *int32                           `json:"sourceCount,omitempty"`
 	Revision           *string                          `json:"revision,omitempty"`
 	JobName            *string                          `json:"jobName,omitempty"`
+	Attempt            *int32                           `json:"attempt,omitempty"`
 	Phase              *v1alpha1.ModelWarmupTargetPhase `json:"phase,omitempty"`
 	Reason             *string                          `json:"reason,omitempty"`
 	Message            *string                          `json:"message,omitempty"`
@@ -79,6 +80,14 @@ func (b *ModelWarmupTargetStatusApplyConfiguration) WithRevision(value string) *
 // If called multiple times, the JobName field is set to the value of the last call.
 func (b *ModelWarmupTargetStatusApplyConfiguration) WithJobName(value string) *ModelWarmupTargetStatusApplyConfiguration {
 	b.JobName = &value
+	return b
+}
+
+// WithAttempt sets the Attempt field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Attempt field is set to the value of the last call.
+func (b *ModelWarmupTargetStatusApplyConfiguration) WithAttempt(value int32) *ModelWarmupTargetStatusApplyConfiguration {
+	b.Attempt = &value
 	return b
 }
 

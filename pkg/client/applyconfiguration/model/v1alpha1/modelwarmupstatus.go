@@ -35,6 +35,7 @@ type ModelWarmupStatusApplyConfiguration struct {
 	OmittedTargetDetails *int32                                      `json:"omittedTargetDetails,omitempty"`
 	StartTime            *v1.Time                                    `json:"startTime,omitempty"`
 	CompletionTime       *v1.Time                                    `json:"completionTime,omitempty"`
+	LastConvergedTime    *v1.Time                                    `json:"lastConvergedTime,omitempty"`
 	Targets              []ModelWarmupTargetStatusApplyConfiguration `json:"targets,omitempty"`
 	Conditions           []metav1.ConditionApplyConfiguration        `json:"conditions,omitempty"`
 }
@@ -114,6 +115,14 @@ func (b *ModelWarmupStatusApplyConfiguration) WithStartTime(value v1.Time) *Mode
 // If called multiple times, the CompletionTime field is set to the value of the last call.
 func (b *ModelWarmupStatusApplyConfiguration) WithCompletionTime(value v1.Time) *ModelWarmupStatusApplyConfiguration {
 	b.CompletionTime = &value
+	return b
+}
+
+// WithLastConvergedTime sets the LastConvergedTime field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the LastConvergedTime field is set to the value of the last call.
+func (b *ModelWarmupStatusApplyConfiguration) WithLastConvergedTime(value v1.Time) *ModelWarmupStatusApplyConfiguration {
+	b.LastConvergedTime = &value
 	return b
 }
 

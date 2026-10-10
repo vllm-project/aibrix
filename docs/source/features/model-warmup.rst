@@ -4,8 +4,9 @@
 ModelWarmup
 =================
 
-``ModelWarmup`` performs a finite ``Once`` warmup Job on each selected
-Kubernetes node. A resource can be image-only, custom-only, or combined:
+``ModelWarmup`` supports a finite ``Once`` lifecycle and a long-lived
+``Continuous`` lifecycle on selected Kubernetes nodes. A resource can be
+image-only, custom-only, or combined:
 image entries make the runtime pull an image and run a safe finite command;
 custom actions can check a node or download an artifact; a combined action does
 both. It does not start an inference engine or gate workloads.
@@ -38,12 +39,47 @@ controller takes their union and deduplicates nodes. While a ``Once`` operation
 is not terminal, Node create and label events add newly matched nodes. After
 Succeeded, Failed, or Degraded, later nodes are ignored.
 
+``Continuous`` keeps reconciling the current authorized target set. A newly
+matching Node receives a Job, while a Node that leaves the selector or
+authorization boundary has its owned Job removed. Coverage is identified by
+the Node UID, so a replacement Node with the same name is warmed again. A Node
+that leaves and later rejoins also starts a new coverage cycle.
+
 The namespace and target nodes must share the
 ``resource-pool.aibrix.ai/name`` label, and nodes must opt in with
 ``model.aibrix.ai/warmup-enabled=true``. Control-plane nodes are excluded.
 ``parallelism`` limits simultaneously active Jobs, and ``jobTimeoutSeconds``
 applies after a Job is created. ``retryLimit`` and
 ``ttlSecondsAfterFinished`` bound retry and retention behavior.
+
+This authorization applies to both lifecycle modes. If the Namespace has no
+non-empty resource-pool label, matching Nodes are not authorized. ``Once``
+reports unavailable or unauthorized configured targets and does not reopen
+after reaching a terminal phase. ``Continuous`` remains ``Pending`` with
+``Ready=False`` and reason ``NamespacePoolNotConfigured``; after the label is
+added or corrected, it automatically resolves the current targets. If Nodes
+exist but their names, pool labels, or warmup opt-in do not authorize them, the
+Continuous Ready condition uses ``TargetsUnavailableOrUnauthorized``. Inspect
+both sides of the authorization boundary with:
+
+.. code-block:: bash
+
+   kubectl get namespace <namespace> --show-labels
+   kubectl get nodes -L resource-pool.aibrix.ai/name,model.aibrix.ai/warmup-enabled
+
+For ``Continuous``, ``retryLimit`` still controls retries inside one Kubernetes
+Job. ``continuousRetryLimit`` controls the number of additional Jobs after a
+terminal failure, and ``continuousRetryIntervalSeconds`` controls the fixed
+delay between those attempts. Automatic retries stop after that budget is
+exhausted. Deleting the retained failed Job explicitly starts a new bounded
+retry cycle.
+
+Successful Continuous Jobs are retained as the per-Node coverage record and
+must not use ``ttlSecondsAfterFinished``. Deleting a retained successful Job
+requests a replay. ``Ready`` means all current targets have succeeded;
+``lastConvergedTime`` records the most recent transition into Ready, and
+``completionTime`` remains unset. Pending, running, and failed target details
+remain bounded even when aggregate counters cover a larger target set.
 
 ModelWarmup does not infer tolerations from the target Node. A Node with a
 ``NoSchedule`` or ``NoExecute`` taint remains subject to normal Kubernetes
@@ -77,6 +113,13 @@ The image-only sample is unchanged and remains compatible with the original v1
 behavior:
 
 .. literalinclude:: ../../../samples/modelwarmup/modelwarmup.yaml
+   :language: yaml
+   :linenos:
+
+The Continuous sample keeps a resource pool covered as Nodes join or are
+replaced:
+
+.. literalinclude:: ../../../samples/modelwarmup/continuous.yaml
    :language: yaml
    :linenos:
 
@@ -152,7 +195,7 @@ be disallowed by Pod Security admission. The samples do not require privileged
 containers; do not broaden privilege, host networking, PID namespaces, or host
 mount scope solely to run them.
 
-``Succeeded`` is a point-in-time aggregate Job result. Kubelet or runtime image
+``Succeeded`` and ``Ready`` are point-in-time aggregate Job results. Kubelet or runtime image
 garbage collection can evict pulled images, and node replacement, cleanup, or
 storage failures can remove host-path model artifacts. Use immutable image and
 model references when reproducibility matters, and retain a durable artifact
@@ -187,13 +230,21 @@ Labels and annotations
    * - ``model.aibrix.ai/target-node``
      - Job
      - Controller-managed annotation recording the exact authorized target
-       Node. Users do not set these Job metadata keys.
+       Node name.
+   * - ``model.aibrix.ai/target-node-uid``
+     - Job
+     - Controller-managed annotation recording the target Node identity used
+       by Continuous coverage.
+   * - ``model.aibrix.ai/attempt``
+     - Job
+     - Controller-managed, one-based Continuous Job attempt. Users do not set
+       these Job metadata keys.
 
 Scope
 -----
 
-The spec is immutable after creation; create another resource for another Once
-operation. Separate pipeline stages, arbitrary lifecycle hooks, workload or
+The spec is immutable after creation; create another resource to change an
+action, selector, or lifecycle policy. Separate pipeline stages, arbitrary lifecycle hooks, workload or
 rollout gating, autoscaler mutation, and workload-derived targets remain out of
 scope. Custom actions are finite Job work, not a general-purpose deployment or
 orchestration framework.

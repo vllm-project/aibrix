@@ -184,6 +184,41 @@ var _ = ginkgo.Describe("ModelWarmup admission", func() {
 		gomega.Expect(k8sClient.Create(ctx, warmup)).To(gomega.Succeed())
 	})
 
+	ginkgo.It("accepts Continuous policies without materializing defaults", func() {
+		warmup := newWarmup("continuous")
+		warmup.Spec.Mode = modelapi.ModelWarmupModeContinuous
+		warmup.Spec.Policies = &modelapi.ModelWarmupPolicies{
+			ContinuousRetryLimit: ptr.To[int32](2), ContinuousRetryIntervalSeconds: ptr.To[int64](30),
+		}
+		gomega.Expect(k8sClient.Create(ctx, warmup)).To(gomega.Succeed())
+		stored := &modelapi.ModelWarmup{}
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(warmup), stored)).To(gomega.Succeed())
+		gomega.Expect(stored.Spec.Mode).To(gomega.Equal(modelapi.ModelWarmupModeContinuous))
+		gomega.Expect(stored.Spec.Policies).To(gomega.Equal(warmup.Spec.Policies))
+	})
+
+	ginkgo.DescribeTable("rejects mode-specific Continuous policy violations", func(mutate func(*modelapi.ModelWarmup)) {
+		warmup := newWarmup("invalid-continuous-policy")
+		mutate(warmup)
+		gomega.Expect(k8sClient.Create(ctx, warmup)).To(gomega.HaveOccurred())
+	},
+		ginkgo.Entry("Continuous TTL", func(w *modelapi.ModelWarmup) {
+			w.Spec.Mode = modelapi.ModelWarmupModeContinuous
+			w.Spec.Policies = &modelapi.ModelWarmupPolicies{TTLSecondsAfterFinished: ptr.To[int32](60)}
+		}),
+		ginkgo.Entry("Continuous retry policy on Once", func(w *modelapi.ModelWarmup) {
+			w.Spec.Policies = &modelapi.ModelWarmupPolicies{ContinuousRetryLimit: ptr.To[int32](1)}
+		}),
+		ginkgo.Entry("Continuous retry limit over maximum", func(w *modelapi.ModelWarmup) {
+			w.Spec.Mode = modelapi.ModelWarmupModeContinuous
+			w.Spec.Policies = &modelapi.ModelWarmupPolicies{ContinuousRetryLimit: ptr.To[int32](11)}
+		}),
+		ginkgo.Entry("zero Continuous retry interval", func(w *modelapi.ModelWarmup) {
+			w.Spec.Mode = modelapi.ModelWarmupModeContinuous
+			w.Spec.Policies = &modelapi.ModelWarmupPolicies{ContinuousRetryIntervalSeconds: ptr.To[int64](0)}
+		}),
+	)
+
 	ginkgo.It("rejects invalid spec updates and permits status updates", func() {
 		warmup := newWarmup("update")
 		gomega.Expect(k8sClient.Create(ctx, warmup)).To(gomega.Succeed())

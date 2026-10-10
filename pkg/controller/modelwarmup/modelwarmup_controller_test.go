@@ -61,6 +61,243 @@ func TestReconcileReportsCreatedJobsWithoutRelisting(t *testing.T) {
 	require.Len(t, updated.Status.Targets, 1)
 	require.Equal(t, modelv1alpha1.ModelWarmupTargetRunning, updated.Status.Targets[0].Phase)
 	require.NotEmpty(t, updated.Status.Targets[0].JobName)
+	var jobs batchv1.JobList
+	require.NoError(t, counting.Client.List(context.Background(), &jobs, client.InNamespace(warmup.Namespace)))
+	require.Len(t, jobs.Items, 1)
+	require.Equal(t, string(nodes[0].UID), jobs.Items[0].Annotations[TargetNodeUIDAnnotationKey])
+	require.NotContains(t, jobs.Items[0].Annotations, AttemptAnnotationKey)
+}
+
+func TestReconcileContinuousCreatesFirstAttemptAndReportsRunning(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+	warmup.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous
+	warmup.Spec.Policies = &modelv1alpha1.ModelWarmupPolicies{
+		Parallelism: ptr.To[int32](1), ContinuousRetryLimit: ptr.To[int32](2),
+		ContinuousRetryIntervalSeconds: ptr.To[int64](300),
+	}
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+
+	require.NoError(t, err)
+	require.Zero(t, result)
+	var jobs batchv1.JobList
+	require.NoError(t, counting.Client.List(context.Background(), &jobs, client.InNamespace(warmup.Namespace)))
+	require.Len(t, jobs.Items, 1)
+	require.Equal(t, "1", jobs.Items[0].Annotations[AttemptAnnotationKey])
+	require.Equal(t, string(nodes[0].UID), jobs.Items[0].Annotations[TargetNodeUIDAnnotationKey])
+	updated := &modelv1alpha1.ModelWarmup{}
+	require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+	require.Equal(t, modelv1alpha1.ModelWarmupRunning, updated.Status.Phase)
+	require.Nil(t, updated.Status.CompletionTime)
+	require.Len(t, updated.Status.Targets, 1)
+	require.Equal(t, int32(1), updated.Status.Targets[0].Attempt)
+	require.Equal(t, modelv1alpha1.ModelWarmupTargetRunning, updated.Status.Targets[0].Phase)
+}
+
+func TestReconcileContinuousBecomesReadyAndSkipsSteadyStateWrites(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+	warmup.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}
+	require.NoError(t, reconcileOnce(r, request))
+
+	var jobs batchv1.JobList
+	require.NoError(t, counting.Client.List(context.Background(), &jobs, client.InNamespace(warmup.Namespace)))
+	require.Len(t, jobs.Items, 1)
+	job := jobs.Items[0].DeepCopy()
+	completedAt := metav1.Now()
+	job.Status.CompletionTime = &completedAt
+	job.Status.Conditions = []batchv1.JobCondition{{
+		Type: batchv1.JobComplete, Status: corev1.ConditionTrue, LastTransitionTime: completedAt,
+	}}
+	require.NoError(t, counting.Client.Status().Update(context.Background(), job))
+
+	require.NoError(t, reconcileOnce(r, request))
+	updated := &modelv1alpha1.ModelWarmup{}
+	require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+	require.Equal(t, modelv1alpha1.ModelWarmupReady, updated.Status.Phase)
+	require.Equal(t, int32(1), updated.Status.SucceededNodes)
+	require.Empty(t, updated.Status.Targets)
+	require.Nil(t, updated.Status.CompletionTime)
+	require.NotNil(t, updated.Status.LastConvergedTime)
+	require.Equal(t, metav1.ConditionTrue, mustCondition(updated.Status.Conditions, "Ready").Status)
+	require.Equal(t, metav1.ConditionFalse, mustCondition(updated.Status.Conditions, "Progressing").Status)
+	require.Equal(t, metav1.ConditionFalse, mustCondition(updated.Status.Conditions, "Degraded").Status)
+	firstConverged := updated.Status.LastConvergedTime.DeepCopy()
+	statusUpdates := counting.statusUpdates
+
+	require.NoError(t, reconcileOnce(r, request))
+	require.Equal(t, statusUpdates, counting.statusUpdates)
+	require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+	require.Equal(t, firstConverged, updated.Status.LastConvergedTime)
+	require.Nil(t, job.Spec.TTLSecondsAfterFinished)
+}
+
+func TestReconcileContinuousReportsOverlappingFailureConditions(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 2)
+	warmup.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous
+	warmup.Spec.Targets = []modelv1alpha1.ModelWarmupTarget{{
+		NodeSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"group": "all"}},
+	}}
+	warmup.Spec.Policies = &modelv1alpha1.ModelWarmupPolicies{
+		Parallelism: ptr.To[int32](2), ContinuousRetryLimit: ptr.To[int32](1),
+		ContinuousRetryIntervalSeconds: ptr.To[int64](300),
+	}
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}
+	require.NoError(t, reconcileOnce(r, request))
+
+	var jobs batchv1.JobList
+	require.NoError(t, counting.Client.List(context.Background(), &jobs, client.InNamespace(warmup.Namespace)))
+	require.Len(t, jobs.Items, 2)
+	failed := jobs.Items[0].DeepCopy()
+	failedAt := metav1.Now()
+	failed.Status.Conditions = []batchv1.JobCondition{{
+		Type: batchv1.JobFailed, Status: corev1.ConditionTrue, LastTransitionTime: failedAt,
+		Reason: "BackoffLimitExceeded", Message: "image pull failed",
+	}}
+	require.NoError(t, counting.Client.Status().Update(context.Background(), failed))
+
+	result, err := r.Reconcile(context.Background(), request)
+	require.NoError(t, err)
+	require.Greater(t, result.RequeueAfter, time.Duration(0))
+	updated := &modelv1alpha1.ModelWarmup{}
+	require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+	require.Equal(t, modelv1alpha1.ModelWarmupDegraded, updated.Status.Phase)
+	require.Equal(t, int32(1), updated.Status.FailedNodes)
+	require.Equal(t, int32(1), updated.Status.ActiveNodes)
+	require.Equal(t, metav1.ConditionTrue, mustCondition(updated.Status.Conditions, "Progressing").Status)
+	require.Equal(t, metav1.ConditionTrue, mustCondition(updated.Status.Conditions, "Degraded").Status)
+	require.Equal(t, int32(1), mustTargetStatus(updated.Status.Targets, targetNodeForJob(failed)).Attempt)
+}
+
+func TestReconcileContinuousIgnoresMissingAndUnauthorizedTargets(t *testing.T) {
+	warmup, namespace, _, scheme := reconcileTestObjects(t, 0)
+	warmup.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous
+	warmup.Spec.Targets = []modelv1alpha1.ModelWarmupTarget{{
+		Nodes: &modelv1alpha1.ModelWarmupNodesTarget{Names: []string{"missing-node"}},
+	}}
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nil)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+	require.NoError(t, reconcileOnce(r, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}))
+	updated := &modelv1alpha1.ModelWarmup{}
+	require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+	require.Equal(t, modelv1alpha1.ModelWarmupPending, updated.Status.Phase)
+	require.Zero(t, updated.Status.DesiredNodes)
+	require.Zero(t, updated.Status.FailedNodes)
+	require.Empty(t, updated.Status.Targets)
+	require.Equal(t, "TargetsUnavailableOrUnauthorized", mustCondition(updated.Status.Conditions, "Ready").Reason)
+}
+
+func TestReconcileContinuousReportsMissingNamespacePool(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+	warmup.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous
+	delete(namespace.Labels, ResourcePoolLabelKey)
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+	require.NoError(t, reconcileOnce(r, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}))
+	updated := &modelv1alpha1.ModelWarmup{}
+	require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+	require.Equal(t, modelv1alpha1.ModelWarmupPending, updated.Status.Phase)
+	require.Zero(t, updated.Status.DesiredNodes)
+	ready := mustCondition(updated.Status.Conditions, "Ready")
+	require.Equal(t, metav1.ConditionFalse, ready.Status)
+	require.Equal(t, "NamespacePoolNotConfigured", ready.Reason)
+	require.Contains(t, ready.Message, ResourcePoolLabelKey)
+}
+
+func TestReconcileContinuousCreatesRetryBeforeDeletingFailedAttempt(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+	warmup.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous
+	warmup.Spec.Policies = &modelv1alpha1.ModelWarmupPolicies{
+		Parallelism: ptr.To[int32](1), ContinuousRetryLimit: ptr.To[int32](1),
+		ContinuousRetryIntervalSeconds: ptr.To[int64](1),
+	}
+	revision := revisionFor(warmup)
+	failed := (&ModelWarmupReconciler{}).jobForTarget(warmup, resolvedTarget{
+		NodeName: nodes[0].Name, NodeUID: nodes[0].UID,
+	}, revision, 1)
+	require.NoError(t, ctrl.SetControllerReference(warmup, failed, scheme))
+	failedAt := metav1.NewTime(time.Now().Add(-2 * time.Second))
+	failed.Status.Conditions = []batchv1.JobCondition{{
+		Type: batchv1.JobFailed, Status: corev1.ConditionTrue, LastTransitionTime: failedAt,
+	}}
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes, failed)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+
+	require.NoError(t, err)
+	require.Zero(t, result.RequeueAfter)
+	var jobs batchv1.JobList
+	require.NoError(t, counting.Client.List(context.Background(), &jobs, client.InNamespace(warmup.Namespace)))
+	require.Len(t, jobs.Items, 1)
+	require.Equal(t, "2", jobs.Items[0].Annotations[AttemptAnnotationKey])
+	require.True(t, strings.HasSuffix(jobs.Items[0].Name, "-a2"))
+	updated := &modelv1alpha1.ModelWarmup{}
+	require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+	require.Equal(t, modelv1alpha1.ModelWarmupRunning, updated.Status.Phase)
+	require.Equal(t, int32(2), updated.Status.Targets[0].Attempt)
+}
+
+func TestReconcileContinuousStopsAfterRetryBudgetIsExhausted(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+	warmup.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous
+	warmup.Spec.Policies = &modelv1alpha1.ModelWarmupPolicies{
+		Parallelism: ptr.To[int32](1), ContinuousRetryLimit: ptr.To[int32](0),
+		ContinuousRetryIntervalSeconds: ptr.To[int64](1),
+	}
+	failed := (&ModelWarmupReconciler{}).jobForTarget(warmup, resolvedTarget{
+		NodeName: nodes[0].Name, NodeUID: nodes[0].UID,
+	}, revisionFor(warmup), 1)
+	require.NoError(t, ctrl.SetControllerReference(warmup, failed, scheme))
+	failedAt := metav1.NewTime(time.Now().Add(-time.Minute))
+	failed.Status.Conditions = []batchv1.JobCondition{{
+		Type: batchv1.JobFailed, Status: corev1.ConditionTrue, LastTransitionTime: failedAt,
+	}}
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes, failed)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+
+	require.NoError(t, err)
+	require.Zero(t, result)
+	var jobs batchv1.JobList
+	require.NoError(t, counting.Client.List(context.Background(), &jobs, client.InNamespace(warmup.Namespace)))
+	require.Len(t, jobs.Items, 1)
+	updated := &modelv1alpha1.ModelWarmup{}
+	require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+	require.Equal(t, modelv1alpha1.ModelWarmupDegraded, updated.Status.Phase)
+	require.Equal(t, metav1.ConditionFalse, mustCondition(updated.Status.Conditions, "Progressing").Status)
+	require.Equal(t, metav1.ConditionTrue, mustCondition(updated.Status.Conditions, "Degraded").Status)
+}
+
+func TestReconcileContinuousReportsTargetLimitWithoutJobMutations(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, modelv1alpha1.MaxModelWarmupTargets+1)
+	warmup.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous
+	warmup.Spec.Targets = []modelv1alpha1.ModelWarmupTarget{{
+		NodeSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"group": "all"}},
+	}}
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+	require.NoError(t, reconcileOnce(r, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}))
+
+	require.Zero(t, counting.createCalls)
+	updated := &modelv1alpha1.ModelWarmup{}
+	require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+	require.Equal(t, modelv1alpha1.ModelWarmupDegraded, updated.Status.Phase)
+	require.Equal(t, int32(modelv1alpha1.MaxModelWarmupTargets+1), updated.Status.DesiredNodes)
+	require.Len(t, updated.Status.Targets, modelv1alpha1.MaxModelWarmupTargetDetails)
+	require.Equal(t, int32(1+modelv1alpha1.MaxModelWarmupTargets-modelv1alpha1.MaxModelWarmupTargetDetails),
+		updated.Status.OmittedTargetDetails)
+	require.Equal(t, "TargetLimitExceeded", mustCondition(updated.Status.Conditions, "Degraded").Reason)
 }
 
 func TestReconcileSkipsSemanticNoopStatusWrite(t *testing.T) {
@@ -822,6 +1059,31 @@ func TestJobNamePreservesNodeAndRevisionSuffix(t *testing.T) {
 	require.NotEqual(t, first.Name, second.Name)
 }
 
+func TestJobForTargetPreservesAttemptOneNameAndRecordsIdentity(t *testing.T) {
+	warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
+		Name: strings.Repeat("warmup-", 20), Namespace: "default", UID: "warmup-uid",
+	}}
+	target := resolvedTarget{NodeName: strings.Repeat("node-", 60), NodeUID: types.UID("node-uid")}
+	revision := "123456789abc"
+
+	once := (&ModelWarmupReconciler{}).jobForTarget(warmup, target, revision, 0)
+	first := (&ModelWarmupReconciler{}).jobForTarget(warmup, target, revision, 1)
+	second := (&ModelWarmupReconciler{}).jobForTarget(warmup, target, revision, 2)
+	eleventh := (&ModelWarmupReconciler{}).jobForTarget(warmup, target, revision, 11)
+
+	require.Equal(t, modelWarmupJobName(warmup.Name, string(warmup.UID), target.NodeName, revision), once.Name)
+	require.Equal(t, once.Name, first.Name)
+	require.Equal(t, "node-uid", once.Annotations[TargetNodeUIDAnnotationKey])
+	require.NotContains(t, once.Annotations, AttemptAnnotationKey)
+	require.Equal(t, "1", first.Annotations[AttemptAnnotationKey])
+	require.Equal(t, "2", second.Annotations[AttemptAnnotationKey])
+	require.Equal(t, "11", eleventh.Annotations[AttemptAnnotationKey])
+	require.True(t, strings.HasSuffix(second.Name, "-a2"))
+	require.True(t, strings.HasSuffix(eleventh.Name, "-a11"))
+	require.LessOrEqual(t, len(second.Name), 63)
+	require.LessOrEqual(t, len(eleventh.Name), 63)
+}
+
 func TestJobNameSeparatesWarmupsWithTheSameTruncatedPrefix(t *testing.T) {
 	firstWarmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
 		Name: strings.Repeat("a", 80) + "-first", UID: "warmup-uid-first",
@@ -1104,6 +1366,34 @@ func TestNodeEventsEnqueueOnlyActiveWarmupsAndIgnoreHeartbeats(t *testing.T) {
 	labelUpdate := oldNode.DeepCopy()
 	labelUpdate.Labels["pool"] = "b"
 	require.True(t, predicate.Update(event.UpdateEvent{ObjectOld: oldNode, ObjectNew: labelUpdate}))
+}
+
+func TestNamespacePoolEventsEnqueueOnlyContinuousWarmups(t *testing.T) {
+	continuous := validWarmupForControllerTest("tenant", "continuous")
+	continuous.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous
+	continuous.Status.Phase = modelv1alpha1.ModelWarmupReady
+	once := validWarmupForControllerTest("tenant", "once")
+	otherNamespace := validWarmupForControllerTest("other", "continuous")
+	otherNamespace.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous
+	scheme := runtime.NewScheme()
+	require.NoError(t, modelv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(continuous, once, otherNamespace).Build()
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant"}}
+
+	requests := enqueueContinuousModelWarmupsForNamespace(c)(context.Background(), namespace)
+	require.Equal(t, []ctrl.Request{{NamespacedName: client.ObjectKeyFromObject(continuous)}}, requests)
+
+	predicate := namespaceResourcePoolChanged()
+	oldNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: "tenant", Labels: map[string]string{ResourcePoolLabelKey: "pool-a", "unrelated": "old"},
+	}}
+	unrelated := oldNamespace.DeepCopy()
+	unrelated.Labels["unrelated"] = "new"
+	require.False(t, predicate.Update(event.UpdateEvent{ObjectOld: oldNamespace, ObjectNew: unrelated}))
+	poolUpdate := oldNamespace.DeepCopy()
+	poolUpdate.Labels[ResourcePoolLabelKey] = "pool-b"
+	require.True(t, predicate.Update(event.UpdateEvent{ObjectOld: oldNamespace, ObjectNew: poolUpdate}))
 }
 
 func validWarmupForControllerTest(namespace, name string) *modelv1alpha1.ModelWarmup {

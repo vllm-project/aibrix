@@ -2259,6 +2259,15 @@ spec:
                 type: string
               policies:
                 properties:
+                  continuousRetryIntervalSeconds:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  continuousRetryLimit:
+                    format: int32
+                    maximum: 10
+                    minimum: 0
+                    type: integer
                   jobTimeoutSeconds:
                     format: int64
                     minimum: 1
@@ -2373,6 +2382,9 @@ spec:
               failedNodes:
                 format: int32
                 type: integer
+              lastConvergedTime:
+                format: date-time
+                type: string
               observedRevision:
                 type: string
               omittedTargetDetails:
@@ -2389,6 +2401,9 @@ spec:
               targets:
                 items:
                   properties:
+                    attempt:
+                      format: int32
+                      type: integer
                     jobName:
                       type: string
                     lastTransitionTime:

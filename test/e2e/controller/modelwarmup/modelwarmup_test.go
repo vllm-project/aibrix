@@ -230,6 +230,119 @@ func TestModelWarmupOnceIgnoresSelectorMatchAfterSuccess(t *testing.T) {
 	env.waitForSucceededJobsAndPods(t, ctx, warmup.Name, []string{nodes[0].Name})
 }
 
+func TestModelWarmupOnceAndContinuousResourcesCoexistAcrossMembershipChanges(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	env := newTestEnvironment(t, ctx)
+	nodes := env.readyWarmupNodes(t, ctx, 2)
+	env.setNodeLabel(t, ctx, nodes[0].Name, "coexist")
+
+	onceExplicit := env.createLifecycleOnceWarmup(t, ctx, "once-explicit", []modelapi.ModelWarmupTarget{{
+		Nodes: &modelapi.ModelWarmupNodesTarget{Names: []string{nodes[0].Name}},
+	}})
+	onceSelector := env.createLifecycleOnceWarmup(t, ctx, "once-selector", []modelapi.ModelWarmupTarget{{
+		NodeSelector: selectorFor("coexist"),
+	}})
+	continuousExplicit := env.createContinuousWarmup(t, ctx, "continuous-explicit", []modelapi.ModelWarmupTarget{{
+		Nodes: &modelapi.ModelWarmupNodesTarget{Names: []string{nodes[0].Name}},
+	}}, []string{"sh", "-c", "exit 0"})
+	continuousSelector := env.createContinuousWarmup(t, ctx, "continuous-selector", []modelapi.ModelWarmupTarget{{
+		NodeSelector: selectorFor("coexist"),
+	}}, []string{"sh", "-c", "exit 0"})
+
+	env.waitForWarmupSucceeded(t, ctx, onceExplicit, 1)
+	env.waitForWarmupSucceeded(t, ctx, onceSelector, 1)
+	env.waitForWarmupReady(t, ctx, continuousExplicit, 1)
+	env.waitForWarmupReady(t, ctx, continuousSelector, 1)
+	env.assertContinuousJobIdentity(t, ctx, continuousExplicit.Name, map[string]string{
+		nodes[0].Name: string(nodes[0].UID),
+	})
+
+	env.setNodeLabel(t, ctx, nodes[1].Name, "coexist")
+	env.waitForWarmupReady(t, ctx, continuousSelector, 2)
+	env.waitForWarmupSucceeded(t, ctx, onceSelector, 1)
+	env.waitForWarmupReady(t, ctx, continuousExplicit, 1)
+	env.assertContinuousJobIdentity(t, ctx, continuousSelector.Name, map[string]string{
+		nodes[0].Name: string(nodes[0].UID), nodes[1].Name: string(nodes[1].UID),
+	})
+
+	env.removeNodeLabel(t, ctx, nodes[0].Name)
+	env.waitForWarmupReady(t, ctx, continuousSelector, 1)
+	env.assertContinuousJobIdentity(t, ctx, continuousSelector.Name, map[string]string{
+		nodes[1].Name: string(nodes[1].UID),
+	})
+
+	env.setNodeLabel(t, ctx, nodes[0].Name, "coexist")
+	env.waitForWarmupReady(t, ctx, continuousSelector, 2)
+	jobs := env.warmupJobs(t, ctx, continuousSelector.Name)
+	var replayedNodeJob batchv1.Job
+	for _, job := range jobs {
+		if job.Annotations[modelwarmup.TargetNodeAnnotationKey] == nodes[0].Name {
+			replayedNodeJob = job
+		}
+	}
+	if replayedNodeJob.Name == "" {
+		t.Fatalf("no retained Continuous Job found for %s", nodes[0].Name)
+	}
+	oldJobUID := replayedNodeJob.UID
+	if err := env.kube.BatchV1().Jobs(env.namespace).Delete(ctx, replayedNodeJob.Name, metav1.DeleteOptions{
+		PropagationPolicy: ptr.To(metav1.DeletePropagationBackground),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err := wait.PollUntilContextTimeout(
+		ctx, 200*time.Millisecond, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
+			for _, job := range env.warmupJobs(t, ctx, continuousSelector.Name) {
+				if job.Annotations[modelwarmup.TargetNodeAnnotationKey] == nodes[0].Name && job.UID != oldJobUID {
+					return job.Annotations[modelwarmup.AttemptAnnotationKey] == "1", nil
+				}
+			}
+			return false, nil
+		})
+	if err != nil {
+		env.dumpWarmupDiagnostics(t, continuousSelector.Name)
+		t.Fatal(err)
+	}
+	env.waitForWarmupReady(t, ctx, continuousSelector, 2)
+
+	env.setNamespacePoolLabel(t, ctx, "")
+	env.waitForContinuousPendingReason(t, ctx, continuousExplicit, "NamespacePoolNotConfigured")
+	env.waitForContinuousPendingReason(t, ctx, continuousSelector, "NamespacePoolNotConfigured")
+	env.waitForWarmupSucceeded(t, ctx, onceExplicit, 1)
+	env.waitForWarmupSucceeded(t, ctx, onceSelector, 1)
+
+	env.setNamespacePoolLabel(t, ctx, "e2e")
+	env.waitForWarmupReady(t, ctx, continuousExplicit, 1)
+	env.waitForWarmupReady(t, ctx, continuousSelector, 2)
+}
+
+func TestModelWarmupContinuousBoundsRetriesAndManualDeletionResetsTheCycle(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	env := newTestEnvironment(t, ctx)
+	node := env.readyWarmupNodes(t, ctx, 1)[0]
+	warmup := env.newContinuousWarmup("continuous-retry-bounded", []modelapi.ModelWarmupTarget{{
+		Nodes: &modelapi.ModelWarmupNodesTarget{Names: []string{node.Name}},
+	}}, []string{"sh", "-c", "exit 1"})
+	warmup.Spec.Policies.RetryLimit = ptr.To[int32](0)
+	warmup.Spec.Policies.ContinuousRetryLimit = ptr.To[int32](1)
+	warmup.Spec.Policies.ContinuousRetryIntervalSeconds = ptr.To[int64](3)
+	if err := env.apiClient.Create(ctx, warmup); err != nil {
+		t.Fatal(err)
+	}
+	env.waitForContinuousAttempt(t, ctx, warmup, 2, modelapi.ModelWarmupDegraded)
+	jobs := env.warmupJobs(t, ctx, warmup.Name)
+	if len(jobs) != 1 || jobs[0].Annotations[modelwarmup.AttemptAnnotationKey] != "2" {
+		t.Fatalf("final retry Jobs = %+v, want one attempt 2", jobs)
+	}
+	if err := env.kube.BatchV1().Jobs(env.namespace).Delete(ctx, jobs[0].Name, metav1.DeleteOptions{
+		PropagationPolicy: ptr.To(metav1.DeletePropagationBackground),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	env.waitForContinuousAttempt(t, ctx, warmup, 1, modelapi.ModelWarmupDegraded)
+}
+
 func TestModelWarmupReportsFailedJobWithoutMutatingExistingWorkload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -519,6 +632,34 @@ func (e *testEnvironment) setNodeLabel(
 	})
 }
 
+func (e *testEnvironment) removeNodeLabel(t *testing.T, ctx context.Context, nodeName string) {
+	t.Helper()
+	node, err := e.kube.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(node.Labels, testSelectorLabel)
+	if _, err := e.kube.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (e *testEnvironment) setNamespacePoolLabel(t *testing.T, ctx context.Context, value string) {
+	t.Helper()
+	namespace, err := e.kube.CoreV1().Namespaces().Get(ctx, e.namespace, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value == "" {
+		delete(namespace.Labels, modelwarmup.ResourcePoolLabelKey)
+	} else {
+		namespace.Labels[modelwarmup.ResourcePoolLabelKey] = value
+	}
+	if _, err := e.kube.CoreV1().Namespaces().Update(ctx, namespace, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (e *testEnvironment) createWarmup(
 	t *testing.T,
 	ctx context.Context,
@@ -566,6 +707,192 @@ func (e *testEnvironment) createWarmupWithImage(
 		t.Fatal(err)
 	}
 	return warmup
+}
+
+func (e *testEnvironment) newContinuousWarmup(
+	name string,
+	targets []modelapi.ModelWarmupTarget,
+	command []string,
+) *modelapi.ModelWarmup {
+	return &modelapi.ModelWarmup{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: e.namespace},
+		Spec: modelapi.ModelWarmupSpec{
+			Mode:    modelapi.ModelWarmupModeContinuous,
+			Targets: targets,
+			ImagePreload: modelapi.ModelWarmupImagePreload{Images: []modelapi.ModelWarmupImage{{
+				Image: "busybox:1.36", Command: slices.Clone(command), ImagePullPolicy: corev1.PullIfNotPresent,
+			}}},
+			Policies: &modelapi.ModelWarmupPolicies{
+				Parallelism: ptr.To[int32](4), JobTimeoutSeconds: ptr.To[int64](60), RetryLimit: ptr.To[int32](1),
+				ContinuousRetryLimit: ptr.To[int32](2), ContinuousRetryIntervalSeconds: ptr.To[int64](300),
+			},
+		},
+	}
+}
+
+func (e *testEnvironment) createLifecycleOnceWarmup(
+	t *testing.T,
+	ctx context.Context,
+	name string,
+	targets []modelapi.ModelWarmupTarget,
+) *modelapi.ModelWarmup {
+	t.Helper()
+	warmup := e.newContinuousWarmup(name, targets, []string{"sh", "-c", "exit 0"})
+	warmup.Spec.Mode = modelapi.ModelWarmupModeOnce
+	warmup.Spec.Policies.ContinuousRetryLimit = nil
+	warmup.Spec.Policies.ContinuousRetryIntervalSeconds = nil
+	warmup.Spec.Policies.TTLSecondsAfterFinished = ptr.To[int32](3600)
+	if err := e.apiClient.Create(ctx, warmup); err != nil {
+		t.Fatal(err)
+	}
+	return warmup
+}
+
+func (e *testEnvironment) createContinuousWarmup(
+	t *testing.T,
+	ctx context.Context,
+	name string,
+	targets []modelapi.ModelWarmupTarget,
+	command []string,
+) *modelapi.ModelWarmup {
+	t.Helper()
+	warmup := e.newContinuousWarmup(name, targets, command)
+	if err := e.apiClient.Create(ctx, warmup); err != nil {
+		t.Fatal(err)
+	}
+	return warmup
+}
+
+func (e *testEnvironment) warmupJobs(t *testing.T, ctx context.Context, warmupName string) []batchv1.Job {
+	t.Helper()
+	selector, err := e.warmupJobSelector(ctx, warmupName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := e.kube.BatchV1().Jobs(e.namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return jobs.Items
+}
+
+func (e *testEnvironment) waitForWarmupReady(
+	t *testing.T,
+	ctx context.Context,
+	warmup *modelapi.ModelWarmup,
+	desired int32,
+) {
+	t.Helper()
+	err := wait.PollUntilContextTimeout(
+		ctx, 500*time.Millisecond, 3*time.Minute, true, func(ctx context.Context) (bool, error) {
+			latest := &modelapi.ModelWarmup{}
+			if err := e.apiClient.Get(ctx, client.ObjectKeyFromObject(warmup), latest); err != nil {
+				return false, err
+			}
+			if latest.Status.Phase != modelapi.ModelWarmupReady || latest.Status.DesiredNodes != desired ||
+				latest.Status.SucceededNodes != desired || latest.Status.ActiveNodes != 0 || latest.Status.FailedNodes != 0 ||
+				latest.Status.CompletionTime != nil || latest.Status.LastConvergedTime == nil {
+				return false, nil
+			}
+			jobs := e.warmupJobs(t, ctx, warmup.Name)
+			if len(jobs) != int(desired) {
+				return false, nil
+			}
+			for _, job := range jobs {
+				if job.Status.Succeeded == 0 || job.Spec.TTLSecondsAfterFinished != nil {
+					return false, nil
+				}
+			}
+			return true, nil
+		})
+	if err != nil {
+		e.dumpWarmupDiagnostics(t, warmup.Name)
+		t.Fatal(err)
+	}
+}
+
+func (e *testEnvironment) assertContinuousJobIdentity(
+	t *testing.T,
+	ctx context.Context,
+	warmupName string,
+	want map[string]string,
+) {
+	t.Helper()
+	jobs := e.warmupJobs(t, ctx, warmupName)
+	if len(jobs) != len(want) {
+		t.Fatalf("got %d Jobs for %s, want %d", len(jobs), warmupName, len(want))
+	}
+	for _, job := range jobs {
+		nodeName := job.Annotations[modelwarmup.TargetNodeAnnotationKey]
+		if job.Annotations[modelwarmup.TargetNodeUIDAnnotationKey] != want[nodeName] {
+			t.Fatalf("Job %s target identity = %s/%s, want %s/%s", job.Name, nodeName,
+				job.Annotations[modelwarmup.TargetNodeUIDAnnotationKey], nodeName, want[nodeName])
+		}
+		if job.Annotations[modelwarmup.AttemptAnnotationKey] != "1" {
+			t.Fatalf("Job %s attempt = %q, want 1", job.Name, job.Annotations[modelwarmup.AttemptAnnotationKey])
+		}
+	}
+}
+
+func (e *testEnvironment) waitForContinuousPendingReason(
+	t *testing.T,
+	ctx context.Context,
+	warmup *modelapi.ModelWarmup,
+	reason string,
+) {
+	t.Helper()
+	err := wait.PollUntilContextTimeout(
+		ctx, 200*time.Millisecond, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
+			latest := &modelapi.ModelWarmup{}
+			if err := e.apiClient.Get(ctx, client.ObjectKeyFromObject(warmup), latest); err != nil {
+				return false, err
+			}
+			ready := modelWarmupCondition(latest.Status.Conditions, "Ready")
+			return latest.Status.Phase == modelapi.ModelWarmupPending && latest.Status.DesiredNodes == 0 &&
+				ready.Status == metav1.ConditionFalse && ready.Reason == reason &&
+				len(e.warmupJobs(t, ctx, warmup.Name)) == 0, nil
+		})
+	if err != nil {
+		e.dumpWarmupDiagnostics(t, warmup.Name)
+		t.Fatal(err)
+	}
+}
+
+func modelWarmupCondition(conditions []metav1.Condition, conditionType string) metav1.Condition {
+	for _, condition := range conditions {
+		if condition.Type == conditionType {
+			return condition
+		}
+	}
+	return metav1.Condition{}
+}
+
+func (e *testEnvironment) waitForContinuousAttempt(
+	t *testing.T,
+	ctx context.Context,
+	warmup *modelapi.ModelWarmup,
+	attempt int32,
+	phase modelapi.ModelWarmupPhase,
+) {
+	t.Helper()
+	err := wait.PollUntilContextTimeout(
+		ctx, 200*time.Millisecond, 3*time.Minute, true, func(ctx context.Context) (bool, error) {
+			jobs := e.warmupJobs(t, ctx, warmup.Name)
+			if len(jobs) != 1 || jobs[0].Annotations[modelwarmup.AttemptAnnotationKey] != fmt.Sprint(attempt) ||
+				jobs[0].Status.Failed == 0 {
+				return false, nil
+			}
+			latest := &modelapi.ModelWarmup{}
+			if err := e.apiClient.Get(ctx, client.ObjectKeyFromObject(warmup), latest); err != nil {
+				return false, err
+			}
+			return latest.Status.Phase == phase && latest.Status.FailedNodes == 1 && len(latest.Status.Targets) == 1 &&
+				latest.Status.Targets[0].Attempt == attempt, nil
+		})
+	if err != nil {
+		e.dumpWarmupDiagnostics(t, warmup.Name)
+		t.Fatal(err)
+	}
 }
 
 func (e *testEnvironment) waitForWarmupSucceeded(
