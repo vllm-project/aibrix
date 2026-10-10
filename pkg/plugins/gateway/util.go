@@ -83,11 +83,13 @@ type responsesReqMinimal struct {
 }
 
 // contentItem holds the raw JSON "content" field of a chat message or a Responses API
-// input item, plus the "tool_calls" of an assistant chat message. It is shared by
-// chatReqMinimal.Messages, parseChatMessages, and parseResponsesInput.
+// input item, plus the "tool_calls" of an assistant chat message and its deprecated
+// single-call form "function_call". It is shared by chatReqMinimal.Messages,
+// parseChatMessages, and parseResponsesInput.
 type contentItem struct {
-	Content   json.RawMessage `json:"content"`
-	ToolCalls json.RawMessage `json:"tool_calls"`
+	Content      json.RawMessage `json:"content"`
+	ToolCalls    json.RawMessage `json:"tool_calls"`
+	FunctionCall json.RawMessage `json:"function_call"`
 }
 
 // engineNativeReqMinimal captures the fields needed to route a vLLM engine-native
@@ -116,9 +118,10 @@ type embeddingReqMinimal struct {
 // parseChatMessages extracts a single concatenated text string from the minimal
 // chat request messages. For simple string content it unquotes the JSON string
 // directly; for array/object content it writes the raw JSON bytes. A null content
-// contributes nothing. An assistant message's tool_calls are written as raw JSON
-// after its content: the engine renders them into the prompt, so they belong in the
-// text used for prefix matching and prompt-length estimates.
+// contributes nothing. An assistant message's tool_calls, or its deprecated
+// function_call, are written as raw JSON after its content: the engine renders them
+// into the prompt, so they belong in the text used for prefix matching and
+// prompt-length estimates.
 func parseChatMessages(requestID string, msgs []contentItem) (string, *extProcPb.ProcessingResponse) {
 	if len(msgs) == 0 {
 		klog.ErrorS(nil, "no messages in the request body", "requestID", requestID)
@@ -129,7 +132,7 @@ func parseChatMessages(requestID string, msgs []contentItem) (string, *extProcPb
 	var builder strings.Builder
 	growHint := len(msgs) - 1 // space separators
 	for _, m := range msgs {
-		growHint += len(m.Content) + len(m.ToolCalls) + 1
+		growHint += len(m.Content) + len(m.ToolCalls) + len(m.FunctionCall) + 2
 	}
 	builder.Grow(growHint)
 	for i, m := range msgs {
@@ -140,19 +143,30 @@ func parseChatMessages(requestID string, msgs []contentItem) (string, *extProcPb
 		if hasContent {
 			writeChatContent(&builder, m.Content)
 		}
-		if hasToolCalls(m.ToolCalls) {
+		calls := m.ToolCalls
+		if !hasToolCalls(calls) {
+			calls = m.FunctionCall
+		}
+		if hasToolCalls(calls) {
 			if hasContent {
 				builder.WriteByte(' ')
 			}
-			builder.Write(m.ToolCalls)
+			builder.Write(calls)
 		}
 	}
 	return builder.String(), nil
 }
 
-// hasToolCalls reports whether a message's raw "tool_calls" holds at least one call.
+// hasToolCalls reports whether a message's raw "tool_calls" or "function_call"
+// holds a call. An empty array counts as none, with or without inner whitespace.
 func hasToolCalls(raw json.RawMessage) bool {
-	return len(raw) > 0 && string(raw) != jsonNull && string(raw) != "[]"
+	if len(raw) == 0 || string(raw) == jsonNull {
+		return false
+	}
+	if raw[0] == '[' && raw[len(raw)-1] == ']' {
+		return len(bytes.TrimSpace(raw[1:len(raw)-1])) > 0
+	}
+	return true
 }
 
 // writeChatContent appends one message's content to the routing text.
