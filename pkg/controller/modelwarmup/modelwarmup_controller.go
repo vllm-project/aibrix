@@ -156,6 +156,9 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
+	if effectiveMode(warmup) == modelv1alpha1.ModelWarmupModeContinuous {
+		return r.reconcileContinuous(ctx, warmup, revision, targets, jobs.Items)
+	}
 	snapshot := buildReconcileSnapshot(warmup, revision, targets, missing, jobs.Items)
 	if !withinTargetLimit(targets, missing) {
 		message := fmt.Sprintf(

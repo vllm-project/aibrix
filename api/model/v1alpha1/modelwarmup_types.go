@@ -51,8 +51,8 @@ const (
 )
 
 type ModelWarmupSpec struct {
-	// Mode controls the warmup lifecycle. Omission means Once. Continuous is
-	// reserved for a future API revision.
+	// Mode controls the warmup lifecycle. Omission means Once. Continuous keeps
+	// reconciling the current authorized target set as Node membership changes.
 	// +optional
 	Mode ModelWarmupMode `json:"mode,omitempty"`
 
