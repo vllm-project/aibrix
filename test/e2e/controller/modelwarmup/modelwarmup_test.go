@@ -290,14 +290,15 @@ func TestModelWarmupOnceAndContinuousResourcesCoexistAcrossMembershipChanges(t *
 	}); err != nil {
 		t.Fatal(err)
 	}
-	err := wait.PollUntilContextTimeout(ctx, 200*time.Millisecond, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
-		for _, job := range env.warmupJobs(t, ctx, continuousSelector.Name) {
-			if job.Annotations[modelwarmup.TargetNodeAnnotationKey] == nodes[0].Name && job.UID != oldJobUID {
-				return job.Annotations[modelwarmup.AttemptAnnotationKey] == "1", nil
+	err := wait.PollUntilContextTimeout(
+		ctx, 200*time.Millisecond, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
+			for _, job := range env.warmupJobs(t, ctx, continuousSelector.Name) {
+				if job.Annotations[modelwarmup.TargetNodeAnnotationKey] == nodes[0].Name && job.UID != oldJobUID {
+					return job.Annotations[modelwarmup.AttemptAnnotationKey] == "1", nil
+				}
 			}
-		}
-		return false, nil
-	})
+			return false, nil
+		})
 	if err != nil {
 		env.dumpWarmupDiagnostics(t, continuousSelector.Name)
 		t.Fatal(err)
@@ -756,27 +757,28 @@ func (e *testEnvironment) waitForWarmupReady(
 	desired int32,
 ) {
 	t.Helper()
-	err := wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 3*time.Minute, true, func(ctx context.Context) (bool, error) {
-		latest := &modelapi.ModelWarmup{}
-		if err := e.apiClient.Get(ctx, client.ObjectKeyFromObject(warmup), latest); err != nil {
-			return false, err
-		}
-		if latest.Status.Phase != modelapi.ModelWarmupReady || latest.Status.DesiredNodes != desired ||
-			latest.Status.SucceededNodes != desired || latest.Status.ActiveNodes != 0 || latest.Status.FailedNodes != 0 ||
-			latest.Status.CompletionTime != nil || latest.Status.LastConvergedTime == nil {
-			return false, nil
-		}
-		jobs := e.warmupJobs(t, ctx, warmup.Name)
-		if len(jobs) != int(desired) {
-			return false, nil
-		}
-		for _, job := range jobs {
-			if job.Status.Succeeded == 0 || job.Spec.TTLSecondsAfterFinished != nil {
+	err := wait.PollUntilContextTimeout(
+		ctx, 500*time.Millisecond, 3*time.Minute, true, func(ctx context.Context) (bool, error) {
+			latest := &modelapi.ModelWarmup{}
+			if err := e.apiClient.Get(ctx, client.ObjectKeyFromObject(warmup), latest); err != nil {
+				return false, err
+			}
+			if latest.Status.Phase != modelapi.ModelWarmupReady || latest.Status.DesiredNodes != desired ||
+				latest.Status.SucceededNodes != desired || latest.Status.ActiveNodes != 0 || latest.Status.FailedNodes != 0 ||
+				latest.Status.CompletionTime != nil || latest.Status.LastConvergedTime == nil {
 				return false, nil
 			}
-		}
-		return true, nil
-	})
+			jobs := e.warmupJobs(t, ctx, warmup.Name)
+			if len(jobs) != int(desired) {
+				return false, nil
+			}
+			for _, job := range jobs {
+				if job.Status.Succeeded == 0 || job.Spec.TTLSecondsAfterFinished != nil {
+					return false, nil
+				}
+			}
+			return true, nil
+		})
 	if err != nil {
 		e.dumpWarmupDiagnostics(t, warmup.Name)
 		t.Fatal(err)
@@ -814,19 +816,20 @@ func (e *testEnvironment) waitForContinuousAttempt(
 	phase modelapi.ModelWarmupPhase,
 ) {
 	t.Helper()
-	err := wait.PollUntilContextTimeout(ctx, 200*time.Millisecond, 3*time.Minute, true, func(ctx context.Context) (bool, error) {
-		jobs := e.warmupJobs(t, ctx, warmup.Name)
-		if len(jobs) != 1 || jobs[0].Annotations[modelwarmup.AttemptAnnotationKey] != fmt.Sprint(attempt) ||
-			jobs[0].Status.Failed == 0 {
-			return false, nil
-		}
-		latest := &modelapi.ModelWarmup{}
-		if err := e.apiClient.Get(ctx, client.ObjectKeyFromObject(warmup), latest); err != nil {
-			return false, err
-		}
-		return latest.Status.Phase == phase && latest.Status.FailedNodes == 1 && len(latest.Status.Targets) == 1 &&
-			latest.Status.Targets[0].Attempt == attempt, nil
-	})
+	err := wait.PollUntilContextTimeout(
+		ctx, 200*time.Millisecond, 3*time.Minute, true, func(ctx context.Context) (bool, error) {
+			jobs := e.warmupJobs(t, ctx, warmup.Name)
+			if len(jobs) != 1 || jobs[0].Annotations[modelwarmup.AttemptAnnotationKey] != fmt.Sprint(attempt) ||
+				jobs[0].Status.Failed == 0 {
+				return false, nil
+			}
+			latest := &modelapi.ModelWarmup{}
+			if err := e.apiClient.Get(ctx, client.ObjectKeyFromObject(warmup), latest); err != nil {
+				return false, err
+			}
+			return latest.Status.Phase == phase && latest.Status.FailedNodes == 1 && len(latest.Status.Targets) == 1 &&
+				latest.Status.Targets[0].Attempt == attempt, nil
+		})
 	if err != nil {
 		e.dumpWarmupDiagnostics(t, warmup.Name)
 		t.Fatal(err)
