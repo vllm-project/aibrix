@@ -364,6 +364,39 @@ class TestDownloadFile:
             # save the result with the original name.
             assert "data.json" in response.headers.get("content-disposition", "")
 
+    def test_content_unicode_filename_does_not_error(self):
+        """A non-ASCII filename must not turn a download into a 500.
+
+        The stored filename is reflected into the ``Content-Disposition``
+        and ``X-File-Name`` headers, whose values must be latin-1
+        encodable. A raw Unicode filename used to raise UnicodeEncodeError
+        and return 500 for an otherwise valid file.
+        """
+        with TestClient(create_test_app()) as client:
+            payload = b'{"hello":"world"}'
+            filename = "\u6d4b\u8bd5.json"
+            upload = client.post(
+                "/v1/files",
+                files={"file": (filename, BytesIO(payload), "application/json")},
+                data={"purpose": "batch"},
+            )
+            assert upload.status_code == 200
+            file_id = upload.json()["id"]
+
+            response = client.get(f"/v1/files/{file_id}/content")
+            assert response.status_code == 200
+            assert response.content == payload
+
+            disposition = response.headers["content-disposition"]
+            # Header value must stay HTTP-safe while preserving the name.
+            disposition.encode("latin-1")
+            assert "filename*=UTF-8''" in disposition
+            assert "%E6%B5%8B%E8%AF%95.json" in disposition
+
+            head_response = client.head(f"/v1/files/{file_id}")
+            assert head_response.status_code == 200
+            assert head_response.headers["X-File-Name"] == "%E6%B5%8B%E8%AF%95.json"
+
     def test_content_unknown_id_returns_404(self):
         with TestClient(create_test_app()) as client:
             response = client.get("/v1/files/no-such/content")
