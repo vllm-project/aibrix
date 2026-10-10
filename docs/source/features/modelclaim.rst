@@ -260,20 +260,15 @@ Do not set ``--gpu-memory-utilization``. kvcached owns elastic KV-cache
 allocation, and the ModelClaim path rejects that flag. Data parallelism is not
 supported; ``--data-parallel-size`` must remain 1.
 
-Configure TP, PP, and PCP pools
--------------------------------
+Configure TP and PP pools
+-------------------------
 
 ModelClaim uses a deliberately simple fixed-topology rule for vLLM:
 
 .. code-block:: text
 
-   tensor-parallel-size * pipeline-parallel-size * prefill-context-parallel-size
+   tensor-parallel-size * pipeline-parallel-size
      == GPUs visible to the warm runtime Pod
-
-Decode context parallelism (DCP) reuses ranks already counted by this topology,
-so ``--decode-context-parallel-size`` does not increase the Pod GPU count.
-ModelClaim ignores this flag when sizing the pool; vLLM validates its DCP
-configuration when the engine starts.
 
 For a TP=2 model, create a separate pool whose Pods each request two GPUs, then
 use:
@@ -284,12 +279,11 @@ use:
      args:
        --tensor-parallel-size: "2"
        --pipeline-parallel-size: "1"
-       --prefill-context-parallel-size: "1"
 
 Do not use one four-GPU pool to mix TP=1, TP=2, and TP=4 claims. Create one
 topology-homogeneous pool per shape. Automatic request-driven KV policy and
 idle sleep are currently limited to single-GPU runtime Pods, even though the
-fixed TP/PP/PCP activation path is supported.
+fixed TP/PP activation path is supported.
 
 Inspect actual runtime state
 ----------------------------
@@ -486,7 +480,7 @@ Troubleshooting
 Claim remains ``Scheduling`` with zero candidates
    Confirm that the Pod is Running, has a Pod IP, matches ``podSelector``, and
    has ``pool.aibrix.ai/enabled: "true"``. For vLLM, confirm that TP times PP
-   times PCP exactly matches the Pod-visible GPU count.
+   exactly matches the Pod-visible GPU count.
 
 Claim remains ``Activating``
    Inspect the runtime snapshot and engine logs. Weight download, CUDA graph

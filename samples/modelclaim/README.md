@@ -45,11 +45,7 @@ limit redistribution and idle sleep. A request for a sleeping model triggers
 an asynchronous wake and receives HTTP 503 with `Retry-After`; the gateway does
 not hold the original request.
 
-This sample uses one GPU and independent single-GPU engines. Fixed TP/PP/PCP is
+This sample uses one GPU and independent single-GPU engines. Fixed TP/PP is
 supported only in a separate topology-homogeneous pool whose Pod GPU limit
-equals `TP x PP x PCP`. `ModelClaim.spec.replicas` is optional and currently
-accepts only one.
-
-Decode context parallelism (DCP) reuses existing ranks, so
-`--decode-context-parallel-size` does not change the required Pod GPU count.
-ModelClaim leaves DCP validation to vLLM when the engine starts.
+equals `TP x PP`. `ModelClaim.spec.replicas` is optional and currently accepts
+only one.
