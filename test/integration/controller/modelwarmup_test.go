@@ -472,6 +472,48 @@ var _ = Describe("ModelWarmup controller", func() {
 		}, timeout, interval).Should(Succeed())
 	})
 
+	It("reconciles Continuous authorization when only the Namespace pool changes", func() {
+		ns := newModelWarmupNamespace("continuous-namespace-pool")
+		node := newModelWarmupNode("continuous-namespace-pool", nil)
+		warmup := newContinuousModelWarmup(ns.Name, "continuous-namespace-pool", node.Name)
+		Expect(k8sClient.Create(ctx, warmup)).To(Succeed())
+
+		var original batchv1.Job
+		Eventually(func(g Gomega) {
+			jobs := controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name)
+			g.Expect(jobs).To(HaveLen(1))
+			original = jobs[0]
+		}, timeout, interval).Should(Succeed())
+		setJobSucceeded(original)
+		Eventually(func(g Gomega) {
+			g.Expect(getModelWarmup(g, warmup).Status.Phase).To(Equal(modelapi.ModelWarmupReady))
+		}, timeout, interval).Should(Succeed())
+
+		latestNamespace := &corev1.Namespace{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ns), latestNamespace)).To(Succeed())
+		delete(latestNamespace.Labels, modelwarmup.ResourcePoolLabelKey)
+		Expect(k8sClient.Update(ctx, latestNamespace)).To(Succeed())
+		Eventually(func(g Gomega) {
+			latest := getModelWarmup(g, warmup)
+			g.Expect(latest.Status.Phase).To(Equal(modelapi.ModelWarmupPending))
+			g.Expect(latest.Status.DesiredNodes).To(BeZero())
+			g.Expect(condition(latest, "Ready").Reason).To(Equal("NamespacePoolNotConfigured"))
+			jobs := nonDeletingJobs(controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name))
+			g.Expect(jobs).To(BeEmpty())
+		}, timeout, interval).Should(Succeed())
+
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ns), latestNamespace)).To(Succeed())
+		latestNamespace.Labels[modelwarmup.ResourcePoolLabelKey] = "integration"
+		Expect(k8sClient.Update(ctx, latestNamespace)).To(Succeed())
+		Eventually(func(g Gomega) {
+			jobs := nonDeletingJobs(controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name))
+			g.Expect(jobs).To(HaveLen(1))
+			g.Expect(jobs[0].UID).NotTo(Equal(original.UID))
+			g.Expect(jobs[0].Annotations[modelwarmup.AttemptAnnotationKey]).To(Equal("1"))
+			g.Expect(getModelWarmup(g, warmup).Status.Phase).To(Equal(modelapi.ModelWarmupRunning))
+		}, timeout, interval).Should(Succeed())
+	})
+
 	It("keeps multiple Once and Continuous ModelWarmups isolated while coexisting", func() {
 		ns := newModelWarmupNamespace("coexist")
 		first := newModelWarmupNode("coexist-a", map[string]string{"coexist-pool": "member"})

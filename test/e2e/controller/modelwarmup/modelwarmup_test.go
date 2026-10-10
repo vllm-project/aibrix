@@ -304,6 +304,16 @@ func TestModelWarmupOnceAndContinuousResourcesCoexistAcrossMembershipChanges(t *
 		t.Fatal(err)
 	}
 	env.waitForWarmupReady(t, ctx, continuousSelector, 2)
+
+	env.setNamespacePoolLabel(t, ctx, "")
+	env.waitForContinuousPendingReason(t, ctx, continuousExplicit, "NamespacePoolNotConfigured")
+	env.waitForContinuousPendingReason(t, ctx, continuousSelector, "NamespacePoolNotConfigured")
+	env.waitForWarmupSucceeded(t, ctx, onceExplicit, 1)
+	env.waitForWarmupSucceeded(t, ctx, onceSelector, 1)
+
+	env.setNamespacePoolLabel(t, ctx, "e2e")
+	env.waitForWarmupReady(t, ctx, continuousExplicit, 1)
+	env.waitForWarmupReady(t, ctx, continuousSelector, 2)
 }
 
 func TestModelWarmupContinuousBoundsRetriesAndManualDeletionResetsTheCycle(t *testing.T) {
@@ -634,6 +644,22 @@ func (e *testEnvironment) removeNodeLabel(t *testing.T, ctx context.Context, nod
 	}
 }
 
+func (e *testEnvironment) setNamespacePoolLabel(t *testing.T, ctx context.Context, value string) {
+	t.Helper()
+	namespace, err := e.kube.CoreV1().Namespaces().Get(ctx, e.namespace, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value == "" {
+		delete(namespace.Labels, modelwarmup.ResourcePoolLabelKey)
+	} else {
+		namespace.Labels[modelwarmup.ResourcePoolLabelKey] = value
+	}
+	if _, err := e.kube.CoreV1().Namespaces().Update(ctx, namespace, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (e *testEnvironment) createWarmup(
 	t *testing.T,
 	ctx context.Context,
@@ -806,6 +832,39 @@ func (e *testEnvironment) assertContinuousJobIdentity(
 			t.Fatalf("Job %s attempt = %q, want 1", job.Name, job.Annotations[modelwarmup.AttemptAnnotationKey])
 		}
 	}
+}
+
+func (e *testEnvironment) waitForContinuousPendingReason(
+	t *testing.T,
+	ctx context.Context,
+	warmup *modelapi.ModelWarmup,
+	reason string,
+) {
+	t.Helper()
+	err := wait.PollUntilContextTimeout(
+		ctx, 200*time.Millisecond, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
+			latest := &modelapi.ModelWarmup{}
+			if err := e.apiClient.Get(ctx, client.ObjectKeyFromObject(warmup), latest); err != nil {
+				return false, err
+			}
+			ready := modelWarmupCondition(latest.Status.Conditions, "Ready")
+			return latest.Status.Phase == modelapi.ModelWarmupPending && latest.Status.DesiredNodes == 0 &&
+				ready.Status == metav1.ConditionFalse && ready.Reason == reason &&
+				len(e.warmupJobs(t, ctx, warmup.Name)) == 0, nil
+		})
+	if err != nil {
+		e.dumpWarmupDiagnostics(t, warmup.Name)
+		t.Fatal(err)
+	}
+}
+
+func modelWarmupCondition(conditions []metav1.Condition, conditionType string) metav1.Condition {
+	for _, condition := range conditions {
+		if condition.Type == conditionType {
+			return condition
+		}
+	}
+	return metav1.Condition{}
 }
 
 func (e *testEnvironment) waitForContinuousAttempt(

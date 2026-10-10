@@ -54,6 +54,7 @@ func (r *ModelWarmupReconciler) reconcileContinuous(
 	warmup *modelv1alpha1.ModelWarmup,
 	revision string,
 	targets map[string]resolvedTarget,
+	missing map[string]string,
 	jobs []batchv1.Job,
 ) (ctrl.Result, error) {
 	now := time.Now()
@@ -95,7 +96,7 @@ func (r *ModelWarmupReconciler) reconcileContinuous(
 	}
 
 	result := ctrl.Result{RequeueAfter: plan.RetryAfter}
-	return r.updateContinuousStatus(ctx, warmup, revision, targets, plan, created, policies, now, result)
+	return r.updateContinuousStatus(ctx, warmup, revision, targets, missing, plan, created, policies, now, result)
 }
 
 func (r *ModelWarmupReconciler) deleteContinuousJob(ctx context.Context, job *batchv1.Job) error {
@@ -140,6 +141,9 @@ func buildContinuousPlan(
 		occupiedNames[job.Name] = struct{}{}
 		if !isJobComplete(&job) && !isJobFailed(&job) {
 			active++
+		}
+		if job.DeletionTimestamp != nil {
+			continue
 		}
 		uid := types.UID(job.Annotations[TargetNodeUIDAnnotationKey])
 		attempt, err := strconv.ParseInt(job.Annotations[AttemptAnnotationKey], 10, 32)
@@ -244,6 +248,7 @@ func (r *ModelWarmupReconciler) updateContinuousStatus(
 	warmup *modelv1alpha1.ModelWarmup,
 	revision string,
 	targets map[string]resolvedTarget,
+	missing map[string]string,
 	plan continuousPlan,
 	created []*batchv1.Job,
 	policies warmupPolicies,
@@ -343,8 +348,9 @@ func (r *ModelWarmupReconciler) updateContinuousStatus(
 			"TargetLimitExceeded", fmt.Sprintf("resolved %d targets; maximum is %d", len(targets), modelv1alpha1.MaxModelWarmupTargets), now)
 	case len(targets) == 0:
 		desired.Status.Phase = modelv1alpha1.ModelWarmupPending
+		reason, message := continuousNoTargetsDiagnostic(missing)
 		setContinuousConditions(desired, false, false, false,
-			"NoTargetsResolved", "waiting for target nodes to match the configured selectors", now)
+			reason, message, now)
 	case failed > 0:
 		desired.Status.Phase = modelv1alpha1.ModelWarmupDegraded
 		setContinuousConditions(desired, false, progressing, true,
@@ -384,7 +390,7 @@ func setContinuousConditions(
 		active := ready && conditionType == "Ready" || progressing && conditionType == "Progressing" ||
 			degraded && conditionType == "Degraded"
 		status := metav1.ConditionFalse
-		conditionReason, conditionMessage := "NotActive", "condition is not active"
+		conditionReason, conditionMessage := reason, message
 		if active {
 			status = metav1.ConditionTrue
 			conditionReason, conditionMessage = reason, message
@@ -398,4 +404,22 @@ func setContinuousConditions(
 		conditions = append(conditions, condition)
 	}
 	warmup.Status.Conditions = conditions
+}
+
+func continuousNoTargetsDiagnostic(missing map[string]string) (string, string) {
+	for _, missingReason := range missing {
+		if missingReason == "NamespacePoolNotConfigured" {
+			return "NamespacePoolNotConfigured", fmt.Sprintf(
+				"the ModelWarmup namespace must set a non-empty %s label matching its target Nodes",
+				ResourcePoolLabelKey,
+			)
+		}
+	}
+	if len(missing) > 0 {
+		return "TargetsUnavailableOrUnauthorized", fmt.Sprintf(
+			"no authorized targets resolved; verify Node names, %s labels, and %s=%s",
+			ResourcePoolLabelKey, WarmupEnabledLabelKey, WarmupEnabledLabelValue,
+		)
+	}
+	return "NoTargetsResolved", "waiting for target nodes to match the configured selectors"
 }

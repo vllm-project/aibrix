@@ -96,6 +96,11 @@ func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 			handler.EnqueueRequestsFromMapFunc(enqueueActiveModelWarmups(mgr.GetClient())),
 			builder.WithPredicates(nodeMembershipChanged()),
 		).
+		Watches(
+			&corev1.Namespace{},
+			handler.EnqueueRequestsFromMapFunc(enqueueContinuousModelWarmupsForNamespace(mgr.GetClient())),
+			builder.WithPredicates(namespaceResourcePoolChanged()),
+		).
 		Complete(&ModelWarmupReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()})
 }
 
@@ -135,6 +140,37 @@ func enqueueActiveModelWarmups(c client.Client) handler.MapFunc {
 	}
 }
 
+func namespaceResourcePoolChanged() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(event.CreateEvent) bool { return false },
+		DeleteFunc: func(event.DeleteEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return e.ObjectOld.GetLabels()[ResourcePoolLabelKey] != e.ObjectNew.GetLabels()[ResourcePoolLabelKey]
+		},
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
+}
+
+func enqueueContinuousModelWarmupsForNamespace(c client.Client) handler.MapFunc {
+	return func(ctx context.Context, namespace client.Object) []reconcile.Request {
+		var warmups modelv1alpha1.ModelWarmupList
+		if err := c.List(ctx, &warmups, client.InNamespace(namespace.GetName())); err != nil {
+			klog.ErrorS(err, "unable to list Continuous ModelWarmups for Namespace event",
+				"namespace", namespace.GetName())
+			return nil
+		}
+		requests := make([]reconcile.Request, 0, len(warmups.Items))
+		for i := range warmups.Items {
+			warmup := &warmups.Items[i]
+			if effectiveMode(warmup) != modelv1alpha1.ModelWarmupModeContinuous {
+				continue
+			}
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+		}
+		return requests
+	}
+}
+
 func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	warmup := &modelv1alpha1.ModelWarmup{}
 	if err := r.Get(ctx, req.NamespacedName, warmup); err != nil {
@@ -157,7 +193,7 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 	if effectiveMode(warmup) == modelv1alpha1.ModelWarmupModeContinuous {
-		return r.reconcileContinuous(ctx, warmup, revision, targets, jobs.Items)
+		return r.reconcileContinuous(ctx, warmup, revision, targets, missing, jobs.Items)
 	}
 	snapshot := buildReconcileSnapshot(warmup, revision, targets, missing, jobs.Items)
 	if !withinTargetLimit(targets, missing) {

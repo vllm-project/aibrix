@@ -52,6 +52,21 @@ The namespace and target nodes must share the
 applies after a Job is created. ``retryLimit`` and
 ``ttlSecondsAfterFinished`` bound retry and retention behavior.
 
+This authorization applies to both lifecycle modes. If the Namespace has no
+non-empty resource-pool label, matching Nodes are not authorized. ``Once``
+reports unavailable or unauthorized configured targets and does not reopen
+after reaching a terminal phase. ``Continuous`` remains ``Pending`` with
+``Ready=False`` and reason ``NamespacePoolNotConfigured``; after the label is
+added or corrected, it automatically resolves the current targets. If Nodes
+exist but their names, pool labels, or warmup opt-in do not authorize them, the
+Continuous Ready condition uses ``TargetsUnavailableOrUnauthorized``. Inspect
+both sides of the authorization boundary with:
+
+.. code-block:: bash
+
+   kubectl get namespace <namespace> --show-labels
+   kubectl get nodes -L resource-pool.aibrix.ai/name,model.aibrix.ai/warmup-enabled
+
 For ``Continuous``, ``retryLimit`` still controls retries inside one Kubernetes
 Job. ``continuousRetryLimit`` controls the number of additional Jobs after a
 terminal failure, and ``continuousRetryIntervalSeconds`` controls the fixed

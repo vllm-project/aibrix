@@ -191,6 +191,25 @@ func TestReconcileContinuousIgnoresMissingAndUnauthorizedTargets(t *testing.T) {
 	require.Zero(t, updated.Status.DesiredNodes)
 	require.Zero(t, updated.Status.FailedNodes)
 	require.Empty(t, updated.Status.Targets)
+	require.Equal(t, "TargetsUnavailableOrUnauthorized", mustCondition(updated.Status.Conditions, "Ready").Reason)
+}
+
+func TestReconcileContinuousReportsMissingNamespacePool(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+	warmup.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous
+	delete(namespace.Labels, ResourcePoolLabelKey)
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+	require.NoError(t, reconcileOnce(r, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}))
+	updated := &modelv1alpha1.ModelWarmup{}
+	require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+	require.Equal(t, modelv1alpha1.ModelWarmupPending, updated.Status.Phase)
+	require.Zero(t, updated.Status.DesiredNodes)
+	ready := mustCondition(updated.Status.Conditions, "Ready")
+	require.Equal(t, metav1.ConditionFalse, ready.Status)
+	require.Equal(t, "NamespacePoolNotConfigured", ready.Reason)
+	require.Contains(t, ready.Message, ResourcePoolLabelKey)
 }
 
 func TestReconcileContinuousCreatesRetryBeforeDeletingFailedAttempt(t *testing.T) {
@@ -1347,6 +1366,34 @@ func TestNodeEventsEnqueueOnlyActiveWarmupsAndIgnoreHeartbeats(t *testing.T) {
 	labelUpdate := oldNode.DeepCopy()
 	labelUpdate.Labels["pool"] = "b"
 	require.True(t, predicate.Update(event.UpdateEvent{ObjectOld: oldNode, ObjectNew: labelUpdate}))
+}
+
+func TestNamespacePoolEventsEnqueueOnlyContinuousWarmups(t *testing.T) {
+	continuous := validWarmupForControllerTest("tenant", "continuous")
+	continuous.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous
+	continuous.Status.Phase = modelv1alpha1.ModelWarmupReady
+	once := validWarmupForControllerTest("tenant", "once")
+	otherNamespace := validWarmupForControllerTest("other", "continuous")
+	otherNamespace.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous
+	scheme := runtime.NewScheme()
+	require.NoError(t, modelv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(continuous, once, otherNamespace).Build()
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant"}}
+
+	requests := enqueueContinuousModelWarmupsForNamespace(c)(context.Background(), namespace)
+	require.Equal(t, []ctrl.Request{{NamespacedName: client.ObjectKeyFromObject(continuous)}}, requests)
+
+	predicate := namespaceResourcePoolChanged()
+	oldNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: "tenant", Labels: map[string]string{ResourcePoolLabelKey: "pool-a", "unrelated": "old"},
+	}}
+	unrelated := oldNamespace.DeepCopy()
+	unrelated.Labels["unrelated"] = "new"
+	require.False(t, predicate.Update(event.UpdateEvent{ObjectOld: oldNamespace, ObjectNew: unrelated}))
+	poolUpdate := oldNamespace.DeepCopy()
+	poolUpdate.Labels[ResourcePoolLabelKey] = "pool-b"
+	require.True(t, predicate.Update(event.UpdateEvent{ObjectOld: oldNamespace, ObjectNew: poolUpdate}))
 }
 
 func validWarmupForControllerTest(namespace, name string) *modelv1alpha1.ModelWarmup {

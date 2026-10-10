@@ -181,6 +181,29 @@ func TestContinuousPlanSchedulesBoundedRetries(t *testing.T) {
 	})
 }
 
+func TestContinuousPlanDoesNotUseDeletingJobsAsRetryLedger(t *testing.T) {
+	warmup := continuousTestWarmup()
+	target := resolvedTarget{NodeName: "node-a", NodeUID: "uid-a"}
+	targets := map[string]resolvedTarget{"node-a": target}
+	failedAt := time.Unix(1000, 0)
+	deletingAt := metav1.NewTime(failedAt.Add(time.Second))
+	failed := continuousTestJob(warmup, "node-a", "uid-a", "revision", 1, batchv1.JobFailed, failedAt)
+	failed.DeletionTimestamp = &deletingAt
+	failed.Finalizers = []string{"test-finalizer"}
+	policies := warmupPolicies{parallelism: 1, continuousRetryLimit: 2, continuousRetryIntervalSeconds: 300}
+
+	plan := buildContinuousPlan(warmup, "revision", targets, []batchv1.Job{failed}, policies, failedAt.Add(time.Hour))
+
+	require.Empty(t, plan.JobsByTarget)
+	require.Empty(t, plan.Create, "the deleting attempt-one name remains occupied until deletion finishes")
+	require.Empty(t, plan.DeleteBeforeCreate)
+	require.Zero(t, plan.RetryAfter)
+
+	plan = buildContinuousPlan(warmup, "revision", targets, nil, policies, failedAt.Add(time.Hour))
+	require.Len(t, plan.Create, 1)
+	require.Equal(t, int32(1), plan.Create[0].Attempt, "completed manual deletion starts a new retry cycle")
+}
+
 func continuousTestWarmup() *modelv1alpha1.ModelWarmup {
 	return &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
 		Name: "warmup", Namespace: "default", UID: "warmup-uid",
