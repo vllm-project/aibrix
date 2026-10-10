@@ -60,7 +60,7 @@ func (r *ModelWarmupReconciler) reconcileContinuous(
 	policies := effectiveWarmupPolicies(warmup)
 	plan := buildContinuousPlan(warmup, revision, targets, jobs, policies, now)
 	for i := range plan.DeleteBeforeCreate {
-		if err := r.Delete(ctx, &plan.DeleteBeforeCreate[i]); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.deleteContinuousJob(ctx, &plan.DeleteBeforeCreate[i]); err != nil && !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
 	}
@@ -88,7 +88,7 @@ func (r *ModelWarmupReconciler) reconcileContinuous(
 		}
 		created = append(created, job)
 		if action.DeleteAfterCreate != nil {
-			if err := r.Delete(ctx, action.DeleteAfterCreate); err != nil && !apierrors.IsNotFound(err) {
+			if err := r.deleteContinuousJob(ctx, action.DeleteAfterCreate); err != nil && !apierrors.IsNotFound(err) {
 				return ctrl.Result{}, err
 			}
 		}
@@ -96,6 +96,10 @@ func (r *ModelWarmupReconciler) reconcileContinuous(
 
 	result := ctrl.Result{RequeueAfter: plan.RetryAfter}
 	return r.updateContinuousStatus(ctx, warmup, revision, targets, plan, created, policies, now, result)
+}
+
+func (r *ModelWarmupReconciler) deleteContinuousJob(ctx context.Context, job *batchv1.Job) error {
+	return r.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground))
 }
 
 func sameContinuousJobIdentity(existing, desired *batchv1.Job, warmup *modelv1alpha1.ModelWarmup) bool {

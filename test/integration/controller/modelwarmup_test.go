@@ -336,6 +336,197 @@ var _ = Describe("ModelWarmup controller", func() {
 		}, timeout, interval).Should(Succeed())
 	})
 
+	It("tracks Continuous membership by Node UID across join leave rejoin and replacement", func() {
+		ns := newModelWarmupNamespace("continuous-membership")
+		first := newModelWarmupNode("continuous-membership-a", map[string]string{"continuous-pool": "member"})
+		warmup := newContinuousModelWarmup(ns.Name, "continuous-membership", first.Name)
+		warmup.Spec.Targets = []modelapi.ModelWarmupTarget{{
+			NodeSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"continuous-pool": "member"}},
+		}}
+		warmup.Spec.Policies.Parallelism = ptr.To[int32](2)
+		Expect(k8sClient.Create(ctx, warmup)).To(Succeed())
+
+		var firstJob batchv1.Job
+		Eventually(func(g Gomega) {
+			jobs := controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name)
+			g.Expect(jobs).To(HaveLen(1))
+			firstJob = jobs[0]
+			g.Expect(firstJob.Annotations[modelwarmup.TargetNodeUIDAnnotationKey]).To(Equal(string(first.UID)))
+			g.Expect(firstJob.Annotations[modelwarmup.AttemptAnnotationKey]).To(Equal("1"))
+		}, timeout, interval).Should(Succeed())
+		setJobSucceeded(firstJob)
+		Eventually(func(g Gomega) {
+			latest := getModelWarmup(g, warmup)
+			g.Expect(latest.Status.Phase).To(Equal(modelapi.ModelWarmupReady))
+			g.Expect(latest.Status.LastConvergedTime).NotTo(BeNil())
+		}, timeout, interval).Should(Succeed())
+
+		second := newModelWarmupNode("continuous-membership-b", map[string]string{"continuous-pool": "member"})
+		var secondJob batchv1.Job
+		Eventually(func(g Gomega) {
+			jobs := controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name)
+			g.Expect(jobs).To(HaveLen(2))
+			for _, job := range jobs {
+				if controllerutils.ModelWarmupJobNode(&job) == second.Name {
+					secondJob = job
+				}
+			}
+			g.Expect(secondJob.Name).NotTo(BeEmpty())
+			g.Expect(getModelWarmup(g, warmup).Status.Phase).To(Equal(modelapi.ModelWarmupRunning))
+		}, timeout, interval).Should(Succeed())
+		setJobSucceeded(secondJob)
+		Eventually(func(g Gomega) {
+			g.Expect(getModelWarmup(g, warmup).Status.Phase).To(Equal(modelapi.ModelWarmupReady))
+		}, timeout, interval).Should(Succeed())
+
+		latestFirst := &corev1.Node{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(first), latestFirst)).To(Succeed())
+		delete(latestFirst.Labels, "continuous-pool")
+		Expect(k8sClient.Update(ctx, latestFirst)).To(Succeed())
+		Eventually(func(g Gomega) {
+			jobs := controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name)
+			g.Expect(jobs).To(HaveLen(1))
+			g.Expect(controllerutils.ModelWarmupJobNode(&jobs[0])).To(Equal(second.Name))
+			g.Expect(getModelWarmup(g, warmup).Status.DesiredNodes).To(Equal(int32(1)))
+		}, timeout, interval).Should(Succeed())
+
+		latestFirst.Labels["continuous-pool"] = "member"
+		Expect(k8sClient.Update(ctx, latestFirst)).To(Succeed())
+		Eventually(func(g Gomega) {
+			jobs := controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name)
+			g.Expect(jobs).To(HaveLen(2))
+			for _, job := range jobs {
+				if controllerutils.ModelWarmupJobNode(&job) == first.Name {
+					g.Expect(job.Annotations[modelwarmup.AttemptAnnotationKey]).To(Equal("1"))
+				}
+			}
+		}, timeout, interval).Should(Succeed())
+
+		oldUID := latestFirst.UID
+		Expect(k8sClient.Delete(ctx, latestFirst)).To(Succeed())
+		Eventually(func() error {
+			return k8sClient.Get(ctx, client.ObjectKeyFromObject(latestFirst), &corev1.Node{})
+		}, timeout, interval).Should(HaveOccurred())
+		replacement := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: latestFirst.Name, Labels: map[string]string{
+			"continuous-pool":                 "member",
+			modelwarmup.ResourcePoolLabelKey:  "integration",
+			modelwarmup.WarmupEnabledLabelKey: modelwarmup.WarmupEnabledLabelValue,
+		}}}
+		Expect(k8sClient.Create(ctx, replacement)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, replacement) })
+		Expect(replacement.UID).NotTo(Equal(oldUID))
+		Eventually(func(g Gomega) {
+			jobs := controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name)
+			found := false
+			for _, job := range jobs {
+				if controllerutils.ModelWarmupJobNode(&job) == replacement.Name {
+					g.Expect(job.Annotations[modelwarmup.TargetNodeUIDAnnotationKey]).To(Equal(string(replacement.UID)))
+					g.Expect(job.Annotations[modelwarmup.AttemptAnnotationKey]).To(Equal("1"))
+					found = true
+				}
+			}
+			g.Expect(found).To(BeTrue())
+		}, timeout, interval).Should(Succeed())
+	})
+
+	It("bounds Continuous retries and lets manual Job deletion start a new cycle", func() {
+		ns := newModelWarmupNamespace("continuous-retry")
+		node := newModelWarmupNode("continuous-retry", nil)
+		warmup := newContinuousModelWarmup(ns.Name, "continuous-retry", node.Name)
+		warmup.Spec.Policies.ContinuousRetryLimit = ptr.To[int32](1)
+		warmup.Spec.Policies.ContinuousRetryIntervalSeconds = ptr.To[int64](1)
+		Expect(k8sClient.Create(ctx, warmup)).To(Succeed())
+
+		var first batchv1.Job
+		Eventually(func(g Gomega) {
+			jobs := controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name)
+			g.Expect(jobs).To(HaveLen(1))
+			first = jobs[0]
+		}, timeout, interval).Should(Succeed())
+		setJobFailed(first, "first failure")
+
+		var second batchv1.Job
+		Eventually(func(g Gomega) {
+			jobs := nonDeletingJobs(controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name))
+			g.Expect(jobs).To(HaveLen(1))
+			second = jobs[0]
+			g.Expect(second.Annotations[modelwarmup.AttemptAnnotationKey]).To(Equal("2"))
+		}, timeout, interval).Should(Succeed())
+		setJobFailed(second, "second failure")
+		Eventually(func(g Gomega) {
+			latest := getModelWarmup(g, warmup)
+			g.Expect(latest.Status.Phase).To(Equal(modelapi.ModelWarmupDegraded))
+			g.Expect(condition(latest, "Progressing").Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(condition(latest, "Degraded").Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(latest.Status.Targets).To(HaveLen(1))
+			g.Expect(latest.Status.Targets[0].Attempt).To(Equal(int32(2)))
+		}, timeout, interval).Should(Succeed())
+
+		Expect(k8sClient.Delete(ctx, &second,
+			client.PropagationPolicy(metav1.DeletePropagationBackground))).To(Succeed())
+		Eventually(func(g Gomega) {
+			jobs := nonDeletingJobs(controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name))
+			g.Expect(jobs).To(HaveLen(1))
+			g.Expect(jobs[0].Annotations[modelwarmup.AttemptAnnotationKey]).To(Equal("1"))
+			g.Expect(jobs[0].Name).NotTo(HaveSuffix("-a2"))
+		}, timeout, interval).Should(Succeed())
+	})
+
+	It("keeps multiple Once and Continuous ModelWarmups isolated while coexisting", func() {
+		ns := newModelWarmupNamespace("coexist")
+		first := newModelWarmupNode("coexist-a", map[string]string{"coexist-pool": "member"})
+		onceExplicit := controllerutils.NewModelWarmup(ns.Name, "once-explicit", first.Name)
+		onceSelector := controllerutils.NewModelWarmup(ns.Name, "once-selector", first.Name)
+		onceSelector.Spec.Targets = []modelapi.ModelWarmupTarget{{
+			NodeSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"coexist-pool": "member"}},
+		}}
+		continuousExplicit := newContinuousModelWarmup(ns.Name, "continuous-explicit", first.Name)
+		continuousSelector := newContinuousModelWarmup(ns.Name, "continuous-selector", first.Name)
+		continuousSelector.Spec.Targets = onceSelector.Spec.Targets
+		warmups := []*modelapi.ModelWarmup{onceExplicit, onceSelector, continuousExplicit, continuousSelector}
+		for _, warmup := range warmups {
+			Expect(k8sClient.Create(ctx, warmup)).To(Succeed())
+		}
+		for _, warmup := range warmups {
+			var job batchv1.Job
+			Eventually(func(g Gomega) {
+				jobs := controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, warmup.Name)
+				g.Expect(jobs).To(HaveLen(1))
+				job = jobs[0]
+				g.Expect(job.Labels[modelwarmup.WarmupLabelKey]).To(Equal(string(warmup.UID)))
+			}, timeout, interval).Should(Succeed())
+			setJobSucceeded(job)
+		}
+		Eventually(func(g Gomega) {
+			g.Expect(getModelWarmup(g, onceExplicit).Status.Phase).To(Equal(modelapi.ModelWarmupSucceeded))
+			g.Expect(getModelWarmup(g, onceSelector).Status.Phase).To(Equal(modelapi.ModelWarmupSucceeded))
+			g.Expect(getModelWarmup(g, continuousExplicit).Status.Phase).To(Equal(modelapi.ModelWarmupReady))
+			g.Expect(getModelWarmup(g, continuousSelector).Status.Phase).To(Equal(modelapi.ModelWarmupReady))
+		}, timeout, interval).Should(Succeed())
+
+		second := newModelWarmupNode("coexist-b", map[string]string{"coexist-pool": "member"})
+		var newContinuousJob batchv1.Job
+		Eventually(func(g Gomega) {
+			g.Expect(controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, onceExplicit.Name)).To(HaveLen(1))
+			g.Expect(controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, onceSelector.Name)).To(HaveLen(1))
+			g.Expect(controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, continuousExplicit.Name)).To(HaveLen(1))
+			jobs := controllerutils.ListModelWarmupJobs(g, ctx, k8sClient, ns.Name, continuousSelector.Name)
+			g.Expect(jobs).To(HaveLen(2))
+			for _, job := range jobs {
+				if controllerutils.ModelWarmupJobNode(&job) == second.Name {
+					newContinuousJob = job
+				}
+			}
+			g.Expect(newContinuousJob.Name).NotTo(BeEmpty())
+			g.Expect(getModelWarmup(g, continuousSelector).Status.Phase).To(Equal(modelapi.ModelWarmupRunning))
+		}, timeout, interval).Should(Succeed())
+		setJobSucceeded(newContinuousJob)
+		Eventually(func(g Gomega) {
+			g.Expect(getModelWarmup(g, continuousSelector).Status.Phase).To(Equal(modelapi.ModelWarmupReady))
+			g.Expect(getModelWarmup(g, onceSelector).Status.Phase).To(Equal(modelapi.ModelWarmupSucceeded))
+		}, timeout, interval).Should(Succeed())
+	})
+
 	It("sets the owner reference used to garbage-collect Jobs", func() {
 		ns := newModelWarmupNamespace("gc")
 		node := newModelWarmupNode("gc", nil)
@@ -400,10 +591,21 @@ func setJobSucceeded(job batchv1.Job) {
 func setJobFailed(job batchv1.Job, message string) {
 	Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&job), &job)).To(Succeed())
 	job.Status.Failed = 1
+	failedAt := metav1.Now()
 	job.Status.Conditions = []batchv1.JobCondition{{
 		Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "Failed", Message: message,
+		LastTransitionTime: failedAt,
 	}}
 	Expect(k8sClient.Status().Update(ctx, &job)).To(Succeed())
+}
+
+func newContinuousModelWarmup(namespace, name, node string) *modelapi.ModelWarmup {
+	warmup := controllerutils.NewModelWarmup(namespace, name, node)
+	warmup.Spec.Mode = modelapi.ModelWarmupModeContinuous
+	warmup.Spec.Policies.TTLSecondsAfterFinished = nil
+	warmup.Spec.Policies.ContinuousRetryLimit = ptr.To[int32](2)
+	warmup.Spec.Policies.ContinuousRetryIntervalSeconds = ptr.To[int64](300)
+	return warmup
 }
 
 func condition(warmup *modelapi.ModelWarmup, conditionType string) metav1.Condition {
