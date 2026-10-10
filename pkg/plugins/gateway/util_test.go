@@ -2409,3 +2409,29 @@ func TestParseMultipartFormData_IgnoresStreamForVideoPaths(t *testing.T) {
 		})
 	}
 }
+
+func TestToolCallsRoutingText(t *testing.T) {
+	args := strings.Repeat("a", 4000)
+	cases := []struct{ name, path, body string }{
+		{"chat", "/v1/chat/completions", `{"model":"m","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"` + args + `"}}]}]}`},
+		{"messages", "/v1/messages", `{"model":"m","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"tool_use","id":"c1","name":"f","input":{"x":"` + args + `"}}]}]}`},
+	}
+	for _, c := range cases {
+		_, msg, _, _, errRes := validateRequestBody("r", c.path, []byte(c.body), utils.User{})
+		assert.Nil(t, errRes, c.name)
+		assert.Greater(t, len(msg), 4000, c.name)
+	}
+}
+func TestCompletionsPromptShapes(t *testing.T) {
+	cases := []struct{ name, prompt string }{
+		{"string", `"hello"`},
+		{"string array", `["hello","world"]`},
+		{"token ids", `[1,2,3]`},
+		{"token id arrays", `[[1,2],[3]]`},
+	}
+	for _, c := range cases {
+		_, msg, _, _, errRes := validateRequestBody("r", "/v1/completions", []byte(`{"model":"m","prompt":`+c.prompt+`}`), utils.User{})
+		assert.Nil(t, errRes)
+		assert.Greater(t, len(msg), 0)
+	}
+}

@@ -86,7 +86,8 @@ type responsesReqMinimal struct {
 // input item. It is shared by chatReqMinimal.Messages, parseChatMessages, and
 // parseResponsesInput.
 type contentItem struct {
-	Content json.RawMessage `json:"content"`
+	Content   json.RawMessage `json:"content"`
+	ToolCalls json.RawMessage `json:"tool_calls"`
 }
 
 // engineNativeReqMinimal captures the fields needed to route a vLLM engine-native
@@ -126,22 +127,44 @@ func parseChatMessages(requestID string, msgs []contentItem) (string, *extProcPb
 	growHint := len(msgs) - 1 // space separators
 	for _, m := range msgs {
 		growHint += len(m.Content)
+		growHint += len(m.ToolCalls)
 	}
 	builder.Grow(growHint)
-	for i, m := range msgs {
-		if i > 0 {
+	first := true
+	for _, m := range msgs {
+		hasContent := len(m.Content) > 0 && string(m.Content) != jsonNull
+		hasToolCalls := len(m.ToolCalls) > 0 && string(m.ToolCalls) != jsonNull
+
+		if !hasContent && !hasToolCalls {
+			continue
+		}
+
+		if !first {
 			builder.WriteByte(' ')
 		}
-		if len(m.Content) > 0 && m.Content[0] == '"' {
-			// Simple string content: JSON-unquote it without allocating an interface.
-			var s string
-			if err := sonic.Unmarshal(m.Content, &s); err == nil {
-				builder.WriteString(s)
-				continue
+		first = false
+
+		if hasContent {
+			if m.Content[0] == '"' {
+				// Simple string content: JSON-unquote it without allocating an interface.
+				var s string
+				if err := sonic.Unmarshal(m.Content, &s); err == nil {
+					builder.WriteString(s)
+				} else {
+					builder.Write(m.Content)
+				}
+			} else {
+				// Array or object content parts: write raw JSON.
+				builder.Write(m.Content)
 			}
 		}
-		// Array or object content parts: write raw JSON.
-		builder.Write(m.Content)
+
+		if hasToolCalls {
+			if hasContent {
+				builder.WriteByte(' ')
+			}
+			builder.Write(m.ToolCalls)
+		}
 	}
 	return builder.String(), nil
 }
@@ -298,18 +321,29 @@ func validateCompletionRequest(requestID string, requestBody []byte) (model, mes
 	// openai.CompletionsNewParams does not support json unmarshal for CompletionNewParamsPromptUnion in release v0.1.0-beta.10
 	// once supported, input request will be directly unmarshal into openai.CompletionsNewParams
 	type Completion struct {
-		Prompt string `json:"prompt"`
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
+		Prompt json.RawMessage `json:"prompt"`
+		Model  string          `json:"model"`
+		Stream bool            `json:"stream"`
 	}
 	completionObj := Completion{}
 	if err := sonic.Unmarshal(requestBody, &completionObj); err != nil {
-		klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
+		klog.ErrorS(err, "error to unmarshal completions object", "requestID", requestID, "requestBody", string(requestBody))
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 	model = completionObj.Model
-	message = completionObj.Prompt
+	if len(completionObj.Prompt) > 0 && completionObj.Prompt[0] == '"' {
+		_ = sonic.Unmarshal(completionObj.Prompt, &message)
+	} else if len(completionObj.Prompt) > 0 && completionObj.Prompt[0] == '[' {
+		var strArr []string
+		if err := sonic.Unmarshal(completionObj.Prompt, &strArr); err == nil {
+			message = strings.Join(strArr, "")
+		} else {
+			message = string(completionObj.Prompt)
+		}
+	} else {
+		message = string(completionObj.Prompt)
+	}
 	stream = completionObj.Stream
 	return
 }
