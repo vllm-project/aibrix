@@ -48,13 +48,28 @@ func ensuresAwake(claim *modelv1alpha1.ModelClaim) bool {
 type policyWakeRequest struct {
 	RequestedAt string `json:"requestedAt"`
 	OperationID string `json:"operationID"`
+	RetryAfter  string `json:"retryAfter,omitempty"`
+	Refusals    int    `json:"refusals,omitempty"`
 }
 
 func policyWakeOnPod(claim *modelv1alpha1.ModelClaim, pod *corev1.Pod) (policyWakeRequest, bool) {
 	var request policyWakeRequest
-	err := json.Unmarshal([]byte(pod.Annotations[constants.ModelClaimPolicyWakeAnnotationPrefix+claim.Name]), &request)
+	value, found := pod.Annotations[constants.ModelClaimPolicyWakeAnnotationPrefix+claim.Name]
+	if !found {
+		return request, false
+	}
+	err := json.Unmarshal([]byte(value), &request)
 	prefix := fmt.Sprintf("controller-policy-wake/%s/%s/", pod.UID, claim.UID)
 	return request, err == nil && request.RequestedAt == pod.Annotations[constants.ModelClaimWakeAnnotationPrefix+claim.Name] && strings.HasPrefix(request.OperationID, prefix)
+}
+
+func (r *ModelClaimReconciler) policyWakeWaiting(claim *modelv1alpha1.ModelClaim, pod *corev1.Pod) bool {
+	request, owned := policyWakeOnPod(claim, pod)
+	if !owned {
+		return false
+	}
+	retryAfter, err := time.Parse(time.RFC3339Nano, request.RetryAfter)
+	return err == nil && r.now().Before(retryAfter)
 }
 
 // Policy wakes enter the same durable request queue and memory ledger as
@@ -76,12 +91,13 @@ func (r *ModelClaimReconciler) reconcilePolicyWakeRequests(ctx context.Context, 
 			if _, found := pod.Annotations[policyKey]; !found {
 				continue
 			}
-			patch := client.MergeFromWithOptions(pod.DeepCopy(), client.MergeFromWithOptimisticLock{})
+			updated := pod.DeepCopy()
+			patch := client.MergeFromWithOptions(pod, client.MergeFromWithOptimisticLock{})
 			if _, owned := policyWakeOnPod(claim, pod); owned {
-				delete(pod.Annotations, wakeKey)
+				delete(updated.Annotations, wakeKey)
 			}
-			delete(pod.Annotations, policyKey)
-			if err := r.Patch(ctx, pod, patch); err != nil {
+			delete(updated.Annotations, policyKey)
+			if err := r.Patch(ctx, updated, patch); err != nil {
 				return err
 			}
 			continue
@@ -100,17 +116,52 @@ func (r *ModelClaimReconciler) reconcilePolicyWakeRequests(ctx context.Context, 
 		if err != nil {
 			return err
 		}
-		patch := client.MergeFromWithOptions(pod.DeepCopy(), client.MergeFromWithOptimisticLock{})
-		if pod.Annotations == nil {
-			pod.Annotations = make(map[string]string)
+		updated := pod.DeepCopy()
+		patch := client.MergeFromWithOptions(pod, client.MergeFromWithOptimisticLock{})
+		if updated.Annotations == nil {
+			updated.Annotations = make(map[string]string)
 		}
-		pod.Annotations[wakeKey] = request.RequestedAt
-		pod.Annotations[policyKey] = string(value)
-		if err := r.Patch(ctx, pod, patch); err != nil {
+		updated.Annotations[wakeKey] = request.RequestedAt
+		updated.Annotations[policyKey] = string(value)
+		if err := r.Patch(ctx, updated, patch); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// Explicit refusals retry with a new operation, unlike an unanswered call.
+// Persist the delay so a controller restart cannot reset the backoff.
+func (r *ModelClaimReconciler) deferPolicyWake(ctx context.Context, claim *modelv1alpha1.ModelClaim, pod *corev1.Pod, request policyWakeRequest) error {
+	delay := 10 * time.Second
+	for n := 0; n < request.Refusals && delay < 5*time.Minute; n++ {
+		delay *= 2
+	}
+	if delay > 5*time.Minute {
+		delay = 5 * time.Minute
+	}
+	request.Refusals = min(request.Refusals+1, 6)
+	request.RetryAfter = r.now().Add(delay).UTC().Format(time.RFC3339Nano)
+	request.OperationID = fmt.Sprintf("controller-policy-wake/%s/%s/%s", pod.UID, claim.UID, uuid.NewUUID())
+	value, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	updated := pod.DeepCopy()
+	updated.Annotations[constants.ModelClaimPolicyWakeAnnotationPrefix+claim.Name] = string(value)
+	return r.Patch(ctx, updated, client.MergeFromWithOptions(pod, client.MergeFromWithOptimisticLock{}))
+}
+
+func (r *ModelClaimReconciler) isPolicyWake(ctx context.Context, pod *corev1.Pod, name string) bool {
+	if _, found := pod.Annotations[constants.ModelClaimPolicyWakeAnnotationPrefix+name]; !found {
+		return false
+	}
+	claim := &modelv1alpha1.ModelClaim{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: name}, claim); err != nil {
+		return false
+	}
+	_, owned := policyWakeOnPod(claim, pod)
+	return owned
 }
 
 func (r *ModelClaimReconciler) notePolicyWakeFailure(claim *modelv1alpha1.ModelClaim, inst *modelv1alpha1.ModelClaimInstance, pod *corev1.Pod, err error) {

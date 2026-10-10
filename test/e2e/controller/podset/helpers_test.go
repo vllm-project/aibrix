@@ -60,6 +60,11 @@ const (
 	podSetCleanupTimeout          = 2 * time.Minute
 )
 
+// The test image's sleep runs as PID 1 and ignores SIGTERM, so every Pod deletion waits out the
+// whole grace period (30s by default). It stays several poll intervals long because
+// waitForPodDeleting must observe the drained Pod while it is terminating.
+const podSetPodTerminationGracePeriodSeconds = int64(5)
+
 type podSetHarness struct {
 	namespace  string
 	kubeClient kubernetes.Interface
@@ -625,7 +630,8 @@ func newPodSet(namespace, name string, size, drainSeconds int32) *orchestrationv
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyAlways,
+					RestartPolicy:                 corev1.RestartPolicyAlways,
+					TerminationGracePeriodSeconds: ptr.To(podSetPodTerminationGracePeriodSeconds),
 					Containers: []corev1.Container{{
 						Name:            "worker",
 						Image:           podSetE2EImage,

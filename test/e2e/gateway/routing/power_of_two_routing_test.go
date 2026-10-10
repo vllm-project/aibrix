@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"sort"
 	"strconv"
 	"sync"
 	"testing"
@@ -205,17 +204,7 @@ func deleteRunningRequestCounters(t *testing.T, pods []string) {
 // counted like any others, which also leaves each pod's running-request hash in place.
 func discoverModelPods(t *testing.T) []string {
 	t.Helper()
-	discovered := make(map[string]struct{})
-	for i := 0; i < 30; i++ {
-		if pod := getTargetPodFromChatCompletion(t, fmt.Sprintf("Pod discovery request %d", i), "random"); pod != "" {
-			discovered[pod] = struct{}{}
-		}
-	}
-	pods := make([]string, 0, len(discovered))
-	for pod := range discovered {
-		pods = append(pods, pod)
-	}
-	sort.Strings(pods)
+	pods := discoverRoutablePods(t)
 	require.GreaterOrEqual(t, len(pods), 2, "need at least two pods to compare, found %v", pods)
 	return pods
 }

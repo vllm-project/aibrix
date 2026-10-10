@@ -66,6 +66,10 @@ const (
 	stormServiceVolcanoDefaultQueue = "default"
 )
 
+// The test image's sleep runs as PID 1 and ignores SIGTERM, so without a short grace period
+// every Pod deletion and in-place container restart waits the default 30s for SIGKILL.
+const stormServicePodTerminationGracePeriodSeconds = int64(1)
+
 var (
 	roleSetGVR = schema.GroupVersionResource{
 		Group: "orchestration.aibrix.ai", Version: "v1alpha1", Resource: "rolesets",
@@ -165,11 +169,14 @@ func newStormService(namespace, name, image string) *orchestrationv1alpha1.Storm
 							Type: orchestrationv1alpha1.InPlaceIfPossibleRoleUpdateStrategyType,
 						},
 						Template: corev1.PodTemplateSpec{
-							Spec: corev1.PodSpec{Containers: []corev1.Container{{
-								Name:            stormServiceWorkerContainerName,
-								Image:           image,
-								ImagePullPolicy: corev1.PullIfNotPresent,
-							}}},
+							Spec: corev1.PodSpec{
+								TerminationGracePeriodSeconds: ptr.To(stormServicePodTerminationGracePeriodSeconds),
+								Containers: []corev1.Container{{
+									Name:            stormServiceWorkerContainerName,
+									Image:           image,
+									ImagePullPolicy: corev1.PullIfNotPresent,
+								}},
+							},
 						},
 					}},
 				},

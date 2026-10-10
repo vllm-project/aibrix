@@ -11,3 +11,4 @@ resources:
 
 patches:
   - path: api-key-patch.yaml
+  - path: latency-patch.yaml

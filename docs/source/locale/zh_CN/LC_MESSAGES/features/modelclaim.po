@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: AIBrix\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-10 18:51+0800\n"
-"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"POT-Creation-Date: 2026-10-10 00:35+0800\n"
+"PO-Revision-Date: 2026-10-10 00:35+0800\n"
 "Last-Translator: AIBrix Team\n"
 "Language: zh_CN\n"
 "Language-Team: zh_CN <LL@li.org>\n"
@@ -16,918 +16,1713 @@ msgstr ""
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Generated-By: Babel 2.17.0\n"
+"Generated-By: Babel 2.18.0\n"
 
 #: ../../source/features/modelclaim.rst:5
-msgid "ModelClaim High-Density GPU Runtime Pools"
-msgstr "ModelClaim 高密度 GPU 运行时池"
+msgid "ModelClaim"
+msgstr "ModelClaim"
 
 #: ../../source/features/modelclaim.rst:9
-msgid ""
-"ModelClaim is an experimental feature. It currently supports one engine "
-"replica per claim, uses a fixed GPU topology per warm pool, and requires "
-"a dedicated kvcached runtime image. Validate the feature with your "
-"engine, model, GPU, and workload before using it for production traffic."
-msgstr ""
-"ModelClaim 是实验性功能。目前每个 claim 只支持一个引擎副本，每个热池使用固定"
-"GPU 拓扑，并需要专用的 kvcached runtime 镜像。用于生产流量前，请先用你的引擎、"
-"模型、GPU 和工作负载验证该功能。"
+msgid "ModelClaim is experimental. Read `Limitations`_ before you rely on it."
+msgstr "ModelClaim 是实验性功能。使用前请先阅读 `限制`_。"
 
-#: ../../source/features/modelclaim.rst:14
+#: ../../source/features/modelclaim.rst:11
 msgid ""
-"ModelClaim lets several independently managed model engines share a warm "
-"GPU runtime Pod. Instead of creating one Kubernetes Deployment per model,"
-" an operator first creates a pool of topology-homogeneous GPU Pods. A "
-"user then creates a ``ModelClaim`` for each model that should run in the "
-"pool."
+"ModelClaim serves several models from the same GPUs. You deploy a warm "
+"pool, which is a Deployment of GPU Pods that run the AIBrix runtime "
+"agent, and create one ModelClaim for each model. The controller starts "
+"each model as its own engine process, on a Pod whose GPU has room for it."
+" The AIBrix gateway then routes requests to that engine by model name. A "
+"pool can also put idle models to sleep, which frees GPU memory for the "
+"models in use, and the next request for a sleeping model wakes it."
 msgstr ""
-"ModelClaim 让多个独立管理的模型引擎共享一个预热 GPU runtime Pod。不必为每个模型创建一个 Kubernetes Deployment，运维人员先创建一批拓扑同构的 "
-"GPU Pod 池，再为每个要在池中运行的模型创建一个 ``ModelClaim`` 。"
+"ModelClaim 让多个模型共用同一组 GPU。你先部署一个热池，即由运行 AIBrix "
+"runtime agent 的 GPU Pod 组成的 Deployment，再为每个模型创建一个 "
+"ModelClaim。控制器把每个模型作为独立的引擎进程，启动在 GPU 有空间的 Pod "
+"上，AIBrix 网关再按模型名把请求路由到该引擎。热池还可以让空闲的模型休眠，"
+"把显存腾给正在使用的模型，对休眠模型的下一个请求会唤醒它。"
 
 #: ../../source/features/modelclaim.rst:19
 msgid ""
-"The ModelClaim controller selects a compatible Pod, asks the AIBrix "
-"runtime agent to start a separate engine process, and publishes the "
-"engine's port to the AIBrix gateway only after the engine is ready. The "
-"default experimental image contains vLLM; SGLang requires a custom "
-"compatible runtime image. The kvcached framework provides elastic KV-"
-"cache memory across colocated engines. An optional pool policy can "
-"redistribute KV capacity according to observed requests and put idle vLLM"
-" engines into sleep mode."
-msgstr ""
-"ModelClaim 控制器会选择兼容的 Pod，让 AIBrix runtime agent 启动独立的引擎进程，"
-"并仅在引擎就绪后把引擎端口发布给 AIBrix 网关。默认实验镜像包含 vLLM；SGLang "
-"需要自定义兼容的 runtime 镜像。kvcached 框架在同驻引擎之间提供弹性 KV cache "
-"内存。可选的池策略可根据观测到的请求重新分配 KV 容量，并把空闲的 vLLM 引擎"
-"置于 sleep 模式。"
+"ModelClaim suits models that are busy only part of the time and would "
+"otherwise each need a GPU of their own."
+msgstr "ModelClaim 适合只在部分时间繁忙、否则各自都要独占一块 GPU 的模型。"
 
-#: ../../source/features/modelclaim.rst:28
-msgid "Architecture"
-msgstr "架构"
+#: ../../source/features/modelclaim.rst:23
+msgid "How it works"
+msgstr "工作原理"
 
-#: ../../source/features/modelclaim.rst:45
-msgid "The main responsibilities are:"
-msgstr "主要职责如下："
-
-#: ../../source/features/modelclaim.rst:47
+#: ../../source/features/modelclaim.rst:38
 msgid ""
-"**ModelClaim** declares the served model, artifact, pool selector, "
-"engine, and engine arguments. It does not request GPUs directly."
+"A **warm pool** is a Deployment whose Pods run the ModelClaim runtime "
+"image and request a fixed number of GPUs. In each Pod, the runtime agent "
+"starts, stops, sleeps and wakes engine processes for the controller."
 msgstr ""
-"**ModelClaim** 声明要服务的模型、制品、池选择器、引擎和引擎参数。它不直接申请"
-" GPU。"
+"**热池** 是一个 Deployment，其 Pod 运行 ModelClaim 的 runtime 镜像，"
+"并申请固定数量的 GPU。在每个 Pod 中，runtime agent 替控制器启动、停止、"
+"休眠和唤醒引擎进程。"
+
+#: ../../source/features/modelclaim.rst:41
+msgid ""
+"A **ModelClaim** names a model and the pool it runs in. It also sets the "
+"engine arguments, and declares how much GPU memory one instance needs."
+msgstr ""
+"**ModelClaim** 指定一个模型及其所在的热池，还设置引擎参数，"
+"并声明一个实例需要多少显存。"
+
+#: ../../source/features/modelclaim.rst:43
+msgid ""
+"The **ModelClaim controller** places each claim on a Pod whose GPU has "
+"room for it, and has the runtime agent start the engine there. The "
+"engines on a GPU share its memory for their KV caches through kvcached, "
+"and the controller gives each engine a KV cache limit. Once an engine is "
+"ready, the controller writes its port in an annotation on the Pod, which "
+"this guide calls the engine's route."
+msgstr ""
+"**ModelClaim 控制器** 把每个 claim 放置到 GPU 有空间的 Pod 上，并让 "
+"runtime agent 在那里启动引擎。同一块 GPU 上的引擎通过 kvcached 共用这块 "
+"GPU 的显存来存放各自的 KV cache，控制器为每个引擎设定 KV cache 上限。"
+"引擎就绪后，控制器把它的端口写进 Pod 上的一个注解，"
+"本指南称之为该引擎的路由（route）。"
 
 #: ../../source/features/modelclaim.rst:49
 msgid ""
-"**Warm pool Deployment** owns the GPU resources and fixes the Pod-visible"
-" GPU topology."
-msgstr "**热池 Deployment** 持有 GPU 资源，并固定 Pod 可见的 GPU 拓扑。"
-
-#: ../../source/features/modelclaim.rst:51
-msgid ""
-"**ModelClaim controller** performs placement, lifecycle reconciliation, "
-"route gating, and the optional pool policy."
+"The **AIBrix gateway** reads the routes and sends each request to the "
+"engine of its model. When the model is asleep, the gateway asks the "
+"controller to wake it and tells the client to retry."
 msgstr ""
-"**ModelClaim 控制器** 负责放置、生命周期调和、路由放行，以及可选的池策略。"
+"**AIBrix 网关** 读取这些路由，把每个请求发给对应模型的引擎。"
+"如果模型在休眠，网关会请控制器唤醒它，并让客户端重试。"
 
-#: ../../source/features/modelclaim.rst:53
+#: ../../source/features/modelclaim.rst:54
+msgid "Limitations"
+msgstr "限制"
+
+#: ../../source/features/modelclaim.rst:56
 msgid ""
-"**AIBrix runtime agent** starts and supervises one process per claim and "
-"exposes actual engine, memory, and request state through a runtime "
-"snapshot."
+"**One engine per claim.** ``replicas`` must be 1, so a claim runs one "
+"engine on one Pod."
 msgstr ""
-"**AIBrix runtime agent** 为每个 claim 启动并监管一个进程，并通过 runtime "
-"snapshot 暴露实际的引擎、内存和请求状态。"
+"**每个 claim 一个引擎。** ``replicas`` 必须为 1，因此一个 claim 只在一个 "
+"Pod 上运行一个引擎。"
 
-#: ../../source/features/modelclaim.rst:55
+#: ../../source/features/modelclaim.rst:58
 msgid ""
-"**AIBrix gateway** routes a served model to its per-engine port. It can "
-"trigger a wake for a sleeping model but does not hold the original "
-"request."
+"**Tested setups.** ModelClaim has been tested with vLLM on NVIDIA H20 "
+"GPUs, with tensor parallelism 1 and 2 in one Pod. Pipeline parallelism, "
+"tensor parallelism above 2, Pods with more than two GPUs and other GPU "
+"types have not been tested. Data parallelism is not supported."
 msgstr ""
-"**AIBrix 网关** 将已服务模型路由到其按引擎划分的端口。它可以为处于 sleep 的"
-"模型触发唤醒，但不会持有原始请求。"
+"**已测试的环境。** ModelClaim 已在 NVIDIA H20 GPU 上配合 vLLM 测试过，"
+"覆盖单个 Pod 内张量并行度为 1 和 2 的情况。流水线并行、张量并行度大于 2、"
+"每个 Pod 超过两块 GPU 以及其他型号的 GPU 都未经测试。不支持数据并行。"
 
-#: ../../source/features/modelclaim.rst:59
-msgid "Prerequisites"
-msgstr "前置条件"
-
-#: ../../source/features/modelclaim.rst:61
-msgid "You need:"
-msgstr "你需要："
-
-#: ../../source/features/modelclaim.rst:63
+#: ../../source/features/modelclaim.rst:62
 msgid ""
-"an existing Kubernetes cluster with NVIDIA GPUs and the NVIDIA device "
-"plugin;"
-msgstr "已有带 NVIDIA GPU 和 NVIDIA device plugin 的 Kubernetes 集群；"
-
-#: ../../source/features/modelclaim.rst:65
-msgid "the latest AIBrix nightly control plane from the ``main`` branch;"
-msgstr "来自 ``main`` 分支的最新 AIBrix nightly 控制面；"
-
-#: ../../source/features/modelclaim.rst:66
-msgid "a kvcached-compatible image for the selected engine;"
-msgstr "所选引擎的 kvcached 兼容镜像；"
-
-#: ../../source/features/modelclaim.rst:67
-msgid ""
-"enough host memory for vLLM sleep level 1 and enough ``/dev/shm`` "
-"capacity for kvcached metadata and IPC;"
+"**One GPU layout per pool.** A vLLM claim must use all the GPUs of its "
+"Pod, so models with different parallelism go in separate pools."
 msgstr ""
-"足够的宿主机内存以支持 vLLM sleep level 1，以及足够的 ``/dev/shm`` 容量用于 "
-"kvcached 元数据和 IPC；"
+"**每个热池只有一种 GPU 布局。** vLLM 的 claim 必须用满所在 Pod 的全部 "
+"GPU，因此并行方式不同的模型要放在不同的热池里。"
 
-#: ../../source/features/modelclaim.rst:69
-msgid "a node-local or otherwise persistent model-weight cache;"
-msgstr "节点本地或其他持久化的模型权重缓存；"
+#: ../../source/features/modelclaim.rst:64
+msgid ""
+"**Host memory is not managed.** ModelClaim puts engines to sleep with "
+"vLLM's sleep level 1, which moves a model's weights from the GPU to host "
+"memory until the engine wakes. The controller does not count host memory "
+"when it places claims or puts engines to sleep. If many models sleep on "
+"one node, the node can run out of memory, and engines can be killed. Size"
+" the pool's memory request for all its models asleep at once."
+msgstr ""
+"**主机内存不受管理。** ModelClaim 用 vLLM 的 sleep level 1 让引擎休眠，"
+"它会把模型权重从 GPU 移到主机内存，直到引擎被唤醒。控制器在放置 claim "
+"和让引擎休眠时都不计算主机内存。如果一个节点上有很多模型同时休眠，"
+"节点可能耗尽内存，引擎可能因此被杀掉。"
+"请按热池中所有模型同时休眠的情况设置其内存请求。"
 
 #: ../../source/features/modelclaim.rst:70
-msgid "``kubectl`` access to create CRDs, Deployments, Services, and ModelClaims."
-msgstr "有 ``kubectl`` 权限以创建 CRD、Deployment、Service 和 ModelClaim。"
-
-#: ../../source/features/modelclaim.rst:73
-msgid "Install the nightly control plane"
-msgstr "安装 nightly 控制面"
+msgid ""
+"**Sleep and wake are per pool, and on request.** Only vLLM engines sleep."
+" The sleep policy applies to every model in a pool, so a model that must "
+"stay awake needs a pool without idle sleep. A sleeping model wakes only "
+"when a request for it reaches the AIBrix gateway, which answers that "
+"request with 503 instead of holding it, so clients must retry."
+msgstr ""
+"**休眠与唤醒按热池设置，且只在有请求时唤醒。** 只有 vLLM 引擎会休眠。"
+"休眠策略作用于热池中的每个模型，"
+"因此必须保持唤醒的模型需要放在不启用空闲休眠的热池里。"
+"休眠的模型只有在发给它的请求到达 AIBrix 网关时才会被唤醒。"
+"网关会对这个请求返回 503，而不是挂起等待，因此客户端必须重试。"
 
 #: ../../source/features/modelclaim.rst:75
 msgid ""
-"ModelClaim is included in the current ``main`` branch, including its CRD,"
-" controller reconciliation, and gateway wake support. Follow the "
-"**Nightly Version** section of the :doc:`AIBrix installation guide "
-"<../getting_started/installation/installation>`. The standard "
-"``config/crd`` and ``config/default`` manifests install the ModelClaim "
-"API and use the public nightly controller and gateway images. No custom "
-"control-plane build is required."
+"**Declared GPU memory.** The controller trusts the figures that a claim "
+"declares in ``perGPU``, and does not measure a model's footprint. "
+"kvcached limits only the KV cache, so an engine that needs more than its "
+"declared footprint can run the GPU out of memory."
 msgstr ""
-"ModelClaim 已包含在当前 ``main`` 分支中，含其 CRD、控制器调和以及网关唤醒支持。"
-"请遵循 :doc:`AIBrix installation guide "
-"<../getting_started/installation/installation>` 中的 **Nightly Version** 小节。"
-"标准的 ``config/crd`` 和 ``config/default`` 清单会安装 ModelClaim API，并使用"
-"公开的 nightly 控制器和网关镜像。无需自定义构建控制面。"
+"**显存按声明计算。** 控制器信任 claim 在 ``perGPU`` 中声明的数值，"
+"不会测量模型的占用。kvcached 只限制 KV cache，"
+"因此实际需要超过所声明占用的引擎可能耗尽 GPU 显存。"
 
-#: ../../source/features/modelclaim.rst:83
-msgid "Verify the installation before creating a runtime pool:"
-msgstr "创建 runtime 池之前，先验证安装："
-
-#: ../../source/features/modelclaim.rst:93
+#: ../../source/features/modelclaim.rst:79
 msgid ""
-"Nightly tags are mutable. For a repeatable experiment, record the AIBrix "
-"commit and resolved controller and gateway image digests together with "
-"the runtime image digest."
+"**No live migration.** A claim moves to another Pod when its engine fails"
+" permanently or cannot wake where it is. A new engine then loads the "
+"model there, and the model serves nothing until that engine is ready."
 msgstr ""
-"Nightly 标签可变。为了可复现实验，请记录 AIBrix commit，以及解析后的控制器、"
-"网关镜像 digest 和 runtime 镜像 digest。"
+"**不支持热迁移。** 当 claim 的引擎永久失败，或无法在原地唤醒时，claim "
+"会迁移到另一个 Pod。新的引擎会在那里重新加载模型，在它就绪之前，"
+"该模型不提供服务。"
+
+#: ../../source/features/modelclaim.rst:82
+msgid ""
+"**Runtime image.** The published runtime image contains vLLM and is built"
+" for ``linux/amd64`` only. It is published from ``main`` and is not part "
+"of AIBrix releases. ``engine: sglang`` needs your own image with SGLang "
+"and kvcached, and has not been tested."
+msgstr ""
+"**runtime 镜像。** 发布的 runtime 镜像只包含 vLLM，并且只构建了 "
+"``linux/amd64`` 版本。它从 ``main`` 发布，不属于 AIBrix 的正式版本。"
+"``engine: sglang`` 需要你自己构建包含 SGLang 和 kvcached 的镜像，"
+"且未经测试。"
+
+#: ../../source/features/modelclaim.rst:86
+msgid ""
+"**Model sources.** Only Hugging Face artifacts (``huggingface://``) have "
+"been tested."
+msgstr "**模型来源。** 只测试过 Hugging Face 的模型（``huggingface://``）。"
+
+#: ../../source/features/modelclaim.rst:88
+msgid ""
+"**Claim names.** A claim's name can be at most 63 characters, because it "
+"is part of annotation keys on the Pod."
+msgstr ""
+"**claim 名称。** claim 的名称最多 63 个字符，因为它是 Pod "
+"上注解键的一部分。"
+
+#: ../../source/features/modelclaim.rst:90
+msgid ""
+"**No access control.** The runtime agent's API on port 8080 has no "
+"authentication, and the engines accept vLLM's own sleep and wake calls on"
+" their ports, from 20000 to 20999. Anything that can reach a pool Pod can"
+" start, stop, sleep or wake its engines. Limit access to these ports, for"
+" example with a NetworkPolicy that admits only the ModelClaim controller,"
+" Envoy and Prometheus."
+msgstr ""
+"**没有访问控制。** runtime agent 在 8080 端口上的 API 没有认证，"
+"引擎也会在自己的端口（20000 到 20999）上接受 vLLM 自带的休眠和唤醒调用。"
+"任何能访问到热池 Pod 的程序，都能启动、停止、休眠或唤醒其中的引擎。"
+"请限制对这些端口的访问，例如用 NetworkPolicy 只允许 ModelClaim 控制器、"
+"Envoy 和 Prometheus 访问。"
 
 #: ../../source/features/modelclaim.rst:98
-msgid "Build the experimental runtime image"
-msgstr "构建实验性 runtime 镜像"
+msgid "Before you begin"
+msgstr "开始之前"
 
 #: ../../source/features/modelclaim.rst:100
 msgid ""
-"Only the kvcached runtime agent image needs a feature-specific build. Its"
-" dedicated target is intentionally not part of ``docker-build-all``, "
-"``docker-push-all``, or the public nightly image workflow."
+"A Kubernetes cluster with NVIDIA GPU nodes on ``linux/amd64`` and the "
+"NVIDIA device plugin."
 msgstr ""
-"只有 kvcached runtime agent 镜像需要按本功能单独构建。其专用 target 有意不包含在 ``docker-build-all`` "
-"、``docker-push-all`` 或公开 nightly 镜像工作流中。"
+"一个 Kubernetes 集群，带有 ``linux/amd64`` 的 NVIDIA GPU 节点和 NVIDIA "
+"device plugin。"
 
-#: ../../source/features/modelclaim.rst:104
+#: ../../source/features/modelclaim.rst:102
 msgid ""
-"Use the same current ``main`` checkout used by the nightly installation. "
-"Build the image and push it to a registry accessible from the cluster:"
+"The AIBrix control plane. Its standard installation includes ModelClaim's"
+" CRD and controller, and the gateway's support for it. See "
+":doc:`../getting_started/installation/installation`."
 msgstr ""
-"使用与 nightly 安装相同的当前 ``main`` 检出。构建镜像并推送到集群可访问的仓库："
+"AIBrix 控制面。其标准安装已包含 ModelClaim 的 CRD 和控制器，"
+"以及网关对它的支持。参见 "
+":doc:`../getting_started/installation/installation`。"
 
-#: ../../source/features/modelclaim.rst:118
+#: ../../source/features/modelclaim.rst:105
 msgid ""
-"``KVCACHED_RUNTIME_BASE_IMAGE`` defaults to ``ghcr.io/ovg-project"
-"/kvcached-vllm:latest``. Pin it to a tested digest or tag for a "
-"reproducible deployment:"
+"Access from the GPU nodes to Docker Hub for the runtime image, and to "
+"wherever your models are stored."
 msgstr ""
-"``KVCACHED_RUNTIME_BASE_IMAGE`` 默认为 ``ghcr.io/ovg-project/kvcached-vllm:latest`` "
-"。为可复现部署，请将其固定到已验证的 digest 或 tag："
+"GPU 节点能访问 Docker Hub 以拉取 runtime 镜像，也能访问存放模型的位置。"
 
-#: ../../source/features/modelclaim.rst:128
+#: ../../source/features/modelclaim.rst:108
+msgid "Check that the control plane is ready:"
+msgstr "检查控制面是否就绪："
+
+#: ../../source/features/modelclaim.rst:117
+msgid "Quick start"
+msgstr "快速上手"
+
+#: ../../source/features/modelclaim.rst:119
 msgid ""
-"The default base image contains vLLM. The runtime launcher also has an "
-"SGLang path, but using ``engine: sglang`` requires a custom base image "
-"that contains a compatible SGLang and kvcached integration. Automatic "
-"idle sleep currently applies only to vLLM."
+"The samples run two small Qwen models on one GPU, in the ``default`` "
+"namespace. Each claim declares a 6 GiB footprint and a 1 GiB KV floor, so"
+" the GPU needs at least 14 GiB, and the Pod requests 16 GiB of host "
+"memory. Run the commands from the repository root."
 msgstr ""
-"默认基础镜像包含 vLLM。runtime 启动器也有 SGLang 路径，但使用 ``engine: "
-"sglang`` 需要包含兼容 SGLang 与 kvcached 集成的自定义基础镜像。自动空闲 sleep "
-"目前仅适用于 vLLM。"
+"示例在 ``default`` 命名空间里用一块 GPU 运行两个小型 Qwen 模型。每个 "
+"claim 声明 6 GiB 的占用和 1 GiB 的 KV 下限，因此 GPU 至少需要 14 GiB，Pod "
+"还会申请 16 GiB 主机内存。请在仓库根目录下运行这些命令。"
 
-#: ../../source/features/modelclaim.rst:133
-#, python-brace-format
+#: ../../source/features/modelclaim.rst:124
+msgid "Create the warm pool and wait for its Pod:"
+msgstr "创建热池并等待其 Pod 就绪："
+
+#: ../../source/features/modelclaim.rst:131
+msgid "Create the two claims and watch them start:"
+msgstr "创建两个 claim，并观察它们启动："
+
+#: ../../source/features/modelclaim.rst:138
 msgid ""
-"Update the warm-pool manifest to use "
-"``${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/kvcached-runtime:${IMAGE_TAG}``."
-" Keep the runtime source revision aligned with the nightly control plane "
-"revision used for the test."
+"Each claim reads ``Activating`` once it is placed, and ``Active`` once "
+"its engine serves. The first start downloads the model, so it can take a "
+"few minutes:"
 msgstr ""
-"将热池清单中的镜像更新为 ``${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/kvcached-runtime:${IMAGE_TAG}`` "
-"。保持 runtime 源码版本与测试所用 nightly 控制面版本一致。"
-
-#: ../../source/features/modelclaim.rst:139
-msgid "Create a warm runtime pool"
-msgstr "创建预热 runtime 池"
-
-#: ../../source/features/modelclaim.rst:141
-msgid ""
-"The repository sample creates one single-GPU runtime Pod and a metrics "
-"Service:"
-msgstr "仓库示例会创建一个单 GPU runtime Pod 和一个 metrics Service："
+"claim 被放置后显示 ``Activating``，引擎开始服务后显示 ``Active``。"
+"首次启动需要下载模型，可能要几分钟："
 
 #: ../../source/features/modelclaim.rst:148
-msgid "Before applying it, review these fields:"
-msgstr "应用前请检查以下字段："
-
-#: ../../source/features/modelclaim.rst:150
-msgid "``claim.model.aibrix.ai/pool``"
-msgstr "``claim.model.aibrix.ai/pool``"
-
-#: ../../source/features/modelclaim.rst:151
 msgid ""
-"The logical pool selected by ModelClaims. Put the label on both the "
-"Deployment and Pod template."
-msgstr "ModelClaim 选择的逻辑池。请将该标签同时打在 Deployment 和 Pod 模板上。"
-
-#: ../../source/features/modelclaim.rst:154
-msgid "``claim.model.aibrix.ai/enabled: \"true\"``"
-msgstr "``claim.model.aibrix.ai/enabled: \"true\"``"
-
-#: ../../source/features/modelclaim.rst:155
-msgid ""
-"Required on candidate Pods. Removing or changing it keeps the Pod out of "
-"ModelClaim placement."
-msgstr "候选 Pod 必须带此标签。删除或修改后，该 Pod 不会进入 ModelClaim 放置。"
+"To send requests through the gateway, keep a port-forward to Envoy "
+"running in another terminal:"
+msgstr ""
+"要通过网关发送请求，请在另一个终端里保持一个到 Envoy 的 port-forward："
 
 #: ../../source/features/modelclaim.rst:158
-msgid "``image``"
-msgstr "``image``"
-
-#: ../../source/features/modelclaim.rst:159
 msgid ""
-"Replace ``aibrix/kvcached-runtime:dev`` when using a remote registry or a"
-" pinned image."
-msgstr "使用远程仓库或固定镜像时，请替换 ``aibrix/kvcached-runtime:dev`` 。"
+"Then send a request with a claim's ``modelName`` as the model. The "
+"``routing-strategy`` header is needed, as `Requests`_ explains:"
+msgstr ""
+"然后以 claim 的 ``modelName`` 作为模型名发送请求。必须带上 "
+"``routing-strategy`` 请求头，原因见 `请求`_："
 
-#: ../../source/features/modelclaim.rst:162
+#: ../../source/features/modelclaim.rst:167
+msgid "Let idle models sleep by giving the pool a sleep policy:"
+msgstr "给热池设置休眠策略，让空闲的模型休眠："
+
+#: ../../source/features/modelclaim.rst:174
+msgid ""
+"Once a model has had no requests for 60 seconds, the controller puts it "
+"to sleep, and its claim shows ``Sleeping``. The next request for it gets "
+"``503`` with ``Retry-After: 10``, and the controller wakes the model. "
+"These small models wake in a few seconds, so a retry after those 10 "
+"seconds is normally served."
+msgstr ""
+"模型连续 60 秒没有请求后，控制器会让它休眠，其 claim 显示 ``Sleeping``。"
+"之后发给它的下一个请求会得到带 ``Retry-After: 10`` 的 ``503``，"
+"同时控制器唤醒该模型。这两个小模型几秒内就能唤醒，所以 10 秒后重试，"
+"请求通常就能得到服务。"
+
+#: ../../source/features/modelclaim.rst:180
+msgid ""
+"To clean up, delete the claims first, so that the controller stops their "
+"engines:"
+msgstr "清理时请先删除 claim，以便控制器停止它们的引擎："
+
+#: ../../source/features/modelclaim.rst:189
+msgid "Warm pools"
+msgstr "热池"
+
+#: ../../source/features/modelclaim.rst:191
+msgid "A warm pool is a Deployment. The sample runs one Pod with one GPU:"
+msgstr "热池就是一个 Deployment。示例运行一个带一块 GPU 的 Pod："
+
+#: ../../source/features/modelclaim.rst:196
+msgid "What its fields do:"
+msgstr "各字段的作用："
+
+#: ../../source/features/modelclaim.rst:198
+msgid ""
+"``claim.model.aibrix.ai/pool`` and ``claim.model.aibrix.ai/enabled`` "
+"labels"
+msgstr ""
+"``claim.model.aibrix.ai/pool`` 和 ``claim.model.aibrix.ai/enabled`` 标签"
+
+#: ../../source/features/modelclaim.rst:199
+msgid ""
+"Claims select a pool by its ``pool`` label. The controller places claims "
+"only on Pods that also have ``enabled: \"true\"``. A claim already on a "
+"Pod stays there when the Pod loses either label, until the Pod stops "
+"running or is deleted."
+msgstr ""
+"claim 通过热池的 ``pool`` 标签选择热池。控制器只会把 claim 放置到同时带有 "
+"``enabled: \"true\"`` 的 Pod 上。已经在某个 Pod 上的 claim，在该 Pod "
+"失去任一标签后仍留在那里，直到 Pod 停止运行或被删除。"
+
+#: ../../source/features/modelclaim.rst:204
 msgid "``nvidia.com/gpu``"
 msgstr "``nvidia.com/gpu``"
 
-#: ../../source/features/modelclaim.rst:163
+#: ../../source/features/modelclaim.rst:205
 msgid ""
-"Defines the fixed topology for this pool. Every Pod in one pool should "
-"expose the same number of GPUs."
-msgstr "定义该池的固定拓扑。同一池中每个 Pod 应暴露相同数量的 GPU。"
+"The number of GPUs in each Pod. A vLLM claim runs only on Pods whose GPU "
+"count equals its tensor parallel size times its pipeline parallel size. "
+"For a model that needs two GPUs, create another pool whose Pods request "
+"two, and give the claim ``--tensor-parallel-size: \"2\"``."
+msgstr ""
+"每个 Pod 的 GPU 数量。vLLM 的 claim 只会运行在 GPU "
+"数量等于其张量并行度乘以流水线并行度的 Pod 上。对于需要两块 GPU 的模型，"
+"请另建一个 Pod 申请两块 GPU 的热池，并为 claim 设置 "
+"``--tensor-parallel-size: \"2\"``。"
 
-#: ../../source/features/modelclaim.rst:166
+#: ../../source/features/modelclaim.rst:210
+msgid "``image``"
+msgstr "``image``"
+
+#: ../../source/features/modelclaim.rst:211
+msgid ""
+"``aibrix/kvcached-runtime`` contains the runtime agent, vLLM and "
+"kvcached, on top of ``ghcr.io/ovg-project/kvcached-"
+"vllm:kvcached-v0.1.6-vllm-v0.30.0``. CI publishes it on every push to "
+"``main``, tagged ``nightly`` and with the commit's full SHA. With a "
+"control plane built from ``main``, use the image of the same commit, "
+"pinned by its SHA tag. With ``nightly`` and the sample's "
+"``IfNotPresent``, a node keeps the first ``nightly`` it pulled. AIBrix "
+"releases do not publish this image. For a release, or for another base "
+"image, build the image yourself from a checkout of the commit your "
+"control plane runs:"
+msgstr ""
+"``aibrix/kvcached-runtime`` 包含 runtime agent、vLLM 和 kvcached，基于 "
+"``ghcr.io/ovg-project/kvcached-vllm:kvcached-v0.1.6-vllm-v0.30.0`` 构建。"
+"CI 在每次推送到 ``main`` 时发布它，打上 ``nightly`` 标签和该提交的完整 "
+"SHA 标签。如果控制面是从 ``main`` 构建的，请使用同一提交的镜像，并用 SHA "
+"标签固定版本。使用 ``nightly`` 且拉取策略为示例中的 ``IfNotPresent`` 时，"
+"节点会一直使用它第一次拉取的 ``nightly``。AIBrix 正式版本不发布这个镜像。"
+"对于正式版本或其他基础镜像，请从控制面所用的提交自行构建镜像："
+
+#: ../../source/features/modelclaim.rst:228
+msgid "``resources.requests.memory``"
+msgstr "``resources.requests.memory``"
+
+#: ../../source/features/modelclaim.rst:229
+msgid ""
+"Host memory for the runtime agent and its engines. A sleeping engine "
+"keeps its model's weights in host memory, so size this for all the Pod's "
+"models asleep at once."
+msgstr ""
+"供 runtime agent 及其引擎使用的主机内存。"
+"休眠的引擎会把模型权重留在主机内存里，因此请按该 Pod "
+"上所有模型同时休眠的情况来设置。"
+
+#: ../../source/features/modelclaim.rst:233
 msgid "``/dev/shm``"
 msgstr "``/dev/shm``"
 
-#: ../../source/features/modelclaim.rst:167
+#: ../../source/features/modelclaim.rst:234
 msgid ""
-"The sample uses a 16 GiB memory-backed ``emptyDir``. Size it for the "
-"chosen kvcached and engine configuration."
-msgstr "示例使用 16 GiB 内存型 ``emptyDir`` 。请按所选 kvcached 和引擎配置调整大小。"
+"A memory-backed volume that kvcached and vLLM use to share memory between"
+" processes. The sample allows it 16 GiB."
+msgstr ""
+"一个基于内存的卷，kvcached 和 vLLM 用它在进程之间共享内存。示例为它分配了 "
+"16 GiB。"
 
-#: ../../source/features/modelclaim.rst:170
-msgid "``AIBRIX_WEIGHT_CACHE_DIR``"
-msgstr "``AIBRIX_WEIGHT_CACHE_DIR``"
+#: ../../source/features/modelclaim.rst:237
+msgid "The ``hf-cache`` volume and ``AIBRIX_WEIGHT_CACHE_DIR``"
+msgstr "``hf-cache`` 卷和 ``AIBRIX_WEIGHT_CACHE_DIR``"
 
-#: ../../source/features/modelclaim.rst:171
+#: ../../source/features/modelclaim.rst:238
 msgid ""
-"Points to the model-weight cache inspected by runtime snapshots. The "
-"sample mounts a node-local ``hostPath`` so recreated Pods on that node "
-"can reuse downloads."
-msgstr "指向 runtime snapshot 检查的模型权重缓存。示例挂载节点本地 ``hostPath`` ，以便该节点上重建的 Pod 可以复用已下载内容。"
+"The volume is a directory on the node, mounted at the Hugging Face cache,"
+" ``/root/.cache/huggingface``, where engines download their models. A Pod"
+" that is recreated on that node therefore does not download them again. "
+"``AIBRIX_WEIGHT_CACHE_DIR`` points the runtime agent at the same "
+"directory, where it notes the models it has served. The controller "
+"prefers Pods that have served a model before."
+msgstr ""
+"该卷是节点上的一个目录，挂载在 Hugging Face 缓存目录 "
+"``/root/.cache/huggingface``，引擎会把模型下载到这里。"
+"因此在该节点上重建的 Pod 无需重新下载模型。``AIBRIX_WEIGHT_CACHE_DIR`` 让 "
+"runtime agent 也使用这个目录，并在其中记录它服务过的模型。"
+"控制器会优先选择服务过该模型的 Pod。"
 
-#: ../../source/features/modelclaim.rst:175
+#: ../../source/features/modelclaim.rst:245
 msgid "``/var/run/aibrix``"
 msgstr "``/var/run/aibrix``"
 
-#: ../../source/features/modelclaim.rst:176
+#: ../../source/features/modelclaim.rst:246
 msgid ""
-"Stores the engine registry. The ``emptyDir`` survives an agent process "
-"restart within the Pod, but not a Pod replacement."
+"The runtime agent keeps its list of engines here. When the agent "
+"restarts, it reads the list and takes its engines back without restarting"
+" them."
 msgstr ""
-"存放引擎注册表。``emptyDir`` 可在 Pod 内 agent 进程重启后保留，但不能跨 Pod "
-"替换保留。"
+"runtime agent 在这里保存它的引擎列表。agent 重启后会读取这份列表，"
+"接管原有的引擎，而不会重启它们。"
 
-#: ../../source/features/modelclaim.rst:179
+#: ../../source/features/modelclaim.rst:249
+msgid "``ENABLE_KVCACHED: \"false\"`` and ``KVCACHED_AUTOPATCH: \"0\"``"
+msgstr "``ENABLE_KVCACHED: \"false\"`` 和 ``KVCACHED_AUTOPATCH: \"0\"``"
+
+#: ../../source/features/modelclaim.rst:250
 msgid ""
-"The runtime image still contains kvcached, ``kvctl``, and the shared-"
-"memory control interfaces when ``ENABLE_KVCACHED=false``. This variable "
-"controls whether the current Python process is patched; it does not "
-"remove kvcached from the image. Keep ``ENABLE_KVCACHED=false`` and "
-"``KVCACHED_AUTOPATCH=0`` on the runtime agent. The launcher overrides "
-"both values and assigns a unique ``KVCACHED_IPC_NAME`` for each child "
-"engine. Autopatching the agent itself can load the engine stack into the "
-"supervisor, create an unrelated CUDA context, and blur the isolation "
-"boundary between independently managed engines."
+"These apply to the runtime agent, which must not load kvcached itself. "
+"The agent turns kvcached on in each engine it starts."
 msgstr ""
-"即使 ``ENABLE_KVCACHED=false`` ，runtime 镜像仍包含 kvcached、``kvctl`` 和共享内存控制接口。该变量只控制当前 "
-"Python 进程是否被 patch，并不会从镜像中移除 kvcached。请在 runtime agent 上保持 ``ENABLE_KVCACHED=false`` "
-"和 ``KVCACHED_AUTOPATCH=0`` 。启动器会覆盖这两个值，并为每个子引擎分配唯一的 ``KVCACHED_IPC_NAME`` "
-"。对 agent 自身做 autopatch 可能把引擎栈加载进 supervisor，创建无关的 CUDA context，并模糊独立管理引擎之间的隔离边界。"
+"这两个变量作用于 runtime agent 本身，agent 不能自己加载 kvcached。agent "
+"会在它启动的每个引擎中开启 kvcached。"
 
-#: ../../source/features/modelclaim.rst:188
-msgid "Apply the pool and wait for the runtime agent:"
-msgstr "应用该池并等待 runtime agent："
+#: ../../source/features/modelclaim.rst:253
+msgid "Other environment variables"
+msgstr "其他环境变量"
 
-#: ../../source/features/modelclaim.rst:197
-msgid "Create ModelClaims"
-msgstr "创建 ModelClaim"
+#: ../../source/features/modelclaim.rst:254
+msgid ""
+"Engines inherit the container's environment. Set ``HF_TOKEN`` or "
+"``HF_ENDPOINT`` on the container when your models need them."
+msgstr ""
+"引擎会继承容器的环境变量。如果模型需要，请在容器上设置 ``HF_TOKEN`` 或 "
+"``HF_ENDPOINT``。"
 
-#: ../../source/features/modelclaim.rst:199
-msgid "The sample attaches two small Qwen models to the same pool:"
-msgstr "示例将两个小型 Qwen 模型挂到同一池："
+#: ../../source/features/modelclaim.rst:257
+msgid "``readinessProbe``"
+msgstr "``readinessProbe``"
 
-#: ../../source/features/modelclaim.rst:205
-msgid "Apply the claims and watch their lifecycle:"
-msgstr "应用这些 claim 并观察其生命周期："
+#: ../../source/features/modelclaim.rst:258
+msgid ""
+"The Pod is Ready once the runtime agent answers on ``/healthz``. The "
+"gateway sends requests only to Ready Pods."
+msgstr ""
+"runtime agent 在 ``/healthz`` 上有响应后，Pod 就绪。"
+"网关只把请求发给就绪的 Pod。"
 
-#: ../../source/features/modelclaim.rst:217
-msgid "The supported spec fields are:"
-msgstr "支持的 spec 字段如下："
+#: ../../source/features/modelclaim.rst:261
+msgid "The metrics Service"
+msgstr "指标 Service"
 
-#: ../../source/features/modelclaim.rst:223
+#: ../../source/features/modelclaim.rst:262
+msgid ""
+"Its ``aibrix.ai/metrics: modelclaim-runtime`` label and its port named "
+"``runtime`` let Prometheus find the runtime agent's metrics. See "
+"`Monitoring`_."
+msgstr ""
+"它的 ``aibrix.ai/metrics: modelclaim-runtime`` 标签和名为 ``runtime`` "
+"的端口，让 Prometheus 能找到 runtime agent 的指标。参见 `监控`_。"
+
+#: ../../source/features/modelclaim.rst:266
+msgid ""
+"Changing the Pod template, for example its image, replaces the Pods. "
+"Their engines stop with them, and the controller places their claims "
+"again."
+msgstr ""
+"修改 Pod 模板（例如镜像）会替换 Pod。原 Pod 上的引擎随之停止，"
+"控制器会重新放置它们的 claim。"
+
+#: ../../source/features/modelclaim.rst:270
+msgid "ModelClaims"
+msgstr "ModelClaim 资源"
+
+#: ../../source/features/modelclaim.rst:272
+msgid "The sample claims:"
+msgstr "示例中的 claim："
+
+#: ../../source/features/modelclaim.rst:281
+#: ../../source/features/modelclaim.rst:393
 msgid "Field"
 msgstr "字段"
 
-#: ../../source/features/modelclaim.rst:224
-msgid "Required"
-msgstr "是否必需"
-
-#: ../../source/features/modelclaim.rst:225
-msgid "Description"
-msgstr "说明"
-
-#: ../../source/features/modelclaim.rst:226
-msgid "``modelName``"
-msgstr "``modelName``"
-
-#: ../../source/features/modelclaim.rst:227
-#: ../../source/features/modelclaim.rst:239
-#: ../../source/features/modelclaim.rst:243
-#: ../../source/features/modelclaim.rst:246
-msgid "No"
-msgstr "否"
-
-#: ../../source/features/modelclaim.rst:228
-msgid ""
-"Served model identifier used in OpenAI-compatible requests. Defaults to "
-"the ModelClaim object name."
-msgstr "OpenAI 兼容请求中使用的服务模型标识符。默认为 ModelClaim 对象名。"
-
-#: ../../source/features/modelclaim.rst:230
-msgid "``podSelector``"
-msgstr "``podSelector``"
-
-#: ../../source/features/modelclaim.rst:231
-#: ../../source/features/modelclaim.rst:235
-msgid "Yes"
-msgstr "是"
-
-#: ../../source/features/modelclaim.rst:232
-msgid ""
-"Selects eligible warm-pool Pods. Candidates must also have the enabled "
-"pool label."
-msgstr "选择符合条件的热池 Pod。候选 Pod 还必须带有启用池标签。"
-
-#: ../../source/features/modelclaim.rst:234
-msgid "``artifactURL``"
-msgstr "``artifactURL``"
-
-#: ../../source/features/modelclaim.rst:236
-msgid ""
-"Model artifact location, such as ``huggingface://``, ``s3://``, or "
-"``gcs://``."
-msgstr "模型制品位置，例如 ``huggingface://`` 、``s3://`` 或 ``gcs://`` 。"
-
-#: ../../source/features/modelclaim.rst:238
-msgid "``engine``"
-msgstr "``engine``"
-
-#: ../../source/features/modelclaim.rst:240
-msgid ""
-"``vllm`` or ``sglang``. Defaults to ``vllm``. SGLang requires a "
-"compatible custom runtime image."
-msgstr "``vllm`` 或 ``sglang`` 。默认为 ``vllm`` 。SGLang 需要兼容的自定义 runtime 镜像。"
-
-#: ../../source/features/modelclaim.rst:242
-msgid "``replicas``"
-msgstr "``replicas``"
-
-#: ../../source/features/modelclaim.rst:244
-msgid "Defaults to 1. The current API only accepts 1."
-msgstr "默认为 1。当前 API 只接受 1。"
-
-#: ../../source/features/modelclaim.rst:245
-msgid "``engineConfig.args``"
-msgstr "``engineConfig.args``"
-
-#: ../../source/features/modelclaim.rst:247
-msgid ""
-"Engine CLI flags mapped to string values. Use an empty string for a "
-"boolean flag."
-msgstr "映射为字符串值的引擎 CLI 标志。布尔标志使用空字符串。"
-
-#: ../../source/features/modelclaim.rst:250
-msgid "For example:"
-msgstr "例如："
-
-#: ../../source/features/modelclaim.rst:259
-msgid ""
-"Do not set ``--gpu-memory-utilization``. kvcached owns elastic KV-cache "
-"allocation, and the ModelClaim path rejects that flag. Data parallelism "
-"is not supported; ``--data-parallel-size`` must remain 1."
-msgstr ""
-"不要设置 ``--gpu-memory-utilization`` 。弹性 KV cache 分配由 kvcached 负责，ModelClaim "
-"路径会拒绝该标志。不支持数据并行；``--data-parallel-size`` 必须保持为 1。"
-
-#: ../../source/features/modelclaim.rst:264
-msgid "Configure TP and PP pools"
-msgstr "配置 TP 和 PP 池"
-
-#: ../../source/features/modelclaim.rst:266
-msgid "ModelClaim uses a deliberately simple fixed-topology rule for vLLM:"
-msgstr "ModelClaim 对 vLLM 使用刻意简化的固定拓扑规则："
-
-#: ../../source/features/modelclaim.rst:273
-msgid ""
-"For a TP=2 model, create a separate pool whose Pods each request two "
-"GPUs, then use:"
-msgstr "对于 TP=2 的模型，创建独立池，其中每个 Pod 申请两块 GPU，然后使用："
-
-#: ../../source/features/modelclaim.rst:283
-msgid ""
-"Do not use one four-GPU pool to mix TP=1, TP=2, and TP=4 claims. Create "
-"one topology-homogeneous pool per shape. Automatic request-driven KV "
-"policy and idle sleep are currently limited to single-GPU runtime Pods, "
-"even though the fixed TP/PP activation path is supported."
-msgstr ""
-"不要用一个四 GPU 池混放 TP=1、TP=2 和 TP=4 的 claim。每种形态创建一个拓扑同构"
-"池。尽管已支持固定 TP/PP 激活路径，按请求驱动的自动 KV 策略和空闲 sleep 目前"
-"仍仅限单 GPU runtime Pod。"
-
-#: ../../source/features/modelclaim.rst:289
-msgid "Inspect actual runtime state"
-msgstr "查看实际 runtime 状态"
-
-#: ../../source/features/modelclaim.rst:291
-msgid "ModelClaim status summarizes the lifecycle:"
-msgstr "ModelClaim status 汇总生命周期："
-
-#: ../../source/features/modelclaim.rst:297
-msgid "Status"
-msgstr "状态"
-
-#: ../../source/features/modelclaim.rst:298
+#: ../../source/features/modelclaim.rst:282
+#: ../../source/features/modelclaim.rst:394
+#: ../../source/features/modelclaim.rst:533
+#: ../../source/features/modelclaim.rst:556
+#: ../../source/features/modelclaim.rst:574
 msgid "Meaning"
 msgstr "含义"
 
+#: ../../source/features/modelclaim.rst:283
+msgid "``modelName``"
+msgstr "``modelName``"
+
+#: ../../source/features/modelclaim.rst:284
+msgid ""
+"The name clients send as ``model``. Defaults to the claim's name. Give "
+"each claim its own model name."
+msgstr ""
+"客户端在请求中作为 ``model`` 发送的名称，默认为 claim 的名称。请为每个 "
+"claim 设置不同的模型名。"
+
+#: ../../source/features/modelclaim.rst:286
+msgid "``podSelector``"
+msgstr "``podSelector``"
+
+#: ../../source/features/modelclaim.rst:287
+msgid ""
+"Required. Selects the pool, usually by ``claim.model.aibrix.ai/pool``, "
+"among the Pods in the claim's namespace."
+msgstr ""
+"必填。在 claim 所在命名空间的 Pod 中选择热池，通常按 "
+"``claim.model.aibrix.ai/pool`` 选择。"
+
+#: ../../source/features/modelclaim.rst:289
+msgid "``artifactURL``"
+msgstr "``artifactURL``"
+
+#: ../../source/features/modelclaim.rst:290
+msgid ""
+"Required. Where the model comes from, such as "
+"``huggingface://Qwen/Qwen3-0.6B``."
+msgstr "必填。模型的来源，例如 ``huggingface://Qwen/Qwen3-0.6B``。"
+
+#: ../../source/features/modelclaim.rst:292
+msgid "``engine``"
+msgstr "``engine``"
+
+#: ../../source/features/modelclaim.rst:293
+msgid "``vllm``, the default, or ``sglang``."
+msgstr "``vllm`` 或 ``sglang``，默认为 ``vllm``。"
+
+#: ../../source/features/modelclaim.rst:294
+msgid "``replicas``"
+msgstr "``replicas``"
+
+#: ../../source/features/modelclaim.rst:295
+msgid "Must be 1, the default."
+msgstr "必须为 1，即默认值。"
+
+#: ../../source/features/modelclaim.rst:296
+msgid "``engineConfig.args``"
+msgstr "``engineConfig.args``"
+
+#: ../../source/features/modelclaim.rst:297
+msgid ""
+"Engine flags and their values, as strings. An empty string adds a flag "
+"without a value."
+msgstr ""
+"引擎参数及其取值，均为字符串。值为空字符串时，只添加参数本身，不带值。"
+
 #: ../../source/features/modelclaim.rst:299
-msgid "``Pending`` / ``Scheduling``"
-msgstr "``Pending`` / ``Scheduling``"
+msgid "``perGPU.maximumFootprint``"
+msgstr "``perGPU.maximumFootprint``"
 
 #: ../../source/features/modelclaim.rst:300
-msgid "The claim is new or the controller is selecting a compatible Pod."
-msgstr "claim 新建，或控制器正在选择兼容 Pod。"
-
-#: ../../source/features/modelclaim.rst:301
-msgid "``Loading`` / ``Activating``"
-msgstr "``Loading`` / ``Activating``"
-
-#: ../../source/features/modelclaim.rst:302
 msgid ""
-"The runtime is downloading or starting the engine. It remains non-"
-"routable with port 0."
-msgstr "runtime 正在下载或启动引擎。此时端口为 0，仍不可路由。"
+"Needed for placement. The most GPU memory one instance holds on a GPU "
+"apart from its KV cache. That covers weights, CUDA graphs, activations "
+"and memory the allocator keeps."
+msgstr ""
+"放置时需要。一个实例在一块 GPU 上除 KV cache 以外占用的最大显存，"
+"包括权重、CUDA graph、激活值以及分配器保留的内存。"
+
+#: ../../source/features/modelclaim.rst:303
+msgid "``perGPU.kvFloor``"
+msgstr "``perGPU.kvFloor``"
 
 #: ../../source/features/modelclaim.rst:304
-msgid "``Active``"
-msgstr "``Active``"
-
-#: ../../source/features/modelclaim.rst:305
 msgid ""
-"The runtime reports the engine alive and ready; the gateway has a real "
-"per-engine port."
-msgstr "runtime 报告引擎存活且就绪；网关已有真实的按引擎端口。"
+"Needed for placement. The KV cache one instance needs on a GPU to serve a"
+" single request of its maximum length."
+msgstr ""
+"放置时需要。一个实例在一块 GPU 上处理一个最大长度的请求所需的 KV cache。"
 
 #: ../../source/features/modelclaim.rst:307
-msgid "``Sleeping``"
-msgstr "``Sleeping``"
-
-#: ../../source/features/modelclaim.rst:308
 msgid ""
-"The engine remains resident but is intentionally non-routable. A request "
-"can trigger a wake."
-msgstr "引擎仍驻留，但有意不可路由。请求可以触发唤醒。"
+"Only ``perGPU`` can change after a claim is created. To change anything "
+"else, delete the claim and create it again."
+msgstr ""
+"claim 创建后只有 ``perGPU`` 可以修改。要修改其他字段，请删除 claim "
+"后重新创建。"
 
 #: ../../source/features/modelclaim.rst:310
-msgid "``Failed``"
-msgstr "``Failed``"
-
-#: ../../source/features/modelclaim.rst:311
-msgid "Activation or local restart recovery reached a terminal failure."
-msgstr "激活或本地重启恢复已到达终态失败。"
-
-#: ../../source/features/modelclaim.rst:313
-msgid "Inspect claim status and the routing annotation:"
-msgstr "查看 claim 状态和路由注解："
-
-#: ../../source/features/modelclaim.rst:325
-msgid "An annotation has this form:"
-msgstr "注解格式如下："
-
-#: ../../source/features/modelclaim.rst:331
 msgid ""
-"``port: 0`` means the model is known but not currently routable. It is "
-"used while the engine is activating, restarting, sleeping, or failed."
+"The runtime agent sets ``--model``, ``--served-model-name``, ``--host``, "
+"``--port`` and ``--enable-sleep-mode`` itself, so leave them out of "
+"``engineConfig.args``. Leave out ``--gpu-memory-utilization`` as well, "
+"since kvcached manages the KV cache. A vLLM claim with that flag fails "
+"with ``InvalidEngineConfig``. So does one whose parallel sizes are not "
+"positive whole numbers, or whose data parallel size is not 1."
 msgstr ""
-"``port: 0`` 表示模型已知但当前不可路由。引擎处于激活、重启、sleep 或失败时"
-"会使用该值。"
+"runtime agent 会自行设置 ``--model``、``--served-model-name``、"
+"``--host``、``--port`` 和 ``--enable-sleep-mode``，因此不要在 "
+"``engineConfig.args`` 中设置它们。同样不要设置 "
+"``--gpu-memory-utilization``，因为 KV cache 由 kvcached 管理。"
+"带有该参数的 vLLM claim 会以 ``InvalidEngineConfig`` 失败。"
+"并行度不是正整数，或数据并行度不为 1 的 claim 也是如此。"
 
-#: ../../source/features/modelclaim.rst:334
-msgid "For detailed engine and memory state, port-forward the runtime API:"
-msgstr "要查看详细的引擎和内存状态，请对 runtime API 做 port-forward："
+#: ../../source/features/modelclaim.rst:318
+msgid "Declare what a model needs on a GPU"
+msgstr "声明模型在一块 GPU 上需要多少显存"
+
+#: ../../source/features/modelclaim.rst:320
+msgid ""
+"The controller places a claim only on a Pod whose GPU has room for its "
+"``maximumFootprint`` plus its ``kvFloor``. Engines already on that GPU "
+"count with their footprints and their KV caches, and each KV cache counts"
+" as at least its KV floor. With tensor or pipeline parallelism, give the "
+"figures for the GPU that holds the most."
+msgstr ""
+"只有当某个 Pod 的 GPU 能容纳 claim 的 ``maximumFootprint`` 加上 "
+"``kvFloor`` 时，控制器才会把 claim 放置到该 Pod 上。该 GPU "
+"上已有的引擎按其占用和 KV cache 计算，每个 KV cache 至少按其 KV 下限计算。"
+"使用张量并行或流水线并行时，请按占用最多的那块 GPU 填写这些数值。"
+
+#: ../../source/features/modelclaim.rst:326
+msgid "The controller does not measure models, so measure them yourself:"
+msgstr "控制器不会测量模型，请自行测量："
+
+#: ../../source/features/modelclaim.rst:328
+msgid "Create the claim with generous figures, on a GPU with room to spare."
+msgstr "先用宽裕的数值创建 claim，放在空间充足的 GPU 上。"
+
+#: ../../source/features/modelclaim.rst:329
+msgid ""
+"Send it requests of its maximum length. While it serves them, the runtime"
+" snapshot (see `Status`_) shows its engine's GPU memory in "
+"``hbm_peak_bytes`` and its KV cache in ``kv_used_bytes``. The footprint "
+"is about ``hbm_peak_bytes`` minus ``kv_used_bytes``. ``hbm_peak_bytes`` "
+"reads 0 when the runtime agent cannot match GPU processes to the engine. "
+"Then use how far the GPU's ``hbm_free_bytes`` fell when the engine "
+"started."
+msgstr ""
+"向它发送最大长度的请求。在它处理这些请求时，runtime snapshot（参见 "
+"`状态`_）中的 ``hbm_peak_bytes`` 是该引擎的显存用量，``kv_used_bytes`` "
+"是其 KV cache。占用约等于 ``hbm_peak_bytes`` 减去 ``kv_used_bytes``。如果 "
+"runtime agent 无法把 GPU 进程对应到该引擎，``hbm_peak_bytes`` 会为 0，"
+"这时改看引擎启动时该 GPU 的 ``hbm_free_bytes`` 下降了多少。"
+
+#: ../../source/features/modelclaim.rst:335
+msgid ""
+"Lower ``maximumFootprint`` to what you measured, with some margin. For a "
+"model on one GPU, ``kvFloor`` is about 2 × layers × KV heads × head size "
+"× bytes per value × the maximum model length."
+msgstr ""
+"把 ``maximumFootprint`` 降到测得的值，并留一些余量。对于单 GPU 上的模型，"
+"``kvFloor`` 约为 2 × 层数 × KV 头数 × 头维度 × 每个值的字节数 × "
+"最大模型长度。"
+
+#: ../../source/features/modelclaim.rst:339
+msgid ""
+"Declaring more than a model needs wastes room, while declaring less can "
+"run the GPU out of memory."
+msgstr "声明多于模型所需会浪费空间，声明不足则可能耗尽 GPU 显存。"
 
 #: ../../source/features/modelclaim.rst:342
 msgid ""
-"The snapshot includes per-engine port, IPC name, phase, liveness, "
-"readiness, restart count, last error, KV usage and capacity, best-effort "
-"HBM peak, request activity, and cached-artifact markers."
+"A claim without ``perGPU``, or with a figure that is not positive, stays "
+"``Pending``, and its ``Scheduled`` condition reads ``InvalidPerGPU``. A "
+"claim that is larger than every GPU in its pool stays ``Pending`` with "
+"``TooLargeForAnyCard``."
 msgstr ""
-"snapshot 包含按引擎的端口、IPC 名称、阶段、存活、就绪、重启次数、最近错误、"
-"KV 用量与容量、尽力而为的 HBM 峰值、请求活动，以及已缓存制品标记。"
+"没有 ``perGPU``，或其中有非正数值的 claim，会停留在 ``Pending``，其 "
+"``Scheduled`` 条件为 ``InvalidPerGPU``。比热池中每块 GPU 都大的 claim "
+"会停留在 ``Pending``，原因为 ``TooLargeForAnyCard``。"
 
-#: ../../source/features/modelclaim.rst:347
-msgid "Send inference requests"
-msgstr "发送推理请求"
+#: ../../source/features/modelclaim.rst:348
+msgid "Placement and GPU memory"
+msgstr "放置与显存"
 
-#: ../../source/features/modelclaim.rst:349
-msgid "Find the Envoy Service by its ownership labels and start a port-forward:"
-msgstr "通过归属标签找到 Envoy Service，并启动 port-forward："
+#: ../../source/features/modelclaim.rst:350
+msgid ""
+"A Pod can take a claim when it is in the claim's namespace, matches its "
+"``podSelector``, has ``claim.model.aibrix.ai/enabled: \"true\"``, is "
+"running with an IP address, and has as many GPUs as the claim needs. The "
+"controller places the claim on such a Pod whose GPU has room for it. "
+"Among those, it prefers a Pod that has served the model before, since the"
+" weights are already on the node. After that, it prefers the Pod with the"
+" fewest models awake, then the one with the most room."
+msgstr ""
+"满足以下条件的 Pod 可以接收 claim：与 claim 在同一命名空间、匹配其 "
+"``podSelector``、带有 ``claim.model.aibrix.ai/enabled: \"true\"``、"
+"正在运行且有 IP 地址，并且 GPU 数量与 claim 所需相同。控制器会把 claim "
+"放置到其中 GPU 有空间的 Pod 上。在这些 Pod 中，它优先选择服务过该模型的 "
+"Pod，因为权重已经在节点上；其次选择醒着的模型最少的 Pod，"
+"再次选择空间最多的 Pod。"
 
-#: ../../source/features/modelclaim.rst:360
-msgid "Send an OpenAI-compatible request using ``spec.modelName``:"
-msgstr "使用 ``spec.modelName`` 发送 OpenAI 兼容请求："
+#: ../../source/features/modelclaim.rst:358
+msgid ""
+"When no Pod has room, the claim stays ``Pending``. Its ``Scheduled`` "
+"condition reads ``NoMatchingPods``, and its message names the Pod that "
+"came closest and what it lacks. The controller tries again after 10, 20 "
+"and 40 seconds and then every minute. It also tries at once when room may"
+" have appeared, for example when another claim is deleted or goes to "
+"sleep."
+msgstr ""
+"如果没有 Pod 有空间，claim 会停留在 ``Pending``。其 ``Scheduled`` 条件为 "
+"``NoMatchingPods``，消息中会指出最接近的 Pod 以及它还差什么。控制器会在 "
+"10、20、40 秒后重试，之后每分钟重试一次。当可能有了空间时，例如另一个 "
+"claim 被删除或进入休眠，它也会立即重试。"
+
+#: ../../source/features/modelclaim.rst:364
+msgid ""
+"The controller divides each GPU among the engines on it. Each engine "
+"keeps its declared footprint and at least its KV floor. The rest of the "
+"GPU's usable memory goes to the KV caches of the engines that are awake, "
+"and the busy ones get more. A GPU's usable memory is its total memory "
+"less what the driver reserves. kvcached keeps each engine within its KV "
+"limit, which the claim records in ``status.instances[].kvLimitBytes``. "
+"The limits change when engines start, stop, sleep or wake, and when the "
+"load moves between them."
+msgstr ""
+"控制器在每块 GPU 上的引擎之间划分这块 GPU。每个引擎保有其声明的占用，"
+"以及至少等于其 KV 下限的 KV cache。GPU "
+"可用显存的其余部分分给醒着的引擎作为 KV cache，繁忙的引擎分得更多。GPU "
+"的可用显存是其总显存减去驱动保留的部分。kvcached 让每个引擎不超过它的 KV "
+"上限，claim 把这个上限记录在 ``status.instances[].kvLimitBytes`` 中。"
+"当引擎启动、停止、休眠或唤醒，以及负载在引擎之间转移时，"
+"这些上限会随之变化。"
 
 #: ../../source/features/modelclaim.rst:373
-msgid "Enable automatic KV and sleep policy"
-msgstr "启用自动 KV 与 sleep 策略"
-
-#: ../../source/features/modelclaim.rst:375
 msgid ""
-"Policy is optional and is configured as one strict JSON annotation on the"
-" warm pool Deployment. It does not add fields to ModelClaim:"
+"An engine goes on the route only once it is ready and runs within its KV "
+"limit. If something else raises an engine's KV limit, the controller sets"
+" it back, and keeps the engine off the route until then."
 msgstr ""
-"策略是可选的，以一条严格 JSON 注解配置在热池 Deployment 上。它不会给 "
-"ModelClaim 增加字段："
+"引擎只有在就绪并且运行在其 KV 上限之内时，才会加入路由。"
+"如果有其他程序调高了引擎的 KV 上限，控制器会把它改回来，"
+"并在改回之前让该引擎退出路由。"
 
-#: ../../source/features/modelclaim.rst:384
-msgid "The fields mean:"
-msgstr "各字段含义："
+#: ../../source/features/modelclaim.rst:378
+msgid "Sleep and wake"
+msgstr "休眠与唤醒"
 
-#: ../../source/features/modelclaim.rst:386
-msgid "``reclaim.capacityBytes``"
-msgstr "``reclaim.capacityBytes``"
-
-#: ../../source/features/modelclaim.rst:387
+#: ../../source/features/modelclaim.rst:380
 msgid ""
-"Total KV capacity that the policy may distribute on each eligible single-"
-"GPU runtime. This is not total GPU HBM. Choose it only after accounting "
-"for model weights, engine overhead, and headroom."
+"A pool's sleep policy is a JSON annotation on its Deployment, "
+"``claim.model.aibrix.ai/pool-policy``, and it applies to every model in "
+"the pool:"
 msgstr ""
-"策略可在每个符合条件的单 GPU runtime 上分配的总 KV 容量。这不是 GPU 总 HBM。"
-"请在计入模型权重、引擎开销和预留空间后再选择该值。"
+"热池的休眠策略是其 Deployment 上的一个 JSON 注解 "
+"``claim.model.aibrix.ai/pool-policy``，作用于热池中的每个模型："
 
-#: ../../source/features/modelclaim.rst:391
-msgid "``reclaim.guaranteedFloorPercent``"
-msgstr "``reclaim.guaranteedFloorPercent``"
-
-#: ../../source/features/modelclaim.rst:392
-msgid ""
-"Per-model minimum as a percentage of the configured capacity. The policy "
-"also protects currently used and preallocated KV pages. If protected "
-"usage already exceeds the total capacity, no new plan is applied."
-msgstr ""
-"每个模型的下限，按已配置容量的百分比计。策略还会保护当前已用和预分配的 KV "
-"页。若受保护用量已超过总容量，则不会应用新计划。"
-
-#: ../../source/features/modelclaim.rst:396
+#: ../../source/features/modelclaim.rst:395
 msgid "``lifecycle.sleepAfterSeconds``"
 msgstr "``lifecycle.sleepAfterSeconds``"
 
-#: ../../source/features/modelclaim.rst:397
+#: ../../source/features/modelclaim.rst:396
 msgid ""
-"How long a vLLM engine must have complete, initialized, and idle request "
-"observations before sleep level 1 is applied."
+"How long a model must be idle before the controller puts it to sleep. A "
+"model is idle while it has no request running or waiting. Leave the field"
+" out, or set it to 0, to keep models awake unless room is needed. That is"
+" allowed only with ``noWakeReserveWhileAsleep``."
 msgstr ""
-"在应用 sleep level 1 之前，vLLM 引擎必须持续多长时间处于请求观测已完成、已初始"
-"化且空闲。"
+"模型空闲多久后，控制器让它休眠。没有正在运行或等待的请求时，模型即为空闲。"
+"不设置该字段或设为 0，则除非需要腾出空间，模型都保持唤醒。这只在开启 "
+"``noWakeReserveWhileAsleep`` 时允许。"
 
 #: ../../source/features/modelclaim.rst:400
+msgid "``lifecycle.noWakeReserveWhileAsleep``"
+msgstr "``lifecycle.noWakeReserveWhileAsleep``"
+
+#: ../../source/features/modelclaim.rst:401
 msgid ""
-"The controller distributes remaining KV capacity among active models "
-"using bounded inflight requests and completion deltas. A configured limit"
-" is a kvcached capacity ceiling, not an immediate physical HBM allocation"
-" and not an OOM guarantee."
+"``false`` by default, so a sleeping model keeps its room on the GPU. When"
+" ``true``, a sleeping model reserves only the GPU memory it still holds, "
+"and other models can use the rest."
 msgstr ""
-"控制器使用有界的进行中请求和完成增量，在活跃模型之间分配剩余 KV 容量。配置的"
-"限制是 kvcached 容量上限，不是立即的物理 HBM 分配，也不是 OOM 保证。"
+"默认为 ``false``，即休眠的模型保留其在 GPU 上的空间。为 ``true`` 时，"
+"休眠的模型只预留它仍占用的显存，其余部分可供其他模型使用。"
+
+#: ../../source/features/modelclaim.rst:404
+msgid "``lifecycle.sleepToMakeRoomAfterSeconds``"
+msgstr "``lifecycle.sleepToMakeRoomAfterSeconds``"
 
 #: ../../source/features/modelclaim.rst:405
 msgid ""
-"The JSON parser rejects unknown fields. An invalid policy is disabled and"
-" reported with an ``InvalidPoolPolicy`` Event:"
-msgstr "JSON 解析器会拒绝未知字段。无效策略会被禁用，并以 ``InvalidPoolPolicy`` Event 报告："
+"Used only with ``noWakeReserveWhileAsleep``. How long a model must be "
+"idle before the controller may put it to sleep to make room for another "
+"model. It defaults to 30 seconds, or to ``sleepAfterSeconds`` if that is "
+"shorter. It must be positive, and no longer than ``sleepAfterSeconds`` "
+"when that is set."
+msgstr ""
+"仅在开启 ``noWakeReserveWhileAsleep`` 时使用。模型空闲多久后，"
+"控制器才可以为了给另一个模型腾出空间而让它休眠。默认为 30 秒，如果 "
+"``sleepAfterSeconds`` 更短，则默认取 ``sleepAfterSeconds``。"
+"该值必须为正数，且在设置了 ``sleepAfterSeconds`` 时不能比它长。"
 
-#: ../../source/features/modelclaim.rst:414
-msgid "Sleeping request behavior"
-msgstr "Sleep 状态下的请求行为"
+#: ../../source/features/modelclaim.rst:411
+msgid ""
+"A policy with an unknown field or an invalid value is turned off, and the"
+" Deployment gets an ``InvalidPoolPolicy`` Event. The policy also accepts "
+"a deprecated ``reclaim`` section, which has no effect on claims that "
+"declare ``perGPU``."
+msgstr ""
+"如果策略含有未知字段或无效值，策略会被关闭，Deployment 上会产生一个 "
+"``InvalidPoolPolicy`` Event。策略还接受一个已弃用的 ``reclaim`` 部分，"
+"它对声明了 ``perGPU`` 的 claim 不起作用。"
 
 #: ../../source/features/modelclaim.rst:416
 msgid ""
-"The gateway does not hold or replay a request while a model wakes. When a"
-" binding is sleeping, the gateway starts one deduplicated asynchronous "
-"wake and returns:"
+"The controller puts a model to sleep once it has been idle for "
+"``sleepAfterSeconds``. It first takes the model off the route and checks "
+"again that no request is in progress. If one is, the model stays awake. "
+"Otherwise, the engine sleeps with vLLM's sleep level 1, which moves its "
+"weights to host memory and frees its KV cache for the models that are "
+"awake. The claim shows ``Sleeping``."
 msgstr ""
-"模型唤醒期间，网关不会持有或重放请求。当绑定处于 sleep 时，网关会启动一次去重"
-"的异步唤醒并返回："
+"模型空闲达到 ``sleepAfterSeconds`` 后，控制器会让它休眠。"
+"控制器先把模型从路由中移除，再确认一次没有正在处理的请求。如果有，"
+"模型保持唤醒。否则，引擎以 vLLM 的 sleep level 1 休眠，"
+"把权重移到主机内存，并把 KV cache 释放给醒着的模型。claim 显示 "
+"``Sleeping``。"
 
-#: ../../source/features/modelclaim.rst:425
+#: ../../source/features/modelclaim.rst:423
 msgid ""
-"The client or an outer gateway must retry. While the engine is waking, "
-"later requests can continue to receive 503. The controller restores the "
-"real port only after the runtime reports the engine active and ready."
+"When a request for a sleeping model reaches the gateway, the gateway "
+"answers 503 and writes a wake request on the Pod, unless one is there "
+"already. The controller then wakes the engine, and puts it back on the "
+"route once it is ready. Many requests for one sleeping model cause a "
+"single wake. The controller removes the wake request once the model "
+"serves, when the wake fails, or after five minutes."
 msgstr ""
-"客户端或外层网关必须重试。引擎唤醒期间，后续请求仍可能收到 503。仅当 runtime "
-"报告引擎处于 active 且就绪后，控制器才会恢复真实端口。"
+"当发给休眠模型的请求到达网关时，网关返回 503，并在 Pod "
+"上写入一个唤醒请求（如果还没有的话）。控制器随后唤醒引擎，"
+"并在引擎就绪后把它重新加入路由。同一个休眠模型的多个请求只会触发一次唤醒。"
+"模型开始服务、唤醒失败或过了五分钟后，控制器会删除该唤醒请求。"
 
-#: ../../source/features/modelclaim.rst:429
+#: ../../source/features/modelclaim.rst:430
 msgid ""
-"An activating model also returns 503 with ``Retry-After``. A terminally "
-"failed model returns 503 without ``Retry-After``."
+"By default, a sleeping model keeps its room on the GPU, so that it can "
+"wake where it is. Only its KV cache above its KV floor goes to the other "
+"models on the GPU, and they give it back when it wakes."
 msgstr ""
-"正在激活的模型也会返回带 ``Retry-After`` 的 503。终态失败的模型返回不带 "
-"``Retry-After`` 的 503。"
+"默认情况下，休眠的模型保留其在 GPU 上的空间，以便在原地唤醒。只有其 KV "
+"下限以上的 KV cache 会分给同一 GPU 上的其他模型，它唤醒时这些模型会归还。"
 
-#: ../../source/features/modelclaim.rst:433
-msgid "Runtime reliability"
-msgstr "Runtime 可靠性"
-
-#: ../../source/features/modelclaim.rst:435
+#: ../../source/features/modelclaim.rst:434
 msgid ""
-"Each ModelClaim engine has an independent process group and supervisor. "
-"An engine crash is removed from routing and restarted with exponential "
-"backoff; other engines in the Pod are not restarted. After five local "
-"restarts, the engine remains ``Failed`` with its error visible in the "
-"runtime snapshot."
+"With ``noWakeReserveWhileAsleep``, a sleeping model reserves only what it"
+" still holds on the GPU, which the runtime agent measures after each "
+"sleep. The rest can go to other models, so a pool can hold more models "
+"than fit awake at once. A model that wakes then needs room again:"
 msgstr ""
-"每个 ModelClaim 引擎都有独立的进程组和 supervisor。引擎崩溃后会从路由中移除，并以指数退避重启；Pod 中其他引擎不会重启。本地重启五次后，引擎保持 "
-"``Failed`` ，错误可在 runtime snapshot 中查看。"
+"开启 ``noWakeReserveWhileAsleep`` 后，休眠的模型只预留它在 GPU "
+"上仍占用的部分，这部分由 runtime agent 在每次休眠后测量。"
+"其余空间可以分给其他模型，"
+"因此热池能容纳的模型可以多于全部醒着时能容纳的数量。这样，"
+"模型唤醒时需要重新获得空间："
+
+#: ../../source/features/modelclaim.rst:439
+msgid "If its GPU has room, it wakes at once."
+msgstr "如果其 GPU 有空间，立即唤醒。"
 
 #: ../../source/features/modelclaim.rst:440
 msgid ""
-"The kvcached runtime image uses ``tini`` and a small restart loop around "
-"the AIBrix agent. If only the agent process crashes, child engines stay "
-"alive. The new agent reads ``/var/run/aibrix/engines.json``, verifies the"
-" PID start time and health endpoint, and re-adopts valid engines without "
-"changing their port or IPC name."
+"Otherwise, the controller puts other models on the GPU to sleep, the "
+"longest idle first and one at a time, until the waking model fits. It "
+"takes only models that have been idle for "
+"``sleepToMakeRoomAfterSeconds``. Meanwhile, the waking model's claim "
+"reads ``WaitingForRoom``, and each model put to sleep gets a "
+"``SleptToMakeRoom`` Event."
 msgstr ""
-"kvcached runtime 镜像对 AIBrix agent 使用 ``tini`` 和一个小型重启循环。若仅 agent 进程崩溃，子引擎仍保持存活。新 "
-"agent 读取 ``/var/run/aibrix/engines.json`` ，校验 PID 启动时间和健康检查端点，并重新接管有效引擎，不改变其端口或 "
-"IPC 名称。"
+"否则，控制器让同一 GPU 上的其他模型休眠，从空闲最久的开始，每次一个，"
+"直到要唤醒的模型能放下。它只会选择已空闲 ``sleepToMakeRoomAfterSeconds`` "
+"的模型。在此期间，要唤醒的模型的 claim 显示 ``WaitingForRoom``，"
+"每个为此休眠的模型都会得到一个 ``SleptToMakeRoom`` Event。"
 
-#: ../../source/features/modelclaim.rst:446
+#: ../../source/features/modelclaim.rst:445
 msgid ""
-"This recovery does not cross a Pod restart. If the Pod disappears, the "
-"controller removes the stale instance and can activate the claim on "
-"another compatible Pod. There is no live migration or transparent "
-"preservation of in-flight requests."
+"If no model can be put to sleep for it, and another Pod has room, the "
+"model moves there. A new engine loads it on that Pod."
 msgstr ""
-"该恢复不能跨过 Pod 重启。若 Pod 消失，控制器会移除过期实例，并可在另一个兼容 "
-"Pod 上激活该 claim。没有热迁移，也不会透明保留进行中请求。"
+"如果没有模型可以为它休眠，而另一个 Pod 有空间，该模型会迁移过去，"
+"由新的引擎在那个 Pod 上加载它。"
 
-#: ../../source/features/modelclaim.rst:452
-msgid "Observability"
-msgstr "可观测性"
+#: ../../source/features/modelclaim.rst:447
+msgid ""
+"Otherwise, it waits for room for up to five minutes, and the next request"
+" asks again."
+msgstr "否则，它会等待空间，最多等五分钟，之后的下一个请求会再次请求唤醒。"
+
+#: ../../source/features/modelclaim.rst:450
+msgid ""
+"In such a pool, a new claim that no Pod has room for gets room the same "
+"way. The controller puts idle models to sleep on one Pod, and the claim's"
+" ``Scheduled`` condition reads ``MakingRoom`` until the claim is placed."
+msgstr ""
+"在这样的热池中，没有 Pod 有空间容纳的新 claim 也会以同样的方式获得空间。"
+"控制器让某个 Pod 上的空闲模型休眠，在该 claim 被放置之前，其 "
+"``Scheduled`` 条件为 ``MakingRoom``。"
 
 #: ../../source/features/modelclaim.rst:454
 msgid ""
-"The sample metrics Service is selected by "
-"``observability/monitor/service_monitor_modelclaim_runtime.yaml``. Import"
-" ``observability/grafana/AIBrix_ModelClaim_Runtime_Dashboard.json`` for "
-"the current dashboard."
+"If the runtime agent cannot measure what a sleeping engine holds, the "
+"engine keeps its full room, and its claim gets a "
+"``SleepingFootprintUnknown`` Event. While ``noWakeReserveWhileAsleep`` is"
+" on, do not wake engines through the runtime agent's API, because such a "
+"wake skips the controller's check for room."
 msgstr ""
-"示例 metrics Service 由 "
-"``observability/monitor/service_monitor_modelclaim_runtime.yaml`` 选择。导入 "
-"``observability/grafana/AIBrix_ModelClaim_Runtime_Dashboard.json`` 以使用当前"
-"仪表盘。"
-
-#: ../../source/features/modelclaim.rst:459
-msgid "Controller metrics include:"
-msgstr "控制器指标包括："
+"如果 runtime agent 无法测量休眠引擎仍占用的显存，该引擎会保留其全部空间，"
+"其 claim 会得到一个 ``SleepingFootprintUnknown`` Event。开启 "
+"``noWakeReserveWhileAsleep`` 时，不要通过 runtime agent 的 API 唤醒引擎，"
+"因为这样的唤醒会跳过控制器的空间检查。"
 
 #: ../../source/features/modelclaim.rst:461
-msgid "``aibrix_modelclaim_desired_replicas``;"
-msgstr "``aibrix_modelclaim_desired_replicas`` ；"
-
-#: ../../source/features/modelclaim.rst:462
-msgid "``aibrix_modelclaim_ready_replicas``;"
-msgstr "``aibrix_modelclaim_ready_replicas`` ；"
+msgid "Failures"
+msgstr "故障"
 
 #: ../../source/features/modelclaim.rst:463
-msgid "``aibrix_modelclaim_activating``;"
-msgstr "``aibrix_modelclaim_activating`` ；"
-
-#: ../../source/features/modelclaim.rst:464
-#, python-brace-format
-msgid "``aibrix_modelclaim_activation_total{result}``;"
-msgstr "``aibrix_modelclaim_activation_total{result}`` ；"
-
-#: ../../source/features/modelclaim.rst:465
-msgid "``aibrix_modelclaim_pool_policy_valid``."
-msgstr "``aibrix_modelclaim_pool_policy_valid`` 。"
-
-#: ../../source/features/modelclaim.rst:467
-msgid "Runtime metrics include:"
-msgstr "Runtime 指标包括："
-
-#: ../../source/features/modelclaim.rst:469
-msgid "``aibrix:modelclaim_models_resident``;"
-msgstr "``aibrix:modelclaim_models_resident`` ；"
-
-#: ../../source/features/modelclaim.rst:470
-#, python-brace-format
-msgid "``aibrix:modelclaim_kv_used_bytes{model}``;"
-msgstr "``aibrix:modelclaim_kv_used_bytes{model}`` ；"
-
-#: ../../source/features/modelclaim.rst:471
-#, python-brace-format
-msgid "``aibrix:modelclaim_kv_total_bytes{model}``;"
-msgstr "``aibrix:modelclaim_kv_total_bytes{model}`` ；"
-
-#: ../../source/features/modelclaim.rst:472
-#, python-brace-format
-msgid "``aibrix:modelclaim_hbm_peak_bytes{model}``."
-msgstr "``aibrix:modelclaim_hbm_peak_bytes{model}`` 。"
-
-#: ../../source/features/modelclaim.rst:474
 msgid ""
-"HBM attribution is best effort and is used for observation and placement "
-"ranking. It is not a hard admission or reservation signal."
-msgstr "HBM 归因是尽力而为的，用于观测和放置排序。它不是硬准入或预留信号。"
-
-#: ../../source/features/modelclaim.rst:478
-msgid "Troubleshooting"
-msgstr "故障排查"
-
-#: ../../source/features/modelclaim.rst:480
-msgid "Claim remains ``Scheduling`` with zero candidates"
-msgstr "Claim 一直处于 ``Scheduling`` 且候选为零"
-
-#: ../../source/features/modelclaim.rst:481
-msgid ""
-"Confirm that the Pod is Running, has a Pod IP, matches ``podSelector``, "
-"and has ``claim.model.aibrix.ai/enabled: \"true\"``. For vLLM, confirm that TP "
-"times PP exactly matches the Pod-visible GPU count."
+"Each engine is a separate process, so a crash stops only that engine. The"
+" runtime agent restarts it on the same port after 2, 4, 8, 16 and 32 "
+"seconds, up to five times over the engine's life. While it restarts, the "
+"model is off the route, and the other models on the Pod keep serving."
 msgstr ""
-"确认 Pod 处于 Running、有 Pod IP、匹配 ``podSelector`` ，且带有 ``claim.model.aibrix.ai/enabled: "
-"\"true\"`` 。对于 vLLM，确认 TP 乘以 PP 恰好等于 Pod 可见 GPU 数量。"
+"每个引擎都是独立的进程，因此一个引擎崩溃只会停止它自己。runtime agent "
+"会在 2、4、8、16、32 秒后在同一端口上重启它，"
+"在引擎的整个生命周期内最多重启五次。重启期间，该模型退出路由，同一 Pod "
+"上的其他模型继续服务。"
+
+#: ../../source/features/modelclaim.rst:468
+msgid ""
+"An engine that crashes again after its fifth restart has failed "
+"permanently, and its claim gets an ``EngineFailed`` Event. If another Pod"
+" has room, the controller stops the engine and starts the claim there at "
+"once. Otherwise, the claim reads ``Failed`` with ``EngineFailed``, and "
+"its ``Scheduled`` condition says why it cannot move. The engine's "
+"``last_error`` in the runtime snapshot says why it crashed."
+msgstr ""
+"第五次重启后再次崩溃的引擎即为永久失败，其 claim 会得到一个 "
+"``EngineFailed`` Event。如果另一个 Pod 有空间，控制器会停止该引擎，"
+"并立即在那里启动 claim。否则，claim 显示 ``Failed``，原因为 "
+"``EngineFailed``，其 ``Scheduled`` 条件会说明它为何无法迁移。runtime "
+"snapshot 中该引擎的 ``last_error`` 说明了它崩溃的原因。"
+
+#: ../../source/features/modelclaim.rst:475
+msgid ""
+"If the runtime agent crashes, its engines keep running. The image "
+"restarts the agent, which takes the engines back from ``/var/run/aibrix``"
+" with their ports unchanged."
+msgstr ""
+"如果 runtime agent 崩溃，其引擎会继续运行。镜像会重启 agent，agent 从 "
+"``/var/run/aibrix`` 接管这些引擎，端口不变。"
+
+#: ../../source/features/modelclaim.rst:479
+msgid ""
+"If a Pod goes away, its engines go with it, and the controller places "
+"their claims again."
+msgstr "如果 Pod 消失，其上的引擎随之消失，控制器会重新放置它们的 claim。"
+
+#: ../../source/features/modelclaim.rst:483
+msgid "Requests"
+msgstr "请求"
 
 #: ../../source/features/modelclaim.rst:485
-msgid "Claim remains ``Activating``"
-msgstr "Claim 一直处于 ``Activating``"
-
-#: ../../source/features/modelclaim.rst:486
 msgid ""
-"Inspect the runtime snapshot and engine logs. Weight download, CUDA graph"
-" initialization, or engine compilation may take time. The controller "
-"intentionally keeps the route at port 0 until ``/health`` succeeds."
+"Send requests to the AIBrix gateway with a claim's ``modelName`` as the "
+"model, and with a routing strategy, such as the header ``routing-"
+"strategy: random``. The gateway can also take a default strategy from its"
+" ``ROUTING_ALGORITHM`` environment variable. Without either, it looks for"
+" an HTTPRoute for the model, which ModelClaim does not create, and "
+"answers 503."
 msgstr ""
-"检查 runtime snapshot 和引擎日志。权重下载、CUDA graph 初始化或引擎编译可能"
-"耗时。在 ``/health`` 成功之前，控制器会有意把路由保持在端口 0。"
-
-#: ../../source/features/modelclaim.rst:490
-msgid "Activation rejects ``--gpu-memory-utilization``"
-msgstr "激活拒绝 ``--gpu-memory-utilization``"
+"向 AIBrix 网关发送请求时，以 claim 的 ``modelName`` 作为模型名，"
+"并指定路由策略，例如请求头 ``routing-strategy: random``。网关也可以从其 "
+"``ROUTING_ALGORITHM`` 环境变量取得默认策略。两者都没有时，"
+"网关会查找该模型的 HTTPRoute，而 ModelClaim 不会创建它，因此会返回 503。"
 
 #: ../../source/features/modelclaim.rst:491
 msgid ""
-"Remove the flag. The kvcached framework replaces the engine's fixed KV-"
-"memory fraction in this deployment path."
-msgstr "移除该标志。在此部署路径中，kvcached 框架会替代引擎固定的 KV 内存比例。"
-
-#: ../../source/features/modelclaim.rst:494
-msgid "Policy does not change KV limits"
-msgstr "策略没有改变 KV 限制"
-
-#: ../../source/features/modelclaim.rst:495
-msgid ""
-"Automatic policy requires exactly one visible accelerator, valid request "
-"metrics with matching model labels, and at least one observed active "
-"model. It does not shrink when observations are incomplete or protected "
-"KV usage exceeds the configured capacity."
+"The gateway sends each request to the engine's port on its Pod, once the "
+"engine is on the route, and only while the Pod is Ready. When a model "
+"cannot serve, the gateway answers at once instead of holding the request."
+" The error message gives the model's state, and the reason when there is "
+"one."
 msgstr ""
-"自动策略要求恰好有一个可见加速器、带匹配模型标签的有效请求指标，以及至少一个"
-"观测到的活跃模型。观测不完整，或受保护 KV 用量超过配置容量时，它不会收缩。"
+"在引擎加入路由之后，且只在 Pod 就绪时，网关会把每个请求发到该引擎在其 Pod "
+"上的端口。当模型无法服务时，网关会立即应答，而不是挂起请求。"
+"错误信息会给出模型的状态，有原因时也会给出原因。"
 
 #: ../../source/features/modelclaim.rst:500
-msgid "Model never enters automatic sleep"
-msgstr "模型从不进入自动 sleep"
+msgid "The model is"
+msgstr "模型状态"
 
 #: ../../source/features/modelclaim.rst:501
-msgid ""
-"Automatic idle sleep currently applies only to vLLM. Check that request "
-"activity is initialized and observable and that no request is running or "
-"waiting."
-msgstr ""
-"自动空闲 sleep 目前仅适用于 vLLM。检查请求活动已初始化且可观测，并且没有请求"
-"正在运行或等待。"
+msgid "The gateway answers"
+msgstr "网关的应答"
+
+#: ../../source/features/modelclaim.rst:502
+msgid "starting, asleep, failed permanently, or waiting to be placed"
+msgstr "正在启动、休眠中、已永久失败，或等待放置"
+
+#: ../../source/features/modelclaim.rst:503
+msgid "503 with ``Retry-After: 10``. A sleeping model is also woken."
+msgstr "503，带 ``Retry-After: 10``。休眠的模型还会被唤醒。"
+
+#: ../../source/features/modelclaim.rst:504
+msgid "waiting for room to wake, or getting room made for it"
+msgstr "等待空间以便唤醒，或正在为它腾出空间"
 
 #: ../../source/features/modelclaim.rst:505
-msgid "Requests return 503"
-msgstr "请求返回 503"
+msgid "503 with ``Retry-After: 20``"
+msgstr "503，带 ``Retry-After: 20``"
 
 #: ../../source/features/modelclaim.rst:506
-msgid ""
-"Inspect the routing annotation and ModelClaim status. A sleeping or "
-"activating model is retryable; a failed model requires operator "
-"attention."
-msgstr ""
-"检查路由注解和 ModelClaim 状态。处于 sleep 或激活中的模型可重试；失败模型需要"
-"运维介入。"
+msgid "moving to another Pod"
+msgstr "正在迁移到另一个 Pod"
 
-#: ../../source/features/modelclaim.rst:509
-msgid "Agent restarted but engines also disappeared"
-msgstr "Agent 重启后引擎也消失了"
+#: ../../source/features/modelclaim.rst:507
+msgid "503 with ``Retry-After: 30``"
+msgstr "503，带 ``Retry-After: 30``"
+
+#: ../../source/features/modelclaim.rst:508
+msgid ""
+"held back by ``InvalidEngineConfig``, ``InvalidPerGPU`` or "
+"``TooLargeForAnyCard``"
+msgstr ""
+"因 ``InvalidEngineConfig``、``InvalidPerGPU`` 或 ``TooLargeForAnyCard`` "
+"而无法运行"
 
 #: ../../source/features/modelclaim.rst:510
+msgid "503 without ``Retry-After``, since retrying does not help"
+msgstr "503，不带 ``Retry-After``，因为重试没有用"
+
+#: ../../source/features/modelclaim.rst:511
+msgid "unknown to the gateway"
+msgstr "网关不认识该模型"
+
+#: ../../source/features/modelclaim.rst:512
+msgid "400"
+msgstr "400"
+
+#: ../../source/features/modelclaim.rst:515
+msgid "Deleting claims"
+msgstr "删除 claim"
+
+#: ../../source/features/modelclaim.rst:517
 msgid ""
-"Check that the container uses ``build/container/Dockerfile.kvcached-"
-"runtime`` and its tini supervisor, and that the engine registry is "
-"mounted at ``/var/run/aibrix``. A full Pod or container restart does not "
-"preserve engine processes."
+"When a claim is deleted, the controller first takes it off the route, so "
+"the gateway stops sending it requests. It then gives the engine up to 90 "
+"seconds from the deletion to finish the requests in progress, and asks "
+"the runtime agent to stop it. A sleeping or starting engine is stopped at"
+" once. Delete claims before their pool, so that the controller can stop "
+"their engines."
 msgstr ""
-"确认容器使用 ``build/container/Dockerfile.kvcached-runtime`` 及其 tini supervisor，并且引擎注册表挂载在 "
-"``/var/run/aibrix`` 。完整的 Pod 或容器重启不会保留引擎进程。"
+"删除 claim 时，控制器先把它从路由中移除，网关因此不再向它发送请求。"
+"然后控制器给引擎最多 90 秒（从删除时算起）处理完正在进行的请求，再请 "
+"runtime agent 停止它。休眠中或正在启动的引擎会被立即停止。请先删除 claim，"
+"再删除其热池，以便控制器停止它们的引擎。"
 
-#: ../../source/features/modelclaim.rst:516
-msgid "Cleanup"
-msgstr "清理"
+#: ../../source/features/modelclaim.rst:524
+msgid "Status"
+msgstr "状态"
 
-#: ../../source/features/modelclaim.rst:518
-msgid ""
-"Delete claims before the warm pool so the finalizer can stop their "
-"engines and remove routing annotations:"
-msgstr "先删除 claim 再删除热池，以便 finalizer 能停止其引擎并移除路由注解："
+#: ../../source/features/modelclaim.rst:526
+msgid "``kubectl get modelclaims`` shows each claim's phase:"
+msgstr "``kubectl get modelclaims`` 显示每个 claim 的阶段："
 
-#: ../../source/features/modelclaim.rst:527
-msgid "Validation guides"
-msgstr "验证指南"
+#: ../../source/features/modelclaim.rst:532
+msgid "Phase"
+msgstr "阶段"
 
-#: ../../source/features/modelclaim.rst:529
-msgid ""
-"Use the `ModelClaim manual GPU validation runbook <https://github.com"
-"/vllm-project/aibrix/blob/main/docs/modelclaim/manual-validation-"
-"runbook.md>`_ for the full minikube and real-GPU acceptance procedure. A "
-"`Chinese version <https://github.com/vllm-"
-"project/aibrix/blob/main/docs/modelclaim/manual-validation-runbook-"
-"zh.md>`_ is also available. To validate kvcached and vLLM sleep "
-"independently of the AIBrix control plane, use the `mechanism guide "
-"<https://github.com/vllm-project/aibrix/blob/main/docs/modelclaim"
-"/kvcached-vllm-sleep-test-guide.md>`_."
-msgstr ""
-"完整的 minikube 与真实 GPU 验收流程见 `ModelClaim manual GPU validation runbook <https://github.com/vllm-project/aibrix/blob/main/docs/modelclaim/manual-validation-runbook.md>`_ "
-"。也提供 `中文版本 <https://github.com/vllm-project/aibrix/blob/main/docs/modelclaim/manual-validation-runbook-zh.md>`_ "
-"。若要在不依赖 AIBrix 控制面的情况下验证 kvcached 和 vLLM sleep，请使用 `mechanism guide <https://github.com/vllm-project/aibrix/blob/main/docs/modelclaim/kvcached-vllm-sleep-test-guide.md>`_ "
-"。"
+#: ../../source/features/modelclaim.rst:534
+msgid "``Pending``"
+msgstr "``Pending``"
+
+#: ../../source/features/modelclaim.rst:535
+msgid "Not placed yet. The ``Scheduled`` condition says why."
+msgstr "尚未放置。``Scheduled`` 条件会说明原因。"
+
+#: ../../source/features/modelclaim.rst:536
+msgid "``Activating``"
+msgstr "``Activating``"
 
 #: ../../source/features/modelclaim.rst:537
-msgid "Upstream references:"
-msgstr "上游参考："
+msgid ""
+"The engine is starting or restarting, or waits for its KV limit. It is "
+"off the route."
+msgstr "引擎正在启动或重启，或在等待其 KV 上限生效。此时它不在路由中。"
 
 #: ../../source/features/modelclaim.rst:539
-msgid "`kvcached <https://github.com/ovg-project/kvcached>`_;"
-msgstr "`kvcached <https://github.com/ovg-project/kvcached>`_ ；"
+msgid "``Active``"
+msgstr "``Active``"
 
 #: ../../source/features/modelclaim.rst:540
-msgid "`vLLM Sleep Mode <https://docs.vllm.ai/en/stable/features/sleep_mode/>`_;"
-msgstr "`vLLM Sleep Mode <https://docs.vllm.ai/en/stable/features/sleep_mode/>`_ ；"
+msgid "The engine serves requests."
+msgstr "引擎正在提供服务。"
 
 #: ../../source/features/modelclaim.rst:541
+msgid "``Sleeping``"
+msgstr "``Sleeping``"
+
+#: ../../source/features/modelclaim.rst:542
+msgid "The engine is asleep, and a request wakes it."
+msgstr "引擎在休眠，请求会唤醒它。"
+
+#: ../../source/features/modelclaim.rst:543
+msgid "``Failed``"
+msgstr "``Failed``"
+
+#: ../../source/features/modelclaim.rst:544
+msgid ""
+"The engine failed permanently (``EngineFailed``), could not be started "
+"(``ActivateFailed``) or is moving to another Pod (``Moving``), or the "
+"engine arguments are invalid (``InvalidEngineConfig``)."
+msgstr ""
+"引擎已永久失败（``EngineFailed``）、无法启动（``ActivateFailed``）"
+"或正在迁移到另一个 Pod（``Moving``），"
+"或者引擎参数无效（``InvalidEngineConfig``）。"
+
+#: ../../source/features/modelclaim.rst:548
+msgid ""
+"The ``Scheduled`` condition reads ``Placed`` once the claim has an "
+"engine. Until then, it gives one of these reasons:"
+msgstr ""
+"claim 有了引擎后，``Scheduled`` 条件为 ``Placed``。在此之前，"
+"它给出以下原因之一："
+
+#: ../../source/features/modelclaim.rst:555
+#: ../../source/features/modelclaim.rst:573
+msgid "Reason"
+msgstr "原因"
+
+#: ../../source/features/modelclaim.rst:557
+msgid "``NoMatchingPods``"
+msgstr "``NoMatchingPods``"
+
+#: ../../source/features/modelclaim.rst:558
+msgid "No Pod can take the claim now. The message says why."
+msgstr "目前没有 Pod 能接收该 claim。消息中会说明原因。"
+
+#: ../../source/features/modelclaim.rst:559
+msgid "``TooLargeForAnyCard``"
+msgstr "``TooLargeForAnyCard``"
+
+#: ../../source/features/modelclaim.rst:560
+msgid "No GPU in the pool is large enough for the claim."
+msgstr "热池中没有足够大的 GPU 能容纳该 claim。"
+
+#: ../../source/features/modelclaim.rst:561
+msgid "``InvalidPerGPU``"
+msgstr "``InvalidPerGPU``"
+
+#: ../../source/features/modelclaim.rst:562
+msgid "``perGPU`` is missing or has an unusable figure."
+msgstr "缺少 ``perGPU``，或其中有不可用的数值。"
+
+#: ../../source/features/modelclaim.rst:563
+msgid "``MakingRoom``"
+msgstr "``MakingRoom``"
+
+#: ../../source/features/modelclaim.rst:564
+msgid "Idle models are being put to sleep to make room for the claim."
+msgstr "正在让空闲模型休眠，为该 claim 腾出空间。"
+
+#: ../../source/features/modelclaim.rst:566
+msgid ""
+"The ``Ready`` condition is ``True`` with ``ModelClaimActive`` while the "
+"claim serves. Otherwise, its reason says what holds the claim back:"
+msgstr ""
+"claim 提供服务时，``Ready`` 条件为 ``True``，原因为 ``ModelClaimActive``。"
+"否则，其原因说明是什么让 claim 无法服务："
+
+#: ../../source/features/modelclaim.rst:575
+msgid "``EngineStarting``"
+msgstr "``EngineStarting``"
+
+#: ../../source/features/modelclaim.rst:576
+msgid "The engine is starting or restarting, or waits for its KV limit."
+msgstr "引擎正在启动或重启，或在等待其 KV 上限生效。"
+
+#: ../../source/features/modelclaim.rst:577
+msgid "``EngineSleeping``"
+msgstr "``EngineSleeping``"
+
+#: ../../source/features/modelclaim.rst:578
+msgid "The engine is asleep."
+msgstr "引擎在休眠。"
+
+#: ../../source/features/modelclaim.rst:579
+msgid "``WaitingForRoom``"
+msgstr "``WaitingForRoom``"
+
+#: ../../source/features/modelclaim.rst:580
+msgid "The engine was asked to wake, and its GPU has no room yet."
+msgstr "引擎已被请求唤醒，但其 GPU 暂时没有空间。"
+
+#: ../../source/features/modelclaim.rst:581
+msgid "``Moving``"
+msgstr "``Moving``"
+
+#: ../../source/features/modelclaim.rst:582
+msgid ""
+"The engine could not wake where it is, and the claim is moving to another"
+" Pod."
+msgstr "引擎无法在原地唤醒，claim 正在迁移到另一个 Pod。"
+
+#: ../../source/features/modelclaim.rst:584
+msgid "``EngineFailed``"
+msgstr "``EngineFailed``"
+
+#: ../../source/features/modelclaim.rst:585
+msgid "The engine failed permanently."
+msgstr "引擎已永久失败。"
+
+#: ../../source/features/modelclaim.rst:586
+msgid "``ActivateFailed``"
+msgstr "``ActivateFailed``"
+
+#: ../../source/features/modelclaim.rst:587
+msgid "The runtime agent could not start the engine. The controller tries again."
+msgstr "runtime agent 无法启动该引擎。控制器会重试。"
+
+#: ../../source/features/modelclaim.rst:589
+msgid "``InvalidEngineConfig``"
+msgstr "``InvalidEngineConfig``"
+
+#: ../../source/features/modelclaim.rst:590
+msgid "The engine arguments are invalid, and the claim has to be recreated."
+msgstr "引擎参数无效，必须重新创建 claim。"
+
+#: ../../source/features/modelclaim.rst:591
+msgid "``NotPlaced``"
+msgstr "``NotPlaced``"
+
+#: ../../source/features/modelclaim.rst:592
+msgid ""
+"The claim lost its engine, for example with its Pod, and waits to be "
+"placed again."
+msgstr "claim 失去了引擎（例如随其 Pod 一起消失），正在等待重新放置。"
+
+#: ../../source/features/modelclaim.rst:595
+msgid ""
+"Claims also record what happens to them as Events, such as ``Activated``,"
+" ``Sleeping``, ``Waking``, ``Woken``, ``KVLimitSet``, ``Rescheduled`` and"
+" ``DrainTimedOut``. The controller's Kubernetes client sends at most 25 "
+"Events for a claim in a burst, and then one every five minutes, so a busy"
+" claim can miss some. Its phase and conditions stay current."
+msgstr ""
+"claim 还会以 Event 记录发生在它身上的事情，例如 ``Activated``、"
+"``Sleeping``、``Waking``、``Woken``、``KVLimitSet``、``Rescheduled`` 和 "
+"``DrainTimedOut``。控制器的 Kubernetes 客户端对每个 claim "
+"在一次突发中最多发送 25 个 Event，之后每五分钟发送一个，因此繁忙的 claim "
+"可能会漏掉一些 Event。其阶段和条件始终是最新的。"
+
+#: ../../source/features/modelclaim.rst:601
+msgid ""
+"For more detail, read the claim, the route on its Pod, and the runtime "
+"snapshot. The snapshot lists every engine on the Pod with its phase, "
+"port, KV limit, KV use and ``last_error``:"
+msgstr ""
+"要查看更多细节，可以读取 claim、其 Pod 上的路由以及 runtime snapshot。"
+"snapshot 列出了 Pod 上的每个引擎，包括其阶段、端口、KV 上限、KV 用量和 "
+"``last_error``："
+
+#: ../../source/features/modelclaim.rst:612
+msgid "A route looks like this:"
+msgstr "路由的形式如下："
+
+#: ../../source/features/modelclaim.rst:618
+msgid ""
+"Its ``state`` is ``active``, ``activating``, ``sleeping`` or ``failed``, "
+"and its port is 0 unless the state is ``active``. A route that waits can "
+"also give a ``reason``, such as ``WaitingForRoom``. ``wakeByRequest`` "
+"tells the gateway to ask the controller for a wake."
+msgstr ""
+"其 ``state`` 为 ``active``、``activating``、``sleeping`` 或 ``failed``，"
+"除非状态为 ``active``，否则端口为 0。处于等待中的路由还可能给出 "
+"``reason``，例如 ``WaitingForRoom``。``wakeByRequest`` "
+"告诉网关通过控制器来唤醒模型。"
+
+#: ../../source/features/modelclaim.rst:624
+msgid "Labels and annotations"
+msgstr "标签与注解"
+
+#: ../../source/features/modelclaim.rst:626
+msgid ""
+"You set the first four keys. AIBrix writes the others, so leave them "
+"alone."
+msgstr "前四个键由你设置。其余的由 AIBrix 写入，请不要改动。"
+
+#: ../../source/features/modelclaim.rst:632
+msgid "Key"
+msgstr "键"
+
+#: ../../source/features/modelclaim.rst:633
+msgid "On"
+msgstr "所在位置"
+
+#: ../../source/features/modelclaim.rst:634
+msgid "Set by"
+msgstr "设置者"
+
+#: ../../source/features/modelclaim.rst:635
+msgid "Purpose"
+msgstr "用途"
+
+#: ../../source/features/modelclaim.rst:636
+msgid "``claim.model.aibrix.ai/pool``"
+msgstr "``claim.model.aibrix.ai/pool``"
+
+#: ../../source/features/modelclaim.rst:637
+msgid "Label on the pool's Deployment and Pods"
+msgstr "热池 Deployment 和 Pod 上的标签"
+
+#: ../../source/features/modelclaim.rst:638
+#: ../../source/features/modelclaim.rst:643
+#: ../../source/features/modelclaim.rst:647
+#: ../../source/features/modelclaim.rst:651
+msgid "You"
+msgstr "你"
+
+#: ../../source/features/modelclaim.rst:639
+msgid ""
+"Names the pool. Claims select it in ``podSelector``, and the "
+"ServiceMonitor copies it into the ``pool`` metric label."
+msgstr ""
+"热池的名称。claim 在 ``podSelector`` 中按它选择热池，ServiceMonitor "
+"会把它复制为指标标签 ``pool``。"
+
+#: ../../source/features/modelclaim.rst:641
+msgid "``claim.model.aibrix.ai/enabled: \"true\"``"
+msgstr "``claim.model.aibrix.ai/enabled: \"true\"``"
+
+#: ../../source/features/modelclaim.rst:642
+msgid "Label on the pool's Pods"
+msgstr "热池 Pod 上的标签"
+
+#: ../../source/features/modelclaim.rst:644
+msgid "Lets the controller place claims on the Pod."
+msgstr "允许控制器把 claim 放置到该 Pod 上。"
+
+#: ../../source/features/modelclaim.rst:645
+msgid "``claim.model.aibrix.ai/pool-policy``"
+msgstr "``claim.model.aibrix.ai/pool-policy``"
+
+#: ../../source/features/modelclaim.rst:646
+msgid "Annotation on the pool's Deployment"
+msgstr "热池 Deployment 上的注解"
+
+#: ../../source/features/modelclaim.rst:648
+msgid "The sleep policy, as JSON. See `Sleep and wake`_."
+msgstr "休眠策略，JSON 格式。参见 `休眠与唤醒`_。"
+
+#: ../../source/features/modelclaim.rst:649
+msgid "``aibrix.ai/metrics: modelclaim-runtime``"
+msgstr "``aibrix.ai/metrics: modelclaim-runtime``"
+
+#: ../../source/features/modelclaim.rst:650
+msgid "Label on the pool's metrics Service"
+msgstr "热池指标 Service 上的标签"
+
+#: ../../source/features/modelclaim.rst:652
+msgid "Lets the ModelClaim ServiceMonitor find the Service."
+msgstr "让 ModelClaim 的 ServiceMonitor 找到该 Service。"
+
+#: ../../source/features/modelclaim.rst:653
+msgid "``route.claim.model.aibrix.ai/<claim>``"
+msgstr "``route.claim.model.aibrix.ai/<claim>``"
+
+#: ../../source/features/modelclaim.rst:654
+#: ../../source/features/modelclaim.rst:659
+msgid "Annotation on a pool Pod"
+msgstr "热池 Pod 上的注解"
+
+#: ../../source/features/modelclaim.rst:655
+#: ../../source/features/modelclaim.rst:665
+msgid "Controller"
+msgstr "控制器"
+
+#: ../../source/features/modelclaim.rst:656
+msgid ""
+"The claim's route on that Pod, as JSON with ``model``, ``port`` and "
+"``state``. The gateway routes requests by it."
+msgstr ""
+"claim 在该 Pod 上的路由，JSON 格式，包含 ``model``、``port`` 和 "
+"``state``。网关依据它路由请求。"
+
+#: ../../source/features/modelclaim.rst:658
+msgid "``wake.modelclaim.aibrix.ai/<claim>``"
+msgstr "``wake.modelclaim.aibrix.ai/<claim>``"
+
+#: ../../source/features/modelclaim.rst:660
+msgid "Gateway"
+msgstr "网关"
+
+#: ../../source/features/modelclaim.rst:661
+msgid ""
+"Asks the controller to wake the claim's sleeping engine, and holds the "
+"time of the request. The controller removes it."
+msgstr "请控制器唤醒该 claim 休眠中的引擎，值为请求的时间。由控制器删除。"
+
+#: ../../source/features/modelclaim.rst:663
+msgid "``model.aibrix.ai/modelclaim-finalizer``"
+msgstr "``model.aibrix.ai/modelclaim-finalizer``"
+
+#: ../../source/features/modelclaim.rst:664
+msgid "Finalizer on ModelClaims"
+msgstr "ModelClaim 上的 finalizer"
+
+#: ../../source/features/modelclaim.rst:666
+msgid ""
+"Keeps a deleted claim until the controller has asked the runtime agent to"
+" stop its engine."
+msgstr "保留已删除的 claim，直到控制器请 runtime agent 停止其引擎。"
+
+#: ../../source/features/modelclaim.rst:670
+msgid "Monitoring"
+msgstr "监控"
+
+#: ../../source/features/modelclaim.rst:672
+msgid ""
+"Apply ``observability/monitor/service_monitor_modelclaim_runtime.yaml``, "
+"so that Prometheus scrapes the runtime agent of every Service labeled "
+"``aibrix.ai/metrics: modelclaim-runtime``. The controller's metrics need "
+"``observability/monitor/service_monitor_controller_manager.yaml`` as "
+"well. Then import "
+"``observability/grafana/AIBrix_ModelClaim_Runtime_Dashboard.json`` into "
+"Grafana. ``observability/grafana/README.md`` lists the metrics the "
+"dashboard uses and their labels."
+msgstr ""
+"应用 ``observability/monitor/service_monitor_modelclaim_runtime.yaml``，"
+"让 Prometheus 抓取每个带有 ``aibrix.ai/metrics: modelclaim-runtime`` "
+"标签的 Service 背后的 runtime agent。控制器的指标还需要 "
+"``observability/monitor/service_monitor_controller_manager.yaml``。然后把 "
+"``observability/grafana/AIBrix_ModelClaim_Runtime_Dashboard.json`` 导入 "
+"Grafana。``observability/grafana/README.md`` "
+"列出了该仪表盘使用的指标及其标签。"
+
+#: ../../source/features/modelclaim.rst:680
+msgid "The controller exports these metrics:"
+msgstr "控制器导出以下指标："
+
+#: ../../source/features/modelclaim.rst:682
+msgid ""
+"``aibrix_modelclaim_desired_replicas`` and "
+"``aibrix_modelclaim_ready_replicas``, for each claim;"
+msgstr ""
+"``aibrix_modelclaim_desired_replicas`` 和 "
+"``aibrix_modelclaim_ready_replicas``，按 claim 统计；"
+
+#: ../../source/features/modelclaim.rst:684
+msgid "``aibrix_modelclaim_activating``, 1 while a claim's engine starts;"
+msgstr "``aibrix_modelclaim_activating``，claim 的引擎启动期间为 1；"
+
+#: ../../source/features/modelclaim.rst:685
+msgid "``aibrix_modelclaim_activation_total``, engine starts by result;"
+msgstr "``aibrix_modelclaim_activation_total``，按结果统计的引擎启动次数；"
+
+#: ../../source/features/modelclaim.rst:686
+msgid ""
+"``aibrix_modelclaim_no_ready_duration_seconds``, how long a claim has not"
+" been ready;"
+msgstr ""
+"``aibrix_modelclaim_no_ready_duration_seconds``，claim 未就绪的时长；"
+
+#: ../../source/features/modelclaim.rst:688
+msgid ""
+"``aibrix_modelclaim_pool_policy_valid``, whether a pool's sleep policy is"
+" valid;"
+msgstr "``aibrix_modelclaim_pool_policy_valid``，热池的休眠策略是否有效；"
+
+#: ../../source/features/modelclaim.rst:690
+msgid ""
+"``aibrix_modelclaim_pool_policy_evaluations_total`` and "
+"``aibrix_modelclaim_pool_policy_actions_total``, for each pool."
+msgstr ""
+"``aibrix_modelclaim_pool_policy_evaluations_total`` 和 "
+"``aibrix_modelclaim_pool_policy_actions_total``，按热池统计。"
+
+#: ../../source/features/modelclaim.rst:693
+msgid "The runtime agent exports these:"
+msgstr "runtime agent 导出以下指标："
+
+#: ../../source/features/modelclaim.rst:695
+msgid "``aibrix:modelclaim_models_resident``, the engines running in the Pod;"
+msgstr "``aibrix:modelclaim_models_resident``，Pod 中正在运行的引擎；"
+
+#: ../../source/features/modelclaim.rst:696
+msgid ""
+"``aibrix:modelclaim_engine_state``, the Pod's engines that are active, "
+"sleeping, restarting or failed;"
+msgstr ""
+"``aibrix:modelclaim_engine_state``，Pod 中处于 active、sleeping、"
+"restarting 或 failed 状态的引擎；"
+
+#: ../../source/features/modelclaim.rst:698
+msgid ""
+"``aibrix:modelclaim_kv_used_bytes`` and "
+"``aibrix:modelclaim_kv_total_bytes``;"
+msgstr ""
+"``aibrix:modelclaim_kv_used_bytes`` 和 "
+"``aibrix:modelclaim_kv_total_bytes``；"
+
+#: ../../source/features/modelclaim.rst:699
+msgid ""
+"``aibrix:modelclaim_kv_limit_requested_bytes``, "
+"``aibrix:modelclaim_kv_limit_applied_bytes`` and "
+"``aibrix:modelclaim_kv_limit_operations_total``;"
+msgstr ""
+"``aibrix:modelclaim_kv_limit_requested_bytes``、"
+"``aibrix:modelclaim_kv_limit_applied_bytes`` 和 "
+"``aibrix:modelclaim_kv_limit_operations_total``；"
+
+#: ../../source/features/modelclaim.rst:702
+msgid ""
+"``aibrix:modelclaim_hbm_peak_bytes``, the GPU memory of each engine, "
+"which reads 0 when the runtime agent cannot match GPU processes to the "
+"engine;"
+msgstr ""
+"``aibrix:modelclaim_hbm_peak_bytes``，每个引擎的显存用量，runtime agent "
+"无法把 GPU 进程对应到该引擎时为 0；"
+
+#: ../../source/features/modelclaim.rst:704
+msgid ""
+"``aibrix:modelclaim_sleeping_footprint_bytes``, what a sleeping engine "
+"still holds on the GPU;"
+msgstr ""
+"``aibrix:modelclaim_sleeping_footprint_bytes``，休眠引擎在 GPU "
+"上仍占用的显存；"
+
+#: ../../source/features/modelclaim.rst:706
+msgid ""
+"``aibrix:modelclaim_lifecycle_operations_total`` and "
+"``aibrix:modelclaim_lifecycle_operation_duration_seconds``, for sleeps "
+"and wakes;"
+msgstr ""
+"``aibrix:modelclaim_lifecycle_operations_total`` 和 "
+"``aibrix:modelclaim_lifecycle_operation_duration_seconds``，"
+"用于休眠和唤醒；"
+
+#: ../../source/features/modelclaim.rst:709
+msgid ""
+"``aibrix:modelclaim_engine_restart_attempts_total``, "
+"``aibrix:modelclaim_engine_restart_budget_exhausted_total`` and "
+"``aibrix:modelclaim_engine_re_adoptions_total``."
+msgstr ""
+"``aibrix:modelclaim_engine_restart_attempts_total``、"
+"``aibrix:modelclaim_engine_restart_budget_exhausted_total`` 和 "
+"``aibrix:modelclaim_engine_re_adoptions_total``。"
+
+#: ../../source/features/modelclaim.rst:714
+msgid "Troubleshooting"
+msgstr "故障排查"
+
+#: ../../source/features/modelclaim.rst:716
+msgid ""
+"To find the Pod of a claim, run ``kubectl get modelclaim <claim> -o "
+"jsonpath='{.status.instances[0].pod}'``."
+msgstr ""
+"要找到 claim 所在的 Pod，请运行 ``kubectl get modelclaim <claim> -o "
+"jsonpath='{.status.instances[0].pod}'``。"
+
+#: ../../source/features/modelclaim.rst:719
+msgid "Requests get 400, ``model ... does not exist``"
+msgstr "请求得到 400，提示 ``model ... does not exist``"
+
+#: ../../source/features/modelclaim.rst:720
+msgid ""
+"Use the claim's ``modelName``, such as ``qwen3-0.6b``, rather than the "
+"claim's name, ``qwen3-0-6b``."
+msgstr ""
+"请使用 claim 的 ``modelName``，例如 ``qwen3-0.6b``，而不是 claim 的名称 "
+"``qwen3-0-6b``。"
+
+#: ../../source/features/modelclaim.rst:723
+msgid "Requests get 503 with ``error on getting pods``"
+msgstr "请求得到 503，提示 ``error on getting pods``"
+
+#: ../../source/features/modelclaim.rst:724
+msgid ""
+"The model is on the route, but its Pod is not Ready. The gateway sends "
+"requests only to Ready Pods."
+msgstr "模型已在路由中，但其 Pod 未就绪。网关只把请求发给就绪的 Pod。"
+
+#: ../../source/features/modelclaim.rst:727
+msgid "A claim stays ``Pending``"
+msgstr "claim 一直处于 ``Pending``"
+
+#: ../../source/features/modelclaim.rst:728
+msgid "Read its ``Scheduled`` condition:"
+msgstr "查看其 ``Scheduled`` 条件："
+
+#: ../../source/features/modelclaim.rst:734
+msgid ""
+"``no available candidate warm pod`` means that no Pod qualifies. Check "
+"that the Pod has both labels, is running, and has as many GPUs as the "
+"claim needs. A message about GPU memory names the Pod that came closest "
+"and what it lacks. For ``InvalidPerGPU`` or ``TooLargeForAnyCard``, "
+"correct ``perGPU``."
+msgstr ""
+"``no available candidate warm pod`` 表示没有符合条件的 Pod。请检查 Pod "
+"是否带有这两个标签、是否在运行，以及其 GPU 数量是否与 claim 所需相同。"
+"关于显存的消息会指出最接近的 Pod 以及它还差什么。如果是 ``InvalidPerGPU`` "
+"或 ``TooLargeForAnyCard``，请修改 ``perGPU``。"
+
+#: ../../source/features/modelclaim.rst:740
+msgid "A claim reads ``Failed`` with ``InvalidEngineConfig``"
+msgstr "claim 处于 ``Failed``，原因为 ``InvalidEngineConfig``"
+
+#: ../../source/features/modelclaim.rst:741
+msgid ""
+"Remove ``--gpu-memory-utilization``, and check the parallel sizes. Engine"
+" arguments cannot be changed, so delete the claim and create it again."
+msgstr ""
+"去掉 ``--gpu-memory-utilization``，并检查各并行度。引擎参数不能修改，"
+"因此请删除 claim 后重新创建。"
+
+#: ../../source/features/modelclaim.rst:744
+msgid "A claim stays ``Activating``"
+msgstr "claim 一直处于 ``Activating``"
+
+#: ../../source/features/modelclaim.rst:745
+msgid ""
+"The engine may still be downloading or loading its model. Check the "
+"runtime agent's log, and the engine's ``last_error`` in the runtime "
+"snapshot:"
+msgstr ""
+"引擎可能仍在下载或加载模型。请查看 runtime agent 的日志，以及 runtime "
+"snapshot 中该引擎的 ``last_error``："
+
+#: ../../source/features/modelclaim.rst:753
+msgid "A Pod is turned away because an engine there \"answers to no claim\""
+msgstr "Pod 因其上的引擎 “answers to no claim” 而被拒绝"
+
+#: ../../source/features/modelclaim.rst:754
+msgid ""
+"The controller cannot tell what such an engine holds on the GPU, so it "
+"places nothing on that Pod. Stop the engine through the runtime agent's "
+"API, or restart the Pod:"
+msgstr ""
+"控制器无法知道这样的引擎在 GPU 上占用了多少，因此不会在该 Pod 上放置任何 "
+"claim。请通过 runtime agent 的 API 停止该引擎，或重启该 Pod："
+
+#: ../../source/features/modelclaim.rst:763
+msgid "Engines are gone after the runtime agent restarted"
+msgstr "runtime agent 重启后引擎都不见了"
+
+#: ../../source/features/modelclaim.rst:764
+msgid ""
+"Check that the Pod runs the runtime image as published, which restarts "
+"the agent inside the container, and that it mounts ``/var/run/aibrix``."
+msgstr ""
+"请检查 Pod 是否使用原样发布的 runtime 镜像（它会在容器内重启 agent），"
+"以及是否挂载了 ``/var/run/aibrix``。"
+
+#: ../../source/features/modelclaim.rst:768
+msgid "Validation"
+msgstr "验证"
+
+#: ../../source/features/modelclaim.rst:770
+msgid ""
+"To check ModelClaim on your own GPUs, follow the `validation runbook "
+"<https://github.com/vllm-"
+"project/aibrix/blob/main/development/tutorials/modelclaim/manual-"
+"validation-runbook.md>`_. It runs these samples and covers placement and "
+"GPU memory division, sleep and wake, recovery from engine faults, and "
+"deletion."
+msgstr ""
+"要在你自己的 GPU 上检查 ModelClaim，请按照 `验证手册 "
+"<https://github.com/vllm-project/aibrix/blob/main/development/tutorials/modelclaim/manual-validation-runbook.md>`_ "
+"操作。它会运行这些示例，覆盖放置与显存划分、休眠与唤醒、"
+"引擎故障恢复以及删除。"
+
+#: ../../source/features/modelclaim.rst:775
+msgid "Further reading:"
+msgstr "延伸阅读："
+
+#: ../../source/features/modelclaim.rst:777
+msgid "`kvcached <https://github.com/ovg-project/kvcached>`_"
+msgstr "`kvcached <https://github.com/ovg-project/kvcached>`_"
+
+#: ../../source/features/modelclaim.rst:778
+msgid "`vLLM sleep mode <https://docs.vllm.ai/en/stable/features/sleep_mode/>`_"
+msgstr ""
+"`vLLM 休眠模式 <https://docs.vllm.ai/en/stable/features/sleep_mode/>`_"
+
+#: ../../source/features/modelclaim.rst:779
 msgid ""
 "`Prism: Cost-Efficient Multi-LLM Serving via GPU Memory Ballooning "
-"<https://arxiv.org/abs/2505.04021>`_."
+"<https://arxiv.org/abs/2505.04021>`_"
 msgstr ""
-"`Prism: Cost-Efficient Multi-LLM Serving via GPU Memory Ballooning <https://arxiv.org/abs/2505.04021>`_ "
-"。"
+"`Prism: Cost-Efficient Multi-LLM Serving via GPU Memory Ballooning "
+"<https://arxiv.org/abs/2505.04021>`_"
 
 #: ../../source/features/modelclaim.rst:804
 msgid "Declarative wake policy (draft)"
@@ -947,18 +1742,26 @@ msgstr ""
 #: ../../source/features/modelclaim.rst:820
 msgid ""
 "Wake admission still checks the GPU memory ledger and arranges neighbouring "
-"engines' KV limits before calling the existing runtime Wake API. A "
-"successful Wake call does not restore routing: the port remains zero until "
-"the runtime snapshot reports the engine ready and the controller's normal "
-"health checks permit routing. Transport failures retry the persisted "
-"operation; runtime refusals reuse the existing replacement path, or retry on"
-" a later reconcile when no other pod can take the model. Failure Events and "
-"the Ready condition explain why the model is unavailable."
+"engines' KV limits before calling the existing runtime Wake API. A successful "
+"Wake call does not restore routing: the port remains zero until the runtime "
+"snapshot reports the engine ready and the controller's normal health checks "
+"permit routing. Transport failures retry the persisted operation without "
+"declaring that it failed: an unanswered operation may already have applied. "
+"Runtime refusals reuse the existing replacement path. When no other pod can "
+"take the model, policy wakes retry with a persisted exponential backoff from "
+"10 seconds to 5 minutes and raise a failure Event only when entering the "
+"failure state. The Ready condition continues to explain the unavailability. "
+"Client wake requests take precedence over background policy wakes, even if "
+"the policy request was queued first. Requests waiting for capacity remain "
+"queued; after the engine starts booting, the normal request lifetime applies."
 msgstr ""
-"唤醒准入仍会检查 GPU 内存账本，并在调用现有 runtime Wake API 前调整相邻引擎的 KV 限制。Wake "
-"调用成功不会立即恢复路由：只有 runtime snapshot "
-"报告引擎就绪，且控制器的正常健康检查允许路由后，端口才会从零恢复。传输失败会重试已持久化的操作；runtime "
-"明确拒绝时会复用现有的替换流程，或在没有其他 Pod 能接纳模型时于后续调谐中重试。失败 Event 和 Ready 条件会说明模型不可用的原因。"
+"唤醒准入仍会检查 GPU 内存账本，并在调用现有 runtime Wake API 前调整相邻引擎的 KV 限制。"
+"只有 runtime snapshot 报告引擎就绪且正常健康检查通过后，路由端口才会从零恢复。"
+"传输失败会重试已持久化的操作，不会断言唤醒失败，因为未收到回复的操作可能已执行。"
+"运行时明确拒绝时使用现有替换流程；没有其他 Pod 可接纳模型时，后台唤醒采用持久化的指数退避，"
+"从 10 秒增长至最多 5 分钟。仅进入失败状态时上报失败事件，Ready 条件持续说明不可用原因。"
+"客户唤醒请求优先于后台唤醒，即使后台请求先入队。等待容量的请求保留在队列中；"
+"引擎开始启动后适用正常请求有效期。"
 
 #: ../../source/features/modelclaim.rst:829
 msgid ""
@@ -994,6 +1797,3 @@ msgstr ""
 "``OnDemand``。本草案合入前，API 契约必须与该 issue 及驻留策略设计保持一致。``Scheduled`` "
 "唤醒留待后续实现，目前不被接受。"
 
-#: ../../source/features/modelclaim.rst:850
-msgid "On-demand wake"
-msgstr "按需唤醒"

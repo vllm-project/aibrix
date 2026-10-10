@@ -336,10 +336,11 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		if options.Cache != nil {
 			routerManager = routing.NewRouterManagerWithCache(c)
 		} else {
-			routing.Init()
 			routerManager = routing.DefaultRouterManager()
 		}
 	}
+	// Init constructs every registered router; it runs once, for whichever
+	// manager the server uses.
 	routerManager.Init()
 	if err := routerManager.InitializationError(routing.RouterExternal); err != nil && !errors.Is(err, routing.ErrExternalRouterDisabled) {
 		panic(fmt.Errorf("invalid external router configuration: %w", err))

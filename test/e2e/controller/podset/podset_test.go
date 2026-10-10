@@ -27,9 +27,9 @@ import (
 )
 
 const (
-	podSetDrainTimeoutSeconds = int32(30)
-	podSetDrainTimeout        = 30 * time.Second
-	podSetCancelMinMargin     = 15 * time.Second
+	podSetDrainTimeoutSeconds = int32(15)
+	podSetDrainTimeout        = 15 * time.Second
+	podSetCancelMinMargin     = 8 * time.Second
 	podSetEarlyDeleteMargin   = 2 * time.Second
 	podSetTimestampTolerance  = 2 * time.Second
 )

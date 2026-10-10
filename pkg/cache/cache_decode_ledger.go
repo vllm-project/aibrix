@@ -118,9 +118,8 @@ func (c *Store) SharedDecodeLedgerAvailable() bool {
 // Without Redis it returns a no-op.
 //
 // A later call replaces the earlier registration, whose returned function then
-// does nothing. The gateway constructs its routers more than once at startup
-// and serves with the last one constructed, so the last registration is the
-// one whose ledger counts.
+// does nothing: a router constructed later serves the requests, so its ledger
+// is the one that counts.
 func (c *Store) PublishDecodeLedger(provider DecodeLedgerProvider) func(podKey string) {
 	if c.redisClient == nil || provider == nil {
 		return func(string) {}

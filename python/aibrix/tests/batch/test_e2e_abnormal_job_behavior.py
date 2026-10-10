@@ -51,7 +51,7 @@ from aibrix.batch.job_entity import (
     ResourceAllocation,
 )
 from aibrix.batch.job_entity.batch_job import parse_completion_window
-from aibrix.batch.storage import batch_storage
+from aibrix.batch.storage import batch_metastore, batch_storage
 from aibrix.batch.storage.adapter import (
     UNREADABLE_COMPLETED_OUTPUT_PART_MESSAGE,
     UNREADABLE_FAILED_ERROR_PART_MESSAGE,
@@ -581,6 +581,33 @@ async def wait_for_completed_at_least(
             return result
         await asyncio.sleep(poll_interval)
     return result
+
+
+async def wait_for_crash_consumed(
+    batch_id: str,
+    *,
+    max_polls: int = 60,
+    poll_interval: float = 0.5,
+) -> None:
+    """Wait until an injected driver crash has been persisted to the metastore.
+
+    A crash is only durable once the driver has written ``last_crashed_at``.
+    Restart-recovery tests must build the restarted app only after this marker
+    exists; otherwise the restarted driver reads a pre-crash snapshot and
+    re-arms the injection for a second crash.
+    """
+    for _ in range(max_polls):
+        job = await batch_metastore.get_batch_job(batch_id)
+        if (
+            job is not None
+            and job.status is not None
+            and job.status.last_crashed_at is not None
+        ):
+            return
+        await asyncio.sleep(poll_interval)
+    raise AssertionError(
+        f"Job {batch_id} crash was not persisted within the wait window"
+    )
 
 
 def decode_jsonl_content(content: bytes) -> List[Dict[str, Any]]:
@@ -2947,6 +2974,9 @@ async def test_job_restore_after_mds_crash_during_in_progress(
             client, batch_id, "in_progress", max_polls=20, poll_interval=0.2
         )
         assert payload["status"] == "in_progress"
+        # The crash fires once dispatch begins (1 request). Wait until it has
+        # been consumed and persisted before building the restarted app.
+        await wait_for_crash_consumed(batch_id)
         original_debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
         await complete_job_after_restart(
             request,

@@ -205,6 +205,56 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 		gomega.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(1))
 	})
 
+	ginkgo.It("keeps serving from a pod that leaves the pool", func() {
+		fixture.Runtime().SetDefaultState("active", true)
+		leaving := fixture.CreateWarmPod(ns.Name, "warm-leaving", "pool-a")
+		claim := fixture.CreateClaim(ns.Name, "claim-leaving", "pool-a", nil, nil)
+		var port int32
+		gomega.Eventually(func(g gomega.Gomega) {
+			latest := fixture.GetClaim(g, claim)
+			g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			g.Expect(latest.Status.Instances).To(gomega.HaveLen(1))
+			g.Expect(latest.Status.Instances[0].Pod).To(gomega.Equal(leaving.Name))
+			port = latest.Status.Instances[0].Port
+			fixture.ExpectRoute(g, ns.Name, leaving.Name, claim.Name, port, constants.ModelClaimRoutingStateActive)
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		fixture.CreateWarmPod(ns.Name, "warm-staying", "pool-a")
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.GetClaim(g, claim).Status.Candidates).To(gomega.Equal(int32(2)))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+		pod := &corev1.Pod{}
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(leaving), pod)).To(gomega.Succeed())
+		left := pod.DeepCopy()
+		delete(left.Labels, constants.ModelPoolLabelEnabled)
+		gomega.Expect(k8sClient.Patch(ctx, left, client.MergeFrom(pod))).To(gomega.Succeed())
+
+		// The first pass without the label counts one candidate. The claim
+		// stays on the pod it runs on, and no engine is started or stopped.
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.GetClaim(g, claim).Status.Candidates).To(gomega.Equal(int32(1)))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		latest := &modelapi.ModelClaim{}
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(claim), latest)).To(gomega.Succeed())
+		gomega.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+		gomega.Expect(latest.Status.Instances).To(gomega.HaveLen(1))
+		gomega.Expect(latest.Status.Instances[0].Pod).To(gomega.Equal(leaving.Name))
+		fixture.ExpectRoute(gomega.Default, ns.Name, leaving.Name, claim.Name, port, constants.ModelClaimRoutingStateActive)
+		gomega.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(1))
+		gomega.Expect(fixture.Runtime().DeactivateRequests()).To(gomega.BeEmpty())
+
+		// Deleting the claim still stops its engine there.
+		gomega.Expect(k8sClient.Delete(ctx, claim)).To(gomega.Succeed())
+		gomega.Eventually(func(g gomega.Gomega) {
+			g.Expect(fixture.Runtime().DeactivateRequests()).To(gomega.ContainElement(
+				gomega.HaveField("ModelName", claim.Name),
+			))
+			latestPod := &corev1.Pod{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(leaving), latestPod)).To(gomega.Succeed())
+			g.Expect(latestPod.Annotations).NotTo(gomega.HaveKey(constants.ModelClaimPodAnnotationPrefix + claim.Name))
+		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+	})
+
 	ginkgo.It("places a parallel model only on a pod with the required GPU topology", func() {
 		fixture.Runtime().SetCards(8<<30, 8<<30)
 		fixture.Runtime().SetDefaultState("active", true)

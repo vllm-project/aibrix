@@ -1,3 +1,4 @@
+# Two small models that share the GPU of the warm-runtime-pool sample.
 apiVersion: model.aibrix.ai/v1alpha1
 kind: ModelClaim
 metadata:
@@ -7,11 +8,13 @@ spec:
   modelName: qwen3-0.6b
   podSelector:
     matchLabels:
-      claim.model.aibrix.ai/pool: b300-pool-a
+      claim.model.aibrix.ai/pool: pool-a
   artifactURL: huggingface://Qwen/Qwen3-0.6B
   engine: vllm
   replicas: 1
-  # Measured on the card this pool runs, not derived from the artifact.
+  # What one instance needs on a GPU: its footprint besides the KV cache, and
+  # the KV cache for one request of the maximum length. Both leave room to
+  # spare for this model with these engine arguments.
   perGPU:
     maximumFootprint: 6Gi
     kvFloor: 1Gi
@@ -28,7 +31,7 @@ spec:
   modelName: qwen2.5-0.5b
   podSelector:
     matchLabels:
-      claim.model.aibrix.ai/pool: b300-pool-a
+      claim.model.aibrix.ai/pool: pool-a
   artifactURL: huggingface://Qwen/Qwen2.5-0.5B-Instruct
   engine: vllm
   replicas: 1

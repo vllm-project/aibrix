@@ -52,6 +52,11 @@ def prepare_model_dir(
         lock_path = cache_dir.joinpath(f"{file_name}.lock")
         meta_path = cache_dir.joinpath(f"{file_name}.metadata")
 
+        # Nested file names (e.g. "LLM/config.json") need their parent dirs.
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+
         if status == FileDownloadStatus.DOWNLOADED:
             file_path.touch()
             lock_path.touch()
@@ -228,3 +233,115 @@ def test_infer_from_model_path_uses_metadata(tmp_path: Path):
     assert model is not None
     names = {df.file_path.name for df in model.download_files}
     assert "weights.bin" in names
+
+
+NESTED_DOWNLOADED_FILES = [
+    ("config.json", FileDownloadStatus.DOWNLOADED),
+    ("LLM/config.json", FileDownloadStatus.DOWNLOADED),
+    ("a/b/weights.safetensors", FileDownloadStatus.DOWNLOADED),
+]
+
+
+def test_infer_from_model_path_tracks_nested_files(tmp_path: Path):
+    src = RemoteSource.HUGGINGFACE
+    model_name = "org/model"
+    with prepare_model_dir(tmp_path, model_name, src, NESTED_DOWNLOADED_FILES):
+        model = DownloadModel.infer_from_model_path(tmp_path, model_name, src)
+        assert model is not None
+        model_base_dir = tmp_path.joinpath(model_name)
+        expected = {
+            model_base_dir.joinpath(name) for name, _ in NESTED_DOWNLOADED_FILES
+        }
+        assert {df.file_path for df in model.download_files} == expected
+        assert len(model.download_files) == len(NESTED_DOWNLOADED_FILES)
+        assert model.status == ModelDownloadStatus.DOWNLOADED
+
+
+def test_nested_file_downloading_marks_model_downloading(tmp_path: Path):
+    src = RemoteSource.S3
+    model_name = "model"
+    files_with_status = [
+        ("config.json", FileDownloadStatus.DOWNLOADED),
+        ("LLM/config.json", FileDownloadStatus.DOWNLOADED),
+        ("a/b/weights.safetensors", FileDownloadStatus.DOWNLOADING),
+    ]
+    with prepare_model_dir(tmp_path, model_name, src, files_with_status):
+        model = DownloadModel.infer_from_model_path(tmp_path, model_name, src)
+        assert model is not None
+        assert model.status == ModelDownloadStatus.DOWNLOADING
+
+
+def test_nested_file_missing_data_is_not_downloaded(tmp_path: Path):
+    src = RemoteSource.TOS
+    model_name = "model"
+    with prepare_model_dir(tmp_path, model_name, src, NESTED_DOWNLOADED_FILES):
+        model_base_dir = tmp_path.joinpath(model_name)
+        model_base_dir.joinpath("LLM/config.json").unlink()
+        model = DownloadModel.infer_from_model_path(tmp_path, model_name, src)
+        assert model is not None
+        assert model.status != ModelDownloadStatus.DOWNLOADED
+        assert model.status == ModelDownloadStatus.NO_OPERATION
+
+
+def test_infer_from_local_path_tracks_nested_files(tmp_path: Path):
+    src = RemoteSource.HUGGINGFACE
+    model_name = "org/model"
+    with prepare_model_dir(tmp_path, model_name, src, NESTED_DOWNLOADED_FILES):
+        models = DownloadModel.infer_from_local_path(tmp_path)
+        assert len(models) == 1
+        model = models[0]
+        assert model.model_name == model_name
+        assert model.model_source == src
+        assert len(model.download_files) == len(NESTED_DOWNLOADED_FILES)
+        paths = {
+            df.file_path.relative_to(model.model_root_path).as_posix()
+            for df in model.download_files
+        }
+        assert paths == {name for name, _ in NESTED_DOWNLOADED_FILES}
+
+
+def test_nested_metadata_without_lock_is_tracked(tmp_path: Path):
+    src = RemoteSource.HUGGINGFACE
+    model_name = "org/model"
+    model_base_dir = tmp_path.joinpath(model_name)
+    cache_dir = model_base_dir.joinpath((DOWNLOAD_CACHE_DIR % src.value).strip("/"))
+    # Built by hand: prepare_model_dir cannot express "metadata without lock".
+    data_path = model_base_dir.joinpath("LLM/config.json")
+    meta_path = cache_dir.joinpath("LLM/config.json.metadata")
+    for path in (data_path, meta_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+
+    model = DownloadModel.infer_from_model_path(tmp_path, model_name, src)
+    assert model is not None
+    assert len(model.download_files) == 1
+    download_file = model.download_files[0]
+    assert download_file.file_path == data_path
+    assert download_file.lock_path == cache_dir.joinpath("LLM/config.json.lock")
+    assert download_file.metadata_path == meta_path
+    assert model.status == ModelDownloadStatus.DOWNLOADED
+
+
+def test_incidental_cache_entries_are_ignored(tmp_path: Path):
+    src = RemoteSource.HUGGINGFACE
+    model_name = "org/model"
+    files = [
+        ("config.json", FileDownloadStatus.DOWNLOADED),
+        ("LLM/config.json", FileDownloadStatus.DOWNLOADED),
+    ]
+    with prepare_model_dir(tmp_path, model_name, src, files):
+        model_base_dir = tmp_path.joinpath(model_name)
+        cache_dir = model_base_dir.joinpath((DOWNLOAD_CACHE_DIR % src.value).strip("/"))
+        # Files huggingface_hub leaves in the cache that are not lock/metadata.
+        cache_dir.joinpath("LLM/config.json.0123abcd.incomplete").touch()
+        cache_dir.joinpath(".gitignore").touch()
+        # Repo folders named like the suffixes yield cache *directories*.
+        cache_dir.joinpath("LLM/assets.metadata").mkdir()
+        cache_dir.joinpath("LLM/other.lock").mkdir()
+
+        model = DownloadModel.infer_from_model_path(tmp_path, model_name, src)
+        assert model is not None
+        assert {df.file_path for df in model.download_files} == {
+            model_base_dir.joinpath(name) for name, _ in files
+        }
+        assert model.status == ModelDownloadStatus.DOWNLOADED

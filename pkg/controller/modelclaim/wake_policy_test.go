@@ -75,6 +75,18 @@ func TestWakePolicyCompatibilityDefaults(t *testing.T) {
 	}
 }
 
+func TestWakeQueueOrdersFractionalSecondTimestamps(t *testing.T) {
+	// Go's RFC3339 parser accepts fractional seconds even when the layout
+	// omits them. Keep nanoseconds so a same-second gateway overwrite is
+	// distinguishable from the controller-owned request.
+	const earlier = "2026-10-01T08:00:00.000000001Z"
+	const later = "2026-10-01T08:00:00.000000002Z"
+	_, err := time.Parse(time.RFC3339, earlier)
+	require.NoError(t, err)
+	assert.True(t, askedBefore(earlier, "z", later, "a"))
+	assert.False(t, askedBefore(later, "a", earlier, "z"))
+}
+
 func TestEnsureAwakeWaitsForSnapshotReadinessAndReusesOperationAcrossRestart(t *testing.T) {
 	r, runtime, pm, port := sleepingClaim(t)
 	setResidencyPolicy(t, r, pm.Name, `{"sleepPolicy":{"mode":"Never"},"wakePolicy":{"mode":"EnsureAwake"}}`)
@@ -128,14 +140,27 @@ func TestEnsureAwakeRetriesFailuresWithoutUserTraffic(t *testing.T) {
 			ready := meta.FindStatusCondition(claim.Status.Conditions, string(modelv1alpha1.ModelClaimConditionReady))
 			require.NotNil(t, ready)
 			assert.Equal(t, metav1.ConditionFalse, ready.Status)
-			assert.Equal(t, "WakeFailed", ready.Reason)
-			assert.Contains(t, strings.Join(drainEvents(t, r), "\n"), "WakeFailed")
+			events := strings.Join(drainEvents(t, r), "\n")
+			if refusal {
+				assert.Equal(t, "WakeFailed", ready.Reason)
+				assert.Contains(t, events, "WakeFailed")
+			} else {
+				assert.Equal(t, "EngineSleeping", ready.Reason)
+				assert.NotContains(t, events, "WakeFailed", "an unanswered operation is not a runtime refusal")
+			}
 			assert.Contains(t, podNamed(t, r, "warm-1").Annotations[constants.ModelClaimPodAnnotationPrefix+pm.Name], `"port":0`)
 			if refusal {
 				now := r.now().Add(time.Second)
 				r.Now = func() time.Time { return now }
 			}
 			reconcileOnce(t, r, pm.Name)
+			if refusal {
+				assert.Len(t, runtime.wakeCalls, 1, "refusals must back off")
+				assert.NotContains(t, strings.Join(drainEvents(t, r), "\n"), "WakeFailed", "do not repeat failure events")
+				now := r.now().Add(9 * time.Second)
+				r.Now = func() time.Time { return now }
+				reconcileOnce(t, r, pm.Name)
+			}
 			require.Len(t, runtime.wakeCalls, 2)
 			if refusal {
 				assert.NotEqual(t, runtime.wakeCalls[0].OperationID, runtime.wakeCalls[1].OperationID, "an explicit refusal needs a new attempt")
@@ -145,6 +170,85 @@ func TestEnsureAwakeRetriesFailuresWithoutUserTraffic(t *testing.T) {
 			assert.Empty(t, runtime.deactivateCalls)
 		})
 	}
+}
+
+func TestPolicyWakeYieldsToLaterClientRequest(t *testing.T) {
+	r, runtime := queueCard(t, 800,
+		queued{name: "a", footprint: 300, floor: 100, idleSince: at0758},
+		queued{name: "b", footprint: 300, floor: 100, asleep: true, askedAt: "2026-10-01T07:59:00Z"},
+		queued{name: "waker", footprint: 300, floor: 100, asleep: true, askedAt: "2026-10-01T08:00:00Z"})
+	claim := getModel(t, r, "b")
+	pod := podNamed(t, r, "warm-1")
+	patch := client.MergeFrom(pod.DeepCopy())
+	request := policyWakeRequest{
+		RequestedAt: pod.Annotations[constants.ModelClaimWakeAnnotationPrefix+claim.Name],
+		OperationID: fmt.Sprintf("controller-policy-wake/%s/%s/test", pod.UID, claim.UID),
+	}
+	value, err := json.Marshal(request)
+	require.NoError(t, err)
+	pod.Annotations[constants.ModelClaimPolicyWakeAnnotationPrefix+claim.Name] = string(value)
+	require.NoError(t, r.Patch(context.Background(), pod, patch))
+	reconcileOnce(t, r, "waker")
+	require.Len(t, runtime.sleepCalls, 1, "client traffic gets first access to room")
+	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
+}
+
+func TestDeactivationRemovesOrphanPolicyWake(t *testing.T) {
+	r, _, pm, _ := sleepingClaim(t)
+	pod := podNamed(t, r, "warm-1")
+	patch := client.MergeFrom(pod.DeepCopy())
+	delete(pod.Annotations, constants.ModelClaimPodAnnotationPrefix+pm.Name)
+	delete(pod.Annotations, constants.ModelClaimWakeAnnotationPrefix+pm.Name)
+	pod.Annotations[constants.ModelClaimPolicyWakeAnnotationPrefix+pm.Name] = "orphan"
+	require.NoError(t, r.Patch(context.Background(), pod, patch))
+	r.deannotateWarmPod(context.Background(), pm.Namespace, pod.Name, pm.Name)
+	assert.NotContains(t, podNamed(t, r, pod.Name).Annotations, constants.ModelClaimPolicyWakeAnnotationPrefix+pm.Name)
+}
+
+func TestPolicyWakeBackoffPersistsAndCapsAcrossRestart(t *testing.T) {
+	r, runtime, pm, _ := sleepingClaim(t)
+	setResidencyPolicy(t, r, pm.Name, `{"sleepPolicy":{"mode":"Never"}}`)
+	runtime.failWake = true
+	now := r.now()
+	r.Now = func() time.Time { return now }
+	for i, delay := range []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second, 160 * time.Second, 5 * time.Minute, 5 * time.Minute} {
+		reconcileOnce(t, r, pm.Name)
+		require.Len(t, runtime.wakeCalls, i+1)
+		pod := podNamed(t, r, "warm-1")
+		request, owned := policyWakeOnPod(getModel(t, r, pm.Name), pod)
+		require.True(t, owned)
+		retryAt, err := time.Parse(time.RFC3339Nano, request.RetryAfter)
+		require.NoError(t, err)
+		assert.Equal(t, now.Add(delay), retryAt)
+		// A fresh reconciler has no in-memory retry clock.
+		r = &ModelClaimReconciler{Client: r.Client, Scheme: r.Scheme, Recorder: r.Recorder, Runtime: runtime, Now: func() time.Time { return now }}
+		now = retryAt.Add(-time.Nanosecond)
+		reconcileOnce(t, r, pm.Name)
+		assert.Len(t, runtime.wakeCalls, i+1)
+		now = retryAt
+	}
+	assert.Equal(t, 1, strings.Count(strings.Join(drainEvents(t, r), "\n"), "WakeFailed"), "only the transition into failure emits an event")
+}
+
+func TestPolicyWakeRequestExpiresAfterEngineStartsBooting(t *testing.T) {
+	r, runtime, pm, port := sleepingClaim(t)
+	setResidencyPolicy(t, r, pm.Name, `{"sleepPolicy":{"mode":"Never"}}`)
+	now := r.now()
+	r.Now = func() time.Time { return now }
+	reconcileOnce(t, r, pm.Name)
+	require.Len(t, runtime.wakeCalls, 1)
+	runtime.models[servedModelName(pm)] = ModelInfo{ModelName: servedModelName(pm), Port: port, Phase: "active"}
+	runtime.notReady = true
+	now = now.Add(10 * time.Second)
+	reconcileOnce(t, r, pm.Name)
+	assert.Contains(t, podNamed(t, r, "warm-1").Annotations, constants.ModelClaimWakeAnnotationPrefix+pm.Name)
+	now = now.Add(wakeRequestLifetime + time.Second)
+	reconcileOnce(t, r, pm.Name)
+	pod := podNamed(t, r, "warm-1")
+	assert.NotContains(t, pod.Annotations, constants.ModelClaimWakeAnnotationPrefix+pm.Name)
+	assert.NotContains(t, pod.Annotations, constants.ModelClaimPolicyWakeAnnotationPrefix+pm.Name)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, getModel(t, r, pm.Name).Status.Phase)
+	assert.Len(t, runtime.wakeCalls, 1)
 }
 
 func TestEnsureAwakeRespectsCapacityAdmissionBeyondRequestLifetime(t *testing.T) {

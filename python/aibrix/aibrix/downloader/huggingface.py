@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from pathlib import Path
-from typing import List, Optional
+from typing import ClassVar, List, Optional
 
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
@@ -28,6 +28,7 @@ from aibrix.downloader.base import (
     BaseDownloader,
     DownloadExtraConfig,
 )
+from aibrix.downloader.entity import RemoteSource
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -38,6 +39,8 @@ def _parse_model_name_from_uri(model_uri: str) -> str:
 
 
 class HuggingFaceDownloader(BaseDownloader):
+    _source: ClassVar[RemoteSource] = RemoteSource.HUGGINGFACE
+
     def __init__(
         self,
         model_uri: str,
