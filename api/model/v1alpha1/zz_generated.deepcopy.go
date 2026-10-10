@@ -524,6 +524,16 @@ func (in *ModelWarmupPolicies) DeepCopyInto(out *ModelWarmupPolicies) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.ContinuousRetryLimit != nil {
+		in, out := &in.ContinuousRetryLimit, &out.ContinuousRetryLimit
+		*out = new(int32)
+		**out = **in
+	}
+	if in.ContinuousRetryIntervalSeconds != nil {
+		in, out := &in.ContinuousRetryIntervalSeconds, &out.ContinuousRetryIntervalSeconds
+		*out = new(int64)
+		**out = **in
+	}
 	if in.TTLSecondsAfterFinished != nil {
 		in, out := &in.TTLSecondsAfterFinished, &out.TTLSecondsAfterFinished
 		*out = new(int32)
@@ -583,6 +593,10 @@ func (in *ModelWarmupStatus) DeepCopyInto(out *ModelWarmupStatus) {
 	}
 	if in.CompletionTime != nil {
 		in, out := &in.CompletionTime, &out.CompletionTime
+		*out = (*in).DeepCopy()
+	}
+	if in.LastConvergedTime != nil {
+		in, out := &in.LastConvergedTime, &out.LastConvergedTime
 		*out = (*in).DeepCopy()
 	}
 	if in.Targets != nil {

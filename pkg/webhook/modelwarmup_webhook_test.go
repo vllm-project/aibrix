@@ -155,10 +155,52 @@ func TestModelWarmupWebhookRejectsInvalidPoliciesAndAllowsZeroRetries(t *testing
 	require.NoError(t, err)
 }
 
-func TestModelWarmupWebhookRejectsModeAndSpecUpdates(t *testing.T) {
+func TestModelWarmupWebhookValidatesContinuousPolicies(t *testing.T) {
+	tests := []struct {
+		name    string
+		mode    modelapi.ModelWarmupMode
+		policy  modelapi.ModelWarmupPolicies
+		wantErr string
+	}{
+		{name: "continuous defaults", mode: modelapi.ModelWarmupModeContinuous},
+		{name: "continuous zero retries", mode: modelapi.ModelWarmupModeContinuous,
+			policy: modelapi.ModelWarmupPolicies{ContinuousRetryLimit: ptr.To[int32](0)}},
+		{name: "continuous retry limit", mode: modelapi.ModelWarmupModeContinuous,
+			policy: modelapi.ModelWarmupPolicies{ContinuousRetryLimit: ptr.To[int32](10)}},
+		{name: "negative continuous retry limit", mode: modelapi.ModelWarmupModeContinuous,
+			policy: modelapi.ModelWarmupPolicies{ContinuousRetryLimit: ptr.To[int32](-1)}, wantErr: "greater than or equal to zero"},
+		{name: "excessive continuous retry limit", mode: modelapi.ModelWarmupModeContinuous,
+			policy: modelapi.ModelWarmupPolicies{ContinuousRetryLimit: ptr.To[int32](11)}, wantErr: "less than or equal to 10"},
+		{name: "zero continuous retry interval", mode: modelapi.ModelWarmupModeContinuous,
+			policy: modelapi.ModelWarmupPolicies{ContinuousRetryIntervalSeconds: ptr.To[int64](0)}, wantErr: "greater than zero"},
+		{name: "continuous TTL", mode: modelapi.ModelWarmupModeContinuous,
+			policy: modelapi.ModelWarmupPolicies{TTLSecondsAfterFinished: ptr.To[int32](60)}, wantErr: "not supported in Continuous mode"},
+		{name: "Once continuous retry limit", mode: modelapi.ModelWarmupModeOnce,
+			policy: modelapi.ModelWarmupPolicies{ContinuousRetryLimit: ptr.To[int32](1)}, wantErr: "only supported in Continuous mode"},
+		{name: "omitted mode continuous retry interval",
+			policy: modelapi.ModelWarmupPolicies{ContinuousRetryIntervalSeconds: ptr.To[int64](30)}, wantErr: "only supported in Continuous mode"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			warmup := validModelWarmupForWebhookTest()
+			warmup.Spec.Mode = tt.mode
+			if !equality.Semantic.DeepEqual(tt.policy, modelapi.ModelWarmupPolicies{}) {
+				warmup.Spec.Policies = tt.policy.DeepCopy()
+			}
+			_, err := (&ModelWarmupWebhook{}).ValidateCreate(context.Background(), warmup)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestModelWarmupWebhookRejectsUnknownModeAndSpecUpdates(t *testing.T) {
 	w := &ModelWarmupWebhook{}
 	invalidMode := validModelWarmupForWebhookTest()
-	invalidMode.Spec.Mode = modelapi.ModelWarmupMode("Continuous")
+	invalidMode.Spec.Mode = modelapi.ModelWarmupMode("Unknown")
 	_, err := w.ValidateCreate(context.Background(), invalidMode)
 	require.ErrorContains(t, err, "Unsupported value")
 
