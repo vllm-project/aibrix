@@ -188,6 +188,17 @@ func buildHPABehavior(scalingContext scalingctx.ScalingContext) *autoscalingv2.H
 		},
 	}
 
+	// A rate of one forbids scaling; HPA policy values must be positive.
+	disabledPolicy := autoscalingv2.DisabledPolicySelect
+	if maxScaleUpRate == 1 {
+		behavior.ScaleUp.SelectPolicy = &disabledPolicy
+		behavior.ScaleUp.Policies = nil
+	}
+	if maxScaleDownRate == 1 {
+		behavior.ScaleDown.SelectPolicy = &disabledPolicy
+		behavior.ScaleDown.Policies = nil
+	}
+
 	klog.V(4).InfoS("Built HPA behavior",
 		"scaleUpStabilization", scaleUpStabilization,
 		"scaleDownStabilization", scaleDownStabilization,

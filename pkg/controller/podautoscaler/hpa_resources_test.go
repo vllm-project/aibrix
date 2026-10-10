@@ -318,3 +318,43 @@ func TestMakeHPAWithInvalidScheduledBounds(t *testing.T) {
 func TestReasonForHPAGenerationErrorDefaultsToMetricsConfig(t *testing.T) {
 	assert.Equal(t, ReasonMetricsConfigError, reasonForHPAGenerationError(assert.AnError))
 }
+
+func TestBuildHPABehaviorScaleRates(t *testing.T) {
+	tests := []struct {
+		name               string
+		scaleUp, scaleDown float64
+	}{
+		{"scale up disabled", 1, 2},
+		{"scale down disabled", 2, 1},
+		{"both disabled", 1, 1},
+		{"rate two control", 2, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.NewBaseScalingContext()
+			ctx.MaxScaleUpRate, ctx.MaxScaleDownRate = tt.scaleUp, tt.scaleDown
+			behavior := buildHPABehavior(ctx)
+			for _, direction := range []struct {
+				rules        *autoscalingv2.HPAScalingRules
+				rate         float64
+				selectPolicy autoscalingv2.ScalingPolicySelect
+				percent      int32
+			}{
+				{behavior.ScaleUp, tt.scaleUp, autoscalingv2.MaxChangePolicySelect, 100},
+				{behavior.ScaleDown, tt.scaleDown, autoscalingv2.MinChangePolicySelect, 50},
+			} {
+				if direction.rate == 1 {
+					assert.Equal(t, ptr.To(autoscalingv2.DisabledPolicySelect), direction.rules.SelectPolicy)
+				} else {
+					assert.Equal(t, ptr.To(direction.selectPolicy), direction.rules.SelectPolicy)
+					assert.Equal(t, []autoscalingv2.HPAScalingPolicy{{
+						Type: autoscalingv2.PercentScalingPolicy, Value: direction.percent, PeriodSeconds: 60,
+					}}, direction.rules.Policies)
+				}
+				for _, policy := range direction.rules.Policies {
+					assert.Greater(t, policy.Value, int32(0))
+				}
+			}
+		})
+	}
+}
