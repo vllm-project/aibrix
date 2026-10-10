@@ -96,6 +96,25 @@ func TestReconcileContinuousCreatesFirstAttemptAndReportsRunning(t *testing.T) {
 	require.Equal(t, modelv1alpha1.ModelWarmupTargetRunning, updated.Status.Targets[0].Phase)
 }
 
+func TestReconcileContinuousDoesNotAdoptDeletingAlreadyExistsJob(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+	warmup.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous
+	target := resolvedTarget{NodeName: nodes[0].Name, NodeUID: nodes[0].UID}
+	deleting := (&ModelWarmupReconciler{}).jobForTarget(warmup, target, revisionFor(warmup), 1)
+	require.NoError(t, ctrl.SetControllerReference(warmup, deleting, scheme))
+	deletedAt := metav1.Now()
+	deleting.DeletionTimestamp = &deletedAt
+	deleting.Finalizers = []string{"test-finalizer"}
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes, deleting)
+	counting.omitJobsFromList = map[string]struct{}{deleting.Name: {}}
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+
+	require.ErrorContains(t, err, "is being deleted")
+	require.Zero(t, counting.statusUpdates)
+}
+
 func TestReconcileContinuousBecomesReadyAndSkipsSteadyStateWrites(t *testing.T) {
 	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
 	warmup.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous

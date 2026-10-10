@@ -173,6 +173,14 @@ func TestModelWarmupWebhookValidatesContinuousPolicies(t *testing.T) {
 			policy: modelapi.ModelWarmupPolicies{ContinuousRetryLimit: ptr.To[int32](11)}, wantErr: "less than or equal to 10"},
 		{name: "zero continuous retry interval", mode: modelapi.ModelWarmupModeContinuous,
 			policy: modelapi.ModelWarmupPolicies{ContinuousRetryIntervalSeconds: ptr.To[int64](0)}, wantErr: "greater than zero"},
+		{name: "maximum continuous retry interval", mode: modelapi.ModelWarmupModeContinuous,
+			policy: modelapi.ModelWarmupPolicies{
+				ContinuousRetryIntervalSeconds: ptr.To(modelapi.MaxModelWarmupContinuousRetryIntervalSeconds),
+			}},
+		{name: "excessive continuous retry interval", mode: modelapi.ModelWarmupModeContinuous,
+			policy: modelapi.ModelWarmupPolicies{
+				ContinuousRetryIntervalSeconds: ptr.To(modelapi.MaxModelWarmupContinuousRetryIntervalSeconds + 1),
+			}, wantErr: "less than or equal to 604800"},
 		{name: "continuous TTL", mode: modelapi.ModelWarmupModeContinuous,
 			policy: modelapi.ModelWarmupPolicies{TTLSecondsAfterFinished: ptr.To[int32](60)}, wantErr: "not supported in Continuous mode"},
 		{name: "Once continuous retry limit", mode: modelapi.ModelWarmupModeOnce,

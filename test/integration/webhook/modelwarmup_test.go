@@ -133,6 +133,12 @@ var _ = ginkgo.Describe("ModelWarmup admission", func() {
 		ginkgo.Entry("negative finished job TTL", func(w *modelapi.ModelWarmup) {
 			w.Spec.Policies = &modelapi.ModelWarmupPolicies{TTLSecondsAfterFinished: ptr.To[int32](-1)}
 		}),
+		ginkgo.Entry("Continuous retry interval over maximum", func(w *modelapi.ModelWarmup) {
+			w.Spec.Mode = modelapi.ModelWarmupModeContinuous
+			w.Spec.Policies = &modelapi.ModelWarmupPolicies{
+				ContinuousRetryIntervalSeconds: ptr.To(modelapi.MaxModelWarmupContinuousRetryIntervalSeconds + 1),
+			}
+		}),
 		ginkgo.Entry("duplicate image", func(w *modelapi.ModelWarmup) {
 			w.Spec.ImagePreload.Images = append(w.Spec.ImagePreload.Images, w.Spec.ImagePreload.Images[0])
 		}),

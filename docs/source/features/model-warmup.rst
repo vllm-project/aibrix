@@ -67,12 +67,19 @@ both sides of the authorization boundary with:
    kubectl get namespace <namespace> --show-labels
    kubectl get nodes -L resource-pool.aibrix.ai/name,model.aibrix.ai/warmup-enabled
 
+Continuous aggregate status covers only the currently resolved and authorized
+set. If some explicit names are missing or unauthorized while other targets
+resolve, those names are excluded from ``desiredNodes`` and do not prevent
+``Ready``; this differs from Once, which reports them as failed targets. Verify
+explicit names and authorization labels when the reported desired count is
+lower than the configured list.
+
 For ``Continuous``, ``retryLimit`` still controls retries inside one Kubernetes
 Job. ``continuousRetryLimit`` controls the number of additional Jobs after a
 terminal failure, and ``continuousRetryIntervalSeconds`` controls the fixed
-delay between those attempts. Automatic retries stop after that budget is
-exhausted. Deleting the retained failed Job explicitly starts a new bounded
-retry cycle.
+delay between those attempts, from 1 second through 604800 seconds (7 days).
+Automatic retries stop after that budget is exhausted. Deleting the retained
+failed Job explicitly starts a new bounded retry cycle.
 
 Successful Continuous Jobs are retained as the per-Node coverage record and
 must not use ``ttlSecondsAfterFinished``. Deleting a retained successful Job
@@ -80,6 +87,9 @@ requests a replay. ``Ready`` means all current targets have succeeded;
 ``lastConvergedTime`` records the most recent transition into Ready, and
 ``completionTime`` remains unset. Pending, running, and failed target details
 remain bounded even when aggregate counters cover a larger target set.
+Each current target retains one Job and its completed Pod, so a 1,000-Node
+Continuous warmup can hold roughly 1,000 Jobs and 1,000 Pods and may consume
+namespace object or Pod quotas.
 
 ModelWarmup does not infer tolerations from the target Node. A Node with a
 ``NoSchedule`` or ``NoExecute`` taint remains subject to normal Kubernetes
@@ -248,3 +258,5 @@ action, selector, or lifecycle policy. Separate pipeline stages, arbitrary lifec
 rollout gating, autoscaler mutation, and workload-derived targets remain out of
 scope. Custom actions are finite Job work, not a general-purpose deployment or
 orchestration framework.
+Deleting and recreating a Continuous resource deletes its owned coverage
+ledger and warms every currently authorized target again.

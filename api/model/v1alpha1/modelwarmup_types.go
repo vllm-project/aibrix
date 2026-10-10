@@ -22,25 +22,26 @@ import (
 )
 
 const (
-	DefaultModelWarmupParallelism             int32 = 8
-	DefaultModelWarmupJobTimeoutSeconds       int64 = 1800
-	DefaultModelWarmupRetryLimit              int32 = 2
-	DefaultModelWarmupTTLSecondsAfterFinished int32 = 3600
-	DefaultModelWarmupContinuousRetryLimit    int32 = 2
-	DefaultModelWarmupContinuousRetryInterval int64 = 300
-	MaxModelWarmupContinuousRetryLimit        int32 = 10
-	MaxModelWarmupTargets                           = 1000
-	MaxModelWarmupTargetDetails                     = 256
-	MaxModelWarmupDiagnosticLength                  = 1024
-	MaxModelWarmupTargetEntries                     = 32
-	MaxModelWarmupImages                            = 32
-	MaxModelWarmupPullSecrets                       = 32
-	MaxModelWarmupCommandElements                   = 64
-	MaxModelWarmupArgElements                       = 64
-	MaxModelWarmupCustomInitContainers              = 32
-	MaxModelWarmupCustomContainers                  = 32
-	MaxModelWarmupCustomVolumes                     = 32
-	MaxModelWarmupCustomPullSecrets                 = 32
+	DefaultModelWarmupParallelism                int32 = 8
+	DefaultModelWarmupJobTimeoutSeconds          int64 = 1800
+	DefaultModelWarmupRetryLimit                 int32 = 2
+	DefaultModelWarmupTTLSecondsAfterFinished    int32 = 3600
+	DefaultModelWarmupContinuousRetryLimit       int32 = 2
+	DefaultModelWarmupContinuousRetryInterval    int64 = 300
+	MaxModelWarmupContinuousRetryLimit           int32 = 10
+	MaxModelWarmupContinuousRetryIntervalSeconds int64 = 604800
+	MaxModelWarmupTargets                              = 1000
+	MaxModelWarmupTargetDetails                        = 256
+	MaxModelWarmupDiagnosticLength                     = 1024
+	MaxModelWarmupTargetEntries                        = 32
+	MaxModelWarmupImages                               = 32
+	MaxModelWarmupPullSecrets                          = 32
+	MaxModelWarmupCommandElements                      = 64
+	MaxModelWarmupArgElements                          = 64
+	MaxModelWarmupCustomInitContainers                 = 32
+	MaxModelWarmupCustomContainers                     = 32
+	MaxModelWarmupCustomVolumes                        = 32
+	MaxModelWarmupCustomPullSecrets                    = 32
 )
 
 type ModelWarmupMode string
@@ -153,6 +154,7 @@ type ModelWarmupPolicies struct {
 	// failed Job attempts in Continuous mode.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=604800
 	ContinuousRetryIntervalSeconds *int64 `json:"continuousRetryIntervalSeconds,omitempty"`
 	// +optional
 	// +kubebuilder:validation:Minimum=1

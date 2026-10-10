@@ -182,15 +182,16 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	revision := revisionFor(warmup)
 	targets, missing, err := r.resolveTargets(ctx, warmup)
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("resolve targets for ModelWarmup %s: %w", req.NamespacedName, err)
 	}
 	klog.V(4).InfoS("resolved ModelWarmup targets", "modelWarmup", req.NamespacedName,
-		"revision", revision, "targets", len(targets), "missing", len(missing))
+		"mode", effectiveMode(warmup), "revision", revision, "targets", len(targets),
+		"missing", len(missing), "missingReasons", summarizeMissingReasons(missing))
 	var jobs batchv1.JobList
 	if err := r.List(ctx, &jobs, client.InNamespace(warmup.Namespace), client.MatchingLabels{
 		WarmupLabelKey: string(warmup.UID),
 	}); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("list owned Jobs for ModelWarmup %s: %w", req.NamespacedName, err)
 	}
 	if effectiveMode(warmup) == modelv1alpha1.ModelWarmupModeContinuous {
 		return r.reconcileContinuous(ctx, warmup, revision, targets, missing, jobs.Items)
@@ -202,6 +203,9 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			len(targets)+len(missing),
 			modelv1alpha1.MaxModelWarmupTargets,
 		)
+		klog.V(2).InfoS("ModelWarmup target limit exceeded", "modelWarmup", req.NamespacedName,
+			"mode", effectiveMode(warmup), "resolvedTargets", len(targets), "missingTargets", len(missing),
+			"limit", modelv1alpha1.MaxModelWarmupTargets)
 		return r.updateStatus(
 			ctx, warmup, revision, targets, missing, snapshot.jobsForStatus(nil), jobs.Items,
 			"TargetLimitExceeded", message,
@@ -210,7 +214,8 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	for i := range snapshot.StaleActiveJobs {
 		job := &snapshot.StaleActiveJobs[i]
 		if err := r.Delete(ctx, job); err != nil && !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("delete stale ModelWarmup Job %s/%s: %w",
+				job.Namespace, job.Name, err)
 		}
 		klog.V(3).InfoS("deleted stale ModelWarmup Job", "modelWarmup",
 			client.ObjectKeyFromObject(warmup), "job", job.Name,
@@ -229,7 +234,8 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 		job := r.jobForTarget(warmup, snapshot.Targets[node], revision, 0)
 		if err := ctrl.SetControllerReference(warmup, job, r.Scheme); err != nil {
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("set ModelWarmup owner on Job %s/%s: %w",
+				job.Namespace, job.Name, err)
 		}
 		if err := r.Create(ctx, job); err != nil {
 			if apierrors.IsAlreadyExists(err) {
@@ -276,6 +282,14 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 func withinTargetLimit(targets map[string]resolvedTarget, missing map[string]string) bool {
 	return len(targets)+len(missing) <= modelv1alpha1.MaxModelWarmupTargets
+}
+
+func summarizeMissingReasons(missing map[string]string) map[string]int {
+	result := make(map[string]int)
+	for _, reason := range missing {
+		result[reason]++
+	}
+	return result
 }
 
 type warmupPolicies struct {
@@ -705,8 +719,10 @@ func (r *ModelWarmupReconciler) updateStatus(
 	if modelWarmupStatusEqual(w.Status, desired.Status) {
 		return ctrl.Result{}, nil
 	}
+	logModelWarmupStatusChange(w, desired)
 	if err := r.Status().Update(ctx, desired); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("update status for ModelWarmup %s/%s: %w",
+			w.Namespace, w.Name, err)
 	}
 	desired.DeepCopyInto(w)
 	return ctrl.Result{}, nil
@@ -826,10 +842,43 @@ func (r *ModelWarmupReconciler) applyFinishedJobTTL(
 		}
 		job.Spec.TTLSecondsAfterFinished = ptr.To(ttl)
 		if err := r.Update(ctx, job); err != nil {
-			return err
+			return fmt.Errorf("set TTL on finished ModelWarmup Job %s/%s: %w", job.Namespace, job.Name, err)
 		}
+		klog.V(4).InfoS("set TTL on finished ModelWarmup Job", "modelWarmup",
+			client.ObjectKeyFromObject(warmup), "job", job.Name, "ttlSecondsAfterFinished", ttl)
 	}
 	return nil
+}
+
+func logModelWarmupStatusChange(current, desired *modelv1alpha1.ModelWarmup) {
+	reason := modelWarmupStatusReason(desired.Status.Conditions)
+	fields := []interface{}{
+		"modelWarmup", client.ObjectKeyFromObject(desired), "mode", effectiveMode(desired),
+		"previousPhase", current.Status.Phase, "phase", desired.Status.Phase,
+		"desiredNodes", desired.Status.DesiredNodes, "activeNodes", desired.Status.ActiveNodes,
+		"succeededNodes", desired.Status.SucceededNodes, "failedNodes", desired.Status.FailedNodes,
+		"omittedTargetDetails", desired.Status.OmittedTargetDetails, "reason", reason,
+	}
+	klog.V(3).InfoS("updating ModelWarmup status", fields...)
+	if desired.Status.Phase == modelv1alpha1.ModelWarmupFailed ||
+		desired.Status.Phase == modelv1alpha1.ModelWarmupDegraded {
+		klog.V(2).InfoS("ModelWarmup requires attention", fields...)
+	}
+}
+
+func modelWarmupStatusReason(conditions []metav1.Condition) string {
+	for _, conditionType := range []string{"Degraded", "Ready", "Complete", "Progressing"} {
+		if condition := meta.FindStatusCondition(conditions, conditionType); condition != nil &&
+			condition.Status == metav1.ConditionTrue {
+			return condition.Reason
+		}
+	}
+	for _, conditionType := range []string{"Ready", "Progressing", "Degraded", "Complete"} {
+		if condition := meta.FindStatusCondition(conditions, conditionType); condition != nil {
+			return condition.Reason
+		}
+	}
+	return ""
 }
 
 func preserveTargetTransition(item *modelv1alpha1.ModelWarmupTargetStatus, previous *metav1.Time,

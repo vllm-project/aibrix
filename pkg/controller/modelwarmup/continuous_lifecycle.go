@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -36,8 +37,10 @@ import (
 )
 
 type continuousCreateAction struct {
-	Target            resolvedTarget
-	Attempt           int32
+	Target  resolvedTarget
+	Attempt int32
+	// DeleteAfterCreate keeps the failed attempt as the durable retry ledger
+	// until its successor has been created successfully.
 	DeleteAfterCreate *batchv1.Job
 }
 
@@ -60,18 +63,28 @@ func (r *ModelWarmupReconciler) reconcileContinuous(
 	now := time.Now()
 	policies := effectiveWarmupPolicies(warmup)
 	plan := buildContinuousPlan(warmup, revision, targets, jobs, policies, now)
+	klog.V(4).InfoS("planned Continuous ModelWarmup reconciliation",
+		"modelWarmup", client.ObjectKeyFromObject(warmup), "revision", revision,
+		"targets", len(targets), "ownedJobs", len(jobs), "creates", len(plan.Create),
+		"deletes", len(plan.DeleteBeforeCreate), "retryAfter", plan.RetryAfter,
+		"targetLimitExceeded", plan.TargetLimitExceeded)
 	for i := range plan.DeleteBeforeCreate {
 		if err := r.deleteContinuousJob(ctx, &plan.DeleteBeforeCreate[i]); err != nil && !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("delete stale Continuous ModelWarmup Job %s/%s: %w",
+				plan.DeleteBeforeCreate[i].Namespace, plan.DeleteBeforeCreate[i].Name, err)
 		}
+		klog.V(3).InfoS("deleted stale Continuous ModelWarmup Job",
+			"modelWarmup", client.ObjectKeyFromObject(warmup), "job", plan.DeleteBeforeCreate[i].Name)
 	}
 
 	created := make([]*batchv1.Job, 0, len(plan.Create))
 	for _, action := range plan.Create {
 		job := r.jobForTarget(warmup, action.Target, revision, action.Attempt)
 		if err := ctrl.SetControllerReference(warmup, job, r.Scheme); err != nil {
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("set Continuous ModelWarmup owner on Job %s/%s: %w",
+				job.Namespace, job.Name, err)
 		}
+		createdNow := true
 		if err := r.Create(ctx, job); err != nil {
 			if !apierrors.IsAlreadyExists(err) {
 				return ctrl.Result{}, fmt.Errorf("create Continuous ModelWarmup Job %s/%s: %w", job.Namespace, job.Name, err)
@@ -81,17 +94,35 @@ func (r *ModelWarmupReconciler) reconcileContinuous(
 				return ctrl.Result{}, fmt.Errorf("diagnose existing Continuous ModelWarmup Job %s/%s: %w",
 					job.Namespace, job.Name, getErr)
 			}
+			if existing.DeletionTimestamp != nil {
+				return ctrl.Result{}, fmt.Errorf("job %s/%s is being deleted; retry after deletion completes",
+					existing.Namespace, existing.Name)
+			}
 			if !sameContinuousJobIdentity(existing, job, warmup) {
 				return ctrl.Result{}, fmt.Errorf("job %s/%s already exists with a different Continuous identity",
 					existing.Namespace, existing.Name)
 			}
 			job = existing
+			createdNow = false
 		}
 		created = append(created, job)
+		if createdNow {
+			klog.V(3).InfoS("created Continuous ModelWarmup Job",
+				"modelWarmup", client.ObjectKeyFromObject(warmup), "node", action.Target.NodeName,
+				"nodeUID", action.Target.NodeUID, "attempt", action.Attempt, "job", job.Name)
+		} else {
+			klog.V(4).InfoS("adopted existing Continuous ModelWarmup Job after create collision",
+				"modelWarmup", client.ObjectKeyFromObject(warmup), "node", action.Target.NodeName,
+				"attempt", action.Attempt, "job", job.Name)
+		}
 		if action.DeleteAfterCreate != nil {
 			if err := r.deleteContinuousJob(ctx, action.DeleteAfterCreate); err != nil && !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, err
+				return ctrl.Result{}, fmt.Errorf("delete predecessor Continuous ModelWarmup Job %s/%s: %w",
+					action.DeleteAfterCreate.Namespace, action.DeleteAfterCreate.Name, err)
 			}
+			klog.V(3).InfoS("deleted predecessor Continuous ModelWarmup Job after retry creation",
+				"modelWarmup", client.ObjectKeyFromObject(warmup), "job", action.DeleteAfterCreate.Name,
+				"nextJob", job.Name, "nextAttempt", action.Attempt)
 		}
 	}
 
@@ -371,8 +402,10 @@ func (r *ModelWarmupReconciler) updateContinuousStatus(
 	if modelWarmupStatusEqual(warmup.Status, desired.Status) {
 		return result, nil
 	}
+	logModelWarmupStatusChange(warmup, desired)
 	if err := r.Status().Update(ctx, desired); err != nil {
-		return result, err
+		return result, fmt.Errorf("update Continuous ModelWarmup status %s/%s: %w",
+			warmup.Namespace, warmup.Name, err)
 	}
 	desired.DeepCopyInto(warmup)
 	return result, nil

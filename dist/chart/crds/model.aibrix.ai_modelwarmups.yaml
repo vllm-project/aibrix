@@ -2261,6 +2261,7 @@ spec:
                 properties:
                   continuousRetryIntervalSeconds:
                     format: int64
+                    maximum: 604800
                     minimum: 1
                     type: integer
                   continuousRetryLimit:

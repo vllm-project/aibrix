@@ -380,6 +380,12 @@ func validateModelWarmupPolicies(mode modelapi.ModelWarmupMode, policies *modela
 			allErrs = append(allErrs, positivePolicyError(
 				"continuousRetryIntervalSeconds", *policies.ContinuousRetryIntervalSeconds,
 			))
+		case *policies.ContinuousRetryIntervalSeconds > modelapi.MaxModelWarmupContinuousRetryIntervalSeconds:
+			allErrs = append(allErrs, field.Invalid(
+				field.NewPath("spec", "policies", "continuousRetryIntervalSeconds"),
+				*policies.ContinuousRetryIntervalSeconds,
+				fmt.Sprintf("must be less than or equal to %d", modelapi.MaxModelWarmupContinuousRetryIntervalSeconds),
+			))
 		}
 	}
 	if continuous && policies.TTLSecondsAfterFinished != nil {
