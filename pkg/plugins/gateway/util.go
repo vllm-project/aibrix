@@ -28,6 +28,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -196,7 +197,7 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 	if input[0] == '"' {
 		var s string
 		if err := sonic.Unmarshal(input, &s); err != nil {
-			klog.ErrorS(err, "error to unmarshal responses input string", "requestID", requestID)
+			klog.ErrorS(nil, "error to unmarshal responses input string", "requestID", requestID, "reason", jsonParseReason(err))
 			return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "input", HeaderErrorRequestBodyProcessing, "true")
 		}
 		return s, nil
@@ -206,7 +207,7 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 	// contribute nothing to the routing key.
 	var items []contentItem
 	if err := sonic.Unmarshal(input, &items); err != nil {
-		klog.ErrorS(err, "error to unmarshal responses input array", "requestID", requestID)
+		klog.ErrorS(nil, "error to unmarshal responses input array", "requestID", requestID, "reason", jsonParseReason(err))
 		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' must be a string or an array of input items", "", "input", HeaderErrorRequestBodyProcessing, "true")
 	}
 	if len(items) == 0 {
@@ -234,7 +235,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 	case PathEmbeddings:
 		model, errRes = validateEmbeddingRequest(requestID, requestBody)
 	case PathImagesGenerations, PathVideoGenerations:
-		model, errRes = validateImageGenerationRequest(requestID, requestBody)
+		model, errRes = validateImageGenerationRequest(requestID, path, requestBody)
 	case PathRerank:
 		model, message, errRes = validateRerankRequest(requestID, requestBody)
 	case PathClassify:
@@ -258,7 +259,11 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		return
 	}
 
-	klog.V(4).InfoS("validateRequestBody", "requestID", requestID, "requestPath", requestPath, "model", model, "message", message, "stream", stream)
+	klog.V(4).InfoS("validateRequestBody", "requestID", requestID, "requestPath", requestPath, "model", model, "messageBytes", len(message), "stream", stream)
+	if v := klog.V(6); v.Enabled() {
+		text, truncated := truncateForLog([]byte(message))
+		v.InfoS("validateRequestBody message", "requestID", requestID, "message", text, "messageTruncated", truncated)
+	}
 	return
 }
 
@@ -270,7 +275,7 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 	// map[string]json.RawMessage unmarshal used only for stream-field detection.
 	var req chatReqMinimal
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
+		logRequestBodyParseFailure(requestID, requestPath, "error to unmarshal chat completions object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -305,7 +310,7 @@ func validateResponsesRequest(requestID string, requestBody []byte) (model, mess
 	// .include_usage requirement to enforce for TPM-limited users.
 	var req responsesReqMinimal
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		klog.ErrorS(err, "error to unmarshal responses object", "requestID", requestID, "requestBody", string(requestBody))
+		logRequestBodyParseFailure(requestID, PathResponses, "error to unmarshal responses object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -338,7 +343,7 @@ func validateCompletionRequest(requestID string, requestBody []byte) (model, mes
 		Stream bool            `json:"stream"`
 	}
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		klog.ErrorS(err, "error to unmarshal completions object", "requestID", requestID, "requestBody", string(requestBody))
+		logRequestBodyParseFailure(requestID, PathCompletions, "error to unmarshal completions object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -505,7 +510,7 @@ func validateEmbeddingRequest(requestID string, requestBody []byte) (model strin
 		if m, mmErrRes, matched := validateMultimodalEmbeddingRequest(requestID, requestBody); matched {
 			return m, mmErrRes
 		}
-		klog.ErrorS(err, "error to unmarshal embeddings object", "requestID", requestID, "requestBody", string(requestBody))
+		logRequestBodyParseFailure(requestID, PathEmbeddings, "error to unmarshal embeddings object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -530,10 +535,10 @@ func validateEmbeddingRequest(requestID string, requestBody []byte) (model strin
 
 // validateImageGenerationRequest parses and validates an image/video generation request body.
 // nolint:nakedret
-func validateImageGenerationRequest(requestID string, requestBody []byte) (model string, errRes *extProcPb.ProcessingResponse) {
+func validateImageGenerationRequest(requestID, requestPath string, requestBody []byte) (model string, errRes *extProcPb.ProcessingResponse) {
 	imageGenerationObj := openai.ImageGenerateParams{}
 	if err := sonic.Unmarshal(requestBody, &imageGenerationObj); err != nil {
-		klog.ErrorS(err, "error to unmarshal image generations object", "requestID", requestID, "requestBody", string(requestBody))
+		logRequestBodyParseFailure(requestID, requestPath, "error to unmarshal image generations object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -551,7 +556,7 @@ func validateRerankRequest(requestID string, requestBody []byte) (model, message
 	}
 	var req RerankRequest
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		klog.ErrorS(err, "error to unmarshal rerank object", "requestID", requestID)
+		logRequestBodyParseFailure(requestID, PathRerank, "error to unmarshal rerank object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -605,7 +610,11 @@ func validatePoolingRequest(requestID string, requestBody []byte) (model, messag
 func validateEngineNativeRequest(requestID, endpoint string, pooling bool, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
 	var req engineNativeReqMinimal
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		klog.ErrorS(err, "error to unmarshal "+endpoint+" object", "requestID", requestID, "requestBody", string(requestBody))
+		endpointPath := PathTokenize
+		if pooling {
+			endpointPath = PathPooling
+		}
+		logRequestBodyParseFailure(requestID, endpointPath, "error to unmarshal "+endpoint+" object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -637,7 +646,7 @@ func validateEngineNativeRequest(requestID, endpoint string, pooling bool, reque
 		if err := sonic.Unmarshal(req.Messages, &msgs); err != nil {
 			// Non-array messages on a messages-only body: no routing key, but the
 			// engine owns the schema error, so forward without one.
-			klog.ErrorS(err, "error to unmarshal "+endpoint+" messages", "requestID", requestID)
+			klog.ErrorS(nil, "error to unmarshal "+endpoint+" messages", "requestID", requestID, "reason", jsonParseReason(err))
 			break
 		}
 		message, errRes = parseChatMessages(requestID, msgs)
@@ -721,7 +730,7 @@ func validateClassifyRequest(requestID string, requestBody []byte) (model, messa
 	}
 	var req ClassifyRequest
 	if err := json.Unmarshal(requestBody, &req); err != nil {
-		klog.ErrorS(err, "error to unmarshal classify object", "requestID", requestID)
+		logRequestBodyParseFailure(requestID, PathClassify, "error to unmarshal classify object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -776,8 +785,7 @@ func validateDecisionsRequest(requestID string, requestBody []byte) (model, mess
 		Questions json.RawMessage `json:"questions"`
 	}
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		// The body can hold customer text or base64 images, so log its size, not its content.
-		klog.ErrorS(nil, "error to unmarshal decisions object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		logRequestBodyParseFailure(requestID, PathDecisions, "error to unmarshal decisions object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -823,8 +831,7 @@ func validateSystemOneRequest(requestID string, requestBody []byte) (model, mess
 		Questions json.RawMessage `json:"questions"`
 	}
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		// The body can hold customer text or base64 images, so log its size, not its content.
-		klog.ErrorS(nil, "error to unmarshal systemone object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		logRequestBodyParseFailure(requestID, PathSystemOne, "error to unmarshal systemone object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -864,6 +871,40 @@ func jsonParseReason(err error) string {
 		return withMessage.Message()
 	}
 	return "invalid JSON body"
+}
+
+// maxLoggedRequestBytes caps the request text the V(6) diagnostics write.
+const maxLoggedRequestBytes = 4096
+
+// logRequestBodyParseFailure logs a request body that did not parse. The body can hold
+// prompts, tool arguments or base64 images, so normal levels get its size and the
+// sanitized reason; the body itself is only written, capped, at V(6).
+func logRequestBodyParseFailure(requestID, endpoint, msg string, err error, requestBody []byte) {
+	klog.ErrorS(nil, msg, "requestID", requestID, "endpoint", endpoint, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+	// A multipart body sent to a JSON endpoint carries file contents and form values,
+	// which are not logged at any level.
+	if v := klog.V(6); v.Enabled() && !isMultipartBody(requestBody) {
+		text, truncated := truncateForLog(requestBody)
+		v.InfoS("request body parse failure details", "requestID", requestID, "requestBody", text, "requestBodyTruncated", truncated)
+	}
+}
+
+// isMultipartBody reports whether body opens with a multipart boundary delimiter.
+func isMultipartBody(body []byte) bool {
+	return bytes.HasPrefix(bytes.TrimLeft(body, "\r\n"), []byte("--"))
+}
+
+// truncateForLog returns at most maxLoggedRequestBytes of b, cut on a rune boundary, and
+// whether anything was cut.
+func truncateForLog(b []byte) (string, bool) {
+	if len(b) <= maxLoggedRequestBytes {
+		return string(b), false
+	}
+	cut := maxLoggedRequestBytes
+	for cut > 0 && !utf8.RuneStart(b[cut]) {
+		cut--
+	}
+	return string(b[:cut]), true
 }
 
 // decisionsInputText renders a /v1/decisions "input" value (a string, object, or array)
