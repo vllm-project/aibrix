@@ -295,23 +295,35 @@ func validateResponsesRequest(requestID string, requestBody []byte) (model, mess
 // validateCompletionRequest parses and validates a legacy completions request body.
 // nolint:nakedret
 func validateCompletionRequest(requestID string, requestBody []byte) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
-	// openai.CompletionsNewParams does not support json unmarshal for CompletionNewParamsPromptUnion in release v0.1.0-beta.10
-	// once supported, input request will be directly unmarshal into openai.CompletionsNewParams
-	type Completion struct {
-		Prompt string `json:"prompt"`
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
+	var req struct {
+		Prompt json.RawMessage `json:"prompt"`
+		Model  string          `json:"model"`
+		Stream bool            `json:"stream"`
 	}
-	completionObj := Completion{}
-	if err := sonic.Unmarshal(requestBody, &completionObj); err != nil {
-		klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		klog.ErrorS(err, "error to unmarshal completions object", "requestID", requestID, "requestBody", string(requestBody))
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
-	model = completionObj.Model
-	message = completionObj.Prompt
-	stream = completionObj.Stream
+	model = req.Model
+	message = completionPromptText(requestID, req.Prompt)
+	stream = req.Stream
 	return
+}
+
+// completionPromptText renders all four prompt shapes accepted by the OpenAI
+// completions API. String batches are joined for useful routing text; token
+// arrays retain their canonical JSON form because the gateway cannot decode
+// model-specific token IDs.
+func completionPromptText(requestID string, prompt json.RawMessage) string {
+	raw := bytes.TrimSpace(prompt)
+	if len(raw) > 0 && raw[0] == '[' {
+		var prompts []string
+		if err := sonic.Unmarshal(raw, &prompts); err == nil {
+			return strings.Join(prompts, " ")
+		}
+	}
+	return requestPromptText(requestID, raw)
 }
 
 // embeddingReqRaw is a fallback parse target for embeddings requests whose `input` uses
