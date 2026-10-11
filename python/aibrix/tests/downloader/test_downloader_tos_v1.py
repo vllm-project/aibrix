@@ -196,3 +196,37 @@ def test_tos_v1_part_size(mock_tos, tmp_path, env_part_size, override, expected)
         assert "part_size" not in fake_client.download_kwargs
     else:
         assert fake_client.download_kwargs["part_size"] == expected
+
+
+@pytest.mark.parametrize("populated", [False, True])
+@mock.patch(TOS_MODULE)
+def test_tos_v1_directory_source(mock_tos, tmp_path, populated):
+    client = _make_fake_tos_client_for_force_download_test()
+
+    def list_objects(bucket, prefix, delimiter=None):
+        # A delimiter listing may contain only common prefixes, with no objects.
+        assert prefix == ("models" if delimiter else "models/")
+        return types.SimpleNamespace(
+            contents=[types.SimpleNamespace(key="models/file.txt")]
+            if populated and not delimiter
+            else [],
+            common_prefixes=[types.SimpleNamespace(prefix="models/")]
+            if populated and delimiter
+            else [],
+        )
+
+    client.list_objects_type2 = list_objects
+    mock_tos.TosClientV2.return_value = client
+    uri = "tos://bucket/models"
+    downloader = TOSDownloaderV1(uri, model_name="m")
+    assert downloader._is_directory()
+
+    if populated:
+        downloader.download_model(local_path=str(tmp_path))
+        assert (tmp_path / "m" / "file.txt").read_bytes() == b"data"
+        assert client.download_calls == 1
+    else:
+        with pytest.raises(ModelNotFoundError) as exception:
+            downloader.download_model(local_path=str(tmp_path))
+        assert uri in str(exception.value)
+        assert client.download_calls == 0
