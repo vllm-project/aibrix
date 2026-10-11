@@ -1207,6 +1207,72 @@ func TestHandleRequestBody_LanguageRequestKeepsConfiguredResponseMode(t *testing
 	assert.Nil(t, resp.GetModeOverride())
 }
 
+// TestHandleRequestBody_MessagesAndAudioReachABackendPod is the request half of
+// the reserved routes for these endpoints: once Envoy hands their bodies to
+// ext_proc, the model has to come out of the right parser and select a pod. The
+// query-string variants matter because HTTP/2 :path carries the query.
+func TestHandleRequestBody_MessagesAndAudioReachABackendPod(t *testing.T) {
+	audioBody, audioContentType := buildMultipartForm(t, map[string]string{"model": "llama"})
+	messagesBody := []byte(`{"model":"llama","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
+
+	tests := []struct {
+		name        string
+		path        string
+		body        []byte
+		contentType string
+	}{
+		{"messages", PathMessages, messagesBody, "application/json"},
+		{"messages with query string", PathMessages + "?beta=true", messagesBody, "application/json"},
+		{"audio transcriptions", PathAudioTranscriptions, audioBody, audioContentType},
+		{"audio transcriptions with query string", PathAudioTranscriptions + "?foo=bar", audioBody, audioContentType},
+		{"audio translations", PathAudioTranslations, audioBody, audioContentType},
+		{"audio translations with query string", PathAudioTranslations + "?foo=bar", audioBody, audioContentType},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cache.InitForTest()
+			routingalgorithms.Init()
+
+			mockCache := &MockCache{Cache: cache.NewForTest()}
+			pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+			mockCache.On("HasModel", "llama").Return(true)
+			mockCache.On("ListPodsByModel", "llama").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+			mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "llama").Return(int64(1))
+			mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+				Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+			server := &Server{cache: mockCache}
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_RequestBody{
+					RequestBody: &extProcPb.HttpBody{Body: tt.body},
+				},
+			}
+
+			routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+			routingCtx.ReqPath = tt.path
+			routingCtx.ReqHeaders[contentTypeKey] = tt.contentType
+			routingCtx.ReqHeaders[methodKey] = http.MethodPost
+			routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(routingalgorithms.RouterLeastRequest)
+
+			resp, model, _, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+			require.NotNil(t, resp)
+			require.Nil(t, resp.GetImmediateResponse(), "the request must not be rejected")
+			assert.Equal(t, "llama", model)
+
+			var targetPod string
+			for _, h := range resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
+				if h.Header.Key == HeaderTargetPod {
+					targetPod = string(h.Header.RawValue)
+				}
+			}
+			assert.Equal(t, "1.2.3.4:8000", targetPod)
+		})
+	}
+}
+
 // registerTestRouter registers the shared TestRouterAlgorithm mock router so a
 // request can be routed with it. Idempotent across tests.
 func registerTestRouter(mockRouter *mockRouter) {

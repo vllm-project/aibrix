@@ -221,6 +221,31 @@ func TestGatewayPluginManifest_SharedRouteKeepsStreamingAndDropsVideos(t *testin
 	assert.Equal(t, "Streamed", mode.Response.Body, "SSE completions must keep being forwarded chunk by chunk")
 }
 
+// TestGatewayPluginManifest_SharedRouteServesMessagesAndAudio: the plugin can only
+// read the model out of a body it receives, and it only receives requests that
+// matched a reserved route first. The model routes alone cannot be reached, since
+// they match on the model header ext_proc writes.
+func TestGatewayPluginManifest_SharedRouteServesMessagesAndAudio(t *testing.T) {
+	manifest := loadGatewayPluginManifest(t)
+	matches := manifest.pathMatches(t, "reserved-router")
+
+	for _, path := range []string{
+		PathChatCompletions,
+		PathResponses,
+		PathMessages,
+		PathAudioTranscriptions,
+		PathAudioTranslations,
+	} {
+		assert.Contains(t, matches, manifestPathMatch{Type: "PathPrefix", Value: path},
+			"%s requests would never reach ext_proc", path)
+	}
+
+	// The JSON and multipart parsers both need the whole request body.
+	mode := manifest.policyFor(t, "reserved-router").Spec.ExtProc[0].ProcessingMode
+	require.NotNil(t, mode.Request)
+	assert.Equal(t, "Buffered", mode.Request.Body)
+}
+
 // TestGatewayPluginManifest_NoUnsupportedModeOverrideField guards against the
 // tempting one-line fix: EnvoyExtensionPolicy in Envoy Gateway v1.2.8 has no
 // allowModeOverride field, so setting it would be dropped by the API server and

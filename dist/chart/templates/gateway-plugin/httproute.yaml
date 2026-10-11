@@ -21,6 +21,9 @@ spec:
             value: /v1/responses
         - path:
             type: PathPrefix
+            value: /v1/messages
+        - path:
+            type: PathPrefix
             value: /v1/completions
         - path:
             type: PathPrefix
@@ -31,6 +34,12 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/video/generations
+        - path:
+            type: PathPrefix
+            value: /v1/audio/transcriptions
+        - path:
+            type: PathPrefix
+            value: /v1/audio/translations
         - path:
             type: PathPrefix
             value: /v1/rerank
