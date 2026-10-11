@@ -137,6 +137,11 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		routingCtx.Algorithm = routingAlgorithm
 	}
 
+	if err := validateRoutingStrategyForPath(requestPath, routingAlgorithm); err != nil {
+		klog.ErrorS(err, "unsupported routing strategy for endpoint", "requestID", requestID, "requestPath", requestPath, "routingStrategy", routingAlgorithm)
+		return buildErrorResponseWithType(envoyTypePb.StatusCode_BadRequest, err.Error(), ErrorTypeInvalidRequest, ErrorCodeUnsupportedRoutingStrategy, "", HeaderErrorRouting, "true"), model, stream, term
+	}
+
 	// The tier the caller declared is mapped onto the body that is forwarded
 	// upstream. This runs before a pod is chosen because the PD router builds the
 	// prefill leg out of the routing context while it routes (see

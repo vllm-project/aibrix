@@ -18,8 +18,10 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -1395,6 +1397,195 @@ func TestHandleRequestBody_LockedRoutingStrategy(t *testing.T) {
 			}
 			mockCache.AssertExpectations(t)
 			mockRouter.AssertExpectations(t)
+		})
+	}
+}
+
+func immediateHeaderFromResponse(resp *extProcPb.ProcessingResponse, key string) string {
+	if imm := resp.GetImmediateResponse(); imm != nil && imm.GetHeaders() != nil {
+		for _, h := range imm.GetHeaders().GetSetHeaders() {
+			if h.Header != nil && strings.EqualFold(h.Header.Key, key) {
+				return string(h.Header.RawValue)
+			}
+		}
+	}
+	return ""
+}
+
+func TestHandleRequestBody_RejectPDRouting(t *testing.T) {
+	mockPDRouter := new(mockRouter)
+	routingalgorithms.Register(routingalgorithms.RouterPD, func() (types.Router, error) {
+		return mockPDRouter, nil
+	})
+	routingalgorithms.Init()
+
+	tests := []struct {
+		name          string
+		reqPath       string
+		requestBody   string
+		headerValue   string
+		configProfile string
+		profileJSON   string
+		wantReject    bool
+		wantErrCode   string
+		wantErrType   string
+		wantErrMsg    string
+	}{
+		{
+			name:        "responses with pd header is rejected",
+			reqPath:     PathResponses,
+			requestBody: `{"model":"test-model","input":"test"}`,
+			headerValue: "pd",
+			wantReject:  true,
+			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
+			wantErrType: ErrorTypeInvalidRequest,
+			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/responses'",
+		},
+		{
+			name:        "messages with pd header is rejected",
+			reqPath:     PathMessages,
+			requestBody: `{"model":"test-model","messages":[{"role":"user","content":"test"}]}`,
+			headerValue: "pd",
+			wantReject:  true,
+			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
+			wantErrType: ErrorTypeInvalidRequest,
+			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/messages'",
+		},
+		{
+			name:        "embeddings with pd header is rejected",
+			reqPath:     PathEmbeddings,
+			requestBody: `{"model":"test-model","input":"test"}`,
+			headerValue: "pd",
+			wantReject:  true,
+			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
+			wantErrType: ErrorTypeInvalidRequest,
+			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/embeddings'",
+		},
+		{
+			name:        "responses with query string and pd header is rejected",
+			reqPath:     PathResponses + "?stream=true",
+			requestBody: `{"model":"test-model","input":"test"}`,
+			headerValue: "pd",
+			wantReject:  true,
+			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
+			wantErrType: ErrorTypeInvalidRequest,
+			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/responses'",
+		},
+		{
+			name:          "embeddings with pd from model profile is rejected",
+			reqPath:       PathEmbeddings,
+			requestBody:   `{"model":"test-model","input":"test"}`,
+			configProfile: "pd-profile",
+			profileJSON:   `{"defaultProfile":"default","profiles":{"pd-profile":{"routingStrategy":"pd"},"default":{"routingStrategy":"test-router"}}}`,
+			wantReject:    true,
+			wantErrCode:   ErrorCodeUnsupportedRoutingStrategy,
+			wantErrType:   ErrorTypeInvalidRequest,
+			wantErrMsg:    "routing strategy 'pd' is not supported for endpoint '/v1/embeddings'",
+		},
+		{
+			name:        "rerank with locked pd profile is rejected",
+			reqPath:     PathRerank,
+			requestBody: `{"model":"test-model","query":"q","documents":["d1"]}`,
+			headerValue: "test-router", // locked profile should take precedence
+			profileJSON: `{"lockedRoutingStrategy":"pd","defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"}}}`,
+			wantReject:  true,
+			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
+			wantErrType: ErrorTypeInvalidRequest,
+			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/rerank'",
+		},
+		{
+			name:        "chat completions with pd header is accepted",
+			reqPath:     PathChatCompletions,
+			requestBody: `{"model":"test-model","messages":[{"role":"user","content":"test"}]}`,
+			headerValue: "pd",
+			wantReject:  false,
+		},
+		{
+			name:        "completions with pd header is accepted",
+			reqPath:     PathCompletions,
+			requestBody: `{"model":"test-model","prompt":"test"}`,
+			headerValue: "pd",
+			wantReject:  false,
+		},
+		{
+			name:        "responses with non-pd test-router is accepted",
+			reqPath:     PathResponses,
+			requestBody: `{"model":"test-model","input":"test"}`,
+			headerValue: "test-router",
+			wantReject:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockCache := &MockCache{Cache: cache.NewForTest()}
+			mockRouter := new(mockRouter)
+			registerTestRouter(mockRouter)
+			routingalgorithms.Register(routingalgorithms.RouterPD, func() (types.Router, error) {
+				return mockRouter, nil
+			})
+			routingalgorithms.Init()
+
+			profileJSON := tt.profileJSON
+			if profileJSON == "" {
+				profileJSON = `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"}}}`
+			}
+			podList := &utils.PodArray{Pods: configProfilePods(profileJSON)}
+
+			mockCache.On("HasModel", "test-model").Return(true)
+			mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+			mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+				Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+			if !tt.wantReject {
+				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1)).Maybe()
+				mockRouter.On("Route", mock.Anything, mock.Anything).Return("1.2.3.4:8000", nil).Maybe()
+			}
+
+			server := &Server{cache: mockCache}
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_RequestBody{
+					RequestBody: &extProcPb.HttpBody{
+						Body: []byte(tt.requestBody),
+					},
+				},
+			}
+
+			routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+			routingCtx.ReqPath = tt.reqPath
+			if tt.headerValue != "" {
+				routingCtx.ReqHeaders[HeaderRoutingStrategy] = tt.headerValue
+			}
+			routingCtx.ReqConfigProfile = tt.configProfile
+
+			resp, _, _, term := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+			require.NotNil(t, resp)
+			if tt.wantReject {
+				imm := resp.GetImmediateResponse()
+				require.NotNil(t, imm, "rejected request must return an immediate response")
+				assert.Equal(t, envoyTypePb.StatusCode_BadRequest, imm.GetStatus().GetCode())
+				assert.Equal(t, int64(0), term)
+
+				var errResp map[string]map[string]interface{}
+				require.NoError(t, json.Unmarshal([]byte(imm.GetBody()), &errResp))
+				errObj, ok := errResp["error"]
+				require.True(t, ok)
+				assert.Equal(t, tt.wantErrCode, errObj["code"])
+				assert.Equal(t, tt.wantErrType, errObj["type"])
+				assert.Equal(t, tt.wantErrMsg, errObj["message"])
+
+				assert.Equal(t, "true", immediateHeaderFromResponse(resp, HeaderErrorRouting))
+
+				mockRouter.AssertNotCalled(t, "Route", mock.Anything, mock.Anything)
+				mockCache.AssertNotCalled(t, "AddRequestCount", mock.Anything, mock.Anything, mock.Anything)
+			} else {
+				if resp.GetImmediateResponse() != nil {
+					assert.NotEqual(t, envoyTypePb.StatusCode_BadRequest, resp.GetImmediateResponse().GetStatus().GetCode(),
+						"accepted request must not be rejected with 400: %s", resp.GetImmediateResponse().GetBody())
+				}
+			}
 		})
 	}
 }

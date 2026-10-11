@@ -31,6 +31,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"go.opentelemetry.io/otel/attribute"
@@ -2432,6 +2433,182 @@ func TestParseMultipartFormData_IgnoresStreamForVideoPaths(t *testing.T) {
 			assert.Nil(t, errRes)
 			assert.Equal(t, "test-model", model)
 			assert.Equal(t, tt.wantStream, stream)
+		})
+	}
+}
+
+func TestValidateRoutingStrategyForPath(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		strategy  types.RoutingAlgorithm
+		wantErr   bool
+		errString string
+	}{
+		{
+			name:     "chat completions with pd is supported",
+			path:     PathChatCompletions,
+			strategy: routing.RouterPD,
+			wantErr:  false,
+		},
+		{
+			name:     "chat completions with query string and pd is supported",
+			path:     PathChatCompletions + "?stream=true",
+			strategy: routing.RouterPD,
+			wantErr:  false,
+		},
+		{
+			name:     "completions with pd is supported",
+			path:     PathCompletions,
+			strategy: routing.RouterPD,
+			wantErr:  false,
+		},
+		{
+			name:     "completions with query string and pd is supported",
+			path:     PathCompletions + "?max_tokens=100",
+			strategy: routing.RouterPD,
+			wantErr:  false,
+		},
+		{
+			name:     "multi-strategy resolving to pd on chat completions is supported",
+			path:     PathChatCompletions,
+			strategy: types.RoutingAlgorithm("pd:1,least-request:1"),
+			wantErr:  false,
+		},
+		{
+			name:      "responses with pd is rejected",
+			path:      PathResponses,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/responses'",
+		},
+		{
+			name:      "messages with pd is rejected",
+			path:      PathMessages,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/messages'",
+		},
+		{
+			name:      "embeddings with pd is rejected",
+			path:      PathEmbeddings,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/embeddings'",
+		},
+		{
+			name:      "score endpoint with pd is rejected",
+			path:      "/v1/score",
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/score'",
+		},
+		{
+			name:      "score endpoint with query string and pd is rejected",
+			path:      "/v1/score?stream=true",
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/score'",
+		},
+		{
+			name:      "rerank with pd is rejected",
+			path:      PathRerank,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/rerank'",
+		},
+		{
+			name:      "classify with pd is rejected",
+			path:      PathClassify,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/classify'",
+		},
+		{
+			name:      "decisions with pd is rejected",
+			path:      PathDecisions,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/decisions'",
+		},
+		{
+			name:      "systemone with pd is rejected",
+			path:      PathSystemOne,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/systemone'",
+		},
+		{
+			name:      "images generations with pd is rejected",
+			path:      PathImagesGenerations,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/images/generations'",
+		},
+		{
+			name:      "videos with pd is rejected",
+			path:      PathVideos,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/videos'",
+		},
+		{
+			name:      "audio transcriptions with pd is rejected",
+			path:      PathAudioTranscriptions,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/audio/transcriptions'",
+		},
+		{
+			name:      "tokenize with pd is rejected",
+			path:      PathTokenize,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/tokenize'",
+		},
+		{
+			name:      "pooling with pd is rejected",
+			path:      PathPooling,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/pooling'",
+		},
+		{
+			name:      "multi-strategy resolving to pd on score endpoint is rejected",
+			path:      "/v1/score",
+			strategy:  types.RoutingAlgorithm("pd:1,least-request:1"),
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/score'",
+		},
+		{
+			name:     "non-pd strategy least-request on score is accepted",
+			path:     "/v1/score",
+			strategy: routing.RouterLeastRequest,
+			wantErr:  false,
+		},
+		{
+			name:     "non-pd strategy prefix-cache on embeddings is accepted",
+			path:     PathEmbeddings,
+			strategy: types.RoutingAlgorithm("prefix-cache"),
+			wantErr:  false,
+		},
+		{
+			name:     "empty strategy is accepted",
+			path:     PathEmbeddings,
+			strategy: "",
+			wantErr:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateRoutingStrategyForPath(tt.path, tt.strategy)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Equal(t, tt.errString, err.Error())
+			} else {
+				assert.NoError(t, err)
+			}
 		})
 	}
 }

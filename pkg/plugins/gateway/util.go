@@ -659,6 +659,30 @@ func isMultipartFormPath(requestPath string) bool {
 	}
 }
 
+// validateRoutingStrategyForPath checks whether strategy is supported for requestPath.
+// The prefill-decode (PD) disaggregated router mutates generation-specific fields
+// and is initially supported only on generation endpoints (/v1/chat/completions and
+// /v1/completions). Rejecting unsupported endpoint combinations protects non-generation
+// APIs from invalid request mutations and unexpected routing behavior.
+func validateRoutingStrategyForPath(requestPath string, strategy types.RoutingAlgorithm) error {
+	resolvedStrategy := string(strategy)
+	if resolvedExclusive, isExclusive := routing.ResolveExclusiveStrategy(string(strategy)); isExclusive {
+		resolvedStrategy = resolvedExclusive
+	}
+
+	if resolvedStrategy == string(routing.RouterPD) {
+		cleanPath := pathWithoutQuery(requestPath)
+		switch cleanPath {
+		case PathChatCompletions, PathCompletions:
+			return nil
+		default:
+			return fmt.Errorf("routing strategy '%s' is not supported for endpoint '%s'", routing.RouterPD, cleanPath)
+		}
+	}
+
+	return nil
+}
+
 // validateClassifyRequest validates a classify request and returns the model and message.
 // nolint:nakedret
 func validateClassifyRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
