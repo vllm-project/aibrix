@@ -123,6 +123,35 @@ spec:
                 maximum: 1
                 minimum: 1
                 type: integer
+              residencyPolicy:
+                properties:
+                  sleepPolicy:
+                    properties:
+                      mode:
+                        enum:
+                        - PoolDefault
+                        - Never
+                        type: string
+                    required:
+                    - mode
+                    type: object
+                  wakePolicy:
+                    properties:
+                      mode:
+                        enum:
+                        - OnDemand
+                        - EnsureAwake
+                        type: string
+                    required:
+                    - mode
+                    type: object
+                type: object
+                x-kubernetes-validations:
+                - fieldPath: .wakePolicy
+                  message: EnsureAwake requires sleepPolicy.mode Never to prevent
+                    sleep/wake oscillation
+                  rule: '!has(self.wakePolicy) || self.wakePolicy.mode != ''EnsureAwake''
+                    || (has(self.sleepPolicy) && self.sleepPolicy.mode == ''Never'')'
             required:
             - artifactURL
             - podSelector

@@ -565,7 +565,7 @@ func (r *ModelClaimReconciler) reconcilePoolIdleSleep(
 			continue
 		}
 		claim := claimForRuntimeSnapshot(claims, model)
-		if claim == nil || !isVLLMModel(claim) {
+		if claim == nil || !isVLLMModel(claim) || neverSleeps(claim) {
 			continue
 		}
 		idleSince := activity.LastActive
@@ -627,6 +627,9 @@ func (r *ModelClaimReconciler) putEngineToSleep(
 	modelName, operationID string,
 	readings *runtimeReadings,
 ) error {
+	if neverSleeps(claim) {
+		return fmt.Errorf("sleepPolicy Never keeps model %s awake", claim.Name)
+	}
 	if err := r.annotateWarmPodWithState(ctx, claim, pod, 0, constants.ModelClaimRoutingStateSleeping, ""); err != nil {
 		return fmt.Errorf("take the route back: %w", err)
 	}
