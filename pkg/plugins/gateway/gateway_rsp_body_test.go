@@ -149,6 +149,11 @@ func TestIsLanguageRequest(t *testing.T) {
 			want:        true,
 		},
 		{
+			name:        "score is language",
+			requestPath: "/v1/score",
+			want:        true,
+		},
+		{
 			name:        "empty path is language",
 			requestPath: "",
 			want:        true,
@@ -305,6 +310,66 @@ func TestProcessLanguageResponse_DecisionsResponse(t *testing.T) {
 	assert.Equal(t, int64(42), promptTokens)
 	assert.Equal(t, int64(0), completionTokens)
 	assert.Equal(t, int64(42), totalTokens)
+}
+
+// TestProcessLanguageResponse_ScoreResponse locks in that SGLang's /v1/score body needs no
+// special handling: it carries "model" and an optional usage block, so it is metered like
+// any language response, and the nil response leaves the body, score matrices included,
+// to reach the client as the engine sent it.
+func TestProcessLanguageResponse_ScoreResponse(t *testing.T) {
+	tests := []struct {
+		name                      string
+		chunks                    []string
+		prompt, completion, total int64
+	}{
+		{
+			name:   "pointwise",
+			chunks: []string{`{"scores": [[0.91, 0.09], [0.12, 0.88]], "model": "scorer", "usage": {"prompt_tokens": 30, "completion_tokens": 0, "total_tokens": 30}, "object": "scoring"}`},
+			prompt: 30, total: 30,
+		},
+		{
+			name:   "setwise with pooled hidden states",
+			chunks: []string{`{"scores": [[[0.7, 0.3], [0.4, 0.6]], [[0.2, 0.8]]], "pooled_hidden_states": [[[0.1, 0.2], null], [[0.3, 0.4]]], "model": "scorer", "usage": {"prompt_tokens": 51, "completion_tokens": 0, "total_tokens": 51}, "object": "scoring"}`},
+			prompt: 51, total: 51,
+		},
+		{
+			name:   "split across chunks",
+			chunks: []string{`{"scores": [[0.5, 0.5]], "model": "sco`, `rer", "usage": {"prompt_tokens": 8, "total_tokens": 8}}`},
+			prompt: 8, total: 8,
+		},
+		{
+			name:   "no usage",
+			chunks: []string{`{"scores": [[1.0]], "model": "scorer", "object": "scoring"}`},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requestID := "test-score-" + tt.name + "-" + time.Now().Format("150405.000")
+
+			var res *extProcPb.ProcessingResponse
+			var complete bool
+			var prompt, completion, total int64
+			for i, chunk := range tt.chunks {
+				req := &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        []byte(chunk),
+						EndOfStream: i == len(tt.chunks)-1,
+					},
+				}
+				res, complete, prompt, completion, total = processLanguageResponse(requestID, req)
+				if i < len(tt.chunks)-1 {
+					assert.Nil(t, res.GetResponseBody().GetResponse().GetBodyMutation(), "a partial chunk must pass through unchanged")
+				}
+			}
+
+			assert.False(t, complete)
+			assert.Nil(t, res, "a nil response forwards the engine's body untouched")
+			assert.Equal(t, tt.prompt, prompt)
+			assert.Equal(t, tt.completion, completion)
+			assert.Equal(t, tt.total, total)
+		})
+	}
 }
 
 // systemOneResponseBody is SGLang's /v1/systemone body: "model" and a usage block of
@@ -502,6 +567,16 @@ func TestProcessLanguageResponse_UpstreamErrorNormalization(t *testing.T) {
 			)},
 			wantCode:  envoyTypePb.StatusCode_BadRequest,
 			wantMsg:   "max_new_tokens must be at least 0, got -1.",
+			wantType:  "BadRequestError",
+			wantParam: sentinelNull,
+		},
+		{
+			name: "score error passthrough",
+			chunks: [][]byte{[]byte(
+				`{"object": "error", "message": "label_token_ids must not be empty", "type": "BadRequestError", "param": null, "code": 400}`,
+			)},
+			wantCode:  envoyTypePb.StatusCode_BadRequest,
+			wantMsg:   "label_token_ids must not be empty",
 			wantType:  "BadRequestError",
 			wantParam: sentinelNull,
 		},

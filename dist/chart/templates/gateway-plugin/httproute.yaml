@@ -54,6 +54,9 @@ spec:
             value: /v1/systemone
         - path:
             type: PathPrefix
+            value: /v1/score
+        - path:
+            type: PathPrefix
             value: /tokenize
         - path:
             type: PathPrefix

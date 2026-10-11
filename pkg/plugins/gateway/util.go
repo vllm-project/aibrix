@@ -243,6 +243,8 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		model, message, errRes = validateDecisionsRequest(requestID, requestBody)
 	case PathSystemOne:
 		model, message, errRes = validateSystemOneRequest(requestID, requestBody)
+	case PathScore:
+		model, message, errRes = validateScoreRequest(requestID, requestBody)
 	case PathTokenize:
 		model, message, errRes = validateTokenizeRequest(requestID, requestBody)
 	case PathPooling:
@@ -853,6 +855,88 @@ func validateSystemOneRequest(requestID string, requestBody []byte) (model, mess
 
 	model, message = req.Model, text
 	return
+}
+
+// validateScoreRequest parses and validates an SGLang /v1/score request body. Only what the
+// gateway itself needs is checked: a JSON object with a non-empty "model" to route on, a
+// non-empty "items" to score, and no streaming, since the response is a single JSON body.
+// The scoring options (label_token_ids, apply_softmax, item_first, score_extraction_token,
+// ...) are SGLang's to validate and are forwarded as sent.
+// nolint:nakedret
+func validateScoreRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	if trimmed := bytes.TrimSpace(requestBody); len(trimmed) == 0 || trimmed[0] != '{' {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	var req struct {
+		Model  string          `json:"model"`
+		Query  json.RawMessage `json:"query"`
+		Items  json.RawMessage `json:"items"`
+		Stream json.RawMessage `json:"stream"`
+	}
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		// The body can hold customer text, so log its size, not its content.
+		klog.ErrorS(nil, "error to unmarshal score object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	// SGLang falls back to a default model, but the gateway selects pods by it.
+	if strings.TrimSpace(req.Model) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	items := bytes.TrimSpace(req.Items)
+	switch string(items) {
+	case "", jsonNull, `""`, "[]":
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'items' is a required property and cannot be empty", "", "items", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if len(req.Stream) > 0 {
+		var streamBool bool
+		if err := sonic.Unmarshal(req.Stream, &streamBool); err != nil || streamBool {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for score", "", "stream", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+	}
+
+	model, message = req.Model, scoreRoutingText(req.Query, items)
+	return
+}
+
+// scoreRoutingText picks the text prefix-cache-aware routing should see for a score request:
+// the query when it is non-blank text, otherwise the first item when items are text. Token-ID
+// queries and items give no routing text, because stringified ids would not share a prefix
+// with the same text sent as a string.
+func scoreRoutingText(query, items json.RawMessage) string {
+	if text, ok := jsonString(query); ok && strings.TrimSpace(text) != "" {
+		return text
+	}
+	if text, ok := jsonString(items); ok {
+		return text
+	}
+	var list []json.RawMessage
+	if items[0] == '[' && sonic.Unmarshal(items, &list) == nil && len(list) > 0 {
+		if text, ok := jsonString(list[0]); ok {
+			return text
+		}
+	}
+	return ""
+}
+
+// jsonString returns value as a Go string when it is a JSON string.
+func jsonString(value json.RawMessage) (string, bool) {
+	value = bytes.TrimSpace(value)
+	if len(value) == 0 || value[0] != '"' {
+		return "", false
+	}
+	var text string
+	if err := sonic.Unmarshal(value, &text); err != nil {
+		return "", false
+	}
+	return text, true
 }
 
 // jsonParseReason returns why sonic rejected a body without the excerpt of the body that its

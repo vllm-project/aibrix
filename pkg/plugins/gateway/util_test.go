@@ -2677,3 +2677,174 @@ func TestValidateRoutingStrategyForPath(t *testing.T) {
 		})
 	}
 }
+
+func Test_ValidateRequestBody_Score(t *testing.T) {
+	testCases := []struct {
+		message     string
+		requestPath string // defaults to PathScore
+		requestBody string
+		messages    string
+		statusCode  envoyTypePb.StatusCode
+		param       string
+	}{
+		{
+			message:     "/v1/score pointwise routes on the query",
+			requestBody: `{"model": "scorer", "query": "Is this relevant?", "items": ["doc a", "doc b"], "label_token_ids": [9454, 2753]}`,
+			messages:    "Is this relevant?",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score setwise fields are forwarded, not inspected",
+			requestBody: `{"model": "scorer", "query": "rank these", "items": ["a<sep>b<sep>"], "score_extraction_token": "<sep>", "return_pooled_hidden_states": true, "item_first": false, "apply_softmax": true}`,
+			messages:    "rank these",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score unknown fields are accepted",
+			requestBody: `{"model": "scorer", "query": "q", "items": "one item", "x_future_option": {"k": 1}}`,
+			messages:    "q",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score without a query routes on the first item",
+			requestBody: `{"model": "scorer", "items": ["first item", "second item"]}`,
+			messages:    "first item",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score a blank query falls back to the first item",
+			requestBody: `{"model": "scorer", "query": "  ", "items": ["first item"]}`,
+			messages:    "first item",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score a single string item",
+			requestBody: `{"model": "scorer", "items": "only item"}`,
+			messages:    "only item",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score token-id query and items give no routing text",
+			requestBody: `{"model": "scorer", "query": [101, 2054], "items": [[2023, 2003], [2008]]}`,
+			messages:    "",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score text query with token-id items routes on the query",
+			requestBody: `{"model": "scorer", "query": "q", "items": [[2023, 2003]]}`,
+			messages:    "q",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score stream false is accepted",
+			requestBody: `{"model": "scorer", "items": ["a"], "stream": false}`,
+			messages:    "a",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score query string does not break path matching",
+			requestPath: PathScore + "?api-version=1",
+			requestBody: `{"model": "scorer", "query": "q", "items": ["a"]}`,
+			messages:    "q",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score missing model",
+			requestBody: `{"query": "q", "items": ["a"]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/score blank model",
+			requestBody: `{"model": " ", "query": "q", "items": ["a"]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/score non-string model",
+			requestBody: `{"model": 7, "items": ["a"]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/score missing items",
+			requestBody: `{"model": "scorer", "query": "q"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items",
+		},
+		{
+			message:     "/v1/score null items",
+			requestBody: `{"model": "scorer", "items": null}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items",
+		},
+		{
+			message:     "/v1/score empty items array",
+			requestBody: `{"model": "scorer", "items": []}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items",
+		},
+		{
+			message:     "/v1/score empty items string",
+			requestBody: `{"model": "scorer", "items": ""}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items",
+		},
+		{
+			message:     "/v1/score stream true is rejected",
+			requestBody: `{"model": "scorer", "items": ["a"], "stream": true}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "stream",
+		},
+		{
+			message:     "/v1/score malformed JSON",
+			requestBody: `{"model": "scorer", "items": ["a"]`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/score array root",
+			requestBody: `[{"model": "scorer", "items": ["a"]}]`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/score null root",
+			requestBody: `null`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.message, func(t *testing.T) {
+			requestPath := tt.requestPath
+			if requestPath == "" {
+				requestPath = PathScore
+			}
+			model, messages, prefixText, stream, errRes := validateRequestBody("test-request-id", requestPath, []byte(tt.requestBody), utils.User{})
+
+			// Score never streams and never carries a separate prefix text.
+			assert.False(t, stream)
+			assert.Empty(t, prefixText)
+
+			if tt.statusCode == envoyTypePb.StatusCode_OK {
+				assert.Nil(t, errRes)
+				assert.Equal(t, "scorer", model)
+				assert.Equal(t, tt.messages, messages)
+				return
+			}
+
+			if !assert.NotNil(t, errRes) {
+				return
+			}
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, model)
+			assert.Empty(t, messages)
+
+			var errResponse map[string]any
+			require.NoError(t, sonic.Unmarshal([]byte(errRes.GetImmediateResponse().GetBody()), &errResponse))
+			errObj, ok := errResponse["error"].(map[string]any)
+			require.True(t, ok, "response should have an 'error' object")
+			if tt.param != "" {
+				assert.Equal(t, tt.param, errObj["param"])
+			}
+		})
+	}
+}

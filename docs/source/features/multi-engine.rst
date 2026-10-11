@@ -459,6 +459,43 @@ The same engine caveat applies: a request for a model served by another engine i
 fails at the pod. SGLang also serves the route only for models with a Jinja chat template; its
 decision-models documentation lists what it refuses.
 
+SGLang Score API
+----------------
+
+SGLang serves ``POST /v1/score``, which scores items against a query without generating text:
+label-token probabilities for a causal LM, or class logits for a sequence-classification model.
+The gateway routes it to the pods of the requested model, like the other model endpoints:
+
+.. code-block:: bash
+
+    curl http://${GATEWAY}/v1/score \
+      -H "Authorization: Bearer ${API_KEY}" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "model": "qwen3-reranker",
+        "query": "Is this passage about billing?",
+        "items": ["The invoice was charged twice.", "The app crashes on start."],
+        "label_token_ids": [9454, 2753],
+        "apply_softmax": true
+      }'
+
+What differs from the other endpoints:
+
+- ``model`` is required. SGLang falls back to a default model, but the gateway needs the name to
+  select a pod, so a request without one is rejected with ``400``.
+- ``items`` is required and cannot be empty. It may be a string, an array of strings or an array
+  of token-ID arrays. ``query`` is optional and takes text or token IDs.
+- Every other field, such as ``label_token_ids``, ``apply_softmax``, ``item_first`` and the
+  setwise ``score_extraction_token``, is forwarded as sent and validated by SGLang.
+- The routing text for prefix-cache-aware routing is the ``query`` when it is text, otherwise the
+  first item when the items are text. Token-ID input gives no routing text.
+- There is no streaming, and ``stream: true`` is rejected with ``400``. The response, including
+  nested setwise ``scores`` and ``pooled_hidden_states``, is forwarded unchanged. Usage is counted
+  when SGLang reports it.
+
+The gateway does not check the engine, so a score request for a model served by another engine is
+forwarded and fails at the pod. Only route it to ``model.aibrix.ai/engine: sglang`` models.
+
 Adding New Engines
 ------------------
 

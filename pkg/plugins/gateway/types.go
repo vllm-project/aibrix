@@ -147,6 +147,9 @@ const (
 	// map of noul, choice and score questions keyed by caller ids. It does not stream, and its
 	// usage reports input_tokens/output_tokens with no total.
 	PathSystemOne = "/v1/systemone"
+	// PathScore is SGLang's scoring endpoint: label-token probabilities or classifier
+	// logits for each query/item pair, pointwise or setwise. It does not stream.
+	PathScore = "/v1/score"
 	// PathVideos and PathVideosSync are vLLM-Omni's native Videos API (multipart/form-data),
 	// distinct from the OpenAI/Sora-shaped PathVideoGenerations (JSON) above. PathVideos also
 	// covers its GET/DELETE sub-resources (/v1/videos/{id}, /v1/videos/{id}/content) via
