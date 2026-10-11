@@ -1229,11 +1229,11 @@ func TestHandleRequestBody_MessagesAndAudioReachABackendPod(t *testing.T) {
 		{"audio translations with query string", PathAudioTranslations + "?foo=bar", audioBody, audioContentType},
 	}
 
+	cache.InitForTest()
+	routingalgorithms.Init()
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cache.InitForTest()
-			routingalgorithms.Init()
-
 			mockCache := &MockCache{Cache: cache.NewForTest()}
 			pod := readyPod("pod-a", "ns-a", "1.2.3.4")
 			mockCache.On("HasModel", "llama").Return(true)
