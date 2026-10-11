@@ -44,6 +44,7 @@ type ScalingRequest struct {
 	Target            types.ScaleTarget
 	CurrentReplicas   int32
 	AggregatedMetrics *types.AggregatedMetrics
+	MetricSourceType  autoscalingv1alpha1.MetricSourceType
 	ScalingContext    scalingctx.ScalingContext
 	Timestamp         time.Time
 }

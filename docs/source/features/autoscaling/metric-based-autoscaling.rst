@@ -205,6 +205,12 @@ If the external metrics client cannot be constructed at controller startup, the
 controller logs a warning and continues with external metrics unavailable, so
 check the controller logs if a ``PodAutoscaler`` using this mode never scales.
 
+An external or domain source reports one value for the whole workload. KPA and APA
+treat it as a total, recommending about ``ceil(value / targetValue)`` replicas before
+tolerance and scale-rate limits, so ``targetValue`` is the load one replica should
+handle. Expose the external metric as a total for the workload, such as a sum
+over its pods.
+
 Example external metrics KPA config
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

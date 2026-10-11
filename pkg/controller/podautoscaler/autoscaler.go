@@ -460,6 +460,7 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 		},
 		CurrentReplicas:   request.CurrentReplicas,
 		AggregatedMetrics: aggregatedMetrics,
+		MetricSourceType:  metricSource.MetricSourceType,
 		ScalingContext:    scalingContext,
 		Timestamp:         request.Timestamp,
 	}

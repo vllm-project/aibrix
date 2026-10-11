@@ -374,6 +374,18 @@ msgstr ""
 "因此若使用此模式的 ``PodAutoscaler`` 始终不扩缩，请检查控制器日志。"
 
 #: ../../source/features/autoscaling/metric-based-autoscaling.rst:208
+msgid ""
+"An external or domain source reports one value for the whole workload. "
+"KPA and APA treat it as a total, recommending about ``ceil(value / "
+"targetValue)`` replicas before tolerance and scale-rate limits, so "
+"``targetValue`` is the load one replica should handle. Expose the "
+"external metric as a total for the workload, such as a sum over its pods."
+msgstr ""
+"外部或 domain 指标源为整个工作负载报告一个值。KPA 和 APA 将其视为总量，在应用波动容差和扩缩速率限制之前，"
+"建议的副本数约为 ``ceil(value / targetValue)``，因此 ``targetValue`` 表示一个副本应处理的负载。"
+"请将外部指标暴露为整个工作负载的总量，例如对其所有 pod 的指标求和。"
+
+#: ../../source/features/autoscaling/metric-based-autoscaling.rst:208
 msgid "Example external metrics KPA config"
 msgstr "外部指标 KPA 配置示例"
 
