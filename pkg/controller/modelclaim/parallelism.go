@@ -70,7 +70,7 @@ func vllmParallelism(config *modelv1alpha1.ModelClaimEngineConfig) (int64, error
 
 func positiveEngineArg(args map[string]string, name string) (int64, error) {
 	raw, found := args[name]
-	if !found {
+	if !found || raw == "" {
 		return 1, nil
 	}
 	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
