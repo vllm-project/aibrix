@@ -29,6 +29,7 @@ type ModelClaimSpecApplyConfiguration struct {
 	ArtifactURL  *string                                   `json:"artifactURL,omitempty"`
 	Engine       *string                                   `json:"engine,omitempty"`
 	Replicas     *int32                                    `json:"replicas,omitempty"`
+	Priority     *int32                                    `json:"priority,omitempty"`
 	EngineConfig *ModelClaimEngineConfigApplyConfiguration `json:"engineConfig,omitempty"`
 	PerGPU       *ModelClaimPerGPUApplyConfiguration       `json:"perGPU,omitempty"`
 }
@@ -76,6 +77,14 @@ func (b *ModelClaimSpecApplyConfiguration) WithEngine(value string) *ModelClaimS
 // If called multiple times, the Replicas field is set to the value of the last call.
 func (b *ModelClaimSpecApplyConfiguration) WithReplicas(value int32) *ModelClaimSpecApplyConfiguration {
 	b.Replicas = &value
+	return b
+}
+
+// WithPriority sets the Priority field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Priority field is set to the value of the last call.
+func (b *ModelClaimSpecApplyConfiguration) WithPriority(value int32) *ModelClaimSpecApplyConfiguration {
+	b.Priority = &value
 	return b
 }
 
