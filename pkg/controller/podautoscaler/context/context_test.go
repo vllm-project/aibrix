@@ -178,3 +178,111 @@ func TestUpdateByPaTypes_InvalidTargetValue(t *testing.T) {
 		})
 	}
 }
+
+func TestUpdateByPaTypes_RejectsUnusableAnnotationValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value string
+		want  string
+	}{
+		{name: "scale-up rate not a number", key: types.MaxScaleUpRateLabel, value: "fast", want: "must be a number"},
+		{name: "scale-up rate NaN", key: types.MaxScaleUpRateLabel, value: "NaN", want: "must be a finite number"},
+		{name: "scale-up rate infinite", key: types.MaxScaleUpRateLabel, value: "+Inf", want: "must be a finite number"},
+		{name: "scale-up rate below one", key: types.MaxScaleUpRateLabel, value: "0.5", want: "must be greater than or equal to 1"},
+		{name: "scale-down rate zero", key: types.MaxScaleDownRateLabel, value: "0", want: "must be greater than or equal to 1"},
+		{name: "scale-down rate negative", key: types.MaxScaleDownRateLabel, value: "-2", want: "must be greater than or equal to 1"},
+		{name: "scale-up tolerance negative", key: types.ScaleUpToleranceLabel, value: "-0.1", want: "must not be negative"},
+		{name: "scale-down tolerance NaN", key: types.ScaleDownToleranceLabel, value: "nan", want: "must be a finite number"},
+		{name: "panic threshold zero", key: types.PanicThresholdLabel, value: "0", want: "must be greater than 0"},
+		{name: "scale-up cooldown not a duration", key: types.ScaleUpCooldownWindowLabel, value: "30", want: "must be a duration"},
+		{name: "scale-down cooldown negative", key: types.ScaleDownCooldownWindowLabel, value: "-5m", want: "must not be negative"},
+		{name: "scale-to-zero not a boolean", key: types.ScaleToZeroLabel, value: "maybe", want: "must be a boolean"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pa := &autoscalingv1alpha1.PodAutoscaler{
+				ObjectMeta: v1.ObjectMeta{Annotations: map[string]string{tt.key: tt.value}},
+			}
+			defaults := NewBaseScalingContext()
+			ctx := NewBaseScalingContext()
+
+			err := ctx.UpdateByPaTypes(pa)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.key)
+			assert.Contains(t, err.Error(), tt.want)
+			// The unusable value must not replace the default.
+			assert.Equal(t, defaults, ctx)
+		})
+	}
+}
+
+// An unusable annotation must only cost its own setting. Before this was made
+// independent per key, parsing stopped at the first bad value while ranging
+// over the annotations map, so which of the other settings applied depended on
+// map iteration order and could differ from one reconcile to the next.
+func TestUpdateByPaTypes_AppliesUsableAnnotationsNextToUnusableOnes(t *testing.T) {
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: v1.ObjectMeta{Annotations: map[string]string{
+			types.MaxScaleUpRateLabel:          "3",
+			types.MaxScaleDownRateLabel:        "0",
+			types.ScaleUpToleranceLabel:        "0.3",
+			types.ScaleDownToleranceLabel:      "NaN",
+			types.PanicThresholdLabel:          "4",
+			types.ScaleUpCooldownWindowLabel:   "30s",
+			types.ScaleDownCooldownWindowLabel: "-1m",
+			types.ScaleToZeroLabel:             "true",
+		}},
+	}
+	defaults := NewBaseScalingContext()
+
+	for i := 0; i < 50; i++ {
+		ctx := NewBaseScalingContext()
+
+		err := ctx.UpdateByPaTypes(pa)
+
+		require.Error(t, err)
+		assert.Equal(t, 3.0, ctx.MaxScaleUpRate)
+		assert.Equal(t, 0.3, ctx.UpFluctuationTolerance)
+		assert.Equal(t, 4.0, ctx.PanicThreshold)
+		assert.Equal(t, 30*time.Second, ctx.ScaleUpCooldownWindow)
+		assert.True(t, ctx.ScaleToZero)
+		assert.Equal(t, defaults.MaxScaleDownRate, ctx.MaxScaleDownRate)
+		assert.Equal(t, defaults.DownFluctuationTolerance, ctx.DownFluctuationTolerance)
+		assert.Equal(t, defaults.ScaleDownCooldownWindow, ctx.ScaleDownCooldownWindow)
+	}
+}
+
+func TestValidateAnnotations(t *testing.T) {
+	t.Run("accepts usable values and ignores annotations it does not read", func(t *testing.T) {
+		errs := ValidateAnnotations(map[string]string{
+			types.MaxScaleUpRateLabel:          "1",
+			types.MaxScaleDownRateLabel:        "2.5",
+			types.ScaleUpToleranceLabel:        "0",
+			types.ScaleDownToleranceLabel:      "0.2",
+			types.PanicThresholdLabel:          "200",
+			types.ScaleUpCooldownWindowLabel:   "0s",
+			types.ScaleDownCooldownWindowLabel: "5m",
+			types.ScaleToZeroLabel:             "false",
+			"example.com/owner":                "not-a-number",
+		})
+
+		assert.Empty(t, errs)
+	})
+
+	t.Run("reports every unusable value ordered by key", func(t *testing.T) {
+		errs := ValidateAnnotations(map[string]string{
+			types.ScaleUpToleranceLabel: "-1",
+			types.MaxScaleDownRateLabel: "0",
+			types.PanicThresholdLabel:   "2",
+		})
+
+		require.Len(t, errs, 2)
+		assert.Equal(t, types.MaxScaleDownRateLabel, errs[0].Key)
+		assert.Equal(t, "0", errs[0].Value)
+		assert.Equal(t, types.ScaleUpToleranceLabel, errs[1].Key)
+		assert.Equal(t, "-1", errs[1].Value)
+	})
+}
