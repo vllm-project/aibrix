@@ -12,6 +12,9 @@ spec:
   artifactURL: huggingface://Qwen/Qwen3-0.6B
   engine: vllm
   replicas: 1
+  # Higher values get the next placement opportunity when unplaced claims
+  # compete for this pool. Omit priority to use the default of 0.
+  priority: 10
   # What one instance needs on a GPU: its footprint besides the KV cache, and
   # the KV cache for one request of the maximum length. Both leave room to
   # spare for this model with these engine arguments.
@@ -35,6 +38,8 @@ spec:
   artifactURL: huggingface://Qwen/Qwen2.5-0.5B-Instruct
   engine: vllm
   replicas: 1
+  # Negative priorities are valid for background work.
+  priority: -10
   perGPU:
     maximumFootprint: 6Gi
     kvFloor: 1Gi

@@ -293,6 +293,11 @@ The sample claims:
      - ``vllm``, the default, or ``sglang``.
    * - ``replicas``
      - Must be 1, the default.
+   * - ``priority``
+     - An immutable signed 32-bit placement priority. A higher value gets the
+       next placement opportunity before a lower value when unplaced claims
+       compete for a pool. It defaults to 0 when omitted; negative values are
+       valid for background work.
    * - ``engineConfig.args``
      - Engine flags and their values, as strings. An empty string adds a flag
        without a value.
@@ -306,6 +311,27 @@ The sample claims:
 
 Only ``perGPU`` can change after a claim is created. To change anything else,
 delete the claim and create it again.
+
+Placement priority
+~~~~~~~~~~~~~~~~~~
+
+``priority`` decides the placement order only for claims that do not yet have
+an instance. It is a signed ``int32``: higher numbers are considered first,
+omitting the field means 0, and negative values are useful for background
+work. The value is immutable, so create a new ModelClaim to change it.
+
+For claims of the same priority that compete for at least one Pod, the
+controller keeps FIFO order by creation time, then by name. It uses
+BestEffortFIFO: a higher-priority or earlier claim that cannot fit now and
+cannot make room does not block a feasible claim behind it. Claims that select
+different pools do not compete.
+
+Priority is non-preemptive. It never stops, moves, sleeps, wakes, or changes
+an existing instance. Once a claim has begun making room and holds a valid
+reservation, it keeps that placement turn until it is placed, releases the
+reservation, the reservation expires, or the claim is deleted; a later,
+higher-priority claim cannot take it. Strict priority can starve a
+low-priority claim when feasible higher-priority claims continue to arrive.
 
 The runtime agent sets ``--model``, ``--served-model-name``, ``--host``,
 ``--port`` and ``--enable-sleep-mode`` itself, so leave them out of
@@ -360,6 +386,12 @@ reads ``NoMatchingPods``, and its message names the Pod that came closest and
 what it lacks. The controller tries again after 10, 20 and 40 seconds and then
 every minute. It also tries at once when room may have appeared, for example
 when another claim is deleted or goes to sleep.
+
+When several unplaced claims can use the same newly available room, priority
+chooses the first feasible claim as described in `Placement priority`_. A
+claim that is otherwise feasible but waits for an earlier placement turn stays
+``Pending`` with ``Scheduled`` reason ``WaitingForPlacementTurn``. This wait
+does not add placement-refusal backoff.
 
 The controller divides each GPU among the engines on it. Each engine keeps its
 declared footprint and at least its KV floor. The rest of the GPU's usable
@@ -562,6 +594,9 @@ Until then, it gives one of these reasons:
      - ``perGPU`` is missing or has an unusable figure.
    * - ``MakingRoom``
      - Idle models are being put to sleep to make room for the claim.
+   * - ``WaitingForPlacementTurn``
+     - Another feasible claim has an earlier priority/FIFO placement turn for
+       the same pool.
 
 The ``Ready`` condition is ``True`` with ``ModelClaimActive`` while the claim
 serves. Otherwise, its reason says what holds the claim back:
