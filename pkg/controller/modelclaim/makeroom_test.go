@@ -213,6 +213,28 @@ func TestReconcileMakesRoomForANewerClaimWhenNoneCanBeMadeForTheOlder(t *testing
 	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
 }
 
+func TestReconcileMakesRoomForLowerPriorityClaimWhenHighPriorityClaimIsInfeasible(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+	// "huge" wins priority order, but needs more than the whole card.
+	high := withFinalizer(claimOnPod("huge", "", modelv1alpha1.ModelClaimActive, 1000, 100))
+	high.Status.Instances = nil
+	high.CreationTimestamp = metav1.NewTime(at0759)
+	high.Spec.Priority = 10
+	require.NoError(t, r.Create(context.Background(), high))
+	lower := withFinalizer(claimOnPod("lower", "", modelv1alpha1.ModelClaimActive, 300, 100))
+	lower.Status.Instances = nil
+	lower.CreationTimestamp = metav1.NewTime(at0758)
+	lower.Spec.Priority = 1
+	require.NoError(t, r.Create(context.Background(), lower))
+
+	reconcileOnce(t, r, lower.Name)
+
+	require.Len(t, runtime.sleepCalls, 1, "the infeasible higher-priority claim does not block lower")
+	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
+	assert.Equal(t, scheduledReasonMakingRoom, scheduledOf(t, r, lower.Name).Reason)
+}
+
 func TestReconcileLeavesACardToARequestToWakeAnEngine(t *testing.T) {
 	r, runtime := queueCard(t, 1000,
 		queued{name: "a", footprint: 300, floor: 100, idleSince: at0758},
