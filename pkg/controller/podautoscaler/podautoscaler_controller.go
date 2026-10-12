@@ -313,6 +313,9 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := r.updateStatusIfNeeded(ctx, &pa.Status, paCopy); err != nil {
 		return ctrl.Result{}, err
 	}
+	// The strategy path below continues from the status that is now stored, so
+	// its own status write does not put back the conditions replaced above.
+	pa.Status = *newStatus
 
 	// if invalid, skip reconciliation (no scaling)
 	if !specVR.Valid || !conflictVR.Valid {
@@ -753,26 +756,34 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler,
 		}
 	}
 
-	// ScalingActive
 	scalingActive := st.DesiredScale != st.ActualScale
-	apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{
-		Type:               ConditionScalingActive,
-		Status:             boolToCond(scalingActive),
-		Reason:             map[bool]string{true: ReasonReconcilingScaleDiff, false: ReasonStable}[scalingActive],
-		Message:            fmt.Sprintf("desired=%d, actual=%d", st.DesiredScale, st.ActualScale),
-		LastTransitionTime: now,
-	})
-
-	// AbleToScale (minimal; extend later with cooldown/limits applied)
 	specOK := specValidationResult.Valid
 	noConflict := conflictValidationResult.Valid
 	able := specOK && noConflict && pa.Spec.MaxReplicas > 0
-	apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{
-		Type:               ConditionAbleToScale,
-		Status:             boolToCond(able),
-		Reason:             map[bool]string{true: ReasonConfigured, false: ReasonInvalidSpec}[able],
-		LastTransitionTime: now,
-	})
+
+	// ScalingActive and AbleToScale belong to the strategy path (reconcileCustomPA
+	// or reconcileHPA), which runs whenever the spec is valid and unconflicted and
+	// reports them with its own reason and message. Setting them here as well made
+	// the two writers replace each other's text on every reconcile, and since a
+	// status write enqueues the object again, the controller never went idle.
+	// Report them here only when the strategy path will not run.
+	if !specOK || !noConflict {
+		apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{
+			Type:               ConditionScalingActive,
+			Status:             boolToCond(scalingActive),
+			Reason:             map[bool]string{true: ReasonReconcilingScaleDiff, false: ReasonStable}[scalingActive],
+			Message:            fmt.Sprintf("desired=%d, actual=%d", st.DesiredScale, st.ActualScale),
+			LastTransitionTime: now,
+		})
+
+		// AbleToScale (minimal; extend later with cooldown/limits applied)
+		apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{
+			Type:               ConditionAbleToScale,
+			Status:             boolToCond(able),
+			Reason:             map[bool]string{true: ReasonConfigured, false: ReasonInvalidSpec}[able],
+			LastTransitionTime: now,
+		})
+	}
 
 	// Ready = ValidSpec && !ScalingActive
 	ready := able && !scalingActive
@@ -788,6 +799,7 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler,
 // reconcileHPA handles HPA strategy by creating and managing Kubernetes HorizontalPodAutoscaler resources.
 // This provides KEDA-like functionality where we wrap standard K8s HPA with additional features.
 func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
+	paStatusOriginal := pa.Status.DeepCopy()
 	now := r.nowTime()
 	bounds, err := paschedules.Resolve(&pa, now)
 	if err != nil {
@@ -842,10 +854,31 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 	pa.Status.DesiredScale = existingHPA.Status.DesiredReplicas
 	pa.Status.LastScaleTime = existingHPA.Status.LastScaleTime
 	pa.Status.ScheduledBounds = scheduledBoundsStatus(&pa, now)
+	reportedByHPA := make(map[string]bool, len(existingHPA.Status.Conditions))
 	for _, condition := range existingHPA.Status.Conditions {
+		reportedByHPA[string(condition.Type)] = true
 		setCondition(&pa, string(condition.Type), metav1.ConditionStatus(condition.Status), condition.Reason, "%s", condition.Message)
 	}
-	if err = r.Status().Update(ctx, &pa); err != nil {
+	// The HPA controller owns AbleToScale and ScalingActive once it reports them.
+	// A new HPA has no conditions yet, so until then report the controller's own
+	// view instead of leaving a value from an earlier invalid spec in place.
+	if !reportedByHPA[ConditionAbleToScale] {
+		setCondition(&pa, ConditionAbleToScale, metav1.ConditionTrue, ReasonConfigured, "")
+	}
+	if !reportedByHPA[ConditionScalingActive] {
+		scalingActive := pa.Status.DesiredScale != pa.Status.ActualScale
+		scalingReason := ReasonStable
+		if scalingActive {
+			scalingReason = ReasonReconcilingScaleDiff
+		}
+		setCondition(&pa, ConditionScalingActive, boolToCond(scalingActive), scalingReason,
+			"desired=%d, actual=%d", pa.Status.DesiredScale, pa.Status.ActualScale)
+	}
+	// Write only when something changed, against the latest stored object. A
+	// plain Status().Update here used the object fetched at the start of
+	// Reconcile, so it failed with a conflict whenever the status had already
+	// been written in this reconcile.
+	if err = r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
 		klog.ErrorS(err, "Failed to update PodAutoscaler status")
 	}
 	return resultWithNextScheduleRequeue(&pa, now), nil
