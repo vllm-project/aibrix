@@ -5,9 +5,9 @@
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: AIBrix\n"
+"Project-Id-Version:  AIBrix\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"POT-Creation-Date: 2026-10-11 19:13-0700\n"
 "PO-Revision-Date: 2026-09-10 18:55+0800\n"
 "Last-Translator: AIBrix Team\n"
 "Language: zh_CN\n"
@@ -16,7 +16,7 @@ msgstr ""
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Generated-By: Babel 2.17.0\n"
+"Generated-By: Babel 2.18.0\n"
 
 #: ../../source/community/community.rst:5
 msgid "Community"
@@ -34,8 +34,7 @@ msgid ""
 "support from the community."
 msgstr ""
 "我们使用 vLLM Slack `#AIBrix <https://vllm-"
-"dev.slack.com/archives/C08EQ883CSV>`_ 供用户和贡献者进行非正式讨论。"
-"加入频道即可发起交流，并从社区获得支持。"
+"dev.slack.com/archives/C08EQ883CSV>`_ 供用户和贡献者进行非正式讨论。加入频道即可发起交流，并从社区获得支持。"
 
 #: ../../source/community/community.rst:15
 msgid "AiBrix Mailing List"
@@ -46,8 +45,8 @@ msgid ""
 "The official AIBrix mailing list is hosted on Google Groups at "
 "`maintainers@aibrix.ai <maintainers@aibrix.ai>`_."
 msgstr ""
-"官方 AIBrix 邮件列表托管在 Google Groups，地址为 `maintainers@aibrix.ai <maintainers@aibrix.ai>`_ "
-"。"
+"官方 AIBrix 邮件列表托管在 Google Groups，地址为 `maintainers@aibrix.ai "
+"<maintainers@aibrix.ai>`_ 。"
 
 #: ../../source/community/community.rst:21
 msgid "Becoming a Maintainer"
@@ -59,9 +58,7 @@ msgid ""
 "you’ve been actively contributing, consider becoming a **Maintainer** — a"
 " role with broader responsibilities and deeper involvement in the "
 "project."
-msgstr ""
-"我们感谢持续帮助改进 AIBrix 的贡献者。如果你一直在积极贡献，可以考虑成为 **维护者** —"
-" 该角色承担更广的职责，并更深入地参与项目。"
+msgstr "我们感谢持续帮助改进 AIBrix 的贡献者。如果你一直在积极贡献，可以考虑成为 **维护者** — 该角色承担更广的职责，并更深入地参与项目。"
 
 #: ../../source/community/community.rst:26
 msgid "What is a Maintainer?"
@@ -157,9 +154,8 @@ msgid ""
 "dev.slack.com/archives/C08EQ883CSV>`_ or by `maintainers@aibrix.ai "
 "<maintainers@aibrix.ai>`_ ."
 msgstr ""
-"在 Slack `#AIBrix <https://vllm-"
-"dev.slack.com/archives/C08EQ883CSV>`_ 联系现有维护者，或发送邮件至 "
-"`maintainers@aibrix.ai <maintainers@aibrix.ai>`_ 。"
+"在 Slack `#AIBrix <https://vllm-dev.slack.com/archives/C08EQ883CSV>`_ "
+"联系现有维护者，或发送邮件至 `maintainers@aibrix.ai <maintainers@aibrix.ai>`_ 。"
 
 #: ../../source/community/community.rst:58
 msgid ""
@@ -216,7 +212,7 @@ msgid "Maintainers"
 msgstr "维护者"
 
 #: ../../source/community/community.rst:80
-#: ../../source/community/community.rst:102
+#: ../../source/community/community.rst:100
 msgid "Focus Areas"
 msgstr "关注领域"
 
@@ -261,51 +257,51 @@ msgid "Benchmark and research collaboration"
 msgstr "基准测试与研究合作"
 
 #: ../../source/community/community.rst:92
-msgid "`@nwangfw <https://github.com/nwangfw>`_"
-msgstr "`@nwangfw <https://github.com/nwangfw>`_"
-
-#: ../../source/community/community.rst:92
-msgid "Autoscaling"
-msgstr "Autoscaling"
-
-#: ../../source/community/community.rst:94
 msgid "`@xunzhuo <https://github.com/xunzhuo>`_"
 msgstr "`@xunzhuo <https://github.com/xunzhuo>`_"
 
-#: ../../source/community/community.rst:94
+#: ../../source/community/community.rst:92
 msgid "Gateway architecture and routing performance"
 msgstr "网关架构与路由性能"
 
-#: ../../source/community/community.rst:96
+#: ../../source/community/community.rst:94
 msgid "`@googs1025 <https://github.com/googs1025>`_"
 msgstr "`@googs1025 <https://github.com/googs1025>`_"
 
-#: ../../source/community/community.rst:96
-msgid "Control Plane Features and Stability"
+#: ../../source/community/community.rst:94
+#, fuzzy
+msgid "Autoscaling, Control Plane Stability"
 msgstr "控制面功能与稳定性"
 
-#: ../../source/community/community.rst:99
+#: ../../source/community/community.rst:97
 msgid ""
 "Emeritus Maintainers will also participate in design reviews, feel free "
 "to @mention them if needed."
 msgstr "荣誉维护者也会参与设计评审，如有需要可随时 @mention 他们。"
 
-#: ../../source/community/community.rst:102
+#: ../../source/community/community.rst:100
 msgid "Emeritus Maintainers"
 msgstr "荣誉维护者"
 
-#: ../../source/community/community.rst:104
+#: ../../source/community/community.rst:102
 msgid "`@brosoul <https://github.com/brosoul>`_"
 msgstr "`@brosoul <https://github.com/brosoul>`_"
 
-#: ../../source/community/community.rst:104
+#: ../../source/community/community.rst:102
 msgid "AI runtime and model loading acceleration"
 msgstr "AI Runtime 与模型加载加速"
 
-#: ../../source/community/community.rst:106
+#: ../../source/community/community.rst:104
 msgid "`@kr11 <https://github.com/kr11>`_"
 msgstr "`@kr11 <https://github.com/kr11>`_"
 
-#: ../../source/community/community.rst:106
+#: ../../source/community/community.rst:104
 msgid "Autoscaling algorithms"
 msgstr "自动扩缩容算法"
+
+#~ msgid "`@nwangfw <https://github.com/nwangfw>`_"
+#~ msgstr "`@nwangfw <https://github.com/nwangfw>`_"
+
+#~ msgid "Autoscaling"
+#~ msgstr "Autoscaling"
+

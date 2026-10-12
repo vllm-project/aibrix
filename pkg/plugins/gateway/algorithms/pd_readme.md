@@ -406,7 +406,7 @@ either leg has been dispatched.
 
 Prerequisites (TRT-LLM `1.3.0rc8`, the Python KV-cache transceiver on both roles,
 matching model/tokenizer/chat-template) are listed in
-`docs/source/features/pd-disaggregation.rst`.
+`docs/source/features/gateway-routing/pd-disaggregation.rst`.
 
 ```
 Gateway selects CTX + GEN

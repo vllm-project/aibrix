@@ -303,13 +303,14 @@ msgstr "``vllm:deployment_replicas`` （由 GPU Optimizer 产生，而非引擎�
 
 #: ../../source/designs/aibrix-autoscaler.rst:108
 msgid ""
-"For the full list, including what each name maps to for SGLang, xLLM and "
-"TRT-LLM, see the metric table in :doc:`../features/multi-engine`, and the"
-" `vLLM Metrics Documentation "
-"<https://docs.vllm.ai/en/stable/serving/metrics.html>`_."
+"For the full list, including what each name maps to for SGLang, xLLM "
+"and TRT-LLM, see the metric table in "
+":doc:`../features/model-serving/multi-engine`, and the `vLLM Metrics "
+"Documentation <https://docs.vllm.ai/en/stable/serving/metrics.html>`_."
 msgstr ""
-"完整列表（含各名称在 SGLang、xLLM 和 TRT-LLM 上的映射）见 :doc:`../features/multi-engine` "
-"中的指标表，以及 `vLLM Metrics Documentation <https://docs.vllm.ai/en/stable/serving/metrics.html>`_ "
+"完整列表（含各名称在 SGLang、xLLM 和 TRT-LLM 上的映射）见 "
+":doc:`../features/model-serving/multi-engine` 中的指标表，以及 `vLLM Metrics "
+"Documentation <https://docs.vllm.ai/en/stable/serving/metrics.html>`_ "
 "。"
 
 #: ../../source/designs/aibrix-autoscaler.rst:112
@@ -344,8 +345,8 @@ msgstr ""
 "将主动（基于优化器）与反应式（基于指标）机制结合为混合扩缩容器，以兼顾稳健性与效率。"
 
 #: ../../source/designs/aibrix-autoscaler.rst:125
-msgid ":doc:`../features/autoscaling/autoscaling`"
-msgstr ":doc:`../features/autoscaling/autoscaling`"
+msgid ":doc:`../features/scaling-performance/autoscaling/autoscaling`"
+msgstr ":doc:`../features/scaling-performance/autoscaling/autoscaling`"
 
 #: ../../source/designs/aibrix-autoscaler.rst:126
 msgid "Configuring PodAutoscaler with HPA, KPA, and APA strategies."

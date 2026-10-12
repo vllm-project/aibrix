@@ -207,7 +207,7 @@ request bodies, credentials, arbitrary client headers, and pod IPs are never sen
 | `AIBRIX_EXTERNAL_ROUTER_CANDIDATE_METRICS` | CSV | _(empty)_ | Any of `runningRequests`, `engineUtilization`, `kvCacheUsage`. |
 | `AIBRIX_EXTERNAL_ROUTER_POLICY_ATTRIBUTES` | CSV | _(empty)_ | Downstream extension-point allowlist for trusted RoutingContext policy attributes. Upstream AIBrix has no built-in producer; integrators must call `SetTrustedPolicyAttribute`. Raw headers are never copied automatically. |
 
-See the [External Replica Routing guide](../../../docs/source/features/external-replica-routing.rst)
+See the [External Replica Routing guide](../../../docs/source/features/gateway-routing/external-replica-routing.rst)
 and the published OpenAPI contract for policy and protocol details.
 
 ---
@@ -378,7 +378,7 @@ factor, a percentage outside its range, an unknown GPU name) is ignored, so a pr
 narrow or sharpen routing behavior. The values are resolved once per request and applied to that
 request alone; a request whose profile sets none behaves exactly as before. The user-facing
 description and examples live in the Config Profiles section of the gateway plugin guide
-([docs/source/features/gateway-plugins.rst](../../../docs/source/features/gateway-plugins.rst)).
+([docs/source/features/gateway-routing/gateway-plugins.rst](../../../docs/source/features/gateway-routing/gateway-plugins.rst)).
 
 | Variable | Profile field | Notes |
 |---|---|---|

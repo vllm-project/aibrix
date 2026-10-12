@@ -19,7 +19,7 @@ kubectl -n default get modelclaims -w
 ```
 
 Both claims become `Active` once their engines are ready. The
-[ModelClaim guide](https://aibrix.readthedocs.io/latest/features/modelclaim.html)
+[ModelClaim guide](https://aibrix.readthedocs.io/latest/features/model-serving/modelclaim.html)
 explains how to send requests and let idle models sleep, what the samples set,
 and the limitations of ModelClaim. The
 [validation runbook](../../development/tutorials/modelclaim/manual-validation-runbook.md)

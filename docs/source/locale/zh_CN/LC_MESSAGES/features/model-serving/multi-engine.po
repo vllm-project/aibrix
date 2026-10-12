@@ -1,0 +1,1298 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version:  AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-11 19:16-0700\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../source/features/model-serving/multi-engine.rst:5
+msgid "Multi-Engine Support"
+msgstr "多引擎支持"
+
+#: ../../source/features/model-serving/multi-engine.rst:7
+msgid ""
+"AIBrix serves models on vLLM, SGLang, TRT-LLM and xLLM in one cluster. "
+"Set ``model.aibrix.ai/engine`` on the pod so the gateway can read that "
+"engine's metrics under one set of names, then route each request to a "
+"ready pod of the requested model."
+msgstr ""
+"AIBrix 可在同一集群中用 vLLM、SGLang、TRT-LLM 和 xLLM 提供模型服务。在 Pod 上设置 "
+"``model.aibrix.ai/engine`` 后，网关会把该引擎的指标读成同一套名称，再把每个请求路由到所请求模型的就绪 Pod。"
+
+#: ../../source/features/model-serving/multi-engine.rst:10
+msgid "Key Features"
+msgstr "主要特性"
+
+#: ../../source/features/model-serving/multi-engine.rst:12
+msgid "Run vLLM, SGLang, TRT-LLM and xLLM pods in the same cluster."
+msgstr "在同一集群中运行 vLLM、SGLang、TRT-LLM 和 xLLM Pod。"
+
+#: ../../source/features/model-serving/multi-engine.rst:13
+msgid ""
+"Select the engine with the ``model.aibrix.ai/engine`` label on the pod "
+"template."
+msgstr "在 Pod 模板上用 ``model.aibrix.ai/engine`` 标签选择引擎。"
+
+#: ../../source/features/model-serving/multi-engine.rst:14
+msgid "Map each engine's metric names onto one internal name used by routing."
+msgstr "把各引擎的指标名映射到路由使用的同一个内部名称。"
+
+#: ../../source/features/model-serving/multi-engine.rst:15
+msgid ""
+"Skip a pod, for a policy that needs an engine metric, when that engine "
+"does not export it."
+msgstr "当某条策略需要某项引擎指标、而该引擎并未导出这项指标时，跳过对应 Pod。"
+
+#: ../../source/features/model-serving/multi-engine.rst:18
+msgid "System Overview"
+msgstr "系统概览"
+
+#: ../../source/features/model-serving/multi-engine.rst:20
+msgid ""
+"The gateway discovers pods by ``model.aibrix.ai/name`` and reads "
+"``model.aibrix.ai/engine`` from the same pod. It scrapes each pod's "
+"metrics endpoint and translates the names with the mapping in "
+"`pkg/metrics/metrics.go <https://github.com/vllm-"
+"project/aibrix/blob/main/pkg/metrics/metrics.go>`_. Routing then uses "
+"those names, or signals the gateway tracks itself. Query-based metrics, "
+"described under *Supported Metrics*, are the ones computed by Prometheus."
+msgstr ""
+"网关按 ``model.aibrix.ai/name`` 发现 Pod，并从同一 Pod 读取 "
+"``model.aibrix.ai/engine``。它抓取每个 Pod 的指标端点，并用 `pkg/metrics/metrics.go "
+"<https://github.com/vllm-"
+"project/aibrix/blob/main/pkg/metrics/metrics.go>`_ "
+"中的映射转换名称。路由随后使用这些名称，或使用网关自己跟踪的信号。*Supported Metrics* 中所述的查询型指标由 "
+"Prometheus 计算。"
+
+#: ../../source/features/model-serving/multi-engine.rst:22
+msgid ""
+"To configure a specific engine, apply the following labels on the pod "
+"template:"
+msgstr "要配置特定引擎，在 Pod 模板上设置以下标签："
+
+#: ../../source/features/model-serving/multi-engine.rst:32
+msgid "An empty ``model.aibrix.ai/engine`` label is treated as ``vllm``."
+msgstr "未设置 ``model.aibrix.ai/engine`` 时按 ``vllm`` 处理。"
+
+#: ../../source/features/model-serving/multi-engine.rst:34
+msgid "Supported engine label values: ``vllm``, ``sglang``, ``trtllm``, ``xllm``."
+msgstr "支持的引擎标签值：``vllm``、``sglang``、``trtllm``、``xllm``。"
+
+#: ../../source/features/model-serving/multi-engine.rst:37
+msgid "How it works"
+msgstr "工作原理"
+
+#: ../../source/features/model-serving/multi-engine.rst:39
+msgid ""
+"The AIBrix cache watches pods that carry ``model.aibrix.ai/name`` and "
+"reads ``model.aibrix.ai/engine`` from the same pod. Every metric AIBrix "
+"uses internally has one abstract name (for example "
+"``num_requests_waiting``) and a per-engine mapping to the name the engine"
+" actually exports. The mapping lives in `pkg/metrics/metrics.go "
+"<https://github.com/vllm-"
+"project/aibrix/blob/main/pkg/metrics/metrics.go>`_ and is reproduced in "
+"the table below."
+msgstr ""
+"AIBrix cache 会监视带有 ``model.aibrix.ai/name`` 的 Pod，并从同一 Pod 读取 "
+"``model.aibrix.ai/engine`` 。AIBrix 内部使用的每个指标都有一个抽象名称（例如 "
+"``num_requests_waiting`` ），以及按引擎映射到该引擎实际导出的名称。映射位于 "
+"`pkg/metrics/metrics.go <https://github.com/vllm-"
+"project/aibrix/blob/main/pkg/metrics/metrics.go>`_ ，并在下表中复现。"
+
+#: ../../source/features/model-serving/multi-engine.rst:45
+msgid ""
+"Metrics are scraped from each pod on the port given by ``model.aibrix.ai"
+"/metric-port``, or port ``8000`` when the label is absent, at "
+"``/metrics`` (``/prometheus/metrics`` for ``trtllm``). Requests are "
+"forwarded to ``model.aibrix.ai/port``."
+msgstr ""
+"指标从每个 Pod 上由 ``model.aibrix.ai/metric-port`` 指定的端口抓取；若无该标签则使用端口 ``8000`` "
+"，路径为 ``/metrics`` （``trtllm`` 为 ``/prometheus/metrics`` ）。请求转发到 "
+"``model.aibrix.ai/port`` 。"
+
+#: ../../source/features/model-serving/multi-engine.rst:48
+msgid ""
+"Routing policies read either an engine metric by its abstract name or a "
+"signal the gateway tracks itself. A policy that scores pods on an engine "
+"metric skips a pod whose engine has no mapping for it, and routes the "
+"request to a random pod when no pod can be scored."
+msgstr ""
+"路由策略读取的要么是按抽象名称引用的引擎指标，要么是网关自行跟踪的信号。基于引擎指标给 Pod 打分的策略，会跳过其引擎没有该指标映射的 "
+"Pod；若没有任何 Pod 可打分，则将请求路由到随机 Pod。"
+
+#: ../../source/features/model-serving/multi-engine.rst:52
+msgid ""
+"``least-request``, ``slo-least-load`` and ``slo-pack-load`` use load the "
+"gateway tracks, so they behave the same on every engine."
+msgstr ""
+"``least-request`` 、``slo-least-load`` 和 ``slo-pack-load`` "
+"使用网关自行跟踪的负载，因此在所有引擎上行为一致。"
+
+#: ../../source/features/model-serving/multi-engine.rst:54
+msgid ""
+"``load-balance`` also uses gateway-tracked load and output-token rate. It"
+" reads ``kv_cache_usage_perc`` for KV pressure, and treats a pod with no "
+"reading as fully free instead of dropping it."
+msgstr ""
+"``load-balance`` 同样使用网关跟踪的负载和输出 token 速率。它读取 ``kv_cache_usage_perc`` 来衡量 "
+"KV 压力，并将没有读数的 Pod 视为完全空闲，而不是将其剔除。"
+
+#: ../../source/features/model-serving/multi-engine.rst:57
+msgid ""
+"``least-kv-cache`` reads ``kv_cache_usage_perc``, which every supported "
+"engine maps."
+msgstr "``least-kv-cache`` 读取 ``kv_cache_usage_perc`` ，所有受支持的引擎都提供该映射。"
+
+#: ../../source/features/model-serving/multi-engine.rst:58
+msgid ""
+"``least-latency`` and ``throughput`` need query-based metrics written "
+"against vLLM metric names (see *Supported Metrics*), so use them with "
+"vLLM only."
+msgstr ""
+"``least-latency`` 和 ``throughput`` 需要基于 vLLM 指标名称编写的查询类指标（参见 *支持的指标* "
+"），因此只能用于 vLLM。"
+
+#: ../../source/features/model-serving/multi-engine.rst:60
+msgid ""
+"``least-utilization`` reads ``engine_utilization``, which only ``xllm`` "
+"maps, so on vLLM, SGLang and TRT-LLM it falls back to a random pod."
+msgstr ""
+"``least-utilization`` 读取 ``engine_utilization``，只有 ``xllm`` 提供这项映射，因此在 "
+"vLLM、SGLang 和 TRT-LLM 上会退回到随机 Pod。"
+
+#: ../../source/features/model-serving/multi-engine.rst:62
+msgid ""
+"``least-busy-time`` reads ``gpu_busy_time_ratio``. No engine maps that "
+"metric, so it always falls back to a random pod."
+msgstr ""
+"``least-busy-time`` 读取 ``gpu_busy_time_ratio``。没有任何引擎映射这项指标，因此它始终退回到随机 "
+"Pod。"
+
+#: ../../source/features/model-serving/multi-engine.rst:65
+msgid ""
+"The optional :doc:`runtime` sidecar is a separate mechanism and works "
+"with vLLM only today. It serves the engine's metrics unchanged on its own"
+" port and adds engine-neutral ``aibrix:`` copies, which the metric "
+"mapping below does not read. The engine label works without it."
+msgstr ""
+"可选的 :doc:`runtime` sidecar 是另一套机制，目前仅适用于 "
+"vLLM。它在自己的端口上原样提供引擎指标，并额外提供与引擎无关的 ``aibrix:`` "
+"副本，下方的指标映射不会读取这些副本。引擎标签不依赖它也能工作。"
+
+#: ../../source/features/model-serving/multi-engine.rst:70
+msgid "Configuration reference"
+msgstr "配置参考"
+
+#: ../../source/features/model-serving/multi-engine.rst:72
+msgid ""
+"Everything is configured with pod labels. Set them on the pod template of"
+" the ``Deployment`` (or of the ``StormService`` role) rather than on the "
+"workload object itself."
+msgstr ""
+"全部通过 Pod 标签配置。请把它们设在 ``Deployment`` （或 ``StormService`` 角色）的 Pod "
+"模板上，而不是工作负载对象本身。"
+
+#: ../../source/features/model-serving/multi-engine.rst:79
+msgid "Label"
+msgstr "标签"
+
+#: ../../source/features/model-serving/multi-engine.rst:80
+msgid "Default"
+msgstr "默认值"
+
+#: ../../source/features/model-serving/multi-engine.rst:81
+msgid "Meaning"
+msgstr "含义"
+
+#: ../../source/features/model-serving/multi-engine.rst:82
+msgid "``model.aibrix.ai/name``"
+msgstr "``model.aibrix.ai/name``"
+
+#: ../../source/features/model-serving/multi-engine.rst:83
+msgid "required"
+msgstr "必需"
+
+#: ../../source/features/model-serving/multi-engine.rst:84
+msgid "Model name used in requests and for pod discovery."
+msgstr "请求中使用以及用于 Pod 发现的模型名。"
+
+#: ../../source/features/model-serving/multi-engine.rst:85
+msgid "``model.aibrix.ai/engine``"
+msgstr "``model.aibrix.ai/engine``"
+
+#: ../../source/features/model-serving/multi-engine.rst:86
+msgid "``vllm``"
+msgstr "``vllm``"
+
+#: ../../source/features/model-serving/multi-engine.rst:87
+msgid ""
+"Engine type. One of ``vllm``, ``sglang``, ``trtllm``, ``xllm``. Selects "
+"the metric mapping."
+msgstr "引擎类型。取值为 ``vllm``、``sglang``、``trtllm``、``xllm`` 之一。用于选择指标映射。"
+
+#: ../../source/features/model-serving/multi-engine.rst:89
+msgid "``model.aibrix.ai/port``"
+msgstr "``model.aibrix.ai/port``"
+
+#: ../../source/features/model-serving/multi-engine.rst:90
+#: ../../source/features/model-serving/multi-engine.rst:93
+msgid "``8000``"
+msgstr "``8000``"
+
+#: ../../source/features/model-serving/multi-engine.rst:91
+msgid "Port the engine serves requests on."
+msgstr "引擎提供请求服务的端口。"
+
+#: ../../source/features/model-serving/multi-engine.rst:92
+msgid "``model.aibrix.ai/metric-port``"
+msgstr "``model.aibrix.ai/metric-port``"
+
+#: ../../source/features/model-serving/multi-engine.rst:94
+msgid ""
+"Port the engine exposes ``/metrics`` on. It does not follow "
+"``model.aibrix.ai/port``, so set it explicitly when the engine does not "
+"serve metrics on port ``8000``."
+msgstr ""
+"引擎暴露 ``/metrics`` 的端口。它不会跟随 ``model.aibrix.ai/port`` ，因此当引擎不在端口 ``8000`` "
+"上提供指标时，请显式设置。"
+
+#: ../../source/features/model-serving/multi-engine.rst:98
+msgid "Supported Metrics"
+msgstr "支持的指标"
+
+#: ../../source/features/model-serving/multi-engine.rst:100
+msgid ""
+"Only a limited set of metrics is mapped for each engine, and more will be"
+" added over time. For a routing policy implemented through the `routing "
+"policy API <https://github.com/vllm-"
+"project/aibrix/tree/main/pkg/plugins/gateway/algorithms>`_, use a metric "
+"your target engine exports. Most policies fall back to random when they "
+"cannot score a pod; see *How it works* above for the exceptions."
+msgstr ""
+"每种引擎目前只映射有限的一组指标，后续会继续增加。对于通过 `routing policy API <https://github.com"
+"/vllm-project/aibrix/tree/main/pkg/plugins/gateway/algorithms>`_ "
+"实现的路由策略，请使用目标引擎会导出的指标。多数策略在无法给 Pod 打分时退回到随机；例外见上文 *How it works*。"
+
+#: ../../source/features/model-serving/multi-engine.rst:106
+msgid "AIBrix metric"
+msgstr "AIBrix 指标"
+
+#: ../../source/features/model-serving/multi-engine.rst:107
+msgid "vLLM"
+msgstr "vLLM"
+
+#: ../../source/features/model-serving/multi-engine.rst:108
+msgid "SGLang"
+msgstr "SGLang"
+
+#: ../../source/features/model-serving/multi-engine.rst:109
+msgid "TRT-LLM"
+msgstr "TRT-LLM"
+
+#: ../../source/features/model-serving/multi-engine.rst:110
+msgid "xLLM"
+msgstr "xLLM"
+
+#: ../../source/features/model-serving/multi-engine.rst:111
+msgid "``num_requests_running``"
+msgstr "``num_requests_running``"
+
+#: ../../source/features/model-serving/multi-engine.rst:112
+msgid "``vllm:num_requests_running``"
+msgstr "``vllm:num_requests_running``"
+
+#: ../../source/features/model-serving/multi-engine.rst:113
+msgid "``sglang:num_running_reqs``"
+msgstr "``sglang:num_running_reqs``"
+
+#: ../../source/features/model-serving/multi-engine.rst:114
+#: ../../source/features/model-serving/multi-engine.rst:115
+#: ../../source/features/model-serving/multi-engine.rst:119
+#: ../../source/features/model-serving/multi-engine.rst:120
+#: ../../source/features/model-serving/multi-engine.rst:124
+#: ../../source/features/model-serving/multi-engine.rst:125
+#: ../../source/features/model-serving/multi-engine.rst:128
+#: ../../source/features/model-serving/multi-engine.rst:129
+#: ../../source/features/model-serving/multi-engine.rst:130
+#: ../../source/features/model-serving/multi-engine.rst:133
+#: ../../source/features/model-serving/multi-engine.rst:134
+#: ../../source/features/model-serving/multi-engine.rst:135
+#: ../../source/features/model-serving/multi-engine.rst:138
+#: ../../source/features/model-serving/multi-engine.rst:139
+#: ../../source/features/model-serving/multi-engine.rst:140
+#: ../../source/features/model-serving/multi-engine.rst:145
+#: ../../source/features/model-serving/multi-engine.rst:147
+#: ../../source/features/model-serving/multi-engine.rst:149
+#: ../../source/features/model-serving/multi-engine.rst:150
+#: ../../source/features/model-serving/multi-engine.rst:152
+#: ../../source/features/model-serving/multi-engine.rst:154
+#: ../../source/features/model-serving/multi-engine.rst:155
+#: ../../source/features/model-serving/multi-engine.rst:160
+#: ../../source/features/model-serving/multi-engine.rst:163
+#: ../../source/features/model-serving/multi-engine.rst:165
+#: ../../source/features/model-serving/multi-engine.rst:168
+#: ../../source/features/model-serving/multi-engine.rst:169
+#: ../../source/features/model-serving/multi-engine.rst:170
+#: ../../source/features/model-serving/multi-engine.rst:172
+#: ../../source/features/model-serving/multi-engine.rst:174
+#: ../../source/features/model-serving/multi-engine.rst:175
+#: ../../source/features/model-serving/multi-engine.rst:178
+#: ../../source/features/model-serving/multi-engine.rst:179
+#: ../../source/features/model-serving/multi-engine.rst:180
+#: ../../source/features/model-serving/multi-engine.rst:183
+#: ../../source/features/model-serving/multi-engine.rst:184
+#: ../../source/features/model-serving/multi-engine.rst:185
+#: ../../source/features/model-serving/multi-engine.rst:188
+#: ../../source/features/model-serving/multi-engine.rst:189
+#: ../../source/features/model-serving/multi-engine.rst:190
+#: ../../source/features/model-serving/multi-engine.rst:193
+#: ../../source/features/model-serving/multi-engine.rst:194
+#: ../../source/features/model-serving/multi-engine.rst:195
+#: ../../source/features/model-serving/multi-engine.rst:198
+#: ../../source/features/model-serving/multi-engine.rst:199
+#: ../../source/features/model-serving/multi-engine.rst:200
+#: ../../source/features/model-serving/multi-engine.rst:203
+#: ../../source/features/model-serving/multi-engine.rst:204
+#: ../../source/features/model-serving/multi-engine.rst:205
+#: ../../source/features/model-serving/multi-engine.rst:208
+#: ../../source/features/model-serving/multi-engine.rst:209
+#: ../../source/features/model-serving/multi-engine.rst:210
+#: ../../source/features/model-serving/multi-engine.rst:213
+#: ../../source/features/model-serving/multi-engine.rst:214
+#: ../../source/features/model-serving/multi-engine.rst:215
+#: ../../source/features/model-serving/multi-engine.rst:220
+#: ../../source/features/model-serving/multi-engine.rst:225
+#: ../../source/features/model-serving/multi-engine.rst:230
+#: ../../source/features/model-serving/multi-engine.rst:233
+#: ../../source/features/model-serving/multi-engine.rst:234
+#: ../../source/features/model-serving/multi-engine.rst:235
+#: ../../source/features/model-serving/multi-engine.rst:238
+#: ../../source/features/model-serving/multi-engine.rst:239
+#: ../../source/features/model-serving/multi-engine.rst:240
+#: ../../source/features/model-serving/multi-engine.rst:243
+#: ../../source/features/model-serving/multi-engine.rst:244
+#: ../../source/features/model-serving/multi-engine.rst:245
+#: ../../source/features/model-serving/multi-engine.rst:249
+#: ../../source/features/model-serving/multi-engine.rst:253
+#: ../../source/features/model-serving/multi-engine.rst:254
+#: ../../source/features/model-serving/multi-engine.rst:255
+#: ../../source/features/model-serving/multi-engine.rst:262
+#: ../../source/features/model-serving/multi-engine.rst:263
+#: ../../source/features/model-serving/multi-engine.rst:264
+#: ../../source/features/model-serving/multi-engine.rst:267
+#: ../../source/features/model-serving/multi-engine.rst:268
+#: ../../source/features/model-serving/multi-engine.rst:270
+#: ../../source/features/model-serving/multi-engine.rst:273
+#: ../../source/features/model-serving/multi-engine.rst:274
+#: ../../source/features/model-serving/multi-engine.rst:275
+#: ../../source/features/model-serving/multi-engine.rst:278
+#: ../../source/features/model-serving/multi-engine.rst:279
+#: ../../source/features/model-serving/multi-engine.rst:280
+#: ../../source/features/model-serving/multi-engine.rst:283
+#: ../../source/features/model-serving/multi-engine.rst:284
+#: ../../source/features/model-serving/multi-engine.rst:285
+#: ../../source/features/model-serving/multi-engine.rst:288
+#: ../../source/features/model-serving/multi-engine.rst:289
+#: ../../source/features/model-serving/multi-engine.rst:290
+#: ../../source/features/model-serving/multi-engine.rst:293
+#: ../../source/features/model-serving/multi-engine.rst:294
+#: ../../source/features/model-serving/multi-engine.rst:295
+#: ../../source/features/model-serving/multi-engine.rst:298
+#: ../../source/features/model-serving/multi-engine.rst:299
+#: ../../source/features/model-serving/multi-engine.rst:300
+#: ../../source/features/model-serving/multi-engine.rst:303
+#: ../../source/features/model-serving/multi-engine.rst:304
+#: ../../source/features/model-serving/multi-engine.rst:305
+#: ../../source/features/model-serving/multi-engine.rst:308
+#: ../../source/features/model-serving/multi-engine.rst:309
+#: ../../source/features/model-serving/multi-engine.rst:310
+#: ../../source/features/model-serving/multi-engine.rst:313
+#: ../../source/features/model-serving/multi-engine.rst:314
+#: ../../source/features/model-serving/multi-engine.rst:315
+#: ../../source/features/model-serving/multi-engine.rst:318
+#: ../../source/features/model-serving/multi-engine.rst:319
+#: ../../source/features/model-serving/multi-engine.rst:320
+#: ../../source/features/model-serving/multi-engine.rst:323
+#: ../../source/features/model-serving/multi-engine.rst:324
+#: ../../source/features/model-serving/multi-engine.rst:325
+#: ../../source/features/model-serving/multi-engine.rst:329
+#: ../../source/features/model-serving/multi-engine.rst:330
+#: ../../source/features/model-serving/multi-engine.rst:333
+#: ../../source/features/model-serving/multi-engine.rst:334
+#: ../../source/features/model-serving/multi-engine.rst:335
+#: ../../source/features/model-serving/multi-engine.rst:338
+#: ../../source/features/model-serving/multi-engine.rst:339
+#: ../../source/features/model-serving/multi-engine.rst:340
+#: ../../source/features/model-serving/multi-engine.rst:343
+#: ../../source/features/model-serving/multi-engine.rst:344
+#: ../../source/features/model-serving/multi-engine.rst:345
+msgid "N/A"
+msgstr "N/A"
+
+#: ../../source/features/model-serving/multi-engine.rst:116
+msgid "``num_requests_waiting``"
+msgstr "``num_requests_waiting``"
+
+#: ../../source/features/model-serving/multi-engine.rst:117
+msgid "``vllm:num_requests_waiting``"
+msgstr "``vllm:num_requests_waiting``"
+
+#: ../../source/features/model-serving/multi-engine.rst:118
+msgid "``sglang:num_queue_reqs``"
+msgstr "``sglang:num_queue_reqs``"
+
+#: ../../source/features/model-serving/multi-engine.rst:121
+msgid "``num_requests_swapped``"
+msgstr "``num_requests_swapped``"
+
+#: ../../source/features/model-serving/multi-engine.rst:122
+msgid "``vllm:num_requests_swapped``"
+msgstr "``vllm:num_requests_swapped``"
+
+#: ../../source/features/model-serving/multi-engine.rst:123
+msgid "``sglang:num_retracted_reqs``"
+msgstr "``sglang:num_retracted_reqs``"
+
+#: ../../source/features/model-serving/multi-engine.rst:126
+msgid "``engine_sleep_state``"
+msgstr "``engine_sleep_state``"
+
+#: ../../source/features/model-serving/multi-engine.rst:127
+msgid "``vllm:engine_sleep_state``"
+msgstr "``vllm:engine_sleep_state``"
+
+#: ../../source/features/model-serving/multi-engine.rst:131
+msgid "``http_requests_total``"
+msgstr "``http_requests_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:132
+msgid "``vllm:http_requests_total``"
+msgstr "``vllm:http_requests_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:136
+msgid "``num_preemptions_total``"
+msgstr "``num_preemptions_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:137
+msgid "``vllm:num_preemptions_total``"
+msgstr "``vllm:num_preemptions_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:141
+msgid "``request_success_total``"
+msgstr "``request_success_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:142
+msgid "``vllm:num_requests_success_total``"
+msgstr "``vllm:num_requests_success_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:143
+msgid "``sglang:num_requests_total``"
+msgstr "``sglang:num_requests_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:144
+msgid "``trtllm_request_success_total``"
+msgstr "``trtllm_request_success_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:146
+msgid "``num_prefill_prealloc_queue_reqs``"
+msgstr "``num_prefill_prealloc_queue_reqs``"
+
+#: ../../source/features/model-serving/multi-engine.rst:148
+msgid "``sglang:num_prefill_prealloc_queue_reqs``"
+msgstr "``sglang:num_prefill_prealloc_queue_reqs``"
+
+#: ../../source/features/model-serving/multi-engine.rst:151
+msgid "``num_decode_prealloc_queue_reqs``"
+msgstr "``num_decode_prealloc_queue_reqs``"
+
+#: ../../source/features/model-serving/multi-engine.rst:153
+msgid "``sglang:num_decode_prealloc_queue_reqs``"
+msgstr "``sglang:num_decode_prealloc_queue_reqs``"
+
+#: ../../source/features/model-serving/multi-engine.rst:156
+msgid "``e2e_request_latency_seconds``"
+msgstr "``e2e_request_latency_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:157
+msgid "``vllm:e2e_request_latency_seconds``"
+msgstr "``vllm:e2e_request_latency_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:158
+msgid "``sglang:e2e_request_latency_seconds``"
+msgstr "``sglang:e2e_request_latency_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:159
+msgid "``trtllm_e2e_request_latency_seconds``"
+msgstr "``trtllm_e2e_request_latency_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:161
+msgid "``request_queue_time_seconds``"
+msgstr "``request_queue_time_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:162
+msgid "``vllm:request_queue_time_seconds``"
+msgstr "``vllm:request_queue_time_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:164
+msgid "``trtllm_request_queue_time_seconds``"
+msgstr "``trtllm_request_queue_time_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:166
+msgid "``request_inference_time_seconds``"
+msgstr "``request_inference_time_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:167
+msgid "``vllm:request_inference_time_seconds``"
+msgstr "``vllm:request_inference_time_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:171
+msgid "``per_stage_req_latency_seconds``"
+msgstr "``per_stage_req_latency_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:173
+msgid "``sglang:per_stage_req_latency_seconds``"
+msgstr "``sglang:per_stage_req_latency_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:176
+#: ../../source/features/model-serving/multi-engine.rst:177
+msgid "``http_request_duration_seconds``"
+msgstr "``http_request_duration_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:181
+#: ../../source/features/model-serving/multi-engine.rst:182
+msgid "``http_request_duration_highr_seconds``"
+msgstr "``http_request_duration_highr_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:186
+msgid "``prompt_tokens_total``"
+msgstr "``prompt_tokens_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:187
+msgid "``vllm:prompt_tokens_total``"
+msgstr "``vllm:prompt_tokens_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:191
+msgid "``request_prompt_tokens``"
+msgstr "``request_prompt_tokens``"
+
+#: ../../source/features/model-serving/multi-engine.rst:192
+msgid "``vllm:request_prompt_tokens``"
+msgstr "``vllm:request_prompt_tokens``"
+
+#: ../../source/features/model-serving/multi-engine.rst:196
+msgid "``generation_tokens_total``"
+msgstr "``generation_tokens_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:197
+msgid "``vllm:generation_tokens_total``"
+msgstr "``vllm:generation_tokens_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:201
+msgid "``request_generation_tokens``"
+msgstr "``request_generation_tokens``"
+
+#: ../../source/features/model-serving/multi-engine.rst:202
+msgid "``vllm:request_generation_tokens``"
+msgstr "``vllm:request_generation_tokens``"
+
+#: ../../source/features/model-serving/multi-engine.rst:206
+msgid "``request_max_num_generation_tokens``"
+msgstr "``request_max_num_generation_tokens``"
+
+#: ../../source/features/model-serving/multi-engine.rst:207
+msgid "``vllm:request_max_num_generation_tokens``"
+msgstr "``vllm:request_max_num_generation_tokens``"
+
+#: ../../source/features/model-serving/multi-engine.rst:211
+msgid "``iteration_tokens_total``"
+msgstr "``iteration_tokens_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:212
+msgid "``vllm:iteration_tokens_total``"
+msgstr "``vllm:iteration_tokens_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:216
+msgid "``time_to_first_token_seconds``"
+msgstr "``time_to_first_token_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:217
+msgid "``vllm:time_to_first_token_seconds``"
+msgstr "``vllm:time_to_first_token_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:218
+msgid "``sglang:time_to_first_token_seconds``"
+msgstr "``sglang:time_to_first_token_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:219
+msgid "``trtllm_time_to_first_token_seconds``"
+msgstr "``trtllm_time_to_first_token_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:221
+msgid "``time_per_output_token_seconds``"
+msgstr "``time_per_output_token_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:222
+msgid "``vllm:time_per_output_token_seconds``"
+msgstr "``vllm:time_per_output_token_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:223
+#: ../../source/features/model-serving/multi-engine.rst:228
+msgid "``sglang:inter_token_latency_seconds``"
+msgstr "``sglang:inter_token_latency_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:224
+#: ../../source/features/model-serving/multi-engine.rst:229
+msgid "``trtllm_time_per_output_token_seconds``"
+msgstr "``trtllm_time_per_output_token_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:226
+msgid "``inter_token_latency_seconds``"
+msgstr "``inter_token_latency_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:227
+msgid "``vllm:inter_token_latency_seconds``"
+msgstr "``vllm:inter_token_latency_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:231
+msgid "``request_decode_time_seconds``"
+msgstr "``request_decode_time_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:232
+msgid "``vllm:request_decode_time_seconds``"
+msgstr "``vllm:request_decode_time_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:236
+msgid "``request_prefill_time_seconds``"
+msgstr "``request_prefill_time_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:237
+msgid "``vllm:request_prefill_time_seconds``"
+msgstr "``vllm:request_prefill_time_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:241
+msgid "``request_time_per_output_token_seconds``"
+msgstr "``request_time_per_output_token_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:242
+msgid "``vllm:request_time_per_output_token_seconds``"
+msgstr "``vllm:request_time_per_output_token_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:246
+msgid "``gpu_cache_usage_perc``"
+msgstr "``gpu_cache_usage_perc``"
+
+#: ../../source/features/model-serving/multi-engine.rst:247
+msgid "``vllm:gpu_cache_usage_perc``"
+msgstr "``vllm:gpu_cache_usage_perc``"
+
+#: ../../source/features/model-serving/multi-engine.rst:248
+#: ../../source/features/model-serving/multi-engine.rst:258
+msgid "``sglang:token_usage``"
+msgstr "``sglang:token_usage``"
+
+#: ../../source/features/model-serving/multi-engine.rst:250
+#: ../../source/features/model-serving/multi-engine.rst:260
+msgid "``kv_cache_utilization``"
+msgstr "``kv_cache_utilization``"
+
+#: ../../source/features/model-serving/multi-engine.rst:251
+msgid "``cpu_cache_usage_perc``"
+msgstr "``cpu_cache_usage_perc``"
+
+#: ../../source/features/model-serving/multi-engine.rst:252
+msgid "``vllm:cpu_cache_usage_perc``"
+msgstr "``vllm:cpu_cache_usage_perc``"
+
+#: ../../source/features/model-serving/multi-engine.rst:256
+msgid "``kv_cache_usage_perc``"
+msgstr "``kv_cache_usage_perc``"
+
+#: ../../source/features/model-serving/multi-engine.rst:257
+msgid "``vllm:kv_cache_usage_perc``"
+msgstr "``vllm:kv_cache_usage_perc``"
+
+#: ../../source/features/model-serving/multi-engine.rst:259
+msgid "``trtllm_kv_cache_utilization``"
+msgstr "``trtllm_kv_cache_utilization``"
+
+#: ../../source/features/model-serving/multi-engine.rst:261
+#: ../../source/features/model-serving/multi-engine.rst:265
+msgid "``engine_utilization``"
+msgstr "``engine_utilization``"
+
+#: ../../source/features/model-serving/multi-engine.rst:266
+msgid "``kv_cache_hit_rate``"
+msgstr "``kv_cache_hit_rate``"
+
+#: ../../source/features/model-serving/multi-engine.rst:269
+msgid "``trtllm_kv_cache_hit_rate``"
+msgstr "``trtllm_kv_cache_hit_rate``"
+
+#: ../../source/features/model-serving/multi-engine.rst:271
+msgid "``prefix_cache_queries_total``"
+msgstr "``prefix_cache_queries_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:272
+msgid "``vllm:prefix_cache_queries_total``"
+msgstr "``vllm:prefix_cache_queries_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:276
+msgid "``prefix_cache_hits_total``"
+msgstr "``prefix_cache_hits_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:277
+msgid "``vllm:prefix_cache_hits_total``"
+msgstr "``vllm:prefix_cache_hits_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:281
+msgid "``external_prefix_cache_queries_total``"
+msgstr "``external_prefix_cache_queries_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:282
+msgid "``vllm:external_prefix_cache_queries_total``"
+msgstr "``vllm:external_prefix_cache_queries_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:286
+msgid "``external_prefix_cache_hits_total``"
+msgstr "``external_prefix_cache_hits_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:287
+msgid "``vllm:external_prefix_cache_hits_total``"
+msgstr "``vllm:external_prefix_cache_hits_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:291
+msgid "``nixl_xfer_time_seconds``"
+msgstr "``nixl_xfer_time_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:292
+msgid "``vllm:nixl_xfer_time_seconds``"
+msgstr "``vllm:nixl_xfer_time_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:296
+msgid "``nixl_post_time_seconds``"
+msgstr "``nixl_post_time_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:297
+msgid "``vllm:nixl_post_time_seconds``"
+msgstr "``vllm:nixl_post_time_seconds``"
+
+#: ../../source/features/model-serving/multi-engine.rst:301
+msgid "``nixl_bytes_transferred``"
+msgstr "``nixl_bytes_transferred``"
+
+#: ../../source/features/model-serving/multi-engine.rst:302
+msgid "``vllm:nixl_bytes_transferred``"
+msgstr "``vllm:nixl_bytes_transferred``"
+
+#: ../../source/features/model-serving/multi-engine.rst:306
+msgid "``nixl_num_descriptors``"
+msgstr "``nixl_num_descriptors``"
+
+#: ../../source/features/model-serving/multi-engine.rst:307
+msgid "``vllm:nixl_num_descriptors``"
+msgstr "``vllm:nixl_num_descriptors``"
+
+#: ../../source/features/model-serving/multi-engine.rst:311
+msgid "``nixl_num_failed_transfers_total``"
+msgstr "``nixl_num_failed_transfers_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:312
+msgid "``vllm:nixl_num_failed_transfers``"
+msgstr "``vllm:nixl_num_failed_transfers``"
+
+#: ../../source/features/model-serving/multi-engine.rst:316
+msgid "``nixl_num_failed_notifications_total``"
+msgstr "``nixl_num_failed_notifications_total``"
+
+#: ../../source/features/model-serving/multi-engine.rst:317
+msgid "``vllm:nixl_num_failed_notifications``"
+msgstr "``vllm:nixl_num_failed_notifications``"
+
+#: ../../source/features/model-serving/multi-engine.rst:321
+msgid "``avg_prompt_throughput_toks_per_s``"
+msgstr "``avg_prompt_throughput_toks_per_s``"
+
+#: ../../source/features/model-serving/multi-engine.rst:322
+msgid "``vllm:avg_prompt_throughput_toks_per_s``"
+msgstr "``vllm:avg_prompt_throughput_toks_per_s``"
+
+#: ../../source/features/model-serving/multi-engine.rst:326
+msgid "``avg_generation_throughput_toks_per_s``"
+msgstr "``avg_generation_throughput_toks_per_s``"
+
+#: ../../source/features/model-serving/multi-engine.rst:327
+msgid "``vllm:avg_generation_throughput_toks_per_s``"
+msgstr "``vllm:avg_generation_throughput_toks_per_s``"
+
+#: ../../source/features/model-serving/multi-engine.rst:328
+msgid "``sglang:gen_throughput``"
+msgstr "``sglang:gen_throughput``"
+
+#: ../../source/features/model-serving/multi-engine.rst:331
+msgid "``max_lora``"
+msgstr "``max_lora``"
+
+#: ../../source/features/model-serving/multi-engine.rst:332
+#: ../../source/features/model-serving/multi-engine.rst:337
+#: ../../source/features/model-serving/multi-engine.rst:342
+msgid "``vllm:lora_requests_info``"
+msgstr "``vllm:lora_requests_info``"
+
+#: ../../source/features/model-serving/multi-engine.rst:336
+msgid "``running_lora_adapters``"
+msgstr "``running_lora_adapters``"
+
+#: ../../source/features/model-serving/multi-engine.rst:341
+msgid "``waiting_lora_adapters``"
+msgstr "``waiting_lora_adapters``"
+
+#: ../../source/features/model-serving/multi-engine.rst:347
+msgid ""
+"The SGLang entries for ``gpu_cache_usage_perc`` and "
+"``kv_cache_usage_perc`` map to ``sglang:token_usage`` [1]_. The xLLM "
+"names have no engine prefix: both cache metrics map to "
+"``kv_cache_utilization``, and ``engine_utilization`` maps to itself."
+msgstr ""
+"SGLang 的 ``gpu_cache_usage_perc`` 和 ``kv_cache_usage_perc`` 映射到 "
+"``sglang:token_usage`` [1]_。xLLM 的名称没有引擎前缀：两项缓存指标都映射到 "
+"``kv_cache_utilization``，``engine_utilization`` 映射到它自身。"
+
+#: ../../source/features/model-serving/multi-engine.rst:349
+msgid ""
+"`https://github.com/sgl-project/sglang/issues/5979 <https://github.com"
+"/sgl-project/sglang/issues/5979>`_"
+msgstr ""
+"`https://github.com/sgl-project/sglang/issues/5979 <https://github.com"
+"/sgl-project/sglang/issues/5979>`_"
+
+#: ../../source/features/model-serving/multi-engine.rst:351
+msgid ""
+"The table lists metrics read directly from each engine. AIBrix also "
+"defines query-based metrics that Prometheus computes, such as "
+"``avg_prompt_toks_per_req``, ``avg_generation_toks_per_req``, "
+"``p95_ttft_5m`` and ``avg_e2e_latency_pod``. Their PromQL is written "
+"against vLLM metric names, so they are available for vLLM only. "
+"``drain_rate_1m`` is the exception: it is written against SGLang metric "
+"names."
+msgstr ""
+"该表列出的是直接从各引擎读取的指标。AIBrix 还定义了由 Prometheus 计算的查询类指标，例如 "
+"``avg_prompt_toks_per_req`` 、``avg_generation_toks_per_req`` "
+"、``p95_ttft_5m`` 和 ``avg_e2e_latency_pod`` 。它们的 PromQL 基于 vLLM "
+"指标名称编写，因此仅适用于 vLLM。 ``drain_rate_1m`` 是例外：它基于 SGLang 指标名称编写。"
+
+#: ../../source/features/model-serving/multi-engine.rst:354
+msgid "TRT-LLM Quickstart"
+msgstr "TRT-LLM 快速开始"
+
+#: ../../source/features/model-serving/multi-engine.rst:356
+msgid ""
+"To use TRT-LLM as the inference engine, set the ``model.aibrix.ai/engine:"
+" trtllm`` label on your deployment. TRT-LLM must be configured to expose "
+"performance metrics by enabling ``return_perf_metrics: true``, "
+"``enable_iter_perf_stats: true``, and ``enable_iter_req_stats: true`` in "
+"its server config."
+msgstr ""
+"要将 TRT-LLM 用作推理引擎，请在 deployment 上设置 ``model.aibrix.ai/engine: trtllm`` 标签"
+"。TRT-LLM 必须在其 server config 中启用 ``return_perf_metrics: true`` "
+"、``enable_iter_perf_stats: true`` 和 ``enable_iter_req_stats: true`` "
+"，以暴露性能指标。"
+
+#: ../../source/features/model-serving/multi-engine.rst:358
+msgid "Sample configurations are available at:"
+msgstr "示例配置见："
+
+#: ../../source/features/model-serving/multi-engine.rst:360
+msgid ""
+"`samples/quickstart/tensorrt/tensor-rt.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/quickstart/tensorrt/tensor-rt.yaml>`_ — "
+"standard single-instance deployment"
+msgstr ""
+"`samples/quickstart/tensorrt/tensor-rt.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/quickstart/tensorrt/tensor-rt.yaml>`_ — "
+"标准单实例部署"
+
+#: ../../source/features/model-serving/multi-engine.rst:361
+msgid ""
+"`samples/quickstart/tensorrt/tensor-rt-pd.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/quickstart/tensorrt/tensor-rt-pd.yaml>`_"
+" — prefill/decode disaggregated deployment using StormService"
+msgstr ""
+"`samples/quickstart/tensorrt/tensor-rt-pd.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/quickstart/tensorrt/tensor-rt-pd.yaml>`_"
+" — 使用 StormService 的 Prefill/Decode 分离部署"
+
+#: ../../source/features/model-serving/multi-engine.rst:363
+msgid "Example deployment label configuration for TRT-LLM:"
+msgstr "TRT-LLM 的 deployment 标签配置示例："
+
+#: ../../source/features/model-serving/multi-engine.rst:373
+msgid "TRT-LLM Limitations"
+msgstr "TRT-LLM 限制"
+
+#: ../../source/features/model-serving/multi-engine.rst:375
+msgid ""
+"**No queue-depth metrics**: TRT-LLM does not expose "
+"``num_requests_running`` or ``num_requests_waiting``, so anything that "
+"reads engine queue depth sees zero for TRT-LLM pods, such as the optional"
+" queued-request term of ``load-balance``. ``least-request`` is not "
+"affected: it counts in-flight requests at the gateway."
+msgstr ""
+"**无队列深度指标** ：TRT-LLM 不暴露 ``num_requests_running`` 或 "
+"``num_requests_waiting`` ，因此任何读取引擎队列深度的逻辑在 TRT-LLM Pod 上都会读到零，例如 ``load-"
+"balance`` 可选的排队请求项。 ``least-request`` 不受影响：它在网关处统计在途请求。"
+
+#: ../../source/features/model-serving/multi-engine.rst:376
+msgid ""
+"**Metrics require explicit config**: Performance metrics are only emitted"
+" when ``return_perf_metrics: true``, ``enable_iter_perf_stats: true``, "
+"and ``enable_iter_req_stats: true`` are set in the TRT-LLM server "
+"configuration."
+msgstr ""
+"**指标需要显式配置** ：仅当 TRT-LLM server 配置中设置 ``return_perf_metrics: true`` "
+"、``enable_iter_perf_stats: true`` 和 ``enable_iter_req_stats: true`` "
+"时才会发出性能指标。"
+
+#: ../../source/features/model-serving/multi-engine.rst:379
+msgid "SGLang Decisions API"
+msgstr "SGLang Decisions API"
+
+#: ../../source/features/model-serving/multi-engine.rst:381
+msgid ""
+"SGLang serves ``POST /v1/decisions``, which answers typed ``choice``, "
+"``score`` and ``yes_no`` questions about an input by scoring answer "
+"labels, without generating text. The gateway routes it to the pods of the"
+" requested model, like the other model endpoints:"
+msgstr ""
+"SGLang 提供 ``POST /v1/decisions``。它通过对答案标签打分来回答关于一段输入的 "
+"``choice``、``score`` 和 ``yes_no`` 问题，而不生成文本。网关像其他模型端点一样，把它路由到所请求模型的 Pod："
+
+#: ../../source/features/model-serving/multi-engine.rst:401
+msgid "What differs from the other endpoints:"
+msgstr "与其他端点的不同之处："
+
+#: ../../source/features/model-serving/multi-engine.rst:403
+msgid ""
+"``model`` is required. SGLang treats it as optional and echoes a default,"
+" but the gateway needs it to select a pod, so a request without one is "
+"rejected with ``400``."
+msgstr "``model`` 必填。SGLang 把它当作可选并回显一个默认值，但网关需要它来选择 Pod，因此缺少该字段的请求会以 ``400`` 拒绝。"
+
+#: ../../source/features/model-serving/multi-engine.rst:405
+msgid ""
+"``input`` is required and may be a string, an object or an array. The "
+"gateway uses it, with objects and arrays compacted to JSON text, as the "
+"routing text for prefix-cache-aware routing. ``questions`` must be a non-"
+"empty array. The question schema itself is validated by SGLang."
+msgstr ""
+"``input`` 必填，可以是字符串、对象或数组。网关把它（对象和数组会压缩成 JSON "
+"文本）用作前缀缓存感知路由的路由文本。``questions`` 必须是非空数组。问题结构本身由 SGLang 校验。"
+
+#: ../../source/features/model-serving/multi-engine.rst:408
+msgid ""
+"There is no streaming and no generation. Usage reports ``prompt_tokens`` "
+"and ``total_tokens`` only, with ``completion_tokens`` at ``0``."
+msgstr ""
+"没有流式输出，也不生成文本。用量只报告 ``prompt_tokens`` 和 "
+"``total_tokens``，``completion_tokens`` 为 ``0``。"
+
+#: ../../source/features/model-serving/multi-engine.rst:410
+msgid ""
+"``images`` are forwarded as sent. The gateway buffers the whole request "
+"body, so large base64 images count against the ``bufferLimit`` of the "
+"gateway's ``ClientTrafficPolicy`` (4 MiB by default). Raise it, together "
+"with ``AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES``, if you send big images."
+msgstr ""
+"``images`` 会按原样转发。网关会缓冲整个请求体，因此较大的 base64 图片计入网关 ``ClientTrafficPolicy`` "
+"的 ``bufferLimit``（默认 4 MiB）。发送大图片时，请同时提高该限制和 "
+"``AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES``。"
+
+#: ../../source/features/model-serving/multi-engine.rst:414
+msgid ""
+"The gateway does not check the engine, so a decisions request for a model"
+" served by another engine is forwarded and fails at the pod. Only route "
+"it to ``model.aibrix.ai/engine: sglang`` models."
+msgstr ""
+"网关不检查引擎，因此发给其他引擎所服务模型的 decisions 请求会被转发，并在 Pod 上失败。请只把它路由到 "
+"``model.aibrix.ai/engine: sglang`` 的模型。"
+
+#: ../../source/features/model-serving/multi-engine.rst:418
+msgid "SGLang System One API"
+msgstr "SGLang System One API"
+
+#: ../../source/features/model-serving/multi-engine.rst:420
+msgid ""
+"SGLang's ``POST /v1/systemone`` serves the same decisions in the System "
+"One request shape: a ``state`` and a map of ``noul``, ``choice`` and "
+"``score`` questions keyed by your own ids. The gateway routes it to the "
+"pods of the requested model, like ``/v1/decisions``:"
+msgstr ""
+"SGLang 的 ``POST /v1/systemone`` 用 System One 的请求形状提供同样的决策：一个 "
+"``state``，以及由你自己的 id 作为键的 ``noul``、``choice`` 和 ``score`` 问题映射。网关像 "
+"``/v1/decisions`` 一样，把它路由到所请求模型的 Pod："
+
+#: ../../source/features/model-serving/multi-engine.rst:442
+msgid "What differs from ``/v1/decisions``:"
+msgstr "与 ``/v1/decisions`` 的不同之处："
+
+#: ../../source/features/model-serving/multi-engine.rst:444
+msgid ""
+"``model`` is required and must be a model the gateway serves. SGLang "
+"accepts any name, but the gateway selects a pod with it, so a model that "
+"is not deployed is rejected with ``400`` ``model_not_found``. A client "
+"library that sends a default model name, such as the TypeSafe SDKs' "
+"``jev-latest``, has to be told to send your model's name instead."
+msgstr ""
+"``model`` 必填，且必须是网关正在服务的模型。SGLang 接受任意名称，但网关用它选择 Pod，因此未部署的模型会以 ``400`` "
+"``model_not_found`` 拒绝。会发送默认模型名的客户端库（例如 TypeSafe SDK 的 ``jev-"
+"latest``）必须改成发送你的模型名。"
+
+#: ../../source/features/model-serving/multi-engine.rst:448
+msgid ""
+"``state`` is required and may be a string, an object or an array. Unlike "
+"a decisions ``input`` it may be empty, because SGLang accepts an empty "
+"state. The gateway uses it, with objects and arrays compacted to JSON "
+"text, as the routing text for prefix-cache-aware routing: SGLang puts the"
+" state at the head of every question's prompt, so it is the part the "
+"questions share. A pod serving a decision checkpoint renders an object "
+"state with spaces after the JSON separators, so the routing text then "
+"differs from the prompt by whitespace; this only affects the cache-"
+"affinity estimate."
+msgstr ""
+"``state`` 必填，可以是字符串、对象或数组。与 decisions 的 ``input`` 不同，它可以是空的，因为 SGLang 接受空"
+" state。网关把它（对象和数组会压缩成 JSON 文本）用作前缀缓存感知路由的路由文本：SGLang 把 state 放在每个问题 "
+"prompt 的开头，因此它是各问题共享的部分。提供 decision checkpoint 的 Pod 在渲染对象 state 时会在 JSON"
+" 分隔符后加空格，于是路由文本与 prompt 只在空白上不同；这只影响缓存亲和性的估计。"
+
+#: ../../source/features/model-serving/multi-engine.rst:454
+msgid ""
+"``questions`` must be a non-empty object keyed by your ids. An array, the"
+" ``/v1/decisions`` shape, is rejected with ``400``. The question schema "
+"itself is validated by SGLang."
+msgstr ""
+"``questions`` 必须是以你的 id 为键的非空对象。数组（即 ``/v1/decisions`` 的形状）会以 ``400`` "
+"拒绝。问题结构本身由 SGLang 校验。"
+
+#: ../../source/features/model-serving/multi-engine.rst:456
+msgid ""
+"There is no streaming and no generation. Usage reports ``input_tokens``, "
+"which counts the prompt of every question, so the state is counted once "
+"per question, and ``output_tokens`` at ``0``. There is no "
+"``total_tokens``: the gateway counts input plus output as the total for "
+"rate-limit and request metrics, and forwards the usage block unchanged."
+msgstr ""
+"没有流式输出，也不生成文本。用量报告 ``input_tokens``，它计入每个问题的 prompt，因此 state "
+"会按问题重复计算，``output_tokens`` 为 ``0``。没有 "
+"``total_tokens``：网关把输入加输出作为限流和请求指标的总量，并原样转发 usage 块。"
+
+#: ../../source/features/model-serving/multi-engine.rst:460
+msgid ""
+"``images`` are forwarded as sent, with the same ``bufferLimit`` caveat as"
+" for ``/v1/decisions``."
+msgstr "``images`` 会按原样转发，``bufferLimit`` 的限制与 ``/v1/decisions`` 相同。"
+
+#: ../../source/features/model-serving/multi-engine.rst:461
+msgid ""
+"The TypeSafe SDKs time out after 10 seconds and retry. Each retry reaches"
+" the gateway as a separate request, so request counts and token usage "
+"include the retries."
+msgstr "TypeSafe SDK 在 10 秒后超时并重试。每次重试都会作为单独请求到达网关，因此请求计数和 token 用量包含这些重试。"
+
+#: ../../source/features/model-serving/multi-engine.rst:464
+msgid ""
+"The same engine caveat applies: a request for a model served by another "
+"engine is forwarded and fails at the pod. SGLang also serves the route "
+"only for models with a Jinja chat template; its decision-models "
+"documentation lists what it refuses."
+msgstr ""
+"同样的引擎限制也适用：发给其他引擎所服务模型的请求会被转发，并在 Pod 上失败。SGLang 也只对带有 Jinja "
+"聊天模板的模型提供该路由；它的 decision-models 文档列出了会拒绝的情况。"
+
+#: ../../source/features/model-serving/multi-engine.rst:468
+msgid "SGLang Score API"
+msgstr "SGLang Score API"
+
+#: ../../source/features/model-serving/multi-engine.rst:471
+msgid ""
+"SGLang serves ``POST /v1/score``, which scores items against a query "
+"without generating text: label-token probabilities for a causal LM, or "
+"class logits for a sequence-classification model. The gateway routes it "
+"to the pods of the requested model, like the other model endpoints:"
+msgstr ""
+"SGLang 提供 ``POST /v1/score`` ，在不生成文本的情况下针对查询为各条目打分：因果语言模型返回标签 token "
+"的概率，序列分类模型返回类别 logits。网关会像其他模型端点一样，将其路由到所请求模型的 Pod："
+
+#: ../../source/features/model-serving/multi-engine.rst:403
+msgid ""
+"``model`` is required. SGLang falls back to a default model, but the "
+"gateway needs the name to select a pod, so a request without one is "
+"rejected with ``400``."
+msgstr "``model`` 为必填项。SGLang 会回退到默认模型，但网关需要模型名来选择 Pod，因此缺少该字段的请求会以 ``400`` 被拒绝。"
+
+#: ../../source/features/model-serving/multi-engine.rst:492
+msgid ""
+"``items`` is required and cannot be empty. It may be a string, an array "
+"of strings or an array of token-ID arrays. ``query`` is optional and "
+"takes text or token IDs."
+msgstr ""
+"``items`` 为必填项且不能为空，可以是字符串、字符串数组或 token ID 数组的数组。 ``query`` 为可选项，可以是文本或 "
+"token ID。"
+
+#: ../../source/features/model-serving/multi-engine.rst:494
+msgid ""
+"Every other field, such as ``label_token_ids``, ``apply_softmax``, "
+"``item_first`` and the setwise ``score_extraction_token``, is forwarded "
+"as sent and validated by SGLang."
+msgstr ""
+"其他字段，例如 ``label_token_ids`` 、 ``apply_softmax`` 、 ``item_first`` 以及 "
+"setwise 模式的 ``score_extraction_token`` ，都会原样转发，由 SGLang 校验。"
+
+#: ../../source/features/model-serving/multi-engine.rst:496
+msgid ""
+"The routing text for prefix-cache-aware routing is the ``query`` when it "
+"is text, otherwise the first item when the items are text. Token-ID input"
+" gives no routing text."
+msgstr ""
+"前缀缓存感知路由使用的路由文本：当 ``query`` 为文本时使用 ``query`` ，否则在条目为文本时使用第一个条目。token ID "
+"形式的输入不产生路由文本。"
+
+#: ../../source/features/model-serving/multi-engine.rst:408
+msgid ""
+"There is no streaming, and ``stream: true`` is rejected with ``400``. The"
+" response, including nested setwise ``scores`` and "
+"``pooled_hidden_states``, is forwarded unchanged. Usage is counted when "
+"SGLang reports it."
+msgstr ""
+"不支持流式， ``stream: true`` 会以 ``400`` 被拒绝。响应（包括 setwise 模式下嵌套的 ``scores`` 和 "
+"``pooled_hidden_states`` ）会原样转发。SGLang 报告 usage 时会计入用量。"
+
+#: ../../source/features/model-serving/multi-engine.rst:502
+msgid ""
+"The gateway does not check the engine, so a score request for a model "
+"served by another engine is forwarded and fails at the pod. Only route it"
+" to ``model.aibrix.ai/engine: sglang`` models."
+msgstr ""
+"网关不检查引擎，因此发往其他引擎所服务模型的 score 请求会被转发，并在 Pod 上失败。请仅将其路由到 "
+"``model.aibrix.ai/engine: sglang`` 的模型。"
+
+#: ../../source/features/model-serving/multi-engine.rst:505
+msgid "Adding New Engines"
+msgstr "添加新引擎"
+
+#: ../../source/features/model-serving/multi-engine.rst:507
+msgid "To support a new engine or metric:"
+msgstr "要支持新的引擎或指标："
+
+#: ../../source/features/model-serving/multi-engine.rst:509
+msgid ""
+"Add the engine's metric names to the mapping in `pkg/metrics/metrics.go "
+"<https://github.com/vllm-"
+"project/aibrix/blob/main/pkg/metrics/metrics.go>`_."
+msgstr ""
+"把该引擎的指标名加入 `pkg/metrics/metrics.go <https://github.com/vllm-"
+"project/aibrix/blob/main/pkg/metrics/metrics.go>`_ 中的映射。"
+
+#: ../../source/features/model-serving/multi-engine.rst:510
+msgid ""
+"Set ``model.aibrix.ai/engine`` on the deployment's pod template to that "
+"engine name."
+msgstr "在 Deployment 的 Pod 模板上把 ``model.aibrix.ai/engine`` 设为该引擎名。"
+
+#: ../../source/features/model-serving/multi-engine.rst:512
+msgid "For more details, see the `cache_metrics.go` and `metrics.go` in:"
+msgstr "更多细节见以下路径中的 `cache_metrics.go` 和 `metrics.go` ："
+
+#: ../../source/features/model-serving/multi-engine.rst:514
+msgid ""
+"`aibrix/pkg/cache/cache_metrics.go <https://github.com/vllm-"
+"project/aibrix/blob/main/pkg/cache/cache_metrics.go>`_"
+msgstr ""
+"`aibrix/pkg/cache/cache_metrics.go <https://github.com/vllm-"
+"project/aibrix/blob/main/pkg/cache/cache_metrics.go>`_"
+
+#: ../../source/features/model-serving/multi-engine.rst:515
+msgid ""
+"`aibrix/pkg/metrics/metrics.go <https://github.com/vllm-"
+"project/aibrix/blob/main/pkg/metrics/metrics.go>`_"
+msgstr ""
+"`aibrix/pkg/metrics/metrics.go <https://github.com/vllm-"
+"project/aibrix/blob/main/pkg/metrics/metrics.go>`_"
+
+#~ msgid ""
+#~ "AIBrix **multi-engine scheduling** allows "
+#~ "developers to deploy and serve multiple"
+#~ " engines (e.g., different LLMs or "
+#~ "engine backends) under a single AIBrix"
+#~ " instance. This enables flexible routing"
+#~ " of incoming requests to different "
+#~ "engines based on model name, scheduling"
+#~ " policies, or performance characteristics."
+#~ msgstr ""
+#~ "AIBrix **多引擎调度** 可让开发者在同一个 AIBrix "
+#~ "实例下部署并服务多个引擎（例如不同 LLM "
+#~ "或引擎后端）。从而能按模型名、调度策略或性能特征，将入站请求灵活路由到不同引擎。"
+
+#~ msgid "Support vLLM, SGLang and TRT-LLM engines in a single deployment."
+#~ msgstr "在同一部署中支持 vLLM、SGLang 和 TRT-LLM 引擎。"
+
+#~ msgid ""
+#~ "Configure engine by adding "
+#~ "`model.aibrix.ai/engine` as label in the "
+#~ "deployment YAML file."
+#~ msgstr "在 deployment YAML 中添加 `model.aibrix.ai/engine` 标签以配置引擎。"
+
+#~ msgid "Support for interpreting metrics from different engine types."
+#~ msgstr "支持解析不同类型引擎的指标。"
+
+#~ msgid ""
+#~ "**Side-by-side comparisons** of latency,"
+#~ " throughput, and behavior across engines."
+#~ msgstr "**并排比较** 不同引擎的延迟、吞吐和行为。"
+
+#~ msgid ""
+#~ "**Deployment flexibility**, supporting model "
+#~ "sharding or migration strategies."
+#~ msgstr "**部署灵活性** ，支持模型分片或迁移策略。"
+
+#~ msgid ""
+#~ "Incoming requests will use the "
+#~ "deployment label to determine correct "
+#~ "ways of interpreting metrics retrieved "
+#~ "from Prometheus API, which are later "
+#~ "used by the `Router` to delegate "
+#~ "execution. To configure a specific "
+#~ "engine, apply the following labels in"
+#~ " the deployment YAML file:"
+#~ msgstr ""
+#~ "入站请求会使用 deployment 标签，决定如何正确解析从 Prometheus API"
+#~ " 获取的指标，随后由 `Router` 用于委派执行。要配置特定引擎，请在 deployment"
+#~ " YAML 中应用以下标签："
+
+#~ msgid ""
+#~ "AIBrix will use the `model.aibrix.ai/engine`"
+#~ " label to determine which engine to"
+#~ " use for the deployment and search"
+#~ " for correct format of metrics to "
+#~ "retrieve from all metrics read from "
+#~ "Prometheus."
+#~ msgstr ""
+#~ "AIBrix 会使用 `model.aibrix.ai/engine` 标签确定该 "
+#~ "deployment 使用的引擎，并在从 Prometheus 读取的全部指标中查找正确格式以获取指标。"
+
+#~ msgid ""
+#~ "Adding engine type to metrics name "
+#~ "mapping at `aibrix/pkg/metrics/metrics.go`."
+#~ msgstr "在 `aibrix/pkg/metrics/metrics.go` 中添加引擎类型到指标名的映射。"
+

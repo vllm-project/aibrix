@@ -516,5 +516,7 @@ msgid ":doc:`model-deployment`: deploy the models the Console manages"
 msgstr ":doc:`model-deployment` ：部署 Console 所管理的模型"
 
 #: ../../source/production/console.rst:246
-msgid ":doc:`../features/batch-api`: submit and track offline batch jobs"
-msgstr ":doc:`../features/batch-api` ：提交并跟踪离线批处理任务"
+msgid ""
+":doc:`../features/batch-inference/batch-api`: submit and track "
+"offline batch jobs"
+msgstr ":doc:`../features/batch-inference/batch-api` ：提交并跟踪离线批处理任务"

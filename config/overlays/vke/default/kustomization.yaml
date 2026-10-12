@@ -9,24 +9,24 @@ patches:
   - path: gateway_plugins_patch.yaml
 
 images:
-- name: quay.io/kuberay/operator
-  newName: aibrix-cn-beijing.cr.volces.com/aibrix/kuberay-operator
+- name: aibrix/kuberay-operator
+  newName: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/kuberay-operator
   newTag: v1.2.1-patch-20250726
 - name: busybox
-  newName: aibrix-cn-beijing.cr.volces.com/aibrix/busybox
+  newName: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/busybox
   newTag: stable
 - name: redis
-  newName: aibrix-cn-beijing.cr.volces.com/aibrix/redis
+  newName: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/redis
   newTag: "7.4"
 - name: aibrix/gateway-plugins
-  newName: aibrix-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+  newName: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
   newTag: v0.8.0-rc.1
 - name: aibrix/metadata-service
-  newName: aibrix-cn-beijing.cr.volces.com/aibrix/metadata-service
+  newName: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/metadata-service
   newTag: v0.8.0-rc.1
 - name: aibrix/controller-manager
-  newName: aibrix-cn-beijing.cr.volces.com/aibrix/controller-manager
+  newName: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/controller-manager
   newTag: v0.8.0-rc.1
 - name: aibrix/runtime
-  newName: aibrix-cn-beijing.cr.volces.com/aibrix/runtime
+  newName: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/runtime
   newTag: v0.8.0-rc.1

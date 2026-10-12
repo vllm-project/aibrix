@@ -27,8 +27,9 @@ spec:
   # Only nil or 1 are supported. Other values will be rejected.
   # replicas: 1
   
-  # Optional: Scheduler to use for pod selection (default: "default")
-  # Available schedulers: "default", "least-adapters"
+  # The controller does not read schedulerName. Pod selection uses
+  # --model-adapter-scheduler-policy on the controller manager
+  # (default leastAdapters). The CRD still defaults this field to "default".
   schedulerName: default
 
   # Lifecycle phases: Pending → Scheduled (replicas: 1 only) → Running, or Failed

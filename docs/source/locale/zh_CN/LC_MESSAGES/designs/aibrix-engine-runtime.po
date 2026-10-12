@@ -102,8 +102,8 @@ msgid "ai-engine-runtime-overview"
 msgstr "ai-engine-runtime-overview"
 
 #: ../../source/designs/aibrix-engine-runtime.rst:32
-msgid ":doc:`../features/runtime`"
-msgstr ":doc:`../features/runtime`"
+msgid ":doc:`../features/model-serving/runtime`"
+msgstr ":doc:`../features/model-serving/runtime`"
 
 #: ../../source/designs/aibrix-engine-runtime.rst:33
 msgid "Using the AI Runtime sidecar."

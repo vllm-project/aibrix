@@ -197,6 +197,6 @@ For advanced development usage, please refer to the :ref:`development` section.
    :class-card: sd-border-1
 
    * :doc:`installation/installation`: production installation for your platform
-   * :doc:`../features/gateway-plugins`: choose a routing strategy for your workload
-   * :doc:`../features/autoscaling/autoscaling`: scale replicas on inference metrics
+   * :doc:`../features/gateway-routing/gateway-plugins`: choose a routing strategy for your workload
+   * :doc:`../features/scaling-performance/autoscaling/autoscaling`: scale replicas on inference metrics
    * :doc:`../production/observability`: see what the system is doing

@@ -27,16 +27,16 @@ msgid "Architecture"
 msgstr "架构"
 
 #: ../../source/index.rst:85
-msgid "Gateway & Routing"
-msgstr "网关与路由"
+msgid "Request Routing"
+msgstr "请求路由"
 
 #: ../../source/index.rst:94
-msgid "Model Serving"
-msgstr "模型服务"
+msgid "Model Management"
+msgstr "模型管理"
 
 #: ../../source/index.rst:105
-msgid "Scaling & Performance"
-msgstr "扩缩容与性能"
+msgid "Scaling & Efficiency"
+msgstr "扩缩容与效率"
 
 #: ../../source/index.rst:113
 msgid "Batch Inference"
@@ -161,8 +161,8 @@ msgid ":doc:`getting_started/installation/installation`"
 msgstr ":doc:`getting_started/installation/installation`"
 
 #: ../../source/index.rst:38
-msgid ":doc:`features/gateway-plugins`"
-msgstr ":doc:`features/gateway-plugins`"
+msgid ":doc:`features/gateway-routing/gateway-plugins`"
+msgstr ":doc:`features/gateway-routing/gateway-plugins`"
 
 #: ../../source/index.rst:40
 msgid "Intermediate"
@@ -173,16 +173,16 @@ msgid "Serving works. Make it efficient."
 msgstr "服务已经跑起来。接下来把它做得更高效。"
 
 #: ../../source/index.rst:45
-msgid ":doc:`features/autoscaling/autoscaling`"
-msgstr ":doc:`features/autoscaling/autoscaling`"
+msgid ":doc:`features/scaling-performance/autoscaling/autoscaling`"
+msgstr ":doc:`features/scaling-performance/autoscaling/autoscaling`"
 
 #: ../../source/index.rst:46
-msgid ":doc:`features/lora-dynamic-loading`"
-msgstr ":doc:`features/lora-dynamic-loading`"
+msgid ":doc:`features/model-serving/lora-dynamic-loading`"
+msgstr ":doc:`features/model-serving/lora-dynamic-loading`"
 
 #: ../../source/index.rst:47
-msgid ":doc:`features/kvcache-offloading`"
-msgstr ":doc:`features/kvcache-offloading`"
+msgid ":doc:`features/scaling-performance/kvcache-offloading`"
+msgstr ":doc:`features/scaling-performance/kvcache-offloading`"
 
 #: ../../source/index.rst:48
 msgid ":doc:`production/observability`"
@@ -197,16 +197,16 @@ msgid "Scale, cost, and latency targets."
 msgstr "规模、成本与延迟目标。"
 
 #: ../../source/index.rst:55
-msgid ":doc:`features/pd-disaggregation`"
-msgstr ":doc:`features/pd-disaggregation`"
+msgid ":doc:`features/gateway-routing/pd-disaggregation`"
+msgstr ":doc:`features/gateway-routing/pd-disaggregation`"
 
 #: ../../source/index.rst:56
-msgid ":doc:`features/multi-node-inference`"
-msgstr ":doc:`features/multi-node-inference`"
+msgid ":doc:`features/model-serving/multi-node-inference`"
+msgstr ":doc:`features/model-serving/multi-node-inference`"
 
 #: ../../source/index.rst:57
-msgid ":doc:`features/heterogeneous-gpu`"
-msgstr ":doc:`features/heterogeneous-gpu`"
+msgid ":doc:`features/model-serving/heterogeneous-gpu`"
+msgstr ":doc:`features/model-serving/heterogeneous-gpu`"
 
 #: ../../source/index.rst:58
 msgid ":doc:`production/model-deployment`"
