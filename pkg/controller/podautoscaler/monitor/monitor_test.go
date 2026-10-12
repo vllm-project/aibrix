@@ -52,3 +52,21 @@ func TestMonitor_RecordScaleAction(t *testing.T) {
 		assert.Equal(t, expectedValue, actualValue, "Expected metric for %s/%s to be %v", tc.namespace, tc.name, tc.desiredReplicas)
 	}
 }
+
+func TestMonitor_ForgetScaleAction(t *testing.T) {
+	autoscalerScaleAction.Reset()
+
+	m := New()
+	// One PodAutoscaler leaves a series per algorithm/reason pair it has reported.
+	m.RecordScaleAction("default", "llm", "kpa", "stable", 2)
+	m.RecordScaleAction("default", "llm", "kpa", "kpa above target", 4)
+	m.RecordScaleAction("default", "llm-canary", "apa", "stable", 1)
+	m.RecordScaleAction("prod", "llm", "kpa", "stable", 3)
+	assert.Equal(t, 4, testutil.CollectAndCount(autoscalerScaleAction))
+
+	m.ForgetScaleAction("default", "llm")
+
+	assert.Equal(t, 2, testutil.CollectAndCount(autoscalerScaleAction))
+	assert.Equal(t, 1.0, testutil.ToFloat64(autoscalerScaleAction.WithLabelValues("default", "llm-canary", "apa", "stable")))
+	assert.Equal(t, 3.0, testutil.ToFloat64(autoscalerScaleAction.WithLabelValues("prod", "llm", "kpa", "stable")))
+}

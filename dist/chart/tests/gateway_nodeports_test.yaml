@@ -1,0 +1,189 @@
+suite: Test Envoy Service NodePorts
+templates:
+  - gateway-instance/gateway.yaml
+tests:
+  - it: should preserve default Service behavior
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    asserts:
+      - notExists:
+          path: spec.provider.kubernetes.envoyService
+  - it: should allow a LoadBalancer override without inherited NodePorts
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    set:
+      gateway.envoyProxy.service.type: LoadBalancer
+    asserts:
+      - equal:
+          path: spec.provider.kubernetes.envoyService
+          value:
+            type: LoadBalancer
+  - it: should patch only HTTP when TLS is disabled
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    set:
+      gateway.envoyProxy.service:
+        type: NodePort
+        nodePorts:
+          http: 32080
+          https: 32443
+    asserts:
+      - equal:
+          path: spec.provider.kubernetes.envoyService.patch.value.spec.ports
+          value:
+            - port: 80
+              protocol: TCP
+              nodePort: 32080
+      - notExists:
+          path: spec.provider.kubernetes.envoyService.nodePorts
+  - it: should patch both enabled listeners
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    set:
+      gateway.tls.enabled: true
+      gateway.tls.secretName: test-tls
+      gateway.envoyProxy.service:
+        type: NodePort
+        nodePorts:
+          http: 32080
+          https: 32443
+    asserts:
+      - equal:
+          path: spec.provider.kubernetes.envoyService.patch.value.spec.ports
+          value:
+            - port: 80
+              protocol: TCP
+              nodePort: 32080
+            - port: 443
+              protocol: TCP
+              nodePort: 32443
+  - it: should use the custom TLS port for HTTPS only
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    set:
+      gateway.http.enabled: false
+      gateway.tls.enabled: true
+      gateway.tls.secretName: test-tls
+      gateway.tls.port: 8443
+      gateway.envoyProxy.service:
+        type: NodePort
+        nodePorts:
+          http: 32080
+          https: 32443
+    asserts:
+      - equal:
+          path: spec.provider.kubernetes.envoyService.patch.value.spec.ports
+          value:
+            - port: 8443
+              protocol: TCP
+              nodePort: 32443
+  - it: should allow automatic allocation for both listeners
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    set:
+      gateway.tls.enabled: true
+      gateway.tls.secretName: test-tls
+      gateway.envoyProxy.service.type: NodePort
+    asserts:
+      - equal:
+          path: spec.provider.kubernetes.envoyService
+          value:
+            type: NodePort
+  - it: should leave an omitted HTTPS NodePort unpatched
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    set:
+      gateway.tls.enabled: true
+      gateway.tls.secretName: test-tls
+      gateway.envoyProxy.service:
+        type: NodePort
+        nodePorts:
+          http: 32080
+    asserts:
+      - equal:
+          path: spec.provider.kubernetes.envoyService.patch.value.spec.ports
+          value:
+            - port: 80
+              protocol: TCP
+              nodePort: 32080
+  - it: should pass through a partial raw patch unchanged
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    set:
+      gateway.tls.enabled: true
+      gateway.tls.secretName: test-tls
+      gateway.envoyProxy.service:
+        type: NodePort
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              ports:
+                - port: 80
+                  nodePort: 32080
+    asserts:
+      - equal:
+          path: spec.provider.kubernetes.envoyService.patch
+          value:
+            type: StrategicMerge
+            value:
+              spec:
+                ports:
+                  - port: 80
+                    nodePort: 32080
+---
+suite: Test Envoy Service NodePort Validation
+templates:
+  - validate.yaml
+tests:
+  - it: should reject fixed NodePorts with a non-NodePort Service
+    set:
+      gateway.envoyProxy.service:
+        type: LoadBalancer
+        nodePorts:
+          http: 32080
+    asserts:
+      - failedTemplate:
+          errorMessage: "gateway.envoyProxy.service.nodePorts requires service.type=NodePort."
+  - it: should reject fixed NodePorts combined with a raw patch
+    set:
+      gateway.envoyProxy.service:
+        type: NodePort
+        nodePorts:
+          http: 32080
+        patch:
+          type: StrategicMerge
+          value: {}
+    asserts:
+      - failedTemplate:
+          errorMessage: "gateway.envoyProxy.service.nodePorts and service.patch are mutually exclusive."
+  - it: should reject duplicate NodePorts for enabled listeners
+    set:
+      gateway.tls.enabled: true
+      gateway.tls.secretName: test-tls
+      gateway.envoyProxy.service:
+        type: NodePort
+        nodePorts:
+          http: 32080
+          https: 32080
+    asserts:
+      - failedTemplate:
+          errorMessage: "gateway.envoyProxy.service.nodePorts.http and https must differ when both listeners are enabled."
+  - it: should allow equal NodePorts when only one listener is enabled
+    set:
+      gateway.envoyProxy.service:
+        type: NodePort
+        nodePorts:
+          http: 32080
+          https: 32080
+    asserts:
+      - hasDocuments:
+          count: 0

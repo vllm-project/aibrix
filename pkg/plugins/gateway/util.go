@@ -227,7 +227,7 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message, prefixText string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	path := pathWithoutQuery(requestPath)
 	switch path {
-	case PathChatCompletions, PathMessages:
+	case PathChatCompletions, PathMessages, PathMessagesCountTokens:
 		model, message, prefixText, stream, errRes = validateChatRequest(requestID, path, requestBody, user)
 	case PathResponses:
 		model, message, prefixText, stream, errRes = validateResponsesRequest(requestID, requestBody)
@@ -289,7 +289,7 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 		return
 	}
 	systemText := ""
-	if requestPath == PathMessages {
+	if requestPath == PathMessages || requestPath == PathMessagesCountTokens {
 		systemText = requestPromptText(requestID, req.System)
 	}
 	prefixText = combinePrefixText(message, systemText, canonicalToolsText(requestID, req.Tools))

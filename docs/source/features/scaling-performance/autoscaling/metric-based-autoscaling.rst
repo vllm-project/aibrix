@@ -236,6 +236,19 @@ when needed.
 Durations are parsed with Go duration syntax such as ``30s`` or ``5m``.
 Floating-point values are parsed as decimal numbers such as ``0.1`` or ``2.0``.
 
+Values must be usable by the autoscaler:
+
+- scale rates must be ``1`` or greater, where ``1`` allows no change in that direction;
+- tolerances and cooldown windows must not be negative;
+- the panic threshold must be greater than ``0``;
+- numbers must be finite, so ``NaN`` and ``Inf`` are not accepted.
+
+The admission webhook rejects a ``PodAutoscaler`` that adds or changes an
+annotation to an unusable value. If such a value still reaches the controller,
+for example on an object stored before this check existed, the controller
+ignores that one annotation, keeps the default for the setting, and logs the
+reason. The other annotations still apply.
+
 .. list-table::
    :header-rows: 1
    :widths: 34 14 16 18 48

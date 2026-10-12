@@ -212,7 +212,9 @@ func (f *CustomMetricsFetcher) fetchCustomMetric(ctx context.Context, pod v1.Pod
 		return 0.0, err
 	}
 
-	return float64(metricList.Value.Value()), nil
+	// Quantity.Value() rounds up to a whole number, which would turn a fractional
+	// reading such as "500m" into 1. Keep the fraction, as the external metrics path does.
+	return metricList.Value.AsApproximateFloat64(), nil
 }
 
 // ExternalMetricsFetcher handles external metrics with per-pod adaptation
