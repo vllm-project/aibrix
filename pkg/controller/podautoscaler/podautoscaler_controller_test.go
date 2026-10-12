@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,6 +37,7 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
@@ -1322,6 +1324,65 @@ func TestStabilizeRecommendationHoldsWithinCooldownWindows(t *testing.T) {
 					t.Fatalf("step %d: stabilizeRecommendation(rec=%d, current=%d)=%d, want %d",
 						i, s.recommendation, s.current, got, s.want)
 				}
+			}
+		})
+	}
+}
+
+func TestFilterHPAObjectEnqueuesOwningPodAutoscaler(t *testing.T) {
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: "llm-pa", Namespace: ns, UID: "pa-uid"},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{APIVersion: "apps/v1", Kind: "Deployment", Name: "llm"},
+			MaxReplicas:    3,
+			MetricsSources: []autoscalingv1alpha1.MetricSource{{
+				MetricSourceType: autoscalingv1alpha1.RESOURCE,
+				TargetMetric:     autoscalingv1alpha1.CPU,
+				TargetValue:      "50",
+			}},
+			ScalingStrategy: autoscalingv1alpha1.HPA,
+		},
+	}
+	// Build the HPA the same way the reconciler does, so the owner reference
+	// written by makeHPA and the one filterHPAObject looks for cannot drift.
+	hpa, err := makeHPA(pa, scalingctx.NewBaseScalingContext())
+	if err != nil {
+		t.Fatalf("makeHPA: %v", err)
+	}
+
+	got := filterHPAObject(context.Background(), hpa)
+	want := []reconcile.Request{{NamespacedName: ktypes.NamespacedName{Namespace: ns, Name: "llm-pa"}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("filterHPAObject() = %v, want %v", got, want)
+	}
+}
+
+func TestFilterHPAObjectIgnoresUnmanagedHPA(t *testing.T) {
+	tests := []struct {
+		name   string
+		owners []metav1.OwnerReference
+	}{
+		{name: "no owner"},
+		{
+			name: "controlled by another kind",
+			owners: []metav1.OwnerReference{{
+				APIVersion: "apps/v1", Kind: "Deployment", Name: "llm", Controller: ptr.To(true),
+			}},
+		},
+		{
+			name: "PodAutoscaler owner that is not the controller",
+			owners: []metav1.OwnerReference{{
+				APIVersion: autoscalingv1alpha1.GroupVersion.String(), Kind: podAutoscalerKind, Name: "llm-pa",
+			}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hpa := &autoscalingv2.HorizontalPodAutoscaler{
+				ObjectMeta: metav1.ObjectMeta{Name: "llm-pa-hpa", Namespace: ns, OwnerReferences: tt.owners},
+			}
+			if got := filterHPAObject(context.Background(), hpa); len(got) != 0 {
+				t.Fatalf("filterHPAObject() = %v, want no requests", got)
 			}
 		})
 	}

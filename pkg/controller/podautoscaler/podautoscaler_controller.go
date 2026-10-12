@@ -184,7 +184,7 @@ func filterHPAObject(ctx context.Context, object client.Object) []reconcile.Requ
 	// Iterate through ownerReferences to find the PodAutoscaler.
 	// if found, enqueue the managing PodAutoscaler object
 	for _, ownerRef := range hpa.OwnerReferences {
-		if ownerRef.Kind == "PodAutoScaler" && ownerRef.Controller != nil && *ownerRef.Controller {
+		if ownerRef.Kind == podAutoscalerKind && ownerRef.Controller != nil && *ownerRef.Controller {
 			// Enqueue the managing PodAutoscaler object
 			return []reconcile.Request{
 				{
