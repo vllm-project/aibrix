@@ -180,7 +180,7 @@ Behavior in Edge Cases
    * - ``kvFree < kvCritical``
      - Score is ``+Inf``. When ``load-balance`` routes alone, the replica is skipped until it recovers. When ``load-balance`` is blended with other strategies, ``+Inf`` is only a strong penalty: another strategy that scores the replica highly can still select it.
    * - Every replica is below ``kvCritical``
-     - The request is not failed. It is routed to the replica with the most KV headroom.
+     - The request does not fail. It is routed to the replica with the most KV headroom.
    * - Replica is idle (``running = 0``)
      - Score is ``0`` regardless of capacity, so idle replicas are preferred.
    * - Several replicas share the lowest score

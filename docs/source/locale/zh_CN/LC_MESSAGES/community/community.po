@@ -269,9 +269,8 @@ msgid "`@googs1025 <https://github.com/googs1025>`_"
 msgstr "`@googs1025 <https://github.com/googs1025>`_"
 
 #: ../../source/community/community.rst:94
-#, fuzzy
 msgid "Autoscaling, Control Plane Stability"
-msgstr "控制面功能与稳定性"
+msgstr "自动扩缩容、控制面稳定性"
 
 #: ../../source/community/community.rst:97
 msgid ""

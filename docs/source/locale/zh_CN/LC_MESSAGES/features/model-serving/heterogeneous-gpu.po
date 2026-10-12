@@ -573,7 +573,7 @@ msgstr "所有副本都低于 ``kvCritical``"
 
 #: ../../source/features/model-serving/heterogeneous-gpu.rst:183
 msgid ""
-"The request is not failed. It is routed to the replica with the most KV "
+"The request does not fail. It is routed to the replica with the most KV "
 "headroom."
 msgstr "请求不会失败，而是路由到 KV 余量最多的副本。"
 

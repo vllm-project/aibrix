@@ -125,15 +125,15 @@ msgstr ""
 "推断：`replicas > 1` 为 replica mode，否则为 pooled mode。"
 
 #: ../../source/designs/aibrix-stormservice.rst:42
-#, fuzzy
 msgid ""
 "When `spec.mode` is set to `Pooled`, `spec.replicas` must stay at `1`; "
 "roles are scaled through `spec.template.spec.roles[].replicas`. The "
 "validating webhook enforces this on create/update and on the `/scale` "
 "subresource (`kubectl scale`, HPA, and other external autoscalers)."
 msgstr ""
-"当 `spec.mode` 为 `Pooled` 时，`spec.replicas` 必须为 `1` ；角色通过 "
-"`spec.template.spec.roles[].replicas` 扩缩。"
+"当 `spec.mode` 被设置为 `Pooled` 时，`spec.replicas` 必须保持为 `1`；角色通过 "
+"`spec.template.spec.roles[].replicas` 进行扩缩。校验 Webhook 会在创建/更新以及 `/scale` "
+"子资源（`kubectl scale`、HPA 以及其他外部自动扩缩容工具）上强制执行此限制。"
 
 #: ../../source/designs/aibrix-stormservice.rst:43
 msgid ""
@@ -1290,12 +1290,13 @@ msgstr ""
 "StormService 副本。"
 
 #: ../../source/designs/aibrix-stormservice.rst:943
-#, fuzzy
 msgid ""
 "**Pooled Mode**: In pooled mode, each role in the RoleSet is supposed to "
 "be independently scalable. The `/scale` subresource still exists, but "
 "scaling `spec.replicas` above 1 is rejected when `spec.mode` is `Pooled`."
-msgstr "**Pooled Mode** ：在 pooled mode 中，RoleSet 内每个角色应可独立扩缩。"
+msgstr ""
+"**Pooled Mode** ：在 pooled 模式下，RoleSet 中的每个角色都应该可以独立扩缩。虽然 `/scale` "
+"子资源仍然存在，但当 `spec.mode` 为 `Pooled` 时，拒绝将 `spec.replicas` 扩缩到 1 以上。"
 
 #: ../../source/designs/aibrix-stormservice.rst:946
 msgid ""

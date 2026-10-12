@@ -226,7 +226,7 @@ General load balancing
 
   Edge cases:
 
-  - **KV guardrail:** a pod with less than 10% free KV cache scores ``+Inf`` and is skipped. If every pod is below that threshold, the request still routes, to the pod with the most KV headroom.
+  - **KV guardrail:** a pod with less than 10% free KV cache scores ``+Inf`` and is skipped. If every pod is below that threshold, the request still routes to the pod with the most KV headroom.
   - **Missing KV metrics:** a pod whose engine reports no KV-cache usage, or reports ``NaN``, is treated as fully free (no penalty and no guardrail).
   - **No token-rate estimate yet:** the pod is scored at the mean estimate of the others (uniform capacity when none has one).
   - **Ties:** broken using least combined GPU+CPU KV-cache usage, falling back to a random pick if cache metrics are unavailable for the tied pods.

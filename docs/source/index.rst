@@ -11,9 +11,11 @@ AIBrix delivers a cloud-native solution optimized for deploying, managing, and s
 
 Key features:
 
-- **LLM Gateway and Routing**: Efficiently manage and direct traffic across multiple models and replicas.
+- **LLM Gateway and Routing**: OpenAI-compatible gateway that routes by live engine state, with prefix-cache-aware, load-aware, and P/D routing, plus session affinity for agentic workloads.
+- **Multi-Engine Support**: Serve vLLM, SGLang, TensorRT-LLM, and xLLM side by side behind one gateway.
 - **High-Density LoRA Management**: Streamlined support for lightweight, low-rank adaptations of models.
-- **Distributed Inference**: Scalable architecture to handle large workloads across multiple nodes.
+- **Model Lifecycle**: Declare models with ModelClaim, and preload images and weights onto nodes with ModelWarmup for faster scale-up.
+- **Distributed Inference**: Multi-node inference deployments with StormService, scaling large workloads across nodes.
 - **LLM App-Tailored Autoscaler**: Dynamically scale inference resources based on real-time demand.
 - **Unified AI Runtime**: A versatile sidecar enabling metric standardization, model downloading, and management.
 - **Heterogeneous-GPU Inference**: Cost-effective SLO-driven LLM inference using heterogeneous GPUs.
