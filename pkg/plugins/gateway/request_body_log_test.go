@@ -74,7 +74,7 @@ func TestValidateRequestBody_ParseFailureLogsMetadataOnly(t *testing.T) {
 	for _, path := range []string{
 		PathChatCompletions, PathMessages, PathResponses, PathCompletions, PathEmbeddings,
 		PathImagesGenerations, PathVideoGenerations, PathRerank, PathClassify,
-		PathDecisions, PathSystemOne, PathTokenize, PathPooling,
+		PathDecisions, PathSystemOne, PathTokenize, PathPooling, PathNativeClassify,
 	} {
 		t.Run(path, func(t *testing.T) {
 			logs := captureKlog(t, "0")
