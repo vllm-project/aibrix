@@ -1,15 +1,18 @@
 suite: Test Envoy Service NodePorts
 templates:
   - gateway-instance/gateway.yaml
-documentSelector:
-  path: kind
-  value: EnvoyProxy
 tests:
   - it: should preserve default Service behavior
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
     asserts:
       - notExists:
           path: spec.provider.kubernetes.envoyService
   - it: should allow a LoadBalancer override without inherited NodePorts
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
     set:
       gateway.envoyProxy.service.type: LoadBalancer
     asserts:
@@ -18,6 +21,9 @@ tests:
           value:
             type: LoadBalancer
   - it: should patch only HTTP when TLS is disabled
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
     set:
       gateway.envoyProxy.service:
         type: NodePort
@@ -34,6 +40,9 @@ tests:
       - notExists:
           path: spec.provider.kubernetes.envoyService.nodePorts
   - it: should patch both enabled listeners
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
     set:
       gateway.tls.enabled: true
       gateway.tls.secretName: test-tls
@@ -53,6 +62,9 @@ tests:
               protocol: TCP
               nodePort: 32443
   - it: should use the custom TLS port for HTTPS only
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
     set:
       gateway.http.enabled: false
       gateway.tls.enabled: true
@@ -71,6 +83,9 @@ tests:
               protocol: TCP
               nodePort: 32443
   - it: should allow automatic allocation for both listeners
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
     set:
       gateway.tls.enabled: true
       gateway.tls.secretName: test-tls
@@ -81,6 +96,9 @@ tests:
           value:
             type: NodePort
   - it: should leave an omitted HTTPS NodePort unpatched
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
     set:
       gateway.tls.enabled: true
       gateway.tls.secretName: test-tls
@@ -96,6 +114,9 @@ tests:
               protocol: TCP
               nodePort: 32080
   - it: should pass through a partial raw patch unchanged
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
     set:
       gateway.tls.enabled: true
       gateway.tls.secretName: test-tls
