@@ -20,6 +20,10 @@ import "github.com/prometheus/client_golang/prometheus"
 
 type Monitor interface {
 	RecordScaleAction(namespace, name, algorithm, reason string, desiredReplicas int32)
+
+	// ForgetScaleAction removes every scale action series recorded for a
+	// PodAutoscaler, so a deleted one stops being exported.
+	ForgetScaleAction(namespace, name string)
 }
 
 type monitor struct{}
@@ -35,4 +39,11 @@ func (m *monitor) RecordScaleAction(namespace, name, algorithm, reason string, d
 		"algorithm": algorithm,
 		"reason":    reason,
 	}).Set(float64(desiredReplicas))
+}
+
+func (m *monitor) ForgetScaleAction(namespace, name string) {
+	autoscalerScaleAction.DeletePartialMatch(prometheus.Labels{
+		"namespace": namespace,
+		"name":      name,
+	})
 }

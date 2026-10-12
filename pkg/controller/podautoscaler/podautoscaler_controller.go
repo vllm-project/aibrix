@@ -356,15 +356,28 @@ func (r *PodAutoscalerReconciler) buildScalingTargetKey(pa *autoscalingv1alpha1.
 	return base
 }
 
-// cleanupDeletedPA removes the PA from conflict maps.
+// cleanupDeletedPA releases everything the controller keeps in memory for a
+// PodAutoscaler that no longer exists: its claim on the scaling target, its
+// recommendation history, its metric windows and its exported metric series.
 func (r *PodAutoscalerReconciler) cleanupDeletedPA(paKey ktypes.NamespacedName) {
 	r.scalingTargetMu.Lock()
-	defer r.scalingTargetMu.Unlock()
-
 	if keyStr, exists := r.paToScalingKey[paKey]; exists {
 		delete(r.scalingTargetToPA, keyStr)
 	}
 	delete(r.paToScalingKey, paKey)
+	r.scalingTargetMu.Unlock()
+
+	// stabilizeRecommendation keys its history by "namespace/name".
+	r.recommendationsMu.Lock()
+	delete(r.recommendations, paKey.String())
+	r.recommendationsMu.Unlock()
+
+	if r.autoScaler != nil {
+		r.autoScaler.ForgetPodAutoscaler(paKey.Namespace, paKey.Name)
+	}
+	if r.monitor != nil {
+		r.monitor.ForgetScaleAction(paKey.Namespace, paKey.Name)
+	}
 }
 
 // checkNoMultiPodAutoscalerConflict checks whether the PodAutoscaler's target is already controlled by another PA.

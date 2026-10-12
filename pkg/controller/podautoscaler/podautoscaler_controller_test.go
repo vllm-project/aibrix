@@ -79,6 +79,11 @@ type fakeAutoScaler struct {
 	lastRequest *ReplicaComputeRequest
 	result      *ReplicaComputeResult
 	err         error
+	forgotten   []ktypes.NamespacedName
+}
+
+func (f *fakeAutoScaler) ForgetPodAutoscaler(namespace, name string) {
+	f.forgotten = append(f.forgotten, ktypes.NamespacedName{Namespace: namespace, Name: name})
 }
 
 func (f *fakeAutoScaler) ComputeDesiredReplicas(ctx context.Context, req ReplicaComputeRequest) (*ReplicaComputeResult, error) {
@@ -1385,6 +1390,77 @@ func TestFilterHPAObjectIgnoresUnmanagedHPA(t *testing.T) {
 				t.Fatalf("filterHPAObject() = %v, want no requests", got)
 			}
 		})
+	}
+}
+
+// fakeMonitor records which PodAutoscalers had their metric series removed.
+type fakeMonitor struct {
+	forgotten []ktypes.NamespacedName
+}
+
+func (f *fakeMonitor) RecordScaleAction(string, string, string, string, int32) {}
+
+func (f *fakeMonitor) ForgetScaleAction(namespace, name string) {
+	f.forgotten = append(f.forgotten, ktypes.NamespacedName{Namespace: namespace, Name: name})
+}
+
+func TestReconcileDeletedPodAutoscalerReleasesState(t *testing.T) {
+	sch := runtime.NewScheme()
+	_ = scheme.AddToScheme(sch)
+	_ = autoscalingv1alpha1.AddToScheme(sch)
+
+	deleted := ktypes.NamespacedName{Namespace: ns, Name: "deleted-pa"}
+	other := ktypes.NamespacedName{Namespace: ns, Name: "other-pa"}
+	recommendation := []timestampedRecommendation{{recommendation: 3, timestamp: time.Now()}}
+
+	as := &fakeAutoScaler{}
+	mon := &fakeMonitor{}
+	r := &PodAutoscalerReconciler{
+		// No PodAutoscaler exists in the cluster, as after a delete.
+		Client:     fake.NewClientBuilder().WithScheme(sch).Build(),
+		autoScaler: as,
+		monitor:    mon,
+		recommendations: map[string][]timestampedRecommendation{
+			deleted.String(): recommendation,
+			other.String():   recommendation,
+		},
+		scalingTargetToPA: map[string]ktypes.NamespacedName{
+			"apps/v1.Deployment/ns1/deleted": deleted,
+			"apps/v1.Deployment/ns1/other":   other,
+		},
+		paToScalingKey: map[ktypes.NamespacedName]string{
+			deleted: "apps/v1.Deployment/ns1/deleted",
+			other:   "apps/v1.Deployment/ns1/other",
+		},
+	}
+
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: deleted}); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+
+	if _, ok := r.recommendations[deleted.String()]; ok {
+		t.Errorf("recommendation history for %s was not released", deleted)
+	}
+	if _, ok := r.paToScalingKey[deleted]; ok {
+		t.Errorf("scaling target claim for %s was not released", deleted)
+	}
+	if _, ok := r.scalingTargetToPA["apps/v1.Deployment/ns1/deleted"]; ok {
+		t.Errorf("scaling target of %s is still claimed", deleted)
+	}
+	if want := []ktypes.NamespacedName{deleted}; !reflect.DeepEqual(as.forgotten, want) {
+		t.Errorf("autoscaler forgot %v, want %v", as.forgotten, want)
+	}
+	if want := []ktypes.NamespacedName{deleted}; !reflect.DeepEqual(mon.forgotten, want) {
+		t.Errorf("monitor forgot %v, want %v", mon.forgotten, want)
+	}
+
+	// State of a PodAutoscaler that still exists must not be touched.
+	if _, ok := r.recommendations[other.String()]; !ok {
+		t.Errorf("recommendation history for %s was removed", other)
+	}
+	if r.paToScalingKey[other] != "apps/v1.Deployment/ns1/other" ||
+		r.scalingTargetToPA["apps/v1.Deployment/ns1/other"] != other {
+		t.Errorf("scaling target claim for %s was removed", other)
 	}
 }
 
