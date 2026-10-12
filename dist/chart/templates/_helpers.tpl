@@ -170,6 +170,19 @@ Create the name of the metadata service service account
 {{- if and $tlsEnabled $tlsAutoGenerate (empty (trim $tlsHostname)) -}}
 {{- fail "gateway.tls.hostname is required when gateway.tls.autoGenerate=true." -}}
 {{- end -}}
+{{- $service := dig "envoyProxy" "service" (dict) .Values.gateway -}}
+{{- $nodePorts := get $service "nodePorts" | default dict -}}
+{{- if $nodePorts -}}
+{{- if ne (get $service "type") "NodePort" -}}
+{{- fail "gateway.envoyProxy.service.nodePorts requires service.type=NodePort." -}}
+{{- end -}}
+{{- if get $service "patch" -}}
+{{- fail "gateway.envoyProxy.service.nodePorts and service.patch are mutually exclusive." -}}
+{{- end -}}
+{{- if and $httpEnabled $tlsEnabled (get $nodePorts "http") (get $nodePorts "https") (eq (int $nodePorts.http) (int $nodePorts.https)) -}}
+{{- fail "gateway.envoyProxy.service.nodePorts.http and https must differ when both listeners are enabled." -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{- $builtInRedisEnabled := dig "redis" "enabled" true .Values.metadata -}}

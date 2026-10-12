@@ -225,6 +225,16 @@ gateway:
           requests:
             cpu: 10m
             memory: 32Mi
+    # Optional Envoy Service overrides; empty preserves Envoy Gateway defaults.
+    service: {}
+    # service:
+    #   type: NodePort
+    #   externalTrafficPolicy: Cluster
+    #   nodePorts:
+    #     http: 32080
+    #     https: 32443
+    # Omit either NodePort to let Kubernetes allocate it for that listener.
+    # Fixed NodePorts apply only to enabled listeners and cannot coexist with patch.
   clientTrafficPolicy:
     connection:
       bufferLimit: 4194304  # 4MiB — keep in sync with AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES
