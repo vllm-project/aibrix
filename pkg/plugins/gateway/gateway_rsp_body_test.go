@@ -134,6 +134,11 @@ func TestIsLanguageRequest(t *testing.T) {
 			want:        false,
 		},
 		{
+			name:        "messages count_tokens is not language",
+			requestPath: "/v1/messages/count_tokens",
+			want:        false,
+		},
+		{
 			name:        "pooling is language",
 			requestPath: "/pooling",
 			want:        true,
@@ -1044,6 +1049,31 @@ func TestHandleResponseBody_NonLanguageRequest(t *testing.T) {
 	// Non-language request with EndOfStream sets complete=true
 	assert.True(t, complete)
 	assert.NotNil(t, resp)
+	assert.Equal(t, TokenUsage{}, usage)
+}
+
+func TestHandleResponseBody_MessagesCountTokensPassesThrough(t *testing.T) {
+	server := &Server{}
+
+	requestID := "test-req-count-tokens-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+	routerCtx.ReqPath = "/v1/messages/count_tokens?beta=true"
+	routerCtx.RequestTime = time.Now()
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"input_tokens": 12}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{}, 0, "test-model", false, false)
+
+	assert.True(t, complete)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.NotNil(t, resp.GetResponseBody())
 	assert.Equal(t, TokenUsage{}, usage)
 }
 

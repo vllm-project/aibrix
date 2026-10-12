@@ -132,6 +132,7 @@ const (
 	PathChatCompletions     = "/v1/chat/completions"
 	PathResponses           = "/v1/responses"
 	PathMessages            = "/v1/messages"
+	PathMessagesCountTokens = "/v1/messages/count_tokens"
 	PathCompletions         = "/v1/completions"
 	PathEmbeddings          = "/v1/embeddings"
 	PathImagesGenerations   = "/v1/images/generations"
