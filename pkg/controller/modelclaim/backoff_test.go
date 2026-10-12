@@ -886,6 +886,38 @@ func TestEnqueueWaitingClaimsWakesTheOldestFirst(t *testing.T) {
 		"a pod that changes reaches every claim, the oldest first")
 }
 
+func TestEnqueueWaitingClaimsPriorityFiltersBeforeOrdering(t *testing.T) {
+	leaving := claimOnPod("leaving", "warm-1", modelv1alpha1.ModelClaimActive, 300, 100)
+	created := time.Unix(1_700_000_000, 0)
+	low := priorityTestClaim("older-low", 1, created)
+	high := priorityTestClaim("newer-high", 10, created.Add(time.Minute))
+	failed := priorityTestClaim("failed-highest", 100, created.Add(2*time.Minute))
+	failed.Status.Phase = modelv1alpha1.ModelClaimFailed
+	r, _ := newReconciler(t, leaving, low, high, failed)
+
+	var woken []string
+	for _, request := range enqueueWaitingClaims(r.Client)(context.Background(), leaving) {
+		woken = append(woken, request.Name)
+	}
+
+	assert.Equal(t, []string{"newer-high", "older-low"}, woken)
+}
+
+func TestEnqueueModelClaimsForPodKeepsOldestFirstDespitePriority(t *testing.T) {
+	created := time.Unix(1_700_000_000, 0)
+	low := priorityTestClaim("older-low", 1, created)
+	high := priorityTestClaim("newer-high", 10, created.Add(time.Minute))
+	r, _ := newReconciler(t, low, high)
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+
+	var queued []string
+	for _, request := range enqueueModelClaimsForPod(r.Client)(context.Background(), pod) {
+		queued = append(queued, request.Name)
+	}
+
+	assert.Equal(t, []string{"older-low", "newer-high"}, queued)
+}
+
 // Room does not help a claim that failed: its engine config is not valid, or
 // its engine could not be started. Such a claim is not waiting for a card.
 func TestEnqueueWaitingClaimsLeavesOutAClaimThatFailed(t *testing.T) {

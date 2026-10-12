@@ -354,13 +354,12 @@ func (r *ModelClaimReconciler) planRoom(
 	return roomPlan{}, false
 }
 
-// firstToMakeRoomFor reports whether room is to be made for a claim now. It is
-// the claim that has waited longest of those that room can be made for, as
-// Kueue's BestEffortFIFO admits workloads: a claim that has waited longer, but
-// that no room can be made for on any pod now, does not hold up the ones behind
-// it. A claim that holds a card keeps its turn, so that the room made for it is
-// not taken by a claim behind it. The claims that wait are the ones
-// waitingClaims lists.
+// firstToMakeRoomFor reports whether room is to be made for a claim now. It
+// considers priority-eligible claims in priority/FIFO order, but retains
+// BestEffortFIFO behavior: a claim that cannot make room on any pod now does
+// not hold up the claims behind it. A claim that holds a card keeps its turn,
+// so that the room made for it is not taken by a claim behind it. The claims
+// that wait are the ones waitingClaims lists.
 func (r *ModelClaimReconciler) firstToMakeRoomFor(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
@@ -420,12 +419,10 @@ func (r *ModelClaimReconciler) wakeWaitsOn(ctx context.Context, pod *corev1.Pod,
 	return false
 }
 
-// waitingClaims lists, oldest first, the claims that wait for a card in a
-// claim's pool: the claims in its namespace that select one of its candidate
-// pods, and still miss an instance. A claim whose last start failed is not
-// among them, the given one included, as room does not help it. The claims are
-// listed as the account lists them: the cache can miss an instance recorded a
-// moment ago, and a claim just placed would then seem to wait.
+// waitingClaims lists priority-eligible claims in priority/FIFO order for a
+// claim's pool. The claims are listed as the account lists them: the cache can
+// miss an instance recorded a moment ago, and a claim just placed would then
+// seem to wait.
 func (r *ModelClaimReconciler) waitingClaims(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
@@ -442,16 +439,14 @@ func (r *ModelClaimReconciler) waitingClaims(
 	for i := range claims.Items {
 		claim := claims.Items[i]
 		if claim.Name == pm.Name {
-			waiting = append(waiting, *pm)
-			continue
+			claim = *pm
 		}
-		if !claim.DeletionTimestamp.IsZero() || claim.Status.Phase == modelv1alpha1.ModelClaimFailed ||
-			desiredReplicas(&claim) <= int32(len(claim.Status.Instances)) || !selectsAny(&claim, candidates) {
+		if !priorityEligible(&claim, candidates) {
 			continue
 		}
 		waiting = append(waiting, claim)
 	}
-	oldestFirst(waiting)
+	placementPriorityFirst(waiting)
 	return waiting, true
 }
 

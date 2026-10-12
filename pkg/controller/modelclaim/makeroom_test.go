@@ -33,6 +33,33 @@ import (
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 )
 
+func TestWaitingClaimsPriorityOrdersOnlyEligibleUnplacedClaims(t *testing.T) {
+	created := time.Unix(1_700_000_000, 0)
+	low := priorityTestClaim("older-low", 1, created)
+	high := priorityTestClaim("newer-high", 10, created.Add(time.Minute))
+	invalid := priorityTestClaim("invalid-highest", 100, created.Add(2*time.Minute))
+	invalid.Spec.PerGPU = nil
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	r, _ := newReconciler(t, low, high, invalid)
+
+	waiting, listed := r.waitingClaims(context.Background(), low, []corev1.Pod{*pod})
+
+	assert.True(t, listed)
+	assert.Equal(t, []string{"newer-high", "older-low"}, claimNames(waiting))
+}
+
+func TestFirstToMakeRoomForPriorityHonorsUnexpiredReservation(t *testing.T) {
+	created := time.Unix(1_700_000_000, 0)
+	low := priorityTestClaim("older-low", 1, created)
+	high := priorityTestClaim("newer-high", 10, created.Add(time.Minute))
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	r, _ := newReconciler(t, low, high)
+	card := types.NamespacedName{Namespace: testNamespace, Name: pod.Name}
+	require.True(t, r.reservations().hold(card, high.Name, 400, r.now()))
+
+	assert.False(t, r.firstToMakeRoomFor(context.Background(), low, []corev1.Pod{*pod}, nil, newRuntimeReadings(nil)))
+}
+
 // serving is a claim whose engine serves on a card, idle since a time.
 type serving struct {
 	name, pod        string

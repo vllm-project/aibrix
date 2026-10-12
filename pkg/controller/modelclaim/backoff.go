@@ -490,8 +490,7 @@ func enqueueWaitingClaims(c client.Client) handler.MapFunc {
 			klog.ErrorS(err, "unable to list model claims to wake", "namespace", obj.GetNamespace())
 			return nil
 		}
-		oldestFirst(claims.Items)
-		var requests []reconcile.Request
+		waiting := make([]modelv1alpha1.ModelClaim, 0, len(claims.Items))
 		for i := range claims.Items {
 			claim := &claims.Items[i]
 			if claim.Name == obj.GetName() || !claim.DeletionTimestamp.IsZero() ||
@@ -499,6 +498,12 @@ func enqueueWaitingClaims(c client.Client) handler.MapFunc {
 				desiredReplicas(claim) <= int32(len(claim.Status.Instances)) {
 				continue
 			}
+			waiting = append(waiting, *claim)
+		}
+		placementPriorityFirst(waiting)
+		var requests []reconcile.Request
+		for i := range waiting {
+			claim := &waiting[i]
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: claim.Namespace, Name: claim.Name},
 			})
