@@ -1826,8 +1826,10 @@ func (r *pdRouter) decodeKVCapacities(usesDecodeTokenLoad bool, pods []*v1.Pod) 
 // metrics: num_gpu_blocks × block_size from vLLM's cache config info, or the
 // capacity gauge SGLang reports.
 func (r *pdRouter) podKVCapacity(pod *v1.Pod) (float64, bool) {
-	if v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.KVCacheCapacityTokens); err == nil && v != nil && v.GetSimpleValue() > 0 {
-		return v.GetSimpleValue(), true
+	if v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.KVCacheCapacityTokens); err == nil && v != nil {
+		if c := v.GetSimpleValue(); validKVCapacity(c) {
+			return c, true
+		}
 	}
 	blocks, ok := podLabelMetricFloat(r.cache, pod, metrics.KVCacheNumGPUBlocks)
 	if !ok {
@@ -1851,10 +1853,16 @@ func podLabelMetricFloat(c cache.Cache, pod *v1.Pod, metricName string) (float64
 		return 0, false
 	}
 	f, err := strconv.ParseFloat(label.Value, 64)
-	if err != nil || f <= 0 || math.IsInf(f, 0) || math.IsNaN(f) {
+	if err != nil || !validKVCapacity(f) {
 		return 0, false
 	}
 	return f, true
+}
+
+// validKVCapacity reports whether a scraped capacity value is usable: positive
+// and finite. The Prometheus text format accepts NaN and +Inf as values.
+func validKVCapacity(f float64) bool {
+	return f > 0 && !math.IsInf(f, 0) && !math.IsNaN(f)
 }
 
 // scaleByCapacity applies podKey's capacity factor (see decodeKVCapacities)

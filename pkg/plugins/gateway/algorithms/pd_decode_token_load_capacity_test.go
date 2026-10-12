@@ -17,6 +17,7 @@ limitations under the License.
 package routingalgorithms
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -48,7 +49,8 @@ func TestDecodeKVCapacities(t *testing.T) {
 	sglang := burstPod("decode-sglang", "decode", "127.0.0.102")
 	unknown := burstPod("decode-unknown", "decode", "127.0.0.103")
 	broken := burstPod("decode-broken", "decode", "127.0.0.104")
-	pods := []*v1.Pod{small, large, sglang, unknown, broken}
+	infinite := burstPod("decode-infinite", "decode", "127.0.0.105")
+	pods := []*v1.Pod{small, large, sglang, unknown, broken, infinite}
 
 	r, _ := newDecodeTokenLoadTestRouter(t)
 	r.cache = cache.NewWithPodsMetricsForTest(pods, "token-load-model", map[string]map[string]metrics.MetricValue{
@@ -57,6 +59,8 @@ func TestDecodeKVCapacities(t *testing.T) {
 		sglang.Name: {metrics.KVCacheCapacityTokens: &metrics.SimpleMetricValue{Value: 300_000}},
 		// vLLM reports "None" before the engine has allocated its blocks.
 		broken.Name: vllmCapacity("None"),
+		// The Prometheus text format accepts +Inf as a gauge value.
+		infinite.Name: {metrics.KVCacheCapacityTokens: &metrics.SimpleMetricValue{Value: math.Inf(1)}},
 	})
 
 	t.Run("factors scale to the mean capacity", func(t *testing.T) {
@@ -69,12 +73,13 @@ func TestDecodeKVCapacities(t *testing.T) {
 		assert.InDelta(t, 2.0/3, factors[burstPodKey(sglang.Name)], 1e-9)
 		assert.Equal(t, 1.0, factors[burstPodKey(unknown.Name)], "an unknown capacity counts as the mean")
 		assert.Equal(t, 1.0, factors[burstPodKey(broken.Name)], "an unparsable capacity counts as the mean")
+		assert.Equal(t, 1.0, factors[burstPodKey(infinite.Name)], "an infinite capacity counts as the mean")
 	})
 
 	t.Run("no scaling", func(t *testing.T) {
 		withDecodeTokenLoadCapacityAware(t, true)
 		assert.Nil(t, r.decodeKVCapacities(false, pods), "only token_load is scaled")
-		assert.Nil(t, r.decodeKVCapacities(true, []*v1.Pod{unknown, broken}), "no candidate reports a capacity")
+		assert.Nil(t, r.decodeKVCapacities(true, []*v1.Pod{unknown, broken, infinite}), "no candidate reports a capacity")
 		withDecodeTokenLoadCapacityAware(t, false)
 		assert.Nil(t, r.decodeKVCapacities(true, pods), "switch off")
 	})
