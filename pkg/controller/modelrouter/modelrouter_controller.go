@@ -19,6 +19,8 @@ package modelrouter
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,7 +61,7 @@ const (
 
 	modelRouterCustomPath = constants.ModelAnnoRouterCustomPath
 
-	// defaultResyncInterval is how often missing HTTPRoutes are recreated.
+	// defaultResyncInterval is how often HTTPRoutes are recreated or brought up to date.
 	defaultResyncInterval = 30 * time.Second
 )
 
@@ -317,6 +319,31 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 	if !ok {
 		return
 	}
+	if _, err := strconv.ParseInt(labels[modelPortIdentifier], 10, 32); err != nil {
+		klog.Warningf("failed to parse model port: %v", err)
+		klog.Infof("please ensure %s is configured, default port %d will be used", modelPortIdentifier, defaultModelServingPort)
+	}
+	httpRoute := buildHTTPRoute(namespace, modelName, labels, annotations)
+
+	err := m.Create(context.Background(), httpRoute)
+	if err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			klog.V(4).Infof("httproute: %v already exists in namespace: %v", httpRoute.Name, namespace)
+		} else {
+			klog.ErrorS(err, "Failed to create httproute", "namespace", namespace, "name", httpRoute.Name)
+			return
+		}
+	} else {
+		klog.Infof("httproute: %v created for model: %v", httpRoute.Name, modelName)
+	}
+
+	if aibrixEnvoyGatewayNamespace != namespace {
+		m.createReferenceGrant(namespace)
+	}
+}
+
+// buildHTTPRoute returns the HTTPRoute a model workload should have.
+func buildHTTPRoute(namespace, modelName string, labels map[string]string, annotations map[string]string) *gatewayv1.HTTPRoute {
 	serviceName := modelName
 	if annotatedServiceName := annotations[constants.ModelAnnoServiceName]; annotatedServiceName != "" {
 		serviceName = annotatedServiceName
@@ -324,8 +351,6 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 
 	modelPort, err := strconv.ParseInt(labels[modelPortIdentifier], 10, 32)
 	if err != nil {
-		klog.Warningf("failed to parse model port: %v", err)
-		klog.Infof("please ensure %s is configured, default port %d will be used", modelPortIdentifier, defaultModelServingPort)
 		modelPort = defaultModelServingPort
 	}
 
@@ -387,22 +412,7 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 	}
 
 	appendCustomModelRouterPaths(&httpRoute, modelHeaderMatch, annotations)
-
-	err = m.Create(context.Background(), &httpRoute)
-	if err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			klog.V(4).Infof("httproute: %v already exists in namespace: %v", httpRoute.Name, namespace)
-		} else {
-			klog.ErrorS(err, "Failed to create httproute", "namespace", namespace, "name", httpRoute.Name)
-			return
-		}
-	} else {
-		klog.Infof("httproute: %v created for model: %v", httpRoute.Name, modelName)
-	}
-
-	if aibrixEnvoyGatewayNamespace != namespace {
-		m.createReferenceGrant(namespace)
-	}
+	return &httpRoute
 }
 
 func (m *ModelRouter) createReferenceGrant(namespace string) {
@@ -622,7 +632,7 @@ func (m *ModelRouter) Run(ctx context.Context) {
 }
 
 // ensureHTTPRoutes creates the HTTPRoute of every labeled model workload whose
-// route is missing. Existing routes are left unchanged.
+// route is missing, and updates the ones that have drifted from their workload.
 func (m *ModelRouter) ensureHTTPRoutes(ctx context.Context) error {
 	var workloads []client.Object
 
@@ -661,6 +671,19 @@ func (m *ModelRouter) ensureHTTPRoutes(ctx context.Context) error {
 		}
 	}
 
+	// Oldest first, so a model served by several workloads always takes its route
+	// from the same one.
+	sort.SliceStable(workloads, func(i, j int) bool {
+		ti, tj := workloads[i].GetCreationTimestamp(), workloads[j].GetCreationTimestamp()
+		if !ti.Equal(&tj) {
+			return ti.Before(&tj)
+		}
+		if workloads[i].GetNamespace() != workloads[j].GetNamespace() {
+			return workloads[i].GetNamespace() < workloads[j].GetNamespace()
+		}
+		return workloads[i].GetName() < workloads[j].GetName()
+	})
+
 	checked := make(map[string]struct{})
 	for _, workload := range workloads {
 		if workload.GetDeletionTimestamp() != nil {
@@ -680,7 +703,7 @@ func (m *ModelRouter) ensureHTTPRoutes(ctx context.Context) error {
 	return nil
 }
 
-// ensureHTTPRouteForWorkload creates the model's HTTPRoute if it is missing and
+// ensureHTTPRouteForWorkload creates or updates the model's HTTPRoute if
 // the workload still serves the model. It reports whether the workload is still
 // current, so the caller can skip other workloads of the same model.
 //
@@ -712,6 +735,7 @@ func (m *ModelRouter) ensureHTTPRouteForWorkload(ctx context.Context, workload c
 	key := client.ObjectKey{Namespace: aibrixEnvoyGatewayNamespace, Name: utils.ModelRouterName(modelName)}
 	err = m.Get(ctx, key, &route)
 	if err == nil {
+		m.updateHTTPRouteIfStale(ctx, &route, buildHTTPRoute(current.GetNamespace(), modelName, current.GetLabels(), current.GetAnnotations()))
 		return true
 	}
 	if !apierrors.IsNotFound(err) {
@@ -721,6 +745,52 @@ func (m *ModelRouter) ensureHTTPRouteForWorkload(ctx context.Context, workload c
 	klog.InfoS("httproute is missing, recreating it", "model", modelName, "namespace", current.GetNamespace())
 	m.createHTTPRoute(current.GetNamespace(), current.GetLabels(), current.GetAnnotations())
 	return true
+}
+
+// updateHTTPRouteIfStale rewrites an existing route whose spec no longer matches
+// its workload, e.g. after an upgrade adds model paths or the port label changes.
+func (m *ModelRouter) updateHTTPRouteIfStale(ctx context.Context, route, desired *gatewayv1.HTTPRoute) {
+	if httpRouteSpecMatches(route, desired) {
+		return
+	}
+	route.Spec.ParentRefs = desired.Spec.ParentRefs
+	route.Spec.Rules = desired.Spec.Rules
+	if err := m.Update(ctx, route); err != nil {
+		klog.ErrorS(err, "Failed to update httproute", "name", route.Name)
+		return
+	}
+	klog.InfoS("httproute updated", "name", route.Name)
+}
+
+// httpRouteSpecMatches compares only the fields buildHTTPRoute sets, so values the
+// API server defaults (backend group, kind, weight) are not seen as drift.
+func httpRouteSpecMatches(route, desired *gatewayv1.HTTPRoute) bool {
+	return slices.Equal(httpRouteSpecKey(route), httpRouteSpecKey(desired))
+}
+
+func httpRouteSpecKey(route *gatewayv1.HTTPRoute) []string {
+	var key []string
+	for _, ref := range route.Spec.ParentRefs {
+		key = append(key, fmt.Sprintf("parent %s/%s", ptr.Deref(ref.Namespace, ""), ref.Name))
+	}
+	for _, rule := range route.Spec.Rules {
+		key = append(key, "rule")
+		for _, match := range rule.Matches {
+			if match.Path != nil {
+				key = append(key, fmt.Sprintf("path %s %s", ptr.Deref(match.Path.Type, ""), ptr.Deref(match.Path.Value, "")))
+			}
+			for _, header := range match.Headers {
+				key = append(key, fmt.Sprintf("header %s %s=%s", ptr.Deref(header.Type, ""), header.Name, header.Value))
+			}
+		}
+		for _, backend := range rule.BackendRefs {
+			key = append(key, fmt.Sprintf("backend %s/%s:%d", ptr.Deref(backend.Namespace, ""), backend.Name, ptr.Deref(backend.Port, 0)))
+		}
+		if rule.Timeouts != nil {
+			key = append(key, fmt.Sprintf("timeout %s", ptr.Deref(rule.Timeouts.Request, "")))
+		}
+	}
+	return key
 }
 
 // getWorkload re-reads a listed workload from the informer cache.
@@ -810,7 +880,7 @@ func appendCustomModelRouterPaths(httpRoute *gatewayv1.HTTPRoute, modelHeaderMat
 					modelHeaderMatch,
 				},
 			})
-		klog.InfoS("Added custom model router path", "path", path)
+		klog.V(4).InfoS("Added custom model router path", "path", path)
 	}
 }
 

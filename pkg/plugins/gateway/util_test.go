@@ -467,6 +467,28 @@ func Test_ValidateRequestBody(t *testing.T) {
 			messages:    "this is system say this is test",
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
+		{
+			message:     "/v1/messages/count_tokens valid request body",
+			requestPath: "/v1/messages/count_tokens",
+			requestBody: []byte(`{"model": "llama2-7b", "system": "this is system", "messages": [{"role": "user", "content": "say this is test"}]}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/messages/count_tokens?beta=true",
+			requestPath: "/v1/messages/count_tokens?beta=true",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "user", "content": "say this is test"}]}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/messages/count_tokens invalid json",
+			requestPath: "/v1/messages/count_tokens",
+			requestBody: []byte(`{"model": "llama2-7b", "messages":`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
 	}
 
 	for _, tt := range testCases {
