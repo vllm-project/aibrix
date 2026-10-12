@@ -53,6 +53,96 @@ func TestPlacementBackoffWaitsLongerAfterEachRefusal(t *testing.T) {
 	assert.Equal(t, 4*DefaultRequeueDuration, backoff.refused(claim, 1, nil))
 }
 
+func TestReconcilePriorityExpiredLowTimerCannotBypassHighClaim(t *testing.T) {
+	r, runtime, low, high, pod := priorityReconciler(t)
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	room := roomSignatureOf([]corev1.Pod{*pod}, &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*low, *high}})
+	lowKey, highKey := client.ObjectKeyFromObject(low), client.ObjectKeyFromObject(high)
+	r.Backoff.refused(lowKey, low.Generation, room)
+	r.Backoff.statusWritten(lowKey)
+	now = now.Add(DefaultRequeueDuration / 2)
+	r.Backoff.refused(highKey, high.Generation, room)
+	r.Backoff.statusWritten(highKey)
+	now = now.Add(DefaultRequeueDuration / 2)
+	before := r.Backoff.attempts[lowKey]
+
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, low.Name))
+	assert.Empty(t, runtime.activateCalls)
+	assert.Equal(t, "WaitingForPlacementTurn", scheduled(t, r, low.Name).Reason)
+	assert.Equal(t, before.refusals, r.Backoff.attempts[lowKey].refusals, "priority denial is not a card refusal")
+	assert.Equal(t, before.readyAt, r.Backoff.attempts[lowKey].readyAt)
+	due, _ := r.Backoff.due(highKey, high.Generation, room)
+	assert.False(t, due, "the competitor's independent timer has not expired")
+}
+
+func TestReconcilePriorityDenialDoesNotCreateRefusalBackoff(t *testing.T) {
+	r, runtime, low, _, _ := priorityReconciler(t)
+	for i := 0; i < 3; i++ {
+		assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, low.Name))
+		assert.NotContains(t, r.Backoff.attempts, client.ObjectKeyFromObject(low))
+	}
+	assert.Empty(t, runtime.activateCalls)
+	assert.Equal(t, "WaitingForPlacementTurn", scheduled(t, r, low.Name).Reason)
+}
+
+func TestReconcilePriorityInfeasibleCurrentRetainsActualRefusalBackoff(t *testing.T) {
+	low := priorityTestClaim("low-too-large", 0, at0758)
+	low.Spec.PerGPU = claimWithCost(2000, 100).Spec.PerGPU
+	high := priorityTestClaim("high-fits", 10, at0759)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	r, runtime := newReconciler(t, low, high, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	for i, want := range []time.Duration{DefaultRequeueDuration, 2 * DefaultRequeueDuration} {
+		assert.Equal(t, want, reconcileFor(t, r, low.Name))
+		assert.Equal(t, "TooLargeForAnyCard", scheduled(t, r, low.Name).Reason)
+		assert.EqualValues(t, i+1, r.Backoff.attempts[client.ObjectKeyFromObject(low)].refusals)
+		now = now.Add(want)
+	}
+	assert.Empty(t, runtime.activateCalls)
+}
+
+func TestEnsureActivatedPriorityFailedRetryWaitsForOrdinaryPending(t *testing.T) {
+	r, runtime, low, high, pod := priorityReconciler(t)
+	current := getModel(t, r, high.Name)
+	current.Status.Phase = modelv1alpha1.ModelClaimFailed
+	require.NoError(t, r.Status().Update(context.Background(), current))
+	key := client.ObjectKeyFromObject(high)
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+	room := roomSignatureOf([]corev1.Pod{*pod}, &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*low, *current}})
+	r.Backoff.failedToStart(key, current.Generation, room)
+	now = now.Add(DefaultRequeueDuration)
+	before := r.Backoff.attempts[key]
+	wait, err := r.ensureActivated(context.Background(), current, []corev1.Pod{*pod}, newRuntimeReadings(runtime))
+	require.NoError(t, err)
+	assert.Equal(t, DefaultRequeueDuration, wait)
+	assert.Empty(t, runtime.activateCalls)
+	assert.Equal(t, before, r.Backoff.attempts[key])
+	condition := meta.FindStatusCondition(current.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, condition)
+	assert.Equal(t, "WaitingForPlacementTurn", condition.Reason)
+	assert.Equal(t, "waiting behind ModelClaim older-low with priority 1 that can use the same pool", condition.Message)
+}
+
+func TestReconcilePriorityFailedRetryRemainsBehindPendingAfterRestart(t *testing.T) {
+	r, runtime, _, high, _ := priorityReconciler(t)
+	current := getModel(t, r, high.Name)
+	current.Status.Phase = modelv1alpha1.ModelClaimFailed
+	require.NoError(t, r.Status().Update(context.Background(), current))
+	// A restarted controller has the persisted Failed phase but no in-memory
+	// activation-failure backoff. A denied turn must not promote that retry
+	// into the ordinary placement queue on the next pass.
+	for i := 0; i < 2; i++ {
+		assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, high.Name))
+		assert.Equal(t, "WaitingForPlacementTurn", scheduled(t, r, high.Name).Reason)
+		assert.Equal(t, modelv1alpha1.ModelClaimFailed, getModel(t, r, high.Name).Status.Phase)
+		assert.Empty(t, runtime.activateCalls)
+	}
+}
+
 func TestPlacementBackoffStopsDoublingAtItsCeiling(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	backoff := newPlacementBackoff(func() time.Time { return now })

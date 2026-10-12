@@ -425,6 +425,169 @@ func newReconciler(t *testing.T, objs ...client.Object) (*ModelClaimReconciler, 
 	}, runtime
 }
 
+func priorityReconciler(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, *modelv1alpha1.ModelClaim, *modelv1alpha1.ModelClaim, *corev1.Pod) {
+	t.Helper()
+	low := priorityTestClaim("older-low", 1, at0758)
+	high := priorityTestClaim("newer-high", 10, at0759)
+	low.Spec.ModelName, high.Spec.ModelName = nil, nil
+	low.UID, high.UID = types.UID(low.Name), types.UID(high.Name)
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	r, runtime := newReconciler(t, low, high, pod)
+	return r, runtime, low, high, pod
+}
+
+func TestReconcilePriorityDenialConditionAndDeduplicatedEvents(t *testing.T) {
+	r, runtime, low, high, _ := priorityReconciler(t)
+	for i := 0; i < 2; i++ {
+		assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, low.Name))
+		got := getModel(t, r, low.Name)
+		assert.Empty(t, got.Status.Instances)
+		assert.Equal(t, modelv1alpha1.ModelClaimPending, got.Status.Phase)
+		condition := scheduled(t, r, low.Name)
+		assert.Equal(t, metav1.ConditionFalse, condition.Status)
+		assert.Equal(t, "WaitingForPlacementTurn", condition.Reason)
+		assert.Equal(t, "waiting behind ModelClaim newer-high with priority 10 that can use the same pool", condition.Message)
+	}
+	assert.Empty(t, runtime.activateCalls)
+	events := r.Recorder.(*record.FakeRecorder).Events
+	var waiting []string
+	for len(events) > 0 {
+		event := <-events
+		if strings.Contains(event, "WaitingForPlacementTurn") {
+			waiting = append(waiting, event)
+		}
+	}
+	assert.Equal(t, []string{"Normal WaitingForPlacementTurn waiting behind ModelClaim newer-high with priority 10 that can use the same pool"}, waiting)
+
+	newBlocker := priorityTestClaim("highest", 20, at0759.Add(time.Minute))
+	newBlocker.Spec.ModelName = nil
+	require.NoError(t, r.Create(context.Background(), newBlocker))
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, low.Name))
+	assert.Equal(t, "waiting behind ModelClaim highest with priority 20 that can use the same pool", scheduled(t, r, low.Name).Message)
+	var changed []string
+	for len(events) > 0 {
+		event := <-events
+		if strings.Contains(event, "WaitingForPlacementTurn") {
+			changed = append(changed, event)
+		}
+	}
+	assert.Equal(t, []string{"Normal WaitingForPlacementTurn waiting behind ModelClaim highest with priority 20 that can use the same pool"}, changed)
+	assert.Empty(t, runtime.activateCalls)
+
+	// Once both predecessors record their instances, the normal placement
+	// update clears the waiting condition.
+	for _, name := range []string{newBlocker.Name, high.Name} {
+		reconcileFor(t, r, name)
+	}
+	reconcileFor(t, r, low.Name)
+	assert.Equal(t, "Placed", scheduled(t, r, low.Name).Reason)
+	assert.Equal(t, metav1.ConditionTrue, scheduled(t, r, low.Name).Status)
+}
+
+func TestEnsureActivatedPriorityFailedInstanceReplacementBypassesAdmission(t *testing.T) {
+	r, runtime, low, _, pod := priorityReconciler(t)
+	low = getModel(t, r, low.Name)
+	low.Status.Phase = modelv1alpha1.ModelClaimFailed
+	low.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: "failed-pod", Port: 9001, Phase: modelv1alpha1.ModelClaimFailed}}
+	require.NoError(t, r.Status().Update(context.Background(), low))
+
+	_, err := r.ensureActivated(context.Background(), low, []corev1.Pod{*pod}, newRuntimeReadings(runtime))
+	require.NoError(t, err)
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, low.Name, runtime.activateCalls[0].ModelName)
+	require.Len(t, low.Status.Instances, 1)
+	assert.Equal(t, pod.Name, low.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, low.Status.Instances[0].Phase)
+}
+
+func TestReconcilePriorityLostInstanceReentersAdmission(t *testing.T) {
+	r, runtime, low, _, _ := priorityReconciler(t)
+	low = getModel(t, r, low.Name)
+	low.Status.Phase = modelv1alpha1.ModelClaimActive
+	low.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: "lost-pod", Port: 9001, Phase: modelv1alpha1.ModelClaimActive}}
+	require.NoError(t, r.Status().Update(context.Background(), low))
+	reconcileFor(t, r, low.Name)
+	assert.Empty(t, runtime.activateCalls)
+	assert.Empty(t, getModel(t, r, low.Name).Status.Instances)
+	assert.Equal(t, "WaitingForPlacementTurn", scheduled(t, r, low.Name).Reason)
+}
+
+func TestPriorityAPIReaderFailureStopsBeforeActivation(t *testing.T) {
+	r, runtime, low, _, pod := priorityReconciler(t)
+	readErr := errors.New("authoritative claims unavailable")
+	listCalls := 0
+	r.APIReader = fake.NewClientBuilder().WithScheme(r.Scheme).WithInterceptorFuncs(interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*modelv1alpha1.ModelClaimList); ok {
+				listCalls++
+				return readErr
+			}
+			return c.List(ctx, list, opts...)
+		},
+	}).Build()
+	before := getModel(t, r, low.Name)
+	_, err := r.ensureActivated(context.Background(), before, []corev1.Pod{*pod}, newRuntimeReadings(runtime))
+	assert.ErrorIs(t, err, readErr)
+	assert.Equal(t, 1, listCalls)
+	assert.Empty(t, runtime.activateCalls)
+	assert.Empty(t, runtime.kvLimitCalls)
+	assert.Empty(t, getModel(t, r, low.Name).Status.Instances)
+	assert.NotContains(t, r.backoff().attempts, client.ObjectKeyFromObject(low))
+}
+
+func TestPriorityAPIReaderStateOverridesStaleCache(t *testing.T) {
+	for _, apiPlaced := range []bool{false, true} {
+		t.Run(map[bool]string{false: "API pending beats cached instance", true: "API instance beats cached pending"}[apiPlaced], func(t *testing.T) {
+			r, runtime, low, high, pod := priorityReconciler(t)
+			cached := getModel(t, r, high.Name)
+			authoritative := cached.DeepCopy()
+			placed := cached
+			if apiPlaced {
+				placed = authoritative
+			}
+			placed.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: "other-pod", Port: 9001, Phase: modelv1alpha1.ModelClaimActive}}
+			require.NoError(t, r.Status().Update(context.Background(), cached))
+			listCalls := 0
+			r.APIReader = fake.NewClientBuilder().WithScheme(r.Scheme).WithObjects(low.DeepCopy(), authoritative).
+				WithInterceptorFuncs(interceptor.Funcs{
+					List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+						if _, ok := list.(*modelv1alpha1.ModelClaimList); ok {
+							listCalls++
+						}
+						return c.List(ctx, list, opts...)
+					},
+				}).Build()
+			current := getModel(t, r, low.Name)
+			_, err := r.ensureActivated(context.Background(), current, []corev1.Pod{*pod}, newRuntimeReadings(runtime))
+			require.NoError(t, err)
+			assert.Equal(t, 1, listCalls, "admission reuses the ledger's authoritative listing")
+			condition := meta.FindStatusCondition(current.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+			require.NotNil(t, condition)
+			if apiPlaced {
+				assert.Len(t, runtime.activateCalls, 1)
+				assert.Equal(t, "Placed", condition.Reason)
+			} else {
+				assert.Empty(t, runtime.activateCalls)
+				assert.Equal(t, "WaitingForPlacementTurn", condition.Reason)
+			}
+		})
+	}
+}
+
+func TestPrioritySnapshotReadOncePerPodDuringAdmission(t *testing.T) {
+	r, runtime, low, _, first := priorityReconciler(t)
+	second := first.DeepCopy()
+	second.Name, second.Status.PodIP = "warm-2", testPeerIP
+	current := getModel(t, r, low.Name)
+	_, err := r.ensureActivated(context.Background(), current, []corev1.Pod{*first, *second}, newRuntimeReadings(runtime))
+	require.NoError(t, err)
+	assert.Empty(t, runtime.activateCalls)
+	assert.Equal(t, map[string]int{first.Status.PodIP: 1, second.Status.PodIP: 1}, runtime.snapshotCallsTo)
+	condition := meta.FindStatusCondition(current.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, condition)
+	assert.Equal(t, "WaitingForPlacementTurn", condition.Reason)
+}
+
 func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{

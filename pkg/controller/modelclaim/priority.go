@@ -17,12 +17,15 @@ limitations under the License.
 package modelclaim
 
 import (
+	"context"
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 )
+
+const scheduledReasonWaitingForPlacementTurn = "WaitingForPlacementTurn"
 
 // placementPriorityFirst orders unplaced claims by descending priority while
 // retaining FIFO order among claims with equal priority.
@@ -51,4 +54,94 @@ func priorityEligible(claim *modelv1alpha1.ModelClaim, candidates []corev1.Pod) 
 	}
 	_, err := modelParallelism(claim)
 	return err == nil
+}
+
+// claimFeasibleForPlacement uses the current pass's account and readings to
+// determine whether a claim can fit directly or have room made for it.
+func (r *ModelClaimReconciler) claimFeasibleForPlacement(
+	ctx context.Context,
+	claim *modelv1alpha1.ModelClaim,
+	candidates []corev1.Pod,
+	ledgers map[string]podLedger,
+	readings *runtimeReadings,
+) bool {
+	perGPU, err := perGPUBytesOf(claim)
+	if err != nil {
+		return false
+	}
+	parallelism, err := modelParallelism(claim)
+	if err != nil {
+		return false
+	}
+	shared := make([]corev1.Pod, 0, len(candidates))
+	for i := range candidates {
+		pod := candidates[i]
+		if !selects(claim, &pod) || (isVLLMModel(claim) && !podSupportsVLLMParallelism(pod, parallelism)) {
+			continue
+		}
+		shared = append(shared, pod)
+	}
+	admissible, _ := admissibleCandidates(shared, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(claim))
+	if len(admissible) > 0 {
+		return true
+	}
+	for i := range shared {
+		pod := &shared[i]
+		if _, found := r.planRoom(ctx, claim, pod, ledgers[pod.Name], perGPU.minimumReserveBytes(), readings); found {
+			return true
+		}
+	}
+	return false
+}
+
+// placementTurnBlocker identifies the first feasible predecessor using the
+// same authoritative claims that built the card account. Existing instances
+// and acquired reservations retain their placement turns.
+func (r *ModelClaimReconciler) placementTurnBlocker(
+	ctx context.Context,
+	current *modelv1alpha1.ModelClaim,
+	candidates []corev1.Pod,
+	claims *modelv1alpha1.ModelClaimList,
+	ledgers map[string]podLedger,
+	readings *runtimeReadings,
+) *modelv1alpha1.ModelClaim {
+	if len(current.Status.Instances) != 0 {
+		return nil
+	}
+	now := r.now()
+	if _, held := r.reservations().heldFor(current.Namespace, current.Name, now); held {
+		return nil
+	}
+	// An infeasible current claim must retain its actual refusal and backoff.
+	if !r.claimFeasibleForPlacement(ctx, current, candidates, ledgers, readings) {
+		return nil
+	}
+	waiting := make([]modelv1alpha1.ModelClaim, 0, len(claims.Items)+1)
+	if current.Status.Phase != modelv1alpha1.ModelClaimFailed {
+		waiting = append(waiting, *current)
+	}
+	for i := range claims.Items {
+		claim := &claims.Items[i]
+		if claim.Namespace == current.Namespace && claim.Name != current.Name && priorityEligible(claim, candidates) {
+			waiting = append(waiting, *claim)
+		}
+	}
+	placementPriorityFirst(waiting)
+	for i := range waiting {
+		claim := &waiting[i]
+		if claim.Name == current.Name {
+			return nil
+		}
+		// The current ledger already charges this owner's reservation, so
+		// checking only physical fit would incorrectly discard its turn.
+		if _, held := r.reservations().heldFor(claim.Namespace, claim.Name, now); held {
+			return claim
+		}
+		if r.claimFeasibleForPlacement(ctx, claim, candidates, ledgers, readings) {
+			return claim
+		}
+	}
+	// A Failed claim with no instance retries after every ordinary feasible
+	// competitor, regardless of the retrying claim's numeric priority.
+	return nil
 }

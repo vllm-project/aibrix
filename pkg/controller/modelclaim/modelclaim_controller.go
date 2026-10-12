@@ -348,10 +348,14 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if len(failedInstanceSlots(pm)) < failed {
 		booting = true
 	}
+	scheduled := meta.FindStatusCondition(pm.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	failedRetryWaiting := pm.Status.Phase == modelv1alpha1.ModelClaimFailed && scheduled != nil &&
+		scheduled.Reason == scheduledReasonWaitingForPlacementTurn
 	r.recomputeReadiness(pm)
-	if len(pm.Status.Instances) == 0 && r.backoff().waitsAfterAFailedStart(req.NamespacedName) {
+	if len(pm.Status.Instances) == 0 && (failedRetryWaiting || r.backoff().waitsAfterAFailedStart(req.NamespacedName)) {
 		// A pass inside the wait tried nothing, so the claim still stands as
-		// its last try left it.
+		// its last try left it. A denied placement turn also preserves the
+		// Failed retry lane after a restart has lost the in-memory backoff.
 		pm.Status.Phase = modelv1alpha1.ModelClaimFailed
 	}
 	setClaimGauges(pm)
@@ -699,6 +703,24 @@ func (r *ModelClaimReconciler) ensureActivated(
 	claims, listErr := r.listClaimsForAccount(ctx, pm.Namespace)
 	ledgers := podLedgersFrom(claims, listErr, candidates, snapshots, r.podsWithoutWakeReserve(ctx, candidates))
 	r.reservations().takeFrom(ledgers, pm.Namespace, pm.Name, r.now())
+	if len(pm.Status.Instances) == 0 {
+		if listErr != nil {
+			return 0, listErr
+		}
+		if blocker := r.placementTurnBlocker(ctx, pm, candidates, claims, ledgers, readings); blocker != nil {
+			message := fmt.Sprintf("waiting behind ModelClaim %s with priority %d that can use the same pool",
+				blocker.Name, blocker.Spec.Priority)
+			if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+				Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
+				Status:  metav1.ConditionFalse,
+				Reason:  scheduledReasonWaitingForPlacementTurn,
+				Message: message,
+			}) {
+				r.Recorder.Event(pm, corev1.EventTypeNormal, scheduledReasonWaitingForPlacementTurn, message)
+			}
+			return DefaultRequeueDuration, nil
+		}
+	}
 	admissible, refusals := admissibleCandidates(candidates, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(pm))
 	rankByRoom(placementStates, ledgers)
 

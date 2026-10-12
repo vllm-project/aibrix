@@ -174,6 +174,74 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
 	})
 
+	ginkgo.DescribeTable("placement priority on a newly eligible pod",
+		func(highFootprint string, highFits bool) {
+			fixture.Runtime().SetDefaultState("active", true)
+			fixture.Runtime().SetCard(3 << 30)
+			pod := fixture.CreateWarmPodPending(ns.Name, "warm-priority", "pool-priority", 1)
+			claims := make([]*modelapi.ModelClaim, 0, 2)
+			for _, spec := range []struct {
+				name      string
+				priority  int32
+				footprint string
+			}{
+				{"a-older-low", 1, "1Gi"},
+				{"z-newer-high", 10, highFootprint},
+			} {
+				claim := &modelapi.ModelClaim{
+					ObjectMeta: metav1.ObjectMeta{Name: spec.name, Namespace: ns.Name},
+					Spec: modelapi.ModelClaimSpec{
+						Priority:    spec.priority,
+						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{constants.ModelPoolLabelName: "pool-priority"}},
+						ArtifactURL: "huggingface://integration/" + spec.name,
+						Engine:      "vllm",
+						PerGPU: &modelapi.ModelClaimPerGPU{
+							MaximumFootprint: resource.MustParse(spec.footprint),
+							KVFloor:          resource.MustParse("1Gi"),
+						},
+					},
+				}
+				gomega.Expect(k8sClient.Create(ctx, claim)).To(gomega.Succeed())
+				claims = append(claims, claim)
+			}
+			low, high := claims[0], claims[1]
+			gomega.Eventually(func(g gomega.Gomega) {
+				for _, claim := range claims {
+					latest := fixture.GetClaim(g, claim)
+					g.Expect(latest.Status.Instances).To(gomega.BeEmpty())
+					condition := meta.FindStatusCondition(latest.Status.Conditions, string(modelapi.ModelClaimConditionTypeScheduled))
+					g.Expect(condition).NotTo(gomega.BeNil())
+					g.Expect(condition.Reason).To(gomega.Equal("NoMatchingPods"))
+				}
+			}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+			fixture.MarkWarmPodRunning(pod)
+			if highFits {
+				gomega.Eventually(func(g gomega.Gomega) {
+					g.Expect(fixture.GetClaim(g, high).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+					g.Expect(fixture.GetClaim(g, low).Status.Instances).To(gomega.BeEmpty())
+				}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+				gomega.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(1))
+				gomega.Expect(k8sClient.Delete(ctx, high)).To(gomega.Succeed())
+				gomega.Eventually(func(g gomega.Gomega) {
+					g.Expect(apierrors.IsNotFound(k8sClient.Get(ctx, client.ObjectKeyFromObject(high), &modelapi.ModelClaim{}))).To(gomega.BeTrue())
+					g.Expect(fixture.GetClaim(g, low).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+				}, 2*modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+			} else {
+				gomega.Eventually(func(g gomega.Gomega) {
+					g.Expect(fixture.GetClaim(g, low).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+					latest := fixture.GetClaim(g, high)
+					g.Expect(latest.Status.Instances).To(gomega.BeEmpty())
+					condition := meta.FindStatusCondition(latest.Status.Conditions, string(modelapi.ModelClaimConditionTypeScheduled))
+					g.Expect(condition).NotTo(gomega.BeNil())
+					g.Expect(condition.Reason).To(gomega.Equal(constants.ModelClaimReasonTooLargeForAnyCard))
+				}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+			}
+		},
+		ginkgo.Entry("places the newer high-priority claim first and low after capacity is freed", "1Gi", true),
+		ginkgo.Entry("skips a high-priority claim too large for every card", "3Gi", false),
+	)
+
 	ginkgo.It("places a pending claim when its existing warm pod becomes runnable", func() {
 		fixture.Runtime().SetDefaultState("active", true)
 		pod := fixture.CreateWarmPodPending(ns.Name, "warm-becoming-ready", "pool-a", 0)

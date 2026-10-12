@@ -302,7 +302,13 @@ func TestReconcileMakesNoRoomWhereItShouldNot(t *testing.T) {
 			reconcileOnce(t, r, "x")
 
 			assert.Empty(t, runtime.sleepCalls)
-			assert.Equal(t, "NoMatchingPods", scheduledOf(t, r, "x").Reason)
+			condition := scheduledOf(t, r, "x")
+			if tc.older {
+				assert.Equal(t, "WaitingForPlacementTurn", condition.Reason)
+				assert.Equal(t, "waiting behind ModelClaim older with priority 0 that can use the same pool", condition.Message)
+			} else {
+				assert.Equal(t, "NoMatchingPods", condition.Reason)
+			}
 			_, held := r.reservations().heldFor(testNamespace, "x", r.now())
 			assert.False(t, held)
 		})
