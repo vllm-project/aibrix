@@ -1,8 +1,8 @@
 .. _modelclaim:
 
-==========
-ModelClaim
-==========
+===========
+Model Claim
+===========
 
 .. warning::
 
@@ -18,6 +18,11 @@ for a sleeping model wakes it.
 
 ModelClaim suits models that are busy only part of the time and would
 otherwise each need a GPU of their own.
+
+.. figure:: ../../assets/images/modelclaim-overview.png
+  :alt: ModelClaim places models on a warm GPU runtime pool and publishes them to the AIBrix gateway
+  :width: 100%
+  :align: center
 
 How it works
 ------------
