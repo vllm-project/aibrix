@@ -43,12 +43,12 @@ Requests hit an OpenAI-compatible gateway and go straight to an engine pod. Kube
 
 These commands install AIBrix, including its Envoy Gateway dependency, into the cluster your current `kubectl` context points at. KubeRay is included and is only required for Ray-based multi-node inference.
 
-The snippet uses **v0.7.0**, the latest published release, so the downloads succeed today. This repository’s manifests track the [v0.8.0-rc.2](https://github.com/vllm-project/aibrix/releases/tag/v0.8.0-rc.2) release candidate; that GitHub release is still a draft, and its asset URLs return 404 until it is published. Switch `VERSION` when it is.
+The snippet installs the latest release, [v0.8.0](https://github.com/vllm-project/aibrix/releases/tag/v0.8.0). Change `VERSION` to install a different release.
 
 ### Install a release
 
 ```shell
-VERSION=v0.7.0
+VERSION=v0.8.0
 
 # Dependencies (Envoy Gateway, KubeRay, and friends)
 kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/${VERSION}/aibrix-dependency-${VERSION}.yaml" --server-side
@@ -91,7 +91,7 @@ Full guides live at [aibrix.readthedocs.io](https://aibrix.readthedocs.io/latest
 
 ### Releases
 
-- **[2026-10-09]** [v0.8.0-rc.2](https://github.com/vllm-project/aibrix/releases/tag/v0.8.0-rc.2) release candidate.
+- **[2026-10-09]** [v0.8.0](https://github.com/vllm-project/aibrix/releases/tag/v0.8.0)
 - **[2026-06-16]** [v0.7.0](https://github.com/vllm-project/aibrix/releases/tag/v0.7.0) · [blog](https://aibrix.github.io/posts/2026-06-16-v0.7.0-release/)
 - **[2026-03-05]** [v0.6.0](https://github.com/vllm-project/aibrix/releases/tag/v0.6.0) · [blog](https://aibrix.github.io/posts/2026-03-03-v0.6.0-release/)
 - **[2025-11-10]** [v0.5.0](https://github.com/vllm-project/aibrix/releases/tag/v0.5.0) · [blog](https://aibrix.github.io/posts/2025-11-10-v0.5.0-release/)
