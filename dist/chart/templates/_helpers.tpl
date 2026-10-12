@@ -171,7 +171,7 @@ Create the name of the metadata service service account
 {{- fail "gateway.tls.hostname is required when gateway.tls.autoGenerate=true." -}}
 {{- end -}}
 {{- $service := dig "envoyProxy" "service" (dict) .Values.gateway -}}
-{{- $nodePorts := get $service "nodePorts" | default dict -}}
+{{- $nodePorts := get $service "nodePorts" | default (dict) -}}
 {{- if $nodePorts -}}
 {{- if ne (get $service "type") "NodePort" -}}
 {{- fail "gateway.envoyProxy.service.nodePorts requires service.type=NodePort." -}}

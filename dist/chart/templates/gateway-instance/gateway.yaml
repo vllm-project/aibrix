@@ -112,14 +112,14 @@ spec:
                       resources: {{ toYaml .Values.gateway.envoyProxy.container.shutdownManager.resources | nindent 24 }}
       {{- with .Values.gateway.envoyProxy.service }}
       {{- $service := deepCopy . }}
-      {{- $nodePorts := get $service "nodePorts" | default dict }}
+      {{- $nodePorts := get $service "nodePorts" | default (dict) }}
       {{- $_ := unset $service "nodePorts" }}
       {{- $ports := list }}
       {{- if and $.Values.gateway.http.enabled (get $nodePorts "http") }}
-        {{- $ports = append $ports (dict "port" 80 "protocol" "TCP" "nodePort" $nodePorts.http) }}
+        {{- $ports = append $ports (dict "port" 80 "protocol" "TCP" "nodePort" (int $nodePorts.http)) }}
       {{- end }}
       {{- if and $.Values.gateway.tls.enabled (get $nodePorts "https") }}
-        {{- $ports = append $ports (dict "port" (int $.Values.gateway.tls.port) "protocol" "TCP" "nodePort" $nodePorts.https) }}
+        {{- $ports = append $ports (dict "port" (int $.Values.gateway.tls.port) "protocol" "TCP" "nodePort" (int $nodePorts.https)) }}
       {{- end }}
       {{- /* Unpatched listener ports remain managed by Envoy Gateway. */}}
       {{- if $ports }}
