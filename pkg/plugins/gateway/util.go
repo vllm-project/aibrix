@@ -94,11 +94,12 @@ type contentItem struct {
 }
 
 // engineNativeReqMinimal captures the fields needed to route a vLLM engine-native
-// request (/tokenize, /pooling): the completion form carries "prompt" (tokenize)
-// or "input" (pooling), the chat form "messages". Prompt, input, and messages all
-// stay raw JSON so a wrongly-typed value reaches the engine's validator instead of
-// failing this unmarshal -- in particular a non-array "messages" on a
-// completion-form body (an ignored extra) must not reject a valid "input".
+// request (/tokenize, /pooling, /classify): the completion form carries "prompt"
+// (tokenize) or "input" (pooling, classify), the chat form "messages". Prompt,
+// input, and messages all stay raw JSON so a wrongly-typed value reaches the
+// engine's validator instead of failing this unmarshal -- in particular a non-array
+// "messages" on a completion-form body (an ignored extra) must not reject a valid
+// "input".
 type engineNativeReqMinimal struct {
 	Model          string          `json:"model"`
 	Prompt         json.RawMessage `json:"prompt"`
@@ -240,6 +241,8 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		model, message, errRes = validateRerankRequest(requestID, requestBody)
 	case PathClassify:
 		model, message, errRes = validateClassifyRequest(requestID, requestBody)
+	case PathNativeClassify:
+		model, message, errRes = validateNativeClassifyRequest(requestID, requestBody)
 	case PathDecisions:
 		model, message, errRes = validateDecisionsRequest(requestID, requestBody)
 	case PathSystemOne:
@@ -586,7 +589,7 @@ func validateRerankRequest(requestID string, requestBody []byte) (model, message
 // and the rest of the schema is left to the engine. Nothing is metered: no tokens are generated.
 // nolint:nakedret
 func validateTokenizeRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
-	return validateEngineNativeRequest(requestID, "tokenize", false, requestBody)
+	return validateEngineNativeRequest(requestID, PathTokenize, requestBody)
 }
 
 // validatePoolingRequest parses and validates a vLLM /pooling request body. Only "model"
@@ -597,25 +600,31 @@ func validateTokenizeRequest(requestID string, requestBody []byte) (model, messa
 // are rejected at the edge too, because the language response path cannot meter them.
 // nolint:nakedret
 func validatePoolingRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
-	return validateEngineNativeRequest(requestID, "pooling", true, requestBody)
+	return validateEngineNativeRequest(requestID, PathPooling, requestBody)
+}
+
+// validateNativeClassifyRequest parses and validates a vLLM /classify request body, which
+// takes the same "input" or "messages" forms as /pooling. Only "model" is required, and the
+// rest of the schema is left to the engine.
+// nolint:nakedret
+func validateNativeClassifyRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	return validateEngineNativeRequest(requestID, PathNativeClassify, requestBody)
 }
 
 // validateEngineNativeRequest is the shared validator for vLLM engine-native paths
-// (/tokenize, /pooling), whose request bodies are a union of a completion form
-// ("prompt" for tokenize, "input" for pooling) and a chat form ("messages").
+// (/tokenize, /pooling, /classify), whose request bodies are a union of a completion
+// form ("prompt" for tokenize, "input" otherwise) and a chat form ("messages").
 // Only "model" is required - the one field the gateway routes on; a body without
 // any input field still reaches the engine, which owns that error. The routing
 // message is best-effort: parseChatMessages unquotes a JSON string and writes any
 // other JSON value (array, token ids) as raw bytes, so the whole input value becomes
 // one content item rather than being expanded into several.
 // nolint:nakedret
-func validateEngineNativeRequest(requestID, endpoint string, pooling bool, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+func validateEngineNativeRequest(requestID, endpointPath string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	endpoint := strings.TrimPrefix(endpointPath, "/")
+	pooling := endpointPath == PathPooling
 	var req engineNativeReqMinimal
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		endpointPath := PathTokenize
-		if pooling {
-			endpointPath = PathPooling
-		}
 		logRequestBodyParseFailure(requestID, endpointPath, "error to unmarshal "+endpoint+" object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
@@ -628,11 +637,11 @@ func validateEngineNativeRequest(requestID, endpoint string, pooling bool, reque
 	model = req.Model
 
 	// Select the completion field by endpoint: tokenize reads "prompt", pooling
-	// reads "input". The other completion field is an ignored extra on that path
-	// (vLLM's OpenAIBaseModel is extra="allow"), so it must not win the routing
-	// key. The chat form ("messages") is the fallback for both.
+	// and classify read "input". The other completion field is an ignored extra on
+	// that path (vLLM's OpenAIBaseModel is extra="allow"), so it must not win the
+	// routing key. The chat form ("messages") is the fallback for all of them.
 	completionField := req.Input
-	if !pooling {
+	if endpointPath == PathTokenize {
 		completionField = req.Prompt
 	}
 
@@ -658,7 +667,7 @@ func validateEngineNativeRequest(requestID, endpoint string, pooling bool, reque
 	}
 
 	// Non-streaming engine paths reject stream at the edge, like embeddings;
-	// tokenize has no stream field, and a stray one is left to the engine.
+	// tokenize and classify have no stream field, and a stray one is left to the engine.
 	if pooling && len(req.Stream) > 0 {
 		var streamBool bool
 		if err := sonic.Unmarshal(req.Stream, &streamBool); err != nil || streamBool {

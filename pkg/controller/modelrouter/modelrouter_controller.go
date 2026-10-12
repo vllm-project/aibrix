@@ -75,6 +75,7 @@ var modelPaths = []string{
 	"/v1/embeddings",
 	"/v1/rerank",
 	"/v1/classify",
+	"/classify",
 	"/v1/decisions",
 	"/v1/systemone",
 	"/v1/score",

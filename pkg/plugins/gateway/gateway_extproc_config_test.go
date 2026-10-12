@@ -255,6 +255,12 @@ func TestGatewayPluginManifest_SharedRouteServesScore(t *testing.T) {
 	assert.Contains(t, manifest.pathMatches(t, "reserved-router"), manifestPathMatch{Type: "PathPrefix", Value: PathScore})
 }
 
+func TestGatewayPluginManifest_SharedRouteServesNativeClassify(t *testing.T) {
+	manifest := loadGatewayPluginManifest(t)
+
+	assert.Contains(t, manifest.pathMatches(t, "reserved-router"), manifestPathMatch{Type: "PathPrefix", Value: PathNativeClassify})
+}
+
 // TestGatewayPluginManifest_NoUnsupportedModeOverrideField guards against the
 // tempting one-line fix: EnvoyExtensionPolicy in Envoy Gateway v1.2.8 has no
 // allowModeOverride field, so setting it would be dropped by the API server and

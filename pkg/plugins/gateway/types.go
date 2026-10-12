@@ -140,6 +140,9 @@ const (
 	PathAudioTranslations   = "/v1/audio/translations"
 	PathRerank              = "/v1/rerank"
 	PathClassify            = "/v1/classify"
+	// PathNativeClassify is where vLLM serves classification; PathClassify is SGLang's
+	// OpenAI-style route.
+	PathNativeClassify = "/classify"
 	// PathDecisions is SGLang's typed-question scoring endpoint (choice, score, yes_no).
 	// It does not stream and generates no tokens.
 	PathDecisions = "/v1/decisions"
