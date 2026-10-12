@@ -233,7 +233,11 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 					} else {
 						usage.CompletionTokens = usageResult.Get("output_tokens").Int()
 					}
-					usage.TotalTokens = usageResult.Get("total_tokens").Int()
+					if tt := usageResult.Get("total_tokens"); tt.Exists() {
+						usage.TotalTokens = tt.Int()
+					} else {
+						usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+					}
 				}
 			}
 		}

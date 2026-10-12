@@ -1023,6 +1023,45 @@ func TestHandleResponseBody_SystemOneIsMetered(t *testing.T) {
 	mockRL.AssertExpectations(t)
 }
 
+// Shaped like vLLM's /v1/messages stream, which sends no total_tokens.
+const messagesStreamBody = "event: message_start\n" +
+	`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[],"usage":{"input_tokens":25,"output_tokens":0}}}` + "\n\n" +
+	"event: content_block_delta\n" +
+	`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}` + "\n\n" +
+	"event: message_delta\n" +
+	`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":25,"output_tokens":15}}` + "\n\n" +
+	"event: message_stop\n" +
+	`data: {"type":"message_stop"}` + "\n\n"
+
+func TestHandleResponseBody_MessagesStreamIsMetered(t *testing.T) {
+	mockRL := &mockRateLimiter{}
+	mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(40)).Return(int64(40), nil)
+
+	server := &Server{
+		ratelimiter: mockRL,
+	}
+
+	requestID := "test-req-messages-stream-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "m", "", requestID, "test-user")
+	routerCtx.ReqPath = PathMessages
+	routerCtx.RequestTime = time.Now()
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(messagesStreamBody),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	_, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user", Tpm: 1000}, 1, "m", true, false)
+
+	assert.True(t, complete)
+	assert.Equal(t, TokenUsage{PromptTokens: 25, CompletionTokens: 15, TotalTokens: 40}, usage)
+	mockRL.AssertExpectations(t)
+}
+
 func TestHandleResponseBody_NonLanguageRequest(t *testing.T) {
 	server := &Server{}
 
