@@ -254,9 +254,11 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 	case PathPooling:
 		model, message, errRes = validatePoolingRequest(requestID, requestBody)
 	case PathAudioTranscriptions, PathAudioTranslations:
-		// Audio endpoints require multipart/form-data content-type, not JSON
-		// This case handles the error when JSON is sent to audio endpoints
+		// Audio transcription and translation require multipart/form-data content-type, not JSON
+		// This case handles the error when JSON is sent to these audio endpoints
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "audio requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
+	case PathAudioSpeech:
+		model, message, errRes = validateAudioSpeechRequest(requestID, requestBody)
 	default:
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", "", "", HeaderErrorRequestBodyProcessing, "true")
 	}
@@ -953,6 +955,44 @@ func jsonString(value json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return text, true
+}
+
+// validateAudioSpeechRequest parses and validates a vLLM-Omni /v1/audio/speech request body.
+// Only what the gateway itself needs is checked: a JSON object with a non-empty "model" to
+// route on and a non-empty textual "input" to synthesize. The speech options (voice,
+// response_format, speed, instructions, language, stream_format, ...) belong to the engine and
+// are forwarded as sent. A request-level "stream" field is deliberately not surfaced as a stream
+// here: the response is binary audio, so the gateway must never treat it as an SSE stream.
+// nolint:nakedret
+func validateAudioSpeechRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	if trimmed := bytes.TrimSpace(requestBody); len(trimmed) == 0 || trimmed[0] != '{' {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	var req struct {
+		Model string `json:"model"`
+		Input string `json:"input"`
+	}
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		// The body can hold customer text, so log its size, not its content.
+		klog.ErrorS(nil, "error to unmarshal audio speech object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	// The gateway selects the backend pod by model, so it cannot fall back to an engine default.
+	if strings.TrimSpace(req.Model) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if strings.TrimSpace(req.Input) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property and cannot be empty", "", "input", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	model, message = req.Model, req.Input
+	return
 }
 
 // jsonParseReason returns why sonic rejected a body without the excerpt of the body that its

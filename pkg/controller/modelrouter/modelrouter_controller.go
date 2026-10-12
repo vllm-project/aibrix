@@ -87,6 +87,7 @@ var modelPaths = []string{
 	"/v1/videos",
 	"/v1/audio/transcriptions",
 	"/v1/audio/translations",
+	"/v1/audio/speech",
 	"/tokenize",
 	"/pooling",
 }

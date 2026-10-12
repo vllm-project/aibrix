@@ -357,6 +357,9 @@ func isLanguageRequest(requestPath string) bool {
 		PathVideos,
 		PathAudioTranscriptions,
 		PathAudioTranslations,
+		// Speech generation returns binary audio, which may arrive in several chunks, so its
+		// response is forwarded byte-for-byte and never parsed as JSON or SSE.
+		PathAudioSpeech,
 		PathTokenize,
 		PathMessagesCountTokens,
 	}

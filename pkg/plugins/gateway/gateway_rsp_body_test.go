@@ -159,6 +159,11 @@ func TestIsLanguageRequest(t *testing.T) {
 			want:        true,
 		},
 		{
+			name:        "audio speech is not language",
+			requestPath: "/v1/audio/speech",
+			want:        false,
+		},
+		{
 			name:        "empty path is language",
 			requestPath: "",
 			want:        true,
@@ -1134,6 +1139,41 @@ func TestHandleResponseBody_MessagesCountTokensPassesThrough(t *testing.T) {
 	assert.Nil(t, resp.GetImmediateResponse())
 	assert.NotNil(t, resp.GetResponseBody())
 	assert.Equal(t, TokenUsage{}, usage)
+}
+
+// TestHandleResponseBody_AudioSpeechPassesThrough: /v1/audio/speech returns binary audio, often
+// in several chunks, so the gateway must forward every chunk byte for byte, parse no tokens from
+// it and meter no usage, while still completing on the last chunk.
+func TestHandleResponseBody_AudioSpeechPassesThrough(t *testing.T) {
+	server := &Server{}
+
+	requestID := "test-req-speech-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "tts-model", "", requestID, "test-user")
+	routerCtx.ReqPath = PathAudioSpeech
+	routerCtx.RequestTime = time.Now()
+
+	chunks := [][]byte{
+		{0xff, 0xf3, 0x60, 0xc4, 0x00, 0x10}, // raw MP3 bytes, not text
+		{0x30, 0x31, 0x32, 0x33},             // a second audio chunk
+	}
+
+	for i, chunk := range chunks {
+		req := &extProcPb.ProcessingRequest{
+			Request: &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        chunk,
+					EndOfStream: i == len(chunks)-1,
+				},
+			},
+		}
+
+		resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "tts-model", false, false)
+
+		assert.Equal(t, i == len(chunks)-1, complete)
+		assert.NotNil(t, resp)
+		assert.Equal(t, TokenUsage{}, usage, "binary audio carries no token usage")
+		assert.Nil(t, resp.GetResponseBody().GetResponse().GetBodyMutation(), "audio chunks must pass through unchanged")
+	}
 }
 
 func TestHandleResponseBody_EndOfStreamNoTokens(t *testing.T) {

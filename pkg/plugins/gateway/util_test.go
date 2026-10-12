@@ -2930,3 +2930,142 @@ func Test_ValidateRequestBody_Score(t *testing.T) {
 		})
 	}
 }
+
+func Test_ValidateRequestBody_AudioSpeech(t *testing.T) {
+	testCases := []struct {
+		message     string
+		requestPath string // defaults to PathAudioSpeech
+		requestBody string
+		input       string
+		statusCode  envoyTypePb.StatusCode
+		param       string
+	}{
+		{
+			message:     "/v1/audio/speech routes on the model and speaks the input",
+			requestBody: `{"model": "tts-1", "input": "Hello world", "voice": "alloy"}`,
+			input:       "Hello world",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech speech options are forwarded, not inspected",
+			requestBody: `{"model": "tts-1", "input": "Hi", "voice": "verse", "response_format": "wav", "speed": 1.25, "instructions": "excited", "language": "en", "stream_format": "audio", "task_type": "Base", "x_future_option": {"k": 1}}`,
+			input:       "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech unknown fields are accepted",
+			requestBody: `{"model": "tts-1", "input": "Hi", "x_future_option": {"k": 1}}`,
+			input:       "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech a request-level stream field does not make it an SSE stream",
+			requestBody: `{"model": "tts-1", "input": "Hi", "stream": true}`,
+			input:       "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech query string does not break path matching",
+			requestPath: PathAudioSpeech + "?api-version=1",
+			requestBody: `{"model": "tts-1", "input": "Hi"}`,
+			input:       "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech missing model",
+			requestBody: `{"input": "Hi"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/audio/speech blank model",
+			requestBody: `{"model": " ", "input": "Hi"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/audio/speech non-string model",
+			requestBody: `{"model": 7, "input": "Hi"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech missing input",
+			requestBody: `{"model": "tts-1", "voice": "alloy"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/audio/speech blank input",
+			requestBody: `{"model": "tts-1", "input": "   "}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/audio/speech empty input",
+			requestBody: `{"model": "tts-1", "input": ""}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/audio/speech non-string input",
+			requestBody: `{"model": "tts-1", "input": 42}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech malformed JSON",
+			requestBody: `{"model": "tts-1", "input": "Hi"`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech array root",
+			requestBody: `[{"model": "tts-1", "input": "Hi"}]`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech null root",
+			requestBody: `null`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech empty body",
+			requestBody: ``,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.message, func(t *testing.T) {
+			requestPath := tt.requestPath
+			if requestPath == "" {
+				requestPath = PathAudioSpeech
+			}
+			model, messages, prefixText, stream, errRes := validateRequestBody("test-request-id", requestPath, []byte(tt.requestBody), utils.User{})
+
+			// Binary audio is never treated as an SSE stream and carries no separate prefix text.
+			assert.False(t, stream)
+			assert.Empty(t, prefixText)
+
+			if tt.statusCode == envoyTypePb.StatusCode_OK {
+				assert.Nil(t, errRes)
+				assert.Equal(t, "tts-1", model)
+				assert.Equal(t, tt.input, messages)
+				return
+			}
+
+			if !assert.NotNil(t, errRes) {
+				return
+			}
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, model)
+			assert.Empty(t, messages)
+
+			var errResponse map[string]any
+			require.NoError(t, sonic.Unmarshal([]byte(errRes.GetImmediateResponse().GetBody()), &errResponse))
+			errObj, ok := errResponse["error"].(map[string]any)
+			require.True(t, ok, "response should have an 'error' object")
+			if tt.param != "" {
+				assert.Equal(t, tt.param, errObj["param"])
+			}
+		})
+	}
+}

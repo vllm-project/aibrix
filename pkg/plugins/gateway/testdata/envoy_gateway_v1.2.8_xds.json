@@ -460,6 +460,39 @@
                       },
                       {
                         "match": {
+                          "pathSeparatedPrefix": "/v1/audio/speech"
+                        },
+                        "metadata": {
+                          "filterMetadata": {
+                            "envoy-gateway": {
+                              "resources": [
+                                {
+                                  "kind": "HTTPRoute",
+                                  "name": "aibrix-reserved-router",
+                                  "namespace": "aibrix-system"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/15/*",
+                        "route": {
+                          "cluster": "httproute/aibrix-system/aibrix-reserved-router/rule/0",
+                          "upgradeConfigs": [
+                            {
+                              "upgradeType": "websocket"
+                            }
+                          ]
+                        },
+                        "typedPerFilterConfig": {
+                          "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-extension-policy/extproc/0": {
+                            "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig",
+                            "config": {}
+                          }
+                        }
+                      },
+                      {
+                        "match": {
                           "pathSeparatedPrefix": "/v1/images/generations"
                         },
                         "metadata": {
@@ -970,7 +1003,7 @@
                             }
                           }
                         },
-                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/15/*",
+                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/16/*",
                         "route": {
                           "cluster": "httproute/aibrix-system/aibrix-reserved-router/rule/0",
                           "upgradeConfigs": [
@@ -1036,7 +1069,7 @@
                             }
                           }
                         },
-                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/16/*",
+                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/17/*",
                         "route": {
                           "cluster": "httproute/aibrix-system/aibrix-reserved-router/rule/0",
                           "upgradeConfigs": [
