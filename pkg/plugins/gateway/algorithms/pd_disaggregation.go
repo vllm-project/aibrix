@@ -22,6 +22,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -103,6 +104,10 @@ var (
 	// other gateway replicas through Redis when Redis is configured; false keeps
 	// it local to this process.
 	aibrixTokenLoadSharedLedger bool = utils.LoadEnvBool("AIBRIX_TOKEN_LOAD_SHARED_LEDGER", true)
+	// aibrixDecodeTokenLoadCapacityAware scales each decode pod's token_load
+	// score by its KV capacity, so pods of different sizes are compared by how
+	// full they are rather than by token counts.
+	aibrixDecodeTokenLoadCapacityAware bool = utils.LoadEnvBool("AIBRIX_DECODE_TOKEN_LOAD_CAPACITY_AWARE", true)
 	// KV transfer backend: "shfs" (GPU/SHFS) or "nixl" (Neuron)
 	aibrixKVConnectorType string = utils.LoadEnv("AIBRIX_KV_CONNECTOR_TYPE", KVConnectorTypeSHFS)
 	// prefill pod scoring strategy: "prefix_cache", "least_request", "conductor" or "token_load"
@@ -1234,6 +1239,7 @@ func (r *pdRouter) scoreDecodePodsWithLedger(routingCtx *types.RoutingContext, f
 	// apply to it.
 	usesDecodeTokenLoad := pd.UsesDecodeTokenLoad(policy)
 	decodeRates := decodeTokenLoadRates(usesDecodeTokenLoad, podThroughputs, podRequestCounts)
+	decodeCapacities := r.decodeKVCapacities(usesDecodeTokenLoad, filteredDecodePods)
 	anyMetricsReady := false
 	metricsReadyByPod := make(map[string]bool, len(filteredDecodePods))
 	for _, pod := range filteredDecodePods {
@@ -1286,7 +1292,7 @@ func (r *pdRouter) scoreDecodePodsWithLedger(routingCtx *types.RoutingContext, f
 			MaxFreeGPUUsage: maxFreeGPUUsage,
 		}
 		if usesDecodeTokenLoad && r.tokenLoadTracker != nil {
-			in.DecodeTokens = r.decodeTokenLoad(podKey, decodeRates[podKey], remoteLedger)
+			in.DecodeTokens = scaleByCapacity(r.decodeTokenLoad(podKey, decodeRates[podKey], remoteLedger), decodeCapacities, podKey)
 		}
 
 		decodeScore := policy.ScoreDecodePod(routingCtx, pod, in)
@@ -1777,6 +1783,85 @@ func (r *pdRouter) decodeTokenLoad(podKey string, rate float64, remoteLedger map
 		if rate > 0 {
 			load += rate * remote.Elapsed
 		}
+	}
+	return load
+}
+
+// decodeKVCapacities returns, per decode pod key, the factor that scales the
+// pod's token_load score to the mean capacity of the candidates: mean
+// capacity / pod capacity, with capacities in KV tokens. Scores then rank pods
+// by how full they are, and stay in tokens: with equal capacities every factor
+// is 1. A pod whose capacity is unknown uses the mean (factor 1). Returns nil,
+// which leaves the scores in tokens, unless token_load scores the pass with
+// AIBRIX_DECODE_TOKEN_LOAD_CAPACITY_AWARE on and some candidate reports a
+// capacity.
+func (r *pdRouter) decodeKVCapacities(usesDecodeTokenLoad bool, pods []*v1.Pod) map[string]float64 {
+	if !usesDecodeTokenLoad || !aibrixDecodeTokenLoadCapacityAware {
+		return nil
+	}
+	capacities := make(map[string]float64, len(pods))
+	sum := 0.0
+	for _, pod := range pods {
+		if c, ok := r.podKVCapacity(pod); ok {
+			capacities[utils.GeneratePodKey(pod.Namespace, pod.Name)] = c
+			sum += c
+		}
+	}
+	if len(capacities) == 0 {
+		return nil
+	}
+	mean := sum / float64(len(capacities))
+	factors := make(map[string]float64, len(pods))
+	for _, pod := range pods {
+		key := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		factors[key] = 1
+		if c, ok := capacities[key]; ok {
+			factors[key] = mean / c
+		}
+	}
+	return factors
+}
+
+// podKVCapacity reads a pod's KV cache capacity in tokens from its scraped
+// metrics: num_gpu_blocks × block_size from vLLM's cache config info, or the
+// capacity gauge SGLang reports.
+func (r *pdRouter) podKVCapacity(pod *v1.Pod) (float64, bool) {
+	if v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.KVCacheCapacityTokens); err == nil && v != nil && v.GetSimpleValue() > 0 {
+		return v.GetSimpleValue(), true
+	}
+	blocks, ok := podLabelMetricFloat(r.cache, pod, metrics.KVCacheNumGPUBlocks)
+	if !ok {
+		return 0, false
+	}
+	blockSize, ok := podLabelMetricFloat(r.cache, pod, metrics.KVCacheBlockSize)
+	if !ok {
+		return 0, false
+	}
+	return blocks * blockSize, true
+}
+
+// podLabelMetricFloat parses a positive number from a label-valued pod metric.
+func podLabelMetricFloat(c cache.Cache, pod *v1.Pod, metricName string) (float64, bool) {
+	v, err := c.GetMetricValueByPod(pod.Name, pod.Namespace, metricName)
+	if err != nil {
+		return 0, false
+	}
+	label, ok := v.(*metrics.LabelValueMetricValue)
+	if !ok || label == nil {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(label.Value, 64)
+	if err != nil || f <= 0 || math.IsInf(f, 0) || math.IsNaN(f) {
+		return 0, false
+	}
+	return f, true
+}
+
+// scaleByCapacity applies podKey's capacity factor (see decodeKVCapacities)
+// to a token_load score; nil factors leave it unchanged.
+func scaleByCapacity(load float64, factors map[string]float64, podKey string) float64 {
+	if f, ok := factors[podKey]; ok {
+		return load * f
 	}
 	return load
 }
