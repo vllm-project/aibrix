@@ -219,6 +219,12 @@ class TestLocalBatchMetastoreUpgrade:
             assert not await storage.object_exists(watermark)
             assert not storage._get_metadata_path(watermark).exists()
 
+    async def test_missing_metastore_root_is_a_no_op(self, migration):
+        storage, _ = migration
+        shutil.rmtree(storage.base_path)
+        await maybe_upgrade_storage(storage)
+        assert not storage.base_path.exists()
+
     async def test_other_local_roots_are_left_alone(self, migration, tmp_path):
         other = LocalStorage(str(tmp_path / "files"))
         _write_pair(other, "batchjob:old-job", b"legacy")

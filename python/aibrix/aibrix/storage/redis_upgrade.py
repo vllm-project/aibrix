@@ -241,6 +241,8 @@ async def upgrade_local_batch_metastore(storage: LocalStorage) -> None:
         return
 
     def _scan() -> tuple[list[Path], list[Path], bool]:
+        if not storage.base_path.is_dir():  # nothing was ever stored here
+            return [], [], False
         paths = [path for path in storage.base_path.iterdir() if path.is_file()]
         sidecars = [
             path
