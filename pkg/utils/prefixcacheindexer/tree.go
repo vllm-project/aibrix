@@ -732,6 +732,8 @@ func (c *LPRadixCache) evictNode(node *TreeNode) {
 	// Acquire parent.mu to prevent concurrent map access from GetModelToPods callers.
 	// A parent keeps a pod that caches the parent's own prefix or that one of
 	// its remaining children still has, and so do all of its own parents.
+	// Dropping a kept pod from the snapshot is what keeps it on every parent
+	// above; the snapshot is a copy, so node itself is not changed.
 	for parent := node.parent; parent != nil; parent = parent.parent {
 		parent.mu.Lock()
 		for model, pods := range modelToPodsSnapshot {
@@ -813,7 +815,8 @@ func (c *LPRadixCache) splitNode(key []int, child *TreeNode, splitLen int) *Tree
 		newNode.evictedPods[k] = v
 	}
 
-	// Copy ModelToPods mapping to both nodes
+	// Copy ModelToPods mapping to both nodes. directPods stays on child: a
+	// prefix that ended at child still ends there after the split.
 	newNode.modelToPods = make(map[string]map[string]time.Time)
 	for model, pods := range child.modelToPods {
 		// Copy to new node (prefix node)
