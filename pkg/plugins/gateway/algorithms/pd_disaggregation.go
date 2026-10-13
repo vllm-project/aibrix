@@ -1817,6 +1817,9 @@ func (r *pdRouter) decodeKVCapacities(usesDecodeTokenLoad bool, pods []*v1.Pod) 
 		factors[key] = 1
 		if c, ok := capacities[key]; ok {
 			factors[key] = mean / c
+		} else {
+			klog.V(4).InfoS("pd_router token_load decode capacity unknown, scoring at the mean",
+				"pod_name", pod.Name, "mean_capacity_tokens", mean)
 		}
 	}
 	return factors
@@ -1824,7 +1827,9 @@ func (r *pdRouter) decodeKVCapacities(usesDecodeTokenLoad bool, pods []*v1.Pod) 
 
 // podKVCapacity reads a pod's KV cache capacity in tokens from its scraped
 // metrics: num_gpu_blocks × block_size from vLLM's cache config info, or the
-// capacity gauge SGLang reports.
+// capacity gauge SGLang reports. With data parallelism, vLLM's front end sums
+// num_gpu_blocks over the engines it manages and puts that sum on every
+// engine's cache_config_info series, so the first series is the pod's total.
 func (r *pdRouter) podKVCapacity(pod *v1.Pod) (float64, bool) {
 	if v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.KVCacheCapacityTokens); err == nil && v != nil {
 		if c := v.GetSimpleValue(); validKVCapacity(c) {
