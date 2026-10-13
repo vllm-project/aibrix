@@ -114,7 +114,8 @@ class TOSDownloaderV1(BaseDownloader):
         )
         # Bare siblings such as `models/llama.json` share the listing with the
         # exact key, so look for the exact key rather than a single result.
-        if any(obj.key == self.bucket_path for obj in objects_out.contents):
+        contents = getattr(objects_out, "contents", None) or []
+        if any(obj.key == self.bucket_path for obj in contents):
             prefix = f"{self.bucket_path}/"
             if any(
                 child.prefix.startswith(prefix)
