@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from aibrix.batch.job_driver import BaseJobDriver
 from aibrix.batch.job_driver.driver import TerminateResult
 from aibrix.batch.job_driver.runtime import (
     RUNTIME_WAIT_MODE_PROVISION,
@@ -41,6 +42,9 @@ from aibrix.batch.job_entity import (
     BatchJobState,
     BatchJobStatus,
     BatchJobStatusCopy,
+    Condition,
+    ConditionStatus,
+    ConditionType,
     JobRuntimeRef,
     RequestCountStats,
 )
@@ -298,6 +302,47 @@ async def test_runtime_base_terminate_before_session_start_short_circuits_sessio
 
     assert calls == []
     assert runtime.cancelled() is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_base_terminate_before_session_persistence_failure(monkeypatch):
+    job = _make_test_job()
+    job.status.state = BatchJobState.IN_PROGRESS
+    original_status = job.status.model_copy(deep=True)
+    deleted_job = copy.deepcopy(job)
+    deleted_job.status.state = BatchJobState.CANCELLING
+    deleted_job.status.add_condition(
+        Condition(
+            type=ConditionType.CANCELLED,
+            status=ConditionStatus.TRUE,
+            lastTransitionTime=datetime.now(timezone.utc),
+        )
+    )
+    progress_manager = _FakeProgressManager()
+
+    async def get_job(job_id):
+        return job if job_id == job.job_id else None
+
+    async def update_job_status(job_id, status):
+        assert job_id == job.job_id
+        assert status.check_condition(ConditionType.CANCELLED)
+        raise RuntimeError("status persistence failed")
+
+    monkeypatch.setattr(progress_manager, "get_job", get_job)
+    monkeypatch.setattr(
+        progress_manager, "update_job_status", update_job_status, raising=False
+    )
+    runtime = _R()
+    driver = BaseJobDriver(InfrastructureContext(), progress_manager, runtime)
+
+    with pytest.raises(RuntimeError, match="status persistence failed"):
+        await driver.terminate(deleted_job)
+
+    assert runtime._stop_requested.is_set() is False
+    assert runtime._stop_job_id is None
+    stored = await progress_manager.get_job(job.job_id)
+    assert stored is not None
+    assert stored.status == original_status
 
 
 @pytest.mark.asyncio
