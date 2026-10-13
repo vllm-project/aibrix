@@ -603,13 +603,8 @@ func (p *prefixCacheAndLoadRouter) PostRouteUpdate(ctx *types.RoutingContext, re
 		return err
 	}
 
-	node, _, _ := p.cache.AddPrefix(tokens, ctx.Model, "")
 	targetPodKey := utils.GeneratePodKey(targetPod.Namespace, targetPod.Name)
-	currentNode := node
-	for currentNode != nil {
-		currentNode.AddOrUpdatePodForModel(ctx.Model, targetPodKey, time.Now())
-		currentNode = currentNode.GetParent()
-	}
+	node, _, _ := p.cache.AddPrefix(tokens, ctx.Model, targetPodKey)
 
 	decodeLen := ctx.RoutingOverrides().Preble.DecodingLength
 	p.histogram.update(time.Now(), node, node, targetPodKey, decodeLen)

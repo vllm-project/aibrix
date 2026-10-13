@@ -87,6 +87,41 @@ func Test_LPRadixCacheEvictKeepsPodsOfRemainingChildren(t *testing.T) {
 	assert.Equal(t, []*v1.Pod{p1}, matchPods)
 }
 
+func Test_LPRadixCacheEvictKeepsPodsCachedOnTheParent(t *testing.T) {
+	cache := NewLPRadixCache(1)
+	p1 := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}}
+
+	// p1 caches [1 2] itself and [1 2 4] below it.
+	parent, _, _ := cache.AddPrefix([]int{1, 2}, "m1", "default/p1")
+	stale, _, _ := cache.AddPrefix([]int{1, 2, 4}, "m1", "default/p1")
+	stale.lastAccess = time.Now().Add(-2 * evictionDuration)
+
+	evicted := cache.Evict(time.Now())
+	assert.Equal(t, []*TreeNode{stale}, evicted)
+
+	// [1 2] has no children left, but p1 still caches it directly.
+	assert.True(t, parent.HasPodForModel("m1", "default/p1"))
+	matchedTokens, _, matchPods := cache.MatchPrefix([]int{1, 2, 9}, "m1", []*v1.Pod{p1})
+	assert.Equal(t, []int{1, 2}, matchedTokens)
+	assert.Equal(t, []*v1.Pod{p1}, matchPods)
+}
+
+func Test_LPRadixCacheEvictDropsPodsRemovedFromThePodSet(t *testing.T) {
+	cache := NewLPRadixCache(1)
+
+	// p1 caches [1 2], leaves the pod set, and comes back only caching [1 2 4].
+	parent, _, _ := cache.AddPrefix([]int{1, 2}, "m1", "default/p1")
+	for _, node := range cache.GetAllNodes() {
+		node.RemovePodsNotInSet(map[string]bool{})
+	}
+	stale, _, _ := cache.AddPrefix([]int{1, 2, 4}, "m1", "default/p1")
+	stale.lastAccess = time.Now().Add(-2 * evictionDuration)
+
+	evicted := cache.Evict(time.Now())
+	assert.Equal(t, []*TreeNode{stale}, evicted)
+	assert.False(t, parent.HasPodForModel("m1", "default/p1"))
+}
+
 func Test_RadixMatchPrefix(t *testing.T) {
 	tests := []*struct {
 		name          string

@@ -46,6 +46,9 @@ type TreeNode struct {
 	contextLength int // total length from root to this node
 	depth         int
 	modelToPods   map[string]map[string]time.Time // model -> {pod key (namespace/name) -> lastAccessTime}
+	// directPods has the model -> pod entries for prefixes that end at this
+	// node. modelToPods also has the entries of every descendant.
+	directPods map[string]map[string]bool
 }
 
 // GetModelToPods returns a deep copy of the model-to-pods mapping.
@@ -79,6 +82,33 @@ func (n *TreeNode) InitAndUpdateModelPod(model string, podName string, timestamp
 	}
 	n.modelToPods[model][podName] = timestamp
 	klog.InfoS("Updated mapping for model %s, pod %s in node(%d)", "model", model, "podName", podName, "nodeID", n.id)
+}
+
+func (n *TreeNode) addDirectPod(model string, podName string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.directPods == nil {
+		n.directPods = make(map[string]map[string]bool)
+	}
+	if n.directPods[model] == nil {
+		n.directPods[model] = make(map[string]bool)
+	}
+	n.directPods[model][podName] = true
+}
+
+// removeDirectPodsNotInSet drops direct entries of pods that are not in
+// currentPodSet. The caller holds n.mu.
+func (n *TreeNode) removeDirectPodsNotInSet(currentPodSet map[string]bool) {
+	for model, podMap := range n.directPods {
+		for podName := range podMap {
+			if !currentPodSet[podName] {
+				delete(podMap, podName)
+			}
+		}
+		if len(podMap) == 0 {
+			delete(n.directPods, model)
+		}
+	}
 }
 
 func (n *TreeNode) GetRefCounter() []int {
@@ -182,6 +212,7 @@ func (n *TreeNode) RemovePodsNotInCurrentPodSet(currentPodSet map[string]bool) b
 			klog.InfoS("Removed model from node(%d): %s", "nodeID", n.id, "model", model)
 		}
 	}
+	n.removeDirectPodsNotInSet(currentPodSet)
 	return podsChanged
 }
 
@@ -264,6 +295,7 @@ func (n *TreeNode) RemovePodsNotInSet(currentPodSet map[string]bool) bool {
 			delete(n.modelToPods, model)
 		}
 	}
+	n.removeDirectPodsNotInSet(currentPodSet)
 	if podsChanged {
 		klog.InfoS("Removed pods from node(%d): %v", "nodeID", n.id, "deletedPods", deleted_pods)
 	}
@@ -554,6 +586,7 @@ func (c *LPRadixCache) AddPrefix(tokens []int, model string, podName string) (*T
 	node, matchedTokens, unmatchedTokens := c.insertHelper(c.rootNode, tokens, tokens)
 	if node != nil && podName != "" {
 		node.InitAndUpdateModelPod(model, podName, time.Now())
+		node.addDirectPod(model, podName)
 		current := node
 		for current.parent != nil {
 			current.parent.InitAndUpdateModelPod(model, podName, time.Now())
@@ -697,14 +730,14 @@ func (c *LPRadixCache) evictNode(node *TreeNode) {
 
 	// Clean up pod mappings in parent nodes.
 	// Acquire parent.mu to prevent concurrent map access from GetModelToPods callers.
-	// A parent keeps a pod that one of its remaining children still has, and
-	// so do all of its own parents.
+	// A parent keeps a pod that caches the parent's own prefix or that one of
+	// its remaining children still has, and so do all of its own parents.
 	for parent := node.parent; parent != nil; parent = parent.parent {
 		parent.mu.Lock()
 		for model, pods := range modelToPodsSnapshot {
 			if parentPods, ok := parent.modelToPods[model]; ok {
 				for podName := range pods {
-					if childrenHavePodForModel(parent, model, podName) {
+					if parent.directPods[model][podName] || childrenHavePodForModel(parent, model, podName) {
 						delete(pods, podName)
 						continue
 					}
@@ -726,6 +759,7 @@ func (c *LPRadixCache) evictNode(node *TreeNode) {
 	node.parent = nil
 	node.children = nil
 	node.modelToPods = nil
+	node.directPods = nil
 	node.evictedPods = nil
 	node.cachedPods = nil
 	node.value = nil
