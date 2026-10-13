@@ -27,9 +27,11 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils/pametrics"
 	"github.com/vllm-project/aibrix/pkg/utils/paschedules"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/ptr"
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 )
@@ -138,6 +140,35 @@ func makeHPAWithBounds(pa *pav1.PodAutoscaler, scalingContext scalingctx.Scaling
 	}
 
 	return hpa, nil
+}
+
+// hpaMatchesDesired reports whether the stored HPA already carries everything
+// makeHPA would set, so that updating it would change nothing.
+func hpaMatchesDesired(existing, desired *autoscalingv2.HorizontalPodAutoscaler) bool {
+	return apiequality.Semantic.DeepEqual(existing.Labels, desired.Labels) &&
+		apiequality.Semantic.DeepEqual(existing.Annotations, desired.Annotations) &&
+		apiequality.Semantic.DeepEqual(existing.OwnerReferences, desired.OwnerReferences) &&
+		apiequality.Semantic.DeepEqual(comparableHPASpec(existing.Spec), comparableHPASpec(desired.Spec))
+}
+
+// comparableHPASpec returns a copy of spec with the values the API server fills
+// in for the fields makeHPA leaves unset. Without it a stored HPA would never
+// compare equal to the desired one.
+func comparableHPASpec(spec autoscalingv2.HorizontalPodAutoscalerSpec) *autoscalingv2.HorizontalPodAutoscalerSpec {
+	out := spec.DeepCopy()
+	if out.MinReplicas == nil {
+		out.MinReplicas = ptr.To(int32(1))
+	}
+	// makeHPA sends no policies with a Disabled select policy and the API server
+	// stores its default ones. They have no effect while scaling is disabled.
+	if out.Behavior != nil {
+		for _, rules := range []*autoscalingv2.HPAScalingRules{out.Behavior.ScaleUp, out.Behavior.ScaleDown} {
+			if rules != nil && rules.SelectPolicy != nil && *rules.SelectPolicy == autoscalingv2.DisabledPolicySelect {
+				rules.Policies = nil
+			}
+		}
+	}
+	return out
 }
 
 // buildHPABehavior creates HPA behavior configuration from ScalingContext
