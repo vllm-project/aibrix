@@ -136,7 +136,7 @@ class LocalStorage(BaseStorage2):
             etag_data = f"{content_length}-{stat.st_mtime}"
             etag = hashlib.md5(etag_data.encode()).hexdigest()
 
-            last_modified = datetime.fromtimestamp(stat.st_mtime)
+            last_modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
             return content_length, etag, last_modified
 
         (
@@ -234,6 +234,13 @@ class LocalStorage(BaseStorage2):
         if last_modified_str := metadata_data.get("last_modified"):
             try:
                 last_modified = datetime.fromisoformat(last_modified_str)
+                if last_modified.tzinfo is None:
+                    # Legacy naive sidecars keep their timestamp() epoch, DST gaps included.
+                    last_modified = datetime.fromtimestamp(
+                        last_modified.timestamp(), timezone.utc
+                    )
+                else:
+                    last_modified = last_modified.astimezone(timezone.utc)
             except ValueError:
                 pass
 
