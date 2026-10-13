@@ -206,8 +206,8 @@ func (t *RequestTrace) addRequestTraceLocked(key string) {
 }
 
 func (t *RequestTrace) getTraceKey(inputBucket, outputBucket float64) (traceKey string) {
-	inputIndex := int64(inputBucket / RequestTracePrecision) // Convert to int without precision loss.
-	outputIndex := int64(outputBucket / RequestTracePrecision)
+	inputIndex := int64(math.Round(inputBucket / RequestTracePrecision)) // Convert to int without precision loss.
+	outputIndex := int64(math.Round(outputBucket / RequestTracePrecision))
 	traceKey = fmt.Sprintf("%v:%v", inputIndex, outputIndex)
 	return
 }
