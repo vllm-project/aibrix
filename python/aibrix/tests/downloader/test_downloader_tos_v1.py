@@ -261,7 +261,7 @@ def test_tos_v1_exact_object_with_prefixes(
     client.list_objects_type2.side_effect = [
         types.SimpleNamespace(
             contents=[types.SimpleNamespace(key="models/llama")],
-            common_prefixes=[CommonPrefixInfo(prefix)] if prefix else [],
+            common_prefixes=[CommonPrefixInfo(prefix)] if prefix else None,
             is_truncated=truncated,
         ),
         types.SimpleNamespace(

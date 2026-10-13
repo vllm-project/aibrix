@@ -119,7 +119,7 @@ class TOSDownloaderV1(BaseDownloader):
             prefix = f"{self.bucket_path}/"
             if any(
                 child.prefix.startswith(prefix)
-                for child in getattr(objects_out, "common_prefixes", [])
+                for child in getattr(objects_out, "common_prefixes", None) or []
             ):
                 return True
             if getattr(objects_out, "is_truncated", False):
