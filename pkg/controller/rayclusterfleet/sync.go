@@ -98,7 +98,7 @@ func (r *RayClusterFleetReconciler) checkPausedConditions(ctx context.Context, d
 		return nil
 	}
 
-	err := r.Update(ctx, d)
+	err := r.Status().Update(ctx, d)
 	return err
 }
 

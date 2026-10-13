@@ -859,6 +859,30 @@ msgstr "``running_lora_adapters``"
 msgid "``waiting_lora_adapters``"
 msgstr "``waiting_lora_adapters``"
 
+#: ../../source/features/model-serving/multi-engine.rst:346
+msgid "``kv_cache_num_gpu_blocks``"
+msgstr "``kv_cache_num_gpu_blocks``"
+
+#: ../../source/features/model-serving/multi-engine.rst:347
+msgid "``vllm:cache_config_info`` (``num_gpu_blocks`` label)"
+msgstr "``vllm:cache_config_info``（``num_gpu_blocks`` 标签）"
+
+#: ../../source/features/model-serving/multi-engine.rst:351
+msgid "``kv_cache_block_size``"
+msgstr "``kv_cache_block_size``"
+
+#: ../../source/features/model-serving/multi-engine.rst:352
+msgid "``vllm:cache_config_info`` (``block_size`` label)"
+msgstr "``vllm:cache_config_info``（``block_size`` 标签）"
+
+#: ../../source/features/model-serving/multi-engine.rst:356
+msgid "``kv_cache_capacity_tokens``"
+msgstr "``kv_cache_capacity_tokens``"
+
+#: ../../source/features/model-serving/multi-engine.rst:358
+msgid "``sglang:max_total_num_tokens``"
+msgstr "``sglang:max_total_num_tokens``"
+
 #: ../../source/features/model-serving/multi-engine.rst:347
 msgid ""
 "The SGLang entries for ``gpu_cache_usage_perc`` and "

@@ -343,6 +343,21 @@ Only a limited set of metrics is mapped for each engine, and more will be added 
      - N/A
      - N/A
      - N/A
+   * - ``kv_cache_num_gpu_blocks``
+     - ``vllm:cache_config_info`` (``num_gpu_blocks`` label)
+     - N/A
+     - N/A
+     - N/A
+   * - ``kv_cache_block_size``
+     - ``vllm:cache_config_info`` (``block_size`` label)
+     - N/A
+     - N/A
+     - N/A
+   * - ``kv_cache_capacity_tokens``
+     - N/A
+     - ``sglang:max_total_num_tokens``
+     - N/A
+     - N/A
 
 The SGLang entries for ``gpu_cache_usage_perc`` and ``kv_cache_usage_perc`` map to ``sglang:token_usage`` [1]_. The xLLM names have no engine prefix: both cache metrics map to ``kv_cache_utilization``, and ``engine_utilization`` maps to itself.
 
