@@ -687,13 +687,27 @@ func (c *LPRadixCache) evictNode(node *TreeNode) {
 	// reading current.modelToPods without current.mu (races with RemovePodsNotInSet).
 	modelToPodsSnapshot := node.GetModelToPods()
 
+	// Remove node from parent's children.
+	// Acquire parent.mu to prevent concurrent map access from GetChildren callers.
+	if node.parent != nil {
+		node.parent.mu.Lock()
+		delete(node.parent.children, node.key[0])
+		node.parent.mu.Unlock()
+	}
+
 	// Clean up pod mappings in parent nodes.
 	// Acquire parent.mu to prevent concurrent map access from GetModelToPods callers.
+	// A parent keeps a pod that one of its remaining children still has, and
+	// so do all of its own parents.
 	for parent := node.parent; parent != nil; parent = parent.parent {
 		parent.mu.Lock()
 		for model, pods := range modelToPodsSnapshot {
 			if parentPods, ok := parent.modelToPods[model]; ok {
 				for podName := range pods {
+					if childrenHavePodForModel(parent, model, podName) {
+						delete(pods, podName)
+						continue
+					}
 					delete(parentPods, podName)
 				}
 				if len(parentPods) == 0 {
@@ -702,14 +716,6 @@ func (c *LPRadixCache) evictNode(node *TreeNode) {
 			}
 		}
 		parent.mu.Unlock()
-	}
-
-	// Remove node from parent's children.
-	// Acquire parent.mu to prevent concurrent map access from GetChildren callers.
-	if node.parent != nil {
-		node.parent.mu.Lock()
-		delete(node.parent.children, node.key[0])
-		node.parent.mu.Unlock()
 	}
 
 	// Remove from allNodes map
@@ -725,6 +731,17 @@ func (c *LPRadixCache) evictNode(node *TreeNode) {
 	node.value = nil
 	node.key = nil
 	node.refCounter = nil
+}
+
+// childrenHavePodForModel reports whether any child of node has podName for
+// model. The caller holds node.mu.
+func childrenHavePodForModel(node *TreeNode, model, podName string) bool {
+	for _, child := range node.children {
+		if child.HasPodForModel(model, podName) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *LPRadixCache) splitNode(key []int, child *TreeNode, splitLen int) *TreeNode {

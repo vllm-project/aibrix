@@ -66,6 +66,27 @@ func Test_LPRadixCacheE2E(t *testing.T) {
 	assert.Equal(t, 0, len(matchPods))
 }
 
+func Test_LPRadixCacheEvictKeepsPodsOfRemainingChildren(t *testing.T) {
+	cache := NewLPRadixCache(2)
+	p1 := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}}
+	p2 := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p2"}}
+
+	// p1 caches both [1 2 3] and [1 2 4]; p2 only caches [1 2 4].
+	cache.AddPrefix([]int{1, 2, 3}, "m1", "default/p1")
+	cache.AddPrefix([]int{1, 2, 4}, "m1", "default/p1")
+	stale, _, _ := cache.AddPrefix([]int{1, 2, 4}, "m1", "default/p2")
+	stale.lastAccess = time.Now().Add(-2 * evictionDuration)
+
+	evicted := cache.Evict(time.Now())
+	assert.Equal(t, []*TreeNode{stale}, evicted)
+
+	// [1 2] is still cached on p1 through [1 2 3], but p2 only had it
+	// through the evicted [1 2 4].
+	matchedTokens, _, matchPods := cache.MatchPrefix([]int{1, 2, 9}, "m1", []*v1.Pod{p1, p2})
+	assert.Equal(t, []int{1, 2}, matchedTokens)
+	assert.Equal(t, []*v1.Pod{p1}, matchPods)
+}
+
 func Test_RadixMatchPrefix(t *testing.T) {
 	tests := []*struct {
 		name          string
