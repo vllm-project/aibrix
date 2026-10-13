@@ -80,6 +80,7 @@ var (
 		metrics.GPUCacheUsagePerc,
 		metrics.CPUCacheUsagePerc,
 		metrics.EngineUtilization,
+		metrics.KVCacheCapacityTokens,
 	}
 
 	// histogram metric example - time_to_first_token_seconds, _sum, _bucket _count.
@@ -121,6 +122,8 @@ var (
 
 	labelQueryMetricNames = []string{
 		metrics.MaxLora,
+		metrics.KVCacheNumGPUBlocks,
+		metrics.KVCacheBlockSize,
 		metrics.WaitingLoraAdapters,
 		metrics.RunningLoraAdapters,
 	}

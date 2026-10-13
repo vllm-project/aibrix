@@ -195,6 +195,7 @@ type RoutingContext struct {
 	// allowlist before serializing any entry.
 	trustedPolicyAttributes map[string]string
 	tokens                  []int           // Cache of tokenized prompts
+	prefixTokens            []byte          // Cache of the prefix-cache router's tokens, see PrefixTokens
 	predictor               OutputPredictor // OutputPredictor gained from cache
 	statsUpdated            int32           // Use to flag if in-memory realtime statistics has been updated for the request.
 	statsMu                 sync.Mutex      // Held by WithStatsUpdate; reused across pool tenants, not reset.
@@ -288,6 +289,17 @@ func (r *RoutingContext) PromptTokens() ([]int, error) {
 		}
 	}
 	return r.tokens, nil
+}
+
+// PrefixTokens returns the tokens stored by SetPrefixTokens. A blended route
+// scores, routes and indexes one request through the prefix-cache router, and
+// every step needs the same tokens.
+func (r *RoutingContext) PrefixTokens() []byte {
+	return r.prefixTokens
+}
+
+func (r *RoutingContext) SetPrefixTokens(tokens []byte) {
+	r.prefixTokens = tokens
 }
 
 // PromptLength returns the length of the prompt of the request.
@@ -541,6 +553,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.lastError.Store(nil)
 	// debugDelay will be reset by tests.
 	r.tokens = nil
+	r.prefixTokens = nil
 	r.predictor = nil
 	r.statsUpdated = statusInitial
 	r.traceAdded = statusInitial

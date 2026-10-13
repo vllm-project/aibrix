@@ -736,3 +736,43 @@ func TestEngineMetricsResult(t *testing.T) {
 	assert.Len(t, result.Errors, 1)
 	assert.Equal(t, "test error", result.Errors[0].Error())
 }
+
+// vLLM reports its KV cache size as labels of an info gauge; SGLang as a gauge.
+func TestEngineMetricsFetcher_FetchAllTypedMetrics_KVCacheCapacity(t *testing.T) {
+	fetcher := NewEngineMetricsFetcher()
+	ctx := context.Background()
+
+	t.Run("vllm cache_config_info labels", func(t *testing.T) {
+		server := setupMockServer(`# HELP vllm:cache_config_info Information of the LLMEngine CacheConfig
+# TYPE vllm:cache_config_info gauge
+vllm:cache_config_info{block_size="16",cache_dtype="auto",enable_prefix_caching="True",engine="0",gpu_memory_utilization="0.9",num_gpu_blocks="10000",num_gpu_blocks_override="None"} 1.0
+`, 200, 0)
+		defer server.Close()
+		endpoint := strings.TrimPrefix(server.URL, "http://")
+
+		result, err := fetcher.FetchAllTypedMetrics(ctx, endpoint, "vllm", "test-pod",
+			[]string{KVCacheNumGPUBlocks, KVCacheBlockSize, KVCacheCapacityTokens})
+		require.NoError(t, err)
+		require.Contains(t, result.Metrics, KVCacheNumGPUBlocks)
+		require.Contains(t, result.Metrics, KVCacheBlockSize)
+		assert.Equal(t, "10000", result.Metrics[KVCacheNumGPUBlocks].(*LabelValueMetricValue).Value)
+		assert.Equal(t, "16", result.Metrics[KVCacheBlockSize].(*LabelValueMetricValue).Value)
+		assert.NotContains(t, result.Metrics, KVCacheCapacityTokens, "vLLM has no capacity gauge")
+	})
+
+	t.Run("sglang max_total_num_tokens", func(t *testing.T) {
+		server := setupMockServer(`# HELP sglang:max_total_num_tokens Maximum total number of tokens in the KV cache pool.
+# TYPE sglang:max_total_num_tokens gauge
+sglang:max_total_num_tokens{model_name="m"} 160000.0
+`, 200, 0)
+		defer server.Close()
+		endpoint := strings.TrimPrefix(server.URL, "http://")
+
+		result, err := fetcher.FetchAllTypedMetrics(ctx, endpoint, "sglang", "test-pod",
+			[]string{KVCacheNumGPUBlocks, KVCacheBlockSize, KVCacheCapacityTokens})
+		require.NoError(t, err)
+		require.Contains(t, result.Metrics, KVCacheCapacityTokens)
+		assert.Equal(t, 160000.0, result.Metrics[KVCacheCapacityTokens].GetSimpleValue())
+		assert.NotContains(t, result.Metrics, KVCacheNumGPUBlocks)
+	})
+}

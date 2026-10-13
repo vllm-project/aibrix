@@ -13,13 +13,36 @@
 # limitations under the License.
 
 import json
+import os
+import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from io import BytesIO
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
 
 from aibrix.metadata.setting.config import settings as metadata_settings
+from aibrix.storage.s3 import S3Storage
 from tests.metadata.conftest import create_test_app as _create_app
+
+
+@pytest.fixture
+def non_utc_timezone():
+    if not hasattr(time, "tzset"):
+        pytest.skip("time.tzset is unavailable")
+    previous = os.environ.get("TZ")
+    os.environ["TZ"] = "<-07>7"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
 
 
 def create_test_app():
@@ -216,6 +239,80 @@ class TestFilesAPI:
             assert head_headers["Content-Type"] == get_metadata["content_type"]
             assert head_headers["Content-Length"] == str(get_metadata["bytes"])
             assert head_headers["X-File-Status"] == get_metadata["status"]
+
+
+class TestFileTimestamps:
+    def test_local_head_last_modified_matches_mtime(self, non_utc_timezone):
+        app = create_test_app()
+        with TestClient(app) as client:
+            file_id = _upload(client).json()["id"]
+            path = app.state.storage._get_full_path(file_id, "application/jsonl")
+            epoch = int(path.stat().st_mtime)
+
+            response = client.head(f"/v1/files/{file_id}")
+            assert response.status_code == 200
+            parsed = parsedate_to_datetime(response.headers["Last-Modified"])
+            assert int(parsed.timestamp()) == epoch
+            assert response.headers["Last-Modified"].endswith(" GMT")
+            metadata = client.get(f"/v1/files/{file_id}").json()
+            assert metadata["last_modified"] == epoch
+
+    @pytest.mark.parametrize("created_at", [None, "42", "invalid"])
+    def test_s3_created_at_fallback_preserves_epoch(self, non_utc_timezone, created_at):
+        instant = datetime(2026, 6, 15, 18, 30, tzinfo=timezone.utc)
+        expected = 42 if created_at == "42" else int(instant.timestamp())
+        user_metadata = {"purpose": "batch"}
+        if created_at is not None:
+            user_metadata["created_at"] = created_at
+        storage = object.__new__(S3Storage)
+        storage.bucket_name = "bucket"
+        storage.client = Mock()
+        storage.client.head_object.return_value = {
+            "ContentLength": 7,
+            "ETag": '"etag"',
+            "LastModified": instant,
+            "Metadata": user_metadata,
+        }
+        storage.list_objects = AsyncMock(return_value=(["file-timestamp"], None))
+
+        app = create_test_app()
+        with TestClient(app) as client:
+            app.state.storage = storage
+            response = client.get("/v1/files/file-timestamp")
+            assert response.status_code == 200
+            assert response.json()["created_at"] == expected
+            assert response.json()["last_modified"] == int(instant.timestamp())
+            listed = client.get("/v1/files").json()["data"]
+            assert len(listed) == 1
+            assert listed[0]["created_at"] == expected
+            head = client.head("/v1/files/file-timestamp")
+            assert head.status_code == 200
+            assert int(head.headers["X-File-Created-At"]) == expected
+            assert parsedate_to_datetime(head.headers["Last-Modified"]) == instant
+
+    @pytest.mark.parametrize(
+        "last_modified", [None, "invalid", "9999-12-31T23:59:59-01:00"]
+    )
+    def test_local_missing_or_invalid_last_modified(
+        self, non_utc_timezone, last_modified
+    ):
+        app = create_test_app()
+        with TestClient(app) as client:
+            uploaded = _upload(client).json()
+            file_id = uploaded["id"]
+            storage = app.state.storage
+            sidecar_path = storage._get_metadata_path(file_id)
+            sidecar = storage._read_json_file(sidecar_path)
+            sidecar["last_modified"] = last_modified
+            storage._write_json_file(sidecar_path, sidecar)
+
+            response = client.get(f"/v1/files/{file_id}")
+            assert response.status_code == 200
+            assert response.json()["last_modified"] is None
+            assert response.json()["created_at"] == uploaded["created_at"]
+            head = client.head(f"/v1/files/{file_id}")
+            assert head.status_code == 200
+            assert "Last-Modified" not in head.headers
 
 
 class TestUploadErrors:
