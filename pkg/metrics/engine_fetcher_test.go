@@ -690,6 +690,31 @@ func TestEngineMetricsFetcher_SGLangPriorityQueueTotals(t *testing.T) {
 
 // In SGLang's request counters and latency histograms priority="" marks requests without an
 // explicit priority, not a total, so their priority series must still be combined.
+// A merged family where only model-a has a total: model-b keeps its breakdowns (and today's
+// last-series behavior) in the per-model parser, while the pod-scoped read uses the total.
+func TestEngineMetricsFetcher_SGLangPriorityTotalsPerModel(t *testing.T) {
+	fetcher := NewEngineMetricsFetcher()
+	metric := Metrics[NumRequestsWaiting]
+	rawMetricName := metric.EngineMetricsNameMapping[EngineNameSGLang]
+	series := func(model, priority string, value int) string {
+		return fmt.Sprintf("%s{model_name=%q,priority=%q} %d\n", rawMetricName, model, priority, value)
+	}
+	families, err := ParseMetricsFromReader(strings.NewReader("# TYPE " + rawMetricName + " gauge\n" +
+		series("model-a", "", 10) + series("model-a", "1", 8) + series("model-a", "5", 2) +
+		series("model-b", "1", 3) + series("model-b", "5", 4)))
+	require.NoError(t, err)
+
+	values, err := fetcher.parseModelMetricsFromFamily(families, rawMetricName, metric)
+	require.NoError(t, err)
+	assert.Equal(t, 10.0, values["model-a"].GetSimpleValue())
+	require.Contains(t, values, "model-b")
+	assert.Equal(t, 4.0, values["model-b"].GetSimpleValue())
+
+	value, err := fetcher.parseMetricFromFamily(families, rawMetricName, metric)
+	require.NoError(t, err)
+	assert.Equal(t, 10.0, value.GetSimpleValue())
+}
+
 func TestEngineMetricsFetcher_SGLangPriorityLabelOutsideQueues(t *testing.T) {
 	fetcher := NewEngineMetricsFetcher()
 
