@@ -224,7 +224,9 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 				gomega.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(1))
 				gomega.Expect(k8sClient.Delete(ctx, high)).To(gomega.Succeed())
 				gomega.Eventually(func(g gomega.Gomega) {
-					g.Expect(apierrors.IsNotFound(k8sClient.Get(ctx, client.ObjectKeyFromObject(high), &modelapi.ModelClaim{}))).To(gomega.BeTrue())
+					g.Expect(apierrors.IsNotFound(k8sClient.Get(
+						ctx, client.ObjectKeyFromObject(high), &modelapi.ModelClaim{},
+					))).To(gomega.BeTrue())
 					g.Expect(fixture.GetClaim(g, low).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
 				}, 2*modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
 			} else {

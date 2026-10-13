@@ -270,43 +270,7 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	case desiredReplicas(pm) > int32(len(pm.Status.Instances)):
 		wait, err := r.ensureActivated(ctx, pm, candidates, readings)
 		if err != nil {
-			if apierrors.IsConflict(err) {
-				// The claim was read a moment too early to be written. No engine
-				// was asked for, so nothing failed.
-				return requeueOnConflict(err)
-			}
-			var admissionReadErr placementAdmissionReadError
-			if errors.As(err, &admissionReadErr) {
-				return ctrl.Result{}, err
-			}
-			r.Recorder.Event(pm, corev1.EventTypeWarning, "ActivateFailed", err.Error())
-			meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
-				Type:    string(modelv1alpha1.ModelClaimConditionReady),
-				Status:  metav1.ConditionFalse,
-				Reason:  "ActivateFailed",
-				Message: err.Error(),
-			})
-			pm.Status.Phase = modelv1alpha1.ModelClaimFailed
-			setClaimGauges(pm)
-			if uerr := r.Status().Update(ctx, pm); uerr != nil {
-				return requeueOnConflict(uerr)
-			}
-			// A card divided for an engine that then did not start has lost that
-			// engine again. Divide it now, so its neighbours get back the room
-			// they gave up for it. The cache may still show the record that
-			// was just taken back, so the API server is asked.
-			r.divideCardsAsListed(ctx, candidates, readings)
-			// A start that failed is tried again as a refusal is, less and
-			// less often. The pool is remembered as it stands, since a pod
-			// that joins or turns ready may be able to start the engine. A
-			// claim with an instance left comes back every round, to check
-			// that instance's engine.
-			wait := r.backoff().failedToStart(req.NamespacedName, pm.Generation,
-				r.roomAsCached(ctx, pm.Namespace, candidates))
-			if len(pm.Status.Instances) > 0 {
-				wait = DefaultRequeueDuration
-			}
-			return ctrl.Result{RequeueAfter: wait}, nil
+			return r.handleActivationError(ctx, pm, candidates, readings, req.NamespacedName, err)
 		}
 		// A claim with nothing placed has nothing else to do each round, so it
 		// comes back when its wait is up. One with an instance keeps coming
@@ -391,6 +355,55 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		requeueAfter = min(requeueAfter, ActivatingRequeueDuration)
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+// handleActivationError preserves admission-read and conflict retries while
+// retaining activation-failure status and backoff for other errors.
+func (r *ModelClaimReconciler) handleActivationError(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	candidates []corev1.Pod,
+	readings *runtimeReadings,
+	claimKey types.NamespacedName,
+	err error,
+) (ctrl.Result, error) {
+	if apierrors.IsConflict(err) {
+		// The claim was read a moment too early to be written. No engine
+		// was asked for, so nothing failed.
+		return requeueOnConflict(err)
+	}
+	var admissionReadErr placementAdmissionReadError
+	if errors.As(err, &admissionReadErr) {
+		return ctrl.Result{}, err
+	}
+	r.Recorder.Event(pm, corev1.EventTypeWarning, "ActivateFailed", err.Error())
+	meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+		Type:    string(modelv1alpha1.ModelClaimConditionReady),
+		Status:  metav1.ConditionFalse,
+		Reason:  "ActivateFailed",
+		Message: err.Error(),
+	})
+	pm.Status.Phase = modelv1alpha1.ModelClaimFailed
+	setClaimGauges(pm)
+	if uerr := r.Status().Update(ctx, pm); uerr != nil {
+		return requeueOnConflict(uerr)
+	}
+	// A card divided for an engine that then did not start has lost that
+	// engine again. Divide it now, so its neighbours get back the room
+	// they gave up for it. The cache may still show the record that
+	// was just taken back, so the API server is asked.
+	r.divideCardsAsListed(ctx, candidates, readings)
+	// A start that failed is tried again as a refusal is, less and
+	// less often. The pool is remembered as it stands, since a pod
+	// that joins or turns ready may be able to start the engine. A
+	// claim with an instance left comes back every round, to check
+	// that instance's engine.
+	wait := r.backoff().failedToStart(claimKey, pm.Generation,
+		r.roomAsCached(ctx, pm.Namespace, candidates))
+	if len(pm.Status.Instances) > 0 {
+		wait = DefaultRequeueDuration
+	}
+	return ctrl.Result{RequeueAfter: wait}, nil
 }
 
 // reconcileHealthAndWakes checks each instance's engine against what its

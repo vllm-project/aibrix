@@ -118,7 +118,9 @@ func TestModelClaimPriorityControlsPodEventPlacementOrder(t *testing.T) {
 				if err != nil {
 					return false, err
 				}
-				condition := meta.FindStatusCondition(claim.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+				condition := meta.FindStatusCondition(
+					claim.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled),
+				)
 				if condition == nil || condition.Reason != "NoMatchingPods" || len(claim.Status.Instances) != 0 {
 					return false, nil
 				}
@@ -161,7 +163,10 @@ func TestModelClaimPriorityControlsPodEventPlacementOrder(t *testing.T) {
 		condition := meta.FindStatusCondition(claim.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
 		if condition != nil && condition.Reason == "WaitingForPlacementTurn" {
 			assert.Equal(t, metav1.ConditionFalse, condition.Status)
-			assert.Equal(t, fmt.Sprintf("waiting behind ModelClaim %s with priority 10 that can use the same pool", highName), condition.Message)
+			assert.Equal(t,
+				fmt.Sprintf("waiting behind ModelClaim %s with priority 10 that can use the same pool", highName),
+				condition.Message,
+			)
 			return true, nil
 		}
 		if claim.Status.Phase == modelv1alpha1.ModelClaimActive {
