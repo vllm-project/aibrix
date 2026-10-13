@@ -356,8 +356,6 @@ func (t *InMemorySlidingWindowTokenTracker) UpdateTokenCount(ctx context.Context
 		}
 	}
 
-	oldTotal := t.userTotals[user]
-
 	// Prune first before adding/updating to maintain window size constraint accurately
 	t.pruneExpiredBucketsAndUpdateState(user, cutoff)
 
@@ -383,7 +381,7 @@ func (t *InMemorySlidingWindowTokenTracker) UpdateTokenCount(ctx context.Context
 	newTotal := totalAfterPruning + newTokens
 
 	// Update user total and global min/max efficiently
-	t.updateUserTotalAndMinMax(user, oldTotal, newTotal)
+	t.updateUserTotalAndMinMax(user, totalAfterPruning, newTotal)
 
 	return nil
 }

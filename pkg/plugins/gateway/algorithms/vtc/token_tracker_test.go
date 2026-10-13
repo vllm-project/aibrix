@@ -215,6 +215,41 @@ func TestGetMinMaxTokenCount(t *testing.T) {
 	assert.Equal(t, float64(1000), maxVal, "max after user2 update")
 }
 
+// backdateOldestBucket moves the user's oldest bucket d into the past, so a
+// test can expire it without sleeping. The tracker must use Milliseconds.
+func backdateOldestBucket(tracker *InMemorySlidingWindowTokenTracker, user string, d time.Duration) {
+	data := tracker.userBucketStore[user]
+	element := data.buckets.Front()
+	node := element.Value.(*bucketNode)
+	delete(data.lookup, node.timestamp)
+	node.timestamp -= d.Milliseconds()
+	data.lookup[node.timestamp] = element
+}
+
+func TestUpdateTokenCountAfterPartialPruneKeepsMinMax(t *testing.T) {
+	config := DefaultVTCConfig()
+	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds)).(*InMemorySlidingWindowTokenTracker)
+	ctx := context.Background()
+
+	// Two buckets in the window: 100 tokens, then 30 tokens.
+	assert.NoError(t, tracker.UpdateTokenCount(ctx, "user1", 100, 0))
+	backdateOldestBucket(tracker, "user1", 10*time.Millisecond)
+	assert.NoError(t, tracker.UpdateTokenCount(ctx, "user1", 30, 0))
+
+	// The next update prunes only the 100-token bucket and adds 50 tokens.
+	backdateOldestBucket(tracker, "user1", time.Second)
+	assert.NoError(t, tracker.UpdateTokenCount(ctx, "user1", 50, 0))
+
+	total, err := tracker.GetTokenCount(ctx, "user1")
+	assert.NoError(t, err)
+	assert.Equal(t, float64(80), total)
+	minVal, _ := tracker.GetMinTokenCount(ctx)
+	maxVal, _ := tracker.GetMaxTokenCount(ctx)
+	assert.Equal(t, float64(80), minVal, "min is the only user's total")
+	assert.Equal(t, float64(80), maxVal, "max is the only user's total")
+	assert.Equal(t, map[float64]map[string]struct{}{80: {"user1": {}}}, tracker.totalsToUsers)
+}
+
 func TestTokenTrackerThreadSafety(t *testing.T) {
 	config := DefaultVTCConfig()
 	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds))
