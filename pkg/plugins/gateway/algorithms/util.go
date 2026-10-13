@@ -99,7 +99,7 @@ func SelectByScore(pods []*v1.Pod, scores []float64, scored []bool, polarity typ
 }
 
 // RouteByScore is the shared "least-X"/"most-X" routing pattern used by single-metric
-// strategies (least-request, least-kv-cache, least-busy-time, least-gpu-cache, ...): it scores
+// strategies (least-request, least-kv-cache, least-busy-time, ...): it scores
 // all ready pods via scorer.ScoreAll, picks the best one per scorer.Polarity() breaking ties
 // randomly, and falls back to a uniformly random ready pod when nothing could be scored.
 func RouteByScore(ctx *types.RoutingContext, readyPodList types.PodList, scorer types.PodScorer) (*v1.Pod, error) {

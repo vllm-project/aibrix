@@ -773,6 +773,7 @@ func NewRouterManagerWithCacheAndPrefixIndexer(c cache.Cache, indexer *prefixcac
 	rm.Register(RouterLeastRequest, func() (types.Router, error) { return NewLeastRequestRouterWithCache(c) })
 	rm.Register(RouterLeastRequestTopK, func() (types.Router, error) { return NewLeastRequestTopKRouterWithCache(c), nil })
 	rm.Register(RouterLeastKvCache, func() (types.Router, error) { return NewLeastKvCacheRouterWithCache(c) })
+	rm.Register(RouterLeastGpuCache, func() (types.Router, error) { return NewLeastKvCacheRouterWithCache(c) })
 	rm.Register(RouterLeastLatency, func() (types.Router, error) { return NewLeastLatencyRouterWithCache(c) })
 	rm.Register(RouterLoadBalance, func() (types.Router, error) { return NewLoadBalanceRouterWithCache(c) })
 	rm.Register(RouterPrefixCache, func() (types.Router, error) {

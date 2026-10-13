@@ -26,8 +26,16 @@ import (
 
 const RouterLeastKvCache types.RoutingAlgorithm = "least-kv-cache"
 
+// RouterLeastGpuCache is a deprecated alias for RouterLeastKvCache. The standalone least-gpu-cache
+// router scored the legacy gpu_cache_usage_perc metric, while every other KV-aware strategy
+// (least-kv-cache, load-balance, pd) reads kv_cache_usage_perc. The name stays registered so
+// existing routing-strategy headers and config profiles keep working, but it resolves to
+// least-kv-cache.
+const RouterLeastGpuCache types.RoutingAlgorithm = "least-gpu-cache"
+
 func init() {
 	Register(RouterLeastKvCache, NewLeastKvCacheRouter)
+	Register(RouterLeastGpuCache, NewLeastKvCacheRouter)
 }
 
 type leastKvCacheRouter struct {
