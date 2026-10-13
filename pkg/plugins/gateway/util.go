@@ -232,7 +232,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 	case PathResponses:
 		model, message, prefixText, stream, errRes = validateResponsesRequest(requestID, requestBody)
 	case PathCompletions:
-		model, message, stream, errRes = validateCompletionRequest(requestID, requestBody)
+		model, message, stream, errRes = validateCompletionRequest(requestID, requestBody, user)
 	case PathEmbeddings:
 		model, errRes = validateEmbeddingRequest(requestID, requestBody)
 	case PathImagesGenerations, PathVideoGenerations:
@@ -343,11 +343,14 @@ func validateResponsesRequest(requestID string, requestBody []byte) (model, mess
 
 // validateCompletionRequest parses and validates a legacy completions request body.
 // nolint:nakedret
-func validateCompletionRequest(requestID string, requestBody []byte) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
+func validateCompletionRequest(requestID string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	var req struct {
-		Prompt json.RawMessage `json:"prompt"`
-		Model  string          `json:"model"`
-		Stream bool            `json:"stream"`
+		Prompt        json.RawMessage `json:"prompt"`
+		Model         string          `json:"model"`
+		Stream        bool            `json:"stream"`
+		StreamOptions struct {
+			IncludeUsage bool `json:"include_usage"`
+		} `json:"stream_options"`
 	}
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
 		logRequestBodyParseFailure(requestID, PathCompletions, "error to unmarshal completions object", err, requestBody)
@@ -357,6 +360,15 @@ func validateCompletionRequest(requestID string, requestBody []byte) (model, mes
 	model = req.Model
 	message = completionPromptText(requestID, req.Prompt)
 	stream = req.Stream
+	// Without stream_options.include_usage the engine sends no usage chunk, so a
+	// TPM-limited user's streamed tokens would never be metered. Mirror the check
+	// validateChatRequest applies to /v1/chat/completions.
+	if stream && user.Tpm > 0 && !req.StreamOptions.IncludeUsage {
+		klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID)
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "include usage for stream options not set",
+			"", "stream_options", HeaderErrorStreamOptionsIncludeUsage, "include usage for stream options not set")
+		return
+	}
 	return
 }
 

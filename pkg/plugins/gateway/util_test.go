@@ -273,6 +273,45 @@ func Test_ValidateRequestBody(t *testing.T) {
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
 		{
+			message:     "/v1/completions stream without stream_options with user.TPM >= 1 is NOT OK",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "prompt": "say this is test"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/completions stream_options.include_usage == false with user.TPM >= 1 is NOT OK",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": false}, "prompt": "say this is test"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/completions stream_options.include_usage == true with user.TPM >= 1 is OK",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": true}, "prompt": "say this is test"}`),
+			stream:      true,
+			model:       "llama2-7b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/completions stream without stream_options with user.TPM == 0 is OK",
+			requestPath: "/v1/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "prompt": "say this is test"}`),
+			stream:      true,
+			model:       "llama2-7b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/completions non-streamed request without stream_options with user.TPM >= 1 is OK",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "prompt": "say this is test"}`),
+			model:       "llama2-7b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
 			// validateChatRequest's TPM guard compares requestPath against PathChatCompletions
 			// exactly (see the "NOT OK" case above), so a 400 here also confirms
 			// validateRequestBody passes the query-stripped path down to it, not the raw
