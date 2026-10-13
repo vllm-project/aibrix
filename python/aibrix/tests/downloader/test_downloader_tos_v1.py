@@ -283,6 +283,55 @@ def test_tos_v1_exact_object_with_prefixes(
         )
 
 
+@pytest.mark.parametrize(
+    "prefixes, truncated, child, expected",
+    [
+        ([], False, False, False),
+        (["models/llama2/"], False, False, False),
+        (["models/llama/"], False, False, True),
+        ([], True, True, True),
+        ([], True, False, False),
+    ],
+)
+@mock.patch(TOS_MODULE)
+def test_tos_v1_exact_object_with_sibling_keys(
+    mock_tos, prefixes, truncated, child, expected
+):
+    mock_exsit_tos(mock_tos)
+    client = mock_tos.TosClientV2.return_value
+    client.list_objects_type2.side_effect = [
+        types.SimpleNamespace(
+            contents=[
+                types.SimpleNamespace(key="models/llama"),
+                types.SimpleNamespace(key="models/llama.json"),
+            ],
+            common_prefixes=[CommonPrefixInfo(p) for p in prefixes],
+            is_truncated=truncated,
+        ),
+        types.SimpleNamespace(
+            contents=[types.SimpleNamespace(key="models/llama/config.json")]
+            if child
+            else [],
+            common_prefixes=[],
+        ),
+    ]
+    downloader = TOSDownloaderV1("tos://bucket/models/llama", model_name="m")
+    assert downloader._is_directory() is expected
+
+
+@mock.patch(TOS_MODULE)
+def test_tos_v1_sibling_keys_without_exact_object(mock_tos):
+    mock_exsit_tos(mock_tos)
+    client = mock_tos.TosClientV2.return_value
+    client.list_objects_type2.return_value = types.SimpleNamespace(
+        contents=[types.SimpleNamespace(key="models/llama.json")],
+        common_prefixes=[],
+        is_truncated=False,
+    )
+    downloader = TOSDownloaderV1("tos://bucket/models/llama", model_name="m")
+    assert downloader._is_directory() is True
+
+
 @pytest.mark.parametrize("path", ["models/llama", "models/llama/"])
 @mock.patch(TOS_MODULE)
 def test_tos_v1_directory_listing_failure(mock_tos, path):
