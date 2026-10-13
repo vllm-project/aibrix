@@ -81,9 +81,15 @@ const (
 	AvgPromptThroughputToksPerMinPod     = "avg_prompt_throughput_toks_per_min_pod"
 	AvgGenerationThroughputToksPerMinPod = "avg_generation_throughput_toks_per_min_pod"
 	MaxLora                              = "max_lora"
-	WaitingLoraAdapters                  = "waiting_lora_adapters"
-	RunningLoraAdapters                  = "running_lora_adapters"
-	VTCBucketSizeActive                  = "vtc_bucket_size_active"
+	// KV cache capacity of a pod, for scores that compare KV load across pods
+	// of different sizes. vLLM reports it as the num_gpu_blocks and block_size
+	// labels of vllm:cache_config_info; SGLang as a gauge of tokens.
+	KVCacheNumGPUBlocks   = "kv_cache_num_gpu_blocks"
+	KVCacheBlockSize      = "kv_cache_block_size"
+	KVCacheCapacityTokens = "kv_cache_capacity_tokens"
+	WaitingLoraAdapters   = "waiting_lora_adapters"
+	RunningLoraAdapters   = "running_lora_adapters"
+	VTCBucketSizeActive   = "vtc_bucket_size_active"
 	// Realtime metrics
 	RealtimeNumRequestsRunning         = "realtime_num_requests_running"
 	RealtimeNormalizedPendings         = "realtime_normalized_pendings"
@@ -753,6 +759,41 @@ var (
 			},
 			PromQL:      `increase(vllm:generation_tokens_total{instance="${instance}", job="pods"}[5m]) / 5`,
 			Description: "Average generation throughput in tokens per minute in last 5 mins",
+		},
+		KVCacheNumGPUBlocks: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Query: QueryLabel,
+			},
+			LabelKey: "num_gpu_blocks",
+			EngineMetricsNameMapping: map[string]string{
+				EngineNameVLLM: "vllm:cache_config_info",
+			},
+			Description: "Number of KV cache blocks the engine allocated (label of the cache config info)",
+		},
+		KVCacheBlockSize: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Query: QueryLabel,
+			},
+			LabelKey: "block_size",
+			EngineMetricsNameMapping: map[string]string{
+				EngineNameVLLM: "vllm:cache_config_info",
+			},
+			Description: "Tokens per KV cache block (label of the cache config info)",
+		},
+		KVCacheCapacityTokens: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"sglang": "sglang:max_total_num_tokens",
+			},
+			Description: "KV cache capacity in tokens",
 		},
 		MaxLora: {
 			MetricScope:  PodMetricScope,

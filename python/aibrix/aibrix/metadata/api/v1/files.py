@@ -14,6 +14,8 @@
 
 import time
 import uuid
+from datetime import timezone
+from email.utils import format_datetime
 from enum import Enum
 from typing import Any, Dict, Optional
 from urllib.parse import quote
@@ -569,8 +571,8 @@ async def head_file_metadata(request: Request, file_id: str) -> Response:
             headers["ETag"] = head_object.etag
 
         if head_object.last_modified:
-            headers["Last-Modified"] = head_object.last_modified.strftime(
-                "%a, %d %b %Y %H:%M:%S GMT"
+            headers["Last-Modified"] = format_datetime(
+                head_object.last_modified.astimezone(timezone.utc), usegmt=True
             )
 
         if "purpose" in metadata:

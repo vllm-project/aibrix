@@ -520,6 +520,8 @@ Each request is charged its ``prompt_tokens`` to its decode pod: the whole promp
 
 ``token_load`` helps most when decode KV, not compute, is what runs out, and when requests arrive in bursts shorter than the metric refresh interval, where the scraped KV usage is stale. At low decode KV utilization it behaves like the other policies. With Redis configured, the decode ledger is shared across gateway replicas: each replica publishes its own charges and adds the other live replicas' charges, read in the same Redis round trip as the running-request counts, to its score. Without Redis, or with ``AIBRIX_TOKEN_LOAD_SHARED_LEDGER=false``, the ledger is local to each replica, and with several replicas each scores only the requests it routed itself. The prefill ledger is always local.
 
+Decode pods can have different KV capacities, for example on different GPU types or with different ``gpu_memory_utilization``. ``token_load`` then compares how full each pod is rather than its token count: each pod's score is multiplied by the mean capacity of the candidates divided by its own capacity, so it stays in tokens and is unchanged when all capacities are equal. The capacity comes from the scraped engine metrics: ``num_gpu_blocks`` × ``block_size`` from vLLM's ``vllm:cache_config_info``, or SGLang's ``sglang:max_total_num_tokens``. A pod whose capacity isn't known counts as the mean; when no candidate reports one, scores stay in tokens. Set ``AIBRIX_DECODE_TOKEN_LOAD_CAPACITY_AWARE=false`` to compare token counts.
+
 **Configuration**
 
 Enable ``token_load`` via the routing config:
@@ -836,6 +838,9 @@ These are set on the **gateway plugin** deployment.
    * - ``AIBRIX_TOKEN_LOAD_SHARED_LEDGER``
      - ``true``
      - ``token_load`` decode policy only, with Redis configured. Shares the decode ledger across gateway replicas through Redis. ``false`` keeps it local to each replica.
+   * - ``AIBRIX_DECODE_TOKEN_LOAD_CAPACITY_AWARE``
+     - ``true``
+     - ``token_load`` decode policy only. Scales each decode pod's score by its KV capacity, read from the engine metrics, so pods of different sizes are compared by how full they are. ``false`` compares token counts.
    * - ``AIBRIX_DECODE_SCORE_POLICY``
      - ``load_balancing``
      - Default scoring policy for selecting decode pods. ``load_balancing``, ``least_request``, ``conductor``, or ``token_load``.
