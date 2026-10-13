@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from tos.models import CommonPrefixInfo
 
 from aibrix.common.errors import (
     ArgNotCongiuredError,
@@ -30,6 +31,11 @@ TOS_MODULE = "aibrix.downloader.tos.tos"
 ENVS_MODULE = "aibrix.downloader.tos.envs"
 ENVS_DOWNLOADER_TOS_VERSION = "aibrix.downloader.base.envs.DOWNLOADER_TOS_VERSION"
 DOWNLOADER_TOS_VERSION = "v1"
+
+
+@pytest.fixture(autouse=True)
+def clear_directory_cache():
+    TOSDownloaderV1._is_directory.cache_clear()
 
 
 def mock_not_exsit_tos(mock_tos):
@@ -198,9 +204,11 @@ def test_tos_v1_part_size(mock_tos, tmp_path, env_part_size, override, expected)
         assert fake_client.download_kwargs["part_size"] == expected
 
 
-@pytest.mark.parametrize("populated", [False, True])
+@pytest.mark.parametrize(
+    "populated, exact", [(False, False), (True, False), (True, True)]
+)
 @mock.patch(TOS_MODULE)
-def test_tos_v1_directory_source(mock_tos, tmp_path, populated):
+def test_tos_v1_directory_source(mock_tos, tmp_path, populated, exact):
     client = _make_fake_tos_client_for_force_download_test()
 
     def list_objects(bucket, prefix, delimiter=None):
@@ -209,8 +217,10 @@ def test_tos_v1_directory_source(mock_tos, tmp_path, populated):
         return types.SimpleNamespace(
             contents=[types.SimpleNamespace(key="models/file.txt")]
             if populated and not delimiter
+            else [types.SimpleNamespace(key="models")]
+            if exact
             else [],
-            common_prefixes=[types.SimpleNamespace(prefix="models/")]
+            common_prefixes=[CommonPrefixInfo("models/")]
             if populated and delimiter
             else [],
         )
@@ -230,3 +240,59 @@ def test_tos_v1_directory_source(mock_tos, tmp_path, populated):
             downloader.download_model(local_path=str(tmp_path))
         assert uri in str(exception.value)
         assert client.download_calls == 0
+
+
+@pytest.mark.parametrize(
+    "prefix, truncated, child, expected",
+    [
+        (None, False, False, False),
+        ("models/llama2/", False, False, False),
+        ("models/llama/", False, False, True),
+        ("models/llama2/", True, True, True),
+        ("models/llama2/", True, False, False),
+    ],
+)
+@mock.patch(TOS_MODULE)
+def test_tos_v1_exact_object_with_prefixes(
+    mock_tos, prefix, truncated, child, expected
+):
+    mock_exsit_tos(mock_tos)
+    client = mock_tos.TosClientV2.return_value
+    client.list_objects_type2.side_effect = [
+        types.SimpleNamespace(
+            contents=[types.SimpleNamespace(key="models/llama")],
+            common_prefixes=[CommonPrefixInfo(prefix)] if prefix else [],
+            is_truncated=truncated,
+        ),
+        types.SimpleNamespace(
+            contents=[types.SimpleNamespace(key="models/llama/config.json")]
+            if child
+            else [],
+            common_prefixes=[],
+        ),
+    ]
+    downloader = TOSDownloaderV1("tos://bucket/models/llama", model_name="m")
+    assert downloader._is_directory() is expected
+    if truncated:
+        client.list_objects_type2.assert_called_with(
+            "bucket", prefix="models/llama/", max_keys=1
+        )
+    else:
+        client.list_objects_type2.assert_called_once_with(
+            "bucket", prefix="models/llama", delimiter="/"
+        )
+
+
+@pytest.mark.parametrize("path", ["models/llama", "models/llama/"])
+@mock.patch(TOS_MODULE)
+def test_tos_v1_directory_listing_failure(mock_tos, path):
+    mock_exsit_tos(mock_tos)
+    client = mock_tos.TosClientV2.return_value
+    client.list_objects_type2.side_effect = RuntimeError("listing failed")
+    downloader = TOSDownloaderV1(f"tos://bucket/{path}", model_name="m")
+    if path.endswith("/"):
+        assert downloader._is_directory()
+        client.list_objects_type2.assert_not_called()
+    else:
+        with pytest.raises(RuntimeError, match="listing failed"):
+            downloader._is_directory()
