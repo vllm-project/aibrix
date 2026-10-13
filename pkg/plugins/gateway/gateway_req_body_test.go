@@ -1070,7 +1070,7 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 
 // TestHandleRequestBody_AsyncVideoJobWithoutRoutingStrategyGetsPinned guards against a
 // regression where POST /v1/videos submitted without a routing-strategy header (the
-// out-of-the-box default, and what the async example in docs/source/features/gateway-routing/vllm-omni.rst
+// out-of-the-box default, and what the async example in docs/source/features/gateway-routing/omni-video.rst
 // uses) fell into the RouterNotSet branch, which never calls SetTargetPod. That left
 // registerVideoJobFromCreateResponse's routerCtx.TargetPod() call (see
 // gateway_video_routing.go) blocking until the request's context was done, and the job

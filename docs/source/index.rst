@@ -94,7 +94,7 @@ Documentation
    features/gateway-routing/pd-disaggregation.rst
    features/gateway-routing/agentic-routing.rst
    features/gateway-routing/semantic-router.rst
-   features/gateway-routing/vllm-omni.rst
+   features/gateway-routing/omni.rst
    features/gateway-routing/external-replica-routing.rst
 
 .. toctree::

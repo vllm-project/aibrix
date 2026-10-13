@@ -1,22 +1,18 @@
-.. _vllm-omni-serving:
+.. _omni-video:
 
-===================================
-vLLM-Omni Multi-Modal Serving
-===================================
+=====
+Video
+=====
 
-`vLLM-Omni <https://docs.vllm.ai/projects/vllm-omni/en/stable/>`_ extends vLLM's OpenAI-compatible serving to non-text modalities — image generation/editing, speech and general audio, and video generation — behind the same ``vllm serve`` entrypoint you already use for LLMs. AIBrix's gateway understands these endpoints natively: it routes requests to the right backend pods and, for video generation specifically, keeps track of which pod owns each in-progress job so follow-up calls land back on it.
-
-This guide walks through deploying a vLLM-Omni video generation model — `Wan-AI/Wan2.1-VACE-1.3B-diffusers <https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B-diffusers>`_ — and driving it through AIBrix's gateway, both synchronously and as an async job you poll and download.
+This guide covers video generation through AIBrix's gateway. It walks through deploying a vLLM-Omni video generation model — `Wan-AI/Wan2.1-VACE-1.3B-diffusers <https://huggingface.co/Wan-AI/Wan2.1-VACE-1.3B-diffusers>`_ — and driving it through the gateway, both synchronously and as an async job you poll and download. The Videos API is the video endpoint family vLLM-Omni documents; see the :ref:`supported endpoints <multimodal-supported-endpoints>`. Before you start, finish the :ref:`prerequisites <omni-prerequisites>` and :ref:`gateway access <omni-access-gateway>` steps on the Multi-Modal Serving page, which set up the cluster and the ``$BASE`` used below.
 
 .. note::
-    The sample manifest referenced in this guide lives at `samples/vllm_omni/wan2.1-vace-1.3b.yaml <https://github.com/vllm-project/aibrix/blob/main/samples/vllm_omni/wan2.1-vace-1.3b.yaml>`_ in the AIBrix repository. A text+audio example (`Qwen/Qwen2.5-Omni-7B <https://huggingface.co/Qwen/Qwen2.5-Omni-7B>`_) is also available at `samples/vllm_omni/qwen2-5-omni-7b.yaml <https://github.com/vllm-project/aibrix/blob/main/samples/vllm_omni/qwen2-5-omni-7b.yaml>`_.
+    The sample manifest referenced in this guide lives at `samples/vllm_omni/wan2.1-vace-1.3b.yaml <https://github.com/vllm-project/aibrix/blob/main/samples/vllm_omni/wan2.1-vace-1.3b.yaml>`_ in the AIBrix repository.
 
 ----
 
 How It Works
 ------------
-
-A vLLM-Omni pod is started the same way as any other model in AIBrix — a ``Deployment`` labeled with ``model.aibrix.ai/name`` and a matching ``Service`` — with one difference: passing ``--omni`` to ``vllm serve``. That flag auto-detects the model's task from its architecture and exposes the matching OpenAI-compatible endpoint (``/v1/images/generations``, ``/v1/audio/speech``, ``/v1/videos``, ...).
 
 The stock gateway already matches ``/v1/videos`` on its own reserved HTTPRoutes (so requests reach ext_proc before a ``model`` header exists) and uses 600s Envoy / ext_proc / model-HTTPRoute timeouts so synchronous generation can finish. The Videos API gets routes of its own — ``aibrix-reserved-router-videos`` for the JSON endpoints and ``aibrix-reserved-router-videos-streaming`` for ``/v1/videos/sync`` and ``/v1/videos/{id}/content`` — because those two groups need opposite ext_proc response-body modes; see the troubleshooting note on truncated responses below. If you installed an older AIBrix release, apply both routes with their ``EnvoyExtensionPolicy`` objects (``config/gateway/gateway-plugin``) and set ``AIBRIX_GATEWAY_TIMEOUT_SECONDS=600`` on the controller-manager.
 
@@ -49,24 +45,16 @@ Resolution also verifies the recorded pod's UID against the informer cache. If t
 
 Records expire with the backend's own ``expires_at`` when the create response provides one, and after 7 days otherwise — a backend expiry is honoured as given, never stretched to the default, so a create whose ``expires_at`` has already passed is refused with ``503`` rather than registered for a week. Expired records are absent from both lookups and the catalog.
 
-``POST /v1/videos/sync`` and image/audio endpoints don't need any of this: they're a single request/response, so ordinary model-based routing is enough.
+``POST /v1/videos/sync`` doesn't need any of this: it's a single request/response, so ordinary model-based routing is enough.
 
 ----
 
-Prerequisites
--------------
-
-Before you begin, make sure you have:
-
-- A running Kubernetes cluster with `AIBrix installed <https://github.com/vllm-project/aibrix>`_ (includes Envoy Gateway).
-- ``kubectl`` configured to talk to your cluster.
-- A GPU node (one GPU is enough for the 1.3B-parameter Wan model used below).
-- ``jq`` and ``curl`` for the examples below.
-
-----
+.. _omni-video-deploy:
 
 Step 1 — Deploy the Video Generation Model
--------------------------------------------
+------------------------------------------
+
+One GPU is enough for the 1.3B-parameter Wan model used here.
 
 .. literalinclude:: ../../../../samples/vllm_omni/wan2.1-vace-1.3b.yaml
    :language: yaml
@@ -83,35 +71,8 @@ Apply it and wait for the pod to become ready. The model is loaded from the host
 
 ----
 
-Step 2 — Access the Gateway
------------------------------
-
-Port-forward the Envoy service to test locally:
-
-.. code-block:: bash
-
-    export ENVOY_SERVICE=$(kubectl get svc -n envoy-gateway-system \
-      --selector=gateway.envoyproxy.io/owning-gateway-namespace=aibrix-system,gateway.envoyproxy.io/owning-gateway-name=aibrix-eg \
-      -o jsonpath='{.items[0].metadata.name}')
-
-    kubectl port-forward -n envoy-gateway-system "svc/${ENVOY_SERVICE}" 8080:80
-
-    BASE="http://localhost:8080"
-
-In production, use the LoadBalancer external IP instead:
-
-.. code-block:: bash
-
-    LB_IP=$(kubectl get svc -n envoy-gateway-system \
-      -l "gateway.envoyproxy.io/owning-gateway-name=aibrix-eg" \
-      -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}')
-
-    BASE="http://${LB_IP}"
-
-----
-
-Step 3 — Generate a Video Synchronously
-------------------------------------------
+Step 2 — Generate a Video Synchronously
+---------------------------------------
 
 ``POST /v1/videos/sync`` blocks until generation completes and returns the raw MP4 bytes directly. Both video endpoints take ``multipart/form-data`` — do **not** set ``-H "Content-Type: application/json"``.
 
@@ -149,8 +110,8 @@ Step 3 — Generate a Video Synchronously
 
 ----
 
-Step 4 — Generate a Video Asynchronously
---------------------------------------------
+Step 3 — Generate a Video Asynchronously
+----------------------------------------
 
 For longer generations, ``POST /v1/videos`` returns immediately with a job ID while generation continues in the background — poll for status and fetch the result once it's done. The ID you get back is the gateway's own opaque public job ID (``aibrixjob-...``), not the engine's; use it everywhere below.
 
@@ -256,36 +217,10 @@ The catalog reports what the gateway knows: the job's identity, model, and reten
 
 ----
 
-Text-to-Speech
---------------
-
-vLLM-Omni's ``POST /v1/audio/speech`` synthesizes speech from text. It is a JSON request with a binary audio response, so — like the image and synchronous video endpoints — it needs none of the video job machinery: the gateway routes it to the pods of the requested model and streams the audio back untouched.
-
-.. code-block:: bash
-
-    curl -X POST "$BASE/v1/audio/speech" \
-      -H "Authorization: Bearer ${API_KEY}" \
-      -H "Content-Type: application/json" \
-      -d '{
-        "model": "qwen2-5-omni-7b",
-        "input": "Hello from AIBrix.",
-        "voice": "alloy",
-        "response_format": "mp3"
-      }' \
-      -o speech.mp3
-
-What differs from the other endpoints:
-
-- ``model`` is required. The gateway needs the name to select a pod, so a request without one is rejected with ``400``.
-- ``input`` is required and cannot be empty. It is the text to synthesize and is also the routing text for prefix-cache-aware routing.
-- Every other field, such as ``voice``, ``response_format``, ``speed``, ``instructions``, ``language``, and ``stream_format``, is forwarded as sent and validated by the engine.
-- The response is binary audio, which the engine may send in several chunks. The gateway forwards it byte for byte and never parses it as JSON or as an SSE stream, so a request-level ``stream`` field does not turn on SSE handling. Nothing about a successful body is parsed, so no token usage is reported.
-- Unlike the ``/v1/videos`` endpoints, this one takes ``application/json``: do **not** send ``multipart/form-data``.
-
-----
+.. _omni-video-endpoint-reference:
 
 Endpoint Reference
---------------------
+------------------
 
 .. list-table::
    :header-rows: 1
@@ -312,9 +247,6 @@ Endpoint Reference
    * - ``/v1/videos/{id}``
      - DELETE
      - Delete a job and its stored video. Pinned to the pod that created it; the record is removed after a 2xx or 404 response so a failed delete can still be retried.
-   * - ``/v1/audio/speech``
-     - POST
-     - JSON request, binary audio response. Routed by model like a chat completion; the audio streams through unparsed, so no token usage is recorded and no job is registered.
 
 ----
 
@@ -364,10 +296,9 @@ Confirm the weights exist on the node at ``/data00/models/Wan2.1-VACE-1.3B-diffu
 ----
 
 Sample Files
--------------
+------------
 
 - `samples/vllm_omni/wan2.1-vace-1.3b.yaml <https://github.com/vllm-project/aibrix/blob/main/samples/vllm_omni/wan2.1-vace-1.3b.yaml>`_ — Deployment and Service for the video generation example used in this guide
-- `samples/vllm_omni/qwen2-5-omni-7b.yaml <https://github.com/vllm-project/aibrix/blob/main/samples/vllm_omni/qwen2-5-omni-7b.yaml>`_ — text+audio vLLM-Omni example
 
 .. seealso::
 

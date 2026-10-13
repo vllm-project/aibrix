@@ -62,8 +62,8 @@ msgstr ":doc:`semantic-router`"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:15
 #: ../../source/features/gateway-routing/gateway-plugins.rst:1295
-msgid ":doc:`vllm-omni`"
-msgstr ":doc:`vllm-omni`"
+msgid ":doc:`omni`"
+msgstr ":doc:`omni`"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:16
 #: ../../source/features/gateway-routing/gateway-plugins.rst:1297
@@ -2523,8 +2523,8 @@ msgstr "``x-error-multipart-parsing``"
 #: ../../source/features/gateway-routing/gateway-plugins.rst:1183
 msgid ""
 "The multipart/form-data body could not be parsed, typically on image, "
-"audio, or video endpoints. See :doc:`vllm-omni`."
-msgstr "无法解析 multipart/form-data 请求体，常见于图像、音频或视频端点。参见 :doc:`vllm-omni`。"
+"audio, or video endpoints. See :doc:`omni`."
+msgstr "无法解析 multipart/form-data 请求体，常见于图像、音频或视频端点。参见 :doc:`omni`。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:1184
 msgid "``x-error-video-not-found``"
@@ -2533,8 +2533,8 @@ msgstr "``x-error-video-not-found``"
 #: ../../source/features/gateway-routing/gateway-plugins.rst:1185
 msgid ""
 "The video job ID is unknown, expired, out of scope, or its owning pod is "
-"gone. See :doc:`vllm-omni`."
-msgstr "视频任务 ID 未知、已过期、不在当前作用域，或其所属 Pod 已不存在。参见 :doc:`vllm-omni`。"
+"gone. See :doc:`omni-video`."
+msgstr "视频任务 ID 未知、已过期、不在当前作用域，或其所属 Pod 已不存在。参见 :doc:`omni-video`。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:1186
 msgid "``x-error-video-job-pod-unavailable``"
@@ -2542,9 +2542,9 @@ msgstr "``x-error-video-job-pod-unavailable``"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:1187
 msgid ""
-"The video job's owning pod is temporarily unroutable. See :doc:`vllm-"
-"omni`."
-msgstr "视频任务所属 Pod 暂时不可路由。参见 :doc:`vllm-omni`。"
+"The video job's owning pod is temporarily unroutable. See :doc:`omni-"
+"video`."
+msgstr "视频任务所属 Pod 暂时不可路由。参见 :doc:`omni-video`。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:1190
 msgid "Streaming Headers"

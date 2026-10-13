@@ -1,0 +1,102 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version:  AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-13 12:08-0700\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../source/features/gateway-routing/omni-chat.rst:5
+msgid "Chat Completions"
+msgstr "Chat Completions（对话补全）"
+
+#: ../../source/features/gateway-routing/omni-chat.rst:7
+msgid ""
+"This guide covers multi-modal chat through AIBrix's gateway: ``POST "
+"/v1/chat/completions`` with a prompt that mixes text and media, answered "
+"by an omni model. The gateway handles it like any other chat completion, "
+"including routing, streaming and token usage as described in :doc"
+":`gateway-plugins`, and forwards fields it does not know unchanged. ``GET"
+" /v1/models`` lists the models AIBrix serves, and ``POST "
+"/v1/chat/completions/batch`` is not supported; see the :ref:`supported "
+"endpoints <multimodal-supported-endpoints>`. Before you start, finish the"
+" :ref:`prerequisites <omni-prerequisites>` and :ref:`gateway access "
+"<omni-access-gateway>` steps on the Multi-Modal Serving page, and deploy "
+"your model the way the :ref:`video guide <omni-video-deploy>` describes, "
+"swapping in an omni chat model."
+msgstr ""
+"本指南介绍通过 AIBrix 网关进行多模态对话： ``POST /v1/chat/completions`` 请求中的提示词混合了文本和媒体，由"
+" omni 模型作答。网关像处理其他 chat completion 一样处理它，包括 :doc:`gateway-plugins` "
+"中介绍的路由、流式输出和 token 用量，并将自己不认识的字段原样转发。 ``GET /v1/models`` 列出 AIBrix "
+"提供服务的模型， ``POST /v1/chat/completions/batch`` 不受支持；参见 :ref:`支持的端点 "
+"<multimodal-supported-endpoints>` 。开始之前，请先完成多模态服务页面上的 :ref:`前置条件 <omni-"
+"prerequisites>` 和 :ref:`访问网关 <omni-access-gateway>` 步骤，并按照 :ref:`视频指南 "
+"<omni-video-deploy>` 所述方式部署模型，换成 omni 对话模型。"
+
+#: ../../source/features/gateway-routing/omni-chat.rst:10
+msgid ""
+"A text+audio example (`Qwen/Qwen2.5-Omni-7B "
+"<https://huggingface.co/Qwen/Qwen2.5-Omni-7B>`_) lives at "
+"`samples/vllm_omni/qwen2-5-omni-7b.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/vllm_omni/qwen2-5-omni-7b.yaml>`_ in the"
+" AIBrix repository."
+msgstr ""
+"文本 + 音频示例（ `Qwen/Qwen2.5-Omni-7B <https://huggingface.co/Qwen/Qwen2.5"
+"-Omni-7B>`_ ）位于 AIBrix 仓库的 `samples/vllm_omni/qwen2-5-omni-7b.yaml "
+"<https://github.com/vllm-"
+"project/aibrix/blob/main/samples/vllm_omni/qwen2-5-omni-7b.yaml>`_ 。"
+
+#: ../../source/features/gateway-routing/omni-chat.rst:15
+msgid "Ask About an Image"
+msgstr "询问图像内容"
+
+#: ../../source/features/gateway-routing/omni-chat.rst:17
+msgid ""
+"Send the image as an OpenAI-style content part inside ``messages``. "
+"``modalities`` asks the engine for text-only output:"
+msgstr "将图像作为 OpenAI 风格的内容部分放在 ``messages`` 中发送。 ``modalities`` 用于要求引擎只输出文本："
+
+#: ../../source/features/gateway-routing/omni-chat.rst:37
+msgid "What the gateway does with it:"
+msgstr "网关如何处理它："
+
+#: ../../source/features/gateway-routing/omni-chat.rst:39
+msgid ""
+"Media travels inside ``messages[].content`` as content parts. The gateway"
+" does not decode or validate them; the engine does."
+msgstr "媒体以内容部分的形式放在 ``messages[].content`` 中传递。网关不会解码或校验它们，由引擎负责。"
+
+#: ../../source/features/gateway-routing/omni-chat.rst:40
+msgid "Fields it does not inspect, such as ``modalities``, are forwarded as sent."
+msgstr "网关不检查的字段，例如 ``modalities`` ，会原样转发。"
+
+#: ../../source/features/gateway-routing/omni-chat.rst:41
+msgid ""
+"The gateway writes array-form message content, including inline base64 "
+"media, into the text it uses for prefix-cache-aware routing. Prefer a URL"
+" over a base64 data URL to keep that text small."
+msgstr ""
+"网关会把数组形式的消息内容（包括内联的 base64 媒体）写入前缀缓存感知路由所使用的文本中。请优先使用 URL 而不是 base64 data"
+" URL，以保持该文本较小。"
+
+#: ../../source/features/gateway-routing/omni-chat.rst:42
+msgid ""
+"The request body counts against the gateway's request size limit, 4 MiB "
+"by default; see Message Size Configuration in :doc:`gateway-plugins`. A "
+"URL also keeps large images under it."
+msgstr ""
+"请求体计入网关的请求大小上限，默认 4 MiB；参见 :doc:`gateway-plugins` 中的消息大小配置。使用 URL "
+"也能让大图保持在该上限之内。"
+
