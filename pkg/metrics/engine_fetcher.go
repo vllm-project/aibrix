@@ -254,6 +254,32 @@ func (ef *EngineMetricsFetcher) FetchAllTypedMetrics(ctx context.Context, endpoi
 
 // Helper methods
 
+// priorityTotalMetrics lists raw metric names that use SGLang's "total plus
+// per-priority breakdown" exposition pattern. For these families, the
+// instance with priority="" is the authoritative total and per-priority
+// breakdowns must be skipped. For all other metrics with a priority label,
+// the priority label is a meaningful series dimension and must be aggregated
+// normally (counters summed, gauges folded by value, histograms summed).
+// See issue #3056 and review comments on PR #3060.
+var priorityTotalMetrics = map[string]struct{}{
+	"sglang:num_running_reqs":               {},
+	"sglang:num_queue_reqs":                 {},
+	"sglang:num_decode_prealloc_queue_reqs": {},
+}
+
+// isPriorityTotal returns true when the instance carries no "priority" label
+// or carries one with an empty value. SGLang's priority scheduling metrics
+// mark their queue total with priority="" and per-priority breakdowns with
+// priority="1", priority="5", etc.; this helper identifies the total.
+func isPriorityTotal(instance *dto.Metric) bool {
+	if instance == nil {
+		return true
+	}
+	value, err := GetLabelValueForKey(instance, "priority")
+	return err != nil || value == ""
+}
+
+// calculateBackoffDelay calculates exponential backoff delay
 func (ef *EngineMetricsFetcher) calculateBackoffDelay(attempt int) time.Duration {
 	delay := time.Duration(float64(ef.config.BaseDelay) * math.Pow(2, float64(attempt-1)))
 	if delay > ef.config.MaxDelay {
@@ -262,6 +288,9 @@ func (ef *EngineMetricsFetcher) calculateBackoffDelay(attempt int) time.Duration
 	return delay
 }
 
+// sleepWithContext blocks for the given delay or until ctx is done, whichever comes first.
+// It uses an explicit timer that is stopped on early return so a cancelled context does not
+// leave a pending timer behind, unlike time.After, whose timer cannot be stopped.
 func sleepWithContext(ctx context.Context, delay time.Duration) error {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
@@ -272,6 +301,8 @@ func sleepWithContext(ctx context.Context, delay time.Duration) error {
 		return nil
 	}
 }
+
+// getAvailableMetricsForEngine returns all metrics available for a given engine type
 
 func (ef *EngineMetricsFetcher) getAvailableMetricsForEngine(engineType string) []string {
 	var availableMetrics []string
@@ -284,6 +315,9 @@ func (ef *EngineMetricsFetcher) getAvailableMetricsForEngine(engineType string) 
 	}
 	return availableMetrics
 }
+
+// parseMetricFromFamily parses the first instance of a metric family. It is used for
+// pod-scoped metrics, which are not differentiated by model_name.
 
 func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto.MetricFamily, rawMetricName string, metric Metric) (MetricValue, error) {
 	metricFamily, exists := allMetrics[rawMetricName]
@@ -300,31 +334,25 @@ func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto
 	return ef.parseMetricInstance(instance, metricFamily, metric, rawMetricName)
 }
 
-// isPriorityTotal returns true when the instance carries no "priority" label
-// or carries one with an empty value. SGLang's priority scheduling metrics
-// mark their queue total with priority="" and per-priority breakdowns with
-// priority="1", priority="5", etc.; this helper identifies the total.
-func isPriorityTotal(instance *dto.Metric) bool {
-	value, err := GetLabelValueForKey(instance, "priority")
-	return err != nil || value == ""
-}
-
 // selectMetricInstance returns the family instance parseMetricFromFamily
 // should read. Most metrics report exactly one instance per pod/model and
 // keep today's behavior of taking the first one; metric.RequiredLabelKey
 // narrows that to the instance whose label matches, for a family that
 // reports several instances under the same name distinguished only by a
-// label.
+// label (e.g. vllm:engine_sleep_state, one gauge per sleep_state value).
 //
-// When no RequiredLabelKey is set and the family contains multiple
-// instances, prefer the one that represents the queue total (empty or
-// absent priority label) over per-priority breakdowns, regardless of the
-// order the scrape reported them in.
+// For raw metric names known to use SGLang's "total plus per-priority
+// breakdown" exposition (see priorityTotalMetrics), prefer the instance
+// with empty/absent priority label regardless of scrape order. For all
+// other metric names with a priority label, the priority label is a
+// meaningful series dimension that must be aggregated normally.
 func selectMetricInstance(instances []*dto.Metric, metric Metric, rawMetricName string) (*dto.Metric, error) {
 	if metric.RequiredLabelKey == "" {
-		for _, instance := range instances {
-			if isPriorityTotal(instance) {
-				return instance, nil
+		if _, isPriorityTotalMetric := priorityTotalMetrics[rawMetricName]; isPriorityTotalMetric {
+			for _, instance := range instances {
+				if isPriorityTotal(instance) {
+					return instance, nil
+				}
 			}
 		}
 		return instances[0], nil
@@ -341,9 +369,14 @@ func selectMetricInstance(instances []*dto.Metric, metric Metric, rawMetricName 
 	)
 }
 
-// parseModelMetricsFromFamily returns one MetricValue per model_name in the family.
-// Instances that repeat a model_name (differing only by a non-model label) are folded
-// together by aggregateModelMetric.
+// parseModelMetricsFromFamily returns one MetricValue per model_name in the family, so models on a
+// multi-model pod no longer share a single instance. Instances that repeat a model_name (differing
+// only by a non-model label) are folded together by aggregateModelMetric.
+//
+// For raw metric names known to use SGLang's "total plus per-priority breakdown" exposition
+// (see priorityTotalMetrics), instances with non-empty priority labels are skipped and only
+// the authoritative total (priority="" or absent) is used. For all other metrics, normal
+// aggregation behavior applies regardless of priority label presence.
 func (ef *EngineMetricsFetcher) parseModelMetricsFromFamily(allMetrics map[string]*dto.MetricFamily, rawMetricName string, metric Metric) (map[string]MetricValue, error) {
 	metricFamily, exists := allMetrics[rawMetricName]
 	if !exists {
@@ -352,52 +385,61 @@ func (ef *EngineMetricsFetcher) parseModelMetricsFromFamily(allMetrics map[strin
 	if len(metricFamily.Metric) == 0 {
 		return nil, fmt.Errorf("no metric instances found for %s", rawMetricName)
 	}
+	// For allowlisted priority-total metrics, skip per-priority breakdowns
+	// so we only consume the authoritative priority="" total instance.
+	isAllowlisted := false
+	if _, isPriorityTotalMetric := priorityTotalMetrics[rawMetricName]; isPriorityTotalMetric {
+		isAllowlisted = true
+	}
+
 	modelMetrics := make(map[string]MetricValue)
-	// modelIsTotal remembers, per model_name, whether the stored value came
-	// from a priority-total (empty/absent priority label) instance.
-	modelIsTotal := make(map[string]bool)
 	for _, familyMetric := range metricFamily.Metric {
 		modelName, err := GetLabelValueForKey(familyMetric, "model_name")
 		if err != nil || modelName == "" {
 			continue
 		}
+		// A family that reports several instances per model_name,
+		// distinguished only by a label (e.g. vllm:engine_sleep_state's
+		// sleep_state), must be narrowed here too: aggregateModelMetric's
+		// gauge folding keeps whichever instance the scrape lists last,
+		// which is scrape-order dependent and defeats the label filter for
+		// every caller of this model-scoped path (review on #2735).
 		if metric.RequiredLabelKey != "" {
 			labelValue, labelErr := GetLabelValueForKey(familyMetric, metric.RequiredLabelKey)
 			if labelErr != nil || labelValue != metric.RequiredLabelValue {
 				continue
 			}
 		}
+		// For allowlisted priority-total metrics, skip instances with non-empty
+		// priority labels — they are per-priority breakdowns, not the authoritative total.
+		if isAllowlisted && !isPriorityTotal(familyMetric) {
+			continue
+		}
+
 		value, err := ef.parseMetricInstance(familyMetric, metricFamily, metric, rawMetricName)
 		if err != nil {
+			// Skip the malformed instance rather than dropping every model in the family.
 			klog.V(4).InfoS("skipping metric instance that failed to parse",
 				"metric", rawMetricName, "model", modelName, "err", err)
 			continue
 		}
-		isTotal := isPriorityTotal(familyMetric)
-		existing, hasExisting := modelMetrics[modelName]
-		existingTotal := modelIsTotal[modelName]
-		switch {
-		case isTotal && !hasExisting:
-			modelMetrics[modelName] = value
-			modelIsTotal[modelName] = true
-		case isTotal && hasExisting && !existingTotal:
-			modelMetrics[modelName] = value
-			modelIsTotal[modelName] = true
-		case !isTotal && hasExisting && existingTotal:
-			// Already have the total — skip per-priority breakdowns.
-		default:
-			if hasExisting {
-				value = aggregateModelMetric(existing, value, modelName, metric.MetricType.Raw)
-			}
-			modelMetrics[modelName] = value
-			modelIsTotal[modelName] = isTotal
+		if existing, ok := modelMetrics[modelName]; ok {
+			value = aggregateModelMetric(existing, value, modelName, metric.MetricType.Raw)
 		}
+		modelMetrics[modelName] = value
 	}
 	if len(modelMetrics) == 0 {
 		klog.V(4).InfoS("metric family has no model_name-labeled instances", "metric", rawMetricName)
 	}
 	return modelMetrics, nil
 }
+
+// aggregateModelMetric folds incoming into the value already parsed for modelName and returns it.
+// Counters and histograms that repeat a model_name (differing only by a non-model label such as
+// finished_reason on vllm:request_success_total) are summed; gauges keep the latest instance. The
+// differentiating labels are reset to model_name only so EmitMetricToPrometheus does not report the
+// merged total under a single arbitrary label value. It mutates and returns existing in place; the
+// sole caller reassigns the map entry.
 
 func aggregateModelMetric(existing, incoming MetricValue, modelName string, rawType RawMetricType) MetricValue {
 	switch rawType {
@@ -436,6 +478,9 @@ func aggregateModelMetric(existing, incoming MetricValue, modelName string, rawT
 	}
 }
 
+// parseMetricInstance converts a single Prometheus metric instance into a typed MetricValue
+// according to the metric definition.
+
 func (ef *EngineMetricsFetcher) parseMetricInstance(familyMetric *dto.Metric, metricFamily *dto.MetricFamily, metric Metric, rawMetricName string) (MetricValue, error) {
 	if metric.MetricType.IsRawMetric() {
 		switch metric.MetricType.Raw {
@@ -464,9 +509,16 @@ func (ef *EngineMetricsFetcher) parseMetricInstance(familyMetric *dto.Metric, me
 	return nil, fmt.Errorf("unsupported metric type for raw parsing: %v", metric.MetricType)
 }
 
+// fetchAllMetricsFromURL performs a single HTTP request against an engine endpoint and parses
+// all Prometheus metrics. Transport failures are counted in llm_engine_metrics_query_fail.
+
 func (ef *EngineMetricsFetcher) fetchAllMetricsFromURL(ctx context.Context, url string) (map[string]*dto.MetricFamily, error) {
 	return ef.fetchMetricsFromURL(ctx, url, LLMEngineMetricsQueryFail)
 }
+
+// fetchMetricsFromURL performs a single HTTP request and parses all Prometheus metrics in the
+// response. If failureMetric is non-empty, transport failures increment that counter; callers
+// scraping non-engine sources pass an empty name so their failures are not attributed to engines.
 
 func (ef *EngineMetricsFetcher) fetchMetricsFromURL(ctx context.Context, url, failureMetric string) (map[string]*dto.MetricFamily, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
