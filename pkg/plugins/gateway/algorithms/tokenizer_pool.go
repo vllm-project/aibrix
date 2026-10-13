@@ -490,24 +490,40 @@ func (p *TokenizerPool) startHealthChecker() {
 
 // performHealthCheck checks health of all tokenizers
 func (p *TokenizerPool) performHealthCheck() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
+	// Probe without the lock: GetTokenizer takes it on every routed request,
+	// and one unresponsive endpoint would stall them all.
+	p.mu.RLock()
+	entries := make(map[string]*tokenizerEntry, len(p.tokenizers))
 	for model, entry := range p.tokenizers {
-		if remoteTok, ok := entry.tokenizer.(interface{ IsHealthy(context.Context) bool }); ok {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			healthy := remoteTok.IsHealthy(ctx)
-			cancel()
+		entries[model] = entry
+	}
+	p.mu.RUnlock()
 
-			oldStatus := entry.healthStatus
-			entry.healthStatus = healthy
-			if healthy {
-				entry.lastHealthy = time.Now()
-			} else if oldStatus {
-				// Only log and count when transitioning from healthy to unhealthy
-				klog.Warningf("Tokenizer for model %s is now unhealthy", model)
-				p.incUnhealthyTokenizers()
-			}
+	for model, entry := range entries {
+		remoteTok, ok := entry.tokenizer.(interface{ IsHealthy(context.Context) bool })
+		if !ok {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		healthy := remoteTok.IsHealthy(ctx)
+		cancel()
+
+		p.mu.Lock()
+		// Skip entries replaced or removed while the probe ran.
+		if p.tokenizers[model] != entry {
+			p.mu.Unlock()
+			continue
+		}
+		oldStatus := entry.healthStatus
+		entry.healthStatus = healthy
+		if healthy {
+			entry.lastHealthy = time.Now()
+		}
+		p.mu.Unlock()
+		if !healthy && oldStatus {
+			// Only log and count when transitioning from healthy to unhealthy
+			klog.Warningf("Tokenizer for model %s is now unhealthy", model)
+			p.incUnhealthyTokenizers()
 		}
 	}
 }

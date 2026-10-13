@@ -455,6 +455,46 @@ func TestTokenizerPoolHealthCheck(t *testing.T) {
 	unhealthyTokenizer.AssertExpectations(t)
 }
 
+func TestTokenizerPoolHealthCheckDoesNotBlockLookups(t *testing.T) {
+	resetPrometheusRegistry()
+	pool := NewTokenizerPool(TokenizerPoolConfig{
+		EnableVLLMRemote: true, MaxTokenizersPerPool: 100, DefaultTokenizer: &mockTokenizer{},
+	}, createTestCache())
+	defer func() { assert.NoError(t, pool.Close()) }()
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	hung := &mockTokenizer{}
+	hung.On("IsHealthy", mock.Anything).Run(func(mock.Arguments) {
+		close(entered)
+		<-release
+	}).Return(false)
+	hung.On("Close").Return(nil)
+	healthy := &mockTokenizer{}
+	healthy.On("IsHealthy", mock.Anything).Return(true)
+	healthy.On("Close").Return(nil)
+	now := time.Now()
+	pool.tokenizers["hung"] = &tokenizerEntry{tokenizer: hung, lastUsed: now, healthStatus: true}
+	pool.tokenizers["healthy"] = &tokenizerEntry{tokenizer: healthy, lastUsed: now, healthStatus: true}
+
+	checked := make(chan struct{})
+	go func() {
+		defer close(checked)
+		pool.performHealthCheck()
+	}()
+	<-entered
+	got := make(chan tokenizer.Tokenizer, 1)
+	go func() { got <- pool.GetTokenizer("healthy", nil) }()
+	select {
+	case tok := <-got:
+		assert.Same(t, healthy, tok)
+	case <-time.After(time.Second):
+		t.Error("GetTokenizer waited for another model's health probe")
+	}
+	close(release)
+	<-checked
+	assert.False(t, pool.tokenizers["hung"].healthStatus)
+}
+
 func TestTokenizerPoolMaxSize(t *testing.T) {
 	resetPrometheusRegistry()
 
