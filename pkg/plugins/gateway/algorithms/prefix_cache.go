@@ -413,6 +413,9 @@ func cachedPrefixTokens(ctx *types.RoutingContext, tokenize func() ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
+	if tokens == nil {
+		tokens = []byte{} // so an empty result is cached too
+	}
 	ctx.SetPrefixTokens(tokens)
 	return tokens, nil
 }

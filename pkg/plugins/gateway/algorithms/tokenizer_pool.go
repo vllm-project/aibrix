@@ -245,7 +245,8 @@ func (p *TokenizerPool) observeTokenizerLatency(model string, duration time.Dura
 	}
 }
 
-// GetTokenizer returns a tokenizer for the specified model
+// GetTokenizer returns a tokenizer for the specified model. Pass all of the
+// model's ready pods: a tokenizer whose pod isn't in the list gets replaced.
 func (p *TokenizerPool) GetTokenizer(model string, pods []*v1.Pod) tokenizer.Tokenizer {
 	// Safe metric increment
 	p.incTokenizerRequests(model)
