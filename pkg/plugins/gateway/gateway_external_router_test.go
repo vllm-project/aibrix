@@ -128,7 +128,7 @@ func TestExternalSelectionAdmissionRejectsWithoutSecondDecision(t *testing.T) {
 	mockCache.On("HasModel", "test-model").Return(true).Once()
 	mockCache.On("ListPodsByModel", "test-model").Return(podList, nil).Once()
 	mockCache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{"ns/a": 0}, nil)
-	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, false, nil).Once()
 
 	externalRouter, err := routing.NewExternalRouterWithCache(mockCache)
 	require.NoError(t, err)

@@ -85,6 +85,7 @@ type Store struct {
 	mu                  sync.RWMutex            // Read-write lock for concurrency safety
 	initialized         bool                    // Initialization status flag
 	redisClient         *redis.Client           // Redis client instance
+	admitRedisClient    *redis.Client           // redisClient without go-redis retries, for the admit script
 	prometheusApi       prometheusv1.API        // Prometheus API client
 	modelRouterProvider ModelRouterProviderFunc // Function to get model router
 
@@ -227,6 +228,7 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterP
 	store = &Store{
 		initialized:           true,
 		redisClient:           redisClient,
+		admitRedisClient:      admitRunningRequestsClient(redisClient),
 		prometheusApi:         prometheusApi,
 		enableTracing:         enableGPUOptimizerTracing,
 		requestTrace:          &utils.SyncMap[string, *RequestTrace]{},
