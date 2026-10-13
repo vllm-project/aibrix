@@ -196,8 +196,8 @@ func (c *Store) GetMetricValueByPodModel(podName, podNamespace, modelName string
 }
 
 // AdmitPodRunningRequest is the hard-cap counterpart of GetPodRunningRequests: instead of
-// just reading the live cross-gateway running-request count, it atomically checks that
-// count against limit and, only if still under it, includes this request's own
+// just reading the live cross-gateway running-request count, it uses Redis to atomically
+// check that count against limit and, only if still under it, includes this request's own
 // contribution in the count from this call onward (see admitRunningRequest). A plain read
 // followed by a later, separate increment cannot enforce a hard cap -- concurrent
 // requests can all observe the same pre-increment count and all be admitted regardless of
@@ -206,15 +206,17 @@ func (c *Store) GetMetricValueByPodModel(podName, podNamespace, modelName string
 // admitted=false, err=nil means the pod is over its cap right now; err is non-nil only
 // when the pod itself isn't in the cache (mirrors GetPodRunningRequests), which the
 // caller should treat as fail-open, same as GetPodRunningRequests's error case.
-func (c *Store) AdmitPodRunningRequest(podName, podNamespace string, limit int64) (admitted bool, err error) {
+// counted is true only when Redis confirmed the increment; a local fallback admission
+// still needs the normal request-tracking increment.
+func (c *Store) AdmitPodRunningRequest(podName, podNamespace string, limit int64) (admitted, counted bool, err error) {
 	key := utils.GeneratePodKey(podNamespace, podName)
 	metaPod, ok := c.metaPods.Load(key)
 	if !ok {
-		return false, fmt.Errorf("key does not exist in the cache: %s", key)
+		return false, false, fmt.Errorf("key does not exist in the cache: %s", key)
 	}
 	localRunning := int64(atomic.LoadInt32(&metaPod.runningRequests))
-	admitted, _ = c.admitRunningRequest(podNamespace, podName, limit, localRunning)
-	return admitted, nil
+	admitted, counted, _ = c.admitRunningRequest(podNamespace, podName, limit, localRunning)
+	return admitted, counted, nil
 }
 
 // realtimeRunningRequests is the live cross-gateway running-request total for one pod.

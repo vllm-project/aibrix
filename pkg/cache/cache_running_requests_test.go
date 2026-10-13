@@ -18,6 +18,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -38,6 +39,27 @@ func newTestRunningRequestsClient(t *testing.T) *redis.Client {
 	t.Cleanup(func() { _ = client.Close() })
 	return client
 }
+
+type admitScriptHook struct {
+	process func(*redis.Cmd) error
+}
+
+func (h admitScriptHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h admitScriptHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == "eval" && cmd.Args()[1] == runningRequestsAdmitScript {
+			return h.process(cmd.(*redis.Cmd))
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (h admitScriptHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func failAdmitScript(*redis.Cmd) error { return errors.New("admit script unavailable") }
 
 // A negative delta against a hash key that does not exist must be a no-op: it must
 // not resurrect the key holding a lying zero for this gateway's field (see
@@ -145,16 +167,19 @@ func TestAdmitRunningRequest_AdmitsUnderLimitThenRejects(t *testing.T) {
 	store := &Store{redisClient: client}
 	seedLiveGateway(t, client)
 
-	admitted, running := store.admitRunningRequest(testNamespace, testPodName, 2, 0)
+	admitted, counted, running := store.admitRunningRequest(testNamespace, testPodName, 2, 0)
 	require.True(t, admitted)
+	require.True(t, counted)
 	require.EqualValues(t, 0, running)
 
-	admitted, running = store.admitRunningRequest(testNamespace, testPodName, 2, 0)
+	admitted, counted, running = store.admitRunningRequest(testNamespace, testPodName, 2, 0)
 	require.True(t, admitted)
+	require.True(t, counted)
 	require.EqualValues(t, 1, running)
 
-	admitted, running = store.admitRunningRequest(testNamespace, testPodName, 2, 0)
+	admitted, counted, running = store.admitRunningRequest(testNamespace, testPodName, 2, 0)
 	require.False(t, admitted, "a request must be rejected once the live sum reaches the limit")
+	require.False(t, counted)
 	require.EqualValues(t, 2, running)
 
 	key := runningRequestsKey(testNamespace, testPodName)
@@ -173,8 +198,9 @@ func TestAdmitRunningRequest_OnlyCountsLiveGateways(t *testing.T) {
 	require.NoError(t, client.HSet(context.Background(), key, "gw-dead", 10).Err())
 	seedLiveGateway(t, client)
 
-	admitted, running := store.admitRunningRequest(testNamespace, testPodName, 1, 0)
+	admitted, counted, running := store.admitRunningRequest(testNamespace, testPodName, 1, 0)
 	require.True(t, admitted, "a dead gateway's leaked count must not block admission")
+	require.True(t, counted)
 	require.EqualValues(t, 0, running)
 }
 
@@ -183,13 +209,67 @@ func TestAdmitRunningRequest_OnlyCountsLiveGateways(t *testing.T) {
 func TestAdmitRunningRequest_FailsOpenToLocalCountWhenRedisNil(t *testing.T) {
 	store := &Store{}
 
-	admitted, running := store.admitRunningRequest(testNamespace, testPodName, 2, 1)
+	admitted, counted, running := store.admitRunningRequest(testNamespace, testPodName, 2, 1)
 	require.True(t, admitted)
+	require.False(t, counted)
 	require.EqualValues(t, 1, running)
 
-	admitted, running = store.admitRunningRequest(testNamespace, testPodName, 2, 2)
+	admitted, counted, running = store.admitRunningRequest(testNamespace, testPodName, 2, 2)
 	require.False(t, admitted)
+	require.False(t, counted)
 	require.EqualValues(t, 2, running)
+}
+
+func TestAdmitRunningRequest_FailsOpenToLocalCountWhenEvalFails(t *testing.T) {
+	client := newTestRunningRequestsClient(t)
+	client.AddHook(admitScriptHook{process: failAdmitScript})
+	store := &Store{redisClient: client}
+	for _, local := range []int64{1, 2} {
+		admitted, counted, running := store.admitRunningRequest(testNamespace, testPodName, 2, local)
+		require.Equal(t, local < 2, admitted)
+		require.False(t, counted)
+		require.Equal(t, local, running)
+	}
+}
+
+func TestAdmitRunningRequest_MalformedRepliesFallBackToLocalCount(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		reply interface{}
+	}{
+		{"not an array", int64(1)},
+		{"empty array", []interface{}{}},
+		{"short array", []interface{}{int64(1)}},
+		{"long array", []interface{}{int64(1), int64(9), int64(0)}},
+		{"wrong flag type", []interface{}{"1", int64(9)}},
+		{"wrong sum type", []interface{}{int64(1), "9"}},
+		{"both wrong types", []interface{}{1, 9}},
+		{"negative flag", []interface{}{int64(-1), int64(9)}},
+		{"flag above one", []interface{}{int64(2), int64(9)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newTestRunningRequestsClient(t)
+			client.AddHook(admitScriptHook{process: func(cmd *redis.Cmd) error {
+				cmd.SetVal(tt.reply)
+				return nil
+			}})
+			store := &Store{redisClient: client}
+			for _, local := range []int64{1, 2} {
+				admitted, counted, running := store.admitRunningRequest(testNamespace, testPodName, 2, local)
+				require.Equal(t, local < 2, admitted)
+				require.False(t, counted)
+				require.Equal(t, local, running)
+			}
+		})
+	}
+}
+
+func TestAdmitPodRunningRequest_MissingPod(t *testing.T) {
+	store := NewForTest()
+	admitted, counted, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 2)
+	require.ErrorContains(t, err, "key does not exist in the cache")
+	require.False(t, admitted)
+	require.False(t, counted)
 }
 
 // TestAdmitRunningRequest_ConcurrentCallsNeverExceedLimit is the regression this whole
@@ -226,7 +306,7 @@ func TestAdmitRunningRequest_ConcurrentCallsNeverExceedLimit(t *testing.T) {
 	for i := 0; i < concurrency; i++ {
 		go func() {
 			defer wg.Done()
-			if admitted, _ := store.admitRunningRequest(testNamespace, testPodName, limit, 0); admitted {
+			if admitted, _, _ := store.admitRunningRequest(testNamespace, testPodName, limit, 0); admitted {
 				atomic.AddInt32(&admittedCount, 1)
 			}
 		}()

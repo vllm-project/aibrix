@@ -43,16 +43,16 @@ func replicaInflightLimit(routingCtx *types.RoutingContext) int64 {
 
 // enforceReplicaInflight checks whether the already-selected target pod still has
 // capacity for one more concurrent request under its config profile's requestsInflight cap,
-// and if so atomically reserves that capacity for this request.
+// and if so reserves that capacity atomically when Redis is available.
 //
 // Uses AdmitPodRunningRequest, not a plain read (GetPodRunningRequests) followed by the
 // normal request-tracking path's later increment: this request (and any other concurrent
 // one to the same pod, on this gateway or another) would otherwise be able to observe the
 // same pre-increment count and all get admitted regardless of how tight limit is -- see
-// AdmitPodRunningRequest's doc comment. A successful admission here means this gateway's
-// own contribution to the pod's live count has already been applied, so it sets
-// routingCtx.ReplicaInflightAdmitted -- addPodStats (cache_trace.go) must see that and skip
-// its own increment of the same counter, or this request would be double-counted.
+// AdmitPodRunningRequest's doc comment. Only a confirmed Redis increment sets
+// routingCtx.ReplicaInflightAdmitted -- addPodStats (cache_trace.go) then skips its own
+// increment of the same counter, or this request would be double-counted. A local
+// fallback admission leaves that increment to normal request tracking.
 //
 // err != nil means the pod dropped out of the cache between selection and this call (an
 // AdmitPodRunningRequest contract, mirroring GetPodRunningRequests) -- fail open, same as
@@ -66,7 +66,7 @@ func (s *Server) enforceReplicaInflight(ctx context.Context, model string, routi
 		return nil
 	}
 	pod := routingCtx.TargetPod()
-	admitted, err := s.cache.AdmitPodRunningRequest(pod.Name, pod.Namespace, limit)
+	admitted, counted, err := s.cache.AdmitPodRunningRequest(pod.Name, pod.Namespace, limit)
 	if err != nil {
 		return nil
 	}
@@ -75,7 +75,7 @@ func (s *Server) enforceReplicaInflight(ctx context.Context, model string, routi
 			"targetPod", pod.Name, "limit", limit, "reason", "replica_at_capacity")
 		return replicaInflightExceededResponse(model, limit)
 	}
-	routingCtx.ReplicaInflightAdmitted = true
+	routingCtx.ReplicaInflightAdmitted = counted
 	return nil
 }
 

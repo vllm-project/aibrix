@@ -30,6 +30,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
@@ -134,7 +135,7 @@ func TestEnforceReplicaInflight_AdmitThenReject(t *testing.T) {
 	s := &Server{cache: mockCache}
 	pod := podWithReplicaInflight("a", 1)
 
-	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, true, nil).Once()
 	routingCtx := types.NewRoutingContext(context.Background(), "", "m", "", "r1", "")
 	applyConfigProfile(routingCtx, []*v1.Pod{pod})
 	routingCtx.SetTargetPod(pod)
@@ -142,7 +143,7 @@ func TestEnforceReplicaInflight_AdmitThenReject(t *testing.T) {
 	assert.True(t, routingCtx.ReplicaInflightAdmitted,
 		"a successful admission must be recorded so addPodStats does not double-increment")
 
-	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, false, nil).Once()
 	routingCtx2 := types.NewRoutingContext(context.Background(), "", "m", "", "r2", "")
 	applyConfigProfile(routingCtx2, []*v1.Pod{pod})
 	routingCtx2.SetTargetPod(pod)
@@ -157,6 +158,66 @@ func TestEnforceReplicaInflight_AdmitThenReject(t *testing.T) {
 	mockCache.AssertExpectations(t)
 }
 
+func TestEnforceReplicaInflight_NilRedisAdmissionIsNotCounted(t *testing.T) {
+	pod := podWithReplicaInflight("a", 4)
+	store := cache.NewWithPodsForTest([]*v1.Pod{pod}, "m")
+	s := &Server{cache: store}
+	routingCtx := types.NewRoutingContext(context.Background(), "", "m", "", "fallback", "")
+	applyConfigProfile(routingCtx, []*v1.Pod{pod})
+	routingCtx.SetTargetPod(pod)
+	require.Nil(t, s.enforceReplicaInflight(context.Background(), "m", routingCtx))
+	require.False(t, routingCtx.ReplicaInflightAdmitted, "a local admission has no confirmed Redis increment")
+}
+
+type replicaInflightAdmitFailureHook struct{}
+
+func (replicaInflightAdmitFailureHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (replicaInflightAdmitFailureHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		// Only the admit script takes the pod hash and the liveness ZSET as keys.
+		if cmd.Name() == "eval" && len(cmd.Args()) >= 5 && cmd.Args()[4] == "aibrix:rrq:gateways" {
+			return errors.New("admit script unavailable")
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (replicaInflightAdmitFailureHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func TestEnforceReplicaInflight_RedisFailureUsesNormalTracking(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	client.AddHook(replicaInflightAdmitFailureHook{})
+	pod := podWithReplicaInflight("a", 4)
+	store := cache.InitWithPods(cache.New(client, nil, nil), []*v1.Pod{pod}, "m")
+	s := &Server{cache: store}
+	routingCtx := types.NewRoutingContext(context.Background(), "", "m", "", "fallback", "")
+	applyConfigProfile(routingCtx, []*v1.Pod{pod})
+	routingCtx.SetTargetPod(pod)
+	require.Nil(t, s.enforceReplicaInflight(context.Background(), "m", routingCtx))
+	require.False(t, routingCtx.ReplicaInflightAdmitted)
+
+	term := store.AddRequestCount(routingCtx, routingCtx.RequestID, "m")
+	key := "aibrix:rrq:" + utils.GeneratePodKey(pod.Namespace, pod.Name)
+	var field string
+	require.Eventually(t, func() bool {
+		fields, err := mr.HKeys(key)
+		if err != nil || len(fields) != 1 {
+			return false
+		}
+		field = fields[0]
+		return mr.HGet(key, field) == "1"
+	}, 5*time.Second, 10*time.Millisecond, "normal tracking must increment after fallback admission")
+	store.DoneRequestCount(routingCtx, routingCtx.RequestID, "m", term)
+	require.Eventually(t, func() bool {
+		return mr.HGet(key, field) == "0"
+	}, 5*time.Second, 10*time.Millisecond, "completion must restore the baseline")
+}
+
 func TestEnforceReplicaInflight_TwoPodsIndependent(t *testing.T) {
 	mockCache := &MockCache{}
 	s := &Server{cache: mockCache}
@@ -164,25 +225,25 @@ func TestEnforceReplicaInflight_TwoPodsIndependent(t *testing.T) {
 	podB := podWithReplicaInflight("b", 1)
 	pods := []*v1.Pod{podA, podB}
 
-	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, true, nil).Once()
 	ctxA := types.NewRoutingContext(context.Background(), "", "m", "", "r1", "")
 	applyConfigProfile(ctxA, pods)
 	ctxA.SetTargetPod(podA)
 	assert.Nil(t, s.enforceReplicaInflight(context.Background(), "m", ctxA))
 
-	mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1)).Return(true, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1)).Return(true, true, nil).Once()
 	ctxB := types.NewRoutingContext(context.Background(), "", "m", "", "r2", "")
 	applyConfigProfile(ctxB, pods)
 	ctxB.SetTargetPod(podB)
 	assert.Nil(t, s.enforceReplicaInflight(context.Background(), "m", ctxB))
 
-	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, false, nil).Once()
 	ctxA2 := types.NewRoutingContext(context.Background(), "", "m", "", "r3", "")
 	applyConfigProfile(ctxA2, pods)
 	ctxA2.SetTargetPod(podA)
 	assert.NotNil(t, s.enforceReplicaInflight(context.Background(), "m", ctxA2))
 
-	mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1)).Return(false, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1)).Return(false, false, nil).Once()
 	ctxB2 := types.NewRoutingContext(context.Background(), "", "m", "", "r4", "")
 	applyConfigProfile(ctxB2, pods)
 	ctxB2.SetTargetPod(podB)
@@ -196,7 +257,7 @@ func TestEnforceReplicaInflight_TwoPodsIndependent(t *testing.T) {
 // admits the request.
 func TestEnforceReplicaInflight_MetricLookupErrorFailsOpen(t *testing.T) {
 	mockCache := &MockCache{}
-	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, assert.AnError)
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, false, assert.AnError)
 	s := &Server{cache: mockCache}
 	pod := podWithReplicaInflight("a", 1)
 	routingCtx := types.NewRoutingContext(context.Background(), "", "m", "", "r1", "")
@@ -257,7 +318,7 @@ func TestHandleRequestBody_ReplicaInflightAdmitThenReject(t *testing.T) {
 	// now sees the pod at the limit and rejects it before enforceReplicaInflight or
 	// request_start is ever reached.
 	mockCache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{"ns/a": 0}, nil).Once()
-	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, true, nil).Once()
 	mockCache.On("GetMetricValueByPod", "a", "ns", metrics.RealtimeNumRequestsRunning).
 		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Once()
 	mockCache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{"ns/a": 1}, nil).Once()

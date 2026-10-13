@@ -171,7 +171,7 @@ type RoutingContext struct {
 
 	// ReplicaInflightAdmitted is true once the gateway's replica-inflight admission check
 	// (enforceReplicaInflight, backed by cache.Store.AdmitPodRunningRequest) has atomically
-	// admitted this request AND, in doing so, already applied this gateway's own +1 to the
+	// admitted this request AND confirmed this gateway's own +1 was applied to the
 	// target pod's cross-gateway running-requests counter. Consumers that also increment
 	// that counter (addPodStats) must check this first and skip their own increment, or the
 	// pod's count would be inflated by an extra, never-decremented +1 for this request.
