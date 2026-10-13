@@ -129,7 +129,7 @@ func TestRateLimitingDisabledKeepsReplicaInflight(t *testing.T) {
 	assert.Nil(t, server.enforceModelRPS(context.Background(), "model", routingCtx))
 	assert.Empty(t, redisServer.Keys())
 
-	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, false, nil).Once()
 	routingCtx.SetTargetPod(pod)
 	resp := server.enforceReplicaInflight(context.Background(), "model", routingCtx)
 	require.NotNil(t, resp.GetImmediateResponse())
