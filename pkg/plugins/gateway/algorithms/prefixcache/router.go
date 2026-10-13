@@ -52,10 +52,11 @@ const (
 	selectionLeastRequestFallback = "least_request_fallback"
 )
 
+const RouterPrefixCache types.RoutingAlgorithm = "prefix-cache"
+
 var (
-	RouterPrefixCache       types.RoutingAlgorithm = "prefix-cache"
-	tokenizerType                                  = utils.LoadEnv(constants.EnvPrefixCacheTokenizerType, "character")
-	standardDeviationFactor int                    = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR", defaultStandardDeviationFactor)
+	tokenizerType               = utils.LoadEnv(constants.EnvPrefixCacheTokenizerType, "character")
+	standardDeviationFactor int = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR", defaultStandardDeviationFactor)
 )
 
 // PrefixCacheMetrics holds all prefix cache metrics

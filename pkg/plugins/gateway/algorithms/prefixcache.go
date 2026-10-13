@@ -22,7 +22,7 @@ import (
 
 // The prefix-cache routers live in the prefixcache package. Their algorithm names stay
 // re-exported here so callers keep referring to them as routingalgorithms.RouterPrefixCache.
-var RouterPrefixCache = prefixcache.RouterPrefixCache
+const RouterPrefixCache = prefixcache.RouterPrefixCache
 
 const RouterPrefixCachePreble = prefixcache.RouterPrefixCachePreble
 
