@@ -537,11 +537,7 @@ func (k *kvSyncPrefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, rea
 		modelName, _ = constants.ModelNameFromMetadata(pods[0].Labels, pods[0].Annotations)
 	}
 
-	tokenizerToUse := k.getTokenizerForRequest(ctx, readyPodList)
-	if tokenizerToUse == nil {
-		return fmt.Errorf("TokenizerPool not initialized for KV sync router")
-	}
-	tokens, err := tokenizeInputText(ctx, tokenizerToUse)
+	tokens, err := k.tokenize(ctx, readyPodList)
 	if err != nil {
 		return err
 	}
@@ -612,12 +608,7 @@ func (k *kvSyncPrefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodLi
 
 	loraID := int64(-1)
 
-	tokenizerToUse := k.getTokenizerForRequest(ctx, readyPodList)
-	if tokenizerToUse == nil {
-		return nil, nil, fmt.Errorf("TokenizerPool not initialized for KV sync router")
-	}
-
-	tokens, err := tokenizeInputText(ctx, tokenizerToUse)
+	tokens, err := k.tokenize(ctx, readyPodList)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -791,6 +782,22 @@ func (k *kvSyncPrefixCacheRouter) tokenizeChatRequest(ctx *types.RoutingContext,
 	return tokens
 }
 
+// tokenize renders chat requests through the chat template, as the engine does,
+// so the hashes line up with the blocks it reports in KV events. Route, ScoreAll
+// and PostRouteUpdate must all tokenize this way.
+func (k *kvSyncPrefixCacheRouter) tokenize(ctx *types.RoutingContext, readyPodList types.PodList) ([]byte, error) {
+	tok := k.getTokenizerForRequest(ctx, readyPodList)
+	if tok == nil {
+		return nil, fmt.Errorf("TokenizerPool not initialized for KV sync router")
+	}
+	if utils.PathWithoutQuery(ctx.ReqPath) == "/v1/chat/completions" {
+		if tokens := k.tokenizeChatRequest(ctx, tok); tokens != nil {
+			return tokens, nil
+		}
+	}
+	return tokenizeInputText(ctx, tok)
+}
+
 // Route handles KV sync routing with clean implementation
 func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	var prefixHashes []uint64
@@ -814,26 +821,10 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 
 	loraID := int64(-1) // TODO: Extract from context when available
 
-	// Use helper method to get model-specific tokenizer
-	tokenizerToUse := k.getTokenizerForRequest(ctx, readyPodList)
-	if tokenizerToUse == nil {
-		return "", fmt.Errorf("TokenizerPool not initialized for KV sync router")
-	}
-
-	// Tokenize the input based on endpoint type
-	var tokens []byte
-	if utils.PathWithoutQuery(ctx.ReqPath) == "/v1/chat/completions" {
-		tokens = k.tokenizeChatRequest(ctx, tokenizerToUse)
-	}
-
-	// Fallback to text tokenization if chat tokenization wasn't used or failed
-	if tokens == nil {
-		var err error
-		tokens, err = tokenizeInputText(ctx, tokenizerToUse)
-		if err != nil {
-			recordRoutingError(modelName, "tokenize_failed", true)
-			return "", err
-		}
+	tokens, err := k.tokenize(ctx, readyPodList)
+	if err != nil {
+		recordRoutingError(modelName, "tokenize_failed", true)
+		return "", err
 	}
 
 	readyPods := readyPodList.All()
