@@ -18,6 +18,7 @@ package routingalgorithms
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -78,7 +79,6 @@ func newTestRouter(cacheSize int, metricCache cache.Cache) *prefixCacheAndLoadRo
 			podAllocations:             make(map[*prefixcacheindexer.TreeNode]map[int]bool),
 			currentDecodeLengthsPerPod: make(map[string]int),
 			avgTimePerTokenPerPod:      make(map[string][]float64),
-			perNodeTotalDecodeLengths:  make(map[*prefixcacheindexer.TreeNode]int),
 		},
 		numPods:        0,
 		podAllocations: make(map[*prefixcacheindexer.TreeNode]map[int]bool),
@@ -386,6 +386,45 @@ func TestPrefixCacheAndLoadRouterScoreAllDoesNotMutateCache(t *testing.T) {
 	}
 	if got := node.GetLastAccess(); !got.Equal(beforeLastAccess) {
 		t.Fatalf("expected ScoreAll not to update lastAccess, before=%v after=%v", beforeLastAccess, got)
+	}
+}
+
+func TestSlidingWindowHistogramDropsExpiredAndEvictedNodes(t *testing.T) {
+	setup := func() (*SlidingWindowHistogram, *prefixcacheindexer.TreeNode, time.Time) {
+		router := newTestRouter(1, nil)
+		node, _, _ := router.cache.AddPrefix([]int{1, 2, 3}, "test-model", prebleTestPodKey("pod-1"))
+		now := time.Now()
+		router.histogram.update(now, node, node, prebleTestPodKey("pod-1"), 16)
+		return router.histogram, node, now
+	}
+
+	t.Run("expired", func(t *testing.T) {
+		h, node, now := setup()
+		h.removeOldEntries(now.Add(slidingWindowPeriod + time.Second))
+		requireNodeDropped(t, h, node)
+	})
+
+	t.Run("evicted", func(t *testing.T) {
+		h, node, _ := setup()
+		h.removeEvictedNodes([]*prefixcacheindexer.TreeNode{node})
+		requireNodeDropped(t, h, node)
+	})
+}
+
+// requireNodeDropped fails if any map of h that is keyed by tree node still has
+// an entry for node.
+func requireNodeDropped(t *testing.T, h *SlidingWindowHistogram, node *prefixcacheindexer.TreeNode) {
+	t.Helper()
+	nodeType := reflect.TypeOf(node)
+	v := reflect.ValueOf(h).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Field(i)
+		if field.Kind() != reflect.Map || field.Type().Key() != nodeType {
+			continue
+		}
+		if field.MapIndex(reflect.ValueOf(node)).IsValid() {
+			t.Errorf("%s still has an entry for the node", v.Type().Field(i).Name)
+		}
 	}
 }
 
