@@ -534,3 +534,120 @@ func TestLoadBalanceScoreAll_QueuedRequestsWeighted(t *testing.T) {
 	assert.NoError(t, err)
 	assert.InDelta(t, (4+0.5*6)/2.0, scores[0], 1e-9)
 }
+
+// TestGetTargetPodListOnLoadImbalance tests the relative load-gate logic
+func TestGetTargetPodListOnLoadImbalance(t *testing.T) {
+	tests := []struct {
+		name            string
+		requestCounts   map[string]int
+		expectImbalance bool
+		expectMinPods   []string // pod names that should appear in result (all have min count)
+	}{
+		{
+			name:            "empty",
+			requestCounts:   map[string]int{},
+			expectImbalance: false,
+		},
+		{
+			name:            "all_zero_no_imbalance",
+			requestCounts:   map[string]int{"p0": 0, "p1": 0, "p2": 0},
+			expectImbalance: false,
+		},
+		{
+			name:            "uniform_load_no_imbalance",
+			requestCounts:   map[string]int{"p0": 10, "p1": 10, "p2": 10},
+			expectImbalance: false,
+		},
+		{
+			name:            "small_absolute_gap_no_imbalance",
+			requestCounts:   map[string]int{"p0": 0, "p1": 0, "p2": 5},
+			expectImbalance: false, // gap=5 < minGap=8
+		},
+		{
+			name:            "two_pods_gap_below_min_no_imbalance",
+			requestCounts:   map[string]int{"p0": 0, "p1": 7},
+			expectImbalance: false, // gap=7 < minGap=8
+		},
+		{
+			// Two pods skip the relative factor check (it never holds for n=2 with factor=2)
+			// and fire on the absolute gap alone.
+			name:            "two_pods_gap_at_min_triggers",
+			requestCounts:   map[string]int{"p0": 0, "p1": 8},
+			expectImbalance: true, // gap=8 >= minGap=8
+			expectMinPods:   []string{"p0"},
+		},
+		{
+			// meanOfOthers excludes the busiest pod itself: (5+5+5)/3=5, 15>2*(5+1)=12, so
+			// this now correctly fires. The old mean-inclusive formula ((5+5+5+15)/4=7.5,
+			// 15<=2*(7.5+1)=17) folded the busiest pod's own count into its own baseline,
+			// masking a pod carrying 3x its peers' load as "not imbalanced".
+			name:            "moderate_load_now_detected_as_imbalance",
+			requestCounts:   map[string]int{"p0": 5, "p1": 5, "p2": 5, "p3": 15},
+			expectImbalance: true, // gap=15-5=10>=8; 15>2*(5+1)=12
+			expectMinPods:   []string{"p0", "p1", "p2"},
+		},
+		{
+			name:            "severe_skew_triggers_imbalance",
+			requestCounts:   map[string]int{"p0": 0, "p1": 0, "p2": 0, "p3": 15},
+			expectImbalance: true, // meanOfOthers=0, 15>2*(0+1)=2; gap=15>=8
+			expectMinPods:   []string{"p0", "p1", "p2"},
+		},
+		{
+			name:            "two_pods_large_gap_triggers",
+			requestCounts:   map[string]int{"p0": 0, "p1": 100},
+			expectImbalance: true, // n=2 skips factor check; gap=100 >= minGap=8
+			expectMinPods:   []string{"p0"},
+		},
+		{
+			name:            "four_pods_one_overloaded",
+			requestCounts:   map[string]int{"p0": 0, "p1": 0, "p2": 5, "p3": 20},
+			expectImbalance: true, // meanOfOthers=(0+0+5)/3=1.67, 20>2*(1.67+1)=5.33; gap=20>=8
+			expectMinPods:   []string{"p0", "p1"},
+		},
+		{
+			name:            "single_pod_never_imbalanced",
+			requestCounts:   map[string]int{"p0": 100},
+			expectImbalance: false,
+		},
+		{
+			name:            "large_spread_triggers_imbalance",
+			requestCounts:   map[string]int{"p0": 0, "p1": 5, "p2": 50, "p3": 100},
+			expectImbalance: true, // meanOfOthers=(0+5+50)/3=18.33, 100>2*(18.33+1)=38.67; gap=100>=8
+			expectMinPods:   []string{"p0"},
+		},
+		{
+			name:            "multiple_min_pods_returned",
+			requestCounts:   map[string]int{"p0": 0, "p1": 0, "p2": 50, "p3": 100},
+			expectImbalance: true, // meanOfOthers=(0+0+50)/3=16.67, 100>2*(16.67+1)=35.33; gap=100>=8
+			expectMinPods:   []string{"p0", "p1"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Build pod slice matching the keys in requestCounts
+			var pods []*v1.Pod
+			for name := range tt.requestCounts {
+				pods = append(pods, &v1.Pod{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				})
+			}
+
+			result, _, _, imbalanced := getTargetPodListOnLoadImbalance(defaultNamespaceKeys(tt.requestCounts), pods, podRunningRequestImbalanceFactor, podRunningRequestImbalanceMinGap)
+			assert.Equal(t, tt.expectImbalance, imbalanced)
+			if tt.expectImbalance {
+				assert.NotEmpty(t, result)
+				for _, pod := range result {
+					assert.Contains(t, tt.expectMinPods, pod.Name)
+				}
+				// All returned pods must have the minimum count
+				minCount := tt.requestCounts[result[0].Name]
+				for _, pod := range result {
+					assert.Equal(t, minCount, tt.requestCounts[pod.Name])
+				}
+			} else {
+				assert.Empty(t, result)
+			}
+		})
+	}
+}

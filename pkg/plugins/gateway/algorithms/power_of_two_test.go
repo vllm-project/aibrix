@@ -19,20 +19,16 @@ package routingalgorithms
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
-	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 // Route samples its two pods with the global math/rand, which cannot be seeded, so no test
@@ -46,136 +42,8 @@ import (
 // after routing, DoneRequestCount on completion), so they also cover the counter the router
 // depends on.
 
-const (
-	po2TestModel = "test-model"
-	po2Namespace = "default"
-)
-
-// po2TestPods returns ready single-port pods named names, at 10.0.0.1, 10.0.0.2, ... on port 8000.
-func po2TestPods(names ...string) []*v1.Pod {
-	pods := make([]*v1.Pod, len(names))
-	for i, name := range names {
-		pods[i] = &v1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: po2Namespace,
-				Labels: map[string]string{
-					constants.ModelLabelName: po2TestModel,
-					constants.ModelLabelPort: "8000",
-				},
-			},
-			Status: v1.PodStatus{
-				PodIP:      fmt.Sprintf("10.0.0.%d", i+1),
-				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
-			},
-		}
-	}
-	return pods
-}
-
-// po2PodList is a mockPodList that also reports per-pod ports, the way utils.PodArray does for
-// pods carrying the model.aibrix.ai/port label.
-type po2PodList struct {
-	*mockPodList
-	ports map[string][]int
-}
-
-func (l *po2PodList) ListPortsForPod() map[string][]int { return l.ports }
-
-// po2PodKey is the ListPortsForPod key of a po2TestPods pod.
-func po2PodKey(name string) string { return utils.GeneratePodKey(po2Namespace, name) }
-
-func newPo2PodList(pods []*v1.Pod, ports map[string][]int) *po2PodList {
-	return &po2PodList{mockPodList: newMockPodList(pods, nil), ports: ports}
-}
-
 func newPo2Ctx(requestID string) *types.RoutingContext {
 	return types.NewRoutingContext(context.Background(), RouterPowerOfTwo, po2TestModel, "", requestID, "")
-}
-
-// po2FakeCache serves counts from maps. It embeds a nil cache.Cache, so a Cache method the
-// router is not supposed to call panics instead of returning something plausible.
-type po2FakeCache struct {
-	cache.Cache
-
-	// running is what GetPodsRunningRequests reports, by pod name. A pod not in it is missing
-	// from the result, as for a pod the cache does not know.
-	running    map[string]int64
-	runningErr error
-	// nilCounts makes GetPodsRunningRequests answer (nil, nil), as a custom or mock cache might.
-	nilCounts bool
-	// portRunning is the per-port realtime metric of data-parallel pods, by "<pod>/<port>".
-	portRunning map[string]float64
-
-	// readySince backs GetPodsReadySince (UnixNano by pod name) and LatestPodReadySince (the max
-	// of these values). A pod not in it is missing from GetPodsReadySince's result, same "no
-	// ramp info" semantics as a pod the cache does not know about. nil by default, which makes
-	// LatestPodReadySince report 0 -- applyRampAdjustment's early exit then skips
-	// GetPodsReadySince entirely, exercising that no-op path for every test that doesn't
-	// populate readySince, without needing to opt out of anything.
-	readySince map[string]int64
-
-	// readySinceCalls counts GetPodsReadySince invocations, so tests can assert
-	// applyRampAdjustment's LatestPodReadySince early exit actually skipped the per-pod call
-	// rather than merely producing the same end result via the slow path.
-	readySinceCalls int
-
-	batches [][]string // pod names of every GetPodsRunningRequests call, in order
-}
-
-func (c *po2FakeCache) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {
-	names := make([]string, len(pods))
-	for i, pod := range pods {
-		names[i] = pod.Name
-	}
-	c.batches = append(c.batches, names)
-	if c.runningErr != nil {
-		return nil, c.runningErr
-	}
-	if c.nilCounts {
-		return nil, nil
-	}
-	counts := make(map[string]int64, len(pods))
-	for _, pod := range pods {
-		if n, ok := c.running[pod.Name]; ok {
-			counts[utils.GeneratePodKey(pod.Namespace, pod.Name)] = n
-		}
-	}
-	return counts, nil
-}
-
-func (c *po2FakeCache) GetPodsReadySince(pods []*v1.Pod) (map[string]int64, error) {
-	c.readySinceCalls++
-	result := make(map[string]int64, len(pods))
-	for _, pod := range pods {
-		if v, ok := c.readySince[pod.Name]; ok {
-			result[utils.GeneratePodKey(pod.Namespace, pod.Name)] = v
-		}
-	}
-	return result, nil
-}
-
-// LatestPodReadySince is the other half of cache.PodReadySinceProvider: the real *Store
-// implementation reports a maintained running max in O(1); this fake computes the same value
-// directly from readySince each call, which is fine at test scale and keeps the fake's behavior
-// obviously correct by construction rather than needing its own separate upkeep.
-func (c *po2FakeCache) LatestPodReadySince() int64 {
-	var latest int64
-	for _, v := range c.readySince {
-		if v > latest {
-			latest = v
-		}
-	}
-	return latest
-}
-
-func (c *po2FakeCache) GetMetricValueByPod(podName, _, metricName string) (metrics.MetricValue, error) {
-	if port, ok := strings.CutPrefix(metricName, metrics.RealtimeNumRequestsRunning+"/"); ok {
-		if n, found := c.portRunning[podName+"/"+port]; found {
-			return &metrics.SimpleMetricValue{Value: n}, nil
-		}
-	}
-	return nil, fmt.Errorf("no metric %s for pod %s", metricName, podName)
 }
 
 func TestPowerOfTwoRouter_NoReadyPods(t *testing.T) {
@@ -197,7 +65,7 @@ func TestPowerOfTwoRouter_SingleReadyPodIsChosenWithoutReadingCounts(t *testing.
 	require.NoError(t, err)
 	assert.Equal(t, "10.0.0.1:8000", addr)
 	assert.Equal(t, "pod1", ctx.TargetPod().Name)
-	assert.Empty(t, fake.batches, "there is nothing to compare, so no count should be read")
+	assert.Empty(t, fake.Batches, "there is nothing to compare, so no count should be read")
 }
 
 // With two pods both are always sampled, so the pod with the lower count must win every time.
@@ -218,7 +86,7 @@ func TestPowerOfTwoRouter_PrefersLessLoadedPod(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			router := NewPowerOfTwoRouterWithCache(&po2FakeCache{running: tt.running})
+			router := NewPowerOfTwoRouterWithCache(&po2FakeCache{Running: tt.running})
 			ctx := newPo2Ctx("req-1")
 
 			addr, err := router.Route(ctx, newPo2PodList(po2TestPods("pod1", "pod2"), nil))
@@ -237,7 +105,7 @@ func TestPowerOfTwoRouter_PrefersLessLoadedPod(t *testing.T) {
 // One routing decision costs one cache read, for the two sampled pods only: a router that
 // scored every ready pod, or read the pods one by one, would be as slow as a scan.
 func TestPowerOfTwoRouter_ReadsOnlyTheTwoSampledPodsInOneBatch(t *testing.T) {
-	fake := &po2FakeCache{running: map[string]int64{}}
+	fake := &po2FakeCache{Running: map[string]int64{}}
 	router := NewPowerOfTwoRouterWithCache(fake)
 	names := []string{"pod1", "pod2", "pod3", "pod4", "pod5", "pod6"}
 	pods := po2TestPods(names...)
@@ -251,8 +119,8 @@ func TestPowerOfTwoRouter_ReadsOnlyTheTwoSampledPodsInOneBatch(t *testing.T) {
 		chosen[i] = ctx.TargetPod().Name
 	}
 
-	require.Len(t, fake.batches, requests, "exactly one cache read per routing decision")
-	for i, batch := range fake.batches {
+	require.Len(t, fake.Batches, requests, "exactly one cache read per routing decision")
+	for i, batch := range fake.Batches {
 		require.Len(t, batch, 2, "request %d read %v", i, batch)
 		assert.NotEqual(t, batch[0], batch[1], "request %d compared a pod with itself", i)
 		assert.Subset(t, names, batch)
@@ -263,7 +131,7 @@ func TestPowerOfTwoRouter_ReadsOnlyTheTwoSampledPodsInOneBatch(t *testing.T) {
 // A pod with a strictly higher count never wins, so one heavily loaded pod among many receives
 // nothing, while every other pod stays reachable.
 func TestPowerOfTwoRouter_NeverPicksTheBusiestPodAmongMany(t *testing.T) {
-	router := NewPowerOfTwoRouterWithCache(&po2FakeCache{running: map[string]int64{"pod1": 1000}})
+	router := NewPowerOfTwoRouterWithCache(&po2FakeCache{Running: map[string]int64{"pod1": 1000}})
 	pods := po2TestPods("pod1", "pod2", "pod3", "pod4")
 
 	tally := map[string]int{}
@@ -286,8 +154,8 @@ func TestPowerOfTwoRouter_CacheFailureStillRoutes(t *testing.T) {
 		name string
 		fake *po2FakeCache
 	}{
-		{name: "cache error", fake: &po2FakeCache{runningErr: fmt.Errorf("redis unavailable")}},
-		{name: "nil counts without an error", fake: &po2FakeCache{nilCounts: true}},
+		{name: "cache error", fake: &po2FakeCache{RunningErr: fmt.Errorf("redis unavailable")}},
+		{name: "nil counts without an error", fake: &po2FakeCache{NilCounts: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -306,7 +174,7 @@ func TestPowerOfTwoRouter_CacheFailureStillRoutes(t *testing.T) {
 // from the per-port counts of that pod alone.
 func TestPowerOfTwoRouter_ChoosesLeastLoadedPortOfTheChosenPod(t *testing.T) {
 	t.Run("one data-parallel pod", func(t *testing.T) {
-		fake := &po2FakeCache{portRunning: map[string]float64{
+		fake := &po2FakeCache{PortRunning: map[string]float64{
 			"pod1/8000": 5, "pod1/8001": 2, "pod1/8002": 9, "pod1/8003": 2,
 		}}
 		router := NewPowerOfTwoRouterWithCache(fake)
@@ -324,8 +192,8 @@ func TestPowerOfTwoRouter_ChoosesLeastLoadedPortOfTheChosenPod(t *testing.T) {
 		// pod1 is far busier overall, and its port counts are deliberately misleading: pod2
 		// must win on its total, and its port comes from pod2's own counts.
 		fake := &po2FakeCache{
-			running: map[string]int64{"pod1": 9, "pod2": 1},
-			portRunning: map[string]float64{
+			Running: map[string]int64{"pod1": 9, "pod2": 1},
+			PortRunning: map[string]float64{
 				"pod1/8000": 0, "pod1/8001": 0,
 				"pod2/8000": 7, "pod2/8001": 1,
 			},

@@ -29,10 +29,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/least"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/prefixcache"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/routeutil"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
-	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
@@ -659,7 +661,7 @@ func TestMultiStrategyRouterRoute_SelectsLeastLoadedPortForMultiPortPod(t *testi
 		}},
 		scorers: map[string]types.PodScorer{
 			"fixed":                    &fakeScorer{polarity: types.PolarityMost, scores: map[*v1.Pod]float64{podA: 1, podB: 0}},
-			string(RouterLeastRequest): NewLeastRequestTopKRouterWithCache(c),
+			string(RouterLeastRequest): least.NewLeastRequestTopKRouterWithCache(c),
 		},
 	}
 	ctx := types.NewRoutingContext(context.Background(), RouterNotSet, model, "hello", "req-multi-port", "")
@@ -1066,8 +1068,8 @@ func TestSelectExplicitLeastRequestIsNotGivenTopKToo(t *testing.T) {
 func TestMultiStrategyRouterPortSelectionCache(t *testing.T) {
 	topKCache := &po2FakeCache{}
 	leastRequestCache := &po2FakeCache{}
-	topK := NewLeastRequestTopKRouterWithCache(topKCache)
-	leastRequest := NewLeastRequestTopKRouterWithCache(leastRequestCache)
+	topK := least.NewLeastRequestTopKRouterWithCache(topKCache)
+	leastRequest := least.NewLeastRequestTopKRouterWithCache(leastRequestCache)
 
 	tests := []struct {
 		name    string
@@ -1095,12 +1097,12 @@ func TestMultiStrategyRouterPortSelectionCache(t *testing.T) {
 func TestMultiStrategyRouterSetsPortForMultiPortPods(t *testing.T) {
 	pods := po2TestPods("pod1")
 	pods[0].Spec.Containers = []v1.Container{{Env: []v1.EnvVar{{Name: "data-parallel-size", Value: "2"}}}}
-	fake := &po2FakeCache{portRunning: map[string]float64{"pod1/8000": 5, "pod1/8001": 1}}
+	fake := &po2FakeCache{PortRunning: map[string]float64{"pod1/8000": 5, "pod1/8001": 1}}
 	ports := map[string][]int{po2PodKey("pod1"): {8000, 8001}}
-	assert.True(t, isMultiPortPods(pods), "fixture must be a data-parallel pod")
+	assert.True(t, routeutil.IsMultiPortPods(pods), "fixture must be a data-parallel pod")
 
 	m := &multiStrategyRouter{scorers: map[string]types.PodScorer{
-		string(RouterLeastRequestTopK): NewLeastRequestTopKRouterWithCache(fake),
+		string(RouterLeastRequestTopK): least.NewLeastRequestTopKRouterWithCache(fake),
 	}}
 	ctx := types.NewRoutingContext(context.Background(), RouterLeastRequestTopK, testModelName, "", "req-port", "")
 
@@ -1273,7 +1275,7 @@ func TestNoPods(t *testing.T) {
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
 
-	r2 := NewLeastRequestTopKRouterWithCache(&c)
+	r2 := least.NewLeastRequestTopKRouterWithCache(&c)
 	targetPodIP, err = r2.Route(requestContext(model), podsFromCache(&c))
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
@@ -1373,7 +1375,7 @@ func TestWithIPPods(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
 
-	r2 := NewLeastRequestTopKRouterWithCache(c)
+	r2 := least.NewLeastRequestTopKRouterWithCache(c)
 	targetPodIP, err = r2.Route(requestContext(model), pods)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
@@ -1603,7 +1605,7 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 
 	// Register least-request (an alias for least-request-top-k) with the test cache
 	rm.Register(RouterLeastRequest, func() (types.Router, error) {
-		return NewLeastRequestTopKRouterWithCache(c), nil
+		return least.NewLeastRequestTopKRouterWithCache(c), nil
 	})
 
 	// Register throughput with the test cache
@@ -1618,11 +1620,7 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 
 	// Register prefix-cache
 	rm.Register(RouterPrefixCache, func() (types.Router, error) {
-		tokenizerObj, _ := tokenizer.NewTokenizer("character", nil)
-		return prefixCacheRouter{
-			prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
-			tokenizer:          tokenizerObj,
-		}, nil
+		return prefixcache.NewPrefixCacheRouterWithOptions(c, prefixcacheindexer.NewPrefixHashTable())
 	})
 
 	rm.Init()
@@ -1817,7 +1815,7 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 
 	// Update router manager with the new 3-pod cache
 	rm3 := NewRouterManager()
-	rm3.Register(RouterLeastRequest, func() (types.Router, error) { return NewLeastRequestTopKRouterWithCache(c3), nil })
+	rm3.Register(RouterLeastRequest, func() (types.Router, error) { return least.NewLeastRequestTopKRouterWithCache(c3), nil })
 	rm3.Register(RouterThroughput, func() (types.Router, error) { return throughputRouter{cache: c3}, nil })
 	rm3.Init()
 

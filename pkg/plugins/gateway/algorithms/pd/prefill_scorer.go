@@ -119,7 +119,7 @@ type PrefillScorer interface {
 // by Prepare, so the policy is safe to share across concurrent goroutines.
 //
 // To add a new prefill scoring strategy: implement this interface and register
-// it in NewPDRouter (pd_disaggregation.go) by handling the new policy name in
+// it in NewPDRouter (pd/router/router.go) by handling the new policy name in
 // the AIBRIX_PREFILL_SCORE_POLICY switch statement.
 type PrefillScorePolicy interface {
 	// Prepare is called once per request. pods and readyPodsMap represent the

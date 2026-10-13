@@ -129,7 +129,7 @@ func runRandomRoutingCheck() error {
 // TestPrefixCacheRouting verifies that an identical prompt reuses the warm-up pod.
 //
 // "prefix-cache" isn't pure prefix-affinity: ApplyLoadImbalanceGate
-// (pkg/plugins/gateway/algorithms/load_balance.go) and prefix_cache.go's own stddev-based
+// (pkg/plugins/gateway/algorithms/load_balance.go) and prefixcache/router.go's own stddev-based
 // getTargetPodFromMatchedPodsFromCounts filtering (see TestPrefixCacheRoutingConsistency's
 // comment below) can both reroute a request to a less-loaded pod even on an exact prefix
 // match — and the warm-up request itself briefly bumps the warm pod's outstanding count.
@@ -167,7 +167,7 @@ func TestPrefixCacheRouting(t *testing.T) {
 // applies ApplyLoadImbalanceGate (pkg/plugins/gateway/algorithms/load_balance.go)
 // ahead of routing, narrowing the candidate pods to the least-loaded subset when
 // running-request counts are severely skewed; and within whatever candidate set
-// remains, prefix_cache.go's own getTargetPodFromMatchedPodsFromCounts filters
+// remains, prefixcache/router.go's own getTargetPodFromMatchedPodsFromCounts filters
 // matched pods by a stddev threshold on request count, so even a matched anchor pod
 // can be skipped for a less busy one. As a multi-turn conversation grows, the anchor
 // pod naturally accumulates more in-flight/running requests than idle peers, so a
@@ -237,9 +237,9 @@ func TestMultiTurnConversation(t *testing.T) {
 //
 // A clear majority for the warm pod is NOT guaranteed, and an even (or close to even)
 // split is expected rather than a bug: once any single reroute sends this exact prompt to
-// the other pod (via ApplyLoadImbalanceGate or prefix_cache.go's own stddev-based
+// the other pod (via ApplyLoadImbalanceGate or prefixcache/router.go's own stddev-based
 // getTargetPodFromMatchedPodsFromCounts filtering — both in
-// pkg/plugins/gateway/algorithms/load_balance.go / prefix_cache.go), that pod also gets
+// pkg/plugins/gateway/algorithms/load_balance.go / prefixcache/router.go), that pod also gets
 // the prompt cached. From that point both pods show a 100% prefix match, so
 // prefix-cache's own score can no longer differentiate them (see
 // multiStrategyRouter.normalizeScoresArray's tied-value case in
