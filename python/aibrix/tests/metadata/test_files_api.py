@@ -290,7 +290,9 @@ class TestFileTimestamps:
             assert int(head.headers["X-File-Created-At"]) == expected
             assert parsedate_to_datetime(head.headers["Last-Modified"]) == instant
 
-    @pytest.mark.parametrize("last_modified", [None, "invalid"])
+    @pytest.mark.parametrize(
+        "last_modified", [None, "invalid", "9999-12-31T23:59:59-01:00"]
+    )
     def test_local_missing_or_invalid_last_modified(
         self, non_utc_timezone, last_modified
     ):

@@ -241,8 +241,9 @@ class LocalStorage(BaseStorage2):
                     )
                 else:
                     last_modified = last_modified.astimezone(timezone.utc)
-            except ValueError:
-                pass
+            except (ValueError, OverflowError, OSError):
+                # Unparseable, or out of range for UTC conversion on this platform.
+                last_modified = None
 
         return (
             metadata_data.get("content_type"),
