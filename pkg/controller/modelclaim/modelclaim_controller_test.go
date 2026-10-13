@@ -535,6 +535,50 @@ func TestPriorityAPIReaderFailureStopsBeforeActivation(t *testing.T) {
 	assert.NotContains(t, r.backoff().attempts, client.ObjectKeyFromObject(low))
 }
 
+func TestReconcilePriorityAPIReaderFailurePreservesPlacementTurn(t *testing.T) {
+	r, runtime, low, high, _ := priorityReconciler(t)
+	ctx := context.Background()
+	high.Status.Phase = modelv1alpha1.ModelClaimPending
+	require.NoError(t, r.Status().Update(ctx, high))
+	before := getModel(t, r, high.Name).Status
+	readErr := errors.New("authoritative claim list temporarily unavailable")
+	listCalls := 0
+	r.APIReader = interceptor.NewClient(r.Client.(client.WithWatch), interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*modelv1alpha1.ModelClaimList); ok {
+				listCalls++
+				if listCalls == 1 {
+					return readErr
+				}
+			}
+			return c.List(ctx, list, opts...)
+		},
+	})
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(high)})
+	assert.ErrorIs(t, err, readErr, "the work queue must retry the read failure")
+	assert.Equal(t, ctrl.Result{}, result)
+	assert.Equal(t, before, getModel(t, r, high.Name).Status, "no activation was attempted, so status must not be demoted")
+	assert.Empty(t, runtime.activateCalls)
+	assert.NotContains(t, r.backoff().attempts, client.ObjectKeyFromObject(high))
+	events := r.Recorder.(*record.FakeRecorder).Events
+	for len(events) > 0 {
+		assert.NotContains(t, <-events, "ActivateFailed")
+	}
+
+	// Reads recover before the lower-priority claim runs. The high-priority
+	// claim must still be an ordinary pending competitor, not a failed retry.
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, low.Name))
+	assert.Equal(t, "WaitingForPlacementTurn", scheduled(t, r, low.Name).Reason)
+	assert.Equal(t, "waiting behind ModelClaim newer-high with priority 10 that can use the same pool", scheduled(t, r, low.Name).Message)
+	assert.Empty(t, runtime.activateCalls)
+	assert.Empty(t, getModel(t, r, low.Name).Status.Instances)
+
+	reconcileFor(t, r, high.Name)
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, high.Name, runtime.activateCalls[0].ModelName)
+}
+
 func TestPriorityAPIReaderStateOverridesStaleCache(t *testing.T) {
 	for _, apiPlaced := range []bool{false, true} {
 		t.Run(map[bool]string{false: "API pending beats cached instance", true: "API instance beats cached pending"}[apiPlaced], func(t *testing.T) {

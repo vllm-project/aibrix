@@ -275,6 +275,10 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				// was asked for, so nothing failed.
 				return requeueOnConflict(err)
 			}
+			var admissionReadErr placementAdmissionReadError
+			if errors.As(err, &admissionReadErr) {
+				return ctrl.Result{}, err
+			}
 			r.Recorder.Event(pm, corev1.EventTypeWarning, "ActivateFailed", err.Error())
 			meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
 				Type:    string(modelv1alpha1.ModelClaimConditionReady),
@@ -705,7 +709,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 	r.reservations().takeFrom(ledgers, pm.Namespace, pm.Name, r.now())
 	if len(pm.Status.Instances) == 0 {
 		if listErr != nil {
-			return 0, listErr
+			return 0, placementAdmissionReadError{err: listErr}
 		}
 		if blocker := r.placementTurnBlocker(ctx, pm, candidates, claims, ledgers, readings); blocker != nil {
 			message := fmt.Sprintf("waiting behind ModelClaim %s with priority %d that can use the same pool",

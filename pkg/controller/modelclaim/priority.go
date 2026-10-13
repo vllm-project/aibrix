@@ -27,6 +27,16 @@ import (
 
 const scheduledReasonWaitingForPlacementTurn = "WaitingForPlacementTurn"
 
+// placementAdmissionReadError means no activation was attempted. A transient
+// account read must not move an ordinary claim into the Failed retry lane.
+type placementAdmissionReadError struct{ err error }
+
+func (e placementAdmissionReadError) Error() string {
+	return "cannot read claims for placement admission: " + e.err.Error()
+}
+
+func (e placementAdmissionReadError) Unwrap() error { return e.err }
+
 // placementPriorityFirst orders unplaced claims by descending priority while
 // retaining FIFO order among claims with equal priority.
 func placementPriorityFirst(claims []modelv1alpha1.ModelClaim) {
