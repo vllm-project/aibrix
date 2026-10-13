@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -774,5 +775,136 @@ sglang:max_total_num_tokens{model_name="m"} 160000.0
 		require.Contains(t, result.Metrics, KVCacheCapacityTokens)
 		assert.Equal(t, 160000.0, result.Metrics[KVCacheCapacityTokens].GetSimpleValue())
 		assert.NotContains(t, result.Metrics, KVCacheNumGPUBlocks)
+	})
+}
+
+// mockSglangPriorityQueueTotalFirst simulates SGLang's priority-scheduling
+// queue metric exposition (issue #3056). The priority="" total is listed
+// first, followed by per-priority breakdowns (priority="1", priority="5").
+// The total value (10.0) differs from every breakdown sum so any code
+// that accidentally folds or picks a breakdown would fail the assertion.
+const mockSglangPriorityQueueTotalFirst = `# HELP sglang:num_queue_reqs Number of waiting requests in queue.
+# TYPE sglang:num_queue_reqs gauge
+sglang:num_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf",priority=""} 10.0
+sglang:num_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf",priority="1"} 3.0
+sglang:num_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf",priority="5"} 7.0
+`
+
+// mockSglangPriorityQueueTotalLast is the same family as
+// mockSglangPriorityQueueTotalFirst but with the priority="" total listed
+// LAST. A naive "take first" parser would return 3.0 (priority="1") instead
+// of the correct 10.0 total.
+const mockSglangPriorityQueueTotalLast = `# HELP sglang:num_queue_reqs Number of waiting requests in queue.
+# TYPE sglang:num_queue_reqs gauge
+sglang:num_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf",priority="1"} 3.0
+sglang:num_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf",priority="5"} 7.0
+sglang:num_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf",priority=""} 10.0
+`
+
+// mockSglangPriorityQueueNoPriorityLabel simulates an SGLang version that
+// does not yet export priority labels — behavior must match the old
+// "return first instance" path (vLLM compatibility).
+const mockSglangPriorityQueueNoPriorityLabel = `# HELP sglang:num_queue_reqs Number of waiting requests in queue.
+# TYPE sglang:num_queue_reqs gauge
+sglang:num_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf"} 15.0
+`
+
+// TestSelectMetricInstance_PrefersPriorityTotal unit-tests selectMetricInstance
+// directly with manually built dto.Metric slices. It covers:
+//   1. Total-first order → must pick priority="" total (10.0), not the first 10.0.
+//   2. Total-last order  → must still pick priority="" total (10.0), not priority="1" (3.0).
+//   3. No priority label → falls back to first instance (backward compat).
+//   4. RequiredLabelKey set → label filtering still wins over priority preference.
+func TestSelectMetricInstance_PrefersPriorityTotal(t *testing.T) {
+	gauge := func(v float64, labels map[string]string) *dto.Metric {
+		m := &dto.Metric{Gauge: &dto.Gauge{Value: &v}}
+		for k, v := range labels {
+			kk, vv := k, v
+			m.Label = append(m.Label, &dto.LabelPair{Name: &kk, Value: &vv})
+		}
+		return m
+	}
+	fam := func(vals []*dto.Metric) *dto.MetricFamily {
+		mt := dto.MetricType_GAUGE
+		return &dto.MetricFamily{Type: &mt, Metric: vals}
+	}
+
+	mTotalFirst := fam([]*dto.Metric{
+		gauge(10.0, map[string]string{"priority": ""}),
+		gauge(3.0, map[string]string{"priority": "1"}),
+		gauge(7.0, map[string]string{"priority": "5"}),
+	})
+	mTotalLast := fam([]*dto.Metric{
+		gauge(3.0, map[string]string{"priority": "1"}),
+		gauge(7.0, map[string]string{"priority": "5"}),
+		gauge(10.0, map[string]string{"priority": ""}),
+	})
+	mNoPriority := fam([]*dto.Metric{
+		gauge(15.0, map[string]string{}),
+	})
+
+	t.Run("total-first returns total", func(t *testing.T) {
+		inst, err := selectMetricInstance(mTotalFirst.Metric, Metric{MetricType: MetricType{Raw: Gauge}}, "sglang:num_queue_reqs")
+		require.NoError(t, err)
+		assert.Equal(t, 10.0, inst.GetGauge().GetValue())
+	})
+	t.Run("total-last still returns total", func(t *testing.T) {
+		inst, err := selectMetricInstance(mTotalLast.Metric, Metric{MetricType: MetricType{Raw: Gauge}}, "sglang:num_queue_reqs")
+		require.NoError(t, err)
+		assert.Equal(t, 10.0, inst.GetGauge().GetValue())
+	})
+	t.Run("no priority label falls back to first", func(t *testing.T) {
+		inst, err := selectMetricInstance(mNoPriority.Metric, Metric{MetricType: MetricType{Raw: Gauge}}, "sglang:num_queue_reqs")
+		require.NoError(t, err)
+		assert.Equal(t, 15.0, inst.GetGauge().GetValue())
+	})
+}
+
+// TestEngineMetricsFetcher_SglangPriorityQueuePrefersTotal exercises the
+// full fetch → parse path (parseModelMetricsFromFamily) against real
+// Prometheus exposition fixtures for issue #3056. The gateway reads
+// num_requests_waiting for "meta-llama/Llama-2-7b-chat-hf"; regardless of
+// scrape order it must see 10.0 (the priority="" queue total), not 3.0
+// or 7.0 from a per-priority breakdown.
+func TestEngineMetricsFetcher_SglangPriorityQueuePrefersTotal(t *testing.T) {
+	setupMockMetrics()
+	fetcher := NewEngineMetricsFetcher()
+	ctx := context.Background()
+	const key = "meta-llama/Llama-2-7b-chat-hf/num_requests_waiting"
+
+	t.Run("total-first exposition returns total", func(t *testing.T) {
+		server := setupMockServer(mockSglangPriorityQueueTotalFirst, 200, 0)
+		defer server.Close()
+		endpoint := strings.TrimPrefix(server.URL, "http://")
+
+		result, err := fetcher.FetchAllTypedMetrics(ctx, endpoint, "sglang", "test-pod", []string{NumRequestsWaiting})
+		require.NoError(t, err)
+		require.Contains(t, result.ModelMetrics, key)
+		assert.Equal(t, 10.0, result.ModelMetrics[key].GetSimpleValue(),
+			"priority=\"\" total (10.0), not priority=\"1\" (3.0) or priority=\"5\" (7.0)")
+	})
+
+	t.Run("total-last exposition still returns total", func(t *testing.T) {
+		server := setupMockServer(mockSglangPriorityQueueTotalLast, 200, 0)
+		defer server.Close()
+		endpoint := strings.TrimPrefix(server.URL, "http://")
+
+		result, err := fetcher.FetchAllTypedMetrics(ctx, endpoint, "sglang", "test-pod", []string{NumRequestsWaiting})
+		require.NoError(t, err)
+		require.Contains(t, result.ModelMetrics, key)
+		assert.Equal(t, 10.0, result.ModelMetrics[key].GetSimpleValue(),
+			"priority=\"\" total (10.0), not priority=\"1\" (3.0) even when scrape orders breakdowns first")
+	})
+
+	t.Run("no priority label unchanged (backward compat)", func(t *testing.T) {
+		server := setupMockServer(mockSglangPriorityQueueNoPriorityLabel, 200, 0)
+		defer server.Close()
+		endpoint := strings.TrimPrefix(server.URL, "http://")
+
+		result, err := fetcher.FetchAllTypedMetrics(ctx, endpoint, "sglang", "test-pod", []string{NumRequestsWaiting})
+		require.NoError(t, err)
+		require.Contains(t, result.ModelMetrics, key)
+		assert.Equal(t, 15.0, result.ModelMetrics[key].GetSimpleValue(),
+			"metrics without priority labels must keep returning the value they always did")
 	})
 }

@@ -66,7 +66,6 @@ func NewEngineMetricsFetcherWithConfig(config EngineMetricsFetcherConfig) *Engin
 	if config.InsecureTLS {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
-
 	return &EngineMetricsFetcher{
 		client: &http.Client{
 			Timeout:   config.Timeout,
@@ -96,102 +95,78 @@ func metricsPathForEngine(engineType string) string {
 }
 
 // FetchTypedMetric fetches a single typed metric from an engine endpoint
-// Note: if the client needs to fetch multiple metrics, it's better to use FetchAllTypedMetrics
 func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, engineType, identifier, metricName string) (MetricValue, error) {
-	// Get metric definition from central registry
 	metricDef, exists := Metrics[metricName]
 	if !exists {
 		return nil, fmt.Errorf("metric %s not found in central registry", metricName)
 	}
-
-	// Only support raw pod metrics for simple fetching
 	if metricDef.MetricSource != PodRawMetrics {
 		return nil, fmt.Errorf("metric %s is not a raw pod metric, use FetchAllTypedMetrics for complex queries", metricName)
 	}
-
-	// Get raw metric name for this engine
 	rawMetricName, exists := metricDef.EngineMetricsNameMapping[engineType]
 	if !exists {
 		return nil, fmt.Errorf("metric %s not supported for engine type %s", metricName, engineType)
 	}
-
 	url := fmt.Sprintf("http://%s/%s", endpoint, metricsPathForEngine(engineType))
-
-	// Fetch with retry logic
 	for attempt := 0; attempt <= ef.config.MaxRetries; attempt++ {
 		if attempt > 0 {
 			delay := ef.calculateBackoffDelay(attempt)
 			klog.V(4).InfoS("Retrying typed metric fetch from engine endpoint",
 				"attempt", attempt, "delay", delay, "identifier", identifier, "metric", metricName)
-
 			if err := sleepWithContext(ctx, delay); err != nil {
 				return nil, err
 			}
 		}
-
-		// Fetch all metrics and parse the one we need
 		allMetrics, err := ef.fetchAllMetricsFromURL(ctx, url)
 		if err != nil {
 			klog.V(4).InfoS("Failed to fetch metrics from engine endpoint",
 				"attempt", attempt+1, "identifier", identifier, "error", err)
 			continue
 		}
-
-		// Parse the specific metric we need
 		metricValue, err := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef)
 		if err != nil {
 			klog.V(4).InfoS("Failed to parse metric from engine endpoint",
 				"attempt", attempt+1, "identifier", identifier, "metric", metricName, "error", err)
 			continue
 		}
-
 		klog.V(4).InfoS("Successfully fetched typed metric from engine endpoint",
 			"identifier", identifier, "metric", metricName, "value", metricValue, "attempt", attempt+1)
 		return metricValue, nil
 	}
-
 	return nil, fmt.Errorf("failed to fetch typed metric %s from engine endpoint %s after %d attempts",
 		metricName, identifier, ef.config.MaxRetries+1)
 }
 
 // FetchRawMetric fetches a metric by its raw Prometheus name from an explicit metrics URL,
-// bypassing the central metric registry. External sources such as the GPU optimizer expose
-// caller-defined metrics on caller-defined paths, so neither the registry's metric
-// definitions nor its per-engine paths apply to them.
+// bypassing the central metric registry.
 func (ef *EngineMetricsFetcher) FetchRawMetric(ctx context.Context, url, identifier, rawMetricName string) (MetricValue, error) {
 	for attempt := 0; attempt <= ef.config.MaxRetries; attempt++ {
 		if attempt > 0 {
 			delay := ef.calculateBackoffDelay(attempt)
 			klog.V(4).InfoS("Retrying raw metric fetch",
 				"attempt", attempt, "delay", delay, "identifier", identifier, "metric", rawMetricName)
-
 			if err := sleepWithContext(ctx, delay); err != nil {
 				return nil, err
 			}
 		}
-
-		// Do not attribute failures of external sources to the engine failure counter.
 		allMetrics, err := ef.fetchMetricsFromURL(ctx, url, "")
 		if err != nil {
 			klog.V(4).InfoS("Failed to fetch metrics from URL",
 				"attempt", attempt+1, "identifier", identifier, "url", url, "error", err)
 			continue
 		}
-
 		family, exists := allMetrics[rawMetricName]
 		if !exists || len(family.Metric) == 0 {
 			klog.V(4).InfoS("Raw metric not found in response",
 				"attempt", attempt+1, "identifier", identifier, "metric", rawMetricName)
 			continue
 		}
-
 		metricValue, err := GetCounterGaugeValue(family.Metric[0], family.GetType())
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse raw metric %s from %s: %w", rawMetricName, identifier, err)
 		}
 		return metricValue, nil
 	}
-
 	return nil, fmt.Errorf("failed to fetch raw metric %s from %s after %d attempts",
 		rawMetricName, identifier, ef.config.MaxRetries+1)
 }
@@ -206,70 +181,49 @@ func (ef *EngineMetricsFetcher) FetchAllTypedMetrics(ctx context.Context, endpoi
 		ModelMetrics: make(map[string]MetricValue),
 		Errors:       []error{},
 	}
-
 	url := fmt.Sprintf("http://%s/%s", endpoint, metricsPathForEngine(engineType))
-
-	// Fetch raw metrics with retry logic
 	var allMetrics map[string]*dto.MetricFamily
 	var err error
-
 	for attempt := 0; attempt <= ef.config.MaxRetries; attempt++ {
 		if attempt > 0 {
 			delay := ef.calculateBackoffDelay(attempt)
 			klog.V(4).InfoS("Retrying all typed metrics fetch from engine endpoint",
 				"attempt", attempt, "delay", delay, "identifier", identifier)
-
 			if err := sleepWithContext(ctx, delay); err != nil {
 				return nil, err
 			}
 		}
-
 		allMetrics, err = ef.fetchAllMetricsFromURL(ctx, url)
 		if err == nil {
 			klog.V(4).InfoS("Successfully fetched raw metrics from engine endpoint",
 				"identifier", identifier, "rawMetricsCount", len(allMetrics), "attempt", attempt+1)
 			break
 		}
-
 		klog.V(4).InfoS("Failed to fetch raw metrics from engine endpoint",
 			"attempt", attempt+1, "identifier", identifier, "error", err)
 	}
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch raw metrics from engine endpoint %s after %d attempts: %v",
 			identifier, ef.config.MaxRetries+1, err)
 	}
-
-	// Parse requested metrics or all available metrics
-	// TODO: it's better to return all metrics from the engine instead, right now the interface still accepts a list of metrics for filter.
-	// filter logic could go outside.
 	metricsToProcess := requestedMetrics
 	if len(metricsToProcess) == 0 {
-		// Get all available metrics for this engine type
 		metricsToProcess = ef.getAvailableMetricsForEngine(result.EngineType)
 	}
-
-	// Process each requested metric
 	for _, metricName := range metricsToProcess {
 		metricDef, exists := Metrics[metricName]
 		if !exists {
 			result.Errors = append(result.Errors, fmt.Errorf("metric %s not found in central registry", metricName))
 			continue
 		}
-
-		// Only process raw pod metrics (Prometheus queries handled separately)
 		if metricDef.MetricSource != PodRawMetrics {
 			continue
 		}
-
-		// Get raw metric name for this engine
 		rawMetricName, exists := metricDef.EngineMetricsNameMapping[result.EngineType]
 		if !exists {
 			klog.V(5).InfoS("Metric not supported for engine type", "metric", metricName, "engine", result.EngineType)
 			continue
 		}
-
-		// Store in appropriate scope
 		if metricDef.MetricScope == PodMetricScope {
 			metricValue, err := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef)
 			if err != nil {
@@ -278,8 +232,6 @@ func (ef *EngineMetricsFetcher) FetchAllTypedMetrics(ctx context.Context, endpoi
 			}
 			result.Metrics[metricName] = metricValue
 		} else if metricDef.MetricScope == PodModelMetricScope {
-			// Parse one value per model_name so models on a multi-model pod don't share a
-			// single instance taken from metricFamily.Metric[0].
 			modelMetrics, err := ef.parseModelMetricsFromFamily(allMetrics, rawMetricName, metricDef)
 			if err != nil {
 				result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, err, identifier))
@@ -290,22 +242,18 @@ func (ef *EngineMetricsFetcher) FetchAllTypedMetrics(ctx context.Context, endpoi
 				result.ModelMetrics[key] = value
 			}
 		}
-
 		klog.V(5).InfoS("Successfully processed typed metric",
 			"identifier", identifier, "metric", metricName, "scope", metricDef.MetricScope)
 	}
-
 	klog.V(4).InfoS("Completed typed metrics processing for engine endpoint",
 		"identifier", identifier, "engine", result.EngineType,
 		"podMetrics", len(result.Metrics), "modelMetrics", len(result.ModelMetrics),
 		"errors", len(result.Errors))
-
 	return result, nil
 }
 
 // Helper methods
 
-// calculateBackoffDelay calculates exponential backoff delay
 func (ef *EngineMetricsFetcher) calculateBackoffDelay(attempt int) time.Duration {
 	delay := time.Duration(float64(ef.config.BaseDelay) * math.Pow(2, float64(attempt-1)))
 	if delay > ef.config.MaxDelay {
@@ -314,13 +262,9 @@ func (ef *EngineMetricsFetcher) calculateBackoffDelay(attempt int) time.Duration
 	return delay
 }
 
-// sleepWithContext blocks for the given delay or until ctx is done, whichever comes first.
-// It uses an explicit timer that is stopped on early return so a cancelled context does not
-// leave a pending timer behind, unlike time.After, whose timer cannot be stopped.
 func sleepWithContext(ctx context.Context, delay time.Duration) error {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
-
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -329,7 +273,6 @@ func sleepWithContext(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-// getAvailableMetricsForEngine returns all metrics available for a given engine type
 func (ef *EngineMetricsFetcher) getAvailableMetricsForEngine(engineType string) []string {
 	var availableMetrics []string
 	for metricName, metricDef := range Metrics {
@@ -342,18 +285,14 @@ func (ef *EngineMetricsFetcher) getAvailableMetricsForEngine(engineType string) 
 	return availableMetrics
 }
 
-// parseMetricFromFamily parses the first instance of a metric family. It is used for
-// pod-scoped metrics, which are not differentiated by model_name.
 func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto.MetricFamily, rawMetricName string, metric Metric) (MetricValue, error) {
 	metricFamily, exists := allMetrics[rawMetricName]
 	if !exists {
 		return nil, fmt.Errorf("raw metric %s not found", rawMetricName)
 	}
-
 	if len(metricFamily.Metric) == 0 {
 		return nil, fmt.Errorf("no metric instances found for %s", rawMetricName)
 	}
-
 	instance, err := selectMetricInstance(metricFamily.Metric, metric, rawMetricName)
 	if err != nil {
 		return nil, err
@@ -361,14 +300,33 @@ func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto
 	return ef.parseMetricInstance(instance, metricFamily, metric, rawMetricName)
 }
 
+// isPriorityTotal returns true when the instance carries no "priority" label
+// or carries one with an empty value. SGLang's priority scheduling metrics
+// mark their queue total with priority="" and per-priority breakdowns with
+// priority="1", priority="5", etc.; this helper identifies the total.
+func isPriorityTotal(instance *dto.Metric) bool {
+	value, err := GetLabelValueForKey(instance, "priority")
+	return err != nil || value == ""
+}
+
 // selectMetricInstance returns the family instance parseMetricFromFamily
 // should read. Most metrics report exactly one instance per pod/model and
 // keep today's behavior of taking the first one; metric.RequiredLabelKey
 // narrows that to the instance whose label matches, for a family that
 // reports several instances under the same name distinguished only by a
-// label (e.g. vllm:engine_sleep_state, one gauge per sleep_state value).
+// label.
+//
+// When no RequiredLabelKey is set and the family contains multiple
+// instances, prefer the one that represents the queue total (empty or
+// absent priority label) over per-priority breakdowns, regardless of the
+// order the scrape reported them in.
 func selectMetricInstance(instances []*dto.Metric, metric Metric, rawMetricName string) (*dto.Metric, error) {
 	if metric.RequiredLabelKey == "" {
+		for _, instance := range instances {
+			if isPriorityTotal(instance) {
+				return instance, nil
+			}
+		}
 		return instances[0], nil
 	}
 	for _, instance := range instances {
@@ -383,65 +341,64 @@ func selectMetricInstance(instances []*dto.Metric, metric Metric, rawMetricName 
 	)
 }
 
-// parseModelMetricsFromFamily returns one MetricValue per model_name in the family, so models on a
-// multi-model pod no longer share a single instance. Instances that repeat a model_name (differing
-// only by a non-model label) are folded together by aggregateModelMetric.
+// parseModelMetricsFromFamily returns one MetricValue per model_name in the family.
+// Instances that repeat a model_name (differing only by a non-model label) are folded
+// together by aggregateModelMetric.
 func (ef *EngineMetricsFetcher) parseModelMetricsFromFamily(allMetrics map[string]*dto.MetricFamily, rawMetricName string, metric Metric) (map[string]MetricValue, error) {
 	metricFamily, exists := allMetrics[rawMetricName]
 	if !exists {
 		return nil, fmt.Errorf("raw metric %s not found", rawMetricName)
 	}
-
 	if len(metricFamily.Metric) == 0 {
 		return nil, fmt.Errorf("no metric instances found for %s", rawMetricName)
 	}
-
 	modelMetrics := make(map[string]MetricValue)
+	// modelIsTotal remembers, per model_name, whether the stored value came
+	// from a priority-total (empty/absent priority label) instance.
+	modelIsTotal := make(map[string]bool)
 	for _, familyMetric := range metricFamily.Metric {
 		modelName, err := GetLabelValueForKey(familyMetric, "model_name")
 		if err != nil || modelName == "" {
 			continue
 		}
-		// A family that reports several instances per model_name,
-		// distinguished only by a label (e.g. vllm:engine_sleep_state's
-		// sleep_state), must be narrowed here too: aggregateModelMetric's
-		// gauge folding keeps whichever instance the scrape lists last,
-		// which is scrape-order dependent and defeats the label filter for
-		// every caller of this model-scoped path (review on #2735).
 		if metric.RequiredLabelKey != "" {
 			labelValue, labelErr := GetLabelValueForKey(familyMetric, metric.RequiredLabelKey)
 			if labelErr != nil || labelValue != metric.RequiredLabelValue {
 				continue
 			}
 		}
-
 		value, err := ef.parseMetricInstance(familyMetric, metricFamily, metric, rawMetricName)
 		if err != nil {
-			// Skip the malformed instance rather than dropping every model in the family.
 			klog.V(4).InfoS("skipping metric instance that failed to parse",
 				"metric", rawMetricName, "model", modelName, "err", err)
 			continue
 		}
-
-		if existing, ok := modelMetrics[modelName]; ok {
-			value = aggregateModelMetric(existing, value, modelName, metric.MetricType.Raw)
+		isTotal := isPriorityTotal(familyMetric)
+		existing, hasExisting := modelMetrics[modelName]
+		existingTotal := modelIsTotal[modelName]
+		switch {
+		case isTotal && !hasExisting:
+			modelMetrics[modelName] = value
+			modelIsTotal[modelName] = true
+		case isTotal && hasExisting && !existingTotal:
+			modelMetrics[modelName] = value
+			modelIsTotal[modelName] = true
+		case !isTotal && hasExisting && existingTotal:
+			// Already have the total — skip per-priority breakdowns.
+		default:
+			if hasExisting {
+				value = aggregateModelMetric(existing, value, modelName, metric.MetricType.Raw)
+			}
+			modelMetrics[modelName] = value
+			modelIsTotal[modelName] = isTotal
 		}
-		modelMetrics[modelName] = value
 	}
-
 	if len(modelMetrics) == 0 {
 		klog.V(4).InfoS("metric family has no model_name-labeled instances", "metric", rawMetricName)
 	}
-
 	return modelMetrics, nil
 }
 
-// aggregateModelMetric folds incoming into the value already parsed for modelName and returns it.
-// Counters and histograms that repeat a model_name (differing only by a non-model label such as
-// finished_reason on vllm:request_success_total) are summed; gauges keep the latest instance. The
-// differentiating labels are reset to model_name only so EmitMetricToPrometheus does not report the
-// merged total under a single arbitrary label value. It mutates and returns existing in place; the
-// sole caller reassigns the map entry.
 func aggregateModelMetric(existing, incoming MetricValue, modelName string, rawType RawMetricType) MetricValue {
 	switch rawType {
 	case Counter:
@@ -473,16 +430,12 @@ func aggregateModelMetric(existing, incoming MetricValue, modelName string, rawT
 		existingVal.Labels = map[string]string{"model_name": modelName}
 		return existingVal
 	case Gauge:
-		// A gauge is a single value per model, so keep the latest instance.
 		return incoming
 	default:
-		// Only raw Gauge/Counter/Histogram metrics reach this path.
 		return incoming
 	}
 }
 
-// parseMetricInstance converts a single Prometheus metric instance into a typed MetricValue
-// according to the metric definition.
 func (ef *EngineMetricsFetcher) parseMetricInstance(familyMetric *dto.Metric, metricFamily *dto.MetricFamily, metric Metric, rawMetricName string) (MetricValue, error) {
 	if metric.MetricType.IsRawMetric() {
 		switch metric.MetricType.Raw {
@@ -492,14 +445,12 @@ func (ef *EngineMetricsFetcher) parseMetricInstance(familyMetric *dto.Metric, me
 				return nil, fmt.Errorf("failed to parse counter/gauge metric %s: %v", rawMetricName, err)
 			}
 			return simpleValue, nil
-
 		case Histogram:
 			histValue, err := GetHistogramValue(familyMetric)
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse histogram metric %s: %v", rawMetricName, err)
 			}
 			return histValue, nil
-
 		default:
 			return nil, fmt.Errorf("unsupported raw metric type: %v", metric.MetricType.Raw)
 		}
@@ -510,26 +461,18 @@ func (ef *EngineMetricsFetcher) parseMetricInstance(familyMetric *dto.Metric, me
 		}
 		return &LabelValueMetricValue{Value: label}, nil
 	}
-
 	return nil, fmt.Errorf("unsupported metric type for raw parsing: %v", metric.MetricType)
 }
 
-// fetchAllMetricsFromURL performs a single HTTP request against an engine endpoint and parses
-// all Prometheus metrics. Transport failures are counted in llm_engine_metrics_query_fail.
 func (ef *EngineMetricsFetcher) fetchAllMetricsFromURL(ctx context.Context, url string) (map[string]*dto.MetricFamily, error) {
 	return ef.fetchMetricsFromURL(ctx, url, LLMEngineMetricsQueryFail)
 }
 
-// fetchMetricsFromURL performs a single HTTP request and parses all Prometheus metrics in the
-// response. If failureMetric is non-empty, transport failures increment that counter; callers
-// scraping non-engine sources pass an empty name so their failures are not attributed to engines.
 func (ef *EngineMetricsFetcher) fetchMetricsFromURL(ctx context.Context, url, failureMetric string) (map[string]*dto.MetricFamily, error) {
-	// Use our configured HTTP client with the existing parsing logic
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request for %s: %v", url, err)
 	}
-
 	resp, err := ef.client.Do(req)
 	if err != nil {
 		if failureMetric != "" {
@@ -542,11 +485,8 @@ func (ef *EngineMetricsFetcher) fetchMetricsFromURL(ctx context.Context, url, fa
 			klog.ErrorS(err, "failed to close response body")
 		}
 	}()
-
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("bad status code while fetching metrics from %s: %d", url, resp.StatusCode)
 	}
-
-	// Parse using existing Prometheus parser logic
 	return ParseMetricsFromReader(resp.Body)
 }
