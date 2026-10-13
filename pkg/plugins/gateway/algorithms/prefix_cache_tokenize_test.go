@@ -88,3 +88,19 @@ func TestKVSyncPrefixCacheTokenizesChatRequestsLikeRoute(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []float64{100, 100}, scores)
 }
+
+func TestBlendedPrefixCacheRouteTokenizesOnce(t *testing.T) {
+	for _, kvSync := range []bool{false, true} {
+		t.Run(map[bool]string{false: "local-index", true: "kv-sync"}[kvSync], func(t *testing.T) {
+			tok, _, calls := newChatTokenizer(t)
+			router, pods := newPrefixContextRouter(t, tok, kvSync)
+			blended := &multiStrategyRouter{
+				config:  &MultiRouterConfig{Items: []RouterItem{{Name: string(RouterPrefixCache), Coefficient: 1}}},
+				scorers: map[string]types.PodScorer{string(RouterPrefixCache): router},
+			}
+			_, err := blended.Route(newChatRoutingContext(t), pods)
+			require.NoError(t, err)
+			assert.EqualValues(t, 1, calls.Load())
+		})
+	}
+}

@@ -402,6 +402,27 @@ func tokenizeInputText(ctx *types.RoutingContext, tok tokenizer.Tokenizer) ([]by
 	return tok.TokenizeInputText(ctx.PrefixText())
 }
 
+// cachedPrefixTokens tokenizes a request at most once. A blended route calls
+// ScoreAll and then PostRouteUpdate, and a remote tokenizer would otherwise be
+// asked for the same prompt twice.
+func cachedPrefixTokens(ctx *types.RoutingContext, tokenize func() ([]byte, error)) ([]byte, error) {
+	if tokens := ctx.PrefixTokens(); tokens != nil {
+		return tokens, nil
+	}
+	tokens, err := tokenize()
+	if err != nil {
+		return nil, err
+	}
+	ctx.SetPrefixTokens(tokens)
+	return tokens, nil
+}
+
+func (p *prefixCacheRouter) tokenize(ctx *types.RoutingContext, readyPodList types.PodList) ([]byte, error) {
+	return cachedPrefixTokens(ctx, func() ([]byte, error) {
+		return tokenizeInputText(ctx, p.getTokenizerForRequest(ctx, readyPodList))
+	})
+}
+
 func (p prefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	if p.kvSyncRouter != nil {
 		return p.kvSyncRouter.Route(ctx, readyPodList)
@@ -424,9 +445,7 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	var targetPod *v1.Pod
 	var selection string
 
-	// Use helper method to get the appropriate tokenizer
-	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
-	tokens, err := tokenizeInputText(ctx, tokenizerToUse)
+	tokens, err := p.tokenize(ctx, readyPodList)
 	if err != nil {
 		recordRoutingError(ctx.Model, "tokenize_failed", false)
 		return "", err
@@ -505,8 +524,7 @@ func (p prefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodLi
 		return p.kvSyncRouter.PostRouteUpdate(ctx, readyPodList, targetPod)
 	}
 
-	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
-	tokens, err := tokenizeInputText(ctx, tokenizerToUse)
+	tokens, err := p.tokenize(ctx, readyPodList)
 	if err != nil {
 		return err
 	}
@@ -568,8 +586,7 @@ func (p prefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList type
 		return p.kvSyncRouter.ScoreAll(ctx, readyPodList)
 	}
 
-	tokenizerToUse := p.getTokenizerForRequest(ctx, readyPodList)
-	tokens, err := tokenizeInputText(ctx, tokenizerToUse)
+	tokens, err := p.tokenize(ctx, readyPodList)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -786,16 +803,18 @@ func (k *kvSyncPrefixCacheRouter) tokenizeChatRequest(ctx *types.RoutingContext,
 // so the hashes line up with the blocks it reports in KV events. Route, ScoreAll
 // and PostRouteUpdate must all tokenize this way.
 func (k *kvSyncPrefixCacheRouter) tokenize(ctx *types.RoutingContext, readyPodList types.PodList) ([]byte, error) {
-	tok := k.getTokenizerForRequest(ctx, readyPodList)
-	if tok == nil {
-		return nil, fmt.Errorf("TokenizerPool not initialized for KV sync router")
-	}
-	if utils.PathWithoutQuery(ctx.ReqPath) == "/v1/chat/completions" {
-		if tokens := k.tokenizeChatRequest(ctx, tok); tokens != nil {
-			return tokens, nil
+	return cachedPrefixTokens(ctx, func() ([]byte, error) {
+		tok := k.getTokenizerForRequest(ctx, readyPodList)
+		if tok == nil {
+			return nil, fmt.Errorf("TokenizerPool not initialized for KV sync router")
 		}
-	}
-	return tokenizeInputText(ctx, tok)
+		if utils.PathWithoutQuery(ctx.ReqPath) == "/v1/chat/completions" {
+			if tokens := k.tokenizeChatRequest(ctx, tok); tokens != nil {
+				return tokens, nil
+			}
+		}
+		return tokenizeInputText(ctx, tok)
+	})
 }
 
 // Route handles KV sync routing with clean implementation
