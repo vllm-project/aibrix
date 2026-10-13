@@ -368,16 +368,18 @@ func TestAddPodStats_SkipsRedisIncrementWhenReplicaInflightAlreadyAdmitted(t *te
 func TestAdmitPodRunningRequest_TrackerPreservesBaseline(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
+		hook    *admitScriptHook
 		counted bool
 	}{
-		{"Redis failure", false},
-		{"confirmed admission", true},
+		{"admit never ran", &admitScriptHook{process: failAdmitScript}, false},
+		{"reply lost after the admit ran", &admitScriptHook{run: true, process: loseAdmitReply}, true},
+		{"confirmed admission", nil, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			const modelName = "test-model"
 			client := newTestRunningRequestsClient(t)
-			if !tt.counted {
-				client.AddHook(admitScriptHook{process: failAdmitScript})
+			if tt.hook != nil {
+				client.AddHook(*tt.hook)
 			}
 			store := NewForTest()
 			store.redisClient = client

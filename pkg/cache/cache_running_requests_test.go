@@ -19,6 +19,8 @@ package cache
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -41,6 +43,7 @@ func newTestRunningRequestsClient(t *testing.T) *redis.Client {
 }
 
 type admitScriptHook struct {
+	run     bool // let the script run before process picks the reply
 	process func(*redis.Cmd) error
 }
 
@@ -49,6 +52,11 @@ func (h admitScriptHook) DialHook(next redis.DialHook) redis.DialHook { return n
 func (h admitScriptHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
 		if cmd.Name() == "eval" && cmd.Args()[1] == runningRequestsAdmitScript {
+			if h.run {
+				if err := next(ctx, cmd); err != nil {
+					return err
+				}
+			}
 			return h.process(cmd.(*redis.Cmd))
 		}
 		return next(ctx, cmd)
@@ -59,7 +67,18 @@ func (h admitScriptHook) ProcessPipelineHook(next redis.ProcessPipelineHook) red
 	return next
 }
 
-func failAdmitScript(*redis.Cmd) error { return errors.New("admit script unavailable") }
+// failAdmitScript fails the admit before it is sent, as a refused connection does.
+func failAdmitScript(*redis.Cmd) error {
+	return &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+}
+
+// loseAdmitReply reports a timeout for an admit script that already ran.
+func loseAdmitReply(*redis.Cmd) error { return context.DeadlineExceeded }
+
+type testRedisError string
+
+func (e testRedisError) Error() string { return string(e) }
+func (testRedisError) RedisError()     {}
 
 // A negative delta against a hash key that does not exist must be a no-op: it must
 // not resurrect the key holding a lying zero for this gateway's field (see
@@ -221,15 +240,42 @@ func TestAdmitRunningRequest_FailsOpenToLocalCountWhenRedisNil(t *testing.T) {
 }
 
 func TestAdmitRunningRequest_FailsOpenToLocalCountWhenEvalFails(t *testing.T) {
-	client := newTestRunningRequestsClient(t)
-	client.AddHook(admitScriptHook{process: failAdmitScript})
-	store := &Store{redisClient: client}
-	for _, local := range []int64{1, 2} {
-		admitted, counted, running := store.admitRunningRequest(testNamespace, testPodName, 2, local)
-		require.Equal(t, local < 2, admitted)
-		require.False(t, counted)
-		require.Equal(t, local, running)
+	for _, tt := range []struct {
+		name      string
+		err       error
+		didNotRun bool
+	}{
+		{"dial error", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}, true},
+		{"Redis error reply", testRedisError("ERR Error running script"), false},
+		{"closed client", redis.ErrClosed, true},
+		{"deadline", context.DeadlineExceeded, false},
+		{"read timeout", &net.OpError{Op: "read", Net: "tcp", Err: errors.New("i/o timeout")}, false},
+		{"dropped connection", io.ErrUnexpectedEOF, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newTestRunningRequestsClient(t)
+			client.AddHook(admitScriptHook{process: func(*redis.Cmd) error { return tt.err }})
+			store := &Store{redisClient: client}
+			for _, local := range []int64{1, 2} {
+				admitted, counted, running := store.admitRunningRequest(testNamespace, testPodName, 2, local)
+				require.Equal(t, local < 2, admitted)
+				require.Equal(t, admitted && !tt.didNotRun, counted,
+					"only an error that shows the script never ran leaves the +1 to normal tracking")
+				require.Equal(t, local, running)
+			}
+		})
 	}
+}
+
+func TestAdmitRunningRequestsClient_DisablesRetries(t *testing.T) {
+	require.Nil(t, admitRunningRequestsClient(nil))
+	shared := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0", MaxRetries: 5})
+	t.Cleanup(func() { _ = shared.Close() })
+	admit := admitRunningRequestsClient(shared)
+	t.Cleanup(func() { _ = admit.Close() })
+	require.Zero(t, admit.Options().MaxRetries, "go-redis normalises -1 to 0, meaning no retries")
+	require.Equal(t, 5, shared.Options().MaxRetries, "the shared client keeps its retries")
+	require.Equal(t, shared.Options().Addr, admit.Options().Addr)
 }
 
 func TestAdmitRunningRequest_MalformedRepliesFallBackToLocalCount(t *testing.T) {

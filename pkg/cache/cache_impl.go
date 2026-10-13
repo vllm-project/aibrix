@@ -206,8 +206,9 @@ func (c *Store) GetMetricValueByPodModel(podName, podNamespace, modelName string
 // admitted=false, err=nil means the pod is over its cap right now; err is non-nil only
 // when the pod itself isn't in the cache (mirrors GetPodRunningRequests), which the
 // caller should treat as fail-open, same as GetPodRunningRequests's error case.
-// counted is true only when Redis confirmed the increment; a local fallback admission
-// still needs the normal request-tracking increment.
+// For an admitted request, counted=true means request tracking skips its Redis increment and
+// keeps the completion decrement: the admit script's +1 was confirmed or may have been applied
+// (see admitRunningRequest). counted=false leaves the increment to normal request tracking.
 func (c *Store) AdmitPodRunningRequest(podName, podNamespace string, limit int64) (admitted, counted bool, err error) {
 	key := utils.GeneratePodKey(podNamespace, podName)
 	metaPod, ok := c.metaPods.Load(key)

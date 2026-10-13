@@ -49,10 +49,10 @@ func replicaInflightLimit(routingCtx *types.RoutingContext) int64 {
 // normal request-tracking path's later increment: this request (and any other concurrent
 // one to the same pod, on this gateway or another) would otherwise be able to observe the
 // same pre-increment count and all get admitted regardless of how tight limit is -- see
-// AdmitPodRunningRequest's doc comment. Only a confirmed Redis increment sets
-// routingCtx.ReplicaInflightAdmitted -- addPodStats (cache_trace.go) then skips its own
-// increment of the same counter, or this request would be double-counted. A local
-// fallback admission leaves that increment to normal request tracking.
+// AdmitPodRunningRequest's doc comment. An admission whose +1 is, or may be, already in
+// Redis (counted) sets routingCtx.ReplicaInflightAdmitted -- addPodStats (cache_trace.go)
+// then skips its own increment of the same counter, or this request would be double-counted.
+// Otherwise the increment is left to normal request tracking.
 //
 // err != nil means the pod dropped out of the cache between selection and this call (an
 // AdmitPodRunningRequest contract, mirroring GetPodRunningRequests) -- fail open, same as

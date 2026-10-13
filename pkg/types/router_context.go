@@ -169,10 +169,11 @@ type RoutingContext struct {
 	// based on config-profile header. Nil when no config is present.
 	ConfigProfile *ResolvedConfigProfile
 
-	// ReplicaInflightAdmitted is true once the gateway's replica-inflight admission check
-	// (enforceReplicaInflight, backed by cache.Store.AdmitPodRunningRequest) has atomically
-	// admitted this request AND confirmed this gateway's own +1 was applied to the
-	// target pod's cross-gateway running-requests counter. Consumers that also increment
+	// ReplicaInflightAdmitted tells request tracking to skip its Redis increment and keep the
+	// completion decrement. The gateway's replica-inflight admission check (enforceReplicaInflight,
+	// backed by cache.Store.AdmitPodRunningRequest) sets it once it has admitted this request
+	// and this gateway's own +1 was confirmed, or may already be applied, on the target pod's
+	// cross-gateway running-requests counter. Consumers that also increment
 	// that counter (addPodStats) must check this first and skip their own increment, or the
 	// pod's count would be inflated by an extra, never-decremented +1 for this request.
 	ReplicaInflightAdmitted bool

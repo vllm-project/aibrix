@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -169,36 +171,32 @@ func TestEnforceReplicaInflight_NilRedisAdmissionIsNotCounted(t *testing.T) {
 	require.False(t, routingCtx.ReplicaInflightAdmitted, "a local admission has no confirmed Redis increment")
 }
 
-type replicaInflightAdmitFailureHook struct{}
-
-func (replicaInflightAdmitFailureHook) DialHook(next redis.DialHook) redis.DialHook { return next }
-
-func (replicaInflightAdmitFailureHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
-	return func(ctx context.Context, cmd redis.Cmder) error {
-		// Only the admit script takes the pod hash and the liveness ZSET as keys.
-		if cmd.Name() == "eval" && len(cmd.Args()) >= 5 && cmd.Args()[4] == "aibrix:rrq:gateways" {
-			return errors.New("admit script unavailable")
-		}
-		return next(ctx, cmd)
-	}
-}
-
-func (replicaInflightAdmitFailureHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
-	return next
-}
-
 func TestEnforceReplicaInflight_RedisFailureUsesNormalTracking(t *testing.T) {
 	mr := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	var refuseDials atomic.Bool
+	client := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+		// The admit script runs on its own client and connection pool, so refusing new dials
+		// while it runs fails only the admit, before anything is sent.
+		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if refuseDials.Load() {
+				return nil, &net.OpError{Op: "dial", Net: network, Err: errors.New("connection refused")}
+			}
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr)
+		},
+	})
 	t.Cleanup(func() { _ = client.Close() })
-	client.AddHook(replicaInflightAdmitFailureHook{})
+	require.NoError(t, client.Ping(context.Background()).Err())
 	pod := podWithReplicaInflight("a", 4)
 	store := cache.InitWithPods(cache.New(client, nil, nil), []*v1.Pod{pod}, "m")
 	s := &Server{cache: store}
 	routingCtx := types.NewRoutingContext(context.Background(), "", "m", "", "fallback", "")
 	applyConfigProfile(routingCtx, []*v1.Pod{pod})
 	routingCtx.SetTargetPod(pod)
+	refuseDials.Store(true)
 	require.Nil(t, s.enforceReplicaInflight(context.Background(), "m", routingCtx))
+	refuseDials.Store(false)
 	require.False(t, routingCtx.ReplicaInflightAdmitted)
 
 	term := store.AddRequestCount(routingCtx, routingCtx.RequestID, "m")

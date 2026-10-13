@@ -173,7 +173,7 @@ type MetricCache interface {
 	//   limit: Maximum concurrent live requests to admit
 	// Returns:
 	//   admitted: Whether this request was admitted (Redis or local fallback)
-	//   counted: Whether Redis confirmed this request's own increment
+	//   counted: Whether this request's own increment is, or may be, already applied
 	//   error: Error information if the pod is not found
 	AdmitPodRunningRequest(podName, podNamespace string, limit int64) (admitted, counted bool, err error)
 
