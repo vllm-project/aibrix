@@ -26,13 +26,14 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/rayclusterfleet/util"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 // syncRolloutStatus updates the status of a deployment during a rollout. There are
 // cases this helper will run that cannot be prevented from the scaling detection,
 // for example a resync of the deployment after it was scaled up. In those cases,
 // we shouldn't try to estimate any progress.
-func (r *RayClusterFleetReconciler) syncRolloutStatus(ctx context.Context, allRSs []*orchestrationv1alpha1.RayClusterReplicaSet, newRS *orchestrationv1alpha1.RayClusterReplicaSet, d *orchestrationv1alpha1.RayClusterFleet) error {
+func (r *RayClusterFleetReconciler) syncRolloutStatus(ctx context.Context, allRSs []*orchestrationv1alpha1.RayClusterReplicaSet, newRS *orchestrationv1alpha1.RayClusterReplicaSet, d *orchestrationv1alpha1.RayClusterFleet) (ctrl.Result, error) {
 	newStatus := calculateStatus(allRSs, newRS, d)
 
 	// If there is no progressDeadlineSeconds set, remove any Progressing condition.
@@ -103,17 +104,16 @@ func (r *RayClusterFleetReconciler) syncRolloutStatus(ctx context.Context, allRS
 		util.RemoveDeploymentCondition(&newStatus, orchestrationv1alpha1.RayClusterFleetReplicaFailure)
 	}
 
-	// Do not update if there is nothing new to add.
-	if reflect.DeepEqual(d.Status, newStatus) {
-		// Requeue the deployment if required.
-		r.requeueStuckDeployment(ctx, d, newStatus)
-		return nil
+	if !reflect.DeepEqual(d.Status, newStatus) {
+		d.Status = newStatus
+		if err := r.Status().Update(ctx, d); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
-
-	newDeployment := d
-	newDeployment.Status = newStatus
-	err := r.Status().Update(ctx, newDeployment)
-	return err
+	if after := r.requeueStuckDeployment(ctx, d, newStatus); after > 0 {
+		return ctrl.Result{RequeueAfter: after}, nil
+	}
+	return ctrl.Result{}, nil
 }
 
 // getReplicaFailures will convert replica failure conditions from replica sets
@@ -151,17 +151,16 @@ func (r *RayClusterFleetReconciler) getReplicaFailures(allRSs []*orchestrationv1
 }
 
 // requeueStuckDeployment checks whether the provided deployment needs to be synced for a progress
-// check. It returns the time after the deployment will be requeued for the progress check, 0 if it
-// will be requeued now, or -1 if it does not need to be requeued.
+// check. It returns a positive delay (at least one second), or -1 if no check is needed.
 func (r *RayClusterFleetReconciler) requeueStuckDeployment(ctx context.Context, d *orchestrationv1alpha1.RayClusterFleet, newStatus orchestrationv1alpha1.RayClusterFleetStatus) time.Duration {
 	logger := klog.FromContext(ctx)
-	currentCond := util.GetDeploymentCondition(d.Status, orchestrationv1alpha1.RayClusterFleetProgressing)
+	currentCond := util.GetDeploymentCondition(newStatus, orchestrationv1alpha1.RayClusterFleetProgressing)
 	// Can't estimate progress if there is no deadline in the spec or progressing condition in the current status.
-	if !util.HasProgressDeadline(d) || currentCond == nil {
+	if d.Spec.Paused || d.DeletionTimestamp != nil || !util.HasProgressDeadline(d) || currentCond == nil {
 		return time.Duration(-1)
 	}
 	// No need to estimate progress if the rollout is complete or already timed out.
-	if util.DeploymentComplete(d, &newStatus) || currentCond.Reason == util.TimedOutReason {
+	if util.DeploymentComplete(d, &newStatus) || currentCond.Reason == util.NewRSAvailableReason || currentCond.Reason == util.TimedOutReason {
 		return time.Duration(-1)
 	}
 	// If there is no sign of progress at this point then there is a high chance that the
@@ -180,19 +179,10 @@ func (r *RayClusterFleetReconciler) requeueStuckDeployment(ctx context.Context, 
 	//
 	// lastUpdated + progressDeadlineSeconds - now => 00:00:00 + 00:10:00 - 00:03:00 => 07:00
 	after := currentCond.LastUpdateTime.Time.Add(time.Duration(*d.Spec.ProgressDeadlineSeconds) * time.Second).Sub(util.NowFn())
-	// If the remaining time is less than a second, then requeue the deployment immediately.
-	// Make it ratelimited so we stay on the safe side, eventually the Deployment should
-	// transition either to a Complete or to a TimedOut condition.
+	// Equality is not timed out; keep a positive delay so the due check is not lost.
 	if after < time.Second {
-		logger.V(4).Info("Queueing up deployment for a progress check now", "deployment", klog.KObj(d))
-		// TODO: r.requeue
-		// dc.enqueueRateLimited(d)
-		return time.Duration(0)
+		after = time.Second
 	}
 	logger.V(4).Info("Queueing up deployment for a progress check", "deployment", klog.KObj(d), "queueAfter", int(after.Seconds()))
-	// Add a second to avoid milliseconds skew in AddAfter.
-	// See https://github.com/kubernetes/kubernetes/issues/39785#issuecomment-279959133 for more info.
-	// TODO: r.requeue
-	// dc.enqueueAfter(d, after+time.Second)
 	return after
 }

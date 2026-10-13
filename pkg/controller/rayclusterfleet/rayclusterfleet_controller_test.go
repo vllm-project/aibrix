@@ -18,8 +18,10 @@ package rayclusterfleet
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -333,14 +335,15 @@ func TestReconcilePauseResume(t *testing.T) {
 	f := newFleetTestFixture(t, interceptor.Funcs{})
 	var previous *orchestrationv1alpha1.RayClusterFleetCondition
 	for _, step := range []struct {
-		paused bool
-		delay  time.Duration
-		reason string
+		paused    bool
+		delay     time.Duration
+		reason    string
+		wantDelay time.Duration
 	}{
-		{true, time.Minute, util.PausedDeployReason},
-		{true, 20 * time.Minute, util.PausedDeployReason},
-		{false, time.Minute, util.ResumedDeployReason},
-		{false, time.Minute, util.ResumedDeployReason},
+		{true, time.Minute, util.PausedDeployReason, 0},
+		{true, 20 * time.Minute, util.PausedDeployReason, 0},
+		{false, time.Minute, util.ResumedDeployReason, 600 * time.Second},
+		{false, time.Minute, util.ResumedDeployReason, 540 * time.Second},
 	} {
 		f.now = f.now.Add(step.delay)
 		d := f.getFleet(t)
@@ -349,8 +352,8 @@ func TestReconcilePauseResume(t *testing.T) {
 			t.Fatal(err)
 		}
 		result, err := f.reconciler.Reconcile(context.Background(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(d)})
-		if err != nil || result != (reconcile.Result{}) {
-			t.Fatalf("reconcile = %+v, %v, want empty result and nil error", result, err)
+		if err != nil || result != (reconcile.Result{RequeueAfter: step.wantDelay}) {
+			t.Fatalf("reconcile = %+v, %v, want delay %v and nil error", result, err, step.wantDelay)
 		}
 		stored := f.getFleet(t)
 		cond := util.GetDeploymentCondition(stored.Status, orchestrationv1alpha1.RayClusterFleetProgressing)
@@ -431,7 +434,11 @@ func TestCheckPausedConditionsStatusError(t *testing.T) {
 					writeTime = f.now
 				}
 				result, err = f.reconciler.Reconcile(context.Background(), req)
-				if err != nil || result != (reconcile.Result{}) {
+				wantDelay := time.Duration(0)
+				if !paused {
+					wantDelay = writeTime.Add(600 * time.Second).Sub(f.now)
+				}
+				if err != nil || result != (reconcile.Result{RequeueAfter: wantDelay}) {
 					t.Fatalf("retry = %+v, %v", result, err)
 				}
 				cond := util.GetDeploymentCondition(f.getFleet(t).Status, orchestrationv1alpha1.RayClusterFleetProgressing)
@@ -440,5 +447,397 @@ func TestCheckPausedConditionsStatusError(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func (f *fleetTestFixture) save(t *testing.T, rs *orchestrationv1alpha1.RayClusterReplicaSet) {
+	t.Helper()
+	g := NewWithT(t)
+	objects := []client.Object{f.fleet}
+	if rs != nil {
+		objects = append(objects, rs)
+	}
+	for _, obj := range objects {
+		// Ordinary updates preserve stored status; update a copy to retain our intended status.
+		copy := obj.DeepCopyObject().(client.Object)
+		g.Expect(f.reconciler.Update(context.Background(), copy)).To(Succeed())
+		obj.SetResourceVersion(copy.GetResourceVersion())
+		g.Expect(f.reconciler.Status().Update(context.Background(), obj)).To(Succeed())
+	}
+}
+
+type deadlineSchedulingCase struct {
+	name          string
+	deadline      int32
+	elapsed       time.Duration
+	input, reason string
+	want          time.Duration
+	refresh       bool
+}
+
+func TestDeadlineScheduling(t *testing.T) {
+	for _, tt := range []deadlineSchedulingCase{
+		{"rolling stable|recreate stable|rolling up|rolling down|recreate down|recreate wait|unrelated status", 600, time.Minute, util.ReplicaSetUpdatedReason, util.ReplicaSetUpdatedReason, 540 * time.Second, false},
+		{"replacement", 900, time.Minute, util.ReplicaSetUpdatedReason, util.ReplicaSetUpdatedReason, 840 * time.Second, false},
+		{"updated|old reduction|ready|available", 600, time.Hour, util.ReplicaSetUpdatedReason, util.ReplicaSetUpdatedReason, 600 * time.Second, true},
+		{"initialize|reenable", 600, time.Minute, "missing", util.FoundNewRSReason, 600 * time.Second, true},
+		{"timeout|timeout paused|timeout resumed", 600, time.Hour, util.TimedOutReason, util.TimedOutReason, 0, false},
+		{"availability loss|wait complete", 600, time.Hour, util.NewRSAvailableReason, util.NewRSAvailableReason, 0, false},
+		{"scaling|rollback|selector|unsupported|deletion", 600, time.Minute, util.ReplicaSetUpdatedReason, util.ReplicaSetUpdatedReason, 0, false},
+		{"nil|notfound", 600, time.Minute, util.ReplicaSetUpdatedReason, "", 0, false},
+		{"extension", 900, 601 * time.Second, util.ReplicaSetUpdatedReason, util.ReplicaSetUpdatedReason, 299 * time.Second, false},
+		{"shortening", 30, time.Minute, util.ReplicaSetUpdatedReason, util.TimedOutReason, 0, true},
+		{"new rollout", 600, time.Minute, util.ReplicaSetUpdatedReason, util.NewReplicaSetReason, 600 * time.Second, true},
+		{"complete", 600, time.Hour, util.ReplicaSetUpdatedReason, util.NewRSAvailableReason, 0, true},
+		{"timeout progress", 600, time.Hour, util.TimedOutReason, util.ReplicaSetUpdatedReason, 600 * time.Second, true},
+		{"timeout complete", 600, time.Hour, util.TimedOutReason, util.NewRSAvailableReason, 0, true},
+		{"wait missing", 600, time.Minute, "missing", "", 0, false},
+		{"maximum", math.MaxInt32, time.Minute, util.ReplicaSetUpdatedReason, "", 0, false},
+		{"zero", 0, time.Minute, util.ReplicaSetUpdatedReason, util.TimedOutReason, 0, true},
+		{"negative", -1, time.Minute, util.ReplicaSetUpdatedReason, util.TimedOutReason, 0, true},
+		{"minimum", math.MinInt32, time.Minute, util.ReplicaSetUpdatedReason, util.TimedOutReason, 0, true},
+		{"large", math.MaxInt32 - 1, time.Minute, util.ReplicaSetUpdatedReason, util.ReplicaSetUpdatedReason, time.Duration(math.MaxInt32-1)*time.Second - time.Minute, false},
+		{"equality", 600, 600 * time.Second, util.ReplicaSetUpdatedReason, util.ReplicaSetUpdatedReason, time.Second, false},
+		{"subsecond", 600, 600*time.Second - time.Millisecond, util.ReplicaSetUpdatedReason, util.ReplicaSetUpdatedReason, time.Second, false},
+		{"one second", 600, 599 * time.Second, util.ReplicaSetUpdatedReason, util.ReplicaSetUpdatedReason, time.Second, false},
+		{"expired", 600, 600*time.Second + time.Millisecond, util.ReplicaSetUpdatedReason, util.TimedOutReason, 0, true},
+		{"false", 600, time.Minute, util.FailedRSCreateReason, util.FailedRSCreateReason, 540 * time.Second, false},
+		{"unknown", 600, time.Minute, util.ResumedDeployReason, util.ResumedDeployReason, 540 * time.Second, false},
+		{"unset", 600, time.Minute, util.ReplicaSetUpdatedReason, util.TimedOutReason, 0, true},
+	} {
+		for _, name := range strings.Split(tt.name, "|") {
+			tt.name = name
+			for _, mode := range []string{"normal", "rejected", "committed", "partial"} {
+				if mode != "normal" && tt.name != "updated" && tt.name != "complete" && tt.name != "expired" && tt.name != "initialize" && tt.name != "rolling up" || mode == "partial" && tt.name != "initialize" {
+					continue
+				}
+				t.Run(tt.name+"/"+mode, func(t *testing.T) {
+					tt := tt
+					g, f := NewWithT(t), newFleetTestFixture(t, interceptor.Funcs{})
+					rs, baseline := f.prepareDeadlineCase(t, tt)
+					ctx, req := context.Background(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(f.fleet)}
+					if mode != "normal" {
+						if tt.name != "expired" {
+							f.now = baseline.Add(599 * time.Second)
+						}
+						originalClient, before, injected, writes := f.reconciler.Client, f.getFleet(t).Status, errors.NewServiceUnavailable("status failure"), 0
+						f.reconciler.Client = interceptor.NewClient(f.reconciler.Client.(client.WithWatch), interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+							writes++
+							if mode == "committed" || mode == "partial" && writes == 1 {
+								g.Expect(c.SubResource(sub).Update(ctx, obj, opts...)).To(Succeed())
+							}
+							if mode == "partial" && writes == 1 {
+								return nil
+							}
+							return injected
+						}})
+						result, err := f.reconciler.Reconcile(ctx, req)
+						g.Expect(err == injected).To(BeTrue(), "original status error")
+						g.Expect(result).To(Equal(reconcile.Result{}))
+						stored := f.getFleet(t)
+						if tt.name == "rolling up" {
+							g.Expect(f.reconciler.Get(ctx, client.ObjectKeyFromObject(rs), rs)).To(Succeed())
+							g.Expect(*rs.Spec.Replicas).To(Equal(int32(1)))
+						}
+						if mode == "rejected" {
+							g.Expect(stored.Status).To(Equal(before))
+						}
+						// Retry reads whatever the failed request actually committed.
+						f.reconciler.Client, f.now = originalClient, f.now.Add(2*time.Second)
+						if tt.name == "updated" || tt.name == "initialize" {
+							tt.want = 600 * time.Second
+							if mode != "rejected" {
+								tt.want -= 2 * time.Second
+							}
+						}
+						if tt.name == "rolling up" {
+							tt.want, tt.reason, tt.refresh = 0, util.TimedOutReason, true
+						}
+					}
+					if tt.name == "expired" || tt.name == "zero" || tt.name == "negative" || tt.name == "minimum" || tt.name == "unset" {
+						g.Expect(f.reconciler.requeueStuckDeployment(ctx, f.fleet, f.fleet.Status)).To(Equal(time.Second))
+					}
+					result, err := f.reconciler.Reconcile(ctx, req)
+					f.assertDeadlineScheduling(t, tt, mode, baseline, result, err)
+				})
+			}
+		}
+	}
+}
+
+func (f *fleetTestFixture) prepareDeadlineCase(t *testing.T, tt deadlineSchedulingCase) (*orchestrationv1alpha1.RayClusterReplicaSet, time.Time) {
+	t.Helper()
+	g := NewWithT(t)
+	ctx, rs, req := context.Background(), &orchestrationv1alpha1.RayClusterReplicaSet{}, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(f.fleet)}
+	g.Expect(f.reconciler.Get(ctx, client.ObjectKey{Namespace: "default", Name: "fleet-rs"}, rs)).To(Succeed())
+	_, err := f.reconciler.Reconcile(ctx, req)
+	g.Expect(err).To(Succeed())
+	if tt.name == "reenable" {
+		f.fleet.Spec.ProgressDeadlineSeconds = nil
+		f.save(t, nil)
+		_, err = f.reconciler.Reconcile(ctx, req)
+		g.Expect(err).To(Succeed())
+		f.fleet = f.getFleet(t)
+	}
+	baseline, cond := f.now, &f.fleet.Status.Conditions[0]
+	f.now, f.fleet.Spec.ProgressDeadlineSeconds = f.now.Add(tt.elapsed), &tt.deadline
+	cond.Reason = tt.input
+	if status, ok := map[string]corev1.ConditionStatus{util.TimedOutReason: corev1.ConditionFalse, util.FailedRSCreateReason: corev1.ConditionFalse, util.ResumedDeployReason: corev1.ConditionUnknown}[tt.input]; ok {
+		cond.Status = status
+	}
+	if tt.input == "missing" {
+		f.fleet.Status.Conditions = nil
+	}
+	if strings.HasPrefix(tt.name, "recreate") || strings.HasPrefix(tt.name, "wait") {
+		f.fleet.Spec.Strategy.Type = appsv1.RecreateDeploymentStrategyType
+	}
+	switch tt.name {
+	case "replacement":
+		g.Expect(f.reconciler.Delete(ctx, f.fleet)).To(Succeed())
+		f.fleet.UID, f.fleet.ResourceVersion = "replacement-uid", ""
+		g.Expect(f.reconciler.Create(ctx, f.fleet)).To(Succeed())
+		rs.OwnerReferences[0].UID = f.fleet.UID
+	case "new rollout":
+		f.fleet.Spec.Template.Spec.RayVersion = "new"
+	case "timeout paused":
+		f.fleet.Spec.Paused = true
+	case "rolling up":
+		rs.Spec.Replicas = ptr.To(int32(0))
+	case "rolling down", "recreate down":
+		old := rs.DeepCopy()
+		old.Name, old.UID, old.ResourceVersion = "old", "old-uid", ""
+		old.Spec.Template.Spec.RayVersion, old.Annotations[util.RevisionAnnotation] = "old", "0"
+		g.Expect(f.reconciler.Create(ctx, old)).To(Succeed())
+		f.fleet.Spec.Strategy.RollingUpdate.MaxUnavailable = ptr.To(intstr.FromInt(1))
+	case "recreate wait", "wait missing", "wait complete":
+		rs.Spec.Template.Spec.RayVersion, rs.Spec.Replicas = "old", ptr.To(int32(0))
+		f.fleet.Status.UpdatedReplicas = 0
+	case "unrelated status":
+		f.fleet.Status.ObservedGeneration = 0
+	case "complete", "timeout complete":
+		rs.Status.ReadyReplicas, rs.Status.AvailableReplicas = 1, 1
+	case "timeout progress", "updated":
+		f.fleet.Status.UpdatedReplicas = 0
+	case "old reduction":
+		f.fleet.Status.Replicas = 2
+	case "ready":
+		rs.Status.ReadyReplicas = 1
+	case "available":
+		f.fleet.Spec.Replicas, rs.Annotations[util.DesiredReplicasAnnotation], rs.Status.AvailableReplicas = ptr.To(int32(2)), "2", 1
+	case "nil":
+		f.fleet.Spec.ProgressDeadlineSeconds = nil
+	case "unset":
+		cond.LastUpdateTime = metav1.Time{}
+	case "scaling":
+		f.fleet.Spec.Replicas = ptr.To(int32(2))
+	case "rollback":
+		f.fleet.Annotations[appsv1.DeprecatedRollbackTo] = "1"
+	case "selector":
+		f.fleet.Spec.Selector = &metav1.LabelSelector{}
+	case "unsupported":
+		f.fleet.Spec.Strategy.Type = "unsupported"
+	case "deletion":
+		f.fleet.Finalizers = []string{"test"}
+	}
+	// Kubernetes serializes metav1.Time at whole-second precision.
+	data, err := json.Marshal(f.fleet.Status)
+	g.Expect(err).To(Succeed())
+	g.Expect(json.Unmarshal(data, &f.fleet.Status)).To(Succeed())
+	f.save(t, rs)
+	if tt.input == "missing" {
+		g.Expect(f.reconciler.requeueStuckDeployment(ctx, f.fleet, f.fleet.Status)).To(Equal(time.Duration(-1)))
+	}
+	if tt.name == "deletion" || tt.name == "notfound" {
+		g.Expect(f.reconciler.Delete(ctx, f.fleet)).To(Succeed())
+	}
+	return rs, baseline
+}
+
+func (f *fleetTestFixture) assertDeadlineScheduling(t *testing.T, tt deadlineSchedulingCase, mode string, baseline time.Time, result reconcile.Result, err error) {
+	t.Helper()
+	g, ctx, transition := NewWithT(t), context.Background(), baseline
+	g.Expect(err).To(Succeed())
+	g.Expect(result).To(Equal(reconcile.Result{RequeueAfter: tt.want}))
+	if tt.name == "notfound" {
+		return
+	}
+	stored := f.getFleet(t)
+	if tt.name == "unrelated status" {
+		g.Expect(stored.Status.ObservedGeneration).To(Equal(stored.Generation))
+	}
+	if tt.name == "scaling" {
+		rs := &orchestrationv1alpha1.RayClusterReplicaSet{}
+		g.Expect(f.reconciler.Get(ctx, client.ObjectKey{Namespace: stored.Namespace, Name: "fleet-rs"}, rs)).To(Succeed())
+		g.Expect(*rs.Spec.Replicas).To(Equal(int32(2)))
+		g.Expect(rs.Annotations).To(Equal(map[string]string{util.RevisionAnnotation: "1", util.DesiredReplicasAnnotation: "2", util.MaxReplicasAnnotation: "3"}))
+	}
+	if tt.name == "updated" {
+		// Only the resulting condition owns the refreshed deadline.
+		f.fleet.Status.Conditions = nil
+		g.Expect(f.reconciler.requeueStuckDeployment(ctx, f.fleet, stored.Status)).To(Equal(tt.want))
+	}
+	got := util.GetDeploymentCondition(stored.Status, orchestrationv1alpha1.RayClusterFleetProgressing)
+	if got == nil {
+		g.Expect(tt.reason).To(BeEmpty())
+		return
+	}
+	g.Expect(got.Reason).To(Equal(tt.reason))
+	if tt.refresh {
+		baseline = f.now.Truncate(time.Second)
+		if (mode == "committed" || mode == "partial") && tt.name != "rolling up" {
+			baseline = baseline.Add(-2 * time.Second)
+		}
+		if tt.input != util.ReplicaSetUpdatedReason || tt.reason == util.TimedOutReason {
+			transition = baseline
+		}
+	}
+	g.Expect(got.LastUpdateTime.Time.Equal(baseline)).To(BeTrue(), "update timestamp")
+	g.Expect(got.LastTransitionTime.Time.Equal(transition)).To(BeTrue(), "transition timestamp")
+	if tt.name == "rollback" {
+		g.Expect(getRollbackTo(stored)).To(BeNil())
+	}
+	event := map[string]string{"selector": "Warning SelectingAll", "scaling": "Normal ScalingReplicaSet", "rollback": "Warning " + util.RollbackTemplateUnchanged}[tt.name]
+	if event != "" {
+		g.Expect(f.reconciler.Recorder.(*record.FakeRecorder).Events).To(Receive(ContainSubstring(event)))
+	}
+}
+
+func TestDeadlineOperationErrors(t *testing.T) {
+	for _, op := range []string{"get", "list", "cancel", "create", "update", "cleanup", "cleanup notfound", "swallow unhealthy", "swallow scale"} {
+		t.Run(op, func(t *testing.T) {
+			g, f := NewWithT(t), newFleetTestFixture(t, interceptor.Funcs{})
+			ctx, rs := context.Background(), &orchestrationv1alpha1.RayClusterReplicaSet{}
+			g.Expect(f.reconciler.Get(ctx, client.ObjectKey{Namespace: "default", Name: "fleet-rs"}, rs)).To(Succeed())
+			if op == "create" {
+				f.fleet.Spec.Template.Spec.RayVersion = "new"
+			}
+			if op == "update" {
+				rs.Spec.Replicas = ptr.To(int32(0))
+			}
+			if strings.HasPrefix(op, "cleanup") || strings.HasPrefix(op, "swallow") {
+				old := rs.DeepCopy()
+				old.Name, old.UID, old.ResourceVersion = "old", "old-uid", ""
+				old.Spec.Template.Spec.RayVersion, old.Annotations[util.RevisionAnnotation] = "old", "0"
+				if strings.HasPrefix(op, "cleanup") {
+					old.Spec.Replicas, old.Status.Replicas = ptr.To(int32(0)), 0
+					rs.Status.ReadyReplicas, rs.Status.AvailableReplicas = 1, 1
+					f.fleet.Status = calculateStatus([]*orchestrationv1alpha1.RayClusterReplicaSet{rs}, rs, f.fleet)
+					f.fleet.Spec.RevisionHistoryLimit = ptr.To(int32(0))
+				}
+				if op == "swallow scale" {
+					old.Status.AvailableReplicas = 1
+				}
+				g.Expect(f.reconciler.Create(ctx, old)).To(Succeed())
+				f.fleet.Spec.Strategy.RollingUpdate.MaxUnavailable = ptr.To(intstr.FromInt(1))
+			}
+			f.save(t, rs)
+			injected := error(errors.NewServiceUnavailable("operation failure"))
+			wantErr, want := injected, time.Duration(0)
+			if op == "cancel" {
+				cancelCtx, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = cancelCtx
+				wantErr, injected = context.Canceled, context.Canceled
+			}
+			if strings.HasPrefix(op, "swallow") {
+				wantErr, want = nil, 600*time.Second
+			}
+			if op == "cleanup notfound" {
+				wantErr, injected = nil, errors.NewNotFound(orchestrationv1alpha1.GroupVersion.WithResource("rayclusterreplicasets").GroupResource(), "old")
+			}
+			calls, funcs := 0, interceptor.Funcs{}
+			fail := func() error { calls++; return injected }
+			switch op {
+			case "get", "cancel":
+				funcs.Get = func(ctx context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+					if op == "cancel" {
+						calls++
+						return ctx.Err()
+					}
+					return fail()
+				}
+			case "list":
+				funcs.List = func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error { return fail() }
+			case "create":
+				funcs.Create = func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error { return fail() }
+			case "update", "swallow unhealthy", "swallow scale":
+				funcs.Update = func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error { return fail() }
+			case "cleanup", "cleanup notfound":
+				funcs.Delete = func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error { return fail() }
+			}
+			f.reconciler.Client = interceptor.NewClient(f.reconciler.Client.(client.WithWatch), funcs)
+			result, err := f.reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(f.fleet)})
+			g.Expect(err == wantErr).To(BeTrue(), "original operation error")
+			g.Expect(result).To(Equal(reconcile.Result{RequeueAfter: want}))
+			g.Expect(calls).To(BeNumerically(">", 0))
+			if op == "create" {
+				g.Expect(util.GetDeploymentCondition(f.getFleet(t).Status, orchestrationv1alpha1.RayClusterFleetProgressing).Reason).To(Equal(util.FailedRSCreateReason))
+				g.Expect(f.reconciler.Recorder.(*record.FakeRecorder).Events).To(Receive(ContainSubstring("Warning " + util.FailedRSCreateReason)))
+			}
+		})
+	}
+}
+
+func TestRecreateOperationErrors(t *testing.T) {
+	for _, tt := range []struct {
+		name, operation                   string
+		failAt                            int
+		wantReplicas, wantMinReadySeconds int32
+	}{
+		{"initialization", "update", 1, 0, 0},
+		{"scale-down", "update", 2, 0, 2},
+		{"creation", "create", 1, 0, 0},
+		{"scale-up", "update", 2, 0, 2},
+		{"cleanup", "delete", 1, 1, 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			g, f := NewWithT(t), newFleetTestFixture(t, interceptor.Funcs{})
+			ctx, rs := context.Background(), &orchestrationv1alpha1.RayClusterReplicaSet{}
+			g.Expect(f.reconciler.Get(ctx, client.ObjectKey{Namespace: "default", Name: "fleet-rs"}, rs)).To(Succeed())
+			f.fleet.Spec.Strategy.Type, f.fleet.Spec.MinReadySeconds = appsv1.RecreateDeploymentStrategyType, 2
+			f.fleet.Spec.RevisionHistoryLimit, rs.Spec.Replicas = ptr.To(int32(0)), ptr.To(int32(0))
+			old := rs.DeepCopy()
+			old.Name, old.UID, old.ResourceVersion = "old", "old-uid", ""
+			old.Spec.Template.Spec.RayVersion, old.Annotations[util.RevisionAnnotation], old.Status.Replicas = "old", "0", 0
+			if tt.name == "scale-down" {
+				old.Spec.Replicas = ptr.To(int32(1))
+			}
+			if tt.name == "creation" {
+				rs.Spec.Template.Spec.RayVersion, rs.Status.Replicas = "old", 0
+			}
+			if tt.name == "cleanup" {
+				rs.Status.ReadyReplicas, rs.Status.AvailableReplicas = 1, 1
+				f.fleet.Status = calculateStatus([]*orchestrationv1alpha1.RayClusterReplicaSet{rs}, rs, f.fleet)
+			}
+			g.Expect(f.reconciler.Create(ctx, old)).To(Succeed())
+			f.save(t, rs)
+			injected, calls := errors.NewServiceUnavailable("recreate operation failure"), 0
+			fail, funcs := func() error { calls++; return injected }, interceptor.Funcs{}
+			switch tt.operation {
+			case "update":
+				funcs.Update = func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+					calls++
+					if calls == tt.failAt {
+						return injected
+					}
+					return c.Update(ctx, obj, opts...)
+				}
+			case "create":
+				funcs.Create = func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error { return fail() }
+			case "delete":
+				funcs.Delete = func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error { return fail() }
+			}
+			f.reconciler.Client = interceptor.NewClient(f.reconciler.Client.(client.WithWatch), funcs)
+			result, err := f.reconciler.rolloutRecreate(ctx, f.getFleet(t), []*orchestrationv1alpha1.RayClusterReplicaSet{old, rs}, nil)
+			g.Expect(err == injected).To(BeTrue(), "original operation error")
+			g.Expect(result).To(Equal(reconcile.Result{}))
+			g.Expect(calls).To(Equal(tt.failAt))
+			g.Expect(f.reconciler.Get(ctx, client.ObjectKeyFromObject(rs), rs)).To(Succeed())
+			g.Expect(*rs.Spec.Replicas).To(Equal(tt.wantReplicas))
+			g.Expect(rs.Spec.MinReadySeconds).To(Equal(tt.wantMinReadySeconds), "earlier initialization persists")
+			if tt.name == "creation" {
+				g.Expect(util.GetDeploymentCondition(f.getFleet(t).Status, orchestrationv1alpha1.RayClusterFleetProgressing).Reason).To(Equal(util.FailedRSCreateReason))
+			}
+		})
 	}
 }
