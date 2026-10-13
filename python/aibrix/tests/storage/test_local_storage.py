@@ -18,14 +18,234 @@ LocalStorage specific tests.
 Tests functionality specific to the local filesystem storage implementation.
 """
 
+import json
 import os
+import shutil
 import tempfile
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
+from aibrix.batch.job_entity.batch_job import BatchJob, BatchJobSpec, BatchJobState
+from aibrix.batch.state.job_store import JobStore
+from aibrix.batch.storage import batch_metastore
 from aibrix.storage import LocalStorage
 from aibrix.storage.factory import create_storage_from_env
+from aibrix.storage.redis_upgrade import maybe_upgrade_storage
+
+
+def _write_pair(storage, key, payload):
+    stamp = "2026-01-01T00:00:01+00:00"
+    if isinstance(payload, BatchJob):
+        stamp = payload.status.created_at.isoformat()
+        payload = payload.model_dump_json(by_alias=True, exclude_none=True).encode()
+    path = storage.base_path / key
+    sidecar = storage.base_path / f"{key}.metadata"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    data = {"created_at": stamp, "content_length": len(payload)}
+    sidecar.write_text(json.dumps(data))
+    return path, sidecar
+
+
+def _batch_job(job_id, day=1, finished=False):
+    spec = BatchJobSpec(input_file_id="input-1", endpoint="/v1/chat/completions")
+    job = BatchJob.new_from_spec(job_id, "default", spec)
+    job.status.job_id = job_id
+    stamp = datetime.fromisoformat(f"2026-01-0{day}T00:00:01+00:00")
+    job.status.created_at = job.metadata.creation_timestamp = stamp
+    if finished:
+        job.status.state, job.status.finalized_at = BatchJobState.FINALIZED, stamp
+    return job
+
+
+def _snapshot(storage):
+    files = (p for p in storage.base_path.rglob("*") if p.is_file())
+    return {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in files}
+
+
+async def _assert_upgrade(storage, job, outcome="migrated"):
+    before = _snapshot(storage)
+    key = f"batchjob:{job.job_id}"
+    old_metadata = storage.base_path / f"{key}.metadata"
+    new_metadata = storage._get_metadata_path(f"batchjob/{job.job_id}")
+    sidecar = (old_metadata if old_metadata.exists() else new_metadata).read_bytes()
+    if outcome == "conflict":
+        with pytest.raises(RuntimeError, match="conflicting records"):
+            await maybe_upgrade_storage(storage)
+    else:
+        await maybe_upgrade_storage(storage)
+    if outcome in ("conflict", "skipped"):
+        assert _snapshot(storage) == before
+    else:
+        assert await batch_metastore.get_batch_job(job.job_id) == job
+        assert not (storage.base_path / key).exists() and not old_metadata.exists()
+        assert new_metadata.read_bytes() == sidecar
+        payload = job.model_dump_json(by_alias=True, exclude_none=True).encode()
+        assert await storage.get_object(f"batchjob/{job.job_id}") == payload
+    after = _snapshot(storage)
+    for path, data in before.items():
+        if path.parent == new_metadata.parent:
+            assert after[path] == data
+
+
+@pytest.mark.asyncio
+class TestLocalBatchMetastoreUpgrade:
+    @pytest.fixture
+    def migration(self, local_storage, monkeypatch):
+        monkeypatch.setattr(batch_metastore, "p_metastore", local_storage)
+        job = _batch_job("old-job")
+        _write_pair(local_storage, "batchjob:old-job", job)
+        return local_storage, job
+
+    @pytest.mark.parametrize(
+        "state",
+        [
+            (True, False, False, False, False, "migrated"),
+            (True, True, False, False, True, "resumed"),
+            (True, True, False, False, False, "conflict"),
+            (True, True, True, True, True, "converged"),
+            (True, False, True, True, False, "conflict"),
+            (True, True, True, True, False, "conflict"),
+            (True, True, True, False, True, "conflict"),
+            (True, False, True, False, False, "conflict"),
+            (True, True, True, False, False, "conflict"),
+            (False, True, True, True, True, "resumed"),
+            (False, False, True, True, False, "conflict"),
+            (False, True, True, True, False, "conflict"),
+            (False, False, False, False, False, "skipped"),
+            (False, True, False, False, True, "skipped"),
+            (False, True, False, False, False, "skipped"),
+        ],
+    )
+    async def test_job_state_table(self, migration, caplog, state):
+        storage, legacy_job = migration
+        # LP: legacy payload; DP: destination sidecar; D: destination payload.
+        lp, dp, d, d_equal, dp_equal, outcome = state
+        old = storage.base_path / "batchjob:old-job"
+        old_meta = storage.base_path / "batchjob:old-job.metadata"
+        new = storage._get_full_path("batchjob/old-job")
+        new_meta = storage._get_metadata_path("batchjob/old-job")
+        new.parent.mkdir()
+        for path, present, equal, source in (
+            (new, d, d_equal, old),
+            (new_meta, dp, dp_equal, old_meta),
+        ):
+            if present:
+                path.write_bytes(source.read_bytes() if equal else b"different")
+        if not lp:
+            old.unlink()
+        await _assert_upgrade(storage, legacy_job, outcome)
+        if outcome == "skipped":
+            assert sum(r.levelname == "WARNING" for r in caplog.records) == 1
+
+    @pytest.mark.parametrize(
+        "boundary", ["copyfile", "replace", "unlink", "watermark", "orphan", "none"]
+    )
+    async def test_retry_and_cleanup(self, migration, monkeypatch, caplog, boundary):
+        storage, legacy_job = migration
+        artifact = boundary if boundary in ("orphan", "none") else "pair"
+        watermark = batch_metastore.OLDEST_UNFINISHED_JOB_CREATED_AT_KEY
+        current_jobs = [_batch_job(f"finished-{day}", day, True) for day in (3, 2)]
+        for job in current_jobs:
+            _write_pair(storage, f"batchjob/{job.job_id}", job)
+        await storage.put_object("batchstatus_copies:job-2/w1", b"current")
+        await storage.put_object("file-123", b"{}", content_type="application/json")
+        for key in ("other:key", "nested/batchjob:leave"):
+            _write_pair(storage, key, b"unrelated")
+        protected = {
+            p: data
+            for p, data in _snapshot(storage).items()
+            if p.parent != storage.base_path or not p.name.startswith("batchjob:")
+        }
+        legacy_paths = []
+        for key in (watermark, "batchstatus_copies:old-job:worker-1"):
+            legacy_paths.extend(_write_pair(storage, key, b"legacy"))
+        await storage.put_object(watermark, b"2026-01-03T00:00:01+00:00")
+        if artifact != "pair":
+            (storage.base_path / "batchjob:old-job").unlink()
+        if artifact == "none":
+            (storage.base_path / "batchjob:old-job.metadata").unlink()
+        monkeypatch.setattr(JobStore, "DEFAULT_JOB_PAGE_LIMIT", 1)
+        store = JobStore()
+        assert await store._list_active_jobs() == []
+        before = _snapshot(storage)
+        if artifact == "pair":
+            with monkeypatch.context() as patch:
+                if boundary == "watermark":
+                    delete = AsyncMock(side_effect=PermissionError("interrupted"))
+                    patch.setattr(storage, "delete_object", delete)
+                else:
+                    owners = dict(copyfile=shutil, replace=os, unlink=Path)
+                    owner = owners[boundary]
+                    suffix = "" if boundary == "replace" else ".metadata"
+                    source = "batchjob:old-job" + suffix
+                    operation = getattr(owner, boundary)
+
+                    def interrupt(path, *args, **kwargs):
+                        operation(path, *args, **kwargs)
+                        if Path(path) == storage.base_path / source:
+                            raise OSError("interrupted")
+
+                    patch.setattr(owner, boundary, interrupt)
+                with pytest.raises(OSError, match="interrupted"):
+                    await maybe_upgrade_storage(storage)
+            if boundary == "watermark":
+                delete.assert_awaited_once_with(watermark)
+                assert _snapshot(storage) == before
+            else:
+                assert not await storage.object_exists(watermark)
+                assert not storage._get_metadata_path(watermark).exists()
+        if artifact == "pair":
+            await _assert_upgrade(storage, legacy_job)
+        else:
+            await maybe_upgrade_storage(storage)
+        after = _snapshot(storage)
+        caplog.clear()
+        await maybe_upgrade_storage(storage)
+        assert _snapshot(storage) == after
+        if artifact != "orphan":
+            assert not caplog.records
+        assert all(not p.exists() for p in legacy_paths)
+        assert all(after[p] == data for p, data in protected.items())
+        expected = [legacy_job] if artifact == "pair" else []
+        assert await store._list_active_jobs() == expected
+        assert await batch_metastore.list_batch_jobs() == current_jobs + expected
+        if artifact == "none":
+            assert await storage.get_object(watermark) == b"2026-01-03T00:00:01+00:00"
+        else:
+            assert not await storage.object_exists(watermark)
+            assert not storage._get_metadata_path(watermark).exists()
+
+    async def test_all_conflicts_and_deleted_job(self, migration):
+        storage, legacy_job = migration
+        current_job = _batch_job("old-job", 2, True)
+        _write_pair(storage, "batchjob/old-job", current_job)
+        _write_pair(storage, "batchjob:another-job", b"legacy")
+        await storage.put_object("batchjob/another-job", b"conflict")
+        before = _snapshot(storage)
+        job = _batch_job("valid-job")
+        paths = _write_pair(storage, "batchjob:valid-job", job)
+        with pytest.raises(RuntimeError, match="conflicting records") as error:
+            await maybe_upgrade_storage(storage)
+        message = str(error.value)
+        assert "batchjob:old-job" in message and "batchjob:another-job" in message
+        assert "resolve them manually" in message
+        assert all(_snapshot(storage)[p] == data for p, data in before.items())
+        assert await batch_metastore.get_batch_job(job.job_id) == job
+        assert all(not path.exists() for path in paths)
+        for path in before:
+            if path.name.startswith("batchjob:"):
+                path.unlink()
+        await batch_metastore.delete_batch_job("another-job")
+        await maybe_upgrade_storage(storage)
+        assert await batch_metastore.get_batch_job("old-job") == current_job
+        await batch_metastore.delete_batch_job("old-job")
+        await maybe_upgrade_storage(storage)
+        assert await batch_metastore.get_batch_job("old-job") is None
+        assert await batch_metastore.list_batch_jobs() == [job]
 
 
 class TestLocalStorage:
