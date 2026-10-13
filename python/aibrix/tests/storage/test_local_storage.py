@@ -213,11 +213,19 @@ class TestLocalBatchMetastoreUpgrade:
         expected = [legacy_job] if artifact == "pair" else []
         assert await store._list_active_jobs() == expected
         assert await batch_metastore.list_batch_jobs() == current_jobs + expected
-        if artifact == "none":
+        if artifact in ("none", "orphan"):
             assert await storage.get_object(watermark) == b"2026-01-03T00:00:01+00:00"
         else:
             assert not await storage.object_exists(watermark)
             assert not storage._get_metadata_path(watermark).exists()
+
+    async def test_other_local_roots_are_left_alone(self, migration, tmp_path):
+        other = LocalStorage(str(tmp_path / "files"))
+        _write_pair(other, "batchjob:old-job", b"legacy")
+        _write_pair(other, "batchstatus_copies:old-job:worker-1", b"legacy")
+        before = _snapshot(other)
+        await maybe_upgrade_storage(other)
+        assert _snapshot(other) == before
 
     async def test_all_conflicts_and_deleted_job(self, migration):
         storage, legacy_job = migration
@@ -232,7 +240,7 @@ class TestLocalBatchMetastoreUpgrade:
             await maybe_upgrade_storage(storage)
         message = str(error.value)
         assert "batchjob:old-job" in message and "batchjob:another-job" in message
-        assert "resolve them manually" in message
+        assert "resolve them manually" in message and str(storage.base_path) in message
         assert all(_snapshot(storage)[p] == data for p, data in before.items())
         assert await batch_metastore.get_batch_job(job.job_id) == job
         assert all(not path.exists() for path in paths)

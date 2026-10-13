@@ -2,6 +2,8 @@ import asyncio
 import math
 import os
 import shutil
+import tempfile
+from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from aibrix.logger import init_logger
@@ -232,17 +234,32 @@ async def maybe_upgrade_storage(storage: Any) -> Optional[int]:
 async def upgrade_local_batch_metastore(storage: LocalStorage) -> None:
     # v0.7.0 used flat batchjob:<id> files; v0.8.0 uses batchjob/<id>.
     # Clear the watermark before mutations; conflicts stop startup.
+    # Imported here so the storage package does not import the batch package at load time.
+    from aibrix.batch.storage import batch_metastore
+
+    if storage is not batch_metastore.p_metastore:
+        return
+
+    def _scan() -> tuple[list[Path], list[Path], bool]:
+        paths = [path for path in storage.base_path.iterdir() if path.is_file()]
+        sidecars = [
+            path
+            for path in paths
+            if path.name.startswith(_OLD_BATCH_JOB_PREFIX)
+            and path.name.endswith(".metadata")
+        ]
+        # Orphan sidecars (no payload in either layout) are only warned about; on their own
+        # they must not force a full recovery scan on every start.
+        pending = any(
+            (storage.base_path / key).exists()
+            or storage._get_full_path(_remap_batch_metastore_key_to_v3(key)).exists()
+            for key in (path.name.removesuffix(".metadata") for path in sidecars)
+        )
+        return paths, sidecars, pending
+
     loop = asyncio.get_event_loop()
-    paths = await loop.run_in_executor(
-        None, lambda: [path for path in storage.base_path.iterdir() if path.is_file()]
-    )
-    legacy_sidecars = [
-        path
-        for path in paths
-        if path.name.startswith(_OLD_BATCH_JOB_PREFIX)
-        and path.name.endswith(".metadata")
-    ]
-    if legacy_sidecars:
+    paths, legacy_sidecars, pending = await loop.run_in_executor(None, _scan)
+    if pending:
         await storage.delete_object(_BATCH_JOB_WATERMARK_KEY)
 
     def _upgrade() -> tuple[int, int, int, list[str]]:
@@ -252,7 +269,7 @@ async def upgrade_local_batch_metastore(storage: LocalStorage) -> None:
             if path.name.startswith(
                 (_OLD_BATCH_STATUS_COPIES_PREFIX, _OLD_BATCH_JOB_META_PREFIX)
             ):
-                path.unlink()
+                path.unlink(missing_ok=True)
                 removed += 1
 
         for path in legacy_sidecars:
@@ -284,9 +301,9 @@ async def upgrade_local_batch_metastore(storage: LocalStorage) -> None:
                     skipped += 1
                     continue
                 if legacy_exists:
-                    legacy_payload.unlink()
+                    legacy_payload.unlink(missing_ok=True)
                     removed += 1
-                path.unlink()
+                path.unlink(missing_ok=True)
                 removed += 1
                 continue
             if metadata_exists and not metadata_equal:
@@ -296,9 +313,9 @@ async def upgrade_local_batch_metastore(storage: LocalStorage) -> None:
 
             new_payload.parent.mkdir(parents=True, exist_ok=True)
             if not metadata_exists:
-                shutil.copyfile(path, new_metadata)
+                _copy_atomically(path, new_metadata)
             os.replace(legacy_payload, new_payload)
-            path.unlink()
+            path.unlink(missing_ok=True)
             migrated += 1
         return migrated, skipped, removed, conflicts
 
@@ -312,9 +329,21 @@ async def upgrade_local_batch_metastore(storage: LocalStorage) -> None:
         )  # type: ignore[call-arg]
     if conflicts:
         raise RuntimeError(
-            "Local batch metastore upgrade found conflicting records "
+            f"Local batch metastore upgrade found conflicting records in {storage.base_path}: "
             f"{', '.join(sorted(conflicts))}; resolve them manually"
         )
+
+
+def _copy_atomically(source: Path, target: Path) -> None:
+    # A crash mid-copy must not leave a truncated sidecar, which would read as a conflict.
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")
+    os.close(fd)
+    try:
+        shutil.copyfile(source, tmp)
+        os.replace(tmp, target)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 async def upgrade_redis_storage_to_v3(redis_client: Any) -> None:
