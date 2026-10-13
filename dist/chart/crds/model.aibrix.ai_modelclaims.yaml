@@ -120,6 +120,7 @@ spec:
               priority:
                 default: 0
                 format: int32
+                minimum: 0
                 type: integer
                 x-kubernetes-validations:
                 - message: priority is immutable; create a new ModelClaim instead

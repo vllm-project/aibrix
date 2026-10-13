@@ -294,10 +294,9 @@ The sample claims:
    * - ``replicas``
      - Must be 1, the default.
    * - ``priority``
-     - An immutable signed 32-bit placement priority. A higher value gets the
-       next placement opportunity before a lower value when unplaced claims
-       compete for a pool. It defaults to 0 when omitted; negative values are
-       valid for background work.
+     - An immutable non-negative 32-bit placement priority. A higher value
+       gets the next placement opportunity before a lower value when unplaced
+       claims compete for a pool. It defaults to 0 when omitted.
    * - ``engineConfig.args``
      - Engine flags and their values, as strings. An empty string adds a flag
        without a value.
@@ -316,9 +315,9 @@ Placement priority
 ~~~~~~~~~~~~~~~~~~
 
 ``priority`` decides the placement order only for claims that do not yet have
-an instance. It is a signed ``int32``: higher numbers are considered first,
-omitting the field means 0, and negative values are useful for background
-work. The value is immutable, so create a new ModelClaim to change it.
+an instance. It is a non-negative ``int32``: higher numbers are considered
+first, and omitting the field means 0. The value is immutable, so create a new
+ModelClaim to change it.
 
 For claims of the same priority that compete for at least one Pod, the
 controller keeps FIFO order by creation time, then by name. It uses

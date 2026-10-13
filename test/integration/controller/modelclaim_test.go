@@ -517,7 +517,6 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 			name     string
 			priority int32
 		}{
-			{name: "claim-priority-min", priority: math.MinInt32},
 			{name: "claim-priority-zero", priority: 0},
 			{name: "claim-priority-max", priority: math.MaxInt32},
 		} {
@@ -541,6 +540,7 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 			name   string
 			change func(*modelapi.ModelClaim)
 		}{
+			{name: "priority-negative", change: func(claim *modelapi.ModelClaim) { claim.Spec.Priority = -1 }},
 			{name: "engine", change: func(claim *modelapi.ModelClaim) { claim.Spec.Engine = "unknown" }},
 			{name: "replicas-zero", change: func(claim *modelapi.ModelClaim) { claim.Spec.Replicas = ptr.To[int32](0) }},
 			{name: "replicas-two", change: func(claim *modelapi.ModelClaim) { claim.Spec.Replicas = ptr.To[int32](2) }},

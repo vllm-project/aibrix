@@ -76,6 +76,8 @@ func TestModelClaimPrioritySchema(t *testing.T) {
 		require.Equal(t, "int32", priority.Format, path)
 		require.NotNil(t, priority.Default, path)
 		require.JSONEq(t, "0", string(priority.Default.Raw), path)
+		require.NotNil(t, priority.Minimum, path)
+		require.Equal(t, float64(0), *priority.Minimum, path)
 
 		var immutable bool
 		for _, rule := range priority.XValidations {

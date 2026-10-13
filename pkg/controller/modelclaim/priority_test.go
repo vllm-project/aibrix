@@ -159,14 +159,14 @@ func TestPlacementTurnBlockerPriorityAndFIFO(t *testing.T) {
 		wantBlock bool
 	}{
 		{"newer higher priority", 10, created.Add(time.Minute), "competitor", true},
-		{"older lower priority", -1, created.Add(-time.Minute), "competitor", false},
-		{"equal priority older", 0, created.Add(-time.Minute), "competitor", true},
-		{"equal priority newer", 0, created.Add(time.Minute), "competitor", false},
-		{"equal timestamp earlier name", 0, created, "a-first", true},
-		{"equal timestamp later name", 0, created, "z-last", false},
+		{"older lower priority", 0, created.Add(-time.Minute), "competitor", false},
+		{"equal priority older", 1, created.Add(-time.Minute), "competitor", true},
+		{"equal priority newer", 1, created.Add(time.Minute), "competitor", false},
+		{"equal timestamp earlier name", 1, created, "a-first", true},
+		{"equal timestamp later name", 1, created, "z-last", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			current := priorityTestClaim("middle", 0, created)
+			current := priorityTestClaim("middle", 1, created)
 			competitor := priorityTestClaim(tt.claimName, tt.priority, tt.created)
 			pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
 			r, runtime := newReconciler(t)
@@ -297,7 +297,7 @@ func TestPlacementTurnBlockerInfeasibleCurrentKeepsItsRefusal(t *testing.T) {
 func TestPlacementTurnBlockerFailedRetryYieldsToOrdinaryClaims(t *testing.T) {
 	current := priorityTestClaim("failed-high", 100, at0758)
 	current.Status.Phase = modelv1alpha1.ModelClaimFailed
-	ordinary := priorityTestClaim("ordinary-low", -10, at0759)
+	ordinary := priorityTestClaim("ordinary-low", 0, at0759)
 	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
 	r, runtime := newReconciler(t)
 	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
@@ -371,7 +371,7 @@ func TestClaimFeasibleForPlacementMakesRoomWithoutMutating(t *testing.T) {
 }
 
 func TestPlacementTurnBlockerExistingInstanceBypassesAdmission(t *testing.T) {
-	current := priorityTestClaim("replacement", -10, at0758)
+	current := priorityTestClaim("replacement", 0, at0758)
 	current.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: "failed", Phase: modelv1alpha1.ModelClaimFailed}}
 	high := priorityTestClaim("high", 10, at0759)
 	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
