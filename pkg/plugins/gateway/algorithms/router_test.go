@@ -659,7 +659,7 @@ func TestMultiStrategyRouterRoute_SelectsLeastLoadedPortForMultiPortPod(t *testi
 		}},
 		scorers: map[string]types.PodScorer{
 			"fixed":                    &fakeScorer{polarity: types.PolarityMost, scores: map[*v1.Pod]float64{podA: 1, podB: 0}},
-			string(RouterLeastRequest): &leastRequestRouter{cache: c},
+			string(RouterLeastRequest): NewLeastRequestTopKRouterWithCache(c),
 		},
 	}
 	ctx := types.NewRoutingContext(context.Background(), RouterNotSet, model, "hello", "req-multi-port", "")
@@ -1061,12 +1061,13 @@ func TestSelectExplicitLeastRequestIsNotGivenTopKToo(t *testing.T) {
 }
 
 // The blend's port selection for multi-port pods reads the cache of whichever load-count scorer
-// is configured, and prefers least-request-top-k, which is what the blend appends.
+// is configured (least-request-top-k, or its least-request alias), and prefers least-request-top-k,
+// which is what the blend appends.
 func TestMultiStrategyRouterPortSelectionCache(t *testing.T) {
 	topKCache := &po2FakeCache{}
 	leastRequestCache := &po2FakeCache{}
 	topK := NewLeastRequestTopKRouterWithCache(topKCache)
-	leastRequest := &leastRequestRouter{cache: leastRequestCache}
+	leastRequest := NewLeastRequestTopKRouterWithCache(leastRequestCache)
 
 	tests := []struct {
 		name    string
@@ -1272,9 +1273,7 @@ func TestNoPods(t *testing.T) {
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
 
-	r2 := leastRequestRouter{
-		cache: &c,
-	}
+	r2 := NewLeastRequestTopKRouterWithCache(&c)
 	targetPodIP, err = r2.Route(requestContext(model), podsFromCache(&c))
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
@@ -1374,9 +1373,7 @@ func TestWithIPPods(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
 
-	r2 := leastRequestRouter{
-		cache: c,
-	}
+	r2 := NewLeastRequestTopKRouterWithCache(c)
 	targetPodIP, err = r2.Route(requestContext(model), pods)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
@@ -1604,9 +1601,9 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 	// Normally `Init()` initializes routers using `cache.Get()`. We override the factory specifically for testing here.
 	rm := NewRouterManager()
 
-	// Register least-request with the test cache
+	// Register least-request (an alias for least-request-top-k) with the test cache
 	rm.Register(RouterLeastRequest, func() (types.Router, error) {
-		return &leastRequestRouter{cache: c}, nil
+		return NewLeastRequestTopKRouterWithCache(c), nil
 	})
 
 	// Register throughput with the test cache
@@ -1820,7 +1817,7 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 
 	// Update router manager with the new 3-pod cache
 	rm3 := NewRouterManager()
-	rm3.Register(RouterLeastRequest, func() (types.Router, error) { return &leastRequestRouter{cache: c3}, nil })
+	rm3.Register(RouterLeastRequest, func() (types.Router, error) { return NewLeastRequestTopKRouterWithCache(c3), nil })
 	rm3.Register(RouterThroughput, func() (types.Router, error) { return throughputRouter{cache: c3}, nil })
 	rm3.Init()
 

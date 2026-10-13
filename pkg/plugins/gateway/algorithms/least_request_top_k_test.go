@@ -28,6 +28,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -793,4 +794,84 @@ func TestLeastRequestTopKRouter_ScoreAllAppliesRampAdjustment(t *testing.T) {
 	require.True(t, scored[0] && scored[1])
 	assert.InDelta(t, scores[0], scores[1], 5,
 		"ramp should put podA's score close to podB's, not ~32 apart as it would without ramp: %v", scores)
+}
+
+// least-request is a deprecated alias for least-request-top-k: the name must stay registered
+// (existing routing-strategy headers and config profiles pass it) but must resolve to the top-k
+// router, wired to the same cache the manager was built with.
+func TestLeastRequest_IsAliasForLeastRequestTopK(t *testing.T) {
+	t.Run("default manager registers the alias", func(t *testing.T) {
+		defaultRM.routerMu.RLock()
+		defer defaultRM.routerMu.RUnlock()
+		assert.Contains(t, defaultRM.routerConstructor, RouterLeastRequest)
+	})
+
+	t.Run("isolated manager resolves it to the top-k router on its own cache", func(t *testing.T) {
+		pods := []*v1.Pod{newPod("p1", "1.1.1.1", true, nil)}
+		c := cache.NewWithPodsMetricsForTest(pods, testModelName, map[string]map[string]metrics.MetricValue{})
+		rm := NewRouterManagerWithCache(c)
+		rm.Init()
+
+		_, valid := rm.Validate(string(RouterLeastRequest))
+		assert.True(t, valid, "least-request must stay a valid routing strategy")
+
+		router, err := rm.Lookup(RouterLeastRequest)
+		require.NoError(t, err)
+		topK, ok := router.(*LeastRequestTopKRouter)
+		require.True(t, ok, "least-request must resolve to *LeastRequestTopKRouter, got %T", router)
+		assert.Same(t, c, topK.cache)
+	})
+}
+
+// Through the alias, a request must still avoid a pod that is far busier than the rest of the fleet:
+// only the least-loaded pods within the top-k/epsilon window are eligible, so p4 never wins.
+func TestLeastRequest_AliasNeverPicksHeavilyLoadedPod(t *testing.T) {
+	pods := []*v1.Pod{
+		newPod("p1", "1.1.1.1", true, nil),
+		newPod("p2", "2.2.2.2", true, nil),
+		newPod("p3", "3.3.3.3", true, nil),
+		newPod("p4", "4.4.4.4", true, nil),
+	}
+	c := cache.NewWithPodsMetricsForTest(pods, testModelName, map[string]map[string]metrics.MetricValue{
+		"p1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+		"p2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 2}},
+		"p3": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 3}},
+		"p4": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 9}},
+	})
+	withTopK(t, 5, 4)
+	rm := NewRouterManagerWithCache(c)
+	rm.Init()
+	router, err := rm.Lookup(RouterLeastRequest)
+	require.NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		ctx := types.NewRoutingContext(context.Background(), RouterLeastRequest, testModelName, "hello", "req-alias", "")
+		address, err := router.Route(ctx, podsFromCache(c))
+		require.NoError(t, err)
+		assert.Contains(t, []string{"1.1.1.1:8000", "2.2.2.2:8000", "3.3.3.3:8000"}, address)
+	}
+}
+
+// The port lookup is keyed by pod key (namespace/name), so same-named pods in two namespaces keep
+// their own ports: the data-parallel pod resolves to its least-loaded port and the plain pod to its
+// only port.
+func TestSelectTargetPortForPodWithLeastRequestCount_SameNamedPodsInTwoNamespaces(t *testing.T) {
+	dpPod := newPod("worker-0", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	dpPod.Namespace = "team-a"
+	dpPod.Spec.Containers = []v1.Container{{Env: []v1.EnvVar{{Name: "data-parallel-size", Value: "2"}}}}
+	plainPod := newPod("worker-0", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "9000"})
+	plainPod.Namespace = "team-b"
+	pods := []*v1.Pod{plainPod, dpPod}
+
+	// The test cache keys metrics by pod name, so both pods read these per-port counts.
+	c := cache.NewWithPodsMetricsForTest(pods, testModelName, map[string]map[string]metrics.MetricValue{
+		"worker-0": {
+			metrics.RealtimeNumRequestsRunning + "/8000": &metrics.SimpleMetricValue{Value: 5},
+			metrics.RealtimeNumRequestsRunning + "/8001": &metrics.SimpleMetricValue{Value: 3},
+		},
+	})
+	ports := (&utils.PodArray{Pods: pods}).ListPortsForPod()
+
+	assert.Equal(t, 8001, selectTargetPortForPodWithLeastRequestCount(c, dpPod, ports))
+	assert.Equal(t, 9000, selectTargetPortForPodWithLeastRequestCount(c, plainPod, ports))
 }

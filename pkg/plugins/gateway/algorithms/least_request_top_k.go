@@ -22,20 +22,30 @@ import (
 	"math/rand/v2"
 	"os"
 	"sort"
+	"strconv"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 const RouterLeastRequestTopK types.RoutingAlgorithm = "least-request-top-k"
 
+// RouterLeastRequest is a deprecated alias for RouterLeastRequestTopK. The standalone
+// least-request router always picked the single global minimum, so gateway replicas reading the
+// same Redis-backed counter at the same moment all picked the same pod (see
+// leastRequestTopKCandidates). The name stays registered so existing routing-strategy headers,
+// config profiles and fallback settings keep working, but it resolves to least-request-top-k.
+const RouterLeastRequest types.RoutingAlgorithm = "least-request"
+
 func init() {
 	Register(RouterLeastRequestTopK, NewLeastRequestTopKRouter)
+	Register(RouterLeastRequest, NewLeastRequestTopKRouter)
 }
 
 // leastRequestTopKCandidates (K) bounds the eligible set by rank. Plain least-request always picks
@@ -302,6 +312,107 @@ func (r *LeastRequestTopKRouter) Polarity() types.Polarity {
 // count, not a scraped metric, so there is nothing to subscribe to.
 func (r *LeastRequestTopKRouter) SubscribedMetrics() []string {
 	return []string{}
+}
+
+func selectTargetPodWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod) *v1.Pod {
+	return selectTargetPodWithLeastRequestCountFromCounts(getRequestCounts(cache, readyPods), readyPods)
+}
+
+func selectTargetPodWithLeastRequestCountFromCounts(podRequestCount map[string]int, readyPods []*v1.Pod) *v1.Pod {
+	var targetPod *v1.Pod
+	targetPods := []string{}
+
+	minCount := math.MaxInt32
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("selectTargetPodWithLeastRequestCount", "podRequestCount", podRequestCount)
+	}
+	for podKey, totalReq := range podRequestCount {
+		if totalReq < minCount {
+			minCount = totalReq
+			targetPods = []string{podKey}
+		} else if totalReq == minCount {
+			targetPods = append(targetPods, podKey)
+		}
+	}
+	if len(targetPods) > 0 {
+		targetPod = podsByKey(readyPods)[targetPods[rand.IntN(len(targetPods))]]
+	}
+	return targetPod
+}
+
+func selectTargetPortForPodWithLeastRequestCount(cache cache.Cache, pod *v1.Pod, portsMap map[string][]int) int {
+	if pod == nil {
+		return 0
+	}
+	podPorts := portsMap[utils.GeneratePodKey(pod.Namespace, pod.Name)]
+	if len(podPorts) == 0 {
+		return 0
+	}
+	if len(podPorts) == 1 {
+		return podPorts[0]
+	}
+
+	minCount := math.MaxInt32
+	targetPorts := make([]int, 0, len(podPorts))
+	for _, port := range podPorts {
+		metricName := metrics.RealtimeNumRequestsRunning + "/" + strconv.Itoa(port)
+		count := 0
+		if val, err := cache.GetMetricValueByPod(pod.Name, pod.Namespace, metricName); err == nil && val != nil {
+			count = int(val.GetSimpleValue())
+		}
+		if count < minCount {
+			minCount = count
+			targetPorts = []int{port}
+		} else if count == minCount {
+			targetPorts = append(targetPorts, port)
+		}
+	}
+
+	if len(targetPorts) == 0 {
+		return 0
+	}
+	return targetPorts[rand.IntN(len(targetPorts))]
+}
+
+// getRequestCounts returns the live cross-gateway running request count for each
+// pod, keyed by pod key (namespace/name), via GetPodsRunningRequests (one Redis round
+// trip for the whole list) rather than GetMetricValueByPod(RealtimeNumRequestsRunning),
+// which is a periodically synced cache that, between scrape ticks, only reflects this
+// gateway's local view.
+func getRequestCounts(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
+	counts, err := cache.GetPodsRunningRequests(readyPods)
+	podRequestCount := make(map[string]int, len(readyPods))
+	for _, pod := range readyPods {
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		if err == nil && counts != nil {
+			podRequestCount[podKey] = int(counts[podKey])
+		} else {
+			podRequestCount[podKey] = 0
+		}
+	}
+
+	return podRequestCount
+}
+
+// podsByKey maps each pod's key (namespace/name) to the pod, so a key picked from a
+// per-request map resolves to the pod it was computed for even when two candidates
+// share a name.
+func podsByKey(pods []*v1.Pod) map[string]*v1.Pod {
+	byKey := make(map[string]*v1.Pod, len(pods))
+	for _, pod := range pods {
+		byKey[utils.GeneratePodKey(pod.Namespace, pod.Name)] = pod
+	}
+	return byKey
+}
+
+func isMultiPortPods(pods []*v1.Pod) bool {
+	for _, pod := range pods {
+		if utils.IsDataParallelPod(pod) {
+			return true
+		}
+	}
+
+	return false
 }
 
 var _ types.Router = (*LeastRequestTopKRouter)(nil)

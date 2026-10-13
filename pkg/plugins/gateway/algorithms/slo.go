@@ -97,7 +97,7 @@ func NewSLORouter(modelName string) (types.QueueRouter, error) {
 	rm.Register(RouterSLOLeastLoad, func() (types.Router, error) { return NewLeastLoadRouter(loadProvider) })
 	// RouterLeastRequest must be registered on the local rm because rm.SetFallback
 	// resolves the provider from rm.routerFactory, populated by rm.Init() below.
-	rm.Register(RouterLeastRequest, NewLeastRequestRouter)
+	rm.Register(RouterLeastRequest, NewLeastRequestTopKRouter)
 	rm.Init()
 
 	sloQueue, err := queue.NewSLOQueue(rm.Select, modelName)

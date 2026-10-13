@@ -166,10 +166,9 @@ func ResolveExclusiveStrategy(algStr string) (string, bool) {
 // load-balance weight to 0 disables the whole feature, matching ParseMultiRouterConfig's own
 // "weight 0 means skip" convention.
 //
-// autoBlendLeastRequestTopKWeight weights least-request-top-k, not plain least-request: plain
-// least-request's ScoreAll gives every gateway replica the same single best pod (see
-// leastRequestTopKCandidates). The env var and the profile's autoBlend.leastRequestWeight keep
-// their least-request names because they are deployed configuration.
+// autoBlendLeastRequestTopKWeight weights least-request-top-k, which also backs the deprecated
+// least-request alias. The env var and the profile's autoBlend.leastRequestWeight keep their
+// least-request names because they are deployed configuration.
 var (
 	autoBlendLoadBalanceWeight      = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT", 1)
 	autoBlendLeastRequestTopKWeight = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT", 1)
@@ -338,8 +337,9 @@ func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig, weights autoB
 			blended += fmt.Sprintf(",%s:%d", RouterLoadBalance, weights.loadBalance)
 		}
 	}
-	// Checks both names: a caller who explicitly asked for plain "least-request" shouldn't also
-	// get least-request-top-k silently layered in as a second, redundant load-count scorer.
+	// Checks both names: "least-request" is an alias for least-request-top-k, so a caller who
+	// asked for it shouldn't also get least-request-top-k silently layered in as a second,
+	// redundant load-count scorer.
 	if !includesPrefixCache && !includesSessionAffinity &&
 		!mentioned[string(RouterLeastRequest)] && !mentioned[string(RouterLeastRequestTopK)] &&
 		weights.leastRequest > 0 {
@@ -428,17 +428,14 @@ func (m *multiStrategyRouter) setTargetPortIfNeeded(ctx *types.RoutingContext, r
 	}
 }
 
-// portSelectionCache returns the cache backing whichever of least-request-top-k or least-request
-// is configured on m, or nil if neither is present.
+// portSelectionCache returns the cache backing whichever of least-request-top-k or its
+// least-request alias is configured on m, or nil if neither is present.
 func (m *multiStrategyRouter) portSelectionCache() cache.Cache {
-	if scorer, ok := m.scorers[string(RouterLeastRequestTopK)]; ok {
-		if topK, ok := scorer.(*LeastRequestTopKRouter); ok {
-			return topK.cache
-		}
-	}
-	if scorer, ok := m.scorers[string(RouterLeastRequest)]; ok {
-		if leastRequest, ok := scorer.(*leastRequestRouter); ok {
-			return leastRequest.cache
+	for _, name := range []types.RoutingAlgorithm{RouterLeastRequestTopK, RouterLeastRequest} {
+		if scorer, ok := m.scorers[string(name)]; ok {
+			if topK, ok := scorer.(*LeastRequestTopKRouter); ok {
+				return topK.cache
+			}
 		}
 	}
 	return nil
@@ -770,7 +767,7 @@ func NewRouterManagerWithCacheAndPrefixIndexer(c cache.Cache, indexer *prefixcac
 	// copied from the production manager and retain their original dependencies
 	// (for example, SLO providers still resolve their configured cache).
 	rm.RegisterProvider(RouterRandom, RandomRouterProviderFunc)
-	rm.Register(RouterLeastRequest, func() (types.Router, error) { return NewLeastRequestRouterWithCache(c) })
+	rm.Register(RouterLeastRequest, func() (types.Router, error) { return NewLeastRequestTopKRouterWithCache(c), nil })
 	rm.Register(RouterLeastRequestTopK, func() (types.Router, error) { return NewLeastRequestTopKRouterWithCache(c), nil })
 	rm.Register(RouterLeastKvCache, func() (types.Router, error) { return NewLeastKvCacheRouterWithCache(c) })
 	rm.Register(RouterLeastLatency, func() (types.Router, error) { return NewLeastLatencyRouterWithCache(c) })
