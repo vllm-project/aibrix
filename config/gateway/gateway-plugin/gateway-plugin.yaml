@@ -191,6 +191,7 @@ spec:
     - name: aibrix-eg
   rules:
     - matches:
+        # Text generation
         - path:
             type: PathPrefix
             value: /v1/chat/completions
@@ -203,6 +204,7 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/completions
+        # Embeddings, ranking, classification and scoring
         - path:
             type: PathPrefix
             value: /v1/embeddings
@@ -224,12 +226,18 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/score
+        # Engine-native utilities
+        - path:
+            type: PathPrefix
+            value: /tokenize
+        - path:
+            type: PathPrefix
+            value: /pooling
+        # Image
         - path:
             type: PathPrefix
             value: /v1/images/generations
-        - path:
-            type: PathPrefix
-            value: /v1/video/generations
+        # Audio
         - path:
             type: PathPrefix
             value: /v1/audio/transcriptions
@@ -239,12 +247,10 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/audio/speech
+        # Video (the Videos API has routes of its own below)
         - path:
             type: PathPrefix
-            value: /tokenize
-        - path:
-            type: PathPrefix
-            value: /pooling
+            value: /v1/video/generations
       backendRefs:
         - name: aibrix-gateway-plugins
           port: 50052

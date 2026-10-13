@@ -350,11 +350,16 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 
 func isLanguageRequest(requestPath string) bool {
 	nonLanguagePrefixes := []string{
+		// Image
 		PathImagesGenerations,
+
+		// Video
 		PathVideoGenerations,
 		// Prefix match: also covers /v1/videos/sync and the GET/DELETE sub-resources
 		// (/v1/videos/{id}, /v1/videos/{id}/content).
 		PathVideos,
+
+		// Audio
 		PathAudioTranscriptions,
 		PathAudioTranslations,
 		// Speech generation returns binary audio, which may arrive in several chunks, so its
@@ -362,6 +367,8 @@ func isLanguageRequest(requestPath string) bool {
 		// covers PathAudioSpeechBatch, whose JSON body inlines every item's base64 audio and can
 		// run to many megabytes; its HTTP 200 does not say whether individual items failed.
 		PathAudioSpeech,
+
+		// Tokenization and token counting
 		PathTokenize,
 		PathMessagesCountTokens,
 	}

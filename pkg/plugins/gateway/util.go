@@ -227,16 +227,17 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message, prefixText string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	path := pathWithoutQuery(requestPath)
 	switch path {
+	// Text generation
 	case PathChatCompletions, PathMessages, PathMessagesCountTokens:
 		model, message, prefixText, stream, errRes = validateChatRequest(requestID, path, requestBody, user)
 	case PathResponses:
 		model, message, prefixText, stream, errRes = validateResponsesRequest(requestID, requestBody)
 	case PathCompletions:
 		model, message, stream, errRes = validateCompletionRequest(requestID, requestBody, user)
+
+	// Embeddings, ranking, classification and scoring
 	case PathEmbeddings:
 		model, errRes = validateEmbeddingRequest(requestID, requestBody)
-	case PathImagesGenerations, PathVideoGenerations:
-		model, errRes = validateImageGenerationRequest(requestID, path, requestBody)
 	case PathRerank:
 		model, message, errRes = validateRerankRequest(requestID, requestBody)
 	case PathClassify:
@@ -249,10 +250,18 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		model, message, errRes = validateSystemOneRequest(requestID, requestBody)
 	case PathScore:
 		model, message, errRes = validateScoreRequest(requestID, requestBody)
+
+	// Engine-native utilities
 	case PathTokenize:
 		model, message, errRes = validateTokenizeRequest(requestID, requestBody)
 	case PathPooling:
 		model, message, errRes = validatePoolingRequest(requestID, requestBody)
+
+	// Image and video generation share one JSON validator
+	case PathImagesGenerations, PathVideoGenerations:
+		model, errRes = validateImageGenerationRequest(requestID, path, requestBody)
+
+	// Audio
 	case PathAudioTranscriptions, PathAudioTranslations:
 		// Audio transcription and translation require multipart/form-data content-type, not JSON
 		// This case handles the error when JSON is sent to these audio endpoints
