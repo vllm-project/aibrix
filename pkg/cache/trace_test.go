@@ -76,7 +76,8 @@ var _ = Describe("reqeustTrace", func() {
 	It("should key a request by its log2 token buckets.", func() {
 		trace := NewRequestTrace(0)
 		// log2(20) = 4.32 and log2(270) = 8.08, which round to buckets 43 and 81 of 0.1.
-		key, _ := trace.AddRequestTrace("no use now", 20, 270, "")
+		key, ok := trace.AddRequestTrace("no use now", 20, 270, "")
+		Expect(ok).To(BeTrue())
 		Expect(key).To(Equal("43:81"))
 	})
 
