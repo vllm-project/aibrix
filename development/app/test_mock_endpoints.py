@@ -1232,3 +1232,51 @@ def test_speech_batch_rejects_a_non_object_body(monkeypatch):
     response = post_json(module.app.test_client(), "/v1/audio/speech/batch", [{"input": "Hi"}])
 
     assert response.status_code == 400
+
+
+@pytest.mark.parametrize("response_format", ["bogus", "", 7, ["wav"], {"format": "wav"}])
+def test_speech_rejects_an_unsupported_response_format(monkeypatch, response_format):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(
+        module.app.test_client(),
+        "/v1/audio/speech",
+        {"model": "tts-1", "input": "Hi", "response_format": response_format},
+    )
+
+    # A JSON list or object is unhashable, so a bare dict lookup would turn it into a 500.
+    assert response.status_code == 400
+    assert response.get_json()["error"]["param"] == "response_format"
+
+
+def test_speech_serves_every_declared_format_with_its_content_type(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    for response_format, media_type in module.SPEECH_CONTENT_TYPES.items():
+        response = post_json(
+            client,
+            "/v1/audio/speech",
+            {"model": "tts-1", "input": "Hi", "response_format": response_format},
+        )
+
+        assert response.status_code == 200, response_format
+        assert response.mimetype == media_type, response_format
+
+
+@pytest.mark.parametrize("response_format", [7, ["wav"], {"format": "wav"}])
+def test_speech_batch_reports_a_non_string_item_format_without_failing_the_batch(
+    monkeypatch, response_format
+):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(
+        module.app.test_client(),
+        "/v1/audio/speech/batch",
+        {"items": [{"input": "ok"}, {"input": "bad format", "response_format": response_format}]},
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert [result["status"] for result in body["results"]] == ["success", "error"]
+    assert body["results"][1]["error"]["param"] == "items.1.response_format"

@@ -1676,11 +1676,10 @@ def audio_speech():
                 param="voice"
             )
 
-        # Validate response format
-        valid_formats = ["mp3", "opus", "aac", "flac", "wav", "pcm"]
-        if response_format not in valid_formats:
+        # Validate response format against the table that also supplies its content type
+        if not is_supported_speech_format(response_format):
             return create_error_response(
-                f"Invalid response_format '{response_format}'. Must be one of: {', '.join(valid_formats)}",
+                f"Invalid response_format '{response_format}'. Must be one of: {', '.join(SPEECH_CONTENT_TYPES)}",
                 param="response_format"
             )
 
@@ -1689,7 +1688,7 @@ def audio_speech():
 
         return Response(
             build_mock_speech_audio(response_format),
-            mimetype=SPEECH_CONTENT_TYPES[response_format],
+            mimetype=SPEECH_CONTENT_TYPES.get(response_format, "audio/mpeg"),
             headers={
                 "Content-Disposition": f"attachment; filename=speech.{response_format}"
             }
@@ -1712,6 +1711,15 @@ SPEECH_CONTENT_TYPES = {
     "wav": "audio/wav",
     "pcm": "audio/pcm",
 }
+
+
+def is_supported_speech_format(response_format):
+    """True for a response_format the mock can serve.
+
+    A JSON list or object is unhashable and would raise on a dict membership test, so only a
+    string is ever looked up. Handlers that pass this check can index SPEECH_CONTENT_TYPES.
+    """
+    return isinstance(response_format, str) and response_format in SPEECH_CONTENT_TYPES
 
 
 def build_mock_speech_audio(response_format):
@@ -1792,7 +1800,7 @@ def audio_speech_batch():
                 results.append(speech_batch_item_error(
                     index, "'input' is a required parameter and cannot be empty",
                     f"items.{index}.input"))
-            elif response_format not in SPEECH_CONTENT_TYPES:
+            elif not is_supported_speech_format(response_format):
                 results.append(speech_batch_item_error(
                     index,
                     f"Invalid response_format '{response_format}'. "
@@ -1805,7 +1813,7 @@ def audio_speech_batch():
                     "audio_data": base64.b64encode(
                         build_mock_speech_audio(response_format)).decode("ascii"),
                     "format": response_format,
-                    "media_type": SPEECH_CONTENT_TYPES[response_format],
+                    "media_type": SPEECH_CONTENT_TYPES.get(response_format, "audio/mpeg"),
                     "finish_reason": "stop",
                 })
 
