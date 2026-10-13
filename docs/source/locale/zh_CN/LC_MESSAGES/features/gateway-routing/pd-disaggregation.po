@@ -1126,6 +1126,31 @@ msgstr ""
 "往返中读入其他存活副本的计费后加到分数上。没有 Redis，或设置 ``AIBRIX_TOKEN_LOAD_SHARED_LEDGER=false`` "
 "时，账本是每个副本本地的；多副本时各自只计入自己路由过的请求。prefill 账本始终是本地的。"
 
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:523
+msgid ""
+"Decode pods can have different KV capacities, for example on different "
+"GPU types or with different ``gpu_memory_utilization``. ``token_load`` "
+"then compares how full each pod is rather than its token count: each "
+"pod's score is multiplied by the mean capacity of the candidates divided "
+"by its own capacity, so it stays in tokens and is unchanged when all "
+"capacities are equal. The capacity comes from the scraped engine metrics:"
+" ``num_gpu_blocks`` × ``block_size`` from vLLM's "
+"``vllm:cache_config_info``, or SGLang's ``sglang:max_total_num_tokens``. "
+"A pod whose capacity isn't known counts as the mean; when no candidate "
+"reports one, scores stay in tokens. Set "
+"``AIBRIX_DECODE_TOKEN_LOAD_CAPACITY_AWARE=false`` to compare token "
+"counts."
+msgstr ""
+"decode pod 的 KV 容量可能不同，例如部署在不同的 GPU 型号上，或设置了不同的 "
+"``gpu_memory_utilization``。此时 ``token_load`` "
+"比较的是每个 pod 的填满程度，而不是 token 数：每个 pod 的分数乘以候选 pod "
+"的平均容量再除以它自己的容量，因此分数仍以 token 为单位，且所有容量相等时保持不变。"
+"容量来自抓取的引擎指标：vLLM ``vllm:cache_config_info`` 中的 "
+"``num_gpu_blocks`` × ``block_size``，或 SGLang "
+"的 ``sglang:max_total_num_tokens``。容量未知的 pod 按平均容量计；"
+"没有任何候选 pod 报告容量时，分数仍按 token 计。设置 ``AIBRIX_DECODE_TOKEN_LOAD_CAPACITY_AWARE=false`` "
+"可改为比较 token 数。"
+
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:525
 msgid "Enable ``token_load`` via the routing config:"
 msgstr "通过路由配置启用 ``token_load`` ："
@@ -1817,6 +1842,20 @@ msgid ""
 msgstr ""
 "仅用于 ``token_load`` decode 策略，且已配置 Redis。通过 Redis 在网关副本之间共享 decode "
 "账本。``false`` 则每个副本使用本地账本。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:841
+msgid "``AIBRIX_DECODE_TOKEN_LOAD_CAPACITY_AWARE``"
+msgstr "``AIBRIX_DECODE_TOKEN_LOAD_CAPACITY_AWARE``"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:843
+msgid ""
+"``token_load`` decode policy only. Scales each decode pod's score by its "
+"KV capacity, read from the engine metrics, so pods of different sizes are"
+" compared by how full they are. ``false`` compares token counts."
+msgstr ""
+"仅用于 ``token_load`` decode 策略。按每个 decode pod 的 "
+"KV 容量（从引擎指标读取）缩放其分数，使不同大小的 pod 按填满程度比较。``false`` "
+"则比较 token 数。"
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:839
 msgid "``AIBRIX_DECODE_SCORE_POLICY``"

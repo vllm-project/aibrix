@@ -51,9 +51,28 @@ type TokenizerPoolConfig struct {
 type tokenizerEntry struct {
 	tokenizer    tokenizer.Tokenizer
 	endpoint     string
+	podIP        string // set when the endpoint is a pod rather than a ModelServiceMap entry
 	lastUsed     time.Time
 	lastHealthy  time.Time
 	healthStatus bool
+}
+
+// usable reports whether the entry can serve a request routed among pods. A
+// tokenizer found through pod discovery is pinned to that pod and has to move
+// once the pod leaves the ready set, as it does in every rollout or scale-down.
+func (e *tokenizerEntry) usable(pods []*v1.Pod) bool {
+	if !e.healthStatus {
+		return false
+	}
+	if e.podIP == "" {
+		return true
+	}
+	for _, pod := range pods {
+		if pod.Status.PodIP == e.podIP {
+			return true
+		}
+	}
+	return false
 }
 
 // TokenizerPool manages model-specific tokenizers with caching and health checking
@@ -226,7 +245,8 @@ func (p *TokenizerPool) observeTokenizerLatency(model string, duration time.Dura
 	}
 }
 
-// GetTokenizer returns a tokenizer for the specified model
+// GetTokenizer returns a tokenizer for the specified model. Pass all of the
+// model's ready pods: a tokenizer whose pod isn't in the list gets replaced.
 func (p *TokenizerPool) GetTokenizer(model string, pods []*v1.Pod) tokenizer.Tokenizer {
 	// Safe metric increment
 	p.incTokenizerRequests(model)
@@ -245,7 +265,7 @@ func (p *TokenizerPool) GetTokenizer(model string, pods []*v1.Pod) tokenizer.Tok
 	// to improve concurrency performance while maintaining thread safety
 	p.mu.Lock()
 	entry, exists := p.tokenizers[model]
-	if exists && entry.healthStatus {
+	if exists && entry.usable(pods) {
 		// Update lastUsed while still holding the lock
 		entry.lastUsed = time.Now()
 		tok := entry.tokenizer
@@ -264,7 +284,7 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 	p.mu.Lock()
 
 	// Double-check after acquiring write lock
-	if entry, exists := p.tokenizers[model]; exists && entry.healthStatus {
+	if entry, exists := p.tokenizers[model]; exists && entry.usable(pods) {
 		entry.lastUsed = time.Now()
 		p.mu.Unlock()
 		return entry.tokenizer
@@ -278,7 +298,7 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 	}
 
 	// Find endpoint for model
-	endpoint := p.findVLLMEndpointForModel(model, pods)
+	endpoint, podIP := p.findVLLMEndpointForModel(model, pods)
 	if endpoint == "" {
 		p.mu.Unlock()
 		klog.V(4).Infof("No vLLM endpoint found for model %s, using default tokenizer", model)
@@ -327,7 +347,7 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 
 	// Double-check: another goroutine might have created it while we were checking health
 	entry, exists := p.tokenizers[model]
-	if exists && entry.healthStatus {
+	if exists && entry.usable(pods) {
 		// Another goroutine beat us to it, use theirs and discard ours
 		entry.lastUsed = time.Now()
 		// Close the tokenizer we just created since we won't use it
@@ -348,7 +368,7 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 		return p.config.DefaultTokenizer
 	}
 	if exists {
-		// The existing entry is unhealthy; healthy entries returned above under this same lock.
+		// The existing entry is unhealthy or its pod has left; usable entries returned above under this same lock.
 		if closer, ok := entry.tokenizer.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
@@ -359,6 +379,7 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 	p.tokenizers[model] = &tokenizerEntry{
 		tokenizer:    tok,
 		endpoint:     endpoint,
+		podIP:        podIP,
 		lastUsed:     now,
 		lastHealthy:  now,
 		healthStatus: true,
@@ -373,11 +394,11 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 }
 
 // findVLLMEndpointForModel finds the vLLM endpoint for a specific model
-func (p *TokenizerPool) findVLLMEndpointForModel(model string, pods []*v1.Pod) string {
+func (p *TokenizerPool) findVLLMEndpointForModel(model string, pods []*v1.Pod) (endpoint, podIP string) {
 	// Priority order for endpoint discovery:
 	// 1. Service endpoint (if configured)
-	if endpoint, exists := p.config.ModelServiceMap[model]; exists {
-		return endpoint
+	if service, exists := p.config.ModelServiceMap[model]; exists {
+		return service, ""
 	}
 
 	// 2. Direct pod endpoint
@@ -397,10 +418,10 @@ func (p *TokenizerPool) findVLLMEndpointForModel(model string, pods []*v1.Pod) s
 			continue
 		}
 
-		return fmt.Sprintf(p.config.EndpointTemplate, pod.Status.PodIP)
+		return fmt.Sprintf(p.config.EndpointTemplate, pod.Status.PodIP), pod.Status.PodIP
 	}
 
-	return ""
+	return "", ""
 }
 
 // getModelFromPod extracts model information from pod
@@ -490,24 +511,40 @@ func (p *TokenizerPool) startHealthChecker() {
 
 // performHealthCheck checks health of all tokenizers
 func (p *TokenizerPool) performHealthCheck() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
+	// Probe without the lock: GetTokenizer takes it on every routed request,
+	// and one unresponsive endpoint would stall them all.
+	p.mu.RLock()
+	entries := make(map[string]*tokenizerEntry, len(p.tokenizers))
 	for model, entry := range p.tokenizers {
-		if remoteTok, ok := entry.tokenizer.(interface{ IsHealthy(context.Context) bool }); ok {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			healthy := remoteTok.IsHealthy(ctx)
-			cancel()
+		entries[model] = entry
+	}
+	p.mu.RUnlock()
 
-			oldStatus := entry.healthStatus
-			entry.healthStatus = healthy
-			if healthy {
-				entry.lastHealthy = time.Now()
-			} else if oldStatus {
-				// Only log and count when transitioning from healthy to unhealthy
-				klog.Warningf("Tokenizer for model %s is now unhealthy", model)
-				p.incUnhealthyTokenizers()
-			}
+	for model, entry := range entries {
+		remoteTok, ok := entry.tokenizer.(interface{ IsHealthy(context.Context) bool })
+		if !ok {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		healthy := remoteTok.IsHealthy(ctx)
+		cancel()
+
+		p.mu.Lock()
+		// Skip entries replaced or removed while the probe ran.
+		if p.tokenizers[model] != entry {
+			p.mu.Unlock()
+			continue
+		}
+		oldStatus := entry.healthStatus
+		entry.healthStatus = healthy
+		if healthy {
+			entry.lastHealthy = time.Now()
+		}
+		p.mu.Unlock()
+		if !healthy && oldStatus {
+			// Only log and count when transitioning from healthy to unhealthy
+			klog.Warningf("Tokenizer for model %s is now unhealthy", model)
+			p.incUnhealthyTokenizers()
 		}
 	}
 }
