@@ -94,11 +94,12 @@ type contentItem struct {
 }
 
 // engineNativeReqMinimal captures the fields needed to route a vLLM engine-native
-// request (/tokenize, /pooling): the completion form carries "prompt" (tokenize)
-// or "input" (pooling), the chat form "messages". Prompt, input, and messages all
-// stay raw JSON so a wrongly-typed value reaches the engine's validator instead of
-// failing this unmarshal -- in particular a non-array "messages" on a
-// completion-form body (an ignored extra) must not reject a valid "input".
+// request (/tokenize, /pooling, /classify): the completion form carries "prompt"
+// (tokenize) or "input" (pooling, classify), the chat form "messages". Prompt,
+// input, and messages all stay raw JSON so a wrongly-typed value reaches the
+// engine's validator instead of failing this unmarshal -- in particular a non-array
+// "messages" on a completion-form body (an ignored extra) must not reject a valid
+// "input".
 type engineNativeReqMinimal struct {
 	Model          string          `json:"model"`
 	Prompt         json.RawMessage `json:"prompt"`
@@ -226,7 +227,7 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message, prefixText string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	path := pathWithoutQuery(requestPath)
 	switch path {
-	case PathChatCompletions, PathMessages:
+	case PathChatCompletions, PathMessages, PathMessagesCountTokens:
 		model, message, prefixText, stream, errRes = validateChatRequest(requestID, path, requestBody, user)
 	case PathResponses:
 		model, message, prefixText, stream, errRes = validateResponsesRequest(requestID, requestBody)
@@ -240,6 +241,8 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		model, message, errRes = validateRerankRequest(requestID, requestBody)
 	case PathClassify:
 		model, message, errRes = validateClassifyRequest(requestID, requestBody)
+	case PathNativeClassify:
+		model, message, errRes = validateNativeClassifyRequest(requestID, requestBody)
 	case PathDecisions:
 		model, message, errRes = validateDecisionsRequest(requestID, requestBody)
 	case PathSystemOne:
@@ -251,9 +254,11 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 	case PathPooling:
 		model, message, errRes = validatePoolingRequest(requestID, requestBody)
 	case PathAudioTranscriptions, PathAudioTranslations:
-		// Audio endpoints require multipart/form-data content-type, not JSON
-		// This case handles the error when JSON is sent to audio endpoints
+		// Audio transcription and translation require multipart/form-data content-type, not JSON
+		// This case handles the error when JSON is sent to these audio endpoints
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "audio requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
+	case PathAudioSpeech:
+		model, message, errRes = validateAudioSpeechRequest(requestID, requestBody)
 	default:
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", "", "", HeaderErrorRequestBodyProcessing, "true")
 	}
@@ -286,7 +291,7 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 		return
 	}
 	systemText := ""
-	if requestPath == PathMessages {
+	if requestPath == PathMessages || requestPath == PathMessagesCountTokens {
 		systemText = requestPromptText(requestID, req.System)
 	}
 	prefixText = combinePrefixText(message, systemText, canonicalToolsText(requestID, req.Tools))
@@ -586,7 +591,7 @@ func validateRerankRequest(requestID string, requestBody []byte) (model, message
 // and the rest of the schema is left to the engine. Nothing is metered: no tokens are generated.
 // nolint:nakedret
 func validateTokenizeRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
-	return validateEngineNativeRequest(requestID, "tokenize", false, requestBody)
+	return validateEngineNativeRequest(requestID, PathTokenize, requestBody)
 }
 
 // validatePoolingRequest parses and validates a vLLM /pooling request body. Only "model"
@@ -597,25 +602,31 @@ func validateTokenizeRequest(requestID string, requestBody []byte) (model, messa
 // are rejected at the edge too, because the language response path cannot meter them.
 // nolint:nakedret
 func validatePoolingRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
-	return validateEngineNativeRequest(requestID, "pooling", true, requestBody)
+	return validateEngineNativeRequest(requestID, PathPooling, requestBody)
+}
+
+// validateNativeClassifyRequest parses and validates a vLLM /classify request body, which
+// takes the same "input" or "messages" forms as /pooling. Only "model" is required, and the
+// rest of the schema is left to the engine.
+// nolint:nakedret
+func validateNativeClassifyRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	return validateEngineNativeRequest(requestID, PathNativeClassify, requestBody)
 }
 
 // validateEngineNativeRequest is the shared validator for vLLM engine-native paths
-// (/tokenize, /pooling), whose request bodies are a union of a completion form
-// ("prompt" for tokenize, "input" for pooling) and a chat form ("messages").
+// (/tokenize, /pooling, /classify), whose request bodies are a union of a completion
+// form ("prompt" for tokenize, "input" otherwise) and a chat form ("messages").
 // Only "model" is required - the one field the gateway routes on; a body without
 // any input field still reaches the engine, which owns that error. The routing
 // message is best-effort: parseChatMessages unquotes a JSON string and writes any
 // other JSON value (array, token ids) as raw bytes, so the whole input value becomes
 // one content item rather than being expanded into several.
 // nolint:nakedret
-func validateEngineNativeRequest(requestID, endpoint string, pooling bool, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+func validateEngineNativeRequest(requestID, endpointPath string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	endpoint := strings.TrimPrefix(endpointPath, "/")
+	pooling := endpointPath == PathPooling
 	var req engineNativeReqMinimal
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		endpointPath := PathTokenize
-		if pooling {
-			endpointPath = PathPooling
-		}
 		logRequestBodyParseFailure(requestID, endpointPath, "error to unmarshal "+endpoint+" object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
@@ -628,11 +639,11 @@ func validateEngineNativeRequest(requestID, endpoint string, pooling bool, reque
 	model = req.Model
 
 	// Select the completion field by endpoint: tokenize reads "prompt", pooling
-	// reads "input". The other completion field is an ignored extra on that path
-	// (vLLM's OpenAIBaseModel is extra="allow"), so it must not win the routing
-	// key. The chat form ("messages") is the fallback for both.
+	// and classify read "input". The other completion field is an ignored extra on
+	// that path (vLLM's OpenAIBaseModel is extra="allow"), so it must not win the
+	// routing key. The chat form ("messages") is the fallback for all of them.
 	completionField := req.Input
-	if !pooling {
+	if endpointPath == PathTokenize {
 		completionField = req.Prompt
 	}
 
@@ -658,7 +669,7 @@ func validateEngineNativeRequest(requestID, endpoint string, pooling bool, reque
 	}
 
 	// Non-streaming engine paths reject stream at the edge, like embeddings;
-	// tokenize has no stream field, and a stray one is left to the engine.
+	// tokenize and classify have no stream field, and a stray one is left to the engine.
 	if pooling && len(req.Stream) > 0 {
 		var streamBool bool
 		if err := sonic.Unmarshal(req.Stream, &streamBool); err != nil || streamBool {
@@ -944,6 +955,44 @@ func jsonString(value json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return text, true
+}
+
+// validateAudioSpeechRequest parses and validates a vLLM-Omni /v1/audio/speech request body.
+// Only what the gateway itself needs is checked: a JSON object with a non-empty "model" to
+// route on and a non-empty textual "input" to synthesize. The speech options (voice,
+// response_format, speed, instructions, language, stream_format, ...) belong to the engine and
+// are forwarded as sent. A request-level "stream" field is deliberately not surfaced as a stream
+// here: the response is binary audio, so the gateway must never treat it as an SSE stream.
+// nolint:nakedret
+func validateAudioSpeechRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	if trimmed := bytes.TrimSpace(requestBody); len(trimmed) == 0 || trimmed[0] != '{' {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	var req struct {
+		Model string `json:"model"`
+		Input string `json:"input"`
+	}
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		// The body can hold customer text, so log its size, not its content.
+		klog.ErrorS(nil, "error to unmarshal audio speech object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	// The gateway selects the backend pod by model, so it cannot fall back to an engine default.
+	if strings.TrimSpace(req.Model) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if strings.TrimSpace(req.Input) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property and cannot be empty", "", "input", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	model, message = req.Model, req.Input
+	return
 }
 
 // jsonParseReason returns why sonic rejected a body without the excerpt of the body that its

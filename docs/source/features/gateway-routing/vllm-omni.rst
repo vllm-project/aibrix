@@ -256,6 +256,34 @@ The catalog reports what the gateway knows: the job's identity, model, and reten
 
 ----
 
+Text-to-Speech
+--------------
+
+vLLM-Omni's ``POST /v1/audio/speech`` synthesizes speech from text. It is a JSON request with a binary audio response, so — like the image and synchronous video endpoints — it needs none of the video job machinery: the gateway routes it to the pods of the requested model and streams the audio back untouched.
+
+.. code-block:: bash
+
+    curl -X POST "$BASE/v1/audio/speech" \
+      -H "Authorization: Bearer ${API_KEY}" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "model": "qwen2-5-omni-7b",
+        "input": "Hello from AIBrix.",
+        "voice": "alloy",
+        "response_format": "mp3"
+      }' \
+      -o speech.mp3
+
+What differs from the other endpoints:
+
+- ``model`` is required. The gateway needs the name to select a pod, so a request without one is rejected with ``400``.
+- ``input`` is required and cannot be empty. It is the text to synthesize and is also the routing text for prefix-cache-aware routing.
+- Every other field, such as ``voice``, ``response_format``, ``speed``, ``instructions``, ``language``, and ``stream_format``, is forwarded as sent and validated by the engine.
+- The response is binary audio, which the engine may send in several chunks. The gateway forwards it byte for byte and never parses it as JSON or as an SSE stream, so a request-level ``stream`` field does not turn on SSE handling. Nothing about a successful body is parsed, so no token usage is reported.
+- Unlike the ``/v1/videos`` endpoints, this one takes ``application/json``: do **not** send ``multipart/form-data``.
+
+----
+
 Endpoint Reference
 --------------------
 
@@ -284,6 +312,9 @@ Endpoint Reference
    * - ``/v1/videos/{id}``
      - DELETE
      - Delete a job and its stored video. Pinned to the pod that created it; the record is removed after a 2xx or 404 response so a failed delete can still be retried.
+   * - ``/v1/audio/speech``
+     - POST
+     - JSON request, binary audio response. Routed by model like a chat completion; the audio streams through unparsed, so no token usage is recorded and no job is registered.
 
 ----
 

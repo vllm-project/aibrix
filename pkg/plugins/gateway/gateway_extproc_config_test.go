@@ -255,6 +255,21 @@ func TestGatewayPluginManifest_SharedRouteServesScore(t *testing.T) {
 	assert.Contains(t, manifest.pathMatches(t, "reserved-router"), manifestPathMatch{Type: "PathPrefix", Value: PathScore})
 }
 
+func TestGatewayPluginManifest_SharedRouteServesNativeClassify(t *testing.T) {
+	manifest := loadGatewayPluginManifest(t)
+
+	assert.Contains(t, manifest.pathMatches(t, "reserved-router"), manifestPathMatch{Type: "PathPrefix", Value: PathNativeClassify})
+}
+
+// TestGatewayPluginManifest_SharedRouteServesAudioSpeech: /v1/audio/speech has to match a
+// reserved route before ext_proc can read its model, and it belongs on the shared one, whose
+// streamed response mode passes the binary audio chunks through unchanged.
+func TestGatewayPluginManifest_SharedRouteServesAudioSpeech(t *testing.T) {
+	manifest := loadGatewayPluginManifest(t)
+
+	assert.Contains(t, manifest.pathMatches(t, "reserved-router"), manifestPathMatch{Type: "PathPrefix", Value: PathAudioSpeech})
+}
+
 // TestGatewayPluginManifest_NoUnsupportedModeOverrideField guards against the
 // tempting one-line fix: EnvoyExtensionPolicy in Envoy Gateway v1.2.8 has no
 // allowModeOverride field, so setting it would be dropped by the API server and

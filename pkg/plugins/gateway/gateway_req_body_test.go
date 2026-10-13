@@ -1324,6 +1324,55 @@ func TestHandleRequestBody_ScoreReachesABackendPodUnchanged(t *testing.T) {
 	assert.Equal(t, "1.2.3.4:8000", targetPod)
 }
 
+// TestHandleRequestBody_AudioSpeechReachesABackendPodUnchanged: a /v1/audio/speech request is
+// routed on its model like any other JSON request, and the body is forwarded byte for byte, so
+// the engine's speech options and any field the gateway does not know reach the engine.
+func TestHandleRequestBody_AudioSpeechReachesABackendPodUnchanged(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+	mockCache.On("HasModel", "tts-1").Return(true)
+	mockCache.On("ListPodsByModel", "tts-1").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "tts-1").Return(int64(1))
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	server := &Server{cache: mockCache}
+
+	body := []byte(`{"model":"tts-1","input":"Hello world","voice":"alloy","response_format":"wav","instructions":"excited","x_future_option":{"k":1}}`)
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: body},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathAudioSpeech + "?api-version=1"
+	routingCtx.ReqHeaders[contentTypeKey] = "application/json"
+	routingCtx.ReqHeaders[methodKey] = http.MethodPost
+	routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(routingalgorithms.RouterLeastRequest)
+
+	resp, model, stream, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	require.NotNil(t, resp)
+	require.Nil(t, resp.GetImmediateResponse(), "the request must not be rejected")
+	assert.Equal(t, "tts-1", model)
+	assert.False(t, stream)
+	assert.Equal(t, "Hello world", routingCtx.Message)
+
+	common := resp.GetRequestBody().GetResponse()
+	assert.Equal(t, body, common.GetBodyMutation().GetBody())
+	var targetPod string
+	for _, h := range common.GetHeaderMutation().GetSetHeaders() {
+		if h.Header.Key == HeaderTargetPod {
+			targetPod = string(h.Header.RawValue)
+		}
+	}
+	assert.Equal(t, "1.2.3.4:8000", targetPod)
+}
+
 // registerTestRouter registers the shared TestRouterAlgorithm mock router so a
 // request can be routed with it. Idempotent across tests.
 func registerTestRouter(mockRouter *mockRouter) {

@@ -19,8 +19,8 @@ msgstr ""
 "Generated-By: Babel 2.18.0\n"
 
 #: ../../source/features/model-serving/model-claim.rst:5
-msgid "ModelClaim"
-msgstr "ModelClaim"
+msgid "Model Claim"
+msgstr "Model Claim"
 
 #: ../../source/features/model-serving/model-claim.rst:9
 msgid "ModelClaim is experimental. Read `Limitations`_ before you rely on it."
@@ -49,6 +49,12 @@ msgid ""
 msgstr "ModelClaim 适合只在部分时间繁忙、否则各自都要独占一块 GPU 的模型。"
 
 #: ../../source/features/model-serving/model-claim.rst:23
+msgid ""
+"ModelClaim places models on a warm GPU runtime pool and publishes them to"
+" the AIBrix gateway"
+msgstr "ModelClaim 把模型放置到 GPU 热运行时池上，并发布给 AIBrix 网关"
+
+#: ../../source/features/model-serving/model-claim.rst:28
 msgid "How it works"
 msgstr "工作原理"
 

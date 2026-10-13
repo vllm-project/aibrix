@@ -42,10 +42,16 @@ spec:
             value: /v1/audio/translations
         - path:
             type: PathPrefix
+            value: /v1/audio/speech
+        - path:
+            type: PathPrefix
             value: /v1/rerank
         - path:
             type: PathPrefix
             value: /v1/classify
+        - path:
+            type: PathPrefix
+            value: /classify
         - path:
             type: PathPrefix
             value: /v1/decisions

@@ -314,6 +314,45 @@ func TestCustomMetricsFetcher_FetchFailureReturnsError(t *testing.T) {
 	assert.Equal(t, 0.0, actualMetricValue)
 }
 
+// The custom metrics API reports values as resource.Quantity, so a fractional
+// reading such as a 0.5 utilization ratio arrives as "500m". The fetcher must
+// keep the fraction: rounding it to a whole number would make the autoscaler
+// see 1.0 and scale on a load that is twice the real one.
+func TestCustomMetricsFetcher_FetchPodMetricsKeepsFractionalValues(t *testing.T) {
+	tests := []struct {
+		name     string
+		quantity string
+		want     float64
+	}{
+		{name: "fraction below one", quantity: "500m", want: 0.5},
+		{name: "small fraction", quantity: "200m", want: 0.2},
+		{name: "fraction above one", quantity: "1500m", want: 1.5},
+		{name: "whole number", quantity: "3", want: 3},
+	}
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-1",
+			Namespace: "default",
+		},
+	}
+	source := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.CUSTOM,
+		TargetMetric:     "gpu_utilization_ratio",
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fetcher := NewCustomMetricsFetcher(&stubCustomMetricsClient{
+				value: &custommetricsv1beta2.MetricValue{Value: resource.MustParse(tt.quantity)},
+			})
+
+			actualMetricValue, err := fetcher.FetchPodMetrics(context.TODO(), pod, source)
+
+			assert.NoError(t, err)
+			assert.InDelta(t, tt.want, actualMetricValue, 1e-9)
+		})
+	}
+}
+
 func TestExternalMetricsFetcher_FetchPodMetricsFromK8sExternalMetrics(t *testing.T) {
 	externalClient := &externalmetricsfake.FakeExternalMetricsClient{}
 	externalClient.AddReactor("list", "queue_depth", func(action clientgotesting.Action) (bool, runtime.Object, error) {
@@ -405,7 +444,8 @@ func parseURL(rawURL string) (string, string) {
 }
 
 type stubCustomMetricsClient struct {
-	err error
+	value *custommetricsv1beta2.MetricValue
+	err   error
 }
 
 func (s *stubCustomMetricsClient) RootScopedMetrics() custom_metrics.MetricsInterface {
@@ -417,7 +457,7 @@ func (s *stubCustomMetricsClient) NamespacedMetrics(string) custom_metrics.Metri
 }
 
 func (s *stubCustomMetricsClient) GetForObject(schema.GroupKind, string, string, labels.Selector) (*custommetricsv1beta2.MetricValue, error) {
-	return nil, s.err
+	return s.value, s.err
 }
 
 func (s *stubCustomMetricsClient) GetForObjects(schema.GroupKind, labels.Selector, string, labels.Selector) (*custommetricsv1beta2.MetricValueList, error) {

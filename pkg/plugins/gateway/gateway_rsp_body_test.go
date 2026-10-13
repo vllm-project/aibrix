@@ -134,6 +134,11 @@ func TestIsLanguageRequest(t *testing.T) {
 			want:        false,
 		},
 		{
+			name:        "messages count_tokens is not language",
+			requestPath: "/v1/messages/count_tokens",
+			want:        false,
+		},
+		{
 			name:        "pooling is language",
 			requestPath: "/pooling",
 			want:        true,
@@ -152,6 +157,11 @@ func TestIsLanguageRequest(t *testing.T) {
 			name:        "score is language",
 			requestPath: "/v1/score",
 			want:        true,
+		},
+		{
+			name:        "audio speech is not language",
+			requestPath: "/v1/audio/speech",
+			want:        false,
 		},
 		{
 			name:        "empty path is language",
@@ -1023,6 +1033,65 @@ func TestHandleResponseBody_SystemOneIsMetered(t *testing.T) {
 	mockRL.AssertExpectations(t)
 }
 
+// Shaped like vLLM's /v1/messages stream, which sends no total_tokens.
+func messagesStreamBody(finalUsage string) string {
+	return "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[],"usage":{"input_tokens":25,"output_tokens":0}}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":` + finalUsage + `}` + "\n\n" +
+		"event: message_stop\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+}
+
+func TestHandleResponseBody_MessagesStreamIsMetered(t *testing.T) {
+	tests := []struct {
+		name  string
+		usage string
+	}{
+		{
+			name:  "no total_tokens",
+			usage: `{"input_tokens":25,"output_tokens":15}`,
+		},
+		{
+			name:  "null total_tokens",
+			usage: `{"input_tokens":25,"output_tokens":15,"total_tokens":null}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockRL := &mockRateLimiter{}
+			mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(40)).Return(int64(40), nil)
+
+			server := &Server{
+				ratelimiter: mockRL,
+			}
+
+			requestID := "test-req-messages-stream-" + tt.name + "-" + time.Now().Format("150405.000")
+			routerCtx := types.NewRoutingContext(context.Background(), "random", "m", "", requestID, "test-user")
+			routerCtx.ReqPath = PathMessages
+			routerCtx.RequestTime = time.Now()
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        []byte(messagesStreamBody(tt.usage)),
+						EndOfStream: true,
+					},
+				},
+			}
+
+			_, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user", Tpm: 1000}, 1, "m", true, false)
+
+			assert.True(t, complete)
+			assert.Equal(t, TokenUsage{PromptTokens: 25, CompletionTokens: 15, TotalTokens: 40}, usage)
+			mockRL.AssertExpectations(t)
+		})
+	}
+}
+
 func TestHandleResponseBody_NonLanguageRequest(t *testing.T) {
 	server := &Server{}
 
@@ -1045,6 +1114,66 @@ func TestHandleResponseBody_NonLanguageRequest(t *testing.T) {
 	assert.True(t, complete)
 	assert.NotNil(t, resp)
 	assert.Equal(t, TokenUsage{}, usage)
+}
+
+func TestHandleResponseBody_MessagesCountTokensPassesThrough(t *testing.T) {
+	server := &Server{}
+
+	requestID := "test-req-count-tokens-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+	routerCtx.ReqPath = "/v1/messages/count_tokens?beta=true"
+	routerCtx.RequestTime = time.Now()
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"input_tokens": 12}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{}, 0, "test-model", false, false)
+
+	assert.True(t, complete)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.NotNil(t, resp.GetResponseBody())
+	assert.Equal(t, TokenUsage{}, usage)
+}
+
+// TestHandleResponseBody_AudioSpeechPassesThrough: /v1/audio/speech returns binary audio, often
+// in several chunks, so the gateway must forward every chunk byte for byte, parse no tokens from
+// it and meter no usage, while still completing on the last chunk.
+func TestHandleResponseBody_AudioSpeechPassesThrough(t *testing.T) {
+	server := &Server{}
+
+	requestID := "test-req-speech-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "tts-model", "", requestID, "test-user")
+	routerCtx.ReqPath = PathAudioSpeech
+	routerCtx.RequestTime = time.Now()
+
+	chunks := [][]byte{
+		{0xff, 0xf3, 0x60, 0xc4, 0x00, 0x10}, // raw MP3 bytes, not text
+		{0x30, 0x31, 0x32, 0x33},             // a second audio chunk
+	}
+
+	for i, chunk := range chunks {
+		req := &extProcPb.ProcessingRequest{
+			Request: &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        chunk,
+					EndOfStream: i == len(chunks)-1,
+				},
+			},
+		}
+
+		resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "tts-model", false, false)
+
+		assert.Equal(t, i == len(chunks)-1, complete)
+		assert.NotNil(t, resp)
+		assert.Equal(t, TokenUsage{}, usage, "binary audio carries no token usage")
+		assert.Nil(t, resp.GetResponseBody().GetResponse().GetBodyMutation(), "audio chunks must pass through unchanged")
+	}
 }
 
 func TestHandleResponseBody_EndOfStreamNoTokens(t *testing.T) {

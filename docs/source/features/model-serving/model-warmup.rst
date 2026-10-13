@@ -1,7 +1,7 @@
 .. _model-warmup:
 
 =================
-ModelWarmup
+Model Warmup
 =================
 
 .. warning::
@@ -14,6 +14,11 @@ Kubernetes node. A resource can be image-only, custom-only, or combined:
 image entries make the runtime pull an image and run a safe finite command;
 custom actions can check a node or download an artifact; a combined action does
 both. It does not start an inference engine or gate workloads.
+
+.. figure:: ../../assets/images/modelwarmup-overview.png
+  :alt: ModelWarmup runs a node-pinned Job on each selected node to preload images and download model artifacts
+  :width: 100%
+  :align: center
 
 Workflow and data flow
 ----------------------
@@ -101,7 +106,7 @@ Verify the command against the exact image tag or digest before creating a
 ModelWarmup; other engines and distroless images may expose different binaries.
 
 ``model-download.yaml`` is custom-only. It uses the public
-``aibrix/runtime:v0.8.0-rc.1`` image to run ``aibrix_download`` for the small public
+``aibrix/runtime:v0.8.0`` image to run ``aibrix_download`` for the small public
 ``sshleifer/tiny-gpt2`` artifact and writes it to a node-local cache:
 
 .. literalinclude:: ../../../../samples/modelwarmup/model-download.yaml

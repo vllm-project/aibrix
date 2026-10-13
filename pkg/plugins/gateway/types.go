@@ -132,14 +132,22 @@ const (
 	PathChatCompletions     = "/v1/chat/completions"
 	PathResponses           = "/v1/responses"
 	PathMessages            = "/v1/messages"
+	PathMessagesCountTokens = "/v1/messages/count_tokens"
 	PathCompletions         = "/v1/completions"
 	PathEmbeddings          = "/v1/embeddings"
 	PathImagesGenerations   = "/v1/images/generations"
 	PathVideoGenerations    = "/v1/video/generations"
 	PathAudioTranscriptions = "/v1/audio/transcriptions"
 	PathAudioTranslations   = "/v1/audio/translations"
-	PathRerank              = "/v1/rerank"
-	PathClassify            = "/v1/classify"
+	// PathAudioSpeech is vLLM-Omni's OpenAI-compatible speech generation endpoint. Unlike the
+	// transcription and translation endpoints it takes a JSON request and returns binary audio,
+	// often streamed in several chunks, so its response is never parsed as JSON or SSE.
+	PathAudioSpeech = "/v1/audio/speech"
+	PathRerank      = "/v1/rerank"
+	PathClassify    = "/v1/classify"
+	// PathNativeClassify is where vLLM serves classification; PathClassify is SGLang's
+	// OpenAI-style route.
+	PathNativeClassify = "/classify"
 	// PathDecisions is SGLang's typed-question scoring endpoint (choice, score, yes_no).
 	// It does not stream and generates no tokens.
 	PathDecisions = "/v1/decisions"

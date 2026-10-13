@@ -116,6 +116,18 @@ class TOSDownloaderV1(BaseDownloader):
             len(objects_out.contents) == 1
             and objects_out.contents[0].key == self.bucket_path
         ):
+            prefix = f"{self.bucket_path}/"
+            if any(
+                child.prefix.startswith(prefix)
+                for child in getattr(objects_out, "common_prefixes", None) or []
+            ):
+                return True
+            if getattr(objects_out, "is_truncated", False):
+                # Children may be beyond the broad listing's result limit.
+                children = self.client.list_objects_type2(
+                    self.bucket_name, prefix=prefix, max_keys=1
+                )
+                return bool(children.contents)
             return False
         return True
 

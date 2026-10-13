@@ -18,8 +18,8 @@ msgstr ""
 "Generated-By: Babel 2.18.0\n"
 
 #: ../../source/features/model-serving/model-warmup.rst:5
-msgid "ModelWarmup"
-msgstr "ModelWarmup"
+msgid "Model Warmup"
+msgstr "Model Warmup"
 
 #: ../../source/features/model-serving/model-warmup.rst:9
 msgid "ModelWarmup is experimental. Its API and behavior may change in future releases."
@@ -28,6 +28,12 @@ msgstr "ModelWarmup 是实验性功能，其 API 和行为在后续版本中可�
 #: ../../source/features/model-serving/model-warmup.rst:7
 msgid "``ModelWarmup`` performs a finite ``Once`` warmup Job on each selected Kubernetes node. A resource can be image-only, custom-only, or combined: image entries make the runtime pull an image and run a safe finite command; custom actions can check a node or download an artifact; a combined action does both. It does not start an inference engine or gate workloads."
 msgstr "``ModelWarmup`` 会在每个选定的 Kubernetes 节点上执行一次有限的 ``Once`` 预热 Job。资源可以仅包含镜像、仅包含自定义操作，也可以将二者组合：镜像条目会让容器运行时拉取镜像并运行一条可安全结束的命令；自定义操作可以检查节点或下载制品；组合操作则同时完成这两项工作。它不会启动推理引擎，也不会用作工作负载门禁。"
+
+#: ../../source/features/model-serving/model-warmup.rst:18
+msgid ""
+"ModelWarmup runs a node-pinned Job on each selected node to preload "
+"images and download model artifacts"
+msgstr "ModelWarmup 在每个选中的节点上运行固定到该节点的 Job，预加载镜像并下载模型制品"
 
 #: ../../source/features/model-serving/model-warmup.rst:14
 msgid "Workflow and data flow"
@@ -82,8 +88,8 @@ msgid "Verify the command against the exact image tag or digest before creating 
 msgstr "创建 ModelWarmup 前，请针对确切的镜像标签或摘要验证该命令；其他引擎和 distroless 镜像可能提供不同的可执行文件。"
 
 #: ../../source/features/model-serving/model-warmup.rst:98
-msgid "``model-download.yaml`` is custom-only. It uses the public ``aibrix/runtime:v0.8.0-rc.1`` image to run ``aibrix_download`` for the small public ``sshleifer/tiny-gpt2`` artifact and writes it to a node-local cache:"
-msgstr "``model-download.yaml`` 仅包含自定义操作。它使用公开的 ``aibrix/runtime:v0.8.0-rc.1`` 镜像运行 ``aibrix_download``，下载小型公开制品 ``sshleifer/tiny-gpt2`` 并将其写入节点本地缓存："
+msgid "``model-download.yaml`` is custom-only. It uses the public ``aibrix/runtime:v0.8.0`` image to run ``aibrix_download`` for the small public ``sshleifer/tiny-gpt2`` artifact and writes it to a node-local cache:"
+msgstr "``model-download.yaml`` 仅包含自定义操作。它使用公开的 ``aibrix/runtime:v0.8.0`` 镜像运行 ``aibrix_download``，下载小型公开制品 ``sshleifer/tiny-gpt2`` 并将其写入节点本地缓存："
 
 #: ../../source/features/model-serving/model-warmup.rst:106
 msgid "``node-precheck.yaml`` checks cache write access and at least 1 GiB free space. ``gpu-precheck.yaml`` runs ``nvidia-smi`` with an ``nvidia.com/gpu: \"1\"`` limit and therefore requires a GPU node with the NVIDIA device plugin."

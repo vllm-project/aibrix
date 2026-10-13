@@ -17,12 +17,15 @@ limitations under the License.
 package webhook
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	scalingtypes "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 )
 
@@ -621,4 +624,78 @@ func TestPodAutoscalerCustomValidator_validatePodAutoscaler(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPodAutoscalerCustomValidator_Annotations(t *testing.T) {
+	validator := &PodAutoscalerCustomValidator{}
+	paWith := func(annotations map[string]string) *autoscalingv1alpha1.PodAutoscaler {
+		return &autoscalingv1alpha1.PodAutoscaler{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-pa", Annotations: annotations},
+			Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+				ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
+				MaxReplicas:     10,
+				ScalingStrategy: autoscalingv1alpha1.KPA,
+				MetricsSources: []autoscalingv1alpha1.MetricSource{{
+					MetricSourceType: autoscalingv1alpha1.RESOURCE,
+					TargetMetric:     "cpu",
+					TargetValue:      "50",
+				}},
+			},
+		}
+	}
+
+	t.Run("create accepts usable values and unrelated annotations", func(t *testing.T) {
+		_, err := validator.ValidateCreate(context.Background(), paWith(map[string]string{
+			scalingtypes.MaxScaleUpRateLabel:          "3",
+			scalingtypes.MaxScaleDownRateLabel:        "1",
+			scalingtypes.ScaleDownToleranceLabel:      "0.2",
+			scalingtypes.ScaleDownCooldownWindowLabel: "5m",
+			"example.com/owner":                       "team-a",
+		}))
+		require.NoError(t, err)
+	})
+
+	t.Run("create rejects every unusable value with its annotation path", func(t *testing.T) {
+		_, err := validator.ValidateCreate(context.Background(), paWith(map[string]string{
+			scalingtypes.MaxScaleDownRateLabel:      "0",
+			scalingtypes.ScaleUpToleranceLabel:      "NaN",
+			scalingtypes.ScaleUpCooldownWindowLabel: "-30s",
+		}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "metadata.annotations[autoscaling.aibrix.ai/max-scale-down-rate]")
+		assert.Contains(t, err.Error(), "must be greater than or equal to 1")
+		assert.Contains(t, err.Error(), "metadata.annotations[autoscaling.aibrix.ai/scale-up-tolerance]")
+		assert.Contains(t, err.Error(), "must be a finite number")
+		assert.Contains(t, err.Error(), "metadata.annotations[autoscaling.aibrix.ai/scale-up-cooldown-window]")
+		assert.Contains(t, err.Error(), "must not be negative")
+	})
+
+	// The check is newer than the annotations, so stored objects may already
+	// carry a value it rejects. Those objects must stay updatable.
+	t.Run("update keeps an unusable value that is already stored", func(t *testing.T) {
+		stored := paWith(map[string]string{scalingtypes.MaxScaleUpRateLabel: "0.5"})
+		updated := paWith(map[string]string{scalingtypes.MaxScaleUpRateLabel: "0.5"})
+		updated.Spec.MaxReplicas = 20
+
+		_, err := validator.ValidateUpdate(context.Background(), stored, updated)
+		require.NoError(t, err)
+	})
+
+	t.Run("update rejects an unusable value that is added or changed", func(t *testing.T) {
+		stored := paWith(map[string]string{scalingtypes.MaxScaleUpRateLabel: "0.5"})
+
+		changed := paWith(map[string]string{scalingtypes.MaxScaleUpRateLabel: "0.25"})
+		_, err := validator.ValidateUpdate(context.Background(), stored, changed)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "metadata.annotations[autoscaling.aibrix.ai/max-scale-up-rate]")
+
+		added := paWith(map[string]string{
+			scalingtypes.MaxScaleUpRateLabel: "0.5",
+			scalingtypes.PanicThresholdLabel: "0",
+		})
+		_, err = validator.ValidateUpdate(context.Background(), stored, added)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "metadata.annotations[autoscaling.aibrix.ai/panic-threshold]")
+		assert.NotContains(t, err.Error(), "max-scale-up-rate")
+	})
 }
