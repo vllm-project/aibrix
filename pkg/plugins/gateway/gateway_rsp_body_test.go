@@ -164,6 +164,11 @@ func TestIsLanguageRequest(t *testing.T) {
 			want:        false,
 		},
 		{
+			name:        "audio speech batch is not language",
+			requestPath: "/v1/audio/speech/batch",
+			want:        false,
+		},
+		{
 			name:        "empty path is language",
 			requestPath: "",
 			want:        true,
@@ -1174,6 +1179,49 @@ func TestHandleResponseBody_AudioSpeechPassesThrough(t *testing.T) {
 		assert.Equal(t, TokenUsage{}, usage, "binary audio carries no token usage")
 		assert.Nil(t, resp.GetResponseBody().GetResponse().GetBodyMutation(), "audio chunks must pass through unchanged")
 	}
+}
+
+// TestHandleResponseBody_AudioSpeechBatchPassesThrough: /v1/audio/speech/batch returns one JSON
+// document that inlines every item's base64 audio, possibly across several chunks. It looks like
+// a language response (JSON with an id and a usage-free body), so the gateway must still forward
+// every chunk untouched, buffer nothing, meter no usage, and leave a batch whose items all failed
+// as the HTTP 200 the engine sent rather than turning it into an error.
+func TestHandleResponseBody_AudioSpeechBatchPassesThrough(t *testing.T) {
+	server := &Server{}
+
+	requestID := "test-req-speech-batch-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "tts-model", "", requestID, "test-user")
+	routerCtx.ReqPath = PathAudioSpeechBatch
+	routerCtx.RequestTime = time.Now()
+
+	chunks := [][]byte{
+		[]byte(`{"id":"speech-batch-1","results":[{"index":0,"status":"success","audio_data":"UklGR`),
+		[]byte(`iQ=","format":"wav"},{"index":1,"status":"error","error":{"message":"bad","param":"items.1.input"}}],`),
+		[]byte(`"total":2,"succeeded":1,"failed":1}`),
+	}
+
+	for i, chunk := range chunks {
+		req := &extProcPb.ProcessingRequest{
+			Request: &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        chunk,
+					EndOfStream: i == len(chunks)-1,
+				},
+			},
+		}
+
+		resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "tts-model", false, false)
+
+		assert.Equal(t, i == len(chunks)-1, complete)
+		if assert.NotNil(t, resp) {
+			assert.Nil(t, resp.GetImmediateResponse(), "a partially failed batch must not become an error response")
+			assert.Nil(t, resp.GetResponseBody().GetResponse().GetBodyMutation(), "batch chunks must pass through unchanged")
+		}
+		assert.Equal(t, TokenUsage{}, usage, "a speech batch carries no token usage")
+	}
+
+	_, buffered := requestBuffers.Load(requestID)
+	assert.False(t, buffered, "the response must not be held in the language-response buffer")
 }
 
 func TestHandleResponseBody_EndOfStreamNoTokens(t *testing.T) {

@@ -2931,6 +2931,181 @@ func Test_ValidateRequestBody_Score(t *testing.T) {
 	}
 }
 
+func Test_ValidateRequestBody_AudioSpeechBatch(t *testing.T) {
+	testCases := []struct {
+		message     string
+		requestPath string // defaults to PathAudioSpeechBatch
+		requestBody string
+		input       string
+		statusCode  envoyTypePb.StatusCode
+		param       string
+	}{
+		{
+			message:     "/v1/audio/speech/batch routes on the model and joins the item inputs",
+			requestBody: `{"model": "tts-1", "items": [{"input": "First sentence."}, {"input": "Second sentence.", "speed": 1.1}]}`,
+			input:       "First sentence.\nSecond sentence.",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech/batch shared defaults and a reference clip item are forwarded, not inspected",
+			requestBody: `{"model": "tts-1", "voice": "default", "response_format": "wav", "items": [{"input": "First sentence."}, {"input": "Use a reference clip.", "ref_audio": "https://example.com/prompt.wav", "ref_text": "We asked over twenty people."}]}`,
+			input:       "First sentence.\nUse a reference clip.",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech/batch item problems are left to the engine to report per item",
+			requestBody: `{"model": "tts-1", "items": [{"input": ""}, {"voice": "alloy"}, {"input": 5}, {"input": "  "}, {"input": "kept", "stream": true, "x_future_option": {"k": 1}}]}`,
+			input:       "kept",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech/batch an item model is forwarded, not compared",
+			requestBody: `{"model": "tts-1", "items": [{"model": "another-model", "input": "Hi"}]}`,
+			input:       "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech/batch a request-level stream field does not make it an SSE stream",
+			requestBody: `{"model": "tts-1", "stream": true, "items": [{"input": "Hi"}]}`,
+			input:       "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech/batch query string does not break path matching",
+			requestPath: PathAudioSpeechBatch + "?api-version=1",
+			requestBody: `{"model": "tts-1", "items": [{"input": "Hi"}]}`,
+			input:       "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech/batch missing model",
+			requestBody: `{"items": [{"input": "Hi"}]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/audio/speech/batch blank model",
+			requestBody: `{"model": " ", "items": [{"input": "Hi"}]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/audio/speech/batch non-string model",
+			requestBody: `{"model": 7, "items": [{"input": "Hi"}]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech/batch the model is checked before the items",
+			requestBody: `{"model": "", "items": []}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/audio/speech/batch missing items",
+			requestBody: `{"model": "tts-1", "voice": "default"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items",
+		},
+		{
+			message:     "/v1/audio/speech/batch single-request body without items",
+			requestBody: `{"model": "tts-1", "input": "Hi"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items",
+		},
+		{
+			message:     "/v1/audio/speech/batch empty items",
+			requestBody: `{"model": "tts-1", "items": []}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items",
+		},
+		{
+			message:     "/v1/audio/speech/batch null items",
+			requestBody: `{"model": "tts-1", "items": null}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items",
+		},
+		{
+			message:     "/v1/audio/speech/batch non-array items",
+			requestBody: `{"model": "tts-1", "items": {"input": "Hi"}}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech/batch string item",
+			requestBody: `{"model": "tts-1", "items": ["Hi"]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items.0",
+		},
+		{
+			message:     "/v1/audio/speech/batch the failing item is named by its index",
+			requestBody: `{"model": "tts-1", "items": [{"input": "Hi"}, {"input": "Hi"}, 7]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items.2",
+		},
+		{
+			message:     "/v1/audio/speech/batch null item",
+			requestBody: `{"model": "tts-1", "items": [null]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items.0",
+		},
+		{
+			message:     "/v1/audio/speech/batch malformed JSON",
+			requestBody: `{"model": "tts-1", "items": [{"input": "Hi"}]`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech/batch array root",
+			requestBody: `[{"input": "Hi"}]`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech/batch null root",
+			requestBody: `null`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech/batch empty body",
+			requestBody: ``,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.message, func(t *testing.T) {
+			requestPath := tt.requestPath
+			if requestPath == "" {
+				requestPath = PathAudioSpeechBatch
+			}
+			model, messages, prefixText, stream, errRes := validateRequestBody("test-request-id", requestPath, []byte(tt.requestBody), utils.User{})
+
+			// The batch response is one JSON document, never an SSE stream, and has no separate prefix text.
+			assert.False(t, stream)
+			assert.Empty(t, prefixText)
+
+			if tt.statusCode == envoyTypePb.StatusCode_OK {
+				assert.Nil(t, errRes)
+				assert.Equal(t, "tts-1", model)
+				assert.Equal(t, tt.input, messages)
+				return
+			}
+
+			if !assert.NotNil(t, errRes) {
+				return
+			}
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, model)
+			assert.Empty(t, messages)
+
+			var errResponse map[string]any
+			require.NoError(t, sonic.Unmarshal([]byte(errRes.GetImmediateResponse().GetBody()), &errResponse))
+			errObj, ok := errResponse["error"].(map[string]any)
+			require.True(t, ok, "response should have an 'error' object")
+			if tt.param != "" {
+				assert.Equal(t, tt.param, errObj["param"])
+			}
+		})
+	}
+}
+
 func Test_ValidateRequestBody_AudioSpeech(t *testing.T) {
 	testCases := []struct {
 		message     string

@@ -259,6 +259,8 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "audio requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
 	case PathAudioSpeech:
 		model, message, errRes = validateAudioSpeechRequest(requestID, requestBody)
+	case PathAudioSpeechBatch:
+		model, message, errRes = validateAudioSpeechBatchRequest(requestID, requestBody)
 	default:
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", "", "", HeaderErrorRequestBodyProcessing, "true")
 	}
@@ -992,6 +994,67 @@ func validateAudioSpeechRequest(requestID string, requestBody []byte) (model, me
 	}
 
 	model, message = req.Model, req.Input
+	return
+}
+
+// validateAudioSpeechBatchRequest parses and validates a /v1/audio/speech/batch request body.
+// Only the envelope is checked: a JSON object with a non-empty "model" to route on and a
+// non-empty "items" array of objects. What is inside an item (input, voice, ref_audio, a
+// per-item stream, ...) belongs to the engine, which reports a bad item as a failed entry in an
+// otherwise successful response, so one bad item must not fail the whole batch here. The returned
+// message joins the textual item inputs for routing. As with a single speech request, a "stream"
+// field is deliberately not surfaced as a stream: the response is one JSON document, not SSE.
+// nolint:nakedret
+func validateAudioSpeechBatchRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	if trimmed := bytes.TrimSpace(requestBody); len(trimmed) == 0 || trimmed[0] != '{' {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	// Items stay raw so a reference clip inlined as a base64 data URL is never decoded here.
+	var req struct {
+		Model string            `json:"model"`
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		// The body can hold customer text, so log its size, not its content.
+		klog.ErrorS(nil, "error to unmarshal audio speech batch object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	// The gateway selects the backend pod by model, so it cannot fall back to an engine default.
+	if strings.TrimSpace(req.Model) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if len(req.Items) == 0 {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'items' is a required property and cannot be empty", "", "items", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	inputs := make([]string, 0, len(req.Items))
+	for i, rawItem := range req.Items {
+		if trimmed := bytes.TrimSpace(rawItem); len(trimmed) == 0 || trimmed[0] != '{' {
+			param := fmt.Sprintf("items.%d", i)
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("'%s' must be a JSON object", param), "", param, HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		var item struct {
+			Input json.RawMessage `json:"input"`
+		}
+		if err := sonic.Unmarshal(rawItem, &item); err != nil {
+			klog.ErrorS(nil, "error to unmarshal audio speech batch item", "requestID", requestID, "item", i, "reason", jsonParseReason(err), "itemBytes", len(rawItem))
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", fmt.Sprintf("items.%d", i), HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		// A missing, blank or non-string input is the engine's per-item error to report.
+		if input, ok := jsonString(item.Input); ok && strings.TrimSpace(input) != "" {
+			inputs = append(inputs, input)
+		}
+	}
+
+	model, message = req.Model, strings.Join(inputs, "\n")
 	return
 }
 

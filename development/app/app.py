@@ -1687,36 +1687,9 @@ def audio_speech():
         # Simulate processing time based on text length
         time.sleep(0.1 + len(input_text) * 0.001)
 
-        # Generate mock audio data
-        if response_format == "wav":
-            # Minimal WAV header (44 bytes) with 0 data
-            mock_audio = (
-                b"RIFF" + struct.pack("<I", 36) + b"WAVE"
-                + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, 24000, 48000, 2, 16)
-                + b"data" + struct.pack("<I", 0)
-            )
-        else:
-            # Minimal MP3 frame header for other formats
-            mock_audio = bytes([
-                0xFF, 0xFB, 0x90, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-            ])
-
-        # Set content type based on format
-        content_types = {
-            "mp3": "audio/mpeg",
-            "opus": "audio/opus",
-            "aac": "audio/aac",
-            "flac": "audio/flac",
-            "wav": "audio/wav",
-            "pcm": "audio/pcm",
-        }
-
         return Response(
-            mock_audio,
-            mimetype=content_types.get(response_format, "audio/mpeg"),
+            build_mock_speech_audio(response_format),
+            mimetype=SPEECH_CONTENT_TYPES[response_format],
             headers={
                 "Content-Disposition": f"attachment; filename=speech.{response_format}"
             }
@@ -1724,6 +1697,129 @@ def audio_speech():
 
     except Exception as e:
         logger.error(f"Error in audio speech endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
+SPEECH_CONTENT_TYPES = {
+    "mp3": "audio/mpeg",
+    "opus": "audio/opus",
+    "aac": "audio/aac",
+    "flac": "audio/flac",
+    "wav": "audio/wav",
+    "pcm": "audio/pcm",
+}
+
+
+def build_mock_speech_audio(response_format):
+    """Return placeholder audio bytes for a /v1/audio/speech response format."""
+    if response_format == "wav":
+        # Minimal WAV header (44 bytes) with 0 data
+        return (
+            b"RIFF" + struct.pack("<I", 36) + b"WAVE"
+            + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, 24000, 48000, 2, 16)
+            + b"data" + struct.pack("<I", 0)
+        )
+    # Minimal MP3 frame header for other formats
+    return bytes([
+        0xFF, 0xFB, 0x90, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+    ])
+
+
+def speech_batch_item_error(index, message, param):
+    """Build a failed entry for the /v1/audio/speech/batch results list."""
+    return {
+        "index": index,
+        "status": "error",
+        "error": {
+            "message": message,
+            "type": "invalid_request_error",
+            "param": param,
+        },
+    }
+
+
+@app.route("/v1/audio/speech/batch", methods=["POST"])
+@auth_required
+def audio_speech_batch():
+    """
+    Simulates SGLang-Omni's batch text-to-speech endpoint.
+    A bad envelope fails the request with 400. A bad item becomes an error entry inside an
+    otherwise successful (HTTP 200) response, so the other items still return audio.
+    Top-level fields are shared defaults that each item may override.
+    """
+    try:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return create_error_response("speech batch request body must be valid JSON")
+
+        items = payload.get("items")
+        if not isinstance(items, list) or not items:
+            return create_error_response(
+                "'items' is a required parameter and cannot be empty", param="items"
+            )
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                return create_error_response(
+                    f"'items.{index}' must be a JSON object", param=f"items.{index}"
+                )
+
+        longest_input = max(
+            (len(item["input"]) for item in items if isinstance(item.get("input"), str)),
+            default=0,
+        )
+        # Items run concurrently in the engine, so the slowest one sets the latency.
+        time.sleep(0.1 + longest_input * 0.001)
+
+        defaults = {key: value for key, value in payload.items() if key != "items"}
+        results = []
+        for index, item in enumerate(items):
+            merged = {**defaults, **item}
+            response_format = merged.get("response_format", "wav")
+            input_text = merged.get("input")
+            # Only an item-level stream is refused, as in the engine; a top-level one is dropped.
+            if item.get("stream"):
+                results.append(speech_batch_item_error(
+                    index, "stream is not supported for batch speech requests",
+                    f"items.{index}.stream"))
+            elif not isinstance(input_text, str) or not input_text.strip():
+                results.append(speech_batch_item_error(
+                    index, "'input' is a required parameter and cannot be empty",
+                    f"items.{index}.input"))
+            elif response_format not in SPEECH_CONTENT_TYPES:
+                results.append(speech_batch_item_error(
+                    index,
+                    f"Invalid response_format '{response_format}'. "
+                    f"Must be one of: {', '.join(SPEECH_CONTENT_TYPES)}",
+                    f"items.{index}.response_format"))
+            else:
+                results.append({
+                    "index": index,
+                    "status": "success",
+                    "audio_data": base64.b64encode(
+                        build_mock_speech_audio(response_format)).decode("ascii"),
+                    "format": response_format,
+                    "media_type": SPEECH_CONTENT_TYPES[response_format],
+                    "finish_reason": "stop",
+                })
+
+        succeeded = sum(1 for result in results if result["status"] == "success")
+        return jsonify({
+            "id": "speech-batch-" + str(uuid.uuid4()),
+            "results": results,
+            "total": len(results),
+            "succeeded": succeeded,
+            "failed": len(results) - succeeded,
+        })
+
+    except Exception as e:
+        logger.error(f"Error in audio speech batch endpoint: {e}")
         return create_error_response(
             "The server had an error while processing your request. Sorry about that!",
             error_type="api_error",
