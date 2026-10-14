@@ -791,7 +791,11 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 BatchJobState.CANCELLING,
                 BatchJobState.FINALIZING,
             ):
-                job_cancelled = self._build_cancelled_job_update(in_progress_job)
+                # The driver was already terminated with the entity manager's job above;
+                # entity deletion keeps its immediate finalization.
+                job_cancelled = self._build_cancelled_job_update(
+                    in_progress_job, has_live_driver=False
+                )
                 await self.job_updated_handler(in_progress_job, job_cancelled)
             return True
 
@@ -960,7 +964,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
             in (BatchJobState.CANCELLING, BatchJobState.FINALIZING)
             or current_job.status.finished
         ):
-            # Validation may finish after cancellation; keep the current lifecycle state.
+            # Validation may finish after cancellation or expiry; keep the current
+            # lifecycle state. The validated request count is not published, so a
+            # job cancelled during validation keeps request_counts.total at 0.
             return current_job
         meta_data = await self._meta_from_in_progress_job(job_id)
         validated = meta_data.copy(status)
@@ -1378,7 +1384,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
             return self._in_progress_jobs, "_in_progress_jobs"
 
     def _build_cancelled_job_update(
-        self, job: BatchJob, *, has_live_driver: bool = False
+        self, job: BatchJob, *, has_live_driver: bool
     ) -> BatchJob:
         cancelling_at = datetime.now(timezone.utc)
         job_cancelled = job.copy()
