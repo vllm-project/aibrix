@@ -279,6 +279,12 @@ jobs:
             echo "::error::Envoy data-plane Service for Gateway aibrix-eg was not found"
             exit 1
           fi
+          # port-forward attaches to one pod when it starts and exits if that pod is
+          # not running yet, so wait for the Envoy Deployment (named like its Service).
+          if ! kubectl -n envoy-gateway-system rollout status "deployment/${gateway_service}" --timeout=5m; then
+            echo "::error::Envoy data-plane Deployment ${gateway_service} did not become ready"
+            exit 1
+          fi
           kubectl -n envoy-gateway-system port-forward "service/${gateway_service}" 8888:80 > "${RUNNER_TEMP}/gateway-port-forward.log" 2>&1 &
           port_forward_pid=$!
           trap 'kill "${port_forward_pid}" 2>/dev/null || true' EXIT
@@ -530,6 +536,12 @@ jobs:
             grep '^envoy-aibrix-system-aibrix-eg-' | head -n 1)"
           if [ -z "${gateway_service}" ]; then
             echo "::error::Envoy data-plane Service for Gateway aibrix-eg was not found"
+            exit 1
+          fi
+          # port-forward attaches to one pod when it starts and exits if that pod is
+          # not running yet, so wait for the Envoy Deployment (named like its Service).
+          if ! kubectl -n envoy-gateway-system rollout status "deployment/${gateway_service}" --timeout=5m; then
+            echo "::error::Envoy data-plane Deployment ${gateway_service} did not become ready"
             exit 1
           fi
           kubectl -n envoy-gateway-system port-forward "service/${gateway_service}" 8888:80 > "${RUNNER_TEMP}/gateway-port-forward.log" 2>&1 &
