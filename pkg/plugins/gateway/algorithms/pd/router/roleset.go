@@ -26,6 +26,8 @@ import (
 type pdRolesetBucket struct {
 	prefills []*v1.Pod
 	decodes  []*v1.Pod
+	// encodes are optional; a roleset is eligible without them.
+	encodes []*v1.Pod
 }
 
 func groupPDPodsByRoleset(readyPods []*v1.Pod) map[string]*pdRolesetBucket {
@@ -43,16 +45,19 @@ func groupPDPodsByRoleset(readyPods []*v1.Pod) map[string]*pdRolesetBucket {
 			continue
 		}
 		switch roleID {
-		case PDRolePrefill, PDRoleDecode:
+		case PDRolePrefill, PDRoleDecode, PDRoleEncode:
 			b := byRoleset[roleSetID]
 			if b == nil {
 				b = &pdRolesetBucket{}
 				byRoleset[roleSetID] = b
 			}
-			if roleID == PDRolePrefill {
+			switch roleID {
+			case PDRolePrefill:
 				b.prefills = append(b.prefills, pod)
-			} else {
+			case PDRoleDecode:
 				b.decodes = append(b.decodes, pod)
+			default:
+				b.encodes = append(b.encodes, pod)
 			}
 		}
 	}

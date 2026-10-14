@@ -31,6 +31,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/prefill"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/selector"
@@ -55,6 +56,7 @@ const (
 	PDRoleIdentifier             string                 = "role-name"
 	PDRolePrefill                string                 = "prefill"
 	PDRoleDecode                 string                 = "decode"
+	PDRoleEncode                 string                 = "encode"
 	RoleReplicaIndex             string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
 	PodGroupIndex                string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
 	PromptLenBucketMinLength     string                 = "prompt-len-bucket-min-length"
@@ -255,6 +257,7 @@ type pdRouter struct {
 	selectionCounts       map[string]int64
 	podSelector           selector.PodSelector
 	prefillExecutor       prefill.PrefillExecutor
+	encodeExecutor        *encode.Executor
 	trtHandler            *engine.TRTLLMHandler
 
 	// tokenLoadTracker is the token-weighted prefill ledger read by the
@@ -415,6 +418,7 @@ func NewPDRouterWithCacheAndPrefixIndexer(c cache.Cache, sharedPrefixTable *pref
 	r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
 	r.prefillExecutor = prefill.NewDefaultExecutor(httpClient, r.prefillRequestTracker,
 		prefill.WithTokenLoadTracker(tokenLoadTracker))
+	r.encodeExecutor = encode.NewExecutor(httpClient)
 	// Request completion is only observable through the cache's request
 	// tracker callbacks; that is where the resident-KV charge is released.
 	c.RegisterRequestTracker(r)
@@ -570,6 +574,7 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		// has to infer the mode from the engine name (TRT context-first and
 		// generation-first share one).
 		ctx.SetResetAfterHeaders(engine.AsyncDispatchPolicyFor(handler).ResetAfterHeaders)
+		r.encodeMedia(ctx, readyPods, prefillPod)
 		// The prefill registration was made by Select; the executor's
 		// RemovePrefillRequest (sync/async) is the matching decrement.
 		err = r.doPrefillRequest(ctx, prefillPod, handler)
@@ -1555,7 +1560,7 @@ func (r *pdRouter) collectAndBucketPods(routingCtx *types.RoutingContext, readyP
 				continue
 			}
 			roleID, hasRole := pod.Labels[PDRoleIdentifier]
-			if !hasRole || roleID == PDRolePrefill || roleID == PDRoleDecode {
+			if !hasRole || roleID == PDRolePrefill || roleID == PDRoleDecode || roleID == PDRoleEncode {
 				continue
 			}
 			if !isPodWithHTTPServer(pod) {
