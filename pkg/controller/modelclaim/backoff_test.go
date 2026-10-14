@@ -1037,8 +1037,8 @@ func TestEnqueueWaitingClaimsWakesTheOldestFirst(t *testing.T) {
 	for _, request := range enqueueModelClaimsForPod(r.Client)(context.Background(), pod) {
 		woken = append(woken, request.Name)
 	}
-	assert.Equal(t, []string{"a-twin-of-the-oldest", "d-oldest", "leaving", "c-older", "b-newer", "a-newest"}, woken,
-		"a pod that changes reaches every claim, the oldest first")
+	assert.Equal(t, []string{"leaving", "a-twin-of-the-oldest", "d-oldest", "c-older", "b-newer", "a-newest"}, woken,
+		"a pod that changes reaches existing instances before unplaced claims")
 }
 
 func TestEnqueueWaitingClaimsPriorityFiltersBeforeOrdering(t *testing.T) {
@@ -1058,19 +1058,36 @@ func TestEnqueueWaitingClaimsPriorityFiltersBeforeOrdering(t *testing.T) {
 	assert.Equal(t, []string{"newer-high", "older-low"}, woken)
 }
 
-func TestEnqueueModelClaimsForPodKeepsOldestFirstDespitePriority(t *testing.T) {
+func TestEnqueueModelClaimsForPodOrdersExistingInstancesBeforePriorityPlacement(t *testing.T) {
 	created := time.Unix(1_700_000_000, 0)
 	low := priorityTestClaim("older-low", 1, created)
-	high := priorityTestClaim("newer-high", 10, created.Add(time.Minute))
-	r, _ := newReconciler(t, low, high)
+	high := priorityTestClaim("z-high-oldest", 10, created.Add(time.Minute))
+	twin := priorityTestClaim("a-high-twin", 10, created.Add(time.Minute))
+	newer := priorityTestClaim("high-newer", 10, created.Add(2*time.Minute))
+	failed := priorityTestClaim("failed-highest", 100, created.Add(3*time.Minute))
+	failed.Status.Phase = modelv1alpha1.ModelClaimFailed
+	existing := claimOnPod("z-existing-oldest", "warm-1", modelv1alpha1.ModelClaimSleeping, 300, 100)
+	existing.CreationTimestamp = metav1.NewTime(created.Add(4 * time.Minute))
+	existingTwin := claimOnPod("a-existing-twin", "warm-1", modelv1alpha1.ModelClaimActive, 300, 100)
+	existingTwin.CreationTimestamp = existing.CreationTimestamp
+	existingNewer := claimOnPod("existing-newer", "warm-1", modelv1alpha1.ModelClaimFailed, 300, 100)
+	existingNewer.CreationTimestamp = metav1.NewTime(created.Add(5 * time.Minute))
+	existingNewer.Spec.Priority = 200
+	otherNamespace := priorityTestClaim("other-namespace", 1000, created)
+	otherNamespace.Namespace = "other"
+	r, _ := newReconciler(t, low, high, twin, newer, failed, existing, existingTwin, existingNewer, otherNamespace)
 	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
 
 	var queued []string
 	for _, request := range enqueueModelClaimsForPod(r.Client)(context.Background(), pod) {
+		assert.Equal(t, pod.Namespace, request.Namespace)
 		queued = append(queued, request.Name)
 	}
 
-	assert.Equal(t, []string{"older-low", "newer-high"}, queued)
+	assert.Equal(t, []string{
+		"a-existing-twin", "z-existing-oldest", "existing-newer",
+		"failed-highest", "a-high-twin", "z-high-oldest", "high-newer", "older-low",
+	}, queued)
 }
 
 // Room does not help a claim that failed: its engine config is not valid, or

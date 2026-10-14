@@ -28,7 +28,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
@@ -95,7 +94,10 @@ func TestModelClaimPriorityControlsPodEventPlacementOrder(t *testing.T) {
 		priority int32
 	}{{lowName, 1}, {highName, 10}} {
 		_, err := claims.Create(ctx, &modelv1alpha1.ModelClaim{
-			ObjectMeta: metav1.ObjectMeta{Name: spec.name, Namespace: lifecycleNamespace},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: spec.name, Namespace: lifecycleNamespace,
+				Labels: map[string]string{"app": name},
+			},
 			Spec: modelv1alpha1.ModelClaimSpec{
 				Priority:    spec.priority,
 				PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{constants.ModelPoolLabelName: name}},
@@ -109,7 +111,6 @@ func TestModelClaimPriorityControlsPodEventPlacementOrder(t *testing.T) {
 		}, metav1.CreateOptions{})
 		require.NoError(t, err)
 	}
-	var low *modelv1alpha1.ModelClaim
 	var firstRetry time.Time
 	require.NoError(t, wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true,
 		func(ctx context.Context) (bool, error) {
@@ -128,21 +129,26 @@ func TestModelClaimPriorityControlsPodEventPlacementOrder(t *testing.T) {
 				if firstRetry.IsZero() || due.Before(firstRetry) {
 					firstRetry = due
 				}
-				if claimName == lowName {
-					low = claim
-				}
 			}
 			return true, nil
 		}), "both claims must be waiting before a pod joins")
+	// One watch records the admission order across both uniquely labeled claims.
+	// Start at the list revision so no status update between listing and
+	// establishing the watch can be missed.
+	claimList, err := claims.List(ctx, metav1.ListOptions{LabelSelector: "app=" + name})
+	require.NoError(t, err)
+	require.Len(t, claimList.Items, 2)
+	for _, claim := range claimList.Items {
+		require.Empty(t, claim.Status.Instances)
+	}
 	watcher, err := claims.Watch(ctx, metav1.ListOptions{
-		FieldSelector:   fields.OneTermEqualSelector("metadata.name", lowName).String(),
-		ResourceVersion: low.ResourceVersion,
+		LabelSelector:   "app=" + name,
+		ResourceVersion: claimList.ResourceVersion,
 	})
 	require.NoError(t, err)
 	defer watcher.Stop()
 
-	// Scaling before the ordinary retry exercises the older-first Pod watch
-	// queue. The watch retains even a short-lived placement-turn condition.
+	// Scaling before the ordinary retry exercises placement on a Pod event.
 	require.True(t, time.Now().Before(firstRetry), "setup missed the initial placement-backoff window")
 	scaleCtx, scaleCancel := context.WithDeadline(ctx, firstRetry)
 	defer scaleCancel()
@@ -152,7 +158,7 @@ func TestModelClaimPriorityControlsPodEventPlacementOrder(t *testing.T) {
 	_, err = deployments.UpdateScale(scaleCtx, name, scale, metav1.UpdateOptions{})
 	require.NoError(t, err, "pool must scale before placement backoff is due")
 
-	_, err = watchtools.UntilWithoutRetry(ctx, watcher, func(event watch.Event) (bool, error) {
+	firstPlacement, err := watchtools.UntilWithoutRetry(ctx, watcher, func(event watch.Event) (bool, error) {
 		if event.Type == watch.Error {
 			return false, apierrors.FromObject(event.Object)
 		}
@@ -160,21 +166,11 @@ func TestModelClaimPriorityControlsPodEventPlacementOrder(t *testing.T) {
 		if !ok {
 			return false, fmt.Errorf("unexpected priority watch object %T", event.Object)
 		}
-		condition := meta.FindStatusCondition(claim.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
-		if condition != nil && condition.Reason == "WaitingForPlacementTurn" {
-			assert.Equal(t, metav1.ConditionFalse, condition.Status)
-			assert.Equal(t,
-				fmt.Sprintf("waiting behind ModelClaim %s with priority 10 that can use the same pool", highName),
-				condition.Message,
-			)
-			return true, nil
-		}
-		if claim.Status.Phase == modelv1alpha1.ModelClaimActive {
-			return false, fmt.Errorf("low-priority claim became Active without observing WaitingForPlacementTurn")
-		}
-		return false, nil
+		return len(claim.Status.Instances) > 0, nil
 	})
-	require.NoError(t, err, "older low-priority claim must yield its placement turn")
+	require.NoError(t, err, "one of the claims must record its first instance")
+	require.Equal(t, highName, firstPlacement.Object.(*modelv1alpha1.ModelClaim).Name,
+		"the high-priority claim must record an instance before the older low-priority claim")
 	for _, claimName := range []string{highName, lowName} {
 		waitForLifecycleClaimPhase(t, ctx, aibrixClient, claimName, modelv1alpha1.ModelClaimActive)
 	}

@@ -2351,14 +2351,25 @@ func enqueueModelClaimsForPod(c client.Client) handler.MapFunc {
 			klog.ErrorS(err, "unable to list model claims in namespace", "namespace", obj.GetNamespace())
 			return nil
 		}
-		// A pod that joins may bring room, so the claims are tried oldest first.
-		oldestFirst(list.Items)
+		// Check existing instances before placing new ones. Zero-instance Failed
+		// retries also compete for placement; admission remains authoritative.
+		var existing, unplaced []modelv1alpha1.ModelClaim
+		for _, claim := range list.Items {
+			if len(claim.Status.Instances) > 0 {
+				existing = append(existing, claim)
+			} else {
+				unplaced = append(unplaced, claim)
+			}
+		}
+		oldestFirst(existing)
+		placementPriorityFirst(unplaced)
+		ordered := append(existing, unplaced...)
 		requests := make([]reconcile.Request, 0, len(list.Items))
-		for i := range list.Items {
+		for i := range ordered {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Namespace: list.Items[i].Namespace,
-					Name:      list.Items[i].Name,
+					Namespace: ordered[i].Namespace,
+					Name:      ordered[i].Name,
 				},
 			})
 		}
