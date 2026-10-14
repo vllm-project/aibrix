@@ -345,6 +345,11 @@ func TestMatchPrefixUsesEngineBlockSize(t *testing.T) {
 		{name: "partial block after full blocks", events: []BlockStored{full, partial}},
 		{name: "single short block first", events: []BlockStored{
 			{BlockHashes: []int64{9}, Tokens: [][]byte{makeTokens(8)}}, full}},
+		{name: "single short block, then one block per step", events: []BlockStored{
+			{BlockHashes: []int64{9}, Tokens: [][]byte{makeTokens(8)}},
+			{BlockHashes: []int64{1}, Tokens: blocks[:1]},
+			{BlockHashes: []int64{2}, ParentBlockHash: &one, Tokens: blocks[1:2]},
+			{BlockHashes: []int64{3}, ParentBlockHash: &two, Tokens: blocks[2:]}}},
 		{name: "one block per step after offloaded blocks", events: []BlockStored{
 			{BlockHashes: []int64{21, 22}, Tokens: [][]byte{makeTokens(2 * engineBlock), makeTokens(2 * engineBlock)}, Medium: MediumCPU},
 			{BlockHashes: []int64{1}, Tokens: blocks[:1]},
