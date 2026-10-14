@@ -187,7 +187,9 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	// Remove old mappings if present, no adapter will be inherited. (Adapters will be rescaned and readded later)
 	// A model that loses its only pod stays in the cache until the new mappings are
 	// added below, so a status update of that pod does not reset the model's
-	// pending count and output predictor.
+	// pending count and output predictor. This covers the pod's base model only:
+	// adapter models served just by this pod are still dropped here and re-added
+	// later by the adapter informer.
 	var emptiedModels []string
 	defer func() {
 		for _, modelName := range emptiedModels {

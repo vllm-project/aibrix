@@ -22,7 +22,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
@@ -80,4 +82,51 @@ func TestUpdatePodDropsModelItNoLongerServes(t *testing.T) {
 	meta, ok := cache.metaModels.Load("model-b")
 	assert.True(t, ok)
 	assert.Equal(t, 1, meta.Pods.Len())
+}
+
+// An adapter update that leaves its instance list unchanged swaps the mappings in
+// place. It must keep the adapter model and its pending count.
+func TestUpdateModelAdapterKeepsModelWithUnchangedInstances(t *testing.T) {
+	cache := NewForTest()
+	pod := requestTrackerTestPod("decode-0", "default", "base-model", "10.0.0.1")
+	cache.addPod(pod)
+
+	adapter := &modelv1alpha1.ModelAdapter{
+		ObjectMeta: metav1.ObjectMeta{Name: "adapter-model", Namespace: "default"},
+		Status:     modelv1alpha1.ModelAdapterStatus{Instances: []string{pod.Name}},
+	}
+	cache.addModelAdapter(adapter)
+	before, ok := cache.metaModels.Load("adapter-model")
+	assert.True(t, ok)
+	atomic.StoreInt32(&before.pendingRequests, 3)
+
+	cache.updateModelAdapter(adapter, adapter.DeepCopy())
+
+	after, ok := cache.metaModels.Load("adapter-model")
+	assert.True(t, ok)
+	assert.Same(t, before, after, "an unchanged instance list must not rebuild the adapter model")
+	assert.Equal(t, int32(3), atomic.LoadInt32(&after.pendingRequests))
+	assert.Equal(t, 1, after.Pods.Len())
+}
+
+// An adapter update that removes its last instance still drops the adapter model.
+func TestUpdateModelAdapterDropsModelWithoutInstances(t *testing.T) {
+	cache := NewForTest()
+	pod := requestTrackerTestPod("decode-0", "default", "base-model", "10.0.0.1")
+	cache.addPod(pod)
+
+	adapter := &modelv1alpha1.ModelAdapter{
+		ObjectMeta: metav1.ObjectMeta{Name: "adapter-model", Namespace: "default"},
+		Status:     modelv1alpha1.ModelAdapterStatus{Instances: []string{pod.Name}},
+	}
+	cache.addModelAdapter(adapter)
+	_, ok := cache.metaModels.Load("adapter-model")
+	assert.True(t, ok)
+
+	updated := adapter.DeepCopy()
+	updated.Status.Instances = nil
+	cache.updateModelAdapter(adapter, updated)
+
+	_, ok = cache.metaModels.Load("adapter-model")
+	assert.False(t, ok, "a model with no instance must be removed")
 }
