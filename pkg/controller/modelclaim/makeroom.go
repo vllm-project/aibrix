@@ -433,9 +433,6 @@ func (r *ModelClaimReconciler) waitingClaims(
 	pm *modelv1alpha1.ModelClaim,
 	candidates []corev1.Pod,
 ) ([]modelv1alpha1.ModelClaim, *modelv1alpha1.ModelClaimList) {
-	if pm.Status.Phase == modelv1alpha1.ModelClaimFailed {
-		return nil, nil
-	}
 	claims, err := r.listClaimsForAccount(ctx, pm.Namespace)
 	if err != nil {
 		return nil, nil

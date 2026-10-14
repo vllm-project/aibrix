@@ -81,12 +81,6 @@ func TestPriorityEligibleRejectsIneligibleClaims(t *testing.T) {
 			},
 		},
 		{
-			name: "activation failed",
-			mutate: func(claim *modelv1alpha1.ModelClaim) {
-				claim.Status.Phase = modelv1alpha1.ModelClaimFailed
-			},
-		},
-		{
 			name: "desired replicas already satisfied",
 			mutate: func(claim *modelv1alpha1.ModelClaim) {
 				claim.Spec.Replicas = &zero
@@ -206,7 +200,6 @@ func TestPlacementTurnBlockerSkipsIneligibleCompetitors(t *testing.T) {
 	}{
 		{"deleting", func(c *modelv1alpha1.ModelClaim) { c.DeletionTimestamp = &deleted }},
 		{"zero replicas", func(c *modelv1alpha1.ModelClaim) { c.Spec.Replicas = &zero }},
-		{"zero instance failed", func(c *modelv1alpha1.ModelClaim) { c.Status.Phase = modelv1alpha1.ModelClaimFailed }},
 		{"active instance", func(c *modelv1alpha1.ModelClaim) {
 			c.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: "elsewhere", Phase: modelv1alpha1.ModelClaimActive}}
 		}},
@@ -332,6 +325,51 @@ func TestPlacementTurnBlockerFailedRetryUsesPriorityAndFIFO(t *testing.T) {
 			if tt.blocks {
 				require.NotNil(t, blocker)
 				assert.Equal(t, ordinary.Name, blocker.Name)
+			} else {
+				assert.Nil(t, blocker)
+			}
+		})
+	}
+}
+
+func TestPlacementTurnBlockerFailedCompetitorYieldsOnlyDuringBackoff(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		waiting bool
+		due     bool
+		blocks  bool
+	}{
+		{name: "active backoff", waiting: true},
+		{name: "due retry", waiting: true, due: true, blocks: true},
+		{name: "controller restart", blocks: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			current := priorityTestClaim("current", 0, at0759)
+			failed := priorityTestClaim("failed-high", 100, at0758)
+			failed.Status.Phase = modelv1alpha1.ModelClaimFailed
+			failed.Generation = 1
+			pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+			r, runtime := newReconciler(t)
+			runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+			now := at0759
+			r.Backoff = newPlacementBackoff(func() time.Time { return now })
+			candidates := []corev1.Pod{*pod}
+			claims := &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*current, *failed}}
+			if tt.waiting {
+				key := types.NamespacedName{Namespace: failed.Namespace, Name: failed.Name}
+				r.Backoff.failedToStart(key, failed.Generation, roomSignatureOf(candidates, claims))
+			}
+			if tt.due {
+				now = now.Add(DefaultRequeueDuration)
+			}
+			readings := newRuntimeReadings(runtime)
+			ledgers := podLedgersFrom(claims, nil, candidates, readings.ofPods(context.Background(), candidates), nil)
+
+			blocker := r.placementTurnBlocker(context.Background(), current, candidates, claims, ledgers, readings)
+
+			if tt.blocks {
+				require.NotNil(t, blocker)
+				assert.Equal(t, failed.Name, blocker.Name)
 			} else {
 				assert.Nil(t, blocker)
 			}

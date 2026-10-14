@@ -592,17 +592,49 @@ func TestPlanRoomPassesOverAnIdleEngineTheAccountDoesNotKnow(t *testing.T) {
 	assert.Equal(t, "b", plan.sleeps[0].claim.Name)
 }
 
-func TestReconcileMakesNoRoomForAClaimWhoseLastStartFailed(t *testing.T) {
-	r, runtime := servingPool(t, keepNoWakeReserve, 1,
-		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
-	newClaim(t, r, "x", at0759)
-	claim := getModel(t, r, "x")
-	claim.Status.Phase = modelv1alpha1.ModelClaimFailed
-	require.NoError(t, r.Status().Update(context.Background(), claim))
+func TestReconcileFailedClaimMakesRoomOnlyWhenBackoffDue(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		waiting bool
+		due     bool
+		makes   bool
+	}{
+		{name: "active backoff", waiting: true},
+		{name: "due retry", waiting: true, due: true, makes: true},
+		{name: "controller restart", makes: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r, runtime := servingPool(t, keepNoWakeReserve, 1,
+				serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+			newClaim(t, r, "x", at0759)
+			claim := getModel(t, r, "x")
+			claim.Status.Phase = modelv1alpha1.ModelClaimFailed
+			require.NoError(t, r.Status().Update(context.Background(), claim))
+			now := at0759
+			r.Backoff = newPlacementBackoff(func() time.Time { return now })
+			if tt.waiting {
+				candidates, err := r.listCandidateWarmPods(context.Background(), claim)
+				require.NoError(t, err)
+				claims, err := r.listClaimsForAccount(context.Background(), testNamespace)
+				require.NoError(t, err)
+				r.Backoff.failedToStart(client.ObjectKeyFromObject(claim), claim.Generation,
+					roomSignatureOf(candidates, claims))
+			}
+			if tt.due {
+				now = now.Add(DefaultRequeueDuration)
+			}
 
-	reconcileOnce(t, r, "x")
+			reconcileOnce(t, r, claim.Name)
 
-	assert.Empty(t, runtime.sleepCalls, "room does not help a claim whose start failed")
+			if tt.makes {
+				require.Len(t, runtime.sleepCalls, 1)
+				assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
+				assert.Equal(t, scheduledReasonMakingRoom, scheduledOf(t, r, claim.Name).Reason)
+			} else {
+				assert.Empty(t, runtime.sleepCalls)
+			}
+		})
+	}
 }
 
 // A claim that is gone leaves nothing behind in memory: not the card held for

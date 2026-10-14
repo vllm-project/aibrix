@@ -56,7 +56,7 @@ func placementPriorityFirst(claims []modelv1alpha1.ModelClaim) {
 // the given candidate pods.
 func priorityEligible(claim *modelv1alpha1.ModelClaim, candidates []corev1.Pod) bool {
 	if claim == nil || !claim.DeletionTimestamp.IsZero() || len(claim.Status.Instances) != 0 ||
-		claim.Status.Phase == modelv1alpha1.ModelClaimFailed || desiredReplicas(claim) <= 0 {
+		desiredReplicas(claim) <= 0 {
 		return false
 	}
 	if _, err := perGPUBytesOf(claim); err != nil {
