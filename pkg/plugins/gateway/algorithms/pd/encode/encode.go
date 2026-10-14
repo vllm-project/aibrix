@@ -92,6 +92,11 @@ func requestBody(body []byte, item string) ([]byte, error) {
 	if out, err = sjson.SetBytes(out, "stream", false); err != nil {
 		return nil, err
 	}
+	// An encoder started with --mm-encoder-only stops after the prompt anyway;
+	// without it (or before vLLM 0.29) this keeps it from generating.
+	if out, err = sjson.SetBytes(out, "max_tokens", 1); err != nil {
+		return nil, err
+	}
 	for _, field := range passthroughFields {
 		if v := gjson.GetBytes(body, field); v.Exists() {
 			if out, err = sjson.SetRawBytes(out, field, []byte(v.Raw)); err != nil {

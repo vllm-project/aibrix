@@ -55,7 +55,7 @@ func (r *pdRouter) encodeMedia(ctx *types.RoutingContext, readyPods []*v1.Pod, p
 		return
 	}
 	if err := r.encodeExecutor.Execute(ctx, encoders, items, ctx.PDOverrides().PrefillRequestTimeout); err != nil {
-		klog.ErrorS(err, "encode_request_failed", "request_id", ctx.RequestID,
+		klog.V(2).InfoS("encode_request_failed", "error", err, "request_id", ctx.RequestID,
 			"roleset", roleset, "media_items", len(items))
 		return
 	}

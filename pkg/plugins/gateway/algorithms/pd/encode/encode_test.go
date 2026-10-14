@@ -45,7 +45,7 @@ func TestEncoderRequestCarriesOneItemVerbatim(t *testing.T) {
 	assert.Equal(t, "user", gjson.GetBytes(req, "messages.0.role").String())
 	// Byte for byte, so the encoder and the prefill instance hash the same item.
 	assert.Equal(t, `[`+image+`]`, gjson.GetBytes(req, "messages.0.content").Raw)
-	assert.False(t, gjson.GetBytes(req, "max_tokens").Exists())
+	assert.Equal(t, "1", gjson.GetBytes(req, "max_tokens").Raw)
 
 	assert.Empty(t, MediaItems([]byte(`{"messages":[{"role":"user","content":"hi"}]}`)))
 }
