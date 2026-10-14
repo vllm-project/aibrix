@@ -35,6 +35,7 @@ Bind the Role to the Console's service account using a RoleBinding. No
 permission to write Gateway status, Deployments or Secrets is needed for
 this feature. All authenticated Console users can read Gateways in the
 configured namespace; the Console `admin` role is required to write them.
+Readers can see listener configuration, hostnames and TLS secret names.
 This is a shared cluster administration view, not per-user resource isolation.
 
 ## Operations
@@ -45,6 +46,9 @@ This is a shared cluster administration view, not per-user resource isolation.
 | GET | `/api/v1/gateway-instances/{name}` | Native Gateway |
 | POST | `/api/v1/gateway-instances` | Created Gateway, HTTP 201 |
 | PUT | `/api/v1/gateway-instances/{name}` | Updated Gateway, HTTP 200 |
+
+List returns the full configured namespace without pagination or a limit.
+This initial API is intended for small Gateway inventories.
 
 Create accepts native Gateway JSON, for example:
 
@@ -77,7 +81,9 @@ Both the provider and Kubernetes enforce optimistic concurrency. A stale
 version or a concurrent API-server write returns HTTP 409. GET again and
 reconcile the edit before retrying. Missing resources return 404; invalid
 requests return 400 or Kubernetes' 422 validation response. Authentication
-and authorization failures return 401 and 403.
+and authorization failures for Console users return 401 and 403.
+Kubernetes credential or RBAC failures return 503 with a generic message;
+operators should inspect backend logs and the Console's Kubernetes identity.
 
 Successful writes acknowledge persistence, not traffic readiness. Read
 `status.conditions` and `status.listeners` from the Gateway controller.

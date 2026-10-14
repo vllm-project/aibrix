@@ -67,9 +67,14 @@ func (p *Kubernetes) List(ctx context.Context) (*gatewayv1.GatewayList, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Return the full configured namespace; pagination is not exposed by this
+	// initial Console API, which is intended for small Gateway inventories.
 	result, err := client.List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
+	}
+	if result == nil {
+		return nil, apierrors.NewServiceUnavailable("Gateway client returned an empty list response")
 	}
 	sort.Slice(result.Items, func(i, j int) bool { return result.Items[i].Name < result.Items[j].Name })
 	return result, nil
@@ -123,6 +128,11 @@ func (p *Kubernetes) Update(ctx context.Context, request *gatewayv1.Gateway) (*g
 	current, err := client.Get(ctx, request.Name, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
+	}
+	if current == nil {
+		return nil, apierrors.NewNotFound(
+			schema.GroupResource{Group: gatewayv1.GroupName, Resource: "gateways"}, request.Name,
+		)
 	}
 	if current.ResourceVersion != request.ResourceVersion {
 		return nil, apierrors.NewConflict(

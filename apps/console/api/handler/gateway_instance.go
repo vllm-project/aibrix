@@ -62,7 +62,7 @@ func (h *GatewayInstanceHandler) RegisterRoutes(mux *runtime.ServeMux) error {
 func (h *GatewayInstanceHandler) serve(w http.ResponseWriter, r *http.Request, params map[string]string) {
 	user := middleware.GetUser(r.Context())
 	if user == nil {
-		writeGatewayInstanceError(w, apierrors.NewUnauthorized("authentication is required"))
+		writeGatewayInstanceJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication is required"})
 		return
 	}
 	if r.Method != http.MethodGet && !strings.EqualFold(strings.TrimSpace(user.Role), "admin") {
@@ -120,6 +120,11 @@ func writeGatewayInstanceError(w http.ResponseWriter, err error) {
 	message := err.Error()
 	if apiStatus, ok := err.(apierrors.APIStatus); ok {
 		code = int(apiStatus.Status().Code)
+		// These credentials belong to the Console's Kubernetes identity,
+		// not the end user's session.
+		if code == http.StatusUnauthorized || code == http.StatusForbidden {
+			code = http.StatusServiceUnavailable
+		}
 	} else {
 		switch status.Code(err) {
 		case codes.InvalidArgument:
@@ -154,9 +159,14 @@ func writeGatewayInstanceJSON(w http.ResponseWriter, code int, value any) {
 		}
 		value = list
 	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		writeGatewayInstanceError(w, fmt.Errorf("marshal Gateway response: %w", err))
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	if err := json.NewEncoder(w).Encode(value); err != nil {
+	if _, err := w.Write(append(data, '\n')); err != nil {
 		klog.Errorf("write Gateway response: %v", err)
 	}
 }

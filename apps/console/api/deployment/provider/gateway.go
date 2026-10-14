@@ -27,7 +27,8 @@ import (
 
 type gatewayClientProvider struct {
 	kubeconfigClientProvider
-	client gatewayclient.Interface
+	client    gatewayclient.Interface
+	namespace string
 }
 
 // NewGatewayClientProvider uses the same Kubernetes configuration as model
@@ -40,7 +41,7 @@ func (p *gatewayClientProvider) GatewayClient() (gatewayclient.Interface, string
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.client != nil {
-		return p.client, p.cachedNamespace, nil
+		return p.client, p.namespace, nil
 	}
 	cfg, namespace, err := p.restConfig()
 	if err != nil {
@@ -51,5 +52,6 @@ func (p *gatewayClientProvider) GatewayClient() (gatewayclient.Interface, string
 		return nil, "", apierrors.NewServiceUnavailable(fmt.Sprintf("initialize Gateway client: %v", err))
 	}
 	p.client = client
+	p.namespace = namespace
 	return client, namespace, nil
 }
