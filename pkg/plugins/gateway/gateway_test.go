@@ -1732,6 +1732,55 @@ func TestProcess_ContextCancelled(t *testing.T) {
 	srv.AssertExpectations(t)
 }
 
+// TestSendProcessingResponse_SendFailure verifies that a transport failure is
+// always propagated, even for early rejections where no model was resolved.
+// Accounting (metrics + DoneRequestCount) still only runs when a model was set,
+// since AddRequestCount never ran for model-less requests.
+func TestSendProcessingResponse_SendFailure(t *testing.T) {
+	sendErr := errors.New("transport closed")
+	resp := &extProcPb.ProcessingResponse{}
+
+	t.Run("empty model propagates error without accounting", func(t *testing.T) {
+		mc := &MockCache{}
+		s := newProcessTestServer(openShutdownCh(), mc)
+		srv := &mockProcessServer{ctx: context.Background()}
+		srv.On("Send", resp).Return(sendErr).Once()
+
+		st := &processState{ctx: context.Background(), requestID: "req-no-model", model: ""}
+		err := s.sendProcessingResponse(srv, st, resp)
+
+		assert.ErrorIs(t, err, sendErr)
+		mc.AssertNotCalled(t, "DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		srv.AssertExpectations(t)
+	})
+
+	t.Run("known model propagates error with accounting", func(t *testing.T) {
+		mc := &MockCache{}
+		mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Once()
+		s := newProcessTestServer(openShutdownCh(), mc)
+		srv := &mockProcessServer{ctx: context.Background()}
+		srv.On("Send", resp).Return(sendErr).Once()
+
+		st := &processState{ctx: context.Background(), requestID: "req-model", model: "test-model"}
+		err := s.sendProcessingResponse(srv, st, resp)
+
+		assert.ErrorIs(t, err, sendErr)
+		mc.AssertExpectations(t)
+		srv.AssertExpectations(t)
+	})
+
+	t.Run("send success returns nil", func(t *testing.T) {
+		mc := &MockCache{}
+		s := newProcessTestServer(openShutdownCh(), mc)
+		srv := &mockProcessServer{ctx: context.Background()}
+		srv.On("Send", resp).Return(nil).Once()
+
+		st := &processState{ctx: context.Background(), requestID: "req-ok", model: ""}
+		assert.NoError(t, s.sendProcessingResponse(srv, st, resp))
+		srv.AssertExpectations(t)
+	})
+}
+
 // TestProcess_RecvEOF_NotCompleted verifies that an EOF received before the
 // request completes is surfaced as io.EOF (client closed stream prematurely).
 func TestProcess_RecvEOF_NotCompleted(t *testing.T) {

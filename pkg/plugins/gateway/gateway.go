@@ -804,10 +804,12 @@ func (s *Server) responseForResponseHeaderError(st *processState, resp *extProcP
 }
 
 func (s *Server) sendProcessingResponse(srv extProcPb.ExternalProcessor_ProcessServer, st *processState, resp *extProcPb.ProcessingResponse) error {
-	if err := srv.Send(resp); err != nil && len(st.model) > 0 {
+	if err := srv.Send(resp); err != nil {
 		klog.ErrorS(err, "gateway fail to send response to envoy-proxy", "requestID", st.requestID)
-		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "send_envoy_proxy", "499", st.routerCtx)
-		s.finishRequestCount(st)
+		if len(st.model) > 0 {
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "send_envoy_proxy", "499", st.routerCtx)
+			s.finishRequestCount(st)
+		}
 
 		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "EOF") {
 			klog.Warning("Stream already closed by client", "requestID", st.requestID)
