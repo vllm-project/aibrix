@@ -51,6 +51,8 @@ const ns = "ns1"
 // fakeWorkloadScaleClient implements the subset of the WorkloadScaleClient used by the reconciler.
 type fakeWorkloadScaleClient struct {
 	selector labels.Selector
+	// replicasErr, when set, is returned by GetCurrentReplicasFromScale.
+	replicasErr error
 }
 
 func (f *fakeWorkloadScaleClient) Validate(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler) error {
@@ -62,6 +64,9 @@ func (f *fakeWorkloadScaleClient) SetDesiredReplicas(ctx context.Context, pa *au
 }
 
 func (f *fakeWorkloadScaleClient) GetCurrentReplicasFromScale(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, scaleObj *unstructured.Unstructured) (int32, error) {
+	if f.replicasErr != nil {
+		return 0, f.replicasErr
+	}
 	return 1, nil
 }
 

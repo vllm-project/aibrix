@@ -333,7 +333,7 @@ func Test_ConcurrentGetAllNodesAndEvict(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Goroutine 1: repeatedly call GetAllNodes and iterate the result
-	// (simulates updatePodSet in prefix_cache_preble.go)
+	// (simulates updatePodSet in prefixcache/preble.go)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -347,7 +347,7 @@ func Test_ConcurrentGetAllNodesAndEvict(t *testing.T) {
 	}()
 
 	// Goroutine 2: repeatedly evict nodes
-	// (simulates evictionLoop in prefix_cache_preble.go)
+	// (simulates evictionLoop in prefixcache/preble.go)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

@@ -25,6 +25,8 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/least"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/routeutil"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
@@ -69,7 +71,7 @@ var (
 )
 
 // kvSyncEnabled reports whether KV event sync is enabled for this deployment, per the same
-// env var prefix_cache.go's NewPrefixCacheRouter reads. The value is a process-wide
+// env var prefixcache's NewPrefixCacheRouter reads. The value is a process-wide
 // deployment setting decided once at startup, so it's cached rather than re-read from the
 // environment on every request.
 func kvSyncEnabled() bool {
@@ -160,7 +162,7 @@ func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 		}
 		load := running
 		if queuedWeight > 0 {
-			queued := GetPodModelMetricsSimpleValue(r.cache, pod.Name, pod.Namespace, ctx.Model, metrics.NumRequestsWaiting)
+			queued := routeutil.GetPodModelMetricsSimpleValue(r.cache, pod.Name, pod.Namespace, ctx.Model, metrics.NumRequestsWaiting)
 			load += queuedWeight * queued
 		}
 		kvFree := r.kvFreeFraction(ctx, pod)
@@ -256,7 +258,7 @@ func (r *loadBalanceRouter) Route(ctx *types.RoutingContext, readyPodList types.
 
 	// Reuse the least-kv-cache strategy's own scorer to break the tie, rather than a
 	// bespoke lookup: any registered types.PodScorer works here as a tie-breaker.
-	targetPod, err := RouteByScore(ctx, &utils.PodArray{Pods: candidates}, newLeastKvCacheRouter(r.cache))
+	targetPod, err := routeutil.RouteByScore(ctx, &utils.PodArray{Pods: candidates}, least.NewLeastKvCacheScorer(r.cache))
 	if err != nil {
 		return "", err
 	}
@@ -346,7 +348,7 @@ func ApplyLoadImbalanceGate(ctx *types.RoutingContext, c cache.Cache, readyPods 
 	imbalanceFactor := lb.ImbalanceFactor
 	imbalanceMinGap := lb.ImbalanceMinGap
 
-	podRequestCount := getRequestCounts(c, readyPods)
+	podRequestCount := routeutil.GetRequestCounts(c, readyPods)
 	leastPods, minValue, maxValue, imbalanced := getTargetPodListOnLoadImbalance(podRequestCount, readyPods, imbalanceFactor, imbalanceMinGap)
 	if !imbalanced {
 		return readyPods
@@ -429,7 +431,7 @@ func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods [
 		}
 	}
 
-	podByKey := podsByKey(readyPods)
+	podByKey := routeutil.PodsByKey(readyPods)
 	for podKey, v := range podRequestCount {
 		if v == minValue {
 			if pod := podByKey[podKey]; pod != nil {

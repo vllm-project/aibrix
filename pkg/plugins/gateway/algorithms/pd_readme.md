@@ -1,6 +1,6 @@
 # PD Disaggregation Router
 
-`pd_disaggregation.go` implements the **prefill-decode (PD) disaggregated routing algorithm** (`RouterPD = "pd"`). **This file (`pd_readme.md`) is the canonical documentation** for PD: request flow, scoring, engine behavior, metrics, and environment variables. PD-only settings are under **Environment Variables**; variables shared with the prefix-cache router (tokenizer, stddev factor, and related `AIBRIX_PREFIX_CACHE_*` knobs) are listed in **Inherited from Prefix Cache Router** in the same section.
+`pd/router/router.go` implements the **prefill-decode (PD) disaggregated routing algorithm** (`RouterPD = "pd"`). **This file (`pd_readme.md`) is the canonical documentation** for PD: request flow, scoring, engine behavior, metrics, and environment variables. PD-only settings are under **Environment Variables**; variables shared with the prefix-cache router (tokenizer, stddev factor, and related `AIBRIX_PREFIX_CACHE_*` knobs) are listed in **Inherited from Prefix Cache Router** in the same section.
 
 In PD disaggregation, inference is split across two specialized pod roles:
 
@@ -72,7 +72,7 @@ Only rolesets with **both** at least one prefill replica and one decode replica 
 
 ## Roleset Eligibility Utilities
 
-`pd_roleset.go` provides helper functions used by both the router and the gateway's pod-readiness logic.
+`pd/router/roleset.go` provides helper functions used by both the router and the gateway's pod-readiness logic.
 
 ### Replica cardinality
 
@@ -818,7 +818,7 @@ NewPDRouter()
   ├─ NewPendingDecodeTracker()
   └─ startPrefixUpdater()                 // background goroutine
 
-// pd_roleset.go (no per-router state; pure functions called on each request)
+// pd/router/roleset.go (no per-router state; pure functions called on each request)
 HasEligibleRoleset(readyPods)             // gateway: skip PD when no complete roleset
 eligiblePDRolesets(readyPods)             // internal: filter to complete rolesets only
 DescribePDRolesetEligibility(readyPods)   // diagnostics: per-roleset replica counts

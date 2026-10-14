@@ -25,6 +25,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/routeutil"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -102,7 +103,7 @@ func (p *PowerOfTwoRouter) Route(ctx *types.RoutingContext, readyPodList types.P
 		}
 	}
 
-	targetPort := selectTargetPortForPodWithLeastRequestCount(p.cache, target, readyPodList.ListPortsForPod())
+	targetPort := routeutil.SelectTargetPortForPodWithLeastRequestCount(p.cache, target, readyPodList.ListPortsForPod())
 	klog.V(4).InfoS("power_of_two_route",
 		"request_id", ctx.RequestID,
 		"target_pod", target.Name,

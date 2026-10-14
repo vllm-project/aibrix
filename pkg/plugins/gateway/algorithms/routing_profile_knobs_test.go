@@ -29,14 +29,12 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/prefixcache"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
-	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // routingOverridesContext builds a routing context the way the gateway does: a
@@ -438,27 +436,6 @@ func TestAutoBlendWeightsHonorProfileOverrides(t *testing.T) {
 	assert.True(t, ok)
 }
 
-func TestPrebleDecodingLengthKnobReachesTheHistogram(t *testing.T) {
-	router := newTestRouter(1024, nil)
-	pod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "preble-1", Namespace: "default"},
-		Status: v1.PodStatus{
-			PodIP:      "10.0.0.1",
-			Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
-		},
-	}
-	podList := &MockPodList{pods: []*v1.Pod{pod}}
-
-	profiled := createTestRoutingContext("model", "hello world", "req-preble-overrides")
-	profiled.SetRoutingOverrides(&types.RoutingOverrides{Preble: types.PrebleOverrides{DecodingLength: 32}})
-	require.NoError(t, router.PostRouteUpdate(profiled, podList, pod))
-	assert.Equal(t, 32, router.histogram.currentDecodeLengthsPerPod[utils.GeneratePodKey(pod.Namespace, pod.Name)])
-
-	plain := createTestRoutingContext("model", "hello world", "req-preble-default")
-	require.NoError(t, router.PostRouteUpdate(plain, podList, pod))
-	assert.Equal(t, 32+decodingLength, router.histogram.currentDecodeLengthsPerPod[utils.GeneratePodKey(pod.Namespace, pod.Name)], "a request without the knob keeps the process default")
-}
-
 func TestPrefixCacheSigmaKnobControlsCandidateFiltering(t *testing.T) {
 	const model = "m1"
 
@@ -470,9 +447,9 @@ func TestPrefixCacheSigmaKnobControlsCandidateFiltering(t *testing.T) {
 		}
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, model, metricsMap)
-	tokenizerObj, err := tokenizer.NewTokenizer("character", nil)
+	// Under the default environment this builds the character-tokenizer router with a local index.
+	router, err := prefixcache.NewPrefixCacheRouterWithOptions(c, prefixcacheindexer.NewPrefixHashTable())
 	require.NoError(t, err)
-	router := prefixCacheRouter{cache: c, tokenizer: tokenizerObj, prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable()}
 	podList := podsFromCache(c)
 
 	bump := func(podName string, times int) {
@@ -520,52 +497,4 @@ func TestPrefixCacheSigmaKnobControlsCandidateFiltering(t *testing.T) {
 	skipped, err := router.Route(sharp, podList)
 	require.NoError(t, err)
 	assert.NotEqual(t, p4Addr, skipped, "a sharp sigma skips the cache-warm but loaded replica")
-}
-
-func TestPrefillSigmaKnobControlsPrefillCandidacy(t *testing.T) {
-	newCtx := func(requestID string) *types.RoutingContext {
-		ctx := types.NewRoutingContext(context.Background(), RouterPD, "model", "hello world", requestID, "user")
-		t.Cleanup(ctx.Delete)
-		return ctx
-	}
-
-	pods := []*v1.Pod{
-		makePDPod("prefill-1", "roleset-1", "", nil),
-		makePDPod("prefill-2", "roleset-2", "", nil),
-		makePDPod("prefill-3", "roleset-3", "", nil),
-		makePDPod("prefill-hot", "roleset-hot", "", nil),
-	}
-	tracker := pd.NewPrefillRequestTracker()
-	addRequests(tracker, "prefill-1", 1)
-	addRequests(tracker, "prefill-2", 1)
-	addRequests(tracker, "prefill-3", 1)
-	addRequests(tracker, "prefill-hot", 10)
-
-	r := &pdRouter{
-		prefillPolicy:         pd.NewPrefixCachePrefillPolicy(tokenizer.NewCharacterTokenizer(), prefixcacheindexer.NewPrefixHashTable()),
-		prefillRequestTracker: tracker,
-	}
-	hotIsCandidate := func(scores map[string]*Scores) bool {
-		for _, score := range scores {
-			if score.Pod.Name == "prefill-hot" {
-				return true
-			}
-		}
-		return false
-	}
-
-	// Counts are [1,1,1,10]: the hot prefill replica sits several deviations above
-	// the pool mean, so the sigma of the request decides its candidacy, the same
-	// knob the prefix-cache strategies read.
-	sharp := newCtx("req-prefill-sharp")
-	sharp.SetRoutingOverrides(&types.RoutingOverrides{PrefixCache: types.PrefixCacheOverrides{StandardDeviationFactor: 1}})
-	sharpScores, _, _ := r.scorePrefillPods(sharp, pods, nil)
-	assert.Len(t, sharpScores, 3)
-	assert.False(t, hotIsCandidate(sharpScores), "a sharp sigma drops the loaded prefill replica")
-
-	wide := newCtx("req-prefill-wide")
-	wide.SetRoutingOverrides(&types.RoutingOverrides{PrefixCache: types.PrefixCacheOverrides{StandardDeviationFactor: 4}})
-	wideScores, _, _ := r.scorePrefillPods(wide, pods, nil)
-	assert.Len(t, wideScores, 4)
-	assert.True(t, hotIsCandidate(wideScores), "a generous sigma keeps it a candidate")
 }

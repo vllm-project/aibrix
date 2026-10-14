@@ -131,11 +131,12 @@ const (
 	// Request Paths, grouped by modality. Add a new endpoint to its group.
 
 	// Text generation
-	PathChatCompletions     = "/v1/chat/completions"
-	PathResponses           = "/v1/responses"
-	PathMessages            = "/v1/messages"
-	PathMessagesCountTokens = "/v1/messages/count_tokens"
-	PathCompletions         = "/v1/completions"
+	PathChatCompletions      = "/v1/chat/completions"
+	PathResponses            = "/v1/responses"
+	PathMessages             = "/v1/messages"
+	PathMessagesCountTokens  = "/v1/messages/count_tokens"
+	PathCompletions          = "/v1/completions"
+	PathChatCompletionsBatch = "/v1/chat/completions/batch"
 
 	// Embeddings, ranking, classification and scoring
 	PathEmbeddings = "/v1/embeddings"

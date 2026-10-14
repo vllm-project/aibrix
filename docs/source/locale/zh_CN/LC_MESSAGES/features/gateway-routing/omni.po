@@ -276,11 +276,12 @@ msgstr ""
 
 #: ../../source/features/gateway-routing/omni.rst:124
 msgid ""
-"``POST /v1/chat/completions/batch`` reaches the gateway but is rejected "
-"with ``501 unknown request path``."
+"``POST /v1/chat/completions/batch`` is routed like a chat completion, and"
+" the engine answers with one JSON document that holds a choice per "
+"conversation; see :ref:`omni-chat-batch`."
 msgstr ""
-"``POST /v1/chat/completions/batch`` 会到达网关，但会以 ``501 unknown request "
-"path`` 被拒绝。"
+"``POST /v1/chat/completions/batch`` 与 chat completion 一样被路由，引擎以一个 JSON 文档作答，其中每个会话对应一个"
+" choice；参见 :ref:`omni-chat-batch` 。"
 
 #: ../../source/features/gateway-routing/omni.rst:125
 msgid ""

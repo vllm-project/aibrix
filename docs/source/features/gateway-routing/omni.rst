@@ -36,7 +36,7 @@ The vLLM-Omni and SGLang-Omni columns show what each engine documents upstream. 
    * - ``POST /v1/chat/completions/batch``
      - ✅
      - Not supported
-     - ❌ Not supported
+     - ✅ Supported
    * - ``GET /v1/models``
      - ✅
      - ✅
@@ -121,7 +121,7 @@ The vLLM-Omni and SGLang-Omni columns show what each engine documents upstream. 
 In the engine columns, *Model-dependent* means the engine serves the endpoint only for models that support the task, and *Not supported* means the engine does not offer the endpoint, going by its upstream documentation. A few AIBrix entries need a word of explanation:
 
 - ``GET /v1/models`` is answered by AIBrix's metadata service from the models it discovers (pod labels and ``ModelAdapter`` resources) instead of being forwarded to an engine, so it lists every model AIBrix knows about, whichever engine serves it.
-- ``POST /v1/chat/completions/batch`` reaches the gateway but is rejected with ``501 unknown request path``.
+- ``POST /v1/chat/completions/batch`` is routed like a chat completion, and the engine answers with one JSON document that holds a choice per conversation; see :ref:`omni-chat-batch`.
 - ``GET /v1/audio/speech/stream`` is a WebSocket endpoint, and the gateway has no handler for it.
 - ``/v1/audio/generate``, ``/v1/audio/voices`` and ``/v1/images/edits`` do not match any of the gateway's reserved routes.
 - AIBrix also serves ``GET /v1/videos`` itself, a catalog of your own video jobs kept in the gateway's registry. It is not an engine endpoint, so it is not listed above; see :ref:`omni-video-endpoint-reference`.

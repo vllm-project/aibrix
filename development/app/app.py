@@ -529,6 +529,25 @@ def get_token_count(text):
     return max(1, len(text.split()))
 
 
+def message_token_count(message):
+    """Count a chat message's tokens; content is a string or a list of multimodal parts.
+
+    /v1/chat/completions does not validate the message shape, so anything that is not an
+    object counts as one token rather than failing the request.
+    """
+    if not isinstance(message, dict):
+        return 1
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return get_token_count(content)
+    if isinstance(content, list):
+        return sum(
+            get_token_count(part.get("text", ""))
+            for part in content if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return 1
+
+
 models = [
     {
         "id": "meta-llama/Llama-2-7b-hf",
@@ -1389,19 +1408,7 @@ def chat_completions():
         arrived_at = datetime.now().timestamp()
         modalities = request.json.get("modalities", ["text"])
 
-        # Token count: handle both string and list content (multimodal)
-        def _msg_tokens(msg):
-            c = msg.get("content", "")
-            if isinstance(c, str):
-                return get_token_count(c)
-            if isinstance(c, list):
-                return sum(
-                    get_token_count(b.get("text", ""))
-                    for b in c if b.get("type") == "text"
-                )
-            return 1
-
-        input_tokens = sum(_msg_tokens(m) for m in messages)
+        input_tokens = sum(message_token_count(m) for m in messages)
         output_tokens = max_tokens if max_tokens else randint(10, 500)
         arrived_next = request.json.get("next_in")
         if not arrived_next:
@@ -1638,6 +1645,105 @@ def chat_completions():
             }
         }
         return jsonify(err), 500
+
+
+@app.route("/v1/chat/completions/batch", methods=["POST"])
+@auth_required
+def chat_completions_batch():
+    """
+    Simulates vLLM-Omni's batch chat endpoint: "messages" is a list of conversations and the
+    reply is one non-streaming chat completion with a choice per conversation and the usage
+    summed over all of them. Like the engine it refuses streaming ("stream": true), n > 1
+    and beam search; "stream" must be false or omitted.
+    """
+    try:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return create_error_response("chat batch request body must be valid JSON")
+
+        model = payload.get("model")
+        if not model:
+            return create_error_response("'model' is a required parameter", param="model")
+
+        conversations = payload.get("messages")
+        if not isinstance(conversations, list) or not conversations:
+            return create_error_response(
+                "'messages' is a required parameter and cannot be empty", param="messages"
+            )
+        for index, conversation in enumerate(conversations):
+            if (
+                not isinstance(conversation, list)
+                or not conversation
+                or not all(isinstance(message, dict) for message in conversation)
+            ):
+                return create_error_response(
+                    f"'messages.{index}' must be a non-empty array of messages",
+                    param=f"messages.{index}",
+                )
+
+        if payload.get("stream"):
+            return create_error_response(
+                "Batch chat completions do not support streaming. Please set `stream` to False.",
+                param="stream",
+            )
+        if payload.get("n", 1) != 1:
+            return create_error_response(
+                "Batch chat completions do not support `n > 1`. Please set `n` to 1.",
+                param="n",
+            )
+        if payload.get("use_beam_search"):
+            return create_error_response(
+                "Batch chat completions do not support beam search. "
+                "Please set `use_beam_search` to False.",
+                param="use_beam_search",
+            )
+
+        started_at = datetime.now().timestamp()
+        max_tokens = payload.get("max_tokens")
+        choices = []
+        input_tokens = 0
+        output_tokens = 0
+        longest_input_tokens = 0
+        longest_output_tokens = 0
+        for index, conversation in enumerate(conversations):
+            conversation_input_tokens = sum(message_token_count(m) for m in conversation)
+            conversation_output_tokens = max_tokens if max_tokens else randint(10, 500)
+            input_tokens += conversation_input_tokens
+            output_tokens += conversation_output_tokens
+            longest_input_tokens = max(longest_input_tokens, conversation_input_tokens)
+            longest_output_tokens = max(longest_output_tokens, conversation_output_tokens)
+            choices.append({
+                "index": index,
+                "message": {"role": "assistant", "content": simulated_message(model)},
+                "logprobs": None,
+                "finish_reason": "stop",
+            })
+
+        # Conversations run concurrently in the engine, so the slowest one sets the latency.
+        _sleep_for_mock_latency(started_at, 0.0, longest_input_tokens, longest_output_tokens)
+
+        response = {
+            "id": "chatcmpl-batch-" + str(uuid.uuid4()),
+            "object": "chat.completion",
+            "created": int(datetime.now().timestamp()),
+            "model": model,
+            "choices": choices,
+            "usage": {
+                "prompt_tokens": input_tokens,
+                "completion_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            },
+        }
+        _log_mock_exchange("/v1/chat/completions/batch", payload, response)
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in chat completions batch endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
 
 
 @app.route("/v1/audio/speech", methods=["POST"])
