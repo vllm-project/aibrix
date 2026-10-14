@@ -325,6 +325,56 @@ func TestProcessBlockStoredMultiBlockChain(t *testing.T) {
 	}
 }
 
+// Requests are split by the engine's block size, which need not match
+// AIBRIX_PREFIX_CACHE_BLOCK_SIZE: vLLM's default 16-token blocks are 64 bytes.
+func TestMatchPrefixUsesEngineBlockSize(t *testing.T) {
+	engineBlock := 4 * 16
+	tokens := makeTokens(3 * engineBlock)
+	blocks := [][]byte{tokens[:engineBlock], tokens[engineBlock : 2*engineBlock], tokens[2*engineBlock:]}
+	full := BlockStored{BlockHashes: []int64{1, 2, 3}, Tokens: blocks}
+	// A hybrid model's partial block: one short block continuing a prefix.
+	one, two, parent := int64(1), int64(2), int64(3)
+	partial := BlockStored{BlockHashes: []int64{4}, ParentBlockHash: &parent, Tokens: [][]byte{makeTokens(8)}}
+	readyPods := map[string]struct{}{testPod1Name: {}}
+
+	tests := []struct {
+		name   string
+		events []BlockStored
+	}{
+		{name: "full blocks", events: []BlockStored{full}},
+		{name: "partial block after full blocks", events: []BlockStored{full, partial}},
+		{name: "single short block first", events: []BlockStored{
+			{BlockHashes: []int64{9}, Tokens: [][]byte{makeTokens(8)}}, full}},
+		{name: "one block per step after offloaded blocks", events: []BlockStored{
+			{BlockHashes: []int64{21, 22}, Tokens: [][]byte{makeTokens(2 * engineBlock), makeTokens(2 * engineBlock)}, Medium: MediumCPU},
+			{BlockHashes: []int64{1}, Tokens: blocks[:1]},
+			{BlockHashes: []int64{2}, ParentBlockHash: &one, Tokens: blocks[1:2]},
+			{BlockHashes: []int64{3}, ParentBlockHash: &two, Tokens: blocks[2:]}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			table := NewSyncPrefixHashTable()
+			defer table.Close()
+			if table.blockSize == engineBlock {
+				t.Fatalf("test needs a block size other than %d", engineBlock)
+			}
+			for _, ev := range tt.events {
+				ev.ModelName = testModelName
+				ev.LoraID = -1
+				ev.SourcePod = testPod1Name
+				if err := table.ProcessBlockStored(ev); err != nil {
+					t.Fatalf("failed to process block stored: %v", err)
+				}
+			}
+
+			matches, hashes := table.MatchPrefix(testModelName, -1, tokens, readyPods)
+			if matches[testPod1Name] != 100 || len(hashes) != 3 {
+				t.Errorf("expected a 100%% match over 3 blocks, got %d%% over %d", matches[testPod1Name], len(hashes))
+			}
+		})
+	}
+}
+
 func TestProcessBlockStoredUnknownParent(t *testing.T) {
 	table := NewSyncPrefixHashTable()
 	defer table.Close()
