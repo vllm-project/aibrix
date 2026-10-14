@@ -332,13 +332,16 @@ func (s *SyncPrefixHashTable) ProcessBlockStored(event BlockStored) error {
 
 	// Only GPU blocks set the size: offload tiers can use larger chunks. Partial-block
 	// events (vLLM hybrid models) carry a single short block, so a multi-block
-	// event's size wins, and the smaller one if groups differ.
+	// event's size wins, and the smaller one if groups differ. Until then the
+	// longest single block wins, as a partial block is never the longer one.
 	if size := int64(len(event.Tokens[0])); size > 0 && (event.Medium == "" || event.Medium == MediumGPU) {
 		current := contextData.blockSize.Load()
 		multi := len(event.Tokens) > 1
-		if current == 0 || (multi && (!contextData.blockSizeFromMulti || size < current)) {
+		fromMulti := contextData.blockSizeFromMulti
+		if current == 0 || (multi && (!fromMulti || size < current)) || (!multi && !fromMulti && size > current) {
 			contextData.blockSize.Store(size)
-			contextData.blockSizeFromMulti = contextData.blockSizeFromMulti || multi
+			contextData.blockSizeFromMulti = fromMulti || multi
+			// Prefixes added with the old size can't match any more; eviction drops them.
 			if size != current {
 				klog.InfoS("sync prefix index uses the engine block size", "model", event.ModelName,
 					"lora_id", event.LoraID, "block_size_bytes", size, "configured_bytes", s.blockSize)
