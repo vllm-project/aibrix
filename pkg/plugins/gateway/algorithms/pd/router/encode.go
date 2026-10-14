@@ -44,15 +44,21 @@ func (r *pdRouter) encodeMedia(ctx *types.RoutingContext, readyPods []*v1.Pod, p
 	if len(items) == 0 {
 		return
 	}
-	b := groupPDPodsByRoleset(readyPods)[prefillPod.Labels[PDRoleSetIdentifier]]
-	if b == nil || len(b.encodes) == 0 {
+	roleset := prefillPod.Labels[PDRoleSetIdentifier]
+	var encoders []*v1.Pod
+	for _, pod := range readyPods {
+		if pod.Labels[PDRoleSetIdentifier] == roleset && pod.Labels[PDRoleIdentifier] == PDRoleEncode && isPodWithHTTPServer(pod) {
+			encoders = append(encoders, pod)
+		}
+	}
+	if len(encoders) == 0 {
 		return
 	}
-	if err := r.encodeExecutor.Execute(ctx, b.encodes, items, ctx.PDOverrides().PrefillRequestTimeout); err != nil {
+	if err := r.encodeExecutor.Execute(ctx, encoders, items, ctx.PDOverrides().PrefillRequestTimeout); err != nil {
 		klog.ErrorS(err, "encode_request_failed", "request_id", ctx.RequestID,
-			"roleset", prefillPod.Labels[PDRoleSetIdentifier], "media_items", len(items))
+			"roleset", roleset, "media_items", len(items))
 		return
 	}
 	klog.V(4).InfoS("encode_request_end", "request_id", ctx.RequestID,
-		"roleset", prefillPod.Labels[PDRoleSetIdentifier], "media_items", len(items))
+		"roleset", roleset, "media_items", len(items))
 }

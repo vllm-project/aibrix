@@ -170,15 +170,16 @@ func (e *Executor) encode(routingCtx *types.RoutingContext, pod *v1.Pod, index i
 	defer func() {
 		_ = resp.Body.Close()
 	}()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		emit(routingCtx, "read_error", "200")
-		return fmt.Errorf("read encode response: %w", err)
-	}
 	if resp.StatusCode != http.StatusOK {
 		status, code := metrics.HttpFailureStatusCode(ctx, nil, resp)
 		emit(routingCtx, status, code)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return fmt.Errorf("encoder returned %d: %s", resp.StatusCode, body)
+	}
+	// Only the status matters; drain the body so the connection is reused.
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		emit(routingCtx, "read_error", "200")
+		return fmt.Errorf("read encode response: %w", err)
 	}
 	emit(routingCtx, "success", "200")
 	return nil
