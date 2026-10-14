@@ -333,7 +333,7 @@ With vLLM, a roleset can also run the vision or audio encoder on its own pods, l
 
 The request body is not changed. The encode pods store their output through vLLM's EC connector, keyed by the hash of each media item, and the prefill pod finds it under the same hash. If an item's output is not there, for example because its encode request failed, the prefill pod encodes the item itself, so a failed encode costs latency but not the request. Each encode request uses the prefill request timeout, and ``gateway_pd_encode_request_total`` counts them by ``status``.
 
-Start the encode pods as encoder-only producers and the prefill pods as consumers of the same EC connector, for example ``ECExampleConnector`` on storage shared by the roleset:
+Start the encode pods as encoder-only producers and the prefill pods as consumers of the same EC connector. With ``ECExampleConnector``, the encode and prefill pods must mount the same volume, such as a ``ReadWriteMany`` PVC or a ``hostPath`` on one node. Otherwise the prefill pod never finds the encoder output and encodes every item itself. ``samples/disaggregation/vllm/1e1p1d.yaml`` is a complete example:
 
 .. code-block:: bash
 
