@@ -144,6 +144,14 @@ type ContextData struct {
 
 	// Eviction tracking (lock-free)
 	markedForEviction atomic.Bool
+
+	// blockSize is the byte length of the engine's KV blocks, learned from
+	// BlockStored events; 0 until one arrives. Requests must be split into
+	// blocks of this size to hash like the engine's blocks.
+	blockSize atomic.Int64
+	// blockSizeFromMulti is set once blockSize comes from a multi-block event.
+	// Guarded by mappingMu.
+	blockSizeFromMulti bool
 }
 
 // SyncPrefixHashTable is the main structure
@@ -229,16 +237,20 @@ func (s *SyncPrefixHashTable) MatchPrefix(modelName string, loraID int64, tokens
 		LoraID:    loraID,
 	}
 
-	// Compute hashes outside any lock
-	prefixHashes := s.GetPrefixHashes(tokens)
-
 	// Lock-free context lookup
 	value, exists := s.contextMap.Load(ctx)
 	if !exists {
-		return map[string]int{}, prefixHashes
+		return map[string]int{}, s.GetPrefixHashes(tokens)
 	}
 
 	contextData := value.(*ContextData)
+
+	// Compute hashes outside any lock
+	blockSize := int(contextData.blockSize.Load())
+	if blockSize == 0 {
+		blockSize = s.blockSize
+	}
+	prefixHashes := s.prefixHashes(tokens, blockSize)
 
 	// Check if marked for eviction (lock-free)
 	if contextData.markedForEviction.Load() {
@@ -343,6 +355,22 @@ func (s *SyncPrefixHashTable) ProcessBlockStored(event BlockStored) error {
 		klog.V(4).InfoS("Skipping block stored event for evicted context",
 			"model", ctx.ModelName, "loraID", ctx.LoraID, "blocks", len(event.BlockHashes))
 		return nil
+	}
+
+	// Only GPU blocks set the size: offload tiers can use larger chunks. Partial-block
+	// events (vLLM hybrid models) carry a single short block, so a multi-block
+	// event's size wins, and the smaller one if groups differ.
+	if size := int64(len(event.Tokens[0])); size > 0 && (event.Medium == "" || event.Medium == MediumGPU) {
+		current := contextData.blockSize.Load()
+		multi := len(event.Tokens) > 1
+		if current == 0 || (multi && (!contextData.blockSizeFromMulti || size < current)) {
+			contextData.blockSize.Store(size)
+			contextData.blockSizeFromMulti = contextData.blockSizeFromMulti || multi
+			if size != current {
+				klog.InfoS("sync prefix index uses the engine block size", "model", event.ModelName,
+					"lora_id", event.LoraID, "block_size_bytes", size, "configured_bytes", s.blockSize)
+			}
+		}
 	}
 
 	hashMapping := contextData.hashMapping
@@ -669,7 +697,11 @@ func (s *SyncPrefixHashTable) removeBlockIndexEntries(ctx ModelContext, blocks [
 
 // GetPrefixHashes computes prefix hashes for given tokens
 func (s *SyncPrefixHashTable) GetPrefixHashes(tokens []byte) []uint64 {
-	numBlocks := len(tokens) / s.blockSize
+	return s.prefixHashes(tokens, s.blockSize)
+}
+
+func (s *SyncPrefixHashTable) prefixHashes(tokens []byte, blockSize int) []uint64 {
+	numBlocks := len(tokens) / blockSize
 	prefixHashes := make([]uint64, 0, numBlocks)
 	digest := xxhash.NewWithSeed(s.seed)
 
@@ -678,8 +710,8 @@ func (s *SyncPrefixHashTable) GetPrefixHashes(tokens []byte) []uint64 {
 
 	var parentHashBytes [8]byte
 
-	for i := 0; i < len(tokens); i += s.blockSize {
-		end := i + s.blockSize
+	for i := 0; i < len(tokens); i += blockSize {
+		end := i + blockSize
 		if end > len(tokens) {
 			// Don't hash incomplete blocks
 			break
