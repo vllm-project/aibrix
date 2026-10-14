@@ -158,7 +158,7 @@ func TestModelClaimPriorityControlsPodEventPlacementOrder(t *testing.T) {
 	_, err = deployments.UpdateScale(scaleCtx, name, scale, metav1.UpdateOptions{})
 	require.NoError(t, err, "pool must scale before placement backoff is due")
 
-	firstPlacement, err := watchtools.UntilWithoutRetry(ctx, watcher, func(event watch.Event) (bool, error) {
+	firstPlacement, err := watchtools.UntilWithoutRetry(scaleCtx, watcher, func(event watch.Event) (bool, error) {
 		if event.Type == watch.Error {
 			return false, apierrors.FromObject(event.Object)
 		}
@@ -168,7 +168,7 @@ func TestModelClaimPriorityControlsPodEventPlacementOrder(t *testing.T) {
 		}
 		return len(claim.Status.Instances) > 0, nil
 	})
-	require.NoError(t, err, "one of the claims must record its first instance")
+	require.NoError(t, err, "one of the claims must record its first instance before ordinary placement retry is due")
 	require.Equal(t, highName, firstPlacement.Object.(*modelv1alpha1.ModelClaim).Name,
 		"the high-priority claim must record an instance before the older low-priority claim")
 	for _, claimName := range []string{highName, lowName} {
