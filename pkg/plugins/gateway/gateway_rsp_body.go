@@ -352,6 +352,7 @@ func isLanguageRequest(requestPath string) bool {
 	nonLanguagePrefixes := []string{
 		// Image
 		PathImagesGenerations,
+		PathImagesEdits,
 
 		// Video
 		PathVideoGenerations,

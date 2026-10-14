@@ -291,11 +291,9 @@ msgstr "``GET /v1/audio/speech/stream`` 是 WebSocket 端点，网关没有对�
 
 #: ../../source/features/gateway-routing/omni.rst:126
 msgid ""
-"``/v1/audio/generate``, ``/v1/audio/voices`` and ``/v1/images/edits`` do "
-"not match any of the gateway's reserved routes."
-msgstr ""
-"``/v1/audio/generate`` 、 ``/v1/audio/voices`` 和 ``/v1/images/edits`` "
-"不匹配网关的任何保留路由。"
+"``/v1/audio/generate`` and ``/v1/audio/voices`` do not match any of the "
+"gateway's reserved routes."
+msgstr "``/v1/audio/generate`` 和 ``/v1/audio/voices`` 不匹配网关的任何保留路由。"
 
 #: ../../source/features/gateway-routing/omni.rst:127
 msgid ""

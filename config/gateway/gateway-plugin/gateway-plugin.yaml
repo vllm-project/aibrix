@@ -237,6 +237,9 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/images/generations
+        - path:
+            type: PathPrefix
+            value: /v1/images/edits
         # Audio
         - path:
             type: PathPrefix

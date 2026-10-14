@@ -1215,6 +1215,8 @@ func TestHandleRequestBody_LanguageRequestKeepsConfiguredResponseMode(t *testing
 // query-string variants matter because HTTP/2 :path carries the query.
 func TestHandleRequestBody_MessagesAndAudioReachABackendPod(t *testing.T) {
 	audioBody, audioContentType := buildMultipartForm(t, map[string]string{"model": "llama"})
+	imageEditBody, imageEditContentType := buildMultipartFormWithFile(t,
+		map[string]string{"model": "llama", "prompt": "add a hat"}, "image", "cat.png", []byte("\x89PNG not a real image"))
 	messagesBody := []byte(`{"model":"llama","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
 
 	tests := []struct {
@@ -1229,6 +1231,8 @@ func TestHandleRequestBody_MessagesAndAudioReachABackendPod(t *testing.T) {
 		{"audio transcriptions with query string", PathAudioTranscriptions + "?foo=bar", audioBody, audioContentType},
 		{"audio translations", PathAudioTranslations, audioBody, audioContentType},
 		{"audio translations with query string", PathAudioTranslations + "?foo=bar", audioBody, audioContentType},
+		{"image edits", PathImagesEdits, imageEditBody, imageEditContentType},
+		{"image edits with query string", PathImagesEdits + "?foo=bar", imageEditBody, imageEditContentType},
 	}
 
 	cache.InitForTest()

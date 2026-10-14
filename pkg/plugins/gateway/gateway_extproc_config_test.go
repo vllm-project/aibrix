@@ -255,6 +255,19 @@ func TestGatewayPluginManifest_SharedRouteServesScore(t *testing.T) {
 	assert.Contains(t, manifest.pathMatches(t, "reserved-router"), manifestPathMatch{Type: "PathPrefix", Value: PathScore})
 }
 
+// TestGatewayPluginManifest_SharedRouteServesImageEdits: /v1/images/edits has to match a
+// reserved route before ext_proc can read its model out of the multipart body, which needs
+// the whole body buffered like the other multipart endpoints.
+func TestGatewayPluginManifest_SharedRouteServesImageEdits(t *testing.T) {
+	manifest := loadGatewayPluginManifest(t)
+
+	assert.Contains(t, manifest.pathMatches(t, "reserved-router"), manifestPathMatch{Type: "PathPrefix", Value: PathImagesEdits})
+
+	mode := manifest.policyFor(t, "reserved-router").Spec.ExtProc[0].ProcessingMode
+	require.NotNil(t, mode.Request)
+	assert.Equal(t, "Buffered", mode.Request.Body)
+}
+
 func TestGatewayPluginManifest_SharedRouteServesNativeClassify(t *testing.T) {
 	manifest := loadGatewayPluginManifest(t)
 

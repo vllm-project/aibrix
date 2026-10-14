@@ -33,6 +33,9 @@ spec:
             value: /v1/images/generations
         - path:
             type: PathPrefix
+            value: /v1/images/edits
+        - path:
+            type: PathPrefix
             value: /v1/video/generations
         - path:
             type: PathPrefix

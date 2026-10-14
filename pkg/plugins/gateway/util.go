@@ -263,6 +263,12 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 	case PathImagesGenerations, PathVideoGenerations:
 		model, errRes = validateImageGenerationRequest(requestID, path, requestBody)
 
+	case PathImagesEdits:
+		// Image edits upload the source images as files, so the body is multipart/form-data.
+		// A multipart request never gets here (see isMultipartFormPath); this is a JSON or
+		// content-type-less one.
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "image edit requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
+
 	// Audio
 	case PathAudioTranscriptions, PathAudioTranslations:
 		// Audio transcription and translation require multipart/form-data content-type, not JSON
@@ -789,11 +795,11 @@ func pathWithoutQuery(requestPath string) string {
 }
 
 // isMultipartFormPath returns true if requestPath is an endpoint whose request
-// body is multipart/form-data rather than JSON -- audio endpoints, and
-// vLLM-Omni's Videos API create endpoints (PathVideos, PathVideosSync).
+// body is multipart/form-data rather than JSON -- audio transcription and translation,
+// image edits, and vLLM-Omni's Videos API create endpoints (PathVideos, PathVideosSync).
 func isMultipartFormPath(requestPath string) bool {
 	switch pathWithoutQuery(requestPath) {
-	case PathAudioTranscriptions, PathAudioTranslations, PathVideos, PathVideosSync:
+	case PathAudioTranscriptions, PathAudioTranslations, PathImagesEdits, PathVideos, PathVideosSync:
 		return true
 	default:
 		return false

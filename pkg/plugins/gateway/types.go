@@ -162,6 +162,9 @@ const (
 
 	// Image
 	PathImagesGenerations = "/v1/images/generations"
+	// PathImagesEdits is the OpenAI-compatible image edit endpoint. Unlike PathImagesGenerations
+	// it takes multipart/form-data, because the source images are uploaded as files.
+	PathImagesEdits = "/v1/images/edits"
 
 	// Audio
 	PathAudioTranscriptions = "/v1/audio/transcriptions"

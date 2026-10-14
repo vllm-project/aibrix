@@ -52,6 +52,23 @@ func buildMultipartForm(t *testing.T, fields map[string]string) (body []byte, co
 	return buf.Bytes(), w.FormDataContentType()
 }
 
+// buildMultipartFormWithFile is buildMultipartForm plus one file part, as an image edit
+// request carries its source image.
+func buildMultipartFormWithFile(t *testing.T, fields map[string]string, fileField, fileName string, content []byte) (body []byte, contentType string) {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	for k, v := range fields {
+		require.NoError(t, w.WriteField(k, v))
+	}
+	part, err := w.CreateFormFile(fileField, fileName)
+	require.NoError(t, err)
+	_, err = part.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	return buf.Bytes(), w.FormDataContentType()
+}
+
 func int64Ptr(v int64) *int64 {
 	return &v
 }
@@ -76,6 +93,14 @@ func Test_ValidateRequestBody(t *testing.T) {
 			message:     "unknown path",
 			requestPath: "/v1/unknown",
 			statusCode:  envoyTypePb.StatusCode_NotImplemented,
+		},
+		{
+			// Image edits upload files, so a JSON body is a client error rather than an
+			// unknown path.
+			message:     "/v1/images/edits rejects a JSON body",
+			requestPath: PathImagesEdits,
+			requestBody: []byte(`{"model":"qwen-image-edit","prompt":"add a hat"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
 		},
 		{
 			message:     "/v1/completions string prompt",
@@ -2605,6 +2630,10 @@ func TestParseMultipartFormData_IgnoresStreamForVideoPaths(t *testing.T) {
 		{"videos sync create ignores stream field", PathVideosSync, false},
 		{"videos create with query string still ignores stream field", PathVideos + "?foo=bar", false},
 		{"audio transcription honors stream field", PathAudioTranscriptions, true},
+		// Multi-stage image edit pipelines answer stream=true with SSE, so the flag has to
+		// reach HandleResponseBody.
+		{"image edits honors stream field", PathImagesEdits, true},
+		{"image edits with query string honors stream field", PathImagesEdits + "?foo=bar", true},
 	}
 
 	for _, tt := range tests {
@@ -2737,6 +2766,13 @@ func TestValidateRoutingStrategyForPath(t *testing.T) {
 			strategy:  routing.RouterPD,
 			wantErr:   true,
 			errString: "routing strategy 'pd' is not supported for endpoint '/v1/images/generations'",
+		},
+		{
+			name:      "images edits with pd is rejected",
+			path:      PathImagesEdits,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/images/edits'",
 		},
 		{
 			name:      "videos with pd is rejected",

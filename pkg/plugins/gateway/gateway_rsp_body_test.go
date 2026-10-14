@@ -99,6 +99,11 @@ func TestIsLanguageRequest(t *testing.T) {
 			want:        false,
 		},
 		{
+			name:        "images edits is not language",
+			requestPath: "/v1/images/edits",
+			want:        false,
+		},
+		{
 			name:        "video generations is not language",
 			requestPath: "/v1/video/generations",
 			want:        false,
