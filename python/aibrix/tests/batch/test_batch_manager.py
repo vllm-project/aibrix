@@ -1896,3 +1896,40 @@ async def test_list_jobs_delegates_pagination_to_entity_manager():
 
     page2 = await job_manager.list_jobs(after="job-2", limit=2)
     assert [job.job_id for job in page2] == ["job-1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "execution", [None, {}], ids=["execution-none", "execution-empty"]
+)
+async def test_recovered_overdue_in_progress_job_finalizes_expired(
+    monkeypatch, execution
+):
+    job_manager = _job_manager()
+    scheduler = _CapturingScheduler()
+    job_manager.set_scheduler(scheduler)
+    job_id = f"test-job-id-recovered-overdue-{execution is None}"
+    job = _in_progress_meta_job(job_id, total_requests=1)
+    created = datetime.now(timezone.utc) - timedelta(hours=25)
+    job.status.created_at = created
+    job.status.in_progress_at = created
+    job.status.execution = execution
+
+    cleanup_driver = BaseJobDriver(
+        InfrastructureContext(), job_manager, FakeRuntime(), job
+    )
+    monkeypatch.setattr(
+        "aibrix.batch.batch_manager.create_job_driver",
+        lambda context, progress_manager, entity_manager, job, inference_client: (
+            cleanup_driver
+        ),
+    )
+
+    await job_manager.job_committed_handler(job)
+    await job_manager.expire_job(job_id)  # the scheduler's next expiry pass
+
+    assert scheduler.appended_job_ids == []
+    assert job_id not in job_manager._in_progress_jobs
+    done = job_manager._done_jobs[job_id]
+    assert done.status.state == BatchJobState.FINALIZED
+    assert done.status.condition == ConditionType.EXPIRED

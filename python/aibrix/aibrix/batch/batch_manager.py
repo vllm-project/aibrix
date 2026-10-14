@@ -600,6 +600,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 condition=job.status.condition,
             )  # type: ignore[call-arg]
             await self.expire_job(job_id)
+            await self._finish_recovered_expired_job(job_id)
             return True
 
         # Add to job scheduler if available (traditional workflow). Expiry is
@@ -641,6 +642,32 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 # No need to stop job because only update_job_ready will start job.
 
         return True
+
+    async def _finish_recovered_expired_job(self, job_id: str) -> None:
+        """Finish an overdue in-progress job that recovery found without a driver.
+
+        expire_job leaves an in-progress job to its live driver, and only reruns
+        orphan cleanup when durable execution metadata exists. A recovered job
+        with no execution metadata has neither, so it would stay in-progress
+        with the expired condition forever.
+        """
+        job = self._in_progress_jobs.get(job_id)
+        if (
+            job is None
+            or job.status.state != BatchJobState.IN_PROGRESS
+            or job.status.execution is not None
+            or getattr(job, "job_driver", None) is not None
+        ):
+            return
+        cleanup_driver = create_job_driver(
+            self._context,
+            self,
+            self._job_entity_manager,
+            job,
+            self._endpoint_source,
+        )
+        await cleanup_driver.cleanup(job)
+        logger.info("Recovered expired job finished", job_id=job_id)  # type: ignore[call-arg]
 
     async def job_updated_handler(self, old_job: BatchJob, new_job: BatchJob) -> bool:
         """
