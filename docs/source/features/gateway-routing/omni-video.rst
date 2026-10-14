@@ -18,6 +18,11 @@ The stock gateway already matches ``/v1/videos`` on its own reserved HTTPRoutes 
 
 Video generation needs a bit more from the gateway than a stateless chat completion does. Because a generated video is written to local disk on whichever pod created it, the gateway has to remember which pod owns each job and route follow-up calls back to that exact pod. It does so through an asynchronous-job registry: on a successful create it mints its own opaque **public job ID** and hands that to the client instead of the engine's ID, keeping the backend ID and the owning pod's identity to itself.
 
+.. figure:: ../../assets/images/omni-video-async-flow.png
+  :alt: AIBrix async video generation flow
+  :width: 100%
+  :align: center
+
 .. code-block:: text
 
     POST /v1/videos              ──►  gateway selects a pod for the model (least-request,

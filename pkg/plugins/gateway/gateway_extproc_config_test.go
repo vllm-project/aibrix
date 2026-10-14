@@ -285,6 +285,22 @@ func TestGatewayPluginManifest_SharedRouteServesAudioSpeechBatch(t *testing.T) {
 	assert.True(t, covered, "no PathPrefix match on the reserved router covers %s", PathAudioSpeechBatch)
 }
 
+// TestGatewayPluginManifest_SharedRouteServesChatCompletionsBatch: the batch endpoint has no
+// match of its own. It relies on the /v1/chat/completions PathPrefix, which Envoy Gateway applies
+// on path segment boundaries, so the manifest must keep a prefix match that is a parent segment
+// of it.
+func TestGatewayPluginManifest_SharedRouteServesChatCompletionsBatch(t *testing.T) {
+	manifest := loadGatewayPluginManifest(t)
+
+	covered := false
+	for _, match := range manifest.pathMatches(t, "reserved-router") {
+		if match.Type == "PathPrefix" && strings.HasPrefix(PathChatCompletionsBatch, match.Value+"/") {
+			covered = true
+		}
+	}
+	assert.True(t, covered, "no PathPrefix match on the reserved router covers %s", PathChatCompletionsBatch)
+}
+
 // TestGatewayPluginManifest_NoUnsupportedModeOverrideField guards against the
 // tempting one-line fix: EnvoyExtensionPolicy in Envoy Gateway v1.2.8 has no
 // allowModeOverride field, so setting it would be dropped by the API server and

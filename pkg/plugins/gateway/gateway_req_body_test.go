@@ -1422,6 +1422,90 @@ func TestHandleRequestBody_AudioSpeechBatchReachesABackendPodUnchanged(t *testin
 	assert.Equal(t, "1.2.3.4:8000", targetPod)
 }
 
+// TestHandleRequestBody_ChatCompletionsBatchReachesABackendPodUnchanged: a
+// /v1/chat/completions/batch request is routed on its top-level model, and the body is forwarded
+// byte for byte, so every conversation and sampling option reaches the engine as sent.
+func TestHandleRequestBody_ChatCompletionsBatchReachesABackendPodUnchanged(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+	mockCache.On("HasModel", "chat-model").Return(true)
+	mockCache.On("ListPodsByModel", "chat-model").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "chat-model").Return(int64(1))
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	server := &Server{cache: mockCache}
+
+	body := []byte(`{"model":"chat-model","max_tokens":32,"temperature":0,"messages":[[{"role":"user","content":"What is the capital of France?"}],[{"role":"system","content":"Be brief."},{"role":"user","content":"What is the capital of Japan?"}]]}`)
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: body},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathChatCompletionsBatch + "?api-version=1"
+	routingCtx.ReqHeaders[contentTypeKey] = "application/json"
+	routingCtx.ReqHeaders[methodKey] = http.MethodPost
+	routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(routingalgorithms.RouterLeastRequest)
+
+	resp, model, stream, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	require.NotNil(t, resp)
+	require.Nil(t, resp.GetImmediateResponse(), "the request must not be rejected")
+	assert.Equal(t, "chat-model", model)
+	assert.False(t, stream)
+	assert.Equal(t, "What is the capital of France?\nBe brief. What is the capital of Japan?", routingCtx.Message)
+
+	common := resp.GetRequestBody().GetResponse()
+	assert.Equal(t, body, common.GetBodyMutation().GetBody())
+	var targetPod string
+	for _, h := range common.GetHeaderMutation().GetSetHeaders() {
+		if h.Header.Key == HeaderTargetPod {
+			targetPod = string(h.Header.RawValue)
+		}
+	}
+	assert.Equal(t, "1.2.3.4:8000", targetPod)
+}
+
+// TestHandleRequestBody_ChatCompletionsBatchRejectsPDRouting: the PD router rewrites a single
+// conversation's messages into a prefill and a decode request, which a list of conversations
+// cannot go through, so the strategy is refused instead of producing a malformed prefill body.
+func TestHandleRequestBody_ChatCompletionsBatchRejectsPDRouting(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+	mockCache.On("HasModel", "chat-model").Return(true)
+	mockCache.On("ListPodsByModel", "chat-model").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+
+	server := &Server{cache: mockCache}
+
+	body := []byte(`{"model":"chat-model","messages":[[{"role":"user","content":"Hi"}]]}`)
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: body},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathChatCompletionsBatch
+	routingCtx.ReqHeaders[contentTypeKey] = "application/json"
+	routingCtx.ReqHeaders[methodKey] = http.MethodPost
+	routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(routingalgorithms.RouterPD)
+
+	resp, _, _, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	require.NotNil(t, resp)
+	require.NotNil(t, resp.GetImmediateResponse(), "the request must be rejected")
+	assert.Equal(t, envoyTypePb.StatusCode_BadRequest, resp.GetImmediateResponse().GetStatus().GetCode())
+	assert.Contains(t, resp.GetImmediateResponse().GetBody(), "is not supported for endpoint '/v1/chat/completions/batch'")
+}
+
 // registerTestRouter registers the shared TestRouterAlgorithm mock router so a
 // request can be routed with it. Idempotent across tests.
 func registerTestRouter(mockRouter *mockRouter) {

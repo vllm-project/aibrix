@@ -74,6 +74,11 @@ func TestIsLanguageRequest(t *testing.T) {
 			want:        true,
 		},
 		{
+			name:        "chat completions batch is language",
+			requestPath: "/v1/chat/completions/batch",
+			want:        true,
+		},
+		{
 			name:        "messages alias is language",
 			requestPath: "/v1/messages",
 			want:        true,
@@ -1222,6 +1227,43 @@ func TestHandleResponseBody_AudioSpeechBatchPassesThrough(t *testing.T) {
 
 	_, buffered := requestBuffers.Load(requestID)
 	assert.False(t, buffered, "the response must not be held in the language-response buffer")
+}
+
+// TestHandleResponseBody_ChatCompletionsBatchIsMetered: the engine answers a batch with one
+// chat completion holding a choice per conversation and the usage summed over all of them, so a
+// TPM-limited user is charged for the whole batch from that one document.
+func TestHandleResponseBody_ChatCompletionsBatchIsMetered(t *testing.T) {
+	mockRL := &mockRateLimiter{}
+	mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(40)).Return(int64(500), nil)
+
+	server := &Server{
+		ratelimiter: mockRL,
+	}
+
+	requestID := "test-req-chat-batch-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "chat-model", "", requestID, "test-user")
+	routerCtx.ReqPath = PathChatCompletionsBatch
+	routerCtx.RequestTime = time.Now()
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body: []byte(`{"id":"chatcmpl-1","object":"chat.completion","model":"chat-model","choices":[` +
+					`{"index":0,"message":{"role":"assistant","content":"Paris."},"finish_reason":"stop"},` +
+					`{"index":1,"message":{"role":"assistant","content":"Tokyo."},"finish_reason":"stop"}],` +
+					`"usage":{"prompt_tokens":30,"completion_tokens":10,"total_tokens":40}}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 42, "chat-model", false, false)
+
+	assert.True(t, complete)
+	assert.NotNil(t, resp)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, TokenUsage{PromptTokens: 30, CompletionTokens: 10, TotalTokens: 40}, usage)
+	mockRL.AssertExpectations(t)
 }
 
 func TestHandleResponseBody_EndOfStreamNoTokens(t *testing.T) {

@@ -230,6 +230,8 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 	// Text generation
 	case PathChatCompletions, PathMessages, PathMessagesCountTokens:
 		model, message, prefixText, stream, errRes = validateChatRequest(requestID, path, requestBody, user)
+	case PathChatCompletionsBatch:
+		model, message, errRes = validateChatBatchRequest(requestID, requestBody)
 	case PathResponses:
 		model, message, prefixText, stream, errRes = validateResponsesRequest(requestID, requestBody)
 	case PathCompletions:
@@ -317,6 +319,71 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 			return
 		}
 	}
+	return
+}
+
+// validateChatBatchRequest parses and validates a /v1/chat/completions/batch request body.
+// Only the envelope is checked: a JSON object with a non-empty "model" to route on and a
+// non-empty "messages" array whose entries are non-empty conversations, each an array of
+// messages. The sampling options and message contents belong to the engine. The returned message
+// joins the conversation texts for routing. A "stream" field is deliberately not surfaced as a
+// stream: the gateway always treats a batch as non-SSE, and the engine does not stream one (it
+// expects stream to be false or omitted and may reject true), so its response is one JSON
+// document that SSE parsing would fail on.
+// nolint:nakedret
+func validateChatBatchRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	if trimmed := bytes.TrimSpace(requestBody); len(trimmed) == 0 || trimmed[0] != '{' {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	// Conversations stay raw so each is parsed once, after its shape is known to be an array.
+	var req struct {
+		Model    string            `json:"model"`
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		logRequestBodyParseFailure(requestID, PathChatCompletionsBatch, "error to unmarshal chat completions batch object", err, requestBody)
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	// The gateway selects the backend pod by model, so it cannot fall back to an engine default.
+	if strings.TrimSpace(req.Model) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if len(req.Messages) == 0 {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'messages' is a required property and cannot be empty", "", "messages", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	conversationTexts := make([]string, 0, len(req.Messages))
+	for i, rawConversation := range req.Messages {
+		param := fmt.Sprintf("messages.%d", i)
+		// A flat list of messages is the single-conversation shape; name the entry that gives it away.
+		if trimmed := bytes.TrimSpace(rawConversation); len(trimmed) == 0 || trimmed[0] != '[' {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("'%s' must be an array of messages", param), "", param, HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		var conversation []contentItem
+		if err := sonic.Unmarshal(rawConversation, &conversation); err != nil {
+			logRequestBodyParseFailure(requestID, PathChatCompletionsBatch, "error to unmarshal chat completions batch conversation", err, rawConversation)
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", param, HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		if len(conversation) == 0 {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("'%s' cannot be empty", param), "", param, HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		var conversationText string
+		if conversationText, errRes = parseChatMessages(requestID, conversation); errRes != nil {
+			return
+		}
+		conversationTexts = append(conversationTexts, conversationText)
+	}
+
+	model, message = req.Model, strings.Join(conversationTexts, "\n")
 	return
 }
 

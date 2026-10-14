@@ -98,6 +98,10 @@ msgstr ""
 "Pod。它通过异步任务登记表实现：创建成功时签发自己的不透明**公开任务 ID** 交给客户端，而不是引擎 ID，后端 ID 和所属 Pod "
 "身份只保留在网关内部。"
 
+#: ../../source/features/gateway-routing/omni-video.rst:21
+msgid "AIBrix async video generation flow"
+msgstr "AIBrix 异步视频生成流程"
+
 #: ../../source/features/gateway-routing/omni-video.rst:40
 msgid ""
 "Records are read from and written to Redis on every operation — there is "

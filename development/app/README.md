@@ -392,6 +392,7 @@ Endpoints are grouped by modality. An endpoint that exists for only one engine i
 ### Text Generation
 - `/v1/chat/completions` - Chat completions (streaming supported)
 - `/v1/completions` - Text completions (streaming supported)
+- `/v1/chat/completions/batch` - Batch chat: `messages` is a list of conversations, answered by one non-streaming response with a choice per conversation and the usage summed over all of them; `stream: true`, `n > 1` and beam search are refused (vLLM-Omni)
 
 ### Embeddings, Ranking and Scoring
 - `/v1/embeddings` - Text embeddings
