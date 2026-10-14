@@ -267,6 +267,9 @@ func TestPlacementTurnBlockerPreservesReservations(t *testing.T) {
 				owner = current.Name
 			}
 			require.True(t, r.reservations().hold(cardOf(pod), owner, 800, r.now()))
+			ownerKey := types.NamespacedName{Namespace: testNamespace, Name: owner}
+			r.Backoff.refused(ownerKey, 0, roomSignatureOf([]corev1.Pod{*pod}, nil))
+			r.Backoff.statusWritten(ownerKey)
 			readings := newRuntimeReadings(runtime)
 			candidates := []corev1.Pod{*pod}
 			claims := &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*high, *current}}
@@ -302,22 +305,96 @@ func TestPlacementTurnBlockerInfeasibleCurrentKeepsItsRefusal(t *testing.T) {
 	assert.Nil(t, r.placementTurnBlocker(context.Background(), current, candidates, claims, ledgers, readings))
 }
 
-func TestPlacementTurnBlockerFailedRetryYieldsToOrdinaryClaims(t *testing.T) {
-	current := priorityTestClaim("failed-high", 100, at0758)
-	current.Status.Phase = modelv1alpha1.ModelClaimFailed
-	ordinary := priorityTestClaim("ordinary-low", 0, at0759)
-	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
-	r, runtime := newReconciler(t)
-	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
-	readings := newRuntimeReadings(runtime)
-	candidates := []corev1.Pod{*pod}
-	claims := &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*current, *ordinary}}
-	ledgers := podLedgersFrom(claims, nil, candidates, readings.ofPods(context.Background(), candidates), nil)
-	blocker := r.placementTurnBlocker(context.Background(), current, candidates, claims, ledgers, readings)
-	require.NotNil(t, blocker)
-	assert.Equal(t, ordinary.Name, blocker.Name)
-	claims.Items[1].Spec.PerGPU = claimWithCost(2000, 100).Spec.PerGPU
-	assert.Nil(t, r.placementTurnBlocker(context.Background(), current, candidates, claims, ledgers, readings))
+func TestPlacementTurnBlockerFailedRetryUsesPriorityAndFIFO(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		priority int32
+		created  time.Time
+		blocks   bool
+	}{
+		{"lower priority", 0, at0758, false},
+		{"higher priority", 200, at0759, true},
+		{"equal priority older", 100, at0758.Add(-time.Minute), true},
+		{"equal priority newer", 100, at0759, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			current := priorityTestClaim("failed-high", 100, at0758)
+			current.Status.Phase = modelv1alpha1.ModelClaimFailed
+			ordinary := priorityTestClaim("ordinary", tt.priority, tt.created)
+			pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+			r, runtime := newReconciler(t)
+			runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+			readings := newRuntimeReadings(runtime)
+			candidates := []corev1.Pod{*pod}
+			claims := &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*current, *ordinary}}
+			ledgers := podLedgersFrom(claims, nil, candidates, readings.ofPods(context.Background(), candidates), nil)
+			blocker := r.placementTurnBlocker(context.Background(), current, candidates, claims, ledgers, readings)
+			if tt.blocks {
+				require.NotNil(t, blocker)
+				assert.Equal(t, ordinary.Name, blocker.Name)
+			} else {
+				assert.Nil(t, blocker)
+			}
+		})
+	}
+}
+
+func TestPlacementTurnBlockerBackoffUsesOnlySharedCandidateRoom(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		generation int64
+		elapsed    time.Duration
+		freedPod   string
+		blocks     bool
+	}{
+		{"active wait", 1, 0, "", false},
+		{"expired wait", 1, DefaultRequeueDuration, "", true},
+		{"changed spec", 2, 0, "", true},
+		{"shared room freed", 1, 0, "shared", true},
+		{"unselected room freed", 1, 0, "unselected", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			current := priorityTestClaim("current", 0, at0759)
+			high := priorityTestClaim("high", 100, at0758)
+			high.Generation = 1
+			high.Spec.PodSelector.MatchLabels["selected"] = "yes"
+			shared, snapshot := sizedWarmPod("shared", "10.0.0.1", 1000)
+			shared.Labels["selected"] = "yes"
+			other, otherSnapshot := sizedWarmPod("unselected", "10.0.0.2", 1000)
+			neighbour := claimOnPod("neighbour", "shared", modelv1alpha1.ModelClaimActive, 50, 50)
+			otherNeighbour := claimOnPod("other-neighbour", "unselected", modelv1alpha1.ModelClaimActive, 50, 50)
+			neighbour.Status.Instances[0].Port = 9001
+			otherNeighbour.Status.Instances[0].Port = 9002
+			claims := &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*current, *high, *neighbour, *otherNeighbour}}
+			r, runtime := newReconciler(t)
+			runtime.snapshots = map[string]*RuntimeSnapshot{shared.Status.PodIP: snapshot, other.Status.PodIP: otherSnapshot}
+			now := at0759
+			r.Backoff = newPlacementBackoff(func() time.Time { return now })
+			key := types.NamespacedName{Namespace: testNamespace, Name: high.Name}
+			r.Backoff.refused(key, 1, roomSignatureOf([]corev1.Pod{*shared}, claims))
+			r.Backoff.statusWritten(key)
+			before := r.Backoff.attempts[key]
+			now = now.Add(tt.elapsed)
+			claims.Items[1].Generation = tt.generation
+			for i := 2; i < len(claims.Items); i++ {
+				if claims.Items[i].Status.Instances[0].Pod == tt.freedPod {
+					claims.Items[i].Status.Instances = nil
+					claims.Items[i].Spec.Replicas = new(int32)
+				}
+			}
+			candidates := []corev1.Pod{*shared, *other}
+			readings := newRuntimeReadings(runtime)
+			ledgers := podLedgersFrom(claims, nil, candidates, readings.ofPods(context.Background(), candidates), nil)
+			blocker := r.placementTurnBlocker(context.Background(), current, candidates, claims, ledgers, readings)
+			if tt.blocks {
+				require.NotNil(t, blocker)
+				assert.Equal(t, high.Name, blocker.Name)
+			} else {
+				assert.Nil(t, blocker)
+			}
+			assert.Equal(t, before, r.Backoff.attempts[key])
+		})
+	}
 }
 
 func TestClaimFeasibleForPlacementFiltersSharedPodsAndUnavailableReadings(t *testing.T) {

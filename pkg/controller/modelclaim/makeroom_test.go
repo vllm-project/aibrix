@@ -43,9 +43,9 @@ func TestWaitingClaimsPriorityOrdersOnlyEligibleUnplacedClaims(t *testing.T) {
 	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
 	r, _ := newReconciler(t, low, high, invalid)
 
-	waiting, listed := r.waitingClaims(context.Background(), low, []corev1.Pod{*pod})
+	waiting, claims := r.waitingClaims(context.Background(), low, []corev1.Pod{*pod})
 
-	assert.True(t, listed)
+	require.NotNil(t, claims)
 	assert.Equal(t, []string{"newer-high", "older-low"}, claimNames(waiting))
 }
 
@@ -57,6 +57,9 @@ func TestFirstToMakeRoomForPriorityHonorsUnexpiredReservation(t *testing.T) {
 	r, _ := newReconciler(t, low, high)
 	card := types.NamespacedName{Namespace: testNamespace, Name: pod.Name}
 	require.True(t, r.reservations().hold(card, high.Name, 400, r.now()))
+	key := client.ObjectKeyFromObject(high)
+	r.Backoff.refused(key, high.Generation, roomSignatureOf([]corev1.Pod{*pod}, nil))
+	r.Backoff.statusWritten(key)
 
 	assert.False(t, r.firstToMakeRoomFor(context.Background(), low, []corev1.Pod{*pod}, nil, newRuntimeReadings(nil)))
 }
@@ -306,6 +309,81 @@ func TestReconcileLetsTheCardGoWhenTheSleepThatMakesRoomFails(t *testing.T) {
 	_, held := r.reservations().heldFor(testNamespace, "x", r.now())
 	assert.False(t, held, "no room was made, so the card is not kept from the other claims")
 	assert.NotEqual(t, scheduledReasonMakingRoom, scheduledOf(t, r, "x").Reason)
+}
+
+func TestReconcilePrioritySleepFailureBackoffLetsLaterClaimProceed(t *testing.T) {
+	for _, priority := range []int32{0, 100} {
+		t.Run(fmt.Sprintf("predecessor priority %d", priority), func(t *testing.T) {
+			r, runtime := servingPool(t, keepNoWakeReserve, 1,
+				serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+			high := priorityTestClaim("needs-sleep", priority, at0758)
+			high.Spec.ModelName = nil
+			low := priorityTestClaim("small", 0, at0759)
+			low.Spec.ModelName = nil
+			low.Spec.PerGPU = claimWithCost(50, 50).Spec.PerGPU
+			require.NoError(t, r.Create(context.Background(), withFinalizer(high)))
+			require.NoError(t, r.Create(context.Background(), withFinalizer(low)))
+			runtime.sleepErr = &runtimeRefusal{"sleep failed: boom"}
+			r.Backoff = newPlacementBackoff(func() time.Time { return at0759 })
+
+			assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, high.Name))
+			require.Len(t, runtime.sleepCalls, 1)
+			assert.Empty(t, runtime.activateCalls)
+			assert.Equal(t, "NoMatchingPods", scheduledOf(t, r, high.Name).Reason)
+			_, held := r.reservations().heldFor(testNamespace, high.Name, r.now())
+			assert.False(t, held)
+			key := client.ObjectKeyFromObject(high)
+			before, waiting := r.Backoff.attempts[key]
+			require.True(t, waiting)
+			assert.True(t, before.written)
+			assert.Equal(t, at0759.Add(DefaultRequeueDuration), before.readyAt)
+
+			reconcileFor(t, r, low.Name)
+			require.Len(t, getModel(t, r, low.Name).Status.Instances, 1, "the small claim fits without putting a neighbour to sleep")
+			assert.Equal(t, "warm-1", getModel(t, r, low.Name).Status.Instances[0].Pod)
+			assert.Empty(t, getModel(t, r, high.Name).Status.Instances)
+			assert.Equal(t, before, r.Backoff.attempts[key])
+			assert.Len(t, runtime.sleepCalls, 1)
+		})
+	}
+}
+
+func TestReconcilePrioritySleepFailureBackoffLetsLaterClaimMakeRoom(t *testing.T) {
+	for _, priority := range []int32{0, 100} {
+		t.Run(fmt.Sprintf("predecessor priority %d", priority), func(t *testing.T) {
+			r, runtime := servingPool(t, keepNoWakeReserve, 1,
+				serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+			high := priorityTestClaim("first", priority, at0758)
+			low := priorityTestClaim("later", 0, at0759)
+			require.NoError(t, r.Create(context.Background(), withFinalizer(high)))
+			require.NoError(t, r.Create(context.Background(), withFinalizer(low)))
+			runtime.sleepErr = &runtimeRefusal{"sleep failed: boom"}
+			r.Backoff = newPlacementBackoff(func() time.Time { return at0759 })
+			assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, high.Name))
+			assert.Empty(t, runtime.activateCalls)
+			assert.Equal(t, "NoMatchingPods", scheduledOf(t, r, high.Name).Reason)
+			key := client.ObjectKeyFromObject(high)
+			before, waiting := r.Backoff.attempts[key]
+			require.True(t, waiting)
+			require.True(t, before.written)
+			_, held := r.reservations().heldFor(testNamespace, high.Name, r.now())
+			require.False(t, held)
+
+			// The sleep endpoint recovers without a generation or room change.
+			// The first claim still waits, while the next may try to make room.
+			runtime.sleepErr = nil
+			reconcileFor(t, r, low.Name)
+			require.Equal(t, scheduledReasonMakingRoom, scheduledOf(t, r, low.Name).Reason)
+			card, held := r.reservations().heldFor(testNamespace, low.Name, r.now())
+			require.True(t, held)
+			assert.Equal(t, "warm-1", card.Name)
+			assert.Equal(t, before, r.Backoff.attempts[key])
+			reconcileFor(t, r, low.Name)
+			require.Len(t, getModel(t, r, low.Name).Status.Instances, 1)
+			assert.Equal(t, "warm-1", getModel(t, r, low.Name).Status.Instances[0].Pod)
+			assert.Empty(t, getModel(t, r, high.Name).Status.Instances)
+		})
+	}
 }
 
 func TestReconcileKeepsTheRoomMadeForAClaimFromOthers(t *testing.T) {

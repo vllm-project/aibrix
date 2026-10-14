@@ -500,6 +500,107 @@ func TestEnsureActivatedPriorityFailedInstanceReplacementBypassesAdmission(t *te
 	assert.Equal(t, modelv1alpha1.ModelClaimActivating, low.Status.Instances[0].Phase)
 }
 
+func TestReconcilePriorityFailedRetryCompetesWhenDue(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		wait     bool
+		expired  bool
+		priority int32
+		placed   bool
+	}{
+		{"active backoff yields to zero", true, false, 0, false},
+		{"due retry precedes zero", true, true, 0, true},
+		{"restart precedes zero", false, false, 0, true},
+		{"due retry yields to higher priority", true, true, 200, false},
+		{"restart yields to higher priority", false, false, 200, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r, runtime, low, high, pod := priorityReconciler(t)
+			low.Spec.Priority = tt.priority
+			require.NoError(t, r.Update(context.Background(), low))
+			high.Spec.Priority = 100
+			require.NoError(t, r.Update(context.Background(), high))
+			high.Status.Phase = modelv1alpha1.ModelClaimFailed
+			require.NoError(t, r.Status().Update(context.Background(), high))
+			now := at0759
+			r.Backoff = newPlacementBackoff(func() time.Time { return now })
+			key := client.ObjectKeyFromObject(high)
+			if tt.wait {
+				room := roomSignatureOf([]corev1.Pod{*pod}, &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*low, *high}})
+				r.Backoff.failedToStart(key, high.Generation, room)
+			}
+			if tt.expired {
+				now = now.Add(DefaultRequeueDuration)
+			}
+			before := r.Backoff.attempts[key]
+			reconcileFor(t, r, high.Name)
+			if tt.placed {
+				require.Len(t, getModel(t, r, high.Name).Status.Instances, 1)
+				require.Len(t, runtime.activateCalls, 1)
+				assert.Equal(t, high.Name, runtime.activateCalls[0].ModelName)
+				assert.Equal(t, "Placed", scheduled(t, r, high.Name).Reason)
+			} else {
+				assert.Empty(t, runtime.activateCalls)
+				assert.Empty(t, getModel(t, r, high.Name).Status.Instances)
+				assert.Equal(t, modelv1alpha1.ModelClaimFailed, getModel(t, r, high.Name).Status.Phase)
+				assert.Equal(t, before, r.Backoff.attempts[key])
+				if tt.priority > 100 {
+					assert.Equal(t, "WaitingForPlacementTurn", scheduled(t, r, high.Name).Reason)
+				}
+				reconcileFor(t, r, low.Name)
+				require.Len(t, runtime.activateCalls, 1)
+				assert.Equal(t, low.Name, runtime.activateCalls[0].ModelName)
+			}
+		})
+	}
+}
+
+func TestReconcilePriorityKVFailureBackoffLetsLaterClaimProceed(t *testing.T) {
+	for _, failure := range []string{"write", "readback"} {
+		t.Run(failure, func(t *testing.T) {
+			high := priorityTestClaim("high", 100, at0758)
+			high.Spec.ModelName = nil
+			high.Spec.PodSelector.MatchLabels["broken"] = "yes"
+			low := priorityTestClaim("low", 0, at0759)
+			low.Spec.ModelName = nil
+			broken, snapshot := sizedWarmPod("broken", "10.0.0.1", 1000)
+			broken.Labels["broken"] = "yes"
+			healthy, healthySnapshot := sizedWarmPod("healthy", "10.0.0.2", 1000)
+			neighbour := claimOnPod("neighbour", broken.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+			neighbour.Status.Instances[0].KVLimitBytes = 600
+			snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+			r, runtime := newReconciler(t, high, low, neighbour, broken, healthy)
+			runtime.snapshots = map[string]*RuntimeSnapshot{broken.Status.PodIP: snapshot, healthy.Status.PodIP: healthySnapshot}
+			if failure == "write" {
+				r.Runtime = &failingKVLimits{fakeRuntime: runtime, failing: map[int]bool{1: true}}
+			} else {
+				runtime.deafToKVLimits = true
+			}
+			r.Backoff = newPlacementBackoff(func() time.Time { return at0759 })
+			assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, high.Name))
+			assert.Empty(t, runtime.activateCalls)
+			assert.Equal(t, "NoMatchingPods", scheduled(t, r, high.Name).Reason)
+			assert.Contains(t, scheduled(t, r, high.Name).Message, "could not be divided")
+			if failure == "readback" {
+				assert.Contains(t, scheduled(t, r, high.Name).Message, "did not take a KV limit")
+			}
+			key := client.ObjectKeyFromObject(high)
+			before, waiting := r.Backoff.attempts[key]
+			require.True(t, waiting)
+			assert.True(t, before.written)
+			assert.Equal(t, at0759.Add(DefaultRequeueDuration), before.readyAt)
+			_, held := r.reservations().heldFor(testNamespace, high.Name, r.now())
+			assert.False(t, held)
+
+			reconcileFor(t, r, low.Name)
+			require.Len(t, getModel(t, r, low.Name).Status.Instances, 1, "a failed predecessor yields during backoff")
+			assert.Equal(t, healthy.Name, getModel(t, r, low.Name).Status.Instances[0].Pod)
+			assert.Empty(t, getModel(t, r, high.Name).Status.Instances)
+			assert.Equal(t, before, r.Backoff.attempts[key])
+		})
+	}
+}
+
 func TestReconcilePriorityLostInstanceReentersAdmission(t *testing.T) {
 	r, runtime, low, _, _ := priorityReconciler(t)
 	low = getModel(t, r, low.Name)

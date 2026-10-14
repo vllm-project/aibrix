@@ -21,6 +21,7 @@ import (
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 )
@@ -137,9 +138,9 @@ func (r *ModelClaimReconciler) placementTurnBlocker(
 		return nil
 	}
 	waiting := make([]modelv1alpha1.ModelClaim, 0, len(claims.Items)+1)
-	if current.Status.Phase != modelv1alpha1.ModelClaimFailed {
-		waiting = append(waiting, *current)
-	}
+	// The current claim has passed its own backoff gate, so a due Failed
+	// retry competes by the same priority and FIFO order as an ordinary claim.
+	waiting = append(waiting, *current)
 	for i := range claims.Items {
 		claim := &claims.Items[i]
 		if claim.Namespace == current.Namespace && claim.Name != current.Name && priorityEligible(claim, candidates) {
@@ -157,11 +158,14 @@ func (r *ModelClaimReconciler) placementTurnBlocker(
 		if _, held := r.reservations().heldFor(claim.Namespace, claim.Name, now); held {
 			return claim
 		}
+		shared, _ := candidatePodsForClaim(claim, candidates)
+		if r.backoff().waiting(types.NamespacedName{Namespace: claim.Namespace, Name: claim.Name},
+			claim.Generation, roomSignatureOf(shared, claims)) {
+			continue
+		}
 		if r.claimFeasibleForPlacement(ctx, claim, candidates, ledgers, readings) {
 			return claim
 		}
 	}
-	// A Failed claim with no instance retries after every ordinary feasible
-	// competitor, regardless of the retrying claim's numeric priority.
 	return nil
 }

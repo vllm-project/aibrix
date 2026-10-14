@@ -177,6 +177,17 @@ func (b *placementBackoff) due(claim types.NamespacedName, generation int64, roo
 	return false, left
 }
 
+// waiting reports whether another claim must still wait before retrying. Unlike
+// due, this leaves the attempt untouched: only the claim's own reconcile may
+// reset its refusal count or consume an unwritten refusal.
+func (b *placementBackoff) waiting(claim types.NamespacedName, generation int64, room roomSignature) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	attempt, found := b.attempts[claim]
+	return found && attempt.written && generation == attempt.generation &&
+		!roomMayHaveAppeared(attempt.room, room, attempt.helpedBy()) && b.now().Before(attempt.readyAt)
+}
+
 // refused records that no card could hold a claim, and returns how long it
 // waits before its next try. The wait doubles with each refusal in a row, up to
 // maximumPlacementBackoff.

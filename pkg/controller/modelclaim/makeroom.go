@@ -371,8 +371,8 @@ func (r *ModelClaimReconciler) firstToMakeRoomFor(
 	if _, holding := r.reservations().heldFor(pm.Namespace, pm.Name, now); holding {
 		return true
 	}
-	waiting, listed := r.waitingClaims(ctx, pm, candidates)
-	if !listed {
+	waiting, claims := r.waitingClaims(ctx, pm, candidates)
+	if claims == nil {
 		return false
 	}
 	for i := range waiting {
@@ -389,6 +389,9 @@ func (r *ModelClaimReconciler) firstToMakeRoomFor(
 		}
 		shared, valid := candidatePodsForClaim(claim, candidates)
 		if !valid {
+			continue
+		}
+		if r.backoff().waiting(client.ObjectKeyFromObject(claim), claim.Generation, roomSignatureOf(shared, claims)) {
 			continue
 		}
 		for j := range shared {
@@ -423,18 +426,19 @@ func (r *ModelClaimReconciler) wakeWaitsOn(ctx context.Context, pod *corev1.Pod,
 // waitingClaims lists priority-eligible claims in priority/FIFO order for a
 // claim's pool. The claims are listed as the account lists them: the cache can
 // miss an instance recorded a moment ago, and a claim just placed would then
-// seem to wait.
+// seem to wait. The full listing is returned too, so backoff checks can compare
+// room without another account read or discarding the live instances.
 func (r *ModelClaimReconciler) waitingClaims(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
 	candidates []corev1.Pod,
-) ([]modelv1alpha1.ModelClaim, bool) {
+) ([]modelv1alpha1.ModelClaim, *modelv1alpha1.ModelClaimList) {
 	if pm.Status.Phase == modelv1alpha1.ModelClaimFailed {
-		return nil, false
+		return nil, nil
 	}
 	claims, err := r.listClaimsForAccount(ctx, pm.Namespace)
 	if err != nil {
-		return nil, false
+		return nil, nil
 	}
 	var waiting []modelv1alpha1.ModelClaim
 	for i := range claims.Items {
@@ -448,7 +452,7 @@ func (r *ModelClaimReconciler) waitingClaims(
 		waiting = append(waiting, claim)
 	}
 	placementPriorityFirst(waiting)
-	return waiting, true
+	return waiting, claims
 }
 
 // selects reports whether a claim selects a pod.

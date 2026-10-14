@@ -53,7 +53,7 @@ func TestPlacementBackoffWaitsLongerAfterEachRefusal(t *testing.T) {
 	assert.Equal(t, 4*DefaultRequeueDuration, backoff.refused(claim, 1, nil))
 }
 
-func TestReconcilePriorityExpiredLowTimerCannotBypassHighClaim(t *testing.T) {
+func TestReconcilePriorityExpiredLowTimerSkipsHighClaimInBackoff(t *testing.T) {
 	r, runtime, low, high, pod := priorityReconciler(t)
 	now := time.Unix(1_700_000_000, 0)
 	r.Backoff = newPlacementBackoff(func() time.Time { return now })
@@ -65,13 +65,13 @@ func TestReconcilePriorityExpiredLowTimerCannotBypassHighClaim(t *testing.T) {
 	r.Backoff.refused(highKey, high.Generation, room)
 	r.Backoff.statusWritten(highKey)
 	now = now.Add(DefaultRequeueDuration / 2)
-	before := r.Backoff.attempts[lowKey]
+	before := r.Backoff.attempts[highKey]
 
-	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, low.Name))
-	assert.Empty(t, runtime.activateCalls)
-	assert.Equal(t, "WaitingForPlacementTurn", scheduled(t, r, low.Name).Reason)
-	assert.Equal(t, before.refusals, r.Backoff.attempts[lowKey].refusals, "priority denial is not a card refusal")
-	assert.Equal(t, before.readyAt, r.Backoff.attempts[lowKey].readyAt)
+	reconcileFor(t, r, low.Name)
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, low.Name, runtime.activateCalls[0].ModelName)
+	assert.Equal(t, "Placed", scheduled(t, r, low.Name).Reason)
+	assert.Equal(t, before, r.Backoff.attempts[highKey], "checking a competitor must not change its wait")
 	due, _ := r.Backoff.due(highKey, high.Generation, room)
 	assert.False(t, due, "the competitor's independent timer has not expired")
 }
@@ -104,7 +104,7 @@ func TestReconcilePriorityInfeasibleCurrentRetainsActualRefusalBackoff(t *testin
 	assert.Empty(t, runtime.activateCalls)
 }
 
-func TestEnsureActivatedPriorityFailedRetryWaitsForOrdinaryPending(t *testing.T) {
+func TestEnsureActivatedPriorityDueFailedRetryPrecedesLowerPriorityPending(t *testing.T) {
 	r, runtime, low, high, pod := priorityReconciler(t)
 	current := getModel(t, r, high.Name)
 	current.Status.Phase = modelv1alpha1.ModelClaimFailed
@@ -115,31 +115,96 @@ func TestEnsureActivatedPriorityFailedRetryWaitsForOrdinaryPending(t *testing.T)
 	room := roomSignatureOf([]corev1.Pod{*pod}, &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*low, *current}})
 	r.Backoff.failedToStart(key, current.Generation, room)
 	now = now.Add(DefaultRequeueDuration)
-	before := r.Backoff.attempts[key]
 	wait, err := r.ensureActivated(context.Background(), current, []corev1.Pod{*pod}, newRuntimeReadings(runtime))
 	require.NoError(t, err)
-	assert.Equal(t, DefaultRequeueDuration, wait)
-	assert.Empty(t, runtime.activateCalls)
-	assert.Equal(t, before, r.Backoff.attempts[key])
+	assert.Zero(t, wait)
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, high.Name, runtime.activateCalls[0].ModelName)
+	assert.NotContains(t, r.Backoff.attempts, key)
 	condition := meta.FindStatusCondition(current.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
 	require.NotNil(t, condition)
-	assert.Equal(t, "WaitingForPlacementTurn", condition.Reason)
-	assert.Equal(t, "waiting behind ModelClaim older-low with priority 1 that can use the same pool", condition.Message)
+	assert.Equal(t, "Placed", condition.Reason)
 }
 
-func TestReconcilePriorityFailedRetryRemainsBehindPendingAfterRestart(t *testing.T) {
+func TestReconcilePriorityFailedRetryPrecedesLowerPriorityPendingAfterRestart(t *testing.T) {
 	r, runtime, _, high, _ := priorityReconciler(t)
 	current := getModel(t, r, high.Name)
 	current.Status.Phase = modelv1alpha1.ModelClaimFailed
 	require.NoError(t, r.Status().Update(context.Background(), current))
-	// A restarted controller has the persisted Failed phase but no in-memory
-	// activation-failure backoff. A denied turn must not promote that retry
-	// into the ordinary placement queue on the next pass.
-	for i := 0; i < 2; i++ {
-		assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, high.Name))
-		assert.Equal(t, "WaitingForPlacementTurn", scheduled(t, r, high.Name).Reason)
-		assert.Equal(t, modelv1alpha1.ModelClaimFailed, getModel(t, r, high.Name).Status.Phase)
-		assert.Empty(t, runtime.activateCalls)
+	// A restart loses the wait, so the Failed claim competes immediately.
+	reconcileFor(t, r, high.Name)
+	assert.Equal(t, "Placed", scheduled(t, r, high.Name).Reason)
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, high.Name, runtime.activateCalls[0].ModelName)
+}
+
+func TestPlacementBackoffWaitingIsReadOnly(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		kind       string
+		written    bool
+		elapsed    time.Duration
+		generation int64
+		room       roomSignature
+		want       bool
+	}{
+		{"unknown claim", "none", false, 0, 1, nil, false},
+		{"unchanged refusal", "room", true, 0, 1, nil, true},
+		{"unwritten refusal", "room", false, 0, 1, nil, false},
+		{"expired refusal", "room", true, 2 * DefaultRequeueDuration, 1, nil, false},
+		{"changed generation", "room", true, 0, 2, nil, false},
+		{"room freed", "room", true, 0, 1, roomSignature{"pod": {ready: false}}, false},
+		{"room grew", "room", true, 0, 1, roomSignature{"pod": {instances: 2, awake: 2, promisedBytes: 800}}, true},
+		{"pod disappeared", "room", true, 0, 1, roomSignature{}, true},
+		{"pod became ready", "room", true, 0, 1, roomSignature{"pod": {instances: 1, awake: 1, promisedBytes: 400, ready: true}}, false},
+		{"unlisted room", "room", true, 0, 1, roomSignature{"pod": {unlisted: true}}, true},
+		{"failed start ignores freed room", "start", true, 0, 1, roomSignature{"pod": {}}, true},
+		{"failed start sees ready pod", "start", true, 0, 1, roomSignature{"pod": {instances: 1, awake: 1, promisedBytes: 400, ready: true}}, false},
+		{"too large ignores ready pod", "large", true, 0, 1, roomSignature{"pod": {ready: true}}, true},
+		{"too large sees new pod", "large", true, 0, 1, roomSignature{"new": {}}, false},
+		{"reset refusal", "reset", true, 0, 1, nil, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := at0758
+			backoff := newPlacementBackoff(func() time.Time { return now })
+			key := types.NamespacedName{Namespace: testNamespace, Name: "waiting"}
+			room := roomSignature{"pod": {instances: 1, awake: 1, promisedBytes: 400}}
+			if tt.kind != "none" {
+				for i := 0; i < 2; i++ {
+					switch tt.kind {
+					case "large":
+						backoff.refusedAsTooLarge(key, 1, room)
+					case "start":
+						backoff.failedToStart(key, 1, room)
+					default:
+						backoff.refused(key, 1, room)
+					}
+				}
+				if tt.written {
+					backoff.statusWritten(key)
+				}
+				if tt.kind == "reset" {
+					backoff.startOver(key)
+				}
+			}
+			now = now.Add(tt.elapsed)
+			if tt.room != nil {
+				room = tt.room
+			}
+			before := make(map[types.NamespacedName]placementAttempt, len(backoff.attempts))
+			for key, attempt := range backoff.attempts {
+				copy := attempt
+				copy.room = make(roomSignature, len(attempt.room))
+				for pod, taken := range attempt.room {
+					copy.room[pod] = taken
+				}
+				before[key] = copy
+			}
+			for i := 0; i < 2; i++ {
+				assert.Equal(t, tt.want, backoff.waiting(key, tt.generation, room))
+				assert.Equal(t, before, backoff.attempts, "eligibility checks cannot consume another claim's retry")
+			}
+		})
 	}
 }
 
