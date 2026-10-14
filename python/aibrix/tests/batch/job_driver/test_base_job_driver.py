@@ -117,6 +117,110 @@ async def test_accepted_cancel_before_session_finalizes_as_cancelled():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("validation_fails", [False, True], ids=["success", "failure"])
+async def test_cancel_validating_job_with_live_driver_is_accepted(validation_fails):
+    context = InfrastructureContext()
+    manager = BatchManager(context)
+    job = _make_job()
+    job.status.state = BatchJobState.CREATED
+    manager._pending_jobs[job.job_id] = job
+    driver = BaseJobDriver(context, manager, NoopRuntime(context), job)
+    validation_started = asyncio.Event()
+    release_validation = asyncio.Event()
+
+    async def blocked_validation(*args):
+        validation_started.set()
+        await release_validation.wait()
+        return 1, "invalid input" if validation_fails else None
+
+    with (
+        patch("aibrix.batch.batch_manager.create_job_driver", return_value=driver),
+        patch.object(
+            base_module.storage, "read_job_input_info", return_value=(1, True)
+        ),
+        patch.object(
+            base_module.storage,
+            "validate_job_input_file",
+            side_effect=blocked_validation,
+        ),
+    ):
+        admission = asyncio.create_task(manager.admit(job.job_id))
+        try:
+            await asyncio.wait_for(validation_started.wait(), timeout=5)
+            assert await manager.cancel_job(job.job_id) == TerminateResult.ACCEPTED
+            stored = await manager.get_job(job.job_id)
+            assert stored is not None
+            assert stored.status.state == BatchJobState.CANCELLING
+            assert stored.status.check_condition(ConditionType.CANCELLED)
+            release_validation.set()
+            admitted_driver = await asyncio.wait_for(admission, timeout=5)
+            assert admitted_driver is (None if validation_fails else driver)
+            stored = await manager.get_job(job.job_id)
+            assert stored is not None
+            assert stored.status.in_progress_at is None
+            if not validation_fails:
+                assert stored.status.state == BatchJobState.CANCELLING
+                await asyncio.wait_for(driver.execute(job.job_id), timeout=5)
+            finished = await manager.get_job(job.job_id)
+            assert finished is not None
+            assert finished.status.state == BatchJobState.FINALIZED
+            assert finished.status.check_condition(ConditionType.CANCELLED)
+            assert finished.status.completed_at is None
+            if validation_fails:
+                assert finished.status.condition == ConditionType.FAILED
+                assert finished.status.failed_at is not None
+                assert finished.status.cancelled_at is None
+                assert finished.status.errors is not None
+                assert (
+                    finished.status.errors[0].code == BatchJobErrorCode.VALIDATION_ERROR
+                )
+            else:
+                assert finished.status.condition == ConditionType.CANCELLED
+                assert finished.status.cancelled_at is not None
+        finally:
+            admission.cancel()
+            await asyncio.gather(admission, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [BatchJobState.CREATED, BatchJobState.VALIDATING])
+async def test_cancel_without_live_driver_finalizes_immediately(state):
+    manager = BatchManager(InfrastructureContext())
+    job = _make_job()
+    job.status.state = state
+    manager._pending_jobs[job.job_id] = job
+    assert await manager.cancel_job(job.job_id) == TerminateResult.ACCEPTED
+    finished = await manager.get_job(job.job_id)
+    assert finished is not None
+    assert finished.status.state == BatchJobState.FINALIZED
+    assert finished.status.condition == ConditionType.CANCELLED
+    assert finished.status.cancelled_at is not None
+    assert finished.status.completed_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state",
+    [BatchJobState.CANCELLING, BatchJobState.FINALIZING, BatchJobState.FINALIZED],
+)
+async def test_late_validation_preserves_current_job(state):
+    manager = BatchManager(InfrastructureContext())
+    job = JobMetaInfo(_make_job())
+    stale_status = job.status.model_copy(deep=True)
+    stale_status.state = BatchJobState.VALIDATING
+    stale_status.request_counts.total = 1
+    job.status.state = state
+    if state == BatchJobState.FINALIZED:
+        manager._done_jobs[job.job_id] = job
+    else:
+        manager._in_progress_jobs[job.job_id] = job
+    assert await manager.mark_job_validated(job.job_id, stale_status) is job
+    assert job.status.state == state
+    assert job.status.request_counts.total == 0
+    assert job.status.in_progress_at is None
+
+
+@pytest.mark.asyncio
 async def test_accepted_cancel_after_session_finalizes_as_cancelled():
     context = InfrastructureContext()
     manager = BatchManager(context)
