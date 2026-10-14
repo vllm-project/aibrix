@@ -204,7 +204,7 @@ The gateway identifies the role of each pod using two labels:
      - Value
      - Purpose
    * - ``role-name``
-     - ``prefill``, ``decode``, or another value (e.g. ``all``)
+     - ``prefill``, ``decode``, ``encode``, or another value (e.g. ``all``)
      - Tells the gateway which phase this pod handles. Standard inference pods use a role other than ``prefill``/``decode`` (or omit ``role-name``) and set ``combined: true`` in ``routingConfig``.
    * - ``roleset-name``
      - any string (e.g. ``group-0``)
@@ -324,6 +324,29 @@ Enable prompt-length bucketing on the gateway plugin (add to its Deployment envi
         value: "true"
 
 With bucketing enabled, the gateway considers a standard inference pod as a candidate only when the request's prompt length falls within the pod's configured range (see below). Without a range configured, a standard inference pod accepts any prompt length.
+
+
+Encode Pods for Multimodal Requests (EPD)
+-----------------------------------------
+
+With vLLM, a roleset can also run the vision or audio encoder on its own pods, labeled ``role-name: encode`` with the same ``roleset-name`` as the prefill and decode pods. For a ``/v1/chat/completions`` request that carries ``image_url``, ``audio_url``, ``input_audio`` or ``video_url`` items, the gateway first sends each item to one of the selected roleset's encode pods, in parallel, and waits for them before the prefill request. Text-only requests, other endpoints and rolesets without encode pods route exactly as before. Encode pods are never picked as prefill, decode or standard inference pods.
+
+The request body is not changed. The encode pods store their output through vLLM's EC connector, keyed by the hash of each media item, and the prefill pod finds it under the same hash. If an item's output is not there, for example because its encode request failed, the prefill pod encodes the item itself, so a failed encode costs latency but not the request. Each encode request uses the prefill request timeout, and ``gateway_pd_encode_request_total`` counts them by ``status``.
+
+Start the encode pods as encoder-only producers and the prefill pods as consumers of the same EC connector, for example ``ECExampleConnector`` on storage shared by the roleset:
+
+.. code-block:: bash
+
+    # encode pod
+    vllm serve my-vl-model --enforce-eager --no-enable-prefix-caching --mm-encoder-only \
+      --ec-transfer-config '{"ec_connector": "ECExampleConnector", "ec_role": "ec_producer",
+        "ec_connector_extra_config": {"shared_storage_path": "/ec-cache"}}'
+
+    # prefill pod: add to its usual --kv-transfer-config flags
+      --ec-transfer-config '{"ec_connector": "ECExampleConnector", "ec_role": "ec_consumer",
+        "ec_connector_extra_config": {"shared_storage_path": "/ec-cache"}}'
+
+See vLLM's `disaggregated encoder <https://docs.vllm.ai/en/latest/features/disagg_encoder/>`_ documentation for the encoder flags. Connectors that need per-request transfer handles from the gateway are not supported yet.
 
 
 Prompt-Length Bucketing

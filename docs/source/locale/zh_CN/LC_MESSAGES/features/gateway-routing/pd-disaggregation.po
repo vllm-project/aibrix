@@ -431,8 +431,8 @@ msgid "``role-name``"
 msgstr "``role-name``"
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:207
-msgid "``prefill``, ``decode``, or another value (e.g. ``all``)"
-msgstr "``prefill`` 、``decode`` ，或其他值（例如 ``all`` ）"
+msgid "``prefill``, ``decode``, ``encode``, or another value (e.g. ``all``)"
+msgstr "``prefill`` 、``decode`` 、``encode`` ，或其他值（例如 ``all`` ）"
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:208
 msgid ""
@@ -590,6 +590,63 @@ msgstr ""
 "Pod 接受任意 prompt 长度。"
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:330
+msgid "Encode Pods for Multimodal Requests (EPD)"
+msgstr "多模态请求的 Encode Pod（EPD）"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:332
+msgid ""
+"With vLLM, a roleset can also run the vision or audio encoder on its own "
+"pods, labeled ``role-name: encode`` with the same ``roleset-name`` as the"
+" prefill and decode pods. For a ``/v1/chat/completions`` request that "
+"carries ``image_url``, ``audio_url``, ``input_audio`` or ``video_url`` "
+"items, the gateway first sends each item to one of the selected roleset's"
+" encode pods, in parallel, and waits for them before the prefill request."
+" Text-only requests, other endpoints and rolesets without encode pods "
+"route exactly as before. Encode pods are never picked as prefill, decode "
+"or standard inference pods."
+msgstr ""
+"使用 vLLM 时，roleset 还可以在独立的 Pod 上运行视觉或音频编码器：这些 Pod 标记为 ``role-name: encode`` ，"
+"并与 prefill、decode Pod 使用相同的 ``roleset-name`` 。对于携带 ``image_url`` 、``audio_url`` "
+"、``input_audio`` 或 ``video_url`` 项的 ``/v1/chat/completions`` 请求，网关会先将每一项并行发送到所选 "
+"roleset 中的某个 encode Pod，等它们完成后再发出 prefill 请求。纯文本请求、其他端点以及没有 encode Pod 的 "
+"roleset 的路由方式保持不变。Encode Pod 永远不会被选为 prefill、decode 或标准推理 Pod。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:334
+msgid ""
+"The request body is not changed. The encode pods store their output "
+"through vLLM's EC connector, keyed by the hash of each media item, and "
+"the prefill pod finds it under the same hash. If an item's output is not "
+"there, for example because its encode request failed, the prefill pod "
+"encodes the item itself, so a failed encode costs latency but not the "
+"request. Each encode request uses the prefill request timeout, and "
+"``gateway_pd_encode_request_total`` counts them by ``status``."
+msgstr ""
+"请求体不会被修改。Encode Pod 通过 vLLM 的 EC connector 保存输出，以每个媒体项的哈希为键，prefill Pod "
+"用同一哈希找到它。如果某一项的输出不存在（例如其 encode 请求失败），prefill Pod 会自行编码该项，因此 encode "
+"失败只会增加延迟，不会导致请求失败。每个 encode 请求使用 prefill 请求超时， ``gateway_pd_encode_request_total`` "
+"按 ``status`` 统计这些请求。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:336
+msgid ""
+"Start the encode pods as encoder-only producers and the prefill pods as "
+"consumers of the same EC connector, for example ``ECExampleConnector`` on"
+" storage shared by the roleset:"
+msgstr ""
+"将 encode Pod 启动为仅运行编码器的生产者，将 prefill Pod 启动为同一 EC connector 的消费者，例如在 roleset "
+"共享的存储上使用 ``ECExampleConnector`` ："
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:349
+msgid ""
+"See vLLM's `disaggregated encoder "
+"<https://docs.vllm.ai/en/latest/features/disagg_encoder/>`_ documentation"
+" for the encoder flags. Connectors that need per-request transfer handles"
+" from the gateway are not supported yet."
+msgstr ""
+"编码器相关参数请参阅 vLLM 的 `disaggregated encoder "
+"<https://docs.vllm.ai/en/latest/features/disagg_encoder/>`_ 文档。需要网关逐请求传递传输句柄的 "
+"connector 暂不支持。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:352
 msgid "Prompt-Length Bucketing"
 msgstr "Prompt 长度分桶"
 

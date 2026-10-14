@@ -61,7 +61,7 @@ Pods are grouped using Kubernetes labels:
 | Label | Values | Purpose |
 |-------|--------|---------|
 | `roleset-name` | any string | Groups prefill+decode pairs into a "roleset" |
-| `role-name` | `prefill` / `decode` / other | Pod's role in PD disaggregation |
+| `role-name` | `prefill` / `decode` / `encode` / other | Pod's role in PD disaggregation. `encode` pods are optional and only take the encode stage (see [vLLM encode stage (EPD)](#vllm-encode-stage-epd)) |
 | `stormservice.orchestration.aibrix.ai/pod-group-index` | `"0"` or absent | Only pods with index `"0"` (or no label) host the HTTP server (multi-node TP) |
 | `stormservice.orchestration.aibrix.ai/role-replica-index` | any string | Distinct replica index within a role; used by `roleReplicaCardinality` to count unique replicas across multi-node TP groups. When absent, each routable pod counts as its own replica. |
 | `model.aibrix.ai/engine` | `vllm` / `sglang` / `trtllm` | LLM engine type |
@@ -316,6 +316,19 @@ Omitted fields keep the gateway defaults from environment variables.
 
 
 ## Engine-Specific Prefill Behaviour
+
+### vLLM encode stage (EPD)
+
+When the selected prefill pod's roleset has `role-name: encode` pods and a vLLM `/v1/chat/completions` request carries media items (`image_url`, `audio_url`, `input_audio`, `video_url`), `Route` runs an encode stage before the prefill call:
+
+```
+Gateway ──POST /v1/chat/completions {messages:[{role:user, content:[item i]}]}──► Encode Pod   (one per item, in parallel)
+         ◄── 200 ──────────────────────────────────────────────────────────────── Encode Pod   (output stored by the EC connector)
+
+Gateway ──prefill as below, request body unchanged──────────────────────────────► Prefill Pod  (finds the output by the item's hash)
+```
+
+Items are spread round-robin over the roleset's encode pods. The body is not rewritten: the encoder and the prefill pod hash the same item bytes, so the prefill pod's EC connector finds the output, and encodes the item itself when it can't. A failed encode is therefore logged and counted, not returned. Each call uses the prefill request timeout. Connectors that need transfer handles passed through the request (vLLM's `*_embeds` rewrite in `disagg_epd_proxy.py`) are not supported.
 
 ### vLLM (`AIBRIX_KV_CONNECTOR_TYPE=shfs`, default)
 
@@ -759,6 +772,7 @@ SGLang uses a bootstrap mechanism for prefill/decode coordination. The port is r
 |--------|------|
 | `GatewayPrefillRequestFailTotal` | Engine validation fail, pod filter fail, prefill HTTP error |
 | `GatewayPrefillRequestSuccessTotal` | Prefill HTTP succeeded. For SGLang and TRT generation-first, emitted asynchronously after the background prefill request completes, not when `Route()` returns. |
+| `gateway_pd_encode_request_total{status,status_code}` | One media item sent to an encode pod. `status` is `success`, or the failure class (`http_error`, `deadline_exceeded`, ...) |
 | `PDSelectedPrefillPodTotal` | Prefill pod selected (per pod label) |
 | `PDSelectedDecodePodTotal` | Decode pod selected (per pod label) |
 | `gateway_pd_prefill_failure_total{class,stage}` | A terminal prefill failure reached the client-facing handler. `stage` is `before_response` (the client was failed fast) or `after_response` (the decode leg had already started answering) |
