@@ -1370,6 +1370,27 @@ def test_chat_batch_rejects_a_bad_request(monkeypatch, payload, param):
     assert response.get_json()["error"]["param"] == param
 
 
+@pytest.mark.parametrize(
+    "messages",
+    [
+        "Hi",
+        ["Hi", "there"],
+        [{"role": "user", "content": ["Hi", {"type": "text", "text": "there"}]}],
+    ],
+)
+def test_chat_completions_counts_malformed_messages_instead_of_crashing(monkeypatch, messages):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(
+        module.app.test_client(),
+        "/v1/chat/completions",
+        {"model": "chat-model", "max_tokens": 4, "messages": messages},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["usage"]["completion_tokens"] == 4
+
+
 def test_chat_batch_rejects_a_non_object_body(monkeypatch):
     module = load_mock_module(monkeypatch)
 

@@ -530,14 +530,20 @@ def get_token_count(text):
 
 
 def message_token_count(message):
-    """Count a chat message's tokens; content is a string or a list of multimodal parts."""
+    """Count a chat message's tokens; content is a string or a list of multimodal parts.
+
+    /v1/chat/completions does not validate the message shape, so anything that is not an
+    object counts as one token rather than failing the request.
+    """
+    if not isinstance(message, dict):
+        return 1
     content = message.get("content", "")
     if isinstance(content, str):
         return get_token_count(content)
     if isinstance(content, list):
         return sum(
             get_token_count(part.get("text", ""))
-            for part in content if part.get("type") == "text"
+            for part in content if isinstance(part, dict) and part.get("type") == "text"
         )
     return 1
 
