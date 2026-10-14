@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -233,6 +234,52 @@ func TestReconcileMakesRoomForLowerPriorityClaimWhenHighPriorityClaimIsInfeasibl
 	require.Len(t, runtime.sleepCalls, 1, "the infeasible higher-priority claim does not block lower")
 	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
 	assert.Equal(t, scheduledReasonMakingRoom, scheduledOf(t, r, lower.Name).Reason)
+}
+
+func TestReconcileUnsuitableParallelismDoesNotStallPlacement(t *testing.T) {
+	for _, priority := range []int32{0, 10} {
+		t.Run(fmt.Sprintf("predecessor priority %d", priority), func(t *testing.T) {
+			r, runtime := servingPool(t, keepNoWakeReserve, 1,
+				serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+			pod := podNamed(t, r, "warm-1")
+			pod.Spec.Containers = warmPodWithGPUs("warm-1", "b300-pool-a", 1).Spec.Containers
+			require.NoError(t, r.Update(context.Background(), pod))
+			predecessor := priorityTestClaim("tp-two", priority, at0758)
+			predecessor.Spec.EngineConfig = &modelv1alpha1.ModelClaimEngineConfig{Args: map[string]string{
+				"--tensor-parallel-size": "2",
+			}}
+			require.NoError(t, r.Create(context.Background(), withFinalizer(predecessor)))
+			newClaim(t, r, "needs-room", at0759)
+			small := priorityTestClaim("small", 0, at0759.Add(time.Second))
+			small.Spec.PerGPU = claimWithCost(50, 50).Spec.PerGPU
+			require.NoError(t, r.Create(context.Background(), withFinalizer(small)))
+
+			// The later small claim fits directly but preserves the earlier
+			// feasible claim's turn, even though that claim needs a sleep first.
+			reconcileOnce(t, r, "small")
+			assert.Equal(t, scheduledReasonWaitingForPlacementTurn, scheduledOf(t, r, "small").Reason)
+			assert.Contains(t, scheduledOf(t, r, "small").Message, "needs-room")
+			assert.Empty(t, runtime.activateCalls)
+			assert.Empty(t, runtime.sleepCalls)
+
+			reconcileOnce(t, r, "needs-room")
+			require.Len(t, runtime.sleepCalls, 1, "the TP=2 predecessor cannot use this one-GPU pod")
+			assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
+			assert.Equal(t, scheduledReasonMakingRoom, scheduledOf(t, r, "needs-room").Reason)
+			card, held := r.reservations().heldFor(testNamespace, "needs-room", r.now())
+			require.True(t, held)
+			assert.Equal(t, "warm-1", card.Name)
+
+			reconcileOnce(t, r, "needs-room")
+			require.Len(t, getModel(t, r, "needs-room").Status.Instances, 1)
+			assert.Equal(t, "warm-1", getModel(t, r, "needs-room").Status.Instances[0].Pod)
+			reconcileOnce(t, r, "small")
+			require.Len(t, getModel(t, r, "small").Status.Instances, 1)
+			assert.Equal(t, "warm-1", getModel(t, r, "small").Status.Instances[0].Pod)
+			assert.Empty(t, getModel(t, r, "tp-two").Status.Instances)
+			assert.Len(t, runtime.sleepCalls, 1)
+		})
+	}
 }
 
 func TestReconcileLeavesACardToARequestToWakeAnEngine(t *testing.T) {

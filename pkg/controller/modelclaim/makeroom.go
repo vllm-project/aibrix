@@ -387,11 +387,12 @@ func (r *ModelClaimReconciler) firstToMakeRoomFor(
 		if err != nil {
 			continue
 		}
-		for j := range candidates {
-			pod := &candidates[j]
-			if !selects(claim, pod) {
-				continue
-			}
+		shared, valid := candidatePodsForClaim(claim, candidates)
+		if !valid {
+			continue
+		}
+		for j := range shared {
+			pod := &shared[j]
 			if _, found := r.planRoom(ctx, claim, pod, ledgers[pod.Name], perGPU.minimumReserveBytes(), readings); found {
 				return false
 			}

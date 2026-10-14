@@ -60,7 +60,7 @@ func TestPlacementPriorityFirstKeepsZeroPriorityFIFO(t *testing.T) {
 }
 
 func TestPriorityEligibleRejectsIneligibleClaims(t *testing.T) {
-	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
 	zero := int32(0)
 	deletedAt := metav1.NewTime(time.Unix(1_700_000_000, 0))
 
@@ -111,6 +111,14 @@ func TestPriorityEligibleRejectsIneligibleClaims(t *testing.T) {
 			mutate: func(claim *modelv1alpha1.ModelClaim) {
 				claim.Spec.EngineConfig = &modelv1alpha1.ModelClaimEngineConfig{Args: map[string]string{
 					"--tensor-parallel-size": "0",
+				}}
+			},
+		},
+		{
+			name: "parallelism does not match the pod",
+			mutate: func(claim *modelv1alpha1.ModelClaim) {
+				claim.Spec.EngineConfig = &modelv1alpha1.ModelClaimEngineConfig{Args: map[string]string{
+					"--tensor-parallel-size": "2",
 				}}
 			},
 		},

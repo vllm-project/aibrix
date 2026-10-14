@@ -55,15 +55,33 @@ func placementPriorityFirst(claims []modelv1alpha1.ModelClaim) {
 // the given candidate pods.
 func priorityEligible(claim *modelv1alpha1.ModelClaim, candidates []corev1.Pod) bool {
 	if claim == nil || !claim.DeletionTimestamp.IsZero() || len(claim.Status.Instances) != 0 ||
-		claim.Status.Phase == modelv1alpha1.ModelClaimFailed || desiredReplicas(claim) <= 0 ||
-		!selectsAny(claim, candidates) {
+		claim.Status.Phase == modelv1alpha1.ModelClaimFailed || desiredReplicas(claim) <= 0 {
 		return false
 	}
 	if _, err := perGPUBytesOf(claim); err != nil {
 		return false
 	}
-	_, err := modelParallelism(claim)
-	return err == nil
+	shared, valid := candidatePodsForClaim(claim, candidates)
+	return valid && len(shared) > 0
+}
+
+// candidatePodsForClaim applies the same selector and declared GPU topology
+// checks to placement admission and make-room ordering. Runtime-reported GPU
+// topology is checked later against the ledger. False means invalid parallelism.
+func candidatePodsForClaim(claim *modelv1alpha1.ModelClaim, candidates []corev1.Pod) ([]corev1.Pod, bool) {
+	parallelism, err := modelParallelism(claim)
+	if err != nil {
+		return nil, false
+	}
+	shared := make([]corev1.Pod, 0, len(candidates))
+	for i := range candidates {
+		pod := candidates[i]
+		if !selects(claim, &pod) || (isVLLMModel(claim) && !podSupportsVLLMParallelism(pod, parallelism)) {
+			continue
+		}
+		shared = append(shared, pod)
+	}
+	return shared, true
 }
 
 // claimFeasibleForPlacement uses the current pass's account and readings to
@@ -79,17 +97,9 @@ func (r *ModelClaimReconciler) claimFeasibleForPlacement(
 	if err != nil {
 		return false
 	}
-	parallelism, err := modelParallelism(claim)
-	if err != nil {
+	shared, valid := candidatePodsForClaim(claim, candidates)
+	if !valid {
 		return false
-	}
-	shared := make([]corev1.Pod, 0, len(candidates))
-	for i := range candidates {
-		pod := candidates[i]
-		if !selects(claim, &pod) || (isVLLMModel(claim) && !podSupportsVLLMParallelism(pod, parallelism)) {
-			continue
-		}
-		shared = append(shared, pod)
 	}
 	admissible, _ := admissibleCandidates(shared, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(claim))
 	if len(admissible) > 0 {
