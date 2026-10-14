@@ -388,6 +388,25 @@ func TestReconcileStoresStrategyConditionsWhenReadingReplicasFails(t *testing.T)
 	}
 }
 
+// A failed scaling computation holds the current replica count. The stored
+// ScalingActive condition must say so rather than report the hold as Stable,
+// and a repeated failure must not rewrite status.
+func TestReconcileReportsFailedScaleComputation(t *testing.T) {
+	pa := stabilityPodAutoscaler(autoscalingv1alpha1.KPA)
+	h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
+	computeErr := errors.New("metrics unavailable")
+	h.reconciler.autoScaler.(*fakeAutoScaler).err = computeErr
+
+	if _, err := h.reconcile(); !errors.Is(err, computeErr) {
+		t.Fatalf("Reconcile error = %v, want the compute failure", err)
+	}
+
+	latest := h.latest()
+	requireCondition(t, latest, ConditionScalingActive, metav1.ConditionFalse, "FailedComputeScale")
+	requireCondition(t, latest, ConditionAbleToScale, metav1.ConditionTrue, "SucceededGetScale")
+	h.requireSettled(4, true)
+}
+
 // The API server fills in defaults for fields makeHPA leaves unset. A stored
 // HPA that differs from the desired one only by those defaults is up to date.
 func TestHPAMatchesDesired(t *testing.T) {

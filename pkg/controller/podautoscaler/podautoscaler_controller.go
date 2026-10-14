@@ -963,6 +963,10 @@ func (r *PodAutoscalerReconciler) scaleCustomPA(ctx context.Context, pa *autosca
 	scaleDecision, err := r.computeScaleDecision(ctx, *pa, scaleObj, currentReplicas)
 	if err != nil {
 		setStatus(pa, currentReplicas, currentReplicas, false, "FailedComputeScale", false, false, err)
+		// setStatus reports a held replica count as Stable. Say why it is held
+		// instead: like the HPA, a failure to compute a recommendation is
+		// ScalingActive=False, while AbleToScale keeps reporting the scale access.
+		setCondition(pa, ConditionScalingActive, metav1.ConditionFalse, "FailedComputeScale", "unable to compute the desired replicas: %v", err)
 		r.EventRecorder.Event(pa, corev1.EventTypeWarning, "FailedComputeScale", err.Error())
 		return ctrl.Result{}, fmt.Errorf("failed to compute scaling decision for %s: %w", scaleReference, err)
 	}
