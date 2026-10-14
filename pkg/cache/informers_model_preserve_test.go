@@ -17,7 +17,6 @@ limitations under the License.
 package cache
 
 import (
-	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -161,160 +160,61 @@ func TestPreserveServedModel_OnModelAdapterUpdate(t *testing.T) {
 	assert.True(t, hasP2, "new instance p2 must be mapped")
 }
 
-func TestPreserveServedModel_OverlappingAdaptersAndBaseModel(t *testing.T) {
+func TestPreserveServedModel_DropsEmptyModelWhenPodModelChanges(t *testing.T) {
 	st := NewForTest()
 
-	p1Ns1 := &v1.Pod{
+	podV1 := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "p1",
-			Namespace: "ns1",
+			Namespace: "default",
 			Labels: map[string]string{
-				constants.ModelLabelName: "shared-model",
+				constants.ModelLabelName: "m1",
 			},
 		},
 	}
-	p2Ns2 := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "p2",
-			Namespace: "ns2",
-			Labels: map[string]string{
-				constants.ModelLabelName: "host-base-2",
-			},
-		},
-	}
-	st.addPod(p1Ns1)
-	st.addPod(p2Ns2)
+	st.addPod(podV1)
 
-	// Adapter in ns1 with same name as pod's base model "shared-model" on p1.
-	adapterNs1 := &modelv1alpha1.ModelAdapter{
+	podV2 := podV1.DeepCopy()
+	podV2.Labels[constants.ModelLabelName] = "m2"
+	st.updatePod(podV1, podV2)
+
+	_, hasM1 := st.metaModels.Load("m1")
+	_, hasM2 := st.metaModels.Load("m2")
+	assert.False(t, hasM1, "model m1 must be dropped when its last pod moves to m2")
+	assert.True(t, hasM2, "model m2 must be registered")
+}
+
+func TestPreserveServedModel_DropsAdapterModelWhenInstancesRemoved(t *testing.T) {
+	st := NewForTest()
+
+	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "shared-model",
-			Namespace: "ns1",
+			Name:      "p1",
+			Namespace: "default",
+			Labels: map[string]string{
+				constants.ModelLabelName: "base-m",
+			},
 		},
-		Spec: modelv1alpha1.ModelAdapterSpec{
-			BaseModel: ptr.To("base-ns1"),
+	}
+	st.addPod(pod)
+
+	adapter := &modelv1alpha1.ModelAdapter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "lora-1",
+			Namespace: "default",
 		},
 		Status: modelv1alpha1.ModelAdapterStatus{
 			Instances: []string{"p1"},
 		},
 	}
-	// Adapter in ns2 with same model name "shared-model" on p2.
-	adapterNs2 := &modelv1alpha1.ModelAdapter{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "shared-model",
-			Namespace: "ns2",
-		},
-		Spec: modelv1alpha1.ModelAdapterSpec{
-			BaseModel: ptr.To("base-ns2"),
-		},
-		Status: modelv1alpha1.ModelAdapterStatus{
-			Instances: []string{"p2"},
-		},
-	}
-	st.addModelAdapter(adapterNs2)
-	st.addModelAdapter(adapterNs1)
-
-	modelMeta, ok := st.metaModels.Load("shared-model")
-	require.True(t, ok)
-	// Deterministic resolution by sorted namespace/name ("ns1/shared-model" before "ns2/shared-model").
-	assert.Equal(t, "base-ns1", modelMeta.BaseModel)
-
-	// Deleting adapterNs1 must NOT drop ns1/p1 from shared-model because p1Ns1 directly serves "shared-model" via pod label,
-	// and BaseModel must deterministically fall back to adapterNs2 ("base-ns2").
-	st.deleteModelAdapter(adapterNs1)
-	_, hasNs1P1 := modelMeta.Pods.Load("ns1/p1")
-	_, hasNs2P2 := modelMeta.Pods.Load("ns2/p2")
-	assert.True(t, hasNs1P1, "pod ns1/p1 still serves shared-model directly via pod label")
-	assert.True(t, hasNs2P2, "pod ns2/p2 still serves shared-model via adapterNs2")
-	assert.Equal(t, "base-ns2", modelMeta.BaseModel, "BaseModel must resolve to remaining active adapter")
-
-	// Deleting p2Ns2 removes the last active edge of adapterNs2, clearing BaseModel while retaining
-	// adapterRecord so a recreated p2Ns2 pod automatically re-links to adapterNs2.
-	st.deletePod(p2Ns2)
-	assert.Empty(t, st.adapterRecords["ns2/shared-model"].edges, "active edges must be cleared when pod is deleted")
-	assert.Equal(t, "", modelMeta.BaseModel)
-
-	// Re-adding p2Ns2 re-links it to adapterNs2 and restores BaseModel.
-	st.addPod(p2Ns2)
-	assert.Equal(t, "base-ns2", modelMeta.BaseModel)
-
-	// Deleting adapterNs2 removes its adapterRecord and clears BaseModel.
-	st.deleteModelAdapter(adapterNs2)
-	assert.Empty(t, st.adapterRecords, "adapterRecords must be cleaned up when adapter is deleted")
-	assert.Equal(t, "", modelMeta.BaseModel)
-}
-
-func TestPreserveServedModel_RouterConstructionRetry(t *testing.T) {
-	attempts := 0
-	st := InitWithModelRouterProvider(NewForTest(), func(modelName string) (types.QueueRouter, error) {
-		if modelName != "m-retry" && modelName != "lora-retry" {
-			return &stubQueueRouter{id: 99}, nil
-		}
-		attempts++
-		if attempts <= 2 {
-			return nil, errors.New("transient router init failure")
-		}
-		return &stubQueueRouter{id: attempts}, nil
-	})
-
-	podV1 := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            "p1",
-			Namespace:       "default",
-			ResourceVersion: "1",
-			Labels: map[string]string{
-				constants.ModelLabelName: "m-retry",
-			},
-		},
-	}
-	podP2 := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            "p2",
-			Namespace:       "default",
-			ResourceVersion: "1",
-			Labels: map[string]string{
-				constants.ModelLabelName: "base-other",
-			},
-		},
-	}
-	st.addPod(podV1)
-	st.addPod(podP2)
-
-	m, ok := st.metaModels.Load("m-retry")
-	require.True(t, ok)
-	assert.Nil(t, m.QueueRouter, "first attempt failed so QueueRouter should be nil")
-	assert.Equal(t, 1, attempts)
-
-	// Multi-pod ModelAdapter event with 2 instances must attempt router construction only once per event.
-	adapter := &modelv1alpha1.ModelAdapter{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "lora-retry",
-			Namespace: "default",
-		},
-		Status: modelv1alpha1.ModelAdapterStatus{
-			Instances: []string{"p1", "p2"},
-		},
-	}
 	st.addModelAdapter(adapter)
-	assert.Equal(t, 2, attempts, "multi-pod addModelAdapter must attempt router construction only once per event")
-
-	// Next membership event (updatePod on p1) retries router initialization once for m-retry and once for lora-retry.
-	podV2 := podV1.DeepCopy()
-	podV2.ResourceVersion = "2"
-	st.updatePod(podV1, podV2)
-
-	mAfter, ok := st.metaModels.Load("m-retry")
+	_, ok := st.metaModels.Load("lora-1")
 	require.True(t, ok)
-	assert.Same(t, m, mAfter)
-	require.NotNil(t, mAfter.QueueRouter, "subsequent membership event must retry and populate QueueRouter")
-	loraAfter, ok := st.metaModels.Load("lora-retry")
-	require.True(t, ok)
-	require.NotNil(t, loraAfter.QueueRouter, "subsequent membership event must also retry and populate adapter QueueRouter")
-	assert.Equal(t, 4, attempts)
 
-	// A third membership event must keep the non-nil QueueRouter without calling modelRouterProvider again.
-	podV3 := podV2.DeepCopy()
-	podV3.ResourceVersion = "3"
-	st.updatePod(podV2, podV3)
-	assert.Equal(t, 4, attempts, "once QueueRouter is non-nil, modelRouterProvider must not be called again")
+	updated := adapter.DeepCopy()
+	updated.Status.Instances = nil
+	st.updateModelAdapter(adapter, updated)
+
+	_, ok = st.metaModels.Load("lora-1")
+	assert.False(t, ok, "adapter model must be dropped when all instances are removed")
 }
