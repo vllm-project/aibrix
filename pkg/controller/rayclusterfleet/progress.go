@@ -159,7 +159,9 @@ func (r *RayClusterFleetReconciler) requeueStuckDeployment(ctx context.Context, 
 	if d.Spec.Paused || d.DeletionTimestamp != nil || !util.HasProgressDeadline(d) || currentCond == nil {
 		return time.Duration(-1)
 	}
-	// No need to estimate progress if the rollout is complete or already timed out.
+	// No need to estimate progress if the rollout is complete or already timed out. Keep the
+	// NewRSAvailableReason exclusion: util.DeploymentTimedOut never reports a timeout for that reason, so a
+	// stale condition would give a negative delay and a one-second requeue loop that cannot change the status.
 	if util.DeploymentComplete(d, &newStatus) || currentCond.Reason == util.NewRSAvailableReason || currentCond.Reason == util.TimedOutReason {
 		return time.Duration(-1)
 	}
