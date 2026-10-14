@@ -243,7 +243,12 @@ class Runtime(Protocol):
         *,
         progress_manager: Optional[RunningJobs] = None,
     ) -> TerminateResult:
-        """Terminate a job execution, no more job_entity_manager hijacks."""
+        """Terminate a job execution, no more job_entity_manager hijacks.
+
+        Implementers must accept the ``progress_manager`` keyword argument.
+        An active session uses ``self._progress_manager``; the argument only
+        matters when no session is bound.
+        """
         ...
 
     async def cleanup(self, job: BatchJob) -> None:
@@ -469,7 +474,9 @@ class RuntimeBase:
             if progress_manager is not None and deleted_job.status.check_condition(
                 ConditionType.CANCELLED
             ):
-                # Persist cancelling before raising the stop signal.
+                # Honour accepted cancels with no active session, both before it
+                # starts and after it ends but before finalization, even if all
+                # requests finished. Persist cancelling before raising the stop signal.
                 await progress_manager.update_job_status(
                     deleted_job.job_id,
                     deleted_job.status,
