@@ -600,7 +600,6 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 condition=job.status.condition,
             )  # type: ignore[call-arg]
             await self.expire_job(job_id)
-            await self._finish_recovered_expired_job(job_id)
             return True
 
         # Add to job scheduler if available (traditional workflow). Expiry is
@@ -644,7 +643,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
         return True
 
     async def _finish_recovered_expired_job(self, job_id: str) -> None:
-        """Finish an overdue in-progress job that recovery found without a driver.
+        """Finish an expired in-progress job that has no driver and no execution.
 
         expire_job leaves an in-progress job to its live driver, and only reruns
         orphan cleanup when durable execution metadata exists. A recovered job
@@ -1241,6 +1240,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
             old_job.status.state == BatchJobState.IN_PROGRESS
             and old_job.status.check_condition(ConditionType.EXPIRED)
         ):
+            # A driverless job without execution metadata has nobody else to
+            # finish it, so each pass retries a failed finish.
+            await self._finish_recovered_expired_job(job_id)
             return True
 
         if old_job.status.state == BatchJobState.FINALIZING:
@@ -1295,6 +1297,8 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 "Expired job cleaned orphaned execution",
                 job_id=job_id,
             )  # type: ignore[call-arg]
+        else:
+            await self._finish_recovered_expired_job(job_id)
 
         logger.info("Job expired", job_id=job_id)  # type: ignore[call-arg]
         return True

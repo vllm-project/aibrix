@@ -603,9 +603,12 @@ async def test_expire_job_marks_admitted_job_expired_without_immediate_finalizat
         meta_data={},
     )
     job_id = next(iter(job_manager._pending_jobs.keys()))
-    # Simulate admission: the job left pending for in-progress.
+    # Simulate admission: the job left pending for in-progress with a live
+    # driver, which owns the stop flow.
     job = job_manager._pending_jobs.pop(job_id)
     job.status.state = BatchJobState.IN_PROGRESS
+    job = JobMetaInfo(job)
+    job._job_driver = _FakeJobDriver()
     job_manager._in_progress_jobs[job_id] = job
 
     result = await job_manager.expire_job(job_id)
@@ -1933,3 +1936,47 @@ async def test_recovered_overdue_in_progress_job_finalizes_expired(
     done = job_manager._done_jobs[job_id]
     assert done.status.state == BatchJobState.FINALIZED
     assert done.status.condition == ConditionType.EXPIRED
+
+
+@pytest.mark.asyncio
+async def test_recovered_overdue_job_finish_is_retried_by_next_expiry_pass(
+    monkeypatch,
+):
+    job_manager = _job_manager()
+    job_manager.set_scheduler(_CapturingScheduler())
+    job_id = "test-job-id-recovered-overdue-retry"
+    job = _in_progress_meta_job(job_id, total_requests=1)
+    created = datetime.now(timezone.utc) - timedelta(hours=25)
+    job.status.created_at = created
+    job.status.in_progress_at = created
+    job.status.execution = None
+
+    cleanup_driver = BaseJobDriver(
+        InfrastructureContext(), job_manager, FakeRuntime(), job
+    )
+    monkeypatch.setattr(
+        "aibrix.batch.batch_manager.create_job_driver",
+        lambda context, progress_manager, entity_manager, job, inference_client: (
+            cleanup_driver
+        ),
+    )
+    real_cleanup = cleanup_driver.cleanup
+    calls = {"n": 0}
+
+    async def flaky_cleanup(j):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient storage error")
+        return await real_cleanup(j)
+
+    monkeypatch.setattr(cleanup_driver, "cleanup", flaky_cleanup)
+
+    with pytest.raises(RuntimeError):
+        await job_manager.job_committed_handler(job)
+    assert job_id in job_manager._in_progress_jobs
+
+    await job_manager.expire_job(job_id)  # the scheduler's next expiry pass
+
+    assert calls["n"] == 2
+    assert job_id not in job_manager._in_progress_jobs
+    assert job_manager._done_jobs[job_id].status.state == BatchJobState.FINALIZED
