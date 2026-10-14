@@ -788,7 +788,9 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler,
 		// The strategy path can fail before it reports. Give both conditions a
 		// starting value so that a new object is never left without them and a
 		// repaired one does not keep the verdict of its invalid spec, but never
-		// replace a value the strategy path reported.
+		// replace a value the strategy path reported. ReasonInvalidSpec is how
+		// the leftover verdict is recognised, so it must stay the reason that
+		// both the branch above and setInvalidSpecStatus write.
 		if apimeta.FindStatusCondition(st.Conditions, ConditionScalingActive) == nil {
 			apimeta.SetStatusCondition(&st.Conditions, scalingActiveCondition)
 		}
@@ -943,14 +945,18 @@ func (r *PodAutoscalerReconciler) scaleCustomPA(ctx context.Context, pa *autosca
 		setCondition(pa, "AbleToScale", metav1.ConditionFalse, "FailedGetScale", "unable to get target scaleObj: %v", err)
 		return ctrl.Result{}, fmt.Errorf("failed to get scaleObj for %s: %w", scaleReference, err)
 	}
-	setCondition(pa, "AbleToScale", metav1.ConditionTrue, "SucceededGetScale", "successfully retrieved target scale")
 
 	// Step 2: Get current replicas from scale object
 	currentReplicas, err := r.workloadScaleClient.GetCurrentReplicasFromScale(ctx, pa, scaleObj)
 	if err != nil {
 		r.EventRecorder.Eventf(pa, corev1.EventTypeWarning, "FailedGetReplicas", "Error extracting replicas: %v", err)
+		setCondition(pa, "AbleToScale", metav1.ConditionFalse, "FailedGetReplicas", "unable to get current replicas: %v", err)
 		return ctrl.Result{}, fmt.Errorf("failed to get current replicas: %w", err)
 	}
+	// Reported only once both reads succeed. Setting it before the replicas
+	// read would flip the condition to True and back to False on every failing
+	// pass, and each flip moves its transition time and so rewrites status.
+	setCondition(pa, "AbleToScale", metav1.ConditionTrue, "SucceededGetScale", "successfully retrieved target scale")
 
 	// Step 3: Compute scaling decision with selector
 	// Pass ScaleTargetRef to handle special cases like RayClusterFleet

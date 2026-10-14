@@ -381,7 +381,7 @@ func TestReconcileStoresStrategyConditionsWhenReadingReplicasFails(t *testing.T)
 
 			latest := h.latest()
 			requireCondition(t, latest, ConditionValidSpec, metav1.ConditionTrue, ReasonAsExpected)
-			requireCondition(t, latest, ConditionAbleToScale, metav1.ConditionTrue, "SucceededGetScale")
+			requireCondition(t, latest, ConditionAbleToScale, metav1.ConditionFalse, "FailedGetReplicas")
 			requireCondition(t, latest, ConditionScalingActive, metav1.ConditionFalse, ReasonStable)
 			h.requireSettled(4, true)
 		})
