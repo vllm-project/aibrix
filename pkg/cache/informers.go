@@ -17,6 +17,7 @@ package cache
 
 import (
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -45,6 +46,18 @@ const (
 	nodeWorker      = "worker"
 	podGroupIndex   = "stormservice.orchestration.aibrix.ai/pod-group-index"
 )
+
+type adapterEdge struct {
+	podKey    string
+	modelName string
+}
+
+type adapterRecord struct {
+	modelName string
+	specBase  string
+	instances []string
+	edges     map[adapterEdge]struct{}
+}
 
 var (
 	modelAdapterResyncMaxRetries    = 30
@@ -135,6 +148,8 @@ func (c *Store) addPod(obj interface{}) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.beginMembershipEventLocked()
+	defer c.endMembershipEventLocked()
 
 	metaPod := c.addPodLocked(pod)
 	if ok {
@@ -147,6 +162,7 @@ func (c *Store) addPod(obj interface{}) {
 			c.addPodAndModelMappingLocked(metaPod, servedModel)
 		}
 	}
+	c.linkPodToAdaptersLocked(metaPod, podKey)
 
 	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
 	c.debugInfo()
@@ -170,7 +186,8 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	}
 
 	_, oldOk := getModelNameFromPod(oldPod)
-	_, existed := c.metaPods.Load(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name)) // Make sure nothing left.
+	oldPodKey := utils.GeneratePodKey(oldPod.Namespace, oldPod.Name)
+	_, existed := c.metaPods.Load(oldPodKey) // Make sure nothing left.
 	newModelName, newOk := getModelNameFromPod(newPod)
 	newModelClaims := c.modelClaimBindingsFromPod(newPod)
 	newHasModelInfo := newOk || len(newModelClaims) > 0
@@ -181,44 +198,65 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.beginMembershipEventLocked()
+	defer c.endMembershipEventLocked()
 
-	// TODO: No in place update is handled here
-
-	// Remove old mappings if present, no adapter will be inherited. (Adapters will be rescaned and readded later)
-	if oldOk || existed {
-		odlMetaPod := c.deletePodLocked(oldPod.Name, oldPod.Namespace)
-		if odlMetaPod != nil {
-			for _, modelName := range odlMetaPod.Models.Array() {
-				c.deletePodAndModelMappingLocked(odlMetaPod.Name, odlMetaPod.Namespace, modelName, 1)
-			}
-		}
-		c.modelClaims.clearPod(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name))
-	}
-
-	// ignore worker pods
 	oldNodeType := oldPod.Labels[nodeType]
 	newNodeType := newPod.Labels[nodeType]
-	if oldNodeType == nodeWorker || newNodeType == nodeWorker {
-		c.clearPodMetricsBackoff(oldPod.Namespace, oldPod.Name)
-		c.clearPodMetricsScheduling(oldPod.Namespace, oldPod.Name)
-		klog.InfoS("ignored ray worker pod", "old pod", oldPod.Name, "new pod", newPod.Name)
-		return
+	ignoredRayWorker := oldNodeType == nodeWorker || newNodeType == nodeWorker
+	newEligible := !ignoredRayWorker && newHasModelInfo && !newIsWorker
+
+	// Remove old pod entry and clear adapter edges on oldPodKey, but defer removing
+	// departing model-to-pod mappings until after incoming mappings are registered
+	// so a single-pod model never transiently drops to zero pods.
+	var oldMetaPod *Pod
+	var affectedAdapterModels []string
+	if oldOk || existed {
+		oldMetaPod = c.deletePodLocked(oldPod.Name, oldPod.Namespace)
+		c.modelClaims.clearPod(oldPodKey)
+		affectedAdapterModels = c.clearPodAdapterEdgesLocked(oldPodKey)
 	}
 
-	// Add new mappings if present
-	if newHasModelInfo && !newIsWorker {
-		metaPod := c.addPodLocked(newPod)
+	newPodKey := utils.GeneratePodKey(newPod.Namespace, newPod.Name)
+	var metaPod *Pod
+	if newEligible {
+		metaPod = c.addPodLocked(newPod)
 		if newOk {
 			c.addPodAndModelMappingLocked(metaPod, newModelName)
 		}
-		newPodKey := utils.GeneratePodKey(newPod.Namespace, newPod.Name)
 		for servedModel, binding := range newModelClaims {
 			c.modelClaims.set(newPodKey, servedModel, binding)
 			if binding.Port > 0 {
 				c.addPodAndModelMappingLocked(metaPod, servedModel)
 			}
 		}
-	} else {
+		c.linkPodToAdaptersLocked(metaPod, newPodKey)
+	}
+
+	if oldMetaPod != nil {
+		for _, modelName := range oldMetaPod.Models.Array() {
+			if newEligible && oldPodKey == newPodKey && metaPod != nil {
+				if _, stillServed := metaPod.Models.Load(modelName); stillServed {
+					c.reconcileModelBaseModelLocked(modelName)
+					continue
+				}
+			}
+			c.deletePodAndModelMappingLocked(oldMetaPod.Name, oldMetaPod.Namespace, modelName, 1)
+			c.reconcileModelBaseModelLocked(modelName)
+		}
+	}
+	for _, modelName := range affectedAdapterModels {
+		c.reconcileModelBaseModelLocked(modelName)
+	}
+
+	if ignoredRayWorker {
+		c.clearPodMetricsBackoff(oldPod.Namespace, oldPod.Name)
+		c.clearPodMetricsScheduling(oldPod.Namespace, oldPod.Name)
+		klog.InfoS("ignored ray worker pod", "old pod", oldPod.Name, "new pod", newPod.Name)
+		return
+	}
+
+	if !newEligible {
 		c.clearPodMetricsBackoff(oldPod.Namespace, oldPod.Name)
 		c.clearPodMetricsScheduling(oldPod.Namespace, oldPod.Name)
 	}
@@ -261,7 +299,8 @@ func (c *Store) deletePod(obj interface{}) {
 			return
 		}
 	}
-	_, existed := c.metaPods.Load(utils.GeneratePodKey(namespace, name))
+	podKey := utils.GeneratePodKey(namespace, name)
+	_, existed := c.metaPods.Load(podKey)
 	if !hasModelInfo && !existed {
 		return
 	}
@@ -274,14 +313,20 @@ func (c *Store) deletePod(obj interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	affectedAdapterModels := c.clearPodAdapterEdgesLocked(podKey)
+
 	// delete base model and associated lora models on this pod
 	metaPod := c.deletePodLocked(name, namespace)
 	if metaPod != nil {
 		for _, modelName := range metaPod.Models.Array() {
 			c.deletePodAndModelMappingLocked(name, namespace, modelName, 1)
+			c.reconcileModelBaseModelLocked(modelName)
 		}
 	}
-	c.modelClaims.clearPod(utils.GeneratePodKey(namespace, name))
+	for _, modelName := range affectedAdapterModels {
+		c.reconcileModelBaseModelLocked(modelName)
+	}
+	c.modelClaims.clearPod(podKey)
 
 	c.clearPodMetricsBackoff(namespace, name)
 	c.clearPodMetricsScheduling(namespace, name)
@@ -294,12 +339,11 @@ func (c *Store) deletePod(obj interface{}) {
 func (c *Store) addModelAdapter(obj interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.beginMembershipEventLocked()
+	defer c.endMembershipEventLocked()
 
 	model := obj.(*modelv1alpha1.ModelAdapter)
-	for _, pod := range model.Status.Instances {
-		c.addPodAndModelMappingLockedByName(pod, model.Namespace, model.Name)
-	}
-	c.setModelBaseModelLocked(model)
+	c.upsertModelAdapterLocked(nil, model)
 
 	klog.V(4).Infof("MODELADAPTER CREATED: %s/%s", model.Namespace, model.Name)
 	c.debugInfo()
@@ -308,47 +352,232 @@ func (c *Store) addModelAdapter(obj interface{}) {
 func (c *Store) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.beginMembershipEventLocked()
+	defer c.endMembershipEventLocked()
 
 	oldModel := oldObj.(*modelv1alpha1.ModelAdapter)
 	newModel := newObj.(*modelv1alpha1.ModelAdapter)
-	for _, pod := range oldModel.Status.Instances {
-		// the namespace of the pod is same as the namespace of model
-		c.deletePodAndModelMappingLocked(pod, oldModel.Namespace, oldModel.Name, 0)
-	}
-
-	for _, pod := range newModel.Status.Instances {
-		c.addPodAndModelMappingLockedByName(pod, newModel.Namespace, newModel.Name)
-	}
-	c.setModelBaseModelLocked(newModel)
+	c.upsertModelAdapterLocked(oldModel, newModel)
 
 	c.debugInfo()
+}
+
+func adapterSpecBaseModel(model *modelv1alpha1.ModelAdapter) string {
+	if model == nil || model.Spec.BaseModel == nil {
+		return ""
+	}
+	return strings.TrimSpace(*model.Spec.BaseModel)
+}
+
+func (c *Store) upsertModelAdapterLocked(oldModel, newModel *modelv1alpha1.ModelAdapter) {
+	oldEdges := make(map[adapterEdge]struct{})
+	var oldKey string
+	if oldModel != nil {
+		oldKey = utils.GeneratePodKey(oldModel.Namespace, oldModel.Name)
+		if rec, ok := c.adapterRecords[oldKey]; ok {
+			for edge := range rec.edges {
+				oldEdges[edge] = struct{}{}
+			}
+		}
+		for _, podName := range oldModel.Status.Instances {
+			oldEdges[adapterEdge{
+				podKey:    utils.GeneratePodKey(oldModel.Namespace, podName),
+				modelName: oldModel.Name,
+			}] = struct{}{}
+		}
+	}
+
+	newKey := utils.GeneratePodKey(newModel.Namespace, newModel.Name)
+	if prevRec, ok := c.adapterRecords[newKey]; ok && newKey != oldKey {
+		for edge := range prevRec.edges {
+			oldEdges[edge] = struct{}{}
+		}
+	}
+
+	newEdges := make(map[adapterEdge]struct{}, len(newModel.Status.Instances))
+	newInstances := make([]string, 0, len(newModel.Status.Instances))
+	for _, podName := range newModel.Status.Instances {
+		podKey := utils.GeneratePodKey(newModel.Namespace, podName)
+		newInstances = append(newInstances, podKey)
+		if metaPod, ok := c.metaPods.Load(podKey); ok {
+			c.addPodAndModelMappingLocked(metaPod, newModel.Name)
+			newEdges[adapterEdge{podKey: podKey, modelName: newModel.Name}] = struct{}{}
+		} else {
+			klog.Errorf("pod %s does not exist in internal-cache", podName)
+		}
+	}
+
+	if oldKey != "" {
+		delete(c.adapterRecords, oldKey)
+	}
+	if len(newModel.Status.Instances) > 0 {
+		if c.adapterRecords == nil {
+			c.adapterRecords = make(map[string]*adapterRecord)
+		}
+		c.adapterRecords[newKey] = &adapterRecord{
+			modelName: newModel.Name,
+			specBase:  adapterSpecBaseModel(newModel),
+			instances: newInstances,
+			edges:     newEdges,
+		}
+	} else {
+		delete(c.adapterRecords, newKey)
+	}
+
+	for edge := range oldEdges {
+		if _, kept := newEdges[edge]; kept {
+			continue
+		}
+		if c.isModelEdgeStillReferencedLocked(edge.podKey, edge.modelName) {
+			continue
+		}
+		podNamespace, podName, ok := utils.ParsePodKey(edge.podKey)
+		if !ok {
+			continue
+		}
+		c.deletePodAndModelMappingLocked(podName, podNamespace, edge.modelName, 0)
+	}
+
+	if oldModel != nil && oldModel.Name != newModel.Name {
+		c.reconcileModelBaseModelLocked(oldModel.Name)
+	}
+	c.reconcileModelBaseModelLocked(newModel.Name)
+}
+
+func (c *Store) recordAdapterEdgeLocked(model *modelv1alpha1.ModelAdapter, podKey string) {
+	if c.adapterRecords == nil {
+		c.adapterRecords = make(map[string]*adapterRecord)
+	}
+	adapterKey := utils.GeneratePodKey(model.Namespace, model.Name)
+	rec, ok := c.adapterRecords[adapterKey]
+	if !ok {
+		instances := make([]string, 0, len(model.Status.Instances))
+		for _, podName := range model.Status.Instances {
+			instances = append(instances, utils.GeneratePodKey(model.Namespace, podName))
+		}
+		rec = &adapterRecord{
+			modelName: model.Name,
+			specBase:  adapterSpecBaseModel(model),
+			instances: instances,
+			edges:     make(map[adapterEdge]struct{}),
+		}
+		c.adapterRecords[adapterKey] = rec
+	} else {
+		rec.modelName = model.Name
+		rec.specBase = adapterSpecBaseModel(model)
+	}
+	rec.edges[adapterEdge{podKey: podKey, modelName: model.Name}] = struct{}{}
+}
+
+func (c *Store) clearPodAdapterEdgesLocked(podKey string) []string {
+	if len(c.adapterRecords) == 0 {
+		return nil
+	}
+	var affectedModels []string
+	for _, rec := range c.adapterRecords {
+		for edge := range rec.edges {
+			if edge.podKey == podKey {
+				delete(rec.edges, edge)
+				affectedModels = append(affectedModels, edge.modelName)
+			}
+		}
+	}
+	return affectedModels
+}
+
+func (c *Store) linkPodToAdaptersLocked(metaPod *Pod, podKey string) {
+	for _, rec := range c.adapterRecords {
+		for _, instKey := range rec.instances {
+			if instKey == podKey {
+				c.addPodAndModelMappingLocked(metaPod, rec.modelName)
+				if rec.edges == nil {
+					rec.edges = make(map[adapterEdge]struct{})
+				}
+				rec.edges[adapterEdge{podKey: podKey, modelName: rec.modelName}] = struct{}{}
+				c.reconcileModelBaseModelLocked(rec.modelName)
+				break
+			}
+		}
+	}
+}
+
+func (c *Store) isModelEdgeStillReferencedLocked(podKey, modelName string) bool {
+	edge := adapterEdge{podKey: podKey, modelName: modelName}
+	for _, rec := range c.adapterRecords {
+		if _, ok := rec.edges[edge]; ok {
+			return true
+		}
+	}
+	metaPod, ok := c.metaPods.Load(podKey)
+	if !ok || metaPod.Pod == nil {
+		return false
+	}
+	if podModel, ok := getModelNameFromPod(metaPod.Pod); ok && podModel == modelName {
+		return true
+	}
+	if bindings := c.modelClaimBindingsFromPod(metaPod.Pod); len(bindings) > 0 {
+		if binding, ok := bindings[modelName]; ok && binding.Port > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // setModelBaseModelLocked records the adapter → base-model mapping on the cache
 // entry. Caller must hold c.mu. Prefers spec.baseModel; falls back to the host
 // pod's model.aibrix.ai/name label when spec is empty.
 func (c *Store) setModelBaseModelLocked(model *modelv1alpha1.ModelAdapter) {
-	meta, ok := c.metaModels.Load(model.Name)
+	if model == nil {
+		return
+	}
+	c.reconcileModelBaseModelLocked(model.Name)
+}
+
+func (c *Store) reconcileModelBaseModelLocked(modelName string) {
+	meta, ok := c.metaModels.Load(modelName)
 	if !ok {
 		return
 	}
-	base := ""
-	if model.Spec.BaseModel != nil {
-		base = strings.TrimSpace(*model.Spec.BaseModel)
+	if len(c.adapterRecords) == 0 {
+		meta.BaseModel = ""
+		return
 	}
-	if base == "" {
-		for _, podName := range model.Status.Instances {
-			metaPod, ok := c.metaPods.Load(utils.GeneratePodKey(model.Namespace, podName))
+	keys := make([]string, 0, len(c.adapterRecords))
+	for key, rec := range c.adapterRecords {
+		if rec.modelName == modelName && len(rec.edges) > 0 {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		meta.BaseModel = ""
+		return
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		rec := c.adapterRecords[key]
+		if rec.specBase != "" {
+			meta.BaseModel = rec.specBase
+			return
+		}
+	}
+	for _, key := range keys {
+		rec := c.adapterRecords[key]
+		for _, podKey := range rec.instances {
+			if _, active := rec.edges[adapterEdge{podKey: podKey, modelName: modelName}]; !active {
+				continue
+			}
+			metaPod, ok := c.metaPods.Load(podKey)
 			if !ok || metaPod.Pod == nil || metaPod.Labels == nil {
 				continue
 			}
 			if v := strings.TrimSpace(metaPod.Labels[constants.ModelLabelName]); v != "" {
-				base = v
-				break
+				meta.BaseModel = v
+				return
 			}
 		}
 	}
-	meta.BaseModel = base
+	meta.BaseModel = ""
 }
 
 func (c *Store) deleteModelAdapter(obj interface{}) {
@@ -367,10 +596,31 @@ func (c *Store) deleteModelAdapter(obj interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for _, pod := range model.Status.Instances {
-		// the namespace of the pod is same as the namespace of model
-		c.deletePodAndModelMappingLocked(pod, model.Namespace, model.Name, 0)
+	adapterKey := utils.GeneratePodKey(model.Namespace, model.Name)
+	oldEdges := make(map[adapterEdge]struct{})
+	if rec, ok := c.adapterRecords[adapterKey]; ok {
+		for edge := range rec.edges {
+			oldEdges[edge] = struct{}{}
+		}
+		delete(c.adapterRecords, adapterKey)
 	}
+	for _, podName := range model.Status.Instances {
+		oldEdges[adapterEdge{
+			podKey:    utils.GeneratePodKey(model.Namespace, podName),
+			modelName: model.Name,
+		}] = struct{}{}
+	}
+	for edge := range oldEdges {
+		if c.isModelEdgeStillReferencedLocked(edge.podKey, edge.modelName) {
+			continue
+		}
+		podNamespace, podName, ok := utils.ParsePodKey(edge.podKey)
+		if !ok {
+			continue
+		}
+		c.deletePodAndModelMappingLocked(podName, podNamespace, edge.modelName, 0)
+	}
+	c.reconcileModelBaseModelLocked(model.Name)
 
 	c.debugInfo()
 }
@@ -483,6 +733,32 @@ func (c *Store) addPodAndModelMappingLockedByName(podName, namespace, modelName 
 	c.addPodAndModelMappingLocked(pod, modelName)
 }
 
+func (c *Store) beginMembershipEventLocked() {
+	c.routerAttemptedInEvent = make(map[string]struct{})
+}
+
+func (c *Store) endMembershipEventLocked() {
+	c.routerAttemptedInEvent = nil
+}
+
+func (c *Store) ensureModelQueueRouterLocked(metaModel *Model, modelName string) {
+	if metaModel == nil || metaModel.QueueRouter != nil || c.modelRouterProvider == nil {
+		return
+	}
+	if c.routerAttemptedInEvent != nil {
+		if _, tried := c.routerAttemptedInEvent[modelName]; tried {
+			return
+		}
+		c.routerAttemptedInEvent[modelName] = struct{}{}
+	}
+	router, err := c.modelRouterProvider(modelName)
+	if err != nil {
+		klog.Errorf("failed to initialize model-based queue router: %v", err)
+		return
+	}
+	metaModel.QueueRouter = router
+}
+
 func (c *Store) addPodAndModelMappingLocked(metaPod *Pod, modelName string) {
 	if c.bufferModel == nil {
 		c.bufferModel = &Model{
@@ -493,15 +769,9 @@ func (c *Store) addPodAndModelMappingLocked(metaPod *Pod, modelName string) {
 	metaModel, loaded := c.metaModels.LoadOrStore(modelName, c.bufferModel)
 	if !loaded {
 		c.bufferModel = nil
-		if c.modelRouterProvider != nil {
-			var err error
-			metaModel.QueueRouter, err = c.modelRouterProvider(modelName)
-			if err != nil {
-				klog.Errorf("failed to initialize model-based queue router: %v", err)
-			}
-		}
 		klog.V(4).Infof("MODEL(ADAPTER) CREATED: %s", modelName)
 	}
+	c.ensureModelQueueRouterLocked(metaModel, modelName)
 
 	metaPod.Models.Store(modelName, modelName)
 	podKey := utils.GeneratePodKey(metaPod.Namespace, metaPod.Name)
@@ -628,10 +898,12 @@ func (c *Store) resyncModelAdapters(store cache.Store, stopCh <-chan struct{}) {
 			missingPods := []string{}
 
 			c.mu.Lock()
+			c.beginMembershipEventLocked()
 			for _, podName := range modelAdapter.Status.Instances {
 				podKey := utils.GeneratePodKey(modelAdapter.Namespace, podName)
 				if metaPod, exists := c.metaPods.Load(podKey); exists {
 					c.addPodAndModelMappingLocked(metaPod, modelAdapter.Name)
+					c.recordAdapterEdgeLocked(modelAdapter, podKey)
 					klog.V(4).Infof("Resynced pod mapping for adapter %s, pod %s/%s",
 						modelAdapter.Name, modelAdapter.Namespace, podName)
 				} else {
@@ -640,6 +912,8 @@ func (c *Store) resyncModelAdapters(store cache.Store, stopCh <-chan struct{}) {
 						modelAdapter.Namespace, podName, modelAdapter.Name, i+1, modelAdapterResyncMaxRetries)
 				}
 			}
+			c.reconcileModelBaseModelLocked(modelAdapter.Name)
+			c.endMembershipEventLocked()
 			c.mu.Unlock()
 
 			if len(missingPods) > 0 {

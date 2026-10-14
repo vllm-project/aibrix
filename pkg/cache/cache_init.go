@@ -132,6 +132,12 @@ type Store struct {
 	// ModelClaim advertisements include non-routable port-0 states and are kept
 	// separate from metaModels by construction.
 	modelClaims modelClaimState
+	// adapterRecords tracks active (podKey, modelName) mappings and base-model
+	// metadata per ModelAdapter (keyed by "namespace/name"). Protected by mu.
+	adapterRecords map[string]*adapterRecord
+	// routerAttemptedInEvent bounds QueueRouter construction retries to at most
+	// once per model per informer membership event while QueueRouter is nil.
+	routerAttemptedInEvent map[string]struct{}
 
 	// Deploymnent related storage
 	enableProfileCaching bool                                    // Default to load from enableModelGPUProfileCaching, can be configured.
