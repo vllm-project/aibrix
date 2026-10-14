@@ -260,8 +260,13 @@ func (s *SyncPrefixHashTable) MatchPrefix(modelName string, loraID int64, tokens
 
 		hasMatch := false
 		for podName, podInfo := range pods {
-			if _, isReady := readyPods[podName]; !isReady {
-				continue
+			// Readiness only needs checking at block 0: matches holds just the
+			// ready pods that reached this block, and a pod absent from it at a
+			// later block reads back as zero blocks, so the check below skips it.
+			if i == 0 {
+				if _, isReady := readyPods[podName]; !isReady {
+					continue
+				}
 			}
 			match := matches[podName]
 			if match.blocks != i {
