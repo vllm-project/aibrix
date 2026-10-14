@@ -325,17 +325,26 @@ first, and omitting the field means 0. The value is immutable, so create a new
 ModelClaim to change it.
 
 For claims of the same priority that compete for at least one Pod, the
-controller keeps FIFO order by creation time, then by name. It uses
-BestEffortFIFO: a higher-priority or earlier claim that cannot fit now and
-cannot make room does not block a feasible claim behind it. Claims that select
-different pools do not compete.
+controller provides reliable FIFO admission by creation time, then by name.
+Claims that omit ``priority`` therefore compete at priority 0 with the same
+deterministic FIFO admission; their order does not depend on which reconcile
+event happens first. The controller uses BestEffortFIFO: a higher-priority or
+earlier claim that cannot fit now and cannot make room does not block a
+feasible claim behind it. Claims that select different pools do not compete.
 
-Priority is non-preemptive. It never stops, moves, sleeps, wakes, or changes
-an existing instance. Once a claim has begun making room and holds a valid
-reservation, it keeps that placement turn until it is placed, releases the
-reservation, the reservation expires, or the claim is deleted; a later,
-higher-priority claim cannot take it. Strict priority can starve a
-low-priority claim when feasible higher-priority claims continue to arrive.
+Priority is non-preemptive: it only chooses which unplaced claim gets the next
+placement opportunity, and does not stop or move an existing instance. Normal
+placement may still resize KV limits or sleep eligible idle engines to make
+room. Once a claim has begun making room and holds a valid reservation, it
+keeps that placement turn until it is placed, releases the reservation, the
+reservation expires, or the claim is deleted; a later, higher-priority claim
+cannot take it. Strict priority can starve a low-priority claim when feasible
+higher-priority claims continue to arrive.
+
+A zero-instance claim whose engine could not be activated remains ``Failed``
+during its activation-failure backoff and does not block a later feasible
+claim during that wait. When its retry is due, it re-enters admission at its
+numeric priority and FIFO position; ``Failed`` does not lower its priority.
 
 The runtime agent sets ``--model``, ``--served-model-name``, ``--host``,
 ``--port`` and ``--enable-sleep-mode`` itself, so leave them out of
