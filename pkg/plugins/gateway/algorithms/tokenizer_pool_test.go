@@ -19,6 +19,8 @@ package routingalgorithms
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -380,7 +382,7 @@ func TestTokenizerPoolGetTokenizer(t *testing.T) {
 
 		// Since we can't create actual remote tokenizers in unit tests,
 		// just verify the endpoint discovery works
-		endpoint := pool.findVLLMEndpointForModel("llama2-7b", pods)
+		endpoint, _ := pool.findVLLMEndpointForModel("llama2-7b", pods)
 		assert.Equal(t, "http://llama-service:8000", endpoint)
 	})
 }
@@ -453,6 +455,72 @@ func TestTokenizerPoolHealthCheck(t *testing.T) {
 
 	healthyTokenizer.AssertExpectations(t)
 	unhealthyTokenizer.AssertExpectations(t)
+}
+
+func TestTokenizerPoolHealthCheckDoesNotBlockLookups(t *testing.T) {
+	resetPrometheusRegistry()
+	pool := NewTokenizerPool(TokenizerPoolConfig{
+		EnableVLLMRemote: true, MaxTokenizersPerPool: 100, DefaultTokenizer: &mockTokenizer{},
+	}, createTestCache())
+	defer func() { assert.NoError(t, pool.Close()) }()
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	hung := &mockTokenizer{}
+	hung.On("IsHealthy", mock.Anything).Run(func(mock.Arguments) {
+		close(entered)
+		<-release
+	}).Return(false)
+	hung.On("Close").Return(nil)
+	healthy := &mockTokenizer{}
+	healthy.On("IsHealthy", mock.Anything).Return(true)
+	healthy.On("Close").Return(nil)
+	now := time.Now()
+	pool.tokenizers["hung"] = &tokenizerEntry{tokenizer: hung, lastUsed: now, healthStatus: true}
+	pool.tokenizers["healthy"] = &tokenizerEntry{tokenizer: healthy, lastUsed: now, healthStatus: true}
+
+	checked := make(chan struct{})
+	go func() {
+		defer close(checked)
+		pool.performHealthCheck()
+	}()
+	<-entered
+	got := make(chan tokenizer.Tokenizer, 1)
+	go func() { got <- pool.GetTokenizer("healthy", nil) }()
+	select {
+	case tok := <-got:
+		assert.Same(t, healthy, tok)
+	case <-time.After(time.Second):
+		t.Error("GetTokenizer waited for another model's health probe")
+	}
+	close(release)
+	<-checked
+	assert.False(t, pool.tokenizers["hung"].healthStatus)
+}
+
+func TestTokenizerPoolMovesOffAPodThatLeft(t *testing.T) {
+	resetPrometheusRegistry()
+	var endpoints []string
+	var pods []*v1.Pod
+	for _, name := range []string{"pod-a", "pod-b"} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"tokens":[],"count":0}`))
+		}))
+		defer server.Close()
+		pod := createTestPod(name, "m", "vllm", true)
+		pod.Status.PodIP = server.URL // EndpointTemplate "%s" turns the pod IP into the endpoint
+		endpoints, pods = append(endpoints, server.URL), append(pods, &pod)
+	}
+	pool := NewTokenizerPool(TokenizerPoolConfig{
+		EnableVLLMRemote: true, MaxTokenizersPerPool: 10, DefaultTokenizer: &mockTokenizer{}, EndpointTemplate: "%s",
+	}, nil)
+	defer func() { assert.NoError(t, pool.Close()) }()
+
+	first := pool.GetTokenizer("m", pods)
+	assert.Equal(t, endpoints[0], first.(interface{ GetEndpoint() string }).GetEndpoint())
+	// pod-a is deleted, so routing now only sees pod-b.
+	moved := pool.GetTokenizer("m", pods[1:])
+	assert.Equal(t, endpoints[1], moved.(interface{ GetEndpoint() string }).GetEndpoint())
+	assert.Len(t, pool.tokenizers, 1)
 }
 
 func TestTokenizerPoolMaxSize(t *testing.T) {

@@ -126,6 +126,26 @@ func TestMaxSurgeAndUnavailable(t *testing.T) {
 	assert.Equal(t, int32(3), MaxUnavailable(role))
 }
 
+func TestValidateUpdateBudget(t *testing.T) {
+	tests := []struct {
+		name     string
+		replicas int32
+		budget   *intstrutil.IntOrString
+		wantErr  bool
+	}{
+		{"invalid", 4, intStrPtr(intstrutil.FromString("25x")), true},
+		{"percentage", 4, intStrPtr(intstrutil.FromString("25%")), false},
+		{"omitted", 4, nil, false},
+		{"zero replicas", 0, intStrPtr(intstrutil.FromString("25x")), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			role := newTestRoleSpec("worker", tt.replicas, nil, tt.budget)
+			assert.Equal(t, tt.wantErr, validateUpdateBudget(role) != nil)
+		})
+	}
+}
+
 func TestRenderStormServicePod_WithRoleIndex(t *testing.T) {
 	roleSet := &orchestrationv1alpha1.RoleSet{
 		ObjectMeta: metav1.ObjectMeta{

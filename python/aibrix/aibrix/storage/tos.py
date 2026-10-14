@@ -14,6 +14,7 @@
 
 import asyncio
 from dataclasses import replace
+from datetime import timezone
 from io import BytesIO
 from typing import BinaryIO, Optional, TextIO, Union
 
@@ -289,8 +290,11 @@ class TOSStorage(BaseStorage2):
                 if hasattr(response, "last_modified") and response.last_modified:
                     last_modified = response.last_modified
                     if hasattr(last_modified, "replace"):
-                        # Convert TOS datetime to naive datetime (remove timezone info)
-                        last_modified = last_modified.replace(tzinfo=None)
+                        # SDK timestamps without a timezone come from an HTTP date in GMT.
+                        if last_modified.tzinfo is None:
+                            last_modified = last_modified.replace(tzinfo=timezone.utc)
+                        else:
+                            last_modified = last_modified.astimezone(timezone.utc)
 
                 # Extract user metadata from TOS headers (x-tos-meta-* headers)
                 user_metadata = {}

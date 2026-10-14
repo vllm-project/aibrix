@@ -785,6 +785,68 @@ class TestReader:
         reader.close()
 
     @pytest.mark.asyncio
+    async def test_reader_size_limiter_int_rejects_read_all(self):
+        """Integer size_limiter must bound a single read-all operation."""
+        test_data = b"0123456789abcdef"  # 16 bytes
+        bytes_io = BytesIO(test_data)
+
+        reader = Reader(bytes_io, size_limiter=10)
+
+        # read_all reads the whole payload in one call; the integer budget must
+        # still reject it instead of trivially passing (0 <= 10).
+        with pytest.raises(
+            SizeExceededError, match="Read operation rejected by size limiter"
+        ):
+            reader.read_all()
+
+        reader.close()
+
+    @pytest.mark.asyncio
+    async def test_reader_size_limiter_int_allows_within_limit(self):
+        """Integer size_limiter allows payloads at or under the budget."""
+        test_data = b"0123456789"  # exactly 10 bytes
+        bytes_io = BytesIO(test_data)
+
+        reader = Reader(bytes_io, size_limiter=10)
+
+        assert reader.read_all() == test_data
+        assert reader.bytes_read() == 10
+
+        reader.close()
+
+    @pytest.mark.asyncio
+    async def test_reader_size_limiter_int_rejects_chunked_overflow(self):
+        """Integer size_limiter rejects once cumulative reads exceed the budget."""
+        test_data = b"0123456789abcdef"  # 16 bytes
+        bytes_io = BytesIO(test_data)
+
+        reader = Reader(bytes_io, size_limiter=10)
+
+        assert reader.read(8) == b"01234567"
+
+        with pytest.raises(
+            SizeExceededError, match="Read operation rejected by size limiter"
+        ):
+            reader.read(8)
+
+        reader.close()
+
+    @pytest.mark.asyncio
+    async def test_reader_size_limiter_int_bytes_conversion_propagates(self):
+        """bytes(Reader) must not swallow an integer size-limit rejection."""
+        test_data = b"0123456789abcdef"  # 16 bytes
+        bytes_io = BytesIO(test_data)
+
+        reader = Reader(bytes_io, size_limiter=10)
+
+        with pytest.raises(
+            SizeExceededError, match="Read operation rejected by size limiter"
+        ):
+            bytes(reader)
+
+        reader.close()
+
+    @pytest.mark.asyncio
     async def test_reader_size_limiter_none(self):
         """Test Reader with no size limiter (default behavior)."""
         test_data = b"Hello, no limiter!"

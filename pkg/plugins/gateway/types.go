@@ -109,15 +109,16 @@ const (
 	ErrorTypeOverloaded     = "overloaded_error"
 
 	// OpenAI Error Codes
-	ErrorCodeInvalidAPIKey             = "invalid_api_key"
-	ErrorCodeModelNotFound             = "model_not_found"
-	ErrorCodeRateLimitExceeded         = "rate_limit_exceeded"
-	ErrorCodeServiceUnavailable        = "service_unavailable"
-	ErrorCodeExternalPolicyDenied      = "external_policy_denied"
-	ErrorCodeExternalRouterUnavailable = "external_router_unavailable"
-	ErrorCodeVideoNotFound             = "video_not_found"
-	ErrorCodeVideoJobPodUnavailable    = "video_job_pod_unavailable"
-	ErrorCodeReplicaInflightExceeded   = "replica_inflight_exceeded"
+	ErrorCodeInvalidAPIKey              = "invalid_api_key"
+	ErrorCodeModelNotFound              = "model_not_found"
+	ErrorCodeRateLimitExceeded          = "rate_limit_exceeded"
+	ErrorCodeServiceUnavailable         = "service_unavailable"
+	ErrorCodeExternalPolicyDenied       = "external_policy_denied"
+	ErrorCodeExternalRouterUnavailable  = "external_router_unavailable"
+	ErrorCodeVideoNotFound              = "video_not_found"
+	ErrorCodeVideoJobPodUnavailable     = "video_job_pod_unavailable"
+	ErrorCodeReplicaInflightExceeded    = "replica_inflight_exceeded"
+	ErrorCodeUnsupportedRoutingStrategy = "unsupported_routing_strategy"
 
 	// Embedding Constraints
 	// https://github.com/openai/openai-go/blob/main/embedding.go#L126
@@ -127,18 +128,22 @@ const (
 	// tokens, which the gateway cannot measure. See validateStringInputs.
 	MaxArrayDimensions = 2048
 
-	// Request Paths
+	// Request Paths, grouped by modality. Add a new endpoint to its group.
+
+	// Text generation
 	PathChatCompletions     = "/v1/chat/completions"
 	PathResponses           = "/v1/responses"
 	PathMessages            = "/v1/messages"
+	PathMessagesCountTokens = "/v1/messages/count_tokens"
 	PathCompletions         = "/v1/completions"
-	PathEmbeddings          = "/v1/embeddings"
-	PathImagesGenerations   = "/v1/images/generations"
-	PathVideoGenerations    = "/v1/video/generations"
-	PathAudioTranscriptions = "/v1/audio/transcriptions"
-	PathAudioTranslations   = "/v1/audio/translations"
-	PathRerank              = "/v1/rerank"
-	PathClassify            = "/v1/classify"
+
+	// Embeddings, ranking, classification and scoring
+	PathEmbeddings = "/v1/embeddings"
+	PathRerank     = "/v1/rerank"
+	PathClassify   = "/v1/classify"
+	// PathNativeClassify is where vLLM serves classification; PathClassify is SGLang's
+	// OpenAI-style route.
+	PathNativeClassify = "/classify"
 	// PathDecisions is SGLang's typed-question scoring endpoint (choice, score, yes_no).
 	// It does not stream and generates no tokens.
 	PathDecisions = "/v1/decisions"
@@ -146,6 +151,31 @@ const (
 	// map of noul, choice and score questions keyed by caller ids. It does not stream, and its
 	// usage reports input_tokens/output_tokens with no total.
 	PathSystemOne = "/v1/systemone"
+	// PathScore is SGLang's scoring endpoint: label-token probabilities or classifier
+	// logits for each query/item pair, pointwise or setwise. It does not stream.
+	PathScore = "/v1/score"
+
+	// Engine-native utilities
+	PathTokenize = "/tokenize"
+	PathPooling  = "/pooling"
+
+	// Image
+	PathImagesGenerations = "/v1/images/generations"
+
+	// Audio
+	PathAudioTranscriptions = "/v1/audio/transcriptions"
+	PathAudioTranslations   = "/v1/audio/translations"
+	// PathAudioSpeech is the OpenAI-compatible speech generation endpoint. Unlike the
+	// transcription and translation endpoints it takes a JSON request and returns binary audio,
+	// often streamed in several chunks, so its response is never parsed as JSON or SSE.
+	PathAudioSpeech = "/v1/audio/speech"
+	// PathAudioSpeechBatch is the batch form of PathAudioSpeech: one JSON request holds
+	// many items and the response is one JSON document with a base64-encoded result per item.
+	// isLanguageRequest matches it through the PathAudioSpeech prefix, so it is never parsed.
+	PathAudioSpeechBatch = "/v1/audio/speech/batch"
+
+	// Video
+	PathVideoGenerations = "/v1/video/generations"
 	// PathVideos and PathVideosSync are vLLM-Omni's native Videos API (multipart/form-data),
 	// distinct from the OpenAI/Sora-shaped PathVideoGenerations (JSON) above. PathVideos also
 	// covers its GET/DELETE sub-resources (/v1/videos/{id}, /v1/videos/{id}/content) via
@@ -153,10 +183,7 @@ const (
 	PathVideos     = "/v1/videos"
 	PathVideosSync = "/v1/videos/sync"
 
-	PathTokenize = "/tokenize"
-	PathPooling  = "/pooling"
-
-	// Engine-specific paths (xdit)
+	// Engine-specific paths (xdit), image and video generation
 	PathXditGenerate      = "/generate"
 	PathXditGenerateVideo = "/generatevideo"
 

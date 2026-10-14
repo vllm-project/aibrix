@@ -14,7 +14,7 @@
 
 import asyncio
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import pytest
@@ -406,7 +406,7 @@ async def test_job_committed_handler_expires_overdue_job_before_scheduling():
         status=BatchJobStatus(
             jobID="expired-before-scheduling-id",
             state=BatchJobState.CREATED,
-            createdAt=datetime.now() - timedelta(seconds=5),
+            createdAt=datetime.now(timezone.utc) - timedelta(seconds=5),
         ),
     )
 

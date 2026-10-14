@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from datetime import timezone
 from io import BytesIO, TextIOBase
 from typing import BinaryIO, Optional, TextIO, Union
 
@@ -305,8 +306,11 @@ class S3Storage(BaseStorage2):
                 # Parse last modified time
                 last_modified = response.get("LastModified")
                 if last_modified and hasattr(last_modified, "replace"):
-                    # Convert AWS datetime to naive datetime (remove timezone info)
-                    last_modified = last_modified.replace(tzinfo=None)
+                    # SDK timestamps without a timezone come from an HTTP date in GMT.
+                    if last_modified.tzinfo is None:
+                        last_modified = last_modified.replace(tzinfo=timezone.utc)
+                    else:
+                        last_modified = last_modified.astimezone(timezone.utc)
 
                 # Extract user metadata (remove 'x-amz-meta-' prefix)
                 user_metadata = {}

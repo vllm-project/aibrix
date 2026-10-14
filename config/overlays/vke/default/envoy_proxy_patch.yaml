@@ -37,7 +37,7 @@ spec:
                 spec:
                   containers:
                     - name: envoy
-                      image: aibrix-cn-beijing.cr.volces.com/aibrix/envoy:v1.33.2
+                      image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/envoy:v1.33.2
                       resources:
                         requests:
                           cpu: 2
@@ -46,7 +46,7 @@ spec:
                           cpu: 2
                           memory: 8Gi
                     - name: shutdown-manager
-                      image: aibrix-cn-beijing.cr.volces.com/aibrix/gateway:v1.2.8
+                      image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway:v1.2.8
                       resources:
                         requests:
                           cpu: 10m

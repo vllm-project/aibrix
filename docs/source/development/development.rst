@@ -297,7 +297,7 @@ Debugging Gateway IPs
    NAME                                     TYPE           CLUSTER-IP      EXTERNAL-IP   PORT(S)                                   AGE
    envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   10.96.239.246   101.18.0.4    80:32079/TCP                              10d
 
-Please also follow `debugging guidelines <https://aibrix.readthedocs.io/latest/features/gateway-plugins.html#debugging-guidelines>`_.
+Please also follow `debugging guidelines <https://aibrix.readthedocs.io/latest/features/gateway-routing/gateway-plugins.html#debugging-guidelines>`_.
 
 Mocked CPU App
 ~~~~~~~~~~~~~~

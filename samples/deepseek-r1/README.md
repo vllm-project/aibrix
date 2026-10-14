@@ -117,7 +117,7 @@ This distributed configuration ensures that the orchestration, routing, and auto
 
 ## Model Deployment
 
-Firstly, make sure you change network and object storage configuration, for example using [s3](https://aibrix.readthedocs.io/latest/features/runtime.html#download-from-s3).
+Firstly, make sure you change network and object storage configuration, for example using [s3](https://aibrix.readthedocs.io/latest/features/model-serving/runtime.html#download-from-s3).
 `DOWNLOADER_ALLOW_FILE_SUFFIX` has to be `json, safetensors, py` for deepseek-r1. 
 
 Then run following command to deploy the model and associated kv cache based autoscaling strategy. Note, it really depends on the network speed between compute and object storage, the deployment make takes up to 20 mins.

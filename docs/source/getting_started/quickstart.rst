@@ -18,9 +18,9 @@ Get your kubernetes cluster ready, run following commands to install aibrix comp
 
 .. code-block:: bash
 
-    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.8.0-rc.1/aibrix-dependency-v0.8.0-rc.1.yaml
-    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.8.0-rc.1/aibrix-core-crds-v0.8.0-rc.1.yaml
-    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.8.0-rc.1/aibrix-core-v0.8.0-rc.1.yaml
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.8.0/aibrix-dependency-v0.8.0.yaml --server-side
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.8.0/aibrix-core-crds-v0.8.0.yaml --server-side
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.8.0/aibrix-core-v0.8.0.yaml
 
 Wait for few minutes and run `kubectl get pods -n aibrix-system` to check pod status util they are ready.
 
@@ -197,6 +197,6 @@ For advanced development usage, please refer to the :ref:`development` section.
    :class-card: sd-border-1
 
    * :doc:`installation/installation`: production installation for your platform
-   * :doc:`../features/gateway-plugins`: choose a routing strategy for your workload
-   * :doc:`../features/autoscaling/autoscaling`: scale replicas on inference metrics
+   * :doc:`../features/gateway-routing/gateway-plugins`: choose a routing strategy for your workload
+   * :doc:`../features/scaling-performance/autoscaling/autoscaling`: scale replicas on inference metrics
    * :doc:`../production/observability`: see what the system is doing

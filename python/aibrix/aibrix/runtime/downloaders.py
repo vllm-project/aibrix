@@ -172,6 +172,10 @@ class S3ArtifactDownloader(ArtifactDownloader):
                 relative_path = key[len(prefix) :]
                 local_file_path = os.path.join(local_path, relative_path)
 
+                if key.endswith("/"):
+                    self._ensure_directory(local_file_path)
+                    continue
+
                 # Ensure directory exists
                 self._ensure_directory(os.path.dirname(local_file_path))
 
@@ -265,6 +269,10 @@ class GCSArtifactDownloader(ArtifactDownloader):
 
                     relative_path = blob.name[len(blob_name) :]
                     local_file_path = os.path.join(local_path, relative_path)
+
+                    if blob.name.endswith("/"):
+                        self._ensure_directory(local_file_path)
+                        continue
 
                     # Ensure directory exists
                     self._ensure_directory(os.path.dirname(local_file_path))

@@ -72,7 +72,7 @@ func getSessionAffinityTarget(t *testing.T, message string, headers map[string]s
 }
 
 // TestSessionAffinityXSessionIDStickiness covers the sequential multi-turn flow described
-// in docs/source/features/agentic-routing.rst: the first request gets a gateway-issued
+// in docs/source/features/gateway-routing/agentic-routing.rst: the first request gets a gateway-issued
 // x-session-id, and echoing it back on the next request routes to the same pod.
 func TestSessionAffinityXSessionIDStickiness(t *testing.T) {
 	const msg = "session affinity x-session-id stickiness test"
@@ -88,7 +88,7 @@ func TestSessionAffinityXSessionIDStickiness(t *testing.T) {
 }
 
 // TestSessionAffinityConcurrentAgenticRequestsShareSessionKey covers the core agentic-routing
-// scenario from docs/source/features/agentic-routing.rst: an agent run mints its own
+// scenario from docs/source/features/gateway-routing/agentic-routing.rst: an agent run mints its own
 // x-aibrix-session-key up front and fans out several sub-requests (parallel tool calls,
 // sub-agent turns) concurrently, before any of them has produced an x-session-id to reuse.
 // All of them must still land on the same ready pod.
@@ -128,7 +128,7 @@ func TestSessionAffinityConcurrentAgenticRequestsShareSessionKey(t *testing.T) {
 
 // TestSessionAffinitySessionKeyStickyAcrossReplicas exercises the Redis-backed pinning
 // path described in the "Staying sticky across gateway plugin replicas" section of
-// docs/source/features/agentic-routing.rst. config/test/gateway patches
+// docs/source/features/gateway-routing/agentic-routing.rst. config/test/gateway patches
 // aibrix-gateway-plugins to run 2 replicas, and NewOpenAIClient disables HTTP keep-alives,
 // so each of these requests is a fresh connection Envoy is free to load-balance to either
 // replica. Once a session key is pinned, every follow-up request -- regardless of which

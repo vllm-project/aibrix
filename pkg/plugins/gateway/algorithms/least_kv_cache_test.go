@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -213,4 +214,61 @@ func TestLeastKvCache_ScoreAll(t *testing.T) {
 
 	// Check polarity
 	assert.Equal(t, types.PolarityLeast, r.Polarity())
+}
+
+// least-gpu-cache is a deprecated alias for least-kv-cache: the name must stay registered (existing
+// routing-strategy headers and config profiles pass it) but must resolve to the kv-cache router,
+// wired to the same cache the manager was built with.
+func TestLeastGpuCache_IsAliasForLeastKvCache(t *testing.T) {
+	t.Run("default manager registers the alias", func(t *testing.T) {
+		defaultRM.routerMu.RLock()
+		defer defaultRM.routerMu.RUnlock()
+		assert.Contains(t, defaultRM.routerConstructor, RouterLeastGpuCache)
+	})
+
+	t.Run("isolated manager resolves it to the kv-cache router on its own cache", func(t *testing.T) {
+		pods := []*v1.Pod{newPod("p1", "1.1.1.1", true, nil)}
+		c := cache.NewWithPodsModelMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{})
+		rm := NewRouterManagerWithCache(c)
+		rm.Init()
+
+		_, valid := rm.Validate(string(RouterLeastGpuCache))
+		assert.True(t, valid, "least-gpu-cache must stay a valid routing strategy")
+
+		router, err := rm.Lookup(RouterLeastGpuCache)
+		require.NoError(t, err)
+		kv, ok := router.(leastKvCacheRouter)
+		require.True(t, ok, "least-gpu-cache must resolve to leastKvCacheRouter, got %T", router)
+		assert.Same(t, c, kv.cache)
+	})
+}
+
+// Through the alias, routing follows kv_cache_usage_perc, not the legacy gpu_cache_usage_perc the
+// removed router scored: the two metrics disagree here, and the pod with the lower KV usage wins.
+func TestLeastGpuCache_AliasRoutesByKvCacheUsage(t *testing.T) {
+	pods := []*v1.Pod{
+		newPod("p1", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("p2", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+	}
+	c := cache.NewWithPodsModelMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
+		"p1": {
+			metrics.KVCacheUsagePerc:  &metrics.SimpleMetricValue{Value: 0.9},
+			metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.1},
+		},
+		"p2": {
+			metrics.KVCacheUsagePerc:  &metrics.SimpleMetricValue{Value: 0.1},
+			metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.9},
+		},
+	})
+	rm := NewRouterManagerWithCache(c)
+	rm.Init()
+	router, err := rm.Lookup(RouterLeastGpuCache)
+	require.NoError(t, err)
+
+	for i := 0; i < 20; i++ {
+		ctx := types.NewRoutingContext(context.Background(), RouterLeastGpuCache, "m1", "message", "req-alias", "user")
+		address, err := router.Route(ctx, podsFromCache(c))
+		require.NoError(t, err)
+		assert.Equal(t, "2.2.2.2:8000", address)
+	}
 }

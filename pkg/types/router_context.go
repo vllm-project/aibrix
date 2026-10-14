@@ -169,10 +169,11 @@ type RoutingContext struct {
 	// based on config-profile header. Nil when no config is present.
 	ConfigProfile *ResolvedConfigProfile
 
-	// ReplicaInflightAdmitted is true once the gateway's replica-inflight admission check
-	// (enforceReplicaInflight, backed by cache.Store.AdmitPodRunningRequest) has atomically
-	// admitted this request AND, in doing so, already applied this gateway's own +1 to the
-	// target pod's cross-gateway running-requests counter. Consumers that also increment
+	// ReplicaInflightAdmitted tells request tracking to skip its Redis increment and keep the
+	// completion decrement. The gateway's replica-inflight admission check (enforceReplicaInflight,
+	// backed by cache.Store.AdmitPodRunningRequest) sets it once it has admitted this request
+	// and this gateway's own +1 was confirmed, or may already be applied, on the target pod's
+	// cross-gateway running-requests counter. Consumers that also increment
 	// that counter (addPodStats) must check this first and skip their own increment, or the
 	// pod's count would be inflated by an extra, never-decremented +1 for this request.
 	ReplicaInflightAdmitted bool
@@ -195,6 +196,7 @@ type RoutingContext struct {
 	// allowlist before serializing any entry.
 	trustedPolicyAttributes map[string]string
 	tokens                  []int           // Cache of tokenized prompts
+	prefixTokens            []byte          // Cache of the prefix-cache router's tokens, see PrefixTokens
 	predictor               OutputPredictor // OutputPredictor gained from cache
 	statsUpdated            int32           // Use to flag if in-memory realtime statistics has been updated for the request.
 	statsMu                 sync.Mutex      // Held by WithStatsUpdate; reused across pool tenants, not reset.
@@ -288,6 +290,17 @@ func (r *RoutingContext) PromptTokens() ([]int, error) {
 		}
 	}
 	return r.tokens, nil
+}
+
+// PrefixTokens returns the tokens stored by SetPrefixTokens. A blended route
+// scores, routes and indexes one request through the prefix-cache router, and
+// every step needs the same tokens.
+func (r *RoutingContext) PrefixTokens() []byte {
+	return r.prefixTokens
+}
+
+func (r *RoutingContext) SetPrefixTokens(tokens []byte) {
+	r.prefixTokens = tokens
 }
 
 // PromptLength returns the length of the prompt of the request.
@@ -541,6 +554,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.lastError.Store(nil)
 	// debugDelay will be reset by tests.
 	r.tokens = nil
+	r.prefixTokens = nil
 	r.predictor = nil
 	r.statsUpdated = statusInitial
 	r.traceAdded = statusInitial

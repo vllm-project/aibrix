@@ -1132,3 +1132,151 @@ def test_systemone_rejects_bad_requests(monkeypatch):
         # SGLang answers a schema error with 422, not the gateway's 400.
         assert response.status_code == 422, (name, response.get_json())
         assert response.get_json()["error"]["param"] == param, name
+
+
+def test_speech_batch_returns_one_result_per_item_in_order(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = post_json(
+        client,
+        "/v1/audio/speech/batch",
+        {
+            "model": "tts-1",
+            "response_format": "wav",
+            "items": [
+                {"input": "First sentence."},
+                {"input": "Second sentence.", "speed": 1.1},
+                {"input": "Third sentence.", "response_format": "mp3"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["id"].startswith("speech-batch-")
+    assert (body["total"], body["succeeded"], body["failed"]) == (3, 3, 0)
+    assert [result["index"] for result in body["results"]] == [0, 1, 2]
+    assert [result["format"] for result in body["results"]] == ["wav", "wav", "mp3"]
+    assert [result["media_type"] for result in body["results"]] == [
+        "audio/wav",
+        "audio/wav",
+        "audio/mpeg",
+    ]
+    assert base64.b64decode(body["results"][0]["audio_data"]).startswith(b"RIFF")
+    assert all(result["finish_reason"] == "stop" for result in body["results"])
+    assert all("error" not in result for result in body["results"])
+
+
+def test_speech_batch_reports_a_bad_item_without_failing_the_batch(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = post_json(
+        client,
+        "/v1/audio/speech/batch",
+        {
+            # A top-level stream is dropped, as in the engine; only an item-level one is refused.
+            "stream": True,
+            "items": [
+                {"input": "ok"},
+                {"input": ""},
+                {"voice": "alloy"},
+                {"input": "streamed", "stream": True},
+                {"input": "bad format", "response_format": "ogg"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert (body["total"], body["succeeded"], body["failed"]) == (5, 1, 4)
+    assert [result["status"] for result in body["results"]] == [
+        "success",
+        "error",
+        "error",
+        "error",
+        "error",
+    ]
+    assert [result["error"]["param"] for result in body["results"][1:]] == [
+        "items.1.input",
+        "items.2.input",
+        "items.3.stream",
+        "items.4.response_format",
+    ]
+    assert all("audio_data" not in result for result in body["results"][1:])
+
+
+@pytest.mark.parametrize(
+    ("payload", "param"),
+    [
+        ({"items": []}, "items"),
+        ({"model": "tts-1"}, "items"),
+        ({"items": {"input": "Hi"}}, "items"),
+        ({"items": [{"input": "Hi"}, "Hi"]}, "items.1"),
+        ({"items": [None]}, "items.0"),
+    ],
+)
+def test_speech_batch_rejects_a_bad_envelope(monkeypatch, payload, param):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(module.app.test_client(), "/v1/audio/speech/batch", payload)
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["param"] == param
+
+
+def test_speech_batch_rejects_a_non_object_body(monkeypatch):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(module.app.test_client(), "/v1/audio/speech/batch", [{"input": "Hi"}])
+
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("response_format", ["bogus", "", 7, ["wav"], {"format": "wav"}])
+def test_speech_rejects_an_unsupported_response_format(monkeypatch, response_format):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(
+        module.app.test_client(),
+        "/v1/audio/speech",
+        {"model": "tts-1", "input": "Hi", "response_format": response_format},
+    )
+
+    # A JSON list or object is unhashable, so a bare dict lookup would turn it into a 500.
+    assert response.status_code == 400
+    assert response.get_json()["error"]["param"] == "response_format"
+
+
+def test_speech_serves_every_declared_format_with_its_content_type(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    for response_format, media_type in module.SPEECH_CONTENT_TYPES.items():
+        response = post_json(
+            client,
+            "/v1/audio/speech",
+            {"model": "tts-1", "input": "Hi", "response_format": response_format},
+        )
+
+        assert response.status_code == 200, response_format
+        assert response.mimetype == media_type, response_format
+
+
+@pytest.mark.parametrize("response_format", [7, ["wav"], {"format": "wav"}])
+def test_speech_batch_reports_a_non_string_item_format_without_failing_the_batch(
+    monkeypatch, response_format
+):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(
+        module.app.test_client(),
+        "/v1/audio/speech/batch",
+        {"items": [{"input": "ok"}, {"input": "bad format", "response_format": response_format}]},
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert [result["status"] for result in body["results"]] == ["success", "error"]
+    assert body["results"][1]["error"]["param"] == "items.1.response_format"

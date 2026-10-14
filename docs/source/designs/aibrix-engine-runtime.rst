@@ -29,5 +29,5 @@ AI Engine Runtime serves as an essential bridge between the AIBrix Control Plane
 
 .. seealso::
 
-   :doc:`../features/runtime`
+   :doc:`../features/model-serving/runtime`
        Using the AI Runtime sidecar.

@@ -44,6 +44,10 @@ type AutoScaler interface {
 	// It does NOT perform any actual scaling operations.
 	// All per-PA configuration is extracted from the PodAutoscaler spec on each call.
 	ComputeDesiredReplicas(ctx context.Context, request ReplicaComputeRequest) (*ReplicaComputeResult, error)
+
+	// ForgetPodAutoscaler releases the metric history kept for a PodAutoscaler
+	// that no longer exists.
+	ForgetPodAutoscaler(namespace, name string)
 }
 
 // ReplicaComputeRequest represents a request for replica calculation.
@@ -108,6 +112,11 @@ func NewDefaultAutoScaler(
 		aggregator:     aggregator,
 		algorithmCache: make(map[autoscalingv1alpha1.ScalingStrategyType]algorithm.ScalingAlgorithm),
 	}
+}
+
+// ForgetPodAutoscaler drops the metric windows recorded for a deleted PodAutoscaler.
+func (a *DefaultAutoScaler) ForgetPodAutoscaler(namespace, name string) {
+	a.metricsClient.DeleteMetrics(namespace, name)
 }
 
 // getOrCreateAlgorithm retrieves or creates a stateless algorithm for the given strategy
@@ -460,6 +469,7 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 		},
 		CurrentReplicas:   request.CurrentReplicas,
 		AggregatedMetrics: aggregatedMetrics,
+		MetricSourceType:  metricSource.MetricSourceType,
 		ScalingContext:    scalingContext,
 		Timestamp:         request.Timestamp,
 	}

@@ -149,15 +149,17 @@ msgstr ":doc:`installation/installation` ：面向你所用平台的生产安装
 
 #: ../../source/getting_started/quickstart.rst:200
 msgid ""
-":doc:`../features/gateway-plugins`: choose a routing strategy for your "
-"workload"
-msgstr ":doc:`../features/gateway-plugins` ：为工作负载选择路由策略"
+":doc:`../features/gateway-routing/gateway-plugins`: choose a routing "
+"strategy for your workload"
+msgstr ":doc:`../features/gateway-routing/gateway-plugins` ：为工作负载选择路由策略"
 
 #: ../../source/getting_started/quickstart.rst:201
 msgid ""
-":doc:`../features/autoscaling/autoscaling`: scale replicas on inference "
-"metrics"
-msgstr ":doc:`../features/autoscaling/autoscaling` ：基于推理指标扩缩副本"
+":doc:`../features/scaling-performance/autoscaling/autoscaling`: scale "
+"replicas on inference metrics"
+msgstr ""
+":doc:`../features/scaling-performance/autoscaling/autoscaling` "
+"：基于推理指标扩缩副本"
 
 #: ../../source/getting_started/quickstart.rst:202
 msgid ":doc:`../production/observability`: see what the system is doing"

@@ -104,7 +104,7 @@ load-balance gate and score, the prefix-cache standard-deviation factor, the pre
 knobs, the VTC score weights, the auto-blend weights and the prefill/decode thresholds. An
 unset field keeps the gateway's environment default, so a profile only changes what it
 explicitly sets. See the Config Profiles section of `Gateway Plugins
-<../features/gateway-plugins.html>`_ for the full list.
+<../features/gateway-routing/gateway-plugins.html>`_ for the full list.
 
 
 Capping Model Throughput (RPS Limiting)
@@ -343,5 +343,5 @@ See the `Observability <observability.html>`_ guide for the full metrics referen
 
    * :doc:`gateway`: production gateway configuration
    * :doc:`observability`: full metrics reference
-   * :doc:`../features/autoscaling/autoscaling`: autoscale the deployment
-   * :doc:`../features/kvcache-offloading`: reduce prefill cost with KV reuse
+   * :doc:`../features/scaling-performance/autoscaling/autoscaling`: autoscale the deployment
+   * :doc:`../features/scaling-performance/kvcache-offloading`: reduce prefill cost with KV reuse

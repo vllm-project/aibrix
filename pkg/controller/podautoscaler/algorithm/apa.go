@@ -21,6 +21,7 @@ import (
 	"errors"
 	"math"
 
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
 	"k8s.io/klog/v2"
 )
@@ -40,7 +41,7 @@ func (a *APAAlgorithm) ComputeRecommendation(ctx context.Context, request Scalin
 
 	// Compute target replicas using APA algorithm
 	desiredReplicas := a.computeTargetReplicas(float64(request.CurrentReplicas), request.ScalingContext,
-		request.AggregatedMetrics.MetricKey.MetricName)
+		request.AggregatedMetrics.MetricKey.MetricName, request.MetricSourceType)
 
 	// Apply constraints from ScalingContext
 	desiredReplicas = applyConstraints(desiredReplicas, request.ScalingContext)
@@ -68,7 +69,7 @@ func (a *APAAlgorithm) GetAlgorithmType() string {
 // Journal of Physics: Conference Series. Vol. 2451. No. 1. IOP Publishing, 2023.
 // Tolerance is applied here to prevent scaling for minor metric fluctuations.
 func (a *APAAlgorithm) computeTargetReplicas(currentPodCount float64, context scalingctx.ScalingContext,
-	metricsName string) int32 {
+	metricsName string, sourceType autoscalingv1alpha1.MetricSourceType) int32 {
 	expectedUse, ok := context.GetTargetValueForMetric(metricsName)
 	if !ok {
 		klog.ErrorS(errors.New("get no TargetValueForMetric"), "APA Details", "metricsName", metricsName)
@@ -81,6 +82,22 @@ func (a *APAAlgorithm) computeTargetReplicas(currentPodCount float64, context sc
 	upTolerance := context.GetUpFluctuationTolerance()
 	downTolerance := context.GetDownFluctuationTolerance()
 	currentUsePerPod := context.GetCurrentUsePerPod()
+	desiredPodCount := currentPodCount * (currentUsePerPod / expectedUse)
+	if sourceType == "" {
+		sourceType, _ = context.GetMetricSourceTypeForMetric(metricsName)
+	}
+	if !IsPerPodSource(sourceType) {
+		// Use the raw total to avoid rounding errors from normalization and multiplication.
+		desiredPodCount = currentUsePerPod / expectedUse
+		if currentPodCount > 0 {
+			// Normalize totals before checking tolerance and choosing scaling direction.
+			currentUsePerPod /= currentPodCount
+		} else if currentPodCount == 0 && currentUsePerPod > 0 {
+			// Allow activation from zero with the same scale-up bound as KPA.
+			maxScaleUp := math.Max(1, math.Ceil(context.GetMaxScaleUpRate()*currentPodCount))
+			return int32(math.Min(math.Ceil(currentUsePerPod/expectedUse), maxScaleUp))
+		}
+	}
 
 	klog.V(4).InfoS("APA Details", "currentPodCount", currentPodCount,
 		"expectedUse", expectedUse, "upTolerance", upTolerance, "downTolerance", downTolerance,
@@ -90,7 +107,7 @@ func (a *APAAlgorithm) computeTargetReplicas(currentPodCount float64, context sc
 	// Tolerance check: only scale if metric exceeds tolerance thresholds
 	if currentUsePerPod/expectedUse > (1 + upTolerance) {
 		maxScaleUp := int32(math.Ceil(context.GetMaxScaleUpRate() * currentPodCount))
-		expectedPods := int32(math.Ceil(currentPodCount * (currentUsePerPod / expectedUse)))
+		expectedPods := int32(math.Ceil(desiredPodCount))
 		if expectedPods > maxScaleUp {
 			expectedPods = maxScaleUp
 		}
@@ -98,7 +115,7 @@ func (a *APAAlgorithm) computeTargetReplicas(currentPodCount float64, context sc
 		return expectedPods
 	} else if currentUsePerPod/expectedUse < (1 - downTolerance) {
 		maxScaleDown := int32(math.Floor(currentPodCount / context.GetMaxScaleDownRate()))
-		expectedPods := int32(math.Ceil(currentPodCount * (currentUsePerPod / expectedUse)))
+		expectedPods := int32(math.Ceil(desiredPodCount))
 		if expectedPods < maxScaleDown {
 			expectedPods = maxScaleDown
 		}

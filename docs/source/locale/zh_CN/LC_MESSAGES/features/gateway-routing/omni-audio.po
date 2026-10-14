@@ -1,0 +1,341 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version:  AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-13 12:08-0700\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:5
+msgid "Audio"
+msgstr "音频"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:7
+msgid ""
+"This guide covers the audio endpoints exposed through AIBrix's gateway: "
+"text-to-speech, in single and batch form, and speech-to-text through "
+"transcription and translation. The :ref:`supported endpoints <multimodal-"
+"supported-endpoints>` table shows which audio endpoints each engine "
+"offers and which of them AIBrix supports. Before you start, finish the "
+":ref:`prerequisites <omni-prerequisites>` and :ref:`gateway access <omni-"
+"access-gateway>` steps on the Multi-Modal Serving page, and deploy your "
+"model the way the :ref:`video guide <omni-video-deploy>` describes, "
+"swapping in an audio model."
+msgstr ""
+"本指南介绍通过 AIBrix 网关提供的音频端点：文本转语音（单条和批量形式），以及通过转写和翻译实现的语音转文本。 :ref:`支持的端点 "
+"<multimodal-supported-endpoints>` 表显示了各引擎提供哪些音频端点，以及 AIBrix "
+"支持其中哪些。开始之前，请先完成多模态服务页面上的 :ref:`前置条件 <omni-prerequisites>` 和 :ref:`访问网关 "
+"<omni-access-gateway>` 步骤，并按照 :ref:`视频指南 <omni-video-deploy>` "
+"所述方式部署模型，换成音频模型。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:10
+msgid ""
+"A text+audio example (`Qwen/Qwen2.5-Omni-7B "
+"<https://huggingface.co/Qwen/Qwen2.5-Omni-7B>`_) lives at "
+"`samples/vllm_omni/qwen2-5-omni-7b.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/vllm_omni/qwen2-5-omni-7b.yaml>`_ in the"
+" AIBrix repository."
+msgstr ""
+"文本 + 音频示例（ `Qwen/Qwen2.5-Omni-7B <https://huggingface.co/Qwen/Qwen2.5"
+"-Omni-7B>`_ ）位于 AIBrix 仓库的 `samples/vllm_omni/qwen2-5-omni-7b.yaml "
+"<https://github.com/vllm-"
+"project/aibrix/blob/main/samples/vllm_omni/qwen2-5-omni-7b.yaml>`_ 。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:15
+msgid "Text-to-Speech"
+msgstr "文本转语音"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:17
+msgid ""
+"``POST /v1/audio/speech`` synthesizes speech from text. It is a JSON "
+"request with a binary audio response, so — like the image and synchronous"
+" video endpoints — it needs none of the video job machinery: the gateway "
+"routes it to the pods of the requested model and streams the audio back "
+"untouched."
+msgstr ""
+"``POST /v1/audio/speech`` 将文本合成为语音。它是 JSON "
+"请求、二进制音频响应，因此——与图像和同步视频端点一样——不需要任何视频任务机制：网关会将其路由到所请求模型的 Pod，并把音频原样流式返回。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:32
+msgid "What differs from the other endpoints:"
+msgstr "与其他端点不同之处："
+
+#: ../../source/features/gateway-routing/omni-audio.rst:34
+msgid ""
+"``model`` is required. The gateway needs the name to select a pod, so a "
+"request without one is rejected with ``400``."
+msgstr "``model`` 为必填项。网关需要模型名来选择 Pod，因此缺少该字段的请求会以 ``400`` 被拒绝。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:35
+msgid ""
+"``input`` is required and cannot be empty. It is the text to synthesize "
+"and is also the routing text for prefix-cache-aware routing."
+msgstr "``input`` 为必填项且不能为空，是要合成的文本，同时也是前缀缓存感知路由使用的路由文本。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:36
+msgid ""
+"Every other field, such as ``voice``, ``response_format``, ``speed``, "
+"``instructions``, ``language``, and ``stream_format``, is forwarded as "
+"sent and validated by the engine."
+msgstr ""
+"其他字段，例如 ``voice`` 、 ``response_format`` 、 ``speed`` 、 ``instructions`` 、 "
+"``language`` 和 ``stream_format`` ，都会原样转发，由引擎校验。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:37
+msgid ""
+"The response is binary audio, which the engine may send in several "
+"chunks. The gateway forwards it byte for byte and never parses it as JSON"
+" or as an SSE stream, so a request-level ``stream`` field does not turn "
+"on SSE handling. Nothing about a successful body is parsed, so no token "
+"usage is reported."
+msgstr ""
+"响应为二进制音频，引擎可能分多个分块发送。网关逐字节转发，绝不将其解析为 JSON 或 SSE 流，因此请求级的 ``stream`` "
+"字段不会开启 SSE 处理。成功响应体不会被解析，因此不上报 token 用量。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:38
+msgid ""
+"Unlike the ``/v1/videos`` endpoints, this one takes ``application/json``:"
+" do **not** send ``multipart/form-data``."
+msgstr ""
+"与 ``/v1/videos`` 各端点不同，此端点接收 ``application/json`` ：请 **不要** 发送 "
+"``multipart/form-data`` 。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:43
+msgid "Batch Text-to-Speech"
+msgstr "批量文本转语音"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:45
+msgid ""
+"``POST /v1/audio/speech/batch`` synthesizes several utterances in one "
+"call. The request is shared defaults plus an ``items`` array whose "
+"entries override them, and the response is **one JSON document** with a "
+"base64-encoded result per item — not binary audio. The gateway routes it "
+"to the pods of the requested model like ``/v1/audio/speech``; it needs no"
+" new route, because the ``/v1/audio/speech`` path match already covers "
+"it."
+msgstr ""
+"``POST /v1/audio/speech/batch`` 一次调用合成多段语音。请求由共享的默认值加上一个 ``items`` "
+"数组组成，数组中的条目会覆盖这些默认值；响应是 **一个 JSON 文档** ，其中每个条目对应一个 base64 "
+"编码的结果——而不是二进制音频。网关像处理 ``/v1/audio/speech`` 一样将其路由到所请求模型的 Pod；无需新增路由，因为 "
+"``/v1/audio/speech`` 的路径匹配已经覆盖了它。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:66
+msgid "What the gateway checks, and returns ``400`` for:"
+msgstr "网关会检查以下内容，不满足时返回 ``400`` ："
+
+#: ../../source/features/gateway-routing/omni-audio.rst:68
+msgid ""
+"The body must be a JSON object, and ``model`` is required, for the same "
+"reason as ``/v1/audio/speech``."
+msgstr "请求体必须是 JSON 对象，且 ``model`` 为必填项，原因与 ``/v1/audio/speech`` 相同。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:69
+msgid ""
+"``items`` is required and cannot be empty, and every entry must be a JSON"
+" object. The error's ``param`` names the entry, such as ``items.2``."
+msgstr ""
+"``items`` 为必填项且不能为空，每个条目都必须是 JSON 对象。错误中的 ``param`` 会指明具体条目，例如 "
+"``items.2`` 。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:71
+msgid ""
+"Everything inside an item (``input``, ``voice``, ``speed``, "
+"``ref_audio``, ``ref_text``, ...) is forwarded as sent and validated by "
+"the engine, and so is the number of items. The engine reports a bad item "
+"as a failed entry in an otherwise successful response, so one bad item "
+"does not fail the batch:"
+msgstr ""
+"条目内部的内容（ ``input`` 、 ``voice`` 、 ``speed`` 、 ``ref_audio`` 、 ``ref_text``"
+" 等）以及条目数量，都会原样转发，由引擎校验。引擎会把有问题的条目作为失败项放入整体成功的响应中，因此单个坏条目不会让整个批次失败："
+
+#: ../../source/features/gateway-routing/omni-audio.rst:86
+msgid "Things to know when calling it through the gateway:"
+msgstr "通过网关调用时需要注意："
+
+#: ../../source/features/gateway-routing/omni-audio.rst:88
+msgid ""
+"The HTTP status is ``200`` even when items fail. Check ``failed`` or each"
+" result's ``status``; the gateway does not parse the body, so its metrics"
+" cannot see per-item failures."
+msgstr ""
+"即使有条目失败，HTTP 状态码也是 ``200`` 。请检查 ``failed`` 或每个结果的 ``status`` "
+"；网关不会解析响应体，因此其指标无法看到单个条目的失败。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:89
+msgid ""
+"Results follow the order of ``items``, and ``index`` is the entry's "
+"position in your request."
+msgstr "结果与 ``items`` 的顺序一致， ``index`` 是该条目在你的请求中的位置。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:90
+msgid ""
+"The response is forwarded as it arrives and never parsed as JSON or SSE, "
+"so no token usage is reported. A request-level ``stream`` field does not "
+"turn on SSE handling, and the engine refuses ``stream`` on an item."
+msgstr ""
+"响应按到达情况原样转发，绝不解析为 JSON 或 SSE，因此不上报 token 用量。请求级的 ``stream`` 字段不会开启 SSE "
+"处理，引擎也会拒绝条目上的 ``stream`` 。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:91
+msgid ""
+"The request body is buffered by the gateway, and the default connection "
+"buffer limit is 4 MiB (``bufferLimit``). Give each reference clip as a "
+"URL rather than an inline base64 data URL, and keep batches small enough "
+"that the response, which inlines every item's audio as base64, stays "
+"within what your clients accept."
+msgstr ""
+"网关会缓冲请求体，默认连接缓冲上限为 4 MiB（ ``bufferLimit`` ）。请以 URL 而不是内联 base64 data URL "
+"的方式提供每个参考音频，并控制批次大小，使内联了每个条目 base64 音频的响应不超过客户端可接受的范围。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:96
+msgid "Transcription and Translation"
+msgstr "转写与翻译"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:98
+msgid ""
+"``POST /v1/audio/transcriptions`` and ``POST /v1/audio/translations`` are"
+" the OpenAI-style speech-to-text endpoints, served only for models that "
+"support the task. Unlike text-to-speech they take ``multipart/form-data``"
+" with the audio in a ``file`` part, so — like the ``/v1/videos`` "
+"endpoints — do **not** set ``-H \"Content-Type: application/json\"``."
+msgstr ""
+"``POST /v1/audio/transcriptions`` 和 ``POST /v1/audio/translations`` 是 "
+"OpenAI 风格的语音转文本端点，仅对支持该任务的模型提供服务。与文本转语音不同，它们接收 ``multipart/form-data`` "
+"，音频放在 ``file`` 部分，因此——与 ``/v1/videos`` 各端点一样—— **不要** 设置 ``-H \"Content-"
+"Type: application/json\"`` 。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:107
+msgid "What the gateway checks:"
+msgstr "网关会检查以下内容："
+
+#: ../../source/features/gateway-routing/omni-audio.rst:109
+msgid ""
+"``model`` is required as a form field. The gateway needs the name to "
+"select a pod, so a request without one is rejected with ``400``."
+msgstr "``model`` 必须作为表单字段提供。网关需要模型名来选择 Pod，因此缺少该字段的请求会以 ``400`` 被拒绝。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:110
+msgid ""
+"A JSON body is rejected with ``400`` and the message ``audio requests "
+"must use multipart/form-data content-type``."
+msgstr ""
+"JSON 请求体会以 ``400`` 被拒绝，消息为 ``audio requests must use multipart/form-data "
+"content-type`` 。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:111
+msgid ""
+"Every other field, including the ``file`` part, is forwarded as sent and "
+"validated by the engine."
+msgstr "其他字段（包括 ``file`` 部分）都会原样转发，由引擎校验。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:112
+msgid ""
+"A ``stream`` form field set to ``true`` or ``1`` makes the gateway handle"
+" the response as an SSE stream."
+msgstr "将 ``stream`` 表单字段设为 ``true`` 或 ``1`` ，网关会把响应作为 SSE 流处理。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:113
+msgid ""
+"The whole request, audio file included, counts against the gateway's "
+"request size limit, 4 MiB by default; see Message Size Configuration in "
+":doc:`gateway-plugins`."
+msgstr "整个请求（包括音频文件）计入网关的请求大小上限，默认 4 MiB；参见 :doc:`gateway-plugins` 中的消息大小配置。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:120
+msgid "Endpoint Reference"
+msgstr "接口参考"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:126
+msgid "Endpoint"
+msgstr "接口"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:127
+msgid "Method"
+msgstr "方法"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:128
+msgid "Behavior"
+msgstr "行为"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:129
+msgid "``/v1/audio/speech``"
+msgstr "``/v1/audio/speech``"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:130
+#: ../../source/features/gateway-routing/omni-audio.rst:133
+#: ../../source/features/gateway-routing/omni-audio.rst:136
+msgid "POST"
+msgstr "POST"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:131
+msgid ""
+"JSON request, binary audio response. Routed by model like a chat "
+"completion; the audio streams through unparsed, so no token usage is "
+"recorded and no job is registered."
+msgstr ""
+"JSON 请求、二进制音频响应。像 chat completion 一样按模型路由；音频不经解析直接流式转发，因此不记录 token "
+"用量，也不登记任务。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:132
+msgid "``/v1/audio/speech/batch``"
+msgstr "``/v1/audio/speech/batch``"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:134
+msgid ""
+"JSON request with an ``items`` array, one JSON response holding a base64 "
+"result per item. Routed by model; the gateway checks only ``model`` and "
+"``items``, the response streams through unparsed, and ``200`` does not "
+"mean every item succeeded."
+msgstr ""
+"JSON 请求，带有 ``items`` 数组，返回一个 JSON 响应，其中包含每个条目的 base64 结果。按模型路由；网关只检查 "
+"``model`` 和 ``items`` ，响应不经解析直接流式转发，且 ``200`` 并不表示每个条目都成功。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:135
+msgid "``/v1/audio/transcriptions``, ``/v1/audio/translations``"
+msgstr "``/v1/audio/transcriptions``, ``/v1/audio/translations``"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:137
+msgid ""
+"``multipart/form-data`` request with the model in a ``model`` form field."
+" Routed by model; a ``stream`` form field set to ``true`` or ``1`` makes "
+"the response an SSE stream."
+msgstr ""
+"``multipart/form-data`` 请求，模型放在 ``model`` 表单字段中。按模型路由； ``stream`` 表单字段设为 "
+"``true`` 或 ``1`` 时，响应按 SSE 流处理。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:142
+msgid "Sample Files"
+msgstr "示例文件"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:144
+msgid ""
+"`samples/vllm_omni/qwen2-5-omni-7b.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/vllm_omni/qwen2-5-omni-7b.yaml>`_ — "
+"text+audio vLLM-Omni example"
+msgstr ""
+"`samples/vllm_omni/qwen2-5-omni-7b.yaml <https://github.com/vllm-"
+"project/aibrix/blob/main/samples/vllm_omni/qwen2-5-omni-7b.yaml>`_ — "
+"文本+音频 vLLM-Omni 示例"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:148
+msgid ":doc:`gateway-plugins`"
+msgstr ":doc:`gateway-plugins`"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:149
+msgid ""
+"Gateway routing, the ``user`` header used for job ownership, and message-"
+"size limits."
+msgstr "网关路由、用于任务归属的 ``user`` 头，以及消息大小限制。"
+

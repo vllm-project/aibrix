@@ -64,7 +64,6 @@ type SlidingWindowHistogram struct {
 	podAllocations             map[*prefixcacheindexer.TreeNode]map[int]bool
 	currentDecodeLengthsPerPod map[string]int       // pod key (namespace/name) -> total decode length
 	avgTimePerTokenPerPod      map[string][]float64 // pod key (namespace/name) -> list of time/token measurements
-	perNodeTotalDecodeLengths  map[*prefixcacheindexer.TreeNode]int
 	// currentPrefillCostPerPod   map[string]float64 // pod name -> prefill cost
 	// perNodePrefillCost         map[*prefixcacheindexer.TreeNode]float64
 }
@@ -255,7 +254,6 @@ func NewPrefixCacheAndLoadRouter() (types.Router, error) {
 		numPods:                    numPods,
 		podAllocations:             make(map[*prefixcacheindexer.TreeNode]map[int]bool),
 		currentDecodeLengthsPerPod: make(map[string]int),
-		perNodeTotalDecodeLengths:  make(map[*prefixcacheindexer.TreeNode]int),
 		avgTimePerTokenPerPod:      make(map[string][]float64),
 	}
 
@@ -437,7 +435,6 @@ func (p *prefixCacheAndLoadRouter) updatePodSet(readyPods []*v1.Pod) {
 		// - hitTokens
 		// - promptTokens
 		// - decodingSize
-		// - perNodeTotalDecodeLengths
 
 		// Filter timestamps entries for nodes that still have valid pods
 		newTimestamps := make([]histogramEntry, 0)
@@ -603,13 +600,8 @@ func (p *prefixCacheAndLoadRouter) PostRouteUpdate(ctx *types.RoutingContext, re
 		return err
 	}
 
-	node, _, _ := p.cache.AddPrefix(tokens, ctx.Model, "")
 	targetPodKey := utils.GeneratePodKey(targetPod.Namespace, targetPod.Name)
-	currentNode := node
-	for currentNode != nil {
-		currentNode.AddOrUpdatePodForModel(ctx.Model, targetPodKey, time.Now())
-		currentNode = currentNode.GetParent()
-	}
+	node, _, _ := p.cache.AddPrefix(tokens, ctx.Model, targetPodKey)
 
 	decodeLen := ctx.RoutingOverrides().Preble.DecodingLength
 	p.histogram.update(time.Now(), node, node, targetPodKey, decodeLen)
@@ -751,5 +743,4 @@ func (h *SlidingWindowHistogram) update(timestamp time.Time, node, leafNode *pre
 	// h.perNodePrefillCost[node] = newCost
 
 	h.currentDecodeLengthsPerPod[podKey] += decodingLength
-	h.perNodeTotalDecodeLengths[node] += decodingLength
 }

@@ -14,7 +14,7 @@ SGLang pod and a Service, both named `jev-latest`.
 
 - AIBrix installed with the gateway enabled. The gateway must include the
   `/v1/systemone` route; see
-  [SGLang System One API](../../docs/source/features/multi-engine.rst).
+  [SGLang System One API](../../docs/source/features/model-serving/multi-engine.rst).
 - A GPU node that can hold Qwen3.8-27B in BF16 (about 54 GB of weights). SGLang
   validates this model on a single H200.
 - A cluster that can pull the images and reach huggingface.co. If it cannot, see the

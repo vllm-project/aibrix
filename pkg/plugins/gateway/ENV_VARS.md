@@ -207,7 +207,7 @@ request bodies, credentials, arbitrary client headers, and pod IPs are never sen
 | `AIBRIX_EXTERNAL_ROUTER_CANDIDATE_METRICS` | CSV | _(empty)_ | Any of `runningRequests`, `engineUtilization`, `kvCacheUsage`. |
 | `AIBRIX_EXTERNAL_ROUTER_POLICY_ATTRIBUTES` | CSV | _(empty)_ | Downstream extension-point allowlist for trusted RoutingContext policy attributes. Upstream AIBrix has no built-in producer; integrators must call `SetTrustedPolicyAttribute`. Raw headers are never copied automatically. |
 
-See the [External Replica Routing guide](../../../docs/source/features/external-replica-routing.rst)
+See the [External Replica Routing guide](../../../docs/source/features/gateway-routing/external-replica-routing.rst)
 and the published OpenAPI contract for policy and protocol details.
 
 ---
@@ -268,6 +268,7 @@ Scoring formula: `score = (fairnessWeight * normFairness + utilizationWeight * n
 | `AIBRIX_PREFILL_SCORE_POLICY` | string | `"prefix_cache"` | Strategy for selecting the prefill pod. Options: `prefix_cache`, `least_request`. |
 | `AIBRIX_DECODE_SCORE_POLICY` | string | `"load_balancing"` | Strategy for selecting the decode pod. Options: `load_balancing`, `least_request`, `conductor`, `token_load`. |
 | `AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH` | bool | `true` | `token_load` decode policy only: add an estimate of the output generated so far (per-request decode rate × time since routing) to the decode score. `false` scores prompt tokens only. |
+| `AIBRIX_DECODE_TOKEN_LOAD_CAPACITY_AWARE` | bool | `true` | `token_load` decode policy only: multiply each decode pod's score by the candidates' mean KV capacity divided by the pod's own (`num_gpu_blocks` × `block_size` from vLLM's `vllm:cache_config_info`, or SGLang's `sglang:max_total_num_tokens`), so pods of different sizes are compared by how full they are. Unknown capacities count as the mean; with none known, or `false`, scores are token counts. |
 | `AIBRIX_TOKEN_LOAD_SHARED_LEDGER` | bool | `true` | `token_load` decode policy only, with Redis configured: share the decode ledger across gateway replicas, so each replica adds the other live replicas' charges to its decode score. `false` keeps the ledger local to each replica. |
 
 The prefill/decode routing thresholds (`AIBRIX_PREFILL_*`, `AIBRIX_DECODE_*`, `AIBRIX_TOKEN_LOAD_*`, `AIBRIX_HYBRID_CACHE_LOAD_FACTOR`, `AIBRIX_MIN_MATCH_PCT`, `AIBRIX_PROMPT_LENGTH_BUCKETING`, `AIBRIX_BUCKET_SERVE`,
@@ -378,7 +379,7 @@ factor, a percentage outside its range, an unknown GPU name) is ignored, so a pr
 narrow or sharpen routing behavior. The values are resolved once per request and applied to that
 request alone; a request whose profile sets none behaves exactly as before. The user-facing
 description and examples live in the Config Profiles section of the gateway plugin guide
-([docs/source/features/gateway-plugins.rst](../../../docs/source/features/gateway-plugins.rst)).
+([docs/source/features/gateway-routing/gateway-plugins.rst](../../../docs/source/features/gateway-routing/gateway-plugins.rst)).
 
 | Variable | Profile field | Notes |
 |---|---|---|

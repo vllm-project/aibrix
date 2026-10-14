@@ -22,6 +22,32 @@ This chart is not intended for upgrades from earlier deployments that used Kusto
 
 ## Development 
 
+### Envoy Service NodePorts
+
+The default `gateway.envoyProxy.service: {}` preserves Envoy Gateway's Service
+defaults. To expose enabled listeners on fixed NodePorts, override:
+
+```yaml
+gateway:
+  envoyProxy:
+    service:
+      type: NodePort
+      externalTrafficPolicy: Cluster
+      nodePorts:
+        http: 32080
+        https: 32443
+```
+
+HTTP uses listener port 80; HTTPS uses `gateway.tls.port`. Only enabled
+listeners receive a fixed NodePort patch. Omit either `nodePorts` entry to let
+Kubernetes allocate that listener's NodePort. Fixed ports must be available and
+within the cluster's configured NodePort range, and must differ when both
+listeners are enabled.
+
+`nodePorts` requires `service.type: NodePort` and cannot be combined with
+`service.patch`. Raw patches remain unchanged; use them instead of `nodePorts`
+for advanced Service customization.
+
 ### Diagnostic Envoy access logs
 
 Set `gateway.envoyProxy.accessLog.enabled=true` to add request/response timings

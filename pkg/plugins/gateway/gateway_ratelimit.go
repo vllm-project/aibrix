@@ -60,6 +60,21 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 			}}},
 			err.Error(), "", ""), err
 	}
+	// checkRPM is a pre-check; use the incremented value for RPM admission.
+	// Refund rejected increments on a best-effort basis. If the window expires
+	// before the refund, it can decrement the next window's counter.
+	if rpm > user.Rpm {
+		if _, derr := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_RPM_CURRENT", user.Name), -1); derr != nil {
+			klog.ErrorS(derr, "fail to refund rejected RPM increment for user", "user", user.Name)
+		}
+		exceeded := fmt.Errorf("user: %v has exceeded RPM: %v", user.Name, user.Rpm)
+		return 0, generateErrorResponse(
+			envoyTypePb.StatusCode_TooManyRequests,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: HeaderErrorRPMExceeded, RawValue: []byte("true"),
+			}}},
+			exceeded.Error(), ErrorCodeRateLimitExceeded, ""), exceeded
+	}
 
 	code, err = s.checkTPM(ctx, user.Name, user.Tpm)
 	if err != nil {

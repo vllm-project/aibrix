@@ -106,7 +106,7 @@ the controller maps to the engine's own metric (for vLLM, ``num_requests_waiting
 - ``vllm:deployment_replicas`` (produced by the GPU optimizer rather than the engine)
 
 For the full list, including what each name maps to for SGLang, xLLM and TRT-LLM, see the
-metric table in :doc:`../features/multi-engine`, and the `vLLM Metrics Documentation <https://docs.vllm.ai/en/stable/serving/metrics.html>`_.
+metric table in :doc:`../features/model-serving/multi-engine`, and the `vLLM Metrics Documentation <https://docs.vllm.ai/en/stable/serving/metrics.html>`_.
 
 Extending or Selecting Autoscalers
 ----------------------------------
@@ -122,5 +122,5 @@ Future improvements include:
 
 .. seealso::
 
-   :doc:`../features/autoscaling/autoscaling`
+   :doc:`../features/scaling-performance/autoscaling/autoscaling`
        Configuring PodAutoscaler with HPA, KPA, and APA strategies.

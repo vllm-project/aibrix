@@ -350,7 +350,7 @@ Use HTTPS or an appropriate cluster NetworkPolicy and store bearer tokens in a
 mounted Secret file. Test Authoritative denial and service unavailability before
 enabling fail-closed traffic. External business-policy state is owned by the
 service; Gateway bulkhead and circuit state is local to each Gateway replica.
-See :doc:`../features/external-replica-routing`.
+See :doc:`../features/gateway-routing/external-replica-routing`.
 
 .. code-block:: bash
 
@@ -490,5 +490,5 @@ For config profile setup and the full annotation schema see :ref:`config_profile
 
    * :doc:`model-deployment`: deploy models behind this gateway
    * :doc:`observability`: gateway metrics and dashboards
-   * :doc:`../features/pd-disaggregation`: split prefill from decode
-   * :doc:`../designs/aibrix-router`: how routing decisions are made
+   * :doc:`../features/gateway-routing/pd-disaggregation`: split prefill from decode
+   * :doc:`../designs/aibrix-gateway`: how routing decisions are made
