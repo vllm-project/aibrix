@@ -399,7 +399,7 @@ func modelClaimRetryResponse(model, state, reason string, retry bool) *extProcPb
 	if retry {
 		headers = append(headers, &configPb.HeaderValueOption{
 			Header: &configPb.HeaderValue{
-				Key: "Retry-After", RawValue: []byte(strconv.Itoa(modelClaimRetryAfter(reason))),
+				Key: "Retry-After", RawValue: []byte(strconv.Itoa(modelClaimRetryAfter(state, reason))),
 			},
 		})
 		message += "; retry shortly"
@@ -431,11 +431,15 @@ var modelClaimRetryAfterByReason = map[string]int{
 	constants.ModelClaimRouteReasonMoving:         30,
 }
 
-// modelClaimRetryAfter is the Retry-After, in seconds, for a claim the
-// controller gives this reason for.
-func modelClaimRetryAfter(reason string) int {
+// modelClaimRetryAfter is the Retry-After, in seconds, for a claim's state and
+// reason. A known reason takes precedence over the shorter wait for a
+// sleeping claim with no reason.
+func modelClaimRetryAfter(state, reason string) int {
 	if seconds, found := modelClaimRetryAfterByReason[reason]; found {
 		return seconds
+	}
+	if state == constants.ModelClaimRoutingStateSleeping && reason == "" {
+		return modelClaimWakeRetryAfterSeconds
 	}
 	return modelClaimRetryAfterSeconds
 }

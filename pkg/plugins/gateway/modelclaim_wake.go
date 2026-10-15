@@ -44,6 +44,10 @@ const (
 	modelClaimWakePath           = "/v1/runtime/models/wake"
 	modelClaimWakeTimeout        = 2 * time.Minute
 	modelClaimRetryAfterSeconds  = 10
+	// A sleeping model gets an earlier chance to be retried than one that starts
+	// from scratch. Whether it is ready is still up to the controller and the
+	// gateway cache.
+	modelClaimWakeRetryAfterSeconds = 3
 	// A wake request is a single patch of the pod's annotations.
 	modelClaimWakeRequestTimeout = 10 * time.Second
 	// A wake request written this recently is not written again while the

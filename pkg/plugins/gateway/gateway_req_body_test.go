@@ -761,7 +761,7 @@ func TestValidateModelAvailabilityReturnsRetryableResponseForSleepingModelClaim(
 	assert.Nil(t, pods)
 	require.NotNil(t, response)
 	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
-	assert.Equal(t, "10", responseHeader(response, "Retry-After"))
+	assert.Equal(t, "3", responseHeader(response, "Retry-After"))
 	require.Len(t, wakeRequester.calls, 1)
 	assert.Equal(t, "qwen", wakeRequester.calls[0].model)
 	assert.Equal(t, pod.Name, wakeRequester.calls[0].pod.Name)
@@ -790,7 +790,7 @@ func TestValidateModelAvailabilityWakesASleepingClaimThatAlsoHasARecord(t *testi
 
 	require.NotNil(t, response)
 	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
-	assert.Equal(t, "10", responseHeader(response, "Retry-After"))
+	assert.Equal(t, "3", responseHeader(response, "Retry-After"))
 	require.Len(t, wakeRequester.calls, 1)
 	assert.Equal(t, pod.Name, wakeRequester.calls[0].pod.Name)
 	assert.NotContains(t, response.GetImmediateResponse().GetBody(), "EngineSleeping")
@@ -890,12 +890,19 @@ func TestValidateModelAvailabilityAsksToWaitLongerForTheReasonTheControllerGives
 			retryAfter: "20",
 			says:       "(MakingRoom)",
 		},
-		"a sleeping model with no reason": {
+		"a sleeping model with no reason, which is being woken": {
 			cache: &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
 				"qwen": {pod: pod, state: constants.ModelClaimRoutingStateSleeping},
 			}},
-			retryAfter: "10",
+			retryAfter: "3",
 			says:       "model qwen is sleeping; retry shortly",
+		},
+		"an activating model with no reason, which starts from scratch": {
+			cache: &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
+				"qwen": {pod: pod, state: constants.ModelClaimRoutingStateActivating},
+			}},
+			retryAfter: "10",
+			says:       "model qwen is activating; retry shortly",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
