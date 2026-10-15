@@ -414,6 +414,11 @@ keeps each engine within its KV limit, which the claim records in
 ``status.instances[].kvLimitBytes``. The limits change when engines start,
 stop, sleep or wake, and when the load moves between them.
 
+When the runtime snapshot reports an engine's KV capacity at startup, as
+``kv_initial_capacity_bytes``, the controller caps the engine's KV limit at that
+capacity. Room above the capacity stays unassigned. An engine whose startup
+capacity is unknown keeps the existing limit behavior.
+
 An engine goes on the route only once it is ready and runs within its KV
 limit. If something else raises an engine's KV limit, the controller sets it
 back, and keeps the engine off the route until then.

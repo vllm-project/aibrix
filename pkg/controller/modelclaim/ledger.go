@@ -124,6 +124,9 @@ type engineOnPod struct {
 	// kvCapacityBytes is the limit written in the engine's segment now, and is
 	// negative when there is no segment to read it from.
 	kvCapacityBytes int64
+	// kvInitialCapacityBytes is the engine's KV capacity at startup, as the
+	// runtime reports it. Nil or negative is unknown.
+	kvInitialCapacityBytes *int64
 	// kvRecordedBytes is the limit the instance records now, and is zero when
 	// it records none.
 	kvRecordedBytes int64
@@ -337,6 +340,7 @@ func (r *ModelClaimReconciler) listClaimsForAccount(
 // observe takes in what a runtime reading says of an instance's engine.
 func (e *engineOnPod) observe(model *RuntimeSnapshotModel, instance modelv1alpha1.ModelClaimInstance) {
 	e.snapshotKey = snapshotActivityKey(*model)
+	e.kvInitialCapacityBytes = model.KVInitialCapacityBytes
 	e.kvCapacityBytes = model.KVCapacityBytes
 	e.inFlightRequests = max(model.RequestsRunning, 0) + max(model.RequestsWaiting, 0)
 	e.requestsWaiting = max(model.RequestsWaiting, 0)

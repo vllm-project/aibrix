@@ -1302,12 +1302,12 @@ func (r *ModelClaimReconciler) writeAndConfirmKVLimits(
 // takeBackKVLimits holds each engine that a shrink step wrote to what it was
 // held to before, and to no more than its record.
 //
-// A shrink that is not confirmed changes no record, and it must not leave an
-// engine held to less than before either. A division that fails is tried again
-// by the next round. One that kept failing would shrink the engines beside the
-// one at fault again, round after round. An engine not routed yet would be
-// shrunk by each division and raised by its own pass in turn, and would never
-// be found holding its record.
+// A shrink that is not confirmed changes no record. It restores the previous
+// limit, up to the record and the known startup capacity. A division that
+// fails is tried again by the next round. One that kept failing would shrink
+// the engines beside the one at fault again, round after round. An engine not
+// routed yet would be shrunk by each division and raised by its own pass in
+// turn, and would never be found holding its record.
 //
 // The shrinks are the first step of a division, so nothing has grown yet, and
 // raising them again gives no engine room that another was given. Only what
@@ -1328,6 +1328,7 @@ func (r *ModelClaimReconciler) takeBackKVLimits(
 		if limit.kvRecordedBytes > 0 && limit.kvRecordedBytes < before {
 			before = limit.kvRecordedBytes
 		}
+		before = clampKVLimit(before, limit.kvInitialCapacityBytes)
 		if before <= limit.kvLimitBytes {
 			continue
 		}
@@ -1544,7 +1545,7 @@ func (r *ModelClaimReconciler) announcePhase(
 			// a healthy process.
 			r.Recorder.Eventf(pm, corev1.EventTypeWarning, "KVLimitNotHeld",
 				"model %s on pod %s is held to more KV than its limit of %s; marked non-routable until the limit is written again",
-				served, inst.Pod, gibibytes(inst.KVLimitBytes))
+				served, inst.Pod, gibibytes(clampKVLimit(inst.KVLimitBytes, observed.KVInitialCapacityBytes)))
 		case serving:
 			// An engine that woke and waits for its limit is ready. The Event
 			// of the limit says what it waits for.
@@ -1583,8 +1584,14 @@ func (r *ModelClaimReconciler) holdToKVLimit(
 	state engineState,
 	readings *runtimeReadings,
 ) (engineState, *RuntimeSnapshotModel) {
+	// Compare, write and report the same capped target without lowering the
+	// stored record until an observation confirms that the engine fits.
+	target := *inst
+	if observed != nil {
+		target.KVLimitBytes = clampKVLimit(target.KVLimitBytes, observed.KVInitialCapacityBytes)
+	}
 	served := servedModelName(pm)
-	written := r.writeKVLimit(ctx, pm, inst, pod, pod.Status.PodIP, snapshot, observed)
+	written := r.writeKVLimit(ctx, pm, &target, pod, pod.Status.PodIP, snapshot, observed)
 	readings.forget(pod.Name)
 	if !written {
 		return state, observed
@@ -1592,7 +1599,7 @@ func (r *ModelClaimReconciler) holdToKVLimit(
 	if inst.Phase == modelv1alpha1.ModelClaimActive {
 		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "KVLimitSet",
 			"model %s on pod %s: KV limit of %s written over %s",
-			served, inst.Pod, gibibytes(inst.KVLimitBytes), gibibytes(observed.KVCapacityBytes))
+			served, inst.Pod, gibibytes(target.KVLimitBytes), gibibytes(observed.KVCapacityBytes))
 		return state, observed
 	}
 	confirmed, err := readings.of(ctx, pod)
@@ -1603,7 +1610,7 @@ func (r *ModelClaimReconciler) holdToKVLimit(
 	}
 	writtenOver := observed.KVCapacityBytes
 	observed = snapshotModelForClaim(confirmed, pm, served)
-	r.reportKVLimit(pm, inst, writtenOver, observed)
+	r.reportKVLimit(pm, &target, writtenOver, observed)
 	return r.judgeEngine(ctx, pm, inst, confirmed, observed), observed
 }
 
@@ -1619,7 +1626,9 @@ func (r *ModelClaimReconciler) reportKVLimit(
 	served := servedModelName(pm)
 	switch {
 	case observed == nil || observed.KVCapacityBytes < 0:
-	case kvLimitInForce(inst, observed):
+	// Compare with the limit just written: a zero limit capped by a zero
+	// startup capacity is a real target here, not the record that means none.
+	case observed.KVCapacityBytes == inst.KVLimitBytes:
 		r.limitWarnings().forget(limitWarningKey(pm, inst))
 		r.Recorder.Eventf(pm, corev1.EventTypeNormal, "KVLimitSet",
 			"model %s on pod %s: KV limit set to %s, from %s",
@@ -1707,6 +1716,14 @@ func (r *ModelClaimReconciler) judgeKVLimit(
 		if fresh, found := r.freshKVLimitRecord(ctx, pm, inst.Pod); found && fresh != inst.KVLimitBytes {
 			inst.KVLimitBytes = fresh
 			inForce = kvLimitInForce(inst, observed)
+		}
+	}
+	if observed != nil {
+		target := clampKVLimit(inst.KVLimitBytes, observed.KVInitialCapacityBytes)
+		// Zero records mean no limit; retain the record to keep enforcing a zero ceiling.
+		if target > 0 && target < inst.KVLimitBytes && observed.KVCapacityBytes >= 0 &&
+			observed.KVCapacityBytes <= target && observed.KVUsedBytes <= target {
+			inst.KVLimitBytes = target
 		}
 	}
 	return inForce, kvLimitWithinRecord(inst, observed)
@@ -1988,7 +2005,7 @@ func kvLimitInForce(inst *modelv1alpha1.ModelClaimInstance, observed *RuntimeSna
 	if inst.KVLimitBytes <= 0 {
 		return true
 	}
-	return observed != nil && observed.KVCapacityBytes == inst.KVLimitBytes
+	return observed != nil && observed.KVCapacityBytes == clampKVLimit(inst.KVLimitBytes, observed.KVInitialCapacityBytes)
 }
 
 // kvLimitWithinRecord reports whether the engine is held to no more than the
@@ -1998,7 +2015,7 @@ func kvLimitWithinRecord(inst *modelv1alpha1.ModelClaimInstance, observed *Runti
 	if inst.KVLimitBytes <= 0 {
 		return true
 	}
-	return observed != nil && observed.KVCapacityBytes >= 0 && observed.KVCapacityBytes <= inst.KVLimitBytes
+	return observed != nil && observed.KVCapacityBytes >= 0 && observed.KVCapacityBytes <= clampKVLimit(inst.KVLimitBytes, observed.KVInitialCapacityBytes)
 }
 
 // writeKVLimit asks the runtime to hold this engine to the limit the instance

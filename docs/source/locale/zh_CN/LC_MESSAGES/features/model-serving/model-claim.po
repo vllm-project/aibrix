@@ -823,6 +823,17 @@ msgstr ""
 "当引擎启动、停止、休眠或唤醒，以及负载在引擎之间转移时，"
 "这些上限会随之变化。"
 
+#: ../../source/features/model-serving/model-claim.rst:378
+msgid ""
+"When the runtime snapshot reports an engine's KV capacity at startup, as "
+"``kv_initial_capacity_bytes``, the controller caps the engine's KV limit "
+"at that capacity. Room above the capacity stays unassigned. An engine "
+"whose startup capacity is unknown keeps the existing limit behavior."
+msgstr ""
+"当运行时快照以 ``kv_initial_capacity_bytes`` 报告引擎启动时的 KV 容量时，"
+"控制器会把该引擎的 KV 上限限制在这个容量以内。超出该容量的空间保持不分配。"
+"启动容量未知的引擎，其 KV 上限的行为与以前相同。"
+
 #: ../../source/features/model-serving/model-claim.rst:417
 msgid ""
 "An engine goes on the route only once it is ready and runs within its KV "

@@ -17,11 +17,15 @@ limitations under the License.
 package modelclaim
 
 import (
+	"encoding/json"
+	"fmt"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 )
 
 // plannedEngine is one engine to divide a card among.
@@ -434,5 +438,54 @@ func TestNeedsDividingAsksForTheSameEngineTwiceInARow(t *testing.T) {
 		needed, owed := needsDividing(engines, c.limits, threshold, c.before)
 		assert.Equal(t, c.needed, needed, name)
 		assert.Equal(t, c.owed, owed, name)
+	}
+}
+
+func TestKVInitialCapacityPlan(t *testing.T) {
+	const startup = int64(28173858448) // Issue #3108: 26.2 GiB pool, 29.0 GiB planned.
+	engine := plannedEngine("alone", 10752<<20, 2<<30, 2<<30)
+	for _, wire := range []string{`{}`, `{"kv_initial_capacity_bytes":null}`, `{"kv_initial_capacity_bytes":-1}`, `{"kv_initial_capacity_bytes":28173858448}`, `{"kv_initial_capacity_bytes":0}`} {
+		t.Run(wire, func(t *testing.T) {
+			var model RuntimeSnapshotModel
+			require.NoError(t, json.Unmarshal([]byte(wire), &model))
+			e := engine
+			e.observe(&model, modelv1alpha1.ModelClaimInstance{})
+			limits, err := planKVLimits(engine.maximumFootprintBytes+31132614656, []engineOnPod{e})
+			if strings.Contains(wire, ":0") {
+				require.Error(t, err)
+				assert.Nil(t, limits)
+				return
+			}
+			require.NoError(t, err)
+			want := int64(31132614656)
+			if strings.Contains(wire, "28173858448") {
+				want = startup
+			}
+			assert.Equal(t, want, limits[0].kvLimitBytes)
+		})
+	}
+}
+
+func TestKVInitialCapacitySplit(t *testing.T) {
+	a, b := plannedEngine("a", 200, 100, 0), plannedEngine("b", 200, 100, 0)
+	var model RuntimeSnapshotModel
+	require.NoError(t, json.Unmarshal([]byte(`{"kv_initial_capacity_bytes":300}`), &model))
+	a.observe(&model, modelv1alpha1.ModelClaimInstance{})
+	a.inFlightRequests = 1
+	first, err := planKVLimits(1000, []engineOnPod{a, b})
+	require.NoError(t, err)
+	second, err := planKVLimits(1000, []engineOnPod{b, a})
+	require.NoError(t, err)
+	assert.Equal(t, first, second)
+	assert.Equal(t, int64(300), first[0].kvLimitBytes)
+	assert.Equal(t, int64(233), first[1].kvLimitBytes)
+	assert.Equal(t, int64(933), spentBytes([]engineOnPod{a, b}, first))
+	for _, held := range []int64{0, 301} {
+		ceiling := max(99, held-1)
+		require.NoError(t, json.Unmarshal([]byte(fmt.Sprintf(`{"kv_initial_capacity_bytes":%d,"kv_used_bytes":%d}`, ceiling, held)), &model))
+		a.observe(&model, modelv1alpha1.ModelClaimInstance{})
+		limits, err := planKVLimits(1000, []engineOnPod{b, a})
+		require.Error(t, err)
+		assert.Nil(t, limits)
 	}
 }

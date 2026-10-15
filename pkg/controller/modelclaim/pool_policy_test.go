@@ -206,6 +206,26 @@ func TestComputePoolKVTargetsRefusesToShrinkBelowObservedKVUsage(t *testing.T) {
 	assert.Nil(t, targets)
 }
 
+func TestKVInitialCapacityPoolSharesLeaveExcessUnassigned(t *testing.T) {
+	ceiling := int64(200)
+	a, b := readyEngine(200), readyEngine(500)
+	a.ModelName, b.ModelName = "a", "b"
+	a.KVInitialCapacityBytes = &ceiling
+	snapshot := &RuntimeSnapshot{Models: []RuntimeSnapshotModel{a, b}}
+	activities := map[string]poolRequestActivity{"a": {Active: true}, "b": {Active: true}}
+	targets, err := computePoolKVTargets(1001, 0, modelsForKVPolicy(snapshot, activities))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int64{"a": 200, "b": 500}, targets)
+
+	// An unsafe second model invalidates the whole plan.
+	snapshot.Models[0].KVInitialCapacityBytes = nil
+	snapshot.Models[1].KVInitialCapacityBytes = &ceiling
+	snapshot.Models[1].KVUsedBytes = 201
+	targets, err = computePoolKVTargets(1000, 0, modelsForKVPolicy(snapshot, activities))
+	require.Error(t, err)
+	assert.Nil(t, targets)
+}
+
 func TestModelsForKVPolicyRejectsIncompleteCapacityObservation(t *testing.T) {
 	models := modelsForKVPolicy(&RuntimeSnapshot{Models: []RuntimeSnapshotModel{
 		{

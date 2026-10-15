@@ -206,10 +206,11 @@ type poolRequestActivity struct {
 }
 
 type poolKVModel struct {
-	Name            string
-	KVUsedBytes     int64
-	KVCapacityBytes int64
-	Activity        poolRequestActivity
+	Name                   string
+	KVUsedBytes            int64
+	KVCapacityBytes        int64
+	KVInitialCapacityBytes *int64
+	Activity               poolRequestActivity
 }
 
 // computePoolKVTargets distributes one explicit physical KV budget across the
@@ -247,6 +248,9 @@ func computePoolKVTargets(
 		seen[model.Name] = struct{}{}
 		used := max(model.KVUsedBytes, 0)
 		base := max(floorBytes, used)
+		if clampKVLimit(base, model.KVInitialCapacityBytes) < base {
+			return nil, fmt.Errorf("%s startup KV capacity is below its held KV", model.Name)
+		}
 		if baseBytes > capacityBytes-base {
 			return nil, errPoolKVUsageExceedsCapacity
 		}
@@ -292,6 +296,10 @@ func computePoolKVTargets(
 	for index := int64(0); index < remaining-granted; index++ {
 		name := active[index%int64(len(active))].Name
 		targets[name]++
+	}
+	// Cap completed shares without giving the excess to another engine.
+	for _, model := range models {
+		targets[model.Name] = clampKVLimit(targets[model.Name], model.KVInitialCapacityBytes)
 	}
 	return targets, nil
 }
