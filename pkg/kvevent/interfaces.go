@@ -66,6 +66,9 @@ type SyncIndexProvider interface {
 type SyncIndexer interface {
 	ProcessBlockStored(ctx context.Context, event BlockStoredEvent) error
 	ProcessBlockRemoved(ctx context.Context, event BlockRemovedEvent) error
+	// RemovePrefix drops the pod from every context of the model, adapter
+	// contexts included, whatever loraID is passed. Callers use it when the
+	// pod's whole cache is gone.
 	RemovePrefix(ctx context.Context, modelName string, loraID int64, podKey string) error
 }
 
@@ -83,8 +86,8 @@ type BlockStoredEvent struct {
 	// Medium is the storage tier the blocks live on ("GPU"/"CPU"/"STORAGE";
 	// empty when the publisher does not emit it). Used for tier-aware scoring.
 	Medium string
-	// LoraName is the canonical adapter id ("" = base model). Reserved for
-	// per-adapter index isolation.
+	// LoraName is the canonical adapter id ("" = base model). When set, the
+	// blocks are indexed under the adapter, not LoraID.
 	LoraName string
 	// GroupIdx is the KV-cache group for hybrid-attention models (-1 when
 	// unspecified). The index tracks each group separately.

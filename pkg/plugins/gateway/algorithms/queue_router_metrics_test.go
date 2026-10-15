@@ -108,23 +108,69 @@ type metricCapture struct {
 	restore  func()
 }
 
+// metricHook is the signature shared by the gauge and counter emission hooks.
+type metricHook func(name string, help string, value float64, labelNames []string, labelValues ...string)
+
+// The metrics.*FnForTest hooks are plain package variables, and a queueRouter's serve
+// goroutine keeps reading them for as long as the process lives: routers are never
+// stopped, including the ones the Ginkgo SLO suite creates through the cache. A test that
+// reassigned the variable would therefore race with a router left over from an earlier
+// test. Instead, init installs one dispatching hook per variable, before any goroutine
+// exists, and tests retarget it through these atomic pointers; nil falls through to the
+// hook that was in place at startup.
+var (
+	activeGaugeHook   atomic.Pointer[metricHook]
+	activeCounterHook atomic.Pointer[metricHook]
+)
+
+func init() {
+	defaultGauge := metrics.SetGaugeMetricFnForTest
+	metrics.SetGaugeMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		if hook := activeGaugeHook.Load(); hook != nil {
+			(*hook)(name, help, value, labelNames, labelValues...)
+			return
+		}
+		defaultGauge(name, help, value, labelNames, labelValues...)
+	}
+	defaultCounter := metrics.IncrementCounterMetricFnForTest
+	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		if hook := activeCounterHook.Load(); hook != nil {
+			(*hook)(name, help, value, labelNames, labelValues...)
+			return
+		}
+		defaultCounter(name, help, value, labelNames, labelValues...)
+	}
+}
+
+// setGaugeMetricHook routes gauge emissions to hook and returns the function that puts
+// the previous target back.
+func setGaugeMetricHook(hook metricHook) (restore func()) {
+	previous := activeGaugeHook.Swap(&hook)
+	return func() { activeGaugeHook.Store(previous) }
+}
+
+// setCounterMetricHook routes counter emissions to hook and returns the function that
+// puts the previous target back.
+func setCounterMetricHook(hook metricHook) (restore func()) {
+	previous := activeCounterHook.Swap(&hook)
+	return func() { activeCounterHook.Store(previous) }
+}
+
 func startMetricCapture() *metricCapture {
 	capture := &metricCapture{}
-	originalCounter := metrics.IncrementCounterMetricFnForTest
-	originalGauge := metrics.SetGaugeMetricFnForTest
-	metrics.IncrementCounterMetricFnForTest = func(name string, _ string, value float64, labelNames []string, labelValues ...string) {
+	restoreCounter := setCounterMetricHook(func(name string, _ string, value float64, labelNames []string, labelValues ...string) {
 		capture.mu.Lock()
 		defer capture.mu.Unlock()
 		capture.counters = append(capture.counters, newMetricEmission(name, value, labelNames, labelValues))
-	}
-	metrics.SetGaugeMetricFnForTest = func(name string, _ string, value float64, labelNames []string, labelValues ...string) {
+	})
+	restoreGauge := setGaugeMetricHook(func(name string, _ string, value float64, labelNames []string, labelValues ...string) {
 		capture.mu.Lock()
 		defer capture.mu.Unlock()
 		capture.gauges = append(capture.gauges, newMetricEmission(name, value, labelNames, labelValues))
-	}
+	})
 	capture.restore = func() {
-		metrics.IncrementCounterMetricFnForTest = originalCounter
-		metrics.SetGaugeMetricFnForTest = originalGauge
+		restoreCounter()
+		restoreGauge()
 	}
 	return capture
 }
@@ -339,8 +385,7 @@ func TestQueuePendingGaugeSamplesAreSerialized(t *testing.T) {
 
 	var mu sync.Mutex
 	var published []float64
-	original := metrics.SetGaugeMetricFnForTest
-	metrics.SetGaugeMetricFnForTest = func(name string, _ string, value float64, _ []string, _ ...string) {
+	restore := setGaugeMetricHook(func(name string, _ string, value float64, _ []string, _ ...string) {
 		if name != metrics.GatewayQueuePendingRequests {
 			return
 		}
@@ -350,8 +395,8 @@ func TestQueuePendingGaugeSamplesAreSerialized(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		published = append(published, value)
-	}
-	defer func() { metrics.SetGaugeMetricFnForTest = original }()
+	})
+	defer restore()
 
 	router := &queueRouter{queue: &scriptedLenQueue{}}
 	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("slo"), "test-model", "hello world", "req-serialized", "")

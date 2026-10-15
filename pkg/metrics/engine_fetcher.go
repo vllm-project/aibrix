@@ -548,5 +548,10 @@ func (ef *EngineMetricsFetcher) fetchMetricsFromURL(ctx context.Context, url, fa
 	}
 
 	// Parse using existing Prometheus parser logic
-	return ParseMetricsFromReader(resp.Body)
+	families, err := ParseMetricsFromReader(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	mergeEngineSeries(families)
+	return families, nil
 }

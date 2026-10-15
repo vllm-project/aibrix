@@ -54,28 +54,28 @@ func TestLeastLatency(t *testing.T) {
 			},
 			podModelMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {
-					metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
+					metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 5, Count: 1},
 					metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
 					metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
 					metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 10, Count: 1},
 					metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 10, Count: 1},
 				},
 				"p2": {
-					metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
+					metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 5, Count: 1},
 					metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 20},
 					metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 200},
 					metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 21, Count: 1},
 					metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 21, Count: 1},
 				},
 				"p3": {
-					metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
+					metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 5, Count: 1},
 					metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 30},
 					metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 300},
 					metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 31, Count: 1},
 					metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 31, Count: 1},
 				},
 				"p4": {
-					metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
+					metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 5, Count: 1},
 					metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 40},
 					metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 400},
 					metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 41, Count: 1},
@@ -106,21 +106,21 @@ func TestLeastLatency(t *testing.T) {
 			},
 			podModelMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {
-					metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
+					metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 5, Count: 1},
 					metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
 					metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
 					metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 10, Count: 1},
 					metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 10, Count: 1},
 				},
 				"p2": {
-					metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
+					metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 5, Count: 1},
 					metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 20},
 					metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 200},
 					metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 21, Count: 1},
 					metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 21, Count: 1},
 				},
 				"p3": {
-					metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
+					metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 5, Count: 1},
 					metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 30},
 					metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 300},
 					metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 30, Count: 1},
@@ -142,14 +142,14 @@ func TestLeastLatency(t *testing.T) {
 			},
 			podModelMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {
-					metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
+					metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 5, Count: 1},
 					metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 0},
 					metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
 					metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 10, Count: 1},
 					metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 10, Count: 1},
 				},
 				"p2": {
-					metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
+					metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 5, Count: 1},
 					metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 0},
 					metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
 					metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 20, Count: 1},
@@ -171,14 +171,14 @@ func TestLeastLatency(t *testing.T) {
 			},
 			podModelMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {
-					metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
+					metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 5, Count: 1},
 					metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
 					metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 0},
 					metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 10, Count: 1},
 					metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 10, Count: 1},
 				},
 				"p2": {
-					metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
+					metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 5, Count: 1},
 					metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
 					metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 0},
 					metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 10, Count: 1},
@@ -187,6 +187,36 @@ func TestLeastLatency(t *testing.T) {
 			},
 			expectErr:  false,
 			expectMsgs: []string{"1.1.1.1:8000"},
+		},
+		{
+			name: "queue time outweighs faster prefill and decode",
+			readyPods: []*v1.Pod{
+				newPod("p1", "1.1.1.1", true, map[string]string{
+					"model.aibrix.ai/port": "8000",
+				}),
+				newPod("p2", "2.2.2.2", true, map[string]string{
+					"model.aibrix.ai/port": "8000",
+				}),
+			},
+			podModelMetrics: map[string]map[string]metrics.MetricValue{
+				// p1 computes faster but its requests wait 30s on average in the queue.
+				"p1": {
+					metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 300, Count: 10},
+					metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
+					metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
+					metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 1, Count: 1},
+					metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 1, Count: 1},
+				},
+				"p2": {
+					metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 0.1, Count: 10},
+					metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
+					metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
+					metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 2, Count: 1},
+					metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 2, Count: 1},
+				},
+			},
+			expectErr:  false,
+			expectMsgs: []string{"2.2.2.2:8000"},
 		},
 		{
 			name: "one pod has no metrics",
@@ -200,7 +230,7 @@ func TestLeastLatency(t *testing.T) {
 			},
 			podModelMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {
-					metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
+					metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 5, Count: 1},
 					metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
 					metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
 					metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 10, Count: 1},
@@ -255,23 +285,31 @@ func TestLeastLatencyScoreAllHandlesNonHistogramMetrics(t *testing.T) {
 		newPod("p1", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
 		newPod("p2", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
 		newPod("p3", "3.3.3.3", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("p4", "4.4.4.4", true, map[string]string{"model.aibrix.ai/port": "8000"}),
 	}
 	c := cache.NewWithPodsModelMetricsForTest(readyPods, "m1", map[string]map[string]metrics.MetricValue{
 		"p1": {
-			metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
+			metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 5, Count: 1},
 			metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
 			metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
 			metrics.RequestPrefillTimeSeconds: &metrics.SimpleMetricValue{Value: 10},
 			metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 10, Count: 1},
 		},
 		"p2": {
-			metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
+			metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 5, Count: 1},
 			metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
 			metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
 			metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 10, Count: 1},
 			metrics.RequestDecodeTimeSeconds:  &metrics.SimpleMetricValue{Value: 10},
 		},
 		"p3": {
+			metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 5, Count: 1},
+			metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
+			metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
+			metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 10, Count: 1},
+			metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 10, Count: 1},
+		},
+		"p4": {
 			metrics.RequestQueueTimeSeconds:   &metrics.SimpleMetricValue{Value: 5},
 			metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
 			metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
@@ -285,10 +323,11 @@ func TestLeastLatencyScoreAllHandlesNonHistogramMetrics(t *testing.T) {
 	scores, scored, err := router.ScoreAll(ctx, newMockPodList(readyPods, nil))
 
 	assert.NoError(t, err)
-	assert.Len(t, scores, 3)
-	assert.Len(t, scored, 3)
+	assert.Len(t, scores, 4)
+	assert.Len(t, scored, 4)
 	assert.False(t, scored[0])
 	assert.False(t, scored[1])
 	assert.True(t, scored[2])
 	assert.Greater(t, scores[2], 0.0)
+	assert.False(t, scored[3], "a queue time that is not a histogram leaves the pod unscored")
 }

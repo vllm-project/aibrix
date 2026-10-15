@@ -1504,3 +1504,52 @@ func TestEnforceContextLimitDropsBlockIndex(t *testing.T) {
 		t.Error("blockIndex should no longer reference the evicted context's block hash")
 	}
 }
+
+func TestAdapterBlocksAreIndexedPerAdapter(t *testing.T) {
+	table := NewSyncPrefixHashTable()
+	defer table.Close()
+
+	tokens := makeTokens(32)
+	ready := map[string]struct{}{testPod1Name: {}}
+	adapter := LoraIDFromName("sql-lora")
+
+	err := table.ProcessBlockStored(BlockStored{
+		BlockHashes: []int64{3001, 3002},
+		Tokens:      [][]byte{tokens[:16], tokens[16:]},
+		ModelName:   testModelName,
+		LoraID:      -1,
+		LoraName:    "sql-lora",
+		SourcePod:   testPod1Name,
+	})
+	if err != nil {
+		t.Fatalf("failed to store blocks: %v", err)
+	}
+
+	if matches, _ := table.MatchPrefix(testModelName, -1, tokens, ready); len(matches) != 0 {
+		t.Errorf("base model matched the adapter's blocks: %v", matches)
+	}
+	if matches, _ := table.MatchPrefix(testModelName, adapter, tokens, ready); matches[testPod1Name] != 100 {
+		t.Errorf("adapter match = %v, want 100 for %s", matches, testPod1Name)
+	}
+
+	// vLLM's BlockRemoved does not name the adapter.
+	err = table.ProcessBlockRemoved(BlockRemoved{
+		BlockHashes: []int64{3002},
+		ModelName:   testModelName,
+		LoraID:      -1,
+		SourcePod:   testPod1Name,
+	})
+	if err != nil {
+		t.Fatalf("failed to remove blocks: %v", err)
+	}
+	if matches, _ := table.MatchPrefix(testModelName, adapter, tokens, ready); matches[testPod1Name] != 50 {
+		t.Errorf("adapter match after removal = %v, want 50 for %s", matches, testPod1Name)
+	}
+
+	if err := table.RemovePrefix(testModelName, -1, testPod1Name); err != nil {
+		t.Fatalf("failed to remove pod: %v", err)
+	}
+	if matches, _ := table.MatchPrefix(testModelName, adapter, tokens, ready); len(matches) != 0 {
+		t.Errorf("adapter still matched a removed pod: %v", matches)
+	}
+}

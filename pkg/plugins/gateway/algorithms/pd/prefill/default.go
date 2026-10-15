@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
@@ -103,6 +104,23 @@ func (e *DefaultExecutor) prefillDone(requestID string) {
 	if e.tokenLoad != nil {
 		e.tokenLoad.ReleaseTokens(requestID)
 	}
+}
+
+// correctDecodeCharge replaces the request's decode token_load charge, which
+// the router made from the request body's size when it selected the decode
+// pod, with the prompt length the engine reports in its prefill response
+// (usage.prompt_tokens). The body size is a poor estimate for requests with
+// media: inline images count as their base64 text, and images given by URL
+// not at all. A response without the field leaves the charge alone.
+func (e *DefaultExecutor) correctDecodeCharge(requestID string, prefillResponse []byte) {
+	if e.tokenLoad == nil {
+		return
+	}
+	promptTokens := gjson.GetBytes(prefillResponse, "usage.prompt_tokens")
+	if promptTokens.Type != gjson.Number || promptTokens.Float() <= 0 {
+		return
+	}
+	e.tokenLoad.CorrectDecodeCost(requestID, promptTokens.Float())
 }
 
 // Execute implements PrefillExecutor. handler is the one the router already
@@ -185,7 +203,8 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 			defer decPrefillOutstanding()
 			defer e.prefillDone(requestID)
 
-			if _, err := e.executeHTTP(apiURL, asyncCtx, payload, prefillTimeout); err != nil {
+			prefillResponse, err := e.executeHTTP(apiURL, asyncCtx, payload, prefillTimeout)
+			if err != nil {
 				// The prefill leg is fire-and-forget, so nobody is waiting on
 				// this error: record it on the leg (and abort the decode leg
 				// that will never receive its KV) before it is only logged.
@@ -227,6 +246,8 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 				}
 				return
 			}
+
+			e.correctDecodeCharge(requestID, prefillResponse)
 
 			// For SGLang the prefill pod only answers once the decode pod has
 			// taken the KV transfer, so from here on the decode pod owes the
@@ -281,6 +302,7 @@ func (e *DefaultExecutor) handleSync(
 			return fmt.Errorf("failed to update routing context with %s for request %s: %w", errorContext, routingCtx.RequestID, err)
 		}
 	}
+	e.correctDecodeCharge(routingCtx.RequestID, prefillResponse)
 
 	routingCtx.PrefillEndTime = time.Now()
 	fields = append(fields,

@@ -971,3 +971,93 @@ func TestPrefixCacheRouterConcurrency(t *testing.T) {
 func testPodsFromCache(c *cache.Store) types.PodList {
 	return &utils.PodArray{Pods: c.ListPods()}
 }
+
+type adapterBaseCache struct {
+	cache.Cache
+	bases map[string]string
+}
+
+func (c adapterBaseCache) ModelBaseModel(model string) (string, bool) {
+	base, ok := c.bases[model]
+	return base, ok
+}
+
+// newAdapterKVSyncRouter returns a router whose index holds the sql-lora
+// adapter's blocks for pod1, along with the ready pods and the prompt.
+func newAdapterKVSyncRouter(t *testing.T) (*kvSyncPrefixCacheRouter, []*v1.Pod, string) {
+	readyPods := []*v1.Pod{
+		{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "base-model"}}, Status: v1.PodStatus{PodIP: "1.1.1.1"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "base-model"}}, Status: v1.PodStatus{PodIP: "2.2.2.2"}},
+	}
+	tok, err := tokenizer.NewTokenizer("character", nil)
+	require.NoError(t, err)
+	k := &kvSyncPrefixCacheRouter{
+		cache: adapterBaseCache{
+			Cache: cache.NewWithPodsForTest(readyPods, "base-model"),
+			bases: map[string]string{"sql-lora": "base-model"},
+		},
+		tokenizerPool: &mockTokenizerPool{tokenizer: tok},
+		syncIndexer:   syncindexer.NewSyncPrefixHashTable(),
+	}
+	t.Cleanup(k.syncIndexer.Close)
+
+	prompt := "select the five largest orders placed last week"
+	tokens, err := tok.TokenizeInputText(prompt)
+	require.NoError(t, err)
+	blockSize := 16
+	var blocks [][]byte
+	var hashes []int64
+	for i := 0; i+blockSize <= len(tokens); i += blockSize {
+		blocks = append(blocks, tokens[i:i+blockSize])
+		hashes = append(hashes, int64(9000+i))
+	}
+	require.NoError(t, k.syncIndexer.ProcessBlockStored(syncindexer.BlockStored{
+		BlockHashes: hashes,
+		Tokens:      blocks,
+		ModelName:   "base-model",
+		LoraID:      -1,
+		LoraName:    "sql-lora",
+		SourcePod:   "default/pod1",
+	}))
+	return k, readyPods, prompt
+}
+
+func TestKVSyncScoreAllMatchesAdapterBlocks(t *testing.T) {
+	k, readyPods, prompt := newAdapterKVSyncRouter(t)
+
+	ctx := types.NewRoutingContext(context.Background(), RouterPrefixCache, "sql-lora", prompt, "req-lora", "")
+	scores, _, err := k.ScoreAll(ctx, &utils.PodArray{Pods: readyPods})
+	require.NoError(t, err)
+	assert.Greater(t, scores[0], 0.0, "pod1 holds the adapter's blocks")
+	assert.Equal(t, 0.0, scores[1])
+}
+
+func TestKVSyncRouteMatchesAdapterBlocks(t *testing.T) {
+	k, readyPods, prompt := newAdapterKVSyncRouter(t)
+
+	ctx := types.NewRoutingContext(context.Background(), RouterPrefixCache, "sql-lora", prompt, "req-lora", "")
+	_, err := k.Route(ctx, &utils.PodArray{Pods: readyPods})
+	require.NoError(t, err)
+	assert.Equal(t, "pod1", ctx.TargetPod().Name)
+
+	tokens, err := k.tokenize(ctx, &utils.PodArray{Pods: readyPods})
+	require.NoError(t, err)
+	allPods := map[string]struct{}{"default/pod1": {}, "default/pod2": {}}
+	matched, _ := k.syncIndexer.MatchPrefix("sql-lora", -1, tokens, allPods)
+	assert.Empty(t, matched, "nothing should be indexed under the adapter's own name")
+}
+
+func TestKVSyncPostRouteUpdateAddsToAdapterContext(t *testing.T) {
+	k, readyPods, prompt := newAdapterKVSyncRouter(t)
+
+	ctx := types.NewRoutingContext(context.Background(), RouterPrefixCache, "sql-lora", prompt, "req-lora", "")
+	require.NoError(t, k.PostRouteUpdate(ctx, &utils.PodArray{Pods: readyPods}, readyPods[1]))
+
+	tokens, err := k.tokenize(ctx, &utils.PodArray{Pods: readyPods})
+	require.NoError(t, err)
+	pod2 := map[string]struct{}{"default/pod2": {}}
+	matched, _ := k.syncIndexer.MatchPrefix("base-model", syncindexer.LoraIDFromName("sql-lora"), tokens, pod2)
+	assert.Contains(t, matched, "default/pod2")
+	matched, _ = k.syncIndexer.MatchPrefix("sql-lora", -1, tokens, pod2)
+	assert.Empty(t, matched, "nothing should be indexed under the adapter's own name")
+}
