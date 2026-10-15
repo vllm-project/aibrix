@@ -17,6 +17,8 @@ limitations under the License.
 package monitor
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -87,4 +89,34 @@ func TestMonitor_ForgetScaleAction(t *testing.T) {
 	assert.Equal(t, 2, testutil.CollectAndCount(autoscalerScaleAction))
 	assert.Equal(t, 1.0, testutil.ToFloat64(autoscalerScaleAction.WithLabelValues("default", "llm-canary", "apa", "stable")))
 	assert.Equal(t, 3.0, testutil.ToFloat64(autoscalerScaleAction.WithLabelValues("prod", "llm", "kpa", "stable")))
+}
+
+// Reconciles of one PodAutoscaler and its deletion can run on different
+// goroutines. Run under -race, this guards the lock around the remembered labels.
+func TestMonitor_RecordAndForgetScaleActionConcurrently(t *testing.T) {
+	autoscalerScaleAction.Reset()
+
+	m := New()
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				m.RecordScaleAction("default", "llm", "kpa", fmt.Sprintf("reason-%d", (i+j)%3), int32(j))
+			}
+		}(i)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				m.ForgetScaleAction("default", "llm")
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Whatever the interleaving, at most the latest series is left.
+	assert.LessOrEqual(t, testutil.CollectAndCount(autoscalerScaleAction), 1)
+	m.ForgetScaleAction("default", "llm")
+	assert.Equal(t, 0, testutil.CollectAndCount(autoscalerScaleAction))
 }
