@@ -1,4 +1,4 @@
-/*
+x/*
 Copyright 2026 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,6 +19,7 @@ package stormservice
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -66,7 +67,7 @@ func TestReconcileReturnsControllerRevisionListError(t *testing.T) {
 	}).Build()
 	r := &StormServiceReconciler{Client: c, Scheme: scheme, EventRecorder: record.NewFakeRecorder(8)}
 	result, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(storm)})
-	if err == nil && !result.Requeue && result.RequeueAfter == 0 {
-		t.Fatalf("ControllerRevision list error dropped: result=%+v err=%v", result, err)
+	if err == nil || !strings.Contains(err.Error(), "temporary apiserver timeout") {
+		t.Fatalf("ControllerRevision list error not returned: result=%+v err=%v", result, err)
 	}
 }
