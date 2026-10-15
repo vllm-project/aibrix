@@ -332,13 +332,19 @@ func (h *SlidingWindowHistogram) removeOldEntries(currentTime time.Time) {
 func (p *prefixCacheAndLoadRouter) evictionLoop() {
 	ticker := time.NewTicker(evictionLoopInterval)
 	for range ticker.C {
-		p.syncPodSet()
-		evictedNodes := p.cache.Evict(time.Now())
-		if len(evictedNodes) > 0 {
-			p.histogram.removeEvictedNodes(evictedNodes)
-		}
-		p.histogram.removeOldEntries(time.Now())
+		p.maintain()
 	}
+}
+
+// maintain runs one pass of periodic upkeep: it syncs pod membership, evicts
+// expired prefix nodes and trims the sliding-window histogram.
+func (p *prefixCacheAndLoadRouter) maintain() {
+	p.syncPodSet()
+	evictedNodes := p.cache.Evict(time.Now())
+	if len(evictedNodes) > 0 {
+		p.histogram.removeEvictedNodes(evictedNodes)
+	}
+	p.histogram.removeOldEntries(time.Now())
 }
 
 func (h *SlidingWindowHistogram) getSimplePrefillCost(node *prefixcacheindexer.TreeNode) float64 {

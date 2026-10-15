@@ -534,13 +534,13 @@ func TestPreble_SyncPodSetDropsRemovedPods(t *testing.T) {
 	router := newTestRouter(2, cache.NewWithPodsMetricsForTest([]*v1.Pod{podA, podB}, "m", nil))
 
 	require.NoError(t, router.PostRouteUpdate(createTestRoutingContext("m", prebleSharedPrompt, "seed"), both, podB))
-	router.syncPodSet()
+	router.maintain()
 	assert.Equal(t, []string{prebleTestPodKey("pod-b")}, cachedPodKeys(t, router, "m", prebleSharedPrompt),
 		"pod-b still exists, so it keeps its prefix")
 
 	// pod-b is deleted.
 	router.metricCache = cache.NewWithPodsMetricsForTest([]*v1.Pod{podA}, "m", nil)
-	router.syncPodSet()
+	router.maintain()
 	assert.Empty(t, cachedPodKeys(t, router, "m", prebleSharedPrompt), "pod-b's prefix is dropped once it is gone")
 }
 
