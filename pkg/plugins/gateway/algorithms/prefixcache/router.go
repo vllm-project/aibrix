@@ -554,7 +554,9 @@ func (p prefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodLi
 
 // indexContext returns the sync index context a request's blocks are kept
 // under. KV events index an adapter's blocks under its base model, keyed by
-// the adapter name, which is also the model name the request uses.
+// the adapter name, which is also the model name the request uses. Events take
+// the base model from the pod's model label, so the adapter's baseModel must
+// match that label or its requests won't find any blocks.
 func (k *kvSyncPrefixCacheRouter) indexContext(model string) (string, int64) {
 	if k.cache != nil {
 		if base, ok := k.cache.ModelBaseModel(model); ok {
