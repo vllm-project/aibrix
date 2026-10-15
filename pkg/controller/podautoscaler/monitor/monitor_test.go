@@ -53,16 +53,34 @@ func TestMonitor_RecordScaleAction(t *testing.T) {
 	}
 }
 
+func TestMonitor_RecordScaleActionReplacesEarlierReason(t *testing.T) {
+	autoscalerScaleAction.Reset()
+
+	m := New()
+	m.RecordScaleAction("default", "llm", "kpa", "panic mode scaling", 8)
+	m.RecordScaleAction("default", "other", "kpa", "panic mode scaling", 5)
+	m.RecordScaleAction("default", "llm", "kpa", "stable mode scaling", 3)
+
+	// The panic series of llm would otherwise keep reporting 8 replicas next to
+	// the current 3. Other PodAutoscalers keep their own series.
+	assert.Equal(t, 2, testutil.CollectAndCount(autoscalerScaleAction))
+	assert.Equal(t, 3.0, testutil.ToFloat64(autoscalerScaleAction.WithLabelValues("default", "llm", "kpa", "stable mode scaling")))
+	assert.Equal(t, 5.0, testutil.ToFloat64(autoscalerScaleAction.WithLabelValues("default", "other", "kpa", "panic mode scaling")))
+
+	// Recording the same reason again updates the series in place.
+	m.RecordScaleAction("default", "llm", "kpa", "stable mode scaling", 4)
+	assert.Equal(t, 2, testutil.CollectAndCount(autoscalerScaleAction))
+	assert.Equal(t, 4.0, testutil.ToFloat64(autoscalerScaleAction.WithLabelValues("default", "llm", "kpa", "stable mode scaling")))
+}
+
 func TestMonitor_ForgetScaleAction(t *testing.T) {
 	autoscalerScaleAction.Reset()
 
 	m := New()
-	// One PodAutoscaler leaves a series per algorithm/reason pair it has reported.
 	m.RecordScaleAction("default", "llm", "kpa", "stable", 2)
-	m.RecordScaleAction("default", "llm", "kpa", "kpa above target", 4)
 	m.RecordScaleAction("default", "llm-canary", "apa", "stable", 1)
 	m.RecordScaleAction("prod", "llm", "kpa", "stable", 3)
-	assert.Equal(t, 4, testutil.CollectAndCount(autoscalerScaleAction))
+	assert.Equal(t, 3, testutil.CollectAndCount(autoscalerScaleAction))
 
 	m.ForgetScaleAction("default", "llm")
 
