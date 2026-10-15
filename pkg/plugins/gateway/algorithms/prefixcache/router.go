@@ -864,10 +864,9 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 		recordRoutingError(modelName, "sync_indexer_unavailable", true)
 		return "", fmt.Errorf("sync indexer not available for KV sync routing")
 	}
-	// Compute request counts once; reused by pod selection and log calls.
-	podRequestCount := routeutil.GetRequestCounts(k.cache, readyPods)
-
 	matchedPods, prefixHashes = k.syncIndexer.MatchPrefix(modelName, loraID, tokens, readyPodsMap)
+
+	podRequestCount := routeutil.GetRequestCounts(k.cache, readyPods)
 
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("prefix cache matching completed",
