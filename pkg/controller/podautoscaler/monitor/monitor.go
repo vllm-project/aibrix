@@ -56,12 +56,7 @@ func (m *monitor) RecordScaleAction(namespace, name, algorithm, reason string, d
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	autoscalerScaleAction.With(prometheus.Labels{
-		"namespace": namespace,
-		"name":      name,
-		"algorithm": algorithm,
-		"reason":    reason,
-	}).Set(float64(desiredReplicas))
+	autoscalerScaleAction.WithLabelValues(namespace, name, algorithm, reason).Set(float64(desiredReplicas))
 
 	// The reason is a label, so a new reason starts a new series. Drop the one
 	// it replaces; it would otherwise keep its last value until the object is
