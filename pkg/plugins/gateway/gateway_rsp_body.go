@@ -187,7 +187,8 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 	// selectively extracting only the "usage" metadata via gjson for the final chunks.
 	// After a running usage was reported, "[DONE]" ends the stream even in a chunk
 	// that carries no usage of its own.
-	if bytes.Contains(bodyBytes, []byte(`"usage"`)) || (seenUsage && bytes.Contains(bodyBytes, []byte("[DONE]"))) {
+	hasUsageKey := bytes.Contains(bodyBytes, []byte(`"usage"`))
+	if hasUsageKey || (seenUsage && bytes.Contains(bodyBytes, []byte("[DONE]"))) {
 		remaining := bodyBytes
 
 		for len(remaining) > 0 {
@@ -233,56 +234,67 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 						"malformed JSON in SSE stream", "", "")
 				}
 
-				// gjson avoids full deserialization by only extracting the usage field.
-				usageResult := gjson.GetBytes(jsonBytes, "usage")
-				// A usage object next to non-empty choices is a running count
-				// (continuous_usage_stats); the final usage arrives in an event
-				// without choices.
-				choices := gjson.GetBytes(jsonBytes, "choices")
-				finalUsage := !choices.IsArray() || len(choices.Array()) == 0
-				if !usageResult.Exists() {
-					// The Responses API (/v1/responses) emits usage nested inside the
-					// terminal "response.completed" SSE event, where the full response
-					// object (including its "usage" field) lives under "response".
-					// Hence the usage path there is "response.usage".
-					usageResult = gjson.GetBytes(jsonBytes, "response.usage")
-				}
-				if usageResult.Exists() && usageResult.IsObject() {
+				if eventUsage, ok, isFinal := parseSSEUsage(jsonBytes); ok {
 					// Later usage objects replace earlier ones: with continuous_usage_stats
 					// each chunk reports the running totals so far.
-					seenUsage = true
-					if finalUsage {
+					usage, seenUsage = eventUsage, true
+					if isFinal {
 						final = true
-					}
-					// The Responses API uses input_tokens/output_tokens instead of
-					// prompt_tokens/completion_tokens, so fall back to those names only when
-					// the primary field is genuinely absent (Exists() == false), since a
-					// zero count is a semantically valid value.
-					if pt := usageResult.Get("prompt_tokens"); pt.Exists() {
-						usage.PromptTokens = pt.Int()
-					} else {
-						usage.PromptTokens = usageResult.Get("input_tokens").Int()
-					}
-					if ct := usageResult.Get("completion_tokens"); ct.Exists() {
-						usage.CompletionTokens = ct.Int()
-					} else {
-						usage.CompletionTokens = usageResult.Get("output_tokens").Int()
-					}
-					if tt := usageResult.Get("total_tokens"); tt.Exists() && tt.Type != gjson.Null {
-						usage.TotalTokens = tt.Int()
-					} else {
-						usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 					}
 				}
 			}
 		}
 		// warnings when "usage" is triggered by a false positive in generated content.
-		if !seenUsage && bytes.Contains(bodyBytes, []byte(`"usage"`)) {
+		if !seenUsage && hasUsageKey {
 			klog.V(4).Infof("usage string detected but no valid tokens parsed (likely generated text), requestID: %s", requestID)
 		}
 	}
 
 	return usage, final, nil
+}
+
+// parseSSEUsage extracts the usage object from one SSE event's JSON. ok reports
+// whether the event carries usage; final reports whether it is the stream's final
+// usage rather than a running count (continuous_usage_stats), which is the case
+// when the event has no choices.
+func parseSSEUsage(jsonBytes []byte) (usage TokenUsage, ok bool, final bool) {
+	// gjson avoids full deserialization by only extracting the usage field.
+	usageResult := gjson.GetBytes(jsonBytes, "usage")
+	if !usageResult.Exists() {
+		// The Responses API (/v1/responses) emits usage nested inside the
+		// terminal "response.completed" SSE event, where the full response
+		// object (including its "usage" field) lives under "response".
+		// Hence the usage path there is "response.usage".
+		usageResult = gjson.GetBytes(jsonBytes, "response.usage")
+	}
+	if !usageResult.Exists() || !usageResult.IsObject() {
+		return usage, false, false
+	}
+	// A usage object next to non-empty choices is a running count; the final
+	// usage arrives in an event without choices.
+	choices := gjson.GetBytes(jsonBytes, "choices")
+	final = !choices.IsArray() || !choices.Get("0").Exists()
+
+	// The Responses API uses input_tokens/output_tokens instead of
+	// prompt_tokens/completion_tokens, so fall back to those names only when
+	// the primary field is genuinely absent (Exists() == false), since a
+	// zero count is a semantically valid value.
+	if pt := usageResult.Get("prompt_tokens"); pt.Exists() {
+		usage.PromptTokens = pt.Int()
+	} else {
+		usage.PromptTokens = usageResult.Get("input_tokens").Int()
+	}
+	if ct := usageResult.Get("completion_tokens"); ct.Exists() {
+		usage.CompletionTokens = ct.Int()
+	} else {
+		usage.CompletionTokens = usageResult.Get("output_tokens").Int()
+	}
+	if tt := usageResult.Get("total_tokens"); tt.Exists() && tt.Type != gjson.Null {
+		usage.TotalTokens = tt.Int()
+	} else {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+	return usage, true, final
 }
 
 // HandleResponseBody parses and accounts for a response body but deliberately
