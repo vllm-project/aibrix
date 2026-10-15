@@ -50,10 +50,6 @@ type ScalingContext interface {
 	SetActivationScale(value int32)
 	GetActivationScale() int32
 	GetPanicThreshold() float64
-	GetInPanicMode() bool
-	SetInPanicMode(bool)
-	GetMaxPanicPods() int32
-	SetMaxPanicPods(int32)
 	GetScaleUpCooldownWindow() time.Duration
 	GetScaleDownCooldownWindow() time.Duration
 	GetScaleToZero() bool
@@ -88,8 +84,6 @@ type baseScalingContext struct {
 	StableValue float64
 	PanicValue  float64
 
-	// Panic mode state
-	InPanicMode bool
 	// MetricTargets used to store multiple metrics
 	MetricTargets map[string]MetricTarget // key: metric name (e.g., "cpu", "gpu_cache_usage_perc")
 }
@@ -401,22 +395,6 @@ func (b *baseScalingContext) SetActivationScale(value int32) {
 
 func (b *baseScalingContext) GetPanicThreshold() float64 {
 	return b.PanicThreshold
-}
-
-func (b *baseScalingContext) GetInPanicMode() bool {
-	return b.InPanicMode
-}
-
-func (b *baseScalingContext) SetInPanicMode(inPanic bool) {
-	b.InPanicMode = inPanic
-}
-
-func (b *baseScalingContext) GetMaxPanicPods() int32 {
-	return 0
-}
-
-func (b *baseScalingContext) SetMaxPanicPods(pods int32) {
-	// No-op in base implementation
 }
 
 func (b *baseScalingContext) GetScaleUpCooldownWindow() time.Duration {

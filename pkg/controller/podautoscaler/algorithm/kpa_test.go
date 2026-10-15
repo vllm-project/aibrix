@@ -17,7 +17,9 @@ limitations under the License.
 package algorithm
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
@@ -32,6 +34,7 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 		name            string
 		currentPodCount float64
 		context         *mockScalingContext
+		panic           *PanicState // nil: not panicking
 		expected        int32
 		description     string
 	}{
@@ -50,8 +53,6 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 				PanicValue:       10.0,
 				ActivationScale:  1,
 				PanicThreshold:   2.0,
-				InPanicMode:      false,
-				MaxPanicPods:     0,
 				MinReplicas:      0,
 				MaxReplicas:      10,
 			},
@@ -73,11 +74,10 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 				PanicValue:       40.0, // 40/10 = 4 pods needed
 				ActivationScale:  1,
 				PanicThreshold:   2.0,
-				InPanicMode:      true,
-				MaxPanicPods:     2,
 				MinReplicas:      0,
 				MaxReplicas:      10,
 			},
+			panic:       &PanicState{PanicTime: kpaTestNow, MaxPanicPods: 2},
 			expected:    4,
 			description: "Should scale to 4 pods based on panic value in panic mode",
 		},
@@ -96,11 +96,10 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 				PanicValue:       4.0,
 				ActivationScale:  1,
 				PanicThreshold:   2.0,
-				InPanicMode:      true,
-				MaxPanicPods:     5, // Should not scale down below this
 				MinReplicas:      0,
 				MaxReplicas:      10,
 			},
+			panic:       &PanicState{PanicTime: kpaTestNow, MaxPanicPods: 5}, // Should not scale down below this
 			expected:    5,
 			description: "Should not scale down below maxPanicPods in panic mode",
 		},
@@ -119,8 +118,6 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 				PanicValue:       0.0,
 				ActivationScale:  1,
 				PanicThreshold:   2.0,
-				InPanicMode:      false,
-				MaxPanicPods:     0,
 				MinReplicas:      0,
 				MaxReplicas:      10,
 			},
@@ -142,8 +139,6 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 				PanicValue:       15.0,
 				ActivationScale:  3, // Should scale to 3 when activating
 				PanicThreshold:   2.0,
-				InPanicMode:      false,
-				MaxPanicPods:     0,
 				MinReplicas:      0,
 				MaxReplicas:      10,
 			},
@@ -165,8 +160,6 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 				PanicValue:       100.0,
 				ActivationScale:  1,
 				PanicThreshold:   2.0,
-				InPanicMode:      false,
-				MaxPanicPods:     0,
 				MinReplicas:      0,
 				MaxReplicas:      20,
 			},
@@ -188,8 +181,6 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 				PanicValue:       5.0,
 				ActivationScale:  1,
 				PanicThreshold:   2.0,
-				InPanicMode:      false,
-				MaxPanicPods:     0,
 				MinReplicas:      0,
 				MaxReplicas:      10,
 			},
@@ -257,43 +248,132 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := algorithm.computeTargetReplicas(tt.currentPodCount, tt.context, metricsName)
+			counts, ok := algorithm.desiredPodCounts(tt.currentPodCount, tt.context, metricsName)
+			if !ok {
+				t.Fatal("desiredPodCounts found no target value")
+			}
+			state := tt.panic
+			if state == nil {
+				state = &PanicState{}
+			}
+			result, _ := state.apply(kpaTestNow, kpaTestStableWindow, counts)
 			if result != tt.expected {
-				t.Errorf("computeTargetReplicas() = %d, expected %d. %s", result, tt.expected, tt.description)
+				t.Errorf("desired pod count = %d, expected %d. %s", result, tt.expected, tt.description)
 			}
 		})
 	}
 }
 
-func TestKPAAlgorithm_shouldEnterPanicMode(t *testing.T) {
-	tests := []struct {
-		name           string
-		stableValue    float64
-		panicValue     float64
-		panicThreshold float64
-		want           bool
-	}{
-		// no usable stable history, guard against division by zero
-		{"zero stable value enters panic", 0, 5, 2.0, true},
-		{"negative stable value enters panic", -1, 5, 2.0, true},
-		// ratio compared against the threshold
-		{"ratio above threshold enters panic", 10, 30, 2.0, true},
-		{"ratio below threshold stays stable", 10, 15, 2.0, false},
-		{"ratio exactly at threshold stays stable", 10, 20, 2.0, false},
+var (
+	kpaTestNow          = time.Date(2026, time.October, 14, 12, 0, 0, 0, time.UTC)
+	kpaTestStableWindow = 180 * time.Second
+)
+
+// kpaTarget is one KPA target observed over time, with its panic state kept
+// across recommendations the way DefaultAutoScaler keeps it.
+type kpaTarget struct {
+	t     *testing.T
+	ctx   *mockScalingContext
+	state PanicState
+}
+
+func newKPATarget(t *testing.T) *kpaTarget {
+	return &kpaTarget{t: t, ctx: &mockScalingContext{
+		MetricTargets:    map[string]scalingctx.MetricTarget{"rps": {TargetValue: 10, MetricType: autoscalingv1alpha1.POD}},
+		MaxScaleUpRate:   1000,
+		MaxScaleDownRate: 1000,
+		ActivationScale:  1,
+		PanicThreshold:   2.0,
+		MinReplicas:      0,
+		MaxReplicas:      100,
+	}}
+}
+
+// recommend returns the recommendation at kpaTestNow+at for per-pod means
+// stable and panic on pods replicas.
+func (k *kpaTarget) recommend(at time.Duration, pods int32, stable, panic float64) (int32, string) {
+	k.t.Helper()
+	rec, err := (&KPAAlgorithm{}).ComputeRecommendation(context.Background(), ScalingRequest{
+		CurrentReplicas: pods,
+		AggregatedMetrics: &types.AggregatedMetrics{
+			MetricKey:   types.MetricKey{MetricName: "rps"},
+			StableValue: stable,
+			PanicValue:  panic,
+		},
+		ScalingContext: k.ctx,
+		Timestamp:      kpaTestNow.Add(at),
+		StableWindow:   kpaTestStableWindow,
+		Panic:          &k.state,
+	})
+	if err != nil {
+		k.t.Fatalf("ComputeRecommendation: %v", err)
 	}
+	return rec.DesiredReplicas, rec.Metadata["mode"].(string)
+}
 
-	a := &KPAAlgorithm{}
+func (k *kpaTarget) require(at time.Duration, pods int32, stable, panic float64, wantReplicas int32, wantMode string) {
+	k.t.Helper()
+	got, mode := k.recommend(at, pods, stable, panic)
+	if got != wantReplicas || mode != wantMode {
+		k.t.Fatalf("at +%s on %d pods (stable %v, panic %v): got %d in %s mode, want %d in %s mode",
+			at, pods, stable, panic, got, mode, wantReplicas, wantMode)
+	}
+}
 
+// A surge enters panic, panic holds the pod count while the surge recedes,
+// and it ends a whole stable window after the panic window last crossed the
+// threshold. This is the hold #3082 found missing: the panic state now
+// outlives a single recommendation.
+func TestKPAAlgorithm_PanicHoldsUntilAStableWindowPasses(t *testing.T) {
+	k := newKPATarget(t)
+
+	// Steady at target: 4 pods each at 10.
+	k.require(0, 4, 10, 10, 4, "stable")
+	// Surge: the panic window wants 4*25/10 = 10 pods, 2.5x the 4 there are.
+	k.require(10*time.Second, 4, 12, 25, 10, "panic")
+	// The surge recedes. Without the hold, 10 pods at 3 would go back to 3.
+	k.require(20*time.Second, 10, 4, 3, 10, "panic")
+	k.require(kpaTestStableWindow, 10, 4, 3, 10, "panic")
+	// A stable window after the last crossing, the panic ends and the stable
+	// window decides again: 10*4/10 = 4.
+	k.require(10*time.Second+kpaTestStableWindow+time.Second, 10, 4, 3, 4, "stable")
+}
+
+// Crossing the threshold again during a panic extends it, and a bigger surge
+// raises the held count.
+func TestKPAAlgorithm_PanicIsExtendedAndOnlyGrows(t *testing.T) {
+	k := newKPATarget(t)
+
+	k.require(0, 4, 10, 25, 10, "panic")
+	// 10 pods at 25: wants 25, 2.5x the 10 there are, so the panic extends.
+	k.require(100*time.Second, 10, 10, 25, 25, "panic")
+	// Below the threshold again. The hold is 25 and runs for a stable window
+	// from +100s, not from +0s.
+	k.require(200*time.Second, 25, 5, 5, 25, "panic")
+	k.require(100*time.Second+kpaTestStableWindow, 25, 5, 5, 25, "panic")
+	k.require(100*time.Second+kpaTestStableWindow+time.Second, 25, 5, 5, 13, "stable")
+}
+
+// The panic window must ask for PanicThreshold times the current pods, not
+// just exceed the stable value by that ratio.
+func TestKPAAlgorithm_PanicThresholdIsRelativeToCurrentPods(t *testing.T) {
+	tests := []struct {
+		name          string
+		pods          int32
+		stable, panic float64
+		wantReplicas  int32
+		wantMode      string
+	}{
+		// Idle: nothing to scale for is not a panic (it used to be).
+		{"idle", 2, 0, 0, 0, "stable"},
+		// Panic 3x stable, but 4*6/10 = 3 pods is less than 2x the 4 there are.
+		{"ratio to stable is not enough", 4, 2, 6, 1, "stable"},
+		// Exactly 2x the current pods panics, as in Knative (>=).
+		{"twice the current pods", 4, 10, 20, 8, "panic"},
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			metrics := &types.AggregatedMetrics{
-				StableValue: tt.stableValue,
-				PanicValue:  tt.panicValue,
-			}
-			if got := a.shouldEnterPanicMode(metrics, tt.panicThreshold); got != tt.want {
-				t.Errorf("shouldEnterPanicMode(stable=%v, panic=%v, threshold=%v) = %v, want %v",
-					tt.stableValue, tt.panicValue, tt.panicThreshold, got, tt.want)
-			}
+			newKPATarget(t).require(0, tt.pods, tt.stable, tt.panic, tt.wantReplicas, tt.wantMode)
 		})
 	}
 }
