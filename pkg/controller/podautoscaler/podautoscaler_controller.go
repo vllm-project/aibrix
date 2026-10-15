@@ -95,6 +95,7 @@ const (
 	ReasonInvalidSpec               = "InvalidSpec"
 	ReasonConfigured                = "Configured"
 	ReasonPendingReplicas           = "PendingReplicas"
+	ReasonFailedComputeScale        = "FailedComputeScale"
 	maxScalingHistorySize           = 5
 	minScalingHistoryRecordInterval = 5 * time.Second
 	maxMetricWindowSeconds          = int64(3600)
@@ -799,15 +800,34 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler,
 		}
 	}
 
-	// Ready = ValidSpec && !ScalingActive
-	ready := able && !scalingActive
-	apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{
-		Type:               ConditionReady,
-		Status:             boolToCond(ready),
-		Reason:             map[bool]string{true: ReasonAsExpected, false: ReasonReconcilingScaleDiff}[ready],
-		LastTransitionTime: now,
-	})
+	apimeta.SetStatusCondition(&st.Conditions, readyCondition(st, able, now))
 	return st
+}
+
+// readyCondition derives Ready from the scale and the other conditions. A
+// failing strategy step holds the replica count, so desired == actual alone
+// would report Ready=True while every reconcile fails. computeStatus and the
+// strategy paths both use it, so they agree and never flip Ready between them.
+func readyCondition(st *autoscalingv1alpha1.PodAutoscalerStatus, able bool, now metav1.Time) metav1.Condition {
+	cond := metav1.Condition{Type: ConditionReady, LastTransitionTime: now}
+	notReadyBecause := func(failure *metav1.Condition) metav1.Condition {
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = failure.Reason
+		cond.Message = failure.Message
+		return cond
+	}
+	if able {
+		if c := apimeta.FindStatusCondition(st.Conditions, ConditionAbleToScale); c != nil && c.Status == metav1.ConditionFalse {
+			return notReadyBecause(c)
+		}
+		if c := apimeta.FindStatusCondition(st.Conditions, ConditionScalingActive); c != nil && c.Reason == ReasonFailedComputeScale {
+			return notReadyBecause(c)
+		}
+	}
+	ready := able && st.DesiredScale == st.ActualScale
+	cond.Status = boolToCond(ready)
+	cond.Reason = map[bool]string{true: ReasonAsExpected, false: ReasonReconcilingScaleDiff}[ready]
+	return cond
 }
 
 // reconcileHPA handles HPA strategy by creating and managing Kubernetes HorizontalPodAutoscaler resources.
@@ -892,6 +912,7 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 		setCondition(&pa, ConditionScalingActive, boolToCond(scalingActive), scalingReason,
 			"desired=%d, actual=%d", pa.Status.DesiredScale, pa.Status.ActualScale)
 	}
+	apimeta.SetStatusCondition(&pa.Status.Conditions, readyCondition(&pa.Status, pa.Spec.MaxReplicas > 0, metav1.Now()))
 	// Write only when something changed, against the latest stored object. A
 	// plain Status().Update here used the object fetched at the start of
 	// Reconcile, so it failed with a conflict whenever the status had already
@@ -922,6 +943,9 @@ func hasObservedInvalidSpec(pa *autoscalingv1alpha1.PodAutoscaler) bool {
 func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
 	paStatusOriginal := pa.Status.DeepCopy()
 	result, err := r.scaleCustomPA(ctx, &pa)
+	// Report Ready for the outcome of this pass instead of waiting for
+	// computeStatus to see it on the next reconcile.
+	apimeta.SetStatusCondition(&pa.Status.Conditions, readyCondition(&pa.Status, pa.Spec.MaxReplicas > 0, metav1.Now()))
 	// Every outcome is written here, failures included, so a step that fails
 	// cannot leave the conditions reported by the steps before it unsaved.
 	if updateErr := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); updateErr != nil {
@@ -962,12 +986,12 @@ func (r *PodAutoscalerReconciler) scaleCustomPA(ctx context.Context, pa *autosca
 	// Pass ScaleTargetRef to handle special cases like RayClusterFleet
 	scaleDecision, err := r.computeScaleDecision(ctx, *pa, scaleObj, currentReplicas)
 	if err != nil {
-		setStatus(pa, currentReplicas, currentReplicas, false, "FailedComputeScale", false, false, err)
+		setStatus(pa, currentReplicas, currentReplicas, false, ReasonFailedComputeScale, false, false, err)
 		// setStatus reports a held replica count as Stable. Say why it is held
 		// instead: like the HPA, a failure to compute a recommendation is
 		// ScalingActive=False, while AbleToScale keeps reporting the scale access.
-		setCondition(pa, ConditionScalingActive, metav1.ConditionFalse, "FailedComputeScale", "unable to compute the desired replicas: %v", err)
-		r.EventRecorder.Event(pa, corev1.EventTypeWarning, "FailedComputeScale", err.Error())
+		setCondition(pa, ConditionScalingActive, metav1.ConditionFalse, ReasonFailedComputeScale, "unable to compute the desired replicas: %v", err)
+		r.EventRecorder.Event(pa, corev1.EventTypeWarning, ReasonFailedComputeScale, err.Error())
 		return ctrl.Result{}, fmt.Errorf("failed to compute scaling decision for %s: %w", scaleReference, err)
 	}
 	r.monitor.RecordScaleAction(pa.Namespace, pa.Name, scaleDecision.Algorithm, scaleDecision.Reason, scaleDecision.DesiredReplicas)

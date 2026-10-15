@@ -383,6 +383,7 @@ func TestReconcileStoresStrategyConditionsWhenReadingReplicasFails(t *testing.T)
 			requireCondition(t, latest, ConditionValidSpec, metav1.ConditionTrue, ReasonAsExpected)
 			requireCondition(t, latest, ConditionAbleToScale, metav1.ConditionFalse, "FailedGetReplicas")
 			requireCondition(t, latest, ConditionScalingActive, metav1.ConditionFalse, ReasonStable)
+			requireCondition(t, latest, ConditionReady, metav1.ConditionFalse, "FailedGetReplicas")
 			h.requireSettled(4, true)
 		})
 	}
@@ -402,9 +403,32 @@ func TestReconcileReportsFailedScaleComputation(t *testing.T) {
 	}
 
 	latest := h.latest()
-	requireCondition(t, latest, ConditionScalingActive, metav1.ConditionFalse, "FailedComputeScale")
+	requireCondition(t, latest, ConditionScalingActive, metav1.ConditionFalse, ReasonFailedComputeScale)
 	requireCondition(t, latest, ConditionAbleToScale, metav1.ConditionTrue, "SucceededGetScale")
+	// The replica count is held, so desired == actual, but the autoscaler is
+	// not working and Ready must not say it is.
+	requireCondition(t, latest, ConditionReady, metav1.ConditionFalse, ReasonFailedComputeScale)
 	h.requireSettled(4, true)
+}
+
+func TestReconcileReportsReadyAgainAfterScaleComputationRecovers(t *testing.T) {
+	pa := stabilityPodAutoscaler(autoscalingv1alpha1.KPA)
+	h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
+	fake := h.reconciler.autoScaler.(*fakeAutoScaler)
+	fake.err = errors.New("metrics unavailable")
+	if _, err := h.reconcile(); err == nil {
+		t.Fatal("Reconcile with a failing autoscaler returned no error")
+	}
+	requireCondition(t, h.latest(), ConditionReady, metav1.ConditionFalse, ReasonFailedComputeScale)
+
+	fake.err = nil
+	if _, err := h.reconcile(); err != nil {
+		t.Fatalf("Reconcile after recovery returned error: %v", err)
+	}
+	latest := h.latest()
+	requireCondition(t, latest, ConditionScalingActive, metav1.ConditionFalse, ReasonStable)
+	requireCondition(t, latest, ConditionReady, metav1.ConditionTrue, ReasonAsExpected)
+	h.requireSettled(4, false)
 }
 
 // The API server fills in defaults for fields makeHPA leaves unset. A stored
