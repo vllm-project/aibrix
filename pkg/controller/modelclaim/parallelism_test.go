@@ -34,6 +34,11 @@ func TestVLLMParallelismIncludesPrefillContextParallelism(t *testing.T) {
 	}{
 		{name: "defaults", want: 1},
 		{
+			name: "empty prefill context defaults to one",
+			args: map[string]string{"--prefill-context-parallel-size": ""},
+			want: 1,
+		},
+		{
 			name: "tensor pipeline and prefill context",
 			args: map[string]string{
 				"--tensor-parallel-size":          "2",
@@ -69,7 +74,7 @@ func TestInstanceGPUCountIncludesPrefillContextParallelism(t *testing.T) {
 }
 
 func TestVLLMParallelismRejectsInvalidPrefillContextParallelism(t *testing.T) {
-	for _, raw := range []string{"0", "", "invalid"} {
+	for _, raw := range []string{"0", "invalid"} {
 		t.Run("value="+raw, func(t *testing.T) {
 			_, err := vllmParallelism(&modelv1alpha1.ModelClaimEngineConfig{
 				Args: map[string]string{"--prefill-context-parallel-size": raw},
