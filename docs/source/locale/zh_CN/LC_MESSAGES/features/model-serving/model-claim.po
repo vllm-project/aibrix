@@ -112,16 +112,18 @@ msgstr ""
 "**每个 claim 一个引擎。** ``replicas`` 必须为 1，因此一个 claim 只在一个 "
 "Pod 上运行一个引擎。"
 
-#: ../../source/features/model-serving/model-claim.rst:58
+#: ../../source/features/model-serving/model-claim.rst:63
 msgid ""
 "**Tested setups.** ModelClaim has been tested with vLLM on NVIDIA H20 "
-"GPUs, with tensor parallelism 1 and 2 in one Pod. Pipeline parallelism, "
-"tensor parallelism above 2, Pods with more than two GPUs and other GPU "
-"types have not been tested. Data parallelism is not supported."
+"GPUs, with tensor parallelism 1 and 2 in one Pod. Pipeline and prefill "
+"context parallelism, tensor parallelism above 2, Pods with more than two "
+"GPUs and other GPU types have not been tested. Data parallelism is not "
+"supported."
 msgstr ""
 "**已测试的环境。** ModelClaim 已在 NVIDIA H20 GPU 上配合 vLLM 测试过，"
-"覆盖单个 Pod 内张量并行度为 1 和 2 的情况。流水线并行、张量并行度大于 2、"
-"每个 Pod 超过两块 GPU 以及其他型号的 GPU 都未经测试。不支持数据并行。"
+"覆盖单个 Pod 内张量并行度为 1 和 2 的情况。流水线并行、预填充上下文并行、"
+"张量并行度大于 2、每个 Pod 超过两块 GPU 以及其他型号的 GPU 都未经测试。"
+"不支持数据并行。"
 
 #: ../../source/features/model-serving/model-claim.rst:62
 msgid ""
@@ -358,17 +360,31 @@ msgstr ""
 msgid "``nvidia.com/gpu``"
 msgstr "``nvidia.com/gpu``"
 
-#: ../../source/features/model-serving/model-claim.rst:205
+#: ../../source/features/model-serving/model-claim.rst:210
 msgid ""
 "The number of GPUs in each Pod. A vLLM claim runs only on Pods whose GPU "
-"count equals its tensor parallel size times its pipeline parallel size. "
-"For a model that needs two GPUs, create another pool whose Pods request "
-"two, and give the claim ``--tensor-parallel-size: \"2\"``."
+"count equals its tensor parallel size times its pipeline parallel size "
+"times its prefill context parallel size (TP × PP × PCP). Omitted sizes "
+"default to 1. For a model that needs two GPUs, create another pool whose "
+"Pods request two, and give the claim ``--tensor-parallel-size: \"2\"``. "
+"Setting ``--prefill-context-parallel-size: \"2\"`` as well requires four "
+"GPUs per Pod."
 msgstr ""
-"每个 Pod 的 GPU 数量。vLLM 的 claim 只会运行在 GPU "
-"数量等于其张量并行度乘以流水线并行度的 Pod 上。对于需要两块 GPU 的模型，"
-"请另建一个 Pod 申请两块 GPU 的热池，并为 claim 设置 "
-"``--tensor-parallel-size: \"2\"``。"
+"每个 Pod 的 GPU 数量。vLLM 的 claim 只会运行在 GPU 数量等于张量并行度 "
+"乘以流水线并行度再乘以预填充上下文并行度（TP × PP × PCP）的 Pod 上。"
+"未指定的并行度默认为 1。对于需要两块 GPU 的模型，请另建一个 Pod 申请两块 "
+"GPU 的热池，并为 claim 设置 ``--tensor-parallel-size: \"2\"``。若同时设置 "
+"``--prefill-context-parallel-size: \"2\"``，每个 Pod 则需要四块 GPU。"
+
+#: ../../source/features/model-serving/model-claim.rst:217
+msgid ""
+"Decode context parallelism (DCP) reuses ranks in that GPU group, so "
+"``--decode-context-parallel-size`` does not increase the Pod GPU count. "
+"ModelClaim does not validate DCP; vLLM checks that argument when it starts."
+msgstr ""
+"解码上下文并行（DCP）复用该 GPU 组中的 rank，因此 "
+"``--decode-context-parallel-size`` 不会增加 Pod 所需的 GPU 数量。"
+"ModelClaim 不校验 DCP；vLLM 会在启动时检查该参数。"
 
 #: ../../source/features/model-serving/model-claim.rst:210
 msgid "``image``"
@@ -645,18 +661,19 @@ msgstr ""
 msgid "Declare what a model needs on a GPU"
 msgstr "声明模型在一块 GPU 上需要多少显存"
 
-#: ../../source/features/model-serving/model-claim.rst:320
+#: ../../source/features/model-serving/model-claim.rst:331
 msgid ""
 "The controller places a claim only on a Pod whose GPU has room for its "
 "``maximumFootprint`` plus its ``kvFloor``. Engines already on that GPU "
 "count with their footprints and their KV caches, and each KV cache counts"
-" as at least its KV floor. With tensor or pipeline parallelism, give the "
-"figures for the GPU that holds the most."
+" as at least its KV floor. With tensor, pipeline or prefill context "
+"parallelism, give the figures for the GPU that holds the most."
 msgstr ""
 "只有当某个 Pod 的 GPU 能容纳 claim 的 ``maximumFootprint`` 加上 "
 "``kvFloor`` 时，控制器才会把 claim 放置到该 Pod 上。该 GPU "
 "上已有的引擎按其占用和 KV cache 计算，每个 KV cache 至少按其 KV 下限计算。"
-"使用张量并行或流水线并行时，请按占用最多的那块 GPU 填写这些数值。"
+"使用张量并行、流水线并行或预填充上下文并行时，请按占用最多的那块 GPU "
+"填写这些数值。"
 
 #: ../../source/features/model-serving/model-claim.rst:326
 msgid "The controller does not measure models, so measure them yourself:"
