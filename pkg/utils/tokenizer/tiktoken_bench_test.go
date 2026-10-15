@@ -22,7 +22,20 @@ import (
 	"testing"
 )
 
+// bytesPerToken mirrors the uint32 serialization in IntToByteArray (utils.go).
+const bytesPerToken = 4
+
 const benchSentence = "The quick brown fox jumps over the lazy dog while the diligent engineer measures tokenization latency under sustained load. "
+
+var benchPromptSizes = []struct {
+	name   string
+	tokens int
+}{
+	{"1K", 1024},
+	{"4K", 4096},
+	{"16K", 16384},
+	{"64K", 65536},
+}
 
 // buildPrompt grows benchSentence until it tokenizes to about targetTokens.
 func buildPrompt(tb testing.TB, tk Tokenizer, targetTokens int) string {
@@ -34,7 +47,10 @@ func buildPrompt(tb testing.TB, tk Tokenizer, targetTokens int) string {
 		if err != nil {
 			tb.Fatal(err)
 		}
-		count := len(out) / 4
+		count := len(out) / bytesPerToken
+		if count == 0 {
+			tb.Fatal("tokenizer returned no tokens for the scaled prompt")
+		}
 		if math.Abs(float64(count-targetTokens)) <= float64(targetTokens)*0.005 {
 			return text
 		}
@@ -50,18 +66,16 @@ func buildPrompt(tb testing.TB, tk Tokenizer, targetTokens int) string {
 	return strings.Repeat(benchSentence, reps)
 }
 
+// reportTokensPerSecond reports the throughput of b.N operations.
+func reportTokensPerSecond(b *testing.B, tokens int) {
+	b.Helper()
+	b.ReportMetric(float64(tokens)*float64(b.N)/b.Elapsed().Seconds(), "tokens/s")
+}
+
 // BenchmarkTokenizeInputText measures the local tiktoken tokenizer at the
 // prompt sizes used in the gateway CPU sizing discussion (issue #2019).
 func BenchmarkTokenizeInputText(b *testing.B) {
-	for _, tc := range []struct {
-		name   string
-		tokens int
-	}{
-		{"1K", 1024},
-		{"4K", 4096},
-		{"16K", 16384},
-		{"64K", 65536},
-	} {
+	for _, tc := range benchPromptSizes {
 		b.Run(tc.name, func(b *testing.B) {
 			tk := NewTiktokenTokenizer()
 			text := buildPrompt(b, tk, tc.tokens)
@@ -73,6 +87,30 @@ func BenchmarkTokenizeInputText(b *testing.B) {
 					b.Fatal(err)
 				}
 			}
+			reportTokensPerSecond(b, tc.tokens)
+		})
+	}
+}
+
+// BenchmarkTokenizeInputTextParallel measures the same tokenizer with
+// b.RunParallel; combine with -cpu 1,2,4,8 to see how throughput scales.
+func BenchmarkTokenizeInputTextParallel(b *testing.B) {
+	for _, tc := range benchPromptSizes {
+		b.Run(tc.name, func(b *testing.B) {
+			tk := NewTiktokenTokenizer()
+			text := buildPrompt(b, tk, tc.tokens)
+			b.SetBytes(int64(len(text)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					if _, err := tk.TokenizeInputText(text); err != nil {
+						b.Error(err)
+						return
+					}
+				}
+			})
+			reportTokensPerSecond(b, tc.tokens)
 		})
 	}
 }
