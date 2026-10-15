@@ -823,6 +823,15 @@ func readyCondition(st *autoscalingv1alpha1.PodAutoscalerStatus, able bool, now 
 		if c := apimeta.FindStatusCondition(st.Conditions, ConditionScalingActive); c != nil && c.Reason == ReasonFailedComputeScale {
 			return notReadyBecause(c)
 		}
+	} else {
+		// Not reconciling at all: name the invalid spec or the conflict rather
+		// than reporting a scale difference.
+		if c := apimeta.FindStatusCondition(st.Conditions, ConditionValidSpec); c != nil && c.Status == metav1.ConditionFalse {
+			return notReadyBecause(c)
+		}
+		if c := apimeta.FindStatusCondition(st.Conditions, ConditionConflict); c != nil && c.Status == metav1.ConditionFalse {
+			return notReadyBecause(c)
+		}
 	}
 	ready := able && st.DesiredScale == st.ActualScale
 	cond.Status = boolToCond(ready)
