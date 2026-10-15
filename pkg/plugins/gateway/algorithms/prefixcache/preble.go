@@ -18,6 +18,7 @@ package prefixcache
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"sort"
 	"sync"
@@ -78,6 +79,8 @@ type prefixCacheAndLoadRouter struct {
 	numPods        int
 	podAllocations map[*prefixcacheindexer.TreeNode]map[int]bool
 	podsMu         sync.RWMutex
+	// podKeys is the pod set last applied by syncPodSet.
+	podKeys map[string]struct{}
 }
 
 // Find all prefix matches with their depths
@@ -329,6 +332,7 @@ func (h *SlidingWindowHistogram) removeOldEntries(currentTime time.Time) {
 func (p *prefixCacheAndLoadRouter) evictionLoop() {
 	ticker := time.NewTicker(evictionLoopInterval)
 	for range ticker.C {
+		p.syncPodSet()
 		evictedNodes := p.cache.Evict(time.Now())
 		if len(evictedNodes) > 0 {
 			p.histogram.removeEvictedNodes(evictedNodes)
@@ -380,8 +384,39 @@ func (h *SlidingWindowHistogram) getCurrentAllocationCostPerPod(gpu string) map[
 	return costs
 }
 
-// updatePodSet drops pods that are no longer ready from the prefix tree and the
+// syncPodSet drops pods that no longer exist or are no longer routable from the
+// prefix tree and the histogram. The pod set comes from the metric cache, across all
+// models, not from the pods a request is routed among: the gateway narrows those per
+// request (the external-filter header, the per-replica in-flight cap, the
+// load-imbalance gate, the single-candidate fast path) and they only cover the
+// request's model. Treating them as the pod set erased the cached prefixes of every
+// pod that was merely filtered out, and of every other model's pods.
+func (p *prefixCacheAndLoadRouter) syncPodSet() {
+	var readyPods []*v1.Pod
+	for _, model := range p.metricCache.ListModels() {
+		modelPods, err := p.metricCache.ListPodsByModel(model)
+		if err != nil || modelPods == nil {
+			continue
+		}
+		readyPods = append(readyPods, utils.FilterRoutablePods(modelPods.All())...)
+	}
+	podKeys := make(map[string]struct{}, len(readyPods))
+	for _, pod := range readyPods {
+		podKeys[utils.GeneratePodKey(pod.Namespace, pod.Name)] = struct{}{}
+	}
+
+	p.podsMu.Lock()
+	defer p.podsMu.Unlock()
+	if p.podKeys != nil && maps.Equal(podKeys, p.podKeys) {
+		return
+	}
+	p.updatePodSet(readyPods)
+	p.podKeys = podKeys
+}
+
+// updatePodSet drops pods that are not in readyPods from the prefix tree and the
 // histogram. The tree and the histogram identify pods by pod key (namespace/name).
+// Callers hold podsMu.
 func (p *prefixCacheAndLoadRouter) updatePodSet(readyPods []*v1.Pod) {
 	currentPodSet := make(map[string]bool)
 	for _, pod := range readyPods {
@@ -463,19 +498,6 @@ func collectMatchedReadyPods(modelPods map[string]time.Time, readyPodsByKey map[
 
 func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	readyPods := readyPodList.All()
-	var podUpdateNeeded bool
-	func() {
-		p.podsMu.RLock()
-		defer p.podsMu.RUnlock()
-		podUpdateNeeded = len(readyPods) != p.numPods
-	}()
-
-	if podUpdateNeeded {
-		p.podsMu.Lock()
-		p.updatePodSet(readyPods) // Move update pod logic to separate function
-		p.podsMu.Unlock()
-		klog.InfoS("Request processing", "requestID", ctx.RequestID, "updatePodSet", p.numPods)
-	}
 
 	tokens, err := utils.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
@@ -578,20 +600,6 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 }
 
 func (p *prefixCacheAndLoadRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) error {
-	readyPods := readyPodList.All()
-	var podUpdateNeeded bool
-	func() {
-		p.podsMu.RLock()
-		defer p.podsMu.RUnlock()
-		podUpdateNeeded = len(readyPods) != p.numPods
-	}()
-
-	if podUpdateNeeded {
-		p.podsMu.Lock()
-		p.updatePodSet(readyPods)
-		p.podsMu.Unlock()
-	}
-
 	tokens, err := utils.TokenizeInputText(ctx.PrefixText())
 	if err != nil {
 		return err
@@ -611,19 +619,6 @@ func (p *prefixCacheAndLoadRouter) ScoreAll(ctx *types.RoutingContext, readyPodL
 	readyPods := readyPodList.All()
 	scores := make([]float64, len(readyPods))
 	scored := make([]bool, len(readyPods))
-
-	var podUpdateNeeded bool
-	func() {
-		p.podsMu.RLock()
-		defer p.podsMu.RUnlock()
-		podUpdateNeeded = len(readyPods) != p.numPods
-	}()
-
-	if podUpdateNeeded {
-		p.podsMu.Lock()
-		p.updatePodSet(readyPods)
-		p.podsMu.Unlock()
-	}
 
 	tokens, err := utils.TokenizeInputText(ctx.PrefixText())
 	if err != nil {

@@ -448,9 +448,6 @@ func TestPreble_SameNamedPodsInTwoNamespaces(t *testing.T) {
 
 	const message = "Hello world shared content extra"
 	require.NoError(t, router.PostRouteUpdate(createTestRoutingContext("test-model", message, "seed"), podList, teamA))
-	// Both pods are in the pod set. A smaller set would differ from the ready-list length
-	// on every request and rebuild the pod set each time.
-	assert.Equal(t, 2, router.numPods)
 
 	_, scored, err := router.ScoreAll(createTestRoutingContext("test-model", message, "score"), podList)
 	require.NoError(t, err)
@@ -482,4 +479,82 @@ func TestPrebleDecodingLengthKnobReachesTheHistogram(t *testing.T) {
 	plain := createTestRoutingContext("model", "hello world", "req-preble-default")
 	require.NoError(t, router.PostRouteUpdate(plain, podList, pod))
 	assert.Equal(t, 32+decodingLength, router.histogram.currentDecodeLengthsPerPod[utils.GeneratePodKey(pod.Namespace, pod.Name)], "a request without the knob keeps the process default")
+}
+
+const prebleSharedPrompt = "You are a helpful assistant. Summarize the attached quarterly report in detail."
+
+// TestPreble_NarrowedCandidatesKeepCachedPrefixes checks that a request routed among a
+// subset of the pods does not erase what the other pods have cached. The gateway
+// narrows candidates per request (load-imbalance gate, in-flight cap, external-filter
+// header) and passes a single remaining candidate straight to PostRouteUpdate.
+func TestPreble_NarrowedCandidatesKeepCachedPrefixes(t *testing.T) {
+	podA := newPod("pod-a", "10.0.0.1", true, nil)
+	podB := newPod("pod-b", "10.0.0.2", true, nil)
+	both := newMockPodList([]*v1.Pod{podA, podB}, nil)
+	router := newTestRouter(2, cache.NewWithPodsMetricsForTest([]*v1.Pod{podA, podB}, "m", nil))
+
+	require.NoError(t, router.PostRouteUpdate(createTestRoutingContext("m", prebleSharedPrompt, "seed"), both, podB))
+
+	// pod-b is hot, so the gate left only pod-a for this request.
+	onlyA := newMockPodList([]*v1.Pod{podA}, nil)
+	require.NoError(t, router.PostRouteUpdate(createTestRoutingContext("m", "an unrelated prompt", "narrowed"), onlyA, podA))
+
+	_, scored, err := router.ScoreAll(createTestRoutingContext("m", prebleSharedPrompt, "score"), both)
+	require.NoError(t, err)
+	assert.Equal(t, []bool{false, true}, scored, "pod-b still holds the shared prefix")
+}
+
+// TestPreble_OtherModelKeepsCachedPrefixes checks that a request for one model does not
+// erase the cached prefixes of another model's pods. One router serves every model.
+func TestPreble_OtherModelKeepsCachedPrefixes(t *testing.T) {
+	podA := newPod("pod-a", "10.0.0.1", true, nil)
+	podB := newPod("pod-b", "10.0.0.2", true, nil)
+	podC := newPod("pod-c", "10.0.0.3", true, nil)
+	metricCache := cache.InitWithPods(cache.InitWithPods(cache.NewForTest(), []*v1.Pod{podA}, "m1"), []*v1.Pod{podB, podC}, "m2")
+	router := newTestRouter(3, metricCache)
+	m2Pods := newMockPodList([]*v1.Pod{podB, podC}, nil)
+
+	require.NoError(t, router.PostRouteUpdate(createTestRoutingContext("m2", prebleSharedPrompt, "seed"), m2Pods, podB))
+
+	ctx := createTestRoutingContext("m1", "a prompt for the other model", "m1")
+	_, err := router.Route(ctx, newMockPodList([]*v1.Pod{podA}, nil))
+	require.NoError(t, err)
+
+	_, scored, err := router.ScoreAll(createTestRoutingContext("m2", prebleSharedPrompt, "score"), m2Pods)
+	require.NoError(t, err)
+	assert.Equal(t, []bool{true, false}, scored, "pod-b still holds the m2 prefix")
+}
+
+// TestPreble_SyncPodSetDropsRemovedPods checks that pods leaving the metric cache are
+// dropped from the prefix tree, and that pods still present are kept.
+func TestPreble_SyncPodSetDropsRemovedPods(t *testing.T) {
+	podA := newPod("pod-a", "10.0.0.1", true, nil)
+	podB := newPod("pod-b", "10.0.0.2", true, nil)
+	both := newMockPodList([]*v1.Pod{podA, podB}, nil)
+	router := newTestRouter(2, cache.NewWithPodsMetricsForTest([]*v1.Pod{podA, podB}, "m", nil))
+
+	require.NoError(t, router.PostRouteUpdate(createTestRoutingContext("m", prebleSharedPrompt, "seed"), both, podB))
+	router.syncPodSet()
+	assert.Equal(t, []string{prebleTestPodKey("pod-b")}, cachedPodKeys(t, router, "m", prebleSharedPrompt),
+		"pod-b still exists, so it keeps its prefix")
+
+	// pod-b is deleted.
+	router.metricCache = cache.NewWithPodsMetricsForTest([]*v1.Pod{podA}, "m", nil)
+	router.syncPodSet()
+	assert.Empty(t, cachedPodKeys(t, router, "m", prebleSharedPrompt), "pod-b's prefix is dropped once it is gone")
+}
+
+// cachedPodKeys returns the pods the prefix tree lists for model on the node that
+// matches prompt.
+func cachedPodKeys(t *testing.T, router *prefixCacheAndLoadRouter, model, prompt string) []string {
+	t.Helper()
+	tokens, err := utils.TokenizeInputText(prompt)
+	require.NoError(t, err)
+	node, _ := router.cache.MatchPrefixNodeReadOnly(tokens)
+	require.NotNil(t, node)
+	keys := make([]string, 0)
+	for key := range node.GetModelToPods()[model] {
+		keys = append(keys, key)
+	}
+	return keys
 }
