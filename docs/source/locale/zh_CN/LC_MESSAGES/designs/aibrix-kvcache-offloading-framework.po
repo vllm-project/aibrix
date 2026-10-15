@@ -879,16 +879,16 @@ msgid "Max background jobs."
 msgstr "最大后台任务数。"
 
 #: ../../source/designs/aibrix-kvcache-offloading-framework.rst:519
-msgid ":doc:`../features/kvcache-offloading`"
-msgstr ":doc:`../features/kvcache-offloading`"
+msgid ":doc:`../features/scaling-performance/kvcache-offloading`"
+msgstr ":doc:`../features/scaling-performance/kvcache-offloading`"
 
 #: ../../source/designs/aibrix-kvcache-offloading-framework.rst:520
 msgid "Deploying and configuring distributed KV cache."
 msgstr "部署并配置分布式 KVCache。"
 
 #: ../../source/designs/aibrix-kvcache-offloading-framework.rst:521
-msgid ":doc:`../features/kv-event-sync`"
-msgstr ":doc:`../features/kv-event-sync`"
+msgid ":doc:`../features/scaling-performance/kv-event-sync`"
+msgstr ":doc:`../features/scaling-performance/kv-event-sync`"
 
 #: ../../source/designs/aibrix-kvcache-offloading-framework.rst:522
 msgid "Synchronizing KV cache events with the gateway."

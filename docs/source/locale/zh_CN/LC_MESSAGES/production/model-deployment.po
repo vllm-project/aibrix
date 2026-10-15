@@ -5,9 +5,9 @@
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: AIBrix\n"
+"Project-Id-Version:  AIBrix\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"POT-Creation-Date: 2026-10-11 19:13-0700\n"
 "PO-Revision-Date: 2026-09-10 18:55+0800\n"
 "Last-Translator: AIBrix Team\n"
 "Language: zh_CN\n"
@@ -16,7 +16,7 @@ msgstr ""
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Generated-By: Babel 2.17.0\n"
+"Generated-By: Babel 2.18.0\n"
 
 #: ../../source/production/model-deployment.rst:5
 msgid "Production Model Deployments"
@@ -27,8 +27,7 @@ msgid ""
 "This guide covers what to check before a model deployment goes to "
 "production: required labels, choosing a routing strategy, capping model-"
 "level throughput, configuring readiness, and sizing replicas."
-msgstr ""
-"本指南说明模型部署进入生产前需要检查的内容：必需标签、选择路由策略、限制模型级吞吐、配置就绪探针，以及规划副本规模。"
+msgstr "本指南说明模型部署进入生产前需要检查的内容：必需标签、选择路由策略、限制模型级吞吐、配置就绪探针，以及规划副本规模。"
 
 #: ../../source/production/model-deployment.rst:12
 msgid "On this page"
@@ -79,8 +78,7 @@ msgid ""
 "Set the default routing strategy for a model via the config annotation "
 "rather than relying on the global env default. This makes the intent "
 "explicit and allows different models to use different strategies."
-msgstr ""
-"通过配置注解为模型设置默认路由策略，而不要依赖全局环境变量默认值。这样意图更明确，并允许不同模型使用不同策略。"
+msgstr "通过配置注解为模型设置默认路由策略，而不要依赖全局环境变量默认值。这样意图更明确，并允许不同模型使用不同策略。"
 
 #: ../../source/production/model-deployment.rst:45
 msgid "A practical starting point for common workload types:"
@@ -151,8 +149,7 @@ msgid ""
 "Config profiles let a single model deployment serve multiple traffic "
 "classes without separate deployments. A common pattern for production is "
 "to define a profile per client type:"
-msgstr ""
-"Config profile 使单个模型部署可以服务多种流量类别，而无需单独部署。生产环境的常见做法是按客户端类型定义 profile："
+msgstr "Config profile 使单个模型部署可以服务多种流量类别，而无需单独部署。生产环境的常见做法是按客户端类型定义 profile："
 
 #: ../../source/production/model-deployment.rst:91
 msgid "Clients select a profile with the ``config-profile`` request header:"
@@ -162,249 +159,390 @@ msgstr "客户端通过 ``config-profile`` 请求头选择 profile："
 msgid "If no header is set, the ``defaultProfile`` is used."
 msgstr "如果未设置该头，则使用 ``defaultProfile`` 。"
 
-#: ../../source/production/model-deployment.rst:104
+#: ../../source/production/model-deployment.rst:102
+msgid ""
+"Profiles can also carry per-request routing thresholds in "
+"``routingConfig``: the load-balance gate and score, the prefix-cache "
+"standard-deviation factor, the preble cost-model knobs, the VTC score "
+"weights, the auto-blend weights and the prefill/decode thresholds. An "
+"unset field keeps the gateway's environment default, so a profile only "
+"changes what it explicitly sets. See the Config Profiles section of "
+"`Gateway Plugins <../features/gateway-routing/gateway-plugins.html>`_ for"
+" the full list."
+msgstr ""
+
+#: ../../source/production/model-deployment.rst:111
 msgid "Capping Model Throughput (RPS Limiting)"
 msgstr "限制模型吞吐（RPS 限制）"
 
-#: ../../source/production/model-deployment.rst:107
+#: ../../source/production/model-deployment.rst:114
+#: ../../source/production/model-deployment.rst:191
+#: ../../source/production/model-deployment.rst:230
 msgid "What it is"
 msgstr "它是什么"
 
-#: ../../source/production/model-deployment.rst:109
+#: ../../source/production/model-deployment.rst:116
 msgid ""
 "``requestsPerSecond`` sets a hard cap on how many requests per second the"
 " gateway will forward to a given model. Requests that exceed the limit "
 "are rejected immediately with HTTP ``429 Too Many Requests`` before any "
 "routing or inference work is done."
 msgstr ""
-"``requestsPerSecond`` 为网关向指定模型转发的每秒请求数设置硬上限。超出限制的请求会立即以 HTTP "
-"``429 Too Many Requests`` 拒绝，不会进行任何路由或推理。"
+"``requestsPerSecond`` 为网关向指定模型转发的每秒请求数设置硬上限。超出限制的请求会立即以 HTTP ``429 Too "
+"Many Requests`` 拒绝，不会进行任何路由或推理。"
 
-#: ../../source/production/model-deployment.rst:111
+#: ../../source/production/model-deployment.rst:118
 msgid ""
 "This is a **model-level** cap (all users combined), distinct from the "
 "per-user RPM/TPM limits. Use it to:"
 msgstr "这是 **模型级** 上限（所有用户合计），不同于按用户的 RPM/TPM 限制。可用于："
 
-#: ../../source/production/model-deployment.rst:113
+#: ../../source/production/model-deployment.rst:120
 msgid "Protect a model from accidental traffic spikes."
 msgstr "保护模型免受意外流量尖峰影响。"
 
-#: ../../source/production/model-deployment.rst:114
+#: ../../source/production/model-deployment.rst:121
 msgid "Enforce a cost budget (GPU-hours) for a model in a shared cluster."
 msgstr "在共享集群中为模型执行成本预算（GPU 小时）。"
 
-#: ../../source/production/model-deployment.rst:115
+#: ../../source/production/model-deployment.rst:122
 msgid "Guarantee headroom for higher-priority models on the same gateway."
 msgstr "为同一网关上更高优先级的模型预留余量。"
 
-#: ../../source/production/model-deployment.rst:118
+#: ../../source/production/model-deployment.rst:125
+#: ../../source/production/model-deployment.rst:198
+#: ../../source/production/model-deployment.rst:239
 msgid "How to configure it"
 msgstr "如何配置"
 
-#: ../../source/production/model-deployment.rst:120
+#: ../../source/production/model-deployment.rst:127
 msgid ""
 "Add ``requestsPerSecond`` to the relevant profile in the model's config "
 "annotation:"
 msgstr "在模型配置注解的相应 profile 中添加 ``requestsPerSecond`` ："
 
-#: ../../source/production/model-deployment.rst:135
+#: ../../source/production/model-deployment.rst:142
 msgid "To apply different limits per traffic class, set it per profile:"
 msgstr "要按流量类别应用不同限制，请按 profile 分别设置："
 
-#: ../../source/production/model-deployment.rst:155
+#: ../../source/production/model-deployment.rst:162
 msgid ""
 "Here, interactive traffic (``default`` profile) is capped at 100 RPS "
 "while batch traffic is limited to 20 RPS."
 msgstr "此处，交互流量（``default`` profile）上限为 100 RPS，批处理流量限制为 20 RPS。"
 
-#: ../../source/production/model-deployment.rst:158
+#: ../../source/production/model-deployment.rst:165
+#: ../../source/production/model-deployment.rst:218
+#: ../../source/production/model-deployment.rst:255
 msgid "What clients see when the limit is hit"
 msgstr "达到限制时客户端看到的内容"
 
-#: ../../source/production/model-deployment.rst:160
+#: ../../source/production/model-deployment.rst:167
 msgid "The gateway returns:"
 msgstr "网关返回："
 
-#: ../../source/production/model-deployment.rst:170
+#: ../../source/production/model-deployment.rst:177
+#: ../../source/production/model-deployment.rst:267
 msgid "How it works internally"
 msgstr "内部工作方式"
 
-#: ../../source/production/model-deployment.rst:172
+#: ../../source/production/model-deployment.rst:179
 msgid ""
 "The counter is stored in Redis and incremented atomically on each "
 "request. The 1-second window resets automatically. If routing fails after"
 " the counter is incremented (e.g. no ready pods), the increment is rolled"
 " back so failed requests do not consume quota."
 msgstr ""
-"计数器存储在 Redis 中，并在每次请求时原子递增。1 秒窗口会自动重置。如果计数器递增后路由失败（例如没有就绪 Pod），"
-"该增量会回滚，因此失败请求不会消耗配额。"
+"计数器存储在 Redis 中，并在每次请求时原子递增。1 秒窗口会自动重置。如果计数器递增后路由失败（例如没有就绪 "
+"Pod），该增量会回滚，因此失败请求不会消耗配额。"
 
-#: ../../source/production/model-deployment.rst:175
+#: ../../source/production/model-deployment.rst:182
 msgid ""
 "``requestsPerSecond`` requires Redis to be enabled on the gateway plugin."
 " Without Redis, the counter is in-process and is not shared across "
 "gateway replicas. See the `Deploying Gateway <gateway.html>`_ guide — "
 "Enabling Redis for Multi-Replica Deployments."
 msgstr ""
-"``requestsPerSecond`` 要求在网关插件上启用 Redis。"
-"没有 Redis 时，计数器位于进程内，不会在网关副本之间共享。参见 `Deploying Gateway <gateway.html>`_ 指南 — "
-"为多副本部署启用 Redis。"
+"``requestsPerSecond`` 要求在网关插件上启用 Redis。没有 Redis 时，计数器位于进程内，不会在网关副本之间共享。参见"
+" `Deploying Gateway <gateway.html>`_ 指南 — 为多副本部署启用 Redis。"
 
-#: ../../source/production/model-deployment.rst:177
+#: ../../source/production/model-deployment.rst:184
 msgid "Omit ``requestsPerSecond`` or set it to ``0`` to disable the limit."
 msgstr "省略 ``requestsPerSecond`` 或将其设为 ``0`` 可禁用该限制。"
 
-#: ../../source/production/model-deployment.rst:181
+#: ../../source/production/model-deployment.rst:188
+msgid "Scaling RPS Limits with Replica Count"
+msgstr ""
+
+#: ../../source/production/model-deployment.rst:193
+msgid ""
+"``requestsPerSecondPerReplica`` sets a **per-replica** RPS cap instead of"
+" a fixed model-wide one. The gateway multiplies it by the model's current"
+" routable replica count to derive the effective aggregate limit, so the "
+"cap scales automatically as the model is scaled up or down. When set, it "
+"takes precedence over ``requestsPerSecond`` on the same profile."
+msgstr ""
+
+#: ../../source/production/model-deployment.rst:195
+msgid ""
+"Setting ``requestsPerSecondPerReplica`` also forces the profile's routing"
+" strategy to ``least-request`` (overriding whatever ``routingStrategy`` "
+"the profile specifies), because the per-replica figure only holds in "
+"aggregate if traffic is balanced evenly across replicas."
+msgstr ""
+
+#: ../../source/production/model-deployment.rst:213
+msgid ""
+"With 4 routable replicas, the effective aggregate cap above is 40 RPS; "
+"scaling to 8 replicas raises it to 80 RPS without editing the annotation."
+msgstr ""
+
+#: ../../source/production/model-deployment.rst:215
+msgid ""
+"Fractional values (e.g. ``0.5``) are supported for sub-1 rps limits, "
+"expressed internally as \"1 request every N seconds\". The derived limit "
+"is always rounded so the delivered rate never exceeds what was configured"
+" — e.g. ``0.18`` becomes 1 request every 6 seconds (~0.167 rps), not "
+"every 5 (which would have been ~0.2 rps, over the configured cap)."
+msgstr ""
+
+#: ../../source/production/model-deployment.rst:220
+msgid ""
+"The same response as plain ``requestsPerSecond`` — see above — since the "
+"per-replica figure is resolved to an aggregate ``requestsPerSecond`` "
+"value before enforcement."
+msgstr ""
+
+#: ../../source/production/model-deployment.rst:223
+msgid ""
+"Like ``requestsPerSecond``, this requires Redis to be enabled on the "
+"gateway plugin to be enforced cluster-wide. Neither "
+"``requestsPerSecondPerReplica`` nor ``requestsInflight`` (below) has an "
+"environment-variable form — both are configured directly in the profile."
+msgstr ""
+
+#: ../../source/production/model-deployment.rst:227
+msgid "Capping Per-Replica Concurrency (Inflight Limiting)"
+msgstr ""
+
+#: ../../source/production/model-deployment.rst:232
+msgid ""
+"``requestsInflight`` caps the number of concurrent (in-flight) requests "
+"allowed on a single replica. Unlike the RPS limits above, this is "
+"enforced per pod, not as a cluster-wide aggregate, so it needs no "
+"replica-count scaling — it holds regardless of how many replicas the "
+"model has."
+msgstr ""
+
+#: ../../source/production/model-deployment.rst:234
+msgid ""
+"Setting ``requestsInflight`` also forces the routing strategy to ``least-"
+"request``, for the same reason as ``requestsPerSecondPerReplica``: the "
+"per-pod cap is only enforced when a routing strategy actually selects a "
+"single target pod for the request."
+msgstr ""
+
+#: ../../source/production/model-deployment.rst:236
+msgid ""
+"``requestsInflight`` and ``requestsPerSecondPerReplica`` are independent "
+"limits and can be set together (e.g. \"at most 3 concurrent requests per "
+"replica, and also no more than 5 rps per replica\"). If "
+"``requestsInflight`` is configured below the resolved per-replica RPS, "
+"the gateway logs a warning that the RPS ceiling may be practically "
+"unreachable, but leaves the concurrency cap as configured rather than "
+"loosening it."
+msgstr ""
+
+#: ../../source/production/model-deployment.rst:257
+msgid "Once every routable replica is at its inflight cap, the gateway returns:"
+msgstr ""
+
+#: ../../source/production/model-deployment.rst:269
+msgid ""
+"The per-pod running-request count is tracked in Redis and updated "
+"atomically as requests start and finish, so the cap holds across all "
+"gateway replicas sharing that Redis instance. Admission is atomic "
+"(increment-and-check in one round trip), so concurrent requests landing "
+"on the same pod across different gateway instances cannot all slip past "
+"the cap during the same check."
+msgstr ""
+
+#: ../../source/production/model-deployment.rst:272
+#, fuzzy
+msgid ""
+"Without Redis enabled on the gateway plugin, ``requestsInflight`` falls "
+"back to a local, in-process count and is only enforced per gateway "
+"replica rather than cluster-wide for the model replica. See the "
+"`Deploying Gateway <gateway.html>`_ guide — Enabling Redis for Multi-"
+"Replica Deployments."
+msgstr ""
+"``requestsPerSecond`` 要求在网关插件上启用 Redis。没有 Redis 时，计数器位于进程内，不会在网关副本之间共享。参见"
+" `Deploying Gateway <gateway.html>`_ 指南 — 为多副本部署启用 Redis。"
+
+#: ../../source/production/model-deployment.rst:274
+#, fuzzy
+msgid "Omit ``requestsInflight`` or set it to ``0`` to disable the limit."
+msgstr "省略 ``requestsPerSecond`` 或将其设为 ``0`` 可禁用该限制。"
+
+#: ../../source/production/model-deployment.rst:278
 msgid "Readiness and Health"
 msgstr "就绪与健康"
 
-#: ../../source/production/model-deployment.rst:183
+#: ../../source/production/model-deployment.rst:280
 msgid ""
 "The gateway only routes to pods that Kubernetes considers **Ready**. "
 "Ensure your pod's readiness probe waits for the inference server to fully"
 " load the model before marking the pod ready. For large models this can "
 "take several minutes."
 msgstr ""
-"网关只路由到 Kubernetes 视为 **Ready** 的 Pod。"
-"请确保 Pod 的就绪探针在将 Pod 标记为就绪之前，等待推理服务器完成模型加载。大型模型可能需要数分钟。"
+"网关只路由到 Kubernetes 视为 **Ready** 的 Pod。请确保 Pod 的就绪探针在将 Pod "
+"标记为就绪之前，等待推理服务器完成模型加载。大型模型可能需要数分钟。"
 
-#: ../../source/production/model-deployment.rst:185
+#: ../../source/production/model-deployment.rst:282
 msgid "A practical readiness probe for vLLM:"
 msgstr "适用于 vLLM 的实用就绪探针："
 
-#: ../../source/production/model-deployment.rst:197
+#: ../../source/production/model-deployment.rst:294
 msgid ""
 "If a pod fails its readiness probe after previously being ready (e.g. due"
 " to OOM), the gateway stops routing to it immediately without dropping "
 "in-flight requests."
-msgstr ""
-"如果 Pod 曾经就绪后就绪探针失败（例如因 OOM），网关会立即停止向其路由，但不会丢弃进行中的请求。"
+msgstr "如果 Pod 曾经就绪后就绪探针失败（例如因 OOM），网关会立即停止向其路由，但不会丢弃进行中的请求。"
 
-#: ../../source/production/model-deployment.rst:201
+#: ../../source/production/model-deployment.rst:298
 msgid "Replica Sizing"
 msgstr "副本规模规划"
 
-#: ../../source/production/model-deployment.rst:203
+#: ../../source/production/model-deployment.rst:300
 msgid "There is no universal formula, but a useful starting point:"
 msgstr "没有通用公式，但以下起点较为实用："
 
-#: ../../source/production/model-deployment.rst:205
+#: ../../source/production/model-deployment.rst:302
 msgid ""
 "**Measure single-replica capacity** — run a short load test at increasing"
 " QPS until latency or error rate degrades. Note the sustainable QPS."
 msgstr "**测量单副本容量** — 以递增 QPS 运行短期负载测试，直到延迟或错误率劣化。记录可持续 QPS。"
 
-#: ../../source/production/model-deployment.rst:206
+#: ../../source/production/model-deployment.rst:303
+#, python-format
 msgid ""
 "**Apply a safety margin** — target 60–70% of the measured peak to leave "
 "room for spikes."
 msgstr "**预留安全余量** — 以测得峰值的 60–70% 为目标，为尖峰留出空间。"
 
-#: ../../source/production/model-deployment.rst:207
+#: ../../source/production/model-deployment.rst:304
 msgid ""
 "**Add replicas** — ``replicas = ceil(target_QPS / "
 "sustainable_QPS_per_replica)``."
 msgstr "**增加副本** — ``replicas = ceil(target_QPS / sustainable_QPS_per_replica)`` 。"
 
-#: ../../source/production/model-deployment.rst:209
+#: ../../source/production/model-deployment.rst:306
 msgid ""
 "For PD deployments, size prefill and decode pods separately: prefill pods"
 " are compute-bound (add more for high-input-token workloads), decode pods"
 " are memory-bandwidth-bound (add more for long-output workloads)."
 msgstr ""
-"对于 PD 部署，请分别规划 prefill 和 decode Pod 规模：prefill Pod 受计算限制（高输入 token 负载需增加更多），"
-"decode Pod 受内存带宽限制（长输出负载需增加更多）。"
+"对于 PD 部署，请分别规划 prefill 和 decode Pod 规模：prefill Pod 受计算限制（高输入 token "
+"负载需增加更多），decode Pod 受内存带宽限制（长输出负载需增加更多）。"
 
-#: ../../source/production/model-deployment.rst:213
+#: ../../source/production/model-deployment.rst:310
 msgid "Rolling Updates"
 msgstr "滚动更新"
 
-#: ../../source/production/model-deployment.rst:215
+#: ../../source/production/model-deployment.rst:312
 msgid ""
 "LLM pods take a long time to start. Configure ``maxUnavailable: 0`` and "
 "``maxSurge: 1`` (or higher) to ensure capacity is not lost during "
 "rollouts:"
-msgstr "LLM Pod 启动较慢。配置 ``maxUnavailable: 0`` 和 ``maxSurge: 1`` （或更高），以确保滚动发布期间不损失容量："
+msgstr ""
+"LLM Pod 启动较慢。配置 ``maxUnavailable: 0`` 和 ``maxSurge: 1`` "
+"（或更高），以确保滚动发布期间不损失容量："
 
-#: ../../source/production/model-deployment.rst:226
+#: ../../source/production/model-deployment.rst:323
 msgid ""
 "With ``maxUnavailable: 0``, Kubernetes only terminates an old pod after "
 "the new pod passes its readiness probe. This prevents the gateway from "
 "routing to a pod that has not finished loading the model."
 msgstr ""
-"设置 ``maxUnavailable: 0`` 时，Kubernetes 仅在新 Pod 通过就绪探针后才会终止旧 Pod。"
-"这可防止网关将流量路由到尚未完成模型加载的 Pod。"
+"设置 ``maxUnavailable: 0`` 时，Kubernetes 仅在新 Pod 通过就绪探针后才会终止旧 "
+"Pod。这可防止网关将流量路由到尚未完成模型加载的 Pod。"
 
-#: ../../source/production/model-deployment.rst:228
+#: ../../source/production/model-deployment.rst:325
 msgid ""
 "For PD deployments, update prefill and decode pods in separate rollouts —"
 " updating both simultaneously can temporarily leave some rolesets "
 "incomplete, causing the gateway to skip them."
 msgstr ""
-"对于 PD 部署，请分别滚动更新 prefill 和 decode Pod —"
-" 同时更新两者可能暂时导致部分 RoleSet 不完整，从而使网关跳过它们。"
+"对于 PD 部署，请分别滚动更新 prefill 和 decode Pod — 同时更新两者可能暂时导致部分 RoleSet "
+"不完整，从而使网关跳过它们。"
 
-#: ../../source/production/model-deployment.rst:232
+#: ../../source/production/model-deployment.rst:329
 msgid "Observability Checklist"
 msgstr "可观测性检查清单"
 
-#: ../../source/production/model-deployment.rst:234
+#: ../../source/production/model-deployment.rst:331
 msgid "Before shipping to production, ensure you have visibility into:"
 msgstr "上线生产前，请确保能够观察到："
 
-#: ../../source/production/model-deployment.rst:236
+#: ../../source/production/model-deployment.rst:333
 msgid ""
 "**Request rate per model** — ``aibrix_gateway_requests_total`` counter, "
 "broken down by ``model`` label."
 msgstr "**每个模型的请求速率** — ``aibrix_gateway_requests_total`` 计数器，按 ``model`` 标签分解。"
 
-#: ../../source/production/model-deployment.rst:237
+#: ../../source/production/model-deployment.rst:334
 msgid "**Routing latency** — time between request arrival and pod selection."
 msgstr "**路由延迟** — 从请求到达至选定 Pod 的时间。"
 
-#: ../../source/production/model-deployment.rst:238
+#: ../../source/production/model-deployment.rst:335
 msgid ""
 "**RPS limit rejections** — watch for ``x-error-model-rps-exceeded`` "
 "response headers or the corresponding metric."
 msgstr "**RPS 限制拒绝** — 关注 ``x-error-model-rps-exceeded`` 响应头或对应指标。"
 
-#: ../../source/production/model-deployment.rst:239
+#: ../../source/production/model-deployment.rst:336
 msgid ""
 "**Pod readiness churn** — alerts on pods that flip between Ready and "
 "NotReady indicate OOM or instability."
 msgstr "**Pod 就绪抖动** — 对在 Ready 与 NotReady 之间切换的 Pod 告警，通常表示 OOM 或不稳定。"
 
-#: ../../source/production/model-deployment.rst:240
+#: ../../source/production/model-deployment.rst:337
 msgid ""
 "**Prefill timeout rate** (PD only) — ``pd-prefill-request-error`` log "
 "entries; a high rate suggests prefill pods are overloaded."
 msgstr ""
-"**Prefill 超时率** （仅 PD） — ``pd-prefill-request-error`` 日志条目；比率偏高表明 prefill "
-"Pod 过载。"
+"**Prefill 超时率** （仅 PD） — ``pd-prefill-request-error`` 日志条目；比率偏高表明 prefill"
+" Pod 过载。"
 
-#: ../../source/production/model-deployment.rst:242
+#: ../../source/production/model-deployment.rst:339
 msgid ""
 "See the `Observability <observability.html>`_ guide for the full metrics "
 "reference."
 msgstr "完整指标参考见 `Observability <observability.html>`_ 指南。"
 
-#: ../../source/production/model-deployment.rst:244
+#: ../../source/production/model-deployment.rst:341
 msgid "What's next?"
 msgstr "下一步？"
 
-#: ../../source/production/model-deployment.rst:247
+#: ../../source/production/model-deployment.rst:344
 msgid ":doc:`gateway`: production gateway configuration"
 msgstr ":doc:`gateway` ：生产网关配置"
 
-#: ../../source/production/model-deployment.rst:248
+#: ../../source/production/model-deployment.rst:345
 msgid ":doc:`observability`: full metrics reference"
 msgstr ":doc:`observability` ：完整指标参考"
 
-#: ../../source/production/model-deployment.rst:249
-msgid ":doc:`../features/autoscaling/autoscaling`: autoscale the deployment"
-msgstr ":doc:`../features/autoscaling/autoscaling` ：对部署进行自动扩缩容"
+#: ../../source/production/model-deployment.rst:346
+msgid ""
+":doc:`../features/scaling-performance/autoscaling/autoscaling`: autoscale"
+" the deployment"
+msgstr ":doc:`../features/scaling-performance/autoscaling/autoscaling` ：对部署进行自动扩缩容"
 
-#: ../../source/production/model-deployment.rst:250
-msgid ":doc:`../features/kvcache-offloading`: reduce prefill cost with KV reuse"
-msgstr ":doc:`../features/kvcache-offloading` ：通过 KV 复用降低 prefill 成本"
+#: ../../source/production/model-deployment.rst:347
+msgid ""
+":doc:`../features/scaling-performance/kvcache-offloading`: reduce prefill"
+" cost with KV reuse"
+msgstr ""
+":doc:`../features/scaling-performance/kvcache-offloading` ：通过 KV 复用降低 "
+"prefill 成本"
+

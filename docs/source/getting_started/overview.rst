@@ -57,13 +57,13 @@ replicas, which adapters are loaded where, and which pods form a distributed inf
 group. These are the Kubernetes controllers that reconcile the custom resources listed below,
 and also the **AI Runtime**, a sidecar in each engine pod that downloads model weights, loads
 and unloads LoRA adapters, and normalizes engine metrics into a consistent shape. See
-:doc:`../designs/architecture` and :doc:`../features/runtime`.
+:doc:`../designs/architecture` and :doc:`../features/model-serving/runtime`.
 
 **Data plane**: the request path. Envoy terminates the connection and AIBrix runs as an
 Envoy ``ext_proc`` extension: for each request it resolves the model, selects a pod, and
 returns a ``target-pod`` header. Envoy forwards the request to that pod, so traffic never
 flows through the AIBrix plugin. Routing is decided per request, not per deployment. See
-:doc:`../features/gateway-plugins`.
+:doc:`../features/gateway-routing/gateway-plugins`.
 
 Core concepts
 =============
@@ -81,19 +81,19 @@ documentation.
    * - ``PodAutoscaler``
      - ``autoscaling.aibrix.ai``
      - Scales a workload on inference metrics. Supports HPA, KPA, and APA strategies.
-       See :doc:`../features/autoscaling/autoscaling`.
+       See :doc:`../features/scaling-performance/autoscaling/autoscaling`.
    * - ``ModelAdapter``
      - ``model.aibrix.ai``
      - Registers a LoRA adapter and manages loading it onto matching pods.
-       See :doc:`../features/lora-dynamic-loading`.
+       See :doc:`../features/model-serving/lora-dynamic-loading`.
    * - ``ModelClaim``
      - ``model.aibrix.ai``
      - *(experimental)* Lets several independently managed model engines share a warm GPU
-       runtime pod, instead of one Deployment per model. See :doc:`../features/modelclaim`.
+       runtime pod, instead of one Deployment per model. See :doc:`../features/model-serving/model-claim`.
    * - ``KVCache``
      - ``orchestration.aibrix.ai``
      - Provisions a distributed KV cache backend for offloading and cross-engine reuse.
-       See :doc:`../features/kvcache-offloading`.
+       See :doc:`../features/scaling-performance/kvcache-offloading`.
    * - ``StormService``
      - ``orchestration.aibrix.ai``
      - Orchestrates multi-role serving topologies, including prefill/decode
@@ -109,7 +109,7 @@ documentation.
    * - ``RayClusterFleet``
      - ``orchestration.aibrix.ai``
      - Manages multi-node inference on Ray for models too large for one node.
-       See :doc:`../features/multi-node-inference`.
+       See :doc:`../features/model-serving/multi-node-inference`.
 
 Two more terms appear constantly:
 
@@ -119,7 +119,7 @@ profile, or an environment default.
 
 **Prefill / decode disaggregation**: splitting the two phases of inference across separate
 pod pools so each can be sized and scaled independently.
-See :doc:`../features/pd-disaggregation`.
+See :doc:`../features/gateway-routing/pd-disaggregation`.
 
 Which feature solves which problem
 ==================================
@@ -133,26 +133,26 @@ If you arrived with a specific problem, start here.
    * - Your problem
      - Start with
    * - "Requests pile up on some replicas while others idle"
-     - :doc:`../features/gateway-plugins`: load-aware routing strategies
+     - :doc:`../features/gateway-routing/gateway-plugins`: load-aware routing strategies
    * - "Repeated prompt prefixes are re-computed every request"
-     - :doc:`../features/kvcache-offloading` and prefix-cache routing in
-       :doc:`../features/gateway-plugins`
+     - :doc:`../features/scaling-performance/kvcache-offloading` and prefix-cache routing in
+       :doc:`../features/gateway-routing/gateway-plugins`
    * - "I serve many fine-tunes of one base model and GPUs are idle"
-     - :doc:`../features/lora-dynamic-loading`: many adapters per pod
+     - :doc:`../features/model-serving/lora-dynamic-loading`: many adapters per pod
    * - "Replica count does not track real load"
-     - :doc:`../features/autoscaling/autoscaling`: KPA/APA on engine metrics
+     - :doc:`../features/scaling-performance/autoscaling/autoscaling`: KPA/APA on engine metrics
    * - "Time to first token is too high under load"
-     - :doc:`../features/pd-disaggregation`: separate prefill from decode
+     - :doc:`../features/gateway-routing/pd-disaggregation`: separate prefill from decode
    * - "The model does not fit on one node"
-     - :doc:`../features/multi-node-inference`
+     - :doc:`../features/model-serving/multi-node-inference`
    * - "I have a mix of GPU types and want to control cost"
-     - :doc:`../features/heterogeneous-gpu` *(experimental)*
+     - :doc:`../features/model-serving/heterogeneous-gpu` *(experimental)*
    * - "I need to run large offline jobs, not live traffic"
-     - :doc:`../features/batch-api`
+     - :doc:`../features/batch-inference/batch-api`
    * - "I cannot see what the system is doing"
      - :doc:`../production/observability`
    * - "I need to measure whether any of this helped"
-     - :doc:`../features/benchmark-and-generator` and :doc:`../features/brixbench`
+     - :doc:`../features/benchmark/benchmark-and-generator` and :doc:`../features/benchmark/brixbench`
 
 .. seealso::
 

@@ -226,38 +226,39 @@ func (t *InMemorySlidingWindowTokenTracker) getCutoffTimestamp() int64 {
 
 // Caller must hold the write lock
 func (t *InMemorySlidingWindowTokenTracker) pruneExpiredBucketsAndUpdateState(user string, cutoff int64) {
+	oldTotal := t.userTotals[user]
+	t.updateUserTotalAndMinMax(user, oldTotal, t.pruneExpiredBuckets(user, cutoff))
+}
+
+// pruneExpiredBuckets removes the user's buckets older than cutoff and returns
+// the user's total without them. It leaves userTotals and the min/max tracking
+// to the caller. Caller must hold the write lock.
+func (t *InMemorySlidingWindowTokenTracker) pruneExpiredBuckets(user string, cutoff int64) float64 {
+	total := t.userTotals[user]
 	_, ok := t.userBucketStore[user]
 	if !ok {
-		return // User doesn't exist or has no buckets
+		return total // User doesn't exist or has no buckets
 	}
 
 	bucketsList := t.userBucketStore[user].buckets
 	lookupMap := t.userBucketStore[user].lookup
-	modified := false
-	oldTotal := t.userTotals[user]
-	newTotal := oldTotal
 
 	// Iterate from the front (oldest) of the list
 	for el := bucketsList.Front(); el != nil; {
 		node := el.Value.(*bucketNode)
 		if node.timestamp < cutoff {
 			// Remove expired bucket
-			newTotal -= node.tokenCount
+			total -= node.tokenCount
 			delete(lookupMap, node.timestamp)
 			next := el.Next()
 			bucketsList.Remove(el)
 			el = next
-			modified = true
 		} else {
 			// Stop as soon as we find a non-expired bucket (list is ordered)
 			break
 		}
 	}
-
-	if modified {
-		// Update user total and min/max tracking with correct old and new values
-		t.updateUserTotalAndMinMax(user, oldTotal, newTotal)
-	}
+	return max(0, total)
 }
 
 // Time: Avg O(1) (amortized), Worst O(B_u) where B_u = buckets for user u | Space: O(1)
@@ -359,9 +360,7 @@ func (t *InMemorySlidingWindowTokenTracker) UpdateTokenCount(ctx context.Context
 	oldTotal := t.userTotals[user]
 
 	// Prune first before adding/updating to maintain window size constraint accurately
-	t.pruneExpiredBucketsAndUpdateState(user, cutoff)
-
-	totalAfterPruning := t.userTotals[user]
+	totalAfterPruning := t.pruneExpiredBuckets(user, cutoff)
 
 	// Clamp negative tokens to zero
 	inputTokens = max(0, inputTokens)

@@ -221,6 +221,99 @@ func TestGatewayPluginManifest_SharedRouteKeepsStreamingAndDropsVideos(t *testin
 	assert.Equal(t, "Streamed", mode.Response.Body, "SSE completions must keep being forwarded chunk by chunk")
 }
 
+// TestGatewayPluginManifest_SharedRouteServesMessagesAndAudio: the plugin can only
+// read the model out of a body it receives, and it only receives requests that
+// matched a reserved route first. The model routes alone cannot be reached, since
+// they match on the model header ext_proc writes.
+func TestGatewayPluginManifest_SharedRouteServesMessagesAndAudio(t *testing.T) {
+	manifest := loadGatewayPluginManifest(t)
+	matches := manifest.pathMatches(t, "reserved-router")
+
+	for _, path := range []string{
+		PathChatCompletions,
+		PathResponses,
+		PathMessages,
+		PathAudioTranscriptions,
+		PathAudioTranslations,
+	} {
+		assert.Contains(t, matches, manifestPathMatch{Type: "PathPrefix", Value: path},
+			"%s requests would never reach ext_proc", path)
+	}
+
+	// The JSON and multipart parsers both need the whole request body.
+	mode := manifest.policyFor(t, "reserved-router").Spec.ExtProc[0].ProcessingMode
+	require.NotNil(t, mode.Request)
+	assert.Equal(t, "Buffered", mode.Request.Body)
+}
+
+// TestGatewayPluginManifest_SharedRouteServesScore: /v1/score has to match a reserved
+// route before ext_proc can read its model, and it belongs on the shared one, whose
+// streamed response mode passes the single JSON score body through unchanged.
+func TestGatewayPluginManifest_SharedRouteServesScore(t *testing.T) {
+	manifest := loadGatewayPluginManifest(t)
+
+	assert.Contains(t, manifest.pathMatches(t, "reserved-router"), manifestPathMatch{Type: "PathPrefix", Value: PathScore})
+}
+
+// TestGatewayPluginManifest_SharedRouteServesImageEdits: /v1/images/edits has to match a
+// reserved route before ext_proc can read its model out of the multipart body, which needs
+// the whole body buffered like the other multipart endpoints.
+func TestGatewayPluginManifest_SharedRouteServesImageEdits(t *testing.T) {
+	manifest := loadGatewayPluginManifest(t)
+
+	assert.Contains(t, manifest.pathMatches(t, "reserved-router"), manifestPathMatch{Type: "PathPrefix", Value: PathImagesEdits})
+
+	mode := manifest.policyFor(t, "reserved-router").Spec.ExtProc[0].ProcessingMode
+	require.NotNil(t, mode.Request)
+	assert.Equal(t, "Buffered", mode.Request.Body)
+}
+
+func TestGatewayPluginManifest_SharedRouteServesNativeClassify(t *testing.T) {
+	manifest := loadGatewayPluginManifest(t)
+
+	assert.Contains(t, manifest.pathMatches(t, "reserved-router"), manifestPathMatch{Type: "PathPrefix", Value: PathNativeClassify})
+}
+
+// TestGatewayPluginManifest_SharedRouteServesAudioSpeech: /v1/audio/speech has to match a
+// reserved route before ext_proc can read its model, and it belongs on the shared one, whose
+// streamed response mode passes the binary audio chunks through unchanged.
+func TestGatewayPluginManifest_SharedRouteServesAudioSpeech(t *testing.T) {
+	manifest := loadGatewayPluginManifest(t)
+
+	assert.Contains(t, manifest.pathMatches(t, "reserved-router"), manifestPathMatch{Type: "PathPrefix", Value: PathAudioSpeech})
+}
+
+// TestGatewayPluginManifest_SharedRouteServesAudioSpeechBatch: the batch endpoint has no match of
+// its own. It relies on the /v1/audio/speech PathPrefix, which Envoy Gateway applies on path
+// segment boundaries, so the manifest must keep a prefix match that is a parent segment of it.
+func TestGatewayPluginManifest_SharedRouteServesAudioSpeechBatch(t *testing.T) {
+	manifest := loadGatewayPluginManifest(t)
+
+	covered := false
+	for _, match := range manifest.pathMatches(t, "reserved-router") {
+		if match.Type == "PathPrefix" && strings.HasPrefix(PathAudioSpeechBatch, match.Value+"/") {
+			covered = true
+		}
+	}
+	assert.True(t, covered, "no PathPrefix match on the reserved router covers %s", PathAudioSpeechBatch)
+}
+
+// TestGatewayPluginManifest_SharedRouteServesChatCompletionsBatch: the batch endpoint has no
+// match of its own. It relies on the /v1/chat/completions PathPrefix, which Envoy Gateway applies
+// on path segment boundaries, so the manifest must keep a prefix match that is a parent segment
+// of it.
+func TestGatewayPluginManifest_SharedRouteServesChatCompletionsBatch(t *testing.T) {
+	manifest := loadGatewayPluginManifest(t)
+
+	covered := false
+	for _, match := range manifest.pathMatches(t, "reserved-router") {
+		if match.Type == "PathPrefix" && strings.HasPrefix(PathChatCompletionsBatch, match.Value+"/") {
+			covered = true
+		}
+	}
+	assert.True(t, covered, "no PathPrefix match on the reserved router covers %s", PathChatCompletionsBatch)
+}
+
 // TestGatewayPluginManifest_NoUnsupportedModeOverrideField guards against the
 // tempting one-line fix: EnvoyExtensionPolicy in Envoy Gateway v1.2.8 has no
 // allowModeOverride field, so setting it would be dropped by the API server and

@@ -28,6 +28,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -83,18 +84,22 @@ type responsesReqMinimal struct {
 }
 
 // contentItem holds the raw JSON "content" field of a chat message or a Responses API
-// input item. It is shared by chatReqMinimal.Messages, parseChatMessages, and
-// parseResponsesInput.
+// input item, plus the "tool_calls" of an assistant chat message and its deprecated
+// single-call form "function_call". It is shared by chatReqMinimal.Messages,
+// parseChatMessages, and parseResponsesInput.
 type contentItem struct {
-	Content json.RawMessage `json:"content"`
+	Content      json.RawMessage `json:"content"`
+	ToolCalls    json.RawMessage `json:"tool_calls"`
+	FunctionCall json.RawMessage `json:"function_call"`
 }
 
 // engineNativeReqMinimal captures the fields needed to route a vLLM engine-native
-// request (/tokenize, /pooling): the completion form carries "prompt" (tokenize)
-// or "input" (pooling), the chat form "messages". Prompt, input, and messages all
-// stay raw JSON so a wrongly-typed value reaches the engine's validator instead of
-// failing this unmarshal -- in particular a non-array "messages" on a
-// completion-form body (an ignored extra) must not reject a valid "input".
+// request (/tokenize, /pooling, /classify): the completion form carries "prompt"
+// (tokenize) or "input" (pooling, classify), the chat form "messages". Prompt,
+// input, and messages all stay raw JSON so a wrongly-typed value reaches the
+// engine's validator instead of failing this unmarshal -- in particular a non-array
+// "messages" on a completion-form body (an ignored extra) must not reject a valid
+// "input".
 type engineNativeReqMinimal struct {
 	Model          string          `json:"model"`
 	Prompt         json.RawMessage `json:"prompt"`
@@ -114,7 +119,11 @@ type embeddingReqMinimal struct {
 
 // parseChatMessages extracts a single concatenated text string from the minimal
 // chat request messages. For simple string content it unquotes the JSON string
-// directly; for array/object content it writes the raw JSON bytes.
+// directly; for array/object content it writes the raw JSON bytes. A null content
+// contributes nothing. An assistant message's tool_calls, or its deprecated
+// function_call, are written as raw JSON after its content: the engine renders them
+// into the prompt, so they belong in the text used for prefix matching and
+// prompt-length estimates.
 func parseChatMessages(requestID string, msgs []contentItem) (string, *extProcPb.ProcessingResponse) {
 	if len(msgs) == 0 {
 		klog.ErrorS(nil, "no messages in the request body", "requestID", requestID)
@@ -125,25 +134,55 @@ func parseChatMessages(requestID string, msgs []contentItem) (string, *extProcPb
 	var builder strings.Builder
 	growHint := len(msgs) - 1 // space separators
 	for _, m := range msgs {
-		growHint += len(m.Content)
+		growHint += len(m.Content) + len(m.ToolCalls) + len(m.FunctionCall) + 2
 	}
 	builder.Grow(growHint)
 	for i, m := range msgs {
 		if i > 0 {
 			builder.WriteByte(' ')
 		}
-		if len(m.Content) > 0 && m.Content[0] == '"' {
-			// Simple string content: JSON-unquote it without allocating an interface.
-			var s string
-			if err := sonic.Unmarshal(m.Content, &s); err == nil {
-				builder.WriteString(s)
-				continue
-			}
+		hasContent := len(m.Content) > 0 && string(m.Content) != jsonNull
+		if hasContent {
+			writeChatContent(&builder, m.Content)
 		}
-		// Array or object content parts: write raw JSON.
-		builder.Write(m.Content)
+		calls := m.ToolCalls
+		if !hasToolCalls(calls) {
+			calls = m.FunctionCall
+		}
+		if hasToolCalls(calls) {
+			if hasContent {
+				builder.WriteByte(' ')
+			}
+			builder.Write(calls)
+		}
 	}
 	return builder.String(), nil
+}
+
+// hasToolCalls reports whether a message's raw "tool_calls" or "function_call"
+// holds a call. An empty array counts as none, with or without inner whitespace.
+func hasToolCalls(raw json.RawMessage) bool {
+	if len(raw) == 0 || string(raw) == jsonNull {
+		return false
+	}
+	if raw[0] == '[' && raw[len(raw)-1] == ']' {
+		return len(bytes.TrimSpace(raw[1:len(raw)-1])) > 0
+	}
+	return true
+}
+
+// writeChatContent appends one message's content to the routing text.
+func writeChatContent(builder *strings.Builder, content json.RawMessage) {
+	if content[0] == '"' {
+		// Simple string content: JSON-unquote it without allocating an interface.
+		var s string
+		if err := sonic.Unmarshal(content, &s); err == nil {
+			builder.WriteString(s)
+			return
+		}
+	}
+	// Array or object content parts: write raw JSON.
+	builder.Write(content)
 }
 
 // parseResponsesInput extracts a single concatenated text string from a Responses
@@ -159,7 +198,7 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 	if input[0] == '"' {
 		var s string
 		if err := sonic.Unmarshal(input, &s); err != nil {
-			klog.ErrorS(err, "error to unmarshal responses input string", "requestID", requestID)
+			klog.ErrorS(nil, "error to unmarshal responses input string", "requestID", requestID, "reason", jsonParseReason(err))
 			return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "input", HeaderErrorRequestBodyProcessing, "true")
 		}
 		return s, nil
@@ -169,7 +208,7 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 	// contribute nothing to the routing key.
 	var items []contentItem
 	if err := sonic.Unmarshal(input, &items); err != nil {
-		klog.ErrorS(err, "error to unmarshal responses input array", "requestID", requestID)
+		klog.ErrorS(nil, "error to unmarshal responses input array", "requestID", requestID, "reason", jsonParseReason(err))
 		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' must be a string or an array of input items", "", "input", HeaderErrorRequestBodyProcessing, "true")
 	}
 	if len(items) == 0 {
@@ -188,32 +227,57 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message, prefixText string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	path := pathWithoutQuery(requestPath)
 	switch path {
-	case PathChatCompletions, PathMessages:
+	// Text generation
+	case PathChatCompletions, PathMessages, PathMessagesCountTokens:
 		model, message, prefixText, stream, errRes = validateChatRequest(requestID, path, requestBody, user)
+	case PathChatCompletionsBatch:
+		model, message, errRes = validateChatBatchRequest(requestID, requestBody)
 	case PathResponses:
 		model, message, prefixText, stream, errRes = validateResponsesRequest(requestID, requestBody)
 	case PathCompletions:
-		model, message, stream, errRes = validateCompletionRequest(requestID, requestBody)
+		model, message, stream, errRes = validateCompletionRequest(requestID, requestBody, user)
+
+	// Embeddings, ranking, classification and scoring
 	case PathEmbeddings:
 		model, errRes = validateEmbeddingRequest(requestID, requestBody)
-	case PathImagesGenerations, PathVideoGenerations:
-		model, errRes = validateImageGenerationRequest(requestID, requestBody)
 	case PathRerank:
 		model, message, errRes = validateRerankRequest(requestID, requestBody)
 	case PathClassify:
 		model, message, errRes = validateClassifyRequest(requestID, requestBody)
+	case PathNativeClassify:
+		model, message, errRes = validateNativeClassifyRequest(requestID, requestBody)
 	case PathDecisions:
 		model, message, errRes = validateDecisionsRequest(requestID, requestBody)
 	case PathSystemOne:
 		model, message, errRes = validateSystemOneRequest(requestID, requestBody)
+	case PathScore:
+		model, message, errRes = validateScoreRequest(requestID, requestBody)
+
+	// Engine-native utilities
 	case PathTokenize:
 		model, message, errRes = validateTokenizeRequest(requestID, requestBody)
 	case PathPooling:
 		model, message, errRes = validatePoolingRequest(requestID, requestBody)
+
+	// Image and video generation share one JSON validator
+	case PathImagesGenerations, PathVideoGenerations:
+		model, errRes = validateImageGenerationRequest(requestID, path, requestBody)
+
+	case PathImagesEdits:
+		// Image edits upload the source images as files, so the body is multipart/form-data.
+		// A multipart request never gets here (see isMultipartFormPath); this is a JSON or
+		// content-type-less one.
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "image edit requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
+
+	// Audio
 	case PathAudioTranscriptions, PathAudioTranslations:
-		// Audio endpoints require multipart/form-data content-type, not JSON
-		// This case handles the error when JSON is sent to audio endpoints
+		// Audio transcription and translation require multipart/form-data content-type, not JSON
+		// This case handles the error when JSON is sent to these audio endpoints
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "audio requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
+	case PathAudioSpeech:
+		model, message, errRes = validateAudioSpeechRequest(requestID, requestBody)
+	case PathAudioSpeechBatch:
+		model, message, errRes = validateAudioSpeechBatchRequest(requestID, requestBody)
 	default:
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", "", "", HeaderErrorRequestBodyProcessing, "true")
 	}
@@ -221,7 +285,11 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		return
 	}
 
-	klog.V(4).InfoS("validateRequestBody", "requestID", requestID, "requestPath", requestPath, "model", model, "message", message, "stream", stream)
+	klog.V(4).InfoS("validateRequestBody", "requestID", requestID, "requestPath", requestPath, "model", model, "messageBytes", len(message), "stream", stream)
+	if v := klog.V(6); v.Enabled() {
+		text, truncated := truncateForLog([]byte(message))
+		v.InfoS("validateRequestBody message", "requestID", requestID, "message", text, "messageTruncated", truncated)
+	}
 	return
 }
 
@@ -233,7 +301,7 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 	// map[string]json.RawMessage unmarshal used only for stream-field detection.
 	var req chatReqMinimal
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
+		logRequestBodyParseFailure(requestID, requestPath, "error to unmarshal chat completions object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -242,7 +310,7 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 		return
 	}
 	systemText := ""
-	if requestPath == PathMessages {
+	if requestPath == PathMessages || requestPath == PathMessagesCountTokens {
 		systemText = requestPromptText(requestID, req.System)
 	}
 	prefixText = combinePrefixText(message, systemText, canonicalToolsText(requestID, req.Tools))
@@ -260,6 +328,71 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 	return
 }
 
+// validateChatBatchRequest parses and validates a /v1/chat/completions/batch request body.
+// Only the envelope is checked: a JSON object with a non-empty "model" to route on and a
+// non-empty "messages" array whose entries are non-empty conversations, each an array of
+// messages. The sampling options and message contents belong to the engine. The returned message
+// joins the conversation texts for routing. A "stream" field is deliberately not surfaced as a
+// stream: the gateway always treats a batch as non-SSE, and the engine does not stream one (it
+// expects stream to be false or omitted and may reject true), so its response is one JSON
+// document that SSE parsing would fail on.
+// nolint:nakedret
+func validateChatBatchRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	if trimmed := bytes.TrimSpace(requestBody); len(trimmed) == 0 || trimmed[0] != '{' {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	// Conversations stay raw so each is parsed once, after its shape is known to be an array.
+	var req struct {
+		Model    string            `json:"model"`
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		logRequestBodyParseFailure(requestID, PathChatCompletionsBatch, "error to unmarshal chat completions batch object", err, requestBody)
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	// The gateway selects the backend pod by model, so it cannot fall back to an engine default.
+	if strings.TrimSpace(req.Model) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if len(req.Messages) == 0 {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'messages' is a required property and cannot be empty", "", "messages", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	conversationTexts := make([]string, 0, len(req.Messages))
+	for i, rawConversation := range req.Messages {
+		param := fmt.Sprintf("messages.%d", i)
+		// A flat list of messages is the single-conversation shape; name the entry that gives it away.
+		if trimmed := bytes.TrimSpace(rawConversation); len(trimmed) == 0 || trimmed[0] != '[' {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("'%s' must be an array of messages", param), "", param, HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		var conversation []contentItem
+		if err := sonic.Unmarshal(rawConversation, &conversation); err != nil {
+			logRequestBodyParseFailure(requestID, PathChatCompletionsBatch, "error to unmarshal chat completions batch conversation", err, rawConversation)
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", param, HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		if len(conversation) == 0 {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("'%s' cannot be empty", param), "", param, HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		var conversationText string
+		if conversationText, errRes = parseChatMessages(requestID, conversation); errRes != nil {
+			return
+		}
+		conversationTexts = append(conversationTexts, conversationText)
+	}
+
+	model, message = req.Model, strings.Join(conversationTexts, "\n")
+	return
+}
+
 // validateResponsesRequest parses and validates an OpenAI Responses API (/v1/responses) request body.
 // nolint:nakedret
 func validateResponsesRequest(requestID string, requestBody []byte) (model, message, prefixText string, stream bool, errRes *extProcPb.ProcessingResponse) {
@@ -268,7 +401,7 @@ func validateResponsesRequest(requestID string, requestBody []byte) (model, mess
 	// .include_usage requirement to enforce for TPM-limited users.
 	var req responsesReqMinimal
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		klog.ErrorS(err, "error to unmarshal responses object", "requestID", requestID, "requestBody", string(requestBody))
+		logRequestBodyParseFailure(requestID, PathResponses, "error to unmarshal responses object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -294,24 +427,51 @@ func validateResponsesRequest(requestID string, requestBody []byte) (model, mess
 
 // validateCompletionRequest parses and validates a legacy completions request body.
 // nolint:nakedret
-func validateCompletionRequest(requestID string, requestBody []byte) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
-	// openai.CompletionsNewParams does not support json unmarshal for CompletionNewParamsPromptUnion in release v0.1.0-beta.10
-	// once supported, input request will be directly unmarshal into openai.CompletionsNewParams
-	type Completion struct {
-		Prompt string `json:"prompt"`
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
+func validateCompletionRequest(requestID string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
+	var req struct {
+		Prompt        json.RawMessage `json:"prompt"`
+		Model         string          `json:"model"`
+		Stream        bool            `json:"stream"`
+		StreamOptions struct {
+			IncludeUsage bool `json:"include_usage"`
+		} `json:"stream_options"`
 	}
-	completionObj := Completion{}
-	if err := sonic.Unmarshal(requestBody, &completionObj); err != nil {
-		klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		logRequestBodyParseFailure(requestID, PathCompletions, "error to unmarshal completions object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
-	model = completionObj.Model
-	message = completionObj.Prompt
-	stream = completionObj.Stream
+	model = req.Model
+	message = completionPromptText(requestID, req.Prompt)
+	stream = req.Stream
+	// Without stream_options.include_usage the engine sends no usage chunk, so a
+	// TPM-limited user's streamed tokens would never be metered. Mirror the check
+	// validateChatRequest applies to /v1/chat/completions.
+	if stream && user.Tpm > 0 && !req.StreamOptions.IncludeUsage {
+		klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID)
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "include usage for stream options not set",
+			"", "stream_options", HeaderErrorStreamOptionsIncludeUsage, "include usage for stream options not set")
+		return
+	}
 	return
+}
+
+// completionPromptText renders all four prompt shapes accepted by the OpenAI
+// completions API. String batches are joined for useful routing text; token
+// arrays retain their canonical JSON form because the gateway cannot decode
+// model-specific token IDs.
+func completionPromptText(requestID string, prompt json.RawMessage) string {
+	raw := bytes.TrimSpace(prompt)
+	if len(raw) > 1 && raw[0] == '[' {
+		firstElement := bytes.TrimSpace(raw[1:])
+		if len(firstElement) > 0 && firstElement[0] == '"' {
+			var prompts []string
+			if err := sonic.Unmarshal(raw, &prompts); err == nil {
+				return strings.Join(prompts, " ")
+			}
+		}
+	}
+	return requestPromptText(requestID, raw)
 }
 
 // embeddingReqRaw is a fallback parse target for embeddings requests whose `input` uses
@@ -453,7 +613,7 @@ func validateEmbeddingRequest(requestID string, requestBody []byte) (model strin
 		if m, mmErrRes, matched := validateMultimodalEmbeddingRequest(requestID, requestBody); matched {
 			return m, mmErrRes
 		}
-		klog.ErrorS(err, "error to unmarshal embeddings object", "requestID", requestID, "requestBody", string(requestBody))
+		logRequestBodyParseFailure(requestID, PathEmbeddings, "error to unmarshal embeddings object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -478,10 +638,10 @@ func validateEmbeddingRequest(requestID string, requestBody []byte) (model strin
 
 // validateImageGenerationRequest parses and validates an image/video generation request body.
 // nolint:nakedret
-func validateImageGenerationRequest(requestID string, requestBody []byte) (model string, errRes *extProcPb.ProcessingResponse) {
+func validateImageGenerationRequest(requestID, requestPath string, requestBody []byte) (model string, errRes *extProcPb.ProcessingResponse) {
 	imageGenerationObj := openai.ImageGenerateParams{}
 	if err := sonic.Unmarshal(requestBody, &imageGenerationObj); err != nil {
-		klog.ErrorS(err, "error to unmarshal image generations object", "requestID", requestID, "requestBody", string(requestBody))
+		logRequestBodyParseFailure(requestID, requestPath, "error to unmarshal image generations object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -499,7 +659,7 @@ func validateRerankRequest(requestID string, requestBody []byte) (model, message
 	}
 	var req RerankRequest
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		klog.ErrorS(err, "error to unmarshal rerank object", "requestID", requestID)
+		logRequestBodyParseFailure(requestID, PathRerank, "error to unmarshal rerank object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -527,7 +687,7 @@ func validateRerankRequest(requestID string, requestBody []byte) (model, message
 // and the rest of the schema is left to the engine. Nothing is metered: no tokens are generated.
 // nolint:nakedret
 func validateTokenizeRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
-	return validateEngineNativeRequest(requestID, "tokenize", false, requestBody)
+	return validateEngineNativeRequest(requestID, PathTokenize, requestBody)
 }
 
 // validatePoolingRequest parses and validates a vLLM /pooling request body. Only "model"
@@ -538,22 +698,32 @@ func validateTokenizeRequest(requestID string, requestBody []byte) (model, messa
 // are rejected at the edge too, because the language response path cannot meter them.
 // nolint:nakedret
 func validatePoolingRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
-	return validateEngineNativeRequest(requestID, "pooling", true, requestBody)
+	return validateEngineNativeRequest(requestID, PathPooling, requestBody)
+}
+
+// validateNativeClassifyRequest parses and validates a vLLM /classify request body, which
+// takes the same "input" or "messages" forms as /pooling. Only "model" is required, and the
+// rest of the schema is left to the engine.
+// nolint:nakedret
+func validateNativeClassifyRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	return validateEngineNativeRequest(requestID, PathNativeClassify, requestBody)
 }
 
 // validateEngineNativeRequest is the shared validator for vLLM engine-native paths
-// (/tokenize, /pooling), whose request bodies are a union of a completion form
-// ("prompt" for tokenize, "input" for pooling) and a chat form ("messages").
+// (/tokenize, /pooling, /classify), whose request bodies are a union of a completion
+// form ("prompt" for tokenize, "input" otherwise) and a chat form ("messages").
 // Only "model" is required - the one field the gateway routes on; a body without
 // any input field still reaches the engine, which owns that error. The routing
 // message is best-effort: parseChatMessages unquotes a JSON string and writes any
 // other JSON value (array, token ids) as raw bytes, so the whole input value becomes
 // one content item rather than being expanded into several.
 // nolint:nakedret
-func validateEngineNativeRequest(requestID, endpoint string, pooling bool, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+func validateEngineNativeRequest(requestID, endpointPath string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	endpoint := strings.TrimPrefix(endpointPath, "/")
+	pooling := endpointPath == PathPooling
 	var req engineNativeReqMinimal
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		klog.ErrorS(err, "error to unmarshal "+endpoint+" object", "requestID", requestID, "requestBody", string(requestBody))
+		logRequestBodyParseFailure(requestID, endpointPath, "error to unmarshal "+endpoint+" object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -565,11 +735,11 @@ func validateEngineNativeRequest(requestID, endpoint string, pooling bool, reque
 	model = req.Model
 
 	// Select the completion field by endpoint: tokenize reads "prompt", pooling
-	// reads "input". The other completion field is an ignored extra on that path
-	// (vLLM's OpenAIBaseModel is extra="allow"), so it must not win the routing
-	// key. The chat form ("messages") is the fallback for both.
+	// and classify read "input". The other completion field is an ignored extra on
+	// that path (vLLM's OpenAIBaseModel is extra="allow"), so it must not win the
+	// routing key. The chat form ("messages") is the fallback for all of them.
 	completionField := req.Input
-	if !pooling {
+	if endpointPath == PathTokenize {
 		completionField = req.Prompt
 	}
 
@@ -585,7 +755,7 @@ func validateEngineNativeRequest(requestID, endpoint string, pooling bool, reque
 		if err := sonic.Unmarshal(req.Messages, &msgs); err != nil {
 			// Non-array messages on a messages-only body: no routing key, but the
 			// engine owns the schema error, so forward without one.
-			klog.ErrorS(err, "error to unmarshal "+endpoint+" messages", "requestID", requestID)
+			klog.ErrorS(nil, "error to unmarshal "+endpoint+" messages", "requestID", requestID, "reason", jsonParseReason(err))
 			break
 		}
 		message, errRes = parseChatMessages(requestID, msgs)
@@ -595,7 +765,7 @@ func validateEngineNativeRequest(requestID, endpoint string, pooling bool, reque
 	}
 
 	// Non-streaming engine paths reject stream at the edge, like embeddings;
-	// tokenize has no stream field, and a stray one is left to the engine.
+	// tokenize and classify have no stream field, and a stray one is left to the engine.
 	if pooling && len(req.Stream) > 0 {
 		var streamBool bool
 		if err := sonic.Unmarshal(req.Stream, &streamBool); err != nil || streamBool {
@@ -625,15 +795,39 @@ func pathWithoutQuery(requestPath string) string {
 }
 
 // isMultipartFormPath returns true if requestPath is an endpoint whose request
-// body is multipart/form-data rather than JSON -- audio endpoints, and
-// vLLM-Omni's Videos API create endpoints (PathVideos, PathVideosSync).
+// body is multipart/form-data rather than JSON -- audio transcription and translation,
+// image edits, and vLLM-Omni's Videos API create endpoints (PathVideos, PathVideosSync).
 func isMultipartFormPath(requestPath string) bool {
 	switch pathWithoutQuery(requestPath) {
-	case PathAudioTranscriptions, PathAudioTranslations, PathVideos, PathVideosSync:
+	case PathAudioTranscriptions, PathAudioTranslations, PathImagesEdits, PathVideos, PathVideosSync:
 		return true
 	default:
 		return false
 	}
+}
+
+// validateRoutingStrategyForPath checks whether strategy is supported for requestPath.
+// The prefill-decode (PD) disaggregated router mutates generation-specific fields
+// and is initially supported only on generation endpoints (/v1/chat/completions and
+// /v1/completions). Rejecting unsupported endpoint combinations protects non-generation
+// APIs from invalid request mutations and unexpected routing behavior.
+func validateRoutingStrategyForPath(requestPath string, strategy types.RoutingAlgorithm) error {
+	resolvedStrategy := string(strategy)
+	if resolvedExclusive, isExclusive := routing.ResolveExclusiveStrategy(string(strategy)); isExclusive {
+		resolvedStrategy = resolvedExclusive
+	}
+
+	if resolvedStrategy == string(routing.RouterPD) {
+		cleanPath := pathWithoutQuery(requestPath)
+		switch cleanPath {
+		case PathChatCompletions, PathCompletions:
+			return nil
+		default:
+			return fmt.Errorf("routing strategy '%s' is not supported for endpoint '%s'", routing.RouterPD, cleanPath)
+		}
+	}
+
+	return nil
 }
 
 // validateClassifyRequest validates a classify request and returns the model and message.
@@ -645,7 +839,7 @@ func validateClassifyRequest(requestID string, requestBody []byte) (model, messa
 	}
 	var req ClassifyRequest
 	if err := json.Unmarshal(requestBody, &req); err != nil {
-		klog.ErrorS(err, "error to unmarshal classify object", "requestID", requestID)
+		logRequestBodyParseFailure(requestID, PathClassify, "error to unmarshal classify object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -700,8 +894,7 @@ func validateDecisionsRequest(requestID string, requestBody []byte) (model, mess
 		Questions json.RawMessage `json:"questions"`
 	}
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		// The body can hold customer text or base64 images, so log its size, not its content.
-		klog.ErrorS(nil, "error to unmarshal decisions object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		logRequestBodyParseFailure(requestID, PathDecisions, "error to unmarshal decisions object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -747,8 +940,7 @@ func validateSystemOneRequest(requestID string, requestBody []byte) (model, mess
 		Questions json.RawMessage `json:"questions"`
 	}
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
-		// The body can hold customer text or base64 images, so log its size, not its content.
-		klog.ErrorS(nil, "error to unmarshal systemone object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		logRequestBodyParseFailure(requestID, PathSystemOne, "error to unmarshal systemone object", err, requestBody)
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -779,6 +971,187 @@ func validateSystemOneRequest(requestID string, requestBody []byte) (model, mess
 	return
 }
 
+// validateScoreRequest parses and validates an SGLang /v1/score request body. Only what the
+// gateway itself needs is checked: a JSON object with a non-empty "model" to route on, a
+// non-empty "items" to score, and no streaming, since the response is a single JSON body.
+// The scoring options (label_token_ids, apply_softmax, item_first, score_extraction_token,
+// ...) are SGLang's to validate and are forwarded as sent.
+// nolint:nakedret
+func validateScoreRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	if trimmed := bytes.TrimSpace(requestBody); len(trimmed) == 0 || trimmed[0] != '{' {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	var req struct {
+		Model  string          `json:"model"`
+		Query  json.RawMessage `json:"query"`
+		Items  json.RawMessage `json:"items"`
+		Stream json.RawMessage `json:"stream"`
+	}
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		// The body can hold customer text, so log its size, not its content.
+		klog.ErrorS(nil, "error to unmarshal score object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	// SGLang falls back to a default model, but the gateway selects pods by it.
+	if strings.TrimSpace(req.Model) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	items := bytes.TrimSpace(req.Items)
+	switch string(items) {
+	case "", jsonNull, `""`, "[]":
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'items' is a required property and cannot be empty", "", "items", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if len(req.Stream) > 0 {
+		var streamBool bool
+		if err := sonic.Unmarshal(req.Stream, &streamBool); err != nil || streamBool {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for score", "", "stream", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+	}
+
+	model, message = req.Model, scoreRoutingText(req.Query, items)
+	return
+}
+
+// scoreRoutingText picks the text prefix-cache-aware routing should see for a score request:
+// the query when it is non-blank text, otherwise the first item when items are text. Token-ID
+// queries and items give no routing text, because stringified ids would not share a prefix
+// with the same text sent as a string.
+func scoreRoutingText(query, items json.RawMessage) string {
+	if text, ok := jsonString(query); ok && strings.TrimSpace(text) != "" {
+		return text
+	}
+	if text, ok := jsonString(items); ok {
+		return text
+	}
+	var list []json.RawMessage
+	if items[0] == '[' && sonic.Unmarshal(items, &list) == nil && len(list) > 0 {
+		if text, ok := jsonString(list[0]); ok {
+			return text
+		}
+	}
+	return ""
+}
+
+// jsonString returns value as a Go string when it is a JSON string.
+func jsonString(value json.RawMessage) (string, bool) {
+	value = bytes.TrimSpace(value)
+	if len(value) == 0 || value[0] != '"' {
+		return "", false
+	}
+	var text string
+	if err := sonic.Unmarshal(value, &text); err != nil {
+		return "", false
+	}
+	return text, true
+}
+
+// validateAudioSpeechRequest parses and validates a vLLM-Omni /v1/audio/speech request body.
+// Only what the gateway itself needs is checked: a JSON object with a non-empty "model" to
+// route on and a non-empty textual "input" to synthesize. The speech options (voice,
+// response_format, speed, instructions, language, stream_format, ...) belong to the engine and
+// are forwarded as sent. A request-level "stream" field is deliberately not surfaced as a stream
+// here: the response is binary audio, so the gateway must never treat it as an SSE stream.
+// nolint:nakedret
+func validateAudioSpeechRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	if trimmed := bytes.TrimSpace(requestBody); len(trimmed) == 0 || trimmed[0] != '{' {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	var req struct {
+		Model string `json:"model"`
+		Input string `json:"input"`
+	}
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		// The body can hold customer text, so log its size, not its content.
+		klog.ErrorS(nil, "error to unmarshal audio speech object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	// The gateway selects the backend pod by model, so it cannot fall back to an engine default.
+	if strings.TrimSpace(req.Model) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if strings.TrimSpace(req.Input) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property and cannot be empty", "", "input", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	model, message = req.Model, req.Input
+	return
+}
+
+// validateAudioSpeechBatchRequest parses and validates a /v1/audio/speech/batch request body.
+// Only the envelope is checked: a JSON object with a non-empty "model" to route on and a
+// non-empty "items" array of objects. What is inside an item (input, voice, ref_audio, a
+// per-item stream, ...) belongs to the engine, which reports a bad item as a failed entry in an
+// otherwise successful response, so one bad item must not fail the whole batch here. The returned
+// message joins the textual item inputs for routing. As with a single speech request, a "stream"
+// field is deliberately not surfaced as a stream: the response is one JSON document, not SSE.
+// nolint:nakedret
+func validateAudioSpeechBatchRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	if trimmed := bytes.TrimSpace(requestBody); len(trimmed) == 0 || trimmed[0] != '{' {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	// Items stay raw so a reference clip inlined as a base64 data URL is never decoded here.
+	var req struct {
+		Model string            `json:"model"`
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		// The body can hold customer text, so log its size, not its content.
+		klog.ErrorS(nil, "error to unmarshal audio speech batch object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	// The gateway selects the backend pod by model, so it cannot fall back to an engine default.
+	if strings.TrimSpace(req.Model) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if len(req.Items) == 0 {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'items' is a required property and cannot be empty", "", "items", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	inputs := make([]string, 0, len(req.Items))
+	for i, rawItem := range req.Items {
+		if trimmed := bytes.TrimSpace(rawItem); len(trimmed) == 0 || trimmed[0] != '{' {
+			param := fmt.Sprintf("items.%d", i)
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("'%s' must be a JSON object", param), "", param, HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		var item struct {
+			Input json.RawMessage `json:"input"`
+		}
+		if err := sonic.Unmarshal(rawItem, &item); err != nil {
+			klog.ErrorS(nil, "error to unmarshal audio speech batch item", "requestID", requestID, "item", i, "reason", jsonParseReason(err), "itemBytes", len(rawItem))
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", fmt.Sprintf("items.%d", i), HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		// A missing, blank or non-string input is the engine's per-item error to report.
+		if input, ok := jsonString(item.Input); ok && strings.TrimSpace(input) != "" {
+			inputs = append(inputs, input)
+		}
+	}
+
+	model, message = req.Model, strings.Join(inputs, "\n")
+	return
+}
+
 // jsonParseReason returns why sonic rejected a body without the excerpt of the body that its
 // error text embeds (a syntax error quotes the bytes around the failure, a type mismatch
 // quotes the offending value), so the result is safe to log.
@@ -788,6 +1161,40 @@ func jsonParseReason(err error) string {
 		return withMessage.Message()
 	}
 	return "invalid JSON body"
+}
+
+// maxLoggedRequestBytes caps the request text the V(6) diagnostics write.
+const maxLoggedRequestBytes = 4096
+
+// logRequestBodyParseFailure logs a request body that did not parse. The body can hold
+// prompts, tool arguments or base64 images, so normal levels get its size and the
+// sanitized reason; the body itself is only written, capped, at V(6).
+func logRequestBodyParseFailure(requestID, endpoint, msg string, err error, requestBody []byte) {
+	klog.ErrorS(nil, msg, "requestID", requestID, "endpoint", endpoint, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+	// A multipart body sent to a JSON endpoint carries file contents and form values,
+	// which are not logged at any level.
+	if v := klog.V(6); v.Enabled() && !isMultipartBody(requestBody) {
+		text, truncated := truncateForLog(requestBody)
+		v.InfoS("request body parse failure details", "requestID", requestID, "requestBody", text, "requestBodyTruncated", truncated)
+	}
+}
+
+// isMultipartBody reports whether body opens with a multipart boundary delimiter.
+func isMultipartBody(body []byte) bool {
+	return bytes.HasPrefix(bytes.TrimLeft(body, "\r\n"), []byte("--"))
+}
+
+// truncateForLog returns at most maxLoggedRequestBytes of b, cut on a rune boundary, and
+// whether anything was cut.
+func truncateForLog(b []byte) (string, bool) {
+	if len(b) <= maxLoggedRequestBytes {
+		return string(b), false
+	}
+	cut := maxLoggedRequestBytes
+	for cut > 0 && !utf8.RuneStart(b[cut]) {
+		cut--
+	}
+	return string(b[:cut]), true
 }
 
 // decisionsInputText renders a /v1/decisions "input" value (a string, object, or array)

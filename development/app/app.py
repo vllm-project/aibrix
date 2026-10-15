@@ -529,6 +529,25 @@ def get_token_count(text):
     return max(1, len(text.split()))
 
 
+def message_token_count(message):
+    """Count a chat message's tokens; content is a string or a list of multimodal parts.
+
+    /v1/chat/completions does not validate the message shape, so anything that is not an
+    object counts as one token rather than failing the request.
+    """
+    if not isinstance(message, dict):
+        return 1
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return get_token_count(content)
+    if isinstance(content, list):
+        return sum(
+            get_token_count(part.get("text", ""))
+            for part in content if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return 1
+
+
 models = [
     {
         "id": "meta-llama/Llama-2-7b-hf",
@@ -1389,19 +1408,7 @@ def chat_completions():
         arrived_at = datetime.now().timestamp()
         modalities = request.json.get("modalities", ["text"])
 
-        # Token count: handle both string and list content (multimodal)
-        def _msg_tokens(msg):
-            c = msg.get("content", "")
-            if isinstance(c, str):
-                return get_token_count(c)
-            if isinstance(c, list):
-                return sum(
-                    get_token_count(b.get("text", ""))
-                    for b in c if b.get("type") == "text"
-                )
-            return 1
-
-        input_tokens = sum(_msg_tokens(m) for m in messages)
+        input_tokens = sum(message_token_count(m) for m in messages)
         output_tokens = max_tokens if max_tokens else randint(10, 500)
         arrived_next = request.json.get("next_in")
         if not arrived_next:
@@ -1640,6 +1647,105 @@ def chat_completions():
         return jsonify(err), 500
 
 
+@app.route("/v1/chat/completions/batch", methods=["POST"])
+@auth_required
+def chat_completions_batch():
+    """
+    Simulates vLLM-Omni's batch chat endpoint: "messages" is a list of conversations and the
+    reply is one non-streaming chat completion with a choice per conversation and the usage
+    summed over all of them. Like the engine it refuses streaming ("stream": true), n > 1
+    and beam search; "stream" must be false or omitted.
+    """
+    try:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return create_error_response("chat batch request body must be valid JSON")
+
+        model = payload.get("model")
+        if not model:
+            return create_error_response("'model' is a required parameter", param="model")
+
+        conversations = payload.get("messages")
+        if not isinstance(conversations, list) or not conversations:
+            return create_error_response(
+                "'messages' is a required parameter and cannot be empty", param="messages"
+            )
+        for index, conversation in enumerate(conversations):
+            if (
+                not isinstance(conversation, list)
+                or not conversation
+                or not all(isinstance(message, dict) for message in conversation)
+            ):
+                return create_error_response(
+                    f"'messages.{index}' must be a non-empty array of messages",
+                    param=f"messages.{index}",
+                )
+
+        if payload.get("stream"):
+            return create_error_response(
+                "Batch chat completions do not support streaming. Please set `stream` to False.",
+                param="stream",
+            )
+        if payload.get("n", 1) != 1:
+            return create_error_response(
+                "Batch chat completions do not support `n > 1`. Please set `n` to 1.",
+                param="n",
+            )
+        if payload.get("use_beam_search"):
+            return create_error_response(
+                "Batch chat completions do not support beam search. "
+                "Please set `use_beam_search` to False.",
+                param="use_beam_search",
+            )
+
+        started_at = datetime.now().timestamp()
+        max_tokens = payload.get("max_tokens")
+        choices = []
+        input_tokens = 0
+        output_tokens = 0
+        longest_input_tokens = 0
+        longest_output_tokens = 0
+        for index, conversation in enumerate(conversations):
+            conversation_input_tokens = sum(message_token_count(m) for m in conversation)
+            conversation_output_tokens = max_tokens if max_tokens else randint(10, 500)
+            input_tokens += conversation_input_tokens
+            output_tokens += conversation_output_tokens
+            longest_input_tokens = max(longest_input_tokens, conversation_input_tokens)
+            longest_output_tokens = max(longest_output_tokens, conversation_output_tokens)
+            choices.append({
+                "index": index,
+                "message": {"role": "assistant", "content": simulated_message(model)},
+                "logprobs": None,
+                "finish_reason": "stop",
+            })
+
+        # Conversations run concurrently in the engine, so the slowest one sets the latency.
+        _sleep_for_mock_latency(started_at, 0.0, longest_input_tokens, longest_output_tokens)
+
+        response = {
+            "id": "chatcmpl-batch-" + str(uuid.uuid4()),
+            "object": "chat.completion",
+            "created": int(datetime.now().timestamp()),
+            "model": model,
+            "choices": choices,
+            "usage": {
+                "prompt_tokens": input_tokens,
+                "completion_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            },
+        }
+        _log_mock_exchange("/v1/chat/completions/batch", payload, response)
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in chat completions batch endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
 @app.route("/v1/audio/speech", methods=["POST"])
 @auth_required
 def audio_speech():
@@ -1676,47 +1782,19 @@ def audio_speech():
                 param="voice"
             )
 
-        # Validate response format
-        valid_formats = ["mp3", "opus", "aac", "flac", "wav", "pcm"]
-        if response_format not in valid_formats:
+        # Validate response format against the table that also supplies its content type
+        if not is_supported_speech_format(response_format):
             return create_error_response(
-                f"Invalid response_format '{response_format}'. Must be one of: {', '.join(valid_formats)}",
+                f"Invalid response_format '{response_format}'. Must be one of: {', '.join(SPEECH_CONTENT_TYPES)}",
                 param="response_format"
             )
 
         # Simulate processing time based on text length
         time.sleep(0.1 + len(input_text) * 0.001)
 
-        # Generate mock audio data
-        if response_format == "wav":
-            # Minimal WAV header (44 bytes) with 0 data
-            mock_audio = (
-                b"RIFF" + struct.pack("<I", 36) + b"WAVE"
-                + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, 24000, 48000, 2, 16)
-                + b"data" + struct.pack("<I", 0)
-            )
-        else:
-            # Minimal MP3 frame header for other formats
-            mock_audio = bytes([
-                0xFF, 0xFB, 0x90, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-            ])
-
-        # Set content type based on format
-        content_types = {
-            "mp3": "audio/mpeg",
-            "opus": "audio/opus",
-            "aac": "audio/aac",
-            "flac": "audio/flac",
-            "wav": "audio/wav",
-            "pcm": "audio/pcm",
-        }
-
         return Response(
-            mock_audio,
-            mimetype=content_types.get(response_format, "audio/mpeg"),
+            build_mock_speech_audio(response_format),
+            mimetype=SPEECH_CONTENT_TYPES.get(response_format, "audio/mpeg"),
             headers={
                 "Content-Disposition": f"attachment; filename=speech.{response_format}"
             }
@@ -1724,6 +1802,138 @@ def audio_speech():
 
     except Exception as e:
         logger.error(f"Error in audio speech endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
+SPEECH_CONTENT_TYPES = {
+    "mp3": "audio/mpeg",
+    "opus": "audio/opus",
+    "aac": "audio/aac",
+    "flac": "audio/flac",
+    "wav": "audio/wav",
+    "pcm": "audio/pcm",
+}
+
+
+def is_supported_speech_format(response_format):
+    """True for a response_format the mock can serve.
+
+    A JSON list or object is unhashable and would raise on a dict membership test, so only a
+    string is ever looked up. Handlers that pass this check can index SPEECH_CONTENT_TYPES.
+    """
+    return isinstance(response_format, str) and response_format in SPEECH_CONTENT_TYPES
+
+
+def build_mock_speech_audio(response_format):
+    """Return placeholder audio bytes for a /v1/audio/speech response format."""
+    if response_format == "wav":
+        # Minimal WAV header (44 bytes) with 0 data
+        return (
+            b"RIFF" + struct.pack("<I", 36) + b"WAVE"
+            + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, 24000, 48000, 2, 16)
+            + b"data" + struct.pack("<I", 0)
+        )
+    # Minimal MP3 frame header for other formats
+    return bytes([
+        0xFF, 0xFB, 0x90, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+    ])
+
+
+def speech_batch_item_error(index, message, param):
+    """Build a failed entry for the /v1/audio/speech/batch results list."""
+    return {
+        "index": index,
+        "status": "error",
+        "error": {
+            "message": message,
+            "type": "invalid_request_error",
+            "param": param,
+        },
+    }
+
+
+@app.route("/v1/audio/speech/batch", methods=["POST"])
+@auth_required
+def audio_speech_batch():
+    """
+    Simulates SGLang-Omni's batch text-to-speech endpoint.
+    A bad envelope fails the request with 400. A bad item becomes an error entry inside an
+    otherwise successful (HTTP 200) response, so the other items still return audio.
+    Top-level fields are shared defaults that each item may override.
+    """
+    try:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return create_error_response("speech batch request body must be valid JSON")
+
+        items = payload.get("items")
+        if not isinstance(items, list) or not items:
+            return create_error_response(
+                "'items' is a required parameter and cannot be empty", param="items"
+            )
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                return create_error_response(
+                    f"'items.{index}' must be a JSON object", param=f"items.{index}"
+                )
+
+        longest_input = max(
+            (len(item["input"]) for item in items if isinstance(item.get("input"), str)),
+            default=0,
+        )
+        # Items run concurrently in the engine, so the slowest one sets the latency.
+        time.sleep(0.1 + longest_input * 0.001)
+
+        defaults = {key: value for key, value in payload.items() if key != "items"}
+        results = []
+        for index, item in enumerate(items):
+            merged = {**defaults, **item}
+            response_format = merged.get("response_format", "wav")
+            input_text = merged.get("input")
+            # Only an item-level stream is refused, as in the engine; a top-level one is dropped.
+            if item.get("stream"):
+                results.append(speech_batch_item_error(
+                    index, "stream is not supported for batch speech requests",
+                    f"items.{index}.stream"))
+            elif not isinstance(input_text, str) or not input_text.strip():
+                results.append(speech_batch_item_error(
+                    index, "'input' is a required parameter and cannot be empty",
+                    f"items.{index}.input"))
+            elif not is_supported_speech_format(response_format):
+                results.append(speech_batch_item_error(
+                    index,
+                    f"Invalid response_format '{response_format}'. "
+                    f"Must be one of: {', '.join(SPEECH_CONTENT_TYPES)}",
+                    f"items.{index}.response_format"))
+            else:
+                results.append({
+                    "index": index,
+                    "status": "success",
+                    "audio_data": base64.b64encode(
+                        build_mock_speech_audio(response_format)).decode("ascii"),
+                    "format": response_format,
+                    "media_type": SPEECH_CONTENT_TYPES.get(response_format, "audio/mpeg"),
+                    "finish_reason": "stop",
+                })
+
+        succeeded = sum(1 for result in results if result["status"] == "success")
+        return jsonify({
+            "id": "speech-batch-" + str(uuid.uuid4()),
+            "results": results,
+            "total": len(results),
+            "succeeded": succeeded,
+            "failed": len(results) - succeeded,
+        })
+
+    except Exception as e:
+        logger.error(f"Error in audio speech batch endpoint: {e}")
         return create_error_response(
             "The server had an error while processing your request. Sorry about that!",
             error_type="api_error",

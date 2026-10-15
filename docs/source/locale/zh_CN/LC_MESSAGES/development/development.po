@@ -287,10 +287,10 @@ msgstr "调试网关 IP"
 #: ../../source/development/development.rst:297
 msgid ""
 "Please also follow `debugging guidelines "
-"<https://aibrix.readthedocs.io/latest/features/gateway-plugins.html"
-"#debugging-guidelines>`_."
+"<https://aibrix.readthedocs.io/latest/features/gateway-routing/gateway-plugins.html#debugging-guidelines>`_."
 msgstr ""
-"也请遵循 `调试指南 <https://aibrix.readthedocs.io/latest/features/gateway-plugins.html#debugging-guidelines>`_ "
+"也请遵循 `调试指南 "
+"<https://aibrix.readthedocs.io/latest/features/gateway-routing/gateway-plugins.html#debugging-guidelines>`_ "
 "。"
 
 #: ../../source/development/development.rst:300

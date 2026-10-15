@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from botocore.exceptions import ClientError
 
 from aibrix.common.errors import (
     ArgNotCongiuredError,
@@ -370,7 +371,8 @@ def test_s3_recursive_download(monkeypatch, tmp_path):
     assert (tmp_path / "test_model" / "subfolder" / "vocab.txt").exists()
 
 
-def test_s3_empty_allow_file_suffix(monkeypatch, tmp_path):
+@pytest.mark.parametrize("suffixes", [None, [], [".bin"]])
+def test_s3_empty_allow_file_suffix(monkeypatch, tmp_path, suffixes):
     # Mock S3 client with various file types
     from aibrix.downloader import s3 as s3_mod
 
@@ -440,13 +442,37 @@ def test_s3_empty_allow_file_suffix(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(s3_mod, "envs", mock_envs)
 
-    # Test download with empty file suffix filtering (should download all files)
-    d = s3_mod.S3Downloader("s3://bucket/models/all", model_name="all_files_model")
+    # Empty suffix filters download everything; .bin excludes all existing files.
+    d = s3_mod.S3Downloader(
+        "s3://bucket/models/all",
+        model_name="all_files_model",
+        download_extra_config=DownloadExtraConfig(allow_file_suffix=suffixes),
+    )
     d.download_model(local_path=str(tmp_path))
 
-    # Verify all files exist in the target directory
-    assert (tmp_path / "all_files_model" / "file1.txt").exists()
-    assert (tmp_path / "all_files_model" / "file2.json").exists()
+    # A populated source succeeds even when every file is excluded.
+    assert (tmp_path / "all_files_model" / "file1.txt").exists() is (not suffixes)
+    assert (tmp_path / "all_files_model" / "file2.json").exists() is (not suffixes)
+
+
+@pytest.mark.parametrize("path", ["models/missing.bin", "models/missing/"])
+@mock.patch(S3_BOTO3_MODULE)
+def test_s3_missing_source(mock_boto3, tmp_path, path):
+    mock_exist_boto3(mock_boto3)
+    client = mock_boto3.client.return_value
+    client.head_object.side_effect = ClientError(
+        {"Error": {"Code": "404"}}, "HeadObject"
+    )
+    client.get_paginator.return_value.paginate.return_value = [{"KeyCount": 0}]
+    uri = f"s3://bucket/{path}"
+    downloader = S3Downloader(uri, model_name="m")
+
+    with pytest.raises(ModelNotFoundError) as exception:
+        downloader.download_model(local_path=str(tmp_path))
+
+    assert uri in str(exception.value)
+    client.download_file.assert_not_called()
+    assert client.head_object.call_count == (0 if path.endswith("/") else 1)
 
 
 def test_s3_recursive_download_nested_dirs(monkeypatch, tmp_path):

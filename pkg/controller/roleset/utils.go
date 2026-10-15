@@ -478,12 +478,24 @@ func sortPodsByTemplateHash(pods []*v1.Pod, targetHash string) {
 	})
 }
 
+func validateUpdateBudget(role *orchestrationv1alpha1.RoleSpec) error {
+	expectedReplicas := getRoleReplicas(role)
+	if expectedReplicas == 0 {
+		return nil
+	}
+	_, _, err := ssctrl.ResolveFenceposts(role.UpdateStrategy.MaxSurge, role.UpdateStrategy.MaxUnavailable, expectedReplicas)
+	if err != nil {
+		return fmt.Errorf("role %s updateStrategy (maxSurge=%v, maxUnavailable=%v): %w", role.Name, role.UpdateStrategy.MaxSurge, role.UpdateStrategy.MaxUnavailable, err)
+	}
+	return nil
+}
+
 func MaxUnavailable(role *orchestrationv1alpha1.RoleSpec) int32 {
 	expectedReplicas := getRoleReplicas(role)
 	if expectedReplicas == 0 {
 		return 0
 	}
-	// Error caught by validation
+	// Budgets are validated before any role syncer runs.
 	_, maxUnavailable, _ := ssctrl.ResolveFenceposts(role.UpdateStrategy.MaxSurge, role.UpdateStrategy.MaxUnavailable, expectedReplicas)
 	if maxUnavailable > expectedReplicas {
 		return expectedReplicas
@@ -496,6 +508,7 @@ func MaxSurge(role *orchestrationv1alpha1.RoleSpec) int32 {
 	if expectedReplicas == 0 {
 		return 0
 	}
+	// Budgets are validated before any role syncer runs.
 	maxSurge, _, _ := ssctrl.ResolveFenceposts(role.UpdateStrategy.MaxSurge, role.UpdateStrategy.MaxUnavailable, expectedReplicas)
 	return maxSurge
 }

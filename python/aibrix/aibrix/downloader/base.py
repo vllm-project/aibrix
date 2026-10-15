@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import ClassVar, Dict, List, Optional
 
 from aibrix import envs
+from aibrix.common.errors import ModelNotFoundError
 from aibrix.downloader.entity import RemoteSource
 from aibrix.logger import init_logger
 
@@ -121,6 +122,12 @@ class BaseDownloader(ABC):
         used to download the directory.
         """
         directory_list = self._directory_list(self.bucket_path)
+        # Check existence before excluding directory markers or unwanted suffixes.
+        if not directory_list:
+            raise ModelNotFoundError(
+                model_uri=self.model_uri,
+                detail_msg="No objects found under the prefix.",
+            )
         # filter the directory path
         files = [file for file in directory_list if not file.endswith("/")]
 

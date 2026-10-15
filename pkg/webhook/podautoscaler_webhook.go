@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
 	"github.com/vllm-project/aibrix/pkg/utils/pametrics"
 	"github.com/vllm-project/aibrix/pkg/utils/paschedules"
 )
@@ -110,7 +111,9 @@ func (v *PodAutoscalerCustomValidator) ValidateUpdate(_ context.Context, oldObj,
 	}
 	podautoscalerlog.Info("Validation for PodAutoscaler upon update", "name", podautoscaler.GetName())
 
-	return nil, v.validatePodAutoscaler(podautoscaler)
+	// A nil old object only disables the annotation ratchet, so every value is checked.
+	oldPodAutoscaler, _ := oldObj.(*autoscalingv1alpha1.PodAutoscaler)
+	return nil, v.validatePodAutoscalerUpdate(oldPodAutoscaler, podautoscaler)
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type PodAutoscaler.
@@ -123,10 +126,18 @@ func (v *PodAutoscalerCustomValidator) ValidateDelete(ctx context.Context, obj r
 	return nil, nil
 }
 
-// validatePodAutoscaler performs all spec validations.
+// validatePodAutoscaler performs all validations for a new PodAutoscaler.
 func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1alpha1.PodAutoscaler) error {
+	return v.validatePodAutoscalerUpdate(nil, pa)
+}
+
+// validatePodAutoscalerUpdate performs all validations for pa. old is the
+// stored object on update and nil on create.
+func (v *PodAutoscalerCustomValidator) validatePodAutoscalerUpdate(old, pa *autoscalingv1alpha1.PodAutoscaler) error {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
+
+	allErrs = append(allErrs, validateAnnotations(old, pa)...)
 
 	allErrs = append(allErrs, validateScaleTargetRef(pa, specPath)...)
 	allErrs = append(allErrs, validateReplicaBounds(pa, specPath)...)
@@ -145,6 +156,27 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 		pa.Name,
 		allErrs,
 	)
+}
+
+// validateAnnotations rejects autoscaling annotations whose value the
+// controller cannot use, such as a scale rate below 1 or a non-finite number.
+//
+// These values were accepted before this check existed, so an update only
+// fails on a value it adds or changes. An object that already carries an
+// unusable value can still be updated; the controller ignores that value and
+// keeps the default for the setting.
+func validateAnnotations(old, pa *autoscalingv1alpha1.PodAutoscaler) field.ErrorList {
+	var errs field.ErrorList
+	annotationsPath := field.NewPath("metadata", "annotations")
+	for _, annotationErr := range scalingctx.ValidateAnnotations(pa.Annotations) {
+		if old != nil {
+			if oldValue, ok := old.Annotations[annotationErr.Key]; ok && oldValue == annotationErr.Value {
+				continue
+			}
+		}
+		errs = append(errs, field.Invalid(annotationsPath.Key(annotationErr.Key), annotationErr.Value, annotationErr.Err.Error()))
+	}
+	return errs
 }
 
 func validateScaleTargetRef(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) field.ErrorList {

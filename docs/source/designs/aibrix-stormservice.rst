@@ -965,5 +965,5 @@ In the Kubernetes ecosystem, `ControllerRevision` is a crucial resource object u
 
 .. seealso::
 
-   :doc:`../features/pd-disaggregation`
+   :doc:`../features/gateway-routing/pd-disaggregation`
        Prefill/decode disaggregation built on StormService.

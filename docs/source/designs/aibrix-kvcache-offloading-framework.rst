@@ -516,7 +516,7 @@ RocksDB connector is used for testing purposes.
 
 .. seealso::
 
-   :doc:`../features/kvcache-offloading`
+   :doc:`../features/scaling-performance/kvcache-offloading`
        Deploying and configuring distributed KV cache.
-   :doc:`../features/kv-event-sync`
+   :doc:`../features/scaling-performance/kv-event-sync`
        Synchronizing KV cache events with the gateway.

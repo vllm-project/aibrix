@@ -1,0 +1,529 @@
+# Simplified Chinese translations for AIBrix documentation.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version:  AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-11 19:13-0700\n"
+"PO-Revision-Date: 2026-10-11 16:23-0700\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:5
+msgid "Prefix-Cache Aware Routing"
+msgstr "前缀缓存感知路由"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:7
+msgid ""
+"Many LLM requests share a long prompt prefix: a system prompt, a shared "
+"document, or the earlier turns of a conversation. An engine that has "
+"already processed that prefix still holds its KV cache blocks, so it can "
+"skip most of the prefill work. Prefix-cache aware routing sends each "
+"request to a pod that already holds the longest matching prefix. This "
+"lowers time to first token and saves GPU compute."
+msgstr ""
+"许多 LLM 请求共享很长的 prompt 前缀：系统提示词、共享文档，或对话中此前的轮次。已经处理过该前缀的引擎仍保留着对应的 KVCache "
+"块，因此可以跳过大部分 prefill 工作。前缀缓存感知路由会把每个请求发送到已持有最长匹配前缀的 Pod，从而降低首 token "
+"延迟（TTFT）并节省 GPU 算力。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:9
+msgid ""
+"The ``prefix-cache`` strategy is built into the AIBrix gateway. In its "
+"default mode it needs no changes to your engines, but each engine must "
+"have its own prefix caching enabled for the routing to pay off."
+msgstr ""
+"``prefix-cache`` 策略内置于 AIBrix 网关。在默认模式下，它无需改动引擎，但每个引擎必须自行启用前缀缓存（prefix "
+"caching），路由才能发挥作用。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:13
+msgid "On this page"
+msgstr "本页内容"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:16
+msgid "How it works"
+msgstr "工作原理"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:18
+msgid "For each request, the gateway does the following:"
+msgstr "对每个请求，网关会执行以下步骤："
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:20
+msgid ""
+"Builds the prompt text. For chat requests this is the message text, "
+"preceded by the request's ``tools`` when present (see "
+"``AIBRIX_PREFIX_CACHE_INCLUDE_TOOLS``)."
+msgstr ""
+"构建 prompt 文本。对于聊天请求，这是消息文本；如果请求带有 ``tools`` ，则 ``tools`` 会放在消息文本之前（见 "
+"``AIBRIX_PREFIX_CACHE_INCLUDE_TOOLS`` ）。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:21
+msgid ""
+"Tokenizes the text and splits the result into fixed-size blocks. Each "
+"block's hash includes the hash of the block before it, so a block matches"
+" only when everything before it matches too. A trailing partial block is "
+"ignored."
+msgstr ""
+"对文本做 "
+"tokenize，并把结果切分为固定大小的块。每个块的哈希都包含前一个块的哈希，因此只有在它之前的所有内容都匹配时，该块才会匹配。末尾不足一块的部分会被忽略。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:22
+msgid ""
+"Looks the blocks up in a per-model prefix index, in order, and stops at "
+"the first block that no ready pod holds. A pod's prefix match is the "
+"percentage of the request's blocks, counted from the start, that it "
+"holds."
+msgstr "按顺序在按模型划分的前缀索引中查找这些块，遇到没有任何就绪 Pod 持有的块时停止。Pod 的前缀匹配度是它从头开始持有的请求块所占的百分比。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:23
+msgid ""
+"Chooses a pod from the prefix match and the pods' load, as described in "
+":ref:`Choosing the pod <prefix_cache_choosing_pod>`."
+msgstr "根据前缀匹配度和各 Pod 的负载选择 Pod，详见 :ref:`选择 Pod <prefix_cache_choosing_pod>` 。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:24
+msgid ""
+"Records the chosen pod as holding the request's blocks, so later requests"
+" with the same prefix follow it."
+msgstr "把所选 Pod 记录为持有该请求的块，使之后具有相同前缀的请求跟随到该 Pod。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:27
+msgid "Routing modes"
+msgstr "路由模式"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:33
+msgid "Mode"
+msgstr "模式"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:34
+msgid "Prefix index"
+msgstr "前缀索引"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:35
+msgid "Notes"
+msgstr "说明"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:36
+msgid "Standard (default)"
+msgstr "标准模式（默认）"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:37
+msgid ""
+"A hash table in each gateway replica. A pod is added to it each time the "
+"gateway routes a prefix to that pod."
+msgstr "每个网关副本内的哈希表。每当网关把某个前缀路由到某个 Pod，就会把该 Pod 加入索引。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:38
+msgid ""
+"Works with any engine and needs no extra setup. The index reflects where "
+"the gateway sent requests, not what the engine still has cached, so it "
+"can lag behind cache evictions in the engine."
+msgstr "适用于任何引擎，无需额外配置。索引反映的是网关把请求发到了哪里，而不是引擎当前实际缓存了什么，因此可能滞后于引擎侧的缓存淘汰。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:39
+msgid "KV event sync"
+msgstr "KV Cache 事件同步"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:40
+msgid ""
+"An index fed by the engines' own block-stored and block-removed events. "
+"Enabled with ``AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true``."
+msgstr ""
+"由引擎自身的块写入和块移除事件驱动的索引。通过 "
+"``AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true`` 启用。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:41
+msgid ""
+"Follows the real cache state of each engine. It requires engines that "
+"publish KV cache events and turns on the remote tokenizer automatically. "
+"See :doc:`../scaling-performance/kv-event-sync`."
+msgstr ""
+"跟随各引擎真实的缓存状态。它要求引擎发布 KVCache 事件，并会自动启用 remote tokenizer。参见 :doc"
+":`../scaling-performance/kv-event-sync` 。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:43
+msgid "Both modes use the same pod selection."
+msgstr "两种模式使用相同的 Pod 选择方式。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:46
+msgid "Enabling the strategy"
+msgstr "启用该策略"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:48
+msgid "Select it for a single request with the ``routing-strategy`` header:"
+msgstr "通过 ``routing-strategy`` 请求头为单个请求选择该策略："
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:63
+msgid ""
+"To make it the default for a model, set ``routingStrategy`` in the "
+"model's config profile (see :ref:`config_profiles`), or set the gateway's"
+" ``ROUTING_ALGORITHM`` environment variable to ``prefix-cache``. See :doc"
+":`gateway-plugins` for the order in which these apply."
+msgstr ""
+"要让它成为某个模型的默认策略，请在该模型的 config profile 中设置 ``routingStrategy`` （见 "
+":ref:`config_profiles` ），或把网关的 ``ROUTING_ALGORITHM`` 环境变量设为 ``prefix-"
+"cache`` 。这些方式的生效顺序见 :doc:`gateway-plugins` 。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:68
+msgid "Choosing the pod"
+msgstr "选择 Pod"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:70
+msgid ""
+"By default the gateway does not route on prefix match alone. It scores "
+"every ready pod on two signals, normalizes each score to the range 0 to "
+"1, and sends the request to the pod with the highest weighted total:"
+msgstr ""
+"默认情况下，网关不会只根据前缀匹配度路由。它会在两个信号上为每个就绪 Pod 打分，把每个分数归一化到 0 到 1 "
+"的范围，并把请求发送到加权总分最高的 Pod："
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:72
+msgid "the pod's prefix match, with weight 5, and"
+msgstr "Pod 的前缀匹配度，权重为 5；以及"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:73
+msgid "the pod's capacity-aware ``load-balance`` score, with weight 4."
+msgstr "Pod 的容量感知 ``load-balance`` 得分，权重为 4。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:75
+msgid ""
+"The weights lean toward cache affinity, but load still counts, so the pod"
+" with the best prefix match does not always win. Before any strategy "
+"runs, the gateway's load-imbalance gate can also narrow the candidates "
+"when load across the pods is severely skewed."
+msgstr ""
+"这些权重偏向缓存亲和，但负载仍会起作用，因此前缀匹配度最高的 Pod 并不总是胜出。在任何策略运行之前，当各 Pod "
+"之间的负载严重倾斜时，网关的负载不均衡门控还可能缩小候选范围。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:77
+msgid ""
+"If you disable the blend by setting "
+"``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0``, ``prefix-cache`` "
+"routes by itself:"
+msgstr ""
+"如果通过设置 ``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0`` 关闭混合， "
+"``prefix-cache`` 会独立路由："
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:79
+msgid ""
+"It sorts the pods that hold a match by prefix match, highest first, and "
+"then by running requests, fewest first."
+msgstr "它先按前缀匹配度从高到低、再按运行中请求数从少到多，对持有匹配的 Pod 排序。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:80
+msgid ""
+"It picks the first pod whose running requests are no higher than ``mean +"
+" factor × σ``, where the mean and the standard deviation σ are taken over"
+" the candidate pods and ``factor`` is "
+"``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``."
+msgstr ""
+"它选择第一个运行中请求数不高于 ``mean + factor × σ`` 的 Pod，其中均值和标准差 σ 取自候选 Pod， "
+"``factor`` 为 ``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR`` 。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:81
+msgid ""
+"If no pod holds a match, or none passes the threshold, it falls back to "
+"the pod with the fewest running requests."
+msgstr "如果没有 Pod 持有匹配，或没有 Pod 通过阈值，则回退到运行中请求数最少的 Pod。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:83
+msgid ""
+"``prefix-cache-preble`` is a separate strategy that weighs prefix hits "
+"against load using the Preble cost model. See :doc:`gateway-plugins` for "
+"all strategies."
+msgstr ""
+"``prefix-cache-preble`` 是另一个独立策略，它基于 Preble 成本模型权衡前缀命中和负载。所有策略见 :doc"
+":`gateway-plugins` 。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:86
+msgid "Configuration"
+msgstr "配置"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:88
+msgid ""
+"Set these variables on the gateway plugin deployment. The defaults are "
+"the built-in ones."
+msgstr "在网关插件的 Deployment 上设置这些变量。默认值为内置默认值。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:94
+msgid "Variable"
+msgstr "变量"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:95
+msgid "Default"
+msgstr "默认值"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:96
+msgid "Description"
+msgstr "说明"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:97
+msgid "``AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE``"
+msgstr "``AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:98
+msgid "``character``"
+msgstr "``character``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:99
+msgid ""
+"Local tokenizer: ``character`` (the UTF-8 bytes of the text) or "
+"``tiktoken``."
+msgstr "本地 tokenizer： ``character`` （文本的 UTF-8 字节）或 ``tiktoken`` 。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:100
+msgid "``AIBRIX_PREFIX_CACHE_BLOCK_SIZE``"
+msgstr "``AIBRIX_PREFIX_CACHE_BLOCK_SIZE``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:101
+msgid "``4``"
+msgstr "``4``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:102
+msgid ""
+"Size of a prefix block, in bytes of the tokenized prompt. With "
+"``tiktoken`` each token counts as 4 bytes. Smaller blocks match finer "
+"prefixes but create more blocks to hash and store."
+msgstr ""
+"前缀块的大小，单位为 tokenize 后 prompt 的字节数。使用 ``tiktoken`` 时，每个 token 计为 4 "
+"字节。块越小，匹配的前缀越精细，但需要哈希和存储的块也越多。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:103
+msgid "``AIBRIX_PREFIX_CACHE_BLOCK_NUMBER``"
+msgstr "``AIBRIX_PREFIX_CACHE_BLOCK_NUMBER``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:104
+msgid "``200000``"
+msgstr "``200000``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:105
+msgid ""
+"Maximum number of blocks in the index. The least recently updated blocks "
+"are evicted first."
+msgstr "索引中块的最大数量。最久未更新的块最先被淘汰。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:106
+msgid "``AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS``"
+msgstr "``AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:107
+msgid "``20``"
+msgstr "``20``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:108
+msgid ""
+"A block that has not been refreshed for this long expires. A block is "
+"refreshed each time the gateway routes a request that contains it."
+msgstr "超过该时长未被刷新的块会过期。每当网关路由包含某个块的请求时，该块就会被刷新。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:109
+msgid "``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``"
+msgstr "``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:110
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:125
+msgid "``1``"
+msgstr "``1``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:111
+msgid ""
+"The ``factor`` in the standalone selection above. A model config profile "
+"can override it per request with "
+"``routingConfig.prefixCache.standardDeviationFactor``."
+msgstr ""
+"上述独立选择中的 ``factor`` 。Model config profile 可以通过 "
+"``routingConfig.prefixCache.standardDeviationFactor`` 按请求覆盖它。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:112
+msgid "``AIBRIX_PREFIX_CACHE_INCLUDE_TOOLS``"
+msgstr "``AIBRIX_PREFIX_CACHE_INCLUDE_TOOLS``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:113
+msgid "``true``"
+msgstr "``true``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:114
+msgid ""
+"Include the chat request's ``tools`` in the hashed text, so requests with"
+" the same messages but different tools do not look like a full match."
+msgstr "把聊天请求的 ``tools`` 纳入被哈希的文本，使消息相同但 tools 不同的请求不会被当作完全匹配。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:115
+msgid "``AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER``"
+msgstr "``AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:116
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:119
+msgid "``false``"
+msgstr "``false``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:117
+msgid ""
+"Tokenize with the engines' own tokenizer service instead of a local "
+"tokenizer."
+msgstr "使用引擎自带的 tokenizer 服务，而不是本地 tokenizer 进行 tokenize。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:118
+msgid "``AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED``"
+msgstr "``AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:120
+msgid "Use KV event sync mode."
+msgstr "使用 KV 事件同步模式。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:121
+msgid ""
+"``AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT`` and "
+"``AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT``"
+msgstr ""
+"``AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT`` 和 "
+"``AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:122
+msgid "``5`` and ``4``"
+msgstr "``5`` 和 ``4``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:123
+msgid ""
+"The weights of the prefix match and of ``load-balance`` in the default "
+"blend."
+msgstr "默认混合中，前缀匹配度和 ``load-balance`` 的权重。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:124
+msgid "``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT``"
+msgstr "``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:126
+msgid "Set to ``0`` to turn the auto-blend off."
+msgstr "设为 ``0`` 可关闭自动混合。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:128
+msgid ""
+"The gateway manifest shipped in ``config/gateway/gateway-plugin`` sets "
+"``AIBRIX_PREFIX_CACHE_BLOCK_SIZE`` to ``128`` and "
+"``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR`` to ``2``, so a default "
+"installation runs with those values."
+msgstr ""
+"``config/gateway/gateway-plugin`` 中随附的网关清单把 "
+"``AIBRIX_PREFIX_CACHE_BLOCK_SIZE`` 设为 ``128`` ，把 "
+"``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR`` 设为 ``2`` ，因此默认安装使用这些值。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:131
+msgid "Things to know"
+msgstr "注意事项"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:133
+msgid ""
+"In standard mode the index is an estimate built from the gateway's own "
+"routing decisions. Use KV event sync if you need it to follow the "
+"engines' real cache state."
+msgstr "在标准模式下，索引是根据网关自身路由决策构建的估计值。如果需要索引跟随引擎的真实缓存状态，请使用 KV 事件同步。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:134
+msgid ""
+"Each gateway replica keeps its own index. With "
+"``AIBRIX_STATESYNC_ENABLED=true`` the replicas share it through Redis, "
+"which they sync periodically, so they converge over time. The replicas "
+"then also use the same hash seed (``0`` unless you set "
+"``AIBRIX_PREFIX_CACHE_HASH_SEED``)."
+msgstr ""
+"每个网关副本都有自己的索引。设置 ``AIBRIX_STATESYNC_ENABLED=true`` 后，各副本通过 Redis "
+"共享索引并定期同步，因此会逐渐趋于一致。此时各副本也会使用相同的哈希种子（除非设置了 "
+"``AIBRIX_PREFIX_CACHE_HASH_SEED`` ，否则为 ``0`` ）。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:135
+msgid ""
+"The index is kept per model name. In standard mode it is bounded by the "
+"block limit and the expiry time above."
+msgstr "索引按模型名称划分。在标准模式下，它受上述块数量上限和过期时间限制。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:136
+msgid "A prompt prefix shorter than one block cannot match."
+msgstr "短于一个块的 prompt 前缀无法匹配。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:139
+msgid "Observability"
+msgstr "可观测性"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:141
+msgid "The strategy exports these Prometheus metrics:"
+msgstr "该策略导出以下 Prometheus 指标："
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:143
+msgid "``aibrix_prefix_cache_routing_decisions_total``, by prefix-match bucket"
+msgstr "``aibrix_prefix_cache_routing_decisions_total`` ，按前缀匹配度分桶"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:144
+msgid ""
+"``aibrix_prefix_cache_routing_selection_total``, by outcome: "
+"``prefix_match``, ``prefix_match_skipped`` or ``least_request_fallback``"
+msgstr ""
+"``aibrix_prefix_cache_routing_selection_total`` ，按结果划分： ``prefix_match`` "
+"、 ``prefix_match_skipped`` 或 ``least_request_fallback``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:145
+msgid "``aibrix_prefix_cache_routing_latency_seconds``"
+msgstr "``aibrix_prefix_cache_routing_latency_seconds``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:146
+msgid "``aibrix_prefix_cache_routing_errors_total``"
+msgstr "``aibrix_prefix_cache_routing_errors_total``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:147
+msgid "``aibrix_prefix_cache_indexer_status``"
+msgstr "``aibrix_prefix_cache_indexer_status``"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:149
+msgid ""
+"The decision, selection, latency and error series are recorded by the "
+"standalone selection described above. While the default auto-blend is "
+"active, only ``aibrix_prefix_cache_indexer_status`` is updated."
+msgstr ""
+"决策、选择、延迟和错误这几个序列由上述独立选择路径记录。默认自动混合生效时，只会更新 "
+"``aibrix_prefix_cache_indexer_status`` 。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:152
+msgid "Related pages"
+msgstr "相关页面"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:154
+msgid ":doc:`gateway-plugins`: all routing strategies and how to select them."
+msgstr ":doc:`gateway-plugins` ：所有路由策略及其选择方式。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:155
+msgid ""
+":doc:`pd-disaggregation`: PD prefill scoring that reuses this prefix "
+"index."
+msgstr ":doc:`pd-disaggregation`：复用此前缀索引的 PD prefill 打分。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:156
+msgid ""
+":doc:`agentic-routing`: keeping the requests of one agent run on the same"
+" pod."
+msgstr ":doc:`agentic-routing` ：让同一次智能体运行的请求保持在同一个 Pod 上。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:157
+msgid ""
+":doc:`../scaling-performance/kv-event-sync`: feeding the prefix index "
+"from engine cache events."
+msgstr ":doc:`../scaling-performance/kv-event-sync` ：用引擎缓存事件驱动前缀索引。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:158
+msgid ""
+":doc:`../../production/gateway`: Redis and ``AIBRIX_STATESYNC_ENABLED`` "
+"for multi-replica indexes."
+msgstr ""
+":doc:`../../production/gateway`：多副本索引所需的 Redis 和 "
+"``AIBRIX_STATESYNC_ENABLED``。"
+
+#: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:159
+msgid ":doc:`../../designs/aibrix-gateway`: how the gateway selects a pod."
+msgstr ":doc:`../../designs/aibrix-gateway` ：网关如何选择 Pod。"
+

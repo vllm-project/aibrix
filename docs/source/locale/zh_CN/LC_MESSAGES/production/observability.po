@@ -222,5 +222,7 @@ msgid ":doc:`model-deployment`: the signals worth alerting on"
 msgstr ":doc:`model-deployment` ：值得告警的信号"
 
 #: ../../source/production/observability.rst:95
-msgid ":doc:`../features/benchmark-and-generator`: generate load to exercise them"
-msgstr ":doc:`../features/benchmark-and-generator` ：生成负载以验证这些指标"
+msgid ""
+":doc:`../features/benchmark/benchmark-and-generator`: generate load "
+"to exercise them"
+msgstr ":doc:`../features/benchmark/benchmark-and-generator` ：生成负载以验证这些指标"

@@ -18,8 +18,10 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -1068,7 +1070,7 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 
 // TestHandleRequestBody_AsyncVideoJobWithoutRoutingStrategyGetsPinned guards against a
 // regression where POST /v1/videos submitted without a routing-strategy header (the
-// out-of-the-box default, and what the async example in docs/source/features/vllm-omni.rst
+// out-of-the-box default, and what the async example in docs/source/features/gateway-routing/omni-video.rst
 // uses) fell into the RouterNotSet branch, which never calls SetTargetPod. That left
 // registerVideoJobFromCreateResponse's routerCtx.TargetPod() call (see
 // gateway_video_routing.go) blocking until the request's context was done, and the job
@@ -1205,6 +1207,307 @@ func TestHandleRequestBody_LanguageRequestKeepsConfiguredResponseMode(t *testing
 	resp, _, _, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
 
 	assert.Nil(t, resp.GetModeOverride())
+}
+
+// TestHandleRequestBody_MessagesAndAudioReachABackendPod is the request half of
+// the reserved routes for these endpoints: once Envoy hands their bodies to
+// ext_proc, the model has to come out of the right parser and select a pod. The
+// query-string variants matter because HTTP/2 :path carries the query.
+func TestHandleRequestBody_MessagesAndAudioReachABackendPod(t *testing.T) {
+	audioBody, audioContentType := buildMultipartForm(t, map[string]string{"model": "llama"})
+	imageEditBody, imageEditContentType := buildMultipartFormWithFile(t,
+		map[string]string{"model": "llama", "prompt": "add a hat"}, "image", "cat.png", []byte("\x89PNG not a real image"))
+	messagesBody := []byte(`{"model":"llama","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
+
+	tests := []struct {
+		name        string
+		path        string
+		body        []byte
+		contentType string
+	}{
+		{"messages", PathMessages, messagesBody, "application/json"},
+		{"messages with query string", PathMessages + "?beta=true", messagesBody, "application/json"},
+		{"audio transcriptions", PathAudioTranscriptions, audioBody, audioContentType},
+		{"audio transcriptions with query string", PathAudioTranscriptions + "?foo=bar", audioBody, audioContentType},
+		{"audio translations", PathAudioTranslations, audioBody, audioContentType},
+		{"audio translations with query string", PathAudioTranslations + "?foo=bar", audioBody, audioContentType},
+		{"image edits", PathImagesEdits, imageEditBody, imageEditContentType},
+		{"image edits with query string", PathImagesEdits + "?foo=bar", imageEditBody, imageEditContentType},
+	}
+
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockCache := &MockCache{Cache: cache.NewForTest()}
+			pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+			mockCache.On("HasModel", "llama").Return(true)
+			mockCache.On("ListPodsByModel", "llama").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+			mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "llama").Return(int64(1))
+			mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+				Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+			server := &Server{cache: mockCache}
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_RequestBody{
+					RequestBody: &extProcPb.HttpBody{Body: tt.body},
+				},
+			}
+
+			routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+			routingCtx.ReqPath = tt.path
+			routingCtx.ReqHeaders[contentTypeKey] = tt.contentType
+			routingCtx.ReqHeaders[methodKey] = http.MethodPost
+			routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(routingalgorithms.RouterLeastRequest)
+
+			resp, model, _, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+			require.NotNil(t, resp)
+			require.Nil(t, resp.GetImmediateResponse(), "the request must not be rejected")
+			assert.Equal(t, "llama", model)
+
+			var targetPod string
+			for _, h := range resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
+				if h.Header.Key == HeaderTargetPod {
+					targetPod = string(h.Header.RawValue)
+				}
+			}
+			assert.Equal(t, "1.2.3.4:8000", targetPod)
+		})
+	}
+}
+
+// TestHandleRequestBody_ScoreReachesABackendPodUnchanged: a /v1/score request is routed
+// on its model like any other, and the body is forwarded byte for byte, so SGLang's
+// scoring options and any field the gateway does not know reach the engine.
+func TestHandleRequestBody_ScoreReachesABackendPodUnchanged(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+	mockCache.On("HasModel", "scorer").Return(true)
+	mockCache.On("ListPodsByModel", "scorer").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "scorer").Return(int64(1))
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	server := &Server{cache: mockCache}
+
+	body := []byte(`{"model":"scorer","query":"rank these","items":["a<sep>b<sep>"],"score_extraction_token":"<sep>","label_token_ids":[[9454],[2753]],"x_future_option":{"k":1}}`)
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: body},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathScore + "?api-version=1"
+	routingCtx.ReqHeaders[contentTypeKey] = "application/json"
+	routingCtx.ReqHeaders[methodKey] = http.MethodPost
+	routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(routingalgorithms.RouterLeastRequest)
+
+	resp, model, stream, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	require.NotNil(t, resp)
+	require.Nil(t, resp.GetImmediateResponse(), "the request must not be rejected")
+	assert.Equal(t, "scorer", model)
+	assert.False(t, stream)
+	assert.Equal(t, "rank these", routingCtx.Message)
+
+	common := resp.GetRequestBody().GetResponse()
+	assert.Equal(t, body, common.GetBodyMutation().GetBody())
+	var targetPod string
+	for _, h := range common.GetHeaderMutation().GetSetHeaders() {
+		if h.Header.Key == HeaderTargetPod {
+			targetPod = string(h.Header.RawValue)
+		}
+	}
+	assert.Equal(t, "1.2.3.4:8000", targetPod)
+}
+
+// TestHandleRequestBody_AudioSpeechReachesABackendPodUnchanged: a /v1/audio/speech request is
+// routed on its model like any other JSON request, and the body is forwarded byte for byte, so
+// the engine's speech options and any field the gateway does not know reach the engine.
+func TestHandleRequestBody_AudioSpeechReachesABackendPodUnchanged(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+	mockCache.On("HasModel", "tts-1").Return(true)
+	mockCache.On("ListPodsByModel", "tts-1").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "tts-1").Return(int64(1))
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	server := &Server{cache: mockCache}
+
+	body := []byte(`{"model":"tts-1","input":"Hello world","voice":"alloy","response_format":"wav","instructions":"excited","x_future_option":{"k":1}}`)
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: body},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathAudioSpeech + "?api-version=1"
+	routingCtx.ReqHeaders[contentTypeKey] = "application/json"
+	routingCtx.ReqHeaders[methodKey] = http.MethodPost
+	routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(routingalgorithms.RouterLeastRequest)
+
+	resp, model, stream, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	require.NotNil(t, resp)
+	require.Nil(t, resp.GetImmediateResponse(), "the request must not be rejected")
+	assert.Equal(t, "tts-1", model)
+	assert.False(t, stream)
+	assert.Equal(t, "Hello world", routingCtx.Message)
+
+	common := resp.GetRequestBody().GetResponse()
+	assert.Equal(t, body, common.GetBodyMutation().GetBody())
+	var targetPod string
+	for _, h := range common.GetHeaderMutation().GetSetHeaders() {
+		if h.Header.Key == HeaderTargetPod {
+			targetPod = string(h.Header.RawValue)
+		}
+	}
+	assert.Equal(t, "1.2.3.4:8000", targetPod)
+}
+
+// TestHandleRequestBody_AudioSpeechBatchReachesABackendPodUnchanged: a /v1/audio/speech/batch
+// request is routed on its top-level model, and the body is forwarded byte for byte, so the
+// shared defaults, per-item overrides and reference clips all reach the engine as sent.
+func TestHandleRequestBody_AudioSpeechBatchReachesABackendPodUnchanged(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+	mockCache.On("HasModel", "tts-1").Return(true)
+	mockCache.On("ListPodsByModel", "tts-1").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "tts-1").Return(int64(1))
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	server := &Server{cache: mockCache}
+
+	body := []byte(`{"model":"tts-1","voice":"default","response_format":"wav","items":[{"input":"First sentence."},{"input":"Second sentence.","speed":1.1},{"input":"Use a reference clip.","ref_audio":"https://example.com/prompt.wav","ref_text":"We asked twenty people."}]}`)
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: body},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathAudioSpeechBatch + "?api-version=1"
+	routingCtx.ReqHeaders[contentTypeKey] = "application/json"
+	routingCtx.ReqHeaders[methodKey] = http.MethodPost
+	routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(routingalgorithms.RouterLeastRequest)
+
+	resp, model, stream, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	require.NotNil(t, resp)
+	require.Nil(t, resp.GetImmediateResponse(), "the request must not be rejected")
+	assert.Equal(t, "tts-1", model)
+	assert.False(t, stream)
+	assert.Equal(t, "First sentence.\nSecond sentence.\nUse a reference clip.", routingCtx.Message)
+
+	common := resp.GetRequestBody().GetResponse()
+	assert.Equal(t, body, common.GetBodyMutation().GetBody())
+	var targetPod string
+	for _, h := range common.GetHeaderMutation().GetSetHeaders() {
+		if h.Header.Key == HeaderTargetPod {
+			targetPod = string(h.Header.RawValue)
+		}
+	}
+	assert.Equal(t, "1.2.3.4:8000", targetPod)
+}
+
+// TestHandleRequestBody_ChatCompletionsBatchReachesABackendPodUnchanged: a
+// /v1/chat/completions/batch request is routed on its top-level model, and the body is forwarded
+// byte for byte, so every conversation and sampling option reaches the engine as sent.
+func TestHandleRequestBody_ChatCompletionsBatchReachesABackendPodUnchanged(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+	mockCache.On("HasModel", "chat-model").Return(true)
+	mockCache.On("ListPodsByModel", "chat-model").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "chat-model").Return(int64(1))
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	server := &Server{cache: mockCache}
+
+	body := []byte(`{"model":"chat-model","max_tokens":32,"temperature":0,"messages":[[{"role":"user","content":"What is the capital of France?"}],[{"role":"system","content":"Be brief."},{"role":"user","content":"What is the capital of Japan?"}]]}`)
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: body},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathChatCompletionsBatch + "?api-version=1"
+	routingCtx.ReqHeaders[contentTypeKey] = "application/json"
+	routingCtx.ReqHeaders[methodKey] = http.MethodPost
+	routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(routingalgorithms.RouterLeastRequest)
+
+	resp, model, stream, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	require.NotNil(t, resp)
+	require.Nil(t, resp.GetImmediateResponse(), "the request must not be rejected")
+	assert.Equal(t, "chat-model", model)
+	assert.False(t, stream)
+	assert.Equal(t, "What is the capital of France?\nBe brief. What is the capital of Japan?", routingCtx.Message)
+
+	common := resp.GetRequestBody().GetResponse()
+	assert.Equal(t, body, common.GetBodyMutation().GetBody())
+	var targetPod string
+	for _, h := range common.GetHeaderMutation().GetSetHeaders() {
+		if h.Header.Key == HeaderTargetPod {
+			targetPod = string(h.Header.RawValue)
+		}
+	}
+	assert.Equal(t, "1.2.3.4:8000", targetPod)
+}
+
+// TestHandleRequestBody_ChatCompletionsBatchRejectsPDRouting: the PD router rewrites a single
+// conversation's messages into a prefill and a decode request, which a list of conversations
+// cannot go through, so the strategy is refused instead of producing a malformed prefill body.
+func TestHandleRequestBody_ChatCompletionsBatchRejectsPDRouting(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+	mockCache.On("HasModel", "chat-model").Return(true)
+	mockCache.On("ListPodsByModel", "chat-model").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+
+	server := &Server{cache: mockCache}
+
+	body := []byte(`{"model":"chat-model","messages":[[{"role":"user","content":"Hi"}]]}`)
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: body},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathChatCompletionsBatch
+	routingCtx.ReqHeaders[contentTypeKey] = "application/json"
+	routingCtx.ReqHeaders[methodKey] = http.MethodPost
+	routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(routingalgorithms.RouterPD)
+
+	resp, _, _, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	require.NotNil(t, resp)
+	require.NotNil(t, resp.GetImmediateResponse(), "the request must be rejected")
+	assert.Equal(t, envoyTypePb.StatusCode_BadRequest, resp.GetImmediateResponse().GetStatus().GetCode())
+	assert.Contains(t, resp.GetImmediateResponse().GetBody(), "is not supported for endpoint '/v1/chat/completions/batch'")
 }
 
 // registerTestRouter registers the shared TestRouterAlgorithm mock router so a
@@ -1395,6 +1698,195 @@ func TestHandleRequestBody_LockedRoutingStrategy(t *testing.T) {
 			}
 			mockCache.AssertExpectations(t)
 			mockRouter.AssertExpectations(t)
+		})
+	}
+}
+
+func immediateHeaderFromResponse(resp *extProcPb.ProcessingResponse, key string) string {
+	if imm := resp.GetImmediateResponse(); imm != nil && imm.GetHeaders() != nil {
+		for _, h := range imm.GetHeaders().GetSetHeaders() {
+			if h.Header != nil && strings.EqualFold(h.Header.Key, key) {
+				return string(h.Header.RawValue)
+			}
+		}
+	}
+	return ""
+}
+
+func TestHandleRequestBody_RejectPDRouting(t *testing.T) {
+	mockPDRouter := new(mockRouter)
+	routingalgorithms.Register(routingalgorithms.RouterPD, func() (types.Router, error) {
+		return mockPDRouter, nil
+	})
+	routingalgorithms.Init()
+
+	tests := []struct {
+		name          string
+		reqPath       string
+		requestBody   string
+		headerValue   string
+		configProfile string
+		profileJSON   string
+		wantReject    bool
+		wantErrCode   string
+		wantErrType   string
+		wantErrMsg    string
+	}{
+		{
+			name:        "responses with pd header is rejected",
+			reqPath:     PathResponses,
+			requestBody: `{"model":"test-model","input":"test"}`,
+			headerValue: "pd",
+			wantReject:  true,
+			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
+			wantErrType: ErrorTypeInvalidRequest,
+			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/responses'",
+		},
+		{
+			name:        "messages with pd header is rejected",
+			reqPath:     PathMessages,
+			requestBody: `{"model":"test-model","messages":[{"role":"user","content":"test"}]}`,
+			headerValue: "pd",
+			wantReject:  true,
+			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
+			wantErrType: ErrorTypeInvalidRequest,
+			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/messages'",
+		},
+		{
+			name:        "embeddings with pd header is rejected",
+			reqPath:     PathEmbeddings,
+			requestBody: `{"model":"test-model","input":"test"}`,
+			headerValue: "pd",
+			wantReject:  true,
+			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
+			wantErrType: ErrorTypeInvalidRequest,
+			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/embeddings'",
+		},
+		{
+			name:        "responses with query string and pd header is rejected",
+			reqPath:     PathResponses + "?stream=true",
+			requestBody: `{"model":"test-model","input":"test"}`,
+			headerValue: "pd",
+			wantReject:  true,
+			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
+			wantErrType: ErrorTypeInvalidRequest,
+			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/responses'",
+		},
+		{
+			name:          "embeddings with pd from model profile is rejected",
+			reqPath:       PathEmbeddings,
+			requestBody:   `{"model":"test-model","input":"test"}`,
+			configProfile: "pd-profile",
+			profileJSON:   `{"defaultProfile":"default","profiles":{"pd-profile":{"routingStrategy":"pd"},"default":{"routingStrategy":"test-router"}}}`,
+			wantReject:    true,
+			wantErrCode:   ErrorCodeUnsupportedRoutingStrategy,
+			wantErrType:   ErrorTypeInvalidRequest,
+			wantErrMsg:    "routing strategy 'pd' is not supported for endpoint '/v1/embeddings'",
+		},
+		{
+			name:        "rerank with locked pd profile is rejected",
+			reqPath:     PathRerank,
+			requestBody: `{"model":"test-model","query":"q","documents":["d1"]}`,
+			headerValue: "test-router", // locked profile should take precedence
+			profileJSON: `{"lockedRoutingStrategy":"pd","defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"}}}`,
+			wantReject:  true,
+			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
+			wantErrType: ErrorTypeInvalidRequest,
+			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/rerank'",
+		},
+		{
+			name:        "chat completions with pd header is accepted",
+			reqPath:     PathChatCompletions,
+			requestBody: `{"model":"test-model","messages":[{"role":"user","content":"test"}]}`,
+			headerValue: "pd",
+			wantReject:  false,
+		},
+		{
+			name:        "completions with pd header is accepted",
+			reqPath:     PathCompletions,
+			requestBody: `{"model":"test-model","prompt":"test"}`,
+			headerValue: "pd",
+			wantReject:  false,
+		},
+		{
+			name:        "responses with non-pd test-router is accepted",
+			reqPath:     PathResponses,
+			requestBody: `{"model":"test-model","input":"test"}`,
+			headerValue: "test-router",
+			wantReject:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockCache := &MockCache{Cache: cache.NewForTest()}
+			mockRouter := new(mockRouter)
+			registerTestRouter(mockRouter)
+			routingalgorithms.Register(routingalgorithms.RouterPD, func() (types.Router, error) {
+				return mockRouter, nil
+			})
+			routingalgorithms.Init()
+
+			profileJSON := tt.profileJSON
+			if profileJSON == "" {
+				profileJSON = `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"}}}`
+			}
+			podList := &utils.PodArray{Pods: configProfilePods(profileJSON)}
+
+			mockCache.On("HasModel", "test-model").Return(true)
+			mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+			mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+				Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+			if !tt.wantReject {
+				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1)).Maybe()
+				mockRouter.On("Route", mock.Anything, mock.Anything).Return("1.2.3.4:8000", nil).Maybe()
+			}
+
+			server := &Server{cache: mockCache}
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_RequestBody{
+					RequestBody: &extProcPb.HttpBody{
+						Body: []byte(tt.requestBody),
+					},
+				},
+			}
+
+			routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+			routingCtx.ReqPath = tt.reqPath
+			if tt.headerValue != "" {
+				routingCtx.ReqHeaders[HeaderRoutingStrategy] = tt.headerValue
+			}
+			routingCtx.ReqConfigProfile = tt.configProfile
+
+			resp, _, _, term := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+			require.NotNil(t, resp)
+			if tt.wantReject {
+				imm := resp.GetImmediateResponse()
+				require.NotNil(t, imm, "rejected request must return an immediate response")
+				assert.Equal(t, envoyTypePb.StatusCode_BadRequest, imm.GetStatus().GetCode())
+				assert.Equal(t, int64(0), term)
+
+				var errResp map[string]map[string]interface{}
+				require.NoError(t, json.Unmarshal([]byte(imm.GetBody()), &errResp))
+				errObj, ok := errResp["error"]
+				require.True(t, ok)
+				assert.Equal(t, tt.wantErrCode, errObj["code"])
+				assert.Equal(t, tt.wantErrType, errObj["type"])
+				assert.Equal(t, tt.wantErrMsg, errObj["message"])
+
+				assert.Equal(t, "true", immediateHeaderFromResponse(resp, HeaderErrorRouting))
+
+				mockRouter.AssertNotCalled(t, "Route", mock.Anything, mock.Anything)
+				mockCache.AssertNotCalled(t, "AddRequestCount", mock.Anything, mock.Anything, mock.Anything)
+			} else {
+				if resp.GetImmediateResponse() != nil {
+					assert.NotEqual(t, envoyTypePb.StatusCode_BadRequest, resp.GetImmediateResponse().GetStatus().GetCode(),
+						"accepted request must not be rejected with 400: %s", resp.GetImmediateResponse().GetBody())
+				}
+			}
 		})
 	}
 }

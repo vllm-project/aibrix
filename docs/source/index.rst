@@ -11,9 +11,11 @@ AIBrix delivers a cloud-native solution optimized for deploying, managing, and s
 
 Key features:
 
-- **LLM Gateway and Routing**: Efficiently manage and direct traffic across multiple models and replicas.
+- **LLM Gateway and Routing**: OpenAI-compatible gateway that routes by live engine state, with prefix-cache-aware, load-aware, and P/D routing, plus session affinity for agentic workloads.
+- **Multi-Engine Support**: Serve vLLM, SGLang, TensorRT-LLM, and xLLM side by side behind one gateway.
 - **High-Density LoRA Management**: Streamlined support for lightweight, low-rank adaptations of models.
-- **Distributed Inference**: Scalable architecture to handle large workloads across multiple nodes.
+- **Model Lifecycle**: Declare models with ModelClaim, and preload images and weights onto nodes with ModelWarmup for faster scale-up.
+- **Distributed Inference**: Multi-node inference deployments with StormService, scaling large workloads across nodes.
 - **LLM App-Tailored Autoscaler**: Dynamically scale inference resources based on real-time demand.
 - **Unified AI Runtime**: A versatile sidecar enabling metric standardization, model downloading, and management.
 - **Heterogeneous-GPU Inference**: Cost-effective SLO-driven LLM inference using heterogeneous GPUs.
@@ -35,16 +37,16 @@ Where to start
       1. :doc:`getting_started/overview`
       2. :doc:`getting_started/quickstart`
       3. :doc:`getting_started/installation/installation`
-      4. :doc:`features/gateway-plugins`
+      4. :doc:`features/gateway-routing/gateway-plugins`
 
    .. grid-item-card:: Intermediate
       :class-card: sd-border-1
 
       Serving works. Make it efficient.
 
-      1. :doc:`features/autoscaling/autoscaling`
-      2. :doc:`features/lora-dynamic-loading`
-      3. :doc:`features/kvcache-offloading`
+      1. :doc:`features/scaling-performance/autoscaling/autoscaling`
+      2. :doc:`features/model-serving/lora-dynamic-loading`
+      3. :doc:`features/scaling-performance/kvcache-offloading`
       4. :doc:`production/observability`
 
    .. grid-item-card:: Advanced
@@ -52,9 +54,9 @@ Where to start
 
       Scale, cost, and latency targets.
 
-      1. :doc:`features/pd-disaggregation`
-      2. :doc:`features/multi-node-inference`
-      3. :doc:`features/heterogeneous-gpu`
+      1. :doc:`features/gateway-routing/pd-disaggregation`
+      2. :doc:`features/model-serving/multi-node-inference`
+      3. :doc:`features/model-serving/heterogeneous-gpu`
       4. :doc:`production/model-deployment`
 
 Documentation
@@ -76,58 +78,58 @@ Documentation
    :caption: Architecture
 
    designs/architecture.rst
-   designs/aibrix-router.rst
+   designs/aibrix-gateway.rst
    designs/aibrix-engine-runtime.rst
    designs/aibrix-autoscaler.rst
    designs/aibrix-kvcache-offloading-framework.rst
    designs/aibrix-stormservice.rst
-   designs/gateway-model-list-discovery-health.rst
 
 .. toctree::
    :maxdepth: 1
-   :caption: Gateway & Routing
+   :caption: Request Routing
 
-   features/gateway-plugins.rst
-   features/external-replica-routing.rst
-   features/pd-disaggregation.rst
-   features/agentic-routing.rst
-   features/semantic-router.rst
-   features/vllm-omni.rst
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Model Serving
-
-   features/lora-dynamic-loading.rst
-   features/multi-node-inference.rst
-   features/multi-engine.rst
-   features/heterogeneous-gpu.rst
-   features/runtime.rst
-   features/modelclaim.rst
-   features/model-warmup.rst
+   features/gateway-routing/gateway-plugins.rst
+   features/gateway-routing/prefix-cache-aware-routing.rst
+   features/gateway-routing/pd-disaggregation.rst
+   features/gateway-routing/agentic-routing.rst
+   features/gateway-routing/semantic-router.rst
+   features/gateway-routing/omni.rst
+   features/gateway-routing/external-replica-routing.rst
 
 .. toctree::
    :maxdepth: 1
-   :caption: Scaling & Performance
+   :caption: Model Management
 
-   features/autoscaling/autoscaling.rst
-   features/kvcache-offloading.rst
-   features/kv-event-sync.rst
+   features/model-serving/multi-engine.rst
+   features/model-serving/multi-node-inference.rst
+   features/model-serving/heterogeneous-gpu.rst
+   features/model-serving/lora-dynamic-loading.rst
+   features/model-serving/runtime.rst
+   features/model-serving/model-claim.rst
+   features/model-serving/model-warmup.rst
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Scaling & Efficiency
+
+   features/scaling-performance/autoscaling/autoscaling.rst
+   features/scaling-performance/kvcache-offloading.rst
+   features/scaling-performance/kv-event-sync.rst
 
 .. toctree::
    :maxdepth: 1
    :caption: Batch Inference
 
-   features/batch-api.rst
-   features/batch-model-deployment-templates.rst
-   features/batch-resource-manager.rst
+   features/batch-inference/batch-api.rst
+   features/batch-inference/batch-model-deployment-templates.rst
+   features/batch-inference/batch-resource-manager.rst
 
 .. toctree::
    :maxdepth: 1
    :caption: Benchmark
 
-   features/brixbench.rst
-   features/benchmark-and-generator.rst
+   features/benchmark/brixbench.rst
+   features/benchmark/benchmark-and-generator.rst
 
 .. toctree::
    :maxdepth: 1

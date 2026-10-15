@@ -13,6 +13,14 @@ tests:
       - notExists:
           path: spec.telemetry
 
+  - it: should leave tracing absent with the default values
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    asserts:
+      - notExists:
+          path: spec.telemetry.tracing
+
   - it: should enable diagnostic logs without enabling tracing
     release:
       name: aibrix

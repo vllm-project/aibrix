@@ -243,4 +243,4 @@ intended Console surface:
 
    * :doc:`observability`: metrics and dashboards behind the Console views
    * :doc:`model-deployment`: deploy the models the Console manages
-   * :doc:`../features/batch-api`: submit and track offline batch jobs
+   * :doc:`../features/batch-inference/batch-api`: submit and track offline batch jobs

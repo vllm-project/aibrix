@@ -46,6 +46,9 @@ func (m *RollingManagerSequential) Next(ctx context.Context, roleSet *orchestrat
 	var result controllerdrain.Result
 	for _, role := range roleSet.Spec.Roles {
 		klog.Infof("[RollingManagerSequential.Next] start to scale roleset %s/%s role %s", roleSet.Namespace, roleSet.Name, role.Name)
+		if err := validateUpdateBudget(&role); err != nil {
+			return result, err
+		}
 		scaleResult, err := GetRoleSyncerWithRecorder(m.cli, &role, m.recorder).Scale(ctx, roleSet, &role)
 		if err != nil {
 			return result, err
@@ -105,6 +108,9 @@ func (m *RollingManagerParallel) Next(ctx context.Context, roleSet *orchestratio
 	var result controllerdrain.Result
 	for _, role := range roleSet.Spec.Roles {
 		klog.Infof("[RollingManagerParallel.Next] start to scale roleset %s/%s role %s", roleSet.Namespace, roleSet.Name, role.Name)
+		if err := validateUpdateBudget(&role); err != nil {
+			return result, err
+		}
 		scaleResult, err := GetRoleSyncerWithRecorder(m.cli, &role, m.recorder).Scale(ctx, roleSet, &role)
 		if err != nil {
 			return result, err
@@ -139,6 +145,9 @@ func (m *RollingManagerInterleave) Next(ctx context.Context, roleSet *orchestrat
 	var result controllerdrain.Result
 	for _, role := range roleSet.Spec.Roles {
 		klog.Infof("[RollingManagerInterleave.Next] start to scale roleset %s/%s role %s", roleSet.Namespace, roleSet.Name, role.Name)
+		if err := validateUpdateBudget(&role); err != nil {
+			return result, err
+		}
 		scaleResult, err := GetRoleSyncerWithRecorder(m.cli, &role, m.recorder).Scale(ctx, roleSet, &role)
 		if err != nil {
 			return result, err

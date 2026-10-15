@@ -635,6 +635,23 @@
           "enum": ["Cluster", "Local"],
           "description": "Determines the external traffic policy for the Envoy Service"
         },
+        "nodePorts": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optional fixed NodePorts for enabled listeners; requires type NodePort and cannot be combined with patch.",
+          "properties": {
+            "http": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "https": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          }
+        },
         "patch": {
           "type": "object",
           "description": "Patch defines how to perform the patch operation to the service",

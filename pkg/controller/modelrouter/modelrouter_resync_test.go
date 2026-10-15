@@ -19,6 +19,7 @@ package modelrouter
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -41,11 +43,12 @@ var leaderWorkerSetGVK = schema.GroupVersionKind{
 	Kind:    "LeaderWorkerSet",
 }
 
-// createCountingClient counts HTTPRoute creates so tests can assert that a
+// createCountingClient counts HTTPRoute writes so tests can assert that a
 // resync or update did not write to the API server.
 type createCountingClient struct {
 	client.Client
 	routeCreates int
+	routeUpdates int
 }
 
 func (c *createCountingClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
@@ -53,6 +56,13 @@ func (c *createCountingClient) Create(ctx context.Context, obj client.Object, op
 		c.routeCreates++
 	}
 	return c.Client.Create(ctx, obj, opts...)
+}
+
+func (c *createCountingClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	if _, ok := obj.(*gatewayv1.HTTPRoute); ok {
+		c.routeUpdates++
+	}
+	return c.Client.Update(ctx, obj, opts...)
 }
 
 func httpRouteExists(t *testing.T, c client.Client, modelName string) bool {
@@ -353,6 +363,17 @@ func TestEnsureHTTPRoutesDoesNotWriteWhenRoutesExist(t *testing.T) {
 	m := newEventTestRouter(t, deploys[0], deploys[1])
 	m.addRouteFromDeployment(deploys[0])
 
+	// Fields the API server defaults on admission must not look like drift.
+	route := getHTTPRoute(t, m.Client, "llama-7b")
+	route.Spec.ParentRefs[0].Group = ptr.To(gatewayv1.Group(gatewayv1.GroupName))
+	route.Spec.ParentRefs[0].Kind = ptr.To(gatewayv1.Kind("Gateway"))
+	route.Spec.Rules[0].BackendRefs[0].Group = ptr.To(gatewayv1.Group(""))
+	route.Spec.Rules[0].BackendRefs[0].Kind = ptr.To(gatewayv1.Kind("Service"))
+	route.Spec.Rules[0].BackendRefs[0].Weight = ptr.To(int32(1))
+	if err := m.Update(context.Background(), route); err != nil {
+		t.Fatalf("update HTTPRoute: %v", err)
+	}
+
 	counter := &createCountingClient{Client: m.Client}
 	m.Client = counter
 	if err := m.ensureHTTPRoutes(context.Background()); err != nil {
@@ -360,6 +381,103 @@ func TestEnsureHTTPRoutesDoesNotWriteWhenRoutesExist(t *testing.T) {
 	}
 	if counter.routeCreates != 0 {
 		t.Errorf("HTTPRoute creates = %d, want 0", counter.routeCreates)
+	}
+	if counter.routeUpdates != 0 {
+		t.Errorf("HTTPRoute updates = %d, want 0", counter.routeUpdates)
+	}
+}
+
+func TestEnsureHTTPRoutesUpdatesRouteMissingNewPaths(t *testing.T) {
+	const modelName = "llama-7b"
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llama-deploy",
+			Namespace: "models",
+			Labels:    modelWorkloadLabels(modelName, "8000"),
+		},
+	}
+	m := newEventTestRouter(t, deploy)
+	m.addRouteFromDeployment(deploy)
+
+	// A route created by an older release, before the later paths were added.
+	route := getHTTPRoute(t, m.Client, modelName)
+	route.Spec.Rules[0].Matches = route.Spec.Rules[0].Matches[:2]
+	if err := m.Update(context.Background(), route); err != nil {
+		t.Fatalf("update HTTPRoute: %v", err)
+	}
+
+	if err := m.ensureHTTPRoutes(context.Background()); err != nil {
+		t.Fatalf("ensureHTTPRoutes() error = %v", err)
+	}
+	if got := routeMatchPaths(getHTTPRoute(t, m.Client, modelName)); !slices.Equal(got, modelPaths) {
+		t.Errorf("route paths = %v, want %v", got, modelPaths)
+	}
+}
+
+func TestEnsureHTTPRoutesUpdatesRouteOnPortChange(t *testing.T) {
+	const modelName = "llama-7b"
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llama-deploy",
+			Namespace: "models",
+			Labels:    modelWorkloadLabels(modelName, "8000"),
+		},
+	}
+	m := newEventTestRouter(t, deploy)
+	m.addRouteFromDeployment(deploy)
+
+	current := &appsv1.Deployment{}
+	if err := m.Get(context.Background(), client.ObjectKeyFromObject(deploy), current); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	current.Labels[constants.ModelLabelPort] = "8080"
+	if err := m.Update(context.Background(), current); err != nil {
+		t.Fatalf("update deployment: %v", err)
+	}
+
+	if err := m.ensureHTTPRoutes(context.Background()); err != nil {
+		t.Fatalf("ensureHTTPRoutes() error = %v", err)
+	}
+	backend := getHTTPRoute(t, m.Client, modelName).Spec.Rules[0].BackendRefs[0]
+	if backend.Port == nil || int32(*backend.Port) != 8080 {
+		t.Errorf("backend port = %v, want 8080", backend.Port)
+	}
+}
+
+func TestEnsureHTTPRoutesFollowsOldestWorkload(t *testing.T) {
+	const modelName = "llama-7b"
+	older := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "llama-deploy-b",
+			Namespace:         "models",
+			CreationTimestamp: metav1.NewTime(time.Unix(1000, 0)),
+			Labels:            modelWorkloadLabels(modelName, "8000"),
+		},
+	}
+	newer := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "llama-deploy-a",
+			Namespace:         "models",
+			CreationTimestamp: metav1.NewTime(time.Unix(2000, 0)),
+			Labels:            modelWorkloadLabels(modelName, "8080"),
+		},
+	}
+	m := newEventTestRouter(t, older, newer)
+	m.addRouteFromDeployment(newer)
+
+	counter := &createCountingClient{Client: m.Client}
+	m.Client = counter
+	for i := 0; i < 3; i++ {
+		if err := m.ensureHTTPRoutes(context.Background()); err != nil {
+			t.Fatalf("ensureHTTPRoutes() error = %v", err)
+		}
+	}
+	backend := getHTTPRoute(t, m.Client, modelName).Spec.Rules[0].BackendRefs[0]
+	if backend.Port == nil || int32(*backend.Port) != 8000 {
+		t.Errorf("backend port = %v, want 8000 from the older workload", backend.Port)
+	}
+	if counter.routeUpdates != 1 {
+		t.Errorf("HTTPRoute updates = %d, want 1", counter.routeUpdates)
 	}
 }
 

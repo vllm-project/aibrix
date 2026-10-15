@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,6 +37,7 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
@@ -49,6 +51,8 @@ const ns = "ns1"
 // fakeWorkloadScaleClient implements the subset of the WorkloadScaleClient used by the reconciler.
 type fakeWorkloadScaleClient struct {
 	selector labels.Selector
+	// replicasErr, when set, is returned by GetCurrentReplicasFromScale.
+	replicasErr error
 }
 
 func (f *fakeWorkloadScaleClient) Validate(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler) error {
@@ -60,6 +64,9 @@ func (f *fakeWorkloadScaleClient) SetDesiredReplicas(ctx context.Context, pa *au
 }
 
 func (f *fakeWorkloadScaleClient) GetCurrentReplicasFromScale(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, scaleObj *unstructured.Unstructured) (int32, error) {
+	if f.replicasErr != nil {
+		return 0, f.replicasErr
+	}
 	return 1, nil
 }
 
@@ -77,6 +84,11 @@ type fakeAutoScaler struct {
 	lastRequest *ReplicaComputeRequest
 	result      *ReplicaComputeResult
 	err         error
+	forgotten   []ktypes.NamespacedName
+}
+
+func (f *fakeAutoScaler) ForgetPodAutoscaler(namespace, name string) {
+	f.forgotten = append(f.forgotten, ktypes.NamespacedName{Namespace: namespace, Name: name})
 }
 
 func (f *fakeAutoScaler) ComputeDesiredReplicas(ctx context.Context, req ReplicaComputeRequest) (*ReplicaComputeResult, error) {
@@ -1324,6 +1336,136 @@ func TestStabilizeRecommendationHoldsWithinCooldownWindows(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFilterHPAObjectEnqueuesOwningPodAutoscaler(t *testing.T) {
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: "llm-pa", Namespace: ns, UID: "pa-uid"},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{APIVersion: "apps/v1", Kind: "Deployment", Name: "llm"},
+			MaxReplicas:    3,
+			MetricsSources: []autoscalingv1alpha1.MetricSource{{
+				MetricSourceType: autoscalingv1alpha1.RESOURCE,
+				TargetMetric:     autoscalingv1alpha1.CPU,
+				TargetValue:      "50",
+			}},
+			ScalingStrategy: autoscalingv1alpha1.HPA,
+		},
+	}
+	// Build the HPA the same way the reconciler does, so the owner reference
+	// written by makeHPA and the one filterHPAObject looks for cannot drift.
+	hpa, err := makeHPA(pa, scalingctx.NewBaseScalingContext())
+	if err != nil {
+		t.Fatalf("makeHPA: %v", err)
+	}
+
+	got := filterHPAObject(context.Background(), hpa)
+	want := []reconcile.Request{{NamespacedName: ktypes.NamespacedName{Namespace: ns, Name: "llm-pa"}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("filterHPAObject() = %v, want %v", got, want)
+	}
+}
+
+func TestFilterHPAObjectIgnoresUnmanagedHPA(t *testing.T) {
+	tests := []struct {
+		name   string
+		owners []metav1.OwnerReference
+	}{
+		{name: "no owner"},
+		{
+			name: "controlled by another kind",
+			owners: []metav1.OwnerReference{{
+				APIVersion: "apps/v1", Kind: "Deployment", Name: "llm", Controller: ptr.To(true),
+			}},
+		},
+		{
+			name: "PodAutoscaler owner that is not the controller",
+			owners: []metav1.OwnerReference{{
+				APIVersion: autoscalingv1alpha1.GroupVersion.String(), Kind: podAutoscalerKind, Name: "llm-pa",
+			}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hpa := &autoscalingv2.HorizontalPodAutoscaler{
+				ObjectMeta: metav1.ObjectMeta{Name: "llm-pa-hpa", Namespace: ns, OwnerReferences: tt.owners},
+			}
+			if got := filterHPAObject(context.Background(), hpa); len(got) != 0 {
+				t.Fatalf("filterHPAObject() = %v, want no requests", got)
+			}
+		})
+	}
+}
+
+// fakeMonitor records which PodAutoscalers had their metric series removed.
+type fakeMonitor struct {
+	forgotten []ktypes.NamespacedName
+}
+
+func (f *fakeMonitor) RecordScaleAction(string, string, string, string, int32) {}
+
+func (f *fakeMonitor) ForgetScaleAction(namespace, name string) {
+	f.forgotten = append(f.forgotten, ktypes.NamespacedName{Namespace: namespace, Name: name})
+}
+
+func TestReconcileDeletedPodAutoscalerReleasesState(t *testing.T) {
+	sch := runtime.NewScheme()
+	_ = scheme.AddToScheme(sch)
+	_ = autoscalingv1alpha1.AddToScheme(sch)
+
+	deleted := ktypes.NamespacedName{Namespace: ns, Name: "deleted-pa"}
+	other := ktypes.NamespacedName{Namespace: ns, Name: "other-pa"}
+	recommendation := []timestampedRecommendation{{recommendation: 3, timestamp: time.Now()}}
+
+	as := &fakeAutoScaler{}
+	mon := &fakeMonitor{}
+	r := &PodAutoscalerReconciler{
+		// No PodAutoscaler exists in the cluster, as after a delete.
+		Client:     fake.NewClientBuilder().WithScheme(sch).Build(),
+		autoScaler: as,
+		monitor:    mon,
+		recommendations: map[string][]timestampedRecommendation{
+			deleted.String(): recommendation,
+			other.String():   recommendation,
+		},
+		scalingTargetToPA: map[string]ktypes.NamespacedName{
+			"apps/v1.Deployment/ns1/deleted": deleted,
+			"apps/v1.Deployment/ns1/other":   other,
+		},
+		paToScalingKey: map[ktypes.NamespacedName]string{
+			deleted: "apps/v1.Deployment/ns1/deleted",
+			other:   "apps/v1.Deployment/ns1/other",
+		},
+	}
+
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: deleted}); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+
+	if _, ok := r.recommendations[deleted.String()]; ok {
+		t.Errorf("recommendation history for %s was not released", deleted)
+	}
+	if _, ok := r.paToScalingKey[deleted]; ok {
+		t.Errorf("scaling target claim for %s was not released", deleted)
+	}
+	if _, ok := r.scalingTargetToPA["apps/v1.Deployment/ns1/deleted"]; ok {
+		t.Errorf("scaling target of %s is still claimed", deleted)
+	}
+	if want := []ktypes.NamespacedName{deleted}; !reflect.DeepEqual(as.forgotten, want) {
+		t.Errorf("autoscaler forgot %v, want %v", as.forgotten, want)
+	}
+	if want := []ktypes.NamespacedName{deleted}; !reflect.DeepEqual(mon.forgotten, want) {
+		t.Errorf("monitor forgot %v, want %v", mon.forgotten, want)
+	}
+
+	// State of a PodAutoscaler that still exists must not be touched.
+	if _, ok := r.recommendations[other.String()]; !ok {
+		t.Errorf("recommendation history for %s was removed", other)
+	}
+	if r.paToScalingKey[other] != "apps/v1.Deployment/ns1/other" ||
+		r.scalingTargetToPA["apps/v1.Deployment/ns1/other"] != other {
+		t.Errorf("scaling target claim for %s was removed", other)
 	}
 }
 

@@ -466,7 +466,9 @@ class BaseJobDriver:
 
         result = TerminateResult.ACCEPTED
         if self._runtime is not None:
-            result = await self._runtime.terminate(deleted_job)
+            result = await self._runtime.terminate(
+                deleted_job, progress_manager=self._progress_manager
+            )
 
         # `deleted_job` carries the manager's optimistic cancelling status so
         # the live path can observe cancel intent early and, if accepted,

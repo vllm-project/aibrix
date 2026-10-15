@@ -28,6 +28,10 @@ import (
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/least"
+	pdrouter "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/router"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/prefixcache"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/routeutil"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -166,10 +170,9 @@ func ResolveExclusiveStrategy(algStr string) (string, bool) {
 // load-balance weight to 0 disables the whole feature, matching ParseMultiRouterConfig's own
 // "weight 0 means skip" convention.
 //
-// autoBlendLeastRequestTopKWeight weights least-request-top-k, not plain least-request: plain
-// least-request's ScoreAll gives every gateway replica the same single best pod (see
-// leastRequestTopKCandidates). The env var and the profile's autoBlend.leastRequestWeight keep
-// their least-request names because they are deployed configuration.
+// autoBlendLeastRequestTopKWeight weights least-request-top-k, which also backs the deprecated
+// least-request alias. The env var and the profile's autoBlend.leastRequestWeight keep their
+// least-request names because they are deployed configuration.
 var (
 	autoBlendLoadBalanceWeight      = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT", 1)
 	autoBlendLeastRequestTopKWeight = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT", 1)
@@ -338,8 +341,9 @@ func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig, weights autoB
 			blended += fmt.Sprintf(",%s:%d", RouterLoadBalance, weights.loadBalance)
 		}
 	}
-	// Checks both names: a caller who explicitly asked for plain "least-request" shouldn't also
-	// get least-request-top-k silently layered in as a second, redundant load-count scorer.
+	// Checks both names: "least-request" is an alias for least-request-top-k, so a caller who
+	// asked for it shouldn't also get least-request-top-k silently layered in as a second,
+	// redundant load-count scorer.
 	if !includesPrefixCache && !includesSessionAffinity &&
 		!mentioned[string(RouterLeastRequest)] && !mentioned[string(RouterLeastRequestTopK)] &&
 		weights.leastRequest > 0 {
@@ -416,32 +420,35 @@ func (m *multiStrategyRouter) Route(ctx *types.RoutingContext, readyPodList type
 }
 
 func (m *multiStrategyRouter) setTargetPortIfNeeded(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) {
-	if !isMultiPortPods(readyPodList.All()) {
+	if !routeutil.IsMultiPortPods(readyPodList.All()) {
 		return
 	}
 	c := m.portSelectionCache()
 	if c == nil {
 		return
 	}
-	if port := selectTargetPortForPodWithLeastRequestCount(c, targetPod, readyPodList.ListPortsForPod()); port != 0 {
+	if port := routeutil.SelectTargetPortForPodWithLeastRequestCount(c, targetPod, readyPodList.ListPortsForPod()); port != 0 {
 		ctx.SetTargetPort(port)
 	}
 }
 
-// portSelectionCache returns the cache backing whichever of least-request-top-k or least-request
-// is configured on m, or nil if neither is present.
+// portSelectionCache returns the cache backing whichever of least-request-top-k or its
+// least-request alias is configured on m, or nil if neither is present.
 func (m *multiStrategyRouter) portSelectionCache() cache.Cache {
-	if scorer, ok := m.scorers[string(RouterLeastRequestTopK)]; ok {
-		if topK, ok := scorer.(*LeastRequestTopKRouter); ok {
-			return topK.cache
-		}
-	}
-	if scorer, ok := m.scorers[string(RouterLeastRequest)]; ok {
-		if leastRequest, ok := scorer.(*leastRequestRouter); ok {
-			return leastRequest.cache
+	for _, name := range []types.RoutingAlgorithm{RouterLeastRequestTopK, RouterLeastRequest} {
+		if scorer, ok := m.scorers[string(name)]; ok {
+			if holder, ok := scorer.(requestCacheHolder); ok {
+				return holder.Cache()
+			}
 		}
 	}
 	return nil
+}
+
+// requestCacheHolder is implemented by least-request-top-k (and so its least-request alias), which
+// holds the cache its request counts (and so per-port counts) are read from.
+type requestCacheHolder interface {
+	Cache() cache.Cache
 }
 
 // PostRouteUpdate lets m satisfy types.PostRouteUpdater itself, so a caller that bypasses
@@ -770,16 +777,17 @@ func NewRouterManagerWithCacheAndPrefixIndexer(c cache.Cache, indexer *prefixcac
 	// copied from the production manager and retain their original dependencies
 	// (for example, SLO providers still resolve their configured cache).
 	rm.RegisterProvider(RouterRandom, RandomRouterProviderFunc)
-	rm.Register(RouterLeastRequest, func() (types.Router, error) { return NewLeastRequestRouterWithCache(c) })
-	rm.Register(RouterLeastRequestTopK, func() (types.Router, error) { return NewLeastRequestTopKRouterWithCache(c), nil })
-	rm.Register(RouterLeastKvCache, func() (types.Router, error) { return NewLeastKvCacheRouterWithCache(c) })
-	rm.Register(RouterLeastLatency, func() (types.Router, error) { return NewLeastLatencyRouterWithCache(c) })
+	rm.Register(RouterLeastRequest, func() (types.Router, error) { return least.NewLeastRequestTopKRouterWithCache(c), nil })
+	rm.Register(RouterLeastRequestTopK, func() (types.Router, error) { return least.NewLeastRequestTopKRouterWithCache(c), nil })
+	rm.Register(RouterLeastKvCache, func() (types.Router, error) { return least.NewLeastKvCacheRouterWithCache(c) })
+	rm.Register(RouterLeastGpuCache, func() (types.Router, error) { return least.NewLeastKvCacheRouterWithCache(c) })
+	rm.Register(RouterLeastLatency, func() (types.Router, error) { return least.NewLeastLatencyRouterWithCache(c) })
 	rm.Register(RouterLoadBalance, func() (types.Router, error) { return NewLoadBalanceRouterWithCache(c) })
 	rm.Register(RouterPrefixCache, func() (types.Router, error) {
-		return NewPrefixCacheRouterWithOptions(c, indexer)
+		return prefixcache.NewPrefixCacheRouterWithOptions(c, indexer)
 	})
 	rm.Register(RouterPD, func() (types.Router, error) {
-		return NewPDRouterWithCacheAndPrefixIndexer(c, indexer)
+		return pdrouter.NewPDRouterWithCacheAndPrefixIndexer(c, indexer)
 	})
 	rm.Register(RouterExternal, func() (types.Router, error) {
 		return newExternalRouterWithCacheAndSelector(c, rm.Select)

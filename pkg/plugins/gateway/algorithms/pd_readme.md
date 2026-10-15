@@ -1,6 +1,6 @@
 # PD Disaggregation Router
 
-`pd_disaggregation.go` implements the **prefill-decode (PD) disaggregated routing algorithm** (`RouterPD = "pd"`). **This file (`pd_readme.md`) is the canonical documentation** for PD: request flow, scoring, engine behavior, metrics, and environment variables. PD-only settings are under **Environment Variables**; variables shared with the prefix-cache router (tokenizer, stddev factor, and related `AIBRIX_PREFIX_CACHE_*` knobs) are listed in **Inherited from Prefix Cache Router** in the same section.
+`pd/router/router.go` implements the **prefill-decode (PD) disaggregated routing algorithm** (`RouterPD = "pd"`). **This file (`pd_readme.md`) is the canonical documentation** for PD: request flow, scoring, engine behavior, metrics, and environment variables. PD-only settings are under **Environment Variables**; variables shared with the prefix-cache router (tokenizer, stddev factor, and related `AIBRIX_PREFIX_CACHE_*` knobs) are listed in **Inherited from Prefix Cache Router** in the same section.
 
 In PD disaggregation, inference is split across two specialized pod roles:
 
@@ -72,7 +72,7 @@ Only rolesets with **both** at least one prefill replica and one decode replica 
 
 ## Roleset Eligibility Utilities
 
-`pd_roleset.go` provides helper functions used by both the router and the gateway's pod-readiness logic.
+`pd/router/roleset.go` provides helper functions used by both the router and the gateway's pod-readiness logic.
 
 ### Replica cardinality
 
@@ -288,7 +288,7 @@ generated_tokens = rate × Σ over outstanding charges (now − routed_at)
 rate = AvgGenerationThroughputToksPerS / running requests   (mean of the other pods if unknown)
 ```
 
-`generated_tokens` estimates the output the pod's outstanding requests have produced so far (it sits in the decode KV too); `pd.TokenLoadTracker.DecodeGrowth` computes it in O(1) per pod from the count and the summed charge times of the outstanding charges. `AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH=false` scores prompt tokens only. The cold-start score does not apply to `token_load`: a pod without metrics is scored from the ledger like any other. The decode load-imbalance fast path is skipped under `token_load` (it still runs to fill the metric maps): it picks by request count, throughput or drain rate, and the pod holding one long prompt has the fewest requests. With Redis configured, the decode ledger is shared across gateway replicas (`AIBRIX_TOKEN_LOAD_SHARED_LEDGER`, default on): each replica publishes its per-pod charges, count and summed charge times under its instance ID (`cache.Store.PublishDecodeLedger`), and `scoreDecodePods` adds the other live replicas' values, read with the running-request counts (`GetPodsRunningRequestsAndDecodeLedger`). Without Redis the ledger is local to each replica.
+`generated_tokens` estimates the output the pod's outstanding requests have produced so far (it sits in the decode KV too); `pd.TokenLoadTracker.DecodeGrowth` computes it in O(1) per pod from the count and the summed charge times of the outstanding charges. `AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH=false` scores prompt tokens only. The cold-start score does not apply to `token_load`: a pod without metrics is scored from the ledger like any other. The decode load-imbalance fast path is skipped under `token_load` (it still runs to fill the metric maps): it picks by request count, throughput or drain rate, and the pod holding one long prompt has the fewest requests. With Redis configured, the decode ledger is shared across gateway replicas (`AIBRIX_TOKEN_LOAD_SHARED_LEDGER`, default on): each replica publishes its per-pod charges, count and summed charge times under its instance ID (`cache.Store.PublishDecodeLedger`), and `scoreDecodePods` adds the other live replicas' values, read with the running-request counts (`GetPodsRunningRequestsAndDecodeLedger`). Without Redis the ledger is local to each replica. Each decode pod's `token_load` score is then multiplied by the candidates' mean KV capacity over its own (`decodeKVCapacities`, `AIBRIX_DECODE_TOKEN_LOAD_CAPACITY_AWARE`, default on), with capacities from the scraped `kv_cache_num_gpu_blocks` × `kv_cache_block_size` (vLLM `vllm:cache_config_info` labels) or `kv_cache_capacity_tokens` (SGLang); unknown capacities count as the mean.
 
 ### Config profile overrides for PD score policies
 
@@ -406,7 +406,7 @@ either leg has been dispatched.
 
 Prerequisites (TRT-LLM `1.3.0rc8`, the Python KV-cache transceiver on both roles,
 matching model/tokenizer/chat-template) are listed in
-`docs/source/features/pd-disaggregation.rst`.
+`docs/source/features/gateway-routing/pd-disaggregation.rst`.
 
 ```
 Gateway selects CTX + GEN
@@ -818,7 +818,7 @@ NewPDRouter()
   ├─ NewPendingDecodeTracker()
   └─ startPrefixUpdater()                 // background goroutine
 
-// pd_roleset.go (no per-router state; pure functions called on each request)
+// pd/router/roleset.go (no per-router state; pure functions called on each request)
 HasEligibleRoleset(readyPods)             // gateway: skip PD when no complete roleset
 eligiblePDRolesets(readyPods)             // internal: filter to complete rolesets only
 DescribePDRolesetEligibility(readyPods)   // diagnostics: per-roleset replica counts

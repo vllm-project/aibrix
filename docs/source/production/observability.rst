@@ -92,4 +92,4 @@ To enable the telemetry components, please refer to :ref:`observability_telemetr
 
    * :doc:`gateway`: gateway configuration that produces these metrics
    * :doc:`model-deployment`: the signals worth alerting on
-   * :doc:`../features/benchmark-and-generator`: generate load to exercise them
+   * :doc:`../features/benchmark/benchmark-and-generator`: generate load to exercise them

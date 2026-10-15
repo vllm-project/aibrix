@@ -184,7 +184,7 @@ func filterHPAObject(ctx context.Context, object client.Object) []reconcile.Requ
 	// Iterate through ownerReferences to find the PodAutoscaler.
 	// if found, enqueue the managing PodAutoscaler object
 	for _, ownerRef := range hpa.OwnerReferences {
-		if ownerRef.Kind == "PodAutoScaler" && ownerRef.Controller != nil && *ownerRef.Controller {
+		if ownerRef.Kind == podAutoscalerKind && ownerRef.Controller != nil && *ownerRef.Controller {
 			// Enqueue the managing PodAutoscaler object
 			return []reconcile.Request{
 				{
@@ -313,6 +313,9 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := r.updateStatusIfNeeded(ctx, &pa.Status, paCopy); err != nil {
 		return ctrl.Result{}, err
 	}
+	// The strategy path below continues from the status that is now stored, so
+	// its own status write does not put back the conditions replaced above.
+	pa.Status = *newStatus
 
 	// if invalid, skip reconciliation (no scaling)
 	if !specVR.Valid || !conflictVR.Valid {
@@ -356,15 +359,28 @@ func (r *PodAutoscalerReconciler) buildScalingTargetKey(pa *autoscalingv1alpha1.
 	return base
 }
 
-// cleanupDeletedPA removes the PA from conflict maps.
+// cleanupDeletedPA releases everything the controller keeps in memory for a
+// PodAutoscaler that no longer exists: its claim on the scaling target, its
+// recommendation history, its metric windows and its exported metric series.
 func (r *PodAutoscalerReconciler) cleanupDeletedPA(paKey ktypes.NamespacedName) {
 	r.scalingTargetMu.Lock()
-	defer r.scalingTargetMu.Unlock()
-
 	if keyStr, exists := r.paToScalingKey[paKey]; exists {
 		delete(r.scalingTargetToPA, keyStr)
 	}
 	delete(r.paToScalingKey, paKey)
+	r.scalingTargetMu.Unlock()
+
+	// stabilizeRecommendation keys its history by "namespace/name".
+	r.recommendationsMu.Lock()
+	delete(r.recommendations, paKey.String())
+	r.recommendationsMu.Unlock()
+
+	if r.autoScaler != nil {
+		r.autoScaler.ForgetPodAutoscaler(paKey.Namespace, paKey.Name)
+	}
+	if r.monitor != nil {
+		r.monitor.ForgetScaleAction(paKey.Namespace, paKey.Name)
+	}
 }
 
 // checkNoMultiPodAutoscalerConflict checks whether the PodAutoscaler's target is already controlled by another PA.
@@ -740,26 +756,48 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler,
 		}
 	}
 
-	// ScalingActive
 	scalingActive := st.DesiredScale != st.ActualScale
-	apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{
+	specOK := specValidationResult.Valid
+	noConflict := conflictValidationResult.Valid
+	able := specOK && noConflict && pa.Spec.MaxReplicas > 0
+
+	// ScalingActive and AbleToScale belong to the strategy path (reconcileCustomPA
+	// or reconcileHPA), which runs whenever the spec is valid and unconflicted and
+	// reports them with its own reason and message. Setting them here as well made
+	// the two writers replace each other's text on every reconcile, and since a
+	// status write enqueues the object again, the controller never went idle.
+	scalingActiveCondition := metav1.Condition{
 		Type:               ConditionScalingActive,
 		Status:             boolToCond(scalingActive),
 		Reason:             map[bool]string{true: ReasonReconcilingScaleDiff, false: ReasonStable}[scalingActive],
 		Message:            fmt.Sprintf("desired=%d, actual=%d", st.DesiredScale, st.ActualScale),
 		LastTransitionTime: now,
-	})
-
+	}
 	// AbleToScale (minimal; extend later with cooldown/limits applied)
-	specOK := specValidationResult.Valid
-	noConflict := conflictValidationResult.Valid
-	able := specOK && noConflict && pa.Spec.MaxReplicas > 0
-	apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{
+	ableToScaleCondition := metav1.Condition{
 		Type:               ConditionAbleToScale,
 		Status:             boolToCond(able),
 		Reason:             map[bool]string{true: ReasonConfigured, false: ReasonInvalidSpec}[able],
 		LastTransitionTime: now,
-	})
+	}
+	if !specOK || !noConflict {
+		// The strategy path will not run, so this is the only report.
+		apimeta.SetStatusCondition(&st.Conditions, scalingActiveCondition)
+		apimeta.SetStatusCondition(&st.Conditions, ableToScaleCondition)
+	} else {
+		// The strategy path can fail before it reports. Give both conditions a
+		// starting value so that a new object is never left without them and a
+		// repaired one does not keep the verdict of its invalid spec, but never
+		// replace a value the strategy path reported. ReasonInvalidSpec is how
+		// the leftover verdict is recognised, so it must stay the reason that
+		// both the branch above and setInvalidSpecStatus write.
+		if apimeta.FindStatusCondition(st.Conditions, ConditionScalingActive) == nil {
+			apimeta.SetStatusCondition(&st.Conditions, scalingActiveCondition)
+		}
+		if cond := apimeta.FindStatusCondition(st.Conditions, ConditionAbleToScale); cond == nil || cond.Reason == ReasonInvalidSpec {
+			apimeta.SetStatusCondition(&st.Conditions, ableToScaleCondition)
+		}
+	}
 
 	// Ready = ValidSpec && !ScalingActive
 	ready := able && !scalingActive
@@ -775,6 +813,7 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler,
 // reconcileHPA handles HPA strategy by creating and managing Kubernetes HorizontalPodAutoscaler resources.
 // This provides KEDA-like functionality where we wrap standard K8s HPA with additional features.
 func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
+	paStatusOriginal := pa.Status.DeepCopy()
 	now := r.nowTime()
 	bounds, err := paschedules.Resolve(&pa, now)
 	if err != nil {
@@ -814,13 +853,17 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 		klog.ErrorS(err, "Failed to get HPA", "HPA", hpaName)
 		return ctrl.Result{}, err
 	} else {
-		// Update the existing HPA if it already exists.
-		klog.V(4).InfoS("Updating existing HPA to desired state", "HPA", hpaName)
+		// Update the existing HPA only when it differs from the desired state.
+		// HPA objects are watched, so an update that changes nothing could still
+		// enqueue this PodAutoscaler again.
+		if !hpaMatchesDesired(existingHPA, hpa) {
+			klog.V(4).InfoS("Updating existing HPA to desired state", "HPA", hpaName)
 
-		err = r.Update(ctx, hpa)
-		if err != nil {
-			klog.ErrorS(err, "Failed to update HPA")
-			return ctrl.Result{}, err
+			err = r.Update(ctx, hpa)
+			if err != nil {
+				klog.ErrorS(err, "Failed to update HPA")
+				return ctrl.Result{}, err
+			}
 		}
 	}
 
@@ -829,11 +872,33 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 	pa.Status.DesiredScale = existingHPA.Status.DesiredReplicas
 	pa.Status.LastScaleTime = existingHPA.Status.LastScaleTime
 	pa.Status.ScheduledBounds = scheduledBoundsStatus(&pa, now)
+	reportedByHPA := make(map[string]bool, len(existingHPA.Status.Conditions))
 	for _, condition := range existingHPA.Status.Conditions {
+		reportedByHPA[string(condition.Type)] = true
 		setCondition(&pa, string(condition.Type), metav1.ConditionStatus(condition.Status), condition.Reason, "%s", condition.Message)
 	}
-	if err = r.Status().Update(ctx, &pa); err != nil {
+	// The HPA controller owns AbleToScale and ScalingActive once it reports them.
+	// A new HPA has no conditions yet, so until then report the controller's own
+	// view instead of leaving a value from an earlier invalid spec in place.
+	if !reportedByHPA[ConditionAbleToScale] {
+		setCondition(&pa, ConditionAbleToScale, metav1.ConditionTrue, ReasonConfigured, "")
+	}
+	if !reportedByHPA[ConditionScalingActive] {
+		scalingActive := pa.Status.DesiredScale != pa.Status.ActualScale
+		scalingReason := ReasonStable
+		if scalingActive {
+			scalingReason = ReasonReconcilingScaleDiff
+		}
+		setCondition(&pa, ConditionScalingActive, boolToCond(scalingActive), scalingReason,
+			"desired=%d, actual=%d", pa.Status.DesiredScale, pa.Status.ActualScale)
+	}
+	// Write only when something changed, against the latest stored object. A
+	// plain Status().Update here used the object fetched at the start of
+	// Reconcile, so it failed with a conflict whenever the status had already
+	// been written in this reconcile.
+	if err = r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
 		klog.ErrorS(err, "Failed to update PodAutoscaler status")
+		return ctrl.Result{}, err
 	}
 	return resultWithNextScheduleRequeue(&pa, now), nil
 }
@@ -856,46 +921,60 @@ func hasObservedInvalidSpec(pa *autoscalingv1alpha1.PodAutoscaler) bool {
 // reconcileCustomPA handles KPA and APA strategies using WorkloadScaler (generic /scale or StormService role-level).
 func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
 	paStatusOriginal := pa.Status.DeepCopy()
+	result, err := r.scaleCustomPA(ctx, &pa)
+	// Every outcome is written here, failures included, so a step that fails
+	// cannot leave the conditions reported by the steps before it unsaved.
+	if updateErr := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); updateErr != nil {
+		return ctrl.Result{}, updateErr
+	}
+	return result, err
+}
+
+// scaleCustomPA runs one scaling pass and records the outcome in pa.Status.
+// The caller persists the status.
+func (r *PodAutoscalerReconciler) scaleCustomPA(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
 	scaleReference := fmt.Sprintf("%s/%s/%s", pa.Spec.ScaleTargetRef.Kind, pa.Namespace, pa.Spec.ScaleTargetRef.Name)
 	if pa.Spec.SubTargetSelector != nil && pa.Spec.SubTargetSelector.RoleName != "" {
 		scaleReference = fmt.Sprintf("%s/%s/%s/%s", pa.Spec.ScaleTargetRef.Kind, pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.SubTargetSelector.RoleName)
 	}
 
 	// Step 1: Get scaleObj resource
-	scaleObj, _, err := r.getScaleResource(ctx, &pa)
+	scaleObj, _, err := r.getScaleResource(ctx, pa)
 	if err != nil {
-		r.recordScaleError(&pa, "FailedGetScale", err)
-		setCondition(&pa, "AbleToScale", metav1.ConditionFalse, "FailedGetScale", "unable to get target scaleObj: %v", err)
-		if updateErr := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); updateErr != nil {
-			return ctrl.Result{}, updateErr
-		}
+		r.recordScaleError(pa, "FailedGetScale", err)
+		setCondition(pa, "AbleToScale", metav1.ConditionFalse, "FailedGetScale", "unable to get target scaleObj: %v", err)
 		return ctrl.Result{}, fmt.Errorf("failed to get scaleObj for %s: %w", scaleReference, err)
 	}
-	setCondition(&pa, "AbleToScale", metav1.ConditionTrue, "SucceededGetScale", "successfully retrieved target scale")
 
 	// Step 2: Get current replicas from scale object
-	currentReplicas, err := r.workloadScaleClient.GetCurrentReplicasFromScale(ctx, &pa, scaleObj)
+	currentReplicas, err := r.workloadScaleClient.GetCurrentReplicasFromScale(ctx, pa, scaleObj)
 	if err != nil {
-		r.EventRecorder.Eventf(&pa, corev1.EventTypeWarning, "FailedGetReplicas", "Error extracting replicas: %v", err)
+		r.EventRecorder.Eventf(pa, corev1.EventTypeWarning, "FailedGetReplicas", "Error extracting replicas: %v", err)
+		setCondition(pa, "AbleToScale", metav1.ConditionFalse, "FailedGetReplicas", "unable to get current replicas: %v", err)
 		return ctrl.Result{}, fmt.Errorf("failed to get current replicas: %w", err)
 	}
+	// Reported only once both reads succeed. Setting it before the replicas
+	// read would flip the condition to True and back to False on every failing
+	// pass, and each flip moves its transition time and so rewrites status.
+	setCondition(pa, "AbleToScale", metav1.ConditionTrue, "SucceededGetScale", "successfully retrieved target scale")
 
 	// Step 3: Compute scaling decision with selector
 	// Pass ScaleTargetRef to handle special cases like RayClusterFleet
-	scaleDecision, err := r.computeScaleDecision(ctx, pa, scaleObj, currentReplicas)
+	scaleDecision, err := r.computeScaleDecision(ctx, *pa, scaleObj, currentReplicas)
 	if err != nil {
-		setStatus(&pa, currentReplicas, currentReplicas, false, "FailedComputeScale", false, false, err)
-		if updateErr := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); updateErr != nil {
-			return ctrl.Result{}, updateErr
-		}
-		r.EventRecorder.Event(&pa, corev1.EventTypeWarning, "FailedComputeScale", err.Error())
+		setStatus(pa, currentReplicas, currentReplicas, false, "FailedComputeScale", false, false, err)
+		// setStatus reports a held replica count as Stable. Say why it is held
+		// instead: like the HPA, a failure to compute a recommendation is
+		// ScalingActive=False, while AbleToScale keeps reporting the scale access.
+		setCondition(pa, ConditionScalingActive, metav1.ConditionFalse, "FailedComputeScale", "unable to compute the desired replicas: %v", err)
+		r.EventRecorder.Event(pa, corev1.EventTypeWarning, "FailedComputeScale", err.Error())
 		return ctrl.Result{}, fmt.Errorf("failed to compute scaling decision for %s: %w", scaleReference, err)
 	}
 	r.monitor.RecordScaleAction(pa.Namespace, pa.Name, scaleDecision.Algorithm, scaleDecision.Reason, scaleDecision.DesiredReplicas)
 
 	// Only emit event if we should scale
 	if scaleDecision.ShouldScale {
-		r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "AlgorithmRun",
+		r.EventRecorder.Eventf(pa, corev1.EventTypeNormal, "AlgorithmRun",
 			"%s algorithm completed. currentReplicas: %d, desiredReplicas: %d, shouldScale: %t",
 			pa.Spec.ScalingStrategy, currentReplicas, scaleDecision.DesiredReplicas, scaleDecision.ShouldScale)
 	} else {
@@ -905,33 +984,30 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 	// Step 4: Apply scaling if needed
 	var scaleError error
 	if scaleDecision.ShouldScale {
-		scaleError = r.workloadScaleClient.SetDesiredReplicas(ctx, &pa, scaleDecision.DesiredReplicas)
+		scaleError = r.workloadScaleClient.SetDesiredReplicas(ctx, pa, scaleDecision.DesiredReplicas)
 		if scaleError != nil {
-			r.recordScaleError(&pa, "FailedRescale", scaleError)
-			setCondition(&pa, "AbleToScale", metav1.ConditionFalse, "FailedUpdateScale", "unable to apply desired replicas: %v", scaleError)
-			klog.ErrorS(scaleError, "Failed to apply scaling", "PodAutoscaler", klog.KObj(&pa))
+			r.recordScaleError(pa, "FailedRescale", scaleError)
+			setCondition(pa, "AbleToScale", metav1.ConditionFalse, "FailedUpdateScale", "unable to apply desired replicas: %v", scaleError)
+			klog.ErrorS(scaleError, "Failed to apply scaling", "PodAutoscaler", klog.KObj(pa))
 		} else {
 			klog.InfoS("Successfully rescaled",
-				"PodAutoscaler", klog.KObj(&pa),
+				"PodAutoscaler", klog.KObj(pa),
 				"currentReplicas", currentReplicas,
 				"desiredReplicas", scaleDecision.DesiredReplicas,
 				"reason", scaleDecision.Reason)
-			r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "SuccessfulRescale",
+			r.EventRecorder.Eventf(pa, corev1.EventTypeNormal, "SuccessfulRescale",
 				"New size: %d; reason: %s", scaleDecision.DesiredReplicas, scaleDecision.Reason)
 		}
 	}
 
 	// Step 5: Update status
-	setStatus(&pa, currentReplicas, scaleDecision.DesiredReplicas,
+	setStatus(pa, currentReplicas, scaleDecision.DesiredReplicas,
 		scaleDecision.ShouldScale, scaleDecision.Reason, scaleDecision.PendingReplicaGuardActive, scaleError == nil, scaleError)
 
-	if err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
-		return ctrl.Result{}, err
-	}
 	if scaleError != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to apply scaling for %s: %w", scaleReference, scaleError)
 	}
-	return resultWithNextScheduleRequeue(&pa, r.nowTime()), nil
+	return resultWithNextScheduleRequeue(pa, r.nowTime()), nil
 }
 
 // scaleForResourceMappings attempts to fetch the scale for the resource with the given name and namespace,

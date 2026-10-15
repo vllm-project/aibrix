@@ -20,7 +20,13 @@ from unittest.mock import patch
 
 import pytest
 
-from aibrix.batch.job_driver import BaseJobDriver, ExternalRuntime
+from aibrix.batch.batch_manager import BatchManager
+from aibrix.batch.job_driver import (
+    BaseJobDriver,
+    ExternalRuntime,
+    NoopRuntime,
+    TerminateResult,
+)
 from aibrix.batch.job_driver import base as base_module
 from aibrix.batch.job_driver.running_jobs import RunningJobs
 from aibrix.batch.job_entity import (
@@ -37,6 +43,7 @@ from aibrix.batch.job_entity import (
     TypeMeta,
 )
 from aibrix.batch.job_entity import batch_job as batch_job_module
+from aibrix.batch.state import JobMetaInfo
 from aibrix.batch.worker import SingleJobRunner
 from aibrix.context.infra import InfrastructureContext
 from aibrix.metadata.core.metrics import Emitter, metrics_names
@@ -73,6 +80,86 @@ def _make_driver(job: BatchJob) -> BaseJobDriver:
         SingleJobRunner(job),
         ExternalRuntime(None),
     )
+
+
+@pytest.mark.asyncio
+async def test_accepted_cancel_before_session_finalizes_as_cancelled():
+    context = InfrastructureContext()
+    manager = BatchManager(context)
+    job = JobMetaInfo(_make_job())
+    job.status.request_counts.total = 1
+    runtime = NoopRuntime(context)
+    driver = BaseJobDriver(context, manager, runtime, job)
+    job._job_driver = driver
+    manager._in_progress_jobs[job.job_id] = job
+
+    with patch.object(
+        manager, "update_job_status", wraps=manager.update_job_status
+    ) as update_status:
+        result = await manager.cancel_job(job.job_id)
+        stored = await manager.get_job(job.job_id)
+        assert stored is not None
+        cancelling_status = stored.status.model_copy(deep=True)
+        assert result == TerminateResult.ACCEPTED
+        assert await driver.terminate(stored) == TerminateResult.ALREADY_REQUESTED
+
+        await asyncio.wait_for(driver.execute(job.job_id), timeout=5)
+
+        finished = await manager.get_job(job.job_id)
+        assert finished is not None
+        assert finished.status.state == BatchJobState.FINALIZED
+        assert finished.status.condition == ConditionType.CANCELLED
+        assert finished.status.cancelled_at is not None
+        assert finished.status.completed_at is None
+        assert cancelling_status.state == BatchJobState.CANCELLING
+        assert cancelling_status.check_condition(ConditionType.CANCELLED)
+        update_status.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_accepted_cancel_after_session_finalizes_as_cancelled():
+    context = InfrastructureContext()
+    manager = BatchManager(context)
+    job = JobMetaInfo(_make_job())
+    job.status.request_counts.total = 1
+    runtime = NoopRuntime(context)
+    driver = BaseJobDriver(context, manager, runtime, job)
+    job._job_driver = driver
+    manager._in_progress_jobs[job.job_id] = job
+    finish_stopped_job = driver._finish_stopped_job
+
+    async def complete_requests(*args, **kwargs):
+        assert runtime._active_task is not None
+        status = job.status.model_copy(deep=True)
+        status.request_counts.completed = 1
+        return await manager.update_job_status(job.job_id, status)
+
+    async def cancel_after_session(executed_job):
+        assert runtime._active_task is None
+        assert runtime._progress_manager is None
+        assert executed_job.status.state == BatchJobState.IN_PROGRESS
+        assert executed_job.status.request_counts.completed == 1
+        assert executed_job.status.condition == ConditionType.COMPLETED
+        assert await manager.cancel_job(job.job_id) == TerminateResult.ACCEPTED
+        return await finish_stopped_job(executed_job)
+
+    with (
+        patch.object(driver, "_prepare_execution_job", return_value=job),
+        patch.object(driver, "run_job", side_effect=complete_requests),
+        patch.object(
+            driver, "_finish_stopped_job", side_effect=cancel_after_session
+        ) as finish,
+    ):
+        await asyncio.wait_for(driver.execute(job.job_id), timeout=5)
+        finish.assert_awaited_once()
+
+    finished = await manager.get_job(job.job_id)
+    assert finished is not None
+    assert finished.status.request_counts.completed == 1
+    assert finished.status.state == BatchJobState.FINALIZED
+    assert finished.status.condition == ConditionType.CANCELLED
+    assert finished.status.cancelled_at is not None
+    assert finished.status.completed_at is None
 
 
 def test_assign_worker_id_normalizes_runtime_owner_ref_slashes():
@@ -176,8 +263,8 @@ class _DeadlineStopRuntime:
         self._deadline_reached = True
         raise asyncio.CancelledError
 
-    async def terminate(self, deleted_job):
-        del deleted_job
+    async def terminate(self, deleted_job, *, progress_manager=None):
+        del deleted_job, progress_manager
         return base_module.TerminateResult.REJECTED
 
     async def cleanup(self, job):

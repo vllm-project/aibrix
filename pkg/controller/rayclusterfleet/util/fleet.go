@@ -110,11 +110,12 @@ const (
 
 // NewDeploymentCondition creates a new deployment condition.
 func NewDeploymentCondition(condType orchestrationv1alpha1.RayClusterFleetConditionType, status v1.ConditionStatus, reason, message string) *orchestrationv1alpha1.RayClusterFleetCondition {
+	now := metav1.NewTime(NowFn())
 	return &orchestrationv1alpha1.RayClusterFleetCondition{
 		Type:               condType,
 		Status:             status,
-		LastUpdateTime:     metav1.Now(),
-		LastTransitionTime: metav1.Now(),
+		LastUpdateTime:     now,
+		LastTransitionTime: now,
 		Reason:             reason,
 		Message:            message,
 	}

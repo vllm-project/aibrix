@@ -82,7 +82,7 @@ machine ID on all replicas of a multi-replica gateway Deployment.
 The gateway loads the selected CTX worker's `/server_info` before dispatch, so
 invalid or unavailable metadata fails the request before either inference leg is
 sent, with no silent fallback or automatic replay. See
-`docs/source/features/pd-disaggregation.rst` for the lookup cache and the full
+`docs/source/features/gateway-routing/pd-disaggregation.rst` for the lookup cache and the full
 prerequisite list.
 
 Keep Envoy's `failure_mode_allow=false` and confirm upstream disconnects reach the

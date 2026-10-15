@@ -54,20 +54,20 @@ between callers in this mode.
 
 ---
 
-## Prefix Cache Router (`algorithms/prefix_cache.go`)
+## Prefix Cache Router (`algorithms/prefixcache/router.go`)
 
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
-| `AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE` | string | `"character"` | Tokenizer type for prefix cache hashing. Options: `character`, `tiktoken`, `remote`. | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
-| `AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR` | int | `1` | Factor multiplied by the standard deviation of pod loads when selecting among prefix-matched pods (`pod.req ≤ mean + factor × σ`). | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
+| `AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE` | string | `"character"` | Tokenizer type for prefix cache hashing. Options: `character`, `tiktoken`, `remote`. | [algorithms/prefixcache/router.go](algorithms/prefixcache/router.go) |
+| `AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR` | int | `1` | Factor multiplied by the standard deviation of pod loads when selecting among prefix-matched pods (`pod.req ≤ mean + factor × σ`). | [algorithms/prefixcache/router.go](algorithms/prefixcache/router.go) |
 | `AIBRIX_PREFIX_CACHE_INCLUDE_TOOLS` | bool | `true` | Prepend a canonical rendering of the chat request `tools` (keys sorted, compact) to the text used for prefix matching, since chat templates commonly render tools ahead of the messages. For templates that render tools later in the prompt (e.g. near the last user turn), requests sharing tools but not messages can see a partial match the engine does not have; such deployments can set this to `false`. Requests without tools (absent, `null`, `[]` or not an array) are unaffected. Set to `false` to match on messages only. The tools text goes into a separate prefix-match text (`RoutingContext.PrefixText()`), which feeds prefix matching in `prefix-cache`, `prefix-cache-preble` and the PD prefill policies `prefix_cache`, `conductor` (including its matched/unmatched token estimate) and `hybrid_cache_load`. The routing message (`routingCtx.Message`) stays messages-only, so token estimates (VTC, `PromptTokens`/`PromptLength`, config-profile `promptTokensGte`/`promptTokensLt`) are unchanged. In KV-sync mode, chat requests tokenized through the remote chat template always forward the raw `tools` to the tokenizer, independent of this flag, since the template itself decides where tools go. | [prefix_tools.go](prefix_tools.go) |
-| `AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER` | bool | `false` | Use a remote HTTP tokenizer service instead of the local tokenizer. Requires `AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE=remote`. | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
-| `AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED` | bool | `false` | Enable KV cache event synchronization across gateway replicas. When `true`, also requires `AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER=true`. | [algorithms/prefix_cache.go](algorithms/prefix_cache.go) |
+| `AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER` | bool | `false` | Use a remote HTTP tokenizer service instead of the local tokenizer. Requires `AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE=remote`. | [algorithms/prefixcache/router.go](algorithms/prefixcache/router.go) |
+| `AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED` | bool | `false` | Enable KV cache event synchronization across gateway replicas. When `true`, also requires `AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER=true`. | [algorithms/prefixcache/router.go](algorithms/prefixcache/router.go) |
 | `AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT` | string | `""` | Remote tokenizer service endpoint URL. Required when `AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true`. | [pkg/constants/kv_event_sync.go](../../constants/kv_event_sync.go) |
 | `AIBRIX_PREFIX_CACHE_KV_EVENT_PUBLISH_ADDR` | string | `""` | ZMQ publish address for KV cache events. Used when KV event sync is enabled. | [pkg/constants/kv_event_sync.go](../../constants/kv_event_sync.go) |
 | `AIBRIX_PREFIX_CACHE_KV_EVENT_SUBSCRIBE_ADDRS` | string | `""` | ZMQ subscribe addresses for KV cache events (comma-separated). Used when KV event sync is enabled. | [pkg/constants/kv_event_sync.go](../../constants/kv_event_sync.go) |
 
-### Remote Tokenizer Pool (`algorithms/prefix_cache.go`)
+### Remote Tokenizer Pool (`algorithms/prefixcache/router.go`)
 
 These configure the pool of remote tokenizer connections used when `AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER=true`.
 
@@ -90,7 +90,7 @@ The load-imbalance gate below is applied centrally by the gateway (`selectTarget
 `load-balance` is selected. It restricts candidates to the least-loaded pods before that
 strategy runs when load is severely skewed, and it **is** applied to the Prefix Cache and
 Preble routers (this replaces the prefix-cache-specific gate that used to live in
-`prefix_cache.go`; see the deprecation note under [Variable Dependency
+`prefixcache/router.go`; see the deprecation note under [Variable Dependency
 Notes](#variable-dependency-notes)). It is exempted only for exclusive strategies (`pd`,
 `slo*`), which manage their own pod subsets and would have that management disrupted by a
 blanket running-request-count filter applied ahead of time. It does not participate in
@@ -124,7 +124,7 @@ The five `AIBRIX_LOAD_BALANCE_*` gate and score variables can also be set per re
 
 ---
 
-## Least-Request Top-K Router (`algorithms/least_request_top_k.go`)
+## Least-Request Top-K Router (`algorithms/least/request_top_k.go`)
 
 Strategy name `least-request-top-k`. Plain `least-request` always resolves to the single
 least-loaded pod, so when several gateway replicas read the same Redis-backed running-request
@@ -148,9 +148,9 @@ it over.
 
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
-| `AIBRIX_ROUTING_LEAST_REQUEST_TOP_K` | int | `5` | `K`: how many of the least-loaded ready pods are eligible. Should be at least the number of gateway replicas deciding concurrently. Must be positive; any other value falls back to the default. | [algorithms/least_request_top_k.go](algorithms/least_request_top_k.go) |
-| `AIBRIX_ROUTING_LEAST_REQUEST_TOP_K_EPSILON` | int | `4` | A pod is eligible only if its count is within this many requests of the least-loaded pod's. Combined with `K` as an AND. Must be positive; any other value falls back to the default. The default is a starting point, not a validated one: tune it to the deployment's typical running-request count. | [algorithms/least_request_top_k.go](algorithms/least_request_top_k.go) |
-| `AIBRIX_ROUTING_LEAST_REQUEST_TOP_K_RAMP_WINDOW` | duration | `300s` | Window over which a newly routable pod's ramp penalty decays to `0`, counted from the first time the gateway sees the pod routable. `0` disables the ramp. Any other non-positive or unparseable value falls back to the default. | [algorithms/least_request_top_k.go](algorithms/least_request_top_k.go) |
+| `AIBRIX_ROUTING_LEAST_REQUEST_TOP_K` | int | `5` | `K`: how many of the least-loaded ready pods are eligible. Should be at least the number of gateway replicas deciding concurrently. Must be positive; any other value falls back to the default. | [algorithms/least/request_top_k.go](algorithms/least/request_top_k.go) |
+| `AIBRIX_ROUTING_LEAST_REQUEST_TOP_K_EPSILON` | int | `4` | A pod is eligible only if its count is within this many requests of the least-loaded pod's. Combined with `K` as an AND. Must be positive; any other value falls back to the default. The default is a starting point, not a validated one: tune it to the deployment's typical running-request count. | [algorithms/least/request_top_k.go](algorithms/least/request_top_k.go) |
+| `AIBRIX_ROUTING_LEAST_REQUEST_TOP_K_RAMP_WINDOW` | duration | `300s` | Window over which a newly routable pod's ramp penalty decays to `0`, counted from the first time the gateway sees the pod routable. `0` disables the ramp. Any other non-positive or unparseable value falls back to the default. | [algorithms/least/request_top_k.go](algorithms/least/request_top_k.go) |
 
 These are read once at startup and are environment-only (no `routingConfig` override).
 
@@ -158,7 +158,7 @@ These are read once at startup and are environment-only (no `routingConfig` over
 
 ## Router Selection / Auto-Blend (`algorithms/router.go`)
 
-`RouterManager.Select` silently blends `load-balance` and [`least-request-top-k`](#least-request-top-k-router-algorithmsleast_request_top_kgo)
+`RouterManager.Select` silently blends `load-balance` and [`least-request-top-k`](#least-request-top-k-router-algorithmsleastrequest_top_kgo)
 behind whatever strategy a caller actually asked for, so no single strategy can keep steering
 traffic at an already-hot pod even without going through the central load-imbalance gate above.
 The caller never sees this: `ctx.Algorithm`, response headers, and `Validate()` all continue to
@@ -207,12 +207,12 @@ request bodies, credentials, arbitrary client headers, and pod IPs are never sen
 | `AIBRIX_EXTERNAL_ROUTER_CANDIDATE_METRICS` | CSV | _(empty)_ | Any of `runningRequests`, `engineUtilization`, `kvCacheUsage`. |
 | `AIBRIX_EXTERNAL_ROUTER_POLICY_ATTRIBUTES` | CSV | _(empty)_ | Downstream extension-point allowlist for trusted RoutingContext policy attributes. Upstream AIBrix has no built-in producer; integrators must call `SetTrustedPolicyAttribute`. Raw headers are never copied automatically. |
 
-See the [External Replica Routing guide](../../../docs/source/features/external-replica-routing.rst)
+See the [External Replica Routing guide](../../../docs/source/features/gateway-routing/external-replica-routing.rst)
 and the published OpenAPI contract for policy and protocol details.
 
 ---
 
-## Preble (Prefix Cache with Histogram) Router (`algorithms/prefix_cache_preble.go`)
+## Preble (Prefix Cache with Histogram) Router (`algorithms/prefixcache/preble.go`)
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
@@ -252,7 +252,7 @@ Scoring formula: `score = (fairnessWeight * normFairness + utilizationWeight * n
 
 ---
 
-## PD (Prefill-Decode) Disaggregation Router (`algorithms/pd_disaggregation.go`)
+## PD (Prefill-Decode) Disaggregation Router (`algorithms/pd/router/router.go`)
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
@@ -268,6 +268,7 @@ Scoring formula: `score = (fairnessWeight * normFairness + utilizationWeight * n
 | `AIBRIX_PREFILL_SCORE_POLICY` | string | `"prefix_cache"` | Strategy for selecting the prefill pod. Options: `prefix_cache`, `least_request`. |
 | `AIBRIX_DECODE_SCORE_POLICY` | string | `"load_balancing"` | Strategy for selecting the decode pod. Options: `load_balancing`, `least_request`, `conductor`, `token_load`. |
 | `AIBRIX_DECODE_TOKEN_LOAD_OUTPUT_GROWTH` | bool | `true` | `token_load` decode policy only: add an estimate of the output generated so far (per-request decode rate × time since routing) to the decode score. `false` scores prompt tokens only. |
+| `AIBRIX_DECODE_TOKEN_LOAD_CAPACITY_AWARE` | bool | `true` | `token_load` decode policy only: multiply each decode pod's score by the candidates' mean KV capacity divided by the pod's own (`num_gpu_blocks` × `block_size` from vLLM's `vllm:cache_config_info`, or SGLang's `sglang:max_total_num_tokens`), so pods of different sizes are compared by how full they are. Unknown capacities count as the mean; with none known, or `false`, scores are token counts. |
 | `AIBRIX_TOKEN_LOAD_SHARED_LEDGER` | bool | `true` | `token_load` decode policy only, with Redis configured: share the decode ledger across gateway replicas, so each replica adds the other live replicas' charges to its decode score. `false` keeps the ledger local to each replica. |
 
 The prefill/decode routing thresholds (`AIBRIX_PREFILL_*`, `AIBRIX_DECODE_*`, `AIBRIX_TOKEN_LOAD_*`, `AIBRIX_HYBRID_CACHE_LOAD_FACTOR`, `AIBRIX_MIN_MATCH_PCT`, `AIBRIX_PROMPT_LENGTH_BUCKETING`, `AIBRIX_BUCKET_SERVE`,
@@ -361,7 +362,7 @@ Scoring formula: `score = (wRun × normRunning + wThroughput × normInvThroughpu
 
 ---
 
-## Utilities (`algorithms/util.go`)
+## Utilities (`algorithms/pd/engine/trtllm.go`)
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
@@ -378,7 +379,7 @@ factor, a percentage outside its range, an unknown GPU name) is ignored, so a pr
 narrow or sharpen routing behavior. The values are resolved once per request and applied to that
 request alone; a request whose profile sets none behaves exactly as before. The user-facing
 description and examples live in the Config Profiles section of the gateway plugin guide
-([docs/source/features/gateway-plugins.rst](../../../docs/source/features/gateway-plugins.rst)).
+([docs/source/features/gateway-routing/gateway-plugins.rst](../../../docs/source/features/gateway-routing/gateway-plugins.rst)).
 
 | Variable | Profile field | Notes |
 |---|---|---|
