@@ -30,6 +30,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -820,7 +821,7 @@ func readyCondition(st *autoscalingv1alpha1.PodAutoscalerStatus, able bool, now 
 		if c := apimeta.FindStatusCondition(st.Conditions, ConditionAbleToScale); c != nil && c.Status == metav1.ConditionFalse {
 			return notReadyBecause(c)
 		}
-		if c := apimeta.FindStatusCondition(st.Conditions, ConditionScalingActive); c != nil && c.Reason == ReasonFailedComputeScale {
+		if c := apimeta.FindStatusCondition(st.Conditions, ConditionScalingActive); c != nil && c.Status == metav1.ConditionFalse && isScalingFailure(c.Reason) {
 			return notReadyBecause(c)
 		}
 	} else {
@@ -837,6 +838,15 @@ func readyCondition(st *autoscalingv1alpha1.PodAutoscalerStatus, able bool, now 
 	cond.Status = boolToCond(ready)
 	cond.Reason = map[bool]string{true: ReasonAsExpected, false: ReasonReconcilingScaleDiff}[ready]
 	return cond
+}
+
+// isScalingFailure reports whether a ScalingActive=False reason means no
+// recommendation could be computed. It covers ReasonFailedComputeScale and the
+// HPA controller's reasons (FailedGetResourceMetric, InvalidSelector, ...),
+// which follow the same Failed/Invalid naming, and leaves out the reasons for a
+// deliberate hold such as Stable, PendingReplicas and the HPA's ScalingDisabled.
+func isScalingFailure(reason string) bool {
+	return strings.HasPrefix(reason, "Failed") || strings.HasPrefix(reason, "Invalid")
 }
 
 // reconcileHPA handles HPA strategy by creating and managing Kubernetes HorizontalPodAutoscaler resources.

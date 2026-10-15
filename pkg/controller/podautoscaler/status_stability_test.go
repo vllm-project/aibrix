@@ -229,6 +229,75 @@ func TestReconcileSettlesWhenScaleTargetIsMissing(t *testing.T) {
 	requireCondition(t, h.latest(), ConditionAbleToScale, metav1.ConditionFalse, "FailedGetScale")
 }
 
+// Ready reflects the conditions the HPA controller reports: a failure to read
+// the scale target or to compute a recommendation is not ready, while a
+// deliberate hold such as ScalingDisabled is.
+func TestReconcileHPAReportsReadyFromHPAConditions(t *testing.T) {
+	tests := []struct {
+		name          string
+		ableToScale   autoscalingv2.HorizontalPodAutoscalerCondition
+		scalingActive autoscalingv2.HorizontalPodAutoscalerCondition
+		wantStatus    metav1.ConditionStatus
+		wantReason    string
+	}{
+		{
+			name:          "scale target unreadable",
+			ableToScale:   autoscalingv2.HorizontalPodAutoscalerCondition{Type: autoscalingv2.AbleToScale, Status: corev1.ConditionFalse, Reason: "FailedGetScale"},
+			scalingActive: autoscalingv2.HorizontalPodAutoscalerCondition{Type: autoscalingv2.ScalingActive, Status: corev1.ConditionTrue, Reason: "ValidMetricFound"},
+			wantStatus:    metav1.ConditionFalse,
+			wantReason:    "FailedGetScale",
+		},
+		{
+			name:          "metrics unavailable",
+			ableToScale:   autoscalingv2.HorizontalPodAutoscalerCondition{Type: autoscalingv2.AbleToScale, Status: corev1.ConditionTrue, Reason: "SucceededGetScale"},
+			scalingActive: autoscalingv2.HorizontalPodAutoscalerCondition{Type: autoscalingv2.ScalingActive, Status: corev1.ConditionFalse, Reason: "FailedGetResourceMetric"},
+			wantStatus:    metav1.ConditionFalse,
+			wantReason:    "FailedGetResourceMetric",
+		},
+		{
+			name:          "scaling disabled",
+			ableToScale:   autoscalingv2.HorizontalPodAutoscalerCondition{Type: autoscalingv2.AbleToScale, Status: corev1.ConditionTrue, Reason: "SucceededGetScale"},
+			scalingActive: autoscalingv2.HorizontalPodAutoscalerCondition{Type: autoscalingv2.ScalingActive, Status: corev1.ConditionFalse, Reason: "ScalingDisabled"},
+			wantStatus:    metav1.ConditionTrue,
+			wantReason:    ReasonAsExpected,
+		},
+		{
+			name:          "healthy",
+			ableToScale:   autoscalingv2.HorizontalPodAutoscalerCondition{Type: autoscalingv2.AbleToScale, Status: corev1.ConditionTrue, Reason: "ReadyForNewScale"},
+			scalingActive: autoscalingv2.HorizontalPodAutoscalerCondition{Type: autoscalingv2.ScalingActive, Status: corev1.ConditionTrue, Reason: "ValidMetricFound"},
+			wantStatus:    metav1.ConditionTrue,
+			wantReason:    ReasonAsExpected,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pa := stabilityPodAutoscaler(autoscalingv1alpha1.HPA)
+			h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
+			ctx := context.Background()
+			if _, err := h.reconcile(); err != nil {
+				t.Fatalf("first Reconcile returned error: %v", err)
+			}
+
+			hpa := &autoscalingv2.HorizontalPodAutoscaler{}
+			if err := h.client.Get(ctx, ktypes.NamespacedName{Namespace: ns, Name: pa.Name + "-hpa"}, hpa); err != nil {
+				t.Fatalf("get HPA: %v", err)
+			}
+			hpa.Status.CurrentReplicas = 1
+			hpa.Status.DesiredReplicas = 1
+			hpa.Status.Conditions = []autoscalingv2.HorizontalPodAutoscalerCondition{tt.ableToScale, tt.scalingActive}
+			if err := h.client.Status().Update(ctx, hpa); err != nil {
+				t.Fatalf("update HPA status: %v", err)
+			}
+
+			if _, err := h.reconcile(); err != nil {
+				t.Fatalf("Reconcile after HPA status update returned error: %v", err)
+			}
+			requireCondition(t, h.latest(), ConditionReady, tt.wantStatus, tt.wantReason)
+			h.requireSettled(4, false)
+		})
+	}
+}
+
 func TestReconcileHPASettlesWithoutRewritingStatus(t *testing.T) {
 	pa := stabilityPodAutoscaler(autoscalingv1alpha1.HPA)
 	h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
