@@ -971,3 +971,53 @@ func TestPrefixCacheRouterConcurrency(t *testing.T) {
 func testPodsFromCache(c *cache.Store) types.PodList {
 	return &utils.PodArray{Pods: c.ListPods()}
 }
+
+type adapterBaseCache struct {
+	cache.Cache
+	bases map[string]string
+}
+
+func (c adapterBaseCache) ModelBaseModel(model string) (string, bool) {
+	base, ok := c.bases[model]
+	return base, ok
+}
+
+func TestKVSyncScoreAllMatchesAdapterBlocks(t *testing.T) {
+	readyPods := []*v1.Pod{
+		{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "base-model"}}, Status: v1.PodStatus{PodIP: "1.1.1.1"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "base-model"}}, Status: v1.PodStatus{PodIP: "2.2.2.2"}},
+	}
+	tok, err := tokenizer.NewTokenizer("character", nil)
+	require.NoError(t, err)
+	k := &kvSyncPrefixCacheRouter{
+		cache:         adapterBaseCache{bases: map[string]string{"sql-lora": "base-model"}},
+		tokenizerPool: &mockTokenizerPool{tokenizer: tok},
+		syncIndexer:   syncindexer.NewSyncPrefixHashTable(),
+	}
+	defer k.syncIndexer.Close()
+
+	prompt := "select the five largest orders placed last week"
+	tokens, err := tok.TokenizeInputText(prompt)
+	require.NoError(t, err)
+	blockSize := 16
+	var blocks [][]byte
+	var hashes []int64
+	for i := 0; i+blockSize <= len(tokens); i += blockSize {
+		blocks = append(blocks, tokens[i:i+blockSize])
+		hashes = append(hashes, int64(9000+i))
+	}
+	require.NoError(t, k.syncIndexer.ProcessBlockStored(syncindexer.BlockStored{
+		BlockHashes: hashes,
+		Tokens:      blocks,
+		ModelName:   "base-model",
+		LoraID:      -1,
+		LoraName:    "sql-lora",
+		SourcePod:   "default/pod1",
+	}))
+
+	ctx := types.NewRoutingContext(context.Background(), RouterPrefixCache, "sql-lora", prompt, "req-lora", "")
+	scores, _, err := k.ScoreAll(ctx, &utils.PodArray{Pods: readyPods})
+	require.NoError(t, err)
+	assert.Greater(t, scores[0], 0.0, "pod1 holds the adapter's blocks")
+	assert.Equal(t, 0.0, scores[1])
+}
