@@ -832,3 +832,40 @@ vllm:time_to_first_token_seconds_count{engine="1",model_name="m"} 3.0
 	assert.InDelta(t, 0.7, ttft.Sum, 1e-9)
 	assert.Equal(t, 4.0, ttft.Buckets["0.100000"])
 }
+
+// A single-engine vLLM still labels every series engine="0". The value stays the same,
+// but the merged series no longer carries the engine label.
+func TestEngineMetricsFetcher_SingleEngineDropsEngineLabel(t *testing.T) {
+	server := setupMockServer(`# TYPE vllm:num_requests_waiting gauge
+vllm:num_requests_waiting{engine="0",model_name="m"} 5.0
+`, 200, 0)
+	defer server.Close()
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+
+	result, err := NewEngineMetricsFetcher().FetchAllTypedMetrics(context.Background(), endpoint, "vllm", "test-pod",
+		[]string{NumRequestsWaiting})
+	require.NoError(t, err)
+	require.Contains(t, result.ModelMetrics, "m/"+NumRequestsWaiting)
+	value := result.ModelMetrics["m/"+NumRequestsWaiting]
+	assert.Equal(t, 5.0, value.GetSimpleValue())
+	assert.Equal(t, map[string]string{"model_name": "m"}, value.GetLabelValues())
+}
+
+func TestEngineMetricsFetcher_DataParallelSleepStateIsAveraged(t *testing.T) {
+	server := setupMockServer(`# TYPE vllm:engine_sleep_state gauge
+vllm:engine_sleep_state{engine="0",model_name="m",sleep_state="awake"} 1.0
+vllm:engine_sleep_state{engine="0",model_name="m",sleep_state="weights_offloaded"} 0.0
+vllm:engine_sleep_state{engine="1",model_name="m",sleep_state="awake"} 0.0
+vllm:engine_sleep_state{engine="1",model_name="m",sleep_state="weights_offloaded"} 1.0
+`, 200, 0)
+	defer server.Close()
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+
+	result, err := NewEngineMetricsFetcher().FetchAllTypedMetrics(context.Background(), endpoint, "vllm", "test-pod",
+		[]string{EngineSleepState})
+	require.NoError(t, err)
+	require.Contains(t, result.ModelMetrics, "m/"+EngineSleepState)
+	value := result.ModelMetrics["m/"+EngineSleepState]
+	assert.Equal(t, 0.5, value.GetSimpleValue(), "one of two engines is awake")
+	assert.Equal(t, "awake", value.GetLabelValues()["sleep_state"])
+}
