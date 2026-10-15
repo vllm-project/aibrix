@@ -234,10 +234,21 @@ func (e *tokenLoadEntry) released() bool {
 // what was charged. Its fields mirror tokenLoadEntry, with a single part.
 type decodeLoadEntry struct {
 	podKey     string
-	cost       float64
 	acquiredAt time.Time
 	ttl        time.Duration
-	released   atomic.Bool
+
+	// mu orders a cost correction against the release: whichever runs second
+	// sees the other's result, so the counters never keep a stale cost.
+	mu       sync.Mutex
+	cost     float64
+	released bool
+}
+
+// currentCost returns the entry's cost, for logs.
+func (e *decodeLoadEntry) currentCost() float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.cost
 }
 
 // podCounter is one per-pod token counter: the bits of a float64 value and a
@@ -543,7 +554,7 @@ func (t *TokenLoadTracker) AcquireDecodeWithTTL(requestID, podKey string, cost f
 	if prev, loaded := t.decodeEntries.Swap(requestID, entry); loaded {
 		old := prev.(*decodeLoadEntry)
 		klog.Warningf("token_load_tracker decode re-acquire for request_id=%s: releasing earlier charge pod=%s cost=%g before charging pod=%s cost=%g",
-			requestID, old.podKey, old.cost, podKey, cost)
+			requestID, old.podKey, old.currentCost(), podKey, cost)
 		t.releaseDecode(requestID, old)
 	}
 	t.addDecode(podKey, cost)
@@ -564,14 +575,54 @@ func (t *TokenLoadTracker) ReleaseDecode(requestID string) {
 // is keyed on the entry pointer, so it never removes a newer charge that
 // replaced this one under the same request ID.
 func (t *TokenLoadTracker) releaseDecode(requestID string, entry *decodeLoadEntry) {
-	if !entry.released.CompareAndSwap(false, true) {
+	entry.mu.Lock()
+	if entry.released {
+		entry.mu.Unlock()
 		return
 	}
-	t.addDecode(entry.podKey, -entry.cost)
-	t.addDecodeInflight(entry.podKey, -1, entry.acquiredAt, entry.cost)
+	entry.released = true
+	cost := entry.cost
+	entry.mu.Unlock()
+	t.addDecode(entry.podKey, -cost)
+	t.addDecodeInflight(entry.podKey, -1, entry.acquiredAt, cost)
 	t.decodeEntries.CompareAndDelete(requestID, entry)
 	t.notifyDecode(entry.podKey)
-	klog.V(4).InfoS("token_load_decode_released", "request_id", requestID, "pod", entry.podKey, "cost", entry.cost)
+	klog.V(4).InfoS("token_load_decode_released", "request_id", requestID, "pod", entry.podKey, "cost", cost)
+}
+
+// CorrectDecodeCost replaces the cost of requestID's outstanding decode
+// charge with cost, keeping its pod, charge time and TTL. The router charges
+// the decode pod an estimate of the prompt when it selects the pod; call this
+// once the engine reports the real prompt length (usage.prompt_tokens in a
+// prefill response). No-op for an unknown or released request ID, or a
+// negative cost.
+func (t *TokenLoadTracker) CorrectDecodeCost(requestID string, cost float64) {
+	if cost < 0 {
+		return
+	}
+	if v, ok := t.decodeEntries.Load(requestID); ok {
+		t.correctDecode(requestID, v.(*decodeLoadEntry), cost)
+	}
+}
+
+// correctDecode sets entry's cost unless the entry was released since it was
+// looked up: a release in between has already taken off the old cost, and the
+// counters must not get the difference back.
+func (t *TokenLoadTracker) correctDecode(requestID string, entry *decodeLoadEntry, cost float64) {
+	entry.mu.Lock()
+	if entry.released || entry.cost == cost {
+		entry.mu.Unlock()
+		return
+	}
+	delta := cost - entry.cost
+	entry.cost = cost
+	// Moving the counters under entry.mu as well keeps a release from running
+	// between the cost change and the counters, so they never dip below zero.
+	t.addDecode(entry.podKey, delta)
+	t.addDecodeInflightTokens(entry.podKey, delta)
+	entry.mu.Unlock()
+	t.notifyDecode(entry.podKey)
+	klog.V(4).InfoS("token_load_decode_corrected", "request_id", requestID, "pod", entry.podKey, "cost", cost, "delta", delta)
 }
 
 // GetDecodeLoad returns the decode counter of the pod identified by podKey:
@@ -680,6 +731,23 @@ func (t *TokenLoadTracker) addDecodeInflight(podKey string, delta int64, at time
 	if agg.n <= 0 {
 		// Reset instead of carrying float error into the next charge.
 		agg.n, agg.sumAt, agg.tokens = 0, 0, 0
+	}
+}
+
+// addDecodeInflightTokens moves the pod's charged tokens by delta without
+// changing its outstanding count or charge times: a cost correction.
+func (t *TokenLoadTracker) addDecodeInflightTokens(podKey string, delta float64) {
+	t.countersMu.RLock()
+	defer t.countersMu.RUnlock()
+	v, ok := t.decodeInflight.Load(podKey)
+	if !ok {
+		v, _ = t.decodeInflight.LoadOrStore(podKey, &decodeInflight{})
+	}
+	agg := v.(*decodeInflight)
+	agg.mu.Lock()
+	defer agg.mu.Unlock()
+	if agg.n > 0 {
+		agg.tokens += delta
 	}
 }
 
@@ -811,7 +879,7 @@ func (t *TokenLoadTracker) sweepExpired() int {
 		}
 		requestID := key.(string)
 		klog.Warningf("token_load_tracker force-releasing stale decode charge: request_id=%s pod=%s cost=%g age_seconds=%.0f ttl_seconds=%.0f",
-			requestID, entry.podKey, entry.cost, age.Seconds(), entry.ttl.Seconds())
+			requestID, entry.podKey, entry.currentCost(), age.Seconds(), entry.ttl.Seconds())
 		t.releaseDecode(requestID, entry)
 		released++
 		return true
