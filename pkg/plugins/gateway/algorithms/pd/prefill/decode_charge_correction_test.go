@@ -56,6 +56,8 @@ func TestExecuteCorrectsDecodeChargeFromPrefillUsage(t *testing.T) {
 			body: `{"usage":{"prompt_tokens":"1052"}}`, want: estimate},
 		{name: "zero prompt_tokens keeps the estimate", engine: "vllm", status: http.StatusOK,
 			body: `{"usage":{"prompt_tokens":0}}`, want: estimate},
+		{name: "infinite prompt_tokens keeps the estimate", engine: "vllm", status: http.StatusOK,
+			body: `{"usage":{"prompt_tokens":1e999}}`, want: estimate},
 		{name: "failed prefill keeps the estimate", engine: "vllm", status: http.StatusInternalServerError,
 			body: `{"error":"boom","usage":{"prompt_tokens":1052}}`, want: estimate},
 	}
@@ -79,11 +81,13 @@ func TestExecuteCorrectsDecodeChargeFromPrefillUsage(t *testing.T) {
 			exec.tokenLoad.AcquireDecodeWithTTL(ctx.RequestID, decodeKey, estimate, 0)
 
 			prefillPod := failFastPod(t, "prefill-1", strings.TrimPrefix(prefillSrv.URL, "http://"))
+			prefillKey := utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name)
+			// Registered as the router's Select does, so the count below drops
+			// to 0 only once prefillDone has run (sync, or the async goroutine).
+			exec.tracker.AddPrefillRequest(ctx.RequestID, prefillKey)
 			_ = exec.Execute(ctx, prefillPod, engine.Resolve(tc.engine), LogContext{})
-			// The prefill call is done (sync, or the async goroutine) once the
-			// prefill request count is back to 0.
 			require.Eventually(t, func() bool {
-				return exec.tracker.GetPrefillRequestCountsForPod(utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name)) == 0
+				return exec.tracker.GetPrefillRequestCountsForPod(prefillKey) == 0
 			}, 2*time.Second, 10*time.Millisecond)
 			assert.Equal(t, tc.want, exec.tokenLoad.GetDecodeLoad(decodeKey))
 		})

@@ -595,9 +595,9 @@ func (t *TokenLoadTracker) releaseDecode(requestID string, entry *decodeLoadEntr
 // the decode pod an estimate of the prompt when it selects the pod; call this
 // once the engine reports the real prompt length (usage.prompt_tokens in a
 // prefill response). No-op for an unknown or released request ID, or a
-// negative cost.
+// negative or non-finite cost.
 func (t *TokenLoadTracker) CorrectDecodeCost(requestID string, cost float64) {
-	if cost < 0 {
+	if cost < 0 || math.IsNaN(cost) || math.IsInf(cost, 0) {
 		return
 	}
 	if v, ok := t.decodeEntries.Load(requestID); ok {

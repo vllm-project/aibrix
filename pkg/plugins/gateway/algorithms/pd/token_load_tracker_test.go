@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -1115,7 +1116,9 @@ func TestTokenLoadTracker_CorrectDecodeCost(t *testing.T) {
 
 	tr.CorrectDecodeCost("unknown", 9_999)
 	tr.CorrectDecodeCost("txt", -1)
-	assert.Equal(t, 500.0, tr.GetDecodeLoad(pod), "unknown request IDs and negative costs are ignored")
+	tr.CorrectDecodeCost("txt", math.Inf(1))
+	tr.CorrectDecodeCost("txt", math.NaN())
+	assert.Equal(t, 500.0, tr.GetDecodeLoad(pod), "unknown request IDs and negative or non-finite costs are ignored")
 
 	tr.CorrectDecodeCost("txt", 2_000)
 	tr.ReleaseDecode("txt")
