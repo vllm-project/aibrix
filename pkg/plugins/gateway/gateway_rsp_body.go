@@ -94,8 +94,29 @@ type TokenUsage struct {
 // a tail once len(tail) > 0), so it is unambiguous as a sentinel.
 var streamBufferOverflow = []byte{}
 
-func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bool) (TokenUsage, *extProcPb.ProcessingResponse) {
+// processStreamingResponse scans one response body chunk of a streaming request. It
+// returns the latest usage the stream has reported and whether the stream has reached
+// its final usage: a usage event without choices (the OpenAI/vLLM usage-only chunk,
+// the Responses API "response.completed" event, an Anthropic message_delta), "[DONE]"
+// after usage was reported, or the end of the stream. Usage reported earlier, as with
+// stream_options.continuous_usage_stats where every chunk carries a running count, is
+// kept until then so the request is not finalized while it is still generating.
+func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bool) (TokenUsage, bool, *extProcPb.ProcessingResponse) {
 	var usage TokenUsage
+	seenUsage := false
+	if v, ok := streamUsage.Load(requestID); ok {
+		if latest, ok := v.(TokenUsage); ok {
+			usage, seenUsage = latest, true
+		}
+	}
+	final := endOfStream
+	defer func() {
+		if final {
+			streamUsage.Delete(requestID)
+		} else if seenUsage {
+			streamUsage.Store(requestID, usage)
+		}
+	}()
 
 	// HandleResponseBody runs once per ext_proc callback, and Envoy delivers response
 	// body chunks as TCP data arrives rather than aligned to SSE line boundaries. A
@@ -119,7 +140,7 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 				if !endOfStream {
 					streamBuffers.Store(requestID, streamBufferOverflow)
 				}
-				return usage, nil
+				return usage, final, nil
 			}
 		} else {
 			bodyBytes = append(buf, bodyBytes...)
@@ -164,7 +185,9 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 	// This caused significant CPU overhead and high GC pressure under heavy concurrency.
 	// The new implementation uses zero-allocation  byte scanning and pre-filtering,
 	// selectively extracting only the "usage" metadata via gjson for the final chunks.
-	if bytes.Contains(bodyBytes, []byte(`"usage"`)) {
+	// After a running usage was reported, "[DONE]" ends the stream even in a chunk
+	// that carries no usage of its own.
+	if bytes.Contains(bodyBytes, []byte(`"usage"`)) || (seenUsage && bytes.Contains(bodyBytes, []byte("[DONE]"))) {
 		remaining := bodyBytes
 
 		for len(remaining) > 0 {
@@ -192,6 +215,9 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 
 				// Check for the end of the stream
 				if bytes.Equal(jsonBytes, []byte("[DONE]")) {
+					if seenUsage {
+						final = true
+					}
 					continue
 				}
 
@@ -199,7 +225,7 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 				// Guarded by the bytes.Contains pre-filter, it bypasses the hot path of streaming standard text
 				// and only executes on final chunks, ensuring strict correctness.
 				if !gjson.ValidBytes(jsonBytes) {
-					return usage, generateErrorResponse(
+					return usage, final, generateErrorResponse(
 						envoyTypePb.StatusCode_InternalServerError,
 						[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 							Key: HeaderErrorStreaming, RawValue: []byte("true"),
@@ -209,6 +235,11 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 
 				// gjson avoids full deserialization by only extracting the usage field.
 				usageResult := gjson.GetBytes(jsonBytes, "usage")
+				// A usage object next to non-empty choices is a running count
+				// (continuous_usage_stats); the final usage arrives in an event
+				// without choices.
+				choices := gjson.GetBytes(jsonBytes, "choices")
+				finalUsage := !choices.IsArray() || len(choices.Array()) == 0
 				if !usageResult.Exists() {
 					// The Responses API (/v1/responses) emits usage nested inside the
 					// terminal "response.completed" SSE event, where the full response
@@ -217,8 +248,12 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 					usageResult = gjson.GetBytes(jsonBytes, "response.usage")
 				}
 				if usageResult.Exists() && usageResult.IsObject() {
-					// Assumption: The upstream sends the usage object only in the final chunk
-					// (standard vLLM/OpenAI behavior). We overwrite/set the values here.
+					// Later usage objects replace earlier ones: with continuous_usage_stats
+					// each chunk reports the running totals so far.
+					seenUsage = true
+					if finalUsage {
+						final = true
+					}
 					// The Responses API uses input_tokens/output_tokens instead of
 					// prompt_tokens/completion_tokens, so fall back to those names only when
 					// the primary field is genuinely absent (Exists() == false), since a
@@ -242,12 +277,12 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 			}
 		}
 		// warnings when "usage" is triggered by a false positive in generated content.
-		if usage.PromptTokens == 0 && usage.TotalTokens == 0 {
+		if !seenUsage && bytes.Contains(bodyBytes, []byte(`"usage"`)) {
 			klog.V(4).Infof("usage string detected but no valid tokens parsed (likely generated text), requestID: %s", requestID)
 		}
 	}
 
-	return usage, nil
+	return usage, final, nil
 }
 
 // HandleResponseBody parses and accounts for a response body but deliberately
@@ -282,10 +317,15 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 
 	if stream {
 		var streamRes *extProcPb.ProcessingResponse
-		usage, streamRes = processStreamingResponse(requestID, b.ResponseBody.GetBody(), b.ResponseBody.EndOfStream)
+		var final bool
+		usage, final, streamRes = processStreamingResponse(requestID, b.ResponseBody.GetBody(), b.ResponseBody.EndOfStream)
 		if streamRes != nil {
 			complete = true
 			return streamRes, complete, usage
+		}
+		if !final {
+			// Usage seen so far is a running count; account for it once the stream ends.
+			usage = TokenUsage{}
 		}
 	} else {
 		if isLanguageRequest(routerCtx.ReqPath) {

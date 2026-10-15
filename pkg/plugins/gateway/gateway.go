@@ -115,7 +115,8 @@ type Server struct {
 func HasRequestBuffers(requestID string) bool {
 	_, requestPresent := requestBuffers.Load(requestID)
 	_, streamPresent := streamBuffers.Load(requestID)
-	return requestPresent || streamPresent
+	_, usagePresent := streamUsage.Load(requestID)
+	return requestPresent || streamPresent || usagePresent
 }
 
 // recvResult is one (message, error) pair produced by a stream's srv.Recv().
@@ -411,6 +412,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) (err err
 		}
 		requestBuffers.Delete(st.requestID)
 		streamBuffers.Delete(st.requestID)
+		streamUsage.Delete(st.requestID)
 		// end spans created by this server
 		for _, span := range []trace.Span{st.toLastRespSpan, st.firstRespSpan, st.inferenceSpan} {
 			if span != nil {
