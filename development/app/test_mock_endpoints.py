@@ -1232,3 +1232,172 @@ def test_speech_batch_rejects_a_non_object_body(monkeypatch):
     response = post_json(module.app.test_client(), "/v1/audio/speech/batch", [{"input": "Hi"}])
 
     assert response.status_code == 400
+
+
+@pytest.mark.parametrize("response_format", ["bogus", "", 7, ["wav"], {"format": "wav"}])
+def test_speech_rejects_an_unsupported_response_format(monkeypatch, response_format):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(
+        module.app.test_client(),
+        "/v1/audio/speech",
+        {"model": "tts-1", "input": "Hi", "response_format": response_format},
+    )
+
+    # A JSON list or object is unhashable, so a bare dict lookup would turn it into a 500.
+    assert response.status_code == 400
+    assert response.get_json()["error"]["param"] == "response_format"
+
+
+def test_speech_serves_every_declared_format_with_its_content_type(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    for response_format, media_type in module.SPEECH_CONTENT_TYPES.items():
+        response = post_json(
+            client,
+            "/v1/audio/speech",
+            {"model": "tts-1", "input": "Hi", "response_format": response_format},
+        )
+
+        assert response.status_code == 200, response_format
+        assert response.mimetype == media_type, response_format
+
+
+@pytest.mark.parametrize("response_format", [7, ["wav"], {"format": "wav"}])
+def test_speech_batch_reports_a_non_string_item_format_without_failing_the_batch(
+    monkeypatch, response_format
+):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(
+        module.app.test_client(),
+        "/v1/audio/speech/batch",
+        {"items": [{"input": "ok"}, {"input": "bad format", "response_format": response_format}]},
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert [result["status"] for result in body["results"]] == ["success", "error"]
+    assert body["results"][1]["error"]["param"] == "items.1.response_format"
+
+
+def test_chat_batch_returns_one_choice_per_conversation_with_summed_usage(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+    conversations = [
+        [{"role": "user", "content": "What is the capital of France?"}],
+        [
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": [{"type": "text", "text": "What is the capital of Japan?"}]},
+        ],
+        [{"role": "user", "content": "Hi"}],
+    ]
+
+    response = post_json(
+        client,
+        "/v1/chat/completions/batch",
+        {"model": "chat-model", "max_tokens": 7, "messages": conversations},
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["id"].startswith("chatcmpl-batch-")
+    assert body["object"] == "chat.completion"
+    assert body["model"] == "chat-model"
+    assert [choice["index"] for choice in body["choices"]] == [0, 1, 2]
+    assert all(choice["message"]["role"] == "assistant" for choice in body["choices"])
+    assert all(choice["finish_reason"] == "stop" for choice in body["choices"])
+    expected_prompt_tokens = sum(
+        module.message_token_count(message)
+        for conversation in conversations
+        for message in conversation
+    )
+    assert body["usage"] == {
+        "prompt_tokens": expected_prompt_tokens,
+        "completion_tokens": 7 * len(conversations),
+        "total_tokens": expected_prompt_tokens + 7 * len(conversations),
+    }
+
+
+def test_chat_batch_refuses_stream_true_and_answers_stream_false_with_one_json_document(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+    conversations = [[{"role": "user", "content": "Hi"}]]
+
+    refused = post_json(
+        client,
+        "/v1/chat/completions/batch",
+        {"model": "chat-model", "stream": True, "messages": conversations},
+    )
+
+    assert refused.status_code == 400
+    assert refused.get_json()["error"]["param"] == "stream"
+
+    answered = post_json(
+        client,
+        "/v1/chat/completions/batch",
+        {"model": "chat-model", "stream": False, "messages": conversations},
+    )
+
+    assert answered.status_code == 200
+    assert answered.mimetype == "application/json"
+    assert len(answered.get_json()["choices"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("payload", "param"),
+    [
+        ({"messages": [[{"role": "user", "content": "Hi"}]]}, "model"),
+        ({"model": "chat-model"}, "messages"),
+        ({"model": "chat-model", "messages": []}, "messages"),
+        ({"model": "chat-model", "messages": [{"role": "user", "content": "Hi"}]}, "messages.0"),
+        ({"model": "chat-model", "messages": [[{"role": "user", "content": "Hi"}], []]}, "messages.1"),
+        ({"model": "chat-model", "messages": [["Hi"]]}, "messages.0"),
+        ({"model": "chat-model", "n": 2, "messages": [[{"role": "user", "content": "Hi"}]]}, "n"),
+        (
+            {"model": "chat-model", "use_beam_search": True, "messages": [[{"role": "user", "content": "Hi"}]]},
+            "use_beam_search",
+        ),
+    ],
+)
+def test_chat_batch_rejects_a_bad_request(monkeypatch, payload, param):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(module.app.test_client(), "/v1/chat/completions/batch", payload)
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["param"] == param
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        "Hi",
+        ["Hi", "there"],
+        [{"role": "user", "content": ["Hi", {"type": "text", "text": "there"}]}],
+    ],
+)
+def test_chat_completions_counts_malformed_messages_instead_of_crashing(monkeypatch, messages):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(
+        module.app.test_client(),
+        "/v1/chat/completions",
+        {"model": "chat-model", "max_tokens": 4, "messages": messages},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["usage"]["completion_tokens"] == 4
+
+
+def test_chat_batch_rejects_a_non_object_body(monkeypatch):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(
+        module.app.test_client(),
+        "/v1/chat/completions/batch",
+        [[{"role": "user", "content": "Hi"}]],
+    )
+
+    assert response.status_code == 400

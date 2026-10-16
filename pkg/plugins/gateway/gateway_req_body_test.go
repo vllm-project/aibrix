@@ -761,7 +761,7 @@ func TestValidateModelAvailabilityReturnsRetryableResponseForSleepingModelClaim(
 	assert.Nil(t, pods)
 	require.NotNil(t, response)
 	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
-	assert.Equal(t, "10", responseHeader(response, "Retry-After"))
+	assert.Equal(t, "3", responseHeader(response, "Retry-After"))
 	require.Len(t, wakeRequester.calls, 1)
 	assert.Equal(t, "qwen", wakeRequester.calls[0].model)
 	assert.Equal(t, pod.Name, wakeRequester.calls[0].pod.Name)
@@ -790,7 +790,7 @@ func TestValidateModelAvailabilityWakesASleepingClaimThatAlsoHasARecord(t *testi
 
 	require.NotNil(t, response)
 	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, response.GetImmediateResponse().GetStatus().GetCode())
-	assert.Equal(t, "10", responseHeader(response, "Retry-After"))
+	assert.Equal(t, "3", responseHeader(response, "Retry-After"))
 	require.Len(t, wakeRequester.calls, 1)
 	assert.Equal(t, pod.Name, wakeRequester.calls[0].pod.Name)
 	assert.NotContains(t, response.GetImmediateResponse().GetBody(), "EngineSleeping")
@@ -865,9 +865,10 @@ func TestValidateModelAvailabilityAsksToWaitLongerForTheReasonTheControllerGives
 		Status:     v1.PodStatus{PodIP: "10.0.0.1"},
 	}
 	for name, tc := range map[string]struct {
-		cache      *MockCache
-		retryAfter string
-		says       string
+		cache           *MockCache
+		retryAfter      string
+		says            string
+		noWakeRequester bool
 	}{
 		"a wake that waits for room, on the route": {
 			cache: &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
@@ -890,17 +891,49 @@ func TestValidateModelAvailabilityAsksToWaitLongerForTheReasonTheControllerGives
 			retryAfter: "20",
 			says:       "(MakingRoom)",
 		},
-		"a sleeping model with no reason": {
+		"a sleeping model with no reason, which is being woken": {
 			cache: &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
 				"qwen": {pod: pod, state: constants.ModelClaimRoutingStateSleeping},
 			}},
+			retryAfter: "3",
+			says:       "model qwen is sleeping; retry shortly",
+		},
+		"a sleeping model with an unlisted reason": {
+			cache: &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
+				"qwen": {pod: pod, state: constants.ModelClaimRoutingStateSleeping, reason: "OtherReason"},
+			}},
+			retryAfter: "10",
+			says:       "model qwen is sleeping (OtherReason); retry shortly",
+		},
+		"a sleeping claim known only from its status, with no reason": {
+			cache: &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{
+				"qwen": {phase: "Sleeping"},
+			}},
 			retryAfter: "10",
 			says:       "model qwen is sleeping; retry shortly",
+		},
+		"a sleeping model with no wake requester": {
+			cache: &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
+				"qwen": {pod: pod, state: constants.ModelClaimRoutingStateSleeping},
+			}},
+			retryAfter:      "10",
+			says:            "model qwen is sleeping; retry shortly",
+			noWakeRequester: true,
+		},
+		"an activating model with no reason, which starts from scratch": {
+			cache: &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
+				"qwen": {pod: pod, state: constants.ModelClaimRoutingStateActivating},
+			}},
+			retryAfter: "10",
+			says:       "model qwen is activating; retry shortly",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tc.cache.On("HasModel", "qwen").Return(false)
 			server := &Server{cache: tc.cache, wakeRequester: &recordingModelWakeRequester{}}
+			if tc.noWakeRequester {
+				server.wakeRequester = nil
+			}
 
 			_, response := server.validateModelAvailability("request-1", "qwen")
 
@@ -1070,7 +1103,7 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 
 // TestHandleRequestBody_AsyncVideoJobWithoutRoutingStrategyGetsPinned guards against a
 // regression where POST /v1/videos submitted without a routing-strategy header (the
-// out-of-the-box default, and what the async example in docs/source/features/gateway-routing/vllm-omni.rst
+// out-of-the-box default, and what the async example in docs/source/features/gateway-routing/omni-video.rst
 // uses) fell into the RouterNotSet branch, which never calls SetTargetPod. That left
 // registerVideoJobFromCreateResponse's routerCtx.TargetPod() call (see
 // gateway_video_routing.go) blocking until the request's context was done, and the job
@@ -1215,6 +1248,8 @@ func TestHandleRequestBody_LanguageRequestKeepsConfiguredResponseMode(t *testing
 // query-string variants matter because HTTP/2 :path carries the query.
 func TestHandleRequestBody_MessagesAndAudioReachABackendPod(t *testing.T) {
 	audioBody, audioContentType := buildMultipartForm(t, map[string]string{"model": "llama"})
+	imageEditBody, imageEditContentType := buildMultipartFormWithFile(t,
+		map[string]string{"model": "llama", "prompt": "add a hat"}, "image", "cat.png", []byte("\x89PNG not a real image"))
 	messagesBody := []byte(`{"model":"llama","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
 
 	tests := []struct {
@@ -1229,6 +1264,8 @@ func TestHandleRequestBody_MessagesAndAudioReachABackendPod(t *testing.T) {
 		{"audio transcriptions with query string", PathAudioTranscriptions + "?foo=bar", audioBody, audioContentType},
 		{"audio translations", PathAudioTranslations, audioBody, audioContentType},
 		{"audio translations with query string", PathAudioTranslations + "?foo=bar", audioBody, audioContentType},
+		{"image edits", PathImagesEdits, imageEditBody, imageEditContentType},
+		{"image edits with query string", PathImagesEdits + "?foo=bar", imageEditBody, imageEditContentType},
 	}
 
 	cache.InitForTest()
@@ -1420,6 +1457,90 @@ func TestHandleRequestBody_AudioSpeechBatchReachesABackendPodUnchanged(t *testin
 		}
 	}
 	assert.Equal(t, "1.2.3.4:8000", targetPod)
+}
+
+// TestHandleRequestBody_ChatCompletionsBatchReachesABackendPodUnchanged: a
+// /v1/chat/completions/batch request is routed on its top-level model, and the body is forwarded
+// byte for byte, so every conversation and sampling option reaches the engine as sent.
+func TestHandleRequestBody_ChatCompletionsBatchReachesABackendPodUnchanged(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+	mockCache.On("HasModel", "chat-model").Return(true)
+	mockCache.On("ListPodsByModel", "chat-model").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "chat-model").Return(int64(1))
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	server := &Server{cache: mockCache}
+
+	body := []byte(`{"model":"chat-model","max_tokens":32,"temperature":0,"messages":[[{"role":"user","content":"What is the capital of France?"}],[{"role":"system","content":"Be brief."},{"role":"user","content":"What is the capital of Japan?"}]]}`)
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: body},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathChatCompletionsBatch + "?api-version=1"
+	routingCtx.ReqHeaders[contentTypeKey] = "application/json"
+	routingCtx.ReqHeaders[methodKey] = http.MethodPost
+	routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(routingalgorithms.RouterLeastRequest)
+
+	resp, model, stream, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	require.NotNil(t, resp)
+	require.Nil(t, resp.GetImmediateResponse(), "the request must not be rejected")
+	assert.Equal(t, "chat-model", model)
+	assert.False(t, stream)
+	assert.Equal(t, "What is the capital of France?\nBe brief. What is the capital of Japan?", routingCtx.Message)
+
+	common := resp.GetRequestBody().GetResponse()
+	assert.Equal(t, body, common.GetBodyMutation().GetBody())
+	var targetPod string
+	for _, h := range common.GetHeaderMutation().GetSetHeaders() {
+		if h.Header.Key == HeaderTargetPod {
+			targetPod = string(h.Header.RawValue)
+		}
+	}
+	assert.Equal(t, "1.2.3.4:8000", targetPod)
+}
+
+// TestHandleRequestBody_ChatCompletionsBatchRejectsPDRouting: the PD router rewrites a single
+// conversation's messages into a prefill and a decode request, which a list of conversations
+// cannot go through, so the strategy is refused instead of producing a malformed prefill body.
+func TestHandleRequestBody_ChatCompletionsBatchRejectsPDRouting(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+	mockCache.On("HasModel", "chat-model").Return(true)
+	mockCache.On("ListPodsByModel", "chat-model").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+
+	server := &Server{cache: mockCache}
+
+	body := []byte(`{"model":"chat-model","messages":[[{"role":"user","content":"Hi"}]]}`)
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: body},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathChatCompletionsBatch
+	routingCtx.ReqHeaders[contentTypeKey] = "application/json"
+	routingCtx.ReqHeaders[methodKey] = http.MethodPost
+	routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(routingalgorithms.RouterPD)
+
+	resp, _, _, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	require.NotNil(t, resp)
+	require.NotNil(t, resp.GetImmediateResponse(), "the request must be rejected")
+	assert.Equal(t, envoyTypePb.StatusCode_BadRequest, resp.GetImmediateResponse().GetStatus().GetCode())
+	assert.Contains(t, resp.GetImmediateResponse().GetBody(), "is not supported for endpoint '/v1/chat/completions/batch'")
 }
 
 // registerTestRouter registers the shared TestRouterAlgorithm mock router so a

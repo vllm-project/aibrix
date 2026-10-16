@@ -28,6 +28,10 @@ import (
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/least"
+	pdrouter "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/router"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/prefixcache"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/routeutil"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -416,14 +420,14 @@ func (m *multiStrategyRouter) Route(ctx *types.RoutingContext, readyPodList type
 }
 
 func (m *multiStrategyRouter) setTargetPortIfNeeded(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) {
-	if !isMultiPortPods(readyPodList.All()) {
+	if !routeutil.IsMultiPortPods(readyPodList.All()) {
 		return
 	}
 	c := m.portSelectionCache()
 	if c == nil {
 		return
 	}
-	if port := selectTargetPortForPodWithLeastRequestCount(c, targetPod, readyPodList.ListPortsForPod()); port != 0 {
+	if port := routeutil.SelectTargetPortForPodWithLeastRequestCount(c, targetPod, readyPodList.ListPortsForPod()); port != 0 {
 		ctx.SetTargetPort(port)
 	}
 }
@@ -433,12 +437,18 @@ func (m *multiStrategyRouter) setTargetPortIfNeeded(ctx *types.RoutingContext, r
 func (m *multiStrategyRouter) portSelectionCache() cache.Cache {
 	for _, name := range []types.RoutingAlgorithm{RouterLeastRequestTopK, RouterLeastRequest} {
 		if scorer, ok := m.scorers[string(name)]; ok {
-			if topK, ok := scorer.(*LeastRequestTopKRouter); ok {
-				return topK.cache
+			if holder, ok := scorer.(requestCacheHolder); ok {
+				return holder.Cache()
 			}
 		}
 	}
 	return nil
+}
+
+// requestCacheHolder is implemented by least-request-top-k (and so its least-request alias), which
+// holds the cache its request counts (and so per-port counts) are read from.
+type requestCacheHolder interface {
+	Cache() cache.Cache
 }
 
 // PostRouteUpdate lets m satisfy types.PostRouteUpdater itself, so a caller that bypasses
@@ -767,17 +777,17 @@ func NewRouterManagerWithCacheAndPrefixIndexer(c cache.Cache, indexer *prefixcac
 	// copied from the production manager and retain their original dependencies
 	// (for example, SLO providers still resolve their configured cache).
 	rm.RegisterProvider(RouterRandom, RandomRouterProviderFunc)
-	rm.Register(RouterLeastRequest, func() (types.Router, error) { return NewLeastRequestTopKRouterWithCache(c), nil })
-	rm.Register(RouterLeastRequestTopK, func() (types.Router, error) { return NewLeastRequestTopKRouterWithCache(c), nil })
-	rm.Register(RouterLeastKvCache, func() (types.Router, error) { return NewLeastKvCacheRouterWithCache(c) })
-	rm.Register(RouterLeastGpuCache, func() (types.Router, error) { return NewLeastKvCacheRouterWithCache(c) })
-	rm.Register(RouterLeastLatency, func() (types.Router, error) { return NewLeastLatencyRouterWithCache(c) })
+	rm.Register(RouterLeastRequest, func() (types.Router, error) { return least.NewLeastRequestTopKRouterWithCache(c), nil })
+	rm.Register(RouterLeastRequestTopK, func() (types.Router, error) { return least.NewLeastRequestTopKRouterWithCache(c), nil })
+	rm.Register(RouterLeastKvCache, func() (types.Router, error) { return least.NewLeastKvCacheRouterWithCache(c) })
+	rm.Register(RouterLeastGpuCache, func() (types.Router, error) { return least.NewLeastKvCacheRouterWithCache(c) })
+	rm.Register(RouterLeastLatency, func() (types.Router, error) { return least.NewLeastLatencyRouterWithCache(c) })
 	rm.Register(RouterLoadBalance, func() (types.Router, error) { return NewLoadBalanceRouterWithCache(c) })
 	rm.Register(RouterPrefixCache, func() (types.Router, error) {
-		return NewPrefixCacheRouterWithOptions(c, indexer)
+		return prefixcache.NewPrefixCacheRouterWithOptions(c, indexer)
 	})
 	rm.Register(RouterPD, func() (types.Router, error) {
-		return NewPDRouterWithCacheAndPrefixIndexer(c, indexer)
+		return pdrouter.NewPDRouterWithCacheAndPrefixIndexer(c, indexer)
 	})
 	rm.Register(RouterExternal, func() (types.Router, error) {
 		return newExternalRouterWithCacheAndSelector(c, rm.Select)

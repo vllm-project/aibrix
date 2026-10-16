@@ -347,13 +347,14 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 			if pod, binding, found := provider.ModelClaimBinding(model); found {
 				state := binding.State
 				klog.InfoS("ModelClaim is known but not routable", "requestID", requestID, "model", model, "state", state)
-				if state == constants.ModelClaimRoutingStateSleeping && s.wakeRequester != nil {
+				wakeRequested := state == constants.ModelClaimRoutingStateSleeping && s.wakeRequester != nil
+				if wakeRequested {
 					s.wakeRequester.RequestWake(pod, binding)
 				}
 				// The controller gets past every state a pod carries by itself.
 				// An engine that failed for good is moved to another pod once
 				// one can take it, so its client is asked to retry as well.
-				return nil, modelClaimRetryResponse(model, state, binding.Reason, true)
+				return nil, modelClaimRetryResponse(model, state, binding.Reason, true, wakeRequested)
 			}
 		}
 		// A claim that no pod advertises yet has not been placed. Its model is
@@ -363,7 +364,7 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 				klog.InfoS("ModelClaim is known but not placed", "requestID", requestID, "model", model,
 					"phase", phase, "reason", reason)
 				return nil, modelClaimRetryResponse(model, unplacedModelClaimState(phase), reason,
-					modelClaimRetried(reason))
+					modelClaimRetried(reason), false)
 			}
 		}
 		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "model", model)
@@ -388,7 +389,7 @@ func (s *Server) validateModelAvailability(requestID, model string) (types.PodLi
 // modelClaimRetryResponse answers for a model whose ModelClaim cannot serve
 // it now. The reason, when there is one, is the controller's own word for why,
 // such as NoMatchingPods. A client is asked to retry only when retry is set.
-func modelClaimRetryResponse(model, state, reason string, retry bool) *extProcPb.ProcessingResponse {
+func modelClaimRetryResponse(model, state, reason string, retry, wakeRequested bool) *extProcPb.ProcessingResponse {
 	headers := []*configPb.HeaderValueOption{
 		{Header: &configPb.HeaderValue{Key: HeaderErrorNoModelBackends, RawValue: []byte(model)}},
 	}
@@ -399,7 +400,7 @@ func modelClaimRetryResponse(model, state, reason string, retry bool) *extProcPb
 	if retry {
 		headers = append(headers, &configPb.HeaderValueOption{
 			Header: &configPb.HeaderValue{
-				Key: "Retry-After", RawValue: []byte(strconv.Itoa(modelClaimRetryAfter(reason))),
+				Key: "Retry-After", RawValue: []byte(strconv.Itoa(modelClaimRetryAfter(state, reason, wakeRequested))),
 			},
 		})
 		message += "; retry shortly"
@@ -431,11 +432,16 @@ var modelClaimRetryAfterByReason = map[string]int{
 	constants.ModelClaimRouteReasonMoving:         30,
 }
 
-// modelClaimRetryAfter is the Retry-After, in seconds, for a claim the
-// controller gives this reason for.
-func modelClaimRetryAfter(reason string) int {
+// modelClaimRetryAfter is the Retry-After, in seconds, for a claim's state and
+// reason. A known reason takes precedence over the shorter wait for a
+// sleeping claim with no reason whose wake was requested (possibly already
+// deduplicated). Without a wake requester or a binding, use the default delay.
+func modelClaimRetryAfter(state, reason string, wakeRequested bool) int {
 	if seconds, found := modelClaimRetryAfterByReason[reason]; found {
 		return seconds
+	}
+	if wakeRequested && state == constants.ModelClaimRoutingStateSleeping && reason == "" {
+		return modelClaimWakeRetryAfterSeconds
 	}
 	return modelClaimRetryAfterSeconds
 }

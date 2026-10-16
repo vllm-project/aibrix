@@ -227,16 +227,19 @@ func parseResponsesInput(requestID string, input json.RawMessage) (string, *extP
 func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message, prefixText string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	path := pathWithoutQuery(requestPath)
 	switch path {
+	// Text generation
 	case PathChatCompletions, PathMessages, PathMessagesCountTokens:
 		model, message, prefixText, stream, errRes = validateChatRequest(requestID, path, requestBody, user)
+	case PathChatCompletionsBatch:
+		model, message, errRes = validateChatBatchRequest(requestID, requestBody)
 	case PathResponses:
 		model, message, prefixText, stream, errRes = validateResponsesRequest(requestID, requestBody)
 	case PathCompletions:
 		model, message, stream, errRes = validateCompletionRequest(requestID, requestBody, user)
+
+	// Embeddings, ranking, classification and scoring
 	case PathEmbeddings:
 		model, errRes = validateEmbeddingRequest(requestID, requestBody)
-	case PathImagesGenerations, PathVideoGenerations:
-		model, errRes = validateImageGenerationRequest(requestID, path, requestBody)
 	case PathRerank:
 		model, message, errRes = validateRerankRequest(requestID, requestBody)
 	case PathClassify:
@@ -249,10 +252,24 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		model, message, errRes = validateSystemOneRequest(requestID, requestBody)
 	case PathScore:
 		model, message, errRes = validateScoreRequest(requestID, requestBody)
+
+	// Engine-native utilities
 	case PathTokenize:
 		model, message, errRes = validateTokenizeRequest(requestID, requestBody)
 	case PathPooling:
 		model, message, errRes = validatePoolingRequest(requestID, requestBody)
+
+	// Image and video generation share one JSON validator
+	case PathImagesGenerations, PathVideoGenerations:
+		model, errRes = validateImageGenerationRequest(requestID, path, requestBody)
+
+	case PathImagesEdits:
+		// Image edits upload the source images as files, so the body is multipart/form-data.
+		// A multipart request never gets here (see isMultipartFormPath); this is a JSON or
+		// content-type-less one.
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "image edit requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
+
+	// Audio
 	case PathAudioTranscriptions, PathAudioTranslations:
 		// Audio transcription and translation require multipart/form-data content-type, not JSON
 		// This case handles the error when JSON is sent to these audio endpoints
@@ -308,6 +325,71 @@ func validateChatRequest(requestID, requestPath string, requestBody []byte, user
 			return
 		}
 	}
+	return
+}
+
+// validateChatBatchRequest parses and validates a /v1/chat/completions/batch request body.
+// Only the envelope is checked: a JSON object with a non-empty "model" to route on and a
+// non-empty "messages" array whose entries are non-empty conversations, each an array of
+// messages. The sampling options and message contents belong to the engine. The returned message
+// joins the conversation texts for routing. A "stream" field is deliberately not surfaced as a
+// stream: the gateway always treats a batch as non-SSE, and the engine does not stream one (it
+// expects stream to be false or omitted and may reject true), so its response is one JSON
+// document that SSE parsing would fail on.
+// nolint:nakedret
+func validateChatBatchRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	if trimmed := bytes.TrimSpace(requestBody); len(trimmed) == 0 || trimmed[0] != '{' {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	// Conversations stay raw so each is parsed once, after its shape is known to be an array.
+	var req struct {
+		Model    string            `json:"model"`
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := sonic.Unmarshal(requestBody, &req); err != nil {
+		logRequestBodyParseFailure(requestID, PathChatCompletionsBatch, "error to unmarshal chat completions batch object", err, requestBody)
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	// The gateway selects the backend pod by model, so it cannot fall back to an engine default.
+	if strings.TrimSpace(req.Model) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if len(req.Messages) == 0 {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'messages' is a required property and cannot be empty", "", "messages", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	conversationTexts := make([]string, 0, len(req.Messages))
+	for i, rawConversation := range req.Messages {
+		param := fmt.Sprintf("messages.%d", i)
+		// A flat list of messages is the single-conversation shape; name the entry that gives it away.
+		if trimmed := bytes.TrimSpace(rawConversation); len(trimmed) == 0 || trimmed[0] != '[' {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("'%s' must be an array of messages", param), "", param, HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		var conversation []contentItem
+		if err := sonic.Unmarshal(rawConversation, &conversation); err != nil {
+			logRequestBodyParseFailure(requestID, PathChatCompletionsBatch, "error to unmarshal chat completions batch conversation", err, rawConversation)
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", param, HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		if len(conversation) == 0 {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, fmt.Sprintf("'%s' cannot be empty", param), "", param, HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		var conversationText string
+		if conversationText, errRes = parseChatMessages(requestID, conversation); errRes != nil {
+			return
+		}
+		conversationTexts = append(conversationTexts, conversationText)
+	}
+
+	model, message = req.Model, strings.Join(conversationTexts, "\n")
 	return
 }
 
@@ -713,11 +795,11 @@ func pathWithoutQuery(requestPath string) string {
 }
 
 // isMultipartFormPath returns true if requestPath is an endpoint whose request
-// body is multipart/form-data rather than JSON -- audio endpoints, and
-// vLLM-Omni's Videos API create endpoints (PathVideos, PathVideosSync).
+// body is multipart/form-data rather than JSON -- audio transcription and translation,
+// image edits, and vLLM-Omni's Videos API create endpoints (PathVideos, PathVideosSync).
 func isMultipartFormPath(requestPath string) bool {
 	switch pathWithoutQuery(requestPath) {
-	case PathAudioTranscriptions, PathAudioTranslations, PathVideos, PathVideosSync:
+	case PathAudioTranscriptions, PathAudioTranslations, PathImagesEdits, PathVideos, PathVideosSync:
 		return true
 	default:
 		return false

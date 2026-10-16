@@ -52,6 +52,23 @@ func buildMultipartForm(t *testing.T, fields map[string]string) (body []byte, co
 	return buf.Bytes(), w.FormDataContentType()
 }
 
+// buildMultipartFormWithFile is buildMultipartForm plus one file part, as an image edit
+// request carries its source image.
+func buildMultipartFormWithFile(t *testing.T, fields map[string]string, fileField, fileName string, content []byte) (body []byte, contentType string) {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	for k, v := range fields {
+		require.NoError(t, w.WriteField(k, v))
+	}
+	part, err := w.CreateFormFile(fileField, fileName)
+	require.NoError(t, err)
+	_, err = part.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	return buf.Bytes(), w.FormDataContentType()
+}
+
 func int64Ptr(v int64) *int64 {
 	return &v
 }
@@ -76,6 +93,14 @@ func Test_ValidateRequestBody(t *testing.T) {
 			message:     "unknown path",
 			requestPath: "/v1/unknown",
 			statusCode:  envoyTypePb.StatusCode_NotImplemented,
+		},
+		{
+			// Image edits upload files, so a JSON body is a client error rather than an
+			// unknown path.
+			message:     "/v1/images/edits rejects a JSON body",
+			requestPath: PathImagesEdits,
+			requestBody: []byte(`{"model":"qwen-image-edit","prompt":"add a hat"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
 		},
 		{
 			message:     "/v1/completions string prompt",
@@ -2605,6 +2630,10 @@ func TestParseMultipartFormData_IgnoresStreamForVideoPaths(t *testing.T) {
 		{"videos sync create ignores stream field", PathVideosSync, false},
 		{"videos create with query string still ignores stream field", PathVideos + "?foo=bar", false},
 		{"audio transcription honors stream field", PathAudioTranscriptions, true},
+		// Multi-stage image edit pipelines answer stream=true with SSE, so the flag has to
+		// reach HandleResponseBody.
+		{"image edits honors stream field", PathImagesEdits, true},
+		{"image edits with query string honors stream field", PathImagesEdits + "?foo=bar", true},
 	}
 
 	for _, tt := range tests {
@@ -2697,6 +2726,13 @@ func TestValidateRoutingStrategyForPath(t *testing.T) {
 			errString: "routing strategy 'pd' is not supported for endpoint '/v1/score'",
 		},
 		{
+			name:      "chat completions batch with pd is rejected",
+			path:      PathChatCompletionsBatch,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/chat/completions/batch'",
+		},
+		{
 			name:      "rerank with pd is rejected",
 			path:      PathRerank,
 			strategy:  routing.RouterPD,
@@ -2730,6 +2766,13 @@ func TestValidateRoutingStrategyForPath(t *testing.T) {
 			strategy:  routing.RouterPD,
 			wantErr:   true,
 			errString: "routing strategy 'pd' is not supported for endpoint '/v1/images/generations'",
+		},
+		{
+			name:      "images edits with pd is rejected",
+			path:      PathImagesEdits,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/images/edits'",
 		},
 		{
 			name:      "videos with pd is rejected",
@@ -2949,6 +2992,182 @@ func Test_ValidateRequestBody_Score(t *testing.T) {
 				assert.Nil(t, errRes)
 				assert.Equal(t, "scorer", model)
 				assert.Equal(t, tt.messages, messages)
+				return
+			}
+
+			if !assert.NotNil(t, errRes) {
+				return
+			}
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, model)
+			assert.Empty(t, messages)
+
+			var errResponse map[string]any
+			require.NoError(t, sonic.Unmarshal([]byte(errRes.GetImmediateResponse().GetBody()), &errResponse))
+			errObj, ok := errResponse["error"].(map[string]any)
+			require.True(t, ok, "response should have an 'error' object")
+			if tt.param != "" {
+				assert.Equal(t, tt.param, errObj["param"])
+			}
+		})
+	}
+}
+
+func Test_ValidateRequestBody_ChatCompletionsBatch(t *testing.T) {
+	testCases := []struct {
+		message     string
+		requestPath string // defaults to PathChatCompletionsBatch
+		requestBody string
+		text        string
+		statusCode  envoyTypePb.StatusCode
+		param       string
+	}{
+		{
+			message:     "/v1/chat/completions/batch routes on the model and joins the conversation texts",
+			requestBody: `{"model": "chat-model", "messages": [[{"role": "user", "content": "What is the capital of France?"}], [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "What is the capital of Japan?"}]]}`,
+			text:        "What is the capital of France?\nBe brief. What is the capital of Japan?",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions/batch multimodal content parts reach the routing text like a single chat request",
+			requestBody: `{"model": "chat-model", "messages": [[{"role": "user", "content": [{"type": "text", "text": "Describe it"}]}]]}`,
+			text:        `[{"type": "text", "text": "Describe it"}]`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions/batch sampling options are forwarded, not inspected",
+			requestBody: `{"model": "chat-model", "n": 4, "tools": [{"type": "function"}], "temperature": "hot", "messages": [[{"role": "user", "content": "Hi"}]]}`,
+			text:        "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions/batch a request-level stream field does not make it an SSE stream",
+			requestBody: `{"model": "chat-model", "stream": true, "messages": [[{"role": "user", "content": "Hi"}]]}`,
+			text:        "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions/batch query string does not break path matching",
+			requestPath: PathChatCompletionsBatch + "?api-version=1",
+			requestBody: `{"model": "chat-model", "messages": [[{"role": "user", "content": "Hi"}]]}`,
+			text:        "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions/batch missing model",
+			requestBody: `{"messages": [[{"role": "user", "content": "Hi"}]]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/chat/completions/batch blank model",
+			requestBody: `{"model": " ", "messages": [[{"role": "user", "content": "Hi"}]]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/chat/completions/batch non-string model",
+			requestBody: `{"model": 7, "messages": [[{"role": "user", "content": "Hi"}]]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/chat/completions/batch the model is checked before the messages",
+			requestBody: `{"model": "", "messages": []}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/chat/completions/batch missing messages",
+			requestBody: `{"model": "chat-model"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "messages",
+		},
+		{
+			message:     "/v1/chat/completions/batch null messages",
+			requestBody: `{"model": "chat-model", "messages": null}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "messages",
+		},
+		{
+			message:     "/v1/chat/completions/batch empty messages",
+			requestBody: `{"model": "chat-model", "messages": []}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "messages",
+		},
+		{
+			message:     "/v1/chat/completions/batch non-array messages",
+			requestBody: `{"model": "chat-model", "messages": {"role": "user", "content": "Hi"}}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/chat/completions/batch single-conversation messages are named by their first entry",
+			requestBody: `{"model": "chat-model", "messages": [{"role": "user", "content": "Hi"}]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "messages.0",
+		},
+		{
+			message:     "/v1/chat/completions/batch the failing conversation is named by its index",
+			requestBody: `{"model": "chat-model", "messages": [[{"role": "user", "content": "Hi"}], [{"role": "user", "content": "Hi"}], "Hi"]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "messages.2",
+		},
+		{
+			message:     "/v1/chat/completions/batch null conversation",
+			requestBody: `{"model": "chat-model", "messages": [null]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "messages.0",
+		},
+		{
+			message:     "/v1/chat/completions/batch empty conversation",
+			requestBody: `{"model": "chat-model", "messages": [[{"role": "user", "content": "Hi"}], []]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "messages.1",
+		},
+		{
+			message:     "/v1/chat/completions/batch non-object message",
+			requestBody: `{"model": "chat-model", "messages": [["Hi"]]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "messages.0",
+		},
+		{
+			message:     "/v1/chat/completions/batch malformed JSON",
+			requestBody: `{"model": "chat-model", "messages": [[{"role": "user", "content": "Hi"}]]`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/chat/completions/batch array root",
+			requestBody: `[[{"role": "user", "content": "Hi"}]]`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/chat/completions/batch null root",
+			requestBody: `null`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/chat/completions/batch empty body",
+			requestBody: ``,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.message, func(t *testing.T) {
+			requestPath := tt.requestPath
+			if requestPath == "" {
+				requestPath = PathChatCompletionsBatch
+			}
+			// A TPM-limited user must not be asked for stream_options: a batch is never streamed.
+			model, messages, prefixText, stream, errRes := validateRequestBody("test-request-id", requestPath, []byte(tt.requestBody), utils.User{Tpm: 100})
+
+			// The batch response is one JSON document, never an SSE stream, and has no separate prefix text.
+			assert.False(t, stream)
+			assert.Empty(t, prefixText)
+
+			if tt.statusCode == envoyTypePb.StatusCode_OK {
+				assert.Nil(t, errRes)
+				assert.Equal(t, "chat-model", model)
+				assert.Equal(t, tt.text, messages)
 				return
 			}
 

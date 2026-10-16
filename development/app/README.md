@@ -387,44 +387,53 @@ curl http://localhost:8000/v1/chat/completions \
 
 ## Mocked vLLM Features
 
-### OpenAI-Compatible Endpoints
-- `/v1/models` - List available models
+Endpoints are grouped by modality. An endpoint that exists for only one engine is tagged with its name.
+
+### Text Generation
 - `/v1/chat/completions` - Chat completions (streaming supported)
 - `/v1/completions` - Text completions (streaming supported)
-- `/v1/embeddings` - Text embeddings
-- `/v1/images/generations` - Image generation (OpenAI format)
-- `/v1/video/generations` - Video generation (OpenAI/Sora format)
-- `/v1/rerank` - Document reranking
-- `/v1/audio/speech` - Text-to-speech (OpenAI + vLLM-Omni voices)
-- `/v1/audio/transcriptions` - Audio transcription
-- `/v1/audio/translations` - Audio translation
+- `/v1/chat/completions/batch` - Batch chat: `messages` is a list of conversations, answered by one non-streaming response with a choice per conversation and the usage summed over all of them; `stream: true`, `n > 1` and beam search are refused (vLLM-Omni)
 
-### vLLM-Omni Endpoints
+### Embeddings, Ranking and Scoring
+- `/v1/embeddings` - Text embeddings
+- `/v1/rerank` - Document reranking
+- `/v1/decisions` - Typed choice, score, and yes/no questions about an input (string, object, or array), answered without generation; usage reports prompt tokens only (SGLang)
+- `/v1/systemone` - The same decisions in the System One request shape: a `state` (string, object, or array) and a map of `noul`, `choice`, and `score` questions keyed by id; usage reports `input_tokens` and `output_tokens` with no total (SGLang)
+
+### Tokenization and Pooling
+- `/tokenize` - Tokenize text (vLLM)
+- `/detokenize` - Detokenize tokens (vLLM)
+- `/pooling` - Pooling models (embed/classify/score; string, array, or pre-tokenized input) (vLLM)
+
+### Image
+- `/v1/images/generations` - Image generation (OpenAI format)
 - `/v1/chat/completions` - Image generation/editing (returns base64 image in content array when model name contains image keywords or diffusion params are present)
-- `/v1/chat/completions` - Chat with `modalities: ["text", "audio"]` returns mock audio in response
+
+### Audio
+- `/v1/audio/speech` - Text-to-speech (OpenAI + vLLM-Omni voices)
 - `/v1/audio/speech` - TTS with vLLM-Omni params (`language`, `instructions`, `task_type`, `ref_audio`, `ref_text`)
 - `/v1/audio/speech/batch` - Batch TTS (SGLang-Omni format: shared defaults plus `items`; one JSON response with a base64 `audio_data` result per item, and a bad item becomes an `error` entry inside an HTTP 200)
 - `/v1/audio/voices` - List available TTS voices
+- `/v1/audio/transcriptions` - Audio transcription
+- `/v1/audio/translations` - Audio translation
+- `/v1/chat/completions` - Chat with `modalities: ["text", "audio"]` returns mock audio in response
+
+### Video
+- `/v1/video/generations` - Video generation (OpenAI/Sora format)
 - `/v1/videos` - Video generation (vLLM-Omni/Wan2.2 format, multipart/form-data, synchronous `b64_json` response, supports `input_reference` for I2V)
 
-### vLLM-Specific Endpoints
-- `/v1/load_lora_adapter` - Load a LoRA adapter
-- `/v1/unload_lora_adapter` - Unload a LoRA adapter
-- `/tokenize` - Tokenize text
-- `/detokenize` - Detokenize tokens
-- `/pooling` - Pooling models (embed/classify/score; string, array, or pre-tokenized input)
-- `/load` - Server load metrics
-- `/version` - Version info
-- `/metrics` - Prometheus metrics
+### Models and LoRA Adapters
+- `/v1/models` - List available models
+- `/v1/load_lora_adapter` - Load a LoRA adapter (vLLM)
+- `/v1/unload_lora_adapter` - Unload a LoRA adapter (vLLM)
 
-### SGLang-Specific Endpoints
-- `/v1/decisions` - Typed choice, score, and yes/no questions about an input (string, object, or array), answered without generation; usage reports prompt tokens only
-- `/v1/systemone` - The same decisions in the System One request shape: a `state` (string, object, or array) and a map of `noul`, `choice`, and `score` questions keyed by id; usage reports `input_tokens` and `output_tokens` with no total
-
-### Health/Utility Endpoints
+### Health and Server Utilities
 - `/health` - Health check
 - `/ready` - Ready check
 - `/ping` - Ping check
+- `/load` - Server load metrics (vLLM)
+- `/version` - Version info (vLLM)
+- `/metrics` - Prometheus metrics (vLLM)
 
 
 ### Elastic EP Endpoints

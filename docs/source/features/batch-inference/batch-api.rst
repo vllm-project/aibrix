@@ -146,6 +146,13 @@ The Batch API follows a metadata server architecture for distributed processing:
 - **cancelled**: User explicitly cancelled the batch job
 - **expired**: Job exceeded the 24-hour completion window
 
+An accepted cancellation during input validation moves a batch with a live
+driver to ``cancelling``. Validation may still finish, but successful
+validation does not restart execution; cancellation alone finishes as
+``cancelled``. A late validation error retains failure precedence and can
+finish as ``failed``. Before a driver is attached, a batch awaiting or
+undergoing validation is cancelled immediately.
+
 Components
 ^^^^^^^^^^
 

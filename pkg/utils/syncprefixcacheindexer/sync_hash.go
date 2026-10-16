@@ -97,6 +97,16 @@ type ModelContext struct {
 	LoraID    int64 // -1 represents no LoRA adapter
 }
 
+// LoraIDFromName returns the LoraID that indexes a LoRA adapter's blocks.
+// vLLM names the adapter in BlockStored events, and the gateway routes it by
+// the same name, so both sides derive the ID from it. "" is the base model.
+func LoraIDFromName(name string) int64 {
+	if name == "" {
+		return -1
+	}
+	return int64(xxhash.Sum64String(name) >> 1)
+}
+
 // PodInfo stores pod access information
 type PodInfo struct {
 	LastAccessTime atomic.Int64 // Unix timestamp (lock-free update)
@@ -260,8 +270,13 @@ func (s *SyncPrefixHashTable) MatchPrefix(modelName string, loraID int64, tokens
 
 		hasMatch := false
 		for podName, podInfo := range pods {
-			if _, isReady := readyPods[podName]; !isReady {
-				continue
+			// Readiness only needs checking at block 0: matches holds just the
+			// ready pods that reached this block, and a pod absent from it at a
+			// later block reads back as zero blocks, so the check below skips it.
+			if i == 0 {
+				if _, isReady := readyPods[podName]; !isReady {
+					continue
+				}
 			}
 			match := matches[podName]
 			if match.blocks != i {
@@ -309,6 +324,9 @@ func (s *SyncPrefixHashTable) ProcessBlockStored(event BlockStored) error {
 	ctx := ModelContext{
 		ModelName: event.ModelName,
 		LoraID:    event.LoraID,
+	}
+	if event.LoraName != "" {
+		ctx.LoraID = LoraIDFromName(event.LoraName)
 	}
 
 	// Get or create context data
@@ -394,20 +412,34 @@ func (s *SyncPrefixHashTable) ProcessBlockRemoved(event BlockRemoved) error {
 		return nil
 	}
 
-	ctx := ModelContext{
-		ModelName: event.ModelName,
-		LoraID:    event.LoraID,
+	// BlockRemoved does not name the adapter, so remove each block from every
+	// context of the model that indexed it: the base model and its adapters.
+	byContext := make(map[ModelContext][]int64)
+	s.blockIndexMu.RLock()
+	for _, engineBlockHash := range event.BlockHashes {
+		for _, ctx := range s.blockIndex[engineBlockHash] {
+			if ctx.ModelName == event.ModelName {
+				byContext[ctx] = append(byContext[ctx], engineBlockHash)
+			}
+		}
 	}
+	s.blockIndexMu.RUnlock()
 
-	// Can now target specific context instead of searching all contexts
+	for ctx, blockHashes := range byContext {
+		s.removeBlocksFromContext(ctx, blockHashes, event)
+	}
+	return nil
+}
+
+func (s *SyncPrefixHashTable) removeBlocksFromContext(ctx ModelContext, blockHashes []int64, event BlockRemoved) {
 	value, exists := s.contextMap.Load(ctx)
 	if !exists {
-		return nil
+		return
 	}
 
 	contextData := value.(*ContextData)
 	if contextData.markedForEviction.Load() {
-		return nil
+		return
 	}
 
 	// First, resolve the affected prefixes using the mapping lock. The mapping
@@ -417,13 +449,13 @@ func (s *SyncPrefixHashTable) ProcessBlockRemoved(event BlockRemoved) error {
 	defer contextData.mappingMu.Unlock()
 
 	toRemove := make(map[uint64][]int64) // aibrix prefix hash → engine block hashes
-	for _, engineBlockHash := range event.BlockHashes {
+	for _, engineBlockHash := range blockHashes {
 		if aibrixHash, exists := contextData.hashMapping.engineToAibrix[engineBlockHash]; exists {
 			toRemove[aibrixHash] = append(toRemove[aibrixHash], engineBlockHash)
 		}
 	}
 	if len(toRemove) == 0 {
-		return nil
+		return
 	}
 
 	// Then update prefix store, clearing only the tier and KV-cache group the
@@ -433,9 +465,9 @@ func (s *SyncPrefixHashTable) ProcessBlockRemoved(event BlockRemoved) error {
 	// so drop the whole entry as before.
 	if event.SourcePod == "" {
 		klog.Warningf("block removed event has no source pod, evicting prefixes for every pod: model=%s, lora_id=%d, block_hashes=%d",
-			event.ModelName, event.LoraID, len(event.BlockHashes))
+			ctx.ModelName, ctx.LoraID, len(blockHashes))
 	}
-	orphaned := make([]int64, 0, len(event.BlockHashes))
+	orphaned := make([]int64, 0, len(blockHashes))
 	tier := tierBit(event.Medium, event.GroupIdx)
 	contextData.prefixMu.Lock()
 	prefixStore := contextData.prefixStore
@@ -467,8 +499,6 @@ func (s *SyncPrefixHashTable) ProcessBlockRemoved(event BlockRemoved) error {
 		// Update reverse index
 		s.updateBlockIndex(engineBlockHash, ctx, false)
 	}
-
-	return nil
 }
 
 // ProcessAllBlocksCleared handles AllBlocksCleared events (placeholder implementation)
@@ -538,25 +568,24 @@ func (s *SyncPrefixHashTable) AddPrefixWithMedium(modelName string, loraID int64
 	return nil
 }
 
-// RemovePrefix removes a specific pod from all prefix entries
+// RemovePrefix removes a specific pod from all prefix entries of the model.
+// Callers drop a pod whose whole cache is gone, so the pod is removed from the
+// model's adapter contexts too, whatever loraID is passed.
 func (s *SyncPrefixHashTable) RemovePrefix(modelName string, loraID int64, podName string) error {
-	ctx := ModelContext{
-		ModelName: modelName,
-		LoraID:    loraID,
-	}
+	s.contextMap.Range(func(key, value any) bool {
+		if key.(ModelContext).ModelName == modelName {
+			removePodFromContext(value.(*ContextData), podName)
+		}
+		return true
+	})
+	return nil
+}
 
-	value, exists := s.contextMap.Load(ctx)
-	if !exists {
-		return nil
-	}
-
-	contextData := value.(*ContextData)
+func removePodFromContext(contextData *ContextData, podName string) {
 	contextData.prefixMu.Lock()
 	defer contextData.prefixMu.Unlock()
 
 	prefixStore := contextData.prefixStore
-
-	// Remove pod from all prefix entries
 	for prefixHash, pods := range prefixStore.prefixMap {
 		delete(pods, podName)
 		if len(pods) == 0 {
@@ -564,8 +593,6 @@ func (s *SyncPrefixHashTable) RemovePrefix(modelName string, loraID int64, podNa
 			prefixStore.totalPrefixes--
 		}
 	}
-
-	return nil
 }
 
 // GetPrefixHashes computes prefix hashes for given tokens

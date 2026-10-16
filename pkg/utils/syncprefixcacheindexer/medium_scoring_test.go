@@ -269,6 +269,31 @@ func TestMatchPrefixStopsAtFirstMissingBlock(t *testing.T) {
 	assert.Equal(t, 33, matched["p2"], "only block 0 counts")
 }
 
+// TestMatchPrefixCountsOnlyReadyPodsFromFirstBlock tests that a pod missing from
+// the ready set never scores, even when it holds the whole prefix, and that a
+// ready pod which lacks block 0 is not credited for the later blocks it holds
+func TestMatchPrefixCountsOnlyReadyPodsFromFirstBlock(t *testing.T) {
+	table := NewSyncPrefixHashTable()
+	defer table.Close()
+
+	for i := 0; i < 3; i++ {
+		storeTierBlock(t, table, "ready", MediumGPU, 0, i)
+		storeTierBlock(t, table, "unready", MediumGPU, 0, i)
+	}
+	storeTierBlock(t, table, "partial", MediumGPU, 0, 0)
+	storeTierBlock(t, table, "late", MediumGPU, 0, 1)
+	storeTierBlock(t, table, "late", MediumGPU, 0, 2)
+
+	var tokens []byte
+	for i := 0; i < 3; i++ {
+		tokens = append(tokens, tierTestBlock(i)...)
+	}
+	readyPods := map[string]struct{}{"ready": {}, "partial": {}, "late": {}}
+	matched, _ := table.MatchPrefix(tierTestModel, -1, tokens, readyPods)
+
+	assert.Equal(t, map[string]int{"ready": 100, "partial": 33}, matched)
+}
+
 // TestPodInfoWeight tests the weight of tier combinations
 func TestPodInfoWeight(t *testing.T) {
 	tests := []struct {

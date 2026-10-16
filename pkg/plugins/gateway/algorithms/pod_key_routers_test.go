@@ -17,6 +17,7 @@ limitations under the License.
 package routingalgorithms
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -26,6 +27,8 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/routeutil"
+	"github.com/vllm-project/aibrix/pkg/types"
 )
 
 // namespacedMetricsCache serves per-model metrics by namespace, so two
@@ -50,35 +53,27 @@ func TestThroughput_SameNamedPodsInTwoNamespaces(t *testing.T) {
 	teamB := sameNamedPod("team-b", "10.0.0.2")
 	router := throughputRouter{cache: &namespacedMetricsCache{values: map[string]float64{"team-a": 100, "team-b": 1}}}
 
-	ctx := createTestRoutingContext("m1", "hello", "req-throughput")
-	_, err := router.Route(ctx, &MockPodList{pods: []*v1.Pod{teamA, teamB}})
+	ctx := types.NewRoutingContext(context.Background(), RouterThroughput, "m1", "hello", "req-throughput", "")
+	_, err := router.Route(ctx, newMockPodList([]*v1.Pod{teamA, teamB}, nil))
 	require.NoError(t, err)
 	require.NotNil(t, ctx.TargetPod())
 	assert.Equal(t, "team-b", ctx.TargetPod().Namespace, "team-b/worker-0 processed fewer tokens")
 }
 
-// TestPreble_SameNamedPodsInTwoNamespaces checks that a prefix routed to one pod is
-// not credited to a same-named pod in another namespace.
-func TestPreble_SameNamedPodsInTwoNamespaces(t *testing.T) {
+// TestLeastRequestSelection_SameNamedPodsInTwoNamespaces checks that the least-loaded pod
+// is resolved by pod key, so the selected pod is the one whose count was lowest.
+func TestLeastRequestSelection_SameNamedPodsInTwoNamespaces(t *testing.T) {
 	teamA := sameNamedPod("team-a", "10.0.0.1")
 	teamB := sameNamedPod("team-b", "10.0.0.2")
-	// team-b is listed last, so resolving the cached pod by name alone would pick it.
-	podList := &MockPodList{pods: []*v1.Pod{teamA, teamB}}
-	router := newTestRouter(2, nil)
+	pods := []*v1.Pod{teamB, teamA}
+	counts := map[string]int{"team-a/worker-0": 0, "team-b/worker-0": 20}
 
-	const message = "Hello world shared content extra"
-	require.NoError(t, router.PostRouteUpdate(createTestRoutingContext("test-model", message, "seed"), podList, teamA))
-	// Both pods are in the pod set. A smaller set would differ from the ready-list length
-	// on every request and rebuild the pod set each time.
-	assert.Equal(t, 2, router.numPods)
+	selected := routeutil.SelectTargetPodWithLeastRequestCountFromCounts(counts, pods)
+	require.NotNil(t, selected)
+	assert.Equal(t, "team-a", selected.Namespace)
 
-	_, scored, err := router.ScoreAll(createTestRoutingContext("test-model", message, "score"), podList)
-	require.NoError(t, err)
-	assert.Equal(t, []bool{true, false}, scored, "only team-a/worker-0 holds the prefix")
-
-	ctx := createTestRoutingContext("test-model", message, "route")
-	_, err = router.Route(ctx, podList)
-	require.NoError(t, err)
-	require.NotNil(t, ctx.TargetPod())
-	assert.Equal(t, "team-a", ctx.TargetPod().Namespace, "the request must go to the pod that holds the prefix")
+	leastPods, _, _, imbalanced := getTargetPodListOnLoadImbalance(counts, pods, 2, 8)
+	require.True(t, imbalanced)
+	require.Len(t, leastPods, 1)
+	assert.Equal(t, "team-a", leastPods[0].Namespace)
 }

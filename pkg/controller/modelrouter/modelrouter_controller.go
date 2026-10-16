@@ -69,11 +69,16 @@ var watchedWorkloads = []schema.GroupVersionKind{
 	{Group: "leaderworkerset.x-k8s.io", Version: "v1", Kind: "LeaderWorkerSet"},
 }
 
+// modelPaths is grouped by modality. It is also the order of each model HTTPRoute's matches, so
+// reordering it changes every model's HTTPRoute spec; add new paths to their group instead.
 var modelPaths = []string{
+	// Text generation
 	"/v1/completions",
 	"/v1/chat/completions",
 	"/v1/responses",
 	"/v1/messages",
+
+	// Embeddings, ranking, classification and scoring
 	"/v1/embeddings",
 	"/v1/rerank",
 	"/v1/classify",
@@ -81,13 +86,24 @@ var modelPaths = []string{
 	"/v1/decisions",
 	"/v1/systemone",
 	"/v1/score",
+
+	// Engine-specific (xdit), image and video generation
 	"/generate",
 	"/generatevideo",
+
+	// Image
+	"/v1/images/edits",
+
+	// Video
 	"/v1/video",
 	"/v1/videos",
+
+	// Audio
 	"/v1/audio/transcriptions",
 	"/v1/audio/translations",
 	"/v1/audio/speech",
+
+	// Engine-native utilities
 	"/tokenize",
 	"/pooling",
 }

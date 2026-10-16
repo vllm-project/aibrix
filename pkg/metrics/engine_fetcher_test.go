@@ -776,3 +776,96 @@ sglang:max_total_num_tokens{model_name="m"} 160000.0
 		assert.NotContains(t, result.Metrics, KVCacheNumGPUBlocks)
 	})
 }
+
+// vLLM started with --data-parallel-size N reports one series per engine, labeled engine="<rank>".
+func TestEngineMetricsFetcher_DataParallelEngines(t *testing.T) {
+	server := setupMockServer(`# TYPE vllm:num_requests_waiting gauge
+vllm:num_requests_waiting{engine="0",model_name="m"} 5.0
+vllm:num_requests_waiting{engine="1",model_name="m"} 7.0
+vllm:num_requests_waiting{engine="2",model_name="m"} 3.0
+vllm:num_requests_waiting{engine="3",model_name="m"} 5.0
+# TYPE vllm:kv_cache_usage_perc gauge
+vllm:kv_cache_usage_perc{engine="0",model_name="m"} 0.9
+vllm:kv_cache_usage_perc{engine="1",model_name="m"} 0.8
+vllm:kv_cache_usage_perc{engine="2",model_name="m"} 0.7
+vllm:kv_cache_usage_perc{engine="3",model_name="m"} 0.2
+# TYPE vllm:generation_tokens_total counter
+vllm:generation_tokens_total{engine="0",model_name="m"} 100.0
+vllm:generation_tokens_total{engine="1",model_name="m"} 50.0
+vllm:generation_tokens_total{engine="2",model_name="m"} 30.0
+vllm:generation_tokens_total{engine="3",model_name="m"} 20.0
+# TYPE vllm:time_to_first_token_seconds histogram
+vllm:time_to_first_token_seconds_bucket{engine="0",le="0.1",model_name="m"} 1.0
+vllm:time_to_first_token_seconds_bucket{engine="0",le="+Inf",model_name="m"} 2.0
+vllm:time_to_first_token_seconds_sum{engine="0",model_name="m"} 0.5
+vllm:time_to_first_token_seconds_count{engine="0",model_name="m"} 2.0
+vllm:time_to_first_token_seconds_bucket{engine="1",le="0.1",model_name="m"} 3.0
+vllm:time_to_first_token_seconds_bucket{engine="1",le="+Inf",model_name="m"} 3.0
+vllm:time_to_first_token_seconds_sum{engine="1",model_name="m"} 0.2
+vllm:time_to_first_token_seconds_count{engine="1",model_name="m"} 3.0
+`, 200, 0)
+	defer server.Close()
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+	fetcher := NewEngineMetricsFetcher()
+	ctx := context.Background()
+	want := map[string]float64{
+		NumRequestsWaiting:   20,
+		KVCacheUsagePerc:     0.65,
+		GenerationTokenTotal: 200,
+	}
+
+	result, err := fetcher.FetchAllTypedMetrics(ctx, endpoint, "vllm", "test-pod",
+		[]string{NumRequestsWaiting, KVCacheUsagePerc, GenerationTokenTotal, TimeToFirstTokenSeconds})
+	require.NoError(t, err)
+	for name, v := range want {
+		require.Contains(t, result.ModelMetrics, "m/"+name)
+		assert.InDelta(t, v, result.ModelMetrics["m/"+name].GetSimpleValue(), 1e-9, name)
+
+		single, err := fetcher.FetchTypedMetric(ctx, endpoint, "vllm", "test-pod", name)
+		require.NoError(t, err)
+		assert.InDelta(t, v, single.GetSimpleValue(), 1e-9, name)
+	}
+
+	ttft, ok := result.ModelMetrics["m/"+TimeToFirstTokenSeconds].(*HistogramMetricValue)
+	require.True(t, ok)
+	assert.Equal(t, 5.0, ttft.Count)
+	assert.InDelta(t, 0.7, ttft.Sum, 1e-9)
+	assert.Equal(t, 4.0, ttft.Buckets["0.100000"])
+}
+
+// A single-engine vLLM still labels every series engine="0". The value stays the same,
+// but the merged series no longer carries the engine label.
+func TestEngineMetricsFetcher_SingleEngineDropsEngineLabel(t *testing.T) {
+	server := setupMockServer(`# TYPE vllm:num_requests_waiting gauge
+vllm:num_requests_waiting{engine="0",model_name="m"} 5.0
+`, 200, 0)
+	defer server.Close()
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+
+	result, err := NewEngineMetricsFetcher().FetchAllTypedMetrics(context.Background(), endpoint, "vllm", "test-pod",
+		[]string{NumRequestsWaiting})
+	require.NoError(t, err)
+	require.Contains(t, result.ModelMetrics, "m/"+NumRequestsWaiting)
+	value := result.ModelMetrics["m/"+NumRequestsWaiting]
+	assert.Equal(t, 5.0, value.GetSimpleValue())
+	assert.Equal(t, map[string]string{"model_name": "m"}, value.GetLabelValues())
+}
+
+func TestEngineMetricsFetcher_DataParallelSleepStateIsAveraged(t *testing.T) {
+	server := setupMockServer(`# TYPE vllm:engine_sleep_state gauge
+vllm:engine_sleep_state{engine="0",model_name="m",sleep_state="awake"} 1.0
+vllm:engine_sleep_state{engine="0",model_name="m",sleep_state="weights_offloaded"} 0.0
+vllm:engine_sleep_state{engine="1",model_name="m",sleep_state="awake"} 0.0
+vllm:engine_sleep_state{engine="1",model_name="m",sleep_state="weights_offloaded"} 1.0
+`, 200, 0)
+	defer server.Close()
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+
+	result, err := NewEngineMetricsFetcher().FetchAllTypedMetrics(context.Background(), endpoint, "vllm", "test-pod",
+		[]string{EngineSleepState})
+	require.NoError(t, err)
+	require.Contains(t, result.ModelMetrics, "m/"+EngineSleepState)
+	value := result.ModelMetrics["m/"+EngineSleepState]
+	assert.Equal(t, 0.5, value.GetSimpleValue(), "one of two engines is awake")
+	assert.Equal(t, "awake", value.GetLabelValues()["sleep_state"])
+}

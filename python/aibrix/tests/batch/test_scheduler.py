@@ -140,6 +140,27 @@ async def test_expire_jobs_expires_due_jobs_via_manager():
 
 
 @pytest.mark.asyncio
+async def test_expire_jobs_continues_after_a_job_fails_to_expire():
+    now = time.time()
+    progress_manager = FakeProgressManager(
+        pending=[_pending_job("broken", now - 2), _pending_job("ok", now - 1)]
+    )
+    real_expire = progress_manager.expire_job
+
+    async def flaky_expire(job_id):
+        if job_id == "broken":
+            raise RuntimeError("transient storage error")
+        return await real_expire(job_id)
+
+    progress_manager.expire_job = flaky_expire
+    scheduler = _make_scheduler(progress_manager)
+
+    await scheduler.expire_jobs()
+
+    assert progress_manager.expired_job_ids == ["ok"]
+
+
+@pytest.mark.asyncio
 async def test_expire_jobs_skips_due_finalizing_jobs():
     now = time.time()
     progress_manager = FakeProgressManager(

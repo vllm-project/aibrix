@@ -128,27 +128,20 @@ const (
 	// tokens, which the gateway cannot measure. See validateStringInputs.
 	MaxArrayDimensions = 2048
 
-	// Request Paths
-	PathChatCompletions     = "/v1/chat/completions"
-	PathResponses           = "/v1/responses"
-	PathMessages            = "/v1/messages"
-	PathMessagesCountTokens = "/v1/messages/count_tokens"
-	PathCompletions         = "/v1/completions"
-	PathEmbeddings          = "/v1/embeddings"
-	PathImagesGenerations   = "/v1/images/generations"
-	PathVideoGenerations    = "/v1/video/generations"
-	PathAudioTranscriptions = "/v1/audio/transcriptions"
-	PathAudioTranslations   = "/v1/audio/translations"
-	// PathAudioSpeech is vLLM-Omni's OpenAI-compatible speech generation endpoint. Unlike the
-	// transcription and translation endpoints it takes a JSON request and returns binary audio,
-	// often streamed in several chunks, so its response is never parsed as JSON or SSE.
-	PathAudioSpeech = "/v1/audio/speech"
-	// PathAudioSpeechBatch is SGLang-Omni's batch form of PathAudioSpeech: one JSON request holds
-	// many items and the response is one JSON document with a base64-encoded result per item.
-	// isLanguageRequest matches it through the PathAudioSpeech prefix, so it is never parsed.
-	PathAudioSpeechBatch = "/v1/audio/speech/batch"
-	PathRerank           = "/v1/rerank"
-	PathClassify         = "/v1/classify"
+	// Request Paths, grouped by modality. Add a new endpoint to its group.
+
+	// Text generation
+	PathChatCompletions      = "/v1/chat/completions"
+	PathResponses            = "/v1/responses"
+	PathMessages             = "/v1/messages"
+	PathMessagesCountTokens  = "/v1/messages/count_tokens"
+	PathCompletions          = "/v1/completions"
+	PathChatCompletionsBatch = "/v1/chat/completions/batch"
+
+	// Embeddings, ranking, classification and scoring
+	PathEmbeddings = "/v1/embeddings"
+	PathRerank     = "/v1/rerank"
+	PathClassify   = "/v1/classify"
 	// PathNativeClassify is where vLLM serves classification; PathClassify is SGLang's
 	// OpenAI-style route.
 	PathNativeClassify = "/classify"
@@ -162,6 +155,31 @@ const (
 	// PathScore is SGLang's scoring endpoint: label-token probabilities or classifier
 	// logits for each query/item pair, pointwise or setwise. It does not stream.
 	PathScore = "/v1/score"
+
+	// Engine-native utilities
+	PathTokenize = "/tokenize"
+	PathPooling  = "/pooling"
+
+	// Image
+	PathImagesGenerations = "/v1/images/generations"
+	// PathImagesEdits is the OpenAI-compatible image edit endpoint. Unlike PathImagesGenerations
+	// it takes multipart/form-data, because the source images are uploaded as files.
+	PathImagesEdits = "/v1/images/edits"
+
+	// Audio
+	PathAudioTranscriptions = "/v1/audio/transcriptions"
+	PathAudioTranslations   = "/v1/audio/translations"
+	// PathAudioSpeech is the OpenAI-compatible speech generation endpoint. Unlike the
+	// transcription and translation endpoints it takes a JSON request and returns binary audio,
+	// often streamed in several chunks, so its response is never parsed as JSON or SSE.
+	PathAudioSpeech = "/v1/audio/speech"
+	// PathAudioSpeechBatch is the batch form of PathAudioSpeech: one JSON request holds
+	// many items and the response is one JSON document with a base64-encoded result per item.
+	// isLanguageRequest matches it through the PathAudioSpeech prefix, so it is never parsed.
+	PathAudioSpeechBatch = "/v1/audio/speech/batch"
+
+	// Video
+	PathVideoGenerations = "/v1/video/generations"
 	// PathVideos and PathVideosSync are vLLM-Omni's native Videos API (multipart/form-data),
 	// distinct from the OpenAI/Sora-shaped PathVideoGenerations (JSON) above. PathVideos also
 	// covers its GET/DELETE sub-resources (/v1/videos/{id}, /v1/videos/{id}/content) via
@@ -169,10 +187,7 @@ const (
 	PathVideos     = "/v1/videos"
 	PathVideosSync = "/v1/videos/sync"
 
-	PathTokenize = "/tokenize"
-	PathPooling  = "/pooling"
-
-	// Engine-specific paths (xdit)
+	// Engine-specific paths (xdit), image and video generation
 	PathXditGenerate      = "/generate"
 	PathXditGenerateVideo = "/generatevideo"
 
@@ -184,4 +199,8 @@ var (
 	ErrorUnknownResponse = errors.New("unknown response")
 	requestBuffers       sync.Map // Thread-safe map to track buffers per request
 	streamBuffers        sync.Map // Thread-safe map to track the trailing partial SSE line per streaming request
+	// streamUsage holds the latest usage of a streaming response that has not ended
+	// yet. With stream_options.continuous_usage_stats (vLLM, SGLang) every chunk carries
+	// a running usage object, so usage alone does not mean the stream is over.
+	streamUsage sync.Map
 )

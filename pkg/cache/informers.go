@@ -185,6 +185,11 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	// TODO: No in place update is handled here
 
 	// Remove old mappings if present, no adapter will be inherited. (Adapters will be rescaned and readded later)
+	// A model that loses its only pod stays in the cache until the new mappings are
+	// added below, so a status update of that pod does not reset the model's
+	// pending count and output predictor. This covers the pod's base model only:
+	// adapter models served just by this pod are still dropped here and re-added
+	// later by the adapter informer.
 	var emptiedModels []string
 	defer func() {
 		for _, modelName := range emptiedModels {
@@ -319,6 +324,8 @@ func (c *Store) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 
 	oldModel := oldObj.(*modelv1alpha1.ModelAdapter)
 	newModel := newObj.(*modelv1alpha1.ModelAdapter)
+	// Keep the model while its instances are swapped, so an update that leaves the
+	// instance list unchanged does not reset the model's pending count and predictor.
 	emptied := false
 	for _, pod := range oldModel.Status.Instances {
 		// the namespace of the pod is same as the namespace of model
@@ -602,7 +609,11 @@ func (c *Store) deletePodAndModelMappingLocked(podName, namespace, modelName str
 	}
 }
 
-func (c *Store) removePodModelMappingLocked(podName, namespace, modelName string, ignoreMapping int) bool {
+// removePodModelMappingLocked removes the mappings like deletePodAndModelMappingLocked
+// but leaves a model that lost its last pod in the cache. It reports whether the
+// model is now empty, so a caller that re-adds pods right away can drop the model
+// afterwards only if nothing came back (see updatePod and updateModelAdapter).
+func (c *Store) removePodModelMappingLocked(podName, namespace, modelName string, ignoreMapping int) (modelEmptied bool) {
 	podKey := utils.GeneratePodKey(namespace, podName)
 	if ignoreMapping <= 0 {
 		if metaPod, ok := c.metaPods.Load(podKey); ok {
@@ -621,6 +632,7 @@ func (c *Store) removePodModelMappingLocked(podName, namespace, modelName string
 	return false
 }
 
+// dropModelIfEmptyLocked deletes the model when no pod serves it.
 func (c *Store) dropModelIfEmptyLocked(modelName string) {
 	if meta, ok := c.metaModels.Load(modelName); ok && meta.Pods.Len() == 0 {
 		c.metaModels.Delete(modelName)

@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -62,6 +63,10 @@ const (
 	RevisionLabelKey = "model.aibrix.ai/revision"
 	// TargetNodeAnnotationKey records the exact node targeted by an owned Job.
 	TargetNodeAnnotationKey = "model.aibrix.ai/target-node"
+	// TargetNodeUIDAnnotationKey records the Kubernetes identity of the target Node.
+	TargetNodeUIDAnnotationKey = "model.aibrix.ai/target-node-uid"
+	// AttemptAnnotationKey records the one-based Continuous Job attempt.
+	AttemptAnnotationKey = "model.aibrix.ai/attempt"
 
 	// WarmupEnabledLabelKey opts a Node into ModelWarmup scheduling when its
 	// value is WarmupEnabledLabelValue.
@@ -90,6 +95,11 @@ func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 			&corev1.Node{},
 			handler.EnqueueRequestsFromMapFunc(enqueueActiveModelWarmups(mgr.GetClient())),
 			builder.WithPredicates(nodeMembershipChanged()),
+		).
+		Watches(
+			&corev1.Namespace{},
+			handler.EnqueueRequestsFromMapFunc(enqueueContinuousModelWarmupsForNamespace(mgr.GetClient())),
+			builder.WithPredicates(namespaceResourcePoolChanged()),
 		).
 		Complete(&ModelWarmupReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()})
 }
@@ -130,6 +140,37 @@ func enqueueActiveModelWarmups(c client.Client) handler.MapFunc {
 	}
 }
 
+func namespaceResourcePoolChanged() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(event.CreateEvent) bool { return false },
+		DeleteFunc: func(event.DeleteEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return e.ObjectOld.GetLabels()[ResourcePoolLabelKey] != e.ObjectNew.GetLabels()[ResourcePoolLabelKey]
+		},
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
+}
+
+func enqueueContinuousModelWarmupsForNamespace(c client.Client) handler.MapFunc {
+	return func(ctx context.Context, namespace client.Object) []reconcile.Request {
+		var warmups modelv1alpha1.ModelWarmupList
+		if err := c.List(ctx, &warmups, client.InNamespace(namespace.GetName())); err != nil {
+			klog.ErrorS(err, "unable to list Continuous ModelWarmups for Namespace event",
+				"namespace", namespace.GetName())
+			return nil
+		}
+		requests := make([]reconcile.Request, 0, len(warmups.Items))
+		for i := range warmups.Items {
+			warmup := &warmups.Items[i]
+			if effectiveMode(warmup) != modelv1alpha1.ModelWarmupModeContinuous {
+				continue
+			}
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(warmup)})
+		}
+		return requests
+	}
+}
+
 func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	warmup := &modelv1alpha1.ModelWarmup{}
 	if err := r.Get(ctx, req.NamespacedName, warmup); err != nil {
@@ -141,15 +182,19 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	revision := revisionFor(warmup)
 	targets, missing, err := r.resolveTargets(ctx, warmup)
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("resolve targets for ModelWarmup %s: %w", req.NamespacedName, err)
 	}
 	klog.V(4).InfoS("resolved ModelWarmup targets", "modelWarmup", req.NamespacedName,
-		"revision", revision, "targets", len(targets), "missing", len(missing))
+		"mode", effectiveMode(warmup), "revision", revision, "targets", len(targets),
+		"missing", len(missing), "missingReasons", summarizeMissingReasons(missing))
 	var jobs batchv1.JobList
 	if err := r.List(ctx, &jobs, client.InNamespace(warmup.Namespace), client.MatchingLabels{
 		WarmupLabelKey: string(warmup.UID),
 	}); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("list owned Jobs for ModelWarmup %s: %w", req.NamespacedName, err)
+	}
+	if effectiveMode(warmup) == modelv1alpha1.ModelWarmupModeContinuous {
+		return r.reconcileContinuous(ctx, warmup, revision, targets, missing, jobs.Items)
 	}
 	snapshot := buildReconcileSnapshot(warmup, revision, targets, missing, jobs.Items)
 	if !withinTargetLimit(targets, missing) {
@@ -158,6 +203,9 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			len(targets)+len(missing),
 			modelv1alpha1.MaxModelWarmupTargets,
 		)
+		klog.V(2).InfoS("ModelWarmup target limit exceeded", "modelWarmup", req.NamespacedName,
+			"mode", effectiveMode(warmup), "resolvedTargets", len(targets), "missingTargets", len(missing),
+			"limit", modelv1alpha1.MaxModelWarmupTargets)
 		return r.updateStatus(
 			ctx, warmup, revision, targets, missing, snapshot.jobsForStatus(nil), jobs.Items,
 			"TargetLimitExceeded", message,
@@ -166,7 +214,8 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	for i := range snapshot.StaleActiveJobs {
 		job := &snapshot.StaleActiveJobs[i]
 		if err := r.Delete(ctx, job); err != nil && !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("delete stale ModelWarmup Job %s/%s: %w",
+				job.Namespace, job.Name, err)
 		}
 		klog.V(3).InfoS("deleted stale ModelWarmup Job", "modelWarmup",
 			client.ObjectKeyFromObject(warmup), "job", job.Name,
@@ -183,9 +232,10 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				"modelWarmup", req.NamespacedName, "node", node, "parallelism", policies.parallelism)
 			break
 		}
-		job := r.jobFor(warmup, node, revision)
+		job := r.jobForTarget(warmup, snapshot.Targets[node], revision, 0)
 		if err := ctrl.SetControllerReference(warmup, job, r.Scheme); err != nil {
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("set ModelWarmup owner on Job %s/%s: %w",
+				job.Namespace, job.Name, err)
 		}
 		if err := r.Create(ctx, job); err != nil {
 			if apierrors.IsAlreadyExists(err) {
@@ -234,11 +284,21 @@ func withinTargetLimit(targets map[string]resolvedTarget, missing map[string]str
 	return len(targets)+len(missing) <= modelv1alpha1.MaxModelWarmupTargets
 }
 
+func summarizeMissingReasons(missing map[string]string) map[string]int {
+	result := make(map[string]int)
+	for _, reason := range missing {
+		result[reason]++
+	}
+	return result
+}
+
 type warmupPolicies struct {
-	parallelism             int32
-	jobTimeoutSeconds       int64
-	retryLimit              int32
-	ttlSecondsAfterFinished int32
+	parallelism                    int32
+	jobTimeoutSeconds              int64
+	retryLimit                     int32
+	ttlSecondsAfterFinished        int32
+	continuousRetryLimit           int32
+	continuousRetryIntervalSeconds int64
 }
 
 func effectiveMode(w *modelv1alpha1.ModelWarmup) modelv1alpha1.ModelWarmupMode {
@@ -250,10 +310,12 @@ func effectiveMode(w *modelv1alpha1.ModelWarmup) modelv1alpha1.ModelWarmupMode {
 
 func effectiveWarmupPolicies(w *modelv1alpha1.ModelWarmup) warmupPolicies {
 	result := warmupPolicies{
-		parallelism:             modelv1alpha1.DefaultModelWarmupParallelism,
-		jobTimeoutSeconds:       modelv1alpha1.DefaultModelWarmupJobTimeoutSeconds,
-		retryLimit:              modelv1alpha1.DefaultModelWarmupRetryLimit,
-		ttlSecondsAfterFinished: modelv1alpha1.DefaultModelWarmupTTLSecondsAfterFinished,
+		parallelism:                    modelv1alpha1.DefaultModelWarmupParallelism,
+		jobTimeoutSeconds:              modelv1alpha1.DefaultModelWarmupJobTimeoutSeconds,
+		retryLimit:                     modelv1alpha1.DefaultModelWarmupRetryLimit,
+		ttlSecondsAfterFinished:        modelv1alpha1.DefaultModelWarmupTTLSecondsAfterFinished,
+		continuousRetryLimit:           modelv1alpha1.DefaultModelWarmupContinuousRetryLimit,
+		continuousRetryIntervalSeconds: modelv1alpha1.DefaultModelWarmupContinuousRetryInterval,
 	}
 	if w.Spec.Policies == nil {
 		return result
@@ -269,6 +331,12 @@ func effectiveWarmupPolicies(w *modelv1alpha1.ModelWarmup) warmupPolicies {
 	}
 	if w.Spec.Policies.TTLSecondsAfterFinished != nil {
 		result.ttlSecondsAfterFinished = *w.Spec.Policies.TTLSecondsAfterFinished
+	}
+	if w.Spec.Policies.ContinuousRetryLimit != nil {
+		result.continuousRetryLimit = *w.Spec.Policies.ContinuousRetryLimit
+	}
+	if w.Spec.Policies.ContinuousRetryIntervalSeconds != nil {
+		result.continuousRetryIntervalSeconds = *w.Spec.Policies.ContinuousRetryIntervalSeconds
 	}
 	return result
 }
@@ -456,6 +524,21 @@ func (r *ModelWarmupReconciler) jobFor(w *modelv1alpha1.ModelWarmup, node, revis
 	}
 }
 
+func (r *ModelWarmupReconciler) jobForTarget(
+	w *modelv1alpha1.ModelWarmup,
+	target resolvedTarget,
+	revision string,
+	attempt int32,
+) *batchv1.Job {
+	job := r.jobFor(w, target.NodeName, revision)
+	job.Annotations[TargetNodeUIDAnnotationKey] = string(target.NodeUID)
+	if attempt > 0 {
+		job.Annotations[AttemptAnnotationKey] = strconv.FormatInt(int64(attempt), 10)
+		job.Name = modelWarmupJobNameForAttempt(w.Name, string(w.UID), target.NodeName, revision, attempt)
+	}
+	return job
+}
+
 func copyContainers(containers []corev1.Container) []corev1.Container {
 	if len(containers) == 0 {
 		return nil
@@ -636,8 +719,10 @@ func (r *ModelWarmupReconciler) updateStatus(
 	if modelWarmupStatusEqual(w.Status, desired.Status) {
 		return ctrl.Result{}, nil
 	}
+	logModelWarmupStatusChange(w, desired)
 	if err := r.Status().Update(ctx, desired); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("update status for ModelWarmup %s/%s: %w",
+			w.Namespace, w.Name, err)
 	}
 	desired.DeepCopyInto(w)
 	return ctrl.Result{}, nil
@@ -722,7 +807,15 @@ func jobFailureDetails(job *batchv1.Job) (string, string) {
 }
 
 func modelWarmupJobName(warmupName, warmupUID, node, revision string) string {
-	suffix := fmt.Sprintf("-%s-%s-%s", shortHash(warmupUID), shortHash(node), revision)
+	return modelWarmupJobNameForAttempt(warmupName, warmupUID, node, revision, 1)
+}
+
+func modelWarmupJobNameForAttempt(warmupName, warmupUID, node, revision string, attempt int32) string {
+	attemptSuffix := ""
+	if attempt > 1 {
+		attemptSuffix = fmt.Sprintf("-a%d", attempt)
+	}
+	suffix := fmt.Sprintf("-%s-%s-%s%s", shortHash(warmupUID), shortHash(node), revision, attemptSuffix)
 	prefix := warmupName
 	if len(prefix)+len(suffix) > 63 {
 		prefix = prefix[:63-len(suffix)]
@@ -749,10 +842,43 @@ func (r *ModelWarmupReconciler) applyFinishedJobTTL(
 		}
 		job.Spec.TTLSecondsAfterFinished = ptr.To(ttl)
 		if err := r.Update(ctx, job); err != nil {
-			return err
+			return fmt.Errorf("set TTL on finished ModelWarmup Job %s/%s: %w", job.Namespace, job.Name, err)
 		}
+		klog.V(4).InfoS("set TTL on finished ModelWarmup Job", "modelWarmup",
+			client.ObjectKeyFromObject(warmup), "job", job.Name, "ttlSecondsAfterFinished", ttl)
 	}
 	return nil
+}
+
+func logModelWarmupStatusChange(current, desired *modelv1alpha1.ModelWarmup) {
+	reason := modelWarmupStatusReason(desired.Status.Conditions)
+	fields := []interface{}{
+		"modelWarmup", client.ObjectKeyFromObject(desired), "mode", effectiveMode(desired),
+		"previousPhase", current.Status.Phase, "phase", desired.Status.Phase,
+		"desiredNodes", desired.Status.DesiredNodes, "activeNodes", desired.Status.ActiveNodes,
+		"succeededNodes", desired.Status.SucceededNodes, "failedNodes", desired.Status.FailedNodes,
+		"omittedTargetDetails", desired.Status.OmittedTargetDetails, "reason", reason,
+	}
+	klog.V(3).InfoS("updating ModelWarmup status", fields...)
+	if desired.Status.Phase == modelv1alpha1.ModelWarmupFailed ||
+		desired.Status.Phase == modelv1alpha1.ModelWarmupDegraded {
+		klog.V(2).InfoS("ModelWarmup requires attention", fields...)
+	}
+}
+
+func modelWarmupStatusReason(conditions []metav1.Condition) string {
+	for _, conditionType := range []string{"Degraded", "Ready", "Complete", "Progressing"} {
+		if condition := meta.FindStatusCondition(conditions, conditionType); condition != nil &&
+			condition.Status == metav1.ConditionTrue {
+			return condition.Reason
+		}
+	}
+	for _, conditionType := range []string{"Ready", "Progressing", "Degraded", "Complete"} {
+		if condition := meta.FindStatusCondition(conditions, conditionType); condition != nil {
+			return condition.Reason
+		}
+	}
+	return ""
 }
 
 func preserveTargetTransition(item *modelv1alpha1.ModelWarmupTargetStatus, previous *metav1.Time,

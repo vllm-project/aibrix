@@ -178,9 +178,8 @@ Let idle models sleep by giving the pool a sleep policy:
 
 Once a model has had no requests for 60 seconds, the controller puts it to
 sleep, and its claim shows ``Sleeping``. The next request for it gets ``503``
-with ``Retry-After: 10``, and the controller wakes the model. These small
-models wake in a few seconds, so a retry after those 10 seconds is normally
-served.
+with ``Retry-After: 3``, and the gateway requests a wake. Retry after three
+seconds; the model may still be waking.
 
 To clean up, delete the claims first, so that the controller stops their
 engines:
@@ -504,8 +503,10 @@ message gives the model's state, and the reason when there is one.
 
    * - The model is
      - The gateway answers
-   * - starting, asleep, failed permanently, or waiting to be placed
-     - 503 with ``Retry-After: 10``. A sleeping model is also woken.
+   * - starting, failed permanently, or waiting to be placed
+     - 503 with ``Retry-After: 10``
+   * - asleep, with no reason, and a wake requested through a Pod binding
+     - 503 with ``Retry-After: 3``
    * - waiting for room to wake, or getting room made for it
      - 503 with ``Retry-After: 20``
    * - moving to another Pod
@@ -515,6 +516,11 @@ message gives the model's state, and the reason when there is one.
      - 503 without ``Retry-After``, since retrying does not help
    * - unknown to the gateway
      - 400
+
+The gateway picks the delay by the reason first, then by the state, and any
+other retried case gets 10 seconds. A claim known only from its status, with
+phase ``Sleeping`` and no reason, gets 10 seconds because the gateway cannot
+request a wake for it.
 
 Deleting claims
 ---------------

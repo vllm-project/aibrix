@@ -74,6 +74,11 @@ func TestIsLanguageRequest(t *testing.T) {
 			want:        true,
 		},
 		{
+			name:        "chat completions batch is language",
+			requestPath: "/v1/chat/completions/batch",
+			want:        true,
+		},
+		{
 			name:        "messages alias is language",
 			requestPath: "/v1/messages",
 			want:        true,
@@ -91,6 +96,11 @@ func TestIsLanguageRequest(t *testing.T) {
 		{
 			name:        "images generations is not language",
 			requestPath: "/v1/images/generations",
+			want:        false,
+		},
+		{
+			name:        "images edits is not language",
+			requestPath: "/v1/images/edits",
 			want:        false,
 		},
 		{
@@ -1224,6 +1234,43 @@ func TestHandleResponseBody_AudioSpeechBatchPassesThrough(t *testing.T) {
 	assert.False(t, buffered, "the response must not be held in the language-response buffer")
 }
 
+// TestHandleResponseBody_ChatCompletionsBatchIsMetered: the engine answers a batch with one
+// chat completion holding a choice per conversation and the usage summed over all of them, so a
+// TPM-limited user is charged for the whole batch from that one document.
+func TestHandleResponseBody_ChatCompletionsBatchIsMetered(t *testing.T) {
+	mockRL := &mockRateLimiter{}
+	mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(40)).Return(int64(500), nil)
+
+	server := &Server{
+		ratelimiter: mockRL,
+	}
+
+	requestID := "test-req-chat-batch-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "chat-model", "", requestID, "test-user")
+	routerCtx.ReqPath = PathChatCompletionsBatch
+	routerCtx.RequestTime = time.Now()
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body: []byte(`{"id":"chatcmpl-1","object":"chat.completion","model":"chat-model","choices":[` +
+					`{"index":0,"message":{"role":"assistant","content":"Paris."},"finish_reason":"stop"},` +
+					`{"index":1,"message":{"role":"assistant","content":"Tokyo."},"finish_reason":"stop"}],` +
+					`"usage":{"prompt_tokens":30,"completion_tokens":10,"total_tokens":40}}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 42, "chat-model", false, false)
+
+	assert.True(t, complete)
+	assert.NotNil(t, resp)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, TokenUsage{PromptTokens: 30, CompletionTokens: 10, TotalTokens: 40}, usage)
+	mockRL.AssertExpectations(t)
+}
+
 func TestHandleResponseBody_EndOfStreamNoTokens(t *testing.T) {
 	server := &Server{}
 
@@ -2012,5 +2059,87 @@ func TestEffectiveTTFTThreshold(t *testing.T) {
 	rc.ConfigProfile.TTFTThresholdS = 0
 	if got := effectiveTTFTThreshold(rc); got != ttftThreshold {
 		t.Errorf("effectiveTTFTThreshold(profile=0) = %v, want env default %v", got, ttftThreshold)
+	}
+}
+
+// TestHandleResponseBody_ContinuousUsageStatsFinalizesAtStreamEnd covers
+// stream_options.continuous_usage_stats (vLLM, SGLang), where every chunk carries the
+// running usage. The request must not be finalized or metered on the first such chunk,
+// only once the stream reports its final usage, and then with the final counts.
+func TestHandleResponseBody_ContinuousUsageStatsFinalizesAtStreamEnd(t *testing.T) {
+	chunk := func(choices string, prompt, completion int) string {
+		return fmt.Sprintf(`data: {"id":"c","object":"chat.completion.chunk","choices":%s,"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d}}`+"\n\n",
+			choices, prompt, completion, prompt+completion)
+	}
+	role := chunk(`[{"index":0,"delta":{"role":"assistant"}}]`, 20, 0)
+	content := chunk(`[{"index":0,"delta":{"content":"Hi"}}]`, 20, 5)
+	finish := chunk(`[{"index":0,"delta":{},"finish_reason":"stop"}]`, 20, 7)
+	usageOnly := chunk(`[]`, 20, 7)
+	done := "data: [DONE]\n\n"
+	final := TokenUsage{PromptTokens: 20, CompletionTokens: 7, TotalTokens: 27}
+
+	tests := []struct {
+		name string
+		// The body of each callback; the last one carries EndOfStream.
+		bodies []string
+		// Index of the callback that should finalize the request.
+		finalAt int
+	}{
+		{
+			name:    "usage-only chunk ends the stream",
+			bodies:  []string{role, content, finish, usageOnly + done, ""},
+			finalAt: 3,
+		},
+		{
+			name:    "usage on the finish chunk, then [DONE]",
+			bodies:  []string{role, content, finish, done, ""},
+			finalAt: 3,
+		},
+		{
+			name:    "no [DONE] before end of stream",
+			bodies:  []string{role, content, finish, ""},
+			finalAt: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockRL := &mockRateLimiter{}
+			mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(27)).Return(int64(27), nil).Once()
+			server := &Server{ratelimiter: mockRL}
+
+			requestID := "test-req-continuous-usage-" + tt.name + "-" + time.Now().Format("150405.000000")
+			t.Cleanup(func() {
+				streamBuffers.Delete(requestID)
+				streamUsage.Delete(requestID)
+			})
+			routerCtx := types.NewRoutingContext(context.Background(), "random", "m", "", requestID, "test-user")
+			routerCtx.ReqPath = PathChatCompletions
+			routerCtx.RequestTime = time.Now()
+			user := utils.User{Name: "test-user", Tpm: 1000}
+
+			for i, body := range tt.bodies[:tt.finalAt+1] {
+				req := &extProcPb.ProcessingRequest{
+					Request: &extProcPb.ProcessingRequest_ResponseBody{
+						ResponseBody: &extProcPb.HttpBody{
+							Body:        []byte(body),
+							EndOfStream: i == len(tt.bodies)-1,
+						},
+					},
+				}
+				resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, user, 1, "m", true, false)
+				assert.Nil(t, resp.GetImmediateResponse())
+				if i < tt.finalAt {
+					assert.False(t, complete, "callback %d carries a running count, not the final usage", i)
+					assert.Equal(t, TokenUsage{}, usage, "callback %d", i)
+					continue
+				}
+				assert.True(t, complete)
+				assert.Equal(t, final, usage)
+			}
+			mockRL.AssertExpectations(t)
+			_, pending := streamUsage.Load(requestID)
+			assert.False(t, pending, "the running usage is dropped once the request is finalized")
+		})
 	}
 }
