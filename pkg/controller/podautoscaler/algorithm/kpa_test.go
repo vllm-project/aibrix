@@ -18,6 +18,7 @@ package algorithm
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -336,7 +337,33 @@ func TestKPAAlgorithm_PanicHoldsUntilAStableWindowPasses(t *testing.T) {
 	k.require(kpaTestStableWindow, 10, 4, 3, 10, "panic")
 	// A stable window after the last crossing, the panic ends and the stable
 	// window decides again: 10*4/10 = 4.
-	k.require(10*time.Second+kpaTestStableWindow+time.Second, 10, 4, 3, 4, "stable")
+	end := 10*time.Second + kpaTestStableWindow + time.Second
+	k.require(end, 10, 4, 3, 4, "stable")
+	// The next panic starts from its own count: 4*22/10 = 9, not the 10 the
+	// previous panic held.
+	k.require(end+10*time.Second, 4, 10, 22, 9, "panic")
+}
+
+// A metric with no target in the scaling context is an error, so
+// DefaultAutoScaler skips it instead of counting it as a vote to stay at the
+// current replicas. A validated spec always has a target for every metric.
+func TestKPAAlgorithm_MetricWithoutTargetIsAnError(t *testing.T) {
+	k := newKPATarget(t)
+	_, err := (&KPAAlgorithm{}).ComputeRecommendation(context.Background(), ScalingRequest{
+		CurrentReplicas: 3,
+		AggregatedMetrics: &types.AggregatedMetrics{
+			MetricKey:   types.MetricKey{MetricName: "other"},
+			StableValue: 10,
+			PanicValue:  10,
+		},
+		ScalingContext: k.ctx,
+		Timestamp:      kpaTestNow,
+		StableWindow:   kpaTestStableWindow,
+		Panic:          &k.state,
+	})
+	if err == nil || !strings.Contains(err.Error(), `no target value for metric "other"`) {
+		t.Fatalf("ComputeRecommendation: got error %v, want no target value for metric \"other\"", err)
+	}
 }
 
 // Crossing the threshold again during a panic extends it, and a bigger surge
