@@ -150,6 +150,32 @@ func (a *DefaultAutoScaler) panicState(pa ktypes.NamespacedName, metricName stri
 	return state
 }
 
+// prunePanicStates drops the panic state of metrics that are no longer in the
+// PodAutoscaler's spec, and all of it once the PodAutoscaler stops using KPA, so
+// an edited spec does not leave state behind until the PodAutoscaler is deleted.
+func (a *DefaultAutoScaler) prunePanicStates(pa *autoscalingv1alpha1.PodAutoscaler) {
+	key := ktypes.NamespacedName{Namespace: pa.Namespace, Name: pa.Name}
+	a.panicMu.Lock()
+	defer a.panicMu.Unlock()
+	byMetric, ok := a.panicStates[key]
+	if !ok {
+		return
+	}
+	if pa.Spec.ScalingStrategy != autoscalingv1alpha1.KPA {
+		delete(a.panicStates, key)
+		return
+	}
+	inSpec := make(map[string]bool, len(pa.Spec.MetricsSources))
+	for _, ms := range pa.Spec.MetricsSources {
+		inSpec[ms.TargetMetric] = true
+	}
+	for name := range byMetric {
+		if !inSpec[name] {
+			delete(byMetric, name)
+		}
+	}
+}
+
 // getOrCreateAlgorithm retrieves or creates a stateless algorithm for the given strategy
 // The algorithm struct is stateless and can be safely cached and reused
 func (a *DefaultAutoScaler) getOrCreateAlgorithm(strategy autoscalingv1alpha1.ScalingStrategyType) algorithm.ScalingAlgorithm {
@@ -186,6 +212,8 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 		return &ReplicaComputeResult{Valid: false}, fmt.Errorf(
 			"no metricsSources defined in PodAutoscaler %s/%s", pa.Namespace, pa.Name)
 	}
+	a.prunePanicStates(&pa)
+
 	var validResults []*ReplicaComputeResult // to record the recommended result calculated in the current round
 	var anyValid bool
 

@@ -35,6 +35,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -543,4 +544,45 @@ func TestComputeDesiredReplicasKeepsKPAPanicAcrossReconciles(t *testing.T) {
 
 	autoScaler.ForgetPodAutoscaler(pa.Namespace, pa.Name)
 	assert.Empty(t, autoScaler.panicStates)
+}
+
+// Editing a PodAutoscaler's spec must not leave panic state behind until the
+// PodAutoscaler is deleted: a removed metric loses its state, and so does a
+// PodAutoscaler that stops using KPA.
+func TestComputeDesiredReplicasPrunesStalePanicStates(t *testing.T) {
+	pa := testPodAutoscaler(autoscalingv1alpha1.KPA)
+	fetcher := &mockMetricFetcherFactory{}
+	fetcher.metricsValue = 10
+	autoScaler := NewDefaultAutoScaler(fetcher, nil)
+	key := ktypes.NamespacedName{Namespace: pa.Namespace, Name: pa.Name}
+
+	compute := func() {
+		t.Helper()
+		_, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
+			PodAutoscaler:   pa,
+			ScalingContext:  testScalingContext(t, &pa),
+			CurrentReplicas: 1,
+			Pods:            []corev1.Pod{{ObjectMeta: metav1.ObjectMeta{Name: "pod-0"}}},
+			Timestamp:       time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC),
+		})
+		require.NoError(t, err)
+	}
+
+	removed := "removed_metric"
+	pa.Spec.MetricsSources = append(pa.Spec.MetricsSources, autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.POD,
+		TargetMetric:     removed,
+		TargetValue:      "50",
+	})
+	compute()
+	require.Contains(t, autoScaler.panicStates[key], removed)
+
+	pa.Spec.MetricsSources = pa.Spec.MetricsSources[:1]
+	compute()
+	assert.NotContains(t, autoScaler.panicStates[key], removed)
+	assert.Contains(t, autoScaler.panicStates[key], pa.Spec.MetricsSources[0].TargetMetric)
+
+	pa.Spec.ScalingStrategy = autoscalingv1alpha1.APA
+	compute()
+	assert.NotContains(t, autoScaler.panicStates, key)
 }
