@@ -199,6 +199,7 @@ class RuntimeOperationResponse(NoProtectedBaseModel):
     operation_id: str
     applied: bool
     phase: str
+    limit_bytes: Optional[int] = None
 
 
 class RuntimeModelInfo(NoProtectedBaseModel):

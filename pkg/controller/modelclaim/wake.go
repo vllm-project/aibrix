@@ -606,6 +606,7 @@ func (r *ModelClaimReconciler) cardArrangedForWake(
 			"model", pm.Name, "pod", klog.KObj(pod), "err", err)
 		return false
 	}
+	r.warnKVCapacityBelowFloor(ctx, pod, ledger.engines)
 	if heldAsPlannedForWake(ledger.engines, limits, pm.Name) {
 		return true
 	}

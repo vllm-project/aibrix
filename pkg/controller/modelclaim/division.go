@@ -518,6 +518,29 @@ func (r *ModelClaimReconciler) anyCardMayBeDue(
 	return false
 }
 
+// warnKVCapacityBelowFloor reports a reduced planning floor on its owner.
+// Use a separate warning key so successful limit writes do not reset it.
+func (r *ModelClaimReconciler) warnKVCapacityBelowFloor(ctx context.Context, pod *corev1.Pod, engines []engineOnPod) {
+	for _, engine := range engines {
+		if engine.effectiveKVFloorBytes() >= engine.kvFloorBytes {
+			continue
+		}
+		key := client.ObjectKey{Namespace: pod.Namespace, Name: engine.claimName}
+		warningKey := "kv-capacity-below-floor/" + key.String() + "/" + pod.Name
+		if !r.limitWarnings().due(warningKey, r.now()) {
+			continue
+		}
+		claim := &modelv1alpha1.ModelClaim{}
+		if err := r.Get(ctx, key, claim); err != nil {
+			r.limitWarnings().forget(warningKey)
+			continue
+		}
+		r.Recorder.Eventf(claim, corev1.EventTypeWarning, "KVCapacityBelowFloor",
+			"model %s on pod %s: startup KV capacity %s is below declared floor %s; using the capacity as its planning floor",
+			engine.modelName, pod.Name, gibibytes(engine.effectiveKVFloorBytes()), gibibytes(engine.kvFloorBytes))
+	}
+}
+
 // warnCardNotDivided tells each claim on a card that the card could not be
 // divided through several tries in a row. It is said on the third failure of a
 // run, and again after every thirty more failures. A division that fails once

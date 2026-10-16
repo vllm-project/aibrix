@@ -116,6 +116,7 @@ class RuntimeOperationResult:
     operation_id: str
     applied: bool
     phase: str
+    limit_bytes: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -1755,6 +1756,18 @@ class ModelRuntime:
                         applied=False,
                         phase=inst.phase,
                     )
+                capacity = inst.kv_initial_capacity_bytes
+                if capacity is not None:
+                    limit_bytes = min(limit_bytes, capacity)
+                elif not inst.kv_initial_capacity_unavailable and not isinstance(
+                    self._kv_controller, MockKVController
+                ):
+                    self._increment_metric(
+                        self._kv_limit_outcomes, (model_name, "failed")
+                    )
+                    raise UnsupportedModelControlError(
+                        f"startup KV capacity for {model_name!r} is not known yet"
+                    )
                 # Guard before releasing the lock: a snapshot may race the write.
                 was_unavailable = inst.kv_initial_capacity_unavailable
                 inst.kv_initial_capacity_unavailable = True
@@ -1779,6 +1792,7 @@ class ModelRuntime:
                     operation_id=operation_id,
                     applied=True,
                     phase=inst.phase,
+                    limit_bytes=limit_bytes,
                 )
 
     def sleep(
@@ -2002,12 +2016,21 @@ class ModelRuntime:
                 kv_used, kv_capacity = used + prealloc, total
             activity, ready = probes[id(inst)]
             with self._lock:
+                identity_changed = self._models.get(
+                    inst.model_name
+                ) is not inst or identities[id(inst)] != (
+                    inst.pid,
+                    inst.pid_start_time,
+                    inst.restart_count,
+                )
+                if identity_changed:
+                    # Discard probes from a different engine generation.
+                    ready = False
+                    kv_used = kv_capacity = KV_UNKNOWN
+                    activity = EngineRequestActivity()
                 if (
                     ready
                     and kv_capacity >= 0
-                    and self._models.get(inst.model_name) is inst
-                    and identities[id(inst)]
-                    == (inst.pid, inst.pid_start_time, inst.restart_count)
                     and inst.phase in {"active", "booting"}
                     and not inst.kv_initial_capacity_unavailable
                     and inst.kv_initial_capacity_bytes is None
@@ -2021,7 +2044,9 @@ class ModelRuntime:
                         self._persist_locked()
                     except Exception:
                         logger.exception("could not persist startup KV capacity")
-                initial_capacity = inst.kv_initial_capacity_bytes
+                initial_capacity = (
+                    None if identity_changed else inst.kv_initial_capacity_bytes
+                )
             models.append(
                 {
                     "model_name": inst.model_name,

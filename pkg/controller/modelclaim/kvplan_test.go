@@ -485,6 +485,11 @@ func TestKVInitialCapacitySplit(t *testing.T) {
 		require.NoError(t, json.Unmarshal([]byte(fmt.Sprintf(`{"kv_initial_capacity_bytes":%d,"kv_used_bytes":%d}`, ceiling, held)), &model))
 		a.observe(&model, modelv1alpha1.ModelClaimInstance{})
 		limits, err := planKVLimits(1000, []engineOnPod{b, a})
+		if held == 0 {
+			require.NoError(t, err)
+			assert.Equal(t, ceiling, limits[0].kvLimitBytes, "startup capacity is the effective floor")
+			continue
+		}
 		require.Error(t, err)
 		assert.Nil(t, limits)
 	}

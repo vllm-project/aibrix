@@ -155,24 +155,33 @@ type engineOnPod struct {
 }
 
 // minimumReserveBytes is what an instance is promised on its card: the
-// footprint and floor its claim declared. An engine asleep without a wake
-// reserve is promised only the memory it still holds.
+// footprint and effective KV floor. An engine asleep without a wake reserve is
+// promised only the memory it still holds.
 func (e engineOnPod) minimumReserveBytes() int64 {
 	if e.withoutWakeReserve {
 		return e.sleepingFootprintBytes
 	}
-	return e.perGPUBytes.minimumReserveBytes()
+	return e.maximumFootprintBytes + e.effectiveKVFloorBytes()
+}
+
+// effectiveKVFloorBytes cannot promise KV beyond a known positive startup pool.
+// Zero still needs the planner's rejection: a zero record means no limit.
+func (e engineOnPod) effectiveKVFloorBytes() int64 {
+	if ceiling := e.kvInitialCapacityBytes; ceiling != nil && *ceiling > 0 {
+		return min(e.kvFloorBytes, *ceiling)
+	}
+	return e.kvFloorBytes
 }
 
 // kvHeldBytes is the KV an engine keeps whatever else happens on the card: the
-// floor its claim declared, or what it has already mapped when that is larger.
+// effective floor, or what it has already mapped when that is larger.
 // Lowering a limit does not evict a mapped page, so the pages an engine holds
 // are not room that can be offered to anyone else.
 func (e engineOnPod) kvHeldBytes() int64 {
-	if e.kvUsedBytes > e.kvFloorBytes {
+	if e.kvUsedBytes > e.effectiveKVFloorBytes() {
 		return e.kvUsedBytes
 	}
-	return e.kvFloorBytes
+	return e.effectiveKVFloorBytes()
 }
 
 // heldBytes is what one instance occupies on a card now and will not give
@@ -342,6 +351,12 @@ func (e *engineOnPod) observe(model *RuntimeSnapshotModel, instance modelv1alpha
 	e.snapshotKey = snapshotActivityKey(*model)
 	e.kvInitialCapacityBytes = model.KVInitialCapacityBytes
 	e.kvCapacityBytes = model.KVCapacityBytes
+	if !model.Ready && (model.KVInitialCapacityBytes == nil || *model.KVInitialCapacityBytes < 0) &&
+		(instance.Phase == modelv1alpha1.ModelClaimActivating || model.Phase == "booting") {
+		// A write during startup would prevent the runtime from capturing
+		// the pool's initial capacity once the engine is ready.
+		e.kvCapacityBytes = kvLimitUnknown
+	}
 	e.inFlightRequests = max(model.RequestsRunning, 0) + max(model.RequestsWaiting, 0)
 	e.requestsWaiting = max(model.RequestsWaiting, 0)
 	// A scrape that failed says nothing about load, and the engine may be too
