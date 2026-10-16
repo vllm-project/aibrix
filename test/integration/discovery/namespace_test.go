@@ -57,13 +57,16 @@ type installation struct {
 	name           string
 	namespace      string
 	helmValues     []string
+	kustomizePath  string
 	splitKustomize bool
 }
 
 var installations = []installation{
 	{name: "kustomize", namespace: controlNamespace},
+	{name: "kustomize-ci", namespace: "default", kustomizePath: "config/test"},
 	{name: "kustomize-split", namespace: "workloads", splitKustomize: true},
 	{name: "helm", namespace: controlNamespace, helmValues: []string{}},
+	{name: "helm-ci", namespace: "default", helmValues: []string{"gatewayPlugin.installationNamespace=default"}},
 	{name: "helm-split", namespace: "workloads", helmValues: []string{
 		"gatewayPlugin.installationNamespace=workloads", "gatewayPlugin.serviceAccount.name=custom-gateway",
 	}},
@@ -82,6 +85,9 @@ func renderInstallation(t *testing.T, install installation) []map[string]interfa
 		return renderManifest(t, "helm", args...)
 	}
 	base := filepath.Join(repositoryRoot, "config/default")
+	if install.kustomizePath != "" {
+		base = filepath.Join(repositoryRoot, install.kustomizePath)
+	}
 	if !install.splitKustomize {
 		return renderManifest(t, "kubectl", "kustomize", base)
 	}
@@ -203,7 +209,9 @@ func verifyPermissions(t *testing.T, install installation, objects []map[string]
 	for name := range namespaces {
 		_, err := admin.CoreV1().Namespaces().Create(ctx,
 			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}, metav1.CreateOptions{})
-		require.NoError(t, err)
+		if !apierrors.IsAlreadyExists(err) {
+			require.NoError(t, err)
+		}
 	}
 	applied := 0
 	var serviceAccount string
@@ -215,7 +223,7 @@ func verifyPermissions(t *testing.T, install installation, objects []map[string]
 			require.NoError(t, json.Unmarshal(objectJSON(t, object), &deployment))
 			serviceAccount = deployment.Spec.Template.Spec.ServiceAccountName
 			expectedArg := "--installation-namespace=" + namespace
-			if install.helmValues == nil && !install.splitKustomize {
+			if install.helmValues == nil && !install.splitKustomize && install.kustomizePath == "" {
 				expectedArg = "--installation-namespace=$(POD_NAMESPACE)"
 			}
 			found := false

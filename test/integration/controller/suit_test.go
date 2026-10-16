@@ -156,7 +156,7 @@ var _ = BeforeSuite(func() {
 	// Initialize custom cache layer (e.g., informers) with a stop channel
 	By("initializing custom cache layer")
 	stopCh = make(chan struct{})
-	cache.InitWithOptions(cfg, stopCh, cache.InitOptions{})
+	cache.InitForController(cfg, stopCh)
 
 	// Initialize controller logic
 	features.InitControllers("*")

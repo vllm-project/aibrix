@@ -42,7 +42,7 @@ func TestGatewayManifestWiring(t *testing.T) {
 		})
 	}
 	for _, install := range installations {
-		if install.helmValues == nil {
+		if install.helmValues == nil && install.kustomizePath == "" {
 			continue
 		}
 		t.Run(install.name, func(t *testing.T) {
