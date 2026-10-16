@@ -181,3 +181,79 @@ func TestSessionSyncRefreshesEveryBatch(t *testing.T) {
 	}
 	assert.Equal(t, int64(sessionKeyCacheSyncBatchSize+1), atomic.LoadInt64(&router.sessionKeyPodsSize))
 }
+
+func TestSessionSyncUnconfirmedMissUsesObservedEntry(t *testing.T) {
+	const key, oldAddr, newAddr = "unconfirmed", "10.0.0.1:8000", "10.0.0.2:8000"
+	for _, update := range []string{"unchanged", "repin", "refresh", "remove"} {
+		t.Run(update, func(t *testing.T) {
+			router, mr := newTestSessionAffinityRedis(t)
+			router.storeSessionKeyLocal(key, oldAddr, false)
+			// Distinguish a same-address refresh without depending on clock resolution.
+			initial, _ := router.sessionKeyPods.Load(key)
+			item := initial.(sessionKeyCacheItem)
+			item.storedAt = item.storedAt.Add(-time.Second)
+			router.sessionKeyPods.Store(key, item)
+			var observed any
+			read := false
+			router.redisClient.AddHook(&sessionSyncReadHook{after: func() {
+				read = true
+				switch update {
+				case "repin":
+					router.storeSessionKeyLocal(key, newAddr, false)
+				case "refresh":
+					router.storeSessionKeyLocal(key, oldAddr, false)
+				case "remove":
+					router.forgetSessionKey(key)
+				}
+				observed, _ = router.sessionKeyPods.Load(key)
+			}})
+			router.syncSessionKeyPodsFromRedis()
+			require.True(t, read, "the regression must go through MGET")
+			if update == "unchanged" {
+				remote, err := mr.Get(sessionAffinityRedisKey(key))
+				require.NoError(t, err)
+				assert.Equal(t, oldAddr, remote, "a still-current unconfirmed pin must be retried")
+				_, confirmed, found := router.loadCachedAddr(key)
+				assert.True(t, found && confirmed)
+				return
+			}
+			assert.False(t, mr.Exists(sessionAffinityRedisKey(key)), "the stale snapshot must not claim the empty Redis key")
+			current, _ := router.sessionKeyPods.Load(key)
+			assert.Equal(t, observed, current)
+		})
+	}
+}
+
+func TestSessionSyncIdleExpiryPreservesConcurrentRefresh(t *testing.T) {
+	router, mr := newTestSessionAffinityRedis(t)
+	const key, addr = "idle-sync-refresh", "10.0.0.1:8000"
+	require.NoError(t, mr.Set(sessionAffinityRedisKey(key), addr))
+	start, finished, stopped := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for range start {
+			router.syncSessionKeyPodsFromRedis()
+			finished <- struct{}{}
+		}
+	}()
+	t.Cleanup(func() {
+		close(start)
+		<-stopped
+	})
+	for i := 0; i < 4000; i++ {
+		router.sessionKeyPods.Store(key, sessionKeyCacheItem{
+			addr: addr, confirmed: true, storedAt: time.Now().Add(-2 * sessionAffinityTTL),
+		})
+		atomic.StoreInt64(&router.sessionKeyPodsSize, 1)
+		start <- struct{}{}
+		// Either sync deletes the old pin before this refresh, or its
+		// conditional delete must preserve this new value. Redis retains the
+		// pin, so a later MGET cannot legitimately expire the refresh.
+		router.storeSessionKeyLocal(key, addr, true)
+		<-finished
+		current, confirmed, found := router.loadCachedAddr(key)
+		require.True(t, found && confirmed, "refresh lost in iteration %d", i)
+		require.Equal(t, addr, current)
+		require.Equal(t, int64(1), atomic.LoadInt64(&router.sessionKeyPodsSize))
+	}
+}
