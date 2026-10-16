@@ -137,6 +137,22 @@ func TestSlowStartBatch_WithFailure(t *testing.T) {
 	assert.Less(t, succeeded, count)
 }
 
+func TestSlowStartBatch_PanicIsNotASuccess(t *testing.T) {
+	count := 3
+	panicFn := func(i int) error {
+		if i == 1 {
+			panic("boom")
+		}
+		return nil
+	}
+	// Run it repeatedly: the panic must be recorded before the batch is counted.
+	for run := 0; run < 50; run++ {
+		succeeded, err := SlowStartBatch(count, 1, panicFn)
+		assert.Error(t, err)
+		assert.Less(t, succeeded, count)
+	}
+}
+
 func TestMinIntHelpers(t *testing.T) {
 	assert.Equal(t, int32(3), MinInt32(3, 4))
 	assert.Equal(t, int32(-1), MinInt32(-1, 5))
