@@ -103,11 +103,20 @@ func (s *Server) admitReplicaInflight(routingCtx *types.RoutingContext, pod *v1.
 //
 // A counted admission whose Route then fails (the prefill leg failed) never reaches
 // AddRequestCount, so request tracking's completion decrement will not release it; it is
-// released here instead.
+// released here instead. A router that admits a second target releases the first one's
+// slot, so only the last admitted target holds one.
 func (s *Server) routeWithEarlyAdmission(routeCtx *types.RoutingContext, router types.Router, pods types.PodList, limit int64) (string, error) {
 	var admittedPod *v1.Pod
+	release := func() {
+		if admittedPod != nil && routeCtx.ReplicaInflightAdmitted {
+			s.cache.ReleasePodRunningRequest(admittedPod.Name, admittedPod.Namespace)
+		}
+		admittedPod = nil
+		routeCtx.ReplicaInflightAdmitted = false
+	}
 	routeCtx.SetTargetAdmitter(func(pod *v1.Pod) error {
 		routeCtx.ReplicaInflightChecked = true
+		release()
 		if !s.admitReplicaInflight(routeCtx, pod, limit) {
 			return types.ErrTargetReplicaInflightExceeded
 		}
@@ -115,9 +124,8 @@ func (s *Server) routeWithEarlyAdmission(routeCtx *types.RoutingContext, router 
 		return nil
 	})
 	target, err := router.Route(routeCtx, pods)
-	if err != nil && admittedPod != nil && routeCtx.ReplicaInflightAdmitted {
-		s.cache.ReleasePodRunningRequest(admittedPod.Name, admittedPod.Namespace)
-		routeCtx.ReplicaInflightAdmitted = false
+	if err != nil {
+		release()
 	}
 	return target, err
 }

@@ -391,6 +391,47 @@ func TestRouteWithEarlyAdmission_ReleasesWhenRouteFails(t *testing.T) {
 	}
 }
 
+// A router that admits a second target must not leak the first one's slot: only the last
+// admitted target keeps one, whether or not the second admission succeeds.
+func TestRouteWithEarlyAdmission_ReadmitReleasesPrevious(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		secondAdmits bool
+	}{
+		{name: "second admitted", secondAdmits: true},
+		{name: "second full", secondAdmits: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mockCache := &MockCache{}
+			s := &Server{cache: mockCache}
+			first, second := podWithReplicaInflight("a", 1), podWithReplicaInflight("b", 1)
+			mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, true, nil).Once()
+			mockCache.On("ReleasePodRunningRequest", "a", "ns").Return().Once()
+			mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1)).Return(tc.secondAdmits, tc.secondAdmits, nil).Once()
+
+			routingCtx := earlyAdmissionContext(first, "r1")
+			router := routeFunc(func(ctx *types.RoutingContext, _ types.PodList) (string, error) {
+				require.NoError(t, ctx.AdmitTarget(first))
+				if err := ctx.AdmitTarget(second); err != nil {
+					return "", err
+				}
+				ctx.SetTargetPod(second)
+				return ctx.TargetAddress(), nil
+			})
+			_, err := s.routeWithEarlyAdmission(routingCtx, router, &utils.PodArray{Pods: []*v1.Pod{first, second}}, 1)
+			if tc.secondAdmits {
+				require.NoError(t, err)
+				assert.True(t, routingCtx.ReplicaInflightAdmitted, "the second target keeps its slot")
+			} else {
+				require.ErrorIs(t, err, types.ErrTargetReplicaInflightExceeded)
+				assert.False(t, routingCtx.ReplicaInflightAdmitted)
+			}
+			mockCache.AssertNumberOfCalls(t, "ReleasePodRunningRequest", 1)
+			mockCache.AssertExpectations(t)
+		})
+	}
+}
+
 // The release must take the +1 the admission put on the shared counter back off.
 func TestRouteWithEarlyAdmission_ReleaseRestoresRedisCount(t *testing.T) {
 	mr := miniredis.RunT(t)
