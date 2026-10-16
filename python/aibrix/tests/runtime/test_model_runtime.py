@@ -2183,6 +2183,7 @@ def test_initial_kv_recovered_restart(initial_kv, monkeypatch, pending_restart):
 
     agent, inst, segment = initial_kv
     record = agent._registry_record(inst)
+    record.pop("kv_initial_capacity_bytes", None)  # Pre-field registry format.
     if pending_restart:
         record.update(
             phase="restarting",
@@ -2210,6 +2211,211 @@ def test_initial_kv_recovered_restart(initial_kv, monkeypatch, pending_restart):
     else:
         assert launcher.launched == []
         assert model["kv_initial_capacity_bytes"] is None
+
+
+@pytest.mark.parametrize("capacity", [0, 100])
+def test_initial_kv_persisted_across_agent_restart(initial_kv, monkeypatch, capacity):
+    import struct
+    from unittest.mock import Mock
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    agent, inst, segment = initial_kv
+    registry = EngineRegistry(segment.parent / "engines.json")
+    agent._registry = registry
+    inst.pid_start_time = "start"
+    assert agent._registry_record(inst)["kv_initial_capacity_bytes"] is None
+    monkeypatch.setattr(registry, "save", Mock(wraps=registry.save))
+    segment.write_bytes(struct.pack("<3q", capacity, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == capacity
+    assert registry.load()[0]["kv_initial_capacity_bytes"] == capacity
+    agent.snapshot()
+    registry.save.assert_called_once()
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: True)
+    monkeypatch.setattr(
+        runtime_module, "process_start_time", lambda pid: inst.pid_start_time
+    )
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: True)
+    recovered = ModelRuntime(MockEngineLauncher(), registry=registry)
+    assert recovered.snapshot()["models"][0]["kv_initial_capacity_bytes"] == capacity
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    model = recovered.snapshot()["models"][0]
+    assert model["kv_capacity_bytes"] == 80
+    assert model["kv_initial_capacity_bytes"] == capacity
+    assert recovered._models[inst.model_name].kv_initial_capacity_unavailable
+    assert recovered._launcher.launched == []
+    registry.save.assert_called_once()
+
+
+@pytest.mark.parametrize("phase", ["active", "sleeping"])
+@pytest.mark.parametrize(
+    "saved,current",
+    [
+        (None, "start"),
+        ("start", None),
+        (None, None),
+        ("start", "start"),
+        ("old", "new"),
+    ],
+)
+def test_initial_kv_registry_requires_identity(
+    initial_kv, monkeypatch, phase, saved, current
+):
+    import struct
+    from unittest.mock import Mock
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    agent, inst, segment = initial_kv
+    registry = EngineRegistry(segment.parent / "engines.json")
+    registry.save(
+        [
+            {
+                **agent._registry_record(inst),
+                "phase": phase,
+                "pid_start_time": saved,
+                "kv_initial_capacity_bytes": 100,
+            }
+        ]
+    )
+    monkeypatch.setattr(registry, "save", Mock(wraps=registry.save))
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: True)
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda pid: current)
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: True)
+    recovered = ModelRuntime(MockEngineLauncher(), registry=registry)
+    expected = 100 if saved is not None and saved == current else None
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    model = recovered.snapshot()["models"][0]
+    assert model["kv_initial_capacity_bytes"] == expected
+    assert registry.load()[0]["kv_initial_capacity_bytes"] == expected
+    assert recovered._launcher.launched == []
+    if saved is not None and current is not None and saved != current:
+        assert model["phase"] == "restarting"
+    else:
+        assert model["phase"] == phase
+        assert recovered._models[inst.model_name].kv_initial_capacity_unavailable
+    assert registry.save.call_count == (expected is None)
+
+
+@pytest.mark.parametrize("phase", ["failed", "stopping"])
+def test_initial_kv_registry_early_branches(initial_kv, monkeypatch, phase):
+    from unittest.mock import Mock
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    agent, inst, segment = initial_kv
+    registry = EngineRegistry(segment.parent / "engines.json")
+    registry.save(
+        [
+            {
+                **agent._registry_record(inst),
+                "phase": phase,
+                "pid_start_time": "start",
+                "kv_initial_capacity_bytes": 100,
+            }
+        ]
+    )
+    # Even matching identity must not retain a terminal failed capacity.
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: phase == "failed")
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda pid: "start")
+    monkeypatch.setattr(
+        runtime_module, "process_group_is_alive", lambda pid: phase == "stopping"
+    )
+    launcher = MockEngineLauncher()
+    monkeypatch.setattr(launcher, "stop", Mock())
+    recovered = ModelRuntime(launcher, registry=registry)
+    model = recovered.snapshot()["models"][0]
+    assert model["kv_initial_capacity_bytes"] is None
+    assert registry.load()[0]["kv_initial_capacity_bytes"] is None
+    assert model["phase"] == phase
+    assert not model["alive"]
+    assert recovered._models[inst.model_name].kv_initial_capacity_unavailable
+    assert launcher.stop.call_count == (phase == "stopping")
+    assert launcher.launched == []
+
+
+def test_initial_kv_capture_save_retried(initial_kv, monkeypatch, caplog):
+    import struct
+    from unittest.mock import Mock
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    agent, inst, segment = initial_kv
+    registry = EngineRegistry(segment.parent / "engines.json")
+    agent._registry = registry
+    inst.pid_start_time = "start"
+    agent._persist_locked()
+    save = registry.save
+    monkeypatch.setattr(
+        registry, "save", Mock(side_effect=OSError("transient failure"))
+    )
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    assert "could not persist startup KV capacity" in caplog.text
+    assert registry.load()[0]["kv_initial_capacity_bytes"] is None
+    registry.save.assert_called_once()
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    monkeypatch.setattr(registry, "save", Mock(wraps=save))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    assert registry.load()[0]["kv_initial_capacity_bytes"] == 100
+    agent.snapshot()
+    registry.save.assert_called_once()
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: True)
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda pid: "start")
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: True)
+    recovered = ModelRuntime(MockEngineLauncher(), registry=registry)
+    assert recovered.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    assert recovered._launcher.launched == []
+    registry.save.assert_called_once()
+
+
+@pytest.mark.parametrize("replacement", ["gone", "pid_reused", "pending_restart"])
+def test_initial_kv_registry_capacity_cleared_for_replacement(
+    initial_kv, monkeypatch, replacement
+):
+    import struct
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    agent, inst, segment = initial_kv
+    inst.pid_start_time = "old"
+    record = {**agent._registry_record(inst), "kv_initial_capacity_bytes": 100}
+    if replacement == "pending_restart":
+        record.update(phase="restarting", restart_count=1, next_restart_at="2000-01-01")
+    registry = EngineRegistry(segment.parent / "engines.json")
+    registry.save([record])
+    monkeypatch.setattr(
+        runtime_module, "pid_is_alive", lambda pid: replacement == "pid_reused"
+    )
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda pid: "new")
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
+    recovered = ModelRuntime(MockEngineLauncher(), registry=registry)
+    assert recovered.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+    restored = recovered._models[inst.model_name]
+    restart_at = restored.next_restart_at
+    recovered._now = lambda: restart_at
+    recovered.supervise_once()
+    assert recovered._launcher.launched == [inst.model_name]
+    assert recovered.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    assert recovered.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 80
+
+
+@pytest.mark.parametrize("value", [None, -1, True, False, "100", 1.5, [], {}, 0, 100])
+def test_initial_kv_registry_validates_optional_capacity(initial_kv, value):
+    agent, inst, _ = initial_kv
+    record = {**agent._registry_record(inst), "kv_initial_capacity_bytes": value}
+    restored = agent._instance_from_registry_record(record)
+    assert restored is not None
+    expected = value if type(value) is int and value >= 0 else None
+    assert restored.kv_initial_capacity_bytes == expected
+    assert restored.kv_initial_capacity_unavailable
 
 
 def test_initial_kv_restart_after_backoff_write(initial_kv, monkeypatch):

@@ -91,6 +91,7 @@ class ModelInstance:
     kv_initial_capacity_bytes: Optional[int] = None
     # A control write can replace the startup size before a snapshot sees it.
     kv_initial_capacity_unavailable: bool = False
+    kv_initial_capacity_persist_pending: bool = field(default=False, repr=False)
     last_error: Optional[str] = None
     last_transition: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
@@ -1247,6 +1248,16 @@ class ModelRuntime:
                     continue
                 self._models[inst.model_name] = inst
 
+                # Adoption tolerates missing identity; a saved capacity cannot.
+                if inst.kv_initial_capacity_bytes is not None and (
+                    inst.phase == "failed"
+                    or inst.pid_start_time is None
+                    or not pid_is_alive(inst.pid)
+                    or process_start_time(inst.pid) != inst.pid_start_time
+                ):
+                    inst.kv_initial_capacity_bytes = None
+                    changed = True
+
                 if inst.phase == "failed":
                     self._increment_metric(self._re_adoption_outcomes, "terminal")
                     # A terminal record is never routed or relaunched. If a
@@ -1279,6 +1290,10 @@ class ModelRuntime:
                             changed = True
                     continue
 
+                # A pending restart can bypass _schedule_restart below.
+                if inst.kv_initial_capacity_bytes is not None:
+                    inst.kv_initial_capacity_bytes = None
+                    changed = True
                 if inst.phase != "restarting" or inst.next_restart_at is None:
                     self._schedule_restart(
                         inst, "engine unavailable during runtime re-adoption"
@@ -1358,6 +1373,13 @@ class ModelRuntime:
         last_transition = self._registry_timestamp(
             record.get("last_transition"), self._now()
         )
+        initial_capacity = record.get("kv_initial_capacity_bytes")
+        if (
+            isinstance(initial_capacity, bool)
+            or not isinstance(initial_capacity, int)
+            or initial_capacity < 0
+        ):
+            initial_capacity = None
         return ModelInstance(
             model_name=model_name,
             port=port,
@@ -1385,6 +1407,7 @@ class ModelRuntime:
             sleeping_footprint_bytes=self._registry_sleeping_footprint(
                 record.get("sleeping_footprint_bytes"), phase
             ),
+            kv_initial_capacity_bytes=initial_capacity,
             # Re-adoption cannot establish whether this segment was already changed.
             kv_initial_capacity_unavailable=True,
             proc=AdoptedProcess(pid, pid_start_time),
@@ -1442,6 +1465,7 @@ class ModelRuntime:
                 inst.next_restart_at.isoformat() if inst.next_restart_at else None
             ),
             "sleeping_footprint_bytes": inst.sleeping_footprint_bytes,
+            "kv_initial_capacity_bytes": inst.kv_initial_capacity_bytes,
         }
 
     def _persist_locked(self) -> None:
@@ -1449,6 +1473,8 @@ class ModelRuntime:
             self._registry.save(
                 [self._registry_record(inst) for inst in self._models.values()]
             )
+            for inst in self._models.values():
+                inst.kv_initial_capacity_persist_pending = False
 
     def _transition(self, inst: ModelInstance, phase: str) -> bool:
         if inst.phase == phase:
@@ -1935,9 +1961,8 @@ class ModelRuntime:
     def snapshot(self) -> Dict[str, object]:
         """Return the sidecar's point-in-time scheduling observation.
 
-        Instance bookkeeping is copied while holding the runtime lock. The
-        potentially slow hardware, filesystem, and readiness reads happen
-        afterwards so an observation never blocks activate/deactivate.
+        Hardware, segment and readiness reads happen outside the runtime lock.
+        Capturing startup capacity persists the registry while holding the lock.
         """
         with self._lock:
             instances = list(self._models.values())
@@ -1988,6 +2013,14 @@ class ModelRuntime:
                     and inst.kv_initial_capacity_bytes is None
                 ):
                     inst.kv_initial_capacity_bytes = kv_capacity
+                    inst.kv_initial_capacity_persist_pending = (
+                        self._registry is not None
+                    )
+                if inst.kv_initial_capacity_persist_pending:
+                    try:
+                        self._persist_locked()
+                    except Exception:
+                        logger.exception("could not persist startup KV capacity")
                 initial_capacity = inst.kv_initial_capacity_bytes
             models.append(
                 {

@@ -417,7 +417,13 @@ stop, sleep or wake, and when the load moves between them.
 When the runtime snapshot reports an engine's KV capacity at startup, as
 ``kv_initial_capacity_bytes``, the controller caps the engine's KV limit at that
 capacity. Room above the capacity stays unassigned. An engine whose startup
-capacity is unknown keeps the existing limit behavior.
+capacity is unknown keeps the existing limit behavior. A captured value saved
+in the engine registry is restored after an agent restart only when the live
+process's start time matches the persisted start time. Without a valid saved
+value or matching generation evidence, the re-adopted engine's startup capacity
+stays unknown; its current KV segment cannot establish the startup size. A
+replacement engine clears the old value and can capture its own under the
+startup capture guards.
 
 An engine goes on the route only once it is ready and runs within its KV
 limit. If something else raises an engine's KV limit, the controller sets it
