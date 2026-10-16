@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { APIError, getFileSummary, type FileSummary } from '../utils/api';
+import { MAX_REQUESTS_PER_BATCH } from '../utils/batchValidation';
 
 interface DatasetSummaryProps {
   expectedModel: string;
@@ -22,6 +23,17 @@ export function DatasetSummaryDetails({
   }
   if (supportedEndpoints.length > 0 && summary.endpoints.some((endpoint) => !supportedEndpoints.includes(endpoint))) {
     warnings.push('Some dataset endpoints are not supported by the selected template.');
+  }
+  // Batch validation rejects these too, and they are the mismatches that
+  // actually fail at submit rather than merely looking suspicious.
+  if (summary.models.length > 1) {
+    warnings.push('The dataset uses more than one model. A batch file must use one.');
+  }
+  if (summary.endpoints.length > 1) {
+    warnings.push('The dataset uses more than one endpoint. A batch file must use one.');
+  }
+  if (summary.requestCount > MAX_REQUESTS_PER_BATCH) {
+    warnings.push(`The dataset has ${summary.requestCount.toLocaleString()} requests; the per-batch limit is ${MAX_REQUESTS_PER_BATCH.toLocaleString()}.`);
   }
 
   return (
@@ -53,7 +65,7 @@ export function ExistingDatasetSummary({
 }: DatasetSummaryProps & { fileId: string }) {
   const [summary, setSummary] = useState<FileSummary | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; retryable: boolean } | null>(null);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
@@ -66,8 +78,9 @@ export function ExistingDatasetSummary({
       .catch((err: unknown) => {
         if (!controller.signal.aborted) {
           setError(err instanceof APIError && err.status === 413
-            ? 'This dataset exceeds the 8 MiB preview limit.'
-            : 'Dataset details are unavailable.');
+            // Retrying a file that is over the limit can never succeed.
+            ? { message: 'This dataset exceeds the 8 MiB preview limit.', retryable: false }
+            : { message: 'Dataset details are unavailable.', retryable: true });
         }
       })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
@@ -77,8 +90,10 @@ export function ExistingDatasetSummary({
   if (loading) return <p role="status" className="mt-3 text-xs text-gray-500">Loading dataset details...</p>;
   if (error) return (
     <div className="mt-3 text-xs text-gray-500" role="status">
-      {error} You can still use this dataset.
-      <button type="button" className="ml-2 text-teal-700 underline" onClick={() => setAttempt((value) => value + 1)}>Retry</button>
+      {error.message} You can still use this dataset.
+      {error.retryable && (
+        <button type="button" className="ml-2 text-teal-700 underline" onClick={() => setAttempt((value) => value + 1)}>Retry</button>
+      )}
     </div>
   );
   return summary ? <DatasetSummaryDetails summary={summary} {...props} /> : null;

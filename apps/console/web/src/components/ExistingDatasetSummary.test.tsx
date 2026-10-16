@@ -29,6 +29,30 @@ describe('existing dataset details', () => {
     expect(html).toContain('not supported');
   });
 
+  it('warns about the mismatches that batch validation rejects at submit', () => {
+    const mixed = renderToStaticMarkup(<DatasetSummaryDetails
+      summary={{ requestCount: 4, invalidLines: 0, models: ['model-a', 'model-b'], endpoints: ['/v1/embeddings', '/v1/completions'], truncated: false }}
+      expectedModel=""
+      supportedEndpoints={['/v1/embeddings', '/v1/completions']}
+    />);
+    // expectedModel is empty and both endpoints are supported, so the two
+    // existing warnings stay silent; these come only from the new checks.
+    expect(mixed).toContain('more than one model');
+    expect(mixed).toContain('more than one endpoint');
+    expect(mixed).not.toContain('does not match');
+    expect(mixed).not.toContain('not supported');
+  });
+
+  it('warns when the dataset is over the per-batch request limit', () => {
+    const html = renderToStaticMarkup(<DatasetSummaryDetails
+      summary={{ requestCount: 50001, invalidLines: 0, models: ['model-a'], endpoints: ['/v1/embeddings'], truncated: true }}
+      expectedModel="model-a"
+      supportedEndpoints={['/v1/embeddings']}
+    />);
+    expect(html).toContain('50,001');
+    expect(html).toContain('per-batch limit is 50,000');
+  });
+
   it('does not represent empty model and endpoint sets as a valid batch', () => {
     const html = renderToStaticMarkup(<DatasetSummaryDetails
       summary={{ requestCount: 0, invalidLines: 0, models: [], endpoints: [], truncated: false }}

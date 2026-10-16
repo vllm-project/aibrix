@@ -44,6 +44,14 @@ type fileSummary struct {
 	Truncated    bool     `json:"truncated"`
 }
 
+// Every other file operation counts its failures in console.file.error with a
+// reason tag, so a spike in denied or oversized previews is visible on the same
+// dashboards instead of only showing up as added duration.
+func countSummaryError(reason string) {
+	metrics.Emitter.Counter(metricConsoleFileError, 1, metrics.T("method", "summary"), metrics.T("reason", reason))
+}
+
+// handleSummary reports bounded dataset details for the job creation wizard.
 func (h *FileHandler) handleSummary(w http.ResponseWriter, r *http.Request, pathParams map[string]string) {
 	defer metrics.Duration(metrics.Emitter, metricConsoleFileDuration, time.Now(), metrics.T("method", "summary"))
 	w.Header().Set("Cache-Control", "no-store")
@@ -53,6 +61,7 @@ func (h *FileHandler) handleSummary(w http.ResponseWriter, r *http.Request, path
 		return
 	}
 	if auth := h.authorizeFileDownload(r.Context(), fileID); auth != nil {
+		countSummaryError("auth_failed")
 		http.Error(w, `{"error":"file access denied"}`, auth.status)
 		return
 	}
@@ -61,6 +70,7 @@ func (h *FileHandler) handleSummary(w http.ResponseWriter, r *http.Request, path
 	// storage-backed metadata first, so previews never initiate a large GET.
 	metadata, status := h.readSummaryObject(r, fileID, "", 64*1024)
 	if status != http.StatusOK {
+		countSummaryError("upstream_unreachable")
 		http.Error(w, `{"error":"dataset metadata unavailable"}`, status)
 		return
 	}
@@ -68,20 +78,24 @@ func (h *FileHandler) handleSummary(w http.ResponseWriter, r *http.Request, path
 		Bytes *int64 `json:"bytes"`
 	}
 	if err := json.Unmarshal(metadata, &info); err != nil || info.Bytes == nil || *info.Bytes < 0 {
+		countSummaryError("invalid_metadata")
 		http.Error(w, `{"error":"invalid dataset metadata"}`, http.StatusBadGateway)
 		return
 	}
 	if *info.Bytes > fileSummaryMaxBytes {
+		countSummaryError("too_large")
 		http.Error(w, `{"error":"dataset exceeds the 8 MiB preview limit"}`, http.StatusRequestEntityTooLarge)
 		return
 	}
 	data, status := h.readSummaryObject(r, fileID, "/content", fileSummaryMaxBytes)
 	if status != http.StatusOK {
+		countSummaryError("upstream_unreachable")
 		http.Error(w, `{"error":"dataset content unavailable"}`, status)
 		return
 	}
 	summary, err := summarizeFileData(data)
 	if err != nil {
+		countSummaryError("scan_failed")
 		http.Error(w, `{"error":"failed to scan dataset preview"}`, http.StatusBadGateway)
 		return
 	}
