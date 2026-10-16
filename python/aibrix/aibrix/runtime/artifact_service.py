@@ -300,6 +300,7 @@ class ArtifactDelegationService:
             if artifact_url.startswith("/"):
                 # A path the webhook accepts as-is (e.g. a mounted volume):
                 # nothing to download, the engine loads it in place.
+                self._validate_lora_name(lora_name)
                 local_path = artifact_url
             else:
                 # Download artifact

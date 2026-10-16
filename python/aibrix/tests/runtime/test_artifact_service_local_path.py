@@ -52,3 +52,23 @@ async def test_local_path_adapter_is_loaded_from_its_path(tmp_path, artifact_url
         ("my-lora", artifact_url)
     ]
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("artifact_url", ["/models/my-lora", "s3://bucket/my-lora"])
+async def test_invalid_lora_name_is_rejected_for_local_and_remote_urls(
+    tmp_path, artifact_url
+):
+    """A local path skips the download, which is where lora_name is checked
+    for every other scheme. Both must reject the same names."""
+    service = ArtifactDelegationService(local_dir=str(tmp_path))
+    engine = _RecordingEngine()
+    request = LoadLoraAdapterRuntimeRequest(
+        lora_name="bad/name", artifact_url=artifact_url
+    )
+
+    response = await service.load_adapter_with_delegation(request, engine)
+
+    assert response.status == "error"
+    assert "Invalid lora_name" in response.message
+    assert engine.load_requests == []
