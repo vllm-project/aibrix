@@ -149,13 +149,14 @@ func SlowStartBatch(count int, initialBatchSize int, fn func(int) error) (int, e
 		wg.Add(batchSize)
 		for i := 0; i < batchSize; i++ {
 			go func(index int) {
+				// wg.Done runs after the recover below, so a panic is in errCh before the batch is counted.
+				defer wg.Done()
 				defer func() {
-					err := recover()
-					if err != nil {
+					if err := recover(); err != nil {
 						klog.Errorf("slowStartBatch panic: %v", err)
+						errCh <- fmt.Errorf("slowStartBatch panic: %v", err)
 					}
 				}()
-				defer wg.Done()
 				if err := fn(index); err != nil {
 					errCh <- err
 				}
