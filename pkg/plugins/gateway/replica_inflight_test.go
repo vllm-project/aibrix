@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -284,6 +285,179 @@ func TestFilterSaturatedReplicaInflight(t *testing.T) {
 // selectTargetPod: when every ready replica is already at requestsInflight's cap,
 // selectTargetPod must fail with errReplicaInflightExceeded before a router is ever
 // consulted, rather than routing to (and further overloading) a saturated pod.
+// routeFunc is a types.Router backed by a function, for driving routeWithEarlyAdmission.
+type routeFunc func(ctx *types.RoutingContext, pods types.PodList) (string, error)
+
+func (f routeFunc) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+	return f(ctx, pods)
+}
+
+func earlyAdmissionContext(pod *v1.Pod, requestID string) *types.RoutingContext {
+	routingCtx := types.NewRoutingContext(context.Background(), routing.RouterPD, "m", "", requestID, "")
+	applyConfigProfile(routingCtx, []*v1.Pod{pod})
+	return routingCtx
+}
+
+// A router that admits its target and returns it must not be admitted a second time by
+// the gateway's post-routing check: the mock allows exactly one admission.
+func TestRouteWithEarlyAdmission_AdmitsOnce(t *testing.T) {
+	mockCache := &MockCache{}
+	s := &Server{cache: mockCache}
+	pod := podWithReplicaInflight("a", 1)
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, true, nil).Once()
+
+	routingCtx := earlyAdmissionContext(pod, "r1")
+	router := routeFunc(func(ctx *types.RoutingContext, _ types.PodList) (string, error) {
+		if err := ctx.AdmitTarget(pod); err != nil {
+			return "", err
+		}
+		ctx.SetTargetPod(pod)
+		return ctx.TargetAddress(), nil
+	})
+	_, err := s.routeWithEarlyAdmission(routingCtx, router, &utils.PodArray{Pods: []*v1.Pod{pod}}, 1)
+	require.NoError(t, err)
+	assert.True(t, routingCtx.ReplicaInflightAdmitted)
+	assert.Nil(t, s.enforceReplicaInflight(context.Background(), "m", routingCtx))
+	mockCache.AssertExpectations(t)
+}
+
+// A full target fails Route with ErrTargetReplicaInflightExceeded, which the gateway turns
+// into the same 429 as its own check, and nothing is released since nothing was counted.
+func TestRouteWithEarlyAdmission_FullTargetIs429(t *testing.T) {
+	mockCache := &MockCache{}
+	s := &Server{cache: mockCache}
+	pod := podWithReplicaInflight("a", 1)
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, false, nil).Once()
+
+	routingCtx := earlyAdmissionContext(pod, "r1")
+	routed := false
+	router := routeFunc(func(ctx *types.RoutingContext, _ types.PodList) (string, error) {
+		if err := ctx.AdmitTarget(pod); err != nil {
+			return "", fmt.Errorf("wrapped: %w", err)
+		}
+		routed = true
+		return "", nil
+	})
+	_, err := s.routeWithEarlyAdmission(routingCtx, router, &utils.PodArray{Pods: []*v1.Pod{pod}}, 1)
+	require.True(t, errors.Is(err, types.ErrTargetReplicaInflightExceeded))
+	assert.False(t, routed)
+
+	resp := buildTargetSelectionErrorResponse(routingCtx, "r1", "m", err)
+	require.NotNil(t, resp)
+	imm := resp.GetImmediateResponse()
+	require.NotNil(t, imm)
+	assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
+	assert.Contains(t, imm.GetBody(), ErrorCodeReplicaInflightExceeded)
+	mockCache.AssertNotCalled(t, "ReleasePodRunningRequest", mock.Anything, mock.Anything)
+	mockCache.AssertExpectations(t)
+}
+
+// A counted admission whose Route then fails (the prefill leg failed) never reaches
+// AddRequestCount, so the gateway has to release it itself.
+func TestRouteWithEarlyAdmission_ReleasesWhenRouteFails(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		counted     bool
+		wantRelease bool
+	}{
+		{name: "counted", counted: true, wantRelease: true},
+		{name: "not counted", counted: false, wantRelease: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mockCache := &MockCache{}
+			s := &Server{cache: mockCache}
+			pod := podWithReplicaInflight("a", 1)
+			mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, tc.counted, nil).Once()
+			if tc.wantRelease {
+				mockCache.On("ReleasePodRunningRequest", "a", "ns").Return().Once()
+			}
+
+			routingCtx := earlyAdmissionContext(pod, "r1")
+			prefillErr := errors.New("prefill request failed")
+			router := routeFunc(func(ctx *types.RoutingContext, _ types.PodList) (string, error) {
+				if err := ctx.AdmitTarget(pod); err != nil {
+					return "", err
+				}
+				return "", prefillErr
+			})
+			_, err := s.routeWithEarlyAdmission(routingCtx, router, &utils.PodArray{Pods: []*v1.Pod{pod}}, 1)
+			require.ErrorIs(t, err, prefillErr)
+			assert.False(t, routingCtx.ReplicaInflightAdmitted)
+			if !tc.wantRelease {
+				mockCache.AssertNotCalled(t, "ReleasePodRunningRequest", mock.Anything, mock.Anything)
+			}
+			mockCache.AssertExpectations(t)
+		})
+	}
+}
+
+// The release must take the +1 the admission put on the shared counter back off.
+func TestRouteWithEarlyAdmission_ReleaseRestoresRedisCount(t *testing.T) {
+	mr := miniredis.RunT(t)
+	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = redisClient.Close() })
+	pod := podWithReplicaInflight("a", 1)
+	require.NoError(t, redisClient.Ping(context.Background()).Err())
+	store := cache.InitWithPods(cache.New(redisClient, nil, nil), []*v1.Pod{pod}, "m")
+	s := &Server{cache: store}
+	key := "aibrix:rrq:" + utils.GeneratePodKey(pod.Namespace, pod.Name)
+
+	router := routeFunc(func(ctx *types.RoutingContext, _ types.PodList) (string, error) {
+		if err := ctx.AdmitTarget(pod); err != nil {
+			return "", err
+		}
+		fields, err := mr.HKeys(key)
+		require.NoError(t, err)
+		require.Len(t, fields, 1)
+		require.Equal(t, "1", mr.HGet(key, fields[0]), "the admission holds a slot while the prefill runs")
+		return "", errors.New("prefill request failed")
+	})
+	routingCtx := earlyAdmissionContext(pod, "r1")
+	_, err := s.routeWithEarlyAdmission(routingCtx, router, &utils.PodArray{Pods: []*v1.Pod{pod}}, 1)
+	require.Error(t, err)
+
+	fields, err := mr.HKeys(key)
+	require.NoError(t, err)
+	require.Len(t, fields, 1)
+	assert.Equal(t, "0", mr.HGet(key, fields[0]), "the failed request must not keep its slot")
+
+	// The slot is free again: the next request is admitted.
+	admitted, _, err := store.AdmitPodRunningRequest("a", "ns", 1)
+	require.NoError(t, err)
+	assert.True(t, admitted)
+}
+
+// selectTargetPod gives a PD request with a requestsInflight cap the early admission, so the
+// router admits its decode pod before the prefill and the post-routing check is skipped.
+func Test_selectTargetPod_PDAdmitsTargetInsideRoute(t *testing.T) {
+	podA := podWithReplicaInflight("a", 1)
+	podB := podWithReplicaInflight("b", 1)
+	pods := []*v1.Pod{podA, podB}
+	mockCache := &MockCache{}
+	mockCache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{"ns/a": 0, "ns/b": 0}, nil)
+	mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1)).Return(true, true, nil).Once()
+
+	var admitErr error
+	manager := routing.NewRouterManager()
+	manager.RegisterProvider(routing.RouterPD, func(*types.RoutingContext) (types.Router, error) {
+		return routeFunc(func(ctx *types.RoutingContext, _ types.PodList) (string, error) {
+			admitErr = ctx.AdmitTarget(podB)
+			ctx.SetTargetPod(podB)
+			return ctx.TargetAddress(), nil
+		}), nil
+	})
+	s := &Server{cache: mockCache, routerManager: manager}
+
+	routingCtx := types.NewRoutingContext(context.Background(), routing.RouterPD, "m", "", "r1", "")
+	applyConfigProfile(routingCtx, pods)
+	_, err := s.selectTargetPod(context.Background(), routingCtx, &utils.PodArray{Pods: pods}, "")
+	require.NoError(t, err)
+	require.NoError(t, admitErr)
+	assert.True(t, routingCtx.ReplicaInflightChecked, "the PD router should have admitted its target")
+	assert.Nil(t, s.enforceReplicaInflight(context.Background(), "m", routingCtx))
+	mockCache.AssertExpectations(t)
+}
+
 func Test_selectTargetPod_ReplicaInflightSaturated(t *testing.T) {
 	mockCache := &MockCache{}
 	pod := podWithReplicaInflight("a", 1)

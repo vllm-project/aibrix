@@ -552,6 +552,15 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 
 	defer r.pendingDecodeTracker.RemovePendingDecode(ctx.RequestID)
 
+	// Admit the decode pod against the gateway's per-replica in-flight cap before the
+	// prefill leg is sent. Once the prefill has run, a rejection would only throw away its
+	// work and leave its KV waiting for a decode that never comes.
+	if err := ctx.AdmitTarget(decodePod); err != nil {
+		r.prefillRequestTracker.RemovePrefillRequest(ctx.RequestID)
+		r.releaseTokenLoad(ctx.RequestID)
+		return "", fmt.Errorf("decode pod %s rejected request %s: %w", decodePod.Name, ctx.RequestID, err)
+	}
+
 	if prefillPod != nil {
 
 		klog.InfoS("selected prefill/decode pods", "request_id", ctx.RequestID, "prefill_pod", prefillPod.Name, "decode_pod", decodePod.Name)

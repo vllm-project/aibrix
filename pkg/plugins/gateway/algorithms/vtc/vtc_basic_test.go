@@ -87,6 +87,8 @@ func (c *SimpleCache) AdmitPodRunningRequest(podName, podNamespace string, limit
 	return true, true, nil
 }
 
+func (c *SimpleCache) ReleasePodRunningRequest(podName, podNamespace string) {}
+
 func (c *SimpleCache) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {
 	return nil, nil
 }

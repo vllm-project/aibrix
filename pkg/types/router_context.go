@@ -33,6 +33,9 @@ import (
 var (
 	nilPod     = &v1.Pod{}
 	ErrUnknown = errors.New("unknown error")
+	// ErrTargetReplicaInflightExceeded is returned through AdmitTarget when the chosen
+	// target is already at its config profile's requestsInflight cap.
+	ErrTargetReplicaInflightExceeded = errors.New("target replica has reached inflight limit")
 )
 
 const (
@@ -177,6 +180,14 @@ type RoutingContext struct {
 	// that counter (addPodStats) must check this first and skip their own increment, or the
 	// pod's count would be inflated by an extra, never-decremented +1 for this request.
 	ReplicaInflightAdmitted bool
+	// ReplicaInflightChecked records that the replica-inflight admission already ran for this
+	// request, through AdmitTarget, before the router returned its target. The gateway's
+	// post-routing check (enforceReplicaInflight) must then not admit the request a second time.
+	ReplicaInflightChecked bool
+
+	// targetAdmitter is the gateway's replica-inflight admission, installed for routers that
+	// start work on a request's behalf before returning its target. See AdmitTarget.
+	targetAdmitter func(pod *v1.Pod) error
 
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]
@@ -340,6 +351,23 @@ func (r *RoutingContext) Features() (RequestFeatures, error) {
 	}
 
 	return RequestFeatures{float64(outputLen), float64(promptLen)}, nil
+}
+
+// SetTargetAdmitter installs the gateway's replica-inflight admission, which AdmitTarget runs.
+func (r *RoutingContext) SetTargetAdmitter(admit func(pod *v1.Pod) error) {
+	r.targetAdmitter = admit
+}
+
+// AdmitTarget admits pod as this request's target against the gateway's per-replica
+// in-flight cap, and returns nil when no admission is installed. A router that starts work
+// on the request's behalf before it returns (the PD prefill leg) calls it as soon as the
+// target is chosen, so a request the target has no room for is rejected before that work
+// starts. The error wraps ErrTargetReplicaInflightExceeded when the target is full.
+func (r *RoutingContext) AdmitTarget(pod *v1.Pod) error {
+	if r.targetAdmitter == nil {
+		return nil
+	}
+	return r.targetAdmitter(pod)
 }
 
 // SetTargetPod sets the target pod of the routing context. All routers call this to set the target pod.
@@ -548,6 +576,8 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.ClearRoutingOverrides()
 	clear(r.trustedPolicyAttributes)
 	r.ReplicaInflightAdmitted = false
+	r.ReplicaInflightChecked = false
+	r.targetAdmitter = nil
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
 	r.targetPort.Store(0)
