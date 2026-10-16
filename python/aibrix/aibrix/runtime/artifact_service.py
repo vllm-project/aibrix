@@ -259,7 +259,8 @@ class ArtifactDelegationService:
         Load LoRA adapter with artifact delegation.
 
         This method:
-        1. Downloads artifact from remote storage
+        1. Downloads artifact from remote storage, unless the URL is a local
+           path starting with "/"
         2. Forwards load request to inference engine with local path
         3. Returns response to controller
 
@@ -296,10 +297,15 @@ class ArtifactDelegationService:
                     credentials = {}
                 credentials.update(request.additional_config)
 
-            # Download artifact
-            local_path = await self.download_artifact(
-                artifact_url, lora_name, credentials
-            )
+            if artifact_url.startswith("/"):
+                # A path the webhook accepts as-is (e.g. a mounted volume):
+                # nothing to download, the engine loads it in place.
+                local_path = artifact_url
+            else:
+                # Download artifact
+                local_path = await self.download_artifact(
+                    artifact_url, lora_name, credentials
+                )
 
             # Forward to inference engine with local path
             engine_request = LoadLoraAdapterRequest(
