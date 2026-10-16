@@ -2036,6 +2036,60 @@ def test_initial_kv_capture_after_ready(initial_kv, monkeypatch):
     assert model.kv_initial_capacity_bytes == 100
 
 
+@pytest.mark.parametrize("replace", [False, True])
+def test_initial_kv_rejects_detached_instance(initial_kv, monkeypatch, replace):
+    from dataclasses import replace as replace_instance
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent, inst, segment = initial_kv
+
+    def detached_read(name):
+        # Construct detachment: deactivate() also changes phase to stopping,
+        # which would independently block capture and mask the identity guard.
+        monkeypatch.delitem(agent._models, inst.model_name)
+        if replace:
+            monkeypatch.setitem(agent._models, inst.model_name, replace_instance(inst))
+        return (100, 0, 0)
+
+    monkeypatch.setattr(runtime_module, "read_kv_segment", detached_read)
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+    assert inst.kv_initial_capacity_bytes is None
+
+
+def test_initial_kv_rejects_capture_after_stop_starts(initial_kv, monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent, inst, segment = initial_kv
+
+    def failed_stop(inst):
+        raise RuntimeError("stop failed")
+
+    def stopping_read(name):
+        with pytest.raises(RuntimeError, match="stop failed"):
+            agent.deactivate(inst.model_name)
+        return (100, 0, 0)
+
+    monkeypatch.setattr(agent._launcher, "stop", failed_stop)
+    monkeypatch.setattr(runtime_module, "read_kv_segment", stopping_read)
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+    assert inst.phase == "stopping"
+
+
+def test_initial_kv_is_not_recaptured_after_segment_changes(initial_kv):
+    import struct
+
+    agent, inst, segment = initial_kv
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    # Change the engine's segment without a runtime limit write, which would
+    # independently mark startup capacity unavailable and mask recapture.
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    observed = agent.snapshot()["models"][0]
+    assert observed["kv_capacity_bytes"] == 80
+    assert observed["kv_initial_capacity_bytes"] == 100
+
+
 @pytest.mark.parametrize(
     "raw",
     [None, "unreadable", b"short", b"", (-1).to_bytes(8, "little", signed=True) * 3],

@@ -4230,6 +4230,30 @@ func TestKVInitialCapacityHealth(t *testing.T) {
 	}
 }
 
+func TestKVInitialCapacityAlreadyHeldNeedsNoWrite(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	// The engine is serving, but its instance has not yet been routed.
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActivating, KVLimitBytes: 300,
+	}}
+	ceiling := int64(200)
+	engine := readyEngine(ceiling)
+	engine.KVInitialCapacityBytes = &ceiling
+	snapshot.Models = []RuntimeSnapshotModel{engine}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.kvLimitCalls)
+	assert.NotContains(t, strings.Join(drainEvents(t, r), "\n"), "KVLimitSet")
+	got := getModel(t, r, pm.Name).Status.Instances[0]
+	assert.Equal(t, ceiling, got.KVLimitBytes)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Phase)
+	assert.Equal(t, int32(9001), got.Port)
+}
+
 func TestKVInitialCapacityRollback(t *testing.T) {
 	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
 	ceiling := int64(200)
