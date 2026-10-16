@@ -139,17 +139,21 @@ func TestSlowStartBatch_WithFailure(t *testing.T) {
 
 func TestSlowStartBatch_PanicIsNotASuccess(t *testing.T) {
 	count := 3
-	panicFn := func(i int) error {
-		if i == 1 {
-			panic("boom")
-		}
-		return nil
-	}
-	// Run it repeatedly: the panic must be recorded before the batch is counted.
-	for run := 0; run < 50; run++ {
-		succeeded, err := SlowStartBatch(count, 1, panicFn)
-		assert.Error(t, err)
-		assert.Less(t, succeeded, count)
+	for name, panicValue := range map[string]any{"string": "boom", "nil": nil} {
+		t.Run(name, func(t *testing.T) {
+			panicFn := func(i int) error {
+				if i == 1 {
+					panic(panicValue) // panic(nil) is a runtime.PanicNilError since Go 1.21.
+				}
+				return nil
+			}
+			// Run it repeatedly: the panic must be recorded before the batch is counted.
+			for run := 0; run < 50; run++ {
+				succeeded, err := SlowStartBatch(count, 1, panicFn)
+				assert.Error(t, err)
+				assert.Less(t, succeeded, count)
+			}
+		})
 	}
 }
 
