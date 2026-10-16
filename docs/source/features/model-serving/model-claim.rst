@@ -505,9 +505,8 @@ message gives the model's state, and the reason when there is one.
      - The gateway answers
    * - starting, failed permanently, or waiting to be placed
      - 503 with ``Retry-After: 10``
-   * - asleep, with no reason
-     - 503 with ``Retry-After: 3``. With a Pod binding, the gateway also
-       requests a wake.
+   * - asleep, with no reason, and a wake requested through a Pod binding
+     - 503 with ``Retry-After: 3``
    * - waiting for room to wake, or getting room made for it
      - 503 with ``Retry-After: 20``
    * - moving to another Pod
@@ -520,8 +519,8 @@ message gives the model's state, and the reason when there is one.
 
 The gateway picks the delay by the reason first, then by the state, and any
 other retried case gets 10 seconds. A claim known only from its status, with
-phase ``Sleeping`` and no reason, also gets 3 seconds, although the gateway
-cannot request a wake for it.
+phase ``Sleeping`` and no reason, gets 10 seconds because the gateway cannot
+request a wake for it.
 
 Deleting claims
 ---------------

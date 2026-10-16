@@ -865,9 +865,10 @@ func TestValidateModelAvailabilityAsksToWaitLongerForTheReasonTheControllerGives
 		Status:     v1.PodStatus{PodIP: "10.0.0.1"},
 	}
 	for name, tc := range map[string]struct {
-		cache      *MockCache
-		retryAfter string
-		says       string
+		cache           *MockCache
+		retryAfter      string
+		says            string
+		noWakeRequester bool
 	}{
 		"a wake that waits for room, on the route": {
 			cache: &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
@@ -897,6 +898,28 @@ func TestValidateModelAvailabilityAsksToWaitLongerForTheReasonTheControllerGives
 			retryAfter: "3",
 			says:       "model qwen is sleeping; retry shortly",
 		},
+		"a sleeping model with an unlisted reason": {
+			cache: &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
+				"qwen": {pod: pod, state: constants.ModelClaimRoutingStateSleeping, reason: "OtherReason"},
+			}},
+			retryAfter: "10",
+			says:       "model qwen is sleeping (OtherReason); retry shortly",
+		},
+		"a sleeping claim known only from its status, with no reason": {
+			cache: &MockCache{modelClaimStatuses: map[string]mockModelClaimStatus{
+				"qwen": {phase: "Sleeping"},
+			}},
+			retryAfter: "10",
+			says:       "model qwen is sleeping; retry shortly",
+		},
+		"a sleeping model with no wake requester": {
+			cache: &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
+				"qwen": {pod: pod, state: constants.ModelClaimRoutingStateSleeping},
+			}},
+			retryAfter:      "10",
+			says:            "model qwen is sleeping; retry shortly",
+			noWakeRequester: true,
+		},
 		"an activating model with no reason, which starts from scratch": {
 			cache: &MockCache{modelClaimBindings: map[string]mockModelClaimBinding{
 				"qwen": {pod: pod, state: constants.ModelClaimRoutingStateActivating},
@@ -908,6 +931,9 @@ func TestValidateModelAvailabilityAsksToWaitLongerForTheReasonTheControllerGives
 		t.Run(name, func(t *testing.T) {
 			tc.cache.On("HasModel", "qwen").Return(false)
 			server := &Server{cache: tc.cache, wakeRequester: &recordingModelWakeRequester{}}
+			if tc.noWakeRequester {
+				server.wakeRequester = nil
+			}
 
 			_, response := server.validateModelAvailability("request-1", "qwen")
 

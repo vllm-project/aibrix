@@ -1039,14 +1039,12 @@ msgid "503 with ``Retry-After: 10``"
 msgstr "503，带 ``Retry-After: 10``"
 
 #: ../../source/features/model-serving/model-claim.rst:508
-msgid "asleep, with no reason"
-msgstr "休眠中，且未给出原因"
+msgid "asleep, with no reason, and a wake requested through a Pod binding"
+msgstr "休眠中，未给出原因，且已通过 Pod 绑定请求唤醒"
 
 #: ../../source/features/model-serving/model-claim.rst:509
-msgid ""
-"503 with ``Retry-After: 3``. With a Pod binding, the gateway also "
-"requests a wake."
-msgstr "503，带 ``Retry-After: 3``。如果有 Pod 绑定，网关还会请求唤醒该模型。"
+msgid "503 with ``Retry-After: 3``"
+msgstr "503，带 ``Retry-After: 3``"
 
 #: ../../source/features/model-serving/model-claim.rst:504
 msgid "waiting for room to wake, or getting room made for it"
@@ -1088,12 +1086,12 @@ msgstr "400"
 msgid ""
 "The gateway picks the delay by the reason first, then by the state, and "
 "any other retried case gets 10 seconds. A claim known only from its "
-"status, with phase ``Sleeping`` and no reason, also gets 3 seconds, "
-"although the gateway cannot request a wake for it."
+"status, with phase ``Sleeping`` and no reason, gets 10 seconds because "
+"the gateway cannot request a wake for it."
 msgstr ""
 "网关先按原因、再按状态选择重试间隔，其他会提示重试的情况都是 10 秒。"
-"仅通过状态为网关所知、阶段为 ``Sleeping`` 且没有原因的 claim 也会"
-"得到 3 秒，尽管网关无法为它请求唤醒。"
+"仅通过状态为网关所知、阶段为 ``Sleeping`` 且没有原因的 claim 会"
+"得到 10 秒，因为网关无法为它请求唤醒。"
 
 #: ../../source/features/model-serving/model-claim.rst:515
 msgid "Deleting claims"
