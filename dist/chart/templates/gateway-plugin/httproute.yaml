@@ -18,6 +18,12 @@ spec:
             value: /v1/chat/completions
         - path:
             type: PathPrefix
+            value: /v1/responses
+        - path:
+            type: PathPrefix
+            value: /v1/messages
+        - path:
+            type: PathPrefix
             value: /v1/completions
         - path:
             type: PathPrefix
@@ -27,13 +33,43 @@ spec:
             value: /v1/images/generations
         - path:
             type: PathPrefix
+            value: /v1/images/edits
+        - path:
+            type: PathPrefix
             value: /v1/video/generations
+        - path:
+            type: PathPrefix
+            value: /v1/audio/transcriptions
+        - path:
+            type: PathPrefix
+            value: /v1/audio/translations
+        - path:
+            type: PathPrefix
+            value: /v1/audio/speech
         - path:
             type: PathPrefix
             value: /v1/rerank
         - path:
             type: PathPrefix
             value: /v1/classify
+        - path:
+            type: PathPrefix
+            value: /classify
+        - path:
+            type: PathPrefix
+            value: /v1/decisions
+        - path:
+            type: PathPrefix
+            value: /v1/systemone
+        - path:
+            type: PathPrefix
+            value: /v1/score
+        - path:
+            type: PathPrefix
+            value: /tokenize
+        - path:
+            type: PathPrefix
+            value: /pooling
       backendRefs:
         - group: ''
           kind: Service

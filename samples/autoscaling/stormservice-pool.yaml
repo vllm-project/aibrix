@@ -10,8 +10,6 @@ kind: PodAutoscaler
 metadata:
   name: ss-pool-prefill
   namespace: default
-  annotations:
-    autoscaling.aibrix.ai/storm-service-mode: "pool"
 spec:
   scaleTargetRef:
     apiVersion: orchestration.aibrix.ai/v1alpha1
@@ -41,8 +39,6 @@ kind: PodAutoscaler
 metadata:
   name: ss-pool-decode
   namespace: default
-  annotations:
-    autoscaling.aibrix.ai/storm-service-mode: "pool"
 spec:
   scaleTargetRef:
     apiVersion: orchestration.aibrix.ai/v1alpha1
@@ -78,11 +74,12 @@ metadata:
   name: ss-pool
   namespace: default
 spec:
+  mode: Pooled
   updateStrategy:
     type: InPlaceUpdate
     maxSurge: 2
     maxUnavailable: 1
-  replicas: 1  # Pooled mode
+  replicas: 1
   stateful: true
   selector:
     matchLabels:

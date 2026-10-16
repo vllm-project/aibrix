@@ -21,6 +21,28 @@ from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
 
+_OUTPUT_FILE_ID_FIELDS = (
+    "output_file_id",
+    "error_file_id",
+    "temp_output_file_id",
+    "temp_error_file_id",
+)
+
+
+def _output_file_ids(job: BatchJob) -> dict[str, Optional[str]]:
+    return {field: getattr(job.status, field) for field in _OUTPUT_FILE_ID_FIELDS}
+
+
+def _has_older_resource_version(old: BatchJob, new: BatchJob) -> bool:
+    old_version = old.metadata.resource_version
+    new_version = new.metadata.resource_version
+    if old_version is None or new_version is None:
+        return False
+    try:
+        return int(new_version) < int(old_version)
+    except ValueError:
+        return False
+
 
 class JobEntityManager(ABC):
     DEFAULT_JOB_PAGE_LIMIT = 20
@@ -130,7 +152,20 @@ class JobEntityManager(ABC):
         self._job_updated_handler = handler
         return old_handler
 
-    async def job_updated(self, old: BatchJob, new: BatchJob) -> bool:
+    async def job_updated(
+        self, old: BatchJob, new: BatchJob, source: str = "publisher"
+    ) -> bool:
+        if source == "refresh" and _has_older_resource_version(old, new):
+            logger.warning(
+                "Ignoring stale batch job refresh snapshot",
+                job_id=new.job_id or old.job_id,
+                old_resource_version=old.metadata.resource_version,
+                new_resource_version=new.metadata.resource_version,
+                old_file_ids=_output_file_ids(old),
+                new_file_ids=_output_file_ids(new),
+            )  # type: ignore[call-arg]
+            return False
+
         success = True
         if self._job_updated_handler is not None:
             if self._job_updated_loop is None:
@@ -206,7 +241,7 @@ class JobEntityManager(ABC):
         self._refresh_task = None
 
     async def refresh(self) -> None:
-        jobs = await self._list_recovery_jobs()
+        jobs = await self._list_active_jobs()
         current_jobs: dict[str, BatchJob] = {}
         for job in jobs:
             job_id = job.job_id
@@ -217,14 +252,16 @@ class JobEntityManager(ABC):
             old_job = self._monitored_job_snapshots.get(job_id)
             if old_job is None:
                 self._monitored_job_snapshots[job_id] = snapshot
-                if not snapshot.status.finished:
+                if self._should_publish_committed(snapshot):
                     await self.job_committed(snapshot)
+                else:
+                    self._sync_active_job(snapshot)
                 continue
             if self._jobs_equal(old_job, snapshot):
                 self._monitored_job_snapshots[job_id] = snapshot
+                self._sync_active_job(snapshot)
                 continue
-            self._monitored_job_snapshots[job_id] = snapshot
-            await self.job_updated(old_job, snapshot)
+            await self.job_updated(old_job, snapshot, source="refresh")
 
         deleted_job_ids = set(self._monitored_job_snapshots) - set(current_jobs)
         for job_id in deleted_job_ids:
@@ -239,16 +276,17 @@ class JobEntityManager(ABC):
                 self._forget_job(job_id)
                 self._sync_active_job(latest_job)
                 continue
-            await self.job_updated(previous_job, latest_job)
+            await self.job_updated(previous_job, latest_job, source="refresh")
 
     async def _bootstrap_jobs(self) -> None:
-        for job in await self._list_recovery_jobs():
+        for job in await self._list_active_jobs():
             job_id = job.job_id
             if job_id is None:
                 continue
             snapshot = job.model_copy(deep=True)
             self._monitored_job_snapshots[job_id] = snapshot
-            if snapshot.status.finished:
+            if not self._should_publish_committed(snapshot):
+                self._sync_active_job(snapshot)
                 continue
             await self.job_committed(snapshot)
 
@@ -262,39 +300,39 @@ class JobEntityManager(ABC):
             except Exception:
                 logger.error("job entity manager refresh failed", exc_info=True)  # type: ignore[call-arg]
 
-    async def _list_recovery_jobs(self) -> list[BatchJob]:
-        return await self._list_jobs_for_recovery(None)
+    async def _list_active_jobs(self) -> list[BatchJob]:
+        return await self._list_active_job_impl(None)
 
-    async def _list_jobs_for_recovery(
-        self, oldest_unfinished_created_at: Optional[datetime]
+    async def _list_active_job_impl(
+        self, oldest_active_job_created_at: Optional[datetime]
     ) -> list[BatchJob]:
-        recovered_jobs: list[BatchJob] = []
+        active_jobs: list[BatchJob] = []
         after: Optional[str] = None
         while True:
             jobs = await self.list_jobs(after=after, limit=self.DEFAULT_JOB_PAGE_LIMIT)
             if not jobs:
-                return recovered_jobs
+                return active_jobs
             for job in jobs:
                 if job.job_id is not None and not job.status.finished:
-                    recovered_jobs.append(job)
+                    active_jobs.append(job)
             last_job = jobs[-1]
             last_job_id = last_job.job_id or last_job.status.job_id
             last_created_at = last_job.status.created_at
             if last_job_id is None or len(jobs) < self.DEFAULT_JOB_PAGE_LIMIT:
-                return recovered_jobs
+                return active_jobs
             if (
-                self._supports_created_at_desc_recovery_ordering()
-                and oldest_unfinished_created_at is not None
+                self._supports_created_at_desc_job_ordering()
+                and oldest_active_job_created_at is not None
                 and last_created_at is not None
-                and last_created_at < oldest_unfinished_created_at
+                and last_created_at < oldest_active_job_created_at
             ):
-                return recovered_jobs
+                return active_jobs
             after = last_job_id
 
-    def _supports_created_at_desc_recovery_ordering(self) -> bool:
+    def _supports_created_at_desc_job_ordering(self) -> bool:
         """Whether ``list_jobs`` is guaranteed newest->oldest by created_at.
 
-        Recovery can stop early only when this ordering guarantee holds.
+        Active-job listing can stop early only when this ordering guarantee holds.
         """
         return False
 
@@ -305,6 +343,23 @@ class JobEntityManager(ABC):
             self._monitored_job_snapshots.pop(job.job_id, None)
             return
         self._monitored_job_snapshots[job.job_id] = job.model_copy(deep=True)
+
+    async def _publish_active_job_on_cache_miss(self, job: Optional[BatchJob]) -> None:
+        """Republish an active job discovered outside bootstrap/refresh.
+
+        A direct ``get_job()`` read can discover an unfinished job that was not
+        restored into the manager during startup active-job sync. In that case, publish
+        the same committed event the refresh/bootstrap path would have emitted.
+        """
+
+        if job is None or job.job_id is None or job.status.finished:
+            return
+        if (
+            job.job_id in self.active_jobs
+            or job.job_id in self._monitored_job_snapshots
+        ):
+            return
+        await self.job_committed(job.model_copy(deep=True))
 
     def _forget_job(self, job_id: Optional[str]) -> None:
         if job_id is None:
@@ -329,6 +384,9 @@ class JobEntityManager(ABC):
         return old_job.model_dump(
             mode="json", by_alias=True, exclude_none=True
         ) == new_job.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    def _should_publish_committed(self, job: BatchJob) -> bool:
+        return not job.status.finished
 
     # --- Command store (manager -> store): the abstract contract each backend
     #     implements. The manager calls these to mutate/read persisted jobs. ---

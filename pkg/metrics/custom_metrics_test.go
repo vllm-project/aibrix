@@ -23,6 +23,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/vllm-project/aibrix/pkg/types"
 )
 
 const (
@@ -77,6 +78,34 @@ func TestSetupMetricsForTest(t *testing.T) {
 
 	value = testutil.ToFloat64(testGauge.WithLabelValues(testLabelValue))
 	assert.Equal(t, testValue, value, "Metric value should not change after cleanup")
+}
+
+func TestDeleteGaugeMetric(t *testing.T) {
+	prometheus.DefaultRegisterer = prometheus.NewRegistry()
+	const name = "test_delete_gauge_metric"
+
+	// Deleting before the gauge exists is a no-op.
+	DeleteGaugeMetric(name, []string{testLabelName, testLabelName2}, testLabelValue, testLabelValue2)
+
+	defaultSetGaugeMetric(name, testMetricHelp, 1, []string{testLabelName, testLabelName2}, "a", "b")
+	defaultSetGaugeMetric(name, testMetricHelp, 2, []string{testLabelName, testLabelName2}, "c", "d")
+	customGaugesMu.RLock()
+	gauge := customGauges[name]
+	customGaugesMu.RUnlock()
+	assert.Equal(t, 2, testutil.CollectAndCount(gauge))
+
+	// Label order need not match the registration order.
+	DeleteGaugeMetric(name, []string{testLabelName2, testLabelName}, "b", "a")
+	assert.Equal(t, 1, testutil.CollectAndCount(gauge))
+	assert.Equal(t, 2.0, testutil.ToFloat64(gauge.WithLabelValues("c", "d")))
+
+	// Mismatched or unknown labels do nothing.
+	DeleteGaugeMetric(name, []string{testLabelName}, "c", "d")
+	DeleteGaugeMetric(name, []string{testLabelName, testLabelName2}, "x", "y")
+	assert.Equal(t, 1, testutil.CollectAndCount(gauge))
+
+	DeleteGaugeMetric(name, []string{testLabelName, testLabelName2}, "c", "d")
+	assert.Equal(t, 0, testutil.CollectAndCount(gauge))
 }
 
 func TestMetricRegistrationOnlyOnce(t *testing.T) {
@@ -218,4 +247,29 @@ func TestSetHistogramMetric(t *testing.T) {
 		assert.InDelta(t, 3.0, h.GetSampleSum(), 1e-9)
 	}
 	assert.True(t, found)
+}
+
+func TestBuildMetricLabels_LoraVsBase(t *testing.T) {
+	t.Setenv("POD_NAME", "gw-0")
+	gatewayPodName = "gw-0"
+
+	loraCtx := &types.RoutingContext{Model: "hip-adapter", BaseModel: "qwen3-8b"}
+	names, values := buildMetricLabels(nil, loraCtx, nil)
+	got := zipLabels(names, values)
+	assert.Equal(t, "qwen3-8b", got["model"])
+	assert.Equal(t, "hip-adapter", got["lora_adapter"])
+
+	baseCtx := &types.RoutingContext{Model: "qwen3-8b"}
+	names, values = buildMetricLabels(nil, baseCtx, nil)
+	got = zipLabels(names, values)
+	assert.Equal(t, "qwen3-8b", got["model"])
+	assert.Equal(t, "", got["lora_adapter"])
+}
+
+func zipLabels(names, values []string) map[string]string {
+	out := make(map[string]string, len(names))
+	for i, n := range names {
+		out[n] = values[i]
+	}
+	return out
 }

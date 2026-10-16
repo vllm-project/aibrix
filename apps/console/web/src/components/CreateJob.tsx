@@ -15,13 +15,20 @@ import {
 } from 'lucide-react';
 import {
   createJob,
+  getJobCapabilities,
   listFiles,
   uploadFile,
   listModels as apiListModels,
   listModelDeploymentTemplates,
   JobEndpoint,
 } from '../utils/api';
-import type { FileInfo, ModelDeploymentTemplate } from '../utils/api';
+import type {
+  FileInfo,
+  JobCapabilities,
+  ModelDeploymentTemplate,
+  JobClientConfig,
+  JobClientRetryPolicy,
+} from '../utils/api';
 import {
   validateBatchFile,
   validateBatchLines,
@@ -29,14 +36,18 @@ import {
   ValidationResult,
   MutationDiff,
   ParseResult,
-  parseJsonl,
+  parseJsonlFile,
   validateBatchFileName,
+  formatBatchFileValidationError,
   applyBatchOverrides,
   serializeJsonl,
   hasAnyOverride,
   BatchOverrides,
 } from '../utils/batchValidation';
 import {
+  COMPLETION_WINDOW_OPTIONS,
+  DEFAULT_COMPLETION_WINDOW,
+  CompletionWindowOption,
   formatBytes,
   formatFileCreatedAt,
   formatModelSelectionLabel,
@@ -45,6 +56,10 @@ import {
   getCreateJobReadiness,
 } from '../utils/batchProduct';
 import { Model } from '../data/mockData';
+import {
+  getCreateJobResourcePlugin,
+  type CreateJobResourceConfig,
+} from './createJobResourceConfig';
 
 interface CreateJobProps {
   onBack: () => void;
@@ -58,6 +73,18 @@ function parseNumber(value: string): number | undefined {
 
 type Step = 'model' | 'template' | 'dataset' | 'settings';
 const STEP_INDEX: Record<Step, number> = { model: 1, template: 2, dataset: 3, settings: 4 };
+const MIN_CLIENT_MAX_CONCURRENCY = 1;
+const MAX_CLIENT_MAX_CONCURRENCY = 1024;
+const MIN_ADAPTIVE_MAX_FACTOR = 1;
+const MIN_ADAPTIVE_HEALTHY_WINDOW = 1;
+const MIN_ADAPTIVE_ADDITIVE_INCREASE = 1;
+const ADAPTIVE_CLIENT_PARAM_FIELDS = new Set([
+  'adaptiveMaxFactor',
+  'adaptiveHealthyWindow',
+  'adaptiveAdditiveIncrease',
+]);
+const BYTES_PER_MEBIBYTE = 1024 * 1024;
+const FULL_PARSE_CACHE_MAX_BYTES = 20 * BYTES_PER_MEBIBYTE;
 
 export function CreateJob({ onBack }: CreateJobProps) {
   const [currentStep, setCurrentStep] = useState<Step>('model');
@@ -70,11 +97,28 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const [temperature, setTemperature] = useState('');
   const [topP, setTopP] = useState('');
   const [n, setN] = useState('');
+  const [replicas, setReplicas] = useState('1');
+  const [completionWindow, setCompletionWindow] = useState<CompletionWindowOption>(DEFAULT_COMPLETION_WINDOW);
+  const [resourceConfig, setResourceConfig] = useState<CreateJobResourceConfig>({});
   const [selectedEndpoint, setSelectedEndpoint] = useState('');
+
+  // Client settings (extra_body.aibrix.client). All optional; blank = use
+  // metadata-service defaults. adaptiveConcurrency defaults on, matching MDS.
+  const [maxConcurrency, setMaxConcurrency] = useState('');
+  const [adaptiveConcurrency, setAdaptiveConcurrency] = useState(true);
+  const [adaptiveMaxFactor, setAdaptiveMaxFactor] = useState('');
+  const [adaptiveHealthyWindow, setAdaptiveHealthyWindow] = useState('');
+  const [adaptiveAdditiveIncrease, setAdaptiveAdditiveIncrease] = useState('');
+  const [retryMaxRetries, setRetryMaxRetries] = useState('');
+  const [retryBaseDelay, setRetryBaseDelay] = useState('');
+  const [retryMaxDelay, setRetryMaxDelay] = useState('');
+  const [retryNoEndpointMaxRetries, setRetryNoEndpointMaxRetries] = useState('');
 
   const [models, setModels] = useState<Model[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelSearchQuery, setModelSearchQuery] = useState('');
+  const [jobCapabilities, setJobCapabilities] = useState<JobCapabilities | null>(null);
+  const [jobCapabilitiesError, setJobCapabilitiesError] = useState<string | null>(null);
 
   // Template selection
   const [templates, setTemplates] = useState<ModelDeploymentTemplate[]>([]);
@@ -106,6 +150,9 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const [paramErrors, setParamErrors] = useState<Record<string, string>>({});
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const replicaLimits = jobCapabilities?.resourceRequest;
+  const resourcePlugin = getCreateJobResourcePlugin(jobCapabilities?.provider ?? '');
+  const ResourceFields = resourcePlugin?.Fields;
 
   useEffect(() => {
     apiListModels().then(m => {
@@ -115,6 +162,18 @@ export function CreateJob({ onBack }: CreateJobProps) {
       console.error('Failed to fetch models:', err);
       setModelsLoading(false);
     });
+  }, []);
+
+  useEffect(() => {
+    getJobCapabilities()
+      .then((capabilities) => {
+        setJobCapabilities(capabilities);
+        setJobCapabilitiesError(null);
+      })
+      .catch((err) => {
+        setJobCapabilities(null);
+        setJobCapabilitiesError(err instanceof Error ? err.message : String(err));
+      });
   }, []);
 
   const filteredModels = models.filter(m =>
@@ -238,8 +297,9 @@ export function CreateJob({ onBack }: CreateJobProps) {
     // Validate immediately
     setValidating(true);
     try {
-      const parsed = parseJsonl(await file.text());
-      setSelectedFileParse(parsed);
+      const shouldCacheFullParse = file.size <= FULL_PARSE_CACHE_MAX_BYTES;
+      const parsed = await parseJsonlFile(file, { retainFullRecords: shouldCacheFullParse });
+      setSelectedFileParse(shouldCacheFullParse ? parsed : null);
       const result = validateBatchLines(parsed, {
         expectedModel: selectedServingName,
         supportedEndpoints: selectedTemplate?.spec?.supportedEndpoints,
@@ -249,7 +309,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
       setValidation({
         valid: false,
         totalLines: 0,
-        errors: [`Failed to read file: ${err instanceof Error ? err.message : 'unknown error'}`],
+        errors: [formatBatchFileValidationError(err)],
         warnings: [],
         detectedModel: null,
         endpoints: [],
@@ -324,13 +384,13 @@ export function CreateJob({ onBack }: CreateJobProps) {
     setSubmitError(null);
   };
 
-  const validateParam = (_field: string, value: string, min: number, max: number, isInt: boolean): string => {
+  const validateParam = (_field: string, value: string, min: number | undefined, max: number | undefined, isInt: boolean): string => {
     if (value.trim() === '') return '';
     const num = Number(value);
     if (isNaN(num)) return 'Must be a number';
     if (isInt && !Number.isInteger(num)) return 'Must be an integer';
-    if (num < min) return `Min: ${min}`;
-    if (num > max) return `Max: ${max}`;
+    if (min !== undefined && num < min) return `Min: ${min}`;
+    if (max !== undefined && num > max) return `Max: ${max}`;
     return '';
   };
 
@@ -338,8 +398,8 @@ export function CreateJob({ onBack }: CreateJobProps) {
     field: string,
     value: string,
     setter: (v: string) => void,
-    min: number,
-    max: number,
+    min: number | undefined,
+    max: number | undefined,
     isInt: boolean,
   ) => {
     setter(value);
@@ -347,7 +407,39 @@ export function CreateJob({ onBack }: CreateJobProps) {
     setParamErrors(prev => ({ ...prev, [field]: err }));
   };
 
-  const hasParamErrors = Object.values(paramErrors).some(e => e !== '');
+  useEffect(() => {
+    if (!replicaLimits) return;
+    const err = validateParam('replicas', replicas, replicaLimits.minReplicas, replicaLimits.maxReplicas, true);
+    setParamErrors(prev => ({ ...prev, replicas: err }));
+  }, [replicaLimits, replicas]);
+
+  const hasParamErrors = Object.entries(paramErrors).some(([field, error]) => (
+    error !== '' && (adaptiveConcurrency || !ADAPTIVE_CLIENT_PARAM_FIELDS.has(field))
+  ));
+
+  // Assemble extra_body.aibrix.client from the Settings inputs, omitting blanks
+  // so unset fields fall back to metadata-service defaults. Returns undefined
+  // when nothing is configured.
+  const buildClientConfig = (): JobClientConfig | undefined => {
+    const retry: JobClientRetryPolicy = {
+      maxRetries: parseNumber(retryMaxRetries),
+      baseDelaySeconds: parseNumber(retryBaseDelay),
+      maxDelaySeconds: parseNumber(retryMaxDelay),
+      noEndpointMaxRetries: parseNumber(retryNoEndpointMaxRetries),
+    };
+    const hasRetry = Object.values(retry).some(v => v !== undefined);
+    const client: JobClientConfig = {
+      maxConcurrency: parseNumber(maxConcurrency),
+      // Only forward the toggle when the user diverged from the default (on).
+      adaptiveConcurrency: adaptiveConcurrency ? undefined : false,
+      adaptiveMaxFactor: adaptiveConcurrency ? parseNumber(adaptiveMaxFactor) : undefined,
+      adaptiveHealthyWindow: adaptiveConcurrency ? parseNumber(adaptiveHealthyWindow) : undefined,
+      adaptiveAdditiveIncrease: adaptiveConcurrency ? parseNumber(adaptiveAdditiveIncrease) : undefined,
+      retryPolicy: hasRetry ? retry : undefined,
+    };
+    const hasAny = Object.values(client).some(v => v !== undefined);
+    return hasAny ? client : undefined;
+  };
 
   useEffect(() => {
     if (selectedFile) {
@@ -396,7 +488,10 @@ export function CreateJob({ onBack }: CreateJobProps) {
     selectedExistingFileId: selectedExistingFile?.id ?? '',
     hasInferenceOverrides,
   });
-  const canSubmit = readiness.canSubmit;
+  const canSubmit = readiness.canSubmit && jobCapabilities !== null;
+  const blockedReason = jobCapabilities === null
+    ? (jobCapabilitiesError ? `Failed to load job capabilities: ${jobCapabilitiesError}` : 'Loading job capabilities...')
+    : readiness.reason;
   const canContinueDataset = selectedExistingFile != null || (selectedFile != null && (validation?.valid ?? false));
   const selectedModelLabel = formatModelSelectionLabel(selectedModel, selectedServingName);
 
@@ -418,7 +513,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
 
           let fileToUpload: File = selectedFile;
           if (hasAnyOverride(overrides)) {
-            const parsed = selectedFileParse ?? parseJsonl(await selectedFile.text());
+            const parsed = selectedFileParse ?? await parseJsonlFile(selectedFile, { retainFullRecords: true });
             const { records } = applyBatchOverrides(parsed.records, overrides);
             fileToUpload = new File(
               [serializeJsonl(records)],
@@ -451,17 +546,28 @@ export function CreateJob({ onBack }: CreateJobProps) {
           selectedEndpoint,
           selectedTemplate,
         }) as JobEndpoint;
+      const providerConfig = resourcePlugin?.toProviderConfig?.(
+        resourceConfig,
+        completionWindow,
+      ) ?? {};
 
       // maxTokens/temperature/topP/n are baked into the JSONL via
       // applyBatchOverrides above; no need to forward them to BFF.
       await createJob({
         inputDataset: datasetId || '',
         endpoint,
-        completionWindow: '24h',
+        completionWindow,
         name: displayName,
         modelTemplateName: selectedTemplate?.name,
         modelTemplateVersion: selectedTemplate?.version,
         modelId: selectedModelId || undefined,
+        resourceRequest: {
+          replicas: parseNumber(replicas) ?? 1,
+          providerConfig: Object.keys(providerConfig).length > 0
+            ? providerConfig
+            : undefined,
+        },
+        client: buildClientConfig(),
       });
       onBack();
     } catch (err) {
@@ -909,12 +1015,256 @@ export function CreateJob({ onBack }: CreateJobProps) {
                   </div>
                 </div>
 
+                <div>
+                  <label className="block text-sm mb-2">Completion window</label>
+                  <select
+                    value={completionWindow}
+                    onChange={(e) => {
+                      const nextCompletionWindow = e.target.value as CompletionWindowOption;
+                      setCompletionWindow(nextCompletionWindow);
+                      setResourceConfig(current => (
+                        resourcePlugin?.normalize?.(current, nextCompletionWindow) ?? current
+                      ));
+                    }}
+                    className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 bg-white"
+                  >
+                    {COMPLETION_WINDOW_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 <BatchEndpointControl
                   template={selectedTemplate}
                   selectedEndpoint={selectedEndpoint}
                   detectedEndpoint={validation?.endpoints[0] ?? ''}
                   onChange={setSelectedEndpoint}
                 />
+
+                <div className="border-t border-gray-100 pt-4">
+                  <h3 className="text-sm font-medium mb-1">Resources</h3>
+                  <p className="text-xs text-gray-400 mb-4">
+                    Choose how many dedicated workers this batch should provision.
+                  </p>
+                  {jobCapabilitiesError && (
+                    <p className="text-xs text-red-500 mb-4">
+                      Failed to load job capabilities: {jobCapabilitiesError}
+                    </p>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm mb-1">Service replicas</label>
+                      <p className="text-xs text-gray-400 mb-1">
+                        {replicaLimits ? `${replicaLimits.minReplicas} - ${replicaLimits.maxReplicas}` : 'Loading limits...'}
+                      </p>
+                      <input
+                        type="text"
+                        value={replicas}
+                        onChange={(e) => handleParamChange('replicas', e.target.value, setReplicas, replicaLimits?.minReplicas, replicaLimits?.maxReplicas, true)}
+                        placeholder="1"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
+                          paramErrors.replicas ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {paramErrors.replicas && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.replicas}</p>
+                      )}
+                    </div>
+                    {ResourceFields && (
+                      <ResourceFields
+                        completionWindow={completionWindow}
+                        value={resourceConfig}
+                        onChange={setResourceConfig}
+                      />
+                    )}
+                  </div>
+                </div>
+
+                {/* Client settings section (extra_body.aibrix.client) */}
+                <div className="border-t border-gray-100 pt-4">
+                  <h3 className="text-sm font-medium mb-1">Client Settings</h3>
+                  <p className="text-xs text-gray-400 mb-4">
+                    Optional smart-client concurrency and retry controls. Leave blank to use service defaults.
+                  </p>
+
+                  <label className="flex items-center gap-2 mb-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={adaptiveConcurrency}
+                      onChange={(e) => setAdaptiveConcurrency(e.target.checked)}
+                      className="rounded border-gray-300 text-teal-600 focus:ring-teal-500/30"
+                    />
+                    Adaptive concurrency
+                    <span className="text-xs text-gray-400">
+                      (grow toward Max Concurrency; off = fixed concurrency)
+                    </span>
+                  </label>
+
+                  <p className="text-xs text-gray-400 mb-4">
+                    Initial probing grows by at least 25%; after the first decrease, growth uses the Additive Increase step.
+                  </p>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm mb-1">Max Concurrency</label>
+                      <p className="text-xs text-gray-400 mb-1">{MIN_CLIENT_MAX_CONCURRENCY} - {MAX_CLIENT_MAX_CONCURRENCY}</p>
+                      <input
+                        type="text"
+                        value={maxConcurrency}
+                        onChange={(e) => handleParamChange('maxConcurrency', e.target.value, setMaxConcurrency, MIN_CLIENT_MAX_CONCURRENCY, MAX_CLIENT_MAX_CONCURRENCY, true)}
+                        placeholder={`e.g. ${MAX_CLIENT_MAX_CONCURRENCY}`}
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
+                          paramErrors.maxConcurrency ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {paramErrors.maxConcurrency && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.maxConcurrency}</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm mb-1">Adaptive Max Factor</label>
+                      <p className="text-xs text-gray-400 mb-1">&ge; 1</p>
+                      <input
+                        type="text"
+                        value={adaptiveMaxFactor}
+                        disabled={!adaptiveConcurrency}
+                        onChange={(e) => handleParamChange('adaptiveMaxFactor', e.target.value, setAdaptiveMaxFactor, MIN_ADAPTIVE_MAX_FACTOR, undefined, false)}
+                        placeholder="e.g. 8"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed ${
+                          adaptiveConcurrency && paramErrors.adaptiveMaxFactor ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {adaptiveConcurrency && paramErrors.adaptiveMaxFactor && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.adaptiveMaxFactor}</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm mb-1">Adaptive Healthy Window</label>
+                      <p className="text-xs text-gray-400 mb-1">Healthy completions before each increase, &ge; 1</p>
+                      <input
+                        type="text"
+                        value={adaptiveHealthyWindow}
+                        disabled={!adaptiveConcurrency}
+                        onChange={(e) => handleParamChange(
+                          'adaptiveHealthyWindow',
+                          e.target.value,
+                          setAdaptiveHealthyWindow,
+                          MIN_ADAPTIVE_HEALTHY_WINDOW,
+                          undefined,
+                          true,
+                        )}
+                        placeholder="e.g. 8"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed ${
+                          adaptiveConcurrency && paramErrors.adaptiveHealthyWindow ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {adaptiveConcurrency && paramErrors.adaptiveHealthyWindow && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.adaptiveHealthyWindow}</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm mb-1">Adaptive Additive Increase</label>
+                      <p className="text-xs text-gray-400 mb-1">Fixed growth step after the first decrease, &ge; 1</p>
+                      <input
+                        type="text"
+                        value={adaptiveAdditiveIncrease}
+                        disabled={!adaptiveConcurrency}
+                        onChange={(e) => handleParamChange(
+                          'adaptiveAdditiveIncrease',
+                          e.target.value,
+                          setAdaptiveAdditiveIncrease,
+                          MIN_ADAPTIVE_ADDITIVE_INCREASE,
+                          undefined,
+                          true,
+                        )}
+                        placeholder="e.g. 1"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed ${
+                          adaptiveConcurrency && paramErrors.adaptiveAdditiveIncrease ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {adaptiveConcurrency && paramErrors.adaptiveAdditiveIncrease && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.adaptiveAdditiveIncrease}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <h4 className="text-sm font-medium mt-4 mb-2">Retry Policy</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm mb-1">Max Retries</label>
+                      <p className="text-xs text-gray-400 mb-1">&ge; 0</p>
+                      <input
+                        type="text"
+                        value={retryMaxRetries}
+                        onChange={(e) => handleParamChange('retryMaxRetries', e.target.value, setRetryMaxRetries, 0, 100000, true)}
+                        placeholder="e.g. 5"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
+                          paramErrors.retryMaxRetries ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {paramErrors.retryMaxRetries && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.retryMaxRetries}</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm mb-1">No-Endpoint Max Retries</label>
+                      <p className="text-xs text-gray-400 mb-1">&ge; 0</p>
+                      <input
+                        type="text"
+                        value={retryNoEndpointMaxRetries}
+                        onChange={(e) => handleParamChange('retryNoEndpointMaxRetries', e.target.value, setRetryNoEndpointMaxRetries, 0, 100000, true)}
+                        placeholder="e.g. 5"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
+                          paramErrors.retryNoEndpointMaxRetries ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {paramErrors.retryNoEndpointMaxRetries && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.retryNoEndpointMaxRetries}</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm mb-1">Base Delay (s)</label>
+                      <p className="text-xs text-gray-400 mb-1">&ge; 0</p>
+                      <input
+                        type="text"
+                        value={retryBaseDelay}
+                        onChange={(e) => handleParamChange('retryBaseDelay', e.target.value, setRetryBaseDelay, 0, 3600, false)}
+                        placeholder="e.g. 0.5"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
+                          paramErrors.retryBaseDelay ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {paramErrors.retryBaseDelay && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.retryBaseDelay}</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm mb-1">Max Delay (s)</label>
+                      <p className="text-xs text-gray-400 mb-1">&ge; 0</p>
+                      <input
+                        type="text"
+                        value={retryMaxDelay}
+                        onChange={(e) => handleParamChange('retryMaxDelay', e.target.value, setRetryMaxDelay, 0, 3600, false)}
+                        placeholder="e.g. 5"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
+                          paramErrors.retryMaxDelay ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {paramErrors.retryMaxDelay && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.retryMaxDelay}</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
 
                 {/* Hyperparameters section */}
                 <div className="border-t border-gray-100 pt-4">
@@ -1028,8 +1378,8 @@ export function CreateJob({ onBack }: CreateJobProps) {
                     {uploading ? 'Uploading file...' : submitting ? 'Creating...' : 'Create Job'}
                   </button>
                 </div>
-                {!canSubmit && readiness.reason && (
-                  <p className="text-xs text-gray-500 text-right">{readiness.reason}</p>
+                {!canSubmit && blockedReason && (
+                  <p className="text-xs text-gray-500 text-right">{blockedReason}</p>
                 )}
               </div>
             )}
@@ -1153,6 +1503,11 @@ export function CreateJob({ onBack }: CreateJobProps) {
                 <div>
                   <div className="mb-1">Output Dataset:</div>
                   <p className="text-gray-500">The output file is created automatically after successful requests complete.</p>
+                </div>
+
+                <div>
+                  <div className="mb-1">Service replicas:</div>
+                  <p className="text-gray-500">The number of dedicated workers to provision for this batch.</p>
                 </div>
 
                 <h4 className="mt-4 mb-2">Inference Parameters</h4>

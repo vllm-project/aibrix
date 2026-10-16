@@ -24,6 +24,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	modelapi "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	webhookutils "github.com/vllm-project/aibrix/test/utils/webhook"
 	"github.com/vllm-project/aibrix/test/utils/wrapper"
 )
 
@@ -31,17 +32,12 @@ var _ = ginkgo.Describe("modelAdapter default and validation", func() {
 	var ns *corev1.Namespace
 
 	ginkgo.BeforeEach(func() {
-		// Create test namespace before each test.
-		ns = &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "test-ns-",
-			},
-		}
-		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+		ns = nil
+		ns = webhookutils.CreateNamespace(ctx, k8sClient, "test-ns-")
 	})
 
 	ginkgo.AfterEach(func() {
-		gomega.Expect(k8sClient.Delete(ctx, ns)).To(gomega.Succeed())
+		webhookutils.DeleteNamespace(ctx, k8sClient, ns)
 		var adapters modelapi.ModelAdapterList
 		gomega.Expect(k8sClient.List(ctx, &adapters)).To(gomega.Succeed())
 
@@ -118,6 +114,16 @@ var _ = ginkgo.Describe("modelAdapter default and validation", func() {
 				return wrapper.MakeModelAdapter("test-adapter").
 					Namespace(ns.Name).
 					ArtifactURL("ms://").
+					PodSelector(&metav1.LabelSelector{}).
+					Obj()
+			},
+			failed: true,
+		}),
+		ginkgo.Entry("adapter creation with misspelled huggingface schema should be failed", &testValidatingCase{
+			adapter: func() *modelapi.ModelAdapter {
+				return wrapper.MakeModelAdapter("test-adapter").
+					Namespace(ns.Name).
+					ArtifactURL("hugingface://yard1/llama-2-7b-sql-lora-tests").
 					PodSelector(&metav1.LabelSelector{}).
 					Obj()
 			},

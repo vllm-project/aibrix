@@ -42,6 +42,9 @@ python test_openai_endpoints.py
 
 # Test vLLM-specific endpoints (uses HTTP client)
 python test_vllm_endpoints.py
+
+# Test SGLang-specific endpoints (uses HTTP client)
+python test_sglang_endpoints.py
 ```
 
 You can also specify a custom base URL:
@@ -49,7 +52,253 @@ You can also specify a custom base URL:
 ```bash
 python test_openai_endpoints.py --base-url http://localhost:8000/v1
 python test_vllm_endpoints.py --base-url http://localhost:8000
+python test_sglang_endpoints.py --base-url http://localhost:8000
 ```
+
+### Testing PD contracts locally
+
+The PR2 mock supports explicit, connector-scoped PD contracts. These settings
+are test-only and do not change the gateway implementation. When
+`MOCK_PD_CONTRACT` is unset, the mock keeps its legacy behavior.
+
+| Environment variable | Values | Purpose |
+| --- | --- | --- |
+| `MOCK_PD_CONTRACT` | `vllm-aibrix-shfs`, `vllm-aibrix-nixl`, `sglang-http`, `trtllm-openai` | Enables strict PD request validation |
+| `MOCK_PD_ROLE` | `prefill`, `decode` | Identifies the current mock pod role |
+| `POD_NAME` | pod name | Adds a stable pod name to responses and recorder entries |
+| `LLM_ENGINE` | `vllm`, `sglang`, `trtllm` | Identifies the mock engine |
+
+A standalone process represents one pod, so start separate processes if you
+want to test both prefill and decode legs. Use `127.0.0.1` for local curl
+requests when a proxy is configured for `localhost`.
+
+Example strict SGLang prefill mock:
+
+```bash
+STANDALONE_MODE=true \
+MOCK_PD_CONTRACT=sglang-http \
+MOCK_PD_ROLE=prefill \
+LLM_ENGINE=sglang \
+POD_NAME=local-sglang-prefill \
+python app.py
+```
+
+Send a request with the required bootstrap fields:
+
+```bash
+curl -sS -i -X POST http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'x-request-id: local-sglang-1' \
+  -d '{
+    "model": "llama2-7b-sglang",
+    "messages": [{"role": "user", "content": "hello"}],
+    "bootstrap_host": "10.0.0.1",
+    "bootstrap_port": 8998,
+    "bootstrap_room": 12345,
+    "max_tokens": 8
+  }'
+```
+
+The successful response remains a normal OpenAI-compatible completion. The
+PD-specific request can be inspected through the recorder:
+
+```bash
+curl -sS \
+  'http://127.0.0.1:8000/debug/requests?request_id=local-sglang-1'
+```
+
+Each record includes the request ID, sequence, path, engine, role, headers,
+parsed JSON, status, outcome, response, and the exact raw body as base64.
+`Authorization` values are redacted before they are recorded. The debug
+endpoint is intended for internal Pod-proxy access and does not use the normal
+OpenAI Bearer-token middleware. It has no reset/delete operation; use a unique
+`x-request-id` for each test.
+
+The four strict contract modes validate these internal prefill/decode shapes:
+
+- `vllm-aibrix-shfs`: prefill receives `kv_transfer_params.do_remote_decode=true`;
+  decode receives the merged transfer fields and opaque sentinel.
+- `vllm-aibrix-nixl`: prefill must not receive the SHFS skeleton; gateway wraps
+  the complete prefill response under `disagg_prefill_resp` for decode.
+- `sglang-http`: both legs receive top-level `bootstrap_host`,
+  `bootstrap_port`, and `bootstrap_room`.
+- `trtllm-openai`: prefill uses `context_only`; decode uses `generation_only`
+  with `disagg_request_id`, `first_gen_tokens`,
+  `encoded_opaque_state`, and prompt token IDs.
+
+Request-scoped fault injection is available for failure-path testing:
+
+```bash
+# Fail only when this process has MOCK_PD_ROLE=prefill.
+curl -sS -i -X POST http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'x-request-id: local-failure-1' \
+  -H 'x-aibrix-mock-fail: prefill' \
+  -d '{"model":"llama2-7b","messages":[{"role":"user","content":"fail"}]}'
+
+# Delay the current mock request by 200 ms.
+curl -sS -i -X POST http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'x-request-id: local-delay-1' \
+  -H 'x-aibrix-mock-delay-ms: 200' \
+  -d '{"model":"llama2-7b","messages":[{"role":"user","content":"wait"}]}'
+
+# Delay only the leg handled by a process with MOCK_PD_ROLE=decode.
+curl -sS -i -X POST http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'x-request-id: local-delay-2' \
+  -H 'x-aibrix-mock-delay-ms: 5000' \
+  -H 'x-aibrix-mock-delay-role: decode' \
+  -d '{"model":"llama2-7b","messages":[{"role":"user","content":"wait"}]}'
+```
+
+Matching `fail` requests return HTTP 500 and invalid delay values return HTTP
+400. Both outcomes are recorded. Use `x-aibrix-mock-fail: backend` for a non-PD
+mock deployment; `prefill` and `decode` remain role-specific. The delay limit
+is 30 seconds.
+
+`x-aibrix-mock-delay-ms` alone applies to whichever leg receives the request,
+which for a disaggregated request is both of them: the gateway forwards client
+headers to the prefill and the decode pod alike. `x-aibrix-mock-delay-role`
+(`prefill` or `decode`) restricts the delay to one leg, so a test can hold one
+leg while the other answers immediately. An unknown role returns HTTP 400.
+
+`x-aibrix-mock-stream-stall-ms` holds a streaming chat completion after its
+first chunk, i.e. a pod that started answering and then went silent. It has
+the same 30 second limit, invalid values return HTTP 400, and
+`x-aibrix-mock-delay-role` scopes it to one leg in the same way.
+
+`x-aibrix-mock-first-token-stall-ms` holds a streaming chat completion after its
+response headers and before its first chunk, i.e. a pod that accepted the
+request and never produced a token. This is the shape a real streaming engine
+shows the gateway: an ASGI `StreamingResponse` sends its headers before it
+starts iterating the body. Same limit, validation and role scoping as the
+stream stall.
+
+`POST /abort_request` mocks the SGLang endpoint the gateway calls on the decode
+pod when a PD prefill leg failed. It takes `{"rid": "..."}`, answers `200`, and
+records the abort under that rid so a test can assert which request the gateway
+cancelled; a request without a rid is rejected with HTTP 400.
+
+### PD mock deployment in Kubernetes
+
+`config/mock/kustomization.yaml` deploys separate mock topologies for SHFS,
+NIXL, SGLang, and TRT-LLM. NIXL uses the independent model
+`llama2-7b-vllm-nixl` and the label
+`model.aibrix.ai/kv-connector-type: nixl`, so it cannot be paired with the
+default vLLM SHFS pods.
+
+```bash
+kubectl apply -k config/mock
+kubectl get stormservices -n default
+kubectl delete -k config/mock
+```
+
+The Kubernetes PD manifests set `MOCK_PD_CONTRACT` and `MOCK_PD_ROLE` on every
+prefill/decode container. The mock app does not require Redis for PR2. SGLang
+cross-pod failure state is reserved for the later PD failure e2e work.
+
+### Upstream KV connector source map
+
+The mock contracts are compatibility contracts for the gateway behavior that
+is declared in AIBrix. When an upstream engine or connector changes, check the
+HTTP schema first, then the prefill request/response code, then the decode
+consumer. Do not silently change an existing contract for a new upstream
+version; add a version- or connector-specific contract when the wire shape
+changes.
+
+#### vLLM
+
+vLLM implements KV transfer through the `kv_connector` hierarchy:
+
+```text
+vllm/distributed/kv_transfer/
+└── kv_connector/v1/
+    ├── base.py
+    ├── nixl_connector.py
+    ├── shared_storage_connector.py
+    └── mooncake/
+        └── mooncake_connector.py
+```
+
+The HTTP extension is defined in
+[`vllm/entrypoints/openai/protocol.py`](https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/protocol.py).
+The connector implementations are under the
+[`v1 kv_connector directory`](https://github.com/vllm-project/vllm/tree/main/vllm/distributed/kv_transfer/kv_connector/v1).
+
+The corresponding AIBrix code is:
+
+```text
+pkg/plugins/gateway/algorithms/pd/engine/vllm.go
+pkg/plugins/gateway/algorithms/pd/transfer/resolver.go
+pkg/plugins/gateway/algorithms/pd/transfer/shfs.go
+pkg/plugins/gateway/algorithms/pd/transfer/nixl.go
+pkg/plugins/gateway/algorithms/pd/transfer/mooncake.go
+```
+
+For vLLM changes, update the SHFS or NIXL mock contract only after confirming
+which AIBrix transfer agent is selected. Do not treat every `LLM_ENGINE=vllm`
+request as having the same wire protocol.
+
+#### SGLang
+
+SGLang uses disaggregation and bootstrap fields rather than vLLM's
+`kv_connector` hierarchy:
+
+```text
+python/sglang/srt/entrypoints/openai/protocol.py
+python/sglang/srt/entrypoints/openai/serving_chat.py
+python/sglang/srt/disaggregation/prefill.py
+python/sglang/srt/disaggregation/decode.py
+```
+
+The relevant HTTP fields are top-level
+`bootstrap_host`, `bootstrap_port`, and `bootstrap_room`:
+
+- [`protocol.py`](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/entrypoints/openai/protocol.py)
+- [`serving_chat.py`](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/entrypoints/openai/serving_chat.py)
+- [`prefill.py`](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/disaggregation/prefill.py)
+- [`decode.py`](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/disaggregation/decode.py)
+
+AIBrix mutates these fields in
+`pkg/plugins/gateway/algorithms/pd/engine/sglang.go`. If SGLang changes the
+bootstrap schema, update `sglang-http` and its raw-body preservation tests.
+
+#### TensorRT-LLM
+
+TensorRT-LLM keeps the HTTP protocol and PD service in:
+
+```text
+tensorrt_llm/serve/openai_protocol.py
+tensorrt_llm/serve/openai_disagg_service.py
+tensorrt_llm/disaggregated_params.py
+```
+
+Useful upstream references:
+
+- [`openai_protocol.py`](https://github.com/NVIDIA/TensorRT-LLM/blob/main/tensorrt_llm/serve/openai_protocol.py)
+- [`openai_disagg_service.py`](https://github.com/NVIDIA/TensorRT-LLM/blob/main/tensorrt_llm/serve/openai_disagg_service.py)
+- [`disaggregated_params.py`](https://github.com/NVIDIA/TensorRT-LLM/blob/main/tensorrt_llm/disaggregated_params.py)
+
+The AIBrix implementation is
+`pkg/plugins/gateway/algorithms/pd/engine/trtllm.go`. Track
+`request_type`, `disagg_request_id`, `first_gen_tokens`,
+`encoded_opaque_state`, and `prompt_token_ids`. The HTTP response shape uses
+`choices[0].disaggregated_params`; the mock must not replace it with an
+unrelated top-level shape.
+
+When a field changes, use this maintenance path:
+
+```text
+upstream HTTP schema
+  → prefill request builder
+  → prefill response builder
+  → AIBrix gateway merge
+  → decode request validator
+```
+
+The detailed evidence and version notes are maintained in
+[`PD_CONTRACT_TRACE.md`](./PD_CONTRACT_TRACE.md).
 
 ## Mocked vLLM Basic Deployment
 
@@ -138,38 +387,89 @@ curl http://localhost:8000/v1/chat/completions \
 
 ## Mocked vLLM Features
 
-### OpenAI-Compatible Endpoints
-- `/v1/models` - List available models
+Endpoints are grouped by modality. An endpoint that exists for only one engine is tagged with its name.
+
+### Text Generation
 - `/v1/chat/completions` - Chat completions (streaming supported)
 - `/v1/completions` - Text completions (streaming supported)
+- `/v1/chat/completions/batch` - Batch chat: `messages` is a list of conversations, answered by one non-streaming response with a choice per conversation and the usage summed over all of them; `stream: true`, `n > 1` and beam search are refused (vLLM-Omni)
+
+### Embeddings, Ranking and Scoring
 - `/v1/embeddings` - Text embeddings
-- `/v1/images/generations` - Image generation (OpenAI format)
-- `/v1/video/generations` - Video generation (OpenAI/Sora format)
 - `/v1/rerank` - Document reranking
+- `/v1/decisions` - Typed choice, score, and yes/no questions about an input (string, object, or array), answered without generation; usage reports prompt tokens only (SGLang)
+- `/v1/systemone` - The same decisions in the System One request shape: a `state` (string, object, or array) and a map of `noul`, `choice`, and `score` questions keyed by id; usage reports `input_tokens` and `output_tokens` with no total (SGLang)
+
+### Tokenization and Pooling
+- `/tokenize` - Tokenize text (vLLM)
+- `/detokenize` - Detokenize tokens (vLLM)
+- `/pooling` - Pooling models (embed/classify/score; string, array, or pre-tokenized input) (vLLM)
+
+### Image
+- `/v1/images/generations` - Image generation (OpenAI format)
+- `/v1/chat/completions` - Image generation/editing (returns base64 image in content array when model name contains image keywords or diffusion params are present)
+
+### Audio
 - `/v1/audio/speech` - Text-to-speech (OpenAI + vLLM-Omni voices)
+- `/v1/audio/speech` - TTS with vLLM-Omni params (`language`, `instructions`, `task_type`, `ref_audio`, `ref_text`)
+- `/v1/audio/speech/batch` - Batch TTS (SGLang-Omni format: shared defaults plus `items`; one JSON response with a base64 `audio_data` result per item, and a bad item becomes an `error` entry inside an HTTP 200)
+- `/v1/audio/voices` - List available TTS voices
 - `/v1/audio/transcriptions` - Audio transcription
 - `/v1/audio/translations` - Audio translation
-
-### vLLM-Omni Endpoints
-- `/v1/chat/completions` - Image generation/editing (returns base64 image in content array when model name contains image keywords or diffusion params are present)
 - `/v1/chat/completions` - Chat with `modalities: ["text", "audio"]` returns mock audio in response
-- `/v1/audio/speech` - TTS with vLLM-Omni params (`language`, `instructions`, `task_type`, `ref_audio`, `ref_text`)
-- `/v1/audio/voices` - List available TTS voices
+
+### Video
+- `/v1/video/generations` - Video generation (OpenAI/Sora format)
 - `/v1/videos` - Video generation (vLLM-Omni/Wan2.2 format, multipart/form-data, synchronous `b64_json` response, supports `input_reference` for I2V)
 
-### vLLM-Specific Endpoints
-- `/v1/load_lora_adapter` - Load a LoRA adapter
-- `/v1/unload_lora_adapter` - Unload a LoRA adapter
-- `/tokenize` - Tokenize text
-- `/detokenize` - Detokenize tokens
-- `/load` - Server load metrics
-- `/version` - Version info
-- `/metrics` - Prometheus metrics
+### Models and LoRA Adapters
+- `/v1/models` - List available models
+- `/v1/load_lora_adapter` - Load a LoRA adapter (vLLM)
+- `/v1/unload_lora_adapter` - Unload a LoRA adapter (vLLM)
 
-### Health/Utility Endpoints
+### Health and Server Utilities
 - `/health` - Health check
 - `/ready` - Ready check
 - `/ping` - Ping check
+- `/load` - Server load metrics (vLLM)
+- `/version` - Version info (vLLM)
+- `/metrics` - Prometheus metrics (vLLM)
+
+
+### Elastic EP Endpoints
+
+The mock engine serves the elastic EP state surface that the PodAutoscaler
+observes (issue #2288):
+
+- `POST /is_scaling_elastic_ep` - Answers `200 {"is_scaling_elastic_ep": false}` while idle.
+- `GET /debug/elastic_ep` - Read the simulated scaling state.
+- `POST /debug/elastic_ep` - Drive the simulated scaling state.
+
+While a scaling window is active, every request that is not under `/debug/`
+answers the upstream 503 payload
+`{"error": "The model is currently scaling. Please try again later."}`,
+matching the vLLM elastic EP middleware, which blocks all HTTP requests while
+a scaling commit is in flight.
+
+```bash
+# Simulate a scaling commit that expires after 5 seconds.
+curl -s -X POST http://localhost:8000/debug/elastic_ep \
+  -H "Content-Type: application/json" \
+  -d '{"scaling": true, "duration_seconds": 5}'
+
+# The probe now answers 503, which the PodAutoscaler records as scaling.
+curl -i -X POST http://localhost:8000/is_scaling_elastic_ep
+
+# Hold the window until it is cleared.
+curl -s -X POST http://localhost:8000/debug/elastic_ep \
+  -H "Content-Type: application/json" \
+  -d '{"scaling": true}'
+curl -s -X POST http://localhost:8000/debug/elastic_ep \
+  -H "Content-Type: application/json" \
+  -d '{"scaling": false}'
+```
+
+The surface is covered by `test_elastic_ep.py`.
 
 
 ## How to test AIBrix features

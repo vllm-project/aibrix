@@ -1,24 +1,53 @@
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Unit tests for BatchJobError and related job entity classes"""
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
+import aibrix.batch.job_entity.batch_job as batch_job_module
 from aibrix.batch.job_entity import (
     AibrixMetadata,
+    BatchJob,
     BatchJobEndpoint,
     BatchJobError,
     BatchJobErrorCode,
     BatchJobSpec,
+    BatchJobState,
+    BatchJobStatus,
     BatchProfileRef,
+    ClientConfig,
     CompletionWindow,
+    Condition,
+    ConditionStatus,
+    ConditionType,
     JobAnnotationKey,
+    JobRuntimeRef,
     ModelTemplateRef,
     ResourceAllocation,
     ResourceDetail,
     RuntimeSpec,
+    ensure_batch_job_error,
 )
+from aibrix.batch.job_entity.aibrix_metadata import MAX_CLIENT_CONCURRENCY
+from aibrix.batch.job_entity.batch_job import format_completion_window
 from aibrix.batch.manifest.renderer import JobManifestRenderer, RenderError
 from aibrix.batch.template import local_profile_registry, local_template_registry
 
@@ -148,6 +177,44 @@ class TestBatchJobEntityCreation:
         assert spec.completion_window == 86400
         assert spec.metadata == {"priority": "high"}
 
+    def test_batch_job_spec_accepts_arbitrary_valid_completion_windows(self):
+        windows = {
+            "1h": 3600,
+            "6min": 360,
+            "1d1h1min": 90060,
+        }
+        for window, seconds in windows.items():
+            spec = BatchJobSpec.from_strings(
+                input_file_id="test-input-123",
+                endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+                completion_window=window,
+            )
+            assert spec.completion_window == seconds
+
+    @pytest.mark.parametrize(
+        ("seconds", "expected"),
+        [
+            (90060, "1d1h1min"),
+            (176404, "2d1h"),
+            (5880, "1h38min"),
+            (2, "0h"),
+        ],
+    )
+    def test_format_completion_window(self, seconds, expected):
+        assert format_completion_window(seconds) == expected
+
+    @pytest.mark.parametrize(
+        "window",
+        ["0min", "59s", "1.5h", "38min1h"],
+    )
+    def test_batch_job_spec_rejects_invalid_completion_windows(self, window):
+        with pytest.raises(ValueError):
+            BatchJobSpec.from_strings(
+                input_file_id="test-input-123",
+                endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+                completion_window=window,
+            )
+
     def test_batch_job_spec_creation_with_aibrix_metadata(self):
         spec = BatchJobSpec(
             input_file_id="test-input-123",
@@ -195,6 +262,209 @@ class TestBatchJobEntityCreation:
         assert spec.aibrix.profile.name == "unittest"
 
     def test_resource_allocation_allows_extra_fields(self):
+        allocation = ResourceAllocation.model_validate(
+            {
+                "provision_id": "reservation-1",
+                "future_field": {"phase": "queued"},
+            }
+        )
+
+        assert allocation.provision_id == "reservation-1"
+        assert getattr(allocation, "future_field") == {"phase": "queued"}
+
+    def test_aibrix_metadata_extension_fields_include_client(self):
+        metadata = AibrixMetadata(
+            client=ClientConfig.model_validate(
+                {
+                    "max_concurrency": MAX_CLIENT_CONCURRENCY,
+                    "request_timeout_seconds": 45,
+                    "adaptive_concurrency": True,
+                    "adaptive_max_factor": 16,
+                    "adaptive_healthy_window": 2,
+                    "adaptive_additive_increase": 4,
+                    "retry_policy": {
+                        "max_retries": 5,
+                        "base_delay_seconds": 2,
+                        "max_delay_seconds": 10,
+                        "no_endpoint_max_retries": 5,
+                    },
+                }
+            )
+        )
+
+        fields = metadata.to_extension_fields()
+        restored = AibrixMetadata.from_extension_fields(**fields)
+
+        assert fields["client"]["max_concurrency"] == MAX_CLIENT_CONCURRENCY
+        assert fields["client"]["request_timeout_seconds"] == 45
+        assert restored is not None
+        assert restored.client is not None
+        assert restored.client.request_timeout_seconds == 45
+        assert restored.client.adaptive_healthy_window == 2
+        assert restored.client.adaptive_additive_increase == 4
+        assert restored.client.retry_policy is not None
+        assert restored.client.retry_policy.base_delay_seconds == 2
+
+    def test_client_config_rejects_request_timeout_below_one_second(self):
+        with pytest.raises(ValueError):
+            ClientConfig(request_timeout_seconds=0.5)
+
+    def test_resource_allocation_is_expiring_uses_deadline_timestamp(self):
+        now = int(datetime.now(timezone.utc).timestamp())
+        allocation = ResourceAllocation(
+            provision_id="reservation-1",
+            provision_resource_deadline=now - 1,
+        )
+
+        assert allocation.is_expiring() is True
+        assert (
+            ResourceAllocation(provision_resource_deadline=now + 3600).is_expiring()
+            is False
+        )
+        assert ResourceAllocation(provision_resource_deadline=0).is_expiring() is False
+
+    def test_aibrix_metadata_is_expiring_follows_resource_allocation(self):
+        now = int(datetime.now(timezone.utc).timestamp())
+        metadata = AibrixMetadata(
+            resource_allocation=ResourceAllocation(
+                provision_id="reservation-1",
+                provision_resource_deadline=now - 1,
+            )
+        )
+
+        assert metadata.is_expiring() is True
+        assert AibrixMetadata().is_expiring() is False
+
+    def test_batch_job_is_expiring_is_broader_than_status_expired(self):
+        job = BatchJob.new_local(
+            BatchJobSpec(
+                input_file_id="test-input-123",
+                endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+                completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+            )
+        )
+        job.status.add_condition(
+            Condition(
+                type=ConditionType.EXPIRED,
+                status=ConditionStatus.TRUE,
+                lastTransitionTime=datetime.now(timezone.utc),
+            )
+        )
+
+        assert job.is_expiring() is True
+        assert job.status.expired is False
+
+        job.status.state = BatchJobState.FINALIZED
+        assert job.status.expired is True
+
+    def test_batch_job_is_expiring_prefers_resource_deadline(self):
+        now = int(datetime.now(timezone.utc).timestamp())
+        due_job = BatchJob(
+            typeMeta={"apiVersion": "batch/v1", "kind": "Job"},
+            metadata={"creationTimestamp": datetime.now(timezone.utc)},
+            spec=BatchJobSpec(
+                input_file_id="test-input-124",
+                endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+                completion_window=1,
+                aibrix=AibrixMetadata(
+                    resource_allocation=ResourceAllocation(
+                        provision_id="reservation-1",
+                        provision_resource_deadline=now + 3600,
+                    )
+                ),
+            ),
+            status=BatchJobStatus(
+                jobID="job-124",
+                state=BatchJobState.CREATED,
+                createdAt=datetime.now(timezone.utc) - timedelta(seconds=5),
+            ),
+        )
+
+        assert due_job.is_expiring() is False
+
+        fresh_job = BatchJob(
+            typeMeta={"apiVersion": "batch/v1", "kind": "Job"},
+            metadata={"creationTimestamp": datetime.now(timezone.utc)},
+            spec=BatchJobSpec(
+                input_file_id="test-input-125",
+                endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+                completion_window=3600,
+                aibrix=AibrixMetadata(
+                    resource_allocation=ResourceAllocation(
+                        provision_id="reservation-2",
+                        provision_resource_deadline=now - 1,
+                    )
+                ),
+            ),
+            status=BatchJobStatus(
+                jobID="job-125",
+                state=BatchJobState.CREATED,
+                createdAt=datetime.now(timezone.utc),
+            ),
+        )
+
+        assert fresh_job.is_expiring() is True
+
+    def test_batch_job_status_execution_accepts_legacy_single_ref(self):
+        status = BatchJobStatus.model_validate(
+            {
+                "jobID": "job-123",
+                "state": BatchJobState.IN_PROGRESS,
+                "createdAt": "2026-05-24T00:00:00Z",
+                "execution": {
+                    "driverType": "local",
+                    "attempt": 2,
+                    "ownerRef": "worker-1",
+                },
+            }
+        )
+
+        execution = status.get_runtime_ref("local")
+
+        assert execution is not None
+        assert execution.attempt == 2
+        assert execution.owner_ref == "worker-1"
+
+    def test_batch_job_status_execution_is_keyed_by_driver_type(self):
+        status = BatchJobStatus(
+            jobID="job-123",
+            state=BatchJobState.IN_PROGRESS,
+            createdAt="2026-05-24T00:00:00Z",
+        )
+
+        status.set_runtime_ref(
+            "deployment",
+            JobRuntimeRef(
+                driverType="deployment",
+                attempt=1,
+                ownerRef="deploy-1",
+            ),
+        )
+        status.set_runtime_ref(
+            "local",
+            JobRuntimeRef(
+                driverType="local",
+                attempt=3,
+                ownerRef="worker-2",
+            ),
+        )
+
+        assert status.get_runtime_ref("deployment").owner_ref == "deploy-1"
+        assert status.get_runtime_ref("local").attempt == 3
+
+    def test_resource_allocations_wraps_non_list_resource_detail(self):
+        allocation = ResourceAllocation.model_validate(
+            {
+                "provision_id": "reservation-1",
+                "resource_details": {"endpoint_cluster": "cluster-a"},
+            }
+        )
+
+        assert allocation.resource_details is not None
+        assert len(allocation.resource_details) == 1
+        assert allocation.resource_details[0].endpoint_cluster == "cluster-a"
+
+    def test_resource_allocations_allows_extra_fields(self):
         allocation = ResourceAllocation.model_validate(
             {
                 "provision_id": "reservation-1",
@@ -406,6 +676,132 @@ class TestExceptionMessageConversion:
         error = BatchJobError(code=BatchJobErrorCode.FINALIZING_ERROR, message=str(fe))
 
         assert error.message == "Multi-line\nerror\tmessage\nwith\ttabs"
+
+
+class TestEnsureBatchJobError:
+    def test_unknown_exception_records_traceback_source(self):
+        def raise_unknown():
+            raise RuntimeError("boom")
+
+        try:
+            raise_unknown()
+        except RuntimeError as exc:
+            error = ensure_batch_job_error(exc, BatchJobErrorCode.INTERNAL_ERROR)
+
+        assert error.code == BatchJobErrorCode.INTERNAL_ERROR.value
+        assert error.message.startswith("RuntimeError: boom")
+        assert "(source: test_job_entity.py:" in error.message
+        assert error.param is None
+        assert error.line is None
+
+    def test_unknown_exception_without_message_uses_class_name(self):
+        try:
+            raise Exception()
+        except Exception as exc:
+            error = ensure_batch_job_error(exc, BatchJobErrorCode.INTERNAL_ERROR)
+
+        assert error.message.startswith("Exception")
+
+    def test_unknown_exception_uses_input_line_context(self):
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError as exc:
+            error = ensure_batch_job_error(
+                exc,
+                BatchJobErrorCode.INTERNAL_ERROR,
+                line=79,
+                param="custom_id=req-79",
+            )
+
+        assert error.line == 79
+        assert error.param == "custom_id=req-79"
+        assert error.message.startswith("RuntimeError: boom")
+
+    def test_unknown_exception_ignores_unexpected_kwargs(self):
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError as exc:
+            error = ensure_batch_job_error(
+                exc,
+                BatchJobErrorCode.INTERNAL_ERROR,
+                line=13,
+                param="custom_id=req-13",
+                request_id="req-13",
+            )
+
+        assert error.line == 13
+        assert error.param == "custom_id=req-13"
+        assert error.message.startswith("RuntimeError: boom")
+
+    def test_unknown_exception_logs_job_and_cause_context(self):
+        with patch.object(batch_job_module.logger, "error") as mock_error:
+            try:
+                try:
+                    raise ValueError("inner boom")
+                except ValueError as cause:
+                    raise RuntimeError("outer boom") from cause
+            except RuntimeError as exc:
+                error = ensure_batch_job_error(
+                    exc,
+                    BatchJobErrorCode.INTERNAL_ERROR,
+                    job=SimpleNamespace(job_id="job-123"),
+                )
+
+        assert error.message.startswith("RuntimeError: outer boom")
+        mock_error.assert_called_once()
+        _, kwargs = mock_error.call_args
+        assert kwargs["job_id"] == "job-123"
+        assert kwargs["error_type"] == "RuntimeError"
+        assert kwargs["cause_type"] == "ValueError"
+        assert kwargs["cause_message"] == "inner boom"
+        assert "context_type" not in kwargs
+        assert kwargs["exc_info"].__class__ is RuntimeError
+
+    def test_unknown_exception_logs_job_id_without_job_object(self):
+        with patch.object(batch_job_module.logger, "error") as mock_error:
+            try:
+                raise RuntimeError("boom")
+            except RuntimeError as exc:
+                ensure_batch_job_error(
+                    exc,
+                    BatchJobErrorCode.INTERNAL_ERROR,
+                    job_id="job-456",
+                )
+
+        _, kwargs = mock_error.call_args
+        assert kwargs["job_id"] == "job-456"
+
+    def test_existing_batch_job_error_keeps_existing_context(self):
+        original = BatchJobError(
+            code=BatchJobErrorCode.INTERNAL_ERROR,
+            message="known",
+            param="status",
+            line=7,
+        )
+
+        error = ensure_batch_job_error(original, BatchJobErrorCode.FINALIZING_ERROR)
+
+        assert error is original
+        assert error.param == "status"
+        assert error.line == 7
+
+    def test_existing_batch_job_error_fills_missing_input_context(self):
+        original = BatchJobError(
+            code=BatchJobErrorCode.INTERNAL_ERROR,
+            message="known",
+        )
+
+        error = ensure_batch_job_error(
+            original,
+            BatchJobErrorCode.FINALIZING_ERROR,
+            line=11,
+            param="custom_id=req-11",
+        )
+
+        assert error is not original
+        assert error.message == "known"
+        assert error.line == 11
+        assert error.param == "custom_id=req-11"
 
 
 class TestBatchJobErrorFastAPICompatibility:

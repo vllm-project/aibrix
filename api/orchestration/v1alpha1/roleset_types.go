@@ -27,7 +27,10 @@ import (
 
 // RoleSetSpec defines the desired state of RoleSet
 type RoleSetSpec struct {
-	Roles []RoleSpec `json:"roles,omitempty"`
+	// +kubebuilder:validation:MinItems=1
+	// +listType=map
+	// +listMapKey=name
+	Roles []RoleSpec `json:"roles"`
 
 	// +optional
 	// +kubebuilder:validation:Enum={Parallel,Sequential,Interleave}
@@ -36,6 +39,9 @@ type RoleSetSpec struct {
 
 	// +optional
 	SchedulingStrategy *SchedulingStrategy `json:"schedulingStrategy,omitempty"`
+
+	// +optional
+	TopologyPolicy *TopologyPolicy `json:"topologyPolicy,omitempty"`
 }
 
 // +kubebuilder:validation:MaxProperties=1
@@ -127,6 +133,54 @@ type VolcanoSchedulingStrategySpec struct {
 	MinResources v1.ResourceList `json:"minResources,omitempty" protobuf:"bytes,4,opt,name=minResources"`
 }
 
+type TopologyScope string
+
+const (
+	TopologyStormServiceScope TopologyScope = "StormService"
+	TopologyRoleSetScope      TopologyScope = "RoleSet"
+	TopologyRoleScope         TopologyScope = "Role"
+)
+
+type TopologyPolicyMode string
+
+const (
+	TopologyPolicyPreferred TopologyPolicyMode = "Preferred"
+	TopologyPolicyRequired  TopologyPolicyMode = "Required"
+)
+
+// TopologyPolicy specifies how Pods are co-located based on Kubernetes topology keys.
+// Updating this policy on a live RoleSet only affects newly created or replaced Pods because
+// Pod affinity is immutable after Pod creation.
+type TopologyPolicy struct {
+	// Scope defines the granularity of co-location.
+	// Valid values are:
+	// - "StormService": All Pods in the entire StormService share the same topology value.
+	// - "RoleSet": All Pods within each RoleSet share the same topology value (different RoleSets may be on different domains).
+	// - "Role": All Pods of the same role (across all RoleSets) share the same topology value.
+	// +kubebuilder:validation:Enum=StormService;RoleSet;Role
+	// +kubebuilder:validation:Required
+	Scope TopologyScope `json:"scope"`
+
+	// Mode defines whether topology co-location is a soft preference or a hard requirement.
+	// Defaults to Preferred to avoid blocking scheduling when the topology domain lacks resources.
+	// Preferred mode uses the strongest Kubernetes pod affinity preference weight (100).
+	// +kubebuilder:validation:Enum=Preferred;Required
+	// +kubebuilder:default=Preferred
+	// +optional
+	Mode TopologyPolicyMode `json:"mode,omitempty"`
+
+	// Key is the Kubernetes topology label key to enforce co-location on. It must follow
+	// Kubernetes label key syntax, with an optional DNS subdomain prefix and "/" separator.
+	// Common values include:
+	//   - "kubernetes.io/hostname" (node-level)
+	//   - "topology.kubernetes.io/zone" (zone-level)
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=317
+	// +kubebuilder:validation:Pattern=`^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$`
+	Key string `json:"key"`
+}
+
 // +enum
 type RoleSetUpdateStrategyType string
 
@@ -144,11 +198,20 @@ type DisruptionTolerance struct {
 }
 
 type RoleSpec struct {
-	Name string `json:"name,omitempty"`
+	// Name identifies the role and is used to derive child resource names.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
 
 	// Replicas is the number of desired replicas.
 	// +optional
+	// +kubebuilder:validation:Minimum=0
 	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Drain configures a grace period before controller-managed pod deletion.
+	// +optional
+	Drain *RoleDrainSpec `json:"drain,omitempty"`
 
 	// UpgradeOrder specifies the order in which this role should be upgraded.
 	// Lower values are upgraded first. If not specified, roles upgrade after all explicitly ordered roles.
@@ -182,13 +245,69 @@ type RoleSpec struct {
 	SchedulingStrategy *SchedulingStrategy `json:"schedulingStrategy,omitempty"`
 }
 
+// RoleDrainSpec configures drain behavior before RoleSet-managed pod deletion.
+type RoleDrainSpec struct {
+	// TimeoutSeconds is the minimum time to wait after marking a pod draining
+	// before the controller deletes it.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	TimeoutSeconds *int32 `json:"timeoutSeconds,omitempty"`
+}
+
 // +enum
+type RoleUpdateStrategyType string
+
+const (
+	// RecreateRoleUpdateStrategyType recreates pods during role updates.
+	RecreateRoleUpdateStrategyType RoleUpdateStrategyType = "Recreate"
+	// InPlaceIfPossibleRoleUpdateStrategyType updates pods in place when possible and recreates otherwise.
+	InPlaceIfPossibleRoleUpdateStrategyType RoleUpdateStrategyType = "InPlaceIfPossible"
+)
+
 type RoleUpdateStrategy struct {
+	// +optional
+	// +kubebuilder:validation:Enum={Recreate,InPlaceIfPossible}
+	// +kubebuilder:default=Recreate
+	Type RoleUpdateStrategyType `json:"type,omitempty" protobuf:"bytes,3,opt,name=type"`
+
 	// +optional
 	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty" protobuf:"bytes,1,opt,name=maxUnavailable"`
 
 	// +optional
 	MaxSurge *intstr.IntOrString `json:"maxSurge,omitempty" protobuf:"bytes,2,opt,name=maxSurge"`
+
+	// ReplacementScheduling configures scheduling preferences for replacement Pods.
+	// +optional
+	ReplacementScheduling *RoleReplacementScheduling `json:"replacementScheduling,omitempty"`
+}
+
+// RoleReplacementScheduling configures scheduling preferences that only apply
+// to replacement Pods created during role reconciliation.
+type RoleReplacementScheduling struct {
+	// HistoricalNode makes replacement Pods prefer nodes that previously ran the
+	// same role workload. The field is presence-based; omitting it disables this
+	// policy.
+	// +optional
+	HistoricalNode *HistoricalNodeSchedulingPolicy `json:"historicalNode,omitempty"`
+}
+
+// +enum
+type HistoricalNodeSchedulingMode string
+
+const (
+	// HistoricalNodeSchedulingPreferred injects a best-effort preferred node
+	// affinity term for remembered historical nodes.
+	HistoricalNodeSchedulingPreferred HistoricalNodeSchedulingMode = "Preferred"
+)
+
+// HistoricalNodeSchedulingPolicy configures historical-node replacement scheduling.
+type HistoricalNodeSchedulingPolicy struct {
+	// Mode defines how strongly historical nodes should be preferred. Defaults to
+	// Preferred when omitted. v1 only supports Preferred.
+	// +kubebuilder:validation:Enum=Preferred
+	// +kubebuilder:default=Preferred
+	// +optional
+	Mode HistoricalNodeSchedulingMode `json:"mode,omitempty"`
 }
 
 // RoleSetStatus defines the observed state of RoleSet
@@ -206,6 +325,10 @@ const (
 	RoleSetReady          ConditionType = "Ready"
 	RoleSetReplicaFailure ConditionType = "ReplicaFailure"
 	RoleSetProgressing    ConditionType = "Progressing"
+	// RoleSetPodGroupSynced means the scheduler PodGroup for this RoleSet has been reconciled.
+	RoleSetPodGroupSynced ConditionType = "PodGroupSynced"
+	// RoleSetGangSchedulingError means the RoleSet has an observed gang scheduling configuration or runtime error.
+	RoleSetGangSchedulingError ConditionType = "GangSchedulingError"
 )
 
 type RoleStatus struct {

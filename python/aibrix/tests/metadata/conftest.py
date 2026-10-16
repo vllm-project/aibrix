@@ -20,14 +20,13 @@ implementations. K8s and kopf are disabled so the suite runs without
 any external infrastructure.
 """
 
-import argparse
 import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from aibrix.metadata.app import build_app
+from aibrix.metadata.app import build_app, build_app_args
 from aibrix.metadata.setting import settings
 from aibrix.storage import StorageType
 
@@ -69,14 +68,9 @@ def create_test_app(disable_batch_api: bool = False, disable_file_api: bool = Fa
     settings.STORAGE_TYPE = StorageType.LOCAL
     settings.METASTORE_TYPE = StorageType.LOCAL
     try:
-        # Keep the synthetic CLI namespace aligned with build_app()'s
-        # current argument surface while staying on the local dry-run path
-        # used by metadata HTTP tests.
         app = build_app(
-            argparse.Namespace(
-                host=None,
-                port=8090,
-                enable_fastapi_docs=False,
+            build_app_args(
+                httpx_telemetry=False,
                 enable_k8s_support=False,
                 disable_batch_api=disable_batch_api,
                 disable_file_api=disable_file_api,

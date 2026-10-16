@@ -165,6 +165,13 @@ func NewTimeWindow(duration, granularity time.Duration) *TimeWindow {
 	}
 }
 
+// Duration returns the configured sliding window duration.
+func (tw *TimeWindow) Duration() time.Duration {
+	tw.mu.RLock()
+	defer tw.mu.RUnlock()
+	return tw.duration
+}
+
 // Record adds a value to the time window
 func (tw *TimeWindow) Record(timestamp time.Time, value float64) {
 	tw.mu.Lock()

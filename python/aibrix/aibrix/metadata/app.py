@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
@@ -23,7 +24,9 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from kubernetes import client as k8s_client
 from kubernetes import config
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from aibrix import envs
 from aibrix.batch import BatchDriver
 from aibrix.batch.client import (
     EndpointSource,
@@ -34,9 +37,18 @@ from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger, logging_basic_config
 from aibrix.metadata.api.v1 import batch, files, models, users
 from aibrix.metadata.core import HTTPXClientWrapper
+from aibrix.metadata.core.metrics import (
+    Emitter,
+    T,
+    duration_ms,
+    metrics_names,
+    setup_metrics,
+    shutdown_metrics,
+)
 from aibrix.metadata.setting import settings
 from aibrix.metadata.store import RedisMetadataStore
 from aibrix.storage import create_storage
+from aibrix.storage.redis_upgrade import maybe_upgrade_storage
 
 logger = init_logger(__name__)
 router = APIRouter()
@@ -47,6 +59,7 @@ _LOG_HTTP_BODIES = os.getenv("AIBRIX_MDS_HTTP_BODY_LOG", "").lower() in (
     "true",
     "yes",
 )
+_METRICS_PATH = "/metrics"
 
 
 def _load_batch_k8s_context(
@@ -116,6 +129,14 @@ async def liveness_check():
 async def readiness_check(request: Request):
     # Check if metadata store is ready
     try:
+        if getattr(request.app.state, "storage_upgrade_in_progress", False):
+            return JSONResponse(
+                content={
+                    "status": "not ready",
+                    "error": "storage upgrade in progress",
+                },
+                status_code=503,
+            )
         if hasattr(request.app.state, "metadata_store"):
             ping_ok = await request.app.state.metadata_store.ping()
             if not ping_ok:
@@ -160,6 +181,7 @@ async def status_check(request: Request):
 async def lifespan(app: FastAPI):
     # Code executed on startup
     logger.info("Initializing FastAPI app...")
+    app.state.storage_upgrade_in_progress = True
 
     # Initialize metadata store (abstraction over Redis) only if not already set
     # (e.g., tests may pre-configure a mock store before lifespan runs)
@@ -170,6 +192,12 @@ async def lifespan(app: FastAPI):
         # that haven't migrated to the MetadataStore interface yet
         app.state.redis_client = metadata_store.client
         logger.info("Metadata store initialized")
+
+    try:
+        for storage in _iter_upgrade_candidate_storages(app):
+            await maybe_upgrade_storage(storage)
+    finally:
+        app.state.storage_upgrade_in_progress = False
 
     if hasattr(app.state, "httpx_client_wrapper"):
         app.state.httpx_client_wrapper.start()
@@ -188,6 +216,32 @@ async def lifespan(app: FastAPI):
     elif hasattr(app.state, "redis_client"):
         await app.state.redis_client.aclose()  # type: ignore[attr-defined]
         logger.info("Redis client closed")
+    shutdown_metrics()
+
+
+def _iter_upgrade_candidate_storages(app: FastAPI):
+    seen_ids: set[int] = set()
+
+    def _yield_once(storage):
+        if storage is None:
+            return
+        storage_id = id(storage)
+        if storage_id in seen_ids:
+            return
+        seen_ids.add(storage_id)
+        yield storage
+
+    if hasattr(app.state, "storage"):
+        yield from _yield_once(app.state.storage)
+
+    try:
+        from aibrix.batch.storage import batch_metastore, batch_storage
+
+        if batch_storage.p_storage is not None:
+            yield from _yield_once(batch_storage.p_storage.storage)
+        yield from _yield_once(batch_metastore.p_metastore)
+    except Exception:
+        logger.exception("Failed to inspect batch storages for upgrade")  # type: ignore[call-arg]
 
 
 def build_app(args: argparse.Namespace, params={}):
@@ -203,6 +257,17 @@ def build_app(args: argparse.Namespace, params={}):
             redirect_slashes=False,
         )
 
+    metrics_runtime = setup_metrics(settings.METRICS)
+    app.state.metrics = metrics_runtime
+    if metrics_runtime.registry is not None:
+
+        @app.get(_METRICS_PATH, include_in_schema=False)
+        async def metrics_endpoint():
+            return Response(
+                content=generate_latest(metrics_runtime.registry),
+                media_type=CONTENT_TYPE_LATEST,
+            )
+
     if args.enable_k8s_support:
         try:
             config.load_incluster_config()
@@ -210,7 +275,11 @@ def build_app(args: argparse.Namespace, params={}):
             # Local debug
             config.load_kube_config()
 
-    app.state.httpx_client_wrapper = HTTPXClientWrapper()
+    app.state.httpx_client_wrapper = HTTPXClientWrapper(
+        timeout=envs.CORE_HTTPX_ASYNC_CLIENT_TIMEOUT_SECOND,
+        telemetry_enabled=args.httpx_telemetry,
+        telemetry_interval_seconds=args.httpx_telemetry_interval_seconds,
+    )
 
     # Normalize HTTPException responses to OpenAI's top-level
     # ``{"error": {message, type, param, code}}`` shape so that the
@@ -243,45 +312,67 @@ def build_app(args: argparse.Namespace, params={}):
     # to avoid buffering large payloads.
     @app.middleware("http")
     async def _log_http_traffic(request: Request, call_next):
+        if request.url.path == _METRICS_PATH:
+            return await call_next(request)
+
         method = request.method
         path = request.url.path
+        start_time = time.perf_counter()
+        status_code = 500
 
-        if not _LOG_HTTP_BODIES:
+        try:
+            if not _LOG_HTTP_BODIES:
+                response = await call_next(request)
+                status_code = response.status_code
+                print(
+                    f"[MDS HTTP] {method} {path} -> {response.status_code}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return response
+
+            req_ct = request.headers.get("content-type", "")
+            req_body: bytes = b""
+            if req_ct.startswith("application/json"):
+                try:
+                    req_body = await request.body()
+                except Exception:  # noqa: BLE001
+                    pass
+
             response = await call_next(request)
-            print(
-                f"[MDS HTTP] {method} {path} -> {response.status_code}",
-                file=sys.stderr,
-                flush=True,
+            status_code = response.status_code
+
+            resp_ct = response.headers.get("content-type", "")
+            if resp_ct.startswith("application/json"):
+                chunks = []
+                async for chunk in response.body_iterator:
+                    chunks.append(chunk)
+                resp_body = b"".join(chunks)
+                _emit_traffic(method, path, req_body, response.status_code, resp_body)
+                return Response(
+                    content=resp_body,
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    media_type=response.media_type,
+                )
+            _emit_traffic(
+                method, path, req_body, response.status_code, None, resp_ct=resp_ct
             )
             return response
-
-        req_ct = request.headers.get("content-type", "")
-        req_body: bytes = b""
-        if req_ct.startswith("application/json"):
-            try:
-                req_body = await request.body()
-            except Exception:  # noqa: BLE001
-                pass
-
-        response = await call_next(request)
-
-        resp_ct = response.headers.get("content-type", "")
-        if resp_ct.startswith("application/json"):
-            chunks = []
-            async for chunk in response.body_iterator:
-                chunks.append(chunk)
-            resp_body = b"".join(chunks)
-            _emit_traffic(method, path, req_body, response.status_code, resp_body)
-            return Response(
-                content=resp_body,
-                status_code=response.status_code,
-                headers=dict(response.headers),
-                media_type=response.media_type,
+        finally:
+            route = getattr(request.scope.get("route"), "path", "unmatched")
+            tags = (
+                T("method", method),
+                T("route", route),
+                T("status", str(status_code)),
             )
-        _emit_traffic(
-            method, path, req_body, response.status_code, None, resp_ct=resp_ct
-        )
-        return response
+            duration_ms(
+                Emitter,
+                metrics_names.METRIC_METADATA_HTTP_DURATION,
+                start_time,
+                *tags,
+            )
+            Emitter.counter(metrics_names.METRIC_METADATA_HTTP_REQUEST, 1, *tags)
 
     app.include_router(router)
 
@@ -314,6 +405,7 @@ def build_app(args: argparse.Namespace, params={}):
         # The construction of context should before any k8s dependent components'
         # (e.g., k8s job execution) initialization.
         infrastructure_context = _load_batch_k8s_context(args)
+        app.state.infrastructure_context = infrastructure_context
         app.state.template_registry = infrastructure_context.template_registry
         app.state.profile_registry = infrastructure_context.profile_registry
 
@@ -333,7 +425,9 @@ def build_app(args: argparse.Namespace, params={}):
             metastore_type=settings.METASTORE_TYPE,
             endpoint_source=endpoint_source,
             params=params,
+            stand_alone=getattr(args, "batch_driver_stand_alone", False),
         )
+        infrastructure_context.values["batch_driver"] = app.state.batch_driver
         app.include_router(
             batch.router, prefix=f"{settings.API_V1_STR}/batches", tags=["batches"]
         )  # mount batch api at /v1/batches
@@ -355,10 +449,28 @@ def nullable_str(val: str):
     return val
 
 
-def main():
+def build_app_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=f"Run {settings.PROJECT_NAME}")
     parser.add_argument("--host", type=nullable_str, default=None, help="host name")
     parser.add_argument("--port", type=int, default=8090, help="port number")
+    parser.add_argument(
+        "--httpx-telemetry",
+        action=argparse.BooleanOptionalAction,
+        default=envs.CORE_HTTPX_ASYNC_CLIENT_TELEMETRY_ENABLED,
+        help=(
+            "Enable HTTPX client telemetry logging. Defaults to "
+            "AIBRIX_HTTPX_CLIENT_TELEMETRY_ENABLED."
+        ),
+    )
+    parser.add_argument(
+        "--httpx-telemetry-interval-seconds",
+        type=float,
+        default=envs.CORE_HTTPX_ASYNC_CLIENT_TELEMETRY_INTERVAL_SECONDS,
+        help=(
+            "Telemetry summary interval for the shared metadata HTTPX client. "
+            "Defaults to AIBRIX_HTTPX_CLIENT_TELEMETRY_INTERVAL_SECONDS."
+        ),
+    )
     parser.add_argument(
         "--enable-fastapi-docs",
         action="store_true",
@@ -406,6 +518,23 @@ def main():
             "deployment with a redis metastore for crash-safe long-running batches."
         ),
     )
+    return parser
+
+
+def build_app_args(**overrides: Any) -> argparse.Namespace:
+    """Build a metadata-service CLI namespace with parser-backed defaults.
+
+    Tests can override only the fields they care about while staying aligned
+    with the authoritative parser when new CLI flags are added.
+    """
+    args = build_app_arg_parser().parse_args([])
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
+
+
+def main():
+    parser = build_app_arg_parser()
     args = parser.parse_args()
 
     if args.disable_file_api and not args.disable_batch_api:

@@ -81,6 +81,29 @@ spec:
               minReplicas:
                 format: int32
                 type: integer
+              observeWindowSeconds:
+                format: int64
+                maximum: 3600
+                minimum: 1
+                type: integer
+              panicWindowSeconds:
+                format: int64
+                maximum: 3600
+                minimum: 1
+                type: integer
+              predictive:
+                properties:
+                  horizonSeconds:
+                    format: int64
+                    maximum: 3600
+                    minimum: 1
+                    type: integer
+                  mode:
+                    enum:
+                    - Preview
+                    - Auto
+                    type: string
+                type: object
               scaleTargetRef:
                 properties:
                   apiVersion:
@@ -105,6 +128,39 @@ spec:
                 - KPA
                 - APA
                 type: string
+              schedules:
+                items:
+                  properties:
+                    daysOfWeek:
+                      items:
+                        type: string
+                      minItems: 1
+                      type: array
+                    endTime:
+                      pattern: ^([01][0-9]|2[0-3]):[0-5][0-9]$
+                      type: string
+                    maxReplicas:
+                      format: int32
+                      type: integer
+                    minReplicas:
+                      format: int32
+                      type: integer
+                    name:
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    startTime:
+                      pattern: ^([01][0-9]|2[0-3]):[0-5][0-9]$
+                      type: string
+                    timezone:
+                      type: string
+                  required:
+                  - endTime
+                  - name
+                  - startTime
+                  type: object
+                minItems: 1
+                type: array
               subTargetSelector:
                 properties:
                   roleName:
@@ -162,6 +218,29 @@ spec:
               lastScaleTime:
                 format: date-time
                 type: string
+              predictive:
+                properties:
+                  lastUpdated:
+                    format: date-time
+                    type: string
+                  metric:
+                    type: string
+                  mode:
+                    type: string
+                  observedValue:
+                    type: string
+                  predictedReplicas:
+                    format: int32
+                    type: integer
+                  predictedValue:
+                    type: string
+                  reactiveReplicas:
+                    format: int32
+                    type: integer
+                  wouldBeReplicas:
+                    format: int32
+                    type: integer
+                type: object
               scalingHistory:
                 items:
                   properties:
@@ -189,6 +268,20 @@ spec:
                   type: object
                 maxItems: 5
                 type: array
+              scheduledBounds:
+                properties:
+                  activeSchedule:
+                    type: string
+                  effectiveMaxReplicas:
+                    format: int32
+                    type: integer
+                  effectiveMinReplicas:
+                    format: int32
+                    type: integer
+                required:
+                - effectiveMaxReplicas
+                - effectiveMinReplicas
+                type: object
             type: object
         type: object
     served: true

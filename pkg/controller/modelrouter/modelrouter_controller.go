@@ -19,17 +19,20 @@ package modelrouter
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/selection"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -49,7 +52,6 @@ import (
 const (
 	// TODO (varun): cleanup model related identifiers and establish common consensus
 	modelHeaderIdentifier = "model"
-	modelIdentifier       = constants.ModelLabelName
 	modelPortIdentifier   = constants.ModelLabelPort
 	// TODO (varun): parameterize it or dynamically resolve it
 	aibrixEnvoyGateway          = "aibrix-eg"
@@ -58,24 +60,52 @@ const (
 	defaultModelServingPort = 8000
 
 	modelRouterCustomPath = constants.ModelAnnoRouterCustomPath
+
+	// defaultResyncInterval is how often HTTPRoutes are recreated or brought up to date.
+	defaultResyncInterval = 30 * time.Second
 )
 
 var watchedWorkloads = []schema.GroupVersionKind{
 	{Group: "leaderworkerset.x-k8s.io", Version: "v1", Kind: "LeaderWorkerSet"},
 }
 
+// modelPaths is grouped by modality. It is also the order of each model HTTPRoute's matches, so
+// reordering it changes every model's HTTPRoute spec; add new paths to their group instead.
 var modelPaths = []string{
+	// Text generation
 	"/v1/completions",
 	"/v1/chat/completions",
 	"/v1/responses",
 	"/v1/messages",
+
+	// Embeddings, ranking, classification and scoring
 	"/v1/embeddings",
 	"/v1/rerank",
 	"/v1/classify",
+	"/classify",
+	"/v1/decisions",
+	"/v1/systemone",
+	"/v1/score",
+
+	// Engine-specific (xdit), image and video generation
 	"/generate",
 	"/generatevideo",
+
+	// Image
+	"/v1/images/edits",
+
+	// Video
+	"/v1/video",
+	"/v1/videos",
+
+	// Audio
 	"/v1/audio/transcriptions",
 	"/v1/audio/translations",
+	"/v1/audio/speech",
+
+	// Engine-native utilities
+	"/tokenize",
+	"/pooling",
 }
 
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
@@ -106,12 +136,15 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 	utilruntime.Must(gatewayv1beta1.AddToScheme(mgr.GetClient().Scheme()))
 
 	modelRouter := &ModelRouter{
-		Client:        mgr.GetClient(),
-		RuntimeConfig: runtimeConfig,
+		Client:         mgr.GetClient(),
+		RuntimeConfig:  runtimeConfig,
+		cacheReader:    cacher,
+		resyncInterval: defaultResyncInterval,
 	}
 
 	_, err = deploymentInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    modelRouter.addRouteFromDeployment,
+		UpdateFunc: modelRouter.updateRouteFromWorkload,
 		DeleteFunc: modelRouter.deleteRouteFromDeployment,
 	})
 	if err != nil {
@@ -120,6 +153,7 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 
 	_, err = modelInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    modelRouter.addRouteFromModelAdapter,
+		UpdateFunc: modelRouter.updateRouteFromWorkload,
 		DeleteFunc: modelRouter.deleteRouteFromModelAdapter,
 	})
 	if err != nil {
@@ -128,6 +162,7 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 
 	_, err = fleetInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    modelRouter.addRouteFromRayClusterFleet,
+		UpdateFunc: modelRouter.updateRouteFromWorkload,
 		DeleteFunc: modelRouter.deleteRouteFromRayClusterFleet,
 	})
 	if err != nil {
@@ -144,6 +179,14 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 		if err := addInformerForGVK(mgr, modelRouter, gvk); err != nil {
 			return err
 		}
+		modelRouter.workloadGVKs = append(modelRouter.workloadGVKs, gvk)
+	}
+
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		modelRouter.Run(ctx)
+		return nil
+	})); err != nil {
+		return err
 	}
 
 	return nil
@@ -153,6 +196,16 @@ type ModelRouter struct {
 	client.Client
 	Scheme        *runtime.Scheme
 	RuntimeConfig config.RuntimeConfig
+
+	// cacheReader lists unstructured workloads from the informer cache, since
+	// the manager client reads unstructured objects from the API server.
+	cacheReader    client.Reader
+	resyncInterval time.Duration
+	// workloadGVKs are the optional workload kinds whose informers were registered.
+	workloadGVKs []schema.GroupVersionKind
+	// routeMu serializes route deletion with the resync's create step, so the
+	// resync cannot recreate a route for a workload that was just deleted.
+	routeMu sync.Mutex
 }
 
 func (m *ModelRouter) addRouteFromDeployment(obj interface{}) {
@@ -172,7 +225,7 @@ func (m *ModelRouter) deleteRouteFromDeployment(obj interface{}) {
 			return
 		}
 	}
-	m.deleteHTTPRoute(deployment.Namespace, deployment.Labels)
+	m.deleteHTTPRoute(deployment.Namespace, deployment.Labels, deployment.Annotations)
 }
 
 func (m *ModelRouter) addRouteFromModelAdapter(obj interface{}) {
@@ -192,7 +245,7 @@ func (m *ModelRouter) deleteRouteFromModelAdapter(obj interface{}) {
 			return
 		}
 	}
-	m.deleteHTTPRoute(modelAdapter.Namespace, modelAdapter.Labels)
+	m.deleteHTTPRoute(modelAdapter.Namespace, modelAdapter.Labels, modelAdapter.Annotations)
 }
 
 func (m *ModelRouter) addRouteFromRayClusterFleet(obj interface{}) {
@@ -212,7 +265,7 @@ func (m *ModelRouter) deleteRouteFromRayClusterFleet(obj interface{}) {
 			return
 		}
 	}
-	m.deleteHTTPRoute(fleet.Namespace, fleet.Labels)
+	m.deleteHTTPRoute(fleet.Namespace, fleet.Labels, fleet.Annotations)
 }
 
 func (m *ModelRouter) addRouteFromUnstructuredObj(obj interface{}) {
@@ -236,19 +289,86 @@ func (m *ModelRouter) deleteRouteFromUnstructuredObj(obj interface{}) {
 			return
 		}
 	}
-	m.deleteHTTPRoute(u.GetNamespace(), u.GetLabels())
+	m.deleteHTTPRoute(u.GetNamespace(), u.GetLabels(), u.GetAnnotations())
+}
+
+func (m *ModelRouter) updateRouteFromWorkload(oldObj, newObj interface{}) {
+	oldMeta, err := meta.Accessor(oldObj)
+	if err != nil {
+		klog.ErrorS(err, "Failed to get old object metadata")
+		return
+	}
+	newMeta, err := meta.Accessor(newObj)
+	if err != nil {
+		klog.ErrorS(err, "Failed to get new object metadata")
+		return
+	}
+	// A workload being deleted must not recreate the route that the delete
+	// handler is about to remove.
+	if newMeta.GetDeletionTimestamp() != nil {
+		return
+	}
+	// Informer resyncs and status/spec updates leave the model metadata
+	// unchanged and must not trigger route recreation.
+	if !modelRouteMetadataChanged(oldMeta, newMeta) {
+		return
+	}
+	m.createHTTPRoute(newMeta.GetNamespace(), newMeta.GetLabels(), newMeta.GetAnnotations())
+}
+
+// modelRouteMetadataChanged reports whether any label or annotation that
+// createHTTPRoute reads differs between the two objects.
+func modelRouteMetadataChanged(oldObj, newObj metav1.Object) bool {
+	oldName, _ := constants.ModelNameFromMetadata(oldObj.GetLabels(), oldObj.GetAnnotations())
+	newName, _ := constants.ModelNameFromMetadata(newObj.GetLabels(), newObj.GetAnnotations())
+	if oldName != newName {
+		return true
+	}
+	if oldObj.GetLabels()[modelPortIdentifier] != newObj.GetLabels()[modelPortIdentifier] {
+		return true
+	}
+	oldAnno, newAnno := oldObj.GetAnnotations(), newObj.GetAnnotations()
+	return oldAnno[constants.ModelAnnoServiceName] != newAnno[constants.ModelAnnoServiceName] ||
+		oldAnno[modelRouterCustomPath] != newAnno[modelRouterCustomPath]
 }
 
 func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string, annotations map[string]string) {
-	modelName, ok := labels[modelIdentifier]
+	modelName, ok := constants.ModelNameFromMetadata(labels, annotations)
 	if !ok {
 		return
+	}
+	if _, err := strconv.ParseInt(labels[modelPortIdentifier], 10, 32); err != nil {
+		klog.Warningf("failed to parse model port: %v", err)
+		klog.Infof("please ensure %s is configured, default port %d will be used", modelPortIdentifier, defaultModelServingPort)
+	}
+	httpRoute := buildHTTPRoute(namespace, modelName, labels, annotations)
+
+	err := m.Create(context.Background(), httpRoute)
+	if err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			klog.V(4).Infof("httproute: %v already exists in namespace: %v", httpRoute.Name, namespace)
+		} else {
+			klog.ErrorS(err, "Failed to create httproute", "namespace", namespace, "name", httpRoute.Name)
+			return
+		}
+	} else {
+		klog.Infof("httproute: %v created for model: %v", httpRoute.Name, modelName)
+	}
+
+	if aibrixEnvoyGatewayNamespace != namespace {
+		m.createReferenceGrant(namespace)
+	}
+}
+
+// buildHTTPRoute returns the HTTPRoute a model workload should have.
+func buildHTTPRoute(namespace, modelName string, labels map[string]string, annotations map[string]string) *gatewayv1.HTTPRoute {
+	serviceName := modelName
+	if annotatedServiceName := annotations[constants.ModelAnnoServiceName]; annotatedServiceName != "" {
+		serviceName = annotatedServiceName
 	}
 
 	modelPort, err := strconv.ParseInt(labels[modelPortIdentifier], 10, 32)
 	if err != nil {
-		klog.Warningf("failed to parse model port: %v", err)
-		klog.Infof("please ensure %s is configured, default port %d will be used", modelPortIdentifier, defaultModelServingPort)
 		modelPort = defaultModelServingPort
 	}
 
@@ -273,8 +393,10 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-router", modelName),
-			Namespace: aibrixEnvoyGatewayNamespace,
+			Name:        utils.ModelRouterName(modelName),
+			Namespace:   aibrixEnvoyGatewayNamespace,
+			Labels:      consoleRouteLabels(labels),
+			Annotations: consoleRouteAnnotations(annotations),
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
@@ -292,8 +414,7 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 						{
 							BackendRef: gatewayv1.BackendRef{
 								BackendObjectReference: gatewayv1.BackendObjectReference{
-									// TODO (varun): resolve service name from deployment
-									Name:      gatewayv1.ObjectName(modelName),
+									Name:      gatewayv1.ObjectName(serviceName),
 									Namespace: (*gatewayv1.Namespace)(&namespace),
 									Port:      ptr.To(gatewayv1.PortNumber(modelPort)),
 								},
@@ -301,7 +422,7 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 						},
 					},
 					Timeouts: &gatewayv1.HTTPRouteTimeouts{
-						Request: ptr.To(gatewayv1.Duration(fmt.Sprintf("%ds", utils.LoadEnvInt("AIBRIX_GATEWAY_TIMEOUT_SECONDS", 120)))),
+						Request: ptr.To(gatewayv1.Duration(fmt.Sprintf("%ds", utils.LoadEnvInt("AIBRIX_GATEWAY_TIMEOUT_SECONDS", 600)))),
 					},
 				},
 			},
@@ -309,22 +430,7 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 	}
 
 	appendCustomModelRouterPaths(&httpRoute, modelHeaderMatch, annotations)
-
-	err = m.Client.Create(context.Background(), &httpRoute)
-	if err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			klog.V(4).Infof("httproute: %v already exists in namespace: %v", httpRoute.Name, namespace)
-		} else {
-			klog.ErrorS(err, "Failed to create httproute", "namespace", namespace, "name", httpRoute.Name)
-			return
-		}
-	} else {
-		klog.Infof("httproute: %v created for model: %v", httpRoute.Name, modelName)
-	}
-
-	if aibrixEnvoyGatewayNamespace != namespace {
-		m.createReferenceGrant(namespace)
-	}
+	return &httpRoute
 }
 
 func (m *ModelRouter) createReferenceGrant(namespace string) {
@@ -336,7 +442,7 @@ func (m *ModelRouter) createReferenceGrant(namespace string) {
 		},
 	}
 
-	if err := m.Client.Get(context.Background(), client.ObjectKeyFromObject(&referenceGrant), &referenceGrant); err == nil {
+	if err := m.Get(context.Background(), client.ObjectKeyFromObject(&referenceGrant), &referenceGrant); err == nil {
 		klog.V(4).InfoS("reference grant already exists", "referencegrant", referenceGrant.Name)
 		return
 	}
@@ -362,27 +468,41 @@ func (m *ModelRouter) createReferenceGrant(namespace string) {
 			},
 		},
 	}
-	if err := m.Client.Create(context.Background(), &referenceGrant); err != nil {
+	if err := m.Create(context.Background(), &referenceGrant); err != nil {
 		klog.ErrorS(err, "error on creating referencegrant", "referencegrant", referenceGrant)
 		return
 	}
 	klog.InfoS("referencegrant created", "referencegrant", referenceGrant.Name)
 }
 
-func (m *ModelRouter) deleteHTTPRoute(namespace string, labels map[string]string) {
-	modelName, ok := labels[modelIdentifier]
+func (m *ModelRouter) deleteHTTPRoute(namespace string, labels, annotations map[string]string) {
+	modelName, ok := constants.ModelNameFromMetadata(labels, annotations)
 	if !ok {
+		return
+	}
+
+	m.routeMu.Lock()
+	defer m.routeMu.Unlock()
+
+	ctx := context.Background()
+	hasModel, hasAnyModel, err := m.namespaceModelWorkloadState(ctx, namespace, modelName)
+	if err != nil {
+		klog.ErrorS(err, "Failed to check remaining workloads before deleting HTTPRoute",
+			"namespace", namespace, "model", modelName)
+		return
+	}
+	if hasModel {
 		return
 	}
 
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-router", modelName),
+			Name:      utils.ModelRouterName(modelName),
 			Namespace: aibrixEnvoyGatewayNamespace,
 		},
 	}
 
-	err := m.Client.Delete(context.Background(), &httpRoute)
+	err = m.Delete(ctx, &httpRoute)
 	if err != nil {
 		klog.Errorln(err)
 	}
@@ -391,31 +511,16 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels map[string]string
 	}
 
 	if aibrixEnvoyGatewayNamespace != namespace {
-		m.deleteReferenceGrant(namespace)
+		if err := m.deleteReferenceGrant(ctx, namespace, hasAnyModel); err != nil {
+			klog.ErrorS(err, "Failed to delete ReferenceGrant after checking remaining workloads",
+				"namespace", namespace)
+		}
 	}
 }
 
-func (m *ModelRouter) deleteReferenceGrant(namespace string) {
-	selector, err := labels.NewRequirement(modelIdentifier, selection.Exists, nil)
-	if err != nil {
-		klog.ErrorS(err, "Failed to create label requirement", "namespace", namespace)
-		return
-	}
-
-	listOpts := &client.ListOptions{
-		Namespace:     namespace,
-		LabelSelector: labels.SelectorFromSet(labels.Set{}).Add(*selector),
-	}
-
-	var deploymentList appsv1.DeploymentList
-	if err := m.Client.List(context.Background(), &deploymentList, listOpts); err != nil {
-		klog.ErrorS(err, "Failed to list model deployments", "namespace", namespace)
-		return
-	}
-	if len(deploymentList.Items) > 0 {
-		klog.InfoS("Skip deleting ReferenceGrant: model deployment still exists",
-			"namespace", namespace, "existingDeployments", len(deploymentList.Items))
-		return
+func (m *ModelRouter) deleteReferenceGrant(ctx context.Context, namespace string, hasModelWorkload bool) error {
+	if hasModelWorkload {
+		return nil
 	}
 
 	referenceGrantName := fmt.Sprintf("%s-reserved-referencegrant-in-%s", aibrixEnvoyGatewayNamespace, namespace)
@@ -425,13 +530,335 @@ func (m *ModelRouter) deleteReferenceGrant(namespace string) {
 			Namespace: namespace,
 		},
 	}
-	if err := m.Client.Delete(context.Background(), &referenceGrant); err != nil {
+	if err := m.Delete(ctx, &referenceGrant); err != nil {
 		if !apierrors.IsNotFound(err) {
 			klog.ErrorS(err, "Failed to delete ReferenceGrant", "name", referenceGrantName, "namespace", namespace)
-			return
+			return err
 		}
 	}
 	klog.InfoS("delete reference grant", "referencegrant", referenceGrantName)
+	return nil
+}
+
+func (m *ModelRouter) namespaceHasModelWorkload(ctx context.Context, namespace string) (bool, error) {
+	hasModel, _, err := m.namespaceModelWorkloadState(ctx, namespace, "")
+	return hasModel, err
+}
+
+// namespaceModelWorkloadState reports whether the namespace contains the
+// requested model and whether it contains any model workload. An empty
+// modelName matches any labeled workload for ReferenceGrant cleanup.
+func (m *ModelRouter) namespaceModelWorkloadState(ctx context.Context, namespace, modelName string) (hasModel, hasAnyModel bool, err error) {
+	matches := func(labels, annotations map[string]string) bool {
+		workloadModelName, ok := constants.ModelNameFromMetadata(labels, annotations)
+		if !ok {
+			return false
+		}
+		hasAnyModel = true
+		return modelName == "" || workloadModelName == modelName
+	}
+
+	var deploymentList appsv1.DeploymentList
+	if err := m.List(ctx, &deploymentList, client.InNamespace(namespace)); err != nil {
+		klog.ErrorS(err, "Failed to list model deployments", "namespace", namespace)
+		return false, hasAnyModel, err
+	}
+	for i := range deploymentList.Items {
+		deployment := &deploymentList.Items[i]
+		if matches(deployment.Labels, deployment.Annotations) {
+			klog.InfoS("found labeled model deployment in namespace",
+				"namespace", namespace, "deployment", deployment.Name)
+			return true, true, nil
+		}
+	}
+
+	var adapterList modelv1alpha1.ModelAdapterList
+	if err := m.List(ctx, &adapterList, client.InNamespace(namespace)); err != nil {
+		klog.ErrorS(err, "Failed to list model adapters", "namespace", namespace)
+		return false, hasAnyModel, err
+	}
+	for i := range adapterList.Items {
+		adapter := &adapterList.Items[i]
+		if matches(adapter.Labels, adapter.Annotations) {
+			klog.InfoS("found labeled model adapter in namespace",
+				"namespace", namespace, "modeladapter", adapter.Name)
+			return true, true, nil
+		}
+	}
+
+	var fleetList orchestrationv1alpha1.RayClusterFleetList
+	if err := m.List(ctx, &fleetList, client.InNamespace(namespace)); err != nil {
+		klog.ErrorS(err, "Failed to list ray cluster fleets", "namespace", namespace)
+		return false, hasAnyModel, err
+	}
+	for i := range fleetList.Items {
+		fleet := &fleetList.Items[i]
+		if matches(fleet.Labels, fleet.Annotations) {
+			klog.InfoS("found labeled ray cluster fleet in namespace",
+				"namespace", namespace, "rayclusterfleet", fleet.Name)
+			return true, true, nil
+		}
+	}
+
+	// LeaderWorkerSet (and any other optional watched workload) is listed as
+	// unstructured so clusters without the CRD do not leak ReferenceGrants.
+	for _, gvk := range watchedWorkloads {
+		list := &unstructured.UnstructuredList{}
+		list.SetGroupVersionKind(schema.GroupVersionKind{
+			Group:   gvk.Group,
+			Version: gvk.Version,
+			Kind:    gvk.Kind + "List",
+		})
+		if err := m.List(ctx, list, client.InNamespace(namespace)); err != nil {
+			if meta.IsNoMatchError(err) {
+				// CRD not installed; treat as "not present", not as "has workload".
+				klog.V(4).InfoS("optional workload CRD not present", "GVK", gvk, "namespace", namespace)
+				continue
+			}
+			klog.ErrorS(err, "Failed to list optional model workloads", "GVK", gvk, "namespace", namespace)
+			return false, hasAnyModel, err
+		}
+		for i := range list.Items {
+			u := &list.Items[i]
+			if matches(u.GetLabels(), u.GetAnnotations()) {
+				klog.InfoS("found labeled model workload in namespace",
+					"namespace", namespace, "gvk", gvk.String(), "name", u.GetName())
+				return true, true, nil
+			}
+		}
+	}
+	return false, hasAnyModel, nil
+}
+
+// Run periodically recreates missing HTTPRoutes until ctx is cancelled. Add and
+// Update events cannot recover a route that was deleted out of band.
+func (m *ModelRouter) Run(ctx context.Context) {
+	ticker := time.NewTicker(m.resyncInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if err := m.ensureHTTPRoutes(ctx); err != nil {
+				klog.ErrorS(err, "Failed to resync model httproutes")
+			}
+		case <-ctx.Done():
+			klog.Info("context done, stopping model httproute resync")
+			return
+		}
+	}
+}
+
+// ensureHTTPRoutes creates the HTTPRoute of every labeled model workload whose
+// route is missing, and updates the ones that have drifted from their workload.
+func (m *ModelRouter) ensureHTTPRoutes(ctx context.Context) error {
+	var workloads []client.Object
+
+	var deploymentList appsv1.DeploymentList
+	if err := m.List(ctx, &deploymentList); err != nil {
+		return fmt.Errorf("failed to list deployments: %w", err)
+	}
+	for i := range deploymentList.Items {
+		workloads = append(workloads, &deploymentList.Items[i])
+	}
+
+	var adapterList modelv1alpha1.ModelAdapterList
+	if err := m.List(ctx, &adapterList); err != nil {
+		return fmt.Errorf("failed to list model adapters: %w", err)
+	}
+	for i := range adapterList.Items {
+		workloads = append(workloads, &adapterList.Items[i])
+	}
+
+	var fleetList orchestrationv1alpha1.RayClusterFleetList
+	if err := m.List(ctx, &fleetList); err != nil {
+		return fmt.Errorf("failed to list ray cluster fleets: %w", err)
+	}
+	for i := range fleetList.Items {
+		workloads = append(workloads, &fleetList.Items[i])
+	}
+
+	for _, gvk := range m.workloadGVKs {
+		list := &unstructured.UnstructuredList{}
+		list.SetGroupVersionKind(gvk.GroupVersion().WithKind(gvk.Kind + "List"))
+		if err := m.cacheReader.List(ctx, list); err != nil {
+			return fmt.Errorf("failed to list %s: %w", gvk, err)
+		}
+		for i := range list.Items {
+			workloads = append(workloads, &list.Items[i])
+		}
+	}
+
+	// Oldest first, so a model served by several workloads always takes its route
+	// from the same one.
+	sort.SliceStable(workloads, func(i, j int) bool {
+		ti, tj := workloads[i].GetCreationTimestamp(), workloads[j].GetCreationTimestamp()
+		if !ti.Equal(&tj) {
+			return ti.Before(&tj)
+		}
+		if workloads[i].GetNamespace() != workloads[j].GetNamespace() {
+			return workloads[i].GetNamespace() < workloads[j].GetNamespace()
+		}
+		return workloads[i].GetName() < workloads[j].GetName()
+	})
+
+	checked := make(map[string]struct{})
+	for _, workload := range workloads {
+		if workload.GetDeletionTimestamp() != nil {
+			continue
+		}
+		modelName, ok := constants.ModelNameFromMetadata(workload.GetLabels(), workload.GetAnnotations())
+		if !ok {
+			continue
+		}
+		if _, ok := checked[modelName]; ok {
+			continue
+		}
+		if m.ensureHTTPRouteForWorkload(ctx, workload, modelName) {
+			checked[modelName] = struct{}{}
+		}
+	}
+	return nil
+}
+
+// ensureHTTPRouteForWorkload creates or updates the model's HTTPRoute if
+// the workload still serves the model. It reports whether the workload is still
+// current, so the caller can skip other workloads of the same model.
+//
+// The workload comes from a List snapshot and may have been deleted since, with
+// DeleteFunc already removing the route. Re-reading it under routeMu closes that
+// window: the informer updates its cache before calling DeleteFunc, so either
+// the re-read sees the deletion, or the route is created first and the pending
+// DeleteFunc removes it once the lock is released.
+func (m *ModelRouter) ensureHTTPRouteForWorkload(ctx context.Context, workload client.Object, modelName string) bool {
+	m.routeMu.Lock()
+	defer m.routeMu.Unlock()
+
+	current, err := m.getWorkload(ctx, workload)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			klog.ErrorS(err, "Failed to get model workload",
+				"namespace", workload.GetNamespace(), "name", workload.GetName())
+		}
+		return false
+	}
+	if current.GetDeletionTimestamp() != nil {
+		return false
+	}
+	if name, ok := constants.ModelNameFromMetadata(current.GetLabels(), current.GetAnnotations()); !ok || name != modelName {
+		return false
+	}
+
+	var route gatewayv1.HTTPRoute
+	key := client.ObjectKey{Namespace: aibrixEnvoyGatewayNamespace, Name: utils.ModelRouterName(modelName)}
+	err = m.Get(ctx, key, &route)
+	if err == nil {
+		m.updateHTTPRouteIfStale(ctx, &route, buildHTTPRoute(current.GetNamespace(), modelName, current.GetLabels(), current.GetAnnotations()))
+		return true
+	}
+	if !apierrors.IsNotFound(err) {
+		klog.ErrorS(err, "Failed to get httproute", "model", modelName)
+		return true
+	}
+	klog.InfoS("httproute is missing, recreating it", "model", modelName, "namespace", current.GetNamespace())
+	m.createHTTPRoute(current.GetNamespace(), current.GetLabels(), current.GetAnnotations())
+	return true
+}
+
+// updateHTTPRouteIfStale rewrites an existing route whose spec no longer matches
+// its workload, e.g. after an upgrade adds model paths or the port label changes.
+func (m *ModelRouter) updateHTTPRouteIfStale(ctx context.Context, route, desired *gatewayv1.HTTPRoute) {
+	if httpRouteSpecMatches(route, desired) {
+		return
+	}
+	route.Spec.ParentRefs = desired.Spec.ParentRefs
+	route.Spec.Rules = desired.Spec.Rules
+	if err := m.Update(ctx, route); err != nil {
+		klog.ErrorS(err, "Failed to update httproute", "name", route.Name)
+		return
+	}
+	klog.InfoS("httproute updated", "name", route.Name)
+}
+
+// httpRouteSpecMatches compares only the fields buildHTTPRoute sets, so values the
+// API server defaults (backend group, kind, weight) are not seen as drift.
+func httpRouteSpecMatches(route, desired *gatewayv1.HTTPRoute) bool {
+	return slices.Equal(httpRouteSpecKey(route), httpRouteSpecKey(desired))
+}
+
+func httpRouteSpecKey(route *gatewayv1.HTTPRoute) []string {
+	var key []string
+	for _, ref := range route.Spec.ParentRefs {
+		key = append(key, fmt.Sprintf("parent %s/%s", ptr.Deref(ref.Namespace, ""), ref.Name))
+	}
+	for _, rule := range route.Spec.Rules {
+		key = append(key, "rule")
+		for _, match := range rule.Matches {
+			if match.Path != nil {
+				key = append(key, fmt.Sprintf("path %s %s", ptr.Deref(match.Path.Type, ""), ptr.Deref(match.Path.Value, "")))
+			}
+			for _, header := range match.Headers {
+				key = append(key, fmt.Sprintf("header %s %s=%s", ptr.Deref(header.Type, ""), header.Name, header.Value))
+			}
+		}
+		for _, backend := range rule.BackendRefs {
+			key = append(key, fmt.Sprintf("backend %s/%s:%d", ptr.Deref(backend.Namespace, ""), backend.Name, ptr.Deref(backend.Port, 0)))
+		}
+		if rule.Timeouts != nil {
+			key = append(key, fmt.Sprintf("timeout %s", ptr.Deref(rule.Timeouts.Request, "")))
+		}
+	}
+	return key
+}
+
+// getWorkload re-reads a listed workload from the informer cache.
+func (m *ModelRouter) getWorkload(ctx context.Context, workload client.Object) (client.Object, error) {
+	var current client.Object
+	reader := client.Reader(m.Client)
+	switch w := workload.(type) {
+	case *appsv1.Deployment:
+		current = &appsv1.Deployment{}
+	case *modelv1alpha1.ModelAdapter:
+		current = &modelv1alpha1.ModelAdapter{}
+	case *orchestrationv1alpha1.RayClusterFleet:
+		current = &orchestrationv1alpha1.RayClusterFleet{}
+	case *unstructured.Unstructured:
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(w.GroupVersionKind())
+		current = u
+		reader = m.cacheReader
+	default:
+		return nil, fmt.Errorf("unsupported workload type %T", workload)
+	}
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(workload), current); err != nil {
+		return nil, err
+	}
+	return current, nil
+}
+
+func consoleRouteLabels(labels map[string]string) map[string]string {
+	if labels[constants.AppLabelManagedBy] != constants.ConsoleManagedByValue {
+		return nil
+	}
+	return map[string]string{
+		constants.AppLabelManagedBy: constants.ConsoleManagedByValue,
+	}
+}
+
+func consoleRouteAnnotations(annotations map[string]string) map[string]string {
+	result := map[string]string{}
+	for _, key := range []string{
+		constants.ConsoleDeploymentIDAnnotation,
+		constants.ConsoleDeploymentNameAnnotation,
+	} {
+		if value := annotations[key]; value != "" {
+			result[key] = value
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 // append matches if model-router-custom-paths is set
@@ -471,7 +898,7 @@ func appendCustomModelRouterPaths(httpRoute *gatewayv1.HTTPRoute, modelHeaderMat
 					modelHeaderMatch,
 				},
 			})
-		klog.InfoS("Added custom model router path", "path", path)
+		klog.V(4).InfoS("Added custom model router path", "path", path)
 	}
 }
 
@@ -489,6 +916,7 @@ func addInformerForGVK(mgr manager.Manager, modelRouter *ModelRouter, gvk schema
 	// add Event Handler
 	_, err = uInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    modelRouter.addRouteFromUnstructuredObj,
+		UpdateFunc: modelRouter.updateRouteFromWorkload,
 		DeleteFunc: modelRouter.deleteRouteFromUnstructuredObj,
 	})
 	if err != nil {

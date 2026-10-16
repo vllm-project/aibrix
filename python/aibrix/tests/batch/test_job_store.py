@@ -12,25 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """JobStore: document CRUD delegates to the metastore (one document store);
-lifecycle events fire on writes; list_jobs is the recovery source."""
+lifecycle events fire on writes; list_jobs is the active-job source."""
 
 import os
+import re
 from typing import Optional
 
 import pytest
+from prometheus_client import generate_latest
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
+import aibrix.client.redis as redis_client
 from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobEndpoint,
     BatchJobSpec,
     BatchJobState,
+    BatchJobStatusCopy,
     CompletionWindow,
+    Condition,
+    ConditionStatus,
+    ConditionType,
 )
 from aibrix.batch.state import JobEntityManager, JobStore
 from aibrix.batch.storage import batch_metastore
-from aibrix.storage import StorageType
+from aibrix.metadata.core.metrics import MetricsConfig, setup_metrics, shutdown_metrics
+from aibrix.storage import StorageConfig, StorageType
+from aibrix.storage.types import StorageListOrdering
+from tests.fake.redis import FakeRedisClient
 
 
 class FakeMetastore:
@@ -87,11 +97,24 @@ class FakeMetastore:
     def get_type(self) -> StorageType:
         return self.storage_type
 
+    def get_list_ordering(self) -> StorageListOrdering:
+        return StorageListOrdering.CREATED_AT_DESC
+
+
+def _metric_value(metrics_text: str, metric_name: str, labels: dict[str, str]) -> float:
+    label_text = ",".join(f'{key}="{value}"' for key, value in sorted(labels.items()))
+    match = re.search(
+        rf"{metric_name}\{{{re.escape(label_text)}\}} ([0-9.]+)",
+        metrics_text,
+    )
+    assert match is not None, f"missing metric line for {metric_name} {{{label_text}}}"
+    return float(match.group(1))
+
 
 @pytest.fixture
 def fake_metastore(monkeypatch):
     """In-memory stand-in for the metastore — the single document store the
-    JobStore delegates to (keyed ``batchjob:<id>`` like the real one)."""
+    JobStore delegates to (keyed ``batchjob/<id>`` like the real one)."""
     store = FakeMetastore()
     calls = []
 
@@ -161,6 +184,167 @@ async def test_job_store_submit_persists_to_metastore_and_fires_committed(
 
 
 @pytest.mark.asyncio
+async def test_job_store_emits_operation_latency_and_storage_ops_metrics(
+    fake_metastore,
+):
+    _, _ = fake_metastore
+    runtime = setup_metrics(MetricsConfig(prometheus_enabled=True))
+    store = JobStore(storage_type=StorageType.LOCAL)
+
+    try:
+        await store.submit_job("session-1", _spec(), request_count=1)
+        job = next(iter(store.active_jobs.values()))
+
+        await store.get_job(job.job_id)
+        await store.update_job_status(job)
+
+        assert runtime.registry is not None
+        metrics_text = generate_latest(runtime.registry).decode()
+        assert "metadata_job_store_duration_ms_bucket" in metrics_text
+        assert (
+            'metadata_job_store_operation_total{operation="get_job",storage_type="local"} 1.0'
+            in metrics_text
+        )
+        assert (
+            'metadata_job_store_storage_operations_total{operation="get_job",storage_type="local"} 0.0'
+            in metrics_text
+        )
+        assert (
+            'metadata_job_store_operation_total{operation="update_job_status",storage_type="local"} 1.0'
+            in metrics_text
+        )
+        assert (
+            'metadata_job_store_storage_operations_total{operation="update_job_status",storage_type="local"} 0.0'
+            in metrics_text
+        )
+    finally:
+        shutdown_metrics()
+
+
+@pytest.mark.asyncio
+async def test_job_store_list_active_jobs_emits_operation_metrics(fake_metastore):
+    _, _ = fake_metastore
+    runtime = setup_metrics(MetricsConfig(prometheus_enabled=True))
+    store = JobStore(storage_type=StorageType.LOCAL)
+
+    try:
+        await store._list_active_jobs()
+
+        assert runtime.registry is not None
+        metrics_text = generate_latest(runtime.registry).decode()
+        assert (
+            'metadata_job_store_operation_total{operation="list_active_jobs",storage_type="local"} 1.0'
+            in metrics_text
+        )
+    finally:
+        shutdown_metrics()
+
+
+@pytest.mark.asyncio
+async def test_job_store_redis_emits_tracked_storage_operation_metrics(monkeypatch):
+    runtime = setup_metrics(MetricsConfig(prometheus_enabled=True))
+    fake_client = FakeRedisClient()
+
+    def fake_get_redis_client(**kwargs):
+        del kwargs
+        return fake_client
+
+    monkeypatch.setattr(redis_client, "get_redis_client", fake_get_redis_client)
+    monkeypatch.setattr(batch_metastore, "p_metastore", None)
+    store = JobStore(storage_type=StorageType.REDIS)
+
+    try:
+        await store.submit_job("session-1", _spec(), request_count=1)
+        job = next(iter(store.active_jobs.values()))
+
+        await store.get_job(job.job_id, force_reload=True)
+        await store.update_job_status(job)
+        await store._list_active_jobs()
+
+        assert runtime.registry is not None
+        metrics_text = generate_latest(runtime.registry).decode()
+        redis_labels = {"operation": "submit_job", "storage_type": "redis"}
+        assert (
+            _metric_value(
+                metrics_text,
+                "metadata_job_store_storage_operations_total",
+                redis_labels,
+            )
+            == 4.0
+        )
+        assert (
+            _metric_value(
+                metrics_text,
+                "metadata_job_store_storage_operations_total",
+                {"operation": "get_job", "storage_type": "redis"},
+            )
+            == 1.0
+        )
+        assert (
+            _metric_value(
+                metrics_text,
+                "metadata_job_store_storage_operations_total",
+                {"operation": "update_job_status", "storage_type": "redis"},
+            )
+            == 7.0
+        )
+        assert (
+            _metric_value(
+                metrics_text,
+                "metadata_job_store_storage_operations_total",
+                {"operation": "list_active_jobs", "storage_type": "redis"},
+            )
+            == 4.0
+        )
+    finally:
+        monkeypatch.setattr(batch_metastore, "p_metastore", None)
+        shutdown_metrics()
+
+
+@pytest.mark.asyncio
+async def test_status_copy_worker_id_encoding_is_reversible(monkeypatch):
+    store = FakeMetastore()
+    monkeypatch.setattr(batch_metastore, "p_metastore", store)
+
+    job = BatchJob.new_local(spec=_spec(), request_count=1)
+    assert job.job_id is not None
+    job.status.state = BatchJobState.IN_PROGRESS
+    job.status.status_copies = {
+        "cluster-a/default/workload-1": BatchJobStatusCopy(
+            state=BatchJobState.IN_PROGRESS,
+            updated=True,
+        )
+    }
+
+    await batch_metastore.put_batch_job(job.job_id, job)
+
+    status_copy_keys = [
+        key
+        for key in store.objects
+        if key.startswith(f"batchstatus_copies:{job.job_id}/")
+    ]
+    assert status_copy_keys == [
+        f"batchstatus_copies:{job.job_id}/cluster-a%2Fdefault%2Fworkload-1"
+    ]
+
+    loaded = await batch_metastore.get_batch_job(job.job_id)
+
+    assert loaded is not None
+    assert loaded.status.status_copies is not None
+    assert list(loaded.status.status_copies) == ["cluster-a/default/workload-1"]
+    assert (
+        batch_metastore._normalize_status_copy_worker_id("cluster-a/default/workload-1")
+        == "cluster-a%2Fdefault%2Fworkload-1"
+    )
+    assert (
+        batch_metastore._decode_status_copy_worker_id(
+            "cluster-a%2Fdefault%2Fworkload-1"
+        )
+        == "cluster-a/default/workload-1"
+    )
+
+
+@pytest.mark.asyncio
 async def test_job_store_update_persists_and_fires_updated(fake_metastore):
     _, _ = fake_metastore
     store = JobStore(storage_type=StorageType.LOCAL)
@@ -194,6 +378,52 @@ async def test_job_store_update_persists_and_fires_updated(fake_metastore):
     persisted_job = await store.get_job(job.job_id, force_reload=True)
     assert persisted_job is not None
     assert persisted_job.status.temp_output_file_id == "temp-output"
+
+
+@pytest.mark.asyncio
+async def test_refresh_does_not_apply_older_resource_version(
+    fake_metastore, monkeypatch
+):
+    _, _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+    current_job = BatchJob.new_local(spec=_spec())
+    current_job.status.state = BatchJobState.IN_PROGRESS
+    current_job.metadata.resource_version = "5"
+    current_job.status.output_file_id = "output"
+    current_job.status.error_file_id = "error"
+    current_job.status.temp_output_file_id = "temp-output"
+    current_job.status.temp_error_file_id = "temp-error"
+    stale_job = current_job.model_copy(deep=True)
+    stale_job.metadata.resource_version = "4"
+    stale_job.status.output_file_id = None
+    stale_job.status.error_file_id = None
+    stale_job.status.temp_output_file_id = None
+    stale_job.status.temp_error_file_id = None
+    published_updates = []
+
+    async def list_stale_recovery_jobs():
+        return [stale_job]
+
+    async def updated_handler(old_job, new_job):
+        published_updates.append((old_job, new_job))
+        return True
+
+    monkeypatch.setattr(store, "_list_active_jobs", list_stale_recovery_jobs)
+    store.active_jobs[current_job.job_id] = current_job
+    store._monitored_job_snapshots[current_job.job_id] = current_job.model_copy(
+        deep=True
+    )
+    store.on_job_updated(updated_handler)
+
+    await store.refresh()
+
+    assert published_updates == []
+    assert store.active_jobs[current_job.job_id].metadata.resource_version == "5"
+    assert store.active_jobs[current_job.job_id].status.output_file_id == "output"
+    assert (
+        store._monitored_job_snapshots[current_job.job_id].metadata.resource_version
+        == "5"
+    )
 
 
 @pytest.mark.asyncio
@@ -312,18 +542,18 @@ async def test_batch_metastore_list_metastore_keys_supports_pagination(fake_meta
     JobStore(storage_type=StorageType.LOCAL)
 
     for suffix in ("001", "002", "003"):
-        await store.put_object(f"batchjob:{suffix}", "{}")
+        await store.put_object(f"batchjob/{suffix}", "{}")
 
     first_page, next_token = await batch_metastore.list_metastore_keys(
-        "batchjob:", limit=2
+        "batchjob/", delimiter="/", limit=2
     )
     second_page, final_token = await batch_metastore.list_metastore_keys(
-        "batchjob:", limit=2, continuation_token=next_token
+        "batchjob/", delimiter="/", limit=2, continuation_token=next_token
     )
 
-    assert first_page == ["batchjob:001", "batchjob:002"]
+    assert first_page == ["batchjob/001", "batchjob/002"]
     assert next_token == "2"
-    assert second_page == ["batchjob:003"]
+    assert second_page == ["batchjob/003"]
     assert final_token is None
 
 
@@ -434,7 +664,51 @@ async def test_job_store_start_bootstraps_unfinished_jobs(fake_metastore):
 
 
 @pytest.mark.asyncio
-async def test_job_store_recovery_stops_after_oldest_unfinished_marker(
+async def test_job_store_start_replays_unfinished_expired_jobs(fake_metastore):
+    _, _ = fake_metastore
+    store = JobStore(storage_type=StorageType.LOCAL)
+    committed_jobs = []
+
+    async def committed_handler(job):
+        committed_jobs.append(job)
+        return True
+
+    store.on_job_committed(committed_handler)
+
+    await store.submit_job("session-expired", _spec("input-expired"))
+    expired_job = committed_jobs.pop()
+    expired_job.status.add_condition(
+        Condition(
+            type=ConditionType.EXPIRED,
+            status=ConditionStatus.TRUE,
+            lastTransitionTime=expired_job.status.created_at,
+        )
+    )
+    await store.update_job_status(expired_job)
+
+    restarted_store = JobStore(storage_type=StorageType.LOCAL)
+    restarted_commits = []
+
+    async def restarted_committed_handler(job):
+        restarted_commits.append(job)
+        return True
+
+    restarted_store.on_job_committed(restarted_committed_handler)
+    restarted_store._refresh_interval_seconds = 3600
+
+    await restarted_store.start()
+    await restarted_store.stop()
+
+    assert [job.job_id for job in restarted_commits] == [expired_job.job_id]
+    assert expired_job.job_id in restarted_store.active_jobs
+    assert (
+        restarted_store.active_jobs[expired_job.job_id].status.condition
+        == ConditionType.EXPIRED
+    )
+
+
+@pytest.mark.asyncio
+async def test_job_store_active_job_listing_stops_after_oldest_unfinished_marker(
     fake_metastore, monkeypatch
 ):
     _, _ = fake_metastore
@@ -465,15 +739,13 @@ async def test_job_store_recovery_stops_after_oldest_unfinished_marker(
 
     monkeypatch.setattr(store, "list_jobs", fake_list_jobs)
 
-    recovered_jobs = await store._list_recovery_jobs()
+    active_jobs = await store._list_active_jobs()
 
-    assert [job.job_id for job in recovered_jobs] == [
-        job.job_id for job in first_page[:3]
-    ]
+    assert [job.job_id for job in active_jobs] == [job.job_id for job in first_page[:3]]
 
 
 @pytest.mark.asyncio
-async def test_job_store_recovery_does_not_stop_early_without_time_ordering(
+async def test_job_store_active_job_listing_does_not_stop_early_without_time_ordering(
     fake_metastore, monkeypatch
 ):
     _, _ = fake_metastore
@@ -504,26 +776,57 @@ async def test_job_store_recovery_does_not_stop_early_without_time_ordering(
     monkeypatch.setattr(store, "list_jobs", fake_list_jobs)
     monkeypatch.setattr(
         store,
-        "_supports_created_at_desc_recovery_ordering",
+        "_supports_created_at_desc_job_ordering",
         lambda: False,
     )
 
-    recovered_jobs = await store._list_jobs_for_recovery(oldest_unfinished)
+    active_jobs = await store._list_active_job_impl(oldest_unfinished)
 
-    assert [job.job_id for job in recovered_jobs] == [job.job_id for job in jobs[:3]]
+    assert [job.job_id for job in active_jobs] == [job.job_id for job in jobs[:3]]
 
 
 def test_batch_metastore_initialize_errors_for_unsupported_ordering_backend():
     with pytest.raises(
-        RuntimeError,
-        match="cannot list batch jobs in descending created_at order",
+        ValueError,
+        match="List ordering created_at_desc is not supported by s3 storage",
     ):
-        batch_metastore.initialize_batch_metastore(StorageType.S3)
+        batch_metastore.initialize_batch_metastore(
+            StorageType.S3,
+            {"bucket_name": "test-bucket"},
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="List ordering created_at_desc is not supported by tos storage",
+    ):
+        batch_metastore.initialize_batch_metastore(
+            StorageType.TOS,
+            {
+                "bucket_name": "test-bucket",
+                "access_key": "key",
+                "secret_key": "secret",
+                "endpoint": "http://example.com",
+                "region": "cn-beijing",
+            },
+        )
 
 
-def test_batch_metastore_supports_desc_listing_for_local_and_redis():
-    assert batch_metastore.supports_created_at_desc_batch_job_listing(StorageType.LOCAL)
-    assert batch_metastore.supports_created_at_desc_batch_job_listing(StorageType.REDIS)
-    assert not batch_metastore.supports_created_at_desc_batch_job_listing(
-        StorageType.S3
+def test_batch_metastore_initialize_merges_config_and_defaults_ordering(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("STORAGE_LOCAL_PATH", str(tmp_path))
+    monkeypatch.setattr(batch_metastore, "p_metastore", None)
+
+    config = StorageConfig(max_retries=11)
+    batch_metastore.initialize_batch_metastore(
+        StorageType.LOCAL,
+        {"config": config},
     )
+
+    assert batch_metastore.p_metastore is not None
+    assert batch_metastore.p_metastore.config.max_retries == 11
+    assert (
+        batch_metastore.p_metastore.get_list_ordering()
+        == StorageListOrdering.CREATED_AT_DESC
+    )
+    assert config.list_ordering is None

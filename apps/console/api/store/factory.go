@@ -72,6 +72,8 @@ func NewFromURI(uri, secretKey string, injector error_injection.Injector) (Store
 // Both URI and DSN forms percent-decode credentials the same way; we reuse
 // url.URL.User to handle that. If the host has no port we leave it intact —
 // callers can still supply ?addr=... or use the default port via tcp().
+//
+// The connection is pinned to UTC on both sides; see pinUTCParams.
 func mysqlURIToDSN(u *url.URL) string {
 	creds := ""
 	if u.User != nil {
@@ -83,8 +85,21 @@ func mysqlURIToDSN(u *url.URL) string {
 		dbname = u.Path[1:] // strip leading "/"
 	}
 	dsn := fmt.Sprintf("%stcp(%s)/%s", creds, host, dbname)
-	if u.RawQuery != "" {
-		dsn += "?" + u.RawQuery
+	params, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		// Malformed query: forward it untouched and let the driver report it,
+		// rather than silently dropping connection options.
+		if u.RawQuery != "" {
+			dsn += "?" + u.RawQuery
+		}
+		return dsn
 	}
-	return dsn
+	pinUTCParams(params)
+	return dsn + "?" + params.Encode()
+}
+
+// pinUTCParams fixes the zone the driver uses to convert TIMESTAMP values.
+func pinUTCParams(params url.Values) {
+	params.Set("parseTime", "true")
+	params.Set("loc", "UTC")
 }

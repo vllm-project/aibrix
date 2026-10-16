@@ -5,14 +5,14 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: aibrix
   annotations:
-    kpa.autoscaling.aibrix.ai/scale-down-delay: 0s
+    autoscaling.aibrix.ai/scale-down-cooldown-window: 0s
   name: podautoscaler-deepseek-coder-7b-l20
   namespace: default
 spec:
   maxReplicas: 10
   metricsSources:
   - endpoint: aibrix-gpu-optimizer.aibrix-system.svc.cluster.local:8080
-    metricSourceType: domain
+    metricSourceType: external
     path: /metrics/default/deepseek-coder-7b-l20
     protocolType: http
     targetMetric: vllm:deployment_replicas

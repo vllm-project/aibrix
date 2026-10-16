@@ -31,6 +31,105 @@ Set ``replicaCount`` and container resources in your ``values.yaml`` override:
             cpu: "16"
             memory: 32Gi
 
+Gateway Plugin Kubernetes API Throttling
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Configure the gateway plugin's API server request rate using container arguments
+in ``config/gateway/gateway-plugin/gateway-plugin.yaml``:
+
+.. code-block:: yaml
+
+    containers:
+      - name: gateway-plugin
+        args:
+          - --installation-namespace=$(POD_NAMESPACE)
+          - --kube-api-qps=5
+          - --kube-api-burst=10
+
+``--kube-api-qps`` defaults to ``rest.DefaultQPS`` (5 requests per second), and
+``--kube-api-burst`` defaults to ``rest.DefaultBurst`` (10 requests). Both must be
+greater than zero; QPS must also be finite and remain positive when represented
+as a float32. Invalid values cause the plugin to exit during startup.
+
+The plugin applies these values to its shared Kubernetes REST configuration
+before creating the core Kubernetes and Gateway API clients. Each client uses
+the same settings with its own rate limiter; this is not a combined request
+budget. This configuration is also used when initializing the plugin's Kubernetes
+caches. These flags control API server traffic, not inference request QPS.
+
+Gateway Plugin Model Discovery and Listing
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Kubernetes discovery requires ``--installation-namespace`` to name an existing,
+accessible namespace. Packaged deployments use the gateway Pod namespace by
+default. Pod, ModelAdapter, and ModelClaim discovery stays within this namespace;
+there is no cluster-wide fallback. For Helm, set
+``gatewayPlugin.installationNamespace`` to select another existing workload
+namespace and grant the matching discovery permissions.
+
+The plugin can omit Kubernetes resource types that it does not serve. The
+following options keep Pod discovery and select a list containing only models
+with a ready Pod:
+
+.. code-block:: yaml
+
+    containers:
+      - name: gateway-plugin
+        args:
+          - --installation-namespace=$(POD_NAMESPACE)
+          - --watch-model-adapters=false
+          - --watch-model-claims=false
+          - --model-list-mode=ready-pods
+
+Adapter and ModelClaim watching both default to ``true``. Disabling adapter
+watching avoids listing or watching its CRD and removes it from required cache
+sync. Disabling claim watching also ignores ModelClaim runtime annotations on
+Pods when building the model cache. These options do not remove either feature
+from deployments that leave it enabled.
+
+``--model-list-mode`` defaults to ``known``, which retains the existing cached
+model-name list. ``ready-pods`` includes a name when at least one associated
+Pod has an IP, is Ready, and is neither terminating nor draining. This Pod
+check does not verify an adapter's load status, HTTPRoute acceptance, or a
+complete prefill/decode pair. An empty cache returns an empty list.
+
+To require a recent Kubernetes discovery snapshot before returning the list,
+set a positive ``--model-list-discovery-max-age`` duration. For example:
+
+.. code-block:: yaml
+
+    containers:
+      - name: gateway-plugin
+        args:
+          - --installation-namespace=$(POD_NAMESPACE)
+          - --model-list-mode=ready-pods
+          - --model-list-discovery-max-age=5m
+
+The duration is the maximum age of a successful verification, not a polling
+interval; zero (the default) preserves the existing behavior. The first list
+request, and the first request after that age expires, obtains a current,
+paginated Kubernetes LIST of Pods and enabled ModelAdapters in the installation
+namespace and compares it with events already applied to the gateway cache. Only one verification runs
+at a time. A failed or mismatched LIST, a request timeout, or a reported watch
+error invalidates the previous proof. The endpoint returns HTTP 503 with a
+``service_unavailable`` error until a later verification succeeds; retries
+after failure are limited to once every five seconds. A healthy installation
+with no models still returns HTTP 200 with an empty list. Each gateway replica
+performs its own verification, so choose the duration with API-server load in
+mind. The verification request has a ten-second timeout.
+
+With verification enabled, the plugin opens its HTTP listener before initial
+discovery completes and returns the same 503 while its cache is unavailable.
+This only covers requests that reach the plugin; when no gateway process or
+ready Service endpoint is reachable, the front proxy controls the response.
+
+The gateway plugin serves both ``GET /v1/models`` and ``GET /v1/models/`` on
+its HTTP port. The packaged Kustomize and Helm routes send these requests to the
+plugin Service on port 8080; the Helm Envoy sidecar uses the local plugin HTTP
+port. ``/v1/files`` and ``/v1/batches`` keep their existing metadata destination
+in Envoy Gateway mode. Confirm the HTTPRoute's ``Accepted`` and ``ResolvedRefs``
+conditions before relying on it. The list mode comes from ``--model-list-mode``.
+
 Envoy Proxy
 ~~~~~~~~~~~
 
@@ -122,6 +221,27 @@ requests** and increase CPU if Redis becomes a latency bottleneck (monitor ``red
     ``metadata.redis`` block from your override — the chart will not deploy its own Redis when
     a custom host is provided.
 
+Disabling Gateway Rate Limiting
+--------------------------------
+
+Set ``AIBRIX_DISABLE_RATE_LIMITING=true`` on the gateway plugin to disable AIBrix user
+RPM/TPM and model RPS quota enforcement. The setting defaults to ``false``. When disabled,
+the gateway skips AIBrix user lookup and does not use the ``user`` header as routing identity,
+but it forwards the header unchanged.
+
+.. code-block:: yaml
+
+    gatewayPlugin:
+      container:
+        envs:
+          AIBRIX_DISABLE_RATE_LIMITING: "true"
+
+The setting does not disable the per-replica ``requestsInflight`` guard or disconnect Redis.
+Keep Redis configured when session affinity, asynchronous jobs, state synchronization, or other
+gateway features require it. Because disabled mode leaves routing user identity empty,
+asynchronous video jobs use the shared ownership scope. The unauthenticated ``user`` header
+does not isolate one caller's video jobs from another caller's jobs in this mode.
+
 Configuring Buffer Limits, Connections, and QPS
 ------------------------------------------------
 
@@ -205,6 +325,18 @@ Choosing a Routing Strategy
 
 If no ``routing-strategy`` header is provided, the gateway defaults to ``random`` routing.
 
+External decision services
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For production ``external`` routing, run at least two decision-service replicas
+behind a stable Kubernetes Service, budget its synchronous latency within the
+Gateway request path, and alert on timeout, fallback, and circuit-open outcomes.
+Use HTTPS or an appropriate cluster NetworkPolicy and store bearer tokens in a
+mounted Secret file. Test Authoritative denial and service unavailability before
+enabling fail-closed traffic. External business-policy state is owned by the
+service; Gateway bulkhead and circuit state is local to each Gateway replica.
+See :doc:`../features/gateway-routing/external-replica-routing`.
+
 .. code-block:: bash
 
     # No routing-strategy header — gateway picks a random ready pod
@@ -281,6 +413,36 @@ for deployment requirements and configuration options.
     critical. For any production deployment, explicitly set ``routing-strategy`` to avoid
     relying on the default.
 
+Draining Pods
+-------------
+
+The gateway excludes Pods annotated with ``aibrix.ai/draining=true`` from its
+ready-pod routing candidates. RoleSet and PodSet controllers set this annotation
+before deleting serving Pods when a role configures
+``drain.timeoutSeconds > 0``. This gives the gateway time to stop assigning new
+requests before the controller removes the Pod.
+
+The gateway treats the drain annotation as a routing signal only:
+
+.. code-block:: text
+
+   RoleSet/PodSet controller
+      -> patch Pod: aibrix.ai/draining=true
+      -> patch Pod: aibrix.ai/drain-start-time=<RFC3339 UTC>
+      -> patch Pod: aibrix.ai/drain-reason=scale-in|rollout
+      -> patch Pod: aibrix.ai/drain-target-action=delete
+
+   Gateway pod cache
+      -> observes the Pod update
+      -> filters the Pod out of ready routing candidates
+
+   RoleSet/PodSet controller
+      -> waits for drain.timeoutSeconds
+      -> deletes the Pod
+
+The controller owns the timeout and deletion decision. The gateway does not
+parse ``drain-start-time`` and does not emit drain lifecycle events.
+
 Per-Model Routing Configuration
 ---------------------------------
 
@@ -307,3 +469,11 @@ This allows the same gateway to enforce different routing strategies, prompt-len
 and PD modes per model without deploying separate gateway instances.
 
 For config profile setup and the full annotation schema see :ref:`config_profiles` in the Gateway Routing guide. For production guidance including RPS limiting see :ref:`model_deployment_production`.
+
+.. card:: What's next?
+   :class-card: sd-border-1
+
+   * :doc:`model-deployment`: deploy models behind this gateway
+   * :doc:`observability`: gateway metrics and dashboards
+   * :doc:`../features/gateway-routing/pd-disaggregation`: split prefill from decode
+   * :doc:`../designs/aibrix-gateway`: how routing decisions are made

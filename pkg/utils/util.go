@@ -20,8 +20,10 @@ import (
 	crand "crypto/rand"
 	"fmt"
 	"math/big"
+	mrand "math/rand/v2"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -119,6 +121,35 @@ func LoadEnvInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
+// LoadEnvNonNegativeInt loads an int environment variable that accepts 0 as a
+// meaningful value, falling back to defaultValue when the variable is unset,
+// empty, negative or unparseable.
+//
+// It exists because LoadEnvInt cannot express an explicit 0: that helper treats
+// every value <= 0 as invalid and silently falls back to its default. For some
+// knobs 0 is a documented value in its own right - the off switch of the PD
+// decode abort (AIBRIX_DECODE_ABORT_TIMEOUT) and the single-attempt setting of
+// its retry (AIBRIX_DECODE_ABORT_RETRY_DELAY) - and an operator facing a
+// misbehaving component must be able to switch it off from the environment
+// without a new build. A negative or unparseable value is still refused, as
+// there it means a typo rather than an intent.
+//
+// LoadEnvInt keeps its positive-only behaviour: its other callers rely on it.
+func LoadEnvNonNegativeInt(key string, defaultValue int) int {
+	value := os.Getenv(key)
+	if value != "" {
+		intValue, err := strconv.Atoi(value)
+		if err != nil || intValue < 0 {
+			klog.Warningf("invalid %s: %s, falling back to default: %d", key, value, defaultValue)
+		} else {
+			klog.Infof("set %s: %d", key, intValue)
+			return intValue
+		}
+	}
+	klog.Infof("set %s: %d, using default value", key, defaultValue)
+	return defaultValue
+}
+
 func LoadEnvFloat(key string, defaultValue float64) float64 {
 	valueStr := os.Getenv(key)
 	if valueStr != "" {
@@ -151,11 +182,14 @@ func LoadEnvBool(key string, defaultValue bool) bool {
 }
 
 // LoadEnvDuration loads a duration environment variable or returns a default value if not set.
+// Like LoadEnvInt and LoadEnvFloat, it rejects non-positive values. The result is used as a
+// period, TTL or timeout, where zero or a negative value does not mean "off": it either makes
+// a time.After-based loop spin without waiting or silently skips work gated on a positive period.
 func LoadEnvDuration(key string, defaultValue time.Duration) time.Duration {
 	value := os.Getenv(key)
 	if value != "" {
 		duration, err := time.ParseDuration(value)
-		if err != nil {
+		if err != nil || duration <= 0 {
 			klog.Warningf("invalid %s: %s, falling back to default: %v", key, value, defaultValue)
 		} else {
 			klog.Infof("set %s: %v", key, duration)
@@ -303,6 +337,10 @@ func IsDataParallelPod(pod *v1.Pod) bool {
 	return false
 }
 
+// CryptoShuffle shuffles slice in place using crypto/rand. Every swap reads
+// the OS entropy source, so it costs a getrandom syscall and several
+// allocations per swap; use it where unpredictability matters, not on hot
+// paths. See Shuffle.
 func CryptoShuffle[T any](slice []T) {
 	n := len(slice)
 	for i := n - 1; i > 0; i-- {
@@ -310,6 +348,16 @@ func CryptoShuffle[T any](slice []T) {
 		j := int(jBig.Int64())
 		slice[i], slice[j] = slice[j], slice[i]
 	}
+}
+
+// Shuffle shuffles slice in place using math/rand/v2's process-wide generator,
+// which is safe for concurrent use and neither allocates nor enters the
+// kernel. It is the right choice for tie-breaking on request hot paths, where
+// the order only needs to be unbiased, not unpredictable.
+func Shuffle[T any](slice []T) {
+	mrand.Shuffle(len(slice), func(i, j int) {
+		slice[i], slice[j] = slice[j], slice[i]
+	})
 }
 
 func HasVolume(vols []v1.Volume, name string) bool {
@@ -327,4 +375,12 @@ func HasVolumeMount(mounts []v1.VolumeMount, name, path string) bool {
 		}
 	}
 	return false
+}
+
+// PathWithoutQuery strips the query string from an Envoy/HTTP :path value.
+// HTTP/2 :path includes both path and query (RFC 7540), so exact/prefix
+// matchers on the request path must cut on '?' before comparing.
+func PathWithoutQuery(requestPath string) string {
+	path, _, _ := strings.Cut(requestPath, "?")
+	return path
 }

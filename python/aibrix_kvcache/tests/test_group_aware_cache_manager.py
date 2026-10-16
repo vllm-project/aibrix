@@ -39,7 +39,6 @@ from .conftest import (
     randomize_cache_handle,
 )
 
-pytest.skip(allow_module_level=True)
 cache_manager.TESTING_DISABLE_PIN_MEMORY = True
 
 

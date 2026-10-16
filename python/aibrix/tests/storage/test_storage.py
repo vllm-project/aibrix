@@ -22,12 +22,122 @@ core functionality like put/get operations, range reads, multipart upload APIs, 
 import asyncio
 import io
 import os
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Union
+from unittest.mock import Mock
 
 import pytest
 
 from aibrix.storage.base import BaseStorage
+from aibrix.storage.s3 import S3Storage
+from aibrix.storage.tos import TOSStorage
+from aibrix.storage.types import StorageListOrdering
+
+
+@pytest.fixture
+def non_utc_timezone():
+    if not hasattr(time, "tzset"):
+        pytest.skip("time.tzset is unavailable")
+    previous = os.environ.get("TZ")
+    os.environ["TZ"] = "<-07>7"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+
+class TestStorageTimestamps:
+    @pytest.mark.asyncio
+    async def test_local_last_modified_matches_mtime(
+        self, local_storage, non_utc_timezone
+    ):
+        key = "test/timestamp.txt"
+        await local_storage.put_object(key, b"payload")
+
+        metadata = await local_storage.head_object(key)
+        mtime = local_storage._get_full_path(key).stat().st_mtime
+        assert metadata.last_modified == datetime.fromtimestamp(mtime, timezone.utc)
+        assert metadata.last_modified.tzinfo == timezone.utc
+
+        sidecar = local_storage._read_json_file(local_storage._get_metadata_path(key))
+        assert sidecar["last_modified"].endswith("+00:00")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reader_tz,legacy_iso",
+        [
+            ("<-07>7", "2026-06-15T11:30:00"),
+            # 02:30 does not exist on this spring-forward day.
+            ("EST5EDT,M3.2.0/2,M11.1.0/2", "2026-03-08T02:30:00"),
+        ],
+    )
+    async def test_local_legacy_last_modified_preserves_epoch(
+        self, local_storage, non_utc_timezone, reader_tz, legacy_iso
+    ):
+        os.environ["TZ"] = reader_tz
+        time.tzset()
+        key = "test/legacy.txt"
+        legacy = datetime.fromisoformat(legacy_iso)
+        sidecar_path = local_storage._get_metadata_path(key)
+        sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+        local_storage._write_json_file(
+            sidecar_path,
+            {"content_length": 7, "last_modified": legacy.isoformat()},
+        )
+        original = sidecar_path.read_bytes()
+
+        metadata = await local_storage.head_object(key)
+        assert metadata.last_modified.timestamp() == legacy.timestamp()
+        assert metadata.last_modified.tzinfo == timezone.utc
+        assert sidecar_path.read_bytes() == original
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("backend", [S3Storage, TOSStorage])
+    @pytest.mark.parametrize("timestamp_kind", ["utc", "offset", "naive", "missing"])
+    async def test_cloud_last_modified_preserves_instant(
+        self, backend, timestamp_kind, non_utc_timezone
+    ):
+        instant = datetime(2026, 6, 15, 18, 30, tzinfo=timezone.utc)
+        sdk_value = {
+            "utc": instant,
+            "offset": instant.astimezone(timezone(timedelta(hours=5, minutes=30))),
+            "naive": instant.replace(tzinfo=None),
+            "missing": None,
+        }[timestamp_kind]
+        storage = object.__new__(backend)
+        storage.bucket_name = "bucket"
+        storage.client = Mock()
+        if backend is S3Storage:
+            storage.client.head_object.return_value = {
+                "ContentLength": 7,
+                "ETag": '"etag"',
+                "LastModified": sdk_value,
+            }
+        else:
+            storage.client.head_object.return_value = SimpleNamespace(
+                content_length=7, etag='"etag"', last_modified=sdk_value
+            )
+
+        metadata = await storage.head_object("file-timestamp")
+        if sdk_value is None:
+            assert metadata.last_modified is None
+        else:
+            assert metadata.last_modified == instant
+            assert metadata.last_modified.tzinfo == timezone.utc
+
+
+def _ordered_keys_for_backend(storage: BaseStorage, keys: list[str]) -> list[str]:
+    if storage.get_list_ordering() == StorageListOrdering.CREATED_AT_DESC:
+        return list(reversed(keys))
+    return sorted(keys)
 
 
 class TestStorageFunctionality:
@@ -230,9 +340,10 @@ class TestStorageFunctionality:
             continuation_token=continuation_token,
         )
 
-        assert first_page == test_objects[:2]
+        expected_order = _ordered_keys_for_backend(storage, test_objects)
+        assert first_page == expected_order[:2]
         assert continuation_token is not None
-        assert second_page == test_objects[2:]
+        assert second_page == expected_order[2:]
         assert next_token is None
 
         for key in test_objects:
@@ -258,8 +369,9 @@ class TestStorageFunctionality:
             after_key=first_page[-1],
         )
 
-        assert first_page == test_objects[:2]
-        assert second_page == test_objects[2:]
+        expected_order = _ordered_keys_for_backend(storage, test_objects)
+        assert first_page == expected_order[:2]
+        assert second_page == expected_order[2:]
         assert next_token is None
 
         for key in test_objects:

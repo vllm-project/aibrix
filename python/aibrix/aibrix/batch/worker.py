@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
+import copy
+import json
 import os
 import signal
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import Collection, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -26,8 +28,14 @@ import httpx
 import aibrix.batch.constant as constant
 from aibrix.batch.client import GatewayEndpointSource
 from aibrix.batch.job_driver.base import BaseJobDriver
+from aibrix.batch.job_driver.running_jobs import (
+    LOCAL_STATUS_UPDATE_KEYS,
+    LocalStatusKey,
+    RunningJobs,
+)
 from aibrix.batch.job_driver.runtime import ExternalRuntime
 from aibrix.batch.job_entity import (
+    AibrixMetadata,
     BatchJob,
     BatchJobError,
     BatchJobSpec,
@@ -38,7 +46,9 @@ from aibrix.batch.job_entity import (
     ConditionType,
 )
 from aibrix.batch.state import JobMetaInfo
+from aibrix.context.infra import InfrastructureContext
 from aibrix.logger import init_logger
+from aibrix.metadata.core import HTTPXClientWrapper
 
 logger = init_logger(__name__)
 
@@ -63,10 +73,17 @@ class LLMHealthChecker:
         )  # type: ignore[call-arg]
 
         start_time = time.time()
-        async with httpx.AsyncClient() as client:
+        # Since wait_for_ready is a one-off startup polling loop for in-pod execution,
+        # enabling telemetry for this ephemeral client is unnecessary.
+        async with HTTPXClientWrapper(
+            client_id="batch-worker-health", telemetry_enabled=False
+        ) as client:
             while time.time() - start_time < self.timeout:
                 try:
-                    response = await client.get(self.health_url, timeout=5.0)
+                    response = await client.get(
+                        self.health_url,
+                        timeout=5.0,
+                    )
                     if response.status_code == 200:
                         logger.info("vLLM service is ready")
                         return True
@@ -82,7 +99,7 @@ class LLMHealthChecker:
         return False
 
 
-class SingleJobRunner:
+class SingleJobRunner(RunningJobs):
     """A minimal ``RunningJobs`` for executing ONE batch job in-process (the
     batch worker pod).
 
@@ -101,53 +118,9 @@ class SingleJobRunner:
     async def get_job(self, job_id: str) -> Optional[BatchJob]:
         return self._meta if job_id == self._meta.job_id else None
 
-    async def get_job_next_request(self, job_id: str) -> Tuple[BatchJob, int]:
-        return self._meta, self._meta.next_request_id()
-
-    async def complete_job_request(
-        self, job_id: str, req_id: int, failed: bool = False
-    ) -> BatchJob:
-        async with self._meta._async_lock:
-            total = self._meta.status.request_counts.total
-            if req_id < 0 or req_id >= total:
-                raise ValueError(f"invalid request_id: {req_id}")
-            self._meta.complete_one_request(req_id, failed=failed)
-            return self._meta
-
-    async def mark_job_progress_and_get_next_request(
-        self, job_id: str, req_id: int
-    ) -> Tuple[BatchJob, int]:
-        self._meta.complete_one_request(req_id)
-        return self._meta, self._meta.next_request_id()
-
-    async def mark_jobs_progresses(
-        self, job_id: str, executed_requests: List[int]
-    ) -> BatchJob:
-        total = self._meta.status.request_counts.total
-        for req_id in executed_requests:
-            if req_id < 0 or req_id > total:
-                logger.error(  # type: ignore[call-arg]
-                    "Mark job progress failed - request index out of boundary",
-                    job_id=job_id,
-                    req_id=req_id,
-                    total=total,
-                )
-                continue
-            self._meta.complete_one_request(req_id)
-        return self._meta
-
-    async def mark_job_total(self, job_id: str, total_requests: int) -> BatchJob:
-        # Mirrors BatchManager.mark_job_total -> mark_job_progress(total+1): the
-        # (total+1) sentinel tells the tracker the total is now known.
-        req_id = total_requests + 1
-        if req_id < 0 or req_id > self._meta.status.request_counts.total:
-            raise ValueError(f"invalid request_id: {req_id}")
-        self._meta.complete_one_request(req_id)
-        return self._meta
-
-    async def mark_job_done(self, job_id: str) -> BatchJob:
-        job = self._meta
-        if job.status.state != BatchJobState.FINALIZING:
+    async def mark_job_done(self, job: BatchJob) -> BatchJob:
+        meta = self._meta
+        if meta.status.state != BatchJobState.FINALIZING:
             raise RuntimeError(f"Job is not in finalizing state: {job.status.state}")
         job.status.completed_at = datetime.now(timezone.utc)
         job.status.finalized_at = job.status.completed_at
@@ -160,7 +133,55 @@ class SingleJobRunner:
                 )
             )
         job.status.state = BatchJobState.FINALIZED
-        return job
+        meta.status = job.status
+        return meta
+
+    async def mark_job_validated(self, job_id: str, status: BatchJobStatus) -> BatchJob:
+        del job_id
+        self._meta.status = status
+        return self._meta
+
+    async def update_job_status(self, job_id: str, status: BatchJobStatus) -> BatchJob:
+        del job_id
+        self._meta.status = status
+        return self._meta
+
+    async def update_job_local_status(
+        self,
+        job_id: str,
+        worker_id: str,
+        status: BatchJobStatus,
+        update_keys: Collection[LocalStatusKey] | None = None,
+    ) -> BatchJob:
+        del job_id, worker_id
+        keys = (
+            set(LOCAL_STATUS_UPDATE_KEYS) if update_keys is None else set(update_keys)
+        )
+        unknown_keys = keys.difference(LOCAL_STATUS_UPDATE_KEYS)
+        if unknown_keys:
+            raise ValueError(
+                f"Unsupported local status update keys: {sorted(unknown_keys)}"
+            )
+        if "state" in keys:
+            self._meta.status.state = status.state
+        if "errors" in keys:
+            self._meta.status.errors = copy.deepcopy(status.errors)
+        if "request_counts" in keys:
+            self._meta.status.request_counts = status.request_counts.model_copy(
+                deep=True
+            )
+        if "usage" in keys:
+            self._meta.status.usage = (
+                status.usage.model_copy(deep=True) if status.usage is not None else None
+            )
+        if "execution" in keys:
+            self._meta.status.execution = copy.deepcopy(status.execution)
+        return self._meta
+
+    async def mark_job_finalizing(self, job_id: str) -> BatchJob:
+        del job_id
+        self._meta.status.state = BatchJobState.FINALIZING
+        return self._meta
 
     async def mark_job_failed(self, job_id: str, ex: BatchJobError) -> BatchJob:
         job = self._meta
@@ -210,6 +231,7 @@ class BatchWorker:
         # Get batch job metadata from environment variables
         input_file_id = os.getenv("BATCH_INPUT_FILE_ID")
         endpoint = os.getenv("BATCH_ENDPOINT")
+        aibrix = self._load_aibrix_from_env()
         opts: dict[str, str] = {}
         if (
             failed_after_after_n_requests := os.getenv(
@@ -261,6 +283,7 @@ class BatchWorker:
                 endpoint=endpoint,
                 metadata=None,
                 opts=opts,
+                aibrix=aibrix.model_dump(exclude_none=True) if aibrix else None,
             )
 
             # Determine state based on file IDs (as in current transformer logic)
@@ -301,6 +324,19 @@ class BatchWorker:
             raise RuntimeError(
                 f"Error creating BatchJob from environment variables: {e}"
             ) from e
+
+    def _load_aibrix_from_env(self) -> Optional[AibrixMetadata]:
+        raw = os.getenv("BATCH_AIBRIX")
+        if not raw:
+            return None
+        try:
+            return AibrixMetadata.model_validate(json.loads(raw))
+        except Exception as exc:
+            logger.warning(
+                "Failed to parse BATCH_AIBRIX; ignoring AIBrix metadata",
+                error=str(exc),
+            )  # type: ignore[call-arg]
+            return None
 
     async def wait_for_in_progress(
         self, job: BatchJob, max_wait: int = 300
@@ -369,7 +405,8 @@ class BatchWorker:
             # the driver the per-job RunningJobs surface it needs, and the worker
             # dispatches against its own pod-local engine. execute runs
             # prepare(skipped — the metadata service already prepared the output
-            # files) -> run_job -> finalize, and re-raises on failure
+            # files) -> run_job; finalize is skipped in worker_mode and left to
+            # the metadata service. It re-raises on failure
             # (BaseJobDriver._reraise_on_failure=True).
             job_id = batch_job.job_id
             if job_id is None:
@@ -378,9 +415,17 @@ class BatchWorker:
             runner = SingleJobRunner(batch_job)
             if self.llm_engine_base_url is None:
                 raise RuntimeError("engine base url not resolved")
+            # worker_mode keeps this pod out of finalization: it dispatches
+            # requests and writes its output parts and per-request done markers,
+            # but leaves aggregation to the metadata service. Finalizing here
+            # would consume the markers and complete the multipart upload inside
+            # the Job, so the coordinator would then aggregate against emptied
+            # markers and overwrite the output with zero counts (#2263).
             driver = BaseJobDriver(
+                InfrastructureContext(),
                 runner,
                 ExternalRuntime(GatewayEndpointSource(self.llm_engine_base_url)),
+                worker_mode=True,
             )
             logger.info("Executing batch job", job_id=job_id)  # type: ignore[call-arg]
             await driver.execute(job_id)
@@ -431,7 +476,7 @@ def kill_llm_engine():
             [
                 "bash",
                 "-c",
-                "grep -zla 'WORKER_VICTIM=1' /proc/*/environ 2>/dev/null | awk -F/ '/\/proc\/[0-9]+\/environ/ {print $3}' | sort -n",
+                r"grep -zla 'WORKER_VICTIM=1' /proc/*/environ 2>/dev/null | awk -F/ '/\/proc\/[0-9]+\/environ/ {print $3}' | sort -n",
             ],
             capture_output=True,
             text=True,

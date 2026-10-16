@@ -1,0 +1,28 @@
+# A ModelClaim runs a model in a warm pool: Pods that run the kvcached runtime
+# and carry the labels `claim.model.aibrix.ai/pool: <pool>` and
+# `claim.model.aibrix.ai/enabled: "true"`. The controller starts the model as
+# its own engine process, on a Pod whose GPU has room for it, alongside other
+# ModelClaims.
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelClaim
+metadata:
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  name: qwen2-7b-sample
+spec:
+  # The model name clients send; defaults to metadata.name.
+  modelName: qwen2-7b-instruct
+  # Selects the warm pool.
+  podSelector:
+    matchLabels:
+      claim.model.aibrix.ai/pool: pool-a
+  artifactURL: huggingface://Qwen/Qwen2-7B-Instruct
+  engine: vllm
+  replicas: 1
+  # What one instance needs on one GPU. Measure both figures for your model
+  # and engine arguments. Declaring more than it needs wastes room and is
+  # safe; declaring less is not.
+  perGPU:
+    maximumFootprint: 20Gi   # weights, CUDA graphs and allocator retention
+    kvFloor: 2Gi             # the KV cache for one request of the maximum length

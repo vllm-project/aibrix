@@ -16,6 +16,8 @@ import ast
 import asyncio
 import pkgutil
 from dataclasses import dataclass
+from http import HTTPStatus
+from time import monotonic, time
 
 import httpx
 import pytest
@@ -32,6 +34,7 @@ from aibrix.batch.client import (
     NoopEndpointSource,
     RetryConfig,
 )
+from aibrix.batch.client.engine import _ConcurrencyAdmission
 
 
 class _FakeChannel:
@@ -73,6 +76,34 @@ class _FakeSource:
     async def aclose(self):
         for channel in self._channels:
             await channel.aclose()
+
+
+class _ReadTimeout(Exception):
+    pass
+
+
+class _MutableCapacitySource(_FakeSource):
+    def __init__(self, channels, capacity):
+        super().__init__(channels)
+        self._capacity = capacity
+        self._version = 0
+        self._changes = asyncio.Queue()
+
+    async def capacity(self):
+        return CapacitySignal(count=self._capacity, version=self._version)
+
+    async def wait_capacity_change(self, previous):
+        while True:
+            signal = await self._changes.get()
+            if signal != previous:
+                return signal
+
+    def set_capacity(self, capacity):
+        self._capacity = capacity
+        self._version += 1
+        self._changes.put_nowait(
+            CapacitySignal(count=self._capacity, version=self._version)
+        )
 
 
 class _ErrorChannel(_FakeChannel):
@@ -227,6 +258,8 @@ async def test_http_channel_truncates_large_error_body():
 def test_retry_config_rejects_invalid_values():
     with pytest.raises(ValueError):
         RetryConfig(max_retries=-1)
+    with pytest.raises(ValueError):
+        RetryConfig(no_endpoint_deadline_epoch_seconds=0)
 
 
 @pytest.mark.asyncio
@@ -389,6 +422,30 @@ async def test_no_endpoint_retry_budget_is_separate_from_send_retry_budget():
 
 
 @pytest.mark.asyncio
+async def test_no_endpoint_retries_until_job_deadline():
+    deadline = time() + 0.03
+    engine = DispatchEngine(
+        _FakeSource([]),
+        retry=RetryConfig(
+            max_retries=0,
+            base_delay_seconds=0.01,
+            max_delay_seconds=0.01,
+            no_endpoint_deadline_epoch_seconds=deadline,
+        ),
+    )
+
+    started = monotonic()
+    with pytest.raises(InferenceError) as excinfo:
+        await asyncio.wait_for(
+            engine.send_one(InferenceRequest("/test", {}, ref="r1")),
+            timeout=0.5,
+        )
+
+    assert excinfo.value.code == InferenceErrorCode.NO_ENDPOINT
+    assert monotonic() - started >= 0.02
+
+
+@pytest.mark.asyncio
 async def test_retryable_error_reports_failed_channel_before_retry():
     bad = _ErrorChannel(
         "bad",
@@ -430,6 +487,155 @@ async def test_retryable_error_reports_failed_channel_before_retry():
 
     assert result["by"] == "good"
     assert source.reported == [("bad", InferenceErrorCode.TRANSPORT_ERROR)]
+    assert bad.calls == ["r1"]
+    assert good.calls == ["r1"]
+
+
+@pytest.mark.asyncio
+async def test_source_channels_error_is_reported_per_request():
+    class _BrokenSource:
+        async def channels(self):
+            raise _ReadTimeout("timed out resolving endpoints")
+
+        async def capacity(self):
+            return CapacitySignal(count=1)
+
+        async def wait_capacity_change(self, previous):
+            raise AssertionError("unused")
+
+        async def aclose(self):
+            return None
+
+    results = await _drain(_BrokenSource(), _reqs(1), max_retries=0)
+
+    _, resp, err = results[0]
+    assert resp is None
+    assert isinstance(err, InferenceError)
+    assert err.code == InferenceErrorCode.CONNECTION_SETUP
+    assert err.retryable is True
+    assert "dispatch request" in err.message
+
+
+@pytest.mark.asyncio
+async def test_source_refresh_error_is_reported_per_request():
+    class _RefreshingSource:
+        def __init__(self):
+            self.calls = 0
+            self.refreshes = 0
+
+        async def channels(self):
+            self.calls += 1
+            return []
+
+        async def capacity(self):
+            return CapacitySignal(count=1)
+
+        async def wait_capacity_change(self, previous):
+            raise AssertionError("unused")
+
+        async def refresh(self):
+            self.refreshes += 1
+            raise _ReadTimeout("timed out refreshing endpoints")
+
+        async def aclose(self):
+            return None
+
+    source = _RefreshingSource()
+    results = await _drain(
+        source,
+        _reqs(1),
+        retry=RetryConfig(
+            max_retries=0,
+            no_endpoint_max_retries=0,
+            base_delay_seconds=0.001,
+        ),
+    )
+
+    _, resp, err = results[0]
+    assert resp is None
+    assert isinstance(err, InferenceError)
+    assert err.code == InferenceErrorCode.NO_ENDPOINT
+    assert err.retryable is None
+    assert source.refreshes == 0
+
+
+@pytest.mark.asyncio
+async def test_report_channel_error_failure_does_not_override_inference_error():
+    bad = _ErrorChannel(
+        "bad",
+        InferenceError(
+            InferenceErrorCode.TRANSPORT_ERROR,
+            "backend timed out",
+            retryable=True,
+        ),
+    )
+    good = _FakeChannel("good")
+
+    class _ReportingSource:
+        async def channels(self):
+            return [bad, good]
+
+        async def capacity(self):
+            return CapacitySignal(count=2)
+
+        async def wait_capacity_change(self, previous):
+            raise AssertionError("unused")
+
+        async def report_channel_error(self, channel_id, error):
+            del channel_id, error
+            raise _ReadTimeout("timed out reporting channel failure")
+
+        async def aclose(self):
+            return None
+
+    results = await _drain(_ReportingSource(), _reqs(1), max_retries=1)
+
+    _, resp, err = results[0]
+    assert err is None
+    assert resp["by"] == "good"
+    assert bad.calls == [0]
+    assert good.calls == [0]
+
+
+@pytest.mark.asyncio
+async def test_retryable_server_error_reports_channel_failure_before_retry():
+    bad = _ErrorChannel(
+        "bad",
+        InferenceError(
+            InferenceErrorCode.HTTP_ERROR,
+            "service unavailable",
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+            retryable=True,
+        ),
+    )
+    good = _FakeChannel("good")
+
+    class _ReportingSource:
+        def __init__(self):
+            self.reported = []
+
+        async def channels(self):
+            return [bad, good]
+
+        async def capacity(self):
+            return CapacitySignal(count=2)
+
+        async def wait_capacity_change(self, previous):
+            raise AssertionError("unused")
+
+        async def report_channel_error(self, channel_id, error):
+            self.reported.append((channel_id, error.code))
+
+        async def aclose(self):
+            return None
+
+    source = _ReportingSource()
+    engine = DispatchEngine(source, max_retries=1)
+
+    result = await engine.send_one(InferenceRequest("/test", {}, ref="r1"))
+
+    assert result["by"] == "good"
+    assert source.reported == [("bad", InferenceErrorCode.HTTP_ERROR)]
     assert bad.calls == ["r1"]
     assert good.calls == ["r1"]
 
@@ -611,6 +817,141 @@ async def test_explicit_concurrency_overrides_capacity():
 
 
 @pytest.mark.asyncio
+async def test_fixed_concurrency_scales_with_dynamic_source_capacity():
+    started = 0
+    initial_limit_reached = asyncio.Event()
+    expanded_limit_reached = asyncio.Event()
+    release = asyncio.Event()
+
+    class _BlockingChannel(_FakeChannel):
+        async def send(self, request):
+            nonlocal started
+            started += 1
+            if started == 2:
+                initial_limit_reached.set()
+            if started == 4:
+                expanded_limit_reached.set()
+            await release.wait()
+            return {"ok": True}
+
+    source = _MutableCapacitySource([_BlockingChannel("s")], capacity=1)
+    engine = DispatchEngine(
+        source,
+        max_retries=0,
+        configured_capacity=4,
+    )
+    results = []
+
+    async def feed():
+        for request in _reqs(6):
+            yield request
+
+    async def on_result(req, resp, err):
+        results.append((req.ref, resp, err))
+
+    task = asyncio.create_task(
+        engine.run(
+            feed(),
+            on_result,
+            max_concurrency=8,
+        )
+    )
+    try:
+        await asyncio.wait_for(initial_limit_reached.wait(), timeout=1.0)
+        await asyncio.sleep(0)
+        assert started == 2
+
+        source.set_capacity(2)
+        await asyncio.wait_for(expanded_limit_reached.wait(), timeout=1.0)
+        assert started == 4
+    finally:
+        release.set()
+        await task
+    assert len(results) == 6
+
+
+@pytest.mark.asyncio
+async def test_zero_capacity_keeps_one_recovery_probe():
+    channel = _FakeChannel("s")
+    source = _MutableCapacitySource([channel], capacity=0)
+    engine = DispatchEngine(
+        source,
+        max_retries=0,
+        configured_capacity=1,
+    )
+    pulled = []
+    results = []
+
+    async def feed():
+        for request in _reqs(1):
+            pulled.append(request.ref)
+            yield request
+
+    async def on_result(req, resp, err):
+        results.append((req.ref, resp, err))
+
+    task = asyncio.create_task(engine.run(feed(), on_result, adaptive_concurrency=True))
+    await asyncio.wait_for(task, timeout=1.0)
+    assert pulled == [0]
+    assert channel.calls == [0]
+    assert len(results) == 1
+
+
+@pytest.mark.asyncio
+async def test_positive_capacity_never_scales_limit_to_zero():
+    source = _MutableCapacitySource([_FakeChannel("s")], capacity=9)
+    engine = DispatchEngine(
+        source,
+        max_retries=0,
+        configured_capacity=10,
+    )
+
+    controller = await engine._resolve_concurrency_controller(
+        max_concurrency=1,
+        adaptive_concurrency=False,
+        adaptive_max_factor=1,
+        adaptive_max_concurrency=None,
+        adaptive_healthy_window=8,
+        adaptive_additive_increase=1,
+        concurrency_controller=None,
+    )
+
+    assert controller.limit() == 1
+
+
+@pytest.mark.asyncio
+async def test_adaptive_concurrency_max_scales_with_source_capacity():
+    source = _MutableCapacitySource([_FakeChannel("s")], capacity=2)
+    engine = DispatchEngine(
+        source,
+        max_retries=0,
+        configured_capacity=10,
+    )
+    controller = await engine._resolve_concurrency_controller(
+        max_concurrency=None,
+        adaptive_concurrency=True,
+        adaptive_max_factor=1,
+        adaptive_max_concurrency=100,
+        adaptive_healthy_window=8,
+        adaptive_additive_increase=1,
+        concurrency_controller=None,
+    )
+    healthy = ConcurrencyOutcome(success=True)
+
+    for _ in range(200):
+        controller.on_complete(healthy)
+    assert controller.limit() == 20
+
+    controller.update_capacity(CapacitySignal(count=1, version=1))
+    assert controller.limit() == 10
+
+    controller.update_capacity(CapacitySignal(count=5, version=2))
+    for _ in range(8):
+        controller.on_complete(healthy)
+    assert controller.limit() == 13
+
+
+@pytest.mark.asyncio
 async def test_run_pulls_requests_only_after_admission():
     pulled = []
     results = []
@@ -642,6 +983,39 @@ async def test_run_pulls_requests_only_after_admission():
     await task
     assert pulled == [0, 1]
     assert len(results) == 2
+
+
+@pytest.mark.asyncio
+async def test_admission_backoff_is_interrupted_by_completion():
+    delay_checked = asyncio.Event()
+
+    class _BackoffController:
+        def __init__(self):
+            self.delay = 0.0
+
+        def limit(self):
+            return 2
+
+        def admission_delay_seconds(self):
+            if self.delay > 0:
+                delay_checked.set()
+            return self.delay
+
+        def on_complete(self, outcome):
+            self.delay = 0.0
+
+    controller = _BackoffController()
+    admission = _ConcurrencyAdmission(controller)
+    await admission.acquire()
+
+    controller.delay = 10.0
+    waiting = asyncio.create_task(admission.acquire())
+    await delay_checked.wait()
+
+    await admission.release(ConcurrencyOutcome(success=True))
+    await asyncio.wait_for(waiting, timeout=0.2)
+    assert admission.inflight() == 1
+    await admission.release()
 
 
 @pytest.mark.asyncio
@@ -725,6 +1099,86 @@ async def test_adaptive_concurrency_can_grow_above_source_capacity():
 
     assert len(results) == 24
     assert peak > 1
+
+
+@pytest.mark.asyncio
+async def test_adaptive_concurrency_respects_absolute_max_cap():
+    inflight = 0
+    peak = 0
+
+    class _SlowChannel(_FakeChannel):
+        async def send(self, request):
+            nonlocal inflight, peak
+            inflight += 1
+            peak = max(peak, inflight)
+            await asyncio.sleep(0.01)
+            inflight -= 1
+            return {"usage": {"completion_tokens": 10}}
+
+    source = _FakeSource([_SlowChannel("s")])
+    engine = DispatchEngine(source, max_retries=0)
+    results = []
+
+    async def feed():
+        for request in _reqs(24):
+            yield request
+
+    async def on_result(req, resp, err):
+        results.append((req.ref, resp, err))
+
+    await engine.run(
+        feed(),
+        on_result,
+        adaptive_concurrency=True,
+        adaptive_max_factor=16,
+        adaptive_max_concurrency=2,
+    )
+
+    assert len(results) == 24
+    assert peak <= 2
+
+
+@pytest.mark.asyncio
+async def test_adaptive_concurrency_uses_configured_ramp_up():
+    source = _FakeSource([_FakeChannel("a")])
+    engine = DispatchEngine(source, max_retries=0)
+    controller = await engine._resolve_concurrency_controller(
+        max_concurrency=None,
+        adaptive_concurrency=True,
+        adaptive_max_factor=1,
+        adaptive_max_concurrency=16,
+        adaptive_healthy_window=2,
+        adaptive_additive_increase=4,
+        concurrency_controller=None,
+    )
+    healthy = ConcurrencyOutcome(success=True)
+
+    controller.on_complete(healthy)
+    assert controller.limit() == 1
+
+    controller.on_complete(healthy)
+    assert controller.limit() == 5
+
+
+@pytest.mark.asyncio
+async def test_adaptive_concurrency_can_decrease_below_source_capacity():
+    source = _FakeSource([_FakeChannel("a"), _FakeChannel("b")])
+    engine = DispatchEngine(source, max_retries=0)
+    controller = await engine._resolve_concurrency_controller(
+        max_concurrency=32,
+        adaptive_concurrency=True,
+        adaptive_max_factor=1,
+        adaptive_max_concurrency=32,
+        adaptive_healthy_window=8,
+        adaptive_additive_increase=1,
+        concurrency_controller=None,
+    )
+    overload = ConcurrencyOutcome(success=False, status_code=503, retryable=True)
+
+    for _ in range(512):
+        controller.on_complete(overload)
+
+    assert controller.limit() == 1
 
 
 @pytest.mark.asyncio
@@ -1050,7 +1504,7 @@ async def test_discovery_source_uses_cache_until_refresh_interval():
 
 
 @pytest.mark.asyncio
-async def test_discovery_source_refreshes_and_removes_failed_channel():
+async def test_discovery_source_refreshes_but_keeps_failed_channel():
     from aibrix.batch.client.sources import DiscoveryEndpointSource
 
     now = 0.0
@@ -1095,6 +1549,7 @@ async def test_discovery_source_refreshes_and_removes_failed_channel():
         )
 
         assert [channel.id for channel in await source.channels()] == [
+            "http://bad",
             "http://good",
             "http://new",
         ]
@@ -1104,7 +1559,7 @@ async def test_discovery_source_refreshes_and_removes_failed_channel():
 
 
 @pytest.mark.asyncio
-async def test_discovery_source_removes_failed_channel_even_if_refresh_fails():
+async def test_discovery_source_keeps_channels_when_refresh_fails():
     from aibrix.batch.client.sources import DiscoveryEndpointSource
 
     discovery = _FailingThenSequenceDiscovery(
@@ -1139,7 +1594,10 @@ async def test_discovery_source_removes_failed_channel_even_if_refresh_fails():
             ),
         )
 
-        assert [channel.id for channel in await source.channels()] == ["http://good"]
+        assert [channel.id for channel in await source.channels()] == [
+            "http://bad",
+            "http://good",
+        ]
         assert discovery.calls == 2
     finally:
         await source.aclose()

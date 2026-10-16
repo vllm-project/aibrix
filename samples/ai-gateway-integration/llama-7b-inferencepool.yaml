@@ -73,7 +73,7 @@ spec:
       terminationGracePeriodSeconds: 130
       containers:
         - name: epp
-          image: registry.k8s.io/gateway-api-inference-extension/epp:v1.0.1
+          image: registry.k8s.io/gateway-api-inference-extension/epp:v1.5.0
           imagePullPolicy: IfNotPresent
           args:
             - --pool-name
@@ -95,18 +95,6 @@ spec:
             - containerPort: 9003
             - name: metrics
               containerPort: 9090
-          livenessProbe:
-            grpc:
-              port: 9003
-              service: inference-extension
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          readinessProbe:
-            grpc:
-              port: 9003
-              service: inference-extension
-            initialDelaySeconds: 5
-            periodSeconds: 10
           volumeMounts:
             - name: plugins-config-volume
               mountPath: "/config"
@@ -122,7 +110,7 @@ metadata:
   namespace: default
 rules:
   - apiGroups: ["inference.networking.x-k8s.io"]
-    resources: ["inferenceobjectives", "inferencepools"]
+    resources: ["inferenceobjectives", "inferencepools", "inferencemodelrewrites"]
     verbs: ["get", "watch", "list"]
   - apiGroups: ["inference.networking.k8s.io"]
     resources: ["inferencepools"]

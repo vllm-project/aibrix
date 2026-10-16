@@ -46,14 +46,18 @@ class SchedulableJobs(Protocol):
         ...
 
     async def expire_job(self, job_id: str) -> bool:
-        """Expire a past-due pending job: finalize it (condition: expired) and
-        move it to done. Called by the scheduler's cleanup loop so the registry
-        — not a scheduler-side set — owns expired state. Returns whether the job
-        was expired."""
+        """Expire a past-due schedulable job: finalize it (condition: expired)
+        and move it to done. Called by the scheduler's cleanup loop so the
+        registry — not a scheduler-side set — owns expired state. Returns
+        whether the job was expired."""
         ...
 
     async def list_pending(self) -> List[BatchJob]:
         """Snapshot of pending (awaiting-scheduling) jobs. Lets the scheduler
         derive past-due jobs from the registry's pending pool instead of keeping
         a duplicated due-time list."""
+        ...
+
+    async def list_in_progress(self) -> List[BatchJob]:
+        """Snapshot of admitted in-progress jobs for expiry checks."""
         ...

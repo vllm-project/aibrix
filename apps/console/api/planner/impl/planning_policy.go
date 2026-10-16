@@ -178,15 +178,10 @@ func (p *SimplePolicy) Plan(ctx context.Context, input PlanningInput[*queuedJob]
 			return false
 		}
 		job.mu.RLock()
-		expired := !job.expiresAt.IsZero() && job.expiresAt.Before(time.Now().UTC())
 		status := job.status
 		hasSchedule := job.scheduledResource != nil
 		job.mu.RUnlock()
 
-		if expired {
-			klog.Infof("[planner] Plan job_id=%q expired, skip", job.req.JobID)
-			return true
-		}
 		if !status.IsTerminal() && status != plannerapi.JobStatusCancelling {
 			// Already scheduled, skip
 			if hasSchedule {

@@ -18,6 +18,7 @@ package utils
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -50,8 +51,10 @@ func getDeploymentIdentifier() string {
 }
 
 // GeneratePodKey generates a key in the format "namespace/name" for a given pod.
+// It concatenates rather than using fmt because routers call it for every
+// candidate pod on the request path.
 func GeneratePodKey(podNamespace, podName string) string {
-	return fmt.Sprintf("%s/%s", podNamespace, podName)
+	return podNamespace + "/" + podName
 }
 
 // ParsePodKey parses a key in the format "namespace/podName".
@@ -75,6 +78,10 @@ func IsPodActive(p *v1.Pod) bool {
 func IsPodTerminating(p *v1.Pod) bool {
 	return !IsPodTerminal(p) &&
 		p.DeletionTimestamp != nil
+}
+
+func IsPodDraining(p *v1.Pod) bool {
+	return p != nil && p.Annotations[constants.PodDrainingAnnotationKey] == "true"
 }
 
 // In order to avoid introduce k8s.io/kubernetes package, some helpers code are replicated here.
@@ -194,7 +201,7 @@ func CountReadyPods(podList *v1.PodList) (int64, error) {
 }
 
 func FilterReadyPod(pod *v1.Pod) bool {
-	return pod.Status.PodIP != "" && !IsPodTerminating(pod) && IsPodReady(pod)
+	return pod.Status.PodIP != "" && !IsPodTerminating(pod) && !IsPodDraining(pod) && IsPodReady(pod)
 }
 
 // CountRoutablePods filters and returns the number of pods that are routable.
@@ -253,16 +260,6 @@ func FilterPods(pods []v1.Pod, filterFn filterPod) []v1.Pod {
 		}
 	}
 	return filtered
-}
-
-// FilterPodByName returns the pod with the given name.
-func FilterPodByName(podname string, pods []*v1.Pod) (*v1.Pod, bool) {
-	for _, pod := range pods {
-		if pod.Name == podname {
-			return pod, true
-		}
-	}
-	return nil, false
 }
 
 // FilterPodsByLabel filters pods that have a specific label key-value pair
@@ -369,6 +366,134 @@ func GetModelPortForPod(requestID string, pod *v1.Pod) int64 {
 		modelPort = defaultPodMetricPort
 	}
 	return modelPort
+}
+
+// ModelClaimRoute is the value of a warm pod's annotation for one claim, as
+// the controller writes it and the gateway reads it.
+type ModelClaimRoute struct {
+	Model         string `json:"model"`
+	Port          int    `json:"port"`
+	State         string `json:"state,omitempty"`
+	WakeByRequest bool   `json:"wakeByRequest,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+}
+
+// ModelClaimBinding is the runtime-observed route state carried by one warm
+// pod annotation. Port 0 is known but non-routable.
+type ModelClaimBinding struct {
+	Model string
+	Port  int
+	State string
+	// Claim is the ModelClaim the binding belongs to, named by the
+	// annotation key.
+	Claim string
+	// WakeByRequest says that the controller wakes this engine when asked.
+	// A request for it while it sleeps is then written on the pod as a wake
+	// request, rather than sent to the runtime. An older controller does not
+	// set it, and wakes nothing itself.
+	WakeByRequest bool
+	// Reason says more than State about why the model is not served, such as
+	// WaitingForRoom while a wake waits for room, or Moving while the claim
+	// moves to another pod. It is empty when the state says it all.
+	Reason string
+}
+
+// ModelClaimBindingsFromPod parses route.claim.model.aibrix.ai/* annotations
+// on a warm runtime pod. State is additive: legacy annotations infer active
+// from a positive port and activating from port 0.
+func ModelClaimBindingsFromPod(pod *v1.Pod) map[string]ModelClaimBinding {
+	if pod == nil || len(pod.Annotations) == 0 {
+		return nil
+	}
+	var out map[string]ModelClaimBinding
+	for key, value := range pod.Annotations {
+		if !strings.HasPrefix(key, constants.ModelClaimPodAnnotationPrefix) {
+			continue
+		}
+		var entry ModelClaimRoute
+		if err := json.Unmarshal([]byte(value), &entry); err != nil || entry.Model == "" ||
+			entry.Port < 0 || entry.Port > 65535 {
+			klog.Warningf("pod %s has malformed ModelClaim annotation %q=%q", pod.Name, key, value)
+			continue
+		}
+		if entry.State == "" {
+			entry.State = constants.ModelClaimRoutingStateActive
+			if entry.Port == 0 {
+				entry.State = constants.ModelClaimRoutingStateActivating
+			}
+		}
+		if !validModelClaimRoutingState(entry.State) {
+			klog.Warningf("pod %s has invalid ModelClaim routing state in annotation %q=%q", pod.Name, key, value)
+			continue
+		}
+		if (entry.State == constants.ModelClaimRoutingStateActive) != (entry.Port > 0) {
+			klog.Warningf("pod %s has inconsistent ModelClaim routing state in annotation %q=%q", pod.Name, key, value)
+			continue
+		}
+		if out == nil {
+			out = make(map[string]ModelClaimBinding)
+		}
+		out[entry.Model] = ModelClaimBinding{
+			Model:         entry.Model,
+			Port:          entry.Port,
+			State:         entry.State,
+			Claim:         strings.TrimPrefix(key, constants.ModelClaimPodAnnotationPrefix),
+			WakeByRequest: entry.WakeByRequest,
+			Reason:        entry.Reason,
+		}
+	}
+	return out
+}
+
+func validModelClaimRoutingState(state string) bool {
+	switch state {
+	case constants.ModelClaimRoutingStateActive,
+		constants.ModelClaimRoutingStateActivating,
+		constants.ModelClaimRoutingStateSleeping,
+		constants.ModelClaimRoutingStateFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// ModelClaimsFromPod is the routing compatibility view of ModelClaim bindings.
+func ModelClaimsFromPod(pod *v1.Pod) map[string]int {
+	bindings := ModelClaimBindingsFromPod(pod)
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(bindings))
+	for model, binding := range bindings {
+		out[model] = binding.Port
+	}
+	return out
+}
+
+// ModelClaimPortForPod returns the serving port for a specific served model on
+// a warm runtime pod. It is called on the routing hot path, so it avoids the
+// map allocation of ModelClaimsFromPod: it pre-filters annotation values with a
+// cheap substring check and only unmarshals the matching claim.
+func ModelClaimPortForPod(pod *v1.Pod, modelName string) (int, bool) {
+	if pod == nil || len(pod.Annotations) == 0 {
+		return 0, false
+	}
+	for key, value := range pod.Annotations {
+		if !strings.HasPrefix(key, constants.ModelClaimPodAnnotationPrefix) {
+			continue
+		}
+		if !strings.Contains(value, modelName) {
+			continue
+		}
+		var entry struct {
+			Model string `json:"model"`
+			Port  int    `json:"port"`
+		}
+		if err := json.Unmarshal([]byte(value), &entry); err == nil && entry.Model == modelName {
+			return entry.Port, true
+		}
+	}
+	return 0, false
 }
 
 func GetPodEnv(pod *v1.Pod, envName, defaultValue string) string {

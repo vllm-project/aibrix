@@ -13,8 +13,16 @@
 # limitations under the License.
 from typing import Optional
 
+from pydantic import Field
+
 from aibrix.config import AIBrixSettings
 from aibrix.storage.types import StorageType
+
+from .metrics import MetricsConfig
+from .metrics import load_metrics_config as load_public_metrics_config
+
+# Do not change this line, it is kept here as an override point for metrics loading
+load_metrics_config = load_public_metrics_config
 
 
 class Settings(AIBrixSettings):
@@ -36,6 +44,7 @@ class Settings(AIBrixSettings):
     STORAGE_TYPE: StorageType = StorageType.AUTO
     METASTORE_TYPE: StorageType = StorageType.AUTO
     MAX_FILE_SIZE: int = 100 * 1024 * 1024  # 100 MB in bytes
+    METRICS: MetricsConfig | None = Field(default_factory=load_metrics_config)
 
 
 # Create an instance of the Settings class

@@ -25,6 +25,7 @@ import asyncio
 from dataclasses import dataclass
 from math import ceil, isfinite
 from threading import Lock
+from time import time
 from typing import (
     Any,
     AsyncIterable,
@@ -37,17 +38,25 @@ from typing import (
 
 from aibrix.batch.client.channel import InferenceRequest, Response
 from aibrix.batch.client.concurrency import (
+    DEFAULT_ADAPTIVE_ADDITIVE_INCREASE,
+    DEFAULT_ADAPTIVE_HEALTHY_WINDOW,
     ConcurrencyController,
+    ConcurrencyOutcome,
     FixedConcurrencyController,
     LLMAdaptiveConcurrencyController,
+    LLMAdaptiveConcurrencySettings,
     concurrency_outcome_from_result,
 )
 from aibrix.batch.client.errors import InferenceError, InferenceErrorCode
 from aibrix.batch.client.policy import FIFO, RoundRobin, Router, Scheduler
-from aibrix.batch.client.source import EndpointSource
+from aibrix.batch.client.source import CapacitySignal, EndpointSource
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
+
+_CAPACITY_WATCH_RETRY_SECONDS = 1.0
+_NO_ENDPOINT_MIN_RETRY_DELAY_SECONDS = 1.0
+_NO_ENDPOINT_LOG_INTERVAL = 120
 
 # Called once per request with (request, response, error). Exactly one of
 # response / error is non-None. May be sync or async.
@@ -67,6 +76,7 @@ class RetryConfig:
     base_delay_seconds: float = 0.0
     max_delay_seconds: float = 5.0
     no_endpoint_max_retries: Optional[int] = None
+    no_endpoint_deadline_epoch_seconds: Optional[float] = None
 
     def __post_init__(self) -> None:
         if self.max_retries < 0:
@@ -80,11 +90,18 @@ class RetryConfig:
             and self.no_endpoint_max_retries < 0
         ):
             raise ValueError("no_endpoint_max_retries must be >= 0")
+        if (
+            self.no_endpoint_deadline_epoch_seconds is not None
+            and self.no_endpoint_deadline_epoch_seconds <= 0
+        ):
+            raise ValueError("no_endpoint_deadline_epoch_seconds must be > 0")
 
-    def no_endpoint_retries(self) -> int:
-        if self.no_endpoint_max_retries is None:
-            return self.max_retries
-        return self.no_endpoint_max_retries
+    def no_endpoint_retries(self) -> Optional[int]:
+        if self.no_endpoint_max_retries is not None:
+            return self.no_endpoint_max_retries
+        if self.no_endpoint_deadline_epoch_seconds is not None:
+            return None
+        return self.max_retries
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +185,66 @@ class DispatchStats:
             return snapshot
 
 
+class _CapacityScaledConcurrencyController:
+    """Clamp a controller to the fraction of configured capacity available."""
+
+    def __init__(
+        self,
+        controller: Union[
+            FixedConcurrencyController,
+            LLMAdaptiveConcurrencyController,
+        ],
+        *,
+        configured_capacity: int,
+        full_max_limit: int,
+        capacity: CapacitySignal,
+    ) -> None:
+        self._controller = controller
+        self._configured_capacity = max(int(configured_capacity), 1)
+        self._full_max_limit = max(int(full_max_limit), 1)
+        self._capacity = capacity
+        self._capacity_limit = 0
+        self._apply_capacity(capacity.count)
+
+    @property
+    def capacity(self) -> CapacitySignal:
+        return self._capacity
+
+    @property
+    def configured_capacity(self) -> int:
+        return self._configured_capacity
+
+    @property
+    def full_max_limit(self) -> int:
+        return self._full_max_limit
+
+    def limit(self) -> int:
+        return min(self._controller.limit(), self._capacity_limit)
+
+    def admission_delay_seconds(self) -> float:
+        return _admission_delay_seconds(self._controller)
+
+    def on_complete(self, outcome: ConcurrencyOutcome) -> None:
+        self._controller.on_complete(outcome)
+
+    def update_capacity(self, capacity: CapacitySignal) -> None:
+        self._capacity = capacity
+        self._apply_capacity(capacity.count)
+
+    def _apply_capacity(self, current_capacity: int) -> None:
+        available = min(
+            max(int(current_capacity), 0),
+            self._configured_capacity,
+        )
+        scaled_limit = max(
+            1,
+            (self._full_max_limit * available + self._configured_capacity - 1)
+            // self._configured_capacity,
+        )
+        self._capacity_limit = scaled_limit
+        self._controller.set_max_limit(scaled_limit)
+
+
 class DispatchEngine:
     def __init__(
         self,
@@ -177,11 +254,21 @@ class DispatchEngine:
         scheduler: Optional[Scheduler] = None,
         max_retries: int = 2,
         retry: Optional[RetryConfig] = None,
+        job_id: Optional[str] = None,
+        configured_capacity: Optional[int] = None,
     ) -> None:
         self._source = source
         self._router: Router = router or RoundRobin()
         self._scheduler: Scheduler = scheduler or FIFO()
         self._retry = retry or RetryConfig(max_retries=max_retries)
+        # One engine serves one job. Carrying the id lets every line this layer
+        # emits be filtered per job, which the request ref alone cannot do.
+        self._job_id = job_id
+        self._configured_capacity = (
+            max(int(configured_capacity), 1)
+            if configured_capacity is not None and configured_capacity > 0
+            else None
+        )
 
     @property
     def source(self) -> EndpointSource:
@@ -193,6 +280,11 @@ class DispatchEngine:
         """Single shot: pick an endpoint, send, fail over on error."""
         return await self._send_with_failover(request)
 
+    async def capacity(self) -> CapacitySignal:
+        """Expose the source's advertised concurrency capacity to callers that
+        need to choose between serial and concurrent orchestration."""
+        return await self._source.capacity()
+
     async def run(
         self,
         requests: AsyncIterable[InferenceRequest],
@@ -202,23 +294,35 @@ class DispatchEngine:
         qps: Optional[float] = None,
         adaptive_concurrency: bool = False,
         adaptive_max_factor: float = 1.0,
+        adaptive_max_concurrency: Optional[int] = None,
+        adaptive_healthy_window: int = DEFAULT_ADAPTIVE_HEALTHY_WINDOW,
+        adaptive_additive_increase: int = DEFAULT_ADAPTIVE_ADDITIVE_INCREASE,
         concurrency_controller: Optional[ConcurrencyController] = None,
         stats: Optional[DispatchStats] = None,
     ) -> None:
         """Drive ``requests`` to completion under a concurrency cap.
 
+        When the engine has configured capacity, explicit and adaptive maximums
+        apply at that full capacity and scale with the source's live capacity.
         A per-request inference failure is reported through ``on_result`` and
         never raised. Anything else -- a feeder error, or an ``on_result`` that
         itself raises (e.g. a caller's stop condition) -- stops scheduling,
         drains in-flight work, and re-raises the first such error.
         """
-        admission = _ConcurrencyAdmission(
-            await self._resolve_concurrency_controller(
-                max_concurrency=max_concurrency,
-                adaptive_concurrency=adaptive_concurrency,
-                adaptive_max_factor=adaptive_max_factor,
-                concurrency_controller=concurrency_controller,
-            )
+        controller = await self._resolve_concurrency_controller(
+            max_concurrency=max_concurrency,
+            adaptive_concurrency=adaptive_concurrency,
+            adaptive_max_factor=adaptive_max_factor,
+            adaptive_max_concurrency=adaptive_max_concurrency,
+            adaptive_healthy_window=adaptive_healthy_window,
+            adaptive_additive_increase=adaptive_additive_increase,
+            concurrency_controller=concurrency_controller,
+        )
+        admission = _ConcurrencyAdmission(controller)
+        capacity_task = (
+            asyncio.create_task(self._watch_capacity(admission, controller))
+            if isinstance(controller, _CapacityScaledConcurrencyController)
+            else None
         )
         gate = _QpsGate(qps) if qps else None
         inflight: Set[asyncio.Task[None]] = set()
@@ -231,42 +335,56 @@ class DispatchEngine:
                 if exc is not None and not first_error:
                     first_error.append(exc)
 
-        scheduled = self._scheduler.schedule(requests).__aiter__()
         try:
-            while not first_error:
-                await admission.acquire()
-                if first_error:
-                    await admission.release()
-                    break
-                try:
-                    if gate is not None:
-                        await gate.wait()
-                    request = await scheduled.__anext__()
-                except StopAsyncIteration:
-                    await admission.release()
-                    break
-                except BaseException as exc:
-                    await admission.release()
-                    if not first_error:
-                        first_error.append(exc)
-                    break
+            scheduled = self._scheduler.schedule(requests).__aiter__()
+            try:
+                while not first_error:
+                    await admission.acquire()
+                    if first_error:
+                        await admission.release()
+                        break
+                    try:
+                        if gate is not None:
+                            await gate.wait()
+                        request = await scheduled.__anext__()
+                    except StopAsyncIteration:
+                        await admission.release()
+                        break
+                    except BaseException as exc:
+                        await admission.release()
+                        if not first_error:
+                            first_error.append(exc)
+                        break
 
-                if stats is not None:
-                    stats.record_start(
-                        limit=admission.limit(),
-                        inflight=admission.inflight(),
+                    if stats is not None:
+                        stats.record_start(
+                            limit=admission.limit(),
+                            inflight=admission.inflight(),
+                        )
+                    task = asyncio.create_task(
+                        self._process(
+                            request,
+                            on_result,
+                            admission,
+                            first_error,
+                            stats,
+                        )
                     )
-                task = asyncio.create_task(
-                    self._process(request, on_result, admission, first_error, stats)
-                )
-                inflight.add(task)
-                task.add_done_callback(_on_done)
-        except BaseException as exc:  # feeder raised; drain then re-raise
-            if not first_error:
-                first_error.append(exc)
+                    inflight.add(task)
+                    task.add_done_callback(_on_done)
+            except BaseException as exc:  # feeder raised; drain then re-raise
+                if not first_error:
+                    first_error.append(exc)
 
-        if inflight:
-            await asyncio.gather(*inflight, return_exceptions=True)
+            if inflight:
+                await asyncio.gather(*inflight, return_exceptions=True)
+        finally:
+            if capacity_task is not None:
+                capacity_task.cancel()
+                try:
+                    await capacity_task
+                except asyncio.CancelledError:
+                    pass
         if first_error:
             raise first_error[0]
 
@@ -318,19 +436,114 @@ class DispatchEngine:
         max_concurrency: Optional[ConcurrencyLimit],
         adaptive_concurrency: bool,
         adaptive_max_factor: float,
+        adaptive_max_concurrency: Optional[int],
+        adaptive_healthy_window: int,
+        adaptive_additive_increase: int,
         concurrency_controller: Optional[ConcurrencyController],
     ) -> ConcurrencyController:
         if concurrency_controller is not None:
             return concurrency_controller
-        limit = await self._resolve_limit(max_concurrency)
+        normalized_capacity = self._configured_capacity
+        capacity = (
+            await self._source.capacity() if normalized_capacity is not None else None
+        )
+        limit = (
+            max(capacity.count, 1)
+            if capacity is not None and max_concurrency is None
+            else await self._resolve_limit(max_concurrency)
+        )
         if adaptive_concurrency:
-            return LLMAdaptiveConcurrencyController(
-                initial_limit=limit,
-                max_limit=self._adaptive_max_limit(limit, adaptive_max_factor),
+            max_limit = (
+                max(int(adaptive_max_concurrency), 1)
+                if adaptive_max_concurrency is not None
+                else self._adaptive_max_limit(
+                    (
+                        normalized_capacity
+                        if normalized_capacity is not None and max_concurrency is None
+                        else limit
+                    ),
+                    adaptive_max_factor,
+                )
             )
-        return FixedConcurrencyController(limit)
+            controller: Union[
+                FixedConcurrencyController,
+                LLMAdaptiveConcurrencyController,
+            ] = LLMAdaptiveConcurrencyController(
+                initial_limit=min(limit, max_limit),
+                max_limit=max_limit,
+                settings=LLMAdaptiveConcurrencySettings(
+                    healthy_window=adaptive_healthy_window,
+                    additive_increase=adaptive_additive_increase,
+                ),
+            )
+        else:
+            max_limit = (
+                normalized_capacity
+                if normalized_capacity is not None and max_concurrency is None
+                else limit
+            )
+            controller = FixedConcurrencyController(max_limit)
+
+        if normalized_capacity is None or capacity is None:
+            return controller
+        scaled_controller = _CapacityScaledConcurrencyController(
+            controller,
+            configured_capacity=normalized_capacity,
+            full_max_limit=max_limit,
+            capacity=capacity,
+        )
+        logger.info(
+            "Configured dispatch concurrency for endpoint capacity",
+            job_id=self._job_id,
+            current_capacity=capacity.count,
+            configured_capacity=normalized_capacity,
+            configured_max_concurrency=max_limit,
+            current_limit=scaled_controller.limit(),
+        )  # type: ignore[call-arg]
+        return scaled_controller
+
+    async def _watch_capacity(
+        self,
+        admission: "_ConcurrencyAdmission",
+        controller: _CapacityScaledConcurrencyController,
+    ) -> None:
+        previous = controller.capacity
+        while True:
+            try:
+                current = await self._source.wait_capacity_change(previous)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Failed to watch endpoint capacity; retrying",
+                    job_id=self._job_id,
+                    error=str(exc),
+                )  # type: ignore[call-arg]
+                await asyncio.sleep(_CAPACITY_WATCH_RETRY_SECONDS)
+                continue
+
+            previous = current
+            previous_limit = admission.limit()
+            await admission.update_capacity(current)
+            logger.info(
+                "Updated dispatch concurrency for endpoint capacity",
+                job_id=self._job_id,
+                current_capacity=current.count,
+                configured_capacity=controller.configured_capacity,
+                configured_max_concurrency=controller.full_max_limit,
+                previous_limit=previous_limit,
+                current_limit=admission.limit(),
+            )  # type: ignore[call-arg]
 
     async def _send_with_failover(self, request: InferenceRequest) -> Response:
+        try:
+            return await self._send_with_failover_impl(request)
+        except InferenceError:
+            raise
+        except Exception as ex:
+            raise _normalize_source_error("dispatch request", ex) from ex
+
+    async def _send_with_failover_impl(self, request: InferenceRequest) -> Response:
         causes: list[str] = []
         last_error: Optional[InferenceError] = None
         attempted_channel = False
@@ -343,10 +556,40 @@ class DispatchEngine:
                     InferenceErrorCode.NO_ENDPOINT, "no reachable endpoint"
                 )
                 last_error = no_endpoint
-                causes.append(str(no_endpoint))
-                if endpoint_attempt < self._retry.no_endpoint_retries():
+                if endpoint_attempt == 0:
+                    causes.append(str(no_endpoint))
+                max_endpoint_retries = self._retry.no_endpoint_retries()
+                deadline_reached = (
+                    self._retry.no_endpoint_deadline_epoch_seconds is not None
+                    and time() >= self._retry.no_endpoint_deadline_epoch_seconds
+                )
+                retry_available = (
+                    max_endpoint_retries is None
+                    or endpoint_attempt < max_endpoint_retries
+                )
+                if retry_available and not deadline_reached:
+                    if (
+                        endpoint_attempt == 0
+                        or endpoint_attempt % _NO_ENDPOINT_LOG_INTERVAL == 0
+                    ):
+                        logger.warning(
+                            "No reachable endpoint; waiting for discovery",
+                            job_id=self._job_id,
+                            ref=request.ref,
+                            attempt=endpoint_attempt + 1,
+                            max_retries=max_endpoint_retries,
+                            deadline_epoch_seconds=(
+                                self._retry.no_endpoint_deadline_epoch_seconds
+                            ),
+                        )  # type: ignore[call-arg]
                     await self._refresh_source()
-                    await self._sleep_before_retry(endpoint_attempt)
+                    await self._sleep_before_retry(
+                        endpoint_attempt,
+                        deadline_epoch_seconds=(
+                            self._retry.no_endpoint_deadline_epoch_seconds
+                        ),
+                        minimum_delay_seconds=_NO_ENDPOINT_MIN_RETRY_DELAY_SECONDS,
+                    )
                     endpoint_attempt += 1
                     continue
                 if not attempted_channel:
@@ -363,8 +606,27 @@ class DispatchEngine:
                 causes.append(str(ex))
                 if not _should_retry(ex):
                     raise ex
-                await self._report_channel_error(channel.id, ex)
+                await self._report_channel_error(
+                    channel.id, ex, request_ref=request.ref
+                )
                 if send_attempt < self._retry.max_retries:
+                    # Retries happen entirely inside this call, so the dispatch
+                    # counters stay flat while a request spins here. Without
+                    # this line a retry storm is indistinguishable from a slow
+                    # backend.
+                    logger.warning(
+                        "Retrying inference request",
+                        job_id=self._job_id,
+                        ref=request.ref,
+                        attempt=send_attempt + 1,
+                        max_retries=self._retry.max_retries,
+                        channel_id=channel.id,
+                        error_code=ex.code.value,
+                        status_code=ex.status_code,
+                        # TRANSPORT_ERROR covers both timeouts and connection
+                        # failures; only the message tells them apart.
+                        error=ex.message,
+                    )  # type: ignore[call-arg]
                     await self._sleep_before_retry(send_attempt)
                     send_attempt += 1
                     continue
@@ -386,13 +648,35 @@ class DispatchEngine:
             return max(int(max_concurrency()), 1)
         return max(int(max_concurrency), 1)
 
-    async def _sleep_before_retry(self, attempt: int) -> None:
-        if self._retry.base_delay_seconds <= 0:
+    async def _sleep_before_retry(
+        self,
+        attempt: int,
+        *,
+        deadline_epoch_seconds: Optional[float] = None,
+        minimum_delay_seconds: float = 0.0,
+    ) -> None:
+        base_delay = max(
+            self._retry.base_delay_seconds,
+            minimum_delay_seconds,
+        )
+        max_delay = max(
+            self._retry.max_delay_seconds,
+            minimum_delay_seconds,
+        )
+        if base_delay <= 0:
             return
         delay = min(
-            self._retry.base_delay_seconds * (2**attempt),
-            self._retry.max_delay_seconds,
+            base_delay,
+            max_delay,
         )
+        for _ in range(attempt):
+            if delay >= max_delay:
+                break
+            delay = min(delay * 2, max_delay)
+        if deadline_epoch_seconds is not None:
+            delay = min(delay, max(deadline_epoch_seconds - time(), 0.0))
+        if delay <= 0:
+            return
         await asyncio.sleep(delay)
 
     async def _refresh_source(self) -> None:
@@ -401,11 +685,26 @@ class DispatchEngine:
             await _maybe_await(refresh())
 
     async def _report_channel_error(
-        self, channel_id: str, error: InferenceError
+        self,
+        channel_id: str,
+        error: InferenceError,
+        *,
+        request_ref: Any = None,
     ) -> None:
         report = getattr(self._source, "report_channel_error", None)
         if callable(report):
-            await _maybe_await(report(channel_id, error))
+            try:
+                await _maybe_await(report(channel_id, error))
+            except Exception as ex:
+                logger.warning(
+                    "Failed to report channel error",
+                    job_id=self._job_id,
+                    ref=request_ref,
+                    channel_id=channel_id,
+                    error_code=error.code.value,
+                    error=error.message,
+                    report_error=repr(ex),
+                )  # type: ignore[call-arg]
 
     @staticmethod
     def _adaptive_max_limit(initial_limit: int, factor: float) -> int:
@@ -429,13 +728,19 @@ class _ConcurrencyAdmission:
         while True:
             async with self._condition:
                 await self._condition.wait_for(
-                    lambda: self._inflight < max(int(self._controller.limit()), 1)
+                    lambda: (
+                        int(self._controller.limit()) > 0
+                        and self._inflight < int(self._controller.limit())
+                    )
                 )
                 delay = _admission_delay_seconds(self._controller)
                 if delay <= 0:
                     self._inflight += 1
                     return
-            await asyncio.sleep(delay)
+                try:
+                    await asyncio.wait_for(self._condition.wait(), timeout=delay)
+                except asyncio.TimeoutError:
+                    pass
 
     async def release(self, outcome: Any = None) -> tuple[int, int]:
         async with self._condition:
@@ -445,8 +750,17 @@ class _ConcurrencyAdmission:
             self._condition.notify_all()
             return self.limit(), self._inflight
 
+    async def update_capacity(self, capacity: CapacitySignal) -> None:
+        async with self._condition:
+            if isinstance(
+                self._controller,
+                _CapacityScaledConcurrencyController,
+            ):
+                self._controller.update_capacity(capacity)
+            self._condition.notify_all()
+
     def limit(self) -> int:
-        return max(int(self._controller.limit()), 1)
+        return max(int(self._controller.limit()), 0)
 
     def inflight(self) -> int:
         return self._inflight
@@ -456,6 +770,17 @@ async def _maybe_await(value: Any) -> Any:
     if asyncio.iscoroutine(value):
         return await value
     return value
+
+
+def _normalize_source_error(action: str, error: Exception) -> InferenceError:
+    if isinstance(error, InferenceError):
+        return error
+    detail = repr(error)
+    return InferenceError(
+        InferenceErrorCode.CONNECTION_SETUP,
+        f"endpoint source failed to {action}: {detail}",
+        retryable=True,
+    )
 
 
 def _should_retry(error: InferenceError) -> bool:

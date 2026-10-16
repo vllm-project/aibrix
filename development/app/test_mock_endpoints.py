@@ -1,0 +1,1403 @@
+import base64
+import importlib.util
+import json
+import sys
+import threading
+import time
+from pathlib import Path
+
+import pytest
+from mock_recorder import RequestRecorder
+
+
+APP_DIR = Path(__file__).parent
+APP_PATH = APP_DIR / "app.py"
+
+
+def load_mock_module(monkeypatch, *, contract="", role="", api_key=None):
+    module_name = "aibrix_mock_app_endpoints_under_test"
+    monkeypatch.chdir(APP_DIR)
+    monkeypatch.setenv("STANDALONE_MODE", "true")
+    monkeypatch.setenv("SIMULATION", "disabled")
+    monkeypatch.setenv("MOCK_REQUEST_DURATION_SECONDS", "0")
+    monkeypatch.setenv("MOCK_CAPACITY_AWARE_LATENCY", "false")
+    monkeypatch.setenv("MOCK_PD_CONTRACT", contract)
+    monkeypatch.setenv("MOCK_PD_ROLE", role)
+    if api_key is None:
+        monkeypatch.setattr(sys, "argv", ["app.py"])
+    else:
+        monkeypatch.setattr(sys, "argv", ["app.py", "--api_key", api_key])
+    sys.modules.pop(module_name, None)
+
+    spec = importlib.util.spec_from_file_location(module_name, APP_PATH)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def post_json(client, path, payload, request_id="req-1", **headers):
+    request_headers = {"Content-Type": "application/json", "X-Request-ID": request_id}
+    request_headers.update(headers)
+    raw_body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return client.post(path, data=raw_body, headers=request_headers)
+
+
+def query_records(client, request_id):
+    response = client.get(f"/debug/requests?request_id={request_id}")
+    assert response.status_code == 200
+    return response.get_json()
+
+
+def test_sglang_prefill_failure_is_observed_by_decode(monkeypatch):
+    module = load_mock_module(monkeypatch, contract="sglang-http", role="prefill")
+    client = module.app.test_client()
+    payload = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hello"}],
+        "bootstrap_host": "10.0.0.1",
+        "bootstrap_port": 8998,
+        "bootstrap_room": 123,
+    }
+    request_id = "sglang-failure"
+
+    prefill_response = post_json(
+        client,
+        "/v1/chat/completions",
+        payload,
+        request_id=request_id,
+        **{"x-aibrix-mock-fail": "prefill"},
+    )
+    assert prefill_response.status_code == 500
+    assert query_records(client, request_id)[0]["outcome"] == "failed"
+
+    monkeypatch.setenv("MOCK_PD_ROLE", "decode")
+    decode_response = post_json(
+        client,
+        "/v1/chat/completions",
+        payload,
+        request_id=request_id,
+        **{"x-aibrix-mock-fail": "prefill"},
+    )
+
+    assert decode_response.status_code == 500
+    assert "prefill handoff failed" in decode_response.get_json()["error"]["message"]
+    records = query_records(client, request_id)
+    assert records[-1]["role"] == "decode"
+    assert records[-1]["outcome"] == "failed"
+
+
+def test_legacy_completion_records_exact_raw_body_and_debug_endpoint_is_public(monkeypatch):
+    module = load_mock_module(monkeypatch, api_key="secret")
+    client = module.app.test_client()
+    raw_body = b'{ "model": "m", "prompt": "hello", "max_tokens": 1 }'
+
+    response = client.post(
+        "/v1/completions",
+        data=raw_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Request-ID": "legacy-raw",
+            "Authorization": "Bearer secret",
+        },
+    )
+
+    assert response.status_code == 200
+    records = query_records(client, "legacy-raw")
+    assert len(records) == 1
+    record = records[0]
+    assert base64.b64decode(record["raw_body_base64"]) == raw_body
+    assert record["parsed_json"] == {"model": "m", "prompt": "hello", "max_tokens": 1}
+    assert record["path"] == "/v1/completions"
+    assert record["outcome"] == "success"
+    assert record["status_code"] == 200
+    assert record["response"]["object"] == "text_completion"
+    assert record["timestamp_finished"]
+
+    debug_response = client.get("/debug/requests?request_id=legacy-raw")
+    assert debug_response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "header_name",
+    ["authorization", "COOKIE", "Proxy-Authorization", "x-api-key"],
+)
+def test_recorder_redacts_sensitive_headers_case_insensitively(monkeypatch, header_name):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+    secret = f"{header_name}-secret"
+    header_value = (
+        f"session={secret}" if header_name.lower() == "cookie" else secret
+    )
+
+    if header_name.lower() == "cookie":
+        client.set_cookie("session", secret)
+        response = client.post(
+            "/v1/completions",
+            data=json.dumps(
+                {"model": "m", "prompt": "hello", "max_tokens": 1},
+                separators=(",", ":"),
+            ).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-Request-ID": f"redact-{header_name}",
+            },
+        )
+    else:
+        response = post_json(
+            client,
+            "/v1/completions",
+            {"model": "m", "prompt": "hello", "max_tokens": 1},
+            request_id=f"redact-{header_name}",
+            **{header_name: header_value},
+        )
+
+    assert response.status_code == 200
+    record = query_records(client, f"redact-{header_name}")[0]
+    recorded_value = next(
+        value
+        for key, value in record["headers"].items()
+        if key.lower() == header_name.lower()
+    )
+    assert recorded_value == "<redacted>"
+    assert secret not in json.dumps(record)
+
+
+@pytest.mark.parametrize("status_code", [400, 500])
+def test_safe_merge_does_not_modify_error_responses(monkeypatch, status_code):
+    module = load_mock_module(monkeypatch)
+
+    with module.app.test_request_context("/"):
+        response = module.make_response(
+            module.jsonify({"error": {"message": "backend rejected"}}),
+            status_code,
+        )
+        contract_result = {
+            "body": {
+                "opaque": "contract-opaque",
+                "disagg_prefill_resp": {"should": "not merge"},
+            },
+            "response_patch": {"prompt_token_ids": [1, 2]},
+            "choice_patch": {"disaggregated_params": {"request_type": "context_only"}},
+        }
+
+        merged = module._safe_merge_contract_response(
+            response,
+            contract_result,
+            "/v1/chat/completions",
+            {"model": "m"},
+        )
+
+    assert merged.status_code == status_code
+    assert merged.get_json() == {"error": {"message": "backend rejected"}}
+
+
+def test_evicted_inflight_record_does_not_change_success_response_to_500(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    module.request_recorder = RequestRecorder(capacity=1)
+    first_sleep_started = threading.Event()
+    real_sleep = time.sleep
+
+    def controlled_sleep(seconds):
+        if seconds == 0.025:
+            first_sleep_started.set()
+        real_sleep(seconds)
+
+    monkeypatch.setattr(module.time, "sleep", controlled_sleep)
+    first_result = {}
+
+    def send_first_request():
+        client = module.app.test_client()
+        first_result["response"] = post_json(
+            client,
+            "/v1/completions",
+            {"model": "m", "prompt": "first", "max_tokens": 1},
+            request_id="evicted-first",
+            **{"X-Aibrix-Mock-Delay-Ms": "25"},
+        )
+
+    first_thread = threading.Thread(target=send_first_request)
+    first_thread.start()
+    assert first_sleep_started.wait(timeout=1)
+
+    second_response = post_json(
+        module.app.test_client(),
+        "/v1/completions",
+        {"model": "m", "prompt": "second", "max_tokens": 1},
+        request_id="evicted-second",
+    )
+    first_thread.join(timeout=1)
+
+    assert not first_thread.is_alive()
+    assert first_result["response"].status_code == 200
+    assert second_response.status_code == 200
+    assert query_records(module.app.test_client(), "evicted-second")[0]["outcome"] == "success"
+
+
+@pytest.mark.parametrize("path,payload", [
+    ("/v1/completions", {"model": "m", "prompt": "hello"}),
+    ("/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "hello"}]}),
+])
+@pytest.mark.parametrize("authorization", [None, "Bearer wrong"])
+def test_authentication_failures_are_recorded_before_returning_401(
+    monkeypatch, path, payload, authorization
+):
+    module = load_mock_module(monkeypatch, api_key="secret")
+    client = module.app.test_client()
+    request_id = (
+        f"auth-failure-{path.rsplit('/', 1)[-1]}-"
+        f"{'missing' if authorization is None else 'wrong'}"
+    )
+    headers = {
+        "Content-Type": "application/json",
+        "X-Request-ID": request_id,
+    }
+    if authorization is not None:
+        headers["Authorization"] = authorization
+
+    response = client.post(
+        path,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+    )
+
+    assert response.status_code == 401
+    records = query_records(client, request_id)
+    assert len(records) == 1
+    assert records[0]["outcome"] == "rejected"
+    assert records[0]["status_code"] == 401
+
+
+@pytest.mark.parametrize("path", ["/v1/completions", "/v1/chat/completions"])
+@pytest.mark.parametrize("case", [
+    "malformed-json",
+    "invalid-delay",
+    "matched-fail",
+    "contract-mismatch",
+])
+def test_unauthenticated_requests_return_401_before_body_fault_or_contract_processing(
+    monkeypatch, path, case
+):
+    module = load_mock_module(
+        monkeypatch,
+        contract="vllm-aibrix-shfs",
+        role="prefill",
+        api_key="secret",
+    )
+    client = module.app.test_client()
+    sleeps = []
+    monkeypatch.setattr(module.time, "sleep", sleeps.append)
+    request_id = f"unauth-before-{path.rsplit('/', 1)[-1]}-{case}"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Request-ID": request_id,
+        "Authorization": "Bearer wrong",
+    }
+    payload = {
+        "model": "m",
+        "prompt": "hello",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    if case == "malformed-json":
+        raw_body = b'{"model":'
+    else:
+        raw_body = json.dumps(payload).encode("utf-8")
+    if case == "invalid-delay":
+        headers["X-Aibrix-Mock-Delay-Ms"] = "not-an-int"
+    elif case == "matched-fail":
+        headers["X-Aibrix-Mock-Fail"] = "prefill"
+
+    response = client.post(path, data=raw_body, headers=headers)
+
+    assert response.status_code == 401
+    record = query_records(client, request_id)[0]
+    assert record["outcome"] == "rejected"
+    assert record["status_code"] == 401
+    assert sleeps == []
+
+
+@pytest.mark.parametrize("path,payload", [
+    ("/v1/completions", {"model": "m", "prompt": "hello", "max_tokens": 1}),
+    ("/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "hello"}], "max_tokens": 1}),
+])
+def test_both_completion_endpoints_record_request_metadata(monkeypatch, path, payload):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = post_json(client, path, payload, request_id=path)
+
+    assert response.status_code == 200
+    records = query_records(client, path)
+    assert len(records) == 1
+    assert records[0]["path"] == path
+    assert records[0]["engine"]
+    assert records[0]["role"] == ""
+    assert records[0]["response"]
+    assert records[0]["error"] is None
+    assert records[0]["delay_ms"] == 0
+
+
+def test_malformed_legacy_json_returns_bad_request_and_finalizes_rejected_record(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = client.post(
+        "/v1/chat/completions",
+        data=b'{"model":',
+        headers={"Content-Type": "application/json", "X-Request-ID": "bad-json"},
+    )
+
+    assert response.status_code == 400
+    record = query_records(client, "bad-json")[0]
+    assert record["parsed_json"] is None
+    assert record["outcome"] == "rejected"
+    assert record["status_code"] == 400
+    assert record["error"]
+
+
+def test_non_pd_backend_fault_is_request_scoped_and_recorded(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+    payload = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 1,
+    }
+
+    response = post_json(
+        client,
+        "/v1/chat/completions",
+        payload,
+        request_id="backend-failure",
+        **{"X-Aibrix-Mock-Fail": "backend"},
+    )
+
+    assert response.status_code == 500
+    assert response.get_json()["error"]["message"] == "mock failure injected for backend"
+    record = query_records(client, "backend-failure")[0]
+    assert record["role"] == ""
+    assert record["outcome"] == "failed"
+    assert record["status_code"] == 500
+
+
+@pytest.mark.parametrize(
+    "path,payload,ordinary_field,finish_reason",
+    [
+        (
+            "/v1/completions",
+            {
+                "model": "m",
+                "prompt": "hello",
+                "max_tokens": 1,
+                "disaggregated_params": {"request_type": "context_only"},
+            },
+            "text",
+            "length",
+        ),
+        (
+            "/v1/chat/completions",
+            {
+                "model": "m",
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_tokens": 1,
+                "disaggregated_params": {"request_type": "context_only"},
+            },
+            "message",
+            "stop",
+        ),
+    ],
+)
+def test_strict_trtllm_uses_contract_response_without_legacy_duplicate_fields(
+    monkeypatch, path, payload, ordinary_field, finish_reason
+):
+    module = load_mock_module(
+        monkeypatch,
+        contract="trtllm-openai",
+        role="prefill",
+    )
+
+    response = post_json(module.app.test_client(), path, payload, request_id=path)
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["prompt_token_ids"] == list(range(body["usage"]["prompt_tokens"]))
+    assert body["prompt_token_ids"]
+    assert "disaggregated_params" not in body
+    choice = body["choices"][0]
+    assert ordinary_field in choice
+    assert choice["finish_reason"] == finish_reason
+    assert choice["disaggregated_params"]["request_type"] == "context_only"
+
+
+def test_shfs_prefill_contract_builds_transfer_fields_and_records_response(monkeypatch):
+    module = load_mock_module(monkeypatch, contract="vllm-aibrix-shfs", role="prefill")
+    client = module.app.test_client()
+    payload = {
+        "model": "m",
+        "prompt": "hello",
+        "max_tokens": 1,
+        "kv_transfer_params": {"do_remote_decode": True},
+    }
+
+    response = post_json(client, "/v1/completions", payload, request_id="shfs-prefill")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    transfer = body["kv_transfer_params"]
+    assert transfer["do_remote_decode"] is False
+    assert transfer["do_remote_prefill"] is True
+    assert transfer["opaque"] == "aibrix-pd-contract-opaque-sentinel"
+    record = query_records(client, "shfs-prefill")[0]
+    assert record["role"] == "prefill"
+    assert record["outcome"] == "success"
+    assert record["response"]["kv_transfer_params"] == transfer
+
+
+def test_trtllm_prefill_merges_patches_without_overwriting_normal_choice_fields(monkeypatch):
+    module = load_mock_module(monkeypatch, contract="trtllm-openai", role="prefill")
+    client = module.app.test_client()
+    payload = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 1,
+        "disaggregated_params": {"request_type": "context_only"},
+    }
+
+    response = post_json(client, "/v1/chat/completions", payload, request_id="trt-prefill")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["prompt_token_ids"] == list(range(body["usage"]["prompt_tokens"]))
+    assert body["prompt_token_ids"]
+    assert "disaggregated_params" not in body
+    assert body["choices"][0]["disaggregated_params"]["request_type"] == "context_only"
+    assert body["choices"][0]["disaggregated_params"]["encoded_opaque_state"]
+    assert body["choices"][0]["message"]["role"] == "assistant"
+    assert body["choices"][0]["finish_reason"] == "stop"
+    assert query_records(client, "trt-prefill")[0]["outcome"] == "success"
+
+
+def test_legacy_trtllm_prefill_uses_http_encoded_opaque_state(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+    payload = {
+        "model": "m",
+        "prompt": "hello",
+        "max_tokens": 1,
+        "disaggregated_params": {"request_type": "context_only"},
+    }
+
+    response = post_json(client, "/v1/completions", payload, request_id="legacy-trt")
+
+    assert response.status_code == 200
+    disaggregated = response.get_json()["disaggregated_params"]
+    assert disaggregated["encoded_opaque_state"]
+    assert "opaque_state" not in disaggregated
+
+
+def test_nixl_endpoint_returns_unwrapped_prefill_body_that_gateway_can_wrap(monkeypatch):
+    module = load_mock_module(monkeypatch, contract="vllm-aibrix-nixl", role="prefill")
+    client = module.app.test_client()
+    payload = {"model": "m", "prompt": "hello", "max_tokens": 1}
+
+    prefill_response = post_json(
+        client,
+        "/v1/completions",
+        payload,
+        request_id="nixl-prefill-shape",
+    )
+
+    assert prefill_response.status_code == 200
+    prefill_body = prefill_response.get_json()
+    assert "disagg_prefill_resp" not in prefill_body
+    assert prefill_body["opaque"] == "aibrix-pd-contract-opaque-sentinel"
+
+    gateway_decode_body = dict(payload)
+    gateway_decode_body["disagg_prefill_resp"] = prefill_body
+    module = load_mock_module(monkeypatch, contract="vllm-aibrix-nixl", role="decode")
+    decode_response = post_json(
+        module.app.test_client(),
+        "/v1/completions",
+        gateway_decode_body,
+        request_id="nixl-decode-shape",
+    )
+
+    assert decode_response.status_code == 200
+def test_contract_rejection_is_recorded_and_does_not_fall_through_to_success(monkeypatch):
+    module = load_mock_module(monkeypatch, contract="vllm-aibrix-shfs", role="prefill")
+    client = module.app.test_client()
+    payload = {"model": "m", "prompt": "hello", "max_tokens": 1}
+
+    response = post_json(client, "/v1/completions", payload, request_id="contract-reject")
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["type"] == "invalid_request"
+    record = query_records(client, "contract-reject")[0]
+    assert record["outcome"] == "rejected"
+    assert record["status_code"] == 400
+    assert record["response"]["error"]["type"] == "invalid_request"
+    assert record["error"]
+
+
+def test_role_mismatch_is_rejected_by_configured_contract(monkeypatch):
+    module = load_mock_module(monkeypatch, contract="trtllm-openai", role="worker")
+    client = module.app.test_client()
+
+    response = post_json(
+        client,
+        "/v1/completions",
+        {"model": "m", "prompt": "hello"},
+        request_id="bad-role",
+    )
+
+    assert response.status_code == 400
+    record = query_records(client, "bad-role")[0]
+    assert record["outcome"] == "rejected"
+    assert record["status_code"] == 400
+
+
+def test_matching_fault_fails_and_nonmatching_fault_does_not(monkeypatch):
+    module = load_mock_module(monkeypatch, contract="sglang-http", role="prefill")
+    client = module.app.test_client()
+    payload = {
+        "model": "m",
+        "prompt": "hello",
+        "max_tokens": 1,
+        "bootstrap_host": "host",
+        "bootstrap_port": 1234,
+        "bootstrap_room": 7,
+    }
+
+    failed = post_json(
+        client,
+        "/v1/completions",
+        payload,
+        request_id="fault-match",
+        **{"X-Aibrix-Mock-Fail": "prefill"},
+    )
+    unaffected = post_json(
+        client,
+        "/v1/completions",
+        payload,
+        request_id="fault-other",
+        **{"X-Aibrix-Mock-Fail": "decode"},
+    )
+
+    assert failed.status_code == 500
+    assert unaffected.status_code == 200
+    assert query_records(client, "fault-match")[0]["outcome"] == "failed"
+    assert query_records(client, "fault-other")[0]["outcome"] == "success"
+
+
+def test_valid_delay_sleeps_once_and_is_recorded(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+    slept = []
+    monkeypatch.setattr(module.time, "sleep", slept.append)
+
+    response = post_json(
+        client,
+        "/v1/completions",
+        {"model": "m", "prompt": "hello", "max_tokens": 1},
+        request_id="delayed",
+        **{"X-Aibrix-Mock-Delay-Ms": "25"},
+    )
+
+    assert response.status_code == 200
+    assert 0.025 in slept
+    assert query_records(client, "delayed")[0]["delay_ms"] == 25
+
+
+def test_invalid_delay_is_bad_request_and_recorded(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = post_json(
+        client,
+        "/v1/chat/completions",
+        {"model": "m", "messages": [{"role": "user", "content": "hello"}]},
+        request_id="bad-delay",
+        **{"X-Aibrix-Mock-Delay-Ms": "not-an-int"},
+    )
+
+    assert response.status_code == 400
+    record = query_records(client, "bad-delay")[0]
+    assert record["outcome"] == "rejected"
+    assert record["status_code"] == 400
+    assert record["delay_ms"] == 0
+    assert record["error"] == "invalid x-aibrix-mock-delay-ms"
+
+
+def test_streaming_response_is_not_consumed_by_route_but_is_recorded(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = client.post(
+        "/v1/chat/completions",
+        data=json.dumps({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        }).encode(),
+        headers={"Content-Type": "application/json", "X-Request-ID": "stream"},
+        buffered=False,
+    )
+
+    assert response.status_code == 200
+    assert response.mimetype == "text/event-stream"
+    record = query_records(client, "stream")[0]
+    assert record["outcome"] == "success"
+    assert record["response"]["stream"] is True
+    response.close()
+
+
+def test_stream_stall_holds_the_stream_after_its_first_chunk(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+    events = []
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: events.append(("sleep", seconds)))
+
+    response = client.post(
+        "/v1/chat/completions",
+        data=json.dumps({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        }).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "X-Request-ID": "stream-stall",
+            "X-Aibrix-Mock-Stream-Stall-Ms": "1500",
+        },
+        buffered=False,
+    )
+
+    assert response.status_code == 200
+    chunks = response.iter_encoded()
+    first = next(chunks)
+    assert b'"role": "assistant"' in first
+    assert ("sleep", 1.5) not in events, "the stall must come after the first chunk"
+    next(chunks)
+    assert events[0] == ("sleep", 1.5)
+    response.close()
+
+
+def test_first_token_stall_holds_the_stream_before_its_first_chunk(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+    events = []
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: events.append(("sleep", seconds)))
+
+    response = client.post(
+        "/v1/chat/completions",
+        data=json.dumps({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        }).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "X-Request-ID": "first-token-stall",
+            "X-Aibrix-Mock-First-Token-Stall-Ms": "1500",
+        },
+        buffered=False,
+    )
+
+    # The status line and headers are out before anything is generated.
+    assert response.status_code == 200
+    assert response.mimetype == "text/event-stream"
+    assert events == []
+    chunks = response.iter_encoded()
+    assert next(chunks) == b""
+    assert events == []
+    first = next(chunks)
+    assert events[0] == ("sleep", 1.5), "the stall must come before the first chunk"
+    assert b'"role": "assistant"' in first
+    response.close()
+
+
+def test_legacy_omni_image_and_audio_shapes_remain_available(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+    image_payload = {
+        "model": "qwen-image",
+        "messages": [{"role": "user", "content": "draw a cat"}],
+    }
+    audio_payload = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "speak"}],
+        "modalities": ["text", "audio"],
+    }
+
+    image_response = post_json(client, "/v1/chat/completions", image_payload, "omni-image")
+    audio_response = post_json(client, "/v1/chat/completions", audio_payload, "omni-audio")
+
+    assert image_response.status_code == 200
+    assert image_response.get_json()["choices"][0]["message"]["content"][0]["type"] == "image_url"
+    assert audio_response.status_code == 200
+    assert audio_response.get_json()["choices"][0]["message"]["audio"]["format"] == "wav"
+
+
+def test_abort_request_records_the_rid_of_the_aborted_decode_leg(monkeypatch):
+    module = load_mock_module(monkeypatch, contract="sglang-http", role="decode")
+    client = module.app.test_client()
+    rid = "req-abort-0123456789abcdef"
+
+    response = client.post(
+        "/abort_request",
+        data=json.dumps({"rid": rid}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "ok", "rid": rid}
+    records = query_records(client, rid)
+    assert len(records) == 1
+    record = records[0]
+    assert record["path"] == "/abort_request"
+    assert record["role"] == "decode"
+    assert record["parsed_json"] == {"rid": rid}
+    assert record["outcome"] == "success"
+    assert record["status_code"] == 200
+
+
+def test_abort_request_without_rid_is_rejected(monkeypatch):
+    module = load_mock_module(monkeypatch, contract="sglang-http", role="decode")
+    client = module.app.test_client()
+
+    response = client.post(
+        "/abort_request",
+        data=json.dumps({"abort_all": False}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    records = client.get("/debug/requests").get_json()
+    assert records[-1]["path"] == "/abort_request"
+    assert records[-1]["outcome"] == "rejected"
+    assert records[-1]["request_id"] is None
+
+
+def test_pooling_rejects_non_string_non_list_input(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    # A dict would iterate its keys and an int would raise TypeError; both are
+    # client errors and must surface as 400, not fall into the 500 handler.
+    for bad_input in ({"text": "hello"}, 42, 3.14, True):
+        response = post_json(
+            client,
+            "/pooling",
+            {"model": "m", "input": bad_input},
+            request_id=f"pooling-bad-{type(bad_input).__name__}",
+        )
+        assert response.status_code == 400, bad_input
+        assert response.get_json()["error"]["param"] == "input"
+
+
+def test_pooling_accepts_all_supported_input_shapes(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    shapes = [
+        ("string", "hello world"),
+        ("array of strings", ["hello", "world"]),
+        ("pre-tokenized ids", [100, 101, 102]),
+        ("pre-tokenized id lists", [[100, 101], [102, 103]]),
+    ]
+    for name, input_value in shapes:
+        response = post_json(
+            client,
+            "/pooling",
+            {"model": "m", "input": input_value},
+            request_id=f"pooling-{name}",
+        )
+        assert response.status_code == 200, (name, response.get_json())
+        body = response.get_json()
+        assert body["model"] == "m"
+        assert body["usage"]["prompt_tokens"] > 0
+        assert all(item["object"] == "pooling" for item in body["data"])
+
+
+def test_pooling_chat_form_uses_messages(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = post_json(
+        client,
+        "/pooling",
+        {
+            "model": "m",
+            "messages": [
+                {"role": "system", "content": "you are an embedder"},
+                {"role": "user", "content": "hello world"},
+            ],
+        },
+        request_id="pooling-chat",
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert len(body["data"]) == 1
+    assert body["usage"]["prompt_tokens"] > 0
+
+
+def test_pooling_rejects_non_list_messages(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    # A string, dict, number, or a list of non-dicts would raise inside the chat
+    # branch's text normalizer; all are client errors and must surface as 400,
+    # not fall into the 500 handler.
+    for bad_messages in ("nope", {"content": "hi"}, 42, [{"content": "ok"}, "bad"]):
+        response = post_json(
+            client,
+            "/pooling",
+            {"model": "m", "messages": bad_messages},
+            request_id=f"pooling-bad-msg-{type(bad_messages).__name__}",
+        )
+        assert response.status_code == 400, bad_messages
+        assert response.get_json()["error"]["param"] == "messages"
+
+
+CHOICE_QUESTION = {
+    "id": "pick",
+    "type": "choice",
+    "question": "Which replica?",
+    "options": [{"name": "a"}, {"name": "b", "description": {"load": "low"}}],
+}
+
+
+def test_decisions_answers_each_question_type(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = post_json(
+        client,
+        "/v1/decisions",
+        {
+            "model": "m",
+            "input": "route this request",
+            "questions": [
+                CHOICE_QUESTION,
+                {"id": "rate", "type": "score", "question": "How good?", "levels": ["bad", "ok", "good"]},
+                {"id": "ok", "type": "yes_no", "question": "Is it fine?"},
+            ],
+        },
+        request_id="decisions-types",
+    )
+
+    assert response.status_code == 200, response.get_json()
+    body = response.get_json()
+    assert body["object"] == "decisions"
+    assert body["model"] == "m"
+    assert set(body["answers"]) == {"pick", "rate", "ok"}
+    assert body["answers"]["pick"]["choice"] == "a"
+    assert set(body["answers"]["pick"]["probabilities"]) == {"a", "b"}
+    assert body["answers"]["rate"]["score"] == pytest.approx(1.0)
+    assert set(body["answers"]["ok"]["probabilities"]) == {"yes", "no"}
+    assert "choice" not in body["answers"]["ok"]
+    # The gateway meters this on the language response path: prompt only, nothing generated.
+    usage = body["usage"]
+    assert usage["prompt_tokens"] > 0
+    assert usage["completion_tokens"] == 0
+    assert usage["total_tokens"] == usage["prompt_tokens"]
+
+
+def test_decisions_accepts_string_object_and_array_input(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    for name, input_value in [
+        ("string", "hello"),
+        ("object", {"a": 1}),
+        ("array", ["x", {"y": 2}]),
+    ]:
+        response = post_json(
+            client,
+            "/v1/decisions",
+            {"model": "m", "input": input_value, "questions": [CHOICE_QUESTION]},
+            request_id=f"decisions-input-{name}",
+        )
+        assert response.status_code == 200, (name, response.get_json())
+
+
+def test_decisions_rejects_bad_requests(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    bad_requests = [
+        ("missing input", {"model": "m", "questions": [CHOICE_QUESTION]}, "input"),
+        ("blank input", {"model": "m", "input": "  ", "questions": [CHOICE_QUESTION]}, "input"),
+        ("empty object input", {"model": "m", "input": {}, "questions": [CHOICE_QUESTION]}, "input"),
+        ("number input", {"model": "m", "input": 42, "questions": [CHOICE_QUESTION]}, "input"),
+        ("missing questions", {"model": "m", "input": "x"}, "questions"),
+        ("empty questions", {"model": "m", "input": "x", "questions": []}, "questions"),
+        (
+            "one option",
+            {"model": "m", "input": "x", "questions": [{**CHOICE_QUESTION, "options": [{"name": "a"}]}]},
+            "questions",
+        ),
+        (
+            "duplicate question ids",
+            {"model": "m", "input": "x", "questions": [CHOICE_QUESTION, CHOICE_QUESTION]},
+            "questions",
+        ),
+        (
+            "unknown question type",
+            {"model": "m", "input": "x", "questions": [{**CHOICE_QUESTION, "type": "rank"}]},
+            "questions",
+        ),
+        # SGLang forbids extra fields, so a client cannot ask this endpoint to stream.
+        ("stream is not a field", {"model": "m", "input": "x", "questions": [CHOICE_QUESTION], "stream": True}, "stream"),
+    ]
+    for name, payload, param in bad_requests:
+        response = post_json(client, "/v1/decisions", payload, request_id=f"decisions-bad-{name}")
+        assert response.status_code == 400, (name, response.get_json())
+        assert response.get_json()["error"]["param"] == param, name
+
+
+SYSTEMONE_CHOICE = {
+    "type": "choice",
+    "instructions": "Which team?",
+    "criteria": {"billing": None, "support": "Bugs or integration problems"},
+}
+
+
+def test_systemone_answers_each_question_type(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = post_json(
+        client,
+        "/v1/systemone",
+        {
+            "model": "m",
+            "state": "stripe integration keeps failing",
+            "questions": {
+                "team": SYSTEMONE_CHOICE,
+                "urgent": {"type": "noul", "instructions": "The customer needs an answer today."},
+                "mood": {"type": "score", "criteria": ["calm", "annoyed", "angry"]},
+            },
+        },
+        request_id="systemone-types",
+    )
+
+    assert response.status_code == 200, response.get_json()
+    body = response.get_json()
+    assert body["model"] == "m"
+    assert set(body["answers"]) == {"team", "urgent", "mood"}
+    assert body["answers"]["team"]["choice"] == "billing"
+    assert set(body["answers"]["team"]["probabilities"]) == {"billing", "support"}
+    assert body["answers"]["urgent"]["noul"] == pytest.approx(0.5)
+    assert body["answers"]["mood"]["score"] == pytest.approx(1.0)
+    assert body["answers"]["mood"]["legend"] == {"0": "calm", "1": "annoyed", "2": "angry"}
+    # The engine reports input and output tokens and no total, so the gateway has to derive one.
+    usage = body["usage"]
+    assert usage["input_tokens"] > 0
+    assert usage["output_tokens"] == 0
+    assert "total_tokens" not in usage
+
+
+def test_systemone_counts_the_state_once_per_question(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    def input_tokens(question_count):
+        response = post_json(
+            client,
+            "/v1/systemone",
+            {
+                "model": "m",
+                "state": "a long enough state to count",
+                "questions": {f"q{i}": SYSTEMONE_CHOICE for i in range(question_count)},
+            },
+            request_id=f"systemone-count-{question_count}",
+        )
+        assert response.status_code == 200, response.get_json()
+        return response.get_json()["usage"]["input_tokens"]
+
+    assert input_tokens(2) == 2 * input_tokens(1)
+
+
+def test_systemone_accepts_string_object_array_and_empty_state(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    for name, state in [
+        ("string", "hello"),
+        ("object", {"a": 1}),
+        ("array", ["x", {"y": 2}]),
+        # Unlike /v1/decisions, SGLang accepts an empty state here.
+        ("empty string", ""),
+        ("empty object", {}),
+    ]:
+        response = post_json(
+            client,
+            "/v1/systemone",
+            {"model": "m", "state": state, "questions": {"team": SYSTEMONE_CHOICE}},
+            request_id=f"systemone-state-{name}",
+        )
+        assert response.status_code == 200, (name, response.get_json())
+
+
+def test_systemone_ignores_unknown_top_level_fields(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = post_json(
+        client,
+        "/v1/systemone",
+        {
+            "model": "m",
+            "state": "hello",
+            "questions": {"team": SYSTEMONE_CHOICE},
+            "images": ["data:image/png;base64,AAAA"],
+            "chat_template_kwargs": {"enable_thinking": False},
+            "stream": True,
+            "anything": 1,
+        },
+        request_id="systemone-extra",
+    )
+
+    assert response.status_code == 200, response.get_json()
+
+
+def test_systemone_rejects_bad_requests(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    questions = {"team": SYSTEMONE_CHOICE}
+    bad_requests = [
+        ("missing model", {"state": "x", "questions": questions}, "model"),
+        ("missing state", {"model": "m", "questions": questions}, "state"),
+        ("null state", {"model": "m", "state": None, "questions": questions}, "state"),
+        ("number state", {"model": "m", "state": 42, "questions": questions}, "state"),
+        ("missing questions", {"model": "m", "state": "x"}, "questions"),
+        ("empty questions", {"model": "m", "state": "x", "questions": {}}, "questions"),
+        # /v1/decisions takes an array of questions; System One takes a map keyed by id.
+        ("array questions", {"model": "m", "state": "x", "questions": [SYSTEMONE_CHOICE]}, "questions"),
+        (
+            "unknown question type",
+            {"model": "m", "state": "x", "questions": {"q": {**SYSTEMONE_CHOICE, "type": "rank"}}},
+            "questions",
+        ),
+        (
+            "unknown question key",
+            {"model": "m", "state": "x", "questions": {"q": {**SYSTEMONE_CHOICE, "options": []}}},
+            "questions",
+        ),
+        (
+            "empty choice criteria",
+            {"model": "m", "state": "x", "questions": {"q": {"type": "choice", "criteria": {}}}},
+            "questions",
+        ),
+        (
+            "repeated option name",
+            {
+                "model": "m",
+                "state": "x",
+                "questions": {"q": {"type": "choice", "criteria": {"Yes": None, " yes": None}}},
+            },
+            "questions",
+        ),
+        (
+            "bare noul question",
+            {"model": "m", "state": "x", "questions": {"q": {"type": "noul"}}},
+            "questions",
+        ),
+        (
+            "too many score levels",
+            {
+                "model": "m",
+                "state": "x",
+                "questions": {"q": {"type": "score", "criteria": [str(i) for i in range(11)]}},
+            },
+            "questions",
+        ),
+        # These are /v1/decisions fields that SGLang refuses by name instead of ignoring.
+        (
+            "temperature is refused",
+            {"model": "m", "state": "x", "questions": questions, "temperature": 0.5},
+            "temperature",
+        ),
+        (
+            "prompt_format_version is refused",
+            {"model": "m", "state": "x", "questions": questions, "prompt_format_version": 1},
+            "prompt_format_version",
+        ),
+    ]
+    for name, payload, param in bad_requests:
+        response = post_json(client, "/v1/systemone", payload, request_id=f"systemone-bad-{name}")
+        # SGLang answers a schema error with 422, not the gateway's 400.
+        assert response.status_code == 422, (name, response.get_json())
+        assert response.get_json()["error"]["param"] == param, name
+
+
+def test_speech_batch_returns_one_result_per_item_in_order(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = post_json(
+        client,
+        "/v1/audio/speech/batch",
+        {
+            "model": "tts-1",
+            "response_format": "wav",
+            "items": [
+                {"input": "First sentence."},
+                {"input": "Second sentence.", "speed": 1.1},
+                {"input": "Third sentence.", "response_format": "mp3"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["id"].startswith("speech-batch-")
+    assert (body["total"], body["succeeded"], body["failed"]) == (3, 3, 0)
+    assert [result["index"] for result in body["results"]] == [0, 1, 2]
+    assert [result["format"] for result in body["results"]] == ["wav", "wav", "mp3"]
+    assert [result["media_type"] for result in body["results"]] == [
+        "audio/wav",
+        "audio/wav",
+        "audio/mpeg",
+    ]
+    assert base64.b64decode(body["results"][0]["audio_data"]).startswith(b"RIFF")
+    assert all(result["finish_reason"] == "stop" for result in body["results"])
+    assert all("error" not in result for result in body["results"])
+
+
+def test_speech_batch_reports_a_bad_item_without_failing_the_batch(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = post_json(
+        client,
+        "/v1/audio/speech/batch",
+        {
+            # A top-level stream is dropped, as in the engine; only an item-level one is refused.
+            "stream": True,
+            "items": [
+                {"input": "ok"},
+                {"input": ""},
+                {"voice": "alloy"},
+                {"input": "streamed", "stream": True},
+                {"input": "bad format", "response_format": "ogg"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert (body["total"], body["succeeded"], body["failed"]) == (5, 1, 4)
+    assert [result["status"] for result in body["results"]] == [
+        "success",
+        "error",
+        "error",
+        "error",
+        "error",
+    ]
+    assert [result["error"]["param"] for result in body["results"][1:]] == [
+        "items.1.input",
+        "items.2.input",
+        "items.3.stream",
+        "items.4.response_format",
+    ]
+    assert all("audio_data" not in result for result in body["results"][1:])
+
+
+@pytest.mark.parametrize(
+    ("payload", "param"),
+    [
+        ({"items": []}, "items"),
+        ({"model": "tts-1"}, "items"),
+        ({"items": {"input": "Hi"}}, "items"),
+        ({"items": [{"input": "Hi"}, "Hi"]}, "items.1"),
+        ({"items": [None]}, "items.0"),
+    ],
+)
+def test_speech_batch_rejects_a_bad_envelope(monkeypatch, payload, param):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(module.app.test_client(), "/v1/audio/speech/batch", payload)
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["param"] == param
+
+
+def test_speech_batch_rejects_a_non_object_body(monkeypatch):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(module.app.test_client(), "/v1/audio/speech/batch", [{"input": "Hi"}])
+
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("response_format", ["bogus", "", 7, ["wav"], {"format": "wav"}])
+def test_speech_rejects_an_unsupported_response_format(monkeypatch, response_format):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(
+        module.app.test_client(),
+        "/v1/audio/speech",
+        {"model": "tts-1", "input": "Hi", "response_format": response_format},
+    )
+
+    # A JSON list or object is unhashable, so a bare dict lookup would turn it into a 500.
+    assert response.status_code == 400
+    assert response.get_json()["error"]["param"] == "response_format"
+
+
+def test_speech_serves_every_declared_format_with_its_content_type(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    for response_format, media_type in module.SPEECH_CONTENT_TYPES.items():
+        response = post_json(
+            client,
+            "/v1/audio/speech",
+            {"model": "tts-1", "input": "Hi", "response_format": response_format},
+        )
+
+        assert response.status_code == 200, response_format
+        assert response.mimetype == media_type, response_format
+
+
+@pytest.mark.parametrize("response_format", [7, ["wav"], {"format": "wav"}])
+def test_speech_batch_reports_a_non_string_item_format_without_failing_the_batch(
+    monkeypatch, response_format
+):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(
+        module.app.test_client(),
+        "/v1/audio/speech/batch",
+        {"items": [{"input": "ok"}, {"input": "bad format", "response_format": response_format}]},
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert [result["status"] for result in body["results"]] == ["success", "error"]
+    assert body["results"][1]["error"]["param"] == "items.1.response_format"
+
+
+def test_chat_batch_returns_one_choice_per_conversation_with_summed_usage(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+    conversations = [
+        [{"role": "user", "content": "What is the capital of France?"}],
+        [
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": [{"type": "text", "text": "What is the capital of Japan?"}]},
+        ],
+        [{"role": "user", "content": "Hi"}],
+    ]
+
+    response = post_json(
+        client,
+        "/v1/chat/completions/batch",
+        {"model": "chat-model", "max_tokens": 7, "messages": conversations},
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["id"].startswith("chatcmpl-batch-")
+    assert body["object"] == "chat.completion"
+    assert body["model"] == "chat-model"
+    assert [choice["index"] for choice in body["choices"]] == [0, 1, 2]
+    assert all(choice["message"]["role"] == "assistant" for choice in body["choices"])
+    assert all(choice["finish_reason"] == "stop" for choice in body["choices"])
+    expected_prompt_tokens = sum(
+        module.message_token_count(message)
+        for conversation in conversations
+        for message in conversation
+    )
+    assert body["usage"] == {
+        "prompt_tokens": expected_prompt_tokens,
+        "completion_tokens": 7 * len(conversations),
+        "total_tokens": expected_prompt_tokens + 7 * len(conversations),
+    }
+
+
+def test_chat_batch_refuses_stream_true_and_answers_stream_false_with_one_json_document(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+    conversations = [[{"role": "user", "content": "Hi"}]]
+
+    refused = post_json(
+        client,
+        "/v1/chat/completions/batch",
+        {"model": "chat-model", "stream": True, "messages": conversations},
+    )
+
+    assert refused.status_code == 400
+    assert refused.get_json()["error"]["param"] == "stream"
+
+    answered = post_json(
+        client,
+        "/v1/chat/completions/batch",
+        {"model": "chat-model", "stream": False, "messages": conversations},
+    )
+
+    assert answered.status_code == 200
+    assert answered.mimetype == "application/json"
+    assert len(answered.get_json()["choices"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("payload", "param"),
+    [
+        ({"messages": [[{"role": "user", "content": "Hi"}]]}, "model"),
+        ({"model": "chat-model"}, "messages"),
+        ({"model": "chat-model", "messages": []}, "messages"),
+        ({"model": "chat-model", "messages": [{"role": "user", "content": "Hi"}]}, "messages.0"),
+        ({"model": "chat-model", "messages": [[{"role": "user", "content": "Hi"}], []]}, "messages.1"),
+        ({"model": "chat-model", "messages": [["Hi"]]}, "messages.0"),
+        ({"model": "chat-model", "n": 2, "messages": [[{"role": "user", "content": "Hi"}]]}, "n"),
+        (
+            {"model": "chat-model", "use_beam_search": True, "messages": [[{"role": "user", "content": "Hi"}]]},
+            "use_beam_search",
+        ),
+    ],
+)
+def test_chat_batch_rejects_a_bad_request(monkeypatch, payload, param):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(module.app.test_client(), "/v1/chat/completions/batch", payload)
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["param"] == param
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        "Hi",
+        ["Hi", "there"],
+        [{"role": "user", "content": ["Hi", {"type": "text", "text": "there"}]}],
+    ],
+)
+def test_chat_completions_counts_malformed_messages_instead_of_crashing(monkeypatch, messages):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(
+        module.app.test_client(),
+        "/v1/chat/completions",
+        {"model": "chat-model", "max_tokens": 4, "messages": messages},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["usage"]["completion_tokens"] == 4
+
+
+def test_chat_batch_rejects_a_non_object_body(monkeypatch):
+    module = load_mock_module(monkeypatch)
+
+    response = post_json(
+        module.app.test_client(),
+        "/v1/chat/completions/batch",
+        [[{"role": "user", "content": "Hi"}]],
+    )
+
+    assert response.status_code == 400

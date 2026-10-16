@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -74,6 +75,31 @@ func TestPrepareWorkspaceFromLocalPathStagesCopy(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(workspace.Path, "README.md")); err != nil {
 		t.Fatalf("expected staged workspace to contain copied files: %v", err)
+	}
+}
+
+func TestRequestedWorkspaceRefUsesPrebuiltCommitForCommitSource(t *testing.T) {
+	const commit = "9aa8b21ef6053dc19dde76f71552247b82f93630"
+	t.Setenv("BENCHMARK_GATEWAY_COMMIT", strings.ToUpper(commit))
+
+	ref, err := requestedWorkspaceRef(&Test{Commit: "origin/main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref != commit {
+		t.Fatalf("requested ref = %q, want %q", ref, commit)
+	}
+}
+
+func TestRequestedWorkspaceRefKeepsReleaseVersion(t *testing.T) {
+	t.Setenv("BENCHMARK_GATEWAY_COMMIT", "9aa8b21ef6053dc19dde76f71552247b82f93630")
+
+	ref, err := requestedWorkspaceRef(&Test{Version: "v0.6.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref != "v0.6.0" {
+		t.Fatalf("requested ref = %q, want release tag", ref)
 	}
 }
 

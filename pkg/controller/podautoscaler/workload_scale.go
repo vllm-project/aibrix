@@ -39,7 +39,61 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
 )
 
+// AutoscalingStormServiceModeAnnotationKey is the PodAutoscaler annotation that
+// historically selected how role-level scaling applies to a StormService target:
+// "replica" scales StormService.spec.replicas, anything else scales the targeted
+// role's replicas.
+//
+// Deprecated: declare StormService.spec.mode instead. The annotation is only
+// honored as a compatibility fallback when the target StormService does not
+// declare spec.mode, and may be removed once spec.mode is broadly adopted.
 const AutoscalingStormServiceModeAnnotationKey = "autoscaling.aibrix.ai/storm-service-mode"
+
+// stormServiceScalingMode resolves the deployment mode used to route role-level
+// scaling for a StormService target, in this order:
+//
+//  1. A declared StormService.spec.mode is the source of truth.
+//  2. The deprecated autoscaling.aibrix.ai/storm-service-mode annotation on the
+//     PodAutoscaler, when present: "replica" selects replica mode and any other
+//     value keeps the pooled behavior those objects were configured against.
+//  3. StormServiceSpec.ResolvedMode(), which infers replica mode from
+//     spec.replicas > 1 and pooled otherwise.
+//
+// Step 3 exists so that a StormService predating spec.mode resolves the same way
+// in the autoscaler as it does in the stormservice controller, which has always
+// used ResolvedMode. Disagreeing made the autoscaler read a role count
+// aggregated over every RoleSet while writing a per-RoleSet template value, so
+// it could never converge.
+//
+// The inference is best-effort compatibility, not a stable mode. spec.replicas
+// cannot distinguish a pooled StormService from a replica-mode one scaled down
+// to a single RoleSet, so an inferred replica-mode object that reaches
+// spec.replicas == 1 resolves as pooled on the next reconcile - in the
+// controller as much as here - and a later scale-up then writes the role
+// template instead of spec.replicas. Declaring spec.mode: Replica is the
+// supported way to keep replica semantics through a scale-down to one.
+func stormServiceScalingMode(pa *autoscalingv1alpha1.PodAutoscaler, ss *orchestrationv1alpha1.StormService) orchestrationv1alpha1.StormServiceMode {
+	if ss.Spec.Mode != "" {
+		return ss.Spec.Mode
+	}
+	// Distinguish an absent annotation from one holding a non-"replica" value:
+	// the latter is an explicit choice made against the historical pooled default
+	// and keeps it, rather than falling through to inference.
+	if value, ok := pa.Annotations[AutoscalingStormServiceModeAnnotationKey]; ok {
+		if value == "replica" {
+			return orchestrationv1alpha1.StormServiceReplicaMode
+		}
+		if ss.Spec.ResolvedMode() == orchestrationv1alpha1.StormServiceReplicaMode {
+			// The annotation pins pooled while the stormservice controller reads the
+			// object as replica mode, which is the disagreement this resolution order
+			// otherwise removes. Surface it instead of silently scaling the wrong field.
+			klog.InfoS("PodAutoscaler pins pooled scaling through the deprecated storm-service-mode annotation while the StormService resolves to replica mode; declare spec.mode to make the intent explicit",
+				"podAutoscaler", klog.KObj(pa), "stormService", klog.KObj(ss), "annotation", value, "replicas", ss.Spec.ResolvedReplicas())
+		}
+		return orchestrationv1alpha1.StormServicePooledMode
+	}
+	return ss.Spec.ResolvedMode()
+}
 
 // WorkloadScale provides scaling operations for different workload types.
 // It provides the mechanism to get/set replica counts on workload resources,
@@ -152,10 +206,11 @@ func (s *workloadScale) getCurrentReplicasForRole(ctx context.Context, pa *autos
 		return 0, err
 	}
 
-	// replica mode, return the replicas directly
-	// we can not easily use `*ss.Spec.Replicas > 1` as condition since 1 could be pool or replica both case under autoscaling scenarios
-	if pa.Annotations[AutoscalingStormServiceModeAnnotationKey] == "replica" {
-		return *ss.Spec.Replicas, nil
+	// Replica mode scales the whole StormService, so report spec.replicas. An omitted
+	// spec.replicas resolves to the documented default of 1 instead of reading as a
+	// scaled-to-zero workload, matching how the stormservice controller reconciles it.
+	if stormServiceScalingMode(pa, ss) == orchestrationv1alpha1.StormServiceReplicaMode {
+		return ss.Spec.ResolvedReplicas(), nil
 	}
 
 	roleName := pa.Spec.SubTargetSelector.RoleName
@@ -246,9 +301,9 @@ func (s *workloadScale) setDesiredReplicasForRole(ctx context.Context, pa *autos
 			return err
 		}
 		upd := cur.DeepCopy()
-		// TODO: tricky part. it's hard to know replica=1 is pooling or replica mode, we can use autoscaling to limit it.
-		// we can extract the method and fallback to ss object annotation to check as well.
-		if pa.Annotations[AutoscalingStormServiceModeAnnotationKey] == "replica" {
+		// Replica mode scales the whole StormService through spec.replicas; pooled mode
+		// scales the targeted role. See stormServiceScalingMode for the resolution order.
+		if stormServiceScalingMode(pa, cur) == orchestrationv1alpha1.StormServiceReplicaMode {
 			upd.Spec.Replicas = ptr.To(replicas)
 			return s.client.Patch(ctx, upd, client.MergeFrom(cur))
 		}
@@ -359,10 +414,8 @@ func (s *workloadScale) GetPodSelectorFromScale(ctx context.Context, pa *autosca
 }
 
 func (s *workloadScale) isStormServiceWorkload(scale *unstructured.Unstructured) bool {
-	isStormService := false
-	if scale.GetAPIVersion() == "orchestration.aibrix.ai/v1alpha1" && scale.GetKind() == "StormService" {
-		isStormService = true
-	}
+	isStormService := scale.GetAPIVersion() == "orchestration.aibrix.ai/v1alpha1" && scale.GetKind() == "StormService"
+
 	return isStormService
 }
 

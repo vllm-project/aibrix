@@ -20,6 +20,7 @@ const (
 	GodelPodGroupNameAnnotationKey   = "godel.bytedance.com/pod-group-name"
 	CoschedulingPodGroupNameLabelKey = "scheduling.x-k8s.io/pod-group"
 	VolcanoPodGroupNameAnnotationKey = "scheduling.k8s.io/group-name" // Aligns with the standard Kubernetes PodGroup annotation for gang scheduling.
+	VolcanoTaskSpecKey               = "volcano.sh/task-spec"
 
 	RoleSetNameLabelKey          = "roleset-name"
 	StormServiceNameLabelKey     = "storm-service-name"
@@ -36,6 +37,21 @@ const (
 
 	RoleSetIndexAnnotationKey    = "stormservice.orchestration.aibrix.ai/roleset-index"
 	RoleSetRevisionAnnotationKey = "stormservice.orchestration.aibrix.ai/revision"
+	// RoleInPlaceUpdateTargetHashAnnotationKey records the desired role template hash while a pod image is being updated in place.
+	RoleInPlaceUpdateTargetHashAnnotationKey = "stormservice.orchestration.aibrix.ai/in-place-update-target-hash"
+	// RoleInPlaceUpdateStateAnnotationKey records runtime container state captured before an in-place image update.
+	RoleInPlaceUpdateStateAnnotationKey = "stormservice.orchestration.aibrix.ai/in-place-update-state"
+	// RoleInPlaceUpdatePendingReasonAnnotationKey records why an in-place update has not completed yet.
+	RoleInPlaceUpdatePendingReasonAnnotationKey = "stormservice.orchestration.aibrix.ai/in-place-update-pending-reason"
+	// RoleInPlaceUpdateReadyCondition is an optional readiness gate condition set during in-place image updates.
+	RoleInPlaceUpdateReadyCondition = "stormservice.orchestration.aibrix.ai/in-place-update-ready"
+	// RoleSetHistoricalNodeBindingsAnnotationKey stores controller-owned historical node bindings for RoleSet replacement scheduling.
+	RoleSetHistoricalNodeBindingsAnnotationKey = "orchestration.aibrix.ai/historical-node-bindings"
+
+	RoleInPlaceUpdatePendingReasonPodNotReady            = "PodNotReady"
+	RoleInPlaceUpdatePendingReasonContainerStatusMissing = "ContainerStatusMissing"
+	RoleInPlaceUpdatePendingReasonContainerNotReady      = "ContainerNotReady"
+	RoleInPlaceUpdatePendingReasonImageIDUnchanged       = "ImageIDUnchanged"
 	// RoleReplicaIndexAnnotationKey is originally used, to support label filter rank 0 pod, we add label support but keep this annotation for backward compatibility.
 	RoleReplicaIndexAnnotationKey = "stormservice.orchestration.aibrix.ai/role-replica-index"
 	// RoleRevisionAnnotationPrefix is used to store per-role revision info in RoleSet annotations

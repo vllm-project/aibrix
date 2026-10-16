@@ -1,0 +1,31 @@
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: deepseek-r1-distill-llama-8b-scheduled-apa
+  namespace: default
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  scalingStrategy: APA
+  minReplicas: 1
+  maxReplicas: 10
+  schedules:
+    - name: weekday-business-hours
+      timezone: America/Los_Angeles
+      daysOfWeek: [Mon, Tue, Wed, Thu, Fri]
+      startTime: "09:00"
+      endTime: "18:00"
+      minReplicas: 4
+      maxReplicas: 12
+  metricsSources:
+    - metricSourceType: pod
+      protocolType: http
+      port: "8000"
+      path: metrics
+      targetMetric: gpu_cache_usage_perc
+      targetValue: "0.5"
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: deepseek-r1-distill-llama-8b

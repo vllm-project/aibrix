@@ -1,5 +1,21 @@
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Unit tests for BatchStorageAdapter.finalize_job_output_data metastore-based behavior"""
 
+import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
@@ -7,18 +23,26 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from aibrix.batch.job_entity import (
+    AibrixMetadata,
     BatchJob,
     BatchJobEndpoint,
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
+    BatchUsage,
+    ClientConfig,
     CompletionWindow,
     ObjectMeta,
     RequestCountStats,
     TypeMeta,
 )
 from aibrix.batch.storage.adapter import BatchStorageAdapter
-from aibrix.storage.base import BaseStorage
+from aibrix.storage.base import (
+    LOCAL_PART_PROVIDER_MARKER,
+    LOCAL_PART_PROVIDER_MARKER_VALUE,
+    BaseStorage,
+    StorageType,
+)
 
 
 def create_test_batch_job(
@@ -91,10 +115,82 @@ def mock_storage():
     return storage
 
 
+def _structured_log_events(caplog) -> list[dict]:
+    return [json.loads(record.getMessage()) for record in caplog.records]
+
+
+@pytest.mark.asyncio
+async def test_write_job_output_data_exposes_missing_output_file_ids(mock_storage):
+    adapter = BatchStorageAdapter(mock_storage)
+    job = create_test_batch_job(
+        job_id="job-missing-output-storage",
+        temp_output_file_id="",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "Batch output files are not prepared for job "
+            "job-missing-output-storage: missing temp_output_file_id"
+        ),
+    ):
+        await adapter.write_job_output_data(job, 0, {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_stage",
+    ["output_storage_upload", "completion_metastore_write"],
+)
+async def test_write_job_output_data_logs_persistence_failure(
+    mock_storage, caplog, failure_stage
+):
+    adapter = BatchStorageAdapter(mock_storage)
+    job = create_test_batch_job(job_id="job-persistence-timeout")
+    mock_storage.get_type.return_value = StorageType.TOS
+    mock_storage.upload_part.return_value = "etag-0"
+    if failure_stage == "output_storage_upload":
+        mock_storage.upload_part.side_effect = TimeoutError()
+    caplog.set_level(logging.ERROR, logger="aibrix.batch.storage.adapter")
+
+    with (
+        patch(
+            "aibrix.batch.storage.adapter.get_metastore_type",
+            return_value=StorageType.REDIS,
+        ),
+        patch(
+            "aibrix.batch.storage.adapter.unlock_request",
+            AsyncMock(
+                side_effect=(
+                    TimeoutError()
+                    if failure_stage == "completion_metastore_write"
+                    else None
+                )
+            ),
+        ),
+        pytest.raises(TimeoutError),
+    ):
+        await adapter.write_job_output_data(
+            job,
+            0,
+            {"custom_id": "request-0", "response": {"status_code": 200}},
+        )
+
+    failure_event = next(
+        event
+        for event in _structured_log_events(caplog)
+        if event.get("event") == "Failed to persist batch request result"
+    )
+    assert failure_event["job_id"] == "job-persistence-timeout"
+    assert failure_event["stage"] == failure_stage
+    assert failure_event["exception_repr"] == "TimeoutError()"
+
+
 @pytest.mark.asyncio
 async def test_read_job_next_input_data_keeps_locking_behavior(mock_storage):
     adapter = BatchStorageAdapter(mock_storage)
     job = create_test_batch_job(total=2)
+    job.spec.aibrix = AibrixMetadata(client=ClientConfig(request_timeout_seconds=45))
     mock_storage.readline_iter.side_effect = _readline_iter_from_lines(
         [
             '{"custom_id":"a","body":{"i":0}}',
@@ -102,16 +198,29 @@ async def test_read_job_next_input_data_keeps_locking_behavior(mock_storage):
         ]
     )
 
-    with patch(
-        "aibrix.batch.storage.adapter.lock_request",
-        AsyncMock(return_value=True),
-    ) as mock_lock:
+    # read_job_next_input_data probes is_request_locking_supported() once up
+    # front; force it True here so we exercise the per-request locking path and
+    # confirm the probe optimization doesn't skip lock_request when locking is
+    # available. (The probe reads the process metastore, which isn't initialized
+    # in unit tests, so it must be patched.)
+    with (
+        patch(
+            "aibrix.batch.storage.adapter.is_request_locking_supported",
+            return_value=True,
+        ),
+        patch(
+            "aibrix.batch.storage.adapter.lock_request",
+            AsyncMock(return_value=True),
+        ) as mock_lock,
+    ):
         requests = [
             item async for item in adapter.read_job_next_input_data(job, start_index=0)
         ]
 
     assert [request["_request_index"] for request in requests] == [0, 1]
     assert mock_lock.await_count == 2
+    assert mock_lock.await_args_list[0].kwargs["expiration_seconds"] == 45
+    assert mock_lock.await_args_list[1].kwargs["expiration_seconds"] == 45
 
 
 @pytest.mark.asyncio
@@ -606,6 +715,233 @@ async def test_finalize_job_output_data_preserves_part_numbers(mock_storage):
 
                 # Total should be max index + 1
                 assert batch_job.status.request_counts.total == 16  # 15 + 1
+
+
+@pytest.mark.asyncio
+async def test_finalize_job_output_data_reroutes_unreadable_output_parts(
+    mock_storage,
+):
+    adapter = BatchStorageAdapter(mock_storage)
+    batch_job = create_test_batch_job(job_id="job-reroute")
+    batch_job.status.usage = BatchUsage()
+
+    expected_keys = [
+        f"batch:{batch_job.job_id}:done/0",
+        f"batch:{batch_job.job_id}:done/1",
+    ]
+
+    output_usage = BatchUsage(input_tokens=3, output_tokens=4, total_tokens=7)
+    error_usage = BatchUsage(input_tokens=1, output_tokens=2, total_tokens=3)
+
+    with patch(
+        "aibrix.batch.storage.adapter.list_metastore_keys", new_callable=AsyncMock
+    ) as mock_list_keys:
+        with patch(
+            "aibrix.batch.storage.adapter.get_metadata", new_callable=AsyncMock
+        ) as mock_get_metadata:
+            with patch(
+                "aibrix.batch.storage.adapter.delete_metadata", new_callable=AsyncMock
+            ) as mock_delete_metadata:
+                with patch.object(
+                    adapter,
+                    "_sum_usage_from_output",
+                    new=AsyncMock(side_effect=[output_usage, error_usage]),
+                ):
+                    mock_list_keys.return_value = (expected_keys, None)
+                    mock_get_metadata.side_effect = [
+                        (
+                            '{"result":"output","etag":"etag0","custom_id":"request-0"}',
+                            True,
+                        ),
+                        (
+                            '{"result":"output","etag":"etag1","custom_id":"request-1"}',
+                            True,
+                        ),
+                    ]
+                    mock_storage.complete_multipart_upload.side_effect = [
+                        [{"etag": "etag1", "part_number": 1}],
+                        [],
+                    ]
+                    mock_storage.abort_multipart_upload.return_value = None
+
+                    await adapter.finalize_job_output_data(batch_job)
+
+    assert batch_job.status.request_counts.total == 2
+    assert batch_job.status.request_counts.launched == 2
+    assert batch_job.status.request_counts.completed == 1
+    assert batch_job.status.request_counts.failed == 1
+    assert batch_job.status.usage.input_tokens == 4
+    assert batch_job.status.usage.output_tokens == 6
+    assert batch_job.status.usage.total_tokens == 10
+
+    output_call = mock_storage.complete_multipart_upload.call_args_list[0]
+    assert output_call.kwargs["tolerate_part_get_error"] is True
+
+    error_call = mock_storage.complete_multipart_upload.call_args_list[1]
+    local_part_provider = error_call.kwargs["local_part_provider"]
+    synthesized_parts = error_call.args[2]
+    assert [part["part_number"] for part in synthesized_parts] == [1]
+    assert synthesized_parts[0]["custom_id"] == "request-1"
+    assert (
+        synthesized_parts[0][LOCAL_PART_PROVIDER_MARKER]
+        == LOCAL_PART_PROVIDER_MARKER_VALUE
+    )
+    synth_payload = json.loads(
+        (await local_part_provider(synthesized_parts[0])).decode("utf-8")
+    )
+    assert synth_payload["custom_id"] == "request-1"
+    assert synth_payload["response"] is None
+    assert synth_payload["error"]["code"] == "internal_error"
+    mock_storage.abort_multipart_upload.assert_awaited_once_with(
+        batch_job.status.output_file_id,
+        batch_job.status.temp_output_file_id,
+    )
+    assert mock_delete_metadata.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_finalize_job_output_data_merges_rerouted_parts_by_part_number(
+    mock_storage,
+):
+    adapter = BatchStorageAdapter(mock_storage)
+    batch_job = create_test_batch_job(job_id="job-reroute-merge")
+    batch_job.status.usage = BatchUsage()
+
+    expected_keys = [
+        f"batch:{batch_job.job_id}:done/0",
+        f"batch:{batch_job.job_id}:done/1",
+        f"batch:{batch_job.job_id}:done/2",
+    ]
+
+    with patch(
+        "aibrix.batch.storage.adapter.list_metastore_keys", new_callable=AsyncMock
+    ) as mock_list_keys:
+        with patch(
+            "aibrix.batch.storage.adapter.get_metadata", new_callable=AsyncMock
+        ) as mock_get_metadata:
+            with patch(
+                "aibrix.batch.storage.adapter.delete_metadata", new_callable=AsyncMock
+            ):
+                with patch.object(
+                    adapter,
+                    "_sum_usage_from_output",
+                    new=AsyncMock(side_effect=[BatchUsage(), BatchUsage()]),
+                ):
+                    mock_list_keys.return_value = (expected_keys, None)
+                    mock_get_metadata.side_effect = [
+                        (
+                            '{"result":"output","etag":"etag0","custom_id":"request-0"}',
+                            True,
+                        ),
+                        (
+                            '{"result":"error","etag":"etag1","custom_id":"request-1"}',
+                            True,
+                        ),
+                        (
+                            '{"result":"output","etag":"etag2","custom_id":"request-2"}',
+                            True,
+                        ),
+                    ]
+                    mock_storage.complete_multipart_upload.side_effect = [
+                        [
+                            {"etag": "etag2", "part_number": 2},
+                            {"etag": "etag1-duplicate", "part_number": 1},
+                        ],
+                        [],
+                    ]
+                    mock_storage.abort_multipart_upload.return_value = None
+
+                    await adapter.finalize_job_output_data(batch_job)
+
+    assert batch_job.status.request_counts.total == 3
+    assert batch_job.status.request_counts.launched == 3
+    assert batch_job.status.request_counts.completed == 1
+    assert batch_job.status.request_counts.failed == 2
+
+    error_call = mock_storage.complete_multipart_upload.call_args_list[1]
+    assert error_call.args[2][0] == {
+        "etag": "etag1",
+        "part_number": 1,
+        "custom_id": "request-1",
+    }
+    synthesized_part = error_call.args[2][1]
+    assert synthesized_part["part_number"] == 2
+    assert synthesized_part["custom_id"] == "request-2"
+    assert (
+        synthesized_part[LOCAL_PART_PROVIDER_MARKER] == LOCAL_PART_PROVIDER_MARKER_VALUE
+    )
+    synth_payload = json.loads(
+        (await error_call.kwargs["local_part_provider"](synthesized_part)).decode(
+            "utf-8"
+        )
+    )
+    assert synth_payload["custom_id"] == "request-2"
+    assert synth_payload["error"]["code"] == "internal_error"
+
+
+@pytest.mark.asyncio
+async def test_finalize_job_output_data_synthesizes_unreadable_error_parts(
+    mock_storage,
+):
+    adapter = BatchStorageAdapter(mock_storage)
+    batch_job = create_test_batch_job(job_id="job-unreadable-error-part")
+    batch_job.status.usage = BatchUsage()
+
+    expected_keys = [f"batch:{batch_job.job_id}:done/0"]
+
+    with patch(
+        "aibrix.batch.storage.adapter.list_metastore_keys", new_callable=AsyncMock
+    ) as mock_list_keys:
+        with patch(
+            "aibrix.batch.storage.adapter.get_metadata", new_callable=AsyncMock
+        ) as mock_get_metadata:
+            with patch(
+                "aibrix.batch.storage.adapter.delete_metadata", new_callable=AsyncMock
+            ):
+                with patch.object(
+                    adapter,
+                    "_sum_usage_from_output",
+                    new=AsyncMock(side_effect=[BatchUsage(), BatchUsage()]),
+                ):
+                    mock_list_keys.return_value = (expected_keys, None)
+                    mock_get_metadata.side_effect = [
+                        (
+                            '{"result":"error","etag":"etag0","custom_id":"request-0"}',
+                            True,
+                        ),
+                    ]
+                    mock_storage.complete_multipart_upload.side_effect = [
+                        [],
+                        [],
+                    ]
+
+                    await adapter.finalize_job_output_data(batch_job)
+
+    assert batch_job.status.request_counts.total == 1
+    assert batch_job.status.request_counts.launched == 1
+    assert batch_job.status.request_counts.completed == 0
+    assert batch_job.status.request_counts.failed == 1
+
+    first_error_call = mock_storage.complete_multipart_upload.call_args_list[1]
+    assert first_error_call.kwargs["tolerate_part_get_error"] is True
+    assert len(mock_storage.complete_multipart_upload.call_args_list) == 2
+    original_error_part = first_error_call.args[2][0]
+    assert original_error_part == {
+        "etag": "etag0",
+        "part_number": 0,
+        "custom_id": "request-0",
+    }
+    synth_payload = json.loads(
+        (
+            await first_error_call.kwargs["local_part_provider"](original_error_part)
+        ).decode("utf-8")
+    )
+    assert synth_payload["custom_id"] == "request-0"
+    assert synth_payload["response"] is None
+    assert (
+        synth_payload["error"]["message"]
+        == "Failed to read failed request error part during batch finalization"
+    )
 
 
 @pytest.mark.asyncio

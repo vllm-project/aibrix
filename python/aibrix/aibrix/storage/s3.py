@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from datetime import timezone
 from io import BytesIO, TextIOBase
 from typing import BinaryIO, Optional, TextIO, Union
 
@@ -20,17 +21,13 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from aibrix.storage.base import (
-    BaseStorage,
-    PutObjectOptions,
-    StorageConfig,
-    StorageType,
-)
+from aibrix.storage.base import PutObjectOptions, StorageConfig, StorageType
+from aibrix.storage.base2 import BaseStorage2
 from aibrix.storage.reader import Reader
 from aibrix.storage.utils import ObjectMetadata
 
 
-class S3Storage(BaseStorage):
+class S3Storage(BaseStorage2):
     """AWS S3 storage implementation with multipart upload and range get support."""
 
     def __init__(
@@ -195,6 +192,32 @@ class S3Storage(BaseStorage):
             None, lambda: self.client.delete_object(Bucket=self.bucket_name, Key=key)
         )
 
+    async def delete_objects(self, keys: list[str]) -> None:
+        """Delete multiple objects from S3 using native batch delete."""
+        if not keys:
+            return
+        delete_limit = max(1, min(self.config.multi_object_delete_limit, len(keys)))
+
+        def _delete_chunk(chunk: list[str]) -> None:
+            response = self.client.delete_objects(
+                Bucket=self.bucket_name,
+                Delete={
+                    "Objects": [{"Key": key} for key in chunk],
+                    "Quiet": False,
+                },
+            )
+            errors = [
+                error
+                for error in response.get("Errors", [])
+                if error.get("Code") not in {"NoSuchKey", "404", "NotFound"}
+            ]
+            if errors:
+                raise ValueError(f"Failed to delete S3 objects: {errors}")
+
+        for chunk_start in range(0, len(keys), delete_limit):
+            chunk = keys[chunk_start : chunk_start + delete_limit]
+            await asyncio.get_event_loop().run_in_executor(None, _delete_chunk, chunk)
+
     async def list_objects(
         self,
         prefix: str = "",
@@ -283,8 +306,11 @@ class S3Storage(BaseStorage):
                 # Parse last modified time
                 last_modified = response.get("LastModified")
                 if last_modified and hasattr(last_modified, "replace"):
-                    # Convert AWS datetime to naive datetime (remove timezone info)
-                    last_modified = last_modified.replace(tzinfo=None)
+                    # SDK timestamps without a timezone come from an HTTP date in GMT.
+                    if last_modified.tzinfo is None:
+                        last_modified = last_modified.replace(tzinfo=timezone.utc)
+                    else:
+                        last_modified = last_modified.astimezone(timezone.utc)
 
                 # Extract user metadata (remove 'x-amz-meta-' prefix)
                 user_metadata = {}

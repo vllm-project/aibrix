@@ -29,8 +29,10 @@ import (
 
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
+	plannerutils "github.com/vllm-project/aibrix/apps/console/api/planner/utils"
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
+	"github.com/vllm-project/aibrix/apps/console/api/store/models"
 )
 
 const (
@@ -38,6 +40,8 @@ const (
 	// concurrentEnqueueTimeout is used by race-stress tests where SQLite upserts
 	// under -race can take hundreds of ms each on CI runners.
 	concurrentEnqueueTimeout = 30 * time.Second
+	testOutputFileID         = "file-output"
+	testErrorFileID          = "file-error"
 )
 
 // =============================================================================
@@ -188,6 +192,46 @@ func (b *fakeBatchClient) snapshot() (creates, cancels []string) {
 	return append([]string(nil), b.createCalls...), append([]string(nil), b.cancelCalls...)
 }
 
+type fixedAllocationWindowBackend struct {
+	defaultPlannerBackend
+	timeWindow *rmtypes.TimeWindow
+}
+
+func (b *fixedAllocationWindowBackend) AllocationTimeWindow(*rmtypes.ProvisionResult) *rmtypes.TimeWindow {
+	return b.timeWindow
+}
+
+func TestHandleCleanupRefreshesBatchAfterCancelFailure(t *testing.T) {
+	bc := &fakeBatchClient{
+		CancelFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			return nil, errors.New("cancel conflict")
+		},
+		GetFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			return &openai.Batch{ID: batchID, Status: openai.BatchStatusFinalizing}, nil
+		},
+	}
+	p := &Planner{bc: bc}
+	now := time.Now().UTC()
+	job := &queuedJob{
+		req:      &plannerapi.EnqueueRequest{JobID: "job-1"},
+		status:   plannerapi.JobStatusCancelling,
+		batchID:  "batch-1",
+		queuedAt: now,
+	}
+
+	handleCleanup(context.Background(), p, job, plannerapi.JobStatusCancelling, plannerapi.JobStatusCancelled)
+
+	if job.status != plannerapi.JobStatusFinalizing {
+		t.Fatalf("job.status = %q, want %q", job.status, plannerapi.JobStatusFinalizing)
+	}
+	if job.batch == nil || job.batch.Status != openai.BatchStatusFinalizing {
+		t.Fatalf("job.batch = %#v, want finalizing batch", job.batch)
+	}
+	if !job.canceledAt.IsZero() {
+		t.Fatalf("job.canceledAt = %v, want zero time", job.canceledAt)
+	}
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -228,6 +272,37 @@ func newTestPlannerWithConfig(t *testing.T, bc plannerclient.BatchClient, prov *
 		cancel()
 	})
 	return q
+}
+
+func TestPlanningLoopDeduplicatesJobTasks(t *testing.T) {
+	workerPool := plannerutils.NewWorkerPoolWithQueueSize(1, 1)
+	workerPool.Start(context.Background())
+	defer workerPool.Stop()
+
+	loop := &planningLoop{workerPool: workerPool}
+	job := &queuedJob{req: validReq("single-flight")}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	if !loop.trySubmitJobTask(job, func() {
+		close(started)
+		<-release
+	}) {
+		t.Fatal("first job task was not submitted")
+	}
+	select {
+	case <-started:
+	case <-time.After(defaultTimeout):
+		t.Fatal("first job task did not start")
+	}
+	if loop.trySubmitJobTask(job, func() {}) {
+		t.Fatal("overlapping task for the same job was submitted")
+	}
+
+	close(release)
+	workerPool.Wait()
+	if job.workInFlight.Load() {
+		t.Fatal("job work-in-flight flag remained set after completion")
+	}
 }
 
 // validReq returns a minimal EnqueueRequest that passes validation.
@@ -381,7 +456,168 @@ func TestEnqueueReturnsPendingPlaceholder(t *testing.T) {
 	if job.Batch == nil || job.Batch.Status != openai.BatchStatus("queued") {
 		t.Errorf("Batch.Status = %v, want queued", job.Batch)
 	}
+
+	q.mu.RLock()
+	queued := q.jobs["j1"]
+	q.mu.RUnlock()
+	queued.mu.RLock()
+	expiresAt := queued.expiresAt
+	queued.mu.RUnlock()
+	if !expiresAt.IsZero() {
+		t.Fatalf("queued job deadline = %v, want zero until resource allocation or MDS submission", expiresAt)
+	}
 	close(release)
+}
+
+func TestRecoverReschedulesPreProvisionJobWithLegacyExpiredDeadline(t *testing.T) {
+	for _, recoveredStatus := range []plannerapi.JobStatus{
+		plannerapi.JobStatusQueued,
+		plannerapi.JobStatusPlanned,
+	} {
+		t.Run(string(recoveredStatus), func(t *testing.T) {
+			memStore := store.NewMemoryStore(nil)
+			t.Cleanup(func() { _ = memStore.Close() })
+
+			queuedAt := time.Now().UTC().Add(-2 * time.Hour)
+			legacyDeadline := queuedAt.Add(time.Hour)
+			jobID := "j-recover-" + string(recoveredStatus)
+			if err := memStore.UpsertJob(context.Background(), &models.Job{
+				ID:               jobID,
+				Endpoint:         "/v1/chat/completions",
+				InputDataset:     "file-" + jobID,
+				CompletionWindow: "1h",
+				Status:           string(recoveredStatus),
+				QueuedAt:         &queuedAt,
+				ExpiresAt:        &legacyDeadline,
+			}); err != nil {
+				t.Fatalf("persist legacy job: %v", err)
+			}
+
+			provisionStarted := make(chan struct{})
+			unblockProvision := make(chan struct{})
+			var provisionOnce sync.Once
+			prov := &fakeProvisioner{
+				ProvisionFn: func(ctx context.Context, req *rmtypes.ResourceProvision) (*rmtypes.ProvisionResult, error) {
+					provisionOnce.Do(func() { close(provisionStarted) })
+					select {
+					case <-unblockProvision:
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					}
+					return &rmtypes.ProvisionResult{
+						ProvisionID:    "prov-" + req.IdempotencyKey,
+						IdempotencyKey: req.IdempotencyKey,
+						Status:         rmtypes.ProvisionStatusRunning,
+					}, nil
+				},
+			}
+			q := NewPlanner(PlannerConfig{
+				BatchClient:            &fakeBatchClient{},
+				Provisioner:            prov,
+				Store:                  memStore,
+				PolicyType:             PlanningPolicyTypeSimple,
+				WorkerCount:            1,
+				PlanningInterval:       100 * time.Millisecond,
+				MaxConcurrentProvision: 1,
+			})
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(func() {
+				cancel()
+				_ = q.Close()
+			})
+			if err := q.Recover(ctx); err != nil {
+				t.Fatalf("Recover: %v", err)
+			}
+
+			select {
+			case <-provisionStarted:
+			case <-time.After(defaultTimeout):
+				t.Fatalf("recovered %s job with legacy deadline was not provisioned", recoveredStatus)
+			}
+
+			q.mu.RLock()
+			recovered := q.jobs[jobID]
+			q.mu.RUnlock()
+			recovered.mu.RLock()
+			expiresAt := recovered.expiresAt
+			recovered.mu.RUnlock()
+			if !expiresAt.IsZero() {
+				t.Fatalf("recovered pre-provision deadline = %v, want legacy deadline cleared", expiresAt)
+			}
+
+			storedJob, err := memStore.GetJob(context.Background(), jobID)
+			if err != nil {
+				t.Fatalf("GetJob from store: %v", err)
+			}
+			if storedJob == nil {
+				t.Fatal("recovered job missing from store")
+			}
+			if storedJob.Status != string(plannerapi.JobStatusQueued) {
+				t.Fatalf("stored job status = %q, want %q", storedJob.Status, plannerapi.JobStatusQueued)
+			}
+			if storedJob.ExpiresAt != nil && !storedJob.ExpiresAt.IsZero() {
+				t.Fatalf("stored job expiresAt = %v, want zero/nil", storedJob.ExpiresAt)
+			}
+
+			listedJobs, err := q.ListJobs(context.Background(), &plannerapi.ListJobsRequest{Limit: 10})
+			if err != nil {
+				t.Fatalf("ListJobs after recovery: %v", err)
+			}
+			if len(listedJobs.Data) != 1 {
+				t.Fatalf("ListJobs returned %d jobs, want 1", len(listedJobs.Data))
+			}
+			if listedJobs.Data[0].Batch.Status != openai.BatchStatus("queued") {
+				t.Fatalf("listed job status = %q, want queued", listedJobs.Data[0].Batch.Status)
+			}
+			if listedJobs.Data[0].Batch.ExpiresAt != 0 {
+				t.Fatalf("listed job expiresAt = %d, want 0", listedJobs.Data[0].Batch.ExpiresAt)
+			}
+
+			visibleJob, err := q.GetJob(context.Background(), jobID)
+			if err != nil {
+				t.Fatalf("GetJob after recovery: %v", err)
+			}
+			if visibleJob.Batch.Status != openai.BatchStatus("queued") {
+				t.Fatalf("recovered job status = %q, want queued", visibleJob.Batch.Status)
+			}
+			if visibleJob.Batch.ExpiresAt != 0 {
+				t.Fatalf("recovered job expiresAt = %d, want 0", visibleJob.Batch.ExpiresAt)
+			}
+
+			close(unblockProvision)
+		})
+	}
+}
+
+func TestSimplePolicySchedulesQueuedJobPastLegacyDeadline(t *testing.T) {
+	q := NewPlanner(PlannerConfig{
+		BatchClient:            &fakeBatchClient{},
+		Provisioner:            &fakeProvisioner{},
+		PolicyType:             PlanningPolicyTypeSimple,
+		MaxConcurrentProvision: 1,
+	})
+	job := &queuedJob{
+		req:       validReq("j-legacy-deadline"),
+		status:    plannerapi.JobStatusQueued,
+		expiresAt: time.Now().UTC().Add(-time.Hour),
+		queue:     q.pendingQueue,
+	}
+	q.pendingQueue.Push(job, 0)
+
+	if err := q.policy.Plan(context.Background(), PlanningInput[*queuedJob]{
+		PlannerBackend: q.backend,
+		RunningQueue:   q.runningQueue,
+		PendingQueue:   q.pendingQueue,
+	}); err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	job.mu.RLock()
+	scheduled := job.scheduledResource
+	job.mu.RUnlock()
+	if scheduled == nil {
+		t.Fatal("queued job with legacy deadline was skipped instead of scheduled")
+	}
 }
 
 func TestHappyPathReachesSubmitted(t *testing.T) {
@@ -412,6 +648,149 @@ func TestHappyPathReachesSubmitted(t *testing.T) {
 	}
 	if job.Batch.ID != "batch-j1" || job.Batch.Status != openai.BatchStatusInProgress {
 		t.Errorf("post-submit GetJob: got %+v, want batch-j1/in_progress", job.Batch)
+	}
+}
+
+func TestHandleResourcePreparingUsesBackendAllocationTimeWindow(t *testing.T) {
+	now := time.Now().UTC()
+	allocationEnd := now.Add(3*time.Hour + 123*time.Millisecond)
+	provisionResult := &rmtypes.ProvisionResult{
+		ProvisionID: "prov-actual-window",
+		Status:      rmtypes.ProvisionStatusRunning,
+	}
+	prov := &fakeProvisioner{
+		ListFn: func(context.Context, *rmtypes.ListOptions) ([]*rmtypes.ProvisionResult, error) {
+			return []*rmtypes.ProvisionResult{provisionResult}, nil
+		},
+	}
+	backend := &fixedAllocationWindowBackend{
+		defaultPlannerBackend: defaultPlannerBackend{
+			provider: rmtypes.ResourceProvisionTypeKubernetes,
+		},
+		timeWindow: &rmtypes.TimeWindow{
+			EndTime: &allocationEnd,
+		},
+	}
+	p := &Planner{
+		prov:    prov,
+		backend: backend,
+		baseCtx: context.Background(),
+	}
+	job := &queuedJob{
+		req:         validReq("j-actual-window"),
+		status:      plannerapi.JobStatusResourcePreparing,
+		provisionID: provisionResult.ProvisionID,
+	}
+
+	handleResourcePreparing(p, job)
+
+	job.mu.RLock()
+	defer job.mu.RUnlock()
+	if !job.expiresAt.Equal(allocationEnd) {
+		t.Fatalf(
+			"planner deadline = %v, want backend allocation deadline %v",
+			job.expiresAt,
+			allocationEnd,
+		)
+	}
+}
+
+func TestBatchParamsForProvisionDeadlineUsesResourceLifetime(t *testing.T) {
+	now := time.Date(2026, time.August, 19, 10, 0, 0, 0, time.UTC)
+	resourceEnd := now.Add(2 * time.Hour)
+	params, err := batchParamsForProvisionDeadline(
+		openai.BatchNewParams{CompletionWindow: "6h"},
+		&rmtypes.TimeWindow{EndTime: &resourceEnd},
+		now,
+	)
+	if err != nil {
+		t.Fatalf("batchParamsForProvisionDeadline: %v", err)
+	}
+	if got := params.CompletionWindow; got != "2h" {
+		t.Fatalf("completion window = %q, want 2h", got)
+	}
+}
+
+func TestJobModelRoundTripPreservesProviderConfig(t *testing.T) {
+	req := validReq("j-provider-config-round-trip")
+	req.ResourceRequest = &plannerapi.ResourceRequest{
+		Replicas: 2,
+		ProviderConfig: map[string]any{
+			"duration": "3h",
+			"nested": map[string]any{
+				"enabled": true,
+			},
+		},
+	}
+	req.BatchParams.Metadata = map[string]string{
+		"existing": "value",
+	}
+
+	restored := modelToJob(jobToModel(&queuedJob{
+		req:      req,
+		status:   plannerapi.JobStatusQueued,
+		queuedAt: time.Now().UTC(),
+	}))
+
+	if restored.req.ResourceRequest == nil {
+		t.Fatal("resource request was not restored")
+	}
+	if got := restored.req.ResourceRequest.ProviderConfig["duration"]; got != "3h" {
+		t.Fatalf("duration = %#v, want 3h", got)
+	}
+	nested, ok := restored.req.ResourceRequest.ProviderConfig["nested"].(map[string]any)
+	if !ok || nested["enabled"] != true {
+		t.Fatalf("nested provider config = %#v, want enabled=true", restored.req.ResourceRequest.ProviderConfig["nested"])
+	}
+	if got := restored.req.BatchParams.Metadata["existing"]; got != "value" {
+		t.Fatalf("metadata existing = %q, want value", got)
+	}
+}
+
+func TestGetJobRefreshesInProgressRequestCountsFromMDS(t *testing.T) {
+	const (
+		jobID   = "j-progress"
+		batchID = "batch-j-progress"
+	)
+	var getCalls atomic.Int32
+	freshBatch := &openai.Batch{
+		ID:            batchID,
+		Status:        openai.BatchStatusInProgress,
+		RequestCounts: openai.BatchRequestCounts{Total: 10, Completed: 4},
+	}
+	constructBatchJson(freshBatch)
+	bc := &fakeBatchClient{
+		GetFn: func(context.Context, string) (*openai.Batch, error) {
+			getCalls.Add(1)
+			return freshBatch, nil
+		},
+	}
+	q := &Planner{
+		bc: bc,
+		jobs: map[string]*queuedJob{
+			jobID: {
+				req:      validReq(jobID),
+				status:   plannerapi.JobStatusInProgress,
+				batchID:  batchID,
+				queuedAt: time.Now().UTC(),
+				batch: &openai.Batch{
+					ID:            batchID,
+					Status:        openai.BatchStatusInProgress,
+					RequestCounts: openai.BatchRequestCounts{Total: 10},
+				},
+			},
+		},
+	}
+
+	got, err := q.GetJob(context.Background(), jobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Batch.RequestCounts.Completed != 4 {
+		t.Fatalf("completed request count = %d, want latest MDS count 4", got.Batch.RequestCounts.Completed)
+	}
+	if getCalls.Load() != 1 {
+		t.Fatalf("GetBatch calls = %d, want 1", getCalls.Load())
 	}
 }
 
@@ -469,7 +848,7 @@ func TestGetJobWithTerminalMDSBatchStillFetchesMDS(t *testing.T) {
 			return &openai.Batch{
 				ID:           batchID,
 				Status:       openai.BatchStatusCompleted,
-				OutputFileID: "file-output",
+				OutputFileID: testOutputFileID,
 			}, nil
 		},
 	}
@@ -492,7 +871,7 @@ func TestGetJobWithTerminalMDSBatchStillFetchesMDS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first GetJob: %v", err)
 	}
-	if first.Batch.Status != openai.BatchStatusCompleted || first.Batch.OutputFileID != "file-output" {
+	if first.Batch.Status != openai.BatchStatusCompleted || first.Batch.OutputFileID != testOutputFileID {
 		t.Fatalf("first GetJob batch = %+v, want completed with output file", first.Batch)
 	}
 
@@ -500,12 +879,221 @@ func TestGetJobWithTerminalMDSBatchStillFetchesMDS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second GetJob: %v", err)
 	}
-	if second.Batch.Status != openai.BatchStatusCompleted || second.Batch.OutputFileID != "file-output" {
+	if second.Batch.Status != openai.BatchStatusCompleted || second.Batch.OutputFileID != testOutputFileID {
 		t.Fatalf("second GetJob batch = %+v, want MDS batch, not placeholder", second.Batch)
 	}
 	if got := getCalls.Load(); got < 2 {
 		t.Fatalf("GetBatch calls = %d, want at least 2", got)
 	}
+}
+
+func TestCompletedBatchSurvivesCleanupAndStoreEviction(t *testing.T) {
+	prov := &fakeProvisioner{}
+	bc := &fakeBatchClient{
+		GetFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			batch := &openai.Batch{
+				ID:            batchID,
+				Status:        openai.BatchStatusCompleted,
+				OutputFileID:  testOutputFileID,
+				ErrorFileID:   testErrorFileID,
+				CompletedAt:   1_800_000_123,
+				RequestCounts: openai.BatchRequestCounts{Total: 10, Completed: 10, Failed: 0},
+			}
+			constructBatchJson(batch)
+			return batch, nil
+		},
+	}
+	q := newTestPlanner(t, bc, prov, 1)
+
+	if _, err := q.Enqueue(context.Background(), validReq("j-completed-cleanup")); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	waitFor(t, defaultTimeout, func() bool {
+		q.mu.RLock()
+		_, ok := q.jobs["j-completed-cleanup"]
+		q.mu.RUnlock()
+		return !ok
+	}, "expected terminal job to be evicted from memory")
+
+	got, err := q.GetJob(context.Background(), "j-completed-cleanup")
+	if err != nil {
+		t.Fatalf("GetJob after eviction: %v", err)
+	}
+	if got.Batch.ID != "batch-j-completed-cleanup" {
+		t.Fatalf("Batch.ID = %q, want persisted MDS batch ID", got.Batch.ID)
+	}
+	if got.Batch.Status != openai.BatchStatusCompleted {
+		t.Fatalf("Batch.Status = %s, want completed", got.Batch.Status)
+	}
+	if got.Batch.OutputFileID != testOutputFileID || got.Batch.ErrorFileID != testErrorFileID {
+		t.Fatalf("terminal files = output %q error %q, want file-output/file-error",
+			got.Batch.OutputFileID, got.Batch.ErrorFileID)
+	}
+	if got.Batch.RequestCounts.Total != 10 || got.Batch.RequestCounts.Completed != 10 || got.Batch.RequestCounts.Failed != 0 {
+		t.Fatalf("request counts = %+v, want 10/10/0", got.Batch.RequestCounts)
+	}
+	_, releases, _ := prov.snapshot()
+	if len(releases) != 1 || releases[0] != "prov-j-completed-cleanup" {
+		t.Fatalf("release calls = %v, want [prov-j-completed-cleanup]", releases)
+	}
+
+	list, err := q.ListJobs(context.Background(), &plannerapi.ListJobsRequest{})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if len(list.Data) != 1 {
+		t.Fatalf("ListJobs returned %d jobs, want 1", len(list.Data))
+	}
+	listed := list.Data[0].Batch
+	if listed.ID != "batch-j-completed-cleanup" ||
+		listed.Status != openai.BatchStatusCompleted ||
+		listed.OutputFileID != testOutputFileID ||
+		listed.RequestCounts.Total != 10 ||
+		listed.RequestCounts.Completed != 10 ||
+		listed.RequestCounts.Failed != 0 {
+		t.Fatalf("ListJobs batch = %+v, want completed MDS fields preserved", listed)
+	}
+}
+
+// TestExpiredInProgressPreservesPartialOutput covers the batch that runs past
+// its completion window: the runtime finalizes expiry and aggregates the
+// already-completed requests into the output/error files. The planner must not
+// conclude a premature, output-less expiry on its own deadline; it keeps
+// polling MDS within the grace period and adopts the finalized terminal batch.
+func TestExpiredInProgressPreservesPartialOutput(t *testing.T) {
+	var finalized atomic.Bool
+	prov := &fakeProvisioner{}
+	bc := &fakeBatchClient{
+		GetFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			batch := &openai.Batch{
+				ID:            batchID,
+				Status:        openai.BatchStatusInProgress,
+				RequestCounts: openai.BatchRequestCounts{Total: 10, Completed: 4, Failed: 0},
+			}
+			if finalized.Load() {
+				batch.Status = openai.BatchStatusExpired
+				batch.OutputFileID = testOutputFileID
+				batch.ErrorFileID = testErrorFileID
+				batch.ExpiredAt = 1_800_000_500
+			}
+			constructBatchJson(batch)
+			return batch, nil
+		},
+	}
+	q := newTestPlanner(t, bc, prov, 1)
+
+	if _, err := q.Enqueue(context.Background(), validReq("j-expire-partial")); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	// Wait until the job is running and MDS has been polled at least once.
+	waitFor(t, defaultTimeout, func() bool {
+		q.mu.RLock()
+		job, ok := q.jobs["j-expire-partial"]
+		q.mu.RUnlock()
+		if !ok {
+			return false
+		}
+		job.mu.RLock()
+		defer job.mu.RUnlock()
+		return job.status == plannerapi.JobStatusInProgress
+	}, "expected job to reach in_progress")
+
+	// Simulate the completion window elapsing while the job is still running,
+	// within the finalize grace period.
+	q.mu.RLock()
+	job, ok := q.jobs["j-expire-partial"]
+	q.mu.RUnlock()
+	if !ok {
+		t.Fatal("job evicted before completion window elapsed")
+	}
+	job.mu.Lock()
+	job.expiresAt = time.Now().UTC().Add(-time.Minute)
+	job.mu.Unlock()
+
+	// While the runtime is still finalizing, the planner must not prematurely
+	// conclude an output-less expiry.
+	time.Sleep(300 * time.Millisecond)
+	got, err := q.GetJob(context.Background(), "j-expire-partial")
+	if err != nil {
+		t.Fatalf("GetJob during finalize: %v", err)
+	}
+	if got.Batch.Status == openai.BatchStatusExpired && got.Batch.OutputFileID == "" {
+		t.Fatal("planner concluded a premature expiry before the runtime finalized partial output")
+	}
+
+	// Runtime finishes finalizing: MDS now reports expired with partial output.
+	finalized.Store(true)
+
+	waitFor(t, defaultTimeout, func() bool {
+		g, err := q.GetJob(context.Background(), "j-expire-partial")
+		return err == nil && g.Batch.Status == openai.BatchStatusExpired
+	}, "expected job to reach expired")
+
+	got, err = q.GetJob(context.Background(), "j-expire-partial")
+	if err != nil {
+		t.Fatalf("GetJob after expiry: %v", err)
+	}
+	if got.Batch.OutputFileID != testOutputFileID || got.Batch.ErrorFileID != testErrorFileID {
+		t.Fatalf("expired batch files = output %q error %q, want partial output preserved",
+			got.Batch.OutputFileID, got.Batch.ErrorFileID)
+	}
+	if got.Batch.RequestCounts.Total != 10 || got.Batch.RequestCounts.Completed != 4 || got.Batch.RequestCounts.Failed != 0 {
+		t.Fatalf("expired request counts = %+v, want 10 total / 4 completed / 0 failed", got.Batch.RequestCounts)
+	}
+}
+
+// TestExpiredInProgressForcesExpiryAfterGracePeriod covers the fallback: when
+// the runtime is unresponsive past the completion window, the planner must
+// still force a planner-side expiry rather than leave the job running forever.
+func TestExpiredInProgressForcesExpiryAfterGracePeriod(t *testing.T) {
+	prov := &fakeProvisioner{}
+	bc := &fakeBatchClient{
+		// Runtime never finalizes: it keeps reporting in_progress.
+		GetFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			batch := &openai.Batch{
+				ID:            batchID,
+				Status:        openai.BatchStatusInProgress,
+				RequestCounts: openai.BatchRequestCounts{Total: 10, Completed: 4, Failed: 0},
+			}
+			constructBatchJson(batch)
+			return batch, nil
+		},
+	}
+	q := newTestPlanner(t, bc, prov, 1)
+
+	if _, err := q.Enqueue(context.Background(), validReq("j-expire-stuck")); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	waitFor(t, defaultTimeout, func() bool {
+		q.mu.RLock()
+		job, ok := q.jobs["j-expire-stuck"]
+		q.mu.RUnlock()
+		if !ok {
+			return false
+		}
+		job.mu.RLock()
+		defer job.mu.RUnlock()
+		return job.status == plannerapi.JobStatusInProgress
+	}, "expected job to reach in_progress")
+
+	// Completion window elapsed beyond the finalize grace period with an
+	// unresponsive runtime.
+	q.mu.RLock()
+	job, ok := q.jobs["j-expire-stuck"]
+	q.mu.RUnlock()
+	if !ok {
+		t.Fatal("job evicted before completion window elapsed")
+	}
+	job.mu.Lock()
+	job.expiresAt = time.Now().UTC().Add(-(expiryFinalizeGracePeriod + time.Minute))
+	job.mu.Unlock()
+
+	waitFor(t, defaultTimeout, func() bool {
+		g, err := q.GetJob(context.Background(), "j-expire-stuck")
+		return err == nil && g.Batch.Status == openai.BatchStatusExpired
+	}, "expected fallback planner-side expiry")
 }
 
 // =============================================================================
@@ -545,15 +1133,13 @@ func TestSlowProvisionDoesNotBlockEnqueue(t *testing.T) {
 	}
 }
 
-// TestPolicyConcurrencyLimit: verifies that SimplePolicy respects MaxConcurrentProvision.
-// Since handleProvisioning executes serially, we can't test peak in-flight Provisions.
-// Instead, we verify that all jobs complete successfully without policy over-scheduling.
-// The policy must count jobs in Provisioning state and not schedule beyond the limit.
+// TestPolicyConcurrencyLimit verifies that SimplePolicy and the worker pool
+// respect MaxConcurrentProvision without duplicate provisioning.
 func TestPolicyConcurrencyLimit(t *testing.T) {
 	const concurrency = 4 // MaxConcurrentProvision
 	const submitted = 8
 
-	// Provision completes quickly (no blocking) to allow serial execution
+	// Provision completes quickly so every job can progress through the pipeline.
 	prov := &fakeProvisioner{}
 	bc := &fakeBatchClient{}
 	q := newTestPlannerWithConfig(t, bc, prov, concurrency, concurrency)
@@ -586,13 +1172,10 @@ func TestPolicyConcurrencyLimit(t *testing.T) {
 		}
 	}
 
-	// Since handleProvisioning executes serially, peak in-flight == 1
-	// This is expected behavior given the serial execution constraint
 	_, _, peak := prov.snapshot()
 	if peak > concurrency {
 		t.Errorf("peak in-flight = %d; should not exceed MaxConcurrentProvision=%d", peak, concurrency)
 	}
-	// Note: peak will be 1 due to serial execution, but policy control still works
 }
 
 // =============================================================================
@@ -898,6 +1481,66 @@ func TestCancelSubmittedJobForwardsToMDSAndReleasesProvision(t *testing.T) {
 	}
 }
 
+func TestCancelledBatchSurvivesCleanupAndStoreEviction(t *testing.T) {
+	prov := &fakeProvisioner{}
+	var cancelled atomic.Bool
+	bc := &fakeBatchClient{
+		CancelFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			cancelled.Store(true)
+			batch := &openai.Batch{
+				ID:          batchID,
+				Status:      openai.BatchStatusCancelled,
+				CancelledAt: 1_800_000_456,
+			}
+			constructBatchJson(batch)
+			return batch, nil
+		},
+		GetFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			if !cancelled.Load() {
+				return &openai.Batch{ID: batchID, Status: openai.BatchStatusInProgress}, nil
+			}
+			batch := &openai.Batch{
+				ID:          batchID,
+				Status:      openai.BatchStatusCancelled,
+				CancelledAt: 1_800_000_456,
+			}
+			constructBatchJson(batch)
+			return batch, nil
+		},
+	}
+	q := newTestPlanner(t, bc, prov, 1)
+
+	if _, err := q.Enqueue(context.Background(), validReq("j-cancel-cleanup")); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	waitFor(t, defaultTimeout, func() bool {
+		creates, _ := bc.snapshot()
+		return len(creates) == 1
+	}, "CreateBatch never fired")
+
+	if _, err := q.Cancel(context.Background(), "j-cancel-cleanup"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	waitFor(t, defaultTimeout, func() bool {
+		_, cancels := bc.snapshot()
+		return len(cancels) == 1
+	}, "CancelBatch never fired")
+	waitFor(t, defaultTimeout, func() bool {
+		q.mu.RLock()
+		_, ok := q.jobs["j-cancel-cleanup"]
+		q.mu.RUnlock()
+		return !ok
+	}, "expected terminal job to be evicted from memory")
+
+	got, err := q.GetJob(context.Background(), "j-cancel-cleanup")
+	if err != nil {
+		t.Fatalf("GetJob after eviction: %v", err)
+	}
+	if got.Batch.ID != "batch-j-cancel-cleanup" || got.Batch.Status != openai.BatchStatusCancelled {
+		t.Fatalf("Batch = %+v, want persisted cancelled MDS batch", got.Batch)
+	}
+}
+
 func TestCancelUnknownJobReturnsNotFound(t *testing.T) {
 	q := newTestPlanner(t, &fakeBatchClient{}, &fakeProvisioner{}, 1)
 	_, err := q.Cancel(context.Background(), "j-ghost")
@@ -1001,12 +1644,9 @@ func TestCancelDuringCreateBatchHonored(t *testing.T) {
 
 // TestCloseCancelsInflightProvision: when Close fires while jobs are
 // provisioning or planned, baseCtx cancellation must propagate correctly.
-// Serial provisioning: first job blocks in Provision, subsequent jobs may also
-// enter before planning loop exits.
 func TestCloseCancelsInflightProvision(t *testing.T) {
-	const concurrency = 3               // MaxConcurrentProvision
-	var provisioningCancel atomic.Int32 // First job that blocked in Provision
-	var plannedCancel atomic.Int32      // Jobs that entered after ctx canceled or never entered
+	const concurrency = 3
+	var provisioningCancel atomic.Int32
 
 	var firstJobID atomic.Value // Track which job was first to block
 
@@ -1014,26 +1654,14 @@ func TestCloseCancelsInflightProvision(t *testing.T) {
 		ProvisionFn: func(ctx context.Context, req *rmtypes.ResourceProvision) (*rmtypes.ProvisionResult, error) {
 			jobID := req.IdempotencyKey
 
-			// First job: record ID and block until ctx cancels
+			// Record the first caller, then let every admitted provision block until
+			// planner shutdown cancels the shared context.
 			if firstJobID.Load() == nil {
 				firstJobID.Store(jobID)
-				<-ctx.Done()
-				provisioningCancel.Add(1)
-				return nil, ctx.Err()
 			}
-
-			// Other jobs: check if this is after ctx canceled
-			select {
-			case <-ctx.Done():
-				// ctx was already canceled when this job entered Provision
-				plannedCancel.Add(1)
-				return nil, ctx.Err()
-			default:
-				// Edge case: this job also blocks (shouldn't happen in normal flow)
-				<-ctx.Done()
-				provisioningCancel.Add(1)
-				return nil, ctx.Err()
-			}
+			<-ctx.Done()
+			provisioningCancel.Add(1)
+			return nil, ctx.Err()
 		},
 	}
 
@@ -1057,7 +1685,7 @@ func TestCloseCancelsInflightProvision(t *testing.T) {
 		return
 	}
 
-	// Enqueue 3 jobs: Policy schedules all 3, serial execution processes them sequentially
+	// Enqueue 3 jobs: the policy and worker pool admit all three concurrently.
 	for i := 0; i < concurrency; i++ {
 		if _, err := q.Enqueue(context.Background(), validReq(fmt.Sprintf("j%d", i))); err != nil {
 			cancel()
@@ -1067,7 +1695,7 @@ func TestCloseCancelsInflightProvision(t *testing.T) {
 		}
 	}
 
-	// Wait for first job to enter Provision (serial provisioning starts)
+	// Wait for provisioning to start.
 	waitFor(t, defaultTimeout, func() bool {
 		return firstJobID.Load() != nil
 	}, "first provision never started")
@@ -1087,9 +1715,9 @@ func TestCloseCancelsInflightProvision(t *testing.T) {
 		t.Fatal("Close did not return within 3s; worker didn't honor ctx cancel")
 	}
 
-	// Verify first job blocked in Provision and received ctx.Done()
-	if got := provisioningCancel.Load(); got != 1 {
-		t.Errorf("Provisioning cancel count = %d; want 1 (first job that blocked)", got)
+	// Every admitted provision must observe the cancellation.
+	if got := provisioningCancel.Load(); got != concurrency {
+		t.Errorf("Provisioning cancel count = %d; want %d", got, concurrency)
 	}
 
 	// Verify other jobs were canceled (either in Provision or in Planned state)
@@ -1142,6 +1770,51 @@ func TestCloseIsIdempotent(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("second Close deadlocked")
+	}
+}
+
+func TestPlannerCanRestartAfterClose(t *testing.T) {
+	q := NewPlanner(PlannerConfig{
+		BatchClient:      &fakeBatchClient{},
+		Provisioner:      &fakeProvisioner{},
+		PolicyType:       PlanningPolicyTypeSimple,
+		WorkerCount:      1,
+		PlanningInterval: time.Hour,
+	})
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := q.Start(context.Background()); err != nil {
+			t.Fatalf("attempt %d: Start() error = %v", attempt, err)
+		}
+		if err := q.Close(); err != nil {
+			t.Fatalf("attempt %d: Close() error = %v", attempt, err)
+		}
+	}
+}
+
+func TestPlannerSerializesConcurrentStartAndClose(t *testing.T) {
+	q := NewPlanner(PlannerConfig{
+		BatchClient:      &fakeBatchClient{},
+		Provisioner:      &fakeProvisioner{},
+		PolicyType:       PlanningPolicyTypeSimple,
+		WorkerCount:      1,
+		PlanningInterval: time.Hour,
+	})
+
+	var calls sync.WaitGroup
+	calls.Add(2)
+	go func() {
+		defer calls.Done()
+		_ = q.Start(context.Background())
+	}()
+	go func() {
+		defer calls.Done()
+		_ = q.Close()
+	}()
+	calls.Wait()
+
+	if err := q.Close(); err != nil {
+		t.Fatalf("final Close() error = %v", err)
 	}
 }
 
@@ -1237,6 +1910,65 @@ func TestListJobsFromStoreOnly(t *testing.T) {
 	}
 	if len(resp.Data) != 0 {
 		t.Errorf("expected empty list with nil store, got %d items", len(resp.Data))
+	}
+}
+
+func TestListJobsRefreshesActiveStoredBatchFromMDS(t *testing.T) {
+	var getCalls atomic.Int32
+	bc := &fakeBatchClient{
+		GetFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			getCalls.Add(1)
+			batch := &openai.Batch{
+				ID:            batchID,
+				Status:        openai.BatchStatusCompleted,
+				OutputFileID:  "file-output-list",
+				RequestCounts: openai.BatchRequestCounts{Total: 25, Completed: 25, Failed: 0},
+			}
+			constructBatchJson(batch)
+			return batch, nil
+		},
+	}
+	q := newTestPlanner(t, bc, &fakeProvisioner{}, 1)
+
+	rec := jobToModel(&queuedJob{
+		req:         validReq("j-list-refresh"),
+		status:      plannerapi.JobStatusInProgress,
+		batchID:     "batch-j-list-refresh",
+		queuedAt:    time.Now().UTC(),
+		completedAt: time.Time{},
+	})
+	if err := q.store.UpsertJob(context.Background(), rec); err != nil {
+		t.Fatalf("seed store job: %v", err)
+	}
+
+	resp, err := q.ListJobs(context.Background(), &plannerapi.ListJobsRequest{})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if getCalls.Load() != 1 {
+		t.Fatalf("GetBatch calls = %d, want 1", getCalls.Load())
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("ListJobs returned %d jobs, want 1", len(resp.Data))
+	}
+	batch := resp.Data[0].Batch
+	if batch.Status != openai.BatchStatusCompleted ||
+		batch.OutputFileID != "file-output-list" ||
+		batch.RequestCounts.Total != 25 ||
+		batch.RequestCounts.Completed != 25 ||
+		batch.RequestCounts.Failed != 0 {
+		t.Fatalf("ListJobs batch = %+v, want refreshed completed batch", batch)
+	}
+
+	stored, err := q.store.GetJob(context.Background(), "j-list-refresh")
+	if err != nil {
+		t.Fatalf("GetJob from store: %v", err)
+	}
+	if stored.Status != string(plannerapi.JobStatusCompleted) ||
+		stored.BatchID != "batch-j-list-refresh" ||
+		stored.OutputDataset != "file-output-list" {
+		t.Fatalf("stored row = status %q batch %q output %q, want completed/batch/file-output-list",
+			stored.Status, stored.BatchID, stored.OutputDataset)
 	}
 }
 

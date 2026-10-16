@@ -1,9 +1,16 @@
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from aibrix.batch.job_entity.base import _Lenient, _Strict
+
+#: Absolute upper bound for the per-job smart-client in-flight cap. Protects
+#: the gateway / inference endpoints from a single job requesting runaway
+#: concurrency while allowing high-throughput jobs to tune above the default.
+MAX_CLIENT_CONCURRENCY = 1024
+_MIN_CLIENT_REQUEST_TIMEOUT_SECONDS = 1.0
 
 
 class RuntimeTarget(str, Enum):
@@ -53,6 +60,46 @@ class ResourceAllocation(_Lenient):
     provision_id: Optional[str] = None
     provision_resource_deadline: Optional[int] = None
     resource_details: Optional[List[ResourceDetail]] = None
+
+    @field_validator("resource_details", mode="before")
+    @classmethod
+    def normalize_resource_details(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return value
+        return [value]
+
+    def is_expiring(self) -> bool:
+        deadline = self.provision_resource_deadline
+        if deadline is None or deadline <= 0:
+            return False
+        return deadline <= int(datetime.now(timezone.utc).timestamp())
+
+
+class ClientRetryPolicy(_Strict):
+    """Per-job smart-client retry behavior."""
+
+    max_retries: Optional[int] = Field(default=None, ge=0)
+    base_delay_seconds: Optional[float] = Field(default=None, ge=0)
+    max_delay_seconds: Optional[float] = Field(default=None, ge=0)
+    no_endpoint_max_retries: Optional[int] = Field(default=None, ge=0)
+
+
+class ClientConfig(_Strict):
+    """Per-job smart-client execution controls."""
+
+    max_concurrency: Optional[int] = Field(
+        default=None, ge=1, le=MAX_CLIENT_CONCURRENCY
+    )
+    request_timeout_seconds: Optional[float] = Field(
+        default=None, ge=_MIN_CLIENT_REQUEST_TIMEOUT_SECONDS
+    )
+    adaptive_concurrency: Optional[bool] = None
+    adaptive_max_factor: Optional[float] = Field(default=None, ge=1)
+    adaptive_healthy_window: Optional[int] = Field(default=None, ge=1)
+    adaptive_additive_increase: Optional[int] = Field(default=None, ge=1)
+    retry_policy: Optional[ClientRetryPolicy] = None
 
 
 class ModelTemplateRef(_Strict):
@@ -115,6 +162,17 @@ class ResolvedModelTemplate(_Strict):
     spec: Dict[str, Any] = Field(default_factory=dict)
 
 
+class DeploymentDetail(_Lenient):
+    """Side-channel deployment detail attached to BatchResponse.deployment.
+
+    No fixed fields — each DeploymentDetailProvider implementation defines its
+    own structure. API callers receive the environment-specific result via JSON
+    serialization.
+    """
+
+    pass
+
+
 class AibrixMetadata(_Strict):
     job_id: Optional[str] = None
     resource_allocation: Optional[ResourceAllocation] = None
@@ -122,9 +180,18 @@ class AibrixMetadata(_Strict):
     model_template: Optional[ModelTemplateRef] = None
     profile: Optional[BatchProfileRef] = None
     model: Optional[str] = None
+    client: Optional[ClientConfig] = None
+    deployment: Optional[DeploymentDetail] = None
 
     def to_metadata(self) -> "AibrixMetadata":
         return AibrixMetadata(**self.model_dump(exclude_none=True))
+
+    def is_expiring(self) -> bool:
+        return (
+            self.resource_allocation.is_expiring()
+            if self.resource_allocation is not None
+            else False
+        )
 
     @classmethod
     def from_extension_fields(
@@ -138,6 +205,7 @@ class AibrixMetadata(_Strict):
         runtime_target: Optional[str] = None,
         runtime_options: Optional[Dict[str, Any]] = None,
         model: Optional[str] = None,
+        client: Optional[ClientConfig] = None,
     ) -> Optional["AibrixMetadata"]:
         model_template = None
         if model_template_name:
@@ -164,6 +232,7 @@ class AibrixMetadata(_Strict):
             and profile is None
             and runtime is None
             and model is None
+            and client is None
         ):
             return None
 
@@ -173,11 +242,15 @@ class AibrixMetadata(_Strict):
             model_template=model_template,
             profile=profile,
             model=model,
+            client=client,
         )
 
     def to_extension_fields(self) -> Dict[str, Any]:
         return {
             "model": self.model,
+            "client": self.client.model_dump(exclude_none=True)
+            if self.client
+            else None,
             "model_template_name": (
                 self.model_template.name if self.model_template else None
             ),

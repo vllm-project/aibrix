@@ -24,6 +24,16 @@ import (
 )
 
 // TODO: add performance benchmark tests
+func TestLRUStore_ZeroInterval(t *testing.T) {
+	store := NewLRUStore[string, string](2, time.Second, 0, DefaultGetCurrentTime)
+	t.Cleanup(func() { store.Close() })
+
+	store.Put("key", "value")
+	if val, ok := store.Get("key"); !ok || val != "value" {
+		t.Fatalf("expected value, got %v ok=%v", val, ok)
+	}
+}
+
 func TestLRUStore_PutAndGet(t *testing.T) {
 	store := NewLRUStore[string, string](2, 5*time.Second, 1*time.Second, DefaultGetCurrentTime)
 	t.Cleanup(func() { store.Close() })

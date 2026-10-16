@@ -25,9 +25,10 @@ like an OS scheduler); the per-job execution itself lives in the JobDriver.
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Optional
 
 import aibrix.batch.constant as constant
+from aibrix.batch.job_entity import BatchJobState
 from aibrix.batch.scheduling_policy import FIFOScheduling, SchedulingPolicy
 from aibrix.batch.state import SchedulableJobs
 from aibrix.context import InfrastructureContext
@@ -55,8 +56,8 @@ class BatchScheduler:
         the scheduler keeps no duplicated due-time / inactive bookkeeping — the
         registry is the single source of truth for job state.
 
-        ``pool_size`` caps the number of concurrently executing jobs while the
-        policy still decides which pending job is admitted next.
+        ``pool_size`` caps the number of jobs being admitted or executed while
+        the policy still decides which pending job is admitted next.
         """
         self._context = context
         self._job_progress_manager = job_progress_manager
@@ -77,42 +78,67 @@ class BatchScheduler:
         # derived from the registry's pending pool, so no due-time is tracked.
         self._policy.add(job_id)
 
-    async def schedule_next_job(self) -> Optional[Tuple[str, "JobDriver"]]:
-        # Pick the next job in policy order and admit it (skipping expired /
-        # un-admittable jobs). Returns the admitted (job_id, driver) for the
-        # loop to dispatch, or None if the queue drains.
+    async def schedule_next_job(self) -> Optional[str]:
+        # Pop the next job without awaiting admission so validation can run in
+        # the pool alongside other jobs.
         if self._policy.empty():
             logger.debug("Job scheduler is waiting jobs coming")
             await asyncio.sleep(self._idle_interval)
 
         job_id = self._policy.next()
-        while job_id is not None:
+        if job_id is not None:
             logger.info("Job scheduler is scheduling job", job_id=job_id)  # type: ignore[call-arg]
+        return job_id
+
+    async def _admit_and_execute_scheduled_job(self, job_id: str) -> None:
+        try:
             driver = await self._job_progress_manager.admit(job_id)
-            if driver is not None:
-                return (job_id, driver)
-            # admit() returns None for an expired / no-longer-pending job, so an
-            # expired job is skipped here without a separate "inactive" set.
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(
+                "Failed to admit job",
+                job_id=job_id,
+                error=str(e),
+            )  # type: ignore[call-arg]
+            return
+
+        if driver is None:
             logger.warning(
                 "Scheduler skipped job: admit() declined (expired or no longer pending)",
                 job_id=job_id,
             )  # type: ignore[call-arg]
-            job_id = self._policy.next()
-
-        return None
+            return
+        await self._execute_scheduled_job(job_id, driver)
 
     async def expire_jobs(self):
-        # Derive past-due jobs from the registry's pending pool (the single
-        # source of truth) rather than a duplicated due-time list. The deadline
-        # is recomputed per job: created_at + completion_window.
+        # Derive past-due jobs from schedulable pools rather than a duplicated
+        # due-time list. Each job resolves its resource deadline first and
+        # falls back to created_at + completion_window when none was provided.
         now = time.time()
-        for job in await self._job_progress_manager.list_pending():
-            created_at = job.status.created_at
-            if created_at is None:
+        seen_job_ids = set()
+        schedulable_jobs = list(await self._job_progress_manager.list_pending())
+        schedulable_jobs.extend(await self._job_progress_manager.list_in_progress())
+        for job in schedulable_jobs:
+            if job.job_id in seen_job_ids:
                 continue
-            due_time = created_at.timestamp() + job.spec.completion_window
+            seen_job_ids.add(job.job_id)
+            # FINALIZING jobs are already on the terminalization path, so the
+            # cleanup loop should stop retrying expiry checks for them.
+            if job.status.state == BatchJobState.FINALIZING:
+                continue
+            due_time = job.expiration_timestamp()
             if due_time <= now:
-                await self._job_progress_manager.expire_job(job.job_id)
+                try:
+                    await self._job_progress_manager.expire_job(job.job_id)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # One job failing to finish must not end the cleanup loop;
+                    # the next pass retries it.
+                    logger.error(  # type: ignore[call-arg]
+                        "Failed to expire job", job_id=job.job_id, exc_info=True
+                    )
 
     async def start(self):
         self._serve_loop = asyncio.get_running_loop()
@@ -160,21 +186,26 @@ class BatchScheduler:
                 )
                 continue
 
-            scheduled: Optional[Tuple[str, "JobDriver"]] = None
+            job_id: Optional[str] = None
             try:
-                scheduled = await self.schedule_next_job()
+                job_id = await self.schedule_next_job()
             except Exception as e:
                 logger.error(
                     "Failed to schedule job",
                     error=str(e),
                 )  # type: ignore[call-arg]
 
-            if scheduled:
-                one_job, job_driver = scheduled
-                task = self._serve_loop.create_task(
-                    self._execute_scheduled_job(one_job, job_driver)
-                )
-                self._job_execution_tasks[one_job] = task
+            if job_id is not None:
+                if job_id in self._job_execution_tasks:
+                    logger.warning(
+                        "Job is already being admitted or executed, skipping duplicate scheduling",
+                        job_id=job_id,
+                    )  # type: ignore[call-arg]
+                else:
+                    task = self._serve_loop.create_task(
+                        self._admit_and_execute_scheduled_job(job_id)
+                    )
+                    self._job_execution_tasks[job_id] = task
             # yield loop
             await asyncio.sleep(0)
 

@@ -53,7 +53,8 @@ type DeltaSyncable interface {
 	// GetDelta returns entities that changed since last ClearDirty: updated id->serialized value,
 	// and deleted entity ids. Caller must not modify the map. Do not clear dirty in GetDelta.
 	GetDelta(ctx context.Context) (updated map[string][]byte, deleted []string, err error)
-	// ClearDirty marks all current dirty state as synced; call after successfully pushing delta.
+	// ClearDirty marks the state returned by the last GetDelta as synced; call after successfully
+	// pushing that delta. Changes made after that GetDelta must stay dirty.
 	ClearDirty(ctx context.Context) error
 }
 

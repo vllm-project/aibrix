@@ -117,6 +117,14 @@ def test_need_to_download_not_call(mock_check: mock.Mock):
     need_to_download("file", "file.metadata", 10, "etag")
     mock_check.assert_not_called()
 
+    # per-request force_download=True must skip the check even though both
+    # env vars would otherwise make it run (this is the DownloadExtraConfig
+    # override S3Downloader/TOSDownloader pass in as `self.force_download`)
+    envs.DOWNLOADER_FORCE_DOWNLOAD = False
+    envs.DOWNLOADER_CHECK_FILE_EXIST = True
+    need_to_download("file", "file.metadata", 10, "etag", force_download=True)
+    mock_check.assert_not_called()
+
     # recover envs
     envs.DOWNLOADER_FORCE_DOWNLOAD = origin_force_download_env
     envs.DOWNLOADER_CHECK_FILE_EXIST = origin_check_file_exist

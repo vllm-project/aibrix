@@ -24,3 +24,19 @@ type ModelAdapterListerExpansion interface{}
 // ModelAdapterNamespaceListerExpansion allows custom methods to be added to
 // ModelAdapterNamespaceLister.
 type ModelAdapterNamespaceListerExpansion interface{}
+
+// ModelClaimListerExpansion allows custom methods to be added to
+// ModelClaimLister.
+type ModelClaimListerExpansion interface{}
+
+// ModelClaimNamespaceListerExpansion allows custom methods to be added to
+// ModelClaimNamespaceLister.
+type ModelClaimNamespaceListerExpansion interface{}
+
+// ModelWarmupListerExpansion allows custom methods to be added to
+// ModelWarmupLister.
+type ModelWarmupListerExpansion interface{}
+
+// ModelWarmupNamespaceListerExpansion allows custom methods to be added to
+// ModelWarmupNamespaceLister.
+type ModelWarmupNamespaceListerExpansion interface{}

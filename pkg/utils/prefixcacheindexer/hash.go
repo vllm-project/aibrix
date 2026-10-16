@@ -21,6 +21,7 @@ import (
 	"math/rand"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cespare/xxhash/v2"
@@ -62,11 +63,15 @@ type PrefixHashTable struct {
 	mu       sync.RWMutex
 	seed     uint64
 	store    lrustore.Store[uint64, Block]
-	dirtyIds map[string]struct{} // block hash as string, for delta sync
+	dirtyIds map[string]uint64 // block hash as string -> dirtySeq of its last change, for delta sync
+	dirtySeq uint64
+	// deltaSeq is dirtySeq as of the last GetDeltaForSync. It is written under
+	// the read lock, so it must be atomic.
+	deltaSeq atomic.Uint64
 }
 
 type Block struct {
-	modelToPods map[string]map[string]time.Time // model_name: map[pod_name]pod_last_access_time
+	modelToPods map[string]map[string]time.Time // model_name: map[pod_key]pod_last_access_time, pod_key is namespace/name
 }
 
 func randomPrefixCacheHashSeed() uint64 {
@@ -120,12 +125,14 @@ func (c *PrefixHashTable) EnableDeltaSync() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.dirtyIds == nil {
-		c.dirtyIds = make(map[string]struct{})
+		c.dirtyIds = make(map[string]uint64)
 	}
 }
 
 // MatchPrefix matches the input token prefix's if already cached
-// returns map[podname]%prefixmatch along with all prefix hashes
+// returns map[podkey]%prefixmatch along with all prefix hashes. readyPods and the
+// returned map use the same pod keys that AddPrefix stored, namespace/name
+// (utils.GeneratePodKey), so same-named pods in different namespaces stay apart.
 func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, readyPods map[string]struct{}) (map[string]int, []uint64) {
 	prefixHashes := getPrefixHashes(c.seed, tokens)
 	return c.seqSearchPrefix(prefixHashes, model, readyPods)
@@ -135,7 +142,7 @@ func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, r
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	// podname -> %prefixmatch
+	// podkey -> %prefixmatch
 	prefixMatchPods := make(map[string]int, len(readyPods))
 	for i := 0; i < len(prefixHashes); i++ {
 		prefixHash := prefixHashes[i]
@@ -150,6 +157,11 @@ func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, r
 		}
 
 		prefixMatchPercent := (i + 1) * 100 / len(prefixHashes)
+		// Integer division drops a real hit on a long prompt to 0, which then
+		// ties with pods that matched nothing. Keep the hit visible.
+		if prefixMatchPercent == 0 {
+			prefixMatchPercent = 1
+		}
 		if !matchPods(blockPods, readyPods, prefixMatchPods, prefixMatchPercent) {
 			break
 		}
@@ -157,7 +169,7 @@ func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, r
 	return prefixMatchPods, prefixHashes
 }
 
-// AddPrefix add prefix hashes for input tokens
+// AddPrefix add prefix hashes for input tokens. pod is the pod key, namespace/name.
 func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -184,7 +196,8 @@ func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 
 		c.store.Put(prefixHash, block)
 		if c.dirtyIds != nil {
-			c.dirtyIds[strconv.FormatUint(prefixHash, 10)] = struct{}{}
+			c.dirtySeq++
+			c.dirtyIds[strconv.FormatUint(prefixHash, 10)] = c.dirtySeq
 		}
 	}
 }
@@ -242,4 +255,11 @@ func getPrefixHashes(seed uint64, tokens []byte) []uint64 {
 
 func (c *PrefixHashTable) GetPrefixHashes(tokens []byte) []uint64 {
 	return getPrefixHashes(c.seed, tokens)
+}
+
+// Len returns the number of cached prefix blocks.
+func (c *PrefixHashTable) Len() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.store.Len()
 }

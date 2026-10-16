@@ -51,7 +51,7 @@ type JSONPatchItem struct {
 }
 
 func NewJSONPatch(items ...JSONPatchItem) *JSONPatch {
-	res := make(JSONPatch, len(items))
+	res := make(JSONPatch, 0, len(items))
 	res = append(res, items...)
 	return &res
 }
@@ -118,5 +118,5 @@ func (jp *JSONPatch) JsonPatch() (client.Patch, error) {
 }
 
 func FixPathToValid(path string) string {
-	return strings.Replace(path, "/", "~1", -1)
+	return strings.ReplaceAll(path, "/", "~1")
 }

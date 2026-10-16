@@ -1,4 +1,4 @@
-from flask import Flask, request, Response, jsonify
+from flask import Flask, request, Response, jsonify, make_response, g
 from flask_httpauth import HTTPTokenAuth
 from functools import wraps
 from werkzeug import serving
@@ -6,18 +6,36 @@ import base64
 import random
 import re
 import logging
+import math
 import struct
 import sys
+import threading
 import time
 from datetime import datetime
+from dataclasses import dataclass
 from random import randint
 import os
 import uuid
 import json
 from typing import Optional
 
+from mock_recorder import RequestRecorder
+from pd_contracts import add_prompt_token_ids, parse_fault_headers, validate_or_build
+from sglang_handoff import InMemorySGLangHandoffStore, KubernetesSGLangHandoffStore
+
+
+def _load_metrics_overrides():
+    raw = os.getenv("METRICS_OVERRIDES", "")
+    if not raw:
+        return {}
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("METRICS_OVERRIDES must be a JSON object")
+    return parsed
+
+
 # Global storage for overridden values
-overrides = {}
+overrides = _load_metrics_overrides()
 
 MODEL_NAME = os.getenv("MODEL_NAME", "llama2-7b")
 DEPLOYMENT_NAME = os.getenv("DEPLOYMENT_NAME", "llama2-7b")
@@ -25,6 +43,7 @@ NAMESPACE = os.getenv("POD_NAMESPACE", "default")
 # Kubernetes sets HOSTNAME to the pod name; fall back to the deployment name.
 POD_NAME = os.getenv("POD_NAME") or os.getenv("HOSTNAME") or DEPLOYMENT_NAME
 DEFAULT_REPLICAS = int(os.getenv("DEFAULT_REPLICAS", "1"))
+SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
 SIMULATION = os.getenv("SIMULATION", "disabled")
 STANDALONE_MODE = os.getenv("STANDALONE_MODE", "false").lower() in ("true", "1", "yes")
 
@@ -70,15 +89,59 @@ MAX_LOGGED_BODY_CHARS = int(os.getenv("MAX_LOGGED_BODY_CHARS", "4096"))
 MOCK_REQUEST_DURATION_SECONDS = float(
     os.getenv("MOCK_REQUEST_DURATION_SECONDS", "0.2")
 )
+MOCK_CAPACITY_AWARE_LATENCY = os.getenv(
+    "MOCK_CAPACITY_AWARE_LATENCY", "true"
+).lower() in ("true", "1", "yes")
+MOCK_SERVER_CAPACITY = int(os.getenv("MOCK_SERVER_CAPACITY", "1"))
+MOCK_BASE_LATENCY_SECONDS = float(os.getenv("MOCK_BASE_LATENCY_SECONDS", "0.05"))
+MOCK_TTFT_BASE_SECONDS = float(os.getenv("MOCK_TTFT_BASE_SECONDS", "0.03"))
+MOCK_PREFILL_SECONDS_PER_1K_TOKENS = float(
+    os.getenv("MOCK_PREFILL_SECONDS_PER_1K_TOKENS", "0.02")
+)
+MOCK_DECODE_SECONDS_PER_TOKEN = float(
+    os.getenv("MOCK_DECODE_SECONDS_PER_TOKEN", "0.002")
+)
+MOCK_OVERLOAD_PENALTY_SECONDS = float(
+    os.getenv("MOCK_OVERLOAD_PENALTY_SECONDS", "0.08")
+)
+MOCK_LATENCY_JITTER_SECONDS = float(os.getenv("MOCK_LATENCY_JITTER_SECONDS", "0.01"))
+
+_mock_capacity_lock = threading.Lock()
+_mock_capacity_inflight = 0
+_mock_capacity_max_inflight = 0
+_mock_capacity_requests = 0
+
+# Async video jobs deliberately live in one mock process only. The gateway E2E
+# suite runs several mock replicas, so status/content/delete requests succeed
+# only when AsyncJobRegistry pins them back to the pod that accepted the create.
+_mock_video_jobs_lock = threading.Lock()
+_mock_video_jobs = {}
+
+# Elastic EP scaling state served to the PodAutoscaler observation (#2288).
+# The mock starts idle; /debug/elastic_ep drives the scaling window so the
+# observe path can be exercised without a GPU engine.
+_elastic_ep_lock = threading.Lock()
+_elastic_ep_scaling_deadline = None
+
+ELASTIC_EP_SCALING_ERROR = "The model is currently scaling. Please try again later."
+
+
+def _elastic_ep_scaling_active():
+    with _elastic_ep_lock:
+        deadline = _elastic_ep_scaling_deadline
+    return deadline is not None and time.monotonic() < deadline
+
 
 # Extract the api_key argument and prepare for authentication
 api_key = None
-try:
-    index = sys.argv.index("--api_key")
-    if index + 1 < len(sys.argv):
-        api_key = sys.argv[index + 1]
-except ValueError:
-    pass
+for api_key_arg in ("--api_key", "--api-key"):
+    try:
+        index = sys.argv.index(api_key_arg)
+        if index + 1 < len(sys.argv):
+            api_key = sys.argv[index + 1]
+            break
+    except ValueError:
+        pass
 
 auth = HTTPTokenAuth(scheme="Bearer")
 
@@ -105,6 +168,12 @@ def auth_error(status):
         ),
         401,
     )
+
+
+def auth_required(func):
+    if api_key is None:
+        return func
+    return auth.login_required(func)
 
 
 logger = logging.getLogger(__name__)
@@ -199,6 +268,104 @@ def _sleep_for_request_latency(started_at, simulated_latency):
         )
     elif MOCK_REQUEST_DURATION_SECONDS > overhead:
         time.sleep(MOCK_REQUEST_DURATION_SECONDS - overhead)
+
+
+@dataclass(frozen=True)
+class MockLatencySample:
+    latency_seconds: float
+    ttft_seconds: float
+    tpot_seconds: float
+    inflight: int
+    max_inflight: int
+    capacity: int
+    overload: int
+    request_index: int
+
+
+def _begin_capacity_aware_request(input_tokens, output_tokens):
+    """Return a latency sample and reserve one mock worker slot.
+
+    The model is intentionally simple but captures the core behavior needed by
+    smart-client tests: requests are cheap until per-pod capacity is exceeded,
+    then queueing pressure increases TTFT and end-to-end latency.
+    """
+    global _mock_capacity_inflight, _mock_capacity_max_inflight
+    global _mock_capacity_requests
+
+    input_token_count = max(int(input_tokens or 0), 0)
+    output_token_count = max(int(output_tokens or 0), 0)
+    capacity = max(MOCK_SERVER_CAPACITY, 1)
+    prompt_latency = (
+        input_token_count / 1000.0
+    ) * MOCK_PREFILL_SECONDS_PER_1K_TOKENS
+    decode_latency = output_token_count * MOCK_DECODE_SECONDS_PER_TOKEN
+    jitter = (
+        random.uniform(0.0, MOCK_LATENCY_JITTER_SECONDS)
+        if MOCK_LATENCY_JITTER_SECONDS > 0
+        else 0.0
+    )
+
+    with _mock_capacity_lock:
+        _mock_capacity_inflight += 1
+        _mock_capacity_requests += 1
+        _mock_capacity_max_inflight = max(
+            _mock_capacity_max_inflight, _mock_capacity_inflight
+        )
+        inflight = _mock_capacity_inflight
+        max_inflight = _mock_capacity_max_inflight
+        request_index = _mock_capacity_requests
+
+    overload = max(inflight - capacity, 0)
+    overload_latency = overload * MOCK_OVERLOAD_PENALTY_SECONDS
+    ttft = MOCK_TTFT_BASE_SECONDS + prompt_latency + overload_latency
+    latency = max(MOCK_BASE_LATENCY_SECONDS, ttft + decode_latency + jitter)
+    tpot = max((latency - ttft) / max(output_token_count, 1), 0.0)
+    return MockLatencySample(
+        latency_seconds=latency,
+        ttft_seconds=ttft,
+        tpot_seconds=tpot,
+        inflight=inflight,
+        max_inflight=max_inflight,
+        capacity=capacity,
+        overload=overload,
+        request_index=request_index,
+    )
+
+
+def _end_capacity_aware_request():
+    global _mock_capacity_inflight
+    with _mock_capacity_lock:
+        _mock_capacity_inflight = max(_mock_capacity_inflight - 1, 0)
+
+
+def _capacity_metrics(sample):
+    if sample is None:
+        return None
+    return {
+        "time_to_first_token_seconds": round(sample.ttft_seconds, 6),
+        "time_per_output_token_seconds": round(sample.tpot_seconds, 6),
+        "mock_latency_seconds": round(sample.latency_seconds, 6),
+        "mock_inflight_at_start": sample.inflight,
+        "mock_max_inflight": sample.max_inflight,
+        "mock_capacity": sample.capacity,
+        "mock_overload": sample.overload,
+        "mock_request_index": sample.request_index,
+        "mock_pod": POD_NAME,
+    }
+
+
+def _sleep_for_mock_latency(started_at, simulated_latency, input_tokens, output_tokens):
+    sample = None
+    try:
+        if MOCK_CAPACITY_AWARE_LATENCY:
+            sample = _begin_capacity_aware_request(input_tokens, output_tokens)
+            _sleep_for_request_latency(started_at, sample.latency_seconds)
+        else:
+            _sleep_for_request_latency(started_at, simulated_latency)
+        return sample
+    finally:
+        if sample is not None:
+            _end_capacity_aware_request()
 
 
 def read_configs(file_path):
@@ -298,7 +465,7 @@ def _mock_trtllm_prefill_disaggregated_params(data: dict) -> dict:
         "request_type": "context_only",  # gateway overrides this to generation_only for decode
         "disagg_request_id": disagg_request_id,
         "first_gen_tokens": [random.randint(100, 32000)],
-        "opaque_state": base64.b64encode(bytes(random.randint(8, 32))).decode(),
+        "encoded_opaque_state": base64.b64encode(bytes(random.randint(8, 32))).decode(),
     }
 
 
@@ -360,6 +527,25 @@ def get_token_count(text):
             logger.warning(f"Failed to use tiktoken, fallback to heuristic: {e}")
 
     return max(1, len(text.split()))
+
+
+def message_token_count(message):
+    """Count a chat message's tokens; content is a string or a list of multimodal parts.
+
+    /v1/chat/completions does not validate the message shape, so anything that is not an
+    object counts as one token rather than failing the request.
+    """
+    if not isinstance(message, dict):
+        return 1
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return get_token_count(content)
+    if isinstance(content, list):
+        return sum(
+            get_token_count(part.get("text", ""))
+            for part in content if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return 1
 
 
 models = [
@@ -431,6 +617,500 @@ def disable_endpoint_logs():
 app = Flask(__name__)
 disable_endpoint_logs()
 
+request_recorder = RequestRecorder()
+sglang_handoff_store = (
+    InMemorySGLangHandoffStore() if STANDALONE_MODE else None
+)
+_sglang_store_lock = threading.Lock()
+
+
+def _mock_pd_config():
+    contract = os.getenv("MOCK_PD_CONTRACT", "")
+    role = os.getenv("MOCK_PD_ROLE", "")
+    engine = os.getenv("LLM_ENGINE")
+    if not engine:
+        engine = (
+            "vllm"
+            if contract.startswith("vllm-")
+            else "sglang"
+            if contract == "sglang-http"
+            else "trtllm"
+            if contract == "trtllm-openai"
+            else "vllm"
+        )
+    return contract, role, engine
+
+
+def _get_sglang_handoff_store():
+    global sglang_handoff_store
+    if sglang_handoff_store is None:
+        with _sglang_store_lock:
+            if sglang_handoff_store is None:
+                sglang_handoff_store = KubernetesSGLangHandoffStore(
+                    client.CoreV1Api(), NAMESPACE
+                )
+    return sglang_handoff_store
+
+
+def _mark_sglang_prefill_failure(request_id, payload, error):
+    if not request_id or not isinstance(payload, dict):
+        return False
+    room = payload.get("bootstrap_room")
+    if room is None:
+        return False
+    try:
+        _get_sglang_handoff_store().mark_failure(request_id, room, error)
+        return True
+    except Exception:
+        logger.warning("Unable to persist SGLang prefill failure", exc_info=True)
+        return False
+
+
+def _find_sglang_prefill_failure(request_id, payload):
+    if not request_id or not isinstance(payload, dict):
+        return None
+    room = payload.get("bootstrap_room")
+    if room is None:
+        return None
+    try:
+        return _get_sglang_handoff_store().get_failure(request_id, room)
+    except Exception:
+        logger.warning("Unable to read SGLang prefill failure", exc_info=True)
+        return None
+
+
+def _json_response_body(response):
+    if response.is_streamed:
+        return None
+    return response.get_json(silent=True)
+
+
+def _stream_response_metadata(path, payload):
+    return {
+        "object": "chat.completion.chunk" if "chat" in path else "text_completion",
+        "model": payload.get("model") if isinstance(payload, dict) else None,
+        "stream": True,
+    }
+
+
+def _safe_merge_contract_response(response, contract_result, path, payload):
+    """Merge only PD fields into a normal completion response.
+
+    A contract result may contain a complete backend body as well as explicit
+    patches. Request fields are never copied wholesale into the client-facing
+    response, and ordinary OpenAI fields remain authoritative.
+    """
+    if response.status_code >= 400:
+        return response
+
+    if response.is_streamed:
+        return response
+
+    body = response.get_json(silent=True)
+    if not isinstance(body, dict):
+        return response
+
+    contract_body = contract_result.get("body")
+    if isinstance(contract_body, dict):
+        for key in ("kv_transfer_params", "disagg_prefill_resp"):
+            if key in contract_body:
+                body[key] = contract_body[key]
+        if "opaque" in contract_body:
+            body["opaque"] = contract_body["opaque"]
+
+    protected_response_keys = {"choices", "message", "finish_reason"}
+    for key, value in contract_result.get("response_patch", {}).items():
+        if key not in protected_response_keys:
+            body[key] = value
+
+    choices = body.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        protected_choice_keys = {"message", "finish_reason"}
+        for key, value in contract_result.get("choice_patch", {}).items():
+            if key not in protected_choice_keys:
+                choices[0][key] = value
+
+    response.set_data(json.dumps(body, ensure_ascii=False).encode("utf-8"))
+    response.content_type = "application/json"
+    return response
+
+
+def _completion_record_error(response_body):
+    if isinstance(response_body, dict):
+        error = response_body.get("error")
+        if isinstance(error, dict):
+            return error.get("message")
+    return None
+
+
+def _recorder_headers(headers):
+    sensitive_headers = {
+        "authorization",
+        "cookie",
+        "proxy-authorization",
+        "x-api-key",
+    }
+    return {
+        key: "<redacted>" if str(key).lower() in sensitive_headers else value
+        for key, value in headers.items()
+    }
+
+
+def _finalize_completion_record(
+    handle,
+    response,
+    *,
+    path,
+    payload,
+    delay_ms,
+    forced_outcome=None,
+    forced_error=None,
+):
+    status_code = response.status_code
+    response_body = (
+        _stream_response_metadata(path, payload)
+        if response.is_streamed
+        else _json_response_body(response)
+    )
+    if forced_outcome is not None:
+        outcome = forced_outcome
+    elif 400 <= status_code < 500:
+        outcome = "rejected"
+    elif status_code >= 500:
+        outcome = "failed"
+    else:
+        outcome = "success"
+    error = forced_error or _completion_record_error(response_body)
+    try:
+        request_recorder.finish(
+            handle,
+            outcome=outcome,
+            status_code=status_code,
+            response=response_body,
+            error=error,
+            delay_ms=delay_ms,
+        )
+    except Exception:
+        logger.warning(
+            "Unable to finalize mock request recorder entry; preserving HTTP response",
+            exc_info=True,
+        )
+
+
+def _recorded_completion(path):
+    def decorator(func):
+        def _start_record(raw_body, payload, contract, role, engine, request_id):
+            handle = request_recorder.start(
+                path=path,
+                headers=_recorder_headers(request.headers),
+                raw_body=raw_body,
+                parsed_json=payload,
+                pod=POD_NAME,
+                engine=engine,
+                role=role,
+                request_id=request_id,
+            )
+            g._aibrix_completion_handle = handle
+            g._aibrix_completion_payload = payload
+            g._aibrix_completion_delay_ms = 0
+            return handle
+
+        def _after_auth(*args, **kwargs):
+            raw_body = g._aibrix_completion_raw_body
+            contract, role, engine = _mock_pd_config()
+            request_id = request.headers.get("X-Request-ID")
+
+            try:
+                payload = request.json
+            except Exception as exc:
+                _start_record(raw_body, None, contract, role, engine, request_id)
+                return make_response(
+                    create_error_response(
+                        "The server had an error while processing your request. Sorry about that!",
+                        error_type="api_error",
+                        status_code=400,
+                    )
+                )
+
+            handle = _start_record(raw_body, payload, contract, role, engine, request_id)
+            try:
+                fault = parse_fault_headers(request.headers, role)
+                g._aibrix_completion_delay_ms = fault.delay_ms
+                g._aibrix_stream_stall_ms = fault.stream_stall_ms
+                g._aibrix_first_token_stall_ms = fault.first_token_stall_ms
+                if fault.validation_status_code != 200:
+                    return make_response(
+                        create_error_response(
+                            fault.metadata["error"],
+                            status_code=fault.validation_status_code,
+                        )
+                    )
+
+                if fault.delay_ms:
+                    time.sleep(fault.delay_ms / 1000.0)
+
+                if fault.injected_status_code is not None:
+                    message = (
+                        f"mock failure injected for role {role}"
+                        if role
+                        else "mock failure injected for backend"
+                    )
+                    if contract == "sglang-http" and role == "prefill":
+                        _mark_sglang_prefill_failure(
+                            request_id,
+                            payload,
+                            f"prefill handoff failed: {message}",
+                        )
+                    return make_response(
+                        create_error_response(
+                            message,
+                            error_type="api_error",
+                            status_code=fault.injected_status_code,
+                        )
+                    )
+
+                if contract == "sglang-http" and role == "decode":
+                    prefill_failure = None
+                    if request.headers.get("X-Aibrix-Mock-Fail") == "prefill":
+                        room = payload.get("bootstrap_room") if isinstance(payload, dict) else None
+                        if not request_id or room is None:
+                            prefill_failure = "prefill handoff state unavailable"
+                        else:
+                            deadline = time.monotonic() + 5.0
+                            while time.monotonic() < deadline:
+                                prefill_failure = _find_sglang_prefill_failure(
+                                    request_id, payload
+                                )
+                                if prefill_failure:
+                                    break
+                                time.sleep(0.25)
+                            if not prefill_failure:
+                                prefill_failure = "prefill handoff state unavailable"
+                    if prefill_failure:
+                        return make_response(
+                            create_error_response(
+                                prefill_failure,
+                                error_type="api_error",
+                                status_code=500,
+                            )
+                        )
+
+                contract_result = None
+                if contract:
+                    request_result = validate_or_build(
+                        contract,
+                        role,
+                        payload,
+                        request_id=request_id,
+                    )
+                    if request_result["status_code"] != 200:
+                        return make_response(
+                            (
+                                jsonify(request_result["body"]),
+                                request_result["status_code"],
+                            )
+                        )
+                    contract_result = request_result
+
+                response = make_response(func(*args, **kwargs))
+                if contract_result is not None:
+                    if contract == "trtllm-openai" and role == "prefill":
+                        response_body = _json_response_body(response)
+                        usage = response_body.get("usage", {}) if isinstance(response_body, dict) else {}
+                        contract_result = add_prompt_token_ids(
+                            contract_result,
+                            usage.get("prompt_tokens"),
+                        )
+                    response = _safe_merge_contract_response(
+                        response,
+                        contract_result,
+                        path,
+                        payload,
+                    )
+                return response
+            except Exception as exc:
+                logger.exception("Error in recorded completion endpoint")
+                return make_response(
+                    create_error_response(
+                        "The server had an error while processing your request. Sorry about that!",
+                        error_type="api_error",
+                        status_code=500,
+                    )
+                )
+
+        # Applying auth_required here keeps authentication in one place while
+        # letting the outer recorder capture the request before auth runs.
+        authenticated_handler = auth_required(_after_auth)
+
+        @wraps(func)
+        def wrapped(*args, **kwargs):
+            raw_body = request.get_data(cache=True)
+            g._aibrix_completion_raw_body = raw_body
+            g._aibrix_completion_handle = None
+            g._aibrix_completion_payload = None
+            g._aibrix_completion_delay_ms = 0
+            g._aibrix_stream_stall_ms = 0
+            g._aibrix_first_token_stall_ms = 0
+            contract, role, engine = _mock_pd_config()
+            request_id = request.headers.get("X-Request-ID")
+
+            try:
+                response = make_response(authenticated_handler(*args, **kwargs))
+            except Exception as exc:
+                logger.exception("Error in recorded completion authentication")
+                if g._aibrix_completion_handle is None:
+                    _start_record(raw_body, None, contract, role, engine, request_id)
+                response = make_response(
+                    create_error_response(
+                        "The server had an error while processing your request. Sorry about that!",
+                        error_type="api_error",
+                        status_code=500,
+                    )
+                )
+
+            if g._aibrix_completion_handle is None:
+                # auth_required returned its normal 401/403 response before
+                # body parsing, fault handling, or contract validation.
+                _start_record(raw_body, None, contract, role, engine, request_id)
+
+            _finalize_completion_record(
+                g._aibrix_completion_handle,
+                response,
+                path=path,
+                payload=g._aibrix_completion_payload,
+                delay_ms=g._aibrix_completion_delay_ms,
+            )
+            return response
+
+        return wrapped
+
+    return decorator
+
+
+@app.route("/abort_request", methods=["POST"])
+def abort_request():
+    """Mock of the SGLang /abort_request endpoint.
+
+    The gateway calls it on the decode pod when the prefill leg of a PD request
+    failed, so that the decode leg stops waiting for a KV transfer that will
+    never arrive. The abort is matched by "rid" alone - the engine carries no
+    bootstrap room on this path - and the rid is recorded under its own entry so
+    e2e tests can assert which request was aborted.
+    """
+    raw_body = request.get_data(cache=True)
+    payload = request.get_json(silent=True)
+    rid = payload.get("rid") if isinstance(payload, dict) else None
+    _, role, engine = _mock_pd_config()
+
+    handle = request_recorder.start(
+        path="/abort_request",
+        headers=_recorder_headers(request.headers),
+        raw_body=raw_body,
+        parsed_json=payload,
+        pod=POD_NAME,
+        engine=engine,
+        role=role,
+        request_id=rid,
+    )
+
+    if not rid:
+        # An empty rid would prefix-match every live request on a real engine.
+        request_recorder.finish(
+            handle, outcome="rejected", status_code=400, error="rid is required"
+        )
+        return make_response(
+            create_error_response("'rid' is required", param="rid", status_code=400)
+        )
+
+    response = {"status": "ok", "rid": rid}
+    request_recorder.finish(
+        handle, outcome="success", status_code=200, response=response
+    )
+    return jsonify(response), 200
+
+
+@app.route("/debug/requests", methods=["GET"])
+def debug_requests():
+    return jsonify(request_recorder.query(request_id=request.args.get("request_id")))
+
+
+# =============================================================================
+# ELASTIC EP ENDPOINTS
+# =============================================================================
+
+
+@app.before_request
+def block_requests_while_elastic_ep_scaling():
+    # Mirror the vLLM elastic EP middleware: while a scaling commit is in
+    # flight every HTTP request is answered with a 503. The /debug surface
+    # stays reachable so the simulated state can always be inspected and
+    # cleared.
+    if request.path.startswith("/debug/"):
+        return None
+    if _elastic_ep_scaling_active():
+        return jsonify({"error": ELASTIC_EP_SCALING_ERROR}), 503
+    return None
+
+
+@app.route("/is_scaling_elastic_ep", methods=["POST"])
+def is_scaling_elastic_ep():
+    # While idle the engine reports the boolean field the PodAutoscaler probe
+    # reads. A scaling window answers 503 before this handler runs.
+    return jsonify({"is_scaling_elastic_ep": False})
+
+
+@app.route("/debug/elastic_ep", methods=["GET", "POST"])
+def debug_elastic_ep():
+    global _elastic_ep_scaling_deadline
+
+    if request.method == "GET":
+        return jsonify({"is_scaling_elastic_ep": _elastic_ep_scaling_active()})
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not data:
+        return {"status": "error", "message": "No data provided"}, 400
+
+    scaling = data.get("scaling")
+    if not isinstance(scaling, bool):
+        return {"status": "error", "message": "'scaling' must be a boolean"}, 400
+
+    deadline = None
+    if scaling:
+        duration = data.get("duration_seconds")
+        if duration is None:
+            # Hold the window until it is cleared explicitly.
+            deadline = float("inf")
+        elif (
+            isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or duration <= 0
+        ):
+            return (
+                {
+                    "status": "error",
+                    "message": "'duration_seconds' must be a positive number",
+                },
+                400,
+            )
+        else:
+            try:
+                seconds = float(duration)
+            except OverflowError:
+                seconds = float("inf")
+            if not math.isfinite(seconds):
+                return (
+                    {
+                        "status": "error",
+                        "message": "'duration_seconds' must be a finite positive number",
+                    },
+                    400,
+                )
+            deadline = time.monotonic() + seconds
+
+    with _elastic_ep_lock:
+        _elastic_ep_scaling_deadline = deadline
+    return {"status": "success", "is_scaling_elastic_ep": scaling}, 200
+
 
 # =============================================================================
 # HEALTH & UTILITY ENDPOINTS
@@ -447,7 +1127,7 @@ def ready():
 
 
 @app.route("/v1/models", methods=["GET"])
-@auth.login_required
+@auth_required
 def get_models():
     return jsonify({"object": "list", "data": models})
 
@@ -457,7 +1137,7 @@ def get_models():
 # =============================================================================
 
 @app.route("/v1/load_lora_adapter", methods=["POST"])
-@auth.login_required
+@auth_required
 def load_lora_adapter():
     """
     Load a LoRA adapter. Matches vLLM error handling behavior.
@@ -504,7 +1184,7 @@ def load_lora_adapter():
 
 
 @app.route("/v1/unload_lora_adapter", methods=["POST"])
-@auth.login_required
+@auth_required
 def unload_lora_adapter():
     """
     Unload a LoRA adapter. Matches vLLM error handling behavior.
@@ -538,7 +1218,7 @@ def unload_lora_adapter():
 # =============================================================================
 
 @app.route("/v1/completions", methods=["POST"])
-@auth.login_required
+@_recorded_completion("/v1/completions")
 def completion():
     try:
         prompt = request.json.get("prompt")
@@ -578,7 +1258,9 @@ def completion():
                 )
             )
 
-        _sleep_for_request_latency(start, latency)
+        latency_sample = _sleep_for_mock_latency(
+            start, latency, input_tokens, output_tokens
+        )
 
         simulated_text = simulated_message(model)
 
@@ -647,6 +1329,7 @@ def completion():
                     "model": model,
                     "stream": True,
                     "content_preview": simulated_text,
+                    "metrics": _capacity_metrics(latency_sample),
                     "usage": {
                         "prompt_tokens": input_tokens,
                         "completion_tokens": output_tokens,
@@ -676,8 +1359,12 @@ def completion():
                     "total_tokens": input_tokens + output_tokens,
                 },
             }
+            metrics = _capacity_metrics(latency_sample)
+            if metrics is not None:
+                response["metrics"] = metrics
 
-            _apply_pd_prefill_fields(response, request.json, input_tokens)
+            if os.getenv("MOCK_PD_CONTRACT") != "trtllm-openai":
+                _apply_pd_prefill_fields(response, request.json, input_tokens)
 
             _log_mock_exchange("/v1/completions", request.json, response)
             return jsonify(response), 200
@@ -694,7 +1381,7 @@ def completion():
 
 
 @app.route("/v1/chat/completions", methods=["POST"])
-@auth.login_required
+@_recorded_completion("/v1/chat/completions")
 def chat_completions():
     try:
         messages = request.json.get("messages")
@@ -721,19 +1408,7 @@ def chat_completions():
         arrived_at = datetime.now().timestamp()
         modalities = request.json.get("modalities", ["text"])
 
-        # Token count: handle both string and list content (multimodal)
-        def _msg_tokens(msg):
-            c = msg.get("content", "")
-            if isinstance(c, str):
-                return get_token_count(c)
-            if isinstance(c, list):
-                return sum(
-                    get_token_count(b.get("text", ""))
-                    for b in c if b.get("type") == "text"
-                )
-            return 1
-
-        input_tokens = sum(_msg_tokens(m) for m in messages)
+        input_tokens = sum(message_token_count(m) for m in messages)
         output_tokens = max_tokens if max_tokens else randint(10, 500)
         arrived_next = request.json.get("next_in")
         if not arrived_next:
@@ -750,11 +1425,16 @@ def chat_completions():
                 )
             )
 
-        _sleep_for_request_latency(start, latency)
+        latency_sample = _sleep_for_mock_latency(
+            start, latency, input_tokens, output_tokens
+        )
 
         simulated_text = simulated_message(model, prefix="\n\n")
 
         if stream:
+            # Read in the request context; the generator runs after it is gone.
+            stream_stall_ms = g.get("_aibrix_stream_stall_ms", 0)
+            first_token_stall_ms = g.get("_aibrix_first_token_stall_ms", 0)
 
             def generate():
                 completion_id = "chatcmpl-" + "".join(
@@ -763,6 +1443,13 @@ def chat_completions():
                         k=20,
                     )
                 )
+
+                # x-aibrix-mock-first-token-stall-ms: the response headers go
+                # out, then the pod goes silent before its first chunk. The
+                # empty yield is what makes the server flush the headers.
+                if first_token_stall_ms:
+                    yield ""
+                    time.sleep(first_token_stall_ms / 1000.0)
 
                 # First chunk with role
                 role_chunk = {
@@ -781,6 +1468,11 @@ def chat_completions():
                     ],
                 }
                 yield f"data: {json.dumps(role_chunk)}\n\n"
+
+                # x-aibrix-mock-stream-stall-ms: the response has started, then
+                # the pod goes silent.
+                if stream_stall_ms:
+                    time.sleep(stream_stall_ms / 1000.0)
 
                 # Content chunks
                 full_text = simulated_text
@@ -857,6 +1549,7 @@ def chat_completions():
                     "model": model,
                     "stream": True,
                     "content_preview": simulated_text,
+                    "metrics": _capacity_metrics(latency_sample),
                     "usage": {
                         "prompt_tokens": input_tokens,
                         "completion_tokens": output_tokens,
@@ -933,8 +1626,12 @@ def chat_completions():
                     }
                 ],
             }
+            metrics = _capacity_metrics(latency_sample)
+            if metrics is not None:
+                response["metrics"] = metrics
 
-            _apply_pd_prefill_fields(response, request.json, input_tokens)
+            if os.getenv("MOCK_PD_CONTRACT") != "trtllm-openai":
+                _apply_pd_prefill_fields(response, request.json, input_tokens)
 
             _log_mock_exchange("/v1/chat/completions", request.json, response)
             return jsonify(response), 200
@@ -950,8 +1647,107 @@ def chat_completions():
         return jsonify(err), 500
 
 
+@app.route("/v1/chat/completions/batch", methods=["POST"])
+@auth_required
+def chat_completions_batch():
+    """
+    Simulates vLLM-Omni's batch chat endpoint: "messages" is a list of conversations and the
+    reply is one non-streaming chat completion with a choice per conversation and the usage
+    summed over all of them. Like the engine it refuses streaming ("stream": true), n > 1
+    and beam search; "stream" must be false or omitted.
+    """
+    try:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return create_error_response("chat batch request body must be valid JSON")
+
+        model = payload.get("model")
+        if not model:
+            return create_error_response("'model' is a required parameter", param="model")
+
+        conversations = payload.get("messages")
+        if not isinstance(conversations, list) or not conversations:
+            return create_error_response(
+                "'messages' is a required parameter and cannot be empty", param="messages"
+            )
+        for index, conversation in enumerate(conversations):
+            if (
+                not isinstance(conversation, list)
+                or not conversation
+                or not all(isinstance(message, dict) for message in conversation)
+            ):
+                return create_error_response(
+                    f"'messages.{index}' must be a non-empty array of messages",
+                    param=f"messages.{index}",
+                )
+
+        if payload.get("stream"):
+            return create_error_response(
+                "Batch chat completions do not support streaming. Please set `stream` to False.",
+                param="stream",
+            )
+        if payload.get("n", 1) != 1:
+            return create_error_response(
+                "Batch chat completions do not support `n > 1`. Please set `n` to 1.",
+                param="n",
+            )
+        if payload.get("use_beam_search"):
+            return create_error_response(
+                "Batch chat completions do not support beam search. "
+                "Please set `use_beam_search` to False.",
+                param="use_beam_search",
+            )
+
+        started_at = datetime.now().timestamp()
+        max_tokens = payload.get("max_tokens")
+        choices = []
+        input_tokens = 0
+        output_tokens = 0
+        longest_input_tokens = 0
+        longest_output_tokens = 0
+        for index, conversation in enumerate(conversations):
+            conversation_input_tokens = sum(message_token_count(m) for m in conversation)
+            conversation_output_tokens = max_tokens if max_tokens else randint(10, 500)
+            input_tokens += conversation_input_tokens
+            output_tokens += conversation_output_tokens
+            longest_input_tokens = max(longest_input_tokens, conversation_input_tokens)
+            longest_output_tokens = max(longest_output_tokens, conversation_output_tokens)
+            choices.append({
+                "index": index,
+                "message": {"role": "assistant", "content": simulated_message(model)},
+                "logprobs": None,
+                "finish_reason": "stop",
+            })
+
+        # Conversations run concurrently in the engine, so the slowest one sets the latency.
+        _sleep_for_mock_latency(started_at, 0.0, longest_input_tokens, longest_output_tokens)
+
+        response = {
+            "id": "chatcmpl-batch-" + str(uuid.uuid4()),
+            "object": "chat.completion",
+            "created": int(datetime.now().timestamp()),
+            "model": model,
+            "choices": choices,
+            "usage": {
+                "prompt_tokens": input_tokens,
+                "completion_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            },
+        }
+        _log_mock_exchange("/v1/chat/completions/batch", payload, response)
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in chat completions batch endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
 @app.route("/v1/audio/speech", methods=["POST"])
-@auth.login_required
+@auth_required
 def audio_speech():
     """
     Simulates the OpenAI text-to-speech endpoint.
@@ -986,47 +1782,19 @@ def audio_speech():
                 param="voice"
             )
 
-        # Validate response format
-        valid_formats = ["mp3", "opus", "aac", "flac", "wav", "pcm"]
-        if response_format not in valid_formats:
+        # Validate response format against the table that also supplies its content type
+        if not is_supported_speech_format(response_format):
             return create_error_response(
-                f"Invalid response_format '{response_format}'. Must be one of: {', '.join(valid_formats)}",
+                f"Invalid response_format '{response_format}'. Must be one of: {', '.join(SPEECH_CONTENT_TYPES)}",
                 param="response_format"
             )
 
         # Simulate processing time based on text length
         time.sleep(0.1 + len(input_text) * 0.001)
 
-        # Generate mock audio data
-        if response_format == "wav":
-            # Minimal WAV header (44 bytes) with 0 data
-            mock_audio = (
-                b"RIFF" + struct.pack("<I", 36) + b"WAVE"
-                + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, 24000, 48000, 2, 16)
-                + b"data" + struct.pack("<I", 0)
-            )
-        else:
-            # Minimal MP3 frame header for other formats
-            mock_audio = bytes([
-                0xFF, 0xFB, 0x90, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-            ])
-
-        # Set content type based on format
-        content_types = {
-            "mp3": "audio/mpeg",
-            "opus": "audio/opus",
-            "aac": "audio/aac",
-            "flac": "audio/flac",
-            "wav": "audio/wav",
-            "pcm": "audio/pcm",
-        }
-
         return Response(
-            mock_audio,
-            mimetype=content_types.get(response_format, "audio/mpeg"),
+            build_mock_speech_audio(response_format),
+            mimetype=SPEECH_CONTENT_TYPES.get(response_format, "audio/mpeg"),
             headers={
                 "Content-Disposition": f"attachment; filename=speech.{response_format}"
             }
@@ -1041,8 +1809,140 @@ def audio_speech():
         )
 
 
+SPEECH_CONTENT_TYPES = {
+    "mp3": "audio/mpeg",
+    "opus": "audio/opus",
+    "aac": "audio/aac",
+    "flac": "audio/flac",
+    "wav": "audio/wav",
+    "pcm": "audio/pcm",
+}
+
+
+def is_supported_speech_format(response_format):
+    """True for a response_format the mock can serve.
+
+    A JSON list or object is unhashable and would raise on a dict membership test, so only a
+    string is ever looked up. Handlers that pass this check can index SPEECH_CONTENT_TYPES.
+    """
+    return isinstance(response_format, str) and response_format in SPEECH_CONTENT_TYPES
+
+
+def build_mock_speech_audio(response_format):
+    """Return placeholder audio bytes for a /v1/audio/speech response format."""
+    if response_format == "wav":
+        # Minimal WAV header (44 bytes) with 0 data
+        return (
+            b"RIFF" + struct.pack("<I", 36) + b"WAVE"
+            + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, 24000, 48000, 2, 16)
+            + b"data" + struct.pack("<I", 0)
+        )
+    # Minimal MP3 frame header for other formats
+    return bytes([
+        0xFF, 0xFB, 0x90, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+    ])
+
+
+def speech_batch_item_error(index, message, param):
+    """Build a failed entry for the /v1/audio/speech/batch results list."""
+    return {
+        "index": index,
+        "status": "error",
+        "error": {
+            "message": message,
+            "type": "invalid_request_error",
+            "param": param,
+        },
+    }
+
+
+@app.route("/v1/audio/speech/batch", methods=["POST"])
+@auth_required
+def audio_speech_batch():
+    """
+    Simulates SGLang-Omni's batch text-to-speech endpoint.
+    A bad envelope fails the request with 400. A bad item becomes an error entry inside an
+    otherwise successful (HTTP 200) response, so the other items still return audio.
+    Top-level fields are shared defaults that each item may override.
+    """
+    try:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return create_error_response("speech batch request body must be valid JSON")
+
+        items = payload.get("items")
+        if not isinstance(items, list) or not items:
+            return create_error_response(
+                "'items' is a required parameter and cannot be empty", param="items"
+            )
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                return create_error_response(
+                    f"'items.{index}' must be a JSON object", param=f"items.{index}"
+                )
+
+        longest_input = max(
+            (len(item["input"]) for item in items if isinstance(item.get("input"), str)),
+            default=0,
+        )
+        # Items run concurrently in the engine, so the slowest one sets the latency.
+        time.sleep(0.1 + longest_input * 0.001)
+
+        defaults = {key: value for key, value in payload.items() if key != "items"}
+        results = []
+        for index, item in enumerate(items):
+            merged = {**defaults, **item}
+            response_format = merged.get("response_format", "wav")
+            input_text = merged.get("input")
+            # Only an item-level stream is refused, as in the engine; a top-level one is dropped.
+            if item.get("stream"):
+                results.append(speech_batch_item_error(
+                    index, "stream is not supported for batch speech requests",
+                    f"items.{index}.stream"))
+            elif not isinstance(input_text, str) or not input_text.strip():
+                results.append(speech_batch_item_error(
+                    index, "'input' is a required parameter and cannot be empty",
+                    f"items.{index}.input"))
+            elif not is_supported_speech_format(response_format):
+                results.append(speech_batch_item_error(
+                    index,
+                    f"Invalid response_format '{response_format}'. "
+                    f"Must be one of: {', '.join(SPEECH_CONTENT_TYPES)}",
+                    f"items.{index}.response_format"))
+            else:
+                results.append({
+                    "index": index,
+                    "status": "success",
+                    "audio_data": base64.b64encode(
+                        build_mock_speech_audio(response_format)).decode("ascii"),
+                    "format": response_format,
+                    "media_type": SPEECH_CONTENT_TYPES.get(response_format, "audio/mpeg"),
+                    "finish_reason": "stop",
+                })
+
+        succeeded = sum(1 for result in results if result["status"] == "success")
+        return jsonify({
+            "id": "speech-batch-" + str(uuid.uuid4()),
+            "results": results,
+            "total": len(results),
+            "succeeded": succeeded,
+            "failed": len(results) - succeeded,
+        })
+
+    except Exception as e:
+        logger.error(f"Error in audio speech batch endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
 @app.route("/v1/audio/voices", methods=["GET"])
-@auth.login_required
+@auth_required
 def audio_voices():
     """
     Returns available TTS voices (vLLM-Omni compatible).
@@ -1056,7 +1956,7 @@ def audio_voices():
 
 
 @app.route("/v1/audio/transcriptions", methods=["POST"])
-@auth.login_required
+@auth_required
 def audio_transcriptions():
     """
     Simulates the OpenAI audio transcription endpoint.
@@ -1171,7 +2071,7 @@ def audio_transcriptions():
 
 
 @app.route("/v1/audio/translations", methods=["POST"])
-@auth.login_required
+@auth_required
 def audio_translations():
     """
     Simulates the OpenAI audio translation endpoint.
@@ -1281,7 +2181,7 @@ def audio_translations():
 
 
 @app.route("/v1/embeddings", methods=["POST"])
-@auth.login_required
+@auth_required
 def embeddings():
     try:
         input_data = request.json.get("input")
@@ -1428,7 +2328,7 @@ def embeddings():
 
 
 @app.route("/v1/images/generations", methods=["POST"])
-@auth.login_required
+@auth_required
 def images_generations():
     """
     Simulates the OpenAI image generation endpoint.
@@ -1486,7 +2386,7 @@ def images_generations():
 
 
 @app.route("/v1/video/generations", methods=["POST"])
-@auth.login_required
+@auth_required
 def video_generations():
     """
     Simulates a video generation endpoint.
@@ -1535,46 +2435,48 @@ def video_generations():
 
 
 @app.route("/v1/videos", methods=["POST"])
-@auth.login_required
+@auth_required
 def vllm_omni_videos():
     """
     Simulates the vLLM-Omni /v1/videos endpoint (Wan2.2).
-    Accepts multipart/form-data. Returns synchronous response with base64 MP4.
-    Supports text-to-video and image-to-video (input_reference).
+    Accepts multipart/form-data and creates a pod-local asynchronous job.
     """
     try:
+        model = request.form.get("model", MODEL_NAME)
         prompt = request.form.get("prompt")
-        width = request.form.get("width", "832")
-        height = request.form.get("height", "480")
-        num_frames = request.form.get("num_frames", "33")
-        fps = request.form.get("fps", "16")
-        seed = request.form.get("seed")
-        negative_prompt = request.form.get("negative_prompt")
-        input_reference = request.files.get("input_reference")
 
         if not prompt:
             return create_error_response(
                 "'prompt' is a required parameter", param="prompt"
             )
 
-        # Simulate processing time
-        time.sleep(0.3)
-
-        # Mock base64 MP4 (minimal ftyp box)
-        mock_mp4 = base64.b64encode(
+        created_at = int(time.time())
+        expires_at = created_at + 3600
+        video_id = "video_" + uuid.uuid4().hex
+        video_content = (
             b"\x00\x00\x00\x1c"  # box size
             b"ftypisom"  # major brand
             b"\x00\x00\x02\x00"  # minor version
             b"isomiso2mp41"  # compatible brands
-        ).decode()
+            + POD_NAME.encode()
+        )
 
-        response = {
-            "data": [{
-                "b64_json": mock_mp4,
-                "revised_prompt": prompt[:100],
-            }]
+        job = {
+            "id": video_id,
+            "object": "video",
+            "model": model,
+            "status": "completed",
+            "created_at": created_at,
+            "expires_at": expires_at,
+            "mock_pod": POD_NAME,
+            "content": video_content,
         }
-        return jsonify(response), 200
+        with _mock_video_jobs_lock:
+            _mock_video_jobs[video_id] = job
+
+        return jsonify(
+            {key: value for key, value in job.items() if key != "content"}
+        ), 200
 
     except Exception as e:
         logger.error(f"Error in vLLM-Omni videos endpoint: {e}")
@@ -1585,8 +2487,55 @@ def vllm_omni_videos():
         )
 
 
+def _mock_video_job(video_id):
+    with _mock_video_jobs_lock:
+        return _mock_video_jobs.get(video_id)
+
+
+@app.route("/v1/videos/<video_id>", methods=["GET"])
+@auth_required
+def vllm_omni_video_status(video_id):
+    job = _mock_video_job(video_id)
+    if job is None:
+        return create_error_response(
+            f"Video {video_id} not found",
+            code="video_not_found",
+            status_code=404,
+        )
+    return jsonify(
+        {key: value for key, value in job.items() if key != "content"}
+    ), 200
+
+
+@app.route("/v1/videos/<video_id>/content", methods=["GET"])
+@auth_required
+def vllm_omni_video_content(video_id):
+    job = _mock_video_job(video_id)
+    if job is None:
+        return create_error_response(
+            f"Video {video_id} not found",
+            code="video_not_found",
+            status_code=404,
+        )
+    return Response(job["content"], status=200, mimetype="video/mp4")
+
+
+@app.route("/v1/videos/<video_id>", methods=["DELETE"])
+@auth_required
+def vllm_omni_video_delete(video_id):
+    with _mock_video_jobs_lock:
+        job = _mock_video_jobs.pop(video_id, None)
+    if job is None:
+        return create_error_response(
+            f"Video {video_id} not found",
+            code="video_not_found",
+            status_code=404,
+        )
+    return jsonify({"id": video_id, "object": "video.deleted", "deleted": True}), 200
+
+
 @app.route("/v1/rerank", methods=["POST"])
-@auth.login_required
+@auth_required
 def rerank():
     """
     Simulates the rerank endpoint (vLLM/JinaAI format).
@@ -1663,7 +2612,7 @@ def version():
 
 
 @app.route("/tokenize", methods=["POST"])
-@auth.login_required
+@auth_required
 def tokenize():
     """
     Simulates the tokenize endpoint.
@@ -1704,8 +2653,376 @@ def tokenize():
         )
 
 
+@app.route("/pooling", methods=["POST"])
+@auth_required
+def pooling():
+    """
+    Simulates the vLLM pooling endpoint (embed/classify/score models served
+    with --task embed/classify/score). Input may be a string, a list of
+    strings, or pre-tokenized token ids; the response carries model and usage
+    like the embeddings endpoint, so the gateway meters it on the language
+    response path.
+    """
+    try:
+        data = request.json or {}
+        model = data.get("model")
+        input_data = data.get("input")
+        messages = data.get("messages")
+
+        if not model:
+            return create_error_response("'model' is a required parameter", param="model")
+        if input_data is None and messages is None:
+            return create_error_response(
+                "'input' is a required parameter", param="input"
+            )
+
+        # Chat form: vLLM's PoolingChatRequest carries messages instead of input.
+        if input_data is None:
+            # Guard messages the same way as input: a string, dict, number, or a
+            # list of non-dicts would otherwise raise inside _msg_text and turn a
+            # client error into a 500.
+            if not isinstance(messages, list) or not all(
+                isinstance(m, dict) for m in messages
+            ):
+                return create_error_response(
+                    "'messages' must be an array of message objects",
+                    param="messages",
+                )
+
+            def _msg_text(msg):
+                c = msg.get("content", "")
+                if isinstance(c, str):
+                    return c
+                if isinstance(c, list):
+                    return " ".join(
+                        b.get("text", "") for b in c if b.get("type") == "text"
+                    )
+                return ""
+
+            inputs = [" ".join(_msg_text(m) for m in messages)]
+        else:
+            # Reject shapes the loop below cannot handle before normalizing: a dict
+            # would iterate its keys and an int/float/bool would raise TypeError,
+            # both turning a client error into a 500.
+            if not isinstance(input_data, (str, list)):
+                return create_error_response(
+                    "'input' must be a string, an array of strings, or an array of token ids",
+                    param="input",
+                )
+
+            # Normalize input to a list for uniform processing, mirroring vLLM:
+            # a bare string is one input, a list is many, and a list of ints is a
+            # single pre-tokenized input.
+            if isinstance(input_data, str) or (
+                isinstance(input_data, list) and input_data and all(isinstance(i, int) for i in input_data)
+            ):
+                inputs = [input_data]
+            else:
+                inputs = input_data
+
+        data_out = []
+        total_tokens = 0
+        for idx, item in enumerate(inputs):
+            if isinstance(item, str):
+                total_tokens += get_token_count(item)
+            elif isinstance(item, list):
+                # Pre-tokenized token ids
+                total_tokens += len(item)
+            else:
+                return create_error_response(
+                    "'input' must be a string, an array of strings, or an array of token ids",
+                    param="input",
+                )
+            # A fixed 8-dim vector stands in for the pooled output.
+            data_out.append({"index": idx, "object": "pooling", "data": [0.1] * 8})
+
+        response = {
+            "object": "list",
+            "data": data_out,
+            "model": model,
+            "usage": {"prompt_tokens": total_tokens, "total_tokens": total_tokens},
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in pooling endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
+_DECISION_FIELDS = {
+    "model",
+    "input",
+    "images",
+    "questions",
+    "temperature",
+    "chat_template_kwargs",
+    "prompt_format_version",
+    "return_prompt_token_ids",
+}
+
+
+def _decision_text(value):
+    """Render a decision text the way SGLang does: strings as-is, objects/arrays as compact JSON."""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _is_blank_decision_text(value):
+    return not (value.strip() if isinstance(value, str) else value)
+
+
+def _validate_decision_question(question):
+    """Return (names, error) for one question; names are the answer labels in order."""
+    if not isinstance(question, dict):
+        return None, "each question must be an object"
+    qtype = question.get("type")
+    if qtype not in ("choice", "score", "yes_no"):
+        return None, "question 'type' must be one of choice, score, yes_no"
+    qid = question.get("id")
+    if not isinstance(qid, str) or not qid.strip():
+        return None, "question 'id' must be a non-blank string"
+    text = question.get("question")
+    if not isinstance(text, (str, dict, list)) or _is_blank_decision_text(text):
+        return None, f"question {qid!r}: 'question' must be a non-blank string, object, or array"
+    if qtype == "choice":
+        options = question.get("options")
+        if not isinstance(options, list) or not 2 <= len(options) <= 26:
+            return None, f"question {qid!r}: 'options' must hold 2 to 26 items"
+        names = [o.get("name") if isinstance(o, dict) else None for o in options]
+        if not all(isinstance(n, str) and n.strip() for n in names):
+            return None, f"question {qid!r}: every option needs a non-blank 'name'"
+        if len({n.strip().casefold() for n in names}) != len(names):
+            return None, f"question {qid!r}: option names must be distinct"
+        return names, None
+    if qtype == "score":
+        levels = question.get("levels")
+        if not isinstance(levels, list) or not 2 <= len(levels) <= 10:
+            return None, f"question {qid!r}: 'levels' must hold 2 to 10 items"
+        return [str(i) for i in range(len(levels))], None
+    return ["yes", "no"], None
+
+
+@app.route("/v1/decisions", methods=["POST"])
+@auth_required
+def decisions():
+    """
+    Simulates SGLang's /v1/decisions endpoint: typed choice, score, and yes_no
+    questions about an input, answered by scoring without generation. Mirrors
+    SGLang's request validation (extra fields are rejected, so a stray `stream`
+    is an error) and its response shape. Probabilities are uniform. Usage
+    reports prompt_tokens and total_tokens only, like the engine, so the gateway
+    meters it on the language response path.
+    """
+    try:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return create_error_response("request body must be a JSON object")
+
+        extra = sorted(set(data) - _DECISION_FIELDS)
+        if extra:
+            return create_error_response(f"Extra inputs are not permitted: {', '.join(extra)}", param=extra[0])
+
+        input_data = data.get("input")
+        if not isinstance(input_data, (str, dict, list)) or _is_blank_decision_text(input_data):
+            return create_error_response(
+                "'input' must be a non-blank string, object, or array", param="input"
+            )
+
+        questions = data.get("questions")
+        if not isinstance(questions, list) or not questions:
+            return create_error_response("'questions' must be a non-empty array", param="questions")
+
+        input_text = _decision_text(input_data)
+        input_tokens = get_token_count(input_text)
+        answers = {}
+        prompt_tokens = 0
+        for question in questions:
+            names, error = _validate_decision_question(question)
+            if error:
+                return create_error_response(error, param="questions")
+            if question["id"] in answers:
+                return create_error_response(
+                    f"question id {question['id']!r} repeats another question", param="questions"
+                )
+
+            probability = 1.0 / len(names)
+            answer = {
+                "type": question["type"],
+                "probabilities": {name: probability for name in names},
+                "label_mass": 1.0,
+            }
+            if question["type"] == "choice":
+                answer["choice"] = names[0]
+            elif question["type"] == "score":
+                answer["score"] = sum(i * probability for i in range(len(names)))
+            answers[question["id"]] = answer
+            # Each question is scored against its own prompt: the input plus the question.
+            prompt_tokens += input_tokens + get_token_count(_decision_text(question))
+
+        response = {
+            "object": "decisions",
+            "model": data.get("model") or "default",
+            "prompt_format_version": 1,
+            "answers": answers,
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": 0,
+                "total_tokens": prompt_tokens,
+            },
+        }
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in decisions endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
+_SYSTEMONE_QUESTION_FIELDS = {"type", "instructions", "criteria"}
+# /v1/decisions fields that SGLang refuses by name on /v1/systemone rather than ignoring.
+_SYSTEMONE_REFUSED_FIELDS = ("temperature", "prompt_format_version", "return_prompt_token_ids")
+
+
+def _validate_systemone_question(question):
+    """Return (names, legend, error) for one question; names are the answer labels in order."""
+    if not isinstance(question, dict):
+        return None, None, "a question must be an object"
+    extra = sorted(set(question) - _SYSTEMONE_QUESTION_FIELDS)
+    if extra:
+        return None, None, f"Extra inputs are not permitted: {', '.join(extra)}"
+    instructions = question.get("instructions")
+    if instructions is not None and not isinstance(instructions, (str, dict, list)):
+        return None, None, "'instructions' must be a string, object, or array"
+    criteria = question.get("criteria")
+    qtype = question.get("type")
+    if qtype == "noul":
+        if criteria is not None and (not isinstance(criteria, dict) or set(criteria) - {"true", "false"}):
+            return None, None, "noul 'criteria' may only hold 'true' and 'false'"
+        if all(_is_blank_decision_text(v) for v in [instructions, *(criteria or {}).values()]):
+            return None, None, "a noul question needs instructions or a true or false description to decide on"
+        return ["yes", "no"], None, None
+    if qtype == "choice":
+        if not isinstance(criteria, dict) or not 1 <= len(criteria) <= 255:
+            return None, None, "'criteria' must map 1 to 255 option names to descriptions"
+        names = list(criteria)
+        if not all(n.strip() for n in names):
+            return None, None, "option names must be non-blank"
+        if len({n.strip().casefold() for n in names}) != len(names):
+            return None, None, "option names must be distinct"
+        return names, dict(criteria), None
+    if qtype == "score":
+        if not isinstance(criteria, list) or not 1 <= len(criteria) <= 10:
+            return None, None, "'criteria' must list 1 to 10 levels"
+        if not all(isinstance(v, (str, dict, list)) and not _is_blank_decision_text(v) for v in criteria):
+            return None, None, "every level must be a non-blank string, object, or array"
+        names = [str(i) for i in range(len(criteria))]
+        return names, dict(zip(names, criteria)), None
+    return None, None, "question 'type' must be one of noul, choice, score"
+
+
+@app.route("/v1/systemone", methods=["POST"])
+@auth_required
+def systemone():
+    """
+    Simulates SGLang's /v1/systemone endpoint: the System One compatible form of
+    /v1/decisions, with a `state` and a map of noul, choice, and score questions
+    keyed by caller ids. Mirrors SGLang's request checks (unknown top-level
+    fields are ignored, an empty `state` is accepted, schema errors are 422) and
+    its response shape. Probabilities are uniform. Usage reports input_tokens
+    and output_tokens with no total_tokens, like the engine, so the gateway has
+    to derive the total to meter it.
+    """
+    try:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return create_error_response("request body must be a JSON object", status_code=422)
+
+        for field in _SYSTEMONE_REFUSED_FIELDS:
+            if data.get(field) is not None:
+                return create_error_response(
+                    f"{field} is not part of this API, use /v1/decisions for it", param=field, status_code=422
+                )
+
+        model = data.get("model")
+        if not isinstance(model, str):
+            return create_error_response("'model' must be a string", param="model", status_code=422)
+
+        state = data.get("state")
+        if not isinstance(state, (str, dict, list)):
+            return create_error_response(
+                "'state' must be a string, object, or array", param="state", status_code=422
+            )
+
+        questions = data.get("questions")
+        if not isinstance(questions, dict) or not questions:
+            return create_error_response(
+                "'questions' must be a non-empty object", param="questions", status_code=422
+            )
+
+        state_tokens = get_token_count(_decision_text(state))
+        answers = {}
+        input_tokens = 0
+        for question_id, question in questions.items():
+            names, legend, error = _validate_systemone_question(question)
+            if error:
+                return create_error_response(
+                    f"question {question_id!r}: {error}", param="questions", status_code=422
+                )
+
+            probability = 1.0 / len(names)
+            confidence = 1.0 if len(names) == 1 else 0.0
+            probabilities = {name: probability for name in names}
+            if question["type"] == "noul":
+                answer = {"type": "noul", "noul": probability, "x_label_mass": 1.0}
+            elif question["type"] == "choice":
+                answer = {
+                    "type": "choice",
+                    "choice": names[0],
+                    "confidence": confidence,
+                    "probabilities": probabilities,
+                    "x_label_mass": 1.0,
+                }
+            else:
+                answer = {
+                    "type": "score",
+                    "score": sum(i * probability for i in range(len(names))),
+                    "confidence": confidence,
+                    "legend": legend,
+                    "probabilities": probabilities,
+                    "x_label_mass": 1.0,
+                }
+            answers[question_id] = answer
+            # Each question is scored against its own prompt, so the state counts once per question.
+            input_tokens += state_tokens + get_token_count(_decision_text(question))
+
+        # SGLang reports the served model's name here, whatever name the request used.
+        response = {
+            "model": model,
+            "answers": answers,
+            "usage": {"input_tokens": input_tokens, "output_tokens": 0},
+        }
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in systemone endpoint: {e}")
+        return create_error_response(
+            "The server had an error while processing your request. Sorry about that!",
+            error_type="api_error",
+            status_code=500
+        )
+
+
 @app.route("/detokenize", methods=["POST"])
-@auth.login_required
+@auth_required
 def detokenize():
     """
     Simulates the detokenize endpoint.
@@ -2271,7 +3588,7 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Failed to load k8s config: {e}")
 
-        app.run(host="0.0.0.0", port=8000)
+        app.run(host="0.0.0.0", port=SERVER_PORT)
 
     if simulator is not None:
         simulator.stop()

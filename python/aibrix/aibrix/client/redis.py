@@ -155,6 +155,12 @@ class AsyncRedis(Protocol):
         value: bytes | bytearray | memoryview | str | int | float,
     ) -> Optional[int]: ...
 
+    async def zscore(
+        self,
+        name: bytes | str | memoryview,
+        value: bytes | bytearray | memoryview | str | int | float,
+    ) -> Optional[float]: ...
+
     async def zrem(
         self,
         name: bytes | str | memoryview,

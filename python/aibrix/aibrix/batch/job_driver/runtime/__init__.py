@@ -28,6 +28,8 @@ These re-exports keep ``from aibrix.batch.job_driver.runtime import X`` stable.
 
 from aibrix.batch.job_driver.runtime.base import (
     _RUNTIME_FACTORIES,
+    RUNTIME_WAIT_MODE_PROVISION,
+    RUNTIME_WAIT_MODE_RECONNECT,
     AsyncRuntimeSession,
     Completion,
     Endpoint,
@@ -48,6 +50,8 @@ __all__ = [
     "NoopRuntime",
     "Runtime",
     "RuntimeBase",
+    "RUNTIME_WAIT_MODE_PROVISION",
+    "RUNTIME_WAIT_MODE_RECONNECT",
     "create_runtime",
     "register_runtime",
     "registered_runtimes",

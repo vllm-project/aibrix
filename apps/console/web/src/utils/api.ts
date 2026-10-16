@@ -66,10 +66,12 @@ export type JobEndpoint =
   | '/v1/embeddings'
   | '/v1/rerank';
 
+export type JobCompletionWindow = '1h' | '2h' | '6h' | '12h' | '24h';
+
 export interface CreateJobRequest {
   inputDataset: string;
   endpoint: JobEndpoint;
-  completionWindow?: '24h';
+  completionWindow?: JobCompletionWindow;
   name: string;
   // ModelDeploymentTemplate binding picked by the create-job wizard. The SDK
   // path may omit these and rely on metadata-service-side resolution via
@@ -78,6 +80,40 @@ export interface CreateJobRequest {
   modelTemplateVersion?: string;
   // Model the template was picked under (wizard step 1). 
   modelId?: string;
+  resourceRequest?: JobResourceRequest;
+  // Per-job smart-client controls, forwarded to extra_body.aibrix.client.
+  client?: JobClientConfig;
+}
+
+export interface JobResourceRequest {
+  replicas?: number;
+  providerConfig?: Record<string, unknown>;
+}
+
+export interface JobCapabilities {
+  provider: string;
+  resourceRequest: {
+    minReplicas: number;
+    maxReplicas: number;
+  };
+}
+
+// JobClientConfig mirrors the metadata-service aibrix.client block. All fields
+// optional; omitted ones fall back to metadata-service env defaults.
+export interface JobClientConfig {
+  maxConcurrency?: number;       // absolute in-flight cap, 1..1024
+  adaptiveConcurrency?: boolean; // grow concurrency adaptively
+  adaptiveMaxFactor?: number;    // adaptive growth factor, >= 1
+  adaptiveHealthyWindow?: number; // healthy completions per growth step, >= 1
+  adaptiveAdditiveIncrease?: number; // minimum probe and post-probe growth step, >= 1
+  retryPolicy?: JobClientRetryPolicy;
+}
+
+export interface JobClientRetryPolicy {
+  maxRetries?: number;             // per-request retries, >= 0
+  baseDelaySeconds?: number;       // backoff base, >= 0
+  maxDelaySeconds?: number;        // backoff ceiling, >= 0
+  noEndpointMaxRetries?: number;   // retries while no endpoint, >= 0
 }
 
 export interface ListJobsResponse {
@@ -89,15 +125,80 @@ export interface ListJobsResponse {
 
 export interface CreateDeploymentRequest {
   name: string;
-  baseModel: string;
-  region: string;
-  acceleratorType: string;
-  acceleratorCount: number;
-  quantization?: string;
-  minReplicas: number;
+  template: DeploymentTemplateRef;
+  implementation: DeploymentImplementationRef;
+  overrides?: DeploymentOverrides;
+}
+
+export interface DeploymentTemplateRef {
+  modelId: string;
+  templateId: string;
+}
+
+export interface DeploymentImplementationRef {
+  kind: string;
+  profile?: string;
+}
+
+export interface DeploymentOverrides {
+  region?: string;
+  minReplicas?: number;
   maxReplicas?: number;
   enableAutoScaling?: boolean;
   enableMultiLora?: boolean;
+  engineArgs?: Record<string, string>;
+}
+
+export type ModelAdapterPlacement = 'all' | 'single';
+
+export interface ModelAdapterTarget {
+  name: string;
+  namespace: string;
+  kind: 'Deployment';
+  apiVersion: string;
+  baseModel: string;
+  engine: string;
+  port: number;
+  readyReplicas: number;
+  desiredReplicas: number;
+  selector: string;
+  updateStrategy: string;
+  createdAt: string;
+}
+
+export interface ModelAdapterPod {
+  name: string;
+  ready: string;
+  status: string;
+  restarts: number;
+  createdAt: string;
+  podIp: string;
+  node: string;
+}
+
+export interface ModelAdapter {
+  name: string;
+  namespace: string;
+  apiVersion: string;
+  artifactUrl: string;
+  baseModel: string;
+  schedulerName: string;
+  placement: ModelAdapterPlacement;
+  phase: string;
+  readyReplicas: number;
+  desiredReplicas: number;
+  candidates: number;
+  createdAt: string;
+  podSelector: string;
+  target?: ModelAdapterTarget;
+  instances: ModelAdapterPod[];
+}
+
+export interface CreateModelAdapterRequest {
+  name: string;
+  artifactUrl: string;
+  deploymentName: string;
+  placement: ModelAdapterPlacement;
 }
 
 // --- Model Deployment Templates ---
@@ -326,7 +427,7 @@ export function camelToSnake<T>(data: unknown): T {
 
 // --- Fetch helper ---
 
-class APIError extends Error {
+export class APIError extends Error {
   status: number;
 
   constructor(message: string, status: number) {
@@ -375,8 +476,8 @@ async function apiFetch<T>(
       // the 401 body during the navigation.
       return new Promise<T>(() => {});
     }
-    const text = await response.text().catch(() => 'Unknown error');
-    throw new APIError(text, response.status);
+    const message = await readAPIErrorMessage(response);
+    throw new APIError(message, response.status);
   }
 
   if (response.status === 204) {
@@ -385,6 +486,29 @@ async function apiFetch<T>(
 
   const json = await response.json();
   return snakeToCamel<T>(json);
+}
+
+async function readAPIErrorMessage(response: Response): Promise<string> {
+  const fallback = response.statusText || 'Unknown error';
+  const raw = await response.text().catch(() => '');
+  if (!raw) return fallback;
+
+  try {
+    const parsed = JSON.parse(raw) as {
+      error?: { message?: string };
+      message?: string;
+    };
+    if (typeof parsed.error?.message === 'string' && parsed.error.message.trim() !== '') {
+      return parsed.error.message;
+    }
+    if (typeof parsed.message === 'string' && parsed.message.trim() !== '') {
+      return parsed.message;
+    }
+  } catch {
+    // Fall back to the raw body for non-JSON error payloads.
+  }
+
+  return raw;
 }
 
 function buildQuery(params: Record<string, string | undefined>): string {
@@ -409,25 +533,40 @@ export async function listJobs(params?: { after?: string; limit?: number }): Pro
   return normalizeJobsResponse(await apiFetch<ListJobsResponse>(`/api/v1/jobs${query}`));
 }
 
-// Fetch every job by following the cursor until the server reports no more pages.
-export async function listAllJobs(): Promise<Job[]> {
-  const PAGE_LIMIT = 200;
-  const MAX_PAGES = 50;
+export interface ListAllJobsOptions {
+  pageLimit?: number;
+  onPage?: (jobs: Job[], hasMore: boolean) => void;
+}
+
+// Fetch every job by following the cursor until the server reports no more
+// pages. onPage lets list views render progressively while older pages load.
+export async function listAllJobs(options: ListAllJobsOptions = {}): Promise<Job[]> {
+  const pageLimit = options.pageLimit ?? 200;
+  const maxPages = 50;
   const all: Job[] = [];
   let after: string | undefined;
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const res = await listJobs({ after, limit: PAGE_LIMIT });
+  for (let page = 0; page < maxPages; page++) {
+    const res = await listJobs({ after, limit: pageLimit });
     const batch = res.jobs ?? [];
     all.push(...batch);
     const last = batch[batch.length - 1];
-    if (!res.hasMore || !last?.id) break;
+    const hasMore = res.hasMore && !!last?.id;
+    options.onPage?.([...all], hasMore);
+    if (!hasMore) break;
     after = last.id;
   }
   return all;
 }
 
-export async function getJob(id: string): Promise<Job> {
-  return normalizeJob(await apiFetch<Job>(`/api/v1/jobs/${encodeURIComponent(id)}`));
+export async function getJobCapabilities(): Promise<JobCapabilities> {
+  return apiFetch<JobCapabilities>('/api/v1/config/job-capabilities');
+}
+
+export async function getJob(id: string, options?: { includeDeployment?: boolean }): Promise<Job> {
+  const query = buildQuery({
+    include_deployment: options?.includeDeployment ? 'true' : undefined,
+  });
+  return normalizeJob(await apiFetch<Job>(`/api/v1/jobs/${encodeURIComponent(id)}${query}`));
 }
 
 export async function createJob(req: CreateJobRequest): Promise<Job> {
@@ -469,6 +608,37 @@ export async function deleteDeployment(id: string): Promise<void> {
   });
 }
 
+// --- ModelAdapters ---
+
+export async function listModelAdapters(): Promise<ModelAdapter[]> {
+  const data = await apiFetch<{ modelAdapters: ModelAdapter[] }>('/api/v1/model-adapters');
+  return data.modelAdapters || [];
+}
+
+export async function getModelAdapter(name: string): Promise<ModelAdapter> {
+  return apiFetch<ModelAdapter>(`/api/v1/model-adapters/${encodeURIComponent(name)}`);
+}
+
+export async function createModelAdapter(
+  request: CreateModelAdapterRequest,
+): Promise<ModelAdapter> {
+  return apiFetch<ModelAdapter>('/api/v1/model-adapters', {
+    method: 'POST',
+    body: JSON.stringify(camelToSnake(request)),
+  });
+}
+
+export async function deleteModelAdapter(name: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/model-adapters/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function listModelAdapterTargets(): Promise<ModelAdapterTarget[]> {
+  const data = await apiFetch<{ targets: ModelAdapterTarget[] }>('/api/v1/model-adapter-targets');
+  return data.targets || [];
+}
+
 // --- Models ---
 
 export async function listModels(search?: string, category?: string): Promise<Model[]> {
@@ -479,6 +649,51 @@ export async function listModels(search?: string, category?: string): Promise<Mo
 
 export async function getModel(id: string): Promise<Model> {
   return apiFetch<Model>(`/api/v1/models/${encodeURIComponent(id)}`);
+}
+
+export interface CreateModelRequest {
+  id?: string;
+  name: string;
+  iconBg?: string;
+  iconText?: string;
+  iconTextColor?: string;
+  categories?: string[];
+  isNew?: boolean;
+  pricing?: {
+    uncachedInput?: string;
+    cachedInput?: string;
+    output?: string;
+    perMinute?: string;
+    perImage?: string;
+  };
+  contextLength?: string;
+  description?: string;
+  metadata?: {
+    state?: string;
+    createdOn?: string;
+    providerName?: string;
+    huggingFace?: string;
+  };
+  specification?: {
+    calibrated?: boolean;
+    mixtureOfExperts?: boolean;
+    parameters?: string;
+  };
+  tags?: string[];
+  servingName?: string;
+}
+
+export async function createModel(req: CreateModelRequest): Promise<Model> {
+  const body = camelToSnake<Record<string, unknown>>(req);
+  // metadata is in PRESERVE_VALUE_KEYS so inner keys are not converted.
+  // Override with properly converted keys for structured ModelMetadata.
+  if (req.metadata) {
+    body.metadata = camelToSnake(req.metadata);
+  }
+  return apiFetch<Model>('/api/v1/models', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 }
 
 // --- Model Deployment Templates ---

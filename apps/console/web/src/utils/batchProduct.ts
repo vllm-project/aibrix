@@ -55,6 +55,28 @@ export interface BatchJobSummary {
   totalRequests: number;
 }
 
+export type CompletionWindowOption = '1h' | '2h' | '6h' | '12h' | '24h';
+
+export const DEFAULT_COMPLETION_WINDOW: CompletionWindowOption = '24h';
+
+export const COMPLETION_WINDOW_OPTIONS: Array<{
+  value: CompletionWindowOption;
+  label: string;
+}> = [
+  { value: '1h', label: '1 hr' },
+  { value: '2h', label: '2 hr' },
+  { value: '6h', label: '6 hr' },
+  { value: '12h', label: '12 hr' },
+  { value: '24h', label: '24 hr' },
+];
+
+export interface BatchTiming {
+  deadlineAt: number | null;
+  terminalAt: number | null;
+  remainingSeconds: number | null;
+  elapsedSeconds: number | null;
+}
+
 export function formatModelSelectionLabel(name: string, servingName?: string): string {
   const displayName = name.trim();
   const inferenceName = (servingName || '').trim();
@@ -62,6 +84,74 @@ export function formatModelSelectionLabel(name: string, servingName?: string): s
   if (!displayName) return inferenceName;
   if (!inferenceName || inferenceName === displayName) return displayName;
   return `${displayName} (${inferenceName})`;
+}
+
+export function parseCompletionWindowSeconds(value?: string): number | null {
+  const normalized = (value || '').trim();
+  if (!COMPLETION_WINDOW_OPTIONS.some(option => option.value === normalized)) return null;
+  return Number(normalized.replace(/h$/, '')) * 60 * 60;
+}
+
+function positiveUnix(value?: number): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+export function getBatchTiming(
+  job: Pick<
+    Job,
+    | 'status'
+    | 'createdAt'
+    | 'completionWindow'
+    | 'expiresAt'
+    | 'completedAt'
+    | 'failedAt'
+    | 'expiredAt'
+    | 'cancelledAt'
+    | 'resourceFailedAt'
+    | 'submitFailedAt'
+  >,
+  nowSec: number = Math.floor(Date.now() / 1000),
+): BatchTiming {
+  const createdAt = positiveUnix(job.createdAt);
+  const windowSeconds = parseCompletionWindowSeconds(job.completionWindow);
+  const deadlineAt =
+    positiveUnix(job.expiresAt) ??
+    (createdAt !== null && windowSeconds !== null ? createdAt + windowSeconds : null);
+  const terminalAt =
+    job.status === 'completed'
+      ? positiveUnix(job.completedAt)
+      : job.status === 'failed'
+        ? positiveUnix(job.failedAt)
+        : job.status === 'resource_failed'
+          ? positiveUnix(job.resourceFailedAt) ?? positiveUnix(job.failedAt)
+          : job.status === 'submit_failed'
+            ? positiveUnix(job.submitFailedAt) ?? positiveUnix(job.failedAt)
+        : job.status === 'expired'
+          ? positiveUnix(job.expiredAt)
+          : job.status === 'cancelled'
+            ? positiveUnix(job.cancelledAt)
+            : null;
+  const remainingSeconds =
+    terminalAt === null && deadlineAt !== null ? Math.max(0, deadlineAt - nowSec) : null;
+  const elapsedSeconds =
+    createdAt !== null ? Math.max(0, (terminalAt ?? nowSec) - createdAt) : null;
+
+  return {
+    deadlineAt,
+    terminalAt,
+    remainingSeconds,
+    elapsedSeconds,
+  };
+}
+
+export function formatDuration(seconds: number | null | undefined): string {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return '—';
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
 }
 
 export function getCreateJobReadiness(input: CreateJobReadinessInput): CreateJobReadiness {
@@ -105,8 +195,49 @@ export function getBatchJobSummary(
   );
 }
 
-export function getBatchDatasetRows(job: Pick<Job, 'status' | 'inputDataset' | 'outputDataset' | 'errorDataset'>): BatchDatasetRow[] {
+function hasPositiveUnix(value?: number): boolean {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function isFinalizedAfterFinalizing(
+  job: Pick<
+    Job,
+    | 'finalizingAt'
+    | 'completedAt'
+    | 'failedAt'
+    | 'expiredAt'
+    | 'cancelledAt'
+    | 'errors'
+  >,
+): boolean {
+  const finalized =
+    hasPositiveUnix(job.completedAt) ||
+    hasPositiveUnix(job.failedAt) ||
+    hasPositiveUnix(job.expiredAt) ||
+    hasPositiveUnix(job.cancelledAt);
+  const hasFinalizingFailedError = (job.errors || []).some(
+    (error) => error && error.code === 'finalizing_failed',
+  );
+  return hasPositiveUnix(job.finalizingAt) && finalized && !hasFinalizingFailedError;
+}
+
+export function getBatchDatasetRows(
+  job: Pick<
+    Job,
+    | 'status'
+    | 'inputDataset'
+    | 'outputDataset'
+    | 'errorDataset'
+    | 'finalizingAt'
+    | 'completedAt'
+    | 'failedAt'
+    | 'expiredAt'
+    | 'cancelledAt'
+    | 'errors'
+  >,
+): BatchDatasetRow[] {
   const rows: BatchDatasetRow[] = [];
+  const finalizedAfterFinalizing = isFinalizedAfterFinalizing(job);
   if (job.inputDataset) {
     rows.push({
       key: 'input',
@@ -115,7 +246,7 @@ export function getBatchDatasetRows(job: Pick<Job, 'status' | 'inputDataset' | '
       unavailableReason: '',
     });
   }
-  if (job.outputDataset || job.status === 'completed') {
+  if (job.outputDataset || job.status === 'completed' || finalizedAfterFinalizing) {
     rows.push({
       key: 'output',
       label: 'Output Dataset',
@@ -129,7 +260,8 @@ export function getBatchDatasetRows(job: Pick<Job, 'status' | 'inputDataset' | '
     job.status === 'expired' ||
     job.status === 'cancelled' ||
     job.status === 'resource_failed' ||
-    job.status === 'submit_failed'
+    job.status === 'submit_failed' ||
+    finalizedAfterFinalizing
   ) {
     rows.push({
       key: 'error',

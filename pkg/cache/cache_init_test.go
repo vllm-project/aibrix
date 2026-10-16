@@ -378,3 +378,54 @@ func TestInitWithOptions_KVSyncBehavior(t *testing.T) {
 		})
 	}
 }
+
+func TestServiceIdentity(t *testing.T) {
+	scenarios := []struct {
+		name     string
+		opts     InitOptions
+		expected string
+	}{
+		{
+			name: "gateway without redis",
+			opts: InitOptions{
+				IsGateway: true,
+			},
+			expected: "gateway",
+		},
+		{
+			name: "gateway with KV sync disabled is still the gateway",
+			opts: InitOptions{
+				IsGateway:    true,
+				EnableKVSync: false,
+				RedisClient:  &redis.Client{},
+			},
+			expected: "gateway",
+		},
+		{
+			name: "metadata service",
+			opts: InitOptions{
+				RedisClient: &redis.Client{},
+			},
+			expected: "metadata",
+		},
+		{
+			name: "EnableKVSync alone does not imply gateway",
+			opts: InitOptions{
+				EnableKVSync: true,
+				RedisClient:  &redis.Client{},
+			},
+			expected: "metadata",
+		},
+		{
+			name:     "controllers",
+			opts:     InitOptions{},
+			expected: "controllers",
+		},
+	}
+
+	for _, sc := range scenarios {
+		t.Run(sc.name, func(t *testing.T) {
+			assert.Equal(t, sc.expected, serviceIdentity(sc.opts))
+		})
+	}
+}

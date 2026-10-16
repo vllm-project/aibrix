@@ -63,6 +63,11 @@ func NewServer(t testing.TB, namespace string, pods []corev1.Pod, adapters []mod
 				TypeMeta: metav1.TypeMeta{APIVersion: "model.aibrix.ai/v1alpha1", Kind: "ModelAdapterList"},
 				ListMeta: metav1.ListMeta{ResourceVersion: "1"}, Items: adapters,
 			}
+		case "/apis/model.aibrix.ai/v1alpha1/namespaces/" + namespace + "/modelclaims":
+			object = &modelv1alpha1.ModelClaimList{
+				TypeMeta: metav1.TypeMeta{APIVersion: "model.aibrix.ai/v1alpha1", Kind: "ModelClaimList"},
+				ListMeta: metav1.ListMeta{ResourceVersion: "1"},
+			}
 		default:
 			t.Errorf("unexpected discovery path: %s", r.URL.Path)
 			http.NotFound(w, r)

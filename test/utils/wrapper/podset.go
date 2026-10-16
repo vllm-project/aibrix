@@ -107,12 +107,12 @@ func (w *PodSetWrapper) Labels(labels map[string]string) *PodSetWrapper {
 		w.podSet.Labels = make(map[string]string)
 	}
 	if w.podSet.Spec.Template.Labels == nil {
-		w.podSet.Spec.Template.ObjectMeta.Labels = make(map[string]string)
+		w.podSet.Spec.Template.Labels = make(map[string]string)
 	}
 
 	for k, v := range labels {
 		w.podSet.Labels[k] = v
-		w.podSet.Spec.Template.ObjectMeta.Labels[k] = v
+		w.podSet.Spec.Template.Labels[k] = v
 	}
 	return w
 }
@@ -122,12 +122,12 @@ func (w *PodSetWrapper) Annotations(annotations map[string]string) *PodSetWrappe
 	if w.podSet.Annotations == nil {
 		w.podSet.Annotations = make(map[string]string)
 	}
-	if w.podSet.Spec.Template.ObjectMeta.Annotations == nil {
-		w.podSet.Spec.Template.ObjectMeta.Annotations = make(map[string]string)
+	if w.podSet.Spec.Template.Annotations == nil {
+		w.podSet.Spec.Template.Annotations = make(map[string]string)
 	}
 	for k, v := range annotations {
 		w.podSet.Annotations[k] = v
-		w.podSet.Spec.Template.ObjectMeta.Annotations[k] = v
+		w.podSet.Spec.Template.Annotations[k] = v
 	}
 	return w
 }

@@ -35,13 +35,21 @@ func int32SliceToBytes(tokens []int32) []byte {
 	return result
 }
 
+// removePrefixCall records the arguments of a RemovePrefix invocation.
+type removePrefixCall struct {
+	modelName string
+	loraID    int64
+	podKey    string
+}
+
 // mockSyncIndexerWithErrors allows simulating errors
 type mockSyncIndexerWithErrors struct {
-	blockStoredErr  error
-	blockRemovedErr error
-	removePrefixErr error
-	storedEvents    []BlockStoredEvent
-	removedEvents   []BlockRemovedEvent
+	blockStoredErr    error
+	blockRemovedErr   error
+	removePrefixErr   error
+	storedEvents      []BlockStoredEvent
+	removedEvents     []BlockRemovedEvent
+	removePrefixCalls []removePrefixCall
 }
 
 func (m *mockSyncIndexerWithErrors) ProcessBlockStored(ctx context.Context, event BlockStoredEvent) error {
@@ -55,6 +63,7 @@ func (m *mockSyncIndexerWithErrors) ProcessBlockRemoved(ctx context.Context, eve
 }
 
 func (m *mockSyncIndexerWithErrors) RemovePrefix(ctx context.Context, modelName string, loraID int64, podKey string) error {
+	m.removePrefixCalls = append(m.removePrefixCalls, removePrefixCall{modelName, loraID, podKey})
 	return m.removePrefixErr
 }
 
@@ -170,10 +179,19 @@ func TestHandleBlockRemovedEvent(t *testing.T) {
 	}
 }
 
-// Test HandleEvent with AllBlocksClearedEvent
+// Test HandleEvent with AllBlocksClearedEvent.
+// The engine wiped its whole prefix cache (e.g. /reset_prefix_cache, OOM reset,
+// /sleep), so the pod must be purged from the cross-pod prefix index. Otherwise
+// the prefix router keeps routing to a pod whose cache is now cold (#2287).
 func TestHandleAllBlocksClearedEvent(t *testing.T) {
+	syncIndexer := &mockSyncIndexerWithErrors{}
+	syncProvider := &mockSyncProvider{
+		indexer: syncIndexer,
+	}
+
 	manager := &Manager{
-		ctx: context.Background(),
+		syncProvider: syncProvider,
+		ctx:          context.Background(),
 	}
 
 	handler := &eventHandler{
@@ -187,10 +205,82 @@ func TestHandleAllBlocksClearedEvent(t *testing.T) {
 		ModelName: "test-model",
 	}
 
-	// Should not return error (no-op implementation)
 	err := handler.HandleEvent(event)
 	if err != nil {
 		t.Errorf("HandleEvent failed: %v", err)
+	}
+
+	// The pod's prefix entries must be removed exactly once, scoped to the
+	// handler's model/lora/pod.
+	if len(syncIndexer.removePrefixCalls) != 1 {
+		t.Fatalf("Expected 1 RemovePrefix call, got %d", len(syncIndexer.removePrefixCalls))
+	}
+	call := syncIndexer.removePrefixCalls[0]
+	if call.modelName != "test-model" {
+		t.Errorf("Expected model name 'test-model', got %s", call.modelName)
+	}
+	if call.loraID != 789 {
+		t.Errorf("Expected LoraID 789, got %d", call.loraID)
+	}
+	if call.podKey != "default/test-pod" {
+		t.Errorf("Expected pod key 'default/test-pod', got %s", call.podKey)
+	}
+}
+
+// A temporary error fetching the sync indexer must be swallowed (no error
+// returned, no RemovePrefix call), matching the BlockStored/BlockRemoved paths.
+func TestHandleAllBlocksClearedTemporaryError(t *testing.T) {
+	syncIndexer := &mockSyncIndexerWithErrors{}
+	syncProvider := &mockSyncProvider{
+		indexer: syncIndexer,
+		err:     ErrIndexerNotInitialized,
+	}
+
+	manager := &Manager{
+		syncProvider: syncProvider,
+		ctx:          context.Background(),
+	}
+
+	handler := &eventHandler{
+		manager:   manager,
+		podKey:    "default/test-pod",
+		modelName: "test-model",
+		loraID:    789,
+	}
+
+	err := handler.HandleEvent(&kvcache.AllBlocksClearedEvent{ModelName: "test-model"})
+	if err != nil {
+		t.Errorf("Expected nil on temporary error, got %v", err)
+	}
+	if len(syncIndexer.removePrefixCalls) != 0 {
+		t.Errorf("Expected no RemovePrefix calls on temporary error, got %d", len(syncIndexer.removePrefixCalls))
+	}
+}
+
+// A RemovePrefix failure must propagate so the subscriber can react.
+func TestHandleAllBlocksClearedProcessingError(t *testing.T) {
+	syncIndexer := &mockSyncIndexerWithErrors{
+		removePrefixErr: errors.New("indexer down"),
+	}
+	syncProvider := &mockSyncProvider{
+		indexer: syncIndexer,
+	}
+
+	manager := &Manager{
+		syncProvider: syncProvider,
+		ctx:          context.Background(),
+	}
+
+	handler := &eventHandler{
+		manager:   manager,
+		podKey:    "default/test-pod",
+		modelName: "test-model",
+		loraID:    789,
+	}
+
+	err := handler.HandleEvent(&kvcache.AllBlocksClearedEvent{ModelName: "test-model"})
+	if err == nil {
+		t.Error("Expected error to propagate from RemovePrefix, got nil")
 	}
 }
 

@@ -282,7 +282,12 @@ func verifyPermissions(t *testing.T, install installation, objects []map[string]
 		if adapterWatch != nil {
 			adapterWatch.Stop()
 		}
-		for _, err := range []error{podListErr, podWatchErr, adapterListErr, adapterWatchErr} {
+		_, claimListErr := adapters.ModelV1alpha1().ModelClaims(ns).List(ctx, metav1.ListOptions{})
+		claimWatch, claimWatchErr := adapters.ModelV1alpha1().ModelClaims(ns).Watch(ctx, metav1.ListOptions{})
+		if claimWatch != nil {
+			claimWatch.Stop()
+		}
+		for _, err := range []error{podListErr, podWatchErr, adapterListErr, adapterWatchErr, claimListErr, claimWatchErr} {
 			if ns == namespace {
 				require.NoError(t, err)
 			} else {
@@ -320,13 +325,17 @@ func verifyPermissions(t *testing.T, install installation, objects []map[string]
 	defer close(stop)
 	var mu sync.Mutex
 	var pods []*corev1.Pod
-	err = discovery.NewKubernetesProvider(gatewayConfig, namespace).Watch(func(event discovery.WatchEvent) {
+	provider := discovery.NewKubernetesProvider(gatewayConfig, namespace).
+		WithModelClaims().WithModelListHealth(time.Minute)
+	err = provider.WatchApplied(func(event discovery.WatchEvent) bool {
 		if pod, ok := event.Object.(*corev1.Pod); ok {
 			mu.Lock()
 			defer mu.Unlock()
 			pods = append(pods, pod)
 		}
+		return true
 	}, stop)
+	require.NoError(t, provider.ModelListHealth().EnsureVerified(ctx))
 	require.NoError(t, err)
 	mu.Lock()
 	require.Len(t, pods, 1)

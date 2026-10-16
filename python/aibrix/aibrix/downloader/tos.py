@@ -112,10 +112,22 @@ class TOSDownloaderV1(BaseDownloader):
         objects_out = self.client.list_objects_type2(
             self.bucket_name, prefix=self.bucket_path, delimiter="/"
         )
-        if (
-            len(objects_out.contents) == 1
-            and objects_out.contents[0].key == self.bucket_path
-        ):
+        # Bare siblings such as `models/llama.json` share the listing with the
+        # exact key, so look for the exact key rather than a single result.
+        contents = getattr(objects_out, "contents", None) or []
+        if any(obj.key == self.bucket_path for obj in contents):
+            prefix = f"{self.bucket_path}/"
+            if any(
+                child.prefix.startswith(prefix)
+                for child in getattr(objects_out, "common_prefixes", None) or []
+            ):
+                return True
+            if getattr(objects_out, "is_truncated", False):
+                # Children may be beyond the broad listing's result limit.
+                children = self.client.list_objects_type2(
+                    self.bucket_name, prefix=prefix, max_keys=1
+                )
+                return bool(children.contents)
             return False
         return True
 
@@ -188,14 +200,21 @@ class TOSDownloaderV1(BaseDownloader):
             local_path=local_path, file_name=relative_path, source=self._source.value
         )
 
-        if not need_to_download(local_file, meta_data_file, file_size, etag):
+        if not need_to_download(
+            local_file, meta_data_file, file_size, etag, self.force_download
+        ):
             return
         num_threads = (
             self.download_extra_config.num_threads or envs.DOWNLOADER_NUM_THREADS
         )
         task_num = num_threads if enable_range else 1
 
-        download_kwargs = {"part_size": self.download_extra_config.part_chunksize}
+        part_size = (
+            self.download_extra_config.part_chunksize or envs.DOWNLOADER_PART_CHUNKSIZE
+        )
+        download_kwargs = {}
+        if part_size is not None:
+            download_kwargs["part_size"] = part_size
 
         # download file
         total_length = meta_data.content_length

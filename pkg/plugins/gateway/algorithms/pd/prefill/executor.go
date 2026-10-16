@@ -17,6 +17,7 @@ limitations under the License.
 package prefill
 
 import (
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
 )
@@ -28,8 +29,13 @@ type LogContext struct {
 }
 
 // PrefillExecutor executes the prefill phase of a disaggregated-inference request.
-// Implementations are responsible for payload preparation, HTTP dispatch (async or
-// sync depending on the engine), and tracker lifecycle.
+// Implementations are responsible for payload preparation and HTTP dispatch (async or
+// sync depending on the engine). PrefillRequestTracker registration happens at pod
+// selection time; the executor removes the entry when prefill completes.
+//
+// Execute takes the EngineHandler the router already resolved for this request,
+// so validation (Route) and dispatch (Execute) cannot end up using different
+// handlers for the same engine.
 type PrefillExecutor interface {
-	Execute(routingCtx *types.RoutingContext, prefillPod *v1.Pod, llmEngine string, logCtx LogContext) error
+	Execute(routingCtx *types.RoutingContext, prefillPod *v1.Pod, handler engine.EngineHandler, logCtx LogContext) error
 }

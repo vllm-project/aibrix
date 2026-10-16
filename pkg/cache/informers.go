@@ -18,11 +18,14 @@ package cache
 import (
 	"errors"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	atomic_ext "go.uber.org/atomic"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -106,22 +109,23 @@ func initControllerInformers(instance *Store, config *rest.Config, stopCh <-chan
 // getModelNameFromPod retrieves model name from pod labels first, then annotations.
 // This supports cases where model names contain characters invalid for K8s labels (e.g., '/').
 func getModelNameFromPod(pod *v1.Pod) (string, bool) {
-	// Try label first (standard case)
-	if modelName, ok := pod.Labels[modelIdentifier]; ok && modelName != "" {
-		return modelName, true
+	return constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
+}
+
+func (c *Store) modelClaimBindingsFromPod(pod *v1.Pod) map[string]utils.ModelClaimBinding {
+	if c.disableModelClaimBindings {
+		return nil
 	}
-	// Fallback to annotation (allows special characters like '/' in model paths)
-	if modelName, ok := pod.Annotations[modelIdentifier]; ok && modelName != "" {
-		return modelName, true
-	}
-	return "", false
+	return utils.ModelClaimBindingsFromPod(pod)
 }
 
 func (c *Store) addPod(obj interface{}) {
 	pod := obj.(*v1.Pod)
-	// only track pods with model deployments (check label first, then annotation)
+	// Track pods that serve a model either through the standard deployment label
+	// or through ModelClaim runtime annotations.
 	modelName, ok := getModelNameFromPod(pod)
-	if !ok {
+	modelClaims := c.modelClaimBindingsFromPod(pod)
+	if !ok && len(modelClaims) == 0 {
 		klog.V(4).InfoS("ignored pod without model label or annotation", "name", pod.Name)
 		return
 	}
@@ -135,7 +139,16 @@ func (c *Store) addPod(obj interface{}) {
 	defer c.mu.Unlock()
 
 	metaPod := c.addPodLocked(pod)
-	c.addPodAndModelMappingLocked(metaPod, modelName)
+	if ok {
+		c.addPodAndModelMappingLocked(metaPod, modelName)
+	}
+	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+	for servedModel, binding := range modelClaims {
+		c.modelClaims.set(podKey, servedModel, binding)
+		if binding.Port > 0 {
+			c.addPodAndModelMappingLocked(metaPod, servedModel)
+		}
+	}
 
 	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
 	c.debugInfo()
@@ -161,8 +174,10 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	_, oldOk := getModelNameFromPod(oldPod)
 	_, existed := c.metaPods.Load(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name)) // Make sure nothing left.
 	newModelName, newOk := getModelNameFromPod(newPod)
+	newModelClaims := c.modelClaimBindingsFromPod(newPod)
+	newHasModelInfo := newOk || len(newModelClaims) > 0
 
-	if !oldOk && !existed && !newOk {
+	if !oldOk && !existed && !newHasModelInfo {
 		return // No model information to track in either old or new pod
 	}
 
@@ -172,27 +187,55 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	// TODO: No in place update is handled here
 
 	// Remove old mappings if present, no adapter will be inherited. (Adapters will be rescaned and readded later)
+	// A model that loses its only pod stays in the cache until the new mappings are
+	// added below, so a status update of that pod does not reset the model's
+	// pending count and output predictor. This covers the pod's base model only:
+	// adapter models served just by this pod are still dropped here and re-added
+	// later by the adapter informer.
+	var emptiedModels []string
+	defer func() {
+		for _, modelName := range emptiedModels {
+			c.dropModelIfEmptyLocked(modelName)
+		}
+	}()
 	if oldOk || existed {
 		odlMetaPod := c.deletePodLocked(oldPod.Name, oldPod.Namespace)
 		if odlMetaPod != nil {
 			for _, modelName := range odlMetaPod.Models.Array() {
-				c.deletePodAndModelMappingLocked(odlMetaPod.Name, odlMetaPod.Namespace, modelName, 1)
+				if c.removePodModelMappingLocked(odlMetaPod.Name, odlMetaPod.Namespace, modelName, 1) {
+					emptiedModels = append(emptiedModels, modelName)
+				}
 			}
 		}
+		c.modelClaims.clearPod(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name))
 	}
 
 	// ignore worker pods
 	oldNodeType := oldPod.Labels[nodeType]
 	newNodeType := newPod.Labels[nodeType]
 	if oldNodeType == nodeWorker || newNodeType == nodeWorker {
+		c.clearPodMetricsBackoff(oldPod.Namespace, oldPod.Name)
+		c.clearPodMetricsScheduling(oldPod.Namespace, oldPod.Name)
 		klog.InfoS("ignored ray worker pod", "old pod", oldPod.Name, "new pod", newPod.Name)
 		return
 	}
 
 	// Add new mappings if present
-	if newOk && !newIsWorker {
+	if newHasModelInfo && !newIsWorker {
 		metaPod := c.addPodLocked(newPod)
-		c.addPodAndModelMappingLocked(metaPod, newModelName)
+		if newOk {
+			c.addPodAndModelMappingLocked(metaPod, newModelName)
+		}
+		newPodKey := utils.GeneratePodKey(newPod.Namespace, newPod.Name)
+		for servedModel, binding := range newModelClaims {
+			c.modelClaims.set(newPodKey, servedModel, binding)
+			if binding.Port > 0 {
+				c.addPodAndModelMappingLocked(metaPod, servedModel)
+			}
+		}
+	} else {
+		c.clearPodMetricsBackoff(oldPod.Namespace, oldPod.Name)
+		c.clearPodMetricsScheduling(oldPod.Namespace, oldPod.Name)
 	}
 
 	klog.V(4).Infof("POD UPDATED: %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
@@ -213,11 +256,13 @@ func (c *Store) deletePod(obj interface{}) {
 		pod = obj
 		namespace, name = obj.Namespace, obj.Name
 		_, hasModelInfo = getModelNameFromPod(obj)
+		hasModelInfo = hasModelInfo || len(c.modelClaimBindingsFromPod(obj)) > 0
 	case cache.DeletedFinalStateUnknown:
 		if p, ok := obj.Obj.(*v1.Pod); ok {
 			pod = p
 			namespace, name = p.Namespace, p.Name
 			_, hasModelInfo = getModelNameFromPod(p)
+			hasModelInfo = hasModelInfo || len(c.modelClaimBindingsFromPod(p)) > 0
 			break
 		}
 
@@ -251,8 +296,11 @@ func (c *Store) deletePod(obj interface{}) {
 			c.deletePodAndModelMappingLocked(name, namespace, modelName, 1)
 		}
 	}
+	c.modelClaims.clearPod(utils.GeneratePodKey(namespace, name))
 
-	rateCalculator.PurgeEntriesForPod(name)
+	c.clearPodMetricsBackoff(namespace, name)
+	c.clearPodMetricsScheduling(namespace, name)
+	rateCalculator.PurgeEntriesForPod(namespace, name)
 
 	klog.V(4).Infof("POD DELETED: %s/%s", namespace, name)
 	c.debugInfo()
@@ -266,6 +314,7 @@ func (c *Store) addModelAdapter(obj interface{}) {
 	for _, pod := range model.Status.Instances {
 		c.addPodAndModelMappingLockedByName(pod, model.Namespace, model.Name)
 	}
+	c.setModelBaseModelLocked(model)
 
 	klog.V(4).Infof("MODELADAPTER CREATED: %s/%s", model.Namespace, model.Name)
 	c.debugInfo()
@@ -277,16 +326,52 @@ func (c *Store) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 
 	oldModel := oldObj.(*modelv1alpha1.ModelAdapter)
 	newModel := newObj.(*modelv1alpha1.ModelAdapter)
+	// Keep the model while its instances are swapped, so an update that leaves the
+	// instance list unchanged does not reset the model's pending count and predictor.
+	emptied := false
 	for _, pod := range oldModel.Status.Instances {
 		// the namespace of the pod is same as the namespace of model
-		c.deletePodAndModelMappingLocked(pod, oldModel.Namespace, oldModel.Name, 0)
+		if c.removePodModelMappingLocked(pod, oldModel.Namespace, oldModel.Name, 0) {
+			emptied = true
+		}
 	}
 
 	for _, pod := range newModel.Status.Instances {
 		c.addPodAndModelMappingLockedByName(pod, newModel.Namespace, newModel.Name)
 	}
+	if emptied {
+		c.dropModelIfEmptyLocked(oldModel.Name)
+	}
+	c.setModelBaseModelLocked(newModel)
 
 	c.debugInfo()
+}
+
+// setModelBaseModelLocked records the adapter → base-model mapping on the cache
+// entry. Caller must hold c.mu. Prefers spec.baseModel; falls back to the host
+// pod's model.aibrix.ai/name label when spec is empty.
+func (c *Store) setModelBaseModelLocked(model *modelv1alpha1.ModelAdapter) {
+	meta, ok := c.metaModels.Load(model.Name)
+	if !ok {
+		return
+	}
+	base := ""
+	if model.Spec.BaseModel != nil {
+		base = strings.TrimSpace(*model.Spec.BaseModel)
+	}
+	if base == "" {
+		for _, podName := range model.Status.Instances {
+			metaPod, ok := c.metaPods.Load(utils.GeneratePodKey(model.Namespace, podName))
+			if !ok || metaPod.Pod == nil || metaPod.Labels == nil {
+				continue
+			}
+			if v := strings.TrimSpace(metaPod.Labels[constants.ModelLabelName]); v != "" {
+				base = v
+				break
+			}
+		}
+	}
+	meta.BaseModel = base
 }
 
 func (c *Store) deleteModelAdapter(obj interface{}) {
@@ -313,7 +398,9 @@ func (c *Store) deleteModelAdapter(obj interface{}) {
 	c.debugInfo()
 }
 
+// addPodLocked adds/resumes pod into the cache.
 func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
+	key := utils.GeneratePodKey(pod.Namespace, pod.Name)
 	if c.bufferPod == nil {
 		c.bufferPod = &Pod{
 			Pod:    pod,
@@ -322,11 +409,91 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 	} else {
 		c.bufferPod.Pod = pod
 	}
-	metaPod, loaded := c.metaPods.LoadOrStore(utils.GeneratePodKey(pod.Namespace, pod.Name), c.bufferPod)
+
+	// A pod key that was deleted moments ago (a transient health-check flap on a
+	// busy pod, or the delete+re-add updatePod does for every in-place K8s pod
+	// update -- see deletePodLocked) gets its realtime counters resumed here
+	// instead of restarting at zero. Without this, a pod that never actually
+	// stopped serving would briefly look empty to least-request/load-balance
+	// scoring right as it reappears, and get piled on with new requests on top
+	// of whatever it was already running.
+	//
+	// Gated on the reappearing pod's IP matching the deleted one's: the same
+	// name can legitimately be recreated as a genuinely different backend (e.g.
+	// a StatefulSet pod restarted with a fresh process on a new IP), which must
+	// start at zero rather than inherit a stale, unrelated count -- see
+	// TestDoneRequestCountAfterSameNamePodRecreationDoesNotDecrementNewPod.
+	//
+	// podStatsLockFor(key) is held across the snapshot-resume-and-publish sequence
+	// below so it can't interleave with a concurrent addPodStats/donePodStats for the
+	// same key (which take the same lock around resolving and mutating the counters
+	// this resumes) -- see podStatsLockFor's doc comment in cache_trace.go.
+	mu := c.podStatsLockFor(key)
+	mu.Lock()
+	defer mu.Unlock()
+
+	resumed := false
+	if snap, ok := c.recentlyDeletedPods.LoadAndDelete(key); ok {
+		if time.Since(snap.deletedAt) < recentlyDeletedPodGracePeriod &&
+			snap.podIP != "" && snap.podIP == pod.Status.PodIP {
+			c.bufferPod.runningRequests = atomic.LoadInt32(&snap.runningRequests)
+			c.bufferPod.completedRequests = atomic.LoadInt64(&snap.completedRequests)
+			c.bufferPod.completedOutputTokens = atomic.LoadInt64(&snap.completedOutputTokens)
+			c.bufferPod.pendingLoadUtilization.Store(snap.pendingLoadUtilization.Load())
+			c.bufferPod.statsGeneration = snap.statsGeneration
+			// A same-IP resume means the pod never stopped serving, so its ramp clock
+			// (see readySince in pod.go) continues too.
+			c.bufferPod.readySince.Store(snap.readySince.Load())
+			resumed = true
+		}
+	}
+	if !resumed {
+		c.bufferPod.statsGeneration = c.nextStatsGeneration.Add(1)
+		c.bufferPod.readySince.Store(0)
+	}
+	// readySince starts when the pod is first seen routable, not when it is added: every update
+	// (Pending -> Ready included) is a same-IP delete + re-add that resumes the snapshot above, so
+	// stamping at add would let a pod that sat Pending longer than the ramp window arrive with the
+	// ramp already spent. A not-yet-routable pod keeps 0 (routing never sees it); the stamp is kept
+	// from then on, including across NotReady flaps on the same IP.
+	if c.bufferPod.readySince.Load() == 0 && utils.FilterReadyPod(pod) {
+		c.bufferPod.readySince.Store(time.Now().UnixNano())
+	}
+	// Running max for LatestPodReadySince. A resumed or not-yet-routable pod carries an old value
+	// or 0, which storeIfGreater ignores. Safe before the LoadOrStore race below resolves.
+	storeIfGreater(&c.lastPodReadySince, c.bufferPod.readySince.Load())
+
+	metaPod, loaded := c.metaPods.LoadOrStore(key, c.bufferPod)
 	if !loaded {
 		c.bufferPod = nil
+	} else {
+		// An entry already existed, so this buffer wasn't consumed and will
+		// be reused for an unrelated pod on some future call -- clear any
+		// counters just seeded onto it so they don't leak into that pod.
+		// lastPodReadySince is not rolled back: it reflects a genuine add attempt either way.
+		c.bufferPod.runningRequests = 0
+		c.bufferPod.completedRequests = 0
+		c.bufferPod.completedOutputTokens = 0
+		c.bufferPod.pendingLoadUtilization.Store(0)
+		c.bufferPod.statsGeneration = 0
+		c.bufferPod.readySince.Store(0)
 	}
 	return metaPod
+}
+
+// storeIfGreater raises *addr to val if val is larger. A plain Store could let an earlier
+// timestamp overwrite a later one when addPodLocked calls for different pod keys race (each is
+// serialized only by its own lock stripe). Maintains lastPodReadySince as a running max.
+func storeIfGreater(addr *atomic.Int64, val int64) {
+	for {
+		cur := addr.Load()
+		if val <= cur {
+			return
+		}
+		if addr.CompareAndSwap(cur, val) {
+			return
+		}
+	}
 }
 
 func (c *Store) addPodAndModelMappingLockedByName(podName, namespace, modelName string) {
@@ -366,16 +533,89 @@ func (c *Store) addPodAndModelMappingLocked(metaPod *Pod, modelName string) {
 	klog.V(4).InfoS("Pod added to model", "model", modelName, "pod", podKey, "pods", metaModel.Pods.Len())
 }
 
+// deletedPodSnapshot preserves a deleted pod's realtime request-tracking
+// counters so a fast re-add of the same key (see addPodLocked) can resume
+// from where they left off instead of restarting at zero.
+//
+// It is stored and shared by pointer (not by value): a request that started
+// before the delete can still complete while the pod key is absent from
+// metaPods entirely -- mid-flap, before any re-add happens (see
+// donePodStats). Its counters must be mutable in place, atomically, so that
+// completion is reflected in whatever a later re-add resumes from, rather
+// than being silently lost.
+type deletedPodSnapshot struct {
+	pod                    *Pod   // Orphaned cache pod; same statsGeneration. addPodStats mid-gap stores this as podStats.pod so donePodStats can resolve back to this snapshot.
+	podIP                  string // Guards against reuse across a genuine pod recreation; see addPodLocked.
+	statsGeneration        int64  // Copied from pod at delete; resume copies it onto the new *Pod, fresh add does not.
+	runningRequests        int32  // atomic
+	completedRequests      int64  // atomic
+	completedOutputTokens  int64  // atomic
+	pendingLoadUtilization atomic_ext.Float64
+	readySince             atomic.Int64 // see Pod.readySince
+	deletedAt              time.Time
+}
+
+// recentlyDeletedPodGracePeriod bounds how long a deletedPodSnapshot survives
+// waiting for a matching re-add before it's dropped as a genuine deletion.
+const recentlyDeletedPodGracePeriod = 60 * time.Second
+
 func (c *Store) deletePodLocked(podName, podNamespace string) *Pod {
 	key := utils.GeneratePodKey(podNamespace, podName)
-	metaPod, _ := c.metaPods.LoadAndDelete(key)
+
+	// See the matching lock in addPodLocked and podStatsLockFor's doc comment
+	// (cache_trace.go): held across the snapshot-take-and-publish sequence below so
+	// it can't interleave with a concurrent addPodStats/donePodStats for this key.
+	mu := c.podStatsLockFor(key)
+	mu.Lock()
+	defer mu.Unlock()
+
+	metaPod, ok := c.metaPods.LoadAndDelete(key)
+	if ok {
+		snap := &deletedPodSnapshot{
+			pod:               metaPod,
+			podIP:             metaPod.Status.PodIP,
+			statsGeneration:   metaPod.statsGeneration,
+			runningRequests:   atomic.LoadInt32(&metaPod.runningRequests),
+			completedRequests: atomic.LoadInt64(&metaPod.completedRequests),
+			deletedAt:         time.Now(),
+		}
+		snap.completedOutputTokens = atomic.LoadInt64(&metaPod.completedOutputTokens)
+		snap.pendingLoadUtilization.Store(metaPod.pendingLoadUtilization.Load())
+		snap.readySince.Store(metaPod.readySince.Load())
+		c.recentlyDeletedPods.Store(key, snap)
+		c.pruneExpiredDeletedPodSnapshotsLocked()
+	}
 	return metaPod
+}
+
+// pruneExpiredDeletedPodSnapshotsLocked drops snapshots whose grace period has
+// elapsed. Run from deletePodLocked (rather than a dedicated ticker) so pods
+// that never come back don't leak an entry here forever, while staying
+// bounded by delete frequency instead of needing its own background goroutine.
+func (c *Store) pruneExpiredDeletedPodSnapshotsLocked() {
+	now := time.Now()
+	c.recentlyDeletedPods.Range(func(key string, snap *deletedPodSnapshot) bool {
+		if now.Sub(snap.deletedAt) >= recentlyDeletedPodGracePeriod {
+			c.recentlyDeletedPods.Delete(key)
+		}
+		return true
+	})
 }
 
 // deletePodAndModelMapping delete mappings between pods and model by specified names.
 // If ignoreMapping > 0, podToModel mapping will be ignored.
 // If ignoreMapping < 0, modelToPod mapping will be ignored
 func (c *Store) deletePodAndModelMappingLocked(podName, namespace, modelName string, ignoreMapping int) {
+	if c.removePodModelMappingLocked(podName, namespace, modelName, ignoreMapping) {
+		c.dropModelIfEmptyLocked(modelName)
+	}
+}
+
+// removePodModelMappingLocked removes the mappings like deletePodAndModelMappingLocked
+// but leaves a model that lost its last pod in the cache. It reports whether the
+// model is now empty, so a caller that re-adds pods right away can drop the model
+// afterwards only if nothing came back (see updatePod and updateModelAdapter).
+func (c *Store) removePodModelMappingLocked(podName, namespace, modelName string, ignoreMapping int) (modelEmptied bool) {
 	podKey := utils.GeneratePodKey(namespace, podName)
 	if ignoreMapping <= 0 {
 		if metaPod, ok := c.metaPods.Load(podKey); ok {
@@ -388,12 +628,17 @@ func (c *Store) deletePodAndModelMappingLocked(podName, namespace, modelName str
 		if meta, ok := c.metaModels.Load(modelName); ok {
 			meta.Pods.Delete(podKey)
 			klog.V(4).InfoS("Pod removed from model", "model", modelName, "pod", podKey, "pods", meta.Pods.Len())
-
-			if meta.Pods.Len() == 0 {
-				c.metaModels.Delete(modelName)
-				klog.V(4).Infof("MODEL(ADAPTER) DELETED: %s", modelName)
-			}
+			return meta.Pods.Len() == 0
 		}
+	}
+	return false
+}
+
+// dropModelIfEmptyLocked deletes the model when no pod serves it.
+func (c *Store) dropModelIfEmptyLocked(modelName string) {
+	if meta, ok := c.metaModels.Load(modelName); ok && meta.Pods.Len() == 0 {
+		c.metaModels.Delete(modelName)
+		klog.V(4).Infof("MODEL(ADAPTER) DELETED: %s", modelName)
 	}
 }
 

@@ -17,6 +17,8 @@ limitations under the License.
 package monitor
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -51,4 +53,70 @@ func TestMonitor_RecordScaleAction(t *testing.T) {
 		actualValue := testutil.ToFloat64(autoscalerScaleAction.WithLabelValues(tc.namespace, tc.name, tc.algorithm, tc.reason))
 		assert.Equal(t, expectedValue, actualValue, "Expected metric for %s/%s to be %v", tc.namespace, tc.name, tc.desiredReplicas)
 	}
+}
+
+func TestMonitor_RecordScaleActionReplacesEarlierReason(t *testing.T) {
+	autoscalerScaleAction.Reset()
+
+	m := New()
+	m.RecordScaleAction("default", "llm", "kpa", "panic mode scaling", 8)
+	m.RecordScaleAction("default", "other", "kpa", "panic mode scaling", 5)
+	m.RecordScaleAction("default", "llm", "kpa", "stable mode scaling", 3)
+
+	// The panic series of llm would otherwise keep reporting 8 replicas next to
+	// the current 3. Other PodAutoscalers keep their own series.
+	assert.Equal(t, 2, testutil.CollectAndCount(autoscalerScaleAction))
+	assert.Equal(t, 3.0, testutil.ToFloat64(autoscalerScaleAction.WithLabelValues("default", "llm", "kpa", "stable mode scaling")))
+	assert.Equal(t, 5.0, testutil.ToFloat64(autoscalerScaleAction.WithLabelValues("default", "other", "kpa", "panic mode scaling")))
+
+	// Recording the same reason again updates the series in place.
+	m.RecordScaleAction("default", "llm", "kpa", "stable mode scaling", 4)
+	assert.Equal(t, 2, testutil.CollectAndCount(autoscalerScaleAction))
+	assert.Equal(t, 4.0, testutil.ToFloat64(autoscalerScaleAction.WithLabelValues("default", "llm", "kpa", "stable mode scaling")))
+}
+
+func TestMonitor_ForgetScaleAction(t *testing.T) {
+	autoscalerScaleAction.Reset()
+
+	m := New()
+	m.RecordScaleAction("default", "llm", "kpa", "stable", 2)
+	m.RecordScaleAction("default", "llm-canary", "apa", "stable", 1)
+	m.RecordScaleAction("prod", "llm", "kpa", "stable", 3)
+	assert.Equal(t, 3, testutil.CollectAndCount(autoscalerScaleAction))
+
+	m.ForgetScaleAction("default", "llm")
+
+	assert.Equal(t, 2, testutil.CollectAndCount(autoscalerScaleAction))
+	assert.Equal(t, 1.0, testutil.ToFloat64(autoscalerScaleAction.WithLabelValues("default", "llm-canary", "apa", "stable")))
+	assert.Equal(t, 3.0, testutil.ToFloat64(autoscalerScaleAction.WithLabelValues("prod", "llm", "kpa", "stable")))
+}
+
+// Reconciles of one PodAutoscaler and its deletion can run on different
+// goroutines. Run under -race, this guards the lock around the remembered labels.
+func TestMonitor_RecordAndForgetScaleActionConcurrently(t *testing.T) {
+	autoscalerScaleAction.Reset()
+
+	m := New()
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				m.RecordScaleAction("default", "llm", "kpa", fmt.Sprintf("reason-%d", (i+j)%3), int32(j))
+			}
+		}(i)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				m.ForgetScaleAction("default", "llm")
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Whatever the interleaving, at most the latest series is left.
+	assert.LessOrEqual(t, testutil.CollectAndCount(autoscalerScaleAction), 1)
+	m.ForgetScaleAction("default", "llm")
+	assert.Equal(t, 0, testutil.CollectAndCount(autoscalerScaleAction))
 }

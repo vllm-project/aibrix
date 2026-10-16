@@ -12,21 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import types
+from pathlib import Path
 from unittest import mock
 
 import pytest
+from tos.models import CommonPrefixInfo
 
 from aibrix.common.errors import (
     ArgNotCongiuredError,
     ModelNotFoundError,
 )
-from aibrix.downloader.base import get_downloader
+from aibrix.downloader.base import DownloadExtraConfig, get_downloader
 from aibrix.downloader.tos import TOSDownloaderV1
+from aibrix.downloader.utils import meta_file, save_meta_data
 
 TOS_MODULE = "aibrix.downloader.tos.tos"
 ENVS_MODULE = "aibrix.downloader.tos.envs"
 ENVS_DOWNLOADER_TOS_VERSION = "aibrix.downloader.base.envs.DOWNLOADER_TOS_VERSION"
 DOWNLOADER_TOS_VERSION = "v1"
+
+
+@pytest.fixture(autouse=True)
+def clear_directory_cache():
+    TOSDownloaderV1._is_directory.cache_clear()
 
 
 def mock_not_exsit_tos(mock_tos):
@@ -88,3 +97,251 @@ def test_get_downloader_tos_path_empty_path(mock_tos):
     with pytest.raises(ArgNotCongiuredError) as exception:
         get_downloader("tos://bucket/")
     assert "`bucket_path` is not configured" in str(exception.value)
+
+
+def _make_fake_tos_client_for_force_download_test():
+    class FakeTosClient:
+        def __init__(self):
+            self.download_calls = 0
+            self.download_kwargs = None
+
+        def head_bucket(self, bucket):
+            return {}
+
+        def list_objects_type2(self, bucket, prefix, delimiter=None):
+            # single-file model_uri: exactly one object, matching bucket_path,
+            # so TOSDownloaderV1._is_directory() returns False.
+            return types.SimpleNamespace(
+                contents=[types.SimpleNamespace(key="file.txt")]
+            )
+
+        def head_object(self, bucket, key):
+            return types.SimpleNamespace(etag="etag", content_length=4)
+
+        def download_file(self, bucket, key, file_path, task_num, **kwargs):
+            self.download_calls += 1
+            self.download_kwargs = kwargs
+            Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(file_path).write_bytes(b"data")
+
+    return FakeTosClient()
+
+
+def _prepopulate_matching_local_file(model_path, source_value):
+    local_file = model_path / "file.txt"
+    local_file.parent.mkdir(parents=True, exist_ok=True)
+    local_file.write_bytes(b"data")
+    meta_data_file = meta_file(model_path, "file.txt", source=source_value)
+    save_meta_data(meta_data_file, "etag")
+
+
+@mock.patch(ENVS_DOWNLOADER_TOS_VERSION, DOWNLOADER_TOS_VERSION)
+@mock.patch(ENVS_MODULE, env_group)
+@mock.patch(TOS_MODULE)
+def test_tos_v1_skips_matching_file_when_not_forced(mock_tos, tmp_path):
+    # Control for test_tos_v1_force_download_override_bypasses_exist_check:
+    # with no force_download override, a local file matching the remote
+    # etag/size is skipped, as before.
+    fake_client = _make_fake_tos_client_for_force_download_test()
+    mock_tos.TosClientV2.return_value = fake_client
+
+    d = TOSDownloaderV1("tos://bucket/file.txt", model_name="m")
+    _prepopulate_matching_local_file(tmp_path / "m", d.source.value)
+
+    d.download_model(local_path=str(tmp_path))
+
+    assert fake_client.download_calls == 0
+
+
+@mock.patch(ENVS_DOWNLOADER_TOS_VERSION, DOWNLOADER_TOS_VERSION)
+@mock.patch(ENVS_MODULE, env_group)
+@mock.patch(TOS_MODULE)
+def test_tos_v1_force_download_override_bypasses_exist_check(mock_tos, tmp_path):
+    # Regression test: DownloadExtraConfig(force_download=True) must force a
+    # re-download even when the local file already matches remote etag/size,
+    # mirroring test_s3_force_download_override_bypasses_exist_check.
+    fake_client = _make_fake_tos_client_for_force_download_test()
+    mock_tos.TosClientV2.return_value = fake_client
+
+    d = TOSDownloaderV1(
+        "tos://bucket/file.txt",
+        model_name="m",
+        download_extra_config=DownloadExtraConfig(force_download=True),
+    )
+    _prepopulate_matching_local_file(tmp_path / "m", d.source.value)
+
+    d.download_model(local_path=str(tmp_path))
+
+    assert fake_client.download_calls == 1
+
+
+@pytest.mark.parametrize(
+    "env_part_size, override, expected",
+    [
+        (8 * 1024 * 1024, None, 8 * 1024 * 1024),
+        (8 * 1024 * 1024, 16 * 1024 * 1024, 16 * 1024 * 1024),
+        (None, None, None),
+    ],
+)
+@mock.patch(TOS_MODULE)
+def test_tos_v1_part_size(mock_tos, tmp_path, env_part_size, override, expected):
+    # The TOS SDK fails on part_size=None, so it must only be passed when set.
+    fake_client = _make_fake_tos_client_for_force_download_test()
+    mock_tos.TosClientV2.return_value = fake_client
+
+    with mock.patch(f"{ENVS_MODULE}.DOWNLOADER_PART_CHUNKSIZE", env_part_size):
+        d = TOSDownloaderV1(
+            "tos://bucket/file.txt",
+            model_name="m",
+            download_extra_config=DownloadExtraConfig(part_chunksize=override),
+        )
+        d.download_model(local_path=str(tmp_path))
+
+    assert fake_client.download_calls == 1
+    if expected is None:
+        assert "part_size" not in fake_client.download_kwargs
+    else:
+        assert fake_client.download_kwargs["part_size"] == expected
+
+
+@pytest.mark.parametrize(
+    "populated, exact", [(False, False), (True, False), (True, True)]
+)
+@mock.patch(TOS_MODULE)
+def test_tos_v1_directory_source(mock_tos, tmp_path, populated, exact):
+    client = _make_fake_tos_client_for_force_download_test()
+
+    def list_objects(bucket, prefix, delimiter=None):
+        # A delimiter listing may contain only common prefixes, with no objects.
+        assert prefix == ("models" if delimiter else "models/")
+        return types.SimpleNamespace(
+            contents=[types.SimpleNamespace(key="models/file.txt")]
+            if populated and not delimiter
+            else [types.SimpleNamespace(key="models")]
+            if exact
+            else [],
+            common_prefixes=[CommonPrefixInfo("models/")]
+            if populated and delimiter
+            else [],
+        )
+
+    client.list_objects_type2 = list_objects
+    mock_tos.TosClientV2.return_value = client
+    uri = "tos://bucket/models"
+    downloader = TOSDownloaderV1(uri, model_name="m")
+    assert downloader._is_directory()
+
+    if populated:
+        downloader.download_model(local_path=str(tmp_path))
+        assert (tmp_path / "m" / "file.txt").read_bytes() == b"data"
+        assert client.download_calls == 1
+    else:
+        with pytest.raises(ModelNotFoundError) as exception:
+            downloader.download_model(local_path=str(tmp_path))
+        assert uri in str(exception.value)
+        assert client.download_calls == 0
+
+
+@pytest.mark.parametrize(
+    "prefix, truncated, child, expected",
+    [
+        (None, False, False, False),
+        ("models/llama2/", False, False, False),
+        ("models/llama/", False, False, True),
+        ("models/llama2/", True, True, True),
+        ("models/llama2/", True, False, False),
+    ],
+)
+@mock.patch(TOS_MODULE)
+def test_tos_v1_exact_object_with_prefixes(
+    mock_tos, prefix, truncated, child, expected
+):
+    mock_exsit_tos(mock_tos)
+    client = mock_tos.TosClientV2.return_value
+    client.list_objects_type2.side_effect = [
+        types.SimpleNamespace(
+            contents=[types.SimpleNamespace(key="models/llama")],
+            common_prefixes=[CommonPrefixInfo(prefix)] if prefix else None,
+            is_truncated=truncated,
+        ),
+        types.SimpleNamespace(
+            contents=[types.SimpleNamespace(key="models/llama/config.json")]
+            if child
+            else [],
+            common_prefixes=[],
+        ),
+    ]
+    downloader = TOSDownloaderV1("tos://bucket/models/llama", model_name="m")
+    assert downloader._is_directory() is expected
+    if truncated:
+        client.list_objects_type2.assert_called_with(
+            "bucket", prefix="models/llama/", max_keys=1
+        )
+    else:
+        client.list_objects_type2.assert_called_once_with(
+            "bucket", prefix="models/llama", delimiter="/"
+        )
+
+
+@pytest.mark.parametrize(
+    "prefixes, truncated, child, expected",
+    [
+        ([], False, False, False),
+        (["models/llama2/"], False, False, False),
+        (["models/llama/"], False, False, True),
+        ([], True, True, True),
+        ([], True, False, False),
+    ],
+)
+@mock.patch(TOS_MODULE)
+def test_tos_v1_exact_object_with_sibling_keys(
+    mock_tos, prefixes, truncated, child, expected
+):
+    mock_exsit_tos(mock_tos)
+    client = mock_tos.TosClientV2.return_value
+    client.list_objects_type2.side_effect = [
+        types.SimpleNamespace(
+            contents=[
+                types.SimpleNamespace(key="models/llama"),
+                types.SimpleNamespace(key="models/llama.json"),
+            ],
+            common_prefixes=[CommonPrefixInfo(p) for p in prefixes],
+            is_truncated=truncated,
+        ),
+        types.SimpleNamespace(
+            contents=[types.SimpleNamespace(key="models/llama/config.json")]
+            if child
+            else [],
+            common_prefixes=[],
+        ),
+    ]
+    downloader = TOSDownloaderV1("tos://bucket/models/llama", model_name="m")
+    assert downloader._is_directory() is expected
+
+
+@mock.patch(TOS_MODULE)
+def test_tos_v1_sibling_keys_without_exact_object(mock_tos):
+    mock_exsit_tos(mock_tos)
+    client = mock_tos.TosClientV2.return_value
+    client.list_objects_type2.return_value = types.SimpleNamespace(
+        contents=[types.SimpleNamespace(key="models/llama.json")],
+        common_prefixes=[],
+        is_truncated=False,
+    )
+    downloader = TOSDownloaderV1("tos://bucket/models/llama", model_name="m")
+    assert downloader._is_directory() is True
+
+
+@pytest.mark.parametrize("path", ["models/llama", "models/llama/"])
+@mock.patch(TOS_MODULE)
+def test_tos_v1_directory_listing_failure(mock_tos, path):
+    mock_exsit_tos(mock_tos)
+    client = mock_tos.TosClientV2.return_value
+    client.list_objects_type2.side_effect = RuntimeError("listing failed")
+    downloader = TOSDownloaderV1(f"tos://bucket/{path}", model_name="m")
+    if path.endswith("/"):
+        assert downloader._is_directory()
+        client.list_objects_type2.assert_not_called()
+    else:
+        with pytest.raises(RuntimeError, match="listing failed"):
+            downloader._is_directory()

@@ -1,6 +1,8 @@
 resources:
 - metadata.yaml
 - redis.yaml
+# To use Valkey (BSD-3 OSS alternative) instead of Redis:
+# - valkey.yaml
 
 patches:
 # Uncomment the following lines to enable S3 as the object store

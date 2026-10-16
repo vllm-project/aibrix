@@ -43,50 +43,172 @@ var (
 
 	// Function variables that can be overridden for testing
 	SetGaugeMetricFnForTest         = defaultSetGaugeMetric
+	IncGaugeMetricFnForTest         = defaultIncGaugeMetric
+	DecGaugeMetricFnForTest         = defaultDecGaugeMetric
 	IncrementCounterMetricFnForTest = defaultIncrementCounterMetric
 )
 
+const (
+	PodMetricsEnqueueDroppedTotal = "aibrix_pod_metrics_enqueue_dropped_total"
+	PodMetricsFetchFailuresTotal  = "aibrix_pod_metrics_fetch_failures_total"
+
+	PodMetricsDropReasonQueueFull            = "queue_full"
+	PodMetricsDropReasonBackoff              = "backoff"
+	PodMetricsDropReasonAlreadyQueued        = "already_queued"
+	PodMetricsFetchFailureReasonFetchError   = "fetch_error"
+	podMetricsEnqueueDroppedTotalDescription = "Total number of pod metrics enqueue attempts dropped by the gateway cache."
+	podMetricsFetchFailuresTotalDescription  = "Total number of pod metrics fetch failures observed by the gateway cache."
+)
+
+// GatewayPodName returns the gateway pod name used as the gateway_pod metric label.
+func GatewayPodName() string {
+	return gatewayPodName
+}
+
+func IncrementPodMetricsEnqueueDropped(reason string) {
+	IncrementCounterMetric(
+		PodMetricsEnqueueDroppedTotal,
+		podMetricsEnqueueDroppedTotalDescription,
+		1,
+		[]string{"reason"},
+		reason,
+	)
+}
+
+func IncrementPodMetricsFetchFailure(engineType, reason string) {
+	IncrementCounterMetric(
+		PodMetricsFetchFailuresTotal,
+		podMetricsFetchFailuresTotalDescription,
+		1,
+		[]string{"engine_type", "reason"},
+		engineType,
+		reason,
+	)
+}
+
 func SetGaugeMetric(name string, help string, value float64, labelNames []string, labelValues ...string) {
 	SetGaugeMetricFnForTest(name, help, value, labelNames, labelValues...)
+}
+
+// IncGaugeMetric increments a gauge by 1. Prefer Inc/Dec over Set for concurrent
+// in-flight counters to avoid stale snapshot races.
+func IncGaugeMetric(name string, help string, labelNames []string, labelValues ...string) {
+	IncGaugeMetricFnForTest(name, help, labelNames, labelValues...)
+}
+
+// DecGaugeMetric decrements a gauge by 1.
+func DecGaugeMetric(name string, help string, labelNames []string, labelValues ...string) {
+	DecGaugeMetricFnForTest(name, help, labelNames, labelValues...)
+}
+
+// DeleteGaugeMetric removes one label combination of a custom gauge so the
+// series is no longer exported. No-op when the gauge or the series does not
+// exist, or when labelNames and labelValues differ in length.
+func DeleteGaugeMetric(name string, labelNames []string, labelValues ...string) {
+	if len(labelNames) != len(labelValues) {
+		return
+	}
+	customGaugesMu.RLock()
+	gauge, ok := customGauges[name]
+	canonicalNames := customGaugeLabelNames[name]
+	customGaugesMu.RUnlock()
+	if !ok || gauge == nil {
+		return
+	}
+	if len(canonicalNames) == 0 {
+		_ = gauge.DeleteLabelValues(labelValues...)
+		return
+	}
+	_ = gauge.DeleteLabelValues(orderedGaugeLabelValues(canonicalNames, labelNames, labelValues)...)
+}
+
+func DeleteGaugeMetricForPod(metricName string, routingCtx *types.RoutingContext, pod *v1.Pod, extras map[string]string) {
+	customGaugesMu.RLock()
+	gauge, ok := customGauges[metricName]
+	canonicalNames := customGaugeLabelNames[metricName]
+	customGaugesMu.RUnlock()
+	if !ok || gauge == nil {
+		return
+	}
+
+	labelNames, labelValues := buildMetricLabels(pod, routingCtx, extras)
+	if len(canonicalNames) == 0 {
+		_ = gauge.DeleteLabelValues(labelValues...)
+		return
+	}
+
+	labelMap := make(map[string]string, len(labelNames))
+	for i, ln := range labelNames {
+		labelMap[ln] = labelValues[i]
+	}
+	orderedValues := make([]string, len(canonicalNames))
+	for i, ln := range canonicalNames {
+		orderedValues[i] = labelMap[ln]
+	}
+	_ = gauge.DeleteLabelValues(orderedValues...)
+}
+
+func getOrCreateGaugeVec(name string, help string, labelNames []string) (*prometheus.GaugeVec, []string) {
+	customGaugesMu.RLock()
+	gauge, ok := customGauges[name]
+	canonicalNames := customGaugeLabelNames[name]
+	customGaugesMu.RUnlock()
+
+	if ok {
+		return gauge, canonicalNames
+	}
+
+	customGaugesMu.Lock()
+	defer customGaugesMu.Unlock()
+	gauge, ok = customGauges[name]
+	canonicalNames = customGaugeLabelNames[name]
+	if !ok {
+		namesCopy := append([]string(nil), labelNames...)
+		gauge = promauto.NewGaugeVec(
+			prometheus.GaugeOpts{Name: name, Help: help},
+			namesCopy,
+		)
+		customGauges[name] = gauge
+		customGaugeLabelNames[name] = namesCopy
+		canonicalNames = namesCopy
+	}
+	return gauge, canonicalNames
+}
+
+func orderedGaugeLabelValues(canonicalNames []string, labelNames []string, labelValues []string) []string {
+	labelValueMap := make(map[string]string, len(labelNames))
+	for i, ln := range labelNames {
+		labelValueMap[ln] = labelValues[i]
+	}
+	orderedValues := make([]string, len(canonicalNames))
+	for i, ln := range canonicalNames {
+		orderedValues[i] = labelValueMap[ln]
+	}
+	return orderedValues
 }
 
 func defaultSetGaugeMetric(name string, help string, value float64, labelNames []string, labelValues ...string) {
 	if len(labelNames) != len(labelValues) {
 		return
 	}
+	gauge, canonicalNames := getOrCreateGaugeVec(name, help, labelNames)
+	gauge.WithLabelValues(orderedGaugeLabelValues(canonicalNames, labelNames, labelValues)...).Set(value)
+}
 
-	labelValueMap := make(map[string]string, len(labelNames))
-	for i, ln := range labelNames {
-		labelValueMap[ln] = labelValues[i]
+func defaultIncGaugeMetric(name string, help string, labelNames []string, labelValues ...string) {
+	if len(labelNames) != len(labelValues) {
+		return
 	}
+	gauge, canonicalNames := getOrCreateGaugeVec(name, help, labelNames)
+	gauge.WithLabelValues(orderedGaugeLabelValues(canonicalNames, labelNames, labelValues)...).Inc()
+}
 
-	customGaugesMu.RLock()
-	gauge, ok := customGauges[name]
-	canonicalNames := customGaugeLabelNames[name]
-	customGaugesMu.RUnlock()
-
-	if !ok {
-		customGaugesMu.Lock()
-		gauge, ok = customGauges[name]
-		canonicalNames = customGaugeLabelNames[name]
-		if !ok {
-			namesCopy := append([]string(nil), labelNames...)
-			gauge = promauto.NewGaugeVec(
-				prometheus.GaugeOpts{Name: name, Help: help},
-				namesCopy,
-			)
-			customGauges[name] = gauge
-			customGaugeLabelNames[name] = namesCopy
-			canonicalNames = namesCopy
-		}
-		customGaugesMu.Unlock()
+func defaultDecGaugeMetric(name string, help string, labelNames []string, labelValues ...string) {
+	if len(labelNames) != len(labelValues) {
+		return
 	}
-
-	orderedValues := make([]string, len(canonicalNames))
-	for i, ln := range canonicalNames {
-		orderedValues[i] = labelValueMap[ln]
-	}
-	gauge.WithLabelValues(orderedValues...).Set(value)
+	gauge, canonicalNames := getOrCreateGaugeVec(name, help, labelNames)
+	gauge.WithLabelValues(orderedGaugeLabelValues(canonicalNames, labelNames, labelValues)...).Dec()
 }
 
 func IncrementCounterMetric(name string, help string, value float64, labelNames []string, labelValues ...string) {
@@ -94,24 +216,12 @@ func IncrementCounterMetric(name string, help string, value float64, labelNames 
 }
 
 func emitGaugeMetric(routingCtx *types.RoutingContext, pod *v1.Pod, name string, value float64, extras map[string]string) {
-	var model string
-	if routingCtx == nil {
-		model = ""
-	} else {
-		model = routingCtx.Model
-	}
-	labelNames, labelValues := buildMetricLabels(pod, model, extras)
+	labelNames, labelValues := buildMetricLabels(pod, routingCtx, extras)
 	SetGaugeMetric(name, GetMetricHelp(name), value, labelNames, labelValues...)
 }
 
 func emitCounterMetric(routingCtx *types.RoutingContext, pod *v1.Pod, name string, value float64, extras map[string]string) {
-	var model string
-	if routingCtx == nil {
-		model = ""
-	} else {
-		model = routingCtx.Model
-	}
-	labelNames, labelValues := buildMetricLabels(pod, model, extras)
+	labelNames, labelValues := buildMetricLabels(pod, routingCtx, extras)
 	IncrementCounterMetricFnForTest(name, GetMetricHelp(name), value, labelNames, labelValues...)
 }
 
@@ -278,9 +388,9 @@ func SetupMetricsForTest(metricName string, labelNames []string) (*prometheus.Ga
 	testRegistry.MustRegister(testGauge)
 
 	originalFn := SetGaugeMetricFnForTest
-	SetGaugeMetricFnForTest = func(name string, help string, value float64, labels []string, labelValues ...string) {
+	SetGaugeMetricFnForTest = func(name string, help string, value float64, gotNames []string, gotValues ...string) {
 		if name == metricName {
-			testGauge.WithLabelValues(labelValues...).Set(value)
+			testGauge.WithLabelValues(projectLabelValues(labelNames, gotNames, gotValues)...).Set(value)
 		}
 	}
 
@@ -296,23 +406,36 @@ func SetupCounterMetricsForTest(metricName string, labelNames []string) (*promet
 	testRegistry.MustRegister(testCounter)
 
 	originalFn := IncrementCounterMetricFnForTest
-	IncrementCounterMetricFnForTest = func(name string, help string, value float64, labels []string, labelValues ...string) {
+	IncrementCounterMetricFnForTest = func(name string, help string, value float64, gotNames []string, gotValues ...string) {
 		if name == metricName {
-			testCounter.WithLabelValues(labelValues...).Add(value)
+			testCounter.WithLabelValues(projectLabelValues(labelNames, gotNames, gotValues)...).Add(value)
 		}
 	}
 
 	return testCounter, func() { IncrementCounterMetricFnForTest = originalFn }
 }
 
+// projectLabelValues maps emitted label values onto the subset of names a test
+// CounterVec/GaugeVec was registered with, so tests can ignore extra default
+// labels (lora_adapter, ...).
+func projectLabelValues(wantNames, gotNames, gotValues []string) []string {
+	m := make(map[string]string, len(gotNames))
+	for i, n := range gotNames {
+		if i < len(gotValues) {
+			m[n] = gotValues[i]
+		}
+	}
+	out := make([]string, len(wantNames))
+	for i, n := range wantNames {
+		out[i] = m[n]
+	}
+	return out
+}
+
 func EmitMetricToPrometheus(routingCtx *types.RoutingContext, pod *v1.Pod, metricName string, metricValue MetricValue, extra map[string]string) {
 	metricDef, exists := Metrics[metricName]
 	if !exists {
 		return
-	}
-	var model string
-	if routingCtx != nil {
-		model = routingCtx.Model
 	}
 
 	switch metricDef.MetricType.Raw {
@@ -321,7 +444,7 @@ func EmitMetricToPrometheus(routingCtx *types.RoutingContext, pod *v1.Pod, metri
 	case Counter:
 		emitCounterMetric(routingCtx, pod, metricName, metricValue.GetSimpleValue(), extra)
 	default:
-		labelNames, labelValues := buildMetricLabels(pod, model, extra)
+		labelNames, labelValues := buildMetricLabels(pod, routingCtx, extra)
 		if hv := metricValue.GetHistogramValue(); hv != nil {
 			SetHistogramMetric(metricName, GetMetricHelp(metricName), hv, labelNames, labelValues...)
 			p50, _ := hv.GetPercentile(50)
@@ -334,8 +457,8 @@ func EmitMetricToPrometheus(routingCtx *types.RoutingContext, pod *v1.Pod, metri
 	}
 }
 
-func buildMetricLabels(pod *v1.Pod, model string, extras map[string]string) ([]string, []string) {
-	defaultLabelMap := generateDefaultMetricLabelsMap(pod, model)
+func buildMetricLabels(pod *v1.Pod, routingCtx *types.RoutingContext, extras map[string]string) ([]string, []string) {
+	defaultLabelMap := generateDefaultMetricLabelsMap(pod, routingCtx)
 	labelNames := make([]string, 0, len(defaultLabelMap)+len(extras))
 	labelValues := make([]string, 0, len(defaultLabelMap)+len(extras))
 
@@ -369,21 +492,42 @@ func buildMetricLabels(pod *v1.Pod, model string, extras map[string]string) ([]s
 	return labelNames, labelValues
 }
 
-func generateDefaultMetricLabelsMap(pod *v1.Pod, model string) map[string]string {
+func generateDefaultMetricLabelsMap(pod *v1.Pod, routingCtx *types.RoutingContext) map[string]string {
+	model, loraAdapter := metricModelLabels(routingCtx)
 	if pod == nil {
 		return map[string]string{
-			"model":       model,
-			"gateway_pod": gatewayPodName,
+			"model":        model,
+			"lora_adapter": loraAdapter,
+			"gateway_pod":  gatewayPodName,
 		}
 	}
 	return map[string]string{
 		"namespace":          pod.Namespace,
 		"pod":                pod.Name,
 		"model":              model,
+		"lora_adapter":       loraAdapter,
 		"engine_type":        GetEngineType(*pod),
 		"roleset":            utils.GetPodEnv(pod, "ROLESET_NAME", ""),
-		"role":               utils.GetPodEnv(pod, "ROLE_NAME", ""),
+		"role":               resolvePodRole(pod),
 		"role_replica_index": utils.GetPodEnv(pod, "ROLE_REPLICA_INDEX", ""),
 		"gateway_pod":        gatewayPodName,
 	}
+}
+
+// metricModelLabels returns (model, lora_adapter) for gateway request metrics.
+// model is always the served base-model name so existing $model dashboard
+// filters keep working. For a LoRA request, lora_adapter is the adapter name;
+// for a base-model request it is empty.
+func metricModelLabels(routingCtx *types.RoutingContext) (model, loraAdapter string) {
+	if routingCtx == nil {
+		return "", ""
+	}
+	return routingCtx.MetricModel(), routingCtx.MetricLoraAdapter()
+}
+
+func resolvePodRole(pod *v1.Pod) string {
+	if role, ok := pod.Labels["role-name"]; ok && role != "" {
+		return role
+	}
+	return utils.GetPodEnv(pod, "ROLE_NAME", "")
 }

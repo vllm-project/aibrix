@@ -29,7 +29,7 @@ override merging.
   5. apply_per_batch()      -- annotations, file IDs, deadline, name
 
 Currently supports:
-  - engine.type in {vllm, mock}
+  - engine.type in {vllm, sglang, mock}
   - deployment_mode == dedicated
 
 Templates are provider-agnostic: K8s defaults (namespace, serviceAccount)
@@ -143,6 +143,7 @@ _ENGINE_HEALTH_DEFAULTS: Dict[str, str] = {
     EngineType.VLLM.value: "/health",
     EngineType.SGLANG.value: "/health",
     EngineType.TRTLLM.value: "/health",
+    EngineType.VIPE.value: "/health",
 }
 _FALLBACK_HEALTH_ENDPOINT = "/health"
 
@@ -638,10 +639,9 @@ class JobManifestRenderer(_RendererSupport):
         self, manifest: Dict[str, Any], profile: BatchProfile
     ) -> Dict[str, Any]:
         """Apply batch-level profile policy to the Job manifest."""
-        # Profile-driven scheduling fields that affect Job spec directly.
-        # Only completion_window is honored, and only as 24h. The
-        # actual deadline is set in apply_per_batch from
-        # spec.completion_window so user-supplied window wins.
+        # Profile-driven scheduling fields do not directly mutate the Job spec
+        # today. The actual deadline is set in apply_per_batch from
+        # spec.completion_window so the per-batch request is authoritative.
 
         return manifest
 
@@ -727,8 +727,9 @@ class JobManifestRenderer(_RendererSupport):
             for k, v in spec.metadata.items():
                 pod_annotations[f"{JobAnnotationKey.METADATA_PREFIX.value}{k}"] = v
         if spec.opts:
-            for k, v in spec.opts.items():
-                pod_annotations[f"{JobAnnotationKey.OPTS_PREFIX.value}{k}"] = v
+            pod_annotations[JobAnnotationKey.OPTS.value] = json.dumps(
+                spec.opts, sort_keys=True
+            )
 
         # File IDs from prepared_job (output / temp_output / error / temp_error).
         # Suspend=True keeps the Job from creating Pods (per K8s semantics).
@@ -813,6 +814,10 @@ _BASE_WORKER_ENV: List[Dict[str, Any]] = [
         "valueFrom": _ann_field_ref(JobAnnotationKey.ENDPOINT.value),
     },
     {
+        "name": "BATCH_AIBRIX",
+        "valueFrom": _ann_field_ref(JobAnnotationKey.AIBRIX.value),
+    },
+    {
         "name": "BATCH_OUTPUT_FILE_ID",
         "valueFrom": _ann_field_ref(JobAnnotationKey.OUTPUT_FILE_ID.value),
     },
@@ -829,9 +834,7 @@ _BASE_WORKER_ENV: List[Dict[str, Any]] = [
         "valueFrom": _ann_field_ref(JobAnnotationKey.TEMP_ERROR_FILE_ID.value),
     },
     {
-        "name": "BATCH_OPTS_FAIL_AFTER_N_REQUESTS",
-        "valueFrom": _ann_field_ref(
-            f"{JobAnnotationKey.OPTS_PREFIX.value}fail_after_n_requests"
-        ),
+        "name": "BATCH_OPTS",
+        "valueFrom": _ann_field_ref(JobAnnotationKey.OPTS.value),
     },
 ]

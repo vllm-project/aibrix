@@ -17,13 +17,15 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from botocore.exceptions import ClientError
 
 from aibrix.common.errors import (
     ArgNotCongiuredError,
     ModelNotFoundError,
 )
-from aibrix.downloader.base import get_downloader
+from aibrix.downloader.base import DownloadExtraConfig, get_downloader
 from aibrix.downloader.s3 import S3Downloader
+from aibrix.downloader.utils import meta_file, save_meta_data
 
 S3_BOTO3_MODULE = "aibrix.downloader.s3.boto3"
 ENVS_MODULE = "aibrix.downloader.s3.envs"
@@ -213,6 +215,92 @@ def test_s3_atomic_write(monkeypatch, tmp_path):
     assert not Path(str(final) + ".part").exists()
 
 
+def _make_fake_s3_client_for_force_download_test():
+    class FakeS3Client:
+        def __init__(self):
+            self.objects = {
+                "bucket": {"path/file.txt": {"ETag": "etag", "ContentLength": 4}}
+            }
+            self.download_calls = 0
+
+        def head_bucket(self, Bucket):
+            return {}
+
+        def head_object(self, Bucket, Key):
+            return self.objects[Bucket][Key]
+
+        def get_paginator(self, name):
+            assert name == "list_objects_v2"
+            return types.SimpleNamespace(
+                paginate=lambda **kwargs: iter(
+                    [{"Contents": [{"Key": "path/file.txt"}], "KeyCount": 1}]
+                )
+            )
+
+        def download_file(self, Bucket, Key, Filename, Config, Callback=None):
+            self.download_calls += 1
+            Path(Filename).parent.mkdir(parents=True, exist_ok=True)
+            Path(Filename).write_bytes(b"data")
+
+    return FakeS3Client()
+
+
+def _prepopulate_matching_local_file(model_path, source_value):
+    # Matches the relative path S3BaseDownloader.download() computes for
+    # this fixture (see test_s3_atomic_write above): "path/file.txt".
+    local_file = model_path / "path" / "file.txt"
+    local_file.parent.mkdir(parents=True, exist_ok=True)
+    local_file.write_bytes(b"data")
+    meta_data_file = meta_file(model_path, "path/file.txt", source=source_value)
+    save_meta_data(meta_data_file, "etag")
+
+
+def test_s3_skips_matching_file_when_not_forced(monkeypatch, tmp_path):
+    # Control for test_s3_force_download_override_bypasses_exist_check: with
+    # no force_download override, a local file matching remote ETag/size is
+    # skipped, as before.
+    from aibrix.downloader import s3 as s3_mod
+
+    fake_client = _make_fake_s3_client_for_force_download_test()
+    monkeypatch.setattr(
+        s3_mod,
+        "boto3",
+        types.SimpleNamespace(client=lambda service_name, config, **auth: fake_client),
+    )
+
+    d = s3_mod.S3Downloader("s3://bucket/path/file.txt", model_name="m")
+    _prepopulate_matching_local_file(tmp_path / "m", d.source.value)
+
+    d.download_model(local_path=str(tmp_path))
+
+    assert fake_client.download_calls == 0
+
+
+def test_s3_force_download_override_bypasses_exist_check(monkeypatch, tmp_path):
+    # Regression test: DownloadExtraConfig(force_download=True) must force a
+    # re-download even when the local file already matches remote size/etag,
+    # the same guarantee HuggingFaceDownloader already provides.
+    from aibrix.downloader import s3 as s3_mod
+
+    fake_client = _make_fake_s3_client_for_force_download_test()
+    monkeypatch.setattr(
+        s3_mod,
+        "boto3",
+        types.SimpleNamespace(client=lambda service_name, config, **auth: fake_client),
+    )
+
+    d = s3_mod.S3Downloader(
+        "s3://bucket/path/file.txt",
+        model_name="m",
+        download_extra_config=DownloadExtraConfig(force_download=True),
+    )
+    _prepopulate_matching_local_file(tmp_path / "m", d.source.value)
+
+    d.download_model(local_path=str(tmp_path))
+
+    assert fake_client.download_calls == 1
+
+
 def test_s3_recursive_download(monkeypatch, tmp_path):
     # Mock S3 client with a directory structure
     from aibrix.downloader import s3 as s3_mod
@@ -283,7 +371,8 @@ def test_s3_recursive_download(monkeypatch, tmp_path):
     assert (tmp_path / "test_model" / "subfolder" / "vocab.txt").exists()
 
 
-def test_s3_empty_allow_file_suffix(monkeypatch, tmp_path):
+@pytest.mark.parametrize("suffixes", [None, [], [".bin"]])
+def test_s3_empty_allow_file_suffix(monkeypatch, tmp_path, suffixes):
     # Mock S3 client with various file types
     from aibrix.downloader import s3 as s3_mod
 
@@ -353,13 +442,37 @@ def test_s3_empty_allow_file_suffix(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(s3_mod, "envs", mock_envs)
 
-    # Test download with empty file suffix filtering (should download all files)
-    d = s3_mod.S3Downloader("s3://bucket/models/all", model_name="all_files_model")
+    # Empty suffix filters download everything; .bin excludes all existing files.
+    d = s3_mod.S3Downloader(
+        "s3://bucket/models/all",
+        model_name="all_files_model",
+        download_extra_config=DownloadExtraConfig(allow_file_suffix=suffixes),
+    )
     d.download_model(local_path=str(tmp_path))
 
-    # Verify all files exist in the target directory
-    assert (tmp_path / "all_files_model" / "file1.txt").exists()
-    assert (tmp_path / "all_files_model" / "file2.json").exists()
+    # A populated source succeeds even when every file is excluded.
+    assert (tmp_path / "all_files_model" / "file1.txt").exists() is (not suffixes)
+    assert (tmp_path / "all_files_model" / "file2.json").exists() is (not suffixes)
+
+
+@pytest.mark.parametrize("path", ["models/missing.bin", "models/missing/"])
+@mock.patch(S3_BOTO3_MODULE)
+def test_s3_missing_source(mock_boto3, tmp_path, path):
+    mock_exist_boto3(mock_boto3)
+    client = mock_boto3.client.return_value
+    client.head_object.side_effect = ClientError(
+        {"Error": {"Code": "404"}}, "HeadObject"
+    )
+    client.get_paginator.return_value.paginate.return_value = [{"KeyCount": 0}]
+    uri = f"s3://bucket/{path}"
+    downloader = S3Downloader(uri, model_name="m")
+
+    with pytest.raises(ModelNotFoundError) as exception:
+        downloader.download_model(local_path=str(tmp_path))
+
+    assert uri in str(exception.value)
+    client.download_file.assert_not_called()
+    assert client.head_object.call_count == (0 if path.endswith("/") else 1)
 
 
 def test_s3_recursive_download_nested_dirs(monkeypatch, tmp_path):

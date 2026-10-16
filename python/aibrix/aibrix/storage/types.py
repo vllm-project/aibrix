@@ -23,3 +23,11 @@ class StorageType(Enum):
     TOS = "tos"
     REDIS = "redis"
     AUTO = "auto"
+
+
+class StorageListOrdering(str, Enum):
+    """Ordering contract for ``list_objects`` results."""
+
+    LEXICOGRAPHIC_ASC = "lexicographic_asc"
+    CREATED_AT_ASC = "created_at_asc"
+    CREATED_AT_DESC = "created_at_desc"

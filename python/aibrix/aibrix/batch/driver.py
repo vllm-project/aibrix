@@ -20,6 +20,7 @@ from aibrix.batch.batch_manager import BatchManager
 from aibrix.batch.batch_scheduler import BatchScheduler
 from aibrix.batch.client import EndpointSource
 from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE
+from aibrix.batch.job_driver.driver import TerminateResult
 from aibrix.batch.job_entity import BatchJob, BatchJobSpec
 from aibrix.batch.state import JobEntityManager
 from aibrix.context import InfrastructureContext
@@ -111,7 +112,7 @@ class BatchDriver:
     async def get_job(self, job_id: str) -> Optional[BatchJob]:
         return await self.run_coroutine(self._batch_manager.get_job(job_id))
 
-    async def cancel_job(self, job_id: str) -> bool:
+    async def cancel_job(self, job_id: str) -> TerminateResult:
         return await self.run_coroutine(self._batch_manager.cancel_job(job_id))
 
     async def list_jobs(
@@ -210,6 +211,13 @@ class BatchDriver:
         This method itself MUST be awaited. (For use from async code)
         """
         if self._async_thread_loop is not None:
+            loop = self._async_thread_loop.loop
+            if (
+                loop is None
+                or loop.is_closed()
+                or not self._async_thread_loop.is_alive()
+            ):
+                return await coro
             return await self._async_thread_loop.run_coroutine(coro)
 
         return await coro

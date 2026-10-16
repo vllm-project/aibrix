@@ -80,7 +80,9 @@ func init() {
 
 func RegisterSchemas(scheme *runtime.Scheme) error {
 	podAutoscalerEnabled := features.IsControllerEnabled(features.PodAutoscalerController)
-	modelAdapterEnabled := features.IsControllerEnabled(features.ModelAdapterController)
+	modelAPIEnabled := features.IsControllerEnabled(features.ModelAdapterController) ||
+		features.IsControllerEnabled(features.ModelClaimController) ||
+		features.IsControllerEnabled(features.ModelWarmupController)
 	distributedInferenceEnabled := features.IsControllerEnabled(features.DistributedInferenceController)
 	kvCacheEnabled := features.IsControllerEnabled(features.KVCacheController)
 	stormServiceEnabled := features.IsControllerEnabled(features.StormServiceController)
@@ -89,7 +91,7 @@ func RegisterSchemas(scheme *runtime.Scheme) error {
 		utilruntime.Must(autoscalingv1alpha1.AddToScheme(scheme))
 	}
 
-	if modelAdapterEnabled {
+	if modelAPIEnabled {
 		utilruntime.Must(modelv1alpha1.AddToScheme(scheme))
 	}
 
@@ -331,6 +333,10 @@ func setupControllers(mgr ctrl.Manager, runtimeConfig cfg.RuntimeConfig, certsRe
 			setupLog.Error(err, "unable to setup webhook", "webhook", "ModelAdapter")
 			os.Exit(1)
 		}
+		if err := apiwebhook.SetupModelWarmupWebhook(mgr); err != nil {
+			setupLog.Error(err, "unable to setup webhook", "webhook", "ModelWarmup")
+			os.Exit(1)
+		}
 		if err := apiwebhook.SetupKVCacheWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to setup webhook", "webhook", "KVCache")
 			os.Exit(1)
@@ -345,6 +351,10 @@ func setupControllers(mgr ctrl.Manager, runtimeConfig cfg.RuntimeConfig, certsRe
 		}
 		if err := apiwebhook.SetupPodAutoscalerWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to setup webhook", "webhook", "PodAutoscaler")
+			os.Exit(1)
+		}
+		if err := apiwebhook.SetupRayClusterFleetWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to setup webhook", "webhook", "RayClusterFleet")
 			os.Exit(1)
 		}
 	}

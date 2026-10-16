@@ -57,6 +57,7 @@ gatewayPlugin:
     image:
       repository: busybox
       tag: stable
+      imagePullPolicy: IfNotPresent
   container:
     image:
       repository: aibrix/gateway-plugins
@@ -88,7 +89,7 @@ gatewayPlugin:
       AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"
       AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE: "character"
       AIBRIX_PREFIX_CACHE_BLOCK_SIZE: "128"
-      AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT: "16"
+      AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP: "16"
       AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR: "2"
       AIBRIX_PREFILL_REQUEST_TIMEOUT: "60"
       AIBRIX_STATESYNC_ENABLED: "false"
@@ -98,6 +99,12 @@ gatewayPlugin:
       host: "" # aibrix-redis-master
       port: 6379
       password: ""
+  auth:
+    # Creates a Secret-backed AIBRIX_AUTH_BEARER_TOKEN environment variable for the gateway plugin.
+    # NOTE: This is managed exclusively via this field. Do NOT add
+    # AIBRIX_AUTH_BEARER_TOKEN to the 'gatewayPlugin.container.envs' map below,
+    # as it will result in duplicate environment variables in the manifest.
+    bearerToken: ""
   service:
     type: ClusterIP
   messageTimeout: "60s"
@@ -128,6 +135,7 @@ gpuOptimizer:
     image:
       repository: aibrix/metadata-service
       tag: nightly
+      imagePullPolicy: IfNotPresent
     resources:
       limits:
         cpu: 500m
@@ -148,7 +156,7 @@ gpuOptimizer:
   affinity: {}
 
 gateway:
-  # Mode Selection (mutually exclusive; values must be opposite)
+  # Mode Selection
   # | gateway.enable | envoyAsSideCar | Notes |
   # | -------------- | ------------------- | ----- |
   # | true           | false               | Envoy managed by Envoy Gateway (data plane). Installs Gateway, GatewayClass, EnvoyProxy, and gateway-plugins. |
@@ -157,10 +165,29 @@ gateway:
   # | true           | true                | INVALID: Do not enable both. Values must be opposite. |
   enable: true
   envoyAsSideCar: false
+  http:
+    enabled: true
+  tls:
+    enabled: false
+    autoGenerate: false
+    # Optional Gateway listener hostname, for example "*.example.com".
+    hostname: ""
+    # Validity period in days for the generated self-signed certificate.
+    validityDays: 365
+    # Existing Kubernetes TLS secret used by the Gateway HTTPS listener.
+    # The secret must contain the standard tls.crt and tls.key entries.
+    secretName: ""
+    port: 443
   envoySideCar:
     ports:
       http: 10080
   envoyProxy:
+    accessLog:
+      # Add request/response timing and ext_proc fields to the default JSON log.
+      # Applies to Envoy Gateway-managed proxies; uses Envoy v1.35+ ext_proc fields.
+      enabled: false
+      # Empty derives the filter name from the release namespace and policy name.
+      extProcFilterName: ""
     replicas: 1
     imagePullSecrets: []
     tolerations: []
@@ -201,6 +228,16 @@ gateway:
           requests:
             cpu: 10m
             memory: 32Mi
+    # Optional Envoy Service overrides; empty preserves Envoy Gateway defaults.
+    service: {}
+    # service:
+    #   type: NodePort
+    #   externalTrafficPolicy: Cluster
+    #   nodePorts:
+    #     http: 32080
+    #     https: 32443
+    # Omit either NodePort to let Kubernetes allocate it for that listener.
+    # Fixed NodePorts apply only to enabled listeners and cannot coexist with patch.
   clientTrafficPolicy:
     connection:
       bufferLimit: 4194304  # 4MiB — keep in sync with AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES
@@ -235,6 +272,8 @@ gateway:
       maxRequests: 1024
       # The maximum number of pending requests to the original destination cluster.
       maxPendingRequests: 1024
+      # If True, expose the number of resources remaining until the circuit breakers open
+      trackRemaining: true
     preserveExternalRequestID: false
 
 metadata:
@@ -249,6 +288,7 @@ metadata:
       image:
         repository: busybox
         tag: stable
+        imagePullPolicy: IfNotPresent
     container:
       image:
         repository: aibrix/metadata-service
@@ -275,6 +315,7 @@ metadata:
       image:
         repository: redis
         tag: "7.4"
+        imagePullPolicy: IfNotPresent
       resources:
         requests:
           cpu: 100m

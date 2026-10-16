@@ -42,4 +42,4 @@ bash ./scripts/format.sh
 
 ## License
 
-AI Runtime is licensed under the [APACHE License](https://github.com/vllm-project/aibrix/LICENSE.md).
+AI Runtime is licensed under the [APACHE License](https://github.com/vllm-project/aibrix/blob/main/LICENSE).

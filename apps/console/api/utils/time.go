@@ -59,6 +59,6 @@ func UnixToTimePtr(sec int64) *time.Time {
 	if sec <= 0 {
 		return nil
 	}
-	t := time.Unix(sec, 0)
+	t := time.Unix(sec, 0).UTC()
 	return &t
 }

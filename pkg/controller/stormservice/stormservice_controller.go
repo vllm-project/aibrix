@@ -98,9 +98,9 @@ type StormServiceReconciler struct {
 
 func (r *StormServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	startTime := time.Now()
-	klog.Infof("Started syncing stormservice %s (%v)", req.NamespacedName.String(), startTime)
+	klog.Infof("Started syncing stormservice %s (%v)", req.String(), startTime)
 	defer func() {
-		klog.Infof("Finished syncing stormservice %q (%v)", req.NamespacedName.String(), time.Since(startTime))
+		klog.Infof("Finished syncing stormservice %q (%v)", req.String(), time.Since(startTime))
 	}()
 
 	stormService := &orchestrationv1alpha1.StormService{}
@@ -118,7 +118,7 @@ func (r *StormServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	} else if !controllerutil.ContainsFinalizer(stormService, StormServiceFinalizer) {
 		if err := utils.Patch(ctx, r.Client, stormService, patch.AddFinalizerPatch(stormService, StormServiceFinalizer)); err != nil {
-			klog.Errorf("add finalizer failed: %v, stormService %s", err, req.NamespacedName.String())
+			klog.Errorf("add finalizer failed: %v, stormService %s", err, req.String())
 			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
 		}
 	}

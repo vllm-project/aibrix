@@ -19,6 +19,9 @@ package benchmark
 import (
 	"errors"
 	"testing"
+
+	"github.com/vllm-project/aibrix/brixbench/internal/deployers"
+	"github.com/vllm-project/aibrix/brixbench/internal/resolver"
 )
 
 func TestFallbackGatewayEndpointMissing(t *testing.T) {
@@ -70,5 +73,118 @@ func TestResolveGatewayEndpointFailsWithoutDetectedEndpointOrOverride(t *testing
 	_, err := resolveGatewayEndpoint("", errors.New("lookup failed"))
 	if err == nil {
 		t.Fatal("resolveGatewayEndpoint() expected error, got nil")
+	}
+}
+
+func TestShouldRunStormServicePreflightOnlyForAIBrix(t *testing.T) {
+	aibrixProvider := "aibrix"
+	dynamoProvider := "dynamo"
+	llmdProvider := "llmd"
+	for _, tc := range []struct {
+		name string
+		test resolver.Test
+		want bool
+	}{
+		{
+			name: "aibrix",
+			test: resolver.Test{Provider: &aibrixProvider},
+			want: true,
+		},
+		{
+			name: "dynamo",
+			test: resolver.Test{Provider: &dynamoProvider},
+			want: false,
+		},
+		{
+			name: "llmd",
+			test: resolver.Test{Provider: &llmdProvider},
+			want: false,
+		},
+		{
+			name: "null provider",
+			test: resolver.Test{},
+			want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldRunStormServicePreflight(tc.test); got != tc.want {
+				t.Fatalf("shouldRunStormServicePreflight() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestShouldRunDynamoStaleCleanupRequiresResetEnabled(t *testing.T) {
+	dynamoProvider := "dynamo"
+	aibrixProvider := "aibrix"
+	for _, tc := range []struct {
+		name        string
+		test        resolver.Test
+		resetBefore bool
+		want        bool
+	}{
+		{
+			name:        "dynamo with reset",
+			test:        resolver.Test{Provider: &dynamoProvider},
+			resetBefore: true,
+			want:        true,
+		},
+		{
+			name:        "dynamo without reset",
+			test:        resolver.Test{Provider: &dynamoProvider},
+			resetBefore: false,
+			want:        false,
+		},
+		{
+			name:        "aibrix with reset",
+			test:        resolver.Test{Provider: &aibrixProvider},
+			resetBefore: true,
+			want:        false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldRunDynamoStaleCleanup(tc.test, tc.resetBefore); got != tc.want {
+				t.Fatalf("shouldRunDynamoStaleCleanup() = %t, want %t", got, tc.want)
+                        }
+                })
+        }
+}
+
+func TestBenchmarkNamespaceForProvider(t *testing.T) {
+	dynamoProvider := "dynamo"
+	llmdProvider := "llmd"
+	aibrixProvider := "aibrix"
+
+	for _, tc := range []struct {
+		name string
+		test resolver.Test
+		want string
+	}{
+		{
+			name: "dynamo",
+			test: resolver.Test{Provider: &dynamoProvider},
+			want: deployers.DynamoBenchmarkNamespace,
+		},
+		{
+			name: "llmd",
+			test: resolver.Test{Provider: &llmdProvider},
+			want: deployers.LLMdBenchmarkNamespace,
+		},
+		{
+			name: "aibrix",
+			test: resolver.Test{Provider: &aibrixProvider},
+			want: defaultBenchmarkNamespace,
+		},
+		{
+			name: "null provider",
+			test: resolver.Test{},
+			want: defaultBenchmarkNamespace,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := benchmarkNamespaceForTestCase(tc.test); got != tc.want {
+				t.Fatalf("benchmarkNamespaceForTestCase() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

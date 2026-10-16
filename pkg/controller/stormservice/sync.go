@@ -65,7 +65,7 @@ func (r *StormServiceReconciler) sync(ctx context.Context, stormService *orchest
 		klog.Errorf("failed to update status for stormservice %s/%s, err: %v", stormService.Namespace, stormService.Name, err)
 		return 0, err
 	} else if !ready {
-		return DefaultRequeueAfter, nil
+		return progressDeadlineRequeueAfter(stormService, time.Now()), nil
 	}
 	return 0, nil
 }
@@ -89,11 +89,11 @@ func (r *StormServiceReconciler) syncHeadlessService(ctx context.Context, servic
 	}
 
 	headlessService := &corev1.Service{}
-	err := r.Client.Get(ctx, client.ObjectKey{Name: service.Name, Namespace: service.Namespace}, headlessService)
+	err := r.Get(ctx, client.ObjectKey{Name: service.Name, Namespace: service.Namespace}, headlessService)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// service doesn't exist, create it
-			if createErr := r.Client.Create(ctx, expectedService); createErr != nil {
+			if createErr := r.Create(ctx, expectedService); createErr != nil {
 				return fmt.Errorf("failed to create headless service: %w", createErr)
 			}
 			r.EventRecorder.Eventf(service, corev1.EventTypeNormal, HeadlessServiceEventType, "Headless Service(discovery) %s created", service.Name)
@@ -104,7 +104,7 @@ func (r *StormServiceReconciler) syncHeadlessService(ctx context.Context, servic
 
 	if !isServiceEqual(headlessService, expectedService) {
 		headlessService.Spec = expectedService.Spec
-		if err := r.Client.Update(ctx, headlessService); err != nil {
+		if err := r.Update(ctx, headlessService); err != nil {
 			return fmt.Errorf("failed to update headless service: %w", err)
 		}
 		r.EventRecorder.Eventf(service, corev1.EventTypeNormal, HeadlessServiceEventType, "Headless Service %s updated", service.Name)
@@ -139,16 +139,13 @@ func (r *StormServiceReconciler) scaling(ctx context.Context, stormService, curr
 	currentRevision := currentCR.Name
 	updatedRevision := updateCR.Name
 	var scaling bool
-	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
+	allRoleSets, err := r.getRoleSetList(ctx, stormService)
 	if err != nil {
 		return false, err
 	}
 	// skip scaling when there are terminating roleSets
 	activeRoleSets, _ := filterTerminatingRoleSets(allRoleSets)
-	var expectReplica int32
-	if stormService.Spec.Replicas != nil {
-		expectReplica = *stormService.Spec.Replicas
-	}
+	expectReplica := stormService.Spec.ResolvedReplicas()
 	minAvailable := MinAvailable(stormService)
 	maxSurge := MaxSurge(stormService)
 	diff := len(activeRoleSets) - int(expectReplica)
@@ -260,29 +257,25 @@ func (r *StormServiceReconciler) scaling(ctx context.Context, stormService, curr
 
 // Rollout: execute the deployment update logic with per-role revision tracking
 func (r *StormServiceReconciler) rollout(ctx context.Context, stormService, current *orchestrationv1alpha1.StormService, currentCR, updateCR *apps.ControllerRevision) error {
-	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
+	allRoleSets, err := r.getRoleSetList(ctx, stormService)
 	if err != nil {
 		return err
 	}
-	var expectReplica int32
-	if stormService.Spec.Replicas != nil {
-		expectReplica = *stormService.Spec.Replicas
-	}
+	expectReplica := stormService.Spec.ResolvedReplicas()
 	updated, _ := filterRoleSetByRevision(allRoleSets, updateCR.Name)
 	if len(updated) == int(expectReplica) {
 		return nil
 	}
-	switch stormService.Spec.UpdateStrategy.Type {
-	case "":
-		// By default use RollingUpdate strategy
-		fallthrough
-	case orchestrationv1alpha1.RollingUpdateStormServiceStrategyType:
-		return r.rollingUpdate(allRoleSets, stormService, current, currentCR, updateCR)
-	case orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType:
-		return r.inPlaceUpdate(allRoleSets, stormService, current, currentCR, updateCR)
-	default:
-		return fmt.Errorf("unexpected stormService strategy type: %s", stormService.Spec.UpdateStrategy.Type)
+	// The update path follows the declared spec.mode when it is set and falls back to
+	// the legacy updateStrategy.type selection otherwise, see EffectiveUpdateStrategyType.
+	strategyType, err := EffectiveUpdateStrategyType(stormService)
+	if err != nil {
+		return err
 	}
+	if strategyType == orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType {
+		return r.inPlaceUpdate(allRoleSets, stormService, current, currentCR, updateCR)
+	}
+	return r.rollingUpdate(allRoleSets, stormService, current, currentCR, updateCR)
 }
 
 // rollingUpdate: rolling update logic for replica mode
@@ -319,10 +312,7 @@ func (r *StormServiceReconciler) rollingUpdate(allRoleSets []*orchestrationv1alp
 	}
 
 	// 2. create roleset, follow the max surge rule
-	var expectedReplica int
-	if stormService.Spec.Replicas != nil {
-		expectedReplica = int(*stormService.Spec.Replicas)
-	}
+	expectedReplica := int(stormService.Spec.ResolvedReplicas())
 	surge := utils.MinInt(expectedReplica+int(maxSurge)-len(allRoleSets), expectedReplica-len(updated))
 	if surge < 0 {
 		surge = 0
@@ -358,17 +348,22 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 	stormService.Status.UpdateRevision = updateRevision.Name
 	stormService.Status.CollisionCount = &collisionCount
 	if reconcileErr != nil {
-		condition := []orchestrationv1alpha1.Condition{
-			*utils.NewCondition(orchestrationv1alpha1.StormServiceReplicaFailure, corev1.ConditionTrue, "Failure", reconcileErr.Error()),
-		}
-		stormService.Status.Conditions = condition
+		RemoveStormServiceCondition(&stormService.Status, orchestrationv1alpha1.StormServiceReady)
+		SetStormServiceCondition(&stormService.Status, *utils.NewCondition(
+			orchestrationv1alpha1.StormServiceReplicaFailure,
+			corev1.ConditionTrue,
+			"Failure",
+			reconcileErr.Error(),
+		))
+		syncStormServiceProgressingCondition(stormService, checkpoint, time.Now())
 		err := r.Client.Status().Update(ctx, stormService)
 		return false, err
 	}
-	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
+	allRoleSets, err := r.getRoleSetList(ctx, stormService)
 	if err != nil {
 		return false, err
 	}
+	RemoveStormServiceCondition(&stormService.Status, orchestrationv1alpha1.StormServiceReplicaFailure)
 	stormService.Status.Replicas = int32(len(allRoleSets))
 	stormService.Status.CurrentReplicas = 0
 	stormService.Status.UpdatedReplicas = 0
@@ -392,23 +387,18 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 	stormService.Status.ReadyReplicas = int32(len(ready))
 	stormService.Status.NotReadyReplicas = int32(len(notReady))
 	// set conditions
-	var specReplica int32
-	if stormService.Spec.Replicas != nil {
-		specReplica = *stormService.Spec.Replicas
-	}
+	specReplica := stormService.Spec.ResolvedReplicas()
 	stormServiceReady := stormService.Status.ReadyReplicas >= specReplica &&
-		stormService.Status.UpdatedReplicas == *stormService.Spec.Replicas &&
-		stormService.Status.Replicas == *stormService.Spec.Replicas &&
+		stormService.Status.UpdatedReplicas == specReplica &&
+		stormService.Status.Replicas == specReplica &&
 		stormService.Status.CurrentRevision == stormService.Status.UpdateRevision
 	if stormServiceReady {
-		stormService.Status.Conditions = []orchestrationv1alpha1.Condition{
-			*utils.NewCondition(orchestrationv1alpha1.StormServiceReady, corev1.ConditionTrue, "Ready", ""),
-		}
+		setStormServiceAvailabilityCondition(&stormService.Status, true)
 	} else {
-		stormService.Status.Conditions = []orchestrationv1alpha1.Condition{
-			*utils.NewCondition(orchestrationv1alpha1.StormServiceProgressing, corev1.ConditionTrue, "Processing", ""),
-		}
+		RemoveStormServiceCondition(&stormService.Status, orchestrationv1alpha1.StormServiceReady)
+		syncStormServiceProgressingCondition(stormService, checkpoint, time.Now())
 	}
+	setGangSchedulingConditions(&stormService.Status, allRoleSets)
 	// support scale sub resources.
 	// TODO: add pod template hash to avoid errors during upgrade.
 	stormService.Status.ScalingTargetSelector = fmt.Sprintf("%s=%s", constants.StormServiceNameLabelKey, stormService.Name)
@@ -426,9 +416,19 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 	return stormServiceReady, nil
 }
 
+func setStormServiceAvailabilityCondition(status *orchestrationv1alpha1.StormServiceStatus, ready bool) {
+	if ready {
+		RemoveStormServiceCondition(status, orchestrationv1alpha1.StormServiceProgressing)
+		SetStormServiceCondition(status, *utils.NewCondition(orchestrationv1alpha1.StormServiceReady, corev1.ConditionTrue, "Ready", ""))
+		return
+	}
+	RemoveStormServiceCondition(status, orchestrationv1alpha1.StormServiceReady)
+	SetStormServiceCondition(status, *utils.NewCondition(orchestrationv1alpha1.StormServiceProgressing, corev1.ConditionTrue, "Processing", ""))
+}
+
 func (r *StormServiceReconciler) finalize(ctx context.Context, stormService *orchestrationv1alpha1.StormService) (bool, error) {
 	// check if all rolesets are deleted
-	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
+	allRoleSets, err := r.getRoleSetList(ctx, stormService)
 	if err != nil {
 		return false, err
 	}

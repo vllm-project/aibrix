@@ -51,26 +51,32 @@ type VLLMHandler struct{}
 func (h *VLLMHandler) Name() string  { return "vllm" }
 func (h *VLLMHandler) IsAsync() bool { return false }
 
+// ControlledFields returns the union of every registered KV transfer agent's
+// controlled fields. The agent is only resolved per prefill pod after pod
+// selection, while validation runs before it, so the union is the set that is
+// safe to reject regardless of which connector the request ends up on.
+func (h *VLLMHandler) ControlledFields() []string { return transfer.AllControlledFields() }
+
 func (h *VLLMHandler) AugmentPrefillRequest(
 	routingCtx *types.RoutingContext,
 	pod *v1.Pod,
-	completionRequest map[string]any,
-) error {
+	body []byte,
+) ([]byte, error) {
 	agent, err := transfer.ResolveAgentForPod(pod, connectorTypeFunc())
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return agent.AugmentPrefillRequest(routingCtx, pod, completionRequest)
+	return agent.AugmentPrefillRequest(routingCtx, pod, body)
 }
 
 func (h *VLLMHandler) MergePrefillResponse(
 	routingCtx *types.RoutingContext,
-	responseData map[string]any,
+	prefillResponse []byte,
 	pod *v1.Pod,
 ) error {
 	agent, err := transfer.ResolveAgentForPod(pod, connectorTypeFunc())
 	if err != nil {
 		return err
 	}
-	return agent.MergePrefillResponse(routingCtx, responseData, pod)
+	return agent.MergePrefillResponse(routingCtx, prefillResponse, pod)
 }

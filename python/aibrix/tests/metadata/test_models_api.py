@@ -33,7 +33,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 # Try importing, skip tests if dependencies missing
 try:
     from aibrix.metadata.api.v1.models import K8sModelDiscovery
-    from aibrix.metadata.app import build_app
+    from aibrix.metadata.app import build_app, build_app_args
     from tests.metadata.conftest import create_test_app
 
     DEPENDENCIES_AVAILABLE = True
@@ -312,8 +312,6 @@ class TestModelsAPI:
         no-trailing-slash path explicitly (mirroring files.py / batch.py); a bare
         /v1/models otherwise 404s instead of getting a 307 redirect.
         """
-        from argparse import Namespace
-
         from kubernetes import config as k8s_config
 
         mock_incluster_config.side_effect = k8s_config.ConfigException("Not in cluster")
@@ -332,8 +330,7 @@ class TestModelsAPI:
             "items": []
         }
 
-        args = Namespace(
-            enable_fastapi_docs=False,
+        args = build_app_args(
             disable_batch_api=True,
             disable_file_api=True,
             enable_k8s_support=True,

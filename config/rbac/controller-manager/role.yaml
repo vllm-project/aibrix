@@ -62,6 +62,14 @@ rules:
   - patch
   - update
 - apiGroups:
+  - apps
+  resources:
+  - replicasets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - autoscaling
   resources:
   - horizontalpodautoscalers
@@ -73,6 +81,13 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - external.metrics.k8s.io
+  resources:
+  - '*'
+  verbs:
+  - get
+  - list
 - apiGroups:
   - autoscaling.aibrix.ai
   resources:
@@ -99,6 +114,22 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - ""
   resources:
@@ -181,6 +212,8 @@ rules:
   - model.aibrix.ai
   resources:
   - modeladapters
+  - modelclaims
+  - modelwarmups
   verbs:
   - create
   - delete
@@ -193,16 +226,31 @@ rules:
   - model.aibrix.ai
   resources:
   - modeladapters/finalizers
+  - modelclaims/finalizers
   verbs:
   - update
 - apiGroups:
   - model.aibrix.ai
   resources:
   - modeladapters/status
+  - modelclaims/status
+  - modelwarmups/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - orchestration.aibrix.ai
   resources:

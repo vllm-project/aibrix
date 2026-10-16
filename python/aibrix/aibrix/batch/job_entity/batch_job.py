@@ -13,16 +13,22 @@
 # limitations under the License.
 
 import copy
+import os
+import re
+import traceback
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_core import core_schema
 
 from aibrix.batch.job_entity.aibrix_metadata import AibrixMetadata
 from aibrix.batch.job_entity.base import _Strict
+from aibrix.logger import init_logger
+
+logger = init_logger(__name__)
 
 
 class BatchJobEndpoint(str, Enum):
@@ -35,13 +41,78 @@ class BatchJobEndpoint(str, Enum):
 
 
 class CompletionWindow(str, Enum):
-    """Valid completion windows for batch jobs."""
+    """Common completion-window presets."""
 
+    ONE_HOUR = "1h"
+    TWO_HOURS = "2h"
+    SIX_HOURS = "6h"
+    TWELVE_HOURS = "12h"
     TWENTY_FOUR_HOURS = "24h"
 
+    @classmethod
+    def _missing_(cls, value: object) -> Optional["CompletionWindow"]:
+        if not isinstance(value, str):
+            return None
+        try:
+            parse_completion_window(value)
+        except ValueError:
+            return None
+
+        member = str.__new__(cls, value.strip())
+        member._name_ = None  # type: ignore[assignment]
+        member._value_ = value.strip()
+        return member
+
     def expires_at(self) -> int:
-        """Returns the expiration time of the completion window."""
-        return 86400  # Return default value
+        """Returns the completion window in seconds."""
+        return parse_completion_window(self.value)
+
+
+_COMPLETION_WINDOW_PATTERN = re.compile(
+    r"^(?:(?P<days>[0-9]+)d)?"
+    r"(?:(?P<hours>[0-9]+)h)?"
+    r"(?:(?P<minutes>[0-9]+)(?:min|m))?$"
+)
+
+
+def parse_completion_window(value: str) -> int:
+    """Parse a positive d/h/min/m completion window into whole minutes."""
+    normalized = value.strip()
+    match = _COMPLETION_WINDOW_PATTERN.fullmatch(normalized)
+    if match is None:
+        raise ValueError(
+            "Completion window must use a positive combination of d, h, and min (or m)"
+        )
+
+    total_seconds = (
+        int(match.group("days") or 0) * 24 * 60 * 60
+        + int(match.group("hours") or 0) * 60 * 60
+        + int(match.group("minutes") or 0) * 60
+    )
+    if total_seconds <= 0:
+        raise ValueError("Completion window must be greater than zero")
+    return total_seconds
+
+
+def format_completion_window(total_seconds: int) -> str:
+    """Round down to a minute and format as a stable d/h/min window."""
+    if total_seconds <= 0:
+        raise ValueError("Completion window must be greater than zero")
+
+    total_minutes = total_seconds // 60
+    if total_minutes == 0:
+        return "0h"
+
+    days, remaining_minutes = divmod(total_minutes, 24 * 60)
+    hours, minutes = divmod(remaining_minutes, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}min")
+    return "".join(parts)
 
 
 class BatchJobState(str, Enum):
@@ -60,6 +131,7 @@ class BatchJobErrorCode(str, Enum):
     """Error codes for batch job."""
 
     INVALID_INPUT_FILE = "invalid_input_file"
+    EMPTY_INPUT_FILE = "empty_input_file"
     INVALID_ENDPOINT = "invalid_endpoint"
     INVALID_COMPLETION_WINDOW = "invalid_completion_window"
     INVALID_METADATA = "invalid_metadata"
@@ -67,6 +139,7 @@ class BatchJobErrorCode(str, Enum):
     VALIDATION_ERROR = "validation_error"
     INFERENCE_FAILED = "inference_failed"
     PREPARE_OUTPUT_ERROR = "prepare_output_failed"
+    CANCEL_REJECTED_ERROR = "cancel_rejected"
     FINALIZING_ERROR = "finalizing_failed"
     INTERNAL_ERROR = "internal_error"
     METASTORE_ERROR = "metastore_error"
@@ -228,7 +301,7 @@ class BatchJobSpec(_Strict):
         return cls(
             input_file_id=input_file_id,
             endpoint=validated_endpoint.value,
-            completion_window=validated_completion_window.expires_at(),
+            completion_window=validated_completion_window,
             metadata=metadata,
             opts=opts,
             aibrix=AibrixMetadata(**aibrix)
@@ -261,28 +334,21 @@ class BatchJobSpec(_Strict):
             )
 
     @staticmethod
-    def _validate_completion_window(completion_window_str: str) -> CompletionWindow:
-        """Validate and convert completion window string to CompletionWindow.
+    def _validate_completion_window(completion_window_str: str) -> int:
+        """Validate and convert a completion window string to seconds.
 
         Args:
             completion_window_str: String value of the completion window
 
         Returns:
-            CompletionWindow enum value
+            Positive completion window in seconds
 
         Raises:
             ValueError: If completion window is invalid
         """
         if not completion_window_str:
             raise ValueError("Completion window cannot be empty")
-
-        try:
-            return CompletionWindow(completion_window_str)
-        except ValueError:
-            valid_windows = [w.value for w in CompletionWindow]
-            raise ValueError(
-                f"Invalid completion window '{completion_window_str}'. Valid values: {valid_windows}"
-            )
+        return parse_completion_window(completion_window_str)
 
 
 class RequestCountStats(_Strict):
@@ -338,6 +404,26 @@ class BatchUsage(_Strict):
     output_tokens_details: OutputTokensDetails = Field(
         default_factory=OutputTokensDetails
     )
+
+
+class JobRuntimeRef(_Strict):
+    driver_type: str = Field(alias="driverType")
+    attempt: int = Field(default=0, ge=0)
+    owner_ref: Optional[str] = Field(default=None, alias="ownerRef")
+    owner_worker_id: Optional[str] = Field(default=None, alias="ownerWorkerId")
+    reconnect_payload: Optional[Dict[str, Any]] = Field(
+        default=None, alias="reconnectPayload"
+    )
+    connected_at: Optional[datetime] = Field(default=None, alias="connectedAt")
+    heartbeat_at: Optional[datetime] = Field(default=None, alias="heartbeatAt")
+    delete_started_at: Optional[datetime] = Field(default=None, alias="deleteStartedAt")
+    deleted_at: Optional[datetime] = Field(default=None, alias="deletedAt")
+
+    def delete_started(self) -> bool:
+        return self.delete_started_at is not None
+
+    def deleted(self) -> bool:
+        return self.deleted_at is not None
 
 
 class BatchJobStatusCopy(_Strict):
@@ -471,10 +557,102 @@ def ensure_batch_job_error(
     e: Exception, default_code: BatchJobErrorCode, **kwargs
 ) -> BatchJobError:
     """Ensures that the exception is a BatchJobError."""
+    input_line, input_line_data = _exception_input_context(e, kwargs)
     if isinstance(e, BatchJobError):
-        return e
+        merged_line = e.line if e.line is not None else input_line
+        merged_param = e.param if e.param is not None else input_line_data
+        if merged_line == e.line and merged_param == e.param:
+            return e
+        return BatchJobError(
+            code=BatchJobErrorCode(e.code),
+            message=e.message,
+            param=merged_param,
+            line=merged_line,
+        )
+    return BatchJobError(
+        code=default_code,
+        message=_format_exception_message(e, **kwargs),
+        param=input_line_data,
+        line=input_line,
+    )
+
+
+def _format_exception_message(error: BaseException, **kwargs: Any) -> str:
+    """Return a stable, non-empty message for generic exceptions."""
+    if error.__traceback__ is not None:
+        log_kwargs: Dict[str, Any] = {
+            "error_type": error.__class__.__name__,
+            "exc_info": error,
+        }
+        job_id = _exception_job_id(kwargs)
+        if job_id is not None:
+            log_kwargs["job_id"] = job_id
+        cause = error.__cause__
+        if cause is not None:
+            log_kwargs["cause_type"] = cause.__class__.__name__
+            cause_message = str(cause).strip()
+            if cause_message:
+                log_kwargs["cause_message"] = cause_message
+        context = error.__context__
+        if context is not None and context is not cause:
+            log_kwargs["context_type"] = context.__class__.__name__
+            context_message = str(context).strip()
+            if context_message:
+                log_kwargs["context_message"] = context_message
+        logger.error(
+            "Normalizing generic batch exception",
+            **log_kwargs,
+        )  # type: ignore[call-arg]
+    class_name = error.__class__.__name__
+    text = str(error).strip()
+    if text:
+        details = f"{class_name}: {text}"
+    elif error.args:
+        details = f"{class_name}: {error.args!r}"
     else:
-        return BatchJobError(code=default_code, message=str(e), **kwargs)
+        details = class_name
+    source = _exception_source_details(error)
+    if source is not None:
+        return f"{details} (source: {source})"
+    return details
+
+
+def _exception_job_id(kwargs: Dict[str, Any]) -> Optional[str]:
+    """Best-effort job identifier for normalization logs."""
+    job_id = kwargs.get("job_id")
+    if job_id is not None:
+        return str(job_id)
+    job = kwargs.get("job")
+    if job is None:
+        return None
+    resolved = getattr(job, "job_id", None)
+    return str(resolved) if resolved is not None else None
+
+
+def _exception_source_details(error: BaseException) -> Optional[str]:
+    """Best-effort program source location for a non-BatchJobError exception."""
+    if error.__traceback__ is None:
+        return None
+    frames = traceback.extract_tb(error.__traceback__)
+    if not frames:
+        return None
+    frame = frames[-1]
+    filename = os.path.basename(frame.filename)
+    return f"{filename}:{frame.lineno}"
+
+
+def _exception_input_context(
+    error: BaseException,
+    kwargs: Dict[str, Any],
+) -> tuple[Optional[int], Optional[str]]:
+    """Prefer user-facing input line context over internal source locations."""
+    input_line = kwargs.get("line")
+    input_line_data = kwargs.get("param")
+    if input_line is None:
+        input_line = getattr(error, "batch_input_line_no", None)
+    if input_line_data is None:
+        input_line_data = getattr(error, "batch_input_line_data", None)
+    return input_line, input_line_data
 
 
 class BatchJobStatus(_Strict):
@@ -525,6 +703,10 @@ class BatchJobStatus(_Strict):
             "requests; absent until the first progress flush."
         ),
     )
+    execution: Optional[Dict[str, JobRuntimeRef]] = Field(
+        default=None,
+        description="Durable execution metadata used to reconnect or reschedule work",
+    )
     status_copies: Optional[Dict[str, BatchJobStatusCopy]] = Field(
         default=None,
         alias="statusCopies",
@@ -544,6 +726,11 @@ class BatchJobStatus(_Strict):
         default=None,
         alias="finalizingAt",
         description="Timestamp of when the batch job started finalizing",
+    )
+    last_crashed_at: Optional[datetime] = Field(
+        default=None,
+        alias="lastCrashedAt",
+        description="Timestamp of the most recent injected crash for this job",
     )
     finalized_at: Optional[datetime] = Field(
         default=None,
@@ -581,6 +768,22 @@ class BatchJobStatus(_Strict):
         description="Conditions represent the latest available observations of the batch job's state",
     )
 
+    @field_validator("execution", mode="before")
+    @classmethod
+    def _normalize_execution(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, JobRuntimeRef):
+            return {value.driver_type: value}
+        if isinstance(value, dict):
+            if "driverType" in value or "driver_type" in value:
+                driver_type = value.get("driverType") or value.get("driver_type")
+                if driver_type is None:
+                    raise ValueError("execution driver type is required")
+                return {driver_type: value}
+            return value
+        raise ValueError("execution must be a mapping keyed by driver type")
+
     @property
     def finished(self) -> bool:
         return self.state == BatchJobState.FINALIZED
@@ -599,6 +802,7 @@ class BatchJobStatus(_Strict):
 
     @property
     def expired(self) -> bool:
+        """Whether the job has already finalized in the expired state."""
         return self.finished and self.check_condition(ConditionType.EXPIRED)
 
     @property
@@ -646,6 +850,31 @@ class BatchJobStatus(_Strict):
             self.conditions = []
         self.conditions.append(condition)
 
+    def get_runtime_ref(self, type: str) -> Optional[JobRuntimeRef]:
+        if self.execution is None:
+            return None
+        return self.execution.get(type)
+
+    def set_runtime_ref(self, type: str, execution_ref: JobRuntimeRef):
+        if self.execution is None:
+            self.execution = {}
+        self.execution[type] = execution_ref
+
+    def remove_runtime_ref(self, type: str) -> None:
+        if self.execution is None:
+            return
+        self.execution.pop(type, None)
+        if len(self.execution) == 0:
+            self.execution = None
+
+    def is_finalizing_required(self) -> bool:
+        return not self.finished and self.condition in [
+            ConditionType.COMPLETED,
+            ConditionType.EXPIRED,
+            ConditionType.FAILED,
+            ConditionType.CANCELLED,
+        ]
+
 
 class BatchJob(_Strict):
     """Schema for the BatchJob API - Kubernetes Custom Resource equivalent."""
@@ -660,13 +889,14 @@ class BatchJob(_Strict):
     spec: BatchJobSpec = Field(description="Desired state of the batch job")
     status: BatchJobStatus = Field(description="Observed state of the batch job")
 
-    def copy(self):
+    def copy(self, status: Optional[BatchJobStatus] = None):  # type: ignore[override]
+        """Get a new BatchJob with original fields and copied status"""
         return BatchJob(
             sessionID=self.session_id,
             typeMeta=self.type_meta,
             metadata=self.metadata,
             spec=self.spec,
-            status=copy.deepcopy(self.status),
+            status=status if status is not None else copy.deepcopy(self.status),
         )
 
     @classmethod
@@ -752,6 +982,32 @@ class BatchJob(_Strict):
         """Get the job ID."""
         return self.status.job_id
 
+    def expiration_timestamp(self) -> float:
+        """Return the authoritative Unix timestamp when the job expires."""
+        if self.spec.aibrix and self.spec.aibrix.resource_allocation:
+            deadline = self.spec.aibrix.resource_allocation.provision_resource_deadline
+            if deadline is not None and deadline > 0:
+                return float(deadline)
+
+        created_at = self.status.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        return created_at.timestamp() + self.spec.completion_window
+
+    def is_expiring(self) -> bool:
+        """Whether the job should be treated as expiring now.
+
+        This is broader than ``BatchJobStatus.expired``: it covers jobs that
+        already carry an expired condition before finalization and jobs whose
+        authoritative resource deadline or fallback completion window has
+        elapsed.
+        ``BatchJobStatus.expired`` remains the terminal-state check for a
+        finalized expired job.
+        """
+        if self.status.condition == ConditionType.EXPIRED:
+            return True
+        return self.expiration_timestamp() <= datetime.now(timezone.utc).timestamp()
+
 
 def aggregate_batch_usage(
     base_usage: Optional[BatchUsage], status_copies: Dict[str, BatchJobStatusCopy]
@@ -791,7 +1047,13 @@ def aggregate_batch_job_status(
     if not aggregated.status_copies:
         return aggregated
 
-    seens = max(
+    # Each status copy may carry a fallback "largest request id seen + 1"
+    # total from a worker/driver round. Keep the max seen bound so aggregated
+    # launched/completed/failed counts never exceed the furthest request id any
+    # copy observed. If validation already fixed aggregated.request_counts.total,
+    # that authoritative total stays in place and this seen bound only caps the
+    # per-copy counters during merge.
+    seen_total = max(
         (
             status_copy.request_counts.total
             for status_copy in aggregated.status_copies.values()
@@ -812,15 +1074,21 @@ def aggregate_batch_job_status(
     )
 
     if aggregated.request_counts.total == 0:
-        aggregated.request_counts.total = seens
-    aggregated.request_counts.launched = min(seens, launched) if seens > 0 else launched
+        aggregated.request_counts.total = seen_total
+    aggregated.request_counts.launched = (
+        min(seen_total, launched) if seen_total > 0 else launched
+    )
     aggregated.request_counts.completed = (
-        min(seens, completed) if seens > 0 else completed
+        min(seen_total, completed) if seen_total > 0 else completed
     )
     remaining = (
-        max(seens - aggregated.request_counts.completed, 0) if seens > 0 else failed
+        max(seen_total - aggregated.request_counts.completed, 0)
+        if seen_total > 0
+        else failed
     )
-    aggregated.request_counts.failed = min(remaining, failed) if seens > 0 else failed
+    aggregated.request_counts.failed = (
+        min(remaining, failed) if seen_total > 0 else failed
+    )
     aggregated.usage = aggregate_batch_usage(aggregated.usage, aggregated.status_copies)
     return aggregated
 

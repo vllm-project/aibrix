@@ -35,6 +35,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
@@ -62,6 +63,8 @@ const (
 	gatewayRespHeaders       = "gateway_rsp_headers"
 	gatewayReqBody           = "gateway_req_body"
 	defaultHTTPRouteCacheTTL = 30 * time.Second
+	defaultHTTPRouteErrorTTL = 2 * time.Second
+	httpRouteLookupTimeout   = 5 * time.Second
 	envHTTPRouteCacheTTL     = "AIBRIX_HTTPROUTE_CACHE_TTL"
 )
 
@@ -74,18 +77,51 @@ type Server struct {
 	redisClient         *redis.Client
 	ratelimiter         ratelimiter.RateLimiter
 	modelRateLimiter    ratelimiter.RateLimiter
+	disableRateLimiting bool
+	priorityTier        bool
+	apiKeyAuth          *apiKeyAuthConfig
 	client              kubernetes.Interface
 	gatewayClient       gatewayapi.Interface
 	requestCountTracker map[string]int
 	cache               cache.Cache
+	modelListMode       ModelListMode
+	verifyModelList     bool
+	routerManager       *routing.RouterManager
+	inFlightObserver    func(int)
+	wakeRequester       modelWakeRequester
 	httpServer          *http.Server
 	httprouteCache      sync.Map
 	httprouteCacheTTL   time.Duration
+	httprouteErrorTTL   time.Duration
 	httprouteSFGroup    singleflight.Group
+	// asyncJobs resolves the public job ids handed out for asynchronous APIs
+	// (currently vLLM-Omni's Videos API) back to the pod that owns the job. It
+	// reads and writes its store directly on every operation: there is no
+	// per-replica job cache, so any replica can answer a follow-up for a job
+	// another replica created, with no reconciliation window. Built lazily by
+	// asyncJobRegistry() when not injected.
+	asyncJobs     AsyncJobRegistry
+	asyncJobsOnce sync.Once
 	// Broadcast channel for server-initiated shutdown
 	shutdownCh   <-chan struct{}
 	shutdown     chan struct{}
 	shutdownOnce sync.Once
+}
+
+// HasRequestBuffers is a test-observation API: it reports whether an in-flight
+// request retains body state in either production buffer. sync.Map makes the
+// point-in-time lookup safe concurrently with Process cleanup; callers should
+// invoke it after Process returns when asserting terminal cleanup.
+func HasRequestBuffers(requestID string) bool {
+	_, requestPresent := requestBuffers.Load(requestID)
+	_, streamPresent := streamBuffers.Load(requestID)
+	return requestPresent || streamPresent
+}
+
+// recvResult is one (message, error) pair produced by a stream's srv.Recv().
+type recvResult struct {
+	req *extProcPb.ProcessingRequest
+	err error
 }
 
 type processState struct {
@@ -103,12 +139,111 @@ type processState struct {
 	isRespError      bool
 	isGatewayRspDone bool
 	completed        bool
-	span             trace.Span
-	ttftSpan         trace.Span
+	trackedModel     string
+	// recvCh carries the result of the srv.Recv() this stream already has in
+	// flight. It is kept across processOnce calls because a call can return
+	// without consuming its message (PD fail-fast), and ext_proc requires that
+	// exactly one Recv be outstanding on a stream at a time.
+	recvCh chan recvResult
+	// prefillFailFastDone records that the PD prefill failure has been handled
+	// - not merely that the wakeup fired. The wakeup is a closed channel,
+	// which stays ready forever, so the loop must stop selecting on it once it
+	// has decided what to do, or a failure it deliberately ignored
+	// (bad_response) would spin. Until then it stays armed, so a wakeup that
+	// loses the tie to a message Envoy is waiting on fires again next time
+	// round.
+	prefillFailFastDone bool
+	requestDone         sync.Once
+	rootSpan            trace.Span // main span
+	inferenceSpan       trace.Span // routing completion to final response body
+	firstRespSpan       trace.Span // routing completion to first response body chunk
+	toLastRespSpan      trace.Span // first response body chunk to stream completion
+
+	// prefillSucceededSeen records that the PD prefill-success wakeup has been
+	// observed. Same closed-channel hazard as prefillFailFastDone: the edge is
+	// only needed to make the loop arm its decode watchdog once, after which
+	// the success is readable from the leg's timestamp.
+	prefillSucceededSeen bool
+	// watchdog is the stream's one-shot decode watchdog timer, re-armed on
+	// every pass of the loop from decodeWatchdogDeadline. Nil until a stream
+	// arms one, which only an SGLang PD request ever does.
+	watchdog *time.Timer
 }
 
 var podName = os.Getenv("POD_NAME")
 var tracer = otel.Tracer("envoy-ext-proc-server")
+
+func (st *processState) trackModelInFlight() {
+	if st.model == "" || st.trackedModel == st.model {
+		return
+	}
+	if st.trackedModel != "" {
+		st.releaseModelInFlight()
+	}
+	st.trackedModel = st.model
+	labelNames, labelValues := st.modelInFlightLabels()
+	metrics.IncGaugeMetric(
+		metrics.GatewayModelInFlight,
+		metrics.GetMetricHelp(metrics.GatewayModelInFlight),
+		labelNames,
+		labelValues...,
+	)
+}
+
+func (st *processState) releaseModelInFlight() {
+	if st.trackedModel == "" {
+		return
+	}
+	modelToRelease := st.trackedModel
+	st.trackedModel = ""
+	labelNames, labelValues := st.modelInFlightLabelsFor(modelToRelease)
+	metrics.DecGaugeMetric(
+		metrics.GatewayModelInFlight,
+		metrics.GetMetricHelp(metrics.GatewayModelInFlight),
+		labelNames,
+		labelValues...,
+	)
+}
+
+func (st *processState) modelInFlightLabels() ([]string, []string) {
+	return st.modelInFlightLabelsFor(st.model)
+}
+
+func (st *processState) modelInFlightLabelsFor(model string) ([]string, []string) {
+	loraAdapter := ""
+	if st.routerCtx != nil {
+		if m := st.routerCtx.MetricModel(); m != "" {
+			model = m
+		}
+		loraAdapter = st.routerCtx.MetricLoraAdapter()
+	}
+	return []string{"gateway_pod", "model", "lora_adapter"},
+		[]string{podName, model, loraAdapter}
+}
+
+// finishRequestCount and finishRequestTrace are the only production lifecycle
+// completion points. A request can reach several terminal paths in quick
+// succession (for example, response completion followed by EOF), so cache
+// bookkeeping must be finalized exactly once while routerCtx is still owned by
+// this processState.
+func (s *Server) finishRequestCount(st *processState) {
+	st.requestDone.Do(func() {
+		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+	})
+}
+
+func (s *Server) finishRequestTrace(st *processState, usage TokenUsage) {
+	st.requestDone.Do(func() {
+		s.cache.DoneRequestTrace(
+			st.routerCtx,
+			st.requestID,
+			st.model,
+			usage.PromptTokens,
+			usage.CompletionTokens,
+			st.traceTerm,
+		)
+	})
+}
 
 func httpRouteCacheTTL() time.Duration {
 	if v := os.Getenv(envHTTPRouteCacheTTL); v != "" {
@@ -119,14 +254,76 @@ func httpRouteCacheTTL() time.Duration {
 	return defaultHTTPRouteCacheTTL
 }
 
+// ModelListMode selects which models the gateway HTTP endpoint lists.
+type ModelListMode string
+
+const (
+	// ModelListKnown preserves the existing behavior: every name in the cache.
+	ModelListKnown ModelListMode = "known"
+	// ModelListReadyPods includes names with at least one ready Pod.
+	ModelListReadyPods ModelListMode = "ready-pods"
+)
+
+// ServerOptions configures optional dependencies for a Server.
+type ServerOptions struct {
+	Cache         cache.Cache
+	RouterManager *routing.RouterManager
+	// ModelListMode defaults to ModelListKnown.
+	ModelListMode ModelListMode
+	// VerifyModelList returns 503 when a current discovery snapshot cannot be
+	// established. Off by default for compatibility.
+	VerifyModelList bool
+	// DisableRateLimiting disables AIBrix user and model quota enforcement while
+	// leaving Redis available to other gateway features.
+	DisableRateLimiting bool
+	// PriorityTier forwards the tier a request declares through the
+	// x-aibrix-priority-tier header as the priority on the upstream vLLM
+	// request. Off by default: requests are forwarded unchanged unless a
+	// deployment opts in. See gateway_req_priority.go.
+	PriorityTier bool
+	// InFlightObserver receives test/diagnostic lifecycle deltas (+1/-1). The
+	// callback must be non-blocking and non-panicking because it runs on the
+	// request processing path and is not recovered by Gateway.
+	InFlightObserver func(int)
+}
+
 func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient gatewayapi.Interface) *Server {
-	c, err := cache.Get()
-	if err != nil {
-		panic(err)
+	return NewServerWithOptions(redisClient, client, gatewayClient, ServerOptions{})
+}
+
+// NewServerWithOptions constructs a Gateway server with optional dependencies.
+// A supplied Cache without a RouterManager creates an isolated cache-aware
+// manager; with no options, production global cache and routing behavior apply.
+func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface, gatewayClient gatewayapi.Interface, options ServerOptions) *Server {
+	c := options.Cache
+	if c == nil {
+		var err error
+		c, err = cache.Get()
+		if err != nil {
+			panic(err)
+		}
+	}
+	mode := options.ModelListMode
+	if mode == "" {
+		mode = ModelListKnown
+	}
+	switch mode {
+	case ModelListKnown:
+	case ModelListReadyPods:
+		if _, ok := c.(cache.ReadyModelCache); !ok {
+			panic("ready-pods model listing requires a cache that supports ready model snapshots")
+		}
+	default:
+		panic(fmt.Sprintf("unsupported model list mode %q", mode))
+	}
+	if options.VerifyModelList {
+		if _, ok := c.(cache.VerifiedModelCache); !ok {
+			panic("verified model listing requires a cache that supports discovery verification")
+		}
 	}
 	var r ratelimiter.RateLimiter
 	var mr ratelimiter.RateLimiter
-	if redisClient != nil {
+	if redisClient != nil && !options.DisableRateLimiting {
 		r = ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, 1*time.Minute)
 		mr = ratelimiter.NewRedisAccountRateLimiter("aibrix_model", redisClient, 1*time.Second)
 	} else {
@@ -134,38 +331,111 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 		mr = ratelimiter.NewNoopRateLimiter()
 	}
 
-	// Initialize the routers
-	routing.Init()
+	routerManager := options.RouterManager
+	if routerManager == nil {
+		if options.Cache != nil {
+			routerManager = routing.NewRouterManagerWithCache(c)
+		} else {
+			routerManager = routing.DefaultRouterManager()
+		}
+	}
+	// Init constructs every registered router; it runs once, for whichever
+	// manager the server uses.
+	routerManager.Init()
+	if err := routerManager.InitializationError(routing.RouterExternal); err != nil && !errors.Is(err, routing.ErrExternalRouterDisabled) {
+		panic(fmt.Errorf("invalid external router configuration: %w", err))
+	}
 
 	shutdown := make(chan struct{})
-	return &Server{
+	s := &Server{
 		redisClient:         redisClient,
 		ratelimiter:         r,
 		modelRateLimiter:    mr,
+		disableRateLimiting: options.DisableRateLimiting,
+		priorityTier:        options.PriorityTier,
+		apiKeyAuth:          loadAPIKeyAuthConfig(),
 		client:              client,
 		gatewayClient:       gatewayClient,
 		requestCountTracker: map[string]int{},
 		cache:               c,
+		modelListMode:       mode,
+		verifyModelList:     options.VerifyModelList,
+		routerManager:       routerManager,
+		inFlightObserver:    options.InFlightObserver,
+		wakeRequester:       newRuntimeModelWakeRequester(nil, defaultModelClaimRuntimePort, client),
 		httprouteCacheTTL:   httpRouteCacheTTL(),
+		httprouteErrorTTL:   defaultHTTPRouteErrorTTL,
 		shutdownCh:          shutdown,
 		shutdown:            shutdown,
 	}
+	s.asyncJobs = newAsyncJobRegistryForClient(redisClient, c)
+	if sar, err := routerManager.Lookup(routing.RouterSessionAffinity); err == nil {
+		if rb, ok := sar.(routing.RedisBackedRouter); ok {
+			rb.Start(shutdown, redisClient)
+		}
+	}
+	return s
 }
 
-func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
-	st := &processState{
-		ctx:       srv.Context(),
-		requestID: uuid.New().String(),
-	}
-
+func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) (err error) {
+	// Process is also reachable without the server's stream interceptor, so it
+	// recovers panics on its own as well.
 	defer func() {
-		if st.span != nil {
-			st.span.End()
-		}
-		if st.ttftSpan != nil {
-			st.ttftSpan.End()
+		if r := recover(); r != nil {
+			err = recoverStreamPanic(r, ProcessFullMethod)
 		}
 	}()
+
+	rootSpan := trace.SpanFromContext(srv.Context())
+	requestID := uuid.New().String()
+	if rootSpan.SpanContext().HasTraceID() {
+		requestID = rootSpan.SpanContext().TraceID().String()
+	}
+
+	st := &processState{
+		ctx:       srv.Context(),
+		requestID: requestID,
+		rootSpan:  rootSpan,
+	}
+
+	metrics.IncGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight), []string{"gateway_pod"}, podName)
+	if s.inFlightObserver != nil {
+		s.inFlightObserver(1)
+	}
+	defer func() {
+		// This is a fallback for any terminal path that did not explicitly finish
+		// bookkeeping. A non-empty model and routing context mean request-body
+		// processing progressed far enough that AddRequestCount may have run.
+		if st.model != "" && st.routerCtx != nil {
+			s.finishRequestCount(st)
+		}
+		requestBuffers.Delete(st.requestID)
+		streamBuffers.Delete(st.requestID)
+		// end spans created by this server
+		for _, span := range []trace.Span{st.toLastRespSpan, st.firstRespSpan, st.inferenceSpan} {
+			if span != nil {
+				span.End()
+			}
+		}
+		st.releaseModelInFlight()
+		metrics.DecGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight), []string{"gateway_pod"}, podName)
+		if s.inFlightObserver != nil {
+			s.inFlightObserver(-1)
+		}
+		// routerCtx must remain valid until every completion path above has
+		// returned. Returning it to the pool earlier lets another request reset
+		// the same object while this Process still holds the pointer.
+		if st.routerCtx != nil {
+			st.routerCtx.Delete()
+			st.routerCtx = nil
+		}
+	}()
+
+	// Every return from the loop, terminal or not, leaves at most one armed
+	// decode watchdog timer behind, and a pending timer keeps its entry in the
+	// runtime's timer heap until it fires. Idempotent and nil-safe, so streams
+	// that never armed one pay nothing.
+	defer st.stopDecodeWatchdog()
 
 	klog.InfoS("processing request", "requestID", st.requestID)
 	labels := map[string]string{"pod_name": podName}
@@ -178,11 +448,16 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		// Proactively break the loop if the response is fully processed.
 		// This allows Envoy to gracefully close the stream and send 0\r\n\r\n.
 		if st.completed {
-			klog.V(4).InfoS("request actively finished, breaking ext_proc stream", "requestID", st.requestID)
-			if st.model != "" {
-				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200")
+			if st.toLastRespSpan != nil {
+				st.toLastRespSpan.End()
+				st.toLastRespSpan = nil
 			}
-			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+			klog.V(4).InfoS("request actively finished, breaking ext_proc stream", "requestID", st.requestID)
+			if st.model != "" && !st.isGatewayRspDone {
+				st.isGatewayRspDone = true
+				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200", st.routerCtx)
+			}
+			s.finishRequestCount(st)
 			return nil
 		}
 	}
@@ -197,30 +472,122 @@ func (s *Server) processOnce(srv extProcPb.ExternalProcessor_ProcessServer, st *
 	// cancellation arrives while the stream is idle. Envoy keeps ext_proc
 	// streams open indefinitely between requests, so a bare srv.Recv() would
 	// block GracefulStop() forever on rollout.
-	type recvResult struct {
-		req *extProcPb.ProcessingRequest
-		err error
+	//
+	// The channel outlives the call: a PD fail-fast that decides not to end the
+	// stream returns without consuming the message, and the next iteration must
+	// wait on the same in-flight Recv rather than start a second one.
+	if st.recvCh == nil {
+		ch := make(chan recvResult, 1)
+		st.recvCh = ch
+		go func() {
+			req, err := srv.Recv()
+			ch <- recvResult{req, err}
+		}()
 	}
-	ch := make(chan recvResult, 1)
-	go func() {
-		req, err := srv.Recv()
-		ch <- recvResult{req, err}
-	}()
+
+	// Arm the PD prefill-failure wakeup only once the routing context exists -
+	// it is assigned while handling RequestHeaders, and the prefill goroutine
+	// that records the failure is only started later, from RequestBody - and
+	// only until the failure has been acted on. PrefillFailed() is nil-safe and
+	// a nil channel blocks forever, so a non-PD stream selects on exactly the
+	// two cases it had before. A failure recorded before this point is not
+	// missed either: it closes the channel, and a receive on an already-closed
+	// channel is ready immediately.
+	var prefillFailed <-chan struct{}
+	if !st.prefillFailFastDone {
+		prefillFailed = st.routerCtx.PrefillFailed()
+	}
+
+	// Arm the prefill-success wakeup on the same terms. It carries no decision
+	// of its own: it exists so that the loop, parked on Envoy's messages, wakes
+	// up at the instant the decode watchdog becomes armable and re-enters the
+	// select with its timer running.
+	var prefillSucceeded <-chan struct{}
+	if !st.prefillSucceededSeen {
+		prefillSucceeded = st.routerCtx.PrefillSucceeded()
+	}
+
+	// And the watchdog itself, recomputed from the leg on every pass so that
+	// every chunk from the decode pod moves it and the completed response
+	// disarms it. A nil channel when nothing is armed - the non-PD case, and every PD request
+	// before its prefill leg has finished.
+	var decodeWatchdog <-chan time.Time
+	deadline, _ := st.decodeWatchdogDeadline()
+	if deadline.IsZero() {
+		st.stopDecodeWatchdog()
+	} else {
+		decodeWatchdog = st.armDecodeWatchdog(time.Until(deadline))
+	}
 
 	// ctx.Done() is intentionally omitted here: gRPC unblocks Recv when the
 	// stream context is cancelled, so handleRecvError handles that path.
 	// preRecvCheck covers the case where ctx is already done before we spawn.
 	var req *extProcPb.ProcessingRequest
 	select {
-	case r := <-ch:
+	case r := <-st.recvCh:
+		st.recvCh = nil
 		if r.err != nil {
 			return s.handleRecvError(st, r.err)
 		}
 		req = r.req
+	case <-prefillFailed:
+		// A message that has already arrived wins the tie: Envoy is waiting on
+		// a reply for it, and it may be the decode leg's response headers,
+		// which change which half of the fail-fast handling applies.
+		select {
+		case r := <-st.recvCh:
+			st.recvCh = nil
+			if r.err != nil {
+				return s.handleRecvError(st, r.err)
+			}
+			req = r.req
+		default:
+			// Disarmed only here, where the failure is actually handled.
+			// Setting it for the branch above would drop the wakeup on the
+			// floor: the failure would never be acted on, and the stream
+			// would go back to waiting out the decode pod's bootstrap
+			// timeout - the hang this whole path exists to prevent. Losing
+			// the tie costs nothing instead: the wakeup channel is closed,
+			// so the next iteration sees it ready again and fires fail-fast
+			// then, by which time a decode response among those buffered
+			// messages has been recorded and the after_response half applies.
+			st.prefillFailFastDone = true
+			return s.handlePrefillFailFast(srv, st)
+		}
+	case <-prefillSucceeded:
+		// The prefill leg landed, so the decode pod now owes this request a
+		// response. Nothing to decide here: returning re-enters processOnce,
+		// which arms the watchdog deadline computed from the leg.
+		st.prefillSucceededSeen = true
+		return nil
+	case <-decodeWatchdog:
+		// A message that has already arrived wins the tie, for the same reason
+		// it does on a prefill failure: it is the decode pod answering, which
+		// is exactly what the watchdog was waiting for.
+		select {
+		case r := <-st.recvCh:
+			st.recvCh = nil
+			if r.err != nil {
+				return s.handleRecvError(st, r.err)
+			}
+			req = r.req
+		default:
+			// Recheck the deadline against the clock before acting. A timer
+			// that fired between Stop() and its (non-blocking) drain on an
+			// earlier pass would otherwise kill a healthy stream early; here
+			// it costs one extra pass of the loop, which re-arms for the
+			// remaining time. The phase is taken from the same recheck, so
+			// the kill is reported for the deadline that actually expired.
+			fresh, freshPhase := st.decodeWatchdogDeadline()
+			if fresh.IsZero() || time.Now().Before(fresh) {
+				return nil
+			}
+			return s.handleDecodeWatchdog(srv, st, freshPhase)
+		}
 	case <-s.shutdownCh:
 		if st.model != "" {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "aibrix_gateway_server_shutdown", "503")
-			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "aibrix_gateway_server_shutdown", "503", st.routerCtx)
+			s.finishRequestCount(st)
 		}
 		klog.ErrorS(nil, "server shutdown requested; aborting blocked Recv", "request_id", st.requestID, "model", st.model)
 		return status.Error(codes.Unavailable, "server shutdown in progress")
@@ -237,8 +604,8 @@ func (s *Server) preRecvCheck(st *processState) error {
 	select {
 	case <-s.shutdownCh:
 		if st.model != "" {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "aibrix_gateway_server_shutdown", "503")
-			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "aibrix_gateway_server_shutdown", "503", st.routerCtx)
+			s.finishRequestCount(st)
 		}
 		klog.ErrorS(nil, "server shutdown requested; draining request", "request_id", st.requestID, "model", st.model)
 		return status.Error(codes.Unavailable, "server shutdown in progress")
@@ -246,8 +613,8 @@ func (s *Server) preRecvCheck(st *processState) error {
 	// Client cancelled or deadline exceeded
 	case <-st.ctx.Done():
 		if st.model != "" {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "context_cancelled", "499")
-			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "context_cancelled", "499", st.routerCtx)
+			s.finishRequestCount(st)
 		}
 		klog.ErrorS(st.ctx.Err(), "context cancelled", "request_id", st.requestID, "model", st.model)
 		return st.ctx.Err()
@@ -263,8 +630,8 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 		// check for shutdown
 		case <-s.shutdownCh:
 			if st.model != "" {
-				s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "aibrix_gateway_server_shutdown", "503")
-				s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+				s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "aibrix_gateway_server_shutdown", "503", st.routerCtx)
+				s.finishRequestCount(st)
 			}
 			klog.ErrorS(nil, "server shutdown requested; stream closed (EOF) during shutdown drain", "requestID", st.requestID, "model", st.model)
 			return status.Error(codes.Unavailable, "server shutdown in progress")
@@ -274,43 +641,48 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 
 		// Fallback: if proactive exit in Process was skipped (should not happen normally)
 		if st.completed {
-			if st.model != "" {
-				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200")
+			if st.model != "" && !st.isGatewayRspDone {
+				st.isGatewayRspDone = true
+				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200", st.routerCtx)
 			}
 			klog.V(2).InfoS("stream closed (EOF): completed", "requestID", st.requestID, "model", st.model)
-			s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+			s.finishRequestCount(st)
 			return nil
 		}
 
 		// client closed stream (EOF)
 		if st.model != "" {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "client_cancelled_eof", "499")
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "client_cancelled_eof", "499", st.routerCtx)
 		}
 		klog.ErrorS(nil, "client closed stream (EOF) before completion", "requestID", st.requestID, "model", st.model)
-		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		s.finishRequestCount(st)
 		return io.EOF
 	}
 
 	// Normal stream closure by envoy proxy
 	stErr, ok := status.FromError(err)
 	if ok && stErr.Code() == codes.Canceled {
-		if st.model != "" {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200")
+		if st.model != "" && !st.isGatewayRspDone {
+			st.isGatewayRspDone = true
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200", st.routerCtx)
 		}
-		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		s.finishRequestCount(st)
 		return status.Error(codes.Canceled, "request canceled")
 	}
 
 	// Record failed request metric for other gRPC errors
 	if ok {
 		if st.model != "" {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "gateway_request_fail", strconv.FormatUint(uint64(stErr.Code()), 10))
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "gateway_request_fail", strconv.FormatUint(uint64(stErr.Code()), 10), st.routerCtx)
 		}
 		klog.ErrorS(err, "error receiving stream from Envoy extproc", "requestID", st.requestID, "model", st.model, "grpc_code", stErr.Code(), "grpc_message", stErr.Message())
-		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		s.finishRequestCount(st)
 		return stErr.Err()
 	}
 
+	if st.model != "" && st.routerCtx != nil {
+		s.finishRequestCount(st)
+	}
 	klog.ErrorS(err, "error receiving stream from Envoy extproc (non-gRPC)", "requestID", st.requestID)
 	return status.Errorf(codes.Unknown, "recv stream error: %v", err)
 }
@@ -320,40 +692,68 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 
 	switch req.Request.(type) {
 	case *extProcPb.ProcessingRequest_RequestHeaders:
-		st.ctx, st.span = tracer.Start(st.ctx, "ExtProc_HTTP_Request")
-
-		resp, st.user, st.rpm, st.routerCtx = s.HandleRequestHeaders(st.ctx, st.requestID, req)
+		resp, st.user, st.rpm, st.routerCtx, st.traceTerm = s.HandleRequestHeaders(st.ctx, st.requestID, st.rootSpan, req)
 		if st.routerCtx != nil {
 			st.model = st.routerCtx.Model
-			st.requestID = st.routerCtx.RequestID
+			st.routerCtx.Span = st.rootSpan
+			st.requestID = st.routerCtx.RequestID // sync requestID if it was overridden by traceparent header
 		}
 		st.metricLabel = "gateway_req_headers"
 
 	case *extProcPb.ProcessingRequest_RequestBody:
 		resp, st.model, st.stream, st.traceTerm = s.HandleRequestBody(st.ctx, st.routerCtx, st.requestID, req, st.user)
 		st.metricLabel = gatewayReqBody
-		// create a ttftSpan to collect time from reqBody to first respBody
-		_, st.ttftSpan = tracer.Start(st.ctx, "Wait_For_LLM_First_Token")
+		// ImmediateResponse means the request was rejected locally and never
+		// entered the inference stage.
+		if resp != nil && resp.GetImmediateResponse() == nil {
+			_, st.inferenceSpan = tracer.Start(st.ctx, "llm.inference")
+			if st.stream {
+				_, st.firstRespSpan = tracer.Start(st.ctx, "llm.time_to_first_response_chunk")
+			}
+		}
 
 	case *extProcPb.ProcessingRequest_ResponseHeaders:
+		// The decode pod has started answering: from here on a late PD prefill
+		// failure must not abort it, and must not fail a stream the client is
+		// already being served on.
+		st.routerCtx.MarkDecodeResponded()
 		resp, st.isRespError, st.respErrorCode = s.HandleResponseHeaders(st.ctx, st.routerCtx, st.requestID, st.model, req)
 		st.lastRespHeaders = resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
 		if st.isRespError {
+			s.finishRequestCount(st)
 			resp = s.responseForResponseHeaderError(st, resp)
 		}
 		st.metricLabel = gatewayRespHeaders
 
 	case *extProcPb.ProcessingRequest_ResponseBody:
-		// stop collecting on first resp only
-		if st.ttftSpan != nil {
-			st.ttftSpan.End()
-			st.ttftSpan = nil
+		// Also marked here, not only on response headers: a filter chain
+		// configured without the response-header callback delivers body chunks
+		// as the first sign of life from the decode pod.
+		st.routerCtx.MarkDecodeResponded()
+		// The decode watchdog's clock. Headers alone do not stop the first-
+		// response phase, since an engine can flush them before its first
+		// token; the first chunk does, and every chunk after it re-arms the
+		// stream-idle deadline.
+		st.routerCtx.MarkDecodeChunk()
+		// Stop collecting on the first response body chunk.
+		if st.firstRespSpan != nil {
+			st.firstRespSpan.End()
+			st.firstRespSpan = nil
+			// after the first response body chunk arrives
+			if st.stream && st.toLastRespSpan == nil {
+				_, st.toLastRespSpan = tracer.Start(st.ctx, "llm.time_from_first_to_last_response_chunk")
+			}
 		}
 		if st.isRespError {
 			body := string(req.Request.(*extProcPb.ProcessingRequest_ResponseBody).ResponseBody.GetBody())
+			body = string(rewriteVideoJobErrorBody(st.routerCtx, []byte(body)))
 			resp = s.responseErrorProcessingWithHeaders(st.ctx, st.routerCtx, st.lastRespHeaders, st.respErrorCode, st.model, st.requestID, body)
 		} else {
-			resp, st.completed = s.HandleResponseBody(st.ctx, st.routerCtx, st.requestID, req, st.user, st.rpm, st.model, st.stream, st.traceTerm, st.completed)
+			var usage TokenUsage
+			resp, st.completed, usage = s.HandleResponseBody(st.ctx, st.routerCtx, st.requestID, req, st.user, st.rpm, st.model, st.stream, st.completed)
+			if st.completed {
+				s.finishRequestTrace(st, usage)
+			}
 		}
 		st.metricLabel = gatewayRespBody
 
@@ -361,10 +761,12 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		klog.InfoS("unknown request type", "requestID", st.requestID, "msg_type", fmt.Sprintf("%T", req.Request))
 	}
 
+	st.trackModelInFlight()
+
 	if resp == nil {
 		klog.ErrorS(nil, "no ProcessingResponse generated for message", "requestID", st.requestID, "msg_type", fmt.Sprintf("%T", req.Request))
-		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "no_response_err", "500")
-		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
+		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "no_response_err", "500", st.routerCtx)
+		s.finishRequestCount(st)
 		return nil, status.Errorf(codes.Internal, "no response generated for %T", req.Request)
 	}
 
@@ -374,19 +776,18 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 
 	if resp.GetImmediateResponse() == nil {
 		if st.metricLabel != gatewayRespBody {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, st.metricLabel+"_success", "200")
 			return resp, nil
 		}
 		if st.completed && !st.isGatewayRspDone {
 			st.isGatewayRspDone = true
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, st.metricLabel+"_success", "200")
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, st.metricLabel+"_success", "200", st.routerCtx)
 		}
 		return resp, nil
 	}
 
 	statusCode := strconv.Itoa(int(resp.GetImmediateResponse().GetStatus().GetCode()))
 	metricFail := getMetricErr(resp.GetImmediateResponse(), st.metricLabel)
-	s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, metricFail+"_fail", statusCode)
+	s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, metricFail+"_fail", statusCode, st.routerCtx)
 
 	return resp, nil
 }
@@ -403,14 +804,11 @@ func (s *Server) responseForResponseHeaderError(st *processState, resp *extProcP
 }
 
 func (s *Server) sendProcessingResponse(srv extProcPb.ExternalProcessor_ProcessServer, st *processState, resp *extProcPb.ProcessingResponse) error {
-	if err := srv.Send(resp); err != nil && len(st.model) > 0 {
+	if err := srv.Send(resp); err != nil {
 		klog.ErrorS(err, "gateway fail to send response to envoy-proxy", "requestID", st.requestID)
-		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "send_envoy_proxy", "499")
-		s.cache.DoneRequestCount(st.routerCtx, st.requestID, st.model, st.traceTerm)
-		// Manually delete routerCtx on error paths;
-		// HandleResponseBody() and HandleResponseHeaders() will handle it on the happy path.
-		if st.routerCtx != nil {
-			st.routerCtx.Delete()
+		if len(st.model) > 0 {
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "send_envoy_proxy", "499", st.routerCtx)
+			s.finishRequestCount(st)
 		}
 
 		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "EOF") {
@@ -423,20 +821,30 @@ func (s *Server) sendProcessingResponse(srv extProcPb.ExternalProcessor_ProcessS
 
 func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingContext, pods types.PodList, externalFilterExpr string) (string, error) {
 	var span trace.Span
-	_, span = tracer.Start(ctx, "selectTargetPod")
+	ctx, span = tracer.Start(ctx, "process.select_target_pod")
 	defer span.End()
-
-	router, err := routing.Select(routeCtx)
-	if err != nil {
-		return "", err
-	}
 
 	if pods.Len() == 0 {
 		return "", fmt.Errorf("no pods for routing")
 	}
 	readyPods := utils.FilterRoutablePods(pods.All())
 
+	// Resolve the model config profile's routing knobs once per request: the
+	// load-imbalance gate below and every strategy on the routing path read the
+	// same values from the routing context (see
+	// routingalgorithms.ResolveRoutingOverrides).
+	routing.ResolveRoutingOverrides(routeCtx)
+
+	if routeCtx.Span != nil {
+		routeCtx.Span.SetAttributes(
+			attribute.Int("candidate_pods", pods.Len()),
+			attribute.Int("ready_pods", len(readyPods)),
+			attribute.String("routing_strategy", string(routeCtx.Algorithm)),
+		)
+	}
+
 	// filter pod by header 'external-filter'
+	var err error
 	readyPods, err = utils.FilterPodsByLabelSelector(readyPods, externalFilterExpr)
 	if err != nil {
 		return "", fmt.Errorf("filter pods by label selector failed: %v", err)
@@ -445,18 +853,75 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods for routing")
 	}
-	if len(readyPods) == 1 && len(utils.GetPortsForPod(readyPods[0])) <= 1 {
+
+	if limit := replicaInflightLimit(routeCtx); limit > 0 {
+		readyPods = s.filterSaturatedReplicaInflight(readyPods, limit)
+		if len(readyPods) == 0 {
+			return "", errReplicaInflightExceeded
+		}
+	}
+
+	// Resolve exclusivity from the caller's raw algorithm string rather than comparing it
+	// directly against "pd": the string may itself be a multi-strategy config that collapses
+	// to a single exclusive strategy (e.g. "pd:1,least-request:1" resolves to "pd", and bare
+	// "slo-pack-load"/"slo-least-load" are exclusive too), and a plain equality check would
+	// miss those and wrongly narrow readyPods ahead of them.
+	resolvedExclusive, isExclusive := routing.ResolveExclusiveStrategy(string(routeCtx.Algorithm))
+	if isExclusive {
+		if resolvedExclusive == string(routing.RouterPD) {
+			engine, err := routing.ValidateAndGetLLMEngine(readyPods)
+			if err != nil {
+				return "", fmt.Errorf("engine validation failed for request %s: %w", routeCtx.RequestID, err)
+			}
+			routeCtx.Engine = engine
+		}
+	} else {
+		// Apply the load-imbalance hotspot gate ahead of whichever strategy actually routes
+		// this request. Exclusive strategies (pd, slo*) are exempted above: they manage their
+		// own pod subsets (prefill/decode, SLO tiers), which a blanket running-request-count
+		// filter would distort.
+		readyPods = routing.ApplyLoadImbalanceGate(routeCtx, s.cache, readyPods)
+	}
+
+	if s.routerManager == nil {
+		// Preserve compatibility for legacy tests that build Server literals.
+		s.routerManager = routing.DefaultRouterManager()
+	}
+	router, err := s.routerManager.Select(routeCtx)
+	if err != nil {
+		return "", err
+	}
+
+	bypassSingleCandidate := true
+	if policy, ok := router.(types.SingleCandidateBypasser); ok {
+		bypassSingleCandidate = policy.BypassSingleCandidate()
+	}
+	if len(readyPods) == 1 && len(utils.GetPortsForPod(readyPods[0])) <= 1 && !isExclusive && bypassSingleCandidate {
 		routeCtx.SetTargetPod(readyPods[0])
+		// This fast path skips router.Route() entirely, so a router with state to persist
+		// once a target pod is picked (e.g. session-affinity's Redis pin, or a multi-strategy
+		// blend wrapping it) never gets that chance unless we run its post-route hook here too.
+		if updater, ok := router.(types.PostRouteUpdater); ok {
+			podList := &utils.PodArray{Pods: readyPods}
+			if err := updater.PostRouteUpdate(routeCtx, podList, readyPods[0]); err != nil {
+				klog.Warningf("post-route update failed for request %s: %v", routeCtx.RequestID, err)
+			}
+		}
 		return routeCtx.TargetAddress(), nil
 	}
 	utils.CryptoShuffle(readyPods)
-
+	// PD issues an additional HTTP request while routing. Pass the current span
+	// to that request without changing Context semantics for other routers.
+	if isExclusive && resolvedExclusive == string(routing.RouterPD) {
+		routeCtx.Context = ctx
+	}
 	return router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
 }
 
 // validateHTTPRouteStatus checks if httproute object exists and validates its conditions are true.
-// Results are cached with a TTL (default 30s, configurable via AIBRIX_HTTPROUTE_CACHE_TTL) to
-// avoid hammering the Kubernetes API on every request.
+// Successful results are cached with a TTL (default 30s, configurable via
+// AIBRIX_HTTPROUTE_CACHE_TTL). Transient errors use a short TTL so route
+// creation and recovery are observed quickly without hammering the API server.
 func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) error {
 	// Skip validation in standalone mode (no gateway client)
 	if s.gatewayClient == nil {
@@ -483,11 +948,17 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 			}
 		}
 
-		name := fmt.Sprintf("%s-router", model)
-		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(context.Background(), name, metav1.GetOptions{})
+		name := utils.ModelRouterName(model)
+		lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), httpRouteLookupTimeout)
+		defer cancel()
+		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(lookupCtx, name, metav1.GetOptions{})
 		if err != nil {
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				s.httprouteCache.Store(model, httpRouteCacheEntry{err: err, expiresAt: time.Now().Add(s.httprouteCacheTTL)})
+				ttl := s.httprouteErrorTTL
+				if ttl <= 0 {
+					ttl = defaultHTTPRouteErrorTTL
+				}
+				s.httprouteCache.Store(model, httpRouteCacheEntry{err: err, expiresAt: time.Now().Add(ttl)})
 			}
 			return nil, err
 		}
@@ -513,7 +984,14 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		if len(errMsg) > 0 {
 			result = errors.New(strings.Join(errMsg, ", "))
 		}
-		s.httprouteCache.Store(model, httpRouteCacheEntry{err: result, expiresAt: time.Now().Add(s.httprouteCacheTTL)})
+		ttl := s.httprouteCacheTTL
+		if result != nil {
+			ttl = s.httprouteErrorTTL
+			if ttl <= 0 {
+				ttl = defaultHTTPRouteErrorTTL
+			}
+		}
+		s.httprouteCache.Store(model, httpRouteCacheEntry{err: result, expiresAt: time.Now().Add(ttl)})
 		return result, nil
 	})
 
@@ -533,33 +1011,41 @@ func (s *Server) StartHTTPServer(addr string) error {
 	if s.httpServer != nil {
 		return nil
 	}
+	server, err := startModelListHTTPServer(addr, s.handleListModels)
+	if err != nil {
+		return err
+	}
+	s.httpServer = server
+	return nil
+}
 
+func startModelListHTTPServer(addr string, handler http.HandlerFunc) (*http.Server, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %v", addr, err)
+		return nil, fmt.Errorf("failed to listen on %s: %v", addr, err)
 	}
 
-	s.httpServer = &http.Server{
+	server := &http.Server{
 		Addr:              addr,
-		Handler:           s.httpHandler(),
+		Handler:           modelListHTTPHandler(handler),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	klog.InfoS("Starting HTTP server", "address", addr)
 	go func() {
-		if err := s.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+		if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
 			klog.ErrorS(err, "Failed to start HTTP server")
 		}
 	}()
 
-	return nil
+	return server, nil
 }
 
-func (s *Server) httpHandler() http.Handler {
+func modelListHTTPHandler(handler http.HandlerFunc) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
-	mux.HandleFunc("/v1/models", s.handleListModels)
-	mux.HandleFunc("/v1/models/{$}", s.handleListModels)
+	mux.HandleFunc("/v1/models", handler)
+	mux.HandleFunc("/v1/models/{$}", handler)
 	return mux
 }
 
@@ -567,7 +1053,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		fmt.Fprintf(w, `{"error":"method not allowed"}`)
+		_, _ = fmt.Fprintf(w, `{"error":"method not allowed"}`)
 		return
 	}
 
@@ -582,7 +1068,20 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		Data   []modelObject `json:"data"`
 	}
 
-	models := s.cache.ListModels()
+	var models []string
+	if s.verifyModelList {
+		var err error
+		models, err = s.cache.(cache.VerifiedModelCache).ListModelsVerified(r.Context(), s.modelListMode == ModelListReadyPods)
+		if err != nil {
+			klog.ErrorS(err, "Model-list discovery verification failed")
+			writeModelListUnavailable(w)
+			return
+		}
+	} else if s.modelListMode == ModelListReadyPods {
+		models = s.cache.(cache.ReadyModelCache).ListModelsWithReadyPods()
+	} else {
+		models = s.cache.ListModels()
+	}
 	data := make([]modelObject, len(models))
 	for i, m := range models {
 		data[i] = modelObject{ID: m, Object: "model", Created: 0, OwnedBy: "aibrix"}
@@ -616,12 +1115,14 @@ func (s *Server) responseErrorProcessing(ctx context.Context, routingCtx *types.
 func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, routingCtx *types.RoutingContext, headers []*configPb.HeaderValueOption, respErrorCode int,
 	model, requestID, errMsg string) *extProcPb.ProcessingResponse {
 	var httprouteErr error
-	// if use pd route Algorithm, we don't check httproute status
-	if routingCtx == nil || routingCtx.Algorithm != routing.RouterPD {
+	// Match HandleRequestBody: HTTPRoute is only used when no explicit routing algorithm is set.
+	// Do not validate HTTPRoute on errors for least-request, pd, random, etc. (avoids misleading
+	// "httproute not found" appended to real upstream errors like 404).
+	if routingCtx == nil || routingCtx.Algorithm == routing.RouterNotSet {
 		httprouteErr = s.validateHTTPRouteStatus(ctx, model)
 	}
 
-	_, span := tracer.Start(ctx, "responseErrorProcessingWithHeaders")
+	_, span := tracer.Start(ctx, "process.response_error_processing_with_headers")
 	defer span.End()
 
 	if errMsg != "" && httprouteErr != nil {
@@ -631,11 +1132,22 @@ func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, routing
 	}
 	klog.ErrorS(nil, "request end", "requestID", requestID, "errorCode", respErrorCode, "errorMessage", errMsg)
 
+	// On a non-2xx upstream status the body often carries the engine's own OpenAI-style
+	// error. Normalize it to a single envelope and pass it through verbatim instead of
+	// re-wrapping the raw JSON into error.message. The HTTP status stays the
+	// authoritative respErrorCode; the body's own code is preserved inside the body.
+	if normalizedBody, code, ok := normalizeUpstreamErrorBody([]byte(errMsg), respErrorCode); ok {
+		errHeaders := append(append([]*configPb.HeaderValueOption{}, headers...),
+			buildEnvoyProxyHeaders(nil, HeaderErrorResponseUnknown, "true")...)
+		return buildErrorResponseWithBody(code, normalizedBody, errHeaders)
+	}
+
 	// Determine appropriate error code based on HTTP status
 	errorCode := ""
-	if respErrorCode == 401 {
+	switch respErrorCode {
+	case 401:
 		errorCode = ErrorCodeInvalidAPIKey
-	} else if respErrorCode == 503 {
+	case 503:
 		errorCode = ErrorCodeServiceUnavailable
 	}
 
@@ -645,9 +1157,12 @@ func (s *Server) responseErrorProcessingWithHeaders(ctx context.Context, routing
 		errMsg, errorCode, "")
 }
 
-func (s *Server) emitMetricsCounterHelper(metricName, model, status, statusCode string) {
+func (s *Server) emitMetricsCounterHelper(metricName, model, status, statusCode string, routingCtx *types.RoutingContext) {
+	if routingCtx == nil {
+		routingCtx = &types.RoutingContext{Model: model}
+	}
 	labels := buildGatewayPodMetricLabels(model, status, statusCode)
-	metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, nil, metricName, &metrics.SimpleMetricValue{Value: 1.0}, labels)
+	metrics.EmitMetricToPrometheus(routingCtx, nil, metricName, &metrics.SimpleMetricValue{Value: 1.0}, labels)
 }
 
 func getMetricErr(resp *extProcPb.ImmediateResponse, metricLabel string) string {

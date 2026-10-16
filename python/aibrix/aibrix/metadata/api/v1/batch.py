@@ -13,16 +13,16 @@
 # limitations under the License.
 
 import asyncio
-import json
 import traceback
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
 from aibrix.batch import BatchDriver
+from aibrix.batch.job_driver.driver import TerminateResult
 from aibrix.batch.job_entity import (
     AibrixMetadata,
     BatchJob,
@@ -33,199 +33,32 @@ from aibrix.batch.job_entity import (
     BatchJobStatus,
     BatchProfileRef,
     BatchUsage,
+    ClientConfig,
     CompletionWindow,
+    DeploymentDetail,
     ModelTemplateRef,
     ResourceAllocation,
     RuntimeSpec,
 )
+from aibrix.batch.job_entity.batch_job import (
+    format_completion_window,
+    parse_completion_window,
+)
 from aibrix.batch.manifest import RenderError
-from aibrix.batch.storage.batch_metastore import get_batch_job
+from aibrix.batch.metrics import tags_from_job
 from aibrix.batch.template import (
     BatchProfile,
     ModelDeploymentTemplate,
     ProfileRegistry,
     TemplateRegistry,
 )
+from aibrix.context import InfrastructureContext, get_deployment_detail_provider
 from aibrix.logger import init_logger
-from aibrix.storage.base import BaseStorage
+from aibrix.metadata.core.metrics import Emitter, metrics_names
 
 logger = init_logger(__name__)
 
 router = APIRouter()
-
-# Batch input limits
-MAX_BATCH_REQUESTS = 50000  # Maximum number of requests per batch
-
-# Constants for validation (defined outside loop for efficiency)
-REQUIRED_FIELDS = ["custom_id", "method", "url", "body"]
-VALID_HTTP_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH"}
-
-# Endpoint-specific required body fields
-# These define the minimum required fields in the request body for each endpoint type
-ENDPOINT_REQUIRED_BODY_FIELDS: dict[str, list[str]] = {
-    BatchJobEndpoint.CHAT_COMPLETIONS.value: ["model", "messages"],
-    BatchJobEndpoint.COMPLETIONS.value: ["model", "prompt"],
-    BatchJobEndpoint.EMBEDDINGS.value: ["model", "input"],
-    BatchJobEndpoint.RERANK.value: ["model", "query", "documents"],
-}
-
-
-def _validate_request_body_for_endpoint(
-    body: dict, endpoint: str, line_num: int
-) -> Optional[str]:
-    """Validate request body fields are appropriate for the given endpoint.
-
-    Args:
-        body: The request body dictionary
-        endpoint: The API endpoint string (e.g., "/v1/chat/completions")
-        line_num: Line number for error reporting
-
-    Returns:
-        Error message string if validation fails, None if valid
-    """
-    required_fields = ENDPOINT_REQUIRED_BODY_FIELDS.get(endpoint)
-    if required_fields is None:
-        # Unknown endpoint, skip body validation
-        return None
-
-    for field in required_fields:
-        if field not in body:
-            return (
-                f"Line {line_num}: Request body for endpoint '{endpoint}' "
-                f"is missing required field '{field}'"
-            )
-
-    # Endpoint-specific type validation
-    if endpoint == BatchJobEndpoint.CHAT_COMPLETIONS.value:
-        if not isinstance(body.get("messages"), list):
-            return f"Line {line_num}: 'messages' must be a list for {endpoint}"
-    elif endpoint == BatchJobEndpoint.COMPLETIONS.value:
-        prompt = body.get("prompt")
-        if not isinstance(prompt, (str, list)):
-            return f"Line {line_num}: 'prompt' must be a string or list for {endpoint}"
-    elif endpoint == BatchJobEndpoint.EMBEDDINGS.value:
-        input_val = body.get("input")
-        if not isinstance(input_val, (str, list)):
-            return f"Line {line_num}: 'input' must be a string or list for {endpoint}"
-    elif endpoint == BatchJobEndpoint.RERANK.value:
-        if not isinstance(body.get("query"), str):
-            return f"Line {line_num}: 'query' must be a string for {endpoint}"
-        if not isinstance(body.get("documents"), list):
-            return f"Line {line_num}: 'documents' must be a list for {endpoint}"
-
-    return None
-
-
-async def _validate_batch_input_file(
-    storage: BaseStorage, file_id: str, endpoint: str
-) -> tuple[int, Optional[str]]:
-    """Validate batch input file format and content.
-
-    Args:
-        storage: Storage backend instance
-        file_id: ID of the input file to validate
-        endpoint: Expected endpoint for requests (validated against request URLs)
-
-    Returns:
-        Tuple of (request_count, error_message)
-        - request_count: Number of valid non-empty requests
-        - error_message: None if validation passes, error string otherwise
-
-    Validates:
-        - File exists and is readable
-        - JSONL format (valid JSON on each line)
-        - Required fields present: custom_id, method, url, body
-        - Field types are correct
-        - HTTP methods are valid
-        - Request count doesn't exceed MAX_BATCH_REQUESTS
-        - Endpoint matches the batch endpoint (if provided)
-
-    Note:
-        Uses streaming to avoid loading entire file into memory.
-        Only counts non-empty lines toward the request limit.
-    """
-    try:
-        request_count = 0
-        line_num = 0
-
-        # Stream file line by line to avoid memory issues with large files
-        async for line in storage.readline_iter(file_id):
-            line_num += 1
-            line_stripped = line.strip()
-
-            # Skip empty lines (don't count toward request limit)
-            if not line_stripped:
-                continue
-
-            request_count += 1
-
-            # Check request limit before processing
-            if request_count > MAX_BATCH_REQUESTS:
-                return (
-                    request_count,
-                    f"Batch input contains more than {MAX_BATCH_REQUESTS} requests",
-                )
-
-            # Validate JSON format
-            try:
-                request = json.loads(line_stripped)
-            except json.JSONDecodeError as e:
-                return 0, f"Line {line_num}: Invalid JSON - {str(e)}"
-
-            # Validate required fields
-            for field in REQUIRED_FIELDS:
-                if field not in request:
-                    return 0, f"Line {line_num}: Missing required field '{field}'"
-
-            # Validate field types
-            if not isinstance(request.get("custom_id"), str):
-                return 0, f"Line {line_num}: 'custom_id' must be a string"
-
-            if not isinstance(request.get("method"), str):
-                return 0, f"Line {line_num}: 'method' must be a string"
-
-            if not isinstance(request.get("url"), str):
-                return 0, f"Line {line_num}: 'url' must be a string"
-
-            if not isinstance(request.get("body"), dict):
-                return 0, f"Line {line_num}: 'body' must be an object"
-
-            # Validate HTTP method
-            if request["method"].upper() not in VALID_HTTP_METHODS:
-                return (
-                    0,
-                    f"Line {line_num}: Invalid HTTP method '{request['method']}'",
-                )
-
-            # Validate endpoint matches if provided
-            request_url = request["url"]
-            if endpoint and not request_url.endswith(endpoint):
-                return (
-                    0,
-                    f"Line {line_num}: Request URL '{request_url}' does not match "
-                    f"batch endpoint '{endpoint}'",
-                )
-
-            # Validate request body has required fields for the endpoint
-            # Use the canonical `endpoint` (not the per-line `request_url`)
-            # to ensure validation always matches a known endpoint key.
-            body_error = _validate_request_body_for_endpoint(
-                request["body"], endpoint, line_num
-            )
-            if body_error:
-                return 0, body_error
-
-        # Check if file was empty
-        if request_count == 0:
-            return 0, "Batch input file is empty or contains only empty lines"
-
-        return request_count, None
-
-    except FileNotFoundError:
-        return 0, f"Input file '{file_id}' not found"
-    except Exception as e:
-        logger.error("Error validating batch input", file_id=file_id, error=str(e))  # type: ignore[call-arg]
-        return 0, f"Failed to validate input file: {str(e)}"
 
 
 # OpenAI Batch API request/response models
@@ -312,6 +145,19 @@ class AibrixExtension(BaseModel):
                     "resource_allocation": {"provision_id": "reservation-1"},
                     "model_template": {"name": "llama3-70b-prod"},
                     "profile": {"name": "prod-24h"},
+                    "client": {
+                        "max_concurrency": 1024,
+                        "adaptive_concurrency": True,
+                        "adaptive_max_factor": 16,
+                        "adaptive_healthy_window": 8,
+                        "adaptive_additive_increase": 1,
+                        "retry_policy": {
+                            "max_retries": 5,
+                            "base_delay_seconds": 2,
+                            "max_delay_seconds": 10,
+                            "no_endpoint_max_retries": 5,
+                        },
+                    },
                 }
             },
         )
@@ -354,6 +200,10 @@ class AibrixExtension(BaseModel):
         default=None,
         description="BatchProfile reference; falls back to registry default if omitted",
     )
+    client: Optional[ClientConfig] = Field(
+        default=None,
+        description="Per-job smart-client concurrency and retry controls",
+    )
 
     @field_validator("model_template", mode="before")
     @classmethod
@@ -382,8 +232,8 @@ class BatchSpec(BaseModel):
     endpoint: BatchJobEndpoint = Field(
         description="The API endpoint to be used for all requests in the batch"
     )
-    completion_window: CompletionWindow = Field(
-        default=CompletionWindow.TWENTY_FOUR_HOURS,
+    completion_window: str = Field(
+        default=CompletionWindow.TWENTY_FOUR_HOURS.value,
         description="The time window for completion",
     )
     metadata: Optional[Dict[str, str]] = Field(
@@ -400,6 +250,12 @@ class BatchSpec(BaseModel):
         ),
     )
 
+    @field_validator("completion_window")
+    @classmethod
+    def validate_completion_window(cls, value: str) -> str:
+        parse_completion_window(value)
+        return value.strip()
+
     @classmethod
     def newBatchJobSpec(cls, spec: "BatchSpec") -> BatchJobSpec:
         aibrix: Optional[AibrixMetadata] = None
@@ -411,11 +267,12 @@ class BatchSpec(BaseModel):
                 runtime=spec.aibrix.runtime,
                 model_template=spec.aibrix.model_template,
                 profile=spec.aibrix.profile,
+                client=spec.aibrix.client,
             )
         return BatchJobSpec(
             input_file_id=spec.input_file_id,
             endpoint=spec.endpoint.value,
-            completion_window=spec.completion_window.expires_at(),
+            completion_window=parse_completion_window(spec.completion_window),
             metadata=spec.metadata,
             aibrix=aibrix,
         )
@@ -608,7 +465,9 @@ class BatchListResponse(BaseModel):
     )
 
 
-def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
+def _batch_job_to_openai_response(
+    batch_job: BatchJob, deployment: Optional[DeploymentDetail] = None
+) -> BatchResponse:
     """Convert BatchJob to OpenAI batch response format."""
     status: BatchJobStatus = batch_job.status
     spec: BatchJobSpec = batch_job.spec
@@ -629,9 +488,7 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
     created_at_unix = dt_to_unix(status.created_at)
     assert created_at_unix is not None
 
-    delta = timedelta(seconds=spec.completion_window)
-    total_hours = delta.total_seconds() / 3600
-    completion_window = f"{int(total_hours)}h"
+    completion_window = format_completion_window(spec.completion_window)
 
     # Map the internal state machine to the client-facing status:
     #   - CREATED: accepted and waiting in the scheduler's pending pool for
@@ -658,6 +515,31 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
     else:
         state = status.state.value
 
+    # Mirror OpenAI's batch object contract for the result file ids. We allocate
+    # them upfront so the worker can stream into them, but they must not surface
+    # until they are real, downloadable files:
+    #   - both stay null through validating/in_progress/finalizing (the multipart
+    #     upload is only completed during finalization), and
+    #   - output_file_id is exposed only when there are successful results, and
+    #     error_file_id only when at least one request failed (OpenAI leaves the
+    #     error file null when nothing errored).
+    # rc is non-Optional (default_factory), but guard defensively to match the
+    # check at the request_counts conversion above and stay safe if it ever
+    # becomes nullable.
+    rc = status.request_counts
+    output_file_id = (
+        status.output_file_id if status.finished and rc and rc.completed > 0 else None
+    )
+    error_file_id = (
+        status.error_file_id if status.finished and rc and rc.failed > 0 else None
+    )
+
+    aibrix = (
+        spec.aibrix.model_copy(update={"deployment": deployment})
+        if spec.aibrix and deployment
+        else spec.aibrix
+    )
+
     return BatchResponse(
         id=status.job_id,
         endpoint=spec.endpoint,
@@ -666,11 +548,11 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
         input_file_id=spec.input_file_id,
         completion_window=completion_window,
         status=state,
-        output_file_id=status.output_file_id,
-        error_file_id=status.error_file_id,
+        output_file_id=output_file_id,
+        error_file_id=error_file_id,
         created_at=created_at_unix,
         in_progress_at=dt_to_unix(status.in_progress_at),
-        expires_at=created_at_unix + spec.completion_window,
+        expires_at=int(batch_job.expiration_timestamp()),
         finalizing_at=dt_to_unix(status.finalizing_at),
         completed_at=dt_to_unix(status.completed_at),
         failed_at=dt_to_unix(status.failed_at),
@@ -680,7 +562,7 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
         request_counts=request_counts,
         usage=status.usage,
         metadata=spec.metadata,
-        aibrix=spec.aibrix,
+        aibrix=aibrix,
     )
 
 
@@ -715,34 +597,9 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
             completion_window=batch_request.completion_window,
             session_id=session_id,
         )  # type: ignore[call-arg]
-
-        # Validate input file format
-        storage = request.app.state.storage
-        request_count, validation_error = await _validate_batch_input_file(
-            storage, batch_request.input_file_id, batch_request.endpoint
-        )
-
-        if validation_error:
-            logger.error(
-                "Batch input validation failed",
-                input_file_id=batch_request.input_file_id,
-                error=validation_error,
-            )  # type: ignore[call-arg]
-            raise HTTPException(status_code=400, detail=validation_error)
-
-        logger.info(
-            "Batch input validated",
-            input_file_id=batch_request.input_file_id,
-            request_count=request_count,
-        )  # type: ignore[call-arg]
-
-        # Create the job through the driver facade. Pass the validated input
-        # line count so request_counts.total is fixed at creation, matching
-        # OpenAI Batch API semantics.
         job_id = await batch_driver.create_job(
             session_id=session_id,
             job_spec=batch_request,
-            request_count=request_count,
         )
 
         # Retrieve the created job
@@ -750,6 +607,11 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
         if not job:
             logger.error("Created job not found", job_id=job_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=500, detail="Created batch not found")
+        Emitter.counter(
+            metrics_names.METRIC_METADATA_BATCH_API_JOB_INCOMING,
+            1,
+            *tags_from_job(job),
+        )
 
         logger.info("Batch created successfully", job_id=job_id, session_id=session_id)  # type: ignore[call-arg]
 
@@ -775,37 +637,73 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
 
 
 async def _resolve_batch_job(request: Request, batch_id: str) -> Optional[BatchJob]:
-    """Resolve a BatchJob by id, metastore-first with BatchManager fallback.
+    """Resolve a BatchJob by id through the BatchDriver.
 
-    The batch metastore is the source of truth. The fallback to the driver's
-    in-memory pool covers the brief window after POST before the store write
-    is observable, since the metadata service seeds the BatchManager pool
-    synchronously on create.
+    Reads flow through the BatchDriver so an unfinished job that exists only in
+    the metastore can be republished into the manager's runtime pools if restart
+    recovery missed it. The driver still covers the brief POST -> store window
+    because freshly created jobs are seeded into the in-memory pools first.
     """
-    job = await get_batch_job(batch_id)
-    if job is not None:
-        return job
-
     batch_driver: BatchDriver = request.app.state.batch_driver
     return await batch_driver.get_job(batch_id)
 
 
+async def _query_deployment_detail(
+    ctx: InfrastructureContext, job: BatchJob
+) -> Optional[DeploymentDetail]:
+    """Query the deployment detail for a batch job via side-channel provider."""
+    try:
+        runtime_target = job.spec.runtime_target
+        if not runtime_target:
+            return None
+
+        provider = get_deployment_detail_provider(runtime_target)
+        if provider is None:
+            return None
+
+        detail_dict = await provider.get_deployment_detail(ctx, job)
+        if detail_dict is None:
+            return None
+
+        return DeploymentDetail(**detail_dict)
+    except Exception as e:
+        logger.warning(
+            "Failed to query deployment detail",
+            job_id=job.job_id,
+            error=str(e),
+        )
+        return None
+
+
 @router.get("/{batch_id}", response_model_exclude_none=True)
-async def get_batch(request: Request, batch_id: str) -> BatchResponse:
+async def get_batch(
+    request: Request,
+    batch_id: str,
+    include_deployment: Optional[bool] = Query(
+        False, description="Include deployment detail in the response"
+    ),
+) -> BatchResponse:
     """Retrieve a batch by ID.
 
     Returns the details of a specific batch including its current status,
     request counts, and timestamps.
     """
     try:
-        logger.debug("Retrieving batch", batch_id=batch_id)  # type: ignore[call-arg]
+        logger.debug(
+            "Retrieving batch", batch_id=batch_id, include_deployment=include_deployment
+        )  # type: ignore[call-arg]
 
         job = await _resolve_batch_job(request, batch_id)
         if not job:
             logger.warning("Batch not found", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=404, detail="Batch not found")
 
-        return _batch_job_to_openai_response(job)
+        deployment = None
+        if include_deployment:
+            ctx = request.app.state.infrastructure_context
+            deployment = await _query_deployment_detail(ctx, job)
+
+        return _batch_job_to_openai_response(job, deployment)
     except HTTPException:
         raise
     except Exception as e:
@@ -836,11 +734,8 @@ async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
             raise HTTPException(status_code=404, detail="Batch not found")
 
         # Cancel the job. BatchManager.cancel_job signals the entity manager
-        # to persist the cancellation and stops execution.
-        success = await batch_driver.cancel_job(batch_id)
-        if not success:
-            logger.warning("Failed to cancel batch", batch_id=batch_id)  # type: ignore[call-arg]
-            raise HTTPException(status_code=400, detail="Batch cannot be cancelled")
+        # or live driver to persist the cancellation and stop execution.
+        terminate_result = await batch_driver.cancel_job(batch_id)
 
         # Get updated job status (store-first again).
         updated_job = await _resolve_batch_job(request, batch_id)
@@ -848,7 +743,28 @@ async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
             logger.error("Job not found after cancellation", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=500, detail="Internal server error")
 
-        logger.info("Batch cancelled successfully", batch_id=batch_id)  # type: ignore[call-arg]
+        if terminate_result == TerminateResult.REJECTED:
+            message = (
+                f"Cannot cancel a batch with status '{updated_job.status.state.value}'."
+            )
+            logger.info(  # type: ignore[call-arg]
+                "Batch cancel request rejected by current state",
+                batch_id=batch_id,
+                state=updated_job.status.state,
+            )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": {
+                        "message": message,
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
+        if terminate_result == TerminateResult.ALREADY_REQUESTED:
+            logger.info("Batch cancellation already requested", batch_id=batch_id)  # type: ignore[call-arg]
+        else:
+            logger.info("Batch cancelled successfully", batch_id=batch_id)  # type: ignore[call-arg]
 
         return _batch_job_to_openai_response(updated_job)
 

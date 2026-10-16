@@ -17,6 +17,8 @@ limitations under the License.
 package client
 
 import (
+	"encoding/json"
+
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 )
 
@@ -36,10 +38,18 @@ type ResourceAllocation interface {
 // DefaultResourceAllocation is the shape used by backends that only need to carry
 // the provision ID (kubernetes / aws / lambdaCloud today).
 type DefaultResourceAllocation struct {
-	ProvisionID string `json:"provision_id,omitempty"`
+	ProvisionID     string                  `json:"provision_id,omitempty"`
+	ResourceDetails []DefaultResourceDetail `json:"resource_details,omitempty"`
 }
 
 func (*DefaultResourceAllocation) isResourceAllocation() {}
+
+// DefaultResourceDetail is the flat resource detail shape understood by the
+// upstream MDS deployment runtime.
+type DefaultResourceDetail struct {
+	GpuType string `json:"gpu_type,omitempty"`
+	Replica int    `json:"replica,omitempty"`
+}
 
 // AIBrixExtraBody is the AIBrix-specific extension the BatchClient
 // serializes onto POST /v1/batches via the openai-go SDK's extra_body
@@ -51,4 +61,6 @@ type AIBrixExtraBody struct {
 	ResourceAllocation ResourceAllocation           `json:"resource_allocation,omitempty"`
 	ModelTemplate      *plannerapi.ModelTemplateRef `json:"model_template,omitempty"`
 	Model              string                       `json:"model,omitempty"`
+	Client             *plannerapi.ClientConfig     `json:"client,omitempty"`
+	Deployment         json.RawMessage              `json:"deployment,omitempty"`
 }

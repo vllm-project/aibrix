@@ -18,20 +18,23 @@ limitations under the License.
 package v1alpha1
 
 import (
+	v1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
 // StormServiceSpecApplyConfiguration represents a declarative configuration of the StormServiceSpec type for use
 // with apply.
 type StormServiceSpecApplyConfiguration struct {
-	Replicas             *int32                                        `json:"replicas,omitempty"`
-	Selector             *v1.LabelSelectorApplyConfiguration           `json:"selector,omitempty"`
-	Stateful             *bool                                         `json:"stateful,omitempty"`
-	Template             *RoleSetTemplateSpecApplyConfiguration        `json:"template,omitempty"`
-	UpdateStrategy       *StormServiceUpdateStrategyApplyConfiguration `json:"updateStrategy,omitempty"`
-	RevisionHistoryLimit *int32                                        `json:"revisionHistoryLimit,omitempty"`
-	Paused               *bool                                         `json:"paused,omitempty"`
-	DisruptionTolerance  *DisruptionToleranceApplyConfiguration        `json:"disruptionTolerance,omitempty"`
+	Replicas                *int32                                        `json:"replicas,omitempty"`
+	Mode                    *v1alpha1.StormServiceMode                    `json:"mode,omitempty"`
+	Selector                *v1.LabelSelectorApplyConfiguration           `json:"selector,omitempty"`
+	Stateful                *bool                                         `json:"stateful,omitempty"`
+	Template                *RoleSetTemplateSpecApplyConfiguration        `json:"template,omitempty"`
+	UpdateStrategy          *StormServiceUpdateStrategyApplyConfiguration `json:"updateStrategy,omitempty"`
+	RevisionHistoryLimit    *int32                                        `json:"revisionHistoryLimit,omitempty"`
+	Paused                  *bool                                         `json:"paused,omitempty"`
+	ProgressDeadlineSeconds *int32                                        `json:"progressDeadlineSeconds,omitempty"`
+	DisruptionTolerance     *DisruptionToleranceApplyConfiguration        `json:"disruptionTolerance,omitempty"`
 }
 
 // StormServiceSpecApplyConfiguration constructs a declarative configuration of the StormServiceSpec type for use with
@@ -45,6 +48,14 @@ func StormServiceSpec() *StormServiceSpecApplyConfiguration {
 // If called multiple times, the Replicas field is set to the value of the last call.
 func (b *StormServiceSpecApplyConfiguration) WithReplicas(value int32) *StormServiceSpecApplyConfiguration {
 	b.Replicas = &value
+	return b
+}
+
+// WithMode sets the Mode field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Mode field is set to the value of the last call.
+func (b *StormServiceSpecApplyConfiguration) WithMode(value v1alpha1.StormServiceMode) *StormServiceSpecApplyConfiguration {
+	b.Mode = &value
 	return b
 }
 
@@ -93,6 +104,14 @@ func (b *StormServiceSpecApplyConfiguration) WithRevisionHistoryLimit(value int3
 // If called multiple times, the Paused field is set to the value of the last call.
 func (b *StormServiceSpecApplyConfiguration) WithPaused(value bool) *StormServiceSpecApplyConfiguration {
 	b.Paused = &value
+	return b
+}
+
+// WithProgressDeadlineSeconds sets the ProgressDeadlineSeconds field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ProgressDeadlineSeconds field is set to the value of the last call.
+func (b *StormServiceSpecApplyConfiguration) WithProgressDeadlineSeconds(value int32) *StormServiceSpecApplyConfiguration {
+	b.ProgressDeadlineSeconds = &value
 	return b
 }
 

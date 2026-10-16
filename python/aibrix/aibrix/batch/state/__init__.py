@@ -21,14 +21,12 @@ from aibrix.batch.state.job_entity_manager import JobEntityManager
 from aibrix.batch.state.job_meta_info import JobMetaInfo
 from aibrix.batch.state.job_progress_tracker import JobProgressTracker
 from aibrix.batch.state.job_store import JobStore
-from aibrix.batch.state.running_jobs import RunningJobs
 from aibrix.batch.state.schedulable_jobs import SchedulableJobs
 
 __all__ = [
     "JobProgressTracker",
     "JobMetaInfo",
     "BatchRegistry",
-    "RunningJobs",
     "SchedulableJobs",
     "JobEntityManager",
     "JobStore",

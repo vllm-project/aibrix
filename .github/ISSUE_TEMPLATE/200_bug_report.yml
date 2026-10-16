@@ -49,6 +49,27 @@ body:
         - Client library version (if applicable):
     validations:
       required: true
+  - type: dropdown
+    attributes:
+      label: Area
+      description: |
+        Which part of AIBrix does this affect? This lets the triage bot label the
+        issue directly instead of guessing from keywords in the text above. Pick
+        "Not sure" if none of these fit.
+      options:
+        - Not sure
+        - Gateway
+        - Orchestration (controllers, CRDs)
+        - Runtime
+        - KV Cache
+        - Batch
+        - Website / Docs
+        - CI/CD
+        - Installation (Helm / Kustomize)
+        - Testing (E2E)
+      default: 0
+    validations:
+      required: false
   - type: markdown
     attributes:
       value: |

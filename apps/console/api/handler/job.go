@@ -51,6 +51,7 @@ import (
 
 	"github.com/vllm-project/aibrix/apps/console/api/common"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
+	"github.com/vllm-project/aibrix/apps/console/api/metrics"
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
@@ -61,8 +62,34 @@ import (
 )
 
 const (
-	defaultListLimit = 20
+	defaultListLimit      = 20
+	minJobReplicas        = int32(1)
+	maxJobReplicas        = int32(1024)
+	metricConsoleJobError = "console.job.error"
 )
+
+type JobCapabilities struct {
+	ResourceRequest JobResourceRequestLimits `json:"resource_request"`
+	Provider        string                   `json:"provider"`
+}
+
+type JobResourceRequestLimits struct {
+	MinReplicas int32 `json:"min_replicas"`
+	MaxReplicas int32 `json:"max_replicas"`
+}
+
+func JobCapabilitiesConfig(provider string, devMode bool) JobCapabilities {
+	if devMode {
+		provider = "demo"
+	}
+	return JobCapabilities{
+		ResourceRequest: JobResourceRequestLimits{
+			MinReplicas: minJobReplicas,
+			MaxReplicas: maxJobReplicas,
+		},
+		Provider: provider,
+	}
+}
 
 // JobHandler implements console.v1.JobService.
 type JobHandler struct {
@@ -108,7 +135,9 @@ func (h *JobHandler) ListJobs(ctx context.Context, req *pb.ListJobsRequest) (*pb
 		if h.devMode {
 			if dev, ok := h.store.(interface{ ListDemoJobs() []*pb.Job }); ok {
 				klog.Warningf("MDS unreachable, falling back to demo jobs: %v", err)
-				return &pb.ListJobsResponse{Jobs: dev.ListDemoJobs(), HasMore: false}, nil
+				jobs := dev.ListDemoJobs()
+				h.enrichJobs(ctx, jobs)
+				return &pb.ListJobsResponse{Jobs: jobs, HasMore: false}, nil
 			}
 		}
 		// Non-dev: degrade to empty list. Surfacing the raw SDK error in the UI
@@ -148,6 +177,15 @@ func (h *JobHandler) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.Job
 		}
 	}
 
+	// Propagate include_deployment from HTTP query param through gRPC
+	// metadata to the batch client, which passes it as a query param to
+	// the MDS get_batch endpoint.
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if vals := md.Get("x-aibrix-include-deployment"); len(vals) > 0 {
+			ctx = common.WithIncludeDeployment(ctx, strings.EqualFold(vals[0], "true"))
+		}
+	}
+
 	job, err := h.planner.GetJob(ctx, req.Id)
 	if err != nil {
 		// Dev fallback: return the demo job if MDS is unreachable.
@@ -157,7 +195,10 @@ func (h *JobHandler) GetJob(ctx context.Context, req *pb.GetJobRequest) (*pb.Job
 			}); ok {
 				if demoJob, found := dev.GetDemoJob(req.Id); found {
 					klog.Warningf("MDS unreachable, falling back to demo job %s: %v", req.Id, err)
-					return demoJob, nil
+					if !common.IncludeDeploymentFromCtx(ctx) {
+						demoJob = stripDeploymentFromExtraBody(demoJob)
+					}
+					return h.enrichJob(ctx, demoJob), nil
 				}
 			}
 		}
@@ -202,10 +243,31 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 	if req.Endpoint == "" {
 		return nil, status.Error(codes.InvalidArgument, "endpoint is required")
 	}
+	replicas := int32(1)
+	if req.ResourceRequest != nil && req.ResourceRequest.Replicas != 0 {
+		replicas = req.ResourceRequest.Replicas
+		if replicas < minJobReplicas || replicas > maxJobReplicas {
+			return nil, status.Errorf(codes.InvalidArgument, "resource_request.replicas must be between %d and %d", minJobReplicas, maxJobReplicas)
+		}
+	}
 
 	completionWindow := req.CompletionWindow
 	if completionWindow == "" {
 		completionWindow = string(openai.BatchNewParamsCompletionWindow24h)
+	}
+	_, err := utils.ParseCompletionWindow(completionWindow)
+	if err != nil {
+		return nil, status.Errorf(
+			codes.InvalidArgument,
+			"invalid completion_window %q: %v",
+			completionWindow,
+			err,
+		)
+	}
+
+	var providerConfig map[string]any
+	if req.ResourceRequest != nil && req.ResourceRequest.ProviderConfig != nil {
+		providerConfig = req.ResourceRequest.ProviderConfig.AsMap()
 	}
 
 	// Console-generated JobID. The async Scheduler will own a durable
@@ -286,13 +348,45 @@ func (h *JobHandler) CreateJob(ctx context.Context, req *pb.CreateJobRequest) (*
 			Metadata:         metadata,
 		},
 		InjectionConfig: injectionConfig,
+		ResourceRequest: &plannerapi.ResourceRequest{
+			Replicas:       int(replicas),
+			ProviderConfig: providerConfig,
+		},
+		Client: toPlannerClientConfig(req.Client),
 	}
 
 	job, err := h.planner.Enqueue(ctx, enqueueReq)
 	if err != nil {
+		metrics.Emitter.Counter(metricConsoleJobError, 1, metrics.T("method", "create"), metrics.T("reason", "enqueue_failed"))
 		return nil, mapPlannerError(err, "create batch")
 	}
 	return h.enrichJob(ctx, mergeJob(job, nil)), nil
+}
+
+// toPlannerClientConfig projects the proto JobClientConfig into the planner's
+// ClientConfig. Pointer fields carry proto3 presence straight through, so an
+// unset field stays nil and falls back to MDS env defaults. Range validation
+// is enforced by the metadata service.
+func toPlannerClientConfig(c *pb.JobClientConfig) *plannerapi.ClientConfig {
+	if c == nil {
+		return nil
+	}
+	out := &plannerapi.ClientConfig{
+		MaxConcurrency:           c.MaxConcurrency,
+		AdaptiveConcurrency:      c.AdaptiveConcurrency,
+		AdaptiveMaxFactor:        c.AdaptiveMaxFactor,
+		AdaptiveHealthyWindow:    c.AdaptiveHealthyWindow,
+		AdaptiveAdditiveIncrease: c.AdaptiveAdditiveIncrease,
+	}
+	if rp := c.RetryPolicy; rp != nil {
+		out.RetryPolicy = &plannerapi.ClientRetryPolicy{
+			MaxRetries:           rp.MaxRetries,
+			BaseDelaySeconds:     rp.BaseDelaySeconds,
+			MaxDelaySeconds:      rp.MaxDelaySeconds,
+			NoEndpointMaxRetries: rp.NoEndpointMaxRetries,
+		}
+	}
+	return out
 }
 
 // CancelJob routes through Planner.Cancel; the planner resolves JobID
@@ -311,13 +405,16 @@ func (h *JobHandler) CancelJob(ctx context.Context, req *pb.CancelJobRequest) (*
 
 	existing, err := h.planner.GetJob(ctx, req.Id)
 	if err != nil {
+		metrics.Emitter.Counter(metricConsoleJobError, 1, metrics.T("method", "cancel"), metrics.T("reason", "get_job_failed"))
 		return nil, mapPlannerError(err, "cancel batch")
 	}
 	if err := requireJobOwner(ctx, mergeJob(existing, nil), "cancel"); err != nil {
+		metrics.Emitter.Counter(metricConsoleJobError, 1, metrics.T("method", "cancel"), metrics.T("reason", "not_owner"))
 		return nil, err
 	}
 	job, err := h.planner.Cancel(ctx, req.Id)
 	if err != nil {
+		metrics.Emitter.Counter(metricConsoleJobError, 1, metrics.T("method", "cancel"), metrics.T("reason", "cancel_failed"))
 		return nil, mapPlannerError(err, "cancel batch")
 	}
 	return h.enrichJob(ctx, mergeJob(job, nil)), nil
@@ -366,7 +463,7 @@ func mapSDKError(err error, op string) error {
 		case http.StatusNotFound:
 			c = codes.NotFound
 		case http.StatusConflict:
-			c = codes.FailedPrecondition
+			c = codes.Aborted
 		case http.StatusUnauthorized, http.StatusForbidden:
 			c = codes.PermissionDenied
 		default:
@@ -374,7 +471,11 @@ func mapSDKError(err error, op string) error {
 				c = codes.Unavailable
 			}
 		}
-		return status.Error(c, apiErr.Error())
+		msg := apiErr.Message
+		if msg == "" {
+			msg = apiErr.Error()
+		}
+		return status.Error(c, msg)
 	}
 
 	return status.Errorf(codes.Unavailable, "%s: %v", op, err)
@@ -914,6 +1015,32 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// stripDeploymentFromExtraBody removes the "deployment" key from the
+// aibrix extra body JSON when the caller did not request deployment detail.
+func stripDeploymentFromExtraBody(job *pb.Job) *pb.Job {
+	if job == nil || len(job.ExtraBody) == 0 {
+		return job
+	}
+	raw, ok := job.ExtraBody[common.AIBrixExtraBodyField]
+	if !ok || raw == "" {
+		return job
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return job
+	}
+	if _, exists := m["deployment"]; !exists {
+		return job
+	}
+	delete(m, "deployment")
+	cleaned, err := json.Marshal(m)
+	if err != nil {
+		return job
+	}
+	job.ExtraBody[common.AIBrixExtraBodyField] = string(cleaned)
+	return job
 }
 
 func unixOrZero(t time.Time) int64 {

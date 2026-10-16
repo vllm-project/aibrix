@@ -17,8 +17,11 @@ limitations under the License.
 package cache
 
 import (
+	"context"
+
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -76,11 +79,62 @@ type ModelCache interface {
 	//   map[string]struct{}: Set of model names
 	//   error: Error information if operation fails
 	ListModelsByPod(podName, podNamespace string) ([]string, error)
+
+	// ModelBaseModel returns the base-model name a LoRA adapter is attached to
+	// (ModelAdapter spec.baseModel, or the host pod's model label as fallback).
+	// Returns ("", false) for base models and for adapters with no known base.
+	ModelBaseModel(modelName string) (string, bool)
+}
+
+// ReadyModelCache is an optional model-list extension. It returns model names
+// with at least one Pod passing the gateway's Pod readiness predicate in one
+// cache snapshot.
+type ReadyModelCache interface {
+	ListModelsWithReadyPods() []string
+}
+
+// VerifiedModelCache is an optional gateway extension. It obtains a bounded
+// discovery proof before returning a model list when verification is enabled.
+type VerifiedModelCache interface {
+	ListModelsVerified(ctx context.Context, readyPods bool) ([]string, error)
+}
+
+// ModelClaimBindingProvider is an optional cache extension used by the
+// gateway when a ModelClaim is known but intentionally non-routable. Dormant
+// bindings stay separate from ModelCache so normal routing never sees port 0.
+type ModelClaimBindingProvider interface {
+	ModelClaimBinding(modelName string) (pod *v1.Pod, binding utils.ModelClaimBinding, found bool)
+}
+
+// ModelClaimStatusProvider is implemented by caches that watch ModelClaim
+// objects themselves. It lets the gateway tell a model that is claimed but not
+// placed yet, which no pod advertises, from one that no claim serves.
+type ModelClaimStatusProvider interface {
+	ModelClaimStatus(modelName string) (phase, reason string, found bool)
+}
+
+// PodReadySinceProvider is an optional cache extension exposing when this gateway first saw each
+// pod routable (see readySince in pod.go). Callers type-assert for it, like
+// ModelClaimBindingProvider, and treat a failed assertion as "no ramp info"; it stays off Cache
+// so test fakes that implement Cache directly don't have to add it.
+type PodReadySinceProvider interface {
+	// GetPodsReadySince returns readySince (UnixNano; 0 if never routable) keyed by
+	// utils.GeneratePodKey. Pods not in the cache are omitted. Missing or 0 means "no penalty",
+	// the opposite default to GetPodsRunningRequests. A local read, never shared across gateways.
+	GetPodsReadySince(pods []*v1.Pod) (map[string]int64, error)
+
+	// LatestPodReadySince returns the newest readySince across all pods, or 0, in one atomic
+	// load. If now minus it is already past the ramp window, no pod can be ramping, so callers
+	// can skip GetPodsReadySince on every routing decision once the fleet is warm.
+	LatestPodReadySince() int64
 }
 
 // MetricCache defines operations for metric data caching
 type MetricCache interface {
-	// GetMetricValueByPod gets metric value for a pod
+	// GetMetricValueByPod returns the last-written metric slot for a pod (scraped engine
+	// gauges, PromQL results, or gateway-derived values such as RealtimeNumRequestsRunning).
+	// This is NOT the live cross-gateway running-request count -- use GetPodRunningRequests
+	// / GetPodsRunningRequests for routing and MODEL_REPLICA_REQUESTS_INFLIGHT.
 	// Parameters:
 	//   podName: Name of the pod
 	//   podNamespace: Namespace of the pod
@@ -106,6 +160,51 @@ type MetricCache interface {
 	// Parameters:
 	//   subscriber: Metric subscriber implementation
 	AddSubscriber(subscriber metrics.MetricSubscriber)
+
+	// AdmitPodRunningRequest is the hard-cap counterpart of GetPodRunningRequests: with Redis, it
+	// atomically checks the pod's live cross-gateway running-request count against limit
+	// and, only if still under it, includes this request's own contribution in that count
+	// from this call onward -- so concurrent callers cannot all observe the same
+	// pre-increment count and all be admitted past limit, unlike a plain
+	// GetPodRunningRequests read followed by a later, separate increment.
+	// Parameters:
+	//   podName: Name of the pod
+	//   podNamespace: Namespace of the pod
+	//   limit: Maximum concurrent live requests to admit
+	// Returns:
+	//   admitted: Whether this request was admitted (Redis or local fallback)
+	//   counted: Whether this request's own increment is, or may be, already applied
+	//   error: Error information if the pod is not found
+	AdmitPodRunningRequest(podName, podNamespace string, limit int64) (admitted, counted bool, err error)
+
+	// GetPodRunningRequests is the single-pod live cross-gateway running-request count
+	// (Redis, falling back to this gateway's local atomic). Use GetPodsRunningRequests
+	// for a pod list -- looping this is N Redis round trips. Do not use
+	// GetMetricValueByPod(RealtimeNumRequestsRunning) for routing or inflight; that slot
+	// is a periodically synced cache and can reflect this gateway's local view between ticks.
+	// Returns an error if the pod is not in the cache.
+	// Parameters:
+	//   podName: Name of the pod
+	//   podNamespace: Namespace of the pod
+	// Returns:
+	//   int64: Best-effort running request count
+	//   error: Error information if the pod is not found
+	GetPodRunningRequests(podName, podNamespace string) (int64, error)
+
+	// GetPodsRunningRequests is GetPodRunningRequests for a pod list in one Redis pipeline.
+	// Use this from routers (least-request, load-balance, prefix-cache) and the inflight
+	// saturation filter. The map is keyed by utils.GeneratePodKey(namespace, name).
+	// Local-atomic fallback is already applied; a missing key means the pod was not in
+	// the cache -- treat as 0. Do not treat a missing key as "read the local counter again."
+	// Parameters:
+	//   pods: Pods to resolve
+	// Returns:
+	//   map[string]int64: Running request count keyed by utils.GeneratePodKey(pod.Namespace, pod.Name).
+	//     A pod is present with either its live Redis-backed count or, if that isn't
+	//     available, its local atomic counter. Only pods not found in the cache at all
+	//     are omitted; treat those as 0.
+	//   error: Error information if the batch operation itself fails
+	GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error)
 }
 
 // RequestTracker defines operations for track workload statistics

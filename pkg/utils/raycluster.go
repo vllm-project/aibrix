@@ -60,7 +60,7 @@ func IsRayClusterAvailable(cluster *rayclusterv1.RayCluster, minReadySeconds int
 	}
 
 	lastTransitionTime := provisionedCond.LastTransitionTime
-	if headPodReadyCond.LastTransitionTime.Time.After(provisionedCond.LastTransitionTime.Time) {
+	if headPodReadyCond.LastTransitionTime.After(provisionedCond.LastTransitionTime.Time) {
 		lastTransitionTime = headPodReadyCond.LastTransitionTime
 	}
 

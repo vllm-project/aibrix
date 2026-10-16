@@ -28,6 +28,8 @@ import (
 type ModelV1alpha1Interface interface {
 	RESTClient() rest.Interface
 	ModelAdaptersGetter
+	ModelClaimsGetter
+	ModelWarmupsGetter
 }
 
 // ModelV1alpha1Client is used to interact with features provided by the model group.
@@ -37,6 +39,14 @@ type ModelV1alpha1Client struct {
 
 func (c *ModelV1alpha1Client) ModelAdapters(namespace string) ModelAdapterInterface {
 	return newModelAdapters(c, namespace)
+}
+
+func (c *ModelV1alpha1Client) ModelClaims(namespace string) ModelClaimInterface {
+	return newModelClaims(c, namespace)
+}
+
+func (c *ModelV1alpha1Client) ModelWarmups(namespace string) ModelWarmupInterface {
+	return newModelWarmups(c, namespace)
 }
 
 // NewForConfig creates a new ModelV1alpha1Client for the given config.

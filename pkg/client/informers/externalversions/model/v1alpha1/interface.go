@@ -25,6 +25,10 @@ import (
 type Interface interface {
 	// ModelAdapters returns a ModelAdapterInformer.
 	ModelAdapters() ModelAdapterInformer
+	// ModelClaims returns a ModelClaimInformer.
+	ModelClaims() ModelClaimInformer
+	// ModelWarmups returns a ModelWarmupInformer.
+	ModelWarmups() ModelWarmupInformer
 }
 
 type version struct {
@@ -41,4 +45,14 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 // ModelAdapters returns a ModelAdapterInformer.
 func (v *version) ModelAdapters() ModelAdapterInformer {
 	return &modelAdapterInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// ModelClaims returns a ModelClaimInformer.
+func (v *version) ModelClaims() ModelClaimInformer {
+	return &modelClaimInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// ModelWarmups returns a ModelWarmupInformer.
+func (v *version) ModelWarmups() ModelWarmupInformer {
+	return &modelWarmupInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }

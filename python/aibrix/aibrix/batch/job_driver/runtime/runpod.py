@@ -29,6 +29,10 @@ class RunPodRuntime(SSHLaunchRuntime):
     http_base_url = proxy URL). The pod image has vLLM preinstalled, so it
     launches the vLLM binary directly."""
 
+    def _get_runtime_key(self, job) -> str:
+        del job
+        return "runpod"
+
     def _launch_command(self, info: SSHConnInfo) -> str:
         return build_launch_command(info)
 

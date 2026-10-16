@@ -74,13 +74,82 @@ type PodAutoscalerSpec struct {
 	// It cannot be less than minReplicas
 	MaxReplicas int32 `json:"maxReplicas"`
 
+	// Schedules defines time-based autoscaling configuration. The initial
+	// version supports scheduled replica bounds only.
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	Schedules []PodAutoscalerSchedule `json:"schedules,omitempty"`
+
 	// MetricsSources defines a list of sources from which metrics are collected to make scaling decisions.
 	// +kubebuilder:validation:MinItems=1
 	MetricsSources []MetricSource `json:"metricsSources,omitempty"`
 
+	// ObserveWindowSeconds controls how much recent metric history is used for stable scaling decisions.
+	// If unset, the autoscaler uses its internal default.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3600
+	ObserveWindowSeconds *int64 `json:"observeWindowSeconds,omitempty"`
+
+	// PanicWindowSeconds controls the short metric window used by KPA panic-mode decisions.
+	// If unset, the autoscaler uses its internal default.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3600
+	PanicWindowSeconds *int64 `json:"panicWindowSeconds,omitempty"`
+
+	// Predictive enables forward-looking recommendations derived from the
+	// observed metric trend. Preview records the projection in status without
+	// changing the replica decision; Auto lets the projection raise the replica
+	// floor. When omitted, predictive scaling is disabled.
+	// +optional
+	Predictive *PredictiveSpec `json:"predictive,omitempty"`
+
 	// ScalingStrategy defines the strategy to use for scaling.
 	// +kubebuilder:validation:Enum={HPA,KPA,APA}
 	ScalingStrategy ScalingStrategyType `json:"scalingStrategy"`
+}
+
+// PodAutoscalerSchedule defines a recurring daily time window for scheduled
+// autoscaling configuration. The initial version supports min/max replica
+// bounds only.
+type PodAutoscalerSchedule struct {
+	// Name identifies this schedule. Names must be unique within spec.schedules
+	// and use Kubernetes DNS label style.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// Timezone is an optional IANA timezone used to evaluate this schedule. If
+	// omitted, UTC is used.
+	// +optional
+	Timezone string `json:"timezone,omitempty"`
+
+	// DaysOfWeek optionally restricts this schedule to specific weekdays. If
+	// omitted, the schedule applies every day. Values are case-insensitive
+	// three-letter English weekday names: Mon, Tue, Wed, Thu, Fri, Sat, Sun.
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	DaysOfWeek []string `json:"daysOfWeek,omitempty"`
+
+	// StartTime is the inclusive daily window start in strict HH:MM format.
+	// +kubebuilder:validation:Pattern=`^([01][0-9]|2[0-3]):[0-5][0-9]$`
+	StartTime string `json:"startTime"`
+
+	// EndTime is the exclusive daily window end in strict HH:MM format. It must
+	// be later than startTime; cross-midnight windows are not supported.
+	// +kubebuilder:validation:Pattern=`^([01][0-9]|2[0-3]):[0-5][0-9]$`
+	EndTime string `json:"endTime"`
+
+	// MinReplicas optionally overrides spec.minReplicas while this schedule is active.
+	// At least one of minReplicas or maxReplicas must be set.
+	// +optional
+	MinReplicas *int32 `json:"minReplicas,omitempty"`
+
+	// MaxReplicas optionally overrides spec.maxReplicas while this schedule is active.
+	// At least one of minReplicas or maxReplicas must be set.
+	// +optional
+	MaxReplicas *int32 `json:"maxReplicas,omitempty"`
 }
 
 // SubTargetSelector identifies a sub-component within the scale target
@@ -88,6 +157,34 @@ type SubTargetSelector struct {
 	// RoleName selects a role within StormService or RoleSet
 	// +optional
 	RoleName string `json:"roleName,omitempty"`
+}
+
+// PredictiveMode controls how predictive recommendations are used.
+type PredictiveMode string
+
+const (
+	// PredictiveModePreview records the projection in status only and never
+	// changes the replica decision.
+	PredictiveModePreview PredictiveMode = "Preview"
+
+	// PredictiveModeAuto allows the projection to raise the replica floor while
+	// reactive scaling keeps control of scale-down.
+	PredictiveModeAuto PredictiveMode = "Auto"
+)
+
+// PredictiveSpec configures predictive scaling for a PodAutoscaler.
+type PredictiveSpec struct {
+	// Mode selects how predictions are applied. It defaults to Preview when omitted.
+	// +optional
+	// +kubebuilder:validation:Enum={Preview,Auto}
+	Mode PredictiveMode `json:"mode,omitempty"`
+
+	// HorizonSeconds is how far ahead the observed trend is projected.
+	// If unset, the autoscaler uses an internal default of 120 seconds.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3600
+	HorizonSeconds *int64 `json:"horizonSeconds,omitempty"`
 }
 
 // ScalingStrategyType defines the type for scaling strategies.
@@ -195,6 +292,72 @@ type PodAutoscalerStatus struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=5
 	ScalingHistory []ScalingDecision `json:"scalingHistory,omitempty"`
+
+	// ScheduledBounds is the observed scheduled replica bounds state.
+	// +optional
+	ScheduledBounds *ScheduledBoundsStatus `json:"scheduledBounds,omitempty"`
+
+	// Predictive is the latest predictive evaluation selected for the replica
+	// decision. It is cleared when spec.predictive is removed.
+	// +optional
+	Predictive *PredictiveStatus `json:"predictive,omitempty"`
+}
+
+// ScheduledBoundsStatus captures the currently effective scheduled replica bounds.
+type ScheduledBoundsStatus struct {
+	// ActiveSchedule is the name of the currently active schedule. It is omitted
+	// when no schedule is active and base bounds are in effect.
+	// +optional
+	ActiveSchedule string `json:"activeSchedule,omitempty"`
+
+	// EffectiveMinReplicas is the current effective minimum replica bound.
+	EffectiveMinReplicas int32 `json:"effectiveMinReplicas"`
+
+	// EffectiveMaxReplicas is the current effective maximum replica bound.
+	EffectiveMaxReplicas int32 `json:"effectiveMaxReplicas"`
+}
+
+// PredictiveStatus captures the most recent predictive evaluation.
+type PredictiveStatus struct {
+	// Mode is the effective mode used for this evaluation.
+	// +optional
+	Mode PredictiveMode `json:"mode,omitempty"`
+
+	// Metric identifies the metricsSources entry the projection was derived
+	// from, using its targetMetric.
+	// +optional
+	Metric string `json:"metric,omitempty"`
+
+	// ObservedValue is the mean of the samples used by the fit, as a decimal
+	// string in the same unit as the metric sample and targetValue.
+	// +optional
+	ObservedValue string `json:"observedValue,omitempty"`
+
+	// PredictedValue is the fitted line evaluated at now + horizonSeconds,
+	// as a decimal string in the same unit as the metric sample and targetValue.
+	// +optional
+	PredictedValue string `json:"predictedValue,omitempty"`
+
+	// PredictedReplicas is the replica count the projection alone asks for.
+	// +optional
+	PredictedReplicas int32 `json:"predictedReplicas"`
+
+	// ReactiveReplicas is the replica count the reactive path selected in this
+	// round, before the predictive floor.
+	// +optional
+	ReactiveReplicas int32 `json:"reactiveReplicas"`
+
+	// WouldBeReplicas is the replica count this round would apply in Auto mode:
+	// the reactive count raised by the projection where it asks for more, after
+	// the same caps, bounds and cooldown as the applied decision. In Auto it
+	// equals the applied count; in Preview it shows whether Auto would change
+	// the decision.
+	// +optional
+	WouldBeReplicas int32 `json:"wouldBeReplicas"`
+
+	// LastUpdated is when the prediction was computed.
+	// +optional
+	LastUpdated *metav1.Time `json:"lastUpdated,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -18,11 +18,11 @@ package engine
 
 import (
 	"fmt"
-	"reflect"
 	"sync/atomic"
 	"time"
 
-	"github.com/bytedance/sonic"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -89,82 +89,187 @@ func GetDisaggRequestID(machineID int64) int64 {
 	return globalID%(trtMaxInt64-TRTMinGlobalID) + TRTMinGlobalID
 }
 
-// TRTLLMHandler implements EngineHandler for TensorRT-LLM.
-type TRTLLMHandler struct{}
+const (
+	TRTContextFirst    = "context_first"
+	TRTGenerationFirst = "generation_first"
+	// TRT-LLM's DisaggScheduleStyle is an IntEnum on the HTTP wire.
+	trtGenerationFirstSchedule = 1
+)
 
-func (h *TRTLLMHandler) Name() string  { return "trtllm" }
-func (h *TRTLLMHandler) IsAsync() bool { return false }
+// TRTLLMHandler implements EngineHandler for TensorRT-LLM. Configuration is
+// immutable and router-scoped; the zero value retains context-first behavior.
+type TRTLLMHandler struct {
+	generationFirst bool
+	serverInfo      TRTServerInfoProvider
+}
 
-// AugmentPrefillRequest adds disaggregated_params with request_type="context_only"
-// and a unique disagg_request_id generated from the machine snowflake ID.
-func (h *TRTLLMHandler) AugmentPrefillRequest(
-	_ *types.RoutingContext,
-	_ *v1.Pod,
-	completionRequest map[string]any,
-) error {
-	completionRequest["disaggregated_params"] = map[string]any{
-		"request_type":      "context_only",
-		"disagg_request_id": GetDisaggRequestID(trtMachineID),
+// NewTRTLLMHandler validates the configured schedule before any request is sent.
+// The registry's default handler is never mutated by a router's configuration.
+func NewTRTLLMHandler(scheduleStyle string, serverInfo TRTServerInfoProvider) (*TRTLLMHandler, error) {
+	switch scheduleStyle {
+	case "", TRTContextFirst:
+		return &TRTLLMHandler{}, nil
+	case TRTGenerationFirst:
+		if serverInfo == nil {
+			return nil, fmt.Errorf("TRT generation_first requires a server_info provider")
+		}
+		return &TRTLLMHandler{generationFirst: true, serverInfo: serverInfo}, nil
+	default:
+		return nil, fmt.Errorf("invalid AIBRIX_TRT_SCHEDULE_STYLE=%q: expected context_first or generation_first", scheduleStyle)
 	}
-	return nil
+}
+
+func (h *TRTLLMHandler) Name() string  { return pd.EngineTRTLLM }
+func (h *TRTLLMHandler) IsAsync() bool { return h.generationFirst }
+
+// AsyncDispatch returns the generation-first dispatch contract; context-first
+// keeps the default one and never dispatches a detached prefill leg. TRT-LLM
+// generation-first keeps the client's cancellation (the engine aborts its
+// promise on disconnect), has no native decode abort, and resets the decode
+// stream on a terminal prefill failure even after response headers.
+func (h *TRTLLMHandler) AsyncDispatch() AsyncDispatchPolicy {
+	if !h.generationFirst {
+		return DefaultAsyncDispatchPolicy
+	}
+	return AsyncDispatchPolicy{KeepClientCancel: true, AbortDecode: false, ResetAfterHeaders: true}
+}
+
+// trtControlledFields are the top-level keys AugmentPrefillRequest and
+// MergePrefillResponse write: disaggregated_params on both bodies, and
+// prompt / prompt_token_ids on the decode body when the prefill response
+// carries prompt_token_ids.
+var trtControlledFields = []string{"disaggregated_params", "prompt", "prompt_token_ids"}
+
+func (h *TRTLLMHandler) ControlledFields() []string { return trtControlledFields }
+
+// AugmentPrefillRequest replaces disaggregated_params with request_type="context_only"
+// and a unique disagg_request_id generated from the machine snowflake ID, in a
+// single top-level edit. The ID is written as an integer literal, so it never
+// goes through float64 and keeps full int64 precision.
+func (h *TRTLLMHandler) AugmentPrefillRequest(
+	routingCtx *types.RoutingContext,
+	pod *v1.Pod,
+	body []byte,
+) ([]byte, error) {
+	if h.generationFirst {
+		info, err := h.serverInfo.Get(routingCtx.Context, pod)
+		if err != nil {
+			return nil, fmt.Errorf("prepare TRT generation_first: %w", err)
+		}
+		prefillBody, decodeBody, err := prepareTRTGenerationFirst(body, info, GetDisaggRequestID(trtMachineID))
+		if err != nil {
+			return nil, err
+		}
+		// Commit only after both bodies are ready, before either leg can run.
+		routingCtx.ReqBody = decodeBody
+		return prefillBody, nil
+	}
+	params := fmt.Sprintf(`{"request_type":"context_only","disagg_request_id":%d}`, GetDisaggRequestID(trtMachineID))
+	return pd.NewJSONEditor(body).
+		SetRaw("disaggregated_params", []byte(params)).
+		Result()
+}
+
+// prepareTRTGenerationFirst constructs independent bodies with one shared ID.
+// Only the small gateway-owned params objects are serialized; prompt/messages/
+// tools retain their original bytes on both legs. The worker metadata is
+// allowlisted so it cannot overwrite request_type, IDs, or scheduling policy.
+func prepareTRTGenerationFirst(body []byte, info TRTServerInfo, id int64) ([]byte, []byte, error) {
+	if err := info.validate(); err != nil {
+		return nil, nil, err
+	}
+	if err := pd.ValidateJSONObject(body, "TRT request body"); err != nil {
+		return nil, nil, err
+	}
+	ctxParams, err := pd.NewJSONEditor([]byte(`{}`)).
+		Set("request_type", "context_only").
+		Set("disagg_request_id", id).
+		// schedule_style goes inside disaggregated_params on both legs. The CTX
+		// worker only looks for it there: it reads the request's
+		// py_disaggregated_params to decide whether a context-only request has to
+		// wait for the transceiver before being scheduled. A top-level copy would
+		// be ignored by the server and is only what the upstream proxy emits.
+		Set("schedule_style", trtGenerationFirstSchedule).Result()
+	if err != nil {
+		return nil, nil, err
+	}
+	gen := pd.NewJSONEditor([]byte(`{}`)).
+		Set("request_type", "generation_only").
+		Set("disagg_request_id", id).
+		Set("ctx_request_id", id).
+		Set("schedule_style", trtGenerationFirstSchedule).
+		Set("ctx_info_endpoint", info.ContextInfoEndpoint).
+		Set("ctx_dp_rank", info.ContextDPRank)
+	if info.EncodedOpaqueState != "" {
+		gen.Set("encoded_opaque_state", info.EncodedOpaqueState)
+	}
+	genParams, err := gen.Result()
+	if err != nil {
+		return nil, nil, err
+	}
+	prefillBody, err := pd.NewJSONEditor(body).SetRaw("disaggregated_params", ctxParams).Result()
+	if err != nil {
+		return nil, nil, err
+	}
+	decodeBody, err := pd.NewJSONEditor(body).SetRaw("disaggregated_params", genParams).Result()
+	return prefillBody, decodeBody, err
 }
 
 // MergePrefillResponse injects TensorRT-LLM disaggregated_params from the
 // prefill response into routingCtx.ReqBody so the decode worker can resume
 // generation from the pre-filled KV cache.
+//
+// disaggregated_params is looked up at the top level first, then under
+// choices[0]. Its fragment is copied verbatim from the response with
+// request_type overridden to "generation_only", so large integer fields such
+// as disagg_request_id / ctx_request_id keep their exact value. When the
+// response includes prompt_token_ids they are routed into the decode body by
+// request path: "prompt" for /v1/completions, "prompt_token_ids" for
+// /v1/chat/completions.
 func (h *TRTLLMHandler) MergePrefillResponse(
 	routingCtx *types.RoutingContext,
-	responseData map[string]any,
+	prefillResponse []byte,
 	prefillPod *v1.Pod,
 ) error {
-	var originalRequest map[string]any
-	if err := pd.SonicJSONInt64.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
-		return fmt.Errorf("failed to unmarshal original request body: %w", err)
+	if h.generationFirst {
+		// Envoy may already be using the decode body. This mode does not
+		// consume CTX response metadata or its prompt_token_ids.
+		return nil
 	}
-	if originalRequest == nil {
-		return fmt.Errorf("original request body is empty or null")
-	}
-
-	// Locate disaggregated_params: top-level first, then choices[0] fallback.
-	var disaggParams any
-	var exists bool
-
-	disaggParams, exists = responseData["disaggregated_params"]
-	if !exists {
-		if choices, ok := responseData["choices"].([]any); ok && len(choices) > 0 {
-			if choice, ok := choices[0].(map[string]any); ok {
-				disaggParams, exists = choice["disaggregated_params"]
-			}
-		}
+	if err := pd.ValidateJSONObject(routingCtx.ReqBody, "original request body"); err != nil {
+		return err
 	}
 
-	if !exists {
+	disaggParams := gjson.GetBytes(prefillResponse, "disaggregated_params")
+	if !disaggParams.Exists() {
+		disaggParams = gjson.GetBytes(prefillResponse, "choices.0.disaggregated_params")
+	}
+	if !disaggParams.Exists() {
 		klog.InfoS("no disaggregated_params in TRT prefill response", "request_id", routingCtx.RequestID)
 		return nil
 	}
-
-	disaggParamsMap, ok := disaggParams.(map[string]any)
-	if !ok {
-		return fmt.Errorf("disaggregated_params has unexpected type %T, expected map[string]any", disaggParams)
+	if !disaggParams.IsObject() {
+		return fmt.Errorf("disaggregated_params has unexpected type %s, expected object", disaggParams.Type.String())
 	}
 
-	disaggParamsMap["request_type"] = "generation_only"
-	originalRequest["disaggregated_params"] = disaggParamsMap
-
-	if pti, ok := responseData["prompt_token_ids"]; ok && pti != nil {
-		if ids, ok := anySliceForJSON(pti); ok {
-			switch routingCtx.ReqPath {
-			case "/v1/completions":
-				originalRequest["prompt"] = ids
-			case "/v1/chat/completions":
-				originalRequest["prompt_token_ids"] = ids
-			}
+	// Patch request_type on the small disaggregated_params fragment first,
+	// then splice it into the (much larger) request body with one edit.
+	params, err := sjson.SetBytes([]byte(disaggParams.Raw), "request_type", "generation_only")
+	if err != nil {
+		return fmt.Errorf("failed to set disaggregated_params.request_type: %w", err)
+	}
+	e := pd.NewJSONEditor(routingCtx.ReqBody).SetRaw("disaggregated_params", params)
+	if pti := gjson.GetBytes(prefillResponse, "prompt_token_ids"); pti.IsArray() {
+		switch utils.PathWithoutQuery(routingCtx.ReqPath) {
+		case "/v1/completions":
+			e.SetRaw("prompt", []byte(pti.Raw))
+		case "/v1/chat/completions":
+			e.SetRaw("prompt_token_ids", []byte(pti.Raw))
 		}
 	}
-
-	updatedReqBody, err := sonic.Marshal(originalRequest)
+	updatedReqBody, err := e.Result()
 	if err != nil {
-		return fmt.Errorf("failed to marshal updated request body: %w", err)
+		return fmt.Errorf("failed to update request body: %w", err)
 	}
 	routingCtx.ReqBody = updatedReqBody
 
@@ -173,20 +278,4 @@ func (h *TRTLLMHandler) MergePrefillResponse(
 		"prefill_pod", prefillPod.Name,
 		"prefill_host", prefillPod.Status.PodIP)
 	return nil
-}
-
-// anySliceForJSON converts a JSON-decoded array into []any suitable for map[string]any marshaling.
-func anySliceForJSON(v any) ([]any, bool) {
-	if s, ok := v.([]any); ok {
-		return s, true
-	}
-	val := reflect.ValueOf(v)
-	if val.Kind() != reflect.Slice {
-		return nil, false
-	}
-	out := make([]any, val.Len())
-	for i := 0; i < val.Len(); i++ {
-		out[i] = val.Index(i).Interface()
-	}
-	return out, true
 }

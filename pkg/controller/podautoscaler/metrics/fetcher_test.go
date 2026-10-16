@@ -19,6 +19,7 @@ package metrics
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -37,9 +38,17 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
+	clientgotesting "k8s.io/client-go/testing"
+	custommetricsv1beta2 "k8s.io/metrics/pkg/apis/custom_metrics/v1beta2"
+	externalmetricsv1beta1 "k8s.io/metrics/pkg/apis/external_metrics/v1beta1"
 	v1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	"k8s.io/metrics/pkg/client/clientset/versioned"
+	"k8s.io/metrics/pkg/client/custom_metrics"
+	externalmetricsfake "k8s.io/metrics/pkg/client/external_metrics/fake"
 	"k8s.io/utils/ptr"
 )
 
@@ -94,6 +103,74 @@ func TestRestMetricsFetcher_FetchPodMetrics(t *testing.T) {
 	assert.Equal(t, expectedMetricValue, actualMetricValue)
 }
 
+func TestRestMetricsFetcher_UnknownMetricReturnsError(t *testing.T) {
+	fetcher := NewRestMetricsFetcherWithConfig(metrics.EngineMetricsFetcherConfig{
+		Timeout:    time.Second,
+		MaxRetries: 0,
+	})
+
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pod-1",
+			Labels: map[string]string{
+				constants.ModelLabelEngine: "vllm",
+			},
+		},
+		Status: corev1.PodStatus{
+			PodIP: "127.0.0.1",
+		},
+	}
+	source := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.POD,
+		TargetMetric:     "running_requests",
+		Port:             "8000",
+	}
+
+	actualMetricValue, err := fetcher.FetchPodMetrics(context.TODO(), pod, source)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found in central registry")
+	assert.Equal(t, 0.0, actualMetricValue)
+}
+
+func TestRestMetricsFetcher_FetchFailureReturnsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	ip, port := parseURL(server.URL)
+	require.NotEmpty(t, ip)
+	require.NotEmpty(t, port)
+
+	fetcher := NewRestMetricsFetcherWithConfig(metrics.EngineMetricsFetcherConfig{
+		Timeout:    time.Second,
+		MaxRetries: 0,
+	})
+
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pod-1",
+			Labels: map[string]string{
+				constants.ModelLabelEngine: "vllm",
+			},
+		},
+		Status: corev1.PodStatus{
+			PodIP: ip,
+		},
+	}
+	source := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.POD,
+		TargetMetric:     "gpu_cache_usage_perc",
+		Port:             port,
+	}
+
+	actualMetricValue, err := fetcher.FetchPodMetrics(context.TODO(), pod, source)
+
+	assert.Error(t, err)
+	assert.Equal(t, 0.0, actualMetricValue)
+}
+
 func TestResourceMetricsFetcher_FetchPodMetrics(t *testing.T) {
 	expectedMetricValue := 50000.0
 
@@ -146,10 +223,243 @@ func TestResourceMetricsFetcher_FetchPodMetrics(t *testing.T) {
 	assert.Equal(t, expectedMetricValue, actualMetricValue)
 }
 
+func TestResourceMetricsFetcher_NilClientReturnsError(t *testing.T) {
+	fetcher := NewResourceMetricsFetcher(nil)
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-1",
+			Namespace: "default",
+		},
+	}
+	source := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.RESOURCE,
+		TargetMetric:     "cpu",
+	}
+
+	actualMetricValue, err := fetcher.FetchPodMetrics(context.TODO(), pod, source)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "kubernetes resource metrics client not initialized")
+	assert.Equal(t, 0.0, actualMetricValue)
+}
+
+func TestResourceMetricsFetcher_FetchFailureReturnsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	metricsClient, err := versioned.NewForConfig(&rest.Config{
+		Host: server.URL,
+	})
+	require.NoError(t, err)
+	fetcher := NewResourceMetricsFetcher(metricsClient)
+
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-1",
+			Namespace: "default",
+		},
+	}
+	source := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.RESOURCE,
+		TargetMetric:     "cpu",
+	}
+
+	actualMetricValue, err := fetcher.FetchPodMetrics(context.TODO(), pod, source)
+
+	assert.Error(t, err)
+	assert.Equal(t, 0.0, actualMetricValue)
+}
+
+func TestCustomMetricsFetcher_NilClientReturnsError(t *testing.T) {
+	fetcher := NewCustomMetricsFetcher(nil)
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-1",
+			Namespace: "default",
+		},
+	}
+	source := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.CUSTOM,
+		TargetMetric:     "queue_depth",
+	}
+
+	actualMetricValue, err := fetcher.FetchPodMetrics(context.TODO(), pod, source)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "kubernetes custom metrics client not initialized")
+	assert.Equal(t, 0.0, actualMetricValue)
+}
+
+func TestCustomMetricsFetcher_FetchFailureReturnsError(t *testing.T) {
+	fetcher := NewCustomMetricsFetcher(&stubCustomMetricsClient{
+		err: errors.New("custom metrics api unavailable"),
+	})
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-1",
+			Namespace: "default",
+		},
+	}
+	source := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.CUSTOM,
+		TargetMetric:     "queue_depth",
+	}
+
+	actualMetricValue, err := fetcher.FetchPodMetrics(context.TODO(), pod, source)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "custom metrics api unavailable")
+	assert.Equal(t, 0.0, actualMetricValue)
+}
+
+// The custom metrics API reports values as resource.Quantity, so a fractional
+// reading such as a 0.5 utilization ratio arrives as "500m". The fetcher must
+// keep the fraction: rounding it to a whole number would make the autoscaler
+// see 1.0 and scale on a load that is twice the real one.
+func TestCustomMetricsFetcher_FetchPodMetricsKeepsFractionalValues(t *testing.T) {
+	tests := []struct {
+		name     string
+		quantity string
+		want     float64
+	}{
+		{name: "fraction below one", quantity: "500m", want: 0.5},
+		{name: "small fraction", quantity: "200m", want: 0.2},
+		{name: "fraction above one", quantity: "1500m", want: 1.5},
+		{name: "whole number", quantity: "3", want: 3},
+	}
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-1",
+			Namespace: "default",
+		},
+	}
+	source := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.CUSTOM,
+		TargetMetric:     "gpu_utilization_ratio",
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fetcher := NewCustomMetricsFetcher(&stubCustomMetricsClient{
+				value: &custommetricsv1beta2.MetricValue{Value: resource.MustParse(tt.quantity)},
+			})
+
+			actualMetricValue, err := fetcher.FetchPodMetrics(context.TODO(), pod, source)
+
+			assert.NoError(t, err)
+			assert.InDelta(t, tt.want, actualMetricValue, 1e-9)
+		})
+	}
+}
+
+func TestExternalMetricsFetcher_FetchPodMetricsFromK8sExternalMetrics(t *testing.T) {
+	externalClient := &externalmetricsfake.FakeExternalMetricsClient{}
+	externalClient.AddReactor("list", "queue_depth", func(action clientgotesting.Action) (bool, runtime.Object, error) {
+		listAction := action.(clientgotesting.ListAction)
+		assert.Equal(t, "default", listAction.GetNamespace())
+		return true, &externalmetricsv1beta1.ExternalMetricValueList{
+			Items: []externalmetricsv1beta1.ExternalMetricValue{
+				{
+					MetricName: "queue_depth",
+					Value:      resource.MustParse("40"),
+				},
+				{
+					MetricName: "queue_depth",
+					Value:      resource.MustParse("60"),
+				},
+			},
+		}, nil
+	})
+
+	fetcher := NewExternalMetricsFetcherWithClients(nil, externalClient)
+	source := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.EXTERNAL,
+		TargetMetric:     "queue_depth",
+	}
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "external-source",
+			Namespace: "default",
+		},
+	}
+
+	actualMetricValue, err := fetcher.FetchPodMetrics(context.TODO(), pod, source)
+
+	assert.NoError(t, err)
+	assert.Equal(t, 100.0, actualMetricValue)
+}
+
+func TestExternalMetricsFetcher_FetchPodMetricsReturnsErrorForEmptyExternalMetrics(t *testing.T) {
+	externalClient := &externalmetricsfake.FakeExternalMetricsClient{}
+	externalClient.AddReactor("list", "queue_depth", func(action clientgotesting.Action) (bool, runtime.Object, error) {
+		return true, &externalmetricsv1beta1.ExternalMetricValueList{}, nil
+	})
+
+	fetcher := NewExternalMetricsFetcherWithClients(nil, externalClient)
+	source := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.EXTERNAL,
+		TargetMetric:     "queue_depth",
+	}
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "external-source",
+			Namespace: "default",
+		},
+	}
+
+	actualMetricValue, err := fetcher.FetchPodMetrics(context.TODO(), pod, source)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no external metric values")
+	assert.Equal(t, 0.0, actualMetricValue)
+}
+
+func TestExternalMetricsFetcher_FetchPodMetricsReturnsErrorWithoutK8sExternalMetricsClient(t *testing.T) {
+	fetcher := NewExternalMetricsFetcher()
+	source := autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.EXTERNAL,
+		TargetMetric:     "queue_depth",
+	}
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "external-source",
+			Namespace: "default",
+		},
+	}
+
+	actualMetricValue, err := fetcher.FetchPodMetrics(context.TODO(), pod, source)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "kubernetes external.metrics client not initialized")
+	assert.Equal(t, 0.0, actualMetricValue)
+}
+
 func parseURL(rawURL string) (string, string) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return "", ""
 	}
 	return u.Hostname(), u.Port()
+}
+
+type stubCustomMetricsClient struct {
+	value *custommetricsv1beta2.MetricValue
+	err   error
+}
+
+func (s *stubCustomMetricsClient) RootScopedMetrics() custom_metrics.MetricsInterface {
+	return s
+}
+
+func (s *stubCustomMetricsClient) NamespacedMetrics(string) custom_metrics.MetricsInterface {
+	return s
+}
+
+func (s *stubCustomMetricsClient) GetForObject(schema.GroupKind, string, string, labels.Selector) (*custommetricsv1beta2.MetricValue, error) {
+	return s.value, s.err
+}
+
+func (s *stubCustomMetricsClient) GetForObjects(schema.GroupKind, labels.Selector, string, labels.Selector) (*custommetricsv1beta2.MetricValueList, error) {
+	return nil, s.err
 }

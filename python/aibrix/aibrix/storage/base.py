@@ -17,11 +17,16 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from io import BytesIO, StringIO
-from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
+from typing import AsyncIterator, Awaitable, BinaryIO, Callable, Optional, TextIO, Union
 
 from aibrix.storage.reader import Reader
-from aibrix.storage.types import StorageType
+from aibrix.storage.types import StorageListOrdering, StorageType
 from aibrix.storage.utils import ObjectMetadata
+
+# Internal multipart part flag: only parts carrying this marker may source their
+# bytes from a caller-provided local callback instead of remote staged storage.
+LOCAL_PART_PROVIDER_MARKER = "__aibrix_local_part__"
+LOCAL_PART_PROVIDER_MARKER_VALUE = 1
 
 
 @dataclass
@@ -32,13 +37,23 @@ class StorageConfig:
     max_retries: int = 3
     timeout: int = 30
 
-    # Upload configuration
+    # Upload/session configuration
     multipart_threshold: int = 5 * 1024 * 1024  # 5MB
-    max_concurrency: int = 10
+    # Backend-specific total connection-pool sizing. Only S3 uses this today.
+    max_concurrency: int = 100
+    # Per-operation/session concurrency examples: staged-part prefetch fanout,
+    # and multipart part fanout. This does not
+    # impose a storage-wide total GET/PUT concurrency cap.
+    max_session_concurrency: int = 10
+    # Per-request multi-object delete batch size for backends such as S3/TOS.
+    # Do not increase this value for S3/TOS, and do so if you know what you are doing.
+    multi_object_delete_limit: int = 1000
+    strict_multipart_min_part_size: Optional[bool] = None
 
     # Read configuration
     range_chunksize: int = 1024 * 1024  # 1MB for range reads
     readline_buffer_size: int = 8192  # 8KB buffer for readline
+    list_ordering: Optional[StorageListOrdering] = None
 
 
 @dataclass
@@ -106,6 +121,15 @@ class BaseStorage(ABC):
 
     def __init__(self, config: Optional[StorageConfig] = None):
         self.config = config or StorageConfig()
+        selected_ordering = self.config.list_ordering
+        if selected_ordering is not None and (
+            selected_ordering not in self.get_supported_list_orderings()
+        ):
+            raise ValueError(
+                f"List ordering {selected_ordering.value} is not supported by "
+                f"{self.get_type().value} storage"
+            )
+        self._selected_list_ordering = selected_ordering
 
     @abstractmethod
     def get_type(self) -> StorageType:
@@ -139,6 +163,15 @@ class BaseStorage(ABC):
             True if SET IF EXISTS is supported, False otherwise
         """
         return False
+
+    @classmethod
+    def get_supported_list_orderings(cls) -> tuple[StorageListOrdering, ...]:
+        """Return the supported ordering contracts for ``list_objects`` results."""
+        return (StorageListOrdering.LEXICOGRAPHIC_ASC,)
+
+    def get_list_ordering(self) -> StorageListOrdering:
+        """Return the currently active ordering contract for ``list_objects``."""
+        return self._selected_list_ordering or self.get_supported_list_orderings()[0]
 
     @abstractmethod
     async def put_object(
@@ -194,6 +227,18 @@ class BaseStorage(ABC):
             key: Object key/path
         """
         pass
+
+    async def delete_objects(self, keys: list[str]) -> None:
+        """Delete multiple objects from storage.
+
+        Backends may override this to use a native batch-delete API. The default
+        implementation preserves compatibility by deleting sequentially.
+
+        Args:
+            keys: Object keys/paths to delete
+        """
+        for key in keys:
+            await self.delete_object(key)
 
     @abstractmethod
     async def list_objects(
@@ -527,7 +572,7 @@ class BaseStorage(ABC):
 
         # Store part as individual object
         await self.put_object(
-            self._multipart_upload_key(upload_id, f"part_{part_number:05d}"),
+            self._multipart_upload_part_key(upload_id, part_number),
             part_data,
             content_type="application/octet-stream",
         )
@@ -542,60 +587,18 @@ class BaseStorage(ABC):
         key: str,
         upload_id: str,
         parts: list[dict[str, Union[str, int]]],
-    ) -> None:
-        """Default implementation for completing multipart upload.
-
-        Downloads all part objects, aggregates them locally, and uploads the final object.
-        Suitable for S3/TOS backends that don't have native multipart support for small files.
-
-        Args:
-            key: Object key/path
-            upload_id: Upload ID from create_multipart_upload
-            parts: List of parts with 'part_number' and 'etag' keys
-        """
-        try:
-            # Get upload metadata
-            metadata_data = await self.get_object(self._multipart_upload_key(upload_id))
-            upload_metadata = eval(
-                metadata_data.decode("utf-8")
-            )  # Simple parsing for dict
-        except Exception:
-            # Use _native_complete_multipart_upload if metadata object doesn't exist
-            if self.is_native_multipart_supported():
-                return await self._native_complete_multipart_upload(
-                    key, upload_id, parts
-                )
-            raise ValueError(f"Upload ID {upload_id} not found or corrupted")
-
-        content_type = upload_metadata.get("content_type")
-        metadata = upload_metadata.get("metadata", {})
-
-        # Sort parts by part number
-        sorted_parts = sorted(parts, key=lambda p: p["part_number"])
-
-        # Download and aggregate all parts locally
-        aggregated_data = BytesIO()
-
-        for part in sorted_parts:
-            part_number = part["part_number"]
-            try:
-                part_data = await self.get_object(
-                    self._multipart_upload_key(upload_id, f"part_{part_number:05d}")
-                )
-                aggregated_data.write(part_data)
-            except Exception:
-                # Clean up and raise error
-                await self.abort_multipart_upload(key, upload_id)
-                raise ValueError(
-                    f"Failed to retrieve part {part_number} for upload {upload_id}"
-                )
-
-        # Upload the final aggregated object
-        aggregated_data.seek(0)
-        await self.put_object(key, aggregated_data, content_type, metadata)
-
-        # Clean up multipart upload objects
-        await self.abort_multipart_upload(key, upload_id)
+        *,
+        tolerate_part_get_error: bool = False,
+        local_part_provider: Callable[
+            [dict[str, Union[str, int]]], Awaitable[bytes | str | None]
+        ]
+        | None = None,
+    ) -> list[dict[str, Union[str, int]]]:
+        _ = (key, upload_id, parts, tolerate_part_get_error, local_part_provider)
+        raise NotImplementedError(
+            "BaseStorage.complete_multipart_upload() must not be called; "
+            "use BaseStorage2-backed storage implementations instead."
+        )
 
     async def abort_multipart_upload(
         self,
@@ -814,6 +817,10 @@ class BaseStorage(ABC):
     def _multipart_upload_key(self, upload_id: str, subkey: str = "metadata") -> str:
         """Return the key for multipart upload metadata. For small parts multipart upload only."""
         return f".multipart/{upload_id}/{subkey}"
+
+    def _multipart_upload_part_key(self, upload_id: str, part_number: int) -> str:
+        """Return the key for a staged multipart part object."""
+        return self._multipart_upload_key(upload_id, f"part_{part_number:05d}")
 
     def _wrap_data(self, data: Union[bytes, str, BinaryIO, TextIO, Reader]) -> Reader:
         """Wrap data in Reader if necessary."""

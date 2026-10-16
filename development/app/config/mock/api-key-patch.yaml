@@ -29,3 +29,7 @@ spec:
             - app.py
             - --api_key
             - test-key-1234567890
+        - name: aibrix-runtime
+          env:
+            - name: INFERENCE_ENGINE_API_KEY
+              value: test-key-1234567890

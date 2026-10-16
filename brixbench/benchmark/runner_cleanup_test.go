@@ -65,3 +65,43 @@ func TestResetBeforeTestEnabledAcceptsOff(t *testing.T) {
 		t.Fatalf("expected reset to be disabled by off env override")
 	}
 }
+
+func TestPodMonitoringEnabledDefaultsToFlag(t *testing.T) {
+	t.Setenv("BENCHMARK_POD_MONITORING", "")
+
+	if !podMonitoringEnabled() {
+		t.Fatalf("expected pod monitoring to be enabled by default")
+	}
+}
+
+func TestPodMonitoringEnabledUsesEnvOverride(t *testing.T) {
+	t.Setenv("BENCHMARK_POD_MONITORING", "false")
+
+	if podMonitoringEnabled() {
+		t.Fatalf("expected pod monitoring to be disabled by env override")
+	}
+}
+
+func TestPodMonitoringEnabledAcceptsOff(t *testing.T) {
+	t.Setenv("BENCHMARK_POD_MONITORING", "off")
+
+	if podMonitoringEnabled() {
+		t.Fatalf("expected pod monitoring to be disabled by off env override")
+	}
+}
+
+func TestPodMonitoringStrictDefaultsFalse(t *testing.T) {
+	t.Setenv("BENCHMARK_POD_MONITORING_STRICT", "")
+
+	if podMonitoringStrictEnabled() {
+		t.Fatalf("expected pod monitoring strict mode to be disabled by default")
+	}
+}
+
+func TestPodMonitoringStrictUsesEnvOverride(t *testing.T) {
+	t.Setenv("BENCHMARK_POD_MONITORING_STRICT", "true")
+
+	if !podMonitoringStrictEnabled() {
+		t.Fatalf("expected pod monitoring strict mode to be enabled by env override")
+	}
+}

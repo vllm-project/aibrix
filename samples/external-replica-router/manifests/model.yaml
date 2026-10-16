@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: premium-model-h100
+  namespace: default
+  labels:
+    model.aibrix.ai/name: premium-model
+    model.aibrix.ai/port: "8000"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: premium-model-h100
+  template:
+    metadata:
+      labels:
+        app: premium-model-h100
+        model.aibrix.ai/name: premium-model
+        model.aibrix.ai/port: "8000"
+        topology.kubernetes.io/zone: cn-east-1a
+        routing.example.com/accelerator-class: h100
+    spec:
+      containers:
+      - name: model
+        image: aibrix/vllm-mock:nightly
+        ports:
+        - containerPort: 8000
+

@@ -37,6 +37,7 @@ from aibrix.openapi.protocol import (
     UnloadLoraAdapterRuntimeRequest,
 )
 from aibrix.runtime.artifact_service import ArtifactDelegationService
+from aibrix.runtime.model_runtime_api import model_runtime_router
 
 logger = init_logger(__name__)
 router = APIRouter()
@@ -104,6 +105,11 @@ def mount_metrics(app: FastAPI):
         f"AIBrix to scrape metrics from {scrape_endpoint}, use {engine} standard rules"
     )
 
+    # Runtime model lifecycle, operation, and KV metrics.
+    from aibrix.runtime.model_runtime_metrics import ModelRuntimeKVCollector
+
+    REGISTRY.register(ModelRuntimeKVCollector())
+
     # Add prometheus asgi middleware to route /metrics requests
     metrics_route = Mount("/metrics", make_asgi_app(registry=REGISTRY))
 
@@ -115,6 +121,7 @@ def init_app_state(state: State) -> None:
         envs.INFERENCE_ENGINE,
         envs.INFERENCE_ENGINE_VERSION,
         envs.INFERENCE_ENGINE_ENDPOINT,
+        api_key=envs.INFERENCE_ENGINE_API_KEY,
     )
 
 
@@ -242,6 +249,11 @@ async def list_model(request: Optional[ListModelRequest] = None):
     return JSONResponse(status_code=200, content=response.model_dump())
 
 
+# Runtime model lifecycle endpoints used by ModelClaim and future full-model
+# control-plane integrations.
+router.include_router(model_runtime_router)
+
+
 @router.get("/healthz")
 async def liveness_check():
     # Simply return a 200 status for liveness check
@@ -304,9 +316,11 @@ def nullable_str(val: str):
     return val
 
 
-def main():
+def parse_runtime_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run aibrix runtime server")
-    parser.add_argument("--host", type=nullable_str, default=None, help="host name")
+    parser.add_argument(
+        "--host", type=nullable_str, default="0.0.0.0", help="host name"
+    )
     parser.add_argument("--port", type=int, default=8080, help="port number")
     parser.add_argument(
         "--enable-fastapi-docs",
@@ -314,7 +328,11 @@ def main():
         default=False,
         help="Enable FastAPI's OpenAPI schema, Swagger UI, and ReDoc endpoint",
     )
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main():
+    args = parse_runtime_args()
     logger.info("Use %s to startup runtime server", args)
     app = build_app(args=args)
     uvicorn.run(app, host=args.host, port=args.port)

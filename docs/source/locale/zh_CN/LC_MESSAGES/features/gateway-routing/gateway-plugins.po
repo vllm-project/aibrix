@@ -1,0 +1,2858 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version:  AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-11 19:13-0700\n"
+"PO-Revision-Date: 2026-10-12 08:57+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:5
+msgid "Gateway Routing"
+msgstr "网关路由"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:7
+msgid ""
+"The AIBrix gateway is built on Envoy Gateway and acts as the single entry"
+" point for all LLM inference requests. It handles dynamic model "
+"discovery, request routing, rate limiting, and response streaming. For a "
+"deep dive into the internal design, see the :doc:`AIBrix Gateway "
+"<../../designs/aibrix-gateway>` architecture guide."
+msgstr ""
+"AIBrix 网关基于 Envoy Gateway 构建，是所有 LLM "
+"推理请求的统一入口。它负责动态模型发现、请求路由、限流和响应流式传输。内部设计详见 :doc:`AIBrix 网关 <../../designs"
+"/aibrix-gateway>` 架构指南。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:9
+msgid ""
+"This page is the gateway routing reference. Dedicated guides cover the "
+"strategies that have their own setup:"
+msgstr "本页是网关路由参考。需要单独部署或配置的策略见以下专题指南："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:11
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1287
+msgid ":doc:`prefix-cache-aware-routing`"
+msgstr ":doc:`prefix-cache-aware-routing`"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:12
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1289
+msgid ":doc:`pd-disaggregation`"
+msgstr ":doc:`pd-disaggregation`"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:13
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1291
+msgid ":doc:`agentic-routing`"
+msgstr ":doc:`agentic-routing`"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:14
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1293
+msgid ":doc:`semantic-router`"
+msgstr ":doc:`semantic-router`"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:15
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1295
+msgid ":doc:`omni`"
+msgstr ":doc:`omni`"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:16
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1297
+msgid ":doc:`external-replica-routing`"
+msgstr ":doc:`external-replica-routing`"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:20
+msgid "On this page"
+msgstr "本页内容"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:23
+msgid "Dynamic Routing"
+msgstr "动态路由"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:25
+msgid ""
+"When a model or LoRA adapter is deployed, the respective controller "
+"automatically creates an ``HTTPRoute`` object. The gateway dynamically "
+"discovers these routes to forward incoming requests without any manual "
+"configuration."
+msgstr ""
+"部署模型或 LoRA adapter 时，对应 controller 会自动创建 ``HTTPRoute`` "
+"对象。网关动态发现这些路由并转发入站请求，无需手工配置。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:28
+msgid "Find the gateway endpoint"
+msgstr "获取网关端点"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:30
+msgid "First, retrieve the external IP and port of the Envoy proxy:"
+msgstr "首先获取 Envoy 代理的外部 IP 和端口："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:39
+msgid ""
+"In most Kubernetes setups, ``LoadBalancer`` is supported by default. "
+"Capture the external IP:"
+msgstr "多数 Kubernetes 环境默认支持 ``LoadBalancer`` 。获取外部 IP："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:47
+msgid "Verify the route"
+msgstr "验证路由"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:49
+msgid ""
+"Verify that the ``HTTPRoute`` status is ``Accepted`` before sending "
+"traffic:"
+msgstr "发送流量前确认 ``HTTPRoute`` 状态为 ``Accepted`` ："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:121
+msgid "Send a request"
+msgstr "发送请求"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:123
+msgid ""
+"The model name in the request body must match the "
+"``model.aibrix.ai/name`` label in your deployment:"
+msgstr "请求体中的模型名必须与 Deployment 中的 ``model.aibrix.ai/name`` 标签一致："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:136
+msgid "Authentication"
+msgstr "认证"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:140
+msgid ""
+"AIBrix exposes a public endpoint to the internet. Enable authentication "
+"to secure it. For vLLM backends, pass the ``--api-key`` argument or set "
+"the ``VLLM_API_KEY`` environment variable to require an API key in the "
+"``Authorization`` header. See `vLLM OpenAI-Compatible Server "
+"<https://docs.vllm.ai/en/latest/getting_started/quickstart.html#openai-"
+"compatible-server>`_ for details."
+msgstr ""
+"AIBrix 会向公网暴露端点。请启用认证以保护它。对 vLLM 后端，传入 ``--api-key`` 参数或设置 "
+"``VLLM_API_KEY`` 环境变量，以要求 ``Authorization`` 请求头中带 API key。详见 `vLLM "
+"OpenAI-Compatible Server "
+"<https://docs.vllm.ai/en/latest/getting_started/quickstart.html#openai-"
+"compatible-server>`_ 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:144
+msgid ""
+"After enabling authentication, include the ``Authorization`` header in "
+"every request:"
+msgstr "启用认证后，每个请求都要带 ``Authorization`` 请求头："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:158
+msgid "Expose custom paths"
+msgstr "暴露自定义路径"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:160
+msgid ""
+"As of v0.5.0, each model's ``HTTPRoute`` is created with a default set of"
+" path prefixes (e.g. ``/v1/chat/completions``, ``/v1/completions``). To "
+"expose additional custom paths, add the ``model.aibrix.ai/model-router-"
+"custom-paths`` annotation to your ``Deployment``, ``ModelAdapter``, or "
+"``RayClusterFleet`` manifest:"
+msgstr ""
+"自 v0.5.0 起，每个模型的 ``HTTPRoute`` 会带一组默认路径前缀（例如 ``/v1/chat/completions`` "
+"、``/v1/completions`` ）。要暴露额外自定义路径，在 ``Deployment`` 、``ModelAdapter`` 或 "
+"``RayClusterFleet`` 清单上添加 ``model.aibrix.ai/model-router-custom-paths`` "
+"annotation："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:177
+msgid "Routing Strategies"
+msgstr "路由策略"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:180
+msgid "Selecting a strategy"
+msgstr "选择策略"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:182
+msgid ""
+"The routing strategy controls how the gateway selects the target pod for "
+"each request. It can be set per request via the ``routing-strategy`` "
+"header, per model via a :ref:`config profile <config_profiles>`, or "
+"globally via the ``ROUTING_ALGORITHM`` environment variable. When more "
+"than one is set, :ref:`routing_strategy_priority` decides which one wins."
+msgstr ""
+"路由策略决定网关如何为每个请求选择目标 Pod。可以通过 ``routing-strategy`` 请求头按请求设置，通过 "
+":ref:`config profile <config_profiles>` 按模型设置，或通过 ``ROUTING_ALGORITHM`` "
+"环境变量全局设置。同时设置多项时，由 :ref:`routing_strategy_priority` 决定哪一项生效。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:184
+msgid ""
+"To override the strategy for a single request, pass the ``routing-"
+"strategy`` header with any of the strategy names listed below:"
+msgstr "要为单个请求覆盖策略，请传入 ``routing-strategy`` 请求头，取值为下列任一策略名称："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:197
+msgid ""
+"Some strategies rely on metrics queried from the Prometheus HTTP API "
+"(PromQL). See :ref:`prometheus-api-access` for configuration."
+msgstr ""
+"部分策略依赖从 Prometheus HTTP API（PromQL）查询的指标。配置见 :ref:`prometheus-api-access`"
+" 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:200
+msgid "General load balancing"
+msgstr "通用负载均衡"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:202
+msgid ""
+"``random``: routes to a randomly selected pod. Suitable as a baseline or "
+"when all pods are equivalent."
+msgstr "``random`` ：路由到随机选取的 Pod。适合作为基线，或所有 Pod 等价时使用。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:203
+msgid "``least-request``: routes to the pod with the fewest in-flight requests."
+msgstr "``least-request`` ：路由到正在处理请求数最少的 Pod。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:204
+msgid ""
+"``least-request-top-k``: like ``least-request``, but spreads load across "
+"the least-loaded pods so that several gateway replicas deciding at the "
+"same moment don't all send their next request to the same pod."
+msgstr ""
+"``least-request-top-k`` ：类似 ``least-request`` ，但会把负载分散到负载最低的若干 Pod "
+"上，避免多个网关副本在同一时刻决策时把下一个请求都发往同一个 Pod。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:206
+msgid ""
+"**Candidates:** the ready pods that are both among the ``K`` least-loaded"
+" and within ``epsilon`` requests of the least-loaded pod. One of them is "
+"picked uniformly at random."
+msgstr ""
+"**候选集：** 同时满足“属于负载最低的 ``K`` 个”和“与负载最低的 Pod 相差不超过 ``epsilon`` 个请求”的就绪 "
+"Pod。从中均匀随机选取一个。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:207
+msgid ""
+"**Ramp penalty:** a newly ready pod gets a temporary penalty that decays "
+"over a window, so it isn't flooded before it warms up."
+msgstr "**爬坡惩罚：** 新就绪的 Pod 会获得一个随时间窗口衰减的临时惩罚，避免其在预热完成前被大量请求涌入。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:208
+msgid ""
+"**Tuning:** ``AIBRIX_ROUTING_LEAST_REQUEST_TOP_K`` (default ``5``), "
+"``AIBRIX_ROUTING_LEAST_REQUEST_TOP_K_EPSILON`` (default ``4``) and "
+"``AIBRIX_ROUTING_LEAST_REQUEST_TOP_K_RAMP_WINDOW`` (default ``300s``, "
+"``0`` disables the ramp). See ``pkg/plugins/gateway/ENV_VARS.md``."
+msgstr ""
+"**调优：** ``AIBRIX_ROUTING_LEAST_REQUEST_TOP_K`` （默认 ``5`` "
+"）、``AIBRIX_ROUTING_LEAST_REQUEST_TOP_K_EPSILON`` （默认 ``4`` ）和 "
+"``AIBRIX_ROUTING_LEAST_REQUEST_TOP_K_RAMP_WINDOW`` （默认 ``300s`` ，``0`` "
+"表示关闭爬坡）。详见 ``pkg/plugins/gateway/ENV_VARS.md`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:210
+msgid ""
+"``least-busy-time``: routes to the pod with the least cumulative busy "
+"processing time."
+msgstr "``least-busy-time`` ：路由到累计繁忙处理时间最短的 Pod。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:211
+msgid ""
+"``least-latency``: routes to the pod with the lowest average processing "
+"latency."
+msgstr "``least-latency`` ：路由到平均处理延迟最低的 Pod。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:212
+msgid ""
+"``least-kv-cache``: routes to the pod with the smallest KV cache "
+"occupancy (least VRAM used)."
+msgstr "``least-kv-cache`` ：路由到 KV cache 占用最小（VRAM 使用最少）的 Pod。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:213
+msgid ""
+"``least-utilization``: routes to the pod with the lowest overall "
+"utilization score."
+msgstr "``least-utilization`` ：路由到综合利用率分数最低的 Pod。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:214
+msgid ""
+"``load-balance``: capacity-aware weighted least-request routing. Faster "
+"hardware is learned dynamically and receives proportionally more traffic."
+" See ``pkg/plugins/gateway/algorithms/load_balance.md`` for details."
+msgstr ""
+"``load-balance`` ：感知容量的加权 least-request 路由。系统会动态学习更快的硬件，并按比例为其分配更多流量。详见 "
+"``pkg/plugins/gateway/algorithms/load_balance.md`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:216
+msgid "Each pod is scored, and the pod with the lowest score is selected:"
+msgstr "对每个 Pod 打分，并选择得分最低的 Pod："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:222
+msgid ""
+"``EWMA(output_tokens_per_second)`` is the gateway-observed rate at which "
+"the pod completes output tokens."
+msgstr "``EWMA(output_tokens_per_second)`` 是网关观测到的该 Pod 完成输出 token 的速率。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:223
+msgid "``kv_free`` is the pod's free KV-cache fraction."
+msgstr "``kv_free`` 是该 Pod 空闲 KV cache 的比例。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:224
+msgid ""
+"``λ`` defaults to ``0`` (the running count already includes requests "
+"queued in the engine) and ``α`` to ``2``."
+msgstr "``λ`` 默认为 ``0`` （运行中请求数已包含引擎内排队的请求）， ``α`` 默认为 ``2`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:225
+msgid ""
+"**Tuning:** ``λ``, ``α`` and the free-KV-cache threshold below are set "
+"with ``AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT``, "
+"``AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA`` and "
+"``AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE``, respectively."
+msgstr ""
+"**调优：** ``λ`` 、``α`` 以及下文的空闲 KV cache 阈值，分别通过 "
+"``AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT`` "
+"、``AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA`` 和 "
+"``AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE`` 设置。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:227
+msgid "Edge cases:"
+msgstr "边界情况："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:229
+#, python-format
+msgid ""
+"**KV guardrail:** a pod with less than 10% free KV cache scores ``+Inf`` "
+"and is skipped. If every pod is below that threshold, the request still "
+"routes to the pod with the most KV headroom."
+msgstr ""
+"**KV 保护：** 空闲 KV cache 低于 10% 的 Pod 得分为 ``+Inf`` ，会被跳过。若所有 Pod "
+"都低于该阈值，请求仍会被路由，目标是 KV 余量最多的 Pod。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:230
+msgid ""
+"**Missing KV metrics:** a pod whose engine reports no KV-cache usage, or "
+"reports ``NaN``, is treated as fully free (no penalty and no guardrail)."
+msgstr "**缺少 KV 指标：** 引擎未上报 KV cache 使用量，或上报 ``NaN`` 的 Pod，视为完全空闲（既无惩罚，也不触发保护）。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:231
+msgid ""
+"**No token-rate estimate yet:** the pod is scored at the mean estimate of"
+" the others (uniform capacity when none has one)."
+msgstr "**尚无 token 速率估计：** 该 Pod 按其他 Pod 的平均估计值打分（若都没有估计值，则视为容量一致）。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:232
+msgid ""
+"**Ties:** broken using least combined GPU+CPU KV-cache usage, falling "
+"back to a random pick if cache metrics are unavailable for the tied pods."
+msgstr "**平局：** 按 GPU 与 CPU 合计 KV cache 使用量最少者决出；若平局的 Pod 没有缓存指标，则回退为随机选择。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:234
+msgid ""
+"``throughput``: routes to the pod that has processed the fewest total "
+"weighted tokens, favoring underloaded pods."
+msgstr "``throughput`` ：路由到已处理加权 token 总数最少的 Pod，偏向负载较低的 Pod。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:235
+msgid ""
+"``power-of-two``: applies power-of-two-choices — randomly samples two "
+"pods and selects the better one."
+msgstr "``power-of-two`` ：采用 power-of-two-choices——随机抽取两个 Pod 并选择更优者。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:238
+msgid "KV-cache aware"
+msgstr "KV-cache 感知"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:240
+msgid ""
+"``prefix-cache``: routes to a pod that already holds a KV cache matching "
+"the request's prompt prefix, selecting the best prefix-matched pod within"
+" a configurable stddev threshold. See :doc:`prefix-cache-aware-routing` "
+"for the full guide."
+msgstr ""
+"``prefix-cache`` ：路由到已持有与请求 prompt 前缀匹配的 KV cache 的 "
+"Pod，在可配置的标准差阈值内选择前缀匹配最好的 Pod。完整指南见 :doc:`prefix-cache-aware-routing` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:242
+msgid ""
+"**Load:** it is purely about prefix caching and does not itself gate on "
+"cluster-wide load imbalance; the gateway applies the :ref:`load-imbalance"
+" gate <load_imbalance_gate>` centrally ahead of it."
+msgstr ""
+"**负载：** 它只关注前缀缓存，自身不对集群范围的负载不均衡设限；网关会在它之前统一应用 :ref:`负载不均衡门控 "
+"<load_imbalance_gate>` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:243
+msgid ""
+"**Modes:** standard (local hash table) or KV sync (real-time distributed "
+"index, enabled with ``AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true``)."
+msgstr ""
+"**模式：** 标准模式（本地哈希表）或 KV sync 模式（实时分布式索引，通过 "
+"``AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true`` 启用）。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:244
+msgid ""
+"**Chat requests:** the matched text starts with a canonical rendering of "
+"``tools`` when present, because chat templates commonly render tools "
+"ahead of the messages. Set ``AIBRIX_PREFIX_CACHE_INCLUDE_TOOLS=false`` to"
+" match on messages only. In KV sync mode, chat requests tokenized through"
+" the remote chat template carry their ``tools``, so the template places "
+"them."
+msgstr ""
+"**Chat 请求：** 匹配文本以 ``tools`` 的规范化渲染结果开头（若存在），因为 chat 模板通常把 tools 渲染在 "
+"messages 之前。设置 ``AIBRIX_PREFIX_CACHE_INCLUDE_TOOLS=false`` 则仅按 messages "
+"匹配。在 KV sync 模式下，经远程 chat 模板分词的 chat 请求会携带其 ``tools`` ，由模板决定它们的位置。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:246
+msgid ""
+"``prefix-cache-preble``: routes considering both prefix cache hits and "
+"pod load, based on `Preble: Efficient Distributed Prompt Scheduling for "
+"LLM Serving <https://arxiv.org/abs/2407.00023>`_."
+msgstr ""
+"``prefix-cache-preble`` ：同时考虑 prefix cache 命中和 Pod 负载进行路由，基于 `Preble: "
+"Efficient Distributed Prompt Scheduling for LLM Serving "
+"<https://arxiv.org/abs/2407.00023>`_ 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:249
+msgid "Fairness"
+msgstr "公平性"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:251
+msgid ""
+"``vtc-basic``: routes using a hybrid score that balances per-user token "
+"fairness and pod utilization. A simplified variant of the Virtual Token "
+"Counter (VTC) algorithm. See `VTC-artifact <https://github.com/Ying1123"
+"/VTC-artifact>`_ for background."
+msgstr ""
+"``vtc-basic`` ：使用混合分数路由，在每用户 token 公平性与 Pod 利用率之间平衡。是 Virtual Token "
+"Counter（VTC）算法的简化变体。背景见 `VTC-artifact <https://github.com/Ying1123/VTC-"
+"artifact>`_ 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:254
+msgid "SLO-aware"
+msgstr "SLO 感知"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:256
+msgid "``slo``: routes with awareness of per-request service-level objectives."
+msgstr "``slo`` ：按每请求的服务水平目标进行路由。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:257
+msgid ""
+"``slo-pack-load``: SLO-aware routing that consolidates load onto fewer "
+"pods."
+msgstr "``slo-pack-load`` ：SLO 感知路由，将负载集中到更少的 Pod。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:258
+msgid ""
+"``slo-least-load``: SLO-aware routing that spreads load to the least "
+"loaded pod."
+msgstr "``slo-least-load`` ：SLO 感知路由，将负载分散到负载最低的 Pod。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:259
+msgid ""
+"``slo-least-load-pulling``: variant of ``slo-least-load`` that pulls "
+"metrics directly instead of using cached snapshots."
+msgstr "``slo-least-load-pulling`` ：``slo-least-load`` 的变体，直接拉取指标而非使用缓存快照。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:262
+msgid "Specialized"
+msgstr "专用策略"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:264
+msgid ""
+"``pd``: prefill-decode disaggregation routing. Splits processing between "
+"dedicated prefill pods and decode pods for optimized end-to-end latency. "
+"See :doc:`pd-disaggregation` for the full guide."
+msgstr ""
+"``pd`` ：prefill-decode 分离路由。将处理拆分到专用 prefill Pod 和 decode "
+"Pod，以优化端到端延迟。完整指南见 :doc:`pd-disaggregation` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:277
+msgid ""
+"``session-affinity``: sticky session routing that keeps related requests "
+"on the same pod. Two headers can drive it: the gateway-issued ``x"
+"-session-id`` and the caller-owned ``x-aibrix-session-key``. See :doc"
+":`agentic-routing` for the full guide."
+msgstr ""
+"``session-affinity``：粘滞会话路由，尽可能把相关请求打到同一 Pod。可由两个头驱动：网关签发的 "
+"``x-session-id``，以及调用方自有的 ``x-aibrix-session-key``。完整指南见 "
+":doc:`agentic-routing`。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:284
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1128
+msgid "``x-session-id``"
+msgstr "``x-session-id``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:285
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1131
+msgid "``x-aibrix-session-key``"
+msgstr "``x-aibrix-session-key``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:286
+msgid "Issued by"
+msgstr "签发方"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:287
+msgid "The gateway, in the response header"
+msgstr "网关，通过响应头返回"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:288
+msgid "The caller"
+msgstr "调用方"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:289
+msgid "Available from"
+msgstr "可用起点"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:290
+msgid "The second request"
+msgstr "第二个请求"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:291
+msgid "The first request"
+msgstr "第一个请求"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:292
+msgid "Value"
+msgstr "取值"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:293
+msgid "Base64-encoded pod address (``IP:Port``)"
+msgstr "经 base64 编码的 Pod 地址（``IP:Port`` ）"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:294
+msgid "Any stable, opaque identifier"
+msgstr "任意稳定且不透明的标识符"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:295
+msgid "Best for"
+msgstr "适用场景"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:296
+msgid "Sequential multi-turn conversations"
+msgstr "顺序的多轮对话"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:297
+msgid "Concurrent agentic requests"
+msgstr "并发的 agentic 请求"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:299
+msgid ""
+"Sequential multi-turn chat uses ``x-session-id``: the first response "
+"carries the header, and the client sends it back unchanged. Concurrent "
+"agentic work uses ``x-aibrix-session-key``: the caller supplies a stable "
+"opaque key from the first request. If a request carries both, the gateway"
+" uses ``x-session-id`` first and falls back to ``x-aibrix-session-key`` "
+"when it does not resolve to a ready pod. Neither header is a security "
+"token, and keys longer than 256 bytes are treated as unset."
+msgstr ""
+"顺序多轮对话使用 ``x-session-id``：首次响应带上该头，客户端原样回传。并发 agent 工作使用 "
+"``x-aibrix-session-key``：调用方从第一次请求起就提供一个稳定的不透明键。若请求同时携带两者，网关先用 "
+"``x-session-id``，无法解析到就绪 Pod 时再回退到 ``x-aibrix-session-key``。这两个头都不是安全令牌；超过 "
+"256 字节的键视为未设置。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:301
+msgid ""
+"``external``: delegates replica selection to an operator-run HTTP service"
+" after AIBrix has resolved the model and filtered unsafe replicas. "
+"Experimental. See :doc:`external-replica-routing` for the protocol, "
+"policy modes, and configuration."
+msgstr ""
+"``external``：在 AIBrix 解析模型并过滤不安全副本之后，把副本选择委托给运营方自行运行的 HTTP "
+"服务。实验特性。协议、策略模式和配置见 :doc:`external-replica-routing`。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:306
+msgid "Load-imbalance gate"
+msgstr "负载不均衡门控"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:308
+msgid ""
+"The load-imbalance gate restricts candidates to the least-loaded pods "
+"when load is severely skewed. The gateway applies it centrally, ahead of "
+"whichever strategy actually routes each request, not just when ``load-"
+"balance`` itself is selected. See ``pkg/plugins/gateway/ENV_VARS.md``."
+msgstr ""
+"负载不均衡门控会在负载严重倾斜时，把候选范围限制为负载最低的 Pod。网关会在实际负责路由的任何策略之前统一应用它，而不仅限于选择 ``load-"
+"balance`` 本身的时候。详见 ``pkg/plugins/gateway/ENV_VARS.md`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:311
+msgid "Auto-blended capacity awareness"
+msgstr "自动混合的容量感知"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:313
+msgid ""
+"This auto-blend is **enabled by default** — no opt-in is required. The "
+"gateway silently blends ``load-balance``'s capacity-aware scoring in "
+"behind the strategy you select. This keeps any single strategy from "
+"steering traffic at an already-hot pod, even outside the :ref:`load-"
+"imbalance gate <load_imbalance_gate>`."
+msgstr ""
+"这种自动混合 **默认启用** ，无需显式开启。网关会在你所选策略的背后，悄悄混入 ``load-balance`` 的容量感知打分。这样即使在 "
+":ref:`负载不均衡门控 <load_imbalance_gate>` 之外，也能避免任何单一策略把流量引向已经过热的 Pod。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:315
+msgid ""
+"The caller never sees this: ``ctx.Algorithm``, response headers, and "
+"``Validate()`` all still reflect exactly the strategy that was requested."
+msgstr "调用方感知不到这一点： ``ctx.Algorithm`` 、响应头和 ``Validate()`` 反映的仍然是所请求的策略。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:317
+msgid "What is blended, by strategy:"
+msgstr "各策略的混合情况："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:319
+msgid ""
+"**Most strategies:** every strategy above gets the ``load-balance`` "
+"scorer, except the ones listed below. ``least-request-top-k`` is blended "
+"in too, when the selected strategy doesn't already route by request "
+"count, to keep multi-port/data-parallel pod routing working under the "
+"blend."
+msgstr ""
+"**大多数策略：** 上文所列的每种策略都会被混入 ``load-balance`` "
+"打分器，下列例外除外。当所选策略本身并不按请求数路由时，还会混入 ``least-request-top-k`` ，以保证多端口/数据并行 Pod"
+" 的路由在混合下仍能正常工作。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:320
+msgid ""
+"**Bare** ``prefix-cache``: uses a dedicated 5:4 (1.25:1) lean toward "
+"cache affinity over ``load-balance`` and does not receive ``least-"
+"request-top-k``, so cache locality wins an exact-tie disagreement."
+msgstr ""
+"**单独使用的** ``prefix-cache`` ：使用专门的 5:4（1.25:1）比例，偏向缓存亲和性而非 ``load-"
+"balance`` ，且不会混入 ``least-request-top-k`` ，因此在两者出现完全平局且意见不一致时，缓存局部性胜出。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:321
+msgid ""
+"**Bare** ``session-affinity``: gets no auto-blend at all. Its scoring is "
+"binary (the resolved pod vs. everything else), so any ``load-balance`` "
+"weight small enough to still lose an exact tie could never override the "
+"pin either. Blending it in would be dead weight, not a capacity safety "
+"net, so it keeps running its own ``Route()``/``ScoreAll()`` unblended."
+msgstr ""
+"**单独使用的** ``session-affinity`` ：完全不做自动混合。它的打分是二元的（解析出的 Pod 与其他所有 "
+"Pod），因此任何小到仍会在完全平局中落败的 ``load-balance`` "
+"权重，同样无法覆盖该固定绑定。混入它只是多余负担，而不是容量安全网，所以它继续单独运行自己的 ``Route()``/``ScoreAll()``"
+" ，不做混合。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:322
+msgid ""
+"**Exclusive strategies:** ``pd``, ``slo`` / ``slo-*`` and ``external``, "
+"as well as an explicit standalone ``load-balance`` selection, are not "
+"blended."
+msgstr ""
+"**排他策略：** ``pd`` 、``slo`` / ``slo-*`` 和 ``external`` ，以及显式单独选择的 ``load-"
+"balance`` ，都不做混合。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:324
+msgid ""
+"Both blend weights default to ``1`` (see "
+"``pkg/plugins/gateway/ENV_VARS.md``). Set "
+"``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0`` to disable the auto-"
+"blend."
+msgstr ""
+"两个混合权重默认均为 ``1`` （见 ``pkg/plugins/gateway/ENV_VARS.md`` ）。设置 "
+"``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0`` 可关闭自动混合。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:330
+msgid "Config Profiles"
+msgstr "配置 Profile"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:332
+msgid ""
+"A **config profile** lets you embed routing settings directly in a "
+"model's pod annotation, so every request to that model picks up the right"
+" configuration automatically. You can define multiple named profiles in "
+"one annotation and switch between them per-request with a single header."
+msgstr ""
+"**config profile** 可将路由设置直接嵌入模型 Pod 的 annotation，使发往该模型的每个请求自动获得正确配置。可在一条"
+" annotation 中定义多个命名 profile，并通过单个请求头按请求切换。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:335
+msgid "Defining profiles"
+msgstr "定义 profile"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:337
+msgid ""
+"Add the ``model.aibrix.ai/config`` annotation to the pod template of your"
+" ``Deployment``, ``StormService``, or ``RayClusterFleet``:"
+msgstr ""
+"在 ``Deployment`` 、``StormService`` 或 ``RayClusterFleet`` 的 Pod 模板上添加 "
+"``model.aibrix.ai/config`` annotation："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:376
+msgid "Selecting a profile at request time"
+msgstr "在请求时选择 profile"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:378
+msgid "Two request headers drive the config at request time:"
+msgstr "请求时由两个请求头驱动配置："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:380
+msgid ""
+"``config-profile`` selects a named profile; when absent, "
+"``defaultProfile`` (or ``\"default\"``) is used. ``config-profile: auto``"
+" asks the gateway to select a concrete profile from request-local hints "
+"in each profile's ``routingConfig``."
+msgstr ""
+"``config-profile`` 选择命名 profile；缺省时使用 ``defaultProfile`` （或 "
+"``\"default\"`` ）。``config-profile: auto`` 让网关根据各 profile 的 "
+"``routingConfig`` 中的请求级提示选择具体 profile。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:381
+msgid ""
+"``routing-strategy`` overrides the selected profile's "
+"``routingStrategy``, unless ``lockedRoutingStrategy`` is set (see "
+":ref:`routing_strategy_priority`)."
+msgstr ""
+"``routing-strategy`` 覆盖所选 profile 的 ``routingStrategy`` ，除非设置了 "
+"``lockedRoutingStrategy`` （见 :ref:`routing_strategy_priority` ）。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:383
+msgid ""
+"These request-time choices are ignored when "
+"``authoritativeRoutingPolicy`` is ``true`` (see "
+":ref:`authoritative_routing_policy`)."
+msgstr ""
+"当 ``authoritativeRoutingPolicy`` 为 ``true`` 时，这些请求时的选择会被忽略（见 "
+":ref:`authoritative_routing_policy` ）。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:394
+msgid "Automatic profile selection"
+msgstr "自动选择 profile"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:404
+msgid ""
+"When ``config-profile: auto`` is used, the gateway evaluates the "
+"supported request-local hints inside each profile's ``routingConfig``:"
+msgstr ""
+"使用 ``config-profile: auto`` 时，网关会在每个 profile 的 ``routingConfig`` "
+"中评估受支持的请求级提示："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:406
+msgid "A profile matches only when all of its supported hints match the request."
+msgstr "只有当某个 profile 的全部受支持提示都与请求匹配时，该 profile 才算匹配。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:407
+msgid ""
+"If no profile matches, the gateway uses ``defaultProfile`` (or "
+"``\"default\"``)."
+msgstr "若没有 profile 匹配，网关使用 ``defaultProfile`` （或 ``\"default\"`` ）。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:408
+msgid ""
+"``promptTokens*`` uses the gateway's existing prompt text extraction and "
+"local token estimation."
+msgstr "``promptTokens*`` 使用网关现有的 prompt 文本提取和本地 token 估算。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:409
+msgid ""
+"``maxTokens*`` reads ``max_tokens`` first, then ``max_completion_tokens``"
+" when ``max_tokens`` is absent."
+msgstr ""
+"``maxTokens*`` 优先读取 ``max_tokens`` ，缺少 ``max_tokens`` 时再读取 "
+"``max_completion_tokens`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:412
+msgid "Top-level fields"
+msgstr "顶层字段"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:418
+#: ../../source/features/gateway-routing/gateway-plugins.rst:436
+#: ../../source/features/gateway-routing/gateway-plugins.rst:540
+#: ../../source/features/gateway-routing/gateway-plugins.rst:560
+#: ../../source/features/gateway-routing/gateway-plugins.rst:589
+#: ../../source/features/gateway-routing/gateway-plugins.rst:618
+#: ../../source/features/gateway-routing/gateway-plugins.rst:647
+#: ../../source/features/gateway-routing/gateway-plugins.rst:673
+#: ../../source/features/gateway-routing/gateway-plugins.rst:693
+#: ../../source/features/gateway-routing/gateway-plugins.rst:731
+msgid "Field"
+msgstr "字段"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:419
+#: ../../source/features/gateway-routing/gateway-plugins.rst:437
+#: ../../source/features/gateway-routing/gateway-plugins.rst:542
+#: ../../source/features/gateway-routing/gateway-plugins.rst:562
+#: ../../source/features/gateway-routing/gateway-plugins.rst:591
+#: ../../source/features/gateway-routing/gateway-plugins.rst:620
+#: ../../source/features/gateway-routing/gateway-plugins.rst:649
+#: ../../source/features/gateway-routing/gateway-plugins.rst:675
+#: ../../source/features/gateway-routing/gateway-plugins.rst:695
+#: ../../source/features/gateway-routing/gateway-plugins.rst:733
+#: ../../source/features/gateway-routing/gateway-plugins.rst:905
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1100
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1155
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1197
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1213
+msgid "Description"
+msgstr "说明"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:420
+msgid "``lockedRoutingStrategy``"
+msgstr "``lockedRoutingStrategy``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:421
+msgid ""
+"Pins a single routing strategy model-wide. When set, it takes precedence "
+"over the ``routing-strategy`` header, the per-profile ``routingStrategy``"
+" and the ``ROUTING_ALGORITHM`` env. The remaining per-profile knobs, such"
+" as ``routingConfig``, are still applied normally."
+msgstr ""
+"在模型范围固定单一路由策略。设置后优先于 ``routing-strategy`` 请求头、按 profile 的 "
+"``routingStrategy`` 以及 ``ROUTING_ALGORITHM`` 环境变量。其余按 profile 生效的项（例如 "
+"``routingConfig`` ）仍正常应用。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:422
+msgid "``authoritativeRoutingPolicy``"
+msgstr "``authoritativeRoutingPolicy``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:423
+msgid ""
+"When ``true``, treats application-supplied ``routing-strategy``, "
+"``config-profile`` and ``external-filter`` headers as absent. The gateway"
+" resolves ``defaultProfile``, retains its internally generated routing "
+"headers, and omits routing diagnostic headers from the client response. "
+"Defaults to ``false`` for backward compatibility."
+msgstr ""
+"为 ``true`` 时，将应用侧提供的 ``routing-strategy`` 、``config-profile`` 和 "
+"``external-filter`` 请求头视为不存在。网关解析 ``defaultProfile`` "
+"，保留其内部生成的路由请求头，并在返回给客户端的响应中省略路由诊断请求头。为向后兼容，默认为 ``false`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:424
+msgid "``defaultProfile``"
+msgstr "``defaultProfile``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:425
+msgid ""
+"Profile name used when no ``config-profile`` header is sent. Falls back "
+"to ``\"default\"`` when omitted."
+msgstr "未发送 ``config-profile`` 请求头时使用的 profile 名。省略时回退到 ``\"default\"`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:426
+msgid "``profiles``"
+msgstr "``profiles``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:427
+msgid "Map of named profiles, each carrying the per-profile fields below."
+msgstr "命名 profile 的映射，每个包含下方按 profile 的字段。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:430
+msgid "Profile fields"
+msgstr "Profile 字段"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:438
+msgid "``routingStrategy``"
+msgstr "``routingStrategy``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:439
+msgid ""
+"The routing algorithm for this profile (e.g. ``least-latency``, ``prefix-"
+"cache``, ``pd``). See the Routing Strategies section above for the full "
+"list."
+msgstr ""
+"该 profile 的路由算法（例如 ``least-latency`` 、``prefix-cache`` 、``pd`` "
+"）。完整列表见上文路由策略一节。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:440
+msgid "``requestsPerSecondPerReplica``"
+msgstr "``requestsPerSecondPerReplica``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:441
+msgid ""
+"Per-replica RPS cap for this profile. The gateway multiplies it by the "
+"model's current routable replica count to derive the effective model-wide"
+" limit, so the cap scales automatically as replicas are added or removed."
+" Supports fractional values (e.g. ``0.5`` for one request every two "
+"seconds). Requests that exceed the limit are rejected with HTTP 429. Also"
+" sets the profile's routing strategy to ``least-request``, so traffic is "
+"balanced evenly enough for the per-replica figure to hold in aggregate. "
+"Omit or set to ``0`` for no limit. It has no environment-variable form. "
+"See :doc:`Production Model Deployments <../../production/model-"
+"deployment>` for details."
+msgstr ""
+"该 profile 的单副本 RPS "
+"上限。网关将其乘以模型当前可路由的副本数，得到实际生效的模型级限制，因此上限会随副本的增减自动伸缩。支持小数值（例如 ``0.5`` "
+"表示每两秒一个请求）。超出限制的请求以 HTTP 429 拒绝。同时会将该 profile 的路由策略设为 ``least-request`` "
+"，使流量足够均衡，从而让单副本的限制值在整体上成立。省略或设为 ``0`` 表示不限。它没有对应的环境变量形式。详见 :doc:`生产模型部署 "
+"<../../production/model-deployment>` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:442
+msgid "``requestsInflight``"
+msgstr "``requestsInflight``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:443
+msgid ""
+"Per-replica concurrency cap: the maximum number of in-flight requests "
+"allowed on a single replica. It is enforced per pod, so it needs no "
+"replica-count scaling. When every routable replica is at the cap, the "
+"request is rejected with HTTP 429 and the ``x-error-model-replica-"
+"inflight-exceeded`` header. Also sets the profile's routing strategy to "
+"``least-request``. Independent of ``requestsPerSecondPerReplica``, and "
+"the two can be set together. Omit or set to ``0`` for no limit. It has no"
+" environment-variable form. See :doc:`Production Model Deployments "
+"<../../production/model-deployment>` for details."
+msgstr ""
+"单副本并发上限：单个副本上允许的最大在途（in-flight）请求数。它按 Pod "
+"生效，因此无需随副本数伸缩。当所有可路由的副本都达到上限时，请求会被以 HTTP 429 拒绝，并带上 ``x-error-model-"
+"replica-inflight-exceeded`` 请求头。同时会将该 profile 的路由策略设为 ``least-request`` "
+"。它与 ``requestsPerSecondPerReplica`` 相互独立，二者可同时设置。省略或设为 ``0`` "
+"表示不限。它没有对应的环境变量形式。详见 :doc:`生产模型部署 <../../production/model-deployment>` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:444
+msgid "``ttftThresholdS``"
+msgstr "``ttftThresholdS``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:445
+msgid ""
+"Time-to-first-token threshold in seconds for this profile's responses, "
+"overriding ``AIBRIX_TTFT_THRESHOLD_S``. A first token arriving above this"
+" value is classified as delayed in the gateway's first-token-delay "
+"metric. Omit it or set ``0`` to keep the process-wide default; ``0`` "
+"counts as unset, so a profile cannot set the threshold to zero, only to "
+"another positive value. This affects response classification only, not "
+"routing."
+msgstr ""
+"该 profile 响应的首 token 时间（TTFT）阈值，单位为秒，覆盖 ``AIBRIX_TTFT_THRESHOLD_S`` 。首个 "
+"token 的到达时间超过该值时，在网关的首 token 延迟指标中会被归类为延迟。省略或设为 ``0`` 则沿用进程级默认值； ``0`` "
+"视为未设置，因此 profile 不能把阈值设为零，只能设为另一个正数。这只影响响应的分类，不影响路由。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:446
+msgid "``routingConfig``"
+msgstr "``routingConfig``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:447
+msgid "Algorithm-specific settings as a nested JSON object. It carries:"
+msgstr "算法相关设置，嵌套 JSON 对象。它包含："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:449
+msgid ""
+"Auto-selection hints read by ``config-profile: auto``. Currently "
+"supported hints are ``promptTokensGte``, ``promptTokensLt``, "
+"``maxTokensGte`` and ``maxTokensLt``."
+msgstr ""
+"供 ``config-profile: auto`` 读取的自动选择提示。当前支持的提示为 ``promptTokensGte`` "
+"、``promptTokensLt`` 、``maxTokensGte`` 和 ``maxTokensLt`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:450
+msgid ""
+"Strategy-specific fields, such as ``promptLenBucketMinLength`` for "
+"``pd``. See :doc:`Prefill-Decode Disaggregation <pd-disaggregation>` for "
+"details."
+msgstr ""
+"策略专用字段，例如 ``pd`` 的 ``promptLenBucketMinLength`` 。详见 :doc:`Prefill/Decode "
+"分离（PD） <pd-disaggregation>` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:451
+msgid ""
+"Per-request routing knobs that override the matching gateway environment "
+"variables for this profile's requests only. See "
+":ref:`per_request_routing_knobs`."
+msgstr ""
+"按请求生效的路由参数，仅对该 profile 的请求覆盖对应的网关环境变量。详见 :ref:`per_request_routing_knobs`"
+" 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:456
+msgid "Routing strategy priority"
+msgstr "路由策略优先级"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:458
+msgid "From highest to lowest:"
+msgstr "优先级从高到低："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:460
+msgid ""
+"``lockedRoutingStrategy`` pinned model-wide in the config — always wins "
+"when set, even over the ``routing-strategy`` header."
+msgstr ""
+"配置中模型范围固定的 ``lockedRoutingStrategy`` — 设置后始终优先，即使覆盖 ``routing-strategy`` "
+"请求头。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:461
+msgid "``routing-strategy`` request header."
+msgstr "``routing-strategy`` 请求头。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:462
+msgid ""
+"``routingStrategy`` from the resolved profile. The resolved profile comes"
+" from the concrete ``config-profile`` header, ``config-profile: auto`` "
+"routingConfig hints, or ``defaultProfile``."
+msgstr ""
+"解析后 profile 中的 ``routingStrategy`` 。解析来源为具体的 ``config-profile`` 请求头"
+"、``config-profile: auto`` 的 routingConfig 提示，或 ``defaultProfile`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:463
+msgid "``ROUTING_ALGORITHM`` environment variable on the gateway plugin."
+msgstr "网关插件上的 ``ROUTING_ALGORITHM`` 环境变量。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:465
+msgid ""
+"**Backward compatibility**: ``authoritativeRoutingPolicy`` defaults to "
+"``false``. If a pod has no ``model.aibrix.ai/config`` annotation, the "
+"gateway falls back to the ``routing-strategy`` request header and then "
+"the ``ROUTING_ALGORITHM`` env (steps 2 and 4 above). No migration is "
+"required for existing deployments."
+msgstr ""
+"**向后兼容** ：``authoritativeRoutingPolicy`` 默认为 ``false`` 。若 Pod 上没有 "
+"``model.aibrix.ai/config`` annotation，网关会回退到 ``routing-strategy`` "
+"请求头，再回退到 ``ROUTING_ALGORITHM`` 环境变量（即上文第 2 和第 4 步）。现有部署无需任何迁移。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:468
+msgid "Locking the routing strategy"
+msgstr "锁定路由策略"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:470
+msgid ""
+"Optionally pin a single routing strategy model-wide so it cannot be "
+"overridden at request time (see :ref:`routing_strategy_priority`). "
+"``lockedRoutingStrategy`` only locks the strategy: the remaining per-"
+"profile knobs, such as ``routingConfig``, still follow the profile "
+"selected by ``config-profile``:"
+msgstr ""
+"可选地在模型范围固定单一路由策略，使其无法在请求时被覆盖（见 :ref:`routing_strategy_priority` "
+"）。``lockedRoutingStrategy`` 只锁定策略：其余按 profile 生效的项（例如 ``routingConfig`` "
+"）仍遵循由 ``config-profile`` 选定的 profile："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:492
+msgid "Authoritative routing policy"
+msgstr "权威路由策略"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:494
+msgid ""
+"For platform-managed models whose routing policy must be authoritative, "
+"also set ``authoritativeRoutingPolicy``. The gateway then treats the "
+"request as if it did not contain the client routing controls ``routing-"
+"strategy``, ``config-profile`` (including ``auto``), and ``external-"
+"filter``. It clears them before it resolves the profile and routing "
+"strategy, and it:"
+msgstr ""
+"对于路由策略必须具有权威性的平台托管模型，还应设置 ``authoritativeRoutingPolicy`` "
+"。此时网关会把请求视为不包含客户端路由控制项 ``routing-strategy`` 、``config-profile`` （包括 "
+"``auto`` ）和 ``external-filter`` 。它会在解析 profile 和路由策略之前清除这些控制项，并且："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:496
+msgid "uses ``defaultProfile``;"
+msgstr "使用 ``defaultProfile`` ；"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:497
+msgid ""
+"preserves the routing headers that the gateway itself generates after "
+"selecting a pod;"
+msgstr "保留网关在选出 Pod 之后自行生成的路由请求头；"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:498
+msgid ""
+"omits ``routing-strategy``, ``target-pod``, ``target-pod-ip``, and ``x"
+"-aibrix-config-profile`` from the client response."
+msgstr ""
+"在返回给客户端的响应中省略 ``routing-strategy`` 、``target-pod`` 、``target-pod-ip`` 和 "
+"``x-aibrix-config-profile`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:519
+msgid ""
+"``authoritativeRoutingPolicy`` and ``lockedRoutingStrategy`` have "
+"separate responsibilities. The authoritative policy removes client "
+"routing input; ``lockedRoutingStrategy`` pins the algorithm against both "
+"the resolved default profile and ``ROUTING_ALGORITHM``. The normal "
+":ref:`priority order <routing_strategy_priority>` applies unchanged: "
+"request profile selection uses ``defaultProfile``, the request strategy "
+"is absent, and ``lockedRoutingStrategy`` keeps its existing meaning."
+msgstr ""
+"``authoritativeRoutingPolicy`` 与 ``lockedRoutingStrategy`` "
+"职责不同。权威策略负责移除客户端的路由输入； ``lockedRoutingStrategy`` 则把算法固定下来，凌驾于已解析的默认 "
+"profile 和 ``ROUTING_ALGORITHM`` 之上。常规的 :ref:`优先级顺序 "
+"<routing_strategy_priority>` 保持不变：请求的 profile 选择使用 ``defaultProfile`` "
+"，请求中的策略为空， ``lockedRoutingStrategy`` 的含义也不变。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:524
+msgid "Per-request routing knobs"
+msgstr "按请求生效的路由参数"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:526
+msgid ""
+"Besides the auto-selection hints above, ``routingConfig`` carries routing"
+" thresholds that override the gateway's process-wide environment "
+"variables for this profile's requests only. An unset knob keeps the "
+"environment default, and a value the matching environment variable would "
+"reject (a negative factor, a percentage outside its range, an unknown GPU"
+" name) is ignored, so a profile can only narrow or sharpen routing "
+"behavior. Requests to the same model can therefore be routed with "
+"different thresholds by selecting different profiles."
+msgstr ""
+"除上文的自动选择提示外， ``routingConfig`` 还包含一些路由阈值，可仅针对该 profile "
+"的请求覆盖网关的进程级环境变量。未设置的参数沿用环境变量的默认值；若某个值会被对应环境变量拒绝（负的系数、超出范围的百分比、未知的 GPU "
+"名称），则会被忽略，因此 profile 只能收窄或强化路由行为。这样，同一模型的请求可以通过选择不同的 profile，使用不同的阈值进行路由。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:534
+msgid "Prompt-length bucketing"
+msgstr "Prompt 长度分桶"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:541
+#: ../../source/features/gateway-routing/gateway-plugins.rst:561
+#: ../../source/features/gateway-routing/gateway-plugins.rst:590
+#: ../../source/features/gateway-routing/gateway-plugins.rst:619
+#: ../../source/features/gateway-routing/gateway-plugins.rst:648
+#: ../../source/features/gateway-routing/gateway-plugins.rst:674
+#: ../../source/features/gateway-routing/gateway-plugins.rst:694
+#: ../../source/features/gateway-routing/gateway-plugins.rst:732
+msgid "Overrides"
+msgstr "覆盖的环境变量"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:543
+msgid "``promptLengthBucketing``"
+msgstr "``promptLengthBucketing``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:544
+msgid "``AIBRIX_PROMPT_LENGTH_BUCKETING``"
+msgstr "``AIBRIX_PROMPT_LENGTH_BUCKETING``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:545
+msgid "Turn prompt-length bucketing on or off for this profile's requests."
+msgstr "为该 profile 的请求开启或关闭 prompt 长度分桶。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:546
+msgid "``bucketServe``"
+msgstr "``bucketServe``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:547
+msgid "``AIBRIX_BUCKET_SERVE``"
+msgstr "``AIBRIX_BUCKET_SERVE``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:548
+msgid ""
+"Turn adaptive bucket serving on or off for this profile's requests. It "
+"only takes effect while prompt-length bucketing is on."
+msgstr "为该 profile 的请求开启或关闭自适应分桶服务（bucket serving）。仅在 prompt 长度分桶开启时生效。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:549
+msgid "``bucketServeMode``"
+msgstr "``bucketServeMode``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:550
+msgid "``AIBRIX_BUCKET_SERVE_MODE``"
+msgstr "``AIBRIX_BUCKET_SERVE_MODE``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:551
+msgid ""
+"What the adaptive cut points balance: ``throughput`` (prompt token mass) "
+"or ``rps`` (request counts). An unknown value keeps the environment "
+"default."
+msgstr ""
+"自适应切分点所均衡的对象： ``throughput`` （prompt token 总量）或 ``rps`` "
+"（请求数）。未知值沿用环境变量的默认值。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:554
+msgid "PD timeouts and aborts"
+msgstr "PD 超时与中止"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:563
+msgid "``pd.decodeAbortTimeout``"
+msgstr "``pd.decodeAbortTimeout``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:564
+msgid "``AIBRIX_DECODE_ABORT_TIMEOUT``"
+msgstr "``AIBRIX_DECODE_ABORT_TIMEOUT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:565
+msgid ""
+"Seconds the gateway waits for the decode pod to accept the abort POST "
+"after a prefill failure. ``0`` sends the abort without waiting."
+msgstr "prefill 失败后，网关等待 decode Pod 接受中止（abort）POST 请求的秒数。 ``0`` 表示发送中止请求但不等待。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:566
+msgid "``pd.decodeAbortRetryDelay``"
+msgstr "``pd.decodeAbortRetryDelay``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:567
+msgid "``AIBRIX_DECODE_ABORT_RETRY_DELAY``"
+msgstr "``AIBRIX_DECODE_ABORT_RETRY_DELAY``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:568
+msgid ""
+"Seconds between the two abort attempts. ``0`` repeats the abort "
+"immediately."
+msgstr "两次中止尝试之间的间隔秒数。 ``0`` 表示立即重试中止。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:569
+msgid "``pd.decodeFirstResponseTimeout``"
+msgstr "``pd.decodeFirstResponseTimeout``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:570
+msgid "``AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT``"
+msgstr "``AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:571
+msgid ""
+"Seconds a streaming SGLang PD request waits, after its prefill leg "
+"succeeded, for the decode pod's first token (its first response body "
+"chunk) before the gateway fails it. ``0`` disables the watchdog."
+msgstr ""
+"流式 SGLang PD 请求在 prefill 阶段成功后，等待 decode Pod 返回首个 "
+"token（即首个响应体分块）的秒数，超时后网关会使该请求失败。 ``0`` 表示关闭该看门狗。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:572
+msgid "``pd.decodeResponseTimeout``"
+msgstr "``pd.decodeResponseTimeout``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:573
+msgid "``AIBRIX_DECODE_RESPONSE_TIMEOUT``"
+msgstr "``AIBRIX_DECODE_RESPONSE_TIMEOUT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:574
+msgid ""
+"The same bound for a non-streaming request, where the first body chunk is"
+" the finished answer. ``0`` disables the watchdog."
+msgstr "非流式请求的同类时限，此时首个响应体分块就是完整答案。 ``0`` 表示关闭该看门狗。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:575
+msgid "``pd.decodeStreamIdleTimeout``"
+msgstr "``pd.decodeStreamIdleTimeout``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:576
+msgid "``AIBRIX_DECODE_STREAM_IDLE_TIMEOUT``"
+msgstr "``AIBRIX_DECODE_STREAM_IDLE_TIMEOUT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:577
+msgid ""
+"Longest gap, in seconds, between two body chunks of a streaming response "
+"before the gateway cuts the stream short. ``0`` disables this phase."
+msgstr "流式响应中两个响应体分块之间允许的最长间隔（秒），超过后网关会提前截断该流。 ``0`` 表示关闭此阶段。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:578
+msgid "``pd.prefillRequestTimeout``"
+msgstr "``pd.prefillRequestTimeout``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:579
+msgid "``AIBRIX_PREFILL_REQUEST_TIMEOUT``"
+msgstr "``AIBRIX_PREFILL_REQUEST_TIMEOUT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:580
+msgid "HTTP timeout in seconds for the prefill pod call."
+msgstr "调用 prefill Pod 的 HTTP 超时（秒）。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:583
+msgid "PD load imbalance and decode scoring"
+msgstr "PD 负载不均衡与 decode 打分"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:592
+msgid "``pd.prefillLoadImbalanceMinSpread``"
+msgstr "``pd.prefillLoadImbalanceMinSpread``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:593
+msgid "``AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD``"
+msgstr "``AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:594
+msgid ""
+"Minimum prefill running-request spread (max minus min) that triggers "
+"prefill load-imbalance routing."
+msgstr "触发 prefill 负载不均衡路由所需的最小 prefill 运行中请求数差值（最大值减最小值）。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:595
+msgid "``pd.decodeLoadImbalanceMinSpread``"
+msgstr "``pd.decodeLoadImbalanceMinSpread``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:596
+msgid "``AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD``"
+msgstr "``AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:597
+msgid ""
+"Minimum decode running-request spread that triggers decode load-imbalance"
+" routing."
+msgstr "触发 decode 负载不均衡路由所需的最小 decode 运行中请求数差值。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:598
+msgid "``pd.decodeThroughputImbalanceMinSpread``"
+msgstr "``pd.decodeThroughputImbalanceMinSpread``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:599
+msgid "``AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD``"
+msgstr "``AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:600
+msgid ""
+"Minimum decode token-throughput spread (tokens/s) that triggers "
+"throughput-imbalance routing."
+msgstr "触发吞吐不均衡路由所需的最小 decode token 吞吐差值（tokens/s）。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:601
+msgid "``pd.decodeScoreRatioThreshold``"
+msgstr "``pd.decodeScoreRatioThreshold``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:602
+msgid "``AIBRIX_DECODE_SCORE_RATIO_THRESHOLD``"
+msgstr "``AIBRIX_DECODE_SCORE_RATIO_THRESHOLD``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:603
+msgid ""
+"Max/min drain-rate score ratio above which the slowest decode pod is "
+"excluded."
+msgstr "最大/最小消耗速率（drain-rate）得分之比超过该值时，将排除最慢的 decode Pod。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:604
+msgid "``pd.decodeLBWeightRunning``"
+msgstr "``pd.decodeLBWeightRunning``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:605
+msgid "``AIBRIX_DECODE_LB_WEIGHT_RUNNING``"
+msgstr "``AIBRIX_DECODE_LB_WEIGHT_RUNNING``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:606
+msgid "Weight of the running-request term in the decode load-balancing score."
+msgstr "decode 负载均衡得分中运行中请求数项的权重。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:607
+msgid "``pd.decodeLBWeightThroughput``"
+msgstr "``pd.decodeLBWeightThroughput``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:608
+msgid "``AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT``"
+msgstr "``AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:609
+msgid "Weight of the token-throughput term in the decode load-balancing score."
+msgstr "decode 负载均衡得分中 token 吞吐项的权重。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:612
+msgid "PD token load and prefix matching"
+msgstr "PD token 负载与前缀匹配"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:621
+msgid "``pd.tokenLoadKVWeight``"
+msgstr "``pd.tokenLoadKVWeight``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:622
+msgid "``AIBRIX_TOKEN_LOAD_KV_WEIGHT``"
+msgstr "``AIBRIX_TOKEN_LOAD_KV_WEIGHT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:623
+msgid "Weight of resident KV tokens in the token-load charge."
+msgstr "常驻 KV token 在 token 负载计费（charge）中的权重。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:624
+msgid "``pd.tokenLoadRequestCost``"
+msgstr "``pd.tokenLoadRequestCost``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:625
+msgid "``AIBRIX_TOKEN_LOAD_REQUEST_COST``"
+msgstr "``AIBRIX_TOKEN_LOAD_REQUEST_COST``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:626
+msgid "Fixed per-request cost, in tokens, of the token-load charge."
+msgstr "token 负载计费中每个请求的固定成本（以 token 计）。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:627
+msgid "``pd.tokenLoadTTLSeconds``"
+msgstr "``pd.tokenLoadTTLSeconds``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:628
+msgid "``AIBRIX_TOKEN_LOAD_TTL_SECONDS``"
+msgstr "``AIBRIX_TOKEN_LOAD_TTL_SECONDS``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:629
+msgid ""
+"How long a charge may stay outstanding. ``0`` disables the sweep for this"
+" profile's requests."
+msgstr "一笔计费可以保持未结清状态的时长。 ``0`` 表示对该 profile 的请求关闭清扫。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:630
+msgid "``pd.tokenLoadSessionTTLSeconds``"
+msgstr "``pd.tokenLoadSessionTTLSeconds``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:631
+msgid "``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS``"
+msgstr "``AIBRIX_TOKEN_LOAD_SESSION_TTL_SECONDS``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:632
+msgid ""
+"How long the last prompt size of a session is kept. ``0`` disables the "
+"session delta."
+msgstr "会话最近一次 prompt 大小的保留时长。 ``0`` 表示关闭会话增量。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:633
+msgid "``pd.hybridCacheLoadFactor``"
+msgstr "``pd.hybridCacheLoadFactor``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:634
+msgid "``AIBRIX_HYBRID_CACHE_LOAD_FACTOR``"
+msgstr "``AIBRIX_HYBRID_CACHE_LOAD_FACTOR``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:635
+msgid ""
+"How much a full prefix match discounts a pod's token load in the hybrid-"
+"cache-load prefill policy (0 to 1)."
+msgstr "在 hybrid-cache-load prefill 策略中，完整前缀匹配对 Pod token 负载的折扣幅度（0 到 1）。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:636
+msgid "``pd.minMatchPct``"
+msgstr "``pd.minMatchPct``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:637
+msgid "``AIBRIX_MIN_MATCH_PCT``"
+msgstr "``AIBRIX_MIN_MATCH_PCT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:638
+msgid ""
+"Prefix-match percentage below which a match is treated as no match (0 to "
+"100)."
+msgstr "前缀匹配百分比低于该值时，视为未匹配（0 到 100）。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:641
+msgid "Load-balance scoring"
+msgstr "load-balance 打分"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:650
+msgid "``loadBalance.imbalanceFactor``"
+msgstr "``loadBalance.imbalanceFactor``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:651
+msgid "``AIBRIX_LOAD_BALANCE_IMBALANCE_FACTOR``"
+msgstr "``AIBRIX_LOAD_BALANCE_IMBALANCE_FACTOR``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:652
+msgid "Load-imbalance gate multiplier for pools of three or more replicas."
+msgstr "适用于三个及以上副本的池的负载不均衡门控倍数。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:653
+msgid "``loadBalance.imbalanceMinGap``"
+msgstr "``loadBalance.imbalanceMinGap``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:654
+msgid "``AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP``"
+msgstr "``AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:655
+msgid "Minimum running-request gap required to trigger the load-imbalance gate."
+msgstr "触发负载不均衡门控所需的最小运行中请求数差距。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:656
+msgid "``loadBalance.queuedWeight``"
+msgstr "``loadBalance.queuedWeight``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:657
+msgid "``AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT``"
+msgstr "``AIBRIX_LOAD_BALANCE_QUEUED_WEIGHT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:658
+msgid ""
+"Weight of engine-queued requests added to the load-balance score. ``0`` "
+"is the running-requests-only formula."
+msgstr "加入 load-balance 得分的引擎排队请求的权重。 ``0`` 即仅按运行中请求数计算的公式。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:659
+msgid "``loadBalance.kvPressureAlpha``"
+msgstr "``loadBalance.kvPressureAlpha``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:660
+msgid "``AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA``"
+msgstr "``AIBRIX_LOAD_BALANCE_KV_PRESSURE_ALPHA``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:661
+msgid ""
+"Strength of the KV-pressure penalty in the load-balance score. ``0`` "
+"drops the penalty."
+msgstr "load-balance 得分中 KV 压力惩罚的强度。 ``0`` 表示取消该惩罚。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:662
+msgid "``loadBalance.kvCriticalFree``"
+msgstr "``loadBalance.kvCriticalFree``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:663
+msgid "``AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE``"
+msgstr "``AIBRIX_LOAD_BALANCE_KV_CRITICAL_FREE``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:664
+msgid ""
+"Free-KV-cache fraction below which a replica scores ``+Inf`` in the load-"
+"balance score."
+msgstr "空闲 KV cache 比例低于该值时，副本在 load-balance 得分中记为 ``+Inf`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:667
+msgid "Prefix cache and Preble"
+msgstr "Prefix cache 与 Preble"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:676
+msgid "``prefixCache.standardDeviationFactor``"
+msgstr "``prefixCache.standardDeviationFactor``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:677
+msgid "``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``"
+msgstr "``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:678
+msgid ""
+"How many standard deviations above the mean replica request count a "
+"prefix-match candidate may sit. Also read by the PD prefill candidacy "
+"filter."
+msgstr "前缀匹配候选副本的请求数可以比副本平均请求数高出多少个标准差。PD prefill 候选资格过滤器也会读取该值。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:679
+msgid "``preble.targetGPU``"
+msgstr "``preble.targetGPU``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:680
+msgid "``AIBRIX_ROUTER_PREBLE_TARGET_GPU``"
+msgstr "``AIBRIX_ROUTER_PREBLE_TARGET_GPU``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:681
+msgid ""
+"GPU the prefix-cache-preble cost model assumes. Known values: ``A6000``, "
+"``V100``."
+msgstr "prefix-cache-preble 成本模型所假设的 GPU。已知取值： ``A6000`` 、``V100`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:682
+msgid "``preble.decodingLength``"
+msgstr "``preble.decodingLength``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:683
+msgid "``AIBRIX_ROUTER_PREBLE_DECODING_LENGTH``"
+msgstr "``AIBRIX_ROUTER_PREBLE_DECODING_LENGTH``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:684
+msgid "Assumed number of decoding tokens per request in the preble cost model."
+msgstr "preble 成本模型中假设的每个请求的解码 token 数。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:687
+msgid "VTC fairness"
+msgstr "VTC 公平性"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:696
+msgid "``vtc.maxPodLoad``"
+msgstr "``vtc.maxPodLoad``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:697
+msgid "``AIBRIX_ROUTER_VTC_BASIC_MAX_POD_LOAD``"
+msgstr "``AIBRIX_ROUTER_VTC_BASIC_MAX_POD_LOAD``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:698
+msgid "Running-request count at which the VTC utilization score saturates."
+msgstr "VTC 利用率得分达到饱和时的运行中请求数。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:699
+msgid "``vtc.fairnessWeight``"
+msgstr "``vtc.fairnessWeight``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:700
+msgid "``AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT``"
+msgstr "``AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:701
+msgid "Weight of the fairness term in the VTC score. ``0`` drops the term."
+msgstr "VTC 得分中公平性项的权重。 ``0`` 表示去掉该项。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:702
+msgid "``vtc.utilizationWeight``"
+msgstr "``vtc.utilizationWeight``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:703
+msgid "``AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT``"
+msgstr "``AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:704
+msgid "Weight of the utilization term in the VTC score. ``0`` drops the term."
+msgstr "VTC 得分中利用率项的权重。 ``0`` 表示去掉该项。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:705
+msgid "``vtc.inputTokenWeight``"
+msgstr "``vtc.inputTokenWeight``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:706
+msgid "``AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT``"
+msgstr "``AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:707
+msgid ""
+"Weight of a request's input tokens in the VTC token tracker. Also scopes "
+"the tracker: the profile's requests get one of their own."
+msgstr "请求的输入 token 在 VTC token 跟踪器中的权重。同时它也决定跟踪器的作用范围：该 profile 的请求会获得专属的跟踪器。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:708
+msgid "``vtc.outputTokenWeight``"
+msgstr "``vtc.outputTokenWeight``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:709
+msgid "``AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT``"
+msgstr "``AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:710
+msgid "Weight of a request's output tokens in that tracker."
+msgstr "请求的输出 token 在该跟踪器中的权重。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:711
+msgid "``vtc.tokenTrackerWindowSize``"
+msgstr "``vtc.tokenTrackerWindowSize``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:712
+msgid "``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE``"
+msgstr "``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:713
+msgid ""
+"Sliding window of the profile's tracker, in ``vtc.tokenTrackerTimeUnit`` "
+"units."
+msgstr "该 profile 跟踪器的滑动窗口，单位为 ``vtc.tokenTrackerTimeUnit`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:714
+msgid "``vtc.tokenTrackerTimeUnit``"
+msgstr "``vtc.tokenTrackerTimeUnit``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:715
+msgid "``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_TIME_UNIT``"
+msgstr "``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_TIME_UNIT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:716
+msgid ""
+"Bucket size of that window: ``minutes``, ``seconds`` or ``milliseconds``."
+" An unknown name is ignored."
+msgstr "该窗口的桶大小： ``minutes`` 、``seconds`` 或 ``milliseconds`` 。未知名称会被忽略。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:717
+msgid "``vtc.tokenTrackerMinTokens``"
+msgstr "``vtc.tokenTrackerMinTokens``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:718
+msgid "``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MIN_TOKENS``"
+msgstr "``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MIN_TOKENS``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:719
+msgid ""
+"Floor the profile's tracker reports while its window holds little "
+"activity."
+msgstr "窗口内活动很少时，该 profile 跟踪器上报的下限值。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:720
+msgid "``vtc.tokenTrackerMaxTokens``"
+msgstr "``vtc.tokenTrackerMaxTokens``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:721
+msgid "``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MAX_TOKENS``"
+msgstr "``AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MAX_TOKENS``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:722
+msgid ""
+"Ceiling the profile's tracker reports while its window holds little "
+"activity."
+msgstr "窗口内活动很少时，该 profile 跟踪器上报的上限值。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:725
+msgid "Auto-blend weights"
+msgstr "自动混合权重"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:734
+msgid "``autoBlend.loadBalanceWeight``"
+msgstr "``autoBlend.loadBalanceWeight``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:735
+msgid "``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT``"
+msgstr "``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:736
+msgid ""
+"Weight of the load-balance scorer blended behind every non-exclusive "
+"strategy. ``0`` disables the auto-blend for this profile's requests."
+msgstr "混入每个非排他策略背后的 load-balance 打分器的权重。 ``0`` 表示对该 profile 的请求关闭自动混合。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:737
+msgid "``autoBlend.leastRequestWeight``"
+msgstr "``autoBlend.leastRequestWeight``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:738
+msgid "``AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT``"
+msgstr "``AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:739
+msgid ""
+"Weight of the ``least-request-top-k`` scorer the auto-blend adds. The key"
+" keeps its ``leastRequest`` name for compatibility."
+msgstr ""
+"自动混合加入的 ``least-request-top-k`` 打分器的权重。出于兼容性考虑，该键仍沿用 ``leastRequest`` "
+"这个名称。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:740
+msgid "``autoBlend.prefixCacheWeight``"
+msgstr "``autoBlend.prefixCacheWeight``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:741
+msgid "``AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT``"
+msgstr "``AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:742
+msgid ""
+"Prefix-cache weight of the dedicated prefix-cache/load-balance ratio a "
+"bare ``prefix-cache`` request gets. ``0`` is rejected."
+msgstr ""
+"单独使用 ``prefix-cache`` 的请求所采用的专用 prefix-cache/load-balance 比例中，prefix-"
+"cache 一侧的权重。 ``0`` 会被拒绝。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:743
+msgid "``autoBlend.prefixCacheLoadBalanceWeight``"
+msgstr "``autoBlend.prefixCacheLoadBalanceWeight``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:744
+msgid "``AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT``"
+msgstr "``AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:745
+msgid ""
+"Load-balance weight of that ratio. ``0`` leaves those requests with "
+"prefix-cache scoring alone."
+msgstr "该比例中 load-balance 一侧的权重。 ``0`` 表示这些请求仅使用 prefix-cache 打分。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:748
+msgid "Scoped and environment-only knobs"
+msgstr "限定作用范围的参数与仅限环境变量的参数"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:750
+msgid ""
+"Some knobs configure state normally shared by the whole gateway process. "
+"A profile that sets one of them does not retune the shared state: the "
+"gateway scopes an instance to the resolved values, so profiles that agree"
+" share one and a profile that sets none keeps the shared instance exactly"
+" as before."
+msgstr ""
+"有些参数配置的是通常由整个网关进程共享的状态。profile "
+"设置其中某个参数时，不会调整共享状态：网关会按解析出的取值限定出一个实例，因此取值一致的 profile 共用同一个实例，而未设置任何此类参数的 "
+"profile 则原样沿用共享实例。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:755
+msgid ""
+"This is how ``vtc.inputTokenWeight``, ``vtc.outputTokenWeight``, "
+"``vtc.tokenTrackerWindowSize``, ``vtc.tokenTrackerTimeUnit``, "
+"``vtc.tokenTrackerMinTokens`` and ``vtc.tokenTrackerMaxTokens`` scope the"
+" VTC token tracker (at most 16 trackers per process; a profile past the "
+"bound keeps the shared tracker)."
+msgstr ""
+"``vtc.inputTokenWeight`` 、``vtc.outputTokenWeight`` "
+"、``vtc.tokenTrackerWindowSize`` 、``vtc.tokenTrackerTimeUnit`` "
+"、``vtc.tokenTrackerMinTokens`` 和 ``vtc.tokenTrackerMaxTokens`` 就是以这种方式限定 "
+"VTC token 跟踪器的作用范围（每个进程最多 16 个跟踪器；超出上限的 profile 沿用共享跟踪器）。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:760
+msgid ""
+"Knobs that bound state shared by every model of a process stay "
+"environment-only and have no profile field:"
+msgstr "约束由进程内所有模型共享的状态的参数仅限通过环境变量设置，没有对应的 profile 字段："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:763
+msgid ""
+"the preble histogram window and eviction loop "
+"(``AIBRIX_ROUTER_PREBLE_SLIDING_WINDOW_PERIOD``, "
+"``AIBRIX_ROUTER_PREBLE_EVICTION_LOOP_INTERVAL``)"
+msgstr ""
+"preble 直方图窗口和淘汰循环（``AIBRIX_ROUTER_PREBLE_SLIDING_WINDOW_PERIOD`` "
+"、``AIBRIX_ROUTER_PREBLE_EVICTION_LOOP_INTERVAL`` ）"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:764
+msgid ""
+"the session-affinity local cache capacity "
+"(``AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS``)"
+msgstr "session-affinity 本地缓存容量（``AIBRIX_SESSION_AFFINITY_MAX_LOCAL_KEYS`` ）"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:765
+msgid ""
+"the routing string cache bound "
+"(``AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS``)"
+msgstr "路由字符串缓存上限（``AIBRIX_ROUTER_MAX_CACHED_ALGORITHM_STRINGS`` ）"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:766
+msgid "the token-load session table cap (``AIBRIX_TOKEN_LOAD_MAX_SESSIONS``)"
+msgstr "token 负载会话表容量上限（``AIBRIX_TOKEN_LOAD_MAX_SESSIONS`` ）"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:770
+msgid "External Filter"
+msgstr "外部过滤器"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:772
+msgid ""
+"The ``external-filter`` header restricts the candidate pod pool using "
+"Kubernetes label selector syntax before the routing strategy makes its "
+"final selection. It is evaluated before routing and only takes effect "
+"when a ``routing-strategy`` is also set."
+msgstr ""
+"``external-filter`` 请求头在路由策略最终选择前，用 Kubernetes 标签选择器语法限制候选 Pod "
+"池。在路由之前求值，且仅在同时设置了 ``routing-strategy`` 时生效。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:774
+msgid "Supported selector forms:"
+msgstr "支持的选择器形式："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:776
+msgid "``key=value``"
+msgstr "``key=value``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:777
+msgid "``key in (a, b)``"
+msgstr "``key in (a, b)``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:778
+msgid "``key!=value``"
+msgstr "``key!=value``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:779
+msgid "comma-separated list of selectors"
+msgstr "逗号分隔的选择器列表"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:781
+msgid ""
+"See the `Kubernetes label selector reference "
+"<https://kubernetes.io/docs/concepts/overview/working-with-"
+"objects/labels/>`_ for the full syntax."
+msgstr ""
+"完整语法见 `Kubernetes label selector reference "
+"<https://kubernetes.io/docs/concepts/overview/working-with-"
+"objects/labels/>`_ 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:798
+msgid ""
+"Filtering happens **before** the routing strategy and does not change "
+"which pod the strategy considers optimal."
+msgstr "过滤发生在路由策略**之前** ，不会改变策略认为最优的 Pod。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:799
+msgid ""
+"It further narrows down the pods already selected by "
+"``model.aibrix.ai/name``."
+msgstr "它会进一步缩小已由 ``model.aibrix.ai/name`` 选出的 Pod 范围。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:800
+msgid ""
+"If the filter eliminates all pods, the request fails with ``no ready pods"
+" for routing``."
+msgstr "若过滤器排除了全部 Pod，请求失败并返回 ``no ready pods for routing`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:801
+msgid ""
+"``external-filter`` is optional. When omitted, no extra filtering is "
+"applied."
+msgstr "``external-filter`` 是可选的。省略时不做额外过滤。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:807
+msgid "Request Priority Tier"
+msgstr "请求优先级层级"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:809
+msgid ""
+"Some workloads are not latency-sensitive. A nightly batch job, for "
+"example, is usually fine with answering after the interactive traffic of "
+"the same model has been served. The gateway can relay that intent to the "
+"backend engine: when ``AIBRIX_PRIORITY_TIER_ENABLED=true``, a request "
+"that declares its tier with the ``x-aibrix-priority-tier`` header gets "
+"the matching ``priority`` value set in its backend request body."
+msgstr ""
+"有些工作负载对延迟不敏感。例如，夜间批处理作业通常可以接受在同一模型的交互式流量处理完之后再得到响应。网关可以把这一意图转达给后端引擎：当 "
+"``AIBRIX_PRIORITY_TIER_ENABLED=true`` 时，通过 ``x-aibrix-priority-tier`` "
+"请求头声明层级的请求，其后端请求体中会被设置相应的 ``priority`` 值。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:815
+msgid ""
+"The gateway relies on the engine's own scheduler rather than queuing "
+"requests itself. On vLLM, that requires the deployment to run with a "
+"priority-aware scheduler such as ``--scheduling-policy=priority``, which "
+"serves smaller ``priority`` values first. The mapping is therefore built "
+"to only de-prioritize: a tier never makes a request jump ahead of another"
+" one, so enabling the feature cannot delay interactive traffic on a "
+"shared endpoint."
+msgstr ""
+"网关依赖引擎自身的调度器，而不是自己对请求排队。在 vLLM 上，这要求部署使用支持优先级的调度器，例如 ``--scheduling-"
+"policy=priority`` ，该调度器优先处理较小的 ``priority`` "
+"值。因此该映射只会降低优先级：层级不会让某个请求插到其他请求前面，所以启用该功能不会拖慢共享端点上的交互式流量。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:825
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1143
+msgid "``x-aibrix-priority-tier``"
+msgstr "``x-aibrix-priority-tier``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:826
+msgid "``priority``"
+msgstr "``priority``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:827
+msgid "Notes"
+msgstr "备注"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:828
+msgid "``batch``"
+msgstr "``batch``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:829
+msgid "``100``"
+msgstr "``100``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:830
+msgid ""
+"Below the engine default of ``0``, so batch work yields to interactive "
+"requests."
+msgstr "低于引擎默认值 ``0`` ，因此批处理工作会让位于交互式请求。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:831
+msgid "``background``"
+msgstr "``background``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:832
+msgid "``1000``"
+msgstr "``1000``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:833
+msgid "Yields to both interactive and ``batch`` work."
+msgstr "会让位于交互式请求和 ``batch`` 工作。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:834
+msgid "*(other or missing)*"
+msgstr "*（其他或缺失）*"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:835
+msgid "*(unchanged)*"
+msgstr "*（不变）*"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:836
+msgid "Unmapped tiers, and requests without the header, are forwarded untouched."
+msgstr "未映射的层级以及不带该请求头的请求，会原样转发。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:848
+msgid "Behavior notes:"
+msgstr "行为说明："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:850
+msgid ""
+"The feature is off by default and the header is ignored entirely while it"
+" is off."
+msgstr "该功能默认关闭，关闭期间该请求头会被完全忽略。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:851
+msgid ""
+"Requests that already carry a ``priority`` in their body keep the value "
+"the caller set, which makes an explicit per-request choice possible even "
+"for a tier the table maps."
+msgstr "请求体中已带有 ``priority`` 的请求会保留调用方设置的值，因此即使对表中已映射的层级，也可以按请求显式指定。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:852
+msgid "Tier names are matched case-insensitively."
+msgstr "层级名称的匹配不区分大小写。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:853
+msgid ""
+"A request that the gateway does not map is forwarded byte for byte, so "
+"callers that send something else in this header see no change in "
+"behavior."
+msgstr "网关未映射的请求会逐字节原样转发，因此在该请求头中发送其他内容的调用方不会看到行为变化。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:857
+msgid ""
+"The supported tier names are fixed in this release. Per-tier values a "
+"deployment can tune, and giving latency-sensitive tiers an explicit head "
+"start, are candidates for a follow-up."
+msgstr "在当前版本中，支持的层级名称是固定的。允许部署按层级调整取值，以及为对延迟敏感的层级提供明确的优先起步，都是后续可考虑的改进。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:862
+msgid "Rate Limiting"
+msgstr "限流"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:864
+msgid ""
+"The gateway supports per-user rate limiting on requests per minute (RPM) "
+"and tokens per minute (TPM). Pass the ``user`` header with a unique "
+"identifier to enable rate-limit enforcement for that client."
+msgstr "网关支持按用户的每分钟请求数（RPM）和每分钟 token 数（TPM）限流。传入带唯一标识的 ``user`` 请求头，即可对该客户端启用限流。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:866
+msgid "Create the user in the metadata service first:"
+msgstr "先在 metadata 服务中创建用户："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:889
+msgid ""
+"If rate limiting is not needed, the ``user`` header can be omitted. To "
+"disable user RPM/TPM and model RPS quota enforcement on the gateway, set "
+"``AIBRIX_DISABLE_RATE_LIMITING=true``. See "
+":doc:`../../production/gateway`."
+msgstr ""
+"若不需要限流，可省略 ``user`` 头。要在网关上关闭用户 RPM/TPM 和模型 RPS 配额强制，请设置 "
+"``AIBRIX_DISABLE_RATE_LIMITING=true``。参见 :doc:`../../production/gateway`。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:895
+msgid "Prometheus API Access"
+msgstr "Prometheus API 访问"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:897
+msgid ""
+"Some routing strategies rely on metrics queried from the Prometheus HTTP "
+"API (PromQL). Configure the endpoint and optional Basic Auth credentials "
+"with the following environment variables."
+msgstr "部分路由策略依赖从 Prometheus HTTP API（PromQL）查询的指标。用以下环境变量配置端点和可选的 Basic Auth 凭据。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:903
+msgid "Environment Variable"
+msgstr "环境变量"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:904
+msgid "Default"
+msgstr "默认值"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:906
+msgid "``PROMETHEUS_ENDPOINT``"
+msgstr "``PROMETHEUS_ENDPOINT``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:907
+#: ../../source/features/gateway-routing/gateway-plugins.rst:910
+#: ../../source/features/gateway-routing/gateway-plugins.rst:922
+#: ../../source/features/gateway-routing/gateway-plugins.rst:925
+msgid "(empty)"
+msgstr "（空）"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:908
+msgid ""
+"Prometheus HTTP API base URL (e.g. ``http://prometheus-"
+"operated.prometheus.svc:9090``). If empty, PromQL-based metrics are "
+"skipped."
+msgstr ""
+"Prometheus HTTP API 基 URL（例如 ``http://prometheus-"
+"operated.prometheus.svc:9090`` ）。为空则跳过基于 PromQL 的指标。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:909
+msgid "``PROMETHEUS_BASIC_AUTH_SECRET_NAME``"
+msgstr "``PROMETHEUS_BASIC_AUTH_SECRET_NAME``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:911
+msgid ""
+"Kubernetes Secret name containing Basic Auth credentials. When set, takes"
+" precedence over the plaintext env vars below."
+msgstr "包含 Basic Auth 凭据的 Kubernetes Secret 名称。设置后优先于下方明文环境变量。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:912
+msgid "``PROMETHEUS_BASIC_AUTH_SECRET_NAMESPACE``"
+msgstr "``PROMETHEUS_BASIC_AUTH_SECRET_NAMESPACE``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:913
+msgid "``aibrix-system``"
+msgstr "``aibrix-system``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:914
+msgid ""
+"Namespace of the Secret specified by "
+"``PROMETHEUS_BASIC_AUTH_SECRET_NAME``."
+msgstr "``PROMETHEUS_BASIC_AUTH_SECRET_NAME`` 指定的 Secret 所在命名空间。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:915
+msgid "``PROMETHEUS_BASIC_AUTH_USERNAME_KEY``"
+msgstr "``PROMETHEUS_BASIC_AUTH_USERNAME_KEY``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:916
+msgid "``username``"
+msgstr "``username``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:917
+msgid "Key in ``Secret.data`` used as the Basic Auth username."
+msgstr "``Secret.data`` 中用作 Basic Auth 用户名的 key。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:918
+msgid "``PROMETHEUS_BASIC_AUTH_PASSWORD_KEY``"
+msgstr "``PROMETHEUS_BASIC_AUTH_PASSWORD_KEY``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:919
+msgid "``password``"
+msgstr "``password``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:920
+msgid "Key in ``Secret.data`` used as the Basic Auth password."
+msgstr "``Secret.data`` 中用作 Basic Auth 密码的 key。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:921
+msgid "``PROMETHEUS_BASIC_AUTH_USERNAME``"
+msgstr "``PROMETHEUS_BASIC_AUTH_USERNAME``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:923
+msgid ""
+"Basic Auth username. Used only when ``PROMETHEUS_BASIC_AUTH_SECRET_NAME``"
+" is not set."
+msgstr "Basic Auth 用户名。仅在未设置 ``PROMETHEUS_BASIC_AUTH_SECRET_NAME`` 时使用。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:924
+msgid "``PROMETHEUS_BASIC_AUTH_PASSWORD``"
+msgstr "``PROMETHEUS_BASIC_AUTH_PASSWORD``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:926
+msgid ""
+"Basic Auth password. Used only when ``PROMETHEUS_BASIC_AUTH_SECRET_NAME``"
+" is not set."
+msgstr "Basic Auth 密码。仅在未设置 ``PROMETHEUS_BASIC_AUTH_SECRET_NAME`` 时使用。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:929
+msgid "Example (plaintext env vars)"
+msgstr "示例（明文环境变量）"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:938
+msgid "Example (Kubernetes Secret)"
+msgstr "示例（Kubernetes Secret）"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:960
+msgid "Message Size Configuration"
+msgstr "消息大小配置"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:962
+msgid ""
+"Two independent size limits apply to requests flowing through the "
+"gateway. Both default to **4 MiB** and must be kept in sync when you "
+"raise or lower the limit."
+msgstr "流经网关的请求受两个独立大小限制。二者默认均为 **4 MiB** ，提高或降低限制时必须保持一致。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:965
+msgid "Gateway Plugin gRPC Buffer (``AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES``)"
+msgstr "网关插件 gRPC 缓冲区（``AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES`` ）"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:967
+msgid ""
+"Envoy communicates with the AIBrix gateway plugin over an external-"
+"processing (ext_proc) gRPC connection. This env var controls the maximum "
+"size of a single gRPC message on that connection. Requests or responses "
+"larger than this value are rejected before they reach routing logic."
+msgstr ""
+"Envoy 通过外部处理（ext_proc）gRPC 连接与 AIBrix 网关插件通信。该环境变量控制该连接上单条 gRPC "
+"消息的最大大小。超过该值的请求或响应会在到达路由逻辑之前被拒绝。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:969
+msgid "Configure it under ``gatewayPlugin.container.envs`` in ``values.yaml``:"
+msgstr "在 ``values.yaml`` 的 ``gatewayPlugin.container.envs`` 下配置："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:979
+msgid "Envoy Connection Buffer (``clientTrafficPolicy.connection.bufferLimit``)"
+msgstr "Envoy 连接缓冲区（``clientTrafficPolicy.connection.bufferLimit`` ）"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:981
+msgid ""
+"Envoy itself buffers each incoming HTTP connection up to ``bufferLimit`` "
+"bytes before it begins processing. If a request body exceeds this limit "
+"Envoy returns a ``413`` before the ext_proc filter is even invoked."
+msgstr ""
+"Envoy 自身会在开始处理前将每条入站 HTTP 连接缓冲至最多 ``bufferLimit`` 字节。若请求体超出该限制，Envoy 在调用 "
+"ext_proc 过滤器之前就会返回 ``413`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:983
+msgid "Configure it under ``gateway.clientTrafficPolicy`` in ``values.yaml``:"
+msgstr "在 ``values.yaml`` 的 ``gateway.clientTrafficPolicy`` 下配置："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:993
+msgid "Keeping the two values in sync"
+msgstr "保持两个值一致"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:995
+msgid ""
+"Because Envoy drops the connection before the gateway plugin sees it when"
+" ``bufferLimit`` is the binding limit, both values should always be set "
+"to the same size. When you need to support larger payloads (e.g. large "
+"KV-cache state-sync messages), update **both** fields together:"
+msgstr ""
+"当 ``bufferLimit`` 是约束上限时，Envoy "
+"会在网关插件看到请求之前断开连接，因此两个值应始终设为相同大小。需要支持更大负载（例如大型 KV-cache 状态同步消息）时，请**同时** "
+"更新这两个字段："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1013
+msgid "Observability & Telemetry"
+msgstr "可观测性与遥测"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1015
+msgid ""
+"The gateway plugins have built-in support for distributed tracing using "
+"OpenTelemetry (OTel). This allows you to trace end-to-end request "
+"lifecycles across the external processing pipeline."
+msgstr "网关插件内置基于 OpenTelemetry（OTel）的分布式追踪，可追踪外部处理流水线中的端到端请求生命周期。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1017
+msgid ""
+"Tracing is disabled by default to conserve system resources. To enable "
+"it, complete the following two steps."
+msgstr "为节省系统资源，追踪默认处于关闭状态。要启用它，请完成以下两步。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1020
+msgid "Step 1: Enable OpenTelemetry in EnvoyProxy"
+msgstr "步骤 1：在 EnvoyProxy 中启用 OpenTelemetry"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1022
+msgid ""
+"Enable ``openTelemetry.enable`` in your helm chart or add the telemetry "
+"configuration directly to your ``EnvoyProxy`` resource."
+msgstr "在 Helm chart 中启用 ``openTelemetry.enable`` ，或直接在 ``EnvoyProxy`` 资源中添加遥测配置。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1045
+msgid "Step 2: Configure the OTLP Exporter Endpoint"
+msgstr "步骤 2：配置 OTLP Exporter 端点"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1047
+msgid ""
+"Next, you must explicitly configure an OTLP exporter endpoint in your "
+"environment. You can enable it by setting either the global endpoint or "
+"the traces-specific endpoint."
+msgstr "接下来必须在环境中显式配置 OTLP exporter 端点。可设置全局端点或 traces 专用端点来启用。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1049
+msgid ""
+"For example, if you are running a cluster local OTel Collector, inject "
+"the following environment variables:"
+msgstr "例如，若在集群内运行 OTel Collector，注入以下环境变量："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1081
+msgid "Advanced Configuration"
+msgstr "高级配置"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1083
+msgid ""
+"For the full list of supported telemetry settings (including sampling "
+"rates, TLS options, and custom headers), see "
+"``pkg/plugins/gateway/ENV_VARS.md``."
+msgstr "支持的完整遥测设置（包括采样率、TLS 选项和自定义请求头）见 ``pkg/plugins/gateway/ENV_VARS.md`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1087
+msgid "Headers Reference"
+msgstr "请求头参考"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1089
+msgid ""
+"This section describes the custom headers used in request processing for "
+"routing, debugging, and rate limiting."
+msgstr "本节说明请求处理中用于路由、调试和限流的自定义请求头。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1092
+msgid "Target and General Headers"
+msgstr "目标与通用请求头"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1098
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1154
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1196
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1212
+msgid "Header Name"
+msgstr "请求头名称"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1099
+msgid "Direction"
+msgstr "方向"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1101
+msgid "``request-id``"
+msgstr "``request-id``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1102
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1111
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1126
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1138
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1141
+msgid "Response"
+msgstr "响应"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1103
+msgid ""
+"Unique request ID associated with the client request. Useful for "
+"correlating logs."
+msgstr "与客户端请求关联的唯一请求 ID。用于关联日志。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1104
+msgid "``x-went-into-req-headers``"
+msgstr "``x-went-into-req-headers``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1105
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1108
+msgid "Backend request, Response"
+msgstr "后端请求、响应"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1106
+msgid ""
+"Indicates whether request headers were processed correctly. Used for "
+"debugging header parsing issues."
+msgstr "指示请求头是否被正确处理。用于调试请求头解析问题。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1107
+msgid "``target-pod``"
+msgstr "``target-pod``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1109
+msgid ""
+"Identifies the destination selected by the routing algorithm: the backend"
+" request receives its ``IP:port`` address, while the response reports its"
+" pod name."
+msgstr "标识路由算法选出的目标：后端请求收到其 ``IP:port`` 地址，响应中报告其 Pod 名称。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1110
+msgid "``target-pod-ip``"
+msgstr "``target-pod-ip``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1112
+msgid ""
+"``IP:port`` address of the destination pod selected by the routing "
+"algorithm."
+msgstr "路由算法选出的目标 Pod 的 ``IP:port`` 地址。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1113
+msgid "``routing-strategy``"
+msgstr "``routing-strategy``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1114
+msgid "Request, Backend request, Response"
+msgstr "请求、后端请求、响应"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1115
+msgid ""
+"Selects the routing strategy for the request, forwards the applied "
+"strategy to the backend, and reports it in the response."
+msgstr "选择该请求的路由策略，将实际应用的策略转发到后端，并在响应中报告。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1116
+msgid "``external-filter``"
+msgstr "``external-filter``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1117
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1123
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1132
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1144
+msgid "Request"
+msgstr "请求"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1118
+msgid ""
+"Label selector expression used to further filter candidate pods before "
+"routing."
+msgstr "路由前用于进一步过滤候选 Pod 的标签选择器表达式。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1119
+msgid "``model``"
+msgstr "``model``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1120
+msgid "Backend request"
+msgstr "后端请求"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1121
+msgid ""
+"Model name injected into the backend request when no explicit routing "
+"strategy is selected."
+msgstr "未显式选择路由策略时注入到后端请求的模型名。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1122
+msgid "``config-profile``"
+msgstr "``config-profile``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1124
+msgid "Selects a model configuration profile for the request."
+msgstr "为该请求选择模型配置 profile。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1125
+msgid "``x-aibrix-config-profile``"
+msgstr "``x-aibrix-config-profile``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1127
+msgid "Reports the concrete profile selected when ``config-profile`` is ``auto``."
+msgstr "当 ``config-profile`` 为 ``auto`` 时，报告实际选中的具体 profile。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1129
+msgid "Request, Response"
+msgstr "请求、响应"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1130
+msgid ""
+"Session identifier used by ``session-affinity`` routing. The response "
+"value should be sent on subsequent requests to retain affinity."
+msgstr "``session-affinity`` 路由使用的会话标识。应在后续请求中回传响应值以保持亲和性。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1133
+msgid ""
+"Caller-owned opaque session key used by ``session-affinity`` routing and,"
+" under ``pd`` routing with the ``token_load`` or ``hybrid_cache_load`` "
+"prefill policy, to charge a multi-turn conversation only for its new "
+"tokens."
+msgstr ""
+"调用方持有的不透明会话 key，用于 ``session-affinity`` 路由；在 ``pd`` 路由且 prefill 策略为 "
+"``token_load`` 或 ``hybrid_cache_load`` 时，用于使多轮对话仅计费新增 token。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1134
+msgid "``traceparent``"
+msgstr "``traceparent``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1135
+msgid "Request, Backend request"
+msgstr "请求、后端请求"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1136
+msgid ""
+"W3C Trace Context propagated through requests initiated by the gateway, "
+"including prefill-decode routing."
+msgstr "网关发起的请求中传播的 W3C Trace Context，包括 prefill-decode 路由。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1137
+msgid "``prefill-target-pod``"
+msgstr "``prefill-target-pod``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1139
+msgid "Name of the prefill pod selected by ``pd`` routing."
+msgstr "``pd`` 路由选出的 prefill Pod 名称。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1140
+msgid "``prefill-target-pod-ip``"
+msgstr "``prefill-target-pod-ip``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1142
+msgid "IP address of the prefill pod selected by ``pd`` routing."
+msgstr "``pd`` 路由选出的 prefill Pod 的 IP 地址。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1145
+msgid ""
+"Declares the priority tier of the request, for example ``batch`` or "
+"``background``. When ``AIBRIX_PRIORITY_TIER_ENABLED=true``, the gateway "
+"maps the tier to the ``priority`` field of the backend request; see "
+":ref:`request_priority_tier`."
+msgstr ""
+"声明请求的优先级层级，例如 ``batch`` 或 ``background`` 。当 "
+"``AIBRIX_PRIORITY_TIER_ENABLED=true`` 时，网关会把该层级映射到后端请求的 ``priority`` 字段；见"
+" :ref:`request_priority_tier` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1148
+msgid "Routing and Error Debugging Headers"
+msgstr "路由与错误调试请求头"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1156
+msgid "``x-error-user``"
+msgstr "``x-error-user``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1157
+msgid "Identifies errors caused by incorrect user input."
+msgstr "标识由错误用户输入引起的错误。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1158
+msgid "``x-error-routing``"
+msgstr "``x-error-routing``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1159
+msgid "Indicates a routing failure, such as being unable to select a target pod."
+msgstr "表示路由失败，例如无法选择目标 Pod。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1160
+msgid "``x-error-response-unmarshal``"
+msgstr "``x-error-response-unmarshal``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1161
+msgid ""
+"Signals that the response body could not be parsed, typically due to an "
+"internal error."
+msgstr "表示响应体无法解析，通常由内部错误引起。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1162
+msgid "``x-error-response-unknown``"
+msgstr "``x-error-response-unknown``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1163
+msgid "Generic error header when no specific cause is identified."
+msgstr "未识别到具体原因时的通用错误请求头。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1164
+msgid "``x-error-request-body-processing``"
+msgstr "``x-error-request-body-processing``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1165
+msgid "Marks a request body parsing failure, such as invalid JSON."
+msgstr "标记请求体解析失败，例如无效 JSON。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1166
+msgid "``x-error-no-model-in-request``"
+msgstr "``x-error-no-model-in-request``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1167
+msgid "Indicates that no model was specified in the request."
+msgstr "表示请求中未指定模型。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1168
+msgid "``x-error-no-model-backends``"
+msgstr "``x-error-no-model-backends``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1169
+msgid "Indicates that the requested model exists but has no active backend pods."
+msgstr "表示请求的模型存在，但没有活跃的后端 Pod。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1170
+msgid "``x-error-invalid-routing-strategy``"
+msgstr "``x-error-invalid-routing-strategy``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1171
+msgid "Indicates that an unsupported routing strategy was specified."
+msgstr "表示指定了不支持的路由策略。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1172
+msgid "``x-error-pd-prefill``"
+msgstr "``x-error-pd-prefill``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1173
+msgid ""
+"Marks a gateway-generated error because the prefill leg of a ``pd`` "
+"request failed. See :doc:`pd-disaggregation`."
+msgstr "标记网关因 ``pd`` 请求的 prefill 阶段失败而生成的错误。参见 :doc:`pd-disaggregation`。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1174
+msgid "``x-error-pd-decode``"
+msgstr "``x-error-pd-decode``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1175
+msgid ""
+"Marks a gateway-generated error because the decode watchdog fired after a"
+" successful prefill. See :doc:`pd-disaggregation`."
+msgstr "标记网关因 prefill 成功后 decode 看门狗触发而生成的错误。参见 :doc:`pd-disaggregation`。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1176
+msgid "``x-error-model-rps-exceeded``"
+msgstr "``x-error-model-rps-exceeded``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1177
+msgid ""
+"The request exceeded the model's ``requestsPerSecondPerReplica`` cap. See"
+" :doc:`../../production/model-deployment`."
+msgstr ""
+"请求超过了模型的 ``requestsPerSecondPerReplica`` 上限。参见 "
+":doc:`../../production/model-deployment`。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1178
+msgid "``x-error-incr-model-rps``"
+msgstr "``x-error-incr-model-rps``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1179
+msgid "Error encountered while incrementing the model RPS counter."
+msgstr "递增模型 RPS 计数器时出错。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1180
+msgid "``x-error-model-replica-inflight-exceeded``"
+msgstr "``x-error-model-replica-inflight-exceeded``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1181
+msgid "Every routable replica is at the profile's ``requestsInflight`` cap."
+msgstr "每个可路由副本都已达到该档案的 ``requestsInflight`` 上限。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1182
+msgid "``x-error-multipart-parsing``"
+msgstr "``x-error-multipart-parsing``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1183
+msgid ""
+"The multipart/form-data body could not be parsed, typically on image, "
+"audio, or video endpoints. See :doc:`omni`."
+msgstr "无法解析 multipart/form-data 请求体，常见于图像、音频或视频端点。参见 :doc:`omni`。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1184
+msgid "``x-error-video-not-found``"
+msgstr "``x-error-video-not-found``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1185
+msgid ""
+"The video job ID is unknown, expired, out of scope, or its owning pod is "
+"gone. See :doc:`omni-video`."
+msgstr "视频任务 ID 未知、已过期、不在当前作用域，或其所属 Pod 已不存在。参见 :doc:`omni-video`。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1186
+msgid "``x-error-video-job-pod-unavailable``"
+msgstr "``x-error-video-job-pod-unavailable``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1187
+msgid ""
+"The video job's owning pod is temporarily unroutable. See :doc:`omni-"
+"video`."
+msgstr "视频任务所属 Pod 暂时不可路由。参见 :doc:`omni-video`。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1190
+msgid "Streaming Headers"
+msgstr "流式请求头"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1198
+msgid "``x-error-streaming``"
+msgstr "``x-error-streaming``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1199
+msgid "Signals an error during response streaming."
+msgstr "表示响应流式传输过程中出错。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1200
+msgid "``x-error-stream``"
+msgstr "``x-error-stream``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1201
+msgid "Indicates an incorrect ``stream`` value in the request body."
+msgstr "表示请求体中的 ``stream`` 值不正确。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1202
+msgid "``x-error-no-stream-options-include-usage``"
+msgstr "``x-error-no-stream-options-include-usage``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1203
+msgid ""
+"Indicates whether usage statistics were included in the streaming "
+"response."
+msgstr "表示流式响应中是否包含用量统计。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1206
+msgid "Rate Limiting Headers"
+msgstr "限流请求头"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1214
+msgid "``x-update-rpm``"
+msgstr "``x-update-rpm``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1215
+msgid "Indicates the RPM (requests per minute) counter was updated successfully."
+msgstr "表示 RPM（每分钟请求数）计数器更新成功。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1216
+msgid "``x-update-tpm``"
+msgstr "``x-update-tpm``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1217
+msgid "Indicates the TPM (tokens per minute) counter was updated successfully."
+msgstr "表示 TPM（每分钟 token 数）计数器更新成功。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1218
+msgid "``x-error-rpm-exceeded``"
+msgstr "``x-error-rpm-exceeded``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1219
+msgid "Signals that the request exceeded the allowed RPM limit."
+msgstr "表示请求超出允许的 RPM 限制。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1220
+msgid "``x-error-tpm-exceeded``"
+msgstr "``x-error-tpm-exceeded``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1221
+msgid "Signals that the request exceeded the allowed TPM limit."
+msgstr "表示请求超出允许的 TPM 限制。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1222
+msgid "``x-error-incr-rpm``"
+msgstr "``x-error-incr-rpm``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1223
+msgid "Error encountered while incrementing the RPM counter."
+msgstr "递增 RPM 计数器时出错。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1224
+msgid "``x-error-incr-tpm``"
+msgstr "``x-error-incr-tpm``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1225
+msgid "Error encountered while incrementing the TPM counter."
+msgstr "递增 TPM 计数器时出错。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1229
+msgid "Debugging Guidelines"
+msgstr "调试指南"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1231
+msgid ""
+"**Identify error headers** — inspect ``x-error-routing``, ``x-error-"
+"user``, ``x-error-response-unmarshal``, and ``x-error-response-unknown`` "
+"to locate the root cause. For request body issues, check ``x-error-"
+"request-body-processing`` and ``x-error-no-model-in-request``."
+msgstr ""
+"**识别错误请求头** — 检查 ``x-error-routing`` 、``x-error-user`` 、``x-error-"
+"response-unmarshal`` 和 ``x-error-response-unknown`` 以定位根因。请求体问题请检查 ``x"
+"-error-request-body-processing`` 和 ``x-error-no-model-in-request`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1233
+msgid ""
+"**Verify routing and model assignment** — confirm ``target-pod`` is set. "
+"If ``x-error-no-model-in-request`` or ``x-error-no-model-backends`` "
+"appears, verify the request body includes a valid model name and that the"
+" model has active backend pods. If ``x-error-invalid-routing-strategy`` "
+"is present, confirm the strategy name is supported."
+msgstr ""
+"**验证路由与模型分配** — 确认已设置 ``target-pod`` 。若出现 ``x-error-no-model-in-request``"
+" 或 ``x-error-no-model-backends`` ，请确认请求体包含有效模型名且该模型有活跃后端 Pod。若出现 ``x"
+"-error-invalid-routing-strategy`` ，请确认策略名受支持。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1235
+msgid ""
+"**Diagnose streaming issues** — check ``x-error-streaming`` and ``x"
+"-error-stream``. If usage statistics are missing from a streaming "
+"response, inspect ``x-error-no-stream-options-include-usage``."
+msgstr ""
+"**诊断流式问题** — 检查 ``x-error-streaming`` 和 ``x-error-stream`` "
+"。若流式响应缺少用量统计，检查 ``x-error-no-stream-options-include-usage`` 。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1237
+msgid ""
+"**Investigate rate limiting** — if a request was rejected, check ``x"
+"-error-rpm-exceeded`` or ``x-error-tpm-exceeded``. If counters failed to "
+"update, look for ``x-error-incr-rpm`` or ``x-error-incr-tpm``. Successful"
+" updates are indicated by ``x-update-rpm`` and ``x-update-tpm``."
+msgstr ""
+"**排查限流** — 若请求被拒绝，检查 ``x-error-rpm-exceeded`` 或 ``x-error-tpm-exceeded`` "
+"。若计数器更新失败，查看 ``x-error-incr-rpm`` 或 ``x-error-incr-tpm`` 。更新成功由 ``x"
+"-update-rpm`` 和 ``x-update-tpm`` 表示。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1240
+msgid "Check gateway object status"
+msgstr "检查网关对象状态"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1242
+msgid "Verify that all gateway objects have ``status.conditions == Accepted``:"
+msgstr "确认所有网关对象的 ``status.conditions == Accepted`` ："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1259
+msgid "Collect logs"
+msgstr "收集日志"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1261
+msgid ""
+"Collect logs from the Envoy proxy and the gateway plugin for deeper "
+"investigation:"
+msgstr "收集 Envoy 代理和网关插件的日志以便深入排查："
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1288
+msgid "Prefix-cache aware routing and KV event sync."
+msgstr "前缀缓存感知路由和 KV 事件同步。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1290
+msgid "Prefill-decode disaggregation, bucketing, and scoring policies."
+msgstr "Prefill-decode 分离、分桶和打分策略。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1292
+msgid "Session affinity for multi-turn and concurrent agentic requests."
+msgstr "多轮对话和并发 agent 请求的会话亲和性。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1294
+msgid "Topic-based routing through the vLLM Semantic Router ext_proc filter."
+msgstr "通过 vLLM Semantic Router ext_proc 过滤器按主题路由。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1296
+msgid "Multi-modal serving and sticky video job routing."
+msgstr "多模态服务与粘滞视频任务路由。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1298
+msgid "Delegating replica selection to an operator-run decision service."
+msgstr "把副本选择委托给运营方运行的决策服务。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1299
+msgid ":doc:`../../designs/aibrix-gateway`"
+msgstr ":doc:`../../designs/aibrix-gateway`"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1300
+msgid "Gateway architecture and how to add a routing algorithm."
+msgstr "网关架构以及如何添加路由算法。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1301
+msgid ":doc:`../../production/gateway`"
+msgstr ":doc:`../../production/gateway`"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1302
+msgid "Production replica counts, Redis, timeouts, and traffic policies."
+msgstr "生产环境副本数、Redis、超时和流量策略。"
+
+#~ msgid "Sequential requests with ``x-session-id``:"
+#~ msgstr "使用 ``x-session-id`` 的顺序请求："
+
+#~ msgid ""
+#~ "The gateway encodes the target pod's "
+#~ "address (``IP:Port``) as a base64 value"
+#~ " in the ``x-session-id`` response "
+#~ "header. Subsequent requests that include "
+#~ "this header are routed to the same"
+#~ " pod. If that pod is no longer"
+#~ " available, the gateway transparently fails"
+#~ " over to a new pod and issues"
+#~ " a fresh session ID."
+#~ msgstr ""
+#~ "网关把目标 Pod 的地址（``IP:Port`` ）以 base64 值编码到"
+#~ " ``x-session-id`` 响应头中。携带该请求头的后续请求会被路由到同一个 Pod。若该"
+#~ " Pod 不再可用，网关会透明地故障转移到新 Pod，并签发新的会话 ID。"
+
+#~ msgid ""
+#~ "On the first request (no ``x-session-"
+#~ "id``), the gateway picks a ready "
+#~ "pod and returns an ``x-session-id`` "
+#~ "response header."
+#~ msgstr "首次请求（无 ``x-session-id`` ）时，网关选择一个就绪 Pod，并返回 ``x-session-id`` 响应头。"
+
+#~ msgid ""
+#~ "The client stores and resends this "
+#~ "header on follow-up requests (e.g., "
+#~ "in multi-turn conversations)."
+#~ msgstr "客户端保存该请求头，并在后续请求中回传（例如多轮对话）。"
+
+#~ msgid ""
+#~ "The gateway decodes the session ID "
+#~ "to recover the original pod address "
+#~ "and routes to it."
+#~ msgstr "网关解码 session ID，还原原始 Pod 地址并路由到该 Pod。"
+
+#~ msgid ""
+#~ "If the pod is unavailable (scaled "
+#~ "down or evicted), it falls over to"
+#~ " a new pod and issues a new "
+#~ "session ID."
+#~ msgstr "若 Pod 不可用（缩容或被驱逐），则故障转移到新 Pod 并签发新的 session ID。"
+
+#~ msgid ""
+#~ "Send the first request without a "
+#~ "session header. The response carries an"
+#~ " ``x-session-id`` header:"
+#~ msgstr "首个请求不带任何会话请求头。响应中会带有 ``x-session-id`` 请求头："
+
+#~ msgid "Send that value back unchanged on follow-up requests:"
+#~ msgstr "后续请求原样带回该值："
+
+#~ msgid "Concurrent agentic requests with ``x-aibrix-session-key``:"
+#~ msgstr "使用 ``x-aibrix-session-key`` 的并发 agentic 请求："
+
+#~ msgid ""
+#~ "Choose a stable, opaque value of "
+#~ "your own, such as a conversation "
+#~ "ID or an agent-run ID, and "
+#~ "send it from the very first "
+#~ "request, with no need to wait for"
+#~ " a response first. This matters for"
+#~ " agentic workflows that fan out "
+#~ "concurrent sub-requests -- parallel tool"
+#~ " calls, sub-agent turns -- before "
+#~ "any one of them has produced an"
+#~ " ``x-session-id`` to reuse."
+#~ msgstr ""
+#~ "自行选择一个稳定且不透明的值，例如对话 ID 或 agent 运行 "
+#~ "ID，并从第一个请求起就携带它，无需先等待响应。这对会并发派生子请求（并行工具调用、子 agent 轮次）的 "
+#~ "agentic 工作流很重要：在其中任何一个请求拿到可复用的 ``x-session-id`` "
+#~ "之前，这些请求就已经发出了。"
+
+#~ msgid ""
+#~ "Send the same key on every related"
+#~ " request. Requests that carry it are"
+#~ " consistently mapped to the same "
+#~ "ready pod whenever possible. The key "
+#~ "does not expose the backend address "
+#~ "and is not returned in the "
+#~ "response. Keep it short: keys longer "
+#~ "than 256 bytes are treated as "
+#~ "unset."
+#~ msgstr ""
+#~ "每个相关请求都发送同一个 key。携带该 key 的请求会在可能的情况下被一致地映射到同一个就绪 "
+#~ "Pod。该 key 不会暴露后端地址，也不会在响应中返回。请保持简短：长度超过 256 "
+#~ "字节的 key 会被视为未设置。"
+
+#~ msgid ""
+#~ "Neither ``x-session-id`` nor ``x-aibrix-"
+#~ "session-key`` is a security token. "
+#~ "``x-session-id`` encodes only network "
+#~ "location. Do not use either header "
+#~ "for authentication or authorization."
+#~ msgstr ""
+#~ "``x-session-id`` 和 ``x-aibrix-session-"
+#~ "key`` 都不是安全令牌。 ``x-session-id`` "
+#~ "仅编码网络位置。不得将任一请求头用于认证或授权。"
+
+#~ msgid ""
+#~ "If a request carries both headers, "
+#~ "the gateway uses ``x-session-id`` first"
+#~ " and falls back to ``x-aibrix-"
+#~ "session-key`` when it does not "
+#~ "resolve to a ready pod."
+#~ msgstr ""
+#~ "若请求同时携带两个请求头，网关优先使用 ``x-session-id`` ；当它无法解析到就绪 "
+#~ "Pod 时，再回退到 ``x-aibrix-session-key`` 。"
+
+#~ msgid ""
+#~ "For details on managing users, see "
+#~ "the `User Management documentation "
+#~ "<https://github.com/vllm-"
+#~ "project/aibrix/blob/main/pkg/metadata/README.md>`_."
+#~ msgstr ""
+#~ "用户管理详见 `User Management documentation "
+#~ "<https://github.com/vllm-"
+#~ "project/aibrix/blob/main/pkg/metadata/README.md>`_ 。"
+
+#~ msgid "If rate limiting is not needed, the ``user`` header can be omitted."
+#~ msgstr "若不需要限流，可省略 ``user`` 请求头。"
+

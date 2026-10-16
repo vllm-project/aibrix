@@ -28,8 +28,11 @@ import (
 //   None,               # parent_block_hash
 //   [55, 11, 22],       # token_ids
 //   32,                 # block_size
-//   None,               # lora_id
-//   "cuda:0"            # medium
+//   None,               # lora_id (deprecated)
+//   "GPU",              # medium
+//   "adapter-a",        # lora_name
+//   None,               # extra_keys (may be omitted)
+//   0                   # group_idx (may be omitted)
 // ]
 //
 // [
@@ -74,14 +77,17 @@ type KVEvent interface {
 
 // BlockStoredEvent represents blocks being stored in KV cache
 // ------------------------------------------------------------
-// BlockStored (msgspec encoding order)
-// Python fields:
+// BlockStored (msgspec encoding order, vllm/distributed/kv_events.py)
+// Python fields, positions after the tag:
 //
-//	[tag, block_hashes, parent_block_hash, token_ids, block_size, lora_id, medium]
+//	[tag, block_hashes, parent_block_hash, token_ids, block_size,
+//	 lora_id, medium, lora_name, extra_keys, group_idx, ...]
 //
+// The struct is msgspec array_like with omit_defaults, so trailing fields that
+// equal their default (extra_keys, group_idx and newer spec fields) may be
+// omitted from the wire array. The decoder therefore reads positions 5+ by
+// index with bounds checks and tolerates shorter arrays from older vLLM builds.
 // ------------------------------------------------------------
-//
-// lora_id and medium are unused for now.
 //
 // Note: BlockHashes are converted at decode time:
 // - vLLM legacy format (int64) → stored as-is
@@ -93,6 +99,25 @@ type BlockStoredEvent struct {
 	BlockHashes     []int64   // Decoded from vLLM, supports both old and new formats
 	ParentBlockHash *int64    // Decoded from vLLM, supports both old and new formats
 	TokenIDs        [][]byte
+
+	// Optional fields carried by newer vLLM builds. Decoded best-effort; nil
+	// when the connected vLLM does not emit them. These are exposed here so
+	// prefix-cache routing can key and score on them; see issue #2285.
+	// Consumption is handled separately.
+	LoraID   *int64  // deprecated upstream in favor of LoraName
+	Medium   *string // storage tier, e.g. "GPU"/"CPU"/"STORAGE" (nil = unspecified)
+	LoraName *string // canonical adapter id
+	// ExtraKeys carries one entry per block in BlockHashes (may be nil per
+	// block). It is used for block-hash reconstruction on the KV-event
+	// consumer side; retained here instead of being dropped at decode time.
+	ExtraKeys [][]interface{}
+	GroupIdx  *int64 // KV-cache group for hybrid-attention models
+
+	// Cache-spec metadata (hybrid attention: sliding window info).
+	KVCacheSpecKind          *string
+	KVCacheSpecSlidingWindow *int64
+	// Locality of the blocks relative to the publisher ("LOCAL"/"REMOTE").
+	Locality *string
 
 	// NOTE: These are NOT part of msgpack
 	Timestamp time.Time `msgpack:"-"`
@@ -123,6 +148,12 @@ type BlockRemovedEvent struct {
 	_           struct{}  `msgpack:",array"`
 	Type        EventType `msgpack:"-"`
 	BlockHashes []int64   // Decoded from vLLM, supports both old and new formats
+
+	// Optional fields carried by newer vLLM builds. Used to scope removals to
+	// the correct storage tier / KV-cache group.
+	Medium   *string
+	GroupIdx *int64
+	Locality *string
 
 	// NOTE: These are NOT part of msgpack
 	Timestamp time.Time `msgpack:"-"`

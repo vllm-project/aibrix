@@ -1,0 +1,41 @@
+# ModelClaim's runtime image is experimental, so it is published on its own,
+# to Docker Hub only, and is not part of releases.
+name: Docker Push kvcached-runtime
+
+on:
+  workflow_dispatch:  # Allows manual trigger
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-push-dockerhub:
+    if: github.repository == 'vllm-project/aibrix'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # The build needs about 31 GB of disk, more than the 14 GB that GitHub
+      # documents for its hosted runners.
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+      - uses: actions/checkout@v6
+      - name: Login to DockerHub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Build and push kvcached-runtime
+        uses: docker/build-push-action@v7
+        with:
+          # The kvcached-vLLM base image is built for amd64 only.
+          platforms: linux/amd64
+          context: .
+          file: build/container/Dockerfile.kvcached-runtime
+          push: true
+          tags: |
+            aibrix/kvcached-runtime:${{ github.sha }}
+            aibrix/kvcached-runtime:nightly

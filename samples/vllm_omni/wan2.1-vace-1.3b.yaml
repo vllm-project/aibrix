@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    model.aibrix.ai/name: wan21-vace-13b # Note: The label value `model.aibrix.ai/name` here must match with the service name.
+    model.aibrix.ai/port: "8000"
+  name: wan21-vace-13b
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: wan21-vace-13b
+      model.aibrix.ai/port: "8000"
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: wan21-vace-13b
+        model.aibrix.ai/port: "8000"
+    spec:
+      containers:
+        - name: vllm-omni
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-omni:v0.28.0  # Note: Must use vllm-omni image other than vllm-openai image
+          command:
+            - vllm
+            - serve
+            - /models/Wan2.1-VACE-1.3B-diffusers # Note: host path /data00/models/Wan2.1-VACE-1.3B-diffusers
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+            - --uvicorn-log-level
+            - warning
+            - --served-model-name
+            # Note: The `--served-model-name` argument value must also match the Service name and the Deployment label `model.aibrix.ai/name`
+            - wan21-vace-13b
+            - --omni # Note: switches `vllm serve` into vLLM-Omni mode, which auto-detects this diffusion
+                     # model and exposes the OpenAI-compatible Videos API (multipart/form-data):
+                     # POST /v1/videos (async job; poll GET /v1/videos/{id}, fetch GET /v1/videos/{id}/content)
+                     # and POST /v1/videos/sync (blocks, returns raw MP4 bytes). Per-request generation
+                     # params (height, width, num_frames, guidance_scale, fps, ...) go in the request body/
+                     # form, not as server args.
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+          volumeMounts:
+            - mountPath: /models
+              name: models
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 3
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 5
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 30
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+      volumes:
+        - name: models
+          hostPath:
+            path: /data00/models
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wan21-vace-13b
+  namespace: default
+spec:
+  selector:
+    model.aibrix.ai/name: wan21-vace-13b
+  ports:
+    - name: serve
+      port: 8000
+      protocol: TCP
+      targetPort: 8000

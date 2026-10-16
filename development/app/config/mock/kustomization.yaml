@@ -2,10 +2,13 @@ resources:
   - ../templates/deployment
   - components.yaml
   - config-profile.yaml
+  - replica-limits.yaml
   - vllm-pd-config.yaml
+  - nixl-pd-config.yaml
+  - vllm-pd-bucketing-config.yaml
   - sglang-pd-config.yaml
   - trtllm-pd-config.yaml
 
-# enable following patch when we test lora + api-key
 patches:
   - path: api-key-patch.yaml
+  - path: latency-patch.yaml

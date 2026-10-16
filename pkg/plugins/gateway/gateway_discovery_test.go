@@ -84,7 +84,7 @@ func TestInstallationDiscoveryRoutingAndModels(t *testing.T) {
 		_, err := st.ListPodsByModel(model)
 		require.Error(t, err)
 	}
-	handler := server.httpHandler()
+	handler := modelListHTTPHandler(server.handleListModels)
 	for _, path := range []string{"/v1/models", "/v1/models/", "/v1/models?limit=10", "/v1/models/?limit=10"} {
 		t.Run(path, func(t *testing.T) {
 			response := httptest.NewRecorder()

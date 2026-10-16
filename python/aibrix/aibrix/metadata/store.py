@@ -20,11 +20,18 @@ Provides a clean interface for metadata key-value operations
 This allows for easier testing, backend swapping, and separation of concerns.
 """
 
+import time
 from abc import ABC, abstractmethod
 from typing import Optional
 
 import aibrix.client.redis as redis
 from aibrix.logger import init_logger
+from aibrix.metadata.core.metrics import (
+    Emitter,
+    T,
+    duration_ms,
+    metrics_names,
+)
 
 logger = init_logger(__name__)
 
@@ -119,29 +126,89 @@ class RedisMetadataStore(MetadataStore):
         """
         return self._client
 
+    @staticmethod
+    def _tags(operation: str):
+        return (T("backend", "redis"), T("operation", operation))
+
     async def get(self, key: str) -> Optional[bytes]:
-        data = await self._client.get(key)
-        return data
+        start_time = time.perf_counter()
+        tags = self._tags("get")
+        try:
+            return await self._client.get(key)
+        except Exception:
+            Emitter.counter(metrics_names.METRIC_METADATA_STORE_ERROR, 1, *tags)
+            raise
+        finally:
+            duration_ms(
+                Emitter, metrics_names.METRIC_METADATA_STORE_DURATION, start_time, *tags
+            )
 
     async def set(self, key: str, value: str | bytes) -> bool:
-        result = await self._client.set(key, value)
-        return bool(result)
+        start_time = time.perf_counter()
+        tags = self._tags("set")
+        try:
+            result = await self._client.set(key, value)
+            return bool(result)
+        except Exception:
+            Emitter.counter(metrics_names.METRIC_METADATA_STORE_ERROR, 1, *tags)
+            raise
+        finally:
+            duration_ms(
+                Emitter, metrics_names.METRIC_METADATA_STORE_DURATION, start_time, *tags
+            )
 
     async def exists(self, key: str) -> bool:
-        result = await self._client.exists(key)
-        return bool(result)
+        start_time = time.perf_counter()
+        tags = self._tags("exists")
+        try:
+            result = await self._client.exists(key)
+            return bool(result)
+        except Exception:
+            Emitter.counter(metrics_names.METRIC_METADATA_STORE_ERROR, 1, *tags)
+            raise
+        finally:
+            duration_ms(
+                Emitter, metrics_names.METRIC_METADATA_STORE_DURATION, start_time, *tags
+            )
 
     async def delete(self, key: str) -> bool:
-        result = await self._client.delete(key)
-        return bool(result)
+        start_time = time.perf_counter()
+        tags = self._tags("delete")
+        try:
+            result = await self._client.delete(key)
+            return bool(result)
+        except Exception:
+            Emitter.counter(metrics_names.METRIC_METADATA_STORE_ERROR, 1, *tags)
+            raise
+        finally:
+            duration_ms(
+                Emitter, metrics_names.METRIC_METADATA_STORE_DURATION, start_time, *tags
+            )
 
     async def ping(self) -> bool:
+        start_time = time.perf_counter()
+        tags = self._tags("ping")
         try:
             return await self._client.ping()
         except Exception:
+            Emitter.counter(metrics_names.METRIC_METADATA_STORE_ERROR, 1, *tags)
             logger.exception("Redis metadata store ping failed")
             return False
+        finally:
+            duration_ms(
+                Emitter, metrics_names.METRIC_METADATA_STORE_DURATION, start_time, *tags
+            )
 
     async def close(self) -> None:
-        await self._client.aclose()  # type: ignore[attr-defined]
-        logger.info("Redis metadata store closed")
+        start_time = time.perf_counter()
+        tags = self._tags("close")
+        try:
+            await self._client.aclose()  # type: ignore[attr-defined]
+            logger.info("Redis metadata store closed")
+        except Exception:
+            Emitter.counter(metrics_names.METRIC_METADATA_STORE_ERROR, 1, *tags)
+            raise
+        finally:
+            duration_ms(
+                Emitter, metrics_names.METRIC_METADATA_STORE_DURATION, start_time, *tags
+            )

@@ -22,10 +22,33 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 // AuthModeDev is the development auth mode name.
 const AuthModeDev = "dev"
+
+const defaultMetadataFileUploadTimeout = 30 * time.Minute
+const defaultPlannerWorkerQueueSize = 1000
+
+// KubernetesProviderConfig identifies the cluster and namespace used by the
+// Kubernetes deployment provider.
+type KubernetesProviderConfig struct {
+	Kubeconfig string
+	Context    string
+	Namespace  string
+}
+
+// KubernetesWorkloadConfig holds defaults for Kubernetes resources rendered
+// from a deployment template. These values are workload settings, not cluster
+// connection settings.
+type KubernetesWorkloadConfig struct {
+	ServiceType             string
+	ContainerPort           int32
+	ServicePort             int32
+	CPURequest              string
+	HPATargetCPUUtilization int32
+}
 
 // Config holds all configuration for the AIBrix console backend.
 type Config struct {
@@ -42,6 +65,8 @@ type Config struct {
 	GatewayEndpoint string
 	// MetadataServiceURL is the metadata service URL for file proxy operations.
 	MetadataServiceURL string
+	// MetadataFileUploadTimeout bounds file uploads proxied to metadata service.
+	MetadataFileUploadTimeout time.Duration
 	// DefaultBatchModelDeploymentTemplate is injected as aibrix.model_template
 	// on CreateJob requests when the caller does not provide one. Temporary
 	// stop-gap until the Model entity carries a per-model batch_template.
@@ -56,6 +81,9 @@ type Config struct {
 	// PlannerWorkerCount is the number of worker threads to use for the planner.
 	// Defaults to 10.
 	PlannerWorkerCount int
+	// PlannerWorkerQueueSize bounds queued planner work without blocking the
+	// planning loop. Defaults to 1000.
+	PlannerWorkerQueueSize int
 
 	// GRPCAddr is the listen address for the gRPC server.
 	GRPCAddr string
@@ -134,6 +162,17 @@ type Config struct {
 
 	// ErrorInjectionEnabled controls whether error injection is enabled.
 	ErrorInjectionEnabled bool
+
+	// Metrics holds the metrics configuration.
+	// When nil, no metrics backends are initialised and all emissions are no-ops.
+	Metrics *MetricsConfig
+
+	// KubernetesProvider configures access to the cluster used by the
+	// "kubernetes" deployment provider.
+	KubernetesProvider KubernetesProviderConfig
+	// KubernetesWorkload configures default properties of resources rendered by
+	// the "kubernetes" deployment provider.
+	KubernetesWorkload KubernetesWorkloadConfig
 }
 
 // Load reads configuration from environment variables and applies sensible defaults.
@@ -159,15 +198,34 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	plannerWorkerQueueSize, err := strconv.Atoi(envOrDefault(
+		"PLANNER_WORKER_QUEUE_SIZE",
+		strconv.Itoa(defaultPlannerWorkerQueueSize),
+	))
+	if err != nil {
+		return nil, fmt.Errorf("PLANNER_WORKER_QUEUE_SIZE must be a positive integer: %w", err)
+	}
+	if plannerWorkerQueueSize <= 0 {
+		return nil, fmt.Errorf("PLANNER_WORKER_QUEUE_SIZE must be a positive integer")
+	}
+	metadataFileUploadTimeout, err := envDurationOrDefault(
+		"METADATA_FILE_UPLOAD_TIMEOUT",
+		defaultMetadataFileUploadTimeout,
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Config{
 		StoreURI:                            envOrDefault("STORE_URI", "sqlite:/tmp/aibrix-console.db"),
 		GatewayEndpoint:                     envOrDefault("GATEWAY_ENDPOINT", "http://localhost:8888"),
 		MetadataServiceURL:                  envOrDefault("METADATA_SERVICE_URL", "http://localhost:8090"),
+		MetadataFileUploadTimeout:           metadataFileUploadTimeout,
 		DefaultBatchModelDeploymentTemplate: envOrDefault("DEFAULT_BATCH_MODEL_DEPLOYMENT_TEMPLATE", ""),
 		Provisioner:                         envOrDefault("PROVISIONER", "kubernetes"),
 		PlanningPolicy:                      envOrDefault("PLANNING_POLICY", "simple"),
 		PlannerWorkerCount:                  plannerWorkerCount,
+		PlannerWorkerQueueSize:              plannerWorkerQueueSize,
 		GRPCAddr:                            envOrDefault("GRPC_ADDR", ":50060"),
 		HTTPAddr:                            envOrDefault("HTTP_ADDR", ":8080"),
 		AuthMode:                            authMode,
@@ -191,6 +249,19 @@ func Load() (*Config, error) {
 		AllowedOrigins:                      envOrDefault("ALLOWED_ORIGINS", ""),
 		DevMode:                             envBool("DEV_MODE", false),
 		ErrorInjectionEnabled:               envBool("ERROR_INJECTION_ENABLED", false),
+		Metrics:                             loadMetricsConfig(),
+		KubernetesProvider: KubernetesProviderConfig{
+			Kubeconfig: envOrDefaultCompat("KUBERNETES_KUBECONFIG", "K8S_KUBECONFIG", os.Getenv("KUBECONFIG")),
+			Context:    envOrDefaultCompat("KUBERNETES_CONTEXT", "K8S_CONTEXT", ""),
+			Namespace:  envOrDefaultCompat("KUBERNETES_NAMESPACE", "K8S_NAMESPACE", "default"),
+		},
+		KubernetesWorkload: KubernetesWorkloadConfig{
+			ServiceType:             envOrDefaultCompat("KUBERNETES_SERVICE_TYPE", "K8S_SERVICE_TYPE", "ClusterIP"),
+			ContainerPort:           envInt32Compat("KUBERNETES_CONTAINER_PORT", "K8S_CONTAINER_PORT", 8000),
+			ServicePort:             envInt32Compat("KUBERNETES_SERVICE_PORT", "K8S_SERVICE_PORT", 8000),
+			CPURequest:              envOrDefaultCompat("KUBERNETES_CPU_REQUEST", "K8S_CPU_REQUEST", "1"),
+			HPATargetCPUUtilization: envInt32Compat("KUBERNETES_HPA_TARGET_CPU_UTILIZATION", "K8S_HPA_TARGET_CPU_UTILIZATION", 80),
+		},
 	}, nil
 }
 
@@ -214,6 +285,47 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envOrDefaultCompat(key, legacyKey, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	if v := os.Getenv(legacyKey); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envInt32Compat(key, legacyKey string, fallback int32) int32 {
+	if v := os.Getenv(key); v != "" {
+		var parsed int
+		if _, err := fmt.Sscanf(v, "%d", &parsed); err == nil {
+			return int32(parsed)
+		}
+	}
+	if v := os.Getenv(legacyKey); v != "" {
+		var parsed int
+		if _, err := fmt.Sscanf(v, "%d", &parsed); err == nil {
+			return int32(parsed)
+		}
+	}
+	return fallback
+}
+
+func envDurationOrDefault(key string, fallback time.Duration) (time.Duration, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a valid duration: %w", key, err)
+	}
+	if duration <= 0 {
+		return 0, fmt.Errorf("%s must be greater than zero", key)
+	}
+	return duration, nil
 }
 
 // requiredSecret returns the env var value if set. In dev mode it generates a

@@ -28,6 +28,14 @@ type StormServiceSpec struct {
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
 
+	// Mode is the deployment mode of the StormService. When left empty it is resolved
+	// from spec.replicas for backward compatibility: "Replica" when replicas > 1,
+	// otherwise "Pooled" (see ResolvedMode). The field is not defaulted, so an object
+	// that does not set it keeps the inferred behavior.
+	// +optional
+	// +kubebuilder:validation:Enum={Replica,Pooled}
+	Mode StormServiceMode `json:"mode,omitempty"`
+
 	// Label selector for roleSets. Existing ReplicaSets whose roleSets are
 	// selected by this will be the ones affected by this stormService.
 	// It must match the roleSet template's labels.
@@ -54,6 +62,15 @@ type StormServiceSpec struct {
 	// +optional
 	Paused bool `json:"paused,omitempty" protobuf:"varint,7,opt,name=paused"`
 
+	// The maximum time in seconds for a StormService to make progress before it
+	// is considered to be failed. The controller will continue to process failed
+	// StormServices and surface a condition with a ProgressDeadlineExceeded reason.
+	// Progress is not estimated while a StormService is paused. Defaults to 600s.
+	// +kubebuilder:default=600
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	ProgressDeadlineSeconds *int32 `json:"progressDeadlineSeconds,omitempty" protobuf:"varint,9,opt,name=progressDeadlineSeconds"`
+
 	// DisruptionTolerance indicates how many roleSets can be unavailable during the preemption/eviction.
 	// +optional
 	DisruptionTolerance DisruptionTolerance `json:"disruptionTolerance,omitempty"`
@@ -66,11 +83,49 @@ const (
 	DefaultStormServiceUniqueLabelKey string = "stormservice-template-hash"
 )
 
+// StormServiceMode is the deployment mode of a StormService.
+// +enum
+type StormServiceMode string
+
+const (
+	// StormServiceReplicaMode treats each RoleSet as an independent replica of the
+	// service, so spec.replicas is the desired number of RoleSets.
+	StormServiceReplicaMode StormServiceMode = "Replica"
+	// StormServicePooledMode runs a single RoleSet whose roles scale independently
+	// through spec.template.spec.roles[].replicas.
+	StormServicePooledMode StormServiceMode = "Pooled"
+)
+
+// ResolvedMode returns the effective deployment mode. An explicit spec.mode takes
+// precedence; otherwise the mode is inferred from spec.replicas for backward
+// compatibility (replicas > 1 is Replica mode, replicas <= 1 or unset is Pooled mode).
+func (s *StormServiceSpec) ResolvedMode() StormServiceMode {
+	if s.Mode != "" {
+		return s.Mode
+	}
+	if s.Replicas != nil && *s.Replicas > 1 {
+		return StormServiceReplicaMode
+	}
+	return StormServicePooledMode
+}
+
+// ResolvedReplicas returns the effective number of desired RoleSets. spec.replicas is
+// optional and documented to default to 1 when not specified, but neither the CRD schema
+// nor the mutating webhook materializes that default, so an omitted value reaches the
+// controllers as nil and is resolved here. An explicit 0 is preserved: the field is a
+// pointer precisely to tell explicit zero apart from not specified.
+func (s *StormServiceSpec) ResolvedReplicas() int32 {
+	if s.Replicas == nil {
+		return 1
+	}
+	return *s.Replicas
+}
+
 type RoleSetTemplateSpec struct {
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
 
-	// +optional
+	// +kubebuilder:validation:Required
 	Spec *RoleSetSpec `json:"spec,omitempty"`
 }
 
@@ -144,6 +199,10 @@ const (
 	// StormServiceReplicaFailure is added in a stormService when one of its workloads fails to be created
 	// or deleted.
 	StormServiceReplicaFailure ConditionType = "ReplicaFailure"
+	// StormServicePodGroupSynced summarizes scheduler PodGroup sync across owned RoleSets.
+	StormServicePodGroupSynced ConditionType = "PodGroupSynced"
+	// StormServiceGangSchedulingError summarizes gang scheduling errors across owned RoleSets.
+	StormServiceGangSchedulingError ConditionType = "GangSchedulingError"
 )
 
 type StormServiceUpdateStrategy struct {

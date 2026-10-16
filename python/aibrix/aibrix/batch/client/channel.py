@@ -29,11 +29,29 @@ import httpx
 
 from aibrix.batch.client.errors import InferenceError, InferenceErrorCode
 from aibrix.logger import init_logger
+from aibrix.metadata.core import HTTPXClientWrapper
 
 logger = init_logger(__name__)
 
 Response = Dict[str, Any]
 _MAX_ERROR_BODY_CHARS = 4096
+_HTTPXLikeClient = HTTPXClientWrapper | httpx.AsyncClient
+
+# Idle connections must be discarded before the server's own keep-alive timeout,
+# not at the same moment. httpx defaults to 5s and so does uvicorn: under
+# sustained load the client periodically reuses a connection the server is
+# closing in the same instant, which surfaces as RemoteProtocolError("Server
+# disconnected without sending a response."). Expiring earlier keeps the
+# decision on the client side, where a closed connection costs nothing.
+_KEEPALIVE_EXPIRY_SECONDS = 3.0
+
+# The configured request timeout means "how long the model may take to answer",
+# so it belongs on read alone. Passed as a scalar it also covers connecting,
+# sending and waiting for a free pool slot -- turning a refused connection or a
+# saturated pool into an hour of silence indistinguishable from a slow request.
+_CONNECT_TIMEOUT_SECONDS = 10.0
+_WRITE_TIMEOUT_SECONDS = 60.0
+_POOL_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass(slots=True)
@@ -70,10 +88,16 @@ class HttpChannel:
         base_url: str,
         *,
         timeout: float = 30.0,
-        client: Optional[httpx.AsyncClient] = None,
+        client: Optional[_HTTPXLikeClient] = None,
     ) -> None:
         self._base_url = base_url
         self._timeout = timeout
+        self._timeout_config = httpx.Timeout(
+            connect=_CONNECT_TIMEOUT_SECONDS,
+            read=timeout,
+            write=_WRITE_TIMEOUT_SECONDS,
+            pool=_POOL_TIMEOUT_SECONDS,
+        )
         self._client = client
         self._owns_client = client is None
 
@@ -84,21 +108,31 @@ class HttpChannel:
     async def send(self, request: InferenceRequest) -> Response:
         client = self._ensure_client()
         url = urljoin(self._base_url, request.path)
-        logger.debug("requesting inference", url=url, body=request.payload)  # type: ignore[call-arg]
+        logger.debug(
+            "requesting inference", url=url, model=request.payload.get("model")
+        )  # type: ignore[call-arg]
         try:
-            response = await client.post(
-                url, json=request.payload, timeout=self._timeout
-            )
+            post_kwargs = {"json": request.payload, "timeout": self._timeout_config}
+            if isinstance(client, HTTPXClientWrapper):
+                post_kwargs["telemetry_call_site"] = (
+                    "batch.client.channel.HttpChannel.send"
+                )
+            response = await client.post(url, **post_kwargs)  # type: ignore[arg-type]
         except httpx.TimeoutException as ex:
+            # repr, not str: httpx timeout exceptions often stringify to an
+            # empty message, which would leave the log with a bare URL.
             raise InferenceError(
                 InferenceErrorCode.TRANSPORT_ERROR,
-                f"{self._base_url}: {ex}",
+                f"{self._base_url}: {ex!r}",
                 retryable=True,
             ) from ex
         except httpx.TransportError as ex:
+            detail = f"{ex!r}" + (
+                f" (caused by {ex.__cause__!r})" if ex.__cause__ else ""
+            )
             raise InferenceError(
                 InferenceErrorCode.TRANSPORT_ERROR,
-                f"{self._base_url}: {ex}",
+                f"{self._base_url}: {detail}",
                 retryable=True,
             ) from ex
 
@@ -123,9 +157,18 @@ class HttpChannel:
                 retryable=False,
             ) from ex
 
-    def _ensure_client(self) -> httpx.AsyncClient:
+    def _ensure_client(self) -> _HTTPXLikeClient:
         if self._client is None:
-            self._client = httpx.AsyncClient()
+            self._client = HTTPXClientWrapper(
+                client_id=f"http-channel-{self._base_url}",
+                limits=httpx.Limits(
+                    # Restate httpx's own defaults: constructing Limits() to set
+                    # keepalive_expiry alone would reset these two to unbounded.
+                    max_connections=100,
+                    max_keepalive_connections=20,
+                    keepalive_expiry=_KEEPALIVE_EXPIRY_SECONDS,
+                ),
+            )
         return self._client
 
     async def aclose(self) -> None:

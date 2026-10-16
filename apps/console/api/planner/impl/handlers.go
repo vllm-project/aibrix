@@ -27,14 +27,16 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
+	"github.com/vllm-project/aibrix/apps/console/api/metrics"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
 	rmtypes "github.com/vllm-project/aibrix/apps/console/api/resource_manager/types"
+	"github.com/vllm-project/aibrix/apps/console/api/utils"
 )
 
 func isBatchRunning(s plannerapi.JobStatus) bool {
 	switch s {
-	case plannerapi.JobStatusSubmitting, plannerapi.JobStatusValidating, plannerapi.JobStatusInProgress, plannerapi.JobStatusFinalizing:
+	case plannerapi.JobStatusSubmitting, plannerapi.JobStatusScheduling, plannerapi.JobStatusValidating, plannerapi.JobStatusInProgress, plannerapi.JobStatusFinalizing:
 		return true
 	}
 	return false
@@ -86,20 +88,50 @@ func handleCleanup(ctx context.Context, p *Planner, job *queuedJob, sourceStatus
 	}
 
 	var batch *openai.Batch
-	if batchID != "" && targetStatus != plannerapi.JobStatusExpired && targetStatus != plannerapi.JobStatusCompleted {
+	resolvedStatus := targetStatus
+	switch {
+	case batchID == "":
+		// No MDS batch association yet (e.g. expiry/cancel before submission).
+	case targetStatus == plannerapi.JobStatusExpired || targetStatus == plannerapi.JobStatusCompleted:
+		// Natural terminal states are finalized by the runtime, which aggregates
+		// any already-completed requests into the output/error files. Read the
+		// finalized batch so a planner-side conclusion still records MDS output,
+		// counts, and timestamps instead of a stale in-progress snapshot.
+		var err error
+		if batch, err = p.bc.GetBatch(ctx, batchID); err != nil {
+			klog.Warningf("[planner] GetBatch on cleanup failed job_id=%q batch_id=%q: %v", jobID, batchID, err)
+		}
+	default:
+		// Cancellation is planner-initiated: tell MDS to cancel and adopt the
+		// returned batch.
 		klog.Infof("[planner] cancel submitted job_id=%q batch_id=%q", jobID, batchID)
 		var err error
 		if batch, err = p.bc.CancelBatch(ctx, batchID); err != nil {
 			klog.Warningf("[planner] CancelBatch failed for job_id=%q: %v", jobID, err)
+			if batch, err = p.bc.GetBatch(ctx, batchID); err != nil {
+				klog.Warningf("[planner] GetBatch after cancel failure failed job_id=%q batch_id=%q: %v", jobID, batchID, err)
+			}
 		}
 	}
 
 	job.mu.Lock()
 	if !job.status.IsTerminal() {
 		job.provisionID = ""
-		job.batchID = ""
-		job.batch = batch
-		updateStatusUnsafe(job, targetStatus)
+		if batchID != "" {
+			// The MDS batch remains the source of truth for terminal output,
+			// counts, and timestamps. Keep the association so GetJob/ListJobs
+			// can still hydrate from MDS after the in-memory job is evicted.
+			if batch != nil {
+				job.batch = batch
+				if targetStatus == plannerapi.JobStatusCancelled {
+					resolvedStatus = plannerapi.JobStatus(batch.Status)
+				}
+			}
+		} else {
+			job.batchID = ""
+			job.batch = batch
+		}
+		updateStatusUnsafe(job, resolvedStatus)
 	}
 	job.mu.Unlock()
 	p.persist(ctx, job)
@@ -138,20 +170,27 @@ func handleProvisioning(p *Planner, job *queuedJob) {
 		IdempotencyKey: jobID,
 	}
 
+	provStart := time.Now().UTC()
 	provResult, err := p.prov.Provision(ctx, provReq)
 	if err != nil {
 		klog.Warningf("[planner] Provision failed for job_id=%q: %v", jobID, err)
+		metrics.Emitter.Counter(metricConsolePlannerError, 1, metrics.T("method", "handle_provisioning"), metrics.T("reason", "provision_failed"))
 		p.markFailed(ctx, job, plannerapi.JobStatusResourceFailed, errors.Join(plannerapi.ErrInsufficientResources, err))
 		return
 	}
+	metrics.Duration(metrics.Emitter, metricConsolePlannerDuration, provStart, metrics.T("method", "provision_create"))
 
 	if logger, ok := p.backend.(provisionResponseLogger); ok {
 		logger.LogProvisionResponse(jobID, provResult, *spec)
 	}
 
+	// Add before changing the state so admission accounting always observes the
+	// job in at least one queue during migration.
+	p.runningQueue.Push(job, 0)
 	job.mu.Lock()
 	if job.provisionID != "" || job.status.IsTerminal() {
 		job.mu.Unlock()
+		p.runningQueue.Remove(jobID)
 		if err := p.prov.Release(ctx, provResult.ProvisionID); err != nil {
 			klog.Warningf("[planner] Cancel provision failed for provision_id=%q: %v", provResult.ProvisionID, err)
 		} else {
@@ -164,6 +203,7 @@ func handleProvisioning(p *Planner, job *queuedJob) {
 	job.resourcePreparingAt = time.Now().UTC()
 	if job.status == plannerapi.JobStatusCancelling {
 		job.mu.Unlock()
+		p.runningQueue.Remove(jobID)
 		handleCleanup(ctx, p, job, plannerapi.JobStatusCancelling, plannerapi.JobStatusCancelled)
 		return
 	}
@@ -172,16 +212,13 @@ func handleProvisioning(p *Planner, job *queuedJob) {
 	// Job is now in running queue
 	job.queue = p.runningQueue
 	job.mu.Unlock()
-	p.persist(ctx, job)
-	// It's ok if the job's status has changed in between, the processing logic
-	// of running queue will handle it
 	p.pendingQueue.Remove(jobID)
-	// RunningQueue is a fifo queue, using 0 as priority
-	p.runningQueue.Push(job, 0)
+	p.persist(ctx, job)
 }
 
-// handleResourcePreparing queries provision status and marks job as readyToSubmit.
-// This is executed by worker pool (query-only operation).
+// handleResourcePreparing queries provision status and records the ready
+// allocation. The planning loop still waits for the provision start time before
+// submitting the batch to MDS.
 func handleResourcePreparing(p *Planner, job *queuedJob) {
 	job.mu.RLock()
 	jobID := job.req.JobID
@@ -203,12 +240,14 @@ func handleResourcePreparing(p *Planner, job *queuedJob) {
 	job.mu.RUnlock()
 
 	// Query provision status
+	provStart := time.Now().UTC()
 	filter := &rmtypes.ListOptions{ProvisionIDs: &[]string{provisionID}}
 	results, err := p.prov.List(ctx, filter)
 	if err != nil {
 		klog.Warningf("[planner] list provision failed job_id=%q provision_id=%q: %v", jobID, provisionID, err)
 		return
 	}
+	metrics.Duration(metrics.Emitter, metricConsolePlannerDuration, provStart, metrics.T("method", "provision_list"))
 
 	if len(results) == 0 {
 		p.markFailed(ctx, job, plannerapi.JobStatusResourceFailed, fmt.Errorf("provision %q not found", provisionID))
@@ -218,22 +257,69 @@ func handleResourcePreparing(p *Planner, job *queuedJob) {
 	provResult := results[0]
 	switch provResult.Status {
 	case rmtypes.ProvisionStatusRunning:
-		// Provision is ready, mark job as ready to submit
-		// The planningLoop will submit to MDS in next iteration
+		// Provision is allocated. The planning loop applies the start-time gate
+		// before submitting to MDS.
 		job.mu.Lock()
 		job.allocatedResource = provResult
+		if timeWindow := p.backend.AllocationTimeWindow(provResult); timeWindow != nil &&
+			timeWindow.EndTime != nil && !timeWindow.EndTime.IsZero() {
+			job.expiresAt = timeWindow.EndTime.UTC()
+		}
 		if !job.status.IsTerminal() && job.status == plannerapi.JobStatusResourcePreparing {
 			job.readyToSubmit = true
+			if !job.resourcePreparingAt.IsZero() {
+				metrics.Duration(metrics.Emitter, metricConsolePlannerDuration, job.resourcePreparingAt, metrics.T("method", "provision"), metrics.T("status", string(provResult.Status)))
+			}
 			klog.Infof("[planner] job_id=%q provision ready, marked readyToSubmit", jobID)
 		}
 		job.mu.Unlock()
 
 	case rmtypes.ProvisionStatusFailed, rmtypes.ProvisionStatusReleasing, rmtypes.ProvisionStatusReleased, rmtypes.ProvisionStatusReleaseFailed:
+		if !job.resourcePreparingAt.IsZero() {
+			metrics.Duration(metrics.Emitter, metricConsolePlannerDuration, job.resourcePreparingAt, metrics.T("method", "provision"), metrics.T("status", string(provResult.Status)))
+		}
+		metrics.Emitter.Counter(metricConsolePlannerError, 1, metrics.T("method", "handle_provisioning"), metrics.T("reason", string(provResult.Status)))
 		p.markFailed(ctx, job, plannerapi.JobStatusResourceFailed, fmt.Errorf("provision failed: %s", provResult.ErrorMessage))
 
 	default:
 		// Still pending, wait for next iteration
 	}
+}
+
+func provisionStartReached(timeWindow *rmtypes.TimeWindow, now time.Time) bool {
+	if timeWindow == nil || timeWindow.StartTime.IsZero() {
+		return true
+	}
+	return !now.UTC().Before(timeWindow.StartTime.UTC())
+}
+
+func batchParamsForProvisionDeadline(
+	params openai.BatchNewParams,
+	timeWindow *rmtypes.TimeWindow,
+	now time.Time,
+) (openai.BatchNewParams, error) {
+	if timeWindow == nil || timeWindow.EndTime == nil || timeWindow.EndTime.IsZero() {
+		return params, nil
+	}
+
+	remaining := timeWindow.EndTime.Sub(now.UTC()).Truncate(time.Minute)
+	if remaining < time.Minute {
+		return params, fmt.Errorf(
+			"provision resource deadline %s has less than 1min remaining",
+			timeWindow.EndTime.UTC().Format(time.RFC3339),
+		)
+	}
+	// MDS receives the remaining resource lifetime rounded down to a whole minute.
+	completionWindow, err := utils.FormatCompletionWindow(
+		remaining,
+	)
+	if err != nil {
+		return params, err
+	}
+	params.CompletionWindow = openai.BatchNewParamsCompletionWindow(
+		completionWindow,
+	)
+	return params, nil
 }
 
 // submitToMDS submits batch to MDS
@@ -268,6 +354,11 @@ func submitToMDS(p *Planner, job *queuedJob) {
 		p.markFailed(ctx, job, plannerapi.JobStatusResourceFailed, fmt.Errorf("job %q has no allocated resource", jobID))
 		return
 	}
+	timeWindow := p.backend.AllocationTimeWindow(alloc)
+	if !provisionStartReached(timeWindow, time.Now().UTC()) {
+		job.mu.RUnlock()
+		return
+	}
 	job.mu.RUnlock()
 
 	runtime, err := p.backend.BuildRuntime(req, alloc)
@@ -283,6 +374,7 @@ func submitToMDS(p *Planner, job *queuedJob) {
 		ResourceAllocation: p.backend.BuildResourceAllocation(*spec, alloc),
 		ModelTemplate:      req.ModelTemplate,
 		Model:              req.Model,
+		Client:             req.Client,
 	}
 
 	if batchParamsJson, err := json.Marshal(req.BatchParams); err == nil {
@@ -302,13 +394,29 @@ func submitToMDS(p *Planner, job *queuedJob) {
 		}
 	}
 
-	batch, err := p.bc.CreateBatch(ctx, req.BatchParams, aibrix)
+	batchParams, err := batchParamsForProvisionDeadline(
+		req.BatchParams,
+		timeWindow,
+		time.Now().UTC(),
+	)
+	if err != nil {
+		p.markFailed(ctx, job, plannerapi.JobStatusSubmitFailed, err)
+		return
+	}
+	if batchParamsJson, err := json.Marshal(batchParams); err == nil {
+		klog.Infof("[planner] effective BatchParams: %s", batchParamsJson)
+	}
+
+	submitStart := time.Now().UTC()
+	batch, err := p.bc.CreateBatch(ctx, batchParams, aibrix)
 	if err != nil {
 		klog.Warningf("[planner] CreateBatch failed job_id=%q: %v", jobID, err)
+		metrics.Emitter.Counter(metricConsolePlannerError, 1, metrics.T("method", "submit_to_mds"), metrics.T("reason", "create_batch_failed"))
 		p.markFailed(ctx, job, plannerapi.JobStatusSubmitFailed, err)
 		return
 	}
 
+	metrics.Duration(metrics.Emitter, metricConsolePlannerDuration, submitStart, metrics.T("method", "create_batch"))
 	klog.Infof("[planner] CreateBatch called job_id=%q batch_id=%q", jobID, batch.ID)
 
 	job.mu.Lock()
@@ -319,6 +427,9 @@ func submitToMDS(p *Planner, job *queuedJob) {
 
 	job.batchID = batch.ID
 	job.batch = batch
+	if batch.ExpiresAt > 0 {
+		job.expiresAt = time.Unix(batch.ExpiresAt, 0).UTC()
+	}
 	job.submittingAt = time.Now().UTC()
 	job.readyToSubmit = false // Clear flag after submission
 	job.extraBody = aibrixBodyJson
@@ -365,8 +476,15 @@ func handleRunning(p *Planner, job *queuedJob) {
 	newStatus := plannerapi.JobStatus(batch.Status)
 
 	job.mu.Lock()
-	if job.status.IsTerminal() || job.status == plannerapi.JobStatusCancelling {
+	currentStatus := job.status
+	if currentStatus.IsTerminal() || currentStatus == plannerapi.JobStatusCancelling {
 		job.mu.Unlock()
+		return
+	}
+	if newStatus.IsTerminal() {
+		job.batch = batch
+		job.mu.Unlock()
+		handleCleanup(ctx, p, job, currentStatus, newStatus)
 		return
 	}
 	updateStatusUnsafe(job, newStatus)
@@ -381,7 +499,4 @@ func handleRunning(p *Planner, job *queuedJob) {
 		}
 	}
 
-	if newStatus.IsTerminal() {
-		handleCleanup(ctx, p, job, status, newStatus)
-	}
 }

@@ -24,6 +24,7 @@ import aibrix.batch.job_driver.runtime.runpod  # noqa: F401,E402  RunPod
 from aibrix.batch.client import EndpointSource
 from aibrix.batch.job_driver.base import BaseJobDriver
 from aibrix.batch.job_driver.driver import JobDriver
+from aibrix.batch.job_driver.running_jobs import RunningJobs
 from aibrix.batch.job_driver.runtime import (  # noqa: E402
     create_runtime,
     registered_runtimes,
@@ -33,7 +34,7 @@ from aibrix.batch.job_entity import (  # noqa: E402
     BatchJobError,
     BatchJobErrorCode,
 )
-from aibrix.batch.state import JobEntityManager, RunningJobs  # noqa: E402
+from aibrix.batch.state import JobEntityManager  # noqa: E402
 from aibrix.context import InfrastructureContext  # noqa: E402
 from aibrix.logger import init_logger  # noqa: E402
 
@@ -61,7 +62,11 @@ def create_job_driver(
     if runtime_target is None:
         # Standalone / endpoint-source path: dispatch against the injected
         # source (possibly None for prepare/finalize-only) via External.
-        runtime = create_runtime("External", endpoint_source=endpoint_source)
+        runtime = create_runtime(
+            "External",
+            endpoint_source=endpoint_source,
+            context=context,
+        )
         logger.info(
             "Selected job runtime",
             job_id=job_id,
@@ -71,14 +76,13 @@ def create_job_driver(
             if endpoint_source is not None
             else None,
         )  # type: ignore[call-arg]
-        return BaseJobDriver(progress_manager, runtime)
+        return BaseJobDriver(context, progress_manager, runtime, job=job)
 
     try:
         runtime = create_runtime(
             runtime_target,
             job=job,
             context=context,
-            entity_manager=entity_manager,
             endpoint_source=endpoint_source,
         )
     except KeyError as exc:
@@ -94,4 +98,4 @@ def create_job_driver(
         runtime=type(runtime).__name__,
         registered=registered_runtimes(),
     )  # type: ignore[call-arg]
-    return BaseJobDriver(progress_manager, runtime)
+    return BaseJobDriver(context, progress_manager, runtime, job=job)

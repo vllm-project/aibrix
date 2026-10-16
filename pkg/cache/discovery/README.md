@@ -38,7 +38,7 @@ Loads endpoints from a YAML config file. No dynamic updates.
 ```yaml
 models:
   - name: "Qwen/Qwen2.5-1.5B-Instruct"
-    endpoints:
+    workers:
       - "vllm-0:8000"
       - "vllm-1:8000"
 ```
@@ -49,29 +49,44 @@ models:
 models:
   - name: "Qwen/Qwen2.5-72B"
     engine: vllm
+    prefill_workers:
+      - "prefill-0:8000"
+      - "prefill-1:8000"
+    decode_workers:
+      - "decode-0:8000"
+```
+
+`prefill_workers` and `decode_workers` describe a single roleset (named `default`). The PD routing algorithm selects the roleset first and then chooses the best prefill+decode pair within it; a roleset serves traffic only when both sides have at least one worker.
+
+Use `rolesets` when you need multiple rolesets or explicit roleset names:
+
+```yaml
+models:
+  - name: "Qwen/Qwen2.5-72B"
     rolesets:
-      - name: default
+      - name: group-a
         prefill:
           - "prefill-0:8000"
-          - "prefill-1:8000"
         decode:
           - "decode-0:8000"
 ```
 
-The `rolesets` structure expresses the pairing between prefill and decode workers. The PD routing algorithm selects the roleset first and then chooses the best prefill+decode pair within the same roleset. `endpoints` and `rolesets` are mutually exclusive per model.
+`workers` is the preferred spelling of `endpoints`; both keep working. `rolesets` stays the way to name a group or declare more than one. Per model, the non-disaggregated form (`endpoints`/`workers`) and the disaggregated form (`rolesets`/`prefill_workers` + `decode_workers`) are mutually exclusive.
 
 ### KubernetesProvider (`kubernetes.go`)
 
-Watches Pods and ModelAdapters only in `InitOptions.InstallationNamespace`. This
+Watches Pods and enabled ModelAdapter and ModelClaim sources only in
+`InitOptions.InstallationNamespace`. This
 namespace is required when no `DiscoveryProvider` is set. Kubernetes gateways
 must pass `--installation-namespace=<workload-namespace>`; there is no default or
 cluster-wide fallback. Standalone file discovery does not require this setting.
 
 Startup rejects empty or invalid namespace names, verifies that the namespace
-exists, and requires Pod and ModelAdapter LIST and WATCH access there. Initial
-watch checks and cache synchronization share a one-minute deadline. No gateway
-listeners open until initialization succeeds. Failed initialization stops its
-informers; after readiness, informers reconnect within the same namespace until
+exists, and requires Pod and enabled ModelAdapter LIST and WATCH access there.
+Initial watch checks and cache synchronization share a one-minute deadline.
+With `--model-list-discovery-max-age` enabled, the HTTP listener opens early and
+returns 503 until initialization succeeds. Routing starts after initialization.
+Failed initialization stops its informers; after readiness, informers reconnect within the same namespace until
 the caller closes `stopCh`.
 
 This uses the existing Kubernetes namespace validator, typed namespaced clients and shared
@@ -87,7 +102,7 @@ cache initialization is separate and remains cluster-wide.
 The handler is wired directly into K8s informer callbacks — events flow from the start, including during the initial list phase. No intermediate channel, no buffer, no snapshot replay.
 
 1. Validates the namespace and checks namespace GET and resource WATCH access.
-2. Registers handler on Pod and ModelAdapter informers.
+2. Registers handlers on Pod and enabled ModelAdapter informers. Optional ModelClaims use the same namespace; a missing CRD or denied claim LIST does not block Pod discovery.
 3. Starts informers — initial objects arrive via `AddFunc` as part of the informer's list+watch.
 4. Waits for the registered handlers to process the initial lists.
 5. Post-sync reconcile: re-emits all ModelAdapters as `EventAdd` to fix ordering (Pod and ModelAdapter informers list concurrently, so an adapter may arrive before its pods).
@@ -96,7 +111,7 @@ The handler is wired directly into K8s informer callbacks — events flow from t
 ### Deployment and migration
 
 The default manifest passes the gateway Pod's namespace using the existing
-`POD_NAMESPACE` Downward API variable. It grants Pod and ModelAdapter GET, LIST,
+`POD_NAMESPACE` Downward API variable. It grants Pod, ModelAdapter, and ModelClaim GET, LIST,
 and WATCH through a discovery Role and RoleBinding in that namespace. A separate
 HTTPRoute reader Role and RoleBinding grant GET in `aibrix-system`, where the
 model-router controller creates routes and the gateway validates them. Moving
@@ -170,6 +185,25 @@ against a local Kubernetes API server:
 ```sh
 KUBEBUILDER_ASSETS=/path/to/envtest/binaries go test -race ./test/integration/discovery
 ```
+
+The gateway CLI enables adapter and ModelClaim discovery by default. In Kubernetes
+mode, `--watch-model-adapters=false` skips the adapter informer, its initial
+sync, and all adapter API requests. `--watch-model-claims=false` skips the
+claim informer and also prevents ModelClaim runtime annotations on Pods from
+adding model names to the gateway cache. Pod discovery stays enabled. The
+options leave the default discovery behavior unchanged.
+
+`--model-list-mode=ready-pods` changes the gateway's own `GET /v1/models`
+handler to include a model only when an associated Pod has an address, is
+Ready, and is neither terminating nor draining. The default `known` mode
+continues listing every cached model name. The ready-pods mode checks Pod
+eligibility; it does not validate HTTPRoute acceptance, adapter load status,
+or complete prefill/decode pairs. Packaged routes send `/v1/models` to the gateway
+HTTP port. Ready-Pod filtering alone does not report ongoing discovery failures;
+set `--model-list-discovery-max-age` to require a recent verification against
+Pod and enabled ModelAdapter snapshots in the installation namespace. An empty
+list alone does not prove that discovery is healthy. See the production gateway
+guide for verification settings.
 
 ## Architecture
 

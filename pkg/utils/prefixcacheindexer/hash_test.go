@@ -25,6 +25,20 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestPrefixHashTableLen(t *testing.T) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 1
+
+	cache := NewPrefixHashTable()
+	assert.Equal(t, 0, cache.Len())
+
+	tokens := []byte{1, 2, 3}
+	hashes := cache.GetPrefixHashes(tokens)
+	cache.AddPrefix(hashes, "m", "ns/pod")
+	assert.Equal(t, len(hashes), cache.Len())
+}
+
 func Test_PrefixHashTableE2E(t *testing.T) {
 	originalBlockSize := prefixCacheBlockSize
 	defer func() { prefixCacheBlockSize = originalBlockSize }()
@@ -299,4 +313,23 @@ func TestPrefixCacheHashSeed(t *testing.T) {
 		b := prefixCacheHashSeed()
 		assert.NotEqual(t, a, b)
 	})
+}
+
+func TestMatchPercentDoesNotDropToZero(t *testing.T) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 1
+
+	cache := NewPrefixHashTable()
+	tokens := make([]byte, 101)
+	for i := range tokens {
+		tokens[i] = byte(i)
+	}
+	hashes := cache.GetPrefixHashes(tokens)
+	assert.Len(t, hashes, 101)
+
+	const pod = "ns/pod-a"
+	cache.AddPrefix(hashes[:1], "m", pod)
+	matched, _ := cache.MatchPrefix(tokens, "m", map[string]struct{}{pod: {}})
+	assert.Equal(t, 1, matched[pod])
 }

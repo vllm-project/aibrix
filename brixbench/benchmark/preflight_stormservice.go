@@ -50,6 +50,11 @@ type stormServiceList struct {
 }
 
 func ensureStormServicesCleared(ctx context.Context) error {
+	// Shared clusters may keep unrelated StormServices on other nodes (e.g. teammate
+	// workloads on 192.168.0.6 while this suite pins to 192.168.0.7). Opt out explicitly.
+	if boolEnvOrDefault("BENCHMARK_SKIP_STORMSERVICE_PREFLIGHT", false) {
+		return nil
+	}
 	services, err := listStormServices(ctx)
 	if err != nil {
 		return err

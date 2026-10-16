@@ -18,6 +18,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -32,8 +33,10 @@ import (
 	"google.golang.org/grpc/reflection"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/apps/console/api/deployment/provider"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/handler"
+	"github.com/vllm-project/aibrix/apps/console/api/metrics"
 	"github.com/vllm-project/aibrix/apps/console/api/middleware"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
 	plannerclient "github.com/vllm-project/aibrix/apps/console/api/planner/client"
@@ -48,17 +51,25 @@ import (
 
 // Server holds the gRPC and HTTP servers for the console backend.
 type Server struct {
-	grpcServer *grpc.Server
-	httpServer *http.Server
-	store      store.Store
-	cfg        *config.Config
-	auth       *middleware.AuthMiddleware
-	planner    plannerapi.Planner
-	injector   error_injection.Injector
+	grpcServer     *grpc.Server
+	httpServer     *http.Server
+	store          store.Store
+	cfg            *config.Config
+	auth           *middleware.AuthMiddleware
+	planner        plannerapi.Planner
+	injector       error_injection.Injector
+	metricsHandler http.Handler
+	clusterClients provider.ClusterClientProvider
 }
 
 // New creates a new console Server from configuration.
 func New(cfg *config.Config) *Server {
+	// Initialise metrics subsystem
+	_, metricsHandler, metricsErr := metrics.Setup(cfg)
+	if metricsErr != nil {
+		klog.Fatalf("Failed to setup metrics: %v", metricsErr)
+	}
+
 	// Initialize error injector first as it's needed by store and other components
 	var injector error_injection.Injector
 	var err error
@@ -115,10 +126,12 @@ func New(cfg *config.Config) *Server {
 	}
 
 	return &Server{
-		store:    s,
-		cfg:      cfg,
-		auth:     auth,
-		injector: injector,
+		store:          s,
+		cfg:            cfg,
+		auth:           auth,
+		injector:       injector,
+		metricsHandler: metricsHandler,
+		clusterClients: provider.NewKubernetesClientProvider(cfg.KubernetesProvider),
 	}
 }
 
@@ -137,19 +150,28 @@ func (s *Server) StartGRPC(addr string) error {
 		return fmt.Errorf("resource manager init: %w", err)
 	}
 	s.planner = plannerimpl.NewPlanner(plannerimpl.PlannerConfig{
-		BatchClient: batchClient,
-		Provisioner: rm.Provisioner,
-		Store:       s.store,
-		PolicyType:  plannerimpl.PlanningPolicyType(s.cfg.PlanningPolicy),
-		WorkerCount: s.cfg.PlannerWorkerCount,
-		Injector:    s.injector,
+		BatchClient:     batchClient,
+		Provisioner:     rm.Provisioner,
+		Store:           s.store,
+		PolicyType:      plannerimpl.PlanningPolicyType(s.cfg.PlanningPolicy),
+		WorkerCount:     s.cfg.PlannerWorkerCount,
+		WorkerQueueSize: s.cfg.PlannerWorkerQueueSize,
+		Injector:        s.injector,
 	})
 	if err := s.planner.Recover(context.Background()); err != nil {
 		klog.Warningf("planner recovery failed (continuing without recovered jobs): %v", err)
 	}
+	deploymentProviders := provider.NewRegistry(
+		provider.NewKubernetesDeploymentProvider(
+			s.clusterClients,
+			s.cfg.KubernetesWorkload,
+		),
+	)
 
 	// Register all service handlers
-	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store))
+	deploymentHandler := handler.NewDeploymentHandler(s.store, deploymentProviders)
+	deploymentHandler.SetGatewayEndpoint(s.cfg.GatewayEndpoint)
+	pb.RegisterDeploymentServiceServer(s.grpcServer, deploymentHandler)
 	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.planner, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode, s.injector))
 	pb.RegisterModelServiceServer(s.grpcServer, handler.NewModelHandler(s.store))
 	pb.RegisterModelDeploymentTemplateServiceServer(s.grpcServer, handler.NewModelDeploymentTemplateHandler(s.store))
@@ -175,14 +197,18 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	// Propagate the AuthMiddleware-injected UserInfo onto outgoing gRPC
 	// metadata so gRPC handlers
 	mux := runtime.NewServeMux(runtime.WithMetadata(func(_ context.Context, r *http.Request) metadata.MD {
+		pairs := []string{}
 		u := middleware.GetUser(r.Context())
-		if u == nil {
+		if u != nil {
+			pairs = append(pairs, middleware.MetadataUserEmail, u.Email, middleware.MetadataUserID, u.ID)
+		}
+		if v := r.URL.Query().Get("include_deployment"); v != "" {
+			pairs = append(pairs, "x-aibrix-include-deployment", v)
+		}
+		if len(pairs) == 0 {
 			return nil
 		}
-		return metadata.Pairs(
-			middleware.MetadataUserEmail, u.Email,
-			middleware.MetadataUserID, u.ID,
-		)
+		return metadata.Pairs(pairs...)
 	}))
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 
@@ -212,11 +238,32 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	}
 
 	// Register file proxy routes
-	fileHandler := handler.NewFileHandler(s.cfg.MetadataServiceURL, s.injector, s.store)
+	fileHandler := handler.NewFileHandler(
+		s.cfg.MetadataServiceURL,
+		s.cfg.MetadataFileUploadTimeout,
+		s.injector,
+		s.store,
+	)
 	fileHandler.RegisterRoutes(mux)
+
+	// Register the Kubernetes-backed ModelAdapter BFF.
+	modelAdapterHandler := handler.NewModelAdapterHandler(s.clusterClients)
+	if err := modelAdapterHandler.RegisterRoutes(mux); err != nil {
+		return err
+	}
 
 	// Register auth routes
 	s.auth.RegisterAuthRoutes(mux)
+
+	// Register frontend-consumed configuration.
+	if err := mux.HandlePath("GET", "/api/v1/config/job-capabilities", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(handler.JobCapabilitiesConfig(s.cfg.Provisioner, s.cfg.DevMode)); err != nil {
+			klog.Errorf("write job capabilities response: %v", err)
+		}
+	}); err != nil {
+		return err
+	}
 
 	// Register health endpoint
 	if err := mux.HandlePath("GET", "/api/v1/health", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
@@ -224,6 +271,15 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}); err != nil {
 		return err
+	}
+
+	// Register Prometheus /metrics endpoint when enabled
+	if s.metricsHandler != nil {
+		if err := mux.HandlePath("GET", "/api/v1/metrics", func(w http.ResponseWriter, r *http.Request, _ map[string]string) {
+			s.metricsHandler.ServeHTTP(w, r)
+		}); err != nil {
+			return err
+		}
 	}
 
 	// Build handler chain: CORS -> Auth -> Routes
@@ -236,6 +292,8 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 		httpHandler = staticFileMiddleware(s.cfg.StaticFilesDir, httpHandler)
 	}
 
+	// A server-level ReadTimeout would independently cap inbound file uploads.
+	// Keep it aligned with MetadataFileUploadTimeout if one is introduced.
 	s.httpServer = &http.Server{
 		Addr:    httpAddr,
 		Handler: httpHandler,
@@ -263,6 +321,11 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if s.store != nil {
 		if err := s.store.Close(); err != nil {
 			klog.Errorf("failed to close store: %v", err)
+		}
+	}
+	if metrics.Emitter != nil {
+		if err := metrics.Emitter.Close(); err != nil {
+			klog.Errorf("failed to close metrics emitter: %v", err)
 		}
 	}
 }

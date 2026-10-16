@@ -39,19 +39,42 @@ const (
 	// DecodePolicyLeastRequest routes to the pod with the fewest active decode
 	// requests (including pending requests not yet reflected in metrics).
 	DecodePolicyLeastRequest DecodePolicyName = "least_request"
+
+	// DecodePolicyConductor routes to the pod with the lowest estimated TBT
+	// (time between tokens) after adding the request, accounting for GPU-cache
+	// pressure. Uses throughput-derived TBT, sublinear batch-size scaling, and
+	// a penalty for pods above the GPU-cache utilization threshold.
+	DecodePolicyConductor DecodePolicyName = "conductor"
+
+	// DecodePolicyTokenLoad routes to the pod with the fewest prompt tokens
+	// charged to it by the gateway's decode ledger (TokenLoadTracker): the
+	// requests routed to it that have not completed, weighted by prompt size.
+	DecodePolicyTokenLoad DecodePolicyName = "token_load"
 )
 
 const (
 	ScorePolicyLoadBalancing = string(DecodePolicyLoadBalancing)
 	ScorePolicyLeastRequest  = string(DecodePolicyLeastRequest)
+	ScorePolicyConductor     = string(DecodePolicyConductor)
+	ScorePolicyTokenLoad     = string(DecodePolicyTokenLoad)
+)
+
+// Default values for ConductorDecodePolicy.
+const (
+	DefaultGPUCachePressureThreshold = 0.9
+	DefaultGPUCachePressurePenalty   = 1.5
+	DefaultDecodeTBTFallbackMs       = 20.0
 )
 
 // Weights for the load_balancing score numerator:
 //
 //	score = (wRun*normRunningReqs + wThru*normInverseThroughput) / normFreeGPU
 //
-// Configurable via AIBRIX_DECODE_LB_WEIGHT_RUNNING and AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT.
-// Default equal weighting (1.0 / 1.0) preserves historical behaviour.
+// Configurable via AIBRIX_DECODE_LB_WEIGHT_RUNNING and
+// AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT, or per request through the model config
+// profile knobs routingConfig.pd.decodeLBWeightRunning and
+// routingConfig.pd.decodeLBWeightThroughput. Default equal weighting
+// (1.0 / 1.0) preserves historical behaviour.
 var (
 	decodeLBWeightRunningReq   = utils.LoadEnvFloat("AIBRIX_DECODE_LB_WEIGHT_RUNNING", 1.0)
 	decodeLBWeightThroughput   = utils.LoadEnvFloat("AIBRIX_DECODE_LB_WEIGHT_THROUGHPUT", 1.0)
@@ -65,10 +88,11 @@ var (
 type DecodePodInput struct {
 	RunningReqs     float64 // active decode requests on this pod (incl. pending)
 	Throughput      float64 // AvgGenerationThroughputToksPerS for the model
-	FreeGPUPercent  float64 // 100 - GPUCacheUsagePerc*100, floored at 0.1
+	FreeGPUPercent  float64 // 100 - KVCacheUsagePerc*100, floored at 0.1
 	MaxRequestCount float64 // max RunningReqs across the candidate decode pods
 	MaxThroughput   float64 // max Throughput across the candidate decode pods
 	MaxFreeGPUUsage float64 // max FreeGPUPercent across the candidate decode pods
+	DecodeTokens    float64 // decode ledger of this pod (token_load): charged prompt tokens plus estimated generated output
 }
 
 // RolesetDecodePick is the winning decode pod for one roleset after comparing
@@ -128,19 +152,25 @@ func (LoadBalancingDecodePolicy) Describe() string {
 }
 
 func (LoadBalancingDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext, pod *v1.Pod, in DecodePodInput) float64 {
+	weights := routingCtx.PDOverrides().DecodeLB
+	weightRunning := weights.WeightRunning
+	weightThroughput := weights.WeightThroughput
+
 	normalizedRunningReqs := in.RunningReqs / in.MaxRequestCount
 	normalizedThroughput := 1 - in.Throughput/in.MaxThroughput
 	normalizedFreeGPUPercent := in.FreeGPUPercent / in.MaxFreeGPUUsage
 
-	numer := decodeLBWeightRunningReq*normalizedRunningReqs + decodeLBWeightThroughput*normalizedThroughput
+	numer := weightRunning*normalizedRunningReqs + weightThroughput*normalizedThroughput
 	decodeScore := numer / normalizedFreeGPUPercent
 
-	klog.V(4).InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
-		"policy", DecodePolicyLoadBalancing, "decode_score", decodeScore,
-		"score", fmt.Sprintf("(%g*%f + %g*%f) / %f", decodeLBWeightRunningReq, normalizedRunningReqs, decodeLBWeightThroughput, normalizedThroughput, normalizedFreeGPUPercent),
-		"running_reqs", in.RunningReqs, "max_running_reqs", in.MaxRequestCount,
-		"throughput", in.Throughput, "max_throughput", in.MaxThroughput,
-		"free_gpu", in.FreeGPUPercent, "max_free_gpu_usage", in.MaxFreeGPUUsage)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
+			"policy", DecodePolicyLoadBalancing, "decode_score", decodeScore,
+			"score", fmt.Sprintf("(%g*%f + %g*%f) / %f", weightRunning, normalizedRunningReqs, weightThroughput, normalizedThroughput, normalizedFreeGPUPercent),
+			"running_reqs", in.RunningReqs, "max_running_reqs", in.MaxRequestCount,
+			"throughput", in.Throughput, "max_throughput", in.MaxThroughput,
+			"free_gpu", in.FreeGPUPercent, "max_free_gpu_usage", in.MaxFreeGPUUsage)
+	}
 
 	return decodeScore
 }
@@ -158,10 +188,85 @@ func (LeastRequestDecodePolicy) Describe() string {
 }
 
 func (LeastRequestDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext, pod *v1.Pod, in DecodePodInput) float64 {
-	klog.V(4).InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
-		"policy", DecodePolicyLeastRequest, "running_reqs", in.RunningReqs)
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
+			"policy", DecodePolicyLeastRequest, "running_reqs", in.RunningReqs)
+	}
 
 	return in.RunningReqs
+}
+
+// ConductorDecodePolicy scores decode pods by estimated TBT
+// after adding the request, with a GPU-cache pressure penalty.
+//
+//	estimated_TBT = current_TBT * (1 + 1 / max(running_reqs, 1))
+//	if gpu_cache_usage > threshold: estimated_TBT *= penalty
+//
+// Lower score is better.
+type ConductorDecodePolicy struct{}
+
+func (ConductorDecodePolicy) Name() DecodePolicyName { return DecodePolicyConductor }
+
+func (ConductorDecodePolicy) Describe() string {
+	return fmt.Sprintf("conductor: estimated TBT after adding request; gpu_penalty=%gx above %.0f%% usage",
+		DefaultGPUCachePressurePenalty, DefaultGPUCachePressureThreshold*100)
+}
+
+func (ConductorDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext, pod *v1.Pod, in DecodePodInput) float64 {
+	currentTBTMs := DefaultDecodeTBTFallbackMs
+	if in.Throughput > 0 {
+		currentTBTMs = 1000.0 / in.Throughput
+	}
+
+	// TBT after adding one request to a decode pod.
+	runningReqs := math.Max(in.RunningReqs, 1.0)
+	estimatedTBT := currentTBTMs * (1.0 + 1.0/runningReqs)
+
+	// GPU-cache pressure penalty.
+	gpuCacheUsage := 1.0 - in.FreeGPUPercent/100.0
+	if gpuCacheUsage > DefaultGPUCachePressureThreshold {
+		estimatedTBT *= DefaultGPUCachePressurePenalty
+	}
+
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
+			"policy", DecodePolicyConductor, "decode_score", estimatedTBT,
+			"current_tbt_ms", currentTBTMs, "running_reqs", in.RunningReqs,
+			"gpu_cache_usage", gpuCacheUsage, "throughput", in.Throughput,
+			"free_gpu_percent", in.FreeGPUPercent)
+	}
+
+	return estimatedTBT
+}
+
+// TokenLoadDecodePolicy scores decode pods by the KV the gateway has routed to
+// them: a request is charged its prompt size when its decode pod is selected and
+// released when it completes (see TokenLoadTracker), and the router adds an
+// estimate of the output the outstanding requests have generated since (see
+// TokenLoadTracker.DecodeGrowth). A decode pod receives the whole prompt's KV
+// from the prefill pod, so this tracks the KV each decoder holds, updated
+// synchronously with every selection instead of once per metric refresh. Lower
+// is better.
+type TokenLoadDecodePolicy struct{}
+
+func (TokenLoadDecodePolicy) Name() DecodePolicyName { return DecodePolicyTokenLoad }
+
+func (TokenLoadDecodePolicy) Describe() string {
+	return "token_load: prompt tokens charged to the decode pod by the gateway ledger"
+}
+
+func (TokenLoadDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext, pod *v1.Pod, in DecodePodInput) float64 {
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
+			"policy", DecodePolicyTokenLoad, "decode_tokens", in.DecodeTokens)
+	}
+	return in.DecodeTokens
+}
+
+// UsesDecodeTokenLoad reports whether policy scores from the decode ledger, so
+// the router must charge the ledger when it selects a decode pod.
+func UsesDecodeTokenLoad(policy DecodeScorePolicy) bool {
+	return policy != nil && policy.Name() == DecodePolicyTokenLoad
 }
 
 // decodePolicyFactories is the immutable registry of built-in decode scoring
@@ -170,6 +275,8 @@ func (LeastRequestDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext,
 var decodePolicyFactories = map[string]func() DecodeScorePolicy{
 	string(DecodePolicyLoadBalancing): func() DecodeScorePolicy { return LoadBalancingDecodePolicy{} },
 	string(DecodePolicyLeastRequest):  func() DecodeScorePolicy { return LeastRequestDecodePolicy{} },
+	string(DecodePolicyConductor):     func() DecodeScorePolicy { return ConductorDecodePolicy{} },
+	string(DecodePolicyTokenLoad):     func() DecodeScorePolicy { return TokenLoadDecodePolicy{} },
 }
 
 // RegisterDecodePolicy registers a custom decode scoring policy factory under
@@ -222,11 +329,11 @@ func ResolveDecodePolicy(raw string) (policy DecodeScorePolicy, canonical Decode
 // policy names, including both built-in and dynamically registered custom ones.
 // Used in log/error messages to guide operators toward valid values.
 func ValidDecodePolicyNames() []string {
-	names := []string{string(DecodePolicyLoadBalancing), string(DecodePolicyLeastRequest)}
+	names := []string{string(DecodePolicyLoadBalancing), string(DecodePolicyLeastRequest), string(DecodePolicyConductor), string(DecodePolicyTokenLoad)}
 	decodePolicyRegistryMu.RLock()
 	defer decodePolicyRegistryMu.RUnlock()
 	for name := range decodePolicyRegistryCustom {
-		if name != string(DecodePolicyLoadBalancing) && name != string(DecodePolicyLeastRequest) {
+		if _, builtin := decodePolicyFactories[name]; !builtin {
 			names = append(names, name)
 		}
 	}

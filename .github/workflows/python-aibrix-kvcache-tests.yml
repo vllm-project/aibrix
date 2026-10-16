@@ -5,20 +5,29 @@ on:
     branches: [ "main", "release-*" ]
     paths:
       - 'python/aibrix_kvcache/**'
+      - '.github/workflows/python-aibrix-kvcache-tests.yml'
   pull_request:
     branches: [ "main" ]
     paths:
       - 'python/aibrix_kvcache/**'
+      - '.github/workflows/python-aibrix-kvcache-tests.yml'
+
+# Cancel superseded pull-request runs so the newest push starts first.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     strategy:
       matrix:
         python-version: ["3.11", "3.12"]
-    name: Lint
+    name: Python AIBrix KVCache Tests (${{ matrix.python-version }})
     steps:
       - name: Free Disk Space
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@v1.3.1
         with:
           tool-cache: false
       - name: Check out source repository

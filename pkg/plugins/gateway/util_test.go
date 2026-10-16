@@ -17,16 +17,63 @@ limitations under the License.
 package gateway
 
 import (
+	"bytes"
+	"context"
+	"mime/multipart"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/constants"
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"go.opentelemetry.io/otel/attribute"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// buildMultipartForm encodes fields as a multipart/form-data body and returns
+// the body along with the Content-Type header (including boundary).
+func buildMultipartForm(t *testing.T, fields map[string]string) (body []byte, contentType string) {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	for k, v := range fields {
+		require.NoError(t, w.WriteField(k, v))
+	}
+	require.NoError(t, w.Close())
+	return buf.Bytes(), w.FormDataContentType()
+}
+
+// buildMultipartFormWithFile is buildMultipartForm plus one file part, as an image edit
+// request carries its source image.
+func buildMultipartFormWithFile(t *testing.T, fields map[string]string, fileField, fileName string, content []byte) (body []byte, contentType string) {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	for k, v := range fields {
+		require.NoError(t, w.WriteField(k, v))
+	}
+	part, err := w.CreateFormFile(fileField, fileName)
+	require.NoError(t, err)
+	_, err = part.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	return buf.Bytes(), w.FormDataContentType()
+}
+
+func int64Ptr(v int64) *int64 {
+	return &v
+}
+
+const autoConfigProfile = "auto"
 
 func Test_ValidateRequestBody(t *testing.T) {
 	testCases := []struct {
@@ -46,6 +93,55 @@ func Test_ValidateRequestBody(t *testing.T) {
 			message:     "unknown path",
 			requestPath: "/v1/unknown",
 			statusCode:  envoyTypePb.StatusCode_NotImplemented,
+		},
+		{
+			// Image edits upload files, so a JSON body is a client error rather than an
+			// unknown path.
+			message:     "/v1/images/edits rejects a JSON body",
+			requestPath: PathImagesEdits,
+			requestBody: []byte(`{"model":"qwen-image-edit","prompt":"add a hat"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/completions string prompt",
+			requestPath: PathCompletions,
+			requestBody: []byte(`{"model":"llama2-7b","prompt":"hello"}`),
+			model:       "llama2-7b",
+			messages:    "hello",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/completions string array prompt",
+			requestPath: PathCompletions,
+			requestBody: []byte(`{"model":"llama2-7b","prompt":["hello","world"]}`),
+			model:       "llama2-7b",
+			messages:    "hello world",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/completions string array prompt with whitespace",
+			requestPath: PathCompletions,
+			requestBody: []byte(`{"model":"llama2-7b","prompt":[  "hello","world"]}`),
+			model:       "llama2-7b",
+			messages:    "hello world",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/completions token ID prompt",
+			requestPath: PathCompletions,
+			requestBody: []byte(`{"model":"llama2-7b","prompt":[1,2,3]}`),
+			model:       "llama2-7b",
+			messages:    "[1,2,3]",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/completions token ID array prompt",
+			requestPath: PathCompletions,
+			requestBody: []byte(`{"model":"llama2-7b","prompt":[[1,2],[3]],"stream":true}`),
+			model:       "llama2-7b",
+			messages:    "[[1,2],[3]]",
+			stream:      true,
+			statusCode:  envoyTypePb.StatusCode_OK,
 		},
 		{
 			message:     "/v1/chat/completions json unmarhsal error",
@@ -87,6 +183,56 @@ func Test_ValidateRequestBody(t *testing.T) {
 			// parseChatMessages writes raw JSON bytes directly, preserving the original field order from the request.
 			messages:   "this is system [{\"type\": \"text\", \"text\": \"say this is test\"}, {\"type\": \"text\", \"text\": \"say this is test\"}]",
 			statusCode: envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions assistant tool_calls with null content",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "user", "content": "hi"},{"role": "assistant", "content": null, "tool_calls": [{"id":"c1","type":"function","function":{"name":"f","arguments":"{\"x\":1}"}}]}]}`),
+			model:       "llama2-7b",
+			// A null content adds nothing; the tool calls are written as raw JSON.
+			messages:   "hi [{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"x\\\":1}\"}}]",
+			statusCode: envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions assistant tool_calls after string content",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "assistant", "content": "calling f", "tool_calls": [{"id":"c1"}]},{"role": "tool", "content": "done"}]}`),
+			model:       "llama2-7b",
+			messages:    "calling f [{\"id\":\"c1\"}] done",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions null content and empty tool_calls add nothing",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "user", "content": "hi"},{"role": "assistant", "content": null, "tool_calls": []},{"role": "assistant", "content": null, "tool_calls": null}]}`),
+			model:       "llama2-7b",
+			// Each message keeps its separator, as an empty string content does.
+			messages:   "hi  ",
+			statusCode: envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions deprecated assistant function_call",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "user", "content": "hi"},{"role": "assistant", "content": null, "function_call": {"name":"f","arguments":"{}"}}]}`),
+			model:       "llama2-7b",
+			messages:    "hi {\"name\":\"f\",\"arguments\":\"{}\"}",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions tool_calls win over function_call, null function_call adds nothing",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "assistant", "content": "a", "tool_calls": [{"id":"c1"}], "function_call": {"name":"f"}},{"role": "assistant", "content": "b", "function_call": null}]}`),
+			model:       "llama2-7b",
+			messages:    "a [{\"id\":\"c1\"}] b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions empty tool_calls with inner whitespace adds nothing",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "user", "content": "hi"},{"role": "assistant", "content": "ok", "tool_calls": [ ]}]}`),
+			model:       "llama2-7b",
+			messages:    "hi ok",
+			statusCode:  envoyTypePb.StatusCode_OK,
 		},
 		{
 			message:     "/v1/chat/completions json unmarhsal valid messages with stop string param",
@@ -141,6 +287,226 @@ func Test_ValidateRequestBody(t *testing.T) {
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
 		{
+			// HTTP/2 :path carries the query string (RFC 7540); before validateRequestBody
+			// stripped it here, this fell through to the "unknown request path" default and
+			// returned 501 instead of being parsed as a chat completion.
+			message:     "/v1/chat/completions?beta=true query string does not break path matching",
+			requestPath: "/v1/chat/completions?beta=true",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/completions stream without stream_options with user.TPM >= 1 is NOT OK",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "prompt": "say this is test"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/completions stream_options.include_usage == false with user.TPM >= 1 is NOT OK",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": false}, "prompt": "say this is test"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/completions stream_options.include_usage == true with user.TPM >= 1 is OK",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": true}, "prompt": "say this is test"}`),
+			stream:      true,
+			model:       "llama2-7b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/completions stream without stream_options with user.TPM == 0 is OK",
+			requestPath: "/v1/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "prompt": "say this is test"}`),
+			stream:      true,
+			model:       "llama2-7b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/completions non-streamed request without stream_options with user.TPM >= 1 is OK",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "prompt": "say this is test"}`),
+			model:       "llama2-7b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			// validateChatRequest's TPM guard compares requestPath against PathChatCompletions
+			// exactly (see the "NOT OK" case above), so a 400 here also confirms
+			// validateRequestBody passes the query-stripped path down to it, not the raw
+			// "/v1/chat/completions?beta=true".
+			message:     "/v1/chat/completions?beta=true stream_options.include_usage == false with user.TPM >= 1 is NOT OK",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/chat/completions?beta=true",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": false}, "messages": [{"role": "system", "content": "this is system"}]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/tokenize prompt form",
+			requestPath: "/tokenize",
+			requestBody: []byte(`{"model": "llama2-7b", "prompt": "say this is test"}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/tokenize messages form applies no chat template at the gateway",
+			requestPath: "/tokenize",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}], "add_generation_prompt": true}`),
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/tokenize with neither prompt nor messages is left to the engine",
+			requestPath: "/tokenize",
+			requestBody: []byte(`{"model": "llama2-7b"}`),
+			model:       "llama2-7b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/tokenize non-string prompt is forwarded, not rejected",
+			requestPath: "/tokenize",
+			requestBody: []byte(`{"model": "llama2-7b", "prompt": [1, 2, 3]}`),
+			model:       "llama2-7b",
+			messages:    "[1, 2, 3]",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/tokenize missing model",
+			requestPath: "/tokenize",
+			requestBody: []byte(`{"prompt": "say this is test"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/tokenize invalid json",
+			requestPath: "/tokenize",
+			requestBody: []byte(`{"model": "llama2-7b", "prompt":`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/pooling string input",
+			requestPath: "/pooling",
+			requestBody: []byte(`{"model": "llama2-7b", "input": "say this is test"}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/pooling array input stays raw for routing, like tokenize",
+			requestPath: "/pooling",
+			requestBody: []byte(`{"model": "llama2-7b", "input": ["say this is test", "and again"]}`),
+			model:       "llama2-7b",
+			messages:    `["say this is test", "and again"]`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/pooling pre-tokenized input is forwarded, not rejected",
+			requestPath: "/pooling",
+			requestBody: []byte(`{"model": "llama2-7b", "input": [1, 2, 3]}`),
+			model:       "llama2-7b",
+			messages:    "[1, 2, 3]",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/pooling with no input is left to the engine",
+			requestPath: "/pooling",
+			requestBody: []byte(`{"model": "llama2-7b"}`),
+			model:       "llama2-7b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/pooling messages form (chat pooling) routes on the messages",
+			requestPath: "/pooling",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "user", "content": "say this is test"}]}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/pooling input takes precedence over messages, like vLLM's union order",
+			requestPath: "/pooling",
+			requestBody: []byte(`{"model": "llama2-7b", "input": "say this is test", "messages": [{"role": "user", "content": "ignored"}]}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/pooling input wins over a stray prompt, which vLLM ignores",
+			requestPath: "/pooling",
+			requestBody: []byte(`{"model": "llama2-7b", "prompt": "wrong text", "input": "say this is test"}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/pooling non-array messages does not reject a valid input",
+			requestPath: "/pooling",
+			requestBody: []byte(`{"model": "llama2-7b", "input": "say this is test", "messages": "nope"}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/pooling encoding_format bytes is rejected at the edge",
+			requestPath: "/pooling",
+			requestBody: []byte(`{"model": "llama2-7b", "input": "say this is test", "encoding_format": "bytes"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/pooling encoding_format bytes_only is rejected at the edge",
+			requestPath: "/pooling",
+			requestBody: []byte(`{"model": "llama2-7b", "input": "say this is test", "encoding_format": "bytes_only"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/pooling encoding_format float is accepted",
+			requestPath: "/pooling",
+			requestBody: []byte(`{"model": "llama2-7b", "input": "say this is test", "encoding_format": "float"}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/tokenize ignores a stray input field",
+			requestPath: "/tokenize",
+			requestBody: []byte(`{"model": "llama2-7b", "input": "say this is test"}`),
+			model:       "llama2-7b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/pooling stream false is accepted",
+			requestPath: "/pooling",
+			requestBody: []byte(`{"model": "llama2-7b", "input": "say this is test", "stream": false}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/pooling stream true is rejected",
+			requestPath: "/pooling",
+			requestBody: []byte(`{"model": "llama2-7b", "input": "say this is test", "stream": true}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/pooling missing model",
+			requestPath: "/pooling",
+			requestBody: []byte(`{"input": "say this is test"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/pooling invalid json",
+			requestPath: "/pooling",
+			requestBody: []byte(`{"model": "llama2-7b", "input":`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
 			message:     "/v1/messages valid request body (same as chat completions)",
 			user:        utils.User{Tpm: 1},
 			requestPath: "/v1/messages",
@@ -150,10 +516,47 @@ func Test_ValidateRequestBody(t *testing.T) {
 			messages:    "this is system say this is test",
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
+		{
+			// HTTP/2 :path carries the query string (RFC 7540), so /v1/messages?beta=true must
+			// still match PathMessages, not fall through to the "unknown request path" default
+			// case. stream_options.include_usage is deliberately false with Tpm: 1: that
+			// combination is a 400 on /v1/chat/completions (see the case above), so passing here
+			// also confirms the query string didn't make this get treated as chat completions.
+			message:     "/v1/messages?beta=true query string does not break path matching",
+			user:        utils.User{Tpm: 1},
+			requestPath: "/v1/messages?beta=true",
+			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": false}, "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
+			stream:      true,
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/messages/count_tokens valid request body",
+			requestPath: "/v1/messages/count_tokens",
+			requestBody: []byte(`{"model": "llama2-7b", "system": "this is system", "messages": [{"role": "user", "content": "say this is test"}]}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/messages/count_tokens?beta=true",
+			requestPath: "/v1/messages/count_tokens?beta=true",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "user", "content": "say this is test"}]}`),
+			model:       "llama2-7b",
+			messages:    "say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/messages/count_tokens invalid json",
+			requestPath: "/v1/messages/count_tokens",
+			requestBody: []byte(`{"model": "llama2-7b", "messages":`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("1", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, _, stream, errRes := validateRequestBody("1", tt.requestPath, tt.requestBody, tt.user)
 
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -284,11 +687,36 @@ func Test_ValidateRequestBody_Embeddings(t *testing.T) {
 			requestBody: []byte(`{"model": "text-embedding-ada-002", "input": [[]]}`),
 			statusCode:  envoyTypePb.StatusCode_BadRequest,
 		},
+		// Long inputs are not rejected here: the gateway cannot measure them in
+		// the target model's tokens, so the backend decides. This holds whether
+		// or not the client asked the backend to truncate, and the three cases
+		// below must not collapse into an identical gateway-side 400.
 		{
-			message:     "/v1/embeddings string exceeding max tokens",
+			message:     "/v1/embeddings long string is forwarded, no truncate_prompt_tokens",
 			requestPath: "/v1/embeddings",
-			requestBody: []byte(`{"model": "text-embedding-ada-002", "input": "` + strings.Repeat("word ", MaxInputTokensPerModel+1) + `"}`),
-			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			requestBody: []byte(`{"model": "text-embedding-ada-002", "input": "` + strings.Repeat("word ", 9000) + `"}`),
+			model:       "text-embedding-ada-002",
+			messages:    "",
+			stream:      false,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings long string is forwarded with truncate_prompt_tokens -1",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "text-embedding-ada-002", "truncate_prompt_tokens": -1, "input": "` + strings.Repeat("word ", 9000) + `"}`),
+			model:       "text-embedding-ada-002",
+			messages:    "",
+			stream:      false,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings long string is forwarded with explicit truncate_prompt_tokens",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "text-embedding-ada-002", "truncate_prompt_tokens": 400, "input": "` + strings.Repeat("word ", 9000) + `"}`),
+			model:       "text-embedding-ada-002",
+			messages:    "",
+			stream:      false,
+			statusCode:  envoyTypePb.StatusCode_OK,
 		},
 
 		// Stream validation errors
@@ -324,10 +752,87 @@ func Test_ValidateRequestBody_Embeddings(t *testing.T) {
 			stream:      false,
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
+
+		// Multimodal content-parts input (e.g. image_url for vision-language embedding models)
+		{
+			message:     "/v1/embeddings multimodal image_url input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings multimodal text and image_url input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "text", "text": "a photo of pets"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings multimodal input with stream true - should fail",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}], "stream": true}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/embeddings multimodal input missing image_url",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "image_url"}]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/embeddings multimodal video_url input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "video_url", "video_url": {"url": "data:video/mp4;base64,aGVsbG8="}}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings multimodal input missing video_url",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "video_url"}]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/embeddings multimodal input unsupported content type",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"type": "audio_url"}]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+
+		// sglang's flat MultimodalEmbeddingInput shape (no "type" discriminator):
+		// {"text": "..."} / {"image": "<data-uri>"} / {"video": "<data-uri>"}
+		{
+			message:     "/v1/embeddings flat image input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"image": "data:image/png;base64,aGVsbG8="}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings flat video input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"video": "data:video/mp4;base64,aGVsbG8="}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings flat text and image input",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{"text": "a photo of pets"}, {"image": "data:image/png;base64,aGVsbG8="}]}`),
+			model:       "qwen3-vl-embedding-8b",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/embeddings flat input part with nothing set",
+			requestPath: "/v1/embeddings",
+			requestBody: []byte(`{"model": "qwen3-vl-embedding-8b", "input": [{}]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, _, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
 		t.Log(tt.message)
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -400,7 +905,7 @@ func Test_ValidateRequestBody_Rerank(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, _, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
 		t.Log(tt.message)
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -449,14 +954,15 @@ func TestValidateEmbeddingInput(t *testing.T) {
 			errorMsg:    "input cannot be an empty string",
 		},
 		{
-			name: "string input exceeding max tokens per model",
+			// The gateway does not enforce a context length; the backend does,
+			// with the addressed model's own tokenizer.
+			name: "long string input is accepted",
 			input: openai.EmbeddingNewParams{
 				Input: openai.EmbeddingNewParamsInputUnion{
-					OfString: openai.Opt(strings.Repeat("word ", MaxInputTokensPerModel+1)),
+					OfString: openai.Opt(strings.Repeat("word ", 9000)),
 				},
 			},
-			expectError: true,
-			errorMsg:    "input exceeds max tokens per model",
+			expectError: false,
 		},
 
 		// Array of strings tests
@@ -490,28 +996,25 @@ func TestValidateEmbeddingInput(t *testing.T) {
 			errorMsg:    "input at index 1 cannot be an empty string",
 		},
 		{
-			name: "array of strings with one exceeding max tokens",
+			name: "array of strings with one long entry is accepted",
 			input: openai.EmbeddingNewParams{
 				Input: openai.EmbeddingNewParamsInputUnion{
-					OfArrayOfStrings: []string{"Hello", strings.Repeat("word ", MaxInputTokensPerModel+1)},
+					OfArrayOfStrings: []string{"Hello", strings.Repeat("word ", 9000)},
 				},
 			},
-			expectError: true,
-			errorMsg:    "input at index 1 exceeds max tokens per model",
+			expectError: false,
 		},
 		{
-			name: "array of strings exceeding total tokens",
+			name: "array of strings with a large total length is accepted",
 			input: openai.EmbeddingNewParams{
 				Input: openai.EmbeddingNewParamsInputUnion{
 					OfArrayOfStrings: func() []string {
-						// Create an array that would exceed MaxTotalTokens
-						largeString := strings.Repeat("word ", MaxTotalTokens/2)
+						largeString := strings.Repeat("word ", 9000)
 						return []string{largeString, largeString, largeString}
 					}(),
 				},
 			},
-			expectError: true,
-			errorMsg:    "input at index 0 exceeds max tokens per model (8192)",
+			expectError: false,
 		},
 
 		// Single token array tests
@@ -535,24 +1038,16 @@ func TestValidateEmbeddingInput(t *testing.T) {
 			errorMsg:    "token array cannot be empty",
 		},
 		{
-			name: "single token array exceeding max tokens per model",
-			input: openai.EmbeddingNewParams{
-				Input: openai.EmbeddingNewParamsInputUnion{
-					OfArrayOfTokens: make([]int64, MaxInputTokensPerModel+1),
-				},
-			},
-			expectError: true,
-			errorMsg:    "token array exceeds max tokens per model",
-		},
-		{
-			name: "single token array exceeding max dimensions",
+			// A long pre-tokenized input is accepted, exactly as the same
+			// content sent as a string would be. MaxArrayDimensions bounds the
+			// batch, not the token count of one input.
+			name: "long single token array is accepted",
 			input: openai.EmbeddingNewParams{
 				Input: openai.EmbeddingNewParamsInputUnion{
 					OfArrayOfTokens: make([]int64, MaxArrayDimensions+1),
 				},
 			},
-			expectError: true,
-			errorMsg:    "token array exceeds max dimensions",
+			expectError: false,
 		},
 
 		// Multiple token arrays tests
@@ -604,20 +1099,7 @@ func TestValidateEmbeddingInput(t *testing.T) {
 			errorMsg:    "token array at index 1 cannot be empty",
 		},
 		{
-			name: "multiple token arrays with one exceeding max tokens per model",
-			input: openai.EmbeddingNewParams{
-				Input: openai.EmbeddingNewParamsInputUnion{
-					OfArrayOfTokenArrays: [][]int64{
-						{1, 2, 3},
-						make([]int64, MaxInputTokensPerModel+1),
-					},
-				},
-			},
-			expectError: true,
-			errorMsg:    "token array at index 1 exceeds max tokens per model",
-		},
-		{
-			name: "multiple token arrays with one exceeding max dimensions",
+			name: "batch with one long token array is accepted",
 			input: openai.EmbeddingNewParams{
 				Input: openai.EmbeddingNewParamsInputUnion{
 					OfArrayOfTokenArrays: [][]int64{
@@ -626,22 +1108,56 @@ func TestValidateEmbeddingInput(t *testing.T) {
 					},
 				},
 			},
-			expectError: true,
-			errorMsg:    "token array at index 1 exceeds max dimensions",
+			expectError: false,
 		},
 		{
-			name: "multiple token arrays exceeding total tokens",
+			name: "multiple token arrays with a large total length is accepted",
 			input: openai.EmbeddingNewParams{
 				Input: openai.EmbeddingNewParamsInputUnion{
 					OfArrayOfTokenArrays: func() [][]int64 {
-						// Create arrays that would exceed MaxTotalTokens
-						largeArray := make([]int64, MaxTotalTokens/2)
+						// Each array is within MaxArrayDimensions; only the sum
+						// is large, which is no longer capped.
+						largeArray := make([]int64, MaxArrayDimensions)
 						return [][]int64{largeArray, largeArray, largeArray}
 					}(),
 				},
 			},
+			expectError: false,
+		},
+
+		// Batch size is still bounded: MaxArrayDimensions is OpenAI's maxItems
+		// for the input array, which the gateway can measure exactly.
+		{
+			name: "array of strings exceeding max batch size",
+			input: openai.EmbeddingNewParams{
+				Input: openai.EmbeddingNewParamsInputUnion{
+					OfArrayOfStrings: func() []string {
+						inputs := make([]string, MaxArrayDimensions+1)
+						for i := range inputs {
+							inputs[i] = "hello"
+						}
+						return inputs
+					}(),
+				},
+			},
 			expectError: true,
-			errorMsg:    "token array at index 0 exceeds max tokens per model (8192)",
+			errorMsg:    "input array exceeds max dimensions (2048)",
+		},
+		{
+			name: "multiple token arrays exceeding max batch size",
+			input: openai.EmbeddingNewParams{
+				Input: openai.EmbeddingNewParamsInputUnion{
+					OfArrayOfTokenArrays: func() [][]int64 {
+						arrays := make([][]int64, MaxArrayDimensions+1)
+						for i := range arrays {
+							arrays[i] = []int64{1, 2, 3}
+						}
+						return arrays
+					}(),
+				},
+			},
+			expectError: true,
+			errorMsg:    "input array exceeds max dimensions (2048)",
 		},
 
 		// Nil input test
@@ -686,6 +1202,30 @@ func TestValidateStringInputs(t *testing.T) {
 			name:        "valid multiple strings",
 			inputs:      []string{"Hello", "world", "test"},
 			expectError: false,
+		},
+		{
+			// Length is the backend's call, not the gateway's: the gateway has
+			// no access to the target model's tokenizer or context length.
+			name:        "very long single string",
+			inputs:      []string{strings.Repeat("word ", 100000)},
+			expectError: false,
+		},
+		{
+			name:        "non-ASCII input that cl100k over-counts",
+			inputs:      []string{strings.Repeat("Příliš žluťoučký kůň úpěl ďábelské ódy. ", 2000)},
+			expectError: false,
+		},
+		{
+			name: "array exceeding max batch size",
+			inputs: func() []string {
+				inputs := make([]string, MaxArrayDimensions+1)
+				for i := range inputs {
+					inputs[i] = "hello"
+				}
+				return inputs
+			}(),
+			expectError: true,
+			errorMsg:    "input array exceeds max dimensions (2048)",
 		},
 		{
 			name:        "empty array",
@@ -759,28 +1299,24 @@ func TestValidateTokenInputs(t *testing.T) {
 			errorMsg:    "token array at index 1 cannot be empty",
 		},
 		{
-			name:        "single token array exceeding max tokens per model",
-			tokenArrays: [][]int64{make([]int64, MaxInputTokensPerModel+1)},
-			expectError: true,
-			errorMsg:    "token array exceeds max tokens per model (8192)",
+			// Token count per input is not capped: that is a context-length
+			// question, and the same content sent as a string is accepted.
+			name:        "long token arrays are accepted",
+			tokenArrays: [][]int64{make([]int64, MaxArrayDimensions+1), make([]int64, MaxArrayDimensions+1)},
+			expectError: false,
 		},
 		{
-			name:        "multiple token arrays with one exceeding max tokens per model",
-			tokenArrays: [][]int64{{1, 2, 3}, make([]int64, MaxInputTokensPerModel+1)},
+			// Batch size is capped, per OpenAI's maxItems for the input array.
+			name: "batch exceeding max dimensions",
+			tokenArrays: func() [][]int64 {
+				arrays := make([][]int64, MaxArrayDimensions+1)
+				for i := range arrays {
+					arrays[i] = []int64{1, 2, 3}
+				}
+				return arrays
+			}(),
 			expectError: true,
-			errorMsg:    "token array at index 1 exceeds max tokens per model",
-		},
-		{
-			name:        "single token array exceeding max dimensions",
-			tokenArrays: [][]int64{make([]int64, MaxArrayDimensions+1)},
-			expectError: true,
-			errorMsg:    "token array exceeds max dimensions (2048)",
-		},
-		{
-			name:        "multiple token arrays with one exceeding max dimensions",
-			tokenArrays: [][]int64{{1, 2, 3}, make([]int64, MaxArrayDimensions+1)},
-			expectError: true,
-			errorMsg:    "token array at index 1 exceeds max dimensions",
+			errorMsg:    "input array exceeds max dimensions (2048)",
 		},
 	}
 
@@ -1118,10 +1654,70 @@ func Test_ValidateRequestBody_Classify(t *testing.T) {
 			requestBody: []byte(`{"model": "classifier-model", "input": "text"`),
 			statusCode:  envoyTypePb.StatusCode_BadRequest,
 		},
+		{
+			message:     "/classify string input",
+			requestPath: "/classify",
+			requestBody: []byte(`{"model": "classifier-model", "input": "text to classify"}`),
+			model:       "classifier-model",
+			messages:    "text to classify",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/classify array input stays raw for routing, like pooling",
+			requestPath: "/classify",
+			requestBody: []byte(`{"model": "classifier-model", "input": ["text1", "text2"]}`),
+			model:       "classifier-model",
+			messages:    `["text1", "text2"]`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/classify messages form",
+			requestPath: "/classify",
+			requestBody: []byte(`{"model": "classifier-model", "messages": [{"role": "user", "content": "text to classify"}]}`),
+			model:       "classifier-model",
+			messages:    "text to classify",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/classify ignores a stray prompt field",
+			requestPath: "/classify",
+			requestBody: []byte(`{"model": "classifier-model", "prompt": "ignored", "input": "text to classify"}`),
+			model:       "classifier-model",
+			messages:    "text to classify",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/classify stray stream is left to the engine",
+			requestPath: "/classify",
+			requestBody: []byte(`{"model": "classifier-model", "input": "text to classify", "stream": true}`),
+			model:       "classifier-model",
+			messages:    "text to classify",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/classify with a query string",
+			requestPath: "/classify?foo=bar",
+			requestBody: []byte(`{"model": "classifier-model", "input": "text to classify"}`),
+			model:       "classifier-model",
+			messages:    "text to classify",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/classify missing model",
+			requestPath: "/classify",
+			requestBody: []byte(`{"input": "text to classify"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/classify invalid json",
+			requestPath: "/classify",
+			requestBody: []byte(`{"model": "classifier-model", "input": "text"`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, _, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
 		t.Log(tt.message)
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -1139,6 +1735,383 @@ func Test_ValidateRequestBody_Classify(t *testing.T) {
 		if tt.stream {
 			assert.Equal(t, tt.stream, stream, tt.message)
 		}
+	}
+}
+
+func Test_ValidateRequestBody_Decisions(t *testing.T) {
+	const questions = `[{"id": "q1", "type": "choice", "question": "Which?", "options": [{"name": "a"}, {"name": "b"}]}]`
+
+	testCases := []struct {
+		message     string
+		requestPath string // defaults to PathDecisions
+		requestBody string
+		model       string
+		messages    string
+		statusCode  envoyTypePb.StatusCode
+		param       string
+	}{
+		{
+			message:     "/v1/decisions string input",
+			requestBody: `{"model": "decider", "input": "pick a replica", "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    "pick a replica",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions object input is compacted to JSON text",
+			requestBody: `{"model": "decider", "input": {"a": 1,  "b": ["x", "y"]}, "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    `{"a":1,"b":["x","y"]}`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions array input is compacted to JSON text",
+			requestBody: `{"model": "decider", "input": [ {"role": "user"}, "text" ], "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    `[{"role":"user"},"text"]`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions object input is rendered like SGLang: escapes decoded, floats normalized",
+			requestBody: `{"model": "decider", "input": {"text": "你", "n": 1e0}, "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    `{"text":"你","n":1.0}`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions routes on input, not on question text",
+			requestBody: `{"model": "decider", "input": "shared prefix", "questions": [{"id": "q", "type": "yes_no", "question": "Is it?"}]}`,
+			model:       "decider",
+			messages:    "shared prefix",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions images are forwarded, not inspected",
+			requestBody: `{"model": "decider", "input": "describe", "images": ["data:image/png;base64,AAAA", {"url": "https://example.com/a.png"}], "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    "describe",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions query string does not break path matching",
+			requestPath: PathDecisions + "?api-version=1",
+			requestBody: `{"model": "decider", "input": "pick", "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    "pick",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions missing model",
+			requestBody: `{"input": "pick", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/decisions empty model",
+			requestBody: `{"model": "", "input": "pick", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/decisions whitespace-only model",
+			requestBody: `{"model": "  ", "input": "pick", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/decisions missing input",
+			requestBody: `{"model": "decider", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/decisions null input",
+			requestBody: `{"model": "decider", "input": null, "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/decisions blank string input",
+			requestBody: `{"model": "decider", "input": "   ", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/decisions empty object input",
+			requestBody: `{"model": "decider", "input": {}, "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/decisions empty array input",
+			requestBody: `{"model": "decider", "input": [], "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/decisions number input",
+			requestBody: `{"model": "decider", "input": 42, "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/decisions missing questions",
+			requestBody: `{"model": "decider", "input": "pick"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
+		},
+		{
+			message:     "/v1/decisions null questions",
+			requestBody: `{"model": "decider", "input": "pick", "questions": null}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
+		},
+		{
+			message:     "/v1/decisions empty questions",
+			requestBody: `{"model": "decider", "input": "pick", "questions": []}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
+		},
+		{
+			message:     "/v1/decisions questions not an array",
+			requestBody: `{"model": "decider", "input": "pick", "questions": {"id": "q1"}}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
+		},
+		{
+			message:     "/v1/decisions invalid json",
+			requestBody: `{"model": "decider", "input": "pick"`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.message, func(t *testing.T) {
+			requestPath := tt.requestPath
+			if requestPath == "" {
+				requestPath = PathDecisions
+			}
+			model, messages, prefixText, stream, errRes := validateRequestBody("test-request-id", requestPath, []byte(tt.requestBody), utils.User{})
+
+			// Decisions never stream and never carry a separate prefix text.
+			assert.False(t, stream)
+			assert.Empty(t, prefixText)
+
+			if tt.statusCode == envoyTypePb.StatusCode_OK {
+				assert.Nil(t, errRes)
+				assert.Equal(t, tt.model, model)
+				assert.Equal(t, tt.messages, messages)
+				return
+			}
+
+			if !assert.NotNil(t, errRes) {
+				return
+			}
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, model)
+			assert.Empty(t, messages)
+
+			var errResponse map[string]any
+			require.NoError(t, sonic.Unmarshal([]byte(errRes.GetImmediateResponse().GetBody()), &errResponse))
+			errObj, ok := errResponse["error"].(map[string]any)
+			require.True(t, ok, "response should have an 'error' object")
+			if tt.param != "" {
+				assert.Equal(t, tt.param, errObj["param"])
+			}
+		})
+	}
+}
+
+func Test_ValidateRequestBody_SystemOne(t *testing.T) {
+	const questions = `{"team": {"type": "choice", "instructions": "Which team?", "criteria": {"billing": null, "support": "Bugs"}}}`
+
+	testCases := []struct {
+		message     string
+		requestPath string // defaults to PathSystemOne
+		requestBody string
+		model       string
+		messages    string
+		statusCode  envoyTypePb.StatusCode
+		param       string
+	}{
+		{
+			message:     "/v1/systemone string state",
+			requestBody: `{"model": "decider", "state": "stripe integration keeps failing", "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    "stripe integration keeps failing",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone object state is compacted to JSON text",
+			requestBody: `{"model": "decider", "state": {"a": 1,  "b": ["x", "y"]}, "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    `{"a":1,"b":["x","y"]}`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone array state is compacted to JSON text",
+			requestBody: `{"model": "decider", "state": [ {"role": "user"}, "text" ], "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    `[{"role":"user"},"text"]`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone object state is rendered like SGLang: escapes decoded, floats normalized",
+			requestBody: `{"model": "decider", "state": {"text": "你", "n": 1e0}, "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    `{"text":"你","n":1.0}`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone routes on state, not on question text",
+			requestBody: `{"model": "decider", "state": "shared prefix", "questions": {"q": {"type": "noul", "instructions": "Is it urgent?"}}}`,
+			model:       "decider",
+			messages:    "shared prefix",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone empty string state is accepted, as SGLang accepts it",
+			requestBody: `{"model": "decider", "state": "", "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    "",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone empty object state is accepted",
+			requestBody: `{"model": "decider", "state": {}, "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    "{}",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone blank question id is accepted",
+			requestBody: `{"model": "decider", "state": "x", "questions": {"": {"type": "noul", "instructions": "Is it?"}}}`,
+			model:       "decider",
+			messages:    "x",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone images and unknown top-level fields are forwarded, not inspected",
+			requestBody: `{"model": "decider", "state": "describe", "images": ["data:image/png;base64,AAAA", {"url": "https://example.com/a.png"}], "chat_template_kwargs": {"enable_thinking": false}, "extra": 1, "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    "describe",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone query string does not break path matching",
+			requestPath: PathSystemOne + "?api-version=1",
+			requestBody: `{"model": "decider", "state": "pick", "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    "pick",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/systemone missing model",
+			requestBody: `{"state": "pick", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/systemone empty model",
+			requestBody: `{"model": "", "state": "pick", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/systemone whitespace-only model",
+			requestBody: `{"model": "  ", "state": "pick", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/systemone missing state",
+			requestBody: `{"model": "decider", "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "state",
+		},
+		{
+			message:     "/v1/systemone null state",
+			requestBody: `{"model": "decider", "state": null, "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "state",
+		},
+		{
+			message:     "/v1/systemone number state",
+			requestBody: `{"model": "decider", "state": 42, "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "state",
+		},
+		{
+			message:     "/v1/systemone boolean state",
+			requestBody: `{"model": "decider", "state": true, "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "state",
+		},
+		{
+			message:     "/v1/systemone missing questions",
+			requestBody: `{"model": "decider", "state": "pick"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
+		},
+		{
+			message:     "/v1/systemone null questions",
+			requestBody: `{"model": "decider", "state": "pick", "questions": null}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
+		},
+		{
+			message:     "/v1/systemone empty questions",
+			requestBody: `{"model": "decider", "state": "pick", "questions": {}}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
+		},
+		{
+			message:     "/v1/systemone questions as an array, the /v1/decisions shape",
+			requestBody: `{"model": "decider", "state": "pick", "questions": [{"id": "q1", "type": "yes_no", "question": "Is it?"}]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
+		},
+		{
+			message:     "/v1/systemone invalid json",
+			requestBody: `{"model": "decider", "state": "pick"`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.message, func(t *testing.T) {
+			requestPath := tt.requestPath
+			if requestPath == "" {
+				requestPath = PathSystemOne
+			}
+			model, messages, prefixText, stream, errRes := validateRequestBody("test-request-id", requestPath, []byte(tt.requestBody), utils.User{})
+
+			// System One never streams and never carries a separate prefix text.
+			assert.False(t, stream)
+			assert.Empty(t, prefixText)
+
+			if tt.statusCode == envoyTypePb.StatusCode_OK {
+				assert.Nil(t, errRes)
+				assert.Equal(t, tt.model, model)
+				assert.Equal(t, tt.messages, messages)
+				return
+			}
+
+			if !assert.NotNil(t, errRes) {
+				return
+			}
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, model)
+			assert.Empty(t, messages)
+
+			var errResponse map[string]any
+			require.NoError(t, sonic.Unmarshal([]byte(errRes.GetImmediateResponse().GetBody()), &errResponse))
+			errObj, ok := errResponse["error"].(map[string]any)
+			require.True(t, ok, "response should have an 'error' object")
+			if tt.param != "" {
+				assert.Equal(t, tt.param, errObj["param"])
+			}
+		})
 	}
 }
 
@@ -1220,7 +2193,7 @@ func Test_ValidateRequestBody_Responses(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, _, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
 		t.Log(tt.message)
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -1297,6 +2270,1234 @@ func TestGetTraceID(t *testing.T) {
 			got := GetTraceID(tt.traceparent, tt.requestID)
 			if got != tt.want {
 				t.Errorf("GetTraceID() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFieldsToAttributes(t *testing.T) {
+	tests := []struct {
+		name   string
+		fields []interface{}
+		want   []attribute.KeyValue
+	}{
+		{
+			name: "supported and fallback value types",
+			fields: []interface{}{
+				"string", "value",
+				"int", 7,
+				"int64", int64(8),
+				"float64", 1.5,
+				"duration", 1500 * time.Millisecond,
+				"fallback", true,
+				99, "numeric key",
+			},
+			want: []attribute.KeyValue{
+				attribute.String("string", "value"),
+				attribute.Int("int", 7),
+				attribute.Int64("int64", 8),
+				attribute.Float64("float64", 1.5),
+				attribute.String("duration", "1.5s"),
+				attribute.String("fallback", "true"),
+				attribute.String("99", "numeric key"),
+			},
+		},
+		{
+			name:   "empty fields",
+			fields: nil,
+			want:   []attribute.KeyValue{},
+		},
+		{
+			name:   "incomplete key value pair is ignored",
+			fields: []interface{}{"complete", "value", "orphan"},
+			want: []attribute.KeyValue{
+				attribute.String("complete", "value"),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, fieldsToAttributes(tt.fields))
+		})
+	}
+}
+
+func TestApplyConfigProfile_AutoProfileRoutingConfigHints(t *testing.T) {
+	profileJSON := `{
+		"defaultProfile":"default",
+		"profiles":{
+			"default":{"routingStrategy":"least-request"},
+			"large-input":{"routingStrategy":"pd","routingConfig":{"promptTokensGte":4},"requestsPerSecond":5},
+			"offline-generation":{"routingStrategy":"throughput","routingConfig":{"maxTokensGte":2048}}
+		}
+	}`
+	pods := []*v1.Pod{{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "pod-a",
+			Annotations: map[string]string{constants.ModelAnnoConfig: profileJSON},
+		},
+	}}
+
+	ctx := types.NewRoutingContext(context.Background(), "", "", "", "request-1", "")
+	ctx.ReqConfigProfile = autoConfigProfile
+	ctx.Message = "one two three four"
+	ctx.ReqBody = []byte(`{"max_tokens":128}`)
+	ctx.ReqHeaders = map[string]string{}
+
+	applyConfigProfile(ctx, pods)
+
+	assert.NotNil(t, ctx.ConfigProfile)
+	assert.Equal(t, "pd", ctx.ConfigProfile.RoutingStrategy)
+	assert.Equal(t, int64(5), ctx.ConfigProfile.RequestsPerSecond)
+	assert.Equal(t, "large-input", ctx.ReqConfigProfile)
+	assert.Equal(t, "large-input", ctx.RespHeaders[HeaderAIBrixConfigProfile])
+}
+
+func TestApplyConfigProfile_AutoProfileRoutingConfigHintFallbacks(t *testing.T) {
+	tests := []struct {
+		name             string
+		profileJSON      string
+		reqHeaders       map[string]string
+		reqBody          []byte
+		wantStrategy     string
+		wantReqProfile   string
+		wantProfileHdr   string
+		wantHeaderAbsent bool
+	}{
+		{
+			name: "no matching hint uses default profile",
+			profileJSON: `{
+				"defaultProfile":"default",
+				"profiles":{"default":{"routingStrategy":"least-request"},"throughput":{"routingStrategy":"throughput","routingConfig":{"maxTokensGte":2048}}}
+			}`,
+			reqHeaders:     map[string]string{},
+			reqBody:        []byte(`{"max_tokens":128}`),
+			wantStrategy:   "least-request",
+			wantReqProfile: "default",
+			wantProfileHdr: "default",
+		},
+		{
+			name: "invalid routingConfig hint uses default profile",
+			profileJSON: `{
+				"defaultProfile":"default",
+				"profiles":{"default":{"routingStrategy":"least-request"},"large-input":{"routingStrategy":"pd","routingConfig":"invalid"}}
+			}`,
+			reqHeaders:     map[string]string{},
+			reqBody:        []byte(`{"max_tokens":128}`),
+			wantStrategy:   "least-request",
+			wantReqProfile: "default",
+			wantProfileHdr: "default",
+		},
+		{
+			name: "routing strategy header does not skip auto selection",
+			profileJSON: `{
+				"defaultProfile":"default",
+				"profiles":{"default":{"routingStrategy":"least-request"},"large-input":{"routingStrategy":"pd","routingConfig":{"promptTokensGte":1},"requestsPerSecond":5}}
+			}`,
+			reqHeaders:     map[string]string{HeaderRoutingStrategy: "throughput"},
+			reqBody:        []byte(`{"max_tokens":128}`),
+			wantStrategy:   "pd",
+			wantReqProfile: "large-input",
+			wantProfileHdr: "large-input",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pods := []*v1.Pod{{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "pod-a",
+					Annotations: map[string]string{constants.ModelAnnoConfig: tt.profileJSON},
+				},
+			}}
+			ctx := types.NewRoutingContext(context.Background(), "", "", "", "request-1", "")
+			ctx.ReqConfigProfile = autoConfigProfile
+			ctx.Message = "prompt"
+			ctx.ReqBody = tt.reqBody
+			ctx.ReqHeaders = tt.reqHeaders
+
+			applyConfigProfile(ctx, pods)
+
+			assert.NotNil(t, ctx.ConfigProfile)
+			assert.Equal(t, tt.wantStrategy, ctx.ConfigProfile.RoutingStrategy)
+			assert.Equal(t, tt.wantReqProfile, ctx.ReqConfigProfile)
+			if tt.wantHeaderAbsent {
+				assert.NotContains(t, ctx.RespHeaders, HeaderAIBrixConfigProfile)
+			} else {
+				assert.Equal(t, tt.wantProfileHdr, ctx.RespHeaders[HeaderAIBrixConfigProfile])
+			}
+		})
+	}
+}
+
+func TestApplyConfigProfile_BuildsFeaturesOnlyForAutoSelection(t *testing.T) {
+	profileJSON := `{
+		"defaultProfile":"default",
+		"profiles":{
+			"default":{"routingStrategy":"least-request"},
+			"batch":{"routingStrategy":"throughput","routingConfig":{"promptTokensGte":1}}
+		}
+	}`
+	pods := []*v1.Pod{{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "pod-a",
+			Annotations: map[string]string{constants.ModelAnnoConfig: profileJSON},
+		},
+	}}
+
+	tests := []struct {
+		name             string
+		reqConfigProfile string
+		reqHeaders       map[string]string
+		wantStrategy     string
+		wantReqProfile   string
+	}{
+		{
+			name:             "concrete profile skips request feature parsing",
+			reqConfigProfile: "batch",
+			reqHeaders:       map[string]string{},
+			wantStrategy:     "throughput",
+			wantReqProfile:   "batch",
+		},
+		{
+			name:             "routing strategy header still resolves auto profile",
+			reqConfigProfile: autoConfigProfile,
+			reqHeaders:       map[string]string{HeaderRoutingStrategy: "throughput"},
+			wantStrategy:     "throughput",
+			wantReqProfile:   "batch",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := types.NewRoutingContext(context.Background(), "", "", "", "request-1", "")
+			ctx.ReqConfigProfile = tt.reqConfigProfile
+			ctx.ReqHeaders = tt.reqHeaders
+			ctx.ReqBody = []byte(`{`)
+			ctx.Message = "prompt"
+
+			applyConfigProfile(ctx, pods)
+
+			assert.NotNil(t, ctx.ConfigProfile)
+			assert.Equal(t, tt.wantStrategy, ctx.ConfigProfile.RoutingStrategy)
+			assert.Equal(t, tt.wantReqProfile, ctx.ReqConfigProfile)
+			if tt.reqConfigProfile == autoConfigProfile {
+				assert.Equal(t, tt.wantReqProfile, ctx.RespHeaders[HeaderAIBrixConfigProfile])
+			} else {
+				assert.NotContains(t, ctx.RespHeaders, HeaderAIBrixConfigProfile)
+			}
+		})
+	}
+}
+
+func TestApplyConfigProfile_AuthoritativePolicyUsesDefaultProfile(t *testing.T) {
+	profileJSON := `{
+		"authoritativeRoutingPolicy":true,
+		"defaultProfile":"default",
+		"profiles":{
+			"default":{"routingStrategy":"least-request","routingConfig":{"marker":"default"}},
+			"batch":{"routingStrategy":"throughput","routingConfig":{"promptTokensGte":1,"marker":"batch"}}
+		}
+	}`
+	pods := []*v1.Pod{{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "pod-a",
+			Annotations: map[string]string{constants.ModelAnnoConfig: profileJSON},
+		},
+	}}
+
+	for _, reqConfigProfile := range []string{"batch", autoConfigProfile} {
+		t.Run(reqConfigProfile, func(t *testing.T) {
+			ctx := types.NewRoutingContext(context.Background(), "", "", "", "request-1", "")
+			ctx.ReqConfigProfile = reqConfigProfile
+			ctx.Message = "prompt"
+			ctx.ReqHeaders = map[string]string{
+				HeaderRoutingStrategy: "throughput",
+				HeaderExternalFilter:  "environment=batch",
+				"x-test-header":       "preserved",
+			}
+
+			applyConfigProfile(ctx, pods)
+
+			require.NotNil(t, ctx.ConfigProfile)
+			assert.True(t, ctx.ConfigProfile.AuthoritativeRoutingPolicy)
+			assert.Equal(t, "least-request", ctx.ConfigProfile.RoutingStrategy)
+			assert.Contains(t, string(ctx.ConfigProfile.RoutingConfig), `"marker":"default"`)
+			assert.Empty(t, ctx.ReqConfigProfile)
+			assert.NotContains(t, ctx.ReqHeaders, HeaderRoutingStrategy)
+			assert.NotContains(t, ctx.ReqHeaders, HeaderExternalFilter)
+			assert.Equal(t, "preserved", ctx.ReqHeaders["x-test-header"])
+			assert.NotContains(t, ctx.RespHeaders, HeaderAIBrixConfigProfile)
+		})
+	}
+}
+
+func TestMaxTokensFromRequestBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+		want *int64
+	}{
+		{name: "max tokens", body: []byte(`{"max_tokens":128}`), want: int64Ptr(128)},
+		{name: "max completion tokens", body: []byte(`{"max_completion_tokens":256}`), want: int64Ptr(256)},
+		{name: "max tokens wins", body: []byte(`{"max_tokens":128,"max_completion_tokens":256}`), want: int64Ptr(128)},
+		{name: "absent", body: []byte(`{"model":"m"}`), want: nil},
+		{name: "invalid", body: []byte(`{`), want: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := maxTokensFromRequestBody(tt.body)
+			if tt.want == nil {
+				assert.Nil(t, got)
+				return
+			}
+			if assert.NotNil(t, got) {
+				assert.Equal(t, *tt.want, *got)
+			}
+		})
+	}
+}
+
+func TestDeriveRoutingStrategyFromContext(t *testing.T) {
+	// lockedRoutingStrategy (model-wide) always wins over header and profile.
+	lockedCtx := &types.RoutingContext{
+		ConfigProfile: &types.ResolvedConfigProfile{
+			LockedRoutingStrategy: "pd",
+			RoutingStrategy:       "random",
+		},
+		ReqHeaders: map[string]string{HeaderRoutingStrategy: "throughput"},
+	}
+
+	// Header wins over profile strategy.
+	headerCtx := &types.RoutingContext{
+		ConfigProfile: &types.ResolvedConfigProfile{RoutingStrategy: "random"},
+		ReqHeaders:    map[string]string{HeaderRoutingStrategy: "throughput"},
+	}
+
+	// Profile strategy is used when no header is present.
+	profileCtx := &types.RoutingContext{
+		ConfigProfile: &types.ResolvedConfigProfile{RoutingStrategy: "least-request"},
+		ReqHeaders:    map[string]string{},
+	}
+
+	// Case-insensitive header key match.
+	headerCaseCtx := &types.RoutingContext{
+		ConfigProfile: &types.ResolvedConfigProfile{RoutingStrategy: "random"},
+		ReqHeaders:    map[string]string{"Routing-Strategy": "pd"},
+	}
+
+	// Nothing set: falls back to environment default.
+	emptyCtx := &types.RoutingContext{ReqHeaders: map[string]string{}}
+
+	tests := []struct {
+		name   string
+		ctx    *types.RoutingContext
+		want   string
+		wantOK bool
+	}{
+		{"locked strategy wins over header and profile", lockedCtx, "pd", true},
+		{"header wins over profile strategy", headerCtx, "throughput", true},
+		{"profile strategy used when header absent", profileCtx, "least-request", true},
+		{"case-insensitive header key", headerCaseCtx, "pd", true},
+		{"falls back to env when nothing set", emptyCtx, defaultRoutingStrategy, defaultRoutingStrategyEnabled},
+		{"nil context falls back to env", nil, defaultRoutingStrategy, defaultRoutingStrategyEnabled},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := deriveRoutingStrategyFromContext(tt.ctx)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantOK, ok)
+		})
+	}
+}
+
+// TestParseMultipartFormData_IgnoresStreamForVideoPaths guards against a
+// client (or an SDK reusing a generic multipart helper across audio/video
+// calls) sending stream=true on the async, never-streamed Videos API. If that
+// field were honored, HandleResponseBody would take the SSE branch instead of
+// calling handleVideoJobResponseBody, and the job would never be registered --
+// breaking follow-up GET/DELETE calls with a spurious "video not found".
+func TestParseMultipartFormData_IgnoresStreamForVideoPaths(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		wantStream bool
+	}{
+		{"videos create ignores stream field", PathVideos, false},
+		{"videos sync create ignores stream field", PathVideosSync, false},
+		{"videos create with query string still ignores stream field", PathVideos + "?foo=bar", false},
+		{"audio transcription honors stream field", PathAudioTranscriptions, true},
+		// Multi-stage image edit pipelines answer stream=true with SSE, so the flag has to
+		// reach HandleResponseBody.
+		{"image edits honors stream field", PathImagesEdits, true},
+		{"image edits with query string honors stream field", PathImagesEdits + "?foo=bar", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, contentType := buildMultipartForm(t, map[string]string{
+				"model":  "test-model",
+				"stream": "true",
+			})
+
+			model, stream, errRes := parseMultipartFormData("req-1", tt.path, contentType, body)
+
+			assert.Nil(t, errRes)
+			assert.Equal(t, "test-model", model)
+			assert.Equal(t, tt.wantStream, stream)
+		})
+	}
+}
+
+func TestValidateRoutingStrategyForPath(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		strategy  types.RoutingAlgorithm
+		wantErr   bool
+		errString string
+	}{
+		{
+			name:     "chat completions with pd is supported",
+			path:     PathChatCompletions,
+			strategy: routing.RouterPD,
+			wantErr:  false,
+		},
+		{
+			name:     "chat completions with query string and pd is supported",
+			path:     PathChatCompletions + "?stream=true",
+			strategy: routing.RouterPD,
+			wantErr:  false,
+		},
+		{
+			name:     "completions with pd is supported",
+			path:     PathCompletions,
+			strategy: routing.RouterPD,
+			wantErr:  false,
+		},
+		{
+			name:     "completions with query string and pd is supported",
+			path:     PathCompletions + "?max_tokens=100",
+			strategy: routing.RouterPD,
+			wantErr:  false,
+		},
+		{
+			name:     "multi-strategy resolving to pd on chat completions is supported",
+			path:     PathChatCompletions,
+			strategy: types.RoutingAlgorithm("pd:1,least-request:1"),
+			wantErr:  false,
+		},
+		{
+			name:      "responses with pd is rejected",
+			path:      PathResponses,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/responses'",
+		},
+		{
+			name:      "messages with pd is rejected",
+			path:      PathMessages,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/messages'",
+		},
+		{
+			name:      "embeddings with pd is rejected",
+			path:      PathEmbeddings,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/embeddings'",
+		},
+		{
+			name:      "score endpoint with pd is rejected",
+			path:      "/v1/score",
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/score'",
+		},
+		{
+			name:      "score endpoint with query string and pd is rejected",
+			path:      "/v1/score?stream=true",
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/score'",
+		},
+		{
+			name:      "chat completions batch with pd is rejected",
+			path:      PathChatCompletionsBatch,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/chat/completions/batch'",
+		},
+		{
+			name:      "rerank with pd is rejected",
+			path:      PathRerank,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/rerank'",
+		},
+		{
+			name:      "classify with pd is rejected",
+			path:      PathClassify,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/classify'",
+		},
+		{
+			name:      "decisions with pd is rejected",
+			path:      PathDecisions,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/decisions'",
+		},
+		{
+			name:      "systemone with pd is rejected",
+			path:      PathSystemOne,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/systemone'",
+		},
+		{
+			name:      "images generations with pd is rejected",
+			path:      PathImagesGenerations,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/images/generations'",
+		},
+		{
+			name:      "images edits with pd is rejected",
+			path:      PathImagesEdits,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/images/edits'",
+		},
+		{
+			name:      "videos with pd is rejected",
+			path:      PathVideos,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/videos'",
+		},
+		{
+			name:      "audio transcriptions with pd is rejected",
+			path:      PathAudioTranscriptions,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/audio/transcriptions'",
+		},
+		{
+			name:      "tokenize with pd is rejected",
+			path:      PathTokenize,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/tokenize'",
+		},
+		{
+			name:      "pooling with pd is rejected",
+			path:      PathPooling,
+			strategy:  routing.RouterPD,
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/pooling'",
+		},
+		{
+			name:      "multi-strategy resolving to pd on score endpoint is rejected",
+			path:      "/v1/score",
+			strategy:  types.RoutingAlgorithm("pd:1,least-request:1"),
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/score'",
+		},
+		{
+			name:     "non-pd strategy least-request on score is accepted",
+			path:     "/v1/score",
+			strategy: routing.RouterLeastRequest,
+			wantErr:  false,
+		},
+		{
+			name:     "non-pd strategy prefix-cache on embeddings is accepted",
+			path:     PathEmbeddings,
+			strategy: types.RoutingAlgorithm("prefix-cache"),
+			wantErr:  false,
+		},
+		{
+			name:     "empty strategy is accepted",
+			path:     PathEmbeddings,
+			strategy: "",
+			wantErr:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateRoutingStrategyForPath(tt.path, tt.strategy)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Equal(t, tt.errString, err.Error())
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func Test_ValidateRequestBody_Score(t *testing.T) {
+	testCases := []struct {
+		message     string
+		requestPath string // defaults to PathScore
+		requestBody string
+		messages    string
+		statusCode  envoyTypePb.StatusCode
+		param       string
+	}{
+		{
+			message:     "/v1/score pointwise routes on the query",
+			requestBody: `{"model": "scorer", "query": "Is this relevant?", "items": ["doc a", "doc b"], "label_token_ids": [9454, 2753]}`,
+			messages:    "Is this relevant?",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score setwise fields are forwarded, not inspected",
+			requestBody: `{"model": "scorer", "query": "rank these", "items": ["a<sep>b<sep>"], "score_extraction_token": "<sep>", "return_pooled_hidden_states": true, "item_first": false, "apply_softmax": true}`,
+			messages:    "rank these",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score unknown fields are accepted",
+			requestBody: `{"model": "scorer", "query": "q", "items": "one item", "x_future_option": {"k": 1}}`,
+			messages:    "q",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score without a query routes on the first item",
+			requestBody: `{"model": "scorer", "items": ["first item", "second item"]}`,
+			messages:    "first item",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score a blank query falls back to the first item",
+			requestBody: `{"model": "scorer", "query": "  ", "items": ["first item"]}`,
+			messages:    "first item",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score a single string item",
+			requestBody: `{"model": "scorer", "items": "only item"}`,
+			messages:    "only item",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score token-id query and items give no routing text",
+			requestBody: `{"model": "scorer", "query": [101, 2054], "items": [[2023, 2003], [2008]]}`,
+			messages:    "",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score text query with token-id items routes on the query",
+			requestBody: `{"model": "scorer", "query": "q", "items": [[2023, 2003]]}`,
+			messages:    "q",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score stream false is accepted",
+			requestBody: `{"model": "scorer", "items": ["a"], "stream": false}`,
+			messages:    "a",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score query string does not break path matching",
+			requestPath: PathScore + "?api-version=1",
+			requestBody: `{"model": "scorer", "query": "q", "items": ["a"]}`,
+			messages:    "q",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/score missing model",
+			requestBody: `{"query": "q", "items": ["a"]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/score blank model",
+			requestBody: `{"model": " ", "query": "q", "items": ["a"]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/score non-string model",
+			requestBody: `{"model": 7, "items": ["a"]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/score missing items",
+			requestBody: `{"model": "scorer", "query": "q"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items",
+		},
+		{
+			message:     "/v1/score null items",
+			requestBody: `{"model": "scorer", "items": null}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items",
+		},
+		{
+			message:     "/v1/score empty items array",
+			requestBody: `{"model": "scorer", "items": []}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items",
+		},
+		{
+			message:     "/v1/score empty items string",
+			requestBody: `{"model": "scorer", "items": ""}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items",
+		},
+		{
+			message:     "/v1/score stream true is rejected",
+			requestBody: `{"model": "scorer", "items": ["a"], "stream": true}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "stream",
+		},
+		{
+			message:     "/v1/score malformed JSON",
+			requestBody: `{"model": "scorer", "items": ["a"]`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/score array root",
+			requestBody: `[{"model": "scorer", "items": ["a"]}]`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/score null root",
+			requestBody: `null`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.message, func(t *testing.T) {
+			requestPath := tt.requestPath
+			if requestPath == "" {
+				requestPath = PathScore
+			}
+			model, messages, prefixText, stream, errRes := validateRequestBody("test-request-id", requestPath, []byte(tt.requestBody), utils.User{})
+
+			// Score never streams and never carries a separate prefix text.
+			assert.False(t, stream)
+			assert.Empty(t, prefixText)
+
+			if tt.statusCode == envoyTypePb.StatusCode_OK {
+				assert.Nil(t, errRes)
+				assert.Equal(t, "scorer", model)
+				assert.Equal(t, tt.messages, messages)
+				return
+			}
+
+			if !assert.NotNil(t, errRes) {
+				return
+			}
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, model)
+			assert.Empty(t, messages)
+
+			var errResponse map[string]any
+			require.NoError(t, sonic.Unmarshal([]byte(errRes.GetImmediateResponse().GetBody()), &errResponse))
+			errObj, ok := errResponse["error"].(map[string]any)
+			require.True(t, ok, "response should have an 'error' object")
+			if tt.param != "" {
+				assert.Equal(t, tt.param, errObj["param"])
+			}
+		})
+	}
+}
+
+func Test_ValidateRequestBody_ChatCompletionsBatch(t *testing.T) {
+	testCases := []struct {
+		message     string
+		requestPath string // defaults to PathChatCompletionsBatch
+		requestBody string
+		text        string
+		statusCode  envoyTypePb.StatusCode
+		param       string
+	}{
+		{
+			message:     "/v1/chat/completions/batch routes on the model and joins the conversation texts",
+			requestBody: `{"model": "chat-model", "messages": [[{"role": "user", "content": "What is the capital of France?"}], [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "What is the capital of Japan?"}]]}`,
+			text:        "What is the capital of France?\nBe brief. What is the capital of Japan?",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions/batch multimodal content parts reach the routing text like a single chat request",
+			requestBody: `{"model": "chat-model", "messages": [[{"role": "user", "content": [{"type": "text", "text": "Describe it"}]}]]}`,
+			text:        `[{"type": "text", "text": "Describe it"}]`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions/batch sampling options are forwarded, not inspected",
+			requestBody: `{"model": "chat-model", "n": 4, "tools": [{"type": "function"}], "temperature": "hot", "messages": [[{"role": "user", "content": "Hi"}]]}`,
+			text:        "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions/batch a request-level stream field does not make it an SSE stream",
+			requestBody: `{"model": "chat-model", "stream": true, "messages": [[{"role": "user", "content": "Hi"}]]}`,
+			text:        "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions/batch query string does not break path matching",
+			requestPath: PathChatCompletionsBatch + "?api-version=1",
+			requestBody: `{"model": "chat-model", "messages": [[{"role": "user", "content": "Hi"}]]}`,
+			text:        "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions/batch missing model",
+			requestBody: `{"messages": [[{"role": "user", "content": "Hi"}]]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/chat/completions/batch blank model",
+			requestBody: `{"model": " ", "messages": [[{"role": "user", "content": "Hi"}]]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/chat/completions/batch non-string model",
+			requestBody: `{"model": 7, "messages": [[{"role": "user", "content": "Hi"}]]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/chat/completions/batch the model is checked before the messages",
+			requestBody: `{"model": "", "messages": []}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/chat/completions/batch missing messages",
+			requestBody: `{"model": "chat-model"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "messages",
+		},
+		{
+			message:     "/v1/chat/completions/batch null messages",
+			requestBody: `{"model": "chat-model", "messages": null}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "messages",
+		},
+		{
+			message:     "/v1/chat/completions/batch empty messages",
+			requestBody: `{"model": "chat-model", "messages": []}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "messages",
+		},
+		{
+			message:     "/v1/chat/completions/batch non-array messages",
+			requestBody: `{"model": "chat-model", "messages": {"role": "user", "content": "Hi"}}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/chat/completions/batch single-conversation messages are named by their first entry",
+			requestBody: `{"model": "chat-model", "messages": [{"role": "user", "content": "Hi"}]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "messages.0",
+		},
+		{
+			message:     "/v1/chat/completions/batch the failing conversation is named by its index",
+			requestBody: `{"model": "chat-model", "messages": [[{"role": "user", "content": "Hi"}], [{"role": "user", "content": "Hi"}], "Hi"]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "messages.2",
+		},
+		{
+			message:     "/v1/chat/completions/batch null conversation",
+			requestBody: `{"model": "chat-model", "messages": [null]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "messages.0",
+		},
+		{
+			message:     "/v1/chat/completions/batch empty conversation",
+			requestBody: `{"model": "chat-model", "messages": [[{"role": "user", "content": "Hi"}], []]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "messages.1",
+		},
+		{
+			message:     "/v1/chat/completions/batch non-object message",
+			requestBody: `{"model": "chat-model", "messages": [["Hi"]]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "messages.0",
+		},
+		{
+			message:     "/v1/chat/completions/batch malformed JSON",
+			requestBody: `{"model": "chat-model", "messages": [[{"role": "user", "content": "Hi"}]]`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/chat/completions/batch array root",
+			requestBody: `[[{"role": "user", "content": "Hi"}]]`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/chat/completions/batch null root",
+			requestBody: `null`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/chat/completions/batch empty body",
+			requestBody: ``,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.message, func(t *testing.T) {
+			requestPath := tt.requestPath
+			if requestPath == "" {
+				requestPath = PathChatCompletionsBatch
+			}
+			// A TPM-limited user must not be asked for stream_options: a batch is never streamed.
+			model, messages, prefixText, stream, errRes := validateRequestBody("test-request-id", requestPath, []byte(tt.requestBody), utils.User{Tpm: 100})
+
+			// The batch response is one JSON document, never an SSE stream, and has no separate prefix text.
+			assert.False(t, stream)
+			assert.Empty(t, prefixText)
+
+			if tt.statusCode == envoyTypePb.StatusCode_OK {
+				assert.Nil(t, errRes)
+				assert.Equal(t, "chat-model", model)
+				assert.Equal(t, tt.text, messages)
+				return
+			}
+
+			if !assert.NotNil(t, errRes) {
+				return
+			}
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, model)
+			assert.Empty(t, messages)
+
+			var errResponse map[string]any
+			require.NoError(t, sonic.Unmarshal([]byte(errRes.GetImmediateResponse().GetBody()), &errResponse))
+			errObj, ok := errResponse["error"].(map[string]any)
+			require.True(t, ok, "response should have an 'error' object")
+			if tt.param != "" {
+				assert.Equal(t, tt.param, errObj["param"])
+			}
+		})
+	}
+}
+
+func Test_ValidateRequestBody_AudioSpeechBatch(t *testing.T) {
+	testCases := []struct {
+		message     string
+		requestPath string // defaults to PathAudioSpeechBatch
+		requestBody string
+		input       string
+		statusCode  envoyTypePb.StatusCode
+		param       string
+	}{
+		{
+			message:     "/v1/audio/speech/batch routes on the model and joins the item inputs",
+			requestBody: `{"model": "tts-1", "items": [{"input": "First sentence."}, {"input": "Second sentence.", "speed": 1.1}]}`,
+			input:       "First sentence.\nSecond sentence.",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech/batch shared defaults and a reference clip item are forwarded, not inspected",
+			requestBody: `{"model": "tts-1", "voice": "default", "response_format": "wav", "items": [{"input": "First sentence."}, {"input": "Use a reference clip.", "ref_audio": "https://example.com/prompt.wav", "ref_text": "We asked over twenty people."}]}`,
+			input:       "First sentence.\nUse a reference clip.",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech/batch item problems are left to the engine to report per item",
+			requestBody: `{"model": "tts-1", "items": [{"input": ""}, {"voice": "alloy"}, {"input": 5}, {"input": "  "}, {"input": "kept", "stream": true, "x_future_option": {"k": 1}}]}`,
+			input:       "kept",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech/batch an item model is forwarded, not compared",
+			requestBody: `{"model": "tts-1", "items": [{"model": "another-model", "input": "Hi"}]}`,
+			input:       "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech/batch a request-level stream field does not make it an SSE stream",
+			requestBody: `{"model": "tts-1", "stream": true, "items": [{"input": "Hi"}]}`,
+			input:       "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech/batch query string does not break path matching",
+			requestPath: PathAudioSpeechBatch + "?api-version=1",
+			requestBody: `{"model": "tts-1", "items": [{"input": "Hi"}]}`,
+			input:       "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech/batch missing model",
+			requestBody: `{"items": [{"input": "Hi"}]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/audio/speech/batch blank model",
+			requestBody: `{"model": " ", "items": [{"input": "Hi"}]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/audio/speech/batch non-string model",
+			requestBody: `{"model": 7, "items": [{"input": "Hi"}]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech/batch the model is checked before the items",
+			requestBody: `{"model": "", "items": []}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/audio/speech/batch missing items",
+			requestBody: `{"model": "tts-1", "voice": "default"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items",
+		},
+		{
+			message:     "/v1/audio/speech/batch single-request body without items",
+			requestBody: `{"model": "tts-1", "input": "Hi"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items",
+		},
+		{
+			message:     "/v1/audio/speech/batch empty items",
+			requestBody: `{"model": "tts-1", "items": []}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items",
+		},
+		{
+			message:     "/v1/audio/speech/batch null items",
+			requestBody: `{"model": "tts-1", "items": null}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items",
+		},
+		{
+			message:     "/v1/audio/speech/batch non-array items",
+			requestBody: `{"model": "tts-1", "items": {"input": "Hi"}}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech/batch string item",
+			requestBody: `{"model": "tts-1", "items": ["Hi"]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items.0",
+		},
+		{
+			message:     "/v1/audio/speech/batch the failing item is named by its index",
+			requestBody: `{"model": "tts-1", "items": [{"input": "Hi"}, {"input": "Hi"}, 7]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items.2",
+		},
+		{
+			message:     "/v1/audio/speech/batch null item",
+			requestBody: `{"model": "tts-1", "items": [null]}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "items.0",
+		},
+		{
+			message:     "/v1/audio/speech/batch malformed JSON",
+			requestBody: `{"model": "tts-1", "items": [{"input": "Hi"}]`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech/batch array root",
+			requestBody: `[{"input": "Hi"}]`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech/batch null root",
+			requestBody: `null`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech/batch empty body",
+			requestBody: ``,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.message, func(t *testing.T) {
+			requestPath := tt.requestPath
+			if requestPath == "" {
+				requestPath = PathAudioSpeechBatch
+			}
+			model, messages, prefixText, stream, errRes := validateRequestBody("test-request-id", requestPath, []byte(tt.requestBody), utils.User{})
+
+			// The batch response is one JSON document, never an SSE stream, and has no separate prefix text.
+			assert.False(t, stream)
+			assert.Empty(t, prefixText)
+
+			if tt.statusCode == envoyTypePb.StatusCode_OK {
+				assert.Nil(t, errRes)
+				assert.Equal(t, "tts-1", model)
+				assert.Equal(t, tt.input, messages)
+				return
+			}
+
+			if !assert.NotNil(t, errRes) {
+				return
+			}
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, model)
+			assert.Empty(t, messages)
+
+			var errResponse map[string]any
+			require.NoError(t, sonic.Unmarshal([]byte(errRes.GetImmediateResponse().GetBody()), &errResponse))
+			errObj, ok := errResponse["error"].(map[string]any)
+			require.True(t, ok, "response should have an 'error' object")
+			if tt.param != "" {
+				assert.Equal(t, tt.param, errObj["param"])
+			}
+		})
+	}
+}
+
+func Test_ValidateRequestBody_AudioSpeech(t *testing.T) {
+	testCases := []struct {
+		message     string
+		requestPath string // defaults to PathAudioSpeech
+		requestBody string
+		input       string
+		statusCode  envoyTypePb.StatusCode
+		param       string
+	}{
+		{
+			message:     "/v1/audio/speech routes on the model and speaks the input",
+			requestBody: `{"model": "tts-1", "input": "Hello world", "voice": "alloy"}`,
+			input:       "Hello world",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech speech options are forwarded, not inspected",
+			requestBody: `{"model": "tts-1", "input": "Hi", "voice": "verse", "response_format": "wav", "speed": 1.25, "instructions": "excited", "language": "en", "stream_format": "audio", "task_type": "Base", "x_future_option": {"k": 1}}`,
+			input:       "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech unknown fields are accepted",
+			requestBody: `{"model": "tts-1", "input": "Hi", "x_future_option": {"k": 1}}`,
+			input:       "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech a request-level stream field does not make it an SSE stream",
+			requestBody: `{"model": "tts-1", "input": "Hi", "stream": true}`,
+			input:       "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech query string does not break path matching",
+			requestPath: PathAudioSpeech + "?api-version=1",
+			requestBody: `{"model": "tts-1", "input": "Hi"}`,
+			input:       "Hi",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/speech missing model",
+			requestBody: `{"input": "Hi"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/audio/speech blank model",
+			requestBody: `{"model": " ", "input": "Hi"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/audio/speech non-string model",
+			requestBody: `{"model": 7, "input": "Hi"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech missing input",
+			requestBody: `{"model": "tts-1", "voice": "alloy"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/audio/speech blank input",
+			requestBody: `{"model": "tts-1", "input": "   "}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/audio/speech empty input",
+			requestBody: `{"model": "tts-1", "input": ""}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/audio/speech non-string input",
+			requestBody: `{"model": "tts-1", "input": 42}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech malformed JSON",
+			requestBody: `{"model": "tts-1", "input": "Hi"`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech array root",
+			requestBody: `[{"model": "tts-1", "input": "Hi"}]`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech null root",
+			requestBody: `null`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/speech empty body",
+			requestBody: ``,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.message, func(t *testing.T) {
+			requestPath := tt.requestPath
+			if requestPath == "" {
+				requestPath = PathAudioSpeech
+			}
+			model, messages, prefixText, stream, errRes := validateRequestBody("test-request-id", requestPath, []byte(tt.requestBody), utils.User{})
+
+			// Binary audio is never treated as an SSE stream and carries no separate prefix text.
+			assert.False(t, stream)
+			assert.Empty(t, prefixText)
+
+			if tt.statusCode == envoyTypePb.StatusCode_OK {
+				assert.Nil(t, errRes)
+				assert.Equal(t, "tts-1", model)
+				assert.Equal(t, tt.input, messages)
+				return
+			}
+
+			if !assert.NotNil(t, errRes) {
+				return
+			}
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, model)
+			assert.Empty(t, messages)
+
+			var errResponse map[string]any
+			require.NoError(t, sonic.Unmarshal([]byte(errRes.GetImmediateResponse().GetBody()), &errResponse))
+			errObj, ok := errResponse["error"].(map[string]any)
+			require.True(t, ok, "response should have an 'error' object")
+			if tt.param != "" {
+				assert.Equal(t, tt.param, errObj["param"])
 			}
 		})
 	}

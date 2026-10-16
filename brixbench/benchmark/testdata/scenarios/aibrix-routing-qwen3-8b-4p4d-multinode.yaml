@@ -1,0 +1,42 @@
+# Latest AIBrix main + vLLM Qwen3-8B PD routing — multi-node 4p4d @ 8/16 rps.
+# BENCHMARK_GATEWAY_IMAGE and BENCHMARK_GATEWAY_COMMIT may pin a prebuilt daily
+# gateway image; otherwise brixbench builds the resolved origin/main commit.
+# RATE/PROMPTS match the 4p4d singlenode compare scenario.
+Scenario: aibrix-routing-qwen3-8b-4p4d-multinode
+Tests:
+- name: aibrix-pd-4p4d-multinode-r8
+  provider: aibrix
+  fullstack: false
+  commit: origin/main
+  gateway:
+    image:
+      baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+      outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+    env:
+      ROUTING_ALGORITHM: pd
+      AIBRIX_PREFIX_CACHE_BLOCK_SIZE: 512
+    resources:
+    - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-gateway-resources.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p4d-multinode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-multinode-r8-p1000.yaml
+- name: aibrix-pd-4p4d-multinode-r16
+  provider: aibrix
+  fullstack: false
+  commit: origin/main
+  gateway:
+    image:
+      baseImage: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins:v0.6.0
+      outputRepository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+    env:
+      ROUTING_ALGORITHM: pd
+      AIBRIX_PREFIX_CACHE_BLOCK_SIZE: 512
+    resources:
+    - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-route.yaml
+    - testdata/deployments/aibrix/gateway/overrides/routing/qwen3-8b-gateway-resources.yaml
+  engine:
+    type: vllm
+    manifest: testdata/deployments/aibrix/models/qwen3-8b-pd-4p4d-multinode.yaml
+  benchmark: testdata/benchmarks/routing/qwen3-8b-tc-rt-02-pd-4p4d-multinode-r16-p1000.yaml

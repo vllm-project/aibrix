@@ -1,0 +1,65 @@
+# Usage:
+#   kubectl label node <node-a> topology.kubernetes.io/zone=zone-a --overwrite
+#   kubectl label node <node-b> topology.kubernetes.io/zone=zone-b --overwrite
+#   kubectl apply -f samples/orchestration/topology-policy/roleset-zone-preferred.yaml
+#   kubectl get pods -l storm-service-name=tp-rs-zone-pref -o wide
+#
+# Case: each RoleSet replica prefers to keep its prefill and decode Pods in one zone.
+#
+# Different RoleSet replicas can land in different zones.
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: tp-rs-zone-pref
+spec:
+  replicas: 3
+  stateful: true
+  selector:
+    matchLabels:
+      app: tp-rs-zone-pref
+  template:
+    metadata:
+      labels:
+        app: tp-rs-zone-pref
+    spec:
+      # updateStrategy=Parallel creates all roles immediately for easier demos.
+      updateStrategy: Parallel
+      # topologyPolicy injects Kubernetes pod affinity into generated Pods.
+      topologyPolicy:
+        # scope=RoleSet matches Pods in the same generated RoleSet.
+        # This keeps a single deployment replica's prefill and decode Pods near
+        # each other, while separate RoleSets can choose different zones.
+        scope: RoleSet
+        # mode=Preferred is a soft rule, so scheduling can still succeed when a
+        # single zone cannot fit all Pods in the RoleSet.
+        mode: Preferred
+        # key selects the node label used as the topology domain.
+        key: topology.kubernetes.io/zone
+      roles:
+        - name: prefill
+          # Two prefill replicas per RoleSet. With podGroupSize=2, each replica
+          # is represented by a PodSet containing two Pods.
+          replicas: 2
+          podGroupSize: 2
+          stateful: true
+          template:
+            metadata:
+              labels:
+                role: prefill
+            spec:
+              containers:
+                - name: prefill
+                  image: nginx:alpine
+        - name: decode
+          # Four decode Pods per RoleSet. With scope=RoleSet, these are grouped
+          # with the same RoleSet's prefill Pods.
+          replicas: 4
+          stateful: true
+          template:
+            metadata:
+              labels:
+                role: decode
+            spec:
+              containers:
+                - name: decode
+                  image: nginx:alpine

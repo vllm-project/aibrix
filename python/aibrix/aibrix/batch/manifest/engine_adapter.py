@@ -21,6 +21,7 @@ engine container spec.
 
 At this moment, it implements:
 - VLLM: full coverage of common flags
+- SGLANG: minimal OpenAI-compatible server flags
 - MOCK: minimal startup (used by integration tests)
 
 Other engine types raise UnsupportedEngineError until their adapter
@@ -66,10 +67,14 @@ def build_engine_args(
     engine_type = spec.engine.type
     if engine_type == EngineType.VLLM:
         return _build_vllm_args(spec, ignore_model, served_model_name)
+    if engine_type == EngineType.SGLANG:
+        return _build_sglang_args(spec, ignore_model, served_model_name)
     if engine_type == EngineType.MOCK:
         return _build_mock_args(spec)
+    if engine_type == EngineType.VIPE:
+        return _build_vipe_args(spec, ignore_model, served_model_name)
     raise UnsupportedEngineError(
-        f"engine type '{engine_type.value}' has no adapter yet; supported: vllm, mock"
+        f"engine type '{engine_type.value}' has no adapter yet; supported: vllm, sglang, mock, vipe"
     )
 
 
@@ -174,14 +179,87 @@ _VLLM_TYPED_FIELDS = {
     "num_speculative_tokens",
 }
 
+_SGLANG_TYPED_FIELDS = {
+    "max_num_seqs",
+    "max_model_len",
+    "gpu_memory_utilization",
+}
 
-def _engine_args_extras(dumped: Dict[str, Any]) -> Dict[str, Any]:
-    """Return engine_args fields that aren't typed schema fields.
+_VIPE_TYPED_FIELDS = {
+    "vipe-storage-tos",
+}
+
+
+def _engine_args_extras(
+    dumped: Dict[str, Any],
+    typed_fields: set[str] = _VLLM_TYPED_FIELDS,
+) -> Dict[str, Any]:
+    """Return engine_args fields that aren't already mapped.
 
     These are user-supplied engine-specific flags passed through via
     EngineArgsSpec's lenient model_config (extra='allow').
     """
-    return {k: v for k, v in dumped.items() if k not in _VLLM_TYPED_FIELDS}
+    return {k: v for k, v in dumped.items() if k not in typed_fields}
+
+
+def _build_sglang_args(
+    spec: ModelDeploymentTemplateSpec,
+    ignore_model: bool = False,
+    served_model_name: Optional[str] = None,
+) -> List[str]:
+    """Render SGLang launch_server arguments.
+
+    Keep this intentionally small: only map common template fields whose
+    SGLang CLI equivalent is stable, then append raw serve_args so templates
+    can carry version-specific flags.
+    """
+    args: List[str] = []
+
+    if not ignore_model:
+        args.extend(["--model-path", spec.model_source.uri])
+    if served_model_name and not _pins_served_model_name(spec):
+        args.extend(["--served-model-name", served_model_name])
+    if spec.model_source.tokenizer_path:
+        args.extend(["--tokenizer-path", spec.model_source.tokenizer_path])
+
+    p = spec.parallelism
+    if p.tp > 1:
+        args.extend(["--tp", str(p.tp)])
+    if p.pp > 1:
+        args.extend(["--pp", str(p.pp)])
+    if p.dp > 1:
+        args.extend(["--dp", str(p.dp)])
+
+    ea = spec.engine_args
+    if ea.max_model_len is not None:
+        args.extend(["--context-length", str(ea.max_model_len)])
+    if ea.max_num_seqs is not None:
+        args.extend(["--max-running-requests", str(ea.max_num_seqs)])
+    if ea.gpu_memory_utilization is not None:
+        args.extend(["--mem-fraction-static", str(ea.gpu_memory_utilization)])
+
+    extras = _engine_args_extras(ea.model_dump(exclude_none=True), _SGLANG_TYPED_FIELDS)
+    for key, value in sorted(extras.items()):
+        flag = "--" + key.strip().lstrip("-").replace("_", "-")
+        if isinstance(value, bool):
+            if value:
+                args.append(flag)
+        elif isinstance(value, list):
+            for v in value:
+                args.extend([flag, str(v)])
+        elif value is None or str(value).strip() == "":
+            args.append(flag)
+        else:
+            args.extend([flag, str(value).strip()])
+
+    q = spec.quantization
+    if q.weight is not None:
+        args.extend(["--quantization", q.weight.value])
+    if q.kv_cache is not None:
+        args.extend(["--kv-cache-dtype", q.kv_cache.value])
+
+    args.extend(spec.engine.serve_args)
+    return args
 
 
 def _pins_served_model_name(spec: ModelDeploymentTemplateSpec) -> bool:
@@ -221,3 +299,33 @@ def needs_shell_wrapper(engine: EngineSpec) -> bool:
     args directly to the entrypoint.
     """
     return engine.type == EngineType.MOCK
+
+
+def _build_vipe_args(
+    spec: ModelDeploymentTemplateSpec,
+    ignore_model: bool = False,
+    served_model_name: Optional[str] = None,
+) -> List[str]:
+    """Render ViPE launch_server arguments."""
+    args: List[str] = []
+
+    if served_model_name and not _pins_served_model_name(spec):
+        args.extend(["--vipe-default-model", served_model_name])
+
+    ea = spec.engine_args
+    extras = _engine_args_extras(ea.model_dump(exclude_none=True), _VIPE_TYPED_FIELDS)
+    for key, value in sorted(extras.items()):
+        flag = "--" + key.strip().lstrip("-").replace("_", "-")
+        if isinstance(value, bool):
+            if value:
+                args.append(flag)
+        elif isinstance(value, list):
+            for v in value:
+                args.extend([flag, str(v)])
+        elif value is None or str(value).strip() == "":
+            args.append(flag)
+        else:
+            args.extend([flag, str(value).strip()])
+
+    args.extend(spec.engine.serve_args)
+    return args

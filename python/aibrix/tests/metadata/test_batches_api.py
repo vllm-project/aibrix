@@ -29,6 +29,15 @@ from typing import Any, Dict, List, Optional
 import pytest
 from fastapi.testclient import TestClient
 
+from aibrix.batch.job_entity import (
+    BatchJobError,
+    BatchJobErrorCode,
+    BatchJobState,
+    Condition,
+    ConditionStatus,
+    ConditionType,
+)
+from aibrix.batch.job_entity.batch_job import parse_completion_window
 from tests.metadata.conftest import create_test_app
 
 
@@ -93,7 +102,7 @@ class TestCreateBatch:
             body = response.json()
             assert body["object"] == "batch"
             assert body["endpoint"] == "/v1/chat/completions"
-            assert body["completion_window"] == "24h"
+            assert parse_completion_window(body["completion_window"]) == 24 * 60 * 60
             # CREATED is surfaced as "scheduling" (awaiting admission); may have
             # already advanced to validating/in_progress by the time we read it.
             assert body["status"] in {"scheduling", "validating", "in_progress"}
@@ -136,7 +145,22 @@ class TestCreateBatch:
             )
             assert response.status_code == 422
 
-    def test_create_rejects_unknown_completion_window(self):
+    def test_create_accepts_supported_completion_window(self):
+        with TestClient(create_test_app()) as client:
+            file_id = _upload_jsonl(client, _make_jsonl([_chat_request()]))
+            response = client.post(
+                "/v1/batches",
+                json={
+                    "input_file_id": file_id,
+                    "endpoint": "/v1/chat/completions",
+                    "completion_window": "12h",
+                },
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert parse_completion_window(body["completion_window"]) == 12 * 60 * 60
+
+    def test_create_accepts_custom_completion_window(self):
         with TestClient(create_test_app()) as client:
             file_id = _upload_jsonl(client, _make_jsonl([_chat_request()]))
             response = client.post(
@@ -147,15 +171,16 @@ class TestCreateBatch:
                     "completion_window": "48h",
                 },
             )
-            assert response.status_code == 422
+            assert response.status_code == 200
+            assert (
+                parse_completion_window(response.json()["completion_window"])
+                == 48 * 60 * 60
+            )
 
     def test_create_rejects_unknown_input_file(self):
-        # NOTE: When the input file does not exist, the local storage's
-        # readline_iter currently yields zero lines instead of raising
-        # FileNotFoundError, so the route reports the input as empty rather
-        # than not-found. This documents the current behavior; if storage
-        # is updated to surface FileNotFoundError, the assertion should
-        # tighten to match "not found".
+        # Route-level create now only stages the batch and returns 200.
+        # The semantic input-file validation moved to
+        # tests/batch/test_base_job_driver.py under BaseJobDriver.validate_job.
         with TestClient(create_test_app()) as client:
             response = client.post(
                 "/v1/batches",
@@ -165,26 +190,32 @@ class TestCreateBatch:
                     "completion_window": "24h",
                 },
             )
-            assert response.status_code == 400
+            assert response.status_code == 200
 
     def test_create_rejects_input_missing_custom_id(self):
+        # Route-level create now only stages the batch and returns 200.
+        # The semantic request-line validation moved to
+        # tests/batch/test_base_job_driver.py under BaseJobDriver.validate_job.
         line = _chat_request()
         line.pop("custom_id")
         with TestClient(create_test_app()) as client:
             response = _create_chat_batch(client, lines=[line])
-            assert response.status_code == 400
-            assert "custom_id" in response.json()["error"]["message"]
+            assert response.status_code == 200
 
     def test_create_rejects_input_url_mismatching_batch_endpoint(self):
+        # Route-level create now only stages the batch and returns 200.
+        # The semantic request-line validation moved to
+        # tests/batch/test_base_job_driver.py under BaseJobDriver.validate_job.
         line = _chat_request()
         line["url"] = "/v1/embeddings"  # mismatch
         with TestClient(create_test_app()) as client:
             response = _create_chat_batch(client, lines=[line])
-            assert response.status_code == 400
-            assert "does not match" in response.json()["error"]["message"]
+            assert response.status_code == 200
 
     def test_create_rejects_embeddings_input_missing_input_field(self):
-        # Embeddings body must carry 'input'; here we omit it.
+        # Route-level create now only stages the batch and returns 200.
+        # The semantic request-body validation moved to
+        # tests/batch/test_base_job_driver.py under BaseJobDriver.validate_job.
         line = {
             "custom_id": "e1",
             "method": "POST",
@@ -201,18 +232,22 @@ class TestCreateBatch:
                     "completion_window": "24h",
                 },
             )
-            assert response.status_code == 400
-            assert "input" in response.json()["error"]["message"]
+            assert response.status_code == 200
 
     def test_create_rejects_chat_messages_not_list(self):
+        # Route-level create now only stages the batch and returns 200.
+        # The semantic request-body validation moved to
+        # tests/batch/test_base_job_driver.py under BaseJobDriver.validate_job.
         line = _chat_request()
         line["body"]["messages"] = "not-a-list"
         with TestClient(create_test_app()) as client:
             response = _create_chat_batch(client, lines=[line])
-            assert response.status_code == 400
-            assert "messages" in response.json()["error"]["message"]
+            assert response.status_code == 200
 
     def test_create_rejects_empty_input_file(self):
+        # Route-level create now only stages the batch and returns 200.
+        # The empty-file validation moved to
+        # tests/batch/test_base_job_driver.py under BaseJobDriver.validate_job.
         with TestClient(create_test_app()) as client:
             file_id = _upload_jsonl(client, BytesIO(b"\n\n  \n"))
             response = client.post(
@@ -223,8 +258,7 @@ class TestCreateBatch:
                     "completion_window": "24h",
                 },
             )
-            assert response.status_code == 400
-            assert "empty" in response.json()["error"]["message"].lower()
+            assert response.status_code == 200
 
     def test_create_trailing_slash_works(self):
         with TestClient(create_test_app()) as client:
@@ -274,26 +308,71 @@ class TestCancelBatch:
         # We only assert the synchronous "pending → cancellable" path here.
         # An in_progress batch's cancel is driven asynchronously through
         # the worker and is covered in tests/batch/test_e2e_*.
-        # If the local scheduler races the cancel and finalizes the job,
-        # cancel_job returns False and we get a 400; either outcome is a
-        # legitimate state of the local pipeline, so we allow both and
-        # assert wire-format correctness on each.
+        # If the local scheduler wins the race and finalizes the job first,
+        # the cancel request is rejected with HTTP 409.
         with TestClient(create_test_app()) as client:
             create_response = _create_chat_batch(client)
             assert create_response.status_code == 200
             batch_id = create_response.json()["id"]
 
             response = client.post(f"/v1/batches/{batch_id}/cancel")
-            if response.status_code == 200:
+            if response.status_code == 409:
                 body = response.json()
-                assert body["id"] == batch_id
-                assert body["status"] in {"cancelling", "cancelled"}
-                assert body.get("cancelling_at") is not None
-            else:
-                assert response.status_code == 400
-                assert (
-                    response.json()["error"]["message"] == "Batch cannot be cancelled"
+                assert body == {
+                    "error": {
+                        "message": "Cannot cancel a batch with status 'finalized'.",
+                        "type": "invalid_request_error",
+                    }
+                }
+                return
+
+            assert response.status_code == 200
+            body = response.json()
+            assert body["id"] == batch_id
+            assert body["status"] in {"cancelling", "cancelled"}
+
+    def test_cancel_rejected_returns_409_without_mutating_job_errors(self):
+        app = create_test_app()
+        with TestClient(app) as client:
+            create_response = _create_chat_batch(client)
+            assert create_response.status_code == 200
+            batch_id = create_response.json()["id"]
+
+            job_manager = client.app.state.batch_driver.job_manager
+            job = job_manager._pending_jobs.pop(batch_id)
+            job.status.state = BatchJobState.FINALIZED
+            job.status.failed_at = job.status.created_at
+            job.status.errors = [
+                BatchJobError(code=BatchJobErrorCode.INTERNAL_ERROR, message="")
+            ]
+            job.status.conditions = [
+                Condition(
+                    type=ConditionType.FAILED,
+                    status=ConditionStatus.TRUE,
+                    lastTransitionTime=job.status.created_at,
+                    reason=BatchJobErrorCode.INTERNAL_ERROR.value,
+                    message="",
                 )
+            ]
+            job_manager._done_jobs[batch_id] = job
+
+            response = client.post(f"/v1/batches/{batch_id}/cancel")
+            assert response.status_code == 409
+            assert response.json() == {
+                "error": {
+                    "message": "Cannot cancel a batch with status 'finalized'.",
+                    "type": "invalid_request_error",
+                }
+            }
+
+            get_response = client.get(f"/v1/batches/{batch_id}")
+            assert get_response.status_code == 200
+            get_body = get_response.json()
+            assert get_body["status"] == "failed"
+            assert get_body["errors"] is not None
+            assert [error["code"] for error in get_body["errors"]["data"]] == [
+                "internal_error"
+            ]
 
 
 class TestListBatches:

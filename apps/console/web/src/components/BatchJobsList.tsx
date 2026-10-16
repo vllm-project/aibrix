@@ -113,6 +113,7 @@ function statusFilterLabel(filter: BatchStatusFilter): string {
 export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<BatchStatusFilter>('');
@@ -128,15 +129,25 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const fetchJobs = (initial: boolean) => {
+      let publishedPage = false;
       if (initial) {
         setLoading(true);
+        setLoadingHistory(true);
         setLoadError(null);
       }
-      // Pull the full job set via cursor paging so the client-side
-      // pagination/search/filter/summary (which all assume every job is in
-      // memory) sees everything. The BFF defaults to a 20-job page without an
-      // explicit limit, which silently hid jobs past the 2nd page.
-      listAllJobs()
+      // Publish the first API page immediately, then keep filling the
+      // client-side pagination/search/summary data in the background.
+      listAllJobs(initial ? {
+        pageLimit: 20,
+        onPage: (loadedJobs, hasMore) => {
+          publishedPage = true;
+          if (cancelled) return;
+          const next = [...loadedJobs].sort((a, b) => jobCreatedTs(b) - jobCreatedTs(a));
+          setJobs(next);
+          setLoading(false);
+          setLoadingHistory(hasMore);
+        },
+      } : undefined)
         .then(allJobs => {
           if (cancelled) return;
           // Order strictly by creation time, newest first. The store list is
@@ -144,6 +155,8 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
           // older BFF builds were prepended out of order — sort defensively.
           const next = [...allJobs].sort((a, b) => jobCreatedTs(b) - jobCreatedTs(a));
           setJobs(next);
+          setLoadingHistory(false);
+          setLoadError(null);
           // Poll while any job is in a non-terminal state.
           const hasActive = next.some(j => !TERMINAL_STATUSES.has(j.status));
           if (hasActive) {
@@ -153,9 +166,12 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
         .catch(err => {
           if (cancelled) return;
           console.error('Failed to fetch jobs:', err);
-          if (initial) {
+          setLoadingHistory(false);
+          if (initial && !publishedPage) {
             setLoadError(err instanceof Error ? err.message : String(err));
             setJobs([]);
+          } else if (initial) {
+            setLoadError('Some older jobs could not be loaded. Retrying automatically.');
           }
           // Keep polling on transient errors so the page recovers when MDS comes back.
           timer = setTimeout(() => fetchJobs(false), 10000);
@@ -234,6 +250,11 @@ export function BatchJobsList({ onSelectJob, onCreateJob }: BatchJobsListProps) 
           <p className="text-sm text-gray-500">View your past batch inference jobs or create new ones.</p>
           {loadError && !loading && (
             <p className="text-xs text-red-600 mt-1">Failed to load jobs: {loadError}</p>
+          )}
+          {loadingHistory && !loading && (
+            <p className="text-xs text-gray-500 mt-1">
+              Loading older jobs… Summary and search will update as history arrives.
+            </p>
           )}
         </div>
         <button

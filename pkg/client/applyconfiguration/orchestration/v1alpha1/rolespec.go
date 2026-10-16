@@ -26,6 +26,7 @@ import (
 type RoleSpecApplyConfiguration struct {
 	Name                *string                                `json:"name,omitempty"`
 	Replicas            *int32                                 `json:"replicas,omitempty"`
+	Drain               *RoleDrainSpecApplyConfiguration       `json:"drain,omitempty"`
 	UpgradeOrder        *int32                                 `json:"upgradeOrder,omitempty"`
 	PodGroupSize        *int32                                 `json:"podGroupSize,omitempty"`
 	UpdateStrategy      *RoleUpdateStrategyApplyConfiguration  `json:"updateStrategy,omitempty"`
@@ -54,6 +55,14 @@ func (b *RoleSpecApplyConfiguration) WithName(value string) *RoleSpecApplyConfig
 // If called multiple times, the Replicas field is set to the value of the last call.
 func (b *RoleSpecApplyConfiguration) WithReplicas(value int32) *RoleSpecApplyConfiguration {
 	b.Replicas = &value
+	return b
+}
+
+// WithDrain sets the Drain field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Drain field is set to the value of the last call.
+func (b *RoleSpecApplyConfiguration) WithDrain(value *RoleDrainSpecApplyConfiguration) *RoleSpecApplyConfiguration {
+	b.Drain = value
 	return b
 }
 

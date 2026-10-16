@@ -58,6 +58,7 @@ spec:
       initContainers:
         - name: init-c
           image: {{ .Values.gatewayPlugin.initContainer.image.repository }}:{{ .Values.gatewayPlugin.initContainer.image.tag }}
+          imagePullPolicy: {{ .Values.gatewayPlugin.initContainer.image.imagePullPolicy | default "IfNotPresent" }}
           {{- if include "aibrix.redis.connectionHasPassword" (dict "Values" .Values "component" "gatewayPlugin") }}
           env:
             - name: REDIS_PASSWORD
@@ -71,10 +72,15 @@ spec:
           {{- end }}
       containers:
         - name: gateway-plugin
-          args:
-            - {{ printf "--installation-namespace=%s" (include "aibrix.gatewayPlugin.installationNamespace" .) | quote }}
           image: {{ .Values.gatewayPlugin.container.image.repository }}:{{ .Values.gatewayPlugin.container.image.tag }}
           imagePullPolicy: {{ .Values.gatewayPlugin.container.image.imagePullPolicy | default "IfNotPresent" }}
+          # Optional API server client throttling (client-go defaults shown).
+          # Both values must be greater than zero and apply to the core
+          # Kubernetes and Gateway API clients, each with its own limiter.
+          args:
+            - {{ printf "--installation-namespace=%s" (include "aibrix.gatewayPlugin.installationNamespace" .) | quote }}
+          #   - --kube-api-qps=5
+          #   - --kube-api-burst=10
           ports:
             - name: gateway
               containerPort: 50052
@@ -93,6 +99,14 @@ spec:
                 secretKeyRef:
                   name: {{ include "aibrix.fullname" . }}-redis
                   key: {{ include "aibrix.redis.connectionPasswordKey" (dict "component" "gatewayPlugin") }}
+            {{- end }}
+            {{- $bearerToken := dig "auth" "bearerToken" "" .Values.gatewayPlugin }}
+            {{- if $bearerToken }}
+            - name: AIBRIX_AUTH_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "aibrix.fullname" . }}-gateway-plugin-auth
+                  key: bearer-token
             {{- end }}
             - name: POD_NAME
               valueFrom:

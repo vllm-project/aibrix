@@ -45,6 +45,10 @@ func TestValidateArtifactURL(t *testing.T) {
 	// Case 4: Invalid scheme
 	t.Run("invalid scheme", func(t *testing.T) {
 		err := ValidateArtifactURL("ftp://bucket/path")
-		assert.EqualError(t, err, "unsupported schema")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "unsupported schema")
+		assert.Contains(t, err.Error(), "ftp://bucket/path")
+		assert.Contains(t, err.Error(), "s3://")
+		assert.Contains(t, err.Error(), "huggingface://")
 	})
 }

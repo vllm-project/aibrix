@@ -14,22 +14,23 @@
 """JobMetaInfo: a BatchJob augmented with runtime-only execution state.
 
 Bundles a ``BatchJob`` with a per-request ``JobProgressTracker`` (the
-launch/complete bitmap) and an asyncio lock. It is the active-job state object
-shared by the orchestrator (``BatchManager`` holds one per in-progress job in
-its registry) and the single-job worker path — neither reimplements the
-progress bitmap; both delegate to the tracker here.
+launch/complete bitmap). It is the active-job state object shared by the
+orchestrator (``BatchManager`` holds one per in-progress job in its registry)
+and the single-job worker path — neither reimplements the progress bitmap;
+both delegate to the tracker here.
 """
 
-import asyncio
+from typing import Optional
 
+from aibrix.batch.job_driver.driver import JobDriver
 from aibrix.batch.job_entity import BatchJob
 from aibrix.batch.state.job_progress_tracker import JobProgressTracker
 
 
 class JobMetaInfo(BatchJob):
-    """A BatchJob augmented with runtime-only state for an active job: an
-    asyncio lock and a per-request JobProgressTracker. Progress operations
-    delegate to the tracker (which mutates this job's status in place).
+    """A BatchJob augmented with runtime-only state for an active job: a
+    per-request JobProgressTracker. Progress operations delegate to the tracker
+    (which mutates this job's status in place).
     """
 
     def __init__(self, job: BatchJob):
@@ -40,12 +41,13 @@ class JobMetaInfo(BatchJob):
         """
         # Initialize the parent BatchJob with the same data
         super().__init__(
+            sessionID=job.session_id,
             typeMeta=job.type_meta,
             metadata=job.metadata,
             spec=job.spec,
             status=job.status,
         )
-        self._async_lock = asyncio.Lock()
+        self._job_driver: Optional[JobDriver] = None
         # Per-request progress lives in a standalone JobProgressTracker (which
         # does NOT inherit BatchJob); JobMetaInfo just delegates to it. The
         # tracker mutates this job's status, so behavior is unchanged.
@@ -59,6 +61,10 @@ class JobMetaInfo(BatchJob):
             spec=self.spec,
             status=self.status,
         )
+
+    @property
+    def job_driver(self) -> Optional[JobDriver]:
+        return self._job_driver
 
     def set_request_executed(self, req_id):
         return self._tracker.set_request_executed(req_id)

@@ -17,6 +17,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from aibrix.batch.job_entity import BatchJob
 from aibrix.batch.storage.adapter import BatchStorageAdapter
+from aibrix.batch.storage.input_validation import validate_batch_input_file
 from aibrix.logger import init_logger
 from aibrix.storage import StorageType, create_storage
 
@@ -102,6 +103,16 @@ async def read_job_input_info(job: BatchJob) -> Tuple[int, bool]:
     return await p_storage.read_job_input_info(job)
 
 
+async def validate_job_input_file(
+    file_id: str, endpoint: str
+) -> Tuple[int, Optional[str]]:
+    if p_storage is None:
+        raise RuntimeError(
+            "Batch storage not initialized. Call initialize_storage() first."
+        )
+    return await validate_batch_input_file(p_storage.storage, file_id, endpoint)
+
+
 async def read_job_next_request(
     job: BatchJob, start_index: int = 0
 ) -> AsyncIterator[Dict[str, Any]]:
@@ -177,7 +188,7 @@ async def write_job_output_data(
     await p_storage.write_job_output_data(job, request_index, output_data)
 
 
-async def finalize_job_output_data(job: BatchJob) -> None:
+async def finalize_job_output_data(job: BatchJob) -> BatchJob:
     """Finalize job output files, aggregate output and error files
 
     Raises:
@@ -187,7 +198,8 @@ async def finalize_job_output_data(job: BatchJob) -> None:
         raise RuntimeError(
             "Batch storage not initialized. Call initialize_batch_storage() first."
         )
-    await p_storage.finalize_job_output_data(job)
+    job = await p_storage.finalize_job_output_data(job)
+    return job
 
 
 async def download_output_data(file_id: str) -> List[Dict[str, Any]]:

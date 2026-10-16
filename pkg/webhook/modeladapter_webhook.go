@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"net/url"
 
+	"k8s.io/apimachinery/pkg/api/equality"
+	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -71,15 +73,31 @@ func (w *ModelAdapterWebhook) ValidateCreate(ctx context.Context, obj runtime.Ob
 	}
 
 	if err := utils.ValidateArtifactURL(adapter.Spec.ArtifactURL); err != nil {
-		allErrs = append(allErrs, field.NotSupported(specPath.Child("artifactURL"), adapter.Spec.ArtifactURL, utils.AllowedSchemas))
+		allErrs = append(allErrs, field.Invalid(specPath.Child("artifactURL"), adapter.Spec.ArtifactURL, err.Error()))
 	}
+
+	allErrs = append(allErrs, validatePodSelector(adapter)...)
 
 	return nil, allErrs.ToAggregate()
 }
 
 // ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
 func (w *ModelAdapterWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	return nil, nil
+	oldAdapter := oldObj.(*modelapi.ModelAdapter)
+	newAdapter := newObj.(*modelapi.ModelAdapter)
+
+	// Objects created before this check may already hold an invalid selector.
+	// Only validate a changed selector, so those objects can still be updated,
+	// including the controller removing its finalizer on deletion.
+	if equality.Semantic.DeepEqual(oldAdapter.Spec.PodSelector, newAdapter.Spec.PodSelector) {
+		return nil, nil
+	}
+	return nil, validatePodSelector(newAdapter).ToAggregate()
+}
+
+func validatePodSelector(adapter *modelapi.ModelAdapter) field.ErrorList {
+	return metav1validation.ValidateLabelSelector(adapter.Spec.PodSelector,
+		metav1validation.LabelSelectorValidationOptions{}, field.NewPath("spec", "podSelector"))
 }
 
 // ValidateDelete implements webhook.Validator so a webhook will be registered for the type

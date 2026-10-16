@@ -16,11 +16,10 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
-import httpx
-
 from aibrix.batch.client.sources.static import GatewayEndpointSource
 from aibrix.batch.job_driver.runtime import Endpoint, RuntimeBase
 from aibrix.batch.job_entity import BatchJob
+from aibrix.metadata.core import HTTPXClientWrapper
 
 
 @dataclass(slots=True)
@@ -129,6 +128,7 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
         )
         self._ssh_connect_timeout_s = ssh_connect_timeout_s
         self._ssh_connect_retry_interval_s = ssh_connect_retry_interval_s
+        self._active_handle: Optional[SSHHandle] = None
 
     def _options(self, job: BatchJob) -> dict:
         aibrix = getattr(job.spec, "aibrix", None)
@@ -138,11 +138,49 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
     def _base_url(self, handle: SSHHandle) -> str:
         return (handle.endpoint_url or handle.info.http_base_url).rstrip("/")
 
-    async def _wait_ready(self, handle: SSHHandle) -> None:
+    def _get_runtime_owner_ref(self, job: BatchJob) -> Optional[str]:
+        del job
+        if self._active_handle is None:
+            return None
+        info = self._active_handle.info
+        return f"{info.ssh_user}@{info.host}:{info.ssh_port}"
+
+    def _get_runtime_reconnect_payload(
+        self,
+        job: BatchJob,
+    ) -> Optional[dict[str, Any]]:
+        del job
+        if self._active_handle is None:
+            return None
+        info = self._active_handle.info
+        payload: dict[str, Any] = {
+            "host": info.host,
+            "sshPort": info.ssh_port,
+            "sshUser": info.ssh_user,
+            "httpBaseUrl": info.http_base_url,
+            "model": info.model,
+            "vllmArgs": list(info.vllm_args),
+        }
+        if info.image is not None:
+            payload["image"] = info.image
+        return payload
+
+    async def _wait_ready(
+        self, handle: SSHHandle, wait_mode: str = "provision"
+    ) -> None:
+        del wait_mode
         url = self._base_url(handle) + "/health"
         loop = asyncio.get_event_loop()
         deadline = loop.time() + self._ready_timeout_s
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # Since _wait_ready is a short-lived polling loop, enabling telemetry for
+        # this ephemeral client is unnecessary and will flood the logs with
+        # telemetry summaries and task lifecycle logs.
+        # We should disable telemetry for this client by setting telemetry_enabled=False.
+        async with HTTPXClientWrapper(
+            client_id="ssh-launch-ready",
+            timeout=10.0,
+            telemetry_enabled=False,
+        ) as client:
             while True:
                 try:
                     resp = await client.get(url)
@@ -155,6 +193,26 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
                         f"vLLM not ready at {url} after {self._ready_timeout_s}s"
                     )
                 await asyncio.sleep(self._poll_interval_s)
+
+    async def _check_liveness(
+        self, handle: SSHHandle, reason: str = "unspecified"
+    ) -> None:
+        del reason
+        url = self._base_url(handle) + "/health"
+        # For the same reason as _wait_ready, we disable telemetry for this client.
+        async with HTTPXClientWrapper(
+            client_id="ssh-launch-liveness",
+            timeout=10.0,
+            telemetry_enabled=False,
+        ) as client:
+            try:
+                resp = await client.get(url)
+            except Exception as ex:
+                raise RuntimeError(f"vLLM liveness check failed at {url}: {ex}") from ex
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"vLLM liveness check returned {resp.status_code} at {url}"
+            )
 
     async def _connect(self, handle: SSHHandle) -> Endpoint:
         # Origin only (no path); HttpChannel does urljoin(base_url, path).
@@ -229,6 +287,7 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
             handle.endpoint_url = f"http://127.0.0.1:{listener.get_port()}"
         else:
             handle.endpoint_url = info.http_base_url
+        self._active_handle = handle
         return handle
 
     async def _teardown(self, handle: Optional[SSHHandle]) -> None:
@@ -240,3 +299,5 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
             if handle.listener is not None:
                 handle.listener.close()
             handle.conn.close()
+            if self._active_handle is handle:
+                self._active_handle = None

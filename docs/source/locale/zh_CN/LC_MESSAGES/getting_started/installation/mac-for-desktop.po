@@ -1,0 +1,90 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/getting_started/installation/mac-for-desktop.rst:5
+msgid "Mac for Desktop"
+msgstr "Mac 桌面环境"
+
+#: ../../source/getting_started/installation/mac-for-desktop.rst:7
+msgid ""
+"This guide provides a minimal setup for deploying AIBrix locally on a Mac"
+" desktop for development and testing purposes."
+msgstr "本指南提供在 Mac 桌面本地部署 AIBrix 的最小配置，用于开发和测试。"
+
+#: ../../source/getting_started/installation/mac-for-desktop.rst:10
+msgid "Why Mac Desktop?"
+msgstr "为什么用 Mac 桌面？"
+
+#: ../../source/getting_started/installation/mac-for-desktop.rst:12
+msgid ""
+"Mac desktops are ideal for quick testing of AIBrix control plane "
+"components in your local laptop. It is highly recommended for AIBrix "
+"development and for testing lightweight vLLM CPU images."
+msgstr ""
+"Mac 桌面适合在本地笔记本上快速测试 AIBrix 控制面组件。非常适合 AIBrix 开发，"
+"以及测试轻量级 vLLM CPU 镜像。"
+
+#: ../../source/getting_started/installation/mac-for-desktop.rst:16
+msgid "Prerequisites"
+msgstr "前置条件"
+
+#: ../../source/getting_started/installation/mac-for-desktop.rst:18
+msgid "Install Docker Desktop (with Kubernetes enabled)"
+msgstr "安装 Docker Desktop（并启用 Kubernetes）"
+
+#: ../../source/getting_started/installation/mac-for-desktop.rst:19
+msgid "Install kubectl and Helm"
+msgstr "安装 kubectl 和 Helm"
+
+#: ../../source/getting_started/installation/mac-for-desktop.rst:22
+msgid "Install AIBrix"
+msgstr "安装 AIBrix"
+
+#: ../../source/getting_started/installation/mac-for-desktop.rst:24
+msgid "Clone the AIBrix repository:"
+msgstr "克隆 AIBrix 仓库："
+
+#: ../../source/getting_started/installation/mac-for-desktop.rst:31
+msgid "Install dependencies and core components:"
+msgstr "安装依赖和核心组件："
+
+#: ../../source/getting_started/installation/mac-for-desktop.rst:40
+msgid "Expose Gateway"
+msgstr "暴露网关"
+
+#: ../../source/getting_started/installation/mac-for-desktop.rst:42
+msgid ""
+"Since LoadBalancer is not available by default, use port-forward to "
+"access the gateway:"
+msgstr "默认没有 LoadBalancer，请使用 port-forward 访问网关："
+
+#: ../../source/getting_started/installation/mac-for-desktop.rst:48
+msgid "You can now access the gateway at `http://localhost:8888`."
+msgstr "现在可通过 `http://localhost:8888` 访问网关。"
+
+#: ../../source/getting_started/installation/mac-for-desktop.rst:51
+msgid "Conclusion"
+msgstr "小结"
+
+#: ../../source/getting_started/installation/mac-for-desktop.rst:53
+msgid ""
+"This setup provides a lightweight way to develop and test AIBrix on Mac "
+"without special configuration. Happy developing!"
+msgstr "这套配置可在 Mac 上以轻量方式开发和测试 AIBrix，无需额外特殊配置。祝开发顺利！"

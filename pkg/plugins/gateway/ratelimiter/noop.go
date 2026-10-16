@@ -16,7 +16,10 @@ limitations under the License.
 
 package ratelimiter
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type noopRateLimiter struct{}
 
@@ -32,6 +35,6 @@ func (n *noopRateLimiter) GetLimit(ctx context.Context, key string) (int64, erro
 	return 9223372036854775807, nil
 }
 
-func (n *noopRateLimiter) Incr(ctx context.Context, key string, val int64) (int64, error) {
+func (n *noopRateLimiter) Incr(ctx context.Context, key string, val int64, window ...time.Duration) (int64, error) {
 	return 0, nil
 }

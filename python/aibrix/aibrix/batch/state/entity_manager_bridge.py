@@ -33,7 +33,7 @@ from __future__ import annotations
 import asyncio
 from typing import Callable, Coroutine, Dict, Optional
 
-from aibrix.batch.job_entity import BatchJob, BatchJobSpec, BatchJobState
+from aibrix.batch.job_entity import BatchJob, BatchJobSpec
 from aibrix.batch.state.job_entity_manager import JobEntityManager
 from aibrix.logger import init_logger
 
@@ -152,10 +152,10 @@ class EntityManagerBridge:
         a finalizing/clean status is an update; a status carrying a cancel/fail
         goes through the cancel channel."""
         assert self._em is not None
-        if (
-            old_job.status.state == BatchJobState.FINALIZING
-            or old_job.status.errors is None
-        ):
+        if old_job.status.is_finalizing_required() or old_job.status.errors is None:
             await self._em.update_job_status(job)
         else:
             await self._em.cancel_job(job)
+
+    def reset_runtime_state(self) -> None:
+        self._creating_jobs.clear()

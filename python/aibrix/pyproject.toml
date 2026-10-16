@@ -46,6 +46,7 @@ aibrix_runtime = 'aibrix.app:main'
 aibrix_download = 'aibrix.downloader.__main__:main'
 aibrix_batch_worker = 'aibrix.batch.worker:main'
 aibrix_metadata = 'aibrix.metadata.app:main'
+aibrix_openai_frontend = 'aibrix.openai_frontend.main:main'
 # tools
 aibrix_benchmark = "aibrix.gpu_optimizer.optimizer.profiling.benchmark:main"
 aibrix_gen_profile = 'aibrix.gpu_optimizer.optimizer.profiling.gen_profile:main'
@@ -76,13 +77,18 @@ PyYAML = "^6.0.1"
 types-PyYAML = "^6.0.12.20240917"
 python-multipart = "^0.0.20"
 tenacity = "^9.0.0"
-# GPU Optimizer runtime dependencies (needed by aibrix.gpu_optimizer.app runtime service)
-numpy = "1.26.4"
-pandas = "^2.2.3"
-pulp = "2.8.0"
-incdbscan = "^0.1.0"
-dash = "^2.18.2"
-matplotlib = "^3.9.2"
+# Dependencies required by aibrix.gpu_optimizer (load monitor, visualizer, solver).
+# Optional so aibrix/runtime skips them; install with `pip install aibrix[gpu-optimizer]`.
+# aibrix/metadata-service installs them because it hosts the GPU Optimizer service.
+numpy = { version = "1.26.4", optional = true }
+pandas = { version = "^2.2.3", optional = true }
+pulp = { version = "2.8.0", optional = true }
+incdbscan = { version = "^0.1.0", optional = true }
+dash = { version = "^2.18.2", optional = true }
+matplotlib = { version = "^3.9.2", optional = true }
+
+[tool.poetry.extras]
+gpu-optimizer = ["numpy", "pandas", "pulp", "incdbscan", "dash", "matplotlib"]
 
 [tool.poetry.group.profiling.dependencies]
 # Dependencies only needed for profiling/benchmark tools (aibrix_benchmark, aibrix_gen_profile)
@@ -129,6 +135,9 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "batch_driver_stand_alone: run the batch driver on a dedicated async loop thread",
+]
 filterwarnings = [
     "ignore:Please use `import python_multipart` instead.:PendingDeprecationWarning",
 ]

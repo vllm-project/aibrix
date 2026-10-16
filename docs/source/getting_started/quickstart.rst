@@ -18,9 +18,9 @@ Get your kubernetes cluster ready, run following commands to install aibrix comp
 
 .. code-block:: bash
 
-    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-dependency-v0.7.0.yaml
-    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-core-crds-v0.7.0.yaml
-    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-core-v0.7.0.yaml
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.8.0/aibrix-dependency-v0.8.0.yaml --server-side
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.8.0/aibrix-core-crds-v0.8.0.yaml --server-side
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.8.0/aibrix-core-v0.8.0.yaml
 
 Wait for few minutes and run `kubectl get pods -n aibrix-system` to check pod status util they are ready.
 
@@ -199,3 +199,11 @@ If you meet problems exposing external IPs, feel free to debug with following co
     envoy-gateway                            ClusterIP      10.96.166.226   <none>        18000/TCP,18001/TCP,18002/TCP,19001/TCP   10d
 
 For advanced development usage, please refer to the :ref:`development` section.
+
+.. card:: What's next?
+   :class-card: sd-border-1
+
+   * :doc:`installation/installation`: production installation for your platform
+   * :doc:`../features/gateway-routing/gateway-plugins`: choose a routing strategy for your workload
+   * :doc:`../features/scaling-performance/autoscaling/autoscaling`: scale replicas on inference metrics
+   * :doc:`../production/observability`: see what the system is doing

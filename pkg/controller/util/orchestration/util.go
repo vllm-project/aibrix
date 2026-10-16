@@ -213,7 +213,7 @@ func UpdateStatus(ctx context.Context, scheme *runtime.Scheme, cli client.Client
 
 func resetObject(obj runtime.Object) error {
 	t := reflect.TypeOf(obj)
-	if t.Kind() != reflect.Ptr {
+	if t.Kind() != reflect.Pointer {
 		return fmt.Errorf("runtime object types must be pointers to structs, but got %s", t.Kind())
 	}
 

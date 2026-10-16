@@ -18,20 +18,29 @@ package discovery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/client/clientset/versioned/fake"
 	discoverytest "github.com/vllm-project/aibrix/test/utils/discovery"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func TestKubernetesNamespaceRequired(t *testing.T) {
@@ -42,17 +51,17 @@ func TestKubernetesNamespaceRequired(t *testing.T) {
 		})
 	}
 	require.NoError(t, ValidateNamespace("team-a"))
-	require.ErrorContains(t, NewKubernetesProvider(nil, "team-a").Watch(nil, nil), "configuration is required")
+	require.ErrorContains(t, NewKubernetesProvider(nil, "team-a").Watch(func(WatchEvent) {}, nil), "configuration is required")
 }
 
 func TestKubernetesDiscoveryFiltersForeignObjects(t *testing.T) {
 	const namespace = "team-a"
 	pods := []corev1.Pod{
-		{ObjectMeta: metav1.ObjectMeta{Name: "model", Namespace: namespace}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "model", Namespace: namespace, UID: "pod", ResourceVersion: "1"}},
 		{ObjectMeta: metav1.ObjectMeta{Name: "model", Namespace: "team-a-other"}},
 	}
 	adapters := []modelv1alpha1.ModelAdapter{
-		{ObjectMeta: metav1.ObjectMeta{Name: "adapter", Namespace: namespace}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "adapter", Namespace: namespace, UID: "adapter", ResourceVersion: "1"}},
 		{ObjectMeta: metav1.ObjectMeta{Name: "foreign-adapter", Namespace: "team-a-other"}},
 	}
 	config := discoverytest.NewServer(t, namespace, pods, adapters, nil)
@@ -60,12 +69,14 @@ func TestKubernetesDiscoveryFiltersForeignObjects(t *testing.T) {
 	defer close(stop)
 	var mu sync.Mutex
 	var events []WatchEvent
-	provider := NewKubernetesProvider(config, namespace)
-	require.NoError(t, provider.Watch(func(event WatchEvent) {
+	provider := NewKubernetesProvider(config, namespace).WithModelClaims().WithModelListHealth(time.Minute)
+	require.NoError(t, provider.WatchApplied(func(event WatchEvent) bool {
 		mu.Lock()
 		defer mu.Unlock()
 		events = append(events, event)
+		return true
 	}, stop))
+	require.NoError(t, provider.ModelListHealth().EnsureVerified(context.Background()))
 	mu.Lock()
 	defer mu.Unlock()
 	require.Len(t, events, 3) // Pod + adapter initial events, then adapter reconciliation.
@@ -135,7 +146,7 @@ func TestKubernetesEventsRejectForeignUpdatesAndDeletes(t *testing.T) {
 	foreign.Namespace = "team-a-other"
 	provider := NewKubernetesProvider(nil, "team-a")
 	var delivered int
-	handler := func(WatchEvent) { delivered++ }
+	handler := func(WatchEvent) bool { delivered++; return true }
 	for _, event := range []WatchEvent{
 		{Type: EventAdd, Object: foreign},
 		{Type: EventUpdate, Object: foreign, OldObject: foreign},
@@ -148,4 +159,216 @@ func TestKubernetesEventsRejectForeignUpdatesAndDeletes(t *testing.T) {
 	provider.deliver(handler, WatchEvent{Type: EventUpdate, Object: local, OldObject: local})
 	provider.deliver(handler, WatchEvent{Type: EventDelete, Object: local})
 	require.Equal(t, 2, delivered)
+}
+
+func TestKubernetesProviderVerificationDetectsSilentWatchLoss(t *testing.T) {
+	var deleted atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/namespaces/default" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(&corev1.Namespace{
+				TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
+				ObjectMeta: metav1.ObjectMeta{Name: "default"},
+			})
+			return
+		}
+
+		if r.URL.Path != "/api/v1/namespaces/default/pods" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("watch") == "true" {
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			return
+		}
+		list := &corev1.PodList{
+			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PodList"},
+			ListMeta: metav1.ListMeta{ResourceVersion: "10"},
+		}
+		if !deleted.Load() {
+			list.Items = []corev1.Pod{{ObjectMeta: metav1.ObjectMeta{
+				Namespace: "default", Name: "served", UID: "one", ResourceVersion: "10",
+			}}}
+		}
+		_ = json.NewEncoder(w).Encode(list)
+	}))
+	stopCh := make(chan struct{})
+	t.Cleanup(func() {
+		close(stopCh)
+		server.CloseClientConnections()
+		server.Close()
+	})
+
+	provider := NewKubernetesProvider(&rest.Config{Host: server.URL}, "default").
+		WithModelAdapters(false).WithModelListHealth(time.Minute)
+	result := make(chan error, 1)
+	go func() {
+		result <- provider.WatchApplied(func(WatchEvent) bool { return true }, stopCh)
+	}()
+	select {
+	case err := <-result:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider did not finish initial handler sync")
+	}
+	h := provider.ModelListHealth()
+	require.NoError(t, h.EnsureVerified(context.Background()))
+	deleted.Store(true) // The API server changed, but the watch sent no delete.
+	h.mu.Lock()
+	h.lastVerified = time.Now().Add(-time.Minute)
+	h.mu.Unlock()
+	require.ErrorIs(t, h.EnsureVerified(context.Background()), ErrModelListDiscoveryUnavailable)
+	_, ok := h.ModelsIfHealthy(func() []string { return []string{"served"} })
+	assert.False(t, ok)
+}
+
+func TestCanListModelClaims(t *testing.T) {
+	claims := schema.GroupResource{Group: "model.aibrix.ai", Resource: "modelclaims"}
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"listable", nil, true},
+		{"the role may not list claims", apierrors.NewForbidden(claims, "", errors.New("no rule")), false},
+		{"the CRD is not installed", apierrors.NewNotFound(claims, ""), false},
+		// Anything else may pass, so the informer is left to retry it.
+		{"a transient error", apierrors.NewServiceUnavailable("try again"), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := fake.NewSimpleClientset()
+			if tc.err != nil {
+				client.PrependReactor("list", "modelclaims",
+					func(k8stesting.Action) (bool, runtime.Object, error) { return true, nil, tc.err })
+			}
+			assert.Equal(t, tc.want, canListModelClaims(context.Background(), client, "workloads"))
+			require.Equal(t, "workloads", client.Actions()[0].GetNamespace())
+		})
+	}
+}
+
+func TestKubernetesProviderQueriesOnlyEnabledResources(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		watchAdapters bool
+		watchClaims   bool
+		useDefaults   bool
+	}{
+		{name: "default adapters", watchAdapters: true, useDefaults: true},
+		{name: "pods only"},
+		{name: "claims only", watchClaims: true},
+		{name: "both resources", watchAdapters: true, watchClaims: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var adapterRequests, claimRequests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/namespaces/default" {
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(&corev1.Namespace{
+						TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
+						ObjectMeta: metav1.ObjectMeta{Name: "default"},
+					})
+					return
+				}
+
+				adapterRequest := r.URL.Path == "/apis/model.aibrix.ai/v1alpha1/namespaces/default/modeladapters"
+				claimRequest := r.URL.Path == "/apis/model.aibrix.ai/v1alpha1/namespaces/default/modelclaims"
+				if adapterRequest {
+					adapterRequests.Add(1)
+				}
+				if claimRequest {
+					claimRequests.Add(1)
+				}
+				if (adapterRequest && !tc.watchAdapters) || (claimRequest && !tc.watchClaims) {
+					http.Error(w, "resource is unavailable", http.StatusForbidden)
+					return
+				}
+				if r.URL.Query().Get("watch") == "true" {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					w.(http.Flusher).Flush()
+					<-r.Context().Done()
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/api/v1/namespaces/default/pods":
+					_ = json.NewEncoder(w).Encode(&corev1.PodList{
+						TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PodList"},
+						ListMeta: metav1.ListMeta{ResourceVersion: "1"},
+					})
+				case "/apis/model.aibrix.ai/v1alpha1/namespaces/default/modeladapters":
+					_ = json.NewEncoder(w).Encode(&modelv1alpha1.ModelAdapterList{
+						TypeMeta: metav1.TypeMeta{APIVersion: "model.aibrix.ai/v1alpha1", Kind: "ModelAdapterList"},
+						ListMeta: metav1.ListMeta{ResourceVersion: "1"},
+					})
+				case "/apis/model.aibrix.ai/v1alpha1/namespaces/default/modelclaims":
+					_ = json.NewEncoder(w).Encode(&modelv1alpha1.ModelClaimList{
+						TypeMeta: metav1.TypeMeta{APIVersion: "model.aibrix.ai/v1alpha1", Kind: "ModelClaimList"},
+						ListMeta: metav1.ListMeta{ResourceVersion: "1"},
+					})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			stopCh := make(chan struct{})
+			t.Cleanup(func() {
+				close(stopCh)
+				server.CloseClientConnections()
+				server.Close()
+			})
+
+			provider := NewKubernetesProvider(&rest.Config{Host: server.URL}, "default")
+			if !tc.useDefaults {
+				provider.WithModelAdapters(tc.watchAdapters)
+			}
+			if tc.watchClaims {
+				provider.WithModelClaims()
+			}
+			result := make(chan error, 1)
+			go func() { result <- provider.Watch(func(WatchEvent) {}, stopCh) }()
+			select {
+			case err := <-result:
+				require.NoError(t, err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("Kubernetes provider did not finish initial sync")
+			}
+			if tc.watchAdapters {
+				assert.Positive(t, adapterRequests.Load())
+			} else {
+				assert.Zero(t, adapterRequests.Load(), "disabled adapters must not be queried")
+			}
+			if tc.watchClaims {
+				assert.Positive(t, claimRequests.Load())
+			} else {
+				assert.Zero(t, claimRequests.Load(), "disabled claims must not be queried")
+			}
+		})
+	}
+}
+
+func TestKubernetesClaimEventsRejectForeignNamespaces(t *testing.T) {
+	local := &modelv1alpha1.ModelClaim{ObjectMeta: metav1.ObjectMeta{Name: "model", Namespace: "team-a"}}
+	foreign := local.DeepCopy()
+	foreign.Namespace = "other"
+	provider := NewKubernetesProvider(nil, "team-a").WithModelClaims().WithModelListHealth(time.Minute)
+	var delivered int
+	handler := func(WatchEvent) bool { delivered++; return true }
+	for _, event := range []WatchEvent{
+		{Type: EventAdd, Object: foreign},
+		{Type: EventUpdate, Object: foreign, OldObject: local},
+		{Type: EventUpdate, Object: local, OldObject: foreign},
+		{Type: EventDelete, Object: foreign},
+	} {
+		provider.deliver(handler, event)
+	}
+	require.Zero(t, delivered)
+	provider.deliver(handler, WatchEvent{Type: EventAdd, Object: local})
+	provider.deliver(handler, WatchEvent{Type: EventUpdate, Object: local, OldObject: local})
+	provider.deliver(handler, WatchEvent{Type: EventDelete, Object: local})
+	require.Equal(t, 3, delivered)
 }

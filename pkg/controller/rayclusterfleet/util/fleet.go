@@ -110,11 +110,12 @@ const (
 
 // NewDeploymentCondition creates a new deployment condition.
 func NewDeploymentCondition(condType orchestrationv1alpha1.RayClusterFleetConditionType, status v1.ConditionStatus, reason, message string) *orchestrationv1alpha1.RayClusterFleetCondition {
+	now := metav1.NewTime(NowFn())
 	return &orchestrationv1alpha1.RayClusterFleetCondition{
 		Type:               condType,
 		Status:             status,
-		LastUpdateTime:     metav1.Now(),
-		LastTransitionTime: metav1.Now(),
+		LastUpdateTime:     now,
+		LastTransitionTime: now,
 		Reason:             reason,
 		Message:            message,
 	}
@@ -670,8 +671,8 @@ func FindOldReplicaSets(deployment *orchestrationv1alpha1.RayClusterFleet, rsLis
 func SetFromReplicaSetTemplate(fleet *orchestrationv1alpha1.RayClusterFleet, template orchestrationv1alpha1.RayClusterTemplateSpec) *orchestrationv1alpha1.RayClusterFleet {
 	fleet.Spec.Template.ObjectMeta = template.ObjectMeta
 	fleet.Spec.Template.Spec = template.Spec
-	fleet.Spec.Template.ObjectMeta.Labels = labelsutil.CloneAndRemoveLabel(
-		fleet.Spec.Template.ObjectMeta.Labels,
+	fleet.Spec.Template.Labels = labelsutil.CloneAndRemoveLabel(
+		fleet.Spec.Template.Labels,
 		appsv1.DefaultDeploymentUniqueLabelKey)
 	return fleet
 }
@@ -1056,7 +1057,7 @@ func ComputeHash(template *orchestrationv1alpha1.RayClusterTemplateSpec, collisi
 // Copied from k8s.io/kubernetes/pkg/util/hash/hash.go#DeepHashObject
 func DeepHashObject(hasher hash.Hash, objectToWrite interface{}) {
 	hasher.Reset()
-	fmt.Fprintf(hasher, "%v", dump.ForHash(objectToWrite))
+	_, _ = fmt.Fprintf(hasher, "%v", dump.ForHash(objectToWrite))
 }
 
 // self options

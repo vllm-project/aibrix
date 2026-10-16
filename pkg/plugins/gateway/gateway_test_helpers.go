@@ -23,6 +23,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stype "k8s.io/apimachinery/pkg/types"
@@ -50,6 +51,35 @@ func (m *mockRouter) Name() string { return "mock-router" }
 type MockCache struct {
 	mock.Mock
 	cache.Cache
+	modelClaimBindings map[string]mockModelClaimBinding
+	modelClaimStatuses map[string]mockModelClaimStatus
+}
+
+type mockModelClaimBinding struct {
+	pod           *v1.Pod
+	port          int
+	state         string
+	claim         string
+	wakeByRequest bool
+	reason        string
+}
+
+type mockModelClaimStatus struct {
+	phase  string
+	reason string
+}
+
+func (m *MockCache) ModelClaimBinding(model string) (*v1.Pod, utils.ModelClaimBinding, bool) {
+	binding, found := m.modelClaimBindings[model]
+	return binding.pod, utils.ModelClaimBinding{
+		Model: model, Port: binding.port, State: binding.state,
+		Claim: binding.claim, WakeByRequest: binding.wakeByRequest, Reason: binding.reason,
+	}, found
+}
+
+func (m *MockCache) ModelClaimStatus(model string) (string, string, bool) {
+	status, found := m.modelClaimStatuses[model]
+	return status.phase, status.reason, found
 }
 
 func (m *MockCache) HasModel(model string) bool {
@@ -79,6 +109,11 @@ func (m *MockCache) AddSubscriber(subscriber metrics.MetricSubscriber) {
 	m.Called(subscriber)
 }
 
+// RegisterRequestTracker is a no-op: the pd router registers itself on the
+// injected cache at construction time and the mock does not fan out request
+// lifecycle callbacks.
+func (m *MockCache) RegisterRequestTracker(tracker cache.RequestTracker) {}
+
 func (m *MockCache) GetMetricValueByPod(namespace string, podName string, metricName string) (metrics.MetricValue, error) {
 	args := m.Called(namespace, podName, metricName)
 	return args.Get(0).(metrics.MetricValue), args.Error(1)
@@ -87,6 +122,51 @@ func (m *MockCache) GetMetricValueByPod(namespace string, podName string, metric
 func (m *MockCache) GetMetricValueByPodModel(namespace string, podName string, model string, metricName string) (metrics.MetricValue, error) {
 	args := m.Called(namespace, podName, model, metricName)
 	return args.Get(0).(metrics.MetricValue), args.Error(1)
+}
+
+// hasExpectation reports whether the test explicitly set up an .On(method, ...)
+// expectation. Used by GetPodRunningRequests/GetPodsRunningRequests below to default
+// to a harmless zero-value response for the many tests that don't care about this
+// value at all (e.g. it's only read for request_start logging) rather than requiring
+// every one of them to stub it -- tests that do care about it configure an
+// expectation as usual and get normal testify behavior.
+func (m *MockCache) hasExpectation(method string) bool {
+	for _, call := range m.ExpectedCalls {
+		if call.Method == method {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *MockCache) GetPodRunningRequests(podName string, podNamespace string) (int64, error) {
+	if !m.hasExpectation("GetPodRunningRequests") {
+		return 0, nil
+	}
+	args := m.Called(podName, podNamespace)
+	return args.Get(0).(int64), args.Error(1)
+}
+
+// AdmitPodRunningRequest defaults to admitting and counting (true, true, nil) without an
+// expectation, mirroring GetPodRunningRequests's harmless-zero-value default -- most tests
+// exercising other behavior don't care about the inflight cap at all.
+func (m *MockCache) AdmitPodRunningRequest(podName string, podNamespace string, limit int64) (bool, bool, error) {
+	if !m.hasExpectation("AdmitPodRunningRequest") {
+		return true, true, nil
+	}
+	args := m.Called(podName, podNamespace, limit)
+	return args.Bool(0), args.Bool(1), args.Error(2)
+}
+
+func (m *MockCache) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {
+	if !m.hasExpectation("GetPodsRunningRequests") {
+		return nil, nil
+	}
+	args := m.Called(pods)
+	if v := args.Get(0); v != nil {
+		return v.(map[string]int64), args.Error(1)
+	}
+	return nil, args.Error(1)
 }
 
 func (m *MockCache) GetPod(namespace string, podName string) (*v1.Pod, error) {
@@ -102,6 +182,18 @@ func (m *MockCache) ListModels() []string {
 func (m *MockCache) ListModelsByPod(namespace string, podName string) ([]string, error) {
 	args := m.Called(namespace, podName)
 	return args.Get(0).([]string), args.Error(1)
+}
+
+// ModelBaseModel is called on the request path so LoRA metrics can record
+// both the adapter name and its base model. Default to ("", false).
+func (m *MockCache) ModelBaseModel(model string) (string, bool) {
+	for _, call := range m.ExpectedCalls {
+		if call.Method == "ModelBaseModel" {
+			args := m.Called(model)
+			return args.String(0), args.Bool(1)
+		}
+	}
+	return "", false
 }
 
 // MockGatewayClient implements gatewayapi.Clientset interface

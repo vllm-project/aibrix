@@ -18,10 +18,10 @@ package impl
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/openai/openai-go/v3"
 	plannerapi "github.com/vllm-project/aibrix/apps/console/api/planner/api"
+	"github.com/vllm-project/aibrix/apps/console/api/utils"
 )
 
 // validateEnqueueRequest validates the EnqueueRequest fields including BatchNewParams.
@@ -45,16 +45,12 @@ func validateEnqueueRequest(r *plannerapi.EnqueueRequest) error {
 
 // validateBatchNewParams validates OpenAI BatchNewParams according to API requirements.
 func validateBatchNewParams(params *openai.BatchNewParams) error {
-	// CompletionWindow is required and must be "24h"
+	// CompletionWindow is required and must be a positive duration accepted by
+	// MDS.
 	if params.CompletionWindow == "" {
 		return fmt.Errorf("completion_window is required")
 	}
-
-	// AIBrix does not have 24h limit as OpenAI does, so we do not validate 24h here.
-	// if params.CompletionWindow != openai.BatchNewParamsCompletionWindow24h {
-	// 	return fmt.Errorf("completion_window must be '24h', got '%s'", params.CompletionWindow)
-	// }
-	if _, err := time.ParseDuration(string(params.CompletionWindow)); err != nil {
+	if _, err := utils.ParseCompletionWindow(string(params.CompletionWindow)); err != nil {
 		return fmt.Errorf("completion_window %s parse error: %w", params.CompletionWindow, err)
 	}
 

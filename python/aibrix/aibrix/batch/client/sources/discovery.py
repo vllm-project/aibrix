@@ -99,11 +99,29 @@ class DiscoveryEndpointSource:
         self._last_refresh_at: Optional[float] = None
 
     async def channels(self) -> List[Channel]:
-        await self._refresh_if_needed()
+        try:
+            await self._refresh_if_needed()
+        except Exception as exc:
+            chained = exc.__cause__ or exc.__context__
+            logger.warning(
+                "Failed to refresh discovered endpoints while listing channels",
+                model=self._model,
+                service_id=self._service_id,
+                error=f"{exc!r}" + (f" (caused by {chained!r})" if chained else ""),
+            )  # type: ignore[call-arg]
         return list(self._channels)
 
     async def capacity(self) -> CapacitySignal:
-        await self._refresh_if_needed()
+        try:
+            await self._refresh_if_needed()
+        except Exception as exc:
+            chained = exc.__cause__ or exc.__context__
+            logger.warning(
+                "Failed to refresh discovered endpoints while reading capacity",
+                model=self._model,
+                service_id=self._service_id,
+                error=f"{exc!r}" + (f" (caused by {chained!r})" if chained else ""),
+            )  # type: ignore[call-arg]
         return CapacitySignal(count=len(self._channels), version=self._version or 0)
 
     async def wait_capacity_change(self, previous: CapacitySignal) -> CapacitySignal:
@@ -125,22 +143,42 @@ class DiscoveryEndpointSource:
         await self.refresh()
 
     async def refresh(self) -> None:
-        await self._refresh_if_needed(force=True)
+        try:
+            await self._refresh_if_needed(force=True)
+        except Exception as exc:
+            chained = exc.__cause__ or exc.__context__
+            logger.warning(
+                "Failed to refresh discovered endpoints",
+                model=self._model,
+                service_id=self._service_id,
+                error=f"{exc!r}" + (f" (caused by {chained!r})" if chained else ""),
+            )  # type: ignore[call-arg]
 
     async def report_channel_error(self, channel_id: str, error: Exception) -> None:
-        await self._remove_channel(channel_id)
+        chained = error.__cause__ or error.__context__
+        logger.warning(
+            "Channel reported an error",
+            channel_id=channel_id,
+            error=f"{error!r}" + (f" (caused by {chained!r})" if chained else ""),
+            active_channels=len(self._channels),
+        )  # type: ignore[call-arg]
         try:
             await self.refresh()
         except Exception as exc:  # noqa: BLE001 - discovery is best-effort here.
+            chained = exc.__cause__ or exc.__context__
             logger.warning(
                 "Failed to refresh discovered endpoints after channel error",
                 channel_id=channel_id,
-                error=str(exc),
+                error=f"{exc!r}" + (f" (caused by {chained!r})" if chained else ""),
             )  # type: ignore[call-arg]
-        # A stale discovery snapshot may re-add the failed endpoint during refresh.
-        await self._remove_channel(channel_id)
 
     async def _remove_channel(self, channel_id: str) -> None:
+        """Deprecated: no longer called on request failures.
+
+        Kept so the eviction path can be restored behind a real health signal
+        (repeated failures on the same endpoint, say). Driving it from a single
+        request error is what drained the active set.
+        """
         async with self._lock:
             failed = self._by_url.pop(channel_id, None)
             if failed is not None:
@@ -148,6 +186,11 @@ class DiscoveryEndpointSource:
                 self._channels = [
                     channel for channel in self._channels if channel.id != channel_id
                 ]
+                logger.warning(
+                    "Channel removed from active set",
+                    channel_id=channel_id,
+                    remaining=len(self._channels),
+                )  # type: ignore[call-arg]
 
     async def _refresh_if_needed(self, *, force: bool = False) -> None:
         if not force and not self._should_refresh():
@@ -172,20 +215,41 @@ class DiscoveryEndpointSource:
 
     async def _apply(self, snapshot: _Snapshot) -> None:
         async with self._lock:
-            if snapshot.version == self._version:
-                return
             new_urls = [endpoint.base_url for endpoint in snapshot.endpoints]
+            if set(new_urls) == set(self._by_url):
+                self._version = snapshot.version
+                return
             keep: Dict[str, Channel] = {}
             for url in new_urls:
                 keep[url] = self._by_url.get(url) or HttpChannel(
                     url, timeout=self._timeout
                 )
+            retired_urls: list[str] = []
             for url, channel in self._by_url.items():
                 if url not in keep:
                     self._retired_channels.append(channel)
+                    retired_urls.append(url)
             self._by_url = keep
             self._channels = [keep[url] for url in new_urls]
             self._version = snapshot.version
+            if retired_urls:
+                logger.warning(
+                    "Discovery snapshot changed: endpoints retired",
+                    retired=retired_urls,
+                    active=new_urls,
+                    version=self._version,
+                )  # type: ignore[call-arg]
+            elif new_urls:
+                logger.info(
+                    "Discovery snapshot applied",
+                    endpoint_count=len(new_urls),
+                    version=self._version,
+                )  # type: ignore[call-arg]
+            else:
+                logger.warning(
+                    "Discovery snapshot has no endpoints",
+                    version=self._version,
+                )  # type: ignore[call-arg]
 
     async def aclose(self) -> None:
         for channel in [*self._channels, *self._retired_channels]:

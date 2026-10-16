@@ -17,20 +17,40 @@ package cache
 import (
 	"encoding/base64"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 )
+
+type staticMetricSubscriber []string
+
+func (s staticMetricSubscriber) SubscribedMetrics() []string {
+	return []string(s)
+}
+
+func TestAddSubscriberInitializesMetricSet(t *testing.T) {
+	store := &Store{}
+	require.NotPanics(t, func() {
+		store.AddSubscriber(staticMetricSubscriber{"metric-a", "metric-b"})
+	})
+	require.Equal(t, "yes", store.metrics["metric-a"])
+	require.Equal(t, "yes", store.metrics["metric-b"])
+}
 
 func TestCleanupOldSnapshots(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -55,7 +75,7 @@ func TestUpdatePodRecord(t *testing.T) {
 				Name:      "p1",
 				Namespace: "default",
 				Labels: map[string]string{
-					modelLabel: "m2",
+					constants.ModelLabelName: "m2",
 				},
 			},
 		},
@@ -89,6 +109,11 @@ func TestUpdatePodMetricsFromTypedResultModelFallback(t *testing.T) {
 			wantModel: "raw-model",
 		},
 		{
+			name:      "keeps path-style model name",
+			rawModel:  "/models/mock",
+			wantModel: "/models/mock",
+		},
+		{
 			name:      "falls back for empty model name",
 			rawModel:  "",
 			wantModel: "pod-model",
@@ -109,7 +134,7 @@ func TestUpdatePodMetricsFromTypedResultModelFallback(t *testing.T) {
 						Name:      "p1",
 						Namespace: "default",
 						Labels: map[string]string{
-							modelLabel: "pod-model",
+							constants.ModelLabelName: "pod-model",
 						},
 					},
 				},
@@ -128,6 +153,31 @@ func TestUpdatePodMetricsFromTypedResultModelFallback(t *testing.T) {
 	}
 }
 
+func TestUpdatePodMetricsFromTypedResultAnnotationFallback(t *testing.T) {
+	store := &Store{}
+	pod := &Pod{
+		Pod: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "p1",
+				Namespace: "default",
+				Annotations: map[string]string{
+					constants.ModelLabelName: "/models/mock",
+				},
+			},
+		},
+	}
+	result := &metrics.EngineMetricsResult{
+		ModelMetrics: map[string]metrics.MetricValue{
+			store.getPodModelMetricName("", metrics.NumRequestsWaiting): &metrics.SimpleMetricValue{Value: 1},
+		},
+	}
+
+	store.updatePodMetricsFromTypedResult(pod, result)
+
+	_, ok := pod.ModelMetrics.Load(store.getPodModelMetricName("/models/mock", metrics.NumRequestsWaiting))
+	require.True(t, ok)
+}
+
 func TestSanitizeMetricLabelsFallback(t *testing.T) {
 	pod := &Pod{
 		Pod: &v1.Pod{
@@ -135,8 +185,8 @@ func TestSanitizeMetricLabelsFallback(t *testing.T) {
 				Name:      "p1",
 				Namespace: "default",
 				Labels: map[string]string{
-					modelLabel:  "pod-model",
-					engineLabel: "trtllm",
+					constants.ModelLabelName: "pod-model",
+					engineLabel:              "trtllm",
 				},
 			},
 		},
@@ -197,10 +247,24 @@ func TestMetricRoleFilters(t *testing.T) {
 }
 
 func TestShouldSkipMetric(t *testing.T) {
-	require.True(t, shouldSkipMetric("llm-prefill-0", metrics.TimePerOutputTokenSeconds))
-	require.True(t, shouldSkipMetric("llm-decode-0", metrics.TimeToFirstTokenSeconds))
-	require.False(t, shouldSkipMetric("llm-prefill-0", metrics.TimeToFirstTokenSeconds))
-	require.False(t, shouldSkipMetric("llm-decode-0", metrics.TimePerOutputTokenSeconds))
+	named := func(name string) *v1.Pod { return &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name}} }
+	labeled := func(role string) *v1.Pod {
+		return &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "model-127-0-0-1-2", Labels: map[string]string{pdRoleIdentifier: role}}}
+	}
+
+	require.True(t, shouldSkipMetric(named("llm-prefill-0"), metrics.TimePerOutputTokenSeconds))
+	require.True(t, shouldSkipMetric(named("llm-decode-0"), metrics.TimeToFirstTokenSeconds))
+	require.False(t, shouldSkipMetric(named("llm-prefill-0"), metrics.TimeToFirstTokenSeconds))
+	require.False(t, shouldSkipMetric(named("llm-decode-0"), metrics.TimePerOutputTokenSeconds))
+
+	// Static-discovery pods carry the role only in the label.
+	require.True(t, shouldSkipMetric(labeled("prefill"), metrics.TimePerOutputTokenSeconds))
+	require.True(t, shouldSkipMetric(labeled("decode"), metrics.TimeToFirstTokenSeconds))
+	require.False(t, shouldSkipMetric(labeled("prefill"), metrics.TimeToFirstTokenSeconds))
+	require.False(t, shouldSkipMetric(labeled("decode"), metrics.TimePerOutputTokenSeconds))
+
+	require.False(t, shouldSkipMetric(named("model-127-0-0-1-2"), metrics.TimeToFirstTokenSeconds))
+	require.False(t, shouldSkipMetric(nil, metrics.TimeToFirstTokenSeconds))
 }
 
 func TestBuildMetricLabels(t *testing.T) {
@@ -417,34 +481,103 @@ func TestInitPrometheusAPI_EndpointSet(t *testing.T) {
 	require.NotNil(t, api)
 }
 
-// TestUpdatePodMetricsNonBlocking verifies that updatePodMetrics does not block
-// when the worker pool is saturated (channel buffer full). This prevents the
-// metrics refresh goroutine from stalling when workers are stuck on slow pods.
-func TestUpdatePodMetricsNonBlocking(t *testing.T) {
-	// Create a store with a tiny channel buffer and NO workers draining it
-	store := &Store{
-		podMetricsJobs: make(chan *Pod, 2),
+func TestUpdateModelReplicaMetrics(t *testing.T) {
+	t.Setenv("POD_NAME", "gateway-0")
+
+	var emitted []map[string]string
+	originalFn := metrics.SetGaugeMetricFnForTest
+	defer func() { metrics.SetGaugeMetricFnForTest = originalFn }()
+	metrics.SetGaugeMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		if name != metrics.ModelReplicas {
+			return
+		}
+		labels := make(map[string]string, len(labelNames))
+		for i, ln := range labelNames {
+			labels[ln] = labelValues[i]
+		}
+		emitted = append(emitted, labels)
 	}
 
-	// Add 5 ready pods — more than the channel buffer can hold
-	for i := range 5 {
-		name := fmt.Sprintf("pod-%d", i)
-		store.metaPods.Store(name, &Pod{
+	readyPod := func(name, model, role string, groupIndex string) *Pod {
+		labels := map[string]string{
+			constants.ModelLabelName: model,
+			pdRoleIdentifier:         role,
+		}
+		if groupIndex != "" {
+			labels[podGroupIndex] = groupIndex
+		}
+		return &Pod{
 			Pod: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{Name: name},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+					Labels:    labels,
+				},
 				Status: v1.PodStatus{
 					Phase: v1.PodRunning,
-					PodIP: fmt.Sprintf("10.0.0.%d", i+1),
+					PodIP: "10.0.0.1",
 					Conditions: []v1.PodCondition{
 						{Type: v1.PodReady, Status: v1.ConditionTrue},
 					},
 				},
 			},
-		})
+		}
 	}
 
-	// updatePodMetrics must return promptly without blocking.
-	// With the old blocking send, this would deadlock since no worker is reading.
+	store := &Store{}
+	store.metaPods.Store("default/prefill-0", readyPod("prefill-0", "qwen3-8B", "prefill", "0"))
+	store.metaPods.Store("default/decode-0", readyPod("decode-0", "qwen3-8B", "decode", "0"))
+	store.metaPods.Store("default/prefill-worker", readyPod("prefill-worker", "qwen3-8B", "prefill", "1"))
+	store.metaPods.Store("default/unready", &Pod{
+		Pod: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "unready",
+				Namespace: "default",
+				Labels: map[string]string{
+					constants.ModelLabelName: "qwen3-8B",
+					pdRoleIdentifier:         "prefill",
+				},
+			},
+			Status: v1.PodStatus{Phase: v1.PodPending},
+		},
+	})
+
+	store.updateModelReplicaMetrics()
+	require.Len(t, emitted, 2)
+	byPod := make(map[string]map[string]string, len(emitted))
+	for _, labels := range emitted {
+		byPod[labels["pod"]] = labels
+	}
+	require.Equal(t, "prefill", byPod["prefill-0"]["role"])
+	require.Equal(t, "qwen3-8B", byPod["prefill-0"]["model_name"])
+	require.Equal(t, "decode", byPod["decode-0"]["role"])
+	require.Equal(t, "qwen3-8B", byPod["decode-0"]["model_name"])
+	require.Equal(t, 2, store.modelReplicaEmitted.Len())
+
+	store.metaPods.Delete("default/prefill-0")
+	emitted = nil
+	store.updateModelReplicaMetrics()
+	require.Len(t, emitted, 1)
+	require.Equal(t, "decode-0", emitted[0]["pod"])
+	require.Equal(t, 1, store.modelReplicaEmitted.Len())
+}
+
+func TestUpdatePodMetricsNonBlocking(t *testing.T) {
+	var counters []counterCall
+	restore := captureCounterCalls(&counters)
+	defer restore()
+
+	store := &Store{
+		podMetricsJobs: make(chan *Pod, 2),
+	}
+
+	for i := range 5 {
+		name := fmt.Sprintf("pod-%d", i)
+		pod := newReadyMetricsPod(name, "uid-"+name)
+		pod.Status.PodIP = fmt.Sprintf("10.0.0.%d", i+1)
+		store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+	}
+
 	done := make(chan struct{})
 	go func() {
 		store.updatePodMetrics()
@@ -453,11 +586,607 @@ func TestUpdatePodMetricsNonBlocking(t *testing.T) {
 
 	select {
 	case <-done:
-		// Success: updatePodMetrics returned without blocking
-	case <-time.After(2 * time.Second):
-		t.Fatal("updatePodMetrics blocked — channel send is not non-blocking")
+	case <-time.After(time.Second):
+		t.Fatal("updatePodMetrics blocked while pod metrics queue was full")
 	}
 
-	// Exactly 2 pods should have been enqueued (channel buffer size)
 	require.Equal(t, 2, len(store.podMetricsJobs))
+	require.Equal(t, 3, countCounterCalls(counters, metrics.PodMetricsEnqueueDroppedTotal, "reason", metrics.PodMetricsDropReasonQueueFull))
+}
+
+func TestPodMetricsConfigDefaultsAndOverrides(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		t.Setenv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", "")
+		t.Setenv("AIBRIX_POD_METRICS_WORKER_COUNT", "")
+		t.Setenv("AIBRIX_POD_METRICS_JOB_QUEUE_SIZE", "")
+		t.Setenv("AIBRIX_POD_METRICS_FETCH_TIMEOUT_MS", "")
+
+		require.Equal(t, time.Second, loadPodMetricRefreshInterval())
+		workerCount := loadPodMetricsWorkerCount()
+		require.Equal(t, 10, workerCount)
+		require.Equal(t, 100, loadPodMetricsJobQueueSize(workerCount))
+		require.Equal(t, 5*time.Second, loadPodMetricsFetchTimeout())
+	})
+
+	t.Run("overrides", func(t *testing.T) {
+		t.Setenv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", "2500")
+		t.Setenv("AIBRIX_POD_METRICS_WORKER_COUNT", "20")
+		t.Setenv("AIBRIX_POD_METRICS_JOB_QUEUE_SIZE", "55")
+		t.Setenv("AIBRIX_POD_METRICS_FETCH_TIMEOUT_MS", "1500")
+
+		require.Equal(t, 2500*time.Millisecond, loadPodMetricRefreshInterval())
+		workerCount := loadPodMetricsWorkerCount()
+		require.Equal(t, 20, workerCount)
+		require.Equal(t, 55, loadPodMetricsJobQueueSize(workerCount))
+		require.Equal(t, 1500*time.Millisecond, loadPodMetricsFetchTimeout())
+	})
+
+	t.Run("invalid values", func(t *testing.T) {
+		t.Setenv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", "0")
+		t.Setenv("AIBRIX_POD_METRICS_WORKER_COUNT", "-1")
+		t.Setenv("AIBRIX_POD_METRICS_JOB_QUEUE_SIZE", "bad")
+		t.Setenv("AIBRIX_POD_METRICS_FETCH_TIMEOUT_MS", "0")
+
+		require.Equal(t, time.Second, loadPodMetricRefreshInterval())
+		workerCount := loadPodMetricsWorkerCount()
+		require.Equal(t, 10, workerCount)
+		require.Equal(t, 100, loadPodMetricsJobQueueSize(workerCount))
+		require.Equal(t, 5*time.Second, loadPodMetricsFetchTimeout())
+	})
+}
+
+func TestUpdatePodMetricsDedupesQueuedPods(t *testing.T) {
+	var counters []counterCall
+	restore := captureCounterCalls(&counters)
+	defer restore()
+
+	store := &Store{
+		podMetricsJobs: make(chan *Pod, 10),
+	}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+
+	store.updatePodMetrics()
+	store.updatePodMetrics()
+
+	require.Equal(t, 1, len(store.podMetricsJobs))
+	require.Equal(t, 1, store.podMetricsScheduling.Len())
+	require.Equal(t, 1, countCounterCalls(counters, metrics.PodMetricsEnqueueDroppedTotal, "reason", metrics.PodMetricsDropReasonAlreadyQueued))
+}
+
+func TestPodMetricsSchedulingUIDChangeClearsState(t *testing.T) {
+	store := &Store{
+		podMetricsJobs: make(chan *Pod, 10),
+	}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+	recreated := newReadyMetricsPod("pod-0", "uid-1")
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+
+	require.True(t, store.tryMarkPodMetricsQueued(pod))
+	require.True(t, store.tryMarkPodMetricsQueued(recreated))
+	require.Equal(t, 1, store.podMetricsScheduling.Len())
+}
+
+func TestPodMetricsSchedulingCompletesAndAllowsRequeue(t *testing.T) {
+	store := &Store{
+		podMetricsJobs: make(chan *Pod, 10),
+	}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+
+	require.True(t, store.tryMarkPodMetricsQueued(pod))
+	require.False(t, store.tryMarkPodMetricsQueued(pod))
+
+	store.markPodMetricsInFlight(pod)
+	require.False(t, store.tryMarkPodMetricsQueued(pod))
+
+	store.finishPodMetricsScheduling(pod)
+	require.True(t, store.tryMarkPodMetricsQueued(pod))
+}
+
+func TestPodMetricsBackoffTransitions(t *testing.T) {
+	store := &Store{}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
+
+	require.False(t, store.shouldSkipPodMetricsFetch(pod, now))
+
+	store.recordPodMetricsFetchFailure(pod, now)
+	state, ok := store.podMetricsBackoff.Load(podMetricsBackoffKey(pod))
+	require.True(t, ok)
+	require.Equal(t, 1, state.failures)
+	require.Equal(t, now.Add(time.Second), state.nextFetchAt)
+	require.True(t, store.shouldSkipPodMetricsFetch(pod, now.Add(500*time.Millisecond)))
+	require.False(t, store.shouldSkipPodMetricsFetch(pod, now.Add(time.Second)))
+
+	store.recordPodMetricsFetchFailure(pod, now.Add(time.Second))
+	state, ok = store.podMetricsBackoff.Load(podMetricsBackoffKey(pod))
+	require.True(t, ok)
+	require.Equal(t, 2, state.failures)
+	require.Equal(t, now.Add(3*time.Second), state.nextFetchAt)
+
+	store.recordPodMetricsFetchSuccess(pod)
+	require.Equal(t, 0, store.podMetricsBackoff.Len())
+}
+
+func TestPodMetricsBackoffCapsAtMaxDelay(t *testing.T) {
+	store := &Store{}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
+
+	for range 10 {
+		store.recordPodMetricsFetchFailure(pod, now)
+	}
+
+	state, ok := store.podMetricsBackoff.Load(podMetricsBackoffKey(pod))
+	require.True(t, ok)
+	require.Equal(t, now.Add(30*time.Second), state.nextFetchAt)
+}
+
+func TestPodMetricsBackoffConcurrentFailuresDoNotLoseUpdates(t *testing.T) {
+	store := &Store{}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
+	const failureCount = 100
+
+	var wg sync.WaitGroup
+	wg.Add(failureCount)
+	for range failureCount {
+		go func() {
+			defer wg.Done()
+			store.recordPodMetricsFetchFailure(pod, now)
+		}()
+	}
+	wg.Wait()
+
+	state, ok := store.podMetricsBackoff.Load(podMetricsBackoffKey(pod))
+	require.True(t, ok)
+	require.Equal(t, failureCount, state.failures)
+	require.Equal(t, now.Add(30*time.Second), state.nextFetchAt)
+}
+
+func TestPodMetricsBackoffUIDChangeClearsState(t *testing.T) {
+	store := &Store{}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
+
+	store.recordPodMetricsFetchFailure(pod, now)
+	recreated := newReadyMetricsPod("pod-0", "uid-1")
+
+	require.False(t, store.shouldSkipPodMetricsFetch(recreated, now.Add(500*time.Millisecond)))
+	require.Equal(t, 0, store.podMetricsBackoff.Len())
+}
+
+func TestUpdatePodMetricsSkipsBackoffPods(t *testing.T) {
+	var counters []counterCall
+	restore := captureCounterCalls(&counters)
+	defer restore()
+
+	store := &Store{
+		podMetricsJobs: make(chan *Pod, 2),
+	}
+	backoffPod := newReadyMetricsPod("pod-backoff", "uid-backoff")
+	readyPod := newReadyMetricsPod("pod-ready", "uid-ready")
+	store.metaPods.Store(utils.GeneratePodKey(backoffPod.Namespace, backoffPod.Name), backoffPod)
+	store.metaPods.Store(utils.GeneratePodKey(readyPod.Namespace, readyPod.Name), readyPod)
+	store.recordPodMetricsFetchFailure(backoffPod, time.Now())
+
+	store.updatePodMetrics()
+
+	require.Equal(t, 1, len(store.podMetricsJobs))
+	require.Equal(t, 1, countCounterCalls(counters, metrics.PodMetricsEnqueueDroppedTotal, "reason", metrics.PodMetricsDropReasonBackoff))
+}
+
+func TestPodMetricsFetchSuccessDoesNotClearRecreatedPodBackoff(t *testing.T) {
+	store := &Store{}
+	stalePod := newReadyMetricsPod("pod-0", "uid-0")
+	recreatedPod := newReadyMetricsPod("pod-0", "uid-1")
+	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
+	store.metaPods.Store(utils.GeneratePodKey(recreatedPod.Namespace, recreatedPod.Name), recreatedPod)
+	store.podMetricsBackoff.Store(podMetricsBackoffKey(recreatedPod), &podMetricsBackoffState{
+		uid:         string(recreatedPod.UID),
+		failures:    1,
+		nextFetchAt: now.Add(time.Second),
+	})
+
+	store.recordPodMetricsFetchSuccess(stalePod)
+
+	state, ok := store.podMetricsBackoff.Load(podMetricsBackoffKey(recreatedPod))
+	require.True(t, ok)
+	require.Equal(t, string(recreatedPod.UID), state.uid)
+}
+
+func TestPodMetricsFailureDoesNotRecordBackoffForDeletedPod(t *testing.T) {
+	store := &Store{}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+
+	store.recordPodMetricsFetchFailure(pod, time.Now())
+
+	require.Equal(t, 0, store.podMetricsBackoff.Len())
+}
+
+func TestDeletePodClearsPodMetricsBackoff(t *testing.T) {
+	store := &Store{}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+	store.recordPodMetricsFetchFailure(pod, time.Now())
+	require.Equal(t, 1, store.podMetricsBackoff.Len())
+
+	store.deletePod(pod.Pod)
+
+	require.Equal(t, 0, store.podMetricsBackoff.Len())
+}
+
+func TestDeletePodClearsPodMetricsScheduling(t *testing.T) {
+	store := &Store{}
+	pod := newReadyMetricsPod("pod-0", "uid-0")
+	store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+	require.True(t, store.tryMarkPodMetricsQueued(pod))
+	require.Equal(t, 1, store.podMetricsScheduling.Len())
+
+	store.deletePod(pod.Pod)
+
+	require.Equal(t, 0, store.podMetricsScheduling.Len())
+}
+
+func TestUpdatePodClearsPodMetricsStateWhenModelInfoIsRemoved(t *testing.T) {
+	store := &Store{}
+	oldPod := newReadyMetricsPod("pod-0", "uid-0")
+	newPod := oldPod.DeepCopy()
+	newPod.Labels = map[string]string{}
+	metaPod := &Pod{Pod: oldPod.Pod, Models: utils.NewRegistry[string]()}
+	metaPod.Models.Store("model", "model")
+	store.metaPods.Store(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name), metaPod)
+	store.recordPodMetricsFetchFailure(metaPod, time.Now())
+	require.True(t, store.tryMarkPodMetricsQueued(metaPod))
+
+	store.updatePod(oldPod.Pod, newPod)
+
+	require.Equal(t, 0, store.podMetricsBackoff.Len())
+	require.Equal(t, 0, store.podMetricsScheduling.Len())
+}
+
+func TestUpdatePodPreservesPodMetricsStateWhenPodRemainsTracked(t *testing.T) {
+	store := &Store{}
+	oldPod := newReadyMetricsPod("pod-0", "uid-0")
+	newPod := oldPod.DeepCopy()
+	newPod.Status.PodIP = "10.0.0.2"
+	metaPod := &Pod{Pod: oldPod.Pod, Models: utils.NewRegistry[string]()}
+	metaPod.Models.Store("model", "model")
+	store.metaPods.Store(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name), metaPod)
+	store.recordPodMetricsFetchFailure(metaPod, time.Now())
+	require.True(t, store.tryMarkPodMetricsQueued(metaPod))
+
+	store.updatePod(oldPod.Pod, newPod)
+
+	require.Equal(t, 1, store.podMetricsBackoff.Len())
+	require.Equal(t, 1, store.podMetricsScheduling.Len())
+}
+
+func BenchmarkUpdatePodMetricsEnqueue(b *testing.B) {
+	scenarios := []struct {
+		name         string
+		pods         int
+		queueSize    int
+		backoffEvery int
+	}{
+		{name: "pods_100_no_backoff", pods: 100, queueSize: 100},
+		{name: "pods_1000_no_backoff", pods: 1000, queueSize: 1000},
+		{name: "pods_1000_queue_full", pods: 1000, queueSize: 10},
+		{name: "pods_1000_50pct_backoff", pods: 1000, queueSize: 1000, backoffEvery: 2},
+		{name: "pods_1000_90pct_backoff", pods: 1000, queueSize: 1000, backoffEvery: 10},
+	}
+
+	for _, scenario := range scenarios {
+		b.Run(scenario.name, func(b *testing.B) {
+			var counters []counterCall
+			restore := captureCounterCalls(&counters)
+			defer restore()
+
+			store := &Store{
+				podMetricsJobs: make(chan *Pod, scenario.queueSize),
+			}
+			now := time.Now()
+			for i := range scenario.pods {
+				pod := newReadyMetricsPod(fmt.Sprintf("pod-%d", i), fmt.Sprintf("uid-%d", i))
+				store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+				if scenario.backoffEvery > 0 && i%scenario.backoffEvery != 0 {
+					store.recordPodMetricsFetchFailure(pod, now)
+				}
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			var enqueuedTotal int
+			for range b.N {
+				store.podMetricsJobs = make(chan *Pod, scenario.queueSize)
+				store.updatePodMetrics()
+				enqueuedTotal += len(store.podMetricsJobs)
+				for len(store.podMetricsJobs) > 0 {
+					store.finishPodMetricsScheduling(<-store.podMetricsJobs)
+				}
+			}
+			b.StopTimer()
+
+			b.ReportMetric(float64(enqueuedTotal)/float64(b.N), "jobs_enqueued/op")
+			b.ReportMetric(float64(countCounterCalls(counters, metrics.PodMetricsEnqueueDroppedTotal, "reason", metrics.PodMetricsDropReasonQueueFull))/float64(b.N), "queue_full_drops/op")
+			b.ReportMetric(float64(countCounterCalls(counters, metrics.PodMetricsEnqueueDroppedTotal, "reason", metrics.PodMetricsDropReasonBackoff))/float64(b.N), "backoff_drops/op")
+		})
+	}
+}
+
+type counterCall struct {
+	name        string
+	labelNames  []string
+	labelValues []string
+}
+
+func captureCounterCalls(calls *[]counterCall) func() {
+	originalFn := metrics.IncrementCounterMetricFnForTest
+	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		*calls = append(*calls, counterCall{
+			name:        name,
+			labelNames:  append([]string(nil), labelNames...),
+			labelValues: append([]string(nil), labelValues...),
+		})
+	}
+	return func() {
+		metrics.IncrementCounterMetricFnForTest = originalFn
+	}
+}
+
+func countCounterCalls(calls []counterCall, name, labelName, labelValue string) int {
+	count := 0
+	for _, call := range calls {
+		if call.name != name {
+			continue
+		}
+		for i, ln := range call.labelNames {
+			if ln == labelName && i < len(call.labelValues) && call.labelValues[i] == labelValue {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func newReadyMetricsPod(name, uid string) *Pod {
+	return &Pod{
+		Pod: &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+				UID:       k8stypes.UID(uid),
+				Labels: map[string]string{
+					constants.ModelLabelName: "model",
+				},
+			},
+			Status: v1.PodStatus{
+				Phase: v1.PodRunning,
+				PodIP: "10.0.0.1",
+				Conditions: []v1.PodCondition{
+					{Type: v1.PodReady, Status: v1.ConditionTrue},
+				},
+			},
+		},
+		Models: utils.NewRegistry[string](),
+	}
+}
+
+// seedCompletedOutputTokensHistory plants a rate-window baseline so calculateRate1m has a
+// snapshot far enough in the past (it discards windows shorter than 10s) without sleeping.
+func seedCompletedOutputTokensHistory(t *testing.T, pod *Pod, baseline float64, age time.Duration) {
+	t.Helper()
+	key := rateHistoryKey(pod, "", "completed_output_tokens")
+	rateCalculator.mu.Lock()
+	rateCalculator.history[key] = []MetricSnapshot{{Value: baseline, Timestamp: time.Now().Add(-age)}}
+	rateCalculator.mu.Unlock()
+	t.Cleanup(func() {
+		rateCalculator.mu.Lock()
+		delete(rateCalculator.history, key)
+		rateCalculator.mu.Unlock()
+	})
+}
+
+func TestUpdateRealtimeOutputTokenRateEWMA(t *testing.T) {
+	c := &Store{}
+	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "ewma-pod", Namespace: "default"}}}
+	seedCompletedOutputTokensHistory(t, pod, 0, 30*time.Second)
+
+	// 3000 tokens over the 30s window = 100 tokens/s. The first sample seeds the EWMA as is.
+	atomic.StoreInt64(&pod.completedOutputTokens, 3000)
+	c.updateRealtimeOutputTokenRateEWMA(pod)
+	v, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
+	require.True(t, ok)
+	require.InDelta(t, 100, v.GetSimpleValue(), 1)
+
+	// A higher window rate (~200 tokens/s) moves the estimate only part of the way toward it.
+	atomic.StoreInt64(&pod.completedOutputTokens, 6000)
+	c.updateRealtimeOutputTokenRateEWMA(pod)
+	v, ok = pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
+	require.True(t, ok)
+	alpha := 1 - math.Exp(-podMetricRefreshInterval.Seconds()/outputTokenRateEWMATau.Seconds())
+	want := alpha*200 + (1-alpha)*100
+	require.InDelta(t, want, v.GetSimpleValue(), 2)
+	require.Greater(t, v.GetSimpleValue(), 100.0)
+	require.Less(t, v.GetSimpleValue(), 200.0)
+}
+
+// A window with no completed output tokens says nothing about capacity, so the previous
+// estimate must survive instead of decaying to zero.
+func TestUpdateRealtimeOutputTokenRateEWMA_IdleKeepsPreviousEstimate(t *testing.T) {
+	c := &Store{}
+	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "idle-ewma-pod", Namespace: "default"}}}
+	seedCompletedOutputTokensHistory(t, pod, 500, 30*time.Second)
+	atomic.StoreInt64(&pod.completedOutputTokens, 500) // no new tokens in the window
+	require.NoError(t, c.updatePodRecord(pod, "", metrics.RealtimeOutputTokenRateEWMA, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: 123}))
+
+	c.updateRealtimeOutputTokenRateEWMA(pod)
+
+	v, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
+	require.True(t, ok)
+	require.Equal(t, 123.0, v.GetSimpleValue())
+}
+
+func TestUpdateRealtimeOutputTokenRateEWMA_NoHistoryStoresNothing(t *testing.T) {
+	c := &Store{}
+	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "cold-ewma-pod", Namespace: "default"}}}
+	t.Cleanup(func() {
+		rateCalculator.mu.Lock()
+		delete(rateCalculator.history, rateHistoryKey(pod, "", "completed_output_tokens"))
+		rateCalculator.mu.Unlock()
+	})
+	atomic.StoreInt64(&pod.completedOutputTokens, 1000)
+
+	c.updateRealtimeOutputTokenRateEWMA(pod)
+
+	_, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
+	require.False(t, ok, "a single sample has no window, so no capacity estimate yet")
+}
+
+func namespacedTestPod(namespace, name string) *Pod {
+	return &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}}
+}
+
+// purgeRateHistory drops the rate history of the given pods when the test ends.
+func purgeRateHistory(t *testing.T, pods ...*Pod) {
+	t.Helper()
+	t.Cleanup(func() {
+		for _, pod := range pods {
+			rateCalculator.PurgeEntriesForPod(pod.Namespace, pod.Name)
+		}
+	})
+}
+
+// Same-named pods in different namespaces must keep separate rate histories. Sharing
+// one would compute a pod's rate against the other pod's counter.
+func TestCalculatePerSecondRate_SameNameInTwoNamespaces(t *testing.T) {
+	c := &Store{}
+	podA := namespacedTestPod("team-a", "decode-0")
+	podB := namespacedTestPod("team-b", "decode-0")
+	purgeRateHistory(t, podA, podB)
+
+	require.Equal(t, -1.0, c.calculatePerSecondRate(podA, "m", "gen_tokens", 100000))
+	// team-b has no history of its own yet, so it has no rate.
+	require.Equal(t, -1.0, c.calculatePerSecondRate(podB, "m", "gen_tokens", 500))
+
+	rateCalculator.mu.RLock()
+	defer rateCalculator.mu.RUnlock()
+	require.Equal(t, []float64{100000}, snapshotValues(rateCalculator.history[rateHistoryKey(podA, "m", "gen_tokens")]))
+	require.Equal(t, []float64{500}, snapshotValues(rateCalculator.history[rateHistoryKey(podB, "m", "gen_tokens")]))
+}
+
+func TestCalculateRate1m_SameNameInTwoNamespaces(t *testing.T) {
+	c := &Store{}
+	podA := namespacedTestPod("team-a", "decode-0")
+	podB := namespacedTestPod("team-b", "decode-0")
+	purgeRateHistory(t, podA, podB)
+
+	// Seed a 30s-old baseline for team-a only.
+	seededAt := time.Now().Add(-30 * time.Second)
+	rateCalculator.mu.Lock()
+	rateCalculator.history[rateHistoryKey(podA, "", "completed_requests")] = []MetricSnapshot{{Value: 1000, Timestamp: seededAt}}
+	rateCalculator.mu.Unlock()
+
+	// team-b's much smaller counter must not be read as a counter reset of team-a's.
+	require.Equal(t, -1.0, c.calculateRate1m(podB, "completed_requests", 5))
+	// team-a's rate is still computed against its own baseline: 3000 over the time since
+	// the seed. Bracket the elapsed time so a slow run cannot fail the check.
+	before := time.Since(seededAt).Seconds()
+	rate := c.calculateRate1m(podA, "completed_requests", 4000)
+	after := time.Since(seededAt).Seconds()
+	require.GreaterOrEqual(t, rate, 3000/after)
+	require.LessOrEqual(t, rate, 3000/before)
+}
+
+func TestPurgeEntriesForPod_NamespaceScoped(t *testing.T) {
+	c := &Store{}
+	podA := namespacedTestPod("team-a", "decode-0")
+	podB := namespacedTestPod("team-b", "decode-0")
+	podA2 := namespacedTestPod("team-a", "decode-00") // name shares a prefix with podA
+	purgeRateHistory(t, podA, podB, podA2)
+
+	for _, pod := range []*Pod{podA, podB, podA2} {
+		c.calculatePerSecondRate(pod, "m", "gen_tokens", 1)
+		c.calculateRate1m(pod, "completed_requests", 1)
+	}
+
+	rateCalculator.PurgeEntriesForPod("team-a", "decode-0")
+
+	rateCalculator.mu.RLock()
+	defer rateCalculator.mu.RUnlock()
+	require.NotContains(t, rateCalculator.history, rateHistoryKey(podA, "m", "gen_tokens"))
+	require.NotContains(t, rateCalculator.history, rateHistoryKey(podA, "", "completed_requests"))
+	for _, pod := range []*Pod{podB, podA2} {
+		require.Contains(t, rateCalculator.history, rateHistoryKey(pod, "m", "gen_tokens"))
+		require.Contains(t, rateCalculator.history, rateHistoryKey(pod, "", "completed_requests"))
+	}
+}
+
+func snapshotValues(history []MetricSnapshot) []float64 {
+	values := make([]float64, len(history))
+	for i, s := range history {
+		values[i] = s.Value
+	}
+	return values
+}
+
+func TestPDRole(t *testing.T) {
+	pod := func(name string, labels map[string]string) *v1.Pod {
+		return &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels}}
+	}
+	cases := []struct {
+		name string
+		pod  *v1.Pod
+		want string
+	}{
+		{"label decode, name without role (static discovery)", pod("qwen-127-0-0-1-2", map[string]string{pdRoleIdentifier: "decode"}), "decode"},
+		{"label prefill, name without role", pod("qwen-127-0-0-1-1", map[string]string{pdRoleIdentifier: "prefill"}), "prefill"},
+		{"label wins over the name", pod("prefill-cache-decode-0", map[string]string{pdRoleIdentifier: "decode"}), "decode"},
+		{"no label: name fallback, decode", pod("rs-decode-abcde", nil), "decode"},
+		{"no label: name fallback, prefill", pod("rs-prefill-abcde", nil), "prefill"},
+		{"other label value: name fallback", pod("rs-decode-abcde", map[string]string{pdRoleIdentifier: "worker"}), "decode"},
+		{"neither", pod("vllm-0", map[string]string{pdRoleIdentifier: "worker"}), ""},
+		{"nil pod", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, pdRole(tc.pod))
+		})
+	}
+}
+
+// A decode pod from static discovery is named after its address, not its role. Its
+// generation throughput must still be derived from the role-name label.
+func TestUpdateThroughputToksPerS_UsesRoleLabel(t *testing.T) {
+	c := &Store{}
+	decode := newReadyMetricsPod("model-127-0-0-1-2", "uid-decode")
+	decode.Labels[pdRoleIdentifier] = "decode"
+	prefill := newReadyMetricsPod("model-127-0-0-1-1", "uid-prefill")
+	prefill.Labels[pdRoleIdentifier] = "prefill"
+	purgeRateHistory(t, decode, prefill)
+
+	// Seed a baseline one second back instead of sleeping between two scrapes.
+	seededAt := time.Now().Add(-time.Second)
+	rateCalculator.mu.Lock()
+	rateCalculator.history[rateHistoryKey(decode, "model", metrics.GenerationTokenTotal)] = []MetricSnapshot{{Value: 1000, Timestamp: seededAt}}
+	rateCalculator.history[rateHistoryKey(prefill, "model", metrics.PromptTokenTotal)] = []MetricSnapshot{{Value: 1000, Timestamp: seededAt}}
+	rateCalculator.mu.Unlock()
+
+	c.updateThroughputToksPerS(decode, "model", metrics.GenerationTokenTotal, &metrics.SimpleMetricValue{Value: 1100})
+	c.updateThroughputToksPerS(prefill, "model", metrics.PromptTokenTotal, &metrics.SimpleMetricValue{Value: 1100})
+
+	gen, ok := decode.ModelMetrics.Load(c.getPodModelMetricName("model", metrics.AvgGenerationThroughputToksPerS))
+	require.True(t, ok, "the decode pod must get a generation throughput")
+	require.InDelta(t, 100.0, gen.GetSimpleValue(), 5.0)
+	prompt, ok := prefill.ModelMetrics.Load(c.getPodModelMetricName("model", metrics.AvgPromptThroughputToksPerS))
+	require.True(t, ok, "the prefill pod must get a prompt throughput")
+	require.InDelta(t, 100.0, prompt.GetSimpleValue(), 5.0)
+
+	// A role only gets the rate of its own counter.
+	_, ok = decode.ModelMetrics.Load(c.getPodModelMetricName("model", metrics.AvgPromptThroughputToksPerS))
+	require.False(t, ok)
 }

@@ -90,6 +90,57 @@ export interface JobEvent {
 
 // Job is the Console BFF's view of a batch — superset of OpenAI Batch.
 // Timestamps are unix seconds.
+export interface JobDeploymentWorkload {
+  id: string;
+  name: string;
+  type?: string;
+  sale_mode?: string;
+  role?: string;
+  phase?: string;
+  cluster?: {
+    zone?: string;
+    physical_cluster?: string;
+    logical_cluster?: string;
+    idc?: string;
+  };
+  replicas?: number;
+  image?: string;
+  healthy?: boolean;
+  pods?: JobDeploymentPod[];
+  yaml?: string;
+  resources?: {
+    resourceType?: string;
+    [key: string]: unknown;
+  };
+}
+
+export interface JobDeploymentPod {
+  name: string;
+  phase?: string;
+  pod_ip?: string;
+  node?: string;
+  ports?: Array<{ nodePort?: number; port?: number }>;
+  healthy?: boolean;
+  role?: string;
+  created_at?: string;
+  cluster?: {
+    zone?: string;
+    physical_cluster?: string;
+    logical_cluster?: string;
+    idc?: string;
+  };
+  monitoring?: string;
+}
+
+export interface JobDeploymentDetail {
+  type: string;
+  job_id?: string;
+  job_name?: string;
+  workloads?: JobDeploymentWorkload[];
+  monitoring?: string;
+  grafana?: string;
+}
+
 export interface Job {
   id: string;
   object: string;
@@ -139,6 +190,8 @@ export interface Job {
   events?: JobEvent[];
 }
 
+export type DeploymentStatus = 'Ready' | 'Deploying' | 'Scaling' | 'Failed' | 'Degraded' | 'Deleted' | 'Unknown';
+
 export interface Deployment {
   id: string;
   name: string;
@@ -150,10 +203,28 @@ export interface Deployment {
   gpuType: string;
   region: string;
   createdBy: string;
-  status: 'Ready' | 'Deploying' | 'Failed';
+  status: DeploymentStatus;
+  templateId?: string;
+  templateVersion?: string;
+  implementationKind?: string;
+  servingName: string;
+  createdAt: string;
+  inferenceUrl?: string;
 }
 
 export type ModelCategory = 'LLM' | 'Audio' | 'Image' | 'Video' | 'Vision' | 'Embedding' | 'Reranks';
+
+export const CATEGORY_OPTIONS: ModelCategory[] = ['LLM', 'Audio', 'Image', 'Video', 'Vision', 'Embedding', 'Reranks'];
+
+export const CATEGORY_COLORS: Record<ModelCategory, string> = {
+  LLM: 'text-blue-600',
+  Audio: 'text-green-600',
+  Image: 'text-orange-500',
+  Video: 'text-red-500',
+  Vision: 'text-violet-600',
+  Embedding: 'text-cyan-600',
+  Reranks: 'text-pink-600',
+};
 
 export interface Model {
   id: string;
@@ -232,6 +303,8 @@ export const mockDeployments: Deployment[] = [
     deploymentId: 'euxdnr5z',
     baseModel: 'DeepSeek R1 Distill Llama 8B',
     baseModelId: 'deepseek-r1-distil-llama-8b',
+    servingName: '/models/deepseek-r1-distil-llama-8b',
+    createdAt: '2026-01-18T23:53:06Z',
     replicas: '1[01]',
     gpusPerReplica: 1,
     gpuType: 'NVIDIA H100 80GB',

@@ -57,15 +57,16 @@ class _Lenient(BaseModel):
 class EngineType(str, Enum):
     """Supported inference engines.
 
-    Currently the renderer only ships a VLLM adapter; other types are
-    accepted by the schema but rejected at render time until their
-    adapters land.
+    Currently the renderer ships VLLM, SGLang, and mock adapters; other
+    types are accepted by the schema but rejected at render time until
+    their adapters land.
     """
 
     VLLM = "vllm"
     SGLANG = "sglang"
     TRTLLM = "trtllm"
     LMDEPLOY = "lmdeploy"
+    VIPE = "vipe"
     MOCK = "mock"
 
 
@@ -82,7 +83,7 @@ class EngineInvocation(str, Enum):
 class EngineSpec(_Strict):
     """Configuration for the inference engine container.
 
-    Today VLLM with HTTP_SERVER invocation is fully supported.
+    Today VLLM and SGLang with HTTP_SERVER invocation are supported.
     Other engine types pass through the schema but require their own
     adapters to be implemented.
     """
@@ -364,9 +365,8 @@ class ModelDeploymentTemplateList(RootModel[List[ModelDeploymentTemplate]]):
 class CompletionWindowOption(str, Enum):
     """SLO tier for batch completion.
 
-    The schema accepts all values; only TWENTY_FOUR_HOURS is honored
-    at runtime today. 1H/4H/BEST_EFFORT will take effect once the
-    deadline-aware scheduler ships.
+    Profile-level values are accepted for forward compatibility. Runtime
+    deadlines are currently driven by the per-batch completion_window field.
     """
 
     ONE_HOUR = "1h"
@@ -400,12 +400,11 @@ class RetryPolicy(_Strict):
 class SchedulingSpec(_Strict):
     """Scheduling policy for batches using this profile.
 
-    Honored at runtime today: completion_window (only 24h),
-    max_concurrency, request_timeout_seconds.
+    Honored at runtime today: max_concurrency, request_timeout_seconds.
 
     Accepted by the schema but not yet honored (load-time warning):
-    priority, provider_preference, allow_preempt, allow_spot,
-    retry_policy.
+    completion_window, priority, provider_preference, allow_preempt,
+    allow_spot, retry_policy.
     """
 
     completion_window: CompletionWindowOption = Field(
@@ -529,10 +528,9 @@ class ProfileOverridesSpec(_Strict):
 
         {"scheduling": {"max_concurrency": 32}}
 
-    Today the renderer only honours the profile's completion_window and
-    drops the rest with a warning at load time; the override field is
-    accepted (and roundtripped) for forward compatibility with the
-    deadline-aware scheduler.
+    Today the renderer roundtrips scheduling overrides for forward
+    compatibility; the per-batch completion_window field controls the
+    runtime deadline.
     """
 
     scheduling: Optional[SchedulingSpec] = Field(

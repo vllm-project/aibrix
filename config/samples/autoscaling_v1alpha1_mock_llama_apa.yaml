@@ -13,6 +13,12 @@ spec:
     name: llama2-70b
   minReplicas: 1
   maxReplicas: 10
-  targetMetric: "avg_prompt_throughput_toks_per_s"
-  targetValue: "20"
+  observeWindowSeconds: 600
+  metricsSources:
+    - metricSourceType: "pod"
+      protocolType: "http"
+      port: "8000"
+      path: "/metrics"
+      targetMetric: "avg_prompt_throughput_toks_per_s"
+      targetValue: "20"
   scalingStrategy: "APA"

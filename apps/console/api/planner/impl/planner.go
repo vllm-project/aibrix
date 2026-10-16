@@ -32,15 +32,31 @@ import (
 	pu "github.com/vllm-project/aibrix/apps/console/api/planner/utils"
 	"github.com/vllm-project/aibrix/apps/console/api/resource_manager/provisioner"
 	"github.com/vllm-project/aibrix/apps/console/api/store"
+	"github.com/vllm-project/aibrix/apps/console/api/store/models"
 	"github.com/vllm-project/aibrix/apps/console/api/utils"
 
 	"github.com/vllm-project/aibrix/apps/console/api/error_injection"
+	"github.com/vllm-project/aibrix/apps/console/api/metrics"
 )
 
 const (
 	defaultWorkerCount      = 10
 	defaultPlanningInterval = 60 * time.Second
 	defaultListJobsLimit    = 20
+
+	// expiryFinalizeGracePeriod bounds how long past the completion window the
+	// planner keeps polling MDS before forcing a planner-side expiry. The batch
+	// runtime finalizes expiry on its own deadline and aggregates any
+	// already-completed requests into the output/error files, so we prefer that
+	// terminal batch over a premature planner-side conclusion. The grace period
+	// only kicks in as a fallback when the runtime is unresponsive.
+	expiryFinalizeGracePeriod = 5 * time.Minute
+
+	metricConsolePlannerDuration  = "console.planner.duration"
+	metricConsolePlannerError     = "console.planner.error"
+	metricConsolePlannerJobFailed = "console.planner.job.failed"
+
+	listJobsRefreshWorkers = 8
 )
 
 // Planner is an asynchronous implementation of plannerapi.Planner.
@@ -66,8 +82,9 @@ type Planner struct {
 	// planning worker
 	planningLoop *planningLoop
 
-	baseCtx    context.Context
-	baseCancel context.CancelFunc
+	baseCtx     context.Context
+	baseCancel  context.CancelFunc
+	lifecycleMu sync.Mutex
 
 	mu   sync.RWMutex          // guards jobs
 	jobs map[string]*queuedJob // JobID -> state
@@ -83,6 +100,7 @@ type PlannerConfig struct {
 	Store                  store.Store
 	PolicyType             PlanningPolicyType
 	WorkerCount            int                      // concurrent job processing, default 10
+	WorkerQueueSize        int                      // pending worker tasks, default 1000
 	PlanningInterval       time.Duration            // planning loop interval, default 60s
 	MaxConcurrentProvision int                      // max concurrent provisioning jobs, default 1
 	Injector               error_injection.Injector // error injection for testing
@@ -92,6 +110,7 @@ type PlannerConfig struct {
 func DefaultPlannerConfig() PlannerConfig {
 	return PlannerConfig{
 		WorkerCount:            defaultWorkerCount,
+		WorkerQueueSize:        pu.DefaultWorkerQueueSize,
 		PlanningInterval:       defaultPlanningInterval,
 		PolicyType:             PlanningPolicyTypeSimple,
 		MaxConcurrentProvision: DefaultPolicyConfig().MaxConcurrentProvisioning,
@@ -104,6 +123,9 @@ func NewPlanner(cfg PlannerConfig) *Planner {
 	// Apply defaults
 	if cfg.WorkerCount < 1 {
 		cfg.WorkerCount = DefaultPlannerConfig().WorkerCount
+	}
+	if cfg.WorkerQueueSize < 1 {
+		cfg.WorkerQueueSize = DefaultPlannerConfig().WorkerQueueSize
 	}
 	if cfg.PlanningInterval <= 0 {
 		cfg.PlanningInterval = DefaultPlannerConfig().PlanningInterval
@@ -138,16 +160,28 @@ func NewPlanner(cfg PlannerConfig) *Planner {
 	}
 
 	// Planning loop
-	q.planningLoop = newPlanningLoop(q, cfg.PlanningInterval, cfg.WorkerCount)
+	q.planningLoop = newPlanningLoop(
+		q,
+		cfg.PlanningInterval,
+		cfg.WorkerCount,
+		cfg.WorkerQueueSize,
+	)
 
-	klog.Infof("[planner] created planning loop interval=%v worker_pool_size=%d",
-		cfg.PlanningInterval, cfg.WorkerCount)
+	klog.Infof(
+		"[planner] created planning loop interval=%v worker_pool_size=%d worker_queue_size=%d",
+		cfg.PlanningInterval,
+		cfg.WorkerCount,
+		cfg.WorkerQueueSize,
+	)
 	return q
 }
 
 var _ plannerapi.Planner = (*Planner)(nil)
 
 func (q *Planner) Start(ctx context.Context) error {
+	q.lifecycleMu.Lock()
+	defer q.lifecycleMu.Unlock()
+
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -167,6 +201,9 @@ func (q *Planner) Start(ctx context.Context) error {
 
 // Close cancels in-flight work and waits for all workers to exit.
 func (q *Planner) Close() error {
+	q.lifecycleMu.Lock()
+	defer q.lifecycleMu.Unlock()
+
 	if q.baseCancel != nil {
 		q.baseCancel()
 	}
@@ -223,6 +260,8 @@ func (q *Planner) markFailed(ctx context.Context, job *queuedJob, status planner
 	}
 	job.mu.Unlock()
 
+	metrics.Emitter.Counter(metricConsolePlannerJobFailed, 1, metrics.T("status", string(status)))
+
 	q.persist(ctx, job)
 
 	if provisionID != "" {
@@ -248,6 +287,9 @@ func (q *Planner) persist(ctx context.Context, job *queuedJob) {
 	job.mu.RLock()
 	jobID := job.req.JobID
 	rec := jobToModel(job)
+	if job.batch != nil {
+		mergeBatchIntoModel(rec, job.batch)
+	}
 	job.mu.RUnlock()
 
 	if err := q.store.UpsertJob(ctx, rec); err != nil {
@@ -286,9 +328,35 @@ func (q *Planner) Recover(ctx context.Context) error {
 			continue
 		}
 
+		// A completion window starts when MDS accepts the batch, not while the
+		// job is waiting in the planner queue. So, when recovering pre-provision
+		// states, clear the legacy expiresAt in case it was set.
+		modified := false
+		if (job.status == plannerapi.JobStatusQueued || job.status == plannerapi.JobStatusPlanned) &&
+			!job.expiresAt.IsZero() {
+			job.expiresAt = time.Time{}
+			modified = true
+		}
+
+		// A process can stop after changing the in-memory status to planned
+		// but before Provision returns, so a recovered planned job must be
+		// scheduled again.
+		if job.status == plannerapi.JobStatusPlanned {
+			job.status = plannerapi.JobStatusQueued
+			modified = true
+		}
+
+		if modified {
+			if job.batch != nil {
+				job.batch.Status = job.status.ToBatchStatus()
+				job.batch.ExpiresAt = 0
+			}
+			q.persist(ctx, job)
+		}
+
 		q.jobs[job.req.JobID] = job
 		// Re-enqueue the job onto the queue based on the status
-		if job.status == plannerapi.JobStatusQueued || job.status == plannerapi.JobStatusPlanned {
+		if job.status == plannerapi.JobStatusQueued {
 			q.pendingQueue.Push(job, 0)
 			job.queue = q.pendingQueue
 		} else {
@@ -340,12 +408,10 @@ func (q *Planner) Enqueue(ctx context.Context, req *plannerapi.EnqueueRequest) (
 		q.mu.Unlock()
 		return nil, fmt.Errorf("%w: duplicate job_id %q", plannerapi.ErrInvalidJob, req.JobID)
 	}
-	completionWindow, _ := time.ParseDuration(string(req.BatchParams.CompletionWindow))
 	job := &queuedJob{
 		req:        req,
 		status:     plannerapi.JobStatusQueued,
 		queuedAt:   now,
-		expiresAt:  now.Add(completionWindow),
 		pqPriority: 0,
 		queue:      q.pendingQueue,
 	}
@@ -381,6 +447,7 @@ func (q *Planner) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, er
 	if jobID == "" {
 		return nil, fmt.Errorf("%w: empty job_id", plannerapi.ErrInvalidJob)
 	}
+
 	q.mu.RLock()
 	job, ok := q.jobs[jobID]
 	if !ok {
@@ -394,10 +461,23 @@ func (q *Planner) GetJob(ctx context.Context, jobID string) (*plannerapi.Job, er
 	req := job.req
 	queuedAt := job.queuedAt
 	terminalAt := terminalTime(job)
-	// The running worker will poll MDS and update the batch if it changes.
 	batch := job.batch
+	batchID := job.batchID
 	state := jobStateSnapshot(job)
 	job.mu.RUnlock()
+
+	// Job detail polls this method more frequently than the planning loop. Read
+	// MDS on every request so request counts and usage reflect current progress;
+	// include_deployment remains an optional query flag carried by ctx.
+	if batchID != "" {
+		if newBatch, err := q.bc.GetBatch(ctx, batchID); err == nil {
+			// Do not regress a planner-owned terminal state when MDS is briefly
+			// behind (for example, immediately after cancellation or expiry).
+			if !status.IsTerminal() || plannerapi.JobStatus(newBatch.Status).IsTerminal() {
+				batch = newBatch
+			}
+		}
+	}
 
 	return &plannerapi.Job{
 		JobID: jobID,
@@ -426,6 +506,9 @@ func (q *Planner) getJobFromStore(ctx context.Context, jobID string) (*plannerap
 		if err != nil {
 			return nil, err
 		}
+		if j.status.IsTerminal() && !plannerapi.JobStatus(batch.Status).IsTerminal() {
+			batch = getBatchOrPlaceholder(j.batch, j.req, j.status, j.queuedAt, terminalTime(j))
+		}
 		return &plannerapi.Job{JobID: jobID, Batch: batch, State: jobStateSnapshot(j)}, nil
 	}
 	return &plannerapi.Job{
@@ -433,6 +516,30 @@ func (q *Planner) getJobFromStore(ctx context.Context, jobID string) (*plannerap
 		Batch: getBatchOrPlaceholder(j.batch, j.req, j.status, j.queuedAt, terminalTime(j)),
 		State: jobStateSnapshot(j),
 	}, nil
+}
+
+func (q *Planner) refreshStoredJobFromMDS(ctx context.Context, rec *models.Job) *queuedJob {
+	j := modelToJob(rec)
+	if j.batchID == "" || j.status.IsTerminal() {
+		return j
+	}
+	batch, err := q.bc.GetBatch(ctx, j.batchID)
+	if err != nil {
+		klog.Warningf("[planner] ListJobs refresh failed job_id=%q batch_id=%q: %v",
+			j.req.JobID, j.batchID, err)
+		return j
+	}
+
+	j.status = plannerapi.JobStatus(batch.Status)
+	j.batch = batch
+	refreshed := jobToModel(j)
+	mergeBatchIntoModel(refreshed, batch)
+	if q.store != nil {
+		if err := q.store.UpsertJob(ctx, refreshed); err != nil {
+			klog.Warningf("[planner] ListJobs refresh persist job_id=%q: %v", j.req.JobID, err)
+		}
+	}
+	return modelToJob(refreshed)
 }
 
 // Cancel enqueues a cancel request for async processing.
@@ -514,9 +621,10 @@ func (q *Planner) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest)
 		return nil, err
 	}
 
+	jobs := q.refreshStoredJobsFromMDS(ctx, rows)
 	out := make([]*plannerapi.Job, 0, len(rows))
-	for _, row := range rows {
-		j := modelToJob(row)
+	for i, row := range rows {
+		j := jobs[i]
 		out = append(out, &plannerapi.Job{
 			JobID: row.ID,
 			Batch: getBatchOrPlaceholder(j.batch, j.req, j.status, j.queuedAt, terminalTime(j)),
@@ -525,6 +633,40 @@ func (q *Planner) ListJobs(ctx context.Context, req *plannerapi.ListJobsRequest)
 	}
 
 	return &plannerapi.ListJobsResponse{Data: out, HasMore: hasMore}, nil
+}
+
+func (q *Planner) refreshStoredJobsFromMDS(ctx context.Context, rows []*models.Job) []*queuedJob {
+	jobs := make([]*queuedJob, len(rows))
+	if len(rows) == 0 {
+		return jobs
+	}
+	if len(rows) == 1 {
+		jobs[0] = q.refreshStoredJobFromMDS(ctx, rows[0])
+		return jobs
+	}
+
+	workers := listJobsRefreshWorkers
+	if len(rows) < workers {
+		workers = len(rows)
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for i, row := range rows {
+		wg.Add(1)
+		go func(i int, row *models.Job) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				jobs[i] = modelToJob(row)
+				return
+			}
+			jobs[i] = q.refreshStoredJobFromMDS(ctx, row)
+		}(i, row)
+	}
+	wg.Wait()
+	return jobs
 }
 
 // placeholderBatch builds the batch view for jobs without an MDS batch.ID.

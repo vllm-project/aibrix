@@ -18,7 +18,9 @@ package podautoscaler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -42,6 +44,10 @@ type AutoScaler interface {
 	// It does NOT perform any actual scaling operations.
 	// All per-PA configuration is extracted from the PodAutoscaler spec on each call.
 	ComputeDesiredReplicas(ctx context.Context, request ReplicaComputeRequest) (*ReplicaComputeResult, error)
+
+	// ForgetPodAutoscaler releases the metric history kept for a PodAutoscaler
+	// that no longer exists.
+	ForgetPodAutoscaler(namespace, name string)
 }
 
 // ReplicaComputeRequest represents a request for replica calculation.
@@ -50,16 +56,27 @@ type ReplicaComputeRequest struct {
 	PodAutoscaler   autoscalingv1alpha1.PodAutoscaler
 	ScalingContext  scalingctx.ScalingContext // Single source of truth for PA-level configuration
 	CurrentReplicas int32
+	ReplicaState    ReplicaState
 	Pods            []corev1.Pod
 	Timestamp       time.Time
 }
 
+// ReplicaState captures scale target readiness state for pipeline-level guards.
+type ReplicaState struct {
+	ReadyReplicas   int32
+	PendingReplicas int32
+}
+
 // ReplicaComputeResult represents the result of replica calculation
 type ReplicaComputeResult struct {
-	DesiredReplicas int32
-	Algorithm       string
-	Reason          string
-	Valid           bool
+	DesiredReplicas           int32
+	Algorithm                 string
+	MetricName                string
+	MetricSourceType          autoscalingv1alpha1.MetricSourceType
+	MetricValue               float64
+	Reason                    string
+	Valid                     bool
+	PendingReplicaGuardActive bool
 }
 
 // DefaultAutoScaler implements the complete scaling pipeline
@@ -95,6 +112,11 @@ func NewDefaultAutoScaler(
 		aggregator:     aggregator,
 		algorithmCache: make(map[autoscalingv1alpha1.ScalingStrategyType]algorithm.ScalingAlgorithm),
 	}
+}
+
+// ForgetPodAutoscaler drops the metric windows recorded for a deleted PodAutoscaler.
+func (a *DefaultAutoScaler) ForgetPodAutoscaler(namespace, name string) {
+	a.metricsClient.DeleteMetrics(namespace, name)
 }
 
 // getOrCreateAlgorithm retrieves or creates a stateless algorithm for the given strategy
@@ -196,12 +218,124 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 		"currentReplicas", request.CurrentReplicas,
 	)
 
+	bestResult = applyPendingReplicaGuard(request, bestResult)
+
 	return &ReplicaComputeResult{
-		DesiredReplicas: bestResult.DesiredReplicas,
-		Algorithm:       bestResult.Algorithm,
-		Reason:          bestResult.Reason,
-		Valid:           true,
+		DesiredReplicas:           bestResult.DesiredReplicas,
+		Algorithm:                 bestResult.Algorithm,
+		MetricName:                bestResult.MetricName,
+		MetricSourceType:          bestResult.MetricSourceType,
+		MetricValue:               bestResult.MetricValue,
+		Reason:                    bestResult.Reason,
+		Valid:                     true,
+		PendingReplicaGuardActive: bestResult.PendingReplicaGuardActive,
 	}, nil
+}
+
+func applyPendingReplicaGuard(request ReplicaComputeRequest, result *ReplicaComputeResult) *ReplicaComputeResult {
+	if result == nil || !result.Valid {
+		return result
+	}
+	if request.PodAutoscaler.Spec.ScalingStrategy != autoscalingv1alpha1.KPA &&
+		request.PodAutoscaler.Spec.ScalingStrategy != autoscalingv1alpha1.APA {
+		return result
+	}
+	if result.MetricSourceType != autoscalingv1alpha1.POD &&
+		result.MetricSourceType != autoscalingv1alpha1.RESOURCE {
+		return result
+	}
+	if request.ReplicaState.PendingReplicas <= 0 || result.DesiredReplicas == request.CurrentReplicas {
+		return result
+	}
+	if request.CurrentReplicas <= 0 {
+		return result
+	}
+
+	targetValue, ok := request.ScalingContext.GetTargetValueForMetric(result.MetricName)
+	if !ok || targetValue <= 0 {
+		return result
+	}
+
+	readyReplicas := request.ReplicaState.ReadyReplicas
+	if readyReplicas < 0 {
+		readyReplicas = 0
+	}
+	if readyReplicas > request.CurrentReplicas {
+		readyReplicas = request.CurrentReplicas
+	}
+
+	pendingReplicas := request.CurrentReplicas - readyReplicas
+	if pendingReplicas <= 0 {
+		return result
+	}
+
+	currentReplicas := float64(request.CurrentReplicas)
+	readyCount := float64(readyReplicas)
+	pendingCount := float64(pendingReplicas)
+
+	var desiredReplicas int32
+	var reason string
+
+	if result.DesiredReplicas > request.CurrentReplicas {
+		adjustedMetricValue := result.MetricValue * readyCount / currentReplicas
+		desiredReplicas = computePendingAdjustedReplicas(request, result, adjustedMetricValue, targetValue, readyReplicas, pendingReplicas)
+		if desiredReplicas < request.CurrentReplicas {
+			desiredReplicas = request.CurrentReplicas
+		}
+		if desiredReplicas > result.DesiredReplicas {
+			desiredReplicas = result.DesiredReplicas
+		}
+		reason = "scale-up adjusted: pending replicas treated as missing metrics"
+	} else {
+		adjustedMetricValue := (result.MetricValue*readyCount + targetValue*pendingCount) / currentReplicas
+		desiredReplicas = computePendingAdjustedReplicas(request, result, adjustedMetricValue, targetValue, readyReplicas, pendingReplicas)
+		if desiredReplicas > request.CurrentReplicas {
+			desiredReplicas = request.CurrentReplicas
+		}
+		if desiredReplicas < result.DesiredReplicas {
+			desiredReplicas = result.DesiredReplicas
+		}
+		reason = "scale-down adjusted: pending replicas treated at target utilization"
+	}
+
+	if desiredReplicas == result.DesiredReplicas {
+		return result
+	}
+
+	return &ReplicaComputeResult{
+		DesiredReplicas:           desiredReplicas,
+		Algorithm:                 result.Algorithm,
+		MetricName:                result.MetricName,
+		MetricSourceType:          result.MetricSourceType,
+		MetricValue:               result.MetricValue,
+		Reason:                    reason,
+		Valid:                     true,
+		PendingReplicaGuardActive: true,
+	}
+}
+
+func computePendingAdjustedReplicas(
+	request ReplicaComputeRequest,
+	result *ReplicaComputeResult,
+	adjustedMetricValue float64,
+	targetValue float64,
+	readyReplicas int32,
+	pendingReplicas int32,
+) int32 {
+	switch request.PodAutoscaler.Spec.ScalingStrategy {
+	case autoscalingv1alpha1.APA:
+		return int32(math.Ceil(float64(request.CurrentReplicas) * adjustedMetricValue / targetValue))
+	case autoscalingv1alpha1.KPA:
+		if result.DesiredReplicas < request.CurrentReplicas {
+			return int32(math.Ceil((result.MetricValue*float64(readyReplicas) + targetValue*float64(pendingReplicas)) / targetValue))
+		}
+		if algorithm.IsPerPodSource(result.MetricSourceType) {
+			return int32(math.Ceil(float64(request.CurrentReplicas) * adjustedMetricValue / targetValue))
+		}
+		return int32(math.Ceil(adjustedMetricValue / targetValue))
+	default:
+		return result.DesiredReplicas
+	}
 }
 
 // computeReplicasForSingleMetric computes desired replicas for a single MetricSource.
@@ -227,11 +361,40 @@ func (a *DefaultAutoScaler) computeReplicasForSingleMetric(
 	}
 
 	return &ReplicaComputeResult{
-		DesiredReplicas: recommendation.DesiredReplicas,
-		Algorithm:       recommendation.Algorithm,
-		Reason:          recommendation.Reason,
-		Valid:           true,
+		DesiredReplicas:  recommendation.DesiredReplicas,
+		Algorithm:        recommendation.Algorithm,
+		MetricName:       metricSource.TargetMetric,
+		MetricSourceType: metricSource.MetricSourceType,
+		MetricValue:      recommendationMetricValue(recommendation),
+		Reason:           recommendation.Reason,
+		Valid:            true,
 	}, nil
+}
+
+func recommendationMetricValue(recommendation *algorithm.ScalingRecommendation) float64 {
+	if recommendation == nil || recommendation.Metadata == nil {
+		return 0
+	}
+	switch value := recommendation.Metadata["current_value"].(type) {
+	case float64:
+		return value
+	case float32:
+		return float64(value)
+	case int:
+		return float64(value)
+	case int32:
+		return float64(value)
+	case int64:
+		return float64(value)
+	case json.Number:
+		floatValue, err := value.Float64()
+		if err == nil {
+			return floatValue
+		}
+		return 0
+	default:
+		return 0
+	}
 }
 
 // executeScalingPipeline contains the common scaling logic for replica computation
@@ -264,6 +427,11 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 	scalingContext := request.ScalingContext
 
 	// Step 2: Process and aggregate metrics
+	stableWindow, panicWindow := metricWindowDurations(request.PodAutoscaler)
+	if err := a.metricsClient.ConfigureMetricWindows(metricKey, stableWindow, panicWindow); err != nil {
+		return nil, fmt.Errorf("failed to configure metric windows for %s: %w", workloadKey, err)
+	}
+
 	klog.InfoS("Processing metrics snapshot", "source", workloadKey, "healthy metrics pods", len(snapshot.Values), "values", snapshot.Values)
 	if err := a.aggregator.ProcessSnapshot(metricKey, snapshot); err != nil {
 		return nil, fmt.Errorf("failed to process metrics snapshot for %s: %w", workloadKey, err)
@@ -301,6 +469,7 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 		},
 		CurrentReplicas:   request.CurrentReplicas,
 		AggregatedMetrics: aggregatedMetrics,
+		MetricSourceType:  metricSource.MetricSourceType,
 		ScalingContext:    scalingContext,
 		Timestamp:         request.Timestamp,
 	}
@@ -317,6 +486,20 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 		"recommendation", recommendation)
 
 	return recommendation, nil
+}
+
+func metricWindowDurations(pa autoscalingv1alpha1.PodAutoscaler) (time.Duration, time.Duration) {
+	stableWindow := metrics.DefaultStableWindowDuration
+	if pa.Spec.ObserveWindowSeconds != nil {
+		stableWindow = time.Duration(*pa.Spec.ObserveWindowSeconds) * time.Second
+	}
+
+	panicWindow := metrics.DefaultPanicWindowDuration
+	if pa.Spec.PanicWindowSeconds != nil {
+		panicWindow = time.Duration(*pa.Spec.PanicWindowSeconds) * time.Second
+	}
+
+	return stableWindow, panicWindow
 }
 
 // Helper methods

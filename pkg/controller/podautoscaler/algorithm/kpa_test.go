@@ -19,7 +19,9 @@ package algorithm
 import (
 	"testing"
 
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
 )
 
 func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
@@ -44,8 +46,8 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 				},
 				MaxScaleUpRate:   2.0,
 				MaxScaleDownRate: 2.0,
-				StableValue:      20.0, // 20/10 = 2 pods needed
-				PanicValue:       20.0,
+				StableValue:      10.0, // per-pod mean at target: 2 pods * 10/10 = 2
+				PanicValue:       10.0,
 				ActivationScale:  1,
 				PanicThreshold:   2.0,
 				InPanicMode:      false,
@@ -90,8 +92,8 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 				},
 				MaxScaleUpRate:   2.0,
 				MaxScaleDownRate: 2.0,
-				StableValue:      20.0, // 20/10 = 2 pods needed
-				PanicValue:       20.0, // 20/10 = 2 pods needed
+				StableValue:      4.0, // per-pod mean: 5 pods * 4/10 = 2 pods needed
+				PanicValue:       4.0,
 				ActivationScale:  1,
 				PanicThreshold:   2.0,
 				InPanicMode:      true,
@@ -194,6 +196,63 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			expected:    2, // 4/2 = 2 (floor)
 			description: "Should be limited by max scale down rate",
 		},
+		{
+			name:            "per_pod_mean_over_target_scales_up",
+			currentPodCount: 4.0,
+			context: &mockScalingContext{
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {TargetValue: 50.0, MetricType: autoscalingv1alpha1.POD},
+				},
+				MaxScaleUpRate:   2.0,
+				MaxScaleDownRate: 2.0,
+				StableValue:      90.0, // 4 pods each at 90 vs target 50: 4 * 90/50 = 8
+				PanicValue:       90.0,
+				ActivationScale:  1,
+				PanicThreshold:   2.0,
+				MinReplicas:      0,
+				MaxReplicas:      10,
+			},
+			expected:    8,
+			description: "A per-pod mean above target must scale up in proportion to the pod count (#2879)",
+		},
+		{
+			name:            "ratio_metric_can_exceed_two_replicas",
+			currentPodCount: 4.0,
+			context: &mockScalingContext{
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {TargetValue: 0.5, MetricType: autoscalingv1alpha1.POD},
+				},
+				MaxScaleUpRate:   2.0,
+				MaxScaleDownRate: 2.0,
+				StableValue:      0.9, // gpu_cache_usage_perc style ratio: 4 * 0.9/0.5 = 7.2
+				PanicValue:       0.9,
+				ActivationScale:  1,
+				PanicThreshold:   2.0,
+				MinReplicas:      0,
+				MaxReplicas:      8,
+			},
+			expected:    8,
+			description: "A ratio metric must not cap the recommendation at ceil(1/target)",
+		},
+		{
+			name:            "external_source_value_is_already_a_total",
+			currentPodCount: 4.0,
+			context: &mockScalingContext{
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {TargetValue: 50.0, MetricType: autoscalingv1alpha1.EXTERNAL},
+				},
+				MaxScaleUpRate:   2.0,
+				MaxScaleDownRate: 2.0,
+				StableValue:      90.0, // one total value: ceil(90/50) = 2
+				PanicValue:       90.0,
+				ActivationScale:  1,
+				PanicThreshold:   2.0,
+				MinReplicas:      0,
+				MaxReplicas:      10,
+			},
+			expected:    2,
+			description: "External and domain sources keep the total/target formula",
+		},
 	}
 
 	for _, tt := range tests {
@@ -201,6 +260,39 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			result := algorithm.computeTargetReplicas(tt.currentPodCount, tt.context, metricsName)
 			if result != tt.expected {
 				t.Errorf("computeTargetReplicas() = %d, expected %d. %s", result, tt.expected, tt.description)
+			}
+		})
+	}
+}
+
+func TestKPAAlgorithm_shouldEnterPanicMode(t *testing.T) {
+	tests := []struct {
+		name           string
+		stableValue    float64
+		panicValue     float64
+		panicThreshold float64
+		want           bool
+	}{
+		// no usable stable history, guard against division by zero
+		{"zero stable value enters panic", 0, 5, 2.0, true},
+		{"negative stable value enters panic", -1, 5, 2.0, true},
+		// ratio compared against the threshold
+		{"ratio above threshold enters panic", 10, 30, 2.0, true},
+		{"ratio below threshold stays stable", 10, 15, 2.0, false},
+		{"ratio exactly at threshold stays stable", 10, 20, 2.0, false},
+	}
+
+	a := &KPAAlgorithm{}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			metrics := &types.AggregatedMetrics{
+				StableValue: tt.stableValue,
+				PanicValue:  tt.panicValue,
+			}
+			if got := a.shouldEnterPanicMode(metrics, tt.panicThreshold); got != tt.want {
+				t.Errorf("shouldEnterPanicMode(stable=%v, panic=%v, threshold=%v) = %v, want %v",
+					tt.stableValue, tt.panicValue, tt.panicThreshold, got, tt.want)
 			}
 		})
 	}

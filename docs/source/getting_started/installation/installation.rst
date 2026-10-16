@@ -25,11 +25,11 @@ Stable Version
 .. code:: bash
 
     # Install component dependencies
-    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-dependency-v0.7.0.yaml --server-side
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.8.0/aibrix-dependency-v0.8.0.yaml --server-side
     # Install AIBrix CRDs (separate from the operator so uninstalls don't wipe user CRs)
-    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-core-crds-v0.7.0.yaml --server-side
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.8.0/aibrix-core-crds-v0.8.0.yaml --server-side
     # Install aibrix components
-    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.7.0/aibrix-core-v0.7.0.yaml
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.8.0/aibrix-core-v0.8.0.yaml
 
 
 Stable Version Using Helm
@@ -43,26 +43,9 @@ Prerequisites
 .. code:: bash
 
     # Install envoy-gateway, this is not aibrix component. you can also use helm package to install it.
-    helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.2.8 -n envoy-gateway-system --create-namespace
-
-    # patch the configuration to enable EnvoyPatchPolicy, this is super important!
-    kubectl apply -f - <<EOF
-    apiVersion: v1
-    kind: ConfigMap
-    metadata:
-      name: envoy-gateway-config
-      namespace: envoy-gateway-system
-    data:
-      envoy-gateway.yaml: |
-        apiVersion: gateway.envoyproxy.io/v1alpha1
-        kind: EnvoyGateway
-        provider:
-          type: Kubernetes
-        gateway:
-          controllerName: gateway.envoyproxy.io/gatewayclass-controller
-        extensionApis:
-          enableEnvoyPatchPolicy: true
-    EOF
+    helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.2.8 -n envoy-gateway-system \
+    --create-namespace \
+    --set config.envoyGateway.extensionApis.enableEnvoyPatchPolicy=true
 
 .. note::
     If you are experiencing network issues with `docker.io`, you can install the helm chart from the code repo https://github.com/envoyproxy/gateway/tree/main/charts/gateway-helm instead.
@@ -208,3 +191,11 @@ Available controllers:
 - ``model-adapter-controller``: LoRA adapter management
 - ``kv-cache-controller``: Distributed KV cache server orchestration with consistent hashing
 - ``stormservice-controller``: Multi-node orchestration with P/D and AFD support
+
+.. card:: What's next?
+   :class-card: sd-border-1
+
+   * :doc:`../quickstart`: deploy your first model
+   * :doc:`../../production/model-deployment`: production model deployment guidance
+   * :doc:`../../production/gateway`: production gateway configuration
+   * :doc:`../../production/observability`: metrics, dashboards, and telemetry

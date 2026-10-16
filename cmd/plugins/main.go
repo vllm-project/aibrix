@@ -17,16 +17,22 @@ limitations under the License.
 package main
 
 import (
+	"errors"
 	"flag"
+	"fmt"
+	"math"
 	"net"
 	"net/http"
+	_ "net/http/pprof" // registers the profiling handlers that startPprofServer serves
 	"os"
 	"os/signal"
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc/filters"
 	_ "go.uber.org/automaxprocs"
 	"google.golang.org/grpc"
 	"k8s.io/client-go/kubernetes"
@@ -51,6 +57,8 @@ import (
 const (
 	defaultGRPCMaxMessageSizeBytes = 4 * 1024 * 1024
 	envGRPCMaxMessageSizeBytes     = "AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES"
+	envDisableRateLimiting         = "AIBRIX_DISABLE_RATE_LIMITING"
+	envPriorityTierEnabled         = "AIBRIX_PRIORITY_TIER_ENABLED"
 )
 
 var (
@@ -60,13 +68,113 @@ var (
 	standalone            bool
 	endpointsConfig       string
 	installationNamespace string
+	pprofAddr             string
 )
 
+type kubeAPIOptions struct {
+	qps   float64
+	burst int
+}
+
+type modelDiscoveryOptions struct {
+	watchModelAdapters bool
+	watchModelClaims   bool
+	listMode           string
+	maxAge             time.Duration
+}
+
+func (o *modelDiscoveryOptions) addFlags(fs *flag.FlagSet) {
+	fs.BoolVar(&o.watchModelAdapters, "watch-model-adapters", true,
+		"List and watch ModelAdapter resources in Kubernetes discovery.")
+	fs.BoolVar(&o.watchModelClaims, "watch-model-claims", true,
+		"List and watch ModelClaim resources and use their Pod bindings in Kubernetes discovery.")
+	fs.StringVar(&o.listMode, "model-list-mode", string(gateway.ModelListKnown),
+		"Models returned by /v1/models: known or ready-pods.")
+	fs.DurationVar(&o.maxAge, "model-list-discovery-max-age", 0,
+		"Maximum age of a verified Kubernetes model-list snapshot; 0 disables verification.")
+}
+
+func (o modelDiscoveryOptions) validate() error {
+	if o.listMode != string(gateway.ModelListKnown) && o.listMode != string(gateway.ModelListReadyPods) {
+		return fmt.Errorf("invalid --model-list-mode %q: expected known or ready-pods", o.listMode)
+	}
+	if o.maxAge < 0 {
+		return fmt.Errorf("--model-list-discovery-max-age must be nonnegative")
+	}
+	return nil
+}
+
+func (o modelDiscoveryOptions) kubernetesProvider(config *rest.Config, namespace string) *discovery.KubernetesProvider {
+	provider := discovery.NewKubernetesProvider(config, namespace).WithModelAdapters(o.watchModelAdapters)
+	if o.watchModelClaims {
+		provider = provider.WithModelClaims()
+	}
+	return provider
+}
+
+func startEarlyModelListGate(enabled bool, addr string) (*gateway.ModelListGate, error) {
+	if !enabled {
+		return nil, nil
+	}
+	gate := &gateway.ModelListGate{}
+	if err := gate.StartHTTPServer(addr); err != nil {
+		return nil, err
+	}
+	return gate, nil
+}
+
+func startGatewayHTTPServer(gate *gateway.ModelListGate, server *gateway.Server, addr string) error {
+	if gate != nil {
+		gate.SetServer(server)
+		return nil
+	}
+	return server.StartHTTPServer(addr)
+}
+
+func (o *kubeAPIOptions) addFlags(fs *flag.FlagSet) {
+	fs.Float64Var(
+		&o.qps,
+		"kube-api-qps",
+		float64(rest.DefaultQPS),
+		"Maximum QPS for the core Kubernetes and Gateway API clients; must be greater than zero.",
+	)
+	fs.IntVar(
+		&o.burst,
+		"kube-api-burst",
+		rest.DefaultBurst,
+		"Maximum burst for the core Kubernetes and Gateway API clients; must be greater than zero.",
+	)
+}
+
+func (o kubeAPIOptions) validate() error {
+	// Validate the effective float32 value used by rest.Config as well, so that
+	// conversion cannot turn a positive QPS into zero or infinity.
+	qps := float32(o.qps)
+	if !(qps > 0) || math.IsInf(float64(qps), 0) {
+		return fmt.Errorf("--kube-api-qps must be finite and greater than zero as a float32, got %v", o.qps)
+	}
+	if o.burst <= 0 {
+		return fmt.Errorf("--kube-api-burst must be greater than zero, got %d", o.burst)
+	}
+	return nil
+}
+
+func (o kubeAPIOptions) applyTo(config *rest.Config) {
+	config.QPS = float32(o.qps)
+	config.Burst = o.burst
+}
+
 func main() {
+	var kubeAPI kubeAPIOptions
+	kubeAPI.addFlags(flag.CommandLine)
+	var modelDiscovery modelDiscoveryOptions
+	modelDiscovery.addFlags(flag.CommandLine)
 	flag.StringVar(&grpcAddr, "grpc-bind-address", ":50052", "The address the gRPC server binds to.")
 	flag.StringVar(&httpAddr, "http-bind-address", "", "The address the HTTP server binds to (metrics, /v1/models).")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "", "[Deprecated] Use --http-bind-address instead.")
 	flag.BoolVar(&standalone, "standalone", false, "Run in standalone mode without Kubernetes.")
+	flag.StringVar(&pprofAddr, "pprof-bind-address", "localhost:6060",
+		"The address the pprof debug server binds to. Empty disables it.")
 	flag.StringVar(&endpointsConfig, "endpoints-config", "",
 		"Path to endpoints config file (required in standalone mode).")
 	flag.StringVar(&installationNamespace, "installation-namespace", "",
@@ -74,6 +182,12 @@ func main() {
 	klog.InitFlags(flag.CommandLine)
 	defer klog.Flush()
 	flag.Parse()
+	if err := kubeAPI.validate(); err != nil {
+		klog.Fatal(err)
+	}
+	if err := modelDiscovery.validate(); err != nil {
+		klog.Fatal(err)
+	}
 
 	// Resolve HTTP bind address: prefer --http-bind-address, fall back to deprecated --metrics-bind-address
 	if httpAddr == "" {
@@ -111,11 +225,6 @@ func main() {
 		}()
 	}
 
-	// register additional routing algorithms that need dependences
-	if redisClient != nil {
-		routing.RegisterPowerOfTwoRouter(redisClient)
-	}
-
 	// stopCh is closed either on normal return (via defer) or proactively in
 	// the signal handler before calling os.Exit. sync.Once guards against a
 	// double-close panic.
@@ -148,6 +257,8 @@ func main() {
 			klog.Fatalf("Error building kubeconfig: %v", err)
 		}
 
+		kubeAPI.applyTo(config)
+
 		k8sClient, err = kubernetes.NewForConfig(config)
 		if err != nil {
 			klog.Fatalf("Error creating kubernetes client: %v", err)
@@ -157,18 +268,27 @@ func main() {
 		if err != nil {
 			klog.Fatalf("Error on creating gateway k8s client: %v", err)
 		}
+		discoveryProvider = modelDiscovery.kubernetesProvider(config, installationNamespace)
 	}
+	modelListGate, err := startEarlyModelListGate(modelDiscovery.maxAge > 0, httpAddr)
+	if err != nil {
+		klog.Fatalf("Failed to start model-list HTTP server: %v", err)
+	}
+	defer modelListGate.Shutdown()
 
 	// Initialize cache
 	kvSyncEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheKVEventSyncEnabled, false)
 	remoteTokenizerEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheUseRemoteTokenizer, false)
 
 	cache.InitWithOptions(config, stopCh, cache.InitOptions{
-		InstallationNamespace: installationNamespace,
-		EnableKVSync:          kvSyncEnabled && remoteTokenizerEnabled,
-		RedisClient:           redisClient,
-		ModelRouterProvider:   routing.ModelRouterFactory,
-		DiscoveryProvider:     discoveryProvider,
+		InstallationNamespace:        installationNamespace,
+		IsGateway:                    true,
+		EnableKVSync:                 kvSyncEnabled && remoteTokenizerEnabled,
+		RedisClient:                  redisClient,
+		ModelRouterProvider:          routing.ModelRouterFactory,
+		DiscoveryProvider:            discoveryProvider,
+		DisableModelClaimPodBindings: !standalone && !modelDiscovery.watchModelClaims,
+		ModelListMaxAge:              modelDiscovery.maxAge,
 	})
 
 	lis, err := net.Listen("tcp", grpcAddr)
@@ -176,7 +296,12 @@ func main() {
 		klog.Fatalf("failed to listen: %v", err)
 	}
 
-	gatewayServer := gateway.NewServer(redisClient, k8sClient, gatewayK8sClient)
+	gatewayServer := gateway.NewServerWithOptions(redisClient, k8sClient, gatewayK8sClient, gateway.ServerOptions{
+		DisableRateLimiting: utils.LoadEnvBool(envDisableRateLimiting, false),
+		PriorityTier:        utils.LoadEnvBool(envPriorityTierEnabled, false),
+		ModelListMode:       gateway.ModelListMode(modelDiscovery.listMode),
+		VerifyModelList:     modelDiscovery.maxAge > 0,
+	})
 
 	stateSyncEnabled := utils.LoadEnvBool("AIBRIX_STATESYNC_ENABLED", false)
 	var syncManager *statesync.RedisSync
@@ -191,7 +316,7 @@ func main() {
 		klog.InfoS("statesync disabled; set AIBRIX_STATESYNC_ENABLED=true to enable cross-replica state sync")
 	}
 
-	if err := gatewayServer.StartHTTPServer(httpAddr); err != nil {
+	if err := startGatewayHTTPServer(modelListGate, gatewayServer, httpAddr); err != nil {
 		klog.Fatalf("Failed to start HTTP server: %v", err)
 	}
 	klog.Infof("Started HTTP server on %s", httpAddr)
@@ -209,11 +334,21 @@ func main() {
 		if err != nil || telApp == nil {
 			klog.Fatalf("Failed to initialize OpenTelemetry: %v", err)
 		}
-		opts = append(opts, grpc.StatsHandler(otelgrpc.NewServerHandler()))
+		opts = append(opts, grpc.StatsHandler(
+			otelgrpc.NewServerHandler(
+				otelgrpc.WithFilter(
+					filters.Not(filters.HealthCheck()),
+				),
+			),
+		))
 	}
 
 	grpcMaxMessageSize := utils.LoadEnvInt(envGRPCMaxMessageSizeBytes, defaultGRPCMaxMessageSizeBytes)
 	opts = append(opts, grpc.MaxRecvMsgSize(grpcMaxMessageSize))
+
+	// One panicking request must not take the process down with the requests in
+	// flight on it, so recover in the stream interceptor and fail only that stream.
+	opts = append(opts, grpc.StreamInterceptor(gateway.StreamPanicRecoveryInterceptor()))
 
 	s := grpc.NewServer(opts...)
 
@@ -225,11 +360,7 @@ func main() {
 
 	klog.Info("starting gRPC server on " + grpcAddr)
 
-	go func() {
-		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
-			klog.Fatalf("failed to setup profiling: %v", err)
-		}
-	}()
+	startPprofServer(pprofAddr)
 
 	klog.Infof("GOMAXPROCS is: %d", runtime.GOMAXPROCS(0))
 
@@ -242,6 +373,7 @@ func main() {
 			syncManager.Stop()
 		}
 		gatewayServer.Shutdown()
+		modelListGate.Shutdown()
 		s.GracefulStop()
 		if otelEnabled {
 			telApp.Shutdown()
@@ -255,4 +387,28 @@ func main() {
 	if err := s.Serve(lis); err != nil {
 		panic(err)
 	}
+}
+
+// startPprofServer serves the profiling endpoints (http.DefaultServeMux, where
+// net/http/pprof registers them) on addr in the background and returns the
+// listener, or nil when addr is empty or cannot be bound. A bind failure is
+// logged, not fatal: profiling is a debugging aid, and a port that another
+// process holds, such as a second gateway on the same host in local mode, must
+// not stop the gateway from starting.
+func startPprofServer(addr string) net.Listener {
+	if addr == "" {
+		return nil
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		klog.ErrorS(err, "pprof server disabled: cannot bind its address", "address", addr)
+		return nil
+	}
+	klog.InfoS("pprof server listening", "address", ln.Addr().String())
+	go func() {
+		if err := http.Serve(ln, nil); err != nil && !errors.Is(err, net.ErrClosed) {
+			klog.ErrorS(err, "pprof server stopped")
+		}
+	}()
+	return ln
 }

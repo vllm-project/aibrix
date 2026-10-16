@@ -54,6 +54,28 @@ func isPodReady(pod corev1.Pod) bool {
 	return false
 }
 
+func replicaStateFromPods(pods []corev1.Pod, currentReplicas int32) ReplicaState {
+	var readyReplicas int32
+	for _, pod := range pods {
+		if pod.DeletionTimestamp != nil || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		if isPodReady(pod) {
+			readyReplicas++
+		}
+	}
+
+	pendingReplicas := currentReplicas - readyReplicas
+	if pendingReplicas < 0 {
+		pendingReplicas = 0
+	}
+
+	return ReplicaState{
+		ReadyReplicas:   currentReplicas - pendingReplicas,
+		PendingReplicas: pendingReplicas,
+	}
+}
+
 func minFloat64(a, b float64) float64 {
 	if a < b {
 		return a

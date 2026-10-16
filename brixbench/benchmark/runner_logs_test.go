@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,11 +32,46 @@ import (
 	"github.com/vllm-project/aibrix/brixbench/internal/resolver"
 )
 
+var suiteProgressLog struct {
+	sync.Mutex
+	path string
+}
+
+func setSuiteProgressLog(path string) func() {
+	suiteProgressLog.Lock()
+	suiteProgressLog.path = path
+	suiteProgressLog.Unlock()
+	return func() {
+		suiteProgressLog.Lock()
+		suiteProgressLog.path = ""
+		suiteProgressLog.Unlock()
+	}
+}
+
 func progressLog(t *testing.T, format string, args ...any) {
 	message := fmt.Sprintf(format, args...)
 	t.Helper()
 	t.Log(message)
 	fmt.Printf("[benchmark] %s\n", message)
+
+	suiteProgressLog.Lock()
+	defer suiteProgressLog.Unlock()
+	if suiteProgressLog.path == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(suiteProgressLog.path), 0755); err == nil {
+		_ = appendProgressLog(suiteProgressLog.path, message)
+	}
+}
+
+func appendProgressLog(path string, message string) error {
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = fmt.Fprintf(file, "[benchmark] %s\n", message)
+	return err
 }
 
 func progressStep(t *testing.T, format string, args ...any) func() {

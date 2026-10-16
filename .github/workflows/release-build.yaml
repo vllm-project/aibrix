@@ -22,8 +22,10 @@ jobs:
             file: build/container/Dockerfile.gateway
           - name: metadata-service
             file: build/container/Dockerfile.python
+            target: metadata-service
           - name: runtime
             file: build/container/Dockerfile.python
+            target: runtime
           - name: kvcache-watcher
             file: build/container/Dockerfile.kvcache
           - name: vllm-mock
@@ -48,6 +50,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           context: ${{ matrix.component.context || '.' }}
           file: ${{ matrix.component.file }}
+          target: ${{ matrix.component.target || '' }}
           push: true
           tags: |
             aibrix/${{ matrix.component.name }}:${{ github.ref_name }}
@@ -67,8 +70,10 @@ jobs:
             file: build/container/Dockerfile.gateway
           - name: metadata-service
             file: build/container/Dockerfile.python
+            target: metadata-service
           - name: runtime
             file: build/container/Dockerfile.python
+            target: runtime
           - name: kvcache-watcher
             file: build/container/Dockerfile.kvcache
           - name: vllm-mock
@@ -94,6 +99,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           context: ${{ matrix.component.context || '.' }}
           file: ${{ matrix.component.file }}
+          target: ${{ matrix.component.target || '' }}
           push: true
           tags: |
             ghcr.io/aibrix/${{ matrix.component.name }}:${{ github.ref_name }}
@@ -103,7 +109,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.12"]
-    name: publish
+    name: Publish AIBrix Python Wheel
     steps:
       - name: Check out source repository
         uses: actions/checkout@v6
@@ -147,10 +153,10 @@ jobs:
       url: https://pypi.org/p/aibrix_kvcache
     permissions:
       id-token: write
-    name: publish
+    name: Publish AIBrix KVCache Python Wheel
     steps:
       - name: Free Disk Space
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@v1.3.1
         with:
           tool-cache: false
       - name: Check out source repository

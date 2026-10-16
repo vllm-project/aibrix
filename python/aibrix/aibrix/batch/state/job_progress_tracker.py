@@ -52,7 +52,12 @@ class JobProgressTracker:
     def _status(self):
         return self._job.status
 
+    def _ensure_capacity(self, size: int) -> None:
+        while len(self._request_progress_bits) < size:
+            self._request_progress_bits.append(False)
+
     def set_request_executed(self, req_id):
+        self._ensure_capacity(max(req_id + 1, self._status.request_counts.total))
         # This marks the request successfully executed.
         self._ensure_request_capacity(req_id)
         self._request_progress_bits[req_id] = True
