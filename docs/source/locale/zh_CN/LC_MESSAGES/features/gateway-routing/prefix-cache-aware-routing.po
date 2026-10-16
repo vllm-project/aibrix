@@ -320,8 +320,14 @@ msgstr "``20``"
 #: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:108
 msgid ""
 "A block that has not been refreshed for this long expires. A block is "
-"refreshed each time the gateway routes a request that contains it."
-msgstr "超过该时长未被刷新的块会过期。每当网关路由包含某个块的请求时，该块就会被刷新。"
+"refreshed each time the gateway routes a request that contains it. The same "
+"duration applies to each pod within a block: a pod that has not been routed "
+"the block for this long no longer counts as a match, even while the block "
+"stays cached for other pods."
+msgstr ""
+"超过该时长未被刷新的块会过期。每当网关路由包含某个块的请求时，该块就会被刷新。"
+"同一时长也适用于块内的每个 Pod：超过该时长未被路由到该块的 Pod 不再计为匹配，"
+"即使该块仍因其他 Pod 而保留在缓存中。"
 
 #: ../../source/features/gateway-routing/prefix-cache-aware-routing.rst:109
 msgid "``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``"
