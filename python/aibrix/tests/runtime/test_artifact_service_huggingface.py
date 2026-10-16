@@ -77,3 +77,16 @@ async def test_huggingface_reload_returns_the_same_path(tmp_path, fake_hf):
     assert second == first
     for name in ADAPTER_FILES:
         assert os.path.isfile(os.path.join(second, name))
+
+
+@pytest.mark.asyncio
+async def test_hf_alias_adapter_is_downloaded_into_its_directory(tmp_path, fake_hf):
+    """The controller accepts ``hf://`` as an alias of ``huggingface://`` and
+    sends the URL to the runtime unchanged."""
+    service = ArtifactDelegationService(local_dir=str(tmp_path))
+
+    path = await service.download_artifact("hf://org/adapter", "adapter")
+
+    assert path == str(tmp_path / "adapter")
+    for name in ADAPTER_FILES:
+        assert os.path.isfile(os.path.join(path, name))

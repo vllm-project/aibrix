@@ -667,6 +667,7 @@ def get_downloader(source_url: str) -> ArtifactDownloader:
         "gcs": GCSArtifactDownloader(),
         "tos": TOSArtifactDownloader(),
         "huggingface": HuggingFaceArtifactDownloader(),
+        "hf": HuggingFaceArtifactDownloader(),
         "http": HTTPArtifactDownloader(),
         "https": HTTPArtifactDownloader(),
     }
