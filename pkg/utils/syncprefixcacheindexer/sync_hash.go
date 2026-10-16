@@ -340,6 +340,8 @@ func (s *SyncPrefixHashTable) ProcessBlockStored(event BlockStored) error {
 	// A late store must not add reverse-index entries after that snapshot;
 	// the context will be deleted, leaving those entries without an owner.
 	if contextData.markedForEviction.Load() {
+		klog.V(4).InfoS("Skipping block stored event for evicted context",
+			"model", ctx.ModelName, "loraID", ctx.LoraID, "blocks", len(event.BlockHashes))
 		return nil
 	}
 
