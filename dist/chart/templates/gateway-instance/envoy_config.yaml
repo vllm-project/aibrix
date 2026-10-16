@@ -98,6 +98,14 @@ data:
                   domains: ["*"]
                   routes:
                   - match:
+                      path_separated_prefix: "/v1/models"
+                    route:
+                      cluster: gateway_http
+                    typed_per_filter_config:
+                      envoy.filters.http.ext_proc:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+                        disabled: true
+                  - match:
                       prefix: "/"
                       headers:
                       - name: "routing-strategy"
@@ -110,6 +118,18 @@ data:
 
                       
       clusters:
+      - name: gateway_http
+        connect_timeout: 5s
+        type: STATIC
+        load_assignment:
+          cluster_name: gateway_http
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: "127.0.0.1"
+                    port_value: 8080
       # External Processor Cluster (Sidecar)
       - name: ext_proc_cluster
         connect_timeout: 10s

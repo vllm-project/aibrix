@@ -3,6 +3,8 @@ resources:
 - service_account_gateway.yaml
 - role_gateway.yaml
 - role_binding_gateway.yaml
+- namespace_reader.yaml
+- httproute_reader.yaml
 
 labels:
   - pairs:

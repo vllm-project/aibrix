@@ -12,59 +12,80 @@ metadata:
 ---
 
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: {{ include "aibrix.fullname" . }}-gateway-plugins
+  namespace: {{ include "aibrix.gatewayPlugin.installationNamespace" . | quote }}
 rules:
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - model.aibrix.ai
-  resources:
-  - modeladapters
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - gateway.networking.k8s.io
-  resources:
-  - httproutes
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
+- apiGroups: [""]
+  resources: [pods]
+  verbs: [get, list, watch]
+- apiGroups: [model.aibrix.ai]
+  resources: [modeladapters]
+  verbs: [get, list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   labels:
     {{- include "aibrix.labels" . | nindent 4 }}
   name: {{ include "aibrix.fullname" . }}-gateway-plugins
+  namespace: {{ include "aibrix.gatewayPlugin.installationNamespace" . | quote }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "aibrix.fullname" . }}-gateway-plugins
+subjects:
+- kind: ServiceAccount
+  name: {{ include "aibrix.gatewayPlugin.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+---
+# The model router and gateway currently use aibrix-system for HTTPRoutes.
+# This permission must not move with the workload discovery namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "aibrix.fullname" . }}-gateway-httproute-reader
+  namespace: aibrix-system
+rules:
+- apiGroups: [gateway.networking.k8s.io]
+  resources: [httproutes]
+  verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "aibrix.fullname" . }}-gateway-httproute-reader
+  namespace: aibrix-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "aibrix.fullname" . }}-gateway-httproute-reader
+subjects:
+- kind: ServiceAccount
+  name: {{ include "aibrix.gatewayPlugin.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "aibrix.fullname" . }}-gateway-namespace-reader
+rules:
+- apiGroups: [""]
+  resources: [namespaces]
+  resourceNames: [{{ include "aibrix.gatewayPlugin.installationNamespace" . | quote }}]
+  verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "aibrix.fullname" . }}-gateway-namespace-reader
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "aibrix.fullname" . }}-gateway-plugins
+  name: {{ include "aibrix.fullname" . }}-gateway-namespace-reader
 subjects:
-  - kind: ServiceAccount
-    name: {{ include "aibrix.gatewayPlugin.serviceAccountName" . }}
-    namespace: {{ .Release.Namespace }}
+- kind: ServiceAccount
+  name: {{ include "aibrix.gatewayPlugin.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
 {{- end }}

@@ -75,6 +75,8 @@ spec:
         - name: gateway-plugin
           image: gateway-plugins:latest
           imagePullPolicy: IfNotPresent
+          args:
+            - --installation-namespace=$(POD_NAMESPACE)
           ports:
             - name: gateway
               containerPort: 50052
@@ -150,6 +152,10 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/models
+      backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 8080
+    - matches:
         - path:
             type: PathPrefix
             value: /v1/files

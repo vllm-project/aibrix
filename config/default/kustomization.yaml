@@ -91,3 +91,16 @@ labels:
       app.kubernetes.io/name: aibrix
       app.kubernetes.io/version: nightly
       app.kubernetes.io/managed-by: kubectl
+
+# Match the namespace existence check to the namespace selected above.
+replacements:
+- source:
+    kind: Deployment
+    name: gateway-plugins
+    fieldPath: metadata.namespace
+  targets:
+  - select:
+      kind: ClusterRole
+      name: gateway-namespace-reader
+    fieldPaths:
+    - rules.0.resourceNames.0

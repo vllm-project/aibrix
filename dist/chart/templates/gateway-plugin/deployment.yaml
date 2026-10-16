@@ -71,6 +71,8 @@ spec:
           {{- end }}
       containers:
         - name: gateway-plugin
+          args:
+            - {{ printf "--installation-namespace=%s" (include "aibrix.gatewayPlugin.installationNamespace" .) | quote }}
           image: {{ .Values.gatewayPlugin.container.image.repository }}:{{ .Values.gatewayPlugin.container.image.tag }}
           imagePullPolicy: {{ .Values.gatewayPlugin.container.image.imagePullPolicy | default "IfNotPresent" }}
           ports:

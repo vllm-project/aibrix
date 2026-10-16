@@ -47,6 +47,12 @@
     "gatewayPlugin": {
       "type": "object",
       "properties": {
+        "installationNamespace": {
+          "type": "string",
+          "maxLength": 63,
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "Workload discovery namespace; empty selects the release namespace"
+        },
         "replicaCount": {
           "type": "integer",
           "minimum": 1,

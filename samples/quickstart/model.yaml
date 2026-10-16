@@ -5,7 +5,7 @@ metadata:
     model.aibrix.ai/name: deepseek-r1-distill-llama-8b # Note: The label value `model.aibrix.ai/name` here must match with the service name.
     model.aibrix.ai/port: "8000"
   name: deepseek-r1-distill-llama-8b
-  namespace: default
+  namespace: aibrix-system
 spec:
   replicas: 1
   selector:

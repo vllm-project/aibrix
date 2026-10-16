@@ -54,11 +54,12 @@ const (
 )
 
 var (
-	grpcAddr        string
-	httpAddr        string
-	metricsAddr     string // deprecated: use httpAddr
-	standalone      bool
-	endpointsConfig string
+	grpcAddr              string
+	httpAddr              string
+	metricsAddr           string // deprecated: use httpAddr
+	standalone            bool
+	endpointsConfig       string
+	installationNamespace string
 )
 
 func main() {
@@ -68,6 +69,8 @@ func main() {
 	flag.BoolVar(&standalone, "standalone", false, "Run in standalone mode without Kubernetes.")
 	flag.StringVar(&endpointsConfig, "endpoints-config", "",
 		"Path to endpoints config file (required in standalone mode).")
+	flag.StringVar(&installationNamespace, "installation-namespace", "",
+		"Namespace containing model workloads (required in Kubernetes mode).")
 	klog.InitFlags(flag.CommandLine)
 	defer klog.Flush()
 	flag.Parse()
@@ -85,6 +88,12 @@ func main() {
 	// Validate standalone mode flags
 	if standalone && endpointsConfig == "" {
 		klog.Fatal("--endpoints-config is required when running in standalone mode")
+	}
+
+	if !standalone {
+		if err := discovery.ValidateNamespace(installationNamespace); err != nil {
+			klog.Fatalf("Invalid --installation-namespace: %v", err)
+		}
 	}
 
 	redisClient := utils.GetRedisClient()
@@ -155,10 +164,11 @@ func main() {
 	remoteTokenizerEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheUseRemoteTokenizer, false)
 
 	cache.InitWithOptions(config, stopCh, cache.InitOptions{
-		EnableKVSync:        kvSyncEnabled && remoteTokenizerEnabled,
-		RedisClient:         redisClient,
-		ModelRouterProvider: routing.ModelRouterFactory,
-		DiscoveryProvider:   discoveryProvider,
+		InstallationNamespace: installationNamespace,
+		EnableKVSync:          kvSyncEnabled && remoteTokenizerEnabled,
+		RedisClient:           redisClient,
+		ModelRouterProvider:   routing.ModelRouterFactory,
+		DiscoveryProvider:     discoveryProvider,
 	})
 
 	lis, err := net.Listen("tcp", grpcAddr)

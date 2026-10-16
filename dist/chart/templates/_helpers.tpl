@@ -93,6 +93,13 @@ Create the name of the controller manager service account
 {{- end -}}
 
 {{/*
+Resolve the single workload namespace used by gateway discovery and its RBAC.
+*/}}
+{{- define "aibrix.gatewayPlugin.installationNamespace" -}}
+{{- .Values.gatewayPlugin.installationNamespace | default .Release.Namespace -}}
+{{- end -}}
+
+{{/*
 Create the name of the gateway plugin service account
 */}}
 {{- define "aibrix.gatewayPlugin.serviceAccountName" -}}

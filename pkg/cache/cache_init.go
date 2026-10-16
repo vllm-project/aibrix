@@ -46,6 +46,10 @@ var (
 
 // InitOptions configures the cache initialization behavior
 type InitOptions struct {
+	// InstallationNamespace is required for Kubernetes gateway discovery.
+	// It is ignored when a non-Kubernetes DiscoveryProvider is supplied.
+	InstallationNamespace string
+
 	// EnableKVSync configures whether to start the ZMQ KV event sync
 	EnableKVSync bool
 
@@ -315,6 +319,24 @@ func InitForTest() *Store {
 //
 //	*Store: Pointer to initialized store instance
 func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptions) *Store {
+	provider := opts.DiscoveryProvider
+	if provider == nil {
+		provider = discovery.NewKubernetesProvider(config, opts.InstallationNamespace)
+	}
+	return initWithDiscovery(config, stopCh, opts, func(st *Store) error {
+		return initDiscoveryProvider(st, provider, stopCh)
+	})
+}
+
+// InitForController initializes the controller-manager's cluster-wide scheduling
+// cache. Controller reconciliation scope is independent of gateway discovery.
+func InitForController(config *rest.Config, stopCh <-chan struct{}) *Store {
+	return initWithDiscovery(config, stopCh, InitOptions{}, func(st *Store) error {
+		return initControllerInformers(st, config, stopCh)
+	})
+}
+
+func initWithDiscovery(config *rest.Config, stopCh <-chan struct{}, opts InitOptions, initialize func(*Store) error) *Store {
 	once.Do(func() {
 		// Log initialization based on configuration
 		var service string
@@ -343,16 +365,9 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		// Create store with provided dependencies
 		store = New(opts.RedisClient, initPrometheusAPI(config), opts.ModelRouterProvider)
 
-		// Initialize service discovery — all modes go through the Provider interface
-		provider := opts.DiscoveryProvider
-		if provider == nil {
-			// Default: Kubernetes informer-based discovery
-			provider = discovery.NewKubernetesProvider(config)
+		if err := initialize(store); err != nil {
+			klog.Fatalf("Failed to initialize discovery: %v", err)
 		}
-		if err := initDiscoveryProvider(store, provider, stopCh); err != nil {
-			klog.Fatalf("Failed to initialize discovery provider: %v", err)
-		}
-		klog.InfoS("Using discovery provider", "type", provider.Type())
 		initMetricsCache(store, stopCh)
 
 		// Initialize profile cache if enabled
