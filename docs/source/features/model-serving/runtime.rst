@@ -597,6 +597,17 @@ Configuration reference
    * - ``DOWNLOADER_ALLOW_FILE_SUFFIX``
      - *(all files)*
      - Comma-separated suffixes to fetch, for example ``json, safetensors``.
+       Intended to skip large weight files; small runtime-critical files are
+       still fetched via ``DOWNLOADER_ALWAYS_ALLOW_FILE_SUFFIX``.
+   * - ``DOWNLOADER_ALWAYS_ALLOW_FILE_SUFFIX``
+     - ``py,txt,jinja,model,tiktoken``
+     - Comma-separated suffixes always fetched when
+       ``DOWNLOADER_ALLOW_FILE_SUFFIX`` is set, so that remote-code files
+       (``modeling_*.py``, needed by ``--trust-remote-code``), tokenizer
+       vocabularies (``merges.txt``, ``tokenizer.model``, ``*.tiktoken``) and
+       standalone chat templates (``chat_template.jinja``) are never silently
+       dropped. Set ``always_allow_file_suffix: []`` in the download extra
+       config to disable.
    * - ``DOWNLOADER_PART_THRESHOLD`` / ``DOWNLOADER_PART_CHUNKSIZE``
      - ``67108864``
      - Size in bytes above which a file is fetched in parts, and the part size.
