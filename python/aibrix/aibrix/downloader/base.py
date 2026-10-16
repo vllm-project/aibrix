@@ -52,6 +52,11 @@ class DownloadExtraConfig:
 
     # other config
     allow_file_suffix: Optional[List[str]] = None
+    # Suffixes always downloaded even when ``allow_file_suffix`` is set, for
+    # small runtime-critical files (remote code, tokenizer vocabularies, chat
+    # templates). ``None`` falls back to envs.DOWNLOADER_ALWAYS_ALLOW_FILE_SUFFIX;
+    # an empty list disables the mechanism.
+    always_allow_file_suffix: Optional[List[str]] = None
     force_download: Optional[bool] = None
 
 
@@ -80,6 +85,12 @@ class BaseDownloader(ABC):
             self.download_extra_config.allow_file_suffix
             or envs.DOWNLOADER_ALLOW_FILE_SUFFIX
         )
+        always_allow = self.download_extra_config.always_allow_file_suffix
+        self.always_allow_file_suffix = (
+            envs.DOWNLOADER_ALWAYS_ALLOW_FILE_SUFFIX
+            if always_allow is None
+            else always_allow
+        )
         self.force_download = (
             self.download_extra_config.force_download or envs.DOWNLOADER_FORCE_DOWNLOAD
         )
@@ -87,6 +98,64 @@ class BaseDownloader(ABC):
     @property
     def source(self) -> RemoteSource:
         return self._source
+
+    @property
+    def effective_allow_file_suffix(self) -> Optional[List[str]]:
+        """Suffix filter actually applied to downloads.
+
+        When a user-specified ``allow_file_suffix`` filter is set, small
+        runtime-critical files (remote code ``*.py``, tokenizer vocabularies
+        ``*.txt``/``*.model``/``*.tiktoken`` and chat templates ``*.jinja``)
+        are always kept, since the filter is meant to exclude large weight
+        files only. See https://github.com/vllm-project/aibrix/issues/834.
+
+        Suffixes are normalized (whitespace stripped, leading dots removed)
+        so that ``".json"`` and ``"json"`` behave identically; otherwise the
+        HuggingFace pattern construction would produce ``*..json``, which
+        silently matches nothing.
+
+        This merged list feeds the HuggingFace ``*.{suffix}`` patterns. The
+        S3/TOS path uses :meth:`_matches_allow_file_suffix` instead, which
+        matches always-allow suffixes at the dot boundary.
+        """
+        if self.allow_file_suffix is None or len(self.allow_file_suffix) == 0:
+            return None
+
+        merged: List[str] = []
+        for suffix in self._normalize_suffixes(
+            self.allow_file_suffix
+        ) + self._normalize_suffixes(self.always_allow_file_suffix):
+            if suffix not in merged:
+                merged.append(suffix)
+        return merged or None
+
+    @staticmethod
+    def _normalize_suffixes(suffixes: Optional[List[str]]) -> List[str]:
+        """Strip whitespace and leading dots, drop empty strings."""
+        return [
+            s for s in (suffix.strip().lstrip(".") for suffix in suffixes or []) if s
+        ]
+
+    def _matches_allow_file_suffix(self, file: str) -> bool:
+        """Whether ``file`` passes the suffix filter on the S3/TOS path.
+
+        User-specified suffixes keep the historical bare ``endswith``
+        semantics, since some users pass whole-name suffixes such as
+        ``tokenizer.json``. Always-allow suffixes are matched at the dot
+        boundary (``"." + suffix``) so defaults like ``py`` or ``model`` do
+        not over-match ``*.npy`` arrays or extensionless ``*_model`` files;
+        this keeps the path consistent with the HuggingFace ``*.{suffix}``
+        pattern semantics. See the review on #3119.
+        """
+        if any(
+            file.endswith(suffix)
+            for suffix in self._normalize_suffixes(self.allow_file_suffix)
+        ):
+            return True
+        return any(
+            file.endswith("." + suffix)
+            for suffix in self._normalize_suffixes(self.always_allow_file_suffix)
+        )
 
     @abstractmethod
     def _valid_config(self):
@@ -131,14 +200,13 @@ class BaseDownloader(ABC):
         # filter the directory path
         files = [file for file in directory_list if not file.endswith("/")]
 
-        if self.allow_file_suffix is None or len(self.allow_file_suffix) == 0:
+        effective_suffix = self.effective_allow_file_suffix
+        if effective_suffix is None:
             logger.info(f"All files from {self.bucket_path} will be downloaded.")
             filtered_files = files
         else:
             filtered_files = [
-                file
-                for file in files
-                if any(file.endswith(suffix) for suffix in self.allow_file_suffix)
+                file for file in files if self._matches_allow_file_suffix(file)
             ]
 
         if not self._support_range_download():
