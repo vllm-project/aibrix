@@ -1866,6 +1866,86 @@ func TestProcess_CleansRequestBufferOnExitBeforeResponseEnd(t *testing.T) {
 	mc.AssertExpectations(t)
 }
 
+// TestProcess_CleansStreamUsageWhenStreamIsCutOff covers a continuous-usage stream
+// that ends before its final usage, e.g. on a client disconnect: the running usage
+// kept since the first chunk must be released when Process exits.
+func TestProcess_CleansStreamUsageWhenStreamIsCutOff(t *testing.T) {
+	mc := &MockCache{}
+	mc.On("AddRequestCount", mock.Anything, mock.Anything, mock.Anything).Return(int64(0))
+	mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mc.On("HasModel", mock.Anything).Return(true)
+	pods := &utils.PodArray{Pods: []*v1.Pod{
+		{
+			Status: v1.PodStatus{
+				PodIP:      "1.2.3.4",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		},
+	}}
+	mc.On("ListPodsByModel", mock.Anything).Return(pods, nil)
+
+	const requestID = "5ce92f3577b34da6a3ce929d0e0e4737"
+	t.Cleanup(func() {
+		requestBuffers.Delete(requestID)
+		streamBuffers.Delete(requestID)
+		streamUsage.Delete(requestID)
+	})
+
+	srv := &mockProcessServer{ctx: context.Background()}
+	req := &extProcPb.ProcessingRequest{}
+	recvCount := 0
+	srv.On("Recv").Return(req, nil).Run(func(args mock.Arguments) {
+		switch recvCount {
+		case 0:
+			req.Request = &extProcPb.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extProcPb.HttpHeaders{
+					Headers: &configPb.HeaderMap{
+						Headers: []*configPb.HeaderValue{
+							{Key: ":routing-strategy", Value: "random", RawValue: []byte("random")},
+							{Key: ":path", Value: "/v1/chat/completions", RawValue: []byte("/v1/chat/completions")},
+							{Key: HeaderTraceParent, Value: "00-" + requestID + "-00f067aa0ba902b7-01", RawValue: []byte("00-" + requestID + "-00f067aa0ba902b7-01")},
+						},
+					},
+				},
+			}
+		case 1:
+			req.Request = &extProcPb.ProcessingRequest_RequestBody{
+				RequestBody: &extProcPb.HttpBody{
+					Body: []byte(`{"model": "test", "stream": true, "stream_options": {"include_usage": true, "continuous_usage_stats": true}, "messages": [{"role": "user", "content": "hello"}]}`),
+				},
+			}
+		case 2:
+			// A running usage alongside content: not final, so it is kept.
+			req.Request = &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body: []byte(`data: {"id": "1", "choices": [{"index": 0, "delta": {"content": "hi"}}], "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11}}` + "\n\n"),
+				},
+			}
+		}
+		recvCount++
+	}).Times(3)
+	// The client goes away before the stream ends.
+	srv.On("Recv").Return((*extProcPb.ProcessingRequest)(nil), io.EOF).Run(func(args mock.Arguments) {
+		_, kept := streamUsage.Load(requestID)
+		assert.True(t, kept, "the running usage should be held until the stream ends")
+		_, requestBuffered := requestBuffers.Load(requestID)
+		_, streamBuffered := streamBuffers.Load(requestID)
+		assert.True(t, !requestBuffered && !streamBuffered && HasRequestBuffers(requestID),
+			"HasRequestBuffers should report the running usage on its own")
+	}).Once()
+	srv.On("Send", mock.Anything).Return(nil)
+
+	s := newProcessTestServer(openShutdownCh(), mc)
+
+	err := s.Process(srv)
+
+	assert.Equal(t, io.EOF, err)
+	assert.False(t, HasRequestBuffers(requestID), "Process must release the running usage of a stream that was cut off")
+
+	srv.AssertExpectations(t)
+	mc.AssertExpectations(t)
+}
+
 // TestProcess_RecvGRPCCanceled verifies that a gRPC Canceled error from Recv
 // is treated as a normal stream closure and returned as codes.Canceled.
 func TestProcess_RecvGRPCCanceled(t *testing.T) {

@@ -109,9 +109,10 @@ type Server struct {
 }
 
 // HasRequestBuffers is a test-observation API: it reports whether an in-flight
-// request retains body state in either production buffer. sync.Map makes the
-// point-in-time lookup safe concurrently with Process cleanup; callers should
-// invoke it after Process returns when asserting terminal cleanup.
+// request retains state in the request buffer, the stream buffer or the running
+// stream usage. sync.Map makes the point-in-time lookup safe concurrently with
+// Process cleanup; callers should invoke it after Process returns when asserting
+// terminal cleanup.
 func HasRequestBuffers(requestID string) bool {
 	_, requestPresent := requestBuffers.Load(requestID)
 	_, streamPresent := streamBuffers.Load(requestID)

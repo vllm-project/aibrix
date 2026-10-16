@@ -184,7 +184,8 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 	// The previous implementation unmarshalled every single SSE chunk into a struct (openai.ChatCompletionChunk).
 	// This caused significant CPU overhead and high GC pressure under heavy concurrency.
 	// The new implementation uses zero-allocation  byte scanning and pre-filtering,
-	// selectively extracting only the "usage" metadata via gjson for the final chunks.
+	// selectively extracting only the "usage" metadata via gjson for chunks that carry it
+	// (only the final chunk, unless the client set continuous_usage_stats).
 	// After a running usage was reported, "[DONE]" ends the stream even in a chunk
 	// that carries no usage of its own.
 	hasUsageKey := bytes.Contains(bodyBytes, []byte(`"usage"`))
@@ -224,7 +225,7 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 
 				// While gjson.ValidBytes is O(N), it does not degrade gateway throughput.
 				// Guarded by the bytes.Contains pre-filter, it bypasses the hot path of streaming standard text
-				// and only executes on final chunks, ensuring strict correctness.
+				// and only executes on chunks that carry usage, ensuring strict correctness.
 				if !gjson.ValidBytes(jsonBytes) {
 					return usage, final, generateErrorResponse(
 						envoyTypePb.StatusCode_InternalServerError,
