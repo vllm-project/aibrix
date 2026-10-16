@@ -519,10 +519,14 @@ class HuggingFaceArtifactDownloader(ArtifactDownloader):
             # Ensure local directory exists
             self._ensure_directory(local_path)
 
-            # Download model/adapter
+            # Download model/adapter. Use local_dir so the files land directly
+            # in local_path, like the other downloaders. With cache_dir they
+            # would sit under models--<org>--<name>/snapshots/<revision>/, a
+            # path the artifact service does not return once the completion
+            # marker exists.
             download_path = snapshot_download(
                 repo_id=repo_id,
-                cache_dir=local_path,
+                local_dir=local_path,
                 token=token,
             )
 
