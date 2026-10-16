@@ -336,6 +336,15 @@ func (s *SyncPrefixHashTable) ProcessBlockStored(event BlockStored) error {
 	contextData.mappingMu.Lock()
 	defer contextData.mappingMu.Unlock()
 
+	// Eviction marks the context before snapshotting its block mappings.
+	// A late store must not add reverse-index entries after that snapshot;
+	// the context will be deleted, leaving those entries without an owner.
+	if contextData.markedForEviction.Load() {
+		klog.V(4).InfoS("Skipping block stored event for evicted context",
+			"model", ctx.ModelName, "loraID", ctx.LoraID, "blocks", len(event.BlockHashes))
+		return nil
+	}
+
 	hashMapping := contextData.hashMapping
 	prefixUpdates := make([]struct {
 		hash uint64
