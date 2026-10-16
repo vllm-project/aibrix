@@ -202,6 +202,9 @@ type RoutingContext struct {
 	statsMu                 sync.Mutex      // Held by WithStatsUpdate; reused across pool tenants, not reset.
 	traceAdded              int32           // Use to flag if trace has been added to cache
 
+	predictedOutputTokens int
+	hasOutputPrediction   bool
+
 	// pdLeg holds the prefill/decode leg state of the current incarnation of
 	// this request. It is a separate heap object, replaced wholesale on reset,
 	// because the async prefill leg outlives the client stream and must not
@@ -232,9 +235,12 @@ func NewRoutingContext(ctx context.Context, algorithms RoutingAlgorithm, model, 
 }
 
 // SetOutputPredictor enables RoutingContext to use existing OutputPredictor to predict output length.
+// Attaching a predictor starts a new prediction for subsequent feature reads.
 func (r *RoutingContext) SetOutputPredictor(predictor OutputPredictor) (old OutputPredictor) {
 	old = r.predictor
 	r.predictor = predictor
+	r.predictedOutputTokens = 0
+	r.hasOutputPrediction = false
 	return
 }
 
@@ -312,7 +318,7 @@ func (r *RoutingContext) PromptLength() (int, error) {
 	return len(tokens), nil
 }
 
-// TokenLength returns the predicted output token length.
+// TokenLength returns one sampled output length until the predictor or request is reset.
 func (r *RoutingContext) TokenLength() (int, error) {
 	promptLen, err := r.PromptLength()
 	if err != nil {
@@ -323,7 +329,13 @@ func (r *RoutingContext) TokenLength() (int, error) {
 		return 0, fmt.Errorf("output predictor not set")
 	}
 
-	return r.predictor.Predict(promptLen), nil
+	// Keep the sampled workload stable while the queue and candidate profiles
+	// evaluate this request. Resampling would compare different workloads.
+	if !r.hasOutputPrediction {
+		r.predictedOutputTokens = r.predictor.Predict(promptLen)
+		r.hasOutputPrediction = true
+	}
+	return r.predictedOutputTokens, nil
 }
 
 // Features returns the features corresponding to the request.
@@ -556,6 +568,8 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.tokens = nil
 	r.prefixTokens = nil
 	r.predictor = nil
+	r.predictedOutputTokens = 0
+	r.hasOutputPrediction = false
 	r.statsUpdated = statusInitial
 	r.traceAdded = statusInitial
 	// A fresh leg per incarnation: any prefill goroutine still holding the
