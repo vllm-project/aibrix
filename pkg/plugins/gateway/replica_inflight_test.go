@@ -370,6 +370,10 @@ func TestRouteWithEarlyAdmission_ReleasesWhenRouteFails(t *testing.T) {
 			mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, tc.counted, nil).Once()
 			if tc.wantRelease {
 				mockCache.On("ReleasePodRunningRequest", "a", "ns").Return().Once()
+			} else {
+				// Without an expectation the mock returns before recording the call, and
+				// AssertNotCalled below could never fail.
+				mockCache.On("ReleasePodRunningRequest", "a", "ns").Return().Maybe()
 			}
 
 			routingCtx := earlyAdmissionContext(pod, "r1")
