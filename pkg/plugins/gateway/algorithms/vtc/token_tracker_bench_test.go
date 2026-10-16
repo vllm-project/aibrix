@@ -38,9 +38,15 @@ func BenchmarkTokenTrackerRoutingReads(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				tracker.GetTokenCount(ctx, "0")
-				tracker.GetMinTokenCount(ctx)
-				tracker.GetMaxTokenCount(ctx)
+				if _, err := tracker.GetTokenCount(ctx, "0"); err != nil {
+					b.Fatal(err)
+				}
+				if _, err := tracker.GetMinTokenCount(ctx); err != nil {
+					b.Fatal(err)
+				}
+				if _, err := tracker.GetMaxTokenCount(ctx); err != nil {
+					b.Fatal(err)
+				}
 			}
 		})
 	}
