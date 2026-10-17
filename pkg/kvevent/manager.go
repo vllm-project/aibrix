@@ -40,6 +40,9 @@ type Manager struct {
 	podProvider  PodProvider
 	syncProvider SyncIndexProvider
 
+	// startSubscriber optionally supplies the client startup operation. Set before use.
+	startSubscriber func(*kvcache.ZMQClientConfig, kvcache.EventHandler) (*kvcache.ZMQClient, error)
+
 	// Subscriber management
 	subscribers utils.SyncMap[string, *kvcache.ZMQClient]
 
@@ -360,10 +363,12 @@ func (m *Manager) subscribeToPod(ctx context.Context, podKey string, podInfo *Po
 
 	// Create ZMQ client
 	config := kvcache.DefaultZMQClientConfig(podKey, podInfo.PodIP, podInfo.ModelName)
-	client := kvcache.NewZMQClient(config, handler)
-
-	// Start subscription
-	if err := client.Start(); err != nil {
+	start := m.startSubscriber
+	if start == nil {
+		start = startZMQSubscriber
+	}
+	client, err := start(config, handler)
+	if err != nil {
 		return fmt.Errorf("failed to start ZMQ client: %w", err)
 	}
 
@@ -374,6 +379,14 @@ func (m *Manager) subscribeToPod(ctx context.Context, podKey string, podInfo *Po
 		podKey, podInfo.ModelName, podInfo.PodIP)
 
 	return nil
+}
+
+func startZMQSubscriber(config *kvcache.ZMQClientConfig, handler kvcache.EventHandler) (*kvcache.ZMQClient, error) {
+	client := kvcache.NewZMQClient(config, handler)
+	if err := client.Start(); err != nil {
+		return nil, err
+	}
+	return client, nil
 }
 
 // PurgePodPrefixCache removes podKey's cached prefix entries for

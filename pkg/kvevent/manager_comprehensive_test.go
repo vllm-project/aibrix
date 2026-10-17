@@ -187,10 +187,9 @@ func TestManagerPodLifecycle(t *testing.T) {
 	}
 }
 
-// TestManagerPodUpdateModelChangePurgesOldContext checks that relabeling a pod
-// to another model stops the old subscription, drops the old model's entries
-// for the pod key, and subscribes under the new attribution.
-func TestManagerPodUpdateModelChangePurgesOldContext(t *testing.T) {
+// TestManagerPodUpdateModelChangeAndDisablePurgesOldContext checks cleanup
+// when a relabeled pod also disables KV events.
+func TestManagerPodUpdateModelChangeAndDisablePurgesOldContext(t *testing.T) {
 	t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
 	t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
 
@@ -241,8 +240,6 @@ func TestManagerPodUpdateModelChangePurgesOldContext(t *testing.T) {
 	}
 }
 
-// TestManagerPodUpdateStatusOnlyKeepsContext checks that a pure readiness
-// change does not throw away the pod's cached prefixes.
 // TestManagerPodUpdatePhaseChangePurgesContext checks that a pod leaving a
 // Running phase drops the prefixes it can no longer report.
 func TestManagerPodUpdatePhaseChangePurgesContext(t *testing.T) {
