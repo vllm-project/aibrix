@@ -889,6 +889,7 @@ func appendCustomModelRouterPaths(httpRoute *gatewayv1.HTTPRoute, modelHeaderMat
 		if _, exists := pathSet[path]; path == "" || exists {
 			continue
 		}
+		pathSet[path] = struct{}{}
 		httpRoute.Spec.Rules[0].Matches = append(httpRoute.Spec.Rules[0].Matches,
 			gatewayv1.HTTPRouteMatch{
 				Path: &gatewayv1.HTTPPathMatch{

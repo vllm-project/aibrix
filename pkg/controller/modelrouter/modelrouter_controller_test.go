@@ -174,6 +174,30 @@ func TestAppendCustomModelRouterPaths(t *testing.T) {
 			checkHeaders: true,
 		},
 		{
+			name: "repeated paths are added once",
+			httpRoute: &gatewayv1.HTTPRoute{
+				Spec: gatewayv1.HTTPRouteSpec{
+					Rules: []gatewayv1.HTTPRouteRule{
+						{
+							Matches: []gatewayv1.HTTPRouteMatch{
+								{
+									Path: &gatewayv1.HTTPPathMatch{
+										Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+										Value: ptr.To("/origin"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			annotations: map[string]string{
+				modelRouterCustomPath: "/foo,/bar,/foo, /f oo ,/bar",
+			},
+			wantPaths:    []string{"/origin", "/foo", "/bar"},
+			checkHeaders: true,
+		},
+		{
 			name: "no related annotation key",
 			httpRoute: &gatewayv1.HTTPRoute{
 				Spec: gatewayv1.HTTPRouteSpec{
