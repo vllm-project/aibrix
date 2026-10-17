@@ -630,12 +630,40 @@ func (s *SyncPrefixHashTable) dropOrphanedBlocks(
 	if len(orphaned) == 0 {
 		return
 	}
+	blocks := make([]int64, 0)
 	for engineBlockHash, aibrixHash := range contextData.hashMapping.engineToAibrix {
 		if _, gone := orphaned[aibrixHash]; !gone {
 			continue
 		}
 		delete(contextData.hashMapping.engineToAibrix, engineBlockHash)
-		s.updateBlockIndex(engineBlockHash, ctx, false)
+		blocks = append(blocks, engineBlockHash)
+	}
+	s.removeBlockIndexEntries(ctx, blocks)
+}
+
+// removeBlockIndexEntries deletes ctx from the reverse-index entries of blocks
+// under a single lock acquisition, so a bulk pod or context removal does not
+// take and release blockIndexMu once per block.
+func (s *SyncPrefixHashTable) removeBlockIndexEntries(ctx ModelContext, blocks []int64) {
+	if len(blocks) == 0 {
+		return
+	}
+	s.blockIndexMu.Lock()
+	defer s.blockIndexMu.Unlock()
+	for _, blockHash := range blocks {
+		contexts := s.blockIndex[blockHash]
+		for i, existingCtx := range contexts {
+			if existingCtx != ctx {
+				continue
+			}
+			contexts = append(contexts[:i], contexts[i+1:]...)
+			if len(contexts) == 0 {
+				delete(s.blockIndex, blockHash)
+			} else {
+				s.blockIndex[blockHash] = contexts
+			}
+			break
+		}
 	}
 }
 
