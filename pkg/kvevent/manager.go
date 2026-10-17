@@ -204,17 +204,44 @@ func (m *Manager) OnPodUpdate(oldPod, newPod *v1.Pod) {
 
 	oldSubscribable := isPodSubscribable(oldPod)
 	newSubscribable := isPodSubscribable(newPod)
+	oldModel, oldLora := podEventIdentity(oldPod)
+	newModel, newLora := podEventIdentity(newPod)
+	identityChanged := oldModel != newModel || oldLora != newLora
+	cacheMoved := !isSamePod(oldPod, newPod)
 
-	// Resubscription only happens in 2 cases:
-	// - Pod Changed
-	// - Subscription state (status.Phase) changed, this applies to the same pod or different pods
-	if !isSamePod(oldPod, newPod) || oldSubscribable != newSubscribable {
-		if oldSubscribable {
-			m.unsubscribeFromPod(podKey)
-		}
-		if newSubscribable {
-			m.OnPodAdd(newPod)
-		}
+	// A subscription is stale when the pod, its KV attribution (model/lora), or
+	// its subscription state changed.
+	if !cacheMoved && oldSubscribable == newSubscribable && !identityChanged {
+		return
+	}
+
+	if oldSubscribable {
+		m.unsubscribeFromPod(podKey)
+	}
+	// A restarted pod or a new attribution owns this podKey now; entries from
+	// the previous incarnation must not stay in the index under the same key.
+	if (cacheMoved || identityChanged) && oldModel != "" {
+		m.purgePodPrefixCache(oldModel, oldLora, podKey)
+	}
+	if !newSubscribable {
+		return
+	}
+
+	// Check if manager is stopped before using its context
+	m.mu.RLock()
+	stopped := m.stopped
+	m.mu.RUnlock()
+	if stopped {
+		return
+	}
+
+	// Build the subscription from the updated pod: the provider may still hold
+	// the previous labels, and the handler pins the model/lora it subscribed
+	// with for the lifetime of the client.
+	ctx, cancel := context.WithTimeout(m.ctx, 5*time.Second)
+	defer cancel()
+	if err := m.subscribeToPod(ctx, podKey, podInfoFromPod(newPod)); err != nil {
+		klog.Errorf("Failed to subscribe to pod %s: %v", podKey, err)
 	}
 }
 
@@ -227,17 +254,51 @@ func (m *Manager) OnPodDelete(pod *v1.Pod) {
 	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 	m.unsubscribeFromPod(podKey)
 
-	// Check if manager is stopped before using its context
+	modelName, loraID := podEventIdentity(pod)
+	m.purgePodPrefixCache(modelName, loraID, podKey)
+}
+
+// podEventIdentity returns the model and LoRA the pod's KV events must be
+// attributed to. A change means the existing subscription writes into the
+// wrong context.
+func podEventIdentity(pod *v1.Pod) (modelName string, loraID int64) {
+	modelName, _ = constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
+	loraID = -1
+	if loraStr := constants.GetLoraID(pod.Labels); loraStr != "" {
+		if parsed, err := strconv.ParseInt(loraStr, 10, 64); err == nil {
+			loraID = parsed
+		}
+	}
+	return modelName, loraID
+}
+
+// podInfoFromPod builds the subscription info from the pod itself rather than
+// from the provider cache, which can still hold the previous labels on update.
+func podInfoFromPod(pod *v1.Pod) *PodInfo {
+	modelName, _ := constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
+	return &PodInfo{
+		Name:      pod.Name,
+		Namespace: pod.Namespace,
+		PodIP:     pod.Status.PodIP,
+		ModelName: modelName,
+		Labels:    pod.Labels,
+	}
+}
+
+// purgePodPrefixCache drops every prefix the sync index attributes to podKey
+// under modelName, then updates the reverse index. It is a no-op when the
+// manager is stopped or the pod carries no model.
+func (m *Manager) purgePodPrefixCache(modelName string, loraID int64, podKey string) {
+	if modelName == "" {
+		return
+	}
 	m.mu.RLock()
 	stopped := m.stopped
 	m.mu.RUnlock()
-
 	if stopped {
 		return
 	}
 
-	// Clean up from sync indexer
-	// Use 5s timeout for cleanup operations as they should be quick
 	ctx, cancel := context.WithTimeout(m.ctx, 5*time.Second)
 	defer cancel()
 
@@ -246,19 +307,8 @@ func (m *Manager) OnPodDelete(pod *v1.Pod) {
 		klog.Errorf("Failed to get sync indexer: %v", err)
 		return
 	}
-
-	modelName, hasModelName := constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
-	if hasModelName {
-		loraID := int64(-1)
-		if loraStr := constants.GetLoraID(pod.Labels); loraStr != "" {
-			if parsed, err := strconv.ParseInt(loraStr, 10, 64); err == nil {
-				loraID = parsed
-			}
-		}
-
-		if err := syncIndexer.RemovePrefix(ctx, modelName, loraID, podKey); err != nil {
-			klog.Errorf("Failed to remove prefix for pod %s: %v", podKey, err)
-		}
+	if err := syncIndexer.RemovePrefix(ctx, modelName, loraID, podKey); err != nil {
+		klog.Errorf("Failed to remove prefix for pod %s: %v", podKey, err)
 	}
 }
 

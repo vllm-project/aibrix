@@ -180,8 +180,112 @@ func TestManagerPodLifecycle(t *testing.T) {
 	removedCount := len(syncIndexer.removedPrefixes)
 	syncIndexer.mu.Unlock()
 
-	if removedCount != 1 {
-		t.Errorf("Expected 1 pod cleanup, got: %d", removedCount)
+	// The IP change purges the previous incarnation's entries, then deletion
+	// purges the current one.
+	if removedCount != 2 {
+		t.Errorf("Expected 2 pod cleanups, got: %d", removedCount)
+	}
+}
+
+// TestManagerPodUpdateModelChangePurgesOldContext checks that relabeling a pod
+// to another model stops the old subscription, drops the old model's entries
+// for the pod key, and subscribes under the new attribution.
+func TestManagerPodUpdateModelChangePurgesOldContext(t *testing.T) {
+	t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
+
+	var mu sync.Mutex
+	var removed []string
+	indexer := &mockSyncIndexerWithCallbacks{
+		onRemovePrefix: func(_ context.Context, modelName string, loraID int64, podKey string) error {
+			mu.Lock()
+			removed = append(removed, fmt.Sprintf("%s/%d/%s", modelName, loraID, podKey))
+			mu.Unlock()
+			return nil
+		},
+	}
+	manager := kvevent.NewManager(
+		&mockPodProvider{pods: map[string]*kvevent.PodInfo{}},
+		&mockSyncIndexProvider{indexer: indexer},
+	)
+	if err := manager.Start(); err != nil {
+		t.Fatalf("Failed to start manager: %v", err)
+	}
+	defer manager.Stop()
+
+	oldPod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "relabeled",
+			Namespace: "default",
+			Labels: map[string]string{
+				constants.ModelLabelName:       "old-model",
+				constants.KVEventsEnabledLabel: "true",
+			},
+		},
+		Status: v1.PodStatus{Phase: v1.PodRunning, PodIP: "10.0.0.7"},
+	}
+	newPod := oldPod.DeepCopy()
+	newPod.Labels[constants.ModelLabelName] = "new-model"
+	// Keep the test offline: a subscribable pod would start a real ZMQ client.
+	newPod.Labels[constants.KVEventsEnabledLabel] = "false"
+
+	manager.OnPodUpdate(oldPod, newPod)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(removed) != 1 {
+		t.Fatalf("expected one purge of the old context, got %v", removed)
+	}
+	if removed[0] != "old-model/-1/default/relabeled" {
+		t.Errorf("unexpected purge target: %s", removed[0])
+	}
+}
+
+// TestManagerPodUpdateStatusOnlyKeepsContext checks that a pure readiness
+// change does not throw away the pod's cached prefixes.
+func TestManagerPodUpdateStatusOnlyKeepsContext(t *testing.T) {
+	t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
+
+	var mu sync.Mutex
+	purged := 0
+	indexer := &mockSyncIndexerWithCallbacks{
+		onRemovePrefix: func(context.Context, string, int64, string) error {
+			mu.Lock()
+			purged++
+			mu.Unlock()
+			return nil
+		},
+	}
+	manager := kvevent.NewManager(
+		&mockPodProvider{pods: map[string]*kvevent.PodInfo{}},
+		&mockSyncIndexProvider{indexer: indexer},
+	)
+	if err := manager.Start(); err != nil {
+		t.Fatalf("Failed to start manager: %v", err)
+	}
+	defer manager.Stop()
+
+	oldPod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ready-then-not",
+			Namespace: "default",
+			Labels: map[string]string{
+				constants.ModelLabelName:       "test-model",
+				constants.KVEventsEnabledLabel: "true",
+			},
+		},
+		Status: v1.PodStatus{Phase: v1.PodRunning, PodIP: "10.0.0.8"},
+	}
+	newPod := oldPod.DeepCopy()
+	newPod.Status.Phase = v1.PodPending
+
+	manager.OnPodUpdate(oldPod, newPod)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if purged != 0 {
+		t.Errorf("a status-only change must not purge the context, purged %d", purged)
 	}
 }
 
