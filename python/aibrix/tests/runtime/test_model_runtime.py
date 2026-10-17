@@ -245,6 +245,7 @@ def test_set_kv_limit_is_idempotent_by_operation_id():
         artifact_url="hf://Qwen/Qwen3-0.6B",
         ipc_name="kvc_qwen3-0.6b",
     )
+    inst.kv_initial_capacity_bytes = 4096
 
     first = agent.set_kv_limit(inst.model_name, 4096, operation_id="limit-1")
     duplicate = agent.set_kv_limit(inst.model_name, 4096, operation_id="limit-1")
@@ -267,6 +268,7 @@ def test_failed_kv_limit_operation_is_retriable():
     kv_controller = _FlakyKVController()
     agent = ModelRuntime(MockEngineLauncher(), kv_controller=kv_controller)
     inst = agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    inst.kv_initial_capacity_bytes = 4096
 
     with pytest.raises(RuntimeError, match="kvctl failed"):
         agent.set_kv_limit("m1", 4096, operation_id="limit-1")
@@ -793,6 +795,7 @@ def test_completed_operation_ids_are_bounded():
     kv_controller = _RecordingKVController()
     agent = ModelRuntime(MockEngineLauncher(), kv_controller=kv_controller)
     inst = agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    inst.kv_initial_capacity_bytes = 4096
 
     for index in range(130):
         agent.set_kv_limit("m1", index, operation_id=f"limit-{index}")
@@ -1157,7 +1160,6 @@ def test_control_endpoints_apply_kv_sleep_and_wake():
         json={"model_name": "ep-control", "artifact_url": "hf://Org/Model"},
     )
     assert activated.status_code == 200, activated.text
-
     limited = client.post(
         "/v1/runtime/models/kv-limit",
         json={
@@ -1201,6 +1203,53 @@ def test_control_endpoints_apply_kv_sleep_and_wake():
     assert woken.status_code == 200, woken.text
     assert woken.json()["phase"] == "active"
     assert woken.json()["applied"] is True
+
+
+def test_mock_mode_kv_limit_api_without_captured_capacity(monkeypatch, tmp_path):
+    import json
+
+    import aibrix.runtime.model_runtime as runtime_module
+    import aibrix.runtime.model_runtime_api as api
+    from aibrix.openapi.protocol import (
+        ActivateRuntimeModelRequest,
+        SetRuntimeModelKVLimitRequest,
+    )
+
+    monkeypatch.setenv("AIBRIX_MODEL_RUNTIME_MOCK", "1")
+    monkeypatch.setenv("AIBRIX_WEIGHT_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(runtime_module, "_AGENT", None)
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    activated = api.activate_runtime_model(
+        ActivateRuntimeModelRequest(
+            model_name="mock-kv-no-segment",
+            artifact_url="hf://Org/Model",
+            port=20000,
+        )
+    )
+    assert activated.status_code == 200
+    ipc_name = json.loads(activated.body)["ipc_name"]
+    agent = runtime_module.get_model_runtime()
+    assert isinstance(agent._kv_controller, runtime_module.MockKVController)
+    assert runtime_module.read_kv_segment(ipc_name) is None
+
+    limits = (4096, 8192, 2048)
+    for index, limit in enumerate(limits):
+        observed = agent.snapshot()["models"][0]
+        assert observed["ready"] is True
+        assert observed["kv_capacity_bytes"] == -1
+        assert observed["kv_initial_capacity_bytes"] is None
+        response = api.set_runtime_model_kv_limit(
+            SetRuntimeModelKVLimitRequest(
+                model_name=observed["model_name"],
+                limit_bytes=limit,
+                operation_id=f"limit-{index}",
+            )
+        )
+        assert response.status_code == 200
+        assert json.loads(response.body)["applied"] is True
+        assert agent._kv_controller.limits == [
+            (ipc_name, value) for value in limits[: index + 1]
+        ]
 
 
 def test_control_endpoints_reject_unknown_unsupported_and_invalid_requests():
@@ -1299,6 +1348,7 @@ def test_snapshot_reports_runtime_state(monkeypatch, tmp_path):
         "last_error": None,
         "kv_used_bytes": 25,
         "kv_capacity_bytes": 100,
+        "kv_initial_capacity_bytes": 100,
         "hbm_peak_bytes": 0,
         "sleeping_footprint_bytes": None,
         "request_metrics_observed": True,
@@ -1538,7 +1588,8 @@ def test_a_snapshot_does_not_wait_for_a_kv_limit_write(monkeypatch):
             assert let_it_finish.wait(5)
 
     agent = ModelRuntime(MockEngineLauncher(), kv_controller=_SlowKVController())
-    agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    inst = agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    inst.kv_initial_capacity_bytes = 4096
     writer = threading.Thread(
         target=lambda: agent.set_kv_limit("m1", 4096, operation_id="limit-1")
     )
@@ -1990,3 +2041,579 @@ def test_snapshot_reports_unknown_kv_before_the_segment_exists(monkeypatch, tmp_
 
     assert observed["kv_used_bytes"] == runtime_module.KV_UNKNOWN
     assert observed["kv_capacity_bytes"] == runtime_module.KV_UNKNOWN
+
+
+@pytest.fixture
+def initial_kv(monkeypatch, tmp_path):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setenv("AIBRIX_WEIGHT_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    monkeypatch.setattr(
+        runtime_module,
+        "engine_request_activity",
+        lambda inst: runtime_module.EngineRequestActivity(),
+    )
+    read, write = runtime_module.read_kv_segment, runtime_module.write_kv_limit
+    monkeypatch.setattr(
+        runtime_module, "read_kv_segment", lambda name: read(name, str(tmp_path))
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "write_kv_limit",
+        lambda name, size: write(name, size, str(tmp_path)),
+    )
+    agent = make_agent()
+    inst = agent.activate(model_name="m1", artifact_url="hf://x", port=20000)
+    return agent, inst, tmp_path / inst.ipc_name
+
+
+def test_initial_kv_capture_after_ready(initial_kv, monkeypatch):
+    import struct
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.openapi.protocol import RuntimeSnapshotResponse
+
+    agent, inst, segment = initial_kv
+    segment.write_bytes(struct.pack("<3q", 100, 20, 5))
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: False)
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: True)
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    agent.set_kv_limit(inst.model_name, 200, operation_id="grow")
+    model = RuntimeSnapshotResponse(**agent.snapshot()).models[0]
+    assert model.kv_capacity_bytes == 100
+    assert model.kv_initial_capacity_bytes == 100
+
+
+@pytest.mark.parametrize("replace", [False, True])
+def test_initial_kv_rejects_detached_instance(initial_kv, monkeypatch, replace):
+    from dataclasses import replace as replace_instance
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent, inst, segment = initial_kv
+
+    def detached_read(name):
+        # Construct detachment: deactivate() also changes phase to stopping,
+        # which would independently block capture and mask the identity guard.
+        monkeypatch.delitem(agent._models, inst.model_name)
+        if replace:
+            monkeypatch.setitem(agent._models, inst.model_name, replace_instance(inst))
+        return (100, 0, 0)
+
+    monkeypatch.setattr(runtime_module, "read_kv_segment", detached_read)
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+    assert inst.kv_initial_capacity_bytes is None
+
+
+def test_initial_kv_rejects_capture_after_stop_starts(initial_kv, monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent, inst, segment = initial_kv
+
+    def failed_stop(inst):
+        raise RuntimeError("stop failed")
+
+    def stopping_read(name):
+        with pytest.raises(RuntimeError, match="stop failed"):
+            agent.deactivate(inst.model_name)
+        return (100, 0, 0)
+
+    monkeypatch.setattr(agent._launcher, "stop", failed_stop)
+    monkeypatch.setattr(runtime_module, "read_kv_segment", stopping_read)
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+    assert inst.phase == "stopping"
+
+
+def test_initial_kv_is_not_recaptured_after_segment_changes(initial_kv):
+    import struct
+
+    agent, inst, segment = initial_kv
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    # Change the engine's segment without a runtime limit write, which would
+    # independently mark startup capacity unavailable and mask recapture.
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    observed = agent.snapshot()["models"][0]
+    assert observed["kv_capacity_bytes"] == 80
+    assert observed["kv_initial_capacity_bytes"] == 100
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [None, "unreadable", b"short", b"", (-1).to_bytes(8, "little", signed=True) * 3],
+)
+def test_initial_kv_retries_unknown_segment(initial_kv, raw):
+    import struct
+
+    agent, inst, segment = initial_kv
+    if raw == "unreadable":
+        segment.mkdir()
+    elif raw is not None:
+        segment.write_bytes(raw)
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+    if segment.is_dir():
+        segment.rmdir()
+    segment.write_bytes(struct.pack("<3q", 0, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 0
+
+
+def test_initial_kv_write_before_capture_and_restart(initial_kv):
+    import struct
+
+    agent, inst, segment = initial_kv
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    with pytest.raises(RuntimeError, match="startup KV capacity"):
+        agent.set_kv_limit(inst.model_name, 200, operation_id="grow")
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    agent._schedule_restart(inst, "engine exited")
+    agent._now = lambda: inst.next_restart_at
+    agent.supervise_once()
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 80
+    agent._schedule_restart(inst, "replacement exited")
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_initial_kv_survives_sleep_wake(initial_kv, monkeypatch, fail):
+    import struct
+
+    agent, inst, segment = initial_kv
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    agent.sleep(inst.model_name, level=1, operation_id="sleep")
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    if fail:
+
+        def failed_wake(inst):
+            raise RuntimeError("wake failed")
+
+        monkeypatch.setattr(agent._launcher, "wake", failed_wake)
+        with pytest.raises(RuntimeError, match="wake failed"):
+            agent.wake(inst.model_name, operation_id="wake")
+    else:
+        agent.wake(inst.model_name, operation_id="wake")
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+
+
+def test_initial_kv_rejects_a_stale_restart_read(initial_kv, monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent, inst, segment = initial_kv
+
+    def stale_read(name):
+        agent._schedule_restart(inst, "engine exited during observation")
+        agent._now = lambda: inst.next_restart_at
+        agent.supervise_once()
+        return (100, 0, 0)
+
+    monkeypatch.setattr(runtime_module, "read_kv_segment", stale_read)
+    model = agent.snapshot()["models"][0]
+    assert model["kv_initial_capacity_bytes"] is None
+    assert model["ready"] is False
+    assert model["kv_capacity_bytes"] == model["kv_used_bytes"] == -1
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda name: (80, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 80
+
+
+def test_initial_kv_missing_write_does_not_prevent_capture(initial_kv):
+    import struct
+
+    agent, inst, segment = initial_kv
+    with pytest.raises(RuntimeError, match="startup KV capacity"):
+        agent.set_kv_limit(inst.model_name, 200, operation_id="no-segment")
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+
+
+@pytest.mark.parametrize("pending_restart", [False, True])
+def test_initial_kv_recovered_restart(initial_kv, monkeypatch, pending_restart):
+    import struct
+    from datetime import timedelta
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    agent, inst, segment = initial_kv
+    record = agent._registry_record(inst)
+    record.pop("kv_initial_capacity_bytes", None)  # Pre-field registry format.
+    if pending_restart:
+        record.update(
+            phase="restarting",
+            restart_count=1,
+            next_restart_at=(agent._now() - timedelta(seconds=1)).isoformat(),
+        )
+    registry = EngineRegistry(segment.parent / "engines.json")
+    registry.save([record])
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: not pending_restart)
+    monkeypatch.setattr(
+        runtime_module, "process_start_time", lambda pid: inst.pid_start_time
+    )
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: True)
+    launcher = MockEngineLauncher()
+    recovered = ModelRuntime(launcher, registry=registry)
+    recovered.supervise_once()
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+
+    model = recovered.snapshot()["models"][0]
+    assert model["phase"] == "active"
+    if pending_restart:
+        assert launcher.launched == [inst.model_name]
+        assert model["kv_initial_capacity_bytes"] == 80
+    else:
+        assert launcher.launched == []
+        assert model["kv_initial_capacity_bytes"] is None
+
+
+@pytest.mark.parametrize("capacity", [0, 100])
+def test_initial_kv_persisted_across_agent_restart(initial_kv, monkeypatch, capacity):
+    import struct
+    from unittest.mock import Mock
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    agent, inst, segment = initial_kv
+    registry = EngineRegistry(segment.parent / "engines.json")
+    agent._registry = registry
+    inst.pid_start_time = "start"
+    assert agent._registry_record(inst)["kv_initial_capacity_bytes"] is None
+    monkeypatch.setattr(registry, "save", Mock(wraps=registry.save))
+    segment.write_bytes(struct.pack("<3q", capacity, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == capacity
+    assert registry.load()[0]["kv_initial_capacity_bytes"] == capacity
+    agent.snapshot()
+    registry.save.assert_called_once()
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: True)
+    monkeypatch.setattr(
+        runtime_module, "process_start_time", lambda pid: inst.pid_start_time
+    )
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: True)
+    recovered = ModelRuntime(MockEngineLauncher(), registry=registry)
+    assert recovered.snapshot()["models"][0]["kv_initial_capacity_bytes"] == capacity
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    model = recovered.snapshot()["models"][0]
+    assert model["kv_capacity_bytes"] == 80
+    assert model["kv_initial_capacity_bytes"] == capacity
+    assert recovered._models[inst.model_name].kv_initial_capacity_unavailable
+    assert recovered._launcher.launched == []
+    registry.save.assert_called_once()
+
+
+@pytest.mark.parametrize("phase", ["active", "sleeping"])
+@pytest.mark.parametrize(
+    "saved,current",
+    [
+        (None, "start"),
+        ("start", None),
+        (None, None),
+        ("start", "start"),
+        ("old", "new"),
+    ],
+)
+def test_initial_kv_registry_requires_identity(
+    initial_kv, monkeypatch, phase, saved, current
+):
+    import struct
+    from unittest.mock import Mock
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    agent, inst, segment = initial_kv
+    registry = EngineRegistry(segment.parent / "engines.json")
+    registry.save(
+        [
+            {
+                **agent._registry_record(inst),
+                "phase": phase,
+                "pid_start_time": saved,
+                "kv_initial_capacity_bytes": 100,
+            }
+        ]
+    )
+    monkeypatch.setattr(registry, "save", Mock(wraps=registry.save))
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: True)
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda pid: current)
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: True)
+    recovered = ModelRuntime(MockEngineLauncher(), registry=registry)
+    expected = 100 if saved is not None and saved == current else None
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    model = recovered.snapshot()["models"][0]
+    assert model["kv_initial_capacity_bytes"] == expected
+    assert registry.load()[0]["kv_initial_capacity_bytes"] == expected
+    assert recovered._launcher.launched == []
+    if saved is not None and current is not None and saved != current:
+        assert model["phase"] == "restarting"
+    else:
+        assert model["phase"] == phase
+        assert recovered._models[inst.model_name].kv_initial_capacity_unavailable
+    assert registry.save.call_count == (expected is None)
+
+
+@pytest.mark.parametrize("phase", ["failed", "stopping"])
+def test_initial_kv_registry_early_branches(initial_kv, monkeypatch, phase):
+    from unittest.mock import Mock
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    agent, inst, segment = initial_kv
+    registry = EngineRegistry(segment.parent / "engines.json")
+    registry.save(
+        [
+            {
+                **agent._registry_record(inst),
+                "phase": phase,
+                "pid_start_time": "start",
+                "kv_initial_capacity_bytes": 100,
+            }
+        ]
+    )
+    # Even matching identity must not retain a terminal failed capacity.
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: phase == "failed")
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda pid: "start")
+    monkeypatch.setattr(
+        runtime_module, "process_group_is_alive", lambda pid: phase == "stopping"
+    )
+    launcher = MockEngineLauncher()
+    monkeypatch.setattr(launcher, "stop", Mock())
+    recovered = ModelRuntime(launcher, registry=registry)
+    model = recovered.snapshot()["models"][0]
+    assert model["kv_initial_capacity_bytes"] is None
+    assert registry.load()[0]["kv_initial_capacity_bytes"] is None
+    assert model["phase"] == phase
+    assert not model["alive"]
+    assert recovered._models[inst.model_name].kv_initial_capacity_unavailable
+    assert launcher.stop.call_count == (phase == "stopping")
+    assert launcher.launched == []
+
+
+def test_initial_kv_capture_save_retried(initial_kv, monkeypatch, caplog):
+    import struct
+    from unittest.mock import Mock
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    agent, inst, segment = initial_kv
+    registry = EngineRegistry(segment.parent / "engines.json")
+    agent._registry = registry
+    inst.pid_start_time = "start"
+    agent._persist_locked()
+    save = registry.save
+    monkeypatch.setattr(
+        registry, "save", Mock(side_effect=OSError("transient failure"))
+    )
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    assert "could not persist startup KV capacity" in caplog.text
+    assert registry.load()[0]["kv_initial_capacity_bytes"] is None
+    registry.save.assert_called_once()
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    monkeypatch.setattr(registry, "save", Mock(wraps=save))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    assert registry.load()[0]["kv_initial_capacity_bytes"] == 100
+    agent.snapshot()
+    registry.save.assert_called_once()
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: True)
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda pid: "start")
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: True)
+    recovered = ModelRuntime(MockEngineLauncher(), registry=registry)
+    assert recovered.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    assert recovered._launcher.launched == []
+    registry.save.assert_called_once()
+
+
+@pytest.mark.parametrize("replacement", ["gone", "pid_reused", "pending_restart"])
+def test_initial_kv_registry_capacity_cleared_for_replacement(
+    initial_kv, monkeypatch, replacement
+):
+    import struct
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    agent, inst, segment = initial_kv
+    inst.pid_start_time = "old"
+    record = {**agent._registry_record(inst), "kv_initial_capacity_bytes": 100}
+    if replacement == "pending_restart":
+        record.update(phase="restarting", restart_count=1, next_restart_at="2000-01-01")
+    registry = EngineRegistry(segment.parent / "engines.json")
+    registry.save([record])
+    monkeypatch.setattr(
+        runtime_module, "pid_is_alive", lambda pid: replacement == "pid_reused"
+    )
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda pid: "new")
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
+    recovered = ModelRuntime(MockEngineLauncher(), registry=registry)
+    assert recovered.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+    restored = recovered._models[inst.model_name]
+    restart_at = restored.next_restart_at
+    recovered._now = lambda: restart_at
+    recovered.supervise_once()
+    assert recovered._launcher.launched == [inst.model_name]
+    assert recovered.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    assert recovered.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 80
+
+
+@pytest.mark.parametrize("value", [None, -1, True, False, "100", 1.5, [], {}, 0, 100])
+def test_initial_kv_registry_validates_optional_capacity(initial_kv, value):
+    agent, inst, _ = initial_kv
+    record = {**agent._registry_record(inst), "kv_initial_capacity_bytes": value}
+    restored = agent._instance_from_registry_record(record)
+    assert restored is not None
+    expected = value if type(value) is int and value >= 0 else None
+    assert restored.kv_initial_capacity_bytes == expected
+    assert restored.kv_initial_capacity_unavailable
+
+
+def test_initial_kv_restart_after_backoff_write(initial_kv, monkeypatch):
+    import struct
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent, inst, segment = initial_kv
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
+    inst.proc = SimpleNamespace(poll=lambda: 1)
+    agent.supervise_once()
+    assert inst.phase == "restarting"
+    assert inst.kv_initial_capacity_bytes is None
+    with pytest.raises(RuntimeError, match="startup KV capacity"):
+        agent.set_kv_limit(inst.model_name, 200, operation_id="backoff-write")
+    assert not inst.kv_initial_capacity_unavailable
+    restart_at = inst.next_restart_at
+    agent._now = lambda: restart_at
+    agent.supervise_once()
+    assert agent._launcher.launched == [inst.model_name, inst.model_name]
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 80
+
+
+@pytest.mark.parametrize("failure", [None, "sleep", "wake"])
+def test_initial_kv_sleep_before_capture(initial_kv, monkeypatch, failure):
+    import struct
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent, inst, segment = initial_kv
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+
+    def failed_operation(inst, *args):
+        raise RuntimeError(f"{failure} failed")
+
+    if failure:
+        original_operation = getattr(agent._launcher, failure)
+        monkeypatch.setattr(agent._launcher, failure, failed_operation)
+    if failure == "sleep":
+        with pytest.raises(RuntimeError, match="sleep failed"):
+            agent.sleep(inst.model_name, level=1, operation_id="sleep")
+    else:
+        agent.sleep(inst.model_name, level=1, operation_id="sleep")
+        if failure == "wake":
+            with pytest.raises(RuntimeError, match="wake failed"):
+                agent.wake(inst.model_name, operation_id="wake")
+            monkeypatch.setattr(agent._launcher, "wake", original_operation)
+            agent.wake(inst.model_name, operation_id="wake-retry")
+        else:
+            agent.wake(inst.model_name, operation_id="wake")
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+
+    agent.set_kv_limit(inst.model_name, 200, operation_id="unavailable-growth")
+    assert struct.unpack("<3q", segment.read_bytes())[0] == 200
+
+    # Only a replacement generation restores startup provenance.
+    inst.proc = SimpleNamespace(poll=lambda: 1)
+    inst.phase = "active"
+    agent.supervise_once()
+    restart_at = inst.next_restart_at
+    agent._now = lambda: restart_at
+    agent.supervise_once()
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 80
+
+
+def test_initial_kv_capture_during_sleep(initial_kv, monkeypatch):
+    import struct
+
+    agent, inst, segment = initial_kv
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    during_sleep = []
+
+    def observe_sleep(inst, level):
+        during_sleep.append(agent.snapshot()["models"][0]["kv_initial_capacity_bytes"])
+
+    monkeypatch.setattr(agent._launcher, "sleep", observe_sleep)
+    agent.sleep(inst.model_name, level=1, operation_id="sleep")
+    assert during_sleep == [None]
+    agent.wake(inst.model_name, operation_id="wake")
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+
+
+@pytest.mark.parametrize("captured", [False, True])
+def test_initial_kv_delayed_generation_request(initial_kv, captured):
+    import struct
+
+    from aibrix.runtime.model_runtime import UnsupportedModelControlError
+
+    agent, inst, segment = initial_kv
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    agent.set_kv_limit(inst.model_name, 60, operation_id="shrink")
+    agent._schedule_restart(inst, "old generation exited")
+    agent._now = lambda: inst.next_restart_at
+    agent.supervise_once()
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    if captured:
+        assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 80
+    else:
+        with pytest.raises(UnsupportedModelControlError, match="startup KV capacity"):
+            agent.set_kv_limit(inst.model_name, 100, operation_id="delayed-grow")
+        assert inst.kv_initial_capacity_bytes is None
+        assert not inst.kv_initial_capacity_unavailable
+        assert struct.unpack("<3q", segment.read_bytes())[0] == 80
+        assert "delayed-grow" not in inst.completed_operation_ids.get("kv-limit", [])
+        assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 80
+    result = agent.set_kv_limit(inst.model_name, 100, operation_id="delayed-grow")
+    assert struct.unpack("<3q", segment.read_bytes())[0] == 80
+    assert result.limit_bytes == 80
+    assert agent.snapshot_metrics().kv_limit_applied_bytes[inst.model_name] == 80
+
+
+@pytest.mark.parametrize("captured", [False, True])
+def test_initial_kv_direct_api_ceiling(initial_kv, monkeypatch, captured):
+    import json
+    import struct
+
+    from fastapi import HTTPException
+
+    import aibrix.runtime.model_runtime_api as api
+    from aibrix.openapi.protocol import SetRuntimeModelKVLimitRequest
+
+    agent, inst, segment = initial_kv
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    monkeypatch.setattr(api, "get_model_runtime", lambda: agent)
+    request = SetRuntimeModelKVLimitRequest(
+        model_name=inst.model_name, limit_bytes=200, operation_id="direct"
+    )
+    if not captured:
+        with pytest.raises(HTTPException) as exc:
+            api.set_runtime_model_kv_limit(request)
+        assert exc.value.status_code == 409
+        assert "startup KV capacity" in exc.value.detail
+        assert struct.unpack("<3q", segment.read_bytes())[0] == 100
+        return
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    response = api.set_runtime_model_kv_limit(request)
+    assert response.status_code == 200
+    assert struct.unpack("<3q", segment.read_bytes())[0] == 100
+    assert json.loads(response.body)["limit_bytes"] == 100
+    assert agent.snapshot_metrics().kv_limit_applied_bytes[inst.model_name] == 100

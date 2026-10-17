@@ -1925,3 +1925,167 @@ func TestReconcileDoesNotTakeACardLeftAloneForOneThatWasDivided(t *testing.T) {
 
 	assert.Equal(t, 1, warnings, "three divisions failed in a row, and the rounds between them tried none")
 }
+
+func TestKVInitialCapacityBootWindow(t *testing.T) {
+	pm := claimWithCost(20<<30, 4<<30)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActivating, KVLimitBytes: 60 << 30,
+	}}
+	now := time.Unix(1_700_000_000, 0)
+	snapshot.ObservedAt = now
+	snapshot.Models = []RuntimeSnapshotModel{engineBootingFor(now, time.Minute)}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	r.Divisions = newCardDivisionState(func() time.Time { return now })
+	reconcileOnce(t, r, pm.Name)
+
+	// kvcached builds the startup pool before /health succeeds. A later
+	// leftUnfinished round must not replace it with the uncapped record.
+	capacity := int64(54 << 30)
+	snapshot.Models[0].KVCapacityBytes = capacity
+	nextRound(t, r, &now, pm.Name)
+	assert.Empty(t, runtime.kvLimitCalls)
+	assert.Equal(t, capacity, snapshot.Models[0].KVCapacityBytes)
+	assert.Equal(t, int64(60<<30), getModel(t, r, pm.Name).Status.Instances[0].KVLimitBytes)
+
+	snapshot.Models[0].Ready = true
+	snapshot.Models[0].Phase = runtimePhaseActive
+	snapshot.Models[0].KVInitialCapacityBytes = &capacity
+	nextRound(t, r, &now, pm.Name)
+	got := getModel(t, r, pm.Name).Status.Instances[0]
+	assert.Equal(t, capacity, got.KVLimitBytes)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Phase)
+	assert.Empty(t, runtime.kvLimitCalls)
+}
+
+func TestKVInitialCapacityBelowFloorAllowsPlacement(t *testing.T) {
+	for _, card := range []int64{80 << 30, 54 << 30} {
+		t.Run(resource.NewQuantity(card, resource.BinarySI).String(), func(t *testing.T) {
+			pm := claimWithCost(20<<30, 4<<30)
+			pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", card)
+			neighbour := withFinalizer(claimOnPod("neighbour", pod.Name, modelv1alpha1.ModelClaimActive, 20<<30, 12<<30))
+			neighbour.Status.Instances[0].KVLimitBytes = 10 << 30
+			engine := engineHolding(neighbour.Name, 2<<30, 10<<30)
+			engine.KVInitialCapacityBytes = bytesOf(10 << 30)
+			snapshot.Models = []RuntimeSnapshotModel{engine}
+			r, runtime := newReconciler(t, pm, neighbour, pod)
+			runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+			reconcileOnce(t, r, pm.Name)
+
+			require.Len(t, runtime.activateCalls, 1)
+			require.Len(t, getModel(t, r, pm.Name).Status.Instances, 1)
+			assert.Equal(t, modelv1alpha1.ModelClaimActivating, getModel(t, r, pm.Name).Status.Instances[0].Phase)
+			assert.Equal(t, int64(10<<30), getModel(t, r, neighbour.Name).Status.Instances[0].KVLimitBytes)
+			assert.Contains(t, strings.Join(drainEvents(t, r), "\n"), "Warning KVCapacityBelowFloor")
+		})
+	}
+}
+
+func TestKVInitialCapacityBelowFloorAllowsWake(t *testing.T) {
+	pm := claimWithCost(20<<30, 12<<30)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: pod.Name, Port: 9001, Phase: modelv1alpha1.ModelClaimSleeping, KVLimitBytes: 10 << 30,
+	}}
+	engine := readyEngine(10 << 30)
+	engine.Phase, engine.Ready = runtimePhaseSleeping, false
+	engine.KVInitialCapacityBytes = bytesOf(10 << 30)
+	snapshot.Models = []RuntimeSnapshotModel{engine}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	now := time.Date(2026, time.October, 1, 8, 0, 5, 0, time.UTC)
+	r.Now = func() time.Time { return now }
+	r.Divisions = newCardDivisionState(func() time.Time { return now })
+	askWake(t, r, pod.Name, pm.Name, "2026-10-01T08:00:00Z")
+
+	for pass := 0; pass < 3; pass++ {
+		nextRound(t, r, &now, pm.Name)
+	}
+
+	require.NotEmpty(t, runtime.wakeCalls)
+	assert.Equal(t, servedModelName(pm), runtime.wakeCalls[0].ModelName)
+	assert.Empty(t, runtime.kvLimitCalls, "the sleeping engine already holds its effective floor")
+	events := strings.Join(drainEvents(t, r), "\n")
+	assert.Equal(t, 1, strings.Count(events, "Warning KVCapacityBelowFloor"))
+	assert.Contains(t, events, "startup KV capacity 10.0 GiB is below declared floor 12.0 GiB")
+}
+
+func TestKVInitialCapacityRestartBeforeOwnerReconcile(t *testing.T) {
+	for _, phase := range []modelv1alpha1.ModelClaimPhase{modelv1alpha1.ModelClaimActive, modelv1alpha1.ModelClaimActivating} {
+		for name, capacity := range map[string]*int64{"unknown": nil, "negative": bytesOf(-1)} {
+			t.Run(string(phase)+"/"+name, func(t *testing.T) {
+				pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+				owner := withFinalizer(claimOnPod("owner", pod.Name, phase, 20<<30, 4<<30))
+				owner.Status.Instances[0].KVLimitBytes = 60 << 30
+				snapshot.ObservedAt = time.Unix(1_700_000_000, 0)
+				engine := engineBootingFor(snapshot.ObservedAt, time.Minute)
+				engine.ModelName, engine.KVCapacityBytes = owner.Name, 54<<30
+				engine.KVInitialCapacityBytes = capacity
+				snapshot.Models = []RuntimeSnapshotModel{engine}
+				r, runtime := newReconciler(t, owner, pod)
+				runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+				r.divideCards(context.Background(), []corev1.Pod{*pod}, newRuntimeReadings(r.Runtime))
+				assert.Empty(t, runtime.kvLimitCalls)
+				assert.Equal(t, int64(54<<30), snapshot.Models[0].KVCapacityBytes)
+
+				// Reconcile a neighbour on the established card before the owner.
+				r, runtime, pod, clock := twoEnginesSharingACard(t)
+				reconcileOnce(t, r, "leaves")
+				owner = getModel(t, r, "stays")
+				owner.Status.Instances[0].Phase = phase
+				require.NoError(t, r.Status().Update(context.Background(), owner))
+				snapshot = runtime.snapshots[pod.Status.PodIP]
+				snapshot.Models[0].Phase, snapshot.Models[0].Ready = "booting", false
+				snapshot.Models[0].KVCapacityBytes = 10 << 30
+				snapshot.Models[0].KVInitialCapacityBytes = capacity
+				runtime.kvLimitCalls = nil
+				nextRound(t, r, clock, "leaves")
+				for _, call := range runtime.kvLimitCalls {
+					assert.NotEqual(t, "stays", call.ModelName)
+				}
+				assert.Equal(t, int64(10<<30), snapshot.Models[0].KVCapacityBytes)
+			})
+		}
+	}
+}
+
+func TestKVInitialCapacityWarningThrottlesLookups(t *testing.T) {
+	pm := claimWithCost(20<<30, 12<<30)
+	pod, _ := sizedWarmPod("warm-1", "10.0.0.1", 80<<30)
+	r, _ := newReconciler(t, pm, pod)
+	now, gets, fail := time.Unix(1_700_000_000, 0), 0, true
+	r.Now = func() time.Time { return now }
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			gets++
+			if fail {
+				return errors.New("lookup failed")
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	engines := []engineOnPod{{claimName: pm.Name, perGPUBytes: perGPUBytes{kvFloorBytes: 12 << 30}, kvInitialCapacityBytes: bytesOf(10 << 30)}}
+	r.warnKVCapacityBelowFloor(context.Background(), pod, engines)
+	fail = false
+	for i := 0; i < 10; i++ {
+		r.warnKVCapacityBelowFloor(context.Background(), pod, engines)
+	}
+	assert.Equal(t, 2, gets, "failed lookup releases the warning reservation")
+	assert.Len(t, drainEvents(t, r), 1)
+	now = now.Add(5 * time.Minute)
+	r.warnKVCapacityBelowFloor(context.Background(), pod, engines)
+	assert.Equal(t, 3, gets)
+	assert.Len(t, drainEvents(t, r), 1)
+}
+
+func TestKVInitialCapacityUnknownSleepingStillWrites(t *testing.T) {
+	engine := engineOnPod{perGPUBytes: perGPUBytes{kvFloorBytes: 4 << 30, maximumFootprintBytes: 20 << 30}}
+	model := engineHolding("asleep", 0, 2<<30)
+	model.Phase, model.Ready = runtimePhaseSleeping, false
+	engine.observe(&model, modelv1alpha1.ModelClaimInstance{Phase: modelv1alpha1.ModelClaimSleeping})
+	limits, err := planKVLimits(80<<30, []engineOnPod{engine})
+	require.NoError(t, err)
+	require.Len(t, writeOrder(limits), 1, "wake preparation must still restore the sleeping engine's floor")
+}

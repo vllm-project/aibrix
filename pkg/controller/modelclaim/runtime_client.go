@@ -277,6 +277,8 @@ type RuntimeSnapshotModel struct {
 	KVUsedBytes     int64 `json:"kv_used_bytes"`
 	KVCapacityBytes int64 `json:"kv_capacity_bytes"`
 	HBMPeakBytes    int64 `json:"hbm_peak_bytes"`
+	// KVInitialCapacityBytes is the startup pool size; nil or negative is unknown.
+	KVInitialCapacityBytes *int64 `json:"kv_initial_capacity_bytes,omitempty"`
 	// SleepingFootprintBytes is the GPU memory a sleeping engine still held
 	// right after it went to sleep, as the runtime measured it then. Only a
 	// sleeping engine reports it. Nil means the runtime could not attribute

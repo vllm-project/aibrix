@@ -88,6 +88,10 @@ class ModelInstance:
     pid: Optional[int] = None
     pid_start_time: Optional[str] = None
     restart_count: int = 0
+    kv_initial_capacity_bytes: Optional[int] = None
+    # A control write can replace the startup size before a snapshot sees it.
+    kv_initial_capacity_unavailable: bool = False
+    kv_initial_capacity_persist_pending: bool = field(default=False, repr=False)
     last_error: Optional[str] = None
     last_transition: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
@@ -112,6 +116,7 @@ class RuntimeOperationResult:
     operation_id: str
     applied: bool
     phase: str
+    limit_bytes: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -191,8 +196,8 @@ class KVController(ABC):
     """Applies kvcached controls to a model's shared-memory segment."""
 
     @abstractmethod
-    def set_limit(self, ipc_name: str, limit_bytes: int) -> None:
-        """Set the kvcached limit for one normalized IPC segment."""
+    def set_limit(self, ipc_name: str, limit_bytes: int) -> Optional[bool]:
+        """Set the limit; False means no write, None allows legacy actuators."""
 
 
 class SharedMemoryKVController(KVController):
@@ -201,11 +206,13 @@ class SharedMemoryKVController(KVController):
     it imports kvcached, which takes over a second, and every other change of
     an engine on the Pod waits while a limit is set."""
 
-    def set_limit(self, ipc_name: str, limit_bytes: int) -> None:
-        if not write_kv_limit(ipc_name, limit_bytes):
+    def set_limit(self, ipc_name: str, limit_bytes: int) -> bool:
+        written = write_kv_limit(ipc_name, limit_bytes)
+        if not written:
             logger.warning(
                 "kvcached segment %s not found; its limit was not set", ipc_name
             )
+        return written
 
 
 # --------------------------------------------------------------------------- #
@@ -1242,6 +1249,16 @@ class ModelRuntime:
                     continue
                 self._models[inst.model_name] = inst
 
+                # Adoption tolerates missing identity; a saved capacity cannot.
+                if inst.kv_initial_capacity_bytes is not None and (
+                    inst.phase == "failed"
+                    or inst.pid_start_time is None
+                    or not pid_is_alive(inst.pid)
+                    or process_start_time(inst.pid) != inst.pid_start_time
+                ):
+                    inst.kv_initial_capacity_bytes = None
+                    changed = True
+
                 if inst.phase == "failed":
                     self._increment_metric(self._re_adoption_outcomes, "terminal")
                     # A terminal record is never routed or relaunched. If a
@@ -1274,6 +1291,10 @@ class ModelRuntime:
                             changed = True
                     continue
 
+                # A pending restart can bypass _schedule_restart below.
+                if inst.kv_initial_capacity_bytes is not None:
+                    inst.kv_initial_capacity_bytes = None
+                    changed = True
                 if inst.phase != "restarting" or inst.next_restart_at is None:
                     self._schedule_restart(
                         inst, "engine unavailable during runtime re-adoption"
@@ -1353,6 +1374,13 @@ class ModelRuntime:
         last_transition = self._registry_timestamp(
             record.get("last_transition"), self._now()
         )
+        initial_capacity = record.get("kv_initial_capacity_bytes")
+        if (
+            isinstance(initial_capacity, bool)
+            or not isinstance(initial_capacity, int)
+            or initial_capacity < 0
+        ):
+            initial_capacity = None
         return ModelInstance(
             model_name=model_name,
             port=port,
@@ -1380,6 +1408,9 @@ class ModelRuntime:
             sleeping_footprint_bytes=self._registry_sleeping_footprint(
                 record.get("sleeping_footprint_bytes"), phase
             ),
+            kv_initial_capacity_bytes=initial_capacity,
+            # Re-adoption cannot establish whether this segment was already changed.
+            kv_initial_capacity_unavailable=True,
             proc=AdoptedProcess(pid, pid_start_time),
         )
 
@@ -1435,6 +1466,7 @@ class ModelRuntime:
                 inst.next_restart_at.isoformat() if inst.next_restart_at else None
             ),
             "sleeping_footprint_bytes": inst.sleeping_footprint_bytes,
+            "kv_initial_capacity_bytes": inst.kv_initial_capacity_bytes,
         }
 
     def _persist_locked(self) -> None:
@@ -1442,6 +1474,8 @@ class ModelRuntime:
             self._registry.save(
                 [self._registry_record(inst) for inst in self._models.values()]
             )
+            for inst in self._models.values():
+                inst.kv_initial_capacity_persist_pending = False
 
     def _transition(self, inst: ModelInstance, phase: str) -> bool:
         if inst.phase == phase:
@@ -1486,6 +1520,8 @@ class ModelRuntime:
         # Release worker-owned HBM as soon as the API parent is observed dead;
         # the exponential backoff governs relaunches, not resource cleanup.
         self._terminate_stale_process_group(inst)
+        inst.kv_initial_capacity_bytes = None
+        inst.kv_initial_capacity_unavailable = False
         inst.last_error = error
         if inst.restart_count >= self._max_restarts:
             if self._transition(inst, "failed"):
@@ -1512,6 +1548,10 @@ class ModelRuntime:
         inst.proc = None
         inst.pid = None
         inst.pid_start_time = None
+        # Re-adoption or a limit write during backoff may have blocked capture.
+        # Cleanup succeeded, so the replacement starts with fresh provenance.
+        inst.kv_initial_capacity_bytes = None
+        inst.kv_initial_capacity_unavailable = False
         try:
             self._increment_metric(self._restart_attempts, inst.model_name)
             inst.pid = self._launcher.launch(
@@ -1716,10 +1756,25 @@ class ModelRuntime:
                         applied=False,
                         phase=inst.phase,
                     )
+                capacity = inst.kv_initial_capacity_bytes
+                if capacity is not None:
+                    limit_bytes = min(limit_bytes, capacity)
+                elif not inst.kv_initial_capacity_unavailable and not isinstance(
+                    self._kv_controller, MockKVController
+                ):
+                    self._increment_metric(
+                        self._kv_limit_outcomes, (model_name, "failed")
+                    )
+                    raise UnsupportedModelControlError(
+                        f"startup KV capacity for {model_name!r} is not known yet"
+                    )
+                # Guard before releasing the lock: a snapshot may race the write.
+                was_unavailable = inst.kv_initial_capacity_unavailable
+                inst.kv_initial_capacity_unavailable = True
             # The write may wait for the lock the engine takes on its segment, so
             # it runs without _lock, and a snapshot never waits for it.
             try:
-                self._kv_controller.set_limit(inst.ipc_name, limit_bytes)
+                written = self._kv_controller.set_limit(inst.ipc_name, limit_bytes)
             except Exception:
                 with self._lock:
                     self._increment_metric(
@@ -1727,6 +1782,8 @@ class ModelRuntime:
                     )
                 raise
             with self._lock:
+                if written is False:
+                    inst.kv_initial_capacity_unavailable = was_unavailable
                 self._kv_limit_applied_bytes[model_name] = limit_bytes
                 self._increment_metric(self._kv_limit_outcomes, (model_name, "applied"))
                 self._remember_operation(inst, "kv-limit", operation_id)
@@ -1735,6 +1792,7 @@ class ModelRuntime:
                     operation_id=operation_id,
                     applied=True,
                     phase=inst.phase,
+                    limit_bytes=limit_bytes,
                 )
 
     def sleep(
@@ -1774,6 +1832,8 @@ class ModelRuntime:
                             applied=False,
                             phase=inst.phase,
                         )
+                    if inst.kv_initial_capacity_bytes is None:
+                        inst.kv_initial_capacity_unavailable = True
                 # The card is read just before and just after the sleep, so
                 # what the engine still holds can be told apart even when NVML
                 # reports host PIDs. The operation lock keeps any other sleep
@@ -1915,12 +1975,15 @@ class ModelRuntime:
     def snapshot(self) -> Dict[str, object]:
         """Return the sidecar's point-in-time scheduling observation.
 
-        Instance bookkeeping is copied while holding the runtime lock. The
-        potentially slow hardware, filesystem, and readiness reads happen
-        afterwards so an observation never blocks activate/deactivate.
+        Hardware, segment and readiness reads happen outside the runtime lock.
+        Capturing startup capacity persists the registry while holding the lock.
         """
         with self._lock:
             instances = list(self._models.values())
+            identities = {
+                id(inst): (inst.pid, inst.pid_start_time, inst.restart_count)
+                for inst in instances
+            }
             # A wake clears the reading as it leaves sleep, so the reading is
             # taken together with the phase it belongs to.
             asleep_holding = {
@@ -1952,6 +2015,38 @@ class ModelRuntime:
                 total, used, prealloc = segment
                 kv_used, kv_capacity = used + prealloc, total
             activity, ready = probes[id(inst)]
+            with self._lock:
+                identity_changed = self._models.get(
+                    inst.model_name
+                ) is not inst or identities[id(inst)] != (
+                    inst.pid,
+                    inst.pid_start_time,
+                    inst.restart_count,
+                )
+                if identity_changed:
+                    # Discard probes from a different engine generation.
+                    ready = False
+                    kv_used = kv_capacity = KV_UNKNOWN
+                    activity = EngineRequestActivity()
+                if (
+                    ready
+                    and kv_capacity >= 0
+                    and inst.phase in {"active", "booting"}
+                    and not inst.kv_initial_capacity_unavailable
+                    and inst.kv_initial_capacity_bytes is None
+                ):
+                    inst.kv_initial_capacity_bytes = kv_capacity
+                    inst.kv_initial_capacity_persist_pending = (
+                        self._registry is not None
+                    )
+                if inst.kv_initial_capacity_persist_pending:
+                    try:
+                        self._persist_locked()
+                    except Exception:
+                        logger.exception("could not persist startup KV capacity")
+                initial_capacity = (
+                    None if identity_changed else inst.kv_initial_capacity_bytes
+                )
             models.append(
                 {
                     "model_name": inst.model_name,
@@ -1967,6 +2062,7 @@ class ModelRuntime:
                     "last_transition": inst.last_transition,
                     "kv_used_bytes": kv_used,
                     "kv_capacity_bytes": kv_capacity,
+                    "kv_initial_capacity_bytes": initial_capacity,
                     "hbm_peak_bytes": engine_hbm_peak_bytes(inst, process_hbm),
                     "sleeping_footprint_bytes": (
                         asleep_holding.get(id(inst))

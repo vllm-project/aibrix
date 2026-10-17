@@ -140,8 +140,9 @@ type ModelClaimPerGPU struct {
 	// KVFloor is the KV cache one instance must keep on a device to serve at
 	// all: enough for one request of the engine's maximum model length at this
 	// model's bytes per token, rounded up to the KV allocator's page
-	// granularity. Placement holds this much for the instance for as long as it
-	// is awake. It holds this much while the instance sleeps too, unless the
+	// granularity. Placement holds this much for the instance, reduced to the
+	// startup KV capacity when that capacity is known, positive and smaller.
+	// This effective floor is held while awake and while sleeping, unless the
 	// pool keeps no wake reserve.
 	// +kubebuilder:validation:Required
 	KVFloor resource.Quantity `json:"kvFloor"`
