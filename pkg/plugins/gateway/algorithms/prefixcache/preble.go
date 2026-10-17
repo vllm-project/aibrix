@@ -305,28 +305,37 @@ func (h *SlidingWindowHistogram) removeOldEntries(currentTime time.Time) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	windowStart := currentTime.Add(-h.windowDuration)
-	newTimestamps := make([]histogramEntry, 0)
+	newTimestamps := make([]histogramEntry, 0, len(h.timestamps))
 	for _, entry := range h.timestamps {
 		if entry.timestamp.After(windowStart) {
 			newTimestamps = append(newTimestamps, entry)
-		} else {
-			node := entry.node
-			leafNode := entry.leafNode
-			h.histogram[node] -= leafNode.ContextLength()
-			h.nodeToCount[node]--
-			h.hitTokens[node] -= leafNode.ContextLength() - leafNode.NumTokens()
-			h.promptTokens[node] -= leafNode.ContextLength()
-			if h.histogram[node] <= 0 {
-				delete(h.histogram, node)
-				delete(h.nodeToCount, node)
-				delete(h.hitTokens, node)
-				delete(h.promptTokens, node)
-				delete(h.decodingSize, node)
-				delete(h.podAllocations, node)
-			}
+			continue
 		}
+		h.removeEntryLocked(entry)
 	}
 	h.timestamps = newTimestamps
+}
+
+// removeEntryLocked subtracts one timestamp entry from the sliding-window
+// aggregates and drops the node's maps once its window holds no entries.
+// Callers hold h.mu.
+func (h *SlidingWindowHistogram) removeEntryLocked(entry histogramEntry) {
+	node := entry.node
+	if node == nil || entry.leafNode == nil {
+		return
+	}
+	h.histogram[node] -= entry.leafNode.ContextLength()
+	h.nodeToCount[node]--
+	h.hitTokens[node] -= entry.leafNode.ContextLength() - entry.leafNode.NumTokens()
+	h.promptTokens[node] -= entry.leafNode.ContextLength()
+	if h.histogram[node] <= 0 {
+		delete(h.histogram, node)
+		delete(h.nodeToCount, node)
+		delete(h.hitTokens, node)
+		delete(h.promptTokens, node)
+		delete(h.decodingSize, node)
+		delete(h.podAllocations, node)
+	}
 }
 
 func (p *prefixCacheAndLoadRouter) evictionLoop() {
@@ -474,15 +483,19 @@ func (p *prefixCacheAndLoadRouter) updatePodSet(readyPods []*v1.Pod) {
 		// - promptTokens
 		// - decodingSize
 
-		// Filter timestamps entries for nodes that still have valid pods
-		newTimestamps := make([]histogramEntry, 0)
+		// Filter timestamps entries for nodes that still have valid pods.
+		// Dropped entries must also leave the aggregates, or a node reused by a
+		// surviving pod keeps the departed pod's history forever.
+		newTimestamps := make([]histogramEntry, 0, len(h.timestamps))
 		for _, entry := range h.timestamps {
 			if entry.node == nil {
 				continue
 			}
 			if entry.node.HasValidPods(currentPodSet) {
 				newTimestamps = append(newTimestamps, entry)
+				continue
 			}
+			h.removeEntryLocked(entry)
 		}
 		h.timestamps = newTimestamps
 	}

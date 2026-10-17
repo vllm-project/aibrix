@@ -544,6 +544,55 @@ func TestPreble_SyncPodSetDropsRemovedPods(t *testing.T) {
 	assert.Empty(t, cachedPodKeys(t, router, "m", prebleSharedPrompt), "pod-b's prefix is dropped once it is gone")
 }
 
+// TestPreble_SyncPodSetDropsRemovedHistory checks that dropping a departed pod
+// also removes its sliding-window entries for nodes that no longer have a valid
+// pod. The aggregates must stay equal to the sum of the timestamps that remain.
+func TestPreble_SyncPodSetDropsRemovedHistory(t *testing.T) {
+	podA := newPod("pod-a", "10.0.0.1", true, nil)
+	podB := newPod("pod-b", "10.0.0.2", true, nil)
+	both := newMockPodList([]*v1.Pod{podA, podB}, nil)
+	router := newTestRouter(2, cache.NewWithPodsMetricsForTest([]*v1.Pod{podA, podB}, "m", nil))
+
+	require.NoError(t, router.PostRouteUpdate(createTestRoutingContext("m", prebleSharedPrompt, "seed"), both, podB))
+	tokens, err := utils.TokenizeInputText(prebleSharedPrompt)
+	require.NoError(t, err)
+	node, _ := router.cache.MatchPrefixNodeReadOnly(tokens)
+	require.NotNil(t, node)
+	require.NotZero(t, router.histogram.nodeToCount[node])
+
+	// pod-b is deleted. The node keeps no valid pod afterwards, so its
+	// timestamps are dropped and the aggregates must be decremented with them.
+	router.metricCache = cache.NewWithPodsMetricsForTest([]*v1.Pod{podA}, "m", nil)
+	router.maintain()
+
+	requireNodeDropped(t, router.histogram, node)
+}
+
+// TestPreble_RemovedPodHistoryDoesNotDoubleCount checks that a node reused by a
+// surviving pod does not keep the departed pod's aggregates on top of the new
+// request's entry.
+func TestPreble_RemovedPodHistoryDoesNotDoubleCount(t *testing.T) {
+	podA := newPod("pod-a", "10.0.0.1", true, nil)
+	podB := newPod("pod-b", "10.0.0.2", true, nil)
+	both := newMockPodList([]*v1.Pod{podA, podB}, nil)
+	router := newTestRouter(2, cache.NewWithPodsMetricsForTest([]*v1.Pod{podA, podB}, "m", nil))
+
+	require.NoError(t, router.PostRouteUpdate(createTestRoutingContext("m", prebleSharedPrompt, "seed"), both, podB))
+	router.metricCache = cache.NewWithPodsMetricsForTest([]*v1.Pod{podA}, "m", nil)
+	router.maintain()
+
+	// The same prefix is served by pod-a after pod-b leaves.
+	onlyA := newMockPodList([]*v1.Pod{podA}, nil)
+	require.NoError(t, router.PostRouteUpdate(createTestRoutingContext("m", prebleSharedPrompt, "reuse"), onlyA, podA))
+
+	tokens, err := utils.TokenizeInputText(prebleSharedPrompt)
+	require.NoError(t, err)
+	node, _ := router.cache.MatchPrefixNodeReadOnly(tokens)
+	require.NotNil(t, node)
+	assert.Equal(t, 1, router.histogram.nodeToCount[node],
+		"only the surviving request should count toward pod-a")
+}
+
 // cachedPodKeys returns the pods the prefix tree lists for model on the node that
 // matches prompt.
 func cachedPodKeys(t *testing.T, router *prefixCacheAndLoadRouter, model, prompt string) []string {
