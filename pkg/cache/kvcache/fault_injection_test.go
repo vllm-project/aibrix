@@ -149,7 +149,7 @@ func (h *viewHarness) fullHit(prefix []byte) bool {
 	return len(hashes) == want && matches[h.pod] > 0
 }
 
-// legacyHarness reproduces the pre-guard dispatch: every received batch is
+// legacyHarness models the pre-guard dispatch: every received batch is
 // applied in arrival order and lastSeq is overwritten unconditionally.
 type legacyViewHarness struct {
 	handler *kvViewHandler
@@ -188,7 +188,7 @@ func encodeFaultBatch(t *testing.T, events ...KVEvent) []byte {
 
 // TestKVEventViewFaultInjection drives the real event guard with adversarial
 // streams and checks the resulting prefix view against the engine truth. The
-// "legacy" column applies the same arrivals with the pre-guard dispatch so the
+// "legacy" column models unconditional dispatch of the same arrivals so the
 // false-hit reduction is visible as a number.
 func TestKVEventViewFaultInjection(t *testing.T) {
 	prefixA := faultPrefix('A')
@@ -200,25 +200,25 @@ func TestKVEventViewFaultInjection(t *testing.T) {
 		{
 			name: "stale replay after removal",
 			arrivals: []faultArrival{
-				{seq: 1, events: storedEvents(hashesA, prefixA)},
-				{seq: 2, events: removedEvents(hashesA)},
-				{seq: 1, replay: true, events: storedEvents(hashesA, prefixA)},
+				{seq: 0, events: storedEvents(hashesA, prefixA)},
+				{seq: 1, events: removedEvents(hashesA)},
+				{seq: 0, replay: true, events: storedEvents(hashesA, prefixA)},
 			},
 			hits: map[string]bool{string(prefixA): false, string(prefixB): false},
 		},
 		{
 			name: "publisher restart clears the old view",
 			arrivals: []faultArrival{
-				{seq: 1, events: storedEvents(hashesA, prefixA)},
-				{seq: 1, events: storedEvents(hashesB, prefixB)},
+				{seq: 0, events: storedEvents(hashesA, prefixA)},
+				{seq: 0, events: storedEvents(hashesB, prefixB)},
 			},
 			hits: map[string]bool{string(prefixA): false, string(prefixB): true},
 		},
 		{
 			name: "unrecoverable gap clears the view",
 			arrivals: []faultArrival{
-				{seq: 1, events: storedEvents(hashesA, prefixA)},
-				{seq: 4, events: removedEvents(hashesA)},
+				{seq: 0, events: storedEvents(hashesA, prefixA)},
+				{seq: 3, events: removedEvents(hashesA)},
 			},
 			recoverGap: true,
 			hits:       map[string]bool{string(prefixA): false},
@@ -321,7 +321,7 @@ func TestKVEventViewReconnectOverZMQ(t *testing.T) {
 	require.True(t, faultFullHit(index, faultModel, -1, faultPod, prefixA),
 		"prefix stored before the restart should match")
 
-	// The publisher restarts and numbers its batches from 1 again.
+	// The publisher restarts and numbers its batches from 0 again.
 	publisher.Close()
 	time.Sleep(300 * time.Millisecond)
 	publisher = createMockPublisher(t, config.PubPort, config.RouterPort)

@@ -58,6 +58,10 @@ type ZMQClient struct {
 	// applyMu serializes event batches so live and replayed batches are applied
 	// in one order. It is held across decode + handler + sequence update.
 	applyMu sync.Mutex
+	// lastLiveSeq tracks observed live traffic independently of applied replay
+	// progress, so a held gap or its replay is not counted more than once.
+	// Guarded by applyMu.
+	lastLiveSeq int64
 
 	// replayInFlight prevents concurrent replay requests on the single replay
 	// socket. Guarded by mu.
@@ -91,6 +95,7 @@ func NewZMQClient(config *ZMQClientConfig, handler EventHandler) *ZMQClient {
 		config:         config,
 		eventHandler:   handler,
 		lastSeq:        -1,
+		lastLiveSeq:    -1,
 		reconnectDelay: config.ReconnectDelay,
 		ctx:            ctx,
 		cancel:         cancel,
@@ -368,18 +373,6 @@ func (c *ZMQClient) processMessage() error {
 	}
 	seq := int64(binary.BigEndian.Uint64(seqBytes))
 
-	// Check for missed events
-	c.mu.RLock()
-	lastSeq := c.lastSeq
-	c.mu.RUnlock()
-
-	if lastSeq >= 0 && seq > lastSeq+1 {
-		missedCount := seq - lastSeq - 1
-		klog.Warningf("Missed %d events for %s (last=%d, current=%d)",
-			missedCount, c.config.PodKey, lastSeq, seq)
-		c.metrics.IncrementMissedEvents(missedCount)
-	}
-
 	numEvents, err := c.applyEventBatch(seq, payload, false)
 	if err != nil {
 		return err
@@ -397,47 +390,49 @@ func (c *ZMQClient) processMessage() error {
 //
 // The apply is guarded so the event view stays consistent with the publisher:
 // a replayed batch at or below lastSeq is a duplicate and is dropped, a live
-// batch that restarts at sequence 1 after a publisher restart resets the view,
-// a batch beyond lastSeq+1 asks for the missing batches, and lastSeq only ever
-// moves forward.
+// batch at sequence 0 after prior traffic conservatively resets the view,
+// and a live batch beyond lastSeq+1 asks for the missing batches, including
+// at cold start. Replay can begin at the publisher buffer's oldest batch when
+// no batch has been applied yet. Sequence numbers advance within each stream.
 func (c *ZMQClient) applyEventBatch(seq int64, payload []byte, replay bool) (int, error) {
 	c.applyMu.Lock()
 	defer c.applyMu.Unlock()
 
 	lastSeq := c.GetLastSequence()
-	if lastSeq >= 0 {
-		switch {
-		case seq <= lastSeq:
-			if !replay && seq == 1 {
-				// A publisher restarted while the subscription stayed up: vLLM
-				// numbers its batches from 1, so a live batch at 1 while
-				// lastSeq is ahead of it starts a new sequence space.
-				c.resetEventStreamLocked()
-			} else {
-				klog.V(5).Infof("Skipping duplicate or stale event batch %d from %s (last=%d)",
-					seq, c.config.PodKey, lastSeq)
-				return 0, nil
-			}
-		case seq > lastSeq+1:
-			missedCount := seq - lastSeq - 1
-			klog.Warningf("Missed %d events for %s (last=%d, current=%d)",
-				missedCount, c.config.PodKey, lastSeq, seq)
+	if !replay && seq == 0 && (lastSeq >= 0 || c.lastLiveSeq >= 0) {
+		// vLLM uses count() starting at zero. Without a publisher epoch,
+		// a duplicated live zero cannot be distinguished from a restart;
+		// clearing is safer than retaining the previous engine's view.
+		// Prior traffic includes cold-start batches held pending replay.
+		c.resetEventStreamLocked()
+		lastSeq = -1
+	} else if lastSeq >= 0 && seq <= lastSeq {
+		klog.V(5).Infof("Skipping duplicate or stale event batch %d from %s (last=%d)",
+			seq, c.config.PodKey, lastSeq)
+		return 0, nil
+	}
+	if !replay {
+		observed := max(lastSeq, c.lastLiveSeq)
+		if seq > observed+1 {
+			missedCount := seq - observed - 1
+			klog.Warningf("Missed %d events for %s (last live/applied=%d, current=%d)",
+				missedCount, c.config.PodKey, observed, seq)
 			c.metrics.IncrementMissedEvents(missedCount)
-			if !c.bufferPendingLocked(seq, payload) {
-				// The gap outgrew the buffer. The view cannot be made
-				// consistent with the stream, so clear it and continue from
-				// this batch instead of dropping every later batch.
-				klog.Warningf("Sequence gap for %s outgrew the buffer; resetting the cached view",
-					c.config.PodKey)
-				c.clearCachedViewLocked()
-				c.setLastSequence(seq - 1)
-				c.pending = nil
-			} else {
-				// Ask the publisher for the missing batches. Replayed batches
-				// go through this same guard, so a late duplicate is dropped.
-				c.requestReplayAsync(lastSeq + 1)
-				return 0, nil
-			}
+		}
+		c.lastLiveSeq = max(c.lastLiveSeq, seq)
+	}
+	if seq > lastSeq+1 && (!replay || lastSeq >= 0) {
+		if !c.bufferPendingLocked(seq, payload) {
+			// The gap outgrew the buffer. Clear the untrusted view and
+			// continue from this batch instead of dropping every later one.
+			klog.Warningf("Sequence gap for %s outgrew the buffer; resetting the cached view",
+				c.config.PodKey)
+			c.clearCachedViewLocked()
+			c.setLastSequence(seq - 1)
+			c.pending = nil
+		} else {
+			c.requestReplayAsync(lastSeq + 1)
+			return 0, nil
 		}
 	}
 
@@ -540,6 +535,7 @@ func (c *ZMQClient) resetEventStreamLocked() {
 	klog.Warningf("KV event publisher %s restarted; resetting sequence and cached view",
 		c.config.PodKey)
 	c.pending = nil
+	c.lastLiveSeq = -1
 	c.clearCachedViewLocked()
 	c.setLastSequence(-1)
 }
@@ -647,6 +643,7 @@ func (c *ZMQClient) retryReplay(fromSeq int64, attempts int) {
 		}
 		_, ran, err := c.runReplay(fromSeq)
 		if err == nil && ran {
+			c.recoverStalledGap()
 			return
 		}
 		if err != nil {
