@@ -139,6 +139,18 @@ func DeepCopyMap(source map[string]string) map[string]string {
 	return dest
 }
 
+// callRecovered runs fn(index) and returns its error. A panic in fn is logged and returned as an error,
+// so the caller records it like any other failure.
+func callRecovered(fn func(int) error, index int) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			klog.Errorf("slowStartBatch panic: %v", r)
+			err = fmt.Errorf("slowStartBatch panic: %v", r)
+		}
+	}()
+	return fn(index)
+}
+
 func SlowStartBatch(count int, initialBatchSize int, fn func(int) error) (int, error) {
 	remaining := count
 	successes := 0
@@ -149,15 +161,9 @@ func SlowStartBatch(count int, initialBatchSize int, fn func(int) error) (int, e
 		wg.Add(batchSize)
 		for i := 0; i < batchSize; i++ {
 			go func(index int) {
-				// wg.Done runs after the recover below, so a panic is in errCh before the batch is counted.
 				defer wg.Done()
-				defer func() {
-					if err := recover(); err != nil {
-						klog.Errorf("slowStartBatch panic: %v", err)
-						errCh <- fmt.Errorf("slowStartBatch panic: %v", err)
-					}
-				}()
-				if err := fn(index); err != nil {
+				// callRecovered returns before wg.Done runs, so a panic is in errCh before the batch is counted.
+				if err := callRecovered(fn, index); err != nil {
 					errCh <- err
 				}
 			}(finished + i)
