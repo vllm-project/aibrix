@@ -4,6 +4,13 @@ on:
   workflow_dispatch:  # Allows manual trigger
   push:
     branches: [ "main", "release-*" ]
+    # Docs, samples and benchmarks changes don't need new images.
+    paths-ignore:
+      - 'docs/**'
+      - 'samples/**'
+      - 'benchmarks/**'
+      - '**/*.md'
+      - '**/*.rst'
 
 # When merges land close together, build only the newest one: the running
 # build finishes, and a newer push replaces any build still waiting to start.
