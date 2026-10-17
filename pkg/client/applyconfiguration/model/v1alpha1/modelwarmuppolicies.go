@@ -20,10 +20,12 @@ package v1alpha1
 // ModelWarmupPoliciesApplyConfiguration represents a declarative configuration of the ModelWarmupPolicies type for use
 // with apply.
 type ModelWarmupPoliciesApplyConfiguration struct {
-	Parallelism             *int32 `json:"parallelism,omitempty"`
-	JobTimeoutSeconds       *int64 `json:"jobTimeoutSeconds,omitempty"`
-	RetryLimit              *int32 `json:"retryLimit,omitempty"`
-	TTLSecondsAfterFinished *int32 `json:"ttlSecondsAfterFinished,omitempty"`
+	Parallelism                    *int32 `json:"parallelism,omitempty"`
+	JobTimeoutSeconds              *int64 `json:"jobTimeoutSeconds,omitempty"`
+	RetryLimit                     *int32 `json:"retryLimit,omitempty"`
+	ContinuousRetryLimit           *int32 `json:"continuousRetryLimit,omitempty"`
+	ContinuousRetryIntervalSeconds *int64 `json:"continuousRetryIntervalSeconds,omitempty"`
+	TTLSecondsAfterFinished        *int32 `json:"ttlSecondsAfterFinished,omitempty"`
 }
 
 // ModelWarmupPoliciesApplyConfiguration constructs a declarative configuration of the ModelWarmupPolicies type for use with
@@ -53,6 +55,22 @@ func (b *ModelWarmupPoliciesApplyConfiguration) WithJobTimeoutSeconds(value int6
 // If called multiple times, the RetryLimit field is set to the value of the last call.
 func (b *ModelWarmupPoliciesApplyConfiguration) WithRetryLimit(value int32) *ModelWarmupPoliciesApplyConfiguration {
 	b.RetryLimit = &value
+	return b
+}
+
+// WithContinuousRetryLimit sets the ContinuousRetryLimit field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ContinuousRetryLimit field is set to the value of the last call.
+func (b *ModelWarmupPoliciesApplyConfiguration) WithContinuousRetryLimit(value int32) *ModelWarmupPoliciesApplyConfiguration {
+	b.ContinuousRetryLimit = &value
+	return b
+}
+
+// WithContinuousRetryIntervalSeconds sets the ContinuousRetryIntervalSeconds field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ContinuousRetryIntervalSeconds field is set to the value of the last call.
+func (b *ModelWarmupPoliciesApplyConfiguration) WithContinuousRetryIntervalSeconds(value int64) *ModelWarmupPoliciesApplyConfiguration {
+	b.ContinuousRetryIntervalSeconds = &value
 	return b
 }
 

@@ -657,7 +657,8 @@ func TestSessionAffinitySyncRetryDoesNotClobberAnotherReplicasPin(t *testing.T) 
 
 	require.True(t, routerA.persistSessionKeyToRedis(cacheKey, "10.0.0.1:8000", writeClaim, ""))
 	routerB.storeSessionKeyLocal(cacheKey, "10.0.0.2:8000", false)
-	routerB.handleSessionKeyCacheSyncMiss(cacheKey)
+	observed, _ := routerB.sessionKeyPods.Load(cacheKey)
+	routerB.handleSessionKeyCacheSyncMiss(cacheKey, observed.(sessionKeyCacheItem))
 
 	got, err := mr.Get(sessionAffinityRedisKey(cacheKey))
 	require.NoError(t, err)

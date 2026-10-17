@@ -209,8 +209,12 @@ func (r *sessionAffinityRouter) syncSessionKeyPodsFromRedis() {
 			return true
 		}
 		item, ok := value.(sessionKeyCacheItem)
-		if !ok || time.Since(item.storedAt) >= sessionAffinityTTL {
+		if !ok {
 			r.forgetSessionKey(k)
+			return true
+		}
+		if time.Since(item.storedAt) >= sessionAffinityTTL {
+			r.forgetSessionKeyIfUnchanged(k, item)
 			return true
 		}
 		sessionKeys = append(sessionKeys, k)
@@ -227,8 +231,16 @@ func (r *sessionAffinityRouter) syncSessionKeyPodsFromRedis() {
 		chunk := sessionKeys[batchStart:min(batchStart+sessionKeyCacheSyncBatchSize, len(sessionKeys))]
 
 		redisKeys := make([]string, len(chunk))
+		// Capture only this batch before issuing MGET. A request can repin,
+		// refresh or remove an entry while the Redis read is in flight.
+		observed := make(map[string]sessionKeyCacheItem, len(chunk))
 		for i, k := range chunk {
 			redisKeys[i] = sessionAffinityRedisKey(k)
+			if cached, found := r.sessionKeyPods.Load(k); found {
+				if item, ok := cached.(sessionKeyCacheItem); ok {
+					observed[k] = item
+				}
+			}
 		}
 		vals, err := r.redisClient.MGet(ctx, redisKeys...).Result()
 		if err != nil {
@@ -237,12 +249,19 @@ func (r *sessionAffinityRouter) syncSessionKeyPodsFromRedis() {
 		}
 
 		for i, k := range chunk {
-			raw, ok := vals[i].(string)
-			if !ok {
-				r.handleSessionKeyCacheSyncMiss(k)
+			item, found := observed[k]
+			if !found {
 				continue
 			}
-			r.storeSessionKeyLocal(k, raw, true)
+			raw, ok := vals[i].(string)
+			if !ok {
+				r.handleSessionKeyCacheSyncMiss(k, item)
+				continue
+			}
+			updated := sessionKeyCacheItem{addr: raw, confirmed: true, storedAt: time.Now()}
+			// A stale reply must neither replace a newer pin nor resurrect a
+			// removed entry. Compare the whole snapshot, including refresh time.
+			r.sessionKeyPods.CompareAndSwap(k, item, updated)
 		}
 	}
 }
@@ -254,15 +273,14 @@ func (r *sessionAffinityRouter) syncSessionKeyPodsFromRedis() {
 // pending or failed — a nil read says nothing about whether that pinning is
 // still valid, so it's retried here instead of being dropped as the only
 // surviving copy. Idle unconfirmed entries are evicted rather than retried
-// forever.
-func (r *sessionAffinityRouter) handleSessionKeyCacheSyncMiss(cacheKey string) {
-	cached, found := r.sessionKeyPods.Load(cacheKey)
-	if !found {
+// forever. The miss applies only to the entry observed before the Redis read.
+func (r *sessionAffinityRouter) handleSessionKeyCacheSyncMiss(cacheKey string, item sessionKeyCacheItem) {
+	if item.confirmed || time.Since(item.storedAt) >= sessionAffinityTTL {
+		r.forgetSessionKeyIfUnchanged(cacheKey, item)
 		return
 	}
-	item, ok := cached.(sessionKeyCacheItem)
-	if !ok || item.confirmed || time.Since(item.storedAt) >= sessionAffinityTTL {
-		r.forgetSessionKey(cacheKey)
+	cached, found := r.sessionKeyPods.Load(cacheKey)
+	if !found || cached != item {
 		return
 	}
 	r.persistSessionKeyToRedis(cacheKey, item.addr, writeClaim, "")
@@ -551,6 +569,14 @@ func (r *sessionAffinityRouter) markSessionKeyConfirmed(cacheKey, addr string) {
 // that actually removed it.
 func (r *sessionAffinityRouter) forgetSessionKey(cacheKey string) {
 	if _, loaded := r.sessionKeyPods.LoadAndDelete(cacheKey); loaded {
+		atomic.AddInt64(&r.sessionKeyPodsSize, -1)
+	}
+}
+
+// A sync observation cannot evict an entry refreshed or replaced since it was
+// sampled. Only the successful deletion changes the cache's entry count.
+func (r *sessionAffinityRouter) forgetSessionKeyIfUnchanged(cacheKey string, item sessionKeyCacheItem) {
+	if r.sessionKeyPods.CompareAndDelete(cacheKey, item) {
 		atomic.AddInt64(&r.sessionKeyPodsSize, -1)
 	}
 }

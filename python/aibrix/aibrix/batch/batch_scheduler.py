@@ -129,7 +129,16 @@ class BatchScheduler:
                 continue
             due_time = job.expiration_timestamp()
             if due_time <= now:
-                await self._job_progress_manager.expire_job(job.job_id)
+                try:
+                    await self._job_progress_manager.expire_job(job.job_id)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # One job failing to finish must not end the cleanup loop;
+                    # the next pass retries it.
+                    logger.error(  # type: ignore[call-arg]
+                        "Failed to expire job", job_id=job.job_id, exc_info=True
+                    )
 
     async def start(self):
         self._serve_loop = asyncio.get_running_loop()

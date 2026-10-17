@@ -327,11 +327,11 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string, modelNa
 	//
 	// ReplicaInflightAdmitted means enforceReplicaInflight's atomic admit-and-increment
 	// (pkg/plugins/gateway/gateway_inflight.go, Store.AdmitPodRunningRequest) already
-	// applied this gateway's +1 to this same Redis hash for this exact request, as part of
-	// its admission check. Calling incrPodRunningRequests here too would apply a second,
-	// uncounted +1 that nothing will ever undo (donePodStats only ever fires one matching
-	// decrement per request) -- so this must skip straight to recording success, exactly as
-	// if incrPodRunningRequests had been called and succeeded.
+	// applied, or may have applied, this gateway's +1 to this same Redis hash for this exact
+	// request, as part of its admission check. Calling incrPodRunningRequests here too would
+	// apply a second, uncounted +1 that nothing will ever undo (donePodStats only ever fires
+	// one matching decrement per request) -- so this must skip straight to recording success,
+	// exactly as if incrPodRunningRequests had been called and succeeded.
 	namespace, name := metaPod.Namespace, metaPod.Name
 	if ctx.ReplicaInflightAdmitted {
 		podStats.runningReqIncrOK = true

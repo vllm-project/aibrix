@@ -237,8 +237,18 @@ class Runtime(Protocol):
         implement it."""
         ...
 
-    async def terminate(self, deleted_job: BatchJob) -> TerminateResult:
-        """Terminate a job execution, no more job_entity_manager hijacks."""
+    async def terminate(
+        self,
+        deleted_job: BatchJob,
+        *,
+        progress_manager: Optional[RunningJobs] = None,
+    ) -> TerminateResult:
+        """Terminate a job execution, no more job_entity_manager hijacks.
+
+        Implementers must accept the ``progress_manager`` keyword argument.
+        An active session uses ``self._progress_manager``; the argument only
+        matters when no session is bound.
+        """
         ...
 
     async def cleanup(self, job: BatchJob) -> None:
@@ -440,7 +450,12 @@ class RuntimeBase:
             "(Endpoint(source=None) + provisions=True)"
         )
 
-    async def terminate(self, deleted_job: BatchJob) -> TerminateResult:
+    async def terminate(
+        self,
+        deleted_job: BatchJob,
+        *,
+        progress_manager: Optional[RunningJobs] = None,
+    ) -> TerminateResult:
         """Handle job deletion events, no more job_entity_manager hijacks."""
         # Runtime lifecycle state is mutated only by tasks scheduled onto the
         # same event loop as the driver/runtime. Under that single-loop model,
@@ -456,6 +471,16 @@ class RuntimeBase:
         if self._active_task is None:
             if self._active_job_id not in (None, deleted_job.job_id):
                 return TerminateResult.REJECTED
+            if progress_manager is not None and deleted_job.status.check_condition(
+                ConditionType.CANCELLED
+            ):
+                # Honour accepted cancels with no active session, both before it
+                # starts and after it ends but before finalization, even if all
+                # requests finished. Persist cancelling before raising the stop signal.
+                await progress_manager.update_job_status(
+                    deleted_job.job_id,
+                    deleted_job.status,
+                )
             self._stop_job_id = deleted_job.job_id
             self._stop_requested.set()
             return TerminateResult.ACCEPTED

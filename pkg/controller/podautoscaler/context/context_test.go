@@ -84,6 +84,25 @@ func TestUpdateByPaTypes_MetricsSources(t *testing.T) {
 	assert.Equal(t, expectedMetricTargets, ctx.MetricTargets)
 }
 
+func TestUpdateByPaTypes_RejectsNonFiniteOrNonPositiveTargetValue(t *testing.T) {
+	for _, value := range []string{"NaN", "Inf", "+Inf", "-Inf", "0", "-1"} {
+		t.Run(value, func(t *testing.T) {
+			pa := &autoscalingv1alpha1.PodAutoscaler{
+				ObjectMeta: v1.ObjectMeta{Name: "test-llm-pa", Namespace: "default"},
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					MetricsSources: []autoscalingv1alpha1.MetricSource{
+						{MetricSourceType: autoscalingv1alpha1.POD, TargetMetric: "gpu_cache_usage_perc", TargetValue: value},
+					},
+				},
+			}
+			ctx := NewBaseScalingContext()
+
+			assert.Error(t, ctx.UpdateByPaTypes(pa))
+			assert.Empty(t, ctx.MetricTargets)
+		})
+	}
+}
+
 func TestUpdateByPaTypes_Annotations(t *testing.T) {
 	pa := &autoscalingv1alpha1.PodAutoscaler{
 		ObjectMeta: v1.ObjectMeta{

@@ -24,6 +24,8 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	pdrouter "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/router"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/prefixcache"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/vtc"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
@@ -54,20 +56,11 @@ func init() {
 // variables: the values every read site falls back to for a request whose
 // profile sets no knob of that family.
 //
-// The pd and vtc packages own the knobs only they read, so they expose their
-// environment defaults (pd.EnvOverrides, vtc.EnvOverrides); the rest are the
-// package variables of the matching strategy.
+// The pd/router, vtc and prefixcache packages own the knobs only they read, so
+// they expose their environment defaults (pdrouter.EnvOverrides,
+// vtc.EnvOverrides, prefixcache.PrefixCacheEnvOverrides and PrebleEnvOverrides);
+// the rest are the package variables of the matching strategy.
 func processRoutingOverrides() *types.RoutingOverrides {
-	pdDefaults := pd.EnvOverrides()
-	pdDefaults.Spreads = types.PDSpreadOverrides{
-		PrefillLoadImbalanceMinSpread:      aibrixPrefillLoadImbalanceMinSpread,
-		DecodeLoadImbalanceMinSpread:       aibrixDecodeLoadImbalanceMinSpread,
-		DecodeThroughputImbalanceMinSpread: aibrixDecodeThroughputImbalanceMinSpread,
-		DecodeScoreRatioThreshold:          aibrixDecodeScoreRatioThreshold,
-	}
-	pdDefaults.PromptLengthBucketing = aibrixPromptLengthBucketing
-	pdDefaults.PrefillRequestTimeout = time.Duration(prefillRequestTimeout) * time.Second
-
 	return &types.RoutingOverrides{
 		LoadBalance: types.LoadBalanceOverrides{
 			ImbalanceFactor: podRunningRequestImbalanceFactor,
@@ -76,21 +69,16 @@ func processRoutingOverrides() *types.RoutingOverrides {
 			KVPressureAlpha: loadBalanceKVPressureAlpha,
 			KVCriticalFree:  loadBalanceKVCriticalFree,
 		},
-		PrefixCache: types.PrefixCacheOverrides{
-			StandardDeviationFactor: standardDeviationFactor,
-		},
-		Preble: types.PrebleOverrides{
-			TargetGPU:      targetGPU,
-			DecodingLength: decodingLength,
-		},
-		VTC: vtc.EnvOverrides(),
+		PrefixCache: prefixcache.PrefixCacheEnvOverrides(),
+		Preble:      prefixcache.PrebleEnvOverrides(),
+		VTC:         vtc.EnvOverrides(),
 		AutoBlend: types.AutoBlendOverrides{
 			LoadBalanceWeight:            autoBlendLoadBalanceWeight,
 			LeastRequestWeight:           autoBlendLeastRequestTopKWeight,
 			PrefixCacheWeight:            autoBlendPrefixCacheWeight,
 			PrefixCacheLoadBalanceWeight: autoBlendPrefixCacheLoadBalanceWeight,
 		},
-		PD: pdDefaults,
+		PD: pdrouter.EnvOverrides(),
 	}
 }
 

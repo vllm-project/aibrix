@@ -21,6 +21,7 @@ import (
 	"math/rand"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -332,4 +333,81 @@ func TestMatchPercentDoesNotDropToZero(t *testing.T) {
 	cache.AddPrefix(hashes[:1], "m", pod)
 	matched, _ := cache.MatchPrefix(tokens, "m", map[string]struct{}{pod: {}})
 	assert.Equal(t, 1, matched[pod])
+}
+
+// A block that stays hot is refreshed by every AddPrefix, so it never expires.
+// A pod that has not been routed the prefix for the eviction duration must
+// still stop matching it, and be dropped from the block, rather than tie with
+// the pod that actually holds the prefix.
+func TestStalePodStopsMatchingHotPrefix(t *testing.T) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+
+	cache := NewPrefixHashTable()
+	clock := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	cache.now = func() time.Time { return clock }
+
+	const model, hot, stale = "m", "ns/pod-hot", "ns/pod-stale"
+	tokens := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	hashes := cache.GetPrefixHashes(tokens)
+	cache.AddPrefix(hashes, model, stale)
+	cache.AddPrefix(hashes, model, hot)
+
+	// The prefix keeps being routed to the hot pod, past the eviction duration.
+	for elapsed := time.Duration(0); elapsed <= prefixCacheEvictionDuration; elapsed += time.Minute {
+		clock = clock.Add(time.Minute)
+		cache.AddPrefix(hashes, model, hot)
+	}
+
+	matched, _ := cache.MatchPrefix(tokens, model, map[string]struct{}{hot: {}, stale: {}})
+	assert.Equal(t, map[string]int{hot: 100}, matched)
+
+	block, ok := cache.store.Get(hashes[0])
+	assert.True(t, ok)
+	assert.NotContains(t, block.modelToPods[model], stale)
+	assert.Contains(t, block.modelToPods[model], hot)
+}
+
+// A pod routed the prefix within the eviction duration still matches it.
+func TestRecentPodStillMatches(t *testing.T) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+
+	cache := NewPrefixHashTable()
+	clock := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	cache.now = func() time.Time { return clock }
+
+	const model, pod = "m", "ns/pod-a"
+	tokens := []byte{1, 2, 3, 4}
+	cache.AddPrefix(cache.GetPrefixHashes(tokens), model, pod)
+
+	clock = clock.Add(prefixCacheEvictionDuration)
+	matched, _ := cache.MatchPrefix(tokens, model, map[string]struct{}{pod: {}})
+	assert.Equal(t, map[string]int{pod: 100}, matched)
+}
+
+// The block can outlive one of its pods without another AddPrefix: a later
+// AddPrefix for a different pod keeps the block cached, and the stale pod must
+// stop matching once its own access time passes the eviction duration.
+func TestStalePodStopsMatchingWithoutAnotherAdd(t *testing.T) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+
+	cache := NewPrefixHashTable()
+	clock := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	cache.now = func() time.Time { return clock }
+
+	const model, recent, stale = "m", "ns/pod-recent", "ns/pod-stale"
+	tokens := []byte{1, 2, 3, 4}
+	hashes := cache.GetPrefixHashes(tokens)
+	cache.AddPrefix(hashes, model, stale)
+	clock = clock.Add(prefixCacheEvictionDuration / 2)
+	cache.AddPrefix(hashes, model, recent)
+	clock = clock.Add(prefixCacheEvictionDuration/2 + time.Minute)
+
+	matched, _ := cache.MatchPrefix(tokens, model, map[string]struct{}{recent: {}, stale: {}})
+	assert.Equal(t, map[string]int{recent: 100}, matched)
 }

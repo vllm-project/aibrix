@@ -119,6 +119,10 @@ func resolveTargetsFromNodes(
 
 	targets := make(map[string]resolvedTarget)
 	missing := make(map[string]string)
+	unauthorizedReason := "NodeNotAuthorized"
+	if effectiveMode(w) == modelv1alpha1.ModelWarmupModeContinuous && namespace.Labels[ResourcePoolLabelKey] == "" {
+		unauthorizedReason = "NamespacePoolNotConfigured"
+	}
 	addTarget := func(node *corev1.Node, source string) {
 		target := targets[node.Name]
 		target.NodeName = node.Name
@@ -137,7 +141,7 @@ func resolveTargetsFromNodes(
 					continue
 				}
 				if !isNodeAuthorized(namespace, node) {
-					missing[name] = "NodeNotAuthorized"
+					missing[name] = unauthorizedReason
 					continue
 				}
 				addTarget(node, source)
@@ -154,7 +158,7 @@ func resolveTargetsFromNodes(
 					continue
 				}
 				if !isNodeAuthorized(namespace, node) {
-					missing[node.Name] = "NodeNotAuthorized"
+					missing[node.Name] = unauthorizedReason
 					continue
 				}
 				addTarget(node, source)

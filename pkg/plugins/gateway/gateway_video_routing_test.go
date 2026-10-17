@@ -1190,6 +1190,9 @@ func TestIsMultipartFormPath(t *testing.T) {
 	assert.True(t, isMultipartFormPath(PathVideos+"?foo=bar"))
 	assert.True(t, isMultipartFormPath(PathVideosSync))
 	assert.True(t, isMultipartFormPath(PathAudioTranscriptions))
+	assert.True(t, isMultipartFormPath(PathImagesEdits))
+	assert.True(t, isMultipartFormPath(PathImagesEdits+"?foo=bar"))
+	assert.False(t, isMultipartFormPath(PathImagesGenerations), "image generations take a JSON body")
 	assert.False(t, isMultipartFormPath(PathVideos+"/video-1"))
 	assert.False(t, isMultipartFormPath(PathChatCompletions))
 }

@@ -109,13 +109,15 @@ type Server struct {
 }
 
 // HasRequestBuffers is a test-observation API: it reports whether an in-flight
-// request retains body state in either production buffer. sync.Map makes the
-// point-in-time lookup safe concurrently with Process cleanup; callers should
-// invoke it after Process returns when asserting terminal cleanup.
+// request retains state in the request buffer, the stream buffer or the running
+// stream usage. sync.Map makes the point-in-time lookup safe concurrently with
+// Process cleanup; callers should invoke it after Process returns when asserting
+// terminal cleanup.
 func HasRequestBuffers(requestID string) bool {
 	_, requestPresent := requestBuffers.Load(requestID)
 	_, streamPresent := streamBuffers.Load(requestID)
-	return requestPresent || streamPresent
+	_, usagePresent := streamUsage.Load(requestID)
+	return requestPresent || streamPresent || usagePresent
 }
 
 // recvResult is one (message, error) pair produced by a stream's srv.Recv().
@@ -411,6 +413,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) (err err
 		}
 		requestBuffers.Delete(st.requestID)
 		streamBuffers.Delete(st.requestID)
+		streamUsage.Delete(st.requestID)
 		// end spans created by this server
 		for _, span := range []trace.Span{st.toLastRespSpan, st.firstRespSpan, st.inferenceSpan} {
 			if span != nil {
@@ -804,10 +807,12 @@ func (s *Server) responseForResponseHeaderError(st *processState, resp *extProcP
 }
 
 func (s *Server) sendProcessingResponse(srv extProcPb.ExternalProcessor_ProcessServer, st *processState, resp *extProcPb.ProcessingResponse) error {
-	if err := srv.Send(resp); err != nil && len(st.model) > 0 {
+	if err := srv.Send(resp); err != nil {
 		klog.ErrorS(err, "gateway fail to send response to envoy-proxy", "requestID", st.requestID)
-		s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "send_envoy_proxy", "499", st.routerCtx)
-		s.finishRequestCount(st)
+		if len(st.model) > 0 {
+			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "send_envoy_proxy", "499", st.routerCtx)
+			s.finishRequestCount(st)
+		}
 
 		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "EOF") {
 			klog.Warning("Stream already closed by client", "requestID", st.requestID)
@@ -912,6 +917,9 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	// to that request without changing Context semantics for other routers.
 	if isExclusive && resolvedExclusive == string(routing.RouterPD) {
 		routeCtx.Context = ctx
+		if limit := replicaInflightLimit(routeCtx); limit > 0 {
+			return s.routeWithEarlyAdmission(routeCtx, router, &utils.PodArray{Pods: readyPods}, limit)
+		}
 	}
 	return router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
 }

@@ -25,14 +25,15 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/controller/rayclusterfleet/util"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 // rolloutRecreate implements the logic for recreating a replica set.
-func (r *RayClusterFleetReconciler) rolloutRecreate(ctx context.Context, d *orchestrationv1alpha1.RayClusterFleet, rsList []*orchestrationv1alpha1.RayClusterReplicaSet, clusterMap map[types.UID][]*rayclusterv1.RayCluster) error {
+func (r *RayClusterFleetReconciler) rolloutRecreate(ctx context.Context, d *orchestrationv1alpha1.RayClusterFleet, rsList []*orchestrationv1alpha1.RayClusterReplicaSet, clusterMap map[types.UID][]*rayclusterv1.RayCluster) (ctrl.Result, error) {
 	// Don't create a new RS if not already existed, so that we avoid scaling up before scaling down.
 	newRS, oldRSs, err := r.getAllReplicaSetsAndSyncRevision(ctx, d, rsList, false)
 	if err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
 	allRSs := append(oldRSs, newRS)
 	activeOldRSs := util.FilterActiveReplicaSets(oldRSs)
@@ -40,7 +41,7 @@ func (r *RayClusterFleetReconciler) rolloutRecreate(ctx context.Context, d *orch
 	// scale down old replica sets.
 	scaledDown, err := r.scaleDownOldReplicaSetsForRecreate(ctx, activeOldRSs, d)
 	if err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
 	if scaledDown {
 		// Update DeploymentStatus.
@@ -56,19 +57,19 @@ func (r *RayClusterFleetReconciler) rolloutRecreate(ctx context.Context, d *orch
 	if newRS == nil {
 		newRS, oldRSs, err = r.getAllReplicaSetsAndSyncRevision(ctx, d, rsList, true)
 		if err != nil {
-			return err
+			return ctrl.Result{}, err
 		}
 		allRSs = append(oldRSs, newRS)
 	}
 
 	// scale up new replica set.
 	if _, err := r.scaleUpNewReplicaSetForRecreate(ctx, newRS, d); err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
 
 	if util.DeploymentComplete(d, &d.Status) {
 		if err := r.cleanupDeployment(ctx, oldRSs, d); err != nil {
-			return err
+			return ctrl.Result{}, err
 		}
 	}
 

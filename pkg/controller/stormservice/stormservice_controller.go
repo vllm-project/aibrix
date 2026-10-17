@@ -125,7 +125,7 @@ func (r *StormServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	revisions, err := r.getControllerRevision(ctx, stormService)
 	if err != nil {
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, err
 	}
 	history.SortControllerRevisions(revisions)
 

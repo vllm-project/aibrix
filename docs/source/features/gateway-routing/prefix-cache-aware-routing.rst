@@ -105,7 +105,7 @@ Set these variables on the gateway plugin deployment. The defaults are the built
      - Maximum number of blocks in the index. The least recently updated blocks are evicted first.
    * - ``AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS``
      - ``20``
-     - A block that has not been refreshed for this long expires. A block is refreshed each time the gateway routes a request that contains it.
+     - A block that has not been refreshed for this long expires. A block is refreshed each time the gateway routes a request that contains it. The same duration applies to each pod within a block: a pod that has not been routed the block for this long no longer counts as a match, even while the block stays cached for other pods.
    * - ``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``
      - ``1``
      - The ``factor`` in the standalone selection above. A model config profile can override it per request with ``routingConfig.prefixCache.standardDeviationFactor``.

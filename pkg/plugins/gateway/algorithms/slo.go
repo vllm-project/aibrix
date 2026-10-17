@@ -17,6 +17,7 @@ package routingalgorithms
 
 import (
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/least"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/queue"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
@@ -89,15 +90,15 @@ func NewSLORouter(modelName string) (types.QueueRouter, error) {
 	// this fallback delegate back to defaultRM's shared least-request policy instead of
 	// each SLO router instance carrying its own copy.
 	rm := NewRouterManager()
-	defaultRouter, _ := NewLeastLoadPullingRouter(loadProvider)
+	defaultRouter, _ := least.NewLeastLoadPullingRouter(loadProvider)
 	defaultProvider := func(_ *types.RoutingContext) (types.Router, error) { return defaultRouter, nil }
 	rm.RegisterProvider(RouterSLO, defaultProvider)
 	rm.RegisterProvider(RouterSLOLeastLoadPulling, defaultProvider)
 	rm.Register(RouterSLOPackLoad, func() (types.Router, error) { return NewPackLoadRouter(loadProvider) })
-	rm.Register(RouterSLOLeastLoad, func() (types.Router, error) { return NewLeastLoadRouter(loadProvider) })
+	rm.Register(RouterSLOLeastLoad, func() (types.Router, error) { return least.NewLeastLoadRouter(loadProvider) })
 	// RouterLeastRequest must be registered on the local rm because rm.SetFallback
 	// resolves the provider from rm.routerFactory, populated by rm.Init() below.
-	rm.Register(RouterLeastRequest, NewLeastRequestRouter)
+	rm.Register(RouterLeastRequest, least.NewLeastRequestTopKRouter)
 	rm.Init()
 
 	sloQueue, err := queue.NewSLOQueue(rm.Select, modelName)

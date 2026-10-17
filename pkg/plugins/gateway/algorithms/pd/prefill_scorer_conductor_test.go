@@ -95,9 +95,11 @@ func (m *mockMetricCache) GetPodRunningRequests(podName, podNamespace string) (i
 	return 0, fmt.Errorf("not implemented in mock")
 }
 
-func (m *mockMetricCache) AdmitPodRunningRequest(podName, podNamespace string, limit int64) (bool, error) {
-	return false, fmt.Errorf("not implemented in mock")
+func (m *mockMetricCache) AdmitPodRunningRequest(podName, podNamespace string, limit int64) (bool, bool, error) {
+	return false, false, fmt.Errorf("not implemented in mock")
 }
+
+func (m *mockMetricCache) ReleasePodRunningRequest(podName, podNamespace string) {}
 
 func (m *mockMetricCache) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {
 	return nil, nil

@@ -30,31 +30,31 @@ msgstr "架构"
 msgid "Request Routing"
 msgstr "请求路由"
 
-#: ../../source/index.rst:96
+#: ../../source/index.rst:99
 msgid "Model Management"
 msgstr "模型管理"
 
-#: ../../source/index.rst:107
+#: ../../source/index.rst:111
 msgid "Scaling & Efficiency"
 msgstr "扩缩容与效率"
 
-#: ../../source/index.rst:115
+#: ../../source/index.rst:119
 msgid "Batch Inference"
 msgstr "批量推理"
 
-#: ../../source/index.rst:123
+#: ../../source/index.rst:127
 msgid "Benchmark"
 msgstr "基准测试"
 
-#: ../../source/index.rst:130
+#: ../../source/index.rst:134
 msgid "Development"
 msgstr "开发"
 
-#: ../../source/index.rst:137
+#: ../../source/index.rst:141
 msgid "Production Readiness"
 msgstr "生产就绪"
 
-#: ../../source/index.rst:146
+#: ../../source/index.rst:150
 msgid "Community"
 msgstr "社区"
 

@@ -48,6 +48,9 @@ const (
 	// gauge to track #outstanding prefill requests
 	GatewayPrefillOutstandingRequests = "gateway_prefill_outstanding_requests"
 
+	// counter to track the media items the gateway sends to EPD encode pods
+	GatewayPDEncodeRequestTotal = "gateway_pd_encode_request_total"
+
 	// counter to track the decode-leg aborts the gateway fires when the
 	// prefill leg of a PD request fails or the decode watchdog gives up on it
 	GatewayPDDecodeAbortTotal = "gateway_pd_decode_abort_total"
@@ -156,6 +159,14 @@ var (
 				Raw: Gauge,
 			},
 			Description: "Total number of outstanding prefill requests received by the gateway",
+		},
+		GatewayPDEncodeRequestTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of media items the gateway sent to EPD encode pods, by result",
 		},
 		GatewayPDDecodeAbortTotal: {
 			MetricScope:  PodMetricScope,

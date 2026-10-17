@@ -75,6 +75,10 @@ The backend exposes both gRPC (`:50060`) and REST (`:8090`) APIs. The REST API i
 | GET | `/api/v1/quotas` | List quotas |
 | POST | `/api/v1/playground/chat/completions` | Playground chat (SSE proxy) |
 
+The [Gateway API guide](gateways.md) documents the namespaced
+`/api/v1/gateway-instances` REST API, Kubernetes permissions and concurrency
+requirements.
+
 ## Regenerating Protobuf Code
 
 After modifying `apps/console/api/proto/`:

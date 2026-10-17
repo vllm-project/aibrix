@@ -436,6 +436,17 @@ if extended, ok := tok.(interface {
 }
 ```
 
+## Benchmarks
+
+The package includes benchmarks for the local tokenizer at the prompt sizes used in the gateway CPU sizing discussion (see issue #2019):
+
+```sh
+go test ./pkg/utils/tokenizer/ -run '^$' -bench BenchmarkTokenizeInputText -benchtime=20x -count=3
+go test ./pkg/utils/tokenizer/ -run '^$' -bench BenchmarkTokenizeInputTextParallel -benchtime=20x -count=3 -cpu 1,2,4,8
+```
+
+Both benchmarks report allocations and a `tokens/s` metric; the parallel variant shows how throughput scales across cores.
+
 ## Contributing
 
 When contributing to this package:

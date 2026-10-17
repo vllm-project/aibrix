@@ -174,9 +174,9 @@ func (r *RayClusterFleetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	switch f.Spec.Strategy.Type {
 	case appsv1.RecreateDeploymentStrategyType:
-		return ctrl.Result{}, r.rolloutRecreate(ctx, f, rsList, clusterMap)
+		return r.rolloutRecreate(ctx, f, rsList, clusterMap)
 	case appsv1.RollingUpdateDeploymentStrategyType:
-		return ctrl.Result{}, r.rolloutRolling(ctx, f, rsList)
+		return r.rolloutRolling(ctx, f, rsList)
 	}
 
 	return ctrl.Result{}, nil
