@@ -282,7 +282,7 @@ reason. The other annotations still apply.
      - float
      - ``2.0``
      - KPA
-     - Sets the threshold for entering KPA panic mode when short-window demand is high relative to stable-window demand.
+     - KPA enters panic mode when the panic window asks for at least this many times the current pods. While in panic mode it does not scale down, and it leaves panic mode once a whole stable window has passed below the threshold.
    * - ``autoscaling.aibrix.ai/scale-up-cooldown-window``
      - duration
      - ``0s``
