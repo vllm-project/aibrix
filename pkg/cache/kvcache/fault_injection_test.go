@@ -269,3 +269,70 @@ func TestKVEventViewFaultInjection(t *testing.T) {
 		t.Log("note: legacy dispatch did not produce a false hit in these scenarios")
 	}
 }
+
+// faultFullHit reports whether the index would route prefix fully to pod.
+func faultFullHit(
+	index *syncprefixcacheindexer.SyncPrefixHashTable,
+	model string,
+	lora int64,
+	pod string,
+	prefix []byte,
+) bool {
+	matches, hashes := index.MatchPrefix(
+		model, lora, prefix, map[string]struct{}{pod: {}},
+	)
+	want := len(index.GetPrefixHashes(prefix))
+	return len(hashes) == want && matches[pod] > 0
+}
+
+// TestKVEventViewReconnectOverZMQ exercises the full transport path: a
+// publisher restarts with a fresh sequence space while the subscription stays
+// up, and the old prefix must stop matching while the new one is learned.
+func TestKVEventViewReconnectOverZMQ(t *testing.T) {
+	prefixA := faultPrefix('C')
+	prefixB := faultPrefix('D')
+	hashesA := []int64{301, 302}
+	hashesB := []int64{401, 402}
+
+	index := syncprefixcacheindexer.NewSyncPrefixHashTable()
+	defer index.Close()
+	handler := &kvViewHandler{index: index, model: faultModel, lora: -1, pod: faultPod}
+	config := &ZMQClientConfig{
+		PodKey:         faultPod,
+		PodIP:          "127.0.0.1",
+		ModelName:      faultModel,
+		PubPort:        25601,
+		RouterPort:     25602,
+		PollTimeout:    100 * time.Millisecond,
+		ReplayTimeout:  time.Second,
+		ReconnectDelay: 100 * time.Millisecond,
+	}
+
+	publisher := createMockPublisher(t, config.PubPort, config.RouterPort)
+	client := NewZMQClient(config, handler)
+	if err := client.Start(); err != nil {
+		t.Fatalf("failed to start client: %v", err)
+	}
+	defer client.Stop()
+	time.Sleep(200 * time.Millisecond)
+
+	require.NoError(t, publisher.PublishEvent(storedEvents(hashesA, prefixA)[0]))
+	time.Sleep(300 * time.Millisecond)
+	require.True(t, faultFullHit(index, faultModel, -1, faultPod, prefixA),
+		"prefix stored before the restart should match")
+
+	// The publisher restarts and numbers its batches from 1 again.
+	publisher.Close()
+	time.Sleep(300 * time.Millisecond)
+	publisher = createMockPublisher(t, config.PubPort, config.RouterPort)
+	defer publisher.Close()
+	time.Sleep(500 * time.Millisecond)
+
+	require.NoError(t, publisher.PublishEvent(storedEvents(hashesB, prefixB)[0]))
+	time.Sleep(500 * time.Millisecond)
+
+	require.False(t, faultFullHit(index, faultModel, -1, faultPod, prefixA),
+		"a publisher restart must drop the old cached view")
+	require.True(t, faultFullHit(index, faultModel, -1, faultPod, prefixB),
+		"the new sequence space should be accepted")
+}
