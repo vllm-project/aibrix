@@ -65,6 +65,7 @@ The backend exposes both gRPC (`:50060`) and REST (`:8090`) APIs. The REST API i
 | DELETE | `/api/v1/deployments/{id}` | Delete deployment |
 | GET | `/api/v1/jobs` | List batch jobs |
 | GET | `/api/v1/jobs/{id}` | Get job |
+| GET | `/api/v1/files/{file_id}/summary` | Preview an existing batch dataset |
 | POST | `/api/v1/jobs` | Create batch job |
 | GET | `/api/v1/apikeys` | List API keys |
 | POST | `/api/v1/apikeys` | Create API key |
@@ -78,6 +79,30 @@ The backend exposes both gRPC (`:50060`) and REST (`:8090`) APIs. The REST API i
 The [Gateway API guide](gateways.md) documents the namespaced
 `/api/v1/gateway-instances` REST API, Kubernetes permissions and concurrency
 requirements.
+
+## Existing batch dataset previews
+
+After selecting an existing dataset in the batch job wizard, the Console shows
+its request count, models, and endpoints. It warns about malformed rows and
+model/template mismatches; submission still performs the normal batch validation.
+Preview failures do not prevent selecting a dataset, and the UI offers a retry.
+
+`GET /api/v1/files/{file_id}/summary` uses the same access check as downloading
+file content. It checks storage-backed file metadata first and returns 413 for
+files larger than 8 MiB without downloading them (the metadata content endpoint
+buffers full objects). Those datasets can still be selected for submission.
+Content reads are additionally capped at 8 MiB plus one byte, with the existing
+file-client timeout. Only complete lines within that preview
+are counted, excluding blank lines. The response includes `request_count`,
+`invalid_lines`, `models`, `endpoints`, and `truncated`. Counts include invalid
+non-empty rows; `invalid_lines` reports invalid JSON or rows missing a POST
+method, model, or endpoint. No prompt or response content is returned.
+
+If metadata and content sizes disagree and the preview is cut off, `truncated`
+is true: the request count is a lower bound and the detected models/endpoints
+may be incomplete. The UI labels the result accordingly.
+Summaries are fetched only for the selected file, not for every row in the file
+list. Switching files cancels the previous preview request.
 
 ## Regenerating Protobuf Code
 
