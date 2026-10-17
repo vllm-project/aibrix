@@ -1147,6 +1147,25 @@ func TestTokenLoadTracker_CorrectDecodeCostAfterConcurrentRelease(t *testing.T) 
 	assert.EqualValues(t, 1, charges)
 }
 
+// Two corrections near the float64 limit would overflow the pod's counter to
+// +Inf, which no release undoes; such costs are ignored.
+func TestTokenLoadTracker_CorrectDecodeCostIgnoresHugeCosts(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, TokenLoadConfig{})
+	const pod = "ns/decode-0"
+	tr.AcquireDecodeWithTTL("a", pod, 100, 0)
+	tr.AcquireDecodeWithTTL("b", pod, 100, 0)
+
+	tr.CorrectDecodeCost("a", 1e308)
+	tr.CorrectDecodeCost("b", 1e308)
+	tr.CorrectDecodeCost("b", maxCorrectedDecodeCost+1)
+	assert.Equal(t, 200.0, tr.GetDecodeLoad(pod))
+
+	tr.ReleaseDecode("a")
+	tr.ReleaseDecode("b")
+	tr.AcquireDecodeWithTTL("c", pod, 100, 0)
+	assert.Equal(t, 100.0, tr.GetDecodeLoad(pod))
+}
+
 // A correction racing the release of the same charge never leaves a cost
 // behind: whichever runs second sees the other's result.
 func TestTokenLoadTracker_CorrectDecodeCostRacesRelease(t *testing.T) {
