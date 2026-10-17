@@ -63,6 +63,12 @@ type ZMQClient struct {
 	// socket. Guarded by mu.
 	replayInFlight bool
 
+	// replayWg tracks background replay goroutines. stopped is set by Stop so
+	// no new background replay starts once shutdown began. Both are guarded by
+	// mu; Stop waits replayWg before closing the sockets.
+	replayWg sync.WaitGroup
+	stopped  bool
+
 	// pending holds live batches that arrived ahead of lastSeq+1 until the
 	// missing sequences are replayed or the gap is declared unrecoverable.
 	// Guarded by applyMu.
@@ -183,7 +189,7 @@ func (c *ZMQClient) Start() error {
 		// Retry in the background: without the replay the index misses every
 		// batch published before the subscription, and the consumer only
 		// retries on reconnect.
-		go c.retryReplay(0, 3)
+		c.retryReplayAsync(0, 3)
 	}
 
 	// Start event consumption goroutine
@@ -199,10 +205,14 @@ func (c *ZMQClient) Stop() {
 	klog.Infof("Stopping ZMQ client for pod %s", c.config.PodKey)
 
 	// Cancel context to signal shutdown
+	c.mu.Lock()
+	c.stopped = true
+	c.mu.Unlock()
 	c.cancel()
 
-	// Wait for goroutines to finish
+	// Wait for goroutines to finish before closing the sockets they use.
 	c.wg.Wait()
+	c.replayWg.Wait()
 
 	// Clean up sockets
 	c.mu.Lock()
@@ -565,7 +575,16 @@ func (c *ZMQClient) setLastSequence(seq int64) {
 // requestReplayAsync asks the publisher for the batches missing after fromSeq
 // without blocking the event path.
 func (c *ZMQClient) requestReplayAsync(fromSeq int64) {
+	c.mu.Lock()
+	if c.stopped {
+		c.mu.Unlock()
+		return
+	}
+	c.replayWg.Add(1)
+	c.mu.Unlock()
+
 	go func() {
+		defer c.replayWg.Done()
 		_, ran, err := c.runReplay(fromSeq)
 		if err != nil {
 			klog.Warningf("Replay from seq %d failed for %s: %v",
@@ -576,6 +595,23 @@ func (c *ZMQClient) requestReplayAsync(fromSeq int64) {
 			// found nothing; only the guard knows whether a gap is still open.
 			c.recoverStalledGap()
 		}
+	}()
+}
+
+// retryReplayAsync runs retryReplay in a tracked goroutine so Stop cannot close
+// the replay socket under it.
+func (c *ZMQClient) retryReplayAsync(fromSeq int64, attempts int) {
+	c.mu.Lock()
+	if c.stopped {
+		c.mu.Unlock()
+		return
+	}
+	c.replayWg.Add(1)
+	c.mu.Unlock()
+
+	go func() {
+		defer c.replayWg.Done()
+		c.retryReplay(fromSeq, attempts)
 	}()
 }
 
@@ -609,12 +645,19 @@ func (c *ZMQClient) retryReplay(fromSeq int64, attempts int) {
 			return
 		case <-time.After(c.config.ReconnectDelay):
 		}
-		if _, _, err := c.runReplay(fromSeq); err == nil {
+		_, ran, err := c.runReplay(fromSeq)
+		if err == nil && ran {
 			return
-		} else {
+		}
+		if err != nil {
 			klog.Warningf("Replay retry %d/%d from seq %d failed for %s: %v",
 				i+1, attempts, fromSeq, c.config.PodKey, err)
+			continue
 		}
+		// Another replay owned the socket; this attempt did not run, so keep
+		// retrying instead of reporting a success that never happened.
+		klog.V(4).Infof("Replay retry %d/%d from seq %d skipped for %s: replay in flight",
+			i+1, attempts, fromSeq, c.config.PodKey)
 	}
 }
 
