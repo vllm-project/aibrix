@@ -177,6 +177,17 @@ func (b *placementBackoff) due(claim types.NamespacedName, generation int64, roo
 	return false, left
 }
 
+// waiting reports whether another claim must still wait before retrying. Unlike
+// due, this leaves the attempt untouched: only the claim's own reconcile may
+// reset its refusal count or consume an unwritten refusal.
+func (b *placementBackoff) waiting(claim types.NamespacedName, generation int64, room roomSignature) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	attempt, found := b.attempts[claim]
+	return found && attempt.written && generation == attempt.generation &&
+		!roomMayHaveAppeared(attempt.room, room, attempt.helpedBy()) && b.now().Before(attempt.readyAt)
+}
+
 // refused records that no card could hold a claim, and returns how long it
 // waits before its next try. The wait doubles with each refusal in a row, up to
 // maximumPlacementBackoff.
@@ -490,8 +501,7 @@ func enqueueWaitingClaims(c client.Client) handler.MapFunc {
 			klog.ErrorS(err, "unable to list model claims to wake", "namespace", obj.GetNamespace())
 			return nil
 		}
-		oldestFirst(claims.Items)
-		var requests []reconcile.Request
+		waiting := make([]modelv1alpha1.ModelClaim, 0, len(claims.Items))
 		for i := range claims.Items {
 			claim := &claims.Items[i]
 			if claim.Name == obj.GetName() || !claim.DeletionTimestamp.IsZero() ||
@@ -499,6 +509,12 @@ func enqueueWaitingClaims(c client.Client) handler.MapFunc {
 				desiredReplicas(claim) <= int32(len(claim.Status.Instances)) {
 				continue
 			}
+			waiting = append(waiting, *claim)
+		}
+		placementPriorityFirst(waiting)
+		var requests []reconcile.Request
+		for i := range waiting {
+			claim := &waiting[i]
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: claim.Namespace, Name: claim.Name},
 			})

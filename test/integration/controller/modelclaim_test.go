@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"math"
 	"strings"
 	"time"
 
@@ -172,6 +173,76 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 			g.Expect(latest.Status.Instances[0].Pod).To(gomega.Equal("warm-late"))
 		}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
 	})
+
+	ginkgo.DescribeTable("placement priority on a newly eligible pod",
+		func(highFootprint string, highFits bool) {
+			fixture.Runtime().SetDefaultState("active", true)
+			fixture.Runtime().SetCard(3 << 30)
+			pod := fixture.CreateWarmPodPending(ns.Name, "warm-priority", "pool-priority", 1)
+			claims := make([]*modelapi.ModelClaim, 0, 2)
+			for _, spec := range []struct {
+				name      string
+				priority  int32
+				footprint string
+			}{
+				{"a-older-low", 1, "1Gi"},
+				{"z-newer-high", 10, highFootprint},
+			} {
+				claim := &modelapi.ModelClaim{
+					ObjectMeta: metav1.ObjectMeta{Name: spec.name, Namespace: ns.Name},
+					Spec: modelapi.ModelClaimSpec{
+						Priority:    spec.priority,
+						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{constants.ModelPoolLabelName: "pool-priority"}},
+						ArtifactURL: "huggingface://integration/" + spec.name,
+						Engine:      "vllm",
+						PerGPU: &modelapi.ModelClaimPerGPU{
+							MaximumFootprint: resource.MustParse(spec.footprint),
+							KVFloor:          resource.MustParse("1Gi"),
+						},
+					},
+				}
+				gomega.Expect(k8sClient.Create(ctx, claim)).To(gomega.Succeed())
+				claims = append(claims, claim)
+			}
+			low, high := claims[0], claims[1]
+			gomega.Eventually(func(g gomega.Gomega) {
+				for _, claim := range claims {
+					latest := fixture.GetClaim(g, claim)
+					g.Expect(latest.Status.Instances).To(gomega.BeEmpty())
+					condition := meta.FindStatusCondition(latest.Status.Conditions, string(modelapi.ModelClaimConditionTypeScheduled))
+					g.Expect(condition).NotTo(gomega.BeNil())
+					g.Expect(condition.Reason).To(gomega.Equal("NoMatchingPods"))
+				}
+			}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+
+			fixture.MarkWarmPodRunning(pod)
+			if highFits {
+				gomega.Eventually(func(g gomega.Gomega) {
+					g.Expect(fixture.GetClaim(g, high).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+					g.Expect(fixture.GetClaim(g, low).Status.Instances).To(gomega.BeEmpty())
+				}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+				gomega.Expect(fixture.Runtime().ActivateCallCount()).To(gomega.Equal(1))
+				gomega.Expect(k8sClient.Delete(ctx, high)).To(gomega.Succeed())
+				gomega.Eventually(func(g gomega.Gomega) {
+					g.Expect(apierrors.IsNotFound(k8sClient.Get(
+						ctx, client.ObjectKeyFromObject(high), &modelapi.ModelClaim{},
+					))).To(gomega.BeTrue())
+					g.Expect(fixture.GetClaim(g, low).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+				}, 2*modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+			} else {
+				gomega.Eventually(func(g gomega.Gomega) {
+					g.Expect(fixture.GetClaim(g, low).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+					latest := fixture.GetClaim(g, high)
+					g.Expect(latest.Status.Instances).To(gomega.BeEmpty())
+					condition := meta.FindStatusCondition(latest.Status.Conditions, string(modelapi.ModelClaimConditionTypeScheduled))
+					g.Expect(condition).NotTo(gomega.BeNil())
+					g.Expect(condition.Reason).To(gomega.Equal(constants.ModelClaimReasonTooLargeForAnyCard))
+				}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+			}
+		},
+		ginkgo.Entry("places the newer high-priority claim first and low after capacity is freed", "1Gi", true),
+		ginkgo.Entry("skips a high-priority claim too large for every card", "3Gi", false),
+	)
 
 	ginkgo.It("places a pending claim when its existing warm pod becomes runnable", func() {
 		fixture.Runtime().SetDefaultState("active", true)
@@ -434,11 +505,42 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 		gomega.Expect(stored.Spec.Engine).To(gomega.Equal("vllm"))
 		gomega.Expect(stored.Spec.Replicas).NotTo(gomega.BeNil())
 		gomega.Expect(*stored.Spec.Replicas).To(gomega.Equal(int32(1)))
+		storedUnstructured := &unstructured.Unstructured{}
+		storedUnstructured.SetGroupVersionKind(modelapi.GroupVersion.WithKind("ModelClaim"))
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(defaults), storedUnstructured)).To(gomega.Succeed())
+		priority, found, err := unstructured.NestedInt64(storedUnstructured.Object, "spec", "priority")
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(found).To(gomega.BeTrue())
+		gomega.Expect(priority).To(gomega.Equal(int64(0)))
+
+		for _, tc := range []struct {
+			name     string
+			priority int32
+		}{
+			{name: "claim-priority-zero", priority: 0},
+			{name: "claim-priority-max", priority: math.MaxInt32},
+		} {
+			claim := validClaim(tc.name)
+			claim.Spec.Priority = tc.priority
+			gomega.Expect(k8sClient.Create(ctx, claim)).To(gomega.Succeed())
+		}
+
+		gomega.Expect(k8sClient.Patch(
+			ctx,
+			storedUnstructured,
+			client.RawPatch(types.MergePatchType, []byte(`{"spec":{"priority":0}}`)),
+		)).To(gomega.Succeed())
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(defaults), storedUnstructured)).To(gomega.Succeed())
+		priority, found, err = unstructured.NestedInt64(storedUnstructured.Object, "spec", "priority")
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(found).To(gomega.BeTrue())
+		gomega.Expect(priority).To(gomega.Equal(int64(0)))
 
 		invalid := []struct {
 			name   string
 			change func(*modelapi.ModelClaim)
 		}{
+			{name: "priority-negative", change: func(claim *modelapi.ModelClaim) { claim.Spec.Priority = -1 }},
 			{name: "engine", change: func(claim *modelapi.ModelClaim) { claim.Spec.Engine = "unknown" }},
 			{name: "replicas-zero", change: func(claim *modelapi.ModelClaim) { claim.Spec.Replicas = ptr.To[int32](0) }},
 			{name: "replicas-two", change: func(claim *modelapi.ModelClaim) { claim.Spec.Replicas = ptr.To[int32](2) }},
@@ -572,23 +674,45 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 	ginkgo.It("takes a change of perGPU and refuses a change of anything else", func() {
 		claim := fixture.CreateClaim(ns.Name, "claim-immutable", "pool-a", nil, map[string]string{"--max-model-len": "4096"})
 
-		changes := map[string]func(*modelapi.ModelClaimSpec){
-			"modelName": func(spec *modelapi.ModelClaimSpec) { spec.ModelName = ptr.To("another-model") },
-			"podSelector": func(spec *modelapi.ModelClaimSpec) {
-				spec.PodSelector = &metav1.LabelSelector{MatchLabels: map[string]string{constants.ModelPoolLabelName: "pool-b"}}
+		changes := map[string]struct {
+			change  func(*modelapi.ModelClaimSpec)
+			message string
+		}{
+			"modelName": {
+				change:  func(spec *modelapi.ModelClaimSpec) { spec.ModelName = ptr.To("another-model") },
+				message: "modelName is immutable",
 			},
-			"artifactURL": func(spec *modelapi.ModelClaimSpec) { spec.ArtifactURL = "huggingface://integration/another" },
-			"engine":      func(spec *modelapi.ModelClaimSpec) { spec.Engine = "sglang" },
-			"engineConfig": func(spec *modelapi.ModelClaimSpec) {
-				spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Args: map[string]string{"--max-model-len": "8192"}}
+			"podSelector": {
+				change: func(spec *modelapi.ModelClaimSpec) {
+					spec.PodSelector = &metav1.LabelSelector{MatchLabels: map[string]string{constants.ModelPoolLabelName: "pool-b"}}
+				},
+				message: "podSelector is immutable",
+			},
+			"artifactURL": {
+				change:  func(spec *modelapi.ModelClaimSpec) { spec.ArtifactURL = "huggingface://integration/another" },
+				message: "artifactURL is immutable",
+			},
+			"engine": {
+				change:  func(spec *modelapi.ModelClaimSpec) { spec.Engine = "sglang" },
+				message: "engine is immutable",
+			},
+			"engineConfig": {
+				change: func(spec *modelapi.ModelClaimSpec) {
+					spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Args: map[string]string{"--max-model-len": "8192"}}
+				},
+				message: "engineConfig is immutable",
+			},
+			"priority": {
+				change:  func(spec *modelapi.ModelClaimSpec) { spec.Priority = 1 },
+				message: "priority is immutable; create a new ModelClaim instead",
 			},
 		}
-		for field, change := range changes {
+		for field, tc := range changes {
 			changed := claim.DeepCopy()
-			change(&changed.Spec)
+			tc.change(&changed.Spec)
 			err := k8sClient.Patch(ctx, changed, client.MergeFrom(claim))
 			gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "a change of %s: %v", field, err)
-			gomega.Expect(err.Error()).To(gomega.ContainSubstring(field + " is immutable"))
+			gomega.Expect(err.Error()).To(gomega.ContainSubstring(tc.message))
 		}
 		withoutConfig := claim.DeepCopy()
 		withoutConfig.Spec.EngineConfig = nil

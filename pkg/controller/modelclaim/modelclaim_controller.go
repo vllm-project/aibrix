@@ -270,39 +270,7 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	case desiredReplicas(pm) > int32(len(pm.Status.Instances)):
 		wait, err := r.ensureActivated(ctx, pm, candidates, readings)
 		if err != nil {
-			if apierrors.IsConflict(err) {
-				// The claim was read a moment too early to be written. No engine
-				// was asked for, so nothing failed.
-				return requeueOnConflict(err)
-			}
-			r.Recorder.Event(pm, corev1.EventTypeWarning, "ActivateFailed", err.Error())
-			meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
-				Type:    string(modelv1alpha1.ModelClaimConditionReady),
-				Status:  metav1.ConditionFalse,
-				Reason:  "ActivateFailed",
-				Message: err.Error(),
-			})
-			pm.Status.Phase = modelv1alpha1.ModelClaimFailed
-			setClaimGauges(pm)
-			if uerr := r.Status().Update(ctx, pm); uerr != nil {
-				return requeueOnConflict(uerr)
-			}
-			// A card divided for an engine that then did not start has lost that
-			// engine again. Divide it now, so its neighbours get back the room
-			// they gave up for it. The cache may still show the record that
-			// was just taken back, so the API server is asked.
-			r.divideCardsAsListed(ctx, candidates, readings)
-			// A start that failed is tried again as a refusal is, less and
-			// less often. The pool is remembered as it stands, since a pod
-			// that joins or turns ready may be able to start the engine. A
-			// claim with an instance left comes back every round, to check
-			// that instance's engine.
-			wait := r.backoff().failedToStart(req.NamespacedName, pm.Generation,
-				r.roomAsCached(ctx, pm.Namespace, candidates))
-			if len(pm.Status.Instances) > 0 {
-				wait = DefaultRequeueDuration
-			}
-			return ctrl.Result{RequeueAfter: wait}, nil
+			return r.handleActivationError(ctx, pm, candidates, readings, req.NamespacedName, err)
 		}
 		// A claim with nothing placed has nothing else to do each round, so it
 		// comes back when its wait is up. One with an instance keeps coming
@@ -348,10 +316,14 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if len(failedInstanceSlots(pm)) < failed {
 		booting = true
 	}
+	scheduled := meta.FindStatusCondition(pm.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	failedRetryWaiting := pm.Status.Phase == modelv1alpha1.ModelClaimFailed && scheduled != nil &&
+		scheduled.Reason == scheduledReasonWaitingForPlacementTurn
 	r.recomputeReadiness(pm)
-	if len(pm.Status.Instances) == 0 && r.backoff().waitsAfterAFailedStart(req.NamespacedName) {
+	if len(pm.Status.Instances) == 0 && (failedRetryWaiting || r.backoff().waitsAfterAFailedStart(req.NamespacedName)) {
 		// A pass inside the wait tried nothing, so the claim still stands as
-		// its last try left it.
+		// its last try left it. A denied placement turn also preserves the
+		// Failed retry lane after a restart has lost the in-memory backoff.
 		pm.Status.Phase = modelv1alpha1.ModelClaimFailed
 	}
 	setClaimGauges(pm)
@@ -383,6 +355,55 @@ func (r *ModelClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		requeueAfter = min(requeueAfter, ActivatingRequeueDuration)
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+// handleActivationError preserves admission-read and conflict retries while
+// retaining activation-failure status and backoff for other errors.
+func (r *ModelClaimReconciler) handleActivationError(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	candidates []corev1.Pod,
+	readings *runtimeReadings,
+	claimKey types.NamespacedName,
+	err error,
+) (ctrl.Result, error) {
+	if apierrors.IsConflict(err) {
+		// The claim was read a moment too early to be written. No engine
+		// was asked for, so nothing failed.
+		return requeueOnConflict(err)
+	}
+	var admissionReadErr placementAdmissionReadError
+	if errors.As(err, &admissionReadErr) {
+		return ctrl.Result{}, err
+	}
+	r.Recorder.Event(pm, corev1.EventTypeWarning, "ActivateFailed", err.Error())
+	meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+		Type:    string(modelv1alpha1.ModelClaimConditionReady),
+		Status:  metav1.ConditionFalse,
+		Reason:  "ActivateFailed",
+		Message: err.Error(),
+	})
+	pm.Status.Phase = modelv1alpha1.ModelClaimFailed
+	setClaimGauges(pm)
+	if uerr := r.Status().Update(ctx, pm); uerr != nil {
+		return requeueOnConflict(uerr)
+	}
+	// A card divided for an engine that then did not start has lost that
+	// engine again. Divide it now, so its neighbours get back the room
+	// they gave up for it. The cache may still show the record that
+	// was just taken back, so the API server is asked.
+	r.divideCardsAsListed(ctx, candidates, readings)
+	// A start that failed is tried again as a refusal is, less and
+	// less often. The pool is remembered as it stands, since a pod
+	// that joins or turns ready may be able to start the engine. A
+	// claim with an instance left comes back every round, to check
+	// that instance's engine.
+	wait := r.backoff().failedToStart(claimKey, pm.Generation,
+		r.roomAsCached(ctx, pm.Namespace, candidates))
+	if len(pm.Status.Instances) > 0 {
+		wait = DefaultRequeueDuration
+	}
+	return ctrl.Result{RequeueAfter: wait}, nil
 }
 
 // reconcileHealthAndWakes checks each instance's engine against what its
@@ -699,6 +720,24 @@ func (r *ModelClaimReconciler) ensureActivated(
 	claims, listErr := r.listClaimsForAccount(ctx, pm.Namespace)
 	ledgers := podLedgersFrom(claims, listErr, candidates, snapshots, r.podsWithoutWakeReserve(ctx, candidates))
 	r.reservations().takeFrom(ledgers, pm.Namespace, pm.Name, r.now())
+	if len(pm.Status.Instances) == 0 {
+		if listErr != nil {
+			return 0, placementAdmissionReadError{err: listErr}
+		}
+		if blocker := r.placementTurnBlocker(ctx, pm, candidates, claims, ledgers, readings); blocker != nil {
+			message := fmt.Sprintf("waiting behind ModelClaim %s with priority %d that can use the same pool",
+				blocker.Name, blocker.Spec.Priority)
+			if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
+				Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
+				Status:  metav1.ConditionFalse,
+				Reason:  scheduledReasonWaitingForPlacementTurn,
+				Message: message,
+			}) {
+				r.Recorder.Event(pm, corev1.EventTypeNormal, scheduledReasonWaitingForPlacementTurn, message)
+			}
+			return DefaultRequeueDuration, nil
+		}
+	}
 	admissible, refusals := admissibleCandidates(candidates, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(pm))
 	rankByRoom(placementStates, ledgers)
 
@@ -2312,14 +2351,25 @@ func enqueueModelClaimsForPod(c client.Client) handler.MapFunc {
 			klog.ErrorS(err, "unable to list model claims in namespace", "namespace", obj.GetNamespace())
 			return nil
 		}
-		// A pod that joins may bring room, so the claims are tried oldest first.
-		oldestFirst(list.Items)
+		// Check existing instances before placing new ones. Zero-instance Failed
+		// retries also compete for placement; admission remains authoritative.
+		var existing, unplaced []modelv1alpha1.ModelClaim
+		for _, claim := range list.Items {
+			if len(claim.Status.Instances) > 0 {
+				existing = append(existing, claim)
+			} else {
+				unplaced = append(unplaced, claim)
+			}
+		}
+		oldestFirst(existing)
+		placementPriorityFirst(unplaced)
+		ordered := append(existing, unplaced...)
 		requests := make([]reconcile.Request, 0, len(list.Items))
-		for i := range list.Items {
+		for i := range ordered {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Namespace: list.Items[i].Namespace,
-					Name:      list.Items[i].Name,
+					Namespace: ordered[i].Namespace,
+					Name:      ordered[i].Name,
 				},
 			})
 		}

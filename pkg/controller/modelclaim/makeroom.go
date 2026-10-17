@@ -354,13 +354,12 @@ func (r *ModelClaimReconciler) planRoom(
 	return roomPlan{}, false
 }
 
-// firstToMakeRoomFor reports whether room is to be made for a claim now. It is
-// the claim that has waited longest of those that room can be made for, as
-// Kueue's BestEffortFIFO admits workloads: a claim that has waited longer, but
-// that no room can be made for on any pod now, does not hold up the ones behind
-// it. A claim that holds a card keeps its turn, so that the room made for it is
-// not taken by a claim behind it. The claims that wait are the ones
-// waitingClaims lists.
+// firstToMakeRoomFor reports whether room is to be made for a claim now. It
+// considers priority-eligible claims in priority/FIFO order, but retains
+// BestEffortFIFO behavior: a claim that cannot make room on any pod now does
+// not hold up the claims behind it. A claim that holds a card keeps its turn,
+// so that the room made for it is not taken by a claim behind it. The claims
+// that wait are the ones waitingClaims lists.
 func (r *ModelClaimReconciler) firstToMakeRoomFor(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
@@ -372,8 +371,8 @@ func (r *ModelClaimReconciler) firstToMakeRoomFor(
 	if _, holding := r.reservations().heldFor(pm.Namespace, pm.Name, now); holding {
 		return true
 	}
-	waiting, listed := r.waitingClaims(ctx, pm, candidates)
-	if !listed {
+	waiting, claims := r.waitingClaims(ctx, pm, candidates)
+	if claims == nil {
 		return false
 	}
 	for i := range waiting {
@@ -388,11 +387,15 @@ func (r *ModelClaimReconciler) firstToMakeRoomFor(
 		if err != nil {
 			continue
 		}
-		for j := range candidates {
-			pod := &candidates[j]
-			if !selects(claim, pod) {
-				continue
-			}
+		shared, valid := candidatePodsForClaim(claim, candidates)
+		if !valid {
+			continue
+		}
+		if r.backoff().waiting(client.ObjectKeyFromObject(claim), claim.Generation, roomSignatureOf(shared, claims)) {
+			continue
+		}
+		for j := range shared {
+			pod := &shared[j]
 			if _, found := r.planRoom(ctx, claim, pod, ledgers[pod.Name], perGPU.minimumReserveBytes(), readings); found {
 				return false
 			}
@@ -420,39 +423,33 @@ func (r *ModelClaimReconciler) wakeWaitsOn(ctx context.Context, pod *corev1.Pod,
 	return false
 }
 
-// waitingClaims lists, oldest first, the claims that wait for a card in a
-// claim's pool: the claims in its namespace that select one of its candidate
-// pods, and still miss an instance. A claim whose last start failed is not
-// among them, the given one included, as room does not help it. The claims are
-// listed as the account lists them: the cache can miss an instance recorded a
-// moment ago, and a claim just placed would then seem to wait.
+// waitingClaims lists priority-eligible claims in priority/FIFO order for a
+// claim's pool. The claims are listed as the account lists them: the cache can
+// miss an instance recorded a moment ago, and a claim just placed would then
+// seem to wait. The full listing is returned too, so backoff checks can compare
+// room without another account read or discarding the live instances.
 func (r *ModelClaimReconciler) waitingClaims(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
 	candidates []corev1.Pod,
-) ([]modelv1alpha1.ModelClaim, bool) {
-	if pm.Status.Phase == modelv1alpha1.ModelClaimFailed {
-		return nil, false
-	}
+) ([]modelv1alpha1.ModelClaim, *modelv1alpha1.ModelClaimList) {
 	claims, err := r.listClaimsForAccount(ctx, pm.Namespace)
 	if err != nil {
-		return nil, false
+		return nil, nil
 	}
 	var waiting []modelv1alpha1.ModelClaim
 	for i := range claims.Items {
 		claim := claims.Items[i]
 		if claim.Name == pm.Name {
-			waiting = append(waiting, *pm)
-			continue
+			claim = *pm
 		}
-		if !claim.DeletionTimestamp.IsZero() || claim.Status.Phase == modelv1alpha1.ModelClaimFailed ||
-			desiredReplicas(&claim) <= int32(len(claim.Status.Instances)) || !selectsAny(&claim, candidates) {
+		if !priorityEligible(&claim, candidates) {
 			continue
 		}
 		waiting = append(waiting, claim)
 	}
-	oldestFirst(waiting)
-	return waiting, true
+	placementPriorityFirst(waiting)
+	return waiting, claims
 }
 
 // selects reports whether a claim selects a pod.
