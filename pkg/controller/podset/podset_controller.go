@@ -225,6 +225,21 @@ func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrat
 		return controllerdrain.Result{}, fmt.Errorf("failed to get pods for PodSet: %w", err)
 	}
 
+	// A Failed or Succeeded pod (evicted, shut down with its node) is not active but keeps its
+	// name, so creating its replacement would fail with AlreadyExists. Delete it and let the
+	// delete event bring the next reconcile, which creates the replacement. A pod already
+	// being deleted is skipped, so it does not block creating the other missing pods.
+	var terminatedPods []*v1.Pod
+	for i := range podList.Items {
+		if pod := &podList.Items[i]; podutil.IsPodTerminal(pod) && pod.DeletionTimestamp == nil {
+			terminatedPods = append(terminatedPods, pod)
+		}
+	}
+	if len(terminatedPods) > 0 {
+		klog.InfoS("Deleting terminated pods", "count", len(terminatedPods), "podset", podSet.Name)
+		return controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, podSet, terminatedPods, nil, aibrixconst.PodDrainReasonRollout, time.Now())
+	}
+
 	activePods := filterActivePods(podList.Items)
 	currentPodCount := len(activePods)
 	desiredPodCount := int(podSet.Spec.PodGroupSize)
