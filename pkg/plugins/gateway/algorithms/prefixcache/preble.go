@@ -485,13 +485,21 @@ func (p *prefixCacheAndLoadRouter) updatePodSet(readyPods []*v1.Pod) {
 
 		// Filter timestamps entries for nodes that still have valid pods.
 		// Dropped entries must also leave the aggregates, or a node reused by a
-		// surviving pod keeps the departed pod's history forever.
+		// surviving pod keeps the departed pod's history forever. HasValidPods
+		// takes the node lock, so cache it per node instead of re-checking it
+		// once per timestamp entry on hot nodes.
 		newTimestamps := make([]histogramEntry, 0, len(h.timestamps))
+		nodeHasValidPods := make(map[*prefixcacheindexer.TreeNode]bool)
 		for _, entry := range h.timestamps {
 			if entry.node == nil {
 				continue
 			}
-			if entry.node.HasValidPods(currentPodSet) {
+			hasValidPods, checked := nodeHasValidPods[entry.node]
+			if !checked {
+				hasValidPods = entry.node.HasValidPods(currentPodSet)
+				nodeHasValidPods[entry.node] = hasValidPods
+			}
+			if hasValidPods {
 				newTimestamps = append(newTimestamps, entry)
 				continue
 			}
