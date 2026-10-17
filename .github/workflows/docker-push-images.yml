@@ -5,6 +5,12 @@ on:
   push:
     branches: [ "main", "release-*" ]
 
+# When merges land close together, build only the newest one: the running
+# build finishes, and a newer push replaces any build still waiting to start.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # Each image is built once and pushed to both Docker Hub and GHCR.
   build-push:
