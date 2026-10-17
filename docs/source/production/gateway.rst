@@ -42,6 +42,7 @@ in ``config/gateway/gateway-plugin/gateway-plugin.yaml``:
     containers:
       - name: gateway-plugin
         args:
+          - --installation-namespace=$(POD_NAMESPACE)
           - --kube-api-qps=5
           - --kube-api-burst=10
 
@@ -59,6 +60,13 @@ caches. These flags control API server traffic, not inference request QPS.
 Gateway Plugin Model Discovery and Listing
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+Kubernetes discovery requires ``--installation-namespace`` to name an existing,
+accessible namespace. Packaged deployments use the gateway Pod namespace by
+default. Pod, ModelAdapter, and ModelClaim discovery stays within this namespace;
+there is no cluster-wide fallback. For Helm, set
+``gatewayPlugin.installationNamespace`` to select another existing workload
+namespace and grant the matching discovery permissions.
+
 The plugin can omit Kubernetes resource types that it does not serve. The
 following options keep Pod discovery and select a list containing only models
 with a ready Pod:
@@ -68,6 +76,7 @@ with a ready Pod:
     containers:
       - name: gateway-plugin
         args:
+          - --installation-namespace=$(POD_NAMESPACE)
           - --watch-model-adapters=false
           - --watch-model-claims=false
           - --model-list-mode=ready-pods
@@ -92,14 +101,15 @@ set a positive ``--model-list-discovery-max-age`` duration. For example:
     containers:
       - name: gateway-plugin
         args:
+          - --installation-namespace=$(POD_NAMESPACE)
           - --model-list-mode=ready-pods
           - --model-list-discovery-max-age=5m
 
 The duration is the maximum age of a successful verification, not a polling
 interval; zero (the default) preserves the existing behavior. The first list
 request, and the first request after that age expires, obtains a current,
-paginated Kubernetes LIST of Pods and enabled ModelAdapters and compares it
-with events already applied to the gateway cache. Only one verification runs
+paginated Kubernetes LIST of Pods and enabled ModelAdapters in the installation
+namespace and compares it with events already applied to the gateway cache. Only one verification runs
 at a time. A failed or mismatched LIST, a request timeout, or a reported watch
 error invalidates the previous proof. The endpoint returns HTTP 503 with a
 ``service_unavailable`` error until a later verification succeeds; retries
@@ -113,37 +123,12 @@ discovery completes and returns the same 503 while its cache is unavailable.
 This only covers requests that reach the plugin; when no gateway process or
 ready Service endpoint is reachable, the front proxy controls the response.
 
-The gateway plugin serves ``GET /v1/models`` on its HTTP port. The standard
-Kubernetes Envoy route still sends this path to the metadata service; route
-it to the plugin HTTP port if clients should receive the plugin's list. For
-the default Kustomize installation, this optional HTTPRoute sends the exact
-path to the plugin Service on port 8080. The exact match takes precedence over
-the existing metadata route's prefix match, while ``/v1/files`` and
-``/v1/batches`` keep their existing destination:
-
-.. code-block:: yaml
-
-    apiVersion: gateway.networking.k8s.io/v1
-    kind: HTTPRoute
-    metadata:
-      name: gateway-plugin-model-list
-      namespace: aibrix-system
-    spec:
-      parentRefs:
-        - name: aibrix-eg
-      rules:
-        - matches:
-            - path:
-                type: Exact
-                value: /v1/models
-          backendRefs:
-            - name: aibrix-gateway-plugins
-              port: 8080
-
-Apply the route only when you intend to expose the plugin's list. Confirm its
-``Accepted`` and ``ResolvedRefs`` conditions before relying on it. The route
-does not change whether the plugin returns ``known`` or ``ready-pods``; that
-choice comes from ``--model-list-mode``.
+The gateway plugin serves both ``GET /v1/models`` and ``GET /v1/models/`` on
+its HTTP port. The packaged Kustomize and Helm routes send these requests to the
+plugin Service on port 8080; the Helm Envoy sidecar uses the local plugin HTTP
+port. ``/v1/files`` and ``/v1/batches`` keep their existing metadata destination
+in Envoy Gateway mode. Confirm the HTTPRoute's ``Accepted`` and ``ResolvedRefs``
+conditions before relying on it. The list mode comes from ``--model-list-mode``.
 
 Envoy Proxy
 ~~~~~~~~~~~

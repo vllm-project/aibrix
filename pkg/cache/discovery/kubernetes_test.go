@@ -1,5 +1,5 @@
 /*
-Copyright 2026 The Aibrix Team.
+Copyright 2024 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,21 +31,149 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
-	v1 "k8s.io/api/core/v1"
+	"github.com/vllm-project/aibrix/pkg/client/clientset/versioned/fake"
+	discoverytest "github.com/vllm-project/aibrix/test/utils/discovery"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	k8stesting "k8s.io/client-go/testing"
-
-	"github.com/vllm-project/aibrix/pkg/client/clientset/versioned/fake"
 )
+
+func TestKubernetesNamespaceRequired(t *testing.T) {
+	for _, namespace := range []string{"", " ", "*", "team/a", "Team-A", "team-a ", strings.Repeat("a", 64)} {
+		t.Run(namespace, func(t *testing.T) {
+			provider := NewKubernetesProvider(&rest.Config{Host: "http://unused.invalid"}, namespace)
+			require.ErrorContains(t, provider.Watch(func(WatchEvent) { t.Error("unexpected event") }, nil), "installation namespace")
+		})
+	}
+	require.NoError(t, ValidateNamespace("team-a"))
+	require.ErrorContains(t, NewKubernetesProvider(nil, "team-a").Watch(func(WatchEvent) {}, nil), "configuration is required")
+}
+
+func TestKubernetesDiscoveryFiltersForeignObjects(t *testing.T) {
+	const namespace = "team-a"
+	pods := []corev1.Pod{
+		{ObjectMeta: metav1.ObjectMeta{Name: "model", Namespace: namespace, UID: "pod", ResourceVersion: "1"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "model", Namespace: "team-a-other"}},
+	}
+	adapters := []modelv1alpha1.ModelAdapter{
+		{ObjectMeta: metav1.ObjectMeta{Name: "adapter", Namespace: namespace, UID: "adapter", ResourceVersion: "1"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "foreign-adapter", Namespace: "team-a-other"}},
+	}
+	config := discoverytest.NewServer(t, namespace, pods, adapters, nil)
+	stop := make(chan struct{})
+	defer close(stop)
+	var mu sync.Mutex
+	var events []WatchEvent
+	provider := NewKubernetesProvider(config, namespace).WithModelClaims().WithModelListHealth(time.Minute)
+	require.NoError(t, provider.WatchApplied(func(event WatchEvent) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, event)
+		return true
+	}, stop))
+	require.NoError(t, provider.ModelListHealth().EnsureVerified(context.Background()))
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, events, 3) // Pod + adapter initial events, then adapter reconciliation.
+	for _, event := range events {
+		object, err := meta.Accessor(event.Object)
+		require.NoError(t, err)
+		require.Equal(t, namespace, object.GetNamespace())
+	}
+}
+
+func TestKubernetesStartupAccessFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name, resource string
+		watch          bool
+		status         int
+	}{
+		{"namespace missing", "/team-a", false, http.StatusNotFound},
+		{"namespace denied", "/team-a", false, http.StatusForbidden},
+		{"pod list denied", "/pods", false, http.StatusForbidden},
+		{"pod watch denied", "/pods", true, http.StatusForbidden},
+		{"adapter list denied", "/modeladapters", false, http.StatusForbidden},
+		{"adapter watch denied", "/modeladapters", true, http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := discoverytest.NewServer(t, "team-a", nil, nil, func(w http.ResponseWriter, r *http.Request) bool {
+				if strings.HasSuffix(r.URL.Path, tc.resource) && (r.URL.Query().Get("watch") == "true") == tc.watch {
+					http.Error(w, "access failed", tc.status)
+					return true
+				}
+				return false
+			})
+			provider := NewKubernetesProvider(config, "team-a")
+			provider.startupTimeout = 5 * time.Second
+			require.Error(t, provider.Watch(func(WatchEvent) {}, nil))
+		})
+	}
+}
+
+func TestKubernetesStartupCancelsBlockedRequests(t *testing.T) {
+	for _, resource := range []string{"/team-a", "/pods", "/modeladapters"} {
+		t.Run(resource, func(t *testing.T) {
+			canceled := make(chan struct{}, 4)
+			config := discoverytest.NewServer(t, "team-a", nil, nil, func(w http.ResponseWriter, r *http.Request) bool {
+				if !strings.HasSuffix(r.URL.Path, resource) || r.URL.Query().Get("watch") == "true" {
+					return false
+				}
+				<-r.Context().Done()
+				canceled <- struct{}{}
+				return true
+			})
+			provider := NewKubernetesProvider(config, "team-a")
+			provider.startupTimeout = 150 * time.Millisecond
+			err := provider.Watch(func(WatchEvent) {}, nil)
+			require.True(t, errors.Is(err, context.DeadlineExceeded), "got %v", err)
+			select {
+			case <-canceled:
+			case <-time.After(5 * time.Second):
+				t.Fatal("startup left an API request running")
+			}
+		})
+	}
+}
+
+func TestKubernetesEventsRejectForeignUpdatesAndDeletes(t *testing.T) {
+	local := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "model", Namespace: "team-a"}}
+	foreign := local.DeepCopy()
+	foreign.Namespace = "team-a-other"
+	provider := NewKubernetesProvider(nil, "team-a")
+	var delivered int
+	handler := func(WatchEvent) bool { delivered++; return true }
+	for _, event := range []WatchEvent{
+		{Type: EventAdd, Object: foreign},
+		{Type: EventUpdate, Object: foreign, OldObject: foreign},
+		{Type: EventUpdate, Object: local, OldObject: foreign},
+		{Type: EventDelete, Object: foreign},
+	} {
+		provider.deliver(handler, event)
+	}
+	require.Zero(t, delivered)
+	provider.deliver(handler, WatchEvent{Type: EventUpdate, Object: local, OldObject: local})
+	provider.deliver(handler, WatchEvent{Type: EventDelete, Object: local})
+	require.Equal(t, 2, delivered)
+}
 
 func TestKubernetesProviderVerificationDetectsSilentWatchLoss(t *testing.T) {
 	var deleted atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/pods") {
+		if r.URL.Path == "/api/v1/namespaces/default" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(&corev1.Namespace{
+				TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
+				ObjectMeta: metav1.ObjectMeta{Name: "default"},
+			})
+			return
+		}
+
+		if r.URL.Path != "/api/v1/namespaces/default/pods" {
 			http.NotFound(w, r)
 			return
 		}
@@ -55,12 +184,12 @@ func TestKubernetesProviderVerificationDetectsSilentWatchLoss(t *testing.T) {
 			<-r.Context().Done()
 			return
 		}
-		list := &v1.PodList{
+		list := &corev1.PodList{
 			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PodList"},
 			ListMeta: metav1.ListMeta{ResourceVersion: "10"},
 		}
 		if !deleted.Load() {
-			list.Items = []v1.Pod{{ObjectMeta: metav1.ObjectMeta{
+			list.Items = []corev1.Pod{{ObjectMeta: metav1.ObjectMeta{
 				Namespace: "default", Name: "served", UID: "one", ResourceVersion: "10",
 			}}}
 		}
@@ -73,7 +202,7 @@ func TestKubernetesProviderVerificationDetectsSilentWatchLoss(t *testing.T) {
 		server.Close()
 	})
 
-	provider := NewKubernetesProvider(&rest.Config{Host: server.URL}).
+	provider := NewKubernetesProvider(&rest.Config{Host: server.URL}, "default").
 		WithModelAdapters(false).WithModelListHealth(time.Minute)
 	result := make(chan error, 1)
 	go func() {
@@ -116,7 +245,8 @@ func TestCanListModelClaims(t *testing.T) {
 				client.PrependReactor("list", "modelclaims",
 					func(k8stesting.Action) (bool, runtime.Object, error) { return true, nil, tc.err })
 			}
-			assert.Equal(t, tc.want, canListModelClaims(client))
+			assert.Equal(t, tc.want, canListModelClaims(context.Background(), client, "workloads"))
+			require.Equal(t, "workloads", client.Actions()[0].GetNamespace())
 		})
 	}
 }
@@ -136,8 +266,17 @@ func TestKubernetesProviderQueriesOnlyEnabledResources(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var adapterRequests, claimRequests atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				adapterRequest := strings.HasSuffix(r.URL.Path, "/modeladapters")
-				claimRequest := strings.HasSuffix(r.URL.Path, "/modelclaims")
+				if r.URL.Path == "/api/v1/namespaces/default" {
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(&corev1.Namespace{
+						TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
+						ObjectMeta: metav1.ObjectMeta{Name: "default"},
+					})
+					return
+				}
+
+				adapterRequest := r.URL.Path == "/apis/model.aibrix.ai/v1alpha1/namespaces/default/modeladapters"
+				claimRequest := r.URL.Path == "/apis/model.aibrix.ai/v1alpha1/namespaces/default/modelclaims"
 				if adapterRequest {
 					adapterRequests.Add(1)
 				}
@@ -156,18 +295,18 @@ func TestKubernetesProviderQueriesOnlyEnabledResources(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				switch {
-				case strings.HasSuffix(r.URL.Path, "/pods"):
-					_ = json.NewEncoder(w).Encode(&v1.PodList{
+				switch r.URL.Path {
+				case "/api/v1/namespaces/default/pods":
+					_ = json.NewEncoder(w).Encode(&corev1.PodList{
 						TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PodList"},
 						ListMeta: metav1.ListMeta{ResourceVersion: "1"},
 					})
-				case strings.HasSuffix(r.URL.Path, "/modeladapters"):
+				case "/apis/model.aibrix.ai/v1alpha1/namespaces/default/modeladapters":
 					_ = json.NewEncoder(w).Encode(&modelv1alpha1.ModelAdapterList{
 						TypeMeta: metav1.TypeMeta{APIVersion: "model.aibrix.ai/v1alpha1", Kind: "ModelAdapterList"},
 						ListMeta: metav1.ListMeta{ResourceVersion: "1"},
 					})
-				case strings.HasSuffix(r.URL.Path, "/modelclaims"):
+				case "/apis/model.aibrix.ai/v1alpha1/namespaces/default/modelclaims":
 					_ = json.NewEncoder(w).Encode(&modelv1alpha1.ModelClaimList{
 						TypeMeta: metav1.TypeMeta{APIVersion: "model.aibrix.ai/v1alpha1", Kind: "ModelClaimList"},
 						ListMeta: metav1.ListMeta{ResourceVersion: "1"},
@@ -183,7 +322,7 @@ func TestKubernetesProviderQueriesOnlyEnabledResources(t *testing.T) {
 				server.Close()
 			})
 
-			provider := NewKubernetesProvider(&rest.Config{Host: server.URL})
+			provider := NewKubernetesProvider(&rest.Config{Host: server.URL}, "default")
 			if !tc.useDefaults {
 				provider.WithModelAdapters(tc.watchAdapters)
 			}
@@ -210,4 +349,26 @@ func TestKubernetesProviderQueriesOnlyEnabledResources(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestKubernetesClaimEventsRejectForeignNamespaces(t *testing.T) {
+	local := &modelv1alpha1.ModelClaim{ObjectMeta: metav1.ObjectMeta{Name: "model", Namespace: "team-a"}}
+	foreign := local.DeepCopy()
+	foreign.Namespace = "other"
+	provider := NewKubernetesProvider(nil, "team-a").WithModelClaims().WithModelListHealth(time.Minute)
+	var delivered int
+	handler := func(WatchEvent) bool { delivered++; return true }
+	for _, event := range []WatchEvent{
+		{Type: EventAdd, Object: foreign},
+		{Type: EventUpdate, Object: foreign, OldObject: local},
+		{Type: EventUpdate, Object: local, OldObject: foreign},
+		{Type: EventDelete, Object: foreign},
+	} {
+		provider.deliver(handler, event)
+	}
+	require.Zero(t, delivered)
+	provider.deliver(handler, WatchEvent{Type: EventAdd, Object: local})
+	provider.deliver(handler, WatchEvent{Type: EventUpdate, Object: local, OldObject: local})
+	provider.deliver(handler, WatchEvent{Type: EventDelete, Object: local})
+	require.Equal(t, 3, delivered)
 }

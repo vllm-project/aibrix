@@ -1,0 +1,27 @@
+# HTTPRoutes stay in the control-plane namespace when discovery moves.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gateway-httproute-reader
+  namespace: system
+rules:
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - httproutes
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gateway-httproute-reader
+  namespace: system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gateway-httproute-reader
+subjects:
+- kind: ServiceAccount
+  name: gateway-plugins
+  namespace: system

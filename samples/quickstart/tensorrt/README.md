@@ -6,11 +6,15 @@ Adjust the model hostPath, image registry and GPU resources for your cluster.
 The gateway and StormService controller must already be installed. The commands
 below are instructions to run on your cluster, not an automated GPU test.
 
+The sample uses the default installation namespace, `aibrix-system`. If gateway
+discovery selects another namespace, update the sample namespace and commands
+together.
+
 ## Deploy and verify the workers
 
 ```bash
-kubectl apply -f samples/quickstart/tensorrt/tensor-rt-pd.yaml
-kubectl get pods -l model.aibrix.ai/name=Qwen3-8B -o wide
+kubectl apply -n aibrix-system -f samples/quickstart/tensorrt/tensor-rt-pd.yaml
+kubectl get pods -n aibrix-system -l model.aibrix.ai/name=Qwen3-8B -o wide
 ```
 
 After the workers are ready, query **each selected CTX worker directly**, from a

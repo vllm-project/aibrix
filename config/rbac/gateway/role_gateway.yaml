@@ -1,32 +1,25 @@
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: gateway-plugins-role
+  namespace: system
 rules:
 - apiGroups:
   - ""
   resources:
   - pods
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - model.aibrix.ai
   resources:
   - modeladapters
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - model.aibrix.ai
@@ -35,16 +28,4 @@ rules:
   verbs:
   - get
   - list
-  - watch
-- apiGroups:
-  - gateway.networking.k8s.io
-  resources:
-  - httproutes
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
   - watch

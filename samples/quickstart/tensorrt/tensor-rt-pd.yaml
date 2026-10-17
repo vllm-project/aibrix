@@ -1,6 +1,7 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
 metadata:
+  namespace: aibrix-system
   name: qwen-tensorrt-1p1d
 spec:
   replicas: 1

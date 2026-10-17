@@ -48,6 +48,9 @@ controllerManager:
   affinity: {}
 
 gatewayPlugin:
+  # Workload discovery namespace. Empty selects the Helm release namespace.
+  # A different namespace must already exist before installation.
+  installationNamespace: ""
   replicaCount: 1
   imagePullSecrets: []
   initContainer:

@@ -214,15 +214,21 @@ func (h *ModelListHealth) ModelsIfHealthy(list func() []string) ([]string, bool)
 	return list(), true
 }
 
-func listPodVersions(ctx context.Context, client kubernetes.Interface) (map[string]objectVersion, error) {
+func listPodVersions(ctx context.Context, client kubernetes.Interface, namespace string) (map[string]objectVersion, error) {
+	if err := ValidateNamespace(namespace); err != nil {
+		return nil, err
+	}
 	versions := make(map[string]objectVersion)
 	opts := metav1.ListOptions{Limit: modelListPageSize}
 	for {
-		page, err := client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, opts)
+		page, err := client.CoreV1().Pods(namespace).List(ctx, opts)
 		if err != nil {
 			return nil, err
 		}
 		for i := range page.Items {
+			if page.Items[i].Namespace != namespace {
+				continue
+			}
 			key, version := objectIdentity(&page.Items[i])
 			versions[key] = version
 		}
@@ -236,15 +242,21 @@ func listPodVersions(ctx context.Context, client kubernetes.Interface) (map[stri
 	}
 }
 
-func listAdapterVersions(ctx context.Context, client v1alpha1.Interface) (map[string]objectVersion, error) {
+func listAdapterVersions(ctx context.Context, client v1alpha1.Interface, namespace string) (map[string]objectVersion, error) {
+	if err := ValidateNamespace(namespace); err != nil {
+		return nil, err
+	}
 	versions := make(map[string]objectVersion)
 	opts := metav1.ListOptions{Limit: modelListPageSize}
 	for {
-		page, err := client.ModelV1alpha1().ModelAdapters(metav1.NamespaceAll).List(ctx, opts)
+		page, err := client.ModelV1alpha1().ModelAdapters(namespace).List(ctx, opts)
 		if err != nil {
 			return nil, err
 		}
 		for i := range page.Items {
+			if page.Items[i].Namespace != namespace {
+				continue
+			}
 			key, version := objectIdentity(&page.Items[i])
 			versions[key] = version
 		}

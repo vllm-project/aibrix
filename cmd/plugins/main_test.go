@@ -103,7 +103,16 @@ func TestPodsOnlyFlagsStartDiscoveryWithoutCRDAccess(t *testing.T) {
 
 	var crdRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/pods") {
+		if r.URL.Path == "/api/v1/namespaces/default" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(&v1.Namespace{
+				TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
+				ObjectMeta: metav1.ObjectMeta{Name: "default"},
+			})
+			return
+		}
+
+		if r.URL.Path != "/api/v1/namespaces/default/pods" {
 			crdRequests.Add(1)
 			http.Error(w, "custom resources are unavailable", http.StatusForbidden)
 			return
@@ -129,7 +138,8 @@ func TestPodsOnlyFlagsStartDiscoveryWithoutCRDAccess(t *testing.T) {
 
 	result := make(chan error, 1)
 	go func() {
-		result <- options.kubernetesProvider(&rest.Config{Host: server.URL}).Watch(func(discovery.WatchEvent) {}, stopCh)
+		provider := options.kubernetesProvider(&rest.Config{Host: server.URL}, "default")
+		result <- provider.Watch(func(discovery.WatchEvent) {}, stopCh)
 	}()
 	select {
 	case err := <-result:

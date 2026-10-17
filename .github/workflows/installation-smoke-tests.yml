@@ -479,6 +479,7 @@ jobs:
             --set "controllerManager.container.image.tag=${{ github.sha }}" \
             --set "gatewayPlugin.container.image.repository=aibrix/gateway-plugins" \
             --set "gatewayPlugin.container.image.tag=${{ github.sha }}" \
+            --set "gatewayPlugin.installationNamespace=default" \
             --set "metadata.service.container.image.repository=aibrix/metadata-service" \
             --set "metadata.service.container.image.tag=${{ github.sha }}" \
             --set "gpuOptimizer.container.image.repository=aibrix/metadata-service" \

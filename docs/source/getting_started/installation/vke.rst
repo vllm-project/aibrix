@@ -33,13 +33,20 @@ Download models in TOS and create the credential in the cluster.
 
 .. code-block:: console
 
-    kubectl create secret generic tos-credential --from-literal=TOS_ACCESS_KEY=<YOUR_ACCESS_KEY> --from-literal=TOS_SECRET_KEY=<YOUR_SECRET_KEY>
+    kubectl create secret generic tos-credential -n aibrix-system --from-literal=TOS_ACCESS_KEY=<YOUR_ACCESS_KEY> --from-literal=TOS_SECRET_KEY=<YOUR_SECRET_KEY>
 
 
 Deploy base model
 ~~~~~~~~~~~~~~~~~
 
-Save yaml as `model.yaml` and run `kubectl apply -f model.yaml`.
+The gateway discovers models only in its configured installation namespace.
+These samples use ``aibrix-system``, matching the default installation. If you
+select another workload namespace, update the sample namespaces, commands,
+and any referenced Secrets together. For Helm, set
+``gatewayPlugin.installationNamespace`` to that existing namespace; the chart
+configures the gateway argument and discovery permissions together.
+
+Save yaml as `model.yaml` and run `kubectl apply -n aibrix-system -f model.yaml`.
 
 .. literalinclude:: ../../../../samples/quickstart/vke/model.yaml
    :language: yaml
@@ -47,7 +54,7 @@ Save yaml as `model.yaml` and run `kubectl apply -f model.yaml`.
 Deploy Prefill-Decode (PD) Disaggregation Model
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Save yaml as `pd-model.yaml` and run `kubectl apply -f pd-model.yaml`.
+Save yaml as `pd-model.yaml` and run `kubectl apply -n aibrix-system -f pd-model.yaml`.
 
 .. literalinclude:: ../../../../samples/quickstart/vke/pd-model.yaml
    :language: yaml

@@ -89,3 +89,16 @@ msgstr "根据实际模型需求调整 `max-model-len`"
 #: ../../source/getting_started/advanced-k8s-examples.rst:175
 msgid "Probe delays accommodate model loading time (30s initial delay)"
 msgstr "探针延迟需覆盖模型加载时间（初始延迟 30s）"
+
+#: ../../source/getting_started/advanced-k8s-examples.rst:19
+msgid ""
+"The workloads below use ``aibrix-system-llm``. Create that namespace before "
+"starting the gateway and configure discovery to use it. For a Helm "
+"installation, set ``gatewayPlugin.installationNamespace=aibrix-system-llm`` "
+"while retaining the control plane in ``aibrix-system``. The chart grants "
+"workload discovery only in the selected namespace. Models in other "
+"namespaces will no longer be visible to this gateway."
+msgstr ""
+"以下工作负载使用 ``aibrix-system-llm``。请在启动网关之前创建该命名空间，并配置发现功能使用它。对于 Helm 安装，请设置 "
+"``gatewayPlugin.installationNamespace=aibrix-system-llm``，同时将控制平面保留在 "
+"``aibrix-system`` 中。Chart 仅授予所选命名空间内的工作负载发现权限。此网关将无法再发现其他命名空间中的模型。"

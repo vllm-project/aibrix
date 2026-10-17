@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -48,7 +47,16 @@ func TestVerifiedModelListUsesAppliedPodEvents(t *testing.T) {
 	}
 	var deleted atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/pods") {
+		if r.URL.Path == "/api/v1/namespaces/default" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(&v1.Namespace{
+				TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
+				ObjectMeta: metav1.ObjectMeta{Name: "default"},
+			})
+			return
+		}
+
+		if r.URL.Path != "/api/v1/namespaces/default/pods" {
 			http.NotFound(w, r)
 			return
 		}
@@ -75,7 +83,7 @@ func TestVerifiedModelListUsesAppliedPodEvents(t *testing.T) {
 		server.Close()
 	})
 
-	provider := discovery.NewKubernetesProvider(&rest.Config{Host: server.URL}).
+	provider := discovery.NewKubernetesProvider(&rest.Config{Host: server.URL}, "default").
 		WithModelAdapters(false).WithModelListHealth(time.Minute)
 	store := NewForTest()
 	result := make(chan error, 1)

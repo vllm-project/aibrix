@@ -51,7 +51,9 @@ var (
 	modelAdapterResyncRetryInterval = 1 * time.Second
 )
 
-func initCacheInformers(instance *Store, config *rest.Config, stopCh <-chan struct{}) error {
+// initControllerInformers retains the controller-manager scheduling cache scope.
+// Gateway initialization must use the namespace-scoped discovery provider.
+func initControllerInformers(instance *Store, config *rest.Config, stopCh <-chan struct{}) error {
 	if err := v1alpha1scheme.AddToScheme(scheme.Scheme); err != nil {
 		return err
 	}

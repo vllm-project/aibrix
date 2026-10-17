@@ -75,10 +75,11 @@ spec:
         - name: gateway-plugin
           image: gateway-plugins:latest
           imagePullPolicy: IfNotPresent
+          args:
+            - --installation-namespace=$(POD_NAMESPACE)
           # Optional API server client throttling (client-go defaults shown).
           # Both values must be greater than zero and apply to the core
           # Kubernetes and Gateway API clients, each with its own limiter.
-          # args:
           #   - --kube-api-qps=5
           #   - --kube-api-burst=10
           ports:
@@ -156,6 +157,10 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/models
+      backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 8080
+    - matches:
         - path:
             type: PathPrefix
             value: /v1/files
