@@ -414,11 +414,6 @@ keeps each engine within its KV limit, which the claim records in
 ``status.instances[].kvLimitBytes``. The limits change when engines start,
 stop, sleep or wake, and when the load moves between them.
 
-The effective KV floor is the declared ``kvFloor``, reduced to the startup
-capacity when that capacity is known, positive and smaller. The controller
-reports this reduction with a ``KVCapacityBelowFloor`` Warning on the claim.
-Mapped KV remains a lower bound on accounting.
-
 An engine sizes its KV block pool once, when it starts, and must never be given
 a KV limit above that size. The runtime agent reports the size as
 ``kv_initial_capacity_bytes`` in its snapshot, and the controller and runtime cap
@@ -426,6 +421,10 @@ the engine's KV limit at it. Room above the cap stays unassigned. When the size 
 not known, the field is ``null``. The runtime defers limit writes while startup
 capacity can still be captured. When capture is unavailable, limits remain
 uncapped.
+
+The effective KV floor is the declared ``kvFloor``, reduced to the startup
+capacity when that capacity is known, positive and smaller. The controller
+reports this reduction with a ``KVCapacityBelowFloor`` Warning on the claim.
 
 An engine goes on the route only once it is ready and runs within its KV
 limit. If something else raises an engine's KV limit, the controller sets it

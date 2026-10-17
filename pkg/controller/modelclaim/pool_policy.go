@@ -247,7 +247,12 @@ func computePoolKVTargets(
 		}
 		seen[model.Name] = struct{}{}
 		used := max(model.KVUsedBytes, 0)
-		base := max(floorBytes, used)
+		// As on the claim path, the floor is at most the startup capacity.
+		floor := floorBytes
+		if ceiling := model.KVInitialCapacityBytes; ceiling != nil && *ceiling > 0 {
+			floor = min(floorBytes, *ceiling)
+		}
+		base := max(floor, used)
 		if clampKVLimit(base, model.KVInitialCapacityBytes) < base {
 			return nil, fmt.Errorf("%s startup KV capacity is below its held KV", model.Name)
 		}

@@ -206,6 +206,29 @@ func TestComputePoolKVTargetsRefusesToShrinkBelowObservedKVUsage(t *testing.T) {
 	assert.Nil(t, targets)
 }
 
+func TestComputePoolKVTargetsCapsTheFloorAtStartupCapacity(t *testing.T) {
+	small, large := int64(100), int64(950)
+	targets, err := computePoolKVTargets(1000, 20, []poolKVModel{
+		{
+			Name:                   "small",
+			KVUsedBytes:            50,
+			KVCapacityBytes:        100,
+			KVInitialCapacityBytes: &small,
+		},
+		{
+			Name:                   "busy",
+			KVUsedBytes:            100,
+			KVCapacityBytes:        900,
+			KVInitialCapacityBytes: &large,
+			Activity:               poolRequestActivity{Active: true},
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, int64(100), targets["small"])
+	assert.Equal(t, int64(900), targets["busy"])
+}
+
 func TestKVInitialCapacityPoolSharesLeaveExcessUnassigned(t *testing.T) {
 	ceiling := int64(200)
 	a, b := readyEngine(200), readyEngine(500)

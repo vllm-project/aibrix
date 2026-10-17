@@ -825,17 +825,6 @@ msgstr ""
 
 #: ../../source/features/model-serving/model-claim.rst:378
 msgid ""
-"The effective KV floor is the declared ``kvFloor``, reduced to the startup "
-"capacity when that capacity is known, positive and smaller. The controller "
-"reports this reduction with a ``KVCapacityBelowFloor`` Warning on the claim. "
-"Mapped KV remains a lower bound on accounting."
-msgstr ""
-"有效 KV 下限为声明的 ``kvFloor``；当已知的启动容量为正数且更小时，"
-"将其降低到该启动容量。控制器通过 claim 上的 ``KVCapacityBelowFloor`` "
-"Warning 报告这一降低。已映射的 KV 仍是显存记账的下界。"
-
-#: ../../source/features/model-serving/model-claim.rst:378
-msgid ""
 "An engine sizes its KV block pool once, when it starts, and must never be given "
 "a KV limit above that size. The runtime agent reports the size as "
 "``kv_initial_capacity_bytes`` in its snapshot, and the controller and runtime cap "
@@ -849,6 +838,16 @@ msgstr ""
 "控制器和运行时将引擎的 KV 上限限制在这个大小以内。超出该上限的空间保持不分配。"
 "大小未知时，该字段为 ``null``。只要启动容量仍可捕获，运行时就会推迟写入 KV 上限。"
 "无法捕获时，不施加这一容量限制。"
+
+#: ../../source/features/model-serving/model-claim.rst:386
+msgid ""
+"The effective KV floor is the declared ``kvFloor``, reduced to the startup "
+"capacity when that capacity is known, positive and smaller. The controller "
+"reports this reduction with a ``KVCapacityBelowFloor`` Warning on the claim."
+msgstr ""
+"有效 KV 下限为声明的 ``kvFloor``；当已知的启动容量为正数且更小时，"
+"将其降低到该启动容量。控制器通过 claim 上的 ``KVCapacityBelowFloor`` "
+"Warning 报告这一降低。"
 
 #: ../../source/features/model-serving/model-claim.rst:417
 msgid ""
