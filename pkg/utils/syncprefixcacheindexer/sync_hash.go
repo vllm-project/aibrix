@@ -582,25 +582,60 @@ func (s *SyncPrefixHashTable) AddPrefixWithMedium(modelName string, loraID int64
 // model's adapter contexts too, whatever loraID is passed.
 func (s *SyncPrefixHashTable) RemovePrefix(modelName string, loraID int64, podName string) error {
 	s.contextMap.Range(func(key, value any) bool {
-		if key.(ModelContext).ModelName == modelName {
-			removePodFromContext(value.(*ContextData), podName)
+		ctx := key.(ModelContext)
+		if ctx.ModelName == modelName {
+			s.prunePodFromContext(ctx, value.(*ContextData), podName)
 		}
 		return true
 	})
 	return nil
 }
 
-func removePodFromContext(contextData *ContextData, podName string) {
-	contextData.prefixMu.Lock()
-	defer contextData.prefixMu.Unlock()
+// prunePodFromContext removes podName from every prefix of one context and
+// drops the engine-block mappings of the prefixes it was the last holder of.
+// The mapping and reverse index are part of the same invariant as
+// ProcessBlockRemoved: once no pod holds a block, no context block entry may
+// keep referencing it.
+func (s *SyncPrefixHashTable) prunePodFromContext(ctx ModelContext, contextData *ContextData, podName string) {
+	contextData.mappingMu.Lock()
+	defer contextData.mappingMu.Unlock()
 
+	orphaned := make(map[uint64]struct{})
+	contextData.prefixMu.Lock()
 	prefixStore := contextData.prefixStore
 	for prefixHash, pods := range prefixStore.prefixMap {
+		if _, held := pods[podName]; !held {
+			continue
+		}
 		delete(pods, podName)
 		if len(pods) == 0 {
 			delete(prefixStore.prefixMap, prefixHash)
 			prefixStore.totalPrefixes--
+			orphaned[prefixHash] = struct{}{}
 		}
+	}
+	contextData.prefixMu.Unlock()
+
+	s.dropOrphanedBlocks(ctx, contextData, orphaned)
+}
+
+// dropOrphanedBlocks deletes the engine-to-aibrix mappings whose aibrix prefix
+// no pod holds any more, and mirrors that removal into the reverse index.
+// Callers hold mappingMu.
+func (s *SyncPrefixHashTable) dropOrphanedBlocks(
+	ctx ModelContext,
+	contextData *ContextData,
+	orphaned map[uint64]struct{},
+) {
+	if len(orphaned) == 0 {
+		return
+	}
+	for engineBlockHash, aibrixHash := range contextData.hashMapping.engineToAibrix {
+		if _, gone := orphaned[aibrixHash]; !gone {
+			continue
+		}
+		delete(contextData.hashMapping.engineToAibrix, engineBlockHash)
+		s.updateBlockIndex(engineBlockHash, ctx, false)
 	}
 }
 
@@ -854,14 +889,17 @@ func (s *SyncPrefixHashTable) performEviction() {
 	// Phase 3: clean up expired pods within active (non-evicted) contexts, in
 	// batches so one eviction pass does not hold every context's prefixMu at
 	// once.
-	activeContexts := make([]*ContextData, 0, evictionBatchSize)
+	activeContexts := make([]evictionContext, 0, evictionBatchSize)
 	s.contextMap.Range(func(key, value interface{}) bool {
 		contextData := value.(*ContextData)
 		if contextData.markedForEviction.Load() {
 			return true // Skip contexts Phase 2 already removed.
 		}
 
-		activeContexts = append(activeContexts, contextData)
+		activeContexts = append(activeContexts, evictionContext{
+			ctx:  key.(ModelContext),
+			data: contextData,
+		})
 		if len(activeContexts) >= evictionBatchSize {
 			s.evictExpiredPodsInBatch(activeContexts, expiredBefore)
 			activeContexts = activeContexts[:0]
@@ -873,9 +911,22 @@ func (s *SyncPrefixHashTable) performEviction() {
 	}
 }
 
-// evictExpiredPodsInBatch processes multiple contexts to remove expired pods
-func (s *SyncPrefixHashTable) evictExpiredPodsInBatch(contexts []*ContextData, expiredBefore int64) {
-	for _, contextData := range contexts {
+// evictionContext pairs a context with its key so pod eviction can update the
+// reverse index, which is keyed by ModelContext.
+type evictionContext struct {
+	ctx  ModelContext
+	data *ContextData
+}
+
+// evictExpiredPodsInBatch processes multiple contexts to remove expired pods.
+// It drops the engine-block mappings of prefixes whose last pod expired, so
+// the reverse index does not keep entries for blocks no pod holds.
+func (s *SyncPrefixHashTable) evictExpiredPodsInBatch(contexts []evictionContext, expiredBefore int64) {
+	for _, entry := range contexts {
+		contextData := entry.data
+		contextData.mappingMu.Lock()
+
+		orphaned := make(map[uint64]struct{})
 		contextData.prefixMu.Lock()
 		prefixStore := contextData.prefixStore
 
@@ -891,9 +942,13 @@ func (s *SyncPrefixHashTable) evictExpiredPodsInBatch(contexts []*ContextData, e
 			if len(pods) == 0 {
 				delete(prefixStore.prefixMap, prefixHash)
 				prefixStore.totalPrefixes--
+				orphaned[prefixHash] = struct{}{}
 			}
 		}
 		contextData.prefixMu.Unlock()
+
+		s.dropOrphanedBlocks(entry.ctx, contextData, orphaned)
+		contextData.mappingMu.Unlock()
 	}
 }
 

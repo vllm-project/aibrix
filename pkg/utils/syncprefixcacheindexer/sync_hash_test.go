@@ -680,6 +680,98 @@ func TestRemovePrefix(t *testing.T) {
 	}
 }
 
+// TestRemovePrefixDropsReverseIndex checks that dropping a pod also removes the
+// engine block mappings only that pod held, and their reverse index entries.
+func TestRemovePrefixDropsReverseIndex(t *testing.T) {
+	table := NewSyncPrefixHashTable()
+	defer table.Close()
+
+	ctx := ModelContext{ModelName: testModelName, LoraID: int64(123)}
+	event := BlockStored{
+		BlockHashes: []int64{2001, 2002},
+		Tokens:      [][]byte{{1, 2, 3, 4}, {5, 6, 7, 8}},
+		ModelName:   ctx.ModelName,
+		LoraID:      ctx.LoraID,
+		SourcePod:   testPod1Name,
+	}
+	if err := table.ProcessBlockStored(event); err != nil {
+		t.Fatalf("failed to process block stored: %v", err)
+	}
+
+	value, ok := table.contextMap.Load(ctx)
+	if !ok {
+		t.Fatal("context should exist")
+	}
+	contextData := value.(*ContextData)
+	contextData.mappingMu.RLock()
+	if len(contextData.hashMapping.engineToAibrix) != 2 {
+		t.Fatalf("expected 2 engine block mappings, got %d",
+			len(contextData.hashMapping.engineToAibrix))
+	}
+	contextData.mappingMu.RUnlock()
+
+	if err := table.RemovePrefix(ctx.ModelName, ctx.LoraID, testPod1Name); err != nil {
+		t.Fatalf("failed to remove prefix: %v", err)
+	}
+
+	contextData.mappingMu.RLock()
+	if len(contextData.hashMapping.engineToAibrix) != 0 {
+		t.Errorf("expected no engine block mappings, got %d",
+			len(contextData.hashMapping.engineToAibrix))
+	}
+	contextData.mappingMu.RUnlock()
+
+	table.blockIndexMu.RLock()
+	if len(table.blockIndex) != 0 {
+		t.Errorf("expected an empty reverse index, got %d entries", len(table.blockIndex))
+	}
+	table.blockIndexMu.RUnlock()
+}
+
+// TestEvictExpiredPodsDropsReverseIndex checks the same lifecycle for the
+// periodic pod eviction path.
+func TestEvictExpiredPodsDropsReverseIndex(t *testing.T) {
+	table := NewSyncPrefixHashTable()
+	defer table.Close()
+
+	ctx := ModelContext{ModelName: testModelName, LoraID: int64(456)}
+	event := BlockStored{
+		BlockHashes: []int64{3001, 3002},
+		Tokens:      [][]byte{{1, 2, 3, 4}, {5, 6, 7, 8}},
+		ModelName:   ctx.ModelName,
+		LoraID:      ctx.LoraID,
+		SourcePod:   testPod1Name,
+	}
+	if err := table.ProcessBlockStored(event); err != nil {
+		t.Fatalf("failed to process block stored: %v", err)
+	}
+
+	value, ok := table.contextMap.Load(ctx)
+	if !ok {
+		t.Fatal("context should exist")
+	}
+	contextData := value.(*ContextData)
+
+	// Every pod in this context is now expired.
+	table.evictExpiredPodsInBatch(
+		[]evictionContext{{ctx: ctx, data: contextData}},
+		time.Now().Unix()+1,
+	)
+
+	contextData.mappingMu.RLock()
+	if len(contextData.hashMapping.engineToAibrix) != 0 {
+		t.Errorf("expected no engine block mappings, got %d",
+			len(contextData.hashMapping.engineToAibrix))
+	}
+	contextData.mappingMu.RUnlock()
+
+	table.blockIndexMu.RLock()
+	if len(table.blockIndex) != 0 {
+		t.Errorf("expected an empty reverse index, got %d entries", len(table.blockIndex))
+	}
+	table.blockIndexMu.RUnlock()
+}
+
 func TestProcessAllBlocksCleared(t *testing.T) {
 	table := NewSyncPrefixHashTable()
 	defer table.Close()
