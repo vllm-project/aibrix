@@ -883,6 +883,11 @@ func appendCustomModelRouterPaths(httpRoute *gatewayv1.HTTPRoute, modelHeaderMat
 	pathSlice := strings.Split(paths, ",")
 	// avoid duplicates
 	pathSet := make(map[string]struct{})
+	for _, match := range httpRoute.Spec.Rules[0].Matches {
+		if match.Path != nil && match.Path.Value != nil {
+			pathSet[*match.Path.Value] = struct{}{}
+		}
+	}
 	for _, path := range pathSlice {
 		// remove illegal space in path
 		path = strings.ReplaceAll(path, " ", "")

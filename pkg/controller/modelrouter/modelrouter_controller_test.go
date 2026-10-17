@@ -192,7 +192,7 @@ func TestAppendCustomModelRouterPaths(t *testing.T) {
 				},
 			},
 			annotations: map[string]string{
-				modelRouterCustomPath: "/foo,/bar,/foo, /f oo ,/bar",
+				modelRouterCustomPath: "/foo,/bar,/foo, /f oo ,/bar,/origin",
 			},
 			wantPaths:    []string{"/origin", "/foo", "/bar"},
 			checkHeaders: true,
