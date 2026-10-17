@@ -18,6 +18,7 @@ package modelrouter
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -97,6 +98,14 @@ func TestCreateHTTPRouteSupportsAnnotatedModelAndServiceNames(t *testing.T) {
 		Name:      "aibrix-system-reserved-referencegrant-in-default",
 	}, grant); err != nil {
 		t.Errorf("ReferenceGrant was not created: %v", err)
+	}
+}
+
+func TestBuildHTTPRouteMatchesImageGenerations(t *testing.T) {
+	route := buildHTTPRoute("default", "demo", nil, nil)
+	paths := routeMatchPaths(route)
+	if !slices.Contains(paths, "/v1/images/generations") {
+		t.Errorf("per-model HTTPRoute does not match /v1/images/generations, got %v", paths)
 	}
 }
 

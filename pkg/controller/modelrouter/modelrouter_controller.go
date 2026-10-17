@@ -92,6 +92,7 @@ var modelPaths = []string{
 	"/generatevideo",
 
 	// Image
+	"/v1/images/generations",
 	"/v1/images/edits",
 
 	// Video
