@@ -1046,7 +1046,7 @@ def _positive_engine_arg(args: Dict[str, str], name: str) -> int:
 def vllm_parallelism(
     engine_config: Optional[Dict], additional_config: Optional[Dict[str, str]]
 ) -> int:
-    """Return the fixed GPU group size required by vLLM TP and PP."""
+    """Return the fixed GPU group size required by vLLM TP, PP, and PCP."""
     args = _engine_args(engine_config, additional_config)
     if "--gpu-memory-utilization" in args:
         raise ValueError(
@@ -1054,24 +1054,25 @@ def vllm_parallelism(
         )
     tensor = _positive_engine_arg(args, "--tensor-parallel-size")
     pipeline = _positive_engine_arg(args, "--pipeline-parallel-size")
+    prefill_context = _positive_engine_arg(args, "--prefill-context-parallel-size")
     data = _positive_engine_arg(args, "--data-parallel-size")
     if data != 1:
         raise ValueError(
             f"--data-parallel-size={data} is unsupported by fixed topology pools"
         )
-    return tensor * pipeline
+    return tensor * pipeline * prefill_context
 
 
 def validate_vllm_parallelism(
     engine_config: Optional[Dict], additional_config: Optional[Dict[str, str]]
 ) -> None:
-    """Require TP * PP to match the GPUs visible to this warm runtime pod."""
+    """Require TP * PP * PCP to match the GPUs visible to this warm runtime pod."""
     parallelism = vllm_parallelism(engine_config, additional_config)
     visible_gpus = len(gpu_memory_snapshots())
     if visible_gpus == 0:
         if parallelism > 1:
             raise RuntimeError(
-                "cannot validate vLLM TP/PP topology because no GPUs are visible to the runtime"
+                "cannot validate vLLM TP/PP/PCP topology because no GPUs are visible to the runtime"
             )
         return
     if visible_gpus != parallelism:
