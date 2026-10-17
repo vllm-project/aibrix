@@ -356,7 +356,15 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 			return p.config.DefaultTokenizer
 		}
 		delete(p.retryAt, endpoint)
-		return p.addTokenizerLocked(model, endpoint, podIP, tok, pods)
+		tok, outcome := p.addTokenizerLocked(model, endpoint, podIP, tok, pods)
+		p.mu.Unlock()
+		switch outcome {
+		case tokenizerAdded:
+			klog.V(3).Infof("Created vLLM tokenizer for model %s at endpoint %s", model, endpoint)
+		case tokenizerPoolFull:
+			klog.Warningf("TokenizerPool reached max size %d, using default tokenizer", p.config.MaxTokenizersPerPool)
+		}
+		return tok
 	}
 }
 
@@ -399,10 +407,19 @@ func (p *TokenizerPool) newHealthyTokenizer(model, endpoint string) tokenizer.To
 	return tok
 }
 
+// addTokenizerOutcome says what addTokenizerLocked did, for the caller to log
+// once it has released the pool lock.
+type addTokenizerOutcome int
+
+const (
+	tokenizerAdded addTokenizerOutcome = iota
+	tokenizerAlreadyPresent
+	tokenizerPoolFull
+)
+
 // addTokenizerLocked puts a newly created tokenizer in the pool and returns
-// the tokenizer the caller should use. It is called with the pool lock held
-// and releases it.
-func (p *TokenizerPool) addTokenizerLocked(model, endpoint, podIP string, tok tokenizer.Tokenizer, pods []*v1.Pod) tokenizer.Tokenizer {
+// the tokenizer the caller should use. The caller must hold the pool lock.
+func (p *TokenizerPool) addTokenizerLocked(model, endpoint, podIP string, tok tokenizer.Tokenizer, pods []*v1.Pod) (tokenizer.Tokenizer, addTokenizerOutcome) {
 	// Double-check: another goroutine might have created it while we were checking health
 	entry, exists := p.tokenizers[model]
 	if exists && entry.usable(pods) {
@@ -412,8 +429,7 @@ func (p *TokenizerPool) addTokenizerLocked(model, endpoint, podIP string, tok to
 		if closer, ok := tok.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
-		p.mu.Unlock()
-		return entry.tokenizer
+		return entry.tokenizer, tokenizerAlreadyPresent
 	}
 
 	// Another model may have filled the last slot during the health check.
@@ -421,9 +437,7 @@ func (p *TokenizerPool) addTokenizerLocked(model, endpoint, podIP string, tok to
 		if closer, ok := tok.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
-		p.mu.Unlock()
-		klog.Warningf("TokenizerPool reached max size %d, using default tokenizer", p.config.MaxTokenizersPerPool)
-		return p.config.DefaultTokenizer
+		return p.config.DefaultTokenizer, tokenizerPoolFull
 	}
 	if exists {
 		// The existing entry is unhealthy or its pod has left; usable entries returned above under this same lock.
@@ -445,10 +459,7 @@ func (p *TokenizerPool) addTokenizerLocked(model, endpoint, podIP string, tok to
 
 	p.setActiveTokenizers(float64(len(p.tokenizers)))
 	p.incTokenizerCreationSuccesses()
-	p.mu.Unlock()
-	klog.V(3).Infof("Created vLLM tokenizer for model %s at endpoint %s", model, endpoint)
-
-	return tok
+	return tok, tokenizerAdded
 }
 
 // createRetryBackoff is how long an endpoint that failed is left alone. It
