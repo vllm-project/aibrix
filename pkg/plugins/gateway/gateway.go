@@ -917,6 +917,9 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	// to that request without changing Context semantics for other routers.
 	if isExclusive && resolvedExclusive == string(routing.RouterPD) {
 		routeCtx.Context = ctx
+		if limit := replicaInflightLimit(routeCtx); limit > 0 {
+			return s.routeWithEarlyAdmission(routeCtx, router, &utils.PodArray{Pods: readyPods}, limit)
+		}
 	}
 	return router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
 }

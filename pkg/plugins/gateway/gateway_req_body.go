@@ -267,6 +267,11 @@ func buildTargetSelectionErrorResponse(routingCtx *types.RoutingContext, request
 		return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_BadRequest,
 			invalidReqErr.Error(), "", "", HeaderErrorRouting, "true")
 	}
+	if errors.Is(err, types.ErrTargetReplicaInflightExceeded) {
+		limit := replicaInflightLimit(routingCtx)
+		klog.InfoS("replica_inflight_exceeded", "requestID", requestID, "model", model, "limit", limit, "reason", "replica_at_capacity")
+		return replicaInflightExceededResponse(model, limit)
+	}
 	if errors.Is(err, errReplicaInflightExceeded) {
 		limit := replicaInflightLimit(routingCtx)
 		klog.InfoS("replica_inflight_exceeded", "requestID", requestID, "model", model, "limit", limit, "reason", "all_replicas_saturated")
