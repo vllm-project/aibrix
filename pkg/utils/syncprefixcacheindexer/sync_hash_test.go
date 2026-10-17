@@ -728,9 +728,9 @@ func TestRemovePrefixDropsReverseIndex(t *testing.T) {
 	table.blockIndexMu.RUnlock()
 }
 
-// TestEvictExpiredPodsDropsReverseIndex checks the same lifecycle for the
-// periodic pod eviction path.
-func TestEvictExpiredPodsDropsReverseIndex(t *testing.T) {
+// TestEvictExpiredPodsKeepsEngineLookup checks that idle routing eviction
+// retains the engine lookup needed for later removal events.
+func TestEvictExpiredPodsKeepsEngineLookup(t *testing.T) {
 	table := NewSyncPrefixHashTable()
 	defer table.Close()
 
@@ -759,15 +759,15 @@ func TestEvictExpiredPodsDropsReverseIndex(t *testing.T) {
 	)
 
 	contextData.mappingMu.RLock()
-	if len(contextData.hashMapping.engineToAibrix) != 0 {
-		t.Errorf("expected no engine block mappings, got %d",
+	if len(contextData.hashMapping.engineToAibrix) != 2 {
+		t.Errorf("expected 2 retained engine block mappings, got %d",
 			len(contextData.hashMapping.engineToAibrix))
 	}
 	contextData.mappingMu.RUnlock()
 
 	table.blockIndexMu.RLock()
-	if len(table.blockIndex) != 0 {
-		t.Errorf("expected an empty reverse index, got %d entries", len(table.blockIndex))
+	if len(table.blockIndex) != 2 {
+		t.Errorf("expected 2 retained reverse-index entries, got %d", len(table.blockIndex))
 	}
 	table.blockIndexMu.RUnlock()
 }

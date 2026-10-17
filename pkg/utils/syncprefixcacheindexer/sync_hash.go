@@ -939,44 +939,35 @@ func (s *SyncPrefixHashTable) performEviction() {
 	}
 }
 
-// evictionContext pairs a context with its key so pod eviction can update the
-// reverse index, which is keyed by ModelContext.
+// evictionContext identifies a context included in a pod eviction batch.
 type evictionContext struct {
 	ctx  ModelContext
 	data *ContextData
 }
 
-// evictExpiredPodsInBatch processes multiple contexts to remove expired pods.
-// It drops the engine-block mappings of prefixes whose last pod expired, so
-// the reverse index does not keep entries for blocks no pod holds.
+// evictExpiredPodsInBatch removes idle routing entries. Idle time does not
+// prove that the engine released a block: the router may AddPrefix again
+// without a new BlockStored event. Keep its engine mapping so a later
+// BlockRemoved can still find it; confirmed removals and context eviction
+// reclaim those mappings.
 func (s *SyncPrefixHashTable) evictExpiredPodsInBatch(contexts []evictionContext, expiredBefore int64) {
 	for _, entry := range contexts {
 		contextData := entry.data
-		contextData.mappingMu.Lock()
-
-		orphaned := make(map[uint64]struct{})
 		contextData.prefixMu.Lock()
 		prefixStore := contextData.prefixStore
 
 		for prefixHash, pods := range prefixStore.prefixMap {
-			// Remove expired pods
 			for podName, podInfo := range pods {
 				if podInfo.LastAccessTime.Load() < expiredBefore {
 					delete(pods, podName)
 				}
 			}
-
-			// Remove empty prefix entries
 			if len(pods) == 0 {
 				delete(prefixStore.prefixMap, prefixHash)
 				prefixStore.totalPrefixes--
-				orphaned[prefixHash] = struct{}{}
 			}
 		}
 		contextData.prefixMu.Unlock()
-
-		s.dropOrphanedBlocks(entry.ctx, contextData, orphaned)
-		contextData.mappingMu.Unlock()
 	}
 }
 
