@@ -218,9 +218,10 @@ func (m *Manager) OnPodUpdate(oldPod, newPod *v1.Pod) {
 	if oldSubscribable {
 		m.unsubscribeFromPod(podKey)
 	}
-	// A restarted pod or a new attribution owns this podKey now; entries from
-	// the previous incarnation must not stay in the index under the same key.
-	if (cacheMoved || identityChanged) && oldModel != "" {
+	// A restarted pod, a new attribution, or a pod that can no longer report
+	// events owns this podKey now; entries from the previous state must not
+	// stay in the index under the same key.
+	if oldModel != "" && (cacheMoved || identityChanged || (oldSubscribable && !newSubscribable)) {
 		m.purgePodPrefixCache(oldModel, oldLora, podKey)
 	}
 	if !newSubscribable {
@@ -242,6 +243,15 @@ func (m *Manager) OnPodUpdate(oldPod, newPod *v1.Pod) {
 	defer cancel()
 	if err := m.subscribeToPod(ctx, podKey, podInfoFromPod(newPod)); err != nil {
 		klog.Errorf("Failed to subscribe to pod %s: %v", podKey, err)
+	}
+
+	// Stop may have ranged over subscribers before this client was stored;
+	// close it here so the subscription cannot outlive the manager.
+	m.mu.RLock()
+	stopped = m.stopped
+	m.mu.RUnlock()
+	if stopped {
+		m.unsubscribeFromPod(podKey)
 	}
 }
 

@@ -243,7 +243,9 @@ func TestManagerPodUpdateModelChangePurgesOldContext(t *testing.T) {
 
 // TestManagerPodUpdateStatusOnlyKeepsContext checks that a pure readiness
 // change does not throw away the pod's cached prefixes.
-func TestManagerPodUpdateStatusOnlyKeepsContext(t *testing.T) {
+// TestManagerPodUpdatePhaseChangePurgesContext checks that a pod leaving a
+// Running phase drops the prefixes it can no longer report.
+func TestManagerPodUpdatePhaseChangePurgesContext(t *testing.T) {
 	t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
 	t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
 
@@ -268,7 +270,7 @@ func TestManagerPodUpdateStatusOnlyKeepsContext(t *testing.T) {
 
 	oldPod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "ready-then-not",
+			Name:      "running-then-pending",
 			Namespace: "default",
 			Labels: map[string]string{
 				constants.ModelLabelName:       "test-model",
@@ -284,8 +286,63 @@ func TestManagerPodUpdateStatusOnlyKeepsContext(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+	if purged != 1 {
+		t.Errorf("a phase change must purge the context once, purged %d", purged)
+	}
+}
+
+// TestManagerPodUpdateConditionChangeKeepsContext checks that a readiness
+// condition change does not throw away a Running pod's cached prefixes.
+func TestManagerPodUpdateConditionChangeKeepsContext(t *testing.T) {
+	t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
+
+	var mu sync.Mutex
+	purged := 0
+	indexer := &mockSyncIndexerWithCallbacks{
+		onRemovePrefix: func(context.Context, string, int64, string) error {
+			mu.Lock()
+			purged++
+			mu.Unlock()
+			return nil
+		},
+	}
+	manager := kvevent.NewManager(
+		&mockPodProvider{pods: map[string]*kvevent.PodInfo{}},
+		&mockSyncIndexProvider{indexer: indexer},
+	)
+	if err := manager.Start(); err != nil {
+		t.Fatalf("Failed to start manager: %v", err)
+	}
+	defer manager.Stop()
+
+	oldPod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "condition-only",
+			Namespace: "default",
+			Labels: map[string]string{
+				constants.ModelLabelName:       "test-model",
+				constants.KVEventsEnabledLabel: "true",
+			},
+		},
+		Status: v1.PodStatus{
+			Phase: v1.PodRunning,
+			PodIP: "10.0.0.9",
+			Conditions: []v1.PodCondition{{
+				Type:   v1.PodReady,
+				Status: v1.ConditionTrue,
+			}},
+		},
+	}
+	newPod := oldPod.DeepCopy()
+	newPod.Status.Conditions[0].Status = v1.ConditionFalse
+
+	manager.OnPodUpdate(oldPod, newPod)
+
+	mu.Lock()
+	defer mu.Unlock()
 	if purged != 0 {
-		t.Errorf("a status-only change must not purge the context, purged %d", purged)
+		t.Errorf("a readiness-only change must not purge the context, purged %d", purged)
 	}
 }
 
