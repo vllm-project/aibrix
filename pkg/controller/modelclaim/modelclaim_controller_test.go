@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -4202,4 +4203,190 @@ func TestReconcileStillRoutesAnInstanceWhoseClaimDeclaresNoCost(t *testing.T) {
 	require.Len(t, got.Status.Instances, 1)
 	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
 	assert.Zero(t, got.Status.Instances[0].KVLimitBytes)
+}
+
+func TestKVInitialCapacityHealth(t *testing.T) {
+	for _, phase := range []modelv1alpha1.ModelClaimPhase{modelv1alpha1.ModelClaimActivating, modelv1alpha1.ModelClaimActive} {
+		t.Run(string(phase), func(t *testing.T) {
+			pm := claimWithCost(700, 100)
+			pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+			pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: pod.Name, Phase: phase, KVLimitBytes: 300}}
+			ceiling := int64(200)
+			engine := readyEngine(250)
+			require.NoError(t, json.Unmarshal([]byte(`{"kv_initial_capacity_bytes":200}`), &engine))
+			snapshot.Models = []RuntimeSnapshotModel{engine}
+			r, runtime := newReconciler(t, pm, pod)
+			runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+			reconcileOnce(t, r, pm.Name)
+			reconcileOnce(t, r, pm.Name)
+			require.NotEmpty(t, runtime.kvLimitCalls)
+			for _, call := range runtime.kvLimitCalls {
+				assert.LessOrEqual(t, call.LimitBytes, ceiling)
+			}
+			got := getModel(t, r, pm.Name).Status.Instances[0]
+			assert.Equal(t, ceiling, got.KVLimitBytes)
+			assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Phase)
+		})
+	}
+}
+
+func TestKVInitialCapacityAlreadyHeldNeedsNoWrite(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	// The engine is serving, but its instance has not yet been routed.
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActivating, KVLimitBytes: 300,
+	}}
+	ceiling := int64(200)
+	engine := readyEngine(ceiling)
+	engine.KVInitialCapacityBytes = &ceiling
+	snapshot.Models = []RuntimeSnapshotModel{engine}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.kvLimitCalls)
+	assert.NotContains(t, strings.Join(drainEvents(t, r), "\n"), "KVLimitSet")
+	got := getModel(t, r, pm.Name).Status.Instances[0]
+	assert.Equal(t, ceiling, got.KVLimitBytes)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Phase)
+	assert.Equal(t, int32(9001), got.Port)
+}
+
+func TestKVInitialCapacityRollback(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	ceiling := int64(200)
+	require.NoError(t, json.Unmarshal([]byte(`{"kv_initial_capacity_bytes":200}`), &snapshot.Models[0]))
+	runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 300 }
+	require.Error(t, divideOnce(t, r, pod, snapshot))
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, ceiling, runtime.kvLimitCalls[1].LimitBytes)
+}
+
+func TestKVInitialCapacityPoolPolicy(t *testing.T) {
+	ceiling, negative := int64(200), int64(-1)
+	for _, tc := range []struct {
+		name    string
+		ceiling *int64
+		current int64
+		used    int64
+		floor   int32
+		want    int64
+	}{
+		{name: "known already capped", ceiling: &ceiling, current: 200},
+		{name: "known write", ceiling: &ceiling, current: 100, want: 200},
+		{name: "unknown", current: 200, want: 1000},
+		{name: "negative unknown", ceiling: &negative, current: 200, want: 1000},
+		{name: "incompatible held usage", ceiling: &ceiling, current: 300, used: 201},
+		{name: "incompatible protected floor", ceiling: &ceiling, current: 200, floor: 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pm := claimWithCost(700, 100)
+			pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+			pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActive}}
+			engine := readyEngine(tc.current)
+			engine.KVInitialCapacityBytes = tc.ceiling
+			engine.KVUsedBytes = tc.used
+			snapshot.Models = []RuntimeSnapshotModel{engine}
+			r, runtime := newReconciler(t, pm, pod)
+			runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+			policy, err := parsePoolPolicy(fmt.Sprintf(`{"reclaim":{"capacityBytes":1000,"guaranteedFloorPercent":%d}}`, tc.floor))
+			require.NoError(t, err)
+			source := &poolPolicySource{key: types.NamespacedName{Namespace: testNamespace, Name: "pool"}, policy: policy}
+			r.reconcilePoolKVPolicy(context.Background(), source, pod, snapshot,
+				map[string]poolRequestActivity{snapshotActivityKey(engine): {Active: true, RequestsInFlight: 1}},
+				true, time.Unix(1_700_000_000, 0), newRuntimeReadings(r.Runtime))
+			if tc.want == 0 {
+				assert.Empty(t, runtime.kvLimitCalls)
+				return
+			}
+			require.Len(t, runtime.kvLimitCalls, 1)
+			assert.Equal(t, tc.want, runtime.kvLimitCalls[0].LimitBytes)
+			assert.Contains(t, runtime.kvLimitCalls[0].OperationID, fmt.Sprintf("/%d/", tc.want))
+		})
+	}
+}
+
+func TestKVInitialCapacityZeroHealthKeepsEnforcing(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: pod.Name, Port: 9001, Phase: modelv1alpha1.ModelClaimActive, KVLimitBytes: 300}}
+	zero := int64(0)
+	engine := readyEngine(0)
+	engine.KVInitialCapacityBytes = &zero
+	snapshot.Models = []RuntimeSnapshotModel{engine}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	reconcileOnce(t, r, pm.Name)
+	got := getModel(t, r, pm.Name).Status.Instances[0]
+	assert.Equal(t, int64(300), got.KVLimitBytes, "zero must not become the no-record sentinel")
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Phase)
+	assert.Equal(t, int32(9001), got.Port)
+	assert.Contains(t, routeOf(t, r, pod.Name, pm.Name), `"port":9001`)
+	assert.Empty(t, runtime.kvLimitCalls)
+
+	snapshot.Models[0].KVCapacityBytes = 50
+	runtime.deafToKVLimits = true
+	reconcileOnce(t, r, pm.Name)
+	require.NotEmpty(t, runtime.kvLimitCalls)
+	assert.Zero(t, runtime.kvLimitCalls[0].LimitBytes)
+	got = getModel(t, r, pm.Name).Status.Instances[0]
+	assert.Equal(t, int64(300), got.KVLimitBytes)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Phase)
+	assert.Contains(t, routeOf(t, r, pod.Name, pm.Name), `"port":0`)
+}
+
+func TestKVInitialCapacityZeroWriteIsVerified(t *testing.T) {
+	pm := claimWithCost(7<<30, 1<<30)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 10<<30)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: pod.Name, Port: 9001, Phase: modelv1alpha1.ModelClaimActivating, KVLimitBytes: 3 << 30}}
+	zero := int64(0)
+	engine := readyEngine(1 << 30)
+	engine.KVInitialCapacityBytes = &zero
+	snapshot.Models = []RuntimeSnapshotModel{engine}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	runtime.deafToKVLimits = true
+
+	for pass := 0; pass < 2; pass++ {
+		reconcileOnce(t, r, pm.Name)
+		events := strings.Join(drainEvents(t, r), "\n")
+		assert.NotContains(t, events, "Normal KVLimitSet", "a zero limit the engine ignored is not set")
+		if pass == 0 {
+			assert.Contains(t, events, "Warning KVLimitFailed")
+		}
+	}
+	require.NotEmpty(t, runtime.kvLimitCalls)
+	assert.Zero(t, runtime.kvLimitCalls[len(runtime.kvLimitCalls)-1].LimitBytes)
+
+	runtime.deafToKVLimits = false
+	reconcileOnce(t, r, pm.Name)
+	assert.Contains(t, strings.Join(drainEvents(t, r), "\n"), "Normal KVLimitSet")
+	assert.Zero(t, snapshot.Models[0].KVCapacityBytes)
+}
+
+func TestKVInitialCapacityDemotionEvent(t *testing.T) {
+	pm := claimWithCost(7<<30, 1<<30)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 10<<30)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: pod.Name, Port: 9001, Phase: modelv1alpha1.ModelClaimActive, KVLimitBytes: 3 << 30}}
+	ceiling := int64(2 << 30)
+	engine := readyEngine(5 << 29)
+	engine.KVInitialCapacityBytes = &ceiling
+	snapshot.Models = []RuntimeSnapshotModel{engine}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	runtime.deafToKVLimits = true
+	reconcileOnce(t, r, pm.Name)
+	got := getModel(t, r, pm.Name).Status.Instances[0]
+	assert.Equal(t, int64(3<<30), got.KVLimitBytes, "the record waits for confirmation")
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Phase)
+	var demotions []string
+	for _, event := range drainEvents(t, r) {
+		if strings.Contains(event, "KVLimitNotHeld") {
+			demotions = append(demotions, event)
+		}
+	}
+	require.Len(t, demotions, 1)
+	assert.Contains(t, demotions[0], "limit of 2.0 GiB")
 }

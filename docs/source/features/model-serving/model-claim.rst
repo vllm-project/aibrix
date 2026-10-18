@@ -358,8 +358,8 @@ Declare what a model needs on a GPU
 The controller places a claim only on a Pod whose GPU has room for its
 ``maximumFootprint`` plus its ``kvFloor``. Engines already on that GPU count
 with their footprints and their KV caches, and each KV cache counts as at
-least its KV floor. With tensor or pipeline parallelism, give the figures for
-the GPU that holds the most.
+least its effective KV floor. With tensor or pipeline parallelism, give the
+figures for the GPU that holds the most.
 
 The controller does not measure models, so measure them yourself:
 
@@ -406,13 +406,25 @@ claim that is otherwise feasible but waits for an earlier placement turn stays
 does not add placement-refusal backoff.
 
 The controller divides each GPU among the engines on it. Each engine keeps its
-declared footprint and at least its KV floor. The rest of the GPU's usable
-memory goes to the KV caches of the engines that are awake, and the busy ones
+declared footprint and at least its effective KV floor. The rest of the GPU's
+usable memory goes to the KV caches of the engines that are awake, and the busy ones
 get more. A GPU's usable memory is its total memory less what the driver
 reserves. kvcached
 keeps each engine within its KV limit, which the claim records in
 ``status.instances[].kvLimitBytes``. The limits change when engines start,
 stop, sleep or wake, and when the load moves between them.
+
+An engine sizes its KV block pool once, when it starts, and must never be given
+a KV limit above that size. The runtime agent reports the size as
+``kv_initial_capacity_bytes`` in its snapshot, and the controller and runtime cap
+the engine's KV limit at it. Room above the cap stays unassigned. When the size is
+not known, the field is ``null``. The runtime defers limit writes while startup
+capacity can still be captured. When capture is unavailable, limits remain
+uncapped.
+
+The effective KV floor is the declared ``kvFloor``, reduced to the startup
+capacity when that capacity is known, positive and smaller. The controller
+reports this reduction with a ``KVCapacityBelowFloor`` Warning on the claim.
 
 An engine goes on the route only once it is ready and runs within its KV
 limit. If something else raises an engine's KV limit, the controller sets it
@@ -472,8 +484,8 @@ removes the wake request once the model serves, when the wake fails, or after
 five minutes.
 
 By default, a sleeping model keeps its room on the GPU, so that it can wake
-where it is. Only its KV cache above its KV floor goes to the other models on
-the GPU, and they give it back when it wakes.
+where it is. Only its KV cache above its effective KV floor goes to the other
+models on the GPU, and they give it back when it wakes.
 
 With ``noWakeReserveWhileAsleep``, a sleeping model reserves only what it still
 holds on the GPU, which the runtime agent measures after each sleep. The rest
