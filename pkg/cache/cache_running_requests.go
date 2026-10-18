@@ -18,6 +18,8 @@ package cache
 
 import (
 	"context"
+	"errors"
+	"net"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -290,7 +292,10 @@ return {1, sum}
 // runningRequestsAdmitScript. This sits on the request/admission path (like
 // readPodRunningRequests, unlike the fire-and-forget incr/decr), so it uses the same short
 // runningRequestsReadTimeout: an admission decision must never add meaningful latency to
-// routing.
+// routing. For an admitted request, counted is true when the script's +1 is, or may be, in
+// the hash: a confirmed increment, or an Eval error after which the script may have run (see
+// admitScriptDidNotRun). A nil client, a pre-send failure and, as a fallback policy, an
+// unusable reply leave the increment to normal request tracking.
 //
 // localRunning is the caller's already-known local atomic count for the pod (addPodStats
 // will still increment it normally regardless of this call's outcome -- that counter is
@@ -304,28 +309,71 @@ return {1, sum}
 // prior writes can come from this very script, which updates it before localRunning
 // catches up -- see the script's doc comment for why an unconditional substitution would
 // be wrong here specifically.
-func (c *Store) admitRunningRequest(namespace, name string, limit, localRunning int64) (admitted bool, running int64) {
+func (c *Store) admitRunningRequest(namespace, name string, limit, localRunning int64) (admitted, counted bool, running int64) {
 	if c.redisClient == nil {
-		return localRunning < limit, localRunning
+		return localRunning < limit, false, localRunning
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), runningRequestsReadTimeout)
 	defer cancel()
 	key := runningRequestsKey(namespace, name)
-	res, err := c.redisClient.Eval(ctx, runningRequestsAdmitScript, []string{key, runningRequestsGatewaysKey},
+	client := c.admitRedisClient
+	if client == nil {
+		// Test stores built without New may supply their own client and hooks here. This path
+		// does not disable retries; the pre-send error classification requires that no earlier
+		// Eval attempt ran.
+		client = c.redisClient
+	}
+	res, err := client.Eval(ctx, runningRequestsAdmitScript, []string{key, runningRequestsGatewaysKey},
 		runningRequestsGatewayInstanceID, c.liveGatewaysCutoffMillis(), strconv.FormatInt(limit, 10),
 		strconv.FormatInt(runningRequestsTTL.Milliseconds(), 10), strconv.FormatInt(localRunning, 10)).Result()
 	if err != nil {
 		klog.V(4).ErrorS(err, "failed to atomically admit against running-requests inflight cap; falling back to local count", "key", key)
-		return localRunning < limit, localRunning
+		// After a timeout or a dropped connection the script may still have applied its +1, so
+		// keep treating it as applied: completion's one decrement then removes it. If the script
+		// never ran, that decrement undercounts a positive field; zero-clamping prevents negative
+		// values but does not guarantee recovery under sustained traffic. A second increment
+		// instead would leave a +1 that nothing removes.
+		admitted = localRunning < limit
+		return admitted, admitted && !admitScriptDidNotRun(err), localRunning
 	}
 	arr, ok := res.([]interface{})
 	if !ok || len(arr) != 2 {
 		klog.V(4).InfoS("unexpected running-requests admit script result shape; falling back to local count", "key", key)
-		return localRunning < limit, localRunning
+		return localRunning < limit, false, localRunning
 	}
-	admittedFlag, _ := arr[0].(int64)
-	running, _ = arr[1].(int64)
-	return admittedFlag == 1, running
+	admittedFlag, flagOK := arr[0].(int64)
+	running, runningOK := arr[1].(int64)
+	if !flagOK || !runningOK || (admittedFlag != 0 && admittedFlag != 1) {
+		klog.V(4).InfoS("unexpected running-requests admit script result values; falling back to local count", "key", key)
+		return localRunning < limit, false, localRunning
+	}
+	return admittedFlag == 1, admittedFlag == 1, running
+}
+
+// admitScriptDidNotRun reports whether an error from the single-attempt admit Eval (see
+// admitRunningRequestsClient) shows the script never ran: the client is closed, or no
+// connection could be dialed. Every other error, including a Redis error reply (the script can
+// fail after its HINCRBY), may follow a script that already applied its +1.
+func admitScriptDidNotRun(err error) bool {
+	if errors.Is(err, redis.ErrClosed) {
+		return true
+	}
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial"
+}
+
+// admitRunningRequestsClient derives the client admitRunningRequest uses from the shared one,
+// with go-redis' own retry loop switched off (as asyncJobStoreClient does for its store). The
+// admit script is not idempotent: a retry after an attempt that ran but lost its reply applies a
+// second +1, and the error that comes back describes only the last attempt. MaxRetries is -1
+// because go-redis reads 0 as "use the default".
+func admitRunningRequestsClient(client *redis.Client) *redis.Client {
+	if client == nil {
+		return nil
+	}
+	options := *client.Options()
+	options.MaxRetries = -1
+	return redis.NewClient(&options)
 }
 
 // heartbeatRunningRequestsLiveness refreshes this gateway instance's entry in

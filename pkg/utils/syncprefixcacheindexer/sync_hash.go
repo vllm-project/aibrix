@@ -97,6 +97,16 @@ type ModelContext struct {
 	LoraID    int64 // -1 represents no LoRA adapter
 }
 
+// LoraIDFromName returns the LoraID that indexes a LoRA adapter's blocks.
+// vLLM names the adapter in BlockStored events, and the gateway routes it by
+// the same name, so both sides derive the ID from it. "" is the base model.
+func LoraIDFromName(name string) int64 {
+	if name == "" {
+		return -1
+	}
+	return int64(xxhash.Sum64String(name) >> 1)
+}
+
 // PodInfo stores pod access information
 type PodInfo struct {
 	LastAccessTime atomic.Int64 // Unix timestamp (lock-free update)
@@ -260,8 +270,13 @@ func (s *SyncPrefixHashTable) MatchPrefix(modelName string, loraID int64, tokens
 
 		hasMatch := false
 		for podName, podInfo := range pods {
-			if _, isReady := readyPods[podName]; !isReady {
-				continue
+			// Readiness only needs checking at block 0: matches holds just the
+			// ready pods that reached this block, and a pod absent from it at a
+			// later block reads back as zero blocks, so the check below skips it.
+			if i == 0 {
+				if _, isReady := readyPods[podName]; !isReady {
+					continue
+				}
 			}
 			match := matches[podName]
 			if match.blocks != i {
@@ -310,6 +325,9 @@ func (s *SyncPrefixHashTable) ProcessBlockStored(event BlockStored) error {
 		ModelName: event.ModelName,
 		LoraID:    event.LoraID,
 	}
+	if event.LoraName != "" {
+		ctx.LoraID = LoraIDFromName(event.LoraName)
+	}
 
 	// Get or create context data
 	contextData := s.getOrCreateContextData(ctx)
@@ -317,6 +335,15 @@ func (s *SyncPrefixHashTable) ProcessBlockStored(event BlockStored) error {
 	// First, acquire mapping lock to check what needs to be done
 	contextData.mappingMu.Lock()
 	defer contextData.mappingMu.Unlock()
+
+	// Eviction marks the context before snapshotting its block mappings.
+	// A late store must not add reverse-index entries after that snapshot;
+	// the context will be deleted, leaving those entries without an owner.
+	if contextData.markedForEviction.Load() {
+		klog.V(4).InfoS("Skipping block stored event for evicted context",
+			"model", ctx.ModelName, "loraID", ctx.LoraID, "blocks", len(event.BlockHashes))
+		return nil
+	}
 
 	hashMapping := contextData.hashMapping
 	prefixUpdates := make([]struct {
@@ -394,20 +421,34 @@ func (s *SyncPrefixHashTable) ProcessBlockRemoved(event BlockRemoved) error {
 		return nil
 	}
 
-	ctx := ModelContext{
-		ModelName: event.ModelName,
-		LoraID:    event.LoraID,
+	// BlockRemoved does not name the adapter, so remove each block from every
+	// context of the model that indexed it: the base model and its adapters.
+	byContext := make(map[ModelContext][]int64)
+	s.blockIndexMu.RLock()
+	for _, engineBlockHash := range event.BlockHashes {
+		for _, ctx := range s.blockIndex[engineBlockHash] {
+			if ctx.ModelName == event.ModelName {
+				byContext[ctx] = append(byContext[ctx], engineBlockHash)
+			}
+		}
 	}
+	s.blockIndexMu.RUnlock()
 
-	// Can now target specific context instead of searching all contexts
+	for ctx, blockHashes := range byContext {
+		s.removeBlocksFromContext(ctx, blockHashes, event)
+	}
+	return nil
+}
+
+func (s *SyncPrefixHashTable) removeBlocksFromContext(ctx ModelContext, blockHashes []int64, event BlockRemoved) {
 	value, exists := s.contextMap.Load(ctx)
 	if !exists {
-		return nil
+		return
 	}
 
 	contextData := value.(*ContextData)
 	if contextData.markedForEviction.Load() {
-		return nil
+		return
 	}
 
 	// First, resolve the affected prefixes using the mapping lock. The mapping
@@ -417,13 +458,13 @@ func (s *SyncPrefixHashTable) ProcessBlockRemoved(event BlockRemoved) error {
 	defer contextData.mappingMu.Unlock()
 
 	toRemove := make(map[uint64][]int64) // aibrix prefix hash → engine block hashes
-	for _, engineBlockHash := range event.BlockHashes {
+	for _, engineBlockHash := range blockHashes {
 		if aibrixHash, exists := contextData.hashMapping.engineToAibrix[engineBlockHash]; exists {
 			toRemove[aibrixHash] = append(toRemove[aibrixHash], engineBlockHash)
 		}
 	}
 	if len(toRemove) == 0 {
-		return nil
+		return
 	}
 
 	// Then update prefix store, clearing only the tier and KV-cache group the
@@ -433,9 +474,9 @@ func (s *SyncPrefixHashTable) ProcessBlockRemoved(event BlockRemoved) error {
 	// so drop the whole entry as before.
 	if event.SourcePod == "" {
 		klog.Warningf("block removed event has no source pod, evicting prefixes for every pod: model=%s, lora_id=%d, block_hashes=%d",
-			event.ModelName, event.LoraID, len(event.BlockHashes))
+			ctx.ModelName, ctx.LoraID, len(blockHashes))
 	}
-	orphaned := make([]int64, 0, len(event.BlockHashes))
+	orphaned := make([]int64, 0, len(blockHashes))
 	tier := tierBit(event.Medium, event.GroupIdx)
 	contextData.prefixMu.Lock()
 	prefixStore := contextData.prefixStore
@@ -467,8 +508,6 @@ func (s *SyncPrefixHashTable) ProcessBlockRemoved(event BlockRemoved) error {
 		// Update reverse index
 		s.updateBlockIndex(engineBlockHash, ctx, false)
 	}
-
-	return nil
 }
 
 // ProcessAllBlocksCleared handles AllBlocksCleared events (placeholder implementation)
@@ -538,34 +577,94 @@ func (s *SyncPrefixHashTable) AddPrefixWithMedium(modelName string, loraID int64
 	return nil
 }
 
-// RemovePrefix removes a specific pod from all prefix entries
+// RemovePrefix removes a specific pod from all prefix entries of the model.
+// Callers drop a pod whose whole cache is gone, so the pod is removed from the
+// model's adapter contexts too, whatever loraID is passed.
 func (s *SyncPrefixHashTable) RemovePrefix(modelName string, loraID int64, podName string) error {
-	ctx := ModelContext{
-		ModelName: modelName,
-		LoraID:    loraID,
-	}
+	s.contextMap.Range(func(key, value any) bool {
+		ctx := key.(ModelContext)
+		if ctx.ModelName == modelName {
+			s.prunePodFromContext(ctx, value.(*ContextData), podName)
+		}
+		return true
+	})
+	return nil
+}
 
-	value, exists := s.contextMap.Load(ctx)
-	if !exists {
-		return nil
-	}
+// prunePodFromContext removes podName from every prefix of one context and
+// drops the engine-block mappings of the prefixes it was the last holder of.
+// The mapping and reverse index are part of the same invariant as
+// ProcessBlockRemoved: once no pod holds a block, no context block entry may
+// keep referencing it.
+func (s *SyncPrefixHashTable) prunePodFromContext(ctx ModelContext, contextData *ContextData, podName string) {
+	contextData.mappingMu.Lock()
+	defer contextData.mappingMu.Unlock()
 
-	contextData := value.(*ContextData)
+	orphaned := make(map[uint64]struct{})
 	contextData.prefixMu.Lock()
-	defer contextData.prefixMu.Unlock()
-
 	prefixStore := contextData.prefixStore
-
-	// Remove pod from all prefix entries
 	for prefixHash, pods := range prefixStore.prefixMap {
+		if _, held := pods[podName]; !held {
+			continue
+		}
 		delete(pods, podName)
 		if len(pods) == 0 {
 			delete(prefixStore.prefixMap, prefixHash)
 			prefixStore.totalPrefixes--
+			orphaned[prefixHash] = struct{}{}
 		}
 	}
+	contextData.prefixMu.Unlock()
 
-	return nil
+	s.dropOrphanedBlocks(ctx, contextData, orphaned)
+}
+
+// dropOrphanedBlocks deletes the engine-to-aibrix mappings whose aibrix prefix
+// no pod holds any more, and mirrors that removal into the reverse index.
+// Callers hold mappingMu.
+func (s *SyncPrefixHashTable) dropOrphanedBlocks(
+	ctx ModelContext,
+	contextData *ContextData,
+	orphaned map[uint64]struct{},
+) {
+	if len(orphaned) == 0 {
+		return
+	}
+	blocks := make([]int64, 0)
+	for engineBlockHash, aibrixHash := range contextData.hashMapping.engineToAibrix {
+		if _, gone := orphaned[aibrixHash]; !gone {
+			continue
+		}
+		delete(contextData.hashMapping.engineToAibrix, engineBlockHash)
+		blocks = append(blocks, engineBlockHash)
+	}
+	s.removeBlockIndexEntries(ctx, blocks)
+}
+
+// removeBlockIndexEntries deletes ctx from the reverse-index entries of blocks
+// under a single lock acquisition, so a bulk pod or context removal does not
+// take and release blockIndexMu once per block.
+func (s *SyncPrefixHashTable) removeBlockIndexEntries(ctx ModelContext, blocks []int64) {
+	if len(blocks) == 0 {
+		return
+	}
+	s.blockIndexMu.Lock()
+	defer s.blockIndexMu.Unlock()
+	for _, blockHash := range blocks {
+		contexts := s.blockIndex[blockHash]
+		for i, existingCtx := range contexts {
+			if existingCtx != ctx {
+				continue
+			}
+			contexts = append(contexts[:i], contexts[i+1:]...)
+			if len(contexts) == 0 {
+				delete(s.blockIndex, blockHash)
+			} else {
+				s.blockIndex[blockHash] = contexts
+			}
+			break
+		}
+	}
 }
 
 // GetPrefixHashes computes prefix hashes for given tokens
@@ -818,14 +917,17 @@ func (s *SyncPrefixHashTable) performEviction() {
 	// Phase 3: clean up expired pods within active (non-evicted) contexts, in
 	// batches so one eviction pass does not hold every context's prefixMu at
 	// once.
-	activeContexts := make([]*ContextData, 0, evictionBatchSize)
+	activeContexts := make([]evictionContext, 0, evictionBatchSize)
 	s.contextMap.Range(func(key, value interface{}) bool {
 		contextData := value.(*ContextData)
 		if contextData.markedForEviction.Load() {
 			return true // Skip contexts Phase 2 already removed.
 		}
 
-		activeContexts = append(activeContexts, contextData)
+		activeContexts = append(activeContexts, evictionContext{
+			ctx:  key.(ModelContext),
+			data: contextData,
+		})
 		if len(activeContexts) >= evictionBatchSize {
 			s.evictExpiredPodsInBatch(activeContexts, expiredBefore)
 			activeContexts = activeContexts[:0]
@@ -837,21 +939,29 @@ func (s *SyncPrefixHashTable) performEviction() {
 	}
 }
 
-// evictExpiredPodsInBatch processes multiple contexts to remove expired pods
-func (s *SyncPrefixHashTable) evictExpiredPodsInBatch(contexts []*ContextData, expiredBefore int64) {
-	for _, contextData := range contexts {
+// evictionContext identifies a context included in a pod eviction batch.
+type evictionContext struct {
+	ctx  ModelContext
+	data *ContextData
+}
+
+// evictExpiredPodsInBatch removes idle routing entries. Idle time does not
+// prove that the engine released a block: the router may AddPrefix again
+// without a new BlockStored event. Keep its engine mapping so a later
+// BlockRemoved can still find it; confirmed removals and context eviction
+// reclaim those mappings.
+func (s *SyncPrefixHashTable) evictExpiredPodsInBatch(contexts []evictionContext, expiredBefore int64) {
+	for _, entry := range contexts {
+		contextData := entry.data
 		contextData.prefixMu.Lock()
 		prefixStore := contextData.prefixStore
 
 		for prefixHash, pods := range prefixStore.prefixMap {
-			// Remove expired pods
 			for podName, podInfo := range pods {
 				if podInfo.LastAccessTime.Load() < expiredBefore {
 					delete(pods, podName)
 				}
 			}
-
-			// Remove empty prefix entries
 			if len(pods) == 0 {
 				delete(prefixStore.prefixMap, prefixHash)
 				prefixStore.totalPrefixes--

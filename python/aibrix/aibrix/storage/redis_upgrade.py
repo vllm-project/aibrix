@@ -1,7 +1,13 @@
+import asyncio
 import math
+import os
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from aibrix.logger import init_logger
+from aibrix.storage.local import LocalStorage
 from aibrix.storage.redis import RedisStorage
 
 logger = init_logger(__name__)
@@ -17,6 +23,8 @@ _VERIFY_ZRANGE_CHUNK_SIZE = 1000
 _OLD_BATCH_JOB_PREFIX = "batchjob:"
 _NEW_BATCH_JOB_PREFIX = "batchjob/"
 _OLD_BATCH_STATUS_COPIES_PREFIX = "batchstatus_copies:"
+_OLD_BATCH_JOB_META_PREFIX = "batchjob_meta:"
+_BATCH_JOB_WATERMARK_KEY = "batchjob_meta:oldest_unfinished_created_at"
 
 
 def _decode_redis_value(value: Any) -> Optional[str]:
@@ -215,9 +223,129 @@ async def ensure_redis_storage_version(storage: RedisStorage) -> int:
 
 
 async def maybe_upgrade_storage(storage: Any) -> Optional[int]:
+    if isinstance(storage, LocalStorage):
+        await upgrade_local_batch_metastore(storage)
+        return None
     if not isinstance(storage, RedisStorage):
         return None
     return await ensure_redis_storage_version(storage)
+
+
+async def upgrade_local_batch_metastore(storage: LocalStorage) -> None:
+    # v0.7.0 used flat batchjob:<id> files; v0.8.0 uses batchjob/<id>.
+    # Clear the watermark before mutations; conflicts stop startup.
+    # Imported here so the storage package does not import the batch package at load time.
+    from aibrix.batch.storage import batch_metastore
+
+    if storage is not batch_metastore.p_metastore:
+        return
+
+    def _scan() -> tuple[list[Path], list[Path], bool]:
+        if not storage.base_path.is_dir():  # nothing was ever stored here
+            return [], [], False
+        paths = [path for path in storage.base_path.iterdir() if path.is_file()]
+        sidecars = [
+            path
+            for path in paths
+            if path.name.startswith(_OLD_BATCH_JOB_PREFIX)
+            and path.name.endswith(".metadata")
+        ]
+        # Orphan sidecars (no payload in either layout) are only warned about; on their own
+        # they must not force a full recovery scan on every start.
+        pending = any(
+            (storage.base_path / key).exists()
+            or storage._get_full_path(_remap_batch_metastore_key_to_v3(key)).exists()
+            for key in (path.name.removesuffix(".metadata") for path in sidecars)
+        )
+        return paths, sidecars, pending
+
+    loop = asyncio.get_event_loop()
+    paths, legacy_sidecars, pending = await loop.run_in_executor(None, _scan)
+    if pending:
+        await storage.delete_object(_BATCH_JOB_WATERMARK_KEY)
+
+    def _upgrade() -> tuple[int, int, int, list[str]]:
+        migrated = skipped = removed = 0
+        conflicts: list[str] = []
+        for path in paths:
+            if path.name.startswith(
+                (_OLD_BATCH_STATUS_COPIES_PREFIX, _OLD_BATCH_JOB_META_PREFIX)
+            ):
+                path.unlink(missing_ok=True)
+                removed += 1
+
+        for path in legacy_sidecars:
+            key = path.name.removesuffix(".metadata")
+            legacy_payload = storage.base_path / key
+            new_key = _remap_batch_metastore_key_to_v3(key)
+            new_payload = storage._get_full_path(new_key)
+            new_metadata = storage._get_metadata_path(new_key)
+            legacy_exists = legacy_payload.exists()
+            destination_exists = new_payload.exists()
+            if not legacy_exists and not destination_exists:
+                skipped += 1
+                logger.warning(
+                    "Skipping missing batch metastore payload during local upgrade",
+                    key=key,
+                )  # type: ignore[call-arg]
+                continue
+
+            metadata_exists = new_metadata.exists()
+            metadata_equal = (
+                metadata_exists and new_metadata.read_bytes() == path.read_bytes()
+            )
+            if destination_exists:
+                if not metadata_equal or (
+                    legacy_exists
+                    and new_payload.read_bytes() != legacy_payload.read_bytes()
+                ):
+                    conflicts.append(key)
+                    skipped += 1
+                    continue
+                if legacy_exists:
+                    legacy_payload.unlink(missing_ok=True)
+                    removed += 1
+                path.unlink(missing_ok=True)
+                removed += 1
+                continue
+            if metadata_exists and not metadata_equal:
+                conflicts.append(key)
+                skipped += 1
+                continue
+
+            new_payload.parent.mkdir(parents=True, exist_ok=True)
+            if not metadata_exists:
+                _copy_atomically(path, new_metadata)
+            os.replace(legacy_payload, new_payload)
+            path.unlink(missing_ok=True)
+            migrated += 1
+        return migrated, skipped, removed, conflicts
+
+    migrated, skipped, removed, conflicts = await loop.run_in_executor(None, _upgrade)
+    if migrated or skipped or removed:
+        logger.info(
+            "Local batch metastore upgraded",
+            migrated=migrated,
+            skipped=skipped,
+            removed=removed,
+        )  # type: ignore[call-arg]
+    if conflicts:
+        raise RuntimeError(
+            f"Local batch metastore upgrade found conflicting records in {storage.base_path}: "
+            f"{', '.join(sorted(conflicts))}; resolve them manually"
+        )
+
+
+def _copy_atomically(source: Path, target: Path) -> None:
+    # A crash mid-copy must not leave a truncated sidecar, which would read as a conflict.
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")
+    os.close(fd)
+    try:
+        shutil.copyfile(source, tmp)
+        os.replace(tmp, target)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 async def upgrade_redis_storage_to_v3(redis_client: Any) -> None:

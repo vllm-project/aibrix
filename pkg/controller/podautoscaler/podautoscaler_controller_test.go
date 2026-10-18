@@ -51,6 +51,8 @@ const ns = "ns1"
 // fakeWorkloadScaleClient implements the subset of the WorkloadScaleClient used by the reconciler.
 type fakeWorkloadScaleClient struct {
 	selector labels.Selector
+	// replicasErr, when set, is returned by GetCurrentReplicasFromScale.
+	replicasErr error
 }
 
 func (f *fakeWorkloadScaleClient) Validate(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler) error {
@@ -62,6 +64,9 @@ func (f *fakeWorkloadScaleClient) SetDesiredReplicas(ctx context.Context, pa *au
 }
 
 func (f *fakeWorkloadScaleClient) GetCurrentReplicasFromScale(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, scaleObj *unstructured.Unstructured) (int32, error) {
+	if f.replicasErr != nil {
+		return 0, f.replicasErr
+	}
 	return 1, nil
 }
 
@@ -680,6 +685,42 @@ func TestComputeStatusDoesNotMutateInputConditions(t *testing.T) {
 	}
 	if !reflect.DeepEqual(newStatus.ScalingHistory, pa.Status.ScalingHistory) {
 		t.Fatalf("computeStatus did not preserve scaling history: got %+v, want %+v", newStatus.ScalingHistory, pa.Status.ScalingHistory)
+	}
+}
+
+// A PodAutoscaler that is not reconciled at all reports why on Ready, not a
+// scale difference.
+func TestComputeStatusReadyNamesWhyItIsNotReconciling(t *testing.T) {
+	tests := []struct {
+		name        string
+		spec        ValidationResult
+		conflict    ValidationResult
+		wantReason  string
+		wantMessage string
+	}{
+		{
+			name:        "invalid spec",
+			spec:        invalid(ReasonMetricsConfigError, "invalid targetValue"),
+			conflict:    validOK(),
+			wantReason:  ReasonMetricsConfigError,
+			wantMessage: "invalid targetValue",
+		},
+		{
+			name:        "conflict",
+			spec:        validOK(),
+			conflict:    invalid("MultiplePodAutoscalers", "another PodAutoscaler targets this workload"),
+			wantReason:  "MultiplePodAutoscalers",
+			wantMessage: "another PodAutoscaler targets this workload",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			newStatus := computeStatus(context.Background(), *validPodAutoscalerForSpec(), tt.spec, tt.conflict)
+			ready := apimeta.FindStatusCondition(newStatus.Conditions, ConditionReady)
+			if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != tt.wantReason || ready.Message != tt.wantMessage {
+				t.Fatalf("Ready = %+v, want False/%s %q", ready, tt.wantReason, tt.wantMessage)
+			}
+		})
 	}
 }
 

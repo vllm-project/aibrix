@@ -161,7 +161,7 @@ type MetricCache interface {
 	//   subscriber: Metric subscriber implementation
 	AddSubscriber(subscriber metrics.MetricSubscriber)
 
-	// AdmitPodRunningRequest is the hard-cap counterpart of GetPodRunningRequests: it
+	// AdmitPodRunningRequest is the hard-cap counterpart of GetPodRunningRequests: with Redis, it
 	// atomically checks the pod's live cross-gateway running-request count against limit
 	// and, only if still under it, includes this request's own contribution in that count
 	// from this call onward -- so concurrent callers cannot all observe the same
@@ -172,9 +172,19 @@ type MetricCache interface {
 	//   podNamespace: Namespace of the pod
 	//   limit: Maximum concurrent live requests to admit
 	// Returns:
-	//   bool: Whether this request was admitted (and, if so, already counted)
+	//   admitted: Whether this request was admitted (Redis or local fallback)
+	//   counted: Whether this request's own increment is, or may be, already applied
 	//   error: Error information if the pod is not found
-	AdmitPodRunningRequest(podName, podNamespace string, limit int64) (admitted bool, err error)
+	AdmitPodRunningRequest(podName, podNamespace string, limit int64) (admitted, counted bool, err error)
+
+	// ReleasePodRunningRequest undoes a counted AdmitPodRunningRequest (counted=true) for a
+	// request that ends before request tracking takes it over (AddRequestCount), for
+	// example because work the router started after admitting it failed. Request tracking's
+	// completion decrement never runs for such a request, so its +1 would otherwise stay.
+	// Parameters:
+	//   podName: Name of the pod
+	//   podNamespace: Namespace of the pod
+	ReleasePodRunningRequest(podName, podNamespace string)
 
 	// GetPodRunningRequests is the single-pod live cross-gateway running-request count
 	// (Redis, falling back to this gateway's local atomic). Use GetPodsRunningRequests

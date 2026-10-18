@@ -41,10 +41,6 @@ type mockScalingContext struct {
 	ActivationScale int32
 	PanicThreshold  float64
 
-	// Panic mode state
-	InPanicMode  bool
-	MaxPanicPods int32
-
 	// Time windows
 	StableWindow   time.Duration
 	PanicWindow    time.Duration
@@ -127,25 +123,9 @@ func (m *mockScalingContext) SetActivationScale(value int32) {
 	m.ActivationScale = value
 }
 
-// Panic threshold and mode
+// Panic threshold
 func (m *mockScalingContext) GetPanicThreshold() float64 {
 	return m.PanicThreshold
-}
-
-func (m *mockScalingContext) GetInPanicMode() bool {
-	return m.InPanicMode
-}
-
-func (m *mockScalingContext) SetInPanicMode(inPanic bool) {
-	m.InPanicMode = inPanic
-}
-
-func (m *mockScalingContext) GetMaxPanicPods() int32 {
-	return m.MaxPanicPods
-}
-
-func (m *mockScalingContext) SetMaxPanicPods(pods int32) {
-	m.MaxPanicPods = pods
 }
 
 func (m *mockScalingContext) GetScaleUpCooldownWindow() time.Duration {

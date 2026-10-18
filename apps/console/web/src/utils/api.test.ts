@@ -1,11 +1,35 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { camelToSnake, listAllJobs, normalizeFilesResponse } from './api';
+import { camelToSnake, getFileSummary, listAllJobs, normalizeFilesResponse } from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe('api helpers', () => {
+  it('loads a dataset summary with cancellation and normalizes its counts', async () => {
+    const controller = new AbortController();
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      request_count: 12,
+      invalid_lines: 1,
+      models: ['model-a'],
+      endpoints: ['/v1/embeddings'],
+      truncated: false,
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetcher);
+
+    expect(await getFileSummary('file with spaces', controller.signal)).toEqual({
+      requestCount: 12,
+      invalidLines: 1,
+      models: ['model-a'],
+      endpoints: ['/v1/embeddings'],
+      truncated: false,
+    });
+    expect(fetcher).toHaveBeenCalledWith('/api/v1/files/file%20with%20spaces/summary', expect.objectContaining({
+      signal: controller.signal,
+      credentials: 'include',
+    }));
+  });
+
   it('normalizes OpenAI file list responses for the batch file picker', () => {
     const files = normalizeFilesResponse({
       object: 'list',

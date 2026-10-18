@@ -22,12 +22,18 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	netutils "k8s.io/utils/net"
 	"k8s.io/utils/ptr"
 )
 
 func buildModelAdapterEndpointSlice(instance *modelv1alpha1.ModelAdapter, pods []corev1.Pod) *discoveryv1.EndpointSlice {
 	serviceLabels := map[string]string{
 		"kubernetes.io/service-name": instance.Name,
+	}
+
+	addressType := discoveryv1.AddressTypeIPv4
+	if len(pods) > 0 && netutils.IsIPv6String(pods[0].Status.PodIP) {
+		addressType = discoveryv1.AddressTypeIPv6
 	}
 
 	addresses := make([]discoveryv1.Endpoint, 0, len(pods))
@@ -55,7 +61,7 @@ func buildModelAdapterEndpointSlice(instance *modelv1alpha1.ModelAdapter, pods [
 				*metav1.NewControllerRef(instance, controllerKind),
 			},
 		},
-		AddressType: discoveryv1.AddressTypeIPv4,
+		AddressType: addressType,
 		Endpoints:   addresses,
 		Ports:       ports,
 	}

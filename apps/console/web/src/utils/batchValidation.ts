@@ -59,7 +59,7 @@ export interface MutationDiff {
 const MAX_ERRORS = 20;
 const MAX_DIFF_SAMPLES = 5;
 // OpenAI Batch API hard limit; MDS enforces the same cap (python/aibrix/.../batch.py).
-const MAX_REQUESTS_PER_BATCH = 50000;
+export const MAX_REQUESTS_PER_BATCH = 50000;
 const BYTES_PER_MEBIBYTE = 1024 * 1024;
 const FILE_READ_CHUNK_SIZE_BYTES = BYTES_PER_MEBIBYTE;
 const MIN_FILE_READ_CHUNK_SIZE_BYTES = 1;

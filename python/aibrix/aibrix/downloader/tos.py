@@ -112,10 +112,10 @@ class TOSDownloaderV1(BaseDownloader):
         objects_out = self.client.list_objects_type2(
             self.bucket_name, prefix=self.bucket_path, delimiter="/"
         )
-        if (
-            len(objects_out.contents) == 1
-            and objects_out.contents[0].key == self.bucket_path
-        ):
+        # Bare siblings such as `models/llama.json` share the listing with the
+        # exact key, so look for the exact key rather than a single result.
+        contents = getattr(objects_out, "contents", None) or []
+        if any(obj.key == self.bucket_path for obj in contents):
             prefix = f"{self.bucket_path}/"
             if any(
                 child.prefix.startswith(prefix)

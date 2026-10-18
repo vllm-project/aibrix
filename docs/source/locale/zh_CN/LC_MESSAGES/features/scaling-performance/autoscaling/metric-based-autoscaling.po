@@ -514,9 +514,13 @@ msgstr "KPA"
 
 #: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:266
 msgid ""
-"Sets the threshold for entering KPA panic mode when short-window demand "
-"is high relative to stable-window demand."
-msgstr "设置进入 KPA panic 模式的阈值：短窗口需求相对稳定窗口需求较高时触发。"
+"KPA enters panic mode when the panic window asks for at least this many "
+"times the current pods. While in panic mode it does not scale down, and it "
+"leaves panic mode once a whole stable window has passed below the "
+"threshold."
+msgstr ""
+"当 panic 窗口所需的 Pod 数至少达到当前 Pod 数的该倍数时，KPA 进入 panic 模式。"
+"处于 panic 模式期间不会缩容；当一个完整的稳定窗口都低于该阈值后，退出 panic 模式。"
 
 #: ../../source/features/scaling-performance/autoscaling/metric-based-autoscaling.rst:267
 msgid "``autoscaling.aibrix.ai/scale-up-cooldown-window``"

@@ -33,6 +33,9 @@ import (
 var (
 	nilPod     = &v1.Pod{}
 	ErrUnknown = errors.New("unknown error")
+	// ErrTargetReplicaInflightExceeded is returned through AdmitTarget when the chosen
+	// target is already at its config profile's requestsInflight cap.
+	ErrTargetReplicaInflightExceeded = errors.New("target replica has reached inflight limit")
 )
 
 const (
@@ -169,13 +172,22 @@ type RoutingContext struct {
 	// based on config-profile header. Nil when no config is present.
 	ConfigProfile *ResolvedConfigProfile
 
-	// ReplicaInflightAdmitted is true once the gateway's replica-inflight admission check
-	// (enforceReplicaInflight, backed by cache.Store.AdmitPodRunningRequest) has atomically
-	// admitted this request AND, in doing so, already applied this gateway's own +1 to the
-	// target pod's cross-gateway running-requests counter. Consumers that also increment
+	// ReplicaInflightAdmitted tells request tracking to skip its Redis increment and keep the
+	// completion decrement. The gateway's replica-inflight admission check (enforceReplicaInflight,
+	// backed by cache.Store.AdmitPodRunningRequest) sets it once it has admitted this request
+	// and this gateway's own +1 was confirmed, or may already be applied, on the target pod's
+	// cross-gateway running-requests counter. Consumers that also increment
 	// that counter (addPodStats) must check this first and skip their own increment, or the
 	// pod's count would be inflated by an extra, never-decremented +1 for this request.
 	ReplicaInflightAdmitted bool
+	// ReplicaInflightChecked records that the replica-inflight admission already ran for this
+	// request, through AdmitTarget, before the router returned its target. The gateway's
+	// post-routing check (enforceReplicaInflight) must then not admit the request a second time.
+	ReplicaInflightChecked bool
+
+	// targetAdmitter is the gateway's replica-inflight admission, installed for routers that
+	// start work on a request's behalf before returning its target. See AdmitTarget.
+	targetAdmitter func(pod *v1.Pod) error
 
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]
@@ -200,6 +212,9 @@ type RoutingContext struct {
 	statsUpdated            int32           // Use to flag if in-memory realtime statistics has been updated for the request.
 	statsMu                 sync.Mutex      // Held by WithStatsUpdate; reused across pool tenants, not reset.
 	traceAdded              int32           // Use to flag if trace has been added to cache
+
+	predictedOutputTokens int
+	hasOutputPrediction   bool
 
 	// pdLeg holds the prefill/decode leg state of the current incarnation of
 	// this request. It is a separate heap object, replaced wholesale on reset,
@@ -231,9 +246,12 @@ func NewRoutingContext(ctx context.Context, algorithms RoutingAlgorithm, model, 
 }
 
 // SetOutputPredictor enables RoutingContext to use existing OutputPredictor to predict output length.
+// Attaching a predictor starts a new prediction for subsequent feature reads.
 func (r *RoutingContext) SetOutputPredictor(predictor OutputPredictor) (old OutputPredictor) {
 	old = r.predictor
 	r.predictor = predictor
+	r.predictedOutputTokens = 0
+	r.hasOutputPrediction = false
 	return
 }
 
@@ -311,7 +329,7 @@ func (r *RoutingContext) PromptLength() (int, error) {
 	return len(tokens), nil
 }
 
-// TokenLength returns the predicted output token length.
+// TokenLength returns one sampled output length until the predictor or request is reset.
 func (r *RoutingContext) TokenLength() (int, error) {
 	promptLen, err := r.PromptLength()
 	if err != nil {
@@ -322,7 +340,13 @@ func (r *RoutingContext) TokenLength() (int, error) {
 		return 0, fmt.Errorf("output predictor not set")
 	}
 
-	return r.predictor.Predict(promptLen), nil
+	// Keep the sampled workload stable while the queue and candidate profiles
+	// evaluate this request. Resampling would compare different workloads.
+	if !r.hasOutputPrediction {
+		r.predictedOutputTokens = r.predictor.Predict(promptLen)
+		r.hasOutputPrediction = true
+	}
+	return r.predictedOutputTokens, nil
 }
 
 // Features returns the features corresponding to the request.
@@ -339,6 +363,23 @@ func (r *RoutingContext) Features() (RequestFeatures, error) {
 	}
 
 	return RequestFeatures{float64(outputLen), float64(promptLen)}, nil
+}
+
+// SetTargetAdmitter installs the gateway's replica-inflight admission, which AdmitTarget runs.
+func (r *RoutingContext) SetTargetAdmitter(admit func(pod *v1.Pod) error) {
+	r.targetAdmitter = admit
+}
+
+// AdmitTarget admits pod as this request's target against the gateway's per-replica
+// in-flight cap, and returns nil when no admission is installed. A router that starts work
+// on the request's behalf before it returns (the PD prefill leg) calls it as soon as the
+// target is chosen, so a request the target has no room for is rejected before that work
+// starts. The error wraps ErrTargetReplicaInflightExceeded when the target is full.
+func (r *RoutingContext) AdmitTarget(pod *v1.Pod) error {
+	if r.targetAdmitter == nil {
+		return nil
+	}
+	return r.targetAdmitter(pod)
 }
 
 // SetTargetPod sets the target pod of the routing context. All routers call this to set the target pod.
@@ -547,6 +588,8 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.ClearRoutingOverrides()
 	clear(r.trustedPolicyAttributes)
 	r.ReplicaInflightAdmitted = false
+	r.ReplicaInflightChecked = false
+	r.targetAdmitter = nil
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
 	r.targetPort.Store(0)
@@ -555,6 +598,8 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.tokens = nil
 	r.prefixTokens = nil
 	r.predictor = nil
+	r.predictedOutputTokens = 0
+	r.hasOutputPrediction = false
 	r.statsUpdated = statusInitial
 	r.traceAdded = statusInitial
 	// A fresh leg per incarnation: any prefill goroutine still holding the

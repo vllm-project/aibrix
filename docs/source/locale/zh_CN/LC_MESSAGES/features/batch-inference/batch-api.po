@@ -283,6 +283,20 @@ msgstr "**cancelled** ：用户显式取消了批作业"
 msgid "**expired**: Job exceeded the 24-hour completion window"
 msgstr "**expired** ：作业超过 24 小时完成窗口"
 
+#: ../../source/features/batch-inference/batch-api.rst:149
+msgid ""
+"An accepted cancellation during input validation moves a batch with a "
+"live driver to ``cancelling``. Validation may still finish, but "
+"successful validation does not restart execution; cancellation alone "
+"finishes as ``cancelled``. A late validation error retains failure "
+"precedence and can finish as ``failed``. Before a driver is attached, a "
+"batch awaiting or undergoing validation is cancelled immediately."
+msgstr ""
+"输入验证期间接受取消请求后，具有活动驱动程序的批作业会进入 ``cancelling`` 状态。"
+"验证可能仍会完成，但验证成功不会重新启动执行；仅发生取消时，作业最终状态为 ``cancelled``。"
+"若验证随后报错，仍按现有失败优先级处理，作业可能以 ``failed`` 结束。"
+"对于尚未附加驱动程序且正在等待或进行验证的作业，取消会立即完成。"
+
 #: ../../source/features/batch-inference/batch-api.rst:150
 msgid "Components"
 msgstr "组件"

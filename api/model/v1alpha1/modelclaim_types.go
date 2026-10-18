@@ -73,6 +73,17 @@ type ModelClaimSpec struct {
 	// +kubebuilder:validation:Maximum=1
 	Replicas *int32 `json:"replicas,omitempty"`
 
+	// Priority determines placement order among ModelClaims that currently have
+	// no recorded instance. A higher value is considered before a lower value.
+	// Values must be non-negative.
+	// It does not preempt or otherwise change an existing instance. Claims with
+	// equal priority retain FIFO order. Defaults to zero.
+	// +optional
+	// +kubebuilder:default=0
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="priority is immutable; create a new ModelClaim instead"
+	Priority int32 `json:"priority,omitempty"`
+
 	// EngineConfig carries engine-specific startup options. Args maps engine
 	// CLI flags to their values, e.g. {"--max-model-len": "2048"}.
 	// +optional

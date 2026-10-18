@@ -563,7 +563,9 @@ func assertLifecycleWakeResponse(t *testing.T, model string, timeout time.Durati
 		t, err, "model %s did not return 503; last status=%d body=%s",
 		model, lastStatus, lastBody,
 	)
-	assert.Equal(t, "10", retryAfter)
+	// A sleeping model with no reason is asked to be retried sooner than one
+	// that starts from scratch.
+	assert.Equal(t, "3", retryAfter)
 }
 
 func cleanupLifecycleResources(

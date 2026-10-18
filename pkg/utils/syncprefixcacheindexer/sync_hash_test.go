@@ -680,6 +680,98 @@ func TestRemovePrefix(t *testing.T) {
 	}
 }
 
+// TestRemovePrefixDropsReverseIndex checks that dropping a pod also removes the
+// engine block mappings only that pod held, and their reverse index entries.
+func TestRemovePrefixDropsReverseIndex(t *testing.T) {
+	table := NewSyncPrefixHashTable()
+	defer table.Close()
+
+	ctx := ModelContext{ModelName: testModelName, LoraID: int64(123)}
+	event := BlockStored{
+		BlockHashes: []int64{2001, 2002},
+		Tokens:      [][]byte{{1, 2, 3, 4}, {5, 6, 7, 8}},
+		ModelName:   ctx.ModelName,
+		LoraID:      ctx.LoraID,
+		SourcePod:   testPod1Name,
+	}
+	if err := table.ProcessBlockStored(event); err != nil {
+		t.Fatalf("failed to process block stored: %v", err)
+	}
+
+	value, ok := table.contextMap.Load(ctx)
+	if !ok {
+		t.Fatal("context should exist")
+	}
+	contextData := value.(*ContextData)
+	contextData.mappingMu.RLock()
+	if len(contextData.hashMapping.engineToAibrix) != 2 {
+		t.Fatalf("expected 2 engine block mappings, got %d",
+			len(contextData.hashMapping.engineToAibrix))
+	}
+	contextData.mappingMu.RUnlock()
+
+	if err := table.RemovePrefix(ctx.ModelName, ctx.LoraID, testPod1Name); err != nil {
+		t.Fatalf("failed to remove prefix: %v", err)
+	}
+
+	contextData.mappingMu.RLock()
+	if len(contextData.hashMapping.engineToAibrix) != 0 {
+		t.Errorf("expected no engine block mappings, got %d",
+			len(contextData.hashMapping.engineToAibrix))
+	}
+	contextData.mappingMu.RUnlock()
+
+	table.blockIndexMu.RLock()
+	if len(table.blockIndex) != 0 {
+		t.Errorf("expected an empty reverse index, got %d entries", len(table.blockIndex))
+	}
+	table.blockIndexMu.RUnlock()
+}
+
+// TestEvictExpiredPodsKeepsEngineLookup checks that idle routing eviction
+// retains the engine lookup needed for later removal events.
+func TestEvictExpiredPodsKeepsEngineLookup(t *testing.T) {
+	table := NewSyncPrefixHashTable()
+	defer table.Close()
+
+	ctx := ModelContext{ModelName: testModelName, LoraID: int64(456)}
+	event := BlockStored{
+		BlockHashes: []int64{3001, 3002},
+		Tokens:      [][]byte{{1, 2, 3, 4}, {5, 6, 7, 8}},
+		ModelName:   ctx.ModelName,
+		LoraID:      ctx.LoraID,
+		SourcePod:   testPod1Name,
+	}
+	if err := table.ProcessBlockStored(event); err != nil {
+		t.Fatalf("failed to process block stored: %v", err)
+	}
+
+	value, ok := table.contextMap.Load(ctx)
+	if !ok {
+		t.Fatal("context should exist")
+	}
+	contextData := value.(*ContextData)
+
+	// Every pod in this context is now expired.
+	table.evictExpiredPodsInBatch(
+		[]evictionContext{{ctx: ctx, data: contextData}},
+		time.Now().Unix()+1,
+	)
+
+	contextData.mappingMu.RLock()
+	if len(contextData.hashMapping.engineToAibrix) != 2 {
+		t.Errorf("expected 2 retained engine block mappings, got %d",
+			len(contextData.hashMapping.engineToAibrix))
+	}
+	contextData.mappingMu.RUnlock()
+
+	table.blockIndexMu.RLock()
+	if len(table.blockIndex) != 2 {
+		t.Errorf("expected 2 retained reverse-index entries, got %d", len(table.blockIndex))
+	}
+	table.blockIndexMu.RUnlock()
+}
+
 func TestProcessAllBlocksCleared(t *testing.T) {
 	table := NewSyncPrefixHashTable()
 	defer table.Close()
@@ -1502,5 +1594,54 @@ func TestEnforceContextLimitDropsBlockIndex(t *testing.T) {
 	table.blockIndexMu.RUnlock()
 	if indexed {
 		t.Error("blockIndex should no longer reference the evicted context's block hash")
+	}
+}
+
+func TestAdapterBlocksAreIndexedPerAdapter(t *testing.T) {
+	table := NewSyncPrefixHashTable()
+	defer table.Close()
+
+	tokens := makeTokens(32)
+	ready := map[string]struct{}{testPod1Name: {}}
+	adapter := LoraIDFromName("sql-lora")
+
+	err := table.ProcessBlockStored(BlockStored{
+		BlockHashes: []int64{3001, 3002},
+		Tokens:      [][]byte{tokens[:16], tokens[16:]},
+		ModelName:   testModelName,
+		LoraID:      -1,
+		LoraName:    "sql-lora",
+		SourcePod:   testPod1Name,
+	})
+	if err != nil {
+		t.Fatalf("failed to store blocks: %v", err)
+	}
+
+	if matches, _ := table.MatchPrefix(testModelName, -1, tokens, ready); len(matches) != 0 {
+		t.Errorf("base model matched the adapter's blocks: %v", matches)
+	}
+	if matches, _ := table.MatchPrefix(testModelName, adapter, tokens, ready); matches[testPod1Name] != 100 {
+		t.Errorf("adapter match = %v, want 100 for %s", matches, testPod1Name)
+	}
+
+	// vLLM's BlockRemoved does not name the adapter.
+	err = table.ProcessBlockRemoved(BlockRemoved{
+		BlockHashes: []int64{3002},
+		ModelName:   testModelName,
+		LoraID:      -1,
+		SourcePod:   testPod1Name,
+	})
+	if err != nil {
+		t.Fatalf("failed to remove blocks: %v", err)
+	}
+	if matches, _ := table.MatchPrefix(testModelName, adapter, tokens, ready); matches[testPod1Name] != 50 {
+		t.Errorf("adapter match after removal = %v, want 50 for %s", matches, testPod1Name)
+	}
+
+	if err := table.RemovePrefix(testModelName, -1, testPod1Name); err != nil {
+		t.Fatalf("failed to remove pod: %v", err)
+	}
+	if matches, _ := table.MatchPrefix(testModelName, adapter, tokens, ready); len(matches) != 0 {
+		t.Errorf("adapter still matched a removed pod: %v", matches)
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -1077,6 +1078,123 @@ func TestTokenLoadTracker_DecodeLedgerListener(t *testing.T) {
 	tr.SetDecodeLedgerListener(nil)
 	tr.AcquireDecodeWithTTL("r4", "ns/decode-0", 100, 0)
 	assert.Empty(t, take())
+}
+
+// CorrectDecodeCost replaces an outstanding charge's cost and keeps its pod,
+// count and charge time, so growth is unaffected; the listener hears about it,
+// and the release afterwards takes off the corrected cost.
+func TestTokenLoadTracker_CorrectDecodeCost(t *testing.T) {
+	tr, clock := newTestTokenLoadTracker(t, TokenLoadConfig{})
+	var heard []string
+	tr.SetDecodeLedgerListener(func(podKey string) { heard = append(heard, podKey) })
+	const pod = "ns/decode-0"
+
+	tr.AcquireDecodeWithTTL("img", pod, 60_000, 0)
+	tr.AcquireDecodeWithTTL("txt", pod, 500, 0)
+	clock.Advance(10 * time.Second)
+	_, _, sumAtBefore := tr.DecodeLedgerState(pod)
+	growthBefore := tr.DecodeGrowth(pod, 2)
+	heard = nil
+
+	tr.CorrectDecodeCost("img", 1052)
+	assert.Equal(t, 1552.0, tr.GetDecodeLoad(pod))
+	tokens, charges, sumAt := tr.DecodeLedgerState(pod)
+	assert.Equal(t, 1552.0, tokens)
+	assert.EqualValues(t, 2, charges)
+	assert.Equal(t, sumAtBefore, sumAt, "the charge time is kept")
+	assert.Equal(t, growthBefore, tr.DecodeGrowth(pod, 2), "growth only depends on count and times")
+	assert.Equal(t, []string{pod}, heard)
+
+	heard = nil
+	tr.CorrectDecodeCost("img", 1052)
+	assert.Empty(t, heard, "the same cost again changes nothing")
+
+	tr.ReleaseDecode("img")
+	assert.Equal(t, 500.0, tr.GetDecodeLoad(pod), "the release takes off the corrected cost")
+	tr.CorrectDecodeCost("img", 9_999)
+	assert.Equal(t, 500.0, tr.GetDecodeLoad(pod), "a released charge is not corrected")
+
+	tr.CorrectDecodeCost("unknown", 9_999)
+	tr.CorrectDecodeCost("txt", -1)
+	tr.CorrectDecodeCost("txt", math.Inf(1))
+	tr.CorrectDecodeCost("txt", math.NaN())
+	assert.Equal(t, 500.0, tr.GetDecodeLoad(pod), "unknown request IDs and negative or non-finite costs are ignored")
+
+	tr.CorrectDecodeCost("txt", 2_000)
+	tr.ReleaseDecode("txt")
+	assert.Zero(t, tr.GetDecodeLoad(pod))
+	tokens, charges, _ = tr.DecodeLedgerState(pod)
+	assert.Zero(t, tokens)
+	assert.Zero(t, charges)
+}
+
+// A correction that looked up the charge before its release must not apply
+// after it: the release already took off the old cost.
+func TestTokenLoadTracker_CorrectDecodeCostAfterConcurrentRelease(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, TokenLoadConfig{})
+	const pod = "ns/decode-0"
+	tr.AcquireDecodeWithTTL("txt", pod, 500, 0)
+	tr.AcquireDecodeWithTTL("img", pod, 60_000, 0)
+	v, ok := tr.decodeEntries.Load("img")
+	require.True(t, ok)
+
+	tr.ReleaseDecode("img")
+	tr.correctDecode("img", v.(*decodeLoadEntry), 1052)
+
+	assert.Equal(t, 500.0, tr.GetDecodeLoad(pod), "only the other request's charge is left")
+	tokens, charges, _ := tr.DecodeLedgerState(pod)
+	assert.Equal(t, 500.0, tokens)
+	assert.EqualValues(t, 1, charges)
+}
+
+// Two corrections near the float64 limit would overflow the pod's counter to
+// +Inf, which no release undoes; such costs are ignored.
+func TestTokenLoadTracker_CorrectDecodeCostIgnoresHugeCosts(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, TokenLoadConfig{})
+	const pod = "ns/decode-0"
+	tr.AcquireDecodeWithTTL("a", pod, 100, 0)
+	tr.AcquireDecodeWithTTL("b", pod, 100, 0)
+
+	tr.CorrectDecodeCost("a", 1e308)
+	tr.CorrectDecodeCost("b", 1e308)
+	tr.CorrectDecodeCost("b", maxCorrectedDecodeCost+1)
+	assert.Equal(t, 200.0, tr.GetDecodeLoad(pod))
+
+	tr.ReleaseDecode("a")
+	tr.ReleaseDecode("b")
+	tr.AcquireDecodeWithTTL("c", pod, 100, 0)
+	assert.Equal(t, 100.0, tr.GetDecodeLoad(pod))
+
+	tr.CorrectDecodeCost("c", maxCorrectedDecodeCost)
+	assert.Equal(t, maxCorrectedDecodeCost, tr.GetDecodeLoad(pod), "a cost equal to the bound is accepted")
+}
+
+// A correction racing the release of the same charge never leaves a cost
+// behind: whichever runs second sees the other's result.
+func TestTokenLoadTracker_CorrectDecodeCostRacesRelease(t *testing.T) {
+	tr := newTokenLoadTracker(TokenLoadConfig{}, time.Now)
+	t.Cleanup(tr.Close)
+	const pod = "ns/decode-0"
+	var wg sync.WaitGroup
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < 2000; i++ {
+				id := fmt.Sprintf("w%d-%d", w, i)
+				tr.AcquireDecodeWithTTL(id, pod, 60_000, 0)
+				done := make(chan struct{})
+				go func() { tr.CorrectDecodeCost(id, 1052); close(done) }()
+				tr.ReleaseDecode(id)
+				<-done
+			}
+		}(w)
+	}
+	wg.Wait()
+	assert.Zero(t, tr.GetDecodeLoad(pod))
+	tokens, charges, _ := tr.DecodeLedgerState(pod)
+	assert.Zero(t, tokens)
+	assert.Zero(t, charges)
 }
 
 // DecodeLedgerState reads tokens, charges and charge times together: under

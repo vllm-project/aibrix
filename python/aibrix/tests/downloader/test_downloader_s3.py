@@ -442,11 +442,15 @@ def test_s3_empty_allow_file_suffix(monkeypatch, tmp_path, suffixes):
     )
     monkeypatch.setattr(s3_mod, "envs", mock_envs)
 
-    # Empty suffix filters download everything; .bin excludes all existing files.
+    # Empty suffix filters download everything; .bin excludes all existing
+    # files. Disable the always-allow mechanism (which by default keeps small
+    # runtime files like *.txt) so the ".bin excludes everything" intent holds.
     d = s3_mod.S3Downloader(
         "s3://bucket/models/all",
         model_name="all_files_model",
-        download_extra_config=DownloadExtraConfig(allow_file_suffix=suffixes),
+        download_extra_config=DownloadExtraConfig(
+            allow_file_suffix=suffixes, always_allow_file_suffix=[]
+        ),
     )
     d.download_model(local_path=str(tmp_path))
 

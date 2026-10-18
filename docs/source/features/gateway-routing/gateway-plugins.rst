@@ -12,7 +12,7 @@ This page is the gateway routing reference. Dedicated guides cover the strategie
 - :doc:`pd-disaggregation`
 - :doc:`agentic-routing`
 - :doc:`semantic-router`
-- :doc:`vllm-omni`
+- :doc:`omni`
 - :doc:`external-replica-routing`
 
 .. contents:: On this page
@@ -1180,11 +1180,11 @@ Routing and Error Debugging Headers
    * - ``x-error-model-replica-inflight-exceeded``
      - Every routable replica is at the profile's ``requestsInflight`` cap.
    * - ``x-error-multipart-parsing``
-     - The multipart/form-data body could not be parsed, typically on image, audio, or video endpoints. See :doc:`vllm-omni`.
+     - The multipart/form-data body could not be parsed, typically on image, audio, or video endpoints. See :doc:`omni`.
    * - ``x-error-video-not-found``
-     - The video job ID is unknown, expired, out of scope, or its owning pod is gone. See :doc:`vllm-omni`.
+     - The video job ID is unknown, expired, out of scope, or its owning pod is gone. See :doc:`omni-video`.
    * - ``x-error-video-job-pod-unavailable``
-     - The video job's owning pod is temporarily unroutable. See :doc:`vllm-omni`.
+     - The video job's owning pod is temporarily unroutable. See :doc:`omni-video`.
 
 Streaming Headers
 ^^^^^^^^^^^^^^^^^
@@ -1292,7 +1292,7 @@ Collect logs from the Envoy proxy and the gateway plugin for deeper investigatio
        Session affinity for multi-turn and concurrent agentic requests.
    :doc:`semantic-router`
        Topic-based routing through the vLLM Semantic Router ext_proc filter.
-   :doc:`vllm-omni`
+   :doc:`omni`
        Multi-modal serving and sticky video job routing.
    :doc:`external-replica-routing`
        Delegating replica selection to an operator-run decision service.

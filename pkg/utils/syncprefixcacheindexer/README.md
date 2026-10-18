@@ -93,6 +93,11 @@ All operations are thread-safe through:
 - Atomic operations for statistics
 - Safe iteration during eviction
 
+Block-store updates check whether their context is being evicted while holding
+the mapping lock. Updates to a retiring context are skipped so they cannot add
+reverse-index entries after cleanup. A later event can recreate the context
+once eviction has removed it.
+
 ## Testing
 
 Comprehensive test coverage including:

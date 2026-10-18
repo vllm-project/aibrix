@@ -37,8 +37,8 @@ type BlockStored struct {
 	// Empty when the connected vLLM does not emit it. Used to score pods with
 	// non-GPU prefixes lower during routing (see issue #2285).
 	Medium string
-	// LoraName is the canonical adapter id ("" = base model). Reserved for
-	// per-adapter index isolation; not yet consumed by the index key.
+	// LoraName is the canonical adapter id ("" = base model). When set, the
+	// blocks are indexed under the adapter (see LoraIDFromName), not LoraID.
 	LoraName string
 	// GroupIdx is the KV-cache group for hybrid-attention models (-1 when
 	// unspecified). The index tracks each group separately.

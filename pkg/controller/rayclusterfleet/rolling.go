@@ -24,20 +24,21 @@ import (
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/rayclusterfleet/util"
 	"k8s.io/klog/v2"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 // rolloutRolling implements the logic for rolling a new replica set.
-func (r *RayClusterFleetReconciler) rolloutRolling(ctx context.Context, d *orchestrationv1alpha1.RayClusterFleet, rsList []*orchestrationv1alpha1.RayClusterReplicaSet) error {
+func (r *RayClusterFleetReconciler) rolloutRolling(ctx context.Context, d *orchestrationv1alpha1.RayClusterFleet, rsList []*orchestrationv1alpha1.RayClusterReplicaSet) (ctrl.Result, error) {
 	newRS, oldRSs, err := r.getAllReplicaSetsAndSyncRevision(ctx, d, rsList, true)
 	if err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
 	allRSs := append(oldRSs, newRS)
 
 	// Scale up, if we can.
 	scaledUp, err := r.reconcileNewReplicaSet(ctx, allRSs, newRS, d)
 	if err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
 	if scaledUp {
 		// Update DeploymentStatus
@@ -47,7 +48,7 @@ func (r *RayClusterFleetReconciler) rolloutRolling(ctx context.Context, d *orche
 	// Scale down, if we can.
 	scaledDown, err := r.reconcileOldReplicaSets(ctx, allRSs, util.FilterActiveReplicaSets(oldRSs), newRS, d)
 	if err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
 	if scaledDown {
 		// Update DeploymentStatus
@@ -56,7 +57,7 @@ func (r *RayClusterFleetReconciler) rolloutRolling(ctx context.Context, d *orche
 
 	if util.DeploymentComplete(d, &d.Status) {
 		if err := r.cleanupDeployment(ctx, oldRSs, d); err != nil {
-			return err
+			return ctrl.Result{}, err
 		}
 	}
 

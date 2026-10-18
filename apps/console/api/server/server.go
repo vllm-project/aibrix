@@ -34,6 +34,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/apps/console/api/deployment/provider"
+	gatewayprovider "github.com/vllm-project/aibrix/apps/console/api/gateway/provider"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/handler"
 	"github.com/vllm-project/aibrix/apps/console/api/metrics"
@@ -249,6 +250,13 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	// Register the Kubernetes-backed ModelAdapter BFF.
 	modelAdapterHandler := handler.NewModelAdapterHandler(s.clusterClients)
 	if err := modelAdapterHandler.RegisterRoutes(mux); err != nil {
+		return err
+	}
+
+	gatewayHandler := handler.NewGatewayInstanceHandler(
+		gatewayprovider.NewKubernetes(provider.NewGatewayClientProvider(s.cfg.KubernetesProvider)),
+	)
+	if err := gatewayHandler.RegisterRoutes(mux); err != nil {
 		return err
 	}
 

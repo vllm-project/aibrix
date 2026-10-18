@@ -51,8 +51,9 @@ kubectl -n aibrix-system get pods \
 
 ### Runtime image
 
-The warm-pool sample uses `aibrix/kvcached-runtime:nightly`, which is built
-from `main`. To test another commit, build the runtime from it. Then make the
+The warm-pool sample uses `aibrix/kvcached-runtime:nightly`, which is built on
+demand with the *Docker Push kvcached-runtime* workflow, so it can lag `main`.
+To test another commit, build the runtime from it. Then make the
 image available to the node, for example with `minikube image load`, or push
 it to a registry the node can reach:
 
@@ -354,7 +355,7 @@ for i in $(seq 20); do
 done
 wait "${pids[@]}"
 grep -h '^HTTP' "$EVIDENCE"/s2-*.headers | sort | uniq -c
-grep -il '^Retry-After: 10' "$EVIDENCE"/s2-*.headers | wc -l
+grep -Eil '^Retry-After:[[:blank:]]*3[[:space:]]*$' "$EVIDENCE"/s2-*.headers | wc -l
 wake_request qwen3-0-6b
 eventually 300 serves qwen3-0.6b
 wait_phase qwen3-0-6b Active 2m
@@ -366,7 +367,7 @@ wake_request qwen3-0-6b
 
 Pass criteria:
 
-- every request got 503 with `Retry-After: 10`;
+- every request got 503 with `Retry-After: 3`;
 - the Pod carries one wake request, `wake.modelclaim.aibrix.ai/qwen3-0-6b`,
   holding the time of the first request, and the gateway logged it once;
 - the claim shows `Waking` and then `Woken` Events, a retry returns 200, and

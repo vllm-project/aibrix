@@ -526,6 +526,39 @@
                       },
                       {
                         "match": {
+                          "pathSeparatedPrefix": "/v1/images/edits"
+                        },
+                        "metadata": {
+                          "filterMetadata": {
+                            "envoy-gateway": {
+                              "resources": [
+                                {
+                                  "kind": "HTTPRoute",
+                                  "name": "aibrix-reserved-router",
+                                  "namespace": "aibrix-system"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        "name": "httproute/aibrix-system/aibrix-reserved-router/rule/0/match/18/*",
+                        "route": {
+                          "cluster": "httproute/aibrix-system/aibrix-reserved-router/rule/0",
+                          "upgradeConfigs": [
+                            {
+                              "upgradeType": "websocket"
+                            }
+                          ]
+                        },
+                        "typedPerFilterConfig": {
+                          "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-extension-policy/extproc/0": {
+                            "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig",
+                            "config": {}
+                          }
+                        }
+                      },
+                      {
+                        "match": {
                           "pathSeparatedPrefix": "/v1/video/generations"
                         },
                         "metadata": {

@@ -29,6 +29,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -362,6 +363,77 @@ func TestAddPodStats_SkipsRedisIncrementWhenReplicaInflightAlreadyAdmitted(t *te
 		return err == nil && v == "0"
 	}, time.Second, 5*time.Millisecond,
 		"the matching decrement must still fire exactly once even though the increment was skipped")
+}
+
+func TestAdmitPodRunningRequest_TrackerPreservesBaseline(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		hook    *admitScriptHook
+		counted bool
+	}{
+		{"admit never ran", &admitScriptHook{process: failAdmitScript}, false},
+		{"reply lost after the admit ran", &admitScriptHook{run: true, process: loseAdmitReply}, true},
+		{"confirmed admission", nil, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			const modelName = "test-model"
+			client := newTestRunningRequestsClient(t)
+			if tt.hook != nil {
+				client.AddHook(*tt.hook)
+			}
+			store := NewForTest()
+			store.redisClient = client
+			pod := requestTrackerTestPod(testPodName, testNamespace, modelName, "10.0.0.1")
+			store.addPod(pod)
+			metaPod, ok := store.metaPods.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
+			require.True(t, ok)
+			atomic.StoreInt32(&metaPod.runningRequests, 3)
+			key := runningRequestsKey(testNamespace, testPodName)
+			require.NoError(t, client.HSet(context.Background(), key, runningRequestsGatewayInstanceID, 3).Err())
+			seedLiveGateway(t, client)
+
+			admitted, counted, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 4)
+			require.NoError(t, err)
+			require.True(t, admitted)
+			require.Equal(t, tt.counted, counted)
+			val, err := client.HGet(context.Background(), key, runningRequestsGatewayInstanceID).Result()
+			require.NoError(t, err)
+			if counted {
+				require.Equal(t, "4", val)
+			} else {
+				require.Equal(t, "3", val)
+			}
+
+			routingCtx := types.NewRoutingContext(context.Background(), "least-request", modelName, "", tt.name, "")
+			routingCtx.SetTargetPod(pod)
+			routingCtx.ReplicaInflightAdmitted = counted
+			term := store.AddRequestCount(routingCtx, routingCtx.RequestID, modelName)
+			stats, ok := store.podStats.Load(podStatsAttemptKey(routingCtx, modelName, routingCtx.RequestID))
+			require.True(t, ok)
+			if counted {
+				select {
+				case <-stats.runningReqIncrDone:
+				default:
+					t.Fatal("confirmed admission must skip the asynchronous increment")
+				}
+			}
+			select {
+			case <-stats.runningReqIncrDone:
+			case <-time.After(5 * time.Second):
+				t.Fatal("request increment did not complete")
+			}
+			require.True(t, stats.runningReqIncrOK)
+			val, err = client.HGet(context.Background(), key, runningRequestsGatewayInstanceID).Result()
+			require.NoError(t, err)
+			require.Equal(t, "4", val, "the request must be counted exactly once")
+			store.DoneRequestCount(routingCtx, routingCtx.RequestID, modelName, term)
+			require.Eventually(t, func() bool {
+				val, err := client.HGet(context.Background(), key, runningRequestsGatewayInstanceID).Result()
+				return err == nil && val == "3"
+			}, 5*time.Second, 10*time.Millisecond, "request completion must preserve the baseline of 3")
+			require.EqualValues(t, 3, atomic.LoadInt32(&metaPod.runningRequests))
+		})
+	}
 }
 
 // gapTestLoadProvider is a CappedLoadProvider that returns a fixed consumption

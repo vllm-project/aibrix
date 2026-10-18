@@ -22,6 +22,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/routeutil"
 	"github.com/vllm-project/aibrix/pkg/types"
 
 	v1 "k8s.io/api/core/v1"
@@ -113,7 +114,7 @@ func (r throughputRouter) Route(ctx *types.RoutingContext, readyPodList types.Po
 
 	// Use fallback if no valid metrics
 	if targetPod == nil {
-		targetPod, err = SelectRandomPodAsFallback(ctx, pods, rand.Intn)
+		targetPod, err = routeutil.SelectRandomPodAsFallback(ctx, pods, rand.Intn)
 		if err != nil {
 			return "", err
 		}
