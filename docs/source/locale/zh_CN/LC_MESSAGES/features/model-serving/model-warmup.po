@@ -343,6 +343,32 @@ msgstr ""
 
 #: ../../source/features/model-serving/model-warmup.rst:212
 msgid ""
+"A Job can also be accepted while admission rejects every Pod that it tries to "
+"create. For example, a namespace enforcing the ``restricted`` Pod Security "
+"standard can reject an image-only warmup because its generated containers do "
+"not set every required security-context field. The Job then has no Pods, and "
+"the target can report ``Running`` until ``jobTimeoutSeconds`` expires. Inspect "
+"the Job and its ``FailedCreate`` events to find the admission message:"
+msgstr ""
+"Job 也可能已被接受，而准入控制却拒绝它尝试创建的每个 Pod。例如，强制执行 "
+"``restricted`` Pod Security 标准的命名空间可能会拒绝仅镜像预热，因为其生成"
+"的容器未设置所有必需的安全上下文字段。此时 Job 没有 Pod，而目标可能会持续报告 "
+"``Running``，直到 ``jobTimeoutSeconds`` 到期。检查该 Job 及其 "
+"``FailedCreate`` 事件以查找准入错误消息："
+
+#: ../../source/features/model-serving/model-warmup.rst:224
+msgid ""
+"Use ``spec.custom.containers`` when the action needs an explicit "
+"``securityContext`` that satisfies namespace policy. Image-only entries do "
+"not expose that field. Alternatively, run the warmup in a namespace whose "
+"admission policy permits the generated Pod template."
+msgstr ""
+"当操作需要满足命名空间策略的显式 ``securityContext`` 时，请使用 "
+"``spec.custom.containers``。仅镜像条目不提供该字段。或者，也可以在准入策略"
+"允许所生成 Pod 模板的命名空间中运行预热。"
+
+#: ../../source/features/model-serving/model-warmup.rst:284
+msgid ""
 "The bundled cache samples use ``hostPath`` at ``/var/lib/aibrix/models`` "
 "with ``DirectoryOrCreate``. That exposes a node filesystem path to the Job "
 "and may be disallowed by Pod Security admission. The samples do not require "
@@ -354,7 +380,7 @@ msgstr ""
 "被 Pod Security 准入禁止。示例不需要特权容器；请勿仅为运行这些示例而扩大特"
 "权、主机网络、PID 命名空间或主机挂载范围。"
 
-#: ../../source/features/model-serving/model-warmup.rst:218
+#: ../../source/features/model-serving/model-warmup.rst:236
 msgid ""
 "``Succeeded`` and ``Ready`` are point-in-time aggregate Job results. Kubelet "
 "or runtime image garbage collection can evict pulled images, and node "
@@ -367,35 +393,35 @@ msgstr ""
 "中的模型制品。需要可重现性时，请使用不可变的镜像和模型引用，并为生产工作负载"
 "保留持久的制品来源。"
 
-#: ../../source/features/model-serving/model-warmup.rst:225
+#: ../../source/features/model-serving/model-warmup.rst:261
 msgid "Labels and annotations"
 msgstr "标签与注解"
 
-#: ../../source/features/model-serving/model-warmup.rst:227
+#: ../../source/features/model-serving/model-warmup.rst:263
 msgid "ModelWarmup metadata keys"
 msgstr "ModelWarmup 元数据键"
 
-#: ../../source/features/model-serving/model-warmup.rst:230
+#: ../../source/features/model-serving/model-warmup.rst:284
 msgid "Key"
 msgstr "键"
 
-#: ../../source/features/model-serving/model-warmup.rst:231
+#: ../../source/features/model-serving/model-warmup.rst:267
 msgid "Object"
 msgstr "对象"
 
-#: ../../source/features/model-serving/model-warmup.rst:232
+#: ../../source/features/model-serving/model-warmup.rst:268
 msgid "Purpose"
 msgstr "用途"
 
-#: ../../source/features/model-serving/model-warmup.rst:233
+#: ../../source/features/model-serving/model-warmup.rst:269
 msgid "``resource-pool.aibrix.ai/name``"
 msgstr "``resource-pool.aibrix.ai/name``"
 
-#: ../../source/features/model-serving/model-warmup.rst:234
+#: ../../source/features/model-serving/model-warmup.rst:270
 msgid "Namespace and Node"
 msgstr "Namespace 和 Node"
 
-#: ../../source/features/model-serving/model-warmup.rst:235
+#: ../../source/features/model-serving/model-warmup.rst:253
 msgid ""
 "Authorizes a Node only when its non-empty pool value equals the ModelWarmup "
 "namespace pool value. Cluster administrators manage it."
@@ -403,77 +429,77 @@ msgstr ""
 "仅当 Node 的非空池值等于 ModelWarmup 所在命名空间的池值时，才授权该 Node。此"
 "标签由集群管理员管理。"
 
-#: ../../source/features/model-serving/model-warmup.rst:237
+#: ../../source/features/model-serving/model-warmup.rst:273
 msgid "``model.aibrix.ai/warmup-enabled``"
 msgstr "``model.aibrix.ai/warmup-enabled``"
 
-#: ../../source/features/model-serving/model-warmup.rst:238
+#: ../../source/features/model-serving/model-warmup.rst:274
 msgid "Node"
 msgstr "Node"
 
-#: ../../source/features/model-serving/model-warmup.rst:239
+#: ../../source/features/model-serving/model-warmup.rst:257
 msgid "A value of ``true`` explicitly opts the Node into warmup scheduling."
 msgstr "值为 ``true`` 时，表示该 Node 明确加入预热调度。"
 
-#: ../../source/features/model-serving/model-warmup.rst:240
+#: ../../source/features/model-serving/model-warmup.rst:276
 msgid "``model.aibrix.ai/warmup``"
 msgstr "``model.aibrix.ai/warmup``"
 
-#: ../../source/features/model-serving/model-warmup.rst:241
-#: ../../source/features/model-serving/model-warmup.rst:244
-#: ../../source/features/model-serving/model-warmup.rst:248
-#: ../../source/features/model-serving/model-warmup.rst:251
-#: ../../source/features/model-serving/model-warmup.rst:255
-#: ../../source/features/model-serving/model-warmup.rst:259
+#: ../../source/features/model-serving/model-warmup.rst:277
+#: ../../source/features/model-serving/model-warmup.rst:262
+#: ../../source/features/model-serving/model-warmup.rst:284
+#: ../../source/features/model-serving/model-warmup.rst:269
+#: ../../source/features/model-serving/model-warmup.rst:273
+#: ../../source/features/model-serving/model-warmup.rst:277
 msgid "Job"
 msgstr "Job"
 
-#: ../../source/features/model-serving/model-warmup.rst:242
+#: ../../source/features/model-serving/model-warmup.rst:278
 msgid "Controller-managed label containing the owning ModelWarmup UID."
 msgstr "由控制器管理的标签，包含所属 ModelWarmup 的 UID。"
 
-#: ../../source/features/model-serving/model-warmup.rst:243
+#: ../../source/features/model-serving/model-warmup.rst:261
 msgid "``model.aibrix.ai/warmup-name``"
 msgstr "``model.aibrix.ai/warmup-name``"
 
-#: ../../source/features/model-serving/model-warmup.rst:245
+#: ../../source/features/model-serving/model-warmup.rst:263
 msgid ""
 "Controller-managed annotation containing the human-readable ModelWarmup name."
 msgstr "由控制器管理的注解，包含人类可读的 ModelWarmup 名称。"
 
-#: ../../source/features/model-serving/model-warmup.rst:247
+#: ../../source/features/model-serving/model-warmup.rst:265
 msgid "``model.aibrix.ai/revision``"
 msgstr "``model.aibrix.ai/revision``"
 
-#: ../../source/features/model-serving/model-warmup.rst:249
+#: ../../source/features/model-serving/model-warmup.rst:267
 msgid "Controller-managed label identifying the immutable workload revision."
 msgstr "由控制器管理的标签，用于标识不可变的工作负载修订版本。"
 
-#: ../../source/features/model-serving/model-warmup.rst:250
+#: ../../source/features/model-serving/model-warmup.rst:268
 msgid "``model.aibrix.ai/target-node``"
 msgstr "``model.aibrix.ai/target-node``"
 
-#: ../../source/features/model-serving/model-warmup.rst:252
+#: ../../source/features/model-serving/model-warmup.rst:270
 msgid ""
 "Controller-managed annotation recording the exact authorized target Node "
 "name."
 msgstr "由控制器管理的注解，记录获得授权的确切目标 Node 名称。"
 
-#: ../../source/features/model-serving/model-warmup.rst:254
+#: ../../source/features/model-serving/model-warmup.rst:272
 msgid "``model.aibrix.ai/target-node-uid``"
 msgstr "``model.aibrix.ai/target-node-uid``"
 
-#: ../../source/features/model-serving/model-warmup.rst:256
+#: ../../source/features/model-serving/model-warmup.rst:274
 msgid ""
 "Controller-managed annotation recording the target Node identity used by "
 "Continuous coverage."
 msgstr "由控制器管理的注解，记录 Continuous 覆盖所使用的目标 Node 身份。"
 
-#: ../../source/features/model-serving/model-warmup.rst:258
+#: ../../source/features/model-serving/model-warmup.rst:276
 msgid "``model.aibrix.ai/attempt``"
 msgstr "``model.aibrix.ai/attempt``"
 
-#: ../../source/features/model-serving/model-warmup.rst:260
+#: ../../source/features/model-serving/model-warmup.rst:278
 msgid ""
 "Controller-managed, one-based Continuous Job attempt. Users do not set these "
 "Job metadata keys."
@@ -481,11 +507,11 @@ msgstr ""
 "由控制器管理、从 1 开始计数的 Continuous Job 尝试次数。用户不应设置这些 Job "
 "元数据键。"
 
-#: ../../source/features/model-serving/model-warmup.rst:264
+#: ../../source/features/model-serving/model-warmup.rst:282
 msgid "Scope"
 msgstr "范围"
 
-#: ../../source/features/model-serving/model-warmup.rst:266
+#: ../../source/features/model-serving/model-warmup.rst:284
 msgid ""
 "The spec is immutable after creation; create another resource to change an "
 "action, selector, or lifecycle policy. Separate pipeline stages, arbitrary "
