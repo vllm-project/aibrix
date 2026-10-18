@@ -648,6 +648,82 @@ func TestComputeDesiredReplicasAssumesMeanLoadForUnscrapedReadyPod(t *testing.T)
 	}
 }
 
+// status.readyReplicas can lag the pod list after a scale-up. The pods that
+// report are serving, so the total must count all of them, not only the ready
+// count the status still shows.
+func TestComputeDesiredReplicasCountsReportingPodsWhenReadyReplicasLag(t *testing.T) {
+	for _, strategy := range []autoscalingv1alpha1.ScalingStrategyType{autoscalingv1alpha1.KPA, autoscalingv1alpha1.APA} {
+		t.Run(string(strategy), func(t *testing.T) {
+			pa := testPodAutoscaler(strategy)
+			fetcher := &mockMetricFetcherFactory{}
+			autoScaler := NewDefaultAutoScaler(fetcher, nil)
+			start := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+
+			const totalLoad = 500 // 10 pods at the target of 50
+			for i := range 16 {
+				pods, ready := int32(10), int32(10)
+				if i < 4 {
+					pods, ready = 4, 4
+				} else if i < 8 {
+					ready = 4 // all 10 pods report, the status still shows 4
+				}
+				podList := make([]corev1.Pod, pods)
+				for j := range podList {
+					podList[j].Name = fmt.Sprintf("pod-%d", j)
+				}
+				fetcher.metricsValue = totalLoad / float64(pods)
+				result, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
+					PodAutoscaler:   pa,
+					ScalingContext:  testScalingContext(t, &pa),
+					CurrentReplicas: pods,
+					ReplicaState:    ReplicaState{ReadyReplicas: ready},
+					Pods:            podList,
+					Timestamp:       start.Add(time.Duration(i) * 15 * time.Second),
+				})
+				require.NoError(t, err)
+				require.Equal(t, int32(10), result.DesiredReplicas, "reconcile %d with %d pods, %d ready", i, pods, ready)
+			}
+		})
+	}
+}
+
+// External and domain sources report one total, so their windows must not be
+// rescaled by the pod count: a steady external load needs the same replicas
+// before and after the ready pods change.
+func TestComputeDesiredReplicasLeavesExternalSourceWindowsUnscaled(t *testing.T) {
+	for _, strategy := range []autoscalingv1alpha1.ScalingStrategyType{autoscalingv1alpha1.KPA, autoscalingv1alpha1.APA} {
+		t.Run(string(strategy), func(t *testing.T) {
+			pa := testPodAutoscaler(strategy)
+			pa.Spec.MetricsSources[0].MetricSourceType = autoscalingv1alpha1.EXTERNAL
+			fetcher := &mockMetricFetcherFactory{}
+			fetcher.metricsValue = 500 // 10 pods at the target of 50
+			autoScaler := NewDefaultAutoScaler(fetcher, nil)
+			start := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+
+			for i := range 16 {
+				pods := int32(4)
+				if i >= 4 {
+					pods = 10
+				}
+				podList := make([]corev1.Pod, pods)
+				for j := range podList {
+					podList[j].Name = fmt.Sprintf("pod-%d", j)
+				}
+				result, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
+					PodAutoscaler:   pa,
+					ScalingContext:  testScalingContext(t, &pa),
+					CurrentReplicas: pods,
+					ReplicaState:    ReplicaState{ReadyReplicas: pods},
+					Pods:            podList,
+					Timestamp:       start.Add(time.Duration(i) * 15 * time.Second),
+				})
+				require.NoError(t, err)
+				require.Equal(t, int32(10), result.DesiredReplicas, "reconcile %d with %d pods", i, pods)
+			}
+		})
+	}
+}
+
 // Editing a PodAutoscaler's spec must not leave panic state behind until the
 // PodAutoscaler is deleted: a removed metric loses its state, and so does a
 // PodAutoscaler that stops using KPA.

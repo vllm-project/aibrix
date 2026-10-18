@@ -497,7 +497,10 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 	// the windows keep the total load and it is spread over today's pods when
 	// read back. A window of per-pod means would let samples from before a
 	// scale-up, when each pod carried more, count again for every pod added
-	// since, and steady load would keep scaling up.
+	// since, and steady load would keep scaling up. Like the algorithms'
+	// multiply by replicas, this assumes the metric is additive across pods
+	// (it halves when the pods double at the same load); for one that is not,
+	// such as a latency, the windowed history is rescaled when the pods change.
 	perPod := algorithm.IsPerPodSource(metricSource.MetricSourceType)
 	loadPods := podsCarryingLoad(len(snapshot.Values), request.ReplicaState.ReadyReplicas)
 	if perPod && len(snapshot.Values) > 0 {
