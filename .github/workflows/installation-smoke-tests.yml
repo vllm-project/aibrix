@@ -56,15 +56,13 @@ jobs:
         with:
           version: v3.17.0
 
-      - name: Cache Kind and Kustomize
+      - name: Cache Kind
         uses: actions/cache@v5
         with:
-          path: |
-            /tmp/tools/kind
-            /tmp/tools/kustomize
-          key: installation-smoke-kind-v0.24.0-kustomize-v5.4.3-${{ runner.os }}-${{ runner.arch }}
+          path: /tmp/tools/kind
+          key: installation-smoke-kind-v0.24.0-${{ runner.os }}-${{ runner.arch }}
 
-      - name: Install Kind and Kustomize
+      - name: Install Kind
         run: |
           set -euo pipefail
           mkdir -p /tmp/tools
@@ -72,14 +70,8 @@ jobs:
             curl -fsSLo /tmp/tools/kind "https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64"
             chmod +x /tmp/tools/kind
           fi
-          if [ ! -f /tmp/tools/kustomize ]; then
-            curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz" |
-              tar -xz -C /tmp/tools kustomize
-            chmod +x /tmp/tools/kustomize
-          fi
-          sudo cp /tmp/tools/kind /tmp/tools/kustomize /usr/local/bin/
+          sudo cp /tmp/tools/kind /usr/local/bin/
           kind version
-          kustomize version
 
       - name: Free disk space
         run: |
