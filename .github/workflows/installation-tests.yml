@@ -3,7 +3,8 @@ name: Installation Tests
 on:
   workflow_dispatch:  # Allows manual trigger
   push:
-    branches: [ "main", "release-*" ]
+    # PRs already test against the latest main, so merges don't re-run this.
+    branches: [ "release-*" ]
     paths:
       - '.github/workflows/**'
       - 'build/container/**'

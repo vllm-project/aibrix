@@ -3,7 +3,8 @@ name: StormService Volcano E2E
 on:
   workflow_dispatch:
   push:
-    branches: ["main", "release-*"]
+    # PRs already test against the latest main, so merges don't re-run this.
+    branches: ["release-*"]
     paths:
       - ".github/workflows/stormservice-volcano-e2e.yml"
       - "api/orchestration/**"
