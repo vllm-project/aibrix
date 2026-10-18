@@ -58,6 +58,8 @@ func TestExecuteCorrectsDecodeChargeFromPrefillUsage(t *testing.T) {
 			body: `{"usage":{"prompt_tokens":0}}`, want: estimate},
 		{name: "infinite prompt_tokens keeps the estimate", engine: "vllm", status: http.StatusOK,
 			body: `{"usage":{"prompt_tokens":1e999}}`, want: estimate},
+		{name: "implausibly large prompt_tokens keeps the estimate", engine: "vllm", status: http.StatusOK,
+			body: `{"usage":{"prompt_tokens":1e308}}`, want: estimate},
 		{name: "failed prefill keeps the estimate", engine: "vllm", status: http.StatusInternalServerError,
 			body: `{"error":"boom","usage":{"prompt_tokens":1052}}`, want: estimate},
 	}
