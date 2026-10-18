@@ -986,6 +986,37 @@ sglang:gen_throughput{model_name="a",dp_rank="1"} 20
 	assert.Len(t, original.Label, 3)
 }
 
+func TestSGLangDPUsageCapacityIsScoped(t *testing.T) {
+	for _, label := range []string{"model_name", "engine_type"} {
+		t.Run(label, func(t *testing.T) {
+			families, err := ParseMetricsFromReader(strings.NewReader(fmt.Sprintf(`# TYPE sglang:token_usage gauge
+sglang:token_usage{%s="a",dp_rank="0"} 0.9
+sglang:token_usage{%s="a",dp_rank="1"} 0.1
+sglang:token_usage{%s="b",dp_rank="0"} 0.9
+sglang:token_usage{%s="b",dp_rank="1"} 0.1
+# TYPE sglang:max_total_num_tokens gauge
+sglang:max_total_num_tokens{%s="a",dp_rank="0"} 100
+sglang:max_total_num_tokens{%s="a",dp_rank="1"} 300
+sglang:max_total_num_tokens{%s="b",dp_rank="0"} 300
+sglang:max_total_num_tokens{%s="b",dp_rank="1"} 100
+`, label, label, label, label, label, label, label, label)))
+			require.NoError(t, err)
+			mergeSGLangDPSeries(families)
+
+			usage := families["sglang:token_usage"].Metric
+			require.Len(t, usage, 2)
+			values := map[string]float64{}
+			for _, metric := range usage {
+				scope, _ := GetLabelValueForKey(metric, label)
+				values[scope] = metric.Gauge.GetValue()
+			}
+			// Identical rank IDs and utilizations need each scope's own capacities.
+			assert.InDelta(t, 0.3, values["a"], 1e-9)
+			assert.InDelta(t, 0.7, values["b"], 1e-9)
+		})
+	}
+}
+
 func TestSGLangDPUsageWithoutCompleteCapacityIsUnchanged(t *testing.T) {
 	for _, capacity := range []string{"", `sglang:max_total_num_tokens{model_name="m",dp_rank="0"} 100`,
 		`sglang:max_total_num_tokens{model_name="m",dp_rank="0"} 100
