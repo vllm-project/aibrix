@@ -648,6 +648,26 @@ func TestComputeDesiredReplicasAssumesMeanLoadForUnscrapedReadyPod(t *testing.T)
 	}
 }
 
+// With no pods there is no load to spread, and the windowed total must not be
+// divided by zero: the reported metric has to stay a number.
+func TestComputeDesiredReplicasReportsFiniteMetricWithNoPods(t *testing.T) {
+	for _, strategy := range []autoscalingv1alpha1.ScalingStrategyType{autoscalingv1alpha1.KPA, autoscalingv1alpha1.APA} {
+		t.Run(string(strategy), func(t *testing.T) {
+			pa := testPodAutoscaler(strategy)
+			autoScaler := NewDefaultAutoScaler(&mockMetricFetcherFactory{}, nil)
+
+			result, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
+				PodAutoscaler:  pa,
+				ScalingContext: testScalingContext(t, &pa),
+				Timestamp:      time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, int32(0), result.DesiredReplicas)
+			assert.Equal(t, 0.0, result.MetricValue)
+		})
+	}
+}
+
 // status.readyReplicas can lag the pod list after a scale-up. The pods that
 // report are serving, so the total must count all of them, not only the ready
 // count the status still shows.
