@@ -233,3 +233,29 @@ func Test_selectTargetPod_EPlusPDEngine(t *testing.T) {
 		})
 	}
 }
+
+func Test_selectTargetPod_PDKeepsEncoders(t *testing.T) {
+	encoders := &encodeRecorder{}
+	encodeSrv, servingSrv := encoders.server(t), (&encodeRecorder{}).server(t)
+	pods := []*v1.Pod{
+		epdServingPod(t, "encode-0", "rs-a", encode.Role, encodeSrv),
+		epdServingPod(t, "prefill-0", "rs-a", "prefill", servingSrv),
+		epdServingPod(t, "decode-0", "rs-a", "decode", servingSrv),
+	}
+	router := &firstPodRouter{}
+	routing.Register(routing.RouterPD, func() (types.Router, error) { return router, nil })
+	routing.Init()
+
+	server := &Server{encodeExecutor: encode.NewExecutor(encodeSrv.Client())}
+	routeCtx := types.NewRoutingContext(context.Background(), routing.RouterPD, "qwen-vl", "", "epd-request", "user")
+	defer routeCtx.Delete()
+	routeCtx.ReqPath = "/v1/chat/completions"
+	routeCtx.ReqBody = []byte(`{"model":"qwen-vl","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://x/a.png"}}]}]}`)
+
+	_, err := server.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: pods}, "")
+	require.NoError(t, err)
+	// The PD router picks the encoders itself, so it gets them and the gateway
+	// doesn't run the stage a second time.
+	assert.ElementsMatch(t, []string{"encode-0", "prefill-0", "decode-0"}, router.candidates())
+	assert.Zero(t, encoders.count())
+}
