@@ -298,6 +298,25 @@ func TestSessionAffinityRedisPinIsHonoredByAnotherReplica(t *testing.T) {
 	assert.Equal(t, addr, cached)
 }
 
+// A request its pod has no room for is rejected by the gateway's requestsInflight cap. It
+// must not pin its session to that pod first: the pin would outlive the 429 and keep
+// sending the session to the pod that turned it away.
+func TestSessionAffinityRouteDoesNotPinARejectedRequest(t *testing.T) {
+	router, mr := newTestSessionAffinityRedis(t)
+	pods := []*v1.Pod{newPod("pod-a", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"})}
+	const sessionKey = "agent-run-rejected"
+	ctx := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
+	ctx.ReqHeaders = map[string]string{constants.HeaderSessionKey: sessionKey}
+	ctx.SetTargetAdmitter(func(*v1.Pod) error { return types.ErrTargetReplicaInflightExceeded })
+
+	_, err := router.Route(ctx, newMockPodList(pods, nil))
+	require.ErrorIs(t, err, types.ErrTargetReplicaInflightExceeded)
+	_, _, ok := router.loadCachedAddr(sessionCacheKey("model1", sessionKey))
+	assert.False(t, ok, "a rejected request must not pin its session")
+	time.Sleep(50 * time.Millisecond)
+	assert.False(t, mr.Exists(sessionAffinityRedisKey(sessionCacheKey("model1", sessionKey))))
+}
+
 func TestSessionAffinityRedisCacheHitSurvivesPodSetChange(t *testing.T) {
 	router, mr := newTestSessionAffinityRedis(t)
 	podA := newPod("pod-a", "10.0.0.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
