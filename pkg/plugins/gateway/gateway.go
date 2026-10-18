@@ -47,7 +47,6 @@ import (
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/vllm-project/aibrix/pkg/cache"
-	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
@@ -964,7 +963,12 @@ func (s *Server) encodeMedia(routeCtx *types.RoutingContext, encoders []*v1.Pod)
 		return
 	}
 	target := routeCtx.TargetPod()
-	if target == nil || target.Labels[constants.ModelLabelEngine] != pdrouter.VLLMEngine {
+	if target == nil {
+		return
+	}
+	// Read the engine the way the PD router does, so a pod without the
+	// engine label counts as vLLM here too.
+	if engine, err := routing.ValidateAndGetLLMEngine([]*v1.Pod{target}); err != nil || engine != pdrouter.VLLMEngine {
 		return
 	}
 	s.encodeExecutor.EncodeMedia(routeCtx, encoders, target, routeCtx.RoutingOverrides().PD.PrefillRequestTimeout)

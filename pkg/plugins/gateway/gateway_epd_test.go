@@ -191,3 +191,45 @@ func Test_selectTargetPod_EncodersNeedARoleset(t *testing.T) {
 	assert.Equal(t, "worker-0", routeCtx.TargetPod().Name)
 	assert.Zero(t, encoders.count(), "pods without a roleset don't share encoders")
 }
+
+func Test_selectTargetPod_EPlusPDEngine(t *testing.T) {
+	tests := []struct {
+		name        string
+		engine      string
+		wantEncodes int
+	}{
+		{name: "a pod without the engine label counts as vLLM", wantEncodes: 1},
+		{name: "other engines skip the encode stage", engine: "sglang"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoders := &encodeRecorder{}
+			encodeSrv, workerSrv := encoders.server(t), (&encodeRecorder{}).server(t)
+			pods := []*v1.Pod{
+				epdServingPod(t, "encode-0", "rs-a", encode.Role, encodeSrv),
+				epdServingPod(t, "worker-0", "rs-a", "worker", workerSrv),
+			}
+			for _, pod := range pods {
+				delete(pod.Labels, constants.ModelLabelEngine)
+				if tt.engine != "" {
+					pod.Labels[constants.ModelLabelEngine] = tt.engine
+				}
+			}
+
+			algo := types.RoutingAlgorithm("test-epd-engine-" + strings.ReplaceAll(tt.name, " ", "-"))
+			routing.Register(algo, func() (types.Router, error) { return &firstPodRouter{}, nil })
+			routing.Init()
+
+			server := &Server{encodeExecutor: encode.NewExecutor(encodeSrv.Client())}
+			routeCtx := types.NewRoutingContext(context.Background(), algo, "qwen-vl", "", "epd-request", "user")
+			defer routeCtx.Delete()
+			routeCtx.ReqPath = "/v1/chat/completions"
+			routeCtx.ReqBody = []byte(`{"model":"qwen-vl","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://x/a.png"}}]}]}`)
+
+			_, err := server.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: pods}, "")
+			require.NoError(t, err)
+			assert.Equal(t, "worker-0", routeCtx.TargetPod().Name)
+			assert.Equal(t, tt.wantEncodes, encoders.count())
+		})
+	}
+}
