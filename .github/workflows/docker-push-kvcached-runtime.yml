@@ -1,11 +1,10 @@
 # ModelClaim's runtime image is experimental, so it is published on its own,
-# to Docker Hub only, and is not part of releases.
+# to Docker Hub only, and is not part of releases. It is built on demand
+# rather than on every merge.
 name: Docker Push kvcached-runtime
 
 on:
   workflow_dispatch:  # Allows manual trigger
-  push:
-    branches: [ "main" ]
 
 jobs:
   build-push-dockerhub:

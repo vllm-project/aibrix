@@ -3,7 +3,8 @@ name: Multimodality Chat App CI
 on:
   workflow_dispatch:
   push:
-    branches: ["main", "release-*"]
+    # PRs already test against the latest main, so merges don't re-run this.
+    branches: ["release-*"]
     paths:
       - "apps/chat/**"
       - ".github/workflows/apps-chat-ci.yml"
