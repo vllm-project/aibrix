@@ -237,7 +237,14 @@ func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrat
 	}
 	if len(terminatedPods) > 0 {
 		klog.InfoS("Deleting terminated pods", "count", len(terminatedPods), "podset", podSet.Name)
-		return controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, podSet, terminatedPods, nil, aibrixconst.PodDrainReasonRollout, time.Now())
+		result, err := controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, podSet, terminatedPods, nil, aibrixconst.PodDrainReasonRollout, time.Now())
+		if err != nil {
+			return result, err
+		}
+		for _, pod := range terminatedPods {
+			r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, "DeletingTerminatedPod", "Deleting pod %s in phase %s so it can be replaced.", pod.Name, pod.Status.Phase)
+		}
+		return result, nil
 	}
 
 	activePods := filterActivePods(podList.Items)

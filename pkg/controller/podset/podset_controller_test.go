@@ -481,21 +481,28 @@ func TestReconcilePodsReplacesTerminatedPod(t *testing.T) {
 			scheme := runtime.NewScheme()
 			assert.NoError(t, corev1.AddToScheme(scheme))
 			assert.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+			recorder := record.NewFakeRecorder(10)
 			reconciler := &PodSetReconciler{
 				Client:        clientFake.NewClientBuilder().WithScheme(scheme).WithObjects(&healthyPod, &terminatedPod).Build(),
 				Scheme:        scheme,
-				EventRecorder: record.NewFakeRecorder(10),
+				EventRecorder: recorder,
 				DynamicClient: dynamicFake.NewSimpleDynamicClient(scheme),
 			}
+			key := client.ObjectKey{Namespace: "test-namespace", Name: "test-podset-1"}
 
-			// The first pass deletes the terminated pod; the second creates its replacement.
-			for range 2 {
-				_, err := reconciler.reconcilePods(ctx, podSet)
-				assert.NoError(t, err)
-			}
+			// The first pass only deletes the terminated pod and records an event for it.
+			_, err := reconciler.reconcilePods(ctx, podSet)
+			assert.NoError(t, err)
+			assert.True(t, apierrors.IsNotFound(reconciler.Get(ctx, key, &corev1.Pod{})))
+			require.Len(t, recorder.Events, 1)
+			assert.Equal(t, "Normal DeletingTerminatedPod Deleting pod test-podset-1 in phase "+string(phase)+" so it can be replaced.", <-recorder.Events)
+
+			// The second pass creates its replacement.
+			_, err = reconciler.reconcilePods(ctx, podSet)
+			assert.NoError(t, err)
 
 			replaced := &corev1.Pod{}
-			assert.NoError(t, reconciler.Get(ctx, client.ObjectKey{Namespace: "test-namespace", Name: "test-podset-1"}, replaced))
+			assert.NoError(t, reconciler.Get(ctx, key, replaced))
 			assert.NotEqual(t, phase, replaced.Status.Phase)
 		})
 	}
