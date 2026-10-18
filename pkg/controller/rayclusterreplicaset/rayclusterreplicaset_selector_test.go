@@ -208,10 +208,15 @@ func TestReconcileRetriesAfterFailedCreate(t *testing.T) {
 			if _, err := reconciler.Reconcile(ctx, req); err == nil {
 				t.Fatal("expected Reconcile to return the create error")
 			}
-			if exp, found, _ := reconciler.Expectations.GetExpectations(req.String()); found {
-				if add, del := exp.GetExpectations(); add != 0 || del != 0 {
-					t.Fatalf("expected the create expectations to be lowered to zero, got add=%d del=%d", add, del)
-				}
+			exp, found, err := reconciler.Expectations.GetExpectations(req.String())
+			if err != nil {
+				t.Fatalf("get expectations: %v", err)
+			}
+			if !found {
+				t.Fatal("expected the expectations to be kept after the failed pass")
+			}
+			if add, del := exp.GetExpectations(); add != 0 || del != 0 {
+				t.Fatalf("expected the create expectations to be lowered to zero, got add=%d del=%d", add, del)
 			}
 			updated := &orchestrationv1alpha1.RayClusterReplicaSet{}
 			if err := reconciler.Get(ctx, req.NamespacedName, updated); err != nil {
