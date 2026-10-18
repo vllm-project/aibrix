@@ -31,64 +31,10 @@ permissions:
   contents: read
 
 jobs:
-  build-images:
-    name: Build smoke image (${{ matrix.image }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image: controller-manager
-            dockerfile: build/container/Dockerfile
-            context: .
-          - image: gateway-plugins
-            dockerfile: build/container/Dockerfile.gateway
-            context: .
-          - image: runtime
-            dockerfile: build/container/Dockerfile.python
-            target: runtime
-            context: .
-          - image: metadata-service
-            dockerfile: build/container/Dockerfile.python
-            target: metadata-service
-            context: .
-          - image: vllm-mock
-            dockerfile: development/app/Dockerfile
-            context: development/app
-    steps:
-      - name: Check out code
-        uses: actions/checkout@v6
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build ${{ matrix.image }}
-        uses: docker/build-push-action@v7
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          target: ${{ matrix.target || '' }}
-          tags: aibrix/${{ matrix.image }}:${{ github.sha }}
-          cache-from: type=gha,scope=installation-smoke-${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=installation-smoke-${{ matrix.image }}
-          load: true
-
-      - name: Save image
-        run: docker save "aibrix/${{ matrix.image }}:${{ github.sha }}" > "${{ matrix.image }}.tar"
-
-      - name: Upload image artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.image }}-image
-          path: ${{ matrix.image }}.tar
-          retention-days: 1
-
   helm-install-smoke:
     name: Installation Smoke / Helm
-    needs: build-images
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
     env:
       KIND_CLUSTER_NAME: installation-smoke-helm
       KUBECONFIG: /tmp/installation-smoke-helm.conf
@@ -135,23 +81,6 @@ jobs:
           kind version
           kustomize version
 
-      - name: Download image artifacts
-        uses: actions/download-artifact@v8
-        with:
-          pattern: '*-image'
-          merge-multiple: false
-
-      - name: Verify image artifacts
-        run: |
-          set -euo pipefail
-          for image in controller-manager gateway-plugins runtime metadata-service vllm-mock; do
-            path="${image}-image/${image}.tar"
-            if [ ! -s "${path}" ]; then
-              echo "::error::Required image artifact ${path} is missing or empty"
-              exit 1
-            fi
-          done
-
       - name: Free disk space
         run: |
           sudo rm -rf \
@@ -169,6 +98,63 @@ jobs:
             /usr/share/swift
           df -h /
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # The images are built one after another on this runner and loaded
+      # straight into Docker. They share build caches with Installation Tests.
+      - name: Build controller-manager
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: build/container/Dockerfile
+          tags: aibrix/controller-manager:${{ github.sha }}
+          cache-from: type=gha,scope=controller-manager
+          cache-to: type=gha,mode=max,scope=controller-manager
+          load: true
+
+      - name: Build gateway-plugins
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: build/container/Dockerfile.gateway
+          tags: aibrix/gateway-plugins:${{ github.sha }}
+          cache-from: type=gha,scope=gateway-plugins
+          cache-to: type=gha,mode=max,scope=gateway-plugins
+          load: true
+
+      - name: Build runtime
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: build/container/Dockerfile.python
+          target: runtime
+          tags: aibrix/runtime:${{ github.sha }}
+          cache-from: type=gha,scope=runtime
+          cache-to: type=gha,mode=max,scope=runtime
+          load: true
+
+      - name: Build metadata-service
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: build/container/Dockerfile.python
+          target: metadata-service
+          tags: aibrix/metadata-service:${{ github.sha }}
+          cache-from: type=gha,scope=metadata-service
+          cache-to: type=gha,mode=max,scope=metadata-service
+          load: true
+
+      - name: Build vllm-mock
+        uses: docker/build-push-action@v7
+        with:
+          context: development/app
+          file: development/app/Dockerfile
+          tags: aibrix/vllm-mock:${{ github.sha }}
+          cache-from: type=gha,scope=vllm-mock
+          cache-to: type=gha,mode=max,scope=vllm-mock
+          load: true
+
       - name: Create isolated Kind cluster
         run: |
           set -euo pipefail
@@ -184,7 +170,6 @@ jobs:
           set -euo pipefail
           sha="${{ github.sha }}"
           for image in controller-manager gateway-plugins runtime metadata-service vllm-mock; do
-            docker load < "${image}-image/${image}.tar"
             docker tag "aibrix/${image}:${sha}" "aibrix/${image}:nightly"
           done
           kind load docker-image \
