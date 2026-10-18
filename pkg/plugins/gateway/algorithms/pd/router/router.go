@@ -264,7 +264,9 @@ type pdRouter struct {
 	// request's prefill pod, keyed by request ID. Selection runs under selectMu
 	// and the decode pod is admitted only after it, so Route takes the credit
 	// right after selection and enqueues it once the decode pod admitted the
-	// request: a rejected request credits no pod.
+	// request: a rejected request credits no pod. This relies on request IDs
+	// being unique and on Route being the only caller of Select; another
+	// caller would leave its entries here.
 	pendingPrefixCredits sync.Map
 
 	// tokenLoadTracker is the token-weighted prefill ledger read by the
