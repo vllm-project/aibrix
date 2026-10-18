@@ -492,6 +492,17 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 	}
 
 	klog.InfoS("Processing metrics snapshot", "source", workloadKey, "healthy metrics pods", len(snapshot.Values), "values", snapshot.Values)
+	// A per-pod value only means something for the pod count it was sampled
+	// at, and the algorithms multiply the windowed value by today's count. So
+	// the windows keep the total load and it is spread over today's pods when
+	// read back. A window of per-pod means would let samples from before a
+	// scale-up, when each pod carried more, count again for every pod added
+	// since, and steady load would keep scaling up.
+	perPod := algorithm.IsPerPodSource(metricSource.MetricSourceType)
+	loadPods := podsCarryingLoad(len(snapshot.Values), request.ReplicaState.ReadyReplicas)
+	if perPod && len(snapshot.Values) > 0 {
+		snapshot.Values = []float64{mean(snapshot.Values) * loadPods}
+	}
 	if err := a.aggregator.ProcessSnapshot(metricKey, snapshot); err != nil {
 		return nil, fmt.Errorf("failed to process metrics snapshot for %s: %w", workloadKey, err)
 	}
@@ -499,6 +510,10 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 	aggregatedMetrics, err := a.aggregator.GetAggregatedMetrics(metricKey, request.Timestamp)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get aggregated metrics for %s %s: %w", workloadKey, metricKey, err)
+	}
+	if perPod {
+		aggregatedMetrics.StableValue /= loadPods
+		aggregatedMetrics.PanicValue /= loadPods
 	}
 
 	// Step 3: Enhance confidence with pod count awareness
@@ -552,6 +567,22 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 		"recommendation", recommendation)
 
 	return recommendation, nil
+}
+
+// podsCarryingLoad is the pod count a per-pod sample is scaled by to get the
+// total load, and the total is divided by to get a per-pod value again: the
+// ready pods, so a ready pod whose scrape failed is assumed to carry the mean,
+// or the pods that reported, if more did.
+func podsCarryingLoad(reported int, ready int32) float64 {
+	return math.Max(1, math.Max(float64(reported), float64(ready)))
+}
+
+func mean(values []float64) float64 {
+	var sum float64
+	for _, v := range values {
+		sum += v
+	}
+	return sum / float64(len(values))
 }
 
 func metricWindowDurations(pa autoscalingv1alpha1.PodAutoscaler) (time.Duration, time.Duration) {
