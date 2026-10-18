@@ -367,7 +367,7 @@ msgstr ""
 "``spec.custom.containers``。仅镜像条目不提供该字段。或者，也可以在准入策略"
 "允许所生成 Pod 模板的命名空间中运行预热。"
 
-#: ../../source/features/model-serving/model-warmup.rst:284
+#: ../../source/features/model-serving/model-warmup.rst:230
 msgid ""
 "The bundled cache samples use ``hostPath`` at ``/var/lib/aibrix/models`` "
 "with ``DirectoryOrCreate``. That exposes a node filesystem path to the Job "
@@ -393,31 +393,31 @@ msgstr ""
 "中的模型制品。需要可重现性时，请使用不可变的镜像和模型引用，并为生产工作负载"
 "保留持久的制品来源。"
 
-#: ../../source/features/model-serving/model-warmup.rst:261
+#: ../../source/features/model-serving/model-warmup.rst:243
 msgid "Labels and annotations"
 msgstr "标签与注解"
 
-#: ../../source/features/model-serving/model-warmup.rst:263
+#: ../../source/features/model-serving/model-warmup.rst:245
 msgid "ModelWarmup metadata keys"
 msgstr "ModelWarmup 元数据键"
 
-#: ../../source/features/model-serving/model-warmup.rst:284
+#: ../../source/features/model-serving/model-warmup.rst:248
 msgid "Key"
 msgstr "键"
 
-#: ../../source/features/model-serving/model-warmup.rst:267
+#: ../../source/features/model-serving/model-warmup.rst:249
 msgid "Object"
 msgstr "对象"
 
-#: ../../source/features/model-serving/model-warmup.rst:268
+#: ../../source/features/model-serving/model-warmup.rst:250
 msgid "Purpose"
 msgstr "用途"
 
-#: ../../source/features/model-serving/model-warmup.rst:269
+#: ../../source/features/model-serving/model-warmup.rst:251
 msgid "``resource-pool.aibrix.ai/name``"
 msgstr "``resource-pool.aibrix.ai/name``"
 
-#: ../../source/features/model-serving/model-warmup.rst:270
+#: ../../source/features/model-serving/model-warmup.rst:252
 msgid "Namespace and Node"
 msgstr "Namespace 和 Node"
 
@@ -429,11 +429,11 @@ msgstr ""
 "仅当 Node 的非空池值等于 ModelWarmup 所在命名空间的池值时，才授权该 Node。此"
 "标签由集群管理员管理。"
 
-#: ../../source/features/model-serving/model-warmup.rst:273
+#: ../../source/features/model-serving/model-warmup.rst:255
 msgid "``model.aibrix.ai/warmup-enabled``"
 msgstr "``model.aibrix.ai/warmup-enabled``"
 
-#: ../../source/features/model-serving/model-warmup.rst:274
+#: ../../source/features/model-serving/model-warmup.rst:256
 msgid "Node"
 msgstr "Node"
 
@@ -441,20 +441,20 @@ msgstr "Node"
 msgid "A value of ``true`` explicitly opts the Node into warmup scheduling."
 msgstr "值为 ``true`` 时，表示该 Node 明确加入预热调度。"
 
-#: ../../source/features/model-serving/model-warmup.rst:276
+#: ../../source/features/model-serving/model-warmup.rst:258
 msgid "``model.aibrix.ai/warmup``"
 msgstr "``model.aibrix.ai/warmup``"
 
-#: ../../source/features/model-serving/model-warmup.rst:277
+#: ../../source/features/model-serving/model-warmup.rst:259
 #: ../../source/features/model-serving/model-warmup.rst:262
-#: ../../source/features/model-serving/model-warmup.rst:284
+#: ../../source/features/model-serving/model-warmup.rst:266
 #: ../../source/features/model-serving/model-warmup.rst:269
 #: ../../source/features/model-serving/model-warmup.rst:273
 #: ../../source/features/model-serving/model-warmup.rst:277
 msgid "Job"
 msgstr "Job"
 
-#: ../../source/features/model-serving/model-warmup.rst:278
+#: ../../source/features/model-serving/model-warmup.rst:260
 msgid "Controller-managed label containing the owning ModelWarmup UID."
 msgstr "由控制器管理的标签，包含所属 ModelWarmup 的 UID。"
 
