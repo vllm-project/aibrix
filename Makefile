@@ -152,7 +152,7 @@ test-code-coverage: test
 
 .PHONY: test-race-condition
 test-race-condition: manifests generate fmt vet envtest ## Run unit tests with race detection enabled and write cover.out.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test -race $$(go list ./... | grep -v '/e2e\|/integration') -coverprofile cover.out
+	CGO_ENABLED=1 KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test -race $$(go list ./... | grep -v '/e2e\|/integration') -coverprofile cover.out
 
 .PHONY: test-integration test-integration-webhook test-integration-controller test-integration-gateway
 test-integration: manifests fmt vet envtest ginkgo
