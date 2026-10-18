@@ -235,9 +235,9 @@ func TestComputeDesiredReplicasAdjustsKPAAPAConservativelyWhenReplicasPending(t 
 			currentPods:  4,
 			readyPods:    2,
 			pendingPods:  2,
-			wantReason:   "scale-up adjusted: pending replicas treated as missing metrics",
-			wantReplicas: 10, // the 2 ready pods alone need ceil(2*250/50)
-			wantGuard:    true,
+			wantReason:   "panic mode scaling",
+			wantReplicas: 10,    // the 2 ready pods alone need ceil(2*250/50)
+			wantGuard:    false, // KPA counts only the ready pods' load, so there is nothing to trim
 		},
 		{
 			name:         "kpa scale-up dampened",
@@ -247,9 +247,9 @@ func TestComputeDesiredReplicasAdjustsKPAAPAConservativelyWhenReplicasPending(t 
 			currentPods:  4,
 			readyPods:    3,
 			pendingPods:  1,
-			wantReason:   "scale-up adjusted: pending replicas treated as missing metrics",
-			wantReplicas: 6, // raw 8, the 3 ready pods alone need ceil(3*100/50)
-			wantGuard:    true,
+			wantReason:   "stable mode scaling",
+			wantReplicas: 6,     // the 3 ready pods alone need ceil(3*100/50)
+			wantGuard:    false, // KPA counts only the ready pods' load, so there is nothing to trim
 		},
 		{
 			name:         "kpa scale-up keeps what the ready pods need (pod source)",
@@ -259,9 +259,9 @@ func TestComputeDesiredReplicasAdjustsKPAAPAConservativelyWhenReplicasPending(t 
 			currentPods:  4,
 			readyPods:    3,
 			pendingPods:  1,
-			wantReason:   "scale-up adjusted: pending replicas treated as missing metrics",
+			wantReason:   "stable mode scaling",
 			wantReplicas: 6,
-			wantGuard:    true,
+			wantGuard:    false, // KPA counts only the ready pods' load, so there is nothing to trim
 		},
 		{
 			name:         "kpa scale-up keeps what the ready pods need (resource source)",
@@ -271,9 +271,9 @@ func TestComputeDesiredReplicasAdjustsKPAAPAConservativelyWhenReplicasPending(t 
 			currentPods:  4,
 			readyPods:    3,
 			pendingPods:  1,
-			wantReason:   "scale-up adjusted: pending replicas treated as missing metrics",
+			wantReason:   "stable mode scaling",
 			wantReplicas: 6,
-			wantGuard:    true,
+			wantGuard:    false, // KPA counts only the ready pods' load, so there is nothing to trim
 		},
 		{
 			name:         "apa gives the same answer for the same input",
@@ -563,6 +563,7 @@ func TestComputeDesiredReplicasSettlesUnderSteadyLoad(t *testing.T) {
 	}{
 		{autoscalingv1alpha1.KPA, 0},
 		{autoscalingv1alpha1.APA, 0},
+		{autoscalingv1alpha1.KPA, 90 * time.Second},
 		{autoscalingv1alpha1.APA, 90 * time.Second},
 	} {
 		t.Run(fmt.Sprintf("%s/startup_%s", tt.strategy, tt.startup), func(t *testing.T) {

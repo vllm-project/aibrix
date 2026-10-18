@@ -551,6 +551,7 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 		ScalingContext:    scalingContext,
 		Timestamp:         request.Timestamp,
 		StableWindow:      stableWindow,
+		LoadPods:          loadPods,
 	}
 	if request.PodAutoscaler.Spec.ScalingStrategy == autoscalingv1alpha1.KPA {
 		scalingRequest.Panic = a.panicState(ktypes.NamespacedName{
