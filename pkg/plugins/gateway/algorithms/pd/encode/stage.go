@@ -74,6 +74,9 @@ func (e *Executor) EncodeMedia(ctx *types.RoutingContext, pods []*v1.Pod, target
 		return
 	}
 	roleset := target.Labels[rolesetLabel]
+	if roleset == "" {
+		return
+	}
 	var encoders []*v1.Pod
 	for _, pod := range pods {
 		if pod.Labels[rolesetLabel] == roleset && IsEncoder(pod) && hasHTTPServer(pod) {

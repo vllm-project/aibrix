@@ -167,3 +167,27 @@ func Test_selectTargetPod_OnlyEncodersReady(t *testing.T) {
 	_, err := server.selectTargetPod(context.Background(), routeCtx, pods, "")
 	assert.Error(t, err)
 }
+
+func Test_selectTargetPod_EncodersNeedARoleset(t *testing.T) {
+	encoders := &encodeRecorder{}
+	encodeSrv, workerSrv := encoders.server(t), (&encodeRecorder{}).server(t)
+	encoder := epdServingPod(t, "encode-0", "", encode.Role, encodeSrv)
+	worker := epdServingPod(t, "worker-0", "", "worker", workerSrv)
+	delete(encoder.Labels, "roleset-name")
+	delete(worker.Labels, "roleset-name")
+
+	algo := types.RoutingAlgorithm("test-epd-no-roleset")
+	routing.Register(algo, func() (types.Router, error) { return &firstPodRouter{}, nil })
+	routing.Init()
+
+	server := &Server{encodeExecutor: encode.NewExecutor(encodeSrv.Client())}
+	routeCtx := types.NewRoutingContext(context.Background(), algo, "qwen-vl", "", "epd-request", "user")
+	defer routeCtx.Delete()
+	routeCtx.ReqPath = "/v1/chat/completions"
+	routeCtx.ReqBody = []byte(`{"model":"qwen-vl","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://x/a.png"}}]}]}`)
+
+	_, err := server.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: []*v1.Pod{encoder, worker}}, "")
+	require.NoError(t, err)
+	assert.Equal(t, "worker-0", routeCtx.TargetPod().Name)
+	assert.Zero(t, encoders.count(), "pods without a roleset don't share encoders")
+}
