@@ -346,6 +346,8 @@ Start the encode pods as encoder-only producers and the prefill pods as consumer
       --ec-transfer-config '{"ec_connector": "ECExampleConnector", "ec_role": "ec_consumer",
         "ec_connector_extra_config": {"shared_storage_path": "/ec-cache"}}'
 
+Encode pods can also sit in front of pods that serve the whole request, with no prefill/decode split (E+PD). With any routing strategy other than ``pd``, the gateway never routes a request to an encode pod, and when the pod it picks has encode pods in its roleset, it runs the same encode stage before forwarding the request. With ``pd`` routing, the same happens when the router picks a standard inference pod instead of a prefill/decode pair. That pod is then the EC consumer. ``samples/disaggregation/vllm/1e1pd.yaml`` is an example.
+
 See vLLM's `disaggregated encoder <https://docs.vllm.ai/en/latest/features/disagg_encoder/>`_ documentation for the encoder flags. Connectors that need per-request transfer handles from the gateway are not supported yet.
 
 
