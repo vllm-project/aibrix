@@ -52,13 +52,13 @@ const (
 	SGLangEngine                 string                 = "sglang"
 	TensorRTLLM                  string                 = "trtllm"
 	LLMEngineIdentifier          string                 = constants.ModelLabelEngine
-	PDRoleSetIdentifier          string                 = "roleset-name"
-	PDRoleIdentifier             string                 = "role-name"
+	PDRoleSetIdentifier          string                 = pd.RoleSetLabel
+	PDRoleIdentifier             string                 = pd.RoleLabel
 	PDRolePrefill                string                 = "prefill"
 	PDRoleDecode                 string                 = "decode"
 	PDRoleEncode                 string                 = encode.Role
 	RoleReplicaIndex             string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
-	PodGroupIndex                string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
+	PodGroupIndex                string                 = pd.PodGroupIndexLabel
 	PromptLenBucketMinLength     string                 = "prompt-len-bucket-min-length"
 	PromptLenBucketMaxLength     string                 = "prompt-len-bucket-max-length"
 	defaultPrefillRequestTimeout int                    = 30
@@ -1519,20 +1519,6 @@ func (r *pdRouter) enqueuePrefixUpdate(prefixHashes []uint64, model, pod string)
 	}
 }
 
-// isPodWithHTTPServer checks if a pod should be selected for routing.
-// In multi-node tensor parallelism setups (e.g., TP=16 with node_rank=0 and node_rank=1),
-// only pods with stormservice.orchestration.aibrix.ai/pod-group-index="0" (corresponding to node_rank=0) run the HTTP server.
-// Pods without the label are also selected for backward compatibility.
-func isPodWithHTTPServer(pod *v1.Pod) bool {
-	podGroupIndex, exists := pod.Labels[PodGroupIndex]
-	if !exists {
-		// No PodGroupIndex label means single-node or old setup - include it
-		return true
-	}
-	// Only include pods from node_rank=0 which have the HTTP server
-	return podGroupIndex == "0"
-}
-
 func (r *pdRouter) isPodSuitableForPromptLength(routingCtx *types.RoutingContext, pod *v1.Pod, promptLength int) bool {
 	minLength, maxLength := podPromptLenBucketBounds(routingCtx, pod)
 
@@ -1577,7 +1563,7 @@ func (r *pdRouter) collectAndBucketPods(routingCtx *types.RoutingContext, readyP
 			if !hasRole || roleID == PDRolePrefill || roleID == PDRoleDecode || roleID == PDRoleEncode {
 				continue
 			}
-			if !isPodWithHTTPServer(pod) {
+			if !pd.IsPodWithHTTPServer(pod) {
 				continue
 			}
 			if isCombinedPod(routingCtx, pod) && r.isPodSuitableForPromptLength(routingCtx, pod, promptLength) {

@@ -20,24 +20,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
-const (
-	// Role is the role-name of encoder pods.
-	Role = "encode"
-
-	roleLabel          = "role-name"
-	rolesetLabel       = "roleset-name"
-	podGroupIndexLabel = "stormservice.orchestration.aibrix.ai/pod-group-index"
-)
+// Role is the role-name of encoder pods.
+const Role = "encode"
 
 // IsEncoder reports whether pod is an encoder. Encoders only run the encode
 // stage, so they must never be picked to serve a request.
 func IsEncoder(pod *v1.Pod) bool {
-	return pod.Labels[roleLabel] == Role
+	return pod.Labels[pd.RoleLabel] == Role
 }
 
 // SplitEncoders returns the pods that can serve requests and the encoders,
@@ -73,13 +68,13 @@ func (e *Executor) EncodeMedia(ctx *types.RoutingContext, pods []*v1.Pod, target
 	if len(items) == 0 {
 		return
 	}
-	roleset := target.Labels[rolesetLabel]
+	roleset := target.Labels[pd.RoleSetLabel]
 	if roleset == "" {
 		return
 	}
 	var encoders []*v1.Pod
 	for _, pod := range pods {
-		if pod.Labels[rolesetLabel] == roleset && IsEncoder(pod) && hasHTTPServer(pod) {
+		if pod.Labels[pd.RoleSetLabel] == roleset && IsEncoder(pod) && pd.IsPodWithHTTPServer(pod) {
 			encoders = append(encoders, pod)
 		}
 	}
@@ -93,11 +88,4 @@ func (e *Executor) EncodeMedia(ctx *types.RoutingContext, pods []*v1.Pod, target
 	}
 	klog.V(4).InfoS("encode_request_end", "request_id", ctx.RequestID,
 		"roleset", roleset, "media_items", len(items))
-}
-
-// hasHTTPServer reports whether pod runs the HTTP server of its pod group: in
-// a multi-node group only the first pod does.
-func hasHTTPServer(pod *v1.Pod) bool {
-	index, ok := pod.Labels[podGroupIndexLabel]
-	return !ok || index == "0"
 }

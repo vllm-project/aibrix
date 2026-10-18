@@ -259,3 +259,30 @@ func Test_selectTargetPod_PDKeepsEncoders(t *testing.T) {
 	assert.ElementsMatch(t, []string{"encode-0", "prefill-0", "decode-0"}, router.candidates())
 	assert.Zero(t, encoders.count())
 }
+
+func Test_selectTargetPod_EncodeSkipsNonHTTPEncoderPods(t *testing.T) {
+	leader, follower := &encodeRecorder{}, &encodeRecorder{}
+	leaderSrv, followerSrv, workerSrv := leader.server(t), follower.server(t), (&encodeRecorder{}).server(t)
+	// A multi-node encoder: only the first pod of the group runs the HTTP server.
+	encodeLeader := epdServingPod(t, "encode-0-0", "rs-a", encode.Role, leaderSrv)
+	encodeLeader.Labels["stormservice.orchestration.aibrix.ai/pod-group-index"] = "0"
+	encodeFollower := epdServingPod(t, "encode-0-1", "rs-a", encode.Role, followerSrv)
+	encodeFollower.Labels["stormservice.orchestration.aibrix.ai/pod-group-index"] = "1"
+	pods := []*v1.Pod{encodeLeader, encodeFollower, epdServingPod(t, "worker-0", "rs-a", "worker", workerSrv)}
+
+	algo := types.RoutingAlgorithm("test-epd-multi-node-encoder")
+	routing.Register(algo, func() (types.Router, error) { return &firstPodRouter{}, nil })
+	routing.Init()
+
+	server := &Server{encodeExecutor: encode.NewExecutor(leaderSrv.Client())}
+	routeCtx := types.NewRoutingContext(context.Background(), algo, "qwen-vl", "", "epd-request", "user")
+	defer routeCtx.Delete()
+	routeCtx.ReqPath = "/v1/chat/completions"
+	image := `{"type":"image_url","image_url":{"url":"https://x/a.png"}}`
+	routeCtx.ReqBody = []byte(`{"model":"qwen-vl","messages":[{"role":"user","content":[` + image + `,` + image + `]}]}`)
+
+	_, err := server.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: pods}, "")
+	require.NoError(t, err)
+	assert.Equal(t, 2, leader.count())
+	assert.Zero(t, follower.count())
+}
