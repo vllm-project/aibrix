@@ -3,7 +3,8 @@ name: Docs Build
 on:
   workflow_dispatch:
   push:
-    branches: [ "main", "release-*" ]
+    # PRs already test against the latest main, so merges don't re-run this.
+    branches: [ "release-*" ]
     paths:
       - 'docs/**'
       - '.readthedocs.yaml'

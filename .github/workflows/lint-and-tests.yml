@@ -3,7 +3,8 @@ name: Linter and Unit Tests
 on:
   workflow_dispatch:  # Allows manual trigger
   push:
-    branches: [ "main", "release-*" ]
+    # PRs already test against the latest main, so merges don't re-run this.
+    branches: [ "release-*" ]
     paths:
       - '.github/workflows/**'
       - 'pkg/**'
@@ -114,16 +115,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: make test-zmq
 
-      - name: download artifact (main.breakdown)
-        id: download-main-breakdown
-        if: ${{ !cancelled() && steps.unit-test.outcome == 'success' }}
-        uses: dawidd6/action-download-artifact@v9
-        with:
-          branch: main
-          workflow_conclusion: success
-          name: main.breakdown
-          if_no_artifact_found: warn
-
       - name: check test coverage
         id: coverage
         if: ${{ !cancelled() && steps.unit-test.outcome == 'success' }}
@@ -137,17 +128,6 @@ jobs:
           threshold-file: 0
           threshold-package: 0
           threshold-total: 55
-
-          breakdown-file-name: ${{ github.ref_name == 'main' && 'main.breakdown' || '' }}
-          diff-base-breakdown-file-name: ${{ steps.download-main-breakdown.outputs.found_artifact == 'true' && 'main.breakdown' || '' }}
-
-      - name: upload artifact (main.breakdown)
-        uses: actions/upload-artifact@v7
-        if: ${{ !cancelled() && github.ref_name == 'main' && steps.coverage.conclusion == 'success' }}
-        with:
-          name: main.breakdown
-          path: main.breakdown # as specified via `breakdown-file-name`
-          if-no-files-found: error
 
       - name: "finally check coverage"
         if: ${{ !cancelled() && steps.coverage.outcome == 'failure' }}
