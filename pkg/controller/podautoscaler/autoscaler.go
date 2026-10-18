@@ -501,7 +501,8 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 	perPod := algorithm.IsPerPodSource(metricSource.MetricSourceType)
 	loadPods := podsCarryingLoad(len(snapshot.Values), request.ReplicaState.ReadyReplicas)
 	if perPod && len(snapshot.Values) > 0 {
-		snapshot.Values = []float64{mean(snapshot.Values) * loadPods}
+		snapshot.Values[0] = mean(snapshot.Values) * loadPods
+		snapshot.Values = snapshot.Values[:1]
 	}
 	if err := a.aggregator.ProcessSnapshot(metricKey, snapshot); err != nil {
 		return nil, fmt.Errorf("failed to process metrics snapshot for %s: %w", workloadKey, err)
@@ -578,6 +579,9 @@ func podsCarryingLoad(reported int, ready int32) float64 {
 }
 
 func mean(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
 	var sum float64
 	for _, v := range values {
 		sum += v
