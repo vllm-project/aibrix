@@ -54,7 +54,8 @@ const (
 	ControllerName  = "podset-controller"
 	PodSetFinalizer = "orchestration.aibrix.ai/podset-finalizer"
 
-	PodGroupSyncedEventType = "PodGroupSynced"
+	PodGroupSyncedEventType        = "PodGroupSynced"
+	DeletingTerminatedPodEventType = "DeletingTerminatedPod"
 
 	DefaultRequeueAfter = 15 * time.Second
 )
@@ -242,7 +243,7 @@ func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrat
 			return result, err
 		}
 		for _, pod := range terminatedPods {
-			r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, "DeletingTerminatedPod", "Deleting pod %s in phase %s so it can be replaced.", pod.Name, pod.Status.Phase)
+			r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, DeletingTerminatedPodEventType, "Deleting pod %s in phase %s so it can be replaced.", pod.Name, pod.Status.Phase)
 		}
 		return result, nil
 	}
