@@ -58,6 +58,16 @@ DOWNLOADER_PART_CHUNKSIZE = _parse_int_or_none(
 DOWNLOADER_ALLOW_FILE_SUFFIX = _parse_list_str(
     os.getenv("DOWNLOADER_ALLOW_FILE_SUFFIX")
 )
+# Small runtime-critical files (remote code, tokenizer vocabularies, chat
+# templates) that are always downloaded when DOWNLOADER_ALLOW_FILE_SUFFIX is
+# set, since that filter is meant to skip large weight files only. Without
+# this, the documented "json, safetensors" filter silently drops files like
+# `modeling_*.py` (breaking --trust-remote-code models, see #834),
+# `merges.txt`/`tokenizer.model` and `chat_template.jinja`.
+# Set to an empty value in DownloadExtraConfig to disable.
+DOWNLOADER_ALWAYS_ALLOW_FILE_SUFFIX = _parse_list_str(
+    os.getenv("DOWNLOADER_ALWAYS_ALLOW_FILE_SUFFIX", "py,txt,jinja,model,tiktoken")
+)
 DOWNLOADER_S3_MAX_IO_QUEUE = _parse_int_or_none(
     os.getenv("DOWNLOADER_S3_MAX_IO_QUEUE", "100")
 )

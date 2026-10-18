@@ -177,6 +177,15 @@ type MetricCache interface {
 	//   error: Error information if the pod is not found
 	AdmitPodRunningRequest(podName, podNamespace string, limit int64) (admitted, counted bool, err error)
 
+	// ReleasePodRunningRequest undoes a counted AdmitPodRunningRequest (counted=true) for a
+	// request that ends before request tracking takes it over (AddRequestCount), for
+	// example because work the router started after admitting it failed. Request tracking's
+	// completion decrement never runs for such a request, so its +1 would otherwise stay.
+	// Parameters:
+	//   podName: Name of the pod
+	//   podNamespace: Namespace of the pod
+	ReleasePodRunningRequest(podName, podNamespace string)
+
 	// GetPodRunningRequests is the single-pod live cross-gateway running-request count
 	// (Redis, falling back to this gateway's local atomic). Use GetPodsRunningRequests
 	// for a pod list -- looping this is N Redis round trips. Do not use

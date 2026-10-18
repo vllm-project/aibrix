@@ -92,6 +92,7 @@ var modelPaths = []string{
 	"/generatevideo",
 
 	// Image
+	"/v1/images/generations",
 	"/v1/images/edits",
 
 	// Video
@@ -882,12 +883,18 @@ func appendCustomModelRouterPaths(httpRoute *gatewayv1.HTTPRoute, modelHeaderMat
 	pathSlice := strings.Split(paths, ",")
 	// avoid duplicates
 	pathSet := make(map[string]struct{})
+	for _, match := range httpRoute.Spec.Rules[0].Matches {
+		if match.Path != nil && match.Path.Value != nil {
+			pathSet[*match.Path.Value] = struct{}{}
+		}
+	}
 	for _, path := range pathSlice {
 		// remove illegal space in path
 		path = strings.ReplaceAll(path, " ", "")
 		if _, exists := pathSet[path]; path == "" || exists {
 			continue
 		}
+		pathSet[path] = struct{}{}
 		httpRoute.Spec.Rules[0].Matches = append(httpRoute.Spec.Rules[0].Matches,
 			gatewayv1.HTTPRouteMatch{
 				Path: &gatewayv1.HTTPPathMatch{

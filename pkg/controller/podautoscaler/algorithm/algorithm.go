@@ -47,6 +47,12 @@ type ScalingRequest struct {
 	MetricSourceType  autoscalingv1alpha1.MetricSourceType
 	ScalingContext    scalingctx.ScalingContext
 	Timestamp         time.Time
+	// StableWindow is the stable metric window. KPA ends a panic once a whole
+	// stable window has passed below the panic threshold.
+	StableWindow time.Duration
+	// Panic is the KPA panic state of this target, kept by the caller across
+	// recommendations. Other algorithms ignore it.
+	Panic *PanicState
 }
 
 // ScalingRecommendation contains the scaling decision

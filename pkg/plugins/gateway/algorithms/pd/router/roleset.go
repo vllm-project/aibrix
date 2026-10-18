@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -39,7 +40,7 @@ func groupPDPodsByRoleset(readyPods []*v1.Pod) map[string]*pdRolesetBucket {
 		if !hasRole {
 			continue
 		}
-		if !isPodWithHTTPServer(pod) {
+		if !pd.IsPodWithHTTPServer(pod) {
 			continue
 		}
 		switch roleID {

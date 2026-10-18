@@ -531,10 +531,11 @@ func modelsForKVPolicy(
 			return nil
 		}
 		models = append(models, poolKVModel{
-			Name:            model.ModelName,
-			KVUsedBytes:     model.KVUsedBytes,
-			KVCapacityBytes: model.KVCapacityBytes,
-			Activity:        activities[snapshotActivityKey(model)],
+			Name:                   model.ModelName,
+			KVUsedBytes:            model.KVUsedBytes,
+			KVCapacityBytes:        model.KVCapacityBytes,
+			KVInitialCapacityBytes: model.KVInitialCapacityBytes,
+			Activity:               activities[snapshotActivityKey(model)],
 		})
 	}
 	return models

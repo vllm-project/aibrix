@@ -158,6 +158,14 @@ func (m *MockCache) AdmitPodRunningRequest(podName string, podNamespace string, 
 	return args.Bool(0), args.Bool(1), args.Error(2)
 }
 
+// ReleasePodRunningRequest is a no-op without an expectation, like AdmitPodRunningRequest.
+func (m *MockCache) ReleasePodRunningRequest(podName string, podNamespace string) {
+	if !m.hasExpectation("ReleasePodRunningRequest") {
+		return
+	}
+	m.Called(podName, podNamespace)
+}
+
 func (m *MockCache) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {
 	if !m.hasExpectation("GetPodsRunningRequests") {
 		return nil, nil

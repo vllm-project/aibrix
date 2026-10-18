@@ -17,6 +17,10 @@ queue, it selects a target pod per request by combining two scores:
 
 The pod with the **lowest combined score** is selected.
 
+Token counts and the adaptive window extrema exclude expired usage, including
+clients that have stopped sending requests. The in-memory tracker reclaims that
+usage on reads and updates; it does not need a request from the departed client.
+
 ### Scoring diagram
 
 ```

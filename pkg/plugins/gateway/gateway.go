@@ -34,6 +34,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -48,9 +49,12 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
+	pdrouter "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/router"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayapi "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
@@ -102,6 +106,8 @@ type Server struct {
 	// asyncJobRegistry() when not injected.
 	asyncJobs     AsyncJobRegistry
 	asyncJobsOnce sync.Once
+	// encodeExecutor runs the encode stage for E+PD rolesets. nil skips it.
+	encodeExecutor *encode.Executor
 	// Broadcast channel for server-initiated shutdown
 	shutdownCh   <-chan struct{}
 	shutdown     chan struct{}
@@ -109,13 +115,15 @@ type Server struct {
 }
 
 // HasRequestBuffers is a test-observation API: it reports whether an in-flight
-// request retains body state in either production buffer. sync.Map makes the
-// point-in-time lookup safe concurrently with Process cleanup; callers should
-// invoke it after Process returns when asserting terminal cleanup.
+// request retains state in the request buffer, the stream buffer or the running
+// stream usage. sync.Map makes the point-in-time lookup safe concurrently with
+// Process cleanup; callers should invoke it after Process returns when asserting
+// terminal cleanup.
 func HasRequestBuffers(requestID string) bool {
 	_, requestPresent := requestBuffers.Load(requestID)
 	_, streamPresent := streamBuffers.Load(requestID)
-	return requestPresent || streamPresent
+	_, usagePresent := streamUsage.Load(requestID)
+	return requestPresent || streamPresent || usagePresent
 }
 
 // recvResult is one (message, error) pair produced by a stream's srv.Recv().
@@ -365,6 +373,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		wakeRequester:       newRuntimeModelWakeRequester(nil, defaultModelClaimRuntimePort, client),
 		httprouteCacheTTL:   httpRouteCacheTTL(),
 		httprouteErrorTTL:   defaultHTTPRouteErrorTTL,
+		encodeExecutor:      newEncodeExecutor(),
 		shutdownCh:          shutdown,
 		shutdown:            shutdown,
 	}
@@ -411,6 +420,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) (err err
 		}
 		requestBuffers.Delete(st.requestID)
 		streamBuffers.Delete(st.requestID)
+		streamUsage.Delete(st.requestID)
 		// end spans created by this server
 		for _, span := range []trace.Span{st.toLastRespSpan, st.firstRespSpan, st.inferenceSpan} {
 			if span != nil {
@@ -850,6 +860,21 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return "", fmt.Errorf("filter pods by label selector failed: %v", err)
 	}
 
+	// Resolve exclusivity from the caller's raw algorithm string rather than comparing it
+	// directly against "pd": the string may itself be a multi-strategy config that collapses
+	// to a single exclusive strategy (e.g. "pd:1,least-request:1" resolves to "pd", and bare
+	// "slo-pack-load"/"slo-least-load" are exclusive too), and a plain equality check would
+	// miss those and wrongly narrow readyPods ahead of them.
+	resolvedExclusive, isExclusive := routing.ResolveExclusiveStrategy(string(routeCtx.Algorithm))
+	isPD := isExclusive && resolvedExclusive == string(routing.RouterPD)
+
+	// Encoder pods only run the encode stage. The PD router picks them from
+	// the roleset it routes to; every other strategy must not route to them.
+	var encoders []*v1.Pod
+	if !isPD {
+		readyPods, encoders = encode.SplitEncoders(readyPods)
+	}
+
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods for routing")
 	}
@@ -861,14 +886,8 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		}
 	}
 
-	// Resolve exclusivity from the caller's raw algorithm string rather than comparing it
-	// directly against "pd": the string may itself be a multi-strategy config that collapses
-	// to a single exclusive strategy (e.g. "pd:1,least-request:1" resolves to "pd", and bare
-	// "slo-pack-load"/"slo-least-load" are exclusive too), and a plain equality check would
-	// miss those and wrongly narrow readyPods ahead of them.
-	resolvedExclusive, isExclusive := routing.ResolveExclusiveStrategy(string(routeCtx.Algorithm))
 	if isExclusive {
-		if resolvedExclusive == string(routing.RouterPD) {
+		if isPD {
 			engine, err := routing.ValidateAndGetLLMEngine(readyPods)
 			if err != nil {
 				return "", fmt.Errorf("engine validation failed for request %s: %w", routeCtx.RequestID, err)
@@ -907,15 +926,52 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 				klog.Warningf("post-route update failed for request %s: %v", routeCtx.RequestID, err)
 			}
 		}
+		s.encodeMedia(routeCtx, encoders)
 		return routeCtx.TargetAddress(), nil
 	}
 	utils.CryptoShuffle(readyPods)
 	// PD issues an additional HTTP request while routing. Pass the current span
 	// to that request without changing Context semantics for other routers.
-	if isExclusive && resolvedExclusive == string(routing.RouterPD) {
+	if isPD {
 		routeCtx.Context = ctx
+		if limit := replicaInflightLimit(routeCtx); limit > 0 {
+			return s.routeWithEarlyAdmission(routeCtx, router, &utils.PodArray{Pods: readyPods}, limit)
+		}
 	}
-	return router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
+	addr, err := router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
+	if err == nil {
+		s.encodeMedia(routeCtx, encoders)
+	}
+	return addr, err
+}
+
+func newEncodeExecutor() *encode.Executor {
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	// No client timeout: every encode call carries its own deadline.
+	return encode.NewExecutor(&http.Client{Transport: otelhttp.NewTransport(transport)})
+}
+
+// encodeMedia runs the encode stage for E+PD: when the pod picked to serve a
+// vLLM request has encoders in its roleset, the request's media items are
+// encoded on them first. The PD router runs the stage itself.
+func (s *Server) encodeMedia(routeCtx *types.RoutingContext, encoders []*v1.Pod) {
+	if len(encoders) == 0 || s.encodeExecutor == nil {
+		return
+	}
+	target := routeCtx.TargetPod()
+	if target == nil {
+		return
+	}
+	// Read the engine the way the PD router does, so a pod without the
+	// engine label counts as vLLM here too.
+	if engine, err := routing.ValidateAndGetLLMEngine([]*v1.Pod{target}); err != nil || engine != pdrouter.VLLMEngine {
+		return
+	}
+	s.encodeExecutor.EncodeMedia(routeCtx, encoders, target, routeCtx.RoutingOverrides().PD.PrefillRequestTimeout)
 }
 
 // validateHTTPRouteStatus checks if httproute object exists and validates its conditions are true.

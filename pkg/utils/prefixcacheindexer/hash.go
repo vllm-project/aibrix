@@ -68,6 +68,8 @@ type PrefixHashTable struct {
 	// deltaSeq is dirtySeq as of the last GetDeltaForSync. It is written under
 	// the read lock, so it must be atomic.
 	deltaSeq atomic.Uint64
+	// now is the clock for pod access times; tests replace it.
+	now func() time.Time
 }
 
 type Block struct {
@@ -113,6 +115,7 @@ func NewPrefixHashTable() *PrefixHashTable {
 		"prefix_cache_block_eviction_duration_minutes", prefixCacheEvictionDuration)
 	instance := &PrefixHashTable{
 		seed:  seed,
+		now:   time.Now,
 		store: lrustore.NewLRUStore[uint64, Block](prefixCacheBlockNumber, prefixCacheEvictionDuration, prefixCacheEvictionInterval, func() time.Time { return time.Now() }),
 	}
 	return instance
@@ -142,6 +145,9 @@ func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, r
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
+	// A pod that has not been routed this prefix for the eviction duration has
+	// most likely evicted it, even if the block stays cached for other pods.
+	staleBefore := c.now().Add(-prefixCacheEvictionDuration)
 	// podkey -> %prefixmatch
 	prefixMatchPods := make(map[string]int, len(readyPods))
 	for i := 0; i < len(prefixHashes); i++ {
@@ -162,7 +168,7 @@ func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, r
 		if prefixMatchPercent == 0 {
 			prefixMatchPercent = 1
 		}
-		if !matchPods(blockPods, readyPods, prefixMatchPods, prefixMatchPercent) {
+		if !matchPods(blockPods, readyPods, prefixMatchPods, prefixMatchPercent, staleBefore) {
 			break
 		}
 	}
@@ -174,7 +180,8 @@ func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	now := time.Now()
+	now := c.now()
+	staleBefore := now.Add(-prefixCacheEvictionDuration)
 	for i := 0; i < len(prefixHashes); i++ {
 		prefixHash := prefixHashes[i]
 
@@ -190,6 +197,13 @@ func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 			if !ok {
 				blockPods = map[string]time.Time{}
 			}
+			// Each Put refreshes the whole block, so a block that stays hot would
+			// otherwise keep every pod it was ever routed to.
+			for p, accessed := range blockPods {
+				if accessed.Before(staleBefore) {
+					delete(blockPods, p)
+				}
+			}
 			blockPods[pod] = now
 			block.modelToPods[model] = blockPods
 		}
@@ -203,10 +217,11 @@ func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 }
 
 // matchPods returns ready pods that intersect with pods on which prefix tokens are catched.
-func matchPods(blockPods map[string]time.Time, readyPods map[string]struct{}, prefixMatchPods map[string]int, prefixMatchPercent int) bool {
+// A pod last routed the block before staleBefore does not count.
+func matchPods(blockPods map[string]time.Time, readyPods map[string]struct{}, prefixMatchPods map[string]int, prefixMatchPercent int, staleBefore time.Time) bool {
 	var isMatch bool
 	for pod := range readyPods {
-		if _, ok := blockPods[pod]; ok {
+		if accessed, ok := blockPods[pod]; ok && !accessed.Before(staleBefore) {
 			prefixMatchPods[pod] = prefixMatchPercent
 			isMatch = true
 		} else {

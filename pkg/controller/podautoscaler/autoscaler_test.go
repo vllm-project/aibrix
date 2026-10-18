@@ -19,6 +19,7 @@ package podautoscaler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -496,4 +498,91 @@ func testScalingContext(t *testing.T, pa *autoscalingv1alpha1.PodAutoscaler) sca
 	scalingContext.MaxScaleUpRate = 4
 	require.NoError(t, scalingContext.UpdateByPaTypes(pa))
 	return scalingContext
+}
+
+// The scaling context is rebuilt on every reconcile, so the KPA panic window
+// has to be kept by the autoscaler. A panic must outlast the surge that started
+// it, and deleting the PodAutoscaler must drop it.
+func TestComputeDesiredReplicasKeepsKPAPanicAcrossReconciles(t *testing.T) {
+	pa := testPodAutoscaler(autoscalingv1alpha1.KPA)
+	pa.Spec.ObserveWindowSeconds = ptr.To[int64](120)
+	pa.Spec.PanicWindowSeconds = ptr.To[int64](20)
+	fetcher := &mockMetricFetcherFactory{}
+	autoScaler := NewDefaultAutoScaler(fetcher, nil)
+	start := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+
+	// totalLoad is spread over the pods, as a per-pod metric would be.
+	compute := func(at time.Duration, pods int32, totalLoad float64) *ReplicaComputeResult {
+		t.Helper()
+		fetcher.metricsValue = totalLoad / float64(pods)
+		podList := make([]corev1.Pod, pods)
+		for i := range podList {
+			podList[i].Name = fmt.Sprintf("pod-%d", i)
+		}
+		result, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
+			PodAutoscaler:   pa,
+			ScalingContext:  testScalingContext(t, &pa), // fresh, as in the controller
+			CurrentReplicas: pods,
+			Pods:            podList,
+			Timestamp:       start.Add(at),
+		})
+		require.NoError(t, err)
+		return result
+	}
+
+	for at := time.Duration(0); at < 60*time.Second; at += 10 * time.Second {
+		require.Equal(t, "stable mode scaling", compute(at, 4, 200).Reason)
+	}
+	surge := compute(60*time.Second, 4, 1600)
+	require.Equal(t, "panic mode scaling", surge.Reason)
+
+	// The surge is over and out of the panic window. The panic continues for
+	// a stable window after it, and never recommends fewer pods.
+	after := compute(90*time.Second, surge.DesiredReplicas, 200)
+	assert.Equal(t, "panic mode scaling", after.Reason)
+	assert.GreaterOrEqual(t, after.DesiredReplicas, surge.DesiredReplicas)
+
+	autoScaler.ForgetPodAutoscaler(pa.Namespace, pa.Name)
+	assert.Empty(t, autoScaler.panicStates)
+}
+
+// Editing a PodAutoscaler's spec must not leave panic state behind until the
+// PodAutoscaler is deleted: a removed metric loses its state, and so does a
+// PodAutoscaler that stops using KPA.
+func TestComputeDesiredReplicasPrunesStalePanicStates(t *testing.T) {
+	pa := testPodAutoscaler(autoscalingv1alpha1.KPA)
+	fetcher := &mockMetricFetcherFactory{}
+	fetcher.metricsValue = 10
+	autoScaler := NewDefaultAutoScaler(fetcher, nil)
+	key := ktypes.NamespacedName{Namespace: pa.Namespace, Name: pa.Name}
+
+	compute := func() {
+		t.Helper()
+		_, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
+			PodAutoscaler:   pa,
+			ScalingContext:  testScalingContext(t, &pa),
+			CurrentReplicas: 1,
+			Pods:            []corev1.Pod{{ObjectMeta: metav1.ObjectMeta{Name: "pod-0"}}},
+			Timestamp:       time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC),
+		})
+		require.NoError(t, err)
+	}
+
+	removed := "removed_metric"
+	pa.Spec.MetricsSources = append(pa.Spec.MetricsSources, autoscalingv1alpha1.MetricSource{
+		MetricSourceType: autoscalingv1alpha1.POD,
+		TargetMetric:     removed,
+		TargetValue:      "50",
+	})
+	compute()
+	require.Contains(t, autoScaler.panicStates[key], removed)
+
+	pa.Spec.MetricsSources = pa.Spec.MetricsSources[:1]
+	compute()
+	assert.NotContains(t, autoScaler.panicStates[key], removed)
+	assert.Contains(t, autoScaler.panicStates[key], pa.Spec.MetricsSources[0].TargetMetric)
+
+	pa.Spec.ScalingStrategy = autoscalingv1alpha1.APA
+	compute()
+	assert.NotContains(t, autoScaler.panicStates, key)
 }

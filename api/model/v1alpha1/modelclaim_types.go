@@ -73,6 +73,17 @@ type ModelClaimSpec struct {
 	// +kubebuilder:validation:Maximum=1
 	Replicas *int32 `json:"replicas,omitempty"`
 
+	// Priority determines placement order among ModelClaims that currently have
+	// no recorded instance. A higher value is considered before a lower value.
+	// Values must be non-negative.
+	// It does not preempt or otherwise change an existing instance. Claims with
+	// equal priority retain FIFO order. Defaults to zero.
+	// +optional
+	// +kubebuilder:default=0
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="priority is immutable; create a new ModelClaim instead"
+	Priority int32 `json:"priority,omitempty"`
+
 	// EngineConfig carries engine-specific startup options. Args maps engine
 	// CLI flags to their values, e.g. {"--max-model-len": "2048"}.
 	// +optional
@@ -129,8 +140,9 @@ type ModelClaimPerGPU struct {
 	// KVFloor is the KV cache one instance must keep on a device to serve at
 	// all: enough for one request of the engine's maximum model length at this
 	// model's bytes per token, rounded up to the KV allocator's page
-	// granularity. Placement holds this much for the instance for as long as it
-	// is awake. It holds this much while the instance sleeps too, unless the
+	// granularity. Placement holds this much for the instance, reduced to the
+	// startup KV capacity when that capacity is known, positive and smaller.
+	// This effective floor is held while awake and while sleeping, unless the
 	// pool keeps no wake reserve.
 	// +kubebuilder:validation:Required
 	KVFloor resource.Quantity `json:"kvFloor"`

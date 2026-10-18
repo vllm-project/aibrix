@@ -137,3 +137,22 @@ curl -v "http://${ENDPOINT}/v1/chat/completions" \
 > - The `model` field must exactly match the label `model.aibrix.ai/name` in your deployment.
 > - The `routing-strategy: pd` header **must be present** to enable P/D splitting.
 
+
+### Multimodal Requests with Encode Pods (EPD)
+
+`1e1p1d.yaml` adds an `encode` role in front of prefill and decode for a vision-language model. For a chat request with images, audio or video, the gateway first sends each media item to the roleset's encode pod, and the prefill pod picks up the encoder output from the shared EC cache. Text-only requests skip the encode pod. The `ec-cache` claim must be `ReadWriteMany` (or both pods must use the same node path), and the image needs NIXL as described above.
+
+```bash
+curl -v "http://${ENDPOINT}/v1/chat/completions" \
+  -H "routing-strategy: pd" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen2.5-vl-3b",
+    "messages": [{"role": "user", "content": [
+      {"type": "text", "text": "What is in this image?"},
+      {"type": "image_url", "image_url": {"url": "https://upload.wikimedia.org/wikipedia/commons/4/47/PNG_transparency_demonstration_1.png"}}
+    ]}]
+  }'
+```
+
+`1e1pd.yaml` puts the encode pod in front of a single pod that serves the whole request (E+PD), with no prefill/decode split. Send the same request with any routing strategy other than `pd`, for example `-H "routing-strategy: least-request"`. The gateway never routes to the encode pod and runs the encode stage before forwarding the request to the worker pod.

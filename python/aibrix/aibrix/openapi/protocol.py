@@ -199,6 +199,7 @@ class RuntimeOperationResponse(NoProtectedBaseModel):
     operation_id: str
     applied: bool
     phase: str
+    limit_bytes: Optional[int] = None
 
 
 class RuntimeModelInfo(NoProtectedBaseModel):
@@ -252,6 +253,7 @@ class RuntimeSnapshotModel(NoProtectedBaseModel):
     last_transition: Optional[datetime] = None
     kv_used_bytes: int
     kv_capacity_bytes: int
+    kv_initial_capacity_bytes: Optional[int] = None
     # Largest amount of GPU memory attributable to this engine on any visible
     # accelerator. This is an observation for placement ranking, not an
     # allocation guarantee.

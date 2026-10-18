@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -1115,7 +1116,9 @@ func TestTokenLoadTracker_CorrectDecodeCost(t *testing.T) {
 
 	tr.CorrectDecodeCost("unknown", 9_999)
 	tr.CorrectDecodeCost("txt", -1)
-	assert.Equal(t, 500.0, tr.GetDecodeLoad(pod), "unknown request IDs and negative costs are ignored")
+	tr.CorrectDecodeCost("txt", math.Inf(1))
+	tr.CorrectDecodeCost("txt", math.NaN())
+	assert.Equal(t, 500.0, tr.GetDecodeLoad(pod), "unknown request IDs and negative or non-finite costs are ignored")
 
 	tr.CorrectDecodeCost("txt", 2_000)
 	tr.ReleaseDecode("txt")
@@ -1142,6 +1145,28 @@ func TestTokenLoadTracker_CorrectDecodeCostAfterConcurrentRelease(t *testing.T) 
 	tokens, charges, _ := tr.DecodeLedgerState(pod)
 	assert.Equal(t, 500.0, tokens)
 	assert.EqualValues(t, 1, charges)
+}
+
+// Two corrections near the float64 limit would overflow the pod's counter to
+// +Inf, which no release undoes; such costs are ignored.
+func TestTokenLoadTracker_CorrectDecodeCostIgnoresHugeCosts(t *testing.T) {
+	tr, _ := newTestTokenLoadTracker(t, TokenLoadConfig{})
+	const pod = "ns/decode-0"
+	tr.AcquireDecodeWithTTL("a", pod, 100, 0)
+	tr.AcquireDecodeWithTTL("b", pod, 100, 0)
+
+	tr.CorrectDecodeCost("a", 1e308)
+	tr.CorrectDecodeCost("b", 1e308)
+	tr.CorrectDecodeCost("b", maxCorrectedDecodeCost+1)
+	assert.Equal(t, 200.0, tr.GetDecodeLoad(pod))
+
+	tr.ReleaseDecode("a")
+	tr.ReleaseDecode("b")
+	tr.AcquireDecodeWithTTL("c", pod, 100, 0)
+	assert.Equal(t, 100.0, tr.GetDecodeLoad(pod))
+
+	tr.CorrectDecodeCost("c", maxCorrectedDecodeCost)
+	assert.Equal(t, maxCorrectedDecodeCost, tr.GetDecodeLoad(pod), "a cost equal to the bound is accepted")
 }
 
 // A correction racing the release of the same charge never leaves a cost

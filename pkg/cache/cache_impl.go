@@ -220,6 +220,12 @@ func (c *Store) AdmitPodRunningRequest(podName, podNamespace string, limit int64
 	return admitted, counted, nil
 }
 
+// ReleasePodRunningRequest removes the +1 a counted AdmitPodRunningRequest applied, for a
+// request that never reached request tracking, whose completion decrement would have.
+func (c *Store) ReleasePodRunningRequest(podName, podNamespace string) {
+	c.decrPodRunningRequests(podNamespace, podName)
+}
+
 // realtimeRunningRequests is the live cross-gateway running-request total for one pod.
 // Prefer GetPodRunningRequests / GetPodsRunningRequests at call sites; this is the inner
 // Redis-or-local read they share (see readPodRunningRequests in cache_running_requests.go).

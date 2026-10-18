@@ -199,4 +199,8 @@ var (
 	ErrorUnknownResponse = errors.New("unknown response")
 	requestBuffers       sync.Map // Thread-safe map to track buffers per request
 	streamBuffers        sync.Map // Thread-safe map to track the trailing partial SSE line per streaming request
+	// streamUsage holds the latest usage of a streaming response that has not ended
+	// yet. With stream_options.continuous_usage_stats (vLLM, SGLang) every chunk carries
+	// a running usage object, so usage alone does not mean the stream is over.
+	streamUsage sync.Map
 )

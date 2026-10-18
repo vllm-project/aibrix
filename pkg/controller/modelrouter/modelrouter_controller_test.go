@@ -18,6 +18,7 @@ package modelrouter
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -100,6 +101,14 @@ func TestCreateHTTPRouteSupportsAnnotatedModelAndServiceNames(t *testing.T) {
 	}
 }
 
+func TestBuildHTTPRouteMatchesImageGenerations(t *testing.T) {
+	route := buildHTTPRoute("default", "demo", nil, nil)
+	paths := routeMatchPaths(route)
+	if !slices.Contains(paths, "/v1/images/generations") {
+		t.Errorf("per-model HTTPRoute does not match /v1/images/generations, got %v", paths)
+	}
+}
+
 func TestAppendCustomModelRouterPaths(t *testing.T) {
 
 	modelHeaderMatch := gatewayv1.HTTPHeaderMatch{
@@ -162,6 +171,30 @@ func TestAppendCustomModelRouterPaths(t *testing.T) {
 				modelRouterCustomPath: "/f oo, /bar , ,/ba z /",
 			},
 			wantPaths:    []string{"/origin", "/foo", "/bar", "/baz/"},
+			checkHeaders: true,
+		},
+		{
+			name: "repeated paths are added once",
+			httpRoute: &gatewayv1.HTTPRoute{
+				Spec: gatewayv1.HTTPRouteSpec{
+					Rules: []gatewayv1.HTTPRouteRule{
+						{
+							Matches: []gatewayv1.HTTPRouteMatch{
+								{
+									Path: &gatewayv1.HTTPPathMatch{
+										Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+										Value: ptr.To("/origin"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			annotations: map[string]string{
+				modelRouterCustomPath: "/foo,/bar,/foo, /f oo ,/bar,/origin",
+			},
+			wantPaths:    []string{"/origin", "/foo", "/bar"},
 			checkHeaders: true,
 		},
 		{

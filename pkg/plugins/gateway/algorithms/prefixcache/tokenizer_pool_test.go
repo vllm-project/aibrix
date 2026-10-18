@@ -22,12 +22,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
@@ -902,4 +904,77 @@ func TestLoadTokenizerPoolConfigFromEnvNonDurationDefaults(t *testing.T) {
 	assert.Equal(t, 100, cfg.MaxTokenizersPerPool)
 	assert.Nil(t, cfg.DefaultTokenizer)
 	assert.NotNil(t, cfg.ModelServiceMap)
+}
+
+// TestTokenizerPoolBacksOffAFailedEndpoint checks that once an endpoint fails
+// its probe, requests take the default tokenizer without probing it again
+// until its retry time. Probing on every request made each one wait for the
+// probe, up to 5s against an endpoint that does not answer.
+func TestTokenizerPoolBacksOffAFailedEndpoint(t *testing.T) {
+	resetPrometheusRegistry()
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	def := &mockTokenizer{}
+	pool := NewTokenizerPool(TokenizerPoolConfig{
+		EnableVLLMRemote: true, MaxTokenizersPerPool: 10, DefaultTokenizer: def,
+		ModelServiceMap: map[string]string{"m": server.URL}, Timeout: time.Second,
+	}, nil)
+	defer func() { assert.NoError(t, pool.Close()) }()
+
+	assert.Same(t, def, pool.GetTokenizer("m", nil))
+	probed := calls.Load()
+	require.Positive(t, probed)
+	for i := 0; i < 5; i++ {
+		assert.Same(t, def, pool.GetTokenizer("m", nil))
+	}
+	assert.Equal(t, probed, calls.Load(), "a failed endpoint was probed again before its retry time")
+
+	// Once the retry time passes, the endpoint is tried again.
+	pool.mu.Lock()
+	pool.retryAt[server.URL] = time.Now().Add(-time.Second)
+	pool.mu.Unlock()
+	assert.Same(t, def, pool.GetTokenizer("m", nil))
+	assert.Greater(t, calls.Load(), probed)
+}
+
+// TestTokenizerPoolProbesAnEndpointOnce checks that concurrent requests for a
+// model without a tokenizer wait for one probe instead of each sending their
+// own, and all get the tokenizer it created.
+func TestTokenizerPoolProbesAnEndpointOnce(t *testing.T) {
+	resetPrometheusRegistry()
+	var calls atomic.Int32
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		<-release
+		_, _ = w.Write([]byte(`{"tokens":[],"count":0}`))
+	}))
+	defer server.Close()
+	pool := NewTokenizerPool(TokenizerPoolConfig{
+		EnableVLLMRemote: true, MaxTokenizersPerPool: 10, DefaultTokenizer: &mockTokenizer{},
+		ModelServiceMap: map[string]string{"m": server.URL}, Timeout: 5 * time.Second,
+	}, nil)
+	defer func() { assert.NoError(t, pool.Close()) }()
+
+	const requests = 10
+	got := make(chan tokenizer.Tokenizer, requests)
+	for i := 0; i < requests; i++ {
+		go func() { got <- pool.GetTokenizer("m", nil) }()
+	}
+	require.Eventually(t, func() bool { return calls.Load() >= 1 }, 5*time.Second, time.Millisecond)
+	// Give the other requests time to reach the pool while the probe is held.
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, int32(1), calls.Load(), "concurrent requests each probed the endpoint")
+	close(release)
+
+	first := <-got
+	assert.Equal(t, server.URL, first.(interface{ GetEndpoint() string }).GetEndpoint())
+	for i := 1; i < requests; i++ {
+		assert.Same(t, first, <-got)
+	}
+	assert.Equal(t, int32(1), calls.Load())
 }

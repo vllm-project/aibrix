@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -423,6 +424,314 @@ func newReconciler(t *testing.T, objs ...client.Object) (*ModelClaimReconciler, 
 		Divisions:  newCardDivisionState(time.Now),
 		Backoff:    newPlacementBackoff(time.Now),
 	}, runtime
+}
+
+func priorityReconciler(t *testing.T) (*ModelClaimReconciler, *fakeRuntime, *modelv1alpha1.ModelClaim, *modelv1alpha1.ModelClaim, *corev1.Pod) {
+	t.Helper()
+	low := priorityTestClaim("older-low", 1, at0758)
+	high := priorityTestClaim("newer-high", 10, at0759)
+	low.Spec.ModelName, high.Spec.ModelName = nil, nil
+	low.UID, high.UID = types.UID(low.Name), types.UID(high.Name)
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	r, runtime := newReconciler(t, low, high, pod)
+	return r, runtime, low, high, pod
+}
+
+func TestReconcilePriorityDenialConditionAndDeduplicatedEvents(t *testing.T) {
+	r, runtime, low, high, _ := priorityReconciler(t)
+	for i := 0; i < 2; i++ {
+		assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, low.Name))
+		got := getModel(t, r, low.Name)
+		assert.Empty(t, got.Status.Instances)
+		assert.Equal(t, modelv1alpha1.ModelClaimPending, got.Status.Phase)
+		condition := scheduled(t, r, low.Name)
+		assert.Equal(t, metav1.ConditionFalse, condition.Status)
+		assert.Equal(t, "WaitingForPlacementTurn", condition.Reason)
+		assert.Equal(t, "waiting behind ModelClaim newer-high with priority 10 that can use the same pool", condition.Message)
+	}
+	assert.Empty(t, runtime.activateCalls)
+	events := r.Recorder.(*record.FakeRecorder).Events
+	var waiting []string
+	for len(events) > 0 {
+		event := <-events
+		if strings.Contains(event, "WaitingForPlacementTurn") {
+			waiting = append(waiting, event)
+		}
+	}
+	assert.Equal(t, []string{"Normal WaitingForPlacementTurn waiting behind ModelClaim newer-high with priority 10 that can use the same pool"}, waiting)
+
+	newBlocker := priorityTestClaim("highest", 20, at0759.Add(time.Minute))
+	newBlocker.Spec.ModelName = nil
+	require.NoError(t, r.Create(context.Background(), newBlocker))
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, low.Name))
+	assert.Equal(t, "waiting behind ModelClaim highest with priority 20 that can use the same pool", scheduled(t, r, low.Name).Message)
+	var changed []string
+	for len(events) > 0 {
+		event := <-events
+		if strings.Contains(event, "WaitingForPlacementTurn") {
+			changed = append(changed, event)
+		}
+	}
+	assert.Equal(t, []string{"Normal WaitingForPlacementTurn waiting behind ModelClaim highest with priority 20 that can use the same pool"}, changed)
+	assert.Empty(t, runtime.activateCalls)
+
+	// Once both predecessors record their instances, the normal placement
+	// update clears the waiting condition.
+	for _, name := range []string{newBlocker.Name, high.Name} {
+		reconcileFor(t, r, name)
+	}
+	reconcileFor(t, r, low.Name)
+	assert.Equal(t, "Placed", scheduled(t, r, low.Name).Reason)
+	assert.Equal(t, metav1.ConditionTrue, scheduled(t, r, low.Name).Status)
+}
+
+func TestEnsureActivatedPriorityFailedInstanceReplacementBypassesAdmission(t *testing.T) {
+	r, runtime, low, _, pod := priorityReconciler(t)
+	low = getModel(t, r, low.Name)
+	low.Status.Phase = modelv1alpha1.ModelClaimFailed
+	low.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: "failed-pod", Port: 9001, Phase: modelv1alpha1.ModelClaimFailed}}
+	require.NoError(t, r.Status().Update(context.Background(), low))
+
+	_, err := r.ensureActivated(context.Background(), low, []corev1.Pod{*pod}, newRuntimeReadings(runtime))
+	require.NoError(t, err)
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, low.Name, runtime.activateCalls[0].ModelName)
+	require.Len(t, low.Status.Instances, 1)
+	assert.Equal(t, pod.Name, low.Status.Instances[0].Pod)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, low.Status.Instances[0].Phase)
+}
+
+func TestReconcilePriorityFailedRetryCompetesWhenDue(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		wait     bool
+		expired  bool
+		priority int32
+		placed   bool
+	}{
+		{"active backoff yields to zero", true, false, 0, false},
+		{"due retry precedes zero", true, true, 0, true},
+		{"restart precedes zero", false, false, 0, true},
+		{"due retry yields to higher priority", true, true, 200, false},
+		{"restart yields to higher priority", false, false, 200, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r, runtime, low, high, pod := priorityReconciler(t)
+			low.Spec.Priority = tt.priority
+			require.NoError(t, r.Update(context.Background(), low))
+			high.Spec.Priority = 100
+			require.NoError(t, r.Update(context.Background(), high))
+			high.Status.Phase = modelv1alpha1.ModelClaimFailed
+			require.NoError(t, r.Status().Update(context.Background(), high))
+			now := at0759
+			r.Backoff = newPlacementBackoff(func() time.Time { return now })
+			key := client.ObjectKeyFromObject(high)
+			if tt.wait {
+				room := roomSignatureOf([]corev1.Pod{*pod}, &modelv1alpha1.ModelClaimList{Items: []modelv1alpha1.ModelClaim{*low, *high}})
+				r.Backoff.failedToStart(key, high.Generation, room)
+			}
+			if tt.expired {
+				now = now.Add(DefaultRequeueDuration)
+			}
+			before := r.Backoff.attempts[key]
+			reconcileFor(t, r, high.Name)
+			if tt.placed {
+				require.Len(t, getModel(t, r, high.Name).Status.Instances, 1)
+				require.Len(t, runtime.activateCalls, 1)
+				assert.Equal(t, high.Name, runtime.activateCalls[0].ModelName)
+				assert.Equal(t, "Placed", scheduled(t, r, high.Name).Reason)
+			} else {
+				assert.Empty(t, runtime.activateCalls)
+				assert.Empty(t, getModel(t, r, high.Name).Status.Instances)
+				assert.Equal(t, modelv1alpha1.ModelClaimFailed, getModel(t, r, high.Name).Status.Phase)
+				assert.Equal(t, before, r.Backoff.attempts[key])
+				if tt.priority > 100 {
+					assert.Equal(t, "WaitingForPlacementTurn", scheduled(t, r, high.Name).Reason)
+				}
+				reconcileFor(t, r, low.Name)
+				require.Len(t, runtime.activateCalls, 1)
+				assert.Equal(t, low.Name, runtime.activateCalls[0].ModelName)
+			}
+		})
+	}
+}
+
+func TestReconcilePriorityKVFailureBackoffLetsLaterClaimProceed(t *testing.T) {
+	for _, failure := range []string{"write", "readback"} {
+		t.Run(failure, func(t *testing.T) {
+			high := priorityTestClaim("high", 100, at0758)
+			high.Spec.ModelName = nil
+			high.Spec.PodSelector.MatchLabels["broken"] = "yes"
+			low := priorityTestClaim("low", 0, at0759)
+			low.Spec.ModelName = nil
+			broken, snapshot := sizedWarmPod("broken", "10.0.0.1", 1000)
+			broken.Labels["broken"] = "yes"
+			healthy, healthySnapshot := sizedWarmPod("healthy", "10.0.0.2", 1000)
+			neighbour := claimOnPod("neighbour", broken.Name, modelv1alpha1.ModelClaimActive, 300, 100)
+			neighbour.Status.Instances[0].KVLimitBytes = 600
+			snapshot.Models = []RuntimeSnapshotModel{engineHolding("neighbour", 100, 600)}
+			r, runtime := newReconciler(t, high, low, neighbour, broken, healthy)
+			runtime.snapshots = map[string]*RuntimeSnapshot{broken.Status.PodIP: snapshot, healthy.Status.PodIP: healthySnapshot}
+			if failure == "write" {
+				r.Runtime = &failingKVLimits{fakeRuntime: runtime, failing: map[int]bool{1: true}}
+			} else {
+				runtime.deafToKVLimits = true
+			}
+			r.Backoff = newPlacementBackoff(func() time.Time { return at0759 })
+			assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, high.Name))
+			assert.Empty(t, runtime.activateCalls)
+			assert.Equal(t, "NoMatchingPods", scheduled(t, r, high.Name).Reason)
+			assert.Contains(t, scheduled(t, r, high.Name).Message, "could not be divided")
+			if failure == "readback" {
+				assert.Contains(t, scheduled(t, r, high.Name).Message, "did not take a KV limit")
+			}
+			key := client.ObjectKeyFromObject(high)
+			before, waiting := r.Backoff.attempts[key]
+			require.True(t, waiting)
+			assert.True(t, before.written)
+			assert.Equal(t, at0759.Add(DefaultRequeueDuration), before.readyAt)
+			_, held := r.reservations().heldFor(testNamespace, high.Name, r.now())
+			assert.False(t, held)
+
+			reconcileFor(t, r, low.Name)
+			require.Len(t, getModel(t, r, low.Name).Status.Instances, 1, "a failed predecessor yields during backoff")
+			assert.Equal(t, healthy.Name, getModel(t, r, low.Name).Status.Instances[0].Pod)
+			assert.Empty(t, getModel(t, r, high.Name).Status.Instances)
+			assert.Equal(t, before, r.Backoff.attempts[key])
+		})
+	}
+}
+
+func TestReconcilePriorityLostInstanceReentersAdmission(t *testing.T) {
+	r, runtime, low, _, _ := priorityReconciler(t)
+	low = getModel(t, r, low.Name)
+	low.Status.Phase = modelv1alpha1.ModelClaimActive
+	low.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: "lost-pod", Port: 9001, Phase: modelv1alpha1.ModelClaimActive}}
+	require.NoError(t, r.Status().Update(context.Background(), low))
+	reconcileFor(t, r, low.Name)
+	assert.Empty(t, runtime.activateCalls)
+	assert.Empty(t, getModel(t, r, low.Name).Status.Instances)
+	assert.Equal(t, "WaitingForPlacementTurn", scheduled(t, r, low.Name).Reason)
+}
+
+func TestPriorityAPIReaderFailureStopsBeforeActivation(t *testing.T) {
+	r, runtime, low, _, pod := priorityReconciler(t)
+	readErr := errors.New("authoritative claims unavailable")
+	listCalls := 0
+	r.APIReader = fake.NewClientBuilder().WithScheme(r.Scheme).WithInterceptorFuncs(interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*modelv1alpha1.ModelClaimList); ok {
+				listCalls++
+				return readErr
+			}
+			return c.List(ctx, list, opts...)
+		},
+	}).Build()
+	before := getModel(t, r, low.Name)
+	_, err := r.ensureActivated(context.Background(), before, []corev1.Pod{*pod}, newRuntimeReadings(runtime))
+	assert.ErrorIs(t, err, readErr)
+	assert.Equal(t, 1, listCalls)
+	assert.Empty(t, runtime.activateCalls)
+	assert.Empty(t, runtime.kvLimitCalls)
+	assert.Empty(t, getModel(t, r, low.Name).Status.Instances)
+	assert.NotContains(t, r.backoff().attempts, client.ObjectKeyFromObject(low))
+}
+
+func TestReconcilePriorityAPIReaderFailurePreservesPlacementTurn(t *testing.T) {
+	r, runtime, low, high, _ := priorityReconciler(t)
+	ctx := context.Background()
+	high.Status.Phase = modelv1alpha1.ModelClaimPending
+	require.NoError(t, r.Status().Update(ctx, high))
+	before := getModel(t, r, high.Name).Status
+	readErr := errors.New("authoritative claim list temporarily unavailable")
+	listCalls := 0
+	r.APIReader = interceptor.NewClient(r.Client.(client.WithWatch), interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*modelv1alpha1.ModelClaimList); ok {
+				listCalls++
+				if listCalls == 1 {
+					return readErr
+				}
+			}
+			return c.List(ctx, list, opts...)
+		},
+	})
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(high)})
+	assert.ErrorIs(t, err, readErr, "the work queue must retry the read failure")
+	assert.Equal(t, ctrl.Result{}, result)
+	assert.Equal(t, before, getModel(t, r, high.Name).Status, "no activation was attempted, so status must not be demoted")
+	assert.Empty(t, runtime.activateCalls)
+	assert.NotContains(t, r.backoff().attempts, client.ObjectKeyFromObject(high))
+	events := r.Recorder.(*record.FakeRecorder).Events
+	for len(events) > 0 {
+		assert.NotContains(t, <-events, "ActivateFailed")
+	}
+
+	// Reads recover before the lower-priority claim runs. The high-priority
+	// claim must still be an ordinary pending competitor, not a failed retry.
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, low.Name))
+	assert.Equal(t, "WaitingForPlacementTurn", scheduled(t, r, low.Name).Reason)
+	assert.Equal(t, "waiting behind ModelClaim newer-high with priority 10 that can use the same pool", scheduled(t, r, low.Name).Message)
+	assert.Empty(t, runtime.activateCalls)
+	assert.Empty(t, getModel(t, r, low.Name).Status.Instances)
+
+	reconcileFor(t, r, high.Name)
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, high.Name, runtime.activateCalls[0].ModelName)
+}
+
+func TestPriorityAPIReaderStateOverridesStaleCache(t *testing.T) {
+	for _, apiPlaced := range []bool{false, true} {
+		t.Run(map[bool]string{false: "API pending beats cached instance", true: "API instance beats cached pending"}[apiPlaced], func(t *testing.T) {
+			r, runtime, low, high, pod := priorityReconciler(t)
+			cached := getModel(t, r, high.Name)
+			authoritative := cached.DeepCopy()
+			placed := cached
+			if apiPlaced {
+				placed = authoritative
+			}
+			placed.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: "other-pod", Port: 9001, Phase: modelv1alpha1.ModelClaimActive}}
+			require.NoError(t, r.Status().Update(context.Background(), cached))
+			listCalls := 0
+			r.APIReader = fake.NewClientBuilder().WithScheme(r.Scheme).WithObjects(low.DeepCopy(), authoritative).
+				WithInterceptorFuncs(interceptor.Funcs{
+					List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+						if _, ok := list.(*modelv1alpha1.ModelClaimList); ok {
+							listCalls++
+						}
+						return c.List(ctx, list, opts...)
+					},
+				}).Build()
+			current := getModel(t, r, low.Name)
+			_, err := r.ensureActivated(context.Background(), current, []corev1.Pod{*pod}, newRuntimeReadings(runtime))
+			require.NoError(t, err)
+			assert.Equal(t, 1, listCalls, "admission reuses the ledger's authoritative listing")
+			condition := meta.FindStatusCondition(current.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+			require.NotNil(t, condition)
+			if apiPlaced {
+				assert.Len(t, runtime.activateCalls, 1)
+				assert.Equal(t, "Placed", condition.Reason)
+			} else {
+				assert.Empty(t, runtime.activateCalls)
+				assert.Equal(t, "WaitingForPlacementTurn", condition.Reason)
+			}
+		})
+	}
+}
+
+func TestPrioritySnapshotReadOncePerPodDuringAdmission(t *testing.T) {
+	r, runtime, low, _, first := priorityReconciler(t)
+	second := first.DeepCopy()
+	second.Name, second.Status.PodIP = "warm-2", testPeerIP
+	current := getModel(t, r, low.Name)
+	_, err := r.ensureActivated(context.Background(), current, []corev1.Pod{*first, *second}, newRuntimeReadings(runtime))
+	require.NoError(t, err)
+	assert.Empty(t, runtime.activateCalls)
+	assert.Equal(t, map[string]int{first.Status.PodIP: 1, second.Status.PodIP: 1}, runtime.snapshotCallsTo)
+	condition := meta.FindStatusCondition(current.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled))
+	require.NotNil(t, condition)
+	assert.Equal(t, "WaitingForPlacementTurn", condition.Reason)
 }
 
 func TestReconcilePoolPoliciesAppliesDeploymentKVFirstPolicy(t *testing.T) {
@@ -3894,4 +4203,190 @@ func TestReconcileStillRoutesAnInstanceWhoseClaimDeclaresNoCost(t *testing.T) {
 	require.Len(t, got.Status.Instances, 1)
 	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Status.Instances[0].Phase)
 	assert.Zero(t, got.Status.Instances[0].KVLimitBytes)
+}
+
+func TestKVInitialCapacityHealth(t *testing.T) {
+	for _, phase := range []modelv1alpha1.ModelClaimPhase{modelv1alpha1.ModelClaimActivating, modelv1alpha1.ModelClaimActive} {
+		t.Run(string(phase), func(t *testing.T) {
+			pm := claimWithCost(700, 100)
+			pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+			pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: pod.Name, Phase: phase, KVLimitBytes: 300}}
+			ceiling := int64(200)
+			engine := readyEngine(250)
+			require.NoError(t, json.Unmarshal([]byte(`{"kv_initial_capacity_bytes":200}`), &engine))
+			snapshot.Models = []RuntimeSnapshotModel{engine}
+			r, runtime := newReconciler(t, pm, pod)
+			runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+			reconcileOnce(t, r, pm.Name)
+			reconcileOnce(t, r, pm.Name)
+			require.NotEmpty(t, runtime.kvLimitCalls)
+			for _, call := range runtime.kvLimitCalls {
+				assert.LessOrEqual(t, call.LimitBytes, ceiling)
+			}
+			got := getModel(t, r, pm.Name).Status.Instances[0]
+			assert.Equal(t, ceiling, got.KVLimitBytes)
+			assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Phase)
+		})
+	}
+}
+
+func TestKVInitialCapacityAlreadyHeldNeedsNoWrite(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	// The engine is serving, but its instance has not yet been routed.
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{
+		Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActivating, KVLimitBytes: 300,
+	}}
+	ceiling := int64(200)
+	engine := readyEngine(ceiling)
+	engine.KVInitialCapacityBytes = &ceiling
+	snapshot.Models = []RuntimeSnapshotModel{engine}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Empty(t, runtime.kvLimitCalls)
+	assert.NotContains(t, strings.Join(drainEvents(t, r), "\n"), "KVLimitSet")
+	got := getModel(t, r, pm.Name).Status.Instances[0]
+	assert.Equal(t, ceiling, got.KVLimitBytes)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Phase)
+	assert.Equal(t, int32(9001), got.Port)
+}
+
+func TestKVInitialCapacityRollback(t *testing.T) {
+	r, runtime, pod, snapshot := aShrinkAndAGrow(t)
+	ceiling := int64(200)
+	require.NoError(t, json.Unmarshal([]byte(`{"kv_initial_capacity_bytes":200}`), &snapshot.Models[0]))
+	runtime.onKVLimit = func() { snapshot.Models[0].KVUsedBytes = 300 }
+	require.Error(t, divideOnce(t, r, pod, snapshot))
+	require.Len(t, runtime.kvLimitCalls, 2)
+	assert.Equal(t, ceiling, runtime.kvLimitCalls[1].LimitBytes)
+}
+
+func TestKVInitialCapacityPoolPolicy(t *testing.T) {
+	ceiling, negative := int64(200), int64(-1)
+	for _, tc := range []struct {
+		name    string
+		ceiling *int64
+		current int64
+		used    int64
+		floor   int32
+		want    int64
+	}{
+		{name: "known already capped", ceiling: &ceiling, current: 200},
+		{name: "known write", ceiling: &ceiling, current: 100, want: 200},
+		{name: "unknown", current: 200, want: 1000},
+		{name: "negative unknown", ceiling: &negative, current: 200, want: 1000},
+		{name: "incompatible held usage", ceiling: &ceiling, current: 300, used: 201},
+		{name: "incompatible protected floor", ceiling: &ceiling, current: 200, floor: 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pm := claimWithCost(700, 100)
+			pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+			pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: pod.Name, Phase: modelv1alpha1.ModelClaimActive}}
+			engine := readyEngine(tc.current)
+			engine.KVInitialCapacityBytes = tc.ceiling
+			engine.KVUsedBytes = tc.used
+			snapshot.Models = []RuntimeSnapshotModel{engine}
+			r, runtime := newReconciler(t, pm, pod)
+			runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+			policy, err := parsePoolPolicy(fmt.Sprintf(`{"reclaim":{"capacityBytes":1000,"guaranteedFloorPercent":%d}}`, tc.floor))
+			require.NoError(t, err)
+			source := &poolPolicySource{key: types.NamespacedName{Namespace: testNamespace, Name: "pool"}, policy: policy}
+			r.reconcilePoolKVPolicy(context.Background(), source, pod, snapshot,
+				map[string]poolRequestActivity{snapshotActivityKey(engine): {Active: true, RequestsInFlight: 1}},
+				true, time.Unix(1_700_000_000, 0), newRuntimeReadings(r.Runtime))
+			if tc.want == 0 {
+				assert.Empty(t, runtime.kvLimitCalls)
+				return
+			}
+			require.Len(t, runtime.kvLimitCalls, 1)
+			assert.Equal(t, tc.want, runtime.kvLimitCalls[0].LimitBytes)
+			assert.Contains(t, runtime.kvLimitCalls[0].OperationID, fmt.Sprintf("/%d/", tc.want))
+		})
+	}
+}
+
+func TestKVInitialCapacityZeroHealthKeepsEnforcing(t *testing.T) {
+	pm := claimWithCost(700, 100)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 1000)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: pod.Name, Port: 9001, Phase: modelv1alpha1.ModelClaimActive, KVLimitBytes: 300}}
+	zero := int64(0)
+	engine := readyEngine(0)
+	engine.KVInitialCapacityBytes = &zero
+	snapshot.Models = []RuntimeSnapshotModel{engine}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	reconcileOnce(t, r, pm.Name)
+	got := getModel(t, r, pm.Name).Status.Instances[0]
+	assert.Equal(t, int64(300), got.KVLimitBytes, "zero must not become the no-record sentinel")
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, got.Phase)
+	assert.Equal(t, int32(9001), got.Port)
+	assert.Contains(t, routeOf(t, r, pod.Name, pm.Name), `"port":9001`)
+	assert.Empty(t, runtime.kvLimitCalls)
+
+	snapshot.Models[0].KVCapacityBytes = 50
+	runtime.deafToKVLimits = true
+	reconcileOnce(t, r, pm.Name)
+	require.NotEmpty(t, runtime.kvLimitCalls)
+	assert.Zero(t, runtime.kvLimitCalls[0].LimitBytes)
+	got = getModel(t, r, pm.Name).Status.Instances[0]
+	assert.Equal(t, int64(300), got.KVLimitBytes)
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Phase)
+	assert.Contains(t, routeOf(t, r, pod.Name, pm.Name), `"port":0`)
+}
+
+func TestKVInitialCapacityZeroWriteIsVerified(t *testing.T) {
+	pm := claimWithCost(7<<30, 1<<30)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 10<<30)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: pod.Name, Port: 9001, Phase: modelv1alpha1.ModelClaimActivating, KVLimitBytes: 3 << 30}}
+	zero := int64(0)
+	engine := readyEngine(1 << 30)
+	engine.KVInitialCapacityBytes = &zero
+	snapshot.Models = []RuntimeSnapshotModel{engine}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	runtime.deafToKVLimits = true
+
+	for pass := 0; pass < 2; pass++ {
+		reconcileOnce(t, r, pm.Name)
+		events := strings.Join(drainEvents(t, r), "\n")
+		assert.NotContains(t, events, "Normal KVLimitSet", "a zero limit the engine ignored is not set")
+		if pass == 0 {
+			assert.Contains(t, events, "Warning KVLimitFailed")
+		}
+	}
+	require.NotEmpty(t, runtime.kvLimitCalls)
+	assert.Zero(t, runtime.kvLimitCalls[len(runtime.kvLimitCalls)-1].LimitBytes)
+
+	runtime.deafToKVLimits = false
+	reconcileOnce(t, r, pm.Name)
+	assert.Contains(t, strings.Join(drainEvents(t, r), "\n"), "Normal KVLimitSet")
+	assert.Zero(t, snapshot.Models[0].KVCapacityBytes)
+}
+
+func TestKVInitialCapacityDemotionEvent(t *testing.T) {
+	pm := claimWithCost(7<<30, 1<<30)
+	pod, snapshot := sizedWarmPod("warm-1", "10.0.0.1", 10<<30)
+	pm.Status.Instances = []modelv1alpha1.ModelClaimInstance{{Pod: pod.Name, Port: 9001, Phase: modelv1alpha1.ModelClaimActive, KVLimitBytes: 3 << 30}}
+	ceiling := int64(2 << 30)
+	engine := readyEngine(5 << 29)
+	engine.KVInitialCapacityBytes = &ceiling
+	snapshot.Models = []RuntimeSnapshotModel{engine}
+	r, runtime := newReconciler(t, pm, pod)
+	runtime.snapshots = map[string]*RuntimeSnapshot{pod.Status.PodIP: snapshot}
+	runtime.deafToKVLimits = true
+	reconcileOnce(t, r, pm.Name)
+	got := getModel(t, r, pm.Name).Status.Instances[0]
+	assert.Equal(t, int64(3<<30), got.KVLimitBytes, "the record waits for confirmation")
+	assert.Equal(t, modelv1alpha1.ModelClaimActivating, got.Phase)
+	var demotions []string
+	for _, event := range drainEvents(t, r) {
+		if strings.Contains(event, "KVLimitNotHeld") {
+			demotions = append(demotions, event)
+		}
+	}
+	require.Len(t, demotions, 1)
+	assert.Contains(t, demotions[0], "limit of 2.0 GiB")
 }

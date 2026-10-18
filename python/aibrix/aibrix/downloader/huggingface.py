@@ -74,10 +74,14 @@ class HuggingFaceDownloader(BaseDownloader):
 
         # Dependent on the attributes generated in the base class,
         # so place it after the super().__init__() call.
+        # ``effective_allow_file_suffix`` merges the always-download suffixes
+        # for small runtime-critical files (remote code, tokenizer files,
+        # chat templates) into the user-specified filter. See #834.
+        effective_suffix = self.effective_allow_file_suffix
         self.allow_patterns = (
             None
-            if self.allow_file_suffix is None or len(self.allow_file_suffix) == 0
-            else [f"*.{suffix}" for suffix in self.allow_file_suffix]
+            if effective_suffix is None
+            else [f"*.{suffix}" for suffix in effective_suffix]
         )
         logger.debug(
             f"Downloader {self.__class__.__name__} initialized."

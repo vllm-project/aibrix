@@ -56,6 +56,7 @@ import {
   getCreateJobReadiness,
 } from '../utils/batchProduct';
 import { Model } from '../data/mockData';
+import { ExistingDatasetSummary } from './ExistingDatasetSummary';
 import {
   getCreateJobResourcePlugin,
   type CreateJobResourceConfig,
@@ -853,25 +854,33 @@ export function CreateJob({ onBack }: CreateJobProps) {
                 </div>
 
                 {selectedExistingFile ? (
-                  <div className="border border-teal-200 bg-teal-50 rounded-xl p-4 flex items-center justify-between">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <FileText className="w-5 h-5 text-teal-600 shrink-0" />
-                      <div className="min-w-0">
-                        <div className="text-sm text-gray-900 truncate">
-                          {selectedExistingFile.name || selectedExistingFile.id}
-                        </div>
-                        <div className="text-xs text-gray-500 truncate">
-                          {selectedExistingFile.id} · {formatBytes(selectedExistingFile.size)}
+                  <div className="border border-teal-200 bg-teal-50 rounded-xl p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <FileText className="w-5 h-5 text-teal-600 shrink-0" />
+                        <div className="min-w-0">
+                          <div className="text-sm text-gray-900 truncate">
+                            {selectedExistingFile.name || selectedExistingFile.id}
+                          </div>
+                          <div className="text-xs text-gray-500 truncate">
+                            {selectedExistingFile.id} · {formatBytes(selectedExistingFile.size)}
+                          </div>
                         </div>
                       </div>
+                      <button
+                        onClick={handleClearExistingFile}
+                        className="text-gray-400 hover:text-gray-600"
+                        title="Clear selected dataset"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
                     </div>
-                    <button
-                      onClick={handleClearExistingFile}
-                      className="text-gray-400 hover:text-gray-600"
-                      title="Clear selected dataset"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
+                    <ExistingDatasetSummary
+                      key={selectedExistingFile.id}
+                      fileId={selectedExistingFile.id}
+                      expectedModel={selectedServingName}
+                      supportedEndpoints={selectedTemplate?.spec?.supportedEndpoints ?? []}
+                    />
                   </div>
                 ) : (
                   <button
@@ -943,7 +952,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
                       )}
                     </div>
                     <div className="px-3 py-2 border-t border-gray-100 text-xs text-gray-500">
-                      Existing files are not re-read in the browser; make sure the JSONL endpoint matches the selected template.
+                      Select a dataset to preview its request count, models, and endpoints.
                     </div>
                   </div>
                 )}

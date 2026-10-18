@@ -103,7 +103,12 @@ func TestTokenizerPoolConcurrentCapacity(t *testing.T) {
 			}
 			// Both calls must finish their initial capacity check before either
 			// remote health check can succeed and commit a tokenizer to the pool.
-			for range 2 {
+			// Calls for the same model share one health check.
+			probes := 2
+			if sameModel {
+				probes = 1
+			}
+			for range probes {
 				select {
 				case <-entered:
 				case <-time.After(5 * time.Second):
@@ -127,9 +132,10 @@ func TestTokenizerPoolConcurrentCapacity(t *testing.T) {
 			if sameModel {
 				assert.Same(t, first, second)
 				assert.NotSame(t, fallback, first)
-			} else {
-				assert.True(t, (first == fallback) != (second == fallback), "exactly one new model should use the fallback")
+				// No second tokenizer was created, so none is discarded.
+				return
 			}
+			assert.True(t, (first == fallback) != (second == fallback), "exactly one new model should use the fallback")
 			select {
 			case <-closed:
 			case <-time.After(5 * time.Second):

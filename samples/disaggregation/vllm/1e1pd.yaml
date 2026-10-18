@@ -1,0 +1,111 @@
+# Encode + PD (E+PD) for a multimodal model: one encode pod in front of one
+# pod that serves the whole request, with no prefill/decode split. The encode
+# pod writes encoder outputs to the shared EC cache and the worker pod reads
+# them, so both mount the same storage. The ec-cache claim must be
+# ReadWriteMany, or point both pods at the same node path.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ec-cache
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: vllm-1e1pd
+spec:
+  replicas: 1
+  updateStrategy:
+    type: InPlaceUpdate
+  stateful: true
+  selector:
+    matchLabels:
+      app: vllm-1e1pd
+  template:
+    metadata:
+      labels:
+        app: vllm-1e1pd
+    spec:
+      roles:
+        - name: encode
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: qwen2.5-vl-3b
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+            spec:
+              containers:
+                - name: encode
+                  image: vllm/vllm-openai:v0.31.0
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      vllm serve Qwen/Qwen2.5-VL-3B-Instruct \
+                      --host "0.0.0.0" \
+                      --port "8000" \
+                      --served-model-name qwen2.5-vl-3b \
+                      --enforce-eager \
+                      --no-enable-prefix-caching \
+                      --mm-encoder-only \
+                      --max-num-batched-tokens 65536 \
+                      --ec-transfer-config '{"ec_connector":"ECExampleConnector","ec_role":"ec_producer","ec_connector_extra_config":{"shared_storage_path":"/ec-cache"}}'
+                  volumeMounts:
+                    - name: ec-cache
+                      mountPath: /ec-cache
+                    - name: shared-mem
+                      mountPath: /dev/shm
+                  resources:
+                    limits:
+                      nvidia.com/gpu: 1
+              volumes:
+                - name: ec-cache
+                  persistentVolumeClaim:
+                    claimName: ec-cache
+                - name: shared-mem
+                  emptyDir:
+                    medium: Memory
+        - name: worker
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: qwen2.5-vl-3b
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+            spec:
+              containers:
+                - name: worker
+                  image: vllm/vllm-openai:v0.31.0
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      vllm serve Qwen/Qwen2.5-VL-3B-Instruct \
+                      --host "0.0.0.0" \
+                      --port "8000" \
+                      --served-model-name qwen2.5-vl-3b \
+                      --enforce-eager \
+                      --ec-transfer-config '{"ec_connector":"ECExampleConnector","ec_role":"ec_consumer","ec_connector_extra_config":{"shared_storage_path":"/ec-cache"}}'
+                  volumeMounts:
+                    - name: ec-cache
+                      mountPath: /ec-cache
+                    - name: shared-mem
+                      mountPath: /dev/shm
+                  resources:
+                    limits:
+                      nvidia.com/gpu: 1
+              volumes:
+                - name: ec-cache
+                  persistentVolumeClaim:
+                    claimName: ec-cache
+                - name: shared-mem
+                  emptyDir:
+                    medium: Memory

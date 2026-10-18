@@ -1184,3 +1184,25 @@ func TestHTTPRuntimeListModels(t *testing.T) {
 	assert.Equal(t, int64(10), models[0].KVUsedBytes)
 	assert.Equal(t, int64(100), models[0].KVTotalBytes)
 }
+
+func TestKVInitialCapacityDecode(t *testing.T) {
+	for _, value := range []string{"absent", "null", "0", "42"} {
+		t.Run(value, func(t *testing.T) {
+			wire := `{}`
+			if value != "absent" {
+				wire = `{"kv_initial_capacity_bytes":` + value + `}`
+			}
+			var model RuntimeSnapshotModel
+			require.NoError(t, json.Unmarshal([]byte(wire), &model))
+			if value == "absent" || value == "null" {
+				encoded, err := json.Marshal(model)
+				require.NoError(t, err)
+				assert.NotContains(t, string(encoded), "kv_initial_capacity_bytes")
+			} else {
+				encoded, err := json.Marshal(model)
+				require.NoError(t, err)
+				assert.Contains(t, string(encoded), `"kv_initial_capacity_bytes":`+value)
+			}
+		})
+	}
+}
