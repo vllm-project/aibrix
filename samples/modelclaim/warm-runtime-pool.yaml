@@ -23,8 +23,9 @@ spec:
       containers:
         - name: aibrix-runtime
           # The runtime agent, vLLM and kvcached. The agent starts one engine
-          # process for each claim placed on this Pod. Pin the tag to the full
-          # SHA of the commit your control plane runs.
+          # process for each claim placed on this Pod. The image is built on
+          # demand, so `nightly` can lag main: use an image built from the
+          # commit your control plane runs.
           image: aibrix/kvcached-runtime:nightly
           imagePullPolicy: IfNotPresent
           ports:
