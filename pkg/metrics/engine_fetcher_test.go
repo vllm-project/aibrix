@@ -869,3 +869,135 @@ vllm:engine_sleep_state{engine="1",model_name="m",sleep_state="weights_offloaded
 	assert.Equal(t, 0.5, value.GetSimpleValue(), "one of two engines is awake")
 	assert.Equal(t, "awake", value.GetLabelValues()["sleep_state"])
 }
+
+// Synthetic subset of SGLang v0.5.21 metrics for:
+// --tp 2 --dp 2 --enable-dp-attention --enable-metrics (default EP=1, PP=1; no priority scheduling).
+// Two independent, equal-capacity pools; these values are not a recorded scrape.
+const sglangDPAttentionRepro = `# HELP sglang:num_running_reqs The number of running requests.
+# TYPE sglang:num_running_reqs gauge
+sglang:num_running_reqs{dp_rank="1",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 1.0
+sglang:num_running_reqs{dp_rank="0",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 3.0
+# HELP sglang:num_queue_reqs The number of requests in the waiting queue.
+# TYPE sglang:num_queue_reqs gauge
+sglang:num_queue_reqs{dp_rank="1",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 1.0
+sglang:num_queue_reqs{dp_rank="0",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 7.0
+# HELP sglang:token_usage The token usage.
+# TYPE sglang:token_usage gauge
+sglang:token_usage{dp_rank="1",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 0.1
+sglang:token_usage{dp_rank="0",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 0.9
+# HELP sglang:max_total_num_tokens Maximum total number of tokens in the KV cache pool.
+# TYPE sglang:max_total_num_tokens gauge
+sglang:max_total_num_tokens{dp_rank="1",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 100000.0
+sglang:max_total_num_tokens{dp_rank="0",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 100000.0
+`
+
+func TestEngineMetricsFetcher_SGLangDPPools(t *testing.T) {
+	duplicateRanks := func(input string) string {
+		var lines []string
+		for _, line := range strings.Split(input, "\n") {
+			lines = append(lines, line)
+			if strings.HasPrefix(line, "sglang:") {
+				lines = append(lines, strings.Replace(line, `pp_rank="0"`, `pp_rank="1"`, 1))
+				lines = append(lines, strings.Replace(line, `tp_rank="0"`, `tp_rank="2"`, 1))
+				lines = append(lines, strings.Replace(line, `moe_ep_rank="0"`, `moe_ep_rank="1"`, 1))
+			}
+		}
+		return strings.Join(lines, "\n")
+	}
+	reverseSamples := func(input string) string {
+		var headers, samples []string
+		for _, line := range strings.Split(input, "\n") {
+			if strings.HasPrefix(line, "sglang:") {
+				samples = append(samples, line)
+			} else {
+				headers = append(headers, line)
+			}
+		}
+		for i, j := 0, len(samples)-1; i < j; i, j = i+1, j-1 {
+			samples[i], samples[j] = samples[j], samples[i]
+		}
+		return strings.Join(append(headers, samples...), "\n") + "\n"
+	}
+	unequal := strings.ReplaceAll(sglangDPAttentionRepro, `tp_rank="1"} 100000.0`, `tp_rank="1"} 300000.0`)
+	tests := []struct {
+		name, input     string
+		usage, capacity float64
+	}{
+		{"ordinary", sglangDPAttentionRepro, 0.5, 200000},
+		{"reversed", reverseSamples(sglangDPAttentionRepro), 0.5, 200000},
+		{"replicated_pp_ep", duplicateRanks(sglangDPAttentionRepro), 0.5, 200000},
+		{"replicated_reversed", reverseSamples(duplicateRanks(sglangDPAttentionRepro)), 0.5, 200000},
+		{"unequal_capacity", unequal, 0.3, 400000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := setupMockServer(tt.input, http.StatusOK, 0)
+			defer server.Close()
+			endpoint := strings.TrimPrefix(server.URL, "http://")
+			fetcher := NewEngineMetricsFetcher()
+			want := map[string]float64{NumRequestsRunning: 4, NumRequestsWaiting: 8,
+				KVCacheUsagePerc: tt.usage, KVCacheCapacityTokens: tt.capacity}
+			result, err := fetcher.FetchAllTypedMetrics(context.Background(), endpoint, "sglang", "pod-0",
+				[]string{NumRequestsRunning, NumRequestsWaiting, KVCacheUsagePerc, KVCacheCapacityTokens})
+			require.NoError(t, err)
+			require.Empty(t, result.Errors)
+			for name, expected := range want {
+				value := result.Metrics[name]
+				if name != KVCacheCapacityTokens {
+					value = result.ModelMetrics["Qwen/Qwen3-8B/"+name]
+				}
+				require.NotNil(t, value, name)
+				assert.InDelta(t, expected, value.GetSimpleValue(), 1e-9, name)
+				assert.NotContains(t, value.GetLabelValues(), "dp_rank")
+				assert.NotContains(t, value.GetLabelValues(), "pp_rank")
+				single, err := fetcher.FetchTypedMetric(context.Background(), endpoint, "sglang", "pod-0", name)
+				require.NoError(t, err)
+				assert.InDelta(t, expected, single.GetSimpleValue(), 1e-9, name)
+			}
+		})
+	}
+}
+
+func TestSGLangDPPriorityScopesAndLegacy(t *testing.T) {
+	families, err := ParseMetricsFromReader(strings.NewReader(`# TYPE sglang:num_queue_reqs gauge
+sglang:num_queue_reqs{model_name="a",dp_rank="0",priority=""} 7
+sglang:num_queue_reqs{model_name="a",dp_rank="1",priority=""} 1
+sglang:num_queue_reqs{model_name="a",dp_rank="0",priority="high"} 5
+sglang:num_queue_reqs{model_name="a",dp_rank="1",priority="high"} 1
+sglang:num_queue_reqs{model_name="b",dp_rank="0",priority=""} 2
+sglang:num_queue_reqs{model_name="b",dp_rank="1",priority=""} 3
+sglang:num_queue_reqs{model_name="legacy"} 4
+# TYPE sglang:gen_throughput gauge
+sglang:gen_throughput{model_name="a",dp_rank="0"} 10
+sglang:gen_throughput{model_name="a",dp_rank="1"} 20
+`))
+	require.NoError(t, err)
+	original := families["sglang:num_queue_reqs"].Metric[0]
+	mergeSGLangDPSeries(families)
+	values := map[string]float64{}
+	for _, m := range families["sglang:num_queue_reqs"].Metric {
+		model, _ := GetLabelValueForKey(m, "model_name")
+		priority, _ := GetLabelValueForKey(m, "priority")
+		values[model+"/"+priority] = m.Gauge.GetValue()
+	}
+	assert.Equal(t, map[string]float64{"a/": 8, "a/high": 6, "b/": 5, "legacy/": 4}, values)
+	assert.Len(t, families["sglang:gen_throughput"].Metric, 2, "do not guess aggregation for other gauges")
+	assert.Equal(t, 7.0, original.Gauge.GetValue(), "do not change original rank values")
+	assert.Len(t, original.Label, 3)
+}
+
+func TestSGLangDPUsageWithoutCompleteCapacityIsUnchanged(t *testing.T) {
+	for _, capacity := range []string{"", `sglang:max_total_num_tokens{model_name="m",dp_rank="0"} 100`,
+		`sglang:max_total_num_tokens{model_name="m",dp_rank="0"} 100
+sglang:max_total_num_tokens{model_name="m",dp_rank="1"} 0`} {
+		families, err := ParseMetricsFromReader(strings.NewReader(`# TYPE sglang:token_usage gauge
+sglang:token_usage{model_name="m",dp_rank="0"} 0.9
+sglang:token_usage{model_name="m",dp_rank="1"} 0.1
+# TYPE sglang:max_total_num_tokens gauge
+` + capacity + "\n"))
+		require.NoError(t, err)
+		original := families["sglang:token_usage"].Metric
+		mergeSGLangDPSeries(families)
+		assert.Equal(t, original, families["sglang:token_usage"].Metric)
+	}
+}

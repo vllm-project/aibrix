@@ -553,5 +553,6 @@ func (ef *EngineMetricsFetcher) fetchMetricsFromURL(ctx context.Context, url, fa
 		return nil, err
 	}
 	mergeEngineSeries(families)
+	mergeSGLangDPSeries(families)
 	return families, nil
 }
