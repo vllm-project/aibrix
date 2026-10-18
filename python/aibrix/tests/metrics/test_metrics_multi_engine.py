@@ -39,16 +39,11 @@ class TestMultiEngineMetricsSupport:
         )
 
         # Check token processing metrics exist
-        assert "vllm:prompt_tokens_total" in rules
-        assert (
-            rules["vllm:prompt_tokens_total"].new_name == "aibrix:prompt_tokens_total"
-        )
+        assert "vllm:prompt_tokens" in rules
+        assert rules["vllm:prompt_tokens"].new_name == "aibrix:prompt_tokens"
 
-        assert "vllm:generation_tokens_total" in rules
-        assert (
-            rules["vllm:generation_tokens_total"].new_name
-            == "aibrix:generation_tokens_total"
-        )
+        assert "vllm:generation_tokens" in rules
+        assert rules["vllm:generation_tokens"].new_name == "aibrix:generation_tokens"
 
         # Check latency metrics exist
         assert "vllm:time_to_first_token_seconds" in rules
@@ -70,11 +65,8 @@ class TestMultiEngineMetricsSupport:
         )
 
         # Check success metrics exist
-        assert "vllm:request_success_total" in rules
-        assert (
-            rules["vllm:request_success_total"].new_name
-            == "aibrix:request_success_total"
-        )
+        assert "vllm:request_success" in rules
+        assert rules["vllm:request_success"].new_name == "aibrix:request_success"
 
         # Check pass-through metrics exist
         assert "vllm:num_requests_running" in rules
@@ -93,16 +85,11 @@ class TestMultiEngineMetricsSupport:
         assert rules["sglang:gen_throughput"].new_name == "aibrix:generation_throughput"
 
         # Check token processing metrics exist
-        assert "sglang:prompt_tokens_total" in rules
-        assert (
-            rules["sglang:prompt_tokens_total"].new_name == "aibrix:prompt_tokens_total"
-        )
+        assert "sglang:prompt_tokens" in rules
+        assert rules["sglang:prompt_tokens"].new_name == "aibrix:prompt_tokens"
 
-        assert "sglang:generation_tokens_total" in rules
-        assert (
-            rules["sglang:generation_tokens_total"].new_name
-            == "aibrix:generation_tokens_total"
-        )
+        assert "sglang:generation_tokens" in rules
+        assert rules["sglang:generation_tokens"].new_name == "aibrix:generation_tokens"
 
         # Check latency metrics exist
         assert "sglang:time_to_first_token_seconds" in rules
@@ -174,20 +161,20 @@ class TestMultiEngineMetricsSupport:
         )
 
         # Both should map token processing metrics to same targets
-        vllm_prompt_rule = vllm_rules["vllm:prompt_tokens_total"]
-        sglang_prompt_rule = sglang_rules["sglang:prompt_tokens_total"]
+        vllm_prompt_rule = vllm_rules["vllm:prompt_tokens"]
+        sglang_prompt_rule = sglang_rules["sglang:prompt_tokens"]
         assert (
             vllm_prompt_rule.new_name
             == sglang_prompt_rule.new_name
-            == "aibrix:prompt_tokens_total"
+            == "aibrix:prompt_tokens"
         )
 
-        vllm_gen_rule = vllm_rules["vllm:generation_tokens_total"]
-        sglang_gen_rule = sglang_rules["sglang:generation_tokens_total"]
+        vllm_gen_rule = vllm_rules["vllm:generation_tokens"]
+        sglang_gen_rule = sglang_rules["sglang:generation_tokens"]
         assert (
             vllm_gen_rule.new_name
             == sglang_gen_rule.new_name
-            == "aibrix:generation_tokens_total"
+            == "aibrix:generation_tokens"
         )
 
         # Both should map latency metrics to same targets
@@ -234,10 +221,7 @@ class TestMultiEngineMetricsSupport:
         )
 
         # Request metrics
-        assert (
-            trtllm_rules["request_success_total"].new_name
-            == "aibrix:request_success_total"
-        )
+        assert trtllm_rules["request_success"].new_name == "aibrix:request_success"
 
         # Cache metrics
         assert (
@@ -373,8 +357,8 @@ class TestHybridMappingStrategy:
         essential_mapped = [
             "vllm:num_requests_waiting",
             "vllm:gpu_cache_usage_perc",
-            "vllm:prompt_tokens_total",
-            "vllm:generation_tokens_total",
+            "vllm:prompt_tokens",
+            "vllm:generation_tokens",
             "vllm:time_to_first_token_seconds",
             "vllm:time_per_output_token_seconds",
             "vllm:e2e_request_latency_seconds",
@@ -405,8 +389,8 @@ class TestHybridMappingStrategy:
         essential_mapped = [
             "sglang:num_queue_reqs",
             "sglang:gen_throughput",
-            "sglang:prompt_tokens_total",
-            "sglang:generation_tokens_total",
+            "sglang:prompt_tokens",
+            "sglang:generation_tokens",
             "sglang:time_to_first_token_seconds",
             "sglang:time_per_output_token_seconds",
             "sglang:e2e_request_latency_seconds",
