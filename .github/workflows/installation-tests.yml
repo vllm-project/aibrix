@@ -7,6 +7,7 @@ on:
     branches: [ "release-*" ]
     paths:
       - '.github/workflows/**'
+      - 'api/**'
       - 'build/container/**'
       - 'config/**'
       - 'development/app/**'
@@ -17,12 +18,14 @@ on:
       - 'Makefile'
       - 'go.mod'
       - 'go.sum'
+      - 'hack/ci/**'
       - '!**/*.md'
       - '!**/*.rst'
   pull_request:
     branches: [ "main", "release-*" ]
     paths:
       - '.github/workflows/**'
+      - 'api/**'
       - 'build/container/**'
       - 'config/**'
       - 'development/app/**'
@@ -33,6 +36,7 @@ on:
       - 'Makefile'
       - 'go.mod'
       - 'go.sum'
+      - 'hack/ci/**'
       - '!**/*.md'
       - '!**/*.rst'
 
@@ -247,6 +251,14 @@ jobs:
           kubectl port-forward svc/llama2-7b 8000:8000 &
           kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc  8888:80 &
           kubectl -n aibrix-system port-forward service/aibrix-redis-master 6379:6379 &
+
+      # The installation smoke suite runs on the cluster installed above, so
+      # the Kustomize installation is not set up again in a job of its own.
+      - name: Run installation smoke test
+        run: |
+          kind get kubeconfig --name installation-test > /tmp/admin.conf
+          export KUBECONFIG=/tmp/admin.conf
+          make test-install-smoke
 
       - name: Run installation e2e tests
         run: |
