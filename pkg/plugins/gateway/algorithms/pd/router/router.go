@@ -603,6 +603,11 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		}
 	}
 
+	if prefillPod == nil {
+		// A combined pod serves the whole request, so it is the one that reads
+		// the encoder output.
+		r.encodeMedia(ctx, readyPods, decodePod)
+	}
 	ctx.SetTargetPod(decodePod)
 	return ctx.TargetAddress(), nil
 }
