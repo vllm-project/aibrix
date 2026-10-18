@@ -460,9 +460,14 @@ func (f *mockMetricFetcherFactory) For(source autoscalingv1alpha1.MetricSource) 
 
 type mockMetricFetcher struct {
 	metricsValue float64
+	// unscrapable pods fail to report, as a pod that is not serving yet does.
+	unscrapable map[string]bool
 }
 
 func (f *mockMetricFetcher) FetchPodMetrics(ctx context.Context, pod corev1.Pod, source autoscalingv1alpha1.MetricSource) (float64, error) {
+	if f.unscrapable[pod.Name] {
+		return 0, fmt.Errorf("pod %s is not serving", pod.Name)
+	}
 	return f.metricsValue, nil
 }
 
@@ -544,6 +549,103 @@ func TestComputeDesiredReplicasKeepsKPAPanicAcrossReconciles(t *testing.T) {
 
 	autoScaler.ForgetPodAutoscaler(pa.Namespace, pa.Name)
 	assert.Empty(t, autoScaler.panicStates)
+}
+
+// A per-pod metric falls as pods are added while the total load stays the same.
+// Samples taken before a scale-up must not count for more after it: with a
+// steady load that 10 pods carry at target, KPA and APA have to settle on 10
+// rather than keep scaling up on the samples from when there were fewer pods.
+// startup is how long a new pod takes to serve; until then it fails to report.
+func TestComputeDesiredReplicasSettlesUnderSteadyLoad(t *testing.T) {
+	for _, tt := range []struct {
+		strategy autoscalingv1alpha1.ScalingStrategyType
+		startup  time.Duration
+	}{
+		{autoscalingv1alpha1.KPA, 0},
+		{autoscalingv1alpha1.APA, 0},
+		{autoscalingv1alpha1.APA, 90 * time.Second},
+	} {
+		t.Run(fmt.Sprintf("%s/startup_%s", tt.strategy, tt.startup), func(t *testing.T) {
+			pa := testPodAutoscaler(tt.strategy)
+			pa.Spec.MaxReplicas = 100
+			fetcher := &mockMetricFetcherFactory{}
+			autoScaler := NewDefaultAutoScaler(fetcher, nil)
+			start := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+
+			const totalLoad = 500 // 10 pods at the target of 50
+			var servingAt []time.Duration
+			for range 4 {
+				servingAt = append(servingAt, 0)
+			}
+			for at := time.Duration(0); at <= 10*time.Minute; at += 15 * time.Second {
+				podList := make([]corev1.Pod, len(servingAt))
+				fetcher.unscrapable = map[string]bool{}
+				var ready int32
+				for i, servesAt := range servingAt {
+					podList[i].Name = fmt.Sprintf("pod-%d", i)
+					if servesAt <= at {
+						ready++
+					} else {
+						fetcher.unscrapable[podList[i].Name] = true
+					}
+				}
+				fetcher.metricsValue = totalLoad / float64(ready)
+
+				scalingContext := scalingctx.NewBaseScalingContext()
+				scalingContext.MaxReplicas = 100
+				scalingContext.MaxScaleUpRate = 4
+				require.NoError(t, scalingContext.UpdateByPaTypes(&pa))
+				current := int32(len(servingAt))
+				result, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
+					PodAutoscaler:   pa,
+					ScalingContext:  scalingContext,
+					CurrentReplicas: current,
+					ReplicaState:    ReplicaState{ReadyReplicas: ready, PendingReplicas: current - ready},
+					Pods:            podList,
+					Timestamp:       start.Add(at),
+				})
+				require.NoError(t, err)
+				require.LessOrEqual(t, result.DesiredReplicas, int32(10), "at %s with %d pods, %d ready", at, current, ready)
+				for range result.DesiredReplicas - current {
+					servingAt = append(servingAt, at+tt.startup)
+				}
+				servingAt = servingAt[:result.DesiredReplicas]
+			}
+			assert.Len(t, servingAt, 10)
+		})
+	}
+}
+
+// A ready pod whose scrape fails is still serving, so the windows must not
+// record a total that drops whenever some pods miss a scrape.
+func TestComputeDesiredReplicasAssumesMeanLoadForUnscrapedReadyPod(t *testing.T) {
+	pa := testPodAutoscaler(autoscalingv1alpha1.KPA)
+	fetcher := &mockMetricFetcherFactory{}
+	fetcher.metricsValue = 50 // at target
+	autoScaler := NewDefaultAutoScaler(fetcher, nil)
+	start := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+
+	podList := make([]corev1.Pod, 10)
+	for i := range podList {
+		podList[i].Name = fmt.Sprintf("pod-%d", i)
+	}
+	for i := range 12 {
+		// Four of the pods miss every other scrape.
+		fetcher.unscrapable = map[string]bool{}
+		for _, pod := range podList[:4] {
+			fetcher.unscrapable[pod.Name] = i%2 == 1
+		}
+		result, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
+			PodAutoscaler:   pa,
+			ScalingContext:  testScalingContext(t, &pa),
+			CurrentReplicas: 10,
+			ReplicaState:    ReplicaState{ReadyReplicas: 10},
+			Pods:            podList,
+			Timestamp:       start.Add(time.Duration(i) * 15 * time.Second),
+		})
+		require.NoError(t, err)
+		require.Equal(t, int32(10), result.DesiredReplicas, "reconcile %d", i)
+	}
 }
 
 // Editing a PodAutoscaler's spec must not leave panic state behind until the
