@@ -32,6 +32,14 @@ export interface FileInfo {
   createdAt: string | number;
 }
 
+export interface FileSummary {
+  requestCount: number;
+  invalidLines: number;
+  models: string[];
+  endpoints: string[];
+  truncated: boolean;
+}
+
 interface RawFileInfo {
   id?: string;
   name?: string;
@@ -846,6 +854,10 @@ export async function uploadFile(file: File, purpose?: string): Promise<FileInfo
 export async function listFiles(): Promise<FileInfo[]> {
   const data = await apiFetch<RawFilesResponse>('/api/v1/files');
   return normalizeFilesResponse(data);
+}
+
+export async function getFileSummary(fileId: string, signal?: AbortSignal): Promise<FileSummary> {
+  return apiFetch<FileSummary>(`/api/v1/files/${encodeURIComponent(fileId)}/summary`, { signal });
 }
 
 // --- Auth ---

@@ -90,6 +90,9 @@ func (h *FileHandler) RegisterRoutes(mux *runtime.ServeMux) {
 	if err := mux.HandlePath("GET", "/api/v1/files/{file_id}/content", h.handleDownloadContent); err != nil {
 		klog.Fatalf("Failed to register file download route: %v", err)
 	}
+	if err := mux.HandlePath("GET", "/api/v1/files/{file_id}/summary", h.handleSummary); err != nil {
+		klog.Fatalf("Failed to register file summary route: %v", err)
+	}
 }
 
 // handleUpload proxies multipart file uploads to POST {metadataServiceURL}/v1/files.

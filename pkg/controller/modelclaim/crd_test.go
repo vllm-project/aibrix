@@ -17,11 +17,13 @@ limitations under the License.
 package modelclaim
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	modelapi "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"sigs.k8s.io/yaml"
 )
@@ -63,4 +65,32 @@ func TestTheCRDLeavesPerGPUOptionalButNotHalfDeclared(t *testing.T) {
 		require.Contains(t, perGPU.Required, "maximumFootprint", path)
 		require.Contains(t, perGPU.Required, "kvFloor", path)
 	}
+}
+
+func TestModelClaimPrioritySchema(t *testing.T) {
+	for _, path := range crdPaths {
+		spec := modelClaimSpecSchema(t, path)
+		priority, found := spec.Properties["priority"]
+		require.True(t, found, path)
+		require.Equal(t, "integer", priority.Type, path)
+		require.Equal(t, "int32", priority.Format, path)
+		require.NotNil(t, priority.Default, path)
+		require.JSONEq(t, "0", string(priority.Default.Raw), path)
+		require.NotNil(t, priority.Minimum, path)
+		require.Equal(t, float64(0), *priority.Minimum, path)
+
+		var immutable bool
+		for _, rule := range priority.XValidations {
+			if rule.Rule == "self == oldSelf" && rule.Message == "priority is immutable; create a new ModelClaim instead" {
+				immutable = true
+			}
+		}
+		require.True(t, immutable, path)
+	}
+}
+
+func TestHistoricalModelClaimWithoutPriorityDecodesAsZero(t *testing.T) {
+	claim := &modelapi.ModelClaim{}
+	require.NoError(t, json.Unmarshal([]byte(`{"spec":{"artifactURL":"huggingface://historical/model"}}`), claim))
+	require.Equal(t, int32(0), claim.Spec.Priority)
 }

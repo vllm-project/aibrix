@@ -3,9 +3,11 @@ name: Installation Tests
 on:
   workflow_dispatch:  # Allows manual trigger
   push:
-    branches: [ "main", "release-*" ]
+    # PRs already test against the latest main, so merges don't re-run this.
+    branches: [ "release-*" ]
     paths:
       - '.github/workflows/**'
+      - 'api/**'
       - 'build/container/**'
       - 'config/**'
       - 'development/app/**'
@@ -16,12 +18,14 @@ on:
       - 'Makefile'
       - 'go.mod'
       - 'go.sum'
+      - 'hack/ci/**'
       - '!**/*.md'
       - '!**/*.rst'
   pull_request:
     branches: [ "main", "release-*" ]
     paths:
       - '.github/workflows/**'
+      - 'api/**'
       - 'build/container/**'
       - 'config/**'
       - 'development/app/**'
@@ -32,6 +36,7 @@ on:
       - 'Makefile'
       - 'go.mod'
       - 'go.sum'
+      - 'hack/ci/**'
       - '!**/*.md'
       - '!**/*.rst'
 
@@ -41,85 +46,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  mock-app-auth-test:
-    name: Mock app auth test
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Check out code
-        uses: actions/checkout@v6
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.10'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r development/app/requirements.txt pytest
-
-      - name: Run mock app tests
-        run: pytest development/app/test_auth_e2e.py development/app/test_elastic_ep.py -q
-
-  build-images:
-    name: Build image (${{ matrix.image }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      matrix:
-        include:
-          - image: controller-manager
-            dockerfile: build/container/Dockerfile
-            context: .
-          - image: gateway-plugins
-            dockerfile: build/container/Dockerfile.gateway
-            context: .
-          - image: runtime
-            dockerfile: build/container/Dockerfile.python
-            target: runtime
-            context: .
-          - image: metadata-service
-            dockerfile: build/container/Dockerfile.python
-            target: metadata-service
-            context: .
-          - image: vllm-mock
-            dockerfile: development/app/Dockerfile
-            context: development/app
-    steps:
-      - name: Check out code
-        uses: actions/checkout@v6
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build ${{ matrix.image }}
-        uses: docker/build-push-action@v7
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          target: ${{ matrix.target || '' }}
-          tags: aibrix/${{ matrix.image }}:${{ github.sha }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
-          load: true
-
-      - name: Save image
-        run: |
-          docker save aibrix/${{ matrix.image }}:${{ github.sha }} > ${{ matrix.image }}.tar
-
-      - name: Upload image artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.image }}-image
-          path: ${{ matrix.image }}.tar
-          retention-days: 1
-
   installation-test:
     name: Installation E2E Tests
-    needs: [build-images]
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 90
     steps:
       - name: Check out code
         uses: actions/checkout@v6
@@ -128,40 +58,6 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: '1.22'
-
-      - name: Download image artifacts
-        uses: actions/download-artifact@v8
-        with:
-          # Only the matrix image tarballs (e.g. controller-manager-image). Do not
-          # download Docker buildx cache artifacts (vllm-project~aibrix~*.dockerbuild),
-          # which are unrelated and can fail to extract after retries.
-          pattern: '*-image'
-          merge-multiple: false
-
-      - name: Verify image artifacts
-        run: |
-          missing=()
-          for image in controller-manager gateway-plugins runtime metadata-service vllm-mock; do
-            if [ ! -f "${image}-image/${image}.tar" ]; then
-              missing+=("${image}")
-            fi
-          done
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::warning::Missing artifacts: ${missing[*]}. Attempting re-download..."
-            for image in "${missing[@]}"; do
-              gh run download ${{ github.run_id }} --name "${image}-image" --dir "${image}-image"
-            done
-            for image in "${missing[@]}"; do
-              if [ ! -f "${image}-image/${image}.tar" ]; then
-                echo "::error::Artifact ${image}-image/${image}.tar still missing after retry"
-                exit 1
-              fi
-            done
-          fi
-          echo "All image artifacts verified successfully"
-          ls -lh *-image/*.tar
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: Free disk space
         run: |-
@@ -181,6 +77,64 @@ jobs:
             /usr/share/dotnet \
             /usr/share/swift
           df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # The images are built one after another on this runner and loaded
+      # straight into Docker, instead of in separate jobs that hand tarballs
+      # over as artifacts.
+      - name: Build controller-manager
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: build/container/Dockerfile
+          tags: aibrix/controller-manager:${{ github.sha }}
+          cache-from: type=gha,scope=controller-manager
+          cache-to: type=gha,mode=max,scope=controller-manager
+          load: true
+
+      - name: Build gateway-plugins
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: build/container/Dockerfile.gateway
+          tags: aibrix/gateway-plugins:${{ github.sha }}
+          cache-from: type=gha,scope=gateway-plugins
+          cache-to: type=gha,mode=max,scope=gateway-plugins
+          load: true
+
+      - name: Build runtime
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: build/container/Dockerfile.python
+          target: runtime
+          tags: aibrix/runtime:${{ github.sha }}
+          cache-from: type=gha,scope=runtime
+          cache-to: type=gha,mode=max,scope=runtime
+          load: true
+
+      - name: Build metadata-service
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: build/container/Dockerfile.python
+          target: metadata-service
+          tags: aibrix/metadata-service:${{ github.sha }}
+          cache-from: type=gha,scope=metadata-service
+          cache-to: type=gha,mode=max,scope=metadata-service
+          load: true
+
+      - name: Build vllm-mock
+        uses: docker/build-push-action@v7
+        with:
+          context: development/app
+          file: development/app/Dockerfile
+          tags: aibrix/vllm-mock:${{ github.sha }}
+          cache-from: type=gha,scope=vllm-mock
+          cache-to: type=gha,mode=max,scope=vllm-mock
+          load: true
 
       - name: Cache kind
         id: cache-kind
@@ -226,12 +180,6 @@ jobs:
         run: |
           set -euo pipefail
           sha="${{ github.sha }}"
-          # Load tarballs into the local Docker daemon in parallel (I/O-bound).
-          for image in controller-manager gateway-plugins runtime metadata-service vllm-mock; do
-            docker load < "${image}-image/${image}.tar" &
-          done
-          wait
-
           # Same digest as :sha; manifests still reference :nightly in places (e.g. job templates).
           for image in controller-manager gateway-plugins runtime metadata-service vllm-mock; do
             docker tag "aibrix/${image}:${sha}" "aibrix/${image}:nightly"
@@ -304,6 +252,14 @@ jobs:
           kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc  8888:80 &
           kubectl -n aibrix-system port-forward service/aibrix-redis-master 6379:6379 &
 
+      # The installation smoke suite runs on the cluster installed above, so
+      # the Kustomize installation is not set up again in a job of its own.
+      - name: Run installation smoke test
+        run: |
+          kind get kubeconfig --name installation-test > /tmp/admin.conf
+          export KUBECONFIG=/tmp/admin.conf
+          make test-install-smoke
+
       - name: Run installation e2e tests
         run: |
           kind get kubeconfig --name installation-test > /tmp/admin.conf
@@ -351,14 +307,15 @@ jobs:
         continue-on-error: true
         run: kind delete cluster --name installation-test || true
 
-  delete-artifacts:
-    name: Delete image artifacts
-    needs: [build-images, installation-test]
-    if: ${{ always() }}
-    runs-on: ubuntu-latest  
-    timeout-minutes: 10
-    steps:   
-      - uses: geekyeggo/delete-artifact@v5
+      - name: Set up Python
+        if: ${{ !cancelled() }}
+        uses: actions/setup-python@v6
         with:
-          name: '*-image'
-          failOnError: false
+          python-version: '3.10'
+
+      - name: Run mock app tests
+        if: ${{ !cancelled() }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r development/app/requirements.txt pytest
+          pytest development/app/test_auth_e2e.py development/app/test_elastic_ep.py -q

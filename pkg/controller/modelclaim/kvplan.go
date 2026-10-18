@@ -64,6 +64,9 @@ type plannedKVLimit struct {
 	// kvRecordedBytes is what the instance records now, and is zero when it
 	// records nothing.
 	kvRecordedBytes int64
+	// kvInitialCapacityBytes is the engine's KV capacity at startup, the most
+	// its block pool can index. Nil or negative is unknown, and caps nothing.
+	kvInitialCapacityBytes *int64
 }
 
 // lowersRecord says whether recording this limit lowers what the instance
@@ -75,12 +78,9 @@ func (l plannedKVLimit) lowersRecord() bool {
 // planKVLimits divides a card among the engines on it.
 //
 // Each engine keeps what it holds, and the room left over is shared out by
-// weight. The result therefore spends the card exactly: every footprint, every
-// engine's held KV, and every share together come to what the card can hold, so
-// an engine that grows into its new limit cannot grow into another engine's
-// memory. The one exception is a card whose engines are all asleep. Nothing
-// weighs anything there, so the room left over stays unassigned until an engine
-// wakes and the card is divided again.
+// weight. Each limit is then capped at the engine's known startup capacity.
+// Room above those ceilings stays unassigned, as does spare room on a card
+// whose engines are all asleep. No engine can grow into another's memory.
 //
 // The newcomer in a placement is one of these engines, with nothing mapped and
 // no limit in force. Planning it alongside the engines already there is what
@@ -100,6 +100,9 @@ func planKVLimits(hbmUsableBytes int64, engines []engineOnPod) ([]plannedKVLimit
 		if engine.maximumFootprintBytes <= 0 || engine.kvFloorBytes <= 0 {
 			return nil, fmt.Errorf("%s declares no per-GPU cost", engine.claimName)
 		}
+		if clampKVLimit(engine.plannedKVHeldBytes(), engine.kvInitialCapacityBytes) < engine.plannedKVHeldBytes() {
+			return nil, fmt.Errorf("%s startup KV capacity is below its held KV", engine.claimName)
+		}
 		kvUnassignedBytes -= engine.heldBytes()
 		kvExtraWeights[i] = kvExtraWeight(engine)
 		totalKVExtraWeight += kvExtraWeights[i]
@@ -118,11 +121,12 @@ func planKVLimits(hbmUsableBytes int64, engines []engineOnPod) ([]plannedKVLimit
 		}
 		totalKVExtraBytes += kvExtraBytes
 		limits[i] = plannedKVLimit{
-			claimName:       engine.claimName,
-			modelName:       engine.modelName,
-			kvLimitBytes:    engine.plannedKVHeldBytes() + kvExtraBytes,
-			kvCapacityBytes: engine.kvCapacityBytes,
-			kvRecordedBytes: engine.kvRecordedBytes,
+			claimName:              engine.claimName,
+			modelName:              engine.modelName,
+			kvLimitBytes:           engine.plannedKVHeldBytes() + kvExtraBytes,
+			kvCapacityBytes:        engine.kvCapacityBytes,
+			kvRecordedBytes:        engine.kvRecordedBytes,
+			kvInitialCapacityBytes: engine.kvInitialCapacityBytes,
 		}
 	}
 	if totalKVExtraWeight == 0 {
@@ -138,7 +142,18 @@ func planKVLimits(hbmUsableBytes int64, engines []engineOnPod) ([]plannedKVLimit
 		limits[i].kvLimitBytes++
 		left--
 	}
+	for i := range limits {
+		limits[i].kvLimitBytes = clampKVLimit(limits[i].kvLimitBytes, limits[i].kvInitialCapacityBytes)
+	}
 	return limits, nil
+}
+
+// clampKVLimit preserves unknown ceilings, including negative legacy values.
+func clampKVLimit(limit int64, ceiling *int64) int64 {
+	if ceiling != nil && *ceiling >= 0 && limit > *ceiling {
+		return *ceiling
+	}
+	return limit
 }
 
 // minimumKVLimitChangeBytes is how far a card has to have drifted from its plan

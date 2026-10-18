@@ -154,7 +154,8 @@ def test_sleeping_footprint_is_reported_only_for_sleeping_engines(monkeypatch):
 
 def test_kv_limit_metrics_track_requested_applied_and_skipped(monkeypatch):
     agent = _fresh_mock_agent(monkeypatch)
-    agent.activate(model_name="m1", artifact_url="hf://x")
+    inst = agent.activate(model_name="m1", artifact_url="hf://x")
+    inst.kv_initial_capacity_bytes = 4096
     agent.set_kv_limit("m1", 4096, operation_id="limit-1")
     agent.set_kv_limit("m1", 8192, operation_id="limit-1")
 
@@ -181,7 +182,8 @@ def test_failed_kv_limit_metric_is_exported(monkeypatch):
         pa.MockEngineLauncher(), kv_controller=_FailingKVController()
     )
     monkeypatch.setattr(pa, "_AGENT", agent)
-    agent.activate(model_name="m1", artifact_url="hf://x")
+    inst = agent.activate(model_name="m1", artifact_url="hf://x")
+    inst.kv_initial_capacity_bytes = 4096
 
     with pytest.raises(RuntimeError, match="kvctl failed"):
         agent.set_kv_limit("m1", 4096, operation_id="limit-1")
@@ -226,7 +228,8 @@ def test_lifecycle_metrics_track_count_result_and_duration(monkeypatch):
 
 def test_kv_limit_gauges_disappear_after_deactivation(monkeypatch):
     agent = _fresh_mock_agent(monkeypatch)
-    agent.activate(model_name="m1", artifact_url="hf://x")
+    inst = agent.activate(model_name="m1", artifact_url="hf://x")
+    inst.kv_initial_capacity_bytes = 4096
     agent.set_kv_limit("m1", 4096, operation_id="limit-1")
     agent.deactivate("m1")
 

@@ -84,7 +84,18 @@ type TokenizerPool struct {
 	metrics           *TokenizerPoolMetrics // Can be nil when feature disabled
 	metricsRegistered bool
 	stopCh            chan struct{}
+
+	// creating holds, per model, a channel closed when the tokenizer being
+	// created for it is ready or has failed. retryAt holds when an endpoint whose
+	// tokenizer failed to create or failed its health probe may be tried again.
+	// Together they keep a down endpoint from being probed by every request.
+	creating map[string]chan struct{}
+	retryAt  map[string]time.Time
 }
+
+// defaultCreateRetryBackoff is how long an endpoint that failed is left alone
+// when the pool has no health check period to pace retries by.
+const defaultCreateRetryBackoff = 30 * time.Second
 
 // TokenizerPoolMetrics contains Prometheus metrics for the pool
 type TokenizerPoolMetrics struct {
@@ -174,6 +185,8 @@ func NewTokenizerPool(config TokenizerPoolConfig, cache cache.Cache) *TokenizerP
 		config:     config,
 		cache:      cache,
 		stopCh:     make(chan struct{}),
+		creating:   make(map[string]chan struct{}),
+		retryAt:    make(map[string]time.Time),
 	}
 
 	// Only create and register metrics if feature is enabled
@@ -279,36 +292,86 @@ func (p *TokenizerPool) GetTokenizer(model string, pods []*v1.Pod) tokenizer.Tok
 }
 
 // createOrUpdateTokenizer creates or updates a tokenizer for the model
+//
+// Creating one ends in a health probe that can take up to 5s against an
+// endpoint that does not answer. Only one request at a time creates a model's
+// tokenizer: the others wait for its result instead of each probing. An
+// endpoint that failed is not tried again until its retry time; until then the
+// model gets the default tokenizer at once. An existing entry for it is still
+// probed by the background health check, which brings it back when the
+// endpoint recovers.
 func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) tokenizer.Tokenizer {
-	// First attempt: quick check under write lock
-	p.mu.Lock()
+	for {
+		p.mu.Lock()
 
-	// Double-check after acquiring write lock
-	if entry, exists := p.tokenizers[model]; exists && entry.usable(pods) {
-		entry.lastUsed = time.Now()
+		// Double-check after acquiring write lock
+		if entry, exists := p.tokenizers[model]; exists && entry.usable(pods) {
+			entry.lastUsed = time.Now()
+			p.mu.Unlock()
+			return entry.tokenizer
+		}
+
+		// Replacing an unhealthy tokenizer does not need another pool slot.
+		if _, exists := p.tokenizers[model]; !exists && len(p.tokenizers) >= p.config.MaxTokenizersPerPool {
+			p.mu.Unlock()
+			klog.Warningf("TokenizerPool reached max size %d, using default tokenizer", p.config.MaxTokenizersPerPool)
+			return p.config.DefaultTokenizer
+		}
+
+		// Find endpoint for model
+		endpoint, podIP := p.findVLLMEndpointForModel(model, pods)
+		if endpoint == "" {
+			p.mu.Unlock()
+			klog.V(4).Infof("No vLLM endpoint found for model %s, using default tokenizer", model)
+			p.incTokenizerCreationFailures()
+			return p.config.DefaultTokenizer
+		}
+
+		if done, busy := p.creating[model]; busy {
+			// Another request is already creating this model's tokenizer.
+			p.mu.Unlock()
+			<-done
+			continue
+		}
+		if retryAt, failed := p.retryAt[endpoint]; failed && time.Now().Before(retryAt) {
+			p.mu.Unlock()
+			klog.V(4).Infof("vLLM tokenizer endpoint %s for model %s failed recently, using default tokenizer until %s",
+				endpoint, model, retryAt.Format(time.RFC3339))
+			return p.config.DefaultTokenizer
+		}
+		done := make(chan struct{})
+		p.creating[model] = done
+
+		// Release lock before creating tokenizer and health check
 		p.mu.Unlock()
-		return entry.tokenizer
-	}
 
-	// Replacing an unhealthy tokenizer does not need another pool slot.
-	if _, exists := p.tokenizers[model]; !exists && len(p.tokenizers) >= p.config.MaxTokenizersPerPool {
+		tok := p.newHealthyTokenizer(model, endpoint)
+
+		p.mu.Lock()
+		delete(p.creating, model)
+		close(done)
+		if tok == nil {
+			p.retryAt[endpoint] = time.Now().Add(p.createRetryBackoff())
+			p.mu.Unlock()
+			return p.config.DefaultTokenizer
+		}
+		delete(p.retryAt, endpoint)
+		tok, outcome := p.addTokenizerLocked(model, endpoint, podIP, tok, pods)
 		p.mu.Unlock()
-		klog.Warningf("TokenizerPool reached max size %d, using default tokenizer", p.config.MaxTokenizersPerPool)
-		return p.config.DefaultTokenizer
+		switch outcome {
+		case tokenizerAdded:
+			klog.V(3).Infof("Created vLLM tokenizer for model %s at endpoint %s", model, endpoint)
+		case tokenizerPoolFull:
+			klog.Warningf("TokenizerPool reached max size %d, using default tokenizer", p.config.MaxTokenizersPerPool)
+		}
+		return tok
 	}
+}
 
-	// Find endpoint for model
-	endpoint, podIP := p.findVLLMEndpointForModel(model, pods)
-	if endpoint == "" {
-		p.mu.Unlock()
-		klog.V(4).Infof("No vLLM endpoint found for model %s, using default tokenizer", model)
-		p.incTokenizerCreationFailures()
-		return p.config.DefaultTokenizer
-	}
-
-	// Release lock before creating tokenizer and health check
-	p.mu.Unlock()
-
+// newHealthyTokenizer creates a remote tokenizer for endpoint and probes it.
+// It returns nil, having counted the failure, if either step fails. It must be
+// called without the pool lock.
+func (p *TokenizerPool) newHealthyTokenizer(model, endpoint string) tokenizer.Tokenizer {
 	// Create remote tokenizer (outside of lock)
 	config := tokenizer.RemoteTokenizerConfig{
 		Engine:             vllmEngine,
@@ -324,7 +387,7 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 	if err != nil {
 		klog.Warningf("Failed to create vLLM tokenizer for model %s: %v", model, err)
 		p.incTokenizerCreationFailures()
-		return p.config.DefaultTokenizer
+		return nil
 	}
 
 	// Verify health (outside of lock)
@@ -338,13 +401,25 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 			if closer, ok := tok.(interface{ Close() error }); ok {
 				_ = closer.Close()
 			}
-			return p.config.DefaultTokenizer
+			return nil
 		}
 	}
+	return tok
+}
 
-	// Re-acquire lock to update the pool
-	p.mu.Lock()
+// addTokenizerOutcome says what addTokenizerLocked did, for the caller to log
+// once it has released the pool lock.
+type addTokenizerOutcome int
 
+const (
+	tokenizerAdded addTokenizerOutcome = iota
+	tokenizerAlreadyPresent
+	tokenizerPoolFull
+)
+
+// addTokenizerLocked puts a newly created tokenizer in the pool and returns
+// the tokenizer the caller should use. The caller must hold the pool lock.
+func (p *TokenizerPool) addTokenizerLocked(model, endpoint, podIP string, tok tokenizer.Tokenizer, pods []*v1.Pod) (tokenizer.Tokenizer, addTokenizerOutcome) {
 	// Double-check: another goroutine might have created it while we were checking health
 	entry, exists := p.tokenizers[model]
 	if exists && entry.usable(pods) {
@@ -354,8 +429,7 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 		if closer, ok := tok.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
-		p.mu.Unlock()
-		return entry.tokenizer
+		return entry.tokenizer, tokenizerAlreadyPresent
 	}
 
 	// Another model may have filled the last slot during the health check.
@@ -363,9 +437,7 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 		if closer, ok := tok.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
-		p.mu.Unlock()
-		klog.Warningf("TokenizerPool reached max size %d, using default tokenizer", p.config.MaxTokenizersPerPool)
-		return p.config.DefaultTokenizer
+		return p.config.DefaultTokenizer, tokenizerPoolFull
 	}
 	if exists {
 		// The existing entry is unhealthy or its pod has left; usable entries returned above under this same lock.
@@ -387,10 +459,17 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 
 	p.setActiveTokenizers(float64(len(p.tokenizers)))
 	p.incTokenizerCreationSuccesses()
-	p.mu.Unlock()
-	klog.V(3).Infof("Created vLLM tokenizer for model %s at endpoint %s", model, endpoint)
+	return tok, tokenizerAdded
+}
 
-	return tok
+// createRetryBackoff is how long an endpoint that failed is left alone. It
+// follows the health check period, so requests retry an endpoint no more often
+// than the background check probes the pool.
+func (p *TokenizerPool) createRetryBackoff() time.Duration {
+	if p.config.HealthCheckPeriod > 0 {
+		return p.config.HealthCheckPeriod
+	}
+	return defaultCreateRetryBackoff
 }
 
 // findVLLMEndpointForModel finds the vLLM endpoint for a specific model
@@ -559,6 +638,11 @@ func (p *TokenizerPool) cleanupStaleTokenizers() {
 	// Collect stale tokenizers under lock
 	p.mu.Lock()
 	now := time.Now()
+	for endpoint, retryAt := range p.retryAt {
+		if !now.Before(retryAt) {
+			delete(p.retryAt, endpoint)
+		}
+	}
 	for model, entry := range p.tokenizers {
 		// Remove if unused for TTL duration
 		if now.Sub(entry.lastUsed) > p.config.TokenizerTTL {

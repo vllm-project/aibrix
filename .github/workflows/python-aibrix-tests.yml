@@ -2,7 +2,8 @@ name: Python AIBrix Tests
 
 on:
   push:
-    branches: [ "main", "release-*" ]
+    # PRs already test against the latest main, so merges don't re-run this.
+    branches: [ "release-*" ]
     paths:
       - 'python/aibrix/**'
       - '.github/workflows/python-aibrix-tests.yml'

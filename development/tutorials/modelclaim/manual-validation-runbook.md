@@ -51,8 +51,9 @@ kubectl -n aibrix-system get pods \
 
 ### Runtime image
 
-The warm-pool sample uses `aibrix/kvcached-runtime:nightly`, which is built
-from `main`. To test another commit, build the runtime from it. Then make the
+The warm-pool sample uses `aibrix/kvcached-runtime:nightly`, which is built on
+demand with the *Docker Push kvcached-runtime* workflow, so it can lag `main`.
+To test another commit, build the runtime from it. Then make the
 image available to the node, for example with `minikube image load`, or push
 it to a registry the node can reach:
 

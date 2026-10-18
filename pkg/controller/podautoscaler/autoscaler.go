@@ -31,6 +31,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
 	corev1 "k8s.io/api/core/v1"
+	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -91,6 +92,11 @@ type DefaultAutoScaler struct {
 	// Algorithm cache (algorithms are stateless structs, can be safely reused)
 	mu             sync.RWMutex
 	algorithmCache map[autoscalingv1alpha1.ScalingStrategyType]algorithm.ScalingAlgorithm
+
+	// panicStates keeps the KPA panic state of each PodAutoscaler metric
+	// across reconciles, since the scaling context is rebuilt every time.
+	panicMu     sync.Mutex
+	panicStates map[ktypes.NamespacedName]map[string]*algorithm.PanicState
 }
 
 // NewDefaultAutoScaler creates a new default autoscaler
@@ -111,12 +117,63 @@ func NewDefaultAutoScaler(
 		metricsClient:  metricsClient,
 		aggregator:     aggregator,
 		algorithmCache: make(map[autoscalingv1alpha1.ScalingStrategyType]algorithm.ScalingAlgorithm),
+		panicStates:    make(map[ktypes.NamespacedName]map[string]*algorithm.PanicState),
 	}
 }
 
 // ForgetPodAutoscaler drops the metric windows recorded for a deleted PodAutoscaler.
 func (a *DefaultAutoScaler) ForgetPodAutoscaler(namespace, name string) {
 	a.metricsClient.DeleteMetrics(namespace, name)
+
+	a.panicMu.Lock()
+	delete(a.panicStates, ktypes.NamespacedName{Namespace: namespace, Name: name})
+	a.panicMu.Unlock()
+}
+
+// panicState returns the KPA panic state of one PodAutoscaler metric, creating
+// it on first use. The controller reconciles one PodAutoscaler at a time, so
+// the returned state is not shared between concurrent calls; the lock only
+// guards the map.
+func (a *DefaultAutoScaler) panicState(pa ktypes.NamespacedName, metricName string) *algorithm.PanicState {
+	a.panicMu.Lock()
+	defer a.panicMu.Unlock()
+	byMetric, ok := a.panicStates[pa]
+	if !ok {
+		byMetric = make(map[string]*algorithm.PanicState)
+		a.panicStates[pa] = byMetric
+	}
+	state, ok := byMetric[metricName]
+	if !ok {
+		state = &algorithm.PanicState{}
+		byMetric[metricName] = state
+	}
+	return state
+}
+
+// prunePanicStates drops the panic state of metrics that are no longer in the
+// PodAutoscaler's spec, and all of it once the PodAutoscaler stops using KPA, so
+// an edited spec does not leave state behind until the PodAutoscaler is deleted.
+func (a *DefaultAutoScaler) prunePanicStates(pa *autoscalingv1alpha1.PodAutoscaler) {
+	key := ktypes.NamespacedName{Namespace: pa.Namespace, Name: pa.Name}
+	a.panicMu.Lock()
+	defer a.panicMu.Unlock()
+	byMetric, ok := a.panicStates[key]
+	if !ok {
+		return
+	}
+	if pa.Spec.ScalingStrategy != autoscalingv1alpha1.KPA {
+		delete(a.panicStates, key)
+		return
+	}
+	inSpec := make(map[string]bool, len(pa.Spec.MetricsSources))
+	for _, ms := range pa.Spec.MetricsSources {
+		inSpec[ms.TargetMetric] = true
+	}
+	for name := range byMetric {
+		if !inSpec[name] {
+			delete(byMetric, name)
+		}
+	}
 }
 
 // getOrCreateAlgorithm retrieves or creates a stateless algorithm for the given strategy
@@ -155,6 +212,8 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 		return &ReplicaComputeResult{Valid: false}, fmt.Errorf(
 			"no metricsSources defined in PodAutoscaler %s/%s", pa.Namespace, pa.Name)
 	}
+	a.prunePanicStates(&pa)
+
 	var validResults []*ReplicaComputeResult // to record the recommended result calculated in the current round
 	var anyValid bool
 
@@ -472,6 +531,13 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 		MetricSourceType:  metricSource.MetricSourceType,
 		ScalingContext:    scalingContext,
 		Timestamp:         request.Timestamp,
+		StableWindow:      stableWindow,
+	}
+	if request.PodAutoscaler.Spec.ScalingStrategy == autoscalingv1alpha1.KPA {
+		scalingRequest.Panic = a.panicState(ktypes.NamespacedName{
+			Namespace: request.PodAutoscaler.Namespace,
+			Name:      request.PodAutoscaler.Name,
+		}, metricKey.MetricName)
 	}
 
 	klog.InfoS("Computing scaling recommendation", "source", workloadKey,

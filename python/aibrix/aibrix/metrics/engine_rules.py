@@ -20,6 +20,9 @@ from aibrix.metrics.standard_rules import (
     StandardRule,
 )
 
+# Counter rules are keyed by the family name the Prometheus text parser yields,
+# which has no _total suffix; the samples keep it (vllm:prompt_tokens_total).
+
 # vLLM metric standard rules - complete coverage
 VLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
     # Core performance metrics - map to aibrix namespace
@@ -33,11 +36,11 @@ VLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
         "vllm:kv_cache_usage_perc", "aibrix:kv_cache_usage_perc"
     ),
     # Token processing metrics
-    "vllm:prompt_tokens_total": RenameStandardRule(
-        "vllm:prompt_tokens_total", "aibrix:prompt_tokens_total"
+    "vllm:prompt_tokens": RenameStandardRule(
+        "vllm:prompt_tokens", "aibrix:prompt_tokens"
     ),
-    "vllm:generation_tokens_total": RenameStandardRule(
-        "vllm:generation_tokens_total", "aibrix:generation_tokens_total"
+    "vllm:generation_tokens": RenameStandardRule(
+        "vllm:generation_tokens", "aibrix:generation_tokens"
     ),
     # Latency metrics
     "vllm:time_to_first_token_seconds": RenameStandardRule(
@@ -50,8 +53,8 @@ VLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
         "vllm:e2e_request_latency_seconds", "aibrix:e2e_request_latency_seconds"
     ),
     # Request success metrics
-    "vllm:request_success_total": RenameStandardRule(
-        "vllm:request_success_total", "aibrix:request_success_total"
+    "vllm:request_success": RenameStandardRule(
+        "vllm:request_success", "aibrix:request_success"
     ),
 }
 
@@ -65,11 +68,11 @@ SGLANG_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
         "sglang:gen_throughput", "aibrix:generation_throughput"
     ),
     # Token processing metrics
-    "sglang:prompt_tokens_total": RenameStandardRule(
-        "sglang:prompt_tokens_total", "aibrix:prompt_tokens_total"
+    "sglang:prompt_tokens": RenameStandardRule(
+        "sglang:prompt_tokens", "aibrix:prompt_tokens"
     ),
-    "sglang:generation_tokens_total": RenameStandardRule(
-        "sglang:generation_tokens_total", "aibrix:generation_tokens_total"
+    "sglang:generation_tokens": RenameStandardRule(
+        "sglang:generation_tokens", "aibrix:generation_tokens"
     ),
     # Latency metrics
     "sglang:time_to_first_token_seconds": RenameStandardRule(
@@ -114,9 +117,7 @@ TRTLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
         "time_per_output_token_seconds", "aibrix:time_per_output_token_seconds"
     ),
     # Request metrics
-    "request_success_total": RenameStandardRule(
-        "request_success_total", "aibrix:request_success_total"
-    ),
+    "request_success": RenameStandardRule("request_success", "aibrix:request_success"),
     # Cache metrics
     "kv_cache_utilization": RenameStandardRule(
         "kv_cache_utilization", "aibrix:kv_cache_usage_perc"

@@ -118,7 +118,8 @@ def _operation_response(result: RuntimeOperationResult) -> JSONResponse:
             operation_id=result.operation_id,
             applied=result.applied,
             phase=result.phase,
-        ).model_dump(),
+            limit_bytes=result.limit_bytes,
+        ).model_dump(exclude_none=True),
     )
 
 

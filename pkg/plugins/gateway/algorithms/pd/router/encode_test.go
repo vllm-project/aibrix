@@ -31,6 +31,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/selector"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
@@ -144,4 +145,33 @@ func TestRouteEncodesMediaOnTheRolesetEncoders(t *testing.T) {
 			assert.Equal(t, gjson.Get(tt.body, "messages").Raw, gjson.GetBytes(prefills.got()[0], "messages").Raw)
 		})
 	}
+}
+
+func TestRouteEncodesMediaForACombinedPod(t *testing.T) {
+	encoders := &bodyRecorder{status: http.StatusOK}
+	combined := &bodyRecorder{status: http.StatusOK}
+	encodeSrv, combinedSrv := encoders.server(t), combined.server(t)
+	pods := []*v1.Pod{
+		epdPod(t, "encode-0", "rs-a", PDRoleEncode, encodeSrv),
+		epdPod(t, "combined-0", "rs-a", "combined", combinedSrv),
+	}
+	r, _ := newTokenLoadTestRouter(t, encodeSrv.Client())
+	r.encodeExecutor = encode.NewExecutor(encodeSrv.Client())
+	// Bucketing picked the combined pod, so there is no prefill leg.
+	r.podSelector = selector.NewDefaultSelector(func(*types.RoutingContext, []*v1.Pod) (*v1.Pod, *v1.Pod, error) {
+		return nil, pods[1], nil
+	})
+
+	requestCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ctx := types.NewRoutingContext(requestCtx, RouterPD, "qwen-vl", "", "combined-request", "user")
+	defer ctx.Delete()
+	ctx.Engine, ctx.ReqPath = VLLMEngine, testChatCompletionsPath
+	ctx.ReqBody = []byte(`{"model":"qwen-vl","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://x/a.png"}}]}]}`)
+
+	addr, err := r.Route(ctx, &utils.PodArray{Pods: pods})
+	require.NoError(t, err)
+	assert.Equal(t, ctx.PodAddress(pods[1]), addr)
+	assert.Len(t, encoders.got(), 1)
+	assert.Empty(t, combined.got(), "the gateway forwards the request to the combined pod, the router doesn't call it")
 }
