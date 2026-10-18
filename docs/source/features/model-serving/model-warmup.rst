@@ -209,6 +209,24 @@ API server rejects Job creation, the controller logs the error and requeues it.
 With no Job to inspect, bounded Job diagnostics and ModelWarmup failure status
 may not record that rejection; check controller logs when progress stalls.
 
+A Job can also be accepted while admission rejects every Pod that it tries to
+create. For example, a namespace enforcing the ``restricted`` Pod Security
+standard can reject an image-only warmup because its generated containers do
+not set every required security-context field. The Job then has no Pods, and
+the target can report ``Running`` until ``jobTimeoutSeconds`` expires. Inspect
+the Job and its ``FailedCreate`` events to find the admission message:
+
+.. code-block:: bash
+
+   kubectl -n <namespace> describe job <job-name>
+   kubectl -n <namespace> get events \
+     --field-selector involvedObject.kind=Job,involvedObject.name=<job-name>
+
+Use ``spec.custom.containers`` when the action needs an explicit
+``securityContext`` that satisfies namespace policy. Image-only entries do not
+expose that field. Alternatively, run the warmup in a namespace whose admission
+policy permits the generated Pod template.
+
 The bundled cache samples use ``hostPath`` at ``/var/lib/aibrix/models`` with
 ``DirectoryOrCreate``. That exposes a node filesystem path to the Job and may
 be disallowed by Pod Security admission. The samples do not require privileged
