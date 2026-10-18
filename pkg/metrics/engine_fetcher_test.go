@@ -990,14 +990,19 @@ func TestSGLangDPUsageWithoutCompleteCapacityIsUnchanged(t *testing.T) {
 	for _, capacity := range []string{"", `sglang:max_total_num_tokens{model_name="m",dp_rank="0"} 100`,
 		`sglang:max_total_num_tokens{model_name="m",dp_rank="0"} 100
 sglang:max_total_num_tokens{model_name="m",dp_rank="1"} 0`} {
-		families, err := ParseMetricsFromReader(strings.NewReader(`# TYPE sglang:token_usage gauge
+		for _, missingGauge := range []bool{false, true} {
+			families, err := ParseMetricsFromReader(strings.NewReader(`# TYPE sglang:token_usage gauge
 sglang:token_usage{model_name="m",dp_rank="0"} 0.9
 sglang:token_usage{model_name="m",dp_rank="1"} 0.1
 # TYPE sglang:max_total_num_tokens gauge
 ` + capacity + "\n"))
-		require.NoError(t, err)
-		original := families["sglang:token_usage"].Metric
-		mergeSGLangDPSeries(families)
-		assert.Equal(t, original, families["sglang:token_usage"].Metric)
+			require.NoError(t, err)
+			original := families["sglang:token_usage"].Metric
+			if missingGauge {
+				original[0].Gauge = nil
+			}
+			mergeSGLangDPSeries(families)
+			assert.ElementsMatch(t, original, families["sglang:token_usage"].Metric)
+		}
 	}
 }

@@ -75,7 +75,7 @@ func mergeSGLangDPSeries(families map[string]*dto.MetricFamily) {
 				// Without a capacity for every pool, retain the original series
 				// rather than publishing an unjustified unweighted utilization.
 				for _, m := range family.Metric {
-					if rank, _ := GetLabelValueForKey(m, "dp_rank"); rank != "" && sglangScopeKey(m, true) == key {
+					if rank, _ := GetLabelValueForKey(m, "dp_rank"); rank != "" && m.Gauge != nil && sglangScopeKey(m, true) == key {
 						merged = append(merged, m)
 					}
 				}
