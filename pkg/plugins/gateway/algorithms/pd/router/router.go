@@ -56,7 +56,7 @@ const (
 	PDRoleIdentifier             string                 = "role-name"
 	PDRolePrefill                string                 = "prefill"
 	PDRoleDecode                 string                 = "decode"
-	PDRoleEncode                 string                 = "encode"
+	PDRoleEncode                 string                 = encode.Role
 	RoleReplicaIndex             string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
 	PodGroupIndex                string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
 	PromptLenBucketMinLength     string                 = "prompt-len-bucket-min-length"

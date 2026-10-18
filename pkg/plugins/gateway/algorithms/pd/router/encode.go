@@ -17,48 +17,15 @@ limitations under the License.
 package router
 
 import (
-	"strings"
-
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/klog/v2"
 )
 
-// encodeMedia runs the encode stage when the prefill pod's roleset has encode
-// pods: every image, audio and video item of a vLLM chat request is sent to one
-// of them before prefill.
-//
-// The request body is left untouched. vLLM's prefill instance looks the encoder
-// output up by the hash of the item's content, the same hash the encoder stored
-// it under, and encodes the item itself when the output isn't there. So an
-// encode failure costs latency but not correctness, and is only logged.
-func (r *pdRouter) encodeMedia(ctx *types.RoutingContext, readyPods []*v1.Pod, prefillPod *v1.Pod) {
-	if r.encodeExecutor == nil || ctx.Engine != VLLMEngine {
+// encodeMedia runs the encode stage on the encoders of target's roleset before
+// target gets the request (see encode.Executor.EncodeMedia).
+func (r *pdRouter) encodeMedia(ctx *types.RoutingContext, readyPods []*v1.Pod, target *v1.Pod) {
+	if ctx.Engine != VLLMEngine {
 		return
 	}
-	if path, _, _ := strings.Cut(ctx.ReqPath, "?"); path != "/v1/chat/completions" {
-		return
-	}
-	items := encode.MediaItems(ctx.ReqBody)
-	if len(items) == 0 {
-		return
-	}
-	roleset := prefillPod.Labels[PDRoleSetIdentifier]
-	var encoders []*v1.Pod
-	for _, pod := range readyPods {
-		if pod.Labels[PDRoleSetIdentifier] == roleset && pod.Labels[PDRoleIdentifier] == PDRoleEncode && isPodWithHTTPServer(pod) {
-			encoders = append(encoders, pod)
-		}
-	}
-	if len(encoders) == 0 {
-		return
-	}
-	if err := r.encodeExecutor.Execute(ctx, encoders, items, ctx.PDOverrides().PrefillRequestTimeout); err != nil {
-		klog.V(2).InfoS("encode_request_failed", "error", err, "request_id", ctx.RequestID,
-			"roleset", roleset, "media_items", len(items))
-		return
-	}
-	klog.V(4).InfoS("encode_request_end", "request_id", ctx.RequestID,
-		"roleset", roleset, "media_items", len(items))
+	r.encodeExecutor.EncodeMedia(ctx, readyPods, target, ctx.PDOverrides().PrefillRequestTimeout)
 }
