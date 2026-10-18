@@ -154,3 +154,5 @@ curl -v "http://${ENDPOINT}/v1/chat/completions" \
     ]}]
   }'
 ```
+
+`1e1pd.yaml` puts the encode pod in front of a single pod that serves the whole request (E+PD), with no prefill/decode split. Send the same request with any routing strategy other than `pd`, for example `-H "routing-strategy: least-request"`. The gateway never routes to the encode pod and runs the encode stage before forwarding the request to the worker pod.

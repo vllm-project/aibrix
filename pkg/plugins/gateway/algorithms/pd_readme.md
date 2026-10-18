@@ -330,6 +330,8 @@ Gateway ──prefill as below, request body unchanged────────�
 
 Items are spread round-robin over the roleset's encode pods. The body is not rewritten: the encoder and the prefill pod hash the same item bytes, so the prefill pod's EC connector finds the output, and encodes the item itself when it can't. A failed encode is therefore logged and counted, not returned. Each call uses the prefill request timeout. Connectors that need transfer handles passed through the request (vLLM's `*_embeds` rewrite in `disagg_epd_proxy.py`) are not supported.
 
+When bucketing routes the request to a combined pod instead, `Route` runs the same stage on the combined pod's roleset. For E+PD rolesets, where encode pods sit in front of pods that serve the whole request, the gateway runs it outside the PD router: with any other routing strategy, `selectTargetPod` drops encode pods from the candidates and encodes on the chosen pod's roleset before returning it.
+
 ### vLLM (`AIBRIX_KV_CONNECTOR_TYPE=shfs`, default)
 
 ```
