@@ -1316,6 +1316,15 @@ func TestHandleResponseBody_TPMIncrError(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			var requestsWithUsage float64
+			originalFn := metrics.IncrementCounterMetricFnForTest
+			defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
+			metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+				if name == metrics.GatewayRequestsWithUsageTotal {
+					requestsWithUsage += value
+				}
+			}
+
 			mockRL := &mockRateLimiter{}
 			mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(15)).Return(int64(0), errors.New("mock error"))
 			server := &Server{
@@ -1348,8 +1357,10 @@ func TestHandleResponseBody_TPMIncrError(t *testing.T) {
 				headers[h.Header.Key] = string(h.Header.RawValue)
 			}
 			assert.Equal(t, "true", headers[HeaderErrorIncrTPM])
+			assert.NotContains(t, headers, HeaderUpdateRPM)
 			assert.NotContains(t, headers, HeaderUpdateTPM)
 			assert.Equal(t, requestID, headers[HeaderRequestID])
+			assert.Equal(t, 1.0, requestsWithUsage, "request_end must still run")
 			mockRL.AssertExpectations(t)
 		})
 	}

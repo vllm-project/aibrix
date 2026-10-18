@@ -364,7 +364,13 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 		if user.Name != "" {
 			tpm, err := s.ratelimiter.Incr(routerCtx, fmt.Sprintf("%v_TPM_CURRENT", user.Name), usage.TotalTokens)
 			if err != nil {
-				klog.ErrorS(err, "fail to increment TPM for user", "user", user.Name, "requestID", requestID, "tokens", usage.TotalTokens)
+				if routerCtx.Err() != nil {
+					// The request was cancelled or timed out, typically a client
+					// that went away; not worth an error line each time.
+					klog.V(3).InfoS("TPM increment abandoned with the request", "user", user.Name, "requestID", requestID, "tokens", usage.TotalTokens, "err", err)
+				} else {
+					klog.ErrorS(err, "fail to increment TPM for user", "user", user.Name, "requestID", requestID, "tokens", usage.TotalTokens)
+				}
 				headers = buildEnvoyProxyHeaders(headers, HeaderErrorIncrTPM, "true")
 			} else {
 				headers = buildEnvoyProxyHeaders(headers,
