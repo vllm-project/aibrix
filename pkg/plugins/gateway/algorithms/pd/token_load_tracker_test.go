@@ -1164,6 +1164,9 @@ func TestTokenLoadTracker_CorrectDecodeCostIgnoresHugeCosts(t *testing.T) {
 	tr.ReleaseDecode("b")
 	tr.AcquireDecodeWithTTL("c", pod, 100, 0)
 	assert.Equal(t, 100.0, tr.GetDecodeLoad(pod))
+
+	tr.CorrectDecodeCost("c", maxCorrectedDecodeCost)
+	assert.Equal(t, maxCorrectedDecodeCost, tr.GetDecodeLoad(pod), "a cost equal to the bound is accepted")
 }
 
 // A correction racing the release of the same charge never leaves a cost
