@@ -18,6 +18,7 @@ package utils
 
 import (
 	"context"
+	"net"
 
 	"github.com/redis/go-redis/v9"
 
@@ -30,7 +31,7 @@ func GetRedisClient() *redis.Client {
 	redisPassword := LoadEnv("REDIS_PASSWORD", "")
 	// Connect to Redis
 	client := redis.NewClient(&redis.Options{
-		Addr:     redisHost + ":" + redisPort,
+		Addr:     net.JoinHostPort(redisHost, redisPort),
 		Password: redisPassword,
 		DB:       0, // Default DB
 	})

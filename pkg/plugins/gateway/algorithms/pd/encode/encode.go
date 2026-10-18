@@ -25,7 +25,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -147,8 +149,10 @@ func (e *Executor) encode(routingCtx *types.RoutingContext, pod *v1.Pod, index i
 	if err != nil {
 		return fmt.Errorf("build encode request: %w", err)
 	}
-	url := fmt.Sprintf("http://%s:%d/v1/chat/completions",
-		pod.Status.PodIP, utils.GetModelPortForPod(routingCtx.RequestID, pod))
+	url := "http://" + net.JoinHostPort(
+		pod.Status.PodIP,
+		strconv.FormatInt(utils.GetModelPortForPod(routingCtx.RequestID, pod), 10),
+	) + "/v1/chat/completions"
 
 	ctx, cancel := context.WithTimeout(routingCtx.Context, timeout)
 	defer cancel()

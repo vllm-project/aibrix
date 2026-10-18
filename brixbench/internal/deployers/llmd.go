@@ -21,8 +21,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -158,7 +160,7 @@ func (d *LLMdDeployer) GetGatewayEndpoint(ctx context.Context) (string, error) {
 	if host == "" || strings.EqualFold(host, "None") {
 		host = fmt.Sprintf("%s.%s.svc.cluster.local", service.Name, d.namespace)
 	}
-	return fmt.Sprintf("http://%s:%d", host, port), nil
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(port)), nil
 }
 
 func (d *LLMdDeployer) CaptureArtifacts(ctx context.Context) error {

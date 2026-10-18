@@ -19,6 +19,7 @@ package modeladapter
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 
@@ -120,11 +121,11 @@ func DetectRuntimeSidecar(pod *corev1.Pod) bool {
 func BuildURLs(podIP string, config config.RuntimeConfig, useSidecar bool, engineType string) URLConfig {
 	var host string
 	if config.DebugMode {
-		host = fmt.Sprintf("http://%s:%s", "localhost", DefaultDebugInferenceEnginePort)
+		host = "http://" + net.JoinHostPort("localhost", DefaultDebugInferenceEnginePort)
 	} else if useSidecar {
-		host = fmt.Sprintf("http://%s:%s", podIP, DefaultRuntimeAPIPort)
+		host = "http://" + net.JoinHostPort(podIP, DefaultRuntimeAPIPort)
 	} else {
-		host = fmt.Sprintf("http://%s:%s", podIP, DefaultInferenceEnginePort)
+		host = "http://" + net.JoinHostPort(podIP, DefaultInferenceEnginePort)
 	}
 
 	var apiPath, loadPath, unloadPath string

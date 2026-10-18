@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -349,7 +350,7 @@ func newPod(ip string, engineType string, enableSidecar bool) *corev1.Pod {
 }
 
 func mockServer(t *testing.T, ip string, port int, handler http.HandlerFunc) *httptest.Server {
-	addr := fmt.Sprintf("%s:%d", ip, port)
+	addr := net.JoinHostPort(ip, strconv.Itoa(port))
 
 	ts := httptest.NewUnstartedServer(handler)
 	_ = ts.Listener.Close()
