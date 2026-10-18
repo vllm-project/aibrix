@@ -145,6 +145,12 @@ func (e *Executor) Execute(routingCtx *types.RoutingContext, encoders []*v1.Pod,
 }
 
 func (e *Executor) encode(routingCtx *types.RoutingContext, pod *v1.Pod, index int, item string, timeout time.Duration) error {
+	if pod == nil {
+		return errors.New("encode pod is nil")
+	}
+	if pod.Status.PodIP == "" {
+		return fmt.Errorf("encode pod %s has no IP address", pod.Name)
+	}
 	payload, err := requestBody(routingCtx.ReqBody, item)
 	if err != nil {
 		return fmt.Errorf("build encode request: %w", err)

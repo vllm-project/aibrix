@@ -17,11 +17,17 @@ limitations under the License.
 package encode
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/vllm-project/aibrix/pkg/types"
 )
 
 func TestEncoderRequestCarriesOneItemVerbatim(t *testing.T) {
@@ -48,4 +54,18 @@ func TestEncoderRequestCarriesOneItemVerbatim(t *testing.T) {
 	assert.Equal(t, "1", gjson.GetBytes(req, "max_tokens").Raw)
 
 	assert.Empty(t, MediaItems([]byte(`{"messages":[{"role":"user","content":"hi"}]}`)))
+}
+
+func TestEncodeRejectsPodWithoutAddress(t *testing.T) {
+	executor := NewExecutor(nil)
+	ctx := types.NewRoutingContext(context.Background(), "test", "qwen-vl", "", "req-1", "user")
+	defer ctx.Delete()
+	ctx.ReqPath = "/v1/chat/completions"
+	ctx.ReqBody = []byte(`{"model":"qwen-vl","messages":[{"role":"user","content":"hi"}]}`)
+	item := `{"type":"image_url","image_url":{"url":"https://x/a.png"}}`
+
+	require.Error(t, executor.encode(ctx, nil, 0, item, time.Second))
+
+	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "encoder-0"}}
+	require.Error(t, executor.encode(ctx, pod, 0, item, time.Second))
 }
