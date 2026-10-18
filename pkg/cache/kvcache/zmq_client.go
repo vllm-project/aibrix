@@ -32,6 +32,11 @@ import (
 // (ZmqEventPublisher.END_SEQ in vLLM's vllm/distributed/kv_events.py).
 const replayEndSeq int64 = -1
 
+// maxPendingBatches bounds the live batches held while a sequence gap is being
+// repaired. When it is exceeded, the gap is treated as unrecoverable: the
+// cached view is cleared and the stream continues from the newest batch.
+var maxPendingBatches = 1024
+
 // ZMQClient manages ZMQ connections to vLLM KV event publishers
 type ZMQClient struct {
 	config *ZMQClientConfig
@@ -50,6 +55,29 @@ type ZMQClient struct {
 	reconnectDelay  time.Duration
 	reconnectTicker *time.Ticker
 
+	// applyMu serializes event batches so live and replayed batches are applied
+	// in one order. It is held across decode + handler + sequence update.
+	applyMu sync.Mutex
+	// lastLiveSeq tracks observed live traffic independently of applied replay
+	// progress, so a held gap or its replay is not counted more than once.
+	// Guarded by applyMu.
+	lastLiveSeq int64
+
+	// replayInFlight prevents concurrent replay requests on the single replay
+	// socket. Guarded by mu.
+	replayInFlight bool
+
+	// replayWg tracks background replay goroutines. stopped is set by Stop so
+	// no new background replay starts once shutdown began. Both are guarded by
+	// mu; Stop waits replayWg before closing the sockets.
+	replayWg sync.WaitGroup
+	stopped  bool
+
+	// pending holds live batches that arrived ahead of lastSeq+1 until the
+	// missing sequences are replayed or the gap is declared unrecoverable.
+	// Guarded by applyMu.
+	pending map[int64][]byte
+
 	// Lifecycle
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -67,6 +95,7 @@ func NewZMQClient(config *ZMQClientConfig, handler EventHandler) *ZMQClient {
 		config:         config,
 		eventHandler:   handler,
 		lastSeq:        -1,
+		lastLiveSeq:    -1,
 		reconnectDelay: config.ReconnectDelay,
 		ctx:            ctx,
 		cancel:         cancel,
@@ -160,9 +189,12 @@ func (c *ZMQClient) Start() error {
 	}
 
 	// Request full replay on startup
-	if err := c.requestReplay(0); err != nil {
+	if _, err := c.requestReplay(0); err != nil {
 		klog.Warningf("Failed to request initial replay for %s: %v", c.config.PodKey, err)
-		// Don't fail startup if replay fails
+		// Retry in the background: without the replay the index misses every
+		// batch published before the subscription, and the consumer only
+		// retries on reconnect.
+		c.retryReplayAsync(0, 3)
 	}
 
 	// Start event consumption goroutine
@@ -178,10 +210,14 @@ func (c *ZMQClient) Stop() {
 	klog.Infof("Stopping ZMQ client for pod %s", c.config.PodKey)
 
 	// Cancel context to signal shutdown
+	c.mu.Lock()
+	c.stopped = true
+	c.mu.Unlock()
 	c.cancel()
 
-	// Wait for goroutines to finish
+	// Wait for goroutines to finish before closing the sockets they use.
 	c.wg.Wait()
+	c.replayWg.Wait()
 
 	// Clean up sockets
 	c.mu.Lock()
@@ -259,13 +295,13 @@ func (c *ZMQClient) handleReconnect() {
 		return
 	}
 
-	// Request replay from last known sequence
-	lastSeq := c.GetLastSequence()
-	if lastSeq >= 0 {
-		if err := c.requestReplay(lastSeq + 1); err != nil {
-			klog.Warningf("Failed to request replay after reconnect for %s: %v", c.config.PodKey, err)
-		}
+	// Replay from the next missing sequence. This also retries a first replay
+	// that failed at startup, when lastSeq is still -1.
+	from := c.GetLastSequence() + 1
+	if from < 0 {
+		from = 0
 	}
+	c.requestReplayAsync(from)
 }
 
 // consumeEvents is the core event processing loop
@@ -337,19 +373,7 @@ func (c *ZMQClient) processMessage() error {
 	}
 	seq := int64(binary.BigEndian.Uint64(seqBytes))
 
-	// Check for missed events
-	c.mu.RLock()
-	lastSeq := c.lastSeq
-	c.mu.RUnlock()
-
-	if lastSeq >= 0 && seq > lastSeq+1 {
-		missedCount := seq - lastSeq - 1
-		klog.Warningf("Missed %d events for %s (last=%d, current=%d)",
-			missedCount, c.config.PodKey, lastSeq, seq)
-		c.metrics.IncrementMissedEvents(missedCount)
-	}
-
-	numEvents, err := c.applyEventBatch(seq, payload)
+	numEvents, err := c.applyEventBatch(seq, payload, false)
 	if err != nil {
 		return err
 	}
@@ -361,20 +385,171 @@ func (c *ZMQClient) processMessage() error {
 }
 
 // applyEventBatch decodes an event batch, hands its events to the event
-// handler and records seq as the last processed sequence. Live and replayed
-// batches both go through it. A batch that fails to decode is not applied and
-// leaves lastSeq unchanged.
-func (c *ZMQClient) applyEventBatch(seq int64, payload []byte) (int, error) {
-	// Decode event batch with metadata
+// handler and records seq as the last processed sequence. A batch that fails
+// to decode is not applied and leaves lastSeq unchanged.
+//
+// The apply is guarded so the event view stays consistent with the publisher:
+// a replayed batch at or below lastSeq is a duplicate and is dropped, a live
+// batch at sequence 0 after prior traffic conservatively resets the view,
+// and a live batch beyond lastSeq+1 asks for the missing batches, including
+// at cold start. Replay can begin at the publisher buffer's oldest batch when
+// no batch has been applied yet. Sequence numbers advance within each stream.
+func (c *ZMQClient) applyEventBatch(seq int64, payload []byte, replay bool) (int, error) {
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+
+	lastSeq := c.GetLastSequence()
+	if !replay && seq == 0 && (lastSeq >= 0 || c.lastLiveSeq >= 0) {
+		// vLLM uses count() starting at zero. Without a publisher epoch,
+		// a duplicated live zero cannot be distinguished from a restart;
+		// clearing is safer than retaining the previous engine's view.
+		// Prior traffic includes cold-start batches held pending replay.
+		c.resetEventStreamLocked()
+		lastSeq = -1
+	} else if lastSeq >= 0 && seq <= lastSeq {
+		klog.V(5).Infof("Skipping duplicate or stale event batch %d from %s (last=%d)",
+			seq, c.config.PodKey, lastSeq)
+		return 0, nil
+	}
+	if !replay {
+		observed := max(lastSeq, c.lastLiveSeq)
+		if seq > observed+1 {
+			missedCount := seq - observed - 1
+			klog.Warningf("Missed %d events for %s (last live/applied=%d, current=%d)",
+				missedCount, c.config.PodKey, observed, seq)
+			c.metrics.IncrementMissedEvents(missedCount)
+		}
+		c.lastLiveSeq = max(c.lastLiveSeq, seq)
+	}
+	if seq > lastSeq+1 && (!replay || lastSeq >= 0) {
+		if !c.bufferPendingLocked(seq, payload) {
+			// The gap outgrew the buffer. Clear the untrusted view and
+			// continue from this batch instead of dropping every later one.
+			klog.Warningf("Sequence gap for %s outgrew the buffer; resetting the cached view",
+				c.config.PodKey)
+			c.clearCachedViewLocked()
+			c.setLastSequence(seq - 1)
+			c.pending = nil
+		} else {
+			c.requestReplayAsync(lastSeq + 1)
+			return 0, nil
+		}
+	}
+
+	numEvents, err := c.handleEventBatch(payload)
+	if err != nil {
+		return 0, err
+	}
+	c.setLastSequence(seq)
+	numEvents += c.drainPendingLocked()
+	return numEvents, nil
+}
+
+// bufferPendingLocked holds an out-of-order batch until the missing sequences
+// arrive. It reports false when the buffer is full. Callers hold applyMu.
+func (c *ZMQClient) bufferPendingLocked(seq int64, payload []byte) bool {
+	if c.pending == nil {
+		c.pending = make(map[int64][]byte)
+	}
+	if len(c.pending) >= maxPendingBatches {
+		return false
+	}
+	c.pending[seq] = payload
+	return true
+}
+
+// drainPendingLocked applies buffered batches that became contiguous once
+// lastSeq advanced, and drops entries the replay already applied. Callers hold
+// applyMu.
+func (c *ZMQClient) drainPendingLocked() int {
+	if len(c.pending) == 0 {
+		return 0
+	}
+	applied := 0
+	for {
+		lastSeq := c.GetLastSequence()
+		for seq := range c.pending {
+			if seq <= lastSeq {
+				delete(c.pending, seq)
+			}
+		}
+		payload, ok := c.pending[lastSeq+1]
+		if !ok {
+			return applied
+		}
+		numEvents, err := c.handleEventBatch(payload)
+		if err != nil {
+			klog.Errorf("Failed to apply buffered event batch %d from %s: %v",
+				lastSeq+1, c.config.PodKey, err)
+			return applied
+		}
+		delete(c.pending, lastSeq+1)
+		c.setLastSequence(lastSeq + 1)
+		applied += numEvents
+	}
+}
+
+// recoverStalledGap runs after a replay: if a gap is still open, the publisher
+// could not supply the missing batches. Clear the cached view, because it can
+// no longer be trusted, and continue from the oldest buffered batch.
+func (c *ZMQClient) recoverStalledGap() {
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+
+	if len(c.pending) == 0 {
+		return
+	}
+	minSeq := int64(-1)
+	for seq := range c.pending {
+		if minSeq < 0 || seq < minSeq {
+			minSeq = seq
+		}
+	}
+	if minSeq <= c.GetLastSequence()+1 {
+		return
+	}
+	klog.Warningf("Sequence gap for %s could not be replayed; resetting the cached view",
+		c.config.PodKey)
+	c.clearCachedViewLocked()
+	c.setLastSequence(minSeq - 1)
+	c.drainPendingLocked()
+}
+
+// clearCachedViewLocked tells the handler to drop every prefix cached for this
+// pod. Callers hold applyMu.
+func (c *ZMQClient) clearCachedViewLocked() {
+	event := &AllBlocksClearedEvent{
+		Type:      EventTypeAllCleared,
+		Timestamp: time.Now(),
+		ModelName: c.config.ModelName,
+		PodName:   c.config.PodKey,
+	}
+	if err := c.eventHandler.HandleEvent(event); err != nil {
+		klog.Errorf("Failed to clear the cached view of %s: %v", c.config.PodKey, err)
+	}
+}
+
+// resetEventStreamLocked starts a new sequence space after a publisher restart.
+// Callers hold applyMu.
+func (c *ZMQClient) resetEventStreamLocked() {
+	klog.Warningf("KV event publisher %s restarted; resetting sequence and cached view",
+		c.config.PodKey)
+	c.pending = nil
+	c.lastLiveSeq = -1
+	c.clearCachedViewLocked()
+	c.setLastSequence(-1)
+}
+
+// handleEventBatch decodes one batch and hands its events to the handler
+// without touching the sequence state.
+func (c *ZMQClient) handleEventBatch(payload []byte) (int, error) {
 	batch, err := DecodeEventBatch(payload, c.config.ModelName, c.config.PodKey)
 	if err != nil {
 		c.metrics.IncrementErrorCount("decode")
 		return 0, fmt.Errorf("failed to decode event batch: %w", err)
 	}
 
-	// Process each event
 	for _, event := range batch.Events {
-		// Handle the event
 		startTime := time.Now()
 		if err := c.eventHandler.HandleEvent(event); err != nil {
 			klog.Errorf("Failed to handle event from %s: %v", c.config.PodKey, err)
@@ -384,26 +559,116 @@ func (c *ZMQClient) applyEventBatch(seq int64, payload []byte) (int, error) {
 			c.metrics.IncrementEventCount(string(event.GetType()))
 		}
 	}
-
-	// Update sequence
-	c.mu.Lock()
-	c.lastSeq = seq
-	c.mu.Unlock()
-
 	return len(batch.Events), nil
 }
 
+func (c *ZMQClient) setLastSequence(seq int64) {
+	c.mu.Lock()
+	c.lastSeq = seq
+	c.mu.Unlock()
+}
+
+// requestReplayAsync asks the publisher for the batches missing after fromSeq
+// without blocking the event path.
+func (c *ZMQClient) requestReplayAsync(fromSeq int64) {
+	c.mu.Lock()
+	if c.stopped {
+		c.mu.Unlock()
+		return
+	}
+	c.replayWg.Add(1)
+	c.mu.Unlock()
+
+	go func() {
+		defer c.replayWg.Done()
+		_, ran, err := c.runReplay(fromSeq)
+		if err != nil {
+			klog.Warningf("Replay from seq %d failed for %s: %v",
+				fromSeq, c.config.PodKey, err)
+		}
+		if ran {
+			// The replay may have applied the missing batches or may have
+			// found nothing; only the guard knows whether a gap is still open.
+			c.recoverStalledGap()
+		}
+	}()
+}
+
+// retryReplayAsync runs retryReplay in a tracked goroutine so Stop cannot close
+// the replay socket under it.
+func (c *ZMQClient) retryReplayAsync(fromSeq int64, attempts int) {
+	c.mu.Lock()
+	if c.stopped {
+		c.mu.Unlock()
+		return
+	}
+	c.replayWg.Add(1)
+	c.mu.Unlock()
+
+	go func() {
+		defer c.replayWg.Done()
+		c.retryReplay(fromSeq, attempts)
+	}()
+}
+
+// runReplay serializes replay requests on the single replay socket. ran reports
+// whether this call owned the socket; a call that found another replay in
+// flight returns ran=false and must not interpret applied=0.
+func (c *ZMQClient) runReplay(fromSeq int64) (applied int, ran bool, err error) {
+	c.mu.Lock()
+	if c.replayInFlight || c.replaySocket == nil {
+		c.mu.Unlock()
+		return 0, false, nil
+	}
+	c.replayInFlight = true
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.replayInFlight = false
+		c.mu.Unlock()
+	}()
+
+	applied, err = c.requestReplay(fromSeq)
+	return applied, true, err
+}
+
+// retryReplay retries a failed replay with the reconnect delay between
+// attempts, so a first replay that failed at startup is not lost.
+func (c *ZMQClient) retryReplay(fromSeq int64, attempts int) {
+	for i := 0; i < attempts; i++ {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-time.After(c.config.ReconnectDelay):
+		}
+		_, ran, err := c.runReplay(fromSeq)
+		if err == nil && ran {
+			c.recoverStalledGap()
+			return
+		}
+		if err != nil {
+			klog.Warningf("Replay retry %d/%d from seq %d failed for %s: %v",
+				i+1, attempts, fromSeq, c.config.PodKey, err)
+			continue
+		}
+		// Another replay owned the socket; this attempt did not run, so keep
+		// retrying instead of reporting a success that never happened.
+		klog.V(4).Infof("Replay retry %d/%d from seq %d skipped for %s: replay in flight",
+			i+1, attempts, fromSeq, c.config.PodKey)
+	}
+}
+
 // requestReplay asks the publisher to resend its buffered batches from fromSeq
-// on and applies them. vLLM's ZmqEventPublisher._service_replay answers with
-// one message per buffered batch with sequence >= fromSeq, then an end marker
-// with sequence END_SEQ (-1).
-func (c *ZMQClient) requestReplay(fromSeq int64) error {
+// on and applies them. It returns the number of batches applied. vLLM's
+// ZmqEventPublisher._service_replay answers with one message per buffered batch
+// with sequence >= fromSeq, then an end marker with sequence END_SEQ (-1).
+func (c *ZMQClient) requestReplay(fromSeq int64) (int, error) {
 	c.mu.RLock()
 	socket := c.replaySocket
 	c.mu.RUnlock()
 
 	if socket == nil {
-		return fmt.Errorf("replay socket is nil")
+		return 0, fmt.Errorf("replay socket is nil")
 	}
 
 	// Prepare replay request
@@ -415,7 +680,7 @@ func (c *ZMQClient) requestReplay(fromSeq int64) error {
 	// Send replay request as multipart message: [empty_delimiter, start_seq_bytes]
 	if _, err := socket.SendMessage([]byte{}, reqData); err != nil {
 		c.metrics.IncrementReplayFailure()
-		return fmt.Errorf("failed to send replay request: %w", err)
+		return 0, fmt.Errorf("failed to send replay request: %w", err)
 	}
 	c.metrics.IncrementReplayCount()
 
@@ -425,12 +690,12 @@ func (c *ZMQClient) requestReplay(fromSeq int64) error {
 		// The rest of this reply can still arrive. Replace the socket so that
 		// it is not read as the reply to the next request.
 		c.resetReplaySocket(socket)
-		return fmt.Errorf("replay from seq %d stopped after %d batches: %w", fromSeq, applied, err)
+		return applied, fmt.Errorf("replay from seq %d stopped after %d batches: %w", fromSeq, applied, err)
 	}
 
 	klog.Infof("Replayed %d event batches from seq %d for %s", applied, fromSeq, c.config.PodKey)
 	c.metrics.IncrementReplaySuccess()
-	return nil
+	return applied, nil
 }
 
 // receiveReplay reads replay messages until the end marker and applies each
@@ -477,7 +742,7 @@ func (c *ZMQClient) receiveReplay(socket *zmq.Socket) (int, error) {
 			continue
 		}
 
-		if _, err := c.applyEventBatch(seq, payload); err != nil {
+		if _, err := c.applyEventBatch(seq, payload, true); err != nil {
 			return applied, err
 		}
 		applied++
