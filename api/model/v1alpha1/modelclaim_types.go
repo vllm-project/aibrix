@@ -23,6 +23,15 @@ import (
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+// ModelClaimPreemptionPolicy controls whether a ModelClaim may preempt other
+// claims when it cannot be placed directly.
+type ModelClaimPreemptionPolicy string
+
+const (
+	ModelClaimPreemptionNever              ModelClaimPreemptionPolicy = "Never"
+	ModelClaimPreemptionSleepLowerPriority ModelClaimPreemptionPolicy = "SleepLowerPriority"
+)
+
 // ModelClaim declares a full-model runtime attachment managed by AIBrix. The
 // backing pool may be a manually-created warm Deployment today and a richer
 // resource pool later. The controller selects a pod from the pool and asks the
@@ -83,6 +92,15 @@ type ModelClaimSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="priority is immutable; create a new ModelClaim instead"
 	Priority int32 `json:"priority,omitempty"`
+
+	// PreemptionPolicy controls whether this unplaced ModelClaim may sleep
+	// request-idle ModelClaims with a lower placement priority to make GPU room.
+	// Defaults to Never.
+	// +optional
+	// +kubebuilder:default=Never
+	// +kubebuilder:validation:Enum=Never;SleepLowerPriority
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="preemptionPolicy is immutable; create a new ModelClaim instead"
+	PreemptionPolicy ModelClaimPreemptionPolicy `json:"preemptionPolicy,omitempty"`
 
 	// EngineConfig carries engine-specific startup options. Args maps engine
 	// CLI flags to their values, e.g. {"--max-model-len": "2048"}.

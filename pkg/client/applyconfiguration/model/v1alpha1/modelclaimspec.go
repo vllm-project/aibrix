@@ -18,20 +18,22 @@ limitations under the License.
 package v1alpha1
 
 import (
+	v1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
 // ModelClaimSpecApplyConfiguration represents a declarative configuration of the ModelClaimSpec type for use
 // with apply.
 type ModelClaimSpecApplyConfiguration struct {
-	ModelName    *string                                   `json:"modelName,omitempty"`
-	PodSelector  *v1.LabelSelectorApplyConfiguration       `json:"podSelector,omitempty"`
-	ArtifactURL  *string                                   `json:"artifactURL,omitempty"`
-	Engine       *string                                   `json:"engine,omitempty"`
-	Replicas     *int32                                    `json:"replicas,omitempty"`
-	Priority     *int32                                    `json:"priority,omitempty"`
-	EngineConfig *ModelClaimEngineConfigApplyConfiguration `json:"engineConfig,omitempty"`
-	PerGPU       *ModelClaimPerGPUApplyConfiguration       `json:"perGPU,omitempty"`
+	ModelName        *string                                   `json:"modelName,omitempty"`
+	PodSelector      *v1.LabelSelectorApplyConfiguration       `json:"podSelector,omitempty"`
+	ArtifactURL      *string                                   `json:"artifactURL,omitempty"`
+	Engine           *string                                   `json:"engine,omitempty"`
+	Replicas         *int32                                    `json:"replicas,omitempty"`
+	Priority         *int32                                    `json:"priority,omitempty"`
+	PreemptionPolicy *v1alpha1.ModelClaimPreemptionPolicy      `json:"preemptionPolicy,omitempty"`
+	EngineConfig     *ModelClaimEngineConfigApplyConfiguration `json:"engineConfig,omitempty"`
+	PerGPU           *ModelClaimPerGPUApplyConfiguration       `json:"perGPU,omitempty"`
 }
 
 // ModelClaimSpecApplyConfiguration constructs a declarative configuration of the ModelClaimSpec type for use with
@@ -85,6 +87,14 @@ func (b *ModelClaimSpecApplyConfiguration) WithReplicas(value int32) *ModelClaim
 // If called multiple times, the Priority field is set to the value of the last call.
 func (b *ModelClaimSpecApplyConfiguration) WithPriority(value int32) *ModelClaimSpecApplyConfiguration {
 	b.Priority = &value
+	return b
+}
+
+// WithPreemptionPolicy sets the PreemptionPolicy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the PreemptionPolicy field is set to the value of the last call.
+func (b *ModelClaimSpecApplyConfiguration) WithPreemptionPolicy(value v1alpha1.ModelClaimPreemptionPolicy) *ModelClaimSpecApplyConfiguration {
+	b.PreemptionPolicy = &value
 	return b
 }
 
