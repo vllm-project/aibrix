@@ -528,10 +528,19 @@ func TestTokenizerPoolMovesOffAPodThatLeft(t *testing.T) {
 	defer func() { assert.NoError(t, pool.Close()) }()
 
 	first := pool.GetTokenizer("m", pods)
-	assert.Equal(t, endpoints[0], first.(interface{ GetEndpoint() string }).GetEndpoint())
-	// pod-a is deleted, so routing now only sees pod-b.
-	moved := pool.GetTokenizer("m", pods[1:])
-	assert.Equal(t, endpoints[1], moved.(interface{ GetEndpoint() string }).GetEndpoint())
+	firstEndpoint := first.(interface{ GetEndpoint() string }).GetEndpoint()
+	assert.Contains(t, endpoints, firstEndpoint)
+	// The selected pod is deleted, so routing only sees the other one.
+	var remaining []*v1.Pod
+	for i, endpoint := range endpoints {
+		if endpoint != firstEndpoint {
+			remaining = append(remaining, pods[i])
+		}
+	}
+	moved := pool.GetTokenizer("m", remaining)
+	movedEndpoint := moved.(interface{ GetEndpoint() string }).GetEndpoint()
+	assert.NotEqual(t, firstEndpoint, movedEndpoint)
+	assert.Contains(t, endpoints, movedEndpoint)
 	assert.Len(t, pool.tokenizers, 1)
 }
 
@@ -926,6 +935,26 @@ func TestLoadTokenizerPoolConfigFromEnvFixedEndpoint(t *testing.T) {
 		t.Setenv(constants.EnvPrefixCacheRemoteTokenizerEndpoint, "http://tokenizer-service:8000")
 		assert.Equal(t, "http://tokenizer-service:8000", loadTokenizerPoolConfigFromEnv().FixedEndpoint)
 	})
+}
+
+// TestFindVLLMEndpointPicksARandomCandidatePod checks that pod discovery
+// spreads tokenize calls across the model's pods instead of pinning every
+// call to the first match.
+func TestFindVLLMEndpointPicksARandomCandidatePod(t *testing.T) {
+	pool := &TokenizerPool{config: TokenizerPoolConfig{EndpointTemplate: "http://%s:8000"}}
+	var pods []*v1.Pod
+	for _, name := range []string{"pod-a", "pod-bb", "pod-ccc"} {
+		pod := createTestPod(name, "llama2-7b", "vllm", true)
+		pods = append(pods, &pod)
+	}
+
+	seen := map[string]bool{}
+	for i := 0; i < 50; i++ {
+		_, podIP := pool.findVLLMEndpointForModel("llama2-7b", pods)
+		assert.NotEmpty(t, podIP)
+		seen[podIP] = true
+	}
+	assert.Len(t, seen, 3)
 }
 
 // TestTokenizerPoolBacksOffAFailedEndpoint checks that once an endpoint fails

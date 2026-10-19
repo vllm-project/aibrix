@@ -19,6 +19,7 @@ package prefixcache
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -487,7 +488,11 @@ func (p *TokenizerPool) findVLLMEndpointForModel(model string, pods []*v1.Pod) (
 		return service, ""
 	}
 
-	// 3. Direct pod endpoint
+	// 3. Direct pod endpoint. Pick a random candidate rather than the first
+	// match: an entry lives until its pod leaves the ready set or turns
+	// unhealthy, so a deterministic pick would pin every tokenize call of the
+	// model to one pod indefinitely.
+	var candidates []string
 	for _, pod := range pods {
 		if !isPodReady(pod) {
 			continue
@@ -504,10 +509,13 @@ func (p *TokenizerPool) findVLLMEndpointForModel(model string, pods []*v1.Pod) (
 			continue
 		}
 
-		return fmt.Sprintf(p.config.EndpointTemplate, pod.Status.PodIP), pod.Status.PodIP
+		candidates = append(candidates, pod.Status.PodIP)
 	}
-
-	return "", ""
+	if len(candidates) == 0 {
+		return "", ""
+	}
+	podIP = candidates[rand.Intn(len(candidates))]
+	return fmt.Sprintf(p.config.EndpointTemplate, podIP), podIP
 }
 
 // getModelFromPod extracts model information from pod
