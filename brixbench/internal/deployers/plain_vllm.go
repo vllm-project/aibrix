@@ -19,7 +19,9 @@ package deployers
 import (
 	"context"
 	"fmt"
+	"net"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -97,7 +99,7 @@ func (d *PlainVLLMDeployer) GetGatewayEndpoint(ctx context.Context) (string, err
 	if err != nil || strings.TrimSpace(strings.Trim(ip, "'")) == "" {
 		return "", fmt.Errorf("failed to resolve plain vLLM service IP: %v", err)
 	}
-	return fmt.Sprintf("http://%s:%d", strings.Trim(ip, "'\n "), plainVLLMServicePort), nil
+	return "http://" + net.JoinHostPort(strings.Trim(ip, "'\n "), strconv.Itoa(plainVLLMServicePort)), nil
 }
 
 func (d *PlainVLLMDeployer) CaptureArtifacts(ctx context.Context) error {

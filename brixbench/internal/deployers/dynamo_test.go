@@ -220,10 +220,16 @@ func dynamoServiceListJSON(items string) string {
 }
 
 func dynamoServiceJSON(name string, ports ...int) string {
+	return dynamoServiceJSONWithIP(name, "10.96.0.42", ports...)
+}
+
+func dynamoServiceJSONWithIP(name, ip string, ports ...int) string {
 	var b strings.Builder
 	b.WriteString(`{"metadata":{"name":"`)
 	b.WriteString(name)
-	b.WriteString(`"},"spec":{"clusterIP":"10.96.0.42","ports":[`)
+	b.WriteString(`"},"spec":{"clusterIP":"`)
+	b.WriteString(ip)
+	b.WriteString(`","ports":[`)
 	for i, port := range ports {
 		if i > 0 {
 			b.WriteString(",")
@@ -1055,6 +1061,26 @@ func TestDynamoDeployerGetGatewayEndpointDiscoversFrontendServiceByLabel(t *test
 	}
 	if !reflect.DeepEqual(runner.calls[0].args, wantArgs) {
 		t.Fatalf("expected args %v, got %v", wantArgs, runner.calls[0].args)
+	}
+}
+
+func TestDynamoDeployerGetGatewayEndpointBracketsIPv6ServiceIP(t *testing.T) {
+	runner := &fakeCommandRunner{
+		output: dynamoServiceListJSON(dynamoServiceJSONWithIP("vllm-dynamo-frontend", "2001:db8::42", 8080, 8000)),
+	}
+	deployer := &DynamoDeployer{
+		graphName:   "vllm-dynamo",
+		effectiveNS: "brixbench-dynamo",
+		runner:      runner,
+	}
+
+	endpoint, err := deployer.GetGatewayEndpoint(context.Background())
+	if err != nil {
+		t.Fatalf("GetGatewayEndpoint returned error: %v", err)
+	}
+	wantEndpoint := "http://[2001:db8::42]:8000"
+	if endpoint != wantEndpoint {
+		t.Fatalf("expected endpoint %s, got %s", wantEndpoint, endpoint)
 	}
 }
 

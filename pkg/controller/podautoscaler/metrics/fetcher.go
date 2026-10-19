@@ -19,6 +19,7 @@ package metrics
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
@@ -91,7 +92,7 @@ func (f *RestMetricsFetcher) fetchFromPod(ctx context.Context, pod v1.Pod, sourc
 		"metric", source.TargetMetric)
 
 	// Use real pod information instead of fake pod creation
-	endpoint := fmt.Sprintf("%s:%s", pod.Status.PodIP, source.Port)
+	endpoint := net.JoinHostPort(pod.Status.PodIP, source.Port)
 	engineType := metrics.GetEngineType(pod)
 	identifier := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
 

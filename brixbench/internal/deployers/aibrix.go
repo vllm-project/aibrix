@@ -476,7 +476,7 @@ func (d *AIBrixDeployer) GetGatewayEndpoint(ctx context.Context) (string, error)
 	if strings.TrimSpace(ip) == "" {
 		return "", fmt.Errorf("failed to resolve %s/%s service IP", namespace, serviceName)
 	}
-	return fmt.Sprintf("http://%s:%s", strings.Trim(ip, "'\n "), port), nil
+	return "http://" + net.JoinHostPort(strings.Trim(ip, "'\n "), port), nil
 }
 
 func (d *AIBrixDeployer) CaptureArtifacts(ctx context.Context) error {
