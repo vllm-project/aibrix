@@ -387,6 +387,16 @@ func TestTokenizerPoolGetTokenizer(t *testing.T) {
 		endpoint, _ := pool.findVLLMEndpointForModel("llama2-7b", pods)
 		assert.Equal(t, "http://llama-service:8000", endpoint)
 	})
+
+	t.Run("fixed endpoint takes precedence over service map and pods", func(t *testing.T) {
+		pool.config.FixedEndpoint = "http://tokenizer-service:8000"
+		defer func() { pool.config.FixedEndpoint = "" }()
+
+		pod := createTestPod("pod1", "llama2-7b", "vllm", true)
+		endpoint, podIP := pool.findVLLMEndpointForModel("llama2-7b", []*v1.Pod{&pod})
+		assert.Equal(t, "http://tokenizer-service:8000", endpoint)
+		assert.Empty(t, podIP, "a fixed endpoint is not pinned to a pod, so pod churn must not replace it")
+	})
 }
 
 func TestTokenizerPoolHealthCheck(t *testing.T) {
@@ -904,6 +914,18 @@ func TestLoadTokenizerPoolConfigFromEnvNonDurationDefaults(t *testing.T) {
 	assert.Equal(t, 100, cfg.MaxTokenizersPerPool)
 	assert.Nil(t, cfg.DefaultTokenizer)
 	assert.NotNil(t, cfg.ModelServiceMap)
+}
+
+// TestLoadTokenizerPoolConfigFromEnvFixedEndpoint pins the wiring of
+// AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT into the pool config.
+func TestLoadTokenizerPoolConfigFromEnvFixedEndpoint(t *testing.T) {
+	t.Run("unset leaves FixedEndpoint empty", func(t *testing.T) {
+		assert.Empty(t, loadTokenizerPoolConfigFromEnv().FixedEndpoint)
+	})
+	t.Run("set configures FixedEndpoint", func(t *testing.T) {
+		t.Setenv(constants.EnvPrefixCacheRemoteTokenizerEndpoint, "http://tokenizer-service:8000")
+		assert.Equal(t, "http://tokenizer-service:8000", loadTokenizerPoolConfigFromEnv().FixedEndpoint)
+	})
 }
 
 // TestTokenizerPoolBacksOffAFailedEndpoint checks that once an endpoint fails

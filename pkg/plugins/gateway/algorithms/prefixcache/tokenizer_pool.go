@@ -43,6 +43,7 @@ type TokenizerPoolConfig struct {
 	TokenizerTTL         time.Duration       // Default: 5m
 	MaxTokenizersPerPool int                 // Default: 100
 	DefaultTokenizer     tokenizer.Tokenizer // Default when remote fails
+	FixedEndpoint        string              // Used for every model, ahead of ModelServiceMap and pod discovery
 	ModelServiceMap      map[string]string   // Model -> Service endpoint mapping
 	Timeout              time.Duration       // Request timeout
 }
@@ -475,12 +476,18 @@ func (p *TokenizerPool) createRetryBackoff() time.Duration {
 // findVLLMEndpointForModel finds the vLLM endpoint for a specific model
 func (p *TokenizerPool) findVLLMEndpointForModel(model string, pods []*v1.Pod) (endpoint, podIP string) {
 	// Priority order for endpoint discovery:
-	// 1. Service endpoint (if configured)
+	// 1. Fixed endpoint (AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT), e.g. a
+	// Service that load-balances tokenize calls across replicas.
+	if p.config.FixedEndpoint != "" {
+		return p.config.FixedEndpoint, ""
+	}
+
+	// 2. Service endpoint (if configured)
 	if service, exists := p.config.ModelServiceMap[model]; exists {
 		return service, ""
 	}
 
-	// 2. Direct pod endpoint
+	// 3. Direct pod endpoint
 	for _, pod := range pods {
 		if !isPodReady(pod) {
 			continue
