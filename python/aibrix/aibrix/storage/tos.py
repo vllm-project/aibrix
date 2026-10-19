@@ -86,27 +86,33 @@ class TOSStorage(BaseStorage2):
         # Unify all data types using Reader wrapper
         reader = self._wrap_data(data)
 
-        # Check if we should use multipart upload
         try:
-            size = reader.get_size()
-        except (OSError, IOError, ValueError):
-            # Can't determine size, give up multipart upload
-            pass
-        else:
-            if size >= self.config.multipart_threshold:
-                # Explicit chunking avoids the base class's fallback to put_object.
-                await self.multipart_upload(
-                    key,
-                    reader,
-                    content_type,
-                    metadata,
-                    bysize=self.config.multipart_threshold,
-                )
-                return True
+            # Check if we should use multipart upload
+            try:
+                size = reader.get_size()
+            except (OSError, IOError, ValueError):
+                # Can't determine size, give up multipart upload
+                pass
+            else:
+                if size >= self.config.multipart_threshold:
+                    # Explicit chunking avoids the base class's fallback to put_object.
+                    await self.multipart_upload(
+                        key,
+                        reader,
+                        content_type,
+                        metadata,
+                        bysize=self.config.multipart_threshold,
+                    )
+                    return True
 
-        # For small files, read all data and upload directly as BytesIO
-        # TOS client has issues with custom file-like objects for CRC calculation
-        file_content = reader.read_all()
+            # For small files, read all data and upload directly as BytesIO
+            # TOS client has issues with custom file-like objects for CRC calculation
+            file_content = reader.read_all()
+        finally:
+            # Close only the wrapper we created, including on multipart failures.
+            if not isinstance(data, Reader):
+                reader.close()
+
         tos_content = BytesIO(file_content)
 
         put_kwargs = {
@@ -128,10 +134,6 @@ class TOSStorage(BaseStorage2):
                 raise ValueError(f"Failed to put object {key}: {e}")
 
         await asyncio.get_event_loop().run_in_executor(None, _put_object)
-
-        # Close the reader if we created it
-        if not isinstance(data, Reader):
-            reader.close()
 
         return True  # TOS storage always succeeds
 
