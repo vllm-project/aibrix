@@ -178,6 +178,7 @@ func (r *ModelClaimReconciler) planSleepPreemption(
 		return nil, fmt.Errorf("invalid engineConfig parallelism: %w", err)
 	}
 	seat := perGPU.minimumReserveBytes()
+	held, holding := r.reservations().preemptionHeldFor(pm.Namespace, pm.Name, r.now())
 	var best *sleepPreemptionPlan
 	for i := range candidates {
 		pod := &candidates[i]
@@ -189,7 +190,9 @@ func (r *ModelClaimReconciler) planSleepPreemption(
 		if ledger.maximumRoomBytes() >= seat && ledger.heldRoomBytes() >= seat {
 			continue
 		}
-		if _, can := r.roomCanBeMadeOn(ctx, pm, pod, ledger); !can || r.wakeWaitsOn(ctx, pod, ledger, readings) {
+		ownsPreemptionReservation := holding && held.Name == pod.Name
+		if _, can := r.roomCanBeMadeOn(ctx, pm, pod, ledger); !can ||
+			(!ownsPreemptionReservation && r.wakeWaitsOn(ctx, pod, ledger, readings)) {
 			continue
 		}
 		victims := r.sleepPreemptionVictims(ctx, pm, pod, claims, readings)

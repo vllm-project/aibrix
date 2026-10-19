@@ -388,6 +388,7 @@ func (r *ModelClaimReconciler) handleActivationError(
 	if uerr := r.Status().Update(ctx, pm); uerr != nil {
 		return requeueOnConflict(uerr)
 	}
+	r.reservations().release(claimKey.Namespace, claimKey.Name)
 	// A card divided for an engine that then did not start has lost that
 	// engine again. Divide it now, so its neighbours get back the room
 	// they gave up for it. The cache may still show the record that
@@ -720,6 +721,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 	claims, listErr := r.listClaimsForAccount(ctx, pm.Namespace)
 	ledgers := podLedgersFrom(claims, listErr, candidates, snapshots, r.podsWithoutWakeReserve(ctx, candidates))
 	r.reservations().takeFrom(ledgers, pm.Namespace, pm.Name, r.now())
+	r.reservations().keepWakesOutOfPreemption(ledgers, pm.Namespace, pm.Name, r.now())
 	if len(pm.Status.Instances) == 0 {
 		if listErr != nil {
 			return 0, placementAdmissionReadError{err: listErr}

@@ -297,6 +297,25 @@ func TestPrioritySleepUnknownFootprintRefreshesAndReplans(t *testing.T) {
 	assert.Len(t, runtime.sleepCalls, 2, "the next pass replans from measured room")
 }
 
+func TestPreemptionReservationSurvivesVictimWakeRequest(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+	setClaimPriority(t, r, "a", 1)
+	setClaimPriority(t, r, "b", 1)
+	newPrioritySleepClaim(t, r, "preemptor", 10, at0759)
+	reconcileOnce(t, r, "preemptor")
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
+	askWake(t, r, "warm-1", "a", "2026-10-01T08:00:06Z")
+
+	reconcileOnce(t, r, "preemptor")
+
+	require.Len(t, runtime.activateCalls, 1, "the victim's wake request cannot cancel room reserved for the preemptor")
+	assert.Equal(t, "preemptor", runtime.activateCalls[0].ModelName)
+	_, held := r.reservations().heldFor(testNamespace, "preemptor", r.now())
+	assert.False(t, held, "successful activation releases the reservation")
+}
+
 func TestPrioritySleepRestartReplansWithoutDurableOwnership(t *testing.T) {
 	r, runtime := servingPool(t, keepNoWakeReserve, 1,
 		serving{"a", "warm-1", 280, 50, at0758},
@@ -366,6 +385,43 @@ func TestPreemptionSleepFailureLetsLaterFeasibleClaimProceed(t *testing.T) {
 	require.Len(t, runtime.activateCalls, 1)
 	assert.Equal(t, "low", runtime.activateCalls[0].ModelName)
 	assert.Empty(t, getModel(t, r, "high").Status.Instances)
+}
+
+func TestInfeasiblePrioritySleepPredecessorDoesNotBlockNeverMakeRoom(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"resident-a", "warm-1", 300, 100, at0758}, serving{"resident-b", "warm-1", 300, 100, at0759})
+	setClaimPriority(t, r, "resident-a", 20)
+	setClaimPriority(t, r, "resident-b", 20)
+	high := priorityTestClaim("high", 10, at0758)
+	high.Spec.PreemptionPolicy = modelv1alpha1.ModelClaimPreemptionSleepLowerPriority
+	low := priorityTestClaim("low", 0, at0759)
+	low.Spec.PreemptionPolicy = modelv1alpha1.ModelClaimPreemptionNever
+	require.NoError(t, r.Create(context.Background(), withFinalizer(high)))
+	require.NoError(t, r.Create(context.Background(), withFinalizer(low)))
+
+	reconcileOnce(t, r, low.Name)
+
+	require.Len(t, runtime.sleepCalls, 1, "the infeasible policy-specific predecessor must not keep the ordinary claimant's turn")
+	assert.Equal(t, scheduledReasonMakingRoom, scheduledOf(t, r, low.Name).Reason)
+}
+
+func TestPreemptionActivationFailureReleasesReservationForVictimWake(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+	setClaimPriority(t, r, "a", 1)
+	setClaimPriority(t, r, "b", 1)
+	newPrioritySleepClaim(t, r, "preemptor", 10, at0759)
+	reconcileOnce(t, r, "preemptor")
+	require.Len(t, runtime.sleepCalls, 1)
+	runtime.failActivate = true
+
+	reconcileOnce(t, r, "preemptor")
+
+	_, held := r.reservations().heldFor(testNamespace, "preemptor", r.now())
+	assert.False(t, held, "a definitive activation failure no longer owns reclaimed room")
+	askWake(t, r, "warm-1", "a", "2026-10-01T08:00:06Z")
+	reconcileOnce(t, r, "a")
+	assert.Len(t, runtime.wakeCalls, 1, "normal wake admission resumes after activation failure")
 }
 
 func TestPrioritySleepMakingRoomDoesNotCreateRefusalBackoff(t *testing.T) {

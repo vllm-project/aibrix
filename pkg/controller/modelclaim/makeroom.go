@@ -145,6 +145,43 @@ func (c *cardReservations) heldFor(namespace, claim string, now time.Time) (type
 	return types.NamespacedName{}, false
 }
 
+// preemptionHeldFor is the wake-protecting card held for a claim, if any.
+func (c *cardReservations) preemptionHeldFor(namespace, claim string, now time.Time) (types.NamespacedName, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pruneLocked(now)
+	for card, current := range c.held {
+		if card.Namespace == namespace && current.claim == claim && current.protectsWake {
+			return card, true
+		}
+	}
+	return types.NamespacedName{}, false
+}
+
+// keepWakesOutOfPreemption restores the reservation owner's account to the
+// state before later wake requests put sleeping victims' full reserves back.
+// Wake admission still sees and waits on the reservation itself.
+func (c *cardReservations) keepWakesOutOfPreemption(
+	ledgers map[string]podLedger,
+	namespace, claim string,
+	now time.Time,
+) {
+	card, held := c.preemptionHeldFor(namespace, claim, now)
+	if !held {
+		return
+	}
+	ledger, found := ledgers[card.Name]
+	if !found || !ledger.judgeable {
+		return
+	}
+	for _, engine := range ledger.engines {
+		if engine.asleep && engine.wakeReserveAsked {
+			ledger = ledger.withWakeReserve(engine.claimName, false)
+		}
+	}
+	ledgers[card.Name] = ledger
+}
+
 // release lets go of the card held for a claim.
 func (c *cardReservations) release(namespace, claim string) {
 	c.mu.Lock()
@@ -428,10 +465,6 @@ func (r *ModelClaimReconciler) firstToMakeRoomFor(
 		if _, holding := r.reservations().heldFor(claim.Namespace, claim.Name, now); holding {
 			return false
 		}
-		perGPU, err := perGPUBytesOf(claim)
-		if err != nil {
-			continue
-		}
 		shared, valid := candidatePodsForClaim(claim, candidates)
 		if !valid {
 			continue
@@ -439,11 +472,8 @@ func (r *ModelClaimReconciler) firstToMakeRoomFor(
 		if r.backoff().waiting(client.ObjectKeyFromObject(claim), claim.Generation, roomSignatureOf(shared, claims)) {
 			continue
 		}
-		for j := range shared {
-			pod := &shared[j]
-			if _, found := r.planRoom(ctx, claim, pod, ledgers[pod.Name], perGPU.minimumReserveBytes(), readings); found {
-				return false
-			}
+		if r.claimFeasibleForPlacementWithPolicy(ctx, claim, shared, claims, ledgers, readings) {
+			return false
 		}
 	}
 	return false
