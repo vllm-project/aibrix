@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -2348,24 +2349,33 @@ func TestProcess_RequestIDFallsBackToUUID(t *testing.T) {
 	srv.AssertExpectations(t)
 }
 
+func requestOutcomeCounters(counters []capturedCounter) []capturedCounter {
+	var outcomes []capturedCounter
+	for _, c := range counters {
+		if c.name == metrics.GatewayRequestModelSuccessTotal || c.name == metrics.GatewayRequestModelFailTotal {
+			outcomes = append(outcomes, c)
+		}
+	}
+	return outcomes
+}
+
 // TestProcess_TerminalOutcome counts terminal metric increments from real handlers.
 func TestProcess_TerminalOutcome(t *testing.T) {
+	const requestBody = `{"model":"test-model","messages":[{"role":"user","content":"hi"}]}`
+	const missingBody = `{"model":"missing-model","messages":[{"role":"user","content":"hi"}]}`
+	const errorBody = `{"error":{"message":"invalid parameter","type":"BadRequestError","code":400}}`
+	const successBody = `{"model":"test-model","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
 	canceled := status.Error(codes.Canceled, "Envoy closed stream")
-	sendErr := errors.New("transport closed")
 	for _, tt := range []struct {
-		name, upstreamStatus, wantStatus, wantCode string
-		missing, completed, stream, malformed      bool
-		end, sendErr                               error
+		name, requestBody, upstreamStatus, responseBody, wantStatus, wantCode string
+		end                                                                   error
 	}{
-		{name: "IncompleteCanceled", end: canceled, wantStatus: "client_cancelled", wantCode: "499"},
-		{name: "ImmediateResponseSendFails", upstreamStatus: "400", sendErr: sendErr, wantStatus: "gateway_rsp_body_fail", wantCode: "400"},
-		{name: "StreamingEngine400ThenCanceled", stream: true, upstreamStatus: "400", end: canceled, wantStatus: "gateway_rsp_body_fail", wantCode: "400"},
-		{name: "CompletedImmediateResponseProactiveExit", upstreamStatus: "200", malformed: true, wantStatus: "gateway_rsp_body_fail", wantCode: "500"},
-		{name: "Engine400ThenCanceled", upstreamStatus: "400", end: canceled, wantStatus: "gateway_rsp_body_fail", wantCode: "400"},
-		{name: "ModelNotFoundThenCanceled", missing: true, end: canceled, wantStatus: "gateway_req_body_fail", wantCode: "400"},
-		{name: "CompletedBeforeCanceled", upstreamStatus: "200", completed: true, end: canceled, wantStatus: "gateway_rsp_body_success", wantCode: "200"},
-		{name: "ClientDisconnectEOF", end: io.EOF, wantStatus: "client_cancelled_eof", wantCode: "499"},
-		{name: "FinalResponseSendFails", upstreamStatus: "200", completed: true, end: canceled, sendErr: sendErr, wantStatus: "gateway_rsp_body_success", wantCode: "200"},
+		{"StreamingEngine400ThenCanceled", strings.TrimSuffix(requestBody, "}") + `,"stream":true}`, "400", errorBody, "gateway_rsp_body_fail", "400", canceled},
+		{"CompletedImmediateResponseProactiveExit", requestBody, "200", `{"model":`, "gateway_rsp_body_fail", "500", nil},
+		{"Engine400ThenCanceled", requestBody, "400", errorBody, "gateway_rsp_body_fail", "400", canceled},
+		{"ModelNotFoundThenCanceled", missingBody, "", "", "gateway_req_body_fail", "400", canceled},
+		{"CompletedBeforeCanceled", requestBody, "200", successBody, "gateway_rsp_body_success", "200", nil},
+		{"ClientDisconnectEOF", requestBody, "", "", "client_cancelled_eof", "499", io.EOF},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			counters := captureCounters(t)
@@ -2374,117 +2384,166 @@ func TestProcess_TerminalOutcome(t *testing.T) {
 			}}
 			s := &Server{cache: cache.NewWithPodsForTest([]*v1.Pod{pod}, "test-model"), shutdownCh: openShutdownCh()}
 			srv := &mockProcessServer{ctx: context.Background()}
-			header := &extProcPb.ProcessingRequest{Request: &extProcPb.ProcessingRequest_RequestHeaders{
-				RequestHeaders: &extProcPb.HttpHeaders{Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
+			requests := []*extProcPb.ProcessingRequest{
+				{Request: &extProcPb.ProcessingRequest_RequestHeaders{RequestHeaders: &extProcPb.HttpHeaders{Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
 					{Key: ":path", RawValue: []byte(PathChatCompletions)},
 					{Key: HeaderRoutingStrategy, RawValue: []byte("random")},
-				}}},
-			}}
-			model := "test-model"
-			if tt.missing {
-				model = "missing-model"
+				}}}}},
+				{Request: &extProcPb.ProcessingRequest_RequestBody{RequestBody: &extProcPb.HttpBody{Body: []byte(tt.requestBody)}}},
 			}
-			streamField := ""
-			if tt.stream {
-				streamField = `,"stream":true`
-			}
-			body := &extProcPb.ProcessingRequest{Request: &extProcPb.ProcessingRequest_RequestBody{
-				RequestBody: &extProcPb.HttpBody{Body: []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}]%s}`, model, streamField))},
-			}}
-			requests := []*extProcPb.ProcessingRequest{header, body}
 			if tt.upstreamStatus != "" {
-				requests = append(requests, &extProcPb.ProcessingRequest{Request: &extProcPb.ProcessingRequest_ResponseHeaders{
-					ResponseHeaders: &extProcPb.HttpHeaders{Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
+				requests = append(requests,
+					&extProcPb.ProcessingRequest{Request: &extProcPb.ProcessingRequest_ResponseHeaders{ResponseHeaders: &extProcPb.HttpHeaders{Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
 						{Key: ":status", RawValue: []byte(tt.upstreamStatus)},
-					}}},
-				}})
-			}
-			if tt.upstreamStatus != "" {
-				responseBody := `{"error":{"message":"invalid parameter","type":"BadRequestError","code":400}}`
-				if tt.completed {
-					responseBody = `{"model":"test-model","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
-				}
-				if tt.malformed {
-					responseBody = `{"model":`
-				}
-				requests = append(requests, &extProcPb.ProcessingRequest{Request: &extProcPb.ProcessingRequest_ResponseBody{
-					ResponseBody: &extProcPb.HttpBody{Body: []byte(responseBody), EndOfStream: true},
-				}})
+					}}}}},
+					&extProcPb.ProcessingRequest{Request: &extProcPb.ProcessingRequest_ResponseBody{ResponseBody: &extProcPb.HttpBody{Body: []byte(tt.responseBody), EndOfStream: true}}})
 			}
 			for _, req := range requests {
 				srv.On("Recv").Return(req, nil).Once()
 			}
-			terminal := srv.On("Recv").Return((*extProcPb.ProcessingRequest)(nil), tt.end)
-			if tt.name == "IncompleteCanceled" {
-				ctx, cancel := context.WithCancel(context.Background())
-				defer cancel()
-				srv.ctx = ctx
-				// Recv has started after preRecvCheck; cancellation unblocks it.
-				terminal.Run(func(mock.Arguments) { cancel() })
-			}
-			if tt.completed || tt.malformed || tt.sendErr != nil {
-				// Completion or a failed final Send exits before another Recv;
-				// the queued Canceled is never consumed.
-				terminal.Maybe()
-			} else {
-				terminal.Once()
+			if tt.end != nil {
+				srv.On("Recv").Return((*extProcPb.ProcessingRequest)(nil), tt.end).Once()
 			}
 			immediateResponses := 0
-			recordImmediate := func(args mock.Arguments) {
+			srv.On("Send", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
 				if imm := args.Get(0).(*extProcPb.ProcessingResponse).GetImmediateResponse(); imm != nil {
 					immediateResponses++
 					assert.Equal(t, tt.wantCode, fmt.Sprint(int(imm.GetStatus().GetCode())))
-					if tt.missing {
+					if tt.requestBody == missingBody {
 						assert.Contains(t, imm.GetBody(), "model_not_found")
 					}
 				}
-			}
-			if tt.sendErr != nil {
-				srv.On("Send", mock.MatchedBy(func(resp *extProcPb.ProcessingResponse) bool {
-					return resp.GetResponseBody() != nil || resp.GetImmediateResponse() != nil
-				})).Return(tt.sendErr).Run(recordImmediate).Once()
-			}
-			srv.On("Send", mock.Anything).Return(nil).Run(recordImmediate)
+			})
 			err := s.Process(srv)
-			if tt.sendErr != nil {
-				assert.ErrorIs(t, err, tt.sendErr)
-			} else if tt.completed || tt.malformed {
+			switch tt.end {
+			case nil:
 				assert.NoError(t, err)
 				srv.AssertNumberOfCalls(t, "Recv", len(requests))
-			} else if tt.end == io.EOF {
+			case io.EOF:
 				assert.ErrorIs(t, err, io.EOF)
-			} else {
+			default:
 				assert.Equal(t, codes.Canceled, status.Code(err))
 			}
-			if tt.missing || tt.upstreamStatus == "400" || tt.malformed {
-				assert.Equal(t, 1, immediateResponses)
-			} else {
-				assert.Zero(t, immediateResponses)
+			wantImmediate := 0
+			if strings.HasSuffix(tt.wantStatus, "_fail") {
+				wantImmediate = 1
 			}
-			var outcomes []capturedCounter
-			for _, c := range counters() {
-				if c.name == metrics.GatewayRequestModelSuccessTotal || c.name == metrics.GatewayRequestModelFailTotal {
-					outcomes = append(outcomes, c)
-				}
-			}
-			wantCount := 1
-			if tt.sendErr != nil {
-				// Base behavior records the response outcome before attempting the final Send.
-				wantCount = 2
-			}
-			require.Len(t, outcomes, wantCount, "unexpected terminal counter increments: %+v", outcomes)
+			assert.Equal(t, wantImmediate, immediateResponses)
+			outcomes := requestOutcomeCounters(counters())
+			require.Len(t, outcomes, 1, "unexpected terminal counter increments: %+v", outcomes)
 			wantMetric := metrics.GatewayRequestModelFailTotal
-			if tt.completed {
+			if tt.wantCode == "200" {
 				wantMetric = metrics.GatewayRequestModelSuccessTotal
 			}
 			assert.Equal(t, wantMetric, outcomes[0].name)
 			assert.Equal(t, tt.wantStatus, outcomes[0].labels["status"])
 			assert.Equal(t, tt.wantCode, outcomes[0].labels["status_code"])
-			if tt.sendErr != nil {
-				assert.Equal(t, metrics.GatewayRequestModelFailTotal, outcomes[1].name)
-				assert.Equal(t, "send_envoy_proxy", outcomes[1].labels["status"])
-				assert.Equal(t, "499", outcomes[1].labels["status_code"])
+			srv.AssertExpectations(t)
+		})
+	}
+}
+
+func TestTerminalFailure_ResponseOutcome(t *testing.T) {
+	for _, tt := range []struct {
+		name, wantStatus, wantCode string
+		end                        error
+	}{
+		{"IncompleteEOF", "client_cancelled_eof", "499", io.EOF},
+		{"GRPCError", "gateway_request_fail", "13", status.Error(codes.Internal, "recv failed")},
+		{"ContextBeforeRecv", "context_cancelled", "499", context.Canceled},
+	} {
+		for _, priorResponse := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/priorResponse=%t", tt.name, priorResponse), func(t *testing.T) {
+				counters := captureCounters(t)
+				mc := &MockCache{}
+				mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Once()
+				s := newProcessTestServer(openShutdownCh(), mc)
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				st := &processState{ctx: ctx, model: "test-model", routerCtx: types.NewRoutingContext(ctx, "random", "test-model", "", "", "")}
+				st.routerCtx.ReqPath = PathChatCompletions
+				defer st.routerCtx.Delete()
+				defer st.releaseModelInFlight()
+				wantStatus, wantCode := tt.wantStatus, tt.wantCode
+				if priorResponse {
+					mc.On("HasModel", "test-model").Return(false).Once()
+					req := &extProcPb.ProcessingRequest{Request: &extProcPb.ProcessingRequest_RequestBody{
+						RequestBody: &extProcPb.HttpBody{Body: []byte(`{"model":"test-model","messages":[{"role":"user","content":"hi"}]}`)},
+					}}
+					resp, err := s.handleProcessingRequest(st, req)
+					require.NoError(t, err)
+					require.NotNil(t, resp.GetImmediateResponse())
+					wantStatus, wantCode = "gateway_req_body_fail", "400"
+				}
+				if tt.end == context.Canceled {
+					cancel()
+					assert.ErrorIs(t, s.preRecvCheck(st), tt.end)
+				} else {
+					assert.ErrorIs(t, s.handleRecvError(st, tt.end), tt.end)
+				}
+				require.Len(t, counters(), 1)
+				assert.Equal(t, metrics.GatewayRequestModelFailTotal, counters()[0].name)
+				assert.Equal(t, wantStatus, counters()[0].labels["status"])
+				assert.Equal(t, wantCode, counters()[0].labels["status_code"])
+				mc.AssertExpectations(t)
+			})
+		}
+	}
+}
+
+func TestProcessOnce_CancelDuringReceive(t *testing.T) {
+	counters := captureCounters(t)
+	mc := &MockCache{}
+	mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Once()
+	s := newProcessTestServer(openShutdownCh(), mc)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv := &mockProcessServer{ctx: ctx}
+	// Recv starts after preRecvCheck; cancellation then unblocks the receive.
+	srv.On("Recv").Return((*extProcPb.ProcessingRequest)(nil), status.Error(codes.Canceled, "closed")).
+		Run(func(mock.Arguments) { cancel() }).Once()
+	assert.Equal(t, codes.Canceled, status.Code(s.processOnce(srv, &processState{ctx: ctx, model: "test-model"})))
+	require.Len(t, counters(), 1)
+	assert.Equal(t, metrics.GatewayRequestModelFailTotal, counters()[0].name)
+	assert.Equal(t, "client_cancelled", counters()[0].labels["status"])
+	assert.Equal(t, "499", counters()[0].labels["status_code"])
+	mc.AssertExpectations(t)
+	srv.AssertExpectations(t)
+}
+
+func TestSendProcessingResponse_AfterResponseOutcome(t *testing.T) {
+	for _, completed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("completed=%t", completed), func(t *testing.T) {
+			counters := captureCounters(t)
+			pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"}}
+			s := &Server{cache: cache.NewWithPodsForTest([]*v1.Pod{pod}, "test-model")}
+			st := &processState{ctx: context.Background(), model: "test-model", isRespError: !completed, respErrorCode: 400,
+				routerCtx: types.NewRoutingContext(context.Background(), "random", "test-model", "", "", "")}
+			st.routerCtx.ReqPath = PathChatCompletions
+			defer st.routerCtx.Delete()
+			defer st.releaseModelInFlight()
+			req := &extProcPb.ProcessingRequest{Request: &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{Body: []byte(`{"model":"test-model","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`), EndOfStream: true},
+			}}
+			resp, err := s.handleProcessingRequest(st, req)
+			require.NoError(t, err)
+			require.Equal(t, !completed, resp.GetImmediateResponse() != nil)
+			sendErr := errors.New("transport closed")
+			srv := &mockProcessServer{ctx: st.ctx}
+			srv.On("Send", resp).Return(sendErr).Once()
+			assert.ErrorIs(t, s.sendProcessingResponse(srv, st, resp), sendErr)
+			outcomes := requestOutcomeCounters(counters())
+			require.Len(t, outcomes, 2)
+			wantMetric, wantStatus, wantCode := metrics.GatewayRequestModelFailTotal, "gateway_rsp_body_fail", "400"
+			if completed {
+				wantMetric, wantStatus, wantCode = metrics.GatewayRequestModelSuccessTotal, "gateway_rsp_body_success", "200"
 			}
+			assert.Equal(t, wantMetric, outcomes[0].name)
+			assert.Equal(t, wantStatus, outcomes[0].labels["status"])
+			assert.Equal(t, wantCode, outcomes[0].labels["status_code"])
+			assert.Equal(t, metrics.GatewayRequestModelFailTotal, outcomes[1].name)
+			assert.Equal(t, "send_envoy_proxy", outcomes[1].labels["status"])
+			assert.Equal(t, "499", outcomes[1].labels["status_code"])
 			srv.AssertExpectations(t)
 		})
 	}

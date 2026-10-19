@@ -18,11 +18,14 @@ Official import URLs are also listed in
 
 For requests with an identified model, gRPC Canceled preserves an already-recorded
 response outcome. Otherwise, completed requests record `gateway_request_success`/200
-and incomplete requests record `client_cancelled`/499. Incomplete EOF retains
-`client_cancelled_eof`/499. These are metric classifications; the Canceled branch
-still returns gRPC Canceled. A completed ImmediateResponse failure (for example,
-malformed non-streaming upstream JSON) also prevents a later success increment
-at proactive completion or in the completed-EOF fallback.
+and incomplete requests record `client_cancelled`/499. Outside shutdown,
+incomplete EOF without a recorded outcome records `client_cancelled_eof`/499.
+These are metric classifications; the Canceled branch still returns gRPC Canceled.
+A completed ImmediateResponse failure (for example, malformed non-streaming
+upstream JSON) also prevents a later success increment at proactive completion
+or in the completed-EOF fallback. A recorded response outcome also suppresses
+later incomplete-EOF, gRPC receive-error, and pre-receive context-cancel counters.
+Send-failure and shutdown accounting are unchanged.
 
 ## Import
 

@@ -623,7 +623,10 @@ func (s *Server) preRecvCheck(st *processState) error {
 	// Client cancelled or deadline exceeded
 	case <-st.ctx.Done():
 		if st.model != "" {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "context_cancelled", "499", st.routerCtx)
+			if !st.isGatewayRspDone {
+				st.isGatewayRspDone = true
+				s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "context_cancelled", "499", st.routerCtx)
+			}
 			s.finishRequestCount(st)
 		}
 		klog.ErrorS(st.ctx.Err(), "context cancelled", "request_id", st.requestID, "model", st.model)
@@ -661,7 +664,8 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 		}
 
 		// client closed stream (EOF)
-		if st.model != "" {
+		if st.model != "" && !st.isGatewayRspDone {
+			st.isGatewayRspDone = true
 			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "client_cancelled_eof", "499", st.routerCtx)
 		}
 		klog.ErrorS(nil, "client closed stream (EOF) before completion", "requestID", st.requestID, "model", st.model)
@@ -686,7 +690,8 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 
 	// Record failed request metric for other gRPC errors
 	if ok {
-		if st.model != "" {
+		if st.model != "" && !st.isGatewayRspDone {
+			st.isGatewayRspDone = true
 			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "gateway_request_fail", strconv.FormatUint(uint64(stErr.Code()), 10), st.routerCtx)
 		}
 		klog.ErrorS(err, "error receiving stream from Envoy extproc", "requestID", st.requestID, "model", st.model, "grpc_code", stErr.Code(), "grpc_message", stErr.Message())
