@@ -70,6 +70,7 @@ _hbm_usable_by_device: Dict[str, int] = {}
 # one that never built a segment at all. Zero would read as a measured zero, and
 # a control plane deciding on it would treat a card as emptier than it is.
 KV_UNKNOWN = -1
+KV_CAPACITY_VERIFY_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass
@@ -89,6 +90,7 @@ class ModelInstance:
     pid_start_time: Optional[str] = None
     restart_count: int = 0
     kv_initial_capacity_bytes: Optional[int] = None
+    kv_capacity_verify_until: Optional[datetime] = None
     # A control write can replace the startup size before a snapshot sees it.
     kv_initial_capacity_unavailable: bool = False
     kv_initial_capacity_persist_pending: bool = field(default=False, repr=False)
@@ -1249,15 +1251,7 @@ class ModelRuntime:
                     continue
                 self._models[inst.model_name] = inst
 
-                # Adoption tolerates missing identity; a saved capacity cannot.
-                if inst.kv_initial_capacity_bytes is not None and (
-                    inst.phase == "failed"
-                    or inst.pid_start_time is None
-                    or not pid_is_alive(inst.pid)
-                    or process_start_time(inst.pid) != inst.pid_start_time
-                ):
-                    inst.kv_initial_capacity_bytes = None
-                    changed = True
+                self._refresh_kv_capacity_locked(inst, adopting=True)
 
                 if inst.phase == "failed":
                     self._increment_metric(self._re_adoption_outcomes, "terminal")
@@ -1294,6 +1288,7 @@ class ModelRuntime:
                 # A pending restart can bypass _schedule_restart below.
                 if inst.kv_initial_capacity_bytes is not None:
                     inst.kv_initial_capacity_bytes = None
+                    inst.kv_capacity_verify_until = None
                     changed = True
                 if inst.phase != "restarting" or inst.next_restart_at is None:
                     self._schedule_restart(
@@ -1302,7 +1297,10 @@ class ModelRuntime:
                     changed = True
                 self._increment_metric(self._re_adoption_outcomes, "restart_scheduled")
 
-            if changed:
+            if changed or any(
+                inst.kv_initial_capacity_persist_pending
+                for inst in self._models.values()
+            ):
                 self._persist_locked()
 
     @staticmethod
@@ -1381,6 +1379,14 @@ class ModelRuntime:
             or initial_capacity < 0
         ):
             initial_capacity = None
+        verify_until = self._registry_timestamp(
+            record.get("kv_capacity_verify_until"), None
+        )
+        malformed_deadline = (
+            record.get("kv_capacity_verify_until") is not None and verify_until is None
+        )
+        if malformed_deadline:
+            initial_capacity = None
         return ModelInstance(
             model_name=model_name,
             port=port,
@@ -1409,6 +1415,10 @@ class ModelRuntime:
                 record.get("sleeping_footprint_bytes"), phase
             ),
             kv_initial_capacity_bytes=initial_capacity,
+            kv_capacity_verify_until=verify_until
+            if initial_capacity is not None
+            else None,
+            kv_initial_capacity_persist_pending=malformed_deadline,
             # Re-adoption cannot establish whether this segment was already changed.
             kv_initial_capacity_unavailable=True,
             proc=AdoptedProcess(pid, pid_start_time),
@@ -1467,6 +1477,11 @@ class ModelRuntime:
             ),
             "sleeping_footprint_bytes": inst.sleeping_footprint_bytes,
             "kv_initial_capacity_bytes": inst.kv_initial_capacity_bytes,
+            "kv_capacity_verify_until": (
+                inst.kv_capacity_verify_until.isoformat()
+                if inst.kv_capacity_verify_until
+                else None
+            ),
         }
 
     def _persist_locked(self) -> None:
@@ -1476,6 +1491,52 @@ class ModelRuntime:
             )
             for inst in self._models.values():
                 inst.kv_initial_capacity_persist_pending = False
+
+    def _refresh_kv_capacity_locked(
+        self, inst: ModelInstance, *, adopting: bool = False
+    ) -> None:
+        """Verify saved provenance without ever measuring the mutable segment."""
+        if inst.kv_initial_capacity_bytes is None or (
+            inst.kv_capacity_verify_until is None and not adopting
+        ):
+            return
+        before = (inst.kv_initial_capacity_bytes, inst.kv_capacity_verify_until)
+        current = process_start_time(inst.pid)
+        if (
+            inst.phase in {"failed", "stopping"}
+            or inst.pid_start_time is None
+            or not pid_is_alive(inst.pid)
+            or (current is not None and current != inst.pid_start_time)
+        ):
+            inst.kv_initial_capacity_bytes = None
+            inst.kv_capacity_verify_until = None
+        elif current == inst.pid_start_time:
+            # A match proves the same engine even after the deadline, which only bounds the deferral.
+            inst.kv_capacity_verify_until = None
+        elif (
+            inst.kv_capacity_verify_until is not None
+            and self._now() >= inst.kv_capacity_verify_until
+        ):
+            logger.warning(
+                "startup KV capacity verification expired for model %s (PID %s)",
+                inst.model_name,
+                inst.pid,
+            )
+            inst.kv_initial_capacity_bytes = None
+            inst.kv_capacity_verify_until = None
+        elif inst.kv_capacity_verify_until is None:
+            inst.kv_capacity_verify_until = self._now() + timedelta(
+                seconds=KV_CAPACITY_VERIFY_TIMEOUT_SECONDS
+            )
+        if before != (inst.kv_initial_capacity_bytes, inst.kv_capacity_verify_until):
+            inst.kv_initial_capacity_persist_pending = self._registry is not None
+
+    def _persist_kv_capacity_locked(self, inst: ModelInstance) -> None:
+        if inst.kv_initial_capacity_persist_pending:
+            try:
+                self._persist_locked()
+            except Exception:
+                logger.exception("could not persist startup KV capacity")
 
     def _transition(self, inst: ModelInstance, phase: str) -> bool:
         if inst.phase == phase:
@@ -1521,6 +1582,7 @@ class ModelRuntime:
         # the exponential backoff governs relaunches, not resource cleanup.
         self._terminate_stale_process_group(inst)
         inst.kv_initial_capacity_bytes = None
+        inst.kv_capacity_verify_until = None
         inst.kv_initial_capacity_unavailable = False
         inst.last_error = error
         if inst.restart_count >= self._max_restarts:
@@ -1551,6 +1613,7 @@ class ModelRuntime:
         # Re-adoption or a limit write during backoff may have blocked capture.
         # Cleanup succeeded, so the replacement starts with fresh provenance.
         inst.kv_initial_capacity_bytes = None
+        inst.kv_capacity_verify_until = None
         inst.kv_initial_capacity_unavailable = False
         try:
             self._increment_metric(self._restart_attempts, inst.model_name)
@@ -1589,6 +1652,7 @@ class ModelRuntime:
         remove = []
         now = self._now()
         for model_name, inst in self._models.items():
+            self._refresh_kv_capacity_locked(inst)
             if inst.phase == "failed":
                 continue
             if inst.phase == "stopping":
@@ -1629,7 +1693,9 @@ class ModelRuntime:
         for model_name in remove:
             self._models.pop(model_name, None)
             self._clear_model_metric_gauges(model_name)
-        if changed:
+        if changed or any(
+            inst.kv_initial_capacity_persist_pending for inst in self._models.values()
+        ):
             self._persist_locked()
 
     def activate(
@@ -1715,6 +1781,8 @@ class ModelRuntime:
             if mode != "stop":
                 logger.info("deactivate mode %s is treated as stop", mode)
             self._transition(inst, "stopping")
+            inst.kv_initial_capacity_bytes = None
+            inst.kv_capacity_verify_until = None
             self._persist_locked()
             try:
                 self._launcher.stop(inst)
@@ -1745,6 +1813,8 @@ class ModelRuntime:
         with self._operation_lock:
             with self._lock:
                 inst = self._require_instance(model_name)
+                self._refresh_kv_capacity_locked(inst)
+                self._persist_kv_capacity_locked(inst)
                 self._kv_limit_requested_bytes[model_name] = limit_bytes
                 if self._operation_completed(inst, "kv-limit", operation_id):
                     self._increment_metric(
@@ -1757,6 +1827,18 @@ class ModelRuntime:
                         phase=inst.phase,
                     )
                 capacity = inst.kv_initial_capacity_bytes
+                if (
+                    inst.kv_capacity_verify_until is not None
+                    and capacity is not None
+                    and limit_bytes > capacity
+                ):
+                    self._increment_metric(
+                        self._kv_limit_outcomes, (model_name, "failed")
+                    )
+                    raise UnsupportedModelControlError(
+                        f"startup KV capacity for {model_name!r} has pending "
+                        "identity verification"
+                    )
                 if capacity is not None:
                     limit_bytes = min(limit_bytes, capacity)
                 elif not inst.kv_initial_capacity_unavailable and not isinstance(
@@ -1810,6 +1892,8 @@ class ModelRuntime:
             with self._operation_lock:
                 with self._lock:
                     inst = self._require_instance(model_name)
+                    self._refresh_kv_capacity_locked(inst)
+                    self._persist_kv_capacity_locked(inst)
                     tracked = True
                     if inst.engine != "vllm":
                         raise UnsupportedModelControlError(
@@ -1887,6 +1971,8 @@ class ModelRuntime:
             with self._operation_lock:
                 with self._lock:
                     inst = self._require_instance(model_name)
+                    self._refresh_kv_capacity_locked(inst)
+                    self._persist_kv_capacity_locked(inst)
                     tracked = True
                     if inst.engine != "vllm":
                         raise UnsupportedModelControlError(
@@ -2028,6 +2114,8 @@ class ModelRuntime:
                     ready = False
                     kv_used = kv_capacity = KV_UNKNOWN
                     activity = EngineRequestActivity()
+                if not identity_changed:
+                    self._refresh_kv_capacity_locked(inst)
                 if (
                     ready
                     and kv_capacity >= 0
@@ -2039,13 +2127,11 @@ class ModelRuntime:
                     inst.kv_initial_capacity_persist_pending = (
                         self._registry is not None
                     )
-                if inst.kv_initial_capacity_persist_pending:
-                    try:
-                        self._persist_locked()
-                    except Exception:
-                        logger.exception("could not persist startup KV capacity")
+                self._persist_kv_capacity_locked(inst)
                 initial_capacity = (
-                    None if identity_changed else inst.kv_initial_capacity_bytes
+                    None
+                    if identity_changed or inst.kv_capacity_verify_until is not None
+                    else inst.kv_initial_capacity_bytes
                 )
             models.append(
                 {
