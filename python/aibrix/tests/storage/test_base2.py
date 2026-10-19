@@ -757,6 +757,36 @@ async def test_tos_put_object_at_multipart_threshold(monkeypatch, size_delta):
         client.complete_multipart_upload.assert_called_once()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_stage",
+    ["create_multipart_upload", "upload_part", "complete_multipart_upload"],
+)
+async def test_tos_put_object_multipart_failure_does_not_fall_back(
+    monkeypatch, failure_stage
+):
+    client = Mock()
+    client.create_multipart_upload.return_value = SimpleNamespace(upload_id="upload")
+    client.upload_part.return_value = SimpleNamespace(etag="etag")
+    error = tos.exceptions.TosClientError("injected multipart failure")
+    getattr(client, failure_stage).side_effect = error
+    monkeypatch.setattr(tos, "TosClientV2", lambda *args: client)
+    storage = TOSStorage("bucket", "ak", "sk", "https://tos.example.com", "cn-beijing")
+    data = b"x" * storage.config.multipart_threshold + b"TAIL"
+
+    with pytest.raises(ValueError, match="injected multipart failure") as raised:
+        await storage.put_object("key", data)
+
+    assert raised.value.__context__ is error
+    client.put_object.assert_not_called()
+    if failure_stage == "create_multipart_upload":
+        client.abort_multipart_upload.assert_not_called()
+    else:
+        client.abort_multipart_upload.assert_called_once_with(
+            bucket="bucket", key="key", upload_id="upload"
+        )
+
+
 class TestBackendBulkDelete:
     @pytest.mark.asyncio
     async def test_s3_delete_objects_uses_native_batch_request(self):
