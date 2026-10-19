@@ -28,6 +28,7 @@ Other engine types raise UnsupportedEngineError until their adapter
 is implemented in later phases.
 """
 
+import re
 from typing import Any, Dict, List, Optional
 
 from aibrix.batch.template import (
@@ -126,6 +127,14 @@ def _build_vllm_args(
     if ea.block_size is not None:
         args.extend(["--block-size", str(ea.block_size)])
     if ea.swap_space is not None:
+        # vLLM 0.18 removed the V0 swap-space option. Do not silently
+        # discard an explicit setting or emit a flag that prevents startup.
+        version = re.match(r"^v?(\d+)\.(\d+)(?:\.|$)", spec.engine.version)
+        if version and tuple(map(int, version.groups())) >= (0, 18):
+            raise ValueError(
+                f"engine_args.swap_space is unsupported by vLLM {spec.engine.version}; "
+                "remove it from the template (vLLM 0.18+ removed --swap-space)"
+            )
         args.extend(["--swap-space", str(ea.swap_space)])
     if ea.enable_prefix_caching:
         args.append("--enable-prefix-caching")
@@ -154,7 +163,11 @@ def _build_vllm_args(
     # 4. Quantization
     q = spec.quantization
     if q.weight is not None:
-        args.extend(["--quantization", q.weight.value])
+        if q.weight.value in {"bf16", "fp16"}:
+            dtype = {"bf16": "bfloat16", "fp16": "float16"}[q.weight.value]
+            args.extend(["--dtype", dtype])
+        else:
+            args.extend(["--quantization", q.weight.value])
     if q.kv_cache is not None:
         args.extend(["--kv-cache-dtype", q.kv_cache.value])
 
@@ -180,6 +193,7 @@ _VLLM_TYPED_FIELDS = {
 }
 
 _SGLANG_TYPED_FIELDS = {
+    "block_size",
     "max_num_seqs",
     "max_model_len",
     "gpu_memory_utilization",
@@ -226,11 +240,13 @@ def _build_sglang_args(
     if p.tp > 1:
         args.extend(["--tp", str(p.tp)])
     if p.pp > 1:
-        args.extend(["--pp", str(p.pp)])
+        args.extend(["--pipeline-parallel-size", str(p.pp)])
     if p.dp > 1:
         args.extend(["--dp", str(p.dp)])
 
     ea = spec.engine_args
+    if ea.block_size is not None:
+        args.extend(["--page-size", str(ea.block_size)])
     if ea.max_model_len is not None:
         args.extend(["--context-length", str(ea.max_model_len)])
     if ea.max_num_seqs is not None:
