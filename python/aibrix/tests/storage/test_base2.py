@@ -640,6 +640,27 @@ class TestBaseStorage2:
 
 
 class TestTOSStorageConfig:
+    @pytest.mark.parametrize("threshold", [0, -1])
+    def test_tos_storage_rejects_nonpositive_multipart_threshold(
+        self, monkeypatch, threshold
+    ):
+        client_factory = Mock()
+        monkeypatch.setattr(tos, "TosClientV2", client_factory)
+
+        with pytest.raises(
+            ValueError, match="multipart_threshold must be greater than 0"
+        ):
+            TOSStorage(
+                "bucket",
+                "ak",
+                "sk",
+                "https://tos.example.com",
+                "cn-beijing",
+                config=StorageConfig(multipart_threshold=threshold),
+            )
+
+        client_factory.assert_not_called()
+
     def test_tos_storage_enables_strict_min_part_size_by_default(self, monkeypatch):
         mock_client = object()
         monkeypatch.setattr(tos, "TosClientV2", lambda *args: mock_client)

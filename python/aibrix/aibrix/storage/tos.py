@@ -48,6 +48,9 @@ class TOSStorage(BaseStorage2):
         config: Optional[StorageConfig] = None,
     ):
         resolved_config = config or StorageConfig()
+        # A nonpositive chunk size would re-enter the base class's fallback.
+        if resolved_config.multipart_threshold <= 0:
+            raise ValueError("multipart_threshold must be greater than 0")
         if resolved_config.strict_multipart_min_part_size is None:
             resolved_config = replace(
                 resolved_config, strict_multipart_min_part_size=True
