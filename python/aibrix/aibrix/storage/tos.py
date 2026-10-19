@@ -91,14 +91,18 @@ class TOSStorage(BaseStorage2):
             size = None
 
         if size is not None and size >= self.config.multipart_threshold:
-            await self.multipart_upload(
-                key,
-                reader,
-                content_type,
-                metadata,
-                bysize=self.config.multipart_threshold,
-            )
-            return True
+            try:
+                await self.multipart_upload(
+                    key,
+                    reader,
+                    content_type,
+                    metadata,
+                    bysize=self.config.multipart_threshold,
+                )
+                return True
+            finally:
+                if not isinstance(data, Reader):
+                    reader.close()
 
         # For small files, read all data and upload directly as BytesIO
         # TOS client has issues with custom file-like objects for CRC calculation

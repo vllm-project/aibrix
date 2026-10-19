@@ -216,9 +216,20 @@ class TestTOSPutObject:
         storage, client, uploaded_parts = self._storage_with_mock_client()
         threshold = storage.config.multipart_threshold
         content = b"a" * threshold + b"b" * threshold + b"tail"
+        wrapped_readers = []
+        wrap_data = storage._wrap_data
+
+        def track_wrapped_reader(data):
+            reader = wrap_data(data)
+            wrapped_readers.append(reader)
+            return reader
+
+        storage._wrap_data = track_wrapped_reader
 
         assert await storage.put_object("large", io.BytesIO(content)) is True
 
+        with pytest.raises(ValueError, match="closed file"):
+            wrapped_readers[0].read(1)
         assert [len(part) for part in uploaded_parts] == [threshold, threshold, 4]
         assert b"".join(uploaded_parts) == content
         assert client.upload_part.call_count == 3
@@ -242,15 +253,35 @@ class TestTOSPutObject:
         storage, client, _ = self._storage_with_mock_client()
         client.upload_part.side_effect = TosClientError("upload failed")
         content = b"x" * storage.config.multipart_threshold
+        wrapped_readers = []
+        wrap_data = storage._wrap_data
+
+        def track_wrapped_reader(data):
+            reader = wrap_data(data)
+            wrapped_readers.append(reader)
+            return reader
+
+        storage._wrap_data = track_wrapped_reader
 
         with pytest.raises(ValueError, match="Failed to upload part 1"):
             await storage.put_object("failed", content)
 
+        with pytest.raises(ValueError, match="closed file"):
+            wrapped_readers[0].read(1)
         client.abort_multipart_upload.assert_called_once_with(
             bucket="bucket", key="failed", upload_id="upload-id"
         )
         client.complete_multipart_upload.assert_not_called()
         client.put_object.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_multipart_does_not_close_caller_owned_reader(self):
+        storage, _, _ = self._storage_with_mock_client()
+        reader = Reader(io.BytesIO(b"x" * storage.config.multipart_threshold))
+
+        assert await storage.put_object("reader", reader) is True
+
+        assert reader.read(1) == b""
 
     @pytest.mark.asyncio
     async def test_no_strategy_multipart_keeps_base_fallback(self):
