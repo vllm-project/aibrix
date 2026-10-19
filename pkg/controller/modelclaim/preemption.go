@@ -18,6 +18,7 @@ package modelclaim
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -100,7 +101,7 @@ func (r *ModelClaimReconciler) makeRoomByPrioritySleep(
 		return "", false
 	}
 	victim := plan.victims[0]
-	if !r.putIdleEngineToSleep(ctx, victim.idleEngine(), plan.pod, pm, readings) {
+	if !r.putPreemptionVictimToSleep(ctx, victim, plan.pod, pm, readings) {
 		r.reservations().release(pm.Namespace, pm.Name)
 		return "", false
 	}
@@ -111,6 +112,46 @@ func (r *ModelClaimReconciler) makeRoomByPrioritySleep(
 	return fmt.Sprintf("no pod has room for this model, which needs %s on a card; "+
 		"lower-priority model %s (priority %d) was put to sleep on pod %s to make room%s",
 		gibibytes(seat), victim.model.ModelName, victim.priority, plan.pod.Name, more), true
+}
+
+func (r *ModelClaimReconciler) putPreemptionVictimToSleep(
+	ctx context.Context,
+	victim sleepPreemptionVictim,
+	pod *corev1.Pod,
+	preemptor *modelv1alpha1.ModelClaim,
+	readings *runtimeReadings,
+) bool {
+	operationID := fmt.Sprintf("preemption-sleep/%s/%s/%s/%d",
+		pod.UID, snapshotActivityKey(victim.model), preemptor.UID, victim.idleSince.UnixNano())
+	if err := r.putEngineToSleep(ctx, victim.claim, pod, victim.port, victim.model.ModelName, operationID, readings); err != nil {
+		reason := policyReasonInternalError
+		switch {
+		case errors.Is(err, errEngineServing):
+			reason = preemptionReasonEngineServing
+		case refusedByRuntime(err):
+			reason = policyReasonRuntimeError
+		}
+		recordPreemptionAttempt(preemptionPolicySleepLowerPriority, preemptionResultFailed, reason)
+		recordPreemptionVictim(preemptionActionSleep, preemptionResultFailed)
+		message := fmt.Sprintf("ModelClaim %s (priority %d) could not put lower-priority model %s to sleep on pod %s: %v",
+			preemptor.Name, preemptor.Spec.Priority, victim.claim.Name, pod.Name, err)
+		r.Recorder.Event(preemptor, corev1.EventTypeWarning, "PreemptionFailed", message)
+		r.Recorder.Event(victim.claim, corev1.EventTypeWarning, "PreemptionFailed", message)
+		klog.ErrorS(err, "could not put a lower-priority engine to sleep",
+			"pod", klog.KObj(pod), "victim", klog.KObj(victim.claim), "preemptor", klog.KObj(preemptor))
+		return false
+	}
+	asleep := r.sleptEngine(ctx, pod, victim.claim, readings)
+	if footprint, known := sleepingFootprintOf(asleep); known {
+		r.footprints().note(victim.claim, footprint)
+	}
+	recordPreemptionAttempt(preemptionPolicySleepLowerPriority, preemptionResultSuccess, policyReasonApplied)
+	recordPreemptionVictim(preemptionActionSleep, preemptionResultSuccess)
+	r.Recorder.Eventf(victim.claim, corev1.EventTypeNormal, "PreemptedBySleep",
+		"model %s was put to sleep on pod %s by higher-priority ModelClaim %s (priority %d)%s",
+		victim.model.ModelName, pod.Name, preemptor.Name, preemptor.Spec.Priority, sleepingFootprintNote(asleep))
+	r.warnOfAnUnmeasuredSleep(victim.claim, pod.Name, asleep, true)
+	return true
 }
 
 // planSleepPreemption chooses the best candidate Pod and the lower-priority

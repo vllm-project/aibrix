@@ -949,6 +949,61 @@ func drainEvents(t *testing.T, r *ModelClaimReconciler) []string {
 	}
 }
 
+func TestPreemptionEventsDescribeSuccessAndDeduplicateFailure(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		r, _ := servingPool(t, keepNoWakeReserve, 1,
+			serving{"low", "warm-1", 300, 100, at0758}, serving{"busy", "warm-1", 300, 100, at0759})
+		setClaimPriority(t, r, "low", 1)
+		setClaimPriority(t, r, "busy", 1)
+		newPrioritySleepClaim(t, r, "preemptor", 10, at0759)
+
+		reconcileOnce(t, r, "preemptor")
+
+		events := drainEvents(t, r)
+		var preempted []string
+		for _, event := range events {
+			if strings.Contains(event, "PreemptedBySleep") {
+				preempted = append(preempted, event)
+			}
+		}
+		require.Len(t, preempted, 1)
+		assert.Contains(t, preempted[0], "Normal PreemptedBySleep")
+		assert.Contains(t, preempted[0], "preemptor")
+		assert.Contains(t, preempted[0], "priority 10")
+		claim := getModel(t, r, "preemptor")
+		assert.Equal(t, modelv1alpha1.ModelClaimPending, claim.Status.Phase)
+		assert.Equal(t, scheduledReasonMakingRoom, scheduledOf(t, r, claim.Name).Reason)
+	})
+
+	t.Run("failure once per semantic action", func(t *testing.T) {
+		r, runtime := servingPool(t, keepNoWakeReserve, 1,
+			serving{"low", "warm-1", 300, 100, at0758}, serving{"other", "warm-1", 300, 100, at0759})
+		setClaimPriority(t, r, "low", 1)
+		setClaimPriority(t, r, "other", 1)
+		newPrioritySleepClaim(t, r, "preemptor", 10, at0759)
+		runtime.sleepErr = &runtimeRefusal{"sleep failed: boom"}
+		r.Backoff = newPlacementBackoff(r.now)
+
+		reconcileOnce(t, r, "preemptor")
+		reconcileOnce(t, r, "preemptor")
+
+		events := drainEvents(t, r)
+		var failed []string
+		for _, event := range events {
+			if strings.Contains(event, "PreemptionFailed") {
+				failed = append(failed, event)
+			}
+		}
+		require.Len(t, failed, 2, "one warning belongs to each involved claim")
+		for _, event := range failed {
+			assert.Contains(t, event, "Warning PreemptionFailed")
+			assert.Contains(t, event, "preemptor")
+			assert.Contains(t, event, "low")
+		}
+		assert.Len(t, runtime.sleepCalls, 1)
+	})
+}
+
 func TestReconcilePoolPoliciesWarnsOnceForUnchangedInvalidPolicy(t *testing.T) {
 	deployment, replicaSet, pod := warmPoolObjects(`{"reclaim":{"capacityBytes":0}}`)
 	r, runtime := newReconciler(t, deployment, replicaSet, pod)
