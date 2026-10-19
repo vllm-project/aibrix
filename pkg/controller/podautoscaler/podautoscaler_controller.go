@@ -328,6 +328,9 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	case autoscalingv1alpha1.HPA:
 		return r.reconcileHPA(ctx, pa)
 	case autoscalingv1alpha1.KPA, autoscalingv1alpha1.APA:
+		if err := r.deleteGeneratedHPA(ctx, &pa); err != nil {
+			return ctrl.Result{}, err
+		}
 		return r.reconcileCustomPA(ctx, pa)
 	default:
 		// Status already updated above; nothing more to do
@@ -943,6 +946,23 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 	return resultWithNextScheduleRequeue(&pa, now), nil
 }
 
+// deleteGeneratedHPA removes the HPA that reconcileHPA created for pa. After
+// the strategy changes to KPA or APA that HPA would keep scaling the target
+// against the custom autoscaler.
+func (r *PodAutoscalerReconciler) deleteGeneratedHPA(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler) error {
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{}
+	hpaName := ktypes.NamespacedName{Name: fmt.Sprintf("%s-hpa", pa.Name), Namespace: pa.Namespace}
+	if err := r.Get(ctx, hpaName, hpa); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	// An HPA that happens to share the name but is not ours is left alone.
+	if !metav1.IsControlledBy(hpa, pa) {
+		return nil
+	}
+	klog.InfoS("Deleting HPA left from the HPA strategy", "HPA", hpaName)
+	return r.Delete(ctx, hpa)
+}
+
 func reasonForHPAGenerationError(err error) string {
 	if stderrors.Is(err, errInvalidHPABounds) {
 		return ReasonInvalidBounds
@@ -961,6 +981,9 @@ func hasObservedInvalidSpec(pa *autoscalingv1alpha1.PodAutoscaler) bool {
 // reconcileCustomPA handles KPA and APA strategies using WorkloadScaler (generic /scale or StormService role-level).
 func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
 	paStatusOriginal := pa.Status.DeepCopy()
+	// ScalingLimited is mirrored from the HPA and this path never sets it, so
+	// one left from the HPA strategy would stay in status for good.
+	apimeta.RemoveStatusCondition(&pa.Status.Conditions, string(autoscalingv2.ScalingLimited))
 	result, err := r.scaleCustomPA(ctx, &pa)
 	// Report Ready for the outcome of this pass instead of waiting for
 	// computeStatus to see it on the next reconcile.
