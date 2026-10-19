@@ -25,6 +25,7 @@ import (
 	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
+	"github.com/vllm-project/aibrix/pkg/controller/rayclusterfleet/util"
 	"github.com/vllm-project/aibrix/pkg/controller/util/expectation"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -172,7 +173,7 @@ func (r *RayClusterFleetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, r.sync(ctx, f, rsList)
 	}
 
-	switch f.Spec.Strategy.Type {
+	switch util.StrategyType(f) {
 	case appsv1.RecreateDeploymentStrategyType:
 		return r.rolloutRecreate(ctx, f, rsList, clusterMap)
 	case appsv1.RollingUpdateDeploymentStrategyType:

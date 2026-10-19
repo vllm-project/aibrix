@@ -22,8 +22,11 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 )
@@ -210,6 +213,42 @@ func TestReplicasAnnotationsNeedUpdate(t *testing.T) {
 			got := ReplicasAnnotationsNeedUpdate(rs, tt.desired, tt.max)
 			if got != tt.want {
 				t.Errorf("needsUpdate = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// An unset strategy field takes the Deployment default: a rolling update with 25% for maxSurge and maxUnavailable.
+func TestStrategyDefaults(t *testing.T) {
+	tests := []struct {
+		name            string
+		strategy        appsv1.DeploymentStrategy
+		wantRolling     bool
+		wantSurge       int32
+		wantUnavailable int32
+	}{
+		{name: "empty strategy", wantRolling: true, wantSurge: 5, wantUnavailable: 5},
+		{name: "type without rollingUpdate", strategy: appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType}, wantRolling: true, wantSurge: 5, wantUnavailable: 5},
+		{name: "empty rollingUpdate", strategy: appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType, RollingUpdate: &appsv1.RollingUpdateDeployment{}}, wantRolling: true, wantSurge: 5, wantUnavailable: 5},
+		{name: "maxSurge only", strategy: appsv1.DeploymentStrategy{RollingUpdate: &appsv1.RollingUpdateDeployment{MaxSurge: ptr.To(intstr.FromInt32(1))}}, wantRolling: true, wantSurge: 1, wantUnavailable: 5},
+		{name: "both set", strategy: appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType, RollingUpdate: &appsv1.RollingUpdateDeployment{MaxSurge: ptr.To(intstr.FromInt32(1)), MaxUnavailable: ptr.To(intstr.FromInt32(0))}}, wantRolling: true, wantSurge: 1, wantUnavailable: 0},
+		{name: "recreate", strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fleet := orchestrationv1alpha1.RayClusterFleet{Spec: orchestrationv1alpha1.RayClusterFleetSpec{Replicas: ptr.To(int32(20)), Strategy: tt.strategy}}
+			if got := IsRollingUpdate(&fleet); got != tt.wantRolling {
+				t.Errorf("IsRollingUpdate = %v, want %v", got, tt.wantRolling)
+			}
+			if got := MaxSurge(fleet); got != tt.wantSurge {
+				t.Errorf("MaxSurge = %d, want %d", got, tt.wantSurge)
+			}
+			if got := MaxUnavailable(fleet); got != tt.wantUnavailable {
+				t.Errorf("MaxUnavailable = %d, want %d", got, tt.wantUnavailable)
+			}
+			newRS := &orchestrationv1alpha1.RayClusterReplicaSet{Spec: orchestrationv1alpha1.RayClusterReplicaSetSpec{Replicas: ptr.To(int32(0))}}
+			if got, err := NewRSNewReplicas(&fleet, nil, newRS); err != nil || got != 20 {
+				t.Errorf("NewRSNewReplicas = %d, %v, want 20, nil", got, err)
 			}
 		})
 	}
