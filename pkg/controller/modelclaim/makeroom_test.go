@@ -154,6 +154,23 @@ func newClaim(t *testing.T, r *ModelClaimReconciler, name string, created time.T
 	require.NoError(t, r.Create(context.Background(), claim))
 }
 
+func newPrioritySleepClaim(t *testing.T, r *ModelClaimReconciler, name string, priority int32, created time.Time) {
+	t.Helper()
+	claim := withFinalizer(claimOnPod(name, "", modelv1alpha1.ModelClaimActive, 300, 100))
+	claim.Status.Instances = nil
+	claim.CreationTimestamp = metav1.NewTime(created)
+	claim.Spec.Priority = priority
+	claim.Spec.PreemptionPolicy = modelv1alpha1.ModelClaimPreemptionSleepLowerPriority
+	require.NoError(t, r.Create(context.Background(), claim))
+}
+
+func setClaimPriority(t *testing.T, r *ModelClaimReconciler, name string, priority int32) {
+	t.Helper()
+	claim := getModel(t, r, name)
+	claim.Spec.Priority = priority
+	require.NoError(t, r.Update(context.Background(), claim))
+}
+
 func scheduledOf(t *testing.T, r *ModelClaimReconciler, name string) *metav1.Condition {
 	t.Helper()
 	condition := meta.FindStatusCondition(getModel(t, r, name).Status.Conditions,
@@ -166,6 +183,223 @@ var (
 	at0758 = time.Date(2026, time.October, 1, 7, 58, 0, 0, time.UTC)
 	at0759 = time.Date(2026, time.October, 1, 7, 59, 0, 0, time.UTC)
 )
+
+func TestReconcileNeverUsesTheExistingMakeRoomPath(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+	claim := withFinalizer(claimOnPod("never", "", modelv1alpha1.ModelClaimActive, 300, 100))
+	claim.Status.Instances = nil
+	claim.Spec.PreemptionPolicy = modelv1alpha1.ModelClaimPreemptionNever
+	require.NoError(t, r.Create(context.Background(), claim))
+
+	reconcileOnce(t, r, claim.Name)
+
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
+	assert.Equal(t, scheduledReasonMakingRoom, scheduledOf(t, r, claim.Name).Reason)
+}
+
+func TestReconcileSleepLowerPriorityProtectsEqualAndHigherPriorityClaims(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"equal", "warm-1", 300, 100, at0758}, serving{"higher", "warm-1", 300, 100, at0759})
+	setClaimPriority(t, r, "equal", 10)
+	setClaimPriority(t, r, "higher", 11)
+	newPrioritySleepClaim(t, r, "preemptor", 10, at0759)
+
+	reconcileOnce(t, r, "preemptor")
+
+	assert.Empty(t, runtime.sleepCalls)
+	assert.Equal(t, "NoMatchingPods", scheduledOf(t, r, "preemptor").Reason)
+}
+
+func TestReconcileSleepLowerPrioritySleepsNewlyIdleVictim(t *testing.T) {
+	recent := time.Date(2026, time.October, 1, 7, 59, 50, 0, time.UTC)
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"low", "warm-1", 300, 100, recent}, serving{"busy", "warm-1", 300, 100, at0758})
+	setClaimPriority(t, r, "low", 1)
+	setClaimPriority(t, r, "busy", 1)
+	runtime.snapshots[podNamed(t, r, "warm-1").Status.PodIP].Models[1].RequestsRunning = 1
+	newPrioritySleepClaim(t, r, "preemptor", 10, at0759)
+
+	reconcileOnce(t, r, "preemptor")
+
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "low", runtime.sleepCalls[0].ModelName)
+	assert.Empty(t, runtime.activateCalls)
+	condition := scheduledOf(t, r, "preemptor")
+	assert.Equal(t, scheduledReasonMakingRoom, condition.Reason)
+	assert.Contains(t, condition.Message, "lower-priority model low")
+}
+
+func TestPrioritySleepAcquiresReservationBeforeRuntimeSleep(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+	setClaimPriority(t, r, "a", 1)
+	setClaimPriority(t, r, "b", 1)
+	newPrioritySleepClaim(t, r, "preemptor", 10, at0759)
+	changed := runtime.onSleep
+	heldBeforeSleep := false
+	runtime.onSleep = func(req *SleepRequest) {
+		_, heldBeforeSleep = r.reservations().heldFor(testNamespace, "preemptor", r.now())
+		changed(req)
+	}
+
+	reconcileOnce(t, r, "preemptor")
+
+	assert.True(t, heldBeforeSleep)
+	assert.Len(t, runtime.sleepCalls, 1)
+	assert.Empty(t, runtime.activateCalls)
+}
+
+func TestPrioritySleepExecutesOneKnownVictimPerPass(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 280, 50, at0758},
+		serving{"b", "warm-1", 280, 50, at0759},
+		serving{"c", "warm-1", 280, 50, at0759})
+	for _, name := range []string{"a", "b", "c"} {
+		setClaimPriority(t, r, name, 1)
+		r.footprints().note(getModel(t, r, name), 60)
+	}
+	newPrioritySleepClaim(t, r, "preemptor", 10, at0759)
+
+	reconcileOnce(t, r, "preemptor")
+	assert.Len(t, runtime.sleepCalls, 1)
+	assert.Empty(t, runtime.activateCalls)
+
+	reconcileOnce(t, r, "preemptor")
+	assert.Len(t, runtime.sleepCalls, 2)
+	assert.Empty(t, runtime.activateCalls)
+
+	reconcileOnce(t, r, "preemptor")
+	require.Len(t, runtime.activateCalls, 1)
+	require.Len(t, getModel(t, r, "preemptor").Status.Instances, 1)
+}
+
+func TestPrioritySleepUnknownFootprintRefreshesAndReplans(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 280, 50, at0758},
+		serving{"b", "warm-1", 280, 50, at0759},
+		serving{"c", "warm-1", 280, 50, at0759})
+	for _, name := range []string{"a", "b", "c"} {
+		setClaimPriority(t, r, name, 1)
+	}
+	newPrioritySleepClaim(t, r, "preemptor", 10, at0759)
+
+	reconcileOnce(t, r, "preemptor")
+
+	assert.Len(t, runtime.sleepCalls, 1, "an unknown plan measures one victim")
+	assert.GreaterOrEqual(t, runtime.snapshotCalls, 3, "planning, quiet confirmation, and post-Sleep measurement")
+	assert.Empty(t, runtime.activateCalls)
+	_, known := r.footprints().seenAsleep(getModel(t, r, "a"))
+	assert.True(t, known)
+
+	reconcileOnce(t, r, "preemptor")
+	assert.Len(t, runtime.sleepCalls, 2, "the next pass replans from measured room")
+}
+
+func TestPrioritySleepRestartReplansWithoutDurableOwnership(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 280, 50, at0758},
+		serving{"b", "warm-1", 280, 50, at0759},
+		serving{"c", "warm-1", 280, 50, at0759})
+	for _, name := range []string{"a", "b", "c"} {
+		setClaimPriority(t, r, name, 1)
+	}
+	newPrioritySleepClaim(t, r, "preemptor", 10, at0759)
+	reconcileOnce(t, r, "preemptor")
+	require.Len(t, runtime.sleepCalls, 1)
+
+	fresh := &ModelClaimReconciler{
+		Client: r.Client, Scheme: r.Scheme, Recorder: r.Recorder, Runtime: runtime,
+		PoolPolicy: r.PoolPolicy, Divisions: newCardDivisionState(r.now), Backoff: newPlacementBackoff(r.now), Now: r.Now,
+	}
+	reconcileOnce(t, fresh, "preemptor")
+
+	assert.Len(t, runtime.sleepCalls, 2)
+	assert.Empty(t, runtime.activateCalls)
+	_, held := fresh.reservations().heldFor(testNamespace, "preemptor", fresh.now())
+	assert.True(t, held)
+}
+
+func TestPreemptionSleepFailureReleasesReservationAndBacksOffOnce(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+	setClaimPriority(t, r, "a", 1)
+	setClaimPriority(t, r, "b", 1)
+	newPrioritySleepClaim(t, r, "preemptor", 10, at0759)
+	runtime.sleepErr = &runtimeRefusal{"sleep failed: boom"}
+	r.Backoff = newPlacementBackoff(r.now)
+
+	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, "preemptor"))
+	require.Len(t, runtime.sleepCalls, 1)
+	_, held := r.reservations().heldFor(testNamespace, "preemptor", r.now())
+	assert.False(t, held)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, "a").Status.Instances[0].Phase)
+	key := client.ObjectKey{Namespace: testNamespace, Name: "preemptor"}
+	attempt, waiting := r.Backoff.attempts[key]
+	require.True(t, waiting)
+	assert.Equal(t, 1, attempt.refusals)
+
+	reconcileFor(t, r, "preemptor")
+	assert.Len(t, runtime.sleepCalls, 1, "backoff prevents another victim in the next pass")
+	assert.Equal(t, attempt, r.Backoff.attempts[key])
+}
+
+func TestPreemptionSleepFailureLetsLaterFeasibleClaimProceed(t *testing.T) {
+	recent := time.Date(2026, time.October, 1, 7, 59, 50, 0, time.UTC)
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, recent}, serving{"b", "warm-1", 300, 100, recent})
+	setClaimPriority(t, r, "a", 1)
+	setClaimPriority(t, r, "b", 1)
+	newPrioritySleepClaim(t, r, "high", 10, at0758)
+	low := withFinalizer(claimOnPod("low", "", modelv1alpha1.ModelClaimActive, 50, 50))
+	low.Status.Instances = nil
+	low.CreationTimestamp = metav1.NewTime(at0759)
+	require.NoError(t, r.Create(context.Background(), low))
+	runtime.sleepErr = &runtimeRefusal{"sleep failed: boom"}
+	r.Backoff = newPlacementBackoff(r.now)
+	reconcileOnce(t, r, "high")
+	require.Len(t, runtime.sleepCalls, 1)
+
+	reconcileOnce(t, r, "low")
+
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, "low", runtime.activateCalls[0].ModelName)
+	assert.Empty(t, getModel(t, r, "high").Status.Instances)
+}
+
+func TestPrioritySleepMakingRoomDoesNotCreateRefusalBackoff(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+	setClaimPriority(t, r, "a", 1)
+	setClaimPriority(t, r, "b", 1)
+	newPrioritySleepClaim(t, r, "preemptor", 10, at0759)
+
+	reconcileOnce(t, r, "preemptor")
+
+	assert.Len(t, runtime.sleepCalls, 1)
+	_, waiting := r.Backoff.attempts[client.ObjectKey{Namespace: testNamespace, Name: "preemptor"}]
+	assert.False(t, waiting)
+}
+
+func TestPrioritySleepPreemptorKeepsPlacementTurn(t *testing.T) {
+	recent := time.Date(2026, time.October, 1, 7, 59, 50, 0, time.UTC)
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, recent}, serving{"b", "warm-1", 300, 100, recent})
+	setClaimPriority(t, r, "a", 1)
+	setClaimPriority(t, r, "b", 1)
+	newPrioritySleepClaim(t, r, "high", 10, at0758)
+	low := withFinalizer(claimOnPod("low", "", modelv1alpha1.ModelClaimActive, 50, 50))
+	low.Status.Instances = nil
+	low.CreationTimestamp = metav1.NewTime(at0759)
+	require.NoError(t, r.Create(context.Background(), low))
+
+	reconcileOnce(t, r, "low")
+
+	assert.Empty(t, runtime.activateCalls)
+	assert.Equal(t, scheduledReasonWaitingForPlacementTurn, scheduledOf(t, r, "low").Reason)
+	assert.Contains(t, scheduledOf(t, r, "low").Message, "high")
+}
 
 func TestReconcileMakesRoomForANewClaimByPuttingTheIdlestToSleep(t *testing.T) {
 	r, runtime := servingPool(t, keepNoWakeReserve, 1,

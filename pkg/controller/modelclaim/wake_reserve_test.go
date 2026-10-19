@@ -455,16 +455,25 @@ func TestReconcilePutsTheNeighbourIdleLongestToSleepToMakeRoomForAWake(t *testin
 	assert.Equal(t, "waker", runtime.wakeCalls[0].ModelName)
 }
 
-func TestReconcileMakesRoomForAWakeOnACardHeldForANewClaim(t *testing.T) {
+func TestPreemptionReservationKeepsAWakeFromConsumingHeldRoom(t *testing.T) {
 	r, runtime, pod := crowdedCard(t, keepNoWakeReserve)
-	// Room is being made on this card for a new claim, and the card is held
-	// for it. A request to wake an engine goes first.
+	// Priority preemption has promised this room to a new claim. A wake waits
+	// until that reservation is released rather than consuming the room.
 	require.True(t, r.reservations().hold(cardOf(pod), "new", 400, r.now()))
 
 	reconcileOnce(t, r, "waker")
 
+	assert.Empty(t, runtime.sleepCalls)
+	assert.Empty(t, runtime.wakeCalls)
+	assert.Equal(t, instanceReasonWaitingForRoom, getModel(t, r, "waker").Status.Instances[0].Reason)
+
+	r.reservations().release(testNamespace, "new")
+	reconcileOnce(t, r, "waker")
+
 	require.Len(t, runtime.sleepCalls, 1)
 	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
+	reconcileOnce(t, r, "waker")
+	require.Len(t, runtime.wakeCalls, 1)
 }
 
 // queued is an engine on the card of queueCard: awake, and last seen busy at

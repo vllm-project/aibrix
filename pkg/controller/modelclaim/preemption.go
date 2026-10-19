@@ -23,6 +23,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 )
@@ -57,6 +58,59 @@ func preemptionPolicyOf(pm *modelv1alpha1.ModelClaim) modelv1alpha1.ModelClaimPr
 		return modelv1alpha1.ModelClaimPreemptionNever
 	}
 	return pm.Spec.PreemptionPolicy
+}
+
+// makeRoomByPrioritySleep reserves the selected card and sleeps one victim.
+// The next reconcile rebuilds the ledger from the post-Sleep snapshot and
+// either places the preemptor or plans the next victim.
+func (r *ModelClaimReconciler) makeRoomByPrioritySleep(
+	ctx context.Context,
+	pm *modelv1alpha1.ModelClaim,
+	perGPU perGPUBytes,
+	candidates []corev1.Pod,
+	claims *modelv1alpha1.ModelClaimList,
+	ledgers map[string]podLedger,
+	states map[string]PodPlacementState,
+	readings *runtimeReadings,
+) (string, bool) {
+	now := r.now()
+	held, holding := r.reservations().heldFor(pm.Namespace, pm.Name, now)
+	eligible := candidates
+	if holding {
+		eligible = nil
+		for i := range candidates {
+			if candidates[i].Name == held.Name {
+				eligible = append(eligible, candidates[i])
+				break
+			}
+		}
+	}
+	plan, err := r.planSleepPreemption(ctx, pm, eligible, claims, ledgers, states, readings)
+	if err != nil {
+		klog.ErrorS(err, "could not plan lower-priority sleep preemption", "modelClaim", klog.KObj(pm))
+		r.reservations().release(pm.Namespace, pm.Name)
+		return "", false
+	}
+	if plan == nil || len(plan.victims) == 0 {
+		r.reservations().release(pm.Namespace, pm.Name)
+		return "", false
+	}
+	seat := perGPU.minimumReserveBytes()
+	if !r.reservations().hold(cardOf(plan.pod), pm.Name, seat, now) {
+		return "", false
+	}
+	victim := plan.victims[0]
+	if !r.putIdleEngineToSleep(ctx, victim.idleEngine(), plan.pod, pm, readings) {
+		r.reservations().release(pm.Namespace, pm.Name)
+		return "", false
+	}
+	more := ""
+	if left := len(plan.victims) - 1; left > 0 {
+		more = fmt.Sprintf(", and %d more may follow", left)
+	}
+	return fmt.Sprintf("no pod has room for this model, which needs %s on a card; "+
+		"lower-priority model %s (priority %d) was put to sleep on pod %s to make room%s",
+		gibibytes(seat), victim.model.ModelName, victim.priority, plan.pod.Name, more), true
 }
 
 // planSleepPreemption chooses the best candidate Pod and the lower-priority

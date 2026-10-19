@@ -762,7 +762,8 @@ func (r *ModelClaimReconciler) ensureActivated(
 			//
 			// A failed instance that cannot be replaced stays as it is, so the
 			// claim stays Failed.
-			refusal := r.refusePlacement(ctx, pm, perGPU, candidates, ledgers, admissible, refusals, failed, selectErr, readings)
+			refusal := r.refusePlacement(ctx, pm, perGPU, candidates, claims, ledgers, placementStates,
+				admissible, refusals, failed, selectErr, readings)
 			reason := refusal.reason
 			if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
 				Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
@@ -785,6 +786,11 @@ func (r *ModelClaimReconciler) ensureActivated(
 			}
 			if reason == constants.ModelClaimReasonTooLargeForAnyCard {
 				return backoff.refusedAsTooLarge(claim, pm.Generation, refusedOn), nil
+			}
+			if reason == scheduledReasonMakingRoom &&
+				preemptionPolicyOf(pm) == modelv1alpha1.ModelClaimPreemptionSleepLowerPriority {
+				backoff.placed(claim)
+				return DefaultRequeueDuration, nil
 			}
 			// The API server shows less on a card than the cache did when this
 			// try began. The cache had not caught up with a change, most often
@@ -1028,7 +1034,9 @@ func (r *ModelClaimReconciler) refusePlacement(
 	pm *modelv1alpha1.ModelClaim,
 	perGPU perGPUBytes,
 	candidates []corev1.Pod,
+	claims *modelv1alpha1.ModelClaimList,
 	ledgers map[string]podLedger,
+	placementStates map[string]PodPlacementState,
 	admissible []corev1.Pod,
 	refusals []podRefusal,
 	failed []int,
@@ -1049,7 +1057,15 @@ func (r *ModelClaimReconciler) refusePlacement(
 			"the best of them offers %s on a card", gibibytes(perGPU.minimumReserveBytes()), gibibytes(largest))
 	}
 	if refused.reason == "NoMatchingPods" && len(failed) == 0 {
-		if why, making := r.makeRoomToPlace(ctx, pm, perGPU, candidates, ledgers, readings); making {
+		why, making := "", false
+		switch preemptionPolicyOf(pm) {
+		case modelv1alpha1.ModelClaimPreemptionSleepLowerPriority:
+			why, making = r.makeRoomByPrioritySleep(ctx, pm, perGPU, candidates, claims,
+				ledgers, placementStates, readings)
+		default:
+			why, making = r.makeRoomToPlace(ctx, pm, perGPU, candidates, ledgers, readings)
+		}
+		if making {
 			refused.reason, refused.message, refused.eventType = scheduledReasonMakingRoom, why, corev1.EventTypeNormal
 		}
 	}

@@ -115,6 +115,40 @@ func (r *ModelClaimReconciler) claimFeasibleForPlacement(
 	return false
 }
 
+// claimFeasibleForPlacementWithPolicy applies the claim's make-room policy
+// when deciding whether it keeps its priority/FIFO placement turn.
+func (r *ModelClaimReconciler) claimFeasibleForPlacementWithPolicy(
+	ctx context.Context,
+	claim *modelv1alpha1.ModelClaim,
+	candidates []corev1.Pod,
+	claims *modelv1alpha1.ModelClaimList,
+	ledgers map[string]podLedger,
+	readings *runtimeReadings,
+) bool {
+	if preemptionPolicyOf(claim) != modelv1alpha1.ModelClaimPreemptionSleepLowerPriority {
+		return r.claimFeasibleForPlacement(ctx, claim, candidates, ledgers, readings)
+	}
+	perGPU, err := perGPUBytesOf(claim)
+	if err != nil {
+		return false
+	}
+	shared, valid := candidatePodsForClaim(claim, candidates)
+	if !valid {
+		return false
+	}
+	admissible, _ := admissibleCandidates(shared, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(claim))
+	if len(admissible) > 0 {
+		return true
+	}
+	parallelism, err := modelParallelism(claim)
+	if err != nil {
+		return false
+	}
+	states := placementStatesFrom(readings.ofPods(ctx, shared), shared, claim.Spec.ArtifactURL, parallelism)
+	plan, err := r.planSleepPreemption(ctx, claim, shared, claims, ledgers, states, readings)
+	return err == nil && plan != nil
+}
+
 // placementTurnBlocker identifies the first feasible predecessor using the
 // same authoritative claims that built the card account. Existing instances
 // and acquired reservations retain their placement turns.
@@ -134,7 +168,7 @@ func (r *ModelClaimReconciler) placementTurnBlocker(
 		return nil
 	}
 	// An infeasible current claim must retain its actual refusal and backoff.
-	if !r.claimFeasibleForPlacement(ctx, current, candidates, ledgers, readings) {
+	if !r.claimFeasibleForPlacementWithPolicy(ctx, current, candidates, claims, ledgers, readings) {
 		return nil
 	}
 	waiting := make([]modelv1alpha1.ModelClaim, 0, len(claims.Items)+1)
@@ -163,7 +197,7 @@ func (r *ModelClaimReconciler) placementTurnBlocker(
 			claim.Generation, roomSignatureOf(shared, claims)) {
 			continue
 		}
-		if r.claimFeasibleForPlacement(ctx, claim, candidates, ledgers, readings) {
+		if r.claimFeasibleForPlacementWithPolicy(ctx, claim, candidates, claims, ledgers, readings) {
 			return claim
 		}
 	}
