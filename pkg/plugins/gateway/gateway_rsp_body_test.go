@@ -1350,14 +1350,18 @@ func TestHandleResponseBody_EndOfStreamNoTokens(t *testing.T) {
 // counted, so a failed increment must be reported without replacing it: an
 // ImmediateResponse at this point would reset a response that has been served.
 func TestHandleResponseBody_TPMIncrError(t *testing.T) {
+	nonStreamingBody := `{"model": "test-model", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}`
 	for _, tt := range []struct {
-		name   string
-		stream bool
-		body   string
+		name       string
+		stream     bool
+		cancelled  bool
+		body       string
+		wantReason string
 	}{
 		{
-			name: "non-streaming",
-			body: `{"model": "test-model", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}`,
+			name:       "non-streaming",
+			body:       nonStreamingBody,
+			wantReason: "error",
 		},
 		{
 			name:   "streaming",
@@ -1365,15 +1369,30 @@ func TestHandleResponseBody_TPMIncrError(t *testing.T) {
 			body: "data: {\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n" +
 				"data: {\"model\":\"test-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n" +
 				"data: [DONE]\n\n",
+			wantReason: "error",
+		},
+		{
+			name:       "request cancelled",
+			cancelled:  true,
+			body:       nonStreamingBody,
+			wantReason: "cancelled",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var requestsWithUsage float64
+			var failureReasons []string
 			originalFn := metrics.IncrementCounterMetricFnForTest
 			defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
 			metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
-				if name == metrics.GatewayRequestsWithUsageTotal {
+				switch name {
+				case metrics.GatewayRequestsWithUsageTotal:
 					requestsWithUsage += value
+				case metrics.GatewayTPMIncrementFailuresTotal:
+					for i, l := range labelNames {
+						if l == "reason" {
+							failureReasons = append(failureReasons, labelValues[i])
+						}
+					}
 				}
 			}
 
@@ -1384,7 +1403,12 @@ func TestHandleResponseBody_TPMIncrError(t *testing.T) {
 			}
 
 			requestID := "test-req-tpm-err-" + tt.name + "-" + time.Now().Format("150405.000")
-			routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "test-user")
+			reqCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tt.cancelled {
+				cancel()
+			}
+			routerCtx := types.NewRoutingContext(reqCtx, "random", "test-model", "", requestID, "test-user")
 			routerCtx.ReqPath = PathChatCompletions
 			routerCtx.RequestTime = time.Now()
 			routerCtx.Stream = tt.stream
@@ -1413,6 +1437,7 @@ func TestHandleResponseBody_TPMIncrError(t *testing.T) {
 			assert.NotContains(t, headers, HeaderUpdateTPM)
 			assert.Equal(t, requestID, headers[HeaderRequestID])
 			assert.Equal(t, 1.0, requestsWithUsage, "request_end must still run")
+			assert.Equal(t, []string{tt.wantReason}, failureReasons, "the failed increment must be counted once, by reason")
 			mockRL.AssertExpectations(t)
 		})
 	}
