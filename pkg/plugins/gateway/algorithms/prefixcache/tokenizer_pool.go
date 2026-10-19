@@ -37,18 +37,20 @@ const (
 
 // TokenizerPoolConfig represents configuration for the TokenizerPool
 type TokenizerPoolConfig struct {
-	EnableVLLMRemote     bool                // Feature flag
-	EndpointTemplate     string              // "http://%s:8000"
-	HealthCheckPeriod    time.Duration       // Default: 30s
-	TokenizerTTL         time.Duration       // Default: 5m
-	MaxTokenizersPerPool int                 // Default: 100
-	DefaultTokenizer     tokenizer.Tokenizer // Default when remote fails
-	ModelServiceMap      map[string]string   // Model -> Service endpoint mapping
-	Timeout              time.Duration       // Request timeout
+	EnableVLLMRemote        bool                // Feature flag
+	RemoteTokenizerEndpoint string              // Explicit endpoint shared by all models
+	EndpointTemplate        string              // "http://%s:8000"
+	HealthCheckPeriod       time.Duration       // Default: 30s
+	TokenizerTTL            time.Duration       // Default: 5m
+	MaxTokenizersPerPool    int                 // Default: 100
+	DefaultTokenizer        tokenizer.Tokenizer // Default when remote fails
+	ModelServiceMap         map[string]string   // Model -> Service endpoint mapping
+	Timeout                 time.Duration       // Request timeout
 }
 
 // tokenizerEntry represents a cached tokenizer with metadata
 type tokenizerEntry struct {
+	model        string
 	tokenizer    tokenizer.Tokenizer
 	endpoint     string
 	podIP        string // set when the endpoint is a pod rather than a ModelServiceMap entry
@@ -78,7 +80,7 @@ func (e *tokenizerEntry) usable(pods []*v1.Pod) bool {
 // TokenizerPool manages model-specific tokenizers with caching and health checking
 type TokenizerPool struct {
 	mu                sync.RWMutex
-	tokenizers        map[string]*tokenizerEntry // model -> tokenizer mapping
+	tokenizers        map[string]*tokenizerEntry // model/endpoint -> tokenizer mapping
 	config            TokenizerPoolConfig
 	cache             cache.Cache           // for pod discovery
 	metrics           *TokenizerPoolMetrics // Can be nil when feature disabled
@@ -91,6 +93,7 @@ type TokenizerPool struct {
 	// Together they keep a down endpoint from being probed by every request.
 	creating map[string]chan struct{}
 	retryAt  map[string]time.Time
+	nextPod  map[string]uint64
 }
 
 // defaultCreateRetryBackoff is how long an endpoint that failed is left alone
@@ -187,6 +190,7 @@ func NewTokenizerPool(config TokenizerPoolConfig, cache cache.Cache) *TokenizerP
 		stopCh:     make(chan struct{}),
 		creating:   make(map[string]chan struct{}),
 		retryAt:    make(map[string]time.Time),
+		nextPod:    make(map[string]uint64),
 	}
 
 	// Only create and register metrics if feature is enabled
@@ -273,22 +277,24 @@ func (p *TokenizerPool) GetTokenizer(model string, pods []*v1.Pod) tokenizer.Tok
 		return p.config.DefaultTokenizer
 	}
 
-	// Acquire write lock directly to avoid race condition
-	// TODO: Consider implementing reference counting or double-checked locking
-	// to improve concurrency performance while maintaining thread safety
 	p.mu.Lock()
-	entry, exists := p.tokenizers[model]
+	stale := p.removeUnavailablePodTokenizersLocked(model, pods)
+	endpoint, podIP := p.findVLLMEndpointForModel(model, pods)
+	key := tokenizerKey(model, podIP)
+	entry, exists := p.tokenizers[key]
 	if exists && entry.usable(pods) {
 		// Update lastUsed while still holding the lock
 		entry.lastUsed = time.Now()
 		tok := entry.tokenizer
 		p.mu.Unlock()
+		closeTokenizers(stale)
 		return tok
 	}
 	p.mu.Unlock()
+	closeTokenizers(stale)
 
 	// Slow path: create new tokenizer
-	return p.createOrUpdateTokenizer(model, pods)
+	return p.createOrUpdateTokenizer(model, pods, endpoint, podIP, key)
 }
 
 // createOrUpdateTokenizer creates or updates a tokenizer for the model
@@ -300,26 +306,24 @@ func (p *TokenizerPool) GetTokenizer(model string, pods []*v1.Pod) tokenizer.Tok
 // model gets the default tokenizer at once. An existing entry for it is still
 // probed by the background health check, which brings it back when the
 // endpoint recovers.
-func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) tokenizer.Tokenizer {
+func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod, endpoint, podIP, key string) tokenizer.Tokenizer {
 	for {
 		p.mu.Lock()
 
 		// Double-check after acquiring write lock
-		if entry, exists := p.tokenizers[model]; exists && entry.usable(pods) {
+		if entry, exists := p.tokenizers[key]; exists && entry.usable(pods) {
 			entry.lastUsed = time.Now()
 			p.mu.Unlock()
 			return entry.tokenizer
 		}
 
 		// Replacing an unhealthy tokenizer does not need another pool slot.
-		if _, exists := p.tokenizers[model]; !exists && len(p.tokenizers) >= p.config.MaxTokenizersPerPool {
+		if _, exists := p.tokenizers[key]; !exists && len(p.tokenizers) >= p.config.MaxTokenizersPerPool {
 			p.mu.Unlock()
 			klog.Warningf("TokenizerPool reached max size %d, using default tokenizer", p.config.MaxTokenizersPerPool)
 			return p.config.DefaultTokenizer
 		}
 
-		// Find endpoint for model
-		endpoint, podIP := p.findVLLMEndpointForModel(model, pods)
 		if endpoint == "" {
 			p.mu.Unlock()
 			klog.V(4).Infof("No vLLM endpoint found for model %s, using default tokenizer", model)
@@ -356,7 +360,7 @@ func (p *TokenizerPool) createOrUpdateTokenizer(model string, pods []*v1.Pod) to
 			return p.config.DefaultTokenizer
 		}
 		delete(p.retryAt, endpoint)
-		tok, outcome := p.addTokenizerLocked(model, endpoint, podIP, tok, pods)
+		tok, outcome := p.addTokenizerLocked(key, model, endpoint, podIP, tok, pods)
 		p.mu.Unlock()
 		switch outcome {
 		case tokenizerAdded:
@@ -419,9 +423,9 @@ const (
 
 // addTokenizerLocked puts a newly created tokenizer in the pool and returns
 // the tokenizer the caller should use. The caller must hold the pool lock.
-func (p *TokenizerPool) addTokenizerLocked(model, endpoint, podIP string, tok tokenizer.Tokenizer, pods []*v1.Pod) (tokenizer.Tokenizer, addTokenizerOutcome) {
+func (p *TokenizerPool) addTokenizerLocked(key, model, endpoint, podIP string, tok tokenizer.Tokenizer, pods []*v1.Pod) (tokenizer.Tokenizer, addTokenizerOutcome) {
 	// Double-check: another goroutine might have created it while we were checking health
-	entry, exists := p.tokenizers[model]
+	entry, exists := p.tokenizers[key]
 	if exists && entry.usable(pods) {
 		// Another goroutine beat us to it, use theirs and discard ours
 		entry.lastUsed = time.Now()
@@ -448,7 +452,8 @@ func (p *TokenizerPool) addTokenizerLocked(model, endpoint, podIP string, tok to
 
 	// Add to pool
 	now := time.Now()
-	p.tokenizers[model] = &tokenizerEntry{
+	p.tokenizers[key] = &tokenizerEntry{
+		model:        model,
 		tokenizer:    tok,
 		endpoint:     endpoint,
 		podIP:        podIP,
@@ -475,12 +480,19 @@ func (p *TokenizerPool) createRetryBackoff() time.Duration {
 // findVLLMEndpointForModel finds the vLLM endpoint for a specific model
 func (p *TokenizerPool) findVLLMEndpointForModel(model string, pods []*v1.Pod) (endpoint, podIP string) {
 	// Priority order for endpoint discovery:
-	// 1. Service endpoint (if configured)
+	// 1. Explicit shared endpoint (if configured)
+	if p.config.RemoteTokenizerEndpoint != "" {
+		return p.config.RemoteTokenizerEndpoint, ""
+	}
+
+	// 2. Service endpoint (if configured)
 	if service, exists := p.config.ModelServiceMap[model]; exists {
 		return service, ""
 	}
 
-	// 2. Direct pod endpoint
+	// 3. Direct pod endpoints. Advance for every request so an active model is
+	// not pinned to the first ready replica. The caller holds p.mu.
+	var candidates []*v1.Pod
 	for _, pod := range pods {
 		if !isPodReady(pod) {
 			continue
@@ -497,10 +509,56 @@ func (p *TokenizerPool) findVLLMEndpointForModel(model string, pods []*v1.Pod) (
 			continue
 		}
 
+		candidates = append(candidates, pod)
+	}
+	if len(candidates) > 0 {
+		index := p.nextPod[model] % uint64(len(candidates))
+		p.nextPod[model]++
+		pod := candidates[index]
 		return fmt.Sprintf(p.config.EndpointTemplate, pod.Status.PodIP), pod.Status.PodIP
 	}
 
 	return "", ""
+}
+
+func tokenizerKey(model, podIP string) string {
+	if podIP == "" {
+		return model
+	}
+	return model + "\x00" + podIP
+}
+
+// removeUnavailablePodTokenizersLocked drops connections whose discovered pod
+// is no longer eligible. This preserves capacity during rollouts and scale-down.
+func (p *TokenizerPool) removeUnavailablePodTokenizersLocked(model string, pods []*v1.Pod) []tokenizer.Tokenizer {
+	var removed []tokenizer.Tokenizer
+	for key, entry := range p.tokenizers {
+		if entry.model == model && entry.podIP != "" && !eligiblePodIPPresent(model, entry.podIP, pods) {
+			removed = append(removed, entry.tokenizer)
+			delete(p.tokenizers, key)
+		}
+	}
+	if len(removed) > 0 {
+		p.setActiveTokenizers(float64(len(p.tokenizers)))
+	}
+	return removed
+}
+
+func eligiblePodIPPresent(model, podIP string, pods []*v1.Pod) bool {
+	for _, pod := range pods {
+		if pod.Status.PodIP == podIP && isPodReady(pod) && getModelFromPod(pod) == model && isVLLMPod(pod) {
+			return true
+		}
+	}
+	return false
+}
+
+func closeTokenizers(tokenizers []tokenizer.Tokenizer) {
+	for _, tok := range tokenizers {
+		if closer, ok := tok.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	}
 }
 
 // getModelFromPod extracts model information from pod
@@ -594,12 +652,12 @@ func (p *TokenizerPool) performHealthCheck() {
 	// and one unresponsive endpoint would stall them all.
 	p.mu.RLock()
 	entries := make(map[string]*tokenizerEntry, len(p.tokenizers))
-	for model, entry := range p.tokenizers {
-		entries[model] = entry
+	for key, entry := range p.tokenizers {
+		entries[key] = entry
 	}
 	p.mu.RUnlock()
 
-	for model, entry := range entries {
+	for key, entry := range entries {
 		remoteTok, ok := entry.tokenizer.(interface{ IsHealthy(context.Context) bool })
 		if !ok {
 			continue
@@ -610,7 +668,7 @@ func (p *TokenizerPool) performHealthCheck() {
 
 		p.mu.Lock()
 		// Skip entries replaced or removed while the probe ran.
-		if p.tokenizers[model] != entry {
+		if p.tokenizers[key] != entry {
 			p.mu.Unlock()
 			continue
 		}
@@ -622,7 +680,7 @@ func (p *TokenizerPool) performHealthCheck() {
 		p.mu.Unlock()
 		if !healthy && oldStatus {
 			// Only log and count when transitioning from healthy to unhealthy
-			klog.Warningf("Tokenizer for model %s is now unhealthy", model)
+			klog.Warningf("Tokenizer for model %s at endpoint %s is now unhealthy", entry.model, entry.endpoint)
 			p.incUnhealthyTokenizers()
 		}
 	}
@@ -643,15 +701,15 @@ func (p *TokenizerPool) cleanupStaleTokenizers() {
 			delete(p.retryAt, endpoint)
 		}
 	}
-	for model, entry := range p.tokenizers {
+	for key, entry := range p.tokenizers {
 		// Remove if unused for TTL duration
 		if now.Sub(entry.lastUsed) > p.config.TokenizerTTL {
 			staleTokenizers = append(staleTokenizers, struct {
 				model string
 				tok   tokenizer.Tokenizer
-			}{model: model, tok: entry.tokenizer})
-			delete(p.tokenizers, model)
-			klog.V(4).Infof("Removed stale tokenizer for model %s", model)
+			}{model: entry.model, tok: entry.tokenizer})
+			delete(p.tokenizers, key)
+			klog.V(4).Infof("Removed stale tokenizer for model %s", entry.model)
 		}
 	}
 	p.setActiveTokenizers(float64(len(p.tokenizers)))

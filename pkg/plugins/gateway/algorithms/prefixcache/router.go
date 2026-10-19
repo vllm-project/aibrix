@@ -236,14 +236,15 @@ func NewTokenizer() tokenizer.Tokenizer {
 // pkg/constants, the rest are read by name here.
 func loadTokenizerPoolConfigFromEnv() TokenizerPoolConfig {
 	return TokenizerPoolConfig{
-		EnableVLLMRemote:     true, // We're using it, so enable it
-		EndpointTemplate:     utils.LoadEnv("AIBRIX_VLLM_TOKENIZER_ENDPOINT_TEMPLATE", "http://%s:8000"),
-		HealthCheckPeriod:    utils.LoadEnvDuration("AIBRIX_TOKENIZER_HEALTH_CHECK_PERIOD", 30*time.Second),
-		TokenizerTTL:         utils.LoadEnvDuration("AIBRIX_TOKENIZER_TTL", 300*time.Second),
-		MaxTokenizersPerPool: utils.LoadEnvInt("AIBRIX_MAX_TOKENIZERS_PER_POOL", 100),
-		DefaultTokenizer:     nil, // Set by the caller
-		Timeout:              utils.LoadEnvDuration("AIBRIX_TOKENIZER_REQUEST_TIMEOUT", 5*time.Second),
-		ModelServiceMap:      make(map[string]string),
+		EnableVLLMRemote:        true, // We're using it, so enable it
+		RemoteTokenizerEndpoint: utils.LoadEnv(constants.EnvPrefixCacheRemoteTokenizerEndpoint, ""),
+		EndpointTemplate:        utils.LoadEnv("AIBRIX_VLLM_TOKENIZER_ENDPOINT_TEMPLATE", "http://%s:8000"),
+		HealthCheckPeriod:       utils.LoadEnvDuration("AIBRIX_TOKENIZER_HEALTH_CHECK_PERIOD", 30*time.Second),
+		TokenizerTTL:            utils.LoadEnvDuration("AIBRIX_TOKENIZER_TTL", 300*time.Second),
+		MaxTokenizersPerPool:    utils.LoadEnvInt("AIBRIX_MAX_TOKENIZERS_PER_POOL", 100),
+		DefaultTokenizer:        nil, // Set by the caller
+		Timeout:                 utils.LoadEnvDuration("AIBRIX_TOKENIZER_REQUEST_TIMEOUT", 5*time.Second),
+		ModelServiceMap:         make(map[string]string),
 	}
 }
 

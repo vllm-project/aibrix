@@ -19,8 +19,10 @@ package prefixcache
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -387,6 +389,144 @@ func TestTokenizerPoolGetTokenizer(t *testing.T) {
 		endpoint, _ := pool.findVLLMEndpointForModel("llama2-7b", pods)
 		assert.Equal(t, "http://llama-service:8000", endpoint)
 	})
+
+	t.Run("explicit endpoint takes precedence", func(t *testing.T) {
+		pool.config.RemoteTokenizerEndpoint = "http://shared-tokenizer:8000"
+		pool.config.ModelServiceMap["llama2-7b"] = "http://llama-service:8000"
+		pod := createTestPod("pod1", "llama2-7b", "vllm", true)
+
+		endpoint, podIP := pool.findVLLMEndpointForModel("llama2-7b", []*v1.Pod{&pod})
+		assert.Equal(t, "http://shared-tokenizer:8000", endpoint)
+		assert.Empty(t, podIP)
+	})
+}
+
+func TestTokenizerPoolDistributesRequestsAcrossReadyReplicas(t *testing.T) {
+	resetPrometheusRegistry()
+	var requestCounts [2]atomic.Int32
+	var pods []*v1.Pod
+	var ineligibleCalls [3]atomic.Int32
+	for i := range ineligibleCalls {
+		i := i
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			ineligibleCalls[i].Add(1)
+			_, _ = w.Write([]byte(`{"tokens":[],"count":0}`))
+		}))
+		defer server.Close()
+		pod := createTestPod(fmt.Sprintf("ineligible-%d", i), "m", "vllm", true)
+		pod.Status.PodIP = server.URL
+		switch i {
+		case 0:
+			pod.Status.Conditions[0].Status = v1.ConditionFalse
+		case 1:
+			pod.Labels[constants.ModelLabelName] = "another-model"
+		case 2:
+			pod.Spec.Containers[0].Env[0].Value = "sglang"
+			pod.Spec.Containers[0].Ports = nil
+		}
+		pods = append(pods, &pod)
+	}
+	for i := range requestCounts {
+		i := i
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.ContentLength > 0 {
+				requestCounts[i].Add(1)
+			}
+			_, _ = w.Write([]byte(`{"tokens":[],"count":0}`))
+		}))
+		defer server.Close()
+		pod := createTestPod(fmt.Sprintf("pod-%d", i), "m", "vllm", true)
+		pod.Status.PodIP = server.URL
+		pods = append(pods, &pod)
+	}
+
+	pool := NewTokenizerPool(TokenizerPoolConfig{
+		EnableVLLMRemote: true, EndpointTemplate: "%s", MaxTokenizersPerPool: 10,
+		DefaultTokenizer: &mockTokenizer{}, Timeout: time.Second,
+	}, nil)
+	defer func() { assert.NoError(t, pool.Close()) }()
+
+	for i := 0; i < 6; i++ {
+		_, err := pool.GetTokenizer("m", pods).TokenizeInputText("request")
+		require.NoError(t, err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := pool.GetTokenizer("m", pods).TokenizeInputText("concurrent request")
+			assert.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+
+	assert.Equal(t, int32(14), requestCounts[0].Load()) // one health probe + thirteen requests
+	assert.Equal(t, int32(14), requestCounts[1].Load())
+	for i := range ineligibleCalls {
+		assert.Zero(t, ineligibleCalls[i].Load())
+	}
+	assert.Len(t, pool.tokenizers, 2, "one reusable tokenizer should be cached per endpoint")
+}
+
+func TestTokenizerPoolUsesConfiguredRemoteEndpoint(t *testing.T) {
+	resetPrometheusRegistry()
+	var bodies []string
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"tokens":[],"count":0}`))
+	}))
+	defer server.Close()
+
+	pod := createTestPod("pod", "m", "vllm", true)
+	pool := NewTokenizerPool(TokenizerPoolConfig{
+		EnableVLLMRemote: true, RemoteTokenizerEndpoint: server.URL,
+		ModelServiceMap:  map[string]string{"m": "http://unused-service:8000"},
+		EndpointTemplate: "http://%s:8000", MaxTokenizersPerPool: 10,
+		DefaultTokenizer: &mockTokenizer{}, Timeout: time.Second,
+	}, nil)
+	defer func() { assert.NoError(t, pool.Close()) }()
+
+	_, err := pool.GetTokenizer("m", []*v1.Pod{&pod}).TokenizeInputText("request")
+	require.NoError(t, err)
+	require.Len(t, bodies, 2, "health probe and request should use the configured endpoint")
+	for _, body := range bodies {
+		assert.True(t, strings.Contains(body, `"model":"m"`), body)
+	}
+}
+
+func TestTokenizerPoolDoesNotBypassFailedConfiguredEndpoint(t *testing.T) {
+	resetPrometheusRegistry()
+	configured := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer configured.Close()
+	var podCalls atomic.Int32
+	podServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		podCalls.Add(1)
+		_, _ = w.Write([]byte(`{"tokens":[],"count":0}`))
+	}))
+	defer podServer.Close()
+	pod := createTestPod("pod", "m", "vllm", true)
+	pod.Status.PodIP = podServer.URL
+	fallback := &mockTokenizer{}
+	pool := NewTokenizerPool(TokenizerPoolConfig{
+		EnableVLLMRemote: true, RemoteTokenizerEndpoint: configured.URL,
+		ModelServiceMap: map[string]string{"m": podServer.URL}, EndpointTemplate: "%s",
+		MaxTokenizersPerPool: 10, DefaultTokenizer: fallback, Timeout: time.Second,
+	}, nil)
+	defer func() { assert.NoError(t, pool.Close()) }()
+
+	assert.Same(t, fallback, pool.GetTokenizer("m", []*v1.Pod{&pod}))
+	assert.Zero(t, podCalls.Load(), "a failed explicit endpoint must not fall through to discovery")
 }
 
 func TestTokenizerPoolHealthCheck(t *testing.T) {
@@ -896,10 +1036,12 @@ func TestLoadTokenizerPoolConfigFromEnv(t *testing.T) {
 func TestLoadTokenizerPoolConfigFromEnvNonDurationDefaults(t *testing.T) {
 	t.Setenv("AIBRIX_VLLM_TOKENIZER_ENDPOINT_TEMPLATE", "")
 	t.Setenv("AIBRIX_MAX_TOKENIZERS_PER_POOL", "")
+	t.Setenv(constants.EnvPrefixCacheRemoteTokenizerEndpoint, "http://tokenizer-service:8000")
 
 	cfg := loadTokenizerPoolConfigFromEnv()
 
 	assert.True(t, cfg.EnableVLLMRemote)
+	assert.Equal(t, "http://tokenizer-service:8000", cfg.RemoteTokenizerEndpoint)
 	assert.Equal(t, "http://%s:8000", cfg.EndpointTemplate)
 	assert.Equal(t, 100, cfg.MaxTokenizersPerPool)
 	assert.Nil(t, cfg.DefaultTokenizer)
