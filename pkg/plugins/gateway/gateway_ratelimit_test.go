@@ -159,6 +159,45 @@ func TestCheckLimitsRPMAdmission(t *testing.T) {
 		rl.AssertExpectations(t)
 	})
 
+	t.Run("request rejected for TPM keeps no RPM slot", func(t *testing.T) {
+		redisServer := miniredis.RunT(t)
+		redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+		t.Cleanup(func() { _ = redisClient.Close() })
+		rl := ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, time.Minute)
+		_, err := rl.Incr(context.Background(), "alice_TPM_CURRENT", user.Tpm)
+		require.NoError(t, err)
+		s := &Server{ratelimiter: rl}
+
+		for range 3 {
+			rpm, resp, err := s.checkLimits(context.Background(), user)
+			if assert.Error(t, err) {
+				assert.Contains(t, err.Error(), "has exceeded TPM")
+			}
+			assert.Equal(t, int64(0), rpm)
+			require.NotNil(t, resp.GetImmediateResponse())
+			assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, resp.GetImmediateResponse().GetStatus().GetCode())
+		}
+		usage, err := rl.Get(context.Background(), "alice_RPM_CURRENT")
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), usage, "a request rejected for TPM must not use up the user's RPM")
+	})
+
+	t.Run("TPM read failure takes no RPM slot", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Get", mock.Anything, "alice_RPM_CURRENT").Return(int64(0), nil).Once()
+		rl.On("Get", mock.Anything, "alice_TPM_CURRENT").Return(int64(0), errors.New("redis down")).Once()
+
+		s := &Server{ratelimiter: rl}
+		rpm, resp, err := s.checkLimits(context.Background(), user)
+
+		assert.Error(t, err)
+		assert.Equal(t, int64(0), rpm)
+		require.NotNil(t, resp.GetImmediateResponse())
+		assert.Equal(t, envoyTypePb.StatusCode_InternalServerError, resp.GetImmediateResponse().GetStatus().GetCode())
+		rl.AssertExpectations(t)
+		rl.AssertNotCalled(t, "Incr", mock.Anything, "alice_RPM_CURRENT", int64(1))
+	})
+
 	t.Run("concurrent requests admit no more than the limit", func(t *testing.T) {
 		redisServer := miniredis.RunT(t)
 		redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
