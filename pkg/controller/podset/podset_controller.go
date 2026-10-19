@@ -54,7 +54,8 @@ const (
 	ControllerName  = "podset-controller"
 	PodSetFinalizer = "orchestration.aibrix.ai/podset-finalizer"
 
-	PodGroupSyncedEventType = "PodGroupSynced"
+	PodGroupSyncedEventType        = "PodGroupSynced"
+	DeletingTerminatedPodEventType = "DeletingTerminatedPod"
 
 	DefaultRequeueAfter = 15 * time.Second
 )
@@ -223,6 +224,28 @@ func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrat
 	podList, err := r.getPodsForPodSet(ctx, podSet)
 	if err != nil {
 		return controllerdrain.Result{}, fmt.Errorf("failed to get pods for PodSet: %w", err)
+	}
+
+	// A Failed or Succeeded pod (evicted, shut down with its node) is not active but keeps its
+	// name, so creating its replacement would fail with AlreadyExists. Delete it and let the
+	// delete event bring the next reconcile, which creates the replacement. A pod already
+	// being deleted is skipped, so it does not block creating the other missing pods.
+	var terminatedPods []*v1.Pod
+	for i := range podList.Items {
+		if pod := &podList.Items[i]; podutil.IsPodTerminal(pod) && pod.DeletionTimestamp == nil {
+			terminatedPods = append(terminatedPods, pod)
+		}
+	}
+	if len(terminatedPods) > 0 {
+		klog.InfoS("Deleting terminated pods", "count", len(terminatedPods), "podset", podSet.Name)
+		result, err := controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, podSet, terminatedPods, nil, aibrixconst.PodDrainReasonRollout, time.Now())
+		if err != nil {
+			return result, err
+		}
+		for _, pod := range terminatedPods {
+			r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, DeletingTerminatedPodEventType, "Deleting pod %s in phase %s so it can be replaced.", pod.Name, pod.Status.Phase)
+		}
+		return result, nil
 	}
 
 	activePods := filterActivePods(podList.Items)
