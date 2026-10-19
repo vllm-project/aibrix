@@ -357,21 +357,26 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 	if usage.TotalTokens != 0 {
 		complete = true
 
-		// Count token per user.
+		// Count token per user. The response is already generated and the client
+		// is already receiving it, so a failed increment is reported but must not
+		// replace it: an ImmediateResponse now would reset a response that has
+		// been served.
 		if user.Name != "" {
 			tpm, err := s.ratelimiter.Incr(routerCtx, fmt.Sprintf("%v_TPM_CURRENT", user.Name), usage.TotalTokens)
 			if err != nil {
-				return generateErrorResponse(
-					envoyTypePb.StatusCode_InternalServerError,
-					[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-						Key: HeaderErrorIncrTPM, RawValue: []byte("true"),
-					}}},
-					err.Error(), "", ""), complete, usage
+				if routerCtx.Err() != nil {
+					// The request was cancelled or timed out, typically a client
+					// that went away; not worth an error line each time.
+					klog.V(3).InfoS("TPM increment abandoned with the request", "user", user.Name, "requestID", requestID, "tokens", usage.TotalTokens, "err", err)
+				} else {
+					klog.ErrorS(err, "fail to increment TPM for user", "user", user.Name, "requestID", requestID, "tokens", usage.TotalTokens)
+				}
+				headers = buildEnvoyProxyHeaders(headers, HeaderErrorIncrTPM, "true")
+			} else {
+				headers = buildEnvoyProxyHeaders(headers,
+					HeaderUpdateRPM, strconv.FormatInt(rpm, 10),
+					HeaderUpdateTPM, strconv.FormatInt(tpm, 10))
 			}
-
-			headers = buildEnvoyProxyHeaders(headers,
-				HeaderUpdateRPM, strconv.FormatInt(rpm, 10),
-				HeaderUpdateTPM, strconv.FormatInt(tpm, 10))
 		}
 
 		headers = buildEnvoyProxyHeaders(headers, HeaderRequestID, routerCtx.RequestID)
