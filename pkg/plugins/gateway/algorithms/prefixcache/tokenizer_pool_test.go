@@ -446,10 +446,6 @@ func TestTokenizerPoolDistributesRequestsAcrossReadyReplicas(t *testing.T) {
 	}, nil)
 	defer func() { assert.NoError(t, pool.Close()) }()
 
-	for i := 0; i < 6; i++ {
-		_, err := pool.GetTokenizer("m", pods).TokenizeInputText("request")
-		require.NoError(t, err)
-	}
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
 		wg.Add(1)
@@ -460,6 +456,10 @@ func TestTokenizerPoolDistributesRequestsAcrossReadyReplicas(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	for i := 0; i < 6; i++ {
+		_, err := pool.GetTokenizer("m", pods).TokenizeInputText("request")
+		require.NoError(t, err)
+	}
 
 	assert.Equal(t, int32(14), requestCounts[0].Load()) // one health probe + thirteen requests
 	assert.Equal(t, int32(14), requestCounts[1].Load())

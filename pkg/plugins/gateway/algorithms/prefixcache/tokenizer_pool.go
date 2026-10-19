@@ -293,7 +293,9 @@ func (p *TokenizerPool) GetTokenizer(model string, pods []*v1.Pod) tokenizer.Tok
 	p.mu.Unlock()
 	closeTokenizers(stale)
 
-	// Slow path: create new tokenizer
+	// Keep this request's endpoint selection across the per-model single-flight
+	// wait. Re-selecting from the same pods snapshot inside the retry loop would
+	// not refresh topology and could move the request to a different replica.
 	return p.createOrUpdateTokenizer(model, pods, endpoint, podIP, key)
 }
 
