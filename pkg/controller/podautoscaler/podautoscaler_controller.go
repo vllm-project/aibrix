@@ -960,7 +960,7 @@ func (r *PodAutoscalerReconciler) deleteGeneratedHPA(ctx context.Context, pa *au
 		return nil
 	}
 	klog.InfoS("Deleting HPA left from the HPA strategy", "HPA", hpaName)
-	return r.Delete(ctx, hpa)
+	return client.IgnoreNotFound(r.Delete(ctx, hpa))
 }
 
 func reasonForHPAGenerationError(err error) string {

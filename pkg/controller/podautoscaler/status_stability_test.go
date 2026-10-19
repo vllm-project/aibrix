@@ -64,9 +64,16 @@ type statusStabilityHarness struct {
 	// failStatusWrite, when positive, makes that PodAutoscaler status write
 	// (counted from one) fail with errStatusWrite.
 	failStatusWrite int
+	// hpaGoneBeforeDelete, when set, deletes an HPA just before the
+	// reconciler's own Delete reaches it, as when the cache still holds it.
+	hpaGoneBeforeDelete bool
+	// hpaDeleteErr, when set, makes the reconciler's HPA Delete fail with it.
+	hpaDeleteErr error
 }
 
 var errStatusWrite = errors.New("injected status write failure")
+
+var errHPADelete = errors.New("injected HPA delete failure")
 
 func newStatusStabilityHarness(t *testing.T, pa *autoscalingv1alpha1.PodAutoscaler, objs ...client.Object) *statusStabilityHarness {
 	t.Helper()
@@ -99,6 +106,19 @@ func newStatusStabilityHarness(t *testing.T, pa *autoscalingv1alpha1.PodAutoscal
 					h.hpaUpdates++
 				}
 				return c.Update(ctx, obj, opts...)
+			},
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if _, ok := obj.(*autoscalingv2.HorizontalPodAutoscaler); ok {
+					if h.hpaDeleteErr != nil {
+						return h.hpaDeleteErr
+					}
+					if h.hpaGoneBeforeDelete {
+						if err := c.Delete(ctx, obj, opts...); err != nil {
+							return err
+						}
+					}
+				}
+				return c.Delete(ctx, obj, opts...)
 			},
 		}).
 		Build()
@@ -424,6 +444,50 @@ func TestReconcileDeletesGeneratedHPAWhenStrategyChanges(t *testing.T) {
 				t.Fatalf("Reconcile after the HPA was deleted returned error: %v", err)
 			}
 		})
+	}
+}
+
+// The cache can still hold an HPA that is already gone; its Delete then
+// returns NotFound, which is the state the switch wants.
+func TestReconcileIgnoresHPAAlreadyDeletedOnStrategyChange(t *testing.T) {
+	pa := stabilityPodAutoscaler(autoscalingv1alpha1.HPA)
+	pa.UID = "pa-uid"
+	h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
+	ctx := context.Background()
+
+	if _, err := h.reconcile(); err != nil {
+		t.Fatalf("Reconcile with the HPA strategy returned error: %v", err)
+	}
+	latest := h.latest()
+	latest.Spec.ScalingStrategy = autoscalingv1alpha1.KPA
+	if err := h.client.Update(ctx, latest); err != nil {
+		t.Fatalf("update PodAutoscaler spec: %v", err)
+	}
+	h.hpaGoneBeforeDelete = true
+	if _, err := h.reconcile(); err != nil {
+		t.Fatalf("Reconcile after switching to KPA with the HPA already deleted returned error: %v", err)
+	}
+}
+
+// Any other Delete error must fail the reconcile so that it is retried; the HPA
+// would otherwise keep scaling the target with no sign of it.
+func TestReconcileReturnsHPADeleteErrorOnStrategyChange(t *testing.T) {
+	pa := stabilityPodAutoscaler(autoscalingv1alpha1.HPA)
+	pa.UID = "pa-uid"
+	h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
+	ctx := context.Background()
+
+	if _, err := h.reconcile(); err != nil {
+		t.Fatalf("Reconcile with the HPA strategy returned error: %v", err)
+	}
+	latest := h.latest()
+	latest.Spec.ScalingStrategy = autoscalingv1alpha1.KPA
+	if err := h.client.Update(ctx, latest); err != nil {
+		t.Fatalf("update PodAutoscaler spec: %v", err)
+	}
+	h.hpaDeleteErr = errHPADelete
+	if _, err := h.reconcile(); !errors.Is(err, errHPADelete) {
+		t.Fatalf("Reconcile after switching to KPA with a failing HPA Delete: error = %v, want %v", err, errHPADelete)
 	}
 }
 
