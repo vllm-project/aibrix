@@ -192,6 +192,58 @@ func TestIsLanguageRequest(t *testing.T) {
 	}
 }
 
+func TestSlowestTTFTStage(t *testing.T) {
+	tests := []struct {
+		name       string
+		routing    time.Duration
+		prefill    time.Duration
+		kvTransfer time.Duration
+		want       string
+	}{
+		{"routing dominates", 5 * time.Second, time.Second, 500 * time.Millisecond, "routing"},
+		{"prefill dominates", time.Second, 5 * time.Second, 500 * time.Millisecond, "prefill"},
+		{"kv transfer dominates", time.Second, 500 * time.Millisecond, 5 * time.Second, "kv_transfer"},
+		{"all zero falls back to routing", 0, 0, 0, "routing"},
+		{"negative kv transfer never wins", time.Second, time.Second, -time.Second, "routing"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, slowestTTFTStage(tt.routing, tt.prefill, tt.kvTransfer))
+		})
+	}
+}
+
+// TestRequestEndHelperSlowTTFLabelsAreBounded ensures per-request values never
+// become Prometheus labels. The former high-cardinality labels are still
+// registered, so re-adding one produces more than one series.
+func TestRequestEndHelperSlowTTFLabelsAreBounded(t *testing.T) {
+	labelNames := []string{
+		"gateway_pod", "model", "lora_adapter",
+		"request_id", "routing_time_taken", "prefill_time_taken",
+		"kv_transfer_time_taken", "ttft", "decode_time_taken",
+		"p_bucket", "c_bucket", "ttft_bucket", "slowest_stage",
+	}
+	counter, cleanup := metrics.SetupCounterMetricsForTest(metrics.GatewayFirstTokenDelayOver1sTotal, labelNames)
+	defer cleanup()
+
+	server := &Server{}
+	now := time.Now()
+	for i := 0; i < 64; i++ {
+		requestTime := now.Add(-3*time.Second - time.Duration(i)*time.Millisecond)
+		ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", "", fmt.Sprintf("req-%d", i), "")
+		ctx.Stream = true
+		ctx.RequestTime = requestTime
+		ctx.PrefillStartTime = requestTime.Add(10*time.Millisecond + time.Duration(i)*time.Microsecond)
+		ctx.PrefillEndTime = ctx.PrefillStartTime.Add(20*time.Millisecond + time.Duration(i)*time.Microsecond)
+		ctx.FirstTokenTime = ctx.PrefillEndTime.Add(2*time.Second + time.Duration(i)*time.Microsecond)
+		server.requestEndHelper(ctx, now, 100, 10, 110)
+		ctx.Delete()
+	}
+
+	assert.Equal(t, 1, testutil.CollectAndCount(counter),
+		"64 requests with distinct IDs and timings must share one bounded series")
+}
+
 func TestTokenBucketLabel(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1294,45 +1346,101 @@ func TestHandleResponseBody_EndOfStreamNoTokens(t *testing.T) {
 	assert.Equal(t, TokenUsage{}, usage)
 }
 
+// The response is already generated and on its way to the client when TPM is
+// counted, so a failed increment must be reported without replacing it: an
+// ImmediateResponse at this point would reset a response that has been served.
 func TestHandleResponseBody_TPMIncrError(t *testing.T) {
-	mockRL := &mockRateLimiter{}
-	mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(15)).Return(int64(0), errors.New("mock error"))
-	server := &Server{
-		ratelimiter: mockRL,
-	}
-
-	requestID := "test-req-tpm-err-" + time.Now().Format("150405.000")
-	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "test-user")
-	routerCtx.ReqPath = PathChatCompletions
-	routerCtx.RequestTime = time.Now()
-
-	req := &extProcPb.ProcessingRequest{
-		Request: &extProcPb.ProcessingRequest_ResponseBody{
-			ResponseBody: &extProcPb.HttpBody{
-				Body:        []byte(`{"model": "test-model", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}`),
-				EndOfStream: true,
-			},
+	nonStreamingBody := `{"model": "test-model", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}`
+	for _, tt := range []struct {
+		name       string
+		stream     bool
+		cancelled  bool
+		body       string
+		wantReason string
+	}{
+		{
+			name:       "non-streaming",
+			body:       nonStreamingBody,
+			wantReason: "error",
 		},
-	}
+		{
+			name:   "streaming",
+			stream: true,
+			body: "data: {\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+				"data: {\"model\":\"test-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n" +
+				"data: [DONE]\n\n",
+			wantReason: "error",
+		},
+		{
+			name:       "request cancelled",
+			cancelled:  true,
+			body:       nonStreamingBody,
+			wantReason: "cancelled",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var requestsWithUsage float64
+			var failureReasons []string
+			originalFn := metrics.IncrementCounterMetricFnForTest
+			defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
+			metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+				switch name {
+				case metrics.GatewayRequestsWithUsageTotal:
+					requestsWithUsage += value
+				case metrics.GatewayTPMIncrementFailuresTotal:
+					for i, l := range labelNames {
+						if l == "reason" {
+							failureReasons = append(failureReasons, labelValues[i])
+						}
+					}
+				}
+			}
 
-	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "test-model", false, false)
+			mockRL := &mockRateLimiter{}
+			mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(15)).Return(int64(0), errors.New("mock error"))
+			server := &Server{
+				ratelimiter: mockRL,
+			}
 
-	assert.True(t, complete)
-	assert.NotNil(t, resp)
-	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, usage)
-	// Error response uses ImmediateResponse
-	immResp := resp.GetImmediateResponse()
-	assert.NotNil(t, immResp)
-	headers := immResp.GetHeaders().GetSetHeaders()
-	found := false
-	for _, h := range headers {
-		if h.Header.Key == HeaderErrorIncrTPM {
-			found = true
-			break
-		}
+			requestID := "test-req-tpm-err-" + tt.name + "-" + time.Now().Format("150405.000")
+			reqCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tt.cancelled {
+				cancel()
+			}
+			routerCtx := types.NewRoutingContext(reqCtx, "random", "test-model", "", requestID, "test-user")
+			routerCtx.ReqPath = PathChatCompletions
+			routerCtx.RequestTime = time.Now()
+			routerCtx.Stream = tt.stream
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        []byte(tt.body),
+						EndOfStream: true,
+					},
+				},
+			}
+
+			resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "test-model", tt.stream, false)
+
+			assert.True(t, complete)
+			assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, usage)
+			require.NotNil(t, resp)
+			assert.Nil(t, resp.GetImmediateResponse(), "the served response must not be replaced")
+			headers := map[string]string{}
+			for _, h := range resp.GetResponseBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
+				headers[h.Header.Key] = string(h.Header.RawValue)
+			}
+			assert.Equal(t, "true", headers[HeaderErrorIncrTPM])
+			assert.NotContains(t, headers, HeaderUpdateRPM)
+			assert.NotContains(t, headers, HeaderUpdateTPM)
+			assert.Equal(t, requestID, headers[HeaderRequestID])
+			assert.Equal(t, 1.0, requestsWithUsage, "request_end must still run")
+			assert.Equal(t, []string{tt.wantReason}, failureReasons, "the failed increment must be counted once, by reason")
+			mockRL.AssertExpectations(t)
+		})
 	}
-	assert.True(t, found, "expected HeaderErrorIncrTPM in response")
-	mockRL.AssertExpectations(t)
 }
 
 func TestHandleResponseBody_LanguagePartialResponse(t *testing.T) {

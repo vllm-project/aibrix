@@ -41,6 +41,10 @@ const (
 	GatewayOutputTokensTotal      = "gateway_output_tokens_total"
 	GatewayRequestsWithUsageTotal = "gateway_requests_with_usage_total"
 
+	// counter to track per-user TPM increments that failed after the response
+	// was served, so the tokens were not charged against the user's limit
+	GatewayTPMIncrementFailuresTotal = "gateway_tpm_increment_failures_total"
+
 	// counter to track #success & #fail prefill requests
 	GatewayPrefillRequestSuccessTotal = "gateway_prefill_request_success_total"
 	GatewayPrefillRequestFailTotal    = "gateway_prefill_request_fail_total"
@@ -306,6 +310,14 @@ var (
 				Raw: Counter,
 			},
 			Description: "Requests with usage information, labeled by has_usage",
+		},
+		GatewayTPMIncrementFailuresTotal: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			Description: "Total number of per-user TPM increments that failed after the response was served, so the tokens went uncharged, by reason (cancelled or error)",
 		},
 		PDSelectedPrefillPodTotal: {
 			MetricScope:  PodMetricScope,

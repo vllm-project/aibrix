@@ -22,10 +22,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -241,7 +243,7 @@ func (d *DynamoDeployer) GetGatewayEndpoint(ctx context.Context) (string, error)
 	if host == "" || strings.EqualFold(host, "None") {
 		host = fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, d.effectiveNS)
 	}
-	return fmt.Sprintf("http://%s:%d", host, port), nil
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(port)), nil
 }
 
 func (d *DynamoDeployer) Teardown(ctx context.Context) error {

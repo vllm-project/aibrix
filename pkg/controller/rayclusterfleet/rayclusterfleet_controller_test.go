@@ -19,6 +19,7 @@ package rayclusterfleet
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
@@ -33,6 +34,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -187,6 +189,106 @@ var _ = Describe("RayClusterFleet Controller", func() {
 			Expect(ownedReplicaSets[0].UID).To(Equal(firstReplicaSetUID))
 		})
 	})
+
+	// A typed client always sends "strategy": {}, and a Deployment manifest often sets only the type.
+	for i, tc := range []struct {
+		name     string
+		strategy map[string]interface{} // nil removes spec.strategy
+	}{
+		{"omits spec.strategy", nil},
+		{"sets an empty spec.strategy", map[string]interface{}{}},
+		{"sets only the strategy type", map[string]interface{}{"type": "RollingUpdate"}},
+		{"sets an empty rollingUpdate", map[string]interface{}{"type": "RollingUpdate", "rollingUpdate": map[string]interface{}{}}},
+	} {
+		Context("When a resource "+tc.name, func() {
+			ctx := context.Background()
+			typeNamespacedName := types.NamespacedName{Name: fmt.Sprintf("test-resource-no-strategy-%d", i), Namespace: "default"}
+
+			AfterEach(func() {
+				fleet := &orchestrationv1alpha1.RayClusterFleet{}
+				err := k8sClient.Get(ctx, typeNamespacedName, fleet)
+				if errors.IsNotFound(err) {
+					return
+				}
+				Expect(err).NotTo(HaveOccurred())
+				replicaSets := &orchestrationv1alpha1.RayClusterReplicaSetList{}
+				Expect(k8sClient.List(ctx, replicaSets, client.InNamespace(typeNamespacedName.Namespace))).To(Succeed())
+				for i := range replicaSets.Items {
+					if metav1.IsControlledBy(&replicaSets.Items[i], fleet) {
+						Expect(k8sClient.Delete(ctx, &replicaSets.Items[i])).To(Succeed())
+					}
+				}
+				Expect(k8sClient.Delete(ctx, fleet)).To(Succeed())
+			})
+
+			It("should create a ReplicaSet", func() {
+				By("creating the resource")
+				labels := map[string]string{"app": typeNamespacedName.Name}
+				content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&orchestrationv1alpha1.RayClusterFleet{
+					ObjectMeta: metav1.ObjectMeta{Name: typeNamespacedName.Name, Namespace: typeNamespacedName.Namespace},
+					Spec: orchestrationv1alpha1.RayClusterFleetSpec{
+						Replicas: ptr.To(int32(1)),
+						Selector: &metav1.LabelSelector{MatchLabels: labels},
+						Template: orchestrationv1alpha1.RayClusterTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{Labels: labels},
+							Spec: rayclusterv1.RayClusterSpec{
+								RayVersion: "fake-ray-version",
+								HeadGroupSpec: rayclusterv1.HeadGroupSpec{
+									ServiceType: corev1.ServiceTypeClusterIP,
+									Template: corev1.PodTemplateSpec{
+										Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "ray-head", Image: "rayproject/ray:2.10.0"}}},
+									},
+									RayStartParams: map[string]string{"dashboard-host": "0.0.0.0"},
+								},
+							},
+						},
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				obj := &unstructured.Unstructured{Object: content}
+				obj.SetGroupVersionKind(orchestrationv1alpha1.GroupVersion.WithKind("RayClusterFleet"))
+				if tc.strategy == nil {
+					unstructured.RemoveNestedField(obj.Object, "spec", "strategy")
+				} else {
+					Expect(unstructured.SetNestedField(obj.Object, tc.strategy, "spec", "strategy")).To(Succeed())
+				}
+				Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+
+				fleet := &orchestrationv1alpha1.RayClusterFleet{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, fleet)).To(Succeed())
+
+				By("reconciling the resource")
+				controllerReconciler := &RayClusterFleetReconciler{
+					Client:      k8sClient,
+					Scheme:      k8sClient.Scheme(),
+					Expectation: expectation.NewControllerExpectations(),
+					Recorder:    record.NewFakeRecorder(10),
+				}
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("verifying that the Fleet owns one ReplicaSet")
+				replicaSets := &orchestrationv1alpha1.RayClusterReplicaSetList{}
+				Expect(k8sClient.List(ctx, replicaSets, client.InNamespace(typeNamespacedName.Namespace))).To(Succeed())
+				owned := 0
+				for i := range replicaSets.Items {
+					if metav1.IsControlledBy(&replicaSets.Items[i], fleet) {
+						owned++
+					}
+				}
+				Expect(owned).To(Equal(1))
+
+				if tc.strategy == nil {
+					By("verifying that the API server stored the strategy default")
+					Expect(k8sClient.Get(ctx, typeNamespacedName, fleet)).To(Succeed())
+					Expect(fleet.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
+					Expect(fleet.Spec.Strategy.RollingUpdate).NotTo(BeNil())
+					Expect(fleet.Spec.Strategy.RollingUpdate.MaxSurge).To(Equal(ptr.To(intstr.FromString("25%"))))
+					Expect(fleet.Spec.Strategy.RollingUpdate.MaxUnavailable).To(Equal(ptr.To(intstr.FromString("25%"))))
+				}
+			})
+		})
+	}
 })
 
 type fleetTestFixture struct {

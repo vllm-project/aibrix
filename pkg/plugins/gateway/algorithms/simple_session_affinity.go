@@ -779,6 +779,11 @@ func (r *sessionAffinityRouter) Route(ctx *types.RoutingContext, readyPodList ty
 		sessionKey, via = "", "fallback"
 	}
 
+	// Pin the session only to a pod that admitted the request.
+	if err := ctx.AdmitTarget(pod); err != nil {
+		return "", err
+	}
+
 	port := utils.GetModelPortForPod(ctx.RequestID, pod)
 	addr := net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(int(port)))
 	ctx.SetTargetPod(pod)

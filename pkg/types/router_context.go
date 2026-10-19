@@ -372,9 +372,10 @@ func (r *RoutingContext) SetTargetAdmitter(admit func(pod *v1.Pod) error) {
 
 // AdmitTarget admits pod as this request's target against the gateway's per-replica
 // in-flight cap, and returns nil when no admission is installed. A router that starts work
-// on the request's behalf before it returns (the PD prefill leg) calls it as soon as the
-// target is chosen, so a request the target has no room for is rejected before that work
-// starts. The error wraps ErrTargetReplicaInflightExceeded when the target is full.
+// or records state on the request's behalf before it returns (the PD prefill leg, a
+// prefix-cache index entry) calls it as soon as the target is chosen, so a request the
+// target has no room for is rejected before any of that happens. The error wraps
+// ErrTargetReplicaInflightExceeded when the target is full.
 func (r *RoutingContext) AdmitTarget(pod *v1.Pod) error {
 	if r.targetAdmitter == nil {
 		return nil

@@ -288,6 +288,40 @@ func TestBuildURLs(t *testing.T) {
 			},
 			expectError: false,
 		},
+		{
+			name:  "IPv6 pod address",
+			podIP: "2001:db8::1",
+			config: config.RuntimeConfig{
+				DebugMode:            false,
+				EnableRuntimeSidecar: false,
+			},
+			useSidecar: false,
+			engineType: VLLMEngine,
+			expectedURLs: URLConfig{
+				BaseURL:          "http://[2001:db8::1]:8000",
+				ListModelsURL:    "http://[2001:db8::1]:8000" + ModelListVLLMAPIPath,
+				LoadAdapterURL:   "http://[2001:db8::1]:8000" + LoadLoraAdapterVLLMAPIPath,
+				UnloadAdapterURL: "http://[2001:db8::1]:8000" + UnloadLoraAdapterVLLMAPIPath,
+			},
+			expectError: false,
+		},
+		{
+			name:  "IPv6 pod address with sidecar",
+			podIP: "2001:db8::2",
+			config: config.RuntimeConfig{
+				DebugMode:            false,
+				EnableRuntimeSidecar: true,
+			},
+			useSidecar: true,
+			engineType: VLLMEngine,
+			expectedURLs: URLConfig{
+				BaseURL:          "http://[2001:db8::2]:8080",
+				ListModelsURL:    "http://[2001:db8::2]:8080" + ModelListRuntimeAPIPath,
+				LoadAdapterURL:   "http://[2001:db8::2]:8080" + LoadLoraRuntimeAPIPath,
+				UnloadAdapterURL: "http://[2001:db8::2]:8080" + UnloadLoraRuntimeAPIPath,
+			},
+			expectError: false,
+		},
 	}
 
 	for _, tt := range tests {

@@ -464,6 +464,93 @@ func TestHandleReplaceUnhealthyDeletesImmediatelyWithoutDrain(t *testing.T) {
 	assert.True(t, apierrors.IsNotFound(err))
 }
 
+func TestReconcilePodsReplacesTerminatedPod(t *testing.T) {
+	for _, phase := range []corev1.PodPhase{corev1.PodFailed, corev1.PodSucceeded} {
+		t.Run(string(phase), func(t *testing.T) {
+			ctx := context.Background()
+			podSet := &orchestrationv1alpha1.PodSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-podset", Namespace: "test-namespace"},
+				Spec: orchestrationv1alpha1.PodSetSpec{
+					PodGroupSize:   3,
+					RecoveryPolicy: orchestrationv1alpha1.ReplaceUnhealthy,
+				},
+			}
+			healthyPod := podSetScaleDownPod("test-podset-0", 0)
+			firstTerminatedPod := podSetScaleDownPod("test-podset-1", 1)
+			firstTerminatedPod.Status.Phase = phase
+			secondTerminatedPod := podSetScaleDownPod("test-podset-2", 2)
+			secondTerminatedPod.Status.Phase = phase
+			scheme := runtime.NewScheme()
+			assert.NoError(t, corev1.AddToScheme(scheme))
+			assert.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+			recorder := record.NewFakeRecorder(10)
+			reconciler := &PodSetReconciler{
+				Client:        clientFake.NewClientBuilder().WithScheme(scheme).WithObjects(&healthyPod, &firstTerminatedPod, &secondTerminatedPod).Build(),
+				Scheme:        scheme,
+				EventRecorder: recorder,
+				DynamicClient: dynamicFake.NewSimpleDynamicClient(scheme),
+			}
+			keys := []client.ObjectKey{
+				{Namespace: "test-namespace", Name: "test-podset-1"},
+				{Namespace: "test-namespace", Name: "test-podset-2"},
+			}
+
+			// The first pass only deletes the terminated pods and records an event for each of them.
+			_, err := reconciler.reconcilePods(ctx, podSet)
+			assert.NoError(t, err)
+			for _, key := range keys {
+				assert.True(t, apierrors.IsNotFound(reconciler.Get(ctx, key, &corev1.Pod{})))
+			}
+			require.Len(t, recorder.Events, 2)
+			assert.ElementsMatch(t, []string{
+				"Normal DeletingTerminatedPod Deleting pod test-podset-1 in phase " + string(phase) + " so it can be replaced.",
+				"Normal DeletingTerminatedPod Deleting pod test-podset-2 in phase " + string(phase) + " so it can be replaced.",
+			}, []string{<-recorder.Events, <-recorder.Events})
+
+			// The second pass creates their replacements.
+			_, err = reconciler.reconcilePods(ctx, podSet)
+			assert.NoError(t, err)
+			for _, key := range keys {
+				replaced := &corev1.Pod{}
+				assert.NoError(t, reconciler.Get(ctx, key, replaced))
+				assert.NotEqual(t, phase, replaced.Status.Phase)
+			}
+		})
+	}
+}
+
+func TestReconcilePodsCreatesMissingPodsPastTerminatingPod(t *testing.T) {
+	ctx := context.Background()
+	podSet := &orchestrationv1alpha1.PodSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-podset", Namespace: "test-namespace"},
+		Spec: orchestrationv1alpha1.PodSetSpec{
+			PodGroupSize:   3,
+			RecoveryPolicy: orchestrationv1alpha1.ReplaceUnhealthy,
+		},
+	}
+	healthyPod := podSetScaleDownPod("test-podset-0", 0)
+	// A finalizer holds the failed pod while it is being deleted.
+	terminatingPod := podSetScaleDownPod("test-podset-1", 1)
+	terminatingPod.Status.Phase = corev1.PodFailed
+	now := metav1.Now()
+	terminatingPod.DeletionTimestamp = &now
+	terminatingPod.Finalizers = []string{"example.com/hold"}
+	scheme := runtime.NewScheme()
+	assert.NoError(t, corev1.AddToScheme(scheme))
+	assert.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+	reconciler := &PodSetReconciler{
+		Client:        clientFake.NewClientBuilder().WithScheme(scheme).WithObjects(&healthyPod, &terminatingPod).Build(),
+		Scheme:        scheme,
+		EventRecorder: record.NewFakeRecorder(10),
+		DynamicClient: dynamicFake.NewSimpleDynamicClient(scheme),
+	}
+
+	_, err := reconciler.reconcilePods(ctx, podSet)
+	assert.NoError(t, err)
+
+	assert.NoError(t, reconciler.Get(ctx, client.ObjectKey{Namespace: "test-namespace", Name: "test-podset-2"}, &corev1.Pod{}))
+}
+
 func podSetScaleDownPod(name string, index int) corev1.Pod {
 	return corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

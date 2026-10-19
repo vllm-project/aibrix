@@ -636,6 +636,135 @@ vllm:deployment_replicas{model_name="deepseek-r1-distill-llama-8b"} 3
 	})
 }
 
+func TestEngineMetricsFetcher_SGLangPriorityQueueTotals(t *testing.T) {
+	fetcher := NewEngineMetricsFetcher()
+	for _, metricName := range []string{NumRequestsRunning, NumRequestsWaiting, NumDecodePreallocQueueReqs} {
+		t.Run(metricName, func(t *testing.T) {
+			metric := Metrics[metricName]
+			rawMetricName := metric.EngineMetricsNameMapping[EngineNameSGLang]
+			series := func(labels string, value int) string {
+				return fmt.Sprintf("%s{model_name=\"model-a\"%s} %d\n", rawMetricName, labels, value)
+			}
+			total := series(`,priority=""`, 10)
+			high := series(`,priority="1"`, 8)
+			low := series(`,priority="5"`, 2)
+			tests := []struct {
+				name          string
+				metrics       string
+				expectedFirst float64
+				expectedModel float64
+			}{
+				{"TotalFirst", total + high + low, 10, 10},
+				{"TotalLast", low + high + total, 10, 10},
+				{"LegacyWithoutPriority", series("", 10), 10, 10},
+				{"BreakdownsOnly", high + low, 8, 2},
+				{"ZeroTotal", high + series(`,priority=""`, 0) + low, 0, 0},
+				{"LegacyAlongsideTotal", total + high + low + fmt.Sprintf("%s{model_name=\"model-b\"} 7\n", rawMetricName), 10, 10},
+			}
+
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					families, err := ParseMetricsFromReader(strings.NewReader("# TYPE " + rawMetricName + " gauge\n" + tt.metrics))
+					require.NoError(t, err)
+
+					t.Run("SingleMetric", func(t *testing.T) {
+						value, err := fetcher.parseMetricFromFamily(families, rawMetricName, metric)
+						require.NoError(t, err)
+						assert.Equal(t, tt.expectedFirst, value.GetSimpleValue())
+					})
+					t.Run("ModelMetrics", func(t *testing.T) {
+						values, err := fetcher.parseModelMetricsFromFamily(families, rawMetricName, metric)
+						require.NoError(t, err)
+						require.Contains(t, values, "model-a")
+						assert.Equal(t, tt.expectedModel, values["model-a"].GetSimpleValue())
+						if tt.name == "LegacyAlongsideTotal" {
+							require.Contains(t, values, "model-b")
+							assert.Equal(t, 7.0, values["model-b"].GetSimpleValue())
+						}
+					})
+				})
+			}
+		})
+	}
+}
+
+// In SGLang's request counters and latency histograms priority="" marks requests without an
+// explicit priority, not a total, so their priority series must still be combined.
+// A merged family where only model-a has a total: model-b keeps its breakdowns (and today's
+// last-series behavior) in the per-model parser, while the pod-scoped read uses the total.
+func TestEngineMetricsFetcher_SGLangPriorityTotalsPerModel(t *testing.T) {
+	fetcher := NewEngineMetricsFetcher()
+	metric := Metrics[NumRequestsWaiting]
+	rawMetricName := metric.EngineMetricsNameMapping[EngineNameSGLang]
+	series := func(model, priority string, value int) string {
+		return fmt.Sprintf("%s{model_name=%q,priority=%q} %d\n", rawMetricName, model, priority, value)
+	}
+	families, err := ParseMetricsFromReader(strings.NewReader("# TYPE " + rawMetricName + " gauge\n" +
+		series("model-a", "", 10) + series("model-a", "1", 8) + series("model-a", "5", 2) +
+		series("model-b", "1", 3) + series("model-b", "5", 4)))
+	require.NoError(t, err)
+
+	values, err := fetcher.parseModelMetricsFromFamily(families, rawMetricName, metric)
+	require.NoError(t, err)
+	assert.Equal(t, 10.0, values["model-a"].GetSimpleValue())
+	require.Contains(t, values, "model-b")
+	assert.Equal(t, 4.0, values["model-b"].GetSimpleValue())
+
+	value, err := fetcher.parseMetricFromFamily(families, rawMetricName, metric)
+	require.NoError(t, err)
+	assert.Equal(t, 10.0, value.GetSimpleValue())
+}
+
+func TestEngineMetricsFetcher_SGLangPriorityLabelOutsideQueues(t *testing.T) {
+	fetcher := NewEngineMetricsFetcher()
+
+	counter := Metrics[RequestSuccessTotal]
+	counterName := counter.EngineMetricsNameMapping[EngineNameSGLang]
+	families, err := ParseMetricsFromReader(strings.NewReader(fmt.Sprintf("# TYPE %[1]s counter\n"+
+		"%[1]s{model_name=\"model-a\",priority=\"\"} 4\n"+
+		"%[1]s{model_name=\"model-a\",priority=\"1\"} 6\n", counterName)))
+	require.NoError(t, err)
+	values, err := fetcher.parseModelMetricsFromFamily(families, counterName, counter)
+	require.NoError(t, err)
+	assert.Equal(t, 10.0, values["model-a"].GetSimpleValue())
+
+	histogram := Metrics[E2ERequestLatencySeconds]
+	histogramName := histogram.EngineMetricsNameMapping[EngineNameSGLang]
+	series := func(priority string, sum int) string {
+		return fmt.Sprintf("%[1]s_bucket{model_name=\"model-a\",priority=\"%[2]s\",le=\"+Inf\"} 1\n"+
+			"%[1]s_sum{model_name=\"model-a\",priority=\"%[2]s\"} %[3]d\n"+
+			"%[1]s_count{model_name=\"model-a\",priority=\"%[2]s\"} 1\n", histogramName, priority, sum)
+	}
+	families, err = ParseMetricsFromReader(strings.NewReader("# TYPE " + histogramName + " histogram\n" +
+		series("", 4) + series("1", 6)))
+	require.NoError(t, err)
+	values, err = fetcher.parseModelMetricsFromFamily(families, histogramName, histogram)
+	require.NoError(t, err)
+	hist := values["model-a"].GetHistogramValue()
+	require.NotNil(t, hist)
+	assert.Equal(t, 10.0, hist.Sum)
+	assert.Equal(t, 2.0, hist.Count)
+}
+
+func TestEngineMetricsFetcher_ParseVllmSleepState(t *testing.T) {
+	fetcher := NewEngineMetricsFetcher()
+	metric := Metrics[EngineSleepState]
+	rawMetricName := metric.EngineMetricsNameMapping[EngineNameVLLM]
+	for _, metrics := range []string{mockVllmSleepStateMetrics, mockVllmSleepLevel2Metrics} {
+		families, err := ParseMetricsFromReader(strings.NewReader(metrics))
+		require.NoError(t, err)
+
+		value, err := fetcher.parseMetricFromFamily(families, rawMetricName, metric)
+		require.NoError(t, err)
+		assert.Equal(t, 0.0, value.GetSimpleValue())
+
+		values, err := fetcher.parseModelMetricsFromFamily(families, rawMetricName, metric)
+		require.NoError(t, err)
+		require.Contains(t, values, "meta-llama/Llama-2-7b-chat-hf")
+		assert.Equal(t, 0.0, values["meta-llama/Llama-2-7b-chat-hf"].GetSimpleValue())
+	}
+}
+
 func TestEngineMetricsFetcher_BackoffDelay(t *testing.T) {
 	config := DefaultEngineMetricsFetcherConfig()
 	fetcher := NewEngineMetricsFetcherWithConfig(config)
@@ -868,4 +997,172 @@ vllm:engine_sleep_state{engine="1",model_name="m",sleep_state="weights_offloaded
 	value := result.ModelMetrics["m/"+EngineSleepState]
 	assert.Equal(t, 0.5, value.GetSimpleValue(), "one of two engines is awake")
 	assert.Equal(t, "awake", value.GetLabelValues()["sleep_state"])
+}
+
+// Synthetic subset of SGLang v0.5.21 metrics for:
+// --tp 2 --dp 2 --enable-dp-attention --enable-metrics (default EP=1, PP=1; no priority scheduling).
+// Two independent, equal-capacity pools; these values are not a recorded scrape.
+const sglangDPAttentionRepro = `# HELP sglang:num_running_reqs The number of running requests.
+# TYPE sglang:num_running_reqs gauge
+sglang:num_running_reqs{dp_rank="1",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 1.0
+sglang:num_running_reqs{dp_rank="0",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 3.0
+# HELP sglang:num_queue_reqs The number of requests in the waiting queue.
+# TYPE sglang:num_queue_reqs gauge
+sglang:num_queue_reqs{dp_rank="1",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 1.0
+sglang:num_queue_reqs{dp_rank="0",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 7.0
+# HELP sglang:token_usage The token usage.
+# TYPE sglang:token_usage gauge
+sglang:token_usage{dp_rank="1",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 0.1
+sglang:token_usage{dp_rank="0",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 0.9
+# HELP sglang:max_total_num_tokens Maximum total number of tokens in the KV cache pool.
+# TYPE sglang:max_total_num_tokens gauge
+sglang:max_total_num_tokens{dp_rank="1",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 100000.0
+sglang:max_total_num_tokens{dp_rank="0",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 100000.0
+`
+
+func TestEngineMetricsFetcher_SGLangDPPools(t *testing.T) {
+	duplicateRanks := func(input string) string {
+		var lines []string
+		for _, line := range strings.Split(input, "\n") {
+			lines = append(lines, line)
+			if strings.HasPrefix(line, "sglang:") {
+				lines = append(lines, strings.Replace(line, `pp_rank="0"`, `pp_rank="1"`, 1))
+				lines = append(lines, strings.Replace(line, `tp_rank="0"`, `tp_rank="2"`, 1))
+				lines = append(lines, strings.Replace(line, `moe_ep_rank="0"`, `moe_ep_rank="1"`, 1))
+			}
+		}
+		return strings.Join(lines, "\n")
+	}
+	reverseSamples := func(input string) string {
+		var headers, samples []string
+		for _, line := range strings.Split(input, "\n") {
+			if strings.HasPrefix(line, "sglang:") {
+				samples = append(samples, line)
+			} else {
+				headers = append(headers, line)
+			}
+		}
+		for i, j := 0, len(samples)-1; i < j; i, j = i+1, j-1 {
+			samples[i], samples[j] = samples[j], samples[i]
+		}
+		return strings.Join(append(headers, samples...), "\n") + "\n"
+	}
+	unequal := strings.ReplaceAll(sglangDPAttentionRepro, `tp_rank="1"} 100000.0`, `tp_rank="1"} 300000.0`)
+	tests := []struct {
+		name, input     string
+		usage, capacity float64
+	}{
+		{"ordinary", sglangDPAttentionRepro, 0.5, 200000},
+		{"reversed", reverseSamples(sglangDPAttentionRepro), 0.5, 200000},
+		{"replicated_pp_ep", duplicateRanks(sglangDPAttentionRepro), 0.5, 200000},
+		{"replicated_reversed", reverseSamples(duplicateRanks(sglangDPAttentionRepro)), 0.5, 200000},
+		{"unequal_capacity", unequal, 0.3, 400000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := setupMockServer(tt.input, http.StatusOK, 0)
+			defer server.Close()
+			endpoint := strings.TrimPrefix(server.URL, "http://")
+			fetcher := NewEngineMetricsFetcher()
+			want := map[string]float64{NumRequestsRunning: 4, NumRequestsWaiting: 8,
+				KVCacheUsagePerc: tt.usage, KVCacheCapacityTokens: tt.capacity}
+			result, err := fetcher.FetchAllTypedMetrics(context.Background(), endpoint, "sglang", "pod-0",
+				[]string{NumRequestsRunning, NumRequestsWaiting, KVCacheUsagePerc, KVCacheCapacityTokens})
+			require.NoError(t, err)
+			require.Empty(t, result.Errors)
+			for name, expected := range want {
+				value := result.Metrics[name]
+				if name != KVCacheCapacityTokens {
+					value = result.ModelMetrics["Qwen/Qwen3-8B/"+name]
+				}
+				require.NotNil(t, value, name)
+				assert.InDelta(t, expected, value.GetSimpleValue(), 1e-9, name)
+				assert.NotContains(t, value.GetLabelValues(), "dp_rank")
+				assert.NotContains(t, value.GetLabelValues(), "pp_rank")
+				single, err := fetcher.FetchTypedMetric(context.Background(), endpoint, "sglang", "pod-0", name)
+				require.NoError(t, err)
+				assert.InDelta(t, expected, single.GetSimpleValue(), 1e-9, name)
+			}
+		})
+	}
+}
+
+func TestSGLangDPPriorityScopesAndLegacy(t *testing.T) {
+	families, err := ParseMetricsFromReader(strings.NewReader(`# TYPE sglang:num_queue_reqs gauge
+sglang:num_queue_reqs{model_name="a",dp_rank="0",priority=""} 7
+sglang:num_queue_reqs{model_name="a",dp_rank="1",priority=""} 1
+sglang:num_queue_reqs{model_name="a",dp_rank="0",priority="high"} 5
+sglang:num_queue_reqs{model_name="a",dp_rank="1",priority="high"} 1
+sglang:num_queue_reqs{model_name="b",dp_rank="0",priority=""} 2
+sglang:num_queue_reqs{model_name="b",dp_rank="1",priority=""} 3
+sglang:num_queue_reqs{model_name="legacy"} 4
+# TYPE sglang:gen_throughput gauge
+sglang:gen_throughput{model_name="a",dp_rank="0"} 10
+sglang:gen_throughput{model_name="a",dp_rank="1"} 20
+`))
+	require.NoError(t, err)
+	original := families["sglang:num_queue_reqs"].Metric[0]
+	mergeSGLangDPSeries(families)
+	values := map[string]float64{}
+	for _, m := range families["sglang:num_queue_reqs"].Metric {
+		model, _ := GetLabelValueForKey(m, "model_name")
+		priority, _ := GetLabelValueForKey(m, "priority")
+		values[model+"/"+priority] = m.Gauge.GetValue()
+	}
+	assert.Equal(t, map[string]float64{"a/": 8, "a/high": 6, "b/": 5, "legacy/": 4}, values)
+	assert.Len(t, families["sglang:gen_throughput"].Metric, 2, "do not guess aggregation for other gauges")
+	assert.Equal(t, 7.0, original.Gauge.GetValue(), "do not change original rank values")
+	assert.Len(t, original.Label, 3)
+}
+
+func TestSGLangDPUsageCapacityIsScoped(t *testing.T) {
+	for _, label := range []string{"model_name", "engine_type"} {
+		t.Run(label, func(t *testing.T) {
+			families, err := ParseMetricsFromReader(strings.NewReader(fmt.Sprintf(`# TYPE sglang:token_usage gauge
+sglang:token_usage{%s="a",dp_rank="0"} 0.9
+sglang:token_usage{%s="a",dp_rank="1"} 0.1
+sglang:token_usage{%s="b",dp_rank="0"} 0.9
+sglang:token_usage{%s="b",dp_rank="1"} 0.1
+# TYPE sglang:max_total_num_tokens gauge
+sglang:max_total_num_tokens{%s="a",dp_rank="0"} 100
+sglang:max_total_num_tokens{%s="a",dp_rank="1"} 300
+sglang:max_total_num_tokens{%s="b",dp_rank="0"} 300
+sglang:max_total_num_tokens{%s="b",dp_rank="1"} 100
+`, label, label, label, label, label, label, label, label)))
+			require.NoError(t, err)
+			mergeSGLangDPSeries(families)
+
+			usage := families["sglang:token_usage"].Metric
+			require.Len(t, usage, 2)
+			values := map[string]float64{}
+			for _, metric := range usage {
+				scope, _ := GetLabelValueForKey(metric, label)
+				values[scope] = metric.Gauge.GetValue()
+			}
+			// Identical rank IDs and utilizations need each scope's own capacities.
+			assert.InDelta(t, 0.3, values["a"], 1e-9)
+			assert.InDelta(t, 0.7, values["b"], 1e-9)
+		})
+	}
+}
+
+func TestSGLangDPUsageWithoutCompleteCapacityIsUnchanged(t *testing.T) {
+	for _, capacity := range []string{"", `sglang:max_total_num_tokens{model_name="m",dp_rank="0"} 100`,
+		`sglang:max_total_num_tokens{model_name="m",dp_rank="0"} 100
+sglang:max_total_num_tokens{model_name="m",dp_rank="1"} 0`} {
+		for _, missingGauge := range []bool{false, true} {
+			families, err := ParseMetricsFromReader(strings.NewReader(`# TYPE sglang:token_usage gauge
+sglang:token_usage{model_name="m",dp_rank="0"} 0.9
+sglang:token_usage{model_name="m",dp_rank="1"} 0.1
+# TYPE sglang:max_total_num_tokens gauge
+` + capacity + "\n"))
+			require.NoError(t, err)
+			original := families["sglang:token_usage"].Metric
+			if missingGauge {
+				original[0].Gauge = nil
+			}
+			mergeSGLangDPSeries(families)
+			assert.ElementsMatch(t, original, families["sglang:token_usage"].Metric)
+		}
+	}
 }
