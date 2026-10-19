@@ -135,7 +135,7 @@ func (r *ModelClaimReconciler) wakeRequested(
 		// A priority-preemption reservation is room already promised to the
 		// preemptor. A wake waits rather than consuming it; once the reservation
 		// is released or expires, ordinary wake admission resumes.
-		r.reservations().takeFrom(ledgers, pm.Namespace, "", r.now())
+		r.reservations().takePreemptionsFrom(ledgers, pm.Namespace, r.now())
 		return ledgers
 	}
 	for i := range pm.Status.Instances {

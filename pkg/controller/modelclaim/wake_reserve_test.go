@@ -459,7 +459,7 @@ func TestPreemptionReservationKeepsAWakeFromConsumingHeldRoom(t *testing.T) {
 	r, runtime, pod := crowdedCard(t, keepNoWakeReserve)
 	// Priority preemption has promised this room to a new claim. A wake waits
 	// until that reservation is released rather than consuming the room.
-	require.True(t, r.reservations().hold(cardOf(pod), "new", 400, r.now()))
+	require.True(t, r.reservations().holdPreemption(cardOf(pod), "new", 400, r.now()))
 
 	reconcileOnce(t, r, "waker")
 
@@ -474,6 +474,16 @@ func TestPreemptionReservationKeepsAWakeFromConsumingHeldRoom(t *testing.T) {
 	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
 	reconcileOnce(t, r, "waker")
 	require.Len(t, runtime.wakeCalls, 1)
+}
+
+func TestOrdinaryMakeRoomReservationStillLetsAWakeGoFirst(t *testing.T) {
+	r, runtime, pod := crowdedCard(t, keepNoWakeReserve)
+	require.True(t, r.reservations().hold(cardOf(pod), "new", 400, r.now()))
+
+	reconcileOnce(t, r, "waker")
+
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
 }
 
 // queued is an engine on the card of queueCard: awake, and last seen busy at

@@ -97,7 +97,7 @@ func (r *ModelClaimReconciler) makeRoomByPrioritySleep(
 		return "", false
 	}
 	seat := perGPU.minimumReserveBytes()
-	if !r.reservations().hold(cardOf(plan.pod), pm.Name, seat, now) {
+	if !r.reservations().holdPreemption(cardOf(plan.pod), pm.Name, seat, now) {
 		return "", false
 	}
 	victim := plan.victims[0]
