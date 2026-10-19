@@ -449,7 +449,8 @@ func MaxUnavailable(deployment orchestrationv1alpha1.RayClusterFleet) int32 {
 		return int32(0)
 	}
 	// Error caught by validation
-	_, maxUnavailable, _ := ResolveFenceposts(deployment.Spec.Strategy.RollingUpdate.MaxSurge, deployment.Spec.Strategy.RollingUpdate.MaxUnavailable, *(deployment.Spec.Replicas))
+	surge, unavailable := rollingFenceposts(&deployment)
+	_, maxUnavailable, _ := ResolveFenceposts(surge, unavailable, *(deployment.Spec.Replicas))
 	if maxUnavailable > *deployment.Spec.Replicas {
 		return *deployment.Spec.Replicas
 	}
@@ -470,7 +471,8 @@ func MaxSurge(deployment orchestrationv1alpha1.RayClusterFleet) int32 {
 		return int32(0)
 	}
 	// Error caught by validation
-	maxSurge, _, _ := ResolveFenceposts(deployment.Spec.Strategy.RollingUpdate.MaxSurge, deployment.Spec.Strategy.RollingUpdate.MaxUnavailable, *(deployment.Spec.Replicas))
+	surge, unavailable := rollingFenceposts(&deployment)
+	maxSurge, _, _ := ResolveFenceposts(surge, unavailable, *(deployment.Spec.Replicas))
 	return maxSurge
 }
 
@@ -721,9 +723,34 @@ func GetAvailableReplicaCountForReplicaSets(replicaSets []*orchestrationv1alpha1
 	return totalAvailableReplicas
 }
 
+// StrategyType returns the strategy type of the fleet. An empty type is a rolling update, as
+// it is for a Deployment.
+func StrategyType(deployment *orchestrationv1alpha1.RayClusterFleet) appsv1.DeploymentStrategyType {
+	if deployment.Spec.Strategy.Type == "" {
+		return appsv1.RollingUpdateDeploymentStrategyType
+	}
+	return deployment.Spec.Strategy.Type
+}
+
+// rollingFenceposts returns the maxSurge and maxUnavailable of a rolling update. Each one that is
+// not set is 25%, as it is for a Deployment.
+func rollingFenceposts(deployment *orchestrationv1alpha1.RayClusterFleet) (maxSurge, maxUnavailable *intstrutil.IntOrString) {
+	fencepost := intstrutil.FromString("25%")
+	maxSurge, maxUnavailable = &fencepost, &fencepost
+	if ru := deployment.Spec.Strategy.RollingUpdate; ru != nil {
+		if ru.MaxSurge != nil {
+			maxSurge = ru.MaxSurge
+		}
+		if ru.MaxUnavailable != nil {
+			maxUnavailable = ru.MaxUnavailable
+		}
+	}
+	return maxSurge, maxUnavailable
+}
+
 // IsRollingUpdate returns true if the strategy type is a rolling update.
 func IsRollingUpdate(deployment *orchestrationv1alpha1.RayClusterFleet) bool {
-	return deployment.Spec.Strategy.Type == appsv1.RollingUpdateDeploymentStrategyType
+	return StrategyType(deployment) == appsv1.RollingUpdateDeploymentStrategyType
 }
 
 // DeploymentComplete considers a deployment to be complete once all of its desired replicas
@@ -805,10 +832,11 @@ func DeploymentTimedOut(ctx context.Context, deployment *orchestrationv1alpha1.R
 // 1) The new RS is saturated: newRS's replicas == deployment's replicas
 // 2) Max number of pods allowed is reached: deployment's replicas + maxSurge == all RSs' replicas
 func NewRSNewReplicas(deployment *orchestrationv1alpha1.RayClusterFleet, allRSs []*orchestrationv1alpha1.RayClusterReplicaSet, newRS *orchestrationv1alpha1.RayClusterReplicaSet) (int32, error) {
-	switch deployment.Spec.Strategy.Type {
+	switch StrategyType(deployment) {
 	case appsv1.RollingUpdateDeploymentStrategyType:
 		// Check if we can scale up.
-		maxSurge, err := intstrutil.GetScaledValueFromIntOrPercent(deployment.Spec.Strategy.RollingUpdate.MaxSurge, int(*(deployment.Spec.Replicas)), true)
+		maxSurgeValue, _ := rollingFenceposts(deployment)
+		maxSurge, err := intstrutil.GetScaledValueFromIntOrPercent(maxSurgeValue, int(*(deployment.Spec.Replicas)), true)
 		if err != nil {
 			return 0, err
 		}
