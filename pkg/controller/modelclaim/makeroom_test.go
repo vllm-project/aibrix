@@ -199,6 +199,47 @@ func TestReconcileNeverUsesTheExistingMakeRoomPath(t *testing.T) {
 	assert.Equal(t, scheduledReasonMakingRoom, scheduledOf(t, r, claim.Name).Reason)
 }
 
+func TestFirstToMakeRoomForNeverIgnoresDirectlyPlaceablePredecessor(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 2,
+		serving{"resident", "warm-1", 300, 100, at0758})
+	warm1 := podNamed(t, r, "warm-1")
+	warm2 := podNamed(t, r, "warm-2")
+	warm1.Labels["placement-test"] = "current"
+	warm2.Labels["placement-test"] = "predecessor"
+	require.NoError(t, r.Update(context.Background(), warm1))
+	require.NoError(t, r.Update(context.Background(), warm2))
+
+	predecessor := withFinalizer(claimOnPod("predecessor", "", modelv1alpha1.ModelClaimActive, 50, 50))
+	predecessor.Status.Instances = nil
+	predecessor.Spec.Priority = 10
+	predecessor.Spec.PreemptionPolicy = modelv1alpha1.ModelClaimPreemptionNever
+	predecessor.Spec.PodSelector = &metav1.LabelSelector{MatchLabels: map[string]string{
+		"placement-test": "predecessor",
+	}}
+	predecessor.CreationTimestamp = metav1.NewTime(at0758)
+	require.NoError(t, r.Create(context.Background(), predecessor))
+
+	current := withFinalizer(claimOnPod("current", "", modelv1alpha1.ModelClaimActive, 800, 100))
+	current.Status.Instances = nil
+	current.Spec.PreemptionPolicy = modelv1alpha1.ModelClaimPreemptionNever
+	current.Spec.PodSelector = &metav1.LabelSelector{MatchLabels: map[string]string{
+		"placement-test": "current",
+	}}
+	current.CreationTimestamp = metav1.NewTime(at0759)
+	require.NoError(t, r.Create(context.Background(), current))
+
+	ctx := context.Background()
+	pods := []corev1.Pod{*warm1, *warm2}
+	readings := newRuntimeReadings(runtime)
+	claims, err := r.listClaimsForAccount(ctx, testNamespace)
+	require.NoError(t, err)
+	ledgers := podLedgersFrom(claims, nil, pods, readings.ofPods(ctx, pods),
+		r.podsWithoutWakeReserve(ctx, pods))
+
+	assert.True(t, r.firstToMakeRoomFor(ctx, current, pods, ledgers, readings),
+		"Never keeps the historical rule that only a predecessor able to make room holds the turn")
+}
+
 func TestReconcileSleepLowerPriorityProtectsEqualAndHigherPriorityClaims(t *testing.T) {
 	r, runtime := servingPool(t, keepNoWakeReserve, 1,
 		serving{"equal", "warm-1", 300, 100, at0758}, serving{"higher", "warm-1", 300, 100, at0759})
@@ -430,11 +471,17 @@ func TestPrioritySleepMakingRoomDoesNotCreateRefusalBackoff(t *testing.T) {
 	setClaimPriority(t, r, "a", 1)
 	setClaimPriority(t, r, "b", 1)
 	newPrioritySleepClaim(t, r, "preemptor", 10, at0759)
+	key := client.ObjectKey{Namespace: testNamespace, Name: "preemptor"}
+	preemptor := getModel(t, r, "preemptor")
+	r.Backoff.refused(key, preemptor.Generation, nil)
+	attempt := r.Backoff.attempts[key]
+	attempt.readyAt = r.now().Add(-time.Second)
+	r.Backoff.attempts[key] = attempt
 
 	reconcileOnce(t, r, "preemptor")
 
 	assert.Len(t, runtime.sleepCalls, 1)
-	_, waiting := r.Backoff.attempts[client.ObjectKey{Namespace: testNamespace, Name: "preemptor"}]
+	_, waiting := r.Backoff.attempts[key]
 	assert.False(t, waiting)
 }
 

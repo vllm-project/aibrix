@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/util/retry"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -108,15 +109,23 @@ func TestModelClaimSleepLowerPriorityPreparedPool(t *testing.T) {
 	// annotation directly. Once preemption's reservation is gone, existing wake
 	// admission makes room and returns the victim to Active.
 	if os.Getenv("AIBRIX_E2E_PREEMPTION_SKIP_GATEWAY") == "1" {
-		pod, err := k8sClient.CoreV1().Pods(lifecycleNamespace).Get(
-			ctx, low.Status.Instances[0].Pod, metav1.GetOptions{},
-		)
-		require.NoError(t, err)
-		if pod.Annotations == nil {
-			pod.Annotations = map[string]string{}
-		}
-		pod.Annotations[constants.ModelClaimWakeAnnotationPrefix+low.Name] = time.Now().UTC().Format(time.RFC3339)
-		_, err = k8sClient.CoreV1().Pods(lifecycleNamespace).Update(ctx, pod, metav1.UpdateOptions{})
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			pod, getErr := k8sClient.CoreV1().Pods(lifecycleNamespace).Get(
+				ctx, low.Status.Instances[0].Pod, metav1.GetOptions{},
+			)
+			if getErr != nil {
+				return getErr
+			}
+			if pod.Annotations == nil {
+				pod.Annotations = map[string]string{}
+			}
+			pod.Annotations[constants.ModelClaimWakeAnnotationPrefix+low.Name] =
+				time.Now().UTC().Format(time.RFC3339)
+			_, updateErr := k8sClient.CoreV1().Pods(lifecycleNamespace).Update(
+				ctx, pod, metav1.UpdateOptions{},
+			)
+			return updateErr
+		})
 		require.NoError(t, err)
 	} else {
 		var lastStatus int

@@ -472,8 +472,21 @@ func (r *ModelClaimReconciler) firstToMakeRoomFor(
 		if r.backoff().waiting(client.ObjectKeyFromObject(claim), claim.Generation, roomSignatureOf(shared, claims)) {
 			continue
 		}
-		if r.claimFeasibleForPlacementWithPolicy(ctx, claim, shared, claims, ledgers, readings) {
-			return false
+		if preemptionPolicyOf(claim) == modelv1alpha1.ModelClaimPreemptionSleepLowerPriority {
+			if r.claimFeasibleForPlacementWithPolicy(ctx, claim, shared, claims, ledgers, readings) {
+				return false
+			}
+			continue
+		}
+		perGPU, err := perGPUBytesOf(claim)
+		if err != nil {
+			continue
+		}
+		for j := range shared {
+			pod := &shared[j]
+			if _, found := r.planRoom(ctx, claim, pod, ledgers[pod.Name], perGPU.minimumReserveBytes(), readings); found {
+				return false
+			}
 		}
 	}
 	return false

@@ -221,6 +221,19 @@ func TestPlanSleepPreemptionProtectsPriorityBeforeVictimCount(t *testing.T) {
 	})
 }
 
+func TestPlanSleepPreemptionOrdersVictimsByPriorityWithinCard(t *testing.T) {
+	f := newPreemptionPlannerFixture(t, 1,
+		preemptionVictimFixture{"priority-five", "warm-1", 5, 440, 100, at0758, 60, true},
+		preemptionVictimFixture{"priority-one", "warm-1", 1, 440, 100, at0759, 60, true},
+	)
+
+	plan := f.plan(t)
+
+	require.NotNil(t, plan)
+	require.Len(t, plan.victims, 1)
+	assert.Equal(t, "priority-one", plan.victims[0].claim.Name)
+}
+
 func comparisonPlan(pod string, known, cached bool, victims ...struct {
 	name     string
 	priority int32
