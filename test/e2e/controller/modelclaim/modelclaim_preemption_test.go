@@ -42,7 +42,8 @@ import (
 func TestModelClaimSleepLowerPriorityPreparedPool(t *testing.T) {
 	pool := os.Getenv("AIBRIX_E2E_PREEMPTION_POOL")
 	if pool == "" {
-		t.Skip("set AIBRIX_E2E_PREEMPTION_POOL to a prepared card-backed pool with noWakeReserveWhileAsleep=true and sleepToMakeRoomAfterSeconds=1")
+		t.Skip("set AIBRIX_E2E_PREEMPTION_POOL to a prepared card-backed pool " +
+			"with noWakeReserveWhileAsleep=true and sleepToMakeRoomAfterSeconds=1")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	t.Cleanup(cancel)
@@ -62,7 +63,11 @@ func TestModelClaimSleepLowerPriorityPreparedPool(t *testing.T) {
 		}
 	})
 
-	create := func(name string, priority int32, policy modelv1alpha1.ModelClaimPreemptionPolicy) *modelv1alpha1.ModelClaim {
+	create := func(
+		name string,
+		priority int32,
+		policy modelv1alpha1.ModelClaimPreemptionPolicy,
+	) *modelv1alpha1.ModelClaim {
 		claim, err := claims.Create(ctx, &modelv1alpha1.ModelClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: lifecycleNamespace},
 			Spec: modelv1alpha1.ModelClaimSpec{

@@ -601,7 +601,11 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 	})
 
 	ginkgo.Describe("SleepLowerPriority preemption", func() {
-		createClaim := func(name, pool, footprint, floor string, priority int32, policy modelapi.ModelClaimPreemptionPolicy) *modelapi.ModelClaim {
+		createClaim := func(
+			name, pool, footprint, floor string,
+			priority int32,
+			policy modelapi.ModelClaimPreemptionPolicy,
+		) *modelapi.ModelClaim {
 			claim := &modelapi.ModelClaim{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns.Name},
 				Spec: modelapi.ModelClaimSpec{

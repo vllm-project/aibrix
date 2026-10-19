@@ -786,14 +786,6 @@ func (r *ModelClaimReconciler) ensureActivated(
 			if listErr == nil {
 				refusedOn = roomSignatureOf(candidates, claims)
 			}
-			if reason == constants.ModelClaimReasonTooLargeForAnyCard {
-				return backoff.refusedAsTooLarge(claim, pm.Generation, refusedOn), nil
-			}
-			if reason == scheduledReasonMakingRoom &&
-				preemptionPolicyOf(pm) == modelv1alpha1.ModelClaimPreemptionSleepLowerPriority {
-				backoff.placed(claim)
-				return DefaultRequeueDuration, nil
-			}
 			// The API server shows less on a card than the cache did when this
 			// try began. The cache had not caught up with a change, most often
 			// a neighbour that has just gone, whose engine may still be
@@ -802,10 +794,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 			// the shortest wait. A record that was taken back after a start
 			// that failed does not show here, since a record without a port is
 			// not counted.
-			if roomMayHaveAppeared(room, refusedOn, anyRoom) {
-				backoff.startOver(claim)
-			}
-			return backoff.refused(claim, pm.Generation, refusedOn), nil
+			return placementRefusalWait(backoff, claim, pm, reason, room, refusedOn), nil
 		}
 
 		// Divide the card between the engines on it and this one, and hold
@@ -966,6 +955,27 @@ func (r *ModelClaimReconciler) ensureActivated(
 			"model %s engine starting on pod %s:%d", servedModelName(pm), pod.Name, resp.Port)
 	}
 	return 0, nil
+}
+
+func placementRefusalWait(
+	backoff *placementBackoff,
+	claim types.NamespacedName,
+	pm *modelv1alpha1.ModelClaim,
+	reason string,
+	before, refusedOn roomSignature,
+) time.Duration {
+	switch {
+	case reason == constants.ModelClaimReasonTooLargeForAnyCard:
+		return backoff.refusedAsTooLarge(claim, pm.Generation, refusedOn)
+	case reason == scheduledReasonMakingRoom &&
+		preemptionPolicyOf(pm) == modelv1alpha1.ModelClaimPreemptionSleepLowerPriority:
+		backoff.placed(claim)
+		return DefaultRequeueDuration
+	}
+	if roomMayHaveAppeared(before, refusedOn, anyRoom) {
+		backoff.startOver(claim)
+	}
+	return backoff.refused(claim, pm.Generation, refusedOn)
 }
 
 // rescheduleFailedInstances moves only instances whose runtime has reported a
