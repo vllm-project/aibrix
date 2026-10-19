@@ -87,7 +87,14 @@ class TOSStorage(BaseStorage2):
         try:
             size = reader.get_size()
             if size >= self.config.multipart_threshold:
-                await self.multipart_upload(key, reader, content_type, metadata)
+                # Explicit chunking avoids the base class's fallback to put_object.
+                await self.multipart_upload(
+                    key,
+                    reader,
+                    content_type,
+                    metadata,
+                    bysize=self.config.multipart_threshold,
+                )
                 return True
         except (OSError, IOError, ValueError):
             # Can't determine size, give up multipart upload

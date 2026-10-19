@@ -17,6 +17,7 @@
 import asyncio
 from types import SimpleNamespace
 from typing import Any, Union
+from unittest.mock import Mock
 
 import pytest
 import tos
@@ -667,6 +668,39 @@ class TestTOSStorageConfig:
         )
 
         assert storage.config.strict_multipart_min_part_size is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size_delta", [-1, 0, 1])
+async def test_tos_put_object_at_multipart_threshold(monkeypatch, size_delta):
+    client = Mock()
+    chunks: list[bytes] = []
+
+    def upload_part(**kwargs):
+        chunks.append(kwargs["content"].read())
+        return SimpleNamespace(etag="etag")
+
+    client.create_multipart_upload.return_value = SimpleNamespace(upload_id="upload")
+    client.upload_part.side_effect = upload_part
+    monkeypatch.setattr(tos, "TosClientV2", lambda *args: client)
+    storage = TOSStorage("bucket", "ak", "sk", "https://tos.example.com", "cn-beijing")
+    threshold = storage.config.multipart_threshold
+    data = b"x" * (threshold + size_delta)
+
+    assert await storage.put_object("key", data) is True
+
+    if size_delta < 0:
+        client.put_object.assert_called_once()
+        assert client.put_object.call_args.kwargs["content"].getvalue() == data
+        client.create_multipart_upload.assert_not_called()
+    else:
+        client.put_object.assert_not_called()
+        client.create_multipart_upload.assert_called_once()
+        assert b"".join(chunks) == data
+        assert [len(chunk) for chunk in chunks] == [threshold] + (
+            [1] if size_delta > 0 else []
+        )
+        client.complete_multipart_upload.assert_called_once()
 
 
 class TestBackendBulkDelete:
