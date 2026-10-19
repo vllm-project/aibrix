@@ -27,11 +27,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import List, Union
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
+from tos.exceptions import TosClientError
 
 from aibrix.storage.base import BaseStorage
+from aibrix.storage.reader import Reader
 from aibrix.storage.s3 import S3Storage
 from aibrix.storage.tos import TOSStorage
 from aibrix.storage.types import StorageListOrdering
@@ -132,6 +134,133 @@ class TestStorageTimestamps:
         else:
             assert metadata.last_modified == instant
             assert metadata.last_modified.tzinfo == timezone.utc
+
+
+class TestTOSPutObject:
+    @staticmethod
+    def _storage_with_mock_client() -> tuple[TOSStorage, Mock, list[bytes]]:
+        client = Mock()
+        uploaded_parts: list[bytes] = []
+        client.create_multipart_upload.return_value = SimpleNamespace(
+            upload_id="upload-id"
+        )
+
+        def upload_part(**kwargs):
+            uploaded_parts.append(kwargs["content"].read_all())
+            return SimpleNamespace(etag=f"etag-{kwargs['part_number']}")
+
+        client.upload_part.side_effect = upload_part
+        with patch("aibrix.storage.tos.tos.TosClientV2", return_value=client):
+            storage = TOSStorage(
+                "bucket",
+                "access-key",
+                "secret-key",
+                "https://tos.example.invalid",
+                "cn-beijing",
+            )
+        return storage, client, uploaded_parts
+
+    @pytest.mark.asyncio
+    async def test_below_threshold_uses_single_put(self):
+        storage, client, uploaded_parts = self._storage_with_mock_client()
+        content = b"x" * (storage.config.multipart_threshold - 1)
+
+        assert await storage.put_object("small", content) is True
+
+        assert uploaded_parts == []
+        assert client.create_multipart_upload.call_count == 0
+        assert client.put_object.call_count == 1
+        assert client.put_object.call_args.kwargs["content"].read() == content
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "data_factory",
+        [
+            lambda content: content,
+            lambda content: content.decode(),
+            io.BytesIO,
+            lambda content: Reader(io.BytesIO(content)),
+        ],
+        ids=["bytes", "text", "seekable-stream", "reader"],
+    )
+    async def test_threshold_uses_native_multipart_and_preserves_options(
+        self, data_factory
+    ):
+        storage, client, uploaded_parts = self._storage_with_mock_client()
+        content = b"x" * storage.config.multipart_threshold
+
+        result = await storage.put_object(
+            "threshold",
+            data_factory(content),
+            content_type="application/octet-stream",
+            metadata={"source": "test"},
+        )
+
+        assert result is True
+        assert b"".join(uploaded_parts) == content
+        client.create_multipart_upload.assert_called_once_with(
+            bucket="bucket",
+            key="threshold",
+            content_type="application/octet-stream",
+            meta={"source": "test"},
+        )
+        client.put_object.assert_not_called()
+        client.complete_multipart_upload.assert_called_once()
+        complete_parts = client.complete_multipart_upload.call_args.kwargs["parts"]
+        assert [(part.part_number, part.etag) for part in complete_parts] == [
+            (1, "etag-1")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_above_threshold_uploads_multiple_parts_and_tail(self):
+        storage, client, uploaded_parts = self._storage_with_mock_client()
+        threshold = storage.config.multipart_threshold
+        content = b"a" * threshold + b"b" * threshold + b"tail"
+
+        assert await storage.put_object("large", io.BytesIO(content)) is True
+
+        assert [len(part) for part in uploaded_parts] == [threshold, threshold, 4]
+        assert b"".join(uploaded_parts) == content
+        assert client.upload_part.call_count == 3
+        assert [
+            (
+                call.kwargs["bucket"],
+                call.kwargs["key"],
+                call.kwargs["upload_id"],
+                call.kwargs["part_number"],
+            )
+            for call in client.upload_part.call_args_list
+        ] == [
+            ("bucket", "large", "upload-id", 1),
+            ("bucket", "large", "upload-id", 2),
+            ("bucket", "large", "upload-id", 3),
+        ]
+        assert client.complete_multipart_upload.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_multipart_failure_aborts_without_falling_back_to_single_put(self):
+        storage, client, _ = self._storage_with_mock_client()
+        client.upload_part.side_effect = TosClientError("upload failed")
+        content = b"x" * storage.config.multipart_threshold
+
+        with pytest.raises(ValueError, match="Failed to upload part 1"):
+            await storage.put_object("failed", content)
+
+        client.abort_multipart_upload.assert_called_once_with(
+            bucket="bucket", key="failed", upload_id="upload-id"
+        )
+        client.complete_multipart_upload.assert_not_called()
+        client.put_object.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_strategy_multipart_keeps_base_fallback(self):
+        storage, client, uploaded_parts = self._storage_with_mock_client()
+
+        await storage.multipart_upload("fallback", b"small")
+
+        assert uploaded_parts == []
+        assert client.create_multipart_upload.call_count == 0
+        assert client.put_object.call_count == 1
 
 
 def _ordered_keys_for_backend(storage: BaseStorage, keys: list[str]) -> list[str]:
