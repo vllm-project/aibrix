@@ -714,15 +714,17 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 				metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTPOTBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(tpot)})
 			}
 			if ttft > effectiveTTFTThreshold(routingCtx) {
+				// Keep every label bounded: request_id and raw per-phase
+				// durations are unique per request, so using them as labels
+				// creates unbounded series. The exact values are already on
+				// the request_end log line and OTel span.
 				metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayFirstTokenDelayOver1sTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{
-					"request_id": requestID,
-					"p_bucket":   pBucket, "c_bucket": cBucket,
-					"routing_time_taken":     fmt.Sprintf("%v", routingTime),
-					"prefill_time_taken":     fmt.Sprintf("%v", prefillTime),
-					"kv_transfer_time_taken": fmt.Sprintf("%v", kvTransferTime),
-					"ttft":                   fmt.Sprintf("%v", ttft),
-					"decode_time_taken":      fmt.Sprintf("%v", decodeTime),
+					"p_bucket":      pBucket,
+					"c_bucket":      cBucket,
+					"ttft_bucket":   durationBucketLabel(ttft),
+					"slowest_stage": slowestTTFTStage(routingTime, prefillTime, kvTransferTime),
 				})
+				fields = append(fields, "slow_ttft", true)
 			}
 		}
 	} else if routingCtx.Algorithm != "" {
@@ -738,6 +740,20 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 	fields = append(fields, "total_time_taken", routingCtx.Elapsed(time.Now()))
 	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTotalTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": totalTimeBucketLabel(routingCtx.Elapsed(time.Now()))})
 	return fields
+}
+
+// slowestTTFTStage returns the PD phase with the largest share of TTFT.
+// The three phases sum to TTFT, and the result is a bounded 3-value label.
+func slowestTTFTStage(routingTime, prefillTime, kvTransferTime time.Duration) string {
+	stage := "routing"
+	slowest := routingTime
+	if prefillTime > slowest {
+		stage, slowest = "prefill", prefillTime
+	}
+	if kvTransferTime > slowest {
+		stage = "kv_transfer"
+	}
+	return stage
 }
 
 // tokenBucketLabel returns a human-readable bucket label for token counts.

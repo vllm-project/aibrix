@@ -192,6 +192,58 @@ func TestIsLanguageRequest(t *testing.T) {
 	}
 }
 
+func TestSlowestTTFTStage(t *testing.T) {
+	tests := []struct {
+		name       string
+		routing    time.Duration
+		prefill    time.Duration
+		kvTransfer time.Duration
+		want       string
+	}{
+		{"routing dominates", 5 * time.Second, time.Second, 500 * time.Millisecond, "routing"},
+		{"prefill dominates", time.Second, 5 * time.Second, 500 * time.Millisecond, "prefill"},
+		{"kv transfer dominates", time.Second, 500 * time.Millisecond, 5 * time.Second, "kv_transfer"},
+		{"all zero falls back to routing", 0, 0, 0, "routing"},
+		{"negative kv transfer never wins", time.Second, time.Second, -time.Second, "routing"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, slowestTTFTStage(tt.routing, tt.prefill, tt.kvTransfer))
+		})
+	}
+}
+
+// TestRequestEndHelperSlowTTFLabelsAreBounded ensures per-request values never
+// become Prometheus labels. The former high-cardinality labels are still
+// registered, so re-adding one produces more than one series.
+func TestRequestEndHelperSlowTTFLabelsAreBounded(t *testing.T) {
+	labelNames := []string{
+		"gateway_pod", "model", "lora_adapter",
+		"request_id", "routing_time_taken", "prefill_time_taken",
+		"kv_transfer_time_taken", "ttft", "decode_time_taken",
+		"p_bucket", "c_bucket", "ttft_bucket", "slowest_stage",
+	}
+	counter, cleanup := metrics.SetupCounterMetricsForTest(metrics.GatewayFirstTokenDelayOver1sTotal, labelNames)
+	defer cleanup()
+
+	server := &Server{}
+	now := time.Now()
+	for i := 0; i < 64; i++ {
+		requestTime := now.Add(-3*time.Second - time.Duration(i)*time.Millisecond)
+		ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", "", fmt.Sprintf("req-%d", i), "")
+		ctx.Stream = true
+		ctx.RequestTime = requestTime
+		ctx.PrefillStartTime = requestTime.Add(10*time.Millisecond + time.Duration(i)*time.Microsecond)
+		ctx.PrefillEndTime = ctx.PrefillStartTime.Add(20*time.Millisecond + time.Duration(i)*time.Microsecond)
+		ctx.FirstTokenTime = ctx.PrefillEndTime.Add(2*time.Second + time.Duration(i)*time.Microsecond)
+		server.requestEndHelper(ctx, now, 100, 10, 110)
+		ctx.Delete()
+	}
+
+	assert.Equal(t, 1, testutil.CollectAndCount(counter),
+		"64 requests with distinct IDs and timings must share one bounded series")
+}
+
 func TestTokenBucketLabel(t *testing.T) {
 	tests := []struct {
 		name   string
