@@ -174,8 +174,14 @@ func TestCheckLimitsRPMAdmission(t *testing.T) {
 				assert.Contains(t, err.Error(), "has exceeded TPM")
 			}
 			assert.Equal(t, int64(0), rpm)
-			require.NotNil(t, resp.GetImmediateResponse())
-			assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, resp.GetImmediateResponse().GetStatus().GetCode())
+			imm := resp.GetImmediateResponse()
+			require.NotNil(t, imm)
+			assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
+			assert.Contains(t, imm.GetBody(), ErrorCodeRateLimitExceeded)
+			if assert.NotEmpty(t, imm.GetHeaders().GetSetHeaders()) {
+				assert.Equal(t, HeaderErrorTPMExceeded, imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetKey())
+				assert.Equal(t, "true", string(imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetRawValue()))
+			}
 		}
 		usage, err := rl.Get(context.Background(), "alice_RPM_CURRENT")
 		require.NoError(t, err)
