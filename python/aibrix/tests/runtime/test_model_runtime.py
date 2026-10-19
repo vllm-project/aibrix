@@ -2717,6 +2717,41 @@ def test_dormant_kv_restarts_and_writes(dormant_kv, restart):
     assert not s.kv(s.capacity + 100)["applied"]
 
 
+@pytest.mark.parametrize(
+    "restart", ["_schedule_restart", "_restart_instance", "re_adopt"]
+)
+def test_dormant_kv_restart_clears_verification(dormant_kv, monkeypatch, restart):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    s = dormant_kv
+    assert s.record()["kv_capacity_verify_until"] is not None
+    # Keep PID evidence dormant while the process handle reports an exit.
+    monkeypatch.setattr(runtime_module.AdoptedProcess, "poll", lambda self: 1)
+    if restart == "re_adopt":
+        s.registry.save(
+            [
+                {
+                    **s.record(),
+                    "phase": "restarting",
+                    "next_restart_at": s.now.isoformat(),
+                }
+            ]
+        )
+        s.adopt()
+    else:
+        if restart == "_restart_instance":
+            inst = s.runtime._models["m1"]
+            inst.phase = "restarting"
+            inst.next_restart_at = s.now
+        s.runtime.supervise_once()
+    record = s.record()
+    assert record["phase"] == (
+        "active" if restart == "_restart_instance" else "restarting"
+    )
+    assert record["kv_initial_capacity_bytes"] is None
+    assert record["kv_capacity_verify_until"] is None
+
+
 @pytest.mark.parametrize("restart", [False, True])
 def test_dormant_kv_expiry(dormant_kv, caplog, restart):
     from datetime import timedelta
