@@ -69,11 +69,15 @@ type statusStabilityHarness struct {
 	hpaGoneBeforeDelete bool
 	// hpaDeleteErr, when set, makes the reconciler's HPA Delete fail with it.
 	hpaDeleteErr error
+	// hpaGetErr, when set, makes the reconciler's HPA Get fail with it.
+	hpaGetErr error
 }
 
 var errStatusWrite = errors.New("injected status write failure")
 
 var errHPADelete = errors.New("injected HPA delete failure")
+
+var errHPAGet = errors.New("injected HPA get failure")
 
 func newStatusStabilityHarness(t *testing.T, pa *autoscalingv1alpha1.PodAutoscaler, objs ...client.Object) *statusStabilityHarness {
 	t.Helper()
@@ -119,6 +123,12 @@ func newStatusStabilityHarness(t *testing.T, pa *autoscalingv1alpha1.PodAutoscal
 					}
 				}
 				return c.Delete(ctx, obj, opts...)
+			},
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*autoscalingv2.HorizontalPodAutoscaler); ok && h.hpaGetErr != nil {
+					return h.hpaGetErr
+				}
+				return c.Get(ctx, key, obj, opts...)
 			},
 		}).
 		Build()
@@ -488,6 +498,28 @@ func TestReconcileReturnsHPADeleteErrorOnStrategyChange(t *testing.T) {
 	h.hpaDeleteErr = errHPADelete
 	if _, err := h.reconcile(); !errors.Is(err, errHPADelete) {
 		t.Fatalf("Reconcile after switching to KPA with a failing HPA Delete: error = %v, want %v", err, errHPADelete)
+	}
+}
+
+// Any Get error other than NotFound must fail the reconcile too; reading it as
+// "no HPA" would leave the old HPA scaling the target.
+func TestReconcileReturnsHPAGetErrorOnStrategyChange(t *testing.T) {
+	pa := stabilityPodAutoscaler(autoscalingv1alpha1.HPA)
+	pa.UID = "pa-uid"
+	h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
+	ctx := context.Background()
+
+	if _, err := h.reconcile(); err != nil {
+		t.Fatalf("Reconcile with the HPA strategy returned error: %v", err)
+	}
+	latest := h.latest()
+	latest.Spec.ScalingStrategy = autoscalingv1alpha1.KPA
+	if err := h.client.Update(ctx, latest); err != nil {
+		t.Fatalf("update PodAutoscaler spec: %v", err)
+	}
+	h.hpaGetErr = errHPAGet
+	if _, err := h.reconcile(); !errors.Is(err, errHPAGet) {
+		t.Fatalf("Reconcile after switching to KPA with a failing HPA Get: error = %v, want %v", err, errHPAGet)
 	}
 }
 
