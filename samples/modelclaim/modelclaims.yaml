@@ -15,6 +15,9 @@ spec:
   # Higher values get the next placement opportunity when unplaced claims
   # compete for this pool.
   priority: 10
+  # If no card has room, this claim may put strictly lower-priority,
+  # request-idle vLLM claims to sleep. Omit this field to use Never.
+  preemptionPolicy: SleepLowerPriority
   # What one instance needs on a GPU: its footprint besides the KV cache, and
   # the KV cache for one request of the maximum length. Both leave room to
   # spare for this model with these engine arguments.
