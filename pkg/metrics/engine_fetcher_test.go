@@ -636,6 +636,135 @@ vllm:deployment_replicas{model_name="deepseek-r1-distill-llama-8b"} 3
 	})
 }
 
+func TestEngineMetricsFetcher_SGLangPriorityQueueTotals(t *testing.T) {
+	fetcher := NewEngineMetricsFetcher()
+	for _, metricName := range []string{NumRequestsRunning, NumRequestsWaiting, NumDecodePreallocQueueReqs} {
+		t.Run(metricName, func(t *testing.T) {
+			metric := Metrics[metricName]
+			rawMetricName := metric.EngineMetricsNameMapping[EngineNameSGLang]
+			series := func(labels string, value int) string {
+				return fmt.Sprintf("%s{model_name=\"model-a\"%s} %d\n", rawMetricName, labels, value)
+			}
+			total := series(`,priority=""`, 10)
+			high := series(`,priority="1"`, 8)
+			low := series(`,priority="5"`, 2)
+			tests := []struct {
+				name          string
+				metrics       string
+				expectedFirst float64
+				expectedModel float64
+			}{
+				{"TotalFirst", total + high + low, 10, 10},
+				{"TotalLast", low + high + total, 10, 10},
+				{"LegacyWithoutPriority", series("", 10), 10, 10},
+				{"BreakdownsOnly", high + low, 8, 2},
+				{"ZeroTotal", high + series(`,priority=""`, 0) + low, 0, 0},
+				{"LegacyAlongsideTotal", total + high + low + fmt.Sprintf("%s{model_name=\"model-b\"} 7\n", rawMetricName), 10, 10},
+			}
+
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					families, err := ParseMetricsFromReader(strings.NewReader("# TYPE " + rawMetricName + " gauge\n" + tt.metrics))
+					require.NoError(t, err)
+
+					t.Run("SingleMetric", func(t *testing.T) {
+						value, err := fetcher.parseMetricFromFamily(families, rawMetricName, metric)
+						require.NoError(t, err)
+						assert.Equal(t, tt.expectedFirst, value.GetSimpleValue())
+					})
+					t.Run("ModelMetrics", func(t *testing.T) {
+						values, err := fetcher.parseModelMetricsFromFamily(families, rawMetricName, metric)
+						require.NoError(t, err)
+						require.Contains(t, values, "model-a")
+						assert.Equal(t, tt.expectedModel, values["model-a"].GetSimpleValue())
+						if tt.name == "LegacyAlongsideTotal" {
+							require.Contains(t, values, "model-b")
+							assert.Equal(t, 7.0, values["model-b"].GetSimpleValue())
+						}
+					})
+				})
+			}
+		})
+	}
+}
+
+// In SGLang's request counters and latency histograms priority="" marks requests without an
+// explicit priority, not a total, so their priority series must still be combined.
+// A merged family where only model-a has a total: model-b keeps its breakdowns (and today's
+// last-series behavior) in the per-model parser, while the pod-scoped read uses the total.
+func TestEngineMetricsFetcher_SGLangPriorityTotalsPerModel(t *testing.T) {
+	fetcher := NewEngineMetricsFetcher()
+	metric := Metrics[NumRequestsWaiting]
+	rawMetricName := metric.EngineMetricsNameMapping[EngineNameSGLang]
+	series := func(model, priority string, value int) string {
+		return fmt.Sprintf("%s{model_name=%q,priority=%q} %d\n", rawMetricName, model, priority, value)
+	}
+	families, err := ParseMetricsFromReader(strings.NewReader("# TYPE " + rawMetricName + " gauge\n" +
+		series("model-a", "", 10) + series("model-a", "1", 8) + series("model-a", "5", 2) +
+		series("model-b", "1", 3) + series("model-b", "5", 4)))
+	require.NoError(t, err)
+
+	values, err := fetcher.parseModelMetricsFromFamily(families, rawMetricName, metric)
+	require.NoError(t, err)
+	assert.Equal(t, 10.0, values["model-a"].GetSimpleValue())
+	require.Contains(t, values, "model-b")
+	assert.Equal(t, 4.0, values["model-b"].GetSimpleValue())
+
+	value, err := fetcher.parseMetricFromFamily(families, rawMetricName, metric)
+	require.NoError(t, err)
+	assert.Equal(t, 10.0, value.GetSimpleValue())
+}
+
+func TestEngineMetricsFetcher_SGLangPriorityLabelOutsideQueues(t *testing.T) {
+	fetcher := NewEngineMetricsFetcher()
+
+	counter := Metrics[RequestSuccessTotal]
+	counterName := counter.EngineMetricsNameMapping[EngineNameSGLang]
+	families, err := ParseMetricsFromReader(strings.NewReader(fmt.Sprintf("# TYPE %[1]s counter\n"+
+		"%[1]s{model_name=\"model-a\",priority=\"\"} 4\n"+
+		"%[1]s{model_name=\"model-a\",priority=\"1\"} 6\n", counterName)))
+	require.NoError(t, err)
+	values, err := fetcher.parseModelMetricsFromFamily(families, counterName, counter)
+	require.NoError(t, err)
+	assert.Equal(t, 10.0, values["model-a"].GetSimpleValue())
+
+	histogram := Metrics[E2ERequestLatencySeconds]
+	histogramName := histogram.EngineMetricsNameMapping[EngineNameSGLang]
+	series := func(priority string, sum int) string {
+		return fmt.Sprintf("%[1]s_bucket{model_name=\"model-a\",priority=\"%[2]s\",le=\"+Inf\"} 1\n"+
+			"%[1]s_sum{model_name=\"model-a\",priority=\"%[2]s\"} %[3]d\n"+
+			"%[1]s_count{model_name=\"model-a\",priority=\"%[2]s\"} 1\n", histogramName, priority, sum)
+	}
+	families, err = ParseMetricsFromReader(strings.NewReader("# TYPE " + histogramName + " histogram\n" +
+		series("", 4) + series("1", 6)))
+	require.NoError(t, err)
+	values, err = fetcher.parseModelMetricsFromFamily(families, histogramName, histogram)
+	require.NoError(t, err)
+	hist := values["model-a"].GetHistogramValue()
+	require.NotNil(t, hist)
+	assert.Equal(t, 10.0, hist.Sum)
+	assert.Equal(t, 2.0, hist.Count)
+}
+
+func TestEngineMetricsFetcher_ParseVllmSleepState(t *testing.T) {
+	fetcher := NewEngineMetricsFetcher()
+	metric := Metrics[EngineSleepState]
+	rawMetricName := metric.EngineMetricsNameMapping[EngineNameVLLM]
+	for _, metrics := range []string{mockVllmSleepStateMetrics, mockVllmSleepLevel2Metrics} {
+		families, err := ParseMetricsFromReader(strings.NewReader(metrics))
+		require.NoError(t, err)
+
+		value, err := fetcher.parseMetricFromFamily(families, rawMetricName, metric)
+		require.NoError(t, err)
+		assert.Equal(t, 0.0, value.GetSimpleValue())
+
+		values, err := fetcher.parseModelMetricsFromFamily(families, rawMetricName, metric)
+		require.NoError(t, err)
+		require.Contains(t, values, "meta-llama/Llama-2-7b-chat-hf")
+		assert.Equal(t, 0.0, values["meta-llama/Llama-2-7b-chat-hf"].GetSimpleValue())
+	}
+}
+
 func TestEngineMetricsFetcher_BackoffDelay(t *testing.T) {
 	config := DefaultEngineMetricsFetcherConfig()
 	fetcher := NewEngineMetricsFetcherWithConfig(config)

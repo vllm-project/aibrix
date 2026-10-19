@@ -368,6 +368,7 @@ func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto
 // reports several instances under the same name distinguished only by a
 // label (e.g. vllm:engine_sleep_state, one gauge per sleep_state value).
 func selectMetricInstance(instances []*dto.Metric, metric Metric, rawMetricName string) (*dto.Metric, error) {
+	instances = filterPriorityMetricInstances(instances, rawMetricName, false)
 	if metric.RequiredLabelKey == "" {
 		return instances[0], nil
 	}
@@ -381,6 +382,52 @@ func selectMetricInstance(instances []*dto.Metric, metric Metric, rawMetricName 
 		"no instance of %s has label %s=%s",
 		rawMetricName, metric.RequiredLabelKey, metric.RequiredLabelValue,
 	)
+}
+
+// sglangPriorityQueueGauges are the SGLang queue gauges written as a priority="" total
+// followed by per-priority breakdowns. In SGLang's request counters and latency histograms
+// priority="" instead means "no priority set", so only these families are filtered. They are
+// the gauges mapped in metrics.go that SGLang v0.5.21 writes through _log_gauge_queue_count;
+// num_retracted_reqs is written without a priority label, and num_prefill_prealloc_queue_reqs
+// is not emitted by v0.5.21.
+var sglangPriorityQueueGauges = map[string]bool{
+	"sglang:num_running_reqs":               true,
+	"sglang:num_queue_reqs":                 true,
+	"sglang:num_decode_prealloc_queue_reqs": true,
+}
+
+// filterPriorityMetricInstances prefers SGLang's priority="" queue totals over per-priority
+// breakdowns. Unlabeled series are retained, and a scope without a total keeps its existing
+// selection behavior rather than summing breakdowns. perModel scopes totals by model_name, so a
+// merged family keeps another model's breakdowns; pod-scoped reads use the whole family.
+func filterPriorityMetricInstances(instances []*dto.Metric, rawMetricName string, perModel bool) []*dto.Metric {
+	if !sglangPriorityQueueGauges[rawMetricName] {
+		return instances
+	}
+	scope := func(instance *dto.Metric) string {
+		if !perModel {
+			return ""
+		}
+		model, _ := GetLabelValueForKey(instance, "model_name")
+		return model
+	}
+	hasTotal := map[string]bool{}
+	for _, instance := range instances {
+		if priority, err := GetLabelValueForKey(instance, "priority"); err == nil && priority == "" {
+			hasTotal[scope(instance)] = true
+		}
+	}
+	if len(hasTotal) == 0 {
+		return instances
+	}
+	filtered := make([]*dto.Metric, 0, len(instances))
+	for _, instance := range instances {
+		if priority, err := GetLabelValueForKey(instance, "priority"); err == nil && priority != "" && hasTotal[scope(instance)] {
+			continue
+		}
+		filtered = append(filtered, instance)
+	}
+	return filtered
 }
 
 // parseModelMetricsFromFamily returns one MetricValue per model_name in the family, so models on a
@@ -397,7 +444,7 @@ func (ef *EngineMetricsFetcher) parseModelMetricsFromFamily(allMetrics map[strin
 	}
 
 	modelMetrics := make(map[string]MetricValue)
-	for _, familyMetric := range metricFamily.Metric {
+	for _, familyMetric := range filterPriorityMetricInstances(metricFamily.Metric, rawMetricName, true) {
 		modelName, err := GetLabelValueForKey(familyMetric, "model_name")
 		if err != nil || modelName == "" {
 			continue
