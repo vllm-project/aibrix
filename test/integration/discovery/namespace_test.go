@@ -316,7 +316,12 @@ func verifyPermissions(t *testing.T, install installation, objects []map[string]
 		{controlNamespace, "gateway.networking.k8s.io", "httproutes", "get", true},
 		{foreignNamespace, "gateway.networking.k8s.io", "httproutes", "get", false},
 		{controlNamespace, "gateway.networking.k8s.io", "httproutes", "create", false},
+		{namespace, "", "pods", "patch", true},
+		{foreignNamespace, "", "pods", "patch", false},
+		{"", "", "pods", "patch", false},
 		{namespace, "", "pods", "create", false},
+		{namespace, "", "pods", "update", false},
+		{namespace, "", "pods", "delete", false},
 		{namespace, "model.aibrix.ai", "modeladapters", "update", false},
 	} {
 		review := &authorizationv1.SelfSubjectAccessReview{

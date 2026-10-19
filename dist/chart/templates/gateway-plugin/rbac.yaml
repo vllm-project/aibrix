@@ -19,7 +19,8 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: [pods]
-  verbs: [get, list, watch]
+  # ModelClaim request-wake patches a Pod annotation.
+  verbs: [get, list, watch, patch]
 - apiGroups: [model.aibrix.ai]
   resources: [modeladapters]
   verbs: [get, list, watch]

@@ -13,6 +13,8 @@ rules:
   - get
   - list
   - watch
+  # ModelClaim request-wake patches a Pod annotation.
+  - patch
 - apiGroups:
   - model.aibrix.ai
   resources:
