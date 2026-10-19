@@ -18,6 +18,7 @@ package e2e
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"testing"
 	"time"
@@ -97,10 +98,38 @@ func TestModelClaimSleepLowerPriorityPreparedPool(t *testing.T) {
 	assertLifecycleRouteBinding(t, ctx, k8sClient, low.Status.Instances[0].Pod, low.Name,
 		lifecycleRouteBinding{Model: low.Name, Port: 0, State: constants.ModelClaimRoutingStateSleeping})
 
-	// The gateway reports the victim as sleeping and writes the ordinary wake
-	// request. Once preemption's reservation is gone, existing wake admission
-	// makes room and returns the victim to Active.
-	assertLifecycleWakeResponse(t, low.Name, 20*time.Second)
+	// Normally the gateway reports the victim as sleeping and writes the wake
+	// request. A controller-only upgrade can ask the test to write the same Pod
+	// annotation directly. Once preemption's reservation is gone, existing wake
+	// admission makes room and returns the victim to Active.
+	if os.Getenv("AIBRIX_E2E_PREEMPTION_SKIP_GATEWAY") == "1" {
+		pod, err := k8sClient.CoreV1().Pods(lifecycleNamespace).Get(
+			ctx, low.Status.Instances[0].Pod, metav1.GetOptions{},
+		)
+		require.NoError(t, err)
+		if pod.Annotations == nil {
+			pod.Annotations = map[string]string{}
+		}
+		pod.Annotations[constants.ModelClaimWakeAnnotationPrefix+low.Name] = time.Now().UTC().Format(time.RFC3339)
+		_, err = k8sClient.CoreV1().Pods(lifecycleNamespace).Update(ctx, pod, metav1.UpdateOptions{})
+		require.NoError(t, err)
+	} else {
+		var lastStatus int
+		var lastBody, retryAfter string
+		require.NoError(t, wait.PollUntilContextTimeout(ctx, time.Second, 30*time.Second, true,
+			func(context.Context) (bool, error) {
+				response, body, err := sendLifecycleModelRequest(low.Name)
+				if err != nil {
+					lastBody = err.Error()
+					return false, nil
+				}
+				lastStatus, lastBody = response.StatusCode, string(body)
+				retryAfter = response.Header.Get("Retry-After")
+				_ = response.Body.Close()
+				return lastStatus == http.StatusServiceUnavailable && retryAfter == "3", nil
+			}), "gateway did not observe sleeping route for %s; last status=%d retry-after=%s body=%s",
+			low.Name, lastStatus, retryAfter, lastBody)
+	}
 	recovered := waitForLifecycleClaimPhase(t, ctx, aibrixClient, low.Name, modelv1alpha1.ModelClaimActive)
 	require.NoError(t, wait.PollUntilContextTimeout(ctx, time.Second, 30*time.Second, true,
 		func(ctx context.Context) (bool, error) {
