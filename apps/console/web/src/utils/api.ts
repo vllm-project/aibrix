@@ -209,6 +209,86 @@ export interface CreateModelAdapterRequest {
   placement: ModelAdapterPlacement;
 }
 
+export type ModelClaimEngine = 'vllm' | 'sglang';
+
+export interface ModelClaimPerGpu {
+  maximumFootprint: string;
+  kvFloor: string;
+}
+
+export interface ModelClaimCondition {
+  type: string;
+  status: string;
+  reason: string;
+  message: string;
+  lastTransitionTime: string;
+}
+
+export interface ModelClaimRoute {
+  state: string;
+  port: number;
+  reason?: string;
+  wakeByRequest: boolean;
+}
+
+export interface ModelClaimInstance {
+  pod: string;
+  port: number;
+  phase: string;
+  kvLimitBytes: number;
+  reason: string;
+  route?: ModelClaimRoute;
+  wakeRequestedAt?: string;
+  podStatus: ModelAdapterPod;
+}
+
+export interface ModelClaim {
+  name: string;
+  namespace: string;
+  apiVersion: string;
+  modelName: string;
+  artifactUrl: string;
+  engine: string;
+  poolName: string;
+  podSelector: string;
+  perGpu?: ModelClaimPerGpu;
+  priority: number;
+  engineArgs: Record<string, string>;
+  phase: string;
+  candidates: number;
+  readyReplicas: number;
+  desiredReplicas: number;
+  createdAt: string;
+  deleting: boolean;
+  managedByConsole: boolean;
+  conditions: ModelClaimCondition[];
+  instances: ModelClaimInstance[];
+}
+
+export interface ModelClaimPool {
+  name: string;
+  namespace: string;
+  workloads: string[];
+  pods: number;
+  enabledPods: number;
+  readyPods: number;
+  gpuCounts: number[];
+  images: string[];
+  claims: number;
+  policy?: string;
+}
+
+export interface CreateModelClaimRequest {
+  name: string;
+  modelName?: string;
+  artifactUrl: string;
+  engine: ModelClaimEngine;
+  poolName: string;
+  perGpu: ModelClaimPerGpu;
+  priority?: number;
+  engineArgs: Record<string, string>;
+}
+
 // --- Model Deployment Templates ---
 //
 // Mirrors apps/console/api/proto/console/v1/console.proto. The proto comment
@@ -503,10 +583,18 @@ async function readAPIErrorMessage(response: Response): Promise<string> {
 
   try {
     const parsed = JSON.parse(raw) as {
-      error?: { message?: string };
+      error?: { message?: string } | string;
       message?: string;
     };
-    if (typeof parsed.error?.message === 'string' && parsed.error.message.trim() !== '') {
+    // The Kubernetes-backed BFFs answer {"error": "<message>"}.
+    if (typeof parsed.error === 'string' && parsed.error.trim() !== '') {
+      return parsed.error;
+    }
+    if (
+      typeof parsed.error === 'object' &&
+      typeof parsed.error?.message === 'string' &&
+      parsed.error.message.trim() !== ''
+    ) {
       return parsed.error.message;
     }
     if (typeof parsed.message === 'string' && parsed.message.trim() !== '') {
@@ -645,6 +733,46 @@ export async function deleteModelAdapter(name: string): Promise<void> {
 export async function listModelAdapterTargets(): Promise<ModelAdapterTarget[]> {
   const data = await apiFetch<{ targets: ModelAdapterTarget[] }>('/api/v1/model-adapter-targets');
   return data.targets || [];
+}
+
+// --- ModelClaims ---
+
+export async function listModelClaims(): Promise<ModelClaim[]> {
+  const data = await apiFetch<{ modelClaims: ModelClaim[] }>('/api/v1/model-claims');
+  return data.modelClaims || [];
+}
+
+export async function getModelClaim(name: string): Promise<ModelClaim> {
+  return apiFetch<ModelClaim>(`/api/v1/model-claims/${encodeURIComponent(name)}`);
+}
+
+export async function createModelClaim(request: CreateModelClaimRequest): Promise<ModelClaim> {
+  return apiFetch<ModelClaim>('/api/v1/model-claims', {
+    method: 'POST',
+    body: JSON.stringify(camelToSnake(request)),
+  });
+}
+
+// Only spec.perGPU can change after a claim is created.
+export async function updateModelClaimPerGpu(
+  name: string,
+  perGpu: ModelClaimPerGpu,
+): Promise<ModelClaim> {
+  return apiFetch<ModelClaim>(`/api/v1/model-claims/${encodeURIComponent(name)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(camelToSnake({ perGpu })),
+  });
+}
+
+export async function deleteModelClaim(name: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/model-claims/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function listModelClaimPools(): Promise<ModelClaimPool[]> {
+  const data = await apiFetch<{ pools: ModelClaimPool[] }>('/api/v1/model-claim-pools');
+  return data.pools || [];
 }
 
 // --- Models ---
