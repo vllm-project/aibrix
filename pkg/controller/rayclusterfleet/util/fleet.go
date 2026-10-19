@@ -735,8 +735,8 @@ func StrategyType(deployment *orchestrationv1alpha1.RayClusterFleet) appsv1.Depl
 // rollingFenceposts returns the maxSurge and maxUnavailable of a rolling update. Each one that is
 // not set is 25%, as it is for a Deployment.
 func rollingFenceposts(deployment *orchestrationv1alpha1.RayClusterFleet) (maxSurge, maxUnavailable *intstrutil.IntOrString) {
-	fencepost := intstrutil.FromString("25%")
-	maxSurge, maxUnavailable = &fencepost, &fencepost
+	surge, unavailable := intstrutil.FromString("25%"), intstrutil.FromString("25%")
+	maxSurge, maxUnavailable = &surge, &unavailable
 	if ru := deployment.Spec.Strategy.RollingUpdate; ru != nil {
 		if ru.MaxSurge != nil {
 			maxSurge = ru.MaxSurge
