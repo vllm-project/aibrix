@@ -19,11 +19,20 @@ package utils
 import (
 	"context"
 	"net"
+	"strings"
 
 	"github.com/redis/go-redis/v9"
 
 	"k8s.io/klog/v2"
 )
+
+func redisAddress(host, port string) string {
+	host = strings.TrimSpace(host)
+	if len(host) >= 2 && strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = host[1 : len(host)-1]
+	}
+	return net.JoinHostPort(host, port)
+}
 
 func GetRedisClient() *redis.Client {
 	redisHost := LoadEnv("REDIS_HOST", "localhost")
@@ -31,7 +40,7 @@ func GetRedisClient() *redis.Client {
 	redisPassword := LoadEnv("REDIS_PASSWORD", "")
 	// Connect to Redis
 	client := redis.NewClient(&redis.Options{
-		Addr:     net.JoinHostPort(redisHost, redisPort),
+		Addr:     redisAddress(redisHost, redisPort),
 		Password: redisPassword,
 		DB:       0, // Default DB
 	})
