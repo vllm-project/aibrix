@@ -921,6 +921,15 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		// once a target pod is picked (e.g. session-affinity's Redis pin, or a multi-strategy
 		// blend wrapping it) never gets that chance unless we run its post-route hook here too.
 		if updater, ok := router.(types.PostRouteUpdater); ok {
+			// Admit the pod first, as routeWithEarlyAdmission does for Route: a request the
+			// pod has no room for is rejected, and must not leave state behind for it (e.g.
+			// a prefix-cache entry for a prompt the pod never received).
+			if limit := replicaInflightLimit(routeCtx); limit > 0 {
+				routeCtx.ReplicaInflightChecked = true
+				if !s.admitReplicaInflight(routeCtx, readyPods[0], limit) {
+					return "", types.ErrTargetReplicaInflightExceeded
+				}
+			}
 			podList := &utils.PodArray{Pods: readyPods}
 			if err := updater.PostRouteUpdate(routeCtx, podList, readyPods[0]); err != nil {
 				klog.Warningf("post-route update failed for request %s: %v", routeCtx.RequestID, err)
@@ -934,9 +943,9 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	// to that request without changing Context semantics for other routers.
 	if isPD {
 		routeCtx.Context = ctx
-		if limit := replicaInflightLimit(routeCtx); limit > 0 {
-			return s.routeWithEarlyAdmission(routeCtx, router, &utils.PodArray{Pods: readyPods}, limit)
-		}
+	}
+	if limit := replicaInflightLimit(routeCtx); limit > 0 {
+		return s.routeWithEarlyAdmission(routeCtx, router, &utils.PodArray{Pods: readyPods}, limit)
 	}
 	addr, err := router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
 	if err == nil {

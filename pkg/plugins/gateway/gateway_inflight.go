@@ -93,13 +93,17 @@ func (s *Server) admitReplicaInflight(routingCtx *types.RoutingContext, pod *v1.
 	return true
 }
 
-// routeWithEarlyAdmission routes a request whose router starts work on the request's behalf
-// before it returns a target -- PD sends the prefill leg from inside Route. Admitting that
+// routeWithEarlyAdmission routes a request whose router may start work or record state on
+// the request's behalf before it returns a target -- PD sends the prefill leg from inside
+// Route, and the prefix-cache routers index the prompt on the chosen pod. Admitting that
 // target afterwards, in enforceReplicaInflight, would let every request that arrives during
 // one prefill pass the pre-filter for the same decode pod, run its own prefill, and only then
-// be rejected, leaving the prefill's work and KV behind. So the router admits its target
-// through routeCtx.AdmitTarget as soon as it has chosen it, and a full target fails Route
-// with types.ErrTargetReplicaInflightExceeded before any prefill starts.
+// be rejected, leaving the prefill's work and KV behind; a rejected prefix-cache request would
+// leave an index entry for a prompt the pod never received, and draw the next requests with
+// that prefix to it. So the router admits its target through routeCtx.AdmitTarget as soon as
+// it has chosen it, and a full target fails Route with types.ErrTargetReplicaInflightExceeded
+// before any of that happens. A router that never calls AdmitTarget is admitted afterwards by
+// enforceReplicaInflight, as before.
 //
 // A counted admission whose Route then fails (the prefill leg failed) never reaches
 // AddRequestCount, so request tracking's completion decrement will not release it; it is

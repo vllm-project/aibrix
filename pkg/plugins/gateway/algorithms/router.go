@@ -399,15 +399,16 @@ func (m *multiStrategyRouter) Route(ctx *types.RoutingContext, readyPodList type
 		return "", errors.New("empty pod list")
 	}
 
-	if len(pods) == 1 {
-		ctx.SetTargetPod(pods[0])
-		m.setTargetPortIfNeeded(ctx, readyPodList, pods[0])
-		m.runPostRouteUpdates(ctx, readyPodList, pods[0])
-		return ctx.TargetAddress(), nil
+	topPod := pods[0]
+	if len(pods) > 1 {
+		var err error
+		if topPod, _, err = m.scoreAndRank(ctx, readyPodList); err != nil {
+			return "", err
+		}
 	}
-
-	topPod, _, err := m.scoreAndRank(ctx, readyPodList)
-	if err != nil {
+	// Run the strategies' post-route updates (a prefix-cache entry, a session pin)
+	// only for a pod that admitted the request.
+	if err := ctx.AdmitTarget(topPod); err != nil {
 		return "", err
 	}
 

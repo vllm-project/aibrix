@@ -496,6 +496,10 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 		recordRoutingError(ctx.Model, "no_target_pod", false)
 		return "", errors.New("no target pod found")
 	}
+	// Index the prompt only on a pod that admitted the request.
+	if err := ctx.AdmitTarget(targetPod); err != nil {
+		return "", err
+	}
 
 	targetPodKey := utils.GeneratePodKey(targetPod.Namespace, targetPod.Name)
 	if len(prefixHashes) > 0 {
@@ -935,6 +939,10 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	if targetPod == nil {
 		recordRoutingError(modelName, "no_target_pod", true)
 		return "", fmt.Errorf("no ready pods available for routing")
+	}
+	// Index the prompt only on a pod that admitted the request.
+	if err := ctx.AdmitTarget(targetPod); err != nil {
+		return "", err
 	}
 
 	selectedPodKey := fmt.Sprintf("%s/%s", targetPod.Namespace, targetPod.Name)

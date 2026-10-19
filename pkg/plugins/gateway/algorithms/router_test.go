@@ -599,6 +599,37 @@ func TestMultiStrategyRouterRoute_PostRouteUpdateForSinglePod(t *testing.T) {
 	assert.Same(t, pod, postRouteScorer.calledTargetPod)
 }
 
+// A blend's post-route updates record state for its target (a prefix-cache entry, a
+// session pin), so they run only once the target admitted the request. A target the
+// gateway's requestsInflight cap rejects gets none of it.
+func TestMultiStrategyRouterRoute_PostRouteUpdateOnlyForAdmittedTarget(t *testing.T) {
+	podA := newPod("pod-a", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	podB := newPod("pod-b", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	for name, pods := range map[string][]*v1.Pod{"scored": {podA, podB}, "single pod": {podA}} {
+		t.Run(name, func(t *testing.T) {
+			postRouteScorer := &fakeScorerWithPostRoute{
+				fakeScorer: fakeScorer{polarity: types.PolarityMost, scores: map[*v1.Pod]float64{podA: 1, podB: 2}},
+			}
+			m := &multiStrategyRouter{
+				config:  &MultiRouterConfig{Items: []RouterItem{{Name: "post-route", Coefficient: 1}}},
+				scorers: map[string]types.PodScorer{"post-route": postRouteScorer},
+			}
+			ctx := types.NewRoutingContext(context.Background(), RouterNotSet, testModelName, "hello", "req-rejected", "")
+			var admitted []*v1.Pod
+			ctx.SetTargetAdmitter(func(pod *v1.Pod) error {
+				admitted = append(admitted, pod)
+				return types.ErrTargetReplicaInflightExceeded
+			})
+
+			_, err := m.Route(ctx, wrapper{pods: pods})
+			assert.ErrorIs(t, err, types.ErrTargetReplicaInflightExceeded)
+			assert.Equal(t, []*v1.Pod{pods[len(pods)-1]}, admitted, "the blend's winner is admitted once")
+			assert.False(t, postRouteScorer.called, "a rejected target must not get post-route updates")
+			assert.False(t, ctx.HasRouted())
+		})
+	}
+}
+
 func TestMultiStrategyRouterRoute_PostRouteUpdateOrderAndErrorHandling(t *testing.T) {
 	podA := newPod("pod-a", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
 	podB := newPod("pod-b", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"})

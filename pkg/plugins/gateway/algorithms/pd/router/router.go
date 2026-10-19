@@ -260,6 +260,15 @@ type pdRouter struct {
 	encodeExecutor        *encode.Executor
 	trtHandler            *engine.TRTLLMHandler
 
+	// pendingPrefixCredits holds the prefix-cache credit selection chose for a
+	// request's prefill pod, keyed by request ID. Selection runs under selectMu
+	// and the decode pod is admitted only after it, so Route takes the credit
+	// right after selection and enqueues it once the decode pod admitted the
+	// request: a rejected request credits no pod. This relies on request IDs
+	// being unique and on Route being the only caller of Select; another
+	// caller would leave its entries here.
+	pendingPrefixCredits sync.Map
+
 	// tokenLoadTracker is the token-weighted prefill ledger read by the
 	// token_load prefill policy, and the decode ledger read by the token_load
 	// decode policy. It is charged in filterPrefillDecodePods for requests
@@ -544,6 +553,8 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 	// prefillRequestTracker atomically with the decision (see selectMu);
 	// Route owns the matching removals.
 	prefillPod, decodePod, err := r.podSelector.Select(ctx, readyPods)
+	// Take the prefix credit selection recorded before any return below.
+	credit, hasCredit := r.pendingPrefixCredits.LoadAndDelete(ctx.RequestID)
 	if err != nil {
 		metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": pdRouteFilterPrefillDecodePodsFail, "status_code": "400"})
@@ -559,6 +570,12 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		r.prefillRequestTracker.RemovePrefillRequest(ctx.RequestID)
 		r.releaseTokenLoad(ctx.RequestID)
 		return "", fmt.Errorf("decode pod %s rejected request %s: %w", decodePod.Name, ctx.RequestID, err)
+	}
+	// Credit the prefill pod only now that the request was admitted, but still before its
+	// prefill is sent, so requests with the same prefix that arrive during it follow it.
+	if hasCredit {
+		job := credit.(prefixUpdateJob)
+		r.enqueuePrefixUpdate(job.prefixHashes, job.model, job.pod)
 	}
 
 	if prefillPod != nil {
@@ -1414,7 +1431,8 @@ func decodeTokenLoadRates(usesDecodeTokenLoad bool, throughputs, requestCounts m
 //   - prefillScores is non-empty but no roleset has a matching decode entry: the
 //     roleset sets are disjoint after load-imbalance alignment; targetDecodePod stays nil.
 //
-// On success, enqueues a prefix-cache update when prefixHashes is non-empty, increments
+// On success, records the prefill pod's prefix-cache credit when prefixHashes is non-empty
+// (Route enqueues it once the decode pod admitted the request, see pendingPrefixCredits), increments
 // internal selection counters, and emits PDSelectedPrefillPodTotal / PDSelectedDecodePodTotal.
 // Does not update request trackers; Route registers them after pod selection returns.
 func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
@@ -1470,7 +1488,11 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 	}
 
 	if len(prefixHashes) > 0 {
-		r.enqueuePrefixUpdate(prefixHashes, routingCtx.Model, utils.GeneratePodKey(targetPrefillPod.Namespace, targetPrefillPod.Name))
+		r.pendingPrefixCredits.Store(routingCtx.RequestID, prefixUpdateJob{
+			prefixHashes: append([]uint64(nil), prefixHashes...),
+			model:        routingCtx.Model,
+			pod:          utils.GeneratePodKey(targetPrefillPod.Namespace, targetPrefillPod.Name),
+		})
 	}
 
 	r.countersMu.Lock()

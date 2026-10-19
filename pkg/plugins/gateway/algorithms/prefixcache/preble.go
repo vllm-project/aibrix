@@ -532,6 +532,9 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 		return "", err
 	}
 
+	// Inserting with no pod only builds the tree nodes for the lookup; it
+	// credits no pod, so a request rejected later pulls nothing toward its
+	// target. The pod is recorded in PostRouteUpdate, after admission.
 	node, matchedTokens, _ := p.cache.AddPrefix(tokens, ctx.Model, "")
 	readyPodsMap := routeutil.PodsByKey(readyPods)
 
@@ -616,6 +619,10 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 	if targetPod == nil {
 		klog.ErrorS(fmt.Errorf("no suitable pod found"), "After all routing logic, no suitable pod found", "requestID", ctx.RequestID, "readyPods", readyPods)
 		return "", fmt.Errorf("no suitable pod found")
+	}
+	// Record the prompt and its load only on a pod that admitted the request.
+	if err := ctx.AdmitTarget(targetPod); err != nil {
+		return "", err
 	}
 
 	if err := p.PostRouteUpdate(ctx, readyPodList, targetPod); err != nil {
