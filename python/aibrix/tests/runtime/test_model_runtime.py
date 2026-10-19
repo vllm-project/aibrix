@@ -2728,16 +2728,31 @@ def test_dormant_kv_expiry(dormant_kv, caplog, restart):
     with pytest.raises(HTTPException):
         s.kv(200)
     s.now += timedelta(seconds=0.001)
-    s.identity = "start"  # Expiry wins over the first matching read.
     if restart:
         s.adopt()
     assert s.kv(200)["limit_bytes"] == s.segment() == 200
+    s.identity = "start"  # A match after the ceiling expired cannot bring it back.
     for _ in range(2):
         assert s.snapshot().kv_initial_capacity_bytes is None
         s.runtime.supervise_once()
     assert s.record()["kv_initial_capacity_bytes"] is None
     assert s.record().get("kv_capacity_verify_until") is None
     assert caplog.text.count("verification expired for model m1 (PID 10001)") == 1
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_dormant_kv_late_match_restores(dormant_kv, restart):
+    from datetime import timedelta
+
+    s = dormant_kv
+    # Nothing checked the engine before the deadline passed.
+    s.now += timedelta(seconds=30)
+    s.identity = "start"
+    if restart:
+        s.adopt()
+    assert s.snapshot().kv_initial_capacity_bytes == 100
+    assert s.kv(200)["limit_bytes"] == s.segment() == 100
+    assert s.record().get("kv_capacity_verify_until") is None
 
 
 @pytest.mark.parametrize("trigger", ["snapshot", "kv", "sleep", "wake", "supervisor"])

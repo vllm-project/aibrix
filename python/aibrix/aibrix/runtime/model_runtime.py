@@ -1510,6 +1510,9 @@ class ModelRuntime:
         ):
             inst.kv_initial_capacity_bytes = None
             inst.kv_capacity_verify_until = None
+        elif current == inst.pid_start_time:
+            # A match proves the same engine even after the deadline, which only bounds the deferral.
+            inst.kv_capacity_verify_until = None
         elif (
             inst.kv_capacity_verify_until is not None
             and self._now() >= inst.kv_capacity_verify_until
@@ -1520,8 +1523,6 @@ class ModelRuntime:
                 inst.pid,
             )
             inst.kv_initial_capacity_bytes = None
-            inst.kv_capacity_verify_until = None
-        elif current == inst.pid_start_time:
             inst.kv_capacity_verify_until = None
         elif inst.kv_capacity_verify_until is None:
             inst.kv_capacity_verify_until = self._now() + timedelta(
