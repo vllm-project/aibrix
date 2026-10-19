@@ -17,7 +17,7 @@
 import asyncio
 from types import SimpleNamespace
 from typing import Any, Union
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import tos
@@ -273,6 +273,39 @@ class DelayedMultipartTestStorage(NativeMultipartTestStorage):
 
 
 class TestBaseStorage2:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("strategy", [{"byline": 1}, {"bysize": 4}, {"bysize": 8}])
+    @pytest.mark.parametrize("fail_create", [True, False])
+    async def test_multipart_upload_failure_cleanup(
+        self, monkeypatch, strategy, fail_create
+    ):
+        storage = NativeMultipartTestStorage(multipart_threshold=8)
+        error = RuntimeError("multipart upload failed")
+        create = AsyncMock(
+            return_value="upload", side_effect=error if fail_create else None
+        )
+        abort = AsyncMock()
+        native_abort = AsyncMock()
+        monkeypatch.setattr(storage, "create_multipart_upload", create)
+        monkeypatch.setattr(storage, "abort_multipart_upload", abort)
+        monkeypatch.setattr(storage, "_native_abort_multipart_upload", native_abort)
+        monkeypatch.setattr(storage, "_upload_by_lines", AsyncMock(side_effect=error))
+        monkeypatch.setattr(storage, "_upload_by_size", AsyncMock(side_effect=error))
+
+        with pytest.raises(RuntimeError) as raised:
+            await storage.multipart_upload("key", b"data", **strategy)
+
+        assert raised.value is error
+        if fail_create:
+            abort.assert_not_awaited()
+            native_abort.assert_not_awaited()
+        elif strategy.get("bysize", 0) >= 8:
+            native_abort.assert_awaited_once_with("key", "upload")
+            abort.assert_not_awaited()
+        else:
+            abort.assert_awaited_once_with("key", "upload")
+            native_abort.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_small_parts_completion_uses_native_buffered_aggregation(self):
         storage = NativeMultipartTestStorage(multipart_threshold=8)
