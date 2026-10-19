@@ -397,25 +397,39 @@ func (h *ModelAdapterHandler) handleListTargets(w http.ResponseWriter, r *http.R
 }
 
 func requireModelAdapterAdmin(ctx context.Context) error {
+	return requireAdminRole(ctx, "ModelAdapters")
+}
+
+// requireAdminRole guards the Kubernetes-backed BFF mutations, which act with
+// the console's own cluster credentials rather than the caller's.
+func requireAdminRole(ctx context.Context, resources string) error {
 	user := middleware.GetUser(ctx)
 	if user == nil {
 		return grpcstatus.Error(codes.Unauthenticated, "authentication is required")
 	}
 	if !strings.EqualFold(strings.TrimSpace(user.Role), modelAdapterAdminRole) {
-		return grpcstatus.Error(codes.PermissionDenied, "admin role is required to manage ModelAdapters")
+		return grpcstatus.Errorf(codes.PermissionDenied, "admin role is required to manage %s", resources)
 	}
 	return nil
 }
 
 func (h *ModelAdapterHandler) resolveClients() (kubernetes.Interface, aibrixclient.Interface, string, error) {
-	if h.clients == nil {
+	return resolveClusterClients(h.clients)
+}
+
+// resolveClusterClients returns the core and AIBrix clientsets, which must
+// target the same namespace.
+func resolveClusterClients(
+	clients modelAdapterClientProvider,
+) (kubernetes.Interface, aibrixclient.Interface, string, error) {
+	if clients == nil {
 		return nil, nil, "", grpcstatus.Error(codes.Unavailable, "Kubernetes clients are not configured")
 	}
-	kubeClient, namespace, err := h.clients.Client()
+	kubeClient, namespace, err := clients.Client()
 	if err != nil {
 		return nil, nil, "", err
 	}
-	modelClient, modelNamespace, err := h.clients.ModelClient()
+	modelClient, modelNamespace, err := clients.ModelClient()
 	if err != nil {
 		return nil, nil, "", err
 	}

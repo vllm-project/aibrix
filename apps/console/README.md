@@ -75,6 +75,20 @@ The backend exposes both gRPC (`:50060`) and REST (`:8090`) APIs. The REST API i
 | DELETE | `/api/v1/secrets/{id}` | Delete secret |
 | GET | `/api/v1/quotas` | List quotas |
 | POST | `/api/v1/playground/chat/completions` | Playground chat (SSE proxy) |
+| GET | `/api/v1/model-claims` | List ModelClaims |
+| POST | `/api/v1/model-claims` | Create a ModelClaim (admin) |
+| GET | `/api/v1/model-claims/{name}` | Get a ModelClaim with its conditions, instances, and Pod routes |
+| PATCH | `/api/v1/model-claims/{name}` | Change a ModelClaim's `spec.perGPU`, its only mutable field (admin) |
+| DELETE | `/api/v1/model-claims/{name}` | Delete a ModelClaim (admin) |
+| GET | `/api/v1/model-claim-pools` | List warm runtime pools by `claim.model.aibrix.ai/pool` |
+
+The ModelClaim endpoints read and write Kubernetes directly in
+`KUBERNETES_NAMESPACE`, so claims applied with `kubectl` are listed too. The
+console's Kubernetes identity needs `get`, `list`, `create`, `patch`, and
+`delete` on `modelclaims.model.aibrix.ai`, and `get` and `list` on `pods` and
+`deployments`. See the
+[ModelClaim feature guide](../../docs/source/features/modelclaim.rst) for the
+fields a claim declares.
 
 The [Gateway API guide](gateways.md) documents the namespaced
 `/api/v1/gateway-instances` REST API, Kubernetes permissions and concurrency

@@ -17,60 +17,12 @@ limitations under the License.
 package modelclaim
 
 import (
-	"fmt"
-	"math"
-	"strconv"
-	"strings"
-
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	corev1 "k8s.io/api/core/v1"
 )
 
-const nvidiaGPUResourceName corev1.ResourceName = "nvidia.com/gpu"
-
-// vllmParallelism returns the fixed GPU group size required by a vLLM engine.
-// ModelClaim deliberately keeps these engine options in engineConfig.args; the
-// pool Pod's GPU limit is the resource contract and must match TP * PP.
-func vllmParallelism(config *modelv1alpha1.ModelClaimEngineConfig) (int64, error) {
-	args := map[string]string{}
-	if config != nil && config.Args != nil {
-		args = config.Args
-	}
-	if _, found := args["--gpu-memory-utilization"]; found {
-		return 0, fmt.Errorf("--gpu-memory-utilization is incompatible with kvcached; use the pool KV policy instead")
-	}
-	tensor, err := positiveEngineArg(args, "--tensor-parallel-size")
-	if err != nil {
-		return 0, err
-	}
-	pipeline, err := positiveEngineArg(args, "--pipeline-parallel-size")
-	if err != nil {
-		return 0, err
-	}
-	data, err := positiveEngineArg(args, "--data-parallel-size")
-	if err != nil {
-		return 0, err
-	}
-	if data != 1 {
-		return 0, fmt.Errorf("--data-parallel-size=%d is unsupported by fixed topology pools", data)
-	}
-	if tensor > math.MaxInt64/pipeline {
-		return 0, fmt.Errorf("tensor and pipeline parallelism product overflows int64")
-	}
-	return tensor * pipeline, nil
-}
-
-func positiveEngineArg(args map[string]string, name string) (int64, error) {
-	raw, found := args[name]
-	if !found || raw == "" {
-		return 1, nil
-	}
-	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
-	if err != nil || value < 1 {
-		return 0, fmt.Errorf("%s must be a positive integer", name)
-	}
-	return value, nil
-}
+const nvidiaGPUResourceName = utils.NVIDIAGPUResourceName
 
 func isVLLMModel(pm *modelv1alpha1.ModelClaim) bool {
 	return pm.Spec.Engine == "" || pm.Spec.Engine == "vllm"
@@ -80,7 +32,7 @@ func modelParallelism(pm *modelv1alpha1.ModelClaim) (int64, error) {
 	if !isVLLMModel(pm) {
 		return 1, nil
 	}
-	return vllmParallelism(pm.Spec.EngineConfig)
+	return utils.ModelClaimVLLMParallelism(pm.Spec.EngineConfig)
 }
 
 // instanceGPUCount is how many cards one instance of a claim runs on, as far
@@ -97,21 +49,9 @@ func instanceGPUCount(pm *modelv1alpha1.ModelClaim) int64 {
 	return parallelism
 }
 
-// podGPUCount reports the GPU devices assigned to the warm runtime Pod. The
-// initial contract is one topology-homogeneous runtime container per Pod.
+// podGPUCount reports the GPU devices assigned to the warm runtime Pod.
 func podGPUCount(pod corev1.Pod) int64 {
-	var count int64
-	for i := range pod.Spec.Containers {
-		resources := pod.Spec.Containers[i].Resources
-		if quantity, found := resources.Limits[nvidiaGPUResourceName]; found {
-			count += quantity.Value()
-			continue
-		}
-		if quantity, found := resources.Requests[nvidiaGPUResourceName]; found {
-			count += quantity.Value()
-		}
-	}
-	return count
+	return utils.ModelClaimPodGPUCount(&pod.Spec)
 }
 
 // podHasGPUs reports whether a pod has cards the account has to cover. The
