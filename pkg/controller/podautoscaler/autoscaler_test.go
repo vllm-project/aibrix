@@ -708,6 +708,57 @@ func TestComputeDesiredReplicasCountsReportingPodsWhenReadyReplicasLag(t *testin
 	}
 }
 
+// KPA sizes from every pod that reports, not only from readyReplicas, which can
+// lag the pod list: 10 pods reporting 100 each against a target of 50 need 20,
+// even while the status still shows 4 ready.
+func TestComputeDesiredReplicasKPAScalesFromReportingPodsWhenReadyReplicasLag(t *testing.T) {
+	pa := testPodAutoscaler(autoscalingv1alpha1.KPA)
+	fetcher := &mockMetricFetcherFactory{}
+	fetcher.metricsValue = 100
+	autoScaler := NewDefaultAutoScaler(fetcher, nil)
+
+	podList := make([]corev1.Pod, 10)
+	for j := range podList {
+		podList[j].Name = fmt.Sprintf("pod-%d", j)
+	}
+	result, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
+		PodAutoscaler:   pa,
+		ScalingContext:  testScalingContext(t, &pa),
+		CurrentReplicas: 10,
+		ReplicaState:    ReplicaState{ReadyReplicas: 4},
+		Pods:            podList,
+		Timestamp:       time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int32(20), result.DesiredReplicas)
+}
+
+// Inside the tolerance band KPA holds the current replicas, pods still starting
+// included: 4 ready pods at the target with 6 more starting must stay at 10, not
+// fall to the 4 that carry the load.
+func TestComputeDesiredReplicasKPAHoldsPendingPodsWithinTolerance(t *testing.T) {
+	pa := testPodAutoscaler(autoscalingv1alpha1.KPA)
+	fetcher := &mockMetricFetcherFactory{}
+	fetcher.metricsValue = 50
+	autoScaler := NewDefaultAutoScaler(fetcher, nil)
+
+	podList := make([]corev1.Pod, 4)
+	for j := range podList {
+		podList[j].Name = fmt.Sprintf("pod-%d", j)
+	}
+	result, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
+		PodAutoscaler:   pa,
+		ScalingContext:  testScalingContext(t, &pa),
+		CurrentReplicas: 10,
+		ReplicaState:    ReplicaState{ReadyReplicas: 4},
+		Pods:            podList,
+		Timestamp:       time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int32(10), result.DesiredReplicas)
+	assert.False(t, result.PendingReplicaGuardActive, "the hold must come from KPA, not from the pending-replica guard")
+}
+
 // External and domain sources report one total, so their windows must not be
 // rescaled by the pod count: a steady external load needs the same replicas
 // before and after the ready pods change.
