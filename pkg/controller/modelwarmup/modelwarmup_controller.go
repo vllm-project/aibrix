@@ -84,7 +84,9 @@ var controlPlaneLabelKeys = []string{
 
 type ModelWarmupReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	// APIReader reads from the API server rather than the cache.
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
 }
 
 func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
@@ -101,7 +103,7 @@ func Add(mgr manager.Manager, _ config.RuntimeConfig) error {
 			handler.EnqueueRequestsFromMapFunc(enqueueContinuousModelWarmupsForNamespace(mgr.GetClient())),
 			builder.WithPredicates(namespaceResourcePoolChanged()),
 		).
-		Complete(&ModelWarmupReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()})
+		Complete(&ModelWarmupReconciler{Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Scheme: mgr.GetScheme()})
 }
 
 //+kubebuilder:rbac:groups=model.aibrix.ai,resources=modelwarmups,verbs=get;list;watch;create;update;patch;delete
@@ -341,16 +343,37 @@ func effectiveWarmupPolicies(w *modelv1alpha1.ModelWarmup) warmupPolicies {
 	return result
 }
 
+// resolveTargets resolves a warmup's targets from the cache. A failed target of
+// a Once warmup is final, and the cache can trail a node or Namespace that was
+// labelled just before the warmup was created or changed. So on its first pass
+// over a revision, a Once warmup with a missing or unauthorized node has its
+// targets resolved again from the API server. Later passes use the cache, and
+// so does a Continuous warmup, which is reconciled again when a pool label
+// changes.
 func (r *ModelWarmupReconciler) resolveTargets(
 	ctx context.Context,
 	warmup *modelv1alpha1.ModelWarmup,
 ) (map[string]resolvedTarget, map[string]string, error) {
+	targets, missing, err := resolveTargetsWith(ctx, r.Client, warmup)
+	if err != nil || len(missing) == 0 || r.APIReader == nil ||
+		effectiveMode(warmup) != modelv1alpha1.ModelWarmupModeOnce ||
+		warmup.Status.ObservedRevision == revisionFor(warmup) {
+		return targets, missing, err
+	}
+	return resolveTargetsWith(ctx, r.APIReader, warmup)
+}
+
+func resolveTargetsWith(
+	ctx context.Context,
+	reader client.Reader,
+	warmup *modelv1alpha1.ModelWarmup,
+) (map[string]resolvedTarget, map[string]string, error) {
 	var namespace corev1.Namespace
-	if err := r.Get(ctx, types.NamespacedName{Name: warmup.Namespace}, &namespace); err != nil {
+	if err := reader.Get(ctx, types.NamespacedName{Name: warmup.Namespace}, &namespace); err != nil {
 		return nil, nil, err
 	}
 	var nodes corev1.NodeList
-	if err := r.List(ctx, &nodes); err != nil {
+	if err := reader.List(ctx, &nodes); err != nil {
 		return nil, nil, err
 	}
 	return resolveTargetsFromNodes(warmup, &namespace, nodes.Items)
