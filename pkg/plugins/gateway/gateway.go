@@ -145,7 +145,7 @@ type processState struct {
 	lastRespHeaders  []*configPb.HeaderValueOption
 	stream           bool
 	isRespError      bool
-	isGatewayRspDone bool
+	isGatewayRspDone bool // A response outcome was recorded, including an ImmediateResponse failure.
 	completed        bool
 	trackedModel     string
 	// recvCh carries the result of the srv.Recv() this stream already has in
@@ -623,7 +623,10 @@ func (s *Server) preRecvCheck(st *processState) error {
 	// Client cancelled or deadline exceeded
 	case <-st.ctx.Done():
 		if st.model != "" {
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "context_cancelled", "499", st.routerCtx)
+			if !st.isGatewayRspDone {
+				st.isGatewayRspDone = true
+				s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "context_cancelled", "499", st.routerCtx)
+			}
 			s.finishRequestCount(st)
 		}
 		klog.ErrorS(st.ctx.Err(), "context cancelled", "request_id", st.requestID, "model", st.model)
@@ -661,7 +664,8 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 		}
 
 		// client closed stream (EOF)
-		if st.model != "" {
+		if st.model != "" && !st.isGatewayRspDone {
+			st.isGatewayRspDone = true
 			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "client_cancelled_eof", "499", st.routerCtx)
 		}
 		klog.ErrorS(nil, "client closed stream (EOF) before completion", "requestID", st.requestID, "model", st.model)
@@ -669,12 +673,16 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 		return io.EOF
 	}
 
-	// Normal stream closure by envoy proxy
+	// Envoy can also cancel after an ImmediateResponse without completing the request.
 	stErr, ok := status.FromError(err)
 	if ok && stErr.Code() == codes.Canceled {
 		if st.model != "" && !st.isGatewayRspDone {
 			st.isGatewayRspDone = true
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200", st.routerCtx)
+			if st.completed {
+				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200", st.routerCtx)
+			} else {
+				s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "client_cancelled", "499", st.routerCtx)
+			}
 		}
 		s.finishRequestCount(st)
 		return status.Error(codes.Canceled, "request canceled")
@@ -682,7 +690,8 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 
 	// Record failed request metric for other gRPC errors
 	if ok {
-		if st.model != "" {
+		if st.model != "" && !st.isGatewayRspDone {
+			st.isGatewayRspDone = true
 			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "gateway_request_fail", strconv.FormatUint(uint64(stErr.Code()), 10), st.routerCtx)
 		}
 		klog.ErrorS(err, "error receiving stream from Envoy extproc", "requestID", st.requestID, "model", st.model, "grpc_code", stErr.Code(), "grpc_message", stErr.Message())
@@ -798,6 +807,7 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 	statusCode := strconv.Itoa(int(resp.GetImmediateResponse().GetStatus().GetCode()))
 	metricFail := getMetricErr(resp.GetImmediateResponse(), st.metricLabel)
 	s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, metricFail+"_fail", statusCode, st.routerCtx)
+	st.isGatewayRspDone = true
 
 	return resp, nil
 }
@@ -921,6 +931,15 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		// once a target pod is picked (e.g. session-affinity's Redis pin, or a multi-strategy
 		// blend wrapping it) never gets that chance unless we run its post-route hook here too.
 		if updater, ok := router.(types.PostRouteUpdater); ok {
+			// Admit the pod first, as routeWithEarlyAdmission does for Route: a request the
+			// pod has no room for is rejected, and must not leave state behind for it (e.g.
+			// a prefix-cache entry for a prompt the pod never received).
+			if limit := replicaInflightLimit(routeCtx); limit > 0 {
+				routeCtx.ReplicaInflightChecked = true
+				if !s.admitReplicaInflight(routeCtx, readyPods[0], limit) {
+					return "", types.ErrTargetReplicaInflightExceeded
+				}
+			}
 			podList := &utils.PodArray{Pods: readyPods}
 			if err := updater.PostRouteUpdate(routeCtx, podList, readyPods[0]); err != nil {
 				klog.Warningf("post-route update failed for request %s: %v", routeCtx.RequestID, err)
@@ -934,9 +953,9 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	// to that request without changing Context semantics for other routers.
 	if isPD {
 		routeCtx.Context = ctx
-		if limit := replicaInflightLimit(routeCtx); limit > 0 {
-			return s.routeWithEarlyAdmission(routeCtx, router, &utils.PodArray{Pods: readyPods}, limit)
-		}
+	}
+	if limit := replicaInflightLimit(routeCtx); limit > 0 {
+		return s.routeWithEarlyAdmission(routeCtx, router, &utils.PodArray{Pods: readyPods}, limit)
 	}
 	addr, err := router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
 	if err == nil {

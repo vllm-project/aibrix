@@ -41,6 +41,8 @@ type RayClusterFleetSpec struct {
 	Template RayClusterTemplateSpec `json:"template" protobuf:"bytes,3,opt,name=template"`
 
 	// The deployment strategy to use to replace existing pods with new ones.
+	// Defaults to a RollingUpdate with maxSurge and maxUnavailable of 25%.
+	// +kubebuilder:default={type: "RollingUpdate", rollingUpdate: {maxSurge: "25%", maxUnavailable: "25%"}}
 	// +optional
 	// +patchStrategy=retainKeys
 	Strategy appsv1.DeploymentStrategy `json:"strategy,omitempty" patchStrategy:"retainKeys" protobuf:"bytes,4,opt,name=strategy"`

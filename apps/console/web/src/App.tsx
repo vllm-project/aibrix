@@ -27,6 +27,9 @@ import { DeploymentDetail } from './components/DeploymentDetail';
 import { LoraAdapters } from './components/LoraAdapters';
 import { CreateLoraAdapter } from './components/CreateLoraAdapter';
 import { LoraAdapterDetail } from './components/LoraAdapterDetail';
+import { ModelClaims } from './components/ModelClaims';
+import { CreateModelClaim } from './components/CreateModelClaim';
+import { ModelClaimDetail } from './components/ModelClaimDetail';
 import { ApiKeysPage } from './components/settings/ApiKeysPage';
 import { SecretsPage } from './components/settings/SecretsPage';
 import { Toast } from './components/settings/Toast';
@@ -187,6 +190,38 @@ function LoraAdapterDetailRoute() {
   );
 }
 
+function ModelClaimsRoute() {
+  const navigate = useNavigate();
+  return (
+    <ModelClaims
+      onSelectClaim={(name) => navigate(`/model-claims/${name}`)}
+      onCreateClaim={() => navigate('/model-claims/new')}
+    />
+  );
+}
+
+function CreateModelClaimRoute() {
+  const navigate = useNavigate();
+  return (
+    <CreateModelClaim
+      onBack={() => navigate('/model-claims')}
+      onCreated={(name) => navigate(`/model-claims/${name}`)}
+    />
+  );
+}
+
+function ModelClaimDetailRoute() {
+  const { claimName } = useParams<{ claimName: string }>();
+  const navigate = useNavigate();
+  if (!claimName) return <Navigate to="/model-claims" replace />;
+  return (
+    <ModelClaimDetail
+      claimName={claimName}
+      onBack={() => navigate('/model-claims')}
+    />
+  );
+}
+
 function ComingSoon({ title, description, features }: {
   title: string;
   description: string;
@@ -342,6 +377,9 @@ export default function App() {
             <Route path="/lora" element={<LoraAdaptersRoute />} />
             <Route path="/lora/new" element={<CreateLoraAdapterRoute />} />
             <Route path="/lora/:adapterName" element={<LoraAdapterDetailRoute />} />
+            <Route path="/model-claims" element={<ModelClaimsRoute />} />
+            <Route path="/model-claims/new" element={<CreateModelClaimRoute />} />
+            <Route path="/model-claims/:claimName" element={<ModelClaimDetailRoute />} />
 
             <Route path="/settings" element={<Navigate to="/settings/api-keys" replace />} />
             <Route path="/settings/api-keys" element={<SettingsRoute tab="api-keys" showToast={showToast} />} />

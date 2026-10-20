@@ -23,12 +23,12 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 // perGPUBytes is a claim's spec.perGPU in bytes: what one instance costs on
@@ -46,56 +46,21 @@ func (p perGPUBytes) minimumReserveBytes() int64 {
 	return p.maximumFootprintBytes + p.kvFloorBytes
 }
 
-// maximumDeclaredBytes is the most a claim may declare for one figure. No card
-// holds a pebibyte, and figures this small can be added up for every instance
-// on a card without running past an int64.
-var maximumDeclaredBytes = resource.MustParse("1Pi")
-
-// smallestRoundedBytes is the smallest figure that is rounded up to a whole
-// number of bytes. A smaller one with part of a byte in it is refused.
-var smallestRoundedBytes = resource.MustParse("1Mi")
-
 // perGPUBytesOf reads what a claim declared one instance costs on a GPU, and
 // says what is wrong with the declaration when it cannot be used.
-//
-// A quantity carries no schema bounds, so a figure that cannot be used is
-// caught here. One that is not positive is refused rather than read as a model
-// that costs nothing, which is what a zero would otherwise say. A small one
-// with part of a byte in it is most likely a slip, such as 30m for 30M, and
-// would otherwise be read as a single byte. A larger one comes from a decimal
-// fraction of a binary unit, such as 5.6Gi, and is rounded up.
 func perGPUBytesOf(pm *modelv1alpha1.ModelClaim) (perGPUBytes, error) {
 	if pm == nil || pm.Spec.PerGPU == nil {
 		return perGPUBytes{}, errors.New("spec.perGPU is missing")
 	}
-	maximumFootprintBytes, err := declaredBytes("maximumFootprint", pm.Spec.PerGPU.MaximumFootprint)
+	maximumFootprintBytes, err := utils.ModelClaimDeclaredBytes("maximumFootprint", pm.Spec.PerGPU.MaximumFootprint)
 	if err != nil {
 		return perGPUBytes{}, err
 	}
-	kvFloorBytes, err := declaredBytes("kvFloor", pm.Spec.PerGPU.KVFloor)
+	kvFloorBytes, err := utils.ModelClaimDeclaredBytes("kvFloor", pm.Spec.PerGPU.KVFloor)
 	if err != nil {
 		return perGPUBytes{}, err
 	}
 	return perGPUBytes{maximumFootprintBytes: maximumFootprintBytes, kvFloorBytes: kvFloorBytes}, nil
-}
-
-// declaredBytes is one figure of spec.perGPU in bytes, or what is wrong with
-// it.
-func declaredBytes(name string, declared resource.Quantity) (int64, error) {
-	wrong := ""
-	switch {
-	case declared.Sign() <= 0:
-		wrong = "not positive"
-	case declared.Cmp(maximumDeclaredBytes) > 0:
-		wrong = "more than " + maximumDeclaredBytes.String()
-	case declared.Cmp(smallestRoundedBytes) < 0 &&
-		declared.Cmp(*resource.NewQuantity(declared.Value(), declared.Format)) != 0:
-		wrong = "not a whole number of bytes"
-	}
-	if wrong != "" {
-		return 0, fmt.Errorf("spec.perGPU.%s is %s, which is %s", name, declared.String(), wrong)
-	}
-	return declared.Value(), nil
 }
 
 // kvLimitUnknown stands for an engine whose KV segment could not be read, which

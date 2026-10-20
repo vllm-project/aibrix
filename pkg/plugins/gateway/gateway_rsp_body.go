@@ -364,13 +364,19 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 		if user.Name != "" {
 			tpm, err := s.ratelimiter.Incr(routerCtx, fmt.Sprintf("%v_TPM_CURRENT", user.Name), usage.TotalTokens)
 			if err != nil {
+				reason := "error"
 				if routerCtx.Err() != nil {
 					// The request was cancelled or timed out, typically a client
 					// that went away; not worth an error line each time.
+					reason = "cancelled"
 					klog.V(3).InfoS("TPM increment abandoned with the request", "user", user.Name, "requestID", requestID, "tokens", usage.TotalTokens, "err", err)
 				} else {
 					klog.ErrorS(err, "fail to increment TPM for user", "user", user.Name, "requestID", requestID, "tokens", usage.TotalTokens)
 				}
+				// With a streamed response body the header below may never reach
+				// a client, so the counter is what shows the uncharged tokens.
+				metrics.EmitMetricToPrometheus(routerCtx, nil, metrics.GatewayTPMIncrementFailuresTotal,
+					&metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"reason": reason})
 				headers = buildEnvoyProxyHeaders(headers, HeaderErrorIncrTPM, "true")
 			} else {
 				headers = buildEnvoyProxyHeaders(headers,

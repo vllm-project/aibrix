@@ -21,8 +21,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
@@ -112,4 +114,63 @@ func TestModelClaimBindingsFromPodRejectsInconsistentStateAndPort(t *testing.T) 
 	})
 
 	assert.Nil(t, ModelClaimBindingsFromPod(pod))
+}
+
+func TestModelClaimVLLMParallelism(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    map[string]string
+		want    int64
+		wantErr string
+	}{
+		{name: "no args is one card", want: 1},
+		{name: "tp times pp", args: map[string]string{"--tensor-parallel-size": "2", "--pipeline-parallel-size": "2"}, want: 4},
+		{name: "explicit dp of one", args: map[string]string{"--data-parallel-size": "1"}, want: 1},
+		{name: "gpu memory utilization", args: map[string]string{"--gpu-memory-utilization": "0.9"}, wantErr: "incompatible with kvcached"},
+		{name: "data parallelism", args: map[string]string{"--data-parallel-size": "2"}, wantErr: "unsupported by fixed topology pools"},
+		{name: "not a number", args: map[string]string{"--tensor-parallel-size": "two"}, wantErr: "must be a positive integer"},
+		{name: "zero", args: map[string]string{"--pipeline-parallel-size": "0"}, wantErr: "must be a positive integer"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ModelClaimVLLMParallelism(&modelv1alpha1.ModelClaimEngineConfig{Args: tc.args})
+			if tc.wantErr != "" {
+				assert.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+
+	got, err := ModelClaimVLLMParallelism(nil)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), got)
+}
+
+func TestModelClaimDeclaredBytes(t *testing.T) {
+	got, err := ModelClaimDeclaredBytes("kvFloor", resource.MustParse("1Gi"))
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1<<30), got)
+
+	// A decimal fraction of a binary unit is rounded up to whole bytes.
+	fractional := resource.MustParse("5.6Gi")
+	got, err = ModelClaimDeclaredBytes("maximumFootprint", fractional)
+	assert.NoError(t, err)
+	assert.Equal(t, fractional.Value(), got)
+
+	for _, refused := range []string{"0", "-1Gi", "2Pi", "30m"} {
+		_, err := ModelClaimDeclaredBytes("kvFloor", resource.MustParse(refused))
+		assert.Error(t, err, refused)
+	}
+}
+
+func TestModelClaimPodGPUCount(t *testing.T) {
+	spec := &v1.PodSpec{Containers: []v1.Container{
+		{Resources: v1.ResourceRequirements{Limits: v1.ResourceList{NVIDIAGPUResourceName: resource.MustParse("2")}}},
+		{Resources: v1.ResourceRequirements{Requests: v1.ResourceList{NVIDIAGPUResourceName: resource.MustParse("1")}}},
+		{},
+	}}
+	assert.Equal(t, int64(3), ModelClaimPodGPUCount(spec))
+	assert.Equal(t, int64(0), ModelClaimPodGPUCount(nil))
 }
