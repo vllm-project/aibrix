@@ -34,6 +34,7 @@ import (
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -694,7 +695,7 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 		metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTTFTBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": ttftBucket})
 	}
 
-	if routingCtx.Algorithm == "pd" {
+	if resolved, _ := routing.ResolveExclusiveStrategy(string(routingCtx.Algorithm)); resolved == string(routing.RouterPD) {
 		routingTime := routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime)
 		fields = append(fields,
 			"routing_time_taken", routingTime,

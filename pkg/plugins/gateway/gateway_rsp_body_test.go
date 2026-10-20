@@ -900,17 +900,27 @@ func TestHandleResponseBody_NilRoutingContext(t *testing.T) {
 func TestHandleResponseBody_PDPrefillTimingMetricsRequirePrefillEndTime(t *testing.T) {
 	tests := []struct {
 		name             string
+		algorithm        types.RoutingAlgorithm
 		prefillEndOffset time.Duration
 		wantBucket       string
 		wantCount        float64
 	}{
 		{
 			name:       "skips prefill timing metric when prefill end is unset",
+			algorithm:  "pd",
 			wantBucket: "0-1ms",
 			wantCount:  0.0,
 		},
 		{
 			name:             "emits prefill timing metric when prefill end is set",
+			algorithm:        "pd",
+			prefillEndOffset: 50 * time.Millisecond,
+			wantBucket:       "50-100ms",
+			wantCount:        1.0,
+		},
+		{
+			name:             "emits prefill timing metric for a weighted pd strategy",
+			algorithm:        "pd:1,least-request:1",
 			prefillEndOffset: 50 * time.Millisecond,
 			wantBucket:       "50-100ms",
 			wantCount:        1.0,
@@ -928,7 +938,7 @@ func TestHandleResponseBody_PDPrefillTimingMetricsRequirePrefillEndTime(t *testi
 			server := &Server{}
 			requestTime := time.Now().Add(-200 * time.Millisecond)
 			prefillStartTime := requestTime.Add(20 * time.Millisecond)
-			routerCtx := types.NewRoutingContext(context.Background(), "pd", "test-model", "", "test-req-id", "")
+			routerCtx := types.NewRoutingContext(context.Background(), tt.algorithm, "test-model", "", "test-req-id", "")
 			routerCtx.ReqPath = PathChatCompletions
 			routerCtx.RequestTime = requestTime
 			routerCtx.PrefillStartTime = prefillStartTime
