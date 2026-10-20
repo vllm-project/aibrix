@@ -81,10 +81,12 @@ func unauthorizedNodes(nodes []corev1.Node) []corev1.Node {
 	return stale
 }
 
-// countingReader counts the reads made through it.
+// countingReader counts the reads made through it, and keeps the label
+// selector of the last list.
 type countingReader struct {
 	client.Reader
 	reads, lists int
+	selector     string
 }
 
 func (r *countingReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
@@ -95,6 +97,10 @@ func (r *countingReader) Get(ctx context.Context, key client.ObjectKey, obj clie
 func (r *countingReader) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 	r.reads++
 	r.lists++
+	options := (&client.ListOptions{}).ApplyOptions(opts)
+	if options.LabelSelector != nil {
+		r.selector = options.LabelSelector.String()
+	}
 	return r.Reader.List(ctx, list, opts...)
 }
 
@@ -134,13 +140,17 @@ func TestReconcileOnceReadsOnlyTheCacheWhenEveryNodeResolves(t *testing.T) {
 	require.Zero(t, live.reads)
 }
 
-// Once a pass has recorded the revision, the cache has had time to catch up, so
-// later passes do not read every node from the API server again.
-func TestReconcileOnceRereadsOnlyOnTheFirstPassOverARevision(t *testing.T) {
+// A failure the status shows was checked with the API server when it was
+// recorded, so a later pass does not read the node again.
+func TestReconcileOnceDoesNotRereadAFailureItRecorded(t *testing.T) {
 	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 2)
 	warmup.Spec.Targets[0].Nodes.Names = []string{nodes[0].Name, nodes[1].Name}
-	warmup.Status.ObservedRevision = revisionFor(warmup)
 	warmup.Status.Phase = modelv1alpha1.ModelWarmupRunning
+	warmup.Status.ObservedRevision = revisionFor(warmup)
+	warmup.Status.Targets = []modelv1alpha1.ModelWarmupTargetStatus{{
+		NodeName: nodes[1].Name, Revision: revisionFor(warmup),
+		Phase: modelv1alpha1.ModelWarmupTargetFailed, Reason: "NodeNotAuthorized",
+	}}
 	cached := []corev1.Node{nodes[0], unauthorizedNodes(nodes[1:])[0]}
 	counting := newCountingModelWarmupClient(scheme, warmup, namespace, cached)
 	live := &countingReader{Reader: fake.NewClientBuilder().WithScheme(scheme).
@@ -150,6 +160,35 @@ func TestReconcileOnceRereadsOnlyOnTheFirstPassOverARevision(t *testing.T) {
 	require.NoError(t, reconcileOnce(r, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}))
 
 	require.Zero(t, live.reads)
+}
+
+// More nodes than maxNodeRereads are read in one list of the nodes that the
+// Namespace's pool authorizes, rather than one request each.
+func TestReconcileOnceListsThePoolsNodesWhenManyNeedRereading(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, maxNodeRereads+2)
+	names := make([]string, 0, len(nodes))
+	for i := range nodes {
+		names = append(names, nodes[i].Name)
+	}
+	warmup.Spec.Targets[0].Nodes.Names = names
+	objects := []client.Object{namespace.DeepCopy()}
+	for i := range nodes[1:] {
+		objects = append(objects, nodes[1+i].DeepCopy())
+	}
+	objects = append(objects, unauthorizedNodes(nodes[:1])[0].DeepCopy())
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, unauthorizedNodes(nodes))
+	live := &countingReader{Reader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()}
+	r := &ModelWarmupReconciler{Client: counting, APIReader: live, Scheme: scheme}
+
+	require.NoError(t, reconcileOnce(r, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}))
+
+	require.Equal(t, 1, live.lists)
+	require.Equal(t, 2, live.reads, "the Namespace and one list")
+	require.Equal(t, WarmupEnabledLabelKey+"="+WarmupEnabledLabelValue+","+ResourcePoolLabelKey+"=warm", live.selector)
+	updated := &modelv1alpha1.ModelWarmup{}
+	require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+	require.Equal(t, modelv1alpha1.ModelWarmupRunning, updated.Status.Phase)
+	require.Equal(t, int32(1), updated.Status.FailedNodes, "the node the API server does not authorize either")
 }
 
 func TestReconcileOnceRereadsANodeTheCacheDoesNotHaveYet(t *testing.T) {
@@ -180,6 +219,26 @@ func TestReconcileOnceRereadsTheNamespaceOfAnUnauthorizedNode(t *testing.T) {
 	updated := &modelv1alpha1.ModelWarmup{}
 	require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
 	require.Equal(t, modelv1alpha1.ModelWarmupRunning, updated.Status.Phase)
+}
+
+// The Job created by the first pass enqueues another pass at once, and the
+// node's cache can still trail it then. That pass must not turn the node the
+// API server confirmed into a failed target.
+func TestReconcileOnceKeepsAConfirmedNodeWhileTheCacheTrails(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, unauthorizedNodes(nodes))
+	live := fake.NewClientBuilder().WithScheme(scheme).WithObjects(namespace.DeepCopy(), nodes[0].DeepCopy()).Build()
+	r := &ModelWarmupReconciler{Client: counting, APIReader: live, Scheme: scheme}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}
+
+	require.NoError(t, reconcileOnce(r, request))
+	require.NoError(t, reconcileOnce(r, request))
+
+	updated := &modelv1alpha1.ModelWarmup{}
+	require.NoError(t, counting.Client.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+	require.Equal(t, modelv1alpha1.ModelWarmupRunning, updated.Status.Phase)
+	require.Len(t, updated.Status.Targets, 1)
+	require.Equal(t, modelv1alpha1.ModelWarmupTargetRunning, updated.Status.Targets[0].Phase)
 }
 
 func TestReconcileOnceFailsANodeTheAPIServerDoesNotAuthorize(t *testing.T) {

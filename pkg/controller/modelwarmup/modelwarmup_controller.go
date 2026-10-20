@@ -343,14 +343,18 @@ func effectiveWarmupPolicies(w *modelv1alpha1.ModelWarmup) warmupPolicies {
 	return result
 }
 
+// maxNodeRereads is how many nodes a pass reads one by one from the API
+// server. More than that are listed in one request instead.
+const maxNodeRereads = 10
+
 // resolveTargets resolves a warmup's targets from the cache. A failed target of
 // a Once warmup is final, and the cache can trail a node or Namespace that was
-// labelled just before the warmup was created or changed. So on its first pass
-// over a revision, a Once warmup with a missing or unauthorized node reads the
-// Namespace and those nodes again from the API server. The other nodes come
-// from the cache, so a large cluster is not listed. Later passes use the cache,
-// and so does a Continuous warmup, which is reconciled again when a pool label
-// changes.
+// labelled just before the warmup was created. It can still trail it on the
+// next pass, which the first pass's Job starts at once. So whenever a Once
+// warmup has a missing or unauthorized node whose failure its status does not
+// show yet, the Namespace and those nodes are read again from the API server.
+// The other nodes come from the cache. A Continuous warmup keeps the cache,
+// since it is reconciled again when a pool label changes.
 func (r *ModelWarmupReconciler) resolveTargets(
 	ctx context.Context,
 	warmup *modelv1alpha1.ModelWarmup,
@@ -364,34 +368,104 @@ func (r *ModelWarmupReconciler) resolveTargets(
 		return nil, nil, err
 	}
 	targets, missing, err := resolveTargetsFromNodes(warmup, &namespace, nodes.Items)
-	if err != nil || len(missing) == 0 || r.APIReader == nil ||
-		effectiveMode(warmup) != modelv1alpha1.ModelWarmupModeOnce ||
-		warmup.Status.ObservedRevision == revisionFor(warmup) {
+	if err != nil || r.APIReader == nil || effectiveMode(warmup) != modelv1alpha1.ModelWarmupModeOnce {
 		return targets, missing, err
+	}
+	reread := unrecordedFailures(warmup, missing)
+	if len(reread) == 0 {
+		return targets, missing, nil
 	}
 	var liveNamespace corev1.Namespace
 	if err := r.APIReader.Get(ctx, types.NamespacedName{Name: warmup.Namespace}, &liveNamespace); err != nil {
+		return nil, nil, err
+	}
+	live, err := r.readNodes(ctx, &liveNamespace, reread)
+	if err != nil {
 		return nil, nil, err
 	}
 	index := make(map[string]int, len(nodes.Items))
 	for i := range nodes.Items {
 		index[nodes.Items[i].Name] = i
 	}
-	for name := range missing {
-		var node corev1.Node
-		if err := r.APIReader.Get(ctx, types.NamespacedName{Name: name}, &node); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return nil, nil, err
-		}
-		if i, cached := index[name]; cached {
+	for _, node := range live {
+		if i, cached := index[node.Name]; cached {
 			nodes.Items[i] = node
 		} else {
 			nodes.Items = append(nodes.Items, node)
 		}
 	}
 	return resolveTargetsFromNodes(warmup, &liveNamespace, nodes.Items)
+}
+
+// unrecordedFailures returns the missing nodes whose failure the warmup's
+// status does not show yet for its current revision. A failure it shows was
+// checked with the API server when it was recorded.
+func unrecordedFailures(warmup *modelv1alpha1.ModelWarmup, missing map[string]string) []string {
+	if len(missing) == 0 {
+		return nil
+	}
+	revision := revisionFor(warmup)
+	recorded := make(map[string]string, len(warmup.Status.Targets))
+	for _, target := range warmup.Status.Targets {
+		if target.Revision == revision && target.Phase == modelv1alpha1.ModelWarmupTargetFailed {
+			recorded[target.NodeName] = target.Reason
+		}
+	}
+	var names []string
+	for name, reason := range missing {
+		if recorded[name] != reason {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// readNodes reads the named nodes from the API server, leaving out those that
+// do not exist. Up to maxNodeRereads are read one by one. More than that are
+// listed in one request, limited to the nodes that the Namespace's pool
+// authorizes, since the others would stay missing anyway.
+func (r *ModelWarmupReconciler) readNodes(
+	ctx context.Context,
+	namespace *corev1.Namespace,
+	names []string,
+) ([]corev1.Node, error) {
+	if len(names) <= maxNodeRereads {
+		nodes := make([]corev1.Node, 0, len(names))
+		for _, name := range names {
+			var node corev1.Node
+			if err := r.APIReader.Get(ctx, types.NamespacedName{Name: name}, &node); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				return nil, err
+			}
+			nodes = append(nodes, node)
+		}
+		return nodes, nil
+	}
+	pool := namespace.Labels[ResourcePoolLabelKey]
+	if pool == "" {
+		return nil, nil
+	}
+	var list corev1.NodeList
+	if err := r.APIReader.List(ctx, &list, client.MatchingLabels{
+		ResourcePoolLabelKey:  pool,
+		WarmupEnabledLabelKey: WarmupEnabledLabelValue,
+	}); err != nil {
+		return nil, err
+	}
+	wanted := make(map[string]bool, len(names))
+	for _, name := range names {
+		wanted[name] = true
+	}
+	nodes := make([]corev1.Node, 0, len(names))
+	for i := range list.Items {
+		if wanted[list.Items[i].Name] {
+			nodes = append(nodes, list.Items[i])
+		}
+	}
+	return nodes, nil
 }
 
 func isNodeAuthorized(namespace *corev1.Namespace, node *corev1.Node) bool {
