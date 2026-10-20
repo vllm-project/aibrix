@@ -32,8 +32,8 @@ class _Entry:
 class MemoryConnector(Connector[bytes, torch.Tensor]):
     """Process-local LRU byte store with reader-safe eviction.
 
-    Capacity counts payload bytes, not Python object overhead. A read-only
-    memoryview is borrowed without copying: its owner must keep the backing
+    Capacity counts payload bytes, not Python object overhead. A contiguous
+    read-only memoryview is borrowed without copying: its owner keeps the backing
     buffer unchanged while the record is stored or read. Other inputs are
     copied. Set AIBRIX_KV_CACHE_OL_MEMORY_CAPACITY_BYTES for the factory;
     the default is 10 GiB per connector instance.
@@ -107,8 +107,8 @@ class MemoryConnector(Connector[bytes, torch.Tensor]):
     async def put_bytes(
         self, key: bytes, payload: bytes | memoryview
     ) -> Status:
-        # A read-only memoryview cannot be mutated through itself; keep it
-        # as is so large payloads are not copied while holding the GIL.
+        # Borrow contiguous read-only buffers as byte views. Copy strided
+        # buffers so capacity and storage always use contiguous byte lengths.
         immutable: bytes | memoryview
         if (
             isinstance(payload, memoryview)
