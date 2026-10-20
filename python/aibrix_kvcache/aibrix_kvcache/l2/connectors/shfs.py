@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import uuid
 from concurrent.futures import Executor
 from pathlib import Path
 from typing import Sequence
@@ -264,14 +265,17 @@ class SHFSConnector(Connector[bytes, torch.Tensor], AsyncBase):
             mr = mr[0]
 
         filepath = self._key_to_filepath(key)
+        # Write atomically: write to a temp file first, then rename. The temp
+        # name is unique per writer, since engines sharing the directory can
+        # put the same key at the same time.
+        temp_filepath = filepath.with_name(
+            f"{filepath.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        )
 
         try:
             filepath.parent.mkdir(parents=True, exist_ok=True)
 
             data = mr.tobytes()
-
-            # Write atomically: write to temp file first, then rename
-            temp_filepath = filepath.with_suffix(filepath.suffix + ".tmp")
 
             with open(temp_filepath, "wb") as f:
                 bytes_written = f.write(data)
@@ -298,7 +302,6 @@ class SHFSConnector(Connector[bytes, torch.Tensor], AsyncBase):
 
         except Exception as e:
             logger.error(f"SHFS put failed: {e}")
-            temp_filepath = filepath.with_suffix(filepath.suffix + ".tmp")
             temp_filepath.unlink(missing_ok=True)
             return Status(StatusCodes.ERROR, f"Failed to put value: {e}")
 
