@@ -1904,3 +1904,31 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		assert.Contains(t, targetIP, "2.2.2.2")
 	})
 }
+
+func TestLoadAutoBlendWeightsFromEnvAcceptsDocumentedZero(t *testing.T) {
+	t.Setenv("AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT", "0")
+	t.Setenv("AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT", "0")
+	t.Setenv("AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT", "0")
+	t.Setenv("AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT", "0")
+
+	weights := loadAutoBlendWeightsFromEnv()
+	assert.Equal(t, 0, weights.loadBalance, "0 disables the auto-blend, as documented")
+	assert.Equal(t, 0, weights.leastRequest, "0 omits least-request-top-k, as documented")
+	assert.Equal(t, 0, weights.prefixCacheLoadBalance)
+	assert.Equal(t, 5, weights.prefixCache, "prefix-cache must keep a positive weight, as the profile requires")
+
+	cfg, err := ParseMultiRouterConfig("least-latency")
+	assert.NoError(t, err)
+	_, ok := appendLoadBalanceBlend("least-latency", cfg, weights)
+	assert.False(t, ok, "a zero load-balance weight from the environment disables the blend")
+}
+
+func TestLoadAutoBlendWeightsFromEnvFallsBackOnInvalid(t *testing.T) {
+	t.Setenv("AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT", "-1")
+	t.Setenv("AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT", "x")
+
+	weights := loadAutoBlendWeightsFromEnv()
+	assert.Equal(t, 1, weights.loadBalance)
+	assert.Equal(t, 1, weights.leastRequest)
+	assert.Equal(t, 4, weights.prefixCacheLoadBalance)
+}
