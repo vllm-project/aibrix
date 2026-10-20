@@ -77,6 +77,14 @@ describe('Playground helpers', () => {
     ] as unknown as ModelClaim[]);
     expect(withLen?.maxModelLen).toBe(2048);
     expect(withoutLen?.maxModelLen).toBeUndefined();
+    const [padded, numeric, unparsable] = modelClaimTargets([
+      { name: 'c', modelName: 'c', phase: 'Active', deleting: false, engineArgs: { '--max-model-len': ' 4096 ' } },
+      { name: 'd', modelName: 'd', phase: 'Active', deleting: false, engineArgs: { '--max_model_len': 1024 } },
+      { name: 'e', modelName: 'e', phase: 'Active', deleting: false, engineArgs: { '--max-model-len': 'auto' } },
+    ] as unknown as ModelClaim[]);
+    expect(padded?.maxModelLen).toBe(4096);
+    expect(numeric?.maxModelLen).toBe(1024);
+    expect(unparsable?.maxModelLen).toBeUndefined();
     expect(maxTokensFor(withLen ?? null, 4096)).toBe(1024);
     expect(maxTokensFor(withLen ?? null, 256)).toBe(256);
     expect(maxTokensFor(withoutLen ?? null, 4096)).toBe(4096);
@@ -131,6 +139,8 @@ describe('Playground helpers', () => {
     expect(playgroundErrorMessage('{"error":{"message":"model x does not exist"}}', 400)).toBe('model x does not exist');
     expect(playgroundErrorMessage('{"error":"invalid request body"}', 400)).toBe('invalid request body');
     expect(playgroundErrorMessage('upstream broke', 502)).toBe('upstream broke');
+    expect(playgroundErrorMessage('{"error":{"message":{"detail":"x"}}}', 500)).toBe('{"error":{"message":{"detail":"x"}}}');
+    expect(playgroundErrorMessage('null', 500)).toBe('null');
     expect(playgroundErrorMessage('', 500)).toBe('Playground request failed with status 500');
   });
 

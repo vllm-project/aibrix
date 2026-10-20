@@ -69,7 +69,8 @@ export function deploymentTargets(deployments: Deployment[]): PlaygroundTarget[]
 
 function maxModelLenOf(claim: ModelClaim): number | undefined {
   const args = claim.engineArgs ?? {};
-  const value = Number((args['--max-model-len'] ?? args['--max_model_len'] ?? '').trim());
+  // Number() ignores surrounding whitespace and reads a value that is not a string.
+  const value = Number(args['--max-model-len'] ?? args['--max_model_len']);
   return Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
@@ -143,7 +144,7 @@ export function playgroundErrorMessage(body: string, status: number): string {
   try {
     const parsed = JSON.parse(text) as { error?: string | { message?: string } };
     const message = typeof parsed.error === 'string' ? parsed.error : parsed.error?.message;
-    if (message?.trim()) return message.trim();
+    if (typeof message === 'string' && message.trim()) return message.trim();
   } catch {
     // Not JSON: show the body as it is.
   }
