@@ -1035,6 +1035,15 @@ func TestHandleResponseBody_PDStreamingDecodeTimeAndTPOT(t *testing.T) {
 }
 
 func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
+	var failures float64
+	originalFn := metrics.IncrementCounterMetricFnForTest
+	defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
+	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		if name == metrics.GatewayTPMIncrementFailuresTotal {
+			failures += value
+		}
+	}
+
 	mockRL := &mockRateLimiter{}
 	mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(15)).Return(int64(100), nil)
 
@@ -1080,6 +1089,7 @@ func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
 	}
 	assert.True(t, foundTPM, "expected HeaderUpdateTPM in response")
 	assert.True(t, foundRPM, "expected HeaderUpdateRPM in response")
+	assert.Zero(t, failures, "a successful increment must not count a failure")
 	assert.True(t, foundReqID, "expected request-id in response")
 	mockRL.AssertExpectations(t)
 }
@@ -1403,7 +1413,7 @@ func TestHandleResponseBody_TPMIncrError(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			var requestsWithUsage float64
+			var requestsWithUsage, failures float64
 			var failureReasons []string
 			originalFn := metrics.IncrementCounterMetricFnForTest
 			defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
@@ -1412,6 +1422,7 @@ func TestHandleResponseBody_TPMIncrError(t *testing.T) {
 				case metrics.GatewayRequestsWithUsageTotal:
 					requestsWithUsage += value
 				case metrics.GatewayTPMIncrementFailuresTotal:
+					failures += value
 					for i, l := range labelNames {
 						if l == "reason" {
 							failureReasons = append(failureReasons, labelValues[i])
@@ -1462,6 +1473,7 @@ func TestHandleResponseBody_TPMIncrError(t *testing.T) {
 			assert.Equal(t, requestID, headers[HeaderRequestID])
 			assert.Equal(t, 1.0, requestsWithUsage, "request_end must still run")
 			assert.Equal(t, []string{tt.wantReason}, failureReasons, "the failed increment must be counted once, by reason")
+			assert.Equal(t, 1.0, failures, "the failed increment must add exactly 1")
 			mockRL.AssertExpectations(t)
 		})
 	}
