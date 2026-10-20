@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -110,10 +111,13 @@ func Test_selectTargetPod_EPlusPD(t *testing.T) {
 		name           string
 		body           string
 		servingPods    int
+		inflightLimit  int64
 		wantCandidates []string
 		wantEncodes    int
 	}{
 		{name: "media is encoded on the target's roleset", body: withImage, servingPods: 2,
+			wantCandidates: []string{"worker-0", "worker-1"}, wantEncodes: 1},
+		{name: "media is encoded with a replica inflight cap", body: withImage, servingPods: 2, inflightLimit: 1,
 			wantCandidates: []string{"worker-0", "worker-1"}, wantEncodes: 1},
 		{name: "text-only requests skip the encoders", body: `{"model":"qwen-vl","messages":[{"role":"user","content":"hi"}]}`,
 			servingPods: 2, wantCandidates: []string{"worker-0", "worker-1"}},
@@ -141,6 +145,13 @@ func Test_selectTargetPod_EPlusPD(t *testing.T) {
 			defer routeCtx.Delete()
 			routeCtx.ReqPath = "/v1/chat/completions"
 			routeCtx.ReqBody = []byte(tt.body)
+			if tt.inflightLimit > 0 {
+				cache := &MockCache{}
+				cache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{}, nil)
+				cache.On("AdmitPodRunningRequest", mock.Anything, "default", tt.inflightLimit).Return(true, true, nil)
+				server.cache = cache
+				routeCtx.ConfigProfile = &types.ResolvedConfigProfile{RequestsInflight: tt.inflightLimit}
+			}
 
 			_, err := server.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: pods}, "")
 			require.NoError(t, err)
