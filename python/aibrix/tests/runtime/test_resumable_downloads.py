@@ -33,6 +33,7 @@ from aibrix.runtime.downloaders import (
     GCSArtifactDownloader,
     HTTPArtifactDownloader,
     S3ArtifactDownloader,
+    get_downloader,
 )
 
 # ---------------------------------------------------------------------------
@@ -482,6 +483,23 @@ class TestGCSAtomicWrites:
         assert downloaded == []
         assert (tmp_path / "subdir").is_dir() == nested_marker
         assert not list(tmp_path.rglob("*.part"))
+
+    @pytest.mark.parametrize("scheme", ["gs", "gcs"])
+    @pytest.mark.asyncio
+    async def test_adapter_is_downloaded_for_each_gcs_scheme(
+        self, tmp_path, monkeypatch, scheme
+    ):
+        """The ModelAdapter webhook accepts both gs:// and gcs://, and the
+        controller sends the URL to the runtime unchanged."""
+        downloaded = []
+        _install_fake_gcs(monkeypatch, downloaded)
+        url = f"{scheme}://my-bucket/models/prefix/"
+
+        assert isinstance(get_downloader(url), GCSArtifactDownloader)
+        path = await _make_service(tmp_path).download_artifact(url, "adapter")
+
+        assert path == str(tmp_path / "adapter")
+        assert (tmp_path / "adapter" / "weights.bin").exists()
 
     def test_directory_uses_part_then_renames(self, tmp_path, monkeypatch):
         downloaded = []
