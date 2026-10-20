@@ -39,14 +39,16 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 
 	code, err := s.checkRPM(ctx, user.Name, user.Rpm)
 	if err != nil {
-		errorCode := ""
+		// Only a request over the limit is told it exceeded it; a failed read
+		// is an outage the client should not take as a rate-limit signal.
+		errorHeader, errorCode := HeaderErrorGetRPM, ""
 		if code == envoyTypePb.StatusCode_TooManyRequests {
-			errorCode = ErrorCodeRateLimitExceeded
+			errorHeader, errorCode = HeaderErrorRPMExceeded, ErrorCodeRateLimitExceeded
 		}
 		return 0, generateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderErrorRPMExceeded, RawValue: []byte("true"),
+				Key: errorHeader, RawValue: []byte("true"),
 			}}},
 			err.Error(), errorCode, ""), err
 	}
@@ -55,14 +57,16 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 	// it would keep the RPM slot it took without ever being served.
 	code, err = s.checkTPM(ctx, user.Name, user.Tpm)
 	if err != nil {
-		errorCode := ""
+		// Only a request over the limit is told it exceeded it; a failed read
+		// is an outage the client should not take as a rate-limit signal.
+		errorHeader, errorCode := HeaderErrorGetTPM, ""
 		if code == envoyTypePb.StatusCode_TooManyRequests {
-			errorCode = ErrorCodeRateLimitExceeded
+			errorHeader, errorCode = HeaderErrorTPMExceeded, ErrorCodeRateLimitExceeded
 		}
 		return 0, generateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderErrorTPMExceeded, RawValue: []byte("true"),
+				Key: errorHeader, RawValue: []byte("true"),
 			}}},
 			err.Error(), errorCode, ""), err
 	}

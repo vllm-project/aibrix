@@ -86,6 +86,8 @@ const (
 	HeaderErrorTPMExceeded = "x-error-tpm-exceeded"
 	HeaderErrorIncrRPM     = "x-error-incr-rpm"
 	HeaderErrorIncrTPM     = "x-error-incr-tpm"
+	HeaderErrorGetRPM      = "x-error-get-rpm"
+	HeaderErrorGetTPM      = "x-error-get-tpm"
 
 	// Model RPS Errors
 	HeaderErrorModelRPSExceeded = "x-error-model-rps-exceeded"
