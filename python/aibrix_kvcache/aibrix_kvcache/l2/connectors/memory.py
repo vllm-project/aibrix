@@ -124,17 +124,17 @@ class MemoryConnector(Connector[bytes, torch.Tensor]):
                 return Status.ok()
             if len(immutable) > self.capacity_bytes:
                 return Status(StatusCodes.OUT_OF_MEMORY)
-            while self._used_bytes + len(immutable) > self.capacity_bytes:
-                victim = next(
-                    (
-                        victim_key
-                        for victim_key, entry in store.items()
-                        if entry.readers == 0
-                    ),
-                    None,
-                )
-                if victim is None:
-                    return Status(StatusCodes.OUT_OF_MEMORY)
+            needed = self._used_bytes + len(immutable) - self.capacity_bytes
+            victims: list[bytes] = []
+            for victim_key, entry in store.items():
+                if needed <= 0:
+                    break
+                if entry.readers == 0:
+                    victims.append(victim_key)
+                    needed -= len(entry.payload)
+            if needed > 0:
+                return Status(StatusCodes.OUT_OF_MEMORY)
+            for victim in victims:
                 removed = store.pop(victim)
                 self._used_bytes -= len(removed.payload)
             store[key] = _Entry(immutable)

@@ -136,3 +136,21 @@ def test_read_only_buffer_is_stored_without_copy(monkeypatch):
     assert asyncio.run(connector.put_bytes(b"w", data)).is_ok()
     data[0] = 0
     assert bytes(asyncio.run(connector.get_bytes(b"w")).get()) == b"abc"
+
+
+@pytest.mark.asyncio
+async def test_capacity_rejection_preserves_unleased_entries_and_lru():
+    connector = MemoryConnector(capacity_bytes=12)
+    connector.open().raise_if_not_ok()
+    for key in (b"a", b"b", b"c"):
+        (await connector.put_bytes(key, key * 4)).raise_if_not_ok()
+    async with connector.lease_bytes(b"b"):
+        assert (await connector.put_bytes(b"large", b"x" * 9)).is_out_of_memory()
+        assert connector.used_bytes == 12
+        for key in (b"a", b"b", b"c"):
+            assert (await connector.exists(key)).is_ok()
+        (await connector.put_bytes(b"fits", b"y" * 8)).raise_if_not_ok()
+        assert (await connector.exists(b"a")).is_not_found()
+        assert (await connector.exists(b"c")).is_not_found()
+        assert (await connector.get_bytes(b"b")).get() == b"bbbb"
+        assert connector.used_bytes == 12
