@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { camelToSnake, getFileSummary, listAllJobs, normalizeFilesResponse } from './api';
+import {
+  APIError,
+  camelToSnake,
+  createModelClaim,
+  getFileSummary,
+  getModelClaim,
+  listAllJobs,
+  normalizeFilesResponse,
+} from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -128,6 +136,61 @@ describe('api helpers', () => {
       deployment_name: 'qwen-serving',
       placement: 'all',
     });
+  });
+
+  it('sends ModelClaim creation in the BFF contract and leaves engine flags as typed', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({
+        name: 'qwen3-0-6b',
+        model_name: 'qwen3-0.6b',
+        per_gpu: { maximum_footprint: '6Gi', kv_floor: '1Gi' },
+        engine_args: { '--max-model-len': '2048' },
+        instances: [{ pod: 'warm-0', kv_limit_bytes: 1073741824, pod_status: { pod_ip: '10.0.0.1' } }],
+      }),
+    } as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const claim = await createModelClaim({
+      name: 'qwen3-0-6b',
+      modelName: 'qwen3-0.6b',
+      artifactUrl: 'huggingface://Qwen/Qwen3-0.6B',
+      engine: 'vllm',
+      poolName: 'b300-pool-a',
+      perGpu: { maximumFootprint: '6Gi', kvFloor: '1Gi' },
+      engineArgs: { '--max-model-len': '2048', '--enable_prefix_caching': '' },
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/model-claims');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      name: 'qwen3-0-6b',
+      model_name: 'qwen3-0.6b',
+      artifact_url: 'huggingface://Qwen/Qwen3-0.6B',
+      engine: 'vllm',
+      pool_name: 'b300-pool-a',
+      per_gpu: { maximum_footprint: '6Gi', kv_floor: '1Gi' },
+      engine_args: { '--max-model-len': '2048', '--enable_prefix_caching': '' },
+    });
+    expect(claim.perGpu).toEqual({ maximumFootprint: '6Gi', kvFloor: '1Gi' });
+    expect(claim.engineArgs).toEqual({ '--max-model-len': '2048' });
+    expect(claim.instances[0]?.kvLimitBytes).toBe(1073741824);
+    expect(claim.instances[0]?.podStatus.podIp).toBe('10.0.0.1');
+  });
+
+  it('shows the message of a Kubernetes BFF error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: 'Bad Request',
+      text: async () => JSON.stringify({ error: 'spec.perGPU.kvFloor is required' }),
+    } as Response));
+
+    const request = getModelClaim('qwen3-0-6b');
+    await expect(request).rejects.toBeInstanceOf(APIError);
+    await expect(request).rejects.toThrow('spec.perGPU.kvFloor is required');
   });
 
   it('serializes job resource duration to the API contract', () => {
