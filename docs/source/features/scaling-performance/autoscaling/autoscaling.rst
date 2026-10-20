@@ -111,7 +111,8 @@ PodAutoscaler spec at a glance
    * - ``subTargetSelector.roleName``
      - When the target is a ``StormService``, scale only this role.
    * - ``scalingStrategy``
-     - ``HPA``, ``KPA`` or ``APA``.
+     - ``HPA``, ``KPA`` or ``APA``. It cannot be changed after creation; to switch, delete the
+       ``PodAutoscaler`` and create it again.
    * - ``minReplicas`` / ``maxReplicas``
      - Hard bounds on the result. ``maxReplicas`` is required.
    * - ``metricsSources[]``
