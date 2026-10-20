@@ -211,7 +211,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		}
 
 		routingDelay := routingCtx.GetRoutingDelay()
-		if routingAlgorithm == routing.RouterPD && !routingCtx.PrefillStartTime.IsZero() {
+		if resolved, _ := routing.ResolveExclusiveStrategy(string(routingAlgorithm)); resolved == string(routing.RouterPD) && !routingCtx.PrefillStartTime.IsZero() {
 			routingDelay = routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime)
 		}
 		if routingCtx.Span != nil {
