@@ -433,6 +433,10 @@ func isLanguageRequest(requestPath string) bool {
 		// covers PathAudioSpeechBatch, whose JSON body inlines every item's base64 audio and can
 		// run to many megabytes; its HTTP 200 does not say whether individual items failed.
 		PathAudioSpeech,
+		// The voice catalog answers with small JSON documents (a list, an upload receipt, a
+		// delete message) that are not completions and carry no usage. The prefix also covers
+		// DELETE /v1/audio/voices/{name}.
+		PathAudioVoices,
 
 		// Tokenization and token counting
 		PathTokenize,

@@ -413,7 +413,9 @@ Endpoints are grouped by modality. An endpoint that exists for only one engine i
 - `/v1/audio/speech` - Text-to-speech (OpenAI + vLLM-Omni voices)
 - `/v1/audio/speech` - TTS with vLLM-Omni params (`language`, `instructions`, `task_type`, `ref_audio`, `ref_text`)
 - `/v1/audio/speech/batch` - Batch TTS (SGLang-Omni format: shared defaults plus `items`; one JSON response with a base64 `audio_data` result per item, and a bad item becomes an `error` entry inside an HTTP 200)
-- `/v1/audio/voices` - List available TTS voices
+- `GET /v1/audio/voices` - List the built-in TTS voices (`voices`) and the voices uploaded to this pod (`uploaded_voices`)
+- `POST /v1/audio/voices` - Upload a voice (vLLM-Omni format: multipart `audio_sample`, `consent`, `name`, optional `ref_text` and `speaker_description`); re-uploading a name replaces it
+- `DELETE /v1/audio/voices/{name}` - Delete an uploaded voice (404 for a name that was not uploaded, built-in voices included). Uploaded voices live in one mock process only, like the video jobs
 - `/v1/audio/transcriptions` - Audio transcription
 - `/v1/audio/translations` - Audio translation
 - `/v1/chat/completions` - Chat with `modalities: ["text", "audio"]` returns mock audio in response

@@ -1,5 +1,6 @@
 import base64
 import importlib.util
+import io
 import json
 import sys
 import threading
@@ -1401,3 +1402,103 @@ def test_chat_batch_rejects_a_non_object_body(monkeypatch):
     )
 
     assert response.status_code == 400
+
+
+def upload_voice(client, **overrides):
+    fields = {
+        "name": "narrator",
+        "consent": "consent-1",
+        "audio_sample": (io.BytesIO(b"RIFF....WAVEfmt "), "narrator.wav", "audio/wav"),
+    }
+    fields.update(overrides)
+    fields = {key: value for key, value in fields.items() if value is not None}
+    return client.post(
+        "/v1/audio/voices", data=fields, content_type="multipart/form-data"
+    )
+
+
+def test_voices_are_listed_uploaded_and_deleted(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    listing = client.get("/v1/audio/voices").get_json()
+    assert "vivian" in listing["voices"]
+    assert listing["uploaded_voices"] == []
+
+    uploaded = upload_voice(
+        client, ref_text="We asked twenty people.", speaker_description="calm"
+    )
+    assert uploaded.status_code == 200
+    body = uploaded.get_json()
+    assert body["success"] is True
+    voice = body["voice"]
+    assert (voice["name"], voice["consent"]) == ("narrator", "consent-1")
+    assert voice["mime_type"] == "audio/wav"
+    assert voice["file_size"] == len(b"RIFF....WAVEfmt ")
+    assert voice["ref_text"] == "We asked twenty people."
+    assert voice["speaker_description"] == "calm"
+
+    listing = client.get("/v1/audio/voices").get_json()
+    assert [entry["name"] for entry in listing["uploaded_voices"]] == ["narrator"]
+    assert "narrator" not in listing["voices"]
+
+    deleted = client.delete("/v1/audio/voices/narrator")
+    assert deleted.status_code == 200
+    assert deleted.get_json() == {
+        "success": True,
+        "message": "Voice 'narrator' deleted successfully",
+    }
+    assert client.get("/v1/audio/voices").get_json()["uploaded_voices"] == []
+
+
+def test_voice_upload_omits_the_optional_fields_it_was_not_given(monkeypatch):
+    module = load_mock_module(monkeypatch)
+
+    voice = upload_voice(module.app.test_client()).get_json()["voice"]
+
+    assert "ref_text" not in voice
+    assert "speaker_description" not in voice
+
+
+def test_uploading_an_existing_voice_name_replaces_it(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    upload_voice(client, consent="first")
+    assert upload_voice(client, consent="second").status_code == 200
+
+    uploaded = client.get("/v1/audio/voices").get_json()["uploaded_voices"]
+    assert [(entry["name"], entry["consent"]) for entry in uploaded] == [("narrator", "second")]
+
+
+@pytest.mark.parametrize(
+    "overrides, param",
+    [
+        ({"audio_sample": None}, "audio_sample"),
+        ({"consent": None}, "consent"),
+        ({"name": None}, "name"),
+        ({"name": "  "}, "name"),
+        ({"name": "vivian"}, "name"),
+    ],
+)
+def test_voice_upload_rejects_a_bad_request(monkeypatch, overrides, param):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = upload_voice(client, **overrides)
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["param"] == param
+    assert client.get("/v1/audio/voices").get_json()["uploaded_voices"] == []
+
+
+@pytest.mark.parametrize("name", ["ghost", "vivian"])
+def test_deleting_a_voice_that_was_not_uploaded_is_not_found(monkeypatch, name):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+
+    response = client.delete(f"/v1/audio/voices/{name}")
+
+    assert response.status_code == 404
+    assert response.get_json() == {"success": False, "error": f"Voice '{name}' not found"}
+    assert "vivian" in client.get("/v1/audio/voices").get_json()["voices"]

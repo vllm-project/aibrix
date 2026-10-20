@@ -25,6 +25,7 @@ import (
 	"math"
 	"mime"
 	"mime/multipart"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -279,6 +280,11 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 	case PathAudioSpeechBatch:
 		model, message, errRes = validateAudioSpeechBatchRequest(requestID, requestBody)
 	default:
+		if isAudioVoicesPath(path) {
+			// The body (an uploaded voice sample, or none at all) is the engine's business.
+			model, errRes = audioVoicesModel(requestPath)
+			break
+		}
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", "", "", HeaderErrorRequestBodyProcessing, "true")
 	}
 	if errRes != nil {
@@ -1088,6 +1094,42 @@ func validateAudioSpeechRequest(requestID string, requestBody []byte) (model, me
 	}
 
 	model, message = req.Model, req.Input
+	return
+}
+
+// isAudioVoicesPath reports whether requestPath is part of the custom voice API: the collection
+// (PathAudioVoices, for GET and POST) or one voice in it (PathAudioVoices/{name}, for DELETE).
+// The method and the shape of the remainder are left to the engine, which answers 404 or 405
+// for a combination it does not serve.
+func isAudioVoicesPath(requestPath string) bool {
+	path := pathWithoutQuery(requestPath)
+	return path == PathAudioVoices || strings.HasPrefix(path, PathAudioVoices+"/")
+}
+
+// audioVoicesModel reads the model a voice request is routed to from its "model" query
+// parameter. The voice API names no model of its own: an engine serves one model, so upstream
+// needs none, but the gateway chooses the pod by model, and a GET or DELETE has no body to put
+// it in. The parameter is forwarded to the engine with the rest of the query, which ignores it.
+// nolint:nakedret
+func audioVoicesModel(requestPath string) (model string, errRes *extProcPb.ProcessingResponse) {
+	_, rawQuery, _ := strings.Cut(requestPath, "?")
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "invalid query string", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	models := values["model"]
+	if len(models) > 1 {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' query parameter must be supplied once", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+	if len(models) == 0 || strings.TrimSpace(models[0]) == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' query parameter is required", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	model = models[0]
 	return
 }
 
