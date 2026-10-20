@@ -18,12 +18,14 @@ package rayclusterreplicaset
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/util/expectation"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -31,6 +33,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func TestReconcileCountsOnlyOwnedClustersMatchingSelector(t *testing.T) {
@@ -148,6 +151,136 @@ func TestReconcileRejectsNilSelector(t *testing.T) {
 	}
 	if len(clusters.Items) != 0 {
 		t.Fatalf("expected no RayClusters to be created, got %d", len(clusters.Items))
+	}
+}
+
+func TestReconcileRetriesAfterFailedCreate(t *testing.T) {
+	tests := []struct {
+		name         string
+		failAtCreate int
+	}{
+		{name: "first create fails", failAtCreate: 1},
+		{name: "last create fails", failAtCreate: 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := runtime.NewScheme()
+			if err := rayclusterv1.AddToScheme(scheme); err != nil {
+				t.Fatalf("add RayCluster scheme: %v", err)
+			}
+			if err := orchestrationv1alpha1.AddToScheme(scheme); err != nil {
+				t.Fatalf("add orchestration scheme: %v", err)
+			}
+
+			rs := &orchestrationv1alpha1.RayClusterReplicaSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "rs-a", Namespace: "default", UID: "uid-a"},
+				Spec: orchestrationv1alpha1.RayClusterReplicaSetSpec{
+					Replicas: ptr.To(int32(3)),
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "a"}},
+					Template: orchestrationv1alpha1.RayClusterTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "a"}},
+					},
+				},
+			}
+
+			creates, failCreate := 0, true
+			reconciler := &RayClusterReplicaSetReconciler{
+				Client: fake.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(rs).
+					WithStatusSubresource(rs).
+					WithInterceptorFuncs(interceptor.Funcs{
+						Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+							creates++
+							if failCreate && creates == tt.failAtCreate {
+								return errors.New("exceeded quota")
+							}
+							return c.Create(ctx, obj, opts...)
+						},
+					}).
+					Build(),
+				Expectations: expectation.NewControllerExpectations(),
+			}
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "rs-a"}}
+
+			if _, err := reconciler.Reconcile(ctx, req); err == nil {
+				t.Fatal("expected Reconcile to return the create error")
+			}
+			exp, found, err := reconciler.Expectations.GetExpectations(req.String())
+			if err != nil {
+				t.Fatalf("get expectations: %v", err)
+			}
+			if !found {
+				t.Fatal("expected the expectations to be kept after the failed pass")
+			}
+			if add, del := exp.GetExpectations(); add != 0 || del != 0 {
+				t.Fatalf("expected the create expectations to be lowered to zero, got add=%d del=%d", add, del)
+			}
+			updated := &orchestrationv1alpha1.RayClusterReplicaSet{}
+			if err := reconciler.Get(ctx, req.NamespacedName, updated); err != nil {
+				t.Fatalf("get RayClusterReplicaSet: %v", err)
+			}
+			failure := meta.FindStatusCondition(updated.Status.Conditions, orchestrationv1alpha1.RayClusterReplicaSetReplicaFailure)
+			if failure == nil || failure.Reason != "FailedCreate" {
+				t.Fatalf("expected a FailedCreate ReplicaFailure condition, got %v", failure)
+			}
+
+			failCreate = false
+			if _, err := reconciler.Reconcile(ctx, req); err != nil {
+				t.Fatalf("second Reconcile returned error: %v", err)
+			}
+			clusters := &rayclusterv1.RayClusterList{}
+			if err := reconciler.List(ctx, clusters, client.InNamespace("default")); err != nil {
+				t.Fatalf("list RayClusters: %v", err)
+			}
+			if len(clusters.Items) != 3 {
+				t.Fatalf("expected 3 RayClusters after the retry, got %d", len(clusters.Items))
+			}
+		})
+	}
+}
+
+func TestReconcileReturnsFailedDeleteError(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := rayclusterv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add RayCluster scheme: %v", err)
+	}
+	if err := orchestrationv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add orchestration scheme: %v", err)
+	}
+
+	rs := &orchestrationv1alpha1.RayClusterReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rs-a", Namespace: "default", UID: "uid-a"},
+		Spec: orchestrationv1alpha1.RayClusterReplicaSetSpec{
+			Replicas: ptr.To(int32(1)),
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "a"}},
+			Template: orchestrationv1alpha1.RayClusterTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "a"}},
+			},
+		},
+	}
+	clusterA := ownedRayCluster("cluster-a", rs, map[string]string{"app": "a"})
+	clusterB := ownedRayCluster("cluster-b", rs, map[string]string{"app": "a"})
+
+	reconciler := &RayClusterReplicaSetReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(rs, &clusterA, &clusterB).
+			WithStatusSubresource(rs).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+					return errors.New("admission denied")
+				},
+			}).
+			Build(),
+		Expectations: expectation.NewControllerExpectations(),
+	}
+
+	if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "rs-a"}}); err == nil {
+		t.Fatal("expected Reconcile to return the delete error")
 	}
 }
 
