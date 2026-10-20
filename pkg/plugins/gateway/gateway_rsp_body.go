@@ -264,9 +264,10 @@ func parseSSEUsage(jsonBytes []byte, previous TokenUsage) (usage TokenUsage, ok 
 	// preserve absent counts while allowing an explicitly reported zero to replace them.
 	eventType := gjson.GetBytes(jsonBytes, "type").String()
 	usagePath := "usage"
-	if eventType == "message_start" {
+	switch eventType {
+	case "message_start":
 		usagePath = "message.usage"
-	} else if eventType == "message_delta" {
+	case "message_delta":
 		usage = previous
 	}
 	usageResult := gjson.GetBytes(jsonBytes, usagePath)
