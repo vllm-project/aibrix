@@ -129,7 +129,7 @@ def _build_vllm_args(
     if ea.swap_space is not None:
         # vLLM 0.18 removed the V0 swap-space option. Do not silently
         # discard an explicit setting or emit a flag that prevents startup.
-        version = re.match(r"^v?(\d+)\.(\d+)(?:\.|$)", spec.engine.version)
+        version = re.match(r"^v?(\d+)\.(\d+)", spec.engine.version)
         if version and tuple(map(int, version.groups())) >= (0, 18):
             raise ValueError(
                 f"engine_args.swap_space is unsupported by vLLM {spec.engine.version}; "
