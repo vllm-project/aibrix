@@ -410,7 +410,7 @@ Endpoints are grouped by modality. An endpoint that exists for only one engine i
 - `/v1/chat/completions` - Image generation/editing (returns base64 image in content array when model name contains image keywords or diffusion params are present)
 
 ### Audio
-- `/v1/audio/speech` - Text-to-speech (OpenAI + vLLM-Omni voices)
+- `/v1/audio/speech` - Text-to-speech (OpenAI + vLLM-Omni voices, and voices uploaded to this pod until they are deleted)
 - `/v1/audio/speech` - TTS with vLLM-Omni params (`language`, `instructions`, `task_type`, `ref_audio`, `ref_text`)
 - `/v1/audio/speech/batch` - Batch TTS (SGLang-Omni format: shared defaults plus `items`; one JSON response with a base64 `audio_data` result per item, and a bad item becomes an `error` entry inside an HTTP 200)
 - `GET /v1/audio/voices` - List the built-in TTS voices (`voices`) and the voices uploaded to this pod (`uploaded_voices`)

@@ -1778,9 +1778,11 @@ def audio_speech():
         if not input_text:
             return create_error_response("'input' is a required parameter", param="input")
 
-        # Validate voice — accept both OpenAI and vLLM-Omni voices
+        # Validate voice — accept OpenAI voices, vLLM-Omni voices, and the voices uploaded to this pod
         openai_voices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
-        valid_voices = openai_voices + _MOCK_BUILTIN_VOICES
+        with _mock_uploaded_voices_lock:
+            uploaded_voices = list(_mock_uploaded_voices)
+        valid_voices = openai_voices + _MOCK_BUILTIN_VOICES + uploaded_voices
         if voice not in valid_voices:
             return create_error_response(
                 f"Invalid voice '{voice}'. Must be one of: {', '.join(valid_voices)}",

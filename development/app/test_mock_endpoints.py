@@ -1451,6 +1451,22 @@ def test_voices_are_listed_uploaded_and_deleted(monkeypatch):
     assert client.get("/v1/audio/voices").get_json()["uploaded_voices"] == []
 
 
+def test_an_uploaded_voice_can_be_spoken_until_it_is_deleted(monkeypatch):
+    module = load_mock_module(monkeypatch)
+    client = module.app.test_client()
+    speech = {"model": "tts-1", "input": "Hello", "voice": "narrator"}
+
+    before = post_json(client, "/v1/audio/speech", speech)
+    assert before.status_code == 400
+    assert before.get_json()["error"]["param"] == "voice"
+
+    assert upload_voice(client).status_code == 200
+    assert post_json(client, "/v1/audio/speech", speech).status_code == 200
+
+    assert client.delete("/v1/audio/voices/narrator").status_code == 200
+    assert post_json(client, "/v1/audio/speech", speech).status_code == 400
+
+
 def test_voice_upload_omits_the_optional_fields_it_was_not_given(monkeypatch):
     module = load_mock_module(monkeypatch)
 
