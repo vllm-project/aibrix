@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import {
   AlertTriangle,
@@ -47,7 +47,10 @@ export function CreateModelClaim({ onBack, onCreated }: CreateModelClaimProps) {
   const [maximumFootprint, setMaximumFootprint] = useState('');
   const [kvFloor, setKvFloor] = useState('');
   const [priority, setPriority] = useState('');
-  const [argRows, setArgRows] = useState<EngineArgRow[]>([]);
+  // Each row keeps the id it was added with, so React keys stay stable when a
+  // row above it is removed.
+  const [argRows, setArgRows] = useState<Array<EngineArgRow & { id: number }>>([]);
+  const nextArgRowId = useRef(0);
   const [loadingPools, setLoadingPools] = useState(true);
   const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -107,6 +110,12 @@ export function CreateModelClaim({ onBack, onCreated }: CreateModelClaimProps) {
 
   const updateRow = (index: number, patch: Partial<EngineArgRow>) => {
     setArgRows((rows) => rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+  };
+
+  const addRow = () => {
+    const id = nextArgRowId.current;
+    nextArgRowId.current += 1;
+    setArgRows((rows) => [...rows, { id, key: '', value: '' }]);
   };
 
   const handleSubmit = async (event: FormEvent) => {
@@ -327,7 +336,7 @@ export function CreateModelClaim({ onBack, onCreated }: CreateModelClaimProps) {
                 </div>
                 <button
                   type="button"
-                  onClick={() => setArgRows((rows) => [...rows, { key: '', value: '' }])}
+                  onClick={addRow}
                   className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
                 >
                   <Plus className="h-4 w-4" />
@@ -343,7 +352,7 @@ export function CreateModelClaim({ onBack, onCreated }: CreateModelClaimProps) {
                   {argRows.map((row, index) => {
                     const rowError = engineArgs.rowErrors[index];
                     return (
-                      <div key={index}>
+                      <div key={row.id}>
                         <div className="flex gap-2">
                           <input
                             value={row.key}
