@@ -790,9 +790,11 @@ class KVCacheMetrics(Metrics):
                 enable_time_measurement=enable_time_measurement,
                 enable_breakdown_measurement=enable_breakdown_measurement,
             )
+        # The manager's get() returns a number of tokens, not blocks, so its
+        # int results must not be scaled by block_ntokens.
         self.mgr = CacheMgrMetrics(
             cache_type="CacheMgr",
-            block_ntokens=block_ntokens,
+            block_ntokens=1,
             enable_time_measurement=enable_time_measurement,
             enable_breakdown_measurement=enable_breakdown_measurement,
         )
