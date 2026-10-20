@@ -99,6 +99,12 @@ func Test_ValidateRequestBody_AudioVoices(t *testing.T) {
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
 		{
+			message:     "surrounding whitespace in the model name is trimmed",
+			requestPath: PathAudioVoices + "?model=%20tts-1%20",
+			model:       "tts-1",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
 			message:     "missing model",
 			requestPath: PathAudioVoices,
 			statusCode:  envoyTypePb.StatusCode_BadRequest,

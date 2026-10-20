@@ -1129,7 +1129,7 @@ func audioVoicesModel(requestPath string) (model string, errRes *extProcPb.Proce
 		return
 	}
 
-	model = models[0]
+	model = strings.TrimSpace(models[0])
 	return
 }
 
