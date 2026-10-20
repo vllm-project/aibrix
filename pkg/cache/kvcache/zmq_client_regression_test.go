@@ -69,6 +69,41 @@ func TestZMQClientRecoveryLeavesNonGapsAlone(t *testing.T) {
 	}
 }
 
+// recoverStalledGap runs on the replay goroutine while live batches keep
+// arriving. Run with -race: both sides must hold applyMu.
+func TestZMQClientRecoveryRacesLiveBatches(t *testing.T) {
+	handler := &MockHandlerWithAssertions{}
+	handler.Test(t)
+	handler.On("HandleEvent", mock.AnythingOfType("*kvcache.AllBlocksClearedEvent")).Return(nil).Maybe()
+	client := NewZMQClient(DefaultZMQClientConfig(t.Name(), "127.0.0.1", "model"), handler)
+	t.Cleanup(client.Stop)
+	payload := encodeFaultBatch(t)
+	_, err := client.applyEventBatch(0, payload, true)
+	require.NoError(t, err)
+
+	const lastSeq = 400
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for seq := int64(2); seq <= lastSeq; seq += 2 { // every batch leaves a gap
+			_, _ = client.applyEventBatch(seq, payload, true)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < lastSeq/2; i++ {
+			client.recoverStalledGap()
+		}
+	}()
+	wg.Wait()
+	client.replayWg.Wait()
+
+	client.recoverStalledGap()
+	require.Equal(t, int64(lastSeq), client.GetLastSequence())
+	require.Empty(t, client.pending)
+}
+
 func TestZMQClientZeroBasedPublisherRestart(t *testing.T) {
 	for _, previousLast := range []int64{0, 3} {
 		t.Run(fmt.Sprintf("previous_last_%d", previousLast), func(t *testing.T) {
