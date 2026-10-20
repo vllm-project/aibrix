@@ -17,6 +17,7 @@ limitations under the License.
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -219,7 +220,7 @@ func (h *ModelClaimHandler) handleList(w http.ResponseWriter, r *http.Request, _
 		writeModelAdapterError(w, err)
 		return
 	}
-	pods, err := kubeClient.CoreV1().Pods(namespace).List(r.Context(), metav1.ListOptions{})
+	podsByName, err := listModelClaimInstancePods(r.Context(), kubeClient, namespace, claims.Items)
 	if err != nil {
 		writeModelAdapterError(w, err)
 		return
@@ -231,7 +232,6 @@ func (h *ModelClaimHandler) handleList(w http.ResponseWriter, r *http.Request, _
 		}
 		return claims.Items[i].CreationTimestamp.After(claims.Items[j].CreationTimestamp.Time)
 	})
-	podsByName := indexPods(pods.Items)
 	response := listModelClaimsResponse{
 		ModelClaims: make([]modelClaimResponse, 0, len(claims.Items)),
 	}
@@ -257,7 +257,7 @@ func (h *ModelClaimHandler) handleGet(w http.ResponseWriter, r *http.Request, pa
 		writeModelAdapterError(w, err)
 		return
 	}
-	podsByName, err := getModelClaimInstancePods(r, kubeClient, namespace, claim)
+	podsByName, err := getModelClaimInstancePods(r.Context(), kubeClient, namespace, claim)
 	if err != nil {
 		writeModelAdapterError(w, err)
 		return
@@ -308,7 +308,7 @@ func (h *ModelClaimHandler) handleCreate(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	pools, err := discoverModelClaimPools(r, kubeClient, namespace, existing.Items)
+	pools, err := discoverModelClaimPools(r.Context(), kubeClient, namespace, existing.Items)
 	if err != nil {
 		writeModelAdapterError(w, err)
 		return
@@ -394,7 +394,7 @@ func (h *ModelClaimHandler) handleUpdate(w http.ResponseWriter, r *http.Request,
 		writeModelAdapterError(w, err)
 		return
 	}
-	podsByName, err := getModelClaimInstancePods(r, kubeClient, namespace, updated)
+	podsByName, err := getModelClaimInstancePods(r.Context(), kubeClient, namespace, updated)
 	if err != nil {
 		writeModelAdapterError(w, err)
 		return
@@ -435,7 +435,7 @@ func (h *ModelClaimHandler) handleListPools(w http.ResponseWriter, r *http.Reque
 		writeModelAdapterError(w, err)
 		return
 	}
-	pools, err := discoverModelClaimPools(r, kubeClient, namespace, claims.Items)
+	pools, err := discoverModelClaimPools(r.Context(), kubeClient, namespace, claims.Items)
 	if err != nil {
 		writeModelAdapterError(w, err)
 		return
@@ -613,25 +613,88 @@ func normalizeModelClaimEngineArgs(args map[string]string) (map[string]string, e
 	return normalized, nil
 }
 
+// getModelClaimInstancePods reads the Pods that run one claim's instances.
 func getModelClaimInstancePods(
-	r *http.Request,
+	ctx context.Context,
 	kubeClient kubernetes.Interface,
 	namespace string,
 	claim *modelv1alpha1.ModelClaim,
 ) (map[string]*corev1.Pod, error) {
-	podsByName := make(map[string]*corev1.Pod, len(claim.Status.Instances))
-	for _, instance := range claim.Status.Instances {
-		if _, seen := podsByName[instance.Pod]; seen || instance.Pod == "" {
-			continue
-		}
-		pod, err := kubeClient.CoreV1().Pods(namespace).Get(r.Context(), instance.Pod, metav1.GetOptions{})
-		if err == nil {
-			podsByName[instance.Pod] = pod
-		} else if !apierrors.IsNotFound(err) {
-			return nil, err
-		}
+	names := modelClaimInstancePodNames([]modelv1alpha1.ModelClaim{*claim})
+	podsByName := make(map[string]*corev1.Pod, len(names))
+	if err := readMissingPods(ctx, kubeClient, namespace, names, podsByName); err != nil {
+		return nil, err
 	}
 	return podsByName, nil
+}
+
+// listModelClaimInstancePods reads the Pods that run the claims' instances.
+// The controller places an instance only on a Pod with the enabled label, so
+// one List by that label finds them; the pool name label is not enough, since
+// a claim's selector need not use it. A Pod that has since lost the enabled
+// label, such as one that left its pool, still runs its instances and is read
+// on its own.
+func listModelClaimInstancePods(
+	ctx context.Context,
+	kubeClient kubernetes.Interface,
+	namespace string,
+	claims []modelv1alpha1.ModelClaim,
+) (map[string]*corev1.Pod, error) {
+	names := modelClaimInstancePodNames(claims)
+	podsByName := make(map[string]*corev1.Pod, len(names))
+	if len(names) == 0 {
+		return podsByName, nil
+	}
+	pods, err := kubeClient.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: constants.ModelPoolLabelEnabled,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for i := range pods.Items {
+		if names[pods.Items[i].Name] {
+			podsByName[pods.Items[i].Name] = &pods.Items[i]
+		}
+	}
+	if err := readMissingPods(ctx, kubeClient, namespace, names, podsByName); err != nil {
+		return nil, err
+	}
+	return podsByName, nil
+}
+
+func modelClaimInstancePodNames(claims []modelv1alpha1.ModelClaim) map[string]bool {
+	names := map[string]bool{}
+	for i := range claims {
+		for _, instance := range claims[i].Status.Instances {
+			if instance.Pod != "" {
+				names[instance.Pod] = true
+			}
+		}
+	}
+	return names
+}
+
+// readMissingPods gets each named Pod that podsByName does not hold yet. A Pod
+// that no longer exists is left out.
+func readMissingPods(
+	ctx context.Context,
+	kubeClient kubernetes.Interface,
+	namespace string,
+	names map[string]bool,
+	podsByName map[string]*corev1.Pod,
+) error {
+	for name := range names {
+		if _, found := podsByName[name]; found {
+			continue
+		}
+		pod, err := kubeClient.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err == nil {
+			podsByName[name] = pod
+		} else if !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 func buildModelClaimResponse(
@@ -771,18 +834,18 @@ type modelClaimPoolAccumulator struct {
 // discoverModelClaimPools groups the namespace's warm runtime Pods and the
 // Deployments that create them by pool name.
 func discoverModelClaimPools(
-	r *http.Request,
+	ctx context.Context,
 	kubeClient kubernetes.Interface,
 	namespace string,
 	claims []modelv1alpha1.ModelClaim,
 ) ([]modelClaimPoolResponse, error) {
-	pods, err := kubeClient.CoreV1().Pods(namespace).List(r.Context(), metav1.ListOptions{
+	pods, err := kubeClient.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: constants.ModelPoolLabelName,
 	})
 	if err != nil {
 		return nil, err
 	}
-	deployments, err := kubeClient.AppsV1().Deployments(namespace).List(r.Context(), metav1.ListOptions{})
+	deployments, err := kubeClient.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}

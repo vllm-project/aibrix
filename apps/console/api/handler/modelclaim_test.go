@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +39,7 @@ import (
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	kubernetesfake "k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/utils/ptr"
 )
 
@@ -328,6 +330,108 @@ func TestModelClaimHandlerShowsClaimsAppliedOutsideTheConsole(t *testing.T) {
 	}
 	if detail.EngineArgs == nil || detail.Conditions == nil || detail.Instances == nil {
 		t.Fatalf("collections must encode as empty arrays and objects: %#v", detail)
+	}
+}
+
+func modelClaimPlacedOn(name, pod string) *modelv1alpha1.ModelClaim {
+	claim := &modelv1alpha1.ModelClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: modelAdapterTestNamespace},
+		Spec:       modelv1alpha1.ModelClaimSpec{ArtifactURL: "huggingface://Qwen/" + name},
+	}
+	if pod != "" {
+		claim.Status = modelv1alpha1.ModelClaimStatus{
+			Phase: modelv1alpha1.ModelClaimActive,
+			Instances: []modelv1alpha1.ModelClaimInstance{{
+				Pod: pod, Port: 20000, Phase: modelv1alpha1.ModelClaimActive,
+			}},
+		}
+	}
+	return claim
+}
+
+// podActions returns the Pod lists (by label selector) and gets (by name) the
+// handler sent.
+func podActions(client *kubernetesfake.Clientset) (lists, gets []string) {
+	for _, action := range client.Actions() {
+		if action.GetResource().Resource != "pods" {
+			continue
+		}
+		switch typed := action.(type) {
+		case k8stesting.ListAction:
+			lists = append(lists, typed.GetListRestrictions().Labels.String())
+		case k8stesting.GetAction:
+			gets = append(gets, typed.GetName())
+		}
+	}
+	sort.Strings(gets)
+	return lists, gets
+}
+
+func TestModelClaimHandlerListReadsOnlyInstancePods(t *testing.T) {
+	f := newModelClaimFixture(t,
+		modelClaimPlacedOn("pooled", "warm-runtime-pool-b300-abc"),
+		// A claim whose selector does not use the pool label.
+		modelClaimPlacedOn("selected", "custom-runtime"),
+		// An instance kept on a Pod that has left its pool.
+		modelClaimPlacedOn("departed", "departed-runtime"),
+		modelClaimPlacedOn("gone", "deleted-runtime"),
+	)
+	selected := f.pod.DeepCopy()
+	selected.Name = "custom-runtime"
+	selected.Labels = map[string]string{constants.ModelPoolLabelEnabled: constants.ModelPoolLabelEnabledValue}
+	departed := f.pod.DeepCopy()
+	departed.Name = "departed-runtime"
+	departed.Labels = map[string]string{"app": "retired"}
+	for _, pod := range []*corev1.Pod{selected, departed} {
+		if _, err := f.kubeClient.CoreV1().Pods(modelAdapterTestNamespace).Create(
+			context.Background(), pod, metav1.CreateOptions{},
+		); err != nil {
+			t.Fatalf("create Pod %s: %v", pod.Name, err)
+		}
+	}
+	fake := f.kubeClient.(*kubernetesfake.Clientset)
+	fake.ClearActions()
+
+	recorder := serveModelAdapterRequest(t, f.mux, http.MethodGet, modelClaimAPIPath, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var list listModelClaimsResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	wantStatus := map[string]string{"pooled": "Running", "selected": "Running", "departed": "Running", "gone": "Unknown"}
+	for _, claim := range list.ModelClaims {
+		if len(claim.Instances) != 1 || claim.Instances[0].PodStatus.Status != wantStatus[claim.Name] {
+			t.Fatalf("claim %s instances = %#v, want Pod status %q", claim.Name, claim.Instances, wantStatus[claim.Name])
+		}
+	}
+	if len(list.ModelClaims) != len(wantStatus) {
+		t.Fatalf("list = %#v", list.ModelClaims)
+	}
+
+	lists, gets := podActions(fake)
+	if len(lists) != 1 || lists[0] != constants.ModelPoolLabelEnabled {
+		t.Fatalf("Pod lists = %q, want one by %q", lists, constants.ModelPoolLabelEnabled)
+	}
+	if want := []string{"deleted-runtime", "departed-runtime"}; strings.Join(gets, ",") != strings.Join(want, ",") {
+		t.Fatalf("Pod gets = %q, want %q", gets, want)
+	}
+}
+
+func TestModelClaimHandlerListReadsNoPodsWithoutInstances(t *testing.T) {
+	for _, claims := range [][]*modelv1alpha1.ModelClaim{nil, {modelClaimPlacedOn("pending", "")}} {
+		f := newModelClaimFixture(t, claims...)
+		fake := f.kubeClient.(*kubernetesfake.Clientset)
+		fake.ClearActions()
+
+		recorder := serveModelAdapterRequest(t, f.mux, http.MethodGet, modelClaimAPIPath, nil)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("list status = %d, body = %s", recorder.Code, recorder.Body.String())
+		}
+		if lists, gets := podActions(fake); len(lists) != 0 || len(gets) != 0 {
+			t.Fatalf("%d claims: Pod lists = %q, gets = %q, want none", len(claims), lists, gets)
+		}
 	}
 }
 
