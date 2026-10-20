@@ -68,10 +68,12 @@ func TestEncodeRejectsPodWithoutAddress(t *testing.T) {
 	ctx.ReqBody = []byte(`{"model":"qwen-vl","messages":[{"role":"user","content":"hi"}]}`)
 	item := `{"type":"image_url","image_url":{"url":"https://x/a.png"}}`
 
-	require.Error(t, executor.encode(ctx, nil, 0, item, time.Second))
+	_, err := executor.encode(ctx, nil, 0, item, time.Second)
+	require.Error(t, err)
 
 	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "encoder-0"}}
-	require.Error(t, executor.encode(ctx, pod, 0, item, time.Second))
+	_, err = executor.encode(ctx, pod, 0, item, time.Second)
+	require.Error(t, err)
 }
 
 type recordingRoundTripper struct {
@@ -105,8 +107,73 @@ func TestEncodeUsesBracketedIPv6Host(t *testing.T) {
 		Status: v1.PodStatus{PodIP: "2001:db8::1"},
 	}
 
-	require.NoError(t, executor.encode(ctx, pod, 0, item, time.Second))
+	_, err := executor.encode(ctx, pod, 0, item, time.Second)
+	require.NoError(t, err)
 	if transport.host != "[2001:db8::1]:8000" {
 		t.Fatalf("encode request host = %q, want %q", transport.host, "[2001:db8::1]:8000")
+	}
+}
+
+// encoderStub answers each encode request with ec_transfer_params for the
+// image URL it was sent, or with none when params is false.
+type encoderStub struct {
+	params bool
+}
+
+func (e encoderStub) RoundTrip(req *http.Request) (*http.Response, error) {
+	body, _ := io.ReadAll(req.Body)
+	resp := `{"choices":[]}`
+	if e.params {
+		url := gjson.GetBytes(body, "messages.0.content.0.image_url.url").String()
+		resp = `{"choices":[],"ec_transfer_params":{"` + url + `":{"peer_host":"10.0.0.9","peer_port":5601}}}`
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(resp)),
+		Header:     make(http.Header),
+		Request:    req,
+	}, nil
+}
+
+func TestEncodeMediaSetsEncoderTransferParams(t *testing.T) {
+	pod := func(name, role string) *v1.Pod {
+		return &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+				Labels:    map[string]string{"roleset-name": "rs-0", "role-name": role, constants.ModelLabelPort: "8000"},
+			},
+			Status: v1.PodStatus{PodIP: "10.0.0.1"},
+		}
+	}
+	target := pod("prefill-0", "prefill")
+	pods := []*v1.Pod{target, pod("encode-0", "encode"), pod("encode-1", "encode")}
+	// The client repeats the field; vLLM would read the last copy.
+	body := `{"model":"qwen-vl","ec_transfer_params":{"x":1},"messages":[{"role":"user","content":[` +
+		`{"type":"image_url","image_url":{"url":"a"}},{"type":"image_url","image_url":{"url":"b"}}]}],` +
+		`"ec_transfer_params":{"other":{"peer_host":"203.0.113.7"}}}`
+
+	for _, tc := range []struct {
+		name   string
+		params bool
+		want   string
+		copies int
+	}{
+		{"encoders return params", true, `{"a":{"peer_host":"10.0.0.9","peer_port":5601},"b":{"peer_host":"10.0.0.9","peer_port":5601}}`, 1},
+		{"encoders return none", false, "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := types.NewRoutingContext(context.Background(), "test", "qwen-vl", "", "req-ec", "user")
+			defer ctx.Delete()
+			ctx.ReqPath = "/v1/chat/completions"
+			ctx.ReqBody = []byte(body)
+
+			NewExecutor(&http.Client{Transport: encoderStub{params: tc.params}}).
+				EncodeMedia(ctx, pods, target, time.Second)
+
+			assert.Equal(t, tc.copies, strings.Count(string(ctx.ReqBody), `"ec_transfer_params"`))
+			assert.Equal(t, tc.want, gjson.GetBytes(ctx.ReqBody, "ec_transfer_params").Raw)
+			assert.Len(t, MediaItems(ctx.ReqBody), 2)
+		})
 	}
 }
