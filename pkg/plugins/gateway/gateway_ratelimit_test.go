@@ -204,6 +204,57 @@ func TestCheckLimitsRPMAdmission(t *testing.T) {
 		rl.AssertNotCalled(t, "Incr", mock.Anything, "alice_RPM_CURRENT", int64(1))
 	})
 
+	t.Run("request already over RPM is told so", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Get", mock.Anything, "alice_RPM_CURRENT").Return(int64(1), nil).Once()
+
+		s := &Server{ratelimiter: rl}
+		_, resp, err := s.checkLimits(context.Background(), user)
+
+		assert.Error(t, err)
+		assertRPMExceeded(t, resp)
+		rl.AssertExpectations(t)
+	})
+
+	// A failed counter read is an outage, not a rate limit: the client must not
+	// be told it exceeded a limit, or it may back off as if it had.
+	for _, tt := range []struct {
+		name       string
+		failKey    string
+		wantHeader string
+	}{
+		{name: "RPM", failKey: "alice_RPM_CURRENT", wantHeader: HeaderErrorGetRPM},
+		{name: "TPM", failKey: "alice_TPM_CURRENT", wantHeader: HeaderErrorGetTPM},
+	} {
+		t.Run(tt.name+" read failure is not reported as over the limit", func(t *testing.T) {
+			rl := &mockRateLimiter{}
+			for _, key := range []string{"alice_RPM_CURRENT", "alice_TPM_CURRENT"} {
+				if key == tt.failKey {
+					rl.On("Get", mock.Anything, key).Return(int64(0), errors.New("redis down")).Maybe()
+				} else {
+					rl.On("Get", mock.Anything, key).Return(int64(0), nil).Maybe()
+				}
+			}
+
+			s := &Server{ratelimiter: rl}
+			_, resp, err := s.checkLimits(context.Background(), user)
+
+			assert.Error(t, err)
+			imm := resp.GetImmediateResponse()
+			require.NotNil(t, imm)
+			assert.Equal(t, envoyTypePb.StatusCode_InternalServerError, imm.GetStatus().GetCode())
+			assert.NotContains(t, imm.GetBody(), ErrorCodeRateLimitExceeded)
+			keys := []string{}
+			for _, h := range imm.GetHeaders().GetSetHeaders() {
+				keys = append(keys, h.GetHeader().GetKey())
+			}
+			assert.Contains(t, keys, tt.wantHeader)
+			assert.NotContains(t, keys, HeaderErrorRPMExceeded)
+			assert.NotContains(t, keys, HeaderErrorTPMExceeded)
+			rl.AssertNotCalled(t, "Incr", mock.Anything, "alice_RPM_CURRENT", int64(1))
+		})
+	}
+
 	t.Run("concurrent requests admit no more than the limit", func(t *testing.T) {
 		redisServer := miniredis.RunT(t)
 		redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})

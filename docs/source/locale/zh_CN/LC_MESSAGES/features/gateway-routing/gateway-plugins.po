@@ -2628,6 +2628,22 @@ msgstr "``x-error-incr-tpm``"
 msgid "Error encountered while incrementing the TPM counter."
 msgstr "递增 TPM 计数器时出错。"
 
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1226
+msgid "``x-error-get-rpm``"
+msgstr "``x-error-get-rpm``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1227
+msgid "Error encountered while reading the RPM counter."
+msgstr "读取 RPM 计数器时出错。"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1228
+msgid "``x-error-get-tpm``"
+msgstr "``x-error-get-tpm``"
+
+#: ../../source/features/gateway-routing/gateway-plugins.rst:1229
+msgid "Error encountered while reading the TPM counter."
+msgstr "读取 TPM 计数器时出错。"
+
 #: ../../source/features/gateway-routing/gateway-plugins.rst:1229
 msgid "Debugging Guidelines"
 msgstr "调试指南"
@@ -2668,11 +2684,13 @@ msgstr ""
 msgid ""
 "**Investigate rate limiting** — if a request was rejected, check ``x"
 "-error-rpm-exceeded`` or ``x-error-tpm-exceeded``. If counters failed to "
-"update, look for ``x-error-incr-rpm`` or ``x-error-incr-tpm``. Successful"
+"update, look for ``x-error-incr-rpm`` or ``x-error-incr-tpm``; if they "
+"could not be read, ``x-error-get-rpm`` or ``x-error-get-tpm``. Successful"
 " updates are indicated by ``x-update-rpm`` and ``x-update-tpm``."
 msgstr ""
 "**排查限流** — 若请求被拒绝，检查 ``x-error-rpm-exceeded`` 或 ``x-error-tpm-exceeded`` "
-"。若计数器更新失败，查看 ``x-error-incr-rpm`` 或 ``x-error-incr-tpm`` 。更新成功由 ``x"
+"。若计数器更新失败，查看 ``x-error-incr-rpm`` 或 ``x-error-incr-tpm`` ；若无法读取计数器，查看 "
+"``x-error-get-rpm`` 或 ``x-error-get-tpm`` 。更新成功由 ``x"
 "-update-rpm`` 和 ``x-update-tpm`` 表示。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:1240
