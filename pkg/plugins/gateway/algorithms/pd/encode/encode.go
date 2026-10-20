@@ -55,6 +55,12 @@ var mediaTypes = map[string]struct{}{
 // has to see them to produce the same output the prefill instance expects.
 var passthroughFields = []string{"mm_processor_kwargs", "media_io_kwargs"}
 
+// ECTransferParamsField holds the encoder's handles on its outputs, keyed by
+// mm_hash. ECCPUConnector with NIXL needs it to pull them.
+const ECTransferParamsField = "ec_transfer_params"
+
+const maxEncodeResponseBytes = 1 << 20
+
 // MediaItems returns the raw JSON of every media item in a chat completions
 // request body, in message order.
 func MediaItems(body []byte) []string {
@@ -122,38 +128,86 @@ func NewExecutor(httpClient *http.Client) *Executor {
 }
 
 // Execute sends each item to one of encoders, all at once, and waits for every
-// response. It returns the failures joined, or nil when every item was encoded.
-func (e *Executor) Execute(routingCtx *types.RoutingContext, encoders []*v1.Pod, items []string, timeout time.Duration) error {
+// response. It returns the merged ec_transfer_params (nil if none) and the
+// failures joined.
+func (e *Executor) Execute(routingCtx *types.RoutingContext, encoders []*v1.Pod, items []string, timeout time.Duration) ([]byte, error) {
 	if len(encoders) == 0 || len(items) == 0 {
-		return nil
+		return nil, nil
 	}
 	start := e.next.Add(uint64(len(items))) - uint64(len(items))
 	errs := make([]error, len(items))
+	params := make([]gjson.Result, len(items))
 	var wg sync.WaitGroup
 	for i, item := range items {
 		pod := encoders[(start+uint64(i))%uint64(len(encoders))]
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := e.encode(routingCtx, pod, i, item, timeout); err != nil {
+			p, err := e.encode(routingCtx, pod, i, item, timeout)
+			if err != nil {
 				errs[i] = fmt.Errorf("encode item %d on pod %s: %w", i, pod.Name, err)
 			}
+			params[i] = p
 		}()
 	}
 	wg.Wait()
-	return errors.Join(errs...)
+	return mergeTransferParams(params), errors.Join(errs...)
 }
 
-func (e *Executor) encode(routingCtx *types.RoutingContext, pod *v1.Pod, index int, item string, timeout time.Duration) error {
+// A repeated item has the same mm_hash, so the first entry wins.
+func mergeTransferParams(params []gjson.Result) []byte {
+	var out []byte
+	seen := map[string]struct{}{}
+	for _, p := range params {
+		if !p.IsObject() {
+			continue
+		}
+		p.ForEach(func(key, value gjson.Result) bool {
+			if _, ok := seen[key.String()]; ok {
+				return true
+			}
+			seen[key.String()] = struct{}{}
+			if out == nil {
+				out = []byte{'{'}
+			} else {
+				out = append(out, ',')
+			}
+			out = append(out, key.Raw...)
+			out = append(out, ':')
+			out = append(out, value.Raw...)
+			return true
+		})
+	}
+	if out == nil {
+		return nil
+	}
+	return append(out, '}')
+}
+
+// Deletes every copy first: with a repeated key, vLLM would take the last one.
+func setTransferParams(body, params []byte) ([]byte, error) {
+	var err error
+	for gjson.GetBytes(body, ECTransferParamsField).Exists() {
+		if body, err = sjson.DeleteBytes(body, ECTransferParamsField); err != nil {
+			return nil, err
+		}
+	}
+	if params == nil {
+		return body, nil
+	}
+	return sjson.SetRawBytes(body, ECTransferParamsField, params)
+}
+
+func (e *Executor) encode(routingCtx *types.RoutingContext, pod *v1.Pod, index int, item string, timeout time.Duration) (gjson.Result, error) {
 	if pod == nil {
-		return errors.New("encode pod is nil")
+		return gjson.Result{}, errors.New("encode pod is nil")
 	}
 	if pod.Status.PodIP == "" {
-		return fmt.Errorf("encode pod %s has no IP address", pod.Name)
+		return gjson.Result{}, fmt.Errorf("encode pod %s has no IP address", pod.Name)
 	}
 	payload, err := requestBody(routingCtx.ReqBody, item)
 	if err != nil {
-		return fmt.Errorf("build encode request: %w", err)
+		return gjson.Result{}, fmt.Errorf("build encode request: %w", err)
 	}
 	url := "http://" + net.JoinHostPort(
 		pod.Status.PodIP,
@@ -164,7 +218,7 @@ func (e *Executor) encode(routingCtx *types.RoutingContext, pod *v1.Pod, index i
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("create encode request: %w", err)
+		return gjson.Result{}, fmt.Errorf("create encode request: %w", err)
 	}
 	for key, value := range routingCtx.ReqHeaders {
 		// Envoy pseudo-headers are not valid HTTP/1 field names.
@@ -180,7 +234,7 @@ func (e *Executor) encode(routingCtx *types.RoutingContext, pod *v1.Pod, index i
 	if err != nil {
 		status, code := metrics.HttpFailureStatusCode(ctx, err, nil)
 		emit(routingCtx, status, code)
-		return err
+		return gjson.Result{}, err
 	}
 	defer func() {
 		_ = resp.Body.Close()
@@ -189,15 +243,21 @@ func (e *Executor) encode(routingCtx *types.RoutingContext, pod *v1.Pod, index i
 		status, code := metrics.HttpFailureStatusCode(ctx, nil, resp)
 		emit(routingCtx, status, code)
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("encoder returned %d: %s", resp.StatusCode, body)
+		return gjson.Result{}, fmt.Errorf("encoder returned %d: %s", resp.StatusCode, body)
 	}
-	// Only the status matters; drain the body so the connection is reused.
-	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxEncodeResponseBytes+1))
+	if err == nil && len(body) > maxEncodeResponseBytes {
+		err = fmt.Errorf("larger than %d bytes", maxEncodeResponseBytes)
+	}
+	if err != nil {
 		emit(routingCtx, "read_error", "200")
-		return fmt.Errorf("read encode response: %w", err)
+		return gjson.Result{}, fmt.Errorf("read encode response: %w", err)
 	}
 	emit(routingCtx, "success", "200")
-	return nil
+	if !gjson.ValidBytes(body) {
+		return gjson.Result{}, nil
+	}
+	return gjson.GetBytes(body, ECTransferParamsField), nil
 }
 
 func emit(routingCtx *types.RoutingContext, status, code string) {
