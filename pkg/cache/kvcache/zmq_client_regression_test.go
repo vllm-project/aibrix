@@ -25,8 +25,49 @@ import (
 
 	zmq "github.com/pebbe/zmq4"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
+
+func TestZMQClientRecoveryStopsWithoutProgress(t *testing.T) {
+	handler := &MockHandlerWithAssertions{}
+	handler.Test(t)
+	// A second clear fails immediately if recovery retries the malformed batch
+	// forever, so removing the progress guard cannot hang this test.
+	handler.On("HandleEvent", mock.AnythingOfType("*kvcache.AllBlocksClearedEvent")).Return(nil).Once()
+	client := NewZMQClient(DefaultZMQClientConfig(t.Name(), "127.0.0.1", "model"), handler)
+	t.Cleanup(client.Stop)
+	_, err := client.applyEventBatch(0, encodeFaultBatch(t), true)
+	require.NoError(t, err)
+	payload := []byte{0xc1} // Reserved MessagePack byte: decoding cannot advance.
+	_, err = client.applyEventBatch(3, payload, true)
+	require.NoError(t, err)
+	client.replayWg.Wait()
+	client.recoverStalledGap()
+	require.Equal(t, int64(2), client.GetLastSequence())
+	require.Equal(t, map[int64][]byte{3: payload}, client.pending)
+	handler.AssertExpectations(t)
+}
+
+func TestZMQClientRecoveryLeavesNonGapsAlone(t *testing.T) {
+	for _, seq := range []int64{-1, 0, 1} {
+		t.Run(fmt.Sprintf("pending_%d", seq), func(t *testing.T) {
+			handler := &MockHandlerWithAssertions{}
+			handler.Test(t) // No invalidation or batch dispatch is expected.
+			client := NewZMQClient(DefaultZMQClientConfig(t.Name(), "127.0.0.1", "model"), handler)
+			t.Cleanup(client.Stop)
+			client.setLastSequence(0)
+			if seq >= 0 { // Absent, duplicate, or contiguous (not a gap).
+				client.applyMu.Lock()
+				require.True(t, client.bufferPendingLocked(seq, encodeFaultBatch(t)))
+				client.applyMu.Unlock()
+			}
+			client.recoverStalledGap()
+			require.Equal(t, int64(0), client.GetLastSequence())
+			require.Equal(t, seq >= 0, len(client.pending) > 0)
+		})
+	}
+}
 
 func TestZMQClientZeroBasedPublisherRestart(t *testing.T) {
 	for _, previousLast := range []int64{0, 3} {
