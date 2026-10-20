@@ -121,7 +121,9 @@ function PlaygroundRoute() {
   return (
     <Playground
       initialDeploymentId={searchParams.get('deployment') ?? undefined}
+      initialModelClaim={searchParams.get('model-claim') ?? undefined}
       onNavigateToDeployment={(id) => navigate(`/deployments/${id}`)}
+      onNavigateToModelClaim={(name) => navigate(`/model-claims/${encodeURIComponent(name)}`)}
     />
   );
 }
@@ -218,6 +220,9 @@ function ModelClaimDetailRoute() {
     <ModelClaimDetail
       claimName={claimName}
       onBack={() => navigate('/model-claims')}
+      onOpenPlayground={features.playground
+        ? (name) => navigate(`/playground?model-claim=${encodeURIComponent(name)}`)
+        : undefined}
     />
   );
 }
