@@ -45,13 +45,22 @@ func (v sleepPreemptionVictim) idleEngine() idleEngine {
 }
 
 // sleepPreemptionPlan is the lower-priority engines that would make room for
-// a claim on one Pod. An unknown sleeping footprint deliberately ends a plan
-// after one victim; a fresh reading after that Sleep supplies the next plan.
+// a claim on one Pod. An unknown sleeping footprint deliberately ends the
+// executable victims there; estimatedVictims continues optimistically only
+// far enough to rank Pods without hiding a later higher-priority victim.
 type sleepPreemptionPlan struct {
-	pod            *corev1.Pod
-	victims        []sleepPreemptionVictim
-	known          bool
-	artifactCached bool
+	pod              *corev1.Pod
+	victims          []sleepPreemptionVictim
+	estimatedVictims []sleepPreemptionVictim
+	known            bool
+	artifactCached   bool
+}
+
+func (p sleepPreemptionPlan) victimsForComparison() []sleepPreemptionVictim {
+	if len(p.estimatedVictims) > 0 {
+		return p.estimatedVictims
+	}
+	return p.victims
 }
 
 func preemptionPolicyOf(pm *modelv1alpha1.ModelClaim) modelv1alpha1.ModelClaimPreemptionPolicy {
@@ -269,8 +278,9 @@ func (r *ModelClaimReconciler) sleepPreemptionVictims(
 }
 
 // preemptionVictimsCanMakeRoom uses unknown sleeping footprints optimistically
-// only to rule out impossible Pods. Unknown memory is never credited to a
-// concrete plan; planSleepPreemptionOnPod stops at that victim instead.
+// only to rule out impossible Pods. Unknown memory is never credited to the
+// executable victims; planSleepPreemptionOnPod keeps the optimistic remainder
+// separately for cross-Pod comparison.
 func (r *ModelClaimReconciler) preemptionVictimsCanMakeRoom(
 	ledger podLedger,
 	victims []sleepPreemptionVictim,
@@ -295,20 +305,25 @@ func (r *ModelClaimReconciler) planSleepPreemptionOnPod(
 	}
 	floors, holding := ledger.maximumRoomBytes(), ledger.heldRoomBytes()
 	plan := sleepPreemptionPlan{pod: pod}
+	uncertain := false
 	for _, victim := range victims {
 		engine, found := charged[victim.claim.Name]
 		if !found {
 			continue
 		}
-		plan.victims = append(plan.victims, victim)
+		plan.estimatedVictims = append(plan.estimatedVictims, victim)
+		if !uncertain {
+			plan.victims = append(plan.victims, victim)
+		}
 		asleep, known := r.footprints().seenAsleep(victim.claim)
 		if !known {
-			return plan, true
+			uncertain = true
+			asleep = 0
 		}
 		floors += engine.minimumReserveBytes() - asleep
 		holding += engine.heldBytes() - asleep
 		if floors >= seat && holding >= seat {
-			plan.known = true
+			plan.known = !uncertain
 			return plan, true
 		}
 	}
@@ -318,8 +333,10 @@ func (r *ModelClaimReconciler) planSleepPreemptionOnPod(
 // betterSleepPreemptionPlan compares plans in the policy's protection order:
 // victim priority dominates certainty and victim count.
 func betterSleepPreemptionPlan(plan, than sleepPreemptionPlan) bool {
-	planMax, planSum := sleepPreemptionPriority(plan)
-	thanMax, thanSum := sleepPreemptionPriority(than)
+	planVictims := plan.victimsForComparison()
+	thanVictims := than.victimsForComparison()
+	planMax, planSum := sleepPreemptionPriority(planVictims)
+	thanMax, thanSum := sleepPreemptionPriority(thanVictims)
 	switch {
 	case planMax != thanMax:
 		return planMax < thanMax
@@ -327,27 +344,27 @@ func betterSleepPreemptionPlan(plan, than sleepPreemptionPlan) bool {
 		return planSum < thanSum
 	case plan.known != than.known:
 		return plan.known
-	case len(plan.victims) != len(than.victims):
-		return len(plan.victims) < len(than.victims)
-	case !plan.victims[0].idleSince.Equal(than.victims[0].idleSince):
-		return plan.victims[0].idleSince.Before(than.victims[0].idleSince)
+	case len(planVictims) != len(thanVictims):
+		return len(planVictims) < len(thanVictims)
+	case !planVictims[0].idleSince.Equal(thanVictims[0].idleSince):
+		return planVictims[0].idleSince.Before(thanVictims[0].idleSince)
 	case plan.artifactCached != than.artifactCached:
 		return plan.artifactCached
 	case plan.pod.Name != than.pod.Name:
 		return plan.pod.Name < than.pod.Name
 	}
-	for i := 0; i < len(plan.victims) && i < len(than.victims); i++ {
-		if plan.victims[i].claim.Name != than.victims[i].claim.Name {
-			return plan.victims[i].claim.Name < than.victims[i].claim.Name
+	for i := 0; i < len(planVictims) && i < len(thanVictims); i++ {
+		if planVictims[i].claim.Name != thanVictims[i].claim.Name {
+			return planVictims[i].claim.Name < thanVictims[i].claim.Name
 		}
 	}
 	return false
 }
 
-func sleepPreemptionPriority(plan sleepPreemptionPlan) (int32, int64) {
+func sleepPreemptionPriority(victims []sleepPreemptionVictim) (int32, int64) {
 	var maximum int32
 	var sum int64
-	for i, victim := range plan.victims {
+	for i, victim := range victims {
 		if i == 0 || victim.priority > maximum {
 			maximum = victim.priority
 		}

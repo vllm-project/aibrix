@@ -85,8 +85,9 @@ type ModelClaimSpec struct {
 	// Priority determines placement order among ModelClaims that currently have
 	// no recorded instance. A higher value is considered before a lower value.
 	// Values must be non-negative.
-	// It does not preempt or otherwise change an existing instance. Claims with
-	// equal priority retain FIFO order. Defaults to zero.
+	// Priority alone does not preempt or otherwise change an existing instance.
+	// PreemptionPolicy may use it to identify lower-priority sleep victims.
+	// Claims with equal priority retain FIFO order. Defaults to zero.
 	// +optional
 	// +kubebuilder:default=0
 	// +kubebuilder:validation:Minimum=0

@@ -221,6 +221,26 @@ func TestPlanSleepPreemptionProtectsPriorityBeforeVictimCount(t *testing.T) {
 	})
 }
 
+func TestPlanSleepPreemptionRanksUnknownPlanByEstimatedVictims(t *testing.T) {
+	f := newPreemptionPlannerFixture(t, 2,
+		preemptionVictimFixture{"unknown-low", "warm-1", 1, 250, 50, at0758, 0, false},
+		preemptionVictimFixture{"higher", "warm-1", 50, 250, 50, at0759, 60, true},
+		preemptionVictimFixture{"blocker-1", "warm-1", 100, 300, 100, at0759, 60, true},
+		preemptionVictimFixture{"low-a", "warm-2", 1, 250, 50, at0758, 60, true},
+		preemptionVictimFixture{"low-b", "warm-2", 1, 250, 50, at0759, 60, true},
+		preemptionVictimFixture{"blocker-2", "warm-2", 100, 300, 100, at0759, 60, true},
+	)
+
+	plan := f.plan(t)
+
+	require.NotNil(t, plan)
+	require.Equal(t, "warm-2", plan.pod.Name)
+	require.Len(t, plan.victims, 2)
+	assert.Equal(t, []string{"low-a", "low-b"}, []string{
+		plan.victims[0].claim.Name, plan.victims[1].claim.Name,
+	})
+}
+
 func TestPlanSleepPreemptionOrdersVictimsByPriorityWithinCard(t *testing.T) {
 	f := newPreemptionPlannerFixture(t, 1,
 		preemptionVictimFixture{"priority-five", "warm-1", 5, 440, 100, at0758, 60, true},

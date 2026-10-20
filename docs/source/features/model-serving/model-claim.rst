@@ -357,16 +357,18 @@ Soft preemption
 ~~~~~~~~~~~~~~~
 
 Set ``preemptionPolicy: SleepLowerPriority`` on an unplaced claim to let it
-make room by sleeping lower-priority engines. The field is immutable and
-defaults to ``Never``. An object stored before the field existed also behaves
-as ``Never`` when an older controller or a historical empty value is read.
+make room by sleeping lower-priority engines. This replaces ordinary make-room
+for that claim; it does not fall back to sleeping equal- or higher-priority
+engines after their normal idle threshold. The field is immutable and defaults
+to ``Never``. A claim created before this field existed behaves as ``Never``.
 
 A victim must be in the same namespace and on a selected Pod, have a strictly
 lower numeric priority, and be a vLLM engine whose claim and Runtime state are
 Active, Alive and Ready. The Runtime snapshot must contain authoritative
 request metrics with both running and waiting counts equal to zero. A missing
 metric is never treated as idleness. Pool sleep eligibility still applies;
-soft preemption bypasses only ``sleepToMakeRoomAfterSeconds``.
+soft preemption requires ``noWakeReserveWhileAsleep: true`` and bypasses only
+``sleepToMakeRoomAfterSeconds``.
 
 The planner protects priority before minimizing the number of victims. It
 considers lower numeric victim priorities first, then idle time and claim
@@ -375,13 +377,18 @@ priorities, whether sleeping footprints are known, victim count, first idle
 time, artifact cache and Pod name. Several priority-1 victims therefore beat
 one priority-90 victim for a priority-100 preemptor.
 
+For an unknown sleeping footprint, cross-Pod ranking includes the full
+optimistic victim prefix needed to make room, even though execution stops at
+the first unknown victim and replans from its measured footprint.
+
 The controller reserves the target card for two minutes and sleeps one victim
 per reconcile pass. When a victim's sleeping footprint is unknown, it sleeps
 that victim alone, reads a fresh Runtime snapshot, and replans instead of
 assuming all declared memory was released. The preemptor stays ``Pending``
-with Scheduled reason ``MakingRoom`` until physical room is available. A
-request-triggered wake cannot consume reserved room, but resumes ordinary wake
-admission after the reservation is released or expires.
+with Scheduled reason ``MakingRoom`` until physical room is available. Any
+request-triggered wake on that card, regardless of the sleeping claim's
+priority, cannot consume reserved room, but resumes ordinary wake admission
+after the reservation is released or expires.
 
 No cross-claim ownership is stored in Status. After a controller restart, an
 already sleeping victim remains authoritative in Runtime and claim Status;
