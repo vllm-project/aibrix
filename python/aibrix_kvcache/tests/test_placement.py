@@ -148,6 +148,27 @@ def test_select(simple_cluster_data):
         assert member.meta["addr"] == expected_addr
 
 
+def test_missing_cluster_metadata(redis_server):
+    redis_host, redis_port = redis_server
+    config = MetaServiceConfig(
+        url=f"redis://{redis_host}:{redis_port}",
+        cluster_meta_key="missing_key",
+    )
+    redis_ms = RedisMetaService(config)
+    assert redis_ms.open().is_ok()
+    try:
+        status = redis_ms.get_cluster_metadata()
+        assert not status.is_ok()
+
+        config = copy.deepcopy(PLACEMENT_CONFIG)
+        config.meta_service = redis_ms
+        config.refresh_interval_s = 2
+        placement = Placement.create(config=config)
+        assert not placement.open().is_ok()
+    finally:
+        redis_ms.close()
+
+
 def test_background_refresh(redis_server, redis_client):
     """Test that background refresh works correctly."""
     # Initial test data
