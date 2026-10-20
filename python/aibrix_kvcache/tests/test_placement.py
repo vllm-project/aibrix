@@ -157,6 +157,7 @@ def test_missing_cluster_metadata(redis_server):
     )
     redis_ms = RedisMetaService(config)
     assert redis_ms.open().is_ok()
+    placement = None
     try:
         status = redis_ms.get_cluster_metadata()
         assert not status.is_ok()
@@ -167,6 +168,8 @@ def test_missing_cluster_metadata(redis_server):
         placement = Placement.create(config=config)
         assert not placement.open().is_ok()
     finally:
+        if placement is not None:
+            placement.close()
         redis_ms.close()
 
 
@@ -192,14 +195,16 @@ def test_background_refresh_survives_missing_key(redis_server):
     assert redis_ms.open().is_ok()
     # Closed in finally: an open client keeps the fake server's handler
     # thread alive, which blocks pytest from exiting after a failure.
-    redis_client = redis.Redis(host=redis_host, port=redis_port)
-    redis_client.set(redis_key, json.dumps(data))
-
-    config = copy.deepcopy(PLACEMENT_CONFIG)
-    config.meta_service = redis_ms
-    config.refresh_interval_s = 1
-    placement = Placement.create(config=config)
+    redis_client = None
+    placement = None
     try:
+        redis_client = redis.Redis(host=redis_host, port=redis_port)
+        redis_client.set(redis_key, json.dumps(data))
+
+        config = copy.deepcopy(PLACEMENT_CONFIG)
+        config.meta_service = redis_ms
+        config.refresh_interval_s = 1
+        placement = Placement.create(config=config)
         assert placement.open().is_ok()
 
         # The key disappears for at least one refresh, then comes back.
@@ -217,10 +222,12 @@ def test_background_refresh_survives_missing_key(redis_server):
         assert placement._refresh_thread.is_alive()
         assert placement.members[0].meta["addr"] == "updated.host"
     finally:
-        placement.close()
+        if placement is not None:
+            placement.close()
         redis_ms.close()
-        redis_client.delete(redis_key)
-        redis_client.close()
+        if redis_client is not None:
+            redis_client.delete(redis_key)
+            redis_client.close()
 
 
 def test_background_refresh(redis_server, redis_client):
