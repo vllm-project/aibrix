@@ -14,9 +14,11 @@
 
 
 import pytest
+import torch
 
 from aibrix_kvcache import TokenListView
 from aibrix_kvcache.memory import ManagedMemoryRegion, TensorPoolAllocator
+from aibrix_kvcache.memory.allocator import MemoryRegionFooter
 
 from .conftest import randomize_mrs
 
@@ -108,6 +110,81 @@ def test_unpack_tokens_from_bytes(compact_layout_enabled):
     prefix_from_mr, tokens_from_mr = dst2.unpack_tokens()
     assert prefix_from_mr is None
     assert tokens_from_mr == orig_tokens
+
+
+def _pack_exact_fit_mr(allocator, prefix, query):
+    # No slack after the tokens: block + magic + footer + prefix + query.
+    block_nbytes = 20
+    bytes_per_token = 4
+    mr_nbytes = (
+        block_nbytes
+        + bytes_per_token
+        + MemoryRegionFooter.nbytes()
+        + bytes_per_token * (len(prefix) + len(query))
+    )
+    mr = allocator.alloc(mr_nbytes).get()[0]
+    assert mr.length == mr_nbytes
+    mr.block_nbytes = block_nbytes
+    randomize_mrs([mr])
+    mr.pack_tokens(prefix=prefix, query=query)
+    mr.seal()
+    return mr
+
+
+def _drop_cached_tokens(allocator, mr):
+    # Copy the bytes into a fresh MR so unpack_tokens() reads the buffer.
+    dst = allocator.alloc(mr.length).get()[0]
+    dst.block_nbytes = mr.block_nbytes
+    dst.slab[dst.addr : dst.addr + mr.length].copy_(
+        mr.slab[mr.addr : mr.addr + mr.length]
+    )
+    return dst
+
+
+@pytest.mark.parametrize(
+    "compact_layout_enabled", ["without_compact_layout"], indirect=True
+)
+def test_unpack_tokens_exact_fit(compact_layout_enabled):
+    allocator = TensorPoolAllocator.create(capacity_nbytes=1024)
+    all = TokenListView(tuple(range(128, 128 + 32)))
+    mr = _pack_exact_fit_mr(allocator, all[:16], all[16:])
+    prefix_from_mr, tokens_from_mr = _drop_cached_tokens(
+        allocator, mr
+    ).unpack_tokens()
+    assert prefix_from_mr == all[:16]
+    assert tokens_from_mr == all[16:]
+
+
+@pytest.mark.parametrize(
+    "compact_layout_enabled", ["without_compact_layout"], indirect=True
+)
+@pytest.mark.parametrize(
+    "prefix_length, query_length",
+    [
+        (-1, 16),
+        (-16, 32),
+        (10**6, 16),
+        (0, 10**6),
+        (16, 0),
+        (16, -1),
+        (2**31 - 1, 2**31 - 1),
+        (32, 1),
+    ],
+)
+def test_unpack_tokens_corrupted_footer(
+    compact_layout_enabled, prefix_length, query_length
+):
+    allocator = TensorPoolAllocator.create(capacity_nbytes=1024)
+    all = TokenListView(tuple(range(128, 128 + 32)))
+    mr = _drop_cached_tokens(
+        allocator, _pack_exact_fit_mr(allocator, all[:16], all[16:])
+    )
+    start = mr.addr + mr.block_nbytes + 4
+    stop = start + MemoryRegionFooter.nbytes()
+    mr.slab[start:stop].view(torch.int32).copy_(
+        torch.tensor([prefix_length, query_length], dtype=torch.int32)
+    )
+    assert mr.unpack_tokens() == (None, None)
 
 
 def test_pack_unpack_max(compact_layout_enabled):
