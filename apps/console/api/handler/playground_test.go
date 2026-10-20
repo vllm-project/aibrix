@@ -47,3 +47,54 @@ func TestPlaygroundForwardsGatewayErrors(t *testing.T) {
 		t.Fatalf("body = %q, want upstream error", got)
 	}
 }
+
+func TestPlaygroundForwardsRoutingStrategyAndRetryAfter(t *testing.T) {
+	var gotStrategy string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotStrategy = r.Header.Get("routing-strategy")
+		w.Header().Set("Retry-After", "3")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"message":"model qwen3-0.6b is sleeping; retry shortly"}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	handler := NewPlaygroundHandler(upstream.URL)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/playground/chat/completions",
+		strings.NewReader(`{"model":"qwen3-0.6b","messages":[{"role":"user","content":"hi"}]}`),
+	)
+	request.Header.Set("routing-strategy", " random ")
+	handler.HandleChatCompletion(recorder, request, nil)
+
+	if gotStrategy != "random" {
+		t.Fatalf("gateway routing-strategy = %q, want %q", gotStrategy, "random")
+	}
+	if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != "3" {
+		t.Fatalf("status = %d, Retry-After = %q", recorder.Code, recorder.Header().Get("Retry-After"))
+	}
+}
+
+func TestPlaygroundSendsNoRoutingStrategyByDefault(t *testing.T) {
+	strategy := "unset"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		strategy = r.Header.Get("routing-strategy")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	handler := NewPlaygroundHandler(upstream.URL)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/playground/chat/completions",
+		strings.NewReader(`{"model":"/models/mock","messages":[{"role":"user","content":"hi"}]}`),
+	)
+	handler.HandleChatCompletion(recorder, request, nil)
+
+	if strategy != "" {
+		t.Fatalf("gateway routing-strategy = %q, want none", strategy)
+	}
+}

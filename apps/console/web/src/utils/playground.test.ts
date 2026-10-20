@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Deployment } from '../data/mockData';
-import { callableDeployments, preferredDeployment, streamPlaygroundChat } from './playground';
+import type { ModelClaim } from './api';
+import {
+  callableDeployments,
+  deploymentTargets,
+  maxTokensFor,
+  modelClaimTargets,
+  playgroundErrorMessage,
+  preferredTarget,
+  streamPlaygroundChat,
+} from './playground';
 
 function deployment(overrides: Partial<Deployment>): Deployment {
   return {
@@ -30,8 +39,99 @@ describe('Playground helpers', () => {
     ];
     const callable = callableDeployments(items);
     expect(callable.map((item) => item.id)).toEqual(['ready']);
-    expect(preferredDeployment(callable, 'ready')?.id).toBe('ready');
-    expect(preferredDeployment(callable, '/models/mock')?.id).toBe('ready');
+    const targets = deploymentTargets(items);
+    expect(preferredTarget(targets, { deployment: 'ready' })?.id).toBe('ready');
+    expect(preferredTarget(targets, { deployment: '/models/mock' })?.id).toBe('ready');
+    expect(targets[0]?.routingStrategy).toBeUndefined();
+  });
+
+  it('lists Active and Sleeping ModelClaims with a routing strategy', () => {
+    const claim = (overrides: Partial<ModelClaim>) => ({
+      name: 'qwen3-0-6b',
+      modelName: 'qwen3-0.6b',
+      phase: 'Active',
+      deleting: false,
+      ...overrides,
+    }) as ModelClaim;
+    const targets = modelClaimTargets([
+      claim({}),
+      claim({ name: 'asleep', modelName: 'asleep-model', phase: 'Sleeping' }),
+      claim({ name: 'pending', modelName: 'pending-model', phase: 'Pending' }),
+      claim({ name: 'going', modelName: 'going-model', deleting: true }),
+    ]);
+    expect(targets.map((target) => target.id)).toEqual(['qwen3-0-6b', 'asleep']);
+    expect(targets[0]).toMatchObject({ kind: 'modelclaim', servingName: 'qwen3-0.6b', routingStrategy: 'random' });
+    expect(targets[0]?.note).toBeUndefined();
+    expect(targets[1]?.note).toContain('wakes');
+
+    const all = [...deploymentTargets([deployment({ id: 'ready' })]), ...targets];
+    expect(preferredTarget(all, { modelClaim: 'asleep' })?.key).toBe('modelclaim:asleep');
+    expect(preferredTarget(all, { modelClaim: 'missing' })?.key).toBe('deployment:ready');
+    expect(preferredTarget(all)?.key).toBe('deployment:ready');
+  });
+
+  it('keeps max tokens within a ModelClaim engine context', () => {
+    const [withLen, withoutLen] = modelClaimTargets([
+      { name: 'a', modelName: 'a', phase: 'Active', deleting: false, engineArgs: { '--max-model-len': '2048' } },
+      { name: 'b', modelName: 'b', phase: 'Active', deleting: false, engineArgs: {} },
+    ] as unknown as ModelClaim[]);
+    expect(withLen?.maxModelLen).toBe(2048);
+    expect(withoutLen?.maxModelLen).toBeUndefined();
+    expect(maxTokensFor(withLen ?? null, 4096)).toBe(1024);
+    expect(maxTokensFor(withLen ?? null, 256)).toBe(256);
+    expect(maxTokensFor(withoutLen ?? null, 4096)).toBe(4096);
+    expect(maxTokensFor(null, 4096)).toBe(4096);
+  });
+
+  it('sends the routing strategy and waits out a waking model', async () => {
+    const encoder = new TextEncoder();
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(
+        '{"error":{"message":"model qwen3-0.6b is sleeping; retry shortly"}}',
+        { status: 503, headers: { 'retry-after': '3' } },
+      ))
+      .mockResolvedValueOnce(new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"Paris"}}]}\n\n'));
+          controller.close();
+        },
+      }), { status: 200 }));
+    const sleep = vi.fn(async () => {});
+    const waits: Array<[string, number]> = [];
+
+    const content = await streamPlaygroundChat({
+      model: 'qwen3-0.6b',
+      messages: [{ role: 'user', content: 'Capital of France?' }],
+    }, () => {}, fetcher, {
+      routingStrategy: 'random',
+      sleep,
+      onWaiting: (message, seconds) => waits.push([message, seconds]),
+    });
+
+    expect(content).toBe('Paris');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({ 'routing-strategy': 'random' });
+    expect(sleep).toHaveBeenCalledWith(3000);
+    expect(waits).toEqual([['model qwen3-0.6b is sleeping; retry shortly', 3]]);
+  });
+
+  it('stops waiting once Retry-After would pass the wait limit', async () => {
+    const fetcher = vi.fn(async () => new Response(
+      '{"error":{"message":"model qwen3-0.6b is sleeping; retry shortly"}}',
+      { status: 503, headers: { 'retry-after': '30' } },
+    ));
+    await expect(streamPlaygroundChat({
+      model: 'qwen3-0.6b',
+      messages: [{ role: 'user', content: 'Hi' }],
+    }, () => {}, fetcher, { maxWaitMs: 10_000, sleep: async () => {} })).rejects.toThrow('is sleeping; retry shortly');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads gateway and console error messages', () => {
+    expect(playgroundErrorMessage('{"error":{"message":"model x does not exist"}}', 400)).toBe('model x does not exist');
+    expect(playgroundErrorMessage('{"error":"invalid request body"}', 400)).toBe('invalid request body');
+    expect(playgroundErrorMessage('upstream broke', 502)).toBe('upstream broke');
+    expect(playgroundErrorMessage('', 500)).toBe('Playground request failed with status 500');
   });
 
   it('streams fragmented OpenAI chat completion events', async () => {
