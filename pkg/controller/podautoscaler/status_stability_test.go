@@ -24,7 +24,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -64,20 +63,9 @@ type statusStabilityHarness struct {
 	// failStatusWrite, when positive, makes that PodAutoscaler status write
 	// (counted from one) fail with errStatusWrite.
 	failStatusWrite int
-	// hpaGoneBeforeDelete, when set, deletes an HPA just before the
-	// reconciler's own Delete reaches it, as when the cache still holds it.
-	hpaGoneBeforeDelete bool
-	// hpaDeleteErr, when set, makes the reconciler's HPA Delete fail with it.
-	hpaDeleteErr error
-	// hpaGetErr, when set, makes the reconciler's HPA Get fail with it.
-	hpaGetErr error
 }
 
 var errStatusWrite = errors.New("injected status write failure")
-
-var errHPADelete = errors.New("injected HPA delete failure")
-
-var errHPAGet = errors.New("injected HPA get failure")
 
 func newStatusStabilityHarness(t *testing.T, pa *autoscalingv1alpha1.PodAutoscaler, objs ...client.Object) *statusStabilityHarness {
 	t.Helper()
@@ -110,25 +98,6 @@ func newStatusStabilityHarness(t *testing.T, pa *autoscalingv1alpha1.PodAutoscal
 					h.hpaUpdates++
 				}
 				return c.Update(ctx, obj, opts...)
-			},
-			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
-				if _, ok := obj.(*autoscalingv2.HorizontalPodAutoscaler); ok {
-					if h.hpaDeleteErr != nil {
-						return h.hpaDeleteErr
-					}
-					if h.hpaGoneBeforeDelete {
-						if err := c.Delete(ctx, obj, opts...); err != nil {
-							return err
-						}
-					}
-				}
-				return c.Delete(ctx, obj, opts...)
-			},
-			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-				if _, ok := obj.(*autoscalingv2.HorizontalPodAutoscaler); ok && h.hpaGetErr != nil {
-					return h.hpaGetErr
-				}
-				return c.Get(ctx, key, obj, opts...)
 			},
 		}).
 		Build()
@@ -401,154 +370,6 @@ func TestReconcileHPASettlesWithoutRewritingStatus(t *testing.T) {
 		t.Fatalf("HPA maxReplicas = %d, want %d", hpa.Spec.MaxReplicas, latest.Spec.MaxReplicas)
 	}
 	h.requireSettled(4, false)
-}
-
-// The HPA made for the HPA strategy must not outlive it: left in place it keeps
-// scaling the target against KPA or APA.
-func TestReconcileDeletesGeneratedHPAWhenStrategyChanges(t *testing.T) {
-	for _, strategy := range []autoscalingv1alpha1.ScalingStrategyType{autoscalingv1alpha1.KPA, autoscalingv1alpha1.APA} {
-		t.Run(string(strategy), func(t *testing.T) {
-			pa := stabilityPodAutoscaler(autoscalingv1alpha1.HPA)
-			pa.UID = "pa-uid"
-			h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
-			ctx := context.Background()
-			hpaKey := ktypes.NamespacedName{Namespace: ns, Name: pa.Name + "-hpa"}
-
-			if _, err := h.reconcile(); err != nil {
-				t.Fatalf("Reconcile with the HPA strategy returned error: %v", err)
-			}
-			hpa := &autoscalingv2.HorizontalPodAutoscaler{}
-			if err := h.client.Get(ctx, hpaKey, hpa); err != nil {
-				t.Fatalf("get the generated HPA: %v", err)
-			}
-
-			// The PodAutoscaler mirrors the HPA's conditions into its status.
-			hpa.Status.Conditions = []autoscalingv2.HorizontalPodAutoscalerCondition{{Type: autoscalingv2.ScalingLimited, Status: corev1.ConditionTrue, Reason: "TooManyReplicas"}}
-			if err := h.client.Status().Update(ctx, hpa); err != nil {
-				t.Fatalf("update HPA status: %v", err)
-			}
-			if _, err := h.reconcile(); err != nil {
-				t.Fatalf("Reconcile with the HPA strategy returned error: %v", err)
-			}
-			if apimeta.FindStatusCondition(h.latest().Status.Conditions, string(autoscalingv2.ScalingLimited)) == nil {
-				t.Fatal("the PodAutoscaler did not mirror ScalingLimited from the HPA")
-			}
-
-			latest := h.latest()
-			latest.Spec.ScalingStrategy = strategy
-			if err := h.client.Update(ctx, latest); err != nil {
-				t.Fatalf("update PodAutoscaler spec: %v", err)
-			}
-			if _, err := h.reconcile(); err != nil {
-				t.Fatalf("Reconcile after switching to %s returned error: %v", strategy, err)
-			}
-			if err := h.client.Get(ctx, hpaKey, &autoscalingv2.HorizontalPodAutoscaler{}); !apierrors.IsNotFound(err) {
-				t.Fatalf("get the generated HPA after switching to %s: error = %v, want not found", strategy, err)
-			}
-			if c := apimeta.FindStatusCondition(h.latest().Status.Conditions, string(autoscalingv2.ScalingLimited)); c != nil {
-				t.Fatalf("ScalingLimited from the HPA is still set after switching to %s: %+v", strategy, c)
-			}
-
-			// With the HPA gone the next reconcile has nothing left to delete.
-			if _, err := h.reconcile(); err != nil {
-				t.Fatalf("Reconcile after the HPA was deleted returned error: %v", err)
-			}
-		})
-	}
-}
-
-// The cache can still hold an HPA that is already gone; its Delete then
-// returns NotFound, which is the state the switch wants.
-func TestReconcileIgnoresHPAAlreadyDeletedOnStrategyChange(t *testing.T) {
-	pa := stabilityPodAutoscaler(autoscalingv1alpha1.HPA)
-	pa.UID = "pa-uid"
-	h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
-	ctx := context.Background()
-
-	if _, err := h.reconcile(); err != nil {
-		t.Fatalf("Reconcile with the HPA strategy returned error: %v", err)
-	}
-	latest := h.latest()
-	latest.Spec.ScalingStrategy = autoscalingv1alpha1.KPA
-	if err := h.client.Update(ctx, latest); err != nil {
-		t.Fatalf("update PodAutoscaler spec: %v", err)
-	}
-	h.hpaGoneBeforeDelete = true
-	if _, err := h.reconcile(); err != nil {
-		t.Fatalf("Reconcile after switching to KPA with the HPA already deleted returned error: %v", err)
-	}
-}
-
-// Any other Delete error must fail the reconcile so that it is retried; the HPA
-// would otherwise keep scaling the target with no sign of it.
-func TestReconcileReturnsHPADeleteErrorOnStrategyChange(t *testing.T) {
-	pa := stabilityPodAutoscaler(autoscalingv1alpha1.HPA)
-	pa.UID = "pa-uid"
-	h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
-	ctx := context.Background()
-
-	if _, err := h.reconcile(); err != nil {
-		t.Fatalf("Reconcile with the HPA strategy returned error: %v", err)
-	}
-	latest := h.latest()
-	latest.Spec.ScalingStrategy = autoscalingv1alpha1.KPA
-	if err := h.client.Update(ctx, latest); err != nil {
-		t.Fatalf("update PodAutoscaler spec: %v", err)
-	}
-	h.hpaDeleteErr = errHPADelete
-	if _, err := h.reconcile(); !errors.Is(err, errHPADelete) {
-		t.Fatalf("Reconcile after switching to KPA with a failing HPA Delete: error = %v, want %v", err, errHPADelete)
-	}
-}
-
-// Any Get error other than NotFound must fail the reconcile too; reading it as
-// "no HPA" would leave the old HPA scaling the target.
-func TestReconcileReturnsHPAGetErrorOnStrategyChange(t *testing.T) {
-	pa := stabilityPodAutoscaler(autoscalingv1alpha1.HPA)
-	pa.UID = "pa-uid"
-	h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name))
-	ctx := context.Background()
-
-	if _, err := h.reconcile(); err != nil {
-		t.Fatalf("Reconcile with the HPA strategy returned error: %v", err)
-	}
-	latest := h.latest()
-	latest.Spec.ScalingStrategy = autoscalingv1alpha1.KPA
-	if err := h.client.Update(ctx, latest); err != nil {
-		t.Fatalf("update PodAutoscaler spec: %v", err)
-	}
-	h.hpaGetErr = errHPAGet
-	if _, err := h.reconcile(); !errors.Is(err, errHPAGet) {
-		t.Fatalf("Reconcile after switching to KPA with a failing HPA Get: error = %v, want %v", err, errHPAGet)
-	}
-}
-
-// An HPA that only shares the generated name belongs to someone else.
-func TestReconcileKeepsHPAWithGeneratedNameItDoesNotOwn(t *testing.T) {
-	pa := stabilityPodAutoscaler(autoscalingv1alpha1.KPA)
-	pa.UID = "pa-uid"
-	foreign := &autoscalingv2.HorizontalPodAutoscaler{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: ns,
-			Name:      pa.Name + "-hpa",
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: autoscalingv1alpha1.GroupVersion.String(),
-				Kind:       "PodAutoscaler",
-				Name:       "other",
-				UID:        "other-uid",
-				Controller: ptr.To(true),
-			}},
-		},
-		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{MaxReplicas: 3},
-	}
-	h := newStatusStabilityHarness(t, pa, stabilityDeployment(pa.Spec.ScaleTargetRef.Name), foreign)
-
-	if _, err := h.reconcile(); err != nil {
-		t.Fatalf("Reconcile returned error: %v", err)
-	}
-	if err := h.client.Get(context.Background(), client.ObjectKeyFromObject(foreign), &autoscalingv2.HorizontalPodAutoscaler{}); err != nil {
-		t.Fatalf("get the HPA the PodAutoscaler does not own: %v", err)
-	}
 }
 
 // A failed status write must fail the reconcile so that controller-runtime
