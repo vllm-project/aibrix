@@ -301,8 +301,8 @@ func waitForLifecyclePoolPodWithApp(
 				lastErr = err
 				return false, nil
 			}
-			lastErr = nil
 			if len(pods.Items) != 1 {
+				lastErr = fmt.Errorf("found %d pods, want 1", len(pods.Items))
 				return false, nil
 			}
 			pod := &pods.Items[0]
@@ -312,9 +312,10 @@ func waitForLifecyclePoolPodWithApp(
 					return true, nil
 				}
 			}
+			lastErr = fmt.Errorf("pod %s is not ready", pod.Name)
 			return false, nil
 		})
-	require.NoError(t, err, "ModelClaim lifecycle pool pod did not become ready; last error=%v", lastErr)
+	require.NoError(t, err, "ModelClaim lifecycle pool pod did not become ready; last state=%v", lastErr)
 	return readyPod
 }
 

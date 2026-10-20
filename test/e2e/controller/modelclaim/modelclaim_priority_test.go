@@ -69,6 +69,10 @@ func TestModelClaimPriorityControlsPodEventPlacementOrder(t *testing.T) {
 			func(ctx context.Context) (bool, error) {
 				for _, claimName := range []string{lowName, highName} {
 					_, err := claims.Get(ctx, claimName, metav1.GetOptions{})
+					if err == nil {
+						lastErr = fmt.Errorf("ModelClaim %s still exists", claimName)
+						return false, nil
+					}
 					if !apierrors.IsNotFound(err) {
 						lastErr = err
 						return false, nil
@@ -76,7 +80,7 @@ func TestModelClaimPriorityControlsPodEventPlacementOrder(t *testing.T) {
 				}
 				return true, nil
 			})
-		assert.NoError(t, claimsErr, "priority claims were not cleaned up; last error=%v", lastErr)
+		assert.NoError(t, claimsErr, "priority claims were not cleaned up; last state=%v", lastErr)
 		err := deployments.Delete(cleanupCtx, name, metav1.DeleteOptions{})
 		if !apierrors.IsNotFound(err) {
 			assert.NoError(t, err)
@@ -85,6 +89,10 @@ func TestModelClaimPriorityControlsPodEventPlacementOrder(t *testing.T) {
 		podsErr := wait.PollUntilContextTimeout(cleanupCtx, 200*time.Millisecond, 40*time.Second, true,
 			func(ctx context.Context) (bool, error) {
 				_, err := deployments.Get(ctx, name, metav1.GetOptions{})
+				if err == nil {
+					lastErr = fmt.Errorf("Deployment %s still exists", name)
+					return false, nil
+				}
 				if !apierrors.IsNotFound(err) {
 					lastErr = err
 					return false, nil
@@ -94,9 +102,13 @@ func TestModelClaimPriorityControlsPodEventPlacementOrder(t *testing.T) {
 					lastErr = err
 					return false, nil
 				}
-				return len(pods.Items) == 0, nil
+				if len(pods.Items) > 0 {
+					lastErr = fmt.Errorf("%d pods remain", len(pods.Items))
+					return false, nil
+				}
+				return true, nil
 			})
-		assert.NoError(t, podsErr, "priority deployment and pods were not cleaned up; last error=%v", lastErr)
+		assert.NoError(t, podsErr, "priority deployment and pods were not cleaned up; last state=%v", lastErr)
 	})
 
 	for _, spec := range []struct {
