@@ -267,10 +267,26 @@ func (s *Server) resolveUserForRequest(ctx context.Context, requestID, username 
 			err.Error(), "", "")
 	}
 
+	user = applyDefaultUserLimits(user)
+
 	rpm, errRes, err := s.checkLimits(ctx, user)
 	if errRes != nil {
 		klog.ErrorS(err, "error on checking limits", "requestID", requestID, "username", username)
 		return utils.User{}, rpm, errRes
 	}
 	return user, rpm, nil
+}
+
+// applyDefaultUserLimits fills in the same quotas checkLimits applies to its own
+// copy. Keep the two in sync. Request-body validation reads user.Tpm to decide
+// whether a stream has to ask the engine for a usage chunk, so the resolved user
+// has to carry them too.
+func applyDefaultUserLimits(user utils.User) utils.User {
+	if user.Rpm == 0 {
+		user.Rpm = int64(DefaultRPM)
+	}
+	if user.Tpm == 0 {
+		user.Tpm = user.Rpm * int64(DefaultTPMMultiplier)
+	}
+	return user
 }
