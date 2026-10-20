@@ -64,29 +64,39 @@ func TestModelClaimPriorityControlsPodEventPlacementOrder(t *testing.T) {
 				assert.NoError(t, err)
 			}
 		}
-		assert.NoError(t, wait.PollUntilContextTimeout(cleanupCtx, 200*time.Millisecond, 45*time.Second, true,
+		var lastErr error
+		claimsErr := wait.PollUntilContextTimeout(cleanupCtx, 200*time.Millisecond, 45*time.Second, true,
 			func(ctx context.Context) (bool, error) {
 				for _, claimName := range []string{lowName, highName} {
 					_, err := claims.Get(ctx, claimName, metav1.GetOptions{})
 					if !apierrors.IsNotFound(err) {
-						return false, err
+						lastErr = err
+						return false, nil
 					}
 				}
 				return true, nil
-			}), "priority claims were not cleaned up")
+			})
+		assert.NoError(t, claimsErr, "priority claims were not cleaned up; last error=%v", lastErr)
 		err := deployments.Delete(cleanupCtx, name, metav1.DeleteOptions{})
 		if !apierrors.IsNotFound(err) {
 			assert.NoError(t, err)
 		}
-		assert.NoError(t, wait.PollUntilContextTimeout(cleanupCtx, 200*time.Millisecond, 40*time.Second, true,
+		lastErr = nil
+		podsErr := wait.PollUntilContextTimeout(cleanupCtx, 200*time.Millisecond, 40*time.Second, true,
 			func(ctx context.Context) (bool, error) {
 				_, err := deployments.Get(ctx, name, metav1.GetOptions{})
 				if !apierrors.IsNotFound(err) {
-					return false, err
+					lastErr = err
+					return false, nil
 				}
 				pods, err := k8sClient.CoreV1().Pods(lifecycleNamespace).List(ctx, metav1.ListOptions{LabelSelector: "app=" + name})
-				return err == nil && len(pods.Items) == 0, err
-			}), "priority deployment and pods were not cleaned up")
+				if err != nil {
+					lastErr = err
+					return false, nil
+				}
+				return len(pods.Items) == 0, nil
+			})
+		assert.NoError(t, podsErr, "priority deployment and pods were not cleaned up; last error=%v", lastErr)
 	})
 
 	for _, spec := range []struct {
@@ -112,12 +122,14 @@ func TestModelClaimPriorityControlsPodEventPlacementOrder(t *testing.T) {
 		require.NoError(t, err)
 	}
 	var firstRetry time.Time
-	require.NoError(t, wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true,
+	var lastErr error
+	err = wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true,
 		func(ctx context.Context) (bool, error) {
 			for _, claimName := range []string{lowName, highName} {
 				claim, err := claims.Get(ctx, claimName, metav1.GetOptions{})
 				if err != nil {
-					return false, err
+					lastErr = err
+					return false, nil
 				}
 				condition := meta.FindStatusCondition(
 					claim.Status.Conditions, string(modelv1alpha1.ModelClaimConditionTypeScheduled),
@@ -131,7 +143,8 @@ func TestModelClaimPriorityControlsPodEventPlacementOrder(t *testing.T) {
 				}
 			}
 			return true, nil
-		}), "both claims must be waiting before a pod joins")
+		})
+	require.NoError(t, err, "both claims must be waiting before a pod joins; last error=%v", lastErr)
 	// One watch records the admission order across both uniquely labeled claims.
 	// Start at the list revision so no status update between listing and
 	// establishing the watch can be missed.
