@@ -36,6 +36,7 @@ class ConnectorFeature:
         gdr_put: Whether the kv cache connector supports GDR put.
         gdr_get: Whether the kv cache connector supports GDR get.
         zero_copy: Whether the kv cache connector supports zero copy.
+        variable_payload: Whether get_bytes/put_bytes support variable sizes.
     """
 
     mput_mget: bool = False
@@ -44,6 +45,7 @@ class ConnectorFeature:
     gdr_put: bool = False
     gdr_get: bool = False
     zero_copy: bool = False
+    variable_payload: bool = False
 
 
 @dataclass
@@ -134,6 +136,10 @@ class Connector(Generic[K, V]):
             from .shfs import SHFSConnector
 
             return SHFSConnector.from_envs(conn_id, executor, **kwargs)
+        elif backend_name == "MEMORY":
+            from .memory import MemoryConnector
+
+            return MemoryConnector.from_envs(conn_id, executor, **kwargs)
         else:
             raise ValueError(f"Unknown connector type: {backend_name}")
 
@@ -205,6 +211,14 @@ class Connector(Generic[K, V]):
         Returns:
             The status of the put operation.
         """
+        raise NotImplementedError
+
+    async def get_bytes(self, key: K) -> Status[bytes | memoryview]:
+        """Get a variable-length payload; requires variable_payload."""
+        raise NotImplementedError
+
+    async def put_bytes(self, key: K, payload: bytes | memoryview) -> Status:
+        """Store a variable-length payload; requires variable_payload."""
         raise NotImplementedError
 
     def register_slabs(self, slabs: List[torch.Tensor]) -> Status:
