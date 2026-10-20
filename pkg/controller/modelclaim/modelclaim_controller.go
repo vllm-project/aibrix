@@ -2245,11 +2245,17 @@ func podLoadFrom(list *modelv1alpha1.ModelClaimList) map[string]int {
 	return load
 }
 
-// podIP resolves a pod's IP by name, returning "" if the pod is missing or has
-// no IP yet.
+// podIP resolves the IP of a pod whose runtime can be called. It returns "" if
+// the pod is missing, has no IP yet, does not run, or is being deleted. A pod
+// that is being deleted takes its engines with it, and it may have lost its
+// network while it still shows its IP. A call to it would then hold the
+// controller's only worker until the call timed out.
 func (r *ModelClaimReconciler) podIP(ctx context.Context, namespace, name string) string {
 	pod := &corev1.Pod{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, pod); err != nil {
+		return ""
+	}
+	if pod.Status.Phase != corev1.PodRunning || !pod.DeletionTimestamp.IsZero() {
 		return ""
 	}
 	return pod.Status.PodIP
