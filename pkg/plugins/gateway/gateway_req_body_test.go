@@ -1926,16 +1926,24 @@ func TestHandleRequestBody_RejectPDRouting(t *testing.T) {
 
 // The routing time of a PD request ends when its prefill leg starts, because the PD router
 // sends that leg from inside Route. A weighted strategy that resolves to pd must be timed
-// the same way as the bare strategy.
+// the same way as the bare strategy. Any other strategy keeps the plain routing delay, even
+// with PrefillStartTime set, which only the PD router does.
 func TestHandleRequestBody_PDRoutingTimeEndsAtPrefillStart(t *testing.T) {
 	const prefillOffset = 10 * time.Millisecond
 
-	for _, strategy := range []string{"pd", "pd:1,least-request:1"} {
-		t.Run(strategy, func(t *testing.T) {
+	for _, tt := range []struct {
+		strategy  string
+		algorithm types.RoutingAlgorithm
+	}{
+		{strategy: "pd", algorithm: routingalgorithms.RouterPD},
+		{strategy: "pd:1,least-request:1", algorithm: routingalgorithms.RouterPD},
+		{strategy: string(routingalgorithms.RouterSLOLeastLoad), algorithm: routingalgorithms.RouterSLOLeastLoad},
+	} {
+		t.Run(tt.strategy, func(t *testing.T) {
 			mockCache := &MockCache{Cache: cache.NewForTest()}
-			mockPDRouter := new(mockRouter)
-			routingalgorithms.Register(routingalgorithms.RouterPD, func() (types.Router, error) {
-				return mockPDRouter, nil
+			strategyRouter := new(mockRouter)
+			routingalgorithms.Register(tt.algorithm, func() (types.Router, error) {
+				return strategyRouter, nil
 			})
 			routingalgorithms.Init()
 			logs := captureKlog(t, "0")
@@ -1946,7 +1954,7 @@ func TestHandleRequestBody_PDRoutingTimeEndsAtPrefillStart(t *testing.T) {
 			mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
 				Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
 			mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
-			mockPDRouter.On("Route", mock.Anything, mock.Anything).Return("1.2.3.4:8000", nil).
+			strategyRouter.On("Route", mock.Anything, mock.Anything).Return("1.2.3.4:8000", nil).
 				Run(func(args mock.Arguments) {
 					ctx := args.Get(0).(*types.RoutingContext)
 					ctx.PrefillStartTime = ctx.RequestTime.Add(prefillOffset)
@@ -1961,13 +1969,17 @@ func TestHandleRequestBody_PDRoutingTimeEndsAtPrefillStart(t *testing.T) {
 			}
 			routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
 			routingCtx.ReqPath = PathCompletions
-			routingCtx.ReqHeaders[HeaderRoutingStrategy] = strategy
+			routingCtx.ReqHeaders[HeaderRoutingStrategy] = tt.strategy
 
 			resp, _, _, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
 
 			require.NotNil(t, resp)
 			require.Nil(t, resp.GetImmediateResponse(), "the request must be routed")
-			assert.Contains(t, logs(), `routing_time_taken="`+prefillOffset.String()+`"`)
+			want := prefillOffset
+			if tt.algorithm != routingalgorithms.RouterPD {
+				want = routingCtx.GetRoutingDelay()
+			}
+			assert.Contains(t, logs(), `routing_time_taken="`+want.String()+`"`)
 		})
 	}
 }

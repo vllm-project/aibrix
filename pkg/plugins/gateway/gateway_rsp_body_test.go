@@ -925,6 +925,20 @@ func TestHandleResponseBody_PDPrefillTimingMetricsRequirePrefillEndTime(t *testi
 			wantBucket:       "50-100ms",
 			wantCount:        1.0,
 		},
+		{
+			name:             "skips prefill timing metric for a non-pd strategy",
+			algorithm:        "least-request",
+			prefillEndOffset: 50 * time.Millisecond,
+			wantBucket:       "50-100ms",
+			wantCount:        0.0,
+		},
+		{
+			name:             "skips prefill timing metric for an slo strategy",
+			algorithm:        "slo-least-load",
+			prefillEndOffset: 50 * time.Millisecond,
+			wantBucket:       "50-100ms",
+			wantCount:        0.0,
+		},
 	}
 
 	for _, tt := range tests {
