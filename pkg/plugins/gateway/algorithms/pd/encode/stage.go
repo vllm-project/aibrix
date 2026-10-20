@@ -53,10 +53,11 @@ func SplitEncoders(pods []*v1.Pod) (serving, encoders []*v1.Pod) {
 // the encoders in target's roleset first. target is the prefill pod in PD
 // disaggregation, or the pod serving the whole request in E+PD.
 //
-// The request body is left untouched. vLLM looks the encoder output up by the
-// hash of the item's content, the same hash the encoder stored it under, and
-// encodes the item itself when the output isn't there. So an encode failure
-// costs latency but not correctness, and is only logged.
+// The media items stay on the request, and the encoders' ec_transfer_params
+// replace any the client sent. vLLM finds the encoder output by the item's
+// content hash or through those params, and encodes the item itself when the
+// output isn't there. So an encode failure costs latency but not correctness,
+// and is only logged.
 func (e *Executor) EncodeMedia(ctx *types.RoutingContext, pods []*v1.Pod, target *v1.Pod, timeout time.Duration) {
 	if e == nil || target == nil {
 		return
@@ -81,7 +82,13 @@ func (e *Executor) EncodeMedia(ctx *types.RoutingContext, pods []*v1.Pod, target
 	if len(encoders) == 0 {
 		return
 	}
-	if err := e.Execute(ctx, encoders, items, timeout); err != nil {
+	params, err := e.Execute(ctx, encoders, items, timeout)
+	if body, setErr := setTransferParams(ctx.ReqBody, params); setErr != nil {
+		klog.V(2).InfoS("encode_transfer_params_failed", "error", setErr, "request_id", ctx.RequestID)
+	} else {
+		ctx.ReqBody = body
+	}
+	if err != nil {
 		klog.V(2).InfoS("encode_request_failed", "error", err, "request_id", ctx.RequestID,
 			"roleset", roleset, "media_items", len(items))
 		return
