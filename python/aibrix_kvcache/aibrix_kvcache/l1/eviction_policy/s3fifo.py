@@ -293,13 +293,20 @@ class S3FIFO(BaseEvictionPolicy[S3FIFONode]):
     def assert_consistency(self) -> None:
         total_in_list = 0
         for queue in [self._small_fifo, self._main_fifo, self._ghost_fifo]:
+            queue_nbytes = 0
             curr = queue._head
             while curr is not None and curr.next != queue._head:
                 total_in_list += 1
+                queue_nbytes += curr.nbytes
                 key = curr.key
                 assert self._hashmap.get(key, None) == curr
                 assert self._hashmap[key].queue == queue
+                if queue is not self._ghost_fifo:
+                    assert curr.nbytes == len(curr.value)
                 curr = curr.next
+            assert queue.nbytes() == queue_nbytes, (
+                f"{queue.nbytes()} != {queue_nbytes}"
+            )
         assert total_in_list == len(self._hashmap), (
             f"{total_in_list} != {len(self._hashmap)}"
         )
