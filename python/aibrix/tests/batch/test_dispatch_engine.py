@@ -255,6 +255,26 @@ async def test_http_channel_truncates_large_error_body():
     assert err.response_body.endswith("...<truncated>")
 
 
+@pytest.mark.asyncio
+async def test_http_channel_uses_request_timeout_for_read():
+    read_timeouts = []
+
+    async def handler(request):
+        read_timeouts.append(request.extensions["timeout"]["read"])
+        return httpx.Response(200, json={})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    channel = HttpChannel("http://engine", timeout=30.0, client=client)
+    try:
+        await channel.send(InferenceRequest("/v1/x", {}))
+        await channel.send(InferenceRequest("/v1/x", {}, read_timeout=5.0))
+    finally:
+        await channel.aclose()
+        await client.aclose()
+
+    assert read_timeouts == [30.0, 5.0]
+
+
 def test_retry_config_rejects_invalid_values():
     with pytest.raises(ValueError):
         RetryConfig(max_retries=-1)

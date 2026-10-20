@@ -340,7 +340,7 @@ async def test_execute_request_raises_after_consecutive_failed_active_buckets(
         ExternalRuntime(None),
     )
 
-    async def fake_send_one(_endpoint, _body, _request_id):
+    async def fake_send_one(_endpoint, _body, _request_id, read_timeout=None):
         return {"usage": {"prompt_tokens": 1, "completion_tokens": 2}}, None
 
     async def write_job_output_data(_job, _request_index, _output_data):
@@ -388,7 +388,7 @@ async def test_execute_request_counts_only_once_per_failed_bucket(
         ExternalRuntime(None),
     )
 
-    async def fake_send_one(_endpoint, _body, _request_id):
+    async def fake_send_one(_endpoint, _body, _request_id, read_timeout=None):
         return {"usage": {"prompt_tokens": 1, "completion_tokens": 2}}, None
 
     async def write_job_output_data(_job, _request_index, _output_data):
@@ -442,7 +442,7 @@ async def test_execute_request_success_resets_failed_active_bucket_streak(
     )
     failures = iter([True, False, True])
 
-    async def fake_send_one(_endpoint, _body, _request_id):
+    async def fake_send_one(_endpoint, _body, _request_id, read_timeout=None):
         return {"usage": {"prompt_tokens": 1, "completion_tokens": 2}}, None
 
     async def write_job_output_data(_job, _request_index, _output_data):
@@ -572,6 +572,62 @@ async def test_execute_worker_honors_client_concurrency_for_single_endpoint(
     assert result.status.request_counts.completed == 4
     assert set(outputs) == {0, 1, 2, 3}
     assert channel.peak > 1
+
+
+@pytest.mark.asyncio
+async def test_execute_worker_sends_client_request_timeout(monkeypatch):
+    job = _make_job(total=2)
+    job.spec.aibrix = AibrixMetadata(client={"request_timeout_seconds": 5})
+    driver, channel = _driver(job)
+    timeouts = []
+    send = channel.send
+
+    async def recording_send(request):
+        timeouts.append(request.read_timeout)
+        return await send(request)
+
+    channel.send = recording_send
+    requests = [
+        {"_request_index": i, "custom_id": f"req-{i}", "body": {"i": i}}
+        for i in range(2)
+    ]
+    _patch_storage(monkeypatch, requests)
+
+    result = await driver.execute_worker(job.job_id)
+
+    assert result.status.request_counts.completed == 2
+    assert timeouts == [5.0, 5.0]
+
+
+@pytest.mark.asyncio
+async def test_execute_request_sends_client_request_timeout(monkeypatch):
+    from aibrix.batch.job_driver import base as base_module
+
+    job = _make_job(total=1)
+    job.spec.aibrix = AibrixMetadata(client={"request_timeout_seconds": 5})
+    driver, channel = _driver(job)
+    timeouts = []
+    send = channel.send
+
+    async def recording_send(request):
+        timeouts.append(request.read_timeout)
+        return await send(request)
+
+    async def write_job_output_data(_job, _request_index, _output_data):
+        return None
+
+    channel.send = recording_send
+    monkeypatch.setattr(
+        base_module.storage, "write_job_output_data", write_job_output_data
+    )
+
+    result = await driver._execute_request(
+        job,
+        {"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}},
+    )
+
+    assert result == (0, False)
+    assert timeouts == [5.0]
 
 
 @pytest.mark.asyncio
