@@ -2345,7 +2345,8 @@ def test_initial_kv_registry_requires_identity(
     segment.write_bytes(struct.pack("<3q", 80, 0, 0))
     model = recovered.snapshot()["models"][0]
     assert model["kv_initial_capacity_bytes"] == expected
-    assert registry.load()[0]["kv_initial_capacity_bytes"] == expected
+    persisted = 100 if saved == "start" and current is None else expected
+    assert registry.load()[0]["kv_initial_capacity_bytes"] == persisted
     assert recovered._launcher.launched == []
     if saved is not None and current is not None and saved != current:
         assert model["phase"] == "restarting"
@@ -2617,3 +2618,263 @@ def test_initial_kv_direct_api_ceiling(initial_kv, monkeypatch, captured):
     assert struct.unpack("<3q", segment.read_bytes())[0] == 100
     assert json.loads(response.body)["limit_bytes"] == 100
     assert agent.snapshot_metrics().kv_limit_applied_bytes[inst.model_name] == 100
+
+
+@pytest.fixture
+def dormant_kv(initial_kv, monkeypatch, request):
+    import json
+    import struct
+    from datetime import datetime, timezone
+
+    import aibrix.openapi.protocol as protocol
+    import aibrix.runtime.model_runtime as runtime_module
+    import aibrix.runtime.model_runtime_api as api
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    _, _, segment = initial_kv
+    state = SimpleNamespace(
+        now=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        identity="start",
+        alive=True,
+        ready=True,
+        capacity=getattr(request, "param", 100),
+    )
+    registry = EngineRegistry(segment.parent / "engines.json")
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: state.alive)
+    monkeypatch.setattr(
+        runtime_module, "process_start_time", lambda pid: state.identity
+    )
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: state.ready)
+    monkeypatch.setattr(api, "get_model_runtime", lambda: state.runtime)
+
+    def adopt():
+        state.launcher = MockEngineLauncher()
+        state.runtime = ModelRuntime(
+            state.launcher, registry=registry, now=lambda: state.now
+        )
+
+    def control(action, **kwargs):
+        req = getattr(protocol, action.title() + "RuntimeModelRequest")
+        return getattr(api, action + "_runtime_model")(
+            req(model_name="m1", operation_id=action, **kwargs)
+        )
+
+    state.adopt, state.control, state.registry = adopt, control, registry
+    state.record = lambda: next(r for r in registry.load() if r["model_name"] == "m1")
+    state.snapshot = lambda: api.runtime_snapshot().models[0]
+    state.segment = lambda: struct.unpack("<3q", segment.read_bytes())[0]
+    state.remove_segment = segment.unlink
+    state.kv = lambda size, op="grow": json.loads(
+        api.set_runtime_model_kv_limit(
+            protocol.SetRuntimeModelKVLimitRequest(
+                model_name="m1", limit_bytes=size, operation_id=op
+            )
+        ).body
+    )
+    adopt()
+    activation = protocol.ActivateRuntimeModelRequest(
+        model_name="m1", artifact_url="hf://x", port=20000
+    )
+    assert api.activate_runtime_model(activation).status_code == 200
+    segment.write_bytes(struct.pack("<3q", state.capacity, 0, 0))
+    assert state.snapshot().kv_initial_capacity_bytes == state.capacity
+    state.kv(min(80, state.capacity), "shrink")
+    state.identity = None
+    adopt()
+    return state
+
+
+@pytest.mark.parametrize("dormant_kv", [0, 100], indirect=True)
+@pytest.mark.parametrize("restart", [False, True])
+def test_dormant_kv_restarts_and_writes(dormant_kv, restart):
+    from datetime import timedelta
+
+    from fastapi import HTTPException
+
+    s = dormant_kv
+    assert s.snapshot().kv_initial_capacity_bytes is None
+    assert s.record()["pid_start_time"] == "start"
+    deadline = (s.now + timedelta(seconds=5)).isoformat()
+    assert s.record().get("kv_capacity_verify_until") == deadline
+    s.now += timedelta(seconds=2)
+    s.adopt()
+    assert s.record().get("kv_capacity_verify_until") == deadline
+    with pytest.raises(HTTPException, match="pending.*identity verification") as exc:
+        s.kv(s.capacity + 100)
+    assert exc.value.status_code == 409
+    assert s.segment() == min(80, s.capacity)
+    assert s.runtime.snapshot_metrics().kv_limit_outcomes == {("m1", "failed"): 1}
+    for i, size in enumerate([s.capacity, s.capacity // 2, 0]):
+        assert s.kv(size, str(i))["limit_bytes"] == s.segment() == size
+        assert s.snapshot().kv_initial_capacity_bytes is None
+        assert s.record()["kv_initial_capacity_bytes"] == s.capacity
+    s.identity = "start"
+    if restart:
+        s.adopt()
+    assert s.snapshot().kv_initial_capacity_bytes == s.capacity
+    assert s.kv(s.capacity + 100)["limit_bytes"] == s.segment() == s.capacity
+    assert not s.kv(s.capacity + 100)["applied"]
+
+
+@pytest.mark.parametrize(
+    "restart", ["_schedule_restart", "_restart_instance", "re_adopt"]
+)
+def test_dormant_kv_restart_clears_verification(dormant_kv, monkeypatch, restart):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    s = dormant_kv
+    assert s.record()["kv_capacity_verify_until"] is not None
+    # Keep PID evidence dormant while the process handle reports an exit.
+    monkeypatch.setattr(runtime_module.AdoptedProcess, "poll", lambda self: 1)
+    if restart == "re_adopt":
+        s.registry.save(
+            [
+                {
+                    **s.record(),
+                    "phase": "restarting",
+                    "next_restart_at": s.now.isoformat(),
+                }
+            ]
+        )
+        s.adopt()
+    else:
+        if restart == "_restart_instance":
+            inst = s.runtime._models["m1"]
+            inst.phase = "restarting"
+            inst.next_restart_at = s.now
+        s.runtime.supervise_once()
+    record = s.record()
+    assert record["phase"] == (
+        "active" if restart == "_restart_instance" else "restarting"
+    )
+    assert record["kv_initial_capacity_bytes"] is None
+    assert record["kv_capacity_verify_until"] is None
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_dormant_kv_expiry(dormant_kv, caplog, restart):
+    from datetime import timedelta
+
+    from fastapi import HTTPException
+
+    s = dormant_kv
+    s.now += timedelta(seconds=4.999)
+    with pytest.raises(HTTPException):
+        s.kv(200)
+    s.now += timedelta(seconds=0.001)
+    if restart:
+        s.adopt()
+    assert s.kv(200)["limit_bytes"] == s.segment() == 200
+    s.identity = "start"  # A match after the ceiling expired cannot bring it back.
+    for _ in range(2):
+        assert s.snapshot().kv_initial_capacity_bytes is None
+        s.runtime.supervise_once()
+    assert s.record()["kv_initial_capacity_bytes"] is None
+    assert s.record().get("kv_capacity_verify_until") is None
+    assert caplog.text.count("verification expired for model m1 (PID 10001)") == 1
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_dormant_kv_late_match_restores(dormant_kv, restart):
+    from datetime import timedelta
+
+    s = dormant_kv
+    # Nothing checked the engine before the deadline passed.
+    s.now += timedelta(seconds=30)
+    s.identity = "start"
+    if restart:
+        s.adopt()
+    assert s.snapshot().kv_initial_capacity_bytes == 100
+    assert s.kv(200)["limit_bytes"] == s.segment() == 100
+    assert s.record().get("kv_capacity_verify_until") is None
+
+
+@pytest.mark.parametrize("trigger", ["snapshot", "kv", "sleep", "wake", "supervisor"])
+@pytest.mark.parametrize("phase", ["active", "booting", "sleeping"])
+@pytest.mark.parametrize("observation", ["match", "dead", "mismatch"])
+def test_dormant_kv_refresh(dormant_kv, trigger, phase, observation):
+    from datetime import timedelta
+
+    s = dormant_kv
+    if phase == "sleeping":
+        s.control("sleep", level=1)
+    s.ready = phase != "booting"
+    s.adopt()
+    if phase == "booting" and trigger == "snapshot":
+        s.remove_segment()
+    s.alive = observation != "dead"
+    s.identity = {"match": "start", "dead": None, "mismatch": "new"}[observation]
+    if trigger == "supervisor":
+        s.runtime.supervise_once()
+    elif trigger == "snapshot":
+        s.snapshot()
+    elif trigger == "kv":
+        s.kv(60)
+    else:
+        s.control(trigger, **({"level": 1} if trigger == "sleep" else {}))
+    expected = 100 if observation == "match" else None
+    assert s.record()["kv_initial_capacity_bytes"] == expected
+    assert s.record().get("kv_capacity_verify_until") is None
+    s.alive, s.identity = True, "start"
+    assert s.snapshot().kv_initial_capacity_bytes == expected
+    if observation == "dead" and trigger == "supervisor":
+        s.alive = False
+        s.now += timedelta(seconds=2)
+        s.runtime.supervise_once()
+        s.ready = True
+        assert s.snapshot().kv_initial_capacity_bytes == 80
+
+
+@pytest.mark.parametrize("failure", [None, "sleep", "wake", "other-save", "stop"])
+def test_dormant_kv_lifecycle_saves(dormant_kv, monkeypatch, failure):
+    s = dormant_kv
+    before = s.record()
+
+    def fail(*args):
+        raise RuntimeError("lifecycle failed")
+
+    if failure in ("sleep", "wake"):
+        monkeypatch.setattr(s.launcher, failure, fail)
+    if failure == "stop":
+        s.runtime.deactivate("m1")
+        assert s.record()["kv_initial_capacity_bytes"] is None
+        assert s.record().get("kv_capacity_verify_until") is None
+        return
+    if failure == "other-save":
+        s.runtime.activate(model_name="m2", artifact_url="hf://y", port=20001)
+    elif failure == "sleep":
+        with pytest.raises(RuntimeError, match="lifecycle failed"):
+            s.control("sleep", level=1)
+    else:
+        s.control("sleep", level=1)
+        assert s.control("wake").status_code == (500 if failure else 200)
+    assert s.snapshot().kv_initial_capacity_bytes is None
+    for key in ("kv_initial_capacity_bytes", "kv_capacity_verify_until"):
+        assert s.record().get(key) == before.get(key)
+    s.identity = "start"
+    assert s.snapshot().kv_initial_capacity_bytes == 100
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("kv_capacity_verify_until", "bad"),
+        ("kv_capacity_verify_until", 123),
+        ("kv_initial_capacity_bytes", None),
+        ("kv_initial_capacity_bytes", True),
+        ("pid_start_time", None),
+        ("phase", "failed"),
+        ("phase", "stopping"),
+    ],
+)
+def test_dormant_kv_invalid_evidence(dormant_kv, field, value):
+    s = dormant_kv
+    s.registry.save([{**s.record(), field: value}])
+    s.adopt()
+    s.runtime.activate(model_name="m2", artifact_url="hf://y", port=20001)
+    assert s.snapshot().kv_initial_capacity_bytes is None
+    assert s.record()["kv_initial_capacity_bytes"] is None
+    assert s.record().get("kv_capacity_verify_until") is None
+    if field != "phase":
+        assert s.kv(200)["limit_bytes"] == 200

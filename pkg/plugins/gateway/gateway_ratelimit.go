@@ -51,6 +51,22 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 			err.Error(), errorCode, ""), err
 	}
 
+	// Run every read-only check before the increment: a request rejected after
+	// it would keep the RPM slot it took without ever being served.
+	code, err = s.checkTPM(ctx, user.Name, user.Tpm)
+	if err != nil {
+		errorCode := ""
+		if code == envoyTypePb.StatusCode_TooManyRequests {
+			errorCode = ErrorCodeRateLimitExceeded
+		}
+		return 0, generateErrorResponse(
+			code,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: HeaderErrorTPMExceeded, RawValue: []byte("true"),
+			}}},
+			err.Error(), errorCode, ""), err
+	}
+
 	rpm, code, err := s.incrRPM(ctx, user.Name)
 	if err != nil {
 		return 0, generateErrorResponse(
@@ -74,20 +90,6 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 				Key: HeaderErrorRPMExceeded, RawValue: []byte("true"),
 			}}},
 			exceeded.Error(), ErrorCodeRateLimitExceeded, ""), exceeded
-	}
-
-	code, err = s.checkTPM(ctx, user.Name, user.Tpm)
-	if err != nil {
-		errorCode := ""
-		if code == envoyTypePb.StatusCode_TooManyRequests {
-			errorCode = ErrorCodeRateLimitExceeded
-		}
-		return 0, generateErrorResponse(
-			code,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderErrorTPMExceeded, RawValue: []byte("true"),
-			}}},
-			err.Error(), errorCode, ""), err
 	}
 
 	return rpm, nil, nil

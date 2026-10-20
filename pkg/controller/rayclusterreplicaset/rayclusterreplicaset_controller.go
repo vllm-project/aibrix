@@ -165,17 +165,20 @@ func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl
 		return reconcile.Result{}, err
 	}
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, scaleError
 }
 
 // scaleUp handles RayCluster creation logic when scaling up
 func (r *RayClusterReplicaSetReconciler) scaleUp(ctx context.Context, replicaset *orchestrationv1alpha1.RayClusterReplicaSet, diff int) error {
+	rsKey := types.NamespacedName{Namespace: replicaset.Namespace, Name: replicaset.Name}.String()
 	for i := 0; i < diff; i++ {
 		newCluster := constructRayCluster(replicaset)
 		if err := r.Create(ctx, newCluster); err != nil {
+			// The failed and the skipped creations will never be observed, so stop expecting them.
+			r.Expectations.LowerExpectations(rsKey, diff-i, 0)
 			return fmt.Errorf("failed to create pod: %w", err)
 		}
-		r.Expectations.CreationObserved(types.NamespacedName{Namespace: replicaset.Namespace, Name: replicaset.Name}.String())
+		r.Expectations.CreationObserved(rsKey)
 	}
 	return nil
 }

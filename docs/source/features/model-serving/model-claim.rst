@@ -419,8 +419,10 @@ a KV limit above that size. The runtime agent reports the size as
 ``kv_initial_capacity_bytes`` in its snapshot, and the controller and runtime cap
 the engine's KV limit at it. Room above the cap stays unassigned. When the size is
 not known, the field is ``null``. The runtime defers limit writes while startup
-capacity can still be captured. When capture is unavailable, limits remain
-uncapped.
+capacity can still be captured. Writes above a saved but temporarily unverifiable
+ceiling are deferred for up to five seconds; if verification times out, the
+previous uncapped fallback applies. When capture is unavailable and no saved
+ceiling awaits verification, limits remain uncapped.
 
 The effective KV floor is the declared ``kvFloor``, reduced to the startup
 capacity when that capacity is known, positive and smaller. The controller
