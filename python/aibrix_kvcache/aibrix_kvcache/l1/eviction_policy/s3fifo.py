@@ -26,13 +26,16 @@ from .base_eviction_policy import (
 
 
 class S3FIFONode(BaseEvictionPolicyNode):
-    __slots__ = ("next", "prev", "queue")
+    __slots__ = ("next", "prev", "queue", "nbytes")
 
     def __init__(self, key: KVCacheHashable, value: MemoryRegion):
         super().__init__(key, value)
         self.next: S3FIFONode | None = None
         self.prev: S3FIFONode | None = None
         self.queue: S3FIFOQueue | None = None
+        # Size of the value, kept after a ghost entry drops its value so the
+        # ghost fifo can still be trimmed to its byte capacity.
+        self.nbytes: int = len(value)
 
 
 class S3FIFOQueue:
@@ -60,8 +63,7 @@ class S3FIFOQueue:
         if self._tail is None:
             self._tail = node
         self._len += 1
-        if node.value:
-            self._size_nbytes += len(node.value)
+        self._size_nbytes += node.nbytes
 
     def pop(self) -> S3FIFONode | None:
         node = self._tail
@@ -84,8 +86,7 @@ class S3FIFOQueue:
         node.prev = None
         node.queue = None
         self._len -= 1
-        if node.value:
-            self._size_nbytes -= len(node.value)
+        self._size_nbytes -= node.nbytes
 
 
 class S3FIFO(BaseEvictionPolicy[S3FIFONode]):
@@ -201,6 +202,7 @@ class S3FIFO(BaseEvictionPolicy[S3FIFONode]):
 
                 # Assign new value
                 node.value = value
+                node.nbytes = len(value)
                 node.hotness = 0
 
                 # Insert into main fifo
@@ -217,6 +219,7 @@ class S3FIFO(BaseEvictionPolicy[S3FIFONode]):
                 node.value.ref_down()
 
                 node.value = value
+                node.nbytes = len(value)
                 queue.append(node)  # type: ignore
         else:
             # New key always goes to small fifo

@@ -149,6 +149,23 @@ def test_eviction(small_capacity_policy):
     small_capacity_policy.assert_consistency()
 
 
+def test_s3fifo_ghost_fifo_is_bounded():
+    policy = S3FIFO(10 * TEST_ALLOC_SIZE)
+    allocator = TensorPoolAllocator.create(
+        capacity_nbytes=256 * TEST_ALLOC_SIZE
+    )
+    for i in range(50):
+        key = TokenCacheKey(None, tuple(range(i, i + 16)))
+        assert policy.put(key, build_cache_value(allocator, 16, key)).is_ok()
+
+    # Ghost entries keep only their keys, but the ghost fifo is still trimmed
+    # to the main fifo's byte capacity.
+    ghost_capacity_nbytes = policy._main_fifo_capacity_nbytes
+    assert policy._ghost_fifo.nbytes() <= ghost_capacity_nbytes
+    assert len(policy._ghost_fifo) <= ghost_capacity_nbytes // TEST_ALLOC_SIZE
+    policy.assert_consistency()
+
+
 def test_multiple_evictions(policy):
     allocator = TensorPoolAllocator.create(capacity_nbytes=256 * TEST_ALLOC_SIZE)
     key0 = TokenCacheKey(None, tuple(range(16)))
