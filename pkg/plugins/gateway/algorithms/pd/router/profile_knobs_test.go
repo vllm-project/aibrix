@@ -190,7 +190,10 @@ func TestPrefillSigmaKnobControlsPrefillCandidacy(t *testing.T) {
 
 	// Counts are [1,1,1,10]: the hot prefill replica sits several deviations above
 	// the pool mean, so the sigma of the request decides its candidacy, the same
-	// knob the prefix-cache strategies read.
+	// knob the prefix-cache strategies read. The bounded-load cap would skip the hot
+	// replica on its own, so lift it out of the way to isolate sigma.
+	defer func(f float64) { aibrixPrefillLoadCapFactor = f }(aibrixPrefillLoadCapFactor)
+	aibrixPrefillLoadCapFactor = 100
 	sharp := newCtx("req-prefill-sharp")
 	sharp.SetRoutingOverrides(&types.RoutingOverrides{PrefixCache: types.PrefixCacheOverrides{StandardDeviationFactor: 1}})
 	sharpScores, _, _ := r.scorePrefillPods(sharp, pods, nil)

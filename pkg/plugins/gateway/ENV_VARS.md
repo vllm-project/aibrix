@@ -258,6 +258,7 @@ Scoring formula: `score = (fairnessWeight * normFairness + utilizationWeight * n
 |---|---|---|---|
 | `AIBRIX_PREFILL_REQUEST_TIMEOUT` | int (seconds) | `30` | HTTP request timeout for prefill pod calls. |
 | `AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD` | int32 | `16` | Minimum (max − min) running-request spread across prefill pods to trigger load-imbalance routing. |
+| `AIBRIX_PREFILL_LOAD_CAP_FACTOR` | float64 | `1.5` | Prefill pods with more than `c × (mean + 1)` in-flight prefill requests are skipped, where `c` is this factor. Unlike the `AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR` check, it applies to pools of any size. Values below `1` are treated as `1`. |
 | `AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD` | float64 | `16.0` | Minimum (max − min) running-request spread across decode pods to trigger load-imbalance routing. |
 | `AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD` | float64 | `2048.0` | Minimum (max − min) token-throughput spread (tokens/s) across decode pods to trigger throughput-imbalance routing. |
 | `AIBRIX_DECODE_SCORE_RATIO_THRESHOLD` | float64 | `1.5` | Max/min drain-rate score ratio above which the slowest decode pod is excluded from selection. |
