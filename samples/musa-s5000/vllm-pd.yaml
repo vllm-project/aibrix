@@ -1,0 +1,186 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: musa-vllm-qwen3-8b-pd
+  namespace: default
+spec:
+  replicas: 1
+  updateStrategy:
+    type: InPlaceUpdate
+  stateful: true
+  selector:
+    matchLabels:
+      app: musa-vllm-qwen3-8b-pd
+  template:
+    metadata:
+      labels:
+        app: musa-vllm-qwen3-8b-pd
+    spec:
+      roles:
+        - name: prefill
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                app: musa-vllm-qwen3-8b-pd
+                model.aibrix.ai/name: qwen3-8b
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/metric-port: "8000"
+                model.aibrix.ai/engine: vllm
+                model.aibrix.ai/kv-connector-type: mooncake
+            spec:
+              terminationGracePeriodSeconds: 120
+              containers:
+                - name: prefill
+                  image: registry.mthreads.com/mcconline/inference/vllm:v0.28.0-ph1-5.2.0-torch2.11.0.post1-20260915
+                  imagePullPolicy: IfNotPresent
+                  command: ["vllm", "serve"]
+                  args:
+                    - Qwen/Qwen3-8B
+                    - --served-model-name=qwen3-8b
+                    - --host=0.0.0.0
+                    - --port=8000
+                    - --tensor-parallel-size=1
+                    - --enforce-eager
+                    - --max-model-len=2048
+                    - --max-num-seqs=16
+                    - --max-num-batched-tokens=2048
+                    - --gpu-memory-utilization=0.8
+                    - --disable-access-log-for-endpoints=/health,/metrics,/v1/models
+                    - --kv-transfer-config
+                    - '{"kv_connector":"MooncakeConnector","kv_role":"kv_producer","kv_load_failure_policy":"fail","kv_connector_extra_config":{"mooncake_protocol":"tcp"}}'
+                  env:
+                    - name: VLLM_MOONCAKE_BOOTSTRAP_PORT
+                      value: "8998"
+                    - name: VLLM_HTTP_TIMEOUT_KEEP_ALIVE
+                      value: "120"
+                    - name: HF_TOKEN
+                      valueFrom:
+                        secretKeyRef:
+                          name: musa-hf-token
+                          key: HF_TOKEN
+                          optional: true
+                  ports:
+                    - name: model-server
+                      containerPort: 8000
+                      protocol: TCP
+                    - name: mc-bootstrap
+                      containerPort: 8998
+                      protocol: TCP
+                  resources:
+                    requests:
+                      cpu: "8"
+                      memory: 32Gi
+                      mthreads.com/gpu: "1"
+                    limits:
+                      cpu: "16"
+                      memory: 64Gi
+                      mthreads.com/gpu: "1"
+                  startupProbe:
+                    httpGet:
+                      path: /health
+                      port: model-server
+                    periodSeconds: 10
+                    timeoutSeconds: 10
+                    failureThreshold: 180
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: model-server
+                    periodSeconds: 10
+                    timeoutSeconds: 10
+                    failureThreshold: 6
+                  securityContext:
+                    capabilities:
+                      add: [IPC_LOCK]
+                    seccompProfile:
+                      type: RuntimeDefault
+                  volumeMounts:
+                    - name: shared-memory
+                      mountPath: /dev/shm
+              volumes:
+                - name: shared-memory
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 16Gi
+        - name: decode
+          replicas: 1
+          stateful: true
+          template:
+            metadata:
+              labels:
+                app: musa-vllm-qwen3-8b-pd
+                model.aibrix.ai/name: qwen3-8b
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/metric-port: "8000"
+                model.aibrix.ai/engine: vllm
+                model.aibrix.ai/kv-connector-type: mooncake
+            spec:
+              terminationGracePeriodSeconds: 120
+              containers:
+                - name: decode
+                  image: registry.mthreads.com/mcconline/inference/vllm:v0.28.0-ph1-5.2.0-torch2.11.0.post1-20260915
+                  imagePullPolicy: IfNotPresent
+                  command: ["vllm", "serve"]
+                  args:
+                    - Qwen/Qwen3-8B
+                    - --served-model-name=qwen3-8b
+                    - --host=0.0.0.0
+                    - --port=8000
+                    - --tensor-parallel-size=1
+                    - --enforce-eager
+                    - --max-model-len=2048
+                    - --max-num-seqs=16
+                    - --max-num-batched-tokens=2048
+                    - --gpu-memory-utilization=0.8
+                    - --disable-access-log-for-endpoints=/health,/metrics,/v1/models
+                    - --kv-transfer-config
+                    - '{"kv_connector":"MooncakeConnector","kv_role":"kv_consumer","kv_load_failure_policy":"fail","kv_connector_extra_config":{"mooncake_protocol":"tcp"}}'
+                  env:
+                    - name: HF_TOKEN
+                      valueFrom:
+                        secretKeyRef:
+                          name: musa-hf-token
+                          key: HF_TOKEN
+                          optional: true
+                  ports:
+                    - name: model-server
+                      containerPort: 8000
+                      protocol: TCP
+                  resources:
+                    requests:
+                      cpu: "8"
+                      memory: 32Gi
+                      mthreads.com/gpu: "1"
+                    limits:
+                      cpu: "16"
+                      memory: 64Gi
+                      mthreads.com/gpu: "1"
+                  startupProbe:
+                    httpGet:
+                      path: /health
+                      port: model-server
+                    periodSeconds: 10
+                    timeoutSeconds: 10
+                    failureThreshold: 180
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: model-server
+                    periodSeconds: 10
+                    timeoutSeconds: 10
+                    failureThreshold: 6
+                  securityContext:
+                    capabilities:
+                      add: [IPC_LOCK]
+                    seccompProfile:
+                      type: RuntimeDefault
+                  volumeMounts:
+                    - name: shared-memory
+                      mountPath: /dev/shm
+              volumes:
+                - name: shared-memory
+                  emptyDir:
+                    medium: Memory
+                    sizeLimit: 16Gi
