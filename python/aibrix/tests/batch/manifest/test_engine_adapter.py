@@ -65,7 +65,10 @@ def test_vllm_quantization_mapping_is_preserved(weight):
     assert args[args.index("--quantization") + 1] == weight
 
 
-@pytest.mark.parametrize("version", ["0.18.0", "0.32.0", "v0.32.0", "0.32.0+vendor"])
+@pytest.mark.parametrize(
+    "version",
+    ["0.18.0", "0.32.0", "v0.32.0", "0.32.0+vendor", "0.18-rc1", "0.18a", "0.18.0rc1"],
+)
 @pytest.mark.parametrize("swap_space", [0, 4])
 def test_vllm_removed_swap_space_fails_before_deployment(version, swap_space):
     with pytest.raises(ValueError, match="swap_space.*vLLM"):
@@ -74,7 +77,7 @@ def test_vllm_removed_swap_space_fails_before_deployment(version, swap_space):
         )
 
 
-@pytest.mark.parametrize("version", ["0.6.3", "0.17.0"])
+@pytest.mark.parametrize("version", ["0.6.3", "0.17.0", "0.17-rc1"])
 def test_vllm_legacy_swap_space_is_preserved(version):
     args = build_engine_args(template(version=version, engine_args={"swap_space": 4}))
     assert args[args.index("--swap-space") + 1] == "4"
