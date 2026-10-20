@@ -613,16 +613,19 @@ msgstr ""
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:334
 msgid ""
-"The request body is not changed. The encode pods store their output "
+"The media items stay on the request. The encode pods store their output "
 "through vLLM's EC connector, keyed by the hash of each media item, and "
-"the prefill pod finds it under the same hash. If an item's output is not "
+"the prefill pod finds it under the same hash. When an encode response "
+"carries ``ec_transfer_params``, the gateway sets them on the prefill "
+"request, replacing any the client sent. If an item's output is not "
 "there, for example because its encode request failed, the prefill pod "
 "encodes the item itself, so a failed encode costs latency but not the "
 "request. Each encode request uses the prefill request timeout, and "
 "``gateway_pd_encode_request_total`` counts them by ``status``."
 msgstr ""
-"请求体不会被修改。Encode Pod 通过 vLLM 的 EC connector 保存输出，以每个媒体项的哈希为键，prefill Pod "
-"用同一哈希找到它。如果某一项的输出不存在（例如其 encode 请求失败），prefill Pod 会自行编码该项，因此 encode "
+"媒体项保留在请求中。Encode Pod 通过 vLLM 的 EC connector 保存输出，以每个媒体项的哈希为键，prefill Pod "
+"用同一哈希找到它。如果 encode 响应带有 ``ec_transfer_params`` ，网关会把它设置到 prefill "
+"请求上，并替换客户端发送的值。如果某一项的输出不存在（例如其 encode 请求失败），prefill Pod 会自行编码该项，因此 encode "
 "失败只会增加延迟，不会导致请求失败。每个 encode 请求使用 prefill 请求超时， ``gateway_pd_encode_request_total`` "
 "按 ``status`` 统计这些请求。"
 
@@ -642,6 +645,22 @@ msgstr ""
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:349
 msgid ""
+"With ``ECCPUConnector`` and ``\"ec_enable_nixl\": true``, the prefill pod "
+"pulls each output from the encode pod over NIXL instead, so no shared "
+"volume is needed. Set ``VLLM_EC_SIDE_CHANNEL_HOST`` on the encode pods to"
+" the pod IP, since that is the address they hand out in "
+"``ec_transfer_params``. ``ECCPUConnector`` needs vLLM 0.32.0 or later and"
+" ``VLLM_USE_V2_MODEL_RUNNER=1`` on both sides. "
+"``samples/disaggregation/vllm/1e1p1d-ec-nixl.yaml`` is an example."
+msgstr ""
+"使用 ``ECCPUConnector`` 并设置 ``\"ec_enable_nixl\": true`` 时，prefill Pod 会通过 NIXL "
+"直接从 encode Pod 拉取每个输出，因此不需要共享卷。请将 encode Pod 的 ``VLLM_EC_SIDE_CHANNEL_HOST`` "
+"设置为 Pod IP，因为 encode Pod 会在 ``ec_transfer_params`` 中提供这个地址。 ``ECCPUConnector`` 需要 "
+"vLLM 0.32.0 或更高版本，并且两端都要设置 ``VLLM_USE_V2_MODEL_RUNNER=1`` 。示例见 "
+"``samples/disaggregation/vllm/1e1p1d-ec-nixl.yaml`` 。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:351
+msgid ""
 "Encode pods can also sit in front of pods that serve the whole request, "
 "with no prefill/decode split (E+PD). With any routing strategy other than"
 " ``pd``, the gateway never routes a request to an encode pod, and when "
@@ -660,18 +679,19 @@ msgstr ""
 "就是 EC 消费者。encode 阶段在转发请求之前执行，因此如果 encode Pod 停止响应，每个多模态请求最多会被延迟 prefill "
 "请求超时时间（ ``AIBRIX_PREFILL_REQUEST_TIMEOUT`` ，默认 30 秒）。示例见 ``samples/disaggregation/vllm/1e1pd.yaml`` 。"
 
-#: ../../source/features/gateway-routing/pd-disaggregation.rst:349
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:353
 msgid ""
 "See vLLM's `disaggregated encoder "
 "<https://docs.vllm.ai/en/latest/features/disagg_encoder/>`_ documentation"
-" for the encoder flags. Connectors that need per-request transfer handles"
-" from the gateway are not supported yet."
+" for the encoder flags. Connectors that need the gateway to pick the "
+"consumer before encoding, such as ``ECMooncakeConnector``, are not "
+"supported yet."
 msgstr ""
 "编码器相关参数请参阅 vLLM 的 `disaggregated encoder "
-"<https://docs.vllm.ai/en/latest/features/disagg_encoder/>`_ 文档。需要网关逐请求传递传输句柄的 "
-"connector 暂不支持。"
+"<https://docs.vllm.ai/en/latest/features/disagg_encoder/>`_ 文档。需要网关在编码前选定消费者的 "
+"connector（例如 ``ECMooncakeConnector`` ）暂不支持。"
 
-#: ../../source/features/gateway-routing/pd-disaggregation.rst:352
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:356
 msgid "Prompt-Length Bucketing"
 msgstr "Prompt 长度分桶"
 
