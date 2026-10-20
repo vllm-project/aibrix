@@ -13,6 +13,8 @@
 # limitations under the License.
 
 
+import pytest
+
 from aibrix_kvcache import TokenListView
 from aibrix_kvcache.memory import ManagedMemoryRegion, TensorPoolAllocator
 
@@ -62,6 +64,49 @@ def test_pack_unpack_basic(compact_layout_enabled):
     assert len(prefix_from_mr) == len(orig_prefix)
     assert prefix_from_mr == orig_prefix
     assert len(tokens_from_mr) == len(orig_tokens)
+    assert tokens_from_mr == orig_tokens
+
+
+@pytest.mark.parametrize(
+    "compact_layout_enabled", ["without_compact_layout"], indirect=True
+)
+def test_unpack_tokens_from_bytes(compact_layout_enabled):
+    block_nbytes = 16
+    mr_nbytes = 256
+    allocator = TensorPoolAllocator.create(capacity_nbytes=1024)
+    src = allocator.alloc(mr_nbytes).get()[0]
+    dst = allocator.alloc(mr_nbytes).get()[0]
+    src.block_nbytes = block_nbytes
+    dst.block_nbytes = block_nbytes
+    randomize_mrs([src])
+    temp = tuple(range(128, 128 + 16)) + tuple(range(256, 256 + 16))
+    all = TokenListView(temp)
+    orig_prefix = all[:16]
+    orig_tokens = all[16:]
+    src.pack_tokens(prefix=orig_prefix, query=orig_tokens)
+    src.seal()
+
+    # A MR filled from bytes, e.g. by an L2 get, has no tokens cached and
+    # must decode them from its own buffer.
+    dst.slab[dst.addr : dst.addr + mr_nbytes].copy_(
+        src.slab[src.addr : src.addr + mr_nbytes]
+    )
+    prefix_from_mr, tokens_from_mr = dst.unpack_tokens()
+    assert prefix_from_mr == orig_prefix
+    assert tokens_from_mr == orig_tokens
+
+    # Without a prefix
+    src2 = allocator.alloc(mr_nbytes).get()[0]
+    dst2 = allocator.alloc(mr_nbytes).get()[0]
+    src2.block_nbytes = block_nbytes
+    dst2.block_nbytes = block_nbytes
+    src2.pack_tokens(query=orig_tokens)
+    src2.seal()
+    dst2.slab[dst2.addr : dst2.addr + mr_nbytes].copy_(
+        src2.slab[src2.addr : src2.addr + mr_nbytes]
+    )
+    prefix_from_mr, tokens_from_mr = dst2.unpack_tokens()
+    assert prefix_from_mr is None
     assert tokens_from_mr == orig_tokens
 
 
