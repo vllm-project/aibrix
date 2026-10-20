@@ -110,8 +110,16 @@ class MemoryConnector(Connector[bytes, torch.Tensor]):
         # A read-only memoryview cannot be mutated through itself; keep it
         # as is so large payloads are not copied while holding the GIL.
         immutable: bytes | memoryview
-        if isinstance(payload, memoryview) and payload.readonly:
-            immutable = payload
+        if (
+            isinstance(payload, memoryview)
+            and payload.readonly
+            and payload.c_contiguous
+        ):
+            immutable = (
+                payload
+                if payload.format == "B" and payload.ndim == 1
+                else payload.cast("B")
+            )
         else:
             immutable = bytes(payload)
         with self._lock:

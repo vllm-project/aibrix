@@ -154,3 +154,26 @@ async def test_capacity_rejection_preserves_unleased_entries_and_lru():
         assert (await connector.exists(b"c")).is_not_found()
         assert (await connector.get_bytes(b"b")).get() == b"bbbb"
         assert connector.used_bytes == 12
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["typed", "shaped", "strided"])
+async def test_memoryview_capacity_counts_bytes(kind):
+    import numpy as np
+
+    array = np.arange(8, dtype=np.uint32)
+    if kind == "shaped":
+        array = array.reshape(2, 4)
+    elif kind == "strided":
+        array = array[::2]
+    array.flags.writeable = False
+    view = memoryview(array)
+    connector = MemoryConnector(capacity_bytes=view.nbytes)
+    connector.open().raise_if_not_ok()
+    (await connector.put_bytes(b"key", view)).raise_if_not_ok()
+    assert connector.used_bytes == view.nbytes
+    assert bytes((await connector.get_bytes(b"key")).get()) == view.tobytes()
+    small = MemoryConnector(capacity_bytes=view.nbytes - 1)
+    small.open().raise_if_not_ok()
+    assert (await small.put_bytes(b"key", view)).is_out_of_memory()
+    assert small.used_bytes == 0
