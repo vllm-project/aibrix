@@ -166,6 +166,13 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 		}
 	}
 
+	// A voice GET or DELETE has no body, so Envoy never sends a RequestBody message for it and the
+	// request must be routed here. A voice upload has a body and is routed in HandleRequestBody.
+	if h.RequestHeaders.EndOfStream && isAudioVoicesPath(requestPath) {
+		resp, voicesTerm := s.handleAudioVoicesHeaders(ctx, routingCtx, requestID, user)
+		return resp, user, rpm, routingCtx, voicesTerm
+	}
+
 	headers := videoCreateRematchHeaders(reqHeaders, requestPath, h.RequestHeaders.EndOfStream)
 	// The initial /v1/videos route is selected before ext_proc sees the request.
 	// When the client supplies no routing strategy, stamp a temporary valid value
@@ -210,6 +217,32 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 			},
 		},
 	}, user, rpm, routingCtx, term
+}
+
+// handleAudioVoicesHeaders routes a bodyless voice request (GET list, DELETE) at RequestHeaders.
+// It runs the routing HandleRequestBody does for any model request, on an empty body, and returns
+// the resulting header mutations as the RequestHeaders response, with the route cache cleared so
+// that Envoy matches the model route or the pinned pod they select. A rejection is passed on as
+// the immediate response it already is.
+func (s *Server) handleAudioVoicesHeaders(ctx context.Context, routingCtx *types.RoutingContext, requestID string, user utils.User) (*extProcPb.ProcessingResponse, int64) {
+	resp, _, _, term := s.HandleRequestBody(ctx, routingCtx, requestID, &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{RequestBody: &extProcPb.HttpBody{EndOfStream: true}},
+	}, user)
+	routed := resp.GetRequestBody()
+	if routed == nil {
+		return resp, term
+	}
+
+	return &extProcPb.ProcessingResponse{
+		Response: &extProcPb.ProcessingResponse_RequestHeaders{
+			RequestHeaders: &extProcPb.HeadersResponse{
+				Response: &extProcPb.CommonResponse{
+					HeaderMutation:  routed.GetResponse().GetHeaderMutation(),
+					ClearRouteCache: true,
+				},
+			},
+		},
+	}, term
 }
 
 // resolveUserForRequest resolves user quota state only when rate limiting is enabled.

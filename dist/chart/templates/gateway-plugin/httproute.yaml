@@ -48,6 +48,9 @@ spec:
             value: /v1/audio/speech
         - path:
             type: PathPrefix
+            value: /v1/audio/voices
+        - path:
+            type: PathPrefix
             value: /v1/rerank
         - path:
             type: PathPrefix

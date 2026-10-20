@@ -4,7 +4,7 @@
 Audio
 =====
 
-This guide covers the audio endpoints exposed through AIBrix's gateway: text-to-speech, in single and batch form, and speech-to-text through transcription and translation. The :ref:`supported endpoints <multimodal-supported-endpoints>` table shows which audio endpoints each engine offers and which of them AIBrix supports. Before you start, finish the :ref:`prerequisites <omni-prerequisites>` and :ref:`gateway access <omni-access-gateway>` steps on the Multi-Modal Serving page, and deploy your model the way the :ref:`video guide <omni-video-deploy>` describes, swapping in an audio model.
+This guide covers the audio endpoints exposed through AIBrix's gateway: text-to-speech, in single and batch form, the custom voices it can speak with, and speech-to-text through transcription and translation. The :ref:`supported endpoints <multimodal-supported-endpoints>` table shows which audio endpoints each engine offers and which of them AIBrix supports. Before you start, finish the :ref:`prerequisites <omni-prerequisites>` and :ref:`gateway access <omni-access-gateway>` steps on the Multi-Modal Serving page, and deploy your model the way the :ref:`video guide <omni-video-deploy>` describes, swapping in an audio model.
 
 .. note::
     A text+audio example (`Qwen/Qwen2.5-Omni-7B <https://huggingface.co/Qwen/Qwen2.5-Omni-7B>`_) lives at `samples/vllm_omni/qwen2-5-omni-7b.yaml <https://github.com/vllm-project/aibrix/blob/main/samples/vllm_omni/qwen2-5-omni-7b.yaml>`_ in the AIBrix repository.
@@ -114,6 +114,49 @@ What the gateway checks:
 
 ----
 
+.. _omni-audio-voices:
+
+Custom Voices
+-------------
+
+A text-to-speech engine that clones voices keeps a catalog of voices you upload once and then name in the ``voice`` field of later speech requests. AIBrix routes the three calls that manage it:
+
+- ``GET /v1/audio/voices`` lists the built-in voices and the voices you uploaded.
+- ``POST /v1/audio/voices`` uploads a voice sample as ``multipart/form-data``.
+- ``DELETE /v1/audio/voices/{name}`` removes an uploaded voice.
+
+These calls name no model, because an engine serves a single model and needs none, and a ``GET`` or ``DELETE`` has no body to carry one. The gateway chooses a pod by model, so it reads the model from a ``model`` **query parameter**, on all three calls:
+
+.. code-block:: bash
+
+    # List the voices
+    curl "$BASE/v1/audio/voices?model=my-tts-model" \
+      -H "Authorization: Bearer ${API_KEY}"
+
+    # Upload a voice
+    curl -X POST "$BASE/v1/audio/voices?model=my-tts-model" \
+      -H "Authorization: Bearer ${API_KEY}" \
+      -F "name=narrator" \
+      -F "consent=consent-1" \
+      -F "audio_sample=@narrator.wav" \
+      -F "ref_text=Transcript of the sample."
+
+    # Delete it
+    curl -X DELETE "$BASE/v1/audio/voices/narrator?model=my-tts-model" \
+      -H "Authorization: Bearer ${API_KEY}"
+
+What the gateway checks:
+
+- ``model`` is required, must be given once, and must name a model AIBrix knows. A request that breaks any of these is rejected with ``400``, and the error's ``param`` is ``model``. A known model with no ready pod is answered with ``503``.
+- Everything else is the engine's: the form fields of an upload (``name``, ``consent``, ``audio_sample``, ``ref_text``, ``speaker_description``), the voice names, the status codes, and the responses. The query string reaches the engine as sent, ``model`` included, which the engine ignores.
+- The responses are small JSON documents. The gateway forwards them unparsed, so no token usage is reported.
+- An upload takes ``multipart/form-data``, so — as with transcription — do **not** set ``-H "Content-Type: application/json"``. The whole request, voice sample included, counts against the gateway's request size limit, 4 MiB by default; see Message Size Configuration in :doc:`gateway-plugins`.
+
+.. warning::
+    The engine keeps an uploaded voice on the pod that took the upload (vLLM-Omni writes it under ``SPEAKER_SAMPLES_DIR``, ``~/.cache/vllm-omni/speakers`` by default), and the gateway sends each call to one pod of the model. With more than one replica, a later list, delete or speech request can therefore reach a pod that has never seen the voice. Serve the model from a single replica, or give every replica the same ``SPEAKER_SAMPLES_DIR`` on a volume they share.
+
+----
+
 .. _omni-audio-endpoint-reference:
 
 Endpoint Reference
@@ -135,6 +178,9 @@ Endpoint Reference
    * - ``/v1/audio/transcriptions``, ``/v1/audio/translations``
      - POST
      - ``multipart/form-data`` request with the model in a ``model`` form field. Routed by model; a ``stream`` form field set to ``true`` or ``1`` makes the response an SSE stream.
+   * - ``/v1/audio/voices``, ``/v1/audio/voices/{name}``
+     - GET, POST, DELETE
+     - List, upload (``multipart/form-data``) and delete custom voices. Routed by the model in a ``model`` query parameter, which all three calls need; the responses stream through unparsed, and a voice lives only on the pod that took its upload.
 
 ----
 
