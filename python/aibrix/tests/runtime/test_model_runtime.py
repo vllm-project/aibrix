@@ -2953,3 +2953,34 @@ def test_dormant_kv_invalid_evidence(dormant_kv, field, value):
     assert s.record().get("kv_capacity_verify_until") is None
     if field != "phase":
         assert s.kv(200)["limit_bytes"] == 200
+
+
+def test_resolve_model_path_raises_download_errors(monkeypatch):
+    import aibrix.downloader
+    import aibrix.runtime.model_runtime as runtime_module
+
+    def fail(model_uri, *args, **kwargs):
+        raise PermissionError("403 Forbidden")
+
+    monkeypatch.setattr(aibrix.downloader, "download_model", fail)
+    with pytest.raises(PermissionError):
+        runtime_module._resolve_model_path("s3://bucket/models/m")
+
+
+def test_resolve_model_path_returns_the_downloaded_path(monkeypatch):
+    import aibrix.downloader
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(
+        aibrix.downloader, "download_model", lambda model_uri: "/models/m"
+    )
+    assert runtime_module._resolve_model_path("s3://bucket/models/m") == "/models/m"
+
+
+def test_resolve_model_path_passes_the_path_without_a_downloader(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setitem(sys.modules, "aibrix.downloader", None)
+    assert runtime_module._resolve_model_path("s3://bucket/models/m") == (
+        "bucket/models/m"
+    )

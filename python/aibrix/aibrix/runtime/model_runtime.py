@@ -1009,7 +1009,8 @@ def _resolve_model_path(artifact_url: str) -> str:
       downloads from the Hugging Face Hub natively (no aibrix downloader needed).
     - Other remote stores (``s3://``, ``gcs://``, ``tos://``, ...) that the
       engine can't fetch are staged locally via the aibrix downloader, falling
-      back to the raw path if the downloader/deps are unavailable.
+      back to the raw path if the downloader/deps are unavailable. Download
+      errors (bad URL, missing credentials, missing object) are raised.
     """
     if "://" not in artifact_url:
         return artifact_url
@@ -1020,7 +1021,12 @@ def _resolve_model_path(artifact_url: str) -> str:
         from aibrix.downloader import download_model  # type: ignore
 
         return download_model(artifact_url)
-    except Exception:  # pragma: no cover - depends on runtime deps
+    except ImportError as e:
+        logger.warning(
+            "Downloader for %s:// is unavailable (%s); passing the path as is",
+            scheme,
+            e,
+        )
         return rest
 
 
