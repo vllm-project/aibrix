@@ -346,37 +346,52 @@ func effectiveWarmupPolicies(w *modelv1alpha1.ModelWarmup) warmupPolicies {
 // resolveTargets resolves a warmup's targets from the cache. A failed target of
 // a Once warmup is final, and the cache can trail a node or Namespace that was
 // labelled just before the warmup was created or changed. So on its first pass
-// over a revision, a Once warmup with a missing or unauthorized node has its
-// targets resolved again from the API server. Later passes use the cache, and
-// so does a Continuous warmup, which is reconciled again when a pool label
+// over a revision, a Once warmup with a missing or unauthorized node reads the
+// Namespace and those nodes again from the API server. The other nodes come
+// from the cache, so a large cluster is not listed. Later passes use the cache,
+// and so does a Continuous warmup, which is reconciled again when a pool label
 // changes.
 func (r *ModelWarmupReconciler) resolveTargets(
 	ctx context.Context,
 	warmup *modelv1alpha1.ModelWarmup,
 ) (map[string]resolvedTarget, map[string]string, error) {
-	targets, missing, err := resolveTargetsWith(ctx, r.Client, warmup)
+	var namespace corev1.Namespace
+	if err := r.Get(ctx, types.NamespacedName{Name: warmup.Namespace}, &namespace); err != nil {
+		return nil, nil, err
+	}
+	var nodes corev1.NodeList
+	if err := r.List(ctx, &nodes); err != nil {
+		return nil, nil, err
+	}
+	targets, missing, err := resolveTargetsFromNodes(warmup, &namespace, nodes.Items)
 	if err != nil || len(missing) == 0 || r.APIReader == nil ||
 		effectiveMode(warmup) != modelv1alpha1.ModelWarmupModeOnce ||
 		warmup.Status.ObservedRevision == revisionFor(warmup) {
 		return targets, missing, err
 	}
-	return resolveTargetsWith(ctx, r.APIReader, warmup)
-}
-
-func resolveTargetsWith(
-	ctx context.Context,
-	reader client.Reader,
-	warmup *modelv1alpha1.ModelWarmup,
-) (map[string]resolvedTarget, map[string]string, error) {
-	var namespace corev1.Namespace
-	if err := reader.Get(ctx, types.NamespacedName{Name: warmup.Namespace}, &namespace); err != nil {
+	var liveNamespace corev1.Namespace
+	if err := r.APIReader.Get(ctx, types.NamespacedName{Name: warmup.Namespace}, &liveNamespace); err != nil {
 		return nil, nil, err
 	}
-	var nodes corev1.NodeList
-	if err := reader.List(ctx, &nodes); err != nil {
-		return nil, nil, err
+	index := make(map[string]int, len(nodes.Items))
+	for i := range nodes.Items {
+		index[nodes.Items[i].Name] = i
 	}
-	return resolveTargetsFromNodes(warmup, &namespace, nodes.Items)
+	for name := range missing {
+		var node corev1.Node
+		if err := r.APIReader.Get(ctx, types.NamespacedName{Name: name}, &node); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return nil, nil, err
+		}
+		if i, cached := index[name]; cached {
+			nodes.Items[i] = node
+		} else {
+			nodes.Items = append(nodes.Items, node)
+		}
+	}
+	return resolveTargetsFromNodes(warmup, &liveNamespace, nodes.Items)
 }
 
 func isNodeAuthorized(namespace *corev1.Namespace, node *corev1.Node) bool {
