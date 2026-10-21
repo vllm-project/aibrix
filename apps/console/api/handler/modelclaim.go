@@ -53,11 +53,13 @@ const (
 // every engine it starts. It passes them after engineConfig.args, so its own
 // values win, and a claim that sets one again is refused rather than ignored.
 var modelClaimLauncherFlags = map[string]bool{
-	"--model":             true,
-	"--model-path":        true,
-	"--served-model-name": true,
-	"--host":              true,
-	"--port":              true,
+	"--model":               true,
+	"--model-path":          true,
+	"--served-model-name":   true,
+	"--host":                true,
+	"--port":                true,
+	"--enable-sleep-mode":   true,
+	"--enable-memory-saver": true,
 }
 
 // modelClaimConditionOrder lists the condition types in lifecycle order, so
@@ -591,25 +593,46 @@ func parseModelClaimQuantity(name, value string) (resource.Quantity, error) {
 	return quantity, nil
 }
 
+// normalizeModelClaimEngineArgs checks each flag the way vLLM reads it, so a
+// flag written as --flag=value or with "_" for "-" is still caught.
 func normalizeModelClaimEngineArgs(args map[string]string) (map[string]string, error) {
 	normalized := make(map[string]string, len(args))
+	flags := make(map[string]bool, len(args))
 	for rawKey, rawValue := range args {
 		key := strings.TrimSpace(rawKey)
-		if !strings.HasPrefix(key, "--") || len(key) == len("--") {
+		value := strings.TrimSpace(rawValue)
+		flag, _, hasValue := utils.ModelClaimEngineFlag(key)
+		if !strings.HasPrefix(key, "--") || len(flag) <= len("--") {
 			return nil, fmt.Errorf("engine_args key %q must be an engine flag such as --max-model-len", rawKey)
 		}
 		if strings.IndexFunc(key, unicode.IsSpace) >= 0 {
 			return nil, fmt.Errorf("engine_args key %q must not contain whitespace", rawKey)
 		}
-		if modelClaimLauncherFlags[key] {
-			return nil, fmt.Errorf("engine_args must not set %s; the runtime sets it for every engine", key)
+		if hasValue && value != "" {
+			return nil, fmt.Errorf("engine_args key %q already gives a value after \"=\"; leave its value empty", rawKey)
 		}
-		if _, duplicate := normalized[key]; duplicate {
-			return nil, fmt.Errorf("engine_args sets %s more than once", key)
+		if owned := modelClaimLauncherFlag(flag); owned != "" {
+			return nil, fmt.Errorf("engine_args must not set %s; the runtime sets %s for every engine", key, owned)
 		}
-		normalized[key] = strings.TrimSpace(rawValue)
+		if flags[flag] {
+			return nil, fmt.Errorf("engine_args sets %s more than once", flag)
+		}
+		flags[flag] = true
+		normalized[key] = value
 	}
 	return normalized, nil
+}
+
+// modelClaimLauncherFlag returns the launcher flag that flag sets, or turns off
+// in vLLM's --no- form, or "" for any other flag.
+func modelClaimLauncherFlag(flag string) string {
+	if modelClaimLauncherFlags[flag] {
+		return flag
+	}
+	if name, negated := strings.CutPrefix(flag, "--no-"); negated && modelClaimLauncherFlags["--"+name] {
+		return "--" + name
+	}
+	return ""
 }
 
 // getModelClaimInstancePods reads the Pods that run one claim's instances.

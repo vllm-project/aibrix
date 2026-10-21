@@ -18,7 +18,37 @@ export const MODEL_CLAIM_LAUNCHER_FLAGS = [
   '--served-model-name',
   '--host',
   '--port',
+  '--enable-sleep-mode',
+  '--enable-memory-saver',
 ];
+
+// vLLM's short names for the flags read below.
+const vllmFlagAliases = new Map([
+  ['-tp', '--tensor-parallel-size'],
+  ['-pp', '--pipeline-parallel-size'],
+  ['-dp', '--data-parallel-size'],
+]);
+
+// engineFlag mirrors ModelClaimEngineFlag in pkg/utils/modelclaim.go. It
+// returns the flag's long name, with "_" read as "-", and the value written
+// after "=", or null without one.
+export function engineFlag(key: string): { flag: string; value: string | null } {
+  const trimmed = key.trim();
+  const equals = trimmed.indexOf('=');
+  const name = equals < 0 ? trimmed : trimmed.slice(0, equals);
+  const value = equals < 0 ? null : trimmed.slice(equals + 1);
+  const long = vllmFlagAliases.get(name);
+  if (long !== undefined) return { flag: long, value };
+  return { flag: name.startsWith('--') ? `--${name.slice(2).replace(/_/g, '-')}` : name, value };
+}
+
+// launcherFlag is the launcher flag that flag sets, or turns off in vLLM's
+// --no- form, or null for any other flag.
+function launcherFlag(flag: string): string | null {
+  if (MODEL_CLAIM_LAUNCHER_FLAGS.includes(flag)) return flag;
+  const positive = flag.startsWith('--no-') ? `--${flag.slice('--no-'.length)}` : null;
+  return positive !== null && MODEL_CLAIM_LAUNCHER_FLAGS.includes(positive) ? positive : null;
+}
 
 const PER_GPU_MAXIMUM_BYTES = 2 ** 50; // 1Pi
 const PER_GPU_SMALLEST_ROUNDED_BYTES = 2 ** 20; // 1Mi
@@ -132,8 +162,8 @@ export interface EngineArgsValidation {
   args: Record<string, string>;
 }
 
-function positiveEngineArg(args: Record<string, string>, name: string): number | string {
-  const raw = args[name];
+function positiveEngineArg(flags: Map<string, string>, name: string): number | string {
+  const raw = flags.get(name);
   if (raw === undefined || raw === '') return 1;
   if (!/^\d+$/.test(raw.trim()) || Number(raw.trim()) < 1) return `${name} must be a positive integer.`;
   return Number(raw.trim());
@@ -145,26 +175,33 @@ export function validateEngineArgs(
   pool: ModelClaimPool | null,
 ): EngineArgsValidation {
   const args: Record<string, string> = {};
+  // flags holds each flag under the name vLLM reads it as, with its value.
+  const flags = new Map<string, string>();
   const rowErrors = rows.map((row) => {
     const key = row.key.trim();
-    if (!key && !row.value.trim()) return null;
-    if (!key.startsWith('--') || key.length === 2) return 'Use an engine flag such as --max-model-len.';
+    const value = row.value.trim();
+    if (!key && !value) return null;
+    const { flag, value: valueAfterEquals } = engineFlag(key);
+    if (!key.startsWith('--') || flag.length <= 2) return 'Use an engine flag such as --max-model-len.';
     if (/\s/.test(key)) return 'A flag must not contain whitespace.';
-    if (MODEL_CLAIM_LAUNCHER_FLAGS.includes(key)) return `The runtime sets ${key} for every engine.`;
-    if (key in args) return `${key} is set more than once.`;
-    if (engine === 'vllm' && key === '--gpu-memory-utilization') {
+    if (valueAfterEquals !== null && value) return `${key} already gives a value after "="; leave the value empty.`;
+    const owned = launcherFlag(flag);
+    if (owned !== null) return `The runtime sets ${owned} for every engine.`;
+    if (flags.has(flag)) return `${flag} is set more than once.`;
+    if (engine === 'vllm' && flag === '--gpu-memory-utilization') {
       return 'kvcached owns KV memory; remove --gpu-memory-utilization.';
     }
-    args[key] = row.value.trim();
+    args[key] = value;
+    flags.set(flag, valueAfterEquals ?? value);
     return null;
   });
 
   if (engine !== 'vllm') {
     return { rowErrors, topologyError: null, parallelism: null, args };
   }
-  const tensor = positiveEngineArg(args, '--tensor-parallel-size');
-  const pipeline = positiveEngineArg(args, '--pipeline-parallel-size');
-  const data = positiveEngineArg(args, '--data-parallel-size');
+  const tensor = positiveEngineArg(flags, '--tensor-parallel-size');
+  const pipeline = positiveEngineArg(flags, '--pipeline-parallel-size');
+  const data = positiveEngineArg(flags, '--data-parallel-size');
   for (const value of [tensor, pipeline, data]) {
     if (typeof value === 'string') return { rowErrors, topologyError: value, parallelism: null, args };
   }

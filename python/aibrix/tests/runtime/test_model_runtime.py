@@ -900,12 +900,29 @@ def test_vllm_parallelism_defaults_and_combines_tp_pp():
     )
 
 
+def test_vllm_parallelism_reads_flags_the_way_vllm_does():
+    from aibrix.runtime.model_runtime import vllm_parallelism
+
+    assert vllm_parallelism({"args": {"--tensor-parallel-size=2": ""}}, None) == 2
+    assert (
+        vllm_parallelism(
+            {"args": {"--tensor_parallel_size": "2", "--pipeline_parallel_size": "2"}},
+            None,
+        )
+        == 4
+    )
+    assert vllm_parallelism({"args": {"-tp": "2", "-pp=2": ""}}, None) == 4
+
+
 @pytest.mark.parametrize(
     "args",
     [
         {"--tensor-parallel-size": "0"},
         {"--pipeline-parallel-size": "not-a-number"},
         {"--data-parallel-size": "2"},
+        {"--data-parallel-size=2": ""},
+        {"--gpu-memory-utilization=0.9": ""},
+        {"--gpu_memory_utilization": "0.9"},
     ],
 )
 def test_vllm_parallelism_rejects_unsupported_or_invalid_args(args):
@@ -913,6 +930,18 @@ def test_vllm_parallelism_rejects_unsupported_or_invalid_args(args):
 
     with pytest.raises(ValueError):
         vllm_parallelism({"args": args}, None)
+
+
+def test_vllm_parallelism_refuses_a_flag_set_twice():
+    from aibrix.runtime.model_runtime import vllm_parallelism
+
+    with pytest.raises(
+        ValueError, match="--tensor-parallel-size is set more than once"
+    ):
+        vllm_parallelism(
+            {"args": {"--tensor-parallel-size": "2", "--tensor_parallel_size": "4"}},
+            None,
+        )
 
 
 def test_activate_rejects_vllm_parallelism_that_does_not_match_visible_gpus(

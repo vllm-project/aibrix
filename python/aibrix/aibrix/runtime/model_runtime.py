@@ -38,7 +38,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, overload
+from typing import Any, Callable, Dict, List, Optional, Tuple, overload
 
 from aibrix.runtime.engine_registry import EngineRegistry
 
@@ -1042,8 +1042,44 @@ def _engine_args(
     return args
 
 
+# vLLM's short names for the flags read below.
+_VLLM_FLAG_ALIASES = {
+    "-tp": "--tensor-parallel-size",
+    "-pp": "--pipeline-parallel-size",
+    "-dp": "--data-parallel-size",
+}
+
+
+def _engine_flag(key: str) -> Tuple[str, Optional[str]]:
+    """Mirror the controller's ModelClaimEngineFlag. Return the flag's long
+    name, with "_" read as "-", and the value written after "=", or None
+    without one."""
+    name, equals, value = key.strip().partition("=")
+    if name in _VLLM_FLAG_ALIASES:
+        name = _VLLM_FLAG_ALIASES[name]
+    elif name.startswith("--"):
+        name = "--" + name[2:].replace("_", "-")
+    return name, value if equals else None
+
+
+def _engine_arg(args: Dict[str, str], name: str) -> Optional[str]:
+    """The value args give flag ``name``, however they spell it, or None.
+
+    A flag set more than once is refused, since the engine keeps the last value
+    it is given and a claim's args have no order."""
+    keys = sorted(key for key in args if _engine_flag(key)[0] == name)
+    if not keys:
+        return None
+    if len(keys) > 1:
+        raise ValueError(f"{name} is set more than once, as {' and '.join(keys)}")
+    value_after_equals = _engine_flag(keys[0])[1]
+    return args[keys[0]] if value_after_equals is None else value_after_equals
+
+
 def _positive_engine_arg(args: Dict[str, str], name: str) -> int:
-    raw = args.get(name, "1")
+    raw = _engine_arg(args, name)
+    if raw is None:
+        raw = "1"
     try:
         value = int(raw)
     except (TypeError, ValueError) as exc:
@@ -1058,7 +1094,7 @@ def vllm_parallelism(
 ) -> int:
     """Return the fixed GPU group size required by vLLM TP and PP."""
     args = _engine_args(engine_config, additional_config)
-    if "--gpu-memory-utilization" in args:
+    if _engine_arg(args, "--gpu-memory-utilization") is not None:
         raise ValueError(
             "--gpu-memory-utilization is incompatible with kvcached; use the pool KV policy instead"
         )
