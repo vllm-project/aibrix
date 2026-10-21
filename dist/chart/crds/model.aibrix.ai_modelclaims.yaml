@@ -117,6 +117,16 @@ spec:
                 x-kubernetes-validations:
                 - message: podSelector is immutable; create a new ModelClaim instead
                   rule: self == oldSelf
+              preemptionPolicy:
+                default: Never
+                enum:
+                - Never
+                - SleepLowerPriority
+                type: string
+                x-kubernetes-validations:
+                - message: preemptionPolicy is immutable; create a new ModelClaim
+                    instead
+                  rule: self == oldSelf
               priority:
                 default: 0
                 format: int32

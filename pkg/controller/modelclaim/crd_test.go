@@ -94,3 +94,38 @@ func TestHistoricalModelClaimWithoutPriorityDecodesAsZero(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(`{"spec":{"artifactURL":"huggingface://historical/model"}}`), claim))
 	require.Equal(t, int32(0), claim.Spec.Priority)
 }
+
+func TestModelClaimPreemptionPolicySchema(t *testing.T) {
+	for _, path := range crdPaths {
+		spec := modelClaimSpecSchema(t, path)
+		policy, found := spec.Properties["preemptionPolicy"]
+		require.True(t, found, path)
+		require.Equal(t, "string", policy.Type, path)
+		require.NotNil(t, policy.Default, path)
+		require.JSONEq(t, `"Never"`, string(policy.Default.Raw), path)
+		require.Equal(t, []apiextensionsv1.JSON{
+			{Raw: []byte(`"Never"`)},
+			{Raw: []byte(`"SleepLowerPriority"`)},
+		}, policy.Enum, path)
+
+		for _, rejected := range []string{"StopLowerPriority", "unknown"} {
+			for _, allowed := range policy.Enum {
+				require.NotEqual(t, `"`+rejected+`"`, string(allowed.Raw), path)
+			}
+		}
+
+		var immutable bool
+		for _, rule := range policy.XValidations {
+			if rule.Rule == "self == oldSelf" && rule.Message == "preemptionPolicy is immutable; create a new ModelClaim instead" {
+				immutable = true
+			}
+		}
+		require.True(t, immutable, path)
+	}
+}
+
+func TestHistoricalModelClaimWithoutPreemptionPolicyDecodesEmpty(t *testing.T) {
+	claim := &modelapi.ModelClaim{}
+	require.NoError(t, json.Unmarshal([]byte(`{"spec":{"artifactURL":"huggingface://historical/model"}}`), claim))
+	require.Equal(t, modelapi.ModelClaimPreemptionPolicy(""), claim.Spec.PreemptionPolicy)
+}

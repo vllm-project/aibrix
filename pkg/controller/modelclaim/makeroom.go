@@ -52,9 +52,10 @@ type cardReservations struct {
 
 // cardReservation is one card held for one claim in the card's namespace.
 type cardReservation struct {
-	claim string
-	bytes int64
-	until time.Time
+	claim        string
+	bytes        int64
+	until        time.Time
+	protectsWake bool
 }
 
 func newCardReservations() *cardReservations {
@@ -72,19 +73,63 @@ func (r *ModelClaimReconciler) reservations() *cardReservations {
 // could. A card already held for another claim cannot be. A claim that holds a
 // card keeps the time its hold began with.
 func (c *cardReservations) hold(card types.NamespacedName, claim string, bytes int64, now time.Time) bool {
+	return c.holdWithWakeProtection(card, claim, bytes, now, false)
+}
+
+// holdPreemption holds a card for priority Sleep. Unlike an ordinary
+// make-room hold, it also keeps a request-triggered wake from consuming the
+// room promised to the preemptor.
+func (c *cardReservations) holdPreemption(card types.NamespacedName, claim string, bytes int64, now time.Time) bool {
+	return c.holdWithWakeProtection(card, claim, bytes, now, true)
+}
+
+func (c *cardReservations) holdWithWakeProtection(
+	card types.NamespacedName,
+	claim string,
+	bytes int64,
+	now time.Time,
+	protectsWake bool,
+) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.pruneLocked(now)
 	if current, found := c.held[card]; found {
-		return current.claim == claim
+		if current.claim != claim {
+			return false
+		}
+		if protectsWake && !current.protectsWake {
+			current.protectsWake = true
+			c.held[card] = current
+		}
+		return true
 	}
 	for other, current := range c.held {
 		if other.Namespace == card.Namespace && current.claim == claim {
 			delete(c.held, other)
 		}
 	}
-	c.held[card] = cardReservation{claim: claim, bytes: bytes, until: now.Add(reservationLifetime)}
+	c.held[card] = cardReservation{
+		claim: claim, bytes: bytes, until: now.Add(reservationLifetime), protectsWake: protectsWake,
+	}
 	return true
+}
+
+// takePreemptionsFrom charges only reservations made by priority Sleep. An
+// ordinary make-room reservation preserves the historical rule that a request
+// to wake an existing engine goes before a claim that has never served.
+func (c *cardReservations) takePreemptionsFrom(ledgers map[string]podLedger, namespace string, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pruneLocked(now)
+	for card, current := range c.held {
+		if card.Namespace != namespace || !current.protectsWake {
+			continue
+		}
+		if ledger, found := ledgers[card.Name]; found && ledger.judgeable {
+			ledger.reservedBytes += current.bytes
+			ledgers[card.Name] = ledger
+		}
+	}
 }
 
 // heldFor is the card held for a claim, if any.
@@ -98,6 +143,43 @@ func (c *cardReservations) heldFor(namespace, claim string, now time.Time) (type
 		}
 	}
 	return types.NamespacedName{}, false
+}
+
+// preemptionHeldFor is the wake-protecting card held for a claim, if any.
+func (c *cardReservations) preemptionHeldFor(namespace, claim string, now time.Time) (types.NamespacedName, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pruneLocked(now)
+	for card, current := range c.held {
+		if card.Namespace == namespace && current.claim == claim && current.protectsWake {
+			return card, true
+		}
+	}
+	return types.NamespacedName{}, false
+}
+
+// keepWakesOutOfPreemption restores the reservation owner's account to the
+// state before later wake requests put sleeping victims' full reserves back.
+// Wake admission still sees and waits on the reservation itself.
+func (c *cardReservations) keepWakesOutOfPreemption(
+	ledgers map[string]podLedger,
+	namespace, claim string,
+	now time.Time,
+) {
+	card, held := c.preemptionHeldFor(namespace, claim, now)
+	if !held {
+		return
+	}
+	ledger, found := ledgers[card.Name]
+	if !found || !ledger.judgeable {
+		return
+	}
+	for _, engine := range ledger.engines {
+		if engine.asleep && engine.wakeReserveAsked {
+			ledger = ledger.withWakeReserve(engine.claimName, false)
+		}
+	}
+	ledgers[card.Name] = ledger
 }
 
 // release lets go of the card held for a claim.
@@ -383,15 +465,21 @@ func (r *ModelClaimReconciler) firstToMakeRoomFor(
 		if _, holding := r.reservations().heldFor(claim.Namespace, claim.Name, now); holding {
 			return false
 		}
-		perGPU, err := perGPUBytesOf(claim)
-		if err != nil {
-			continue
-		}
 		shared, valid := candidatePodsForClaim(claim, candidates)
 		if !valid {
 			continue
 		}
 		if r.backoff().waiting(client.ObjectKeyFromObject(claim), claim.Generation, roomSignatureOf(shared, claims)) {
+			continue
+		}
+		if preemptionPolicyOf(claim) == modelv1alpha1.ModelClaimPreemptionSleepLowerPriority {
+			if r.claimFeasibleForPlacementWithPolicy(ctx, claim, shared, claims, ledgers, readings) {
+				return false
+			}
+			continue
+		}
+		perGPU, err := perGPUBytesOf(claim)
+		if err != nil {
 			continue
 		}
 		for j := range shared {
