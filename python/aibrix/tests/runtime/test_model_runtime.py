@@ -841,6 +841,52 @@ def test_engine_config_args_are_structured():
     ) == {"--max-model-len": "2048", "--enforce-eager": ""}
 
 
+@pytest.mark.parametrize(
+    "engine, module, own_flags",
+    [
+        (
+            "vllm",
+            "vllm.entrypoints.openai.api_server",
+            ["--model", "Org/M1", "--served-model-name", "m1", "--host", "0.0.0.0"]
+            + ["--port", "20000", "--enable-sleep-mode"],
+        ),
+        (
+            "sglang",
+            "sglang.launch_server",
+            ["--model-path", "Org/M1", "--served-model-name", "m1", "--host", "0.0.0.0"]
+            + ["--port", "20000", "--enable-memory-saver"],
+        ),
+    ],
+)
+def test_launch_passes_its_own_flags_after_the_claims(
+    monkeypatch, engine, module, own_flags
+):
+    # Both engines keep the last value given for a flag, so the launcher's
+    # flags win however a claim spells them.
+    import subprocess
+
+    from aibrix.runtime.model_runtime import ModelInstance, SubprocessEngineLauncher
+
+    launched = []
+
+    def fake_popen(cmd, env, start_new_session):
+        launched.append(cmd)
+        return SimpleNamespace(pid=4321)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    inst = ModelInstance(model_name="m1", port=20000, ipc_name="kvc_m1", engine=engine)
+    claim_args = {
+        "--port=9000": "",
+        "--no-enable-sleep-mode": "",
+        "--max-model-len": "2048",
+    }
+
+    SubprocessEngineLauncher().launch(inst, "hf://Org/M1", {"args": claim_args}, None)
+
+    claim_flags = ["--port=9000", "--no-enable-sleep-mode", "--max-model-len", "2048"]
+    assert launched == [[sys.executable, "-m", module] + claim_flags + own_flags]
+
+
 def test_vllm_parallelism_defaults_and_combines_tp_pp():
     from aibrix.runtime.model_runtime import vllm_parallelism
 
@@ -854,12 +900,29 @@ def test_vllm_parallelism_defaults_and_combines_tp_pp():
     )
 
 
+def test_vllm_parallelism_reads_flags_the_way_vllm_does():
+    from aibrix.runtime.model_runtime import vllm_parallelism
+
+    assert vllm_parallelism({"args": {"--tensor-parallel-size=2": ""}}, None) == 2
+    assert (
+        vllm_parallelism(
+            {"args": {"--tensor_parallel_size": "2", "--pipeline_parallel_size": "2"}},
+            None,
+        )
+        == 4
+    )
+    assert vllm_parallelism({"args": {"-tp": "2", "-pp=2": ""}}, None) == 4
+
+
 @pytest.mark.parametrize(
     "args",
     [
         {"--tensor-parallel-size": "0"},
         {"--pipeline-parallel-size": "not-a-number"},
         {"--data-parallel-size": "2"},
+        {"--data-parallel-size=2": ""},
+        {"--gpu-memory-utilization=0.9": ""},
+        {"--gpu_memory_utilization": "0.9"},
     ],
 )
 def test_vllm_parallelism_rejects_unsupported_or_invalid_args(args):
@@ -867,6 +930,18 @@ def test_vllm_parallelism_rejects_unsupported_or_invalid_args(args):
 
     with pytest.raises(ValueError):
         vllm_parallelism({"args": args}, None)
+
+
+def test_vllm_parallelism_refuses_a_flag_set_twice():
+    from aibrix.runtime.model_runtime import vllm_parallelism
+
+    with pytest.raises(
+        ValueError, match="--tensor-parallel-size is set more than once"
+    ):
+        vllm_parallelism(
+            {"args": {"--tensor-parallel-size": "2", "--tensor_parallel_size": "4"}},
+            None,
+        )
 
 
 def test_activate_rejects_vllm_parallelism_that_does_not_match_visible_gpus(
