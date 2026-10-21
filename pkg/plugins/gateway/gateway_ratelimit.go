@@ -30,12 +30,7 @@ import (
 )
 
 func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extProcPb.ProcessingResponse, error) {
-	if user.Rpm == 0 {
-		user.Rpm = int64(DefaultRPM)
-	}
-	if user.Tpm == 0 {
-		user.Tpm = user.Rpm * int64(DefaultTPMMultiplier)
-	}
+	user = applyDefaultUserLimits(user)
 
 	code, err := s.checkRPM(ctx, user.Name, user.Rpm)
 	if err != nil {
@@ -190,4 +185,17 @@ func rateWindow(seconds int64) []time.Duration {
 		return nil
 	}
 	return []time.Duration{time.Duration(seconds) * time.Second}
+}
+
+// applyDefaultUserLimits fills in the default RPM and TPM used by checkLimits.
+// Request-body validation reads user.Tpm to decide whether a stream has to ask
+// the engine for a usage chunk, so the resolved user has to carry them too.
+func applyDefaultUserLimits(user utils.User) utils.User {
+	if user.Rpm == 0 {
+		user.Rpm = int64(DefaultRPM)
+	}
+	if user.Tpm == 0 {
+		user.Tpm = user.Rpm * int64(DefaultTPMMultiplier)
+	}
+	return user
 }
