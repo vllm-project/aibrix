@@ -954,10 +954,12 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	if isPD {
 		routeCtx.Context = ctx
 	}
+	var addr string
 	if limit := replicaInflightLimit(routeCtx); limit > 0 {
-		return s.routeWithEarlyAdmission(routeCtx, router, &utils.PodArray{Pods: readyPods}, limit)
+		addr, err = s.routeWithEarlyAdmission(routeCtx, router, &utils.PodArray{Pods: readyPods}, limit)
+	} else {
+		addr, err = router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
 	}
-	addr, err := router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
 	if err == nil {
 		s.encodeMedia(routeCtx, encoders)
 	}
