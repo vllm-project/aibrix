@@ -164,7 +164,7 @@ export interface EngineArgsValidation {
 
 function positiveEngineArg(flags: Map<string, string>, name: string): number | string {
   const raw = flags.get(name);
-  if (raw === undefined || raw === '') return 1;
+  if (raw === undefined) return 1;
   if (!/^\d+$/.test(raw.trim()) || Number(raw.trim()) < 1) return `${name} must be a positive integer.`;
   return Number(raw.trim());
 }

@@ -123,7 +123,7 @@ func positiveEngineArg(args map[string]string, name string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if !found || raw == "" {
+	if !found {
 		return 1, nil
 	}
 	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)

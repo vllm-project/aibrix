@@ -94,6 +94,9 @@ describe('model claim helpers', () => {
     const dataParallel = validateEngineArgs([{ key: '--data-parallel-size', value: '2' }], 'vllm', pool);
     expect(dataParallel.topologyError).toMatch(/Data parallelism/);
 
+    const empty = validateEngineArgs([{ key: '--tensor-parallel-size', value: '' }], 'vllm', pool);
+    expect(empty.topologyError).toBe('--tensor-parallel-size must be a positive integer.');
+
     const unknownPool = validateEngineArgs([{ key: '--tensor-parallel-size', value: '2' }], 'vllm', {
       ...pool,
       gpuCounts: [1, 2],

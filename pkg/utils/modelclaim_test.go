@@ -130,6 +130,8 @@ func TestModelClaimVLLMParallelism(t *testing.T) {
 		{name: "data parallelism", args: map[string]string{"--data-parallel-size": "2"}, wantErr: "unsupported by fixed topology pools"},
 		{name: "not a number", args: map[string]string{"--tensor-parallel-size": "two"}, wantErr: "must be a positive integer"},
 		{name: "zero", args: map[string]string{"--pipeline-parallel-size": "0"}, wantErr: "must be a positive integer"},
+		{name: "empty", args: map[string]string{"--tensor-parallel-size": ""}, wantErr: "must be a positive integer"},
+		{name: "empty after equals", args: map[string]string{"--tensor-parallel-size=": ""}, wantErr: "must be a positive integer"},
 		{name: "value after equals", args: map[string]string{"--tensor-parallel-size=2": ""}, want: 2},
 		{name: "underscores", args: map[string]string{"--tensor_parallel_size": "2", "--pipeline_parallel_size": "2"}, want: 4},
 		{name: "short aliases", args: map[string]string{"-tp": "2", "-pp=2": ""}, want: 4},
