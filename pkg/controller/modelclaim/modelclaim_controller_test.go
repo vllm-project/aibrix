@@ -2411,6 +2411,40 @@ func TestReconcileDeletionStopsAnEngineThatDidNotServeAtOnce(t *testing.T) {
 	require.Len(t, runtime.deactivateCalls, 1, "a sleeping engine serves nothing")
 }
 
+// A pod that is being deleted takes its engines with it, and it may have lost
+// its network already, so a call to its runtime could hold the controller's
+// only worker until the call times out. The claim's route is still taken back,
+// and its finalizer goes without a drain or a stop.
+func TestReconcileDeletionLeavesAPodBeingDeletedAlone(t *testing.T) {
+	now := time.Date(2026, time.October, 6, 2, 0, 0, 0, time.UTC)
+	pm := deletingClaim(now.Add(-deletionDrainGrace))
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	podDeleted := metav1.NewTime(now.Add(-time.Second))
+	pod.DeletionTimestamp = &podDeleted
+	// The fake client keeps a deleted object only while it has a finalizer.
+	pod.Finalizers = []string{"test.aibrix.ai/hold"}
+	pod.Annotations = map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + pm.Name: `{"model":"qwen2-7b","port":9001}`,
+	}
+	r, runtime := newReconciler(t, pm, pod)
+	r.Now = func() time.Time { return now }
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {Models: []RuntimeSnapshotModel{servingEngine(pm, 1)}},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Zero(t, runtime.snapshotCalls, "nothing is read from a pod that is going away")
+	assert.Empty(t, runtime.deactivateCalls, "its engine stops with it")
+	got := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, got))
+	assert.NotContains(t, got.Annotations, constants.ModelClaimPodAnnotationPrefix+pm.Name)
+	claim := &modelv1alpha1.ModelClaim{}
+	err := r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: pm.Name}, claim)
+	assert.True(t, err != nil || !controllerutil.ContainsFinalizer(claim, ModelClaimFinalizer))
+}
+
 // claimWithCost is the sample claim plus a declared per-GPU cost.
 func claimWithCost(footprint, floor int64) *modelv1alpha1.ModelClaim {
 	pm := withFinalizer(sampleModelClaim())
