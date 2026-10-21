@@ -69,8 +69,14 @@ export function deploymentTargets(deployments: Deployment[]): PlaygroundTarget[]
 
 function maxModelLenOf(claim: ModelClaim): number | undefined {
   const args = claim.engineArgs ?? {};
-  // Number() ignores surrounding whitespace and reads a value that is not a string.
-  const value = Number(args['--max-model-len'] ?? args['--max_model_len']);
+  // vLLM uses --max-model-len; SGLang uses --context-length. Number() ignores
+  // surrounding whitespace and reads a value that is not a string.
+  const value = Number(
+    args['--max-model-len']
+      ?? args['--max_model_len']
+      ?? args['--context-length']
+      ?? args['--context_length'],
+  );
   return Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
