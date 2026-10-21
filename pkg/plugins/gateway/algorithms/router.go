@@ -463,7 +463,15 @@ func (m *multiStrategyRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPo
 }
 
 func (m *multiStrategyRouter) runPostRouteUpdates(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) {
+	// A strategy named more than once ("vtc-basic,vtc-basic") shares one scorer,
+	// so update it once: a stateful hook such as vtc-basic's token charge must
+	// not run per mention.
+	updated := make(map[string]struct{}, len(m.config.Items))
 	for _, item := range m.config.Items {
+		if _, done := updated[item.Name]; done {
+			continue
+		}
+		updated[item.Name] = struct{}{}
 		scorer := m.scorers[item.Name]
 		updater, ok := scorer.(types.PostRouteUpdater)
 		if !ok {

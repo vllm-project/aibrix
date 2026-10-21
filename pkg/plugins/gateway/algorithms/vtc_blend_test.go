@@ -84,3 +84,47 @@ func TestSelectVTCBasicBlendChargesUserTokens(t *testing.T) {
 	require.NoError(t, err)
 	assert.InDelta(t, 3*perRequest, tokens, 1e-9, "the blend charges once per request, the same as a direct route")
 }
+
+// A strategy repeated in the string shares one scorer, so the request is
+// charged once, not once per mention.
+func TestSelectVTCBasicRepeatedStrategyChargesOnce(t *testing.T) {
+	withAutoBlendWeights(t, 0, 0)
+	cache.InitForTest()
+
+	config := vtc.DefaultVTCConfig()
+	tracker := vtc.NewInMemorySlidingWindowTokenTracker(&config)
+	vtcRouter, err := vtc.NewBasicVTCRouter(tracker, vtc.NewSimpleTokenEstimator(), &config)
+	require.NoError(t, err)
+	rm := NewRouterManager()
+	rm.RegisterProvider(vtc.RouterVTCBasic, func(_ *types.RoutingContext) (types.Router, error) {
+		return vtcRouter, nil
+	})
+	pods := &utils.PodArray{Pods: []*v1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "default"},
+			Status:     v1.PodStatus{PodIP: "10.0.0.1", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-b", Namespace: "default"},
+			Status:     v1.PodStatus{PodIP: "10.0.0.2", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}},
+		},
+	}}
+
+	route := func(algorithm, user string) float64 {
+		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algorithm), testModelName,
+			"please summarize this document", "req-"+user, user)
+		defer ctx.Delete()
+		router, err := rm.Select(ctx)
+		require.NoError(t, err)
+		_, err = router.Route(ctx, pods)
+		require.NoError(t, err)
+		tokens, err := tracker.GetTokenCount(context.Background(), user)
+		require.NoError(t, err)
+		return tokens
+	}
+
+	once := route("vtc-basic", "alice")
+	require.Greater(t, once, 0.0)
+	assert.InDelta(t, once, route("vtc-basic:1,vtc-basic:2,vtc-basic:3", "bob"), 1e-9,
+		"three mentions of vtc-basic charge the same as one")
+}
