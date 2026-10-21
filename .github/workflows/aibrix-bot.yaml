@@ -29,6 +29,19 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
 
+      # The label approves one commit, see ci-approval.yml. Removing it shows
+      # maintainers that the new commit needs approval again.
+      - name: Remove CI approval after a new push
+        if: >-
+          github.event_name == 'pull_request_target' &&
+          github.event.action == 'synchronize' &&
+          contains(github.event.pull_request.labels.*.name, 'ci-approved')
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh api --method DELETE --silent "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels/ci-approved"
+
       - name: Apply PR labels from changed paths
         if: github.event_name == 'pull_request_target'
         continue-on-error: true

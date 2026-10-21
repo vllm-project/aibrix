@@ -1,0 +1,67 @@
+name: CI Approval
+
+# Called by the workflows that build images or start Kind clusters. It passes
+# for pushes, manual runs, and pull requests from members and collaborators.
+# A pull request from anyone else passes only on the run started by a
+# maintainer adding the ci-approved label, so a label left over from an older
+# commit never approves a newer one.
+on:
+  workflow_call:
+
+permissions:
+  pull-requests: read
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check CI approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPROVAL_LABEL: ci-approved
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_LABEL: ${{ github.event.label.name }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          APPROVED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "Not a pull request, no approval needed."
+            exit 0
+          fi
+
+          case "$AUTHOR_ASSOCIATION" in
+            OWNER|MEMBER|COLLABORATOR)
+              echo "The author is a repository $AUTHOR_ASSOCIATION, no approval needed."
+              exit 0
+              ;;
+          esac
+
+          if [ "$EVENT_ACTION" = "labeled" ] && [ "$EVENT_LABEL" = "$APPROVAL_LABEL" ]; then
+            # The gated jobs test the commit fixed when this run was created,
+            # so a push made after the label was added is caught here.
+            head_sha="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .head.sha)"
+            if [ "$head_sha" = "$APPROVED_SHA" ]; then
+              echo "$APPROVAL_LABEL was added for $APPROVED_SHA, starting CI."
+              exit 0
+            fi
+            reason="The pull request moved to $head_sha after $APPROVAL_LABEL was added for $APPROVED_SHA."
+          else
+            reason="$GITHUB_WORKFLOW waits for a maintainer to add the $APPROVAL_LABEL label for this commit."
+          fi
+
+          {
+            echo "### Waiting for CI approval"
+            echo
+            echo "$reason"
+            echo
+            echo "$GITHUB_WORKFLOW builds images or starts a Kind cluster, so on pull requests from external contributors it runs only after a maintainer reviews the change and adds the \`$APPROVAL_LABEL\` label."
+            echo
+            echo "- Run what you can locally first, such as \`make test\`, \`make test-integration\` and \`make test-e2e\`. See [test/README.md](https://github.com/$GITHUB_REPOSITORY/blob/main/test/README.md)."
+            echo "- The label approves the current commit only. Pushing a new commit removes it, and a maintainer adds it again when the new changes are ready."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error title=Waiting for CI approval::$reason"
+          exit 1
