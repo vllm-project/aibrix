@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
@@ -247,4 +248,34 @@ func TestPreparePayload_SGLangHandlerDuplicateFieldsRejected(t *testing.T) {
 
 	var invalidReqErr *engine.InvalidRequestError
 	assert.True(t, errors.As(err, &invalidReqErr), "must return *InvalidRequestError")
+}
+
+func TestPreparePayload_VLLMResponses(t *testing.T) {
+	t.Setenv("AIBRIX_KV_CONNECTOR_TYPE", "shfs")
+	originalBody := []byte(`{"model":"m","input":"hello","instructions":"be brief","max_output_tokens":128,"temperature":0.7,"stream":true}`)
+	routingCtx := &types.RoutingContext{
+		ReqBody: originalBody,
+		ReqPath: pd.ResponsesPath,
+		Context: context.Background(),
+	}
+	pod := &v1.Pod{Status: v1.PodStatus{PodIP: "10.0.0.1"}}
+	handler := engine.Resolve("vllm")
+
+	prefillBody, err := PreparePayload(routingCtx, pod, "vllm", handler)
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(1), gjson.GetBytes(prefillBody, "max_output_tokens").Int())
+	assert.False(t, gjson.GetBytes(prefillBody, "max_tokens").Exists())
+	assert.False(t, gjson.GetBytes(prefillBody, "max_completion_tokens").Exists())
+	assert.False(t, gjson.GetBytes(prefillBody, "stream").Bool())
+	assert.False(t, gjson.GetBytes(prefillBody, "store").Bool(),
+		"the internal prefill response must not be stored")
+	assert.Equal(t, gjson.GetBytes(originalBody, "input").Raw, gjson.GetBytes(prefillBody, "input").Raw)
+	assert.Equal(t, gjson.GetBytes(originalBody, "instructions").Raw, gjson.GetBytes(prefillBody, "instructions").Raw)
+	assert.True(t, gjson.GetBytes(prefillBody, "kv_transfer_params.do_remote_decode").Bool(),
+		"the SHFS agent must add the vLLM prefill skeleton")
+	assert.Equal(t, gjson.Null, gjson.GetBytes(prefillBody, "kv_transfer_params.remote_host").Type,
+		"the prefill response supplies remote_host later")
+	assert.Equal(t, originalBody, routingCtx.ReqBody,
+		"vLLM sync PD leaves the decode body untouched until the prefill response is merged")
 }

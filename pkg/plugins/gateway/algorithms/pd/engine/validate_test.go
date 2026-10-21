@@ -26,8 +26,8 @@ import (
 )
 
 func TestControlledFields(t *testing.T) {
-	assert.Equal(t, []string{"bootstrap_host", "bootstrap_port", "bootstrap_room", "rid"}, (&SGLangHandler{}).ControlledFields(),
-		"the gateway owns the engine-visible rid of an SGLang PD request, so a client body may not repeat it")
+	assert.Equal(t, []string{"bootstrap_host", "bootstrap_port", "bootstrap_room", "rid", "request_id"}, (&SGLangHandler{}).ControlledFields(),
+		"the gateway owns the engine-visible request id of an SGLang PD request, so a client body may not repeat it")
 	assert.Equal(t, []string{"disaggregated_params", "prompt", "prompt_token_ids"}, (&TRTLLMHandler{}).ControlledFields())
 	assert.Equal(t, []string{"disagg_prefill_resp", "kv_transfer_params"}, (&VLLMHandler{}).ControlledFields(),
 		"vLLM controls the union of every registered KV transfer agent's fields")
@@ -80,6 +80,7 @@ func TestValidateRequest(t *testing.T) {
 		{"prompt_token_ids", []string{"trtllm"}},
 		{"bootstrap_host", []string{"sglang"}},
 		{"bootstrap_room", []string{"sglang"}},
+		{"request_id", []string{"sglang"}},
 	}
 	for _, tc := range cases {
 		body := `{"model":"m","` + tc.key + `":{"a":1},"` + tc.key + `":{"a":2}}`

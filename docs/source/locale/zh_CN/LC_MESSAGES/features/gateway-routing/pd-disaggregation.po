@@ -2128,6 +2128,23 @@ msgstr ":doc:`../../designs/aibrix-stormservice`"
 msgid "StormService, the orchestration layer behind PD disaggregation."
 msgstr "StormService，Prefill/Decode 分离背后的编排层。"
 
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:114
+msgid "Supported APIs"
+msgstr "支持的 API"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:117
+msgid ""
+"PD routing supports ``/v1/chat/completions``, ``/v1/completions``, and "
+"``/v1/responses``. The Responses API requires vLLM 0.19.0+ or SGLang "
+"0.5.22+. Stateful Responses features (``previous_response_id`` and "
+"``background: true``) are not supported with PD because their state is local "
+"to the pod that served the earlier request."
+msgstr ""
+"PD 路由支持 ``/v1/chat/completions``、``/v1/completions`` 和 ``/v1/responses``。"
+"Responses API 要求 vLLM 0.19.0+ 或 SGLang 0.5.22+。有状态的 Responses 特性"
+"（``previous_response_id`` 和 ``background: true``）不支持 PD，因为其状态只存在于"
+"处理先前请求的 Pod 上。"
+
 #~ msgid "Uses NIXL KV transfer backend (``AIBRIX_KV_CONNECTOR_TYPE=nixl``)."
 #~ msgstr "使用 NIXL KV 传输后端（``AIBRIX_KV_CONNECTOR_TYPE=nixl`` ）。"
 

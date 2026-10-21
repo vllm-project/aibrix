@@ -814,10 +814,14 @@ func isMultipartFormPath(requestPath string) bool {
 
 // validateRoutingStrategyForPath checks whether strategy is supported for requestPath.
 // The prefill-decode (PD) disaggregated router mutates generation-specific fields
-// and is initially supported only on generation endpoints (/v1/chat/completions and
-// /v1/completions). Rejecting unsupported endpoint combinations protects non-generation
-// APIs from invalid request mutations and unexpected routing behavior.
-func validateRoutingStrategyForPath(requestPath string, strategy types.RoutingAlgorithm) error {
+// and builds an engine-specific prefill request. It supports the generation endpoints
+// /v1/chat/completions, /v1/completions, and /v1/responses. Responses is limited to
+// engines whose Responses API exposes the PD handshake: vLLM (>= 0.19.0) and SGLang
+// (>= 0.5.22). An empty engine label is the PD router's default vLLM engine (see
+// routingalgorithms.ValidateAndGetLLMEngine). Rejecting unsupported endpoint/engine
+// combinations protects other APIs from invalid request mutations and unexpected
+// routing behavior.
+func validateRoutingStrategyForPath(requestPath string, strategy types.RoutingAlgorithm, llmEngine string) error {
 	resolvedStrategy := string(strategy)
 	if resolvedExclusive, isExclusive := routing.ResolveExclusiveStrategy(string(strategy)); isExclusive {
 		resolvedStrategy = resolvedExclusive
@@ -828,6 +832,13 @@ func validateRoutingStrategyForPath(requestPath string, strategy types.RoutingAl
 		switch cleanPath {
 		case PathChatCompletions, PathCompletions:
 			return nil
+		case PathResponses:
+			switch llmEngine {
+			case "", EngineVLLM, EngineSGLang:
+				return nil
+			default:
+				return fmt.Errorf("routing strategy '%s' is not supported for endpoint '%s' with engine '%s'", routing.RouterPD, cleanPath, llmEngine)
+			}
 		default:
 			return fmt.Errorf("routing strategy '%s' is not supported for endpoint '%s'", routing.RouterPD, cleanPath)
 		}

@@ -58,3 +58,15 @@ var (
 func NewPDRequestID(requestID string) string {
 	return fmt.Sprintf("%s-%08x%08x", requestID, pdRIDNonceBase, pdRIDNonceSeq.Add(1))
 }
+
+// NewPDResponsesRequestID is the Responses API form of NewPDRequestID.
+//
+// SGLang's /v1/responses request model names the engine-visible request id
+// "request_id", not "rid", and uses it as the response id. Its Responses API
+// validates that response ids start with "resp_", so the gateway-owned id needs
+// that prefix. The fixed-width nonce suffix is unchanged: SGLang's
+// /abort_request still matches by rid prefix, and no gateway rid may be a
+// proper prefix of another.
+func NewPDResponsesRequestID(requestID string) string {
+	return "resp_" + NewPDRequestID(requestID)
+}

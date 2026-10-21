@@ -21,11 +21,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
 )
@@ -328,4 +330,46 @@ func TestPrepareSGLangRequestBodies_DuplicateNonControlledKeyAllowed(t *testing.
 	assert.Equal(t, 1, countTopLevelKeyOccurrences(prefillBody, "max_tokens"))
 	assert.Equal(t, 1, countTopLevelKeyOccurrences(prefillBody, "stream"))
 	assert.Equal(t, 0, countTopLevelKeyOccurrences(prefillBody, "stream_options"))
+}
+
+func TestAugmentPrefillRequest_ResponsesUsesRequestID(t *testing.T) {
+	originalBody := []byte(`{"model":"m","input":"hello","instructions":"be brief","max_output_tokens":128,"stream":true}`)
+	routingCtx := types.NewRoutingContext(context.Background(), "", "m", "", "req-responses-1", "")
+	routingCtx.ReqBody = originalBody
+	routingCtx.ReqPath = pd.ResponsesPath
+	handler := &SGLangHandler{}
+	pod := testPod()
+
+	prefillBase, err := handler.AugmentPrefillRequest(routingCtx, pod, routingCtx.ReqBody)
+	require.NoError(t, err)
+
+	requestID := gjson.GetBytes(routingCtx.ReqBody, "request_id").String()
+	require.NotEmpty(t, requestID)
+	assert.True(t, strings.HasPrefix(requestID, "resp_req-responses-1-"),
+		"SGLang Responses ids must start with resp_ and retain the gateway request id: %q", requestID)
+	assert.Equal(t, requestID, routingCtx.PDRequestID(),
+		"the abort rid must be the engine-visible Responses request_id")
+	assert.False(t, gjson.GetBytes(routingCtx.ReqBody, "rid").Exists(),
+		"Responses does not use rid; a client value must not survive")
+	assert.Equal(t, requestID, gjson.GetBytes(prefillBase, "request_id").String())
+	assert.Equal(t, "10.0.0.1", gjson.GetBytes(prefillBase, "bootstrap_host").String())
+	assert.Equal(t, int64(8998), gjson.GetBytes(prefillBase, "bootstrap_port").Int())
+	assert.True(t, gjson.GetBytes(prefillBase, "bootstrap_room").Exists())
+	assert.Equal(t, "hello", gjson.GetBytes(routingCtx.ReqBody, "input").String())
+	assert.Equal(t, "be brief", gjson.GetBytes(routingCtx.ReqBody, "instructions").String())
+
+	// The common prefill controls must use max_output_tokens, and SGLang needs 3
+	// because it subtracts two tokens for BOS/EOS.
+	prefillBody, err := pd.ApplyPrefillControlFieldsForPath(prefillBase, pd.EngineSGLang, pd.ResponsesPath)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), gjson.GetBytes(prefillBody, "max_output_tokens").Int())
+	assert.False(t, gjson.GetBytes(prefillBody, "stream").Bool())
+	assert.False(t, gjson.GetBytes(prefillBody, "max_tokens").Exists())
+}
+
+func TestValidateSGLangRequest_DuplicateResponsesRequestID(t *testing.T) {
+	body := []byte(`{"model":"m","input":"hi","request_id":"a","request_id":"b"}`)
+	err := ValidateSGLangRequest(body)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate")
 }
