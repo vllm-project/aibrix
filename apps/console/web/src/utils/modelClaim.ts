@@ -10,8 +10,8 @@ export const MODEL_CLAIM_REFRESH_INTERVAL_MS = 5000;
 export const MODEL_CLAIM_NAME_MAX_LENGTH = 63;
 const modelClaimNamePattern = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
 
-// Flags the runtime launcher sets for every engine. engineConfig.args is
-// appended after them, so setting one again would override the launcher.
+// Flags the runtime launcher sets for every engine. It passes them after
+// engineConfig.args, so a claim that sets one again would be ignored.
 export const MODEL_CLAIM_LAUNCHER_FLAGS = [
   '--model',
   '--model-path',

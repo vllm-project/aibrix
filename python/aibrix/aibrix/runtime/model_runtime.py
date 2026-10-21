@@ -899,10 +899,8 @@ class SubprocessEngineLauncher(EngineLauncher):
         # Serve under the logical model name (not the artifact path) so the
         # gateway routes the claimed served name to this engine.
         if inst.engine == "sglang":
-            cmd = [
-                sys.executable,
-                "-m",
-                "sglang.launch_server",
+            module = "sglang.launch_server"
+            own_flags = [
                 "--model-path",
                 model_path,
                 "--served-model-name",
@@ -914,10 +912,8 @@ class SubprocessEngineLauncher(EngineLauncher):
                 "--enable-memory-saver",
             ]
         else:  # vllm
-            cmd = [
-                sys.executable,
-                "-m",
-                "vllm.entrypoints.openai.api_server",
+            module = "vllm.entrypoints.openai.api_server"
+            own_flags = [
                 "--model",
                 model_path,
                 "--served-model-name",
@@ -930,10 +926,15 @@ class SubprocessEngineLauncher(EngineLauncher):
             ]
         env = kvcached_env(inst.ipc_name)
         env.setdefault("VLLM_SERVER_DEV_MODE", "1")  # enable /sleep, /wake_up
+        cmd = [sys.executable, "-m", module]
         for key, value in _engine_args(engine_config, additional_config).items():
             cmd.append(key)
             if value:
                 cmd.append(value)
+        # The launcher's own flags go last. Both engines keep the last value
+        # given for a flag, so a claim that sets one again, in any spelling,
+        # cannot move the engine off its port, rename it or turn sleep off.
+        cmd += own_flags
 
         logger.info(
             "launching %s engine for %s: %s",

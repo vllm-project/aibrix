@@ -841,6 +841,52 @@ def test_engine_config_args_are_structured():
     ) == {"--max-model-len": "2048", "--enforce-eager": ""}
 
 
+@pytest.mark.parametrize(
+    "engine, module, own_flags",
+    [
+        (
+            "vllm",
+            "vllm.entrypoints.openai.api_server",
+            ["--model", "Org/M1", "--served-model-name", "m1", "--host", "0.0.0.0"]
+            + ["--port", "20000", "--enable-sleep-mode"],
+        ),
+        (
+            "sglang",
+            "sglang.launch_server",
+            ["--model-path", "Org/M1", "--served-model-name", "m1", "--host", "0.0.0.0"]
+            + ["--port", "20000", "--enable-memory-saver"],
+        ),
+    ],
+)
+def test_launch_passes_its_own_flags_after_the_claims(
+    monkeypatch, engine, module, own_flags
+):
+    # Both engines keep the last value given for a flag, so the launcher's
+    # flags win however a claim spells them.
+    import subprocess
+
+    from aibrix.runtime.model_runtime import ModelInstance, SubprocessEngineLauncher
+
+    launched = []
+
+    def fake_popen(cmd, env, start_new_session):
+        launched.append(cmd)
+        return SimpleNamespace(pid=4321)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    inst = ModelInstance(model_name="m1", port=20000, ipc_name="kvc_m1", engine=engine)
+    claim_args = {
+        "--port=9000": "",
+        "--no-enable-sleep-mode": "",
+        "--max-model-len": "2048",
+    }
+
+    SubprocessEngineLauncher().launch(inst, "hf://Org/M1", {"args": claim_args}, None)
+
+    claim_flags = ["--port=9000", "--no-enable-sleep-mode", "--max-model-len", "2048"]
+    assert launched == [[sys.executable, "-m", module] + claim_flags + own_flags]
+
+
 def test_vllm_parallelism_defaults_and_combines_tp_pp():
     from aibrix.runtime.model_runtime import vllm_parallelism
 

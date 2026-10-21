@@ -50,9 +50,8 @@ const (
 )
 
 // modelClaimLauncherFlags are the engine flags the runtime launcher sets for
-// every engine it starts. engineConfig.args is appended after them, so a claim
-// that sets one again would override the launcher, for example by moving the
-// engine off the port the gateway routes to.
+// every engine it starts. It passes them after engineConfig.args, so its own
+// values win, and a claim that sets one again is refused rather than ignored.
 var modelClaimLauncherFlags = map[string]bool{
 	"--model":             true,
 	"--model-path":        true,
