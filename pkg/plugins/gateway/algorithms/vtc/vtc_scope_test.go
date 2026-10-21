@@ -239,3 +239,26 @@ func TestWithWindowSizeDoesNotLeakIntoTheProcessDefault(t *testing.T) {
 	want := time.Duration(before) * timeUnitDuration[timeUnitFromName(timeUnitStr)]
 	assert.Equal(t, want, after.windowSize, "a tracker built afterwards keeps the process default window")
 }
+
+// PostRouteUpdate charges the tracker the request's profile scopes, the same
+// one Route charges and scoring reads, not the process-wide tracker.
+func TestPostRouteUpdateChargesTheScopedTracker(t *testing.T) {
+	withTrackerDefaults(t)
+	router := newTrackerTestRouter()
+
+	knobs := EnvTokenTrackerKnobs()
+	knobs.WindowSize += 30
+	ctx := scopedCtx(t, knobs, 3.0, 4.0)
+	scoped, _ := router.trackerFor(ctx)
+	require.NotSame(t, router.tokenTracker, scoped)
+
+	pods := createTestPodsForMetrics(2)
+	require.NoError(t, router.PostRouteUpdate(ctx, NewSimplePodList(pods), pods[0]))
+
+	total, err := scoped.GetTokenCount(context.Background(), "user1")
+	require.NoError(t, err)
+	assert.Greater(t, total, 0.0, "the scoped tracker is charged")
+	total, err = router.tokenTracker.GetTokenCount(context.Background(), "user1")
+	require.NoError(t, err)
+	assert.Zero(t, total, "the process-wide tracker is not")
+}

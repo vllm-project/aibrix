@@ -266,15 +266,35 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 		}
 	}
 
-	if *user != "" {
-		err := tracker.UpdateTokenCount(ctx.Context, *user, inputTokens, outputTokens)
-		if err != nil {
-			klog.ErrorS(err, "failed to update user token count", "user", *user)
-		}
-	}
+	chargeUserTokens(ctx, tracker, *user, inputTokens, outputTokens)
 
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
+}
+
+// PostRouteUpdate charges the request's tokens to its user when a pod is picked
+// without Route, as the auto-blend and the single-candidate fast path do.
+func (r *BasicVTCRouter) PostRouteUpdate(ctx *types.RoutingContext, _ types.PodList, _ *v1.Pod) error {
+	if ctx.User == nil {
+		return nil
+	}
+	tracker, _ := r.trackerFor(ctx)
+	chargeUserTokens(ctx, tracker, *ctx.User,
+		r.tokenEstimator.EstimateInputTokens(ctx.Message),
+		r.tokenEstimator.EstimateOutputTokens(ctx.Message))
+	return nil
+}
+
+var _ types.PostRouteUpdater = (*BasicVTCRouter)(nil)
+
+// chargeUserTokens adds a routed request's estimated tokens to its user's window.
+func chargeUserTokens(ctx *types.RoutingContext, tracker TokenTracker, user string, inputTokens, outputTokens float64) {
+	if user == "" {
+		return
+	}
+	if err := tracker.UpdateTokenCount(ctx.Context, user, inputTokens, outputTokens); err != nil {
+		klog.ErrorS(err, "failed to update user token count", "user", user)
+	}
 }
 
 // ScoreAll computes the scores for all ready pods in a single batch operation.
