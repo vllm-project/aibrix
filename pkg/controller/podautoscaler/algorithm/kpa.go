@@ -185,21 +185,36 @@ func (a *KPAAlgorithm) desiredPodCounts(currentPodCount, loadPodCount float64, c
 	// counting them would ask for more pods than the load needs; a panic would
 	// then hold that count after they are ready. External and domain sources
 	// already report one total.
+	//
+	// The tolerance band is per pod, so a total is judged per pod too, the way
+	// APA does: otherwise a total near one pod's target holds any replica count.
+	// With no pods, any load is outside the band so that it activates one.
 	load := 1.0
+	tolerancePods := math.Max(1, currentPodCount)
+	perPodSource := false
 	if sourceType, _ := context.GetMetricSourceTypeForMetric(metricsName); IsPerPodSource(sourceType) {
 		load = math.Max(1, loadPodCount)
+		tolerancePods = 1
+		perPodSource = true
+	}
+	outsideTolerance := func(observed float64) bool {
+		if !perPodSource && currentPodCount == 0 && observed > 0 {
+			return true
+		}
+		v := observed / tolerancePods
+		return v > scaleUpThreshold || v < scaleDownThreshold
 	}
 
 	// Calculate desired replicas based on tolerance-adjusted targets
 	var dspc, dppc float64
-	if observedStableValue > scaleUpThreshold || observedStableValue < scaleDownThreshold {
+	if outsideTolerance(observedStableValue) {
 		dspc = math.Ceil(load * observedStableValue / targetValue)
 	} else {
 		// Within tolerance, maintain current replica count
 		dspc = currentPodCount
 	}
 
-	if observedPanicValue > scaleUpThreshold || observedPanicValue < scaleDownThreshold {
+	if outsideTolerance(observedPanicValue) {
 		dppc = math.Ceil(load * observedPanicValue / targetValue)
 	} else {
 		// Within tolerance, maintain current replica count
