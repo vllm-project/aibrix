@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -1931,4 +1933,27 @@ func TestLoadAutoBlendWeightsFromEnvFallsBackOnInvalid(t *testing.T) {
 	assert.Equal(t, 1, weights.loadBalance)
 	assert.Equal(t, 1, weights.leastRequest)
 	assert.Equal(t, 4, weights.prefixCacheLoadBalance)
+}
+
+// The package-level weights are read once at init, so t.Setenv cannot reach
+// them. Re-run this test in a child process with the variables set and check
+// the values every consumer actually reads.
+func TestAutoBlendPackageWeightsReadZeroFromEnv(t *testing.T) {
+	if os.Getenv("AIBRIX_TEST_AUTO_BLEND_CHILD") == "1" {
+		assert.Equal(t, 0, autoBlendLoadBalanceWeight)
+		assert.Equal(t, 0, autoBlendLeastRequestTopKWeight)
+		assert.Equal(t, 0, autoBlendPrefixCacheLoadBalanceWeight)
+		assert.Equal(t, 5, autoBlendPrefixCacheWeight)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestAutoBlendPackageWeightsReadZeroFromEnv$")
+	cmd.Env = append(os.Environ(),
+		"AIBRIX_TEST_AUTO_BLEND_CHILD=1",
+		"AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0",
+		"AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT=0",
+		"AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT=0",
+		"AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT=0",
+	)
+	out, err := cmd.CombinedOutput()
+	assert.NoError(t, err, "child test failed:\n%s", out)
 }

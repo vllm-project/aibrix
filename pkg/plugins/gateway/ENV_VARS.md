@@ -176,7 +176,7 @@ disagreement without masking real load imbalance.
 |---|---|---|---|---|
 | `AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT` | int | `1` | Weight coefficient for the silently-appended `load-balance` scorer. Set to `0` to disable the whole auto-blend feature. | [algorithms/router.go](algorithms/router.go) |
 | `AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT` | int | `1` | Weight coefficient for the silently-appended `least-request-top-k` scorer. It is added only when neither `least-request` nor `least-request-top-k` is already in the strategy (an explicit weight of `0` on either also suppresses it), and is needed so multi-port/data-parallel pod routing keeps working under the blend. Plain `least-request` is not used here because every gateway replica would score the same single least-loaded pod best. The variable keeps its `LEAST_REQUEST` name for compatibility. Set to `0` to omit it from the blend. | [algorithms/router.go](algorithms/router.go) |
-| `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT` | int | `5` | Primary weight used when auto-blending a bare `prefix-cache` request. With the matching load-balance weight this is a 5:4 (1.25:1) lean toward cache affinity. `0` is rejected. | [algorithms/router.go](algorithms/router.go) |
+| `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT` | int | `5` | Primary weight used when auto-blending a bare `prefix-cache` request. With the matching load-balance weight this is a 5:4 (1.25:1) lean toward cache affinity. `0` is rejected with a warning and the default is used. | [algorithms/router.go](algorithms/router.go) |
 | `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT` | int | `4` | `load-balance` weight paired with `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT` for a bare `prefix-cache` request. `0` leaves those requests with prefix-cache scoring alone. | [algorithms/router.go](algorithms/router.go) |
 
 The four `AIBRIX_ROUTING_AUTO_BLEND_*` weights can also be set per request by the model config profile (`routingConfig.autoBlend.*`); see [Model Config Profile Overrides](#model-config-profile-overrides).
@@ -418,7 +418,7 @@ description and examples live in the Config Profiles section of the gateway plug
 | `AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT` | `routingConfig.vtc.utilizationWeight` | `0` drops the utilization term. |
 | `AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT` | `routingConfig.autoBlend.loadBalanceWeight` | `0` disables the auto-blend for the profile's requests. |
 | `AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT` | `routingConfig.autoBlend.leastRequestWeight` | |
-| `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT` | `routingConfig.autoBlend.prefixCacheWeight` | `0` is rejected; it would drop the caller's own strategy from the blend. |
+| `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT` | `routingConfig.autoBlend.prefixCacheWeight` | `0` is rejected with a warning and the environment value is kept; it would drop the caller's own strategy from the blend. |
 | `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT` | `routingConfig.autoBlend.prefixCacheLoadBalanceWeight` | `0` leaves those requests with prefix-cache scoring alone. |
 | `AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT` | `routingConfig.vtc.inputTokenWeight` | Also scopes the VTC token tracker: this weight is baked into the tracker, so the profile's requests get one of their own. |
 | `AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT` | `routingConfig.vtc.outputTokenWeight` | Scopes the tracker the same way as the input weight. |
