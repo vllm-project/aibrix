@@ -1201,12 +1201,19 @@ func (r *pdRouter) scorePreparedPrefillPods(routingCtx *types.RoutingContext, pr
 		rolesetName := pod.Labels[PDRoleSetIdentifier]
 		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 		reqCnt := float64(podRequestCount[podKey])
-		if reqCnt > meanRequestCount+float64(sigma)*stdDevRequestCount || reqCnt > loadCap {
+		if reqCnt > meanRequestCount+float64(sigma)*stdDevRequestCount {
 			if klog.V(4).Enabled() {
 				klog.V(4).InfoS("prefill pod request count is higher than mean request count, skipping",
 					"request_id", routingCtx.RequestID, "pod_name", pod.Name,
-					"req_cnt", reqCnt, "mean_req_cnt", meanRequestCount, "std_dev_req_cnt", stdDevRequestCount,
-					"load_cap", loadCap)
+					"req_cnt", reqCnt, "mean_req_cnt", meanRequestCount, "std_dev_req_cnt", stdDevRequestCount)
+			}
+			continue
+		}
+		if reqCnt > loadCap {
+			if klog.V(4).Enabled() {
+				klog.V(4).InfoS("prefill pod request count is above the bounded-load cap, skipping",
+					"request_id", routingCtx.RequestID, "pod_name", pod.Name,
+					"req_cnt", reqCnt, "mean_req_cnt", meanRequestCount, "load_cap", loadCap)
 			}
 			continue
 		}
