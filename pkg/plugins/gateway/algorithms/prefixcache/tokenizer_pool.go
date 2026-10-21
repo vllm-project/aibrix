@@ -509,6 +509,12 @@ func (p *TokenizerPool) findVLLMEndpointForModel(model string, pods []*v1.Pod) (
 			continue
 		}
 
+		// A pod in a state transition can report Ready before its IP is
+		// populated; an empty IP would build an endpoint like "http://:8000".
+		if pod.Status.PodIP == "" {
+			continue
+		}
+
 		candidates = append(candidates, pod.Status.PodIP)
 	}
 	if len(candidates) == 0 {

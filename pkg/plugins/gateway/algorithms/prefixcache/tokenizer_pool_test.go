@@ -947,6 +947,10 @@ func TestFindVLLMEndpointPicksARandomCandidatePod(t *testing.T) {
 		pod := createTestPod(name, "llama2-7b", "vllm", true)
 		pods = append(pods, &pod)
 	}
+	// A ready pod whose IP is not populated yet must never be selected.
+	ipLessPod := createTestPod("pod-ipless", "llama2-7b", "vllm", true)
+	ipLessPod.Status.PodIP = ""
+	pods = append(pods, &ipLessPod)
 
 	seen := map[string]bool{}
 	for i := 0; i < 50; i++ {
