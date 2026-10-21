@@ -1211,6 +1211,113 @@ func TestComputeMetricBasedReplicas_StormService_FiltersIndex0(t *testing.T) {
 	}
 }
 
+// TestComputeMetricBasedReplicas_StormService_MixedPodGroups verifies that when a StormService has both a
+// role with pod groups and a role without, only index 0 of each pod group is kept, and every pod of the role
+// without pod groups is kept too, although it has no pod-group index.
+func TestComputeMetricBasedReplicas_StormService_MixedPodGroups(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	sch := runtime.NewScheme()
+	_ = scheme.AddToScheme(sch)
+	_ = corev1.AddToScheme(sch)
+	_ = autoscalingv1alpha1.AddToScheme(sch)
+	_ = orchestrationv1alpha1.AddToScheme(sch)
+
+	ssName := "ss-mixed"
+	ss := &orchestrationv1alpha1.StormService{
+		ObjectMeta: metav1.ObjectMeta{Name: ssName, Namespace: ns},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+				Spec: &orchestrationv1alpha1.RoleSetSpec{
+					Roles: []orchestrationv1alpha1.RoleSpec{
+						{Name: "prefill", PodGroupSize: ptr.To(int32(4))},
+						{Name: "decode"},
+					},
+				},
+			},
+		},
+	}
+	groupPod := func(name, index string) *corev1.Pod {
+		return buildPod(ns, name, map[string]string{
+			constants.StormServiceNameLabelKey: ssName,
+			constants.RoleNameLabelKey:         "prefill",
+			constants.PodGroupIndexLabelKey:    index,
+		})
+	}
+	singlePod := func(name string) *corev1.Pod {
+		return buildPod(ns, name, map[string]string{
+			constants.StormServiceNameLabelKey: ssName,
+			constants.RoleNameLabelKey:         "decode",
+		})
+	}
+	otherStormService := buildPod(ns, "other", map[string]string{
+		constants.StormServiceNameLabelKey: "ss-other",
+		constants.RoleNameLabelKey:         "decode",
+	})
+
+	tests := []struct {
+		name         string
+		roleName     string
+		wantPodNames []string
+	}{
+		{name: "whole StormService", wantPodNames: []string{"decode-0", "decode-1", "prefill-0"}},
+		{name: "role with pod groups", roleName: "prefill", wantPodNames: []string{"prefill-0"}},
+		{name: "role without pod groups", roleName: "decode", wantPodNames: []string{"decode-0", "decode-1"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cl := fake.NewClientBuilder().WithScheme(sch).
+				WithObjects(
+					groupPod("prefill-0", "0"),
+					groupPod("prefill-1", "1"),
+					groupPod("prefill-3", "3"),
+					singlePod("decode-0"),
+					singlePod("decode-1"),
+					otherStormService.DeepCopy(),
+					ss.DeepCopy(),
+				).
+				Build()
+
+			pa := autoscalingv1alpha1.PodAutoscaler{
+				ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "test-pa"},
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						APIVersion: orchestrationv1alpha1.GroupVersion.String(),
+						Kind:       StormService,
+						Namespace:  ns,
+						Name:       ssName,
+					},
+				},
+			}
+			if tc.roleName != "" {
+				pa.Spec.SubTargetSelector = &autoscalingv1alpha1.SubTargetSelector{RoleName: tc.roleName}
+			}
+
+			as := &fakeAutoScaler{}
+			r := &PodAutoscalerReconciler{
+				Client:              cl,
+				workloadScaleClient: NewWorkloadScale(cl, nil),
+				autoScaler:          as,
+			}
+
+			scaleObj := buildScaleObject(orchestrationv1alpha1.GroupVersion.String(), StormService, ns, ssName)
+			if _, err := r.computeMetricBasedReplicas(ctx, pa, scalingctx.NewBaseScalingContext(), scaleObj, 2); err != nil {
+				t.Fatalf("computeMetricBasedReplicas error: %v", err)
+			}
+			if as.lastRequest == nil {
+				t.Fatal("autoscaler did not receive request")
+			}
+			if got := podNames(as.lastRequest.Pods); !reflect.DeepEqual(got, tc.wantPodNames) {
+				t.Errorf("pods mismatch, got=%v want=%v", got, tc.wantPodNames)
+			}
+		})
+	}
+}
+
 // TestComputeMetricBasedReplicas_RayClusterFleet_FiltersHeadOnly verifies that when scaling a RayClusterFleet,
 // the reconciler adds requirement ray.io/node-type=head. It does NOT enforce pod-group index filtering.
 func TestComputeMetricBasedReplicas_RayClusterFleet_FiltersHeadOnly(t *testing.T) {
