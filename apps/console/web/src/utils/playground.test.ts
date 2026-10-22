@@ -89,6 +89,15 @@ describe('Playground helpers', () => {
     expect(maxTokensFor(withLen ?? null, 256)).toBe(256);
     expect(maxTokensFor(withoutLen ?? null, 4096)).toBe(4096);
     expect(maxTokensFor(null, 4096)).toBe(4096);
+
+    const [sglang, sglangUnderscore] = modelClaimTargets([
+      { name: 'f', modelName: 'f', phase: 'Active', deleting: false, engineArgs: { '--context-length': '2048' } },
+      { name: 'g', modelName: 'g', phase: 'Active', deleting: false, engineArgs: { '--context_length': '3072' } },
+    ] as unknown as ModelClaim[]);
+    expect(sglang?.maxModelLen).toBe(2048);
+    expect(maxTokensFor(sglang ?? null, 4096)).toBe(1024);
+    expect(sglangUnderscore?.maxModelLen).toBe(3072);
+    expect(maxTokensFor(sglangUnderscore ?? null, 4096)).toBe(1536);
   });
 
   it('sends the routing strategy and waits out a waking model', async () => {

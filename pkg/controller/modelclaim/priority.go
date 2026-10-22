@@ -194,7 +194,7 @@ func (r *ModelClaimReconciler) placementTurnBlocker(
 		}
 		shared, _ := candidatePodsForClaim(claim, candidates)
 		if r.backoff().waiting(types.NamespacedName{Namespace: claim.Namespace, Name: claim.Name},
-			claim.Generation, roomSignatureOf(shared, claims)) {
+			claim.Generation, roomSignatureOf(shared, claims), ledgers) {
 			continue
 		}
 		if r.claimFeasibleForPlacementWithPolicy(ctx, claim, candidates, claims, ledgers, readings) {

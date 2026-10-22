@@ -78,6 +78,10 @@ type placementAttempt struct {
 	// written is whether the claim's status was written after the refusal, so
 	// that the claim says why it waits.
 	written bool
+	// unread names the candidate pods that the refusing try could not read,
+	// because their runtime did not answer or the claims could not be listed.
+	// The refusal says nothing about whether the claim fits on them.
+	unread []string
 }
 
 // whatHelps says which changes of the pool can help a waiting claim.
@@ -123,7 +127,8 @@ type roomSignature map[string]podRoom
 // podRoom is what the live instances on one pod take. It says how many there
 // are, how many of them are awake, and how many belong to claims that declare
 // nothing. It also says what the rest are promised. Last, it says whether the
-// pod is ready, which is when its runtime answers.
+// pod is ready. Its runtime can answer a moment before that, so a refusal also
+// keeps the pods it could not read.
 //
 // A pod described while the claims could not be listed is unlisted. What it
 // takes is unknown then, and only its being there and its readiness count.
@@ -179,13 +184,51 @@ func (b *placementBackoff) due(claim types.NamespacedName, generation int64, roo
 
 // waiting reports whether another claim must still wait before retrying. Unlike
 // due, this leaves the attempt untouched: only the claim's own reconcile may
-// reset its refusal count or consume an unwritten refusal.
-func (b *placementBackoff) waiting(claim types.NamespacedName, generation int64, room roomSignature) bool {
+// reset its refusal count or consume an unwritten refusal. The ledgers are the
+// caller's reading of the pods. A pod that the refusal could not read and the
+// caller did read was never judged for the claim, so the claim does not count
+// as waiting.
+func (b *placementBackoff) waiting(
+	claim types.NamespacedName,
+	generation int64,
+	room roomSignature,
+	ledgers map[string]podLedger,
+) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	attempt, found := b.attempts[claim]
-	return found && attempt.written && generation == attempt.generation &&
-		!roomMayHaveAppeared(attempt.room, room, attempt.helpedBy()) && b.now().Before(attempt.readyAt)
+	if !found || !attempt.written || generation != attempt.generation ||
+		roomMayHaveAppeared(attempt.room, room, attempt.helpedBy()) || !b.now().Before(attempt.readyAt) {
+		return false
+	}
+	for _, pod := range attempt.unread {
+		if ledger, seen := ledgers[pod]; seen && !ledger.unread {
+			return false
+		}
+	}
+	return true
+}
+
+// refusedWithoutReading records the candidate pods that the try which just
+// refused a claim could not read.
+func (b *placementBackoff) refusedWithoutReading(claim types.NamespacedName, pods []string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if attempt, waiting := b.attempts[claim]; waiting {
+		attempt.unread = pods
+		b.attempts[claim] = attempt
+	}
+}
+
+// unreadPods names the candidates that this pass could not read.
+func unreadPods(candidates []corev1.Pod, ledgers map[string]podLedger) []string {
+	var unread []string
+	for i := range candidates {
+		if ledgers[candidates[i].Name].unread {
+			unread = append(unread, candidates[i].Name)
+		}
+	}
+	return unread
 }
 
 // refused records that no card could hold a claim, and returns how long it
@@ -271,6 +314,7 @@ func (b *placementBackoff) refuseLocked(
 	attempt.tooLarge = tooLarge
 	attempt.failedToStart = false
 	attempt.written = false
+	attempt.unread = nil
 	wait := DefaultRequeueDuration << min(attempt.refusals-1, 16)
 	if wait > maximumPlacementBackoff || wait <= 0 {
 		wait = maximumPlacementBackoff

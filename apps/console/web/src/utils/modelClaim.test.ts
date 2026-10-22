@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ModelClaim, ModelClaimPool } from './api';
 import {
   buildModelClaimYaml,
+  engineFlag,
   formatBytes,
   modelClaimAttention,
   parseQuantity,
@@ -93,6 +94,9 @@ describe('model claim helpers', () => {
     const dataParallel = validateEngineArgs([{ key: '--data-parallel-size', value: '2' }], 'vllm', pool);
     expect(dataParallel.topologyError).toMatch(/Data parallelism/);
 
+    const empty = validateEngineArgs([{ key: '--tensor-parallel-size', value: '' }], 'vllm', pool);
+    expect(empty.topologyError).toBe('--tensor-parallel-size must be a positive integer.');
+
     const unknownPool = validateEngineArgs([{ key: '--tensor-parallel-size', value: '2' }], 'vllm', {
       ...pool,
       gpuCounts: [1, 2],
@@ -102,6 +106,44 @@ describe('model claim helpers', () => {
     const sglang = validateEngineArgs([{ key: '--tensor-parallel-size', value: '2' }], 'sglang', pool);
     expect(sglang.topologyError).toBeNull();
     expect(sglang.parallelism).toBeNull();
+  });
+
+  it('reads engine flags the way vLLM does', () => {
+    expect(engineFlag(' --max_model_len ')).toEqual({ flag: '--max-model-len', value: null });
+    expect(engineFlag('--port=9000')).toEqual({ flag: '--port', value: '9000' });
+    expect(engineFlag('--enforce-eager=')).toEqual({ flag: '--enforce-eager', value: '' });
+    expect(engineFlag('-tp')).toEqual({ flag: '--tensor-parallel-size', value: null });
+    expect(engineFlag('-q')).toEqual({ flag: '-q', value: null });
+
+    const rows = validateEngineArgs(
+      [
+        { key: '--port=9000', value: '' },
+        { key: '--served_model_name', value: 'x' },
+        { key: '--no-enable-sleep-mode', value: '' },
+        { key: '--max-num-seqs=8', value: '16' },
+        { key: '--max-model-len', value: '2048' },
+        { key: '--max_model_len', value: '4096' },
+        { key: '--gpu_memory_utilization', value: '0.9' },
+      ],
+      'vllm',
+      pool,
+    );
+    expect(rows.rowErrors).toEqual([
+      'The runtime sets --port for every engine.',
+      'The runtime sets --served-model-name for every engine.',
+      'The runtime sets --enable-sleep-mode for every engine.',
+      '--max-num-seqs=8 already gives a value after "="; leave the value empty.',
+      null,
+      '--max-model-len is set more than once.',
+      'kvcached owns KV memory; remove --gpu-memory-utilization.',
+    ]);
+
+    for (const row of [
+      { key: '--tensor-parallel-size=2', value: '' },
+      { key: '--tensor_parallel_size', value: '2' },
+    ]) {
+      expect(validateEngineArgs([row], 'vllm', pool).topologyError).toMatch(/TP × PP is 2/);
+    }
   });
 
   it('renders the submitted claim as YAML', () => {

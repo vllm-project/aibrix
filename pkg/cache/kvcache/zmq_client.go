@@ -491,28 +491,29 @@ func (c *ZMQClient) drainPendingLocked() int {
 
 // recoverStalledGap runs after a replay: if a gap is still open, the publisher
 // could not supply the missing batches. Clear the cached view, because it can
-// no longer be trusted, and continue from the oldest buffered batch.
+// no longer be trusted, and continue from the oldest buffered batch. Repeat
+// for each remaining gap.
 func (c *ZMQClient) recoverStalledGap() {
 	c.applyMu.Lock()
 	defer c.applyMu.Unlock()
 
-	if len(c.pending) == 0 {
-		return
-	}
-	minSeq := int64(-1)
-	for seq := range c.pending {
-		if minSeq < 0 || seq < minSeq {
-			minSeq = seq
+	for len(c.pending) > 0 {
+		minSeq := int64(-1)
+		for seq := range c.pending {
+			if minSeq < 0 || seq < minSeq {
+				minSeq = seq
+			}
 		}
+		// A malformed buffered batch may have stopped the previous drain.
+		if minSeq <= c.GetLastSequence()+1 {
+			return
+		}
+		klog.Warningf("Sequence gap for %s could not be replayed; resetting the cached view",
+			c.config.PodKey)
+		c.clearCachedViewLocked()
+		c.setLastSequence(minSeq - 1)
+		c.drainPendingLocked()
 	}
-	if minSeq <= c.GetLastSequence()+1 {
-		return
-	}
-	klog.Warningf("Sequence gap for %s could not be replayed; resetting the cached view",
-		c.config.PodKey)
-	c.clearCachedViewLocked()
-	c.setLastSequence(minSeq - 1)
-	c.drainPendingLocked()
 }
 
 // clearCachedViewLocked tells the handler to drop every prefix cached for this

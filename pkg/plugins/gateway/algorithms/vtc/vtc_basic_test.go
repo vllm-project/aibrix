@@ -688,3 +688,32 @@ func createTestPodsForMetrics(count int) []*v1.Pod {
 	}
 	return pods
 }
+
+func TestVTCBasic_PostRouteUpdateChargesUser(t *testing.T) {
+	config := &VTCConfig{InputTokenWeight: 1.0, OutputTokenWeight: 1.0, Variant: RouterVTCBasic}
+	tracker := NewInMemorySlidingWindowTokenTracker(config)
+	router := &BasicVTCRouter{
+		cache:          NewSimpleCache(),
+		tokenTracker:   tracker,
+		tokenEstimator: NewSimpleTokenEstimator(),
+		config:         config,
+	}
+	pods := createTestPodsForMetrics(2)
+	podList := NewSimplePodList(pods)
+	ctx := context.Background()
+
+	charged := types.NewRoutingContext(ctx, "vtc-basic", "model1", "test message", "request1", "user1")
+	defer charged.Delete()
+	assert.NoError(t, router.PostRouteUpdate(charged, podList, pods[0]))
+	tokens, err := tracker.GetTokenCount(ctx, "user1")
+	assert.NoError(t, err)
+	want := router.tokenEstimator.EstimateInputTokens("test message") + router.tokenEstimator.EstimateOutputTokens("test message")
+	assert.InDelta(t, want, tokens, 1e-9, "the request's estimated tokens are charged to its user")
+
+	anonymous := types.NewRoutingContext(ctx, "vtc-basic", "model1", "test message", "request2", "")
+	defer anonymous.Delete()
+	assert.NoError(t, router.PostRouteUpdate(anonymous, podList, pods[0]))
+	tokens, err = tracker.GetTokenCount(ctx, "")
+	assert.NoError(t, err)
+	assert.Zero(t, tokens, "a request without a user charges nobody")
+}

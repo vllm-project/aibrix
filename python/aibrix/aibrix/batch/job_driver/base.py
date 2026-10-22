@@ -1049,6 +1049,10 @@ class BaseJobDriver:
                 kwargs["max_concurrency"] = max_concurrency
         return kwargs
 
+    def _request_timeout_seconds(self, job: BatchJob) -> Optional[float]:
+        client = job.spec.aibrix.client if job.spec.aibrix else None
+        return getattr(client, "request_timeout_seconds", None)
+
     def _pending_request_retry_poll_seconds(self, job: BatchJob) -> float:
         client = job.spec.aibrix.client if job.spec.aibrix else None
         request_timeout_seconds = getattr(client, "request_timeout_seconds", None)
@@ -1142,7 +1146,10 @@ class BaseJobDriver:
                 )
 
             request_output, last_error = await self._send_one(
-                job.spec.endpoint, request_input["body"], request_id
+                job.spec.endpoint,
+                request_input["body"],
+                request_id,
+                read_timeout=self._request_timeout_seconds(job),
             )
 
             if last_error is None and isinstance(request_output, dict):
@@ -1498,6 +1505,7 @@ class BaseJobDriver:
 
         async def feed():
             nonlocal job, start_index, pending_in_round
+            read_timeout = self._request_timeout_seconds(job)
             # The loop is necessary in cases of job driver lock a request but unable to process it (complete or fail), e.g., server crash.
             while start_index >= 0:
                 dispatched_in_pass = False
@@ -1544,6 +1552,7 @@ class BaseJobDriver:
                         path=job.spec.endpoint,
                         payload=payload,
                         ref=(request_id, custom_id, input_line_data),
+                        read_timeout=read_timeout,
                     )
 
                 await round_drained.wait()
@@ -1760,14 +1769,21 @@ class BaseJobDriver:
         )  # type: ignore[call-arg]
 
     async def _send_one(
-        self, endpoint: str, body: Dict[str, Any], request_id: int
+        self,
+        endpoint: str,
+        body: Dict[str, Any],
+        request_id: int,
+        read_timeout: Optional[float] = None,
     ) -> tuple[Any, Optional[Exception]]:
         """Serial fallback adapter around DispatchEngine.send_one."""
         assert self._engine is not None  # guaranteed by execute_worker
         try:
             output = await self._engine.send_one(
                 InferenceRequest(
-                    path=endpoint, payload=self._shape_payload(body), ref=request_id
+                    path=endpoint,
+                    payload=self._shape_payload(body),
+                    ref=request_id,
+                    read_timeout=read_timeout,
                 )
             )
             return output, None

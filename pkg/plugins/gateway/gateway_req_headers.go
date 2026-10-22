@@ -267,6 +267,8 @@ func (s *Server) resolveUserForRequest(ctx context.Context, requestID, username 
 			err.Error(), "", "")
 	}
 
+	user = applyDefaultUserLimits(user)
+
 	rpm, errRes, err := s.checkLimits(ctx, user)
 	if errRes != nil {
 		klog.ErrorS(err, "error on checking limits", "requestID", requestID, "username", username)

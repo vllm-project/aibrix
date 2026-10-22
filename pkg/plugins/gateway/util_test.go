@@ -2657,6 +2657,7 @@ func TestValidateRoutingStrategyForPath(t *testing.T) {
 		name      string
 		path      string
 		strategy  types.RoutingAlgorithm
+		engine    string
 		wantErr   bool
 		errString string
 	}{
@@ -2691,11 +2692,54 @@ func TestValidateRoutingStrategyForPath(t *testing.T) {
 			wantErr:  false,
 		},
 		{
-			name:      "responses with pd is rejected",
+			name:     "responses with pd and vllm is supported",
+			path:     PathResponses,
+			strategy: routing.RouterPD,
+			engine:   EngineVLLM,
+			wantErr:  false,
+		},
+		{
+			name:     "responses with pd and sglang is supported",
+			path:     PathResponses,
+			strategy: routing.RouterPD,
+			engine:   EngineSGLang,
+			wantErr:  false,
+		},
+		{
+			name:     "responses with pd and empty engine defaults to vllm",
+			path:     PathResponses,
+			strategy: routing.RouterPD,
+			wantErr:  false,
+		},
+		{
+			name:     "responses with query string and pd and vllm is supported",
+			path:     PathResponses + "?stream=true",
+			strategy: routing.RouterPD,
+			engine:   EngineVLLM,
+			wantErr:  false,
+		},
+		{
+			name:      "responses with pd and trtllm is rejected",
 			path:      PathResponses,
 			strategy:  routing.RouterPD,
+			engine:    EngineTRTLLM,
 			wantErr:   true,
-			errString: "routing strategy 'pd' is not supported for endpoint '/v1/responses'",
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/responses' with engine 'trtllm'",
+		},
+		{
+			name:      "responses with pd and unknown engine is rejected",
+			path:      PathResponses,
+			strategy:  routing.RouterPD,
+			engine:    "unknown-engine",
+			wantErr:   true,
+			errString: "routing strategy 'pd' is not supported for endpoint '/v1/responses' with engine 'unknown-engine'",
+		},
+		{
+			name:     "multi-strategy resolving to pd on responses and vllm is supported",
+			path:     PathResponses,
+			strategy: types.RoutingAlgorithm("pd:1,least-request:1"),
+			engine:   EngineVLLM,
+			wantErr:  false,
 		},
 		{
 			name:      "messages with pd is rejected",
@@ -2831,7 +2875,7 @@ func TestValidateRoutingStrategyForPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateRoutingStrategyForPath(tt.path, tt.strategy)
+			err := validateRoutingStrategyForPath(tt.path, tt.strategy, tt.engine)
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Equal(t, tt.errString, err.Error())
