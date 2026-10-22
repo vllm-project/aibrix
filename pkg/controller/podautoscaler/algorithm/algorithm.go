@@ -53,6 +53,11 @@ type ScalingRequest struct {
 	// Panic is the KPA panic state of this target, kept by the caller across
 	// recommendations. Other algorithms ignore it.
 	Panic *PanicState
+	// LoadPods is the pod count a per-pod value is spread over, so the total
+	// load is the value times LoadPods. Pods that are still starting carry
+	// none of it. Zero means CurrentReplicas. KPA uses it; APA leaves pending
+	// pods to the pending-replica guard.
+	LoadPods float64
 }
 
 // ScalingRecommendation contains the scaling decision

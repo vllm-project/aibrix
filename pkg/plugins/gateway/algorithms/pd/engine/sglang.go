@@ -24,6 +24,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -46,12 +47,13 @@ func (h *SGLangHandler) Name() string  { return "sglang" }
 func (h *SGLangHandler) IsAsync() bool { return true }
 
 // AugmentPrefillRequest overwrites bootstrap_host, bootstrap_port, a random
-// bootstrap_room and the gateway-owned rid on the client body with sjson, so
-// that every nested field (messages, tools, …) is preserved at the byte level.
-// The resulting decode body is stored in routingCtx.ReqBody and returned as the
-// prefill base body; the caller applies the common prefill constraints on top
-// of it, so both legs carry the same rid. On error routingCtx.ReqBody is left
-// unchanged.
+// bootstrap_room and the gateway-owned request id on the client body with
+// sjson, so that every nested field (messages, tools, …) is preserved at the
+// byte level. Chat/completions and completions carry that id as "rid"; the
+// Responses API carries it as "request_id". The resulting decode body is stored
+// in routingCtx.ReqBody and returned as the prefill base body; the caller
+// applies the common prefill constraints on top of it, so both legs carry the
+// same id. On error routingCtx.ReqBody is left unchanged.
 //
 // ValidateRequest is already called in Route() before this method is invoked,
 // so duplicate controlled fields have been rejected by then.
@@ -62,9 +64,19 @@ func (h *SGLangHandler) AugmentPrefillRequest(
 ) ([]byte, error) {
 	host, port, room := sglangBootstrapFields(pod)
 	// One rid for both legs: it is what /abort_request matches on when the
-	// prefill leg fails and the decode leg has to be cancelled.
-	rid := NewPDRequestID(routingCtx.RequestID)
-	decodeBody, err := sglangDecodeBody(body, host, port, room, rid)
+	// prefill leg fails and the decode leg has to be cancelled. The Responses
+	// API uses request_id (and requires the resp_ prefix for its response id),
+	// while chat/completions uses rid.
+	var rid string
+	var decodeBody []byte
+	var err error
+	if utils.PathWithoutQuery(routingCtx.ReqPath) == pd.ResponsesPath {
+		rid = NewPDResponsesRequestID(routingCtx.RequestID)
+		decodeBody, err = sglangResponsesDecodeBody(body, host, port, room, rid)
+	} else {
+		rid = NewPDRequestID(routingCtx.RequestID)
+		decodeBody, err = sglangDecodeBody(body, host, port, room, rid)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare SGLang request bodies: %w", err)
 	}
@@ -82,11 +94,12 @@ func sglangBootstrapFields(pod *v1.Pod) (host string, port int64, room int64) {
 }
 
 // sglangBootstrapFieldNames are the top-level keys AugmentPrefillRequest
-// writes on both the prefill and decode bodies. "rid" is one of them: the
-// gateway owns the engine-visible request id of a PD request (see
-// NewPDRequestID) and overwrites whatever the client sent, so a body that
-// repeats the key is ambiguous and must be rejected.
-var sglangBootstrapFieldNames = []string{"bootstrap_host", "bootstrap_port", "bootstrap_room", "rid"}
+// writes on both the prefill and decode bodies. The gateway owns the
+// engine-visible request id of a PD request (see NewPDRequestID and
+// NewPDResponsesRequestID) and overwrites whatever the client sent, so a body
+// that repeats either id key is ambiguous and must be rejected. Chat and
+// completions use "rid"; the Responses API uses "request_id".
+var sglangBootstrapFieldNames = []string{"bootstrap_host", "bootstrap_port", "bootstrap_room", "rid", "request_id"}
 
 // ControlledFields returns the SGLang bootstrap keys; the common prefill
 // control keys are added by ValidateRequest.
@@ -112,11 +125,8 @@ func ValidateSGLangRequest(body []byte) error {
 // duplicated across attempts (poisoning the engine's in-flight request state)
 // or be a prefix of another live rid, turning one abort into a fan-out.
 func sglangDecodeBody(originalBody []byte, bootstrapHost string, bootstrapPort, bootstrapRoom int64, rid string) ([]byte, error) {
-	// Defense-in-depth: callers (Route → PreparePayload) are required to
-	// validate the body first, but this guard prevents sjson from silently
-	// producing invalid output if a future caller bypasses validation.
-	if !gjson.ValidBytes(originalBody) || !gjson.ParseBytes(originalBody).IsObject() {
-		return nil, &InvalidRequestError{Message: "SGLang prefill request body is not a JSON object"}
+	if err := validateSGLangBody(originalBody); err != nil {
+		return nil, err
 	}
 	if rid == "" {
 		return nil, fmt.Errorf("empty rid for SGLang request bodies")
@@ -127,6 +137,39 @@ func sglangDecodeBody(originalBody []byte, bootstrapHost string, bootstrapPort, 
 		Set("bootstrap_room", bootstrapRoom).
 		Set("rid", rid).
 		Result()
+}
+
+// sglangResponsesDecodeBody is the /v1/responses form of sglangDecodeBody.
+// The Responses API names the engine-visible request id "request_id" and uses
+// it as the response id, so it must carry the resp_ prefix (see
+// NewPDResponsesRequestID). A client-supplied "rid" is removed because SGLang
+// ignores it on this endpoint and leaving it would be ambiguous next to the
+// gateway-owned request_id.
+func sglangResponsesDecodeBody(originalBody []byte, bootstrapHost string, bootstrapPort, bootstrapRoom int64, requestID string) ([]byte, error) {
+	if err := validateSGLangBody(originalBody); err != nil {
+		return nil, err
+	}
+	if requestID == "" {
+		return nil, fmt.Errorf("empty request_id for SGLang Responses request bodies")
+	}
+	return pd.NewJSONEditor(originalBody).
+		Set("bootstrap_host", bootstrapHost).
+		Set("bootstrap_port", bootstrapPort).
+		Set("bootstrap_room", bootstrapRoom).
+		Set("request_id", requestID).
+		Delete("rid").
+		Result()
+}
+
+// validateSGLangBody is the defense-in-depth guard shared by both body
+// builders. Callers (Route → PreparePayload) are required to validate the body
+// first, but this prevents sjson from silently producing invalid output if a
+// future caller bypasses validation.
+func validateSGLangBody(body []byte) error {
+	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
+		return &InvalidRequestError{Message: "SGLang prefill request body is not a JSON object"}
+	}
+	return nil
 }
 
 // prepareSGLangRequestBodies derives the decode and prefill request bodies from

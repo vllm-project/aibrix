@@ -237,37 +237,77 @@ func applyRampAdjustment(c cache.Cache, now time.Time, readyPods []*v1.Pod, coun
 
 // eligibleLeastLoaded returns the prefix of readyPods, ranked by running-request count, that is
 // within the top K and within epsilon of the minimum, plus the per-pod counts (keyed by
-// utils.GeneratePodKey) and the minimum. Pods are shuffled before the stable sort so ties don't
-// favor readyPods order. Counts are ramp-adjusted first, so a new pod's zero doesn't anchor the
+// utils.GeneratePodKey) and the minimum. Pods are shuffled before ranking so ties don't favor
+// readyPods order. Counts are ramp-adjusted first, so a new pod's zero doesn't anchor the
 // epsilon window. Shared by Route and ScoreAll.
 func (r *LeastRequestTopKRouter) eligibleLeastLoaded(readyPods []*v1.Pod) (eligible []*v1.Pod, counts map[string]int, minCount int) {
 	counts = routeutil.GetRequestCounts(r.cache, readyPods)
 	counts = applyRampAdjustment(r.cache, r.now(), readyPods, counts)
+	if len(readyPods) == 0 {
+		return nil, counts, 0
+	}
 
-	candidates := make([]*v1.Pod, len(readyPods))
-	copy(candidates, readyPods)
+	candidates := make([]rankedPod, len(readyPods))
+	for i, pod := range readyPods {
+		candidates[i] = rankedPod{pod: pod, count: counts[utils.GeneratePodKey(pod.Namespace, pod.Name)]}
+	}
 	rand.Shuffle(len(candidates), func(i, j int) { candidates[i], candidates[j] = candidates[j], candidates[i] })
-	countOf := func(pod *v1.Pod) int { return counts[utils.GeneratePodKey(pod.Namespace, pod.Name)] }
-	sort.SliceStable(candidates, func(i, j int) bool {
-		return countOf(candidates[i]) < countOf(candidates[j])
-	})
 
 	k := leastRequestTopKCandidates
 	if k <= 0 || k > len(candidates) {
 		k = len(candidates)
 	}
+	ranked := lowestCountsStable(candidates, k)
 
 	// Sorted ascending, so once one pod exceeds min+epsilon every later one does too.
-	minCount = countOf(candidates[0])
+	minCount = ranked[0].count
 	n := k
 	if epsilon := leastRequestTopKEpsilon; epsilon >= 0 {
 		for n = 1; n < k; n++ {
-			if countOf(candidates[n])-minCount > epsilon {
+			if ranked[n].count-minCount > epsilon {
 				break
 			}
 		}
 	}
-	return candidates[:n], counts, minCount
+	eligible = make([]*v1.Pod, n)
+	for i := range eligible {
+		eligible[i] = ranked[i].pod
+	}
+	return eligible, counts, minCount
+}
+
+// rankedPod pairs a pod with its running-request count, so ranking reads each count once
+// instead of rebuilding the pod key on every comparison.
+type rankedPod struct {
+	pod   *v1.Pod
+	count int
+}
+
+// lowestCountsStable returns the first k entries of candidates as a stable sort by ascending
+// count would order them: the k lowest counts, ties kept in candidates order. It costs
+// O(len(candidates) * k) instead of a full O(n log n) sort, which matters because k is small
+// (AIBRIX_ROUTING_LEAST_REQUEST_TOP_K, 5 by default) while the fleet can hold thousands of pods.
+// When k covers every candidate, it sorts candidates in place and returns it; otherwise it
+// leaves candidates unchanged and returns a new slice of length k.
+func lowestCountsStable(candidates []rankedPod, k int) []rankedPod {
+	if k >= len(candidates) {
+		sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].count < candidates[j].count })
+		return candidates
+	}
+	top := make([]rankedPod, 0, k)
+	for _, c := range candidates {
+		if len(top) == k && c.count >= top[k-1].count {
+			continue
+		}
+		// Insert after every entry with a count <= c.count, so equal counts keep their order.
+		pos := sort.Search(len(top), func(i int) bool { return top[i].count > c.count })
+		if len(top) < k {
+			top = append(top, rankedPod{})
+		}
+		copy(top[pos+1:], top[pos:len(top)-1])
+		top[pos] = c
+	}
+	return top
 }
 
 // ScoreAll implements [types.PodScorer] so the strategy can be blended with others. The blend

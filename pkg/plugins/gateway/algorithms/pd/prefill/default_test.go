@@ -58,3 +58,12 @@ func TestExecuteHTTPSkipsEnvoyPseudoHeaders(t *testing.T) {
 	assert.Equal(t, "Bearer test", gotAuth)
 	assert.Equal(t, "pd", gotStrategy)
 }
+
+func TestResponsePromptTokens(t *testing.T) {
+	assert.Equal(t, 42.0, responsePromptTokens([]byte(`{"usage":{"prompt_tokens":42}}`)))
+	assert.Equal(t, 29.0, responsePromptTokens([]byte(`{"usage":{"input_tokens":29}}`)),
+		"vLLM Responses reports usage.input_tokens")
+	assert.Equal(t, 11.0, responsePromptTokens([]byte(`{"usage":{"prompt_tokens":11,"input_tokens":22}}`)))
+	assert.Equal(t, 22.0, responsePromptTokens([]byte(`{"usage":{"prompt_tokens":0,"input_tokens":22}}`)))
+	assert.Equal(t, 0.0, responsePromptTokens([]byte(`{"usage":{"prompt_tokens":"11"}}`)))
+}

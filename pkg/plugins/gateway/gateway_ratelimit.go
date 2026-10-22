@@ -30,23 +30,20 @@ import (
 )
 
 func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extProcPb.ProcessingResponse, error) {
-	if user.Rpm == 0 {
-		user.Rpm = int64(DefaultRPM)
-	}
-	if user.Tpm == 0 {
-		user.Tpm = user.Rpm * int64(DefaultTPMMultiplier)
-	}
+	user = applyDefaultUserLimits(user)
 
 	code, err := s.checkRPM(ctx, user.Name, user.Rpm)
 	if err != nil {
-		errorCode := ""
+		// Only a request over the limit is told it exceeded it; a failed read
+		// is an outage the client should not take as a rate-limit signal.
+		errorHeader, errorCode := HeaderErrorGetRPM, ""
 		if code == envoyTypePb.StatusCode_TooManyRequests {
-			errorCode = ErrorCodeRateLimitExceeded
+			errorHeader, errorCode = HeaderErrorRPMExceeded, ErrorCodeRateLimitExceeded
 		}
 		return 0, generateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderErrorRPMExceeded, RawValue: []byte("true"),
+				Key: errorHeader, RawValue: []byte("true"),
 			}}},
 			err.Error(), errorCode, ""), err
 	}
@@ -55,14 +52,16 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 	// it would keep the RPM slot it took without ever being served.
 	code, err = s.checkTPM(ctx, user.Name, user.Tpm)
 	if err != nil {
-		errorCode := ""
+		// Only a request over the limit is told it exceeded it; a failed read
+		// is an outage the client should not take as a rate-limit signal.
+		errorHeader, errorCode := HeaderErrorGetTPM, ""
 		if code == envoyTypePb.StatusCode_TooManyRequests {
-			errorCode = ErrorCodeRateLimitExceeded
+			errorHeader, errorCode = HeaderErrorTPMExceeded, ErrorCodeRateLimitExceeded
 		}
 		return 0, generateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderErrorTPMExceeded, RawValue: []byte("true"),
+				Key: errorHeader, RawValue: []byte("true"),
 			}}},
 			err.Error(), errorCode, ""), err
 	}
@@ -186,4 +185,17 @@ func rateWindow(seconds int64) []time.Duration {
 		return nil
 	}
 	return []time.Duration{time.Duration(seconds) * time.Second}
+}
+
+// applyDefaultUserLimits fills in the default RPM and TPM used by checkLimits.
+// Request-body validation reads user.Tpm to decide whether a stream has to ask
+// the engine for a usage chunk, so the resolved user has to carry them too.
+func applyDefaultUserLimits(user utils.User) utils.User {
+	if user.Rpm == 0 {
+		user.Rpm = int64(DefaultRPM)
+	}
+	if user.Tpm == 0 {
+		user.Tpm = user.Rpm * int64(DefaultTPMMultiplier)
+	}
+	return user
 }

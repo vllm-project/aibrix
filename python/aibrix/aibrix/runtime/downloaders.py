@@ -665,6 +665,7 @@ def get_downloader(source_url: str) -> ArtifactDownloader:
     downloader_map = {
         "s3": S3ArtifactDownloader(),
         "gcs": GCSArtifactDownloader(),
+        "gs": GCSArtifactDownloader(),
         "tos": TOSArtifactDownloader(),
         "huggingface": HuggingFaceArtifactDownloader(),
         "hf": HuggingFaceArtifactDownloader(),

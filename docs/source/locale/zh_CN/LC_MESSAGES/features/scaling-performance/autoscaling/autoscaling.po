@@ -266,22 +266,26 @@ msgid "``scalingStrategy``"
 msgstr "``scalingStrategy``"
 
 #: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:114
-msgid "``HPA``, ``KPA`` or ``APA``."
-msgstr "``HPA`` 、``KPA`` 或 ``APA`` 。"
+msgid ""
+"``HPA``, ``KPA`` or ``APA``. It cannot be changed after creation; to "
+"switch, delete the ``PodAutoscaler`` and create it again."
+msgstr ""
+"``HPA`` 、``KPA`` 或 ``APA`` 。创建后不能修改；要切换，请删除 "
+"``PodAutoscaler`` 后重新创建。"
 
-#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:115
+#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:116
 msgid "``minReplicas`` / ``maxReplicas``"
 msgstr "``minReplicas`` / ``maxReplicas``"
 
-#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:116
+#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:117
 msgid "Hard bounds on the result. ``maxReplicas`` is required."
 msgstr "结果的硬性边界。``maxReplicas`` 为必填。"
 
-#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:117
+#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:118
 msgid "``metricsSources[]``"
 msgstr "``metricsSources[]``"
 
-#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:118
+#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:119
 msgid ""
 "One or more of ``metricSourceType``, ``protocolType``, ``endpoint``, "
 "``path``, ``port``, ``targetMetric``, ``targetValue``. Several sources "
@@ -292,19 +296,19 @@ msgstr ""
 "、``port`` 、``targetMetric`` 、``targetValue`` 。可以组合多个源；参见 :doc:`metric-"
 "based-autoscaling` 中的 *基于多指标的自动扩缩容*。"
 
-#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:121
+#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:122
 msgid "``observeWindowSeconds`` / ``panicWindowSeconds``"
 msgstr "``observeWindowSeconds`` / ``panicWindowSeconds``"
 
-#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:122
+#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:123
 msgid "Metric windows. ``panicWindowSeconds`` only applies to ``KPA``."
 msgstr "指标窗口。``panicWindowSeconds`` 仅适用于 ``KPA`` 。"
 
-#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:123
+#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:124
 msgid "``schedules[]``"
 msgstr "``schedules[]``"
 
-#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:124
+#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:125
 msgid ""
 "Time-boxed overrides of ``minReplicas`` and ``maxReplicas`` with "
 "``name``, ``timezone``, ``daysOfWeek``, ``startTime`` and ``endTime``."
@@ -312,18 +316,18 @@ msgstr ""
 "带时间范围的 ``minReplicas`` 和 ``maxReplicas`` 覆盖，包含 ``name`` 、``timezone`` "
 "、``daysOfWeek`` 、``startTime`` 和 ``endTime`` 。"
 
-#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:126
+#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:127
 msgid "``predictive``"
 msgstr ""
 
-#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:127
+#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:128
 msgid ""
 "``mode`` (``Preview`` or ``Auto``) and ``horizonSeconds``. Accepted and "
 "validated now; the projection and the scale-up floor land with the "
 "controller follow-up. See :doc:`predictive-autoscaling`."
 msgstr ""
 
-#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:131
+#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:132
 msgid ""
 "Algorithm tunables that are not part of the spec, such as KPA's scale-"
 "down delay or APA's tolerance, are set through annotations on the "
@@ -333,11 +337,11 @@ msgstr ""
 "不属于 spec 的算法调参（例如 KPA 的缩容延迟或 APA 的容差）通过 ``PodAutoscaler`` "
 "上的注解设置。完整注解列表以及各策略的 YAML 示例见 :doc:`metric-based-autoscaling` 。"
 
-#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:137
+#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:138
 msgid ":doc:`../../../designs/aibrix-autoscaler`"
 msgstr ":doc:`../../../designs/aibrix-autoscaler`"
 
-#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:138
+#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:139
 msgid "Internal design of the AIBrix autoscaler."
 msgstr "AIBrix 自动扩缩容器的内部设计。"
 

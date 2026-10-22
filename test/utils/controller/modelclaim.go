@@ -315,11 +315,12 @@ type FakeModelClaimRuntime struct {
 	server *httptest.Server
 	ip     string
 
-	defaultPhase string
-	defaultReady bool
-	failures     int
-	wakeFailures int
-	nextPort     int32
+	defaultPhase  string
+	defaultReady  bool
+	failures      int
+	wakeFailures  int
+	sleepFailures int
+	nextPort      int32
 
 	activateCalls   []modelclaimcontroller.ActivateRequest
 	deactivateCalls []modelclaimcontroller.DeactivateRequest
@@ -327,6 +328,7 @@ type FakeModelClaimRuntime struct {
 	sleepCalls      []modelclaimcontroller.SleepRequest
 	kvLimitCalls    []modelclaimcontroller.SetKVLimitRequest
 	models          map[string]modelclaimcontroller.RuntimeSnapshotModel
+	snapshotCalls   int
 
 	// cardBytes are the sizes of the cards the runtime reports. Without a card
 	// nothing is accounted for, as on a CPU pool.
@@ -471,6 +473,15 @@ func (f *FakeModelClaimRuntime) handleSleep(w http.ResponseWriter, r *http.Reque
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sleepCalls = append(f.sleepCalls, req)
+	if f.sleepFailures > 0 {
+		f.sleepFailures--
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(modelclaimcontroller.RuntimeOperationResponse{
+			Status: "error", ModelName: req.ModelName, OperationID: req.OperationID,
+		})
+		return
+	}
 	applied := false
 	for uid, model := range f.models {
 		if model.ModelName == req.ModelName && model.Phase == "active" {
@@ -545,6 +556,7 @@ func (f *FakeModelClaimRuntime) handleDeactivate(w http.ResponseWriter, r *http.
 
 func (f *FakeModelClaimRuntime) handleSnapshot(w http.ResponseWriter) {
 	f.mu.Lock()
+	f.snapshotCalls++
 	models := make([]modelclaimcontroller.RuntimeSnapshotModel, 0, len(f.models))
 	for _, model := range f.models {
 		models = append(models, model)
@@ -563,6 +575,15 @@ func (f *FakeModelClaimRuntime) handleSnapshot(w http.ResponseWriter) {
 		Accelerators: accelerators,
 		Models:       models,
 	})
+}
+
+// SnapshotCallCount returns how many authoritative Runtime snapshots the
+// controller has requested.
+func (f *FakeModelClaimRuntime) SnapshotCallCount() int {
+	ginkgo.GinkgoHelper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.snapshotCalls
 }
 
 func (f *FakeModelClaimRuntime) handleModelList(w http.ResponseWriter) {
@@ -609,6 +630,15 @@ func (f *FakeModelClaimRuntime) FailNextWakes(count int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.wakeFailures = count
+}
+
+// FailNextSleeps makes the next count sleep requests fail, as a runtime does
+// when it cannot put an otherwise eligible engine to sleep.
+func (f *FakeModelClaimRuntime) FailNextSleeps(count int) {
+	ginkgo.GinkgoHelper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sleepFailures = count
 }
 
 // SetClaimState updates the runtime state for an already activated claim UID.
@@ -684,6 +714,21 @@ func (f *FakeModelClaimRuntime) SetClaimRequests(uid string, running, waiting in
 	model.RequestsRunning = running
 	model.RequestsWaiting = waiting
 	model.RequestSuccessTotal = &completed
+	f.models[uid] = model
+}
+
+// SetClaimRequestMetricsObserved controls whether a snapshot's request counts
+// are authoritative for a claim.
+func (f *FakeModelClaimRuntime) SetClaimRequestMetricsObserved(uid string, observed bool) {
+	ginkgo.GinkgoHelper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	model, found := f.models[uid]
+	gomega.Expect(found).To(gomega.BeTrue(), "fake runtime has no model for claim UID %s", uid)
+	model.RequestMetricsObserved = observed
+	if !observed {
+		model.RequestSuccessTotal = nil
+	}
 	f.models[uid] = model
 }
 

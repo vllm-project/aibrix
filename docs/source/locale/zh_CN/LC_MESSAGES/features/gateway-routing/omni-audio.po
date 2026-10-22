@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  AIBrix\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-13 12:08-0700\n"
+"POT-Creation-Date: 2026-10-17 22:33-0700\n"
 "PO-Revision-Date: 2026-09-10 18:55+0800\n"
 "Last-Translator: AIBrix Team\n"
 "Language: zh_CN\n"
@@ -25,20 +25,22 @@ msgstr "音频"
 #: ../../source/features/gateway-routing/omni-audio.rst:7
 msgid ""
 "This guide covers the audio endpoints exposed through AIBrix's gateway: "
-"text-to-speech, in single and batch form, and speech-to-text through "
-"transcription and translation. The :ref:`supported endpoints <multimodal-"
-"supported-endpoints>` table shows which audio endpoints each engine "
-"offers and which of them AIBrix supports. Before you start, finish the "
-":ref:`prerequisites <omni-prerequisites>` and :ref:`gateway access <omni-"
-"access-gateway>` steps on the Multi-Modal Serving page, and deploy your "
-"model the way the :ref:`video guide <omni-video-deploy>` describes, "
-"swapping in an audio model."
+"text-to-speech, in single and batch form, the custom voices it can speak "
+"with, and speech-to-text through transcription and translation. The "
+":ref:`supported endpoints <multimodal-supported-endpoints>` table shows "
+"which audio endpoints each engine offers and which of them AIBrix "
+"supports. Before you start, finish the :ref:`prerequisites <omni-"
+"prerequisites>` and :ref:`gateway access <omni-access-gateway>` steps on "
+"the Multi-Modal Serving page, and deploy your model the way the "
+":ref:`video guide <omni-video-deploy>` describes, swapping in an audio "
+"model."
 msgstr ""
-"本指南介绍通过 AIBrix 网关提供的音频端点：文本转语音（单条和批量形式），以及通过转写和翻译实现的语音转文本。 :ref:`支持的端点 "
-"<multimodal-supported-endpoints>` 表显示了各引擎提供哪些音频端点，以及 AIBrix "
-"支持其中哪些。开始之前，请先完成多模态服务页面上的 :ref:`前置条件 <omni-prerequisites>` 和 :ref:`访问网关 "
-"<omni-access-gateway>` 步骤，并按照 :ref:`视频指南 <omni-video-deploy>` "
-"所述方式部署模型，换成音频模型。"
+"本指南介绍通过 AIBrix 网关提供的音频端点：文本转语音（单条和批量形式）、文本"
+"转语音可使用的自定义音色，以及通过转写和翻译实现的语音转文本。 :ref:`支持的"
+"端点 <multimodal-supported-endpoints>` 表显示了各引擎提供哪些音频端点，以及 "
+"AIBrix 支持其中哪些。开始之前，请先完成多模态服务页面上的 :ref:`前置条件 <om"
+"ni-prerequisites>` 和 :ref:`访问网关 <omni-access-gateway>` 步骤，并按照 :re"
+"f:`视频指南 <omni-video-deploy>` 所述方式部署模型，换成音频模型。"
 
 #: ../../source/features/gateway-routing/omni-audio.rst:10
 msgid ""
@@ -217,6 +219,7 @@ msgstr ""
 "Type: application/json\"`` 。"
 
 #: ../../source/features/gateway-routing/omni-audio.rst:107
+#: ../../source/features/gateway-routing/omni-audio.rst:148
 msgid "What the gateway checks:"
 msgstr "网关会检查以下内容："
 
@@ -254,32 +257,129 @@ msgid ""
 msgstr "整个请求（包括音频文件）计入网关的请求大小上限，默认 4 MiB；参见 :doc:`gateway-plugins` 中的消息大小配置。"
 
 #: ../../source/features/gateway-routing/omni-audio.rst:120
+msgid "Custom Voices"
+msgstr "自定义音色"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:122
+msgid ""
+"A text-to-speech engine that clones voices keeps a catalog of voices you "
+"upload once and then name in the ``voice`` field of later speech "
+"requests. AIBrix routes the three calls that manage it:"
+msgstr ""
+"能够克隆音色的文本转语音引擎会维护一份音色目录：您只需上传一次音色，之后即可"
+"在语音请求的 ``voice`` 字段中按名称引用。AIBrix 路由管理该目录的三个调用："
+
+#: ../../source/features/gateway-routing/omni-audio.rst:124
+msgid ""
+"``GET /v1/audio/voices`` lists the built-in voices and the voices you "
+"uploaded."
+msgstr "``GET /v1/audio/voices`` 列出内置音色和您上传的音色。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:125
+msgid ""
+"``POST /v1/audio/voices`` uploads a voice sample as ``multipart/form-"
+"data``."
+msgstr "``POST /v1/audio/voices`` 以 ``multipart/form-data`` 形式上传音色样本。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:126
+#, python-brace-format
+msgid "``DELETE /v1/audio/voices/{name}`` removes an uploaded voice."
+msgstr "``DELETE /v1/audio/voices/{name}`` 删除已上传的音色。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:128
+msgid ""
+"These calls name no model, because an engine serves a single model and "
+"needs none, and a ``GET`` or ``DELETE`` has no body to carry one. The "
+"gateway chooses a pod by model, so it reads the model from a ``model`` "
+"**query parameter**, on all three calls:"
+msgstr ""
+"这些调用不指明模型：一个引擎只服务一个模型，无需指明，而且 ``GET`` 或 ``DELE"
+"TE`` 没有请求体可以携带模型。网关按模型选择 Pod，因此这三个调用都从 ``model`"
+"` **查询参数** 中读取模型："
+
+#: ../../source/features/gateway-routing/omni-audio.rst:150
+msgid ""
+"``model`` is required, must be given once, and must name a model AIBrix "
+"knows. A request that breaks any of these is rejected with ``400``, and "
+"the error's ``param`` is ``model``. A known model with no ready pod is "
+"answered with ``503``."
+msgstr ""
+"``model`` 为必填项，只能给出一次，且必须是 AIBrix 已知的模型。违反其中任一条"
+"的请求会以 ``400`` 被拒绝，错误中的 ``param`` 为 ``model`` 。已知模型但没有"
+"就绪 Pod 时返回 ``503`` 。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:151
+msgid ""
+"Everything else is the engine's: the form fields of an upload (``name``, "
+"``consent``, ``audio_sample``, ``ref_text``, ``speaker_description``), "
+"the voice names, the status codes, and the responses. The query string "
+"reaches the engine as sent, ``model`` included, which the engine ignores."
+msgstr ""
+"其余都由引擎负责：上传的表单字段（ ``name`` 、 ``consent`` 、 ``audio_sample"
+"`` 、 ``ref_text`` 、 ``speaker_description`` ）、音色名称、状态码以及响应。"
+"查询字符串会原样到达引擎，其中包括 ``model`` ，引擎会忽略它。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:152
+msgid ""
+"The responses are small JSON documents. The gateway forwards them "
+"unparsed, so no token usage is reported."
+msgstr "响应是小型 JSON 文档。网关不解析而直接转发，因此不上报 token 用量。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:153
+msgid ""
+"An upload takes ``multipart/form-data``, so — as with transcription — do "
+"**not** set ``-H \"Content-Type: application/json\"``. The whole request,"
+" voice sample included, counts against the gateway's request size limit, "
+"4 MiB by default; see Message Size Configuration in :doc:`gateway-"
+"plugins`."
+msgstr ""
+"上传使用 ``multipart/form-data`` ，因此——与转写一样——请 **不要** 设置 ``-H \""
+"Content-Type: application/json\"`` 。整个请求（包括音色样本）计入网关的请求大"
+"小上限，默认 4 MiB；参见 :doc:`gateway-plugins` 中的消息大小配置。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:156
+msgid ""
+"The engine keeps an uploaded voice on the pod that took the upload (vLLM-"
+"Omni writes it under ``SPEAKER_SAMPLES_DIR``, ``~/.cache/vllm-"
+"omni/speakers`` by default), and the gateway sends each call to one pod "
+"of the model. With more than one replica, a later list, delete or speech "
+"request can therefore reach a pod that has never seen the voice. Serve "
+"the model from a single replica, or give every replica the same "
+"``SPEAKER_SAMPLES_DIR`` on a volume they share."
+msgstr ""
+"引擎会把上传的音色保存在接收上传的 Pod 上（vLLM-Omni 写入 ``SPEAKER_SAMPLES_"
+"DIR`` ，默认为 ``~/.cache/vllm-omni/speakers`` ），而网关会把每个调用发送到"
+"该模型的某一个 Pod。因此在有多个副本时，之后的列出、删除或语音请求可能会到达"
+"从未见过该音色的 Pod。请让该模型只使用单个副本，或让所有副本使用同一个 ``SPE"
+"AKER_SAMPLES_DIR`` ，并将其放在它们共享的卷上。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:163
 msgid "Endpoint Reference"
 msgstr "接口参考"
 
-#: ../../source/features/gateway-routing/omni-audio.rst:126
+#: ../../source/features/gateway-routing/omni-audio.rst:169
 msgid "Endpoint"
 msgstr "接口"
 
-#: ../../source/features/gateway-routing/omni-audio.rst:127
+#: ../../source/features/gateway-routing/omni-audio.rst:170
 msgid "Method"
 msgstr "方法"
 
-#: ../../source/features/gateway-routing/omni-audio.rst:128
+#: ../../source/features/gateway-routing/omni-audio.rst:171
 msgid "Behavior"
 msgstr "行为"
 
-#: ../../source/features/gateway-routing/omni-audio.rst:129
+#: ../../source/features/gateway-routing/omni-audio.rst:172
 msgid "``/v1/audio/speech``"
 msgstr "``/v1/audio/speech``"
 
-#: ../../source/features/gateway-routing/omni-audio.rst:130
-#: ../../source/features/gateway-routing/omni-audio.rst:133
-#: ../../source/features/gateway-routing/omni-audio.rst:136
+#: ../../source/features/gateway-routing/omni-audio.rst:173
+#: ../../source/features/gateway-routing/omni-audio.rst:176
+#: ../../source/features/gateway-routing/omni-audio.rst:179
 msgid "POST"
 msgstr "POST"
 
-#: ../../source/features/gateway-routing/omni-audio.rst:131
+#: ../../source/features/gateway-routing/omni-audio.rst:174
 msgid ""
 "JSON request, binary audio response. Routed by model like a chat "
 "completion; the audio streams through unparsed, so no token usage is "
@@ -288,11 +388,11 @@ msgstr ""
 "JSON 请求、二进制音频响应。像 chat completion 一样按模型路由；音频不经解析直接流式转发，因此不记录 token "
 "用量，也不登记任务。"
 
-#: ../../source/features/gateway-routing/omni-audio.rst:132
+#: ../../source/features/gateway-routing/omni-audio.rst:175
 msgid "``/v1/audio/speech/batch``"
 msgstr "``/v1/audio/speech/batch``"
 
-#: ../../source/features/gateway-routing/omni-audio.rst:134
+#: ../../source/features/gateway-routing/omni-audio.rst:177
 msgid ""
 "JSON request with an ``items`` array, one JSON response holding a base64 "
 "result per item. Routed by model; the gateway checks only ``model`` and "
@@ -302,11 +402,11 @@ msgstr ""
 "JSON 请求，带有 ``items`` 数组，返回一个 JSON 响应，其中包含每个条目的 base64 结果。按模型路由；网关只检查 "
 "``model`` 和 ``items`` ，响应不经解析直接流式转发，且 ``200`` 并不表示每个条目都成功。"
 
-#: ../../source/features/gateway-routing/omni-audio.rst:135
+#: ../../source/features/gateway-routing/omni-audio.rst:178
 msgid "``/v1/audio/transcriptions``, ``/v1/audio/translations``"
 msgstr "``/v1/audio/transcriptions``, ``/v1/audio/translations``"
 
-#: ../../source/features/gateway-routing/omni-audio.rst:137
+#: ../../source/features/gateway-routing/omni-audio.rst:180
 msgid ""
 "``multipart/form-data`` request with the model in a ``model`` form field."
 " Routed by model; a ``stream`` form field set to ``true`` or ``1`` makes "
@@ -315,11 +415,31 @@ msgstr ""
 "``multipart/form-data`` 请求，模型放在 ``model`` 表单字段中。按模型路由； ``stream`` 表单字段设为 "
 "``true`` 或 ``1`` 时，响应按 SSE 流处理。"
 
-#: ../../source/features/gateway-routing/omni-audio.rst:142
+#: ../../source/features/gateway-routing/omni-audio.rst:181
+#, python-brace-format
+msgid "``/v1/audio/voices``, ``/v1/audio/voices/{name}``"
+msgstr "``/v1/audio/voices``, ``/v1/audio/voices/{name}``"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:182
+msgid "GET, POST, DELETE"
+msgstr "GET、POST、DELETE"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:183
+msgid ""
+"List, upload (``multipart/form-data``) and delete custom voices. Routed "
+"by the model in a ``model`` query parameter, which all three calls need; "
+"the responses stream through unparsed, and a voice lives only on the pod "
+"that took its upload."
+msgstr ""
+"列出、上传（ ``multipart/form-data`` ）和删除自定义音色。按 ``model`` 查询参"
+"数中的模型路由，三个调用都需要该参数；响应不经解析直接流式转发，音色只存在于"
+"接收其上传的 Pod 上。"
+
+#: ../../source/features/gateway-routing/omni-audio.rst:188
 msgid "Sample Files"
 msgstr "示例文件"
 
-#: ../../source/features/gateway-routing/omni-audio.rst:144
+#: ../../source/features/gateway-routing/omni-audio.rst:190
 msgid ""
 "`samples/vllm_omni/qwen2-5-omni-7b.yaml <https://github.com/vllm-"
 "project/aibrix/blob/main/samples/vllm_omni/qwen2-5-omni-7b.yaml>`_ — "
@@ -329,11 +449,11 @@ msgstr ""
 "project/aibrix/blob/main/samples/vllm_omni/qwen2-5-omni-7b.yaml>`_ — "
 "文本+音频 vLLM-Omni 示例"
 
-#: ../../source/features/gateway-routing/omni-audio.rst:148
+#: ../../source/features/gateway-routing/omni-audio.rst:194
 msgid ":doc:`gateway-plugins`"
 msgstr ":doc:`gateway-plugins`"
 
-#: ../../source/features/gateway-routing/omni-audio.rst:149
+#: ../../source/features/gateway-routing/omni-audio.rst:195
 msgid ""
 "Gateway routing, the ``user`` header used for job ownership, and message-"
 "size limits."

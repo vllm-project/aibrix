@@ -685,7 +685,7 @@ func isNodeListEqual(a, b []NodeInfo) bool {
 
 	for _, n := range b {
 		existing, ok := nodeMap[n.Name]
-		if !ok || !slotRangesEqual(existing.Slots, n.Slots) {
+		if !ok || existing.Addr != n.Addr || existing.Port != n.Port || !slotRangesEqual(existing.Slots, n.Slots) {
 			return false
 		}
 	}

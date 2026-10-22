@@ -8,14 +8,16 @@ import {
   Send,
   Trash2,
 } from 'lucide-react';
-import type { Deployment } from '../data/mockData';
-import { listDeployments } from '../utils/api';
+import { listDeployments, listModelClaims } from '../utils/api';
 import { copyToClipboard } from '../utils/clipboard';
 import {
-  callableDeployments,
-  preferredDeployment,
+  deploymentTargets,
+  maxTokensFor,
+  modelClaimTargets,
+  preferredTarget,
   streamPlaygroundChat,
 } from '../utils/playground';
+import type { PlaygroundTarget } from '../utils/playground';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -24,27 +26,31 @@ interface ChatMessage {
 
 interface PlaygroundProps {
   initialDeploymentId?: string;
+  initialModelClaim?: string;
   onNavigateToDeployment?: (id: string) => void;
+  onNavigateToModelClaim?: (name: string) => void;
 }
 
-function deploymentInitials(deployment: Deployment): string {
-  const source = deployment.baseModel || deployment.name;
+const kindLabel = (target: PlaygroundTarget) => (target.kind === 'modelclaim' ? 'ModelClaim' : 'Deployment');
+
+function targetInitials(target: PlaygroundTarget): string {
+  const source = target.label;
   const words = source.trim().split(/\s+/).filter(Boolean);
   return (words.length > 1
     ? `${words[0]?.[0] ?? ''}${words[1]?.[0] ?? ''}`
     : source.slice(0, 2)).toUpperCase();
 }
 
-function DeploymentSelector({
-  selectedDeployment,
-  deployments,
+function TargetSelector({
+  selectedTarget,
+  targets,
   onSelect,
   isOpen,
   onToggle,
 }: {
-  selectedDeployment: Deployment;
-  deployments: Deployment[];
-  onSelect: (deployment: Deployment) => void;
+  selectedTarget: PlaygroundTarget;
+  targets: PlaygroundTarget[];
+  onSelect: (target: PlaygroundTarget) => void;
   isOpen: boolean;
   onToggle: () => void;
 }) {
@@ -60,10 +66,10 @@ function DeploymentSelector({
   }, [isOpen, onToggle]);
 
   const query = search.trim().toLowerCase();
-  const filtered = deployments.filter((deployment) => !query || [
-    deployment.name,
-    deployment.baseModel,
-    deployment.servingName,
+  const filtered = targets.filter((target) => !query || [
+    target.name,
+    target.label,
+    target.servingName,
   ].some((value) => value.toLowerCase().includes(query)));
 
   return (
@@ -74,12 +80,12 @@ function DeploymentSelector({
         aria-expanded={isOpen}
       >
         <div className="w-8 h-8 bg-teal-50 rounded-lg flex items-center justify-center text-teal-700 text-xs font-semibold">
-          {deploymentInitials(selectedDeployment)}
+          {targetInitials(selectedTarget)}
         </div>
         <div className="text-left min-w-0">
-          <div className="text-[10px] text-gray-400 uppercase tracking-wider leading-none">Deployment</div>
+          <div className="text-[10px] text-gray-400 uppercase tracking-wider leading-none">{kindLabel(selectedTarget)}</div>
           <div className="text-sm flex items-center gap-1 max-w-64">
-            <span className="truncate">{selectedDeployment.name}</span>
+            <span className="truncate">{selectedTarget.name}</span>
             <ChevronDown className="w-3 h-3 text-gray-400 flex-shrink-0" />
           </div>
         </div>
@@ -93,7 +99,7 @@ function DeploymentSelector({
               <input
                 autoFocus
                 type="text"
-                placeholder="Search deployments"
+                placeholder="Search deployments and ModelClaims"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500"
@@ -102,26 +108,32 @@ function DeploymentSelector({
           </div>
           <div className="overflow-y-auto flex-1 py-1">
             {filtered.length === 0 && (
-              <p className="px-4 py-5 text-sm text-center text-gray-500">No matching deployments.</p>
+              <p className="px-4 py-5 text-sm text-center text-gray-500">No matching deployments or ModelClaims.</p>
             )}
-            {filtered.map((deployment) => (
+            {filtered.map((target) => (
               <button
-                key={deployment.id}
+                key={target.key}
                 onClick={() => {
-                  onSelect(deployment);
+                  onSelect(target);
                   onToggle();
                   setSearch('');
                 }}
                 className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors"
               >
                 <div className="w-8 h-8 bg-teal-50 rounded-lg flex items-center justify-center text-teal-700 text-xs font-semibold flex-shrink-0">
-                  {deploymentInitials(deployment)}
+                  {targetInitials(target)}
                 </div>
                 <div className="flex-1 text-left min-w-0">
-                  <div className="text-sm text-gray-900 truncate">{deployment.name}</div>
-                  <div className="text-xs text-gray-400 truncate">{deployment.servingName}</div>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-sm text-gray-900 truncate">{target.name}</span>
+                    <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">
+                      {kindLabel(target)}
+                    </span>
+                  </div>
+                  <div className="text-xs text-gray-400 truncate">{target.servingName}</div>
+                  {target.note && <div className="text-xs text-indigo-500 truncate">{target.note}</div>}
                 </div>
-                {deployment.id === selectedDeployment.id && (
+                {target.key === selectedTarget.key && (
                   <Check className="w-4 h-4 text-teal-500 flex-shrink-0" />
                 )}
               </button>
@@ -187,11 +199,17 @@ function RenderMessage({ text }: { text: string }) {
   );
 }
 
-export function Playground({ initialDeploymentId, onNavigateToDeployment }: PlaygroundProps) {
-  const [deployments, setDeployments] = useState<Deployment[]>([]);
-  const [deploymentsLoading, setDeploymentsLoading] = useState(true);
-  const [deploymentsError, setDeploymentsError] = useState<string | null>(null);
-  const [selectedDeployment, setSelectedDeployment] = useState<Deployment | null>(null);
+export function Playground({
+  initialDeploymentId,
+  initialModelClaim,
+  onNavigateToDeployment,
+  onNavigateToModelClaim,
+}: PlaygroundProps) {
+  const [targets, setTargets] = useState<PlaygroundTarget[]>([]);
+  const [targetsLoading, setTargetsLoading] = useState(true);
+  const [targetsError, setTargetsError] = useState<string | null>(null);
+  const [selectedTarget, setSelectedTarget] = useState<PlaygroundTarget | null>(null);
+  const [waitingNote, setWaitingNote] = useState<string | null>(null);
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
@@ -211,29 +229,40 @@ export function Playground({ initialDeploymentId, onNavigateToDeployment }: Play
   useEffect(() => {
     let active = true;
 
-    setDeploymentsLoading(true);
-    setDeploymentsError(null);
-    listDeployments()
-      .then((items) => {
+    setTargetsLoading(true);
+    setTargetsError(null);
+    // A cluster without ModelClaim still lists its targets, and the other
+    // way round, so one list failing does not hide the other.
+    Promise.allSettled([listDeployments(), listModelClaims()])
+      .then(([deploymentResult, claimResult]) => {
         if (!active) return;
 
-        const callable = callableDeployments(items);
-        setDeployments(callable);
-        setSelectedDeployment(preferredDeployment(callable, initialDeploymentId));
-      })
-      .catch((error: unknown) => {
-        if (!active) return;
-
-        setDeploymentsError(error instanceof Error ? error.message : 'Failed to load deployments');
+        const targets = [
+          ...(deploymentResult.status === 'fulfilled' ? deploymentTargets(deploymentResult.value) : []),
+          ...(claimResult.status === 'fulfilled' ? modelClaimTargets(claimResult.value) : []),
+        ];
+        setTargets(targets);
+        setSelectedTarget(preferredTarget(targets, {
+          deployment: initialDeploymentId,
+          modelClaim: initialModelClaim,
+        }));
+        if (deploymentResult.status === 'rejected' && claimResult.status === 'rejected') {
+          const reason: unknown = deploymentResult.reason;
+          setTargetsError(reason instanceof Error ? reason.message : 'Failed to load deployments');
+        }
       })
       .finally(() => {
-        if (active) setDeploymentsLoading(false);
+        if (active) setTargetsLoading(false);
       });
 
     return () => {
       active = false;
     };
-  }, [initialDeploymentId]);
+  }, [initialDeploymentId, initialModelClaim]);
+
+  useEffect(() => {
+    setMaxTokens((current) => maxTokensFor(selectedTarget, current));
+  }, [selectedTarget]);
 
   const scrollToBottom = useCallback(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -250,14 +279,14 @@ export function Playground({ initialDeploymentId, onNavigateToDeployment }: Play
     setRequestError(null);
   };
 
-  const selectDeployment = (deployment: Deployment) => {
-    setSelectedDeployment(deployment);
+  const selectTarget = (target: PlaygroundTarget) => {
+    setSelectedTarget(target);
     clearConversation();
   };
 
   const handleCopyServingName = () => {
-    if (!selectedDeployment) return;
-    copyToClipboard(selectedDeployment.servingName).then(() => {
+    if (!selectedTarget) return;
+    copyToClipboard(selectedTarget.servingName).then(() => {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     }).catch(() => setCopied(false));
@@ -265,7 +294,7 @@ export function Playground({ initialDeploymentId, onNavigateToDeployment }: Play
 
   const handleSend = async () => {
     const prompt = inputText.trim();
-    if (!prompt || !selectedDeployment || isStreaming) return;
+    if (!prompt || !selectedTarget || isStreaming) return;
 
     const userMessage: ChatMessage = { role: 'user', content: prompt };
     const requestMessages = [...messages, userMessage].map((message) => ({
@@ -276,11 +305,12 @@ export function Playground({ initialDeploymentId, onNavigateToDeployment }: Play
     setInputText('');
     setRequestError(null);
     setStreamingContent('');
+    setWaitingNote(null);
     setIsStreaming(true);
 
     try {
       const response = await streamPlaygroundChat({
-        model: selectedDeployment.servingName,
+        model: selectedTarget.servingName,
         messages: requestMessages,
         temperature,
         max_tokens: maxTokens,
@@ -289,28 +319,36 @@ export function Playground({ initialDeploymentId, onNavigateToDeployment }: Play
         presence_penalty: presencePenalty,
         frequency_penalty: frequencyPenalty,
         stop: stopWord.trim() ? [stopWord.trim()] : undefined,
-      }, (delta) => setStreamingContent((current) => current + delta));
-      if (!response) throw new Error('The deployment returned an empty response');
+      }, (delta) => {
+        setWaitingNote(null);
+        setStreamingContent((current) => current + delta);
+      }, fetch, {
+        routingStrategy: selectedTarget.routingStrategy,
+        onWaiting: (message, seconds) => setWaitingNote(`Waiting for the model: ${message.replace(/\.$/, '')}. Retrying in ${seconds}s...`),
+      });
+      if (!response) throw new Error(`The ${kindLabel(selectedTarget)} returned an empty response`);
       setMessages((current) => [...current, { role: 'assistant', content: response }]);
     } catch (error) {
       setRequestError(error instanceof Error ? error.message : 'The Playground request failed');
     } finally {
       setStreamingContent('');
+      setWaitingNote(null);
       setIsStreaming(false);
     }
   };
 
-  if (!selectedDeployment) {
+  if (!selectedTarget) {
     return (
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="max-w-md text-center">
           <h2 className="text-lg text-gray-900 mb-2">
-            {deploymentsLoading ? 'Loading deployments...' : 'No callable deployments'}
+            {targetsLoading ? 'Loading deployments...' : 'No callable deployments or ModelClaims'}
           </h2>
-          <p className={`text-sm ${deploymentsError ? 'text-red-600' : 'text-gray-500'}`}>
-            {deploymentsError
-              ? `Failed to load deployments: ${deploymentsError}`
-              : !deploymentsLoading && 'Create a deployment and wait for it to become Ready before using Playground.'}
+          <p className={`text-sm ${targetsError ? 'text-red-600' : 'text-gray-500'}`}>
+            {targetsError
+              ? `Failed to load deployments: ${targetsError}`
+              : !targetsLoading
+                && 'Create a deployment and wait for it to become Ready, or a ModelClaim and wait for it to become Active, before using Playground.'}
           </p>
         </div>
       </div>
@@ -320,10 +358,10 @@ export function Playground({ initialDeploymentId, onNavigateToDeployment }: Play
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-3 px-4 py-2.5 border-b border-gray-200 bg-white flex-shrink-0">
-        <DeploymentSelector
-          selectedDeployment={selectedDeployment}
-          deployments={deployments}
-          onSelect={selectDeployment}
+        <TargetSelector
+          selectedTarget={selectedTarget}
+          targets={targets}
+          onSelect={selectTarget}
           isOpen={selectorOpen}
           onToggle={() => setSelectorOpen((open) => !open)}
         />
@@ -337,10 +375,12 @@ export function Playground({ initialDeploymentId, onNavigateToDeployment }: Play
         </button>
         {copied && <span className="text-xs text-teal-600">Copied</span>}
         <button
-          onClick={() => onNavigateToDeployment?.(selectedDeployment.id)}
+          onClick={() => (selectedTarget.kind === 'modelclaim'
+            ? onNavigateToModelClaim?.(selectedTarget.id)
+            : onNavigateToDeployment?.(selectedTarget.id))}
           className="flex items-center gap-1.5 px-3 py-1.5 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50 transition-colors"
         >
-          Deployment details
+          {kindLabel(selectedTarget)} details
           <ExternalLink className="w-3.5 h-3.5" />
         </button>
       </div>
@@ -350,7 +390,14 @@ export function Playground({ initialDeploymentId, onNavigateToDeployment }: Play
           <h3 className="text-base text-gray-900 mb-1">Options</h3>
           <p className="text-xs text-gray-400 mb-5">Sent with each chat completion request.</p>
           <OptionSlider label="Temperature" value={temperature} min={0} max={2} step={0.1} onChange={setTemperature} />
-          <OptionSlider label="Max Tokens" value={maxTokens} min={1} max={16384} step={1} onChange={setMaxTokens} />
+          <OptionSlider
+            label="Max Tokens"
+            value={maxTokens}
+            min={1}
+            max={selectedTarget.maxModelLen ?? 16384}
+            step={1}
+            onChange={setMaxTokens}
+          />
           <OptionSlider label="Top P" value={topP} min={0} max={1} step={0.01} onChange={setTopP} />
           <OptionSlider label="Top K" value={topK} min={0} max={100} step={1} onChange={setTopK} />
           <OptionSlider label="Presence Penalty" value={presencePenalty} min={-2} max={2} step={0.1} onChange={setPresencePenalty} />
@@ -371,7 +418,7 @@ export function Playground({ initialDeploymentId, onNavigateToDeployment }: Play
           <div className="flex items-center justify-between px-6 pt-4 pb-2 flex-shrink-0">
             <div>
               <div className="text-sm font-medium text-gray-900">Chat</div>
-              <code className="text-xs text-gray-400">{selectedDeployment.servingName}</code>
+              <code className="text-xs text-gray-400">{selectedTarget.servingName}</code>
             </div>
             <button
               onClick={clearConversation}
@@ -388,10 +435,14 @@ export function Playground({ initialDeploymentId, onNavigateToDeployment }: Play
             {messages.length === 0 && !isStreaming && (
               <div className="flex items-center justify-center h-full">
                 <div className="bg-gray-50 rounded-xl p-8 max-w-lg text-center">
-                  <h3 className="text-lg text-gray-900 mb-2">Try {selectedDeployment.name}</h3>
+                  <h3 className="text-lg text-gray-900 mb-2">Try {selectedTarget.name}</h3>
                   <p className="text-sm text-gray-500">
-                    Responses are streamed from the deployment through the AIBrix Gateway.
+                    Responses are streamed from the {selectedTarget.kind === 'modelclaim' ? 'ModelClaim' : 'deployment'} through
+                    the AIBrix Gateway.
                   </p>
+                  {selectedTarget.note && (
+                    <p className="mt-2 text-sm text-indigo-600">{selectedTarget.note}.</p>
+                  )}
                 </div>
               </div>
             )}
@@ -401,7 +452,7 @@ export function Playground({ initialDeploymentId, onNavigateToDeployment }: Play
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-semibold ${
                   message.role === 'user' ? 'bg-gray-100 text-gray-600' : 'bg-teal-50 text-teal-700'
                 }`}>
-                  {message.role === 'user' ? 'You' : deploymentInitials(selectedDeployment)}
+                  {message.role === 'user' ? 'You' : targetInitials(selectedTarget)}
                 </div>
                 <div className="flex-1 min-w-0 pt-1">
                   <RenderMessage text={message.content} />
@@ -412,10 +463,12 @@ export function Playground({ initialDeploymentId, onNavigateToDeployment }: Play
             {isStreaming && (
               <div className="mb-6 flex items-start gap-3">
                 <div className="w-8 h-8 rounded-full bg-teal-50 text-teal-700 flex items-center justify-center flex-shrink-0 text-xs font-semibold">
-                  {deploymentInitials(selectedDeployment)}
+                  {targetInitials(selectedTarget)}
                 </div>
                 <div className="flex-1 min-w-0 pt-1">
-                  {streamingContent ? <RenderMessage text={streamingContent} /> : (
+                  {streamingContent ? <RenderMessage text={streamingContent} /> : waitingNote ? (
+                    <span className="text-sm text-indigo-600">{waitingNote}</span>
+                  ) : (
                     <span className="inline-flex gap-1" aria-label="Waiting for response">
                       <span className="w-1.5 h-1.5 bg-teal-500 rounded-full animate-bounce" />
                       <span className="w-1.5 h-1.5 bg-teal-500 rounded-full animate-bounce [animation-delay:150ms]" />

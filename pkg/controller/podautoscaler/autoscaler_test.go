@@ -235,9 +235,9 @@ func TestComputeDesiredReplicasAdjustsKPAAPAConservativelyWhenReplicasPending(t 
 			currentPods:  4,
 			readyPods:    2,
 			pendingPods:  2,
-			wantReason:   "scale-up adjusted: pending replicas treated as missing metrics",
-			wantReplicas: 10, // the 2 ready pods alone need ceil(2*250/50)
-			wantGuard:    true,
+			wantReason:   "panic mode scaling",
+			wantReplicas: 10,    // the 2 ready pods alone need ceil(2*250/50)
+			wantGuard:    false, // KPA counts only the ready pods' load, so there is nothing to trim
 		},
 		{
 			name:         "kpa scale-up dampened",
@@ -247,9 +247,9 @@ func TestComputeDesiredReplicasAdjustsKPAAPAConservativelyWhenReplicasPending(t 
 			currentPods:  4,
 			readyPods:    3,
 			pendingPods:  1,
-			wantReason:   "scale-up adjusted: pending replicas treated as missing metrics",
-			wantReplicas: 6, // raw 8, the 3 ready pods alone need ceil(3*100/50)
-			wantGuard:    true,
+			wantReason:   "stable mode scaling",
+			wantReplicas: 6,     // the 3 ready pods alone need ceil(3*100/50)
+			wantGuard:    false, // KPA counts only the ready pods' load, so there is nothing to trim
 		},
 		{
 			name:         "kpa scale-up keeps what the ready pods need (pod source)",
@@ -259,9 +259,9 @@ func TestComputeDesiredReplicasAdjustsKPAAPAConservativelyWhenReplicasPending(t 
 			currentPods:  4,
 			readyPods:    3,
 			pendingPods:  1,
-			wantReason:   "scale-up adjusted: pending replicas treated as missing metrics",
+			wantReason:   "stable mode scaling",
 			wantReplicas: 6,
-			wantGuard:    true,
+			wantGuard:    false, // KPA counts only the ready pods' load, so there is nothing to trim
 		},
 		{
 			name:         "kpa scale-up keeps what the ready pods need (resource source)",
@@ -271,9 +271,9 @@ func TestComputeDesiredReplicasAdjustsKPAAPAConservativelyWhenReplicasPending(t 
 			currentPods:  4,
 			readyPods:    3,
 			pendingPods:  1,
-			wantReason:   "scale-up adjusted: pending replicas treated as missing metrics",
+			wantReason:   "stable mode scaling",
 			wantReplicas: 6,
-			wantGuard:    true,
+			wantGuard:    false, // KPA counts only the ready pods' load, so there is nothing to trim
 		},
 		{
 			name:         "apa gives the same answer for the same input",
@@ -563,6 +563,7 @@ func TestComputeDesiredReplicasSettlesUnderSteadyLoad(t *testing.T) {
 	}{
 		{autoscalingv1alpha1.KPA, 0},
 		{autoscalingv1alpha1.APA, 0},
+		{autoscalingv1alpha1.KPA, 90 * time.Second},
 		{autoscalingv1alpha1.APA, 90 * time.Second},
 	} {
 		t.Run(fmt.Sprintf("%s/startup_%s", tt.strategy, tt.startup), func(t *testing.T) {
@@ -705,6 +706,57 @@ func TestComputeDesiredReplicasCountsReportingPodsWhenReadyReplicasLag(t *testin
 			}
 		})
 	}
+}
+
+// KPA sizes from every pod that reports, not only from readyReplicas, which can
+// lag the pod list: 10 pods reporting 100 each against a target of 50 need 20,
+// even while the status still shows 4 ready.
+func TestComputeDesiredReplicasKPAScalesFromReportingPodsWhenReadyReplicasLag(t *testing.T) {
+	pa := testPodAutoscaler(autoscalingv1alpha1.KPA)
+	fetcher := &mockMetricFetcherFactory{}
+	fetcher.metricsValue = 100
+	autoScaler := NewDefaultAutoScaler(fetcher, nil)
+
+	podList := make([]corev1.Pod, 10)
+	for j := range podList {
+		podList[j].Name = fmt.Sprintf("pod-%d", j)
+	}
+	result, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
+		PodAutoscaler:   pa,
+		ScalingContext:  testScalingContext(t, &pa),
+		CurrentReplicas: 10,
+		ReplicaState:    ReplicaState{ReadyReplicas: 4},
+		Pods:            podList,
+		Timestamp:       time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int32(20), result.DesiredReplicas)
+}
+
+// Inside the tolerance band KPA holds the current replicas, pods still starting
+// included: 4 ready pods at the target with 6 more starting must stay at 10, not
+// fall to the 4 that carry the load.
+func TestComputeDesiredReplicasKPAHoldsPendingPodsWithinTolerance(t *testing.T) {
+	pa := testPodAutoscaler(autoscalingv1alpha1.KPA)
+	fetcher := &mockMetricFetcherFactory{}
+	fetcher.metricsValue = 50
+	autoScaler := NewDefaultAutoScaler(fetcher, nil)
+
+	podList := make([]corev1.Pod, 4)
+	for j := range podList {
+		podList[j].Name = fmt.Sprintf("pod-%d", j)
+	}
+	result, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
+		PodAutoscaler:   pa,
+		ScalingContext:  testScalingContext(t, &pa),
+		CurrentReplicas: 10,
+		ReplicaState:    ReplicaState{ReadyReplicas: 4},
+		Pods:            podList,
+		Timestamp:       time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int32(10), result.DesiredReplicas)
+	assert.False(t, result.PendingReplicaGuardActive, "the hold must come from KPA, not from the pending-replica guard")
 }
 
 // External and domain sources report one total, so their windows must not be

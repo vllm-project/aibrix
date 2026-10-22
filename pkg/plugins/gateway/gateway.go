@@ -948,16 +948,20 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		s.encodeMedia(routeCtx, encoders)
 		return routeCtx.TargetAddress(), nil
 	}
-	utils.CryptoShuffle(readyPods)
+	// The order only breaks ties between equally scored pods, so it needs to be unbiased, not
+	// unpredictable: crypto/rand here cost a syscall per pod on every request.
+	utils.Shuffle(readyPods)
 	// PD issues an additional HTTP request while routing. Pass the current span
 	// to that request without changing Context semantics for other routers.
 	if isPD {
 		routeCtx.Context = ctx
 	}
+	var addr string
 	if limit := replicaInflightLimit(routeCtx); limit > 0 {
-		return s.routeWithEarlyAdmission(routeCtx, router, &utils.PodArray{Pods: readyPods}, limit)
+		addr, err = s.routeWithEarlyAdmission(routeCtx, router, &utils.PodArray{Pods: readyPods}, limit)
+	} else {
+		addr, err = router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
 	}
-	addr, err := router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
 	if err == nil {
 		s.encodeMedia(routeCtx, encoders)
 	}

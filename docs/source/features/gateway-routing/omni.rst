@@ -72,15 +72,15 @@ The vLLM-Omni and SGLang-Omni columns show what each engine documents upstream. 
    * - ``GET /v1/audio/voices``
      - ✅
      - ✅
-     - ❌ Not supported
+     - ✅ Supported
    * - ``POST /v1/audio/voices``
      - ✅
      - ✅
-     - ❌ Not supported
+     - ✅ Supported
    * - ``DELETE /v1/audio/voices/{name}``
      - ✅
      - ✅
-     - ❌ Not supported
+     - ✅ Supported
    * - **Image**
      -
      -
@@ -123,7 +123,8 @@ In the engine columns, *Model-dependent* means the engine serves the endpoint on
 - ``GET /v1/models`` is answered by AIBrix's metadata service from the models it discovers (pod labels and ``ModelAdapter`` resources) instead of being forwarded to an engine, so it lists every model AIBrix knows about, whichever engine serves it.
 - ``POST /v1/chat/completions/batch`` is routed like a chat completion, and the engine answers with one JSON document that holds a choice per conversation; see :ref:`omni-chat-batch`.
 - ``GET /v1/audio/speech/stream`` is a WebSocket endpoint, and the gateway has no handler for it.
-- ``/v1/audio/generate`` and ``/v1/audio/voices`` do not match any of the gateway's reserved routes.
+- ``/v1/audio/generate`` does not match any of the gateway's reserved routes.
+- The three ``/v1/audio/voices`` calls name no model, so AIBrix reads it from a ``model`` query parameter, and the voices they manage live on the pod that served the upload; see :ref:`omni-audio-voices`.
 - AIBrix also serves ``GET /v1/videos`` itself, a catalog of your own video jobs kept in the gateway's registry. It is not an engine endpoint, so it is not listed above; see :ref:`omni-video-endpoint-reference`.
 
 ----

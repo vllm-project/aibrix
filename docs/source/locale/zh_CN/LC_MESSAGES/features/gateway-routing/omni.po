@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  AIBrix\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-13 12:33-0700\n"
+"POT-Creation-Date: 2026-10-17 22:33-0700\n"
 "PO-Revision-Date: 2026-09-10 18:55+0800\n"
 "Last-Translator: AIBrix Team\n"
 "Language: zh_CN\n"
@@ -125,12 +125,17 @@ msgid "✅"
 msgstr "✅"
 
 #: ../../source/features/gateway-routing/omni.rst:35
+#: ../../source/features/gateway-routing/omni.rst:39
 #: ../../source/features/gateway-routing/omni.rst:43
 #: ../../source/features/gateway-routing/omni.rst:51
 #: ../../source/features/gateway-routing/omni.rst:55
 #: ../../source/features/gateway-routing/omni.rst:63
 #: ../../source/features/gateway-routing/omni.rst:67
+#: ../../source/features/gateway-routing/omni.rst:75
+#: ../../source/features/gateway-routing/omni.rst:79
+#: ../../source/features/gateway-routing/omni.rst:83
 #: ../../source/features/gateway-routing/omni.rst:91
+#: ../../source/features/gateway-routing/omni.rst:95
 #: ../../source/features/gateway-routing/omni.rst:103
 #: ../../source/features/gateway-routing/omni.rst:107
 #: ../../source/features/gateway-routing/omni.rst:111
@@ -155,16 +160,6 @@ msgstr "``POST /v1/chat/completions/batch``"
 msgid "Not supported"
 msgstr "不支持"
 
-#: ../../source/features/gateway-routing/omni.rst:39
-#: ../../source/features/gateway-routing/omni.rst:59
-#: ../../source/features/gateway-routing/omni.rst:71
-#: ../../source/features/gateway-routing/omni.rst:75
-#: ../../source/features/gateway-routing/omni.rst:79
-#: ../../source/features/gateway-routing/omni.rst:83
-#: ../../source/features/gateway-routing/omni.rst:95
-msgid "❌ Not supported"
-msgstr "❌ 不支持"
-
 #: ../../source/features/gateway-routing/omni.rst:40
 msgid "``GET /v1/models``"
 msgstr "``GET /v1/models``"
@@ -184,6 +179,11 @@ msgstr "``POST /v1/audio/speech/batch``"
 #: ../../source/features/gateway-routing/omni.rst:56
 msgid "``GET /v1/audio/speech/stream``"
 msgstr "``GET /v1/audio/speech/stream``"
+
+#: ../../source/features/gateway-routing/omni.rst:59
+#: ../../source/features/gateway-routing/omni.rst:71
+msgid "❌ Not supported"
+msgstr "❌ 不支持"
 
 #: ../../source/features/gateway-routing/omni.rst:60
 msgid "``POST /v1/audio/transcriptions``"
@@ -280,8 +280,8 @@ msgid ""
 " the engine answers with one JSON document that holds a choice per "
 "conversation; see :ref:`omni-chat-batch`."
 msgstr ""
-"``POST /v1/chat/completions/batch`` 与 chat completion 一样被路由，引擎以一个 JSON 文档作答，其中每个会话对应一个"
-" choice；参见 :ref:`omni-chat-batch` 。"
+"``POST /v1/chat/completions/batch`` 与 chat completion 一样被路由，引擎以一个 JSON "
+"文档作答，其中每个会话对应一个 choice；参见 :ref:`omni-chat-batch` 。"
 
 #: ../../source/features/gateway-routing/omni.rst:125
 msgid ""
@@ -291,11 +291,21 @@ msgstr "``GET /v1/audio/speech/stream`` 是 WebSocket 端点，网关没有对�
 
 #: ../../source/features/gateway-routing/omni.rst:126
 msgid ""
-"``/v1/audio/generate`` and ``/v1/audio/voices`` do not match any of the "
-"gateway's reserved routes."
-msgstr "``/v1/audio/generate`` 和 ``/v1/audio/voices`` 不匹配网关的任何保留路由。"
+"``/v1/audio/generate`` does not match any of the gateway's reserved "
+"routes."
+msgstr "``/v1/audio/generate`` 不匹配网关的任何保留路由。"
 
 #: ../../source/features/gateway-routing/omni.rst:127
+msgid ""
+"The three ``/v1/audio/voices`` calls name no model, so AIBrix reads it "
+"from a ``model`` query parameter, and the voices they manage live on the "
+"pod that served the upload; see :ref:`omni-audio-voices`."
+msgstr ""
+"``/v1/audio/voices`` 的三个调用都不指明模型，因此 AIBrix 从 ``model`` 查询参"
+"数中读取模型，并且它们所管理的音色保存在接收上传的 Pod 上；参见 :ref:`omni-a"
+"udio-voices` 。"
+
+#: ../../source/features/gateway-routing/omni.rst:128
 msgid ""
 "AIBrix also serves ``GET /v1/videos`` itself, a catalog of your own video"
 " jobs kept in the gateway's registry. It is not an engine endpoint, so it"
@@ -305,11 +315,11 @@ msgstr ""
 "，即网关注册表中保存的、属于你自己的视频任务目录。它不是引擎端点，因此未在上方列出；参见 :ref:`omni-video-endpoint-"
 "reference` 。"
 
-#: ../../source/features/gateway-routing/omni.rst:132
+#: ../../source/features/gateway-routing/omni.rst:133
 msgid "How It Works"
 msgstr "工作原理"
 
-#: ../../source/features/gateway-routing/omni.rst:134
+#: ../../source/features/gateway-routing/omni.rst:135
 msgid ""
 "An omni engine pod is started the same way as any other model in AIBrix —"
 " a ``Deployment`` labeled with ``model.aibrix.ai/name`` and a matching "
@@ -327,7 +337,7 @@ msgstr ""
 "``/v1/images/generations`` 、 ``/v1/audio/speech`` 、 ``/v1/videos`` "
 "等）。本指南中的示例使用 vLLM-Omni。对于 SGLang-Omni，请按其自身文档启动引擎，并保持相同的标签和 ``Service`` 。"
 
-#: ../../source/features/gateway-routing/omni.rst:136
+#: ../../source/features/gateway-routing/omni.rst:137
 msgid ""
 "Chat, audio and image requests are a single request and response, so "
 "ordinary model-based routing is enough for them. Video generation is the "
@@ -338,15 +348,15 @@ msgstr ""
 "对话、音频和图像请求都是一次请求对应一次响应，因此对它们而言，普通的按模型路由就足够了。视频生成是例外：生成的视频会写入创建它的 Pod "
 "的本地磁盘，因此网关还会跟踪每个任务，并将后续调用路由回该 Pod。其工作方式参见 :doc:`omni-video` 。"
 
-#: ../../source/features/gateway-routing/omni.rst:143
+#: ../../source/features/gateway-routing/omni.rst:144
 msgid "Prerequisites"
 msgstr "前置条件"
 
-#: ../../source/features/gateway-routing/omni.rst:145
+#: ../../source/features/gateway-routing/omni.rst:146
 msgid "Before you begin, make sure you have:"
 msgstr "开始前请确认具备："
 
-#: ../../source/features/gateway-routing/omni.rst:147
+#: ../../source/features/gateway-routing/omni.rst:148
 msgid ""
 "A running Kubernetes cluster with `AIBrix installed <https://github.com"
 "/vllm-project/aibrix>`_ (includes Envoy Gateway)."
@@ -354,43 +364,43 @@ msgstr ""
 "已运行的 Kubernetes 集群，并已 `安装 AIBrix <https://github.com/vllm-"
 "project/aibrix>`_ （包含 Envoy Gateway）。"
 
-#: ../../source/features/gateway-routing/omni.rst:148
+#: ../../source/features/gateway-routing/omni.rst:149
 msgid "``kubectl`` configured to talk to your cluster."
 msgstr "已配置 ``kubectl`` 以访问集群。"
 
-#: ../../source/features/gateway-routing/omni.rst:149
+#: ../../source/features/gateway-routing/omni.rst:150
 msgid "A GPU node for the model you deploy."
 msgstr "用于部署模型的 GPU 节点。"
 
-#: ../../source/features/gateway-routing/omni.rst:150
+#: ../../source/features/gateway-routing/omni.rst:151
 msgid "``jq`` and ``curl`` for the examples in the guides."
 msgstr "用于指南中示例的 ``jq`` 和 ``curl`` 。"
 
-#: ../../source/features/gateway-routing/omni.rst:157
+#: ../../source/features/gateway-routing/omni.rst:158
 msgid "Access the Gateway"
 msgstr "访问网关"
 
-#: ../../source/features/gateway-routing/omni.rst:159
+#: ../../source/features/gateway-routing/omni.rst:160
 msgid "Port-forward the Envoy service to test locally:"
 msgstr "将 Envoy 服务端口转发到本地以便测试："
 
-#: ../../source/features/gateway-routing/omni.rst:171
+#: ../../source/features/gateway-routing/omni.rst:172
 msgid "In production, use the LoadBalancer external IP instead:"
 msgstr "生产环境请改用 LoadBalancer 外部 IP："
 
-#: ../../source/features/gateway-routing/omni.rst:181
+#: ../../source/features/gateway-routing/omni.rst:182
 msgid "The examples in the guides below use this ``$BASE``."
 msgstr "下方指南中的示例使用这里设置的 ``$BASE`` 。"
 
-#: ../../source/features/gateway-routing/omni.rst:186
+#: ../../source/features/gateway-routing/omni.rst:187
 msgid "Guides"
 msgstr "指南"
 
-#: ../../source/features/gateway-routing/omni.rst:198
+#: ../../source/features/gateway-routing/omni.rst:199
 msgid ":doc:`gateway-plugins`"
 msgstr ":doc:`gateway-plugins`"
 
-#: ../../source/features/gateway-routing/omni.rst:199
+#: ../../source/features/gateway-routing/omni.rst:200
 msgid ""
 "Gateway routing, the ``user`` header used for job ownership, and message-"
 "size limits."

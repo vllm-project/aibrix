@@ -165,6 +165,24 @@ func ResolveExclusiveStrategy(algStr string) (string, bool) {
 	return cfg.Items[0].Name, true
 }
 
+var envAutoBlendWeights = loadAutoBlendWeightsFromEnv()
+
+// loadAutoBlendWeightsFromEnv reads the auto-blend weights from the environment
+// with the same lower bounds the model config profile applies to them
+// (ResolveRoutingOverrides), so a profile never sets a value the environment
+// could not. 0 is a documented value for the load-balance weights (it disables
+// the blend, or the load-balance half of the prefix-cache blend) and for
+// least-request (it omits that scorer), so those accept it. The prefix-cache
+// weight stays positive, as the profile requires.
+func loadAutoBlendWeightsFromEnv() autoBlendWeights {
+	return autoBlendWeights{
+		loadBalance:            utils.LoadEnvNonNegativeInt("AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT", 1),
+		leastRequest:           utils.LoadEnvNonNegativeInt("AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT", 1),
+		prefixCache:            utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT", 5),
+		prefixCacheLoadBalance: utils.LoadEnvNonNegativeInt("AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT", 4),
+	}
+}
+
 // autoBlendLoadBalanceWeight/autoBlendLeastRequestTopKWeight control the silent multi-strategy
 // blend appendLoadBalanceBlend adds behind every request's chosen strategy. Setting the
 // load-balance weight to 0 disables the whole feature, matching ParseMultiRouterConfig's own
@@ -174,8 +192,8 @@ func ResolveExclusiveStrategy(algStr string) (string, bool) {
 // least-request alias. The env var and the profile's autoBlend.leastRequestWeight keep their
 // least-request names because they are deployed configuration.
 var (
-	autoBlendLoadBalanceWeight      = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT", 1)
-	autoBlendLeastRequestTopKWeight = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT", 1)
+	autoBlendLoadBalanceWeight      = envAutoBlendWeights.loadBalance
+	autoBlendLeastRequestTopKWeight = envAutoBlendWeights.leastRequest
 )
 
 // autoBlendPrefixCacheWeight/autoBlendPrefixCacheLoadBalanceWeight set the default blend ratio
@@ -189,8 +207,8 @@ var (
 // congestion on a pod whose capacity/drain-rate estimate hasn't caught up yet under sustained
 // concurrent load.
 var (
-	autoBlendPrefixCacheWeight            = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT", 5)
-	autoBlendPrefixCacheLoadBalanceWeight = utils.LoadEnvInt("AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT", 4)
+	autoBlendPrefixCacheWeight            = envAutoBlendWeights.prefixCache
+	autoBlendPrefixCacheLoadBalanceWeight = envAutoBlendWeights.prefixCacheLoadBalance
 )
 
 // autoBlendWeights carries the effective auto-blend weights of one request: the
@@ -463,7 +481,15 @@ func (m *multiStrategyRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPo
 }
 
 func (m *multiStrategyRouter) runPostRouteUpdates(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) {
+	// A strategy named more than once ("vtc-basic,vtc-basic") shares one scorer,
+	// so update it once: a stateful hook such as vtc-basic's token charge must
+	// not run per mention.
+	updated := make(map[string]struct{}, len(m.config.Items))
 	for _, item := range m.config.Items {
+		if _, done := updated[item.Name]; done {
+			continue
+		}
+		updated[item.Name] = struct{}{}
 		scorer := m.scorers[item.Name]
 		updater, ok := scorer.(types.PostRouteUpdater)
 		if !ok {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, ChevronLeft, Copy, Moon, Pencil } from 'lucide-react';
+import { AlertTriangle, ChevronLeft, Copy, ExternalLink, Moon, Pencil } from 'lucide-react';
 import {
   APIError,
   deleteModelClaim,
@@ -8,6 +8,7 @@ import {
 } from '../utils/api';
 import type { ModelClaim, ModelClaimInstance } from '../utils/api';
 import { copyToClipboard } from '../utils/clipboard';
+import { modelClaimTargets } from '../utils/playground';
 import {
   formatBytes,
   MODEL_CLAIM_REFRESH_INTERVAL_MS,
@@ -20,9 +21,11 @@ import { ModelClaimPhase } from './ModelClaimShared';
 interface ModelClaimDetailProps {
   claimName: string;
   onBack: () => void;
+  // Set when the Playground is enabled.
+  onOpenPlayground?: (claimName: string) => void;
 }
 
-export function ModelClaimDetail({ claimName, onBack }: ModelClaimDetailProps) {
+export function ModelClaimDetail({ claimName, onBack, onOpenPlayground }: ModelClaimDetailProps) {
   const [claim, setClaim] = useState<ModelClaim | null>(null);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
@@ -116,6 +119,7 @@ export function ModelClaimDetail({ claimName, onBack }: ModelClaimDetailProps) {
 
   const attention = modelClaimAttention(claim);
   const engineArgs = Object.entries(claim.engineArgs);
+  const playgroundReady = modelClaimTargets([claim]).length > 0;
 
   return (
     <div className="mx-auto w-full max-w-6xl p-8">
@@ -152,6 +156,20 @@ export function ModelClaimDetail({ claimName, onBack }: ModelClaimDetailProps) {
             <Copy className="h-4 w-4" />
             Copy model name
           </button>
+          {onOpenPlayground && (
+            <button
+              type="button"
+              disabled={!playgroundReady}
+              onClick={() => onOpenPlayground(claim.name)}
+              title={playgroundReady
+                ? 'Chat with this model in Playground'
+                : 'The ModelClaim must be Active or Sleeping'}
+              className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Open in Playground
+              <ExternalLink className="h-4 w-4" />
+            </button>
+          )}
           <button
             type="button"
             disabled={deleting || claim.deleting}
