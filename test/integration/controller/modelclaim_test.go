@@ -512,6 +512,29 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(found).To(gomega.BeTrue())
 		gomega.Expect(priority).To(gomega.Equal(int64(0)))
+		policy, found, err := unstructured.NestedString(storedUnstructured.Object, "spec", "preemptionPolicy")
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Expect(found).To(gomega.BeTrue())
+		gomega.Expect(policy).To(gomega.Equal(string(modelapi.ModelClaimPreemptionNever)))
+
+		for _, accepted := range []modelapi.ModelClaimPreemptionPolicy{
+			modelapi.ModelClaimPreemptionNever,
+			modelapi.ModelClaimPreemptionSleepLowerPriority,
+		} {
+			claim := validClaim("claim-policy-" + strings.ToLower(string(accepted)))
+			claim.Spec.PreemptionPolicy = accepted
+			gomega.Expect(k8sClient.Create(ctx, claim)).To(gomega.Succeed())
+		}
+		for _, rejected := range []modelapi.ModelClaimPreemptionPolicy{"StopLowerPriority", "unknown"} {
+			claim := validClaim("claim-policy-invalid-" + strings.ToLower(string(rejected)))
+			claim.Spec.PreemptionPolicy = rejected
+			gomega.Expect(apierrors.IsInvalid(k8sClient.Create(ctx, claim))).To(gomega.BeTrue())
+		}
+		policyClaim := validClaim("claim-policy-immutable")
+		policyClaim.Spec.PreemptionPolicy = modelapi.ModelClaimPreemptionNever
+		gomega.Expect(k8sClient.Create(ctx, policyClaim)).To(gomega.Succeed())
+		policyClaim.Spec.PreemptionPolicy = modelapi.ModelClaimPreemptionSleepLowerPriority
+		gomega.Expect(apierrors.IsInvalid(k8sClient.Update(ctx, policyClaim))).To(gomega.BeTrue())
 
 		for _, tc := range []struct {
 			name     string
@@ -575,6 +598,159 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 			err := k8sClient.Create(ctx, claim)
 			gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "%s: %v", missing, err)
 		}
+	})
+
+	ginkgo.Describe("SleepLowerPriority preemption", func() {
+		createClaim := func(
+			name, pool, footprint, floor string,
+			priority int32,
+			policy modelapi.ModelClaimPreemptionPolicy,
+		) *modelapi.ModelClaim {
+			claim := &modelapi.ModelClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns.Name},
+				Spec: modelapi.ModelClaimSpec{
+					Priority: priority, PreemptionPolicy: policy,
+					PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+						constants.ModelPoolLabelName: pool,
+					}},
+					ArtifactURL: "huggingface://integration/" + name,
+					Engine:      "vllm",
+					PerGPU: &modelapi.ModelClaimPerGPU{
+						MaximumFootprint: resource.MustParse(footprint),
+						KVFloor:          resource.MustParse(floor),
+					},
+				},
+			}
+			gomega.Expect(k8sClient.Create(ctx, claim)).To(gomega.Succeed())
+			return claim
+		}
+		waitActive := func(claim *modelapi.ModelClaim) {
+			gomega.Eventually(func(g gomega.Gomega) {
+				g.Expect(fixture.GetClaim(g, claim).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+		}
+
+		ginkgo.DescribeTable("keeps omitted and Never on ordinary make-room timing",
+			func(policy modelapi.ModelClaimPreemptionPolicy) {
+				fixture.Runtime().SetCard(5 << 30)
+				fixture.Runtime().SetSleepingFootprint(256 << 20)
+				fixture.CreatePoolPod(ns.Name, "pool-never", "pool-never",
+					`{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepToMakeRoomAfterSeconds":600}}`)
+				waitActive(createClaim("never-a", "pool-never", "1Gi", "1Gi", 1, ""))
+				waitActive(createClaim("never-b", "pool-never", "1Gi", "1Gi", 1, ""))
+				waiting := createClaim("never-waiting", "pool-never", "1Gi", "1Gi", 10, policy)
+
+				gomega.Eventually(func(g gomega.Gomega) {
+					latest := fixture.GetClaim(g, waiting)
+					g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimPending))
+					scheduled := meta.FindStatusCondition(latest.Status.Conditions, string(modelapi.ModelClaimConditionTypeScheduled))
+					g.Expect(scheduled).NotTo(gomega.BeNil())
+					g.Expect(scheduled.Reason).To(gomega.Equal("NoMatchingPods"))
+				}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+				gomega.Expect(fixture.Runtime().SleepRequests()).To(gomega.BeEmpty())
+			},
+			ginkgo.Entry("omitted", modelapi.ModelClaimPreemptionPolicy("")),
+			ginkgo.Entry("Never", modelapi.ModelClaimPreemptionNever),
+		)
+
+		ginkgo.It("sleeps only a newly idle lower-priority victim", func() {
+			fixture.Runtime().SetCard(5 << 30)
+			fixture.Runtime().SetSleepingFootprint(256 << 20)
+			fixture.CreatePoolPod(ns.Name, "pool-soft", "pool-soft",
+				`{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepToMakeRoomAfterSeconds":600}}`)
+			low := createClaim("soft-low", "pool-soft", "1Gi", "1Gi", 1, "")
+			equal := createClaim("soft-equal", "pool-soft", "1Gi", "1Gi", 10, "")
+			waitActive(low)
+			waitActive(equal)
+			preemptor := createClaim("soft-high", "pool-soft", "1Gi", "1Gi", 10,
+				modelapi.ModelClaimPreemptionSleepLowerPriority)
+
+			waitActive(preemptor)
+			gomega.Eventually(func(g gomega.Gomega) {
+				g.Expect(fixture.GetClaim(g, low).Status.Phase).To(gomega.Equal(modelapi.ModelClaimSleeping))
+				g.Expect(fixture.GetClaim(g, equal).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+			gomega.Expect(fixture.Runtime().SleepRequests()).To(gomega.HaveLen(1))
+			gomega.Expect(fixture.Runtime().SleepRequests()[0].ModelName).To(gomega.Equal(low.Name))
+			fixture.ExpectEvent(low, corev1.EventTypeNormal, "PreemptedBySleep")
+		})
+
+		ginkgo.DescribeTable("protects a lower-priority victim without authoritative zero requests",
+			func(configure func(*modelapi.ModelClaim)) {
+				fixture.Runtime().SetCard(5 << 30)
+				fixture.Runtime().SetSleepingFootprint(256 << 20)
+				fixture.CreatePoolPod(ns.Name, "pool-safe", "pool-safe",
+					`{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepToMakeRoomAfterSeconds":600}}`)
+				victim := createClaim("safe-victim", "pool-safe", "1Gi", "1Gi", 1, "")
+				protected := createClaim("safe-equal", "pool-safe", "1Gi", "1Gi", 10, "")
+				waitActive(victim)
+				waitActive(protected)
+				configure(victim)
+				preemptor := createClaim("safe-high", "pool-safe", "1Gi", "1Gi", 10,
+					modelapi.ModelClaimPreemptionSleepLowerPriority)
+
+				gomega.Eventually(func(g gomega.Gomega) {
+					latest := fixture.GetClaim(g, preemptor)
+					g.Expect(latest.Status.Phase).To(gomega.Equal(modelapi.ModelClaimPending))
+				}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+				gomega.Expect(fixture.Runtime().SleepRequests()).To(gomega.BeEmpty())
+				// Let AfterEach delete the active engine without waiting for the
+				// controller's deletion-drain timeout.
+				fixture.Runtime().SetClaimRequests(string(victim.UID), 0, 0)
+			},
+			ginkgo.Entry("busy", func(claim *modelapi.ModelClaim) {
+				fixture.Runtime().SetClaimRequests(string(claim.UID), 1, 0)
+			}),
+			ginkgo.Entry("missing metrics", func(claim *modelapi.ModelClaim) {
+				fixture.Runtime().SetClaimRequestMetricsObserved(string(claim.UID), false)
+			}),
+		)
+
+		ginkgo.It("protects priority before victim count", func() {
+			fixture.Runtime().SetCard(7 << 30)
+			fixture.Runtime().SetSleepingFootprint(256 << 20)
+			fixture.CreatePoolPod(ns.Name, "pool-order", "pool-order",
+				`{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepToMakeRoomAfterSeconds":600}}`)
+			lowA := createClaim("order-low-a", "pool-order", "512Mi", "512Mi", 1, "")
+			lowB := createClaim("order-low-b", "pool-order", "512Mi", "512Mi", 1, "")
+			lowC := createClaim("order-low-c", "pool-order", "512Mi", "512Mi", 1, "")
+			highVictim := createClaim("order-high", "pool-order", "2Gi", "1Gi", 90, "")
+			for _, claim := range []*modelapi.ModelClaim{lowA, lowB, lowC, highVictim} {
+				waitActive(claim)
+			}
+			before := fixture.Runtime().SnapshotCallCount()
+			for _, claim := range []*modelapi.ModelClaim{lowA, lowB, lowC} {
+				fixture.TriggerReconcile(claim)
+			}
+			gomega.Eventually(fixture.Runtime().SnapshotCallCount, modelClaimTimeout, modelClaimInterval).
+				Should(gomega.BeNumerically(">=", before+3))
+			preemptor := createClaim("order-preemptor", "pool-order", "1Gi", "1Gi", 100,
+				modelapi.ModelClaimPreemptionSleepLowerPriority)
+
+			waitActive(preemptor)
+			sleeps := fixture.Runtime().SleepRequests()
+			gomega.Expect(sleeps).NotTo(gomega.BeEmpty())
+			gomega.Expect([]string{lowA.Name, lowB.Name, lowC.Name}).To(gomega.ContainElement(sleeps[0].ModelName),
+				"the first victim must have the lowest priority even when one larger victim could reclaim more room")
+		})
+
+		ginkgo.It("recovers after a Runtime Sleep failure", func() {
+			fixture.Runtime().SetCard(5 << 30)
+			fixture.Runtime().SetSleepingFootprint(256 << 20)
+			fixture.CreatePoolPod(ns.Name, "pool-failure", "pool-failure",
+				`{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepToMakeRoomAfterSeconds":600}}`)
+			victim := createClaim("failure-low", "pool-failure", "1Gi", "1Gi", 1, "")
+			waitActive(victim)
+			waitActive(createClaim("failure-equal", "pool-failure", "1Gi", "1Gi", 10, ""))
+			fixture.Runtime().FailNextSleeps(1)
+			preemptor := createClaim("failure-high", "pool-failure", "1Gi", "1Gi", 10,
+				modelapi.ModelClaimPreemptionSleepLowerPriority)
+
+			fixture.ExpectEvent(preemptor, corev1.EventTypeWarning, "PreemptionFailed")
+			waitActive(preemptor)
+			gomega.Expect(fixture.Runtime().SleepRequests()).To(gomega.HaveLen(2))
+			gomega.Expect(fixture.GetClaim(gomega.Default, victim).Status.Phase).To(gomega.Equal(modelapi.ModelClaimSleeping))
+		})
 	})
 
 	ginkgo.It("does not activate claims with unusable per-GPU declarations", func() {

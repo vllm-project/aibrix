@@ -30,7 +30,12 @@ import (
 )
 
 const (
-	activationResultFailed = "failed"
+	activationResultFailed             = "failed"
+	preemptionPolicySleepLowerPriority = "sleep_lower_priority"
+	preemptionActionSleep              = "sleep"
+	preemptionResultSuccess            = "success"
+	preemptionResultFailed             = "failed"
+	preemptionReasonEngineServing      = "engine_serving"
 
 	policyResultApplied = "applied"
 	policyResultSkipped = "skipped"
@@ -151,6 +156,22 @@ var (
 		},
 		[]string{"namespace", "pool", "action", "result", "reason"},
 	)
+	preemptionAttemptsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "modelclaim_preemption_attempts_total",
+			Help:      "Count of ModelClaim preemption action outcomes with a bounded policy and reason.",
+		},
+		[]string{"policy", "result", "reason"},
+	)
+	preemptionVictimsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "modelclaim_preemption_victims_total",
+			Help:      "Count of ModelClaim preemption victim action outcomes.",
+		},
+		[]string{"action", "result"},
+	)
 )
 
 func init() {
@@ -163,6 +184,8 @@ func init() {
 		poolPolicyValid,
 		poolPolicyEvaluationsTotal,
 		poolPolicyActionsTotal,
+		preemptionAttemptsTotal,
+		preemptionVictimsTotal,
 	)
 }
 
@@ -271,4 +294,43 @@ func normalizePolicyLabels(result, reason string) (string, string) {
 		reason = policyReasonInternalError
 	}
 	return result, reason
+}
+
+func recordPreemptionAttempt(policy, result, reason string) {
+	policy, result, reason = normalizePreemptionAttemptLabels(policy, result, reason)
+	preemptionAttemptsTotal.WithLabelValues(policy, result, reason).Inc()
+}
+
+func recordPreemptionVictim(action, result string) {
+	action, result = normalizePreemptionVictimLabels(action, result)
+	preemptionVictimsTotal.WithLabelValues(action, result).Inc()
+}
+
+func normalizePreemptionAttemptLabels(policy, result, reason string) (string, string, string) {
+	if policy != preemptionPolicySleepLowerPriority {
+		policy = preemptionPolicySleepLowerPriority
+		result = preemptionResultFailed
+		reason = policyReasonInternalError
+	}
+	if result != preemptionResultSuccess && result != preemptionResultFailed {
+		result = preemptionResultFailed
+		reason = policyReasonInternalError
+	}
+	switch reason {
+	case policyReasonApplied, policyReasonRuntimeError, preemptionReasonEngineServing, policyReasonInternalError:
+	default:
+		reason = policyReasonInternalError
+	}
+	return policy, result, reason
+}
+
+func normalizePreemptionVictimLabels(action, result string) (string, string) {
+	if action != preemptionActionSleep {
+		action = preemptionActionSleep
+		result = preemptionResultFailed
+	}
+	if result != preemptionResultSuccess && result != preemptionResultFailed {
+		result = preemptionResultFailed
+	}
+	return action, result
 }

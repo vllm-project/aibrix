@@ -117,6 +117,15 @@ _mock_capacity_requests = 0
 _mock_video_jobs_lock = threading.Lock()
 _mock_video_jobs = {}
 
+# Uploaded voices are pod-local, as vLLM-Omni keeps them on the serving pod's own disk: a voice
+# uploaded through the gateway is listed and deleted only by the replica that took the upload.
+_mock_uploaded_voices_lock = threading.Lock()
+_mock_uploaded_voices = {}
+_MOCK_BUILTIN_VOICES = [
+    "aiden", "dylan", "eric", "one_anna", "ryan",
+    "serena", "sohee", "uncle_fu", "vivian",
+]
+
 # Elastic EP scaling state served to the PodAutoscaler observation (#2288).
 # The mock starts idle; /debug/elastic_ep drives the scaling window so the
 # observe path can be exercised without a GPU engine.
@@ -1769,13 +1778,11 @@ def audio_speech():
         if not input_text:
             return create_error_response("'input' is a required parameter", param="input")
 
-        # Validate voice — accept both OpenAI and vLLM-Omni voices
+        # Validate voice — accept OpenAI voices, vLLM-Omni voices, and the voices uploaded to this pod
         openai_voices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
-        vllm_omni_voices = [
-            "aiden", "dylan", "eric", "one_anna", "ryan",
-            "serena", "sohee", "uncle_fu", "vivian",
-        ]
-        valid_voices = openai_voices + vllm_omni_voices
+        with _mock_uploaded_voices_lock:
+            uploaded_voices = list(_mock_uploaded_voices)
+        valid_voices = openai_voices + _MOCK_BUILTIN_VOICES + uploaded_voices
         if voice not in valid_voices:
             return create_error_response(
                 f"Invalid voice '{voice}'. Must be one of: {', '.join(valid_voices)}",
@@ -1945,14 +1952,63 @@ def audio_speech_batch():
 @auth_required
 def audio_voices():
     """
-    Returns available TTS voices (vLLM-Omni compatible).
+    Returns the built-in TTS voices and the voices uploaded to this pod (vLLM-Omni compatible).
     """
+    with _mock_uploaded_voices_lock:
+        uploaded = list(_mock_uploaded_voices.values())
     return jsonify({
-        "voices": [
-            "aiden", "dylan", "eric", "one_anna", "ryan",
-            "serena", "sohee", "uncle_fu", "vivian",
-        ]
+        "voices": list(_MOCK_BUILTIN_VOICES),
+        "uploaded_voices": uploaded,
     })
+
+
+@app.route("/v1/audio/voices", methods=["POST"])
+@auth_required
+def audio_voices_upload():
+    """
+    Registers a voice sample (vLLM-Omni compatible). Takes multipart/form-data with an
+    `audio_sample` file, a `consent` id and a `name`, and optionally `ref_text` and
+    `speaker_description`. Uploading an existing name replaces it.
+    """
+    audio_sample = request.files.get("audio_sample")
+    name = (request.form.get("name") or "").strip()
+    consent = (request.form.get("consent") or "").strip()
+
+    for param, value in (("audio_sample", audio_sample), ("consent", consent), ("name", name)):
+        if not value:
+            return create_error_response(f"'{param}' is a required parameter", param=param)
+    if name in _MOCK_BUILTIN_VOICES:
+        return create_error_response(
+            f"Voice name '{name}' conflicts with a built-in voice", param="name"
+        )
+
+    voice = {
+        "name": name,
+        "consent": consent,
+        "created_at": int(time.time()),
+        "mime_type": audio_sample.mimetype,
+        "file_size": len(audio_sample.read()),
+    }
+    for optional in ("ref_text", "speaker_description"):
+        if request.form.get(optional):
+            voice[optional] = request.form[optional]
+
+    with _mock_uploaded_voices_lock:
+        _mock_uploaded_voices[name] = voice
+    return jsonify({"success": True, "voice": voice}), 200
+
+
+@app.route("/v1/audio/voices/<name>", methods=["DELETE"])
+@auth_required
+def audio_voices_delete(name):
+    """
+    Removes a voice uploaded to this pod (vLLM-Omni compatible). Built-in voices cannot be deleted.
+    """
+    with _mock_uploaded_voices_lock:
+        removed = _mock_uploaded_voices.pop(name, None)
+    if removed is None:
+        return jsonify({"success": False, "error": f"Voice '{name}' not found"}), 404
+    return jsonify({"success": True, "message": f"Voice '{name}' deleted successfully"}), 200
 
 
 @app.route("/v1/audio/transcriptions", methods=["POST"])

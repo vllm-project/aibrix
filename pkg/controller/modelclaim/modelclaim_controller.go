@@ -388,6 +388,7 @@ func (r *ModelClaimReconciler) handleActivationError(
 	if uerr := r.Status().Update(ctx, pm); uerr != nil {
 		return requeueOnConflict(uerr)
 	}
+	r.reservations().release(claimKey.Namespace, claimKey.Name)
 	// A card divided for an engine that then did not start has lost that
 	// engine again. Divide it now, so its neighbours get back the room
 	// they gave up for it. The cache may still show the record that
@@ -720,6 +721,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 	claims, listErr := r.listClaimsForAccount(ctx, pm.Namespace)
 	ledgers := podLedgersFrom(claims, listErr, candidates, snapshots, r.podsWithoutWakeReserve(ctx, candidates))
 	r.reservations().takeFrom(ledgers, pm.Namespace, pm.Name, r.now())
+	r.reservations().keepWakesOutOfPreemption(ledgers, pm.Namespace, pm.Name, r.now())
 	if len(pm.Status.Instances) == 0 {
 		if listErr != nil {
 			return 0, placementAdmissionReadError{err: listErr}
@@ -762,7 +764,8 @@ func (r *ModelClaimReconciler) ensureActivated(
 			//
 			// A failed instance that cannot be replaced stays as it is, so the
 			// claim stays Failed.
-			refusal := r.refusePlacement(ctx, pm, perGPU, candidates, ledgers, admissible, refusals, failed, selectErr, readings)
+			refusal := r.refusePlacement(ctx, pm, perGPU, candidates, claims, ledgers, placementStates,
+				admissible, refusals, failed, selectErr, readings)
 			reason := refusal.reason
 			if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
 				Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
@@ -783,9 +786,6 @@ func (r *ModelClaimReconciler) ensureActivated(
 			if listErr == nil {
 				refusedOn = roomSignatureOf(candidates, claims)
 			}
-			if reason == constants.ModelClaimReasonTooLargeForAnyCard {
-				return backoff.refusedAsTooLarge(claim, pm.Generation, refusedOn), nil
-			}
 			// The API server shows less on a card than the cache did when this
 			// try began. The cache had not caught up with a change, most often
 			// a neighbour that has just gone, whose engine may still be
@@ -794,10 +794,12 @@ func (r *ModelClaimReconciler) ensureActivated(
 			// the shortest wait. A record that was taken back after a start
 			// that failed does not show here, since a record without a port is
 			// not counted.
-			if roomMayHaveAppeared(room, refusedOn, anyRoom) {
-				backoff.startOver(claim)
-			}
-			return backoff.refused(claim, pm.Generation, refusedOn), nil
+			wait := placementRefusalWait(backoff, claim, pm, reason, room, refusedOn)
+			// A pod that could not be read, such as one whose runtime does
+			// not answer yet, was not judged. A claim that reads it later
+			// judges this claim's turn again.
+			backoff.refusedWithoutReading(claim, unreadPods(candidates, ledgers))
+			return wait, nil
 		}
 
 		// Divide the card between the engines on it and this one, and hold
@@ -960,6 +962,27 @@ func (r *ModelClaimReconciler) ensureActivated(
 	return 0, nil
 }
 
+func placementRefusalWait(
+	backoff *placementBackoff,
+	claim types.NamespacedName,
+	pm *modelv1alpha1.ModelClaim,
+	reason string,
+	before, refusedOn roomSignature,
+) time.Duration {
+	switch {
+	case reason == constants.ModelClaimReasonTooLargeForAnyCard:
+		return backoff.refusedAsTooLarge(claim, pm.Generation, refusedOn)
+	case reason == scheduledReasonMakingRoom &&
+		preemptionPolicyOf(pm) == modelv1alpha1.ModelClaimPreemptionSleepLowerPriority:
+		backoff.placed(claim)
+		return DefaultRequeueDuration
+	}
+	if roomMayHaveAppeared(before, refusedOn, anyRoom) {
+		backoff.startOver(claim)
+	}
+	return backoff.refused(claim, pm.Generation, refusedOn)
+}
+
 // rescheduleFailedInstances moves only instances whose runtime has reported a
 // terminal engine failure, in the same pass that found them. ensureActivated
 // replaces each one, so a replacement goes through the same account, division
@@ -1028,7 +1051,9 @@ func (r *ModelClaimReconciler) refusePlacement(
 	pm *modelv1alpha1.ModelClaim,
 	perGPU perGPUBytes,
 	candidates []corev1.Pod,
+	claims *modelv1alpha1.ModelClaimList,
 	ledgers map[string]podLedger,
+	placementStates map[string]PodPlacementState,
 	admissible []corev1.Pod,
 	refusals []podRefusal,
 	failed []int,
@@ -1049,7 +1074,15 @@ func (r *ModelClaimReconciler) refusePlacement(
 			"the best of them offers %s on a card", gibibytes(perGPU.minimumReserveBytes()), gibibytes(largest))
 	}
 	if refused.reason == "NoMatchingPods" && len(failed) == 0 {
-		if why, making := r.makeRoomToPlace(ctx, pm, perGPU, candidates, ledgers, readings); making {
+		why, making := "", false
+		switch preemptionPolicyOf(pm) {
+		case modelv1alpha1.ModelClaimPreemptionSleepLowerPriority:
+			why, making = r.makeRoomByPrioritySleep(ctx, pm, perGPU, candidates, claims,
+				ledgers, placementStates, readings)
+		default:
+			why, making = r.makeRoomToPlace(ctx, pm, perGPU, candidates, ledgers, readings)
+		}
+		if making {
 			refused.reason, refused.message, refused.eventType = scheduledReasonMakingRoom, why, corev1.EventTypeNormal
 		}
 	}
@@ -2245,11 +2278,17 @@ func podLoadFrom(list *modelv1alpha1.ModelClaimList) map[string]int {
 	return load
 }
 
-// podIP resolves a pod's IP by name, returning "" if the pod is missing or has
-// no IP yet.
+// podIP resolves the IP of a pod whose runtime can be called. It returns "" if
+// the pod is missing, has no IP yet, does not run, or is being deleted. A pod
+// that is being deleted takes its engines with it, and it may have lost its
+// network while it still shows its IP. A call to it would then hold the
+// controller's only worker until the call timed out.
 func (r *ModelClaimReconciler) podIP(ctx context.Context, namespace, name string) string {
 	pod := &corev1.Pod{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, pod); err != nil {
+		return ""
+	}
+	if pod.Status.Phase != corev1.PodRunning || !pod.DeletionTimestamp.IsZero() {
 		return ""
 	}
 	return pod.Status.PodIP

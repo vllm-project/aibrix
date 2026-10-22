@@ -186,7 +186,9 @@ func cleanupRuntimeOnlyResources(
 
 	var lastPods []corev1.Pod
 	var lastPodsErr error
-	podsErr := wait.PollUntilContextTimeout(ctx, time.Second, 10*time.Second, true,
+	// A pod may take more than a few seconds to go on a busy node, so this
+	// waits as long as the cleanup's context allows.
+	podsErr := wait.PollUntilContextCancel(ctx, time.Second, true,
 		func(ctx context.Context) (bool, error) {
 			pods, err := k8sClient.CoreV1().Pods(lifecycleNamespace).List(ctx, metav1.ListOptions{
 				LabelSelector: "app=" + runtimeOnlyDeployment,

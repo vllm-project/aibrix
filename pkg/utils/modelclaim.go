@@ -19,6 +19,7 @@ package utils
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -36,6 +37,50 @@ import (
 // requests its GPUs with.
 const NVIDIAGPUResourceName v1.ResourceName = "nvidia.com/gpu"
 
+// modelClaimVLLMFlagAliases are vLLM's short names for the flags read here.
+var modelClaimVLLMFlagAliases = map[string]string{
+	"-tp": "--tensor-parallel-size",
+	"-pp": "--pipeline-parallel-size",
+	"-dp": "--data-parallel-size",
+}
+
+// ModelClaimEngineFlag reads an engineConfig.args key the way vLLM does. It
+// returns the flag's long name, with "_" read as "-", and the value written
+// after "=", if the key has one.
+func ModelClaimEngineFlag(key string) (flag, value string, hasValue bool) {
+	flag, value, hasValue = strings.Cut(strings.TrimSpace(key), "=")
+	if long, found := modelClaimVLLMFlagAliases[flag]; found {
+		return long, value, hasValue
+	}
+	if name, found := strings.CutPrefix(flag, "--"); found {
+		flag = "--" + strings.ReplaceAll(name, "_", "-")
+	}
+	return flag, value, hasValue
+}
+
+// modelClaimEngineArg returns the value args give one engine flag, however
+// they spell it. A flag set more than once is refused, since the engine keeps
+// the last value it is given and a map has no order.
+func modelClaimEngineArg(args map[string]string, name string) (string, bool, error) {
+	var keys []string
+	for key := range args {
+		if flag, _, _ := ModelClaimEngineFlag(key); flag == name {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return "", false, nil
+	}
+	if len(keys) > 1 {
+		sort.Strings(keys)
+		return "", false, fmt.Errorf("%s is set more than once, as %s", name, strings.Join(keys, " and "))
+	}
+	if _, value, hasValue := ModelClaimEngineFlag(keys[0]); hasValue {
+		return value, true, nil
+	}
+	return args[keys[0]], true, nil
+}
+
 // ModelClaimVLLMParallelism returns the fixed GPU group size required by a
 // vLLM engine. ModelClaim deliberately keeps these engine options in
 // engineConfig.args; the pool Pod's GPU limit is the resource contract and
@@ -45,7 +90,11 @@ func ModelClaimVLLMParallelism(config *modelv1alpha1.ModelClaimEngineConfig) (in
 	if config != nil && config.Args != nil {
 		args = config.Args
 	}
-	if _, found := args["--gpu-memory-utilization"]; found {
+	_, found, err := modelClaimEngineArg(args, "--gpu-memory-utilization")
+	if err != nil {
+		return 0, err
+	}
+	if found {
 		return 0, fmt.Errorf("--gpu-memory-utilization is incompatible with kvcached; use the pool KV policy instead")
 	}
 	tensor, err := positiveEngineArg(args, "--tensor-parallel-size")
@@ -70,8 +119,11 @@ func ModelClaimVLLMParallelism(config *modelv1alpha1.ModelClaimEngineConfig) (in
 }
 
 func positiveEngineArg(args map[string]string, name string) (int64, error) {
-	raw, found := args[name]
-	if !found || raw == "" {
+	raw, found, err := modelClaimEngineArg(args, name)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
 		return 1, nil
 	}
 	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)

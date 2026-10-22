@@ -291,13 +291,19 @@ func waitForLifecyclePoolPodWithApp(
 ) *corev1.Pod {
 	t.Helper()
 	var readyPod *corev1.Pod
+	var lastErr error
 	err := wait.PollUntilContextTimeout(ctx, time.Second, 90*time.Second, true,
 		func(ctx context.Context) (bool, error) {
 			pods, err := client.CoreV1().Pods(lifecycleNamespace).List(ctx, metav1.ListOptions{
 				LabelSelector: "app=" + app,
 			})
-			if err != nil || len(pods.Items) != 1 {
-				return false, err
+			if err != nil {
+				lastErr = err
+				return false, nil
+			}
+			if len(pods.Items) != 1 {
+				lastErr = fmt.Errorf("found %d pods, want 1", len(pods.Items))
+				return false, nil
 			}
 			pod := &pods.Items[0]
 			for _, condition := range pod.Status.Conditions {
@@ -306,9 +312,10 @@ func waitForLifecyclePoolPodWithApp(
 					return true, nil
 				}
 			}
+			lastErr = fmt.Errorf("pod %s is not ready", pod.Name)
 			return false, nil
 		})
-	require.NoError(t, err, "ModelClaim lifecycle pool pod did not become ready")
+	require.NoError(t, err, "ModelClaim lifecycle pool pod did not become ready; last state=%v", lastErr)
 	return readyPod
 }
 
@@ -620,23 +627,28 @@ func cleanupLifecycleResources(
 	// An Active engine may report an in-flight request forever in this mock
 	// pool. Removing its pod ends that drain without waiting for the controller's
 	// 90-second safety timeout, after which the finalizer can complete.
+	var lastClaim *modelv1alpha1.ModelClaim
+	var lastClaimErr error
 	claimsErr := wait.PollUntilContextTimeout(ctx, time.Second, 20*time.Second, true,
 		func(ctx context.Context) (bool, error) {
 			for _, name := range []string{lifecycleIdleClaim, lifecycleBusyClaim} {
-				_, err := claims.Get(ctx, name, metav1.GetOptions{})
+				claim, err := claims.Get(ctx, name, metav1.GetOptions{})
 				if err == nil {
+					lastClaim = claim
 					return false, nil
 				}
 				if !apierrors.IsNotFound(err) {
-					return false, err
+					lastClaimErr = err
+					return false, nil
 				}
 			}
 			return true, nil
 		})
 	if requireComplete {
-		assert.NoError(t, claimsErr, "timed out waiting for ModelClaim lifecycle claims to be deleted")
+		assert.NoError(t, claimsErr, "timed out waiting for ModelClaim lifecycle claims to be deleted; "+
+			"last claim=%+v last error=%v", lastClaim, lastClaimErr)
 	} else if claimsErr != nil {
-		t.Logf("wait for stale ModelClaim lifecycle claims: %v", claimsErr)
+		t.Logf("wait for stale ModelClaim lifecycle claims: %v; last error=%v", claimsErr, lastClaimErr)
 	}
 }
 

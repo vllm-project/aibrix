@@ -103,6 +103,7 @@ var modelPaths = []string{
 	"/v1/audio/transcriptions",
 	"/v1/audio/translations",
 	"/v1/audio/speech",
+	"/v1/audio/voices",
 
 	// Engine-native utilities
 	"/tokenize",

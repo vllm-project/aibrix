@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -110,10 +111,13 @@ func Test_selectTargetPod_EPlusPD(t *testing.T) {
 		name           string
 		body           string
 		servingPods    int
+		inflightLimit  int64
 		wantCandidates []string
 		wantEncodes    int
 	}{
 		{name: "media is encoded on the target's roleset", body: withImage, servingPods: 2,
+			wantCandidates: []string{"worker-0", "worker-1"}, wantEncodes: 1},
+		{name: "media is encoded with a replica inflight cap", body: withImage, servingPods: 2, inflightLimit: 1,
 			wantCandidates: []string{"worker-0", "worker-1"}, wantEncodes: 1},
 		{name: "text-only requests skip the encoders", body: `{"model":"qwen-vl","messages":[{"role":"user","content":"hi"}]}`,
 			servingPods: 2, wantCandidates: []string{"worker-0", "worker-1"}},
@@ -141,6 +145,13 @@ func Test_selectTargetPod_EPlusPD(t *testing.T) {
 			defer routeCtx.Delete()
 			routeCtx.ReqPath = "/v1/chat/completions"
 			routeCtx.ReqBody = []byte(tt.body)
+			if tt.inflightLimit > 0 {
+				cache := &MockCache{}
+				cache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{}, nil)
+				cache.On("AdmitPodRunningRequest", mock.Anything, "default", tt.inflightLimit).Return(true, true, nil)
+				server.cache = cache
+				routeCtx.ConfigProfile = &types.ResolvedConfigProfile{RequestsInflight: tt.inflightLimit}
+			}
 
 			_, err := server.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: pods}, "")
 			require.NoError(t, err)
@@ -151,6 +162,45 @@ func Test_selectTargetPod_EPlusPD(t *testing.T) {
 			assert.Zero(t, otherEncoders.count(), "encoders of another roleset must not be used")
 		})
 	}
+}
+
+// A request whose target is full fails routing before the encode stage, so it
+// does not pay for encoding before it is rejected.
+func Test_selectTargetPod_EPlusPDFullTargetSkipsEncode(t *testing.T) {
+	encoders := &encodeRecorder{}
+	encodeSrv, workerSrv := encoders.server(t), (&encodeRecorder{}).server(t)
+	pods := []*v1.Pod{
+		epdServingPod(t, "encode-0", "rs-a", encode.Role, encodeSrv),
+		epdServingPod(t, "worker-0", "rs-a", "worker", workerSrv),
+		epdServingPod(t, "worker-1", "rs-a", "worker", workerSrv),
+	}
+
+	algo := types.RoutingAlgorithm("test-epd-full-target")
+	routing.Register(algo, func() (types.Router, error) {
+		return routeFunc(func(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+			target := pods.All()[0]
+			if err := ctx.AdmitTarget(target); err != nil {
+				return "", err
+			}
+			ctx.SetTargetPod(target)
+			return ctx.TargetAddress(), nil
+		}), nil
+	})
+	routing.Init()
+
+	cache := &MockCache{}
+	cache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{}, nil)
+	cache.On("AdmitPodRunningRequest", mock.Anything, "default", int64(1)).Return(false, false, nil)
+	server := &Server{cache: cache, encodeExecutor: encode.NewExecutor(encodeSrv.Client())}
+	routeCtx := types.NewRoutingContext(context.Background(), algo, "qwen-vl", "", "epd-request", "user")
+	defer routeCtx.Delete()
+	routeCtx.ReqPath = "/v1/chat/completions"
+	routeCtx.ReqBody = []byte(`{"model":"qwen-vl","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://x/a.png"}}]}]}`)
+	routeCtx.ConfigProfile = &types.ResolvedConfigProfile{RequestsInflight: 1}
+
+	_, err := server.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: pods}, "")
+	require.ErrorIs(t, err, types.ErrTargetReplicaInflightExceeded)
+	assert.Zero(t, encoders.count())
 }
 
 func Test_selectTargetPod_OnlyEncodersReady(t *testing.T) {

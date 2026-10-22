@@ -949,6 +949,61 @@ func drainEvents(t *testing.T, r *ModelClaimReconciler) []string {
 	}
 }
 
+func TestPreemptionEventsDescribeSuccessAndDeduplicateFailure(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		r, _ := servingPool(t, keepNoWakeReserve, 1,
+			serving{"low", "warm-1", 300, 100, at0758}, serving{"busy", "warm-1", 300, 100, at0759})
+		setClaimPriority(t, r, "low", 1)
+		setClaimPriority(t, r, "busy", 1)
+		newPrioritySleepClaim(t, r, "preemptor", 10, at0759)
+
+		reconcileOnce(t, r, "preemptor")
+
+		events := drainEvents(t, r)
+		var preempted []string
+		for _, event := range events {
+			if strings.Contains(event, "PreemptedBySleep") {
+				preempted = append(preempted, event)
+			}
+		}
+		require.Len(t, preempted, 1)
+		assert.Contains(t, preempted[0], "Normal PreemptedBySleep")
+		assert.Contains(t, preempted[0], "preemptor")
+		assert.Contains(t, preempted[0], "priority 10")
+		claim := getModel(t, r, "preemptor")
+		assert.Equal(t, modelv1alpha1.ModelClaimPending, claim.Status.Phase)
+		assert.Equal(t, scheduledReasonMakingRoom, scheduledOf(t, r, claim.Name).Reason)
+	})
+
+	t.Run("failure once per semantic action", func(t *testing.T) {
+		r, runtime := servingPool(t, keepNoWakeReserve, 1,
+			serving{"low", "warm-1", 300, 100, at0758}, serving{"other", "warm-1", 300, 100, at0759})
+		setClaimPriority(t, r, "low", 1)
+		setClaimPriority(t, r, "other", 1)
+		newPrioritySleepClaim(t, r, "preemptor", 10, at0759)
+		runtime.sleepErr = &runtimeRefusal{"sleep failed: boom"}
+		r.Backoff = newPlacementBackoff(r.now)
+
+		reconcileOnce(t, r, "preemptor")
+		reconcileOnce(t, r, "preemptor")
+
+		events := drainEvents(t, r)
+		var failed []string
+		for _, event := range events {
+			if strings.Contains(event, "PreemptionFailed") {
+				failed = append(failed, event)
+			}
+		}
+		require.Len(t, failed, 2, "one warning belongs to each involved claim")
+		for _, event := range failed {
+			assert.Contains(t, event, "Warning PreemptionFailed")
+			assert.Contains(t, event, "preemptor")
+			assert.Contains(t, event, "low")
+		}
+		assert.Len(t, runtime.sleepCalls, 1)
+	})
+}
+
 func TestReconcilePoolPoliciesWarnsOnceForUnchangedInvalidPolicy(t *testing.T) {
 	deployment, replicaSet, pod := warmPoolObjects(`{"reclaim":{"capacityBytes":0}}`)
 	r, runtime := newReconciler(t, deployment, replicaSet, pod)
@@ -2409,6 +2464,40 @@ func TestReconcileDeletionStopsAnEngineThatDidNotServeAtOnce(t *testing.T) {
 	reconcileOnce(t, r, pm.Name)
 
 	require.Len(t, runtime.deactivateCalls, 1, "a sleeping engine serves nothing")
+}
+
+// A pod that is being deleted takes its engines with it, and it may have lost
+// its network already, so a call to its runtime could hold the controller's
+// only worker until the call times out. The claim's route is still taken back,
+// and its finalizer goes without a drain or a stop.
+func TestReconcileDeletionLeavesAPodBeingDeletedAlone(t *testing.T) {
+	now := time.Date(2026, time.October, 6, 2, 0, 0, 0, time.UTC)
+	pm := deletingClaim(now.Add(-deletionDrainGrace))
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	podDeleted := metav1.NewTime(now.Add(-time.Second))
+	pod.DeletionTimestamp = &podDeleted
+	// The fake client keeps a deleted object only while it has a finalizer.
+	pod.Finalizers = []string{"test.aibrix.ai/hold"}
+	pod.Annotations = map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + pm.Name: `{"model":"qwen2-7b","port":9001}`,
+	}
+	r, runtime := newReconciler(t, pm, pod)
+	r.Now = func() time.Time { return now }
+	runtime.snapshots = map[string]*RuntimeSnapshot{
+		pod.Status.PodIP: {Models: []RuntimeSnapshotModel{servingEngine(pm, 1)}},
+	}
+
+	reconcileOnce(t, r, pm.Name)
+
+	assert.Zero(t, runtime.snapshotCalls, "nothing is read from a pod that is going away")
+	assert.Empty(t, runtime.deactivateCalls, "its engine stops with it")
+	got := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, got))
+	assert.NotContains(t, got.Annotations, constants.ModelClaimPodAnnotationPrefix+pm.Name)
+	claim := &modelv1alpha1.ModelClaim{}
+	err := r.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: pm.Name}, claim)
+	assert.True(t, err != nil || !controllerutil.ContainsFinalizer(claim, ModelClaimFinalizer))
 }
 
 // claimWithCost is the sample claim plus a declared per-GPU cost.

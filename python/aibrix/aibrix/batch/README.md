@@ -30,6 +30,21 @@ The `worker.py` script implements a **sidecar pattern** where:
 8. Kubernetes sends SIGTERM to vLLM container
 9. Pod completes successfully
 
+## Deployment template engine arguments
+
+The template renderer translates shared settings into engine-specific CLI flags:
+
+- SGLang: `parallelism.pp` uses `--pipeline-parallel-size`, and
+  `engine_args.block_size` uses `--page-size`.
+- vLLM: `quantization.weight: bf16` and `fp16` select `--dtype bfloat16`
+  and `--dtype float16`, respectively. Quantization methods such as AWQ and GPTQ
+  continue to use `--quantization`.
+- vLLM 0.18 and later removed `--swap-space`. Remove `engine_args.swap_space`
+  from templates targeting these versions; an explicit value (including zero)
+  raises a rendering error rather than producing an invalid container command.
+  Older versioned templates retain the flag. Non-numeric version labels retain
+  the existing passthrough behavior; use a concrete `engine.version` for this check.
+
 ## Testing in Kubernetes
 
 ### Prerequisites

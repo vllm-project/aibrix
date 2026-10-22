@@ -21,17 +21,21 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/least"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/prefixcache"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/routeutil"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/vtc"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -953,6 +957,105 @@ func TestSelectAutoBlendsWhenPrimaryIsPodScorer(t *testing.T) {
 	assert.Contains(t, multi.scorers, "blendable-primary")
 	assert.Equal(t, "blendable-primary,load-balance:1,least-request-top-k:1", ctx.ResolvedStrategy)
 	assert.Equal(t, types.RoutingAlgorithm("blendable-primary"), ctx.Algorithm, "the requested algorithm must stay untouched")
+}
+
+// The default auto-blend turns a bare vtc-basic into a multi-strategy blend,
+// which scores vtc-basic through ScoreAll and never calls its Route. The
+// request's tokens must still be charged to its user.
+func TestSelectVTCBasicBlendChargesUserTokens(t *testing.T) {
+	withAutoBlendWeights(t, 1, 1)
+	cache.InitForTest()
+
+	config := vtc.DefaultVTCConfig()
+	tracker := vtc.NewInMemorySlidingWindowTokenTracker(&config)
+	vtcRouter, err := vtc.NewBasicVTCRouter(tracker, vtc.NewSimpleTokenEstimator(), &config)
+	require.NoError(t, err)
+
+	rm := NewRouterManager()
+	rm.RegisterProvider(vtc.RouterVTCBasic, func(_ *types.RoutingContext) (types.Router, error) {
+		return vtcRouter, nil
+	})
+	registerBlendScorers(rm)
+
+	pods := &utils.PodArray{Pods: []*v1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "default"},
+			Status:     v1.PodStatus{PodIP: "10.0.0.1", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-b", Namespace: "default"},
+			Status:     v1.PodStatus{PodIP: "10.0.0.2", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}},
+		},
+	}}
+
+	for i := 0; i < 3; i++ {
+		ctx := types.NewRoutingContext(context.Background(), vtc.RouterVTCBasic, testModelName,
+			"please summarize this document", "req-vtc-blend", "bob")
+		router, err := rm.Select(ctx)
+		require.NoError(t, err)
+		_, isMulti := router.(*multiStrategyRouter)
+		require.True(t, isMulti, "a bare vtc-basic is auto-blended")
+		_, err = router.Route(ctx, pods)
+		require.NoError(t, err)
+		ctx.Delete()
+	}
+
+	tokens, err := tracker.GetTokenCount(context.Background(), "bob")
+	require.NoError(t, err)
+	assert.Greater(t, tokens, 0.0, "every blended route charges the user's tokens")
+
+	ctx := types.NewRoutingContext(context.Background(), vtc.RouterVTCBasic, testModelName,
+		"please summarize this document", "req-vtc-direct", "alice")
+	defer ctx.Delete()
+	_, err = vtcRouter.Route(ctx, pods)
+	require.NoError(t, err)
+	perRequest, err := tracker.GetTokenCount(context.Background(), "alice")
+	require.NoError(t, err)
+	assert.InDelta(t, 3*perRequest, tokens, 1e-9, "the blend charges once per request, the same as a direct route")
+}
+
+// A strategy repeated in the string shares one scorer, so the request is
+// charged once, not once per mention.
+func TestSelectVTCBasicRepeatedStrategyChargesOnce(t *testing.T) {
+	withAutoBlendWeights(t, 0, 0)
+	cache.InitForTest()
+
+	config := vtc.DefaultVTCConfig()
+	tracker := vtc.NewInMemorySlidingWindowTokenTracker(&config)
+	vtcRouter, err := vtc.NewBasicVTCRouter(tracker, vtc.NewSimpleTokenEstimator(), &config)
+	require.NoError(t, err)
+	rm := NewRouterManager()
+	rm.RegisterProvider(vtc.RouterVTCBasic, func(_ *types.RoutingContext) (types.Router, error) {
+		return vtcRouter, nil
+	})
+	pods := &utils.PodArray{Pods: []*v1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "default"},
+			Status:     v1.PodStatus{PodIP: "10.0.0.1", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-b", Namespace: "default"},
+			Status:     v1.PodStatus{PodIP: "10.0.0.2", Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}},
+		},
+	}}
+
+	route := func(algorithm, user string) float64 {
+		ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(algorithm), testModelName,
+			"please summarize this document", "req-"+user, user)
+		defer ctx.Delete()
+		router, err := rm.Select(ctx)
+		require.NoError(t, err)
+		_, err = router.Route(ctx, pods)
+		require.NoError(t, err)
+		tokens, err := tracker.GetTokenCount(context.Background(), user)
+		require.NoError(t, err)
+		return tokens
+	}
+
+	once := route("vtc-basic", "alice")
+	require.Greater(t, once, 0.0)
+	assert.InDelta(t, once, route("vtc-basic:1,vtc-basic:2,vtc-basic:3", "bob"), 1e-9,
+		"three mentions of vtc-basic charge the same as one")
 }
 
 func TestSelectPrefixCacheBlendExcludesLeastRequest(t *testing.T) {
@@ -1903,4 +2006,55 @@ func TestE2EMultiStrategyRouting(t *testing.T) {
 		// Total score B: 6.0 + 1.0 + 1.0 = 8.0 -> Pod B wins!
 		assert.Contains(t, targetIP, "2.2.2.2")
 	})
+}
+
+func TestLoadAutoBlendWeightsFromEnvAcceptsDocumentedZero(t *testing.T) {
+	t.Setenv("AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT", "0")
+	t.Setenv("AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT", "0")
+	t.Setenv("AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT", "0")
+	t.Setenv("AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT", "0")
+
+	weights := loadAutoBlendWeightsFromEnv()
+	assert.Equal(t, 0, weights.loadBalance, "0 disables the auto-blend, as documented")
+	assert.Equal(t, 0, weights.leastRequest, "0 omits least-request-top-k, as documented")
+	assert.Equal(t, 0, weights.prefixCacheLoadBalance)
+	assert.Equal(t, 5, weights.prefixCache, "prefix-cache must keep a positive weight, as the profile requires")
+
+	cfg, err := ParseMultiRouterConfig("least-latency")
+	assert.NoError(t, err)
+	_, ok := appendLoadBalanceBlend("least-latency", cfg, weights)
+	assert.False(t, ok, "a zero load-balance weight from the environment disables the blend")
+}
+
+func TestLoadAutoBlendWeightsFromEnvFallsBackOnInvalid(t *testing.T) {
+	t.Setenv("AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT", "-1")
+	t.Setenv("AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT", "x")
+
+	weights := loadAutoBlendWeightsFromEnv()
+	assert.Equal(t, 1, weights.loadBalance)
+	assert.Equal(t, 1, weights.leastRequest)
+	assert.Equal(t, 4, weights.prefixCacheLoadBalance)
+}
+
+// The package-level weights are read once at init, so t.Setenv cannot reach
+// them. Re-run this test in a child process with the variables set and check
+// the values every consumer actually reads.
+func TestAutoBlendPackageWeightsReadZeroFromEnv(t *testing.T) {
+	if os.Getenv("AIBRIX_TEST_AUTO_BLEND_CHILD") == "1" {
+		assert.Equal(t, 0, autoBlendLoadBalanceWeight)
+		assert.Equal(t, 0, autoBlendLeastRequestTopKWeight)
+		assert.Equal(t, 0, autoBlendPrefixCacheLoadBalanceWeight)
+		assert.Equal(t, 5, autoBlendPrefixCacheWeight)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestAutoBlendPackageWeightsReadZeroFromEnv$")
+	cmd.Env = append(os.Environ(),
+		"AIBRIX_TEST_AUTO_BLEND_CHILD=1",
+		"AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0",
+		"AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT=0",
+		"AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT=0",
+		"AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT=0",
+	)
+	out, err := cmd.CombinedOutput()
+	assert.NoError(t, err, "child test failed:\n%s", out)
 }

@@ -69,7 +69,11 @@ func (a *KPAAlgorithm) ComputeRecommendation(ctx context.Context, request Scalin
 	request.ScalingContext.SetPanicValue(metrics.PanicValue)
 
 	metricName := request.AggregatedMetrics.MetricKey.MetricName
-	counts, ok := a.desiredPodCounts(float64(request.CurrentReplicas), request.ScalingContext, metricName)
+	loadPods := request.LoadPods
+	if loadPods <= 0 {
+		loadPods = float64(request.CurrentReplicas)
+	}
+	counts, ok := a.desiredPodCounts(float64(request.CurrentReplicas), loadPods, request.ScalingContext, metricName)
 	if !ok {
 		return nil, fmt.Errorf("no target value for metric %q", metricName)
 	}
@@ -155,7 +159,7 @@ func IsPerPodSource(t autoscalingv1alpha1.MetricSourceType) bool {
 // desiredPodCounts computes the pod counts the stable and panic windows ask
 // for. Tolerance is applied to prevent scaling for minor metric fluctuations.
 // ok is false when the context has no target for the metric.
-func (a *KPAAlgorithm) desiredPodCounts(currentPodCount float64, context scalingctx.ScalingContext, metricsName string) (kpaPodCounts, bool) {
+func (a *KPAAlgorithm) desiredPodCounts(currentPodCount, loadPodCount float64, context scalingctx.ScalingContext, metricsName string) (kpaPodCounts, bool) {
 	// Get all the necessary values from context
 	observedStableValue := context.GetStableValue()
 	observedPanicValue := context.GetPanicValue()
@@ -176,23 +180,41 @@ func (a *KPAAlgorithm) desiredPodCounts(currentPodCount float64, context scaling
 	scaleUpThreshold := targetValue * (1 + upTolerance)
 	scaleDownThreshold := targetValue * (1 - downTolerance)
 
-	// Pod, resource and custom sources record the per-pod mean, so the total load is
-	// mean * pods. External and domain sources already report one total.
+	// Pod, resource and custom sources give a per-pod mean, so the total load is
+	// the mean times the pods carrying it. Pods still starting carry none, and
+	// counting them would ask for more pods than the load needs; a panic would
+	// then hold that count after they are ready. External and domain sources
+	// already report one total.
+	//
+	// The tolerance band is per pod, so a total is judged per pod too, the way
+	// APA does: otherwise a total near one pod's target holds any replica count.
+	// With no pods, any load is outside the band so that it activates one.
 	load := 1.0
+	tolerancePods := math.Max(1, currentPodCount)
+	perPodSource := false
 	if sourceType, _ := context.GetMetricSourceTypeForMetric(metricsName); IsPerPodSource(sourceType) {
-		load = math.Max(1, readyPodsCount)
+		load = math.Max(1, loadPodCount)
+		tolerancePods = 1
+		perPodSource = true
+	}
+	outsideTolerance := func(observed float64) bool {
+		if !perPodSource && currentPodCount == 0 && observed > 0 {
+			return true
+		}
+		v := observed / tolerancePods
+		return v > scaleUpThreshold || v < scaleDownThreshold
 	}
 
 	// Calculate desired replicas based on tolerance-adjusted targets
 	var dspc, dppc float64
-	if observedStableValue > scaleUpThreshold || observedStableValue < scaleDownThreshold {
+	if outsideTolerance(observedStableValue) {
 		dspc = math.Ceil(load * observedStableValue / targetValue)
 	} else {
 		// Within tolerance, maintain current replica count
 		dspc = currentPodCount
 	}
 
-	if observedPanicValue > scaleUpThreshold || observedPanicValue < scaleDownThreshold {
+	if outsideTolerance(observedPanicValue) {
 		dppc = math.Ceil(load * observedPanicValue / targetValue)
 	} else {
 		// Within tolerance, maintain current replica count

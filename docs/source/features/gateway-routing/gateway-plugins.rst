@@ -1223,6 +1223,10 @@ Rate Limiting Headers
      - Error encountered while incrementing the RPM counter.
    * - ``x-error-incr-tpm``
      - Error encountered while incrementing the TPM counter.
+   * - ``x-error-get-rpm``
+     - Error encountered while reading the RPM counter.
+   * - ``x-error-get-tpm``
+     - Error encountered while reading the TPM counter.
 
 
 Debugging Guidelines
@@ -1234,7 +1238,7 @@ Debugging Guidelines
 
 3. **Diagnose streaming issues** — check ``x-error-streaming`` and ``x-error-stream``. If usage statistics are missing from a streaming response, inspect ``x-error-no-stream-options-include-usage``.
 
-4. **Investigate rate limiting** — if a request was rejected, check ``x-error-rpm-exceeded`` or ``x-error-tpm-exceeded``. If counters failed to update, look for ``x-error-incr-rpm`` or ``x-error-incr-tpm``. Successful updates are indicated by ``x-update-rpm`` and ``x-update-tpm``.
+4. **Investigate rate limiting** — if a request was rejected, check ``x-error-rpm-exceeded`` or ``x-error-tpm-exceeded``. If counters failed to update, look for ``x-error-incr-rpm`` or ``x-error-incr-tpm``; if they could not be read, ``x-error-get-rpm`` or ``x-error-get-tpm``. Successful updates are indicated by ``x-update-rpm`` and ``x-update-tpm``.
 
 Check gateway object status
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^

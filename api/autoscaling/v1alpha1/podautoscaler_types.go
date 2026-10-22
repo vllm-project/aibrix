@@ -105,8 +105,12 @@ type PodAutoscalerSpec struct {
 	// +optional
 	Predictive *PredictiveSpec `json:"predictive,omitempty"`
 
-	// ScalingStrategy defines the strategy to use for scaling.
+	// ScalingStrategy defines the strategy to use for scaling. It cannot be changed
+	// after creation, because the HorizontalPodAutoscaler that the HPA strategy
+	// creates would stay behind. To change it, delete the PodAutoscaler and create
+	// a new one.
 	// +kubebuilder:validation:Enum={HPA,KPA,APA}
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="scalingStrategy is immutable; create a new PodAutoscaler instead"
 	ScalingStrategy ScalingStrategyType `json:"scalingStrategy"`
 }
 

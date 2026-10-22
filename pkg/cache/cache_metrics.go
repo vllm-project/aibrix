@@ -326,7 +326,8 @@ func (c *Store) getPodMetricImpl(podName string, metricStore *utils.SyncMap[stri
 }
 
 func (c *Store) getPodModelMetricName(modelName string, metricName string) string {
-	return fmt.Sprintf("%s/%s", modelName, metricName)
+	// Concatenation, not fmt.Sprintf: this runs for every pod a routing strategy scores.
+	return modelName + "/" + metricName
 }
 
 func (c *Store) updatePodMetrics() {

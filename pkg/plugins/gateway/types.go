@@ -86,6 +86,8 @@ const (
 	HeaderErrorTPMExceeded = "x-error-tpm-exceeded"
 	HeaderErrorIncrRPM     = "x-error-incr-rpm"
 	HeaderErrorIncrTPM     = "x-error-incr-tpm"
+	HeaderErrorGetRPM      = "x-error-get-rpm"
+	HeaderErrorGetTPM      = "x-error-get-tpm"
 
 	// Model RPS Errors
 	HeaderErrorModelRPSExceeded = "x-error-model-rps-exceeded"
@@ -177,6 +179,11 @@ const (
 	// many items and the response is one JSON document with a base64-encoded result per item.
 	// isLanguageRequest matches it through the PathAudioSpeech prefix, so it is never parsed.
 	PathAudioSpeechBatch = "/v1/audio/speech/batch"
+	// PathAudioVoices is the engine's catalog of custom voices: GET lists them, POST uploads one
+	// as multipart/form-data and DELETE PathAudioVoices/{name} removes one. None of these requests
+	// names a model, and two of them have no body to carry one, so the gateway reads it from the
+	// model query parameter (see audioVoicesModel). The bodies are forwarded unparsed.
+	PathAudioVoices = "/v1/audio/voices"
 
 	// Video
 	PathVideoGenerations = "/v1/video/generations"
@@ -192,7 +199,10 @@ const (
 	PathXditGenerateVideo = "/generatevideo"
 
 	// Engine Types
-	EngineXdit = "xdit"
+	EngineXdit   = "xdit"
+	EngineVLLM   = "vllm"
+	EngineSGLang = "sglang"
+	EngineTRTLLM = "trtllm"
 )
 
 var (

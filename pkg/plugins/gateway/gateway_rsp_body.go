@@ -34,6 +34,7 @@ import (
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -235,9 +236,9 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 						"malformed JSON in SSE stream", "", "")
 				}
 
-				if eventUsage, ok, isFinal := parseSSEUsage(jsonBytes); ok {
-					// Later usage objects replace earlier ones: with continuous_usage_stats
-					// each chunk reports the running totals so far.
+				if eventUsage, ok, isFinal := parseSSEUsage(jsonBytes, usage); ok {
+					// Counts are cumulative, not increments. Anthropic message deltas
+					// retain input usage from message_start when only output is reported.
 					usage, seenUsage = eventUsage, true
 					if isFinal {
 						final = true
@@ -256,25 +257,40 @@ func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bo
 
 // parseSSEUsage extracts the usage object from one SSE event's JSON. ok reports
 // whether the event carries usage; final reports whether it is the stream's final
-// usage rather than a running count (continuous_usage_stats), which is the case
-// when the event has no choices.
-func parseSSEUsage(jsonBytes []byte) (usage TokenUsage, ok bool, final bool) {
-	// gjson avoids full deserialization by only extracting the usage field.
-	usageResult := gjson.GetBytes(jsonBytes, "usage")
+// usage rather than a running count. Anthropic deltas retain counts omitted
+// from that event; other response formats report complete usage snapshots.
+func parseSSEUsage(jsonBytes []byte, previous TokenUsage) (usage TokenUsage, ok bool, final bool) {
+	// Anthropic streams split usage between message_start.message.usage and
+	// message_delta.usage. Deltas are cumulative and may omit input_tokens;
+	// preserve absent counts while allowing an explicitly reported zero to replace them.
+	eventType := gjson.GetBytes(jsonBytes, "type").String()
+	usagePath := "usage"
+	switch eventType {
+	case "message_start":
+		usagePath = "message.usage"
+	case "message_delta":
+		usage = previous
+	}
+	usageResult := gjson.GetBytes(jsonBytes, usagePath)
 	if !usageResult.Exists() {
-		// The Responses API (/v1/responses) emits usage nested inside the
-		// terminal "response.completed" SSE event, where the full response
-		// object (including its "usage" field) lives under "response".
-		// Hence the usage path there is "response.usage".
+		// The Responses API nests its terminal usage under response.
 		usageResult = gjson.GetBytes(jsonBytes, "response.usage")
 	}
 	if !usageResult.Exists() || !usageResult.IsObject() {
 		return usage, false, false
 	}
-	// A usage object next to non-empty choices is a running count; the final
-	// usage arrives in an event without choices.
-	choices := gjson.GetBytes(jsonBytes, "choices")
-	final = !choices.IsArray() || !choices.Get("0").Exists()
+	switch eventType {
+	case "message_start":
+		// Recording the prompt must not finalize accounting before generation.
+		final = false
+	case "message_delta":
+		stopReason := gjson.GetBytes(jsonBytes, "delta.stop_reason")
+		final = stopReason.Exists() && stopReason.Type != gjson.Null
+	default:
+		// An OpenAI usage object beside choices is a running count.
+		choices := gjson.GetBytes(jsonBytes, "choices")
+		final = !choices.IsArray() || !choices.Get("0").Exists()
+	}
 
 	// The Responses API uses input_tokens/output_tokens instead of
 	// prompt_tokens/completion_tokens, so fall back to those names only when
@@ -282,13 +298,13 @@ func parseSSEUsage(jsonBytes []byte) (usage TokenUsage, ok bool, final bool) {
 	// zero count is a semantically valid value.
 	if pt := usageResult.Get("prompt_tokens"); pt.Exists() {
 		usage.PromptTokens = pt.Int()
-	} else {
-		usage.PromptTokens = usageResult.Get("input_tokens").Int()
+	} else if it := usageResult.Get("input_tokens"); it.Exists() {
+		usage.PromptTokens = it.Int()
 	}
 	if ct := usageResult.Get("completion_tokens"); ct.Exists() {
 		usage.CompletionTokens = ct.Int()
-	} else {
-		usage.CompletionTokens = usageResult.Get("output_tokens").Int()
+	} else if ot := usageResult.Get("output_tokens"); ot.Exists() {
+		usage.CompletionTokens = ot.Int()
 	}
 	if tt := usageResult.Get("total_tokens"); tt.Exists() && tt.Type != gjson.Null {
 		usage.TotalTokens = tt.Int()
@@ -432,6 +448,10 @@ func isLanguageRequest(requestPath string) bool {
 		// covers PathAudioSpeechBatch, whose JSON body inlines every item's base64 audio and can
 		// run to many megabytes; its HTTP 200 does not say whether individual items failed.
 		PathAudioSpeech,
+		// The voice catalog answers with small JSON documents (a list, an upload receipt, a
+		// delete message) that are not completions and carry no usage. The prefix also covers
+		// DELETE /v1/audio/voices/{name}.
+		PathAudioVoices,
 
 		// Tokenization and token counting
 		PathTokenize,
@@ -694,7 +714,7 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 		metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTTFTBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": ttftBucket})
 	}
 
-	if routingCtx.Algorithm == "pd" {
+	if resolved, _ := routing.ResolveExclusiveStrategy(string(routingCtx.Algorithm)); resolved == string(routing.RouterPD) {
 		routingTime := routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime)
 		fields = append(fields,
 			"routing_time_taken", routingTime,

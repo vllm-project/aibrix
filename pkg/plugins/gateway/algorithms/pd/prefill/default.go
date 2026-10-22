@@ -109,18 +109,32 @@ func (e *DefaultExecutor) prefillDone(requestID string) {
 // correctDecodeCharge replaces the request's decode token_load charge, which
 // the router made from the request body's size when it selected the decode
 // pod, with the prompt length the engine reports in its prefill response
-// (usage.prompt_tokens). The body size is a poor estimate for requests with
-// media: inline images count as their base64 text, and images given by URL
-// not at all. A response without the field leaves the charge alone.
+// (usage.prompt_tokens, or usage.input_tokens on vLLM's Responses API). The
+// body size is a poor estimate for requests with media: inline images count as
+// their base64 text, and images given by URL not at all. A response without
+// either field leaves the charge alone.
 func (e *DefaultExecutor) correctDecodeCharge(requestID string, prefillResponse []byte) {
 	if e.tokenLoad == nil {
 		return
 	}
-	promptTokens := gjson.GetBytes(prefillResponse, "usage.prompt_tokens")
-	if promptTokens.Type != gjson.Number || promptTokens.Float() <= 0 {
+	promptTokens := responsePromptTokens(prefillResponse)
+	if promptTokens <= 0 {
 		return
 	}
-	e.tokenLoad.CorrectDecodeCost(requestID, promptTokens.Float())
+	e.tokenLoad.CorrectDecodeCost(requestID, promptTokens)
+}
+
+// responsePromptTokens returns the prompt length reported by a prefill
+// response. Chat/completions and SGLang's Responses API report it as
+// usage.prompt_tokens; vLLM's Responses API reports usage.input_tokens.
+func responsePromptTokens(prefillResponse []byte) float64 {
+	for _, path := range []string{"usage.prompt_tokens", "usage.input_tokens"} {
+		result := gjson.GetBytes(prefillResponse, path)
+		if result.Type == gjson.Number && result.Float() > 0 {
+			return result.Float()
+		}
+	}
+	return 0
 }
 
 // Execute implements PrefillExecutor. handler is the one the router already
