@@ -463,7 +463,7 @@ func syncPods(
 			Name:  pod.Name,
 			Addr:  ip,
 			Port:  kvCacheServerRDMAPort,
-			Slots: mergeSlots(nodeSlots[pod.Name], consistentHashingTotalSlots),
+			Slots: mergeSlots(nodeSlots[pod.Name]),
 		})
 	}
 
@@ -644,7 +644,7 @@ func getRDMAIPFromExec(ctx context.Context, pod *corev1.Pod, ifName string) (str
 }
 
 // combine the slots range
-func mergeSlots(slots []int, totalSlots int) []SlotRange {
+func mergeSlots(slots []int) []SlotRange {
 	if len(slots) == 0 {
 		return nil
 	}
@@ -658,15 +658,6 @@ func mergeSlots(slots []int, totalSlots int) []SlotRange {
 			last.End = slot
 		} else {
 			ranges = append(ranges, SlotRange{Start: slot, End: slot})
-		}
-	}
-
-	// handle ring case（4095 → 0）
-	if totalSlots > 0 && ranges[0].Start == 0 && ranges[len(ranges)-1].End == totalSlots-1 {
-		first := ranges[0]
-		last := ranges[len(ranges)-1]
-		return []SlotRange{
-			{Start: last.Start, End: first.End},
 		}
 	}
 
