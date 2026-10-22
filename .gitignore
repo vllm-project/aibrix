@@ -33,7 +33,11 @@ __pycache__
 
 # Node.js
 node_modules/
-dist/
+dist/*
+
+# Helm chart
+!dist/chart/
+
 # Python virtual environment directory
 .venv
 
