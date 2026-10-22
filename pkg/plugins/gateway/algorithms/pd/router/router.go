@@ -613,12 +613,22 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 			// Remove is a no-op if the executor already cleaned up (e.g. sync HTTP failure).
 			r.prefillRequestTracker.RemovePrefillRequest(ctx.RequestID)
 			r.releaseTokenLoad(ctx.RequestID)
+			if r.prefillRequestTracker != nil {
+				r.prefillRequestTracker.RecordPrefillFailure(utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name), time.Now())
+			}
+			if hasCredit {
+				job := credit.(prefixUpdateJob)
+				r.enqueuePrefixRemoval(job.prefixHashes, job.model, job.pod)
+			}
 			metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 				map[string]string{"status": pdRoutePrefillRequestError, "status_code": "500"})
 			klog.ErrorS(err, pdRoutePrefillRequestError, "request_id", ctx.RequestID)
 			return "", fmt.Errorf("prefill request failed for request %s: %w", ctx.RequestID, err)
 		}
 		if !handler.IsAsync() {
+			if r.prefillRequestTracker != nil {
+				r.prefillRequestTracker.RecordPrefillSuccess(utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name))
+			}
 			metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestSuccessTotal, &metrics.SimpleMetricValue{Value: 1.0},
 				map[string]string{"status": pdRoutePrefillRequestSuccess, "status_code": "200"})
 		}
@@ -1528,13 +1538,21 @@ type prefixUpdateJob struct {
 	prefixHashes []uint64
 	model        string
 	pod          string
+	remove       bool
 }
 
 func (r *pdRouter) startPrefixUpdater() {
 	// single worker to serialize updates, minimizing lock contention in the indexer
 	go func() {
 		for job := range r.prefixUpdateCh {
-			r.prefixCacheIndexer.AddPrefix(job.prefixHashes, job.model, job.pod)
+			if r.prefixCacheIndexer == nil {
+				continue
+			}
+			if job.remove {
+				r.prefixCacheIndexer.RemovePrefix(job.prefixHashes, job.model, job.pod)
+			} else {
+				r.prefixCacheIndexer.AddPrefix(job.prefixHashes, job.model, job.pod)
+			}
 		}
 	}()
 }
@@ -1547,11 +1565,31 @@ func (r *pdRouter) enqueuePrefixUpdate(prefixHashes []uint64, model, pod string)
 		prefixHashes: copyHashes,
 		model:        model,
 		pod:          pod,
+		remove:       false,
 	}:
 		// enqueued
 	default:
 		// channel full; drop to keep routing path non-blocking
 		klog.Warningf("Prefix update channel full, dropping update for model %s on pod %s", model, pod)
+	}
+}
+
+func (r *pdRouter) enqueuePrefixRemoval(prefixHashes []uint64, model, pod string) {
+	if r.prefixCacheIndexer == nil {
+		return
+	}
+	copyHashes := append([]uint64(nil), prefixHashes...)
+	select {
+	case r.prefixUpdateCh <- prefixUpdateJob{
+		prefixHashes: copyHashes,
+		model:        model,
+		pod:          pod,
+		remove:       true,
+	}:
+		// enqueued
+	default:
+		// channel full; drop to keep routing path non-blocking
+		klog.Warningf("Prefix update channel full, dropping removal for model %s on pod %s", model, pod)
 	}
 }
 
@@ -1609,16 +1647,45 @@ func (r *pdRouter) collectAndBucketPods(routingCtx *types.RoutingContext, readyP
 	}
 
 	eligible := eligiblePDRolesets(readyPods)
+
+	var allPrefills []*v1.Pod
+	for _, b := range eligible {
+		allPrefills = append(allPrefills, b.prefills...)
+	}
+
+	eligiblePrefillSet := make(map[string]struct{}, len(allPrefills))
+	if r.prefillRequestTracker != nil {
+		filtered := r.prefillRequestTracker.FilterEligiblePrefillPods(allPrefills, time.Now())
+		for _, p := range filtered {
+			eligiblePrefillSet[utils.GeneratePodKey(p.Namespace, p.Name)] = struct{}{}
+		}
+	} else {
+		for _, p := range allPrefills {
+			eligiblePrefillSet[utils.GeneratePodKey(p.Namespace, p.Name)] = struct{}{}
+		}
+	}
+
 	var prefillPods, decodePods []*v1.Pod
 	var promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods []*v1.Pod
 
 	for _, b := range eligible {
-		prefillPods = append(prefillPods, b.prefills...)
+		var rolePrefills []*v1.Pod
+		for _, p := range b.prefills {
+			if _, ok := eligiblePrefillSet[utils.GeneratePodKey(p.Namespace, p.Name)]; ok {
+				rolePrefills = append(rolePrefills, p)
+			}
+		}
+		if len(rolePrefills) == 0 {
+			// This roleset has no eligible prefill pods (e.g. all its prefill pods are ejected).
+			continue
+		}
+
+		prefillPods = append(prefillPods, rolePrefills...)
 		decodePods = append(decodePods, b.decodes...)
 
 		if bucketingEnabled {
 			var bucketPrefills, bucketDecodes []*v1.Pod
-			for _, pod := range b.prefills {
+			for _, pod := range rolePrefills {
 				if r.isPodSuitableForPromptLength(routingCtx, pod, promptLength) {
 					bucketPrefills = append(bucketPrefills, pod)
 				}

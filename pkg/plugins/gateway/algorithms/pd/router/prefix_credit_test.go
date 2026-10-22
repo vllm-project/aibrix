@@ -17,7 +17,11 @@ limitations under the License.
 package router
 
 import (
+	"fmt"
+	"io"
 	"net/http"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,4 +91,105 @@ func TestPDRouter_AdmittedRequestCreditsPrefillPodBeforePrefill(t *testing.T) {
 	require.NoError(t, <-done)
 	assert.Equal(t, []string{burstPodKey(ctx.RespHeaders[HeaderPrefillTargetPod])}, credited,
 		"the prefill pod is credited while its prefill is still running")
+}
+
+type selectiveFailingTransport struct {
+	failingHost  string
+	statusCode   int
+	failingCalls atomic.Int32
+	healthyCalls atomic.Int32
+}
+
+func (tr *selectiveFailingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Body != nil {
+		_ = req.Body.Close()
+	}
+	if strings.Contains(req.URL.Host, tr.failingHost) {
+		tr.failingCalls.Add(1)
+		return &http.Response{
+			StatusCode: tr.statusCode,
+			Status:     http.StatusText(tr.statusCode),
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":"pod failing"}`)),
+			Request:    req,
+		}, nil
+	}
+	tr.healthyCalls.Add(1)
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{}`)),
+		Request:    req,
+	}, nil
+}
+
+// TestPDRouter_FailedPrefillRemovesPrefixCredit verifies that when a prefill request fails,
+// any prefix credit enqueued during selection is followed by a removal update so the failing
+// pod does not retain unearned prefix cache credit.
+func TestPDRouter_FailedPrefillRemovesPrefixCredit(t *testing.T) {
+	transport := &selectiveFailingTransport{failingHost: "127.0.0.1", statusCode: http.StatusServiceUnavailable}
+	r, _, _ := newHybridCacheLoadTestRouter(t, &http.Client{Transport: transport}, pd.HybridCacheLoadConfig{Factor: 0.5})
+
+	singlePodList := &utils.PodArray{Pods: []*v1.Pod{
+		burstPod("prefill-0", "prefill", "127.0.0.1"),
+		burstPod("decode-0", "decode", "127.0.0.100"),
+	}}
+	ctx := hybridRequest(t, "failed-prefill", 4000, "")
+
+	_, err := r.Route(ctx, singlePodList)
+	require.Error(t, err)
+
+	// Collect the jobs Route enqueued
+	var jobs []prefixUpdateJob
+	for {
+		select {
+		case job := <-r.prefixUpdateCh:
+			jobs = append(jobs, job)
+		default:
+			goto drained
+		}
+	}
+drained:
+	require.Len(t, jobs, 2, "must enqueue both initial credit and rollback removal on failure")
+	assert.False(t, jobs[0].remove, "first job was credit")
+	assert.Equal(t, burstPodKey("prefill-0"), jobs[0].pod)
+	assert.True(t, jobs[1].remove, "second job was removal rollback")
+	assert.Equal(t, burstPodKey("prefill-0"), jobs[1].pod)
+}
+
+// TestPDRouter_FailingPrefillPodEjectedDivertsTraffic reproduces Issue #3222:
+// When prefill-1 fails every prefill, consecutive failure tracking ejects prefill-1
+// after the threshold, diverting all subsequent requests to healthy prefill-0 instead
+// of prefill-1 drawing 39/40 requests due to zero load.
+func TestPDRouter_FailingPrefillPodEjectedDivertsTraffic(t *testing.T) {
+	transport := &selectiveFailingTransport{failingHost: "127.0.0.2", statusCode: http.StatusServiceUnavailable}
+	r, _, _ := newHybridCacheLoadTestRouter(t, &http.Client{Transport: transport}, pd.HybridCacheLoadConfig{Factor: 0.5})
+	r.prefillRequestTracker.SetFailureEjectionConfig(3, 10*time.Second, 60*time.Second)
+
+	podList := prefixCreditPodList() // prefill-0 on 127.0.0.1, prefill-1 on 127.0.0.2, decode-0 on 127.0.0.100
+
+	var prefill1Attempts int
+	var prefill0Successes int
+
+	// Run 20 requests sharing the same prompt
+	for i := 0; i < 20; i++ {
+		reqID := fmt.Sprintf("req-%d", i)
+		ctx := hybridRequest(t, reqID, 4000, "")
+		_, err := r.Route(ctx, podList)
+		targetPrefill := ctx.RespHeaders[HeaderPrefillTargetPod]
+		if targetPrefill == "prefill-1" {
+			prefill1Attempts++
+			assert.Error(t, err)
+		} else if targetPrefill == "prefill-0" {
+			prefill0Successes++
+			assert.NoError(t, err)
+		}
+	}
+
+	// prefill-1 should fail exactly 3 times (the consecutive failure threshold),
+	// after which it is ejected and all remaining 17 requests go to healthy prefill-0.
+	assert.Equal(t, 3, prefill1Attempts, "failing pod must be ejected after reaching the threshold")
+	assert.Equal(t, 17, prefill0Successes, "all subsequent requests must route to the healthy pod")
+	assert.True(t, r.prefillRequestTracker.IsPrefillPodEjected(burstPodKey("prefill-1"), time.Now()))
 }
