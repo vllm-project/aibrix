@@ -67,7 +67,7 @@ class RedisMetaService(MetaService):
             key = self.config.cluster_meta_key
             json_str = self.client.get(key)  # type: ignore
             if json_str is None:
-                Status(StatusCodes.ERROR, f"No data at Redis key: {key}")
+                return Status(StatusCodes.ERROR, f"No data at Redis key: {key}")
             return Status.ok(json_str.decode("utf-8"))  # type: ignore
         except (redis.RedisError, UnicodeDecodeError) as e:
             log_every_n_seconds(

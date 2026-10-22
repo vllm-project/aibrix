@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 func TestPlacementBackoffWaitsLongerAfterEachRefusal(t *testing.T) {
@@ -74,6 +75,41 @@ func TestReconcilePriorityExpiredLowTimerSkipsHighClaimInBackoff(t *testing.T) {
 	assert.Equal(t, before, r.Backoff.attempts[highKey], "checking a competitor must not change its wait")
 	due, _ := r.Backoff.due(highKey, high.Generation, room)
 	assert.False(t, due, "the competitor's independent timer has not expired")
+}
+
+// A pod's runtime can answer before the kubelet marks the pod Ready. A claim
+// refused because that runtime had not answered yet keeps its turn once it
+// does. This is the order that failed the e2e test
+// TestModelClaimPriorityControlsPodEventPlacementOrder: the high-priority claim
+// read the new pod first, and the low-priority claim a moment later.
+func TestReconcilePriorityKeepsTheTurnOfAClaimRefusedBeforeTheRuntimeAnswered(t *testing.T) {
+	r, runtime, low, high, pod := priorityReconciler(t)
+	require.False(t, utils.IsPodReady(pod), "the pod runs and is not ready yet")
+	now := time.Unix(1_700_000_000, 0)
+	r.Backoff = newPlacementBackoff(func() time.Time { return now })
+
+	r.Runtime = &unreadablePods{fakeRuntime: runtime, pods: map[string]bool{pod.Status.PodIP: true}}
+	reconcileFor(t, r, high.Name)
+	require.Equal(t, "NoMatchingPods", scheduled(t, r, high.Name).Reason)
+	require.Contains(t, scheduled(t, r, high.Name).Message, "its runtime did not answer")
+
+	r.Runtime = runtime
+	now = now.Add(100 * time.Millisecond)
+	reconcileFor(t, r, low.Name)
+	require.Empty(t, runtime.activateCalls, "the low-priority claim must not take the pod first")
+	assert.Equal(t, "WaitingForPlacementTurn", scheduled(t, r, low.Name).Reason)
+
+	// The kubelet marks the pod Ready, and its event brings both claims back.
+	ready := &corev1.Pod{}
+	require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(pod), ready))
+	ready.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	require.NoError(t, r.Status().Update(context.Background(), ready))
+	reconcileFor(t, r, low.Name)
+	reconcileFor(t, r, high.Name)
+	reconcileFor(t, r, low.Name)
+	require.Len(t, runtime.activateCalls, 2)
+	assert.Equal(t, high.Name, runtime.activateCalls[0].ModelName)
+	assert.Equal(t, low.Name, runtime.activateCalls[1].ModelName)
 }
 
 func TestReconcilePriorityDenialDoesNotCreateRefusalBackoff(t *testing.T) {
@@ -136,6 +172,44 @@ func TestReconcilePriorityFailedRetryPrecedesLowerPriorityPendingAfterRestart(t 
 	assert.Equal(t, "Placed", scheduled(t, r, high.Name).Reason)
 	require.Len(t, runtime.activateCalls, 1)
 	assert.Equal(t, high.Name, runtime.activateCalls[0].ModelName)
+}
+
+// A pod that a refusal could not read was not judged for the claim. Once
+// another claim reads it, the refusal no longer counts as waiting. A pod that
+// still cannot be read, or that the other claim does not see, changes nothing.
+func TestPlacementBackoffWaitingEndsWhenAnUnreadPodIsRead(t *testing.T) {
+	read := map[string]podLedger{"warm-1": {judgeable: true}}
+	for _, tt := range []struct {
+		name    string
+		unread  []string
+		ledgers map[string]podLedger
+		want    bool
+	}{
+		{"refusal read every pod", nil, read, true},
+		{"unread pod is read now", []string{"warm-1"}, read, false},
+		{"unread pod is still unread", []string{"warm-1"}, map[string]podLedger{"warm-1": {unread: true}}, true},
+		{"unread pod is not a candidate of the reader", []string{"warm-1"}, map[string]podLedger{}, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			backoff := newPlacementBackoff(func() time.Time { return at0758 })
+			key := types.NamespacedName{Namespace: testNamespace, Name: "waiting"}
+			room := roomSignature{"warm-1": {}}
+			backoff.refused(key, 1, room)
+			backoff.refusedWithoutReading(key, tt.unread)
+			backoff.statusWritten(key)
+			assert.Equal(t, tt.want, backoff.waiting(key, 1, room, tt.ledgers))
+		})
+	}
+	t.Run("next refusal reads every pod", func(t *testing.T) {
+		backoff := newPlacementBackoff(func() time.Time { return at0758 })
+		key := types.NamespacedName{Namespace: testNamespace, Name: "waiting"}
+		room := roomSignature{"warm-1": {}}
+		backoff.refused(key, 1, room)
+		backoff.refusedWithoutReading(key, []string{"warm-1"})
+		backoff.refused(key, 1, room)
+		backoff.statusWritten(key)
+		assert.True(t, backoff.waiting(key, 1, room, read))
+	})
 }
 
 func TestPlacementBackoffWaitingIsReadOnly(t *testing.T) {
@@ -201,7 +275,7 @@ func TestPlacementBackoffWaitingIsReadOnly(t *testing.T) {
 				before[key] = copy
 			}
 			for i := 0; i < 2; i++ {
-				assert.Equal(t, tt.want, backoff.waiting(key, tt.generation, room))
+				assert.Equal(t, tt.want, backoff.waiting(key, tt.generation, room, nil))
 				assert.Equal(t, before, backoff.attempts, "eligibility checks cannot consume another claim's retry")
 			}
 		})

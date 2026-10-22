@@ -258,6 +258,7 @@ Scoring formula: `score = (fairnessWeight * normFairness + utilizationWeight * n
 |---|---|---|---|
 | `AIBRIX_PREFILL_REQUEST_TIMEOUT` | int (seconds) | `30` | HTTP request timeout for prefill pod calls. |
 | `AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD` | int32 | `16` | Minimum (max − min) running-request spread across prefill pods to trigger load-imbalance routing. |
+| `AIBRIX_PREFILL_LOAD_CAP_FACTOR` | float64 | `1.5` | Prefill pods with more than `c × (mean + 1)` in-flight prefill requests are skipped, where `c` is this factor. Unlike the `AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR` check, it applies to pools of any size. Values between `0` and `1` are treated as `1`; `0`, negative or unparsable values use the default `1.5`. To effectively disable the cap, set a large value such as `100`. Lower values give up more prefix-cache affinity: with random (Poisson) load and no hot pod, `1.5` skips at least one pod on up to about 10% of requests with 4 prefill pods and about 20% with 6. `2` skips less often but cannot fire in a two-pod pool. |
 | `AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD` | float64 | `16.0` | Minimum (max − min) running-request spread across decode pods to trigger load-imbalance routing. |
 | `AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD` | float64 | `2048.0` | Minimum (max − min) token-throughput spread (tokens/s) across decode pods to trigger throughput-imbalance routing. |
 | `AIBRIX_DECODE_SCORE_RATIO_THRESHOLD` | float64 | `1.5` | Max/min drain-rate score ratio above which the slowest decode pod is excluded from selection. |
@@ -272,8 +273,8 @@ Scoring formula: `score = (fairnessWeight * normFairness + utilizationWeight * n
 | `AIBRIX_TOKEN_LOAD_SHARED_LEDGER` | bool | `true` | `token_load` decode policy only, with Redis configured: share the decode ledger across gateway replicas, so each replica adds the other live replicas' charges to its decode score. `false` keeps the ledger local to each replica. |
 
 The prefill/decode routing thresholds (`AIBRIX_PREFILL_*`, `AIBRIX_DECODE_*`, `AIBRIX_TOKEN_LOAD_*`, `AIBRIX_HYBRID_CACHE_LOAD_FACTOR`, `AIBRIX_MIN_MATCH_PCT`, `AIBRIX_PROMPT_LENGTH_BUCKETING`, `AIBRIX_BUCKET_SERVE`,
-`AIBRIX_BUCKET_SERVE_MODE`) can also be set per request by the model config profile
-(`routingConfig.pd.*`, `routingConfig.promptLengthBucketing` and `routingConfig.bucketServe*`); see [Model Config Profile Overrides](#model-config-profile-overrides).
+`AIBRIX_BUCKET_SERVE_MODE`), except `AIBRIX_PREFILL_LOAD_CAP_FACTOR`, can also be set per request by the model config profile
+(`routingConfig.pd.*`, `routingConfig.promptLengthBucketing` and `routingConfig.bucketServe*`); see [Model Config Profile Overrides](#model-config-profile-overrides). `AIBRIX_PREFILL_LOAD_CAP_FACTOR` is environment-only.
 
 ### PD Prefill Fail-Fast (`algorithms/pd/abort.go`)
 

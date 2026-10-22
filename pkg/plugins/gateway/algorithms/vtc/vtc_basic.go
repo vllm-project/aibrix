@@ -17,9 +17,11 @@ limitations under the License.
 package vtc
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"math/rand"
+	"slices"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -187,7 +189,8 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 	}
 
 	// Calculate scores for each pod
-	for i, pod := range readyPods {
+	ranks := stablePodRanks(readyPods)
+	for _, pod := range readyPods {
 
 		// 1. Dynamically calculate a reasonable "step size" for mapping user tokens onto pod indices, ensuring the mapping is
 		// relevant to the current system load while maintaining a minimum sensitivity
@@ -204,7 +207,7 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 		// Apply clamped linear mapping: tokens / bucket_size, clamped to [0, npods-1]
 		normalizedTokens := math.Min(float64(userTokens)/adaptiveBucketSize, float64(len(readyPods)-1))
 
-		fairnessScore := math.Abs(float64(i) - normalizedTokens)
+		fairnessScore := math.Abs(float64(ranks[pod]) - normalizedTokens)
 
 		klog.InfoS("VTC token normalization details",
 			"user", *user,
@@ -213,7 +216,7 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 			"maxTokens", maxTokens,
 			"adaptiveBucketSize", adaptiveBucketSize,
 			"normalizedTokens", normalizedTokens,
-			"podIndex", i,
+			"podRank", ranks[pod],
 			"fairnessScore", fairnessScore)
 
 		// 2. Get pod load for utilization score
@@ -242,7 +245,7 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 
 		klog.InfoS("VTC hybrid pod selection",
 			"pod", pod.Name,
-			"podIndex", i,
+			"podRank", ranks[pod],
 			"userTokens", userTokens,
 			"podLoad", podLoad,
 			"fairnessScore", fairnessScore,
@@ -266,15 +269,35 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 		}
 	}
 
-	if *user != "" {
-		err := tracker.UpdateTokenCount(ctx.Context, *user, inputTokens, outputTokens)
-		if err != nil {
-			klog.ErrorS(err, "failed to update user token count", "user", *user)
-		}
-	}
+	chargeUserTokens(ctx, tracker, *user, inputTokens, outputTokens)
 
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
+}
+
+// PostRouteUpdate charges the request's tokens to its user when a pod is picked
+// without Route, as the auto-blend and the single-candidate fast path do.
+func (r *BasicVTCRouter) PostRouteUpdate(ctx *types.RoutingContext, _ types.PodList, _ *v1.Pod) error {
+	if ctx.User == nil {
+		return nil
+	}
+	tracker, _ := r.trackerFor(ctx)
+	chargeUserTokens(ctx, tracker, *ctx.User,
+		r.tokenEstimator.EstimateInputTokens(ctx.Message),
+		r.tokenEstimator.EstimateOutputTokens(ctx.Message))
+	return nil
+}
+
+var _ types.PostRouteUpdater = (*BasicVTCRouter)(nil)
+
+// chargeUserTokens adds a routed request's estimated tokens to its user's window.
+func chargeUserTokens(ctx *types.RoutingContext, tracker TokenTracker, user string, inputTokens, outputTokens float64) {
+	if user == "" {
+		return
+	}
+	if err := tracker.UpdateTokenCount(ctx.Context, user, inputTokens, outputTokens); err != nil {
+		klog.ErrorS(err, "failed to update user token count", "user", user)
+	}
 }
 
 // ScoreAll computes the scores for all ready pods in a single batch operation.
@@ -316,10 +339,11 @@ func (r *BasicVTCRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.
 		maxTokens = trackerKnobs.MaxTokens
 	}
 
+	ranks := stablePodRanks(readyPods)
 	for i, pod := range readyPods {
 		adaptiveBucketSize := math.Max(trackerKnobs.MinTokens, (minTokens+maxTokens)/2)
 		normalizedTokens := math.Min(float64(userTokens)/adaptiveBucketSize, float64(len(readyPods)-1))
-		fairnessScore := math.Abs(float64(i) - normalizedTokens)
+		fairnessScore := math.Abs(float64(ranks[pod]) - normalizedTokens)
 
 		var podLoad float64
 		if r.cache != nil {
@@ -355,4 +379,20 @@ func (r *BasicVTCRouter) SubscribedMetrics() []string {
 		metrics.NumRequestsRunning,
 		metrics.VTCBucketSizeActive,
 	}
+}
+
+// stablePodRanks returns each pod's position when the pods are ordered by
+// namespace and name. The fairness term maps a user's tokens onto a pod
+// position, and the gateway shuffles the candidates before routing, so the
+// list index would send the same user to a random pod on every request.
+func stablePodRanks(pods []*v1.Pod) map[*v1.Pod]int {
+	sorted := slices.Clone(pods)
+	slices.SortFunc(sorted, func(a, b *v1.Pod) int {
+		return cmp.Or(cmp.Compare(a.Namespace, b.Namespace), cmp.Compare(a.Name, b.Name))
+	})
+	ranks := make(map[*v1.Pod]int, len(sorted))
+	for i, pod := range sorted {
+		ranks[pod] = i
+	}
+	return ranks
 }

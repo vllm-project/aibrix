@@ -260,11 +260,11 @@ class TestRendererHappyPath:
         assert engine["ports"][0]["containerPort"] == 8000
         assert "--model-path Qwen/Qwen2.5-7B" in args
         assert "--tp 2" in args
-        assert "--pp 2" in args
+        assert "--pipeline-parallel-size 2" in args
         assert "--context-length 32768" in args
         assert "--max-running-requests 64" in args
         assert "--mem-fraction-static 0.9" in args
-        assert "--block-size 16" in args
+        assert "--page-size 16" in args
         assert "--enable-prefix-caching" in args
 
     def test_mock_template_no_gpu_resources(self, renderer_factory):
