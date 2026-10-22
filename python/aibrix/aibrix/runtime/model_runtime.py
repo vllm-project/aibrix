@@ -1008,25 +1008,17 @@ def _resolve_model_path(artifact_url: str) -> str:
     - ``huggingface://`` / ``hf://`` hand the bare repo id to the engine, which
       downloads from the Hugging Face Hub natively (no aibrix downloader needed).
     - Other remote stores (``s3://``, ``gcs://``, ``tos://``, ...) that the
-      engine can't fetch are staged locally via the aibrix downloader, falling
-      back to the raw path if the downloader cannot be imported. Download
-      errors (bad URL, missing credentials, missing object, a missing backend
-      dependency) are raised.
+      engine can't fetch are staged locally via the aibrix downloader.
+      Download errors (bad URL, missing credentials, missing object, a missing
+      backend dependency) are raised.
     """
     if "://" not in artifact_url:
         return artifact_url
     scheme, rest = artifact_url.split("://", 1)
     if scheme in ("huggingface", "hf"):
         return rest
-    try:
-        from aibrix.downloader import download_model  # type: ignore
-    except ImportError as e:
-        logger.warning(
-            "Downloader for %s:// is unavailable (%s); passing the path as is",
-            scheme,
-            e,
-        )
-        return rest
+    from aibrix.downloader import download_model  # type: ignore
+
     return download_model(artifact_url)
 
 

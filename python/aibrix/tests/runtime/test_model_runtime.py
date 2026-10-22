@@ -2989,13 +2989,12 @@ def test_resolve_model_path_returns_the_downloaded_path(monkeypatch):
     assert runtime_module._resolve_model_path("s3://bucket/models/m") == "/models/m"
 
 
-def test_resolve_model_path_passes_the_path_without_a_downloader(monkeypatch):
+def test_resolve_model_path_raises_without_a_downloader(monkeypatch):
     import aibrix.runtime.model_runtime as runtime_module
 
     monkeypatch.setitem(sys.modules, "aibrix.downloader", None)
-    assert runtime_module._resolve_model_path("s3://bucket/models/m") == (
-        "bucket/models/m"
-    )
+    with pytest.raises(ImportError):
+        runtime_module._resolve_model_path("s3://bucket/models/m")
 
 
 def test_resolve_model_path_raises_other_import_time_errors(monkeypatch):
@@ -3024,7 +3023,7 @@ def _fail_download(model_uri, *args, **kwargs):
     raise PermissionError("403 Forbidden")
 
 
-def test_activate_fails_and_keeps_no_model_when_the_download_fails(monkeypatch):
+def test_activate_registers_no_model_when_the_download_fails(monkeypatch):
     import aibrix.downloader
 
     agent = ModelRuntime(_DownloadingLauncher())
