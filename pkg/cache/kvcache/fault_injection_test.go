@@ -28,10 +28,11 @@ import (
 // kvViewHandler applies decoded KV events to a real prefix index. The harness
 // uses it to turn an event stream into the same view the gateway routes on.
 type kvViewHandler struct {
-	index *syncprefixcacheindexer.SyncPrefixHashTable
-	model string
-	lora  int64
-	pod   string
+	index  *syncprefixcacheindexer.SyncPrefixHashTable
+	model  string
+	lora   int64
+	pod    string
+	clears int
 }
 
 func (h *kvViewHandler) HandleEvent(event KVEvent) error {
@@ -53,6 +54,7 @@ func (h *kvViewHandler) HandleEvent(event KVEvent) error {
 			GroupIdx:    -1,
 		})
 	case *AllBlocksClearedEvent:
+		h.clears++
 		return h.index.RemovePrefix(h.model, h.lora, h.pod)
 	}
 	return nil
@@ -267,6 +269,53 @@ func TestKVEventViewFaultInjection(t *testing.T) {
 	}
 	if totalLegacy == 0 {
 		t.Log("note: legacy dispatch did not produce a false hit in these scenarios")
+	}
+}
+
+func TestKVEventViewRecoveryAcrossGaps(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		removalSeq int64
+		laterStore bool
+		gaps       int
+		emptyStore bool
+	}{
+		{"single_gap", 4, false, 1, false},
+		{"two_gaps", 5, false, 2, false},
+		{"three_gaps_with_later_store", 5, true, 3, false},
+		{"empty_batch_before_second_gap", 5, false, 2, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newGuardedViewHarness(t)
+			oldPrefix, prefix, laterPrefix := faultPrefix('A'), faultPrefix('B'), faultPrefix('C')
+			h.apply(t, faultArrival{seq: 0, events: storedEvents([]int64{101, 102}, oldPrefix)})
+			events := storedEvents([]int64{201, 202}, prefix)
+			if tt.emptyStore {
+				events = nil
+			}
+			h.apply(t, faultArrival{seq: 3, events: events})
+			h.client.replayWg.Wait() // No replay socket: recovery is driven below.
+			h.apply(t, faultArrival{seq: tt.removalSeq, replay: true, events: removedEvents([]int64{201, 202})})
+			lastSeq := tt.removalSeq
+			if tt.laterStore {
+				// A valid empty batch must advance the sequence, even with no events.
+				h.apply(t, faultArrival{seq: 6, replay: true})
+				h.apply(t, faultArrival{seq: 8, replay: true, events: storedEvents([]int64{301, 302}, laterPrefix)})
+				lastSeq = 8
+			}
+			h.client.replayWg.Wait()
+			h.client.recoverStalledGap()
+			require.False(t, h.fullHit(oldPrefix))
+			matches, _ := h.index.MatchPrefix(h.model, h.lora, prefix, map[string]struct{}{h.pod: {}})
+			require.Zero(t, matches[h.pod], "received removal left a prefix hit: lastSeq=%d pending=%d", h.client.GetLastSequence(), len(h.client.pending))
+			require.Equal(t, tt.laterStore, h.fullHit(laterPrefix))
+			require.Equal(t, lastSeq, h.client.GetLastSequence())
+			require.Empty(t, h.client.pending)
+			require.Equal(t, tt.gaps, h.client.eventHandler.(*kvViewHandler).clears)
+			h.client.recoverStalledGap() // Empty pending must not clear the recovered view.
+			require.Equal(t, tt.gaps, h.client.eventHandler.(*kvViewHandler).clears)
+			require.Equal(t, tt.laterStore, h.fullHit(laterPrefix))
+		})
 	}
 }
 
