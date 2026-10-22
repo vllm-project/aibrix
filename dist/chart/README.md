@@ -131,9 +131,10 @@ resolve the issue and retry until you get:
 
 ### helm unittest
 
-test cases in dist/chart/tests
+Test cases live in `dist/chart/tests`. The common-label suite uses `documentSelector.matchMany` and `skipEmptyTemplates`, which require helm-unittest 1.0 or newer. helm-unittest 0.7.x fails that suite with `label expected to exist`.
+
 ```
-helm plugin install https://github.com/helm-unittest/helm-unittest.git
+helm plugin install https://github.com/helm-unittest/helm-unittest.git --version v1.1.2
 
 helm unittest dist/chart
 ### Chart [ aibrix ] dist/chart
