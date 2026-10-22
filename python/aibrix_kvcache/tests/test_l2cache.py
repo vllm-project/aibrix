@@ -55,12 +55,13 @@ def build_put_mr(
     tokens: KVCacheKeyTypes,
 ) -> MemoryRegion:
     mr = build_get_mr(allocator, block_nbytes, tokens)
+    # Randomize before packing, as randomize_mrs() overwrites the whole MR
+    randomize_mrs([mr])
     mr.pack_tokens(
         prefix=tokens[:-block_ntokens],
         query=tokens[-block_ntokens:],
     )
     mr.seal()
-    randomize_mrs([mr])
     return mr
 
 
@@ -268,6 +269,36 @@ async def test_duplicated_puts(cache_key_fixture, l2cache_fixture):
             assert torch.equal(get_mrs[i].to_tensor(), put_mrs[i].to_tensor())
         release_mrs(put_mrs)
         release_mrs(get_mrs)
+
+
+@pytest.mark.asyncio
+async def test_get_validates_tokens_of_every_block(
+    compact_layout_enabled, l2cache_fixture
+):
+    shape, spec, l2cache = l2cache_fixture
+    open_status = l2cache.open()
+    open_status.raise_if_has_exception()
+
+    capacity_nbytes = 128 * spec.block_nbytes
+    allocator = TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes)
+
+    # Every block after the first has a prefix in its token footer
+    tokens = TokenListView([i for i in range(4 * spec.block_ntokens)])
+    put_mrs = build_put_mrs(
+        allocator, spec.block_nbytes, spec.block_ntokens, None, tokens
+    )
+    put_status = await l2cache.put(None, tokens, put_mrs)
+    assert put_status.is_ok()
+    assert put_status.value == len(put_mrs)
+
+    get_mrs = build_get_mrs(
+        allocator, spec.block_nbytes, spec.block_ntokens, None, tokens
+    )
+    get_status = await l2cache.get(None, tokens, get_mrs)
+    assert get_status.is_ok()
+    assert get_status.value == len(get_mrs)
+    release_mrs(put_mrs)
+    release_mrs(get_mrs)
 
 
 @pytest.mark.asyncio

@@ -263,21 +263,25 @@ class ManagedMemoryRegion(MemoryRegion):
             self.slab[start:stop].view(torch.int32).numpy()
         )
 
-        if footer.prefix_length <= 0:
-            prefix = None
-        else:
-            prefix = TokenListView.from_numpy(
-                self.slab[start:stop].view(torch.int32).numpy()
-            )
-
-        if footer.query_length <= 0:
+        if footer.query_length <= 0 or footer.prefix_length < 0:
             return None, None
 
+        # pack_tokens() writes prefix + query after the footer
         start = stop
-        stop = start + bytes_per_token * footer.query_length
-        query = TokenListView.from_numpy(
+        stop = start + bytes_per_token * (
+            footer.prefix_length + footer.query_length
+        )
+        if stop > self.addr + self.length:
+            # corrupted footer
+            return None, None
+        tokens = TokenListView.from_numpy(
             self.slab[start:stop].view(torch.int32).numpy()
         )
+        if footer.prefix_length == 0:
+            prefix = None
+        else:
+            prefix = tokens[: footer.prefix_length]
+        query = tokens[footer.prefix_length :]
 
         self._prefix = prefix
         self._query = query
