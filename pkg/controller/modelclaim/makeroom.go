@@ -469,7 +469,7 @@ func (r *ModelClaimReconciler) firstToMakeRoomFor(
 		if !valid {
 			continue
 		}
-		if r.backoff().waiting(client.ObjectKeyFromObject(claim), claim.Generation, roomSignatureOf(shared, claims)) {
+		if r.backoff().waiting(client.ObjectKeyFromObject(claim), claim.Generation, roomSignatureOf(shared, claims), ledgers) {
 			continue
 		}
 		if preemptionPolicyOf(claim) == modelv1alpha1.ModelClaimPreemptionSleepLowerPriority {

@@ -794,7 +794,12 @@ func (r *ModelClaimReconciler) ensureActivated(
 			// the shortest wait. A record that was taken back after a start
 			// that failed does not show here, since a record without a port is
 			// not counted.
-			return placementRefusalWait(backoff, claim, pm, reason, room, refusedOn), nil
+			wait := placementRefusalWait(backoff, claim, pm, reason, room, refusedOn)
+			// A pod that could not be read, such as one whose runtime does
+			// not answer yet, was not judged. A claim that reads it later
+			// judges this claim's turn again.
+			backoff.refusedWithoutReading(claim, unreadPods(candidates, ledgers))
+			return wait, nil
 		}
 
 		// Divide the card between the engines on it and this one, and hold
