@@ -126,3 +126,24 @@ func TestAugmentPrefillRequestLeavesNoRIDOnFailure(t *testing.T) {
 	assert.Equal(t, string(original), string(ctx.ReqBody))
 	assert.Empty(t, ctx.PDRequestID())
 }
+
+func TestNewPDResponsesRequestID(t *testing.T) {
+	seen := map[string]bool{}
+	length := 0
+	for i := 0; i < 64; i++ {
+		id := NewPDResponsesRequestID("req-responses")
+		assert.True(t, strings.HasPrefix(id, "resp_req-responses-"),
+			"the Responses response id must start with resp_: %s", id)
+		assert.False(t, seen[id], "request id repeated across attempts: %s", id)
+		seen[id] = true
+		if length == 0 {
+			length = len(id)
+		}
+		assert.Equal(t, length, len(id), "ids must be fixed-length for prefix-safe aborts")
+	}
+}
+
+func TestSGLangResponsesDecodeBodyRejectsEmptyRequestID(t *testing.T) {
+	_, err := sglangResponsesDecodeBody([]byte(`{}`), "10.0.0.1", 8998, 12345, "")
+	assert.Error(t, err, "an empty request_id would prefix-match every live request on the engine")
+}

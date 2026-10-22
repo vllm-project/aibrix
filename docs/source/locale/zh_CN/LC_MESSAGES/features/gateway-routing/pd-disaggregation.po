@@ -2152,6 +2152,38 @@ msgstr ":doc:`../../designs/aibrix-stormservice`"
 msgid "StormService, the orchestration layer behind PD disaggregation."
 msgstr "StormService，Prefill/Decode 分离背后的编排层。"
 
-#~ msgid "Uses NIXL KV transfer backend (``AIBRIX_KV_CONNECTOR_TYPE=nixl``)."
-#~ msgstr "使用 NIXL KV 传输后端（``AIBRIX_KV_CONNECTOR_TYPE=nixl`` ）。"
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:114
+msgid "Supported APIs"
+msgstr "支持的 API"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:117
+msgid ""
+"PD routing supports ``/v1/chat/completions``, ``/v1/completions``, and "
+"``/v1/responses``. The Responses API requires vLLM 0.19.0+ or SGLang 0.5.22+."
+msgstr ""
+"PD 路由支持 ``/v1/chat/completions``、``/v1/completions`` 和 ``/v1/responses``。"
+"Responses API 要求 vLLM 0.19.0+ 或 SGLang 0.5.22+。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:120
+msgid ""
+"When using PD with the Responses API, set the engine label explicitly. If it "
+"is unset, PD defaults to vLLM. SGLang also overwrites any client-supplied "
+"``request_id``; the response id is ``resp_<gateway-request-id>-<nonce>``."
+msgstr ""
+"使用 Responses PD 时，请显式设置 ``model.aibrix.ai/engine`` 标签；未设置时默认按 "
+"vLLM 处理。SGLang 还会覆盖客户端传入的 ``request_id``，响应 ID 为 "
+"``resp_<gateway-request-id>-<nonce>``。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:124
+msgid ""
+"E+PD is not supported for the Responses API: the encode stage is skipped, so "
+"requests follow the normal PD path to prefill/decode pods (or the usual "
+"combined-pod fallback), never to encode pods. Stateful Responses features "
+"(``previous_response_id`` and ``background: true``) are not supported with PD "
+"because that state lives only on the pod that served the previous request."
+msgstr ""
+"Responses 不支持 E+PD：encode 阶段会被跳过，请求会走普通 PD 路径，调度到 "
+"prefill/decode Pod（没有可用配对时回退到 combined Pod），不会调度到 encode Pod。"
+"PD 不支持有状态的 Responses 特性（``previous_response_id`` 和 "
+"``background: true``），因为相关状态只保存在处理上一次请求的那个 Pod 上。"
 

@@ -111,6 +111,21 @@ Supported Engines
 
 Set the engine on each pod with the ``model.aibrix.ai/engine`` label.
 
+Supported APIs
+--------------
+
+PD routing supports ``/v1/chat/completions``, ``/v1/completions``, and
+``/v1/responses``. The Responses API requires vLLM 0.19.0+ or SGLang 0.5.22+.
+
+When using PD with the Responses API, set the engine label explicitly. If it
+is unset, PD defaults to vLLM. SGLang also overwrites any client-supplied
+``request_id``; the response id is ``resp_<gateway-request-id>-<nonce>``.
+
+E+PD is not supported for the Responses API: the encode stage is skipped, so
+requests follow the normal PD path to prefill/decode pods (or the usual
+combined-pod fallback), never to encode pods. Stateful Responses features
+(``previous_response_id`` and ``background: true``) are not supported with PD
+because that state lives only on the pod that served the previous request.
 
 TensorRT-LLM Parallel Scheduling
 --------------------------------

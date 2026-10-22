@@ -1758,6 +1758,7 @@ func TestHandleRequestBody_RejectPDRouting(t *testing.T) {
 		reqPath       string
 		requestBody   string
 		headerValue   string
+		ingressEngine string
 		configProfile string
 		profileJSON   string
 		wantReject    bool
@@ -1766,14 +1767,30 @@ func TestHandleRequestBody_RejectPDRouting(t *testing.T) {
 		wantErrMsg    string
 	}{
 		{
-			name:        "responses with pd header is rejected",
+			name:        "responses with pd header and default engine is accepted",
 			reqPath:     PathResponses,
 			requestBody: `{"model":"test-model","input":"test"}`,
 			headerValue: "pd",
-			wantReject:  true,
-			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
-			wantErrType: ErrorTypeInvalidRequest,
-			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/responses'",
+			wantReject:  false,
+		},
+		{
+			name:          "responses with pd header and sglang engine is accepted",
+			reqPath:       PathResponses,
+			requestBody:   `{"model":"test-model","input":"test"}`,
+			headerValue:   "pd",
+			ingressEngine: EngineSGLang,
+			wantReject:    false,
+		},
+		{
+			name:          "responses with pd header and trtllm engine is rejected",
+			reqPath:       PathResponses,
+			requestBody:   `{"model":"test-model","input":"test"}`,
+			headerValue:   "pd",
+			ingressEngine: EngineTRTLLM,
+			wantReject:    true,
+			wantErrCode:   ErrorCodeUnsupportedRoutingStrategy,
+			wantErrType:   ErrorTypeInvalidRequest,
+			wantErrMsg:    "routing strategy 'pd' is not supported for endpoint '/v1/responses' with engine 'trtllm'",
 		},
 		{
 			name:        "messages with pd header is rejected",
@@ -1796,14 +1813,11 @@ func TestHandleRequestBody_RejectPDRouting(t *testing.T) {
 			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/embeddings'",
 		},
 		{
-			name:        "responses with query string and pd header is rejected",
+			name:        "responses with query string and pd header is accepted",
 			reqPath:     PathResponses + "?stream=true",
 			requestBody: `{"model":"test-model","input":"test"}`,
 			headerValue: "pd",
-			wantReject:  true,
-			wantErrCode: ErrorCodeUnsupportedRoutingStrategy,
-			wantErrType: ErrorTypeInvalidRequest,
-			wantErrMsg:  "routing strategy 'pd' is not supported for endpoint '/v1/responses'",
+			wantReject:  false,
 		},
 		{
 			name:          "embeddings with pd from model profile is rejected",
@@ -1864,7 +1878,13 @@ func TestHandleRequestBody_RejectPDRouting(t *testing.T) {
 			if profileJSON == "" {
 				profileJSON = `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"test-router"}}}`
 			}
-			podList := &utils.PodArray{Pods: configProfilePods(profileJSON)}
+			pods := configProfilePods(profileJSON)
+			if tt.ingressEngine != "" {
+				for _, pod := range pods {
+					pod.Labels[constants.ModelLabelEngine] = tt.ingressEngine
+				}
+			}
+			podList := &utils.PodArray{Pods: pods}
 
 			mockCache.On("HasModel", "test-model").Return(true)
 			mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)

@@ -54,7 +54,7 @@ func PreparePayload(routingCtx *types.RoutingContext, pod *v1.Pod, llmEngine str
 
 	// Constrain the prefill to a single token so the pod returns immediately
 	// after completing the KV-cache fill without generating any real output.
-	payload, err = pd.ApplyPrefillControlFields(payload, llmEngine)
+	payload, err = pd.ApplyPrefillControlFieldsForPath(payload, llmEngine, routingCtx.ReqPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to apply prefill control fields for %s: %w", llmEngine, err)
 	}
