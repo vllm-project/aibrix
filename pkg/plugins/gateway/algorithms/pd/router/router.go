@@ -69,6 +69,7 @@ const (
 	defaultRequestRateHighLoadThreshold               = 1.0
 	defaultRequestRateLowLoadThreshold                = 0.25
 	defaultDecodeScoreRatioThreshold          float64 = 1.5 // min queue-drain time ratio to trigger drain-rate routing
+	defaultPrefillLoadCapFactor               float64 = 1.5 // c in the c×(mean+1) prefill candidacy cap
 	defaultDrainRateEpsilon                   float64 = 0.1 // floor for drain rate to avoid division by zero
 
 	pdRouteValidateLLMEngineFail       = "pd-validate-llm-engine-fail"
@@ -94,6 +95,9 @@ var (
 	prefillRequestTimeout int = utils.LoadEnvInt("AIBRIX_PREFILL_REQUEST_TIMEOUT", defaultPrefillRequestTimeout)
 	// min (max-min) request-count spread to trigger prefill load-imbalance routing
 	aibrixPrefillLoadImbalanceMinSpread int32 = int32(utils.LoadEnvInt("AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD", int(defaultPrefillLoadImbalanceMinSpread)))
+	// c in the bounded-load cap: a prefill pod with more than c×(mean+1) in-flight
+	// prefills is skipped. Unlike the stddev filter it can fire at any pool size.
+	aibrixPrefillLoadCapFactor float64 = utils.LoadEnvFloat("AIBRIX_PREFILL_LOAD_CAP_FACTOR", defaultPrefillLoadCapFactor)
 	// min (max-min) request-count spread to trigger decode load-imbalance routing
 	aibrixDecodeLoadImbalanceMinSpread float64 = utils.LoadEnvFloat("AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD", defaultDecodeLoadImbalanceMinSpread)
 	// min (max-min) token-throughput spread (tok/s) to trigger decode throughput-imbalance routing
@@ -1113,7 +1117,8 @@ func (r *pdRouter) loadImbalanceSelectDecodePodWithLedger(ctx *types.RoutingCont
 // Active prefill counts come from PrefillRequestTracker (in-flight prefill HTTP from
 // other concurrent requests; the current request is not counted yet). Pods whose count
 // exceeds mean + standardDeviationFactor×stddev
-// (AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR) are skipped as overloaded. When
+// (AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR) or the bounded-load cap
+// (see prefillLoadCap) are skipped as overloaded. When
 // every pod in a roleset is filtered this way, that roleset has no entry in the
 // returned map and finalPDScore will not be able to select it.
 //
@@ -1188,6 +1193,7 @@ func (r *pdRouter) scorePreparedPrefillPods(routingCtx *types.RoutingContext, pr
 	// The prefill candidacy filter shares AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR with
 	// the prefix-cache strategies; the request's resolved overrides carry it.
 	sigma := routingCtx.RoutingOverrides().PrefixCache.StandardDeviationFactor
+	loadCap := prefillLoadCap(meanRequestCount, aibrixPrefillLoadCapFactor)
 
 	prefillScores := map[string]*Scores{}
 	maxPrefillScore := float64(1)
@@ -1203,6 +1209,14 @@ func (r *pdRouter) scorePreparedPrefillPods(routingCtx *types.RoutingContext, pr
 			}
 			continue
 		}
+		if reqCnt > loadCap {
+			if klog.V(4).Enabled() {
+				klog.V(4).InfoS("prefill pod request count is above the bounded-load cap, skipping",
+					"request_id", routingCtx.RequestID, "pod_name", pod.Name,
+					"req_cnt", reqCnt, "mean_req_cnt", meanRequestCount, "load_cap", loadCap)
+			}
+			continue
+		}
 
 		score := scorer.ScorePod(pod, reqCnt, maxRequestCount)
 		if existing, exists := prefillScores[rolesetName]; !exists || score < existing.Score {
@@ -1214,6 +1228,18 @@ func (r *pdRouter) scorePreparedPrefillPods(routingCtx *types.RoutingContext, pr
 	}
 
 	return prefillScores, maxPrefillScore, scorer.PrefixHashes()
+}
+
+// prefillLoadCap returns the bounded-load cap factor×(mean+1) on a prefill pod's
+// in-flight count. The stddev filter alone cannot skip any pod when the pool is
+// small: no value in n samples sits more than (n-1)/√n sample standard deviations
+// above their mean, which is below 2 for n ≤ 5. The busiest of n pods holds at
+// most n×mean, so the cap can fire whenever the factor is below n; the default
+// of 1.5 reaches two-pod pools. The +1 keeps an
+// idle pool from rejecting its first request, and a factor below 1 is raised to
+// 1 so the cap stays above the mean and the least-loaded pod is never skipped.
+func prefillLoadCap(mean, factor float64) float64 {
+	return math.Max(factor, 1) * (mean + 1)
 }
 
 // scoreDecodePods scores candidate decode pods with policy after any imbalance fast path

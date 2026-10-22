@@ -781,7 +781,7 @@ stands.
 
 **Step 3 — Prefill scoring**
 
-Each prefill pod is scored by the selected policy. Pods with a request count more than ``N`` standard deviations above the mean are skipped (``N = AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``). The lowest-scoring pod per roleset is kept as the roleset's prefill candidate.
+Each prefill pod is scored by the selected policy. Pods with a request count more than ``N`` standard deviations above the mean are skipped (``N = AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``), and so are pods with a request count above ``c × (mean + 1)`` (``c = AIBRIX_PREFILL_LOAD_CAP_FACTOR``). The standard-deviation check cannot skip any pod in a pool of five or fewer prefill pods at ``N = 2``; the cap applies at any pool size. The lowest-scoring pod per roleset is kept as the roleset's prefill candidate.
 
 - ``prefix_cache`` (default): ``score = (100 − prefix_match_percent) × 0.1 + req_count / max_req_count`` — lower score means more cache hits and less load. Matches below ``AIBRIX_MIN_MATCH_PCT`` count as ``0``.
 - ``least_request``: ``score = req_count``.
@@ -875,6 +875,9 @@ These are set on the **gateway plugin** deployment.
    * - ``AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD``
      - ``16``
      - Minimum request-count spread between prefill pods before load-imbalance routing kicks in.
+   * - ``AIBRIX_PREFILL_LOAD_CAP_FACTOR``
+     - ``1.5``
+     - Prefill pods with more than ``c × (mean + 1)`` in-flight prefill requests are skipped, where ``c`` is this factor. A factor between ``0`` and ``1`` is treated as ``1``; ``0``, negative or unparsable values use the default ``1.5``. To effectively disable the cap, set a large value such as ``100``. Lower values give up more prefix-cache affinity: with random (Poisson) load and no hot pod, ``1.5`` skips at least one pod on up to about 10% of requests with 4 prefill pods and about 20% with 6. ``2`` skips less often but cannot fire in a two-pod pool.
    * - ``AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD``
      - ``16``
      - Minimum ``(max − min)`` running request count spread between decode pods before request-count load-imbalance routing kicks in.
