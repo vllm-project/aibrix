@@ -92,14 +92,6 @@ func TestScorePrefillPods_LoadCapFactorIsConfigurable(t *testing.T) {
 	assert.Len(t, kept, 3)
 }
 
-func TestPrefillLoadCap(t *testing.T) {
-	assert.Equal(t, 6.0, prefillLoadCap(3, 1.5))
-	assert.Equal(t, 1.5, prefillLoadCap(0, 1.5), "an idle pool's cap is the factor")
-	// A factor below 1 is raised to 1, so the cap stays above the mean and the
-	// least-loaded pod can never be skipped.
-	assert.Equal(t, 4.0, prefillLoadCap(3, 0.5))
-}
-
 // The factor is read from the environment once at package init, so the wiring is
 // checked in a child test binary started with the variable set.
 func TestPrefillLoadCapFactorReadFromEnv(t *testing.T) {

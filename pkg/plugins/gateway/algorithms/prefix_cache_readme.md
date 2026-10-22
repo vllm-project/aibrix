@@ -93,11 +93,15 @@ The first pod in this sorted list that satisfies the load threshold is selected:
 
 ```
 pod.running_requests <= mean_running_requests + load_factor × std_dev
+pod.running_requests <= max(load_cap_factor, 1) × (mean_running_requests + 1)
 ```
 
 `load_factor` (= `AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR`) controls how aggressively
 the router skips overloaded cache-holding pods. If no matched pod is within the threshold, the
-router falls back to the global least-loaded pod across all ready pods.
+router falls back to the global least-loaded pod across all ready pods. `load_cap_factor`
+(= `AIBRIX_PREFIX_CACHE_LOAD_CAP_FACTOR`) bounds load directly: no value in n pods sits more than
+(n−1)/√n standard deviations above the mean, so at `load_factor` 2 the first check cannot skip
+any pod in a pool of five or fewer.
 
 ## Configuration
 
@@ -107,6 +111,7 @@ router falls back to the global least-loaded pod across all ready pods.
 | `AIBRIX_PREFIX_CACHE_BLOCK_SIZE` | Number of tokens per prefix block. Smaller blocks = finer-grained matching but more hash overhead. | `128` |
 | `AIBRIX_PREFIX_CACHE_BLOCK_NUMBER` | Maximum number of prefix cache blocks tracked per pod. | `200000` |
 | `AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR` | `load_factor` in `mean + load_factor × σ`. Higher value tolerates more load on a high-cache-hit pod. | `1` |
+| `AIBRIX_PREFIX_CACHE_LOAD_CAP_FACTOR` | `load_cap_factor` in `max(load_cap_factor, 1) × (mean + 1)`. Higher value tolerates more load on a high-cache-hit pod; set a large value such as `100` to effectively disable it. | `1.5` |
 | `AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED` | Enable KV sync routing mode (requires remote tokenizer). | `false` |
 | `AIBRIX_PREFIX_CACHE_INCLUDE_TOOLS` | Prepend the canonicalized chat request `tools` to the prompt text before hashing, so requests that share messages but carry different tools do not look like a full prefix match. Token estimates keep using the messages only. KV-sync mode tokenizing through the remote chat template forwards the raw `tools` to the tokenizer regardless of this flag, so the template places them. Set to `false` to hash the messages only. | `true` |
 
