@@ -121,3 +121,16 @@ func TestFindDuplicateTopLevelKey(t *testing.T) {
 	assert.True(t, dup)
 	assert.Equal(t, "kv_transfer_params", key)
 }
+
+func TestCommonControlledFields(t *testing.T) {
+	assert.Equal(t, []string{
+		"max_tokens",
+		"max_completion_tokens",
+		"max_output_tokens",
+		"store",
+		"stream",
+		"stream_options",
+		"min_tokens",
+	}, CommonControlledFields,
+		"the Responses controls must stay in the duplicate-key guard even though the loops in other tests read this variable")
+}

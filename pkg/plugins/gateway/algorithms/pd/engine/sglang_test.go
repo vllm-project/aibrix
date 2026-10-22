@@ -333,7 +333,7 @@ func TestPrepareSGLangRequestBodies_DuplicateNonControlledKeyAllowed(t *testing.
 }
 
 func TestAugmentPrefillRequest_ResponsesUsesRequestID(t *testing.T) {
-	originalBody := []byte(`{"model":"m","input":"hello","instructions":"be brief","max_output_tokens":128,"stream":true}`)
+	originalBody := []byte(`{"model":"m","input":"hello","instructions":"be brief","max_output_tokens":128,"max_tokens":256,"max_completion_tokens":256,"stream":true,"stream_options":{"include_usage":true},"min_tokens":5,"store":true,"rid":"client-rid"}`)
 	routingCtx := types.NewRoutingContext(context.Background(), "", "m", "", "req-responses-1", "")
 	routingCtx.ReqBody = originalBody
 	routingCtx.ReqPath = pd.ResponsesPath
@@ -351,6 +351,10 @@ func TestAugmentPrefillRequest_ResponsesUsesRequestID(t *testing.T) {
 		"the abort rid must be the engine-visible Responses request_id")
 	assert.False(t, gjson.GetBytes(routingCtx.ReqBody, "rid").Exists(),
 		"Responses does not use rid; a client value must not survive")
+	assert.True(t, gjson.GetBytes(routingCtx.ReqBody, "store").Bool(),
+		"the client decode body keeps its store value")
+	assert.Equal(t, int64(128), gjson.GetBytes(routingCtx.ReqBody, "max_output_tokens").Int(),
+		"the decode body keeps the client max_output_tokens")
 	assert.Equal(t, requestID, gjson.GetBytes(prefillBase, "request_id").String())
 	assert.Equal(t, "10.0.0.1", gjson.GetBytes(prefillBase, "bootstrap_host").String())
 	assert.Equal(t, int64(8998), gjson.GetBytes(prefillBase, "bootstrap_port").Int())
@@ -365,6 +369,13 @@ func TestAugmentPrefillRequest_ResponsesUsesRequestID(t *testing.T) {
 	assert.Equal(t, int64(3), gjson.GetBytes(prefillBody, "max_output_tokens").Int())
 	assert.False(t, gjson.GetBytes(prefillBody, "stream").Bool())
 	assert.False(t, gjson.GetBytes(prefillBody, "max_tokens").Exists())
+	assert.False(t, gjson.GetBytes(prefillBody, "max_completion_tokens").Exists())
+	assert.False(t, gjson.GetBytes(prefillBody, "stream_options").Exists())
+	assert.False(t, gjson.GetBytes(prefillBody, "min_tokens").Exists())
+	store := gjson.GetBytes(prefillBody, "store")
+	assert.True(t, store.Exists(), "the prefill body must carry an explicit store value")
+	assert.False(t, store.Bool(), "the internal prefill response must not be stored")
+	assert.False(t, gjson.GetBytes(prefillBody, "rid").Exists())
 }
 
 func TestValidateSGLangRequest_DuplicateResponsesRequestID(t *testing.T) {

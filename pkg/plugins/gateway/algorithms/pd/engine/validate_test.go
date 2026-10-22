@@ -110,3 +110,14 @@ func TestValidateSGLangRequest_MatchesValidateRequest(t *testing.T) {
 	require.Error(t, ValidateRequest(body, Resolve("sglang")))
 	require.NoError(t, ValidateRequest(body, Resolve("vllm")), "bootstrap_room is not controlled on vLLM")
 }
+
+func TestValidateRequest_DuplicateResponsesFields(t *testing.T) {
+	for _, key := range []string{"max_output_tokens", "store"} {
+		t.Run(key, func(t *testing.T) {
+			body := []byte(`{"model":"m","` + key + `":1,"` + key + `":2}`)
+			err := ValidateRequest(body, Resolve("vllm"))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), `duplicate top-level key "`+key+`"`)
+		})
+	}
+}

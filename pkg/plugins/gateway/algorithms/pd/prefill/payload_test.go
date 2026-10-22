@@ -252,7 +252,7 @@ func TestPreparePayload_SGLangHandlerDuplicateFieldsRejected(t *testing.T) {
 
 func TestPreparePayload_VLLMResponses(t *testing.T) {
 	t.Setenv("AIBRIX_KV_CONNECTOR_TYPE", "shfs")
-	originalBody := []byte(`{"model":"m","input":"hello","instructions":"be brief","max_output_tokens":128,"temperature":0.7,"stream":true}`)
+	originalBody := []byte(`{"model":"m","input":"hello","instructions":"be brief","max_output_tokens":128,"max_tokens":256,"max_completion_tokens":256,"temperature":0.7,"stream":true,"stream_options":{"include_usage":true},"min_tokens":5,"store":true}`)
 	routingCtx := &types.RoutingContext{
 		ReqBody: originalBody,
 		ReqPath: pd.ResponsesPath,
@@ -268,8 +268,13 @@ func TestPreparePayload_VLLMResponses(t *testing.T) {
 	assert.False(t, gjson.GetBytes(prefillBody, "max_tokens").Exists())
 	assert.False(t, gjson.GetBytes(prefillBody, "max_completion_tokens").Exists())
 	assert.False(t, gjson.GetBytes(prefillBody, "stream").Bool())
-	assert.False(t, gjson.GetBytes(prefillBody, "store").Bool(),
-		"the internal prefill response must not be stored")
+	assert.False(t, gjson.GetBytes(prefillBody, "stream_options").Exists())
+	assert.False(t, gjson.GetBytes(prefillBody, "min_tokens").Exists())
+	store := gjson.GetBytes(prefillBody, "store")
+	assert.True(t, store.Exists(), "the prefill body must carry an explicit store value")
+	assert.False(t, store.Bool(), "the internal prefill response must not be stored")
+	assert.True(t, gjson.GetBytes(routingCtx.ReqBody, "store").Bool(),
+		"the client decode body keeps its store value")
 	assert.Equal(t, gjson.GetBytes(originalBody, "input").Raw, gjson.GetBytes(prefillBody, "input").Raw)
 	assert.Equal(t, gjson.GetBytes(originalBody, "instructions").Raw, gjson.GetBytes(prefillBody, "instructions").Raw)
 	assert.True(t, gjson.GetBytes(prefillBody, "kv_transfer_params.do_remote_decode").Bool(),
