@@ -287,7 +287,8 @@ type rankedPod struct {
 // count would order them: the k lowest counts, ties kept in candidates order. It costs
 // O(len(candidates) * k) instead of a full O(n log n) sort, which matters because k is small
 // (AIBRIX_ROUTING_LEAST_REQUEST_TOP_K, 5 by default) while the fleet can hold thousands of pods.
-// When k covers every candidate, it sorts the whole slice in place.
+// When k covers every candidate, it sorts candidates in place and returns it; otherwise it
+// leaves candidates unchanged and returns a new slice of length k.
 func lowestCountsStable(candidates []rankedPod, k int) []rankedPod {
 	if k >= len(candidates) {
 		sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].count < candidates[j].count })

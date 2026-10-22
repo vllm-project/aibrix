@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Aibrix Team.
+Copyright 2026 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -69,14 +69,14 @@ func newFleetBenchCache(n int) (*cache.Store, []*v1.Pod) {
 	return c, c.ListPods()
 }
 
-func routeFleetOnce(b *testing.B, rm *RouterManager, c cache.Cache, all []*v1.Pod, scratch []*v1.Pod, strategy, message string, k int, shuffle bool) {
+func routeFleetOnce(b *testing.B, rm *RouterManager, c cache.Cache, all []*v1.Pod, scratch []*v1.Pod, strategy, message string, k int, shuffle func([]*v1.Pod)) {
 	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(strategy), "m1", message, "req", "")
 	defer ctx.Delete()
 	ResolveRoutingOverrides(ctx)
 
 	pods := append(scratch[:0], all...)
-	if shuffle {
-		utils.Shuffle(pods)
+	if shuffle != nil {
+		shuffle(pods)
 	}
 	if k > 0 && k < len(pods) {
 		pods = pods[:k]
@@ -117,7 +117,7 @@ func silenceKlog(b *testing.B) {
 	})
 }
 
-func benchmarkFleetRouting(b *testing.B, k int, shuffle bool) {
+func benchmarkFleetRouting(b *testing.B, k int, shuffle func([]*v1.Pod)) {
 	silenceKlog(b)
 	for _, n := range fleetBenchSizes {
 		c, all := newFleetBenchCache(n)
@@ -138,14 +138,20 @@ func benchmarkFleetRouting(b *testing.B, k int, shuffle bool) {
 }
 
 // BenchmarkFleetRouting_Full is today's path: every ready pod is shuffled and scored.
-func BenchmarkFleetRouting_Full(b *testing.B) { benchmarkFleetRouting(b, 0, true) }
+func BenchmarkFleetRouting_Full(b *testing.B) { benchmarkFleetRouting(b, 0, utils.Shuffle[*v1.Pod]) }
+
+// BenchmarkFleetRouting_FullCryptoShuffle shuffles with crypto/rand, as the gateway did
+// before it switched to math/rand/v2. Run against older code, it reproduces the "before" cost.
+func BenchmarkFleetRouting_FullCryptoShuffle(b *testing.B) {
+	benchmarkFleetRouting(b, 0, utils.CryptoShuffle[*v1.Pod])
+}
 
 // BenchmarkFleetRouting_NoShuffle isolates the cost of shuffling the full list.
-func BenchmarkFleetRouting_NoShuffle(b *testing.B) { benchmarkFleetRouting(b, 0, false) }
+func BenchmarkFleetRouting_NoShuffle(b *testing.B) { benchmarkFleetRouting(b, 0, nil) }
 
 // BenchmarkFleetRouting_K16 scores only 16 shuffled candidates. It still shuffles
 // the whole list, so it shows the scoring saving alone.
-func BenchmarkFleetRouting_K16(b *testing.B) { benchmarkFleetRouting(b, 16, true) }
+func BenchmarkFleetRouting_K16(b *testing.B) { benchmarkFleetRouting(b, 16, utils.Shuffle[*v1.Pod]) }
 
 // BenchmarkShuffle compares the full-list shuffles: crypto/rand, which the gateway used
 // before, and math/rand/v2, which it uses now.
