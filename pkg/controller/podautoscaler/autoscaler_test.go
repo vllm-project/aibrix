@@ -471,6 +471,81 @@ func (f *mockMetricFetcher) FetchPodMetrics(ctx context.Context, pod corev1.Pod,
 	return f.metricsValue, nil
 }
 
+// The pending-replica guard multiplies before it divides, so its pod count can
+// land just above a whole number: (0.05 × 2 + 0.1 × 2) / 0.1 is
+// 3.0000000000000004, and a plain math.Ceil held a fourth pod.
+func TestPendingReplicaGuardIgnoresFloatError(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		strategy     autoscalingv1alpha1.ScalingStrategyType
+		target       string
+		metricValue  float64
+		currentPods  int32
+		readyPods    int32
+		pendingPods  int32
+		wantReplicas int32
+	}{
+		{
+			name:         "kpa scale-down",
+			strategy:     autoscalingv1alpha1.KPA,
+			target:       "0.1",
+			metricValue:  0.05,
+			currentPods:  4,
+			readyPods:    2,
+			pendingPods:  2,
+			wantReplicas: 3,
+		},
+		{
+			name:         "kpa scale-down, larger pool",
+			strategy:     autoscalingv1alpha1.KPA,
+			target:       "0.1",
+			metricValue:  0.08,
+			currentPods:  7,
+			readyPods:    5,
+			pendingPods:  2,
+			wantReplicas: 6,
+		},
+		{
+			name:         "apa scale-down",
+			strategy:     autoscalingv1alpha1.APA,
+			target:       "0.1",
+			metricValue:  0.05,
+			currentPods:  4,
+			readyPods:    2,
+			pendingPods:  2,
+			wantReplicas: 3,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pa := testPodAutoscaler(tt.strategy)
+			pa.Spec.MetricsSources[0].TargetValue = tt.target
+			autoScaler := NewDefaultAutoScaler(&mockMetricFetcherFactory{
+				mockMetricFetcher: mockMetricFetcher{metricsValue: tt.metricValue},
+			}, fake.NewClientBuilder().Build())
+
+			result, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
+				PodAutoscaler:   pa,
+				ScalingContext:  testScalingContext(t, &pa),
+				CurrentReplicas: tt.currentPods,
+				ReplicaState: ReplicaState{
+					ReadyReplicas:   tt.readyPods,
+					PendingReplicas: tt.pendingPods,
+				},
+				Pods: []corev1.Pod{
+					{ObjectMeta: metav1.ObjectMeta{Name: "ready-1"}},
+					{ObjectMeta: metav1.ObjectMeta{Name: "ready-2"}},
+				},
+				Timestamp: time.Now(),
+			})
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.True(t, result.PendingReplicaGuardActive)
+			assert.Equal(t, tt.wantReplicas, result.DesiredReplicas)
+		})
+	}
+}
+
 func testPodAutoscaler(strategy autoscalingv1alpha1.ScalingStrategyType) autoscalingv1alpha1.PodAutoscaler {
 	return autoscalingv1alpha1.PodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{
