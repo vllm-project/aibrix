@@ -435,6 +435,48 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			description: "10 × 0.75 / 0.6 = 12.5 still rounds up to 13",
 		},
 		{
+			name:            "float_error_does_not_add_a_pod_panic_window",
+			currentPodCount: 1.0,
+			context: &mockScalingContext{
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {TargetValue: 0.3, MetricType: autoscalingv1alpha1.POD},
+				},
+				UpFluctuationTolerance:   0.1,
+				DownFluctuationTolerance: 0.1,
+				MaxScaleUpRate:           10.0,
+				MaxScaleDownRate:         2.0,
+				StableValue:              2.1,
+				PanicValue:               2.1,
+				ActivationScale:          1,
+				PanicThreshold:           2.0,
+				MinReplicas:              0,
+				MaxReplicas:              100,
+			},
+			expected:    7,
+			description: "1 × 2.1 / 0.3 is 7.000000000000001 and puts the autoscaler in panic mode; the panic count must also be 7",
+		},
+		{
+			name:            "count_just_above_a_pod_still_rounds_up",
+			currentPodCount: 10.0,
+			context: &mockScalingContext{
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {TargetValue: 1.0, MetricType: autoscalingv1alpha1.POD},
+				},
+				UpFluctuationTolerance:   0.1,
+				DownFluctuationTolerance: 0.1,
+				MaxScaleUpRate:           2.0,
+				MaxScaleDownRate:         2.0,
+				StableValue:              1.20001,
+				PanicValue:               1.20001,
+				ActivationScale:          1,
+				PanicThreshold:           2.0,
+				MinReplicas:              0,
+				MaxReplicas:              100,
+			},
+			expected:    13,
+			description: "10 × 1.20001 / 1 = 12.0001 is a real fraction of a pod, far above the float error, and rounds up to 13",
+		},
+		{
 			name:            "external_total_at_upper_band_edge_holds",
 			currentPodCount: 4.0,
 			context: &mockScalingContext{
