@@ -178,10 +178,11 @@ func TestPDRouter_FailingPrefillPodEjectedDivertsTraffic(t *testing.T) {
 		ctx := hybridRequest(t, reqID, 4000, "")
 		_, err := r.Route(ctx, podList)
 		targetPrefill := ctx.RespHeaders[HeaderPrefillTargetPod]
-		if targetPrefill == "prefill-1" {
+		switch targetPrefill {
+		case "prefill-1":
 			prefill1Attempts++
 			assert.Error(t, err)
-		} else if targetPrefill == "prefill-0" {
+		case "prefill-0":
 			prefill0Successes++
 			assert.NoError(t, err)
 		}
