@@ -411,3 +411,30 @@ func TestStalePodStopsMatchingWithoutAnotherAdd(t *testing.T) {
 	matched, _ := cache.MatchPrefix(tokens, model, map[string]struct{}{recent: {}, stale: {}})
 	assert.Equal(t, map[string]int{recent: 100}, matched)
 }
+
+// TestPrefixHashTableRemovePrefix: removing a pod from prefix hashes clears its match.
+func TestPrefixHashTableRemovePrefix(t *testing.T) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+
+	cache := NewPrefixHashTable()
+	const model, pod1, pod2 = "m", "ns/pod-1", "ns/pod-2"
+	tokens := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	hashes := cache.GetPrefixHashes(tokens)
+
+	cache.AddPrefix(hashes, model, pod1)
+	cache.AddPrefix(hashes, model, pod2)
+
+	readyPods := map[string]struct{}{pod1: {}, pod2: {}}
+	matched, _ := cache.MatchPrefix(tokens, model, readyPods)
+	assert.Equal(t, 100, matched[pod1])
+	assert.Equal(t, 100, matched[pod2])
+
+	// Remove pod1
+	cache.RemovePrefix(hashes, model, pod1)
+
+	matchedAfter, _ := cache.MatchPrefix(tokens, model, readyPods)
+	assert.NotContains(t, matchedAfter, pod1)
+	assert.Equal(t, 100, matchedAfter[pod2])
+}

@@ -205,6 +205,9 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 
 			prefillResponse, err := e.executeHTTP(apiURL, asyncCtx, payload, prefillTimeout)
 			if err != nil {
+				if e.tracker != nil {
+					e.tracker.RecordPrefillFailure(prefillPodKey, time.Now())
+				}
 				// The prefill leg is fire-and-forget, so nobody is waiting on
 				// this error: record it on the leg (and abort the decode leg
 				// that will never receive its KV) before it is only logged.
@@ -248,6 +251,9 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 			}
 
 			e.correctDecodeCharge(requestID, prefillResponse)
+			if e.tracker != nil {
+				e.tracker.RecordPrefillSuccess(prefillPodKey)
+			}
 
 			// For SGLang the prefill pod only answers once the decode pod has
 			// taken the KV transfer, so from here on the decode pod owes the

@@ -257,6 +257,9 @@ Scoring formula: `score = (fairnessWeight * normFairness + utilizationWeight * n
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `AIBRIX_PREFILL_REQUEST_TIMEOUT` | int (seconds) | `30` | HTTP request timeout for prefill pod calls. |
+| `AIBRIX_PREFILL_CONSECUTIVE_FAILURE_THRESHOLD` | int | `5` | Number of consecutive prefill failures on a pod before it is temporarily ejected from routing. `0` disables ejection. |
+| `AIBRIX_PREFILL_FAILURE_BASE_BACKOFF_SECONDS` | int (seconds) | `10` | Initial ejection backoff duration for a prefill pod that reaches the consecutive failure threshold. |
+| `AIBRIX_PREFILL_FAILURE_MAX_BACKOFF_SECONDS` | int (seconds) | `60` | Maximum ejection backoff duration under exponential backoff for repeat prefill pod failures. |
 | `AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD` | int32 | `16` | Minimum (max − min) running-request spread across prefill pods to trigger load-imbalance routing. |
 | `AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD` | float64 | `16.0` | Minimum (max − min) running-request spread across decode pods to trigger load-imbalance routing. |
 | `AIBRIX_DECODE_THROUGHPUT_IMBALANCE_MIN_SPREAD` | float64 | `2048.0` | Minimum (max − min) token-throughput spread (tokens/s) across decode pods to trigger throughput-imbalance routing. |
