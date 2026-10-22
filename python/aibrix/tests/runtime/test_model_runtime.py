@@ -2996,3 +2996,64 @@ def test_resolve_model_path_passes_the_path_without_a_downloader(monkeypatch):
     assert runtime_module._resolve_model_path("s3://bucket/models/m") == (
         "bucket/models/m"
     )
+
+
+def test_resolve_model_path_raises_other_import_time_errors(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    class BrokenModule:
+        def __getattr__(self, name):
+            raise RuntimeError("downloader failed to initialize")
+
+    monkeypatch.setitem(sys.modules, "aibrix.downloader", BrokenModule())
+    with pytest.raises(RuntimeError):
+        runtime_module._resolve_model_path("s3://bucket/models/m")
+
+
+class _DownloadingLauncher(MockEngineLauncher):
+    """Resolves the artifact URL first, as SubprocessEngineLauncher does."""
+
+    def launch(self, inst, artifact_url, engine_config, additional_config):
+        import aibrix.runtime.model_runtime as runtime_module
+
+        runtime_module._resolve_model_path(artifact_url)
+        return super().launch(inst, artifact_url, engine_config, additional_config)
+
+
+def _fail_download(model_uri, *args, **kwargs):
+    raise PermissionError("403 Forbidden")
+
+
+def test_activate_fails_and_keeps_no_model_when_the_download_fails(monkeypatch):
+    import aibrix.downloader
+
+    agent = ModelRuntime(_DownloadingLauncher())
+    monkeypatch.setattr(aibrix.downloader, "download_model", _fail_download)
+    with pytest.raises(PermissionError):
+        agent.activate(model_name="m1", artifact_url="s3://bucket/models/m")
+    assert "m1" not in agent._models
+
+    monkeypatch.setattr(
+        aibrix.downloader, "download_model", lambda model_uri: "/models/m"
+    )
+    inst = agent.activate(model_name="m1", artifact_url="s3://bucket/models/m")
+    assert inst.phase == "active"
+    assert agent._launcher.launched == ["m1"]
+
+
+def test_restart_records_a_failed_download(monkeypatch):
+    import aibrix.downloader
+
+    agent = ModelRuntime(_DownloadingLauncher())
+    monkeypatch.setattr(
+        aibrix.downloader, "download_model", lambda model_uri: "/models/m"
+    )
+    inst = agent.activate(model_name="m1", artifact_url="s3://bucket/models/m")
+    inst.pid = None  # the old engine is gone; no process group to stop
+
+    monkeypatch.setattr(aibrix.downloader, "download_model", _fail_download)
+    agent._restart_instance(inst)
+    assert inst.phase == "restarting"
+    assert inst.restart_count == 1
+    assert inst.last_error == "restart launch failed: 403 Forbidden"
+    assert agent._launcher.launched == ["m1"]
