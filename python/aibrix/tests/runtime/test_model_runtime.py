@@ -2967,6 +2967,18 @@ def test_resolve_model_path_raises_download_errors(monkeypatch):
         runtime_module._resolve_model_path("s3://bucket/models/m")
 
 
+def test_resolve_model_path_raises_a_missing_backend_dependency(monkeypatch):
+    import aibrix.downloader
+    import aibrix.runtime.model_runtime as runtime_module
+
+    def fail(model_uri, *args, **kwargs):
+        raise ImportError("No module named 'boto3'")
+
+    monkeypatch.setattr(aibrix.downloader, "download_model", fail)
+    with pytest.raises(ImportError):
+        runtime_module._resolve_model_path("s3://bucket/models/m")
+
+
 def test_resolve_model_path_returns_the_downloaded_path(monkeypatch):
     import aibrix.downloader
     import aibrix.runtime.model_runtime as runtime_module
