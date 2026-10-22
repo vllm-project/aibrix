@@ -338,10 +338,34 @@ msgstr ""
 "上的注解设置。完整注解列表以及各策略的 YAML 示例见 :doc:`metric-based-autoscaling` 。"
 
 #: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:138
+msgid ""
+"If a ``PodAutoscaler`` was switched from ``HPA`` to ``KPA`` or ``APA`` before "
+"``spec.scalingStrategy`` became immutable, upgrading does not remove its old "
+"Kubernetes HPA, named ``<name>-hpa`` in the same namespace. That HPA can "
+"continue scaling the workload."
+msgstr ""
+"如果某个 ``PodAutoscaler`` 在 ``spec.scalingStrategy`` 改为不可变之前，已从 "
+"``HPA`` 切换到 ``KPA`` 或 ``APA``，升级不会删除其在同一命名空间内名为 "
+"``<name>-hpa`` 的旧 Kubernetes HPA。该 HPA 仍可能继续调节工作负载的副本数。"
+
+#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:143
+msgid ""
+"Before cleanup, confirm that the ``PodAutoscaler`` currently uses ``KPA`` or "
+"``APA`` and that the HPA's ``metadata.ownerReferences`` includes a controller "
+"reference with that ``PodAutoscaler``'s UID. Only then remove the leftover HPA: "
+"``kubectl delete hpa <name>-hpa -n <namespace>``. Here, ``<name>`` is the "
+"``PodAutoscaler`` name."
+msgstr ""
+"清理前，先确认该 ``PodAutoscaler`` 当前使用 ``KPA`` 或 ``APA``，且 HPA 的 "
+"``metadata.ownerReferences`` 中存在控制者引用，其 UID 与该 ``PodAutoscaler`` "
+"的 UID 相同。确认后，仅使用 ``kubectl delete hpa <name>-hpa -n <namespace>`` "
+"删除该遗留 HPA。这里的 ``<name>`` 指 ``PodAutoscaler`` 的名称。"
+
+#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:151
 msgid ":doc:`../../../designs/aibrix-autoscaler`"
 msgstr ":doc:`../../../designs/aibrix-autoscaler`"
 
-#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:139
+#: ../../source/features/scaling-performance/autoscaling/autoscaling.rst:152
 msgid "Internal design of the AIBrix autoscaler."
 msgstr "AIBrix 自动扩缩容器的内部设计。"
 

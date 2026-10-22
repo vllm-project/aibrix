@@ -133,6 +133,19 @@ Algorithm tunables that are not part of the spec, such as KPA's scale-down delay
 tolerance, are set through annotations on the ``PodAutoscaler``. The full annotation list and
 worked YAML examples for every strategy live in :doc:`metric-based-autoscaling`.
 
+.. note::
+
+   If a ``PodAutoscaler`` was switched from ``HPA`` to ``KPA`` or ``APA`` before
+   ``spec.scalingStrategy`` became immutable, upgrading does not remove its old
+   Kubernetes HPA, named ``<name>-hpa`` in the same namespace. That HPA can
+   continue scaling the workload.
+
+   Before cleanup, confirm that the ``PodAutoscaler`` currently uses ``KPA`` or
+   ``APA`` and that the HPA's ``metadata.ownerReferences`` includes a controller
+   reference with that ``PodAutoscaler``'s UID. Only then remove the leftover HPA:
+   ``kubectl delete hpa <name>-hpa -n <namespace>``. Here, ``<name>`` is the
+   ``PodAutoscaler`` name.
+
 .. seealso::
 
    :doc:`../../../designs/aibrix-autoscaler`
