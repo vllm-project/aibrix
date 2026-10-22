@@ -19,11 +19,36 @@ package pd
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
+
+const (
+	// DefaultPrefillConsecutiveFailureThreshold is the default number of consecutive
+	// prefill failures that triggers pod ejection.
+	DefaultPrefillConsecutiveFailureThreshold = 5
+
+	// DefaultPrefillFailureBaseBackoff is the default initial ejection duration.
+	DefaultPrefillFailureBaseBackoff = 10 * time.Second
+
+	// DefaultPrefillFailureMaxBackoff is the maximum ejection duration under exponential backoff.
+	DefaultPrefillFailureMaxBackoff = 60 * time.Second
+)
+
+var (
+	envPrefillConsecutiveFailureThreshold = utils.LoadEnvInt("AIBRIX_PREFILL_CONSECUTIVE_FAILURE_THRESHOLD", DefaultPrefillConsecutiveFailureThreshold)
+	envPrefillFailureBaseBackoffSeconds   = utils.LoadEnvInt("AIBRIX_PREFILL_FAILURE_BASE_BACKOFF_SECONDS", int(DefaultPrefillFailureBaseBackoff/time.Second))
+	envPrefillFailureMaxBackoffSeconds    = utils.LoadEnvInt("AIBRIX_PREFILL_FAILURE_MAX_BACKOFF_SECONDS", int(DefaultPrefillFailureMaxBackoff/time.Second))
+)
+
+type prefillFailureState struct {
+	consecutiveFailures int
+	ejectionCount       int
+	ejectedUntil        time.Time
+}
 
 // PrefillRequestTracker tracks the number of active prefill requests per pod.
 // It is used by the prefill scorer to avoid routing new requests to pods that
@@ -36,15 +61,181 @@ import (
 //
 // All methods are safe for concurrent use.
 type PrefillRequestTracker struct {
-	// podRequestCounts maps pod key → active prefill request count.
+	// podRequestCounts maps pod key -> active prefill request count.
 	podRequestCounts sync.Map // map[string]*atomic.Int32
-	// requestToPod maps request ID → pod key for O(1) cleanup in RemovePrefillRequest.
+	// requestToPod maps request ID -> pod key for O(1) cleanup in RemovePrefillRequest.
 	requestToPod sync.Map // map[string]string
+
+	failureMu                   sync.RWMutex
+	podFailures                 map[string]*prefillFailureState
+	consecutiveFailureThreshold int
+	baseBackoff                 time.Duration
+	maxBackoff                  time.Duration
 }
 
 // NewPrefillRequestTracker creates a new, empty PrefillRequestTracker.
 func NewPrefillRequestTracker() *PrefillRequestTracker {
-	return &PrefillRequestTracker{}
+	baseBackoff := time.Duration(envPrefillFailureBaseBackoffSeconds) * time.Second
+	if baseBackoff <= 0 {
+		baseBackoff = DefaultPrefillFailureBaseBackoff
+	}
+	maxBackoff := time.Duration(envPrefillFailureMaxBackoffSeconds) * time.Second
+	if maxBackoff <= 0 {
+		maxBackoff = DefaultPrefillFailureMaxBackoff
+	}
+	return &PrefillRequestTracker{
+		podFailures:                 make(map[string]*prefillFailureState),
+		consecutiveFailureThreshold: envPrefillConsecutiveFailureThreshold,
+		baseBackoff:                 baseBackoff,
+		maxBackoff:                  maxBackoff,
+	}
+}
+
+// SetFailureEjectionConfig configures consecutive failure threshold and backoff durations.
+func (t *PrefillRequestTracker) SetFailureEjectionConfig(threshold int, baseBackoff, maxBackoff time.Duration) {
+	if t == nil {
+		return
+	}
+	t.failureMu.Lock()
+	defer t.failureMu.Unlock()
+	t.consecutiveFailureThreshold = threshold
+	t.baseBackoff = baseBackoff
+	t.maxBackoff = maxBackoff
+}
+
+// RecordPrefillFailure records a failed prefill attempt for podKey. If consecutive failures
+// reach the threshold, the pod is ejected until now + backoff.
+func (t *PrefillRequestTracker) RecordPrefillFailure(podKey string, now time.Time) {
+	if t == nil {
+		return
+	}
+	t.failureMu.Lock()
+	defer t.failureMu.Unlock()
+
+	threshold := t.consecutiveFailureThreshold
+	if threshold <= 0 {
+		return
+	}
+	if t.podFailures == nil {
+		t.podFailures = make(map[string]*prefillFailureState)
+	}
+	state, exists := t.podFailures[podKey]
+	if !exists {
+		state = &prefillFailureState{}
+		t.podFailures[podKey] = state
+	}
+	state.consecutiveFailures++
+	if state.consecutiveFailures >= threshold {
+		state.ejectionCount++
+		base := t.baseBackoff
+		if base <= 0 {
+			base = DefaultPrefillFailureBaseBackoff
+		}
+		maxB := t.maxBackoff
+		if maxB <= 0 {
+			maxB = DefaultPrefillFailureMaxBackoff
+		}
+		backoff := base
+		if state.ejectionCount > 1 {
+			multiplier := 1 << (state.ejectionCount - 1)
+			backoff = time.Duration(multiplier) * base
+			if backoff > maxB || backoff <= 0 {
+				backoff = maxB
+			}
+		}
+		state.ejectedUntil = now.Add(backoff)
+		klog.Warningf("prefill pod %s ejected after %d consecutive failures (ejection %d, backoff %s until %s)",
+			podKey, state.consecutiveFailures, state.ejectionCount, backoff, state.ejectedUntil)
+	}
+}
+
+// RecordPrefillSuccess records a successful prefill for podKey, resetting its failure and ejection state.
+func (t *PrefillRequestTracker) RecordPrefillSuccess(podKey string) {
+	if t == nil {
+		return
+	}
+	t.failureMu.Lock()
+	defer t.failureMu.Unlock()
+
+	if t.podFailures == nil {
+		return
+	}
+	state, exists := t.podFailures[podKey]
+	if !exists {
+		return
+	}
+	if state.consecutiveFailures > 0 || state.ejectionCount > 0 {
+		klog.InfoS("prefill_pod_recovered", "pod", podKey,
+			"previous_failures", state.consecutiveFailures,
+			"previous_ejections", state.ejectionCount)
+		state.consecutiveFailures = 0
+		state.ejectionCount = 0
+		state.ejectedUntil = time.Time{}
+	}
+}
+
+// IsPrefillPodEjected reports whether the pod is currently ejected at time now.
+func (t *PrefillRequestTracker) IsPrefillPodEjected(podKey string, now time.Time) bool {
+	if t == nil {
+		return false
+	}
+	t.failureMu.RLock()
+	defer t.failureMu.RUnlock()
+
+	if t.consecutiveFailureThreshold <= 0 || t.podFailures == nil {
+		return false
+	}
+	state, exists := t.podFailures[podKey]
+	if !exists {
+		return false
+	}
+	return state.ejectedUntil.After(now)
+}
+
+// FilterEligiblePrefillPods returns candidate prefill pods excluding ejected ones.
+// If all candidate pods would be ejected, it returns all pods to preserve availability.
+func (t *PrefillRequestTracker) FilterEligiblePrefillPods(pods []*v1.Pod, now time.Time) []*v1.Pod {
+	if t == nil || len(pods) <= 1 {
+		return pods
+	}
+	t.failureMu.RLock()
+	defer t.failureMu.RUnlock()
+
+	if t.consecutiveFailureThreshold <= 0 || t.podFailures == nil {
+		return pods
+	}
+
+	eligible := make([]*v1.Pod, 0, len(pods))
+	for _, pod := range pods {
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		state, exists := t.podFailures[podKey]
+		if !exists || !state.ejectedUntil.After(now) {
+			eligible = append(eligible, pod)
+		}
+	}
+	if len(eligible) == 0 {
+		// All candidate pods are currently ejected; do not eject 100% of the fleet.
+		return pods
+	}
+	return eligible
+}
+
+// GetPrefillPodFailureState returns (consecutiveFailures, ejectionCount, isEjected) for podKey.
+func (t *PrefillRequestTracker) GetPrefillPodFailureState(podKey string, now time.Time) (int, int, bool) {
+	if t == nil {
+		return 0, 0, false
+	}
+	t.failureMu.RLock()
+	defer t.failureMu.RUnlock()
+
+	if t.podFailures == nil {
+		return 0, 0, false
+	}
+	state, exists := t.podFailures[podKey]
+	if !exists {
+		return 0, 0, false
+	}
+	return state.consecutiveFailures, state.ejectionCount, state.ejectedUntil.After(now)
 }
 
 // AddPrefillRequest records that requestID has been assigned to the pod

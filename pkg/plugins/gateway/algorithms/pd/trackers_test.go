@@ -18,6 +18,7 @@ package pd
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -49,4 +50,70 @@ func TestRequestTrackers_SameNameInTwoNamespaces(t *testing.T) {
 	assert.Equal(t, float64(0), pending.GetPendingDecodeCount(keyB))
 	pending.RemovePendingDecode("req-1")
 	assert.Equal(t, float64(0), pending.GetPendingDecodeCount(keyA))
+}
+
+func TestPrefillRequestTracker_FailureEjectionAndRecovery(t *testing.T) {
+	podA := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-0", Namespace: "default"}}
+	podB := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-1", Namespace: "default"}}
+	keyA := utils.GeneratePodKey(podA.Namespace, podA.Name)
+	keyB := utils.GeneratePodKey(podB.Namespace, podB.Name)
+
+	now := time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	tracker := NewPrefillRequestTracker()
+	tracker.SetFailureEjectionConfig(3, 10*time.Second, 60*time.Second)
+
+	// Initially neither pod is ejected
+	assert.False(t, tracker.IsPrefillPodEjected(keyA, now))
+	assert.False(t, tracker.IsPrefillPodEjected(keyB, now))
+	assert.Equal(t, []*v1.Pod{podA, podB}, tracker.FilterEligiblePrefillPods([]*v1.Pod{podA, podB}, now))
+
+	// Pod A fails 2 times (below threshold 3)
+	tracker.RecordPrefillFailure(keyA, now)
+	tracker.RecordPrefillFailure(keyA, now)
+	fails, ejections, ejected := tracker.GetPrefillPodFailureState(keyA, now)
+	assert.Equal(t, 2, fails)
+	assert.Equal(t, 0, ejections)
+	assert.False(t, ejected)
+
+	// Pod A fails 3rd time -> triggers ejection
+	tracker.RecordPrefillFailure(keyA, now)
+	fails, ejections, ejected = tracker.GetPrefillPodFailureState(keyA, now)
+	assert.Equal(t, 3, fails)
+	assert.Equal(t, 1, ejections)
+	assert.True(t, ejected)
+	assert.True(t, tracker.IsPrefillPodEjected(keyA, now))
+
+	// While Pod A is ejected, FilterEligiblePrefillPods returns only Pod B
+	assert.Equal(t, []*v1.Pod{podB}, tracker.FilterEligiblePrefillPods([]*v1.Pod{podA, podB}, now))
+
+	// Pod B also fails 3 times -> both pods now ejected
+	tracker.RecordPrefillFailure(keyB, now)
+	tracker.RecordPrefillFailure(keyB, now)
+	tracker.RecordPrefillFailure(keyB, now)
+	assert.True(t, tracker.IsPrefillPodEjected(keyB, now))
+
+	// Safety property: when all candidate pods are ejected, do not eject 100% of fleet
+	assert.Equal(t, []*v1.Pod{podA, podB}, tracker.FilterEligiblePrefillPods([]*v1.Pod{podA, podB}, now))
+
+	// After base backoff (10s), Pod A is no longer ejected
+	afterBackoff := now.Add(11 * time.Second)
+	assert.False(t, tracker.IsPrefillPodEjected(keyA, afterBackoff))
+	assert.False(t, tracker.IsPrefillPodEjected(keyB, afterBackoff))
+
+	// Pod A fails again -> repeat ejection gets 2x backoff (20s)
+	tracker.RecordPrefillFailure(keyA, afterBackoff)
+	_, ejections, ejected = tracker.GetPrefillPodFailureState(keyA, afterBackoff)
+	assert.Equal(t, 2, ejections)
+	assert.True(t, ejected)
+	// Still ejected at +15s (26s total)
+	assert.True(t, tracker.IsPrefillPodEjected(keyA, afterBackoff.Add(15*time.Second)))
+	// Recovered after 20s backoff (at 32s total)
+	assert.False(t, tracker.IsPrefillPodEjected(keyA, afterBackoff.Add(21*time.Second)))
+
+	// Success clears failure and ejection state
+	tracker.RecordPrefillSuccess(keyA)
+	fails, ejections, ejected = tracker.GetPrefillPodFailureState(keyA, afterBackoff)
+	assert.Equal(t, 0, fails)
+	assert.Equal(t, 0, ejections)
+	assert.False(t, ejected)
 }
