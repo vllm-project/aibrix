@@ -19,6 +19,8 @@ package router
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -96,4 +98,20 @@ func TestPrefillLoadCap(t *testing.T) {
 	// A factor below 1 is raised to 1, so the cap stays above the mean and the
 	// least-loaded pod can never be skipped.
 	assert.Equal(t, 4.0, prefillLoadCap(3, 0.5))
+}
+
+// The factor is read from the environment once at package init, so the wiring is
+// checked in a child test binary started with the variable set.
+func TestPrefillLoadCapFactorReadFromEnv(t *testing.T) {
+	if os.Getenv("AIBRIX_TEST_PREFILL_LOAD_CAP_CHILD") == "1" {
+		assert.Equal(t, 3.0, aibrixPrefillLoadCapFactor)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestPrefillLoadCapFactorReadFromEnv$")
+	cmd.Env = append(os.Environ(),
+		"AIBRIX_TEST_PREFILL_LOAD_CAP_CHILD=1",
+		"AIBRIX_PREFILL_LOAD_CAP_FACTOR=3",
+	)
+	out, err := cmd.CombinedOutput()
+	assert.NoError(t, err, "child test failed:\n%s", out)
 }

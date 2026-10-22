@@ -161,6 +161,8 @@ scorePrefillPods()              (per roleset, best pod wins)
   ┌──────────────────────────────────────────────────────────────────┐
   │  Skip pods with req_count > mean + N * stddev                    │
   │  (N = AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR)            │
+  │  Skip pods with req_count > max(c, 1) * (mean + 1)               │
+  │  (c = AIBRIX_PREFILL_LOAD_CAP_FACTOR)                            │
   │  When all pods in a roleset are filtered, that roleset has no    │
   │  entry in the output map and finalPDScore cannot select it.      │
   │                                                                  │
@@ -204,7 +206,7 @@ finalPDScore()
   │  Errors:                                                         │
   │  • prefillScores nil          → Prepare failed in scorer         │
   │  • prefillScores empty        → all prefill pods filtered by     │
-  │                                 stddev (no eligible candidate)   │
+  │                                 stddev or cap (no candidate)     │
   │  • no roleset intersection    → load-imbalance alignment left    │
   │                                 prefill/decode on different sets │
   └──────────────────────────────────────────────────────────────────┘
@@ -576,7 +578,7 @@ chunks.
 
 ### PrefillRequestTracker
 
-Tracks active **prefill** request counts per pod using `sync.Map` and `atomic.Int32`. Used by both prefill load-imbalance detection and `scorePrefillPods` (mean/stddev filter).
+Tracks active **prefill** request counts per pod using `sync.Map` and `atomic.Int32`. Used by both prefill load-imbalance detection and `scorePrefillPods` (mean/stddev filter and load cap).
 
 Both request trackers are shared by every model the router serves, so pods are identified by their pod key, `namespace/name` (`utils.GeneratePodKey(pod.Namespace, pod.Name)`), not by bare pod name.
 
@@ -717,6 +719,7 @@ Metrics: `pd_bucket_serve_band_total` and `pd_bucket_serve_prompt_tokens_total` 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD` | `16` | Min `(max − min)` outstanding prefill request count to trigger imbalance routing |
+| `AIBRIX_PREFILL_LOAD_CAP_FACTOR` | `1.5` | Factor `c`: prefill pods with `req_count > max(c, 1) * (mean + 1)` are skipped from per-roleset selection. Unlike the stddev skip, it fires in pools of five or fewer pods. Environment-only |
 
 ### Decode Load Balancing
 

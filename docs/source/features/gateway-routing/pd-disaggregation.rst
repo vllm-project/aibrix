@@ -877,7 +877,7 @@ These are set on the **gateway plugin** deployment.
      - Minimum request-count spread between prefill pods before load-imbalance routing kicks in.
    * - ``AIBRIX_PREFILL_LOAD_CAP_FACTOR``
      - ``1.5``
-     - Prefill pods with more than ``c × (mean + 1)`` in-flight prefill requests are skipped, where ``c`` is this factor. A factor below ``1`` is treated as ``1``. Lower values give up more prefix-cache affinity: with random (Poisson) load and no hot pod, ``1.5`` skips at least one pod on up to about 10% of requests with 4 prefill pods and about 20% with 6. ``2`` skips less often but cannot fire in a two-pod pool.
+     - Prefill pods with more than ``c × (mean + 1)`` in-flight prefill requests are skipped, where ``c`` is this factor. A factor between ``0`` and ``1`` is treated as ``1``; ``0``, negative or unparsable values use the default ``1.5``. To effectively disable the cap, set a large value such as ``100``. Lower values give up more prefix-cache affinity: with random (Poisson) load and no hot pod, ``1.5`` skips at least one pod on up to about 10% of requests with 4 prefill pods and about 20% with 6. ``2`` skips less often but cannot fire in a two-pod pool.
    * - ``AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD``
      - ``16``
      - Minimum ``(max − min)`` running request count spread between decode pods before request-count load-imbalance routing kicks in.
