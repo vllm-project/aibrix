@@ -243,6 +243,9 @@ func applyRampAdjustment(c cache.Cache, now time.Time, readyPods []*v1.Pod, coun
 func (r *LeastRequestTopKRouter) eligibleLeastLoaded(readyPods []*v1.Pod) (eligible []*v1.Pod, counts map[string]int, minCount int) {
 	counts = routeutil.GetRequestCounts(r.cache, readyPods)
 	counts = applyRampAdjustment(r.cache, r.now(), readyPods, counts)
+	if len(readyPods) == 0 {
+		return nil, counts, 0
+	}
 
 	candidates := make([]rankedPod, len(readyPods))
 	for i, pod := range readyPods {

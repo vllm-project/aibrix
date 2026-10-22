@@ -852,3 +852,13 @@ func TestLowestCountsStable_MatchesStableSortPrefix(t *testing.T) {
 		}
 	}
 }
+
+// ScoreAll on an empty pod list returns empty results instead of panicking on the first rank.
+func TestLeastRequestTopKScoreAll_EmptyPodList(t *testing.T) {
+	r := NewLeastRequestTopKRouterWithCache(cache.NewWithPodsMetricsForTest(nil, testModelName, nil))
+	ctx := types.NewRoutingContext(context.Background(), RouterLeastRequestTopK, testModelName, "", "req", "")
+	scores, scored, err := r.ScoreAll(ctx, &utils.PodArray{})
+	require.NoError(t, err)
+	assert.Empty(t, scores)
+	assert.Empty(t, scored)
+}

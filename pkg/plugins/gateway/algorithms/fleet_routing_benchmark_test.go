@@ -21,6 +21,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -109,7 +110,11 @@ func silenceKlog(b *testing.B) {
 	_ = fs.Set("alsologtostderr", "false")
 	_ = fs.Set("stderrthreshold", "FATAL")
 	klog.SetOutput(io.Discard)
-	b.Cleanup(func() { _ = fs.Set("logtostderr", "true") })
+	b.Cleanup(func() {
+		_ = fs.Set("logtostderr", "true")
+		_ = fs.Set("stderrthreshold", "ERROR")
+		klog.SetOutput(os.Stderr)
+	})
 }
 
 func benchmarkFleetRouting(b *testing.B, k int, shuffle bool) {
