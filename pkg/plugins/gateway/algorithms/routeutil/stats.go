@@ -52,6 +52,12 @@ func StandardDeviation(numbers []float64) float64 {
 // n; a factor of 1.5 reaches two-pod pools. The +1 keeps an idle pool from
 // rejecting its first request, and a factor below 1 is raised to 1 so the cap
 // stays above the mean and the least-loaded pod is never skipped.
+//
+// A NaN factor disables the cap, so the two callers, which compare in opposite
+// directions, agree on it.
 func LoadCap(mean, factor float64) float64 {
+	if math.IsNaN(factor) {
+		return math.Inf(1)
+	}
 	return math.Max(factor, 1) * (mean + 1)
 }

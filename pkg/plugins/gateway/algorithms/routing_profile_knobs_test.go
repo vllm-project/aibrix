@@ -483,7 +483,9 @@ func TestPrefixCacheSigmaKnobControlsCandidateFiltering(t *testing.T) {
 	// Counts are now [1,1,1,4]: p4 holds the prefix but sits 1.5 deviations above
 	// the pool mean, so the sigma of the request decides its candidacy. It stays
 	// under the bounded-load cap, 1.5×(1.75+1) = 4.125, which would skip a busier p4
-	// whatever the sigma.
+	// whatever the sigma. The 1.5 is the prefixcache package default
+	// (AIBRIX_PREFIX_CACHE_LOAD_CAP_FACTOR), which this package cannot override, so
+	// changing that default may need a new count here.
 	bump("p4", 4)
 
 	wide := types.NewRoutingContext(context.Background(), RouterPrefixCache, model, "abcdefgh", "req-wide", "")

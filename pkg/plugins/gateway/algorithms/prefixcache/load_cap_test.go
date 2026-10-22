@@ -44,7 +44,7 @@ func hotPodChosen(t *testing.T, counts []int) bool {
 	}
 	matchedPods["default/pod-0"] = 100
 	pod := getTargetPodFromMatchedPodsFromCounts(podRequestCount, pods, matchedPods, 2)
-	require.NotNil(t, pod, "the least-loaded matched pod is never skipped")
+	require.NotNil(t, pod, "every pod is matched here, so the least-loaded one is never skipped")
 	return pod.Name == "pod-0"
 }
 

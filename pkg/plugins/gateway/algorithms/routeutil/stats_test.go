@@ -17,6 +17,7 @@ limitations under the License.
 package routeutil
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -28,4 +29,5 @@ func TestLoadCap(t *testing.T) {
 	// A factor below 1 is raised to 1, so the cap stays above the mean and the
 	// least-loaded pod can never be skipped.
 	assert.Equal(t, 4.0, LoadCap(3, 0.5))
+	assert.True(t, math.IsInf(LoadCap(3, math.NaN()), 1), "a NaN factor disables the cap")
 }
