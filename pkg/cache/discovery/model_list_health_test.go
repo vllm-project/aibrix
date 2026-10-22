@@ -181,17 +181,18 @@ func TestListPodVersionsUsesCompletePaginatedSnapshot(t *testing.T) {
 	pages := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		pages++
+		assert.Equal(t, "/api/v1/namespaces/workloads/pods", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		list := &v1.PodList{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PodList"}}
 		switch r.URL.Query().Get("continue") {
 		case "":
 			list.Continue = "next"
 			list.Items = []v1.Pod{{ObjectMeta: metav1.ObjectMeta{
-				Namespace: "one", Name: "pod", UID: "first", ResourceVersion: "1",
+				Namespace: "workloads", Name: "pod-one", UID: "first", ResourceVersion: "1",
 			}}}
 		case "next":
 			list.Items = []v1.Pod{{ObjectMeta: metav1.ObjectMeta{
-				Namespace: "two", Name: "pod", UID: "second", ResourceVersion: "2",
+				Namespace: "workloads", Name: "pod-two", UID: "second", ResourceVersion: "2",
 			}}}
 		default:
 			http.Error(w, "unexpected continuation", http.StatusBadRequest)
@@ -202,12 +203,12 @@ func TestListPodVersionsUsesCompletePaginatedSnapshot(t *testing.T) {
 	defer server.Close()
 	client, err := kubernetes.NewForConfig(&rest.Config{Host: server.URL})
 	require.NoError(t, err)
-	versions, err := listPodVersions(context.Background(), client)
+	versions, err := listPodVersions(context.Background(), client, "workloads")
 	require.NoError(t, err)
 	assert.Equal(t, 2, pages)
 	assert.Equal(t, map[string]objectVersion{
-		"one/pod": {uid: "first", resourceVersion: "1"},
-		"two/pod": {uid: "second", resourceVersion: "2"},
+		"workloads/pod-one": {uid: "first", resourceVersion: "1"},
+		"workloads/pod-two": {uid: "second", resourceVersion: "2"},
 	}, versions)
 }
 

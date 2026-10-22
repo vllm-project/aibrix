@@ -65,18 +65,21 @@ func TestHandleListModelsVerificationFailure(t *testing.T) {
 }
 
 func TestModelListGateDuringInitialDiscovery(t *testing.T) {
-	gate := &ModelListGate{}
-	request := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	response := httptest.NewRecorder()
-	gate.handleListModels(response, request)
-	require.Equal(t, http.StatusServiceUnavailable, response.Code)
-	assert.JSONEq(t, `{"error":{"message":"model discovery is unavailable","type":"overloaded_error","code":"service_unavailable","param":null}}`, response.Body.String())
-
-	gate.SetServer(NewServerWithOptions(nil, nil, nil, ServerOptions{Cache: cache.NewForTest()}))
-	response = httptest.NewRecorder()
-	gate.handleListModels(response, request)
-	require.Equal(t, http.StatusOK, response.Code)
-	assert.JSONEq(t, `{"object":"list","data":[]}`, response.Body.String())
+	for _, path := range []string{"/v1/models", "/v1/models/"} {
+		t.Run(path, func(t *testing.T) {
+			gate := &ModelListGate{}
+			handler := modelListHTTPHandler(gate.handleListModels)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+			require.Equal(t, http.StatusServiceUnavailable, response.Code)
+			assert.JSONEq(t, `{"error":{"message":"model discovery is unavailable","type":"overloaded_error","code":"service_unavailable","param":null}}`, response.Body.String())
+			gate.SetServer(NewServerWithOptions(nil, nil, nil, ServerOptions{Cache: cache.NewForTest()}))
+			response = httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+			require.Equal(t, http.StatusOK, response.Code)
+			assert.JSONEq(t, `{"object":"list","data":[]}`, response.Body.String())
+		})
+	}
 }
 
 func TestHandleListModelsMode(t *testing.T) {

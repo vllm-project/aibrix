@@ -25,6 +25,7 @@ patches:
           containers:
             - name: gateway-plugin
               args:
+                - --installation-namespace=$(POD_NAMESPACE)
                 - -v=5
               env:
                 - name: AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS

@@ -62,12 +62,13 @@ const (
 )
 
 var (
-	grpcAddr        string
-	httpAddr        string
-	metricsAddr     string // deprecated: use httpAddr
-	standalone      bool
-	endpointsConfig string
-	pprofAddr       string
+	grpcAddr              string
+	httpAddr              string
+	metricsAddr           string // deprecated: use httpAddr
+	standalone            bool
+	endpointsConfig       string
+	installationNamespace string
+	pprofAddr             string
 )
 
 type kubeAPIOptions struct {
@@ -103,8 +104,8 @@ func (o modelDiscoveryOptions) validate() error {
 	return nil
 }
 
-func (o modelDiscoveryOptions) kubernetesProvider(config *rest.Config) *discovery.KubernetesProvider {
-	provider := discovery.NewKubernetesProvider(config).WithModelAdapters(o.watchModelAdapters)
+func (o modelDiscoveryOptions) kubernetesProvider(config *rest.Config, namespace string) *discovery.KubernetesProvider {
+	provider := discovery.NewKubernetesProvider(config, namespace).WithModelAdapters(o.watchModelAdapters)
 	if o.watchModelClaims {
 		provider = provider.WithModelClaims()
 	}
@@ -176,6 +177,8 @@ func main() {
 		"The address the pprof debug server binds to. Empty disables it.")
 	flag.StringVar(&endpointsConfig, "endpoints-config", "",
 		"Path to endpoints config file (required in standalone mode).")
+	flag.StringVar(&installationNamespace, "installation-namespace", "",
+		"Namespace containing model workloads (required in Kubernetes mode).")
 	klog.InitFlags(flag.CommandLine)
 	defer klog.Flush()
 	flag.Parse()
@@ -199,6 +202,12 @@ func main() {
 	// Validate standalone mode flags
 	if standalone && endpointsConfig == "" {
 		klog.Fatal("--endpoints-config is required when running in standalone mode")
+	}
+
+	if !standalone {
+		if err := discovery.ValidateNamespace(installationNamespace); err != nil {
+			klog.Fatalf("Invalid --installation-namespace: %v", err)
+		}
 	}
 
 	redisClient := utils.GetRedisClient()
@@ -259,7 +268,7 @@ func main() {
 		if err != nil {
 			klog.Fatalf("Error on creating gateway k8s client: %v", err)
 		}
-		discoveryProvider = modelDiscovery.kubernetesProvider(config)
+		discoveryProvider = modelDiscovery.kubernetesProvider(config, installationNamespace)
 	}
 	modelListGate, err := startEarlyModelListGate(modelDiscovery.maxAge > 0, httpAddr)
 	if err != nil {
@@ -272,6 +281,7 @@ func main() {
 	remoteTokenizerEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheUseRemoteTokenizer, false)
 
 	cache.InitWithOptions(config, stopCh, cache.InitOptions{
+		InstallationNamespace:        installationNamespace,
 		IsGateway:                    true,
 		EnableKVSync:                 kvSyncEnabled && remoteTokenizerEnabled,
 		RedisClient:                  redisClient,

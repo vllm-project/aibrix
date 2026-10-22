@@ -77,7 +77,8 @@ spec:
           # Optional API server client throttling (client-go defaults shown).
           # Both values must be greater than zero and apply to the core
           # Kubernetes and Gateway API clients, each with its own limiter.
-          # args:
+          args:
+            - {{ printf "--installation-namespace=%s" (include "aibrix.gatewayPlugin.installationNamespace" .) | quote }}
           #   - --kube-api-qps=5
           #   - --kube-api-burst=10
           ports:

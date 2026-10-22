@@ -97,6 +97,13 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/models
+      backendRefs:
+        - group: ''
+          kind: Service
+          name: {{ include "aibrix.fullname" . }}-gateway-plugins
+          port: 8080
+          weight: 1
+    - matches:
         - path:
             type: PathPrefix
             value: /v1/files

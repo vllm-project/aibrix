@@ -264,16 +264,6 @@ msgstr ""
 "在引擎列中， *取决于模型* 表示仅当模型支持相应任务时，引擎才提供该端点； *不支持* 表示根据引擎的上游文档，引擎不提供该端点。部分 "
 "AIBrix 条目需要补充说明："
 
-#: ../../source/features/gateway-routing/omni.rst:123
-msgid ""
-"``GET /v1/models`` is answered by AIBrix's metadata service from the "
-"models it discovers (pod labels and ``ModelAdapter`` resources) instead "
-"of being forwarded to an engine, so it lists every model AIBrix knows "
-"about, whichever engine serves it."
-msgstr ""
-"``GET /v1/models`` 由 AIBrix 的元数据服务根据其发现的模型（Pod 标签和 ``ModelAdapter`` "
-"资源）直接应答，而不是转发给引擎，因此它会列出 AIBrix 已知的所有模型，无论由哪种引擎提供服务。"
-
 #: ../../source/features/gateway-routing/omni.rst:124
 msgid ""
 "``POST /v1/chat/completions/batch`` is routed like a chat completion, and"
@@ -461,3 +451,12 @@ msgstr "网关路由、用于任务归属的 ``user`` 头，以及消息大小�
 #~ "(``model`` is required):"
 #~ msgstr "**列出某模型的全部任务** ，而不是按 ID 轮询单个任务（``model`` 必填）："
 
+#: ../../source/features/gateway-routing/omni.rst:123
+msgid ""
+"``GET /v1/models`` is answered by the gateway from its routing cache in the "
+"configured installation namespace, whichever engine serves the model. The "
+"default ``known`` mode lists every cached model name; ``ready-pods`` limits "
+"the list to models with eligible Pods."
+msgstr ""
+"无论模型使用哪种引擎，``GET /v1/models`` 都由网关根据所配置安装命名空间中的路由缓存返回结果。默认的 ``known`` "
+"模式列出所有缓存的模型名称；``ready-pods`` 模式仅列出具有符合条件的 Pod 的模型。"

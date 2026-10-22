@@ -6,6 +6,48 @@ resources:
 - gateway/external-router.yaml
 
 patches:
+# E2E workloads live in default; the control plane stays in aibrix-system.
+# Keep discovery and its RBAC restricted to that single workload namespace.
+- patch: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: aibrix-gateway-plugins
+      namespace: aibrix-system
+    spec:
+      template:
+        spec:
+          containers:
+          - name: gateway-plugin
+            args:
+            - --installation-namespace=default
+- target:
+    kind: Role
+    name: aibrix-gateway-plugins-role
+  patch: |
+    - op: replace
+      path: /metadata/namespace
+      value: default
+- target:
+    kind: RoleBinding
+    name: aibrix-gateway-plugins-rolebinding
+  patch: |
+    - op: replace
+      path: /metadata/namespace
+      value: default
+    - op: replace
+      path: /subjects
+      value:
+      - kind: ServiceAccount
+        name: aibrix-gateway-plugins
+        namespace: aibrix-system
+- target:
+    kind: ClusterRole
+    name: aibrix-gateway-namespace-reader
+  patch: |
+    - op: replace
+      path: /rules/0/resourceNames
+      value: [default]
 - path: gateway/vtc-test-env-patch.yaml
   target:
     kind: Deployment

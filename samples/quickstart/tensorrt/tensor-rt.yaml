@@ -1,6 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  namespace: aibrix-system
   name: qwen-tensorrt-llm
   labels:
     app: qwen-llm
@@ -62,6 +63,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
+  namespace: aibrix-system
   name: qwen-llm-service
 spec:
   selector:

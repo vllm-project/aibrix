@@ -46,6 +46,10 @@ var (
 
 // InitOptions configures the cache initialization behavior
 type InitOptions struct {
+	// InstallationNamespace is required for Kubernetes gateway discovery.
+	// It is ignored when a non-Kubernetes DiscoveryProvider is supplied.
+	InstallationNamespace string
+
 	// IsGateway marks the caller as the gateway-plugins service.
 	IsGateway bool
 
@@ -401,6 +405,38 @@ func InitForTest() *Store {
 //
 //	*Store: Pointer to initialized store instance
 func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptions) *Store {
+	provider := opts.DiscoveryProvider
+	if provider == nil {
+		selected := discovery.NewKubernetesProvider(config, opts.InstallationNamespace)
+		if opts.IsGateway {
+			selected.WithModelClaims()
+		}
+		provider = selected
+	}
+	if opts.ModelListMaxAge > 0 {
+		switch selected := provider.(type) {
+		case *discovery.KubernetesProvider:
+			selected.WithModelListHealth(opts.ModelListMaxAge)
+		case *discovery.StaticProvider:
+			// Static discovery has no continuing watch after its file is loaded.
+		default:
+			klog.Fatalf("Model-list verification is unsupported by discovery provider %q", provider.Type())
+		}
+	}
+	return initWithDiscovery(config, stopCh, opts, func(st *Store) error {
+		return initDiscoveryProvider(st, provider, stopCh)
+	})
+}
+
+// InitForController initializes the controller-manager's cluster-wide scheduling
+// cache. Controller reconciliation scope is independent of gateway discovery.
+func InitForController(config *rest.Config, stopCh <-chan struct{}) *Store {
+	return initWithDiscovery(config, stopCh, InitOptions{}, func(st *Store) error {
+		return initControllerInformers(st, config, stopCh)
+	})
+}
+
+func initWithDiscovery(config *rest.Config, stopCh <-chan struct{}, opts InitOptions, initialize func(*Store) error) *Store {
 	once.Do(func() {
 		// Log initialization based on configuration
 		service := serviceIdentity(opts)
@@ -423,32 +459,9 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		store = New(opts.RedisClient, initPrometheusAPI(config), opts.ModelRouterProvider)
 		store.disableModelClaimBindings = opts.DisableModelClaimPodBindings
 
-		// Initialize service discovery — all modes go through the Provider interface
-		provider := opts.DiscoveryProvider
-		if provider == nil {
-			// Default: Kubernetes informer-based discovery. Only the gateway
-			// watches ModelClaims, to answer for a claimed model that no pod
-			// advertises yet.
-			kubernetesProvider := discovery.NewKubernetesProvider(config)
-			if opts.IsGateway {
-				kubernetesProvider.WithModelClaims()
-			}
-			provider = kubernetesProvider
+		if err := initialize(store); err != nil {
+			klog.Fatalf("Failed to initialize discovery: %v", err)
 		}
-		if opts.ModelListMaxAge > 0 {
-			switch selected := provider.(type) {
-			case *discovery.KubernetesProvider:
-				selected.WithModelListHealth(opts.ModelListMaxAge)
-			case *discovery.StaticProvider:
-				// Static discovery has no continuing watch after its file is loaded.
-			default:
-				klog.Fatalf("Model-list verification is unsupported by discovery provider %q", provider.Type())
-			}
-		}
-		if err := initDiscoveryProvider(store, provider, stopCh); err != nil {
-			klog.Fatalf("Failed to initialize discovery provider: %v", err)
-		}
-		klog.InfoS("Using discovery provider", "type", provider.Type())
 		initMetricsCache(store, stopCh)
 
 		// Initialize profile cache if enabled

@@ -16,6 +16,13 @@ The following example shows how to:
 - Configure liveness/readiness probes
 - Set up monitoring annotations
 
+The workloads below use ``aibrix-system-llm``. Create that namespace before
+starting the gateway and configure discovery to use it. For a Helm installation,
+set ``gatewayPlugin.installationNamespace=aibrix-system-llm`` while retaining
+the control plane in ``aibrix-system``. The chart grants workload discovery only
+in the selected namespace. Models in other namespaces will no longer be visible
+to this gateway.
+
 .. code-block:: yaml
 
     apiVersion: v1

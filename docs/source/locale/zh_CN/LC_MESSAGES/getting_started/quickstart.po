@@ -58,10 +58,6 @@ msgstr ""
 msgid "Deploy base model"
 msgstr "部署基座模型"
 
-#: ../../source/getting_started/quickstart.rst:41
-msgid "Save yaml as `model.yaml` and run `kubectl apply -f model.yaml`."
-msgstr "将 yaml 保存为 `model.yaml` ，然后运行 `kubectl apply -f model.yaml` 。"
-
 #: ../../source/getting_started/quickstart.rst:46
 msgid "Ensure that:"
 msgstr "请确保："
@@ -84,10 +80,6 @@ msgstr ""
 #: ../../source/getting_started/quickstart.rst:52
 msgid "Deploy Prefill-Decode (PD) Disaggregation Model"
 msgstr "部署 Prefill-Decode（PD）分离模型"
-
-#: ../../source/getting_started/quickstart.rst:54
-msgid "Save yaml as `pd-model.yaml` and run `kubectl apply -f pd-model.yaml`."
-msgstr "将 yaml 保存为 `pd-model.yaml` ，然后运行 `kubectl apply -f pd-model.yaml` 。"
 
 #: ../../source/getting_started/quickstart.rst:61
 msgid ""
@@ -164,3 +156,31 @@ msgstr ""
 #: ../../source/getting_started/quickstart.rst:202
 msgid ":doc:`../production/observability`: see what the system is doing"
 msgstr ":doc:`../production/observability` ：了解系统正在做什么"
+
+#: ../../source/getting_started/quickstart.rst:41
+msgid ""
+"The gateway discovers models only in its configured installation namespace. "
+"These samples use ``aibrix-system``, matching the default installation. If "
+"you select another workload namespace, update the sample namespaces, "
+"commands, and any referenced Secrets together. For Helm, set "
+"``gatewayPlugin.installationNamespace`` to that existing namespace; the "
+"chart configures the gateway argument and discovery permissions together."
+msgstr ""
+"网关仅发现其配置的安装命名空间中的模型。这些示例使用 ``aibrix-"
+"system``，与默认安装保持一致。如果选择其他工作负载命名空间，请同时更新示例中的命名空间、命令以及引用的 Secret。对于 Helm，请将 "
+"``gatewayPlugin.installationNamespace`` 设置为该已存在的命名空间；Chart 会同时配置网关参数和发现权限。"
+
+#: ../../source/getting_started/quickstart.rst:48
+msgid ""
+"Save yaml as `model.yaml` and run `kubectl apply -n aibrix-system -f "
+"model.yaml`."
+msgstr ""
+"将 YAML 保存为 `model.yaml`，然后运行 `kubectl apply -n aibrix-system -f model.yaml`。"
+
+#: ../../source/getting_started/quickstart.rst:61
+msgid ""
+"Save yaml as `pd-model.yaml` and run `kubectl apply -n aibrix-system -f pd-"
+"model.yaml`."
+msgstr ""
+"将 YAML 保存为 `pd-model.yaml`，然后运行 `kubectl apply -n aibrix-system -f pd-"
+"model.yaml`。"

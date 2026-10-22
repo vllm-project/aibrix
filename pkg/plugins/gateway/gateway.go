@@ -1082,9 +1082,8 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 }
 
 // StartHTTPServer starts the gateway's HTTP server with metrics and API handlers.
-// In local/standalone mode, Envoy routes /v1/models here since there is no metadata service.
-// In standard K8s deployment, Envoy routes /v1/models to the metadata service instead,
-// so the /v1/models handler here is never reached — no conflict.
+// Envoy routes /v1/models here in both Kubernetes and standalone deployments,
+// so model listing and routing use the same discovery cache.
 func (s *Server) StartHTTPServer(addr string) error {
 	if s.httpServer != nil {
 		return nil
@@ -1098,10 +1097,6 @@ func (s *Server) StartHTTPServer(addr string) error {
 }
 
 func startModelListHTTPServer(addr string, handler http.HandlerFunc) (*http.Server, error) {
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
-	mux.HandleFunc("/v1/models", handler)
-
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on %s: %v", addr, err)
@@ -1109,7 +1104,7 @@ func startModelListHTTPServer(addr string, handler http.HandlerFunc) (*http.Serv
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           modelListHTTPHandler(handler),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -1121,6 +1116,14 @@ func startModelListHTTPServer(addr string, handler http.HandlerFunc) (*http.Serv
 	}()
 
 	return server, nil
+}
+
+func modelListHTTPHandler(handler http.HandlerFunc) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/v1/models", handler)
+	mux.HandleFunc("/v1/models/{$}", handler)
+	return mux
 }
 
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {

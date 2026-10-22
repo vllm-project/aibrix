@@ -18,18 +18,21 @@ package discovery
 
 import (
 	"context"
-	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"time"
 
-	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
-
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
-	v1alpha1scheme "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/scheme"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/validation"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/informers"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -37,17 +40,21 @@ import (
 
 // KubernetesProvider implements Provider using Kubernetes informers.
 type KubernetesProvider struct {
-	config *rest.Config
-	// watchModelAdapters keeps the existing adapter discovery behavior by default.
+	config             *rest.Config
+	namespace          string
+	startupTimeout     time.Duration
 	watchModelAdapters bool
-	// watchModelClaims adds ModelClaim objects to what is watched.
-	watchModelClaims bool
-	modelListHealth  *ModelListHealth
+	watchModelClaims   bool
+	modelListHealth    *ModelListHealth
 }
 
-// NewKubernetesProvider creates a new Kubernetes discovery provider.
-func NewKubernetesProvider(config *rest.Config) *KubernetesProvider {
-	return &KubernetesProvider{config: config, watchModelAdapters: true}
+// NewKubernetesProvider creates discovery restricted to namespace. Watch rejects
+// an empty or invalid namespace, nil config, inaccessible namespace, or missing
+// list/watch permissions. Startup is bounded to one minute; stopCh owns lifetime.
+func NewKubernetesProvider(config *rest.Config, namespace string) *KubernetesProvider {
+	return &KubernetesProvider{
+		config: config, namespace: namespace, startupTimeout: time.Minute, watchModelAdapters: true,
+	}
 }
 
 // WithModelAdapters controls whether the provider lists and watches ModelAdapters.
@@ -75,6 +82,16 @@ func (p *KubernetesProvider) ModelListHealth() *ModelListHealth {
 	return p.modelListHealth
 }
 
+// ValidateNamespace rejects missing and invalid installation namespaces without
+// trimming or substituting a default. It performs no Kubernetes API requests.
+func ValidateNamespace(namespace string) error {
+	if problems := validation.ValidateNamespaceName(namespace, false); len(problems) > 0 {
+		return fmt.Errorf("installation namespace %q is required and must be a valid Kubernetes namespace: %s",
+			namespace, strings.Join(problems, "; "))
+	}
+	return nil
+}
+
 // Type returns the provider type identifier.
 func (p *KubernetesProvider) Type() string {
 	return "kubernetes"
@@ -84,14 +101,16 @@ func (p *KubernetesProvider) Type() string {
 // Watch returns once the initial sync and reconcile are complete. After return,
 // informer callbacks continue delivering ongoing changes asynchronously.
 func (p *KubernetesProvider) Watch(handler EventHandler, stopCh <-chan struct{}) error {
-	return p.watch(func(ev WatchEvent) bool {
-		handler(ev)
+	if handler == nil {
+		return fmt.Errorf("discovery event handler is required")
+	}
+	return p.watch(func(event WatchEvent) bool {
+		handler(event)
 		return true
 	}, stopCh)
 }
 
-// WatchApplied is Watch with a handler that reports whether a cache event was
-// applied. Use it when model-list verification is enabled.
+// WatchApplied is Watch with a handler that reports whether a cache event was applied.
 func (p *KubernetesProvider) WatchApplied(handler func(WatchEvent) bool, stopCh <-chan struct{}) error {
 	return p.watch(handler, stopCh)
 }
@@ -102,13 +121,13 @@ func (p *KubernetesProvider) configureModelListHealth(k8sClientSet kubernetes.In
 		return
 	}
 	health.snapshot = func(ctx context.Context) (sourceVersions, error) {
-		pods, err := listPodVersions(ctx, k8sClientSet)
+		pods, err := listPodVersions(ctx, k8sClientSet, p.namespace)
 		if err != nil {
 			return sourceVersions{}, err
 		}
 		adapters := make(map[string]objectVersion)
 		if p.watchModelAdapters {
-			adapters, err = listAdapterVersions(ctx, crdClientSet)
+			adapters, err = listAdapterVersions(ctx, crdClientSet, p.namespace)
 			if err != nil {
 				return sourceVersions{}, err
 			}
@@ -118,114 +137,132 @@ func (p *KubernetesProvider) configureModelListHealth(k8sClientSet kubernetes.In
 }
 
 func (p *KubernetesProvider) watch(handler func(WatchEvent) bool, stopCh <-chan struct{}) error {
-	if err := v1alpha1scheme.AddToScheme(scheme.Scheme); err != nil {
+	if err := ValidateNamespace(p.namespace); err != nil {
 		return err
 	}
+	if p.config == nil {
+		return fmt.Errorf("kubernetes configuration is required")
+	}
+	if handler == nil {
+		return fmt.Errorf("discovery event handler is required")
+	}
+	ctx, cancel := context.WithCancel(wait.ContextForChannel(stopCh))
+	ready := false
+	defer func() {
+		if !ready {
+			cancel()
+		}
+	}()
+	startup, cancelStartup := context.WithTimeout(ctx, p.startupTimeout)
+	defer cancelStartup()
 
 	k8sClientSet, err := kubernetes.NewForConfig(p.config)
 	if err != nil {
 		return err
 	}
 
-	// Currently watches all pods cluster-wide (same as the old initCacheInformers).
-	factory := informers.NewSharedInformerFactoryWithOptions(k8sClientSet, 0)
-
-	podInformer := factory.Core().V1().Pods().Informer()
-	var modelInformer cache.SharedIndexInformer
-	var claimInformer cache.SharedIndexInformer
-	var crdFactory crdinformers.SharedInformerFactory
 	var crdClientSet v1alpha1.Interface
 	if p.watchModelAdapters || p.watchModelClaims {
 		crdClientSet, err = v1alpha1.NewForConfig(p.config)
 		if err != nil {
 			return err
 		}
-		crdFactory = crdinformers.NewSharedInformerFactoryWithOptions(crdClientSet, 0)
-		if p.watchModelAdapters {
-			modelInformer = crdFactory.Model().V1alpha1().ModelAdapters().Informer()
-		}
-		if p.watchModelClaims && canListModelClaims(crdClientSet) {
-			claimInformer = crdFactory.Model().V1alpha1().ModelClaims().Informer()
-		}
 	}
 	p.configureModelListHealth(k8sClientSet, crdClientSet)
 
-	// Wire handler directly into informer callbacks.
-	// Events flow from the start — including during the initial list phase.
-	var requiredHandlers []cache.ResourceEventHandlerRegistration
-	registerHandlers := func(inf cache.SharedIndexInformer, required bool) error {
-		deliver := func(ev WatchEvent) {
-			if required && p.modelListHealth != nil {
-				p.modelListHealth.Apply(ev, handler)
-			} else {
-				handler(ev)
-			}
-		}
-		registration, err := inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
-			AddFunc: func(obj interface{}) {
-				deliver(WatchEvent{Type: EventAdd, Object: obj})
-			},
-			UpdateFunc: func(oldObj, newObj interface{}) {
-				deliver(WatchEvent{Type: EventUpdate, Object: newObj, OldObject: oldObj})
-			},
-			DeleteFunc: func(obj interface{}) {
-				// Unwrap tombstones — K8s informers may deliver
-				// cache.DeletedFinalStateUnknown when a delete event is missed.
-				if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
-					obj = tombstone.Obj
-				}
-				deliver(WatchEvent{Type: EventDelete, Object: obj})
-			},
-		})
-		if err != nil {
-			return err
-		}
-		if required && p.modelListHealth != nil {
-			requiredHandlers = append(requiredHandlers, registration)
-			if err := inf.SetWatchErrorHandler(func(_ *cache.Reflector, watchErr error) {
-				p.modelListHealth.Invalidate()
-				klog.ErrorS(watchErr, "Model-list discovery watch failed")
-			}); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
-	if err := registerHandlers(podInformer, true); err != nil {
+	if err := p.checkAccess(startup, k8sClientSet, crdClientSet); err != nil {
 		return err
 	}
-	if modelInformer != nil {
-		if err := registerHandlers(modelInformer, true); err != nil {
-			return err
-		}
+
+	pods := k8sClientSet.CoreV1().Pods(p.namespace)
+	// ListWatch binds requests to the provider lifetime as well as the explicit
+	// namespace, so failed startup can cancel even an in-flight initial LIST.
+	podInformer := cache.NewSharedIndexInformer(&cache.ListWatch{
+		ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
+			return pods.List(ctx, options)
+		},
+		WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
+			return pods.Watch(ctx, options)
+		},
+	}, &corev1.Pod{}, 0, cache.Indexers{})
+	requiredInformers := []cache.SharedIndexInformer{podInformer}
+	var modelInformer cache.SharedIndexInformer
+	if p.watchModelAdapters {
+		adapters := crdClientSet.ModelV1alpha1().ModelAdapters(p.namespace)
+		modelInformer = cache.NewSharedIndexInformer(&cache.ListWatch{
+			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
+				return adapters.List(ctx, options)
+			},
+			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
+				return adapters.Watch(ctx, options)
+			},
+		}, &modelv1alpha1.ModelAdapter{}, 0, cache.Indexers{})
+		requiredInformers = append(requiredInformers, modelInformer)
 	}
-	if claimInformer != nil {
-		if err := registerHandlers(claimInformer, false); err != nil {
+	synced, err := p.registerHandlers(handler, requiredInformers...)
+	if err != nil {
+		return err
+	}
+	allInformers := append([]cache.SharedIndexInformer(nil), requiredInformers...)
+	// Claims remain optional, as upstream: missing CRDs or permissions do not
+	// prevent Pod-based serving. Their discovery still uses the same namespace.
+	if p.watchModelClaims && canListModelClaims(startup, crdClientSet, p.namespace) {
+		claims := crdClientSet.ModelV1alpha1().ModelClaims(p.namespace)
+		claimInformer := cache.NewSharedIndexInformer(&cache.ListWatch{
+			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
+				return claims.List(ctx, options)
+			},
+			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
+				return claims.Watch(ctx, options)
+			},
+		}, &modelv1alpha1.ModelClaim{}, 0, cache.Indexers{})
+		if _, err := p.registerHandlers(handler, claimInformer); err != nil {
 			return err
 		}
+		allInformers = append(allInformers, claimInformer)
 	}
 
 	// Start informers and wait for initial list+sync.
 	// During this phase, AddFunc fires for each existing object.
-	factory.Start(stopCh)
-	if crdFactory != nil {
-		crdFactory.Start(stopCh)
+	// Surface initial LIST/WATCH errors instead of retrying forever at startup.
+	watchErrors := make(chan error, 1)
+	for _, informer := range requiredInformers {
+		if err := informer.SetWatchErrorHandler(func(_ *cache.Reflector, err error) {
+			if p.modelListHealth != nil {
+				p.modelListHealth.Invalidate()
+			}
+			select {
+			case watchErrors <- err:
+			default:
+			}
+			klog.ErrorS(err, "Installation discovery watch failed", "namespace", p.namespace)
+			cancelStartup()
+		}); err != nil {
+			return err
+		}
 	}
+	var running sync.WaitGroup
+	for _, informer := range allInformers {
+		running.Add(1)
+		go func(informer cache.SharedIndexInformer) {
+			defer running.Done()
+			informer.Run(ctx.Done())
+		}(informer)
+	}
+	defer func() {
+		if !ready {
+			cancel()
+			running.Wait()
+		}
+	}()
 
-	// ModelClaims are left out of the wait. They only tell a model that is
-	// claimed but not placed yet from one that nobody serves. A gateway whose
-	// role cannot list them yet should still start, and answer for such a
-	// model as it did before.
-	requiredSync := []cache.InformerSynced{podInformer.HasSynced}
-	if modelInformer != nil {
-		requiredSync = append(requiredSync, modelInformer.HasSynced)
-	}
-	for _, registration := range requiredHandlers {
-		requiredSync = append(requiredSync, registration.HasSynced)
-	}
-	if !cache.WaitForCacheSync(stopCh, requiredSync...) {
-		return errors.New("timed out waiting for caches to sync")
+	if !cache.WaitForCacheSync(startup.Done(), synced...) {
+		select {
+		case err := <-watchErrors:
+			return fmt.Errorf("sync installation namespace %q: %w", p.namespace, err)
+		default:
+			return fmt.Errorf("sync installation namespace %q: %w", p.namespace, startup.Err())
+		}
 	}
 
 	// Post-sync reconcile: re-emit all ModelAdapters to fix ordering.
@@ -235,21 +272,120 @@ func (p *KubernetesProvider) watch(handler func(WatchEvent) bool, stopCh <-chan 
 	// ensures all mappings are established (addModelAdapter is idempotent).
 	adapterCount := 0
 	if modelInformer != nil {
-		adapters := modelInformer.GetStore().List()
-		adapterCount = len(adapters)
-		for _, obj := range adapters {
-			ev := WatchEvent{Type: EventAdd, Object: obj}
-			if p.modelListHealth != nil {
-				p.modelListHealth.Apply(ev, handler)
-			} else {
-				handler(ev)
-			}
+		adapterObjects := modelInformer.GetStore().List()
+		adapterCount = len(adapterObjects)
+		for _, obj := range adapterObjects {
+			p.deliver(handler, WatchEvent{Type: EventAdd, Object: obj})
 		}
 	}
-
 	klog.InfoS("Kubernetes discovery provider initialized",
-		"pods", len(podInformer.GetStore().List()), "modelAdapters", adapterCount)
+		"namespace", p.namespace, "pods", len(podInformer.GetStore().List()), "modelAdapters", adapterCount)
 
+	if err := startup.Err(); err != nil {
+		return fmt.Errorf("initialize installation namespace %q: %w", p.namespace, err)
+	}
+	ready = true
+	go func() {
+		<-ctx.Done()
+		running.Wait()
+		cancel()
+	}()
+	return nil
+}
+
+// checkAccess verifies namespace existence and WATCH authorization. LIST is
+// checked by the initial informer synchronization, avoiding a redundant list.
+func (p *KubernetesProvider) checkAccess(ctx context.Context, pods kubernetes.Interface, adapters v1alpha1.Interface) error {
+	// A list of a nonexistent namespace can succeed with no objects. Verify the
+	// namespace itself, using GET permission restricted to this exact name.
+	if _, err := pods.CoreV1().Namespaces().Get(ctx, p.namespace, metav1.GetOptions{}); err != nil {
+		return fmt.Errorf("get installation namespace %q: %w", p.namespace, err)
+	}
+	// Cache sync only proves LIST succeeded. Check WATCH too before accepting
+	// traffic, since list-only RBAC would otherwise appear ready indefinitely.
+	podWatch, err := pods.CoreV1().Pods(p.namespace).Watch(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("watch pods in installation namespace %q: %w", p.namespace, err)
+	}
+	podWatch.Stop()
+	if p.watchModelAdapters {
+		adapterWatch, err := adapters.ModelV1alpha1().ModelAdapters(p.namespace).Watch(ctx, metav1.ListOptions{})
+		if err != nil {
+			return fmt.Errorf("watch modeladapters in installation namespace %q: %w", p.namespace, err)
+		}
+		adapterWatch.Stop()
+	}
+
+	return nil
+}
+
+func (p *KubernetesProvider) registerHandlers(handler func(WatchEvent) bool, informers ...cache.SharedIndexInformer) ([]cache.InformerSynced, error) {
+	var synced []cache.InformerSynced
+	for _, informer := range informers {
+		registration, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+			AddFunc: func(obj interface{}) {
+				p.deliver(handler, WatchEvent{Type: EventAdd, Object: obj})
+			},
+			UpdateFunc: func(oldObj, newObj interface{}) {
+				p.deliver(handler, WatchEvent{Type: EventUpdate, Object: newObj, OldObject: oldObj})
+			},
+			DeleteFunc: func(obj interface{}) {
+				if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+					obj = tombstone.Obj
+				}
+				p.deliver(handler, WatchEvent{Type: EventDelete, Object: obj})
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		synced = append(synced, registration.HasSynced)
+	}
+	return synced, nil
+}
+
+// Check events as well as request scope so unexpected objects cannot enter the
+// routing cache, including deletes and adapter reconciliation after initial sync.
+func (p *KubernetesProvider) deliver(handler func(WatchEvent) bool, event WatchEvent) {
+	object := discoveryMetadata(event.Object)
+	if object == nil {
+		if p.modelListHealth != nil {
+			p.modelListHealth.Invalidate()
+		}
+		return
+	}
+	if object.GetNamespace() != p.namespace {
+		return
+	}
+	if event.Type == EventUpdate {
+		old := discoveryMetadata(event.OldObject)
+		if old == nil || old.GetNamespace() != p.namespace {
+			return
+		}
+	}
+	if _, claim := event.Object.(*modelv1alpha1.ModelClaim); !claim && p.modelListHealth != nil {
+		p.modelListHealth.Apply(event, handler)
+		return
+	}
+	handler(event)
+}
+
+// Only known non-nil discovery objects may enter the cache or health record.
+func discoveryMetadata(object interface{}) metav1.Object {
+	switch typed := object.(type) {
+	case *corev1.Pod:
+		if typed != nil {
+			return typed
+		}
+	case *modelv1alpha1.ModelAdapter:
+		if typed != nil {
+			return typed
+		}
+	case *modelv1alpha1.ModelClaim:
+		if typed != nil {
+			return typed
+		}
+	}
 	return nil
 }
 
@@ -257,10 +393,10 @@ func (p *KubernetesProvider) watch(handler func(WatchEvent) bool, stopCh <-chan 
 // that may not list them, or a cluster without the ModelClaim CRD, is logged
 // here once, where an informer would log it every minute for as long as the
 // process runs. Any other error is left to the informer, which retries it.
-func canListModelClaims(client v1alpha1.Interface) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func canListModelClaims(parent context.Context, client v1alpha1.Interface, namespace string) bool {
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
-	_, err := client.ModelV1alpha1().ModelClaims(metav1.NamespaceAll).List(ctx, metav1.ListOptions{Limit: 1})
+	_, err := client.ModelV1alpha1().ModelClaims(namespace).List(ctx, metav1.ListOptions{Limit: 1})
 	if apierrors.IsForbidden(err) || apierrors.IsNotFound(err) {
 		klog.InfoS("Not watching ModelClaims: a model that is claimed but not placed yet "+
 			"is answered as one that does not exist", "err", err)
