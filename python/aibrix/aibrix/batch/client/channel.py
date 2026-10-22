@@ -54,6 +54,15 @@ _WRITE_TIMEOUT_SECONDS = 60.0
 _POOL_TIMEOUT_SECONDS = 30.0
 
 
+def _build_timeout(read_timeout: float) -> httpx.Timeout:
+    return httpx.Timeout(
+        connect=_CONNECT_TIMEOUT_SECONDS,
+        read=read_timeout,
+        write=_WRITE_TIMEOUT_SECONDS,
+        pool=_POOL_TIMEOUT_SECONDS,
+    )
+
+
 @dataclass(slots=True)
 class InferenceRequest:
     """One inference call.
@@ -66,6 +75,9 @@ class InferenceRequest:
     path: str
     payload: Dict[str, Any]
     ref: Any = None
+    # HTTP read timeout in seconds for this call; None keeps the channel's own.
+    # Channels that do not make HTTP calls ignore it.
+    read_timeout: Optional[float] = None
 
 
 @runtime_checkable
@@ -92,12 +104,7 @@ class HttpChannel:
     ) -> None:
         self._base_url = base_url
         self._timeout = timeout
-        self._timeout_config = httpx.Timeout(
-            connect=_CONNECT_TIMEOUT_SECONDS,
-            read=timeout,
-            write=_WRITE_TIMEOUT_SECONDS,
-            pool=_POOL_TIMEOUT_SECONDS,
-        )
+        self._timeout_config = _build_timeout(timeout)
         self._client = client
         self._owns_client = client is None
 
@@ -112,7 +119,12 @@ class HttpChannel:
             "requesting inference", url=url, model=request.payload.get("model")
         )  # type: ignore[call-arg]
         try:
-            post_kwargs = {"json": request.payload, "timeout": self._timeout_config}
+            timeout_config = (
+                self._timeout_config
+                if request.read_timeout is None
+                else _build_timeout(request.read_timeout)
+            )
+            post_kwargs = {"json": request.payload, "timeout": timeout_config}
             if isinstance(client, HTTPXClientWrapper):
                 post_kwargs["telemetry_call_site"] = (
                     "batch.client.channel.HttpChannel.send"
