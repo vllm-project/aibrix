@@ -75,7 +75,7 @@ func routeFleetOnce(b *testing.B, rm *RouterManager, c cache.Cache, all []*v1.Po
 
 	pods := append(scratch[:0], all...)
 	if shuffle {
-		utils.CryptoShuffle(pods)
+		utils.Shuffle(pods)
 	}
 	if k > 0 && k < len(pods) {
 		pods = pods[:k]
@@ -135,21 +135,28 @@ func benchmarkFleetRouting(b *testing.B, k int, shuffle bool) {
 // BenchmarkFleetRouting_Full is today's path: every ready pod is shuffled and scored.
 func BenchmarkFleetRouting_Full(b *testing.B) { benchmarkFleetRouting(b, 0, true) }
 
-// BenchmarkFleetRouting_NoShuffle isolates the cost of CryptoShuffle over the full list.
+// BenchmarkFleetRouting_NoShuffle isolates the cost of shuffling the full list.
 func BenchmarkFleetRouting_NoShuffle(b *testing.B) { benchmarkFleetRouting(b, 0, false) }
 
 // BenchmarkFleetRouting_K16 scores only 16 shuffled candidates. It still shuffles
 // the whole list, so it shows the scoring saving alone.
 func BenchmarkFleetRouting_K16(b *testing.B) { benchmarkFleetRouting(b, 16, true) }
 
-// BenchmarkCryptoShuffle measures the full-list shuffle on its own.
-func BenchmarkCryptoShuffle(b *testing.B) {
+// BenchmarkShuffle compares the full-list shuffles: crypto/rand, which the gateway used
+// before, and math/rand/v2, which it uses now.
+func BenchmarkShuffle(b *testing.B) {
 	for _, n := range fleetBenchSizes {
 		pods := make([]*v1.Pod, n)
-		b.Run(fmt.Sprintf("N=%d", n), func(b *testing.B) {
+		b.Run(fmt.Sprintf("crypto/N=%d", n), func(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
 				utils.CryptoShuffle(pods)
+			}
+		})
+		b.Run(fmt.Sprintf("math/N=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				utils.Shuffle(pods)
 			}
 		})
 	}

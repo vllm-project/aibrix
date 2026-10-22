@@ -19,6 +19,8 @@ package least
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -819,4 +821,34 @@ func TestSelectTargetPortForPodWithLeastRequestCount_SameNamedPodsInTwoNamespace
 
 	assert.Equal(t, 8001, routeutil.SelectTargetPortForPodWithLeastRequestCount(c, dpPod, ports))
 	assert.Equal(t, 9000, routeutil.SelectTargetPortForPodWithLeastRequestCount(c, plainPod, ports))
+}
+
+// lowestCountsStable must return exactly what the full stable sort it replaced returned: the
+// same pods in the same order, ties included, for any k.
+func TestLowestCountsStable_MatchesStableSortPrefix(t *testing.T) {
+	rng := rand.New(rand.NewPCG(1, 2))
+	for trial := 0; trial < 2000; trial++ {
+		n := 1 + rng.IntN(60)
+		maxCount := 1 + rng.IntN(8) // few distinct counts, so ties are common
+		candidates := make([]rankedPod, n)
+		for i := range candidates {
+			candidates[i] = rankedPod{pod: &v1.Pod{}, count: rng.IntN(maxCount)}
+		}
+		want := make([]rankedPod, n)
+		copy(want, candidates)
+		sort.SliceStable(want, func(i, j int) bool { return want[i].count < want[j].count })
+
+		for _, k := range []int{1, 2, 5, n - 1, n} {
+			if k < 1 || k > n { // eligibleLeastLoaded clamps k to len(candidates)
+				continue
+			}
+			input := make([]rankedPod, n)
+			copy(input, candidates)
+			got := lowestCountsStable(input, k)
+			require.Len(t, got, k, "trial %d n=%d k=%d", trial, n, k)
+			for i := 0; i < k; i++ {
+				require.Same(t, want[i].pod, got[i].pod, "trial %d n=%d k=%d position %d", trial, n, k, i)
+			}
+		}
+	}
 }
