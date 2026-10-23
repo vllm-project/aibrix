@@ -312,6 +312,19 @@ func TestComputeDesiredReplicasAdjustsKPAAPAConservativelyWhenReplicasPending(t 
 			wantGuard:    false,
 		},
 		{
+			// DOMAIN is the deprecated alias of EXTERNAL and is collected the same way.
+			name:         "kpa domain metric not adjusted",
+			strategy:     autoscalingv1alpha1.KPA,
+			sourceType:   autoscalingv1alpha1.DOMAIN,
+			metricValue:  350,
+			currentPods:  4,
+			readyPods:    2,
+			pendingPods:  2,
+			wantReason:   "stable mode scaling",
+			wantReplicas: 7,
+			wantGuard:    false,
+		},
+		{
 			name:         "apa scale-up adjusted",
 			strategy:     autoscalingv1alpha1.APA,
 			sourceType:   autoscalingv1alpha1.POD,
@@ -333,6 +346,32 @@ func TestComputeDesiredReplicasAdjustsKPAAPAConservativelyWhenReplicasPending(t 
 			pendingPods:  2,
 			wantReason:   "scale-down adjusted: pending replicas treated at target utilization",
 			wantReplicas: 3,
+			wantGuard:    true,
+		},
+		{
+			// A custom metric is collected per pod like a pod metric, so pending pods carry none
+			// of its load and the guard applies to it the same way.
+			name:         "apa custom metric scale-up adjusted",
+			strategy:     autoscalingv1alpha1.APA,
+			sourceType:   autoscalingv1alpha1.CUSTOM,
+			metricValue:  90,
+			currentPods:  4,
+			readyPods:    2,
+			pendingPods:  2,
+			wantReason:   "scale-up adjusted: pending replicas treated as missing metrics",
+			wantReplicas: 4,
+			wantGuard:    true,
+		},
+		{
+			name:         "kpa custom metric scale-down adjusted",
+			strategy:     autoscalingv1alpha1.KPA,
+			sourceType:   autoscalingv1alpha1.CUSTOM,
+			metricValue:  10,
+			currentPods:  10,
+			readyPods:    5,
+			pendingPods:  5,
+			wantReason:   "scale-down adjusted: pending replicas treated at target utilization",
+			wantReplicas: 6,
 			wantGuard:    true,
 		},
 	} {

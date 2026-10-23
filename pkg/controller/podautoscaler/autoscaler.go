@@ -299,8 +299,7 @@ func applyPendingReplicaGuard(request ReplicaComputeRequest, result *ReplicaComp
 		request.PodAutoscaler.Spec.ScalingStrategy != autoscalingv1alpha1.APA {
 		return result
 	}
-	if result.MetricSourceType != autoscalingv1alpha1.POD &&
-		result.MetricSourceType != autoscalingv1alpha1.RESOURCE {
+	if !algorithm.IsPerPodSource(result.MetricSourceType) {
 		return result
 	}
 	if request.ReplicaState.PendingReplicas <= 0 || result.DesiredReplicas == request.CurrentReplicas {
