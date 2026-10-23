@@ -312,6 +312,19 @@ func TestComputeDesiredReplicasAdjustsKPAAPAConservativelyWhenReplicasPending(t 
 			wantGuard:    false,
 		},
 		{
+			// DOMAIN is the deprecated alias of EXTERNAL and is collected the same way.
+			name:         "kpa domain metric not adjusted",
+			strategy:     autoscalingv1alpha1.KPA,
+			sourceType:   autoscalingv1alpha1.DOMAIN,
+			metricValue:  350,
+			currentPods:  4,
+			readyPods:    2,
+			pendingPods:  2,
+			wantReason:   "stable mode scaling",
+			wantReplicas: 7,
+			wantGuard:    false,
+		},
+		{
 			name:         "apa scale-up adjusted",
 			strategy:     autoscalingv1alpha1.APA,
 			sourceType:   autoscalingv1alpha1.POD,
