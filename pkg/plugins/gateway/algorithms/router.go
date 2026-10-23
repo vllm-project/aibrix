@@ -626,16 +626,19 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 const madOutlierMultiplier = 3.0
 
 // winsorizeClip clamps any value more than madOutlierMultiplier median-absolute-deviations from
-// the median on the worse side for polarity (above it for PolarityLeast, below it for
-// PolarityMost) to that bound, returning a new slice (the input is left untouched). Skipped for
-// fewer than 3 values, where a robust center/spread isn't meaningful, and when mad==0 (every
-// value is identical, so there's no spread to judge outliers against).
+// the median on the worse side for polarity (above it for PolarityLeast, below it for any
+// higher-is-better polarity) to that bound, returning a new slice (the input is left
+// untouched). Skipped for fewer than 3 values, where a robust center/spread isn't meaningful,
+// and when mad==0 (every value is identical, so there's no spread to judge outliers against).
 //
 // The better side is left alone: clamping it would pull the best pods onto one bound, so an idle
 // pod and a busier one would both normalize to 1.0, and the name tie-break in scoreAndRank would
 // then pick whichever sorts first. With running requests {20, 0, 49, 50, 51} the bound is 43,
-// so 20 and 0 tied. An outlier on the better side cannot stretch the scale the way the motivating
-// case below does; it only widens the gap between the best pod and the rest.
+// so 20 and 0 tied. An unclamped outlier on the better side does set the scale for that scorer
+// and compresses the other pods' normalized scores, as plain min-max scaling would: with
+// {0, 49, 50, 51, 52} the pods near 50 score 0.02 to 0.06 instead of 0.2 to 0.6, so the idle
+// pod gains weight in a blend. Unlike the motivating case below, it cannot make a worse pod
+// look nearly as good as the best one.
 func winsorizeClip(values []float64, polarity types.Polarity) []float64 {
 	n := len(values)
 	if n < 3 {
@@ -680,7 +683,7 @@ func medianOf(values []float64) float64 {
 }
 
 // normalizeScoresArray converts raw scores to [0,1] via min-max scaling, after first
-// winsorizing outliers (see winsorizeClip). Plain min-max scaling let one pod's extreme,
+// winsorizing outliers on the worse side (see winsorizeClip). Plain min-max scaling let one pod's extreme,
 // unrelated raw value (e.g. a collapsed drain-rate on an otherwise-unrelated pod) stretch the
 // comparison scale for every other pod, compressing a real, meaningful gap between two other
 // pods down to almost nothing — e.g. with raw pending-times {91, 333, 4534.67}, min-max scored
