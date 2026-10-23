@@ -15,6 +15,7 @@
 """Tests for the alternative BaseStorage2 aggregation path."""
 
 import asyncio
+from io import BytesIO
 from types import SimpleNamespace
 from typing import Any, Union
 from unittest.mock import AsyncMock, Mock
@@ -785,6 +786,83 @@ async def test_tos_put_object_multipart_failure_does_not_fall_back(
         client.abort_multipart_upload.assert_called_once_with(
             bucket="bucket", key="key", upload_id="upload"
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_kind", ["bytes", "stream", "reader"])
+@pytest.mark.parametrize("multipart", [False, True], ids=["single-put", "multipart"])
+@pytest.mark.parametrize("fail_upload", [False, True], ids=["success", "failure"])
+async def test_tos_put_object_reader_ownership(
+    monkeypatch, input_kind, multipart, fail_upload
+):
+    client = Mock()
+    client.create_multipart_upload.return_value = SimpleNamespace(upload_id="upload")
+    client.upload_part.return_value = SimpleNamespace(etag="etag")
+    upload = client.upload_part if multipart else client.put_object
+    if fail_upload:
+        upload.side_effect = tos.exceptions.TosClientError("injected upload failure")
+    monkeypatch.setattr(tos, "TosClientV2", lambda *args: client)
+    storage = TOSStorage(
+        "bucket",
+        "ak",
+        "sk",
+        "https://tos.example.com",
+        "cn-beijing",
+        config=StorageConfig(multipart_threshold=8),
+    )
+
+    payload = b"payload!" if multipart else b"data"
+    stream = BytesIO(payload) if input_kind != "bytes" else None
+    data = payload
+    if stream is not None:
+        # A caller-owned Reader must stay open even when it owns its stream.
+        data = Reader(stream, cascade_close=True) if input_kind == "reader" else stream
+
+    readers: list[Reader] = []
+    closed_readers: list[Reader] = []
+    original_wrap_data = storage._wrap_data
+    original_close = Reader.close
+
+    def track_wrap_data(data):
+        reader = original_wrap_data(data)
+        readers.append(reader)
+        return reader
+
+    def track_close(reader):
+        closed_readers.append(reader)
+        original_close(reader)
+
+    monkeypatch.setattr(storage, "_wrap_data", track_wrap_data)
+    monkeypatch.setattr(Reader, "close", track_close)
+
+    if fail_upload:
+        with pytest.raises(ValueError, match="injected upload failure"):
+            await storage.put_object("key", data)
+    else:
+        assert await storage.put_object("key", data) is True
+    upload.assert_called_once()
+    if multipart:
+        client.put_object.assert_not_called()
+    else:
+        client.create_multipart_upload.assert_not_called()
+
+    # Multipart part uploads create their own wrappers; check the input wrapper.
+    reader = readers[0]
+    close_count = sum(closed_reader is reader for closed_reader in closed_readers)
+    if input_kind == "reader":
+        assert reader is data
+        assert close_count == 0
+        assert not reader.closed
+        reader.seek(0)
+        assert reader.read_all() == payload
+    else:
+        assert close_count == 1
+        assert reader.closed
+
+    if stream is not None:
+        assert not stream.closed
+        stream.seek(0)
+        assert stream.read() == payload
 
 
 class TestBackendBulkDelete:
