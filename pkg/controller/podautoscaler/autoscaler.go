@@ -383,15 +383,15 @@ func computePendingAdjustedReplicas(
 ) int32 {
 	switch request.PodAutoscaler.Spec.ScalingStrategy {
 	case autoscalingv1alpha1.APA:
-		return int32(math.Ceil(float64(request.CurrentReplicas) * adjustedMetricValue / targetValue))
+		return int32(algorithm.CeilPodCount(float64(request.CurrentReplicas) * adjustedMetricValue / targetValue))
 	case autoscalingv1alpha1.KPA:
 		if result.DesiredReplicas < request.CurrentReplicas {
-			return int32(math.Ceil((result.MetricValue*float64(readyReplicas) + targetValue*float64(pendingReplicas)) / targetValue))
+			return int32(algorithm.CeilPodCount((result.MetricValue*float64(readyReplicas) + targetValue*float64(pendingReplicas)) / targetValue))
 		}
 		if algorithm.IsPerPodSource(result.MetricSourceType) {
-			return int32(math.Ceil(float64(request.CurrentReplicas) * adjustedMetricValue / targetValue))
+			return int32(algorithm.CeilPodCount(float64(request.CurrentReplicas) * adjustedMetricValue / targetValue))
 		}
-		return int32(math.Ceil(adjustedMetricValue / targetValue))
+		return int32(algorithm.CeilPodCount(adjustedMetricValue / targetValue))
 	default:
 		return result.DesiredReplicas
 	}
