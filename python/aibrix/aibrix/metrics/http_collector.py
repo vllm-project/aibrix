@@ -81,17 +81,21 @@ class HTTPCollector(Collector):
             return
 
         # Standard transformation mode
+        # Do not publish partial results if a later transformation fails.
+        transformed_metrics = []
         try:
             for m in text_string_to_metric_families(metrics_text):
                 if m.name in self.metrics_rules:
                     if self.keep_original_metric:
-                        yield deepcopy(m)
+                        transformed_metrics.append(deepcopy(m))
                     new_metric = self.metrics_rules[m.name](m)
                     if new_metric is not None:
-                        yield from new_metric
+                        # A rule may mutate and yield the same metric more than once.
+                        transformed_metrics.extend(deepcopy(m) for m in new_metric)
                 elif self.keep_original_metric:
-                    yield m
+                    transformed_metrics.append(m)
         except Exception as e:
+            transformed_metrics.clear()
             logger.error(f"Error during metrics transformation: {e}")
             # Fallback to raw passthrough on transformation errors
             logger.warning(
@@ -99,3 +103,5 @@ class HTTPCollector(Collector):
             )
             for m in text_string_to_metric_families(metrics_text):
                 yield m
+        else:
+            yield from transformed_metrics

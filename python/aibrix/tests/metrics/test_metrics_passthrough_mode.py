@@ -14,6 +14,9 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+from prometheus_client import CollectorRegistry, generate_latest
+
 from aibrix.metrics.http_collector import HTTPCollector
 from aibrix.metrics.standard_rules import RenameStandardRule
 
@@ -177,41 +180,98 @@ vllm:prompt_tokens_total{model_name="test-model"} 1000
         # Should NOT have transformed metrics
         assert "aibrix:queue_size" not in metric_names
 
+    @pytest.mark.parametrize("keep_original_metric", [False, True])
+    @pytest.mark.parametrize(
+        "failing_metric", ["vllm:num_requests_waiting", "vllm:prompt_tokens"]
+    )
+    @pytest.mark.parametrize("fail_after_yield", [False, True])
     @patch("aibrix.metrics.http_collector.requests.Session")
-    def test_transformation_error_fallback_to_passthrough(self, mock_session):
-        """Test transformation errors fall back to raw passthrough."""
+    def test_transformation_error_fallback_to_passthrough(
+        self, mock_session, keep_original_metric, failing_metric, fail_after_yield
+    ):
+        """Fallback must discard any output produced before a rule fails."""
         # Arrange
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.text = self.SAMPLE_METRICS_TEXT
         mock_session.return_value.get.return_value = mock_response
 
-        # Create a rule that will raise an exception
         class FailingRule:
             def __call__(self, metric):
+                if fail_after_yield:
+                    return self.yield_then_fail(metric)
                 raise ValueError("Simulated transformation error")
 
-        metrics_rules = {"vllm:num_requests_waiting": FailingRule()}
+            def yield_then_fail(self, metric):
+                yield from RenameStandardRule(metric.name, "aibrix:partial")(metric)
+                raise ValueError("Simulated transformation error after yielding")
+
+        metrics_rules = {
+            "vllm:num_requests_waiting": RenameStandardRule(
+                "vllm:num_requests_waiting", "aibrix:queue_size"
+            ),
+            "vllm:prompt_tokens": RenameStandardRule(
+                "vllm:prompt_tokens", "aibrix:prompt_tokens"
+            ),
+        }
+        metrics_rules[failing_metric] = FailingRule()
 
         collector = HTTPCollector(
             endpoint="http://fake.metrics.url",
             metrics_rules=metrics_rules,
-            keep_original_metric=False,
+            keep_original_metric=keep_original_metric,
             raw_passthrough_mode=False,
         )
 
-        # Act
-        results = list(collector.collect())
+        registry = CollectorRegistry(auto_describe=False)
+        registry.register(collector)
+        actual = generate_latest(registry)
 
-        # Assert - should fall back to passthrough mode
-        metric_names = [m.name for m in results]
+        raw_registry = CollectorRegistry(auto_describe=False)
+        raw_registry.register(
+            HTTPCollector(endpoint="http://fake.metrics.url", raw_passthrough_mode=True)
+        )
+        assert actual == generate_latest(raw_registry)
+        assert mock_session.return_value.get.call_count == 2
 
-        # Should have original metrics (fallback mode)
-        assert "vllm:num_requests_waiting" in metric_names
-        assert "vllm:prompt_tokens" in metric_names
+    @pytest.mark.parametrize("keep_original_metric", [False, True])
+    @patch("aibrix.metrics.http_collector.requests.Session")
+    def test_successful_rule_reusing_metric(self, mock_session, keep_original_metric):
+        """Buffering must preserve a metric's state at each yield."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = self.SAMPLE_METRICS_TEXT
+        mock_session.return_value.get.return_value = mock_response
 
-        # Should have exactly 2 metrics
-        assert len(results) == 2
+        class ReusingRule:
+            def __call__(self, metric):
+                yield from RenameStandardRule(metric.name, "aibrix:first")(metric)
+                yield from RenameStandardRule(metric.name, "aibrix:second")(metric)
+
+        collector = HTTPCollector(
+            endpoint="http://fake.metrics.url",
+            metrics_rules={"vllm:num_requests_waiting": ReusingRule()},
+            keep_original_metric=keep_original_metric,
+            raw_passthrough_mode=False,
+        )
+        registry = CollectorRegistry(auto_describe=False)
+        registry.register(collector)
+        samples = [
+            line
+            for line in generate_latest(registry).decode().splitlines()
+            if not line.startswith("#")
+        ]
+        expected = [
+            'aibrix:first{model_name="test-model"} 5.0',
+            'aibrix:second{model_name="test-model"} 5.0',
+        ]
+        if keep_original_metric:
+            expected.insert(0, 'vllm:num_requests_waiting{model_name="test-model"} 5.0')
+            expected.append('vllm:prompt_tokens_total{model_name="test-model"} 1000.0')
+        assert samples == expected
+        mock_session.return_value.get.assert_called_once_with(
+            "http://fake.metrics.url", timeout=collector.timeout
+        )
 
     @patch("aibrix.metrics.http_collector.requests.Session")
     def test_explicit_passthrough_overrides_env_var(self, mock_session):
