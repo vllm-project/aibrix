@@ -660,7 +660,7 @@ func winsorizeClip(values []float64, polarity types.Polarity) []float64 {
 		switch {
 		case polarity == types.PolarityLeast && v > upper:
 			clipped[i] = upper
-		case polarity == types.PolarityMost && v < lower:
+		case polarity != types.PolarityLeast && v < lower:
 			clipped[i] = lower
 		default:
 			clipped[i] = v
