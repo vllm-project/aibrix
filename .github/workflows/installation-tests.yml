@@ -22,6 +22,7 @@ on:
       - '!**/*.md'
       - '!**/*.rst'
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     branches: [ "main", "release-*" ]
     paths:
       - '.github/workflows/**'
@@ -40,14 +41,24 @@ on:
       - '!**/*.md'
       - '!**/*.rst'
 
-# Cancel superseded pull-request runs so the newest push starts first.
+# Cancel superseded pull-request runs so the newest push starts first. A run
+# started by any label other than ci-approved does nothing, so it gets its own
+# group and cancels nothing.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  group: ${{ github.workflow }}-${{ (github.event.action != 'labeled' || github.event.label.name == 'ci-approved') && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  ci-approval:
+    name: CI Approval
+    if: github.event.action != 'labeled' || github.event.label.name == 'ci-approved'
+    permissions:
+      pull-requests: read
+    uses: ./.github/workflows/ci-approval.yml
+
   installation-test:
     name: Installation E2E Tests
+    needs: [ci-approval]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
