@@ -530,10 +530,11 @@ class L2Cache(MeasurableBase):
 
             if not status.is_ok():
                 break
-            nr += status.get()
+            fetched = status.get()
+            nr += fetched
             # A short batch ended at a miss; later batches must not be
             # counted after the gap.
-            if status.get() < len(batch):
+            if fetched < len(batch):
                 break
 
         if nr == 0:
