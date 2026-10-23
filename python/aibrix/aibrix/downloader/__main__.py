@@ -22,7 +22,7 @@ def main():
         "--model-uri",
         type=str,
         default="deepseek-ai/deepseek-coder-6.7b-instruct",
-        help="model uri from different source, support HuggingFace, AWS S3, TOS",
+        help="model uri from different source, support HuggingFace, AWS S3, TOS, GCS",
     )
     parser.add_argument(
         "--local-dir",

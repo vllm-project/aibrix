@@ -81,6 +81,7 @@ DOWNLOADER_CHECK_FILE_EXIST = _is_true(os.getenv("DOWNLOADER_CHECK_FILE_EXIST", 
 # Downloader Regex
 DOWNLOADER_S3_REGEX = r"^s3://"
 DOWNLOADER_TOS_REGEX = r"^tos://"
+DOWNLOADER_GCS_REGEX = r"^(gcs|gs)://"
 
 # Downloader HuggingFace Envs
 DOWNLOADER_HF_TOKEN = os.getenv("HF_TOKEN")
