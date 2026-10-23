@@ -14,6 +14,7 @@
 
 """Tests for S3Storage.put_object multipart error handling."""
 
+import io
 from unittest.mock import patch
 
 import pytest
@@ -30,6 +31,7 @@ class FakeMultipartS3Client:
     def __init__(self, fail_part: int | None) -> None:
         self.fail_part = fail_part
         self.calls: list[str] = []
+        self.put_bodies: list[bytes] = []
 
     def create_multipart_upload(self, **kwargs):
         self.calls.append("create_multipart_upload")
@@ -49,6 +51,7 @@ class FakeMultipartS3Client:
 
     def put_object(self, **kwargs):
         self.calls.append("put_object")
+        self.put_bodies.append(kwargs["Body"])
 
 
 @pytest.mark.asyncio
@@ -96,3 +99,37 @@ async def test_s3_put_object_closes_its_reader_after_a_multipart_upload(
 
     assert isinstance(wrapped[0], Reader)
     assert wrapped[0].closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_part", [2, None])
+async def test_s3_put_object_leaves_a_callers_reader_open(fail_part):
+    storage = object.__new__(S3Storage)
+    storage.config = StorageConfig(multipart_threshold=8)
+    storage.bucket_name = "bucket"
+    storage.client = FakeMultipartS3Client(fail_part=fail_part)
+
+    reader = Reader(io.BytesIO(b"A" * 19))
+    if fail_part is None:
+        assert await storage.put_object("out.jsonl", reader)
+    else:
+        with pytest.raises(ReadTimeoutError):
+            await storage.put_object("out.jsonl", reader)
+
+    assert "create_multipart_upload" in storage.client.calls
+    assert not reader.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [OSError, ValueError])
+async def test_s3_put_object_uses_a_single_put_when_the_size_is_unknown(error):
+    storage = object.__new__(S3Storage)
+    storage.config = StorageConfig(multipart_threshold=8)
+    storage.bucket_name = "bucket"
+    storage.client = FakeMultipartS3Client(fail_part=None)
+
+    with patch.object(Reader, "get_size", side_effect=error("size unknown")):
+        assert await storage.put_object("out.jsonl", b"A" * 19)
+
+    assert storage.client.calls == ["put_object"]
+    assert storage.client.put_bodies == [b"A" * 19]
