@@ -387,6 +387,60 @@ async def test_delete(cache_key_fixture, l2cache_fixture):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "op_batch, missing",
+    [
+        (8, 1),
+        # The missing block ends the first batch.
+        (2, 1),
+        # The missing block starts the second batch.
+        (2, 2),
+    ],
+)
+async def test_get_stops_at_a_missing_block(
+    cache_key_fixture, l2cache_fixture, op_batch, missing
+):
+    shape, spec, l2cache = l2cache_fixture
+    open_status = l2cache.open()
+    open_status.raise_if_has_exception()
+    l2cache.op_batch = op_batch
+
+    capacity_nbytes = 128 * spec.block_nbytes
+    allocator = TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes)
+
+    n = spec.block_ntokens
+    tokens = cache_key_fixture([i for i in range(4 * n)], n)
+    put_mrs = build_put_mrs(
+        allocator, spec.block_nbytes, spec.block_ntokens, None, tokens
+    )
+    put_status = await l2cache.put(None, tokens, put_mrs)
+    assert put_status.is_ok()
+    assert put_status.value == 4
+
+    # Remove one of the four blocks.
+    del_status = await l2cache.delete(
+        tokens[: missing * n], tokens[missing * n : (missing + 1) * n]
+    )
+    assert del_status.is_ok()
+
+    exists_status = await l2cache.exists(None, tokens)
+    assert exists_status.is_ok()
+    assert exists_status.value == missing
+
+    get_mrs = build_get_mrs(
+        allocator, spec.block_nbytes, spec.block_ntokens, None, tokens
+    )
+    get_status = await l2cache.get(None, tokens, get_mrs)
+    # Only the blocks before the gap can be used.
+    assert get_status.is_ok()
+    assert get_status.value == missing
+    for i in range(missing):
+        assert torch.equal(get_mrs[i].to_tensor(), put_mrs[i].to_tensor())
+    release_mrs(put_mrs)
+    release_mrs(get_mrs)
+
+
+@pytest.mark.asyncio
 async def test_stress_cache(cache_key_fixture, l2cache_fixture):
     shape, spec, l2cache = l2cache_fixture
     open_status = l2cache.open()

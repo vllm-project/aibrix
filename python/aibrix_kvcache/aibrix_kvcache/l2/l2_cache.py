@@ -528,13 +528,13 @@ class L2Cache(MeasurableBase):
         for batch in block_batches:
             status = await self._backend_mget_impl(*zip(*batch))
 
-            should_break = False
             if not status.is_ok():
-                should_break = True
                 break
-            nr += status.get()
-
-            if should_break:
+            fetched = status.get()
+            nr += fetched
+            # A short batch ended at a miss; later batches must not be
+            # counted after the gap.
+            if fetched < len(batch):
                 break
 
         if nr == 0:
@@ -573,9 +573,11 @@ class L2Cache(MeasurableBase):
 
         is_managed_mr = isinstance(mrs[0], ManagedMemoryRegion)
         nr: int = 0
+        # Count only the leading run of fetched blocks: the caller uses
+        # mrs[:nr] as blocks 0..nr-1, so a block after a miss is unusable.
         for i, status in enumerate(statuses):
             if not status.is_ok():
-                continue
+                break
             # Bypass token validation if MR is using compact layout
             if is_managed_mr and not self._use_compact_layout:
                 mr = mrs[i]
@@ -584,7 +586,7 @@ class L2Cache(MeasurableBase):
                 if not self._tokens_match(
                     real_keys[i], prefix_in_mr, query_in_mr
                 ):
-                    continue
+                    break
             nr += 1
 
         if nr == 0:
