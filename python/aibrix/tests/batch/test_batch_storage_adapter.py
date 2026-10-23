@@ -225,9 +225,17 @@ async def test_read_job_next_input_data_keeps_locking_behavior(mock_storage):
 
 
 @pytest.mark.asyncio
-async def test_read_job_next_input_data_resumes_after_blank_line(tmp_path):
+@pytest.mark.parametrize("reader", ["local", "range"])
+async def test_read_job_next_input_data_resumes_after_blank_line(
+    tmp_path, monkeypatch, reader
+):
     # Request indices skip blank lines, so a resume must not count them.
     storage = create_storage(StorageType.LOCAL, base_path=str(tmp_path))
+    if reader == "range":
+        # S3, TOS and Redis read lines through BaseStorage's range reader.
+        # Small chunks split lines across range reads.
+        monkeypatch.setattr(type(storage), "readline_iter", BaseStorage.readline_iter)
+        monkeypatch.setattr(storage.config, "range_chunksize", 8)
     lines = [
         '{"custom_id":"a"}',
         "",

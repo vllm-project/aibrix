@@ -107,7 +107,8 @@ class BatchStorageAdapter:
 
         Args:
             job: BatchJob
-            start_index: Starting line index
+            start_index: Index of the first request to read. Blank lines
+                are not requests, so they are not counted.
 
         Returns:
             AsyncIterator of lines that were successfully locked for processing
