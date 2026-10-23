@@ -387,6 +387,16 @@ func TestTokenizerPoolGetTokenizer(t *testing.T) {
 		endpoint, _ := pool.findVLLMEndpointForModel("llama2-7b", pods)
 		assert.Equal(t, "http://llama-service:8000", endpoint)
 	})
+
+	t.Run("fixed endpoint takes precedence over service map and pods", func(t *testing.T) {
+		pool.config.FixedEndpoint = "http://tokenizer-service:8000"
+		defer func() { pool.config.FixedEndpoint = "" }()
+
+		pod := createTestPod("pod1", "llama2-7b", "vllm", true)
+		endpoint, podIP := pool.findVLLMEndpointForModel("llama2-7b", []*v1.Pod{&pod})
+		assert.Equal(t, "http://tokenizer-service:8000", endpoint)
+		assert.Empty(t, podIP, "a fixed endpoint is not pinned to a pod, so pod churn must not replace it")
+	})
 }
 
 func TestTokenizerPoolHealthCheck(t *testing.T) {
@@ -518,10 +528,19 @@ func TestTokenizerPoolMovesOffAPodThatLeft(t *testing.T) {
 	defer func() { assert.NoError(t, pool.Close()) }()
 
 	first := pool.GetTokenizer("m", pods)
-	assert.Equal(t, endpoints[0], first.(interface{ GetEndpoint() string }).GetEndpoint())
-	// pod-a is deleted, so routing now only sees pod-b.
-	moved := pool.GetTokenizer("m", pods[1:])
-	assert.Equal(t, endpoints[1], moved.(interface{ GetEndpoint() string }).GetEndpoint())
+	firstEndpoint := first.(interface{ GetEndpoint() string }).GetEndpoint()
+	assert.Contains(t, endpoints, firstEndpoint)
+	// The selected pod is deleted, so routing only sees the other one.
+	var remaining []*v1.Pod
+	for i, endpoint := range endpoints {
+		if endpoint != firstEndpoint {
+			remaining = append(remaining, pods[i])
+		}
+	}
+	moved := pool.GetTokenizer("m", remaining)
+	movedEndpoint := moved.(interface{ GetEndpoint() string }).GetEndpoint()
+	assert.NotEqual(t, firstEndpoint, movedEndpoint)
+	assert.Contains(t, endpoints, movedEndpoint)
 	assert.Len(t, pool.tokenizers, 1)
 }
 
@@ -904,6 +923,42 @@ func TestLoadTokenizerPoolConfigFromEnvNonDurationDefaults(t *testing.T) {
 	assert.Equal(t, 100, cfg.MaxTokenizersPerPool)
 	assert.Nil(t, cfg.DefaultTokenizer)
 	assert.NotNil(t, cfg.ModelServiceMap)
+}
+
+// TestLoadTokenizerPoolConfigFromEnvFixedEndpoint pins the wiring of
+// AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT into the pool config.
+func TestLoadTokenizerPoolConfigFromEnvFixedEndpoint(t *testing.T) {
+	t.Run("unset leaves FixedEndpoint empty", func(t *testing.T) {
+		assert.Empty(t, loadTokenizerPoolConfigFromEnv().FixedEndpoint)
+	})
+	t.Run("set configures FixedEndpoint", func(t *testing.T) {
+		t.Setenv(constants.EnvPrefixCacheRemoteTokenizerEndpoint, "http://tokenizer-service:8000")
+		assert.Equal(t, "http://tokenizer-service:8000", loadTokenizerPoolConfigFromEnv().FixedEndpoint)
+	})
+}
+
+// TestFindVLLMEndpointPicksARandomCandidatePod checks that pod discovery
+// spreads tokenize calls across the model's pods instead of pinning every
+// call to the first match.
+func TestFindVLLMEndpointPicksARandomCandidatePod(t *testing.T) {
+	pool := &TokenizerPool{config: TokenizerPoolConfig{EndpointTemplate: "http://%s:8000"}}
+	var pods []*v1.Pod
+	for _, name := range []string{"pod-a", "pod-bb", "pod-ccc"} {
+		pod := createTestPod(name, "llama2-7b", "vllm", true)
+		pods = append(pods, &pod)
+	}
+	// A ready pod whose IP is not populated yet must never be selected.
+	ipLessPod := createTestPod("pod-ipless", "llama2-7b", "vllm", true)
+	ipLessPod.Status.PodIP = ""
+	pods = append(pods, &ipLessPod)
+
+	seen := map[string]bool{}
+	for i := 0; i < 50; i++ {
+		_, podIP := pool.findVLLMEndpointForModel("llama2-7b", pods)
+		assert.NotEmpty(t, podIP)
+		seen[podIP] = true
+	}
+	assert.Len(t, seen, 3)
 }
 
 // TestTokenizerPoolBacksOffAFailedEndpoint checks that once an endpoint fails
