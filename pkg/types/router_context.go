@@ -223,25 +223,72 @@ type RoutingContext struct {
 	// PDLegState.
 	pdLeg atomic.Pointer[PDLegState]
 
+	// pool is the pool this incarnation came from.
+	pool routingContextPool
+	// Only queued requests need a shared lifetime. The caller and queue must
+	// both finish before this pooled object can be reset for another request.
+	queueLifetime atomic.Pointer[routingContextQueueLifetime]
+
 	// Fields for unit tests
 	debugDelay time.Duration
 }
 
-var requestPool = sync.Pool{
+type routingContextPool interface {
+	Get() any
+	Put(any)
+}
+
+var requestPool routingContextPool = &sync.Pool{
 	New: func() any { return &RoutingContext{} },
+}
+
+// routingContextQueueLifetime belongs to one incarnation of a pooled context.
+// It is allocated only when the request enters a queue.
+type routingContextQueueLifetime struct {
+	context    *RoutingContext
+	pool       routingContextPool
+	references atomic.Int32
+}
+
+func (r *RoutingContext) retainForQueue() *routingContextQueueLifetime {
+	lifetime := r.queueLifetime.Load()
+	if lifetime == nil {
+		pool := r.pool
+		if pool == nil {
+			pool = requestPool
+		}
+		candidate := &routingContextQueueLifetime{context: r, pool: pool}
+		candidate.references.Store(1) // The request caller's reference.
+		if r.queueLifetime.CompareAndSwap(nil, candidate) {
+			lifetime = candidate
+		} else {
+			lifetime = r.queueLifetime.Load()
+		}
+	}
+	lifetime.references.Add(1)
+	return lifetime
+}
+
+func (l *routingContextQueueLifetime) release() {
+	if l.references.Add(-1) == 0 && l.context.queueLifetime.Load() == l {
+		l.pool.Put(l.context)
+	}
 }
 
 // NewContext gets a RoutingContext with current RoutingAlgorithm.
 func (alg RoutingAlgorithm) NewContext(ctx context.Context, model, message, requestID, user string) *RoutingContext {
-	request := requestPool.Get().(*RoutingContext)
-	request.reset(ctx, alg, model, message, requestID, user)
-	return request
+	return NewRoutingContext(ctx, alg, model, message, requestID, user)
 }
 
 // NewRoutingContext gets a RoutingContext from a context pool.
 func NewRoutingContext(ctx context.Context, algorithms RoutingAlgorithm, model, message, requestID, user string) *RoutingContext {
-	request := requestPool.Get().(*RoutingContext)
+	return newRoutingContextFromPool(requestPool, ctx, algorithms, model, message, requestID, user)
+}
+
+func newRoutingContextFromPool(pool routingContextPool, ctx context.Context, algorithms RoutingAlgorithm, model, message, requestID, user string) *RoutingContext {
+	request := pool.Get().(*RoutingContext)
 	request.reset(ctx, algorithms, model, message, requestID, user)
+	request.pool = pool
 	return request
 }
 
@@ -255,10 +302,20 @@ func (r *RoutingContext) SetOutputPredictor(predictor OutputPredictor) (old Outp
 	return
 }
 
-// Delete resolves all waiting TargetPod() calls and releases the RoutingContext to the pool.
+// Delete resolves waiting TargetPod calls and releases the caller's ownership.
+// A queue that still owns the context delays its return to the pool; Delete
+// itself never waits for that queue to finish.
 func (r *RoutingContext) Delete() {
 	r.SetTargetPod(nil) // Unblock waiting TargetPod() call
-	requestPool.Put(r)
+	if lifetime := r.queueLifetime.Load(); lifetime != nil {
+		lifetime.release()
+		return
+	}
+	if r.pool != nil {
+		r.pool.Put(r)
+	} else {
+		requestPool.Put(r)
+	}
 }
 
 // Elapsed returns the elapsed time since the request was created.
@@ -547,6 +604,7 @@ func (r *RoutingContext) getError() (err error) {
 }
 
 func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, model, message, requestID, user string) {
+	r.queueLifetime.Store(nil)
 	r.Context = ctx
 	r.Algorithm = algorithms
 	// Select sets this only on success, so a pooled context must not hand the previous
