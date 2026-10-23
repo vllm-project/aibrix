@@ -105,21 +105,30 @@ class S3Storage(BaseStorage2):
                 size = reader.get_size()
             else:
                 size = len(reader)
+        except (OSError, IOError, ValueError):
+            # Can't determine size, give up multipart upload
+            pass
+        else:
+            # Outside the try: a failed upload (botocore timeouts are OSErrors)
+            # must raise, not fall through to a single PUT of the unread rest.
             if size >= self.config.multipart_threshold:
                 # ``bysize`` is required: ``BaseStorage.multipart_upload``
                 # falls back to ``put_object`` when no chunking strategy
                 # is given, which would re-enter this branch and recurse.
-                await self.multipart_upload(
-                    key,
-                    reader,
-                    content_type,
-                    metadata,
-                    bysize=self.config.multipart_threshold,
-                )
+                try:
+                    await self.multipart_upload(
+                        key,
+                        reader,
+                        content_type,
+                        metadata,
+                        bysize=self.config.multipart_threshold,
+                    )
+                finally:
+                    # Close the reader if we created it, also when the
+                    # upload fails.
+                    if isinstance(reader, Reader) and not isinstance(data, Reader):
+                        reader.close()
                 return True
-        except (OSError, IOError, ValueError):
-            # Can't determine size, give up multipart upload
-            pass
 
         # SigV4 always signs the request body and calls ``tell()`` on the
         # fileobj to remember its start position (botocore auth.py:343).
