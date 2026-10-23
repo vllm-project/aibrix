@@ -3001,7 +3001,7 @@ def test_launch_passes_a_downloaded_model_path_as_a_string(monkeypatch):
 
     launched = []
 
-    def fake_popen(cmd, env, start_new_session):
+    def fake_popen(cmd, **kwargs):
         launched.append(cmd)
         return SimpleNamespace(pid=4321)
 

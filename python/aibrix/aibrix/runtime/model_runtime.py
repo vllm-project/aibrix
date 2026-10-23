@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shlex
 import signal
 import socket
 import sys
@@ -940,7 +941,7 @@ class SubprocessEngineLauncher(EngineLauncher):
             "launching %s engine for %s: %s",
             inst.engine,
             inst.model_name,
-            " ".join(cmd),
+            shlex.join(map(str, cmd)),
         )
         proc = subprocess.Popen(cmd, env=env, start_new_session=True)
         inst.proc = proc
