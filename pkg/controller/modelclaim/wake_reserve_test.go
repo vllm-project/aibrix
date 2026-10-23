@@ -455,10 +455,46 @@ func TestReconcilePutsTheNeighbourIdleLongestToSleepToMakeRoomForAWake(t *testin
 	assert.Equal(t, "waker", runtime.wakeCalls[0].ModelName)
 }
 
-func TestPreemptionReservationKeepsAWakeFromConsumingHeldRoom(t *testing.T) {
+func TestPreemptionReservationRespectsWakePriority(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		wakerPriority int32
+		wantProgress  bool
+	}{
+		{name: "lower priority waits", wakerPriority: 9},
+		{name: "equal priority waits", wakerPriority: 10},
+		{name: "higher priority progresses", wakerPriority: 11, wantProgress: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, runtime, pod := crowdedCard(t, keepNoWakeReserve)
+			setClaimPriority(t, r, "waker", tc.wakerPriority)
+			owner := withFinalizer(priorityTestClaim("new", 10, at0759))
+			require.NoError(t, r.Create(context.Background(), owner))
+			require.True(t, r.reservations().holdPreemption(cardOf(pod), owner.Name, 400, r.now()))
+
+			reconcileOnce(t, r, "waker")
+
+			if !tc.wantProgress {
+				assert.Empty(t, runtime.sleepCalls)
+				assert.Empty(t, runtime.wakeCalls)
+				assert.Equal(t, instanceReasonWaitingForRoom, getModel(t, r, "waker").Status.Instances[0].Reason)
+				return
+			}
+			require.Len(t, runtime.sleepCalls, 1, "a higher-priority wake may make room despite the lower-priority hold")
+			assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
+
+			reconcileOnce(t, r, "waker")
+
+			require.Len(t, runtime.wakeCalls, 1)
+			assert.Equal(t, "waker", runtime.wakeCalls[0].ModelName)
+		})
+	}
+}
+
+func TestPreemptionReservationWithUnknownOwnerBlocksWake(t *testing.T) {
 	r, runtime, pod := crowdedCard(t, keepNoWakeReserve)
-	// Priority preemption has promised this room to a new claim. A wake waits
-	// until that reservation is released rather than consuming the room.
+	// A missing owner cannot prove that the wake outranks its reservation, so
+	// the account protects the held room until the reservation is released.
 	require.True(t, r.reservations().holdPreemption(cardOf(pod), "new", 400, r.now()))
 
 	reconcileOnce(t, r, "waker")
