@@ -19,6 +19,7 @@ import signal
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -2983,10 +2984,40 @@ def test_resolve_model_path_returns_the_downloaded_path(monkeypatch):
     import aibrix.downloader
     import aibrix.runtime.model_runtime as runtime_module
 
+    # The real downloader returns a pathlib.Path.
     monkeypatch.setattr(
-        aibrix.downloader, "download_model", lambda model_uri: "/models/m"
+        aibrix.downloader, "download_model", lambda model_uri: Path("/models/m")
     )
-    assert runtime_module._resolve_model_path("s3://bucket/models/m") == "/models/m"
+    resolved = runtime_module._resolve_model_path("s3://bucket/models/m")
+    assert isinstance(resolved, str)
+    assert resolved == "/models/m"
+
+
+def test_launch_passes_a_downloaded_model_path_as_a_string(monkeypatch):
+    import subprocess
+
+    import aibrix.downloader
+    from aibrix.runtime.model_runtime import ModelInstance, SubprocessEngineLauncher
+
+    launched = []
+
+    def fake_popen(cmd, **kwargs):
+        launched.append(cmd)
+        return SimpleNamespace(pid=4321)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        aibrix.downloader, "download_model", lambda model_uri: Path("/models/m")
+    )
+    inst = ModelInstance(model_name="m1", port=20000, ipc_name="kvc_m1", engine="vllm")
+
+    assert (
+        SubprocessEngineLauncher().launch(inst, "s3://bucket/models/m", None, None)
+        == 4321
+    )
+    cmd = launched[0]
+    assert cmd[cmd.index("--model") + 1] == "/models/m"
+    assert all(isinstance(arg, str) for arg in cmd)
 
 
 def test_resolve_model_path_raises_without_a_downloader(monkeypatch):
