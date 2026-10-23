@@ -14,17 +14,20 @@
 
 """Tests for S3Storage.put_object multipart error handling."""
 
+from unittest.mock import patch
+
 import pytest
 from botocore.exceptions import ReadTimeoutError
 
 from aibrix.storage.base import StorageConfig
+from aibrix.storage.reader import Reader
 from aibrix.storage.s3 import S3Storage
 
 
 class FakeMultipartS3Client:
     """Records S3 calls; ``upload_part`` times out on ``fail_part``."""
 
-    def __init__(self, fail_part: int) -> None:
+    def __init__(self, fail_part: int | None) -> None:
         self.fail_part = fail_part
         self.calls: list[str] = []
 
@@ -62,3 +65,34 @@ async def test_s3_put_object_raises_when_a_multipart_part_fails():
     assert "abort_multipart_upload" in storage.client.calls
     # The rest of the data must not be stored as the whole object.
     assert "put_object" not in storage.client.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_part", [2, None])
+async def test_s3_put_object_closes_its_reader_after_a_multipart_upload(
+    fail_part,
+):
+    storage = object.__new__(S3Storage)
+    storage.config = StorageConfig(multipart_threshold=8)
+    storage.bucket_name = "bucket"
+    storage.client = FakeMultipartS3Client(fail_part=fail_part)
+
+    # put_object() first wraps the bytes in a Reader, which it must close.
+    # Later wraps are the per-part uploads.
+    wrapped = []
+    wrap = storage._wrap_s3_data
+
+    def wrap_and_record(data):
+        reader = wrap(data)
+        wrapped.append(reader)
+        return reader
+
+    with patch.object(storage, "_wrap_s3_data", wrap_and_record):
+        if fail_part is None:
+            assert await storage.put_object("out.jsonl", b"A" * 19)
+        else:
+            with pytest.raises(ReadTimeoutError):
+                await storage.put_object("out.jsonl", b"A" * 19)
+
+    assert isinstance(wrapped[0], Reader)
+    assert wrapped[0].closed

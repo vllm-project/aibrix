@@ -115,13 +115,19 @@ class S3Storage(BaseStorage2):
                 # ``bysize`` is required: ``BaseStorage.multipart_upload``
                 # falls back to ``put_object`` when no chunking strategy
                 # is given, which would re-enter this branch and recurse.
-                await self.multipart_upload(
-                    key,
-                    reader,
-                    content_type,
-                    metadata,
-                    bysize=self.config.multipart_threshold,
-                )
+                try:
+                    await self.multipart_upload(
+                        key,
+                        reader,
+                        content_type,
+                        metadata,
+                        bysize=self.config.multipart_threshold,
+                    )
+                finally:
+                    # Close the reader if we created it, also when the
+                    # upload fails.
+                    if isinstance(reader, Reader) and not isinstance(data, Reader):
+                        reader.close()
                 return True
 
         # SigV4 always signs the request body and calls ``tell()`` on the
