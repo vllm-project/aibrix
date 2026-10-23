@@ -241,6 +241,9 @@ class OpMetrics(Metrics):
             self.num_errors_by_reason[error_key] = prev + 1
         elif self._is_get() and status.is_ok():
             value = status.get()
+            # A tuple holds a number of tokens. An int is a number of blocks,
+            # except at the cache manager, whose metrics use block_ntokens=1
+            # (see KVCacheMetrics).
             if isinstance(value, tuple):
                 num_fetched_tokens = value[0]
             elif isinstance(value, int):
@@ -558,6 +561,7 @@ class BaseCacheMetrics(Metrics, MetricRecorder):
     def _agg_hit_miss(self, num_tokens: int, status: Status) -> None:
         if status.is_ok():
             value = status.get()
+            # Same units as OpMetrics.add.
             if isinstance(value, tuple):
                 num_tokens_hit = value[0]
             elif isinstance(value, int):
@@ -790,9 +794,11 @@ class KVCacheMetrics(Metrics):
                 enable_time_measurement=enable_time_measurement,
                 enable_breakdown_measurement=enable_breakdown_measurement,
             )
+        # The manager's get() returns a number of tokens, not blocks, so its
+        # int results must not be scaled by block_ntokens.
         self.mgr = CacheMgrMetrics(
             cache_type="CacheMgr",
-            block_ntokens=block_ntokens,
+            block_ntokens=1,
             enable_time_measurement=enable_time_measurement,
             enable_breakdown_measurement=enable_breakdown_measurement,
         )
