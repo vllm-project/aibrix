@@ -1018,7 +1018,7 @@ def _resolve_model_path(artifact_url: str) -> str:
     scheme, rest = artifact_url.split("://", 1)
     if scheme in ("huggingface", "hf"):
         return rest
-    from aibrix.downloader import download_model  # type: ignore
+    from aibrix.downloader import download_model
 
     # The downloader returns a pathlib.Path; the engine command line is built
     # from strings.
