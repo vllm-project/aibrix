@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from prometheus_client import CollectorRegistry, generate_latest
+from prometheus_client.samples import Exemplar, Timestamp
 
 from aibrix.metrics.http_collector import HTTPCollector
 from aibrix.metrics.standard_rules import RenameStandardRule
@@ -272,6 +273,63 @@ vllm:prompt_tokens_total{model_name="test-model"} 1000
         mock_session.return_value.get.assert_called_once_with(
             "http://fake.metrics.url", timeout=collector.timeout
         )
+
+    @pytest.mark.parametrize("keep_original_metric", [False, True])
+    @pytest.mark.parametrize("field", ["labels", "timestamp", "exemplar"])
+    @patch("aibrix.metrics.http_collector.requests.Session")
+    def test_reused_metric_preserves_mutable_sample_fields(
+        self, mock_session, keep_original_metric, field
+    ):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = self.SAMPLE_METRICS_TEXT
+        mock_session.return_value.get.return_value = mock_response
+
+        class ReusingRule:
+            def __call__(self, metric):
+                timestamp = Timestamp(1, 0)
+                exemplar = Exemplar({"trace_id": "first"}, 1, timestamp)
+                metric.samples = [
+                    sample._replace(timestamp=timestamp, exemplar=exemplar)
+                    for sample in metric.samples
+                ]
+                yield from RenameStandardRule(metric.name, "aibrix:first")(metric)
+                if field == "labels":
+                    metric.samples[0].labels["model_name"] = "later"
+                elif field == "timestamp":
+                    timestamp.sec = 2
+                else:
+                    exemplar.labels["trace_id"] = "later"
+                yield from RenameStandardRule(metric.name, "aibrix:second")(metric)
+
+        collector = HTTPCollector(
+            endpoint="http://fake.metrics.url",
+            metrics_rules={"vllm:prompt_tokens": ReusingRule()},
+            keep_original_metric=keep_original_metric,
+            raw_passthrough_mode=False,
+        )
+        # Observe values at each yield, just as an exposition consumer does.
+        observed = {}
+        for metric in collector.collect():
+            if metric.name.startswith("aibrix:"):
+                sample = metric.samples[0]
+                observed[metric.name] = (
+                    dict(sample.labels),
+                    float(sample.timestamp),
+                    dict(sample.exemplar.labels),
+                    float(sample.exemplar.timestamp),
+                )
+                assert sample.timestamp is sample.exemplar.timestamp
+        first = ({"model_name": "test-model"}, 1.0, {"trace_id": "first"}, 1.0)
+        assert observed["aibrix:first"] == first
+        later = list(first)
+        if field == "labels":
+            later[0] = {"model_name": "later"}
+        elif field == "timestamp":
+            later[1] = later[3] = 2.0
+        else:
+            later[2] = {"trace_id": "later"}
+        assert observed["aibrix:second"] == tuple(later)
 
     @patch("aibrix.metrics.http_collector.requests.Session")
     def test_explicit_passthrough_overrides_env_var(self, mock_session):
