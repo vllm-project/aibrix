@@ -580,6 +580,11 @@ func TestSetInvalidSpecStatusPersistsConditions(t *testing.T) {
 		Success:       true,
 	}}
 	wantScalingHistory := append([]autoscalingv1alpha1.ScalingDecision(nil), pa.Status.ScalingHistory...)
+	pa.Status.ElasticEPScaling = &autoscalingv1alpha1.ElasticEPScalingStatus{
+		InProgress:      true,
+		ObservedEngines: 3,
+		ScalingEngines:  1,
+	}
 	// Simulate an existing PodAutoscaler after a successful reconcile. In this
 	// case every condition updated by setInvalidSpecStatus already exists, so no
 	// append can accidentally hide a shared Conditions backing array.
@@ -636,6 +641,10 @@ func TestSetInvalidSpecStatusPersistsConditions(t *testing.T) {
 		gotDecision.Success != wantDecision.Success ||
 		gotDecision.Error != wantDecision.Error {
 		t.Fatalf("scaling history changed: got %+v, want %+v", latest.Status.ScalingHistory, wantScalingHistory)
+	}
+	if latest.Status.ElasticEPScaling == nil || !latest.Status.ElasticEPScaling.InProgress ||
+		latest.Status.ElasticEPScaling.ObservedEngines != 3 || latest.Status.ElasticEPScaling.ScalingEngines != 1 {
+		t.Fatalf("elastic EP scaling status changed: got %+v", latest.Status.ElasticEPScaling)
 	}
 	if !hasObservedInvalidSpec(latest) {
 		t.Fatal("expected invalid spec to be gated for the observed generation")
@@ -780,7 +789,7 @@ func TestComputeScaleDecisionAllowsScheduledMinReplicasFromZero(t *testing.T) {
 			pa := *validPodAutoscalerForSpec()
 			pa.Spec.Schedules = []autoscalingv1alpha1.PodAutoscalerSchedule{tt.schedule}
 
-			decision, err := r.computeScaleDecision(context.Background(), pa, nil, 0)
+			decision, err := r.computeScaleDecision(context.Background(), pa, 0, nil, nil)
 			if err != nil {
 				t.Fatalf("computeScaleDecision returned error: %v", err)
 			}
@@ -820,8 +829,12 @@ func TestComputeScaleDecisionPendingGuardDoesNotOverrideHardBounds(t *testing.T)
 	pa.Spec.MaxReplicas = 10
 
 	scaleObj := buildScaleObject("apps/v1", "Deployment", ns, "test-deployment")
+	pods, err := r.getPodsForScale(context.Background(), &pa, scaleObj)
+	if err != nil {
+		t.Fatalf("getPodsForScale returned error: %v", err)
+	}
 
-	decision, err := r.computeScaleDecision(context.Background(), pa, scaleObj, 12)
+	decision, err := r.computeScaleDecision(context.Background(), pa, 12, pods, nil)
 
 	if err != nil {
 		t.Fatalf("computeScaleDecision returned error: %v", err)
@@ -883,8 +896,12 @@ func TestComputeScaleDecisionAppliesHardBoundsWhenMetricsFail(t *testing.T) {
 			pa.Spec.MaxReplicas = tt.maxReplicas
 
 			scaleObj := buildScaleObject("apps/v1", "Deployment", ns, "test-deployment")
+			pods, err := r.getPodsForScale(context.Background(), &pa, scaleObj)
+			if err != nil {
+				t.Fatalf("getPodsForScale returned error: %v", err)
+			}
 
-			decision, err := r.computeScaleDecision(context.Background(), pa, scaleObj, tt.currentReplicas)
+			decision, err := r.computeScaleDecision(context.Background(), pa, tt.currentReplicas, pods, nil)
 
 			if err != nil {
 				t.Fatalf("computeScaleDecision returned error: %v", err)
@@ -899,6 +916,29 @@ func TestComputeScaleDecisionAppliesHardBoundsWhenMetricsFail(t *testing.T) {
 				t.Fatalf("Reason=%q", decision.Reason)
 			}
 		})
+	}
+}
+
+func TestComputeScaleDecisionTreatsPodListFailureAsMetricFailure(t *testing.T) {
+	r := &PodAutoscalerReconciler{
+		workloadScaleClient: &fakeWorkloadScaleClient{},
+		autoScaler:          &fakeAutoScaler{},
+	}
+	pa := *validPodAutoscalerForSpec()
+	pa.Namespace = ns
+	pa.Spec.MinReplicas = ptr.To(int32(1))
+	pa.Spec.MaxReplicas = 10
+
+	decision, err := r.computeScaleDecision(context.Background(), pa, 12, nil, errors.New("list failed"))
+
+	if err != nil {
+		t.Fatalf("computeScaleDecision returned error: %v", err)
+	}
+	if decision.DesiredReplicas != 10 || !decision.ShouldScale {
+		t.Fatalf("DesiredReplicas=%d ShouldScale=%t, want the hard maximum 10", decision.DesiredReplicas, decision.ShouldScale)
+	}
+	if decision.Reason != "current replicas above maximum" {
+		t.Fatalf("Reason=%q", decision.Reason)
 	}
 }
 
@@ -1049,7 +1089,11 @@ func TestComputeMetricBasedReplicas_Deployment_NoIndexFilter(t *testing.T) {
 	scalingCtx := scalingctx.NewBaseScalingContext()
 
 	currentReplicas := int32(2)
-	res, err := r.computeMetricBasedReplicas(ctx, pa, scalingCtx, scaleObj, currentReplicas)
+	pods, err := r.getPodsForScale(ctx, &pa, scaleObj)
+	if err != nil {
+		t.Fatalf("getPodsForScale returned error: %v", err)
+	}
+	res, err := r.computeMetricBasedReplicas(ctx, pa, scalingCtx, currentReplicas, pods)
 	if err != nil {
 		t.Fatalf("computeMetricBasedReplicas returned error: %v", err)
 	}
@@ -1186,7 +1230,11 @@ func TestComputeMetricBasedReplicas_StormService_FiltersIndex0(t *testing.T) {
 
 			scalingCtx := scalingctx.NewBaseScalingContext()
 
-			res, err := r.computeMetricBasedReplicas(ctx, pa, scalingCtx, scaleObj, 3)
+			pods, err := r.getPodsForScale(ctx, &pa, scaleObj)
+			if err != nil {
+				t.Fatalf("getPodsForScale error: %v", err)
+			}
+			res, err := r.computeMetricBasedReplicas(ctx, pa, scalingCtx, 3, pods)
 			if err != nil {
 				t.Fatalf("computeMetricBasedReplicas error: %v", err)
 			}
@@ -1260,7 +1308,11 @@ func TestComputeMetricBasedReplicas_RayClusterFleet_FiltersHeadOnly(t *testing.T
 	}
 	scalingCtx := scalingctx.NewBaseScalingContext()
 
-	res, err := r.computeMetricBasedReplicas(ctx, pa, scalingCtx, scaleObj, 1)
+	pods, err := r.getPodsForScale(ctx, &pa, scaleObj)
+	if err != nil {
+		t.Fatalf("getPodsForScale returned error: %v", err)
+	}
+	res, err := r.computeMetricBasedReplicas(ctx, pa, scalingCtx, 1, pods)
 	if err != nil {
 		t.Fatalf("computeMetricBasedReplicas returned error: %v", err)
 	}
