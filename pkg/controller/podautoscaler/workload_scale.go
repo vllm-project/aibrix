@@ -19,6 +19,7 @@ package podautoscaler
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
@@ -355,23 +356,44 @@ func (s *workloadScale) getPodSelectorForRole(ctx context.Context, pa *autoscali
 
 	// ss.Spec.Template.Spec may be nil in test cases
 	if ss.Spec.Template.Spec != nil {
+		var maxPodGroupSize int32
+		hasRoleWithoutPodGroups := false
 		for _, role := range ss.Spec.Template.Spec.Roles {
 			// skip if roleName specified but not equal
 			if roleName != "" && role.Name != roleName {
 				continue
 			}
-
-			// add new selector for podGroup index 0, based on #1704
 			if role.PodGroupSize != nil && *role.PodGroupSize > 1 {
-				req, err := labels.NewRequirement(constants.PodGroupIndexLabelKey, selection.Equals, []string{"0"})
-				if err != nil {
-					return nil, err
-				}
-				labelSelector = labelSelector.Add(*req)
+				maxPodGroupSize = max(maxPodGroupSize, *role.PodGroupSize)
+			} else {
+				hasRoleWithoutPodGroups = true
 			}
+		}
+
+		// add new selector for podGroup index 0, based on #1704
+		if maxPodGroupSize > 1 {
+			req, err := podGroupIndexZeroRequirement(maxPodGroupSize, hasRoleWithoutPodGroups)
+			if err != nil {
+				return nil, err
+			}
+			labelSelector = labelSelector.Add(*req)
 		}
 	}
 	return labelSelector, nil
+}
+
+// podGroupIndexZeroRequirement keeps index 0 of each pod group. Only pods of a pod group have the
+// pod-group-index label, so when roles without pod groups are selected too, the other indexes are
+// excluded instead of requiring index 0, which would drop every pod of those roles.
+func podGroupIndexZeroRequirement(maxPodGroupSize int32, hasRoleWithoutPodGroups bool) (*labels.Requirement, error) {
+	if !hasRoleWithoutPodGroups {
+		return labels.NewRequirement(constants.PodGroupIndexLabelKey, selection.Equals, []string{"0"})
+	}
+	otherIndexes := make([]string, 0, maxPodGroupSize-1)
+	for i := int32(1); i < maxPodGroupSize; i++ {
+		otherIndexes = append(otherIndexes, strconv.Itoa(int(i)))
+	}
+	return labels.NewRequirement(constants.PodGroupIndexLabelKey, selection.NotIn, otherIndexes)
 }
 
 func (s *workloadScale) GetPodSelectorFromScale(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (labels.Selector, error) {
