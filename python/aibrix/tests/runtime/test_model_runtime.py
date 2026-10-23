@@ -3009,6 +3009,54 @@ def test_resolve_model_path_raises_other_import_time_errors(monkeypatch):
         runtime_module._resolve_model_path("s3://bucket/models/m")
 
 
+@pytest.mark.parametrize("scheme", ["gcs", "gs"])
+def test_resolve_model_path_downloads_from_gcs(monkeypatch, tmp_path, scheme):
+    import requests
+
+    import aibrix.downloader.gcs as gcs_module
+    import aibrix.envs
+    import aibrix.runtime.model_runtime as runtime_module
+
+    objects = {"models/m/config.json": b"{}"}
+
+    class Blob:
+        def __init__(self, name):
+            self.name, self.size, self.etag = name, len(objects[name]), "etag"
+
+        def download_to_filename(self, filename):
+            with open(filename, "wb") as f:
+                f.write(objects[self.name])
+
+    class Client:
+        _http = requests.Session()
+
+        def bucket(self, bucket_name):
+            assert bucket_name == "bucket"
+            return SimpleNamespace(
+                get_blob=lambda name: Blob(name) if name in objects else None
+            )
+
+        def list_blobs(self, bucket_name, prefix=None, max_results=None):
+            names = [n for n in objects if n.startswith(prefix)][:max_results]
+            return iter(Blob(n) for n in names)
+
+    monkeypatch.setattr(
+        gcs_module, "storage", SimpleNamespace(Client=lambda project=None: Client())
+    )
+    monkeypatch.setattr(aibrix.envs, "DOWNLOADER_LOCAL_DIR", str(tmp_path))
+
+    model_path = runtime_module._resolve_model_path(f"{scheme}://bucket/models/m")
+    assert (tmp_path / "m" / "config.json").read_bytes() == b"{}"
+    assert str(model_path) == str(tmp_path / "m")
+
+
+def test_resolve_model_path_names_an_unsupported_scheme():
+    import aibrix.runtime.model_runtime as runtime_module
+
+    with pytest.raises(ValueError, match="`azure://`"):
+        runtime_module._resolve_model_path("azure://container/models/m")
+
+
 class _DownloadingLauncher(MockEngineLauncher):
     """Resolves the artifact URL first, as SubprocessEngineLauncher does."""
 

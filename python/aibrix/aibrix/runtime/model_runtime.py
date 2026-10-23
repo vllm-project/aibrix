@@ -1007,10 +1007,10 @@ def _resolve_model_path(artifact_url: str) -> str:
     - Local paths and bare model names pass through unchanged.
     - ``huggingface://`` / ``hf://`` hand the bare repo id to the engine, which
       downloads from the Hugging Face Hub natively (no aibrix downloader needed).
-    - Other remote stores (``s3://``, ``gcs://``, ``tos://``, ...) that the
-      engine can't fetch are staged locally via the aibrix downloader.
-      Download errors (bad URL, missing credentials, missing object, a missing
-      backend dependency) are raised.
+    - Remote stores the engine can't fetch (``s3://``, ``tos://``,
+      ``gcs://``/``gs://``) are staged locally via the aibrix downloader.
+      Download errors (bad URL, unsupported scheme, missing credentials,
+      missing object, a missing backend dependency) are raised.
     """
     if "://" not in artifact_url:
         return artifact_url
