@@ -165,9 +165,17 @@ func (e *Executor) assign(encoders []*v1.Pod, n int) []*v1.Pod {
 		// Start the scan at the round-robin position so ties rotate.
 		for j := range encoders {
 			pod := encoders[(start+uint64(i)+uint64(j))%uint64(len(encoders))]
+			if pod == nil {
+				continue
+			}
 			if count := e.inflight[podKey(pod)]; best == nil || count < bestCount {
 				best, bestCount = pod, count
 			}
+		}
+		if best == nil {
+			// Only nil pods: keep the round-robin pick, which encode rejects.
+			picks[i] = encoders[(start+uint64(i))%uint64(len(encoders))]
+			continue
 		}
 		picks[i] = best
 		e.inflight[podKey(best)]++
@@ -176,7 +184,7 @@ func (e *Executor) assign(encoders []*v1.Pod, n int) []*v1.Pod {
 }
 
 func (e *Executor) release(pod *v1.Pod) {
-	if !e.leastRequest {
+	if !e.leastRequest || pod == nil {
 		return
 	}
 	e.mu.Lock()
@@ -209,7 +217,11 @@ func (e *Executor) Execute(routingCtx *types.RoutingContext, encoders []*v1.Pod,
 			defer wg.Done()
 			defer e.release(pod)
 			if err := e.encode(routingCtx, pod, i, item, timeout); err != nil {
-				errs[i] = fmt.Errorf("encode item %d on pod %s: %w", i, pod.Name, err)
+				name := "<nil>"
+				if pod != nil {
+					name = pod.Name
+				}
+				errs[i] = fmt.Errorf("encode item %d on pod %s: %w", i, name, err)
 			}
 		}()
 	}

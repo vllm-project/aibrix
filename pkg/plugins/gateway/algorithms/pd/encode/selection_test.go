@@ -103,8 +103,9 @@ func TestEncoderSelectionUnderLoad(t *testing.T) {
 			encoders := []*v1.Pod{encoderPod("encode-a", "10.0.0.1"), encoderPod("encode-b", "10.0.0.2")}
 
 			first := make(chan error, 1)
+			req1 := encodeRequest(t, "r1")
 			go func() {
-				first <- executor.Execute(encodeRequest(t, "r1"), encoders, []string{imageItem}, 5*time.Second)
+				first <- executor.Execute(req1, encoders, []string{imageItem}, 5*time.Second)
 			}()
 			require.Equal(t, hostA, <-transport.arrived, "the first item goes to the first encoder")
 
@@ -113,8 +114,9 @@ func TestEncoderSelectionUnderLoad(t *testing.T) {
 			assert.Equal(t, hostB, transport.host("r2-encode-0"))
 
 			third := make(chan error, 1)
+			req3 := encodeRequest(t, "r3")
 			go func() {
-				third <- executor.Execute(encodeRequest(t, "r3"), encoders, []string{imageItem}, 5*time.Second)
+				third <- executor.Execute(req3, encoders, []string{imageItem}, 5*time.Second)
 			}()
 			assert.Equal(t, tc.wantThird, <-transport.arrived)
 
@@ -144,6 +146,28 @@ func TestLeastRequestSpreadsItemsOfOneRequest(t *testing.T) {
 		executor.release(pod)
 	}
 	assert.Empty(t, executor.inflight)
+}
+
+// A nil pod among the encoders is skipped under least_request; an item that
+// can only go to a nil pod fails in encode, as under round-robin, instead of
+// panicking.
+func TestLeastRequestSkipsNilEncoders(t *testing.T) {
+	t.Setenv("AIBRIX_ENCODE_SELECTION_POLICY", PolicyLeastRequest)
+	executor := NewExecutor(&http.Client{Transport: newGatedTransport("")})
+	b := encoderPod("encode-b", "10.0.0.2")
+
+	require.NoError(t, executor.Execute(encodeRequest(t, "r1"), []*v1.Pod{nil, b}, []string{imageItem, imageItem}, 5*time.Second))
+	err := executor.Execute(encodeRequest(t, "r2"), []*v1.Pod{nil}, []string{imageItem}, 5*time.Second)
+	require.ErrorContains(t, err, "encode pod is nil")
+	assert.Empty(t, executor.inflight)
+}
+
+// Under round-robin too, an item sent to a nil pod fails instead of panicking.
+func TestRoundRobinNilEncoderFails(t *testing.T) {
+	t.Setenv("AIBRIX_ENCODE_SELECTION_POLICY", PolicyRoundRobin)
+	executor := NewExecutor(&http.Client{Transport: newGatedTransport("")})
+	err := executor.Execute(encodeRequest(t, "r1"), []*v1.Pod{nil}, []string{imageItem}, 5*time.Second)
+	require.ErrorContains(t, err, "encode pod is nil")
 }
 
 func TestUnknownEncoderSelectionPolicyUsesRoundRobin(t *testing.T) {
