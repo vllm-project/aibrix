@@ -17,6 +17,7 @@ limitations under the License.
 package types
 
 import (
+	"context"
 	"errors"
 	"time"
 )
@@ -53,6 +54,11 @@ type QueueEntry struct {
 	// at enqueue time. Reading them never touches the pooled context.
 	Model     string
 	BaseModel string
+
+	// requesterCtx is the requester's own context (the value RoutingContext embeds),
+	// frozen at enqueue time. Reset replaces the embedded value when the routing
+	// context is recycled, so this still reports this request's cancellation.
+	requesterCtx context.Context
 }
 
 // NewQueueEntry freezes the metadata a queue reports from, before the requester can be
@@ -63,5 +69,17 @@ func NewQueueEntry(ctx *RoutingContext, enqueuedAt time.Time) *QueueEntry {
 		EnqueuedAt:     enqueuedAt,
 		Model:          ctx.Model,
 		BaseModel:      ctx.BaseModel,
+		requesterCtx:   ctx.Context,
 	}
+}
+
+// RequesterErr returns the requester's context error once it stopped waiting while
+// the entry was queued: context.Canceled when the client went away, or
+// context.DeadlineExceeded when its deadline passed. It is nil while the requester
+// still waits. It reads the context frozen at enqueue time, never the pooled one.
+func (e *QueueEntry) RequesterErr() error {
+	if e.requesterCtx == nil {
+		return nil
+	}
+	return e.requesterCtx.Err()
 }

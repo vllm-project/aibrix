@@ -17,6 +17,7 @@ limitations under the License.
 package routingalgorithms
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime/debug"
@@ -192,15 +193,21 @@ func (r *queueRouter) routeNext(pods types.PodList) (advance bool) {
 	}
 
 	step = routeStepRoute
-	ctx := entry.RoutingContext
-	_, routeErr := r.router.Route(ctx, pods)
-	if routeErr != nil {
-		// Necessary if Router has not set the error. No harm to set twice.
-		ctx.SetError(routeErr)
-	} else {
-		// Add request count here to make real-time metrics update and read serial.
-		// Noted, AddRequestCount should implement the idempotence.
-		r.cache.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
+	// A requester that stopped waiting while queued may already have had its context
+	// recycled for another request. Routing the entry would set that request's target
+	// pod, so such an entry is dequeued without touching the context.
+	routeErr := entry.RequesterErr()
+	if routeErr == nil {
+		ctx := entry.RoutingContext
+		_, routeErr = r.router.Route(ctx, pods)
+		if routeErr != nil {
+			// Necessary if Router has not set the error. No harm to set twice.
+			ctx.SetError(routeErr)
+		} else {
+			// Add request count here to make real-time metrics update and read serial.
+			// Noted, AddRequestCount should implement the idempotence.
+			r.cache.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
+		}
 	}
 
 	step = routeStepDequeue
@@ -302,12 +309,16 @@ func reportRoutePanic(v any, entry *types.QueueEntry, step string) {
 
 // Outcome label values for gateway_queue_outcome_total. slo_failure and
 // capacity_reached are the two conclusions the SLO queue reaches when it rejects a
-// request early; error covers everything else, such as a router selection failure.
+// request early; canceled and deadline_exceeded mean the requester stopped waiting
+// before the entry was routed, so it was dropped; error covers everything else, such as
+// a router selection failure.
 const (
-	queueOutcomeRouted          = "routed"
-	queueOutcomeSLOFailure      = "slo_failure"
-	queueOutcomeCapacityReached = "capacity_reached"
-	queueOutcomeError           = "error"
+	queueOutcomeRouted           = "routed"
+	queueOutcomeSLOFailure       = "slo_failure"
+	queueOutcomeCapacityReached  = "capacity_reached"
+	queueOutcomeError            = "error"
+	queueOutcomeCanceled         = "canceled"
+	queueOutcomeDeadlineExceeded = "deadline_exceeded"
 )
 
 // queueWaitBucketLabel buckets how long a request waited in the queue. Queue waits run
@@ -343,6 +354,10 @@ func queueOutcomeLabel(err error) string {
 		return queueOutcomeSLOFailure
 	case errors.Is(err, cache.ErrorLoadCapacityReached):
 		return queueOutcomeCapacityReached
+	case errors.Is(err, context.Canceled):
+		return queueOutcomeCanceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return queueOutcomeDeadlineExceeded
 	default:
 		return queueOutcomeError
 	}

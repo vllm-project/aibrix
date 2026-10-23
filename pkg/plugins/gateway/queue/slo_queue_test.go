@@ -335,6 +335,35 @@ var _ = Describe("SLOQueue Peek failure isolation", func() {
 		Expect(picked.RequestID).To(Equal("req-late"))
 	})
 
+	It("should hand back a request whose client stopped waiting without ranking or routing it", func() {
+		gone := newRankedTestRequest("req-gone", 16, 0)
+		requestCtx, cancel := context.WithCancel(context.Background())
+		cancel()
+		gone.Context = requestCtx
+		q := newTestSLOQueue(model, map[string]*types.RoutingContext{
+			"early": newRankedTestRequest("req-early", 2, time.Second),
+			"gone":  gone,
+		})
+		pods := fakePodList{deployments: []string{"dep-good", "dep-bad"}}
+
+		picked, err := q.Peek(time.Now(), pods)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(picked).NotTo(BeNil())
+		Expect(picked.RequestID).To(Equal("req-gone"))
+		Expect(picked.RequesterErr()).To(MatchError(context.Canceled))
+		Expect(gone.HasRouted()).To(BeFalse())
+
+		dequeued, err := q.Dequeue(time.Now())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(dequeued).To(BeIdenticalTo(picked))
+
+		next, err := q.Peek(time.Now(), pods)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(next).NotTo(BeNil())
+		Expect(next.RequestID).To(Equal("req-early"))
+		Expect(next.HasRouted()).To(BeTrue())
+	})
+
 	It("should fall back to FIFO when no profile provides ranking for any request", func() {
 		q := newTestSLOQueue(model, map[string]*types.RoutingContext{
 			"early": newRankedTestRequest("req-early", 2, time.Second),

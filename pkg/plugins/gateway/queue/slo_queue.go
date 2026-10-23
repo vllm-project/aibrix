@@ -218,6 +218,8 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Queue
 		q.dequeueCandidates[0].SubKey = key
 		return true
 	}
+	var stopped *types.QueueEntry
+	var stoppedKey string
 	q.subs.Range(func(key string, sub types.RouterQueue[*types.QueueEntry]) bool {
 		r, peekErr := sub.Peek(currentTime, pods)
 		if peekErr == types.ErrQueueEmpty {
@@ -225,6 +227,14 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Queue
 		} else if peekErr != nil {
 			klog.Errorf("Failed to peek subqueue %s: %v.", key, peekErr)
 			return true
+		}
+		if r.RequesterErr() != nil {
+			// The requester stopped waiting, and its routing context may already serve
+			// another request: this entry is neither ranked nor routed. Hand it back
+			// so the caller drops it, and so it does not hold the head of its subqueue.
+			// Heads visited before it were only ranked; routing happens after Range.
+			stopped, stoppedKey = r, key
+			return false
 		}
 
 		// Keep fallback decision in case anything wrong.
@@ -286,6 +296,11 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Queue
 		})
 		return true
 	})
+
+	if stopped != nil {
+		q.lastCandidateSubKey = stoppedKey
+		return stopped, nil
+	}
 
 	if len(q.dequeueCandidates) == 0 {
 		return nil, types.ErrQueueEmpty
