@@ -483,6 +483,7 @@ func TestPendingReplicaGuardIgnoresFloatError(t *testing.T) {
 		currentPods  int32
 		readyPods    int32
 		pendingPods  int32
+		podCount     int // pods the metric is read from; 2 when unset
 		wantReplicas int32
 	}{
 		{
@@ -515,10 +516,42 @@ func TestPendingReplicaGuardIgnoresFloatError(t *testing.T) {
 			pendingPods:  2,
 			wantReplicas: 3,
 		},
+		{
+			// 3 × 0.2 / 0.1 is exactly 6 but evaluates just above it, and the guard's cap at the
+			// algorithm's answer lets the extra pod through on scale-up.
+			name:         "kpa scale-up",
+			strategy:     autoscalingv1alpha1.KPA,
+			target:       "0.1",
+			metricValue:  0.2,
+			currentPods:  4,
+			readyPods:    3,
+			pendingPods:  1,
+			podCount:     4,
+			wantReplicas: 6,
+		},
+		{
+			name:         "apa scale-up",
+			strategy:     autoscalingv1alpha1.APA,
+			target:       "0.1",
+			metricValue:  0.2,
+			currentPods:  4,
+			readyPods:    3,
+			pendingPods:  1,
+			podCount:     4,
+			wantReplicas: 6,
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			pa := testPodAutoscaler(tt.strategy)
 			pa.Spec.MetricsSources[0].TargetValue = tt.target
+			podCount := tt.podCount
+			if podCount == 0 {
+				podCount = 2
+			}
+			pods := make([]corev1.Pod, podCount)
+			for i := range pods {
+				pods[i].Name = fmt.Sprintf("ready-%d", i+1)
+			}
 			autoScaler := NewDefaultAutoScaler(&mockMetricFetcherFactory{
 				mockMetricFetcher: mockMetricFetcher{metricsValue: tt.metricValue},
 			}, fake.NewClientBuilder().Build())
@@ -531,10 +564,7 @@ func TestPendingReplicaGuardIgnoresFloatError(t *testing.T) {
 					ReadyReplicas:   tt.readyPods,
 					PendingReplicas: tt.pendingPods,
 				},
-				Pods: []corev1.Pod{
-					{ObjectMeta: metav1.ObjectMeta{Name: "ready-1"}},
-					{ObjectMeta: metav1.ObjectMeta{Name: "ready-2"}},
-				},
+				Pods:      pods,
 				Timestamp: time.Now(),
 			})
 
