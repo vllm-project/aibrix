@@ -626,10 +626,17 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 const madOutlierMultiplier = 3.0
 
 // winsorizeClip clamps any value more than madOutlierMultiplier median-absolute-deviations from
-// the median to that bound, returning a new slice (the input is left untouched). Skipped for
+// the median on the worse side for polarity (above it for PolarityLeast, below it for
+// PolarityMost) to that bound, returning a new slice (the input is left untouched). Skipped for
 // fewer than 3 values, where a robust center/spread isn't meaningful, and when mad==0 (every
 // value is identical, so there's no spread to judge outliers against).
-func winsorizeClip(values []float64) []float64 {
+//
+// The better side is left alone: clamping it would pull the best pods onto one bound, so an idle
+// pod and a busier one would both normalize to 1.0, and the name tie-break in scoreAndRank would
+// then pick whichever sorts first. With running requests {20, 0, 49, 50, 51} the bound is 43,
+// so 20 and 0 tied. An outlier on the better side cannot stretch the scale the way the motivating
+// case below does; it only widens the gap between the best pod and the rest.
+func winsorizeClip(values []float64, polarity types.Polarity) []float64 {
 	n := len(values)
 	if n < 3 {
 		return values
@@ -651,9 +658,9 @@ func winsorizeClip(values []float64) []float64 {
 	clipped := make([]float64, n)
 	for i, v := range values {
 		switch {
-		case v > upper:
+		case polarity == types.PolarityLeast && v > upper:
 			clipped[i] = upper
-		case v < lower:
+		case polarity == types.PolarityMost && v < lower:
 			clipped[i] = lower
 		default:
 			clipped[i] = v
@@ -701,7 +708,7 @@ func (m *multiStrategyRouter) normalizeScoresArray(scores []float64, scored []bo
 		return normScores // all 0.0
 	}
 
-	clipped := winsorizeClip(values)
+	clipped := winsorizeClip(values, polarity)
 
 	minVal := clipped[0]
 	maxVal := clipped[0]
