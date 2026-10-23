@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
 import types
+import weakref
 from typing import Dict, List, Optional
 
 import pytest
@@ -62,6 +64,7 @@ class FakeClient:
         self.objects = objects
         self.downloaded: List[str] = []
         self.list_error: Optional[Exception] = None
+        self.list_prefixes: List[str] = []
         self._http = requests.Session()
 
     def bucket(self, bucket_name: str) -> FakeBucket:
@@ -70,6 +73,7 @@ class FakeClient:
     def list_blobs(self, bucket_name, prefix=None, max_results=None):
         if self.list_error is not None:
             raise self.list_error
+        self.list_prefixes.append(prefix)
         names = sorted(
             n for n in self.objects.get(bucket_name, {}) if n.startswith(prefix or "")
         )
@@ -181,6 +185,25 @@ def test_get_downloader_gcs_inaccessible_bucket(gcs_client):
 def test_gcs_is_directory(gcs_client, path, expected):
     downloader = get_downloader(f"gs://bucket/{path}")
     assert downloader._is_directory() is expected
+
+
+def test_gcs_is_directory_is_cached_per_downloader(gcs_client):
+    child_listings = lambda: gcs_client.list_prefixes.count("models/llama/")  # noqa: E731
+
+    first = get_downloader("gs://bucket/models/llama")
+    assert first._is_directory() and first._is_directory()
+    assert child_listings() == 1
+
+    # A later downloader for the same URI asks GCS again rather than reusing
+    # the first one's answer, and the first one can be freed.
+    second = get_downloader("gs://bucket/models/llama")
+    assert second._is_directory()
+    assert child_listings() == 2
+
+    first_ref = weakref.ref(first)
+    del first
+    gc.collect()
+    assert first_ref() is None
 
 
 def test_gcs_download_directory(gcs_client, tmp_path):

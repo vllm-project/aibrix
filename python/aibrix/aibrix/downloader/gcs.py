@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from functools import lru_cache
 from pathlib import Path
 from typing import ClassVar, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -94,6 +93,8 @@ class GCSDownloader(BaseDownloader):
         ):
             session.mount("https://", HTTPAdapter(pool_maxsize=num_threads))
 
+        self._is_dir: Optional[bool] = None
+
         super().__init__(
             model_uri=model_uri,
             model_name=model_name,
@@ -131,9 +132,16 @@ class GCSDownloader(BaseDownloader):
             )
             raise ModelNotFoundError(model_uri=self.model_uri, detail_msg=str(e))
 
-    @lru_cache()
     def _is_directory(self) -> bool:
         """Check if model_uri is a directory."""
+        # Cached on the instance rather than with lru_cache, whose class-level
+        # cache would keep every downloader and its client alive, and hand one
+        # downloader's answer to any later one for the same URI.
+        if self._is_dir is None:
+            self._is_dir = self._check_is_directory()
+        return self._is_dir
+
+    def _check_is_directory(self) -> bool:
         if self.bucket_path.endswith("/"):
             return True
         # If the exact object exists and there are no objects under path+"/",
