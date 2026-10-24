@@ -68,7 +68,6 @@ gatewayPlugin:
         timeoutSeconds: 3
         failureThreshold: 3
     envs:
-      AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"
       AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE: "character"
       AIBRIX_PREFIX_CACHE_BLOCK_SIZE: "128"
       AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP: "16"
