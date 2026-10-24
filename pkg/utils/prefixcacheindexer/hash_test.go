@@ -481,6 +481,7 @@ func TestMatchPrefixWalksTheSmallerSet(t *testing.T) {
 	}
 	matched, _ := cache.MatchPrefix(tokens, model, large)
 	assert.Equal(t, want, matched, "many ready pods: walk the block's holders")
+	assert.Len(t, large, len(ready)+100, "the caller's ready-pod set must not be modified")
 
 	small := map[string]struct{}{}
 	for _, pod := range ready {
@@ -488,4 +489,5 @@ func TestMatchPrefixWalksTheSmallerSet(t *testing.T) {
 	}
 	matched, _ = cache.MatchPrefix(tokens, model, small)
 	assert.Equal(t, want, matched, "few ready pods: walk the ready pods")
+	assert.Len(t, small, len(ready), "the caller's ready-pod set must not be modified")
 }

@@ -150,6 +150,7 @@ func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, r
 	staleBefore := c.now().Add(-prefixCacheEvictionDuration)
 	// podkey -> %prefixmatch
 	prefixMatchPods := make(map[string]int)
+	alive := readyPods
 	for i := 0; i < len(prefixHashes); i++ {
 		prefixHash := prefixHashes[i]
 		block, ok := c.store.Get(prefixHash)
@@ -168,7 +169,7 @@ func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, r
 		if prefixMatchPercent == 0 {
 			prefixMatchPercent = 1
 		}
-		if readyPods = matchPods(blockPods, readyPods, prefixMatchPods, prefixMatchPercent, staleBefore); len(readyPods) == 0 {
+		if alive = matchPods(blockPods, alive, i > 0, prefixMatchPods, prefixMatchPercent, staleBefore); len(alive) == 0 {
 			break
 		}
 	}
@@ -218,29 +219,41 @@ func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 
 // matchPods records prefixMatchPercent for the pods in alive that also hold this block, and
 // returns them: only they can match the next block. A pod last routed the block before
-// staleBefore does not count. When the block is held by fewer pods than are still alive, as
-// on the first block of a large fleet, it walks the block's pods into a new set; otherwise it
-// narrows alive in place, as before. Either way a block costs O(min(holders, alive)), not
-// O(ready pods).
-func matchPods(blockPods map[string]time.Time, alive map[string]struct{}, prefixMatchPods map[string]int, prefixMatchPercent int, staleBefore time.Time) map[string]struct{} {
-	if len(blockPods) < len(alive) {
-		next := make(map[string]struct{}, len(blockPods))
-		for pod, accessed := range blockPods {
-			if _, ok := alive[pod]; ok && !accessed.Before(staleBefore) {
+// staleBefore does not count. It walks the smaller of the block's holders and alive, so a block
+// costs O(min(holders, alive)) instead of O(ready pods). alive is narrowed in place only when
+// owned, i.e. when an earlier call built it; the caller's ready-pod set is never modified.
+func matchPods(blockPods map[string]time.Time, alive map[string]struct{}, owned bool, prefixMatchPods map[string]int, prefixMatchPercent int, staleBefore time.Time) map[string]struct{} {
+	if owned && len(alive) <= len(blockPods) {
+		for pod := range alive {
+			if accessed, ok := blockPods[pod]; ok && !accessed.Before(staleBefore) {
 				prefixMatchPods[pod] = prefixMatchPercent
-				next[pod] = struct{}{}
+			} else {
+				delete(alive, pod)
 			}
 		}
-		return next
+		return alive
 	}
-	for pod := range alive {
-		if accessed, ok := blockPods[pod]; ok && !accessed.Before(staleBefore) {
+	next := make(map[string]struct{}, min(len(blockPods), len(alive)))
+	keep := func(pod string, accessed time.Time) {
+		if !accessed.Before(staleBefore) {
 			prefixMatchPods[pod] = prefixMatchPercent
-		} else {
-			delete(alive, pod)
+			next[pod] = struct{}{}
 		}
 	}
-	return alive
+	if len(blockPods) < len(alive) {
+		for pod, accessed := range blockPods {
+			if _, ok := alive[pod]; ok {
+				keep(pod, accessed)
+			}
+		}
+	} else {
+		for pod := range alive {
+			if accessed, ok := blockPods[pod]; ok {
+				keep(pod, accessed)
+			}
+		}
+	}
+	return next
 }
 
 func getPrefixHashes(seed uint64, tokens []byte) []uint64 {
