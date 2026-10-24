@@ -205,6 +205,31 @@ func TestClassifyPrefillFailureNetTimeout(t *testing.T) {
 	assert.Zero(t, code)
 }
 
+func TestIsPodAttributablePrefillFailure(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantAttrib bool
+	}{
+		{"nil", nil, false},
+		{"http 500", &PrefillHTTPError{StatusCode: 500, Body: "boom"}, true},
+		{"http 503", &PrefillHTTPError{StatusCode: 503, Body: "unavailable"}, true},
+		{"http 429", &PrefillHTTPError{StatusCode: 429, Body: "rate limit"}, true},
+		{"http 400", &PrefillHTTPError{StatusCode: 400, Body: "bad request"}, false},
+		{"http 404", &PrefillHTTPError{StatusCode: 404, Body: "not found"}, false},
+		{"timeout", fmt.Errorf("do: %w", context.DeadlineExceeded), true},
+		{"canceled", fmt.Errorf("do: %w", context.Canceled), false},
+		{"transport", fmt.Errorf("connection refused"), true},
+		{"setup", &PrefillSetupError{Err: fmt.Errorf("bad url")}, false},
+		{"bad response", &PrefillBodyError{Err: fmt.Errorf("not json")}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.wantAttrib, IsPodAttributablePrefillFailure(tt.err))
+		})
+	}
+}
+
 func TestRecordPrefillFailureKeepsFirst(t *testing.T) {
 	leg := abortTestLeg(t, "req-1", "req-1-aaaaaaaabbbbbbbb", "")
 

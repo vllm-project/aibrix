@@ -27,8 +27,11 @@ import (
 
 // doPrefillRequest delegates to the router's PrefillExecutor, passing the
 // handler Route already resolved for this request.
-func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod *v1.Pod, handler engine.EngineHandler) error {
+func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod *v1.Pod, handler engine.EngineHandler, onFailure ...func()) error {
 	logCtx := prefillLogContext(r, routingCtx)
+	if len(onFailure) > 0 {
+		logCtx.OnFailure = onFailure[0]
+	}
 	return r.prefillExecutor.Execute(routingCtx, prefillPod, handler, logCtx)
 }
 

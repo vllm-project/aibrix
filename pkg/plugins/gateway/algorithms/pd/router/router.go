@@ -573,9 +573,16 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 	}
 	// Credit the prefill pod only now that the request was admitted, but still before its
 	// prefill is sent, so requests with the same prefix that arrive during it follow it.
+	var onFailure func()
 	if hasCredit {
 		job := credit.(prefixUpdateJob)
 		r.enqueuePrefixUpdate(job.prefixHashes, job.model, job.pod)
+		var removeOnce sync.Once
+		onFailure = func() {
+			removeOnce.Do(func() {
+				r.enqueuePrefixRemoval(job.prefixHashes, job.model, job.pod)
+			})
+		}
 	}
 
 	if prefillPod != nil {
@@ -603,18 +610,17 @@ func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) 
 		r.encodeMedia(ctx, readyPods, prefillPod)
 		// The prefill registration was made by Select; the executor's
 		// RemovePrefillRequest (sync/async) is the matching decrement.
-		err = r.doPrefillRequest(ctx, prefillPod, handler)
+		err = r.doPrefillRequest(ctx, prefillPod, handler, onFailure)
 
 		if err != nil {
 			// Remove is a no-op if the executor already cleaned up (e.g. sync HTTP failure).
 			r.prefillRequestTracker.RemovePrefillRequest(ctx.RequestID)
 			r.releaseTokenLoad(ctx.RequestID)
-			if r.prefillRequestTracker != nil {
+			if r.prefillRequestTracker != nil && pd.IsPodAttributablePrefillFailure(err) {
 				r.prefillRequestTracker.RecordPrefillFailure(utils.GeneratePodKey(prefillPod.Namespace, prefillPod.Name), time.Now())
 			}
-			if hasCredit {
-				job := credit.(prefixUpdateJob)
-				r.enqueuePrefixRemoval(job.prefixHashes, job.model, job.pod)
+			if onFailure != nil {
+				onFailure()
 			}
 			metrics.EmitMetricToPrometheus(ctx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 				map[string]string{"status": pdRoutePrefillRequestError, "status_code": "500"})

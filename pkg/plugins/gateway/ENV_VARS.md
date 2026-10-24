@@ -276,7 +276,7 @@ Scoring formula: `score = (fairnessWeight * normFairness + utilizationWeight * n
 
 The prefill/decode routing thresholds (`AIBRIX_PREFILL_*`, `AIBRIX_DECODE_*`, `AIBRIX_TOKEN_LOAD_*`, `AIBRIX_HYBRID_CACHE_LOAD_FACTOR`, `AIBRIX_MIN_MATCH_PCT`, `AIBRIX_PROMPT_LENGTH_BUCKETING`, `AIBRIX_BUCKET_SERVE`,
 `AIBRIX_BUCKET_SERVE_MODE`) can also be set per request by the model config profile
-(`routingConfig.pd.*`, `routingConfig.promptLengthBucketing` and `routingConfig.bucketServe*`); see [Model Config Profile Overrides](#model-config-profile-overrides).
+(`routingConfig.pd.*`, `routingConfig.promptLengthBucketing` and `routingConfig.bucketServe*`); see [Model Config Profile Overrides](#model-config-profile-overrides). The prefill failure ejection variables (`AIBRIX_PREFILL_CONSECUTIVE_FAILURE_THRESHOLD`, `AIBRIX_PREFILL_FAILURE_BASE_BACKOFF_SECONDS`, `AIBRIX_PREFILL_FAILURE_MAX_BACKOFF_SECONDS`) stay environment-only.
 
 ### PD Prefill Fail-Fast (`algorithms/pd/abort.go`)
 
