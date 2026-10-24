@@ -219,7 +219,10 @@ func (e *DefaultExecutor) Execute(routingCtx *types.RoutingContext, prefillPod *
 
 			prefillResponse, err := e.executeHTTP(apiURL, asyncCtx, payload, prefillTimeout)
 			if err != nil {
-				if e.tracker != nil {
+				if logCtx.OnFailure != nil {
+					logCtx.OnFailure()
+				}
+				if e.tracker != nil && pd.IsPodAttributablePrefillFailure(err) {
 					e.tracker.RecordPrefillFailure(prefillPodKey, time.Now())
 				}
 				// The prefill leg is fire-and-forget, so nobody is waiting on
