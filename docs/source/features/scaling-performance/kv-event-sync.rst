@@ -64,7 +64,7 @@ Environment Variables
      - Must be ``true`` for KV sync
    * - ``AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT``
      - -
-     - vLLM service endpoint
+     - Optional fixed remote tokenizer endpoint for all models. Takes precedence over per-pod discovery; point it at a Service to load-balance tokenize calls across replicas. Global: only set when all models share one tokenizer endpoint.
 
 Pod Labels
 ~~~~~~~~~~
