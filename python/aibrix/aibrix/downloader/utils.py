@@ -50,7 +50,7 @@ def check_file_exist(
     expected_file_size: int,
     expected_etag: str,
 ) -> bool:
-    if expected_file_size is None or expected_file_size <= 0:
+    if expected_file_size is None or expected_file_size < 0:
         return False
 
     if expected_etag is None or expected_etag == "":
