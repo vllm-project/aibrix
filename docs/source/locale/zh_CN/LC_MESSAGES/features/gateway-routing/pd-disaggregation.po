@@ -626,18 +626,20 @@ msgstr ""
 "失败只会增加延迟，不会导致请求失败。每个 encode 请求使用 prefill 请求超时， ``gateway_pd_encode_request_total`` "
 "按 ``status`` 统计这些请求。"
 
-#: ../../source/features/gateway-routing/pd-disaggregation.rst:336
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:351
 msgid ""
 "By default the gateway sends the items to the selected roleset's encode "
 "pods in turn. With ``AIBRIX_ENCODE_SELECTION_POLICY=least_request`` it "
 "sends each item to the encode pod with the fewest items it has in flight, "
 "so an encode pod that is still working on large images does not receive "
-"the next ones while others are idle. The counts are kept per gateway "
-"replica."
+"the next ones while others are idle. Each gateway replica counts "
+"separately, and within a replica the ``pd`` routing strategy and the other"
+" strategies keep separate counts."
 msgstr ""
 "默认情况下，网关把各媒体项依次发给所选 roleset 的 encode Pod。设置 "
-"``AIBRIX_ENCODE_SELECTION_POLICY=least_request`` 后，网关会把每一项发给它在途项最少的 encode"
-" Pod，这样仍在处理大图的 encode Pod 不会在其他 Pod 空闲时继续接收新的项。计数按网关副本分别维护。"
+"``AIBRIX_ENCODE_SELECTION_POLICY=least_request`` 后，网关会把每一项发给在途项最少的 encode "
+"Pod，这样仍在处理大图的 encode Pod 不会在其他 Pod 空闲时继续接收新的项。每个网关副本分别计数，同一副本内 ``pd`` "
+"路由策略与其他策略也各自计数。"
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:336
 msgid ""
@@ -1842,14 +1844,14 @@ msgstr "``AIBRIX_ENCODE_SELECTION_POLICY``"
 msgid "``round_robin``"
 msgstr "``round_robin``"
 
-#: ../../source/features/gateway-routing/pd-disaggregation.rst:837
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:852
 msgid ""
 "How the encode stage picks an encode pod for each media item: "
 "``round_robin``, or ``least_request`` for the encode pod with the fewest "
-"items the gateway replica has in flight."
+"items in flight. Environment only."
 msgstr ""
 "encode 阶段为每个媒体项选择 encode Pod 的方式：``round_robin``，或 "
-"``least_request``（选择本网关副本在途项最少的 encode Pod）。"
+"``least_request``（选择在途项最少的 encode Pod）。仅支持环境变量。"
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:806
 msgid "``AIBRIX_PREFILL_REQUEST_TIMEOUT``"

@@ -18,6 +18,7 @@ package encode
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -168,6 +169,83 @@ func TestRoundRobinNilEncoderFails(t *testing.T) {
 	executor := NewExecutor(&http.Client{Transport: newGatedTransport("")})
 	err := executor.Execute(encodeRequest(t, "r1"), []*v1.Pod{nil}, []string{imageItem}, 5*time.Second)
 	require.ErrorContains(t, err, "encode pod is nil")
+}
+
+// statusTransport answers every encode request with status and counts the
+// requests per host.
+type statusTransport struct {
+	status int
+	mu     sync.Mutex
+	hosts  map[string]int
+}
+
+func (s *statusTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	s.mu.Lock()
+	s.hosts[req.URL.Host]++
+	s.mu.Unlock()
+	return &http.Response{StatusCode: s.status, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}}, nil
+}
+
+// With every encoder idle, ties rotate: sequential single-item requests spread
+// evenly instead of all going to the first encoder.
+func TestLeastRequestRotatesTiesAcrossIdleEncoders(t *testing.T) {
+	t.Setenv("AIBRIX_ENCODE_SELECTION_POLICY", PolicyLeastRequest)
+	transport := &statusTransport{status: http.StatusOK, hosts: map[string]int{}}
+	executor := NewExecutor(&http.Client{Transport: transport})
+	encoders := []*v1.Pod{encoderPod("encode-a", "10.0.0.1"), encoderPod("encode-b", "10.0.0.2"), encoderPod("encode-c", "10.0.0.3")}
+
+	for i := 0; i < 9; i++ {
+		require.NoError(t, executor.Execute(encodeRequest(t, fmt.Sprintf("r%d", i)), encoders, []string{imageItem}, 5*time.Second))
+	}
+	assert.Equal(t, map[string]int{"10.0.0.1:8000": 3, "10.0.0.2:8000": 3, "10.0.0.3:8000": 3}, transport.hosts)
+}
+
+// A failed encode gives its charge back, whether the encoder answered with an
+// error or the pod could not be reached at all.
+func TestLeastRequestReleasesOnFailure(t *testing.T) {
+	t.Setenv("AIBRIX_ENCODE_SELECTION_POLICY", PolicyLeastRequest)
+	executor := NewExecutor(&http.Client{Transport: &statusTransport{status: http.StatusInternalServerError, hosts: map[string]int{}}})
+	encoders := []*v1.Pod{encoderPod("encode-a", "10.0.0.1"), encoderPod("encode-no-ip", "")}
+
+	err := executor.Execute(encodeRequest(t, "r1"), encoders, []string{imageItem, imageItem}, 5*time.Second)
+	require.Error(t, err)
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	assert.Empty(t, executor.inflight)
+}
+
+// Concurrent requests share the counts safely (run with -race) and give every
+// charge back.
+func TestLeastRequestConcurrentExecute(t *testing.T) {
+	t.Setenv("AIBRIX_ENCODE_SELECTION_POLICY", PolicyLeastRequest)
+	transport := &statusTransport{status: http.StatusOK, hosts: map[string]int{}}
+	executor := NewExecutor(&http.Client{Transport: transport})
+	encoders := []*v1.Pod{encoderPod("encode-a", "10.0.0.1"), encoderPod("encode-b", "10.0.0.2"),
+		encoderPod("encode-c", "10.0.0.3"), encoderPod("encode-d", "10.0.0.4")}
+
+	var wg sync.WaitGroup
+	for g := 0; g < 20; g++ {
+		reqs := make([]*types.RoutingContext, 10)
+		for i := range reqs {
+			reqs[i] = encodeRequest(t, fmt.Sprintf("g%d-r%d", g, i))
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for _, req := range reqs {
+				assert.NoError(t, executor.Execute(req, encoders, []string{imageItem, imageItem, imageItem}, 5*time.Second))
+			}
+		}()
+	}
+	wg.Wait()
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	assert.Empty(t, executor.inflight)
+	total := 0
+	for _, n := range transport.hosts {
+		total += n
+	}
+	assert.Equal(t, 20*10*3, total)
 }
 
 func TestUnknownEncoderSelectionPolicyUsesRoundRobin(t *testing.T) {
