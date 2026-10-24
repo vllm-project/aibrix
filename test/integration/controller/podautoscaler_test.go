@@ -346,6 +346,97 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 		}
 	}
 
+	makePredictivePreviewTestCase := func() *testValidatingCase {
+		var metricsServer *httptest.Server
+		var metricsHost string
+		var metricsPort string
+
+		return &testValidatingCase{
+			makePodAutoscaler: func() *autoscalingv1alpha1.PodAutoscaler {
+				pa := wrapper.MakePodAutoscaler("pa-predictive-preview").
+					Namespace(ns.Name).
+					ScalingStrategy(autoscalingv1alpha1.KPA).
+					MinReplicas(1).
+					MaxReplicas(10).
+					ScaleTargetRefWithKind("Deployment", "apps/v1", "predictive-preview-deployment").
+					MetricSource(autoscalingv1alpha1.MetricSource{
+						MetricSourceType: autoscalingv1alpha1.POD,
+						ProtocolType:     autoscalingv1alpha1.HTTP,
+						Port:             "0",
+						Path:             "/metrics",
+						TargetMetric:     "gpu_cache_usage_perc",
+						TargetValue:      "50",
+					}).
+					Obj()
+				// A short window keeps the scenario inside the suite budget. The
+				// projection needs three samples that span half the window.
+				pa.Spec.ObserveWindowSeconds = ptr.To[int64](30)
+				pa.Spec.PanicWindowSeconds = ptr.To[int64](10)
+				pa.Spec.Predictive = &autoscalingv1alpha1.PredictiveSpec{Mode: autoscalingv1alpha1.PredictiveModePreview}
+				return pa
+			},
+			updates: []*update{
+				{
+					updateFunc: func(pa *autoscalingv1alpha1.PodAutoscaler) {
+						metricsServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							_, _ = w.Write([]byte("# TYPE vllm:gpu_cache_usage_perc gauge\n"))
+							_, _ = w.Write([]byte("vllm:gpu_cache_usage_perc 50\n"))
+						}))
+						ginkgo.DeferCleanup(metricsServer.Close)
+						metricsURL, err := url.Parse(metricsServer.URL)
+						gomega.Expect(err).NotTo(gomega.HaveOccurred())
+						metricsHost = metricsURL.Hostname()
+						metricsPort = metricsURL.Port()
+						gomega.Expect(metricsHost).NotTo(gomega.BeEmpty())
+						gomega.Expect(metricsPort).NotTo(gomega.BeEmpty())
+						pa.Spec.MetricsSources[0].Port = metricsPort
+
+						createDeployment("predictive-preview-deployment", ns.Name, 2)
+						podLabels := map[string]string{
+							"app":                      "predictive-preview-deployment",
+							constants.ModelLabelEngine: "vllm",
+						}
+						createPodWithReadiness("predictive-preview-pod-1", ns.Name, podLabels, true, metricsHost)
+						createPodWithReadiness("predictive-preview-pod-2", ns.Name, podLabels, true, metricsHost)
+
+						gomega.Expect(k8sClient.Create(ctx, pa)).To(gomega.Succeed())
+						ginkgo.DeferCleanup(func() {
+							err := k8sClient.Delete(ctx, pa)
+							gomega.Expect(err == nil || apierrors.IsNotFound(err)).To(gomega.BeTrue())
+							gomega.Eventually(func() bool {
+								err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pa), &autoscalingv1alpha1.PodAutoscaler{})
+								return apierrors.IsNotFound(err)
+							}, time.Second*10, time.Millisecond*250).Should(gomega.BeTrue())
+						})
+					},
+					checkFunc: func(ctx context.Context, k8sClient client.Client, pa *autoscalingv1alpha1.PodAutoscaler) {
+						// The projection is recorded once three samples span half of the
+						// 30s window, which takes a few 10s resyncs.
+						gomega.Eventually(func(g gomega.Gomega) {
+							fetched := validation.GetPodAutoscaler(ctx, k8sClient, pa)
+							g.Expect(fetched.Status.Predictive).NotTo(gomega.BeNil())
+							g.Expect(fetched.Status.Predictive.Mode).To(gomega.Equal(autoscalingv1alpha1.PredictiveModePreview))
+							g.Expect(fetched.Status.Predictive.Metric).To(gomega.Equal("gpu_cache_usage_perc"))
+							g.Expect(fetched.Status.Predictive.ObservedValue).NotTo(gomega.BeEmpty())
+							g.Expect(fetched.Status.Predictive.PredictedValue).NotTo(gomega.BeEmpty())
+							// Preview reports the reactive decision next to what Auto
+							// would apply.
+							g.Expect(fetched.Status.Predictive.ReactiveReplicas).To(gomega.Equal(fetched.Status.DesiredScale))
+						}, time.Second*90, time.Millisecond*500).Should(gomega.Succeed())
+
+						// A metric at target keeps the workload at its current count:
+						// the projection is recorded without scaling the deployment.
+						deployment := &appsv1.Deployment{}
+						key := client.ObjectKey{Namespace: ns.Name, Name: "predictive-preview-deployment"}
+						gomega.Expect(k8sClient.Get(ctx, key, deployment)).To(gomega.Succeed())
+						gomega.Expect(deployment.Spec.Replicas).NotTo(gomega.BeNil())
+						gomega.Expect(*deployment.Spec.Replicas).To(gomega.Equal(int32(2)))
+					},
+				},
+			},
+		}
+	}
+
 	ginkgo.DescribeTable("test PodAutoscaler creation and reconciliation",
 		func(tc *testValidatingCase) {
 			pa := tc.makePodAutoscaler()
@@ -889,6 +980,10 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 
 		ginkgo.Entry("Scale Target - APA pending replica guard holds current replicas",
 			makePendingReplicaGuardTestCase(),
+		),
+
+		ginkgo.Entry("Predictive - Preview records the projection without scaling",
+			makePredictivePreviewTestCase(),
 		),
 
 		// =========================================================================
