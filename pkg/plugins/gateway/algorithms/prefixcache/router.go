@@ -25,6 +25,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -247,7 +248,7 @@ func loadTokenizerPoolConfigFromEnv() TokenizerPoolConfig {
 		// Fixed remote tokenizer endpoint shared by all models, e.g. a Service
 		// that load-balances tokenize calls across replicas. It is optional, so
 		// read it with os.Getenv: LoadEnv would log a warning when unset.
-		FixedEndpoint: os.Getenv(constants.EnvPrefixCacheRemoteTokenizerEndpoint),
+		FixedEndpoint: strings.TrimSpace(os.Getenv(constants.EnvPrefixCacheRemoteTokenizerEndpoint)),
 	}
 }
 

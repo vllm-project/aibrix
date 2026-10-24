@@ -929,17 +929,22 @@ func TestLoadTokenizerPoolConfigFromEnvNonDurationDefaults(t *testing.T) {
 // AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT into the pool config.
 func TestLoadTokenizerPoolConfigFromEnvFixedEndpoint(t *testing.T) {
 	t.Run("unset leaves FixedEndpoint empty", func(t *testing.T) {
+		t.Setenv(constants.EnvPrefixCacheRemoteTokenizerEndpoint, "")
 		assert.Empty(t, loadTokenizerPoolConfigFromEnv().FixedEndpoint)
 	})
 	t.Run("set configures FixedEndpoint", func(t *testing.T) {
 		t.Setenv(constants.EnvPrefixCacheRemoteTokenizerEndpoint, "http://tokenizer-service:8000")
 		assert.Equal(t, "http://tokenizer-service:8000", loadTokenizerPoolConfigFromEnv().FixedEndpoint)
 	})
+	t.Run("surrounding whitespace is trimmed", func(t *testing.T) {
+		t.Setenv(constants.EnvPrefixCacheRemoteTokenizerEndpoint, "  http://tokenizer-service:8000\n")
+		assert.Equal(t, "http://tokenizer-service:8000", loadTokenizerPoolConfigFromEnv().FixedEndpoint)
+	})
 }
 
 // TestFindVLLMEndpointPicksARandomCandidatePod checks that pod discovery
-// spreads tokenize calls across the model's pods instead of pinning every
-// call to the first match.
+// picks a random candidate when a tokenizer entry is created instead of
+// always pinning the model to the first match.
 func TestFindVLLMEndpointPicksARandomCandidatePod(t *testing.T) {
 	pool := &TokenizerPool{config: TokenizerPoolConfig{EndpointTemplate: "http://%s:8000"}}
 	var pods []*v1.Pod
