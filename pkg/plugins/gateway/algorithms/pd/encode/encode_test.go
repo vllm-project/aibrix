@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -68,10 +69,12 @@ func TestEncodeRejectsPodWithoutAddress(t *testing.T) {
 	ctx.ReqBody = []byte(`{"model":"qwen-vl","messages":[{"role":"user","content":"hi"}]}`)
 	item := `{"type":"image_url","image_url":{"url":"https://x/a.png"}}`
 
-	require.Error(t, executor.encode(ctx, nil, 0, item, time.Second))
+	_, err := executor.encode(ctx, nil, 0, item, time.Second)
+	require.Error(t, err)
 
 	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "encoder-0"}}
-	require.Error(t, executor.encode(ctx, pod, 0, item, time.Second))
+	_, err = executor.encode(ctx, pod, 0, item, time.Second)
+	require.Error(t, err)
 }
 
 type recordingRoundTripper struct {
@@ -105,8 +108,154 @@ func TestEncodeUsesBracketedIPv6Host(t *testing.T) {
 		Status: v1.PodStatus{PodIP: "2001:db8::1"},
 	}
 
-	require.NoError(t, executor.encode(ctx, pod, 0, item, time.Second))
+	_, err := executor.encode(ctx, pod, 0, item, time.Second)
+	require.NoError(t, err)
 	if transport.host != "[2001:db8::1]:8000" {
 		t.Fatalf("encode request host = %q, want %q", transport.host, "[2001:db8::1]:8000")
 	}
+}
+
+type encodeReply struct {
+	status int
+	body   string
+}
+
+// encoderStub answers each encode request by the image URL it carries.
+type encoderStub struct {
+	replies map[string]encodeReply
+	calls   *atomic.Int32
+}
+
+func (e encoderStub) RoundTrip(req *http.Request) (*http.Response, error) {
+	e.calls.Add(1)
+	body, _ := io.ReadAll(req.Body)
+	reply := e.replies[gjson.GetBytes(body, "messages.0.content.0.image_url.url").String()]
+	return &http.Response{
+		StatusCode: reply.status,
+		Body:       io.NopCloser(strings.NewReader(reply.body)),
+		Header:     make(http.Header),
+		Request:    req,
+	}, nil
+}
+
+func TestEncodeMediaSetsEncoderTransferParams(t *testing.T) {
+	pod := func(name, role string) *v1.Pod {
+		return &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+				Labels:    map[string]string{"roleset-name": "rs-0", "role-name": role, constants.ModelLabelPort: "8000"},
+			},
+			Status: v1.PodStatus{PodIP: "10.0.0.1"},
+		}
+	}
+	target := pod("prefill-0", "prefill")
+	pods := []*v1.Pod{target, pod("encode-0", "encode"), pod("encode-1", "encode")}
+	// The client repeats the field; vLLM would read the last copy.
+	body := `{"model":"qwen-vl","ec_transfer_params":{"x":1},"messages":[{"role":"user","content":[` +
+		`{"type":"image_url","image_url":{"url":"a"}},{"type":"image_url","image_url":{"url":"b"}}]}],` +
+		`"ec_transfer_params":{"other":{"peer_host":"203.0.113.7"}}}`
+	params := func(hash, host string) encodeReply {
+		return encodeReply{http.StatusOK, `{"choices":[],"ec_transfer_params":{"` + hash + `":{"peer_host":"` + host + `"}}}`}
+	}
+	none := encodeReply{http.StatusOK, `{"choices":[]}`}
+	tooLarge := encodeReply{http.StatusOK, `{"pad":"` + strings.Repeat("x", 1<<20) +
+		`","ec_transfer_params":{"b":{"peer_host":"10.0.0.2"}}}`}
+
+	for _, tc := range []struct {
+		name    string
+		body    string
+		replies map[string]encodeReply
+		want    string
+	}{
+		{"encoders return params", body,
+			map[string]encodeReply{"a": params("a", "10.0.0.1"), "b": params("b", "10.0.0.2")},
+			`{"a":{"peer_host":"10.0.0.1"},"b":{"peer_host":"10.0.0.2"}}`},
+		{"encoders return none", body,
+			map[string]encodeReply{"a": none, "b": none}, ""},
+		{"same hash keeps the first item's params", body,
+			map[string]encodeReply{"a": params("h", "10.0.0.1"), "b": params("h", "10.0.0.2")},
+			`{"h":{"peer_host":"10.0.0.1"}}`},
+		{"failed encoder", body,
+			map[string]encodeReply{"a": params("a", "10.0.0.1"), "b": {http.StatusInternalServerError, "boom"}},
+			`{"a":{"peer_host":"10.0.0.1"}}`},
+		{"invalid encoder response", body,
+			map[string]encodeReply{"a": params("a", "10.0.0.1"), "b": {http.StatusOK, `{"ec_transfer_params":{"b":{"peer_host":"10.0.0.2"}}`}},
+			`{"a":{"peer_host":"10.0.0.1"}}`},
+		{"encoder response over the cap", body,
+			map[string]encodeReply{"a": params("a", "10.0.0.1"), "b": tooLarge},
+			`{"a":{"peer_host":"10.0.0.1"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := types.NewRoutingContext(context.Background(), "test", "qwen-vl", "", "req-ec", "user")
+			defer ctx.Delete()
+			ctx.ReqPath = "/v1/chat/completions"
+			ctx.ReqBody = []byte(tc.body)
+
+			stub := encoderStub{replies: tc.replies, calls: &atomic.Int32{}}
+			NewExecutor(&http.Client{Transport: stub}).EncodeMedia(ctx, pods, target, time.Second)
+
+			assert.EqualValues(t, 2, stub.calls.Load())
+			copies := 0
+			if tc.want != "" {
+				copies = 1
+			}
+			assert.Equal(t, copies, strings.Count(string(ctx.ReqBody), `"ec_transfer_params"`))
+			assert.Equal(t, tc.want, gjson.GetBytes(ctx.ReqBody, "ec_transfer_params").Raw)
+			assert.Len(t, MediaItems(ctx.ReqBody), 2)
+		})
+	}
+}
+
+func TestEncodeMediaKeepsBodyWhenParamsCannotBeSet(t *testing.T) {
+	target := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "prefill-0",
+			Labels: map[string]string{"roleset-name": "rs-0", "role-name": "prefill", constants.ModelLabelPort: "8000"},
+		},
+		Status: v1.PodStatus{PodIP: "10.0.0.1"},
+	}
+	encoder := target.DeepCopy()
+	encoder.Name = "encode-0"
+	encoder.Labels["role-name"] = "encode"
+	// Trailing bytes: the media items are still found, but the body can't be rewritten.
+	body := `{"model":"qwen-vl","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"a"}}]}]} x`
+
+	ctx := types.NewRoutingContext(context.Background(), "test", "qwen-vl", "", "req-ec", "user")
+	defer ctx.Delete()
+	ctx.ReqPath = "/v1/chat/completions"
+	ctx.ReqBody = []byte(body)
+
+	stub := encoderStub{
+		replies: map[string]encodeReply{"a": {http.StatusOK, `{"ec_transfer_params":{"a":{}}}`}},
+		calls:   &atomic.Int32{},
+	}
+	NewExecutor(&http.Client{Transport: stub}).EncodeMedia(ctx, []*v1.Pod{target, encoder}, target, time.Second)
+
+	assert.EqualValues(t, 1, stub.calls.Load())
+	assert.Equal(t, body, string(ctx.ReqBody))
+}
+
+func TestSetTransferParamsDropsEveryClientCopy(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`{"model":"m"`)
+	for i := 0; i < 50000; i++ {
+		b.WriteString(`,"ec_transfer_params":{"x":1}`)
+	}
+	b.WriteString(`,"messages":[{"role":"user", "content":"hi"}]}`)
+
+	start := time.Now()
+	out, err := setTransferParams([]byte(b.String()), []byte(`{"a":{}}`))
+	require.NoError(t, err)
+	assert.Less(t, time.Since(start), time.Second)
+	assert.Equal(t, `{"model":"m","messages":[{"role":"user", "content":"hi"}],"ec_transfer_params":{"a":{}}}`, string(out))
+
+	out, err = setTransferParams([]byte(`{"ec_transfer_params":{"x":1}}`), nil)
+	require.NoError(t, err)
+	assert.Equal(t, `{}`, string(out))
+
+	untouched := []byte(`{ "model": "m" }`)
+	out, err = setTransferParams(untouched, nil)
+	require.NoError(t, err)
+	assert.Equal(t, untouched, out)
 }
