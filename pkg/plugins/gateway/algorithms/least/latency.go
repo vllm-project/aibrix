@@ -63,14 +63,15 @@ func (r leastExpectedLatencyRouter) ScoreAll(ctx *types.RoutingContext, readyPod
 	cntPromt := 0
 	cntGeneration := 0
 	for _, p := range pods {
+		// The token averages are PromQL results; their simple value is always 0.
 		avgPromptTokens, err := r.cache.GetMetricValueByPodModel(p.Name, p.Namespace, ctx.Model, metrics.AvgPromptToksPerReq)
-		if err == nil && avgPromptTokens.GetSimpleValue() > 0 {
-			sumPromptTokens += avgPromptTokens.GetSimpleValue()
+		if v, ok := routeutil.NumericValue(avgPromptTokens); err == nil && ok && v > 0 {
+			sumPromptTokens += v
 			cntPromt += 1
 		}
 		avgGenerationTokens, err := r.cache.GetMetricValueByPodModel(p.Name, p.Namespace, ctx.Model, metrics.AvgGenerationToksPerReq)
-		if err == nil && avgGenerationTokens.GetSimpleValue() > 0 {
-			sumGenerationTokens += avgGenerationTokens.GetSimpleValue()
+		if v, ok := routeutil.NumericValue(avgGenerationTokens); err == nil && ok && v > 0 {
+			sumGenerationTokens += v
 			cntGeneration += 1
 		}
 	}
@@ -104,8 +105,8 @@ func (r leastExpectedLatencyRouter) ScoreAll(ctx *types.RoutingContext, readyPod
 			continue
 		}
 		avgPromptTokens := guessPromptTokens
-		if avgPromptTokensMetric.GetSimpleValue() > 0 {
-			avgPromptTokens = avgPromptTokensMetric.GetSimpleValue()
+		if v, ok := routeutil.NumericValue(avgPromptTokensMetric); ok && v > 0 {
+			avgPromptTokens = v
 		}
 
 		prefillTimeMetric, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.RequestPrefillTimeSeconds)
@@ -126,8 +127,8 @@ func (r leastExpectedLatencyRouter) ScoreAll(ctx *types.RoutingContext, readyPod
 			continue
 		}
 		avgGenerationTokens := guessGenerationTokens
-		if avgGenTokensMetric.GetSimpleValue() > 0 {
-			avgGenerationTokens = avgGenTokensMetric.GetSimpleValue()
+		if v, ok := routeutil.NumericValue(avgGenTokensMetric); ok && v > 0 {
+			avgGenerationTokens = v
 		}
 
 		decodeTimeMetric, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.RequestDecodeTimeSeconds)

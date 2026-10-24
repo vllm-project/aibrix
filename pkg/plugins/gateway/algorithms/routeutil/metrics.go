@@ -17,6 +17,8 @@ limitations under the License.
 package routeutil
 
 import (
+	"math"
+
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 )
@@ -46,4 +48,25 @@ func GetPodModelMetricsSimplePrometheusValue(cache cache.Cache, podname, namespa
 	}
 
 	return metricValueFloat
+}
+
+// NumericValue returns the number a metric holds, whether the cache stores it as a scraped value or
+// as a PromQL query result, whose simple value is always 0. ok is false when there is no finite
+// number, including the NaN an averaging query returns for a pod that served no requests.
+func NumericValue(metricValue metrics.MetricValue) (value float64, ok bool) {
+	switch v := metricValue.(type) {
+	case nil:
+		return 0, false
+	case *metrics.PrometheusMetricValue:
+		var err error
+		if value, err = metrics.ExtractNumericFromPromResult(v.Result); err != nil {
+			return 0, false
+		}
+	default:
+		value = v.GetSimpleValue()
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, false
+	}
+	return value, true
 }
