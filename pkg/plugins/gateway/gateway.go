@@ -896,13 +896,15 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		}
 	}
 
-	if s.routerManager == nil {
-		// Preserve compatibility for legacy tests that build Server literals.
-		s.routerManager = routing.DefaultRouterManager()
+	routerManager := s.routerManager
+	if routerManager == nil {
+		// Preserve compatibility for legacy tests that build Server literals. A local keeps
+		// concurrent requests from writing the shared Server.
+		routerManager = routing.DefaultRouterManager()
 	}
 	// Select depends only on the routing context, not on the pods, so it runs before the gate:
 	// the candidate stage below needs the resolved strategy to know whether it applies.
-	router, err := s.routerManager.Select(routeCtx)
+	router, err := routerManager.Select(routeCtx)
 	if err != nil {
 		return "", err
 	}

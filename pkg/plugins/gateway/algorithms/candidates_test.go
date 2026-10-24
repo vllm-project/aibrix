@@ -150,3 +150,32 @@ func TestSelectCandidates_SamplesUniformly(t *testing.T) {
 		assert.InDelta(t, want, float64(counts[pod]), want*0.15, "pod %s", pod.Name)
 	}
 }
+
+// greedySeeder is a scorer that seeds more pods than it is asked for.
+type greedySeeder struct{ seeds []*v1.Pod }
+
+func (g greedySeeder) ScoreAll(*types.RoutingContext, types.PodList) ([]float64, []bool, error) {
+	return nil, nil, nil
+}
+func (g greedySeeder) Polarity() types.Polarity { return types.PolarityMost }
+func (g greedySeeder) SeedCandidates(*types.RoutingContext, types.PodList, int) []*v1.Pod {
+	return g.seeds
+}
+
+// The blend's seeds stay within max even when its scorers return more than asked, and later
+// scorers are not consulted once max is reached.
+func TestMultiStrategySeedCandidatesCapsAtMax(t *testing.T) {
+	pods := candidatePods(10)
+	m := &multiStrategyRouter{
+		config: &MultiRouterConfig{Items: []RouterItem{{Name: "a", Coefficient: 1}, {Name: "b", Coefficient: 1}}},
+		scorers: map[string]types.PodScorer{
+			"a": greedySeeder{seeds: pods[:6]},
+			"b": greedySeeder{seeds: pods[6:]},
+		},
+	}
+	ctx := &types.RoutingContext{}
+	assert.Equal(t, pods[:4], m.SeedCandidates(ctx, nil, 4))
+	assert.Equal(t, pods[:8], m.SeedCandidates(ctx, nil, 8))
+	assert.Empty(t, m.SeedCandidates(ctx, nil, 0))
+	assert.Empty(t, m.SeedCandidates(ctx, nil, -1))
+}
