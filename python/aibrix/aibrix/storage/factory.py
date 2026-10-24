@@ -120,7 +120,9 @@ def create_storage(
 
         host = kwargs.get("host") or envs.STORAGE_REDIS_HOST or "localhost"
         port = kwargs.get("port") or envs.STORAGE_REDIS_PORT or 6379
-        db = kwargs.get("db", 0) or envs.STORAGE_REDIS_DB
+        db = kwargs.get("db")
+        if db is None:
+            db = envs.STORAGE_REDIS_DB
         password = kwargs.get("password") or envs.STORAGE_REDIS_PASSWORD
 
         return RedisStorage(
