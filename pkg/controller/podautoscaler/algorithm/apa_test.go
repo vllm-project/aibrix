@@ -320,6 +320,42 @@ func TestAPAAlgorithm_ComputeTargetReplicas_MetricSources(t *testing.T) {
 	}
 }
 
+// TestAPAAlgorithm_ComputeTargetReplicas_FloatError covers desired counts that are whole
+// numbers but evaluate just above them in float64, where a plain math.Ceil asked for one pod
+// too many: 5 × (0.14 / 0.1) is 7.000000000000001.
+func TestAPAAlgorithm_ComputeTargetReplicas_FloatError(t *testing.T) {
+	algorithm := &APAAlgorithm{}
+	metricsName := "test-metrics"
+	tests := []struct {
+		name            string
+		source          autoscalingv1alpha1.MetricSourceType
+		target          float64
+		currentPodCount float64
+		value           float64
+		expected        int32
+	}{
+		{"pod_scale_up", autoscalingv1alpha1.POD, 0.1, 5, 0.14, 7},
+		{"pod_scale_down", autoscalingv1alpha1.POD, 0.1, 10, 0.07, 7},
+		{"external_scale_up", autoscalingv1alpha1.EXTERNAL, 0.3, 4, 2.1, 7},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			context := &mockScalingContext{
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {TargetValue: tt.target, MetricType: tt.source},
+				},
+				CurrentUsePerPod:         tt.value,
+				UpFluctuationTolerance:   0.1,
+				DownFluctuationTolerance: 0.1,
+				MaxScaleUpRate:           2,
+				MaxScaleDownRate:         2,
+			}
+			result := algorithm.computeTargetReplicas(tt.currentPodCount, context, metricsName, "")
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
 func TestAPAAlgorithm_ComputeRecommendation_SharedMetricName(t *testing.T) {
 	metricsName := "gpu_cache_usage_perc"
 	pa := &autoscalingv1alpha1.PodAutoscaler{

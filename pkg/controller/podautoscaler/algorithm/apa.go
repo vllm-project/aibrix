@@ -107,7 +107,7 @@ func (a *APAAlgorithm) computeTargetReplicas(currentPodCount float64, context sc
 	// Tolerance check: only scale if metric exceeds tolerance thresholds
 	if currentUsePerPod/expectedUse > (1 + upTolerance) {
 		maxScaleUp := int32(ceilPodCount(context.GetMaxScaleUpRate() * currentPodCount))
-		expectedPods := int32(math.Ceil(desiredPodCount))
+		expectedPods := int32(ceilPodCount(desiredPodCount))
 		if expectedPods > maxScaleUp {
 			expectedPods = maxScaleUp
 		}
@@ -115,7 +115,7 @@ func (a *APAAlgorithm) computeTargetReplicas(currentPodCount float64, context sc
 		return expectedPods
 	} else if currentUsePerPod/expectedUse < (1 - downTolerance) {
 		maxScaleDown := int32(floorPodCount(currentPodCount / context.GetMaxScaleDownRate()))
-		expectedPods := int32(math.Ceil(desiredPodCount))
+		expectedPods := int32(ceilPodCount(desiredPodCount))
 		if expectedPods < maxScaleDown {
 			expectedPods = maxScaleDown
 		}
