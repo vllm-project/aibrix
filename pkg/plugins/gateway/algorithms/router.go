@@ -379,6 +379,29 @@ type multiStrategyRouter struct {
 	scorers map[string]types.PodScorer
 }
 
+// SeedCandidates collects the seeds of every blended strategy that has them, in config order,
+// up to max pods in total. See types.CandidateSeeder.
+func (m *multiStrategyRouter) SeedCandidates(ctx *types.RoutingContext, readyPodList types.PodList, max int) []*v1.Pod {
+	var seeds []*v1.Pod
+	seen := make(map[*v1.Pod]struct{}, max)
+	for _, item := range m.config.Items {
+		seeder, ok := m.scorers[item.Name].(types.CandidateSeeder)
+		if !ok {
+			continue
+		}
+		for _, pod := range seeder.SeedCandidates(ctx, readyPodList, max-len(seeds)) {
+			if _, dup := seen[pod]; !dup {
+				seen[pod] = struct{}{}
+				seeds = append(seeds, pod)
+			}
+		}
+		if len(seeds) >= max {
+			break
+		}
+	}
+	return seeds
+}
+
 // newMultiStrategyRouter initializes a new multiStrategyRouter based on the parsed config
 func newMultiStrategyRouter(config *MultiRouterConfig, rm *RouterManager, ctx *types.RoutingContext) (*multiStrategyRouter, error) {
 	scorers := make(map[string]types.PodScorer)

@@ -896,6 +896,17 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		}
 	}
 
+	if s.routerManager == nil {
+		// Preserve compatibility for legacy tests that build Server literals.
+		s.routerManager = routing.DefaultRouterManager()
+	}
+	// Select depends only on the routing context, not on the pods, so it runs before the gate:
+	// the candidate stage below needs the resolved strategy to know whether it applies.
+	router, err := s.routerManager.Select(routeCtx)
+	if err != nil {
+		return "", err
+	}
+
 	if isExclusive {
 		if isPD {
 			engine, err := routing.ValidateAndGetLLMEngine(readyPods)
@@ -905,20 +916,14 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 			routeCtx.Engine = engine
 		}
 	} else {
+		// Narrow the pods to a bounded candidate set when AIBRIX_ROUTING_CANDIDATE_K is set, so
+		// the gate and the router read running counts for those pods only (RFC #3188).
+		readyPods = routing.SelectCandidates(routeCtx, router, readyPods)
 		// Apply the load-imbalance hotspot gate ahead of whichever strategy actually routes
 		// this request. Exclusive strategies (pd, slo*) are exempted above: they manage their
 		// own pod subsets (prefill/decode, SLO tiers), which a blanket running-request-count
 		// filter would distort.
 		readyPods = routing.ApplyLoadImbalanceGate(routeCtx, s.cache, readyPods)
-	}
-
-	if s.routerManager == nil {
-		// Preserve compatibility for legacy tests that build Server literals.
-		s.routerManager = routing.DefaultRouterManager()
-	}
-	router, err := s.routerManager.Select(routeCtx)
-	if err != nil {
-		return "", err
 	}
 
 	bypassSingleCandidate := true
