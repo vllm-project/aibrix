@@ -434,6 +434,8 @@ class Reader:
     def get_size(self) -> int:
         """Get the size of the file in bytes.
 
+        Preserve the current read position and any buffered text bytes.
+
         Returns:
             Size of the file in bytes
 
@@ -447,18 +449,22 @@ class Reader:
         if hasattr(self._file_obj, "size") and self._file_obj.size is not None:
             return self._file_obj.size
 
-        # For text files, seek positions are in characters, not bytes
-        # We need to read the content to get the actual byte size
+        # Text seek positions may be character offsets or opaque cookies.
+        # Read the content to measure its UTF-8 byte size instead.
         if self._is_text_file and self._has_seek:
             current_pos = self.tell()
+            text_buffer = self._text_buffer
+            bytes_read = self._bytes_read
             try:
                 # Read all content to get byte size
                 self.seek(0)
                 all_content = self.read(-1)
                 return len(all_content)
             finally:
-                # Restore original position
+                # The stream position can be ahead of the bytes returned to callers.
                 self.seek(current_pos)
+                self._text_buffer = text_buffer
+                self._bytes_read = bytes_read
 
         # For binary files: seek to end, get position, then restore
         if not self._has_seek or not self._has_tell:
