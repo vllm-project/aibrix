@@ -29,13 +29,14 @@ import (
 )
 
 type seedingRouter struct {
-	seeds []*v1.Pod
+	seeds     []*v1.Pod
+	ignoreMax bool
 }
 
 func (r *seedingRouter) Route(*types.RoutingContext, types.PodList) (string, error) { return "", nil }
 
 func (r *seedingRouter) SeedCandidates(_ *types.RoutingContext, _ types.PodList, max int) []*v1.Pod {
-	if len(r.seeds) > max {
+	if !r.ignoreMax && len(r.seeds) > max {
 		return r.seeds[:max]
 	}
 	return r.seeds
@@ -115,10 +116,18 @@ func TestSelectCandidates_SeedsCappedAtM(t *testing.T) {
 	assert.Same(t, pods[1], got[0])
 	assert.Same(t, pods[2], got[1])
 
-	// M=0 turns seeding off.
-	got = selectCandidates(candidateCtx(t, "prefix-cache"), router, pods, 10, 0)
+	// M=0 turns seeding off, and so does a negative M, without disabling the stage.
+	for _, m := range []int{0, -1} {
+		got = selectCandidates(candidateCtx(t, "prefix-cache"), router, pods, 10, m)
+		requireDistinctSubset(t, got, pods)
+		require.Len(t, got, 10)
+	}
+
+	// A seeder that returns more than it was asked for is cut to M.
+	greedy := &seedingRouter{seeds: router.seeds, ignoreMax: true}
+	got = selectCandidates(candidateCtx(t, "prefix-cache"), greedy, pods, 10, 2)
 	requireDistinctSubset(t, got, pods)
-	require.Len(t, got, 10)
+	require.Len(t, got, 12)
 }
 
 // TestSelectCandidates_LargeSample covers the branch that draws from a permutation when the

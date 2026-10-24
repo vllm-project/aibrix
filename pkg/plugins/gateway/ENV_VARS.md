@@ -194,16 +194,23 @@ strategy then read running counts, from Redis when it is configured, for those p
 bounds the per-request routing work by K + M instead of the number of ready pods (RFC #3188).
 
 The stage applies only when every strategy in the resolved strategy, including the auto-blend,
-judges pods only by the pods it is given: `least-request`, `least-request-top-k`, `load-balance`,
-`prefix-cache`, `random`, `power-of-two` and the other `least-*` strategies. Any other strategy,
-such as `vtc-basic`, `session-affinity`, the queue router, `external`, `throughput`, `pd` or `slo*`,
-keeps every ready pod. It also does nothing when K + M is at least the number of ready pods. When a
-per-replica inflight cap is set, its saturation filter still runs over every ready pod first.
+is candidate-safe: it judges pods only by the pods it is given, with no fleet-wide state of its
+own. These are `least-request`, `least-request-top-k`, `load-balance`, `prefix-cache`, `random`,
+`power-of-two` and the other `least-*` strategies. Any other strategy, such as `vtc-basic`,
+`session-affinity`, the queue router, `external`, `throughput`, `pd` or `slo*`, keeps every ready
+pod. It also does nothing when K + M is at least the number of ready pods. When a per-replica
+inflight cap is set, its saturation filter still runs over every ready pod first.
+
+The scoring formulas are unchanged, but checks that compare a pod with the rest of its pool now
+compare it with the sample: the load-imbalance gate's spread, `prefix-cache`'s standard-deviation
+check, and the blend's min-max normalization and winsorizing. Use K of at least 2. With K = 1 and
+no seeded pods, the set has one pod, and the gateway routes to it without scoring, which is a
+random pick.
 
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
 | `AIBRIX_ROUTING_CANDIDATE_K` | int | `0` | Number of ready pods, drawn at random, that the gate and the router consider. `0` disables the candidate stage. | [algorithms/candidates.go](algorithms/candidates.go) |
-| `AIBRIX_ROUTING_CANDIDATE_PREFIX_M` | int | `16` | Maximum number of pods the router may seed into the candidate set on top of the K random pods. A hot prefix is held by more pods in a larger fleet, and the router can only prefer the least loaded of the holders it is given, so keep this near K. `0` turns seeding off. | [algorithms/candidates.go](algorithms/candidates.go) |
+| `AIBRIX_ROUTING_CANDIDATE_PREFIX_M` | int | `16` | Maximum number of pods the router may seed into the candidate set on top of the K random pods. A hot prefix is held by more pods in a larger fleet, and the router can only prefer the least loaded of the holders it is given, so keep this near K. `0` or a negative value turns seeding off. | [algorithms/candidates.go](algorithms/candidates.go) |
 
 Both can also be set per request by the model config profile (`routingConfig.candidate.*`); see [Model Config Profile Overrides](#model-config-profile-overrides).
 

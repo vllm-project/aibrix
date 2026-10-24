@@ -39,7 +39,10 @@ var (
 )
 
 // candidateSafeStrategies are the strategies whose choice depends only on the pods they are
-// given, so routing over a sample changes which pods compete but not how they are judged.
+// given, so routing over a sample changes which pods compete but not the formulas that judge
+// them. Checks that compare a pod with the rest of its pool (the gate's spread, prefix-cache's
+// standard-deviation check, the blend's normalization) then compare it with the sample, not the
+// fleet. A new strategy is kept off the candidate stage until it is added here.
 // Strategies that keep a global view (vtc's fairness, the queue router, session pins, external
 // and throughput routers, and the exclusive pd and slo routers) always see every ready pod.
 var candidateSafeStrategies = map[string]bool{
@@ -85,13 +88,20 @@ func SelectCandidates(ctx *types.RoutingContext, router types.Router, readyPods 
 }
 
 func selectCandidates(ctx *types.RoutingContext, router types.Router, readyPods []*v1.Pod, k, m int) []*v1.Pod {
-	if k <= 0 || m < 0 || len(readyPods) <= k+m || !candidateStageApplies(ctx) {
+	// A negative M only turns seeding off; it does not disable the stage.
+	m = max(m, 0)
+	if k <= 0 || len(readyPods) <= k+m || !candidateStageApplies(ctx) {
 		return readyPods
 	}
 
 	var seeds []*v1.Pod
 	if seeder, ok := router.(types.CandidateSeeder); ok && m > 0 {
 		seeds = seeder.SeedCandidates(ctx, &utils.PodArray{Pods: readyPods}, m)
+		// Seeders are asked for at most m pods; enforce it so the sampling below never depends on
+		// a seeder honoring that.
+		if len(seeds) > m {
+			seeds = seeds[:m]
+		}
 	}
 
 	candidates := make([]*v1.Pod, 0, k+len(seeds))
