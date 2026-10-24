@@ -285,9 +285,11 @@ func podQuantileSeries(t *testing.T, name, pod string) int {
 	if gauge == nil {
 		return 0
 	}
-	ch := make(chan prometheus.Metric, 64)
-	gauge.Collect(ch)
-	close(ch)
+	ch := make(chan prometheus.Metric)
+	go func() {
+		gauge.Collect(ch)
+		close(ch)
+	}()
 	n := 0
 	for m := range ch {
 		var out dto.Metric
