@@ -181,6 +181,7 @@ func TestThroughputReadsPromQLAverages(t *testing.T) {
 		newPod("p1", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
 		newPod("p2", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
 		newPod("p3", "3.3.3.3", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("p4", "4.4.4.4", true, map[string]string{"model.aibrix.ai/port": "8000"}),
 	}
 	c := cache.NewWithPodsModelMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
 		"p1": {
@@ -194,6 +195,11 @@ func TestThroughputReadsPromQLAverages(t *testing.T) {
 		// A pod that served nothing in the window: the averaging query divides 0 by 0.
 		"p3": {
 			metrics.AvgPromptToksPerReq:     promqlAverage(math.NaN()),
+			metrics.AvgGenerationToksPerReq: promqlAverage(math.NaN()),
+		},
+		// Only one of the two averages is usable, which is not enough to score the pod.
+		"p4": {
+			metrics.AvgPromptToksPerReq:     promqlAverage(1),
 			metrics.AvgGenerationToksPerReq: promqlAverage(math.NaN()),
 		},
 	})
@@ -210,7 +216,7 @@ func TestThroughputReadsPromQLAverages(t *testing.T) {
 		}
 	}
 	assert.Equal(t, map[string]float64{"p1": 250, "p2": 25}, got,
-		"PromQL averages score as 2*prompt + generation, and a NaN average leaves the pod unscored")
+		"PromQL averages score as 2*prompt + generation, and a NaN in either average leaves the pod unscored")
 
 	for i := 0; i < 20; i++ {
 		ctx := types.NewRoutingContext(context.Background(), "test", "m1", "message", "request", "user")

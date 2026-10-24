@@ -39,9 +39,16 @@ func TestNumericValue(t *testing.T) {
 		{"simple value", &metrics.SimpleMetricValue{Value: 3}, 3, true},
 		{"promql vector", promValue(model.Vector{&model.Sample{Value: 42}}), 42, true},
 		{"promql scalar", promValue(&model.Scalar{Value: 7}), 7, true},
-		{"promql NaN from a pod with no requests", promValue(model.Vector{&model.Sample{Value: model.SampleValue(math.NaN())}}), 0, false},
 		{"promql empty vector", promValue(model.Vector{}), 0, false},
+		{"promql matrix", promValue(model.Matrix{&model.SampleStream{Values: []model.SamplePair{{Value: 5}}}}), 5, true},
+		{"promql NaN from a pod with no requests", promValue(model.Vector{&model.Sample{Value: model.SampleValue(math.NaN())}}), 0, false},
+		{"promql +Inf", promValue(model.Vector{&model.Sample{Value: model.SampleValue(math.Inf(1))}}), 0, false},
+		{"simple +Inf", &metrics.SimpleMetricValue{Value: math.Inf(1)}, 0, false},
 		{"promql nil result", &metrics.PrometheusMetricValue{}, 0, false},
+		{"promql result holding a nil value", &metrics.PrometheusMetricValue{Result: new(model.Value)}, 0, false},
+		{"typed nil promql value", (*metrics.PrometheusMetricValue)(nil), 0, false},
+		{"typed nil simple value", (*metrics.SimpleMetricValue)(nil), 0, false},
+		{"histogram holds no single number", &metrics.HistogramMetricValue{Sum: 4, Count: 2}, 0, false},
 		{"nil value", nil, 0, false},
 	}
 	for _, tt := range tests {

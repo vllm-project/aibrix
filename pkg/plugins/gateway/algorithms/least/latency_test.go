@@ -341,25 +341,35 @@ func TestLeastLatencyReadsPromQLTokenAverages(t *testing.T) {
 	pods := []*v1.Pod{
 		newPod("p1", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
 		newPod("p2", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("p3", "3.3.3.3", true, map[string]string{"model.aibrix.ai/port": "8000"}),
 	}
-	// p1 takes longer per prefill but serves prompts ten times as long, so per token it is the
-	// faster pod: 1s/1000 tokens against 0.5s/100 tokens. Scaled to the pool's average prompt of
-	// 550 tokens, p1's prefill estimate is 0.55s and p2's is 2.75s. Without the token averages
-	// both fall back to the same guess and the raw means, 1s and 0.5s, decide instead.
+	// p1 takes longer per request but serves requests ten times as long, so per token it is the
+	// faster pod: prefill 1s/1000 tokens against 0.5s/100, decode 2s/1000 tokens against 0.5s/100.
+	// p3 has served nothing, so its averages are 0 and stay out of the pool averages, which are
+	// 550 prompt and 550 generation tokens. Scaled to them, p1's prefill and decode estimates are
+	// 0.55s and 1.1s, and p2's are 2.75s each. Without the token averages every pod falls back to
+	// the same guess and the raw means decide, which favours p2.
 	c := cache.NewWithPodsModelMetricsForTest(pods, testModelName, map[string]map[string]metrics.MetricValue{
 		"p1": {
 			metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 1, Count: 1},
 			metrics.AvgPromptToksPerReq:       promqlAverage(1000),
-			metrics.AvgGenerationToksPerReq:   promqlAverage(100),
+			metrics.AvgGenerationToksPerReq:   promqlAverage(1000),
 			metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 1, Count: 1},
-			metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 1, Count: 1},
+			metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 2, Count: 1},
 		},
 		"p2": {
 			metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 1, Count: 1},
 			metrics.AvgPromptToksPerReq:       promqlAverage(100),
 			metrics.AvgGenerationToksPerReq:   promqlAverage(100),
 			metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 0.5, Count: 1},
-			metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 1, Count: 1},
+			metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 0.5, Count: 1},
+		},
+		"p3": {
+			metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 1, Count: 1},
+			metrics.AvgPromptToksPerReq:       promqlAverage(0),
+			metrics.AvgGenerationToksPerReq:   promqlAverage(0),
+			metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 3, Count: 1},
+			metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 3, Count: 1},
 		},
 	})
 	podList := podsFromCache(c)
@@ -374,8 +384,9 @@ func TestLeastLatencyReadsPromQLTokenAverages(t *testing.T) {
 			got[pod.Name] = scores[i]
 		}
 	}
-	assert.InDelta(t, 1+0.55+1, got["p1"], 1e-9)
-	assert.InDelta(t, 1+2.75+1, got["p2"], 1e-9)
+	assert.InDelta(t, 1+0.55+1.1, got["p1"], 1e-9)
+	assert.InDelta(t, 1+2.75+2.75, got["p2"], 1e-9)
+	assert.InDelta(t, 1+3+3, got["p3"], 1e-9, "a pod without averages uses the pool's")
 
 	target, err := r.Route(ctx, podList)
 	assert.NoError(t, err)

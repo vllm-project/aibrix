@@ -52,18 +52,25 @@ func GetPodModelMetricsSimplePrometheusValue(cache cache.Cache, podname, namespa
 
 // NumericValue returns the number a metric holds, whether the cache stores it as a scraped value or
 // as a PromQL query result, whose simple value is always 0. ok is false when there is no finite
-// number, including the NaN an averaging query returns for a pod that served no requests.
+// number, including the NaN an averaging query returns for a pod that served no requests, and for
+// metric kinds that hold no single number, such as histograms.
 func NumericValue(metricValue metrics.MetricValue) (value float64, ok bool) {
 	switch v := metricValue.(type) {
-	case nil:
-		return 0, false
+	case *metrics.SimpleMetricValue:
+		if v == nil {
+			return 0, false
+		}
+		value = v.Value
 	case *metrics.PrometheusMetricValue:
+		if v == nil || v.Result == nil || *v.Result == nil {
+			return 0, false
+		}
 		var err error
-		if value, err = metrics.ExtractNumericFromPromResult(v.Result); err != nil {
+		if value, err = metrics.ExtractNumericFromPromResult(v.GetPrometheusResult()); err != nil {
 			return 0, false
 		}
 	default:
-		value = v.GetSimpleValue()
+		return 0, false
 	}
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		return 0, false
