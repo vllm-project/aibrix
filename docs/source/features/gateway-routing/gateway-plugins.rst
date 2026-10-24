@@ -683,6 +683,23 @@ Prefix cache and Preble
      - ``AIBRIX_ROUTER_PREBLE_DECODING_LENGTH``
      - Assumed number of decoding tokens per request in the preble cost model.
 
+Candidate stage
+~~~~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 26 40
+
+   * - Field
+     - Overrides
+     - Description
+   * - ``candidate.k``
+     - ``AIBRIX_ROUTING_CANDIDATE_K``
+     - Number of ready pods drawn at random for the load-imbalance gate and the router to score, so each request reads per-pod load for about ``k`` pods instead of all of them. ``0`` scores every ready pod. Applies only when every resolved strategy is candidate-safe (see ``pkg/plugins/gateway/ENV_VARS.md``).
+   * - ``candidate.prefixM``
+     - ``AIBRIX_ROUTING_CANDIDATE_PREFIX_M``
+     - Most pods the router may add to the sample; for ``prefix-cache`` these are the pods holding the longest cached prefix of the prompt.
+
 VTC fairness
 ~~~~~~~~~~~~
 
