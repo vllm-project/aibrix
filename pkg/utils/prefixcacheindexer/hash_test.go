@@ -491,3 +491,34 @@ func TestMatchPrefixWalksTheSmallerSet(t *testing.T) {
 	assert.Equal(t, want, matched, "few ready pods: walk the ready pods")
 	assert.Len(t, small, len(ready), "the caller's ready-pod set must not be modified")
 }
+
+func TestMatchPrefixInPlaceBranch(t *testing.T) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+
+	cache := NewPrefixHashTable()
+	clock := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	cache.now = func() time.Time { return clock }
+
+	const model = "m"
+	tokens := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+	hashes := cache.GetPrefixHashes(tokens)
+	// ns/late-stale cached the whole prompt long ago and only refreshed the first block since,
+	// so by the time of the match it is fresh on block 0 and stale on the later blocks.
+	cache.AddPrefix(hashes, model, "ns/late-stale")
+	clock = clock.Add(prefixCacheEvictionDuration / 2)
+	cache.AddPrefix(hashes, model, "ns/full")
+	cache.AddPrefix(hashes, model, "ns/full-2")
+	cache.AddPrefix(hashes[:1], model, "ns/late-stale")
+	cache.AddPrefix(hashes[:1], model, "ns/one-third")
+	cache.AddPrefix(hashes[:1], model, "ns/not-ready")
+	clock = clock.Add(prefixCacheEvictionDuration/2 + time.Minute)
+
+	// No more ready pods than holders on any block, so every block walks the ready pods.
+	ready := map[string]struct{}{"ns/full": {}, "ns/late-stale": {}, "ns/one-third": {}, "ns/idle": {}}
+	matched, _ := cache.MatchPrefix(tokens, model, ready)
+	assert.Equal(t, map[string]int{"ns/full": 100, "ns/late-stale": 33, "ns/one-third": 33}, matched,
+		"a holder that is stale on a later block stops matching there")
+	assert.Len(t, ready, 4, "the caller's ready-pod set must not be modified at block 0")
+}
