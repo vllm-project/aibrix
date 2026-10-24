@@ -184,18 +184,44 @@ func mergeTransferParams(params []gjson.Result) []byte {
 	return append(out, '}')
 }
 
-// Deletes every copy first: with a repeated key, vLLM would take the last one.
+// Drops every copy the client sent, in one pass: sjson only edits the first,
+// and with a repeated key vLLM takes the last one.
 func setTransferParams(body, params []byte) ([]byte, error) {
-	var err error
-	for gjson.GetBytes(body, ECTransferParamsField).Exists() {
-		if body, err = sjson.DeleteBytes(body, ECTransferParamsField); err != nil {
-			return nil, err
+	if !gjson.ValidBytes(body) {
+		return nil, errors.New("request body is not valid JSON")
+	}
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() {
+		return nil, errors.New("request body is not a JSON object")
+	}
+	if !root.Get(ECTransferParamsField).Exists() {
+		if params == nil {
+			return body, nil
 		}
+		return sjson.SetRawBytes(body, ECTransferParamsField, params)
 	}
-	if params == nil {
-		return body, nil
+	out := make([]byte, 0, len(body)+len(params))
+	out = append(out, '{')
+	root.ForEach(func(key, value gjson.Result) bool {
+		if key.String() == ECTransferParamsField {
+			return true
+		}
+		if len(out) > 1 {
+			out = append(out, ',')
+		}
+		out = append(out, key.Raw...)
+		out = append(out, ':')
+		out = append(out, value.Raw...)
+		return true
+	})
+	if params != nil {
+		if len(out) > 1 {
+			out = append(out, ',')
+		}
+		out = append(out, `"`+ECTransferParamsField+`":`...)
+		out = append(out, params...)
 	}
-	return sjson.SetRawBytes(body, ECTransferParamsField, params)
+	return append(out, '}'), nil
 }
 
 func (e *Executor) encode(routingCtx *types.RoutingContext, pod *v1.Pod, index int, item string, timeout time.Duration) (gjson.Result, error) {

@@ -53,11 +53,11 @@ func SplitEncoders(pods []*v1.Pod) (serving, encoders []*v1.Pod) {
 // the encoders in target's roleset first. target is the prefill pod in PD
 // disaggregation, or the pod serving the whole request in E+PD.
 //
-// The media items stay on the request, and the encoders' ec_transfer_params
-// replace any the client sent. vLLM finds the encoder output by the item's
-// content hash or through those params, and encodes the item itself when the
-// output isn't there. So an encode failure costs latency but not correctness,
-// and is only logged.
+// The media items stay on the request. Any ec_transfer_params the client sent
+// are dropped, and the encoders' are set instead. vLLM finds the encoder
+// output by the item's content hash or through those params, and encodes the
+// item itself when the output isn't there. So an encode failure costs latency
+// but not correctness, and is only logged.
 func (e *Executor) EncodeMedia(ctx *types.RoutingContext, pods []*v1.Pod, target *v1.Pod, timeout time.Duration) {
 	if e == nil || target == nil {
 		return

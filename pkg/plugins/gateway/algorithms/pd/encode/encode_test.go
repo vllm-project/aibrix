@@ -177,3 +177,27 @@ func TestEncodeMediaSetsEncoderTransferParams(t *testing.T) {
 		})
 	}
 }
+
+func TestSetTransferParamsDropsEveryClientCopy(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`{"model":"m"`)
+	for i := 0; i < 50000; i++ {
+		b.WriteString(`,"ec_transfer_params":{"x":1}`)
+	}
+	b.WriteString(`,"messages":[{"role":"user", "content":"hi"}]}`)
+
+	start := time.Now()
+	out, err := setTransferParams([]byte(b.String()), []byte(`{"a":{}}`))
+	require.NoError(t, err)
+	assert.Less(t, time.Since(start), time.Second)
+	assert.Equal(t, `{"model":"m","messages":[{"role":"user", "content":"hi"}],"ec_transfer_params":{"a":{}}}`, string(out))
+
+	out, err = setTransferParams([]byte(`{"ec_transfer_params":{"x":1}}`), nil)
+	require.NoError(t, err)
+	assert.Equal(t, `{}`, string(out))
+
+	untouched := []byte(`{ "model": "m" }`)
+	out, err = setTransferParams(untouched, nil)
+	require.NoError(t, err)
+	assert.Equal(t, untouched, out)
+}
