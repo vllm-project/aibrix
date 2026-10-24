@@ -1,9 +1,80 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from aibrix.metadata.core import HTTPXClientWrapper
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True], ids=["request", "stream"])
+@pytest.mark.parametrize("fail_first", [False, True], ids=["success", "failure"])
+async def test_httpx_call_site_inflight_survives_telemetry_windows(stream, fail_first):
+    entered = [asyncio.Event(), asyncio.Event()]
+    release = [asyncio.Event(), asyncio.Event()]
+
+    async def handler(request):
+        index = int(request.url.path.rsplit("/", 1)[-1])
+        entered[index].set()
+        await release[index].wait()
+        if index == 0 and fail_first:
+            raise httpx.ConnectError("expected failure", request=request)
+        return httpx.Response(200, json={"ok": True})
+
+    wrapper = HTTPXClientWrapper(
+        client_id="test-wrapper-window",
+        telemetry_enabled=True,
+        telemetry_interval_seconds=0,
+        transport=httpx.MockTransport(handler),
+    )
+    call_site = "tests.metadata.test_httpx_client.window"
+
+    async def send(index):
+        url = f"https://example.test/{index}"
+        if stream:
+            async with wrapper.stream("GET", url, telemetry_call_site=call_site):
+                pass
+        else:
+            await wrapper.get(url, telemetry_call_site=call_site)
+
+    tasks = [asyncio.create_task(send(index)) for index in range(2)]
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*(event.wait() for event in entered)), timeout=1
+        )
+        with patch("aibrix.metadata.core.httpx_client.logger.debug") as mock_debug:
+            wrapper._emit_telemetry(final=False, elapsed=1.0)
+            release[0].set()
+            if fail_first:
+                with pytest.raises(httpx.ConnectError, match="expected failure"):
+                    await tasks[0]
+            else:
+                await tasks[0]
+            assert wrapper._telemetry_stats.inflight == 1
+            wrapper._emit_telemetry(final=False, elapsed=1.0)
+
+            release[1].set()
+            await tasks[1]
+            wrapper._emit_telemetry(final=False, elapsed=1.0)
+            wrapper._emit_telemetry(final=False, elapsed=1.0)
+
+            sites = [
+                call.kwargs
+                for call in mock_debug.call_args_list
+                if call.args == ("HTTPX client telemetry by call site",)
+            ]
+            assert [site["call_site"] for site in sites] == [call_site] * 3
+            assert [site["inflight"] for site in sites] == [2, 1, 0]
+            assert [site["started"] for site in sites] == [2, 0, 0]
+            assert [site["completed"] for site in sites] == [0, 1, 1]
+            assert [site["failed"] for site in sites] == [0, int(fail_first), 0]
+            assert sites[2]["exception_types"] == {}
+    finally:
+        for event in release:
+            event.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await wrapper.stop()
 
 
 @pytest.mark.asyncio

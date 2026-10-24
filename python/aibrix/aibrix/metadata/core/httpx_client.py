@@ -181,7 +181,12 @@ class _HTTPXTelemetryStats:
                 len(_LATENCY_BUCKET_UPPER_BOUNDS_SECONDS) + 1
             )
             self._window_exception_types = Counter()
-            self._call_sites = {}
+            # Pending requests can outlive the reporting window.
+            self._call_sites = {
+                call_site: _HTTPXTelemetryCallSiteStats(inflight=stats.inflight)
+                for call_site, stats in self._call_sites.items()
+                if stats.inflight > 0
+            }
         return snapshot
 
     def _histogram_percentile(self, percentile: float) -> Optional[float]:
