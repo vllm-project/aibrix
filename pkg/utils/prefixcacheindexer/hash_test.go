@@ -309,12 +309,8 @@ func BenchmarkPrefixHashTableAddAndMatchParallel(b *testing.B) {
 			pod := fmt.Sprintf("p%d", localIter%16)
 			cache.AddPrefix(seedHashes, model, pod)
 
-			// MatchPrefix mutates readyPods; use a fresh copy each iteration.
-			readyPods := make(map[string]struct{}, len(allReadyPods))
-			for k := range allReadyPods {
-				readyPods[k] = struct{}{}
-			}
-			_, _ = cache.MatchPrefix(seedTokens, model, readyPods)
+			// MatchPrefix only reads readyPods, so the goroutines can share one map.
+			_, _ = cache.MatchPrefix(seedTokens, model, allReadyPods)
 
 			localIter++
 		}
