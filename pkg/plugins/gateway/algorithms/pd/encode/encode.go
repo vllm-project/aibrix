@@ -279,10 +279,11 @@ func (e *Executor) encode(routingCtx *types.RoutingContext, pod *v1.Pod, index i
 		emit(routingCtx, "read_error", "200")
 		return gjson.Result{}, fmt.Errorf("read encode response: %w", err)
 	}
-	emit(routingCtx, "success", "200")
 	if !gjson.ValidBytes(body) {
-		return gjson.Result{}, nil
+		emit(routingCtx, "invalid_response", "200")
+		return gjson.Result{}, errors.New("encode response is not valid JSON")
 	}
+	emit(routingCtx, "success", "200")
 	return gjson.GetBytes(body, ECTransferParamsField), nil
 }
 

@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -114,22 +115,24 @@ func TestEncodeUsesBracketedIPv6Host(t *testing.T) {
 	}
 }
 
-// encoderStub answers each encode request with ec_transfer_params for the
-// image URL it was sent, or with none when params is false.
+type encodeReply struct {
+	status int
+	body   string
+}
+
+// encoderStub answers each encode request by the image URL it carries.
 type encoderStub struct {
-	params bool
+	replies map[string]encodeReply
+	calls   *atomic.Int32
 }
 
 func (e encoderStub) RoundTrip(req *http.Request) (*http.Response, error) {
+	e.calls.Add(1)
 	body, _ := io.ReadAll(req.Body)
-	resp := `{"choices":[]}`
-	if e.params {
-		url := gjson.GetBytes(body, "messages.0.content.0.image_url.url").String()
-		resp = `{"choices":[],"ec_transfer_params":{"` + url + `":{"peer_host":"10.0.0.9","peer_port":5601}}}`
-	}
+	reply := e.replies[gjson.GetBytes(body, "messages.0.content.0.image_url.url").String()]
 	return &http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(resp)),
+		StatusCode: reply.status,
+		Body:       io.NopCloser(strings.NewReader(reply.body)),
 		Header:     make(http.Header),
 		Request:    req,
 	}, nil
@@ -152,30 +155,85 @@ func TestEncodeMediaSetsEncoderTransferParams(t *testing.T) {
 	body := `{"model":"qwen-vl","ec_transfer_params":{"x":1},"messages":[{"role":"user","content":[` +
 		`{"type":"image_url","image_url":{"url":"a"}},{"type":"image_url","image_url":{"url":"b"}}]}],` +
 		`"ec_transfer_params":{"other":{"peer_host":"203.0.113.7"}}}`
+	params := func(hash, host string) encodeReply {
+		return encodeReply{http.StatusOK, `{"choices":[],"ec_transfer_params":{"` + hash + `":{"peer_host":"` + host + `"}}}`}
+	}
+	none := encodeReply{http.StatusOK, `{"choices":[]}`}
+	tooLarge := encodeReply{http.StatusOK, `{"pad":"` + strings.Repeat("x", 1<<20) +
+		`","ec_transfer_params":{"b":{"peer_host":"10.0.0.2"}}}`}
 
 	for _, tc := range []struct {
-		name   string
-		params bool
-		want   string
-		copies int
+		name    string
+		body    string
+		replies map[string]encodeReply
+		want    string
 	}{
-		{"encoders return params", true, `{"a":{"peer_host":"10.0.0.9","peer_port":5601},"b":{"peer_host":"10.0.0.9","peer_port":5601}}`, 1},
-		{"encoders return none", false, "", 0},
+		{"encoders return params", body,
+			map[string]encodeReply{"a": params("a", "10.0.0.1"), "b": params("b", "10.0.0.2")},
+			`{"a":{"peer_host":"10.0.0.1"},"b":{"peer_host":"10.0.0.2"}}`},
+		{"encoders return none", body,
+			map[string]encodeReply{"a": none, "b": none}, ""},
+		{"same hash keeps the first item's params", body,
+			map[string]encodeReply{"a": params("h", "10.0.0.1"), "b": params("h", "10.0.0.2")},
+			`{"h":{"peer_host":"10.0.0.1"}}`},
+		{"failed encoder", body,
+			map[string]encodeReply{"a": params("a", "10.0.0.1"), "b": {http.StatusInternalServerError, "boom"}},
+			`{"a":{"peer_host":"10.0.0.1"}}`},
+		{"invalid encoder response", body,
+			map[string]encodeReply{"a": params("a", "10.0.0.1"), "b": {http.StatusOK, `{"ec_transfer_params":{"b":{"peer_host":"10.0.0.2"}}`}},
+			`{"a":{"peer_host":"10.0.0.1"}}`},
+		{"encoder response over the cap", body,
+			map[string]encodeReply{"a": params("a", "10.0.0.1"), "b": tooLarge},
+			`{"a":{"peer_host":"10.0.0.1"}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := types.NewRoutingContext(context.Background(), "test", "qwen-vl", "", "req-ec", "user")
 			defer ctx.Delete()
 			ctx.ReqPath = "/v1/chat/completions"
-			ctx.ReqBody = []byte(body)
+			ctx.ReqBody = []byte(tc.body)
 
-			NewExecutor(&http.Client{Transport: encoderStub{params: tc.params}}).
-				EncodeMedia(ctx, pods, target, time.Second)
+			stub := encoderStub{replies: tc.replies, calls: &atomic.Int32{}}
+			NewExecutor(&http.Client{Transport: stub}).EncodeMedia(ctx, pods, target, time.Second)
 
-			assert.Equal(t, tc.copies, strings.Count(string(ctx.ReqBody), `"ec_transfer_params"`))
+			assert.EqualValues(t, 2, stub.calls.Load())
+			copies := 0
+			if tc.want != "" {
+				copies = 1
+			}
+			assert.Equal(t, copies, strings.Count(string(ctx.ReqBody), `"ec_transfer_params"`))
 			assert.Equal(t, tc.want, gjson.GetBytes(ctx.ReqBody, "ec_transfer_params").Raw)
 			assert.Len(t, MediaItems(ctx.ReqBody), 2)
 		})
 	}
+}
+
+func TestEncodeMediaKeepsBodyWhenParamsCannotBeSet(t *testing.T) {
+	target := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "prefill-0",
+			Labels: map[string]string{"roleset-name": "rs-0", "role-name": "prefill", constants.ModelLabelPort: "8000"},
+		},
+		Status: v1.PodStatus{PodIP: "10.0.0.1"},
+	}
+	encoder := target.DeepCopy()
+	encoder.Name = "encode-0"
+	encoder.Labels["role-name"] = "encode"
+	// Trailing bytes: the media items are still found, but the body can't be rewritten.
+	body := `{"model":"qwen-vl","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"a"}}]}]} x`
+
+	ctx := types.NewRoutingContext(context.Background(), "test", "qwen-vl", "", "req-ec", "user")
+	defer ctx.Delete()
+	ctx.ReqPath = "/v1/chat/completions"
+	ctx.ReqBody = []byte(body)
+
+	stub := encoderStub{
+		replies: map[string]encodeReply{"a": {http.StatusOK, `{"ec_transfer_params":{"a":{}}}`}},
+		calls:   &atomic.Int32{},
+	}
+	NewExecutor(&http.Client{Transport: stub}).EncodeMedia(ctx, []*v1.Pod{target, encoder}, target, time.Second)
+
+	assert.EqualValues(t, 1, stub.calls.Load())
+	assert.Equal(t, body, string(ctx.ReqBody))
 }
 
 func TestSetTransferParamsDropsEveryClientCopy(t *testing.T) {
