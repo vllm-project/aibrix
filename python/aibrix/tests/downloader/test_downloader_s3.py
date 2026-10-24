@@ -31,6 +31,73 @@ S3_BOTO3_MODULE = "aibrix.downloader.s3.boto3"
 ENVS_MODULE = "aibrix.downloader.s3.envs"
 
 
+def _make_s3_cache_downloader(monkeypatch, data, force_download=False):
+    from aibrix import envs
+    from aibrix.downloader import s3 as s3_mod
+
+    client = mock.Mock()
+    client.head_object.return_value = {"ETag": "etag", "ContentLength": len(data)}
+    client.get_paginator.return_value.paginate.return_value = [{"KeyCount": 0}]
+    client.download_file.side_effect = lambda **kwargs: Path(
+        kwargs["Filename"]
+    ).write_bytes(data)
+    monkeypatch.setattr(s3_mod.boto3, "client", lambda **kwargs: client)
+    monkeypatch.setattr(envs, "DOWNLOADER_FORCE_DOWNLOAD", False)
+    monkeypatch.setattr(envs, "DOWNLOADER_CHECK_FILE_EXIST", True)
+    downloader = S3Downloader(
+        "s3://bucket/path/file.bin",
+        model_name="m",
+        download_extra_config=DownloadExtraConfig(
+            force_download=force_download, num_threads=1
+        ),
+    )
+    return downloader, client
+
+
+@pytest.mark.parametrize("data", [b"", b"data"])
+@pytest.mark.parametrize("force_download", [False, True])
+def test_s3_cache_reuses_matching_files(monkeypatch, tmp_path, data, force_download):
+    downloader, client = _make_s3_cache_downloader(monkeypatch, data, force_download)
+
+    downloader.download_model(str(tmp_path))
+    downloader.download_model(str(tmp_path))
+
+    assert (tmp_path / "m" / "file.bin").read_bytes() == data
+    assert client.download_file.call_count == (2 if force_download else 1)
+
+
+def test_s3_cache_does_not_treat_missing_size_as_zero(monkeypatch, tmp_path):
+    downloader, client = _make_s3_cache_downloader(monkeypatch, b"")
+    client.head_object.return_value.pop("ContentLength")
+
+    downloader.download_model(str(tmp_path))
+    downloader.download_model(str(tmp_path))
+
+    assert client.download_file.call_count == 2
+
+
+@pytest.mark.parametrize("etag", ["", "changed-etag"])
+def test_s3_cache_rechecks_etag_for_empty_files(monkeypatch, tmp_path, etag):
+    downloader, client = _make_s3_cache_downloader(monkeypatch, b"")
+    downloader.download_model(str(tmp_path))
+    client.head_object.return_value["ETag"] = etag
+
+    downloader.download_model(str(tmp_path))
+
+    assert client.download_file.call_count == 2
+
+
+def test_s3_cache_rechecks_size_for_empty_files(monkeypatch, tmp_path):
+    downloader, client = _make_s3_cache_downloader(monkeypatch, b"")
+    downloader.download_model(str(tmp_path))
+    (tmp_path / "m" / "file.bin").write_bytes(b"stale")
+
+    downloader.download_model(str(tmp_path))
+
+    assert client.download_file.call_count == 2
+    assert (tmp_path / "m" / "file.bin").read_bytes() == b""
+
+
 def mock_not_exist_boto3(mock_boto3):
     mock_client = mock.Mock()
     mock_boto3.client.return_value = mock_client

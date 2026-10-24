@@ -358,7 +358,8 @@ class S3BaseDownloader(BaseDownloader):
 
         # check if file exist
         etag = meta_data.get("ETag", "")
-        file_size = meta_data.get("ContentLength", 0)
+        # Missing metadata must not look like a valid empty object.
+        file_size = meta_data.get("ContentLength", -1)
         meta_data_file = meta_file(
             local_path=local_path, file_name=relative_path, source=self._source.value
         )
