@@ -386,9 +386,11 @@ per reconcile pass. When a victim's sleeping footprint is unknown, it sleeps
 that victim alone, reads a fresh Runtime snapshot, and replans instead of
 assuming all declared memory was released. The preemptor stays ``Pending``
 with Scheduled reason ``MakingRoom`` until physical room is available. Any
-request-triggered wake on that card, regardless of the sleeping claim's
-priority, cannot consume reserved room, but resumes ordinary wake admission
-after the reservation is released or expires.
+request-triggered wake whose claim has a strictly higher priority than the
+preemptor keeps its capacity reserve and is judged by ordinary wake admission.
+Equal- and lower-priority wakes cannot consume the reserved room until the
+reservation is released or expires. Wake requests retain their existing FIFO
+ordering relative to one another.
 
 No cross-claim ownership is stored in Status. After a controller restart, an
 already sleeping victim remains authoritative in Runtime and claim Status;

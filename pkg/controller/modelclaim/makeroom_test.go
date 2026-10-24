@@ -357,6 +357,51 @@ func TestPreemptionReservationSurvivesVictimWakeRequest(t *testing.T) {
 	assert.False(t, held, "successful activation releases the reservation")
 }
 
+func TestHigherPriorityWakeKeepsItsReserveWhenPreemptorReconcilesFirst(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"low", "warm-1", 300, 100, at0758},
+		serving{"busy", "warm-1", 300, 100, at0759},
+		serving{"high", "warm-1", 300, 100, at0759})
+	setClaimPriority(t, r, "low", 1)
+	setClaimPriority(t, r, "busy", 10)
+	setClaimPriority(t, r, "high", 50)
+	high := getModel(t, r, "high")
+	high.Status.Instances[0].Phase = modelv1alpha1.ModelClaimSleeping
+	high.Status.Instances[0].KVLimitBytes = 20
+	require.NoError(t, r.Status().Update(context.Background(), high))
+	snapshot := runtime.snapshots[podNamed(t, r, "warm-1").Status.PodIP]
+	for i := range snapshot.Models {
+		if snapshot.Models[i].ModelName == "high" {
+			snapshot.Models[i].Phase = runtimePhaseSleeping
+			snapshot.Models[i].Ready = false
+			snapshot.Models[i].KVUsedBytes = 20
+			snapshot.Models[i].KVCapacityBytes = 20
+			snapshot.Models[i].SleepingFootprintBytes = bytesOf(60)
+		}
+	}
+	newPrioritySleepClaim(t, r, "preemptor", 10, at0759)
+
+	reconcileOnce(t, r, "preemptor")
+
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "low", runtime.sleepCalls[0].ModelName)
+	_, held := r.reservations().heldFor(testNamespace, "preemptor", r.now())
+	require.True(t, held)
+	askWake(t, r, "warm-1", "high", "2026-10-01T08:00:06Z")
+
+	reconcileOnce(t, r, "preemptor")
+
+	assert.Empty(t, runtime.activateCalls, "the preemptor must account for the higher-priority wake reserve")
+	_, held = r.reservations().heldFor(testNamespace, "preemptor", r.now())
+	assert.False(t, held, "a hold that cannot reclaim more lower-priority room is released")
+
+	reconcileOnce(t, r, "high")
+
+	require.Len(t, runtime.wakeCalls, 1)
+	assert.Equal(t, "high", runtime.wakeCalls[0].ModelName)
+	assert.Empty(t, getModel(t, r, "preemptor").Status.Instances)
+}
+
 func TestPrioritySleepRestartReplansWithoutDurableOwnership(t *testing.T) {
 	r, runtime := servingPool(t, keepNoWakeReserve, 1,
 		serving{"a", "warm-1", 280, 50, at0758},

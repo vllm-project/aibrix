@@ -133,9 +133,9 @@ func (r *ModelClaimReconciler) wakeRequested(
 		}
 		ledgers := podLedgersFrom(claims, listErr, pods, readings.ofPods(ctx, pods), r.podsWithoutWakeReserve(ctx, pods))
 		// A priority-preemption reservation is room already promised to the
-		// preemptor. A wake waits rather than consuming it; once the reservation
-		// is released or expires, ordinary wake admission resumes.
-		r.reservations().takePreemptionsFrom(ledgers, pm.Namespace, r.now())
+		// preemptor. Equal- and lower-priority wakes wait rather than consuming
+		// it; a strictly higher-priority wake keeps its ordinary admission.
+		r.reservations().takePreemptionsFrom(ledgers, claims, pm, r.now())
 		return ledgers
 	}
 	for i := range pm.Status.Instances {
