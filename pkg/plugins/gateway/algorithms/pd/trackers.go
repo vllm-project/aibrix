@@ -39,7 +39,7 @@ const (
 )
 
 var (
-	envPrefillConsecutiveFailureThreshold = utils.LoadEnvInt("AIBRIX_PREFILL_CONSECUTIVE_FAILURE_THRESHOLD", DefaultPrefillConsecutiveFailureThreshold)
+	envPrefillConsecutiveFailureThreshold = utils.LoadEnvNonNegativeInt("AIBRIX_PREFILL_CONSECUTIVE_FAILURE_THRESHOLD", DefaultPrefillConsecutiveFailureThreshold)
 	envPrefillFailureBaseBackoffSeconds   = utils.LoadEnvInt("AIBRIX_PREFILL_FAILURE_BASE_BACKOFF_SECONDS", int(DefaultPrefillFailureBaseBackoff/time.Second))
 	envPrefillFailureMaxBackoffSeconds    = utils.LoadEnvInt("AIBRIX_PREFILL_FAILURE_MAX_BACKOFF_SECONDS", int(DefaultPrefillFailureMaxBackoff/time.Second))
 )
@@ -124,6 +124,11 @@ func (t *PrefillRequestTracker) RecordPrefillFailure(podKey string, now time.Tim
 		state = &prefillFailureState{}
 		t.podFailures[podKey] = state
 	}
+	// If the pod is already currently ejected, ignore in-flight failures
+	// so concurrent requests that were already in flight do not stack ejectionCount.
+	if !state.ejectedUntil.IsZero() && now.Before(state.ejectedUntil) {
+		return
+	}
 	state.consecutiveFailures++
 	if state.consecutiveFailures >= threshold {
 		state.ejectionCount++
@@ -135,9 +140,16 @@ func (t *PrefillRequestTracker) RecordPrefillFailure(podKey string, now time.Tim
 		if maxB <= 0 {
 			maxB = DefaultPrefillFailureMaxBackoff
 		}
+		if base > maxB {
+			base = maxB
+		}
 		backoff := base
 		if state.ejectionCount > 1 {
-			multiplier := 1 << (state.ejectionCount - 1)
+			shift := state.ejectionCount - 1
+			if shift > 30 {
+				shift = 30
+			}
+			multiplier := 1 << shift
 			backoff = time.Duration(multiplier) * base
 			if backoff > maxB || backoff <= 0 {
 				backoff = maxB

@@ -117,3 +117,53 @@ func TestPrefillRequestTracker_FailureEjectionAndRecovery(t *testing.T) {
 	assert.Equal(t, 0, ejections)
 	assert.False(t, ejected)
 }
+
+func TestPrefillRequestTracker_InFlightFailuresDoNotStackEjection(t *testing.T) {
+	podA := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-0", Namespace: "default"}}
+	keyA := utils.GeneratePodKey(podA.Namespace, podA.Name)
+
+	now := time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	tracker := NewPrefillRequestTracker()
+	tracker.SetFailureEjectionConfig(3, 10*time.Second, 60*time.Second)
+
+	// Trigger ejection after 3 failures
+	tracker.RecordPrefillFailure(keyA, now)
+	tracker.RecordPrefillFailure(keyA, now)
+	tracker.RecordPrefillFailure(keyA, now)
+
+	fails, ejections, ejected := tracker.GetPrefillPodFailureState(keyA, now)
+	assert.Equal(t, 3, fails)
+	assert.Equal(t, 1, ejections)
+	assert.True(t, ejected)
+
+	// Concurrent in-flight requests that fail while the pod is already ejected
+	// must NOT increment ejectionCount or push the backoff further out.
+	tracker.RecordPrefillFailure(keyA, now.Add(1*time.Second))
+	tracker.RecordPrefillFailure(keyA, now.Add(2*time.Second))
+	tracker.RecordPrefillFailure(keyA, now.Add(3*time.Second))
+
+	fails, ejections, ejected = tracker.GetPrefillPodFailureState(keyA, now.Add(3*time.Second))
+	assert.Equal(t, 3, fails)
+	assert.Equal(t, 1, ejections)
+	assert.True(t, ejected)
+
+	// Backoff expires at now + 10s
+	assert.False(t, tracker.IsPrefillPodEjected(keyA, now.Add(11*time.Second)))
+}
+
+func TestPrefillRequestTracker_ThresholdZeroDisablesEjection(t *testing.T) {
+	podA := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-0", Namespace: "default"}}
+	keyA := utils.GeneratePodKey(podA.Namespace, podA.Name)
+
+	now := time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	tracker := NewPrefillRequestTracker()
+	tracker.SetFailureEjectionConfig(0, 10*time.Second, 60*time.Second)
+
+	// Even with many failures, pod is never ejected
+	for i := 0; i < 10; i++ {
+		tracker.RecordPrefillFailure(keyA, now)
+	}
+
+	assert.False(t, tracker.IsPrefillPodEjected(keyA, now))
+	assert.Equal(t, []*v1.Pod{podA}, tracker.FilterEligiblePrefillPods([]*v1.Pod{podA}, now))
+}
