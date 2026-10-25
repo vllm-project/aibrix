@@ -12,8 +12,60 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from aibrix.app import parse_runtime_args
+import os
+import subprocess
+import sys
+
+import aibrix.app as app_module
+from aibrix.app import initial_prometheus_multiproc_dir, parse_runtime_args
 
 
 def test_runtime_defaults_to_all_interfaces():
     assert parse_runtime_args([]).host == "0.0.0.0"
+
+
+def test_restart_keeps_metric_files_of_running_engines(tmp_path, monkeypatch):
+    reaped = subprocess.Popen([sys.executable, "-c", "pass"])
+    reaped.wait()
+    zombie = subprocess.Popen([sys.executable, "-c", "pass"])
+    try:
+        # Wait for the exit without reaping, so the child stays a zombie.
+        os.waitid(os.P_PID, zombie.pid, os.WEXITED | os.WNOWAIT)
+        running = os.getpid()
+        for pid in (running, reaped.pid, zombie.pid):
+            (tmp_path / f"counter_{pid}.db").touch()
+            (tmp_path / f"gauge_livesum_{pid}.db").touch()
+        monkeypatch.setenv("PROMETHEUS_MULTIPROC_DIR", str(tmp_path))
+
+        initial_prometheus_multiproc_dir()
+    finally:
+        zombie.wait()
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        f"counter_{running}.db",
+        f"gauge_livesum_{running}.db",
+    ]
+
+
+def test_cleanup_decision_per_file(tmp_path, monkeypatch):
+    def fake_pid_is_alive(pid):
+        if pid > 2**63:
+            raise OverflowError  # what os.kill raises for a pid past the C range
+        return pid != 202
+
+    monkeypatch.setattr(app_module, "pid_is_alive", fake_pid_is_alive)
+    for name in (
+        "counter_101.db",
+        "counter_202.db",
+        "counter_0.db",
+        "counter_0101.db",
+        "counter_99999999999999999999.db",
+        "notes.txt",
+    ):
+        (tmp_path / name).touch()
+    (tmp_path / "leftover").mkdir()
+    monkeypatch.setenv("PROMETHEUS_MULTIPROC_DIR", str(tmp_path))
+
+    initial_prometheus_multiproc_dir()
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["counter_101.db"]
