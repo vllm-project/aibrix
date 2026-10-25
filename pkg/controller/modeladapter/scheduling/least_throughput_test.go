@@ -74,6 +74,24 @@ func TestLeastThroughputSchedulerSelectPod(t *testing.T) {
 			want: "p2",
 		},
 		{
+			name: "generation throughput decides between equal prompt throughputs",
+			podMetrics: map[string]map[string]metrics.MetricValue{
+				"p1": {metrics.AvgPromptThroughputToksPerMinPod: promqlThroughput(10), metrics.AvgGenerationThroughputToksPerMinPod: promqlThroughput(90)},
+				"p2": {metrics.AvgPromptThroughputToksPerMinPod: promqlThroughput(10), metrics.AvgGenerationThroughputToksPerMinPod: promqlThroughput(5)},
+				"p3": {metrics.AvgPromptThroughputToksPerMinPod: promqlThroughput(10), metrics.AvgGenerationThroughputToksPerMinPod: promqlThroughput(40)},
+			},
+			want: "p2",
+		},
+		{
+			name: "a tie goes to the first pod",
+			podMetrics: map[string]map[string]metrics.MetricValue{
+				"p1": {metrics.AvgPromptThroughputToksPerMinPod: promqlThroughput(20), metrics.AvgGenerationThroughputToksPerMinPod: promqlThroughput(20)},
+				"p2": {metrics.AvgPromptThroughputToksPerMinPod: promqlThroughput(10), metrics.AvgGenerationThroughputToksPerMinPod: promqlThroughput(10)},
+				"p3": {metrics.AvgPromptThroughputToksPerMinPod: promqlThroughput(10), metrics.AvgGenerationThroughputToksPerMinPod: promqlThroughput(10)},
+			},
+			want: "p2",
+		},
+		{
 			name: "a pod without a usable throughput is passed over",
 			podMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {metrics.AvgPromptThroughputToksPerMinPod: promqlThroughput(math.NaN()), metrics.AvgGenerationThroughputToksPerMinPod: promqlThroughput(0)},
@@ -104,4 +122,11 @@ func TestLeastThroughputSchedulerSelectPod(t *testing.T) {
 			assert.Equal(t, tt.want, pod.Name)
 		})
 	}
+}
+
+func TestLeastThroughputSchedulerNoReadyPods(t *testing.T) {
+	c := cache.NewWithPodsForTest(nil, "base-model")
+	_, err := NewLeastThroughputScheduler(c).SelectPod(context.Background(), "adapter", nil)
+	require.Error(t, err)
+	assert.Equal(t, "no ready pods to schedule on", err.Error())
 }

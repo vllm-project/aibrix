@@ -62,6 +62,9 @@ func (r leastThroughputScheduler) SelectPod(ctx context.Context, model string, r
 		}
 	}
 	if podThroughputMin == math.MaxFloat64 {
+		if lastErr == nil {
+			return nil, fmt.Errorf("no ready pods to schedule on")
+		}
 		return nil, fmt.Errorf("no ready pod has throughput metrics: %w", lastErr)
 	}
 
