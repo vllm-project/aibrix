@@ -69,3 +69,21 @@ def test_cleanup_decision_per_file(tmp_path, monkeypatch):
     initial_prometheus_multiproc_dir()
 
     assert sorted(p.name for p in tmp_path.iterdir()) == ["counter_101.db"]
+
+
+def test_cleanup_tolerates_a_file_removed_meanwhile(tmp_path, monkeypatch):
+    # An exiting vLLM engine removes its own live-gauge files (multiprocess.mark_process_dead), so a listed file can
+    # be gone by the time cleanup unlinks it.
+    stale = tmp_path / "gauge_livesum_404.db"
+    stale.touch()
+
+    def engine_exits_meanwhile(pid):
+        stale.unlink()
+        return False
+
+    monkeypatch.setattr(app_module, "pid_is_alive", engine_exits_meanwhile)
+    monkeypatch.setenv("PROMETHEUS_MULTIPROC_DIR", str(tmp_path))
+
+    initial_prometheus_multiproc_dir()
+
+    assert list(tmp_path.iterdir()) == []

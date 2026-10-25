@@ -72,7 +72,7 @@ def initial_prometheus_multiproc_dir():
             if item.is_dir():
                 shutil.rmtree(item)
             elif not _writer_is_running(item.name):
-                item.unlink()
+                item.unlink(missing_ok=True)
     os.environ["PROMETHEUS_MULTIPROC_DIR"] = envs.PROMETHEUS_MULTIPROC_DIR
 
 
