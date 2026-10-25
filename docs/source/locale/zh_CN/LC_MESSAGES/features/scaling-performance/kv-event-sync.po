@@ -160,8 +160,8 @@ msgid "``AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT``"
 msgstr "``AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT``"
 
 #: ../../source/features/scaling-performance/kv-event-sync.rst:67
-msgid "vLLM service endpoint"
-msgstr "vLLM 服务端点"
+msgid "Optional fixed remote tokenizer endpoint for all models. Takes precedence over per-pod discovery; point it at a Service to load-balance tokenize calls across replicas. Global: only set when all models share one tokenizer endpoint."
+msgstr "所有模型共用的可选固定远程 tokenizer 端点。优先级高于按 pod 自动发现；可将其指向一个 Service，以便在各副本之间负载均衡 tokenize 调用。该配置是全局的：仅当所有模型共用一个 tokenizer 端点时才应设置。"
 
 #: ../../source/features/scaling-performance/kv-event-sync.rst:70
 msgid "Pod Labels"

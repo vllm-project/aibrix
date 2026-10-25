@@ -64,7 +64,7 @@ between callers in this mode.
 | `AIBRIX_PREFIX_CACHE_INCLUDE_TOOLS` | bool | `true` | Prepend a canonical rendering of the chat request `tools` (keys sorted, compact) to the text used for prefix matching, since chat templates commonly render tools ahead of the messages. For templates that render tools later in the prompt (e.g. near the last user turn), requests sharing tools but not messages can see a partial match the engine does not have; such deployments can set this to `false`. Requests without tools (absent, `null`, `[]` or not an array) are unaffected. Set to `false` to match on messages only. The tools text goes into a separate prefix-match text (`RoutingContext.PrefixText()`), which feeds prefix matching in `prefix-cache`, `prefix-cache-preble` and the PD prefill policies `prefix_cache`, `conductor` (including its matched/unmatched token estimate) and `hybrid_cache_load`. The routing message (`routingCtx.Message`) stays messages-only, so token estimates (VTC, `PromptTokens`/`PromptLength`, config-profile `promptTokensGte`/`promptTokensLt`) are unchanged. In KV-sync mode, chat requests tokenized through the remote chat template always forward the raw `tools` to the tokenizer, independent of this flag, since the template itself decides where tools go. | [prefix_tools.go](prefix_tools.go) |
 | `AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER` | bool | `false` | Use a remote HTTP tokenizer service instead of the local tokenizer. Requires `AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE=remote`. | [algorithms/prefixcache/router.go](algorithms/prefixcache/router.go) |
 | `AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED` | bool | `false` | Enable KV cache event synchronization across gateway replicas. When `true`, also requires `AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER=true`. | [algorithms/prefixcache/router.go](algorithms/prefixcache/router.go) |
-| `AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT` | string | `""` | Remote tokenizer service endpoint URL. Required when `AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true`. | [pkg/constants/kv_event_sync.go](../../constants/kv_event_sync.go) |
+| `AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT` | string | `""` | Optional fixed remote tokenizer endpoint URL (e.g. a Service in front of the inference pods) that every model's tokenizer uses, taking precedence over per-pod discovery. Global: only set when all models share one tokenizer endpoint. | [pkg/constants/kv_event_sync.go](../../constants/kv_event_sync.go) |
 | `AIBRIX_PREFIX_CACHE_KV_EVENT_PUBLISH_ADDR` | string | `""` | ZMQ publish address for KV cache events. Used when KV event sync is enabled. | [pkg/constants/kv_event_sync.go](../../constants/kv_event_sync.go) |
 | `AIBRIX_PREFIX_CACHE_KV_EVENT_SUBSCRIBE_ADDRS` | string | `""` | ZMQ subscribe addresses for KV cache events (comma-separated). Used when KV event sync is enabled. | [pkg/constants/kv_event_sync.go](../../constants/kv_event_sync.go) |
 
@@ -463,8 +463,8 @@ The following variables have interdependencies that must be satisfied together:
   AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true
   AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER=true
   AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE=remote
-  AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT=<url>
   ```
+  `AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT` is optional; when set, it overrides per-pod discovery for all models.
 
 - **Remote tokenizer pool** is initialized whenever `AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER=true`. The pool variables (`AIBRIX_VLLM_TOKENIZER_ENDPOINT_TEMPLATE`, `AIBRIX_TOKENIZER_*`, `AIBRIX_MAX_TOKENIZERS_PER_POOL`) all apply in that case.
 
