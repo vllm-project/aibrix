@@ -453,8 +453,9 @@ func EmitMetricToPrometheus(routingCtx *types.RoutingContext, pod *v1.Pod, metri
 			}{{"_p50", 50}, {"_p90", 90}, {"_p99", 99}} {
 				value, err := hv.GetPercentile(q.percentile)
 				if err != nil {
-					// No observations yet, or none since the engine restarted: drop the
-					// series instead of exporting a value that was never observed.
+					// The percentile cannot be computed, for example with no observations
+					// yet or none since the engine restarted: drop the series instead of
+					// exporting a value that was never observed.
 					DeleteGaugeMetric(metricName+q.suffix, labelNames, labelValues...)
 					continue
 				}
