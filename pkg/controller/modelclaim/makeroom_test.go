@@ -402,6 +402,59 @@ func TestHigherPriorityWakeKeepsItsReserveWhenPreemptorReconcilesFirst(t *testin
 	assert.Empty(t, getModel(t, r, "preemptor").Status.Instances)
 }
 
+func TestPreemptorAccountsForWakeReserveByPriority(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		wakerPriority      int32
+		includeWakerClaim  bool
+		wantMinimumReserve int64
+	}{
+		{name: "lower priority reserve is removed", wakerPriority: 1, includeWakerClaim: true, wantMinimumReserve: 60},
+		{name: "nearer lower priority reserve is removed", wakerPriority: 9, includeWakerClaim: true, wantMinimumReserve: 60},
+		{name: "equal priority reserve is removed", wakerPriority: 10, includeWakerClaim: true, wantMinimumReserve: 60},
+		{name: "higher priority reserve is kept", wakerPriority: 11, includeWakerClaim: true, wantMinimumReserve: 400},
+		{name: "much higher priority reserve is kept", wakerPriority: 50, includeWakerClaim: true, wantMinimumReserve: 400},
+		{name: "unknown waker reserve is kept", wantMinimumReserve: 400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			preemptor := priorityTestClaim("preemptor", 10, at0759)
+			claims := &modelv1alpha1.ModelClaimList{}
+			if tc.includeWakerClaim {
+				waker := priorityTestClaim("waker", tc.wakerPriority, at0758)
+				claims.Items = append(claims.Items, *waker)
+			}
+			ledgers := map[string]podLedger{
+				"warm-1": {
+					judgeable:                true,
+					hbmUsableBytes:           1000,
+					totalMinimumReserveBytes: 400,
+					totalHeldBytes:           400,
+					engines: []engineOnPod{{
+						claimName: "waker",
+						perGPUBytes: perGPUBytes{
+							maximumFootprintBytes: 300,
+							kvFloorBytes:          100,
+						},
+						kvUsedBytes:            20,
+						kvCapacityBytes:        20,
+						asleep:                 true,
+						sleepingFootprintBytes: 60,
+						wakeReserveAsked:       true,
+					}},
+				},
+			}
+			reservations := newCardReservations()
+			now := time.Date(2026, time.October, 1, 8, 0, 5, 0, time.UTC)
+			require.True(t, reservations.holdPreemption(
+				types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, preemptor.Name, 400, now))
+
+			reservations.keepWakesOutOfPreemption(ledgers, claims, preemptor, now)
+
+			assert.Equal(t, tc.wantMinimumReserve, ledgers["warm-1"].totalMinimumReserveBytes)
+		})
+	}
+}
+
 func TestPrioritySleepRestartReplansWithoutDurableOwnership(t *testing.T) {
 	r, runtime := servingPool(t, keepNoWakeReserve, 1,
 		serving{"a", "warm-1", 280, 50, at0758},

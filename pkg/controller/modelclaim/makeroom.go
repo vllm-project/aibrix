@@ -77,8 +77,9 @@ func (c *cardReservations) hold(card types.NamespacedName, claim string, bytes i
 }
 
 // holdPreemption holds a card for priority Sleep. Unlike an ordinary
-// make-room hold, it also keeps a request-triggered wake from consuming the
-// room promised to the preemptor.
+// make-room hold, it also keeps equal- and lower-priority request-triggered
+// wakes from consuming the room promised to the preemptor. A strictly
+// higher-priority wake follows ordinary wake admission.
 func (c *cardReservations) holdPreemption(card types.NamespacedName, claim string, bytes int64, now time.Time) bool {
 	return c.holdWithWakeProtection(card, claim, bytes, now, true)
 }

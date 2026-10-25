@@ -455,6 +455,84 @@ func TestReconcilePutsTheNeighbourIdleLongestToSleepToMakeRoomForAWake(t *testin
 	assert.Equal(t, "waker", runtime.wakeCalls[0].ModelName)
 }
 
+func TestPreemptedLowerPriorityWakeDoesNotSleepPriorityClaims(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"low", "warm-1", 300, 100, at0758},
+		serving{"equal", "warm-1", 300, 100, at0759})
+	setClaimPriority(t, r, "low", 1)
+	setClaimPriority(t, r, "equal", 10)
+	newPrioritySleepClaim(t, r, "high", 10, at0759)
+
+	reconcileOnce(t, r, "high")
+	reconcileOnce(t, r, "high")
+	reconcileOnce(t, r, "high")
+
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "low", runtime.sleepCalls[0].ModelName)
+	require.Len(t, runtime.activateCalls, 1)
+	assert.Equal(t, "high", runtime.activateCalls[0].ModelName)
+	assert.Equal(t, modelv1alpha1.ModelClaimSleeping, getModel(t, r, "low").Status.Instances[0].Phase)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, "equal").Status.Instances[0].Phase)
+	assert.NotEqual(t, modelv1alpha1.ModelClaimSleeping, getModel(t, r, "high").Status.Instances[0].Phase)
+	_, held := r.reservations().heldFor(testNamespace, "high", r.now())
+	require.False(t, held, "successful activation releases the soft-preemption reservation")
+
+	askWake(t, r, "warm-1", "low", "2026-10-01T08:00:06Z")
+	reconcileOnce(t, r, "low")
+
+	assert.Len(t, runtime.sleepCalls, 1, "a lower-priority wake must not sleep either priority-10 claim")
+	assert.Empty(t, runtime.wakeCalls)
+	assert.Equal(t, modelv1alpha1.ModelClaimActive, getModel(t, r, "equal").Status.Instances[0].Phase)
+	assert.NotEqual(t, modelv1alpha1.ModelClaimSleeping, getModel(t, r, "high").Status.Instances[0].Phase)
+	assert.Equal(t, instanceReasonWaitingForRoom, getModel(t, r, "low").Status.Instances[0].Reason)
+}
+
+func TestWakeMakesRoomOnlyWithEqualOrLowerPriorityVictims(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		aPriority, bPriority int32
+		aIdle, bIdle         time.Time
+		wantSleep            string
+	}{
+		{name: "lower priority is eligible", aPriority: 9, bPriority: 11, aIdle: at0758, bIdle: at0759, wantSleep: "a"},
+		{name: "equal priority is eligible", aPriority: 10, bPriority: 11, aIdle: at0758, bIdle: at0759, wantSleep: "a"},
+		{name: "strictly higher priorities are protected", aPriority: 11, bPriority: 12, aIdle: at0758, bIdle: at0759},
+		{name: "older higher priority is skipped", aPriority: 11, bPriority: 9, aIdle: at0758, bIdle: at0759, wantSleep: "b"},
+		{name: "equal priority keeps claim name tie break", aPriority: 10, bPriority: 10, aIdle: at0758, bIdle: at0758, wantSleep: "a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, runtime, pod := crowdedCard(t, keepNoWakeReserve)
+			setClaimPriority(t, r, "waker", 10)
+			setClaimPriority(t, r, "a", tc.aPriority)
+			setClaimPriority(t, r, "b", tc.bPriority)
+
+			now := tc.aIdle
+			r.PoolPolicy = newPoolPolicyManager(func() time.Time { return now })
+			snapshot := runtime.snapshots[pod.Status.PodIP]
+			for i, idleSince := range []time.Time{tc.aIdle, tc.bIdle} {
+				now = idleSince
+				busy := snapshot.Models[i]
+				busy.RequestsRunning = 1
+				_, observed := r.PoolPolicy.observeSnapshot(pod, &RuntimeSnapshot{Models: []RuntimeSnapshotModel{busy}})
+				require.True(t, observed)
+			}
+			now = time.Date(2026, time.October, 1, 8, 0, 5, 0, time.UTC)
+			r.Now = func() time.Time { return now }
+
+			reconcileOnce(t, r, "waker")
+
+			if tc.wantSleep == "" {
+				assert.Empty(t, runtime.sleepCalls)
+				assert.Empty(t, runtime.wakeCalls)
+				assert.Equal(t, instanceReasonWaitingForRoom, getModel(t, r, "waker").Status.Instances[0].Reason)
+				return
+			}
+			require.Len(t, runtime.sleepCalls, 1)
+			assert.Equal(t, tc.wantSleep, runtime.sleepCalls[0].ModelName)
+		})
+	}
+}
+
 func TestPreemptionReservationRespectsWakePriority(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
@@ -493,6 +571,7 @@ func TestPreemptionReservationRespectsWakePriority(t *testing.T) {
 
 func TestPreemptionReservationWithUnknownOwnerBlocksWake(t *testing.T) {
 	r, runtime, pod := crowdedCard(t, keepNoWakeReserve)
+	setClaimPriority(t, r, "waker", 50)
 	// A missing owner cannot prove that the wake outranks its reservation, so
 	// the account protects the held room until the reservation is released.
 	require.True(t, r.reservations().holdPreemption(cardOf(pod), "new", 400, r.now()))
@@ -510,6 +589,19 @@ func TestPreemptionReservationWithUnknownOwnerBlocksWake(t *testing.T) {
 	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
 	reconcileOnce(t, r, "waker")
 	require.Len(t, runtime.wakeCalls, 1)
+}
+
+func TestPreemptionReservationInAnotherNamespaceDoesNotBlockWake(t *testing.T) {
+	r, runtime, pod := crowdedCard(t, keepNoWakeReserve)
+	otherNamespaceCard := cardOf(pod)
+	otherNamespaceCard.Namespace = "another-namespace"
+	require.True(t, r.reservations().holdPreemption(otherNamespaceCard, "new", 400, r.now()))
+
+	reconcileOnce(t, r, "waker")
+
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
+	assert.Empty(t, runtime.wakeCalls)
 }
 
 func TestOrdinaryMakeRoomReservationStillLetsAWakeGoFirst(t *testing.T) {
