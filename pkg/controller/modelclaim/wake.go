@@ -188,7 +188,7 @@ func (r *ModelClaimReconciler) wakeRequested(
 		}
 		turn := wakeNow
 		if ledger.judgeable {
-			turn, ledger = r.wakeTurnOn(ctx, pm, pod, ledger, readings)
+			turn, ledger = r.wakeTurnOn(ctx, pm, pod, ledger, claims, readings)
 		}
 		if turn != wakeNow {
 			// The card has no room for it. Its neighbours' floors leave none,
@@ -325,6 +325,7 @@ func (r *ModelClaimReconciler) wakeTurnOn(
 	waker *modelv1alpha1.ModelClaim,
 	pod *corev1.Pod,
 	ledger podLedger,
+	claims *modelv1alpha1.ModelClaimList,
 	readings *runtimeReadings,
 ) (wakeTurn, podLedger) {
 	asleep := map[string]bool{}
@@ -351,16 +352,18 @@ func (r *ModelClaimReconciler) wakeTurnOn(
 	lifecycle, canMakeRoom := r.roomCanBeMadeOn(ctx, waker, pod, ledger)
 	var idle []idleEngine
 	if canMakeRoom {
-		idle = r.wakeIdleEngines(ctx, waker, pod, lifecycle.sleepToMakeRoomAfter(), readings)
+		idle = r.idleEngines(ctx, waker, pod, lifecycle.sleepToMakeRoomAfter(), readings)
 	}
 	roomMade := false
 	for _, req := range requests {
 		withIt := judged.withWakeReserve(req.claim, true)
 		turn := wakeCannotFit
+		priority, priorityKnown := modelClaimPriority(claims, pod.Namespace, req.claim)
 		switch {
 		case withIt.maximumRoomBytes() >= 0 && withIt.heldRoomBytes() >= 0:
 			turn = wakeNow
-		case canMakeRoom && r.sleepsMakeRoom(withIt, idle, 0):
+		case canMakeRoom && priorityKnown && r.sleepsMakeRoom(
+			withIt, idleEnginesAtOrBelowPriority(idle, priority), 0):
 			turn = wakeMakesRoom
 			if roomMade {
 				turn = wakeWaitsBehind
@@ -527,9 +530,13 @@ func (r *ModelClaimReconciler) wakeIdleEngines(
 		return nil
 	}
 	idle := r.idleEngines(ctx, waker, pod, idleFor, readings)
-	eligible := idle[:0]
+	return idleEnginesAtOrBelowPriority(idle, waker.Spec.Priority)
+}
+
+func idleEnginesAtOrBelowPriority(idle []idleEngine, priority int32) []idleEngine {
+	eligible := make([]idleEngine, 0, len(idle))
 	for _, engine := range idle {
-		if engine.claim.Spec.Priority <= waker.Spec.Priority {
+		if engine.claim.Spec.Priority <= priority {
 			eligible = append(eligible, engine)
 		}
 	}

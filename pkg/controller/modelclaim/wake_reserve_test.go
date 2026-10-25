@@ -730,6 +730,25 @@ func TestReconcileLeavesTheRoomToAnEarlierRequestThatRoomCanBeMadeFor(t *testing
 	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
 }
 
+func TestWakeQueueUsesEachRequestPriorityForMakeRoom(t *testing.T) {
+	// "early" asked first, but as a priority-1 claim it cannot sleep the
+	// priority-10 active engine. The later priority-10 wake may sleep its equal,
+	// so the infeasible earlier request must not hold it up.
+	r, runtime := queueCard(t, 800,
+		queued{name: "a", footprint: 300, floor: 100, idleSince: at0758},
+		queued{name: "early", footprint: 300, floor: 100, asleep: true, askedAt: "2026-10-01T07:59:00Z"},
+		queued{name: "waker", footprint: 300, floor: 100, asleep: true, askedAt: "2026-10-01T08:00:00Z"})
+	setClaimPriority(t, r, "a", 10)
+	setClaimPriority(t, r, "early", 1)
+	setClaimPriority(t, r, "waker", 10)
+
+	reconcileOnce(t, r, "waker")
+
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
+	assert.Equal(t, instanceReasonWaitingForRoom, getModel(t, r, "waker").Status.Instances[0].Reason)
+}
+
 func TestReconcileMakesNoRoomForAWakeThatSleepsCannotMakeRoomFor(t *testing.T) {
 	// "a" held 300 bytes the last time it slept, so its sleep gives back 100,
 	// and "waker" needs 300 more than the card has.

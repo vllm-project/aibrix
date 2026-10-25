@@ -535,6 +535,8 @@ func (r *ModelClaimReconciler) firstToMakeRoomFor(
 // be met there, now or once room is made. Such a card is left to that request:
 // a request to wake an engine goes before a claim that has not served yet.
 func (r *ModelClaimReconciler) wakeWaitsOn(ctx context.Context, pod *corev1.Pod, ledger podLedger, readings *runtimeReadings) bool {
+	claims := &modelv1alpha1.ModelClaimList{}
+	var wakers []*modelv1alpha1.ModelClaim
 	for _, engine := range ledger.engines {
 		if !engine.asleep || !wakeAsked(pod, engine.claimName) {
 			continue
@@ -543,7 +545,11 @@ func (r *ModelClaimReconciler) wakeWaitsOn(ctx context.Context, pod *corev1.Pod,
 		if err := r.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: engine.claimName}, waker); err != nil {
 			continue
 		}
-		if turn, _ := r.wakeTurnOn(ctx, waker, pod, ledger, readings); turn != wakeCannotFit {
+		claims.Items = append(claims.Items, *waker)
+		wakers = append(wakers, waker)
+	}
+	for _, waker := range wakers {
+		if turn, _ := r.wakeTurnOn(ctx, waker, pod, ledger, claims, readings); turn != wakeCannotFit {
 			return true
 		}
 	}
