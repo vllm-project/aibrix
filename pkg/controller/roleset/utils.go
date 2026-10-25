@@ -540,6 +540,7 @@ func createPodsInBatch(ctx context.Context, cli client.Client, podsToCreate []*v
 	}
 	return utils.SlowStartBatch(len(podsToCreate), PodOperationInitBatchSize, func(index int) error {
 		pod := podsToCreate[index]
+		prepareTrafficPodCreation(pod)
 		err := cli.Create(ctx, pod)
 		if err != nil {
 			if apierrors.IsAlreadyExists(err) {

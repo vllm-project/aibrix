@@ -17,6 +17,7 @@ limitations under the License.
 package least
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -125,6 +126,9 @@ func (r *LeastRequestTopKRouter) now() time.Time {
 
 // Route implements [types.Router]: a uniform random pick among the eligible pods.
 func (r *LeastRequestTopKRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+	if ctx.TrafficDrainRouting {
+		return r.routeWithTrafficAdmission(ctx, readyPodList)
+	}
 	readyPods := readyPodList.All()
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods available")
@@ -145,6 +149,40 @@ func (r *LeastRequestTopKRouter) Route(ctx *types.RoutingContext, readyPodList t
 		ctx.SetTargetPort(targetPort)
 	}
 	return ctx.TargetAddress(), nil
+}
+
+// The final admission may reject a target selected from a stale Pod snapshot.
+// Retry another candidate before SetTargetPod commits this request's destination.
+func (r *LeastRequestTopKRouter) routeWithTrafficAdmission(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+	remaining := append([]*v1.Pod(nil), pods.All()...)
+	rejected := types.ErrTargetTrafficDraining
+	for len(remaining) > 0 {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		eligible, _, _ := r.eligibleLeastLoaded(remaining)
+		target := eligible[rand.IntN(len(eligible))]
+		if err := ctx.AdmitTarget(target); err != nil {
+			if !errors.Is(err, types.ErrTargetTrafficDraining) && !errors.Is(err, types.ErrTargetReplicaInflightExceeded) {
+				return "", err
+			}
+			rejected = err
+			for i, pod := range remaining {
+				if pod == target {
+					remaining = append(remaining[:i], remaining[i+1:]...)
+					break
+				}
+			}
+			continue
+		}
+		port := routeutil.SelectTargetPortForPodWithLeastRequestCount(r.cache, target, pods.ListPortsForPod())
+		ctx.SetTargetPod(target)
+		if port != 0 {
+			ctx.SetTargetPort(port)
+		}
+		return ctx.TargetAddress(), nil
+	}
+	return "", rejected
 }
 
 // getReadySinceCounts returns each ready pod's readySince keyed by utils.GeneratePodKey, or nil

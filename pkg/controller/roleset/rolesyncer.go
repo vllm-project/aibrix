@@ -34,6 +34,7 @@ import (
 	controllerdrain "github.com/vllm-project/aibrix/pkg/controller/drain"
 	ctrlutil "github.com/vllm-project/aibrix/pkg/controller/util"
 	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
+	"github.com/vllm-project/aibrix/pkg/trafficdrain"
 	podutil "github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -448,29 +449,19 @@ func (s *StatefulRoleSyncer) podSlotForRole(role *orchestrationv1alpha1.RoleSpec
 }
 
 type StatelessRoleSyncer struct {
-	cli client.Client
+	cli  client.Client
+	gate *trafficdrain.Store
 	// To allow injection for testing.
 	computeHashFunc func(template *v1.PodTemplateSpec, collisionCount *int32) string
 	recorder        record.EventRecorder
 }
 
 func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (controllerdrain.Result, error) {
-	// Clean up orphan PodSets left by the old PodSetRoleSyncer
-	// when podGroupSize was switched from >1 to <=1.
-	cleaned, err := cleanupOrphanPodSets(ctx, s.cli, roleSet, role)
-	if err != nil {
-		return controllerdrain.Result{Changed: cleaned}, err
+	allPods, maxDrainWait, prepared, err := s.prepareStatelessScale(ctx, roleSet, role)
+	if err != nil || prepared.Changed {
+		return prepared, err
 	}
-	if cleaned {
-		klog.V(4).Infof("[StatelessRoleSyncer.Scale] cleaned orphan podsets for roleset %s/%s role %s, waiting for next reconcile", roleSet.Namespace, roleSet.Name, role.Name)
-		return controllerdrain.Result{Changed: true}, nil
-	}
-
 	var toCreate, toDelete []*v1.Pod
-	allPods, err := getRolePods(ctx, s.cli, roleSet.Namespace, roleSet.Name, role.Name)
-	if err != nil {
-		return controllerdrain.Result{}, err
-	}
 	// delete pods that are in terminated state
 	activePods, inactivePods := filterActivePods(allPods)
 	_, terminatedPods := filterTerminatingPods(inactivePods)
@@ -481,6 +472,10 @@ func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv
 	diff := len(activePods) - int(expectedReplicas)
 	if diff > 0 {
 		sortPodsByTemplateHash(activePods, s.computeHashFunc(&role.Template, nil))
+		var trafficEligible map[string]bool
+		if maxDrainWait > 0 {
+			trafficEligible = s.orderTrafficScaleIn(ctx, activePods, s.computeHashFunc(&role.Template, nil), time.Now())
+		}
 		readyPods, _ := filterReadyPods(activePods)
 		readyCount := len(readyPods)
 		minAvailable := expectedReplicas - MaxUnavailable(role)
@@ -504,6 +499,11 @@ func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv
 			}
 			if podutil.IsPodDraining(activePods[i]) {
 				continue
+			}
+			if maxDrainWait > 0 && !trafficEligible[activePods[i].Name] {
+				// Eligible Pods sort first within each cohort. Do not bypass an
+				// unobservable/cooling-down cohort to remove newer rollout capacity.
+				break
 			}
 			// Stop at the availability floor: removing a ready Pod here would violate
 			// maxUnavailable. break (not continue) is safe because sortPodsByTemplateHash
@@ -540,11 +540,19 @@ func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
-	cancelResult, err := controllerdrain.CancelPods(ctx, s.cli, s.recorder, roleSet, staleScaleInDrainingPods(activePods, toDelete), aibrixconst.PodDrainReasonScaleIn)
+	cancelResult, err := s.cancelScaleInDrains(ctx, roleSet, activePods, toDelete)
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
-	result, err := controllerdrain.DeletePods(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, aibrixconst.PodDrainReasonScaleIn, time.Now())
+	var result controllerdrain.Result
+	if maxDrainWait > 0 {
+		result, err = s.trafficScaleIn(ctx, roleSet, role, toDelete, maxDrainWait)
+		if len(activePods) > int(expectedReplicas) && result.RequeueAfter == 0 {
+			result.RequeueAfter = nextTrafficScaleInAttempt(activePods, maxDrainWait, time.Now())
+		}
+	} else {
+		result, err = controllerdrain.DeletePods(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, aibrixconst.PodDrainReasonScaleIn, time.Now())
+	}
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
@@ -577,9 +585,27 @@ func staleScaleInDrainingPods(activePods, toDelete []*v1.Pod) []*v1.Pod {
 	return stale
 }
 
-func deletePodsForRollout(ctx context.Context, cli client.Client, recorder record.EventRecorder, roleSet *orchestrationv1alpha1.RoleSet, pods []*v1.Pod, spec *orchestrationv1alpha1.RoleDrainSpec, now time.Time) (controllerdrain.Result, error) {
-	readyPods, notReadyPods := splitPodsByReady(pods)
+func deletePodsForRollout(ctx context.Context, cli client.Client, recorder record.EventRecorder, roleSet *orchestrationv1alpha1.RoleSet, pods []*v1.Pod, spec *orchestrationv1alpha1.RoleDrainSpec, now time.Time, gates ...*trafficdrain.Store) (controllerdrain.Result, error) {
+	actor := &StatelessRoleSyncer{cli: cli, recorder: recorder}
+	if len(gates) > 0 {
+		actor.gate = gates[0]
+	}
+	var protectedResult controllerdrain.Result
+	var legacy []*v1.Pod
+	for _, pod := range pods {
+		if !protectedTrafficPod(pod) || pod.Status.Phase == v1.PodFailed || pod.Status.Phase == v1.PodSucceeded {
+			legacy = append(legacy, pod)
+			continue
+		}
+		r, err := actor.coordinatedTrafficDelete(ctx, roleSet, pod, spec, aibrixconst.PodDrainReasonRollout)
+		protectedResult.Merge(r)
+		if err != nil {
+			return protectedResult, err
+		}
+	}
+	readyPods, notReadyPods := splitPodsByReady(legacy)
 	result, err := controllerdrain.DeletePods(ctx, cli, recorder, roleSet, notReadyPods, nil, aibrixconst.PodDrainReasonRollout, now)
+	result.Merge(protectedResult)
 	if err != nil {
 		return result, err
 	}
@@ -660,7 +686,7 @@ func (s *StatelessRoleSyncer) Rollout(ctx context.Context, roleSet *orchestratio
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
-	result, err := deletePodsForRollout(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, time.Now())
+	result, err := deletePodsForRollout(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, time.Now(), s.gate)
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
@@ -723,6 +749,12 @@ func rolloutPodsInPlace(ctx context.Context, cli client.Client, roleSet *orchest
 }
 
 func canRolloutPodsInPlace(roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, outdated []*v1.Pod, roleTemplateHash string, hashFunc func(*v1.PodTemplateSpec, *int32) string) (bool, string, error) {
+	for _, pod := range outdated {
+		if protectedTrafficPod(pod) {
+			return false, "traffic drain epochs require recreation", nil
+		}
+	}
+
 	for _, pod := range outdated {
 		if pod.Annotations[constants.RoleInPlaceUpdateTargetHashAnnotationKey] == roleTemplateHash {
 			continue
@@ -833,7 +865,7 @@ func (s *StatelessRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orches
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}
-	result, err := deletePodsForRollout(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, time.Now())
+	result, err := deletePodsForRollout(ctx, s.cli, s.recorder, roleSet, toDelete, role.Drain, time.Now(), s.gate)
 	if err != nil {
 		return controllerdrain.Result{}, err
 	}

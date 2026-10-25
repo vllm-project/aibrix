@@ -17,6 +17,19 @@ limitations under the License.
 package constants
 
 const (
+	// TrafficDrainProtocolAnnotationKey is set at Pod creation, never by an in-place upgrade.
+	TrafficDrainProtocolAnnotationKey = "aibrix.ai/traffic-drain-protocol"
+	TrafficDrainProtocolVersion       = "v1"
+	// TrafficDrainEpochAnnotationKey binds admission to a Pod UID and Redis incarnation.
+	TrafficDrainEpochAnnotationKey = "aibrix.ai/traffic-drain-epoch"
+	// TrafficScaleInMaxWaitAnnotationKey opts a stateless role into best-effort
+	// traffic-aware scale-in. Set on role.template.metadata.annotations to a Go
+	// duration greater than drain.timeoutSeconds. The same duration is the retry cooldown.
+	TrafficScaleInMaxWaitAnnotationKey = "aibrix.ai/traffic-scale-in-max-wait"
+
+	// TrafficScaleInRetryAtAnnotationKey is a controller-written RFC3339Nano time.
+	TrafficScaleInRetryAtAnnotationKey = "aibrix.ai/traffic-scale-in-retry-at"
+
 	// PodDrainingAnnotationKey marks a pod that has entered controller-managed drain.
 	// RoleSet and PodSet controllers write the string value "true" before deleting
 	// a live serving pod. Gateway routing and controller deletion helpers read this

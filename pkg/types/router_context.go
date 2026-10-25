@@ -36,6 +36,7 @@ var (
 	// ErrTargetReplicaInflightExceeded is returned through AdmitTarget when the chosen
 	// target is already at its config profile's requestsInflight cap.
 	ErrTargetReplicaInflightExceeded = errors.New("target replica has reached inflight limit")
+	ErrTargetTrafficDraining         = errors.New("target replica cannot accept protected traffic")
 )
 
 const (
@@ -184,6 +185,12 @@ type RoutingContext struct {
 	// request, through AdmitTarget, before the router returned its target. The gateway's
 	// post-routing check (enforceReplicaInflight) must then not admit the request a second time.
 	ReplicaInflightChecked bool
+	// TrafficDrainRouting installs admission before committing a routing target.
+	TrafficDrainRouting bool
+	TrafficDrainManaged bool
+	// TrafficDrainRelease is called only on confirmed response completion or when
+	// routing fails before dispatch. EOF/cancellation is not completion evidence.
+	TrafficDrainRelease func()
 
 	// targetAdmitter is the gateway's replica-inflight admission, installed for routers that
 	// start work on a request's behalf before returning its target. See AdmitTarget.
@@ -590,6 +597,9 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	clear(r.trustedPolicyAttributes)
 	r.ReplicaInflightAdmitted = false
 	r.ReplicaInflightChecked = false
+	r.TrafficDrainRouting = false
+	r.TrafficDrainManaged = false
+	r.TrafficDrainRelease = nil
 	r.targetAdmitter = nil
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)

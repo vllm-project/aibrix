@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
@@ -110,8 +111,16 @@ func (s *Server) admitReplicaInflight(routingCtx *types.RoutingContext, pod *v1.
 // released here instead. A router that admits a second target releases the first one's
 // slot, so only the last admitted target holds one.
 func (s *Server) routeWithEarlyAdmission(routeCtx *types.RoutingContext, router types.Router, pods types.PodList, limit int64) (string, error) {
+	if routeCtx.TrafficDrainRouting {
+		original := routeCtx.Context
+		admissionCtx, cancel := context.WithTimeout(original, 2*time.Second)
+		routeCtx.Context = admissionCtx
+		defer func() { routeCtx.Context = original; cancel() }()
+	}
 	var admittedPod *v1.Pod
 	release := func() {
+		releaseTrafficReservation(routeCtx)
+		routeCtx.TrafficDrainManaged = false
 		if admittedPod != nil && routeCtx.ReplicaInflightAdmitted {
 			s.cache.ReleasePodRunningRequest(admittedPod.Name, admittedPod.Namespace)
 		}
@@ -119,8 +128,15 @@ func (s *Server) routeWithEarlyAdmission(routeCtx *types.RoutingContext, router 
 		routeCtx.ReplicaInflightAdmitted = false
 	}
 	routeCtx.SetTargetAdmitter(func(pod *v1.Pod) error {
-		routeCtx.ReplicaInflightChecked = true
 		release()
+		if routeCtx.TrafficDrainRouting {
+			if err := s.admitTrafficAndReplica(routeCtx, pod, limit); err != nil {
+				return err
+			}
+			admittedPod = pod
+			return nil
+		}
+		routeCtx.ReplicaInflightChecked = true
 		if !s.admitReplicaInflight(routeCtx, pod, limit) {
 			return types.ErrTargetReplicaInflightExceeded
 		}

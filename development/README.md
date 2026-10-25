@@ -7,6 +7,7 @@ Here are some essential resources for anyone interested in AIBrix:
 - **Documentation and Tutorials**: [View Tutorials](https://github.com/vllm-project/aibrix/tree/main/development/tutorials)
 - **Issue Tracker**: [View Issues](https://github.com/vllm-project/aibrix/issues)
 - **Project Roadmap**: TODO
+- **Traffic-aware RoleSet scale-in**: [Opt-in behavior, configuration and limits](traffic-aware-scale-in.md)
 
 Additional resources for contributors:
 

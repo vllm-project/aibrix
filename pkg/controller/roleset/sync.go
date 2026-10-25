@@ -101,6 +101,14 @@ func (r *RoleSetReconciler) syncPodGroup(ctx context.Context, roleSet *orchestra
 }
 
 func (r *RoleSetReconciler) syncPods(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet) (controllerdrain.Result, error) {
+	for i := range roleSet.Spec.Roles {
+		if _, err := trafficScaleInTimeout(&roleSet.Spec.Roles[i]); err != nil {
+			return controllerdrain.Result{}, err
+		}
+		if err := r.validateTrafficRoleMigration(ctx, roleSet, &roleSet.Spec.Roles[i]); err != nil {
+			return controllerdrain.Result{}, err
+		}
+	}
 	var manager RollingManager
 	switch roleSet.Spec.UpdateStrategy {
 	case orchestrationv1alpha1.SequentialRoleSetStrategyType:

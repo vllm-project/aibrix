@@ -49,9 +49,11 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/least"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
 	pdrouter "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/router"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
+	"github.com/vllm-project/aibrix/pkg/trafficdrain"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
@@ -79,6 +81,12 @@ type httpRouteCacheEntry struct {
 
 type Server struct {
 	redisClient         *redis.Client
+	trafficDrainStore   *trafficdrain.Store
+	trafficDrainOnce    sync.Once
+	processMu           sync.Mutex
+	processClosing      bool
+	processWG           sync.WaitGroup
+	trafficCloseDone    chan struct{}
 	ratelimiter         ratelimiter.RateLimiter
 	modelRateLimiter    ratelimiter.RateLimiter
 	disableRateLimiting bool
@@ -133,21 +141,22 @@ type recvResult struct {
 }
 
 type processState struct {
-	ctx              context.Context
-	requestID        string
-	user             utils.User
-	rpm              int64
-	traceTerm        int64
-	respErrorCode    int
-	model            string
-	metricLabel      string
-	routerCtx        *types.RoutingContext
-	lastRespHeaders  []*configPb.HeaderValueOption
-	stream           bool
-	isRespError      bool
-	isGatewayRspDone bool // A response outcome was recorded, including an ImmediateResponse failure.
-	completed        bool
-	trackedModel     string
+	ctx                 context.Context
+	requestID           string
+	user                utils.User
+	rpm                 int64
+	traceTerm           int64
+	respErrorCode       int
+	model               string
+	metricLabel         string
+	routerCtx           *types.RoutingContext
+	lastRespHeaders     []*configPb.HeaderValueOption
+	stream              bool
+	isRespError         bool
+	isGatewayRspDone    bool // A response outcome was recorded, including an ImmediateResponse failure.
+	completed           bool
+	trafficSemanticDone bool
+	trackedModel        string
 	// recvCh carries the result of the srv.Recv() this stream already has in
 	// flight. It is kept across processOnce calls because a call can return
 	// without consuming its message (PD fail-fast), and ext_proc requires that
@@ -387,6 +396,14 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 }
 
 func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) (err error) {
+	s.processMu.Lock()
+	if s.processClosing {
+		s.processMu.Unlock()
+		return status.Error(codes.Unavailable, "server shutdown in progress")
+	}
+	s.processWG.Add(1)
+	s.processMu.Unlock()
+	defer s.processWG.Done()
 	// Process is also reachable without the server's stream interceptor, so it
 	// recovers panics on its own as well.
 	defer func() {
@@ -415,6 +432,14 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) (err err
 		// This is a fallback for any terminal path that did not explicitly finish
 		// bookkeeping. A non-empty model and routing context mean request-body
 		// processing progressed far enough that AddRequestCount may have run.
+		// A committed non-OK handler result ends the corresponding HTTP request
+		// under the required fail-closed ext_proc policy. Unlike merely receiving
+		// EOF, this is a terminal decision; ordinary client cancellation must not
+		// leave a permanent reservation. A panic with no committed result remains
+		// conservative, as does a failed release RPC.
+		if err != nil {
+			releaseTrafficReservation(st.routerCtx)
+		}
 		if st.model != "" && st.routerCtx != nil {
 			s.finishRequestCount(st)
 		}
@@ -708,6 +733,11 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 
 func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, error) {
 	var resp *extProcPb.ProcessingResponse
+	if st.trafficSemanticDone && req.GetResponseBody() != nil {
+		resp = &extProcPb.ProcessingResponse{Response: &extProcPb.ProcessingResponse_ResponseBody{ResponseBody: &extProcPb.BodyResponse{Response: &extProcPb.CommonResponse{Status: extProcPb.CommonResponse_CONTINUE}}}}
+		s.finishTrafficTransport(st, req)
+		return resp, nil
+	}
 
 	switch req.Request.(type) {
 	case *extProcPb.ProcessingRequest_RequestHeaders:
@@ -776,9 +806,13 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		}
 		st.metricLabel = gatewayRespBody
 
+	case *extProcPb.ProcessingRequest_ResponseTrailers:
+		st.completed = true
+		resp = &extProcPb.ProcessingResponse{Response: &extProcPb.ProcessingResponse_ResponseTrailers{ResponseTrailers: &extProcPb.TrailersResponse{}}}
 	default:
 		klog.InfoS("unknown request type", "requestID", st.requestID, "msg_type", fmt.Sprintf("%T", req.Request))
 	}
+	s.finishTrafficTransport(st, req)
 
 	st.trackModelInFlight()
 
@@ -884,6 +918,9 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	if !isPD {
 		readyPods, encoders = encode.SplitEncoders(readyPods)
 	}
+	if routeCtx.TrafficDrainRouting && len(encoders) > 0 {
+		return "", errors.New("traffic-aware drain does not support separate encoders")
+	}
 
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods for routing")
@@ -904,7 +941,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 			}
 			routeCtx.Engine = engine
 		}
-	} else {
+	} else if !routeCtx.TrafficDrainRouting {
 		// Apply the load-imbalance hotspot gate ahead of whichever strategy actually routes
 		// this request. Exclusive strategies (pd, slo*) are exempted above: they manage their
 		// own pod subsets (prefill/decode, SLO tiers), which a blanket running-request-count
@@ -916,9 +953,17 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		// Preserve compatibility for legacy tests that build Server literals.
 		s.routerManager = routing.DefaultRouterManager()
 	}
-	router, err := s.routerManager.Select(routeCtx)
-	if err != nil {
-		return "", err
+	var router types.Router
+	if routeCtx.TrafficDrainRouting {
+		// Protected traffic must use the admission-aware selector. Automatic
+		// blends may commit a target without consulting AdmitTarget.
+		router = least.NewLeastRequestTopKRouterWithCache(s.cache)
+		routeCtx.ResolvedStrategy = string(routing.RouterLeastRequestTopK)
+	} else {
+		router, err = s.routerManager.Select(routeCtx)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	bypassSingleCandidate := true
@@ -926,27 +971,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		bypassSingleCandidate = policy.BypassSingleCandidate()
 	}
 	if len(readyPods) == 1 && len(utils.GetPortsForPod(readyPods[0])) <= 1 && !isExclusive && bypassSingleCandidate {
-		routeCtx.SetTargetPod(readyPods[0])
-		// This fast path skips router.Route() entirely, so a router with state to persist
-		// once a target pod is picked (e.g. session-affinity's Redis pin, or a multi-strategy
-		// blend wrapping it) never gets that chance unless we run its post-route hook here too.
-		if updater, ok := router.(types.PostRouteUpdater); ok {
-			// Admit the pod first, as routeWithEarlyAdmission does for Route: a request the
-			// pod has no room for is rejected, and must not leave state behind for it (e.g.
-			// a prefix-cache entry for a prompt the pod never received).
-			if limit := replicaInflightLimit(routeCtx); limit > 0 {
-				routeCtx.ReplicaInflightChecked = true
-				if !s.admitReplicaInflight(routeCtx, readyPods[0], limit) {
-					return "", types.ErrTargetReplicaInflightExceeded
-				}
-			}
-			podList := &utils.PodArray{Pods: readyPods}
-			if err := updater.PostRouteUpdate(routeCtx, podList, readyPods[0]); err != nil {
-				klog.Warningf("post-route update failed for request %s: %v", routeCtx.RequestID, err)
-			}
-		}
-		s.encodeMedia(routeCtx, encoders)
-		return routeCtx.TargetAddress(), nil
+		return s.routeSingleCandidate(routeCtx, router, readyPods[0], encoders)
 	}
 	// The order only breaks ties between equally scored pods, so it needs to be unbiased, not
 	// unpredictable: crypto/rand here cost a syscall per pod on every request.
@@ -957,7 +982,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		routeCtx.Context = ctx
 	}
 	var addr string
-	if limit := replicaInflightLimit(routeCtx); limit > 0 {
+	if limit := replicaInflightLimit(routeCtx); limit > 0 || routeCtx.TrafficDrainRouting {
 		addr, err = s.routeWithEarlyAdmission(routeCtx, router, &utils.PodArray{Pods: readyPods}, limit)
 	} else {
 		addr, err = router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
@@ -1170,8 +1195,25 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) Shutdown() {
-	if s.shutdown != nil {
-		s.shutdownOnce.Do(func() { close(s.shutdown) })
+	s.shutdownOnce.Do(func() {
+		s.processMu.Lock()
+		s.processClosing = true
+		s.processMu.Unlock()
+		if s.shutdown != nil {
+			close(s.shutdown)
+		}
+		s.trafficCloseDone = make(chan struct{})
+		go func() {
+			s.processWG.Wait()
+			if s.trafficDrainStore != nil {
+				_ = s.trafficDrainStore.Close()
+			}
+			close(s.trafficCloseDone)
+		}()
+	})
+	select {
+	case <-s.trafficCloseDone:
+	case <-time.After(5 * time.Second):
 	}
 	if s.httpServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1261,4 +1303,35 @@ func getMetricErr(resp *extProcPb.ImmediateResponse, metricLabel string) string 
 		return metricLabel + "_" + headerValue
 	}
 	return metricLabel
+}
+
+func (s *Server) routeSingleCandidate(routeCtx *types.RoutingContext, router types.Router, pod *v1.Pod, encoders []*v1.Pod) (string, error) {
+
+	if routeCtx.TrafficDrainRouting {
+		if err := s.admitTrafficAndReplica(routeCtx, pod, replicaInflightLimit(routeCtx)); err != nil {
+			return "", err
+		}
+	}
+	routeCtx.SetTargetPod(pod)
+	// This fast path skips router.Route() entirely, so a router with state to persist
+	// once a target pod is picked (e.g. session-affinity's Redis pin, or a multi-strategy
+	// blend wrapping it) never gets that chance unless we run its post-route hook here too.
+	if updater, ok := router.(types.PostRouteUpdater); ok {
+		// Admit the pod first, as routeWithEarlyAdmission does for Route: a request the
+		// pod has no room for is rejected, and must not leave state behind for it (e.g.
+		// a prefix-cache entry for a prompt the pod never received).
+		if limit := replicaInflightLimit(routeCtx); limit > 0 && !routeCtx.ReplicaInflightChecked {
+			routeCtx.ReplicaInflightChecked = true
+			if !s.admitReplicaInflight(routeCtx, pod, limit) {
+				return "", types.ErrTargetReplicaInflightExceeded
+			}
+		}
+		podList := &utils.PodArray{Pods: []*v1.Pod{pod}}
+		if err := updater.PostRouteUpdate(routeCtx, podList, pod); err != nil {
+			klog.Warningf("post-route update failed for request %s: %v", routeCtx.RequestID, err)
+		}
+	}
+	s.encodeMedia(routeCtx, encoders)
+	return routeCtx.TargetAddress(), nil
+
 }

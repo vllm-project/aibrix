@@ -67,8 +67,9 @@ type xdsHTTPFilter struct {
 	// typedPerFilterConfig enables it.
 	Disabled    bool `json:"disabled"`
 	TypedConfig struct {
-		Type           string            `json:"@type"`
-		ProcessingMode xdsProcessingMode `json:"processingMode"`
+		FailureModeAllow bool              `json:"failureModeAllow"`
+		Type             string            `json:"@type"`
+		ProcessingMode   xdsProcessingMode `json:"processingMode"`
 	} `json:"typedConfig"`
 }
 

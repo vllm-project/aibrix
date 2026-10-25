@@ -123,6 +123,11 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		routingCtx.Algorithm = routingAlgorithm
 	}
 
+	var trafficErr error
+	routingAlgorithm, trafficErr = prepareTrafficRouting(routingCtx, podsArr.All(), routingAlgorithm)
+	if trafficErr != nil {
+		return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, trafficErr.Error(), ErrorCodeUnsupportedRoutingStrategy, "", HeaderErrorRouting, "true"), model, stream, term
+	}
 	// The async video job (POST /v1/videos) must always be pinned to the pod that
 	// creates it: the generated video lives on that pod's local disk, and
 	// registerVideoJobFromCreateResponse (called from HandleResponseBody) records
@@ -165,6 +170,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 	needsRollback := true
 	defer func() {
 		if needsRollback {
+			s.rollbackTrafficAdmission(routingCtx)
 			s.decrModelRPS(ctx, model, routingCtx)
 		}
 	}()
@@ -184,17 +190,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		klog.InfoS("request_start", "request_id", requestID, "request_path", requestPath, "model", model, "stream", stream)
 	} else {
 		externalFilter := routingCtx.ReqHeaders[HeaderExternalFilter]
-		targetPodIP, err := s.selectTargetPod(ctx, routingCtx, podsArr, externalFilter)
-		if targetPodIP == "" || err != nil {
-			if selectionResponse := buildTargetSelectionErrorResponse(routingCtx, requestID, model, err); selectionResponse != nil {
-				return selectionResponse, model, stream, term
-			}
-			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingAlgorithm, "model", model, "routingDuration", routingCtx.GetRoutingDelay())
-			return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_ServiceUnavailable,
-				"error on selecting target pod", ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true"), model, stream, term
-		}
-		if errRes = s.enforceReplicaInflight(ctx, model, routingCtx); errRes != nil {
-			return errRes, model, stream, term
+		targetPodIP, selectionResponse := s.selectAndAdmitTarget(ctx, routingCtx, podsArr, externalFilter, requestID, model)
+		if selectionResponse != nil {
+			return selectionResponse, model, stream, term
 		}
 		headers = buildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routingAlgorithm),
@@ -262,6 +260,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 }
 
 func buildTargetSelectionErrorResponse(routingCtx *types.RoutingContext, requestID, model string, err error) *extProcPb.ProcessingResponse {
+	if errors.Is(err, types.ErrTargetTrafficDraining) {
+		return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_ServiceUnavailable, "no replica can accept protected traffic", ErrorCodeServiceUnavailable, "", HeaderErrorRouting, "true")
+	}
 	var invalidReqErr *engine.InvalidRequestError
 	if errors.As(err, &invalidReqErr) {
 		return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_BadRequest,
