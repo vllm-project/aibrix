@@ -19,11 +19,14 @@ package podautoscaler
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -150,7 +153,9 @@ func TestGetCurrentReplicasFromScale(t *testing.T) {
 			scale: scaleStormService,
 		},
 		{
-			name: "storm_service_with_status_replicas",
+			// Pooled mode reports the role template, which is what the autoscaler writes,
+			// not status.roleStatuses, which counts the pods that exist so far.
+			name: "storm_service_pooled_reports_template_not_status",
 			pa: &autoscalingv1alpha1.PodAutoscaler{
 				ObjectMeta: v1.ObjectMeta{
 					Namespace: "default",
@@ -170,12 +175,20 @@ func TestGetCurrentReplicasFromScale(t *testing.T) {
 					Name:      "test-storm",
 					Namespace: "default",
 				},
-				Spec: orchestrationv1alpha1.StormServiceSpec{},
+				Spec: orchestrationv1alpha1.StormServiceSpec{
+					Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+						Spec: &orchestrationv1alpha1.RoleSetSpec{
+							Roles: []orchestrationv1alpha1.RoleSpec{
+								{Name: "prefill", Replicas: &expectedReplicas},
+							},
+						},
+					},
+				},
 				Status: orchestrationv1alpha1.StormServiceStatus{
 					RoleStatuses: []orchestrationv1alpha1.RoleStatus{
 						{
 							Name:     "prefill",
-							Replicas: expectedReplicas,
+							Replicas: expectedReplicas - 1, // a pod not created yet
 						},
 					},
 				},
@@ -247,7 +260,7 @@ func TestGetCurrentReplicasFromScale(t *testing.T) {
 		},
 		{
 			// A declared pooled mode wins over a stale "replica" annotation:
-			// the role status is reported, not spec.replicas.
+			// the role's template count is reported, not spec.replicas.
 			name: "storm_service_declared_pooled_mode_wins_over_annotation",
 			pa: &autoscalingv1alpha1.PodAutoscaler{
 				ObjectMeta: v1.ObjectMeta{
@@ -274,12 +287,19 @@ func TestGetCurrentReplicasFromScale(t *testing.T) {
 				Spec: orchestrationv1alpha1.StormServiceSpec{
 					Mode:     orchestrationv1alpha1.StormServicePooledMode,
 					Replicas: ptr.To(int32(5)), // must not be reported in pooled mode
+					Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+						Spec: &orchestrationv1alpha1.RoleSetSpec{
+							Roles: []orchestrationv1alpha1.RoleSpec{
+								{Name: "prefill", Replicas: &expectedReplicas},
+							},
+						},
+					},
 				},
 				Status: orchestrationv1alpha1.StormServiceStatus{
 					RoleStatuses: []orchestrationv1alpha1.RoleStatus{
 						{
 							Name:     "prefill",
-							Replicas: expectedReplicas,
+							Replicas: expectedReplicas + 1, // must not be reported either
 						},
 					},
 				},
@@ -840,4 +860,57 @@ func TestSetDesiredReplicas(t *testing.T) {
 			tt.assertReplicas(t, fakeClient)
 		})
 	}
+}
+
+// TestPooledScaleUpHeldByScaleDownWindowWhilePodsStart covers a pooled StormService right
+// after a scale-up: the autoscaler has written 6 to the role template, but only the 2 old
+// pods exist, so status.roleStatuses still reads 2. A dip 15 seconds later must be held by
+// the 5-minute scale-down window. Reading the current count from status starts the
+// stabilization from 2, and the dip then lands as an immediate scale-down to 3.
+func TestPooledScaleUpHeldByScaleDownWindowWhilePodsStart(t *testing.T) {
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: v1.ObjectMeta{Namespace: "default", Name: "prefill-pa"},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			SubTargetSelector: &autoscalingv1alpha1.SubTargetSelector{RoleName: "prefill"},
+			ScaleTargetRef:    corev1.ObjectReference{Kind: "StormService", Name: "test-storm"},
+		},
+	}
+	ss := &orchestrationv1alpha1.StormService{
+		ObjectMeta: v1.ObjectMeta{Namespace: "default", Name: "test-storm"},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Mode: orchestrationv1alpha1.StormServicePooledMode,
+			Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+				Spec: &orchestrationv1alpha1.RoleSetSpec{
+					Roles: []orchestrationv1alpha1.RoleSpec{{Name: "prefill", Replicas: ptr.To(int32(6))}},
+				},
+			},
+		},
+		Status: orchestrationv1alpha1.StormServiceStatus{
+			RoleStatuses: []orchestrationv1alpha1.RoleStatus{{Name: "prefill", Replicas: 2}},
+		},
+	}
+	scale := &unstructured.Unstructured{}
+	scale.SetAPIVersion("orchestration.aibrix.ai/v1alpha1")
+	scale.SetKind("StormService")
+
+	scheme := runtime.NewScheme()
+	_ = autoscalingv1alpha1.AddToScheme(scheme)
+	_ = orchestrationv1alpha1.AddToScheme(scheme)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pa, ss).Build()
+
+	base := mustParseTime(t, "2026-08-03T09:30:00Z")
+	now := base
+	r := &PodAutoscalerReconciler{now: func() time.Time { return now }}
+	scalingCtx := scalingctx.NewBaseScalingContext()
+	scalingCtx.ScaleDownCooldownWindow = 5 * time.Minute
+
+	// The reconcile that scaled up: from 2 to the recommended 6.
+	require.Equal(t, int32(6), r.stabilizeRecommendation(pa, scalingCtx, 6, 2))
+
+	now = base.Add(15 * time.Second)
+	current, err := NewWorkloadScale(fakeClient, nil).GetCurrentReplicasFromScale(context.TODO(), pa, scale)
+	require.NoError(t, err)
+	assert.Equal(t, int32(6), current, "the role template, not the pods created so far")
+	assert.Equal(t, int32(6), r.stabilizeRecommendation(pa, scalingCtx, 3, current),
+		"the scale-down window still holds the recommendation of 6")
 }

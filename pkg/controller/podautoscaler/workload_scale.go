@@ -213,14 +213,11 @@ func (s *workloadScale) getCurrentReplicasForRole(ctx context.Context, pa *autos
 		return ss.Spec.ResolvedReplicas(), nil
 	}
 
+	// Pooled mode scales the role template, so report the template's count, the value
+	// setDesiredReplicasForRole writes. status.roleStatuses counts the pods that exist, which
+	// trails the template while pods are created, and reading it would let the next
+	// recommendation undo a scale-up before the scale-down window has passed.
 	roleName := pa.Spec.SubTargetSelector.RoleName
-	for _, roleStatus := range ss.Status.RoleStatuses {
-		if roleStatus.Name == roleName {
-			return roleStatus.Replicas, nil
-		}
-	}
-
-	// Fallback to spec
 	if ss.Spec.Template.Spec == nil {
 		return 0, fmt.Errorf("stormservice %s/%s template.spec is nil", ns, ref.Name)
 	}
