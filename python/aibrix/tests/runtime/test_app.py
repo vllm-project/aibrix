@@ -16,6 +16,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 import aibrix.app as app_module
 from aibrix.app import initial_prometheus_multiproc_dir, parse_runtime_args
 
@@ -24,6 +26,7 @@ def test_runtime_defaults_to_all_interfaces():
     assert parse_runtime_args([]).host == "0.0.0.0"
 
 
+@pytest.mark.skipif(not hasattr(os, "waitid"), reason="os.waitid is not available")
 def test_restart_keeps_metric_files_of_running_engines(tmp_path, monkeypatch):
     reaped = subprocess.Popen([sys.executable, "-c", "pass"])
     reaped.wait()
@@ -72,8 +75,7 @@ def test_cleanup_decision_per_file(tmp_path, monkeypatch):
 
 
 def test_cleanup_tolerates_a_file_removed_meanwhile(tmp_path, monkeypatch):
-    # An exiting vLLM engine removes its own live-gauge files (multiprocess.mark_process_dead), so a listed file can
-    # be gone by the time cleanup unlinks it.
+    # A listed file can be removed by another process before cleanup unlinks it; startup must not fail on that.
     stale = tmp_path / "gauge_livesum_404.db"
     stale.touch()
 
