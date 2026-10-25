@@ -28,7 +28,8 @@ limitations under the License.
 //   - Before any scoring, the gateway's load-imbalance gate runs on the counts the gateway
 //     observes: when max-min >= ImbalanceMinGap and max > ImbalanceFactor*(mean of the others+1),
 //     only the pods at the minimum count stay eligible (ApplyLoadImbalanceGate). Every policy
-//     picks its candidates from the pods the gate leaves.
+//     picks its candidates from the pods the gate leaves, except with GateSample, which draws
+//     the candidates first and gates only them, as the gateway's candidate stage does.
 //   - With prefix caching on, each request belongs to a Zipf-distributed prefix group. A pod
 //     holding the group's prefix serves the request with less work, and the blend adds an
 //     equal-weight prefix term after min-max normalizing load over the scored pods, as
@@ -93,12 +94,21 @@ type policy struct {
 	K               int
 	SnapshotRefresh time.Duration
 	// LiveScoring scores the candidates with exact running counts, as a gateway would after
-	// reading only the candidates' counts from Redis. Candidate selection and the imbalance
-	// gate still use the delayed counts.
+	// reading only the candidates' counts from Redis. Candidate selection, and the imbalance
+	// gate unless GateSample, still use the delayed counts.
 	LiveScoring bool
+	// GateSample runs the imbalance gate on the candidates instead of on the whole fleet, as the
+	// gateway's candidate stage does: candidates first, then the gate and scoring on them only.
+	// With LiveScoring the gate then sees the candidates' exact counts.
+	GateSample bool
 }
 
 func (p policy) String() string {
+	if p.GateSample {
+		q := p
+		q.GateSample = false
+		return q.String() + ", gate on sample"
+	}
 	if p.LiveScoring {
 		q := p
 		q.LiveScoring = false
@@ -320,6 +330,32 @@ func (s *sim) eligible(g int) []int {
 	return out
 }
 
+// eligibleAmong is the imbalance gate over pods only: nil when it does not fire, otherwise the
+// pods at the minimum count.
+func (s *sim) eligibleAmong(g int, pods []int) []int {
+	if s.cfg.ImbalanceMinGap == 0 || len(pods) == 0 {
+		return nil
+	}
+	lo, hi, sum := math.MaxInt, 0, 0
+	for _, i := range pods {
+		v := s.observed(g, i)
+		lo, hi, sum = min(lo, v), max(hi, v), sum+v
+	}
+	if hi-lo < s.cfg.ImbalanceMinGap {
+		return nil
+	}
+	if n := len(pods); n > 2 && float64(hi) <= s.cfg.ImbalanceFactor*(float64(sum-hi)/float64(n-1)+1) {
+		return nil
+	}
+	var out []int
+	for _, i := range pods {
+		if s.observed(g, i) == lo {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
 func (s *sim) prefixSeeds(g, group int, allowed map[int]bool) []int {
 	if !s.cfg.PrefixOn || s.cfg.PrefixSeedMax == 0 {
 		return nil
@@ -397,6 +433,10 @@ func (s *sim) candidates(g, group int, universe []int, allowed map[int]bool) []i
 }
 
 func (s *sim) route(r *request, group int) {
+	if s.pol.GateSample {
+		s.routeGateSample(r, group)
+		return
+	}
 	g := r.gateway
 	universe := s.eligible(g)
 	var allowed map[int]bool
@@ -429,6 +469,31 @@ func (s *sim) route(r *request, group int) {
 		if fullScores[pos[target]] >= fullScores[pos[best]]-1e-9 {
 			s.agree++
 		}
+	}
+	s.decided++
+	s.scored += len(cand)
+	s.place(r, target, group)
+}
+
+// routeGateSample routes as the gateway's candidate stage does: draw the candidates from the
+// whole fleet, then run the gate and scoring on them only.
+func (s *sim) routeGateSample(r *request, group int) {
+	g := r.gateway
+	fleet := make([]int, len(s.pods))
+	for i := range fleet {
+		fleet[i] = i
+	}
+	cand := s.candidates(g, group, fleet, nil)
+	s.exact = s.pol.LiveScoring
+	defer func() { s.exact = false }()
+	if gated := s.eligibleAmong(g, cand); gated != nil {
+		s.gated++
+		cand = gated
+	}
+	target := s.argmax(cand, s.finalScores(g, group, cand))
+	fullScores := s.finalScores(g, group, fleet)
+	if fullScores[target] >= fullScores[s.argmax(fleet, fullScores)]-1e-9 {
+		s.agree++
 	}
 	s.decided++
 	s.scored += len(cand)
@@ -752,7 +817,7 @@ func TestCandidateSelectionLiveStage2(t *testing.T) {
 		t.Skip("set CANDIDATE_SIM=live to run the live stage-2 comparison")
 	}
 	policies := []policy{
-		{Kind: policyRandomSeeded, K: 16, LiveScoring: true},
+		{Kind: policyRandomSeeded, K: 16, LiveScoring: true, GateSample: os.Getenv("CANDIDATE_SIM_GATE") != "fleet"},
 		{Kind: policyCountIndex, K: 16, LiveScoring: true},
 		{Kind: policyCountIndexMixed, K: 16, LiveScoring: true},
 		{Kind: policyCountIndex, K: 16},
@@ -842,8 +907,9 @@ func TestCandidateSelectionLiveStage2(t *testing.T) {
 }
 
 // The live stage-2 comparison runs the shipped defaults (500 pods, M=16, holders seeded at
-// random) unless CANDIDATE_SIM_PODS, CANDIDATE_SIM_M or CANDIDATE_SIM_SEED=load say otherwise;
-// CANDIDATE_SIM_QUICK=1 runs one seed at the 100 ms refresh only.
+// random, gate on the sample) unless CANDIDATE_SIM_PODS, CANDIDATE_SIM_M, CANDIDATE_SIM_SEED=load
+// or CANDIDATE_SIM_GATE=fleet say otherwise; CANDIDATE_SIM_QUICK=1 runs one seed at the 100 ms
+// refresh only. The index-backed policies (C, C+A) always gate the whole fleet on the index.
 func livePods() int {
 	if n, err := strconv.Atoi(os.Getenv("CANDIDATE_SIM_PODS")); err == nil && n > 0 {
 		return n

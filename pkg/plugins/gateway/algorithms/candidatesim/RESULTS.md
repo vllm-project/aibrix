@@ -2,16 +2,16 @@
 
 ## What the candidate stage ships with
 
-The gateway's candidate stage (#3292: `AIBRIX_ROUTING_CANDIDATE_K`, `AIBRIX_ROUTING_CANDIDATE_PREFIX_M`) is policy "A random+prefix" below: K pods drawn at random plus up to M prefix holders, seeded at random among equal matches, scored with exact running counts read for those pods only ("live stage 2"). It needs no index. Defaults simulated: K=16, M=16.
+The gateway's candidate stage (#3292: `AIBRIX_ROUTING_CANDIDATE_K`, `AIBRIX_ROUTING_CANDIDATE_PREFIX_M`) is policy "A random+prefix" below: K pods drawn at random plus up to M prefix holders, seeded at random among equal matches, then the load-imbalance gate and scoring on those pods only, with exact running counts read for them ("live stage 2, gate on sample"). It needs no index. Defaults simulated: K=16, M=16.
 
 Output of `CANDIDATE_SIM=live go test -run TestCandidateSelectionLiveStage2 -v ./pkg/plugins/gateway/algorithms/candidatesim/` (500 pods, 4 gateways, utilization 0.85, 3 seeds) and the same with `CANDIDATE_SIM_PODS=2000 CANDIDATE_SIM_QUICK=1` (1 seed). Mean request latency relative to today's full scoring on exact counts, same seed: mean (min to max); prefix hit ratio after the slash. Lower is better; 1.00 = same as today.
 
 | Fleet | Prefix caching off | Prefix caching on |
 | --- | --- | --- |
-| 500 pods | 1.06 (1.06 to 1.07) | 0.93 (0.92 to 0.95) / 99.5% (full: 99.6%) |
+| 500 pods | 1.06 (1.06 to 1.07) | 1.07 (1.05 to 1.09) / 99.4% (full: 99.6%) |
 | 2,000 pods | 1.06 | 1.01 / 99.9% (full: 99.8%) |
 
-The stage reads no index, so it does not depend on how fresh any background signal is. The rows labelled "C" and "C+A" below add a running-count index refreshed from Redis every 100 ms, a possible follow-up: it closes the 6% prefix-off gap but degrades when the refresh falls behind.
+The stage reads no index, so it does not depend on how fresh any background signal is: its rows are the same at 100 ms and 1 s refresh. The rows labelled "C" and "C+A" below add a running-count index refreshed from Redis every 100 ms, a possible follow-up: it closes the 6% prefix-off gap but degrades when the refresh falls behind.
 
 M has to grow with the fleet: at 2,000 pods a hot prefix is held by about 32 pods (8 at 500), and full scoring picks the least loaded of them. With M=4 the stage was 1.30x full scoring with prefix caching on at 2,000 pods (table "Live stage 2 at N=2,000" below), which is why M defaults to 16.
 
@@ -20,16 +20,18 @@ Full live stage-2 output at the shipped defaults (500 pods, 3 seeds):
 | Policy | Index refresh | Prefix off | Prefix on |
 | --- | --- | --- | --- |
 | full, exact counts | every request | 0.051 s | 0.040 s / 99.6% |
-| A random+prefix K=16, live stage 2 | 100ms | 1.06 (1.06 to 1.07) | 0.93 (0.92 to 0.95) / 99.5% |
+| A random+prefix K=16, live stage 2, gate on sample | 100ms | 1.06 (1.06 to 1.07) | 1.07 (1.05 to 1.09) / 99.4% |
 | C count index K=16, live stage 2 | 100ms | 1.01 (1.00 to 1.02) | 0.92 (0.92 to 0.92) / 99.2% |
 | C+A index K/2 + random K/2, K=16, live stage 2 | 100ms | 1.00 (0.99 to 1.01) | 0.95 (0.90 to 0.98) / 99.4% |
 | C count index K=16 | 100ms | 1.85 (1.85 to 1.86) | 1.77 (1.75 to 1.80) / 96.0% |
-| A random+prefix K=16, live stage 2 | 1s | 1.06 (1.06 to 1.07) | 0.86 (0.84 to 0.86) / 99.7% |
+| A random+prefix K=16, live stage 2, gate on sample | 1s | 1.06 (1.06 to 1.07) | 1.07 (1.05 to 1.09) / 99.4% |
 | C count index K=16, live stage 2 | 1s | 8.77 (8.31 to 9.13) | 0.90 (0.88 to 0.92) / 99.6% |
 | C+A index K/2 + random K/2, K=16, live stage 2 | 1s | 1.03 (1.02 to 1.04) | 0.86 (0.84 to 0.90) / 99.6% |
 | C count index K=16 | 1s | 11.73 (11.48 to 12.21) | 7.53 (7.48 to 7.57) / 83.7% |
 
-The sections below are the design exploration behind RFC #3188: every policy considered, with M=4 and the least loaded holders seeded first unless stated.
+Gate order matters with prefix caching on. An earlier version of this simulation ran the gate on the whole fleet before drawing the candidates, which the shipped stage cannot do because it reads only the candidates' counts. That version reported 0.93 (100 ms) and 0.86 (1 s) for the prefix-on cell at 500 pods; `CANDIDATE_SIM_GATE=fleet` still reproduces it. The fleet gate fired on a few percent of requests, almost all during warmup, and sent them to the globally least loaded pods, which shaped where prefixes settled. Prefix off and 2,000 pods are unchanged by the gate order. The C and C+A rows keep the fleet gate: they model the index follow-up, where the index backs a fleet-wide gate.
+
+The sections below are the design exploration behind RFC #3188: every policy considered, with M=4, the least loaded holders seeded first and the gate on the whole fleet unless stated. The Quality and Robustness tests still default to M=4 (`PrefixSeedMax: 4`); only the live stage-2 test defaults to the shipped M=16.
 
 ## Main comparison (seed 42)
 
@@ -173,7 +175,7 @@ Mean latency relative to full scoring on the same seed: mean (min to max). Full 
 
 ## Live stage 2
 
-Output of `CANDIDATE_SIM=live CANDIDATE_SIM_M=4 CANDIDATE_SIM_SEED=load go test -run TestCandidateSelectionLiveStage2 ...`: the index is refreshed every "Index refresh" (plus this gateway's own picks live), and the candidates are scored with exact counts, as a gateway that reads only the candidates from Redis would.
+Output of `CANDIDATE_SIM=live CANDIDATE_SIM_M=4 CANDIDATE_SIM_SEED=load CANDIDATE_SIM_GATE=fleet go test -run TestCandidateSelectionLiveStage2 ...`: the index is refreshed every "Index refresh" (plus this gateway's own picks live), and the candidates are scored with exact counts, as a gateway that reads only the candidates from Redis would.
 
 Mean latency relative to full scoring on exact counts (today with Redis), same seed: mean (min to max). Prefix hit ratio after the slash.
 
@@ -191,7 +193,7 @@ Mean latency relative to full scoring on exact counts (today with Redis), same s
 
 ## Live stage 2 at N=2,000
 
-`CANDIDATE_SIM=live CANDIDATE_SIM_QUICK=1 CANDIDATE_SIM_PODS=2000 CANDIDATE_SIM_M=4|16 [CANDIDATE_SIM_SEED=load] go test -run TestCandidateSelectionLiveStage2 ...`: one seed, 100 ms index refresh. Mean latency relative to full scoring on exact counts; prefix hit ratio after the slash. Full scoring: 0.050 s with prefix off, 0.035 s / 99.8% with prefix on.
+`CANDIDATE_SIM=live CANDIDATE_SIM_QUICK=1 CANDIDATE_SIM_PODS=2000 CANDIDATE_SIM_M=4|16 [CANDIDATE_SIM_SEED=load] [CANDIDATE_SIM_GATE=fleet] go test -run TestCandidateSelectionLiveStage2 ...`: one seed, 100 ms index refresh, gate on the whole fleet except the last A row. Mean latency relative to full scoring on exact counts; prefix hit ratio after the slash. Full scoring: 0.050 s with prefix off, 0.035 s / 99.8% with prefix on.
 
 | Policy | M | Prefix holders seeded | Prefix off | Prefix on |
 | --- | --- | --- | --- | --- |
@@ -199,7 +201,7 @@ Mean latency relative to full scoring on exact counts (today with Redis), same s
 | C+A index K/2 + random K/2, K=16, live stage 2 | 4 | least loaded first | 1.00 | 1.24 / 99.8% |
 | A random+prefix K=16, live stage 2 | 16 | least loaded first | 1.06 | 1.04 / 99.9% |
 | C+A index K/2 + random K/2, K=16, live stage 2 | 16 | least loaded first | 1.00 | 1.01 / 99.9% |
-| A random+prefix K=16, live stage 2 | 16 | random (as shipped) | 1.06 | 1.01 / 99.9% |
+| A random+prefix K=16, live stage 2, gate on sample (as shipped) | 16 | random (as shipped) | 1.06 | 1.01 / 99.9% |
 | C+A index K/2 + random K/2, K=16, live stage 2 | 16 | random (as shipped) | 1.00 | 1.01 / 99.8% |
 
 With 2,000 pods each prefix group is held by about 32 pods (8 at N=500). Full scoring picks the least loaded holder; with M=4 the candidates hold only four, which costs about a quarter of the mean latency. M=16 closes the gap. Seeding holders at random does at least as well as ranking them by the gateway's possibly stale view, so SeedCandidates needs no load signal to pick its seeds.
