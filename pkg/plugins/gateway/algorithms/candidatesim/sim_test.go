@@ -542,6 +542,11 @@ func (s *sim) run() result {
 			s.loadRatioN++
 		}
 	}
+	// Every ratio below needs completed requests after the warmup. A configuration without any
+	// would print zeros or NaN into a results table, so fail loudly instead.
+	if len(s.latencies) == 0 || s.decided == 0 || s.loadRatioN == 0 {
+		panic(fmt.Sprintf("candidatesim: no requests completed between warmup %v and duration %v", cfg.Warmup, cfg.Duration))
+	}
 	sort.Float64s(s.latencies)
 	mean := 0.0
 	for _, l := range s.latencies {
