@@ -21,6 +21,7 @@ import (
 
 	"testing"
 
+	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -330,4 +331,64 @@ func TestLeastLatencyScoreAllHandlesNonHistogramMetrics(t *testing.T) {
 	assert.True(t, scored[2])
 	assert.Greater(t, scores[2], 0.0)
 	assert.False(t, scored[3], "a queue time that is not a histogram leaves the pod unscored")
+}
+
+func TestLeastLatencyReadsPromQLTokenAverages(t *testing.T) {
+	promqlAverage := func(v float64) *metrics.PrometheusMetricValue {
+		var result model.Value = model.Vector{&model.Sample{Value: model.SampleValue(v)}}
+		return &metrics.PrometheusMetricValue{Result: &result}
+	}
+	pods := []*v1.Pod{
+		newPod("p1", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("p2", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("p3", "3.3.3.3", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+	}
+	// p1 takes longer per request but serves requests ten times as long, so per token it is the
+	// faster pod: prefill 1s/1000 tokens against 0.5s/100, decode 2s/1000 tokens against 0.5s/100.
+	// p3 has served nothing, so its averages are 0 and stay out of the pool averages, which are
+	// 550 prompt and 550 generation tokens. Scaled to them, p1's prefill and decode estimates are
+	// 0.55s and 1.1s, and p2's are 2.75s each. Without the token averages every pod falls back to
+	// the same guess and the raw means decide, which favours p2.
+	c := cache.NewWithPodsModelMetricsForTest(pods, testModelName, map[string]map[string]metrics.MetricValue{
+		"p1": {
+			metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 1, Count: 1},
+			metrics.AvgPromptToksPerReq:       promqlAverage(1000),
+			metrics.AvgGenerationToksPerReq:   promqlAverage(1000),
+			metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 1, Count: 1},
+			metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 2, Count: 1},
+		},
+		"p2": {
+			metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 1, Count: 1},
+			metrics.AvgPromptToksPerReq:       promqlAverage(100),
+			metrics.AvgGenerationToksPerReq:   promqlAverage(100),
+			metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 0.5, Count: 1},
+			metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 0.5, Count: 1},
+		},
+		"p3": {
+			metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 1, Count: 1},
+			metrics.AvgPromptToksPerReq:       promqlAverage(0),
+			metrics.AvgGenerationToksPerReq:   promqlAverage(0),
+			metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 3, Count: 1},
+			metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 3, Count: 1},
+		},
+	})
+	podList := podsFromCache(c)
+	r := leastExpectedLatencyRouter{cache: c}
+
+	ctx := types.NewRoutingContext(context.Background(), "least-latency", testModelName, "message", "request", "user")
+	scores, scored, err := r.ScoreAll(ctx, podList)
+	assert.NoError(t, err)
+	got := map[string]float64{}
+	for i, pod := range podList.All() {
+		if scored[i] {
+			got[pod.Name] = scores[i]
+		}
+	}
+	assert.InDelta(t, 1+0.55+1.1, got["p1"], 1e-9)
+	assert.InDelta(t, 1+2.75+2.75, got["p2"], 1e-9)
+	assert.InDelta(t, 1+3+3, got["p3"], 1e-9, "a pod without averages uses the pool's")
+
+	target, err := r.Route(ctx, podList)
+	assert.NoError(t, err)
+	assert.Equal(t, "1.1.1.1:8000", target)
 }

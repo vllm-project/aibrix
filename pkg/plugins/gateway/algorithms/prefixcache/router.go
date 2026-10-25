@@ -25,6 +25,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -231,7 +232,7 @@ func NewTokenizer() tokenizer.Tokenizer {
 }
 
 // loadTokenizerPoolConfigFromEnv builds the remote tokenizer pool configuration
-// from the AIBRIX_TOKENIZER_* environment variables.
+// from the environment.
 //
 // The duration defaults are time.Duration values on purpose: utils.LoadEnvDuration
 // parses the environment value with time.ParseDuration and already returns a
@@ -248,6 +249,10 @@ func loadTokenizerPoolConfigFromEnv() TokenizerPoolConfig {
 		DefaultTokenizer:     nil, // Set by the caller
 		Timeout:              utils.LoadEnvDuration("AIBRIX_TOKENIZER_REQUEST_TIMEOUT", 5*time.Second),
 		ModelServiceMap:      make(map[string]string),
+		// Fixed remote tokenizer endpoint shared by all models, e.g. a Service
+		// that load-balances tokenize calls across replicas. It is optional, so
+		// read it with os.Getenv: LoadEnv would log a warning when unset.
+		FixedEndpoint: strings.TrimSpace(os.Getenv(constants.EnvPrefixCacheRemoteTokenizerEndpoint)),
 	}
 }
 
