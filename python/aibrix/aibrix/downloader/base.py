@@ -246,7 +246,7 @@ class BaseDownloader(ABC):
                 # use range download to speedup download
                 self.download(local_path, file, self.bucket_name, True)
 
-    def download_model(self, local_path: Optional[str] = None):
+    def download_model(self, local_path: Optional[str] = None) -> Path:
         if local_path is None:
             local_path = envs.DOWNLOADER_LOCAL_DIR
             Path(local_path).mkdir(parents=True, exist_ok=True)

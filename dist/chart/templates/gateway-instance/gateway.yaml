@@ -48,6 +48,9 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
 metadata:
   name: {{ include "aibrix.fullname" . }}-custom-proxy-config
+  labels:
+    {{- include "aibrix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gateway
 spec:
 {{- if or .Values.openTelemetry.enable .Values.gateway.envoyProxy.accessLog.enabled }}
   telemetry:

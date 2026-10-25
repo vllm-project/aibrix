@@ -438,6 +438,11 @@ func TestSelectTargetPodWithLeastRequestCount(t *testing.T) {
 
 // TestPrefixMatchingStandardDeviationEdgeCases tests edge cases for standard deviation handling
 func TestPrefixMatchingStandardDeviationEdgeCases(t *testing.T) {
+	// These cases cover the stddev factor alone; several have a pod far above the
+	// mean that the bounded-load cap would skip by itself, so lift it out of the way.
+	defer func(f float64) { loadCapFactor = f }(loadCapFactor)
+	loadCapFactor = 1e9
+
 	// Helper to create test setup
 	createTestSetup := func(podMetrics map[string]int) (cache.Cache, []*v1.Pod) {
 		var pods []*v1.Pod

@@ -10,13 +10,10 @@ and is now manually maintained under `dist/chart`.
 
 ## Limitations
 
-1. Missing Standard Labels
-Common Kubernetes labels such as `app.kubernetes.io/managed-by` and `app.kubernetes.io/name` are currently not included. These should be added to improve consistency and observability.
-
-2. Third-Party Dependencies Not Included
+1. Third-Party Dependencies Not Included
 Dependencies like `Envoy Gateway` and `KubeRay` have their own Helm charts. This AIBrix chart focuses only on core AIBrix components and does not package or manage external dependencies.
 
-3. Not Compatible with Previous Kustomize-Based Installs
+2. Not Compatible with Previous Kustomize-Based Installs
 This chart is not intended for upgrades from earlier deployments that used Kustomize. Transitioning requires a clean install.
 
 
@@ -134,9 +131,10 @@ resolve the issue and retry until you get:
 
 ### helm unittest
 
-test cases in dist/chart/tests
+Test cases live in `dist/chart/tests`. The common-label suite uses `documentSelector.matchMany` and `skipEmptyTemplates`, which require helm-unittest 1.0 or newer. helm-unittest 0.7.x fails that suite with `label expected to exist`.
+
 ```
-helm plugin install https://github.com/helm-unittest/helm-unittest.git
+helm plugin install https://github.com/helm-unittest/helm-unittest.git --version v1.1.2
 
 helm unittest dist/chart
 ### Chart [ aibrix ] dist/chart

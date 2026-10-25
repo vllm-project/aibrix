@@ -15,8 +15,10 @@
 """Tests for the alternative BaseStorage2 aggregation path."""
 
 import asyncio
+from io import BytesIO
 from types import SimpleNamespace
 from typing import Any, Union
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import tos
@@ -272,6 +274,39 @@ class DelayedMultipartTestStorage(NativeMultipartTestStorage):
 
 
 class TestBaseStorage2:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("strategy", [{"byline": 1}, {"bysize": 4}, {"bysize": 8}])
+    @pytest.mark.parametrize("fail_create", [True, False])
+    async def test_multipart_upload_failure_cleanup(
+        self, monkeypatch, strategy, fail_create
+    ):
+        storage = NativeMultipartTestStorage(multipart_threshold=8)
+        error = RuntimeError("multipart upload failed")
+        create = AsyncMock(
+            return_value="upload", side_effect=error if fail_create else None
+        )
+        abort = AsyncMock()
+        native_abort = AsyncMock()
+        monkeypatch.setattr(storage, "create_multipart_upload", create)
+        monkeypatch.setattr(storage, "abort_multipart_upload", abort)
+        monkeypatch.setattr(storage, "_native_abort_multipart_upload", native_abort)
+        monkeypatch.setattr(storage, "_upload_by_lines", AsyncMock(side_effect=error))
+        monkeypatch.setattr(storage, "_upload_by_size", AsyncMock(side_effect=error))
+
+        with pytest.raises(RuntimeError) as raised:
+            await storage.multipart_upload("key", b"data", **strategy)
+
+        assert raised.value is error
+        if fail_create:
+            abort.assert_not_awaited()
+            native_abort.assert_not_awaited()
+        elif strategy.get("bysize", 0) >= 8:
+            native_abort.assert_awaited_once_with("key", "upload")
+            abort.assert_not_awaited()
+        else:
+            abort.assert_awaited_once_with("key", "upload")
+            native_abort.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_small_parts_completion_uses_native_buffered_aggregation(self):
         storage = NativeMultipartTestStorage(multipart_threshold=8)
@@ -639,6 +674,27 @@ class TestBaseStorage2:
 
 
 class TestTOSStorageConfig:
+    @pytest.mark.parametrize("threshold", [0, -1])
+    def test_tos_storage_rejects_nonpositive_multipart_threshold(
+        self, monkeypatch, threshold
+    ):
+        client_factory = Mock()
+        monkeypatch.setattr(tos, "TosClientV2", client_factory)
+
+        with pytest.raises(
+            ValueError, match="multipart_threshold must be greater than 0"
+        ):
+            TOSStorage(
+                "bucket",
+                "ak",
+                "sk",
+                "https://tos.example.com",
+                "cn-beijing",
+                config=StorageConfig(multipart_threshold=threshold),
+            )
+
+        client_factory.assert_not_called()
+
     def test_tos_storage_enables_strict_min_part_size_by_default(self, monkeypatch):
         mock_client = object()
         monkeypatch.setattr(tos, "TosClientV2", lambda *args: mock_client)
@@ -667,6 +723,146 @@ class TestTOSStorageConfig:
         )
 
         assert storage.config.strict_multipart_min_part_size is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size_delta", [-1, 0, 1])
+async def test_tos_put_object_at_multipart_threshold(monkeypatch, size_delta):
+    client = Mock()
+    chunks: list[bytes] = []
+
+    def upload_part(**kwargs):
+        chunks.append(kwargs["content"].read())
+        return SimpleNamespace(etag="etag")
+
+    client.create_multipart_upload.return_value = SimpleNamespace(upload_id="upload")
+    client.upload_part.side_effect = upload_part
+    monkeypatch.setattr(tos, "TosClientV2", lambda *args: client)
+    storage = TOSStorage("bucket", "ak", "sk", "https://tos.example.com", "cn-beijing")
+    threshold = storage.config.multipart_threshold
+    data = b"x" * (threshold + size_delta)
+
+    assert await storage.put_object("key", data) is True
+
+    if size_delta < 0:
+        client.put_object.assert_called_once()
+        assert client.put_object.call_args.kwargs["content"].getvalue() == data
+        client.create_multipart_upload.assert_not_called()
+    else:
+        client.put_object.assert_not_called()
+        client.create_multipart_upload.assert_called_once()
+        assert b"".join(chunks) == data
+        assert [len(chunk) for chunk in chunks] == [threshold] + (
+            [1] if size_delta > 0 else []
+        )
+        client.complete_multipart_upload.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_stage",
+    ["create_multipart_upload", "upload_part", "complete_multipart_upload"],
+)
+async def test_tos_put_object_multipart_failure_does_not_fall_back(
+    monkeypatch, failure_stage
+):
+    client = Mock()
+    client.create_multipart_upload.return_value = SimpleNamespace(upload_id="upload")
+    client.upload_part.return_value = SimpleNamespace(etag="etag")
+    error = tos.exceptions.TosClientError("injected multipart failure")
+    getattr(client, failure_stage).side_effect = error
+    monkeypatch.setattr(tos, "TosClientV2", lambda *args: client)
+    storage = TOSStorage("bucket", "ak", "sk", "https://tos.example.com", "cn-beijing")
+    data = b"x" * storage.config.multipart_threshold + b"TAIL"
+
+    with pytest.raises(ValueError, match="injected multipart failure") as raised:
+        await storage.put_object("key", data)
+
+    assert raised.value.__context__ is error
+    client.put_object.assert_not_called()
+    if failure_stage == "create_multipart_upload":
+        client.abort_multipart_upload.assert_not_called()
+    else:
+        client.abort_multipart_upload.assert_called_once_with(
+            bucket="bucket", key="key", upload_id="upload"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_kind", ["bytes", "stream", "reader"])
+@pytest.mark.parametrize("multipart", [False, True], ids=["single-put", "multipart"])
+@pytest.mark.parametrize("fail_upload", [False, True], ids=["success", "failure"])
+async def test_tos_put_object_reader_ownership(
+    monkeypatch, input_kind, multipart, fail_upload
+):
+    client = Mock()
+    client.create_multipart_upload.return_value = SimpleNamespace(upload_id="upload")
+    client.upload_part.return_value = SimpleNamespace(etag="etag")
+    upload = client.upload_part if multipart else client.put_object
+    if fail_upload:
+        upload.side_effect = tos.exceptions.TosClientError("injected upload failure")
+    monkeypatch.setattr(tos, "TosClientV2", lambda *args: client)
+    storage = TOSStorage(
+        "bucket",
+        "ak",
+        "sk",
+        "https://tos.example.com",
+        "cn-beijing",
+        config=StorageConfig(multipart_threshold=8),
+    )
+
+    payload = b"payload!" if multipart else b"data"
+    stream = BytesIO(payload) if input_kind != "bytes" else None
+    data = payload
+    if stream is not None:
+        # A caller-owned Reader must stay open even when it owns its stream.
+        data = Reader(stream, cascade_close=True) if input_kind == "reader" else stream
+
+    readers: list[Reader] = []
+    closed_readers: list[Reader] = []
+    original_wrap_data = storage._wrap_data
+    original_close = Reader.close
+
+    def track_wrap_data(data):
+        reader = original_wrap_data(data)
+        readers.append(reader)
+        return reader
+
+    def track_close(reader):
+        closed_readers.append(reader)
+        original_close(reader)
+
+    monkeypatch.setattr(storage, "_wrap_data", track_wrap_data)
+    monkeypatch.setattr(Reader, "close", track_close)
+
+    if fail_upload:
+        with pytest.raises(ValueError, match="injected upload failure"):
+            await storage.put_object("key", data)
+    else:
+        assert await storage.put_object("key", data) is True
+    upload.assert_called_once()
+    if multipart:
+        client.put_object.assert_not_called()
+    else:
+        client.create_multipart_upload.assert_not_called()
+
+    # Multipart part uploads create their own wrappers; check the input wrapper.
+    reader = readers[0]
+    close_count = sum(closed_reader is reader for closed_reader in closed_readers)
+    if input_kind == "reader":
+        assert reader is data
+        assert close_count == 0
+        assert not reader.closed
+        reader.seek(0)
+        assert reader.read_all() == payload
+    else:
+        assert close_count == 1
+        assert reader.closed
+
+    if stream is not None:
+        assert not stream.closed
+        stream.seek(0)
+        assert stream.read() == payload
 
 
 class TestBackendBulkDelete:

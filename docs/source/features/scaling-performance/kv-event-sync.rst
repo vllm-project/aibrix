@@ -64,7 +64,7 @@ Environment Variables
      - Must be ``true`` for KV sync
    * - ``AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT``
      - -
-     - vLLM service endpoint
+     - Optional fixed remote tokenizer endpoint for all models. Takes precedence over per-pod discovery; point it at a Service to load-balance tokenize calls across replicas. Global: only set when all models share one tokenizer endpoint.
 
 Pod Labels
 ~~~~~~~~~~
@@ -192,6 +192,7 @@ Pods are matched against the sync indexer and sorted by prefix-match percentage
 .. code-block:: text
 
    running_requests ≤ mean + STANDARD_DEVIATION_FACTOR × σ
+   running_requests ≤ max(LOAD_CAP_FACTOR, 1) × (mean + 1)
 
 is selected. If no matched pod meets the threshold, the router falls back to the globally
 least-loaded ready pod.
@@ -208,6 +209,9 @@ Relevant environment variables:
    * - ``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``
      - ``1``
      - Controls how aggressively overloaded cache-holding pods are skipped during selection.
+   * - ``AIBRIX_PREFIX_CACHE_LOAD_CAP_FACTOR``
+     - ``1.5``
+     - Matched pods with more than ``max(c, 1) × (mean + 1)`` running requests are skipped, where ``c`` is this factor. Applies only when ``prefix-cache`` routes on its own, with the auto-blend off (``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0``). Unlike the standard-deviation check, it applies to pools of any size. A factor between ``0`` and ``1`` is treated as ``1``; ``0``, negative or unparsable values use the default ``1.5``. To effectively disable the cap, set a large value such as ``100``. Lower values give up more prefix-cache affinity for a more even load. Set by environment only.
 
 Event Types
 -----------

@@ -25,6 +25,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,6 +45,7 @@ import (
 
 const (
 	defaultStandardDeviationFactor = 1
+	defaultLoadCapFactor           = 1.5 // c in the c×(mean+1) matched-pod cap
 
 	// tokenizerTypeTiktoken is the tiktoken tokenizer type
 	tokenizerTypeTiktoken = "tiktoken"
@@ -57,6 +59,9 @@ const RouterPrefixCache types.RoutingAlgorithm = "prefix-cache"
 var (
 	tokenizerType               = utils.LoadEnv(constants.EnvPrefixCacheTokenizerType, "character")
 	standardDeviationFactor int = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR", defaultStandardDeviationFactor)
+	// c in the bounded-load cap: a matched pod with more than c×(mean+1) running
+	// requests is skipped. Unlike the stddev check it can fire at any pool size.
+	loadCapFactor float64 = utils.LoadEnvFloat("AIBRIX_PREFIX_CACHE_LOAD_CAP_FACTOR", defaultLoadCapFactor)
 )
 
 // PrefixCacheMetrics holds all prefix cache metrics
@@ -227,7 +232,7 @@ func NewTokenizer() tokenizer.Tokenizer {
 }
 
 // loadTokenizerPoolConfigFromEnv builds the remote tokenizer pool configuration
-// from the AIBRIX_TOKENIZER_* environment variables.
+// from the environment.
 //
 // The duration defaults are time.Duration values on purpose: utils.LoadEnvDuration
 // parses the environment value with time.ParseDuration and already returns a
@@ -244,6 +249,10 @@ func loadTokenizerPoolConfigFromEnv() TokenizerPoolConfig {
 		DefaultTokenizer:     nil, // Set by the caller
 		Timeout:              utils.LoadEnvDuration("AIBRIX_TOKENIZER_REQUEST_TIMEOUT", 5*time.Second),
 		ModelServiceMap:      make(map[string]string),
+		// Fixed remote tokenizer endpoint shared by all models, e.g. a Service
+		// that load-balances tokenize calls across replicas. It is optional, so
+		// read it with os.Getenv: LoadEnv would log a warning when unset.
+		FixedEndpoint: strings.TrimSpace(os.Getenv(constants.EnvPrefixCacheRemoteTokenizerEndpoint)),
 	}
 }
 
@@ -975,7 +984,9 @@ func getTargetPodFromMatchedPods(cache cache.Cache, readyPods []*v1.Pod, matched
 }
 
 // getTargetPodFromMatchedPodsFromCounts is getTargetPodFromMatchedPods with request counts the
-// caller already has, keyed by pod key like matchedPods.
+// caller already has, keyed by pod key like matchedPods. A candidate above the bounded-load cap
+// (see routeutil.LoadCap) is skipped as well, since the stddev check cannot skip any pod in a
+// pool of five or fewer at a factor of 2.
 func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, readyPods []*v1.Pod, matchedPods map[string]int, stdDevFactor int) *v1.Pod {
 	var targetPodKey string
 	requestCount := make([]float64, 0, len(podRequestCount))
@@ -985,6 +996,7 @@ func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, ready
 	}
 	meanRequestCount := routeutil.Mean(requestCount)
 	stdDevRequestCount := routeutil.StandardDeviation(requestCount)
+	loadCap := routeutil.LoadCap(meanRequestCount, loadCapFactor)
 
 	podKeys := make([]string, 0, len(matchedPods))
 	for podKey := range matchedPods {
@@ -1002,10 +1014,10 @@ func getTargetPodFromMatchedPodsFromCounts(podRequestCount map[string]int, ready
 		return matchedPods[podKeys[i]] > matchedPods[podKeys[j]]
 	})
 
-	// select targetpod with highest %prefixmatch and request_count within stddev
+	// select targetpod with highest %prefixmatch and request_count within stddev and the load cap
 	for _, podKey := range podKeys {
 		reqCnt := float64(podRequestCount[podKey])
-		if reqCnt <= meanRequestCount+float64(stdDevFactor)*stdDevRequestCount {
+		if reqCnt <= meanRequestCount+float64(stdDevFactor)*stdDevRequestCount && reqCnt <= loadCap {
 			targetPodKey = podKey
 			break
 		}

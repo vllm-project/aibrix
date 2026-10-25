@@ -43,3 +43,21 @@ func StandardDeviation(numbers []float64) float64 {
 	variance := sumOfSquares / float64(len(numbers)-1)
 	return math.Sqrt(variance)
 }
+
+// LoadCap returns the bounded-load cap factor×(mean+1) on a pod's in-flight
+// request count. A stddev filter alone cannot skip any pod when the pool is
+// small: no value in n samples sits more than (n-1)/√n sample standard
+// deviations above their mean, which is below 2 for n ≤ 5. The busiest of n
+// pods holds at most n×mean, so the cap can fire whenever the factor is below
+// n; a factor of 1.5 reaches two-pod pools. The +1 keeps an idle pool from
+// rejecting its first request, and a factor below 1 is raised to 1 so the cap
+// stays above the mean and the least-loaded pod is never skipped.
+//
+// A NaN factor disables the cap, so the two callers, which compare in opposite
+// directions, agree on it.
+func LoadCap(mean, factor float64) float64 {
+	if math.IsNaN(factor) {
+		return math.Inf(1)
+	}
+	return math.Max(factor, 1) * (mean + 1)
+}

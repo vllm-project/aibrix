@@ -59,12 +59,6 @@ func validateKVEventConfiguration() error {
 		return fmt.Errorf("KV event sync requires %s=remote (got %q)", constants.EnvPrefixCacheTokenizerType, tokenizerType)
 	}
 
-	// Check remote tokenizer endpoint
-	endpoint := utils.LoadEnv(constants.EnvPrefixCacheRemoteTokenizerEndpoint, "")
-	if endpoint == "" {
-		return fmt.Errorf("KV event sync requires %s to be set", constants.EnvPrefixCacheRemoteTokenizerEndpoint)
-	}
-
 	return nil
 }
 

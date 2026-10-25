@@ -77,7 +77,7 @@ The weights lean toward cache affinity, but load still counts, so the pod with t
 If you disable the blend by setting ``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0``, ``prefix-cache`` routes by itself:
 
 1. It sorts the pods that hold a match by prefix match, highest first, and then by running requests, fewest first.
-2. It picks the first pod whose running requests are no higher than ``mean + factor × σ``, where the mean and the standard deviation σ are taken over the candidate pods and ``factor`` is ``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``.
+2. It picks the first pod whose running requests are no higher than ``mean + factor × σ``, where the mean and the standard deviation σ are taken over the candidate pods and ``factor`` is ``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``. It also skips a pod with more than ``c × (mean + 1)`` running requests, where ``c`` is ``AIBRIX_PREFIX_CACHE_LOAD_CAP_FACTOR``. At the shipped factor of ``2`` the standard-deviation check cannot skip any pod in a pool of five or fewer; the cap applies at any pool size.
 3. If no pod holds a match, or none passes the threshold, it falls back to the pod with the fewest running requests.
 
 ``prefix-cache-preble`` is a separate strategy that weighs prefix hits against load using the Preble cost model. See :doc:`gateway-plugins` for all strategies.
@@ -99,7 +99,7 @@ Set these variables on the gateway plugin deployment. The defaults are the built
      - Local tokenizer: ``character`` (the UTF-8 bytes of the text) or ``tiktoken``.
    * - ``AIBRIX_PREFIX_CACHE_BLOCK_SIZE``
      - ``4``
-     - Size of a prefix block, in bytes of the tokenized prompt. With ``tiktoken`` each token counts as 4 bytes. Smaller blocks match finer prefixes but create more blocks to hash and store.
+     - Size of a prefix block, in bytes of the tokenized prompt. With ``tiktoken`` each token counts as 4 bytes. Smaller blocks match finer prefixes but create more blocks to hash and store. With KV event sync, it only applies until a model's first KV event; after that the engine's block size is used.
    * - ``AIBRIX_PREFIX_CACHE_BLOCK_NUMBER``
      - ``200000``
      - Maximum number of blocks in the index. The least recently updated blocks are evicted first.
@@ -109,6 +109,9 @@ Set these variables on the gateway plugin deployment. The defaults are the built
    * - ``AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR``
      - ``1``
      - The ``factor`` in the standalone selection above. A model config profile can override it per request with ``routingConfig.prefixCache.standardDeviationFactor``.
+   * - ``AIBRIX_PREFIX_CACHE_LOAD_CAP_FACTOR``
+     - ``1.5``
+     - Matched pods with more than ``max(c, 1) × (mean + 1)`` running requests are skipped, where ``c`` is this factor. Applies only when ``prefix-cache`` routes on its own, with the auto-blend off (``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0``). Unlike the standard-deviation check, it applies to pools of any size. A factor between ``0`` and ``1`` is treated as ``1``; ``0``, negative or unparsable values use the default ``1.5``. To effectively disable the cap, set a large value such as ``100``. Lower values give up more prefix-cache affinity for a more even load. Set by environment only.
    * - ``AIBRIX_PREFIX_CACHE_INCLUDE_TOOLS``
      - ``true``
      - Include the chat request's ``tools`` in the hashed text, so requests with the same messages but different tools do not look like a full match.
