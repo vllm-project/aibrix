@@ -847,4 +847,3 @@ func waitForLifecyclePoolPodsDeleted(
 			return len(pods.Items) == 0, nil
 		})
 }
-
