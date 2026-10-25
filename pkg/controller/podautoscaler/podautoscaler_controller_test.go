@@ -1211,9 +1211,9 @@ func TestComputeMetricBasedReplicas_StormService_FiltersIndex0(t *testing.T) {
 	}
 }
 
-// TestComputeMetricBasedReplicas_StormService_MixedPodGroups verifies that when a StormService has both a
-// role with pod groups and a role without, only index 0 of each pod group is kept, and every pod of the role
-// without pod groups is kept too, although it has no pod-group index.
+// TestComputeMetricBasedReplicas_StormService_MixedPodGroups verifies that when a StormService has both
+// roles with pod groups of different sizes and a role without, only index 0 of each pod group is kept, and
+// every pod of the role without pod groups is kept too, although it has no pod-group index.
 func TestComputeMetricBasedReplicas_StormService_MixedPodGroups(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -1232,16 +1232,17 @@ func TestComputeMetricBasedReplicas_StormService_MixedPodGroups(t *testing.T) {
 				Spec: &orchestrationv1alpha1.RoleSetSpec{
 					Roles: []orchestrationv1alpha1.RoleSpec{
 						{Name: "prefill", PodGroupSize: ptr.To(int32(4))},
+						{Name: "mid", PodGroupSize: ptr.To(int32(2))},
 						{Name: "decode"},
 					},
 				},
 			},
 		},
 	}
-	groupPod := func(name, index string) *corev1.Pod {
+	groupPod := func(role, name, index string) *corev1.Pod {
 		return buildPod(ns, name, map[string]string{
 			constants.StormServiceNameLabelKey: ssName,
-			constants.RoleNameLabelKey:         "prefill",
+			constants.RoleNameLabelKey:         role,
 			constants.PodGroupIndexLabelKey:    index,
 		})
 	}
@@ -1261,7 +1262,7 @@ func TestComputeMetricBasedReplicas_StormService_MixedPodGroups(t *testing.T) {
 		roleName     string
 		wantPodNames []string
 	}{
-		{name: "whole StormService", wantPodNames: []string{"decode-0", "decode-1", "prefill-0"}},
+		{name: "whole StormService", wantPodNames: []string{"decode-0", "decode-1", "mid-0", "prefill-0"}},
 		{name: "role with pod groups", roleName: "prefill", wantPodNames: []string{"prefill-0"}},
 		{name: "role without pod groups", roleName: "decode", wantPodNames: []string{"decode-0", "decode-1"}},
 	}
@@ -1272,9 +1273,11 @@ func TestComputeMetricBasedReplicas_StormService_MixedPodGroups(t *testing.T) {
 
 			cl := fake.NewClientBuilder().WithScheme(sch).
 				WithObjects(
-					groupPod("prefill-0", "0"),
-					groupPod("prefill-1", "1"),
-					groupPod("prefill-3", "3"),
+					groupPod("prefill", "prefill-0", "0"),
+					groupPod("prefill", "prefill-1", "1"),
+					groupPod("prefill", "prefill-3", "3"),
+					groupPod("mid", "mid-0", "0"),
+					groupPod("mid", "mid-1", "1"),
 					singlePod("decode-0"),
 					singlePod("decode-1"),
 					otherStormService.DeepCopy(),
