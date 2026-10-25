@@ -18,6 +18,7 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"testing"
@@ -39,7 +40,8 @@ import (
 // TestModelClaimSleepLowerPriorityPreparedPool exercises soft preemption on a
 // prepared card-backed runtime pool. The pool must have one card that fits two
 // 2 GiB claims but not three, keep no wake reserve, and use a short ordinary
-// make-room threshold so the sleeping victim can be woken at the end.
+// make-room threshold. A preempted low-priority victim's wake must wait rather
+// than putting either equal-priority active claim to sleep.
 func TestModelClaimSleepLowerPriorityPreparedPool(t *testing.T) {
 	pool := os.Getenv("AIBRIX_E2E_PREEMPTION_POOL")
 	if pool == "" {
@@ -106,8 +108,8 @@ func TestModelClaimSleepLowerPriorityPreparedPool(t *testing.T) {
 
 	// Normally the gateway reports the victim as sleeping and writes the wake
 	// request. A controller-only upgrade can ask the test to write the same Pod
-	// annotation directly. Once preemption's reservation is gone, existing wake
-	// admission makes room and returns the victim to Active.
+	// annotation directly. Once preemption's reservation is gone, wake admission
+	// must still protect both equal-priority active claims.
 	if os.Getenv("AIBRIX_E2E_PREEMPTION_SKIP_GATEWAY") == "1" {
 		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			pod, getErr := k8sClient.CoreV1().Pods(lifecycleNamespace).Get(
@@ -144,16 +146,51 @@ func TestModelClaimSleepLowerPriorityPreparedPool(t *testing.T) {
 			}), "gateway did not observe sleeping route for %s; last status=%d retry-after=%s body=%s",
 			low.Name, lastStatus, retryAfter, lastBody)
 	}
-	recovered := waitForLifecycleClaimPhase(t, ctx, aibrixClient, low.Name, modelv1alpha1.ModelClaimActive)
-	require.NoError(t, wait.PollUntilContextTimeout(ctx, time.Second, 30*time.Second, true,
+	require.NoError(t, wait.PollUntilContextTimeout(ctx, 200*time.Millisecond, 30*time.Second, true,
 		func(ctx context.Context) (bool, error) {
-			pod, err := k8sClient.CoreV1().Pods(lifecycleNamespace).Get(
-				ctx, recovered.Status.Instances[0].Pod, metav1.GetOptions{},
-			)
+			latest, err := claims.Get(ctx, low.Name, metav1.GetOptions{})
 			if err != nil {
 				return false, err
 			}
-			_, waiting := pod.Annotations[constants.ModelClaimWakeAnnotationPrefix+low.Name]
-			return !waiting, nil
-		}))
+			return latest.Status.Phase == modelv1alpha1.ModelClaimSleeping &&
+				len(latest.Status.Instances) == 1 &&
+				latest.Status.Instances[0].Reason == "WaitingForRoom", nil
+		}), "low-priority victim did not wait for room")
+
+	var observationErr error
+	assert.Never(t, func() bool {
+		latestLow, err := claims.Get(ctx, low.Name, metav1.GetOptions{})
+		if err != nil {
+			observationErr = err
+			return true
+		}
+		latestEqual, err := claims.Get(ctx, equal.Name, metav1.GetOptions{})
+		if err != nil {
+			observationErr = err
+			return true
+		}
+		latestHigh, err := claims.Get(ctx, high.Name, metav1.GetOptions{})
+		if err != nil {
+			observationErr = err
+			return true
+		}
+		pod, err := k8sClient.CoreV1().Pods(lifecycleNamespace).Get(
+			ctx, low.Status.Instances[0].Pod, metav1.GetOptions{},
+		)
+		if err != nil {
+			observationErr = err
+			return true
+		}
+		_, waiting := pod.Annotations[constants.ModelClaimWakeAnnotationPrefix+low.Name]
+		if latestLow.Status.Phase != modelv1alpha1.ModelClaimSleeping ||
+			latestEqual.Status.Phase != modelv1alpha1.ModelClaimActive ||
+			latestHigh.Status.Phase != modelv1alpha1.ModelClaimActive || !waiting {
+			observationErr = fmt.Errorf("priority protection changed: low=%s equal=%s high=%s wake-request=%t",
+				latestLow.Status.Phase, latestEqual.Status.Phase, latestHigh.Status.Phase, waiting)
+			return true
+		}
+		return false
+	}, 10*time.Second, time.Second,
+		"priority state and wake request must remain stable throughout the observation window")
+	require.NoError(t, observationErr)
 }
