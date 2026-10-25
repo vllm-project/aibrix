@@ -817,10 +817,18 @@ func TestCandidateSelectionLiveStage2(t *testing.T) {
 		t.Skip("set CANDIDATE_SIM=live to run the live stage-2 comparison")
 	}
 	policies := []policy{
-		{Kind: policyRandomSeeded, K: 16, LiveScoring: true, GateSample: os.Getenv("CANDIDATE_SIM_GATE") != "fleet"},
+		{Kind: policyRandomSeeded, K: 16, LiveScoring: true, GateSample: true},
 		{Kind: policyCountIndex, K: 16, LiveScoring: true},
 		{Kind: policyCountIndexMixed, K: 16, LiveScoring: true},
 		{Kind: policyCountIndex, K: 16},
+	}
+	switch os.Getenv("CANDIDATE_SIM_GATE") {
+	case "fleet":
+		policies[0].GateSample = false
+	case "sample":
+		for i := range policies[:3] {
+			policies[i].GateSample = true
+		}
 	}
 	seeds := []uint64{1, 2, 3}
 	delays := []time.Duration{100 * time.Millisecond, time.Second}
@@ -907,9 +915,10 @@ func TestCandidateSelectionLiveStage2(t *testing.T) {
 }
 
 // The live stage-2 comparison runs the shipped defaults (500 pods, M=16, holders seeded at
-// random, gate on the sample) unless CANDIDATE_SIM_PODS, CANDIDATE_SIM_M, CANDIDATE_SIM_SEED=load
-// or CANDIDATE_SIM_GATE=fleet say otherwise; CANDIDATE_SIM_QUICK=1 runs one seed at the 100 ms
-// refresh only. The index-backed policies (C, C+A) always gate the whole fleet on the index.
+// random, gate on the sample) unless CANDIDATE_SIM_PODS, CANDIDATE_SIM_M or CANDIDATE_SIM_SEED=load
+// say otherwise; CANDIDATE_SIM_QUICK=1 runs one seed at the 100 ms refresh only. The index-backed
+// policies (C, C+A) gate the whole fleet on the index; CANDIDATE_SIM_GATE=sample gates their
+// sample instead, and CANDIDATE_SIM_GATE=fleet gates the whole fleet for policy A too.
 func livePods() int {
 	if n, err := strconv.Atoi(os.Getenv("CANDIDATE_SIM_PODS")); err == nil && n > 0 {
 		return n
