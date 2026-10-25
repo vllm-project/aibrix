@@ -147,19 +147,35 @@ func TestModelClaimEnsureAwakeWithoutTraffic(t *testing.T) {
 	t.Cleanup(cancel)
 	k8sClient, aibrixClient := initializeClient(ctx, t)
 	cleanupLifecycleResources(t, k8sClient, aibrixClient, false)
-	_, err := k8sClient.AppsV1().Deployments(lifecycleNamespace).Create(ctx, lifecyclePoolDeployment(), metav1.CreateOptions{})
+	_, err := k8sClient.AppsV1().Deployments(lifecycleNamespace).Create(
+		ctx, lifecyclePoolDeployment(), metav1.CreateOptions{},
+	)
 	require.NoError(t, err)
 	t.Cleanup(func() { cleanupLifecycleResources(t, k8sClient, aibrixClient, true) })
 	pod := waitForLifecyclePoolPod(t, ctx, k8sClient)
+	// The runtime assigns ports in activation order. Reserve the busy mock's
+	// port before creating the idle claim, just as in the request-wake test.
+	createLifecycleClaim(t, ctx, aibrixClient, lifecycleBusyClaim, lifecycleBusyModel)
+	busy := waitForLifecycleClaimPhase(
+		t, ctx, aibrixClient, lifecycleBusyClaim, modelv1alpha1.ModelClaimActive,
+	)
+	require.Len(t, busy.Status.Instances, 1)
+	require.Equal(t, int32(lifecycleBusyPort), busy.Status.Instances[0].Port)
 	createLifecycleClaim(t, ctx, aibrixClient, lifecycleIdleClaim, lifecycleIdleModel)
 	asleep := waitForLifecycleClaimPhase(t, ctx, aibrixClient, lifecycleIdleClaim, modelv1alpha1.ModelClaimSleeping)
 	require.Len(t, asleep.Status.Instances, 1)
 	port := asleep.Status.Instances[0].Port
+	require.Equal(t, int32(lifecycleIdlePort), port)
 	assertLifecycleRouteBinding(t, ctx, k8sClient, pod.Name, lifecycleIdleClaim,
 		lifecycleRouteBinding{Model: lifecycleIdleModel, Port: 0, State: constants.ModelClaimRoutingStateSleeping})
 
 	_, err = aibrixClient.ModelV1alpha1().ModelClaims(lifecycleNamespace).Patch(ctx, lifecycleIdleClaim,
-		types.MergePatchType, []byte(`{"spec":{"residencyPolicy":{"sleepPolicy":{"mode":"Never"},"wakePolicy":{"mode":"EnsureAwake"}}}}`), metav1.PatchOptions{})
+		types.MergePatchType,
+		[]byte(`{"spec":{"residencyPolicy":{
+			"sleepPolicy":{"mode":"Never"},"wakePolicy":{"mode":"EnsureAwake"}
+		}}}`),
+		metav1.PatchOptions{},
+	)
 	require.NoError(t, err)
 	awake := waitForLifecycleClaimPhase(t, ctx, aibrixClient, lifecycleIdleClaim, modelv1alpha1.ModelClaimActive)
 	assert.Equal(t, int32(1), awake.Status.ReadyReplicas)
@@ -170,14 +186,17 @@ func TestModelClaimEnsureAwakeWithoutTraffic(t *testing.T) {
 
 	// Poll through several pool idle windows to catch sleep/wake oscillation.
 	deadline := time.Now().Add(20 * time.Second)
-	require.NoError(t, wait.PollUntilContextTimeout(ctx, time.Second, 30*time.Second, true, func(ctx context.Context) (bool, error) {
-		claim, err := aibrixClient.ModelV1alpha1().ModelClaims(lifecycleNamespace).Get(ctx, lifecycleIdleClaim, metav1.GetOptions{})
-		if err != nil {
-			return false, err
-		}
-		require.Equal(t, modelv1alpha1.ModelClaimActive, claim.Status.Phase)
-		return time.Now().After(deadline), nil
-	}))
+	require.NoError(t, wait.PollUntilContextTimeout(ctx, time.Second, 30*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			claim, err := aibrixClient.ModelV1alpha1().ModelClaims(lifecycleNamespace).Get(
+				ctx, lifecycleIdleClaim, metav1.GetOptions{},
+			)
+			if err != nil {
+				return false, err
+			}
+			require.Equal(t, modelv1alpha1.ModelClaimActive, claim.Status.Phase)
+			return time.Now().After(deadline), nil
+		}))
 }
 
 func lifecyclePoolDeployment() *appsv1.Deployment {
@@ -828,3 +847,4 @@ func waitForLifecyclePoolPodsDeleted(
 			return len(pods.Items) == 0, nil
 		})
 }
+
