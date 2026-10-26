@@ -15,6 +15,10 @@
   <a href="https://vllm-dev.slack.com/archives/C08EQ883CSV"><b>Slack</b></a>
 </p>
 
+<p align="center">
+  <b>English</b> · <a href="https://github.com/vllm-project/aibrix/blob/main/README.zh.md"><b>简体中文</b></a>
+</p>
+
 AIBrix is a Kubernetes control plane for production LLM inference. You bring the engine — vLLM, SGLang, or TensorRT-LLM — and AIBrix routes each request from live engine state, scales on inference metrics, and manages models, LoRA adapters, and KV cache.
 
 Use it when you run many models or replicas, mix GPU types, or need to hold cost and latency targets.
