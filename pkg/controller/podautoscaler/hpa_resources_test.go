@@ -171,7 +171,7 @@ func TestMakeHPA(t *testing.T) {
 	assert.Equal(t, expectedHPA, actualHPA)
 }
 
-func TestMakeHPAFractionalTargetValueRoundsUp(t *testing.T) {
+func TestMakeHPAFractionalTargetValue(t *testing.T) {
 	pa := &autoscalingv1alpha1.PodAutoscaler{
 		ObjectMeta: v1.ObjectMeta{
 			Name:      "test-fractional-pa",
@@ -194,7 +194,17 @@ func TestMakeHPAFractionalTargetValueRoundsUp(t *testing.T) {
 				{
 					MetricSourceType: autoscalingv1alpha1.POD,
 					TargetMetric:     "gpu_cache_usage_perc",
+					TargetValue:      "0.5",
+				},
+				{
+					MetricSourceType: autoscalingv1alpha1.POD,
+					TargetMetric:     "num_requests_waiting",
 					TargetValue:      "1.2",
+				},
+				{
+					MetricSourceType: autoscalingv1alpha1.CUSTOM,
+					TargetMetric:     "requests",
+					TargetValue:      "9223372036854774784",
 				},
 			},
 		},
@@ -204,18 +214,24 @@ func TestMakeHPAFractionalTargetValueRoundsUp(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.NotNil(t, hpa)
-	assert.Len(t, hpa.Spec.Metrics, 2)
+	assert.Len(t, hpa.Spec.Metrics, 4)
 
-	// Fractional targetValue must round up (like the CPU path) instead of being
-	// truncated by int64(): 0.5 MiB -> 1 MiB, never 0 bytes.
+	// The memory target is a whole number of MiB, so a fractional one rounds up
+	// instead of being truncated by int64(): 0.5 MiB -> 1 MiB, never 0 bytes.
 	memoryTarget := hpa.Spec.Metrics[0].Resource.Target
 	assert.NotNil(t, memoryTarget.AverageValue)
 	assert.Equal(t, int64(1*1024*1024), memoryTarget.AverageValue.Value())
 
-	// 1.2 -> 2 for pod metrics.
-	podsTarget := hpa.Spec.Metrics[1].Pods.Target
-	assert.NotNil(t, podsTarget.AverageValue)
-	assert.Equal(t, int64(2), podsTarget.AverageValue.Value())
+	// A pod metric target is a Quantity, so it keeps the fraction. Rounding
+	// gpu_cache_usage_perc's 0.5 up to 1 would leave a 0-1 metric that can never exceed
+	// its target.
+	for i, want := range []string{"500m", "1200m", "9223372036854774784"} {
+		podsTarget := hpa.Spec.Metrics[i+1].Pods.Target
+		if assert.NotNil(t, podsTarget.AverageValue) {
+			assert.Zero(t, podsTarget.AverageValue.Cmp(resource.MustParse(want)),
+				"%s target = %s, want %s", hpa.Spec.Metrics[i+1].Pods.Metric.Name, podsTarget.AverageValue, want)
+		}
+	}
 }
 
 func TestMakeHPARejectsTargetValueOverflow(t *testing.T) {
