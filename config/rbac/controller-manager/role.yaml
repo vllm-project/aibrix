@@ -15,6 +15,18 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - pods
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - secrets
   verbs:
   - get
@@ -82,13 +94,6 @@ rules:
   - update
   - watch
 - apiGroups:
-  - external.metrics.k8s.io
-  resources:
-  - '*'
-  verbs:
-  - get
-  - list
-- apiGroups:
   - autoscaling.aibrix.ai
   resources:
   - podautoscalers
@@ -115,16 +120,21 @@ rules:
   - patch
   - update
 - apiGroups:
-  - ""
+  - batch
   resources:
-  - namespaces
+  - jobs
   verbs:
+  - create
+  - delete
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - ""
   resources:
+  - namespaces
   - nodes
   verbs:
   - get
@@ -196,6 +206,13 @@ rules:
   - patch
   - update
 - apiGroups:
+  - external.metrics.k8s.io
+  resources:
+  - '*'
+  verbs:
+  - get
+  - list
+- apiGroups:
   - gateway.networking.k8s.io
   resources:
   - httproutes
@@ -207,6 +224,14 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - leaderworkerset.x-k8s.io
+  resources:
+  - leaderworkersets
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - model.aibrix.ai
@@ -239,18 +264,6 @@ rules:
   - get
   - patch
   - update
-- apiGroups:
-  - batch
-  resources:
-  - jobs
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
 - apiGroups:
   - orchestration.aibrix.ai
   resources:
@@ -341,27 +354,9 @@ rules:
   - watch
 - apiGroups:
   - scheduling.godel.kubewharf.io
-  resources:
-  - podgroups
-  verbs:
-  - '*'
-- apiGroups:
+  - scheduling.volcano.sh
   - scheduling.x-k8s.io
   resources:
   - podgroups
   verbs:
   - '*'
-- apiGroups:
-  - scheduling.volcano.sh
-  resources:
-  - podgroups
-  verbs:
-  - '*'
-- apiGroups:
-  - leaderworkerset.x-k8s.io
-  resources:
-  - leaderworkersets
-  verbs:
-  - get
-  - list
-  - watch
