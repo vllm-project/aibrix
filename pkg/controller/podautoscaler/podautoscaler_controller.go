@@ -989,8 +989,10 @@ func (r *PodAutoscalerReconciler) scaleCustomPA(ctx context.Context, pa *autosca
 		return ctrl.Result{}, fmt.Errorf("failed to get scaleObj for %s: %w", scaleReference, err)
 	}
 
-	// Step 2: Get current replicas from scale object
-	currentReplicas, err := r.workloadScaleClient.GetCurrentReplicasFromScale(ctx, pa, scaleObj)
+	// Step 2: Get current replicas from scale object. Scaling decisions start from the
+	// configured count, the one last written to the target, while status reports the
+	// observed count. See ReplicaCounts.
+	counts, err := r.workloadScaleClient.GetCurrentReplicasFromScale(ctx, pa, scaleObj)
 	if err != nil {
 		r.EventRecorder.Eventf(pa, corev1.EventTypeWarning, "FailedGetReplicas", "Error extracting replicas: %v", err)
 		setCondition(pa, "AbleToScale", metav1.ConditionFalse, "FailedGetReplicas", "unable to get current replicas: %v", err)
@@ -1003,9 +1005,10 @@ func (r *PodAutoscalerReconciler) scaleCustomPA(ctx context.Context, pa *autosca
 
 	// Step 3: Compute scaling decision with selector
 	// Pass ScaleTargetRef to handle special cases like RayClusterFleet
+	currentReplicas := counts.Configured
 	scaleDecision, err := r.computeScaleDecision(ctx, *pa, scaleObj, currentReplicas)
 	if err != nil {
-		setStatus(pa, currentReplicas, currentReplicas, false, ReasonFailedComputeScale, false, false, err)
+		setStatus(pa, counts.Observed, currentReplicas, false, ReasonFailedComputeScale, false, false, err)
 		// setStatus reports a held replica count as Stable. Say why it is held
 		// instead: like the HPA, a failure to compute a recommendation is
 		// ScalingActive=False, while AbleToScale keeps reporting the scale access.
@@ -1044,7 +1047,7 @@ func (r *PodAutoscalerReconciler) scaleCustomPA(ctx context.Context, pa *autosca
 	}
 
 	// Step 5: Update status
-	setStatus(pa, currentReplicas, scaleDecision.DesiredReplicas,
+	setStatus(pa, counts.Observed, scaleDecision.DesiredReplicas,
 		scaleDecision.ShouldScale, scaleDecision.Reason, scaleDecision.PendingReplicaGuardActive, scaleError == nil, scaleError)
 
 	if scaleError != nil {

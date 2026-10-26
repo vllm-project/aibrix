@@ -101,6 +101,8 @@ func TestGetCurrentReplicasFromScale(t *testing.T) {
 		pa    *autoscalingv1alpha1.PodAutoscaler
 		ss    *orchestrationv1alpha1.StormService
 		scale *unstructured.Unstructured
+		// observed is the expected observed count when it differs from the configured one.
+		observed *int32
 	}{
 		{
 			name: "llm_model_with_spec_replicas",
@@ -193,7 +195,8 @@ func TestGetCurrentReplicasFromScale(t *testing.T) {
 					},
 				},
 			},
-			scale: scaleStormService,
+			scale:    scaleStormService,
+			observed: ptr.To(expectedReplicas - 1),
 		},
 		{
 			name: "storm_service_with_template_spec_replicas",
@@ -299,12 +302,13 @@ func TestGetCurrentReplicasFromScale(t *testing.T) {
 					RoleStatuses: []orchestrationv1alpha1.RoleStatus{
 						{
 							Name:     "prefill",
-							Replicas: expectedReplicas + 1, // must not be reported either
+							Replicas: expectedReplicas + 1, // the pods that exist
 						},
 					},
 				},
 			},
-			scale: scaleStormService,
+			scale:    scaleStormService,
+			observed: ptr.To(expectedReplicas + 1),
 		},
 	}
 
@@ -321,10 +325,14 @@ func TestGetCurrentReplicasFromScale(t *testing.T) {
 
 			workloadScale := NewWorkloadScale(fakeClient, nil)
 
-			currentReplicas, err := workloadScale.GetCurrentReplicasFromScale(context.TODO(), tt.pa, tt.scale)
+			counts, err := workloadScale.GetCurrentReplicasFromScale(context.TODO(), tt.pa, tt.scale)
 
 			assert.NoError(t, err)
-			assert.Equal(t, expectedReplicas, currentReplicas)
+			observed := expectedReplicas
+			if tt.observed != nil {
+				observed = *tt.observed
+			}
+			assert.Equal(t, ReplicaCounts{Configured: expectedReplicas, Observed: observed}, counts)
 		})
 	}
 }
@@ -372,10 +380,10 @@ func TestGetCurrentReplicasReplicaModeNilReplicas(t *testing.T) {
 
 	workloadScale := NewWorkloadScale(fakeClient, nil)
 
-	currentReplicas, err := workloadScale.GetCurrentReplicasFromScale(context.TODO(), pa, scale)
+	counts, err := workloadScale.GetCurrentReplicasFromScale(context.TODO(), pa, scale)
 
 	assert.NoError(t, err)
-	assert.Equal(t, int32(1), currentReplicas)
+	assert.Equal(t, ReplicaCounts{Configured: 1, Observed: 1}, counts)
 }
 
 // inferredReplicaModeStormService builds a legacy StormService that omits
@@ -441,10 +449,10 @@ func TestGetCurrentReplicasInferredReplicaMode(t *testing.T) {
 	_ = orchestrationv1alpha1.AddToScheme(scheme)
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pa, ss).Build()
 
-	currentReplicas, err := NewWorkloadScale(fakeClient, nil).GetCurrentReplicasFromScale(context.TODO(), pa, scale)
+	counts, err := NewWorkloadScale(fakeClient, nil).GetCurrentReplicasFromScale(context.TODO(), pa, scale)
 
 	assert.NoError(t, err)
-	assert.Equal(t, int32(3), currentReplicas, "expected spec.replicas, not the role status aggregated across RoleSets")
+	assert.Equal(t, ReplicaCounts{Configured: 3, Observed: 3}, counts, "expected spec.replicas, not the role status aggregated across RoleSets")
 }
 
 // TestSetDesiredReplicasInferredReplicaMode is the write-side counterpart: the
@@ -908,9 +916,10 @@ func TestPooledScaleUpHeldByScaleDownWindowWhilePodsStart(t *testing.T) {
 	require.Equal(t, int32(6), r.stabilizeRecommendation(pa, scalingCtx, 6, 2))
 
 	now = base.Add(15 * time.Second)
-	current, err := NewWorkloadScale(fakeClient, nil).GetCurrentReplicasFromScale(context.TODO(), pa, scale)
+	counts, err := NewWorkloadScale(fakeClient, nil).GetCurrentReplicasFromScale(context.TODO(), pa, scale)
 	require.NoError(t, err)
-	assert.Equal(t, int32(6), current, "the role template, not the pods created so far")
-	assert.Equal(t, int32(6), r.stabilizeRecommendation(pa, scalingCtx, 3, current),
+	assert.Equal(t, ReplicaCounts{Configured: 6, Observed: 2}, counts,
+		"decisions start from the role template, status reports the pods created so far")
+	assert.Equal(t, int32(6), r.stabilizeRecommendation(pa, scalingCtx, 3, counts.Configured),
 		"the scale-down window still holds the recommendation of 6")
 }
