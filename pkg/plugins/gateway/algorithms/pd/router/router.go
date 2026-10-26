@@ -1230,12 +1230,14 @@ func (r *pdRouter) prefetchDecodeMetrics(ctx *types.RoutingContext, decodePods [
 			metricsReady: usesDecodeTokenLoad,
 		}
 		if r.cache != nil {
-			if tokenThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgGenerationThroughputToksPerS); err == nil && tokenThroughput != nil {
+			// A NaN or infinite gauge is treated like a missing one: either would make
+			// the shared maxima in decode scoring non-finite and every decode score NaN.
+			if tokenThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgGenerationThroughputToksPerS); err == nil && tokenThroughput != nil && isFinite(tokenThroughput.GetSimpleValue()) {
 				snap.throughput = tokenThroughput.GetSimpleValue()
 				snap.hasThroughput = true
 			}
 			kvUsageVal := float64(0)
-			if kvUsage, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.KVCacheUsagePerc); err == nil && kvUsage != nil {
+			if kvUsage, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.KVCacheUsagePerc); err == nil && kvUsage != nil && isFinite(kvUsage.GetSimpleValue()) {
 				kvUsageVal = kvUsage.GetSimpleValue()
 			}
 			freeGPU := math.Round(100 - kvUsageVal*100)
@@ -2446,6 +2448,11 @@ func podLabelMetricFloat(c cache.Cache, pod *v1.Pod, metricName string) (float64
 // and finite. The Prometheus text format accepts NaN and +Inf as values.
 func validKVCapacity(f float64) bool {
 	return f > 0 && !math.IsInf(f, 0) && !math.IsNaN(f)
+}
+
+// isFinite reports whether a scraped gauge value is neither NaN nor infinite.
+func isFinite(f float64) bool {
+	return !math.IsInf(f, 0) && !math.IsNaN(f)
 }
 
 // scaleByCapacity applies podKey's capacity factor (see decodeKVCapacities)
