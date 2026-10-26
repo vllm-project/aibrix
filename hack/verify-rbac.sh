@@ -20,15 +20,7 @@ set -o pipefail
 
 PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "${PROJECT_ROOT}"
-: "${CONTROLLER_GEN:?Run make verify-rbac or set CONTROLLER_GEN to the pinned generator}"
-
-# Generate separately so verification cannot overwrite the installed policy.
-TMP_RBAC=$(mktemp -d -t verify-rbac.XXXXXX)
-cleanup() {
-  rm -f "${TMP_RBAC}/role.yaml"
-  rmdir "${TMP_RBAC}"
-}
-trap cleanup EXIT
-
-"${CONTROLLER_GEN}" rbac:roleName=controller-manager-role paths="./..." "output:rbac:dir=${TMP_RBAC}"
-diff -u config/rbac/controller-manager/role.yaml "${TMP_RBAC}/role.yaml"
+# Like verify-crd-sync.sh, use the config prepared by make manifests.
+helm template aibrix-rbac-check ./dist/chart \
+  --show-only templates/controller-manager/rbac.yaml |
+  go run ./hack/verify-rbac config/rbac/controller-manager/role.yaml

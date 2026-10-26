@@ -122,8 +122,8 @@ update-codegen:
 verify: verify-codegen verify-crd verify-rbac
 
 .PHONY: verify-rbac
-verify-rbac: controller-gen ## Verify controller-manager RBAC matches its source markers.
-	CONTROLLER_GEN="$(CONTROLLER_GEN)" bash ./hack/verify-rbac.sh
+verify-rbac: ## Verify generated controller-manager RBAC matches the Helm chart.
+	bash ./hack/verify-rbac.sh
 
 .PHONY: verify-crd
 verify-crd:
