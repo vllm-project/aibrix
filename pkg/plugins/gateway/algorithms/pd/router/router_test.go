@@ -3416,6 +3416,7 @@ func TestRouteWithNaNDecodeMetric(t *testing.T) {
 				_, err := r.Route(ctx, &utils.PodArray{Pods: readyPods})
 				require.NoError(t, err)
 				require.NotNil(t, ctx.TargetPod())
+				ctx.Delete()
 			}
 		})
 	}

@@ -1042,7 +1042,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePodWithLedger(ctx *types.RoutingCont
 		// A NaN or infinite gauge is treated like a missing one: either would make
 		// the shared maxima below non-finite and every decode score NaN.
 		tokenThroughput, throughputErr := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgGenerationThroughputToksPerS)
-		if throughputErr != nil || !isFinite(tokenThroughput.GetSimpleValue()) {
+		if throughputErr != nil || tokenThroughput == nil || !isFinite(tokenThroughput.GetSimpleValue()) {
 			podThroughputs[podKey] = 0
 		} else {
 			throughput := tokenThroughput.GetSimpleValue()
@@ -1057,7 +1057,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePodWithLedger(ctx *types.RoutingCont
 
 		kvUsage, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.KVCacheUsagePerc)
 		kvUsageVal := float64(0)
-		if err == nil && isFinite(kvUsage.GetSimpleValue()) {
+		if err == nil && kvUsage != nil && isFinite(kvUsage.GetSimpleValue()) {
 			kvUsageVal = kvUsage.GetSimpleValue()
 		}
 		podFreeGpuUsage[podKey] = math.Round(100 - kvUsageVal*100)
