@@ -2346,6 +2346,58 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 			expectPodFreeGpuUsage:  map[string]float64{"pod1": 5, "pod2": 0.1}, // Minimum 0.1 when <= 0
 		},
 		{
+			name: "NaN KV usage - treated as a missing metric",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+			},
+			metricsMap: map[string]map[string]metrics.MetricValue{
+				"pod1": {
+					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 5},
+					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: math.NaN()},
+				},
+				"pod2": {
+					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 5},
+					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.3},
+				},
+			},
+			expectTargetPod:        "",
+			expectMaxRequestCount:  5,
+			expectMaxThroughput:    100,
+			expectMaxFreeGPUUsage:  100,
+			expectPodRequestCounts: map[string]float64{"pod1": 5, "pod2": 5},
+			expectPodThroughputs:   map[string]float64{"pod1": 100, "pod2": 100},
+			expectPodFreeGpuUsage:  map[string]float64{"pod1": 100, "pod2": 70},
+		},
+		{
+			name: "NaN and infinite throughput - treated as missing metrics",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "default", Labels: map[string]string{constants.ModelLabelName: "test-model"}}},
+			},
+			metricsMap: map[string]map[string]metrics.MetricValue{
+				"pod1": {
+					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 5},
+					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: math.NaN()},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.5},
+				},
+				"pod2": {
+					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 5},
+					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: math.Inf(1)},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.5},
+				},
+			},
+			expectTargetPod:        "",
+			expectMaxRequestCount:  5,
+			expectMaxThroughput:    1,
+			expectMaxFreeGPUUsage:  50,
+			expectPodRequestCounts: map[string]float64{"pod1": 5, "pod2": 5},
+			expectPodThroughputs:   map[string]float64{"pod1": 0, "pod2": 0},
+			expectPodFreeGpuUsage:  map[string]float64{"pod1": 50, "pod2": 50},
+		},
+		{
 			// pod1 has 8 running at 2.0 req/s → score=4s
 			// pod2 has 6 running at 0.3 req/s → score=20s
 			// ratio = 20/4 = 5.0 > 1.5 threshold → route to pod1 (lowest score)
@@ -3308,5 +3360,63 @@ func TestScoreDecodePods_VerboseSummaryPopulated(t *testing.T) {
 		for _, pod := range pods {
 			assert.Contains(t, match[1], pod.Name, "scored= should list every scored pod")
 		}
+	}
+}
+
+// A NaN gauge on one decode pod must not take the healthy decode pods out of
+// routing. If the NaN reached the shared maxima, every decode score would be
+// NaN and Route would fail.
+func TestRouteWithNaNDecodeMetric(t *testing.T) {
+	for name, metricName := range map[string]string{
+		"kv usage":   metrics.KVCacheUsagePerc,
+		"throughput": metrics.AvgGenerationThroughputToksPerS,
+	} {
+		t.Run(name, func(t *testing.T) {
+			prefillPod := burstPod("prefill-0", "prefill", "127.0.0.1")
+			decodeNaN := burstPod("decode-nan", "decode", "127.0.0.2")
+			decodeOK := burstPod("decode-ok", "decode", "127.0.0.3")
+			readyPods := []*v1.Pod{prefillPod, decodeNaN, decodeOK}
+
+			model := "nan-model"
+			healthy := func() map[string]metrics.MetricValue {
+				return map[string]metrics.MetricValue{
+					metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 1},
+					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 100},
+					metrics.KVCacheUsagePerc:                &metrics.SimpleMetricValue{Value: 0.3},
+				}
+			}
+			nanMetrics := healthy()
+			nanMetrics[metricName] = &metrics.SimpleMetricValue{Value: math.NaN()}
+			metricsMap := map[string]map[string]metrics.MetricValue{
+				decodeNaN.Name: nanMetrics,
+				decodeOK.Name:  healthy(),
+			}
+
+			gate := make(chan struct{})
+			close(gate)
+			client := &http.Client{Transport: &gatedTransport{gate: gate}}
+			tracker := pd.NewPrefillRequestTracker()
+			r := &pdRouter{
+				cache:                 cache.NewWithPodsMetricsForTest(readyPods, model, metricsMap),
+				prefillPolicy:         pd.NewLeastRequestPrefillPolicy(),
+				prefillRequestTracker: tracker,
+				pendingDecodeTracker:  pd.NewPendingDecodeTracker(),
+				httpClient:            client,
+				prefixUpdateCh:        make(chan prefixUpdateJob, 16),
+				selectionCounts:       map[string]int64{},
+			}
+			r.podSelector = selector.NewDefaultSelector(r.filterPrefillDecodePods)
+			r.prefillExecutor = prefill.NewDefaultExecutor(client, tracker)
+
+			for i := 0; i < 10; i++ {
+				ctx := types.NewRoutingContext(context.Background(), "pd", model, "hello", "nan-req", "user")
+				ctx.Engine = "vllm"
+				ctx.ReqPath = testChatCompletionsPath
+				ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
+				_, err := r.Route(ctx, &utils.PodArray{Pods: readyPods})
+				require.NoError(t, err)
+				require.NotNil(t, ctx.TargetPod())
+			}
+		})
 	}
 }
