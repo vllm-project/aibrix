@@ -18,6 +18,7 @@ package podautoscaler
 
 import (
 	"math"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -171,7 +172,7 @@ func TestMakeHPA(t *testing.T) {
 	assert.Equal(t, expectedHPA, actualHPA)
 }
 
-func TestMakeHPAFractionalTargetValueRoundsUp(t *testing.T) {
+func TestMakeHPAFractionalTargetValuePreserved(t *testing.T) {
 	pa := &autoscalingv1alpha1.PodAutoscaler{
 		ObjectMeta: v1.ObjectMeta{
 			Name:      "test-fractional-pa",
@@ -212,10 +213,37 @@ func TestMakeHPAFractionalTargetValueRoundsUp(t *testing.T) {
 	assert.NotNil(t, memoryTarget.AverageValue)
 	assert.Equal(t, int64(1*1024*1024), memoryTarget.AverageValue.Value())
 
-	// 1.2 -> 2 for pod metrics.
+	// Pod-metric AverageValue is a Quantity: fractions carry exactly, so 1.2
+	// becomes 1200m instead of rounding to 2.
 	podsTarget := hpa.Spec.Metrics[1].Pods.Target
 	assert.NotNil(t, podsTarget.AverageValue)
-	assert.Equal(t, int64(2), podsTarget.AverageValue.Value())
+	assert.InDelta(t, 1.2, podsTarget.AverageValue.AsApproximateFloat64(), 1e-12)
+}
+
+func TestMakeHPAFractionalPodMetricValues(t *testing.T) {
+	for _, targetValue := range []string{"0.5", "1.2", "0.0015", "0.0004"} {
+		pa := &autoscalingv1alpha1.PodAutoscaler{
+			ObjectMeta: v1.ObjectMeta{Name: "test-fractional-pa", Namespace: "default"},
+			Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+				ScaleTargetRef: corev1.ObjectReference{APIVersion: "apps/v1", Kind: "Deployment", Name: "test-llm"},
+				MinReplicas:    ptr.To(int32(1)),
+				MaxReplicas:    5,
+				MetricsSources: []autoscalingv1alpha1.MetricSource{{
+					MetricSourceType: autoscalingv1alpha1.POD,
+					TargetMetric:     "gpu_cache_usage_perc",
+					TargetValue:      targetValue,
+				}},
+			},
+		}
+
+		hpa, err := makeHPA(pa, context.NewBaseScalingContext())
+
+		assert.NoError(t, err)
+		assert.NotNil(t, hpa.Spec.Metrics[0].Pods.Target.AverageValue)
+		expected, _ := strconv.ParseFloat(targetValue, 64)
+		assert.InDelta(t, expected, hpa.Spec.Metrics[0].Pods.Target.AverageValue.AsApproximateFloat64(), 1e-12,
+			"targetValue %q must be preserved exactly", targetValue)
+	}
 }
 
 func TestMakeHPARejectsTargetValueOverflow(t *testing.T) {

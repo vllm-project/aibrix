@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	pav1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
@@ -122,7 +123,18 @@ func makeHPAWithBounds(pa *pav1.PodAutoscaler, scalingContext scalingctx.Scaling
 				})
 
 			default:
-				targetQuantity := resource.NewQuantity(int64(math.Ceil(targetValue)), resource.DecimalSI)
+				var targetQuantity *resource.Quantity
+				if targetValue == math.Trunc(targetValue) {
+					targetQuantity = resource.NewQuantity(int64(targetValue), resource.DecimalSI)
+				} else {
+					// AverageValue is a Quantity: carry fractions exactly
+					// (0.5 -> 500m) instead of rounding up.
+					q, err := resource.ParseQuantity(strconv.FormatFloat(targetValue, 'f', -1, 64))
+					if err != nil {
+						return nil, fmt.Errorf("failed to convert target value of the metric source: %w", err)
+					}
+					targetQuantity = &q
+				}
 				hpa.Spec.Metrics = append(hpa.Spec.Metrics, autoscalingv2.MetricSpec{
 					Type: autoscalingv2.PodsMetricSourceType,
 					Pods: &autoscalingv2.PodsMetricSource{
