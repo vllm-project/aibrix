@@ -1045,12 +1045,14 @@ func (r *pdRouter) loadImbalanceSelectDecodePodWithLedger(ctx *types.RoutingCont
 		} else {
 			throughput := tokenThroughput.GetSimpleValue()
 			podThroughputs[podKey] = throughput
-			if throughput < minObservedThroughput {
-				minObservedThroughput = throughput
-				minThroughputPod = pod
+			if !math.IsNaN(throughput) {
+				if throughput < minObservedThroughput {
+					minObservedThroughput = throughput
+					minThroughputPod = pod
+				}
+				maxObservedThroughput = math.Max(maxObservedThroughput, throughput)
+				maxThroughput = math.Max(maxThroughput, throughput)
 			}
-			maxObservedThroughput = math.Max(maxObservedThroughput, throughput)
-			maxThroughput = math.Max(maxThroughput, throughput)
 		}
 
 		kvUsage, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.KVCacheUsagePerc)
@@ -1059,7 +1061,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePodWithLedger(ctx *types.RoutingCont
 			kvUsageVal = kvUsage.GetSimpleValue()
 		}
 		podFreeGpuUsage[podKey] = math.Round(100 - kvUsageVal*100)
-		if podFreeGpuUsage[podKey] <= 0 {
+		if !(podFreeGpuUsage[podKey] > 0) {
 			podFreeGpuUsage[podKey] = 0.1
 		}
 		maxFreeGPUUsage = math.Max(maxFreeGPUUsage, podFreeGpuUsage[podKey])
