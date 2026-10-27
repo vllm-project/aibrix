@@ -140,3 +140,22 @@ func TestRejectMissingAmbiguousOrInvalidRoles(t *testing.T) {
 		})
 	}
 }
+
+func TestCompareUnrestrictedAndLiteralNames(t *testing.T) {
+	rule := "- apiGroups: ['']\n  resources: [pods]\n  verbs: [get]\n"
+	for _, name := range []string{"*", "<all>", ""} {
+		t.Run(name, func(t *testing.T) {
+			restricted := rule + "  resourceNames: ['" + name + "']\n"
+			require.ErrorContains(t, compare(strings.NewReader(roleDocument(rule)),
+				strings.NewReader(roleDocument(restricted))), "RBAC rules differ")
+		})
+	}
+}
+
+func TestCompareEmptyRoles(t *testing.T) {
+	empty := roleDocument("  []\n")
+	require.NoError(t, compare(strings.NewReader(empty), strings.NewReader(empty)))
+	for _, invalid := range []string{"", empty + "---\n" + empty, empty + "---\nkind: ["} {
+		require.Error(t, compare(strings.NewReader(empty), strings.NewReader(invalid)))
+	}
+}

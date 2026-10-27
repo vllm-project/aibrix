@@ -18,6 +18,7 @@ limitations under the License.
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -38,73 +39,54 @@ type policyRule struct {
 	Unknown         map[string]any `yaml:",inline"`
 }
 
-type clusterRole struct {
-	APIVersion string `yaml:"apiVersion"`
-	Kind       string `yaml:"kind"`
-	Metadata   struct {
-		Name string `yaml:"name"`
-	} `yaml:"metadata"`
-	Rules           []policyRule `yaml:"rules"`
-	AggregationRule any          `yaml:"aggregationRule"`
-}
-
-// A tuple preserves name restrictions and distinguishes resource permissions
-// from non-resource URL permissions. Wildcards remain literal: comparing them
-// with individual resources would require a cluster's API discovery data.
-type permission struct {
-	group, resource, verb, name, url string
-	allNames                         bool
-}
-
-func (p permission) String() string {
-	if p.url != "" {
-		return fmt.Sprintf("url=%q verb=%q", p.url, p.verb)
-	}
-	name := "<all>"
-	if !p.allNames {
-		name = strconv.Quote(p.name)
-	}
-	return fmt.Sprintf("group=%q resource=%q verb=%q name=%s", p.group, p.resource, p.verb, name)
-}
-
-func readRole(input io.Reader) (*clusterRole, error) {
+func permissions(input io.Reader) (map[string]struct{}, error) {
 	decoder := yaml.NewDecoder(input)
-	var role *clusterRole
+	var result map[string]struct{}
 	for {
-		var document yaml.Node
+		var document struct {
+			APIVersion string `yaml:"apiVersion"`
+			Kind       string `yaml:"kind"`
+			Metadata   struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
+			Rules           yaml.Node `yaml:"rules"`
+			AggregationRule any       `yaml:"aggregationRule"`
+		}
 		if err := decoder.Decode(&document); errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
 			return nil, err
 		}
-		var header struct{ Kind string }
-		if err := document.Decode(&header); err != nil {
-			return nil, err
-		}
-		if header.Kind != "ClusterRole" {
+		if document.Kind != "ClusterRole" {
 			continue
 		}
-		if role != nil {
+		if result != nil {
 			return nil, errors.New("expected exactly one ClusterRole, found more than one")
 		}
-		role = &clusterRole{}
-		if err := document.Decode(role); err != nil {
+		if document.APIVersion != "rbac.authorization.k8s.io/v1" || document.Metadata.Name == "" {
+			return nil, errors.New("expected a named rbac.authorization.k8s.io/v1 ClusterRole")
+		}
+		if document.AggregationRule != nil {
+			return nil, errors.New("aggregated ClusterRoles cannot be compared without a cluster")
+		}
+		var rules []policyRule
+		if err := document.Rules.Decode(&rules); err != nil {
 			return nil, err
 		}
+		result = make(map[string]struct{})
+		for i, rule := range rules {
+			if err := addRule(result, rule); err != nil {
+				return nil, fmt.Errorf("rule %d: %w", i+1, err)
+			}
+		}
 	}
-	if role == nil {
+	if result == nil {
 		return nil, errors.New("expected exactly one ClusterRole, found none")
 	}
-	if role.APIVersion != "rbac.authorization.k8s.io/v1" || role.Metadata.Name == "" {
-		return nil, errors.New("expected a named rbac.authorization.k8s.io/v1 ClusterRole")
-	}
-	if role.AggregationRule != nil {
-		return nil, errors.New("aggregated ClusterRoles cannot be compared without a cluster")
-	}
-	return role, nil
+	return result, nil
 }
 
-func addRule(result map[permission]struct{}, rule policyRule) error {
+func addRule(result map[string]struct{}, rule policyRule) error {
 	if len(rule.Unknown) != 0 || len(rule.Verbs) == 0 {
 		return errors.New("rule has unknown fields or no verbs")
 	}
@@ -117,7 +99,7 @@ func addRule(result map[permission]struct{}, rule policyRule) error {
 				return errors.New("rule has an empty non-resource URL")
 			}
 			for _, verb := range rule.Verbs {
-				result[permission{url: url, verb: verb}] = struct{}{}
+				result[fmt.Sprintf("url=%q verb=%q", url, verb)] = struct{}{}
 			}
 		}
 		return nil
@@ -125,16 +107,20 @@ func addRule(result map[permission]struct{}, rule policyRule) error {
 	if len(rule.APIGroups) == 0 || len(rule.Resources) == 0 {
 		return errors.New("resource rule has no API groups or resources")
 	}
-	names := rule.ResourceNames
-	if len(names) == 0 {
-		names = []string{""}
+	// Quote explicit names so a literal "*" or "<all>" cannot mean unrestricted.
+	// Wildcards stay literal; expanding them would require API discovery.
+	names := []string{"<all>"}
+	if len(rule.ResourceNames) != 0 {
+		names = make([]string, len(rule.ResourceNames))
+		for i, name := range rule.ResourceNames {
+			names[i] = strconv.Quote(name)
+		}
 	}
 	for _, group := range rule.APIGroups {
 		for _, resource := range rule.Resources {
 			for _, verb := range rule.Verbs {
 				for _, name := range names {
-					key := permission{group: group, resource: resource, verb: verb, name: name}
-					key.allNames = len(rule.ResourceNames) == 0
+					key := fmt.Sprintf("group=%q resource=%q verb=%q name=%s", group, resource, verb, name)
 					result[key] = struct{}{}
 				}
 			}
@@ -143,25 +129,11 @@ func addRule(result map[permission]struct{}, rule policyRule) error {
 	return nil
 }
 
-func permissions(input io.Reader) (map[permission]struct{}, error) {
-	role, err := readRole(input)
-	if err != nil {
-		return nil, err
-	}
-	result := make(map[permission]struct{})
-	for i, rule := range role.Rules {
-		if err := addRule(result, rule); err != nil {
-			return nil, fmt.Errorf("rule %d: %w", i+1, err)
-		}
-	}
-	return result, nil
-}
-
-func difference(left, right map[permission]struct{}) []string {
+func difference(left, right map[string]struct{}) []string {
 	var missing []string
 	for p := range left {
 		if _, found := right[p]; !found {
-			missing = append(missing, p.String())
+			missing = append(missing, p)
 		}
 	}
 	slices.Sort(missing)
@@ -190,12 +162,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: verify-rbac CONFIG_ROLE < HELM_RENDERED_YAML")
 		os.Exit(2)
 	}
-	config, err := os.Open(os.Args[1])
+	config, err := os.ReadFile(os.Args[1])
 	if err == nil {
-		err = compare(config, os.Stdin)
-		if closeErr := config.Close(); err == nil {
-			err = closeErr
-		}
+		err = compare(bytes.NewReader(config), os.Stdin)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
