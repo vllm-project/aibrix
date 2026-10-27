@@ -851,10 +851,13 @@ func TestReconcileOwnRunningRequests_ForgetsPodsThatLeftTheCache(t *testing.T) {
 }
 
 // driftReadHook watches the HMGET pipelines reconcileOwnRunningRequests sends: it records the
-// largest one and fails the next failNext of them.
+// largest one, runs onRead (if set) as the read goes out -- after the pass has sampled the
+// local count, before Redis answers, which is where real traffic lands on a slow Redis -- and
+// fails the next failNext of them.
 type driftReadHook struct {
 	maxPipelineLen atomic.Int64
 	failNext       atomic.Int64
+	onRead         func()
 }
 
 func (h *driftReadHook) DialHook(next redis.DialHook) redis.DialHook { return next }
@@ -866,6 +869,9 @@ func (h *driftReadHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redi
 		if len(cmds) > 0 && cmds[0].Name() == "hmget" {
 			if n := int64(len(cmds)); n > h.maxPipelineLen.Load() {
 				h.maxPipelineLen.Store(n)
+			}
+			if h.onRead != nil {
+				h.onRead()
 			}
 			if h.failNext.Load() > 0 {
 				h.failNext.Add(-1)
@@ -944,6 +950,65 @@ func TestReconcileOwnRunningRequests_FailedBatchKeepsDriftState(t *testing.T) {
 	reconcilePasses(store, 1)
 	require.Zero(t, countDriftedFields(t, client, n))
 	require.Empty(t, store.runningRequestsDrift)
+}
+
+// A request starting during the Redis read moves the local count and then the field, so the
+// pass sees them apart by that request even though nothing has drifted. Sustained across the
+// confirmation window (a load ramp) that gap used to survive and be "corrected" into a real
+// error: the field ended one below the local count.
+func TestReconcileOwnRunningRequests_IgnoresTrafficThatMovesDuringTheRead(t *testing.T) {
+	ctx := context.Background()
+	store, client, key := newTestReconcileStore(t, 5)
+	own := runningRequestsGatewayInstanceID
+	require.NoError(t, client.HSet(ctx, key, own, "5").Err()) // field == local: no drift
+	pod, ok := store.metaPods.Load(testNamespace + "/" + testPodName)
+	require.True(t, ok)
+	hook := &driftReadHook{onRead: func() {
+		atomic.AddInt32(&pod.runningRequests, 1)
+		require.NoError(t, client.HIncrBy(ctx, key, own, 1).Err())
+	}}
+	client.AddHook(hook)
+
+	reconcilePasses(store, 3*runningRequestsDriftConfirmPasses)
+
+	got, err := client.HGet(ctx, key, own).Result()
+	require.NoError(t, err)
+	require.Equal(t, strconv.Itoa(int(atomic.LoadInt32(&pod.runningRequests))), got,
+		"the field tracked the local count throughout; no correction should have been applied")
+}
+
+// A pass that could not take a clean sample neither advances nor resets a pod's confirmation:
+// real drift keeps counting on the clean passes around it.
+func TestReconcileOwnRunningRequests_UnsampledPassKeepsDriftProgress(t *testing.T) {
+	ctx := context.Background()
+	store, client, key := newTestReconcileStore(t, 0)
+	own := runningRequestsGatewayInstanceID
+	require.NoError(t, client.HSet(ctx, key, own, "2").Err()) // a leaked count
+	pod, ok := store.metaPods.Load(testNamespace + "/" + testPodName)
+	require.True(t, ok)
+	hook := &driftReadHook{}
+	client.AddHook(hook)
+
+	reconcilePasses(store, runningRequestsDriftConfirmPasses-1)
+	require.Len(t, store.runningRequestsDrift, 1)
+
+	// A request starts during the read, so this pass has no clean sample. It must not be the
+	// confirming pass: counted, it would correct now, and against the moved local count.
+	hook.onRead = func() { atomic.StoreInt32(&pod.runningRequests, 1) }
+	reconcilePasses(store, 1)
+	hook.onRead = nil
+	got, err := client.HGet(ctx, key, own).Result()
+	require.NoError(t, err)
+	require.Equal(t, "2", got, "an unsampled pass must not count toward confirmation")
+	require.Len(t, store.runningRequestsDrift, 1, "nor may it discard the progress made so far")
+
+	// The request finishes. One clean pass is now the confirming one; had the unsampled pass
+	// reset the state, it would take five more.
+	atomic.StoreInt32(&pod.runningRequests, 0)
+	reconcilePasses(store, 1)
+	got, err = client.HGet(ctx, key, own).Result()
+	require.NoError(t, err)
+	require.Equal(t, "0", got)
 }
 
 func TestReconcileOwnRunningRequests_NoRedisIsNoOp(t *testing.T) {

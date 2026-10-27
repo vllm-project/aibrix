@@ -558,7 +558,11 @@ func (s runningRequestsDriftState) observe(redisCount, local int64) (runningRequ
 // the async writes leave the two apart for a few milliseconds around every request. So a
 // pod is only corrected once the difference has held in one direction for
 // runningRequestsDriftConfirmPasses passes (see runningRequestsDriftState), and only by
-// the part that never closed.
+// the part that never closed. The local count is read just before and just after each
+// batch's Redis read, and a pod whose count moved in between is not sampled that pass --
+// it keeps the progress it had, neither advanced nor reset. Without that, traffic arriving
+// or finishing during the round trip lands on one side of the comparison only, and under a
+// steady ramp it would look like a gap that never closes.
 //
 // The correction is applied with runningRequestsIncrDecrScript, the same unconditional
 // HINCRBY every ordinary +1/-1 uses, not a write of the local count and not one guarded
@@ -580,17 +584,12 @@ func (c *Store) reconcileOwnRunningRequests() {
 		return
 	}
 	type sample struct {
-		pod   *Pod
-		key   string
-		local int64
+		pod *Pod
+		key string
 	}
 	var samples []sample
 	c.metaPods.Range(func(_ string, pod *Pod) bool {
-		samples = append(samples, sample{
-			pod:   pod,
-			key:   runningRequestsKey(pod.Namespace, pod.Name),
-			local: int64(atomic.LoadInt32(&pod.runningRequests)),
-		})
+		samples = append(samples, sample{pod: pod, key: runningRequestsKey(pod.Namespace, pod.Name)})
 		return true
 	})
 	if len(samples) == 0 {
@@ -600,6 +599,7 @@ func (c *Store) reconcileOwnRunningRequests() {
 
 	type correction struct {
 		sample
+		local    int64
 		observed int64
 		delta    int64
 	}
@@ -624,9 +624,13 @@ func (c *Store) reconcileOwnRunningRequests() {
 			batchEnd = len(samples)
 		}
 		batch := samples[batchStart:batchEnd]
+		// The local count is read here, per batch, and again after the pipeline returns: a
+		// count taken once up front would be as old as every batch read before this one.
+		before := make([]int64, len(batch))
 		pipe := c.redisClient.Pipeline()
 		reads := make([]*redis.SliceCmd, len(batch))
 		for i, s := range batch {
+			before[i] = int64(atomic.LoadInt32(&s.pod.runningRequests))
 			reads[i] = pipe.HMGet(readCtx, s.key, runningRequestsGatewayInstanceID)
 		}
 		if _, err := pipe.Exec(readCtx); err != nil {
@@ -652,9 +656,18 @@ func (c *Store) reconcileOwnRunningRequests() {
 				}
 				observed = n
 			}
-			state, delta := c.runningRequestsDrift[s.key].observe(observed, s.local)
+			// A request that started or finished during the read moved the local count and,
+			// a moment later, the field, so the two were never measured at the same instant
+			// and their gap is that traffic, not drift. Sustained across passes (a load
+			// ramp) it would survive confirmation and be "corrected" into a real error.
+			local := int64(atomic.LoadInt32(&s.pod.runningRequests))
+			if local != before[i] {
+				keepState(s.key)
+				continue
+			}
+			state, delta := c.runningRequestsDrift[s.key].observe(observed, local)
 			if delta != 0 {
-				corrections = append(corrections, correction{sample: s, observed: observed, delta: delta})
+				corrections = append(corrections, correction{sample: s, local: local, observed: observed, delta: delta})
 			} else if state.passes > 0 {
 				next[s.key] = state
 			}
