@@ -133,9 +133,9 @@ func (r *ModelClaimReconciler) wakeRequested(
 		}
 		ledgers := podLedgersFrom(claims, listErr, pods, readings.ofPods(ctx, pods), r.podsWithoutWakeReserve(ctx, pods))
 		// A priority-preemption reservation is room already promised to the
-		// preemptor. A wake waits rather than consuming it; once the reservation
-		// is released or expires, ordinary wake admission resumes.
-		r.reservations().takePreemptionsFrom(ledgers, pm.Namespace, r.now())
+		// preemptor. Equal- and lower-priority wakes wait rather than consuming
+		// it; a strictly higher-priority wake keeps its ordinary admission.
+		r.reservations().takePreemptionsFrom(ledgers, claims, pm, r.now())
 		return ledgers
 	}
 	for i := range pm.Status.Instances {
@@ -188,7 +188,7 @@ func (r *ModelClaimReconciler) wakeRequested(
 		}
 		turn := wakeNow
 		if ledger.judgeable {
-			turn, ledger = r.wakeTurnOn(ctx, pm, pod, ledger, readings)
+			turn, ledger = r.wakeTurnOn(ctx, pm, pod, ledger, claims, readings)
 		}
 		if turn != wakeNow {
 			// The card has no room for it. Its neighbours' floors leave none,
@@ -325,6 +325,7 @@ func (r *ModelClaimReconciler) wakeTurnOn(
 	waker *modelv1alpha1.ModelClaim,
 	pod *corev1.Pod,
 	ledger podLedger,
+	claims *modelv1alpha1.ModelClaimList,
 	readings *runtimeReadings,
 ) (wakeTurn, podLedger) {
 	asleep := map[string]bool{}
@@ -357,10 +358,12 @@ func (r *ModelClaimReconciler) wakeTurnOn(
 	for _, req := range requests {
 		withIt := judged.withWakeReserve(req.claim, true)
 		turn := wakeCannotFit
+		priority, priorityKnown := modelClaimPriority(claims, pod.Namespace, req.claim)
 		switch {
 		case withIt.maximumRoomBytes() >= 0 && withIt.heldRoomBytes() >= 0:
 			turn = wakeNow
-		case canMakeRoom && r.sleepsMakeRoom(withIt, idle, 0):
+		case canMakeRoom && priorityKnown && r.sleepsMakeRoom(
+			withIt, idleEnginesAtOrBelowPriority(idle, priority), 0):
 			turn = wakeMakesRoom
 			if roomMade {
 				turn = wakeWaitsBehind
@@ -439,7 +442,7 @@ func (r *ModelClaimReconciler) sleepToMakeRoom(
 	if !can {
 		return false
 	}
-	idle := r.idleEngines(ctx, waker, pod, lifecycle.sleepToMakeRoomAfter(), readings)
+	idle := r.wakeIdleEngines(ctx, waker, pod, lifecycle.sleepToMakeRoomAfter(), readings)
 	return len(idle) > 0 && r.putIdleEngineToSleep(ctx, idle[0], pod, waker, readings)
 }
 
@@ -511,6 +514,33 @@ type idleEngine struct {
 	model     RuntimeSnapshotModel
 	port      int32
 	idleSince time.Time
+}
+
+// wakeIdleEngines lists the idle engines whose claims a wake may put to sleep
+// to make room. A wake cannot displace a strictly higher-priority claim;
+// eligible equal- and lower-priority engines retain the ordinary idle order.
+func (r *ModelClaimReconciler) wakeIdleEngines(
+	ctx context.Context,
+	waker *modelv1alpha1.ModelClaim,
+	pod *corev1.Pod,
+	idleFor time.Duration,
+	readings *runtimeReadings,
+) []idleEngine {
+	if waker == nil {
+		return nil
+	}
+	idle := r.idleEngines(ctx, waker, pod, idleFor, readings)
+	return idleEnginesAtOrBelowPriority(idle, waker.Spec.Priority)
+}
+
+func idleEnginesAtOrBelowPriority(idle []idleEngine, priority int32) []idleEngine {
+	eligible := make([]idleEngine, 0, len(idle))
+	for _, engine := range idle {
+		if engine.claim.Spec.Priority <= priority {
+			eligible = append(eligible, engine)
+		}
+	}
+	return eligible
 }
 
 // idleEngines lists the engines on a pod that may be put to sleep to make room
