@@ -389,3 +389,30 @@ func TestInitGatewaySnapshotSync_PublishesNothingBeforeFirstSuccessfulScan(t *te
 	require.Eventually(t, func() bool { return store.gatewaySnapshotCache.Load() != nil },
 		2*time.Second, 20*time.Millisecond)
 }
+
+// A hash under the snapshot prefix that lacks its namespace or pod_name (written by another
+// tool, or malformed) has no pod to attach to; grouping it would put keys like "/" in the cache.
+func TestInitGatewaySnapshotSync_SkipsSnapshotsMissingPodIdentity(t *testing.T) {
+	ctx := context.Background()
+	store, client, _, remoteKey := newSnapshotSyncUnderTest(t)
+	require.Eventually(t, func() bool { v, ok := cachedRemoteRunning(store); return ok && v == "2" },
+		2*time.Second, 20*time.Millisecond)
+
+	for gw, fields := range map[string]map[string]any{
+		"gw-bad-none":      {"gateway_instance_id": "gw-bad-none", "requests_running": "1"},
+		"gw-bad-no-pod":    {"gateway_instance_id": "gw-bad-no-pod", "namespace": testNamespace, "requests_running": "1"},
+		"gw-bad-no-ns":     {"gateway_instance_id": "gw-bad-no-ns", "pod_name": testPodName, "requests_running": "1"},
+		"gw-bad-empty-val": {"gateway_instance_id": "gw-bad-empty-val", "namespace": "", "pod_name": "", "requests_running": "1"},
+	} {
+		require.NoError(t, client.HSet(ctx, gatewayPodSnapshotKey(gw, testNamespace, testPodName), fields).Err())
+	}
+	// The scan that sees this value also sees every malformed hash above, written before it.
+	setRemoteRunning(t, client, remoteKey, "3")
+	require.Eventually(t, func() bool { v, ok := cachedRemoteRunning(store); return ok && v == "3" },
+		2*time.Second, 20*time.Millisecond)
+
+	cache := store.gatewaySnapshotCache.Load().(map[string][]map[string]string)
+	require.Len(t, cache, 1, "only the well-formed snapshot is grouped; got keys %v", cache)
+	require.Contains(t, cache, utils.GeneratePodKey(testNamespace, testPodName))
+	require.Len(t, cache[utils.GeneratePodKey(testNamespace, testPodName)], 1)
+}

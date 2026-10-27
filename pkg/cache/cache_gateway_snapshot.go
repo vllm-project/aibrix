@@ -157,9 +157,16 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 
 					// Keyed by pod key (namespace/name) → list of per-gateway snapshots so consumers
 					// can look up all snapshots for a pod in O(1) without scanning the full cache.
+					// A hash under the snapshot prefix that lacks either field was not written by a
+					// gateway (or is malformed); it has no pod to attach to, so grouping it would only
+					// add a bogus key such as "/".
 					newCache := make(map[string][]map[string]string, len(newRaw))
 					for _, fields := range newRaw {
-						pKey := utils.GeneratePodKey(fields["namespace"], fields["pod_name"])
+						namespace, podName := fields["namespace"], fields["pod_name"]
+						if namespace == "" || podName == "" {
+							continue
+						}
+						pKey := utils.GeneratePodKey(namespace, podName)
 						newCache[pKey] = append(newCache[pKey], fields)
 					}
 
