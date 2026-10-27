@@ -19,6 +19,7 @@ package cache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strconv"
@@ -846,6 +847,102 @@ func TestReconcileOwnRunningRequests_ForgetsPodsThatLeftTheCache(t *testing.T) {
 
 	store.metaPods.Delete(testNamespace + "/" + testPodName)
 	reconcilePasses(store, 1)
+	require.Empty(t, store.runningRequestsDrift)
+}
+
+// driftReadHook watches the HMGET pipelines reconcileOwnRunningRequests sends: it records the
+// largest one and fails the next failNext of them.
+type driftReadHook struct {
+	maxPipelineLen atomic.Int64
+	failNext       atomic.Int64
+}
+
+func (h *driftReadHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *driftReadHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook { return next }
+
+func (h *driftReadHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		if len(cmds) > 0 && cmds[0].Name() == "hmget" {
+			if n := int64(len(cmds)); n > h.maxPipelineLen.Load() {
+				h.maxPipelineLen.Store(n)
+			}
+			if h.failNext.Load() > 0 {
+				h.failNext.Add(-1)
+				return errors.New("injected read failure")
+			}
+		}
+		return next(ctx, cmds)
+	}
+}
+
+// newTestDriftedFleet is a store with n pods, each holding a Redis field of 2 against a local
+// count of 0 -- a leaked count on every pod -- behind a driftReadHook.
+func newTestDriftedFleet(t *testing.T, n int) (*Store, *redis.Client, *driftReadHook) {
+	t.Helper()
+	client := newTestRunningRequestsClient(t)
+	hook := &driftReadHook{}
+	client.AddHook(hook)
+	store := &Store{redisClient: client}
+	for i := 0; i < n; i++ {
+		pod := newTestPod(0)
+		pod.Name = fmt.Sprintf("pod-drift-%d", i)
+		store.metaPods.Store(testNamespace+"/"+pod.Name, pod)
+		require.NoError(t, client.HSet(context.Background(),
+			runningRequestsKey(testNamespace, pod.Name), runningRequestsGatewayInstanceID, "2").Err())
+	}
+	return store, client, hook
+}
+
+// countDriftedFields is how many of the n pods' own fields still hold the leaked count.
+func countDriftedFields(t *testing.T, client *redis.Client, n int) int {
+	t.Helper()
+	drifted := 0
+	for i := 0; i < n; i++ {
+		got, err := client.HGet(context.Background(),
+			runningRequestsKey(testNamespace, fmt.Sprintf("pod-drift-%d", i)), runningRequestsGatewayInstanceID).Result()
+		require.NoError(t, err)
+		if got == "2" {
+			drifted++
+		}
+	}
+	return drifted
+}
+
+// A large pod set must be read in bounded pipelines, and every batch's pods must still be
+// corrected, not only the first.
+func TestReconcileOwnRunningRequests_ReadsPodsInBoundedBatches(t *testing.T) {
+	n := runningRequestsDriftReadBatchSize + 50
+	store, client, hook := newTestDriftedFleet(t, n)
+
+	reconcilePasses(store, runningRequestsDriftConfirmPasses)
+
+	require.EqualValues(t, runningRequestsDriftReadBatchSize, hook.maxPipelineLen.Load())
+	require.Zero(t, countDriftedFields(t, client, n))
+}
+
+// A batch whose read fails says nothing about whether its pods' gaps closed, so those pods
+// keep the confirmation progress they had instead of starting over -- while the other
+// batch carries on.
+func TestReconcileOwnRunningRequests_FailedBatchKeepsDriftState(t *testing.T) {
+	n := runningRequestsDriftReadBatchSize + 50
+	store, client, hook := newTestDriftedFleet(t, n)
+
+	reconcilePasses(store, runningRequestsDriftConfirmPasses-1)
+	require.Len(t, store.runningRequestsDrift, n)
+
+	// The confirming pass loses one batch (which one depends on map iteration order).
+	hook.failNext.Store(1)
+	reconcilePasses(store, 1)
+	left := countDriftedFields(t, client, n)
+	require.Contains(t, []int{50, runningRequestsDriftReadBatchSize}, left,
+		"exactly the failed batch's pods stay uncorrected")
+	require.Len(t, store.runningRequestsDrift, left,
+		"the failed batch's pods keep their progress; the corrected ones are done")
+
+	// One clean pass finishes them; restarting the confirmation would take five.
+	reconcilePasses(store, 1)
+	require.Zero(t, countDriftedFields(t, client, n))
 	require.Empty(t, store.runningRequestsDrift)
 }
 

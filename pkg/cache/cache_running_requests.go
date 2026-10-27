@@ -86,6 +86,11 @@ const (
 	// increment/decrement writes make the two disagree for a few milliseconds around
 	// every request; drift is a gap that outlives them.
 	runningRequestsDriftConfirmPasses = 5
+	// runningRequestsDriftReadBatchSize limits how many HMGET commands share one pipeline
+	// Exec in reconcileOwnRunningRequests, for the same reason as
+	// gatewaySnapshotHGetAllBatchSize: one pipeline over every pod blocks Redis and spikes
+	// client memory in a large cluster.
+	runningRequestsDriftReadBatchSize = 100
 )
 
 // runningRequestsReadTimeout bounds each read (GetPodRunningRequests /
@@ -567,7 +572,9 @@ func (s runningRequestsDriftState) observe(redisCount, local int64) (runningRequ
 //
 // Runs from the hygiene pass, which runningRequestsHygieneBusy keeps to one at a time,
 // so runningRequestsDrift needs no lock. Best-effort: a failed read or write is retried
-// on the next pass.
+// on the next pass. The reads go out in batches of runningRequestsDriftReadBatchSize so a
+// large pod set does not become one huge pipeline, and a pod whose batch failed keeps the
+// drift progress it had rather than starting its confirmation over.
 func (c *Store) reconcileOwnRunningRequests() {
 	if c.redisClient == nil {
 		return
@@ -591,18 +598,6 @@ func (c *Store) reconcileOwnRunningRequests() {
 		return
 	}
 
-	readCtx, cancelRead := context.WithTimeout(context.Background(), runningRequestsWriteTimeout)
-	defer cancelRead()
-	pipe := c.redisClient.Pipeline()
-	reads := make([]*redis.SliceCmd, len(samples))
-	for i, s := range samples {
-		reads[i] = pipe.HMGet(readCtx, s.key, runningRequestsGatewayInstanceID)
-	}
-	if _, err := pipe.Exec(readCtx); err != nil {
-		klog.V(4).ErrorS(err, "failed to read own running-requests fields for drift check", "pod_count", len(samples))
-		return
-	}
-
 	type correction struct {
 		sample
 		observed int64
@@ -611,24 +606,58 @@ func (c *Store) reconcileOwnRunningRequests() {
 	var corrections []correction
 	// Rebuilt every pass so a pod that left the cache does not keep a stale entry.
 	next := make(map[string]runningRequestsDriftState, len(c.runningRequestsDrift))
-	for i, s := range samples {
-		fields, err := reads[i].Result()
-		if err != nil || len(fields) != 1 {
+	// A pod this pass could not observe keeps the progress it had: a read that fails says
+	// nothing about whether the gap closed, so it must not restart the confirmation.
+	keepState := func(key string) {
+		if state, ok := c.runningRequestsDrift[key]; ok {
+			next[key] = state
+		}
+	}
+
+	// One context for every batch, so a slow Redis bounds the whole read phase rather than
+	// each batch in turn; batches past the deadline fail fast and keep their state.
+	readCtx, cancelRead := context.WithTimeout(context.Background(), runningRequestsWriteTimeout)
+	defer cancelRead()
+	for batchStart := 0; batchStart < len(samples); batchStart += runningRequestsDriftReadBatchSize {
+		batchEnd := batchStart + runningRequestsDriftReadBatchSize
+		if batchEnd > len(samples) {
+			batchEnd = len(samples)
+		}
+		batch := samples[batchStart:batchEnd]
+		pipe := c.redisClient.Pipeline()
+		reads := make([]*redis.SliceCmd, len(batch))
+		for i, s := range batch {
+			reads[i] = pipe.HMGet(readCtx, s.key, runningRequestsGatewayInstanceID)
+		}
+		if _, err := pipe.Exec(readCtx); err != nil {
+			klog.V(4).ErrorS(err, "failed to read own running-requests fields for drift check; keeping previous drift state for this batch",
+				"batchStart", batchStart, "batchLen", len(batch))
+			for _, s := range batch {
+				keepState(s.key)
+			}
 			continue
 		}
-		var observed int64 // an absent field or hash counts as zero
-		if raw, ok := fields[0].(string); ok {
-			n, parseErr := strconv.ParseInt(raw, 10, 64)
-			if parseErr != nil {
+		for i, s := range batch {
+			fields, err := reads[i].Result()
+			if err != nil || len(fields) != 1 {
+				keepState(s.key)
 				continue
 			}
-			observed = n
-		}
-		state, delta := c.runningRequestsDrift[s.key].observe(observed, s.local)
-		if delta != 0 {
-			corrections = append(corrections, correction{sample: s, observed: observed, delta: delta})
-		} else if state.passes > 0 {
-			next[s.key] = state
+			var observed int64 // an absent field or hash counts as zero
+			if raw, ok := fields[0].(string); ok {
+				n, parseErr := strconv.ParseInt(raw, 10, 64)
+				if parseErr != nil {
+					keepState(s.key)
+					continue
+				}
+				observed = n
+			}
+			state, delta := c.runningRequestsDrift[s.key].observe(observed, s.local)
+			if delta != 0 {
+				corrections = append(corrections, correction{sample: s, observed: observed, delta: delta})
+			} else if state.passes > 0 {
+				next[s.key] = state
+			}
 		}
 	}
 	c.runningRequestsDrift = next
