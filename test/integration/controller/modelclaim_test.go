@@ -675,6 +675,48 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 			fixture.ExpectEvent(low, corev1.EventTypeNormal, "PreemptedBySleep")
 		})
 
+		ginkgo.It("keeps a lower-priority victim wake from sleeping priority claims", func() {
+			fixture.Runtime().SetDefaultState("active", true)
+			fixture.Runtime().SetCard(5 << 30)
+			fixture.Runtime().SetSleepingFootprint(256 << 20)
+			pod := fixture.CreatePoolPod(ns.Name, "pool-wake-priority", "pool-wake-priority",
+				`{"lifecycle":{"noWakeReserveWhileAsleep":true,"sleepToMakeRoomAfterSeconds":1}}`)
+			low := createClaim("wake-low", "pool-wake-priority", "1Gi", "1Gi", 1, "")
+			equal := createClaim("wake-equal", "pool-wake-priority", "1Gi", "1Gi", 10, "")
+			waitActive(low)
+			waitActive(equal)
+			high := createClaim("wake-high", "pool-wake-priority", "1Gi", "1Gi", 10,
+				modelapi.ModelClaimPreemptionSleepLowerPriority)
+
+			waitActive(high)
+			gomega.Eventually(func(g gomega.Gomega) {
+				g.Expect(fixture.GetClaim(g, low).Status.Phase).To(gomega.Equal(modelapi.ModelClaimSleeping))
+				g.Expect(fixture.GetClaim(g, equal).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+				g.Expect(fixture.GetClaim(g, high).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+			}, modelClaimTimeout, modelClaimInterval).Should(gomega.Succeed())
+			gomega.Expect(fixture.Runtime().SleepRequests()).To(gomega.HaveLen(1))
+			gomega.Expect(fixture.Runtime().SleepRequests()[0].ModelName).To(gomega.Equal(low.Name))
+
+			fixture.RequestWake(ns.Name, pod.Name, low.Name)
+
+			gomega.Eventually(func(g gomega.Gomega) {
+				latestLow := fixture.GetClaim(g, low)
+				g.Expect(latestLow.Status.Phase).To(gomega.Equal(modelapi.ModelClaimSleeping))
+				g.Expect(latestLow.Status.Instances).To(gomega.HaveLen(1))
+				g.Expect(latestLow.Status.Instances[0].Reason).To(gomega.Equal("WaitingForRoom"))
+			}, 5*time.Second, modelClaimInterval).Should(gomega.Succeed())
+			gomega.Consistently(func(g gomega.Gomega) {
+				fixture.TriggerReconcile(low)
+				latestLow := fixture.GetClaim(g, low)
+				g.Expect(latestLow.Status.Phase).To(gomega.Equal(modelapi.ModelClaimSleeping))
+				g.Expect(latestLow.Status.Instances).To(gomega.HaveLen(1))
+				g.Expect(fixture.GetClaim(g, equal).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+				g.Expect(fixture.GetClaim(g, high).Status.Phase).To(gomega.Equal(modelapi.ModelClaimActive))
+				g.Expect(fixture.Runtime().SleepRequests()).To(gomega.HaveLen(1))
+				g.Expect(fixture.Runtime().WakeRequests()).To(gomega.BeEmpty())
+			}, 3*time.Second, modelClaimInterval).Should(gomega.Succeed())
+		})
+
 		ginkgo.DescribeTable("protects a lower-priority victim without authoritative zero requests",
 			func(configure func(*modelapi.ModelClaim)) {
 				fixture.Runtime().SetCard(5 << 30)

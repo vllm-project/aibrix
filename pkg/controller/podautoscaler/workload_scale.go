@@ -104,8 +104,8 @@ type WorkloadScale interface {
 	// Validate checks if the target is valid and scalable
 	Validate(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler) error
 
-	// GetCurrentReplicasFromScale extracts the current replica count from a scale object
-	GetCurrentReplicasFromScale(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (int32, error)
+	// GetCurrentReplicasFromScale extracts the current replica counts from a scale object
+	GetCurrentReplicasFromScale(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (ReplicaCounts, error)
 
 	// SetDesiredReplicas updates the replica count
 	SetDesiredReplicas(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, replicas int32) error
@@ -178,7 +178,18 @@ func (s *workloadScale) validateRoleScaling(ctx context.Context, pa *autoscaling
 	return fmt.Errorf("role %q not found in StormService %s", pa.Spec.SubTargetSelector.RoleName, ref.Name)
 }
 
-func (s *workloadScale) GetCurrentReplicasFromScale(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (int32, error) {
+// ReplicaCounts is a scale target's current size, read two ways. Configured is the
+// count last written to the target's spec: scaling decisions start from it, so a
+// recommendation is compared with what was asked for. Observed is the count that
+// status.actualScale and the Ready and ScalingActive conditions report. The two differ
+// only for a pooled StormService role, whose observed count is the role's pods that
+// exist; every other target reports its spec count for both.
+type ReplicaCounts struct {
+	Configured int32
+	Observed   int32
+}
+
+func (s *workloadScale) GetCurrentReplicasFromScale(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (ReplicaCounts, error) {
 	// Role-level scaling
 	if s.isStormServiceWorkload(scale) && pa.Spec.SubTargetSelector != nil {
 		return s.getCurrentReplicasForRole(ctx, pa)
@@ -187,15 +198,15 @@ func (s *workloadScale) GetCurrentReplicasFromScale(ctx context.Context, pa *aut
 	// Generic scaling - extract from spec.replicas
 	currentReplicasInt64, found, err := unstructured.NestedInt64(scale.Object, "spec", "replicas")
 	if !found {
-		return 0, fmt.Errorf("the 'replicas' field was not found in the scale object")
+		return ReplicaCounts{}, fmt.Errorf("the 'replicas' field was not found in the scale object")
 	}
 	if err != nil {
-		return 0, fmt.Errorf("failed to get 'replicas' from scale: %w", err)
+		return ReplicaCounts{}, fmt.Errorf("failed to get 'replicas' from scale: %w", err)
 	}
-	return int32(currentReplicasInt64), nil
+	return ReplicaCounts{Configured: int32(currentReplicasInt64), Observed: int32(currentReplicasInt64)}, nil
 }
 
-func (s *workloadScale) getCurrentReplicasForRole(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler) (int32, error) {
+func (s *workloadScale) getCurrentReplicasForRole(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler) (ReplicaCounts, error) {
 	ref := pa.Spec.ScaleTargetRef
 	ns := ref.Namespace
 	if ns == "" {
@@ -204,38 +215,51 @@ func (s *workloadScale) getCurrentReplicasForRole(ctx context.Context, pa *autos
 
 	ss := &orchestrationv1alpha1.StormService{}
 	if err := s.client.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, ss); err != nil {
-		return 0, err
+		return ReplicaCounts{}, err
 	}
 
 	// Replica mode scales the whole StormService, so report spec.replicas. An omitted
 	// spec.replicas resolves to the documented default of 1 instead of reading as a
 	// scaled-to-zero workload, matching how the stormservice controller reconciles it.
 	if stormServiceScalingMode(pa, ss) == orchestrationv1alpha1.StormServiceReplicaMode {
-		return ss.Spec.ResolvedReplicas(), nil
+		replicas := ss.Spec.ResolvedReplicas()
+		return ReplicaCounts{Configured: replicas, Observed: replicas}, nil
 	}
 
+	// Pooled mode scales the role template, the count setDesiredReplicasForRole writes, so
+	// that is the configured count. status.roleStatuses counts the role's pods that exist,
+	// which trails the template while pods are created. Starting scaling decisions from it
+	// would let the next recommendation undo a scale-up before the scale-down window has
+	// passed, so it is only the observed count.
 	roleName := pa.Spec.SubTargetSelector.RoleName
-	for _, roleStatus := range ss.Status.RoleStatuses {
-		if roleStatus.Name == roleName {
-			return roleStatus.Replicas, nil
-		}
-	}
-
-	// Fallback to spec
 	if ss.Spec.Template.Spec == nil {
-		return 0, fmt.Errorf("stormservice %s/%s template.spec is nil", ns, ref.Name)
+		return ReplicaCounts{}, fmt.Errorf("stormservice %s/%s template.spec is nil", ns, ref.Name)
 	}
 
+	var counts ReplicaCounts
+	found := false
 	for _, role := range ss.Spec.Template.Spec.Roles {
 		if role.Name == roleName {
 			if role.Replicas != nil {
-				return *role.Replicas, nil
+				counts.Configured = *role.Replicas
 			}
-			return 0, nil
+			found = true
+			break
 		}
 	}
+	if !found {
+		return ReplicaCounts{}, fmt.Errorf("role %s not found", roleName)
+	}
 
-	return 0, fmt.Errorf("role %s not found", roleName)
+	// Until the StormService controller reports the role, observe the template count.
+	counts.Observed = counts.Configured
+	for _, roleStatus := range ss.Status.RoleStatuses {
+		if roleStatus.Name == roleName {
+			counts.Observed = roleStatus.Replicas
+			break
+		}
+	}
+	return counts, nil
 }
 
 func (s *workloadScale) SetDesiredReplicas(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, replicas int32) error {
