@@ -202,6 +202,9 @@ type RoutingContext struct {
 	// and read by that same goroutine, so no atomic is needed here (the PD leg
 	// keeps one for the async prefill and abort paths).
 	routingOverrides *RoutingOverrides
+	// runningRequests holds the running-request counts read during the current routing
+	// decision, shared by every reader in it. Nil outside a decision. See RunningRequests.
+	runningRequests *runningRequestsSnapshot
 	// trustedPolicyAttributes contains request policy inputs populated by trusted
 	// in-process producers. External routers must still apply their operator
 	// allowlist before serializing any entry.
@@ -587,6 +590,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	// the new profile never configured (ResolveRoutingOverrides sets them once
 	// per request, and a request without a profile leaves them unset).
 	r.ClearRoutingOverrides()
+	r.StopRunningRequestsSnapshot()
 	clear(r.trustedPolicyAttributes)
 	r.ReplicaInflightAdmitted = false
 	r.ReplicaInflightChecked = false

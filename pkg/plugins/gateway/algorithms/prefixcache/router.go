@@ -471,7 +471,7 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	}
 
 	// Compute request counts once; reused by pod selection and log calls.
-	podRequestCount := routeutil.GetRequestCounts(p.cache, readyPods)
+	podRequestCount := routeutil.RequestCounts(ctx, p.cache, readyPods)
 
 	matchedPods, prefixHashes = p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
 	if klog.V(4).Enabled() {
@@ -894,7 +894,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	}
 	matchedPods, prefixHashes = k.syncIndexer.MatchPrefix(indexModel, loraID, tokens, readyPodsMap)
 
-	podRequestCount := routeutil.GetRequestCounts(k.cache, readyPods)
+	podRequestCount := routeutil.RequestCounts(ctx, k.cache, readyPods)
 
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("prefix cache matching completed",
