@@ -378,7 +378,7 @@ func (s *conductorScorer) getAvgPrefillTimeMs(podName, podNamespace, modelName s
 	if histogram == nil || histogram.Count <= 0 {
 		return -1
 	}
-	return histogram.GetMean() * 1000.0
+	return cache.RecentHistogramMean(s.metricCache, podName, podNamespace, modelName, metrics.RequestPrefillTimeSeconds, histogram) * 1000.0
 }
 
 // ScorePod returns the estimated TTFT (in ms) for a single pod by summing the queue,
