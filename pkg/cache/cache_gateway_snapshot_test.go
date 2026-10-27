@@ -18,6 +18,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -235,4 +236,156 @@ func TestInitGatewaySnapshotSyncHGetAllBatchingLoadsAllKeys(t *testing.T) {
 		require.Len(t, cache[pk], 1)
 		require.Equal(t, "1", cache[pk][0]["requests_running"])
 	}
+}
+
+// snapshotFaultHook injects Redis failures into the snapshot sync: SCAN fails while failScan
+// is set, and any pipeline carrying an HGETALL fails while failReads is set.
+type snapshotFaultHook struct {
+	failScan  atomic.Bool
+	failReads atomic.Bool
+}
+
+func (h *snapshotFaultHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *snapshotFaultHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == "scan" && h.failScan.Load() {
+			return errors.New("injected scan failure")
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (h *snapshotFaultHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		if h.failReads.Load() {
+			for _, cmd := range cmds {
+				if cmd.Name() == "hgetall" {
+					return errors.New("injected read failure")
+				}
+			}
+		}
+		return next(ctx, cmds)
+	}
+}
+
+// newSnapshotSyncUnderTest starts the snapshot sync against a miniredis holding one remote
+// gateway's snapshot of testPodName, with failures injectable through the returned hook.
+func newSnapshotSyncUnderTest(t *testing.T) (store *Store, client *redis.Client, hook *snapshotFaultHook, remoteKey string) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	client = redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	hook = &snapshotFaultHook{}
+	client.AddHook(hook)
+
+	oldGatewayPodName := gatewayPodName
+	gatewayPodName = testGatewaySelf
+	t.Cleanup(func() { gatewayPodName = oldGatewayPodName })
+
+	remoteKey = gatewayPodSnapshotKey("gw-remote", testNamespace, testPodName)
+	setRemoteRunning(t, client, remoteKey, "2")
+
+	store = &Store{redisClient: client}
+	stopCh := make(chan struct{})
+	initGatewaySnapshotSync(store, stopCh)
+	t.Cleanup(func() { close(stopCh) })
+	return store, client, hook, remoteKey
+}
+
+func setRemoteRunning(t *testing.T, client *redis.Client, key, running string) {
+	t.Helper()
+	require.NoError(t, client.HSet(context.Background(), key, map[string]any{
+		"gateway_instance_id": "gw-remote",
+		"namespace":           testNamespace,
+		"pod_name":            testPodName,
+		"requests_running":    running,
+	}).Err())
+}
+
+// cachedRemoteRunning is the requests_running the sync cache currently holds for the remote
+// gateway's snapshot of testPodName; ok is false when the cache or that entry is absent.
+func cachedRemoteRunning(store *Store) (running string, ok bool) {
+	raw := store.gatewaySnapshotCache.Load()
+	if raw == nil {
+		return "", false
+	}
+	entries := raw.(map[string][]map[string]string)[utils.GeneratePodKey(testNamespace, testPodName)]
+	if len(entries) != 1 {
+		return "", false
+	}
+	return entries[0]["requests_running"], true
+}
+
+// A scan that fails used to break out of the scan loop and replace the cache with an empty (or
+// partial) map, dropping every other gateway's contribution until the next successful tick.
+func TestInitGatewaySnapshotSync_KeepsPreviousSnapshotWhenScanFails(t *testing.T) {
+	store, client, hook, remoteKey := newSnapshotSyncUnderTest(t)
+	require.Eventually(t, func() bool { v, ok := cachedRemoteRunning(store); return ok && v == "2" },
+		2*time.Second, 20*time.Millisecond, "sync must populate the remote snapshot before the failure")
+
+	hook.failScan.Store(true)
+	// Change the value behind the failure so a cache that merely happens to equal "2" cannot pass.
+	setRemoteRunning(t, client, remoteKey, "9")
+	require.Never(t, func() bool { v, ok := cachedRemoteRunning(store); return !ok || v != "2" },
+		10*gatewaySnapshotSyncInterval, 20*time.Millisecond, "a failed scan must keep the last known snapshot")
+
+	hook.failScan.Store(false)
+	require.Eventually(t, func() bool { v, ok := cachedRemoteRunning(store); return ok && v == "9" },
+		2*time.Second, 20*time.Millisecond, "the next successful tick must pick up the new value")
+}
+
+// A failed HGETALL batch keeps only those keys' last known values; it must not blank them.
+func TestInitGatewaySnapshotSync_KeepsPreviousValuesWhenReadFails(t *testing.T) {
+	store, client, hook, remoteKey := newSnapshotSyncUnderTest(t)
+	require.Eventually(t, func() bool { v, ok := cachedRemoteRunning(store); return ok && v == "2" },
+		2*time.Second, 20*time.Millisecond)
+
+	hook.failReads.Store(true)
+	setRemoteRunning(t, client, remoteKey, "9")
+	require.Never(t, func() bool { v, ok := cachedRemoteRunning(store); return !ok || v != "2" },
+		10*gatewaySnapshotSyncInterval, 20*time.Millisecond, "a failed read must keep the key's last known value")
+
+	hook.failReads.Store(false)
+	require.Eventually(t, func() bool { v, ok := cachedRemoteRunning(store); return ok && v == "9" },
+		2*time.Second, 20*time.Millisecond)
+}
+
+// Carrying a value over is only for a failed scan or read. A key the scan no longer returns is
+// really gone (the gateway's snapshot expired) and must leave the cache.
+func TestInitGatewaySnapshotSync_DropsKeyThatLeftRedis(t *testing.T) {
+	store, client, _, remoteKey := newSnapshotSyncUnderTest(t)
+	require.Eventually(t, func() bool { _, ok := cachedRemoteRunning(store); return ok },
+		2*time.Second, 20*time.Millisecond)
+
+	require.NoError(t, client.Del(context.Background(), remoteKey).Err())
+
+	require.Eventually(t, func() bool {
+		raw := store.gatewaySnapshotCache.Load()
+		return raw != nil && len(raw.(map[string][]map[string]string)) == 0
+	}, 2*time.Second, 20*time.Millisecond, "a key absent from a successful scan must not be carried over")
+}
+
+// Before any scan has succeeded there is no snapshot to keep. Publishing an empty one would
+// read as "no other gateway has requests running", so the cache stays unset instead (its
+// consumer, syncRunningRequestsGlobally, skips the update while it is nil).
+func TestInitGatewaySnapshotSync_PublishesNothingBeforeFirstSuccessfulScan(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	hook := &snapshotFaultHook{}
+	hook.failScan.Store(true)
+	client.AddHook(hook)
+
+	store := &Store{redisClient: client}
+	stopCh := make(chan struct{})
+	initGatewaySnapshotSync(store, stopCh)
+	t.Cleanup(func() { close(stopCh) })
+
+	require.Never(t, func() bool { return store.gatewaySnapshotCache.Load() != nil },
+		10*gatewaySnapshotSyncInterval, 20*time.Millisecond)
+
+	hook.failScan.Store(false)
+	require.Eventually(t, func() bool { return store.gatewaySnapshotCache.Load() != nil },
+		2*time.Second, 20*time.Millisecond)
 }

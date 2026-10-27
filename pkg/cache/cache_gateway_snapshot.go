@@ -53,6 +53,11 @@ var gatewayPodName = func() string {
 //  2. Scans all gateway snapshot keys (aibrix:pod:*) and pipelines HGetAll for every key.
 //  3. Stores the resulting map[redisKey]fields atomically in store.gatewaySnapshotCache.
 //
+// A scan failure keeps the previous snapshot untouched, and a read failure for one
+// batch of keys keeps only those keys' last known values -- neither replaces the
+// cache with an empty or partial map, which would otherwise drop every other
+// gateway's contribution until the next successful tick.
+//
 // Consumers call AggregateGatewaySnapshotsForPod to read from the in-memory cache
 // without touching Redis.
 func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
@@ -61,6 +66,12 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 	}
 	ticker := time.NewTicker(gatewaySnapshotSyncInterval)
 	go func() {
+		// prevRaw holds every gateway-instance key's last successfully-read fields,
+		// keyed by its raw Redis key rather than by pod, so a read failure for one
+		// key can fall back to exactly that key's last known value without
+		// disturbing any other key aggregated under the same pod (see the read
+		// phase below).
+		var prevRaw map[string]map[string]string
 		for {
 			select {
 			case <-ticker.C:
@@ -87,8 +98,12 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 					for {
 						keys, nextCursor, err := store.redisClient.Scan(ctx, cursor, "aibrix:pod:*", 500).Result()
 						if err != nil {
-							klog.V(4).ErrorS(err, "failed to scan gateway snapshot keys")
-							break
+							klog.V(4).ErrorS(err, "failed to scan gateway snapshot keys; keeping previous snapshot")
+							// An errored scan cannot tell us which keys are actually gone, so there
+							// is nothing safe to rebuild the cache from this tick -- leave
+							// store.gatewaySnapshotCache exactly as the last successful tick left
+							// it instead of replacing it with an empty or partial map.
+							return
 						}
 						allKeys = append(allKeys, keys...)
 						cursor = nextCursor
@@ -98,9 +113,12 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 					}
 
 					// Phase 2 (read): pipeline HGetAll in batches (bounded pipeline size per round-trip).
-					// Keyed by pod key (namespace/name) → list of per-gateway snapshots so consumers
-					// can look up all snapshots for a pod in O(1) without scanning the full cache.
-					newCache := make(map[string][]map[string]string)
+					// Built first as raw Redis key -> fields so a read failure for one key can fall
+					// back to prevRaw's last known value for exactly that key, then grouped below into
+					// the pod-keyed shape consumers read. A key missing from allKeys (this tick's
+					// authoritative live set) is dropped rather than carried over: the scan
+					// succeeded, so its absence is real, not a read failure.
+					newRaw := make(map[string]map[string]string, len(allKeys))
 					for batchStart := 0; batchStart < len(allKeys); batchStart += gatewaySnapshotHGetAllBatchSize {
 						batchEnd := batchStart + gatewaySnapshotHGetAllBatchSize
 						if batchEnd > len(allKeys) {
@@ -113,16 +131,36 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 							cmds[i] = readPipe.HGetAll(ctx, key)
 						}
 						if _, err := readPipe.Exec(ctx); err != nil {
-							klog.V(4).ErrorS(err, "failed to pipeline HGetAll for gateway snapshots",
+							klog.V(4).ErrorS(err, "failed to pipeline HGetAll for gateway snapshots; keeping previous values for this batch's keys",
 								"batchStart", batchStart, "batchLen", len(chunk))
+							for _, key := range chunk {
+								if old, ok := prevRaw[key]; ok {
+									newRaw[key] = old
+								}
+							}
 							continue
 						}
-						for _, cmd := range cmds {
-							if fields, err := cmd.Result(); err == nil && len(fields) > 0 {
-								pKey := utils.GeneratePodKey(fields["namespace"], fields["pod_name"])
-								newCache[pKey] = append(newCache[pKey], fields)
+						for i, cmd := range cmds {
+							fields, err := cmd.Result()
+							if err != nil {
+								if old, ok := prevRaw[chunk[i]]; ok {
+									newRaw[chunk[i]] = old
+								}
+								continue
+							}
+							if len(fields) > 0 {
+								newRaw[chunk[i]] = fields
 							}
 						}
+					}
+					prevRaw = newRaw
+
+					// Keyed by pod key (namespace/name) → list of per-gateway snapshots so consumers
+					// can look up all snapshots for a pod in O(1) without scanning the full cache.
+					newCache := make(map[string][]map[string]string, len(newRaw))
+					for _, fields := range newRaw {
+						pKey := utils.GeneratePodKey(fields["namespace"], fields["pod_name"])
+						newCache[pKey] = append(newCache[pKey], fields)
 					}
 
 					// Atomically replace the snapshot cache so readers always see a consistent map.

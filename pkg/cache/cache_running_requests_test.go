@@ -617,3 +617,260 @@ func TestRealtimeRunningRequests_TrustsRedisZeroOverLocalCounter(t *testing.T) {
 	require.EqualValues(t, 0, store.realtimeRunningRequests(pod))
 	_ = atomic.LoadInt32(&pod.runningRequests) // sanity: local counter is untouched
 }
+
+// observe must stay silent until a gap has held in one direction for
+// runningRequestsDriftConfirmPasses passes, and then correct only the part of the gap that
+// never closed.
+func TestRunningRequestsDriftState_Observe(t *testing.T) {
+	type sample struct{ redis, local int64 }
+	repeat := func(n int, s sample) []sample {
+		out := make([]sample, n)
+		for i := range out {
+			out[i] = s
+		}
+		return out
+	}
+	join := func(parts ...[]sample) []sample {
+		var out []sample
+		for _, p := range parts {
+			out = append(out, p...)
+		}
+		return out
+	}
+	n := runningRequestsDriftConfirmPasses
+
+	tests := []struct {
+		name    string
+		samples []sample
+		// wantDeltas maps a 0-based sample index to the correction expected there; every
+		// other sample must return zero.
+		wantDeltas map[int]int64
+	}{
+		{name: "matching counts never correct", samples: repeat(3*n, sample{2, 2})},
+		{name: "idle pod with no field never corrects", samples: repeat(3*n, sample{0, 0})},
+		{
+			name:       "excess that persists is removed once confirmed",
+			samples:    repeat(n, sample{2, 0}),
+			wantDeltas: map[int]int64{n - 1: -2},
+		},
+		{
+			name:       "shortfall that persists is added back once confirmed",
+			samples:    repeat(n, sample{0, 2}),
+			wantDeltas: map[int]int64{n - 1: 2},
+		},
+		{
+			name:    "gap that closes in time starts over",
+			samples: join(repeat(n-1, sample{1, 0}), repeat(1, sample{0, 0}), repeat(n-1, sample{1, 0})),
+		},
+		{
+			name:    "gap that flips direction starts over",
+			samples: join(repeat(n-1, sample{1, 0}), repeat(n-1, sample{0, 1})),
+		},
+		{
+			name:       "only the part of the gap that never closed is corrected",
+			samples:    join(repeat(2, sample{3, 0}), repeat(1, sample{2, 0}), repeat(n-3, sample{3, 0})),
+			wantDeltas: map[int]int64{n - 1: -2},
+		},
+		{
+			name:       "confirmation restarts after a correction",
+			samples:    repeat(2*n, sample{1, 0}),
+			wantDeltas: map[int]int64{n - 1: -1, 2*n - 1: -1},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var state runningRequestsDriftState
+			for i, s := range tt.samples {
+				var delta int64
+				state, delta = state.observe(s.redis, s.local)
+				require.Equal(t, tt.wantDeltas[i], delta, "sample %d (redis=%d local=%d)", i, s.redis, s.local)
+			}
+		})
+	}
+}
+
+// A confirmed correction is applied as a plain delta (runningRequestsIncrDecrScript), the
+// same script and semantics as an ordinary +1/-1: no guard on the field still holding a
+// previously observed value and an arbitrary magnitude allowed.
+func TestRunningRequestsIncrDecrScript_AppliesAMultiUnitCorrectionDelta(t *testing.T) {
+	ctx := context.Background()
+	client := newTestRunningRequestsClient(t)
+	key := runningRequestsKey(testNamespace, testPodName)
+	ttl := strconv.FormatInt(runningRequestsTTL.Milliseconds(), 10)
+	require.NoError(t, client.HSet(ctx, key, "gw-1", "3").Err())
+
+	res, err := client.Eval(ctx, runningRequestsIncrDecrScript, []string{key}, "gw-1", "-2", ttl).Result()
+	require.NoError(t, err)
+	require.EqualValues(t, 1, res)
+
+	field, err := client.HGet(ctx, key, "gw-1").Result()
+	require.NoError(t, err)
+	require.Equal(t, "1", field)
+}
+
+func newTestReconcileStore(t *testing.T, local int32) (*Store, *redis.Client, string) {
+	t.Helper()
+	client := newTestRunningRequestsClient(t)
+	store := &Store{redisClient: client}
+	store.metaPods.Store(testNamespace+"/"+testPodName, newTestPod(local))
+	return store, client, runningRequestsKey(testNamespace, testPodName)
+}
+
+func reconcilePasses(store *Store, n int) {
+	for i := 0; i < n; i++ {
+		store.reconcileOwnRunningRequests()
+	}
+}
+
+// The bug this exists for: a decrement that never lands leaves this gateway's field above
+// its local count, and other gateways sum that field as-is.
+func TestReconcileOwnRunningRequests_RemovesLeakedCountOnceConfirmed(t *testing.T) {
+	ctx := context.Background()
+	store, client, key := newTestReconcileStore(t, 0)
+	own := runningRequestsGatewayInstanceID
+	require.NoError(t, client.HSet(ctx, key, map[string]interface{}{own: "2", "gw-other": "1"}).Err())
+
+	reconcilePasses(store, runningRequestsDriftConfirmPasses-1)
+	got, err := client.HGet(ctx, key, own).Result()
+	require.NoError(t, err)
+	require.Equal(t, "2", got, "a gap that has not persisted long enough must be left alone")
+
+	reconcilePasses(store, 1)
+	fields, err := client.HGetAll(ctx, key).Result()
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{own: "0", "gw-other": "1"}, fields,
+		"only this gateway's own field is corrected; other gateways' fields are theirs to keep")
+	ttlLeft, err := client.PTTL(ctx, key).Result()
+	require.NoError(t, err)
+	require.Positive(t, ttlLeft)
+}
+
+// A real request landing between the second-to-last and the confirming pass must not
+// throw away the confirmation or leave the correction wrong: the confirming pass reads
+// the field fresh, so it folds the new write into what it corrects rather than acting on
+// a cached value from an earlier pass.
+//
+// This does not exercise a write landing between reconcileOwnRunningRequests' own HMGET
+// and its own Eval, an interior gap of one Redis round trip within a single pass. That
+// gap is not deterministically reproducible against an in-process fake Redis with no
+// simulated latency. What guarantees against it is structural: the Eval call passes no
+// previously-observed value for the script to compare against (see
+// TestRunningRequestsIncrDecrScript_AppliesAMultiUnitCorrectionDelta), so there is
+// nothing for a write landing in that gap to invalidate.
+func TestReconcileOwnRunningRequests_CorrectionLandsDespiteConcurrentRealWrite(t *testing.T) {
+	ctx := context.Background()
+	store, client, key := newTestReconcileStore(t, 0)
+	own := runningRequestsGatewayInstanceID
+	require.NoError(t, client.HSet(ctx, key, own, "2").Err())
+
+	reconcilePasses(store, runningRequestsDriftConfirmPasses-1)
+
+	// A real request starts on this pod right as the confirming pass is about to run.
+	require.NoError(t, client.HIncrBy(ctx, key, own, 1).Err())
+
+	reconcilePasses(store, 1)
+
+	got, err := client.HGet(ctx, key, own).Result()
+	require.NoError(t, err)
+	require.Equal(t, "1", got,
+		"the confirmed -2 correction must land on top of the real +1, leaving local(0) + the new real request(1)")
+}
+
+func TestReconcileOwnRunningRequests_LeavesFieldThatMatchesLocalCount(t *testing.T) {
+	ctx := context.Background()
+	store, client, key := newTestReconcileStore(t, 3)
+	own := runningRequestsGatewayInstanceID
+	require.NoError(t, client.HSet(ctx, key, own, "3").Err())
+
+	reconcilePasses(store, 3*runningRequestsDriftConfirmPasses)
+
+	got, err := client.HGet(ctx, key, own).Result()
+	require.NoError(t, err)
+	require.Equal(t, "3", got)
+}
+
+// Requests coming and going keep the field briefly apart from the local count; that must
+// never be mistaken for drift.
+func TestReconcileOwnRunningRequests_IgnoresGapThatCloses(t *testing.T) {
+	ctx := context.Background()
+	store, client, key := newTestReconcileStore(t, 0)
+	own := runningRequestsGatewayInstanceID
+	require.NoError(t, client.HSet(ctx, key, own, "1").Err())
+
+	reconcilePasses(store, runningRequestsDriftConfirmPasses-1)
+	// The request this gateway's field was counting is now reflected locally too.
+	pod, ok := store.metaPods.Load(testNamespace + "/" + testPodName)
+	require.True(t, ok)
+	atomic.StoreInt32(&pod.runningRequests, 1)
+	reconcilePasses(store, 2*runningRequestsDriftConfirmPasses)
+
+	got, err := client.HGet(ctx, key, own).Result()
+	require.NoError(t, err)
+	require.Equal(t, "1", got)
+}
+
+// The other direction: a field below the local count hides real load from every other
+// gateway.
+func TestReconcileOwnRunningRequests_RaisesUndercountedField(t *testing.T) {
+	ctx := context.Background()
+	store, client, key := newTestReconcileStore(t, 2)
+	own := runningRequestsGatewayInstanceID
+	require.NoError(t, client.HSet(ctx, key, "gw-other", "1").Err())
+
+	reconcilePasses(store, runningRequestsDriftConfirmPasses)
+
+	got, err := client.HGet(ctx, key, own).Result()
+	require.NoError(t, err)
+	require.Equal(t, "2", got)
+}
+
+// A pod this gateway has no requests for and no field for must not get a hash created.
+func TestReconcileOwnRunningRequests_DoesNotCreateHashForIdlePod(t *testing.T) {
+	ctx := context.Background()
+	store, client, key := newTestReconcileStore(t, 0)
+
+	reconcilePasses(store, 3*runningRequestsDriftConfirmPasses)
+
+	exists, err := client.Exists(ctx, key).Result()
+	require.NoError(t, err)
+	require.Zero(t, exists)
+}
+
+func TestReconcileOwnRunningRequests_ForgetsPodsThatLeftTheCache(t *testing.T) {
+	ctx := context.Background()
+	store, client, key := newTestReconcileStore(t, 0)
+	require.NoError(t, client.HSet(ctx, key, runningRequestsGatewayInstanceID, "1").Err())
+
+	reconcilePasses(store, runningRequestsDriftConfirmPasses-1)
+	require.Len(t, store.runningRequestsDrift, 1)
+
+	store.metaPods.Delete(testNamespace + "/" + testPodName)
+	reconcilePasses(store, 1)
+	require.Empty(t, store.runningRequestsDrift)
+}
+
+func TestReconcileOwnRunningRequests_NoRedisIsNoOp(t *testing.T) {
+	store := &Store{}
+	store.metaPods.Store(testNamespace+"/"+testPodName, newTestPod(1))
+	require.NotPanics(t, func() { store.reconcileOwnRunningRequests() })
+	require.Empty(t, store.runningRequestsDrift)
+}
+
+// The reconcile must actually run from the heartbeat's hygiene pass, not only when called
+// directly.
+func TestScheduleRunningRequestsHygiene_RepairsDriftedField(t *testing.T) {
+	ctx := context.Background()
+	store, client, key := newTestReconcileStore(t, 0)
+	own := runningRequestsGatewayInstanceID
+	require.NoError(t, client.HSet(ctx, key, own, "2").Err())
+
+	for i := 0; i < runningRequestsDriftConfirmPasses; i++ {
+		store.scheduleRunningRequestsHygiene()
+		require.Eventually(t, func() bool { return !store.runningRequestsHygieneBusy.Load() },
+			5*time.Second, time.Millisecond)
+	}
+
+	got, err := client.HGet(ctx, key, own).Result()
+	require.NoError(t, err)
+	require.Equal(t, "0", got)
+}

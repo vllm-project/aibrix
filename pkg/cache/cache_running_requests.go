@@ -79,6 +79,13 @@ const (
 	// writing to it, so a field this stale is at least as old as data this system
 	// already treats as garbage-collectable.
 	runningRequestsFieldPruneWindow = runningRequestsTTL
+	// runningRequestsDriftConfirmPasses is how many consecutive hygiene passes (one per
+	// runningRequestsLivenessHeartbeatInterval, so about 5s) must see this gateway's own
+	// Redis field differ from its local count in the same direction before
+	// reconcileOwnRunningRequests treats the gap as drift and corrects it. The async
+	// increment/decrement writes make the two disagree for a few milliseconds around
+	// every request; drift is a gap that outlives them.
+	runningRequestsDriftConfirmPasses = 5
 )
 
 // runningRequestsReadTimeout bounds each read (GetPodRunningRequests /
@@ -125,7 +132,11 @@ var runningRequestsLivenessStarted atomic.Bool
 // addPodStats/donePodStats's increment/decrement pairing), and refreshes the whole
 // hash key's hygiene TTL -- all in one round trip so a dropped connection can never
 // apply the HINCRBY without the PEXPIRE (which would otherwise risk an
-// immortal key).
+// immortal key). HINCRBY is commutative, so this needs no read-modify-write guard: a
+// delta lands correctly regardless of what other deltas from the same gateway land
+// immediately before or after it. reconcileOwnRunningRequests relies on exactly this to
+// apply a confirmed drift correction of any magnitude through this same script, not only
+// the per-request +1/-1.
 //
 // A negative delta against a hash key that doesn't exist is a no-op instead of
 // creating it: runningRequestsTTL only bounds idle keys, not in-flight requests (the
@@ -140,7 +151,8 @@ var runningRequestsLivenessStarted atomic.Bool
 //
 // KEYS[1] = the pod's running-requests hash key
 // ARGV[1] = field name (this gateway's instance ID)
-// ARGV[2] = delta ("1" or "-1")
+// ARGV[2] = delta -- "1"/"-1" for a normal request, or a confirmed drift correction of
+// any magnitude (see reconcileOwnRunningRequests)
 // ARGV[3] = hash key TTL in milliseconds
 const runningRequestsIncrDecrScript = `
 if tonumber(ARGV[2]) < 0 and redis.call('EXISTS', KEYS[1]) == 0 then
@@ -444,7 +456,8 @@ func (c *Store) writeRunningRequestsLivenessHeartbeat() {
 }
 
 // scheduleRunningRequestsHygiene runs the best-effort half of a heartbeat tick off
-// the ticker: PEXPIRE in-flight pod hashes, then flush enqueued field-prunes.
+// the ticker: PEXPIRE in-flight pod hashes, flush enqueued field-prunes, then repair
+// any of this gateway's own fields that have drifted from its local counts.
 // CompareAndSwap skips if a previous pass is still running -- the next tick retries
 // -- so hygiene cannot stack goroutines or delay the following ZADD.
 func (c *Store) scheduleRunningRequestsHygiene() {
@@ -455,6 +468,7 @@ func (c *Store) scheduleRunningRequestsHygiene() {
 		defer c.runningRequestsHygieneBusy.Store(false)
 		c.refreshInFlightPodHashTTLs()
 		c.flushPendingRunningRequestsPrunes()
+		c.reconcileOwnRunningRequests()
 	}()
 }
 
@@ -482,6 +496,170 @@ func (c *Store) refreshInFlightPodHashTTLs() {
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		klog.V(4).ErrorS(err, "failed to refresh in-flight running-requests hash TTLs", "pod_count", n)
+	}
+}
+
+// runningRequestsDriftState is one pod's progress toward confirming that this gateway's
+// own Redis field has drifted from its local count -- see reconcileOwnRunningRequests.
+type runningRequestsDriftState struct {
+	// direction is +1 while the Redis field is above the local count and -1 while it
+	// is below; 0 means no gap is being tracked.
+	direction int
+	// passes is how many consecutive passes have seen a gap in direction.
+	passes int
+	// minGap is the smallest gap seen over those passes: the part of the difference
+	// that never went away, and so the part safe to correct.
+	minGap int64
+}
+
+// observe folds one sample of (Redis field, local count) into the state. It returns the
+// next state and the correction to add to the Redis field, which is zero until the gap
+// has persisted for runningRequestsDriftConfirmPasses passes in one direction. A gap
+// that closes, or flips direction, starts over: that is in-flight writes, not drift.
+func (s runningRequestsDriftState) observe(redisCount, local int64) (runningRequestsDriftState, int64) {
+	gap := redisCount - local
+	if gap == 0 {
+		return runningRequestsDriftState{}, 0
+	}
+	direction := 1
+	if gap < 0 {
+		direction, gap = -1, -gap
+	}
+	if s.direction != direction {
+		s = runningRequestsDriftState{direction: direction, minGap: gap}
+	} else if gap < s.minGap {
+		s.minGap = gap
+	}
+	s.passes++
+	if s.passes < runningRequestsDriftConfirmPasses {
+		return s, 0
+	}
+	return runningRequestsDriftState{}, -int64(direction) * s.minGap
+}
+
+// reconcileOwnRunningRequests repairs this gateway's own field in each pod's
+// running-requests hash when it has drifted from the local count.
+//
+// A field only ever receives +1/-1 deltas, one pair per request, so a delta that is lost
+// (a write that times out, which decrPodRunningRequests logs at V(4) and does not retry)
+// leaves the field wrong for the rest of this process's life: nothing ever sets it back
+// to the true count. This gateway cannot see the error, because overlaySelfRunningRequests
+// substitutes the local count for its own field on every read, but every other gateway
+// sums the field as-is. On a pod that takes most of the traffic a few such fields are
+// enough to make it look busy to the whole fleet and shift its load onto slower replicas.
+//
+// The local count is the source of truth for this gateway's own share, so a field that
+// stays different from it is wrong. A difference seen for a single pass is not evidence:
+// the async writes leave the two apart for a few milliseconds around every request. So a
+// pod is only corrected once the difference has held in one direction for
+// runningRequestsDriftConfirmPasses passes (see runningRequestsDriftState), and only by
+// the part that never closed.
+//
+// The correction is applied with runningRequestsIncrDecrScript, the same unconditional
+// HINCRBY every ordinary +1/-1 uses, not a write of the local count and not one guarded
+// on the field still holding the value it was sampled at. HINCRBY is commutative, so a
+// correction lands correctly whatever real increments or decrements land immediately
+// before or after it, with no read-modify-write check required. A guard would only
+// reject the correction whenever a real request touched the same field in the gap
+// between sampling and writing -- likeliest on exactly the busy pods this exists to fix
+// -- and, because a rejected correction resets confirmation to zero, sustained traffic
+// to a pod could keep the correction from ever landing.
+//
+// Runs from the hygiene pass, which runningRequestsHygieneBusy keeps to one at a time,
+// so runningRequestsDrift needs no lock. Best-effort: a failed read or write is retried
+// on the next pass.
+func (c *Store) reconcileOwnRunningRequests() {
+	if c.redisClient == nil {
+		return
+	}
+	type sample struct {
+		pod   *Pod
+		key   string
+		local int64
+	}
+	var samples []sample
+	c.metaPods.Range(func(_ string, pod *Pod) bool {
+		samples = append(samples, sample{
+			pod:   pod,
+			key:   runningRequestsKey(pod.Namespace, pod.Name),
+			local: int64(atomic.LoadInt32(&pod.runningRequests)),
+		})
+		return true
+	})
+	if len(samples) == 0 {
+		c.runningRequestsDrift = nil
+		return
+	}
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), runningRequestsWriteTimeout)
+	defer cancelRead()
+	pipe := c.redisClient.Pipeline()
+	reads := make([]*redis.SliceCmd, len(samples))
+	for i, s := range samples {
+		reads[i] = pipe.HMGet(readCtx, s.key, runningRequestsGatewayInstanceID)
+	}
+	if _, err := pipe.Exec(readCtx); err != nil {
+		klog.V(4).ErrorS(err, "failed to read own running-requests fields for drift check", "pod_count", len(samples))
+		return
+	}
+
+	type correction struct {
+		sample
+		observed int64
+		delta    int64
+	}
+	var corrections []correction
+	// Rebuilt every pass so a pod that left the cache does not keep a stale entry.
+	next := make(map[string]runningRequestsDriftState, len(c.runningRequestsDrift))
+	for i, s := range samples {
+		fields, err := reads[i].Result()
+		if err != nil || len(fields) != 1 {
+			continue
+		}
+		var observed int64 // an absent field or hash counts as zero
+		if raw, ok := fields[0].(string); ok {
+			n, parseErr := strconv.ParseInt(raw, 10, 64)
+			if parseErr != nil {
+				continue
+			}
+			observed = n
+		}
+		state, delta := c.runningRequestsDrift[s.key].observe(observed, s.local)
+		if delta != 0 {
+			corrections = append(corrections, correction{sample: s, observed: observed, delta: delta})
+		} else if state.passes > 0 {
+			next[s.key] = state
+		}
+	}
+	c.runningRequestsDrift = next
+	if len(corrections) == 0 {
+		return
+	}
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), runningRequestsWriteTimeout)
+	defer cancelWrite()
+	ttl := strconv.FormatInt(runningRequestsTTL.Milliseconds(), 10)
+	for _, cor := range corrections {
+		// The same script every ordinary +1/-1 uses (see runningRequestsIncrDecrScript):
+		// an unconditional HINCRBY, not one guarded on the field still holding cor.observed.
+		res, err := c.redisClient.Eval(writeCtx, runningRequestsIncrDecrScript, []string{cor.key},
+			runningRequestsGatewayInstanceID, strconv.FormatInt(cor.delta, 10), ttl).Result()
+		if err != nil {
+			klog.V(4).ErrorS(err, "failed to correct drifted running-requests field", "key", cor.key)
+			continue
+		}
+		newVal, ok := res.(int64)
+		if !ok || newVal < 0 {
+			// A negative correction against a hash the script found already gone (see
+			// runningRequestsIncrDecrScript's missing-key guard) -- nothing to correct
+			// until the pod is routed to again and the key exists once more.
+			continue
+		}
+		// Info, not V(4): this only fires when a count has been wrong for seconds, and
+		// it is the evidence an operator needs that counts are drifting.
+		klog.InfoS("corrected drifted running-requests count",
+			"pod", cor.pod.Name, "namespace", cor.pod.Namespace, "gateway", runningRequestsGatewayInstanceID,
+			"redis_count", cor.observed, "local_count", cor.local, "correction", cor.delta, "new_redis_count", newVal)
 	}
 }
 
