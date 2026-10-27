@@ -1061,3 +1061,74 @@ func TestSessionAffinityRefreshScriptReply(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "10.0.0.1:8000", got)
 }
+
+// slowGetHook delays GET by delay, or until the command's context ends, as a slow Redis would.
+type slowGetHook struct{ delay time.Duration }
+
+func (h slowGetHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h slowGetHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == "get" {
+			select {
+			case <-time.After(h.delay):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (h slowGetHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+// pinnedAwayFromRendezvous pins a session in Redis to the pod rendezvous hashing would not pick, so
+// the route's answer shows which source resolved it: the pin's address, or the rendezvous fallback.
+func pinnedAwayFromRendezvous(t *testing.T, mr *miniredis.Miniredis, sessionKey string) (pods []*v1.Pod, pinnedAddr, rendezvousAddr string) {
+	t.Helper()
+	labels := map[string]string{"model.aibrix.ai/port": "8000"}
+	pods = []*v1.Pod{newPod("pod-a", "10.0.0.1", true, labels), newPod("pod-b", "10.0.0.2", true, labels)}
+	ctx := types.NewRoutingContext(context.Background(), "test", "model1", "", "", "")
+	picked := rendezvousPod(ctx, pods, sessionKey)
+	require.NotNil(t, picked)
+	rendezvousAddr = picked.Status.PodIP + ":8000"
+	pinnedAddr = "10.0.0.1:8000"
+	if rendezvousAddr == pinnedAddr {
+		pinnedAddr = "10.0.0.2:8000"
+	}
+	require.NoError(t, mr.Set(sessionAffinityRedisKey(sessionCacheKey("model1", sessionKey)), pinnedAddr))
+	return pods, pinnedAddr, rendezvousAddr
+}
+
+// A miss on this read silently reroutes a session another replica already pinned, so its bound is
+// wider than the 100ms the running-requests read uses on the same hot path: a Redis that answers in
+// 200ms must still have its pin honored.
+func TestSessionAffinityRedisReadToleratesLatencyBeyondTheHotPathBound(t *testing.T) {
+	const delay = 200 * time.Millisecond
+	require.Less(t, delay, sessionKeyRedisReadTimeout)
+	router, mr := newTestSessionAffinityRedis(t)
+	pods, pinnedAddr, rendezvousAddr := pinnedAwayFromRendezvous(t, mr, "agent-run-slow-redis")
+	require.NotEqual(t, pinnedAddr, rendezvousAddr)
+	router.redisClient.AddHook(slowGetHook{delay: delay})
+
+	assert.Equal(t, pinnedAddr, sessionAffinityRoute(t, router, "agent-run-slow-redis", pods),
+		"a pin that Redis returns within sessionKeyRedisReadTimeout must be honored")
+}
+
+// The bound still holds: a Redis slower than sessionKeyRedisReadTimeout degrades to rendezvousPod
+// instead of stalling the request for as long as Redis takes.
+func TestSessionAffinityRedisReadGivesUpAtItsTimeout(t *testing.T) {
+	router, mr := newTestSessionAffinityRedis(t)
+	pods, pinnedAddr, rendezvousAddr := pinnedAwayFromRendezvous(t, mr, "agent-run-stalled-redis")
+	require.NotEqual(t, pinnedAddr, rendezvousAddr)
+	router.redisClient.AddHook(slowGetHook{delay: 10 * time.Second})
+
+	start := time.Now()
+	got := sessionAffinityRoute(t, router, "agent-run-stalled-redis", pods)
+	elapsed := time.Since(start)
+
+	assert.Equal(t, rendezvousAddr, got, "an unanswered read must fall back to rendezvous")
+	assert.Less(t, elapsed, sessionKeyRedisReadTimeout+time.Second, "the request must not wait on Redis past its timeout")
+}
