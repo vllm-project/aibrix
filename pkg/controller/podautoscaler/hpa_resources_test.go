@@ -18,9 +18,11 @@ package podautoscaler
 
 import (
 	"math"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
@@ -333,6 +335,36 @@ func TestMakeHPAWithInvalidScheduledBounds(t *testing.T) {
 
 func TestReasonForHPAGenerationErrorDefaultsToMetricsConfig(t *testing.T) {
 	assert.Equal(t, ReasonMetricsConfigError, reasonForHPAGenerationError(assert.AnError))
+}
+
+// The percent policies must match the rates the PodAutoscaler sets. Common rates such as
+// 1.2 must not lose a point to float error, and a rate just above 1 must still give a
+// positive policy value, which the API server requires.
+func TestBuildHPABehaviorPolicyPercents(t *testing.T) {
+	tests := []struct {
+		rate             float64
+		wantUp, wantDown int32
+	}{
+		{rate: 1.1, wantUp: 10, wantDown: 9},
+		{rate: 1.15, wantUp: 15, wantDown: 13},
+		{rate: 1.2, wantUp: 20, wantDown: 16},
+		{rate: 1.25, wantUp: 25, wantDown: 20},
+		{rate: 1.5, wantUp: 50, wantDown: 33},
+		{rate: 3, wantUp: 200, wantDown: 66},
+		{rate: 5, wantUp: 400, wantDown: 80},
+		{rate: 1.005, wantUp: 1, wantDown: 1},
+	}
+	for _, tt := range tests {
+		t.Run(strconv.FormatFloat(tt.rate, 'f', -1, 64), func(t *testing.T) {
+			ctx := context.NewBaseScalingContext()
+			ctx.MaxScaleUpRate, ctx.MaxScaleDownRate = tt.rate, tt.rate
+			behavior := buildHPABehavior(ctx)
+			require.Len(t, behavior.ScaleUp.Policies, 1)
+			require.Len(t, behavior.ScaleDown.Policies, 1)
+			assert.Equal(t, tt.wantUp, behavior.ScaleUp.Policies[0].Value, "scale-up percent")
+			assert.Equal(t, tt.wantDown, behavior.ScaleDown.Policies[0].Value, "scale-down percent")
+		})
+	}
 }
 
 func TestBuildHPABehaviorScaleRates(t *testing.T) {
