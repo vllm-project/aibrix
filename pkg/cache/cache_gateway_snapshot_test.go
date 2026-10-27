@@ -416,3 +416,57 @@ func TestInitGatewaySnapshotSync_SkipsSnapshotsMissingPodIdentity(t *testing.T) 
 	require.Contains(t, cache, utils.GeneratePodKey(testNamespace, testPodName))
 	require.Len(t, cache[utils.GeneratePodKey(testNamespace, testPodName)], 1)
 }
+
+// The scan-failure twin of PublishesNothingBeforeFirstSuccessfulScan: when every read fails on the
+// first tick there is no earlier value to fall back to, so the keys simply vanish from the result.
+// Publishing that would be an empty map -- which, unlike nil, syncRunningRequestsGlobally treats as
+// "no other gateway has requests running".
+func TestInitGatewaySnapshotSync_PublishesNothingBeforeFirstSuccessfulRead(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	hook := &snapshotFaultHook{}
+	hook.failReads.Store(true)
+	client.AddHook(hook)
+	setRemoteRunning(t, client, gatewayPodSnapshotKey("gw-remote", testNamespace, testPodName), "2")
+
+	store := &Store{redisClient: client}
+	stopCh := make(chan struct{})
+	initGatewaySnapshotSync(store, stopCh)
+	t.Cleanup(func() { close(stopCh) })
+
+	require.Never(t, func() bool { return store.gatewaySnapshotCache.Load() != nil },
+		10*gatewaySnapshotSyncInterval, 20*time.Millisecond, "an unread first snapshot must not be published")
+
+	hook.failReads.Store(false)
+	require.Eventually(t, func() bool { v, ok := cachedRemoteRunning(store); return ok && v == "2" },
+		2*time.Second, 20*time.Millisecond, "the first tick that reads every key must publish")
+}
+
+// A key Redis rejects outright (here a string under the snapshot prefix, so HGETALL answers
+// WRONGTYPE) fails the same way every tick. It must be skipped, not treated as unread: otherwise it
+// would hold back the first snapshot forever, and in steady state pin every key sharing its pipeline
+// to a stale value.
+func TestInitGatewaySnapshotSync_SkipsKeysRedisRejects(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	require.NoError(t, client.Set(ctx, "aibrix:pod:not-a-snapshot", "x", 0).Err())
+	remoteKey := gatewayPodSnapshotKey("gw-remote", testNamespace, testPodName)
+	setRemoteRunning(t, client, remoteKey, "2")
+
+	store := &Store{redisClient: client}
+	stopCh := make(chan struct{})
+	initGatewaySnapshotSync(store, stopCh)
+	t.Cleanup(func() { close(stopCh) })
+
+	require.Eventually(t, func() bool { v, ok := cachedRemoteRunning(store); return ok && v == "2" },
+		2*time.Second, 20*time.Millisecond, "a rejected key must not block the first snapshot")
+
+	setRemoteRunning(t, client, remoteKey, "9")
+	require.Eventually(t, func() bool { v, ok := cachedRemoteRunning(store); return ok && v == "9" },
+		2*time.Second, 20*time.Millisecond, "nor may it freeze the keys read in the same pipeline")
+	cache := store.gatewaySnapshotCache.Load().(map[string][]map[string]string)
+	require.Len(t, cache, 1, "the rejected key is not a snapshot and must not appear in the cache")
+}

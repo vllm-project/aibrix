@@ -18,6 +18,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -56,7 +57,9 @@ var gatewayPodName = func() string {
 // A scan failure keeps the previous snapshot untouched, and a read failure for one
 // batch of keys keeps only those keys' last known values -- neither replaces the
 // cache with an empty or partial map, which would otherwise drop every other
-// gateway's contribution until the next successful tick.
+// gateway's contribution until the next successful tick. Before the first snapshot
+// has been published there are no last known values to keep, so a tick that cannot
+// read every key publishes nothing and the cache stays nil.
 //
 // Consumers call AggregateGatewaySnapshotsForPod to read from the in-memory cache
 // without touching Redis.
@@ -118,7 +121,14 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 					// the pod-keyed shape consumers read. A key missing from allKeys (this tick's
 					// authoritative live set) is dropped rather than carried over: the scan
 					// succeeded, so its absence is real, not a read failure.
+					//
+					// Each key is judged by its own command's result, not by the pipeline's error:
+					// Exec reports only the first failure, so one key Redis rejects (see below) must
+					// not make its 99 batch-mates look failed. The exception is a failure that is
+					// not a Redis reply -- a timeout, a dropped connection -- which says nothing
+					// reliable about any command in the batch, so the whole batch counts as unread.
 					newRaw := make(map[string]map[string]string, len(allKeys))
+					unread := false // some key failed to read and has no earlier value to stand in
 					for batchStart := 0; batchStart < len(allKeys); batchStart += gatewaySnapshotHGetAllBatchSize {
 						batchEnd := batchStart + gatewaySnapshotHGetAllBatchSize
 						if batchEnd > len(allKeys) {
@@ -130,28 +140,39 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 						for i, key := range chunk {
 							cmds[i] = readPipe.HGetAll(ctx, key)
 						}
-						if _, err := readPipe.Exec(ctx); err != nil {
-							klog.V(4).ErrorS(err, "failed to pipeline HGetAll for gateway snapshots; keeping previous values for this batch's keys",
+						_, execErr := readPipe.Exec(ctx)
+						batchFailed := execErr != nil && !isRedisReply(execErr)
+						if batchFailed {
+							klog.V(4).ErrorS(execErr, "failed to pipeline HGetAll for gateway snapshots; keeping previous values for this batch's keys",
 								"batchStart", batchStart, "batchLen", len(chunk))
-							for _, key := range chunk {
-								if old, ok := prevRaw[key]; ok {
-									newRaw[key] = old
-								}
-							}
-							continue
 						}
 						for i, cmd := range cmds {
 							fields, err := cmd.Result()
-							if err != nil {
+							switch {
+							case batchFailed || (err != nil && !isRedisReply(err)):
 								if old, ok := prevRaw[chunk[i]]; ok {
 									newRaw[chunk[i]] = old
+								} else {
+									unread = true
 								}
-								continue
-							}
-							if len(fields) > 0 {
+							case err != nil:
+								// Redis answered with an error for this key alone (WRONGTYPE for a key
+								// something else wrote under the prefix). It is not a gateway snapshot and
+								// will fail the same way every tick, so it is skipped; treating it as
+								// unread would freeze the snapshot behind it.
+								klog.V(5).ErrorS(err, "skipping non-snapshot key under the gateway snapshot prefix", "key", chunk[i])
+							case len(fields) > 0:
 								newRaw[chunk[i]] = fields
 							}
 						}
+					}
+					// Until one tick has read every key, there is no earlier snapshot to be wrong
+					// relative to, and an empty or partial one would be taken as a full picture:
+					// syncRunningRequestsGlobally skips only a nil cache. Leave the cache nil and
+					// prevRaw unset, as a failed scan does, and try again next tick.
+					if unread && prevRaw == nil {
+						klog.V(4).InfoS("not publishing the first gateway snapshot: some keys could not be read", "keys", len(allKeys))
+						return
 					}
 					prevRaw = newRaw
 
@@ -268,4 +289,11 @@ func gatewayPodSnapshotKey(gatewayName, namespace, podName string) string {
 // Format: aibrix:pod:*:{namespace}:{podName}
 func gatewayPodSnapshotPattern(namespace, podName string) string {
 	return fmt.Sprintf("aibrix:pod:*:%s:%s", namespace, podName)
+}
+
+// isRedisReply reports whether err is an error reply from the Redis server (such as WRONGTYPE),
+// as opposed to a failure to get a reply at all (a timeout, a dropped connection).
+func isRedisReply(err error) bool {
+	var re redis.Error
+	return errors.As(err, &re)
 }
