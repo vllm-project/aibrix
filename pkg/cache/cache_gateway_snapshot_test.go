@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,6 +28,7 @@ import (
 	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -469,4 +471,172 @@ func TestInitGatewaySnapshotSync_SkipsKeysRedisRejects(t *testing.T) {
 		2*time.Second, 20*time.Millisecond, "nor may it freeze the keys read in the same pipeline")
 	cache := store.gatewaySnapshotCache.Load().(map[string][]map[string]string)
 	require.Len(t, cache, 1, "the rejected key is not a snapshot and must not appear in the cache")
+}
+
+// capturedErrorLog records what a rateLimitedErrorLog would have written at Error level.
+type capturedErrorLog struct {
+	mu    sync.Mutex
+	lines []capturedErrorLine
+}
+
+type capturedErrorLine struct {
+	msg        string
+	suppressed int
+}
+
+func (c *capturedErrorLog) emit(_ error, msg string, keysAndValues ...interface{}) {
+	line := capturedErrorLine{msg: msg}
+	for i := 0; i+1 < len(keysAndValues); i += 2 {
+		if keysAndValues[i] == "suppressedSinceLastLog" {
+			line.suppressed, _ = keysAndValues[i+1].(int)
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lines = append(c.lines, line)
+}
+
+func (c *capturedErrorLog) snapshot() []capturedErrorLine {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]capturedErrorLine(nil), c.lines...)
+}
+
+func newCapturingErrorLog(interval time.Duration) (*rateLimitedErrorLog, *capturedErrorLog) {
+	captured := &capturedErrorLog{}
+	l := newRateLimitedErrorLog(interval)
+	l.emit = captured.emit
+	return l, captured
+}
+
+// A failure that recurs every tick is logged once per interval, with a count of what it
+// stands for; different kinds of failure are limited independently, so one cannot hide another.
+func TestRateLimitedErrorLog(t *testing.T) {
+	now := time.Unix(1000, 0)
+	l, captured := newCapturingErrorLog(30 * time.Second)
+	l.now = func() time.Time { return now }
+	err := errors.New("boom")
+
+	l.log("scan", err, "scan failed")
+	l.log("scan", err, "scan failed")
+	l.log("scan", err, "scan failed")
+	l.log("read", err, "read failed")
+	require.Equal(t, []capturedErrorLine{{"scan failed", 0}, {"read failed", 0}}, captured.snapshot(),
+		"the first occurrence of each event is logged; repeats within the interval are not")
+
+	now = now.Add(29 * time.Second)
+	l.log("scan", err, "scan failed")
+	require.Len(t, captured.snapshot(), 2, "still inside the interval")
+
+	now = now.Add(time.Second)
+	l.log("scan", err, "scan failed")
+	lines := captured.snapshot()
+	require.Len(t, lines, 3)
+	require.Equal(t, capturedErrorLine{"scan failed", 3}, lines[2],
+		"the next line says how many occurrences were swallowed since the last one")
+}
+
+// startSnapshotSyncWithErrorLog starts the sync over a miniredis holding one remote snapshot,
+// with its Error log captured. The interval is long enough that a test sees at most one line per
+// kind of failure, however many 100ms ticks it runs for.
+func startSnapshotSyncWithErrorLog(t *testing.T, hook *snapshotFaultHook) (*Store, *capturedErrorLog) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	client.AddHook(hook)
+	setRemoteRunning(t, client, gatewayPodSnapshotKey("gw-remote", testNamespace, testPodName), "2")
+
+	errLog, captured := newCapturingErrorLog(time.Hour)
+	store := &Store{redisClient: client, gatewaySnapshotErrorLog: errLog}
+	stopCh := make(chan struct{})
+	initGatewaySnapshotSync(store, stopCh)
+	t.Cleanup(func() { close(stopCh) })
+	return store, captured
+}
+
+func requireOneErrorLine(t *testing.T, captured *capturedErrorLog, wantInMsg string) {
+	t.Helper()
+	require.Eventually(t, func() bool { return len(captured.snapshot()) >= 1 },
+		2*time.Second, 20*time.Millisecond, "a failing sync must reach the Error log")
+	require.Never(t, func() bool { return len(captured.snapshot()) > 1 },
+		10*gatewaySnapshotSyncInterval, 20*time.Millisecond, "and only once, however many ticks fail")
+	require.Contains(t, captured.snapshot()[0].msg, wantInMsg)
+}
+
+// Keep-last makes a failed scan invisible at V(4): the snapshot just stops refreshing. It has to
+// surface at Error level, once per interval.
+func TestInitGatewaySnapshotSync_LogsFailedScansAtErrorLevel(t *testing.T) {
+	hook := &snapshotFaultHook{}
+	hook.failScan.Store(true)
+	_, captured := startSnapshotSyncWithErrorLog(t, hook)
+
+	requireOneErrorLine(t, captured, "cannot scan Redis")
+}
+
+func TestInitGatewaySnapshotSync_LogsFailedFirstReadAtErrorLevel(t *testing.T) {
+	hook := &snapshotFaultHook{}
+	hook.failReads.Store(true)
+	_, captured := startSnapshotSyncWithErrorLog(t, hook)
+
+	requireOneErrorLine(t, captured, "not publishing the first snapshot")
+}
+
+// A healthy sync logs nothing at Error level, and a later read failure is reported as the
+// snapshot holding its previous values.
+func TestInitGatewaySnapshotSync_LogsReadFailureAfterHealthyTicks(t *testing.T) {
+	hook := &snapshotFaultHook{}
+	store, captured := startSnapshotSyncWithErrorLog(t, hook)
+	require.Eventually(t, func() bool { v, ok := cachedRemoteRunning(store); return ok && v == "2" },
+		2*time.Second, 20*time.Millisecond)
+	require.Never(t, func() bool { return len(captured.snapshot()) > 0 },
+		5*gatewaySnapshotSyncInterval, 20*time.Millisecond, "a healthy sync must not log at Error level")
+
+	hook.failReads.Store(true)
+	requireOneErrorLine(t, captured, "using their previous values")
+}
+
+// syncRunningRequestsGlobally is the snapshot cache's only consumer, and the first-tick fix
+// depends on how it treats the two kinds of "no data": an unset cache must leave the metric
+// alone, while a published empty snapshot is a real answer (no other gateway has requests) and
+// yields this gateway's local count alone.
+func TestSyncRunningRequestsGlobally_SnapshotCacheContract(t *testing.T) {
+	oldGatewayPodName := gatewayPodName
+	gatewayPodName = testGatewaySelf
+	t.Cleanup(func() { gatewayPodName = oldGatewayPodName })
+	podKey := utils.GeneratePodKey(testNamespace, testPodName)
+	const stale = 7.0 // what the metric held before the call
+
+	tests := []struct {
+		name  string
+		cache map[string][]map[string]string // nil leaves the cache unset
+		want  float64
+	}{
+		{name: "unset cache leaves the metric alone", cache: nil, want: stale},
+		{name: "published empty snapshot counts only the local requests", cache: map[string][]map[string]string{}, want: 3},
+		{
+			name: "sums other gateways and ignores this gateway's own entry",
+			cache: map[string][]map[string]string{podKey: {
+				{"gateway_instance_id": "gw-other", "requests_running": "5"},
+				{"gateway_instance_id": testGatewaySelf, "requests_running": "100"},
+			}},
+			want: 8,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &Store{}
+			if tt.cache != nil {
+				store.gatewaySnapshotCache.Store(tt.cache)
+			}
+			pod := newTestPod(3)
+			pod.Metrics.Store(metrics.RealtimeNumRequestsRunning, &metrics.SimpleMetricValue{Value: stale})
+
+			store.syncRunningRequestsGlobally(pod)
+
+			got, ok := pod.Metrics.Load(metrics.RealtimeNumRequestsRunning)
+			require.True(t, ok)
+			require.Equal(t, tt.want, got.GetSimpleValue())
+		})
+	}
 }

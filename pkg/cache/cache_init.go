@@ -170,6 +170,9 @@ type Store struct {
 	// from Redis, grouped by pod key (namespace/name) → []fields. Swapped atomically by
 	// initGatewaySnapshotSync. Readers call Load() to get map[string][]map[string]string.
 	gatewaySnapshotCache atomic.Value
+	// gatewaySnapshotErrorLog rate-limits the Error-level log of failing snapshot ticks. Nil
+	// means initGatewaySnapshotSync creates one; tests set it to capture lines.
+	gatewaySnapshotErrorLog *rateLimitedErrorLog
 
 	// modelReplicaEmitted tracks pods currently exported via model_replicas for stale-series cleanup.
 	modelReplicaEmitted utils.SyncMap[string, modelReplicaState]
