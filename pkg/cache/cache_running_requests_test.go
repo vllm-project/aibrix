@@ -850,21 +850,29 @@ func TestReconcileOwnRunningRequests_ForgetsPodsThatLeftTheCache(t *testing.T) {
 	require.Empty(t, store.runningRequestsDrift)
 }
 
-// driftReadHook watches the HMGET pipelines reconcileOwnRunningRequests sends: it records the
+// driftFaultHook watches the HMGET pipelines reconcileOwnRunningRequests sends: it records the
 // largest one, runs onRead (if set) as the read goes out -- after the pass has sampled the
 // local count, before Redis answers, which is where real traffic lands on a slow Redis -- and
-// fails the next failNext of them.
-type driftReadHook struct {
+// fails the next failNext of them. While failEval is set it also fails the correction script.
+type driftFaultHook struct {
 	maxPipelineLen atomic.Int64
 	failNext       atomic.Int64
+	failEval       atomic.Bool
 	onRead         func()
 }
 
-func (h *driftReadHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h *driftFaultHook) DialHook(next redis.DialHook) redis.DialHook { return next }
 
-func (h *driftReadHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook { return next }
+func (h *driftFaultHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == "eval" && h.failEval.Load() {
+			return errors.New("injected eval failure")
+		}
+		return next(ctx, cmd)
+	}
+}
 
-func (h *driftReadHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+func (h *driftFaultHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		if len(cmds) > 0 && cmds[0].Name() == "hmget" {
 			if n := int64(len(cmds)); n > h.maxPipelineLen.Load() {
@@ -883,11 +891,11 @@ func (h *driftReadHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redi
 }
 
 // newTestDriftedFleet is a store with n pods, each holding a Redis field of 2 against a local
-// count of 0 -- a leaked count on every pod -- behind a driftReadHook.
-func newTestDriftedFleet(t *testing.T, n int) (*Store, *redis.Client, *driftReadHook) {
+// count of 0 -- a leaked count on every pod -- behind a driftFaultHook.
+func newTestDriftedFleet(t *testing.T, n int) (*Store, *redis.Client, *driftFaultHook) {
 	t.Helper()
 	client := newTestRunningRequestsClient(t)
-	hook := &driftReadHook{}
+	hook := &driftFaultHook{}
 	client.AddHook(hook)
 	store := &Store{redisClient: client}
 	for i := 0; i < n; i++ {
@@ -963,7 +971,7 @@ func TestReconcileOwnRunningRequests_IgnoresTrafficThatMovesDuringTheRead(t *tes
 	require.NoError(t, client.HSet(ctx, key, own, "5").Err()) // field == local: no drift
 	pod, ok := store.metaPods.Load(testNamespace + "/" + testPodName)
 	require.True(t, ok)
-	hook := &driftReadHook{onRead: func() {
+	hook := &driftFaultHook{onRead: func() {
 		atomic.AddInt32(&pod.runningRequests, 1)
 		require.NoError(t, client.HIncrBy(ctx, key, own, 1).Err())
 	}}
@@ -986,7 +994,7 @@ func TestReconcileOwnRunningRequests_UnsampledPassKeepsDriftProgress(t *testing.
 	require.NoError(t, client.HSet(ctx, key, own, "2").Err()) // a leaked count
 	pod, ok := store.metaPods.Load(testNamespace + "/" + testPodName)
 	require.True(t, ok)
-	hook := &driftReadHook{}
+	hook := &driftFaultHook{}
 	client.AddHook(hook)
 
 	reconcilePasses(store, runningRequestsDriftConfirmPasses-1)
@@ -1009,6 +1017,61 @@ func TestReconcileOwnRunningRequests_UnsampledPassKeepsDriftProgress(t *testing.
 	got, err = client.HGet(ctx, key, own).Result()
 	require.NoError(t, err)
 	require.Equal(t, "0", got)
+}
+
+// A correction that fails to land is not retried on the spot: emitting it spent the confirmation,
+// so the pod has to hold its gap for a full window again before the next attempt. That is a delay,
+// not a loss -- the field is still corrected once Redis accepts the write.
+func TestReconcileOwnRunningRequests_FailedCorrectionIsReconfirmedThenRetried(t *testing.T) {
+	ctx := context.Background()
+	store, client, key := newTestReconcileStore(t, 0)
+	own := runningRequestsGatewayInstanceID
+	require.NoError(t, client.HSet(ctx, key, own, "2").Err())
+	hook := &driftFaultHook{}
+	client.AddHook(hook)
+
+	hook.failEval.Store(true)
+	reconcilePasses(store, runningRequestsDriftConfirmPasses)
+	got, err := client.HGet(ctx, key, own).Result()
+	require.NoError(t, err)
+	require.Equal(t, "2", got, "the confirming pass's correction was rejected")
+	require.Empty(t, store.runningRequestsDrift, "emitting the correction restarts the confirmation")
+
+	hook.failEval.Store(false)
+	reconcilePasses(store, runningRequestsDriftConfirmPasses-1)
+	got, err = client.HGet(ctx, key, own).Result()
+	require.NoError(t, err)
+	require.Equal(t, "2", got, "a full window must be held again before the retry")
+
+	reconcilePasses(store, 1)
+	got, err = client.HGet(ctx, key, own).Result()
+	require.NoError(t, err)
+	require.Equal(t, "0", got)
+}
+
+// A field that does not parse as a count says nothing about whether the gap closed, so it
+// neither advances the confirmation nor discards the progress made before it.
+func TestReconcileOwnRunningRequests_UnparseableFieldKeepsDriftProgress(t *testing.T) {
+	ctx := context.Background()
+	store, client, key := newTestReconcileStore(t, 0)
+	own := runningRequestsGatewayInstanceID
+	require.NoError(t, client.HSet(ctx, key, own, "2").Err())
+
+	reconcilePasses(store, runningRequestsDriftConfirmPasses-1)
+	require.Len(t, store.runningRequestsDrift, 1)
+
+	require.NoError(t, client.HSet(ctx, key, own, "garbage").Err())
+	reconcilePasses(store, 1)
+	require.Len(t, store.runningRequestsDrift, 1, "an unreadable pass must not discard the progress made so far")
+	got, err := client.HGet(ctx, key, own).Result()
+	require.NoError(t, err)
+	require.Equal(t, "garbage", got, "and must not be mistaken for the confirming pass")
+
+	require.NoError(t, client.HSet(ctx, key, own, "2").Err())
+	reconcilePasses(store, 1)
+	got, err = client.HGet(ctx, key, own).Result()
+	require.NoError(t, err)
+	require.Equal(t, "0", got, "one readable pass completes the confirmation; a reset would need five more")
 }
 
 func TestReconcileOwnRunningRequests_NoRedisIsNoOp(t *testing.T) {
