@@ -1070,9 +1070,13 @@ func (h slowGetHook) DialHook(next redis.DialHook) redis.DialHook { return next 
 func (h slowGetHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
 		if cmd.Name() == "get" {
+			// A Timer, not time.After: when ctx ends first, the timer is stopped instead of
+			// lingering for the rest of h.delay.
+			timer := time.NewTimer(h.delay)
 			select {
-			case <-time.After(h.delay):
+			case <-timer.C:
 			case <-ctx.Done():
+				timer.Stop()
 				return ctx.Err()
 			}
 		}
