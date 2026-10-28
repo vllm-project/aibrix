@@ -19,6 +19,12 @@ test/
 
 ## Verification principles
 
+We expect every PR to be tested or otherwise validated before submission,
+using checks appropriate to the change. Include evidence in the PR description:
+the test or validation commands, any manual verification steps, and their results.
+If relevant checks could not be completed, explain why and identify what remains
+unverified. Do not describe unexecuted checks as passing.
+
 Start with the narrowest relevant check and broaden verification for changes
 that cross package or language boundaries. Run commands from the repository
 root unless a guide specifies otherwise.
@@ -46,8 +52,10 @@ Python runtime checks use `make python-ci` (Ruff, mypy, and tests) and follow
    deployment, or interactions that narrower tests cannot verify. Follow any
    additional checks required by the affected component's guide.
 
-Documentation-only changes follow the [documentation guide](../docs/README.md);
-they do not require Go or cluster tests.
+Documentation-only changes still need validation, such as checking links,
+reviewing rendered output, or running the applicable documentation build.
+Follow the [documentation guide](../docs/README.md) for required checks;
+Go or cluster tests are unnecessary for these changes.
 
 > Note: Performance regression benchmarks under `test/regression/` run as part
 > of the release process, not against every commit. Behavior regression tests

@@ -85,8 +85,11 @@ automatically exempt: it must identify the real behavior or risk it protects.
     passes afterward.
   - Keep the implementation within the direction and scope accepted in the
     issue. Return to the issue for agreement before expanding that scope.
-  - List the exact validation commands run and their results. State any
-    relevant checks that were not run. Never report an unexecuted check as passing.
+  - Test or validate the change before submitting the PR, following the
+    [verification guidance](test/README.md#verification-principles). Report the
+    commands or manual steps performed and their results. Explain any relevant
+    checks that could not be completed and what remains unverified. Never
+    report an unexecuted check as passing.
 - **Code Review Process**: Your PR will be reviewed by related contributors. Address feedback to improve and finalize your contribution.
 
 Maintainers may close a pull request without completing a code-level review
