@@ -17,13 +17,41 @@ test/
 └── README.md           # This file
 ```
 
+## Verification principles
+
+Start with the narrowest relevant check and broaden verification for changes
+that cross package or language boundaries. Run commands from the repository
+root unless a guide specifies otherwise.
+
+- Add or update tests for behavior changes, including failure and compatibility
+  cases where applicable. Read nearby implementations and tests before
+  introducing a new pattern.
+- For cluster-level behavior, reuse the helpers and organization under `test/e2e/`;
+  use polling rather than arbitrary sleeps.
+- Report the commands actually executed and their results, including relevant
+  checks that could not be run.
+
+For code-generation requirements, see
+[build and verification](../development/README.md#build-and-verification).
+Python runtime checks use `make python-ci` (Ruff, mypy, and tests) and follow
+[its local guidance](../python/aibrix/AGENTS.md).
+
 ## Development Workflow
 
-1. **Write tests first** - Add unit/integration tests for new features
-2. **Run locally** - Use `make test` and `make test-integration`
-3. **E2E validation** - Run `make test-e2e` before submitting changes
+1. **Write tests first** - Add regression coverage at the cheapest level that
+   reproduces the changed behavior.
+2. **Run locally** - Start with the affected package or test. Run `make test`
+   for broader unit coverage and `make test-integration` for component interactions.
+3. **E2E validation** - Run `make test-e2e` for changes to cluster-level behavior,
+   deployment, or interactions that narrower tests cannot verify. Follow any
+   additional checks required by the affected component's guide.
 
-> Note: Regression tests are run as part of the release process. You do not need to run them against every commit.
+Documentation-only changes follow the [documentation guide](../docs/README.md);
+they do not require Go or cluster tests.
+
+> Note: Performance regression benchmarks under `test/regression/` run as part
+> of the release process, not against every commit. Behavior regression tests
+> for fixes remain part of normal change verification.
 
 ## Running Tests
 
@@ -34,6 +62,9 @@ Unit tests are located alongside source code (`*_test.go` files), not in current
 ```bash
 # Run all unit tests with coverage
 make test
+
+# Run unit tests with the race detector
+make test-race-condition
 
 # Run tests for specific package
 go test ./pkg/controller/...

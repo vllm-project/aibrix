@@ -121,11 +121,8 @@ make undeploy
 
 ## Run Test
 
-To test the build, run:
-
-  ```
-  make test
-  ```
+See the [test guide](../test/README.md) for test selection, commands, and
+cluster setup.
 
 ## Project Distribution
 
@@ -144,3 +141,83 @@ NOTE: The makefile target mentioned above generates an 'install.yaml' file in th
 ```
 kubectl apply -f https://raw.githubusercontent.com/<org>/aibrix/<tag or branch>/dist/install.yaml
 ```
+
+## Implementation Guidelines
+
+### Repository layout
+
+| Path | Role |
+|------|------|
+| `api/` | Kubernetes API types and CRD definitions |
+| `pkg/controller/` | Kubernetes controllers and reconciliation logic |
+| `pkg/plugins/` | Gateway plugins and request processing |
+| `pkg/` | Shared Go libraries, clients, caches, metrics, and utilities |
+| `cmd/` | Go binary entrypoints |
+| `config/` | Kustomize configuration, CRDs, RBAC, and deployment manifests |
+| `test/integration/` | Ginkgo-based integration tests |
+| `test/e2e/` | Kind and cluster-level end-to-end tests |
+| `hack/` | Code generation, verification, and CI scripts |
+| `python/aibrix/` | Python runtime, downloader, batch, metadata, and optimizer |
+| `python/aibrix_kvcache/` | Python distributed KV-cache components |
+| `apps/` | Application services and the console |
+| `docs/` | Project documentation and generated documentation assets |
+| `samples/` | Example deployments and feature samples |
+
+### API and compatibility surfaces
+
+Treat the following as compatibility surfaces:
+
+- Kubernetes API types, CRD schemas, JSON/YAML tags, defaults, validation,
+  list semantics, subresources, and printer columns.
+- Public HTTP endpoints, request and response fields, headers, status codes,
+  and gateway plugin contracts.
+- CLI flags, configuration keys, environment variables, labels, and
+  annotations used by deployment or controller logic.
+
+Do not rename, remove, or repurpose an existing field or key without an
+explicit migration and compatibility plan. Preserve pointer and `omitempty`
+choices when absent, zero, and explicit values have different meanings.
+Keep status fields observational; status transitions must remain consistent
+with every controller that writes or consumes them.
+
+Keep API types declarative. Admission behavior belongs in webhooks,
+reconciliation policy belongs in controllers, and transport compatibility
+belongs in the relevant API or gateway layer.
+
+### Coding conventions
+
+- Follow existing Go package structure and standard Go style; use `gofmt` or
+  `make fmt`.
+- Put reusable implementation in `pkg/`; keep `cmd/` entrypoints thin.
+- Use table-driven tests where they match the surrounding package style.
+- Follow the [test guidance](../test/README.md#verification-principles) for
+  behavior changes and regression coverage.
+- Comments should explain non-obvious reasons or invariants, not restate code.
+- Preserve existing logging, error handling, retry, timeout, and context
+  propagation patterns unless the change specifically addresses them.
+- For Python changes, follow the more specific rules in
+  [`python/aibrix/AGENTS.md`](../python/aibrix/AGENTS.md) and run checks from that
+  subtree as documented there.
+
+### Build and verification
+
+Run commands from the repository root. Test selection and execution are covered
+in the [test guide](../test/README.md#verification-principles).
+
+| Command | Purpose |
+|---------|---------|
+| `make fmt` | Format Go code |
+| `make vet` | Run `go vet ./...` |
+| `make generate` | Regenerate Go and Kubernetes generated artifacts |
+| `make manifests` | Regenerate webhook, RBAC, and CRD manifests |
+| `make verify` | Verify generated code and CRD synchronization |
+| `make lint` | Run Go linting |
+| `make lint-all` | Run license and Go lint checks |
+
+When API types, controller-gen markers, or CRDs change, run the applicable
+generation and verification targets and include the resulting generated files
+in the change. Do not hand-edit generated files unless the generator explicitly
+requires it.
+
+See the [test guide](../test/README.md) for test setup and execution, and the
+[documentation guide](../docs/README.md) for translation and HTML checks.
