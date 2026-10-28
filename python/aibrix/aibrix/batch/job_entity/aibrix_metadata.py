@@ -93,7 +93,14 @@ class ClientConfig(_Strict):
         default=None, ge=1, le=MAX_CLIENT_CONCURRENCY
     )
     request_timeout_seconds: Optional[float] = Field(
-        default=None, ge=_MIN_CLIENT_REQUEST_TIMEOUT_SECONDS
+        default=None,
+        ge=_MIN_CLIENT_REQUEST_TIMEOUT_SECONDS,
+        description=(
+            "HTTP read timeout for each inference request attempt (retries "
+            "may add attempts). Also sets the request lock lifetime (rounded "
+            "up to whole seconds) and the retry poll interval (a tenth of it, "
+            "between 0.1 and 1 second)."
+        ),
     )
     adaptive_concurrency: Optional[bool] = None
     adaptive_max_factor: Optional[float] = Field(default=None, ge=1)

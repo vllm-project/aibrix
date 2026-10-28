@@ -69,7 +69,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v4.2.0
         with:
-          version: v3.17.0
+          version: v3.18.6
       
       - uses: actions/setup-python@v6
         with:
@@ -83,7 +83,7 @@ jobs:
         run: helm lint ./dist/chart
       
       - name: Install helm-unittest
-        run: helm plugin install https://github.com/helm-unittest/helm-unittest --version v0.7.2
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest --version v1.1.2
 
       - name: Run helm unit tests
         run: helm unittest ./dist/chart

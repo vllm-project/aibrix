@@ -57,14 +57,14 @@ func TestKVEventManagerValidation(t *testing.T) {
 			wantError: true,
 		},
 		{
-			name: "enabled without endpoint - error",
+			name: "enabled without endpoint - no error, pod discovery is the fallback",
 			envVars: map[string]string{
 				constants.EnvPrefixCacheKVEventSyncEnabled:      "true",
 				constants.EnvPrefixCacheUseRemoteTokenizer:      "true",
 				constants.EnvPrefixCacheTokenizerType:           "remote",
 				constants.EnvPrefixCacheRemoteTokenizerEndpoint: "",
 			},
-			wantError: true,
+			wantError: false,
 		},
 		{
 			name: "enabled with all config - no error",

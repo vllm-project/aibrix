@@ -199,7 +199,10 @@ const (
 	PathXditGenerateVideo = "/generatevideo"
 
 	// Engine Types
-	EngineXdit = "xdit"
+	EngineXdit   = "xdit"
+	EngineVLLM   = "vllm"
+	EngineSGLang = "sglang"
+	EngineTRTLLM = "trtllm"
 )
 
 var (

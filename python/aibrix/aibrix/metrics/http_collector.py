@@ -16,8 +16,10 @@ from copy import deepcopy
 from typing import Dict, Optional
 
 import requests
+from prometheus_client import Metric
 from prometheus_client.parser import text_string_to_metric_families
 from prometheus_client.registry import Collector
+from prometheus_client.samples import Sample
 
 from aibrix import envs
 from aibrix.config import DEFAULT_METRIC_COLLECTOR_TIMEOUT
@@ -25,6 +27,25 @@ from aibrix.logger import init_logger
 from aibrix.metrics.standard_rules import StandardRule
 
 logger = init_logger(__name__)
+
+
+def _copy_metric(metric: Metric) -> Metric:
+    if type(metric) is not Metric:
+        return deepcopy(metric)
+    # Avoid generic namedtuple reconstruction, but still copy mutable labels,
+    # timestamps and exemplars. One memo preserves aliases within the metric.
+    memo: Dict[int, object] = {}
+    for sample in metric.samples:
+        if type(sample) is Sample and id(sample) not in memo:
+            labels = sample.labels
+            if (
+                type(labels) is dict
+                and id(labels) not in memo
+                and all(type(k) is str and type(v) is str for k, v in labels.items())
+            ):
+                memo[id(labels)] = labels.copy()
+            memo[id(sample)] = Sample._make(deepcopy(value, memo) for value in sample)
+    return deepcopy(metric, memo)
 
 
 class HTTPCollector(Collector):
@@ -81,17 +102,23 @@ class HTTPCollector(Collector):
             return
 
         # Standard transformation mode
+        # Do not publish partial results if a later transformation fails.
+        transformed_metrics = []
         try:
             for m in text_string_to_metric_families(metrics_text):
                 if m.name in self.metrics_rules:
                     if self.keep_original_metric:
-                        yield deepcopy(m)
+                        transformed_metrics.append(_copy_metric(m))
                     new_metric = self.metrics_rules[m.name](m)
                     if new_metric is not None:
-                        yield from new_metric
+                        # A rule may mutate and yield the same metric more than once.
+                        transformed_metrics.extend(
+                            _copy_metric(metric) for metric in new_metric
+                        )
                 elif self.keep_original_metric:
-                    yield m
+                    transformed_metrics.append(m)
         except Exception as e:
+            transformed_metrics.clear()
             logger.error(f"Error during metrics transformation: {e}")
             # Fallback to raw passthrough on transformation errors
             logger.warning(
@@ -99,3 +126,5 @@ class HTTPCollector(Collector):
             )
             for m in text_string_to_metric_families(metrics_text):
                 yield m
+        else:
+            yield from transformed_metrics

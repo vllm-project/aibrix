@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import ClassVar, Dict, List, Optional
 
 from aibrix import envs
-from aibrix.common.errors import ModelNotFoundError
+from aibrix.common.errors import InvalidArgumentError, ModelNotFoundError
 from aibrix.downloader.entity import RemoteSource
 from aibrix.logger import init_logger
 
@@ -246,7 +246,7 @@ class BaseDownloader(ABC):
                 # use range download to speedup download
                 self.download(local_path, file, self.bucket_name, True)
 
-    def download_model(self, local_path: Optional[str] = None):
+    def download_model(self, local_path: Optional[str] = None) -> Path:
         if local_path is None:
             local_path = envs.DOWNLOADER_LOCAL_DIR
             Path(local_path).mkdir(parents=True, exist_ok=True)
@@ -309,6 +309,21 @@ def get_downloader(
             return TOSDownloaderV2(
                 model_uri, model_name, download_config, enable_progress_bar
             )
+    elif re.match(envs.DOWNLOADER_GCS_REGEX, model_uri):
+        from aibrix.downloader.gcs import GCSDownloader
+
+        return GCSDownloader(
+            model_uri, model_name, download_config, enable_progress_bar
+        )
+    elif "://" in model_uri:
+        # Anything else is taken as a Hugging Face repo id, which never has a
+        # scheme. Name the scheme here rather than fail on the repo id format.
+        scheme = model_uri.split("://", 1)[0]
+        raise InvalidArgumentError(
+            f"Unsupported model_uri scheme `{scheme}://` in {model_uri}. "
+            "Supported: s3://, tos://, gcs://, gs://, or a Hugging Face repo id "
+            "(repo/name)."
+        )
     else:
         from aibrix.downloader.huggingface import HuggingFaceDownloader
 

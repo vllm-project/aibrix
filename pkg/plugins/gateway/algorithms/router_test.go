@@ -501,6 +501,57 @@ func TestNormalizeScoresArrayWinsorizesOutlier(t *testing.T) {
 	assert.Less(t, brokenOutlier, overloaded, "the broken outlier should remain the worst score")
 }
 
+// TestNormalizeScoresArrayKeepsBestPodsApart is a regression test: winsorizeClip used to clamp
+// both tails, so with most of the pool at similar load the least-loaded pods were pulled up onto
+// the lower bound and tied at 1.0 with each other. Only the worse tail may be clamped.
+func TestNormalizeScoresArrayKeepsBestPodsApart(t *testing.T) {
+	m := &multiStrategyRouter{}
+	all := []bool{true, true, true, true, true}
+
+	// Running requests: the median is 49 and the MAD 2, so the clamp bounds are 43 and 55.
+	least := m.normalizeScoresArray([]float64{20, 0, 49, 50, 51}, all, types.PolarityLeast)
+	assert.InDelta(t, 1.0, least[1], 1e-9, "the idle pod scores best")
+	assert.Less(t, least[0], least[1], "a pod with 20 running must not tie with the idle pod")
+	assert.Greater(t, least[0], least[2], "and still beats the pods near 50")
+
+	// The mirror case for a higher-is-better score such as a prefix match percentage.
+	most := m.normalizeScoresArray([]float64{80, 100, 51, 50, 49}, all, types.PolarityMost)
+	assert.InDelta(t, 1.0, most[1], 1e-9, "the full match scores best")
+	assert.Less(t, most[0], most[1], "an 80% match must not tie with a full match")
+	assert.Greater(t, most[0], most[2], "and still beats the matches near 50%")
+	// The worse tail is still clamped. TestNormalizeScoresArrayWinsorizesOutlier covers it for
+	// PolarityLeast; here a broken reading of 0 must not set the scale for the pods near 90.
+	low := m.normalizeScoresArray([]float64{100, 90, 91, 92, 0}, all, types.PolarityMost)
+	assert.InDelta(t, 1.0, low[0], 1e-9)
+	assert.Less(t, low[1], 0.5, "90 must stay well below 100, not be compressed toward it by the outlier")
+	assert.InDelta(t, 0.0, low[4], 1e-9, "the outlier is still the worst")
+}
+
+// TestScoreAndRankPicksIdlePodOverBusierPod checks the end-to-end effect: with the default
+// least-request,load-balance blend shape, the idle pod must win whatever its name.
+func TestScoreAndRankPicksIdlePodOverBusierPod(t *testing.T) {
+	running := map[string]float64{"pod-a": 20, "pod-b": 0, "pod-c": 49, "pod-d": 50, "pod-e": 51}
+	var pods []*v1.Pod
+	counts := map[*v1.Pod]float64{}
+	for _, name := range []string{"pod-a", "pod-b", "pod-c", "pod-d", "pod-e"} {
+		pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name}}
+		pods = append(pods, pod)
+		counts[pod] = running[name]
+	}
+	m := &multiStrategyRouter{
+		config: &MultiRouterConfig{Items: []RouterItem{{Name: "least-request", Coefficient: 1}, {Name: "load-balance", Coefficient: 1}}},
+		scorers: map[string]types.PodScorer{
+			"least-request": &fakeScorer{polarity: types.PolarityLeast, scores: counts},
+			"load-balance":  &fakeScorer{polarity: types.PolarityLeast, scores: counts},
+		},
+	}
+
+	winner, scores, err := m.scoreAndRank(&types.RoutingContext{}, wrapper{pods: pods})
+	assert.NoError(t, err)
+	assert.Equal(t, "pod-b", winner.Name, "the idle pod wins, not the busier pod that sorts first")
+	assert.Less(t, scores[pods[0]], scores[pods[1]])
+}
+
 func TestScoreAndRankWithDiagnosticLoggingDisabled(t *testing.T) {
 	if klog.V(4).Enabled() {
 		t.Skip("V(4) logging is enabled; this test specifically covers the no-diagnostic-allocation path")

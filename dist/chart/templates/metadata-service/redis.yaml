@@ -66,6 +66,9 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: {{ include "aibrix.fullname" . }}-redis
+  labels:
+    {{- include "aibrix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-metadata-redis
 type: Opaque
 data:
   {{- $sharedPass := dig "redis" "password" "" .Values.metadata -}}

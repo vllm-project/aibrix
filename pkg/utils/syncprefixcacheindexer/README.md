@@ -66,7 +66,7 @@ Environment variables:
 - `AIBRIX_SYNC_MAX_PREFIXES_PER_CONTEXT`: Max prefixes per context (default: 10000)
 - `AIBRIX_SYNC_EVICTION_INTERVAL_SECONDS`: Eviction check interval (default: 60)
 - `AIBRIX_SYNC_EVICTION_DURATION_MINUTES`: Time before eviction (default: 20)
-- `AIBRIX_PREFIX_CACHE_BLOCK_SIZE`: Token block size (default: 16)
+- `AIBRIX_PREFIX_CACHE_BLOCK_SIZE`: Block size in bytes of the request's encoded tokens (default: 16), used only until a model's first BlockStored event; after that requests are split by the engine's own block size
 
 ## Performance
 

@@ -19,6 +19,7 @@ package prefixcache
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -43,6 +44,7 @@ type TokenizerPoolConfig struct {
 	TokenizerTTL         time.Duration       // Default: 5m
 	MaxTokenizersPerPool int                 // Default: 100
 	DefaultTokenizer     tokenizer.Tokenizer // Default when remote fails
+	FixedEndpoint        string              // Used for every model, ahead of ModelServiceMap and pod discovery
 	ModelServiceMap      map[string]string   // Model -> Service endpoint mapping
 	Timeout              time.Duration       // Request timeout
 }
@@ -475,12 +477,22 @@ func (p *TokenizerPool) createRetryBackoff() time.Duration {
 // findVLLMEndpointForModel finds the vLLM endpoint for a specific model
 func (p *TokenizerPool) findVLLMEndpointForModel(model string, pods []*v1.Pod) (endpoint, podIP string) {
 	// Priority order for endpoint discovery:
-	// 1. Service endpoint (if configured)
+	// 1. Fixed endpoint (AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT), e.g. a
+	// Service that load-balances tokenize calls across replicas.
+	if p.config.FixedEndpoint != "" {
+		return p.config.FixedEndpoint, ""
+	}
+
+	// 2. Service endpoint (if configured)
 	if service, exists := p.config.ModelServiceMap[model]; exists {
 		return service, ""
 	}
 
-	// 2. Direct pod endpoint
+	// 3. Direct pod endpoint. Pick a random candidate rather than the first
+	// match: an entry lives until its pod leaves the ready set or turns
+	// unhealthy, so a deterministic pick would pin every tokenize call of the
+	// model to one pod indefinitely.
+	var candidates []string
 	for _, pod := range pods {
 		if !isPodReady(pod) {
 			continue
@@ -497,10 +509,19 @@ func (p *TokenizerPool) findVLLMEndpointForModel(model string, pods []*v1.Pod) (
 			continue
 		}
 
-		return fmt.Sprintf(p.config.EndpointTemplate, pod.Status.PodIP), pod.Status.PodIP
-	}
+		// A pod in a state transition can report Ready before its IP is
+		// populated; an empty IP would build an endpoint like "http://:8000".
+		if pod.Status.PodIP == "" {
+			continue
+		}
 
-	return "", ""
+		candidates = append(candidates, pod.Status.PodIP)
+	}
+	if len(candidates) == 0 {
+		return "", ""
+	}
+	podIP = candidates[rand.Intn(len(candidates))]
+	return fmt.Sprintf(p.config.EndpointTemplate, podIP), podIP
 }
 
 // getModelFromPod extracts model information from pod

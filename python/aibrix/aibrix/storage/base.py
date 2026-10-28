@@ -442,6 +442,7 @@ class BaseStorage(ABC):
 
         upload_parts: list[dict[str, Union[str, int]]] = []
         small_parts = False
+        upload_id: Optional[str] = None
 
         reader = self._wrap_data(data)
 
@@ -486,6 +487,9 @@ class BaseStorage(ABC):
                 await self.complete_multipart_upload(key, upload_id, upload_parts)
 
         except Exception:
+            if upload_id is None:
+                # Preserve the original error if creating the upload failed.
+                raise
             if small_parts:
                 # Abort small parts upload on error
                 await self.abort_multipart_upload(key, upload_id)

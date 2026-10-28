@@ -74,8 +74,16 @@ func (r throughputRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types
 			continue
 		}
 
+		// Both averages are PromQL results, so read them as such rather than as simple values.
+		promptTokens, promptOK := metrics.NumericValue(promptThroughput)
+		generationTokens, generationOK := metrics.NumericValue(generationThroughput)
+		if !promptOK || !generationOK {
+			scored[i] = false
+			continue
+		}
+
 		// processing prompt tokens is twice as expensive than generation tokens
-		scores[i] = 2*promptThroughput.GetSimpleValue() + generationThroughput.GetSimpleValue()
+		scores[i] = 2*promptTokens + generationTokens
 		scored[i] = true
 	}
 	return scores, scored, nil

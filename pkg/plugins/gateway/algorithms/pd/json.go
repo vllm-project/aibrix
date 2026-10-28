@@ -21,12 +21,31 @@ import (
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-// EngineTRTLLM is the TensorRT-LLM engine identifier. It is defined here so
-// that packages below routingalgorithms (prefill, engine) can special-case
-// TRT-LLM without importing routingalgorithms (circular).
-const EngineTRTLLM = "trtllm"
+// Engine identifiers shared by the PD request transformation and its callers.
+// They are defined here so that packages below routingalgorithms (prefill,
+// engine) can special-case an engine without importing routingalgorithms
+// (circular).
+const (
+	EngineSGLang = "sglang"
+	EngineTRTLLM = "trtllm"
+
+	// ResponsesPath is the OpenAI Responses API endpoint. It is duplicated from
+	// the gateway's PathResponses because the PD packages below gateway must not
+	// import their parent package.
+	ResponsesPath = "/v1/responses"
+
+	// responsesPrefillMaxOutputTokens is the prefill output budget for vLLM's
+	// Responses API, which maps max_output_tokens directly to max_tokens.
+	responsesPrefillMaxOutputTokens = 1
+	// sglangResponsesPrefillMaxOutputTokens compensates for SGLang's Responses
+	// adapter subtracting two tokens (BOS/EOS headroom) from max_output_tokens:
+	// 3 - 2 leaves the single token a PD prefill needs.
+	sglangResponsesPrefillMaxOutputTokens = 3
+)
 
 // JSONEditor chains sjson operations on a JSON body and records the first
 // error. sjson.SetBytes / DeleteBytes return new slices, so the body passed to
@@ -112,6 +131,8 @@ func ValidateJSONObject(body []byte, what string) error {
 var CommonControlledFields = []string{
 	"max_tokens",
 	"max_completion_tokens",
+	"max_output_tokens",
+	"store",
 	"stream",
 	"stream_options",
 	"min_tokens",
@@ -146,13 +167,42 @@ func FindDuplicateTopLevelKey(body []byte, controlledFields []string) (string, b
 }
 
 // ApplyPrefillControlFields overrides the generation control fields so the
-// prefill pod returns right after filling the KV cache:
-//   - max_tokens=1 and max_completion_tokens=1 (TRT-LLM only supports
-//     max_tokens, so max_completion_tokens is removed instead)
+// prefill pod returns right after filling the KV cache. It is the chat
+// completions/completions form; use ApplyPrefillControlFieldsForPath for
+// endpoints whose request schema differs.
+func ApplyPrefillControlFields(body []byte, llmEngine string) ([]byte, error) {
+	return ApplyPrefillControlFieldsForPath(body, llmEngine, "")
+}
+
+// ApplyPrefillControlFieldsForPath overrides the generation control fields so
+// the prefill pod returns right after filling the KV cache:
+//   - Chat/completions: max_tokens=1 and max_completion_tokens=1 (TRT-LLM only
+//     supports max_tokens, so max_completion_tokens is removed instead)
+//   - Responses: max_output_tokens=1 for vLLM. SGLang subtracts two tokens
+//     from max_output_tokens for BOS/EOS headroom, so it needs 3 to generate
+//     the single prefill token; 1 would become -1 and fail SamplingParams
+//     validation. store=false keeps the internal prefill response out of the
+//     engine's pod-local response store.
 //   - stream=false, stream_options and min_tokens removed
 //
 // Only top-level keys are touched; every other byte of body is preserved.
-func ApplyPrefillControlFields(body []byte, llmEngine string) ([]byte, error) {
+func ApplyPrefillControlFieldsForPath(body []byte, llmEngine, path string) ([]byte, error) {
+	if utils.PathWithoutQuery(path) == ResponsesPath {
+		maxOutputTokens := responsesPrefillMaxOutputTokens
+		if llmEngine == EngineSGLang {
+			maxOutputTokens = sglangResponsesPrefillMaxOutputTokens
+		}
+		return NewJSONEditor(body).
+			Set("max_output_tokens", maxOutputTokens).
+			Delete("max_tokens").
+			Delete("max_completion_tokens").
+			Set("store", false).
+			Set("stream", false).
+			Delete("stream_options").
+			Delete("min_tokens").
+			Result()
+	}
+
 	e := NewJSONEditor(body).Set("max_tokens", 1)
 	if llmEngine == EngineTRTLLM {
 		e.Delete("max_completion_tokens")

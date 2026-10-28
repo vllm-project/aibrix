@@ -111,6 +111,21 @@ Supported Engines
 
 Set the engine on each pod with the ``model.aibrix.ai/engine`` label.
 
+Supported APIs
+--------------
+
+PD routing supports ``/v1/chat/completions``, ``/v1/completions``, and
+``/v1/responses``. The Responses API requires vLLM 0.19.0+ or SGLang 0.5.22+.
+
+When using PD with the Responses API, set the engine label explicitly. If it
+is unset, PD defaults to vLLM. SGLang also overwrites any client-supplied
+``request_id``; the response id is ``resp_<gateway-request-id>-<nonce>``.
+
+E+PD is not supported for the Responses API: the encode stage is skipped, so
+requests follow the normal PD path to prefill/decode pods (or the usual
+combined-pod fallback), never to encode pods. Stateful Responses features
+(``previous_response_id`` and ``background: true``) are not supported with PD
+because that state lives only on the pod that served the previous request.
 
 TensorRT-LLM Parallel Scheduling
 --------------------------------
@@ -332,6 +347,8 @@ Encode Pods for Multimodal Requests (EPD)
 With vLLM, a roleset can also run the vision or audio encoder on its own pods, labeled ``role-name: encode`` with the same ``roleset-name`` as the prefill and decode pods. For a ``/v1/chat/completions`` request that carries ``image_url``, ``audio_url``, ``input_audio`` or ``video_url`` items, the gateway first sends each item to one of the selected roleset's encode pods, in parallel, and waits for them before the prefill request. Text-only requests, other endpoints and rolesets without encode pods route exactly as before. Encode pods are never picked as prefill, decode or standard inference pods.
 
 The request body is not changed. The encode pods store their output through vLLM's EC connector, keyed by the hash of each media item, and the prefill pod finds it under the same hash. If an item's output is not there, for example because its encode request failed, the prefill pod encodes the item itself, so a failed encode costs latency but not the request. Each encode request uses the prefill request timeout, and ``gateway_pd_encode_request_total`` counts them by ``status``.
+
+By default the gateway sends the items to the selected roleset's encode pods in turn. With ``AIBRIX_ENCODE_SELECTION_POLICY=least_request`` it sends each item to the encode pod with the fewest items it has in flight, so an encode pod that is still working on large images does not receive the next ones while others are idle. Each gateway replica counts separately, and within a replica the ``pd`` routing strategy and the other strategies keep separate counts.
 
 Start the encode pods as encoder-only producers and the prefill pods as consumers of the same EC connector. With ``ECExampleConnector``, the encode and prefill pods must mount the same volume, such as a ``ReadWriteMany`` PVC or a ``hostPath`` on one node. Otherwise the prefill pod never finds the encoder output and encodes every item itself. ``samples/disaggregation/vllm/1e1p1d.yaml`` is a complete example:
 
@@ -830,6 +847,9 @@ These are set on the **gateway plugin** deployment.
    * - ``AIBRIX_BUCKET_SERVE_MODE``
      - ``throughput``
      - Objective of the adaptive cut points: ``throughput`` (prompt token mass) or ``rps`` (request counts). An unknown value keeps the default.
+   * - ``AIBRIX_ENCODE_SELECTION_POLICY``
+     - ``round_robin``
+     - How the encode stage picks an encode pod for each media item: ``round_robin``, or ``least_request`` for the encode pod with the fewest items in flight. Environment only.
    * - ``AIBRIX_PREFILL_REQUEST_TIMEOUT``
      - ``30``
      - Seconds before a prefill request to a prefill pod times out.
