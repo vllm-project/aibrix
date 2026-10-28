@@ -26,6 +26,7 @@ import (
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -57,6 +58,71 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 			gomega.Expect(k8sClient.Delete(ctx, &item)).To(gomega.Succeed())
 		}
 	})
+
+	for _, operation := range []string{"create", "update"} {
+		ginkgo.DescribeTable("preserves adapter storage on "+operation,
+			func(source *corev1.VolumeSource) {
+				service := wrapper.MakeStormService("storm-storage").Namespace(ns.Name).
+					WithDefaultConfiguration().Obj()
+				wantVolumes := make(map[string][]corev1.Volume)
+				for i := range service.Spec.Template.Spec.Roles {
+					role := &service.Spec.Template.Spec.Roles[i]
+					role.Template.Spec.Volumes = []corev1.Volume{{
+						Name: "scratch", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+					}}
+					if source != nil {
+						roleSource := source.DeepCopy()
+						if roleSource.PersistentVolumeClaim != nil {
+							roleSource.PersistentVolumeClaim.ClaimName += "-" + role.Name
+						}
+						role.Template.Spec.Volumes = append(role.Template.Spec.Volumes, corev1.Volume{
+							Name: webhook.DefaultAdapterVolumeName, VolumeSource: *roleSource,
+						})
+					}
+					wantVolumes[role.Name] = role.Template.Spec.DeepCopy().Volumes
+					if source == nil {
+						wantVolumes[role.Name] = append(wantVolumes[role.Name], corev1.Volume{
+							Name:         webhook.DefaultAdapterVolumeName,
+							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+						})
+					}
+				}
+				if operation == "create" {
+					service.Annotations = map[string]string{webhook.SidecarInjectionAnnotation: "true"}
+				}
+				gomega.Expect(k8sClient.Create(ctx, service)).To(gomega.Succeed())
+				if operation == "update" {
+					service.Annotations = map[string]string{webhook.SidecarInjectionAnnotation: "true"}
+					gomega.Expect(k8sClient.Update(ctx, service)).To(gomega.Succeed())
+				}
+				var created orchestrationapi.StormService
+				key := client.ObjectKeyFromObject(service)
+				gomega.Expect(k8sClient.Get(ctx, key, &created)).To(gomega.Succeed())
+				gomega.Expect(created.Spec.Template.Spec.Roles).To(gomega.HaveLen(len(wantVolumes)))
+				for _, role := range created.Spec.Template.Spec.Roles {
+					expectAdapterStorage(&role.Template.Spec, wantVolumes[role.Name])
+				}
+
+				created.Annotations["test.aibrix.ai/repeated-admission"] = "true"
+				gomega.Expect(k8sClient.Update(ctx, &created)).To(gomega.Succeed())
+				gomega.Expect(k8sClient.Get(ctx, key, &created)).To(gomega.Succeed())
+				gomega.Expect(created.Spec.Template.Spec.Roles).To(gomega.HaveLen(len(wantVolumes)))
+				for _, role := range created.Spec.Template.Spec.Roles {
+					expectAdapterStorage(&role.Template.Spec, wantVolumes[role.Name])
+				}
+			},
+			ginkgo.Entry("PVC", &corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: "adapter-cache",
+			}}),
+			ginkgo.Entry("hostPath", &corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{
+				Path: "/var/lib/adapters", Type: ptr.To(corev1.HostPathDirectory),
+			}}),
+			ginkgo.Entry("configured emptyDir", &corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+				Medium: corev1.StorageMediumMemory, SizeLimit: ptr.To(resource.MustParse("64Mi")),
+			}}),
+			ginkgo.Entry("missing volume", (*corev1.VolumeSource)(nil)),
+		)
+	}
 
 	type testDefaultingCase struct {
 		stormservice     func() *orchestrationapi.StormService
