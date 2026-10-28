@@ -17,6 +17,7 @@ limitations under the License.
 package metrics
 
 import (
+	"math"
 	"testing"
 
 	"github.com/prometheus/common/model"
@@ -181,4 +182,39 @@ func TestMetric(t *testing.T) {
 		assert.Equal(t, "", metric.PromQL)
 		assert.Equal(t, "A test metric", metric.Description)
 	})
+}
+
+func promValue(result model.Value) *PrometheusMetricValue {
+	return &PrometheusMetricValue{Result: &result}
+}
+
+func TestNumericValue(t *testing.T) {
+	tests := []struct {
+		name   string
+		value  MetricValue
+		want   float64
+		wantOK bool
+	}{
+		{"simple value", &SimpleMetricValue{Value: 3}, 3, true},
+		{"promql vector", promValue(model.Vector{&model.Sample{Value: 42}}), 42, true},
+		{"promql scalar", promValue(&model.Scalar{Value: 7}), 7, true},
+		{"promql empty vector", promValue(model.Vector{}), 0, false},
+		{"promql matrix", promValue(model.Matrix{&model.SampleStream{Values: []model.SamplePair{{Value: 5}}}}), 5, true},
+		{"promql NaN from a pod with no requests", promValue(model.Vector{&model.Sample{Value: model.SampleValue(math.NaN())}}), 0, false},
+		{"promql +Inf", promValue(model.Vector{&model.Sample{Value: model.SampleValue(math.Inf(1))}}), 0, false},
+		{"simple +Inf", &SimpleMetricValue{Value: math.Inf(1)}, 0, false},
+		{"promql nil result", &PrometheusMetricValue{}, 0, false},
+		{"promql result holding a nil value", &PrometheusMetricValue{Result: new(model.Value)}, 0, false},
+		{"typed nil promql value", (*PrometheusMetricValue)(nil), 0, false},
+		{"typed nil simple value", (*SimpleMetricValue)(nil), 0, false},
+		{"histogram holds no single number", &HistogramMetricValue{Sum: 4, Count: 2}, 0, false},
+		{"nil value", nil, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := NumericValue(tt.value)
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
