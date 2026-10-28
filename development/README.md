@@ -1,5 +1,10 @@
 # Development
 
+Before changing code, read the [implementation guidelines](#implementation-guidelines)
+for repository layout, API compatibility, coding conventions, and generation
+requirements. For contribution gates and submission requirements, see
+[CONTRIBUTING.md](../CONTRIBUTING.md#issue-first-policy).
+
 ## Important Links and Resources
 
 Here are some essential resources for anyone interested in AIBrix:

@@ -36,12 +36,13 @@ Start by picking an [issue](https://github.com/vllm-project/aibrix/issues) tagge
 #### Issue-first policy
 
 Contributors who are not listed as project maintainers on the
-[community page](docs/source/community/community.rst) must normally obtain
-maintainer agreement before implementing a feature or bug fix. Start by
-searching open issues and pull requests. If the work is not already tracked,
-open an issue and wait for a maintainer to apply the `triage/accepted` label
-before starting the implementation or preparing a pull request. Until then,
-limit work to investigation, reproduction, and improving the issue.
+[community page](docs/source/community/community.rst) must obtain maintainer
+agreement before implementing a feature or bug fix, except for the documentation
+and mechanical corrections described below. Start by searching open issues and
+pull requests. Open an issue if the work is not already tracked. Whether the
+issue is new or existing, wait for a maintainer to apply `triage/accepted` before
+starting implementation or preparing a pull request. Until then, limit work to
+investigation, reproduction, and improving the issue.
 
 A useful issue establishes why AIBrix should maintain the change. Strong
 examples include:
