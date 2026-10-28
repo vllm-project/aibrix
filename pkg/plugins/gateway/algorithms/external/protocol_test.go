@@ -140,6 +140,32 @@ func TestBuildExternalDecisionRequest(t *testing.T) {
 	require.NotContains(t, body, "notAllowed")
 }
 
+// Inside a routing decision, the candidates' running-request counts come from the read an
+// earlier reader of the decision (e.g. the gateway's load-imbalance gate) already made.
+func TestBuildExternalDecisionRequestSharesDecisionRead(t *testing.T) {
+	podA := externalTestPod("default", "a", "10.0.0.1", "zone-a")
+	podB := externalTestPod("default", "b", "10.0.0.2", "zone-b")
+	metricCache := &externalProtocolCache{running: map[string]int64{
+		utils.GeneratePodKey("default", "a"): 3,
+		utils.GeneratePodKey("default", "b"): 5,
+	}}
+	cfg := externalRouterConfig{
+		policyMode:       PolicyAdvisory,
+		candidateMetrics: map[string]struct{}{externalMetricRunningRequests: {}},
+	}
+	ctx := types.NewRoutingContext(context.Background(), Algorithm, "llama", "", "req-shared", "")
+	t.Cleanup(ctx.Delete)
+	ctx.StartRunningRequestsSnapshot()
+	pods := []*v1.Pod{podA, podB}
+	_, err := ctx.RunningRequests(pods, metricCache.GetPodsRunningRequests)
+	require.NoError(t, err)
+
+	request, _, err := buildExternalDecisionRequest(cfg, metricCache, ctx, &utils.PodArray{Pods: pods})
+	require.NoError(t, err)
+	require.Equal(t, 1, metricCache.runningCalls, "the request reuses the decision's read")
+	require.Equal(t, int64(3), *request.Spec.Candidates[0].Metrics.RunningRequests)
+}
+
 func TestBuildExternalDecisionRequestKeepsNamespacePortsSeparate(t *testing.T) {
 	podA := externalTestPod("ns-a", "same-name", "10.0.0.1", "zone-a")
 	podB := externalTestPod("ns-b", "same-name", "10.0.0.2", "zone-b")
