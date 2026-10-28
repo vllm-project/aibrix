@@ -593,6 +593,42 @@ func TestPreble_RemovedPodHistoryDoesNotDoubleCount(t *testing.T) {
 		"only the surviving request should count toward pod-a")
 }
 
+// TestPreble_SharedPrefixCostIsSplitAcrossPods checks that a prefix node's prefill
+// cost is divided by the number of pods holding it, not charged in full to each of
+// them, following the Preble cost model. Four requests share a prefix held by
+// pod-a and pod-b, while pod-c holds three of its own; all pods share the decode
+// term, so the split determines which pod looks cheapest for an unrelated request.
+func TestPreble_SharedPrefixCostIsSplitAcrossPods(t *testing.T) {
+	podA := newPod("pod-a", "10.0.0.1", true, nil)
+	podB := newPod("pod-b", "10.0.0.2", true, nil)
+	podC := newPod("pod-c", "10.0.0.3", true, nil)
+	pods := []*v1.Pod{podA, podB, podC}
+	all := newMockPodList(pods, nil)
+	router := newTestRouter(3, cache.NewWithPodsMetricsForTest(pods, "m", nil))
+
+	seed := func(prompt string, pod *v1.Pod, n int) {
+		for i := 0; i < n; i++ {
+			require.NoError(t, router.PostRouteUpdate(createTestRoutingContext("m", prompt, "seed"), all, pod))
+		}
+	}
+	// Four requests share a prefix held by pod-a and pod-b; pod-c holds three of its own.
+	seed(prebleSharedPrompt, podA, 2)
+	seed(prebleSharedPrompt, podB, 2)
+	seed("Translate the following technical manual section from German into plain English.", podC, 3)
+
+	costs := router.histogram.getCurrentAllocationCostPerPod("")
+	keyA := utils.GeneratePodKey(podA.Namespace, podA.Name)
+	keyC := utils.GeneratePodKey(podC.Namespace, podC.Name)
+	assert.Less(t, costs[keyA], costs[keyC], "pod-a carries half of four requests, pod-c all of three")
+
+	// An unrelated prompt matches no prefix, so Route picks the lowest-cost pod.
+	ctx := createTestRoutingContext("m", "zq", "route")
+	_, err := router.Route(ctx, all)
+	require.NoError(t, err)
+	require.NotNil(t, ctx.TargetPod())
+	assert.NotEqual(t, podC.Name, ctx.TargetPod().Name)
+}
+
 // cachedPodKeys returns the pods the prefix tree lists for model on the node that
 // matches prompt.
 func cachedPodKeys(t *testing.T, router *prefixCacheAndLoadRouter, model, prompt string) []string {
