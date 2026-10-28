@@ -1,5 +1,5 @@
 /*
-Copyright 2025 The Aibrix Team.
+Copyright 2026 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -64,6 +64,27 @@ func TestCalculateMean1m(t *testing.T) {
 		_, ok := c.calculateMean1m(pod, model, metric, hist(500, 1000))
 
 		require.False(t, ok)
+	})
+
+	t.Run("too few observations in the window", func(t *testing.T) {
+		// One 40 s request on a pod that is otherwise at 2 s must not stand for the
+		// whole minute; five observations are enough to trust.
+		for _, tc := range []struct {
+			observations float64
+			wantOK       bool
+		}{{1, false}, {recentMeanMinSamples - 1, false}, {recentMeanMinSamples, true}} {
+			c, pod := &Store{}, namespacedTestPod("ns", "quiet-pod")
+			purgeRateHistory(t, pod)
+			seedMean1m(pod, model, metric, 200, 100, time.Minute)
+
+			mean, ok := c.calculateMean1m(pod, model, metric, hist(200+40*tc.observations, 100+tc.observations))
+
+			require.Equal(t, tc.wantOK, ok, "%v observations", tc.observations)
+			if ok {
+				require.InDelta(t, 40.0, mean, 1e-9)
+			}
+			purgeRateHistoryNow(pod)
+		}
 	})
 
 	t.Run("too little history", func(t *testing.T) {

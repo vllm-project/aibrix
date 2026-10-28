@@ -1,5 +1,5 @@
 /*
-Copyright 2025 The Aibrix Team.
+Copyright 2026 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,6 +32,11 @@ var recentMeanHistograms = map[string]bool{
 	metrics.RequestInferenceTimeSeconds: true,
 }
 
+// recentMeanMinSamples is the fewest observations a ~1-minute window needs before its
+// mean is trusted. A quiet pod that served a single slow request in the window would
+// otherwise score as if every request were that slow, and lose traffic for a minute.
+const recentMeanMinSamples = 5
+
 // RecentMeanMetricName is the pod-model metric under which the cache stores the mean of
 // a latency histogram over about the last minute.
 func RecentMeanMetricName(histogramName string) string {
@@ -39,8 +44,8 @@ func RecentMeanMetricName(histogramName string) string {
 }
 
 // RecentHistogramMean returns the mean of a pod's latency histogram over about the last
-// minute, or its lifetime mean when the pod had no observation in that window (or the
-// cache has too little history yet).
+// minute, or its lifetime mean when the pod had too few observations in that window (or
+// the cache has too little history yet).
 func RecentHistogramMean(c MetricCache, podName, podNamespace, modelName, metricName string, lifetime *metrics.HistogramMetricValue) float64 {
 	if recent, err := c.GetMetricValueByPodModel(podName, podNamespace, modelName, RecentMeanMetricName(metricName)); err == nil && recent != nil {
 		return recent.GetSimpleValue()
@@ -70,7 +75,8 @@ func (c *Store) updateRecentMean(pod *Pod, model, metric string, metricValue met
 // calculateMean1m returns the mean of the observations a cumulative histogram received
 // over about the last minute, (Sum - Sum_base) / (Count - Count_base), with the same
 // snapshots and window as calculateRate1m. ok is false when there is too little history,
-// no observation in the window, or the histogram was reset by an engine restart.
+// fewer than recentMeanMinSamples observations in the window, or the histogram was reset
+// by an engine restart.
 func (c *Store) calculateMean1m(pod *Pod, modelName, metricName string, histogram *metrics.HistogramMetricValue) (mean float64, ok bool) {
 	key := rateHistoryKey(pod, modelName, RecentMeanMetricName(metricName))
 	now := time.Now()
@@ -91,9 +97,10 @@ func (c *Store) calculateMean1m(pod *Pod, modelName, metricName string, histogra
 	}
 
 	sum, count := histogram.Sum-base.Value, histogram.Count-base.Count
-	if sum < 0 || count <= 0 {
-		// No observation in the window, or the engine restarted and the histogram
-		// started again from zero: either way, readers use the lifetime mean.
+	if sum < 0 || count < recentMeanMinSamples {
+		// Too few observations in the window to average, or the engine restarted and
+		// the histogram started again from zero: either way, readers use the lifetime
+		// mean.
 		return 0, false
 	}
 	return sum / count, true
