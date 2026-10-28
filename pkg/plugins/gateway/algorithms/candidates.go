@@ -90,7 +90,7 @@ func SelectCandidates(ctx *types.RoutingContext, router types.Router, readyPods 
 func selectCandidates(ctx *types.RoutingContext, router types.Router, readyPods []*v1.Pod, k, m int) []*v1.Pod {
 	// A negative M only turns seeding off; it does not disable the stage.
 	m = max(m, 0)
-	if k <= 0 || len(readyPods) <= k+m || !candidateStageApplies(ctx) {
+	if k <= 0 || len(readyPods) <= k || !candidateStageApplies(ctx) {
 		return readyPods
 	}
 
@@ -112,9 +112,15 @@ func selectCandidates(ctx *types.RoutingContext, router types.Router, readyPods 
 			candidates = append(candidates, pod)
 		}
 	}
-	// k+m < len(readyPods), so k random pods outside the seeds always exist. When the sample is a
-	// small share of readyPods, rejection sampling keeps this O(k) instead of touching every pod.
+	// The stage applies only when it leaves some ready pod out. M only caps the seeds, so it is
+	// the seeds the router actually returned that count here: a router that seeds fewer than M,
+	// or none, still gets a K-pod sample.
 	want := len(candidates) + k
+	if want >= len(readyPods) {
+		return readyPods
+	}
+	// want < len(readyPods), so k random pods outside the seeds always exist. When the sample is
+	// a small share of readyPods, rejection sampling keeps this O(k) instead of touching every pod.
 	if 2*want > len(readyPods) {
 		for _, i := range rand.Perm(len(readyPods)) {
 			if len(candidates) == want {

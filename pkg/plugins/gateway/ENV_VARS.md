@@ -198,7 +198,7 @@ is candidate-safe: it judges pods only by the pods it is given, with no fleet-wi
 own. These are `least-request`, `least-request-top-k`, `load-balance`, `prefix-cache`, `random`,
 `power-of-two` and the other `least-*` strategies. Any other strategy, such as `vtc-basic`,
 `session-affinity`, the queue router, `external`, `throughput`, `pd` or `slo*`, keeps every ready
-pod. It also does nothing when K + M is at least the number of ready pods. When a per-replica
+pod. It also does nothing when K plus the pods the router seeds is at least the number of ready pods. When a per-replica
 inflight cap is set, its saturation filter still runs over every ready pod first.
 
 The scoring formulas are unchanged, but checks that compare a pod with the rest of its pool now

@@ -80,7 +80,7 @@ func TestSelectCandidates_KeepsAllPodsWhenNotApplicable(t *testing.T) {
 		k, m     int
 	}{
 		{"disabled", "least-request:1,load-balance:1", 0, 4},
-		{"set would not shrink", "load-balance", 36, 4},
+		{"K covers every pod", "load-balance", 40, 4},
 		{"global-view strategy", "vtc-basic", 8, 4},
 		{"blend with a global-view strategy", "least-request:1,vtc-basic:1", 8, 4},
 		{"session pin", "session-affinity", 8, 4},
@@ -92,6 +92,36 @@ func TestSelectCandidates_KeepsAllPodsWhenNotApplicable(t *testing.T) {
 			assert.Equal(t, pods, got)
 		})
 	}
+}
+
+// M only caps the seeds: with fewer ready pods than K+M, the stage still samples K pods unless K
+// plus the seeds the router actually returned covers every pod.
+func TestSelectCandidates_AppliesWhenFewerPodsThanKPlusM(t *testing.T) {
+	pods := candidatePods(20)
+
+	// A strategy that seeds nothing (least-request) or a seeder with no match gets K pods.
+	for _, tc := range []struct {
+		resolved string
+		router   types.Router
+	}{
+		{"least-request", &seedingRouter{}},
+		{"load-balance", nil},
+		{"prefix-cache", &seedingRouter{}},
+	} {
+		got := selectCandidates(candidateCtx(t, tc.resolved), tc.router, pods, 8, 16)
+		requireDistinctSubset(t, got, pods)
+		require.Len(t, got, 8, tc.resolved)
+	}
+
+	// Seeds and K that together leave a pod out are used as usual.
+	router := &seedingRouter{seeds: []*v1.Pod{pods[3], pods[4]}}
+	got := selectCandidates(candidateCtx(t, "prefix-cache"), router, pods, 8, 16)
+	requireDistinctSubset(t, got, pods)
+	require.Len(t, got, 10)
+
+	// Seeds and K that cover every pod keep all of them.
+	router = &seedingRouter{seeds: pods[:12]}
+	assert.Equal(t, pods, selectCandidates(candidateCtx(t, "prefix-cache"), router, pods, 8, 16))
 }
 
 func TestSelectCandidates_SamplesKDistinctPodsPlusSeeds(t *testing.T) {
