@@ -1,0 +1,26 @@
+# The head Service a real deployment needs, in the shape the controller does not
+# create yet.
+#
+#   kubectl apply --dry-run=client -f samples/orchestration/omni-master-wait/head-service.yaml
+#
+# This Service targets a StormService named qwen2-5-omni whose head role is
+# `thinker`. It selects on the two labels the controller puts on every role Pod
+# (`storm-service-name` and `role-name`), so it resolves to the head role only,
+# and it publishes not-ready addresses so the master port stays reachable while
+# the head is `Ready=False`. The port has to match `--omni-master-port`.
+#
+# In the mock run in this directory there is no StormService, so it matches no
+# Pods: the mock head carries `app: omni-master-wait-head`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen2-5-omni-head
+spec:
+  selector:
+    storm-service-name: qwen2-5-omni
+    role-name: thinker
+  publishNotReadyAddresses: true
+  ports:
+    - name: master
+      port: 26000
+      targetPort: 26000
