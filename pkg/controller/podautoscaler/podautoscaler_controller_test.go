@@ -912,7 +912,7 @@ func TestReplicaStateFromPodsUsesCurrentReplicasMinusReadyPodsAsPending(t *testi
 		*readyPod(ns, "old-ready-5", labels),
 		*notReadyPod(ns, "new-pending-1", labels),
 		*notReadyPod(ns, "new-pending-2", labels),
-	}, 4)
+	}, 4, false)
 
 	if state.ReadyReplicas != 4 {
 		t.Fatalf("ReadyReplicas=%d, want 4", state.ReadyReplicas)
@@ -927,7 +927,7 @@ func TestReplicaStateFromPodsTreatsMissingPodsAsPending(t *testing.T) {
 	state := replicaStateFromPods([]corev1.Pod{
 		*readyPod(ns, "ready-1", labels),
 		*readyPod(ns, "ready-2", labels),
-	}, 4)
+	}, 4, false)
 
 	if state.ReadyReplicas != 2 {
 		t.Fatalf("ReadyReplicas=%d, want 2", state.ReadyReplicas)
