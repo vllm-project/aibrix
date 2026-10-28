@@ -186,8 +186,8 @@ belongs in the relevant API or gateway layer.
 
 ### Coding conventions
 
-- Follow existing Go package structure and standard Go style; use `gofmt` or
-  `make fmt`.
+- Follow existing Go package structure and standard Go style. Format Go changes
+  with `gofmt` or `make fmt`, and run `make lint` before submitting the PR.
 - Put reusable implementation in `pkg/`; keep `cmd/` entrypoints thin.
 - Use table-driven tests where they match the surrounding package style.
 - Follow the [test guidance](../test/README.md#verification-principles) for
