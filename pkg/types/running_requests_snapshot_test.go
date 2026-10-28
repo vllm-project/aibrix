@@ -79,36 +79,36 @@ func TestRunningRequests_OutsideSnapshotReadsEveryTime(t *testing.T) {
 	assert.Len(t, r.calls, 3, "a nil context reads live")
 }
 
-func TestRunningRequests_SnapshotReadsEachPodOnce(t *testing.T) {
+func TestRunningRequests_SnapshotSharesFirstRead(t *testing.T) {
 	r := &countingReader{live: map[string]int64{"a": 1, "b": 2, "c": 3}}
 	ctx := NewRoutingContext(context.Background(), "least-request", "m", "", "req-snap", "")
 	defer ctx.Delete()
 	ctx.StartRunningRequestsSnapshot()
 
-	all := snapshotPods("a", "b", "unknown")
+	all := snapshotPods("a", "b", "c")
 	got, err := ctx.RunningRequests(all, r.read)
 	require.NoError(t, err)
-	assert.Equal(t, map[string]int64{"ns/a": 1, "ns/b": 2}, got, "a pod without a count stays missing")
+	assert.Equal(t, map[string]int64{"ns/a": 1, "ns/b": 2, "ns/c": 3}, got)
 
-	// A later change is not seen inside the decision: every reader shares the first value.
+	// A later change is not seen inside the decision: a subset of the first read, including
+	// another object for the same pod (pods are matched by namespace/name, not by pointer),
+	// is answered from it.
 	r.live["a"] = 9
-	got, err = ctx.RunningRequests([]*v1.Pod{all[0], all[2]}, r.read)
-	require.NoError(t, err)
-	assert.Equal(t, map[string]int64{"ns/a": 1}, got)
-	assert.Equal(t, [][]string{{"a", "b", "unknown"}}, r.calls, "a subset already read is not read again, nor is a pod without a count")
+	for _, pods := range [][]*v1.Pod{{nil, all[0], all[2]}, snapshotPods("a")} {
+		got, err = ctx.RunningRequests(pods, r.read)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), got["ns/a"])
+	}
+	assert.Equal(t, [][]string{{"a", "b", "c"}}, r.calls, "a subset of the first read is not read again")
 
-	// Only pods no earlier call read go to the reader.
-	got, err = ctx.RunningRequests([]*v1.Pod{nil, all[1], snapshotPods("c")[0]}, r.read)
+	// A pod outside the first read sends the call to the reader, live, and is not kept.
+	got, err = ctx.RunningRequests(snapshotPods("a", "d"), r.read)
 	require.NoError(t, err)
-	assert.Equal(t, map[string]int64{"ns/b": 2, "ns/c": 3}, got)
-	assert.Equal(t, [][]string{{"a", "b", "unknown"}, {"c"}}, r.calls)
-
-	// Another object for a pod already read is not read again either: pods are matched by
-	// namespace/name, not by pointer.
-	got, err = ctx.RunningRequests(snapshotPods("a"), r.read)
+	assert.Equal(t, map[string]int64{"ns/a": 9}, got)
+	got, err = ctx.RunningRequests(snapshotPods("b"), r.read)
 	require.NoError(t, err)
-	assert.Equal(t, map[string]int64{"ns/a": 1}, got)
-	assert.Len(t, r.calls, 2)
+	assert.Equal(t, int64(2), got["ns/b"])
+	assert.Equal(t, [][]string{{"a", "b", "c"}, {"a", "d"}}, r.calls)
 
 	ctx.StopRunningRequestsSnapshot()
 	got, err = ctx.RunningRequests(snapshotPods("a"), r.read)
