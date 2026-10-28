@@ -60,6 +60,10 @@ type ReplicaComputeRequest struct {
 	ReplicaState    ReplicaState
 	Pods            []corev1.Pod
 	Timestamp       time.Time
+	// PodsPerReplica is how many of the selected pods one replica of the scale
+	// target runs: more than one for a StormService whose replicas are RoleSets.
+	// Zero means one.
+	PodsPerReplica float64
 }
 
 // ReplicaState captures scale target readiness state for pipeline-level guards.
@@ -551,7 +555,7 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 		ScalingContext:    scalingContext,
 		Timestamp:         request.Timestamp,
 		StableWindow:      stableWindow,
-		LoadPods:          loadPods,
+		LoadPods:          loadPods / math.Max(1, request.PodsPerReplica),
 	}
 	if request.PodAutoscaler.Spec.ScalingStrategy == autoscalingv1alpha1.KPA {
 		scalingRequest.Panic = a.panicState(ktypes.NamespacedName{
