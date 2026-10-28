@@ -204,7 +204,7 @@ type RoutingContext struct {
 	routingOverrides *RoutingOverrides
 	// runningRequests holds the running-request counts read during the current routing
 	// decision, shared by every reader in it. Nil outside a decision. See RunningRequests.
-	runningRequests *runningRequestsSnapshot
+	runningRequests atomic.Pointer[runningRequestsSnapshot]
 	// trustedPolicyAttributes contains request policy inputs populated by trusted
 	// in-process producers. External routers must still apply their operator
 	// allowlist before serializing any entry.

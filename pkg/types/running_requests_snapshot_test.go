@@ -19,6 +19,7 @@ package types
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -86,9 +87,10 @@ func TestRunningRequests_SnapshotSharesFirstRead(t *testing.T) {
 	ctx.StartRunningRequestsSnapshot()
 
 	all := snapshotPods("a", "b", "c")
-	got, err := ctx.RunningRequests(all, r.read)
+	first, err := ctx.RunningRequests(all, r.read)
 	require.NoError(t, err)
-	assert.Equal(t, map[string]int64{"ns/a": 1, "ns/b": 2, "ns/c": 3}, got)
+	assert.Equal(t, map[string]int64{"ns/a": 1, "ns/b": 2, "ns/c": 3}, first)
+	var got map[string]int64
 
 	// A later change is not seen inside the decision: a subset of the first read, including
 	// another object for the same pod (pods are matched by namespace/name, not by pointer),
@@ -109,6 +111,15 @@ func TestRunningRequests_SnapshotSharesFirstRead(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), got["ns/b"])
 	assert.Equal(t, [][]string{{"a", "b", "c"}, {"a", "d"}}, r.calls)
+	assert.Equal(t, map[string]int64{"ns/a": 1, "ns/b": 2, "ns/c": 3}, first,
+		"a result already handed out is never written to")
+
+	// A pod the first read returned no count for is not in the snapshot either, so a call
+	// asking for it reads live every time.
+	got, err = ctx.RunningRequests(snapshotPods("unknown"), r.read)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+	assert.Len(t, r.calls, 3)
 
 	ctx.StopRunningRequestsSnapshot()
 	got, err = ctx.RunningRequests(snapshotPods("a"), r.read)
@@ -146,4 +157,38 @@ func TestRunningRequests_ResetDropsSnapshot(t *testing.T) {
 	got, err := ctx.RunningRequests(snapshotPods("a"), r.read)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]int64{"ns/a": 7}, got)
+}
+
+// A routing context can be reached from another goroutine (a queue router's serve loop routes
+// a waiting request with it). Reads racing Start and Stop must be safe; run with -race.
+func TestRunningRequests_ConcurrentStartStopAndReads(t *testing.T) {
+	ctx := NewRoutingContext(context.Background(), "least-request", "m", "", "req-race", "")
+	defer ctx.Delete()
+	pods := snapshotPods("a", "b")
+	read := func(pods []*v1.Pod) (map[string]int64, error) {
+		out := make(map[string]int64, len(pods))
+		for _, pod := range pods {
+			out[pod.Namespace+"/"+pod.Name] = 1
+		}
+		return out, nil
+	}
+
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				got, err := ctx.RunningRequests(pods, read)
+				if assert.NoError(t, err) {
+					assert.Equal(t, int64(1), got["ns/a"])
+				}
+			}
+		}()
+	}
+	for i := 0; i < 500; i++ {
+		ctx.StartRunningRequestsSnapshot()
+		ctx.StopRunningRequestsSnapshot()
+	}
+	wg.Wait()
 }

@@ -26,8 +26,12 @@ import (
 // decision. With Redis, every read of a pod list is a pipelined HGETALL per pod, and the
 // inflight filter, the load-imbalance gate, the strategy and its auto-blend each read the same
 // ready pods or a subset of them, so sharing the first read turns three or four fleet-wide
-// reads into one. Like routingOverrides, it is written and read only by the request goroutine
-// that routes, so it needs no lock.
+// reads into one.
+//
+// A snapshot is never changed once it is published: the first read publishes a new one in
+// place of the empty one Start put there. With RoutingContext.runningRequests an atomic
+// pointer, a reader on another goroutine (e.g. a queue router's serve loop routing a waiting
+// request) sees either no snapshot or a complete one, without a lock.
 type runningRequestsSnapshot struct {
 	// counts is the first read's result, nil until a read succeeds.
 	counts map[string]int64
@@ -35,13 +39,18 @@ type runningRequestsSnapshot struct {
 
 // StartRunningRequestsSnapshot makes RunningRequests share the first read until
 // StopRunningRequestsSnapshot. The gateway brackets one routing decision with the pair, so
-// reads after the decision see live counts. The admission that reserves the chosen pod (cache.AdmitPodRunningRequest) is not a read and
-// always goes to the live counter.
+// reads after the decision see live counts. The admission that reserves the chosen pod
+// (cache.AdmitPodRunningRequest) is not a read and always goes to the live counter.
+//
+// The snapshot spans all of the decision, including any time a queue router holds the
+// request before routing it, so counts read before such a wait would be stale after it. A
+// queued strategy must therefore not read through RunningRequests before it waits. Today
+// only the slo* strategies queue, and their backends do not read running-request counts.
 func (r *RoutingContext) StartRunningRequestsSnapshot() {
 	if r == nil {
 		return
 	}
-	r.runningRequests = &runningRequestsSnapshot{}
+	r.runningRequests.Store(&runningRequestsSnapshot{})
 }
 
 // StopRunningRequestsSnapshot drops the shared counts, so later reads see live values again.
@@ -49,26 +58,32 @@ func (r *RoutingContext) StopRunningRequestsSnapshot() {
 	if r == nil {
 		return
 	}
-	r.runningRequests = nil
+	r.runningRequests.Store(nil)
 }
 
 // RunningRequests returns the running-request count of pods, keyed by utils.GeneratePodKey,
 // as read returns it. Outside a snapshot it calls read. Inside one, the first successful read
 // is kept, and a later call whose pods all have a count in it is answered from it, so every
 // reader in one routing decision sees the same value for a pod. Any other call reads live and
-// is not kept. The first read is lazy, so a decision that reads no counts pays nothing. The result must not be modified, and inside a snapshot it can hold
-// pods besides the ones asked for, so look pods up by key rather than ranging over it.
+// is not kept. The first read is lazy, so a decision that reads no counts pays nothing. The
+// result must not be modified, and inside a snapshot it can hold pods besides the ones asked
+// for, so look pods up by key rather than ranging over it.
 func (r *RoutingContext) RunningRequests(pods []*v1.Pod, read func(pods []*v1.Pod) (map[string]int64, error)) (map[string]int64, error) {
-	if r == nil || r.runningRequests == nil {
+	if r == nil {
 		return read(pods)
 	}
-	s := r.runningRequests
+	s := r.runningRequests.Load()
+	if s == nil {
+		return read(pods)
+	}
 	if s.counts == nil {
 		counts, err := read(pods)
 		if err != nil || counts == nil {
 			return counts, err
 		}
-		s.counts = counts
+		// Publish only over the snapshot this call started from, so a Stop in the meantime
+		// is not undone.
+		r.runningRequests.CompareAndSwap(s, &runningRequestsSnapshot{counts: counts})
 		return counts, nil
 	}
 	for _, pod := range pods {
