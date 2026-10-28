@@ -598,6 +598,17 @@ func TestPreble_RemovedPodHistoryDoesNotDoubleCount(t *testing.T) {
 // them, following the Preble cost model. Four requests share a prefix held by
 // pod-a and pod-b, while pod-c holds three of its own; all pods share the decode
 // term, so the split determines which pod looks cheapest for an unrelated request.
+//
+// The scores are pinned to the decomposition of the cost model: every pod
+// carries the decode term (pinned to 45 tokens at the 0.15 ms/token default;
+// 6.75), the shared node's four-request prefill (4 x 0.062) is spread over its
+// two holders (0.124 each, 6.874 total), and pod-c pays its own node's
+// three-request prefill in full (3 x 0.062, 6.936 total). Pinning kills the
+// mutants a bare inequality admits: no split, splitting by len(modelPods)+1
+// or by len(modelPods)*2, and splitting the decode term across holders all
+// move the scores. A flat divisor over every pod the node lists is
+// indistinguishable in this fixture, because all three pods hold model m;
+// that distinction only shows on nodes shared by several models.
 func TestPreble_SharedPrefixCostIsSplitAcrossPods(t *testing.T) {
 	podA := newPod("pod-a", "10.0.0.1", true, nil)
 	podB := newPod("pod-b", "10.0.0.2", true, nil)
@@ -606,6 +617,7 @@ func TestPreble_SharedPrefixCostIsSplitAcrossPods(t *testing.T) {
 	all := newMockPodList(pods, nil)
 	router := newTestRouter(3, cache.NewWithPodsMetricsForTest(pods, "m", nil))
 
+	ownPrompt := "Translate the following technical manual section from German into plain English."
 	seed := func(prompt string, pod *v1.Pod, n int) {
 		for i := 0; i < n; i++ {
 			require.NoError(t, router.PostRouteUpdate(createTestRoutingContext("m", prompt, "seed"), all, pod))
@@ -614,16 +626,35 @@ func TestPreble_SharedPrefixCostIsSplitAcrossPods(t *testing.T) {
 	// Four requests share a prefix held by pod-a and pod-b; pod-c holds three of its own.
 	seed(prebleSharedPrompt, podA, 2)
 	seed(prebleSharedPrompt, podB, 2)
-	seed("Translate the following technical manual section from German into plain English.", podC, 3)
+	seed(ownPrompt, podC, 3)
+
+	// PostRouteUpdate stores the per-request decode length on the node; its
+	// default is read from AIBRIX_ROUTER_PREBLE_DECODING_LENGTH once the
+	// process starts. Pin both nodes to that default so the pinned scores
+	// below do not depend on the environment running the test.
+	sharedTokens, err := utils.TokenizeInputText(prebleSharedPrompt)
+	require.NoError(t, err)
+	sharedNode, _ := router.cache.MatchPrefixNodeReadOnly(sharedTokens)
+	require.NotNil(t, sharedNode)
+	ownTokens, err := utils.TokenizeInputText(ownPrompt)
+	require.NoError(t, err)
+	ownNode, _ := router.cache.MatchPrefixNodeReadOnly(ownTokens)
+	require.NotNil(t, ownNode)
+	router.histogram.decodingSize[sharedNode] = 45
+	router.histogram.decodingSize[ownNode] = 45
 
 	costs := router.histogram.getCurrentAllocationCostPerPod("")
 	keyA := utils.GeneratePodKey(podA.Namespace, podA.Name)
+	keyB := utils.GeneratePodKey(podB.Namespace, podB.Name)
 	keyC := utils.GeneratePodKey(podC.Namespace, podC.Name)
+	assert.InDelta(t, 6.874, costs[keyA], 1e-9, "pod-a: half of the shared node's four-request prefill on top of the decode term")
+	assert.InDelta(t, 6.874, costs[keyB], 1e-9, "pod-b carries the other half")
+	assert.InDelta(t, 6.936, costs[keyC], 1e-9, "pod-c: its own node's three-request prefill, unsplit")
 	assert.Less(t, costs[keyA], costs[keyC], "pod-a carries half of four requests, pod-c all of three")
 
 	// An unrelated prompt matches no prefix, so Route picks the lowest-cost pod.
 	ctx := createTestRoutingContext("m", "zq", "route")
-	_, err := router.Route(ctx, all)
+	_, err = router.Route(ctx, all)
 	require.NoError(t, err)
 	require.NotNil(t, ctx.TargetPod())
 	assert.NotEqual(t, podC.Name, ctx.TargetPod().Name)

@@ -391,7 +391,11 @@ func (h *SlidingWindowHistogram) getCurrentAllocationCostPerPod(gpu string) map[
 
 	costs := make(map[string]float64)
 	for node := range h.histogram {
-		// Iterate through all models and their pods for this node
+		// Iterate through all models and their pods for this node. len(modelPods)
+		// matches Preble: the pods of one model that hold the node share its
+		// prefill. The histogram's request count is per node rather than per
+		// model, so when several models share a prefix node the cost stays
+		// over-attributed across models; per-model counts would be the durable fix.
 		for _, modelPods := range node.GetModelToPods() {
 			for podKey := range modelPods {
 				costs[podKey] += h.getNodeCost(node, podKey, gpu, len(modelPods))
