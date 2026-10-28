@@ -415,36 +415,53 @@ func TestComputeDesiredReplicasAdjustsKPAAPAConservativelyWhenReplicasPending(t 
 func TestComputeDesiredReplicasGuardsEachMetricBeforeTakingTheMax(t *testing.T) {
 	for _, tt := range []struct {
 		name         string
+		strategy     autoscalingv1alpha1.ScalingStrategyType
 		currentPods  int32
 		readyPods    int32
 		podValue     float64
 		externalVal  float64
 		wantReplicas int32
 		wantMetric   string
+		wantGuard    bool
 	}{
 		{
 			// The pod metric asks for 12 and wins, but its guarded value is 6.
 			name:         "scale-up keeps the external metric's 7",
+			strategy:     autoscalingv1alpha1.APA,
 			currentPods:  4,
 			readyPods:    2,
 			podValue:     150,
 			externalVal:  350,
 			wantReplicas: 7,
 			wantMetric:   "queue_length",
+			wantGuard:    false,
 		},
 		{
 			// The external metric asks for 3 and wins, but the pod metric's guarded value is 4.
-			name:         "scale-down holds for the pending pods",
+			name:         "APA scale-down holds for the pending pods",
+			strategy:     autoscalingv1alpha1.APA,
 			currentPods:  4,
 			readyPods:    1,
 			podValue:     10,
 			externalVal:  150,
 			wantReplicas: 4,
 			wantMetric:   "gpu_cache_usage_perc",
+			wantGuard:    true,
+		},
+		{
+			name:         "KPA scale-down holds for the pending pods",
+			strategy:     autoscalingv1alpha1.KPA,
+			currentPods:  4,
+			readyPods:    1,
+			podValue:     10,
+			externalVal:  150,
+			wantReplicas: 4,
+			wantMetric:   "gpu_cache_usage_perc",
+			wantGuard:    true,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			pa := testPodAutoscaler(autoscalingv1alpha1.APA)
+			pa := testPodAutoscaler(tt.strategy)
 			pa.Spec.MetricsSources = append(pa.Spec.MetricsSources, autoscalingv1alpha1.MetricSource{
 				MetricSourceType: autoscalingv1alpha1.EXTERNAL,
 				TargetMetric:     "queue_length",
@@ -478,6 +495,10 @@ func TestComputeDesiredReplicasGuardsEachMetricBeforeTakingTheMax(t *testing.T) 
 			require.NotNil(t, result)
 			assert.Equal(t, tt.wantReplicas, result.DesiredReplicas)
 			assert.Equal(t, tt.wantMetric, result.MetricName)
+			assert.Equal(t, tt.wantGuard, result.PendingReplicaGuardActive)
+			if tt.wantGuard {
+				assert.Equal(t, "scale-down adjusted: pending replicas treated at target utilization", result.Reason)
+			}
 		})
 	}
 }
