@@ -721,7 +721,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 	claims, listErr := r.listClaimsForAccount(ctx, pm.Namespace)
 	ledgers := podLedgersFrom(claims, listErr, candidates, snapshots, r.podsWithoutWakeReserve(ctx, candidates))
 	r.reservations().takeFrom(ledgers, pm.Namespace, pm.Name, r.now())
-	r.reservations().keepWakesOutOfPreemption(ledgers, pm.Namespace, pm.Name, r.now())
+	r.reservations().keepWakesOutOfPreemption(ledgers, claims, pm, r.now())
 	if len(pm.Status.Instances) == 0 {
 		if listErr != nil {
 			return 0, placementAdmissionReadError{err: listErr}

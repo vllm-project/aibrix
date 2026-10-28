@@ -43,6 +43,51 @@ The Python runtime has additional guidance in
   external messages without explicit authorization for that action.
 - Ask before upgrading dependencies or changing `.github/` workflow policy.
 
+## Contribution intake and evidence
+
+Issues are the primary place to decide whether AIBrix should maintain a change.
+Before implementing a feature or bug fix for a contributor who is not a project
+maintainer:
+
+- Search for an existing issue and open pull requests that cover the same
+  problem.
+- Require an issue with enough evidence to evaluate the problem, affected
+  users, and proposed direction. Production problems, upstream or downstream
+  integration RFCs, reproducible defects, and clear logic or contract
+  violations are appropriate starting points.
+- Wait until a maintainer applies `triage/accepted`. Until then, limit work to
+  investigation, reproduction, and improving the issue; do not implement the
+  change or prepare a pull request.
+- Treat acceptance as agreement on the problem and general direction, not as
+  approval of a future patch. Return to the issue if implementation would
+  materially expand the accepted scope.
+
+Maintainers may self-triage routine fixes and may develop an issue and pull
+request together. Sensitive or broad changes still require prior discussion
+and independent maintainer review. Pure documentation corrections and obvious
+mechanical fixes may proceed without an accepted issue only when they do not
+change behavior, configuration, dependencies, workflows, APIs, or generated
+files. Do not treat test-only changes as automatically exempt; identify the
+real behavior or risk they protect.
+
+For a pull request associated with an accepted issue:
+
+- Link it with `Fixes #<issue-number>`.
+- Record the affected versions or environments, reproduction steps, root cause,
+  and user-visible or operational impact.
+- For a bug fix, add a regression test when practical and confirm that it fails
+  for the expected reason before the fix and passes afterward.
+- Report the exact verification commands and results, including relevant checks
+  that could not be run. Never describe an unexecuted check as passing.
+- Do not present agent-generated analysis or review as maintainer approval. The
+  human contributor remains responsible for understanding every submitted
+  change.
+
+Maintainers may close pull requests without a detailed code review when they
+bypass this process, duplicate existing work, lack required evidence after
+feedback, materially exceed the accepted scope, or add low-value maintenance
+burden. A compliant change may be submitted as a new pull request.
+
 ## API and compatibility surfaces
 
 Treat the following as compatibility surfaces:

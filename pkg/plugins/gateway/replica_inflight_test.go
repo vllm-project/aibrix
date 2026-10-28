@@ -276,7 +276,7 @@ func TestFilterSaturatedReplicaInflight(t *testing.T) {
 		Return(map[string]int64{"ns/a": 1, "ns/b": 0}, nil)
 	s := &Server{cache: mockCache}
 
-	kept := s.filterSaturatedReplicaInflight([]*v1.Pod{podA, podB}, 1)
+	kept := s.filterSaturatedReplicaInflight(nil, []*v1.Pod{podA, podB}, 1)
 	require.Len(t, kept, 1)
 	assert.Equal(t, "b", kept[0].Name)
 }

@@ -46,10 +46,10 @@ msgstr "**指标标准化** ：抓取引擎的 ``/metrics`` ，并在自身端�
 #: ../../source/features/model-serving/runtime.rst:16
 msgid ""
 "**Model and adapter management**: it downloads model weights from "
-"HuggingFace, S3 or TOS and loads or unloads LoRA adapters on the engine. "
-"The :doc:`lora-dynamic-loading` controller calls these endpoints."
+"HuggingFace, S3, TOS or GCS and loads or unloads LoRA adapters on the "
+"engine. The :doc:`lora-dynamic-loading` controller calls these endpoints."
 msgstr ""
-"**模型与适配器管理** ：从 Hugging Face、S3 或 TOS 下载模型权重，并在引擎上加载或卸载 LoRA 适配器。:doc"
+"**模型与适配器管理** ：从 Hugging Face、S3、TOS 或 GCS 下载模型权重，并在引擎上加载或卸载 LoRA 适配器。:doc"
 ":`lora-dynamic-loading` 控制器会调用这些接口。"
 
 #: ../../source/features/model-serving/runtime.rst:19
@@ -542,11 +542,11 @@ msgstr "模型下载"
 #: ../../source/features/model-serving/runtime.rst:364
 msgid ""
 "The AI Engine Runtime supports downloading models from multiple remote "
-"sources, including HuggingFace, S3, and TOS. This is extremely useful "
-"when the control plane needs to interact with the pod to dynamically load"
-" new models."
+"sources, including HuggingFace, S3, TOS, and GCS. This is extremely "
+"useful when the control plane needs to interact with the pod to "
+"dynamically load new models."
 msgstr ""
-"AI Engine Runtime 支持从多个远程源下载模型，包括 Hugging Face、S3 和 TOS。当控制面需要与 Pod "
+"AI Engine Runtime 支持从多个远程源下载模型，包括 Hugging Face、S3、TOS 和 GCS。当控制面需要与 Pod "
 "交互以动态加载新模型时，这非常有用。"
 
 #: ../../source/features/model-serving/runtime.rst:369
@@ -586,6 +586,23 @@ msgstr "首先为 TOS 模型定义必要的环境变量。"
 #: ../../source/features/model-serving/runtime.rst:431
 msgid "Then use AI Runtime to download the model from TOS:"
 msgstr "然后使用 AI Runtime 从 TOS 下载模型："
+
+#: ../../source/features/model-serving/runtime.rst:441
+msgid "Download From GCS"
+msgstr "从 GCS 下载"
+
+#: ../../source/features/model-serving/runtime.rst:442
+msgid ""
+"GCS uses Google Application Default Credentials, for example a service "
+"account key file or GKE Workload Identity. Both ``gcs://`` and ``gs://`` "
+"URIs are accepted."
+msgstr ""
+"GCS 使用 Google 应用默认凭据（Application Default Credentials），例如服务账号密钥文件或 GKE "
+"Workload Identity。``gcs://`` 和 ``gs://`` 两种 URI 均可使用。"
+
+#: ../../source/features/model-serving/runtime.rst:454
+msgid "Then use AI Runtime to download the model from GCS:"
+msgstr "然后使用 AI Runtime 从 GCS 下载模型："
 
 #: ../../source/features/model-serving/runtime.rst:441
 msgid "Model Configuration API"

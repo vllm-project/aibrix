@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	pav1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
@@ -122,7 +123,19 @@ func makeHPAWithBounds(pa *pav1.PodAutoscaler, scalingContext scalingctx.Scaling
 				})
 
 			default:
-				targetQuantity := resource.NewQuantity(int64(math.Ceil(targetValue)), resource.DecimalSI)
+				// AverageValue is a Quantity, so it can carry a fractional target exactly. A
+				// fraction such as gpu_cache_usage_perc's 0.5 must not round up to a whole
+				// number: a target of 1 for a 0-1 metric means the HPA never scales up.
+				// Whole numbers keep the exact int64 Quantity, which a decimal string can't
+				// carry near the int64 limit.
+				targetQuantity := resource.NewQuantity(int64(targetValue), resource.DecimalSI)
+				if targetValue != math.Trunc(targetValue) {
+					fractional, err := resource.ParseQuantity(strconv.FormatFloat(targetValue, 'f', -1, 64))
+					if err != nil {
+						return nil, fmt.Errorf("failed to convert target value %v of metric %s to a quantity: %w", targetValue, source.TargetMetric, err)
+					}
+					targetQuantity = &fractional
+				}
 				hpa.Spec.Metrics = append(hpa.Spec.Metrics, autoscalingv2.MetricSpec{
 					Type: autoscalingv2.PodsMetricSourceType,
 					Pods: &autoscalingv2.PodsMetricSource{

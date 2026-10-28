@@ -847,6 +847,11 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	if pods.Len() == 0 {
 		return "", fmt.Errorf("no pods for routing")
 	}
+	// The inflight filter, the load-imbalance gate, the strategy and its auto-blend each read
+	// the running-request counts of the same pods. Share one read across this decision, so
+	// with Redis it costs one pipelined read of the ready pods instead of up to four (#3322).
+	routeCtx.StartRunningRequestsSnapshot()
+	defer routeCtx.StopRunningRequestsSnapshot()
 	readyPods := utils.FilterRoutablePods(pods.All())
 
 	// Resolve the model config profile's routing knobs once per request: the
@@ -890,7 +895,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	}
 
 	if limit := replicaInflightLimit(routeCtx); limit > 0 {
-		readyPods = s.filterSaturatedReplicaInflight(readyPods, limit)
+		readyPods = s.filterSaturatedReplicaInflight(routeCtx, readyPods, limit)
 		if len(readyPods) == 0 {
 			return "", errReplicaInflightExceeded
 		}

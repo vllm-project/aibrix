@@ -348,6 +348,8 @@ With vLLM, a roleset can also run the vision or audio encoder on its own pods, l
 
 The request body is not changed. The encode pods store their output through vLLM's EC connector, keyed by the hash of each media item, and the prefill pod finds it under the same hash. If an item's output is not there, for example because its encode request failed, the prefill pod encodes the item itself, so a failed encode costs latency but not the request. Each encode request uses the prefill request timeout, and ``gateway_pd_encode_request_total`` counts them by ``status``.
 
+By default the gateway sends the items to the selected roleset's encode pods in turn. With ``AIBRIX_ENCODE_SELECTION_POLICY=least_request`` it sends each item to the encode pod with the fewest items it has in flight, so an encode pod that is still working on large images does not receive the next ones while others are idle. Each gateway replica counts separately, and within a replica the ``pd`` routing strategy and the other strategies keep separate counts.
+
 Start the encode pods as encoder-only producers and the prefill pods as consumers of the same EC connector. With ``ECExampleConnector``, the encode and prefill pods must mount the same volume, such as a ``ReadWriteMany`` PVC or a ``hostPath`` on one node. Otherwise the prefill pod never finds the encoder output and encodes every item itself. ``samples/disaggregation/vllm/1e1p1d.yaml`` is a complete example:
 
 .. code-block:: bash
@@ -845,6 +847,9 @@ These are set on the **gateway plugin** deployment.
    * - ``AIBRIX_BUCKET_SERVE_MODE``
      - ``throughput``
      - Objective of the adaptive cut points: ``throughput`` (prompt token mass) or ``rps`` (request counts). An unknown value keeps the default.
+   * - ``AIBRIX_ENCODE_SELECTION_POLICY``
+     - ``round_robin``
+     - How the encode stage picks an encode pod for each media item: ``round_robin``, or ``least_request`` for the encode pod with the fewest items in flight. Environment only.
    * - ``AIBRIX_PREFILL_REQUEST_TIMEOUT``
      - ``30``
      - Seconds before a prefill request to a prefill pod times out.
