@@ -33,17 +33,18 @@ type RunningRequestsReader func(pods []*v1.Pod) (map[string]int64, error)
 // filter, the load-imbalance gate, the strategy and its auto-blend each read the same pods, so
 // sharing the counts turns three or four fleet-wide reads into one.
 type runningRequestsSnapshot struct {
+	// mu guards the snapshot. One routing decision reads it from a single goroutine today,
+	// but the RoutingContext it hangs off is shared with other goroutines (stats updates, the
+	// PD prefill path), and an uncontended lock costs nothing next to a Redis round trip.
 	mu sync.Mutex
 	// counts is the first read's result, extended by later reads of other pods. A pod read
 	// without a count stays absent, as in the reader's result.
 	counts map[string]int64
-	// keys records every pod already read, with its utils.GeneratePodKey key, so a pod the
-	// cache has no count for is not read again and no pod's key is built twice. The readers
-	// of one decision pass the same *v1.Pod values; a different value for the same pod is
-	// read again, and the count already held is kept.
-	keys map[*v1.Pod]string
-	// first is the pod list of the first read. keys is built from it only when a second read
-	// comes, so a decision that reads once (e.g. random) pays nothing for the snapshot.
+	// readKeys records the utils.GeneratePodKey key of every pod already read, including the
+	// ones the reader returned no count for, so no pod is read twice in one decision.
+	readKeys map[string]struct{}
+	// first is the pod list of the first read. readKeys is built from it only when a second
+	// read comes, so a decision that reads once (e.g. random) pays nothing for the snapshot.
 	first []*v1.Pod
 	read  bool
 }
@@ -94,22 +95,24 @@ func (r *RoutingContext) RunningRequests(pods []*v1.Pod, read RunningRequestsRea
 		s.counts, s.first, s.read = counts, pods, true
 		return counts, nil
 	}
-	if s.keys == nil {
-		s.keys = make(map[*v1.Pod]string, len(s.first))
+	if s.readKeys == nil {
+		s.readKeys = make(map[string]struct{}, len(s.first))
 		for _, pod := range s.first {
 			if pod != nil {
-				s.keys[pod] = utils.GeneratePodKey(pod.Namespace, pod.Name)
+				s.readKeys[utils.GeneratePodKey(pod.Namespace, pod.Name)] = struct{}{}
 			}
 		}
 		s.first = nil
 	}
 
+	keys := make([]string, len(pods))
 	var missing []*v1.Pod
-	for _, pod := range pods {
+	for i, pod := range pods {
 		if pod == nil {
 			continue
 		}
-		if _, ok := s.keys[pod]; !ok {
+		keys[i] = utils.GeneratePodKey(pod.Namespace, pod.Name)
+		if _, ok := s.readKeys[keys[i]]; !ok {
 			missing = append(missing, pod)
 		}
 	}
@@ -120,10 +123,7 @@ func (r *RoutingContext) RunningRequests(pods []*v1.Pod, read RunningRequestsRea
 		}
 		for _, pod := range missing {
 			key := utils.GeneratePodKey(pod.Namespace, pod.Name)
-			s.keys[pod] = key
-			if _, held := s.counts[key]; held {
-				continue
-			}
+			s.readKeys[key] = struct{}{}
 			if count, ok := counts[key]; ok {
 				s.counts[key] = count
 			}
@@ -131,13 +131,12 @@ func (r *RoutingContext) RunningRequests(pods []*v1.Pod, read RunningRequestsRea
 	}
 
 	result := make(map[string]int64, len(pods))
-	for _, pod := range pods {
+	for i, pod := range pods {
 		if pod == nil {
 			continue
 		}
-		key := s.keys[pod]
-		if count, ok := s.counts[key]; ok {
-			result[key] = count
+		if count, ok := s.counts[keys[i]]; ok {
+			result[keys[i]] = count
 		}
 	}
 	return result, nil

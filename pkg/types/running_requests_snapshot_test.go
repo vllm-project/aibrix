@@ -103,10 +103,12 @@ func TestRunningRequests_SnapshotReadsEachPodOnce(t *testing.T) {
 	assert.Equal(t, map[string]int64{"ns/b": 2, "ns/c": 3}, got)
 	assert.Equal(t, [][]string{{"a", "b", "unknown"}, {"c"}}, r.calls)
 
-	// Another object for a pod already read is read again, but keeps the value first read.
+	// Another object for a pod already read is not read again either: pods are matched by
+	// namespace/name, not by pointer.
 	got, err = ctx.RunningRequests(snapshotPods("a"), r.read)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]int64{"ns/a": 1}, got)
+	assert.Len(t, r.calls, 2)
 
 	ctx.StopRunningRequestsSnapshot()
 	got, err = ctx.RunningRequests(snapshotPods("a"), r.read)
