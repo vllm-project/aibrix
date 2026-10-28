@@ -145,7 +145,7 @@ func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 	scores := make([]float64, len(pods))
 	scored := make([]bool, len(pods))
 
-	counts, err := r.cache.GetPodsRunningRequests(pods)
+	counts, err := ctx.RunningRequests(pods, r.cache.GetPodsRunningRequests)
 	capacities := r.capacities(pods)
 
 	// The request's resolved overrides carry the profile's values on top of
@@ -348,7 +348,7 @@ func ApplyLoadImbalanceGate(ctx *types.RoutingContext, c cache.Cache, readyPods 
 	imbalanceFactor := lb.ImbalanceFactor
 	imbalanceMinGap := lb.ImbalanceMinGap
 
-	podRequestCount := routeutil.GetRequestCounts(c, readyPods)
+	podRequestCount := routeutil.RequestCounts(ctx, c, readyPods)
 	leastPods, minValue, maxValue, imbalanced := getTargetPodListOnLoadImbalance(podRequestCount, readyPods, imbalanceFactor, imbalanceMinGap)
 	if !imbalanced {
 		return readyPods
