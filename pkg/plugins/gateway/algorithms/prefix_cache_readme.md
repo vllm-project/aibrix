@@ -25,6 +25,15 @@ Two routing modes are supported, selected automatically at startup:
 
 Both modes share the same stddev-based pod selection logic described below.
 
+When the optional candidate stage seeds prefix holders, it retains the raw match
+percentages and prefix hashes for that routing decision. Scoring, standalone
+routing and post-route updates reuse this result for covered pod subsets in the
+same index/model partition, including pods that had no prefix match. Blended
+scores are still normalized on the final candidate pool. Index changes during
+the decision are observed by the next decision; retries and pooled context reuse
+clear the retained result. Tokenization or index errors are not cached, and
+ordinary routing without seeding does not retain a match snapshot.
+
 ## Routing Flow
 
 ```
