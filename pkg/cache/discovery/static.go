@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
@@ -69,6 +70,10 @@ type StaticModelConfig struct {
 	// rolesets or when the roleset name matters.
 	PrefillWorkers []string `json:"prefill_workers,omitempty"`
 	DecodeWorkers  []string `json:"decode_workers,omitempty"`
+	// Config holds config profiles for this model, as the JSON the
+	// model.aibrix.ai/config pod annotation holds. Optional. The gateway reads
+	// it ahead of pod annotations when it resolves a request's profile.
+	Config string `json:"config,omitempty"`
 }
 
 // StaticConfig represents the complete static endpoints configuration.
@@ -172,7 +177,8 @@ func (p *StaticProvider) Watch(handler EventHandler, _ <-chan struct{}) error {
 	return nil
 }
 
-// load reads the config file and returns all endpoints as synthetic pods.
+// load reads the config file and returns all endpoints as synthetic pods,
+// preceded by a *ModelConfig for each model that sets config.
 func (p *StaticProvider) load() ([]any, error) {
 	data, err := os.ReadFile(p.configPath)
 	if err != nil {
@@ -184,13 +190,28 @@ func (p *StaticProvider) load() ([]any, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	var pods []any
+	var configs, pods []any
+	configured := make(map[string]bool)
 	idx := 0
 
 	for i, model := range config.Models {
 		endpoints, roleSets, err := model.resolve(i)
 		if err != nil {
 			return nil, err
+		}
+
+		if strings.TrimSpace(model.Config) != "" {
+			if configured[model.Name] {
+				return nil, fmt.Errorf("model %q: config is set on more than one entry", model.Name)
+			}
+			// The gateway applies this check to the annotation on every
+			// request and skips a config that fails it. Run it once here so
+			// that a bad profile stops startup instead.
+			if _, err := configprofiles.ParseModelConfig(model.Config); err != nil {
+				return nil, fmt.Errorf("model %q: invalid config: %w", model.Name, err)
+			}
+			configured[model.Name] = true
+			configs = append(configs, &ModelConfig{ModelName: model.Name, Config: model.Config})
 		}
 
 		// Non-disaggregated: plain endpoints (or the workers alias)
@@ -234,7 +255,7 @@ func (p *StaticProvider) load() ([]any, error) {
 		}
 	}
 
-	return pods, nil
+	return append(configs, pods...), nil
 }
 
 // addressToPod creates a synthetic v1.Pod from an address string and optional labels.

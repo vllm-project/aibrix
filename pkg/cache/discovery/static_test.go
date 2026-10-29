@@ -482,6 +482,143 @@ models:
 	}
 }
 
+func TestStaticProviderModelConfig(t *testing.T) {
+	profiles := `{"defaultProfile": "default", "profiles": {"default": {"routingStrategy": "least-request"}}}`
+	tests := []struct {
+		name        string
+		config      string
+		wantConfigs []*ModelConfig
+		wantPods    int
+	}{
+		{
+			name: "config is delivered for its model",
+			config: `
+models:
+  - name: "model-a"
+    workers:
+      - "a-0:8000"
+      - "a-1:8000"
+    config: '` + profiles + `'
+  - name: "model-b"
+    prefill_workers:
+      - "b-prefill-0:8000"
+    decode_workers:
+      - "b-decode-0:8000"
+`,
+			wantConfigs: []*ModelConfig{{ModelName: "model-a", Config: profiles}},
+			wantPods:    4,
+		},
+		{
+			name: "no config field delivers only pods",
+			config: `
+models:
+  - name: "model-a"
+    workers:
+      - "a-0:8000"
+`,
+			wantPods: 1,
+		},
+		{
+			name: "blank config is treated as absent",
+			config: `
+models:
+  - name: "model-a"
+    workers:
+      - "a-0:8000"
+    config: "  "
+`,
+			wantPods: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewStaticProvider(writeTestConfig(t, tt.config))
+			var configs []*ModelConfig
+			var pods []*v1.Pod
+			stopCh := make(chan struct{})
+			defer close(stopCh)
+			err := p.Watch(func(ev WatchEvent) {
+				assert.Equal(t, EventAdd, ev.Type)
+				switch o := ev.Object.(type) {
+				case *ModelConfig:
+					// Configs come first, so the cache has a model's config
+					// before any of its pods.
+					assert.Empty(t, pods, "config delivered after a pod")
+					configs = append(configs, o)
+				case *v1.Pod:
+					assert.Empty(t, o.Annotations, "the config is not copied onto synthetic pods")
+					pods = append(pods, o)
+				default:
+					t.Errorf("unexpected object %T", ev.Object)
+				}
+			}, stopCh)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantConfigs, configs)
+			assert.Len(t, pods, tt.wantPods)
+		})
+	}
+}
+
+// A model config is checked when the file loads, so a bad profile stops the
+// gateway at startup instead of being skipped at request time.
+func TestStaticProviderInvalidModelConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  string
+		wantErr string
+	}{
+		{
+			name: "invalid JSON",
+			config: `
+models:
+  - name: "test-model"
+    workers:
+      - "vllm-0:8000"
+    config: '{"defaultProfile": "default", "profiles": '
+`,
+			wantErr: "parse model config",
+		},
+		{
+			name: "no profiles",
+			config: `
+models:
+  - name: "test-model"
+    workers:
+      - "vllm-0:8000"
+    config: '{"defaultProfile": "default"}'
+`,
+			wantErr: "has no profiles",
+		},
+		{
+			name: "config on two entries of one model",
+			config: `
+models:
+  - name: "test-model"
+    workers:
+      - "vllm-0:8000"
+    config: '{"profiles": {"default": {"routingStrategy": "random"}}}'
+  - name: "test-model"
+    workers:
+      - "vllm-1:8000"
+    config: '{"profiles": {"default": {"routingStrategy": "least-request"}}}'
+`,
+			wantErr: "more than one entry",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTestConfig(t, tt.config)
+			p := NewStaticProvider(path)
+			stopCh := make(chan struct{})
+			defer close(stopCh)
+			err := p.Watch(func(_ WatchEvent) {}, stopCh)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Contains(t, err.Error(), "test-model")
+		})
+	}
+}
+
 func TestStaticProviderMixedSpellings(t *testing.T) {
 	config := `
 models:

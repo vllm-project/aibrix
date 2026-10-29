@@ -274,6 +274,20 @@ func ResolveProfileFromPod(pod *v1.Pod, headerProfile string) *ModelConfigProfil
 	return cfg.GetProfile(headerProfile)
 }
 
+// ResolveProfileFrom is ResolveProfileFromPod with a model-level config
+// consulted first: when modelConfig is set and valid, the profile comes from it
+// and the pod annotation is not read. See ResolveModelConfigFrom.
+func ResolveProfileFrom(modelConfig string, pod *v1.Pod, headerProfile string) *ModelConfigProfile {
+	cfg := parseModelLevelConfig(modelConfig)
+	if cfg == nil {
+		cfg = parseConfigFromPod(pod)
+	}
+	if cfg == nil {
+		return nil
+	}
+	return cfg.GetProfile(headerProfile)
+}
+
 // ResolveConfig resolves the model config from the first pod carrying a
 // model.aibrix.ai/config annotation. It returns the profile selected by
 // headerProfile (nil when no selectable profile exists) together with the
@@ -294,6 +308,18 @@ func ResolveModelConfig(pods []*v1.Pod) *ModelConfigProfiles {
 		}
 	}
 	return nil
+}
+
+// ResolveModelConfigFrom returns the config parsed from modelConfig, the JSON
+// that discovery supplied for the model as a whole (the config field of a
+// local-mode endpoints file), and falls back to ResolveModelConfig(pods) when
+// modelConfig is empty or invalid. A model-level config is used as a whole:
+// it is not merged with pod annotations.
+func ResolveModelConfigFrom(modelConfig string, pods []*v1.Pod) *ModelConfigProfiles {
+	if cfg := parseModelLevelConfig(modelConfig); cfg != nil {
+		return cfg
+	}
+	return ResolveModelConfig(pods)
 }
 
 // ResolveConfigForRequest resolves the model config from the first pod carrying a
@@ -342,6 +368,18 @@ func parseConfigFromPod(pod *v1.Pod) *ModelConfigProfiles {
 	cfg, err := ParseModelConfig(anno)
 	if err != nil {
 		klog.V(4).InfoS("failed to parse model config from pod annotation", "pod", pod.Name, "err", err)
+		return nil
+	}
+	return cfg
+}
+
+// parseModelLevelConfig parses a model-level config. It returns nil when the
+// config is empty or invalid. The static provider rejects an invalid config
+// when it loads, so a parse error here can only come from another source.
+func parseModelLevelConfig(modelConfig string) *ModelConfigProfiles {
+	cfg, err := ParseModelConfig(modelConfig)
+	if err != nil {
+		klog.V(4).InfoS("failed to parse model-level config", "err", err)
 		return nil
 	}
 	return cfg

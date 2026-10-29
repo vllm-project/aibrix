@@ -37,6 +37,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/packages/param"
+	"github.com/vllm-project/aibrix/pkg/cache"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -1454,9 +1455,22 @@ func rpsToLimitWindow(rps float64) (limit int64, windowSeconds int64) {
 	return 1, windowSeconds
 }
 
-// applyConfigProfile resolves the model config from the pod annotation
-// (model.aibrix.ai/config) and applies the selected profile plus the model-wide
-// locked routing strategy onto routingCtx.ConfigProfile.
+// modelConfigFromCache returns the model config c holds for model when c
+// implements cache.ModelConfigCache, and "" otherwise.
+func modelConfigFromCache(c cache.Cache, model string) string {
+	if provider, ok := c.(cache.ModelConfigCache); ok {
+		if cfg, found := provider.ModelConfig(model); found {
+			return cfg
+		}
+	}
+	return ""
+}
+
+// applyConfigProfile resolves the model config and applies the selected profile
+// plus the model-wide locked routing strategy onto routingCtx.ConfigProfile.
+// The config is routingCtx.ModelConfig when discovery supplied one for the
+// model (the config field of a local-mode endpoints file), and otherwise the
+// pod annotation (model.aibrix.ai/config).
 //   - The profile is selected by the config-profile header, falling back to
 //     defaultProfile (or "default") in the JSON.
 //   - config-profile: auto evaluates request-local hints in profile routingConfig
@@ -1485,7 +1499,7 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 	if routingCtx == nil {
 		return
 	}
-	cfg := configprofiles.ResolveModelConfig(pods)
+	cfg := configprofiles.ResolveModelConfigFrom(routingCtx.ModelConfig, pods)
 	if cfg == nil {
 		return
 	}

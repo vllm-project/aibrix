@@ -46,6 +46,18 @@ type WatchEvent struct {
 // EventHandler is a callback invoked by a provider when a resource changes.
 type EventHandler func(event WatchEvent)
 
+// ModelConfig carries the config profiles discovery supplies for a model as a
+// whole, as the JSON the model.aibrix.ai/config pod annotation holds. The
+// static provider delivers one as EventAdd for each model whose entry sets
+// config. The Kubernetes provider does not deliver it: there the pod
+// annotation stays the source.
+type ModelConfig struct {
+	// ModelName is the model the config applies to.
+	ModelName string
+	// Config is the model config JSON.
+	Config string
+}
+
 // Provider defines the interface for service discovery backends.
 //
 // All initial state and ongoing changes are delivered through Watch() via

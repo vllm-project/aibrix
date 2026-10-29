@@ -100,6 +100,45 @@ prefill/decode disaggregation testing:
 The shorthand labels the group ``default``. Use ``rolesets`` when a custom
 name or more than one group is needed.
 
+Config profiles
+^^^^^^^^^^^^^^^
+
+A model entry can set ``config`` to the same JSON that the
+``model.aibrix.ai/config`` pod annotation holds in Kubernetes. See
+:ref:`config_profiles` for the fields. The gateway checks the JSON when it
+loads the file, so a config that does not parse, or has no profiles, stops
+startup with an error that names the model.
+
+.. code-block:: yaml
+
+   models:
+     - name: Qwen/Qwen2.5-1.5B-Instruct
+       workers:
+         - "127.0.0.1:8000"
+         - "127.0.0.1:8001"
+       config: |
+         {"defaultProfile": "default",
+          "profiles": {"default": {"routingStrategy": "least-request-top-k"},
+                       "cache-friendly": {"routingStrategy": "prefix-cache"}}}
+
+A request uses ``defaultProfile`` unless it names another profile in the
+``config-profile`` header:
+
+.. code-block:: bash
+
+   curl http://localhost:10080/v1/chat/completions \
+     -H "Content-Type: application/json" \
+     -H "config-profile: cache-friendly" \
+     -d '{
+       "model": "Qwen/Qwen2.5-1.5B-Instruct",
+       "messages": [{"role": "user", "content": "Hello from AIBrix local mode"}]
+     }'
+
+The config applies to all workers of the model. If a model is listed in more
+than one entry, only one of them may set ``config``. A profile's
+``routingStrategy`` takes precedence over ``ROUTING_ALGORITHM``; see
+:ref:`routing_strategy_priority` for the full order.
+
 Run local mode
 --------------
 
