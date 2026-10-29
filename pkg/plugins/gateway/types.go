@@ -147,12 +147,13 @@ const (
 	// PathNativeClassify is where vLLM serves classification; PathClassify is SGLang's
 	// OpenAI-style route.
 	PathNativeClassify = "/classify"
-	// PathDecisions is SGLang's typed-question scoring endpoint (choice, score, yes_no).
-	// It does not stream and generates no tokens.
+	// PathDecisions is the typed-question scoring endpoint (choice, score, yes_no) served by
+	// vLLM and SGLang. It does not stream and generates no tokens.
 	PathDecisions = "/v1/decisions"
-	// PathSystemOne is SGLang's System One compatible form of PathDecisions: a "state" and a
-	// map of noul, choice and score questions keyed by caller ids. It does not stream, and its
-	// usage reports input_tokens/output_tokens with no total.
+	// PathSystemOne is the System One compatible form of PathDecisions, served by vLLM and
+	// SGLang: a "state" and a map of noul, choice and score questions keyed by caller ids. It
+	// does not stream, and neither engine's usage reports a total, only
+	// input_tokens/output_tokens.
 	PathSystemOne = "/v1/systemone"
 	// PathScore is SGLang's scoring endpoint: label-token probabilities or classifier
 	// logits for each query/item pair, pointwise or setwise. It does not stream.
