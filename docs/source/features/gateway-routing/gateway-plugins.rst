@@ -868,6 +868,7 @@ Behavior notes:
 - Requests that already carry a ``priority`` in their body keep the value the caller set, which makes an explicit per-request choice possible even for a tier the table maps.
 - Tier names are matched case-insensitively.
 - A request that the gateway does not map is forwarded byte for byte, so callers that send something else in this header see no change in behavior.
+- ``POST /v1/decisions`` requests are never rewritten: neither vLLM nor SGLang accepts a ``priority`` field there, and both reject unknown fields with ``400``. ``POST /v1/systemone`` requests are rewritten like any other: vLLM schedules each read by the priority, and SGLang ignores the field.
 
 .. note::
 

@@ -21,7 +21,8 @@ request header to the `priority` field of the backend request body: `batch` beco
 de-prioritizes a request and never pulls one ahead of another; the values sit below the engine
 default of `0`. Requests without the header, or with a tier outside the table, are forwarded
 unchanged, and a `priority` the caller already set in the body is kept. Tier names are matched
-case-insensitively. The deployment has to run a priority-aware vLLM scheduler
+case-insensitively. `POST /v1/decisions` requests are never rewritten, because neither vLLM nor
+SGLang accepts a `priority` field there. The deployment has to run a priority-aware vLLM scheduler
 (`--scheduling-policy=priority`). With the default `false`, the header is ignored and request
 bodies are forwarded byte for byte.
 
