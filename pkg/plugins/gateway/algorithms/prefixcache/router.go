@@ -471,7 +471,7 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	}
 
 	// Compute request counts once; reused by pod selection and log calls.
-	podRequestCount := routeutil.GetRequestCounts(p.cache, readyPods)
+	podRequestCount := routeutil.RequestCounts(ctx, p.cache, readyPods)
 
 	matchedPods, prefixHashes = p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
 	if klog.V(4).Enabled() {
@@ -637,6 +637,39 @@ func (p prefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList type
 	}
 
 	return scores, scored, nil
+}
+
+// SeedCandidates returns up to max ready pods that hold a cached prefix of this request,
+// longest match first, so a bounded candidate set keeps them. It reads only the in-memory
+// prefix index; the tokens it computes are cached on ctx for Route and ScoreAll.
+func (p prefixCacheRouter) SeedCandidates(ctx *types.RoutingContext, readyPodList types.PodList, max int) []*v1.Pod {
+	if max <= 0 {
+		return nil
+	}
+	scores, scored, err := p.ScoreAll(ctx, readyPodList)
+	if err != nil {
+		klog.V(4).ErrorS(err, "prefix-cache candidate seeding skipped", "request_id", ctx.RequestID)
+		return nil
+	}
+	pods := readyPodList.All()
+	matched := make([]int, 0, max)
+	for i := range pods {
+		if scored[i] && scores[i] > 0 {
+			matched = append(matched, i)
+		}
+	}
+	// Holders of the same match length are interchangeable here; shuffle them so the seeds of
+	// a hot prefix spread over all its holders instead of always naming the first M.
+	rand.Shuffle(len(matched), func(a, b int) { matched[a], matched[b] = matched[b], matched[a] })
+	sort.SliceStable(matched, func(a, b int) bool { return scores[matched[a]] > scores[matched[b]] })
+	if len(matched) > max {
+		matched = matched[:max]
+	}
+	seeds := make([]*v1.Pod, len(matched))
+	for j, i := range matched {
+		seeds[j] = pods[i]
+	}
+	return seeds
 }
 
 // Polarity returns whether higher or lower score is better.
@@ -894,7 +927,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	}
 	matchedPods, prefixHashes = k.syncIndexer.MatchPrefix(indexModel, loraID, tokens, readyPodsMap)
 
-	podRequestCount := routeutil.GetRequestCounts(k.cache, readyPods)
+	podRequestCount := routeutil.RequestCounts(ctx, k.cache, readyPods)
 
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("prefix cache matching completed",

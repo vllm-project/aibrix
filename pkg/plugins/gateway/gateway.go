@@ -847,6 +847,11 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	if pods.Len() == 0 {
 		return "", fmt.Errorf("no pods for routing")
 	}
+	// The inflight filter, the load-imbalance gate, the strategy and its auto-blend each read
+	// the running-request counts of the same pods. Share one read across this decision, so
+	// with Redis it costs one pipelined read of the ready pods instead of up to four (#3322).
+	routeCtx.StartRunningRequestsSnapshot()
+	defer routeCtx.StopRunningRequestsSnapshot()
 	readyPods := utils.FilterRoutablePods(pods.All())
 
 	// Resolve the model config profile's routing knobs once per request: the
@@ -890,10 +895,23 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	}
 
 	if limit := replicaInflightLimit(routeCtx); limit > 0 {
-		readyPods = s.filterSaturatedReplicaInflight(readyPods, limit)
+		readyPods = s.filterSaturatedReplicaInflight(routeCtx, readyPods, limit)
 		if len(readyPods) == 0 {
 			return "", errReplicaInflightExceeded
 		}
+	}
+
+	routerManager := s.routerManager
+	if routerManager == nil {
+		// Preserve compatibility for legacy tests that build Server literals. A local keeps
+		// concurrent requests from writing the shared Server.
+		routerManager = routing.DefaultRouterManager()
+	}
+	// Select depends only on the routing context, not on the pods, so it runs before the gate:
+	// the candidate stage below needs the resolved strategy to know whether it applies.
+	router, err := routerManager.Select(routeCtx)
+	if err != nil {
+		return "", err
 	}
 
 	if isExclusive {
@@ -905,20 +923,14 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 			routeCtx.Engine = engine
 		}
 	} else {
+		// Narrow the pods to a bounded candidate set when AIBRIX_ROUTING_CANDIDATE_K is set, so
+		// the gate and the router read running counts for those pods only (RFC #3188).
+		readyPods = routing.SelectCandidates(routeCtx, router, readyPods)
 		// Apply the load-imbalance hotspot gate ahead of whichever strategy actually routes
 		// this request. Exclusive strategies (pd, slo*) are exempted above: they manage their
 		// own pod subsets (prefill/decode, SLO tiers), which a blanket running-request-count
 		// filter would distort.
 		readyPods = routing.ApplyLoadImbalanceGate(routeCtx, s.cache, readyPods)
-	}
-
-	if s.routerManager == nil {
-		// Preserve compatibility for legacy tests that build Server literals.
-		s.routerManager = routing.DefaultRouterManager()
-	}
-	router, err := s.routerManager.Select(routeCtx)
-	if err != nil {
-		return "", err
 	}
 
 	bypassSingleCandidate := true
