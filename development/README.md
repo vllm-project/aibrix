@@ -121,6 +121,12 @@ make undeploy
 
 ## Run Test
 
+After changing controller RBAC markers, run `make manifests` and commit the updated
+`config/rbac/controller-manager/role.yaml`. CI checks that regeneration leaves this
+file unchanged, then compares its permissions with the Helm chart. With Helm on
+your `PATH`, run `make verify-rbac` for that comparison; `make verify` also includes
+this RBAC check alongside generated-code and CRD synchronization checks.
+
 To test the build, run:
 
   ```

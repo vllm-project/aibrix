@@ -98,6 +98,9 @@ jobs:
         id: manifests
         if: ${{ !cancelled() }}
         run: make manifests
+      - name: Verify Generated RBAC Is Committed
+        if: ${{ !cancelled() && steps.manifests.outcome == 'success' }}
+        run: git diff --exit-code -- config/rbac/controller-manager/role.yaml
       - name: Verify CRD Synchronization
         if: ${{ !cancelled() }}
         run: bash ${GITHUB_WORKSPACE}/hack/verify-crd-sync.sh
