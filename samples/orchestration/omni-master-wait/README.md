@@ -104,8 +104,9 @@ Pod FQDN across a rollout, which is the second reason for a role-scoped Service.
 selector `storm-service-name: qwen2-5-omni` plus `role-name: thinker`, port 26000
 and the same `publishNotReadyAddresses` flag. In a real deployment the wait in
 `mock-worker.yaml` stays as it is; only its target changes to
-`qwen2-5-omni-head:26000`. That port is the master port the #3305 pipeline is
-configured with, so it has to match `--omni-master-port`.
+`qwen2-5-omni-head:26000`. 26000 is the value the upstream `docs/cli/serve.md`
+examples use; `--omni-master-port` has no default, so the Service port has to
+match whatever the stage processes are started with.
 
 The roles are independent objects: the role list carries no startup dependency,
 and `upgradeOrder` orders upgrades, not stages. The stage placement comes from

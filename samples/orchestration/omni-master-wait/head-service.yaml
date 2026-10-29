@@ -7,7 +7,9 @@
 # `thinker`. It selects on the two labels the controller puts on every role Pod
 # (`storm-service-name` and `role-name`), so it resolves to the head role only,
 # and it publishes not-ready addresses so the master port stays reachable while
-# the head is `Ready=False`. The port has to match `--omni-master-port`.
+# the head is `Ready=False`. The port has to match `--omni-master-port`; 26000 is
+# the value the upstream `docs/cli/serve.md` examples use, and the flag itself
+# has no default.
 #
 # In the mock run in this directory there is no StormService, so it matches no
 # Pods: the mock head carries `app: omni-master-wait-head`.
