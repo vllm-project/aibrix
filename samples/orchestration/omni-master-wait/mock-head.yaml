@@ -1,0 +1,68 @@
+# The head of the pipeline plus the two Services that expose its master port.
+#
+#   kubectl apply -f samples/orchestration/omni-master-wait/mock-head.yaml
+#
+# The head listens on 26000 but carries a readiness probe that always fails, so
+# the Pod stays Ready=False. That is the condition this sample is about: the
+# master address has to be reachable before the stages behind the head can start.
+#
+# The probe is an exec that exits non-zero instead of an httpGet against a closed
+# port: the Pod is not Ready either way, and this keeps the kubelet out of
+# connection-refused loops while the mock runs.
+#
+# `nc -l` accepts one connection at a time, so there is a short gap between
+# loops. With a single worker here that is harmless: a worker connect landing in
+# the gap just retries.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: omni-master-wait-head
+  labels:
+    app: omni-master-wait-head
+spec:
+  containers:
+    - name: head-master
+      image: busybox:1.36
+      command:
+        - sh
+        - -c
+        - while true; do nc -l -p 26000; done
+      ports:
+        - name: master
+          containerPort: 26000
+      readinessProbe:
+        exec:
+          command:
+            - "false" # quoted: a bare false here is a YAML boolean, not a command
+        periodSeconds: 2
+        failureThreshold: 1
+---
+# publishNotReadyAddresses publishes the Pod IP of a not-ready Pod, so the
+# stages behind the head can resolve the master address while the head is still
+# Ready=False.
+apiVersion: v1
+kind: Service
+metadata:
+  name: omni-master-wait
+spec:
+  selector:
+    app: omni-master-wait-head
+  publishNotReadyAddresses: true
+  ports:
+    - name: master
+      port: 26000
+      targetPort: 26000
+---
+# The same Service without publishNotReadyAddresses, used as a negative control:
+# it stays empty while the head is not Ready.
+apiVersion: v1
+kind: Service
+metadata:
+  name: omni-master-wait-normal
+spec:
+  selector:
+    app: omni-master-wait-head
+  ports:
+    - name: master
+      port: 26000
+      targetPort: 26000
