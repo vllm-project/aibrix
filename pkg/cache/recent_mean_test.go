@@ -87,6 +87,43 @@ func TestCalculateMean1m(t *testing.T) {
 		}
 	})
 
+	t.Run("engine restart inside the window", func(t *testing.T) {
+		// A young pod had served 100 requests at 0.05 s, restarted, and then served
+		// 110 requests at 2 s inside the minute. Base-to-now alone would report
+		// (220 - 5) / (110 - 100) = 21.5 s instead of 2 s.
+		c, pod := &Store{}, namespacedTestPod("ns", "restarted-in-window")
+		purgeRateHistory(t, pod)
+		seedMean1m(pod, model, metric, 5, 100, time.Minute)
+		seedMean1m(pod, model, metric, 6, 3, 30*time.Second) // counters started again
+
+		_, ok := c.calculateMean1m(pod, model, metric, hist(220, 110))
+
+		require.False(t, ok, "a restart inside the window falls back to the lifetime mean")
+	})
+
+	t.Run("growing counters across several snapshots are used", func(t *testing.T) {
+		c, pod := &Store{}, namespacedTestPod("ns", "steady-pod")
+		purgeRateHistory(t, pod)
+		seedMean1m(pod, model, metric, 5, 100, time.Minute)
+		seedMean1m(pod, model, metric, 105, 150, 30*time.Second)
+
+		mean, ok := c.calculateMean1m(pod, model, metric, hist(205, 200))
+
+		require.True(t, ok)
+		require.InDelta(t, 2.0, mean, 1e-9) // (205 - 5) / (200 - 100)
+	})
+
+	t.Run("restart seen only at the current sample", func(t *testing.T) {
+		c, pod := &Store{}, namespacedTestPod("ns", "restarted-just-now")
+		purgeRateHistory(t, pod)
+		seedMean1m(pod, model, metric, 50, 500, time.Minute)
+		seedMean1m(pod, model, metric, 60, 520, 30*time.Second)
+
+		_, ok := c.calculateMean1m(pod, model, metric, hist(1, 1))
+
+		require.False(t, ok)
+	})
+
 	t.Run("too little history", func(t *testing.T) {
 		c, pod := &Store{}, namespacedTestPod("ns", "new-pod")
 		purgeRateHistory(t, pod)

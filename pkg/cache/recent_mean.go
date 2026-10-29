@@ -76,7 +76,7 @@ func (c *Store) updateRecentMean(pod *Pod, model, metric string, metricValue met
 // over about the last minute, (Sum - Sum_base) / (Count - Count_base), with the same
 // snapshots and window as calculateRate1m. ok is false when there is too little history,
 // fewer than recentMeanMinSamples observations in the window, or the histogram was reset
-// by an engine restart.
+// by an engine restart, whether before the window or inside it.
 func (c *Store) calculateMean1m(pod *Pod, modelName, metricName string, histogram *metrics.HistogramMetricValue) (mean float64, ok bool) {
 	key := rateHistoryKey(pod, modelName, RecentMeanMetricName(metricName))
 	now := time.Now()
@@ -96,6 +96,12 @@ func (c *Store) calculateMean1m(pod *Pod, modelName, metricName string, histogra
 		return 0, false
 	}
 
+	if counterWentBackwards(history, base, histogram.Sum, histogram.Count) {
+		// The engine restarted inside the window. The new run has already passed the old
+		// base, so base-to-now would mix two runs: readers use the lifetime mean.
+		return 0, false
+	}
+
 	sum, count := histogram.Sum-base.Value, histogram.Count-base.Count
 	if sum < 0 || count < recentMeanMinSamples {
 		// Too few observations in the window to average, or the engine restarted and
@@ -104,4 +110,24 @@ func (c *Store) calculateMean1m(pod *Pod, modelName, metricName string, histogra
 		return 0, false
 	}
 	return sum / count, true
+}
+
+// counterWentBackwards reports whether the cumulative sum or count decreased anywhere
+// between base and the current sample. Both only ever grow within one engine run, so a
+// decrease means a restart; comparing only base with now misses it once the new run's
+// count has passed the old base.
+func counterWentBackwards(history []MetricSnapshot, base *MetricSnapshot, sum, count float64) bool {
+	prev, seenBase := base, false
+	for i := range history {
+		snapshot := &history[i]
+		if !seenBase {
+			seenBase = snapshot == base
+			continue
+		}
+		if snapshot.Count < prev.Count || snapshot.Value < prev.Value {
+			return true
+		}
+		prev = snapshot
+	}
+	return count < prev.Count || sum < prev.Value
 }
