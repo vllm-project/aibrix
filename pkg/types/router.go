@@ -16,6 +16,8 @@ limitations under the License.
 
 package types
 
+import v1 "k8s.io/api/core/v1"
+
 // Router defines the interface for routing logic to select target pods.
 type Router interface {
 	// Route selects a target pod from the provided list of pods.
@@ -28,6 +30,17 @@ type Router interface {
 // interface retain the existing bypass behavior.
 type SingleCandidateBypasser interface {
 	BypassSingleCandidate() bool
+}
+
+// CandidateSeeder is implemented by routers whose choice depends on particular pods, such as
+// the pods holding a request's prefix. When the gateway routes over a bounded candidate set
+// (AIBRIX_ROUTING_CANDIDATE_K), it adds the pods SeedCandidates returns to that set, so a
+// candidate stage never hides them from the router.
+type CandidateSeeder interface {
+	// SeedCandidates returns at most max pods from readyPods, best first. It must not read
+	// per-pod state from Redis, because the candidate stage exists to avoid reads over every
+	// ready pod.
+	SeedCandidates(ctx *RoutingContext, readyPods PodList, max int) []*v1.Pod
 }
 
 // QueueRouter defines the interface for routers that contains built-in queue and
