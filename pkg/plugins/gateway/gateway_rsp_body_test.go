@@ -475,6 +475,48 @@ func TestProcessLanguageResponse_SystemOneResponse(t *testing.T) {
 	assert.Equal(t, int64(120), totalTokens)
 }
 
+// vLLM's /v1/decisions body is OpenAI's format: "answers" is an array, and the usage block
+// names input_tokens, output_tokens and total_tokens next to two detail objects.
+const vllmDecisionsResponseBody = `{"model": "decider", "answers": [{"type": "predicate", "name": "urgent", "probability": 0.12}, {"type": "choice", "name": "team", "choice": "billing", "probabilities": [{"value": "billing", "probability": 0.9}, {"value": "shipping", "probability": 0.1}], "confidence": 0.88}], "usage": {"input_tokens": 254, "input_tokens_details": {"cached_tokens": 128, "cache_write_tokens": 0}, "output_tokens": 2, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 256}}`
+
+// vLLM's /v1/systemone body: input_tokens and output_tokens with no total_tokens, where
+// output_tokens counts the label tokens read, and a diagnostics block next to the answers.
+const vllmSystemOneResponseBody = `{"id": "decision-1", "object": "structured_decision", "created": 1790000000, "model": "decider", "answers": {"team": {"type": "choice", "choice": "billing", "probabilities": {"billing": 0.97, "shipping": 0.03}, "confidence": 0.9}}, "usage": {"input_tokens": 142, "output_tokens": 3}, "diagnostics": {"team": {"label_mass": 0.93, "argmax_is_label": true}}}`
+
+// TestProcessLanguageResponse_VLLMDecisionResponses locks in that the bodies vLLM sends for
+// both decision APIs are metered like any language response: the detail objects and the
+// array-valued answers are ignored, an explicit total is kept, and a missing one is derived.
+func TestProcessLanguageResponse_VLLMDecisionResponses(t *testing.T) {
+	tests := []struct {
+		name                      string
+		body                      string
+		prompt, completion, total int64
+	}{
+		{name: "decisions", body: vllmDecisionsResponseBody, prompt: 254, completion: 2, total: 256},
+		{name: "systemone", body: vllmSystemOneResponseBody, prompt: 142, completion: 3, total: 145},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requestID := "test-vllm-" + tt.name + "-" + time.Now().Format("150405.000")
+			req := &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        []byte(tt.body),
+					EndOfStream: true,
+				},
+			}
+
+			res, complete, prompt, completion, total := processLanguageResponse(requestID, req)
+
+			assert.False(t, complete)
+			assert.Nil(t, res, "a nil response forwards the engine's body untouched")
+			assert.Equal(t, tt.prompt, prompt)
+			assert.Equal(t, tt.completion, completion)
+			assert.Equal(t, tt.total, total)
+		})
+	}
+}
+
 func TestProcessLanguageResponse_TotalTokens(t *testing.T) {
 	tests := []struct {
 		name                      string
@@ -655,6 +697,17 @@ func TestProcessLanguageResponse_UpstreamErrorNormalization(t *testing.T) {
 			wantCode:  envoyTypePb.StatusCode_BadRequest,
 			wantMsg:   "label_token_ids must not be empty",
 			wantType:  "BadRequestError",
+			wantParam: sentinelNull,
+		},
+		{
+			// vLLM answers 501 when the model has no supported read strategy.
+			name: "vllm decision API on a model without a read strategy",
+			chunks: [][]byte{[]byte(
+				`{"error": {"message": "model does not support structured decisions", "type": "NotImplementedError", "param": null, "code": 501}}`,
+			)},
+			wantCode:  envoyTypePb.StatusCode_NotImplemented,
+			wantMsg:   "model does not support structured decisions",
+			wantType:  "NotImplementedError",
 			wantParam: sentinelNull,
 		},
 		{
@@ -1132,6 +1185,48 @@ func TestHandleResponseBody_SystemOneIsMetered(t *testing.T) {
 	}
 	assert.True(t, foundTPM, "expected HeaderUpdateTPM in response")
 	mockRL.AssertExpectations(t)
+}
+
+// TestHandleResponseBody_VLLMDecisionsAreMetered is the end-to-end half of
+// TestProcessLanguageResponse_VLLMDecisionResponses: both vLLM bodies reach TPM accounting
+// with the total the engine sent or, for /v1/systemone, the derived one.
+func TestHandleResponseBody_VLLMDecisionsAreMetered(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		body    string
+		usage   TokenUsage
+		wantTPM int64
+	}{
+		{name: "decisions", path: PathDecisions, body: vllmDecisionsResponseBody, usage: TokenUsage{PromptTokens: 254, CompletionTokens: 2, TotalTokens: 256}, wantTPM: 256},
+		{name: "systemone", path: PathSystemOne, body: vllmSystemOneResponseBody, usage: TokenUsage{PromptTokens: 142, CompletionTokens: 3, TotalTokens: 145}, wantTPM: 145},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockRL := &mockRateLimiter{}
+			mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", tt.wantTPM).Return(int64(500), nil)
+			server := &Server{ratelimiter: mockRL}
+
+			requestID := "test-req-vllm-" + tt.name + "-" + time.Now().Format("150405.000")
+			routerCtx := types.NewRoutingContext(context.Background(), "random", "decider", "", requestID, "test-user")
+			routerCtx.ReqPath = tt.path
+			routerCtx.RequestTime = time.Now()
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{Body: []byte(tt.body), EndOfStream: true},
+				},
+			}
+
+			resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 42, "decider", false, false)
+
+			assert.True(t, complete)
+			assert.NotNil(t, resp)
+			assert.Equal(t, tt.usage, usage)
+			mockRL.AssertExpectations(t)
+		})
+	}
 }
 
 // Shaped like vLLM's /v1/messages stream, which sends no total_tokens.

@@ -1978,6 +1978,18 @@ msgid ""
 "behavior."
 msgstr "网关未映射的请求会逐字节原样转发，因此在该请求头中发送其他内容的调用方不会看到行为变化。"
 
+#: ../../source/features/gateway-routing/gateway-plugins.rst:871
+msgid ""
+"``POST /v1/decisions`` requests are never rewritten: neither vLLM nor "
+"SGLang accepts a ``priority`` field there, and both reject unknown fields"
+" with ``400``. ``POST /v1/systemone`` requests are rewritten like any "
+"other: vLLM schedules each read by the priority, and SGLang ignores the "
+"field."
+msgstr ""
+"``POST /v1/decisions`` 请求从不被改写：vLLM 和 SGLang 在该端点都不接受 ``priority`` "
+"字段，并且都会以 ``400`` 拒绝未知字段。``POST /v1/systemone`` 请求与其他请求一样会被改写：vLLM "
+"按该优先级调度每次读取，SGLang 则忽略该字段。"
+
 #: ../../source/features/gateway-routing/gateway-plugins.rst:857
 msgid ""
 "The supported tier names are fixed in this release. Per-tier values a "
