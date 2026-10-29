@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	schedv1alpha1 "github.com/kubewharf/godel-scheduler-api/pkg/apis/scheduling/v1alpha1"
 	v1 "k8s.io/api/core/v1"
@@ -32,6 +33,7 @@ import (
 	volcanoschedv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	aibrixconst "github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
 	controllerdrain "github.com/vllm-project/aibrix/pkg/controller/drain"
 	ctrlutil "github.com/vllm-project/aibrix/pkg/controller/util"
@@ -250,12 +252,14 @@ func (r *RoleSetReconciler) calculateStatusFromPodSets(ctx context.Context, rs *
 	}, nil
 }
 
-func (r *RoleSetReconciler) finalize(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet) (bool, error) {
+// finalize returns whether cleanup is done and, while pods are draining, how long to
+// wait before the next pass (0 means the default requeue).
+func (r *RoleSetReconciler) finalize(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet) (bool, time.Duration, error) {
 	selectorOpt := client.MatchingLabels{constants.RoleSetNameLabelKey: roleSet.Name}
 	// 1. check if all podsets are delete for podGroupSize > 1
 	allPodSets := &orchestrationv1alpha1.PodSetList{}
 	if err := r.List(ctx, allPodSets, client.InNamespace(roleSet.Namespace), selectorOpt); err != nil {
-		return false, err
+		return false, 0, err
 	} else if len(allPodSets.Items) != 0 {
 		// delete pods
 		for i := range allPodSets.Items {
@@ -263,48 +267,64 @@ func (r *RoleSetReconciler) finalize(ctx context.Context, roleSet *orchestration
 				if apierrors.IsNotFound(err) {
 					continue
 				}
-				return false, err
+				return false, 0, err
 			}
 		}
 		// let's wait for next reconcile to move to next step, it helps make sure the podsets resources are cleaned up.
-		return false, nil
+		return false, 0, nil
 	}
 
 	// 2. check if all pods are deleted.
 	allPods := &v1.PodList{}
 	if err := r.List(ctx, allPods, client.InNamespace(roleSet.Namespace), selectorOpt); err != nil {
-		return false, err
+		return false, 0, err
 	} else if len(allPods.Items) != 0 {
-		// delete pods
+		// delete pods, draining ready ones first when their role configures drain;
+		// pods that never became ready are deleted right away, as in rollout.
+		drainByRole := make(map[string]*orchestrationv1alpha1.RoleDrainSpec, len(roleSet.Spec.Roles))
+		for i := range roleSet.Spec.Roles {
+			drainByRole[roleSet.Spec.Roles[i].Name] = roleSet.Spec.Roles[i].Drain
+		}
+		podsByRole := make(map[string][]*v1.Pod)
 		for i := range allPods.Items {
-			if err = r.Delete(ctx, &allPods.Items[i]); err != nil {
-				if apierrors.IsNotFound(err) {
-					continue
-				}
-				return false, err
+			roleName := allPods.Items[i].Labels[constants.RoleNameLabelKey]
+			podsByRole[roleName] = append(podsByRole[roleName], &allPods.Items[i])
+		}
+		var result controllerdrain.Result
+		now := time.Now()
+		for roleName, pods := range podsByRole {
+			readyPods, notReadyPods := splitPodsByReady(pods)
+			if _, err := controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, roleSet, notReadyPods, nil, aibrixconst.PodDrainReasonScaleIn, now); err != nil {
+				return false, 0, err
 			}
+			readyResult, err := controllerdrain.DeletePods(ctx, r.Client, r.EventRecorder, roleSet, readyPods, drainByRole[roleName], aibrixconst.PodDrainReasonScaleIn, now)
+			if err != nil {
+				return false, 0, err
+			}
+			result.Merge(readyResult)
 		}
 		// let's wait for next reconcile to move to next step, it helps make sure the pod resources are cleaned up.
-		return false, nil
+		// While pods drain, come back when the earliest drain window ends.
+		return false, result.RequeueAfter, nil
 	}
 
 	// 3. check if pg is deleted
 	if err := utils.FinalizePodGroup(ctx, r.DynamicClient, r.Client, &schedv1alpha1.PodGroup{}, roleSet.Name, roleSet.Namespace); err != nil {
-		return false, err
+		return false, 0, err
 	}
 	if err := utils.FinalizePodGroup(ctx, r.DynamicClient, r.Client, &schedulerpluginsv1aplha1.PodGroup{}, roleSet.Name, roleSet.Namespace); err != nil {
-		return false, err
+		return false, 0, err
 	}
 	if err := utils.FinalizePodGroup(ctx, r.DynamicClient, r.Client, &volcanoschedv1beta1.PodGroup{}, roleSet.Name, roleSet.Namespace); err != nil {
-		return false, err
+		return false, 0, err
 	}
 
 	// 3. remove finalizer
 	if controllerutil.ContainsFinalizer(roleSet, RoleSetFinalizer) {
 		if err := utils.Patch(ctx, r.Client, roleSet, patch.RemoveFinalizerPatch(roleSet, RoleSetFinalizer)); err != nil {
 			klog.Warningf("Failed to remove finalizer for roleSet %s/%s: %v", roleSet.Namespace, roleSet.Name, err)
-			return false, err
+			return false, 0, err
 		}
 	}
-	return true, nil
+	return true, 0, nil
 }
