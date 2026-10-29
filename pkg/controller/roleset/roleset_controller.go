@@ -117,12 +117,15 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if roleSet.DeletionTimestamp != nil {
-		if done, err := r.finalize(ctx, roleSet); err != nil {
+		if done, requeueAfter, err := r.finalize(ctx, roleSet); err != nil {
 			klog.Errorf("Reconciling RoleSet %s finalize error %v", req.String(), err)
 			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
 		} else if !done {
-			klog.Infof("Reconciling RoleSet %s finalize not done yet, reconcile after %v seconds", req.String(), DefaultRequeueAfter)
-			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, nil
+			if requeueAfter <= 0 {
+				requeueAfter = DefaultRequeueAfter
+			}
+			klog.Infof("Reconciling RoleSet %s finalize not done yet, reconcile after %v", req.String(), requeueAfter)
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
 		}
 		return ctrl.Result{}, nil
 	} else if !controllerutil.ContainsFinalizer(roleSet, RoleSetFinalizer) {
