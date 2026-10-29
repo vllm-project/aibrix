@@ -38,9 +38,10 @@ import (
 
 // TestSelectTargetPod_CandidateStageBoundsRedisReads routes one least-request request over 200
 // ready pods against a real Redis protocol server and counts the commands the routing path
-// sends. Today every pod's running count is read several times per request (gate,
-// least-request, the load-balance blend). With routingConfig.candidate.k set, only the
-// candidates are read, so the command count stops depending on the fleet size.
+// sends. Without the stage, every ready pod's running count is read once per decision (the
+// gate, least-request and the load-balance blend share that read, #3329). With
+// routingConfig.candidate.k set, only the candidates are read, so the command count stops
+// depending on the fleet size.
 func TestSelectTargetPod_CandidateStageBoundsRedisReads(t *testing.T) {
 	const n = 200
 	mr := miniredis.RunT(t)
@@ -81,6 +82,6 @@ func TestSelectTargetPod_CandidateStageBoundsRedisReads(t *testing.T) {
 	full := route("")
 	sampled := route(`{"candidate":{"k":8}}`)
 	t.Logf("Redis commands per request over %d pods: %d without the candidate stage, %d with k=8", n, full, sampled)
-	assert.GreaterOrEqual(t, full, 2*n, "today every ready pod is read at least twice")
-	assert.LessOrEqual(t, sampled, 3*8+8, "with the candidate stage only the 8 candidates are read")
+	assert.GreaterOrEqual(t, full, n, "without the stage every ready pod is read")
+	assert.LessOrEqual(t, sampled, 8+8, "with the candidate stage only the 8 candidates are read")
 }
