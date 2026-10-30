@@ -180,7 +180,48 @@ msgstr ""
 "roleset 因 decode Pod 宕机而不完整——则在已配置且 prompt 长度范围匹配时，请求会回退到本地同时运行两个阶段的 "
 "**标准推理 Pod** （``combined: true`` ）。"
 
-#: ../../source/features/gateway-routing/pd-disaggregation.rst:93
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:91
+msgid "Prefill Engine Errors"
+msgstr "prefill 引擎错误"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:94
+msgid ""
+"With vLLM and TensorRT-LLM, the prefill request is synchronous: the gateway "
+"sends it to the prefill pod before any decode pod runs. A request the "
+"prefill engine refuses therefore never reaches the decode pod, and its "
+"rejection is not a routing failure: the prefill pod was selected and "
+"reachable, and the engine rejected the request body itself — a sampling "
+"parameter outside its range, or media the model cannot accept."
+msgstr ""
+"使用 vLLM 与 TensorRT-LLM 时，prefill 请求是同步的：网关先把请求发给 prefill Pod，之后才轮到 decode "
+"Pod。因此被 prefill 引擎拒绝的请求不会到达 decode Pod；这种拒绝并非路由失败：prefill Pod "
+"已成功选中且可访问，真正被拒绝的是请求体本身——例如采样参数超出引擎允许范围，或模型无法接受的媒体内容。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:101
+msgid ""
+"Such a rejection is returned to the client unchanged: the prefill pod's HTTP "
+"status and its error payload (``message``, ``type``, ``param``, ``code``) "
+"reach the client as they were sent. No ``x-error-pd-prefill`` marker is "
+"added: the payload is the engine's own answer, so a disaggregated request "
+"fails with the same error and status a standard inference pod would have "
+"returned."
+msgstr ""
+"这类拒绝会原样返回给客户端：prefill Pod 的 HTTP "
+"状态码及其错误载荷（``message``、``type``、``param``、``code``）保持不变。不会附加 "
+"``x-error-pd-prefill`` 标记：这是引擎自身的应答，因此同一个请求体在 PD 部署下会以与标准推理 Pod "
+"相同的状态码和错误失败。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:107
+msgid ""
+"A ``5xx`` from the prefill engine is returned the same way, with one "
+"difference: it carries the ``x-error-pd-prefill: true`` marker, because a "
+"server-side error says nothing about the request and the status alone cannot "
+"tell which leg failed. Transport failures keep the generic ``503`` response."
+msgstr ""
+"prefill 引擎返回的 ``5xx`` 同样原样返回，区别在于会附加 ``x-error-pd-prefill: true`` "
+"标记：服务端错误并不说明请求本身有问题，仅凭状态码也无法判断是哪条腿失败。传输错误仍返回通用的 ``503`` 响应。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:113
 msgid "Supported Engines"
 msgstr "支持的引擎"
 

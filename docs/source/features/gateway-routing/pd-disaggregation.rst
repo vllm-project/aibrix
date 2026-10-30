@@ -88,6 +88,27 @@ How PD Disaggregation Works
 
 If no complete prefill/decode pair is available for the request's prompt length — for example the prompt is outside all configured buckets, or the matching roleset is incomplete because a decode pod is down — the request falls back to a **standard inference pod** (``combined: true``) that runs both phases locally, when one is configured and its prompt-length range matches.
 
+Prefill Engine Errors
+---------------------
+
+With vLLM and TensorRT-LLM, the prefill request is synchronous: the gateway
+sends it to the prefill pod before any decode pod runs. A request the prefill
+engine refuses therefore never reaches the decode pod, and its rejection is not
+a routing failure: the prefill pod was selected and reachable, and the engine
+rejected the request body itself — a sampling parameter outside its range, or
+media the model cannot accept.
+
+Such a rejection is returned to the client unchanged: the prefill pod's HTTP
+status and its error payload (``message``, ``type``, ``param``, ``code``) reach
+the client as they were sent. No ``x-error-pd-prefill`` marker is added: the
+payload is the engine's own answer, so a disaggregated request fails with the
+same error and status a standard inference pod would have returned.
+
+A ``5xx`` from the prefill engine is returned the same way, with one
+difference: it carries the ``x-error-pd-prefill: true`` marker, because a
+server-side error says nothing about the request and the status alone cannot
+tell which leg failed. Transport failures keep the generic ``503`` response.
+
 
 Supported Engines
 -----------------

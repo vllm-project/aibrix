@@ -1188,7 +1188,7 @@ Routing and Error Debugging Headers
    * - ``x-error-invalid-routing-strategy``
      - Indicates that an unsupported routing strategy was specified.
    * - ``x-error-pd-prefill``
-     - Marks a gateway-generated error because the prefill leg of a ``pd`` request failed. See :doc:`pd-disaggregation`.
+     - Marks an error caused by the prefill leg of a ``pd`` request. 4xx engine answers are returned without it. See :doc:`pd-disaggregation`.
    * - ``x-error-pd-decode``
      - Marks a gateway-generated error because the decode watchdog fired after a successful prefill. See :doc:`pd-disaggregation`.
    * - ``x-error-model-rps-exceeded``

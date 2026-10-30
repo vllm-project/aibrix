@@ -35,6 +35,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/engine"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -267,6 +268,9 @@ func buildTargetSelectionErrorResponse(routingCtx *types.RoutingContext, request
 		return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_BadRequest,
 			invalidReqErr.Error(), "", "", HeaderErrorRouting, "true")
 	}
+	if prefillResponse, ok := buildPrefillErrorResponse(routingCtx, requestID, err); ok {
+		return prefillResponse
+	}
 	if errors.Is(err, types.ErrTargetReplicaInflightExceeded) {
 		limit := replicaInflightLimit(routingCtx)
 		klog.InfoS("replica_inflight_exceeded", "requestID", requestID, "model", model, "limit", limit, "reason", "replica_at_capacity")
@@ -282,6 +286,49 @@ func buildTargetSelectionErrorResponse(routingCtx *types.RoutingContext, request
 		return externalResponse
 	}
 	return nil
+}
+
+// buildPrefillErrorResponse forwards an HTTP error the synchronous prefill leg
+// returned for the request: a 4xx the engine raised while judging the prompt (a
+// bad sampling parameter, unsupported media), or a 5xx from the engine itself.
+// The pods were selected and reachable, so this is the engine's answer rather
+// than a routing failure: the body is normalized like a non-PD upstream error
+// and the status is the engine's own.
+//
+// A 5xx also carries x-error-pd-prefill, because the status alone does not say
+// which leg failed. A 4xx does not: it is the engine's verdict on the request
+// body, and matches what a non-PD pod would return. Transport failures, and
+// statuses Envoy cannot emit, keep the caller's generic 503.
+func buildPrefillErrorResponse(routingCtx *types.RoutingContext, requestID string, err error) (*extProcPb.ProcessingResponse, bool) {
+	var prefillErr *pd.PrefillHTTPError
+	if !errors.As(err, &prefillErr) || prefillErr.StatusCode < 400 || prefillErr.StatusCode > 599 {
+		return nil, false
+	}
+	// Envoy validates ImmediateResponse status as defined_only, so a code the enum
+	// has no name for cannot be sent and keeps the generic 503 instead.
+	if _, ok := envoyTypePb.StatusCode_name[int32(prefillErr.StatusCode)]; !ok {
+		return nil, false
+	}
+	statusCode := envoyTypePb.StatusCode(prefillErr.StatusCode)
+	var marker []string
+	if prefillErr.StatusCode >= 500 {
+		marker = []string{HeaderErrorPDPrefill, "true"}
+	}
+	klog.InfoS("prefill_engine_error", "requestID", requestID, "status_code", prefillErr.StatusCode)
+
+	// Pass the real HTTP status as headerStatus, like the non-PD path, so it wins
+	// over whatever the body's own "code" claims.
+	body, _, ok := normalizeUpstreamErrorBody([]byte(prefillErr.Body), prefillErr.StatusCode)
+	if !ok {
+		// A non-JSON body (plain text, a proxy page) is the engine's answer too:
+		// pass it through as the message and keep the status.
+		message := prefillErr.Body
+		if message == "" {
+			message = fmt.Sprintf("prefill request failed with status %d", prefillErr.StatusCode)
+		}
+		return buildRoutingErrorResponse(routingCtx, requestID, statusCode, message, "", "", marker...), true
+	}
+	return buildRoutingErrorResponseWithBody(routingCtx, requestID, statusCode, body, marker...), true
 }
 
 func buildExternalRouterErrorResponse(routingCtx *types.RoutingContext, requestID string, err error) (*extProcPb.ProcessingResponse, bool) {
@@ -303,7 +350,26 @@ func buildRoutingErrorResponse(
 	errBody, errorCode, param string,
 	headers ...string,
 ) *extProcPb.ProcessingResponse {
-	response := buildErrorResponse(statusCode, errBody, errorCode, param, headers...)
+	return withRoutingResponseHeaders(
+		buildErrorResponse(statusCode, errBody, errorCode, param, headers...), routingCtx, requestID)
+}
+
+// buildRoutingErrorResponseWithBody is buildRoutingErrorResponse for a body that is
+// already an OpenAI-shaped error payload and must reach the client verbatim.
+func buildRoutingErrorResponseWithBody(
+	routingCtx *types.RoutingContext,
+	requestID string,
+	statusCode envoyTypePb.StatusCode,
+	body string,
+	headers ...string,
+) *extProcPb.ProcessingResponse {
+	return withRoutingResponseHeaders(
+		buildErrorResponseWithBody(statusCode, body, buildEnvoyProxyHeaders(nil, headers...)), routingCtx, requestID)
+}
+
+// withRoutingResponseHeaders adds the request id and the target-pod headers the
+// routing context recorded to an immediate error response.
+func withRoutingResponseHeaders(response *extProcPb.ProcessingResponse, routingCtx *types.RoutingContext, requestID string) *extProcPb.ProcessingResponse {
 	setHeaders := response.GetImmediateResponse().GetHeaders().GetSetHeaders()
 	setHeaders = buildEnvoyProxyHeaders(setHeaders, HeaderRequestID, requestID)
 	if routingCtx != nil {
