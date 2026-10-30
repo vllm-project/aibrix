@@ -683,6 +683,23 @@ Prefix cache and Preble
      - ``AIBRIX_ROUTER_PREBLE_DECODING_LENGTH``
      - Assumed number of decoding tokens per request in the preble cost model.
 
+Candidate stage
+~~~~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 26 40
+
+   * - Field
+     - Overrides
+     - Description
+   * - ``candidate.k``
+     - ``AIBRIX_ROUTING_CANDIDATE_K``
+     - Number of ready pods drawn at random for the load-imbalance gate and the router to score, so each request reads per-pod load for about ``k`` pods instead of all of them. ``0`` scores every ready pod. Applies only when every resolved strategy is candidate-safe (see ``pkg/plugins/gateway/ENV_VARS.md``). Checks that compare a pod with the rest of its pool, such as the gate's spread, the prefix-cache standard-deviation check and blend normalization, then compare it with the sample. Use at least ``2``: with ``1`` and no seeded pods, the one sampled pod is routed to without scoring.
+   * - ``candidate.prefixM``
+     - ``AIBRIX_ROUTING_CANDIDATE_PREFIX_M``
+     - Most pods the router may add to the sample; for ``prefix-cache`` these are the pods holding the longest cached prefix of the prompt.
+
 VTC fairness
 ~~~~~~~~~~~~
 
@@ -851,6 +868,7 @@ Behavior notes:
 - Requests that already carry a ``priority`` in their body keep the value the caller set, which makes an explicit per-request choice possible even for a tier the table maps.
 - Tier names are matched case-insensitively.
 - A request that the gateway does not map is forwarded byte for byte, so callers that send something else in this header see no change in behavior.
+- ``POST /v1/decisions`` requests are never rewritten: neither vLLM nor SGLang accepts a ``priority`` field there, and both reject unknown fields with ``400``. ``POST /v1/systemone`` requests are rewritten like any other: vLLM schedules each read by the priority, and SGLang ignores the field.
 
 .. note::
 

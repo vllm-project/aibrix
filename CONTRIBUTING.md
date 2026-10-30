@@ -5,14 +5,29 @@ please see the [Development Guide](development/README.md) in the `development` d
 
 ## How to Contribute
 
+### Scope and review
+
+- State the intended scope and success criteria before a non-trivial change.
+- Keep each change focused on one issue or coherent behavior change. Do not
+  combine unrelated refactors, formatting, or generated output.
+- Discuss large design changes before implementation and record the design in
+  the appropriate documentation area.
+- Update user or developer documentation when behavior, configuration, APIs,
+  deployment, or CLI usage changes. Follow the [documentation guide](docs/README.md).
+- Review every generated or AI-assisted change yourself; submit only changes
+  you can explain and verify. Agent-generated analysis or review does not
+  constitute maintainer approval; the human contributor remains accountable.
+
 ### 0. Coding Guidelines
 
-- **Style Guide**: The [Go style](https://google.github.io/styleguide/go/) guide is a good standard to follow.
-- **Commenting Code**: Write clear comments that explain the "why" not just the "how".
+Follow the [implementation guidelines](development/README.md#implementation-guidelines)
+for Go conventions, API compatibility, and generated artifacts. The
+[Go style guide](https://google.github.io/styleguide/go/) is an additional reference.
 
 ### 1. Understanding the Repository Structure
 
-You can refer to the [Design Doc](https://github.com/vllm-project/aibrix/tree/main/development/tutorials) to quickly understand the layout of the AIBrix directory structure.
+Start with the [repository layout](development/README.md#repository-layout).
+Feature walkthroughs are available in [development tutorials](development/tutorials/).
 
 ### 2. Picking an Issue
 
@@ -21,11 +36,13 @@ Start by picking an [issue](https://github.com/vllm-project/aibrix/issues) tagge
 #### Issue-first policy
 
 Contributors who are not listed as project maintainers on the
-[community page](docs/source/community/community.rst) must normally obtain
-maintainer agreement before implementing a feature or bug fix. Start by
-searching open issues and pull requests. If the work is not already tracked,
-open an issue and wait for a maintainer to apply the `triage/accepted` label
-before starting the implementation or opening a pull request.
+[community page](docs/source/community/community.rst) must obtain maintainer
+agreement before implementing a feature or bug fix, except for the documentation
+and mechanical corrections described below. Start by searching open issues and
+pull requests. Open an issue if the work is not already tracked. Whether the
+issue is new or existing, wait for a maintainer to apply `triage/accepted` before
+starting implementation or preparing a pull request. Until then, limit work to
+investigation, reproduction, and improving the issue.
 
 A useful issue establishes why AIBrix should maintain the change. Strong
 examples include:
@@ -43,9 +60,10 @@ particular patch.
 
 Maintainers may self-triage routine fixes and may open an issue and pull request
 together because they remain responsible for the resulting quality and
-maintenance. Changes to APIs, CRDs, defaults, environment variables,
-admission behavior, autoscaling algorithms, security boundaries, or CI and
-build policy still require prior discussion and independent maintainer review.
+maintenance. Sensitive or broad changes still require prior discussion and
+independent maintainer review. This includes changes to APIs, CRDs, defaults,
+environment variables, admission behavior, autoscaling algorithms, security
+boundaries, or CI and build policy.
 
 Pure documentation corrections and obvious mechanical fixes may be submitted
 without an accepted issue when they do not change behavior, configuration,
@@ -58,16 +76,21 @@ automatically exempt: it must identify the real behavior or risk it protects.
 - **Making Commits**: Write detailed commit messages that explain your changes.
 - **Pull Requests**:
   - Create a pull request on [PR Page](https://github.com/vllm-project/aibrix/pulls) against the main branch.
-  - Use the provided PR template to describe your changes.
+  - Use the [PR template](.github/PULL_REQUEST_TEMPLATE.md) to describe your changes.
   - Link the accepted issue with `Fixes #<issue-number>` unless the change
     qualifies for the small-change exception above.
+  - Record affected versions or environments, reproduction steps, root cause,
+    and user-visible or operational impact.
   - For a bug fix, describe how to reproduce the failure and, when practical,
     add a regression test that fails for the expected reason before the fix and
     passes afterward.
   - Keep the implementation within the direction and scope accepted in the
     issue. Return to the issue for agreement before expanding that scope.
-  - List the exact validation commands run and their results. State any
-    relevant checks that were not run.
+  - Test or validate the change before submitting the PR, following the
+    [verification guidance](test/README.md#verification-principles). Report the
+    commands or manual steps performed and their results. Explain any relevant
+    checks that could not be completed and what remains unverified. Never
+    report an unexecuted check as passing.
 - **Code Review Process**: Your PR will be reviewed by related contributors. Address feedback to improve and finalize your contribution.
 
 Maintainers may close a pull request without completing a code-level review

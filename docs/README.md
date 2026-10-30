@@ -1,5 +1,17 @@
 # Using Sphinx to build html web pages for AIBrix
 
+## Documentation changes
+
+Update documentation alongside changes to behavior, configuration, APIs,
+deployment, or CLI usage.
+
+When changing any `docs/source/**/*.rst` file, update the corresponding catalog
+under `docs/source/locale/zh_CN/LC_MESSAGES/` in the same change, including
+added, modified, and removed content. Do not leave changed content falling
+back to English on the Chinese site. After updating the catalogs, complete the
+translations and run `make html-all` from `docs/` before submitting the change;
+both English and Simplified Chinese HTML builds must succeed.
+
 ## Environment setup
 Make sure that your python conda environment is setup correctly. The following installs sphinx package and necessary templates.
 

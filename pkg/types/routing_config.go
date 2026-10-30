@@ -61,11 +61,20 @@ type RoutingConfig struct {
 	Preble      *PrebleProfileConfig      `json:"preble,omitempty"`
 	VTC         *VTCProfileConfig         `json:"vtc,omitempty"`
 	AutoBlend   *AutoBlendProfileConfig   `json:"autoBlend,omitempty"`
+	// Candidate mirrors the AIBRIX_ROUTING_CANDIDATE_* knobs of the candidate stage.
+	Candidate *CandidateProfileConfig `json:"candidate,omitempty"`
 
 	// PD carries the prefill/decode knobs in one flat object, so
 	// "routingConfig.pd.decodeAbortTimeout" reads as one knob instead of a
 	// four-level path.
 	PD *PDProfileConfig `json:"pd,omitempty"`
+}
+
+// CandidateProfileConfig mirrors AIBRIX_ROUTING_CANDIDATE_K and
+// AIBRIX_ROUTING_CANDIDATE_PREFIX_M.
+type CandidateProfileConfig struct {
+	K       *int `json:"k,omitempty"`
+	PrefixM *int `json:"prefixM,omitempty"`
 }
 
 // LoadBalanceProfileConfig mirrors the AIBRIX_LOAD_BALANCE_* knobs of the
