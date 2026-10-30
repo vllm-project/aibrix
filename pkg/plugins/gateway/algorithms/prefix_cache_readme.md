@@ -34,6 +34,30 @@ the decision are observed by the next decision; retries and pooled context reuse
 clear the retained result. Tokenization or index errors are not cached, and
 ordinary routing without seeding does not retain a match snapshot.
 
+The index contract requires each pod's raw match to be independent of the other
+queried pods, and the ready-set input map to remain unchanged. Hash elements
+returned by the router are read-only; slice capacity is restricted so an append
+cannot overwrite the array retained by the decision.
+
+### Observing match reuse
+
+`aibrix_prefix_cache_match_operations_total{model,result}` records each prefix
+matching operation. The fixed `result` values are:
+
+| Result | Meaning |
+| --- | --- |
+| `lookup` | Read the index without a retained result, including initial seeding. |
+| `reuse` | Project a retained result onto a covered subset. |
+| `fallback_identity` | Read the index because its identity, model or adapter changed. |
+| `fallback_uncovered` | Read the index because the requested set contains an uncovered pod. |
+
+All results except `reuse` perform an index lookup. Ordinary routing with the
+candidate stage disabled also reports `lookup`; compare reuse rates only for
+traffic where candidate seeding is enabled. Replacing prefix tokens clears the
+snapshot, so subsequent operations report `lookup` until seeding runs again.
+Identity and coverage fallbacks also emit a V(4) log with the request ID and
+reason, without logging prompt contents.
+
 ## Routing Flow
 
 ```

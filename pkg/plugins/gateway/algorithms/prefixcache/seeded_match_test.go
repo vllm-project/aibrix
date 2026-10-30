@@ -19,9 +19,11 @@ package prefixcache
 import (
 	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
@@ -103,6 +105,7 @@ func TestSeededPrefixMatchPreservesAdmissionAndPrefixCredit(t *testing.T) {
 }
 
 func TestSeededPrefixMatchCoverageAndIdentity(t *testing.T) {
+	require.NoError(t, initializePrefixCacheMetrics())
 	ctx := newSeededMatchContext("prompt")
 	defer ctx.Delete()
 	pods := []*v1.Pod{{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "a"}}, {ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "b"}}}
@@ -131,16 +134,20 @@ func TestSeededPrefixMatchCoverageAndIdentity(t *testing.T) {
 		model  string
 		loraID int64
 		pods   []*v1.Pod
+		result string
 	}{
-		{"other index", &struct{ id int }{2}, "model", -1, pods},
-		{"other model", index, "other", -1, pods},
-		{"other adapter", index, "model", 7, pods},
-		{"uncovered pod", index, "model", -1, append(append([]*v1.Pod(nil), pods...), &v1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "other", Name: "a"}})},
+		{"other index", &struct{ id int }{2}, "model", -1, pods, prefixMatchIdentityFallback},
+		{"other model", index, "other", -1, pods, prefixMatchIdentityFallback},
+		{"other adapter", index, "model", 7, pods, prefixMatchIdentityFallback},
+		{"uncovered pod", index, "model", -1, append(append([]*v1.Pod(nil), pods...), &v1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "other", Name: "a"}}), prefixMatchCoverageFallback},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := calls
+			counter := getPrefixCacheMetrics().prefixCacheMatchOperations.WithLabelValues(ctx.Model, tc.result)
+			operations := testutil.ToFloat64(counter)
 			matchPrefix(ctx, tc.pods, tc.index, tc.model, tc.loraID, false, read)
 			assert.Equal(t, before+1, calls)
+			assert.Equal(t, operations+1, testutil.ToFloat64(counter), "fallback reason must be observable")
 			assert.Same(t, stored, ctx.SeededPrefixMatch(), "fallback reads never extend the snapshot")
 		})
 	}
@@ -176,6 +183,84 @@ func TestSeededPrefixMatchDoesNotCacheFailures(t *testing.T) {
 			scores, _, err := r.ScoreAll(ctx, pods)
 			require.NoError(t, err)
 			assert.Equal(t, []float64{0, 0, 0}, scores, "all-miss results also avoid another lookup")
+		})
+	}
+}
+
+func TestSeededPrefixMatchHashesCannotAppendIntoSnapshot(t *testing.T) {
+	ctx := newSeededMatchContext("prompt")
+	defer ctx.Delete()
+	pods := []*v1.Pod{{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "a"}}}
+	backing := []uint64{1, 2, 99, 100}
+	index := &struct{}{}
+	read := func(map[string]struct{}) (map[string]int, []uint64) {
+		return map[string]int{"ns/a": 100}, backing[:2]
+	}
+	_, hashes := matchPrefix(ctx, pods, index, "m", -1, true, read)
+	require.Equal(t, len(hashes), cap(hashes), "the initial result must not expose spare retained capacity")
+	appended := append(hashes, 3)
+	require.Equal(t, uint64(3), appended[2])
+	require.Equal(t, uint64(99), backing[2])
+	// Also cover retained results published with spare capacity by another caller.
+	snapshot := *ctx.SeededPrefixMatch()
+	snapshot.Hashes = backing[:2]
+	ctx.SetSeededPrefixMatch(&snapshot)
+	_, hashes = matchPrefix(ctx, pods, index, "m", -1, false, read)
+	require.Equal(t, len(hashes), cap(hashes), "reuse must also prevent append from modifying the retained array")
+	appended = append(hashes, 4)
+	require.Equal(t, uint64(4), appended[2])
+	require.Equal(t, []uint64{1, 2}, ctx.SeededPrefixMatch().Hashes)
+	require.Equal(t, uint64(99), backing[2])
+}
+
+// Reuse relies on a pod's match being independent of the other queried pods,
+// and on both indexers leaving the ready-set map unchanged. Exercise those
+// contracts with overlapping prefixes, random subsets/order and copied pods.
+func TestSeededPrefixMatchDifferentialSubsets(t *testing.T) {
+	for _, kvSync := range []bool{false, true} {
+		t.Run(fmt.Sprintf("kvSync=%v", kvSync), func(t *testing.T) {
+			r, all := newSeededMatchRouter(t, 24, kvSync)
+			rng := rand.New(rand.NewSource(3343))
+			shared := strings.Repeat("shared conversation ", 64)
+			prompts := []string{
+				shared + "first question", shared + "second question",
+				shared[:len(shared)/2] + "short branch",
+				shared[:len(shared)/3] + "another branch",
+				strings.Repeat("different conversation ", 48),
+				strings.Repeat("unrelated prompt ", 64),
+			}
+			for i := 0; i < 80; i++ {
+				prompt := prompts[rng.Intn(len(prompts))]
+				addSeededMatch(t, r, all, all.Pods[rng.Intn(all.Len())], prompt[:1+rng.Intn(len(prompt))])
+			}
+			coverage := make(map[string]struct{}, all.Len())
+			for _, pod := range all.Pods {
+				coverage[utils.GeneratePodKey(pod.Namespace, pod.Name)] = struct{}{}
+			}
+			for trial := 0; trial < 400; trial++ {
+				prompt := prompts[rng.Intn(len(prompts))]
+				ctx, live := newSeededMatchContext(prompt), newSeededMatchContext(prompt)
+				r.SeedCandidates(ctx, all, 1+rng.Intn(all.Len()))
+				require.NotNil(t, ctx.SeededPrefixMatch())
+				require.Equal(t, coverage, ctx.SeededPrefixMatch().Pods, "index lookup must not mutate the coverage input")
+				order := rng.Perm(all.Len())[:1+rng.Intn(all.Len())]
+				subset := &utils.PodArray{}
+				for _, i := range order {
+					pod := all.Pods[i]
+					if rng.Intn(2) == 0 {
+						pod = pod.DeepCopy()
+					}
+					subset.Pods = append(subset.Pods, pod)
+				}
+				got, valid, err := r.ScoreAll(ctx, subset)
+				require.NoError(t, err)
+				want, wantValid, err := r.ScoreAll(live, subset)
+				require.NoError(t, err)
+				require.Equal(t, want, got, "trial %d: seeded subset must equal a live lookup", trial)
+				require.Equal(t, wantValid, valid)
+				ctx.Delete()
+				live.Delete()
+			}
 		})
 	}
 }

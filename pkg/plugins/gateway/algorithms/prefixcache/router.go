@@ -71,6 +71,7 @@ type PrefixCacheMetrics struct {
 	prefixCacheRoutingLatency   *prometheus.HistogramVec
 	prefixCacheRoutingSelection *prometheus.CounterVec
 	prefixCacheRoutingErrors    *prometheus.CounterVec
+	prefixCacheMatchOperations  *prometheus.CounterVec
 }
 
 // Global metrics instance
@@ -124,6 +125,14 @@ func createPrefixCacheMetrics() *PrefixCacheMetrics {
 			},
 			[]string{"model", "reason", "using_kv_sync"},
 		),
+		prefixCacheMatchOperations: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "prefix_cache_match_operations_total",
+				Help:      "Prefix matching operations by seeded reuse or index lookup outcome",
+			},
+			[]string{"model", "result"},
+		),
 	}
 }
 
@@ -135,6 +144,7 @@ func (m *PrefixCacheMetrics) register() error {
 		m.prefixCacheRoutingLatency,
 		m.prefixCacheRoutingSelection,
 		m.prefixCacheRoutingErrors,
+		m.prefixCacheMatchOperations,
 	}
 
 	for _, collector := range collectors {
@@ -705,7 +715,8 @@ func (k *kvSyncPrefixCacheRouter) scoreAll(ctx *types.RoutingContext, readyPodLi
 }
 
 // Cleanup gracefully shuts down the TokenizerPool if it exists
-func (p *prefixCacheRouter) Cleanup() error {
+// A value receiver supports the router value returned by the constructors.
+func (p prefixCacheRouter) Cleanup() error {
 	if p.tokenizerPool != nil {
 		klog.Info("Shutting down TokenizerPool...")
 		if err := p.tokenizerPool.Close(); err != nil {

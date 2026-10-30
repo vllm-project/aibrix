@@ -38,6 +38,7 @@ import (
 // Keep the fixture in this file so the same benchmark can run on pre-reuse revisions.
 func newSeededMatchRouter(tb testing.TB, n int, kvSync bool) (*prefixCacheRouter, *utils.PodArray) {
 	tb.Helper()
+	require.NoError(tb, initializePrefixCacheMetrics())
 	pods := make([]*v1.Pod, n)
 	for i := range pods {
 		pods[i] = &v1.Pod{

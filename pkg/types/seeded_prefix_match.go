@@ -25,6 +25,9 @@ package types
 // partition (the base model and adapter ID for KV sync). All fields are immutable
 // after publication. Only candidate seeding publishes a result, so ordinary
 // routing without seeding does not retain a fleet-sized snapshot.
+// Index lookups must not mutate the coverage map, and a pod's raw match must
+// be independent of which other pods were queried. Returned hashes are read-only;
+// reuse limits their capacity to prevent append from changing retained storage.
 type SeededPrefixMatch struct {
 	Index   any
 	Model   string
