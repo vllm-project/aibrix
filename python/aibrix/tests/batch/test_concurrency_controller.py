@@ -358,3 +358,46 @@ def test_concurrency_outcome_extracts_nested_llm_latency_metrics():
     assert outcome.ttft_seconds == 0.12
     assert outcome.tpot_seconds == 0.025
     assert outcome.e2e_tpot_seconds == 0.1
+
+
+@pytest.mark.parametrize(
+    "non_finite",
+    [float("nan"), float("inf"), float("-inf"), "nan", "Infinity", "-Infinity"],
+)
+def test_concurrency_outcome_ignores_non_finite_latency_metrics(non_finite):
+    outcome = concurrency_outcome_from_result(
+        {
+            "usage": {"output_tokens": 5},
+            "metrics": {
+                "time_to_first_token": non_finite,
+                "time_to_first_token_ms": 120,
+            },
+            "timings": {
+                "time_per_output_token_ms": non_finite,
+            },
+        },
+        None,
+        latency_seconds=0.5,
+    )
+
+    assert outcome.ttft_seconds == 0.12
+    assert outcome.tpot_seconds is None
+
+
+def test_non_finite_latency_does_not_poison_controller_ewma():
+    controller = LLMAdaptiveConcurrencyController(initial_limit=64, max_limit=64)
+
+    def outcome(ttft):
+        return concurrency_outcome_from_result(
+            {"metrics": {"time_to_first_token": ttft}},
+            None,
+            latency_seconds=0.5,
+        )
+
+    for _ in range(10):
+        controller.on_complete(outcome(0.1))
+    controller.on_complete(outcome("nan"))
+    for _ in range(30):
+        controller.on_complete(outcome(5.0))
+
+    assert controller.limit() == 28
