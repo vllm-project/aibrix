@@ -14,7 +14,11 @@
 
 """Failure-convergence tests for the ModelClaim runtime engine supervisor."""
 
+import os
+import select
 import signal
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -289,6 +293,62 @@ def test_deactivate_keeps_real_process_in_stopping_state_until_exit(tmp_path):
     assert registry.load() == []
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups")
+def test_stop_terminates_a_real_process_ignoring_sigterm(tmp_path, monkeypatch):
+    clock = [datetime(2026, 7, 14, tzinfo=timezone.utc)]
+    launcher = runtime_module.SubprocessEngineLauncher()
+    processes = []
+
+    def launch(inst, *_):
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-u",
+                "-c",
+                "import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "print('ready'); signal.pause()",
+            ],
+            stdout=subprocess.PIPE,
+            start_new_session=True,
+        )
+        processes.append(proc)
+        inst.proc = proc
+        assert select.select([proc.stdout], [], [], 5)[0], "child did not become ready"
+        assert proc.stdout.readline() == b"ready\n"
+        return proc.pid
+
+    monkeypatch.setattr(launcher, "launch", launch)
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda _: True)
+    runtime = ModelRuntime(
+        launcher,
+        registry=EngineRegistry(tmp_path / "engines.json"),
+        now=lambda: clock[0],
+    )
+    try:
+        stuck = runtime.activate(
+            model_name="stuck", artifact_url="hf://Org/Stuck", engine="sglang"
+        )
+        other = runtime.activate(
+            model_name="other", artifact_url="hf://Org/Other", engine="sglang"
+        )
+        runtime.deactivate("stuck")
+        clock[0] += timedelta(seconds=29.9)
+        runtime.supervise_once()
+        assert stuck.proc.poll() is None
+        clock[0] += timedelta(seconds=0.1)
+        runtime.supervise_once()
+        assert stuck.proc.wait(timeout=5) == -signal.SIGKILL
+        runtime.supervise_once()
+        assert runtime.list_models() == [other]
+        assert other.proc.poll() is None
+    finally:
+        for proc in processes:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=5)
+            proc.stdout.close()
+
+
 def test_production_singleton_enables_registry_and_supervisor(tmp_path, monkeypatch):
     monkeypatch.delenv("AIBRIX_MODEL_RUNTIME_MOCK", raising=False)
     monkeypatch.setenv("AIBRIX_ENGINE_REGISTRY_PATH", str(tmp_path / "engines.json"))
@@ -303,3 +363,235 @@ def test_production_singleton_enables_registry_and_supervisor(tmp_path, monkeypa
     finally:
         runtime.stop_supervisor()
         runtime_module._AGENT = None
+
+
+@pytest.fixture
+def stopping_runtime(tmp_path, monkeypatch):
+    clock = [datetime(2026, 7, 14, tzinfo=timezone.utc)]
+    launcher = _ControlledLauncher()
+    launcher.stop_exits = False
+    registry = EngineRegistry(tmp_path / "engines.json")
+    runtime = ModelRuntime(launcher, registry=registry, now=lambda: clock[0])
+    signals = []
+    monkeypatch.setattr(
+        runtime_module.os, "killpg", lambda pid, sig: signals.append((pid, sig))
+    )
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda _: False)
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda _: "123456")
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda _: True)
+    inst = runtime.activate(model_name="stuck", artifact_url="hf://Org/Stuck")
+    return runtime, inst, launcher, registry, clock, signals
+
+
+@pytest.mark.parametrize("operation", ["deactivate", "supervise"])
+def test_expired_mock_stop_never_signals_host_processes(monkeypatch, operation):
+    clock = [datetime(2026, 7, 14, tzinfo=timezone.utc)]
+    launcher = runtime_module.MockEngineLauncher()
+    runtime = ModelRuntime(launcher, now=lambda: clock[0])
+    inst = runtime.activate(model_name="mock", artifact_url="hf://Org/Mock")
+    # Simulate an interrupted stop rather than the normal mock deactivation,
+    # which immediately removes an instance without a process handle.
+    inst.phase = "stopping"
+    clock[0] += timedelta(seconds=31)
+    signals = []
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda _: None)
+    monkeypatch.setattr(
+        runtime_module.os, "killpg", lambda pid, sig: signals.append((pid, sig))
+    )
+
+    if operation == "deactivate":
+        runtime.deactivate("mock")
+        assert runtime.list_models() == []
+    else:
+        runtime.supervise_once()
+    assert signals == []
+    assert launcher.stopped == ["mock"]
+
+
+def test_stop_escalates_only_after_grace_and_retains_record_until_exit(
+    stopping_runtime,
+):
+    runtime, inst, launcher, registry, clock, signals = stopping_runtime
+    other = runtime.activate(model_name="other", artifact_url="hf://Org/Other")
+    runtime.deactivate("stuck")
+    clock[0] += timedelta(seconds=29.9)
+    runtime.supervise_once()
+    assert signals == []
+
+    clock[0] += timedelta(seconds=0.1)
+    runtime.supervise_once()
+    assert signals == [(inst.pid, signal.SIGKILL)]
+    assert inst in runtime.list_models()
+    assert any(record["model_name"] == "stuck" for record in registry.load())
+    assert other.proc.alive
+    assert other.phase == "active"
+    assert set(launcher.stopped) == {"stuck"}
+
+    inst.proc.alive = False
+    runtime.supervise_once()
+    assert runtime.list_models() == [other]
+    assert [record["model_name"] for record in registry.load()] == ["other"]
+
+
+def test_stop_does_not_force_kill_an_engine_that_exits_during_grace(stopping_runtime):
+    runtime, inst, _, registry, clock, signals = stopping_runtime
+    runtime.deactivate("stuck")
+    inst.proc.alive = False
+    clock[0] += timedelta(seconds=31)
+    runtime.supervise_once()
+    assert runtime.list_models() == []
+    assert registry.load() == []
+    assert signals == []
+
+
+@pytest.mark.parametrize("retry", ["deactivate", "supervise"])
+def test_stop_errors_do_not_extend_the_grace_period(
+    stopping_runtime, monkeypatch, retry
+):
+    runtime, inst, launcher, registry, clock, signals = stopping_runtime
+    runtime.deactivate("stuck")
+    started = inst.last_transition
+    clock[0] += timedelta(seconds=20)
+
+    def fail_stop(_):
+        raise RuntimeError("stop unavailable")
+
+    monkeypatch.setattr(launcher, "stop", fail_stop)
+    if retry == "deactivate":
+        with pytest.raises(RuntimeError, match="stop unavailable"):
+            runtime.deactivate("stuck")
+    else:
+        runtime.supervise_once()
+    assert inst.last_transition == started
+    assert registry.load()[0]["last_transition"] == started.isoformat()
+
+    clock[0] += timedelta(seconds=10)
+    runtime.supervise_once()
+    assert signals == [(inst.pid, signal.SIGKILL)]
+
+
+def test_repeated_deactivate_does_not_extend_stop_grace(stopping_runtime):
+    runtime, inst, _, _, clock, signals = stopping_runtime
+    runtime.deactivate("stuck")
+    clock[0] += timedelta(seconds=20)
+    runtime.deactivate("stuck")
+    clock[0] += timedelta(seconds=10)
+    runtime.supervise_once()
+    assert signals == [(inst.pid, signal.SIGKILL)]
+
+
+@pytest.mark.parametrize("elapsed", [20, 31])
+def test_re_adopt_preserves_stop_deadline(tmp_path, monkeypatch, elapsed):
+    record = _record()
+    record["phase"] = "stopping"
+    started = datetime.fromisoformat(record["last_transition"])
+    clock = [started + timedelta(seconds=elapsed)]
+    registry = EngineRegistry(tmp_path / "engines.json")
+    registry.save([record])
+    launcher = _ControlledLauncher()
+    launcher.stop_exits = False
+    signals = []
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda _: True)
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda _: True)
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda _: "123456")
+    monkeypatch.setattr(
+        runtime_module.os, "killpg", lambda pid, sig: signals.append((pid, sig))
+    )
+
+    runtime = ModelRuntime(launcher, registry=registry, now=lambda: clock[0])
+    assert runtime.list_models()[0].last_transition == started
+    if elapsed < 30:
+        assert signals == []
+        assert launcher.stopped == ["qwen"]
+        clock[0] = started + timedelta(seconds=30)
+        runtime.supervise_once()
+    assert signals == [(4321, signal.SIGKILL)]
+    assert registry.load()[0]["phase"] == "stopping"
+
+
+def test_re_adopt_keeps_stop_failure_retryable(tmp_path, monkeypatch):
+    record = _record()
+    record["phase"] = "stopping"
+    started = datetime.fromisoformat(record["last_transition"])
+    registry = EngineRegistry(tmp_path / "engines.json")
+    registry.save([record])
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda _: True)
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda _: "123456")
+
+    def fail_killpg(pid, sig):
+        raise PermissionError("signal denied")
+
+    monkeypatch.setattr(runtime_module.os, "killpg", fail_killpg)
+    runtime = ModelRuntime(
+        _ControlledLauncher(),
+        registry=registry,
+        now=lambda: started + timedelta(seconds=31),
+    )
+    inst = runtime.list_models()[0]
+    assert "signal denied" in inst.last_error
+    assert inst.last_transition == started
+    assert registry.load()[0]["last_error"] == inst.last_error
+    signals = []
+    monkeypatch.setattr(
+        runtime_module.os, "killpg", lambda pid, sig: signals.append((pid, sig))
+    )
+    runtime.supervise_once()
+    assert (4321, signal.SIGKILL) in signals
+
+
+def test_stop_waits_for_surviving_process_group(stopping_runtime, monkeypatch):
+    runtime, inst, _, registry, clock, signals = stopping_runtime
+    runtime.deactivate("stuck")
+    inst.proc.alive = False
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda _: True)
+    # A missing leader must not prevent stopping its surviving worker group.
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda _: None)
+    clock[0] += timedelta(seconds=30)
+    runtime.supervise_once()
+    assert signals == [(inst.pid, signal.SIGKILL)]
+    assert registry.load()[0]["phase"] == "stopping"
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda _: False)
+    runtime.supervise_once()
+    assert registry.load() == []
+
+
+def test_stop_does_not_signal_a_reused_pid(stopping_runtime, monkeypatch):
+    runtime, inst, _, registry, clock, signals = stopping_runtime
+    runtime.deactivate("stuck")
+    clock[0] += timedelta(seconds=30)
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda _: "different")
+    runtime.supervise_once()
+    assert signals == []
+    assert inst.last_error is not None
+    assert registry.load()[0]["phase"] == "stopping"
+
+
+@pytest.mark.parametrize("error", [ProcessLookupError, PermissionError])
+def test_force_stop_handles_signal_races_and_retries(
+    stopping_runtime, monkeypatch, error
+):
+    runtime, inst, _, registry, clock, signals = stopping_runtime
+    runtime.deactivate("stuck")
+    started = inst.last_transition
+    clock[0] += timedelta(seconds=30)
+
+    def fail_killpg(pid, sig):
+        assert (pid, sig) == (inst.pid, signal.SIGKILL)
+        if error is ProcessLookupError:
+            inst.proc.alive = False
+        raise error("signal failed")
+
+    monkeypatch.setattr(runtime_module.os, "killpg", fail_killpg)
+    runtime.supervise_once()
+    assert inst.last_transition == started
+    assert registry.load()[0]["phase"] == "stopping"
+    if error is PermissionError:
+        assert "signal failed" in inst.last_error
+        monkeypatch.setattr(
+            runtime_module.os, "killpg", lambda pid, sig: signals.append((pid, sig))
+        )
+        runtime.supervise_once()
+        assert signals == [(inst.pid, signal.SIGKILL)]
+        inst.proc.alive = False
+    runtime.supervise_once()
+    assert registry.load() == []

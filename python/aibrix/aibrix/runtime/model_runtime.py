@@ -72,6 +72,9 @@ _hbm_usable_by_device: Dict[str, int] = {}
 # a control plane deciding on it would treat a card as emptier than it is.
 KV_UNKNOWN = -1
 KV_CAPACITY_VERIFY_TIMEOUT_SECONDS = 5.0
+# Once deactivation starts, an engine must not wait indefinitely for clients
+# to disconnect. The supervisor escalates to SIGKILL after this grace period.
+ENGINE_STOP_GRACE_SECONDS = 30.0
 
 
 @dataclass
@@ -1302,7 +1305,11 @@ class ModelRuntime:
                         inst.pid
                     ):
                         self._increment_metric(self._re_adoption_outcomes, "stopping")
-                        self._launcher.stop(inst)
+                        try:
+                            self._stop_stopping_instance(inst)
+                        except Exception as exc:
+                            inst.last_error = f"stop failed: {exc}"
+                            changed = True
                     else:
                         self._increment_metric(self._re_adoption_outcomes, "removed")
                         self._models.pop(inst.model_name, None)
@@ -1586,6 +1593,32 @@ class ModelRuntime:
         inst.last_transition = self._now()
         return True
 
+    def _stop_stopping_instance(self, inst: ModelInstance) -> None:
+        if isinstance(self._launcher, MockEngineLauncher):
+            self._launcher.stop(inst)
+            return
+        # Do not signal an unrelated process if the recorded leader PID was
+        # reused. A missing leader is different: its workers can keep the
+        # original process group alive and still need to be stopped.
+        current_start_time = process_start_time(inst.pid)
+        if (
+            inst.pid_start_time is not None
+            and current_start_time is not None
+            and current_start_time != inst.pid_start_time
+        ):
+            raise RuntimeError("refusing to stop engine with a reused PID")
+        if (
+            inst.pid is None
+            or (self._now() - inst.last_transition).total_seconds()
+            < ENGINE_STOP_GRACE_SECONDS
+        ):
+            self._launcher.stop(inst)
+            return
+        try:
+            os.killpg(inst.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # The group exited between the liveness check and the signal.
+
     def _terminate_stale_process_group(self, inst: ModelInstance) -> bool:
         """Terminate surviving vLLM workers after their API parent is gone.
 
@@ -1696,10 +1729,9 @@ class ModelRuntime:
             if inst.phase == "stopping":
                 if self._process_handle_alive(inst) or process_group_is_alive(inst.pid):
                     try:
-                        self._launcher.stop(inst)
+                        self._stop_stopping_instance(inst)
                     except Exception as exc:
                         inst.last_error = f"stop failed: {exc}"
-                        inst.last_transition = now
                         changed = True
                 else:
                     remove.append(model_name)
@@ -1823,10 +1855,9 @@ class ModelRuntime:
             inst.kv_capacity_verify_until = None
             self._persist_locked()
             try:
-                self._launcher.stop(inst)
+                self._stop_stopping_instance(inst)
             except Exception as exc:
                 inst.last_error = f"stop failed: {exc}"
-                inst.last_transition = self._now()
                 self._persist_locked()
                 raise
             # A real SIGTERM is asynchronous. Retain the stopping record until
