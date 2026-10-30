@@ -134,7 +134,7 @@ python -m generator.workload_generator.workload_generator \
 
 ### Generate a workload file based on workload patterns (synthetic patterns)
 
-You can generate a workload file based on synthetic traffic (QPS), input lengths (prompt lengths), and output lengths (completion lengths) patterns. Currently, we support 4 patterns (`'quick_rising'`, `'slow_rising'`, `'slight_fluctuation'`, `'severe_fluctuation'`), described [here](https://github.com/vllm-project/aibrix/blob/main/benchmarks/autoscaling/bench_workload_generator.py).
+You can generate a workload file based on synthetic traffic (QPS), input lengths (prompt lengths), and output lengths (completion lengths) patterns. Currently, we support 4 patterns (`'quick_rising'`, `'slow_rising'`, `'slight_fluctuation'`, `'severe_fluctuation'`), described [here](https://github.com/vllm-project/aibrix/blob/main/benchmarks/generator/workload_generator/distribution.py).
 
 ```shell
 python -m generator.workload_generator.workload_generator \
