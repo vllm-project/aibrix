@@ -2580,6 +2580,89 @@ func TestApplyConfigProfile_AuthoritativePolicyUsesDefaultProfile(t *testing.T) 
 	}
 }
 
+func TestApplyConfigProfile_ModelConfig(t *testing.T) {
+	modelConfig := `{
+		"defaultProfile":"default",
+		"profiles":{
+			"default":{"routingStrategy":"least-request"},
+			"cache-friendly":{"routingStrategy":"prefix-cache","requestsPerSecond":7}
+		}
+	}`
+	annotated := &v1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "pod-a",
+		Annotations: map[string]string{
+			constants.ModelAnnoConfig: `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"random"}}}`,
+		},
+	}}
+	plain := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-b"}}
+
+	tests := []struct {
+		name             string
+		modelConfig      string
+		reqConfigProfile string
+		pods             []*v1.Pod
+		wantStrategy     string
+		wantRPS          int64
+	}{
+		{
+			name:         "model config default profile",
+			modelConfig:  modelConfig,
+			pods:         []*v1.Pod{plain},
+			wantStrategy: "least-request",
+		},
+		{
+			name:             "config-profile picks a model config profile",
+			modelConfig:      modelConfig,
+			reqConfigProfile: "cache-friendly",
+			pods:             []*v1.Pod{plain},
+			wantStrategy:     "prefix-cache",
+			wantRPS:          7,
+		},
+		{
+			name:         "model config wins over a pod annotation",
+			modelConfig:  modelConfig,
+			pods:         []*v1.Pod{annotated},
+			wantStrategy: "least-request",
+		},
+		{
+			name:         "no model config keeps the pod annotation",
+			pods:         []*v1.Pod{annotated},
+			wantStrategy: "random",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := types.NewRoutingContext(context.Background(), "", "model", "", "request-1", "")
+			ctx.ModelConfig = tt.modelConfig
+			ctx.ReqConfigProfile = tt.reqConfigProfile
+
+			applyConfigProfile(ctx, tt.pods)
+
+			require.NotNil(t, ctx.ConfigProfile)
+			assert.Equal(t, tt.wantStrategy, ctx.ConfigProfile.RoutingStrategy)
+			assert.Equal(t, tt.wantRPS, ctx.ConfigProfile.RequestsPerSecond)
+		})
+	}
+}
+
+// modelConfigTestCache adds cache.ModelConfigCache to MockCache.
+type modelConfigTestCache struct {
+	*MockCache
+	configs map[string]string
+}
+
+func (c modelConfigTestCache) ModelConfig(model string) (string, bool) {
+	cfg, ok := c.configs[model]
+	return cfg, ok
+}
+
+func TestModelConfigFromCache(t *testing.T) {
+	withConfigs := modelConfigTestCache{MockCache: &MockCache{}, configs: map[string]string{"model": `{"profiles":{}}`}}
+	assert.Equal(t, `{"profiles":{}}`, modelConfigFromCache(withConfigs, "model"))
+	assert.Empty(t, modelConfigFromCache(withConfigs, "other-model"))
+	assert.Empty(t, modelConfigFromCache(&MockCache{}, "model"), "a cache without ModelConfigCache has no model config")
+}
+
 func TestMaxTokensFromRequestBody(t *testing.T) {
 	tests := []struct {
 		name string

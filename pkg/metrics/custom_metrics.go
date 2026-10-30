@@ -447,12 +447,20 @@ func EmitMetricToPrometheus(routingCtx *types.RoutingContext, pod *v1.Pod, metri
 		labelNames, labelValues := buildMetricLabels(pod, routingCtx, extra)
 		if hv := metricValue.GetHistogramValue(); hv != nil {
 			SetHistogramMetric(metricName, GetMetricHelp(metricName), hv, labelNames, labelValues...)
-			p50, _ := hv.GetPercentile(50)
-			SetGaugeMetric(metricName+"_p50", GetMetricHelp(metricName), p50, labelNames, labelValues...)
-			p90, _ := hv.GetPercentile(90)
-			SetGaugeMetric(metricName+"_p90", GetMetricHelp(metricName), p90, labelNames, labelValues...)
-			p99, _ := hv.GetPercentile(99)
-			SetGaugeMetric(metricName+"_p99", GetMetricHelp(metricName), p99, labelNames, labelValues...)
+			for _, q := range []struct {
+				suffix     string
+				percentile float64
+			}{{"_p50", 50}, {"_p90", 90}, {"_p99", 99}} {
+				value, err := hv.GetPercentile(q.percentile)
+				if err != nil {
+					// The percentile cannot be computed, for example with no observations
+					// yet or none since the engine restarted: drop the series instead of
+					// exporting a value that was never observed.
+					DeleteGaugeMetric(metricName+q.suffix, labelNames, labelValues...)
+					continue
+				}
+				SetGaugeMetric(metricName+q.suffix, GetMetricHelp(metricName), value, labelNames, labelValues...)
+			}
 		}
 	}
 }

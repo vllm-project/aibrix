@@ -202,7 +202,10 @@ func podMetricsBackoffDelay(failures int) time.Duration {
 
 // MetricSnapshot represents a metric value at a specific timestamp
 type MetricSnapshot struct {
-	Value     float64
+	Value float64
+	// Count is the observation count of a histogram whose Sum is Value (see
+	// calculateMean1m); it stays 0 for counters.
+	Count     float64
 	Timestamp time.Time
 }
 
@@ -417,6 +420,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 				}
 
 				c.updateThroughputToksPerS(pod, model, metric, metricValue)
+				c.updateRecentMean(pod, model, metric, metricValue)
 				metrics.EmitMetricToPrometheus(&types.RoutingContext{Model: model}, pod.Pod, metric, metricValue, metricValue.GetLabelValues())
 
 				if metric == metrics.EngineSleepState && c.kvEventManager != nil {

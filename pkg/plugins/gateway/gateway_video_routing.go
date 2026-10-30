@@ -384,6 +384,7 @@ func (s *Server) pinAsyncVideoJob(ctx context.Context, routingCtx *types.Routing
 		return nil, term, videoJobPodUnavailableResponse(publicJobID)
 	}
 
+	routingCtx.ModelConfig = modelConfigFromCache(s.cache, record.Model)
 	applyConfigProfile(routingCtx, []*v1.Pod{pod})
 
 	if errRes := s.enforceModelRPS(ctx, record.Model, routingCtx); errRes != nil {

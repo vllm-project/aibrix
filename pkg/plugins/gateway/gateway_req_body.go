@@ -105,7 +105,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		}
 	}
 
-	// Resolve model config profile from annotation and apply overrides
+	// Resolve the model config profile and apply overrides. A config that
+	// discovery supplied for the model is used ahead of pod annotations.
+	routingCtx.ModelConfig = modelConfigFromCache(s.cache, model)
 	applyConfigProfile(routingCtx, podsArr.All())
 
 	// Derive and validate routing strategy (headers -> profile -> env); return 400 on invalid
