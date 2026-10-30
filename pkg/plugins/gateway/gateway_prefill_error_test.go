@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -148,7 +149,7 @@ func TestBuildTargetSelectionErrorResponse_PassesPrefillEngineErrorsThrough(t *t
 				assertHeaderAbsent(t, resp.GetImmediateResponse().GetHeaders().GetSetHeaders(), HeaderErrorPDPrefill)
 			}
 
-			body := string(resp.GetImmediateResponse().GetBody())
+			body := resp.GetImmediateResponse().GetBody()
 			if tc.rawContains != "" {
 				assert.Contains(t, body, tc.rawContains)
 				return
@@ -164,10 +165,9 @@ func TestBuildTargetSelectionErrorResponse_PassesPrefillEngineErrorsThrough(t *t
 }
 
 func TestBuildTargetSelectionErrorResponse_MatchesNonPDErrorBody(t *testing.T) {
-	// The client must get the same body and status the non-PD path produces for the
-	// same normalized upstream error (see the normalizeUpstreamErrorBody call in
-	// gateway.go's processRequestBodyError path). Only a 4xx can be identical: the
-	// non-PD path answers a 5xx with its own generic message, not the engine's body.
+	// Same body and status the non-PD path produces for the same upstream error
+	// (see processRequestBodyError in gateway.go). Only a 4xx can match: the non-PD
+	// path answers a 5xx with its own generic message instead of the engine's body.
 	const engineBody = `{"error":{"message":"temperature must be in [0, 2], got 2.1. (parameter=temperature, value=2.1)","type":"BadRequestError","param":"temperature","code":400}}`
 
 	normalizedBody, statusCode, ok := normalizeUpstreamErrorBody([]byte(engineBody), 400)
@@ -181,8 +181,29 @@ func TestBuildTargetSelectionErrorResponse_MatchesNonPDErrorBody(t *testing.T) {
 	assert.Equal(t, nonPDResp.GetImmediateResponse().GetStatus().GetCode(), resp.GetImmediateResponse().GetStatus().GetCode())
 	// Key order is not part of the contract: the normalization re-marshals the upstream
 	// fields, so compare the payloads semantically.
-	assert.JSONEq(t, string(nonPDResp.GetImmediateResponse().GetBody()), string(resp.GetImmediateResponse().GetBody()))
+	assert.JSONEq(t, nonPDResp.GetImmediateResponse().GetBody(), resp.GetImmediateResponse().GetBody())
 	assertHeaderAbsent(t, resp.GetImmediateResponse().GetHeaders().GetSetHeaders(), HeaderErrorPDPrefill)
+}
+
+func TestBuildTargetSelectionErrorResponse_MarksPrefillTransportFailures(t *testing.T) {
+	// The gateway cannot reach the prefill pod: there is no engine answer to pass
+	// through, so the status stays 503 but the marker and the wrapped error tell
+	// the client which leg failed.
+	transportErr := &pd.PrefillTransportError{Err: errors.New("read tcp 10.0.0.1:34567->10.0.0.2:8000: read: connection reset by peer")}
+	wrapped := fmt.Errorf("prefill request failed for request r1, pod prefill-0: %w", transportErr)
+	wrapped = fmt.Errorf("prefill request failed for request r1: %w", wrapped)
+
+	resp := buildTargetSelectionErrorResponse(prefillErrorRoutingContext(t), "test-request-id", "test-model", wrapped)
+	require.NotNil(t, resp)
+
+	immediate := resp.GetImmediateResponse()
+	assert.Equal(t, envoyTypePb.StatusCode_ServiceUnavailable, immediate.GetStatus().GetCode())
+	var got prefillErrorBody
+	require.NoError(t, json.Unmarshal([]byte(immediate.GetBody()), &got))
+	assert.Contains(t, got.Error.Message, "prefill request failed (transport)")
+	assert.Contains(t, got.Error.Message, "connection reset by peer")
+	assertHeaderRawValue(t, immediate.GetHeaders().GetSetHeaders(), HeaderErrorPDPrefill, "true")
+	assertHeaderAbsent(t, immediate.GetHeaders().GetSetHeaders(), HeaderErrorRouting)
 }
 
 func TestBuildTargetSelectionErrorResponse_KeepsGatewayFailuresGeneric(t *testing.T) {
@@ -191,19 +212,27 @@ func TestBuildTargetSelectionErrorResponse_KeepsGatewayFailuresGeneric(t *testin
 		err  error
 	}{
 		{
-			name: "a transport failure",
-			err:  errors.New("connection refused"),
+			name: "an untyped failure",
+			err:  errors.New("boom"),
 		},
 		{
 			name: "a status Envoy cannot emit",
 			err:  prefillLegError(599, `{"error":{"message":"unknown"}}`),
+		},
+		{
+			name: "a status below the client-error range",
+			err:  prefillLegError(204, `{"error":{"message":"no answer"}}`),
+		},
+		{
+			name: "a redirect below the client-error range",
+			err:  prefillLegError(302, `{"error":{"message":"moved"}}`),
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := buildTargetSelectionErrorResponse(prefillErrorRoutingContext(t), "test-request-id", "test-model", tc.err)
-			assert.Nil(t, resp, "transport failures and unnamed statuses keep the generic 503")
+			assert.Nil(t, resp, "untyped failures and unnamed statuses keep the generic 503")
 		})
 	}
 
@@ -212,6 +241,28 @@ func TestBuildTargetSelectionErrorResponse_KeepsGatewayFailuresGeneric(t *testin
 		&pd.PrefillHTTPError{StatusCode: 400, Body: `{"error":{"message":"bad","type":"BadRequestError","param":"temperature","code":400}}`})
 	require.NotNil(t, resp)
 	assert.Equal(t, envoyTypePb.StatusCode_BadRequest, resp.GetImmediateResponse().GetStatus().GetCode())
+}
+
+func TestBuildTargetSelectionErrorResponse_EmptyEngineBodyFallsBackToStatusMessage(t *testing.T) {
+	resp := buildTargetSelectionErrorResponse(prefillErrorRoutingContext(t), "test-request-id", "test-model",
+		prefillLegError(400, ""))
+	require.NotNil(t, resp)
+
+	var got prefillErrorBody
+	require.NoError(t, json.Unmarshal([]byte(resp.GetImmediateResponse().GetBody()), &got))
+	assert.Equal(t, "prefill request failed with status 400", got.Error.Message)
+}
+
+func TestBuildTargetSelectionErrorResponse_BoundsNonJSONEngineBody(t *testing.T) {
+	huge := strings.Repeat("x", 1<<20)
+
+	resp := buildTargetSelectionErrorResponse(prefillErrorRoutingContext(t), "test-request-id", "test-model",
+		prefillLegError(502, huge))
+	require.NotNil(t, resp)
+
+	var got prefillErrorBody
+	require.NoError(t, json.Unmarshal([]byte(resp.GetImmediateResponse().GetBody()), &got))
+	assert.Len(t, got.Error.Message, maxPrefillFailureMessage+3)
 }
 
 func TestHandleRequestBody_PrefillErrorsReachTheClient(t *testing.T) {
@@ -241,7 +292,7 @@ func TestHandleRequestBody_PrefillErrorsReachTheClient(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := handleRequestBodyWithPrefillError(t, tc.prefillErr)
 			assert.Equal(t, tc.wantStatus, resp.GetImmediateResponse().GetStatus().GetCode())
-			assert.Contains(t, string(resp.GetImmediateResponse().GetBody()), tc.wantBody)
+			assert.Contains(t, resp.GetImmediateResponse().GetBody(), tc.wantBody)
 			if tc.wantMarker {
 				assertHeaderRawValue(t, resp.GetImmediateResponse().GetHeaders().GetSetHeaders(), HeaderErrorPDPrefill, "true")
 			} else {
@@ -309,9 +360,8 @@ func handleRequestBodyWithPrefillError(t *testing.T, prefillErr error) *extProcP
 	return resp
 }
 
-// assertHeaderAbsent checks that the gateway did not label the response with one of
-// its own failure markers (the engine's own answer must not look like a routing or
-// prefill-leg failure).
+// assertHeaderAbsent checks that the response carries none of the gateway's own
+// failure markers.
 func assertHeaderAbsent(t *testing.T, headers []*configPb.HeaderValueOption, key string) {
 	t.Helper()
 	for _, h := range headers {

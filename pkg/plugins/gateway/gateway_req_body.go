@@ -288,24 +288,34 @@ func buildTargetSelectionErrorResponse(routingCtx *types.RoutingContext, request
 	return nil
 }
 
-// buildPrefillErrorResponse forwards an HTTP error the synchronous prefill leg
-// returned for the request: a 4xx the engine raised while judging the prompt (a
-// bad sampling parameter, unsupported media), or a 5xx from the engine itself.
-// The pods were selected and reachable, so this is the engine's answer rather
-// than a routing failure: the body is normalized like a non-PD upstream error
-// and the status is the engine's own.
+// buildPrefillErrorResponse forwards an error the synchronous prefill leg
+// returned for the request: a 4xx the engine raised while judging it (bad
+// sampling parameter, unsupported media) or a 5xx from the engine itself. The
+// prefill pod was selected and reachable, so this is the engine's answer, not a
+// routing failure: the body is normalized like a non-PD upstream error and sent
+// with the engine's status.
 //
-// A 5xx also carries x-error-pd-prefill, because the status alone does not say
-// which leg failed. A 4xx does not: it is the engine's verdict on the request
-// body, and matches what a non-PD pod would return. Transport failures, and
-// statuses Envoy cannot emit, keep the caller's generic 503.
+// A 5xx carries x-error-pd-prefill because the status alone does not say which
+// leg failed; a 4xx does not, being the engine's verdict on the request and
+// matching what a non-PD pod returns. A transport failure (unreachable pod,
+// reset, unreadable response, timeout) keeps the 503 and carries the same marker
+// and underlying error. Statuses Envoy cannot emit keep the caller's 503.
 func buildPrefillErrorResponse(routingCtx *types.RoutingContext, requestID string, err error) (*extProcPb.ProcessingResponse, bool) {
+	var transportErr *pd.PrefillTransportError
+	if errors.As(err, &transportErr) {
+		klog.InfoS("prefill_transport_error", "requestID", requestID)
+		return buildRoutingErrorResponse(routingCtx, requestID, envoyTypePb.StatusCode_ServiceUnavailable,
+			truncatePrefillMessage(fmt.Sprintf("prefill request failed (transport): %v", transportErr.Err)), "", "",
+			HeaderErrorPDPrefill, "true"), true
+	}
+
 	var prefillErr *pd.PrefillHTTPError
-	if !errors.As(err, &prefillErr) || prefillErr.StatusCode < 400 || prefillErr.StatusCode > 599 {
+	if !errors.As(err, &prefillErr) || prefillErr == nil || prefillErr.StatusCode < 400 {
 		return nil, false
 	}
 	// Envoy validates ImmediateResponse status as defined_only, so a code the enum
-	// has no name for cannot be sent and keeps the generic 503 instead.
+	// has no name for cannot be sent and keeps the generic 503 instead. This also
+	// rejects anything above 599.
 	if _, ok := envoyTypePb.StatusCode_name[int32(prefillErr.StatusCode)]; !ok {
 		return nil, false
 	}
@@ -316,13 +326,14 @@ func buildPrefillErrorResponse(routingCtx *types.RoutingContext, requestID strin
 	}
 	klog.InfoS("prefill_engine_error", "requestID", requestID, "status_code", prefillErr.StatusCode)
 
-	// Pass the real HTTP status as headerStatus, like the non-PD path, so it wins
-	// over whatever the body's own "code" claims.
-	body, _, ok := normalizeUpstreamErrorBody([]byte(prefillErr.Body), prefillErr.StatusCode)
+	// The response status is the engine's status from PrefillHTTPError, so no header
+	// status is passed: the body is rendered from the engine payload alone, and an
+	// explicit "code" in it stays the engine's own, as on the non-PD path.
+	body, _, ok := normalizeUpstreamErrorBody([]byte(prefillErr.Body), 0)
 	if !ok {
 		// A non-JSON body (plain text, a proxy page) is the engine's answer too:
-		// pass it through as the message and keep the status.
-		message := prefillErr.Body
+		// pass it through as the message, bounded like the transport message.
+		message := truncatePrefillMessage(prefillErr.Body)
 		if message == "" {
 			message = fmt.Sprintf("prefill request failed with status %d", prefillErr.StatusCode)
 		}

@@ -197,6 +197,21 @@ type PrefillSetupError struct {
 func (e *PrefillSetupError) Error() string { return e.Err.Error() }
 func (e *PrefillSetupError) Unwrap() error { return e.Err }
 
+// PrefillTransportError is returned when the prefill call failed before the pod
+// answered: the connection could not be established, it was reset, or the round
+// trip timed out. It only describes the HTTP call the gateway made; a KV transfer
+// failure inside the engine surfaces as the engine's own answer
+// (PrefillHTTPError) instead.
+type PrefillTransportError struct {
+	Err error
+}
+
+func (e *PrefillTransportError) Error() string {
+	return fmt.Sprintf("failed to execute http prefill request: %v", e.Err)
+}
+
+func (e *PrefillTransportError) Unwrap() error { return e.Err }
+
 // classifyPrefillFailure maps an error returned by the prefill executor to a
 // failure class and, for PrefillFailureHTTPStatus, the prefill pod's status
 // code. The ordering matters: a timeout surfaces as a *url.Error wrapping

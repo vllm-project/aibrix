@@ -104,10 +104,18 @@ the client as they were sent. No ``x-error-pd-prefill`` marker is added: the
 payload is the engine's own answer, so a disaggregated request fails with the
 same error and status a standard inference pod would have returned.
 
-A ``5xx`` from the prefill engine is returned the same way, with one
-difference: it carries the ``x-error-pd-prefill: true`` marker, because a
-server-side error says nothing about the request and the status alone cannot
-tell which leg failed. Transport failures keep the generic ``503`` response.
+A ``5xx`` from the prefill engine keeps the engine's status and message and
+carries the ``x-error-pd-prefill: true`` marker, because a server-side error
+says nothing about the request and the status alone cannot tell which leg
+failed. A standard inference pod instead answers an engine ``500`` with a
+fixed ``Internal server error`` body.
+
+A prefill pod the gateway cannot reach (connection refused or reset, or a
+timeout on the call) keeps the ``503`` status but carries the marker and the
+transport error in its message. This describes the HTTP call only: a KV
+transfer failing inside the engine, as with a push-based connector such as
+NIXL or Mooncake, surfaces as the engine's own ``5xx``, and a pull-based
+handoff such as SGLang fails on the decode side.
 
 
 Supported Engines
