@@ -705,7 +705,7 @@ func (k *kvSyncPrefixCacheRouter) scoreAll(ctx *types.RoutingContext, readyPodLi
 	matchedPods, _ := k.matchPrefix(ctx, pods, tokens, indexModel, loraID, remember)
 
 	for i, pod := range pods {
-		podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 		matchPercent := matchedPods[podKey]
 		scores[i] = float64(matchPercent)
 		scored[i] = true
