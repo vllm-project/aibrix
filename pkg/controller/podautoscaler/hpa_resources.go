@@ -203,17 +203,21 @@ func buildHPABehavior(scalingContext scalingctx.ScalingContext) *autoscalingv2.H
 
 	// Convert rate to percent for K8s HPA
 	// max-scale-up-rate: 2.0 means "can double" -> 100% increase
-	scaleUpPercent := policyPercent(maxScaleUpRate - 1.0)
+	var scaleUpPercent int32
 	if maxScaleUpRate < 1 {
 		klog.Warningf("max-scale-up-rate is %f, which is invalid (must be >= 1.0). Defaulting scale-up percentage to 100%%.", maxScaleUpRate)
 		scaleUpPercent = 100 // Minimum 100% to allow scaling
+	} else {
+		scaleUpPercent = policyPercent(maxScaleUpRate - 1.0)
 	}
 
 	// max-scale-down-rate: 2.0 means "can halve" -> 50% decrease
-	scaleDownPercent := policyPercent(1.0 - 1.0/maxScaleDownRate)
+	var scaleDownPercent int32
 	if maxScaleDownRate < 1 {
 		klog.Warningf("max-scale-down-rate is %f, which is invalid (must be >= 1.0). Defaulting scale-down percentage to 100%%.", maxScaleDownRate)
 		scaleDownPercent = 100 // Minimum 100% to allow scaling
+	} else {
+		scaleDownPercent = policyPercent(1.0 - 1.0/maxScaleDownRate)
 	}
 
 	// Build behavior spec
