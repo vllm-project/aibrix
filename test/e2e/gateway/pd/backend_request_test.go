@@ -211,7 +211,9 @@ func TestPDPrefillRequestConnectionFailureIsPropagatedBeforeEnvoyRouting(t *test
 		})
 		if candidate.status != http.StatusServiceUnavailable ||
 			candidate.header.Get("prefill-target-pod") != prefillPod.Name ||
-			!strings.Contains(string(candidate.body), "error on selecting target pod") {
+			candidate.header.Get(prefillFailFastHeader) != "true" ||
+			candidate.header.Get("x-error-routing") != "" ||
+			!strings.Contains(string(candidate.body), "prefill request failed (transport)") {
 			return false
 		}
 		response, requestID = candidate, candidateID

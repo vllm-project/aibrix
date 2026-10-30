@@ -32,9 +32,10 @@ const (
 	HeaderErrorRequestBodyProcessing = "x-error-request-body-processing"
 	HeaderErrorResponseUnmarshal     = "x-error-response-unmarshal"
 	HeaderErrorResponseUnknown       = "x-error-response-unknown"
-	// HeaderErrorPDPrefill marks a response the gateway generated because the
-	// prefill leg of a PD request failed, so the failure is distinguishable
-	// from a 5xx the decode pod produced itself.
+	// HeaderErrorPDPrefill marks a response caused by the prefill leg of a PD
+	// request, so the failure is distinguishable from a 5xx the decode pod
+	// produced itself. It is set for transport failures and 5xx engine
+	// answers, but not for a 4xx the engine answered itself.
 	HeaderErrorPDPrefill = "x-error-pd-prefill"
 	// HeaderErrorPDDecode marks a response the gateway generated because the
 	// decode leg of a PD request stopped responding after its prefill leg
