@@ -187,9 +187,10 @@ func bucketServeGroups(routingCtx *types.RoutingContext, readyPods []*v1.Pod) []
 // config profile declares, with the whole range as the default: a pod that
 // declares none is not bucket-scoped.
 func podPromptLenBucketBounds(routingCtx *types.RoutingContext, pod *v1.Pod) (int, int) {
-	profile := configprofiles.ResolveProfileFromPod(pod, routingCtx.ReqConfigProfile)
+	profile := configprofiles.ResolveProfileFrom(routingCtx.ModelConfig, pod, routingCtx.ReqConfigProfile)
 	if profile == nil {
-		// Pods without model.aibrix.ai/config are not bucket-scoped; treat as any length.
+		// Without a model config (model-level or model.aibrix.ai/config on the
+		// pod) a pod is not bucket-scoped; treat as any length.
 		return 0, math.MaxInt32
 	}
 	return promptLenBucketBounds(configprofiles.ParseRoutingConfig(profile.RoutingConfig))
@@ -1707,7 +1708,7 @@ func (r *pdRouter) scoreCombinedPods(routingCtx *types.RoutingContext, combinedP
 }
 
 func isCombinedPod(routingCtx *types.RoutingContext, pod *v1.Pod) bool {
-	profile := configprofiles.ResolveProfileFromPod(pod, routingCtx.ReqConfigProfile)
+	profile := configprofiles.ResolveProfileFrom(routingCtx.ModelConfig, pod, routingCtx.ReqConfigProfile)
 	if profile == nil {
 		return false
 	}

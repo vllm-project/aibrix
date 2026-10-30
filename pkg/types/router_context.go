@@ -146,6 +146,11 @@ type RoutingContext struct {
 	ReqBody          []byte
 	ReqPath          string
 	ReqConfigProfile string
+	// ModelConfig is the model config JSON that discovery supplied for Model as
+	// a whole (the config field of a local-mode endpoints file), or empty. The
+	// gateway sets it from the cache before it resolves ConfigProfile, and
+	// profile resolution reads it ahead of pod annotations.
+	ModelConfig string
 	// AsyncJobBackendID is the backend-private identifier used for a pinned
 	// asynchronous job request. It is retained only for the lifetime of this
 	// routing context so gateway error processing can replace it with the public
@@ -168,8 +173,9 @@ type RoutingContext struct {
 	RespHeaders map[string]string
 
 	// ConfigProfile holds the resolved model config profile for this request.
-	// Set in HandleRequestBody from model.aibrix.ai/config (annotation)
-	// based on config-profile header. Nil when no config is present.
+	// Set in HandleRequestBody from ModelConfig, or else the
+	// model.aibrix.ai/config pod annotation, based on the config-profile
+	// header. Nil when no config is present.
 	ConfigProfile *ResolvedConfigProfile
 
 	// ReplicaInflightAdmitted tells request tracking to skip its Redis increment and keep the
@@ -578,6 +584,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.ReqHeaders = map[string]string{}
 	r.ReqPath = ""
 	r.ReqConfigProfile = ""
+	r.ModelConfig = ""
 	r.ReqBody = []byte{}
 	r.AsyncJobBackendID = ""
 	r.PrefillStartTime = time.Time{}
