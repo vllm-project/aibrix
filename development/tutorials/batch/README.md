@@ -4,7 +4,7 @@
 Before submitting a batch job, you need to prepare input data as a file. 
 In this file, each line represents a request. 
 The request's format is in json. 
-The json should cover multiple attributes as specified here, https://platform.openai.com/docs/guides/batch/getting-started, such as endpoint and completion window. 
+The json should cover multiple attributes as specified here, https://platform.openai.com/docs/guides/batch, such as endpoint and completion window. 
 
 ## Submit job input data
 Before submit input data, we need to construct a driver first. Assuming that the file name of the input data is "one_job_input.json", we can
