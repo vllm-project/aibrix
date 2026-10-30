@@ -477,6 +477,33 @@ func TestResolveModelConfigFrom(t *testing.T) {
 	}
 }
 
+// The gateway resolves a model-level config for every pod of every request in
+// the PD router, so the same config JSON is parsed once and then shared.
+func TestModelLevelConfigIsParsedOnce(t *testing.T) {
+	modelConfig := `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"least-request"}}}`
+	first := ResolveModelConfigFrom(modelConfig, nil)
+	if first == nil {
+		t.Fatal("ResolveModelConfigFrom() = nil, want a config")
+	}
+	if again := ResolveModelConfigFrom(modelConfig, nil); again != first {
+		t.Error("ResolveModelConfigFrom() parsed the same config again")
+	}
+	if p := ResolveProfileFrom(modelConfig, nil, ""); p == nil || p.RoutingStrategy != "least-request" {
+		t.Errorf("ResolveProfileFrom() = %v, want routingStrategy=least-request", p)
+	}
+}
+
+func BenchmarkResolveProfileFromModelConfig(b *testing.B) {
+	modelConfig := `{"defaultProfile":"pd","profiles":{"pd":{"routingStrategy":"pd","routingConfig":` +
+		`{"promptLenBucketMinLength":0,"promptLenBucketMaxLength":4096,"combined":true}}}}`
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if ResolveProfileFrom(modelConfig, nil, "") == nil {
+			b.Fatal("no profile")
+		}
+	}
+}
+
 func TestParseModelConfigWithRoutingConfig(t *testing.T) {
 	jsonStr := `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"pd","routingConfig":{"promptLenBucketMinLength":0,"promptLenBucketMaxLength":4096,"combined":true,"prefillScorePolicy":"least_request","decodeScorePolicy":"least_request"}}}}`
 	cfg, err := ParseModelConfig(jsonStr)

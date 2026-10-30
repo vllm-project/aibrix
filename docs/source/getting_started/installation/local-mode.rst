@@ -104,10 +104,13 @@ Config profiles
 ^^^^^^^^^^^^^^^
 
 A model entry can set ``config`` to the same JSON that the
-``model.aibrix.ai/config`` pod annotation holds in Kubernetes. See
-:ref:`config_profiles` for the fields. The gateway checks the JSON when it
-loads the file, so a config that does not parse, or has no profiles, stops
-startup with an error that names the model.
+``model.aibrix.ai/config`` pod annotation holds in Kubernetes, as a string or
+as a YAML mapping. See :ref:`config_profiles` for the fields. The gateway
+checks the JSON when it loads the file, so a config that does not parse, has
+no profiles, or names a ``defaultProfile`` it does not define stops startup
+with an error that names the model. A key of the endpoints file that the
+gateway does not know, such as a misspelled ``config``, is ignored and logged
+as a warning.
 
 .. code-block:: yaml
 
@@ -134,10 +137,12 @@ A request uses ``defaultProfile`` unless it names another profile in the
        "messages": [{"role": "user", "content": "Hello from AIBrix local mode"}]
      }'
 
-The config applies to all workers of the model. If a model is listed in more
-than one entry, only one of them may set ``config``. A profile's
-``routingStrategy`` takes precedence over ``ROUTING_ALGORITHM``; see
-:ref:`routing_strategy_priority` for the full order.
+The config applies to all workers of the model, including every roleset in
+prefill/decode mode, so routing settings such as ``promptLenBucket*`` or
+``combined`` cannot differ between rolesets in local mode. If a model is listed
+in more than one entry, only one of them may set ``config``, and it applies to
+the whole model. A profile's ``routingStrategy`` takes precedence over
+``ROUTING_ALGORITHM``; see :ref:`routing_strategy_priority` for the full order.
 
 Run local mode
 --------------

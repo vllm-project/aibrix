@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -373,14 +374,30 @@ func parseConfigFromPod(pod *v1.Pod) *ModelConfigProfiles {
 	return cfg
 }
 
+// modelLevelConfigs memoizes parseModelLevelConfig by the config JSON. The
+// gateway resolves a model's config several times per request (twice per pod
+// in the PD router), while discovery supplies each model-level config once, so
+// this holds one entry per model that sets one.
+var modelLevelConfigs sync.Map // string -> *ModelConfigProfiles
+
 // parseModelLevelConfig parses a model-level config. It returns nil when the
 // config is empty or invalid. The static provider rejects an invalid config
 // when it loads, so a parse error here can only come from another source.
+// Callers share the returned config and must not modify it.
 func parseModelLevelConfig(modelConfig string) *ModelConfigProfiles {
+	if modelConfig == "" {
+		return nil
+	}
+	if cfg, ok := modelLevelConfigs.Load(modelConfig); ok {
+		return cfg.(*ModelConfigProfiles)
+	}
 	cfg, err := ParseModelConfig(modelConfig)
 	if err != nil {
 		klog.V(4).InfoS("failed to parse model-level config", "err", err)
 		return nil
+	}
+	if cfg != nil {
+		modelLevelConfigs.Store(modelConfig, cfg)
 	}
 	return cfg
 }
