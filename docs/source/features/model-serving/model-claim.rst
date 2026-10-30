@@ -562,8 +562,8 @@ A model that wakes then needs room again:
   idle first and one at a time, until the waking model fits. It takes only
   models that have been idle for ``sleepToMakeRoomAfterSeconds`` and whose
   claims have the same or a lower priority than the waking model's claim.
-  Meanwhile, that claim reads ``WaitingForRoom``, and each model put to sleep
-  gets a ``SleptToMakeRoom`` Event.
+  Meanwhile, the waking model's claim reads ``WaitingForRoom``, and each model
+  put to sleep gets a ``SleptToMakeRoom`` Event.
 * If no model can be put to sleep for it, and another Pod has room, the model
   moves there. A new engine loads it on that Pod.
 * Otherwise, it waits for room for up to five minutes, and the next request
