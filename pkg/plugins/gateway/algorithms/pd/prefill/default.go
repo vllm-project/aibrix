@@ -335,7 +335,7 @@ func (e *DefaultExecutor) handleSync(
 // preserved exactly.
 //
 // Failures are returned as the typed errors of package pd (PrefillSetupError,
-// PrefillHTTPError, PrefillBodyError) or as a wrapped transport error, so that
+// PrefillTransportError, PrefillHTTPError, PrefillBodyError), so that
 // pd.OnPrefillLegFailed can classify them without parsing error strings.
 func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingContext, payload []byte, timeout time.Duration) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(routingCtx.Context, timeout)
@@ -365,7 +365,7 @@ func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingConte
 		status, code := metrics.HttpFailureStatusCode(ctx, err, nil)
 		metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, &metrics.SimpleMetricValue{Value: 1.0},
 			map[string]string{"status": status, "status_code": code})
-		return nil, fmt.Errorf("failed to execute http prefill request: %w", err)
+		return nil, &pd.PrefillTransportError{Err: err}
 	}
 	defer func() {
 		_ = resp.Body.Close()
@@ -373,7 +373,9 @@ func (e *DefaultExecutor) executeHTTP(url string, routingCtx *types.RoutingConte
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read prefill response body: %w", err)
+		// A reset or timeout while reading is still the prefill call failing to
+		// complete, not an answer from the engine.
+		return nil, &pd.PrefillTransportError{Err: fmt.Errorf("failed to read prefill response body: %w", err)}
 	}
 
 	if resp.StatusCode != http.StatusOK {

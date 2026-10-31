@@ -17,6 +17,8 @@ limitations under the License.
 package discovery
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -24,8 +26,10 @@ import (
 	"strings"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/yaml"
 )
 
@@ -69,6 +73,29 @@ type StaticModelConfig struct {
 	// rolesets or when the roleset name matters.
 	PrefillWorkers []string `json:"prefill_workers,omitempty"`
 	DecodeWorkers  []string `json:"decode_workers,omitempty"`
+	// Config holds config profiles for this model, as the JSON the
+	// model.aibrix.ai/config pod annotation holds. Optional. The gateway reads
+	// it ahead of pod annotations when it resolves a request's profile.
+	Config ModelConfigJSON `json:"config,omitempty"`
+}
+
+// ModelConfigJSON is the config field of a model entry: the JSON as a string,
+// as the annotation holds it (config: |), or the same object written as a YAML
+// mapping.
+type ModelConfigJSON string
+
+// UnmarshalJSON accepts the config as a JSON string or as a JSON object.
+func (c *ModelConfigJSON) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*c = ModelConfigJSON(s)
+		return nil
+	}
+	if trimmed := bytes.TrimSpace(data); len(trimmed) > 0 && trimmed[0] == '{' {
+		*c = ModelConfigJSON(trimmed)
+		return nil
+	}
+	return fmt.Errorf("config must be the profiles JSON, as a string or a mapping, not %s", data)
 }
 
 // StaticConfig represents the complete static endpoints configuration.
@@ -172,7 +199,8 @@ func (p *StaticProvider) Watch(handler EventHandler, _ <-chan struct{}) error {
 	return nil
 }
 
-// load reads the config file and returns all endpoints as synthetic pods.
+// load reads the config file and returns all endpoints as synthetic pods,
+// preceded by a *ModelConfig for each model that sets config.
 func (p *StaticProvider) load() ([]any, error) {
 	data, err := os.ReadFile(p.configPath)
 	if err != nil {
@@ -183,14 +211,41 @@ func (p *StaticProvider) load() ([]any, error) {
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
+	// Unknown keys stay allowed so that an existing file keeps loading, but a
+	// misspelled one (confg: for config:) would otherwise be dropped silently.
+	if err := yaml.UnmarshalStrict(data, &StaticConfig{}); err != nil {
+		klog.Warningf("static discovery: %s: %v (loaded anyway)", p.configPath, err)
+	}
 
-	var pods []any
+	var configs, pods []any
+	configured := make(map[string]bool)
 	idx := 0
 
 	for i, model := range config.Models {
 		endpoints, roleSets, err := model.resolve(i)
 		if err != nil {
 			return nil, err
+		}
+
+		if strings.TrimSpace(string(model.Config)) != "" {
+			if configured[model.Name] {
+				return nil, fmt.Errorf("model %q: config is set on more than one entry", model.Name)
+			}
+			// The gateway applies this check to the annotation on every
+			// request and skips a config that fails it. Run it once here so
+			// that a bad profile stops startup instead.
+			cfg, err := configprofiles.ParseModelConfig(string(model.Config))
+			if err != nil {
+				return nil, fmt.Errorf("model %q: invalid config: %w", model.Name, err)
+			}
+			// At request time a missing default profile just leaves requests
+			// without a config-profile header unprofiled.
+			if cfg.DefaultProfile != "" && cfg.GetProfileExact(cfg.DefaultProfile) == nil {
+				return nil, fmt.Errorf("model %q: invalid config: defaultProfile %q is not one of its profiles",
+					model.Name, cfg.DefaultProfile)
+			}
+			configured[model.Name] = true
+			configs = append(configs, &ModelConfig{ModelName: model.Name, Config: string(model.Config)})
 		}
 
 		// Non-disaggregated: plain endpoints (or the workers alias)
@@ -234,7 +289,7 @@ func (p *StaticProvider) load() ([]any, error) {
 		}
 	}
 
-	return pods, nil
+	return append(configs, pods...), nil
 }
 
 // addressToPod creates a synthetic v1.Pod from an address string and optional labels.

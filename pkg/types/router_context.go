@@ -146,6 +146,11 @@ type RoutingContext struct {
 	ReqBody          []byte
 	ReqPath          string
 	ReqConfigProfile string
+	// ModelConfig is the model config JSON that discovery supplied for Model as
+	// a whole (the config field of a local-mode endpoints file), or empty. The
+	// gateway sets it from the cache before it resolves ConfigProfile, and
+	// profile resolution reads it ahead of pod annotations.
+	ModelConfig string
 	// AsyncJobBackendID is the backend-private identifier used for a pinned
 	// asynchronous job request. It is retained only for the lifetime of this
 	// routing context so gateway error processing can replace it with the public
@@ -168,8 +173,9 @@ type RoutingContext struct {
 	RespHeaders map[string]string
 
 	// ConfigProfile holds the resolved model config profile for this request.
-	// Set in HandleRequestBody from model.aibrix.ai/config (annotation)
-	// based on config-profile header. Nil when no config is present.
+	// Set in HandleRequestBody from ModelConfig, or else the
+	// model.aibrix.ai/config pod annotation, based on the config-profile
+	// header. Nil when no config is present.
 	ConfigProfile *ResolvedConfigProfile
 
 	// ReplicaInflightAdmitted tells request tracking to skip its Redis increment and keep the
@@ -204,7 +210,8 @@ type RoutingContext struct {
 	routingOverrides *RoutingOverrides
 	// runningRequests holds the running-request counts read during the current routing
 	// decision, shared by every reader in it. Nil outside a decision. See RunningRequests.
-	runningRequests atomic.Pointer[runningRequestsSnapshot]
+	runningRequests   atomic.Pointer[runningRequestsSnapshot]
+	seededPrefixMatch atomic.Pointer[SeededPrefixMatch]
 	// trustedPolicyAttributes contains request policy inputs populated by trusted
 	// in-process producers. External routers must still apply their operator
 	// allowlist before serializing any entry.
@@ -320,6 +327,8 @@ func (r *RoutingContext) PrefixTokens() []byte {
 }
 
 func (r *RoutingContext) SetPrefixTokens(tokens []byte) {
+	// A new tokenization invalidates any match computed from the previous tokens.
+	r.SetSeededPrefixMatch(nil)
 	r.prefixTokens = tokens
 }
 
@@ -575,6 +584,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.ReqHeaders = map[string]string{}
 	r.ReqPath = ""
 	r.ReqConfigProfile = ""
+	r.ModelConfig = ""
 	r.ReqBody = []byte{}
 	r.AsyncJobBackendID = ""
 	r.PrefillStartTime = time.Time{}
@@ -591,6 +601,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	// per request, and a request without a profile leaves them unset).
 	r.ClearRoutingOverrides()
 	r.StopRunningRequestsSnapshot()
+	r.SetSeededPrefixMatch(nil)
 	clear(r.trustedPolicyAttributes)
 	r.ReplicaInflightAdmitted = false
 	r.ReplicaInflightChecked = false

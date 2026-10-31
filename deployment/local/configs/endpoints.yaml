@@ -29,3 +29,15 @@ models:
 #       - "192.168.1.10:8000"
 #     decode_workers:
 #       - "192.168.1.11:8000"
+#
+# Config profiles example (uncomment to use). config takes the same JSON as the
+# model.aibrix.ai/config pod annotation; a request selects a profile with the
+# config-profile header.
+# models:
+#   - name: "Qwen/Qwen3.5-4B"
+#     workers:
+#       - "127.0.0.1:8000"
+#     config: |
+#       {"defaultProfile": "default",
+#        "profiles": {"default": {"routingStrategy": "least-request"},
+#                     "cache-friendly": {"routingStrategy": "prefix-cache"}}}

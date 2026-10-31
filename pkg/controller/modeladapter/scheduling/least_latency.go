@@ -49,7 +49,8 @@ func (r leastLatencyScheduler) SelectPod(ctx context.Context, model string, read
 		if err != nil {
 			return nil, err
 		}
-		podLatency := queueTime.GetHistogramValue().GetMean() + inferenceTime.GetHistogramValue().GetMean()
+		podLatency := cache.RecentHistogramMean(r.cache, pod.Name, pod.Namespace, model, metrics.RequestQueueTimeSeconds, queueTime.GetHistogramValue()) +
+			cache.RecentHistogramMean(r.cache, pod.Name, pod.Namespace, model, metrics.RequestInferenceTimeSeconds, inferenceTime.GetHistogramValue())
 		if podLatency < podLatencyMin {
 			selectedPod = pod
 			podLatencyMin = podLatency

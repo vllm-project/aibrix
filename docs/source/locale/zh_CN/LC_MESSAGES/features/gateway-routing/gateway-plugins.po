@@ -2530,9 +2530,9 @@ msgstr "``x-error-pd-prefill``"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:1173
 msgid ""
-"Marks a gateway-generated error because the prefill leg of a ``pd`` "
-"request failed. See :doc:`pd-disaggregation`."
-msgstr "标记网关因 ``pd`` 请求的 prefill 阶段失败而生成的错误。参见 :doc:`pd-disaggregation`。"
+"Marks an error caused by the prefill leg of a ``pd`` request. 4xx engine "
+"answers are returned without it. See :doc:`pd-disaggregation`."
+msgstr "标记由 ``pd`` 请求的 prefill 阶段导致的错误响应；引擎返回的 4xx 应答不附加此标记。参见 :doc:`pd-disaggregation`。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:1174
 msgid "``x-error-pd-decode``"
