@@ -353,9 +353,17 @@ func TestBuildHPABehaviorPolicyPercents(t *testing.T) {
 		{rate: 3, wantUp: 200, wantDown: 66},
 		{rate: 5, wantUp: 400, wantDown: 80},
 		{rate: 1.005, wantUp: 1, wantDown: 1},
+		// parseScaleRate has no upper bound, so a huge rate must not overflow int32.
+		{rate: 21474838, wantUp: math.MaxInt32, wantDown: 99},
+		{rate: 1e9, wantUp: math.MaxInt32, wantDown: 99},
+		{rate: math.MaxFloat64, wantUp: math.MaxInt32, wantDown: 100},
+		// An invalid rate below 1 falls back to 100% in both directions.
+		{rate: 0.5, wantUp: 100, wantDown: 100},
+		{rate: 0.99, wantUp: 100, wantDown: 100},
+		{rate: 0, wantUp: 100, wantDown: 100},
 	}
 	for _, tt := range tests {
-		t.Run(strconv.FormatFloat(tt.rate, 'f', -1, 64), func(t *testing.T) {
+		t.Run(strconv.FormatFloat(tt.rate, 'g', -1, 64), func(t *testing.T) {
 			ctx := context.NewBaseScalingContext()
 			ctx.MaxScaleUpRate, ctx.MaxScaleDownRate = tt.rate, tt.rate
 			behavior := buildHPABehavior(ctx)

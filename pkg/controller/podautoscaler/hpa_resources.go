@@ -188,9 +188,10 @@ func comparableHPASpec(spec autoscalingv2.HorizontalPodAutoscalerSpec) *autoscal
 // replicas, to an HPA percent policy value. It rounds down, so the policy never allows
 // more than the rate, after absorbing the float error in fractions such as 1.2-1, which is
 // 0.19999999999999996 and would otherwise truncate to 19. HPA policy values must be
-// positive, so a rate just above 1 still allows 1%.
+// positive, so a rate just above 1 still allows 1%, and an int32, so a huge rate is capped
+// at math.MaxInt32 instead of overflowing.
 func policyPercent(fraction float64) int32 {
-	return int32(max(math.Floor(fraction*100+1e-9), 1))
+	return int32(min(max(math.Floor(fraction*100+1e-9), 1), math.MaxInt32))
 }
 
 // buildHPABehavior creates HPA behavior configuration from ScalingContext
