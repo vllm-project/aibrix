@@ -70,11 +70,9 @@ type RoutingConfig struct {
 	PD *PDProfileConfig `json:"pd,omitempty"`
 }
 
-// CandidateProfileConfig mirrors AIBRIX_ROUTING_CANDIDATE_K and
-// AIBRIX_ROUTING_CANDIDATE_PREFIX_M.
+// CandidateProfileConfig mirrors AIBRIX_ROUTING_CANDIDATE_K.
 type CandidateProfileConfig struct {
-	K       *int `json:"k,omitempty"`
-	PrefixM *int `json:"prefixM,omitempty"`
+	K *int `json:"k,omitempty"`
 }
 
 // LoadBalanceProfileConfig mirrors the AIBRIX_LOAD_BALANCE_* knobs of the

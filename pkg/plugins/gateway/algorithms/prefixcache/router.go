@@ -638,17 +638,26 @@ func (p prefixCacheRouter) scoreAll(ctx *types.RoutingContext, readyPodList type
 	return scores, scored, nil
 }
 
-// SeedCandidates returns up to max ready pods that hold a cached prefix of this request,
-// longest match first, so a bounded candidate set keeps them. It reads only the in-memory
-// prefix index; tokens and raw matches are kept on ctx for the rest of the decision,
-// including scores for random candidates that were not returned as seeds.
-func (p prefixCacheRouter) SeedCandidates(ctx *types.RoutingContext, readyPodList types.PodList, max int) []*v1.Pod {
+// CandidateScores implements types.CandidateScorer. Prefix matching reads only the in-memory
+// prefix index, so these are the scores ScoreAll returns. The tokens and raw matches are kept on
+// ctx for the rest of the decision (see types.SeededPrefixMatch), so scoring the candidates that
+// survive the stage reuses this lookup instead of matching again.
+func (p prefixCacheRouter) CandidateScores(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	return p.scoreAll(ctx, readyPodList, true)
+}
+
+// FindCandidates implements types.CandidateFinder: up to max ready pods that hold a cached
+// prefix of this request, longest match first. Holders of the same match length are
+// interchangeable here, so they are shuffled and a hot prefix spreads over all its holders. The
+// lookup covers every ready pod and is kept on ctx, so CandidateScores and ScoreAll on any of
+// them reuse it.
+func (p prefixCacheRouter) FindCandidates(ctx *types.RoutingContext, readyPodList types.PodList, max int) []*v1.Pod {
 	if max <= 0 {
 		return nil
 	}
 	scores, scored, err := p.scoreAll(ctx, readyPodList, true)
 	if err != nil {
-		klog.V(4).ErrorS(err, "prefix-cache candidate seeding skipped", "request_id", ctx.RequestID)
+		klog.V(4).ErrorS(err, "prefix-cache candidate lookup skipped", "request_id", ctx.RequestID)
 		return nil
 	}
 	pods := readyPodList.All()
@@ -658,18 +667,16 @@ func (p prefixCacheRouter) SeedCandidates(ctx *types.RoutingContext, readyPodLis
 			matched = append(matched, i)
 		}
 	}
-	// Holders of the same match length are interchangeable here; shuffle them so the seeds of
-	// a hot prefix spread over all its holders instead of always naming the first M.
 	rand.Shuffle(len(matched), func(a, b int) { matched[a], matched[b] = matched[b], matched[a] })
 	sort.SliceStable(matched, func(a, b int) bool { return scores[matched[a]] > scores[matched[b]] })
 	if len(matched) > max {
 		matched = matched[:max]
 	}
-	seeds := make([]*v1.Pod, len(matched))
+	found := make([]*v1.Pod, len(matched))
 	for j, i := range matched {
-		seeds[j] = pods[i]
+		found[j] = pods[i]
 	}
-	return seeds
+	return found
 }
 
 // Polarity returns whether higher or lower score is better.

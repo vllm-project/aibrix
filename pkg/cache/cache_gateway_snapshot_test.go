@@ -27,6 +27,7 @@ import (
 
 	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -191,6 +192,50 @@ func TestInitGatewaySnapshotSyncRefreshesCache(t *testing.T) {
 	}
 	require.True(t, foundSelf)
 	require.True(t, foundRemote)
+
+	// The tick that published the snapshot also published the other gateways' sums.
+	require.Eventually(t, func() bool { return store.gatewayRemoteRunning.Load() != nil }, 2*time.Second, 10*time.Millisecond)
+	assert.Equal(t, map[string]int64{utils.GeneratePodKey(testNamespace, testPodName): 2}, store.gatewayRemoteRunning.Load().counts)
+}
+
+// The in-memory estimate is this gateway's live count plus the other gateways' last snapshot.
+func TestGetPodsRunningRequestsApproxAddsRemoteSnapshot(t *testing.T) {
+	store := &Store{}
+	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns"}}}
+	atomic.StoreInt32(&pod.runningRequests, 4)
+	store.metaPods.Store("ns/a", pod)
+	store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{counts: map[string]int64{"ns/a": 2}, readStart: time.Now()})
+	assert.Equal(t, int64(6), store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})["ns/a"])
+	// This gateway's own count is read live, not from what it last wrote to Redis.
+	atomic.StoreInt32(&pod.runningRequests, 9)
+	assert.Equal(t, int64(11), store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})["ns/a"])
+	// A snapshot from a stalled sync is ignored.
+	store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{counts: map[string]int64{"ns/a": 2},
+		readStart: time.Now().Add(-remoteRunningMaxAge - time.Millisecond)})
+	assert.Equal(t, int64(9), store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})["ns/a"])
+}
+
+func TestRemoteRunningByPodSkipsSelfAndSumsOthers(t *testing.T) {
+	grouped := map[string][]map[string]string{
+		"ns/a": {
+			{"gateway_instance_id": "self", "requests_running": "5"},
+			{"gateway_instance_id": "gw-1", "requests_running": "2"},
+			{"gateway_instance_id": "gw-2", "requests_running": "3"},
+		},
+		"ns/b": {{"gateway_instance_id": "self", "requests_running": "7"}},
+		"ns/c": {{"gateway_instance_id": "gw-1", "requests_running": "not a number"}},
+	}
+	assert.Equal(t, map[string]int64{"ns/a": 5}, remoteRunningByPod(grouped, "self"))
+}
+
+func TestGetPodsRunningRequestsApproxWithoutSnapshot(t *testing.T) {
+	store := &Store{}
+	known := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns"}}}
+	atomic.StoreInt32(&known.runningRequests, 3)
+	store.metaPods.Store("ns/a", known)
+	unknown := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: "ns"}}
+	assert.Equal(t, map[string]int64{"ns/a": 3}, store.GetPodsRunningRequestsApprox([]*v1.Pod{known.Pod, unknown, nil}),
+		"without a snapshot it is this gateway's own count; pods the cache does not know are omitted")
 }
 
 func TestInitGatewaySnapshotSyncHGetAllBatchingLoadsAllKeys(t *testing.T) {

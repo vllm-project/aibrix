@@ -188,32 +188,50 @@ The four `AIBRIX_ROUTING_AUTO_BLEND_*` weights can also be set per request by th
 ## Candidate Stage (`algorithms/candidates.go`)
 
 Off by default. When `AIBRIX_ROUTING_CANDIDATE_K` is above 0, `selectTargetPod` narrows the ready
-pods to K pods drawn uniformly at random, plus up to `AIBRIX_ROUTING_CANDIDATE_PREFIX_M` pods the
-router seeds, before the load-imbalance gate and the router run. `prefix-cache` seeds the pods
-holding the longest cached prefix of the request, so cache affinity is kept. The gate and every
-strategy then read running counts, from Redis when it is configured, for those pods only, which
-bounds the per-request routing work by K + M instead of the number of ready pods (RFC #3188).
+pods to K pods before the load-imbalance gate and the router run. The gate and every strategy then
+read running counts, from Redis when it is configured, for those K pods only, which bounds the
+per-request routing work by K instead of the number of ready pods (RFC #3188).
+
+The K pods are chosen by the strategies themselves, from a scout: 4K ready pods drawn at random
+(the whole fleet when that would cover half of it or more), plus up to K pods a strategy finds
+directly, which for `prefix-cache` are the holders of the request's longest cached prefix. Each
+strategy that can estimate its score from memory (`types.CandidateScorer`) scores the scout
+without Redis: `prefix-cache` from its prefix index, `load-balance` and `least-request` from this
+gateway's own running counts plus the other gateways' counts in the last gateway snapshot
+(refreshed every 100 ms), and the `least-*` strategies from the scraped metrics they already read.
+These estimates are normalized and weighted exactly as the router blends its scores, the best
+`K/2` scouted pods are kept, ties broken at random, and the other slots go to pods drawn at random
+from the whole fleet. The random half keeps lagging estimates from offering the router the same
+few pods on every request, and keeps the candidates representative of the fleet for the checks
+that compare a pod with its pool (with three quarters ranked, the gate fires against hot prefix
+holders in simulation). A request's prefix holders, its least-loaded pods and the pods with
+the most KV headroom therefore compete for the same K slots. Estimating only the scout keeps the
+stage's own work bounded by K (estimating every pod costs about a microsecond per pod and
+strategy). Strategies without an estimate (`random`, `power-of-two`) get K pods drawn at random.
 
 The stage applies only when every strategy in the resolved strategy, including the auto-blend,
 is candidate-safe: it judges pods only by the pods it is given, with no fleet-wide state of its
 own. These are `least-request`, `least-request-top-k`, `load-balance`, `prefix-cache`, `random`,
 `power-of-two` and the other `least-*` strategies. Any other strategy, such as `vtc-basic`,
 `session-affinity`, the queue router, `external`, `throughput`, `pd` or `slo*`, keeps every ready
-pod. It also does nothing when K plus the pods the router seeds is at least the number of ready pods. When a per-replica
-inflight cap is set, its saturation filter still runs over every ready pod first.
+pod. It also does nothing when there are K ready pods or fewer. When a per-replica inflight cap is
+set, its saturation filter still runs over every ready pod first.
 
 The scoring formulas are unchanged, but checks that compare a pod with the rest of its pool now
-compare it with the sample: the load-imbalance gate's spread, `prefix-cache`'s standard-deviation
-check, and the blend's min-max normalization and winsorizing. Use K of at least 2. With K = 1 and
-no seeded pods, the set has one pod, and the gateway routes to it without scoring, which is a
-random pick.
+compare it with the candidates: the load-imbalance gate's spread, `prefix-cache`'s
+standard-deviation check, and the blend's min-max normalization and winsorizing. Use K of at
+least 2. With K = 1 the set has one pod, and the gateway routes to it without exact scoring.
+
+`aibrix_routing_candidate_selections_total{model,path}` counts each decision the stage narrows:
+`ranked` when half the candidates were ranked on the estimates, `random_no_estimate` when the
+strategy has none (`random`, `power-of-two`), and `random_estimate_failed` when the strategy has
+estimates but none could be computed, which means the stage is running without its ranking.
 
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
-| `AIBRIX_ROUTING_CANDIDATE_K` | int | `0` | Number of ready pods, drawn at random, that the gate and the router consider. `0` disables the candidate stage. | [algorithms/candidates.go](algorithms/candidates.go) |
-| `AIBRIX_ROUTING_CANDIDATE_PREFIX_M` | int | `16` | Maximum number of pods the router may seed into the candidate set on top of the K random pods. A hot prefix is held by more pods in a larger fleet, and the router can only prefer the least loaded of the holders it is given, so keep this near K. `0` or a negative value turns seeding off. | [algorithms/candidates.go](algorithms/candidates.go) |
+| `AIBRIX_ROUTING_CANDIDATE_K` | int | `0` | Number of ready pods the gate and the router consider: the best half of a 4K-pod scout (plus prefix holders) on the strategies' in-memory estimates, and half drawn at random. `0` disables the candidate stage. | [algorithms/candidates.go](algorithms/candidates.go) |
 
-Both can also be set per request by the model config profile (`routingConfig.candidate.*`); see [Model Config Profile Overrides](#model-config-profile-overrides).
+It can also be set per request by the model config profile (`routingConfig.candidate.k`); see [Model Config Profile Overrides](#model-config-profile-overrides).
 
 ---
 
@@ -457,7 +475,6 @@ description and examples live in the Config Profiles section of the gateway plug
 | `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT` | `routingConfig.autoBlend.prefixCacheWeight` | `0` is rejected with a warning and the environment value is kept; it would drop the caller's own strategy from the blend. |
 | `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT` | `routingConfig.autoBlend.prefixCacheLoadBalanceWeight` | `0` leaves those requests with prefix-cache scoring alone. |
 | `AIBRIX_ROUTING_CANDIDATE_K` | `routingConfig.candidate.k` | `0` disables the candidate stage for the profile's requests. |
-| `AIBRIX_ROUTING_CANDIDATE_PREFIX_M` | `routingConfig.candidate.prefixM` | `0` turns seeding off. |
 | `AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT` | `routingConfig.vtc.inputTokenWeight` | Also scopes the VTC token tracker: this weight is baked into the tracker, so the profile's requests get one of their own. |
 | `AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT` | `routingConfig.vtc.outputTokenWeight` | Scopes the tracker the same way as the input weight. |
 | `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE` | `routingConfig.vtc.tokenTrackerWindowSize` | Sliding window of the profile's tracker, in `tokenTrackerTimeUnit` units. |

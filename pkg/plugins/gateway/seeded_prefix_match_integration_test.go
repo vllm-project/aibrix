@@ -136,9 +136,9 @@ func TestSelectTargetPodReusesPrefixMatchesThroughRealPipeline(t *testing.T) {
 					ctx := types.NewRoutingContext(context.Background(), tc.algorithm, model, prompt, fmt.Sprintf("decision-%d", round), "")
 					// Pre-cached tokens exercise both indexes without a remote tokenizer service.
 					ctx.SetPrefixTokens(tokens)
-					zero, one, k := 0, 1, tc.k
+					zero, k := 0, tc.k
 					ctx.ConfigProfile = &types.ResolvedConfigProfile{Routing: &types.RoutingConfig{
-						Candidate: &types.CandidateProfileConfig{K: &k, PrefixM: &one},
+						Candidate: &types.CandidateProfileConfig{K: &k},
 						AutoBlend: &types.AutoBlendProfileConfig{LoadBalanceWeight: &zero, LeastRequestWeight: &zero},
 					}}
 					if tc.invalidate {
