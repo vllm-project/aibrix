@@ -1565,9 +1565,9 @@ msgstr "ModelClaim 上的 finalizer"
 
 #: ../../source/features/model-serving/model-claim.rst:720
 msgid ""
-"Keeps a deleted claim until the controller has asked the runtime agent to"
-" stop its engine."
-msgstr "保留已删除的 claim，直到控制器请 runtime agent 停止其引擎。"
+"Keeps a deleted claim while runtime cleanup requests fail; removed after "
+"successful cleanup requests, without waiting for process exit."
+msgstr "runtime 清理请求失败时保留正在删除的 claim；清理请求成功后移除，无需等待进程退出。"
 
 #: ../../source/features/model-serving/model-claim.rst:724
 msgid "Monitoring"
