@@ -340,6 +340,32 @@ func (r *LeastRequestTopKRouter) ScoreAll(ctx *types.RoutingContext, readyPodLis
 	return scores, scored, nil
 }
 
+// CandidateScores implements [types.CandidateScorer]: each pod's running count, with the same
+// ramp adjustment as ScoreAll, read from memory (this gateway's own counts plus the last gateway
+// snapshot) instead of Redis. It leaves out ScoreAll's tie-breaking jitter: the candidate stage
+// already orders equal estimates at random.
+func (r *LeastRequestTopKRouter) CandidateScores(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	pods := readyPodList.All()
+	approx, ok := routeutil.ApproxRunningRequests(r.cache, pods)
+	if !ok {
+		return nil, nil, routeutil.ErrNoRunningRequestsEstimate
+	}
+	counts := make(map[string]int, len(pods))
+	keys := make([]string, len(pods))
+	for i, pod := range pods {
+		keys[i] = utils.GeneratePodKey(pod.Namespace, pod.Name)
+		counts[keys[i]] = int(approx[keys[i]])
+	}
+	counts = applyRampAdjustment(r.cache, r.now(), pods, counts)
+	scores := make([]float64, len(pods))
+	scored := make([]bool, len(pods))
+	for i := range pods {
+		scores[i] = float64(counts[keys[i]])
+		scored[i] = true
+	}
+	return scores, scored, nil
+}
+
 // Polarity implements [types.PodScorer]: fewer requests is better, as for least-request.
 func (r *LeastRequestTopKRouter) Polarity() types.Polarity {
 	return types.PolarityLeast

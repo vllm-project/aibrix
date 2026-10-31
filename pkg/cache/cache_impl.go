@@ -300,6 +300,28 @@ func (c *Store) runningRequestsWithLocalFallback(pods []*v1.Pod, live map[string
 	return result
 }
 
+// GetPodsRunningRequestsApprox implements ApproxRunningRequestsProvider: the local atomic plus
+// the other gateways' counts from the latest snapshot, with no Redis call.
+func (c *Store) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
+	var remote map[string]int64
+	if p := c.gatewayRemoteRunning.Load(); p != nil {
+		remote = *p
+	}
+	result := make(map[string]int64, len(pods))
+	for _, pod := range pods {
+		if pod == nil {
+			continue
+		}
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		metaPod, ok := c.metaPods.Load(podKey)
+		if !ok {
+			continue
+		}
+		result[podKey] = int64(atomic.LoadInt32(&metaPod.runningRequests)) + remote[podKey]
+	}
+	return result
+}
+
 // GetPodsReadySince implements PodReadySinceProvider. It is a local read with no Redis: ramp
 // state is per gateway, since each gateway's informer sees the same Ready event at about the
 // same time.

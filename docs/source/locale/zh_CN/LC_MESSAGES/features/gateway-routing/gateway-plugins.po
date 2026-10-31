@@ -1524,35 +1524,25 @@ msgstr "``AIBRIX_ROUTING_CANDIDATE_K``"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:698
 msgid ""
-"Number of ready pods drawn at random for the load-imbalance gate and the "
-"router to score, so each request reads per-pod load for about ``k`` pods "
-"instead of all of them. ``0`` scores every ready pod. Applies only when "
-"every resolved strategy is candidate-safe (see "
+"Number of ready pods the load-imbalance gate and the router score, so "
+"each request reads per-pod load for ``k`` pods instead of all of them. "
+"The strategies pick them: every ready pod is first scored from in-memory"
+" estimates (prefix index, local and snapshot running counts, scraped "
+"metrics) with the router's blend weights, the best three quarters are "
+"kept and the rest are drawn at random. ``0`` scores every ready pod. "
+"Applies only when every resolved strategy is candidate-safe (see "
 "``pkg/plugins/gateway/ENV_VARS.md``). Checks that compare a pod with the "
 "rest of its pool, such as the gate's spread, the prefix-cache standard-"
-"deviation check and blend normalization, then compare it with the sample."
-" Use at least ``2``: with ``1`` and no seeded pods, the one sampled pod "
-"is routed to without scoring."
+"deviation check and blend normalization, then compare it with the "
+"candidates. Use at least ``2``: with ``1``, the one candidate is routed "
+"to without scoring."
 msgstr ""
-"为负载不均衡闸门和路由器随机抽取、用于打分的就绪 Pod 数量，这样每个请求只需读取约 ``k`` 个 Pod "
-"的负载，而不是全部 Pod。 ``0`` 表示对所有就绪 Pod 打分。仅当解析出的每个策略都是候选安全的策略时才生效（参见 "
+"负载不均衡闸门和路由器参与打分的就绪 Pod 数量，这样每个请求只需读取 ``k`` 个 Pod 的负载，而不是全部 Pod。"
+"这些 Pod 由策略自己挑选：先用内存中的估计值（前缀索引、本地及快照中的运行请求数、采集到的指标）按路由器的混合权重给所有就绪 Pod "
+"打分，保留得分最高的四分之三，其余随机抽取。 ``0`` 表示对所有就绪 Pod 打分。仅当解析出的每个策略都是候选安全的策略时才生效（参见 "
 "``pkg/plugins/gateway/ENV_VARS.md`` ）。将某个 Pod 与其所在池中其他 Pod 比较的检查，例如闸门的离散度、"
-"prefix-cache 的标准差检查以及混合策略的归一化，此时比较的是抽样集合。取值至少为 ``2`` ：取 ``1`` "
-"且没有种子 Pod 时，唯一被抽中的 Pod 会不经打分直接被选中。"
-
-#: ../../source/features/gateway-routing/gateway-plugins.rst:699
-msgid "``candidate.prefixM``"
-msgstr "``candidate.prefixM``"
-
-#: ../../source/features/gateway-routing/gateway-plugins.rst:700
-msgid "``AIBRIX_ROUTING_CANDIDATE_PREFIX_M``"
-msgstr "``AIBRIX_ROUTING_CANDIDATE_PREFIX_M``"
-
-#: ../../source/features/gateway-routing/gateway-plugins.rst:701
-msgid ""
-"Most pods the router may add to the sample; for ``prefix-cache`` these "
-"are the pods holding the longest cached prefix of the prompt."
-msgstr "路由器最多可向抽样集合中添加的 Pod 数量；对于 ``prefix-cache`` ，这些是缓存了提示词最长前缀的 Pod。"
+"prefix-cache 的标准差检查以及混合策略的归一化，此时比较的是候选集合。取值至少为 ``2`` ：取 ``1`` "
+"时，唯一的候选 Pod 会不经打分直接被选中。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:687
 msgid "VTC fairness"

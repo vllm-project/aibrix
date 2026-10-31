@@ -139,6 +139,8 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 
 					// Atomically replace the snapshot cache so readers always see a consistent map.
 					store.gatewaySnapshotCache.Store(newCache)
+					remote := remoteRunningByPod(newCache, gatewayPodName)
+					store.gatewayRemoteRunning.Store(&remote)
 					klog.V(5).InfoS("refreshed gateway snapshot cache", "keys", len(newCache), "duration", time.Since(start))
 				}()
 
@@ -331,6 +333,27 @@ func groupSnapshotsByPod(raw map[string]map[string]string) map[string][]map[stri
 		grouped[pKey] = append(grouped[pKey], fields)
 	}
 	return grouped
+}
+
+// remoteRunningByPod sums requests_running over the snapshots of every gateway instance other
+// than self, per pod key. This gateway's own count is left out because its local atomic is
+// always fresher than what it last wrote to Redis.
+func remoteRunningByPod(grouped map[string][]map[string]string, self string) map[string]int64 {
+	remote := make(map[string]int64, len(grouped))
+	for podKey, snapshots := range grouped {
+		var sum float64
+		for _, fields := range snapshots {
+			if fields["gateway_instance_id"] == self {
+				continue
+			}
+			running, _ := strconv.ParseFloat(fields["requests_running"], 64)
+			sum += running
+		}
+		if sum > 0 {
+			remote[podKey] = int64(sum)
+		}
+	}
+	return remote
 }
 
 // isRedisReply reports whether err is an error reply from the Redis server (such as WRONGTYPE),

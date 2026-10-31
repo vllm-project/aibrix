@@ -173,6 +173,11 @@ type Store struct {
 	// from Redis, grouped by pod key (namespace/name) → []fields. Swapped atomically by
 	// initGatewaySnapshotSync. Readers call Load() to get map[string][]map[string]string.
 	gatewaySnapshotCache atomic.Value
+	// gatewayRemoteRunning holds, for each pod key, the sum of requests_running that the
+	// other gateway instances reported in the latest snapshot. It is derived from
+	// gatewaySnapshotCache when that is swapped, so GetPodsRunningRequestsApprox answers with
+	// one map lookup per pod instead of parsing every gateway's fields on each request.
+	gatewayRemoteRunning atomic.Pointer[map[string]int64]
 	// gatewaySnapshotErrorLog rate-limits the Error-level log of failing snapshot ticks. Nil
 	// means initGatewaySnapshotSync creates one; tests set it to capture lines.
 	gatewaySnapshotErrorLog *rateLimitedErrorLog

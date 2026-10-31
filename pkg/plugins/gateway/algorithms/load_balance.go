@@ -142,10 +142,28 @@ func NewLoadBalanceRouterWithCache(c cache.Cache) (types.Router, error) {
 // synced cache and, between scrape ticks, only reflects this gateway's local view.
 func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
 	pods := readyPodList.All()
+	counts, err := ctx.RunningRequests(pods, r.cache.GetPodsRunningRequests)
+	scores, scored := r.scoreWithCounts(ctx, pods, counts, err)
+	return scores, scored, nil
+}
+
+// CandidateScores implements types.CandidateScorer: the ScoreAll formula with the running
+// counts taken from memory (this gateway's own counts plus the last gateway snapshot) instead
+// of Redis. The capacity and KV inputs are scraped metrics either way. It does not go through
+// ctx.RunningRequests, so these estimates never stand in for the exact counts later readers of
+// the same decision ask for.
+func (r *loadBalanceRouter) CandidateScores(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	counts, ok := routeutil.ApproxRunningRequests(r.cache, readyPodList.All())
+	if !ok {
+		return nil, nil, routeutil.ErrNoRunningRequestsEstimate
+	}
+	scores, scored := r.scoreWithCounts(ctx, readyPodList.All(), counts, nil)
+	return scores, scored, nil
+}
+
+func (r *loadBalanceRouter) scoreWithCounts(ctx *types.RoutingContext, pods []*v1.Pod, counts map[string]int64, err error) ([]float64, []bool) {
 	scores := make([]float64, len(pods))
 	scored := make([]bool, len(pods))
-
-	counts, err := ctx.RunningRequests(pods, r.cache.GetPodsRunningRequests)
 	capacities := r.capacities(pods)
 
 	// The request's resolved overrides carry the profile's values on top of
@@ -180,7 +198,7 @@ func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 		}
 	}
 
-	return scores, scored, nil
+	return scores, scored
 }
 
 // loadBalanceScore is the effective load of a replica: the work already committed to it, divided by

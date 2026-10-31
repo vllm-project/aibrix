@@ -25,14 +25,14 @@ Two routing modes are supported, selected automatically at startup:
 
 Both modes share the same stddev-based pod selection logic described below.
 
-When the optional candidate stage seeds prefix holders, it retains the raw match
-percentages and prefix hashes for that routing decision. Scoring, standalone
+When the optional candidate stage estimates prefix-cache scores over every ready
+pod, it retains the raw match percentages and prefix hashes for that routing decision. Scoring, standalone
 routing and post-route updates reuse this result for covered pod subsets in the
 same index/model partition, including pods that had no prefix match. Blended
 scores are still normalized on the final candidate pool. Index changes during
 the decision are observed by the next decision; retries and pooled context reuse
 clear the retained result. Tokenization or index errors are not cached, and
-ordinary routing without seeding does not retain a match snapshot.
+ordinary routing without the candidate stage does not retain a match snapshot.
 
 The index contract requires each pod's raw match to be independent of the other
 queried pods, and the ready-set input map to remain unchanged. Hash elements
@@ -46,15 +46,15 @@ matching operation. The fixed `result` values are:
 
 | Result | Meaning |
 | --- | --- |
-| `lookup` | Read the index without a retained result, including initial seeding. |
+| `lookup` | Read the index without a retained result, including the candidate-stage estimate. |
 | `reuse` | Project a retained result onto a covered subset. |
 | `fallback_identity` | Read the index because its identity, model or adapter changed. |
 | `fallback_uncovered` | Read the index because the requested set contains an uncovered pod. |
 
 All results except `reuse` perform an index lookup. Ordinary routing with the
 candidate stage disabled also reports `lookup`; compare reuse rates only for
-traffic where candidate seeding is enabled. Replacing prefix tokens clears the
-snapshot, so subsequent operations report `lookup` until seeding runs again.
+traffic where the candidate stage is enabled. Replacing prefix tokens clears the
+snapshot, so subsequent operations report `lookup` until the candidate stage runs again.
 Identity and coverage fallbacks also emit a V(4) log with the request ID and
 reason, without logging prompt contents.
 

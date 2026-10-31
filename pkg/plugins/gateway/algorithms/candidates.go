@@ -18,6 +18,7 @@ package routingalgorithms
 
 import (
 	"math/rand/v2"
+	"sort"
 
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/least"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -29,14 +30,23 @@ import (
 // The candidate stage (RFC #3188) bounds the per-request routing work by K instead of the number
 // of ready pods. Every strategy and the load-imbalance gate read each pod's cross-gateway running
 // count from Redis, so routing over N pods costs several N-pod Redis reads per request. With
-// AIBRIX_ROUTING_CANDIDATE_K > 0, the gateway draws K pods at random, adds up to
-// AIBRIX_ROUTING_CANDIDATE_PREFIX_M pods that the router seeds (for prefix-cache, the pods holding
-// the longest cached prefix), and runs the gate and the router on that set only. Off by default;
-// a model config profile can set both through routingConfig.candidate.
-var (
-	routingCandidateK       = utils.LoadEnvInt("AIBRIX_ROUTING_CANDIDATE_K", 0)
-	routingCandidatePrefixM = utils.LoadEnvInt("AIBRIX_ROUTING_CANDIDATE_PREFIX_M", 16)
-)
+// AIBRIX_ROUTING_CANDIDATE_K > 0, the gateway first ranks every ready pod on the strategies' own
+// in-memory estimates (types.CandidateScorer), blended with the router's weights, keeps the best
+// of them plus a few at random, K pods in all, and runs the gate and the router on that set
+// only. K is the only knob: the prefix holders of a request, the least-loaded pods and the pods
+// with the most KV headroom all compete for the same K slots, the way they compete in the
+// router's own blend. Off by default; a model config profile can set K through
+// routingConfig.candidate.k.
+var routingCandidateK = utils.LoadEnvInt("AIBRIX_ROUTING_CANDIDATE_K", 0)
+
+// candidateExploreDivisor reserves K/candidateExploreDivisor of the K slots (none when K < 4)
+// for pods drawn at random from the ones the ranking left out. The estimates the ranking reads
+// lag: other gateways' running counts by up to one gateway-snapshot interval (100ms), scraped
+// engine metrics by up to one scrape interval. Between refreshes every request ranks the same
+// pods first, so a purely ranked set would keep offering the router the same few pods; the
+// random slots keep other pods in view, and the exact scoring that follows decides between them.
+// It is not a knob: it guards the ranking, it does not express a routing preference.
+const candidateExploreDivisor = 4
 
 // candidateSafeStrategies are the strategies whose choice depends only on the pods they are
 // given, so routing over a sample changes which pods compete but not the formulas that judge
@@ -80,70 +90,147 @@ func candidateStageApplies(ctx *types.RoutingContext) bool {
 
 // SelectCandidates returns the pods the gate and router should consider for this request: all of
 // readyPods when the candidate stage is off, does not apply to the strategy, or would not shrink
-// the set; otherwise K pods drawn uniformly at random plus up to M pods the router seeds. It reads
-// no per-pod state from Redis. router is the one Select returned for ctx.
+// the set; otherwise K of them (see routingCandidateK). It reads no per-pod state from Redis.
+// router is the one Select returned for ctx.
 func SelectCandidates(ctx *types.RoutingContext, router types.Router, readyPods []*v1.Pod) []*v1.Pod {
-	knobs := ctx.RoutingOverrides().Candidate
-	return selectCandidates(ctx, router, readyPods, knobs.K, knobs.PrefixM)
+	return selectCandidates(ctx, router, readyPods, ctx.RoutingOverrides().Candidate.K)
 }
 
-func selectCandidates(ctx *types.RoutingContext, router types.Router, readyPods []*v1.Pod, k, m int) []*v1.Pod {
-	// A negative M only turns seeding off; it does not disable the stage.
-	m = max(m, 0)
+func selectCandidates(ctx *types.RoutingContext, router types.Router, readyPods []*v1.Pod, k int) []*v1.Pod {
 	if k <= 0 || len(readyPods) <= k || !candidateStageApplies(ctx) {
 		return readyPods
 	}
 
-	var seeds []*v1.Pod
-	if seeder, ok := router.(types.CandidateSeeder); ok && m > 0 {
-		seeds = seeder.SeedCandidates(ctx, &utils.PodArray{Pods: readyPods}, m)
-		// Seeders are asked for at most m pods; enforce it so the sampling below never depends on
-		// a seeder honoring that.
-		if len(seeds) > m {
-			seeds = seeds[:m]
+	candidates := make([]*v1.Pod, 0, k)
+	picked := make(map[*v1.Pod]struct{}, k)
+	ranked := 0
+	if estimates, ok := candidateEstimates(ctx, router, readyPods); ok {
+		ranked = k - k/candidateExploreDivisor
+		for _, i := range bestIndices(estimates, ranked) {
+			picked[readyPods[i]] = struct{}{}
+			candidates = append(candidates, readyPods[i])
 		}
 	}
-
-	candidates := make([]*v1.Pod, 0, k+len(seeds))
-	picked := make(map[*v1.Pod]struct{}, k+len(seeds))
-	for _, pod := range seeds {
-		if _, dup := picked[pod]; !dup {
-			picked[pod] = struct{}{}
-			candidates = append(candidates, pod)
-		}
-	}
-	// The stage applies only when it leaves some ready pod out. M only caps the seeds, so it is
-	// the seeds the router actually returned that count here: a router that seeds fewer than M,
-	// or none, still gets a K-pod sample.
-	want := len(candidates) + k
-	if want >= len(readyPods) {
-		return readyPods
-	}
-	// want < len(readyPods), so k random pods outside the seeds always exist. When the sample is
-	// a small share of readyPods, rejection sampling keeps this O(k) instead of touching every pod.
-	if 2*want > len(readyPods) {
-		for _, i := range rand.Perm(len(readyPods)) {
-			if len(candidates) == want {
-				break
-			}
-			if _, dup := picked[readyPods[i]]; !dup {
-				picked[readyPods[i]] = struct{}{}
-				candidates = append(candidates, readyPods[i])
-			}
-		}
-	} else {
-		for len(candidates) < want {
-			pod := readyPods[rand.IntN(len(readyPods))]
-			if _, dup := picked[pod]; !dup {
-				picked[pod] = struct{}{}
-				candidates = append(candidates, pod)
-			}
-		}
-	}
+	sampleCandidates(readyPods, k, picked, &candidates)
 
 	if klog.V(5).Enabled() {
 		klog.V(5).InfoS("routing candidate stage", "request_id", ctx.RequestID, "ready_pods", len(readyPods),
-			"candidates", len(candidates), "seeded", len(seeds), "strategy", ctx.ResolvedStrategy)
+			"candidates", len(candidates), "ranked", ranked, "strategy", ctx.ResolvedStrategy)
 	}
 	return candidates
+}
+
+// weightedScorer is one strategy of the router and its weight in the blend.
+type weightedScorer struct {
+	scorer types.PodScorer
+	weight float64
+}
+
+// candidateParts returns the strategies router blends, with their weights: the configured
+// items of a multi-strategy router, or router itself with weight 1.
+func candidateParts(router types.Router) []weightedScorer {
+	if m, ok := router.(*multiStrategyRouter); ok {
+		parts := make([]weightedScorer, 0, len(m.config.Items))
+		for _, item := range m.config.Items {
+			if scorer, ok := m.scorers[item.Name]; ok && item.Coefficient > 0 {
+				parts = append(parts, weightedScorer{scorer: scorer, weight: float64(item.Coefficient)})
+			}
+		}
+		return parts
+	}
+	if scorer, ok := router.(types.PodScorer); ok {
+		return []weightedScorer{{scorer: scorer, weight: 1}}
+	}
+	return nil
+}
+
+// candidateEstimates blends the in-memory estimates of router's strategies into one score per
+// pod, higher is better, the way multiStrategyRouter.scoreAndRank blends ScoreAll: each
+// strategy's scores are normalized to [0, 1] by its polarity and weighted by its share of the
+// total weight. A strategy without an estimate (no types.CandidateScorer, or an error) counts
+// as 0 for every pod, so it shifts no pod ahead of another. ok is false when no strategy has an
+// estimate; the candidates are then drawn at random.
+func candidateEstimates(ctx *types.RoutingContext, router types.Router, readyPods []*v1.Pod) ([]float64, bool) {
+	parts := candidateParts(router)
+	total := 0.0
+	for _, part := range parts {
+		total += part.weight
+	}
+	if total <= 0 {
+		return nil, false
+	}
+	podList := &utils.PodArray{Pods: readyPods}
+	var blended []float64
+	for _, part := range parts {
+		estimator, ok := part.scorer.(types.CandidateScorer)
+		if !ok {
+			continue
+		}
+		scores, scored, err := estimator.CandidateScores(ctx, podList)
+		if err != nil || len(scores) != len(readyPods) || len(scored) != len(readyPods) {
+			if err != nil {
+				klog.V(4).ErrorS(err, "candidate estimate skipped", "request_id", ctx.RequestID)
+			}
+			continue
+		}
+		if blended == nil {
+			blended = make([]float64, len(readyPods))
+		}
+		share := part.weight / total
+		for i, norm := range normalizeScores(scores, scored, estimator.Polarity()) {
+			blended[i] += norm * share
+		}
+	}
+	return blended, blended != nil
+}
+
+// bestIndices returns the indices of the n highest scores, best first. Equal scores are ordered
+// at random, so pods the estimates cannot tell apart (an idle fleet, the holders of one hot
+// prefix) share the ranked slots across requests instead of the same pods always winning.
+func bestIndices(scores []float64, n int) []int {
+	if n <= 0 {
+		return nil
+	}
+	if n > len(scores) {
+		n = len(scores)
+	}
+	top := make([]int, 0, n)
+	for _, i := range rand.Perm(len(scores)) {
+		s := scores[i]
+		if len(top) == n && s <= scores[top[n-1]] {
+			continue
+		}
+		pos := sort.Search(len(top), func(j int) bool { return scores[top[j]] < s })
+		if len(top) < n {
+			top = append(top, 0)
+		}
+		copy(top[pos+1:], top[pos:len(top)-1])
+		top[pos] = i
+	}
+	return top
+}
+
+// sampleCandidates adds pods of readyPods not yet in picked to candidates, uniformly at random,
+// until it holds k. The caller guarantees k < len(readyPods), so enough such pods exist. When
+// the sample is a small share of readyPods, rejection sampling keeps this O(k) instead of
+// touching every pod.
+func sampleCandidates(readyPods []*v1.Pod, k int, picked map[*v1.Pod]struct{}, candidates *[]*v1.Pod) {
+	add := func(pod *v1.Pod) {
+		if _, dup := picked[pod]; !dup {
+			picked[pod] = struct{}{}
+			*candidates = append(*candidates, pod)
+		}
+	}
+	if 2*k > len(readyPods) {
+		for _, i := range rand.Perm(len(readyPods)) {
+			if len(*candidates) >= k {
+				return
+			}
+			add(readyPods[i])
+		}
+		return
+	}
+	for len(*candidates) < k {
+		add(readyPods[rand.IntN(len(readyPods))])
+	}
 }

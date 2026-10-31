@@ -695,10 +695,7 @@ Candidate stage
      - Description
    * - ``candidate.k``
      - ``AIBRIX_ROUTING_CANDIDATE_K``
-     - Number of ready pods drawn at random for the load-imbalance gate and the router to score, so each request reads per-pod load for about ``k`` pods instead of all of them. ``0`` scores every ready pod. Applies only when every resolved strategy is candidate-safe (see ``pkg/plugins/gateway/ENV_VARS.md``). Checks that compare a pod with the rest of its pool, such as the gate's spread, the prefix-cache standard-deviation check and blend normalization, then compare it with the sample. Use at least ``2``: with ``1`` and no seeded pods, the one sampled pod is routed to without scoring.
-   * - ``candidate.prefixM``
-     - ``AIBRIX_ROUTING_CANDIDATE_PREFIX_M``
-     - Most pods the router may add to the sample; for ``prefix-cache`` these are the pods holding the longest cached prefix of the prompt.
+     - Number of ready pods the load-imbalance gate and the router score, so each request reads per-pod load for ``k`` pods instead of all of them. The strategies pick them: every ready pod is first scored from in-memory estimates (prefix index, local and snapshot running counts, scraped metrics) with the router's blend weights, the best three quarters are kept and the rest are drawn at random. ``0`` scores every ready pod. Applies only when every resolved strategy is candidate-safe (see ``pkg/plugins/gateway/ENV_VARS.md``). Checks that compare a pod with the rest of its pool, such as the gate's spread, the prefix-cache standard-deviation check and blend normalization, then compare it with the candidates. Use at least ``2``: with ``1``, the one candidate is routed to without scoring.
 
 VTC fairness
 ~~~~~~~~~~~~

@@ -16,8 +16,6 @@ limitations under the License.
 
 package types
 
-import v1 "k8s.io/api/core/v1"
-
 // Router defines the interface for routing logic to select target pods.
 type Router interface {
 	// Route selects a target pod from the provided list of pods.
@@ -32,15 +30,18 @@ type SingleCandidateBypasser interface {
 	BypassSingleCandidate() bool
 }
 
-// CandidateSeeder is implemented by routers whose choice depends on particular pods, such as
-// the pods holding a request's prefix. When the gateway routes over a bounded candidate set
-// (AIBRIX_ROUTING_CANDIDATE_K), it adds the pods SeedCandidates returns to that set, so a
-// candidate stage never hides them from the router.
-type CandidateSeeder interface {
-	// SeedCandidates returns at most max pods from readyPods, best first. It must not read
-	// per-pod state from Redis, because the candidate stage exists to avoid reads over every
-	// ready pod.
-	SeedCandidates(ctx *RoutingContext, readyPods PodList, max int) []*v1.Pod
+// CandidateScorer is implemented by PodScorers that can estimate their ScoreAll for every ready
+// pod from state already in process memory. When the gateway routes over a bounded candidate
+// set (AIBRIX_ROUTING_CANDIDATE_K), it blends these estimates with the same weights and
+// normalization the router uses, keeps the K pods that score best, and only then runs the
+// gate and ScoreAll on those K. A strategy without it adds nothing to that ranking.
+type CandidateScorer interface {
+	PodScorer
+	// CandidateScores returns one score per pod of readyPods, with the polarity of ScoreAll,
+	// and whether each pod was scored. It must not read per-pod state from Redis, because the
+	// candidate stage exists to avoid reads over every ready pod. A stale but local signal (a
+	// scraped metric, this gateway's own counts plus the last gateway snapshot) is expected.
+	CandidateScores(ctx *RoutingContext, readyPods PodList) (scores []float64, scored []bool, err error)
 }
 
 // QueueRouter defines the interface for routers that contains built-in queue and

@@ -38,12 +38,18 @@ type seededDecisionRouter struct {
 	seeds int
 }
 
-func (r *seededDecisionRouter) SeedCandidates(ctx *types.RoutingContext, _ types.PodList, _ int) []*v1.Pod {
+func (r *seededDecisionRouter) CandidateScores(ctx *types.RoutingContext, pods types.PodList) ([]float64, []bool, error) {
 	r.seeds++
 	assert.Nil(r.t, ctx.SeededPrefixMatch(), "a retry must not reuse the previous attempt's matches")
 	ctx.SetSeededPrefixMatch(&types.SeededPrefixMatch{Model: "this decision"})
-	return nil
+	return make([]float64, pods.Len()), make([]bool, pods.Len()), nil
 }
+
+func (r *seededDecisionRouter) ScoreAll(_ *types.RoutingContext, pods types.PodList) ([]float64, []bool, error) {
+	return make([]float64, pods.Len()), make([]bool, pods.Len()), nil
+}
+
+func (r *seededDecisionRouter) Polarity() types.Polarity { return types.PolarityMost }
 
 func (r *seededDecisionRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
 	require.NotNil(r.t, ctx.SeededPrefixMatch(), "seeding results remain available during routing")
@@ -71,7 +77,7 @@ func TestSelectTargetPodClearsSeededPrefixMatch(t *testing.T) {
 	defer ctx.Delete()
 	zero, two := 0, 2
 	ctx.ConfigProfile = &types.ResolvedConfigProfile{Routing: &types.RoutingConfig{
-		Candidate: &types.CandidateProfileConfig{K: &two, PrefixM: &two},
+		Candidate: &types.CandidateProfileConfig{K: &two},
 		AutoBlend: &types.AutoBlendProfileConfig{LoadBalanceWeight: &zero, LeastRequestWeight: &zero},
 	}}
 	for _, routeErr := range []error{nil, errors.New("routing failed")} {

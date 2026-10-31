@@ -93,9 +93,10 @@ func routeFleetOnce(b *testing.B, rm *RouterManager, c cache.Cache, all []*v1.Po
 }
 
 // routeFleetCandidatesOnce follows selectTargetPod with the candidate stage on: Select, then
-// SelectCandidates (K random pods plus up to M prefix holders), then the gate, the shuffle and
-// Route over the candidates only. The cost of drawing and seeding the candidates is included.
-func routeFleetCandidatesOnce(b *testing.B, rm *RouterManager, c cache.Cache, all []*v1.Pod, strategy, message string, k, m int) {
+// SelectCandidates (K pods ranked on in-memory estimates, a quarter of them random), then the
+// gate, the shuffle and Route over the candidates only. The cost of choosing the candidates,
+// including estimating every ready pod, is included.
+func routeFleetCandidatesOnce(b *testing.B, rm *RouterManager, c cache.Cache, all []*v1.Pod, strategy, message string, k int) {
 	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(strategy), "m1", message, "req", "")
 	defer ctx.Delete()
 	ResolveRoutingOverrides(ctx)
@@ -104,7 +105,7 @@ func routeFleetCandidatesOnce(b *testing.B, rm *RouterManager, c cache.Cache, al
 	if err != nil {
 		b.Fatal(err)
 	}
-	pods := selectCandidates(ctx, router, all, k, m)
+	pods := selectCandidates(ctx, router, all, k)
 	pods = ApplyLoadImbalanceGate(ctx, c, pods)
 	utils.Shuffle(pods)
 	if _, err := router.Route(ctx, &utils.PodArray{Pods: pods}); err != nil {
@@ -173,8 +174,8 @@ func BenchmarkFleetRouting_NoShuffle(b *testing.B) { benchmarkFleetRouting(b, 0,
 // the whole list, so it shows the scoring saving alone.
 func BenchmarkFleetRouting_K16(b *testing.B) { benchmarkFleetRouting(b, 16, utils.Shuffle[*v1.Pod]) }
 
-// BenchmarkFleetRouting_CandidateStage runs the candidate stage at its documented sizes,
-// K=16 and M=16, so it can be read against BenchmarkFleetRouting_Full.
+// BenchmarkFleetRouting_CandidateStage runs the candidate stage with K=16, so it can be read
+// against BenchmarkFleetRouting_Full.
 func BenchmarkFleetRouting_CandidateStage(b *testing.B) {
 	silenceKlog(b)
 	for _, n := range fleetBenchSizes {
@@ -187,7 +188,37 @@ func BenchmarkFleetRouting_CandidateStage(b *testing.B) {
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
 					prompt := fleetBenchPrompts[i%len(fleetBenchPrompts)]
-					routeFleetCandidatesOnce(b, rm, c, all, strategy, prompt, 16, 16)
+					routeFleetCandidatesOnce(b, rm, c, all, strategy, prompt, 16)
+				}
+			})
+		}
+	}
+}
+
+// BenchmarkCandidateSelection isolates the candidate stage itself: estimating every ready pod
+// from memory, blending and ranking the estimates, and drawing the random slots, with K=16.
+func BenchmarkCandidateSelection(b *testing.B) {
+	silenceKlog(b)
+	for _, n := range fleetBenchSizes {
+		c, all := newFleetBenchCache(n)
+		for _, strategy := range fleetBenchStrategies {
+			b.Run(fmt.Sprintf("N=%d/%s", n, strategy), func(b *testing.B) {
+				rm := NewRouterManagerWithCache(c)
+				rm.Init()
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(strategy), "m1",
+						fleetBenchPrompts[i%len(fleetBenchPrompts)], "req", "")
+					ResolveRoutingOverrides(ctx)
+					router, err := rm.Select(ctx)
+					if err != nil {
+						b.Fatal(err)
+					}
+					if got := selectCandidates(ctx, router, all, 16); len(got) != 16 {
+						b.Fatalf("got %d candidates", len(got))
+					}
+					ctx.Delete()
 				}
 			})
 		}

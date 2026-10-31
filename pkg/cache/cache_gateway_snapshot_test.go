@@ -27,6 +27,7 @@ import (
 
 	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -191,6 +192,37 @@ func TestInitGatewaySnapshotSyncRefreshesCache(t *testing.T) {
 	}
 	require.True(t, foundSelf)
 	require.True(t, foundRemote)
+
+	// The in-memory estimate adds the remote gateway's 2 to this gateway's own 4, without Redis.
+	require.Eventually(t, func() bool {
+		return store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})[utils.GeneratePodKey(testNamespace, testPodName)] == 6
+	}, 2*time.Second, 50*time.Millisecond)
+	// This gateway's own count is read live, not from what it last wrote to Redis.
+	atomic.StoreInt32(&pod.runningRequests, 9)
+	require.Equal(t, int64(11), store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})[utils.GeneratePodKey(testNamespace, testPodName)])
+}
+
+func TestRemoteRunningByPodSkipsSelfAndSumsOthers(t *testing.T) {
+	grouped := map[string][]map[string]string{
+		"ns/a": {
+			{"gateway_instance_id": "self", "requests_running": "5"},
+			{"gateway_instance_id": "gw-1", "requests_running": "2"},
+			{"gateway_instance_id": "gw-2", "requests_running": "3"},
+		},
+		"ns/b": {{"gateway_instance_id": "self", "requests_running": "7"}},
+		"ns/c": {{"gateway_instance_id": "gw-1", "requests_running": "not a number"}},
+	}
+	assert.Equal(t, map[string]int64{"ns/a": 5}, remoteRunningByPod(grouped, "self"))
+}
+
+func TestGetPodsRunningRequestsApproxWithoutSnapshot(t *testing.T) {
+	store := &Store{}
+	known := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns"}}}
+	atomic.StoreInt32(&known.runningRequests, 3)
+	store.metaPods.Store("ns/a", known)
+	unknown := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: "ns"}}
+	assert.Equal(t, map[string]int64{"ns/a": 3}, store.GetPodsRunningRequestsApprox([]*v1.Pod{known.Pod, unknown, nil}),
+		"without a snapshot it is this gateway's own count; pods the cache does not know are omitted")
 }
 
 func TestInitGatewaySnapshotSyncHGetAllBatchingLoadsAllKeys(t *testing.T) {
