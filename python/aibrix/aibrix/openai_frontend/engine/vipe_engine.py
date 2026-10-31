@@ -74,7 +74,6 @@ from aibrix.openai_frontend.schemas.openai import (
     ChatCompletionResponseMessage,
     ChatCompletionStreamingResponseChoice,
     ChatCompletionStreamResponseDelta,
-    CompletionUsage,
     CreateChatCompletionRequest,
     CreateChatCompletionResponse,
     CreateChatCompletionStreamResponse,
@@ -84,6 +83,7 @@ from aibrix.openai_frontend.schemas.openai import (
     CreateEmbeddingResponse,
     Model,
     ObjectType,
+    Usage,
 )
 from aibrix.openai_frontend.schemas.vipe import (
     ViPEOutputResult,
@@ -1636,12 +1636,12 @@ class ViPEEngine(LLMEngine):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _build_usage(self, prompt: str, completion: str) -> CompletionUsage:
+    def _build_usage(self, prompt: str, completion: str) -> Usage:
         import re
 
         prompt_tokens = len(re.split(r"[^a-zA-Z0-9]+", prompt))
         completion_tokens = len(re.split(r"[^a-zA-Z0-9]+", completion))
-        return CompletionUsage(
+        return Usage(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=prompt_tokens + completion_tokens,
