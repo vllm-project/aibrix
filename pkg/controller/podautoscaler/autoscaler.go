@@ -506,7 +506,8 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 	// (it halves when the pods double at the same load); for one that is not,
 	// such as a latency, the windowed history is rescaled when the pods change.
 	perPod := algorithm.IsPerPodSource(metricSource.MetricSourceType)
-	loadPods := podsCarryingLoad(len(snapshot.Values), request.ReplicaState.ReadyReplicas)
+	perReplica := math.Max(1, request.PodsPerReplica)
+	loadPods := podsCarryingLoad(len(snapshot.Values), float64(request.ReplicaState.ReadyReplicas)*perReplica)
 	if perPod && len(snapshot.Values) > 0 {
 		snapshot.Values[0] = mean(snapshot.Values) * loadPods
 		snapshot.Values = snapshot.Values[:1]
@@ -555,7 +556,7 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 		ScalingContext:    scalingContext,
 		Timestamp:         request.Timestamp,
 		StableWindow:      stableWindow,
-		LoadPods:          loadPods / math.Max(1, request.PodsPerReplica),
+		LoadPods:          loadPods / perReplica,
 	}
 	if request.PodAutoscaler.Spec.ScalingStrategy == autoscalingv1alpha1.KPA {
 		scalingRequest.Panic = a.panicState(ktypes.NamespacedName{
@@ -582,8 +583,8 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 // total load, and the total is divided by to get a per-pod value again: the
 // ready pods, so a ready pod whose scrape failed is assumed to carry the mean,
 // or the pods that reported, if more did.
-func podsCarryingLoad(reported int, ready int32) float64 {
-	return math.Max(1, math.Max(float64(reported), float64(ready)))
+func podsCarryingLoad(reported int, readyPods float64) float64 {
+	return math.Max(1, math.Max(float64(reported), readyPods))
 }
 
 func mean(values []float64) float64 {
