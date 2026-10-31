@@ -51,3 +51,16 @@ func RecycleRoutingContextForTest(r *RoutingContext, ctx context.Context, algori
 	r.reset(ctx, algorithms, model, message, requestID, user)
 	return r
 }
+
+// NewRoutingContextWithPoolForTest uses the real constructor with a deterministic
+// pool. Tests can replay legal reuse without changing the global pool or relying
+// on sync.Pool retaining an object under the race detector.
+func NewRoutingContextWithPoolForTest(pool interface {
+	Get() any
+	Put(any)
+}, ctx context.Context, algorithms RoutingAlgorithm, model, message, requestID, user string) *RoutingContext {
+	if flag.Lookup("test.v") == nil {
+		panic("types.NewRoutingContextWithPoolForTest is a test-only seam and must not be called outside tests")
+	}
+	return newRoutingContextFromPool(pool, ctx, algorithms, model, message, requestID, user)
+}
