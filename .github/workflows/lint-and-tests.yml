@@ -13,8 +13,16 @@ on:
       - 'cmd/**'
       - 'api/**'
       - 'config/crd/**'
+      - 'config/rbac/controller-manager/**'
       - 'dist/chart/crds/**'
+      - 'dist/chart/templates/controller-manager/rbac.yaml'
+      - 'dist/chart/templates/*.tpl'
+      - 'dist/chart/values.yaml'
+      - 'dist/chart/values.schema.json'
+      - 'dist/chart/Chart.yaml'
       - 'hack/verify-crd-sync.sh'
+      - 'hack/verify-rbac.sh'
+      - 'hack/verify-rbac/**'
       - 'go.mod'
       - 'go.sum'
       - 'Makefile'
@@ -31,8 +39,16 @@ on:
       - 'cmd/**'
       - 'api/**'
       - 'config/crd/**'
+      - 'config/rbac/controller-manager/**'
       - 'dist/chart/crds/**'
+      - 'dist/chart/templates/controller-manager/rbac.yaml'
+      - 'dist/chart/templates/*.tpl'
+      - 'dist/chart/values.yaml'
+      - 'dist/chart/values.schema.json'
+      - 'dist/chart/Chart.yaml'
       - 'hack/verify-crd-sync.sh'
+      - 'hack/verify-rbac.sh'
+      - 'hack/verify-rbac/**'
       - 'go.mod'
       - 'go.sum'
       - 'Makefile'
@@ -79,11 +95,25 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash ${GITHUB_WORKSPACE}/hack/verify-codegen.sh
       - name: Generate CRDs
+        id: manifests
         if: ${{ !cancelled() }}
         run: make manifests
+      - name: Verify Generated RBAC Is Committed
+        if: ${{ !cancelled() && steps.manifests.outcome == 'success' }}
+        run: git diff --exit-code -- config/rbac/controller-manager/role.yaml
       - name: Verify CRD Synchronization
         if: ${{ !cancelled() }}
         run: bash ${GITHUB_WORKSPACE}/hack/verify-crd-sync.sh
+
+      - name: Set up Helm for RBAC verification
+        id: rbac_helm
+        if: ${{ !cancelled() && steps.manifests.outcome == 'success' }}
+        uses: azure/setup-helm@v4.2.0
+        with:
+          version: v3.18.6
+      - name: Verify RBAC Synchronization
+        if: ${{ !cancelled() && steps.manifests.outcome == 'success' && steps.rbac_helm.outcome == 'success' }}
+        run: make verify-rbac
 
       - name: Install ZMQ dependencies
         if: ${{ !cancelled() }}

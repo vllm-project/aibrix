@@ -72,7 +72,7 @@ ginkgo: ## Download ginkgo locally if necessary.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=controller-manager-role crd:maxDescLen=0,generateEmbeddedObjectMeta=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=controller-manager-role crd:maxDescLen=0,generateEmbeddedObjectMeta=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac/controller-manager
 
 # Synchronize generated CRD files from 'bases/' to module-specific directories
 # such as 'orchestration/', 'autoscaling/', and 'model/'.
@@ -119,7 +119,11 @@ update-codegen:
 	sh ./hack/update-codegen.sh
 
 .PHONY: verify
-verify: verify-codegen verify-crd
+verify: verify-codegen verify-crd verify-rbac
+
+.PHONY: verify-rbac
+verify-rbac: ## Verify generated controller-manager RBAC matches the Helm chart.
+	bash ./hack/verify-rbac.sh
 
 .PHONY: verify-crd
 verify-crd:
