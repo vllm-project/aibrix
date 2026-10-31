@@ -1,5 +1,6 @@
 import argparse
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -37,10 +38,22 @@ from aibrix.openapi.protocol import (
     UnloadLoraAdapterRuntimeRequest,
 )
 from aibrix.runtime.artifact_service import ArtifactDelegationService
+from aibrix.runtime.model_runtime import pid_is_alive
 from aibrix.runtime.model_runtime_api import model_runtime_router
 
 logger = init_logger(__name__)
 router = APIRouter()
+
+
+def _writer_is_running(file_name: str) -> bool:
+    """Best-effort liveness check for the pid in a multiprocess file name (``<kind>_<pid>.db``)."""
+    match = re.fullmatch(r"[a-z_]+_([1-9][0-9]*)\.db", file_name)
+    if match is None:
+        return False
+    try:
+        return pid_is_alive(int(match.group(1)))
+    except OverflowError:
+        return False
 
 
 def initial_prometheus_multiproc_dir():
@@ -50,14 +63,16 @@ def initial_prometheus_multiproc_dir():
         prometheus_multiproc_dir = os.environ["PROMETHEUS_MULTIPROC_DIR"]
 
     # Note: ensure it will be automatically cleaned up upon exit.
+    # Engines started by an earlier runtime process keep writing here after the runtime restarts and re-adopts them,
+    # so keep the files whose pid passes a best-effort liveness check (pid reuse is not detected) and remove the rest.
     path = Path(prometheus_multiproc_dir)
     path.mkdir(parents=True, exist_ok=True)
     if path.is_dir():
         for item in path.iterdir():
             if item.is_dir():
                 shutil.rmtree(item)
-            else:
-                item.unlink()
+            elif not _writer_is_running(item.name):
+                item.unlink(missing_ok=True)
     os.environ["PROMETHEUS_MULTIPROC_DIR"] = envs.PROMETHEUS_MULTIPROC_DIR
 
 
