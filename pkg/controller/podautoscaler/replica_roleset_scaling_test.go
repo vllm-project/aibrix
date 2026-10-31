@@ -64,7 +64,8 @@ func readyRoleSetPod(name, roleSet, role string) *corev1.Pod {
 // returns the replicas it writes. Without a subTargetSelector both pods of every
 // RoleSet report the metric, but the controller scales RoleSets. RoleSets past
 // readyRoleSets are still starting: their pods are not ready and not serving.
-func scaleReplicaModeStormService(t *testing.T, strategy autoscalingv1alpha1.ScalingStrategyType, replicas, readyRoleSets int, perPod float64) int32 {
+// Each silentRole adds a ready pod to every RoleSet that reports no metric.
+func scaleReplicaModeStormService(t *testing.T, strategy autoscalingv1alpha1.ScalingStrategyType, replicas, readyRoleSets int, perPod float64, silentRoles ...string) int32 {
 	t.Helper()
 	ctx := context.Background()
 	sch := runtime.NewScheme()
@@ -72,18 +73,24 @@ func scaleReplicaModeStormService(t *testing.T, strategy autoscalingv1alpha1.Sca
 	_ = autoscalingv1alpha1.AddToScheme(sch)
 	_ = orchestrationv1alpha1.AddToScheme(sch)
 
+	roles := []orchestrationv1alpha1.RoleSpec{
+		{Name: "prefill", Replicas: ptr.To(int32(1))},
+		{Name: "decode", Replicas: ptr.To(int32(1))},
+	}
+	roleNames := []string{"prefill", "decode"}
+	silent := map[string]bool{}
+	for _, role := range silentRoles {
+		roles = append(roles, orchestrationv1alpha1.RoleSpec{Name: role, Replicas: ptr.To(int32(1))})
+		roleNames = append(roleNames, role)
+		silent[role] = true
+	}
 	ss := &orchestrationv1alpha1.StormService{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "ss-replica"},
 		Spec: orchestrationv1alpha1.StormServiceSpec{
 			Mode:     orchestrationv1alpha1.StormServiceReplicaMode,
 			Replicas: ptr.To(int32(replicas)),
 			Template: orchestrationv1alpha1.RoleSetTemplateSpec{
-				Spec: &orchestrationv1alpha1.RoleSetSpec{
-					Roles: []orchestrationv1alpha1.RoleSpec{
-						{Name: "prefill", Replicas: ptr.To(int32(1))},
-						{Name: "decode", Replicas: ptr.To(int32(1))},
-					},
-				},
+				Spec: &orchestrationv1alpha1.RoleSetSpec{Roles: roles},
 			},
 		},
 	}
@@ -91,10 +98,13 @@ func scaleReplicaModeStormService(t *testing.T, strategy autoscalingv1alpha1.Sca
 	unscrapable := map[string]bool{}
 	for i := 0; i < replicas; i++ {
 		roleSet := fmt.Sprintf("ss-replica-roleset-%d", i)
-		for _, role := range []string{"prefill", "decode"} {
+		for _, role := range roleNames {
 			pod := readyRoleSetPod(fmt.Sprintf("%s-%d", role, i), roleSet, role)
 			if i >= readyRoleSets {
 				pod.Status.Conditions = nil
+				unscrapable[pod.Name] = true
+			}
+			if silent[role] {
 				unscrapable[pod.Name] = true
 			}
 			objs = append(objs, pod)
@@ -155,6 +165,14 @@ func scaleReplicaModeStormService(t *testing.T, strategy autoscalingv1alpha1.Sca
 func TestKPAReplicaModeStormServiceSizesRoleSets(t *testing.T) {
 	assert.Equal(t, int32(3), scaleReplicaModeStormService(t, autoscalingv1alpha1.KPA, 3, 3, 40), "every pod below target")
 	assert.Equal(t, int32(4), scaleReplicaModeStormService(t, autoscalingv1alpha1.KPA, 3, 3, 60), "every pod 20% above target")
+}
+
+// TestKPAReplicaModeStormServiceCountsReadyPodsThatDoNotReport checks that KPA
+// assumes a ready pod with no metric carries the mean, as it does for a
+// Deployment, when a role's pods are selected but never report.
+func TestKPAReplicaModeStormServiceCountsReadyPodsThatDoNotReport(t *testing.T) {
+	// 6 of the 9 ready pods report 60 against a target of 50: 3.6 RoleSets of load.
+	assert.Equal(t, int32(4), scaleReplicaModeStormService(t, autoscalingv1alpha1.KPA, 3, 3, 60, "routing"))
 }
 
 // TestReplicaModeStormServiceHoldsForAStartingRoleSet checks that a RoleSet whose pods
