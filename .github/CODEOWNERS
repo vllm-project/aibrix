@@ -1,0 +1,48 @@
+# Area owners, as proposed in https://github.com/vllm-project/aibrix/issues/3296.
+# The last matching pattern takes precedence, so defaults come before overrides.
+
+# CI, build and deployment
+/.github/                                    @Jeffwan
+/Makefile                                    @Jeffwan
+/build/                                      @Jeffwan
+/hack/                                       @Jeffwan
+/config/                                     @Jeffwan
+/dist/chart/                                 @Jeffwan
+
+# APIs and admission
+/api/                                        @Jeffwan
+/api/autoscaling/                            @googs1025
+/pkg/webhook/                                @googs1025
+
+# Gateway and routing
+/cmd/plugins/                                @varungup90
+/pkg/plugins/gateway/                        @varungup90
+/pkg/cache/                                  @varungup90
+/pkg/metrics/                                @varungup90
+/pkg/types/                                  @varungup90
+/pkg/utils/prefixcacheindexer/               @varungup90
+/pkg/utils/syncprefixcacheindexer/           @varungup90
+/pkg/utils/tokenizer/                        @varungup90
+/config/gateway/                             @varungup90
+/test/e2e/gateway/                           @varungup90
+/test/integration/gateway/                   @varungup90
+/samples/ai-gateway-integration/             @varungup90
+/samples/external-replica-router/            @varungup90
+/samples/semantic-router/                    @varungup90
+/docs/source/features/gateway-routing/       @varungup90
+/observability/grafana/AIBrix_Envoy_Gateway* @varungup90
+
+# Controllers
+/pkg/controller/                             @Jeffwan @googs1025
+/pkg/controller/modelclaim/                  @Jeffwan
+/pkg/controller/modelwarmup/                 @googs1025
+/pkg/controller/podautoscaler/               @googs1025
+/pkg/kvevent/                                @Jeffwan
+
+# Python
+/python/aibrix/                              @Jeffwan
+/python/aibrix/aibrix/batch/                 @DwyaneShi @Jeffwan
+/python/aibrix/aibrix/gpu_optimizer/         @zhangjyr
+/python/aibrix/aibrix/metadata/              @zhangjyr
+/python/aibrix/aibrix/openai_frontend/       @DwyaneShi
+/python/aibrix_kvcache/                      @DwyaneShi
