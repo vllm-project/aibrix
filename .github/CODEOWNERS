@@ -39,9 +39,13 @@
 /pkg/controller/podautoscaler/               @googs1025
 /pkg/kvevent/                                @Jeffwan
 
+# Console
+/apps/console/                               @DwyaneShi @Jeffwan @scarlet25151
+/cmd/console/                                @DwyaneShi @Jeffwan @scarlet25151
+
 # Python
-/python/aibrix/                              @Jeffwan
-/python/aibrix/aibrix/batch/                 @DwyaneShi @Jeffwan
+/python/aibrix/                            @Jeffwan
+/python/aibrix/aibrix/batch/                 @DwyaneShi @Jeffwan @scarlet25151
 /python/aibrix/aibrix/gpu_optimizer/         @zhangjyr
 /python/aibrix/aibrix/metadata/              @zhangjyr
 /python/aibrix/aibrix/openai_frontend/       @DwyaneShi
