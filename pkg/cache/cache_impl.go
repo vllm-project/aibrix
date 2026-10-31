@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"sort"
 	"sync/atomic"
+	"time"
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -304,8 +305,8 @@ func (c *Store) runningRequestsWithLocalFallback(pods []*v1.Pod, live map[string
 // the other gateways' counts from the latest snapshot, with no Redis call.
 func (c *Store) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
 	var remote map[string]int64
-	if p := c.gatewayRemoteRunning.Load(); p != nil {
-		remote = *p
+	if snap := c.gatewayRemoteRunning.Load(); snap != nil && time.Since(snap.readStart) <= remoteRunningMaxAge {
+		remote = snap.counts
 	}
 	result := make(map[string]int64, len(pods))
 	for _, pod := range pods {

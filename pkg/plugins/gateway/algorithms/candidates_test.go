@@ -67,6 +67,7 @@ type estimator struct {
 	polarity types.Polarity
 	err      error
 	calls    int
+	seen     int // pods in the last CandidateScores call
 }
 
 func (e *estimator) Route(*types.RoutingContext, types.PodList) (string, error) { return "", nil }
@@ -76,6 +77,7 @@ func (e *estimator) ScoreAll(*types.RoutingContext, types.PodList) ([]float64, [
 func (e *estimator) Polarity() types.Polarity { return e.polarity }
 func (e *estimator) CandidateScores(_ *types.RoutingContext, list types.PodList) ([]float64, []bool, error) {
 	e.calls++
+	e.seen = list.Len()
 	if e.err != nil {
 		return nil, nil, e.err
 	}
@@ -145,15 +147,15 @@ func TestSelectCandidates_KeepsAllPodsWhenNotApplicable(t *testing.T) {
 	assert.Zero(t, router.calls, "no estimate is computed when the stage does not apply")
 }
 
-// The best K - K/4 estimates come first, best first; the other K/4 slots are random pods from
-// the rest.
+// The best K/2 estimates come first, best first; the other K/2 slots are random pods from the
+// rest. With 100 pods a scout of 4K = 64 would cover most of them, so all are estimated.
 func TestSelectCandidates_KeepsBestEstimatesPlusRandomSlots(t *testing.T) {
-	pods := candidatePods(200)
+	pods := candidatePods(100)
 	for _, tc := range []struct {
 		polarity types.Polarity
 		best     func(rank int) *v1.Pod
 	}{
-		{types.PolarityMost, func(rank int) *v1.Pod { return pods[199-rank] }},
+		{types.PolarityMost, func(rank int) *v1.Pod { return pods[99-rank] }},
 		{types.PolarityLeast, func(rank int) *v1.Pod { return pods[rank] }},
 	} {
 		router := scoreByIndex(pods, tc.polarity)
@@ -162,28 +164,32 @@ func TestSelectCandidates_KeepsBestEstimatesPlusRandomSlots(t *testing.T) {
 			got := selectCandidates(candidateCtx(t, "load-balance"), router, pods, 16)
 			requireDistinctSubset(t, got, pods)
 			require.Len(t, got, 16)
-			for rank := 0; rank < 12; rank++ {
+			for rank := 0; rank < 8; rank++ {
 				require.Same(t, tc.best(rank), got[rank], "rank %d", rank)
 			}
-			for _, pod := range got[12:] {
+			for _, pod := range got[8:] {
 				explored[pod] = true
 			}
 		}
-		assert.Greater(t, len(explored), 100, "the random slots reach across the rest of the fleet")
+		assert.Greater(t, len(explored), 70, "the random slots reach across the rest of the fleet")
 	}
 }
 
-// With K below 4 there are no random slots.
-func TestSelectCandidates_SmallKIsAllRanked(t *testing.T) {
-	pods := candidatePods(50)
-	got := selectCandidates(candidateCtx(t, "load-balance"), scoreByIndex(pods, types.PolarityLeast), pods, 3)
-	assert.Equal(t, pods[:3], got)
+// A small K still ranks K/2 of its slots.
+func TestSelectCandidates_SmallK(t *testing.T) {
+	pods := candidatePods(10) // a scout of 4K covers most of these, so every pod is estimated
+	for _, k := range []int{2, 3} {
+		got := selectCandidates(candidateCtx(t, "load-balance"), scoreByIndex(pods, types.PolarityLeast), pods, k)
+		requireDistinctSubset(t, got, pods)
+		require.Len(t, got, k)
+		assert.Same(t, pods[0], got[0])
+	}
 }
 
 // The estimates are blended like the router blends its scores: a prefix holder that is also
 // idle beats both a busy holder and an idle pod without the prefix.
 func TestSelectCandidates_BlendsStrategiesUnderOneBudget(t *testing.T) {
-	pods := candidatePods(100)
+	pods := candidatePods(60)
 	prefix := &estimator{scores: map[*v1.Pod]float64{}, polarity: types.PolarityMost}
 	load := &estimator{scores: map[*v1.Pod]float64{}, polarity: types.PolarityLeast}
 	for i := 0; i < 10; i++ {
@@ -194,18 +200,18 @@ func TestSelectCandidates_BlendsStrategiesUnderOneBudget(t *testing.T) {
 	}
 	router := blendOf(map[string]types.PodScorer{"a": prefix, "b": load}, map[string]int{"a": 1, "b": 1})
 	for trial := 0; trial < 50; trial++ {
-		got := selectCandidates(candidateCtx(t, "prefix-cache:1,load-balance:1"), router, pods, 8)
+		got := selectCandidates(candidateCtx(t, "prefix-cache:1,load-balance:1"), router, pods, 10)
 		requireDistinctSubset(t, got, pods)
-		require.Len(t, got, 8)
+		require.Len(t, got, 10)
 		assert.ElementsMatch(t, pods[5:10], got[:5], "the idle holders rank first")
 	}
 
 	// A weight shifts the balance: with the load signal weighted 3:1, an idle pod without the
-	// prefix (0.75) outranks a busy holder (0.25) for the slot after the idle holders (1.0).
+	// prefix (0.75) outranks a busy holder (0.25) for the ranked slots after the idle holders (1.0).
 	router = blendOf(map[string]types.PodScorer{"a": prefix, "b": load}, map[string]int{"a": 1, "b": 3})
-	got := selectCandidates(candidateCtx(t, "prefix-cache:1,load-balance:3"), router, pods, 8)
+	got := selectCandidates(candidateCtx(t, "prefix-cache:1,load-balance:3"), router, pods, 16)
 	assert.ElementsMatch(t, pods[5:10], got[:5])
-	for _, pod := range got[5:6] {
+	for _, pod := range got[5:8] {
 		assert.NotContains(t, pods[:5], pod, "a busy holder does not take a ranked slot over an idle pod")
 	}
 }
@@ -220,7 +226,7 @@ func TestSelectCandidates_StrategiesWithoutEstimates(t *testing.T) {
 
 	router := blendOf(map[string]types.PodScorer{"a": ranked, "b": plainScorer{}, "c": failing}, map[string]int{"a": 1, "b": 5, "c": 5})
 	got := selectCandidates(candidateCtx(t, "least-request:1,load-balance:1"), router, pods, 8)
-	assert.Equal(t, []*v1.Pod{pods[59], pods[58], pods[57], pods[56], pods[55], pods[54]}, got[:6])
+	assert.Equal(t, []*v1.Pod{pods[59], pods[58], pods[57], pods[56]}, got[:4])
 	assert.Equal(t, 1, failing.calls)
 
 	for _, router := range []types.Router{
@@ -237,20 +243,56 @@ func TestSelectCandidates_StrategiesWithoutEstimates(t *testing.T) {
 // Pods the estimates cannot tell apart share the ranked slots across requests, so the holders
 // of a hot prefix, or an idle fleet, are not narrowed to the same few pods.
 func TestSelectCandidates_SpreadsEqualEstimates(t *testing.T) {
-	pods := candidatePods(40)
+	pods := candidatePods(30)
 	holders := &estimator{scores: map[*v1.Pod]float64{}, polarity: types.PolarityMost}
 	for _, pod := range pods[:20] {
 		holders.scores[pod] = 100
 	}
 	seen := map[*v1.Pod]bool{}
 	for trial := 0; trial < 300; trial++ {
-		got := selectCandidates(candidateCtx(t, "prefix-cache"), holders, pods, 4)
+		got := selectCandidates(candidateCtx(t, "prefix-cache"), holders, pods, 6)
 		for _, pod := range got[:3] {
 			require.Contains(t, pods[:20], pod, "ranked slots go to holders")
 			seen[pod] = true
 		}
 	}
 	assert.Len(t, seen, 20, "every holder takes a ranked slot some of the time")
+}
+
+// finder is an estimator that also finds its best pods directly, like prefix-cache.
+type finder struct {
+	*estimator
+	found []*v1.Pod
+}
+
+func (f finder) FindCandidates(_ *types.RoutingContext, _ types.PodList, max int) []*v1.Pod {
+	return f.found[:min(max, len(f.found))]
+}
+
+// On a large fleet only a scout of 4K random pods plus the pods a finder returns is estimated,
+// and the found pods compete for the ranked slots like the others.
+func TestSelectCandidates_EstimatesABoundedScout(t *testing.T) {
+	pods := candidatePods(2000)
+	e := scoreByIndex(pods, types.PolarityMost)
+	f := finder{estimator: e, found: []*v1.Pod{pods[1999], pods[1998], pods[1999]}}
+	for trial := 0; trial < 50; trial++ {
+		got := selectCandidates(candidateCtx(t, "prefix-cache"), f, pods, 16)
+		requireDistinctSubset(t, got, pods)
+		require.Len(t, got, 16)
+		assert.LessOrEqual(t, e.seen, 4*16+2, "the scout is 4K random pods plus the found ones")
+		assert.Same(t, pods[1999], got[0], "a found pod with the best estimate ranks first")
+		assert.Same(t, pods[1998], got[1])
+		for rank := 1; rank < 8; rank++ {
+			assert.Greater(t, e.scores[got[rank-1]], e.scores[got[rank]], "ranked slots are in estimate order")
+		}
+	}
+
+	// Without a finder, the scout is random: the best pod of the fleet is ranked only when the
+	// scout drew it, and the stage's work stays bounded by K.
+	plain := scoreByIndex(pods, types.PolarityMost)
+	got := selectCandidates(candidateCtx(t, "load-balance"), plain, pods, 16)
+	require.Len(t, got, 16)
+	assert.Equal(t, 4*16, plain.seen)
 }
 
 // TestSelectCandidates_LargeSample covers the branch that draws from a permutation when the

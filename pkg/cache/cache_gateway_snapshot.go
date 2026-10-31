@@ -76,6 +76,8 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 	if errLog == nil {
 		errLog = newRateLimitedErrorLog(gatewaySnapshotErrorLogInterval)
 	}
+	// This gateway's identity does not change while it runs; read it once.
+	self := gatewayPodName
 	go func() {
 		// prevRaw holds every gateway-instance key's last successfully-read fields,
 		// keyed by its raw Redis key rather than by pod, so a read failure for one
@@ -139,8 +141,8 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 
 					// Atomically replace the snapshot cache so readers always see a consistent map.
 					store.gatewaySnapshotCache.Store(newCache)
-					remote := remoteRunningByPod(newCache, gatewayPodName)
-					store.gatewayRemoteRunning.Store(&remote)
+					store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{
+						counts: remoteRunningByPod(newCache, self), readStart: start})
 					klog.V(5).InfoS("refreshed gateway snapshot cache", "keys", len(newCache), "duration", time.Since(start))
 				}()
 
@@ -333,6 +335,19 @@ func groupSnapshotsByPod(raw map[string]map[string]string) map[string][]map[stri
 		grouped[pKey] = append(grouped[pKey], fields)
 	}
 	return grouped
+}
+
+// remoteRunningMaxAge is how old the other gateways' counts may be before
+// GetPodsRunningRequestsApprox stops adding them. Ten sync intervals: a few missed ticks are
+// tolerated, a stalled sync is not, so a gateway that cannot reach Redis falls back to its own
+// counts instead of steering by a picture that keeps getting older.
+const remoteRunningMaxAge = 10 * gatewaySnapshotSyncInterval
+
+// remoteRunningSnapshot is the other gateways' running counts per pod key, and when the tick
+// that read them started.
+type remoteRunningSnapshot struct {
+	counts    map[string]int64
+	readStart time.Time
 }
 
 // remoteRunningByPod sums requests_running over the snapshots of every gateway instance other

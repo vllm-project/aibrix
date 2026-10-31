@@ -193,13 +193,26 @@ func TestInitGatewaySnapshotSyncRefreshesCache(t *testing.T) {
 	require.True(t, foundSelf)
 	require.True(t, foundRemote)
 
-	// The in-memory estimate adds the remote gateway's 2 to this gateway's own 4, without Redis.
-	require.Eventually(t, func() bool {
-		return store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})[utils.GeneratePodKey(testNamespace, testPodName)] == 6
-	}, 2*time.Second, 50*time.Millisecond)
+	// The tick that published the snapshot also published the other gateways' sums.
+	require.Eventually(t, func() bool { return store.gatewayRemoteRunning.Load() != nil }, 2*time.Second, 10*time.Millisecond)
+	assert.Equal(t, map[string]int64{utils.GeneratePodKey(testNamespace, testPodName): 2}, store.gatewayRemoteRunning.Load().counts)
+}
+
+// The in-memory estimate is this gateway's live count plus the other gateways' last snapshot.
+func TestGetPodsRunningRequestsApproxAddsRemoteSnapshot(t *testing.T) {
+	store := &Store{}
+	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns"}}}
+	atomic.StoreInt32(&pod.runningRequests, 4)
+	store.metaPods.Store("ns/a", pod)
+	store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{counts: map[string]int64{"ns/a": 2}, readStart: time.Now()})
+	assert.Equal(t, int64(6), store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})["ns/a"])
 	// This gateway's own count is read live, not from what it last wrote to Redis.
 	atomic.StoreInt32(&pod.runningRequests, 9)
-	require.Equal(t, int64(11), store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})[utils.GeneratePodKey(testNamespace, testPodName)])
+	assert.Equal(t, int64(11), store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})["ns/a"])
+	// A snapshot from a stalled sync is ignored.
+	store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{counts: map[string]int64{"ns/a": 2},
+		readStart: time.Now().Add(-remoteRunningMaxAge - time.Millisecond)})
+	assert.Equal(t, int64(9), store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})["ns/a"])
 }
 
 func TestRemoteRunningByPodSkipsSelfAndSumsOthers(t *testing.T) {

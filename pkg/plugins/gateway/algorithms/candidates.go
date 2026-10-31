@@ -30,23 +30,36 @@ import (
 // The candidate stage (RFC #3188) bounds the per-request routing work by K instead of the number
 // of ready pods. Every strategy and the load-imbalance gate read each pod's cross-gateway running
 // count from Redis, so routing over N pods costs several N-pod Redis reads per request. With
-// AIBRIX_ROUTING_CANDIDATE_K > 0, the gateway first ranks every ready pod on the strategies' own
-// in-memory estimates (types.CandidateScorer), blended with the router's weights, keeps the best
-// of them plus a few at random, K pods in all, and runs the gate and the router on that set
-// only. K is the only knob: the prefix holders of a request, the least-loaded pods and the pods
-// with the most KV headroom all compete for the same K slots, the way they compete in the
-// router's own blend. Off by default; a model config profile can set K through
-// routingConfig.candidate.k.
+// AIBRIX_ROUTING_CANDIDATE_K > 0, the gateway picks K pods first and runs the gate and the router
+// on those only. K is the only knob.
+//
+// The router's own strategies pick the K pods. A random scout of candidateScoutFactor*K ready
+// pods, plus up to K pods a strategy finds directly (prefix-cache's holders of the request's
+// prefix, see types.CandidateFinder), is scored on each strategy's in-memory estimate
+// (types.CandidateScorer), blended with the router's weights and normalization. The best K/2
+// of the scout are kept and the other K/2 are drawn at random from the whole fleet. A
+// request's prefix holders, its least-loaded pods and the pods with the most KV headroom so
+// compete for the same K slots, as they compete in the router's blend. Estimating only a scout
+// keeps the stage's own work bounded by K too: estimating every ready pod costs about a
+// microsecond per pod and strategy, which at 2,000 pods is as much as full scoring in process.
+// Off by default; a model config profile can set K through routingConfig.candidate.k.
 var routingCandidateK = utils.LoadEnvInt("AIBRIX_ROUTING_CANDIDATE_K", 0)
 
-// candidateExploreDivisor reserves K/candidateExploreDivisor of the K slots (none when K < 4)
-// for pods drawn at random from the ones the ranking left out. The estimates the ranking reads
-// lag: other gateways' running counts by up to one gateway-snapshot interval (100ms), scraped
-// engine metrics by up to one scrape interval. Between refreshes every request ranks the same
-// pods first, so a purely ranked set would keep offering the router the same few pods; the
-// random slots keep other pods in view, and the exact scoring that follows decides between them.
-// It is not a knob: it guards the ranking, it does not express a routing preference.
-const candidateExploreDivisor = 4
+// candidateScoutFactor sets the random scout to candidateScoutFactor*K ready pods. Ranking K
+// of 4K random pods already keeps most of the gain of ranking every pod (the
+// power-of-d-choices effect), at a cost that does not grow with the fleet.
+const candidateScoutFactor = 4
+
+// The best K/2 scouted pods (rounded down) are ranked into the set; the other slots go to pods
+// drawn at random from the whole fleet. The random half does two jobs. The estimates lag (other
+// gateways' running counts by up to one gateway-snapshot interval, scraped engine metrics by up
+// to one scrape interval), so between refreshes every request ranks the same pods first; random
+// pods keep others in view, and the exact scoring that follows decides between them. And the
+// load-imbalance gate and the blend's normalization run on the candidates and assume they look
+// like the fleet: with three quarters ranked, the set mixes idle pods with hot prefix holders,
+// the gate fires against the holders and prefix affinity collapses (candidatesim,
+// TestCandidateSelectionKOnly). It is not a knob: it guards the ranking.
+func candidateRankedSlots(k int) int { return k / 2 }
 
 // candidateSafeStrategies are the strategies whose choice depends only on the pods they are
 // given, so routing over a sample changes which pods compete but not the formulas that judge
@@ -103,19 +116,24 @@ func selectCandidates(ctx *types.RoutingContext, router types.Router, readyPods 
 
 	candidates := make([]*v1.Pod, 0, k)
 	picked := make(map[*v1.Pod]struct{}, k)
-	ranked := 0
-	if estimates, ok := candidateEstimates(ctx, router, readyPods); ok {
-		ranked = k - k/candidateExploreDivisor
-		for _, i := range bestIndices(estimates, ranked) {
-			picked[readyPods[i]] = struct{}{}
-			candidates = append(candidates, readyPods[i])
+	ranked, scouted := 0, 0
+	parts := candidateParts(router)
+	if hasEstimate(parts) {
+		scout := candidateScout(ctx, parts, readyPods, k)
+		scouted = len(scout)
+		if estimates, ok := candidateEstimates(ctx, parts, scout); ok {
+			ranked = candidateRankedSlots(k)
+			for _, i := range bestIndices(estimates, ranked) {
+				picked[scout[i]] = struct{}{}
+				candidates = append(candidates, scout[i])
+			}
 		}
 	}
 	sampleCandidates(readyPods, k, picked, &candidates)
 
 	if klog.V(5).Enabled() {
 		klog.V(5).InfoS("routing candidate stage", "request_id", ctx.RequestID, "ready_pods", len(readyPods),
-			"candidates", len(candidates), "ranked", ranked, "strategy", ctx.ResolvedStrategy)
+			"candidates", len(candidates), "scouted", scouted, "ranked", ranked, "strategy", ctx.ResolvedStrategy)
 	}
 	return candidates
 }
@@ -144,14 +162,53 @@ func candidateParts(router types.Router) []weightedScorer {
 	return nil
 }
 
-// candidateEstimates blends the in-memory estimates of router's strategies into one score per
-// pod, higher is better, the way multiStrategyRouter.scoreAndRank blends ScoreAll: each
-// strategy's scores are normalized to [0, 1] by its polarity and weighted by its share of the
-// total weight. A strategy without an estimate (no types.CandidateScorer, or an error) counts
-// as 0 for every pod, so it shifts no pod ahead of another. ok is false when no strategy has an
-// estimate; the candidates are then drawn at random.
-func candidateEstimates(ctx *types.RoutingContext, router types.Router, readyPods []*v1.Pod) ([]float64, bool) {
-	parts := candidateParts(router)
+func hasEstimate(parts []weightedScorer) bool {
+	for _, part := range parts {
+		if _, ok := part.scorer.(types.CandidateScorer); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// candidateScout returns the ready pods the stage estimates: up to K pods each finder among
+// parts returns, best first, then candidateScoutFactor*K pods drawn at random, without
+// duplicates. When that would cover most of the fleet, it is the whole fleet.
+func candidateScout(ctx *types.RoutingContext, parts []weightedScorer, readyPods []*v1.Pod, k int) []*v1.Pod {
+	size := candidateScoutFactor * k
+	if 2*size >= len(readyPods) {
+		return readyPods
+	}
+	scout := make([]*v1.Pod, 0, size+k)
+	seen := make(map[*v1.Pod]struct{}, size+k)
+	podList := &utils.PodArray{Pods: readyPods}
+	for _, part := range parts {
+		finder, ok := part.scorer.(types.CandidateFinder)
+		if !ok {
+			continue
+		}
+		found := finder.FindCandidates(ctx, podList, k)
+		if len(found) > k {
+			found = found[:k]
+		}
+		for _, pod := range found {
+			if _, dup := seen[pod]; !dup {
+				seen[pod] = struct{}{}
+				scout = append(scout, pod)
+			}
+		}
+	}
+	sampleCandidates(readyPods, len(scout)+size, seen, &scout)
+	return scout
+}
+
+// candidateEstimates blends the in-memory estimates of the strategies in parts into one score
+// per pod of pods, higher is better, the way multiStrategyRouter.scoreAndRank blends ScoreAll:
+// each strategy's scores are normalized to [0, 1] by its polarity over pods and weighted by its
+// share of the total weight. A strategy without an estimate (no types.CandidateScorer, or an
+// error) counts as 0 for every pod, so it shifts no pod ahead of another. ok is false when no
+// strategy has an estimate.
+func candidateEstimates(ctx *types.RoutingContext, parts []weightedScorer, pods []*v1.Pod) ([]float64, bool) {
 	total := 0.0
 	for _, part := range parts {
 		total += part.weight
@@ -159,7 +216,7 @@ func candidateEstimates(ctx *types.RoutingContext, router types.Router, readyPod
 	if total <= 0 {
 		return nil, false
 	}
-	podList := &utils.PodArray{Pods: readyPods}
+	podList := &utils.PodArray{Pods: pods}
 	var blended []float64
 	for _, part := range parts {
 		estimator, ok := part.scorer.(types.CandidateScorer)
@@ -167,14 +224,14 @@ func candidateEstimates(ctx *types.RoutingContext, router types.Router, readyPod
 			continue
 		}
 		scores, scored, err := estimator.CandidateScores(ctx, podList)
-		if err != nil || len(scores) != len(readyPods) || len(scored) != len(readyPods) {
+		if err != nil || len(scores) != len(pods) || len(scored) != len(pods) {
 			if err != nil {
 				klog.V(4).ErrorS(err, "candidate estimate skipped", "request_id", ctx.RequestID)
 			}
 			continue
 		}
 		if blended == nil {
-			blended = make([]float64, len(readyPods))
+			blended = make([]float64, len(pods))
 		}
 		share := part.weight / total
 		for i, norm := range normalizeScores(scores, scored, estimator.Polarity()) {
@@ -211,9 +268,9 @@ func bestIndices(scores []float64, n int) []int {
 }
 
 // sampleCandidates adds pods of readyPods not yet in picked to candidates, uniformly at random,
-// until it holds k. The caller guarantees k < len(readyPods), so enough such pods exist. When
-// the sample is a small share of readyPods, rejection sampling keeps this O(k) instead of
-// touching every pod.
+// until it holds k, or every ready pod. Every pod in candidates must be in picked. When the
+// sample is a small share of readyPods, rejection sampling keeps this O(k) instead of touching
+// every pod.
 func sampleCandidates(readyPods []*v1.Pod, k int, picked map[*v1.Pod]struct{}, candidates *[]*v1.Pod) {
 	add := func(pod *v1.Pod) {
 		if _, dup := picked[pod]; !dup {
@@ -221,6 +278,7 @@ func sampleCandidates(readyPods []*v1.Pod, k int, picked map[*v1.Pod]struct{}, c
 			*candidates = append(*candidates, pod)
 		}
 	}
+	k = min(k, len(readyPods))
 	if 2*k > len(readyPods) {
 		for _, i := range rand.Perm(len(readyPods)) {
 			if len(*candidates) >= k {

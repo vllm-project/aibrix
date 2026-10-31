@@ -177,7 +177,7 @@ type Store struct {
 	// other gateway instances reported in the latest snapshot. It is derived from
 	// gatewaySnapshotCache when that is swapped, so GetPodsRunningRequestsApprox answers with
 	// one map lookup per pod instead of parsing every gateway's fields on each request.
-	gatewayRemoteRunning atomic.Pointer[map[string]int64]
+	gatewayRemoteRunning atomic.Pointer[remoteRunningSnapshot]
 	// gatewaySnapshotErrorLog rate-limits the Error-level log of failing snapshot ticks. Nil
 	// means initGatewaySnapshotSync creates one; tests set it to capture lines.
 	gatewaySnapshotErrorLog *rateLimitedErrorLog

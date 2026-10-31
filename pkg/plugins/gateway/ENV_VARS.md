@@ -192,16 +192,22 @@ pods to K pods before the load-imbalance gate and the router run. The gate and e
 read running counts, from Redis when it is configured, for those K pods only, which bounds the
 per-request routing work by K instead of the number of ready pods (RFC #3188).
 
-The K pods are chosen by the strategies themselves. Each strategy that can estimate its score from
-memory (`types.CandidateScorer`) scores every ready pod without Redis: `prefix-cache` from its
-prefix index, `load-balance` and `least-request` from this gateway's own running counts plus the
-other gateways' counts in the last gateway snapshot (refreshed every 100 ms), and the `least-*`
-strategies from the scraped metrics they already read. These estimates are normalized and
-weighted exactly as the router blends its scores, the best `K - K/4` pods are kept, ties broken at
-random, and the remaining `K/4` slots (none when K < 4) go to pods drawn at random from the rest,
-so lagging estimates cannot keep offering the router the same few pods. A request's prefix
-holders, its least-loaded pods and the pods with the most KV headroom therefore compete for the
-same K slots. Strategies without an estimate (`random`, `power-of-two`) get K pods drawn at random.
+The K pods are chosen by the strategies themselves, from a scout: 4K ready pods drawn at random
+(the whole fleet when that would cover half of it or more), plus up to K pods a strategy finds
+directly, which for `prefix-cache` are the holders of the request's longest cached prefix. Each
+strategy that can estimate its score from memory (`types.CandidateScorer`) scores the scout
+without Redis: `prefix-cache` from its prefix index, `load-balance` and `least-request` from this
+gateway's own running counts plus the other gateways' counts in the last gateway snapshot
+(refreshed every 100 ms), and the `least-*` strategies from the scraped metrics they already read.
+These estimates are normalized and weighted exactly as the router blends its scores, the best
+`K/2` scouted pods are kept, ties broken at random, and the other slots go to pods drawn at random
+from the whole fleet. The random half keeps lagging estimates from offering the router the same
+few pods on every request, and keeps the candidates representative of the fleet for the checks
+that compare a pod with its pool (with three quarters ranked, the gate fires against hot prefix
+holders in simulation). A request's prefix holders, its least-loaded pods and the pods with
+the most KV headroom therefore compete for the same K slots. Estimating only the scout keeps the
+stage's own work bounded by K (estimating every pod costs about a microsecond per pod and
+strategy). Strategies without an estimate (`random`, `power-of-two`) get K pods drawn at random.
 
 The stage applies only when every strategy in the resolved strategy, including the auto-blend,
 is candidate-safe: it judges pods only by the pods it is given, with no fleet-wide state of its
@@ -218,7 +224,7 @@ least 2. With K = 1 the set has one pod, and the gateway routes to it without ex
 
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
-| `AIBRIX_ROUTING_CANDIDATE_K` | int | `0` | Number of ready pods the gate and the router consider, picked by the strategies' in-memory estimates with a quarter of them drawn at random. `0` disables the candidate stage. | [algorithms/candidates.go](algorithms/candidates.go) |
+| `AIBRIX_ROUTING_CANDIDATE_K` | int | `0` | Number of ready pods the gate and the router consider: the best half of a 4K-pod scout (plus prefix holders) on the strategies' in-memory estimates, and half drawn at random. `0` disables the candidate stage. | [algorithms/candidates.go](algorithms/candidates.go) |
 
 It can also be set per request by the model config profile (`routingConfig.candidate.k`); see [Model Config Profile Overrides](#model-config-profile-overrides).
 

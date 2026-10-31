@@ -646,6 +646,39 @@ func (p prefixCacheRouter) CandidateScores(ctx *types.RoutingContext, readyPodLi
 	return p.scoreAll(ctx, readyPodList, true)
 }
 
+// FindCandidates implements types.CandidateFinder: up to max ready pods that hold a cached
+// prefix of this request, longest match first. Holders of the same match length are
+// interchangeable here, so they are shuffled and a hot prefix spreads over all its holders. The
+// lookup covers every ready pod and is kept on ctx, so CandidateScores and ScoreAll on any of
+// them reuse it.
+func (p prefixCacheRouter) FindCandidates(ctx *types.RoutingContext, readyPodList types.PodList, max int) []*v1.Pod {
+	if max <= 0 {
+		return nil
+	}
+	scores, scored, err := p.scoreAll(ctx, readyPodList, true)
+	if err != nil {
+		klog.V(4).ErrorS(err, "prefix-cache candidate lookup skipped", "request_id", ctx.RequestID)
+		return nil
+	}
+	pods := readyPodList.All()
+	matched := make([]int, 0, max)
+	for i := range pods {
+		if scored[i] && scores[i] > 0 {
+			matched = append(matched, i)
+		}
+	}
+	rand.Shuffle(len(matched), func(a, b int) { matched[a], matched[b] = matched[b], matched[a] })
+	sort.SliceStable(matched, func(a, b int) bool { return scores[matched[a]] > scores[matched[b]] })
+	if len(matched) > max {
+		matched = matched[:max]
+	}
+	found := make([]*v1.Pod, len(matched))
+	for j, i := range matched {
+		found[j] = pods[i]
+	}
+	return found
+}
+
 // Polarity returns whether higher or lower score is better.
 func (p prefixCacheRouter) Polarity() types.Polarity {
 	return types.PolarityMost

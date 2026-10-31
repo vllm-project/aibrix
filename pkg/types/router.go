@@ -16,6 +16,8 @@ limitations under the License.
 
 package types
 
+import v1 "k8s.io/api/core/v1"
+
 // Router defines the interface for routing logic to select target pods.
 type Router interface {
 	// Route selects a target pod from the provided list of pods.
@@ -42,6 +44,18 @@ type CandidateScorer interface {
 	// candidate stage exists to avoid reads over every ready pod. A stale but local signal (a
 	// scraped metric, this gateway's own counts plus the last gateway snapshot) is expected.
 	CandidateScores(ctx *RoutingContext, readyPods PodList) (scores []float64, scored []bool, err error)
+}
+
+// CandidateFinder is implemented by CandidateScorers that can find the pods they would score
+// best among all ready pods without scoring each of them, such as prefix-cache through its
+// prefix index. The candidate stage estimates only a random sample of the ready pods, so a
+// strategy whose best pods are few and specific (the holders of a prefix) adds them here; they
+// then compete for the K slots on the blended estimate like any sampled pod.
+type CandidateFinder interface {
+	CandidateScorer
+	// FindCandidates returns at most max pods of readyPods, best first. Like CandidateScores it
+	// must not read per-pod state from Redis.
+	FindCandidates(ctx *RoutingContext, readyPods PodList, max int) []*v1.Pod
 }
 
 // QueueRouter defines the interface for routers that contains built-in queue and
