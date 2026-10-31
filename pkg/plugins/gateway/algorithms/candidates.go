@@ -117,11 +117,14 @@ func selectCandidates(ctx *types.RoutingContext, router types.Router, readyPods 
 	candidates := make([]*v1.Pod, 0, k)
 	picked := make(map[*v1.Pod]struct{}, k)
 	ranked, scouted := 0, 0
+	path := candidatePathNoEstimate
 	parts := candidateParts(router)
 	if hasEstimate(parts) {
+		path = candidatePathEstimateFailed
 		scout := candidateScout(ctx, parts, readyPods, k)
 		scouted = len(scout)
 		if estimates, ok := candidateEstimates(ctx, parts, scout); ok {
+			path = candidatePathRanked
 			ranked = candidateRankedSlots(k)
 			for _, i := range bestIndices(estimates, ranked) {
 				picked[scout[i]] = struct{}{}
@@ -130,10 +133,11 @@ func selectCandidates(ctx *types.RoutingContext, router types.Router, readyPods 
 		}
 	}
 	sampleCandidates(readyPods, k, picked, &candidates)
+	recordCandidateSelection(ctx.Model, path)
 
 	if klog.V(5).Enabled() {
 		klog.V(5).InfoS("routing candidate stage", "request_id", ctx.RequestID, "ready_pods", len(readyPods),
-			"candidates", len(candidates), "scouted", scouted, "ranked", ranked, "strategy", ctx.ResolvedStrategy)
+			"candidates", len(candidates), "scouted", scouted, "ranked", ranked, "path", path, "strategy", ctx.ResolvedStrategy)
 	}
 	return candidates
 }

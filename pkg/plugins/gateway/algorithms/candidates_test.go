@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
@@ -406,4 +407,51 @@ func TestCandidateSafeStrategiesWithEstimates(t *testing.T) {
 		_, ok := scorer.(types.CandidateScorer)
 		assert.True(t, ok, "%T", scorer)
 	}
+}
+
+func selectionCount(t *testing.T, model, path string) float64 {
+	t.Helper()
+	if candidateSelections == nil {
+		return 0
+	}
+	return testutil.ToFloat64(candidateSelections.WithLabelValues(model, path))
+}
+
+// Each narrowed decision is counted once by the path it took; decisions the stage leaves alone
+// are not counted.
+func TestSelectCandidates_CountsPaths(t *testing.T) {
+	pods := candidatePods(40)
+	failing := &estimator{err: errors.New("no counts"), polarity: types.PolarityLeast}
+	ctxFor := func(resolved string) *types.RoutingContext {
+		ctx := candidateCtx(t, resolved)
+		ctx.Model = "metric-model"
+		return ctx
+	}
+	for _, tc := range []struct {
+		router   types.Router
+		resolved string
+		k        int
+		path     string
+	}{
+		{scoreByIndex(pods, types.PolarityMost), "load-balance", 8, candidatePathRanked},
+		{plainRouter{}, "random", 8, candidatePathNoEstimate},
+		{failing, "load-balance", 8, candidatePathEstimateFailed},
+	} {
+		before := selectionCount(t, "metric-model", tc.path)
+		selectCandidates(ctxFor(tc.resolved), tc.router, pods, tc.k)
+		assert.Equal(t, before+1, selectionCount(t, "metric-model", tc.path), tc.path)
+	}
+
+	before := 0.0
+	for _, path := range []string{candidatePathRanked, candidatePathNoEstimate, candidatePathEstimateFailed} {
+		before += selectionCount(t, "metric-model", path)
+	}
+	selectCandidates(ctxFor("load-balance"), plainRouter{}, pods, 0)
+	selectCandidates(ctxFor("load-balance"), plainRouter{}, pods, 40)
+	selectCandidates(ctxFor("vtc-basic"), plainRouter{}, pods, 8)
+	after := 0.0
+	for _, path := range []string{candidatePathRanked, candidatePathNoEstimate, candidatePathEstimateFailed} {
+		after += selectionCount(t, "metric-model", path)
+	}
+	assert.Equal(t, before, after, "decisions the stage leaves alone are not counted")
 }

@@ -222,6 +222,11 @@ compare it with the candidates: the load-imbalance gate's spread, `prefix-cache`
 standard-deviation check, and the blend's min-max normalization and winsorizing. Use K of at
 least 2. With K = 1 the set has one pod, and the gateway routes to it without exact scoring.
 
+`aibrix_routing_candidate_selections_total{model,path}` counts each decision the stage narrows:
+`ranked` when half the candidates were ranked on the estimates, `random_no_estimate` when the
+strategy has none (`random`, `power-of-two`), and `random_estimate_failed` when the strategy has
+estimates but none could be computed, which means the stage is running without its ranking.
+
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
 | `AIBRIX_ROUTING_CANDIDATE_K` | int | `0` | Number of ready pods the gate and the router consider: the best half of a 4K-pod scout (plus prefix holders) on the strategies' in-memory estimates, and half drawn at random. `0` disables the candidate stage. | [algorithms/candidates.go](algorithms/candidates.go) |
