@@ -217,6 +217,21 @@ func (e *PrefillTransportError) Unwrap() error { return e.Err }
 // code. The ordering matters: a timeout surfaces as a *url.Error wrapping
 // context.DeadlineExceeded, so context errors are checked before the generic
 // transport fallback.
+// IsPodAttributablePrefillFailure reports whether a prefill error is attributable
+// to the prefill pod (transport errors, timeouts, HTTP 5xx or HTTP 429), rather
+// than client cancellations, request setup errors, bad responses, or client 4xx errors.
+func IsPodAttributablePrefillFailure(err error) bool {
+	class, statusCode := classifyPrefillFailure(err)
+	switch class {
+	case PrefillFailureTransport, PrefillFailureTimeout:
+		return true
+	case PrefillFailureHTTPStatus:
+		return statusCode >= 500 || statusCode == http.StatusTooManyRequests
+	default:
+		return false
+	}
+}
+
 func classifyPrefillFailure(err error) (string, int) {
 	if err == nil {
 		return "", 0
