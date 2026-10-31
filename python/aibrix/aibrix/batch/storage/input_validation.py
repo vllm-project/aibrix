@@ -58,6 +58,7 @@ async def validate_batch_input_file(
     try:
         request_count = 0
         line_num = 0
+        seen_custom_ids: set[str] = set()
 
         async for line in storage.readline_iter(file_id):
             line_num += 1
@@ -85,6 +86,11 @@ async def validate_batch_input_file(
 
             if not isinstance(request.get("custom_id"), str):
                 return 0, f"Line {line_num}: 'custom_id' must be a string"
+
+            custom_id = request["custom_id"]
+            if custom_id in seen_custom_ids:
+                return 0, f"Line {line_num}: Duplicate custom_id '{custom_id}'"
+            seen_custom_ids.add(custom_id)
 
             if not isinstance(request.get("method"), str):
                 return 0, f"Line {line_num}: 'method' must be a string"
