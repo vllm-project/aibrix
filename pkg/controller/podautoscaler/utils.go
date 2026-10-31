@@ -22,9 +22,14 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/controller/constants"
 	podutils "github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -54,13 +59,27 @@ func isPodReady(pod corev1.Pod) bool {
 	return false
 }
 
-func replicaStateFromPods(pods []corev1.Pod, currentReplicas int32) ReplicaState {
+// replicaStateFromPods splits currentReplicas into ready and pending. When the
+// replicas are RoleSets (scalesRoleSets), a RoleSet is ready once all of its
+// selected pods are, so a RoleSet still starting counts as pending.
+func replicaStateFromPods(pods []corev1.Pod, currentReplicas int32, roleSets bool) ReplicaState {
 	var readyReplicas int32
+	roleSetReady := map[string]bool{}
 	for _, pod := range pods {
-		if pod.DeletionTimestamp != nil || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		if !isPodLive(pod) {
+			continue
+		}
+		if roleSet := pod.Labels[constants.RoleSetNameLabelKey]; roleSets && roleSet != "" {
+			ready, seen := roleSetReady[roleSet]
+			roleSetReady[roleSet] = isPodReady(pod) && (ready || !seen)
 			continue
 		}
 		if isPodReady(pod) {
+			readyReplicas++
+		}
+	}
+	for _, ready := range roleSetReady {
+		if ready {
 			readyReplicas++
 		}
 	}
@@ -74,6 +93,50 @@ func replicaStateFromPods(pods []corev1.Pod, currentReplicas int32) ReplicaState
 		ReadyReplicas:   currentReplicas - pendingReplicas,
 		PendingReplicas: pendingReplicas,
 	}
+}
+
+func isPodLive(pod corev1.Pod) bool {
+	return pod.DeletionTimestamp == nil && pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed
+}
+
+// scalesRoleSets reports whether the scale target's replicas are RoleSets: a
+// StormService scaled through spec.replicas (any StormService without a
+// subTargetSelector, and a replica-mode one with it).
+func scalesRoleSets(pa *autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (bool, error) {
+	if scale.GetAPIVersion() != orchestrationv1alpha1.GroupVersion.String() || scale.GetKind() != StormService {
+		return false, nil
+	}
+	if pa.Spec.SubTargetSelector == nil {
+		return true, nil
+	}
+	ss := &orchestrationv1alpha1.StormService{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(scale.Object, ss); err != nil {
+		return false, fmt.Errorf("failed to read StormService %s: %w", scale.GetName(), err)
+	}
+	return stormServiceScalingMode(pa, ss) == orchestrationv1alpha1.StormServiceReplicaMode, nil
+}
+
+// podsPerReplica is how many of the selected pods make up one replica of the
+// scale target: 1, or the selected pods per RoleSet when the replicas are
+// RoleSets, so that a per-pod metric is sized in RoleSets rather than pods.
+func podsPerReplica(roleSets bool, pods []corev1.Pod) float64 {
+	if !roleSets {
+		return 1
+	}
+	selected := 0
+	names := map[string]struct{}{}
+	for _, pod := range pods {
+		roleSet := pod.Labels[constants.RoleSetNameLabelKey]
+		if roleSet == "" || !isPodLive(pod) {
+			continue
+		}
+		selected++
+		names[roleSet] = struct{}{}
+	}
+	if len(names) == 0 {
+		return 1
+	}
+	return float64(selected) / float64(len(names))
 }
 
 func minFloat64(a, b float64) float64 {
