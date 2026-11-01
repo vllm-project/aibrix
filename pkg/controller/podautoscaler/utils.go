@@ -60,25 +60,38 @@ func isPodReady(pod corev1.Pod) bool {
 }
 
 // replicaStateFromPods splits currentReplicas into ready and pending. When the
-// replicas are RoleSets (scalesRoleSets), a RoleSet is ready once all of its
-// selected pods are, so a RoleSet still starting counts as pending.
-func replicaStateFromPods(pods []corev1.Pod, currentReplicas int32, roleSets bool) ReplicaState {
+// replicas are RoleSets (scalesRoleSets), a RoleSet is ready once expectedPods
+// of its selected pods are ready, so a RoleSet still starting, including one
+// whose pods are not all created yet, counts as pending. With expectedPods 0
+// (unknown), a RoleSet is ready once all of its selected pods are.
+func replicaStateFromPods(pods []corev1.Pod, currentReplicas int32, roleSets bool, expectedPods int32) ReplicaState {
 	var readyReplicas int32
-	roleSetReady := map[string]bool{}
+	readyPods := map[string]int32{}
+	allReady := map[string]bool{}
 	for _, pod := range pods {
 		if !isPodLive(pod) {
 			continue
 		}
-		if roleSet := pod.Labels[constants.RoleSetNameLabelKey]; roleSets && roleSet != "" {
-			ready, seen := roleSetReady[roleSet]
-			roleSetReady[roleSet] = isPodReady(pod) && (ready || !seen)
+		if roleSets {
+			roleSet := pod.Labels[constants.RoleSetNameLabelKey]
+			if roleSet == "" {
+				continue
+			}
+			ready, seen := allReady[roleSet]
+			allReady[roleSet] = isPodReady(pod) && (ready || !seen)
+			if isPodReady(pod) {
+				readyPods[roleSet]++
+			}
 			continue
 		}
 		if isPodReady(pod) {
 			readyReplicas++
 		}
 	}
-	for _, ready := range roleSetReady {
+	for roleSet, ready := range allReady {
+		if expectedPods > 0 {
+			ready = readyPods[roleSet] >= expectedPods
+		}
 		if ready {
 			readyReplicas++
 		}
@@ -116,12 +129,44 @@ func scalesRoleSets(pa *autoscalingv1alpha1.PodAutoscaler, scale *unstructured.U
 	return stormServiceScalingMode(pa, ss) == orchestrationv1alpha1.StormServiceReplicaMode, nil
 }
 
+// expectedPodsPerRoleSet is how many selected pods one RoleSet of the
+// StormService runs, from its template: the replicas times the pod group size
+// of the role named by subTargetSelector, or of every role without one.
+func expectedPodsPerRoleSet(pa *autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (int32, error) {
+	ss := &orchestrationv1alpha1.StormService{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(scale.Object, ss); err != nil {
+		return 0, fmt.Errorf("failed to read StormService %s: %w", scale.GetName(), err)
+	}
+	if ss.Spec.Template.Spec == nil {
+		return 0, nil
+	}
+	var pods int32
+	for _, role := range ss.Spec.Template.Spec.Roles {
+		if sel := pa.Spec.SubTargetSelector; sel != nil && sel.RoleName != "" && sel.RoleName != role.Name {
+			continue
+		}
+		replicas, groupSize := int32(0), int32(1)
+		if role.Replicas != nil && *role.Replicas > 0 {
+			replicas = *role.Replicas
+		}
+		if role.PodGroupSize != nil && *role.PodGroupSize > 1 {
+			groupSize = *role.PodGroupSize
+		}
+		pods += replicas * groupSize
+	}
+	return pods, nil
+}
+
 // podsPerReplica is how many of the selected pods make up one replica of the
-// scale target: 1, or the selected pods per RoleSet when the replicas are
-// RoleSets, so that a per-pod metric is sized in RoleSets rather than pods.
-func podsPerReplica(roleSets bool, pods []corev1.Pod) float64 {
+// scale target: 1, or the pods per RoleSet when the replicas are RoleSets, so
+// that a per-pod metric is sized in RoleSets rather than pods. It is
+// expectedPods when known, else the live selected pods per RoleSet.
+func podsPerReplica(roleSets bool, expectedPods int32, pods []corev1.Pod) float64 {
 	if !roleSets {
 		return 1
+	}
+	if expectedPods > 0 {
+		return float64(expectedPods)
 	}
 	selected := 0
 	names := map[string]struct{}{}

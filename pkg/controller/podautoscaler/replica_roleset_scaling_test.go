@@ -67,6 +67,14 @@ func readyRoleSetPod(name, roleSet, role string) *corev1.Pod {
 // Each silentRole adds a ready pod to every RoleSet that reports no metric.
 func scaleReplicaModeStormService(t *testing.T, strategy autoscalingv1alpha1.ScalingStrategyType, replicas, readyRoleSets int, perPod float64, silentRoles ...string) int32 {
 	t.Helper()
+	return scaleReplicaModeStormServiceWithMissingRole(t, strategy, replicas, readyRoleSets, perPod, "", silentRoles...)
+}
+
+// scaleReplicaModeStormServiceWithMissingRole is scaleReplicaModeStormService where
+// each starting RoleSet has not created its missingRole pod yet and its other pods
+// are already ready.
+func scaleReplicaModeStormServiceWithMissingRole(t *testing.T, strategy autoscalingv1alpha1.ScalingStrategyType, replicas, readyRoleSets int, perPod float64, missingRole string, silentRoles ...string) int32 {
+	t.Helper()
 	ctx := context.Background()
 	sch := runtime.NewScheme()
 	_ = scheme.AddToScheme(sch)
@@ -101,7 +109,12 @@ func scaleReplicaModeStormService(t *testing.T, strategy autoscalingv1alpha1.Sca
 		for _, role := range roleNames {
 			pod := readyRoleSetPod(fmt.Sprintf("%s-%d", role, i), roleSet, role)
 			if i >= readyRoleSets {
-				pod.Status.Conditions = nil
+				if role == missingRole {
+					continue
+				}
+				if missingRole == "" {
+					pod.Status.Conditions = nil
+				}
 				unscrapable[pod.Name] = true
 			}
 			if silent[role] {
@@ -184,6 +197,19 @@ func TestReplicaModeStormServiceHoldsForAStartingRoleSet(t *testing.T) {
 			// 3 RoleSets serve at 60 per pod against a target of 50 and a 4th is starting:
 			// 3.6 RoleSets of load, so the 4 already asked for are enough.
 			assert.Equal(t, int32(4), scaleReplicaModeStormService(t, strategy, 4, 3, 60))
+		})
+	}
+}
+
+// TestReplicaModeStormServiceHoldsForARoleSetMissingPods checks that a RoleSet whose
+// created pods are ready but which has not created all of its pods yet still counts
+// as pending, because a RoleSet is ready only once its template's pod count is ready.
+func TestReplicaModeStormServiceHoldsForARoleSetMissingPods(t *testing.T) {
+	for _, strategy := range []autoscalingv1alpha1.ScalingStrategyType{autoscalingv1alpha1.APA, autoscalingv1alpha1.KPA} {
+		t.Run(string(strategy), func(t *testing.T) {
+			// As above, but the 4th RoleSet's prefill pod is ready and its decode pod
+			// does not exist yet.
+			assert.Equal(t, int32(4), scaleReplicaModeStormServiceWithMissingRole(t, strategy, 4, 3, 60, "decode"))
 		})
 	}
 }
@@ -325,7 +351,7 @@ func TestPodsPerReplica(t *testing.T) {
 			}
 			roleSets, err := scalesRoleSets(pa, tc.scale)
 			require.NoError(t, err)
-			assert.Equal(t, tc.want, podsPerReplica(roleSets, tc.pods))
+			assert.Equal(t, tc.want, podsPerReplica(roleSets, 0, tc.pods))
 		})
 	}
 }
@@ -344,9 +370,53 @@ func TestReplicaStateFromPodsCountsRoleSets(t *testing.T) {
 	}
 
 	// RoleSets: rs-0 and rs-1 are ready; rs-2 waits on its decode pod, rs-3 on both.
-	assert.Equal(t, ReplicaState{ReadyReplicas: 2, PendingReplicas: 2}, replicaStateFromPods(pods, 4, true))
+	assert.Equal(t, ReplicaState{ReadyReplicas: 2, PendingReplicas: 2}, replicaStateFromPods(pods, 4, true, 0))
 	// A fifth RoleSet with no pods yet is pending too.
-	assert.Equal(t, ReplicaState{ReadyReplicas: 2, PendingReplicas: 3}, replicaStateFromPods(pods, 5, true))
+	assert.Equal(t, ReplicaState{ReadyReplicas: 2, PendingReplicas: 3}, replicaStateFromPods(pods, 5, true, 0))
 	// Counted as pods, the 5 ready pods cover all 4 replicas.
-	assert.Equal(t, ReplicaState{ReadyReplicas: 4, PendingReplicas: 0}, replicaStateFromPods(pods, 4, false))
+	assert.Equal(t, ReplicaState{ReadyReplicas: 4, PendingReplicas: 0}, replicaStateFromPods(pods, 4, false, 0))
+}
+
+func TestReplicaStateFromPodsCountsExpectedPodsPerRoleSet(t *testing.T) {
+	// rs-0 runs both of its pods; rs-1 has created only its prefill pod, which is ready.
+	pods := []corev1.Pod{
+		*readyRoleSetPod("p-0", "rs-0", "prefill"), *readyRoleSetPod("d-0", "rs-0", "decode"),
+		*readyRoleSetPod("p-1", "rs-1", "prefill"),
+	}
+	assert.Equal(t, ReplicaState{ReadyReplicas: 1, PendingReplicas: 1}, replicaStateFromPods(pods, 2, true, 2))
+	// Without a template count, the pods that exist decide.
+	assert.Equal(t, ReplicaState{ReadyReplicas: 2, PendingReplicas: 0}, replicaStateFromPods(pods, 2, true, 0))
+	// A pod without a RoleSet label is not a RoleSet.
+	unlabeled := append(pods, *buildPod(ns, "other", nil))
+	assert.Equal(t, ReplicaState{ReadyReplicas: 1, PendingReplicas: 1}, replicaStateFromPods(unlabeled, 2, true, 2))
+	assert.Equal(t, float64(2), podsPerReplica(true, 2, pods))
+}
+
+func TestExpectedPodsPerRoleSet(t *testing.T) {
+	ss := &orchestrationv1alpha1.StormService{
+		TypeMeta:   metav1.TypeMeta{APIVersion: orchestrationv1alpha1.GroupVersion.String(), Kind: StormService},
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "ss-replica"},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Mode:     orchestrationv1alpha1.StormServiceReplicaMode,
+			Replicas: ptr.To(int32(2)),
+			Template: orchestrationv1alpha1.RoleSetTemplateSpec{Spec: &orchestrationv1alpha1.RoleSetSpec{Roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "prefill", Replicas: ptr.To(int32(1))},
+				{Name: "decode", Replicas: ptr.To(int32(2)), PodGroupSize: ptr.To(int32(2))},
+				{Name: "idle"},
+			}}},
+		},
+	}
+	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(ss)
+	require.NoError(t, err)
+	scale := &unstructured.Unstructured{Object: obj}
+	pa := &autoscalingv1alpha1.PodAutoscaler{}
+
+	got, err := expectedPodsPerRoleSet(pa, scale)
+	require.NoError(t, err)
+	assert.Equal(t, int32(5), got, "1 prefill pod and 2 decode groups of 2 pods")
+
+	pa.Spec.SubTargetSelector = &autoscalingv1alpha1.SubTargetSelector{RoleName: "decode"}
+	got, err = expectedPodsPerRoleSet(pa, scale)
+	require.NoError(t, err)
+	assert.Equal(t, int32(4), got, "only the selected role")
 }
