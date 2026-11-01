@@ -26,6 +26,7 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -144,6 +145,17 @@ var _ = ginkgo.Describe("PodAutoscaler RoleSet scaling", func() {
 				}).
 				Obj()
 			gomega.Expect(k8sClient.Create(ctx, pa)).To(gomega.Succeed())
+			// envtest never finishes deleting a namespace, so delete the PodAutoscaler
+			// before the metrics server closes; it would keep the controller busy
+			// retrying the scrape during the specs that follow.
+			ginkgo.DeferCleanup(func() {
+				err := k8sClient.Delete(ctx, pa)
+				gomega.Expect(err == nil || apierrors.IsNotFound(err)).To(gomega.BeTrue())
+				gomega.Eventually(func() bool {
+					err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pa), &autoscalingv1alpha1.PodAutoscaler{})
+					return apierrors.IsNotFound(err)
+				}, 10*time.Second, 250*time.Millisecond).Should(gomega.BeTrue())
+			})
 
 			// 2 ready RoleSets whose decode leaders report 60 against 50: 2.4 RoleSets.
 			gomega.Eventually(stormServiceReplicas, 30*time.Second, 250*time.Millisecond).Should(gomega.Equal(int32(3)))
