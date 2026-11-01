@@ -119,7 +119,10 @@ func selectCandidates(ctx *types.RoutingContext, router types.Router, readyPods 
 	ranked, scouted := 0, 0
 	path := candidatePathNoEstimate
 	parts := candidateParts(router)
-	if hasEstimate(parts) {
+	if candidateRankedSlots(k) == 0 {
+		// K = 1 ranks no slot, so estimating would only cost time.
+		path = candidatePathNoRankedSlot
+	} else if hasEstimate(parts) {
 		path = candidatePathEstimateFailed
 		scout := candidateScout(ctx, parts, readyPods, k)
 		scouted = len(scout)

@@ -123,10 +123,6 @@ type ModelClaimStatusProvider interface {
 	ModelClaimStatus(modelName string) (phase, reason string, found bool)
 }
 
-// PodReadySinceProvider is an optional cache extension exposing when this gateway first saw each
-// pod routable (see readySince in pod.go). Callers type-assert for it, like
-// ModelClaimBindingProvider, and treat a failed assertion as "no ramp info"; it stays off Cache
-// so test fakes that implement Cache directly don't have to add it.
 // ApproxRunningRequestsProvider is an optional Cache capability: a running-request count for
 // every pod that is read from process memory only. Callers type-assert for it, like
 // PodReadySinceProvider, and treat a failed assertion as "no estimate".
@@ -140,6 +136,10 @@ type ApproxRunningRequestsProvider interface {
 	GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64
 }
 
+// PodReadySinceProvider is an optional cache extension exposing when this gateway first saw each
+// pod routable (see readySince in pod.go). Callers type-assert for it, like
+// ModelClaimBindingProvider, and treat a failed assertion as "no ramp info"; it stays off Cache
+// so test fakes that implement Cache directly don't have to add it.
 type PodReadySinceProvider interface {
 	// GetPodsReadySince returns readySince (UnixNano; 0 if never routable) keyed by
 	// utils.GeneratePodKey. Pods not in the cache are omitted. Missing or 0 means "no penalty",

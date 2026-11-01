@@ -161,19 +161,38 @@ func TestSelectCandidates_KeepsBestEstimatesPlusRandomSlots(t *testing.T) {
 	} {
 		router := scoreByIndex(pods, tc.polarity)
 		explored := map[*v1.Pod]bool{}
-		for trial := 0; trial < 200; trial++ {
+		nextBestAfterRanked := 0
+		const trials = 200
+		for trial := 0; trial < trials; trial++ {
 			got := selectCandidates(candidateCtx(t, "load-balance"), router, pods, 16)
 			requireDistinctSubset(t, got, pods)
 			require.Len(t, got, 16)
 			for rank := 0; rank < 8; rank++ {
 				require.Same(t, tc.best(rank), got[rank], "rank %d", rank)
 			}
+			// Pin the split from above too: if more than K/2 slots were ranked, the slot after
+			// the ranked half would hold the 9th best pod on every trial. Drawn at random from
+			// the 92 pods left, it does so about 1 time in 92.
+			if got[8] == tc.best(8) {
+				nextBestAfterRanked++
+			}
 			for _, pod := range got[8:] {
 				explored[pod] = true
 			}
 		}
+		assert.Less(t, nextBestAfterRanked, trials/10, "only K/2 slots are ranked; the rest are random")
 		assert.Greater(t, len(explored), 70, "the random slots reach across the rest of the fleet")
 	}
+}
+
+// K = 1 ranks no slot, so it does not estimate at all.
+func TestSelectCandidates_KOneSkipsEstimates(t *testing.T) {
+	pods := candidatePods(10)
+	e := scoreByIndex(pods, types.PolarityMost)
+	got := selectCandidates(candidateCtx(t, "load-balance"), e, pods, 1)
+	requireDistinctSubset(t, got, pods)
+	require.Len(t, got, 1)
+	assert.Zero(t, e.calls, "no estimate is computed when no slot is ranked")
 }
 
 // A small K still ranks K/2 of its slots.
@@ -214,6 +233,38 @@ func TestSelectCandidates_BlendsStrategiesUnderOneBudget(t *testing.T) {
 	assert.ElementsMatch(t, pods[5:10], got[:5])
 	for _, pod := range got[5:8] {
 		assert.NotContains(t, pods[:5], pod, "a busy holder does not take a ranked slot over an idle pod")
+	}
+}
+
+// The weights decide the order strictly. A prefix holder that is busy competes with an idle pod
+// that does not hold the prefix. Weighted 3:1 toward prefix, the holder ranks first on every
+// request (0.75 against 0.25); weighted 1:3 toward load, the idle pod does. Equal shares would
+// tie them at 0.5 and order them at random, which these trials would catch.
+func TestSelectCandidates_WeightsOrderStrictly(t *testing.T) {
+	pods := candidatePods(12)
+	holder, idle := pods[0], pods[1]
+	prefix := &estimator{scores: map[*v1.Pod]float64{holder: 100}, polarity: types.PolarityMost}
+	load := &estimator{scores: map[*v1.Pod]float64{}, polarity: types.PolarityLeast}
+	for _, pod := range pods {
+		if pod != idle {
+			load.scores[pod] = 10
+		}
+	}
+	for _, tc := range []struct {
+		resolved      string
+		weights       map[string]int
+		first, second *v1.Pod
+	}{
+		{"prefix-cache:3,load-balance:1", map[string]int{"a": 3, "b": 1}, holder, idle},
+		{"prefix-cache:1,load-balance:3", map[string]int{"a": 1, "b": 3}, idle, holder},
+	} {
+		router := blendOf(map[string]types.PodScorer{"a": prefix, "b": load}, tc.weights)
+		for trial := 0; trial < 50; trial++ {
+			got := selectCandidates(candidateCtx(t, tc.resolved), router, pods, 4)
+			require.Len(t, got, 4)
+			require.Same(t, tc.first, got[0], "%s, trial %d", tc.resolved, trial)
+			require.Same(t, tc.second, got[1], "%s, trial %d", tc.resolved, trial)
+		}
 	}
 }
 
@@ -436,21 +487,23 @@ func TestSelectCandidates_CountsPaths(t *testing.T) {
 		{scoreByIndex(pods, types.PolarityMost), "load-balance", 8, candidatePathRanked},
 		{plainRouter{}, "random", 8, candidatePathNoEstimate},
 		{failing, "load-balance", 8, candidatePathEstimateFailed},
+		{scoreByIndex(pods, types.PolarityMost), "load-balance", 1, candidatePathNoRankedSlot},
 	} {
 		before := selectionCount(t, "metric-model", tc.path)
 		selectCandidates(ctxFor(tc.resolved), tc.router, pods, tc.k)
 		assert.Equal(t, before+1, selectionCount(t, "metric-model", tc.path), tc.path)
 	}
 
+	allPaths := []string{candidatePathRanked, candidatePathNoEstimate, candidatePathEstimateFailed, candidatePathNoRankedSlot}
 	before := 0.0
-	for _, path := range []string{candidatePathRanked, candidatePathNoEstimate, candidatePathEstimateFailed} {
+	for _, path := range allPaths {
 		before += selectionCount(t, "metric-model", path)
 	}
 	selectCandidates(ctxFor("load-balance"), plainRouter{}, pods, 0)
 	selectCandidates(ctxFor("load-balance"), plainRouter{}, pods, 40)
 	selectCandidates(ctxFor("vtc-basic"), plainRouter{}, pods, 8)
 	after := 0.0
-	for _, path := range []string{candidatePathRanked, candidatePathNoEstimate, candidatePathEstimateFailed} {
+	for _, path := range allPaths {
 		after += selectionCount(t, "metric-model", path)
 	}
 	assert.Equal(t, before, after, "decisions the stage leaves alone are not counted")

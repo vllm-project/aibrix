@@ -195,8 +195,9 @@ func BenchmarkFleetRouting_CandidateStage(b *testing.B) {
 	}
 }
 
-// BenchmarkCandidateSelection isolates the candidate stage itself: estimating every ready pod
-// from memory, blending and ranking the estimates, and drawing the random slots, with K=16.
+// BenchmarkCandidateSelection isolates the candidate stage itself: estimating a scout of 4K
+// ready pods plus the found prefix holders from memory, blending and ranking the estimates,
+// and drawing the random slots, with K=16.
 func BenchmarkCandidateSelection(b *testing.B) {
 	silenceKlog(b)
 	for _, n := range fleetBenchSizes {

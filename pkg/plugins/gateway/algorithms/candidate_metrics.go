@@ -36,6 +36,9 @@ const (
 	// example a cache without in-memory counts), so all K candidates were drawn at random.
 	// A steady rate here means the stage is running without the ranking it was configured for.
 	candidatePathEstimateFailed = "random_estimate_failed"
+	// candidatePathNoRankedSlot: K is too small to rank any slot (K = 1), so the candidate was
+	// drawn at random without estimating.
+	candidatePathNoRankedSlot = "random_no_ranked_slot"
 )
 
 var (

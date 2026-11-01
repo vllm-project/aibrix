@@ -84,3 +84,99 @@ func TestCandidateScores_AreThePrefixScores(t *testing.T) {
 	}
 	assert.Equal(t, types.PolarityMost, router.Polarity())
 }
+
+// findCandidatesRouter returns a local-index prefix-cache router over n ready pods and the pod
+// list it routes over.
+func findCandidatesRouter(t *testing.T, n int) (prefixCacheRouter, []*v1.Pod, *utils.PodArray) {
+	t.Helper()
+	pods := make([]*v1.Pod, n)
+	for i := range pods {
+		pods[i] = &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("pod-%d", i), Namespace: "default"},
+			Status: v1.PodStatus{
+				PodIP:      fmt.Sprintf("10.0.0.%d", i+1),
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		}
+	}
+	tok, err := tokenizer.NewTokenizer("character", nil)
+	require.NoError(t, err)
+	return prefixCacheRouter{
+		cache:              cache.NewWithPodsForTest(pods, "m1"),
+		tokenizer:          tok,
+		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
+	}, pods, &utils.PodArray{Pods: pods}
+}
+
+func newFindCtx(t *testing.T, id, message string) *types.RoutingContext {
+	t.Helper()
+	ctx := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", message, id, "")
+	t.Cleanup(ctx.Delete)
+	return ctx
+}
+
+// TestFindCandidates_LongestMatchFirstAndTruncated checks that the found pods are the holders
+// of the request's prefix, longest match first, cut to max, and that pods without it are left
+// out. With more holders than max, the longest matches must be the ones kept.
+func TestFindCandidates_LongestMatchFirstAndTruncated(t *testing.T) {
+	router, pods, podList := findCandidatesRouter(t, 8)
+	full := strings.Repeat("shared conversation ", 16)
+	half := full[:len(full)/2]
+	quarter := full[:len(full)/4]
+	// pods 2 and 6 hold the whole prompt, pod 4 half of it, pods 1 and 7 a quarter.
+	for i, holder := range map[int]string{2: full, 6: full, 4: half, 1: quarter, 7: quarter} {
+		require.NoError(t, router.PostRouteUpdate(newFindCtx(t, fmt.Sprintf("add-%d", i), holder), podList, pods[i]))
+	}
+
+	found := router.FindCandidates(newFindCtx(t, "all", full), podList, 8)
+	require.Len(t, found, 5, "only the holders are found")
+	assert.ElementsMatch(t, []*v1.Pod{pods[2], pods[6]}, found[:2], "the full matches come first")
+	assert.Same(t, pods[4], found[2], "then the half match")
+	assert.ElementsMatch(t, []*v1.Pod{pods[1], pods[7]}, found[3:], "then the quarter matches")
+
+	// More holders than max: the longest matches are kept, the weakest dropped.
+	for _, max := range []int{1, 2, 3} {
+		found = router.FindCandidates(newFindCtx(t, fmt.Sprintf("max-%d", max), full), podList, max)
+		require.Len(t, found, max)
+		for _, pod := range found[:min(max, 2)] {
+			assert.Contains(t, []*v1.Pod{pods[2], pods[6]}, pod, "max=%d keeps a full match", max)
+		}
+		if max == 3 {
+			assert.Same(t, pods[4], found[2], "max=3 keeps the half match over the quarter ones")
+		}
+	}
+
+	assert.Empty(t, router.FindCandidates(newFindCtx(t, "miss", "an unrelated prompt"), podList, 4))
+}
+
+// TestFindCandidates_NonPositiveMaxSkipsTheLookup checks that max <= 0 finds nothing and does
+// not even query the index: no match is published on the context.
+func TestFindCandidates_NonPositiveMaxSkipsTheLookup(t *testing.T) {
+	router, pods, podList := findCandidatesRouter(t, 4)
+	prompt := strings.Repeat("shared conversation ", 16)
+	require.NoError(t, router.PostRouteUpdate(newFindCtx(t, "add", prompt), podList, pods[1]))
+	for _, max := range []int{0, -1} {
+		ctx := newFindCtx(t, fmt.Sprintf("max%d", max), prompt)
+		assert.Empty(t, router.FindCandidates(ctx, podList, max))
+		assert.Nil(t, ctx.SeededPrefixMatch(), "max=%d must not query the index", max)
+	}
+}
+
+// TestFindCandidates_SpreadsTiesOverAllHolders checks that when more pods hold the prefix equally
+// than fit in max, the found pods rotate over all of them instead of always naming the same ones.
+func TestFindCandidates_SpreadsTiesOverAllHolders(t *testing.T) {
+	router, pods, podList := findCandidatesRouter(t, 8)
+	prompt := strings.Repeat("shared conversation ", 16)
+	for i, pod := range pods {
+		require.NoError(t, router.PostRouteUpdate(newFindCtx(t, fmt.Sprintf("add-%d", i), prompt), podList, pod))
+	}
+	seen := map[*v1.Pod]bool{}
+	for i := 0; i < 200; i++ {
+		found := router.FindCandidates(newFindCtx(t, fmt.Sprintf("find-%d", i), prompt), podList, 2)
+		require.Len(t, found, 2)
+		for _, pod := range found {
+			seen[pod] = true
+		}
+	}
+	assert.Len(t, seen, len(pods), "every holder is found some of the time")
+}

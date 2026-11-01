@@ -196,6 +196,10 @@ func TestInitGatewaySnapshotSyncRefreshesCache(t *testing.T) {
 	// The tick that published the snapshot also published the other gateways' sums.
 	require.Eventually(t, func() bool { return store.gatewayRemoteRunning.Load() != nil }, 2*time.Second, 10*time.Millisecond)
 	assert.Equal(t, map[string]int64{utils.GeneratePodKey(testNamespace, testPodName): 2}, store.gatewayRemoteRunning.Load().counts)
+	// End to end through the tick: the estimate the candidate stage reads adds the remote
+	// gateway's 2 to this gateway's own 4. A tick that published a stale or zero readStart
+	// would make the estimate drop the remote count and report 4.
+	assert.Equal(t, int64(6), store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})[utils.GeneratePodKey(testNamespace, testPodName)])
 }
 
 // The in-memory estimate is this gateway's live count plus the other gateways' last snapshot.

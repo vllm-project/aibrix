@@ -225,7 +225,8 @@ least 2. With K = 1 the set has one pod, and the gateway routes to it without ex
 `aibrix_routing_candidate_selections_total{model,path}` counts each decision the stage narrows:
 `ranked` when half the candidates were ranked on the estimates, `random_no_estimate` when the
 strategy has none (`random`, `power-of-two`), and `random_estimate_failed` when the strategy has
-estimates but none could be computed, which means the stage is running without its ranking.
+estimates but none could be computed, which means the stage is running without its ranking, and
+`random_no_ranked_slot` when K = 1 leaves no slot to rank.
 
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|

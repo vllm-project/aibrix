@@ -99,7 +99,9 @@ func TestSelectTargetPodReusesPrefixMatchesThroughRealPipeline(t *testing.T) {
 		}{
 			{"blend", "prefix-cache:1,least-request:1", 2, false, 1, 2, 2},
 			{"tokens-reset", "prefix-cache:1,least-request:1", 2, true, 3, 0, 1},
-			{"single-candidate", "prefix-cache:1,least-request:1", 1, false, 1, 1, 1},
+			// K=1 ranks no slot, so the stage does not look the prefix up; the one lookup is
+			// the post-route update's own, with nothing to reuse.
+			{"single-candidate", "prefix-cache:1,least-request:1", 1, false, 1, 0, 1},
 			{"disabled", "prefix-cache:1,least-request:1", 0, false, 2, 0, 1},
 			{"standalone", routing.RouterPrefixCache, 2, false, 1, 1, 1},
 		} {

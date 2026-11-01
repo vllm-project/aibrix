@@ -353,6 +353,11 @@ type remoteRunningSnapshot struct {
 // remoteRunningByPod sums requests_running over the snapshots of every gateway instance other
 // than self, per pod key. This gateway's own count is left out because its local atomic is
 // always fresher than what it last wrote to Redis.
+//
+// These per-pod remote counts have a second consumer besides the realtime_num_requests_running
+// gauge: the routing candidate stage reads them through GetPodsRunningRequestsApprox to rank
+// candidates. A change that replaces or slows this sync (#3322) must keep publishing them, or
+// the stage quietly ranks on this gateway's own counts alone.
 func remoteRunningByPod(grouped map[string][]map[string]string, self string) map[string]int64 {
 	remote := make(map[string]int64, len(grouped))
 	for podKey, snapshots := range grouped {
