@@ -19,6 +19,7 @@ package podautoscaler
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -75,11 +76,6 @@ func scaleReplicaModeStormService(t *testing.T, strategy autoscalingv1alpha1.Sca
 // are already ready.
 func scaleReplicaModeStormServiceWithMissingRole(t *testing.T, strategy autoscalingv1alpha1.ScalingStrategyType, replicas, readyRoleSets int, perPod float64, missingRole string, silentRoles ...string) int32 {
 	t.Helper()
-	ctx := context.Background()
-	sch := runtime.NewScheme()
-	_ = scheme.AddToScheme(sch)
-	_ = autoscalingv1alpha1.AddToScheme(sch)
-	_ = orchestrationv1alpha1.AddToScheme(sch)
 
 	roles := []orchestrationv1alpha1.RoleSpec{
 		{Name: "prefill", Replicas: ptr.To(int32(1))},
@@ -102,7 +98,7 @@ func scaleReplicaModeStormServiceWithMissingRole(t *testing.T, strategy autoscal
 			},
 		},
 	}
-	objs := []client.Object{ss}
+	var objs []client.Object
 	unscrapable := map[string]bool{}
 	for i := 0; i < replicas; i++ {
 		roleSet := fmt.Sprintf("ss-replica-roleset-%d", i)
@@ -123,6 +119,26 @@ func scaleReplicaModeStormServiceWithMissingRole(t *testing.T, strategy autoscal
 			objs = append(objs, pod)
 		}
 	}
+	return scaleStormServicePods(t, strategy, ss, objs, perPod, unscrapable)
+}
+
+// scaleStormServicePods runs one scaling pass of the controller against ss and its
+// pods, each reporting perPod unless unscrapable, and returns the replicas it writes.
+func scaleStormServicePods(t *testing.T, strategy autoscalingv1alpha1.ScalingStrategyType, ss *orchestrationv1alpha1.StormService, pods []client.Object, perPod float64, unscrapable map[string]bool) int32 {
+	t.Helper()
+	return scaleStormServicePasses(t, strategy, ss, pods, perPod, unscrapable, 1)[0]
+}
+
+// scaleStormServicePasses is scaleStormServicePods over several scaling passes of one
+// controller, 30 seconds apart, and returns the replicas after each pass.
+func scaleStormServicePasses(t *testing.T, strategy autoscalingv1alpha1.ScalingStrategyType, ss *orchestrationv1alpha1.StormService, pods []client.Object, perPod float64, unscrapable map[string]bool, passes int) []int32 {
+	t.Helper()
+	ctx := context.Background()
+	sch := runtime.NewScheme()
+	_ = scheme.AddToScheme(sch)
+	_ = autoscalingv1alpha1.AddToScheme(sch)
+	_ = orchestrationv1alpha1.AddToScheme(sch)
+	objs := append([]client.Object{ss}, pods...)
 	pa := &autoscalingv1alpha1.PodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "ss-pa"},
 		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
@@ -165,12 +181,78 @@ func scaleReplicaModeStormServiceWithMissingRole(t *testing.T, strategy autoscal
 		now:                 func() time.Time { return now },
 	}
 
-	_, err := r.scaleCustomPA(ctx, pa)
-	require.NoError(t, err)
+	var replicas []int32
+	for i := 0; i < passes; i++ {
+		require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(pa), pa))
+		_, err := r.scaleCustomPA(ctx, pa)
+		require.NoError(t, err)
 
-	got := &orchestrationv1alpha1.StormService{}
-	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(ss), got))
-	return *got.Spec.Replicas
+		got := &orchestrationv1alpha1.StormService{}
+		require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(ss), got))
+		replicas = append(replicas, *got.Spec.Replicas)
+		now = now.Add(30 * time.Second)
+	}
+	return replicas
+}
+
+// podGroupStormService builds a replica-mode StormService whose RoleSets each run one
+// prefill pod and one decode pod group of groupSize pods, with its pods. RoleSets past
+// readyRoleSets are still starting. The pod selector keeps only the index-0 pod of
+// each decode group, so one pod per RoleSet is selected.
+func podGroupStormService(replicas, readyRoleSets int, groupSize int32) (*orchestrationv1alpha1.StormService, []client.Object, map[string]bool) {
+	ss := &orchestrationv1alpha1.StormService{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "ss-replica"},
+		Spec: orchestrationv1alpha1.StormServiceSpec{
+			Mode:     orchestrationv1alpha1.StormServiceReplicaMode,
+			Replicas: ptr.To(int32(replicas)),
+			Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+				Spec: &orchestrationv1alpha1.RoleSetSpec{Roles: []orchestrationv1alpha1.RoleSpec{
+					{Name: "prefill", Replicas: ptr.To(int32(1))},
+					{Name: "decode", Replicas: ptr.To(int32(1)), PodGroupSize: ptr.To(groupSize)},
+				}},
+			},
+		},
+	}
+	var pods []client.Object
+	unscrapable := map[string]bool{}
+	for i := 0; i < replicas; i++ {
+		roleSet := fmt.Sprintf("ss-replica-roleset-%d", i)
+		group := []*corev1.Pod{readyRoleSetPod(fmt.Sprintf("prefill-%d", i), roleSet, "prefill")}
+		for g := int32(0); g < groupSize; g++ {
+			pod := readyRoleSetPod(fmt.Sprintf("decode-%d-%d", i, g), roleSet, "decode")
+			pod.Labels[constants.PodGroupIndexLabelKey] = strconv.Itoa(int(g))
+			group = append(group, pod)
+		}
+		for _, pod := range group {
+			if i >= readyRoleSets {
+				pod.Status.Conditions = nil
+				unscrapable[pod.Name] = true
+			}
+			pods = append(pods, pod)
+		}
+	}
+	return ss, pods, unscrapable
+}
+
+// TestReplicaModeStormServiceWithPodGroups checks RoleSets whose decode role runs
+// multi-node pod groups: the controller counts a RoleSet ready when the leaders it
+// selects are ready, sizes RoleSets from their load, holds for a starting RoleSet,
+// and keeps the same replicas over repeated passes under a fixed load.
+func TestReplicaModeStormServiceWithPodGroups(t *testing.T) {
+	for _, strategy := range []autoscalingv1alpha1.ScalingStrategyType{autoscalingv1alpha1.APA, autoscalingv1alpha1.KPA} {
+		for _, groupSize := range []int32{2, 4} {
+			t.Run(fmt.Sprintf("%s/podGroupSize=%d", strategy, groupSize), func(t *testing.T) {
+				ss, pods, unscrapable := podGroupStormService(3, 3, groupSize)
+				assert.Equal(t, int32(4), scaleStormServicePods(t, strategy, ss, pods, 60, unscrapable), "3 ready RoleSets 20% above target")
+
+				ss, pods, unscrapable = podGroupStormService(4, 3, groupSize)
+				assert.Equal(t, int32(4), scaleStormServicePods(t, strategy, ss, pods, 60, unscrapable), "the 4th RoleSet is starting")
+
+				ss, pods, unscrapable = podGroupStormService(4, 4, groupSize)
+				assert.Equal(t, []int32{4, 4, 4, 4, 4}, scaleStormServicePasses(t, strategy, ss, pods, 50, unscrapable, 5), "4 ready RoleSets at target")
+			})
+		}
+	}
 }
 
 // TestKPAReplicaModeStormServiceSizesRoleSets checks that KPA counts the 3 RoleSets
@@ -402,21 +484,28 @@ func TestExpectedPodsPerRoleSet(t *testing.T) {
 			Template: orchestrationv1alpha1.RoleSetTemplateSpec{Spec: &orchestrationv1alpha1.RoleSetSpec{Roles: []orchestrationv1alpha1.RoleSpec{
 				{Name: "prefill", Replicas: ptr.To(int32(1))},
 				{Name: "decode", Replicas: ptr.To(int32(2)), PodGroupSize: ptr.To(int32(2))},
+				{Name: "router", Replicas: ptr.To(int32(3))},
 				{Name: "idle"},
 			}}},
 		},
 	}
-	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(ss)
-	require.NoError(t, err)
-	scale := &unstructured.Unstructured{Object: obj}
-	pa := &autoscalingv1alpha1.PodAutoscaler{}
+	expected := func(pa *autoscalingv1alpha1.PodAutoscaler) int32 {
+		t.Helper()
+		obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(ss)
+		require.NoError(t, err)
+		got, err := expectedPodsPerRoleSet(pa, &unstructured.Unstructured{Object: obj})
+		require.NoError(t, err)
+		return got
+	}
+	selecting := func(role string) *autoscalingv1alpha1.PodAutoscaler {
+		return &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			SubTargetSelector: &autoscalingv1alpha1.SubTargetSelector{RoleName: role}}}
+	}
 
-	got, err := expectedPodsPerRoleSet(pa, scale)
-	require.NoError(t, err)
-	assert.Equal(t, int32(5), got, "1 prefill pod and 2 decode groups of 2 pods")
+	assert.Equal(t, int32(2), expected(&autoscalingv1alpha1.PodAutoscaler{}), "the selector keeps the leader of each of the 2 decode groups")
+	assert.Equal(t, int32(2), expected(selecting("decode")), "the leader of each decode group")
+	assert.Equal(t, int32(3), expected(selecting("router")), "a role without pod groups selects all of its pods")
 
-	pa.Spec.SubTargetSelector = &autoscalingv1alpha1.SubTargetSelector{RoleName: "decode"}
-	got, err = expectedPodsPerRoleSet(pa, scale)
-	require.NoError(t, err)
-	assert.Equal(t, int32(4), got, "only the selected role")
+	ss.Spec.Template.Spec.Roles[1].PodGroupSize = nil
+	assert.Equal(t, int32(6), expected(&autoscalingv1alpha1.PodAutoscaler{}), "without pod groups every pod is selected")
 }

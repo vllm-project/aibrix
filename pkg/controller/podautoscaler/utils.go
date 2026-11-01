@@ -129,30 +129,55 @@ func scalesRoleSets(pa *autoscalingv1alpha1.PodAutoscaler, scale *unstructured.U
 	return stormServiceScalingMode(pa, ss) == orchestrationv1alpha1.StormServiceReplicaMode, nil
 }
 
+// selectedRoles returns the StormService template roles whose pods the
+// autoscaler selects: the role named by subTargetSelector, or every role.
+func selectedRoles(pa *autoscalingv1alpha1.PodAutoscaler, ss *orchestrationv1alpha1.StormService) []orchestrationv1alpha1.RoleSpec {
+	if ss.Spec.Template.Spec == nil {
+		return nil
+	}
+	var roles []orchestrationv1alpha1.RoleSpec
+	for _, role := range ss.Spec.Template.Spec.Roles {
+		if sel := pa.Spec.SubTargetSelector; sel != nil && sel.RoleName != "" && sel.RoleName != role.Name {
+			continue
+		}
+		roles = append(roles, role)
+	}
+	return roles
+}
+
+// selectsPodGroupLeaders reports whether the pod selector keeps only the
+// index-0 pod of each pod group (#1704), which it does when any selected role
+// has a pod group size above 1. Only pod group pods carry the index label.
+func selectsPodGroupLeaders(roles []orchestrationv1alpha1.RoleSpec) bool {
+	for _, role := range roles {
+		if role.PodGroupSize != nil && *role.PodGroupSize > 1 {
+			return true
+		}
+	}
+	return false
+}
+
 // expectedPodsPerRoleSet is how many selected pods one RoleSet of the
-// StormService runs, from its template: the replicas times the pod group size
-// of the role named by subTargetSelector, or of every role without one.
+// StormService runs, from its template: the replicas of each selected role.
+// When the selector keeps only pod group leaders, a role with pod groups
+// contributes one pod per replica and a role without them contributes none.
 func expectedPodsPerRoleSet(pa *autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (int32, error) {
 	ss := &orchestrationv1alpha1.StormService{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(scale.Object, ss); err != nil {
 		return 0, fmt.Errorf("failed to read StormService %s: %w", scale.GetName(), err)
 	}
-	if ss.Spec.Template.Spec == nil {
-		return 0, nil
-	}
+	roles := selectedRoles(pa, ss)
+	leadersOnly := selectsPodGroupLeaders(roles)
 	var pods int32
-	for _, role := range ss.Spec.Template.Spec.Roles {
-		if sel := pa.Spec.SubTargetSelector; sel != nil && sel.RoleName != "" && sel.RoleName != role.Name {
+	for _, role := range roles {
+		if role.Replicas == nil || *role.Replicas <= 0 {
 			continue
 		}
-		replicas, groupSize := int32(0), int32(1)
-		if role.Replicas != nil && *role.Replicas > 0 {
-			replicas = *role.Replicas
+		grouped := role.PodGroupSize != nil && *role.PodGroupSize > 1
+		if leadersOnly && !grouped {
+			continue
 		}
-		if role.PodGroupSize != nil && *role.PodGroupSize > 1 {
-			groupSize = *role.PodGroupSize
-		}
-		pods += replicas * groupSize
+		pods += *role.Replicas
 	}
 	return pods, nil
 }

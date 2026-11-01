@@ -367,33 +367,21 @@ func (s *workloadScale) getPodSelectorForRole(ctx context.Context, pa *autoscali
 		constants.StormServiceNameLabelKey: ss.Name,
 	})
 
-	roleName := ""
 	if pa.Spec.SubTargetSelector != nil && pa.Spec.SubTargetSelector.RoleName != "" {
 		req, err := labels.NewRequirement(constants.RoleNameLabelKey, selection.Equals, []string{pa.Spec.SubTargetSelector.RoleName})
 		if err != nil {
 			return nil, err
 		}
 		labelSelector = labelSelector.Add(*req)
-		roleName = pa.Spec.SubTargetSelector.RoleName
 	}
 
-	// ss.Spec.Template.Spec may be nil in test cases
-	if ss.Spec.Template.Spec != nil {
-		for _, role := range ss.Spec.Template.Spec.Roles {
-			// skip if roleName specified but not equal
-			if roleName != "" && role.Name != roleName {
-				continue
-			}
-
-			// add new selector for podGroup index 0, based on #1704
-			if role.PodGroupSize != nil && *role.PodGroupSize > 1 {
-				req, err := labels.NewRequirement(constants.PodGroupIndexLabelKey, selection.Equals, []string{"0"})
-				if err != nil {
-					return nil, err
-				}
-				labelSelector = labelSelector.Add(*req)
-			}
+	// add new selector for podGroup index 0, based on #1704
+	if selectsPodGroupLeaders(selectedRoles(pa, ss)) {
+		req, err := labels.NewRequirement(constants.PodGroupIndexLabelKey, selection.Equals, []string{"0"})
+		if err != nil {
+			return nil, err
 		}
+		labelSelector = labelSelector.Add(*req)
 	}
 	return labelSelector, nil
 }
