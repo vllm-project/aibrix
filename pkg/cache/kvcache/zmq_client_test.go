@@ -671,11 +671,14 @@ func TestZMQClientStartAppliesReplayedBatches(t *testing.T) {
 			client, handler := newReplayTestClient(tt.pubPort, tt.routerPort, time.Second)
 			defer client.Stop()
 
-			// Start requests the replay from seq 0 and returns when it is done
+			// Start returns without waiting for the replay; the batches arrive
+			// from the background request.
 			require.NoError(t, client.Start())
 
+			require.Eventually(t, func() bool {
+				return client.GetLastSequence() == 2
+			}, 2*time.Second, 20*time.Millisecond, "the startup replay did not apply the published batches")
 			assert.Equal(t, []int64{100, 200, 300}, storedHashes(handler))
-			assert.Equal(t, int64(2), client.GetLastSequence())
 			requireNoPendingReplayFrames(t, client)
 		})
 	}
@@ -1322,4 +1325,125 @@ func TestZMQClientRecoversAfterPublisherRestart(t *testing.T) {
 	stored, ok := events[3].(*BlockStoredEvent)
 	require.True(t, ok)
 	require.Equal(t, []int64{300}, stored.BlockHashes)
+}
+
+// TestZMQClientStartDoesNotWaitForReplay checks that a publisher which has not
+// bound its replay socket yet does not hold Start, and with it the pod event
+// that calls Start, for the whole ReplayTimeout.
+func TestZMQClientStartDoesNotWaitForReplay(t *testing.T) {
+	skipIfZMQUnavailable(t)
+
+	publisher := createMockPublisher(t, 25595, 25596)
+	defer publisher.Close()
+	publishBlockStored(t, publisher, 100, 200, 300)
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseReply := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseReply()
+	publisher.mu.Lock()
+	publisher.beforeReplayBatch = func(int) { <-release }
+	publisher.mu.Unlock()
+
+	client, handler := newReplayTestClient(25595, 25596, 5*time.Second)
+	defer client.Stop()
+
+	start := time.Now()
+	require.NoError(t, client.Start())
+	assert.Less(t, time.Since(start), time.Second, "Start waited for the startup replay")
+
+	// The reply arrives after Start returned and is still applied.
+	releaseReply()
+	require.Eventually(t, func() bool {
+		return client.GetLastSequence() == 2
+	}, 5*time.Second, 20*time.Millisecond)
+	assert.Equal(t, []int64{100, 200, 300}, storedHashes(handler))
+}
+
+// TestZMQClientStopCancelsPendingReplay checks that Stop does not wait out
+// ReplayTimeout for a replay reply that never arrives.
+func TestZMQClientStopCancelsPendingReplay(t *testing.T) {
+	skipIfZMQUnavailable(t)
+
+	publisher := createMockPublisher(t, 25597, 25598)
+	defer publisher.Close()
+	publishBlockStored(t, publisher, 100)
+
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseReply := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseReply()
+	publisher.mu.Lock()
+	publisher.beforeReplayBatch = func(int) { <-release }
+	publisher.mu.Unlock()
+
+	client, _ := newReplayTestClient(25597, 25598, 10*time.Second)
+	require.NoError(t, client.Start())
+
+	require.Eventually(t, func() bool {
+		client.mu.RLock()
+		defer client.mu.RUnlock()
+		return client.replayInFlight
+	}, time.Second, 10*time.Millisecond, "the startup replay never started")
+
+	start := time.Now()
+	client.Stop()
+	assert.Less(t, time.Since(start), time.Second, "Stop waited for the replay reply")
+}
+
+// TestZMQClientReplayFailsOpenWhenSocketCannotBeRecreated checks that a replay
+// whose socket cannot be reopened does not stop replay for the rest of the
+// client's life: the gap is failed open and the stale view is cleared.
+func TestZMQClientReplayFailsOpenWhenSocketCannotBeRecreated(t *testing.T) {
+	skipIfZMQUnavailable(t)
+
+	handler := NewMockEventHandler()
+	client := NewZMQClient(&ZMQClientConfig{
+		PodKey:         "test-pod",
+		PodIP:          "127.0.0.1",
+		ModelName:      "test-model",
+		PubPort:        25599,
+		RouterPort:     25600,
+		PollTimeout:    100 * time.Millisecond,
+		ReplayTimeout:  time.Second,
+		ReconnectDelay: 10 * time.Millisecond,
+	}, handler)
+	defer client.Stop()
+	require.NoError(t, client.Connect())
+
+	// A gap at sequence 1 with sequence 2 held pending, set up directly so the
+	// gap does not ask for a replay on its own.
+	client.mu.Lock()
+	client.lastSeq = 0
+	client.mu.Unlock()
+	client.applyMu.Lock()
+	client.pending = map[int64][]byte{2: encodeBlockStored(t, 300)}
+	client.applyMu.Unlock()
+
+	// A replay failed and the socket could not be reopened: the client keeps
+	// the lost state and has no socket to retry on.
+	client.mu.Lock()
+	_ = client.replaySocket.Close()
+	client.replaySocket = nil
+	client.replaySocketLost = true
+	client.config.RouterPort = -1
+	client.mu.Unlock()
+
+	_, ran, err := client.runReplay(1)
+	require.ErrorIs(t, err, errReplaySocketUnavailable)
+	assert.False(t, ran, "a replay without a socket must not claim it owned one")
+
+	// The next gap replay retries the socket and, when that fails too, fails
+	// the gap open instead of buffering it forever.
+	client.requestReplayAsync(1)
+
+	require.Eventually(t, func() bool {
+		return client.GetLastSequence() == 2
+	}, 2*time.Second, 10*time.Millisecond, "the gap was never failed open")
+
+	events := handler.GetEvents()
+	require.Len(t, events, 2)
+	_, cleared := events[0].(*AllBlocksClearedEvent)
+	assert.True(t, cleared, "a gap that cannot be replayed must clear the stale view")
+	assert.Equal(t, []int64{300}, events[1].(*BlockStoredEvent).BlockHashes)
 }
