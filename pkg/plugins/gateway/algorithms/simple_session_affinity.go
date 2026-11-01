@@ -178,7 +178,7 @@ func (r *sessionAffinityRouter) Start(stopCh <-chan struct{}, redisClient *redis
 		return
 	}
 	r.startOnce.Do(func() {
-		r.redisClient = redisClient
+		r.redisClient = sessionAffinityRedisClient(redisClient)
 		ticker := time.NewTicker(sessionKeyCacheSyncInterval)
 		go func() {
 			for {
@@ -192,6 +192,21 @@ func (r *sessionAffinityRouter) Start(stopCh <-chan struct{}, redisClient *redis
 			}
 		}()
 	})
+}
+
+// sessionAffinityRedisClient derives the client the router uses from the
+// gateway's shared one, with the caller's context deadline honored on the
+// socket.
+//
+// The shared client leaves ContextTimeoutEnabled off, so go-redis bounds a
+// command by its own 3s ReadTimeout and ignores the shorter deadline on the
+// context. sessionKeyRedisReadTimeout would then never apply to a Redis that
+// accepts the connection but stops answering. The rest of the gateway keeps
+// the shared client's defaults - only this router needs the context to win.
+func sessionAffinityRedisClient(client *redis.Client) *redis.Client {
+	options := *client.Options()
+	options.ContextTimeoutEnabled = true
+	return redis.NewClient(&options)
 }
 
 // syncSessionKeyPodsFromRedis reconciles this replica's local sessionKeyPods
