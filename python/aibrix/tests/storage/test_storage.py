@@ -35,6 +35,27 @@ from aibrix.storage.base import BaseStorage
 from aibrix.storage.s3 import S3Storage
 from aibrix.storage.tos import TOSStorage
 from aibrix.storage.types import StorageListOrdering
+from tests.storage.test_base2 import NativeMultipartTestStorage
+
+
+class TestBaseStorageMultipartCleanup:
+    @pytest.mark.asyncio
+    async def test_legacy_abort_multipart_upload_cleans_all_listing_pages(self):
+        storage = NativeMultipartTestStorage()
+        key = "test/legacy_paginated_abort.txt"
+        upload_id = await storage.create_multipart_upload(key, small_parts=True)
+        for part_number in range(1, 1206):
+            await storage.upload_part(key, upload_id, part_number, b"part")
+        await storage.put_object("unrelated", b"keep")
+        other_part_key = storage._multipart_upload_part_key("other-upload", 1)
+        await storage.put_object(other_part_key, b"keep part")
+
+        await BaseStorage.abort_multipart_upload(storage, key, upload_id)
+
+        assert storage.objects == {"unrelated": b"keep", other_part_key: b"keep part"}
+        multipart_prefix = storage._multipart_upload_key(upload_id, "")
+        assert storage.list_objects_calls == [multipart_prefix, multipart_prefix]
+        assert storage.native_abort_calls == []
 
 
 @pytest.fixture

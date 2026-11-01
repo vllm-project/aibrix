@@ -604,6 +604,19 @@ class BaseStorage(ABC):
             "use BaseStorage2-backed storage implementations instead."
         )
 
+    async def _collect_multipart_upload_objects(
+        self, prefix: str, objects: list[str]
+    ) -> None:
+        """Collect before deleting so offset-based pagination stays stable."""
+        continuation_token = None
+        while True:
+            page, continuation_token = await self.list_objects(
+                prefix, continuation_token=continuation_token
+            )
+            objects.extend(page)
+            if not continuation_token:
+                return
+
     async def abort_multipart_upload(
         self,
         key: str,
@@ -621,23 +634,24 @@ class BaseStorage(ABC):
         # List and delete all objects related to this upload
         prefix = self._multipart_upload_key(upload_id, "")
         no_multipart_data = True
+        objects_to_delete: list[str] = []
         try:
-            objects_to_delete, _ = await self.list_objects(prefix)
-
-            # Delete all related objects
-            for obj_key in objects_to_delete:
-                try:
-                    no_multipart_data = False
-                    await self.delete_object(obj_key)
-                except Exception:
-                    # Continue deletion even if some objects fail
-                    pass
+            await self._collect_multipart_upload_objects(prefix, objects_to_delete)
         except Exception:
             # If listing fails, try to delete known objects
             try:
                 await self.delete_object(self._multipart_upload_key(upload_id))
                 no_multipart_data = False
             except Exception:
+                pass
+
+        # Delete all related objects, including keys collected before a listing failure
+        for obj_key in objects_to_delete:
+            try:
+                no_multipart_data = False
+                await self.delete_object(obj_key)
+            except Exception:
+                # Continue deletion even if some objects fail
                 pass
 
         # Last attempt, nothing we can do for small parts

@@ -139,9 +139,11 @@ class NativeMultipartTestStorage(BaseStorage2):
     ) -> tuple[list[str], str | None]:
         self.list_objects_calls.append(prefix)
         keys = sorted(key for key in self.objects if key.startswith(prefix))
-        if limit is not None:
-            keys = keys[:limit]
-        return keys, None
+        offset = int(continuation_token) if continuation_token else 0
+        page_size = 1000 if limit is None else min(limit, 1000)
+        page = keys[offset : offset + page_size]
+        next_offset = offset + len(page)
+        return page, str(next_offset) if next_offset < len(keys) else None
 
     async def object_exists(self, key: str) -> bool:
         return key in self.objects
@@ -349,6 +351,133 @@ class TestBaseStorage2:
             storage._multipart_upload_part_key(upload_id, 3),
             storage._multipart_upload_part_key(upload_id, 4),
         ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("part_count", [900, 999, 1000, 1205, 5000])
+    async def test_small_parts_completion_cleans_all_listing_pages(self, part_count):
+        storage = NativeMultipartTestStorage(multipart_threshold=64)
+        key = "test/paginated_small_parts.txt"
+        upload_id = await storage.create_multipart_upload(key, small_parts=True)
+        payloads = [f"part-{number}\n".encode() for number in range(part_count)]
+        parts: list[dict[str, Union[str, int]]] = []
+        for part_number, payload in enumerate(payloads, start=1):
+            etag = await storage.upload_part(key, upload_id, part_number, payload)
+            parts.append({"part_number": part_number, "etag": etag})
+
+        failed_parts = await storage.complete_multipart_upload(key, upload_id, parts)
+
+        assert failed_parts == []
+        assert await storage.get_object(key) == b"".join(payloads)
+        assert not any(obj_key.startswith(".multipart/") for obj_key in storage.objects)
+        multipart_prefix = storage._multipart_upload_key(upload_id, "")
+        assert storage.list_objects_calls == [multipart_prefix] * (
+            part_count // 1000 + 1
+        )
+        assert storage.native_abort_calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "abort_upload",
+        [BaseStorage.abort_multipart_upload, BaseStorage2.abort_multipart_upload],
+        ids=["legacy", "base2"],
+    )
+    async def test_abort_multipart_upload_cleans_collected_keys_on_listing_failure(
+        self, monkeypatch, abort_upload
+    ):
+        storage = NativeMultipartTestStorage()
+        key = "test/listing_failure.txt"
+        upload_id = await storage.create_multipart_upload(key, small_parts=True)
+        part_keys = [
+            storage._multipart_upload_part_key(upload_id, number)
+            for number in range(1, 1206)
+        ]
+        storage.objects.update(dict.fromkeys(part_keys, b"part"))
+        first_page = part_keys[:1000]
+        listing = AsyncMock(
+            side_effect=[(first_page, "1000"), OSError("listing failed")]
+        )
+        monkeypatch.setattr(storage, "list_objects", listing)
+
+        await abort_upload(storage, key, upload_id)
+
+        assert listing.await_count == 2
+        assert not any(obj_key in storage.objects for obj_key in first_page)
+        assert storage._multipart_upload_key(upload_id) not in storage.objects
+        assert set(storage.objects) == set(part_keys[1000:])
+        assert storage.native_abort_calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "abort_upload",
+        [BaseStorage.abort_multipart_upload, BaseStorage2.abort_multipart_upload],
+        ids=["legacy", "base2"],
+    )
+    @pytest.mark.parametrize("metadata_delete_fails", [False, True])
+    async def test_abort_multipart_upload_falls_back_when_first_listing_fails(
+        self, monkeypatch, abort_upload, metadata_delete_fails
+    ):
+        storage = NativeMultipartTestStorage()
+        key = "test/first_listing_failure.txt"
+        upload_id = "upload-id"
+        metadata_key = storage._multipart_upload_key(upload_id)
+        deletion = AsyncMock(side_effect=OSError() if metadata_delete_fails else None)
+        monkeypatch.setattr(storage, "list_objects", AsyncMock(side_effect=OSError()))
+        monkeypatch.setattr(storage, "delete_object", deletion)
+
+        await abort_upload(storage, key, upload_id)
+
+        deletion.assert_awaited_once_with(metadata_key)
+        assert storage.native_abort_calls == (
+            [{"key": key, "upload_id": upload_id}] if metadata_delete_fails else []
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "abort_upload",
+        [BaseStorage.abort_multipart_upload, BaseStorage2.abort_multipart_upload],
+        ids=["legacy", "base2"],
+    )
+    async def test_abort_multipart_upload_uses_native_abort_for_empty_listing(
+        self, abort_upload
+    ):
+        storage = NativeMultipartTestStorage()
+        key = "test/native_abort.txt"
+        upload_id = await storage.create_multipart_upload(key)
+
+        await abort_upload(storage, key, upload_id)
+
+        assert storage.native_abort_calls == [{"key": key, "upload_id": upload_id}]
+        assert storage.delete_object_calls == []
+
+    @pytest.mark.asyncio
+    async def test_abort_multipart_upload_falls_back_after_batch_delete_failure(
+        self, monkeypatch
+    ):
+        storage = NativeMultipartTestStorage()
+        key = "test/batch_delete_failure.txt"
+        upload_id = await storage.create_multipart_upload(key, small_parts=True)
+        part_keys = [
+            storage._multipart_upload_part_key(upload_id, number)
+            for number in range(1, 1206)
+        ]
+        storage.objects.update(dict.fromkeys(part_keys, b"part"))
+        objects_to_delete = sorted(storage.objects)
+        batch_delete = AsyncMock(side_effect=OSError("batch delete failed"))
+        delete_object = storage.delete_object
+
+        async def fail_one_delete(obj_key):
+            if obj_key == part_keys[0]:
+                raise OSError("part delete failed")
+            await delete_object(obj_key)
+
+        monkeypatch.setattr(storage, "delete_objects", batch_delete)
+        monkeypatch.setattr(storage, "delete_object", fail_one_delete)
+
+        await storage.abort_multipart_upload(key, upload_id)
+
+        batch_delete.assert_awaited_once_with(objects_to_delete)
+        assert set(storage.objects) == {part_keys[0]}
+        assert storage.native_abort_calls == []
 
     @pytest.mark.asyncio
     async def test_small_parts_native_completion_failure_preserves_staged_parts(self):
