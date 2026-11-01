@@ -610,12 +610,13 @@ class BaseStorage(ABC):
         """Collect before deleting so offset-based pagination stays stable."""
         continuation_token = None
         while True:
-            page, continuation_token = await self.list_objects(
+            page, next_token = await self.list_objects(
                 prefix, continuation_token=continuation_token
             )
             objects.extend(page)
-            if not continuation_token:
+            if not next_token or next_token == continuation_token:
                 return
+            continuation_token = next_token
 
     async def abort_multipart_upload(
         self,

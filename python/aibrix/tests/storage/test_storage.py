@@ -35,10 +35,67 @@ from aibrix.storage.base import BaseStorage
 from aibrix.storage.s3 import S3Storage
 from aibrix.storage.tos import TOSStorage
 from aibrix.storage.types import StorageListOrdering
-from tests.storage.test_base2 import NativeMultipartTestStorage
+from tests.storage.conftest import NativeMultipartTestStorage
 
 
 class TestBaseStorageMultipartCleanup:
+    @pytest.mark.asyncio
+    async def test_collect_multipart_upload_objects_stops_on_repeated_token(
+        self, monkeypatch
+    ):
+        storage = NativeMultipartTestStorage()
+        prefix = ".multipart/upload/"
+        tokens: list[str | None] = []
+
+        async def list_objects(prefix, *, continuation_token=None):
+            tokens.append(continuation_token)
+            if len(tokens) > 3:
+                raise AssertionError("Multipart listing exceeded call limit")
+            return [f"{prefix}part_{len(tokens)}"], "repeated-token"
+
+        monkeypatch.setattr(storage, "list_objects", list_objects)
+        objects = ["already-collected"]
+
+        await storage._collect_multipart_upload_objects(prefix, objects)
+
+        assert tokens == [None, "repeated-token"]
+        assert objects == [
+            "already-collected",
+            f"{prefix}part_1",
+            f"{prefix}part_2",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_collect_multipart_upload_objects_continues_past_empty_page(
+        self, monkeypatch
+    ):
+        storage = NativeMultipartTestStorage()
+        prefix = ".multipart/upload/"
+        pages = iter(
+            [
+                ([f"{prefix}part_1"], "token-1"),
+                ([], "token-2"),
+                ([f"{prefix}part_2"], None),
+            ]
+        )
+        tokens: list[str | None] = []
+
+        async def list_objects(prefix, *, continuation_token=None):
+            tokens.append(continuation_token)
+            return next(pages)
+
+        monkeypatch.setattr(storage, "list_objects", list_objects)
+        objects = ["already-collected"]
+
+        await storage._collect_multipart_upload_objects(prefix, objects)
+
+        assert tokens == [None, "token-1", "token-2"]
+        assert objects == [
+            "already-collected",
+            f"{prefix}part_1",
+            f"{prefix}part_2",
+        ]
+
     @pytest.mark.asyncio
     async def test_legacy_abort_multipart_upload_cleans_all_listing_pages(self):
         storage = NativeMultipartTestStorage()
