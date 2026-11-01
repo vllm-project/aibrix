@@ -634,3 +634,35 @@ async def test_validate_job_rejects_empty_input_file(monkeypatch):
 
     assert excinfo.value.code == BatchJobErrorCode.EMPTY_INPUT_FILE
     assert excinfo.value.message == "input file is empty"
+
+
+def test_result_ids_preserve_distinct_uuid_values(monkeypatch):
+    from types import SimpleNamespace
+    from uuid import UUID
+
+    job = _make_job()
+    driver = _make_driver(job)
+    values = iter(
+        [
+            UUID("12345000-0000-4000-8000-000000000001"),
+            UUID("12345fff-ffff-4fff-8fff-ffffffffffff"),
+        ]
+    )
+    monkeypatch.setattr(
+        base_module,
+        "uuid",
+        SimpleNamespace(uuid4=lambda: next(values)),
+    )
+
+    ids = [
+        driver._build_response(
+            f"request-{i}",
+            job.job_id,
+            i,
+            job.spec,
+            request_output="ok",
+        )["id"]
+        for i in range(2)
+    ]
+
+    assert ids[0] != ids[1]
