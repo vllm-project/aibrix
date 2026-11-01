@@ -40,70 +40,123 @@ import (
 )
 
 const (
-	roleSetKPAE2EEnabledEnv = "AIBRIX_ROLESET_KPA_E2E"
-	roleSetKPAStormService  = "roleset-kpa-e2e"
-	roleSetKPAPAName        = "roleset-kpa-e2e"
-	roleSetKPANamespace     = "default"
-	// Each RoleSet runs 1 prefill pod and a decode pod group of 2 pods.
-	roleSetKPAPodsPerRoleSet = 3
+	roleSetAutoscalingE2EEnabledEnv = "AIBRIX_ROLESET_AUTOSCALING_E2E"
+	roleSetAutoscalingNamespace     = "default"
+	// Every pod carries this readiness gate, so the test decides when a RoleSet
+	// becomes ready.
+	roleSetReadyGate corev1.PodConditionType = "e2e.aibrix.ai/ready"
 )
 
-// TestKPAScalesReplicaModeStormServiceWithPodGroups runs KPA against a replica-mode
-// StormService whose decode role runs pod groups of 2. Every pod reports a
-// gpu_cache_usage_perc of 60 against a target of 50, and the autoscaler selects
-// the leader of each decode group. KPA scales 2 RoleSets to the maxReplicas of 3
-// and keeps 3 once every RoleSet is ready.
-func TestKPAScalesReplicaModeStormServiceWithPodGroups(t *testing.T) {
-	if strings.ToLower(strings.TrimSpace(envOrDefault(roleSetKPAE2EEnabledEnv, "false"))) != e2eEnabledValue {
-		t.Skip("set AIBRIX_ROLESET_KPA_E2E=true to run the RoleSet KPA e2e test")
+// roleSetScenario is a replica-mode StormService of 2 RoleSets whose mock vLLM
+// pods all report a gpu_cache_usage_perc of 60, scaled by a PodAutoscaler with a
+// target of 50 and a maxReplicas of 10.
+type roleSetScenario struct {
+	name     string
+	strategy autoscalingv1alpha1.ScalingStrategyType
+	// With decodeGroupSize > 1 the decode role runs pod groups and the
+	// autoscaler selects one pod per RoleSet, the group leader. Otherwise it
+	// selects both the prefill and the decode pod of each RoleSet.
+	decodeGroupSize int32
+	// start is when the case started; logs show the seconds since then.
+	start time.Time
+}
+
+const (
+	roleSetScenarioMetric   = 60
+	roleSetScenarioReplicas = 2
+)
+
+func (s roleSetScenario) podsPerRoleSet() int {
+	if s.decodeGroupSize > 1 {
+		return 1 + int(s.decodeGroupSize)
 	}
+	return 2
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
+func (s roleSetScenario) logf(t *testing.T, format string, args ...any) {
+	t.Helper()
+	t.Logf("+%3.0fs "+format, append([]any{time.Since(s.start).Seconds()}, args...)...)
+}
 
+// TestReplicaModeStormServiceAutoscaling runs KPA and APA against replica-mode
+// StormServices, with the readiness of each RoleSet set by the test. Whether a
+// RoleSet has one selected pod or two, every RoleSet carries the same load, so
+// both layouts must scale to the same RoleSet counts.
+func TestReplicaModeStormServiceAutoscaling(t *testing.T) {
+	if strings.ToLower(strings.TrimSpace(envOrDefault(roleSetAutoscalingE2EEnabledEnv, "false"))) != e2eEnabledValue {
+		t.Skip("set AIBRIX_ROLESET_AUTOSCALING_E2E=true to run the RoleSet autoscaling e2e test")
+	}
 	k8sClient, aibrixClient := scheduledBoundsClients(t)
-	cleanupRoleSetKPAE2E(ctx, t, aibrixClient)
-	defer cleanupRoleSetKPAE2E(context.Background(), t, aibrixClient)
 
-	createRoleSetKPAStormService(ctx, t, aibrixClient, 2)
-	waitForReadyRoleSets(ctx, t, k8sClient, 2)
-	createRoleSetKPAPodAutoscaler(ctx, t, aibrixClient)
+	layouts := []struct {
+		name            string
+		decodeGroupSize int32
+	}{
+		{name: "pod-groups", decodeGroupSize: 2},
+		{name: "two-pods"},
+	}
+	strategies := []autoscalingv1alpha1.ScalingStrategyType{autoscalingv1alpha1.KPA, autoscalingv1alpha1.APA}
+	for _, layout := range layouts {
+		for _, strategy := range strategies {
+			// The StormService webhook rejects names that, together with the
+			// longest pod-group role name, could push PodSet names past 63 characters.
+			s := roleSetScenario{
+				name:            fmt.Sprintf("e2e-%s-%s", strings.ToLower(string(strategy)), layout.name),
+				strategy:        strategy,
+				decodeGroupSize: layout.decodeGroupSize,
+			}
+			t.Run(s.name, func(t *testing.T) {
+				s.start = time.Now()
+				ctx := startRoleSetScenario(t, k8sClient, aibrixClient, s)
 
-	waitForStormServiceReplicas(ctx, t, aibrixClient, 3)
-	waitForReadyRoleSets(ctx, t, k8sClient, 3)
+				// 2 ready RoleSets at 60 against 50 per selected pod is 2.4 RoleSets.
+				waitForRoleSetReplicas(ctx, t, aibrixClient, s, 3)
+				// The 3rd RoleSet is not ready and counts as carrying no load.
+				holdRoleSetReplicas(ctx, t, aibrixClient, s, 3, 30*time.Second)
 
-	// 3 ready RoleSets at 60 want 3.6, which maxReplicas caps at 3. Hold for 6
-	// controller resyncs.
-	deadline := time.Now().Add(time.Minute)
-	for time.Now().Before(deadline) {
-		got := stormServiceReplicas(ctx, t, aibrixClient)
-		pa, err := aibrixClient.AutoscalingV1alpha1().
-			PodAutoscalers(roleSetKPANamespace).
-			Get(ctx, roleSetKPAPAName, metav1.GetOptions{})
-		if err != nil {
-			t.Fatalf("failed to get PodAutoscaler: %v", err)
+				// 3 ready RoleSets is 3.6 RoleSets. The metric window averages the
+				// summed load, so this can take up to its 1 minute panic window.
+				markRoleSetsReady(ctx, t, k8sClient, s, 3)
+				waitForRoleSetReplicas(ctx, t, aibrixClient, s, 4)
+				// The 4th RoleSet is not ready, and the load of the 3 ready RoleSets
+				// holds 4.
+				holdRoleSetReplicas(ctx, t, aibrixClient, s, 4, 30*time.Second)
+			})
 		}
-		t.Logf("StormService replicas %d, PodAutoscaler desired %d actual %d",
-			got, pa.Status.DesiredScale, pa.Status.ActualScale)
-		if got != 3 {
-			t.Fatalf("StormService replicas changed to %d under a fixed load, want 3", got)
-		}
-		time.Sleep(10 * time.Second)
 	}
 }
 
-func createRoleSetKPAStormService(
-	ctx context.Context, t *testing.T, aibrixClient aibrixclientset.Interface, replicas int32,
+// startRoleSetScenario creates the StormService, marks its RoleSets ready and
+// then creates the PodAutoscaler.
+func startRoleSetScenario(
+	t *testing.T, k8sClient kubernetes.Interface, aibrixClient aibrixclientset.Interface, s roleSetScenario,
+) context.Context {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	t.Cleanup(cancel)
+	cleanupRoleSetScenario(ctx, t, aibrixClient, s)
+	t.Cleanup(func() { cleanupRoleSetScenario(context.Background(), t, aibrixClient, s) })
+
+	createRoleSetStormService(ctx, t, aibrixClient, s)
+	markRoleSetsReady(ctx, t, k8sClient, s, roleSetScenarioReplicas)
+	createRoleSetPodAutoscaler(ctx, t, aibrixClient, s)
+	return ctx
+}
+
+func createRoleSetStormService(
+	ctx context.Context, t *testing.T, aibrixClient aibrixclientset.Interface, s roleSetScenario,
 ) {
 	t.Helper()
 
-	labels := map[string]string{"app": roleSetKPAStormService}
+	labels := map[string]string{"app": s.name}
 	template := corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
-			"app":                      roleSetKPAStormService,
+			"app":                      s.name,
 			constants.ModelLabelEngine: "vllm",
 		}},
 		Spec: corev1.PodSpec{
+			ReadinessGates: []corev1.PodReadinessGate{{ConditionType: roleSetReadyGate}},
 			Containers: []corev1.Container{{
 				Name:            "llm-engine",
 				Image:           "aibrix/vllm-mock:nightly",
@@ -111,10 +164,12 @@ func createRoleSetKPAStormService(
 				Ports:           []corev1.ContainerPort{{ContainerPort: 8000}},
 				Env: []corev1.EnvVar{
 					{Name: "STANDALONE_MODE", Value: "true"},
-					{Name: "METRICS_OVERRIDES", Value: `{"gpu_cache_usage_perc": 60}`},
+					{Name: "METRICS_OVERRIDES", Value: fmt.Sprintf(`{"gpu_cache_usage_perc": %d}`, roleSetScenarioMetric)},
 				},
 				ReadinessProbe: &corev1.Probe{
-					ProbeHandler:  corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/ready", Port: intstr.FromInt32(8000)}},
+					ProbeHandler: corev1.ProbeHandler{
+						HTTPGet: &corev1.HTTPGetAction{Path: "/ready", Port: intstr.FromInt32(8000)},
+					},
 					PeriodSeconds: 2,
 				},
 				Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
@@ -124,11 +179,15 @@ func createRoleSetKPAStormService(
 			}},
 		},
 	}
+	decode := orchestrationv1alpha1.RoleSpec{Name: "decode", Replicas: ptr.To(int32(1)), Template: template}
+	if s.decodeGroupSize > 1 {
+		decode.PodGroupSize = ptr.To(s.decodeGroupSize)
+	}
 	ss := &orchestrationv1alpha1.StormService{
-		ObjectMeta: metav1.ObjectMeta{Name: roleSetKPAStormService, Namespace: roleSetKPANamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: s.name, Namespace: roleSetAutoscalingNamespace},
 		Spec: orchestrationv1alpha1.StormServiceSpec{
 			Mode:     orchestrationv1alpha1.StormServiceReplicaMode,
-			Replicas: ptr.To(replicas),
+			Replicas: ptr.To(int32(roleSetScenarioReplicas)),
 			Selector: metav1.SetAsLabelSelector(labels),
 			UpdateStrategy: orchestrationv1alpha1.StormServiceUpdateStrategy{
 				Type: orchestrationv1alpha1.RollingUpdateStormServiceStrategyType,
@@ -137,33 +196,35 @@ func createRoleSetKPAStormService(
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: &orchestrationv1alpha1.RoleSetSpec{Roles: []orchestrationv1alpha1.RoleSpec{
 					{Name: "prefill", Replicas: ptr.To(int32(1)), Template: template},
-					{Name: "decode", Replicas: ptr.To(int32(1)), PodGroupSize: ptr.To(int32(2)), Template: template},
+					decode,
 				}},
 			},
 		},
 	}
 	_, err := aibrixClient.OrchestrationV1alpha1().
-		StormServices(roleSetKPANamespace).
+		StormServices(roleSetAutoscalingNamespace).
 		Create(ctx, ss, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("failed to create StormService: %v", err)
 	}
 }
 
-func createRoleSetKPAPodAutoscaler(ctx context.Context, t *testing.T, aibrixClient aibrixclientset.Interface) {
+func createRoleSetPodAutoscaler(
+	ctx context.Context, t *testing.T, aibrixClient aibrixclientset.Interface, s roleSetScenario,
+) {
 	t.Helper()
 
 	pa := &autoscalingv1alpha1.PodAutoscaler{
-		ObjectMeta: metav1.ObjectMeta{Name: roleSetKPAPAName, Namespace: roleSetKPANamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: s.name, Namespace: roleSetAutoscalingNamespace},
 		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
 			ScaleTargetRef: corev1.ObjectReference{
 				APIVersion: orchestrationv1alpha1.GroupVersion.String(),
 				Kind:       "StormService",
-				Name:       roleSetKPAStormService,
+				Name:       s.name,
 			},
 			MinReplicas:     ptr.To(int32(1)),
-			MaxReplicas:     3,
-			ScalingStrategy: autoscalingv1alpha1.KPA,
+			MaxReplicas:     10,
+			ScalingStrategy: s.strategy,
 			MetricsSources: []autoscalingv1alpha1.MetricSource{{
 				MetricSourceType: autoscalingv1alpha1.POD,
 				ProtocolType:     autoscalingv1alpha1.HTTP,
@@ -175,90 +236,165 @@ func createRoleSetKPAPodAutoscaler(ctx context.Context, t *testing.T, aibrixClie
 		},
 	}
 	_, err := aibrixClient.AutoscalingV1alpha1().
-		PodAutoscalers(roleSetKPANamespace).
+		PodAutoscalers(roleSetAutoscalingNamespace).
 		Create(ctx, pa, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("failed to create PodAutoscaler: %v", err)
 	}
 }
 
-func stormServiceReplicas(ctx context.Context, t *testing.T, aibrixClient aibrixclientset.Interface) int32 {
+// roleSetScale is the StormService replicas and the desired scale in the
+// PodAutoscaler status.
+type roleSetScale struct {
+	replicas, desired int32
+}
+
+func getRoleSetScale(
+	ctx context.Context, t *testing.T, aibrixClient aibrixclientset.Interface, s roleSetScenario,
+) roleSetScale {
 	t.Helper()
 
 	ss, err := aibrixClient.OrchestrationV1alpha1().
-		StormServices(roleSetKPANamespace).
-		Get(ctx, roleSetKPAStormService, metav1.GetOptions{})
+		StormServices(roleSetAutoscalingNamespace).
+		Get(ctx, s.name, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("failed to get StormService: %v", err)
 	}
-	return ptr.Deref(ss.Spec.Replicas, 0)
+	pa, err := aibrixClient.AutoscalingV1alpha1().
+		PodAutoscalers(roleSetAutoscalingNamespace).
+		Get(ctx, s.name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("failed to get PodAutoscaler: %v", err)
+	}
+	return roleSetScale{replicas: ptr.Deref(ss.Spec.Replicas, 0), desired: pa.Status.DesiredScale}
 }
 
-func waitForStormServiceReplicas(
-	ctx context.Context, t *testing.T, aibrixClient aibrixclientset.Interface, want int32,
+// waitForRoleSetReplicas waits until both the StormService replicas and the
+// PodAutoscaler's desired scale are want, and fails as soon as either goes past
+// want.
+func waitForRoleSetReplicas(
+	ctx context.Context, t *testing.T, aibrixClient aibrixclientset.Interface, s roleSetScenario, want int32,
 ) {
 	t.Helper()
 
-	got := int32(-1)
-	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 4*time.Minute, true, func(ctx context.Context) (bool, error) {
-		if replicas := stormServiceReplicas(ctx, t, aibrixClient); replicas != got {
-			got = replicas
-			t.Logf("StormService replicas %d", got)
+	last := roleSetScale{-1, -1}
+	for deadline := time.Now().Add(3 * time.Minute); last != (roleSetScale{want, want}); time.Sleep(2 * time.Second) {
+		if got := getRoleSetScale(ctx, t, aibrixClient, s); got != last {
+			last = got
+			s.logf(t, "StormService replicas %d, PodAutoscaler desired %d", got.replicas, got.desired)
 		}
-		return got == want, nil
-	})
-	if err != nil {
-		t.Fatalf("StormService replicas stayed at %d, want %d: %v", got, want, err)
+		if last.replicas > want || last.desired > want || time.Now().After(deadline) {
+			t.Fatalf("StormService replicas %d and PodAutoscaler desired %d, want %d",
+				last.replicas, last.desired, want)
+		}
 	}
 }
 
-// waitForReadyRoleSets waits until the StormService runs want RoleSets of ready pods.
-func waitForReadyRoleSets(ctx context.Context, t *testing.T, k8sClient kubernetes.Interface, want int) {
+// holdRoleSetReplicas checks every 10 seconds, across several 10 second
+// controller resyncs, that the StormService keeps want replicas.
+func holdRoleSetReplicas(
+	ctx context.Context, t *testing.T, aibrixClient aibrixclientset.Interface, s roleSetScenario,
+	want int32, d time.Duration,
+) {
 	t.Helper()
 
+	for deadline := time.Now().Add(d); ; time.Sleep(10 * time.Second) {
+		got := getRoleSetScale(ctx, t, aibrixClient, s)
+		s.logf(t, "StormService replicas %d, PodAutoscaler desired %d", got.replicas, got.desired)
+		if got.replicas != want {
+			t.Fatalf("StormService replicas changed to %d, want %d", got.replicas, want)
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+	}
+}
+
+// markRoleSetsReady waits until the StormService has the pods of exactly want
+// RoleSets, sets the readiness gate on those pods, and waits until they are
+// ready. Pods created after that, for the next RoleSet, stay not ready.
+func markRoleSetsReady(ctx context.Context, t *testing.T, k8sClient kubernetes.Interface, s roleSetScenario, want int) {
+	t.Helper()
+
+	pods := k8sClient.CoreV1().Pods(roleSetAutoscalingNamespace)
+	selector := fmt.Sprintf("%s=%s", controllerconstants.StormServiceNameLabelKey, s.name)
+	wantPods := want * s.podsPerRoleSet()
+	var marked map[string]bool
 	ready := -1
 	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
-		pods, err := k8sClient.CoreV1().Pods(roleSetKPANamespace).List(ctx, metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("%s=%s", controllerconstants.StormServiceNameLabelKey, roleSetKPAStormService),
-		})
+		list, err := pods.List(ctx, metav1.ListOptions{LabelSelector: selector})
 		if err != nil {
 			return false, err
 		}
+		if marked == nil {
+			if len(list.Items) != wantPods {
+				return false, nil
+			}
+			marked = map[string]bool{}
+			for _, pod := range list.Items {
+				marked[pod.Name] = true
+			}
+		}
 		n := 0
-		for _, pod := range pods.Items {
-			for _, c := range pod.Status.Conditions {
-				if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
-					n++
+		for i := range list.Items {
+			pod := &list.Items[i]
+			if !marked[pod.Name] {
+				continue
+			}
+			if !hasPodCondition(pod, roleSetReadyGate) {
+				pod.Status.Conditions = append(pod.Status.Conditions, corev1.PodCondition{
+					Type:               roleSetReadyGate,
+					Status:             corev1.ConditionTrue,
+					LastTransitionTime: metav1.Now(),
+				})
+				if _, err := pods.UpdateStatus(ctx, pod, metav1.UpdateOptions{}); err != nil && !apierrors.IsConflict(err) {
+					return false, err
 				}
+			}
+			if hasPodCondition(pod, corev1.PodReady) {
+				n++
 			}
 		}
 		if n != ready {
 			ready = n
-			t.Logf("%d of %d pods ready", ready, len(pods.Items))
+			s.logf(t, "%d of %d pods ready", ready, wantPods)
 		}
-		return ready == want*roleSetKPAPodsPerRoleSet, nil
+		return ready == wantPods, nil
 	})
 	if err != nil {
-		t.Fatalf("%d pods ready, want %d: %v", ready, want*roleSetKPAPodsPerRoleSet, err)
+		t.Fatalf("%d pods ready, want %d: %v", ready, wantPods, err)
 	}
 }
 
-func cleanupRoleSetKPAE2E(ctx context.Context, t *testing.T, aibrixClient aibrixclientset.Interface) {
+func hasPodCondition(pod *corev1.Pod, conditionType corev1.PodConditionType) bool {
+	for _, c := range pod.Status.Conditions {
+		if c.Type == conditionType && c.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+// cleanupRoleSetScenario deletes the PodAutoscaler and the StormService and
+// waits until the StormService is gone.
+func cleanupRoleSetScenario(
+	ctx context.Context, t *testing.T, aibrixClient aibrixclientset.Interface, s roleSetScenario,
+) {
 	t.Helper()
 
 	err := aibrixClient.AutoscalingV1alpha1().
-		PodAutoscalers(roleSetKPANamespace).
-		Delete(ctx, roleSetKPAPAName, metav1.DeleteOptions{})
+		PodAutoscalers(roleSetAutoscalingNamespace).
+		Delete(ctx, s.name, metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		t.Logf("failed to delete PodAutoscaler: %v", err)
 	}
-	stormServices := aibrixClient.OrchestrationV1alpha1().StormServices(roleSetKPANamespace)
-	err = stormServices.Delete(ctx, roleSetKPAStormService, metav1.DeleteOptions{})
+	stormServices := aibrixClient.OrchestrationV1alpha1().StormServices(roleSetAutoscalingNamespace)
+	err = stormServices.Delete(ctx, s.name, metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		t.Logf("failed to delete StormService: %v", err)
 	}
 	err = wait.PollUntilContextTimeout(ctx, 2*time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
-		_, err := stormServices.Get(ctx, roleSetKPAStormService, metav1.GetOptions{})
+		_, err := stormServices.Get(ctx, s.name, metav1.GetOptions{})
 		return apierrors.IsNotFound(err), nil
 	})
 	if err != nil {

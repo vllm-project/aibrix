@@ -268,7 +268,7 @@ jobs:
           export AIBRIX_ROLESET_HISTORICAL_NODE_E2E=true
           export AIBRIX_ROLESET_DRAIN_E2E=true
           export AIBRIX_SCHEDULED_BOUNDS_E2E=true
-          export AIBRIX_ROLESET_KPA_E2E=true
+          export AIBRIX_ROLESET_AUTOSCALING_E2E=true
           export AIBRIX_ROLESET_CONTROLLER_DEPLOYMENT=aibrix-controller-manager
           make test-e2e
           export EXTERNAL_METRICS_E2E_CLUSTER=kind
