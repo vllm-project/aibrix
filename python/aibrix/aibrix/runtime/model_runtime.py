@@ -1306,7 +1306,10 @@ class ModelRuntime:
                     ):
                         self._increment_metric(self._re_adoption_outcomes, "stopping")
                         try:
-                            self._stop_stopping_instance(inst)
+                            if self._stop_stopping_instance(inst):
+                                self._models.pop(inst.model_name, None)
+                                self._clear_model_metric_gauges(inst.model_name)
+                                changed = True
                         except Exception as exc:
                             inst.last_error = f"stop failed: {exc}"
                             changed = True
@@ -1593,10 +1596,11 @@ class ModelRuntime:
         inst.last_transition = self._now()
         return True
 
-    def _stop_stopping_instance(self, inst: ModelInstance) -> None:
+    def _stop_stopping_instance(self, inst: ModelInstance) -> bool:
+        """Request stop; return True when PID reuse proves the old group is gone."""
         if isinstance(self._launcher, MockEngineLauncher):
             self._launcher.stop(inst)
-            return
+            return False
         # Do not signal an unrelated process if the recorded leader PID was
         # reused. A missing leader is different: its workers can keep the
         # original process group alive and still need to be stopped.
@@ -1606,18 +1610,27 @@ class ModelRuntime:
             and current_start_time is not None
             and current_start_time != inst.pid_start_time
         ):
-            raise RuntimeError("refusing to stop engine with a reused PID")
+            # A PID cannot be reused while its old process group still exists.
+            # Report completion without signaling the unrelated replacement.
+            return True
         if (
             inst.pid is None
             or (self._now() - inst.last_transition).total_seconds()
             < ENGINE_STOP_GRACE_SECONDS
         ):
             self._launcher.stop(inst)
-            return
+            return False
+        logger.warning(
+            "escalating engine stop to SIGKILL: model=%s pid=%s waited=%.1fs",
+            inst.model_name,
+            inst.pid,
+            (self._now() - inst.last_transition).total_seconds(),
+        )
         try:
             os.killpg(inst.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass  # The group exited between the liveness check and the signal.
+        return False
 
     def _terminate_stale_process_group(self, inst: ModelInstance) -> bool:
         """Terminate surviving vLLM workers after their API parent is gone.
@@ -1729,7 +1742,9 @@ class ModelRuntime:
             if inst.phase == "stopping":
                 if self._process_handle_alive(inst) or process_group_is_alive(inst.pid):
                     try:
-                        self._stop_stopping_instance(inst)
+                        if self._stop_stopping_instance(inst):
+                            remove.append(model_name)
+                            changed = True
                     except Exception as exc:
                         inst.last_error = f"stop failed: {exc}"
                         changed = True
@@ -1855,7 +1870,7 @@ class ModelRuntime:
             inst.kv_capacity_verify_until = None
             self._persist_locked()
             try:
-                self._stop_stopping_instance(inst)
+                old_group_gone = self._stop_stopping_instance(inst)
             except Exception as exc:
                 inst.last_error = f"stop failed: {exc}"
                 self._persist_locked()
@@ -1863,9 +1878,13 @@ class ModelRuntime:
             # A real SIGTERM is asynchronous. Retain the stopping record until
             # the process exits so an agent crash in this interval can still
             # re-adopt and finish the stop instead of losing an orphan engine.
-            if inst.proc is None or (
-                not self._process_handle_alive(inst)
-                and not process_group_is_alive(inst.pid)
+            if (
+                old_group_gone
+                or inst.proc is None
+                or (
+                    not self._process_handle_alive(inst)
+                    and not process_group_is_alive(inst.pid)
+                )
             ):
                 self._models.pop(model_name, None)
                 self._clear_model_metric_gauges(model_name)
