@@ -19,6 +19,7 @@ package kvcache
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sync"
 	"syscall"
@@ -36,6 +37,10 @@ const replayEndSeq int64 = -1
 // repaired. When it is exceeded, the gap is treated as unrecoverable: the
 // cached view is cleared and the stream continues from the newest batch.
 var maxPendingBatches = 1024
+
+// startupReplayAttempts is how often the replay from seq 0 is tried after
+// Start: once right away, then up to three times ReconnectDelay apart.
+const startupReplayAttempts = 4
 
 // ZMQClient manages ZMQ connections to vLLM KV event publishers
 type ZMQClient struct {
@@ -188,14 +193,12 @@ func (c *ZMQClient) Start() error {
 		return fmt.Errorf("initial connection failed: %w", err)
 	}
 
-	// Request full replay on startup
-	if _, err := c.requestReplay(0); err != nil {
-		klog.Warningf("Failed to request initial replay for %s: %v", c.config.PodKey, err)
-		// Retry in the background: without the replay the index misses every
-		// batch published before the subscription, and the consumer only
-		// retries on reconnect.
-		c.retryReplayAsync(0, 3)
-	}
+	// Request the full replay in the background. Start runs in the pod event
+	// handlers, and a new pod usually has not bound its replay socket yet
+	// (vLLM binds it after loading the model), so waiting here would hold
+	// those handlers for the whole ReplayTimeout. Live batches that arrive
+	// first are buffered until the replay fills in the sequences before them.
+	c.retryReplayAsync(0, startupReplayAttempts)
 
 	// Start event consumption goroutine
 	c.wg.Add(1)
@@ -583,6 +586,11 @@ func (c *ZMQClient) requestReplayAsync(fromSeq int64) {
 	go func() {
 		defer c.replayWg.Done()
 		_, ran, err := c.runReplay(fromSeq)
+		if errors.Is(err, context.Canceled) {
+			// Stop interrupted the replay. It did not fail, and the gap it
+			// was filling must not be cleared as unrecoverable.
+			return
+		}
 		if err != nil {
 			klog.Warningf("Replay from seq %d failed for %s: %v",
 				fromSeq, c.config.PodKey, err)
@@ -633,18 +641,24 @@ func (c *ZMQClient) runReplay(fromSeq int64) (applied int, ran bool, err error) 
 	return applied, true, err
 }
 
-// retryReplay retries a failed replay with the reconnect delay between
-// attempts, so a first replay that failed at startup is not lost.
+// retryReplay tries a replay up to attempts times: the first attempt at once,
+// then with the reconnect delay before each further attempt, so a startup
+// replay that the publisher cannot answer yet is not lost.
 func (c *ZMQClient) retryReplay(fromSeq int64, attempts int) {
 	for i := 0; i < attempts; i++ {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-time.After(c.config.ReconnectDelay):
+		if i > 0 {
+			select {
+			case <-c.ctx.Done():
+				return
+			case <-time.After(c.config.ReconnectDelay):
+			}
 		}
 		_, ran, err := c.runReplay(fromSeq)
 		if err == nil && ran {
 			c.recoverStalledGap()
+			return
+		}
+		if errors.Is(err, context.Canceled) {
 			return
 		}
 		if err != nil {
@@ -686,6 +700,12 @@ func (c *ZMQClient) requestReplay(fromSeq int64) (int, error) {
 	c.metrics.IncrementReplayCount()
 
 	applied, err := c.receiveReplay(socket)
+	if errors.Is(err, context.Canceled) {
+		// Stop cancelled the client and closes this socket once the replay
+		// goroutines are done, so there is no failure to count and no socket
+		// to recreate.
+		return applied, fmt.Errorf("replay from seq %d cancelled after %d batches: %w", fromSeq, applied, err)
+	}
 	if err != nil {
 		c.metrics.IncrementReplayFailure()
 		// The rest of this reply can still arrive. Replace the socket so that
@@ -701,23 +721,33 @@ func (c *ZMQClient) requestReplay(fromSeq int64) (int, error) {
 
 // receiveReplay reads replay messages until the end marker and applies each
 // batch newer than lastSeq, in order. The whole reply must arrive within
-// ReplayTimeout. It returns the number of batches applied.
+// ReplayTimeout. It waits at most PollTimeout per receive, like the event
+// loop, and returns the context's error once the client is cancelled, so Stop
+// does not wait out an unanswered replay. It returns the number of batches
+// applied.
 func (c *ZMQClient) receiveReplay(socket *zmq.Socket) (int, error) {
 	deadline := time.Now().Add(c.config.ReplayTimeout)
+	step := c.config.PollTimeout
+	if step <= 0 {
+		step = DefaultPollTimeout
+	}
 	applied := 0
 
 	for {
+		if err := c.ctx.Err(); err != nil {
+			return applied, err
+		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			return applied, fmt.Errorf("timed out after %v waiting for the end of the replay",
 				c.config.ReplayTimeout)
 		}
-		_ = socket.SetRcvtimeo(remaining)
+		_ = socket.SetRcvtimeo(min(remaining, step))
 
 		frames, err := socket.RecvMessageBytes(0)
 		if err != nil {
 			if zmq.AsErrno(err) == zmq.Errno(syscall.EAGAIN) {
-				// Receive timeout; the deadline check above reports it
+				// Receive timeout; check the context and the deadline again
 				continue
 			}
 			return applied, fmt.Errorf("failed to receive replay message: %w", err)

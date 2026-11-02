@@ -354,3 +354,151 @@ func TestZMQClientStopWaitsForReplayHandler(t *testing.T) {
 	}
 	require.Equal(t, []int64{100}, storedHashes(handler.MockEventHandler))
 }
+
+// silentReplayRouter binds a replay ROUTER that takes requests and never
+// answers, like a publisher whose replay thread is stuck. It signals each
+// request it receives on the returned channel.
+func silentReplayRouter(t *testing.T, port int) <-chan struct{} {
+	t.Helper()
+	sock, err := zmq.NewSocket(zmq.ROUTER)
+	require.NoError(t, err)
+	require.NoError(t, sock.SetIpv6(true))
+	require.NoError(t, sock.Bind(formatZMQBindEndpoint("::", port)))
+	require.NoError(t, sock.SetRcvtimeo(50*time.Millisecond))
+
+	requests := make(chan struct{}, 16)
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := sock.RecvMessageBytes(0); err == nil {
+				select {
+				case requests <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		<-done
+		_ = sock.Close()
+	})
+	return requests
+}
+
+func waitForReplayRequest(t *testing.T, requests <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-requests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the replay request never reached the publisher")
+	}
+}
+
+// Start runs in the store's pod event handlers, before vLLM has loaded the
+// model and bound its replay socket. It must not wait for the startup replay,
+// and the replay must still land once the publisher binds (#3363).
+func TestZMQClientStartReturnsBeforeReplay(t *testing.T) {
+	// Nothing is bound on either port yet.
+	client, handler := newReplayTestClient(25821, 25822, 2*time.Second)
+	// Only the first attempt can deliver the replay within this test, so it
+	// must not wait for ReconnectDelay.
+	client.config.ReconnectDelay = time.Minute
+	defer client.Stop()
+
+	start := time.Now()
+	require.NoError(t, client.Start())
+	require.Less(t, time.Since(start), 500*time.Millisecond, "Start waited for the startup replay")
+
+	// The replay socket comes up after Start returned. The request already
+	// queued on the client's DEALER reaches it then.
+	serveReplayOnce(t, 25822,
+		replayMessage(0, encodeBlockStored(t, 100)),
+		replayMessage(1, encodeBlockStored(t, 200)),
+		replayMessage(mockReplayEndSeq, []byte{}))
+	require.Eventually(t, func() bool { return client.GetLastSequence() == 1 },
+		2*time.Second, 10*time.Millisecond, "the startup replay was not applied")
+	require.Equal(t, []int64{100, 200}, storedHashes(handler))
+}
+
+// A publisher that binds its replay socket only after the first startup
+// attempt timed out still gets asked again.
+func TestZMQClientStartupReplayRetriesUntilPublisherBinds(t *testing.T) {
+	client, handler := newReplayTestClient(25823, 25824, 300*time.Millisecond)
+	client.config.ReconnectDelay = 700 * time.Millisecond
+	defer client.Stop()
+	require.NoError(t, client.Start())
+
+	// The first attempt gives up after 0.3 s and drops its request with the
+	// socket; the next one starts at about 1 s.
+	time.Sleep(650 * time.Millisecond)
+	serveReplayOnce(t, 25824,
+		replayMessage(0, encodeBlockStored(t, 100)),
+		replayMessage(mockReplayEndSeq, []byte{}))
+	require.Eventually(t, func() bool { return client.GetLastSequence() == 0 },
+		2*time.Second, 10*time.Millisecond, "the startup replay was not retried")
+	require.Equal(t, []int64{100}, storedHashes(handler))
+}
+
+// Stop runs in the same handlers as Start (pod delete, and pod update on a
+// model, LoRA or IP change). It must not wait out an unanswered replay (#3363).
+func TestZMQClientStopDoesNotWaitForUnansweredReplay(t *testing.T) {
+	requests := silentReplayRouter(t, 25826)
+	client, _ := newReplayTestClient(25825, 25826, 10*time.Second)
+	require.NoError(t, client.Connect())
+	client.requestReplayAsync(0)
+	waitForReplayRequest(t, requests)
+
+	start := time.Now()
+	client.Stop()
+	require.Less(t, time.Since(start), time.Second, "Stop waited for the unanswered replay")
+}
+
+// A replay cut short by Stop did not fail. It must not count as a replay
+// failure, recreate the replay socket, or clear the view for the gap it was
+// filling.
+func TestZMQClientCancelledReplayIsNotAFailure(t *testing.T) {
+	requests := silentReplayRouter(t, 25828)
+	client, handler := newReplayTestClient(25827, 25828, 10*time.Second)
+	defer client.Stop()
+	failures := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_replay_failures_total"}, nil)
+	client.metrics.replayFailures = failures.WithLabelValues()
+	require.NoError(t, client.Connect())
+	socket := replaySocketOf(client)
+
+	// Batch 0 is applied and live batch 2 is held: the replay from 1 goes out
+	// and is never answered.
+	_, err := client.applyEventBatch(0, encodeBlockStored(t, 100), true)
+	require.NoError(t, err)
+	_, err = client.applyEventBatch(2, encodeBlockStored(t, 300), false)
+	require.NoError(t, err)
+	waitForReplayRequest(t, requests)
+
+	client.cancel()
+	returned := make(chan struct{})
+	go func() {
+		client.replayWg.Wait()
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("the replay did not return after the client was cancelled")
+	}
+
+	value, err := getMetricValue(failures)
+	require.NoError(t, err)
+	require.Zero(t, value, "the cancelled replay was counted as a failure")
+	require.Same(t, socket, replaySocketOf(client), "the replay socket was recreated after a cancel")
+	for _, event := range handler.GetEvents() {
+		require.NotEqual(t, EventTypeAllCleared, event.GetType(), "the gap was cleared as unrecoverable after a cancel")
+	}
+	require.Equal(t, []int64{100}, storedHashes(handler))
+	require.Equal(t, int64(0), client.GetLastSequence())
+}
