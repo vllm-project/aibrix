@@ -12,98 +12,108 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pydantic schemas for vLLM multimodal content part extensions.
+"""vLLM-specific extension fields for the OpenAI request models.
 
-Extends the OpenAI chat completion content parts with video, audio,
-and input_audio types supported by vLLM but not part of the standard
-OpenAI API.
+Only fields vLLM accepts beyond the OpenAI schema and the fields shared
+with the other engine (``engine_common.py``) are declared here.
+
+Reference: the vLLM OpenAI entrypoint protocols at tag ``v0.33.0rc1``.
 """
 
 from __future__ import annotations
 
-from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
-from pydantic import AnyUrl, BaseModel, ConfigDict, Field
-
-# ---------------------------------------------------------------------------
-# URL-based media types (video, audio)
-# ---------------------------------------------------------------------------
-
-
-class VideoUrl(BaseModel):
-    url: AnyUrl = Field(..., description="URL of the video.")
-    detail: Optional[str] = Field(
-        None,
-        description="Specifies the detail level of the video.",
-    )
+from aibrix.openai_frontend.schemas.engine_common import (
+    SharedChatCompletionFields,
+    SharedCompletionFields,
+    SharedEmbeddingFields,
+)
 
 
-class AudioUrl(BaseModel):
-    url: AnyUrl = Field(..., description="URL of the audio file.")
-    detail: Optional[str] = Field(
-        None,
-        description="Specifies the detail level of the audio.",
-    )
+class VllmChatCompletionEngineExtensionFields(SharedChatCompletionFields):
+    """vLLM /v1/chat/completions extensions."""
+
+    add_generation_prompt: Optional[Any] = None
+    add_special_tokens: Optional[Any] = None
+    allowed_token_ids: Optional[Any] = None
+    bad_words: Optional[Any] = None
+    chat_template: Optional[Any] = None
+    documents: Optional[Any] = None
+    ec_transfer_params: Optional[Any] = None
+    echo: Optional[Any] = None
+    include_reasoning: Optional[Any] = None
+    include_stop_str_in_output: Optional[Any] = None
+    kv_transfer_params: Optional[Any] = None
+    length_penalty: Optional[Any] = None
+    logprob_token_ids: Optional[Any] = None
+    media_io_kwargs: Optional[Any] = None
+    mm_payload: Optional[Any] = None
+    mm_processor_kwargs: Optional[Any] = None
+    prompt_logprobs: Optional[Any] = None
+    repetition_detection: Optional[Any] = None
+    request_id: Optional[Any] = None
+    return_mm_kwargs: Optional[Any] = None
+    return_prompt_text: Optional[Any] = None
+    return_token_offsets: Optional[Any] = None
+    return_tokens_as_token_ids: Optional[Any] = None
+    return_weight_versions: Optional[Any] = None
+    routed_experts_prompt_start: Optional[Any] = None
+    spaces_between_special_tokens: Optional[Any] = None
+    stream_interval: Optional[Any] = None
+    structured_outputs: Optional[Any] = None
+    thinking_token_budget: Optional[Any] = None
+    truncate_prompt_tokens: Optional[Any] = None
+    truncation_side: Optional[Any] = None
+    use_beam_search: Optional[Any] = None
+    vllm_xargs: Optional[Any] = None
+    watermarking: Optional[Any] = None
 
 
-# ---------------------------------------------------------------------------
-# Inline audio type (base64-encoded)
-# ---------------------------------------------------------------------------
+class VllmCompletionEngineExtensionFields(SharedCompletionFields):
+    """vLLM /v1/completions extensions."""
+
+    add_special_tokens: Optional[Any] = None
+    allowed_token_ids: Optional[Any] = None
+    bad_words: Optional[Any] = None
+    ec_transfer_params: Optional[Any] = None
+    include_stop_str_in_output: Optional[Any] = None
+    kv_transfer_params: Optional[Any] = None
+    length_penalty: Optional[Any] = None
+    logprob_token_ids: Optional[Any] = None
+    mm_payload: Optional[Any] = None
+    prompt_embeds: Optional[Any] = None
+    prompt_logprobs: Optional[Any] = None
+    repetition_detection: Optional[Any] = None
+    request_id: Optional[Any] = None
+    return_mm_kwargs: Optional[Any] = None
+    return_token_offsets: Optional[Any] = None
+    return_tokens_as_token_ids: Optional[Any] = None
+    return_weight_versions: Optional[Any] = None
+    routed_experts_prompt_start: Optional[Any] = None
+    spaces_between_special_tokens: Optional[Any] = None
+    stream_interval: Optional[Any] = None
+    structured_outputs: Optional[Any] = None
+    thinking_token_budget: Optional[Any] = None
+    truncate_prompt_tokens: Optional[Any] = None
+    truncation_side: Optional[Any] = None
+    use_beam_search: Optional[Any] = None
+    vllm_xargs: Optional[Any] = None
+    watermarking: Optional[Any] = None
 
 
-class InputAudio(BaseModel):
-    data: str = Field(..., description="Base64-encoded audio data.")
-    format: str = Field(..., description="Format of the audio data (e.g. wav, mp3).")
+class VllmEmbeddingEngineExtensionFields(SharedEmbeddingFields):
+    """vLLM /v1/embeddings extensions."""
 
-
-# ---------------------------------------------------------------------------
-# Content part type enums
-# ---------------------------------------------------------------------------
-
-
-class VideoUrlType(Enum):
-    video_url = "video_url"
-
-
-class AudioUrlType(Enum):
-    audio_url = "audio_url"
-
-
-class InputAudioType(Enum):
-    input_audio = "input_audio"
-
-
-# ---------------------------------------------------------------------------
-# Content part models
-# ---------------------------------------------------------------------------
-
-
-class ChatCompletionRequestMessageContentPartVideo(BaseModel):
-    model_config = ConfigDict(use_enum_values=True)
-
-    type: VideoUrlType = Field(..., description="The type of the content part.")
-    video_url: VideoUrl
-    uuid: Optional[str] = Field(
-        None, description="Optional unique identifier for the content part."
-    )
-
-
-class ChatCompletionRequestMessageContentPartAudio(BaseModel):
-    model_config = ConfigDict(use_enum_values=True)
-
-    type: AudioUrlType = Field(..., description="The type of the content part.")
-    audio_url: AudioUrl
-    uuid: Optional[str] = Field(
-        None, description="Optional unique identifier for the content part."
-    )
-
-
-class ChatCompletionRequestMessageContentPartInputAudio(BaseModel):
-    model_config = ConfigDict(use_enum_values=True)
-
-    type: InputAudioType = Field(..., description="The type of the content part.")
-    input_audio: InputAudio
-    uuid: Optional[str] = Field(
-        None, description="Optional unique identifier for the content part."
-    )
+    add_generation_prompt: Optional[Any] = None
+    add_special_tokens: Optional[Any] = None
+    chat_template: Optional[Any] = None
+    embed_dtype: Optional[Any] = None
+    endianness: Optional[Any] = None
+    media_io_kwargs: Optional[Any] = None
+    mm_processor_kwargs: Optional[Any] = None
+    padding: Optional[Any] = None
+    request_id: Optional[Any] = None
+    truncate_prompt_tokens: Optional[Any] = None
+    truncation_side: Optional[Any] = None
+    use_activation: Optional[Any] = None
