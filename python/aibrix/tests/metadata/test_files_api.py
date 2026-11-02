@@ -78,6 +78,31 @@ def _upload(client: TestClient, *, filename="test.jsonl", purpose="batch", body=
     return response
 
 
+def _s3_listing_storage(keys, *, max_calls=10):
+    """S3 storage with an in-memory, lexicographic listing client."""
+    storage = object.__new__(S3Storage)
+    storage.bucket_name = "bucket"
+    storage.client = Mock()
+    storage.client.head_object.return_value = {
+        "ContentLength": 1,
+        "ETag": '"etag"',
+        "Metadata": {"purpose": "batch", "created_at": "1"},
+    }
+    keys = sorted(keys)
+
+    def list_objects_v2(**kwargs):
+        assert storage.client.list_objects_v2.call_count <= max_calls
+        offset = int(kwargs.get("ContinuationToken", "0"))
+        page = keys[offset : offset + kwargs["MaxKeys"]]
+        response = {"Contents": [{"Key": key} for key in page]}
+        if offset + len(page) < len(keys):
+            response["NextContinuationToken"] = str(offset + len(page))
+        return response
+
+    storage.client.list_objects_v2.side_effect = list_objects_v2
+    return storage
+
+
 class TestFilesAPI:
     """Test the Files API endpoints."""
 
@@ -390,6 +415,18 @@ class TestListFiles:
             ids = [item["id"] for item in body["data"]]
             assert file_id in ids
 
+    def test_list_hides_local_metastore(self):
+        app = create_test_app()
+        with TestClient(app) as client:
+            file_id = _upload(client).json()["id"]
+            client.portal.call(
+                app.state.storage.put_object, ".metastore/batchjob/job", b"{}"
+            )
+            response = client.get("/v1/files")
+            assert response.status_code == 200
+            assert [item["id"] for item in response.json()["data"]] == [file_id]
+            assert response.json()["has_more"] is False
+
     def test_list_rejects_out_of_range_limit(self):
         with TestClient(create_test_app()) as client:
             for limit in (0, 101):
@@ -429,6 +466,137 @@ class TestListFiles:
             page1_ids = {item["id"] for item in page1["data"]}
             for item in page2["data"]:
                 assert item["id"] not in page1_ids
+
+    @pytest.mark.parametrize("hidden_count", [999, 1000, 1001, 2001])
+    def test_list_skips_hidden_storage_pages(self, hidden_count):
+        visible = ["file-a", "file-b", "file-c"]
+        hidden = [f".multipart/{index:04d}" for index in range(hidden_count)]
+        storage = _s3_listing_storage(hidden + visible)
+        app = create_test_app()
+        with TestClient(app) as client:
+            app.state.storage = storage
+            response = client.get("/v1/files")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert [item["id"] for item in body["data"]] == visible
+        assert body["has_more"] is False
+        assert [
+            call.kwargs["Key"] for call in storage.client.head_object.call_args_list
+        ] == visible
+
+    def test_list_after_cursor_across_storage_pages(self):
+        visible = [f"file-{index}" for index in range(5)]
+        hidden = [f".multipart/{index:04d}" for index in range(999)]
+        storage = _s3_listing_storage(hidden + visible)
+        app = create_test_app()
+        with TestClient(app) as client:
+            app.state.storage = storage
+            listed = []
+            params = {"limit": 2, "purpose": "batch"}
+            for offset in range(0, len(visible), 2):
+                response = client.get("/v1/files", params=params)
+                assert response.status_code == 200
+                body = response.json()
+                ids = [item["id"] for item in body["data"]]
+                assert ids == visible[offset : offset + 2]
+                assert body["has_more"] is (offset + 2 < len(visible))
+                listed.extend(ids)
+                params["after"] = ids[-1]
+            assert listed == visible
+            assert storage.client.list_objects_v2.call_count == 6
+
+            for params in ({"after": "missing"}, {"purpose": "assistants"}):
+                response = client.get("/v1/files", params=params)
+                assert response.status_code == 200
+                assert response.json()["data"] == []
+                assert response.json()["has_more"] is False
+
+    def test_list_caps_visible_keys(self):
+        visible = [f"file-{index:04d}" for index in range(1001)]
+        storage = _s3_listing_storage([".multipart/hidden"] + visible, max_calls=4)
+        app = create_test_app()
+        with TestClient(app) as client:
+            app.state.storage = storage
+            response = client.get("/v1/files", params={"limit": 100})
+            assert response.status_code == 200
+            body = response.json()
+            assert [item["id"] for item in body["data"]] == visible[:100]
+            assert body["has_more"] is True
+            assert storage.client.head_object.call_count == 1000
+            assert [
+                call.kwargs["MaxKeys"]
+                for call in storage.client.list_objects_v2.call_args_list
+            ] == [1000, 1]
+
+            response = client.get(
+                "/v1/files", params={"limit": 100, "after": visible[998]}
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert [item["id"] for item in body["data"]] == visible[999:1000]
+            assert body["has_more"] is False
+            assert storage.client.list_objects_v2.call_count == 4
+
+    def test_list_later_storage_page_failure(self):
+        storage = _s3_listing_storage([])
+        storage.client.list_objects_v2.side_effect = [
+            {"Contents": [{"Key": "file-a"}], "NextContinuationToken": "next"},
+            RuntimeError("later page failed"),
+        ]
+        app = create_test_app()
+        with TestClient(app) as client:
+            app.state.storage = storage
+            response = client.get("/v1/files")
+
+        assert response.status_code == 500
+        assert response.json()["error"]["message"] == "Failed to list files"
+        storage.client.head_object.assert_not_called()
+
+    def test_list_stops_on_repeated_storage_token(self):
+        storage = _s3_listing_storage([])
+        storage.client.list_objects_v2.side_effect = [
+            {
+                "Contents": [{"Key": ".multipart/hidden"}],
+                "NextContinuationToken": "same",
+            },
+            {"Contents": [{"Key": "file-a"}], "NextContinuationToken": "same"},
+            AssertionError("listing exceeded two calls"),
+        ]
+        app = create_test_app()
+        with TestClient(app) as client:
+            app.state.storage = storage
+            response = client.get("/v1/files")
+
+        assert response.status_code == 200
+        assert [item["id"] for item in response.json()["data"]] == ["file-a"]
+        assert response.json()["has_more"] is False
+        assert storage.client.list_objects_v2.call_count == 2
+        assert (
+            storage.client.list_objects_v2.call_args.kwargs["ContinuationToken"]
+            == "same"
+        )
+
+    def test_list_continues_through_empty_storage_pages(self):
+        storage = _s3_listing_storage([])
+        storage.client.list_objects_v2.side_effect = [
+            {"NextContinuationToken": "one"},
+            {"NextContinuationToken": "two"},
+            {"Contents": [{"Key": "file-a"}], "NextContinuationToken": ""},
+            AssertionError("listing continued past a falsy token"),
+        ]
+        app = create_test_app()
+        with TestClient(app) as client:
+            app.state.storage = storage
+            response = client.get("/v1/files")
+
+        assert response.status_code == 200
+        assert [item["id"] for item in response.json()["data"]] == ["file-a"]
+        assert response.json()["has_more"] is False
+        assert [
+            call.kwargs.get("ContinuationToken")
+            for call in storage.client.list_objects_v2.call_args_list
+        ] == [None, "one", "two"]
 
 
 class TestDownloadFile:

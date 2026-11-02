@@ -37,10 +37,10 @@ supported_extensions = {
     "jsonl",
 }
 
-# Upper bound on how many file keys list_files inspects per request.
+# Upper bound on how many visible file keys list_files inspects per request.
 # The route applies purpose-filter + cursor + limit in-process, so this
 # is the largest result set we can paginate over without an indexed
-# list backend. Mirrors the equivalent compromise in batches /v1/batches.
+# list backend.
 _LIST_FILES_FETCH_CEILING = 1000
 
 
@@ -238,6 +238,23 @@ async def create_file(
         raise  # HTTPException(status_code=500, detail=error_response)
 
 
+async def _list_visible_file_keys(storage: BaseStorage) -> list[str]:
+    """Collect visible keys in storage order, excluding .multipart and .metastore."""
+    keys: list[str] = []
+    continuation_token: Optional[str] = None
+    while len(keys) < _LIST_FILES_FETCH_CEILING:
+        page, next_token = await storage.list_objects(
+            prefix="",
+            limit=_LIST_FILES_FETCH_CEILING - len(keys),
+            continuation_token=continuation_token,
+        )
+        keys.extend(key for key in page if not key.startswith("."))
+        if not next_token or next_token == continuation_token:
+            break
+        continuation_token = next_token
+    return keys
+
+
 @router.get("", include_in_schema=True)
 @router.get("/", include_in_schema=False)
 async def list_files(
@@ -268,26 +285,16 @@ async def list_files(
 
         storage: BaseStorage = request.app.state.storage
 
-        # Mirror /v1/batches list pagination semantics: ``after`` is a
-        # file_id, not a storage continuation token. We fetch a generous
-        # page from storage and apply purpose-filter + cursor + limit in
-        # the route. This intentionally caps total visible files at
-        # ``_LIST_FILES_FETCH_CEILING`` per request — same compromise the
-        # batches list endpoint makes; revisit when an indexed list
-        # backend lands.
-        all_keys, _ = await storage.list_objects(
-            prefix="", limit=_LIST_FILES_FETCH_CEILING
-        )
+        # ``after`` is a file_id, not a storage continuation token. Collect
+        # up to ``_LIST_FILES_FETCH_CEILING`` visible keys across storage pages,
+        # then apply purpose-filter + cursor + limit in-process. has_more
+        # only describes results within this bounded window.
+        all_keys = await _list_visible_file_keys(storage)
 
         # Build file objects (with purpose filter applied inline so we
         # only pay head_object for what's relevant when a filter is set).
         file_objects: list[FileObject] = []
         for file_id in all_keys:
-            # Skip internal/hidden keys (e.g. the co-located ``.metastore``
-            # document store under a shared LOCAL storage root). The files API
-            # lists only user-uploaded blobs, never internal storage artifacts.
-            if file_id.startswith("."):
-                continue
             try:
                 head_object = await storage.head_object(file_id)
                 metadata = head_object.metadata or {}

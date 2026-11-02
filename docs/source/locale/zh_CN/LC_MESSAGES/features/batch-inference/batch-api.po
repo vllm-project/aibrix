@@ -513,8 +513,17 @@ msgid "**List Files**"
 msgstr "**列出文件**"
 
 #: ../../source/features/batch-inference/batch-api.rst:529
-msgid "List all files with optional filtering and pagination:"
-msgstr "列出所有文件，可选过滤和分页："
+msgid ""
+"List files with optional filtering and pagination. Each request considers "
+"up to the first 1,000 non-hidden file keys in storage order, then applies "
+"``purpose``, ``after``, and ``limit``. ``has_more`` describes only this "
+"window and can be false even when additional files exist outside it. "
+"Internal keys do not consume the allowance, but skipping them can require "
+"additional storage reads and increase listing latency."
+msgstr ""
+"列出文件，支持可选的过滤和分页。每个请求最多处理存储顺序中前 1,000 个非隐藏文件键，然后应用 ``purpose``、``after`` 和 "
+"``limit``。``has_more`` 只描述这个窗口，即使窗口之外还有文件也可能为 false。内部键不占用这个额度，但跳过它们可能需要额外读取存储，"
+"并增加列表延迟。"
 
 #: ../../source/features/batch-inference/batch-api.rst:542
 msgid "Response:"
