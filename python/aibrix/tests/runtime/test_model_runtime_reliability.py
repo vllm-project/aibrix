@@ -844,15 +844,28 @@ def test_stop_waits_for_surviving_process_group(stopping_runtime, monkeypatch):
     assert registry.load() == []
 
 
-def test_stop_does_not_signal_a_reused_pid(stopping_runtime, monkeypatch):
+@pytest.mark.parametrize("operation", ["supervise", "deactivate", "re_adopt"])
+def test_stop_does_not_signal_a_reused_pid(stopping_runtime, monkeypatch, operation):
     runtime, inst, _, registry, clock, signals = stopping_runtime
     runtime.deactivate("stuck")
     clock[0] += timedelta(seconds=30)
     monkeypatch.setattr(runtime_module, "process_start_time", lambda _: "different")
-    runtime.supervise_once()
+    inst.proc.alive = False
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda _: True)
+    if operation == "deactivate":
+        runtime.deactivate("stuck")
+    elif operation == "re_adopt":
+        runtime = ModelRuntime(
+            runtime._launcher, registry=registry, now=lambda: clock[0]
+        )
+    else:
+        runtime.supervise_once()
     assert signals == []
-    assert inst.last_error is not None
-    assert registry.load()[0]["phase"] == "stopping"
+    assert runtime.list_models() == []
+    assert registry.load() == []
+    runtime.deactivate("stuck")
+    replacement = runtime.activate(model_name="stuck", artifact_url="hf://Org/Stuck")
+    assert replacement.phase != "stopping"
 
 
 @pytest.mark.parametrize("error", [ProcessLookupError, PermissionError])
@@ -884,3 +897,33 @@ def test_force_stop_handles_signal_races_and_retries(
         inst.proc.alive = False
     runtime.supervise_once()
     assert registry.load() == []
+
+
+def test_deactivate_ignores_process_lookup_race(stopping_runtime, monkeypatch):
+    runtime, inst, _, registry, clock, _ = stopping_runtime
+    runtime.deactivate("stuck")
+    clock[0] += timedelta(seconds=30)
+
+    def disappeared(pid, sig):
+        inst.proc.alive = False
+        raise ProcessLookupError("already gone")
+
+    monkeypatch.setattr(runtime_module.os, "killpg", disappeared)
+    runtime.deactivate("stuck")
+    assert inst.last_error is None
+    assert registry.load() == []
+
+
+def test_force_stop_logs_model_pid_and_wait(stopping_runtime, monkeypatch):
+    runtime, inst, _, _, clock, _ = stopping_runtime
+    warnings = []
+    monkeypatch.setattr(
+        runtime_module.logger, "warning", lambda *args, **kwargs: warnings.append(args)
+    )
+    runtime.deactivate("stuck")
+    clock[0] += timedelta(seconds=30)
+    runtime.supervise_once()
+    assert any(
+        "SIGKILL" in args[0] and args[1:] == ("stuck", inst.pid, 30.0)
+        for args in warnings
+    )
