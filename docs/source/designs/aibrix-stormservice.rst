@@ -128,14 +128,18 @@ For roles using ``podGroupSize > 1``, the RoleSet controller propagates the role
 drain configuration to the internal PodSet so grouped Pods follow the same
 drain-before-delete behavior.
 
-Drain also applies when a whole RoleSet is deleted, for example when a
-StormService in replica mode scales in or replaces RoleSets during a rolling
-update. The RoleSet finalizer drains each ready Pod with its role's drain
-settings and deletes Pods that never became ready right away. A RoleSet whose
-Pods are draining still counts toward ``maxSurge`` until it is gone, so with
-``maxSurge: 0`` each rolling-update batch waits at least ``timeoutSeconds``.
-``maxUnavailable`` is still respected, because only RoleSets that are not
-terminating count as ready.
+Drain also applies when a whole RoleSet is deleted: when a StormService in
+replica mode scales in or replaces RoleSets during a rolling update, when the
+StormService itself is deleted, and when a RoleSet is deleted directly. The
+RoleSet finalizer drains each ready Pod with its role's drain settings and
+deletes Pods that are not ready right away, because they receive no traffic. A
+RoleSet whose Pods are draining still counts toward ``maxSurge`` until it is
+gone, so with ``maxSurge: 0`` each rolling-update batch waits at least
+``timeoutSeconds``. ``maxUnavailable`` is still respected, because only
+RoleSets that are not terminating count as ready. In pooled mode, the
+replacement for a directly deleted RoleSet is created only after the old
+RoleSet is gone, so for up to ``timeoutSeconds`` its roles have only draining
+Pods.
 
 
 Topology Policy
