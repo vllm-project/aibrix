@@ -280,7 +280,7 @@ func (r *RoleSetReconciler) finalize(ctx context.Context, roleSet *orchestration
 		return false, 0, err
 	} else if len(allPods.Items) != 0 {
 		// delete pods, draining ready ones first when their role configures drain;
-		// pods that never became ready are deleted right away, as in rollout.
+		// pods that are not ready get no traffic and are deleted right away, as in rollout.
 		drainByRole := make(map[string]*orchestrationv1alpha1.RoleDrainSpec, len(roleSet.Spec.Roles))
 		for i := range roleSet.Spec.Roles {
 			drainByRole[roleSet.Spec.Roles[i].Name] = roleSet.Spec.Roles[i].Drain
