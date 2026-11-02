@@ -644,6 +644,12 @@ func (c *ZMQClient) runReplay(fromSeq int64) (applied int, ran bool, err error) 
 // retryReplay tries a replay up to attempts times: the first attempt at once,
 // then with the reconnect delay before each further attempt, so a startup
 // replay that the publisher cannot answer yet is not lost.
+//
+// A live batch beyond lastSeq+1 that arrives while an attempt is in flight
+// is held, and its own replay request finds that attempt in flight and does
+// nothing. So when the attempts end, whether one succeeded or all failed, the
+// gap before a held batch is asked for once more; that replay clears the
+// view if the publisher cannot fill the gap either.
 func (c *ZMQClient) retryReplay(fromSeq int64, attempts int) {
 	for i := 0; i < attempts; i++ {
 		if i > 0 {
@@ -655,8 +661,7 @@ func (c *ZMQClient) retryReplay(fromSeq int64, attempts int) {
 		}
 		_, ran, err := c.runReplay(fromSeq)
 		if err == nil && ran {
-			c.recoverStalledGap()
-			return
+			break
 		}
 		if errors.Is(err, context.Canceled) {
 			return
@@ -671,6 +676,12 @@ func (c *ZMQClient) retryReplay(fromSeq int64, attempts int) {
 		klog.V(4).Infof("Replay retry %d/%d from seq %d skipped for %s: replay in flight",
 			i+1, attempts, fromSeq, c.config.PodKey)
 	}
+
+	c.applyMu.Lock()
+	if len(c.pending) > 0 {
+		c.requestReplayAsync(c.GetLastSequence() + 1)
+	}
+	c.applyMu.Unlock()
 }
 
 // requestReplay asks the publisher to resend its buffered batches from fromSeq

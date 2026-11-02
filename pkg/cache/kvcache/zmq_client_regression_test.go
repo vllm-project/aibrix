@@ -293,6 +293,9 @@ func TestZMQClientSuccessfulRetryRecoversUnreplayableGap(t *testing.T) {
 	h.client.config.ReplayTimeout = time.Second
 	require.NoError(t, h.client.Connect())
 	h.client.retryReplay(1, 1)
+	// The gap is still open, so it is asked for once more in the background
+	// before the view is cleared
+	h.client.replayWg.Wait()
 	require.False(t, h.fullHit(oldPrefix), "a successful but incomplete replay must invalidate the old view")
 	require.True(t, h.fullHit(newPrefix))
 	require.Equal(t, int64(3), h.client.GetLastSequence())
@@ -501,4 +504,147 @@ func TestZMQClientCancelledReplayIsNotAFailure(t *testing.T) {
 	}
 	require.Equal(t, []int64{100}, storedHashes(handler))
 	require.Equal(t, int64(0), client.GetLastSequence())
+}
+
+// eventLog lists the handler's events in order, as "stored <hash>" or
+// "cleared"
+func eventLog(handler *MockEventHandler) []string {
+	var events []string
+	for _, event := range handler.GetEvents() {
+		switch e := event.(type) {
+		case *BlockStoredEvent:
+			for _, hash := range e.BlockHashes {
+				events = append(events, fmt.Sprintf("stored %d", hash))
+			}
+		case *AllBlocksClearedEvent:
+			events = append(events, "cleared")
+		}
+	}
+	return events
+}
+
+// A live batch beyond lastSeq+1 that arrives while the startup replay is in
+// flight is held, and its own replay request finds that replay in flight. If
+// the gap is still open when the startup replay ends, it is asked for once
+// more, and the view is cleared only if the publisher cannot fill it either.
+func TestZMQClientStartupReplayAsksForLiveGap(t *testing.T) {
+	tests := []struct {
+		name                string
+		pubPort, routerPort int
+		// live batch 3 arrives while the startup replay is in flight
+		live bool
+		// batches 1, 2, ... that the publisher has when it is asked again
+		history []int64
+		want    []string
+	}{
+		{
+			name:       "no live batch is held",
+			pubPort:    25837,
+			routerPort: 25838,
+			want:       []string{"stored 100"},
+		},
+		{
+			name:       "the publisher has the missing batches",
+			pubPort:    25839,
+			routerPort: 25840,
+			live:       true,
+			history:    []int64{200, 300, 400},
+			want:       []string{"stored 100", "stored 200", "stored 300", "stored 400"},
+		},
+		{
+			name:       "the publisher does not have them",
+			pubPort:    25841,
+			routerPort: 25842,
+			live:       true,
+			want:       []string{"stored 100", "cleared", "stored 400"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			publisher := createMockPublisher(t, tt.pubPort, tt.routerPort)
+			defer publisher.Close()
+			publishBlockStored(t, publisher, 100)
+
+			// Hold the startup reply, which has only batch 0, until the test
+			// releases it
+			entered, release := make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			releaseReply := func() { releaseOnce.Do(func() { close(release) }) }
+			defer releaseReply()
+			held := false
+			publisher.mu.Lock()
+			publisher.beforeReplayBatch = func(int) {
+				if !held {
+					held = true
+					close(entered)
+					<-release
+				}
+			}
+			publisher.mu.Unlock()
+
+			client, handler := newReplayTestClient(tt.pubPort, tt.routerPort, 2*time.Second)
+			requests := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_replay_requests_total"}, nil)
+			client.metrics.replayRequests = requests.WithLabelValues()
+			defer client.Stop()
+			require.NoError(t, client.Start())
+			select {
+			case <-entered:
+			case <-time.After(2 * time.Second):
+				t.Fatal("the startup replay request never reached the publisher")
+			}
+
+			wantSeq, wantRequests := int64(0), float64(1)
+			if tt.live {
+				// Published after the reply was taken: batches 1 and 2 are
+				// missed on the live stream, batch 3 arrives
+				publisher.mu.Lock()
+				for i, hash := range tt.history {
+					publisher.buffer = append(publisher.buffer,
+						bufferedBatch{seq: int64(i + 1), payload: encodeBlockStored(t, hash)})
+				}
+				publisher.mu.Unlock()
+				_, err := client.applyEventBatch(3, encodeBlockStored(t, 400), false)
+				require.NoError(t, err)
+				// Let the live batch's own replay request find the startup
+				// replay in flight
+				time.Sleep(100 * time.Millisecond)
+				// The startup replay, then one request for the gap
+				wantSeq, wantRequests = 3, 2
+			}
+
+			releaseReply()
+			client.replayWg.Wait()
+
+			require.Equal(t, tt.want, eventLog(handler))
+			require.Equal(t, wantSeq, client.GetLastSequence())
+			sent, err := getMetricValue(requests)
+			require.NoError(t, err)
+			require.Equal(t, wantRequests, sent)
+		})
+	}
+}
+
+// A live batch held while every startup attempt times out is not left
+// behind: its gap is asked for once more, and when that fails too, the view
+// is cleared and the batch applied.
+func TestZMQClientStartupRetriesExhaustedSettleHeldBatch(t *testing.T) {
+	requests := silentReplayRouter(t, 25844)
+	client, handler := newReplayTestClient(25843, 25844, 300*time.Millisecond)
+	client.config.ReconnectDelay = 50 * time.Millisecond
+	sentRequests := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_replay_requests_total"}, nil)
+	client.metrics.replayRequests = sentRequests.WithLabelValues()
+	defer client.Stop()
+	require.NoError(t, client.Start())
+
+	// Live batch 2 arrives while the first startup attempt is in flight
+	waitForReplayRequest(t, requests)
+	_, err := client.applyEventBatch(2, encodeBlockStored(t, 300), false)
+	require.NoError(t, err)
+	client.replayWg.Wait()
+
+	sent, err := getMetricValue(sentRequests)
+	require.NoError(t, err)
+	require.Equal(t, float64(5), sent, "four startup attempts, then one request for the held batch's gap")
+	require.Equal(t, []string{"cleared", "stored 300"}, eventLog(handler))
+	require.Equal(t, int64(2), client.GetLastSequence())
 }
