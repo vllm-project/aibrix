@@ -223,6 +223,7 @@ func (c *Store) decrPodRunningRequests(namespace, name string) {
 
 // runningRequestsAdmitScript atomically enforces a hard per-pod concurrency cap: it sums
 // the same live-gateway-filtered fields sumLiveFields/readPodRunningRequests would report
+// (with this gateway's own field always treated as live, matching overlaySelfRunningRequests)
 // and, only if that sum is still under the limit, applies this gateway's own +1 to the
 // same hash incrPodRunningRequests/decrPodRunningRequests use -- all in one round trip.
 // This is what makes requestsInflight (see enforceReplicaInflight in
@@ -276,6 +277,8 @@ for _, gw in ipairs(live) do
   liveSet[gw] = true
 end
 local selfField = ARGV[1]
+-- this gateway's own committed admissions always count, even if its heartbeat lags
+liveSet[selfField] = true
 local selfLocal = tonumber(ARGV[5]) or 0
 local selfSeen = false
 local fields = redis.call('HGETALL', KEYS[1])

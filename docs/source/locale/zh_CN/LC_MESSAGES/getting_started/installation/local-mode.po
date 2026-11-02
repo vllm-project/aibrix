@@ -111,6 +111,51 @@ msgid ""
 msgstr ""
 
 #: ../../source/getting_started/installation/local-mode.rst:104
+msgid "Config profiles"
+msgstr "配置 Profile"
+
+#: ../../source/getting_started/installation/local-mode.rst:106
+msgid ""
+"A model entry can set ``config`` to the same JSON that the "
+"``model.aibrix.ai/config`` pod annotation holds in Kubernetes, as a "
+"string or as a YAML mapping. See :ref:`config_profiles` for the fields. "
+"The gateway checks the JSON when "
+"it loads the file, so a config that does not parse, has no profiles, or "
+"names a ``defaultProfile`` it does not define stops startup with an error"
+" that names the model. A key of the endpoints file that the gateway does "
+"not know, such as a misspelled ``config``, is ignored and logged as a "
+"warning."
+msgstr ""
+"模型条目可以设置 ``config`` ，内容与 Kubernetes 中 ``model.aibrix.ai/config`` Pod "
+"annotation 的 JSON 相同，可以写成字符串，也可以写成 YAML 映射，字段说明参见 "
+":ref:`config_profiles` 。网关在加载该文件时校验此 "
+"JSON，因此无法解析、不含任何 profile，或 ``defaultProfile`` 指向未定义 profile "
+"的配置会导致启动失败，错误信息中包含模型名称。endpoints 文件中网关无法识别的键（例如拼写错误的 ``config`` ）"
+"会被忽略，并记录一条警告日志。"
+
+#: ../../source/getting_started/installation/local-mode.rst:127
+msgid ""
+"A request uses ``defaultProfile`` unless it names another profile in the "
+"``config-profile`` header:"
+msgstr "请求默认使用 ``defaultProfile`` ，也可以通过 ``config-profile`` 请求头指定其他 profile："
+
+#: ../../source/getting_started/installation/local-mode.rst:140
+msgid ""
+"The config applies to all workers of the model, including every roleset "
+"in prefill/decode mode, so routing settings such as ``promptLenBucket*`` "
+"or ``combined`` cannot differ between rolesets in local mode. If a model "
+"is listed in more than one entry, only one of them may set ``config``, "
+"and it applies to the whole model. A profile's ``routingStrategy`` takes "
+"precedence over ``ROUTING_ALGORITHM``; see :ref:`routing_strategy_priority`"
+" for the full order."
+msgstr ""
+"该配置作用于模型的所有 worker，在 prefill/decode 模式下也包括每个 roleset，因此在本地模式中，"
+" ``promptLenBucket*`` 或 ``combined`` 等路由设置无法按 roleset 区分。如果同一模型出现在多个条目中，"
+"只能在其中一个条目上设置 ``config`` ，并且该配置作用于整个模型。profile 的 "
+"``routingStrategy`` 优先于 ``ROUTING_ALGORITHM`` ；完整的优先级顺序参见 "
+":ref:`routing_strategy_priority` 。"
+
+#: ../../source/getting_started/installation/local-mode.rst:104
 msgid "Run local mode"
 msgstr "运行本地模式"
 

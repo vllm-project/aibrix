@@ -132,6 +132,9 @@ type Store struct {
 	// ModelClaim advertisements include non-routable port-0 states and are kept
 	// separate from metaModels by construction.
 	modelClaims modelClaimState
+	// modelConfigs holds the model config JSON that discovery supplied per
+	// model (model_name -> config), read through ModelConfigCache.
+	modelConfigs utils.SyncMap[string, string]
 
 	// Deploymnent related storage
 	enableProfileCaching bool                                    // Default to load from enableModelGPUProfileCaching, can be configured.
@@ -592,6 +595,13 @@ func handleDiscoveryObject(store *Store, evType discovery.EventType, obj, oldObj
 			store.setModelClaim(o)
 		case discovery.EventDelete:
 			store.deleteModelClaim(o)
+		}
+	case *discovery.ModelConfig:
+		switch evType {
+		case discovery.EventAdd, discovery.EventUpdate:
+			store.setModelConfig(o)
+		case discovery.EventDelete:
+			store.deleteModelConfig(o)
 		}
 	default:
 		klog.Warningf("Discovery event with unknown object type: %T", obj)

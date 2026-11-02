@@ -17,6 +17,8 @@ limitations under the License.
 package discovery
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 )
 
 // watchCollect calls Watch and collects all delivered pods.
@@ -480,6 +483,231 @@ models:
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
+}
+
+func TestStaticProviderModelConfig(t *testing.T) {
+	profiles := `{"defaultProfile": "default", "profiles": {"default": {"routingStrategy": "least-request"}}}`
+	tests := []struct {
+		name        string
+		config      string
+		wantConfigs []*ModelConfig
+		wantPods    int
+	}{
+		{
+			name: "config is delivered for its model",
+			config: `
+models:
+  - name: "model-a"
+    workers:
+      - "a-0:8000"
+      - "a-1:8000"
+    config: '` + profiles + `'
+  - name: "model-b"
+    prefill_workers:
+      - "b-prefill-0:8000"
+    decode_workers:
+      - "b-decode-0:8000"
+`,
+			wantConfigs: []*ModelConfig{{ModelName: "model-a", Config: profiles}},
+			wantPods:    4,
+		},
+		{
+			name: "no config field delivers only pods",
+			config: `
+models:
+  - name: "model-a"
+    workers:
+      - "a-0:8000"
+`,
+			wantPods: 1,
+		},
+		{
+			name: "blank config is treated as absent",
+			config: `
+models:
+  - name: "model-a"
+    workers:
+      - "a-0:8000"
+    config: "  "
+`,
+			wantPods: 1,
+		},
+		{
+			name: "config on one of two entries is the model's config",
+			config: `
+models:
+  - name: "model-a"
+    workers:
+      - "a-0:8000"
+  - name: "model-a"
+    workers:
+      - "a-1:8000"
+    config: '` + profiles + `'
+`,
+			wantConfigs: []*ModelConfig{{ModelName: "model-a", Config: profiles}},
+			wantPods:    2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewStaticProvider(writeTestConfig(t, tt.config))
+			var configs []*ModelConfig
+			var pods []*v1.Pod
+			stopCh := make(chan struct{})
+			defer close(stopCh)
+			err := p.Watch(func(ev WatchEvent) {
+				assert.Equal(t, EventAdd, ev.Type)
+				switch o := ev.Object.(type) {
+				case *ModelConfig:
+					// Configs come first, so the cache has a model's config
+					// before any of its pods.
+					assert.Empty(t, pods, "config delivered after a pod")
+					configs = append(configs, o)
+				case *v1.Pod:
+					assert.Empty(t, o.Annotations, "the config is not copied onto synthetic pods")
+					pods = append(pods, o)
+				default:
+					t.Errorf("unexpected object %T", ev.Object)
+				}
+			}, stopCh)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantConfigs, configs)
+			assert.Len(t, pods, tt.wantPods)
+		})
+	}
+}
+
+// A model config is checked when the file loads, so a bad profile stops the
+// gateway at startup instead of being skipped at request time.
+func TestStaticProviderInvalidModelConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  string
+		wantErr string
+	}{
+		{
+			name: "invalid JSON",
+			config: `
+models:
+  - name: "test-model"
+    workers:
+      - "vllm-0:8000"
+    config: '{"defaultProfile": "default", "profiles": '
+`,
+			wantErr: "parse model config",
+		},
+		{
+			name: "no profiles",
+			config: `
+models:
+  - name: "test-model"
+    workers:
+      - "vllm-0:8000"
+    config: '{"defaultProfile": "default"}'
+`,
+			wantErr: "has no profiles",
+		},
+		{
+			name: "config on two entries of one model",
+			config: `
+models:
+  - name: "test-model"
+    workers:
+      - "vllm-0:8000"
+    config: '{"profiles": {"default": {"routingStrategy": "random"}}}'
+  - name: "test-model"
+    workers:
+      - "vllm-1:8000"
+    config: '{"profiles": {"default": {"routingStrategy": "least-request"}}}'
+`,
+			wantErr: "more than one entry",
+		},
+		{
+			name: "defaultProfile that is not one of the profiles",
+			config: `
+models:
+  - name: "test-model"
+    workers:
+      - "vllm-0:8000"
+    config: '{"defaultProfile": "fast", "profiles": {"default": {"routingStrategy": "random"}}}'
+`,
+			wantErr: `defaultProfile "fast" is not one of its profiles`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTestConfig(t, tt.config)
+			p := NewStaticProvider(path)
+			stopCh := make(chan struct{})
+			defer close(stopCh)
+			err := p.Watch(func(_ WatchEvent) {}, stopCh)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Contains(t, err.Error(), "test-model")
+		})
+	}
+}
+
+// config can also be written as a YAML mapping. It is delivered as JSON, like
+// the string form.
+func TestStaticProviderModelConfigAsMapping(t *testing.T) {
+	path := writeTestConfig(t, `
+models:
+  - name: "model-a"
+    workers:
+      - "a-0:8000"
+    config:
+      defaultProfile: default
+      profiles:
+        default:
+          routingStrategy: least-request
+`)
+	var configs []*ModelConfig
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	err := NewStaticProvider(path).Watch(func(ev WatchEvent) {
+		if cfg, ok := ev.Object.(*ModelConfig); ok {
+			configs = append(configs, cfg)
+		}
+	}, stopCh)
+	require.NoError(t, err)
+	require.Len(t, configs, 1)
+	assert.Equal(t, "model-a", configs[0].ModelName)
+	assert.JSONEq(t, `{"defaultProfile": "default", "profiles": {"default": {"routingStrategy": "least-request"}}}`,
+		configs[0].Config)
+}
+
+// An unknown key is logged rather than rejected, so an existing file keeps
+// loading while a typo such as confg: for config: still shows up.
+func TestStaticProviderWarnsOnUnknownKeys(t *testing.T) {
+	var logs bytes.Buffer
+	klog.LogToStderr(false)
+	klog.SetOutput(&logs)
+	t.Cleanup(func() {
+		klog.SetOutput(io.Discard)
+		klog.LogToStderr(true)
+	})
+
+	path := writeTestConfig(t, `
+models:
+  - name: "test-model"
+    workers:
+      - "vllm-0:8000"
+    confg: '{"profiles": {"default": {"routingStrategy": "random"}}}'
+`)
+	var objects []any
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	err := NewStaticProvider(path).Watch(func(ev WatchEvent) {
+		objects = append(objects, ev.Object)
+	}, stopCh)
+	require.NoError(t, err)
+	klog.Flush()
+
+	require.Len(t, objects, 1)
+	assert.IsType(t, &v1.Pod{}, objects[0])
+	assert.Contains(t, logs.String(), `unknown field "confg"`)
+	assert.Contains(t, logs.String(), path)
 }
 
 func TestStaticProviderMixedSpellings(t *testing.T) {

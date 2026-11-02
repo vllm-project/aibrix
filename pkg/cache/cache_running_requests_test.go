@@ -169,9 +169,9 @@ func TestDecrPodRunningRequests_NoOpWhenKeyMissing(t *testing.T) {
 }
 
 // seedLiveGateway marks runningRequestsGatewayInstanceID (this test process's own
-// identity) as live in the liveness ZSET, so admitRunningRequest's sum actually counts
-// its own field -- without this, the script would treat the field as belonging to a dead
-// gateway and always compute a sum of 0, admitting regardless of limit.
+// identity) as live in the liveness ZSET for tests verifying gateway liveness tracking.
+// Note that runningRequestsAdmitScript always considers selfField live regardless of
+// whether it is in the ZSET, matching overlaySelfRunningRequests on the read side.
 func seedLiveGateway(t *testing.T, client *redis.Client) {
 	t.Helper()
 	require.NoError(t, client.ZAdd(context.Background(), runningRequestsGatewaysKey,
@@ -367,6 +367,79 @@ func TestAdmitRunningRequest_ConcurrentCallsNeverExceedLimit(t *testing.T) {
 	val, err := client.HGet(context.Background(), key, runningRequestsGatewayInstanceID).Result()
 	require.NoError(t, err)
 	require.Equal(t, strconv.Itoa(limit), val, "the field must reflect exactly the admitted count, never more")
+}
+
+// TestAdmitRunningRequest_SelfAlwaysLiveWithoutHeartbeat verifies that the executing gateway's
+// own field is always treated as live by runningRequestsAdmitScript, even if its heartbeat in
+// runningRequestsGatewaysKey has not landed yet or was delayed. Without liveSet[selfField] = true,
+// the script would treat its own hash field as dead, sum to 0, and admit all callers beyond the limit.
+func TestAdmitRunningRequest_SelfAlwaysLiveWithoutHeartbeat(t *testing.T) {
+	oldReadTimeout := runningRequestsReadTimeout
+	runningRequestsReadTimeout = 30 * time.Second
+	t.Cleanup(func() { runningRequestsReadTimeout = oldReadTimeout })
+
+	client := newTestRunningRequestsClient(t)
+	store := &Store{redisClient: client}
+	// Intentionally DO NOT call seedLiveGateway: runningRequestsGatewaysKey is completely empty.
+
+	const (
+		limit       = 3
+		concurrency = 20
+	)
+	var admittedCount int32
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			defer wg.Done()
+			if admitted, _, _ := store.admitRunningRequest(testNamespace, testPodName, limit, 0); admitted {
+				atomic.AddInt32(&admittedCount, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	require.EqualValues(t, limit, admittedCount,
+		"exactly limit callers must be admitted even when no gateway heartbeat is present in Redis")
+
+	key := runningRequestsKey(testNamespace, testPodName)
+	val, err := client.HGet(context.Background(), key, runningRequestsGatewayInstanceID).Result()
+	require.NoError(t, err)
+	require.Equal(t, strconv.Itoa(limit), val, "the field must reflect exactly the admitted count")
+}
+
+// TestAdmitRunningRequest_SelfLiveWithOtherGateways verifies that when another gateway
+// is live in Redis and self is absent from runningRequestsGatewaysKey, both the other
+// gateway's running count and self's count are correctly summed together.
+func TestAdmitRunningRequest_SelfLiveWithOtherGateways(t *testing.T) {
+	ctx := context.Background()
+	client := newTestRunningRequestsClient(t)
+	store := &Store{redisClient: client}
+	key := runningRequestsKey(testNamespace, testPodName)
+
+	// Seed another gateway as live in the gateways ZSET and with in-flight requests in the hash.
+	const otherGatewayID = "gw-other-live"
+	require.NoError(t, client.ZAdd(ctx, runningRequestsGatewaysKey,
+		redis.Z{Score: float64(time.Now().UnixMilli()), Member: otherGatewayID}).Err())
+	require.NoError(t, client.HSet(ctx, key, otherGatewayID, 2).Err())
+	// Self is intentionally absent from runningRequestsGatewaysKey.
+
+	// Limit is 3. Other gateway has 2.
+	// First call from self should observe sum = 2, so it is admitted (limit 3 > 2), bringing total to 3.
+	admitted, counted, running := store.admitRunningRequest(testNamespace, testPodName, 3, 0)
+	require.True(t, admitted)
+	require.True(t, counted)
+	require.EqualValues(t, 2, running)
+
+	// Second call from self should observe sum = 3 (2 from other + 1 from self) and be rejected.
+	admitted, counted, running = store.admitRunningRequest(testNamespace, testPodName, 3, 0)
+	require.False(t, admitted)
+	require.False(t, counted)
+	require.EqualValues(t, 3, running)
+
+	val, err := client.HGet(ctx, key, runningRequestsGatewayInstanceID).Result()
+	require.NoError(t, err)
+	require.Equal(t, "1", val, "self field in hash should be incremented exactly once")
 }
 
 // writeRunningRequestsLivenessHeartbeat must sync this process's clock-offset

@@ -868,6 +868,7 @@ Behavior notes:
 - Requests that already carry a ``priority`` in their body keep the value the caller set, which makes an explicit per-request choice possible even for a tier the table maps.
 - Tier names are matched case-insensitively.
 - A request that the gateway does not map is forwarded byte for byte, so callers that send something else in this header see no change in behavior.
+- ``POST /v1/decisions`` requests are never rewritten: neither vLLM nor SGLang accepts a ``priority`` field there, and both reject unknown fields with ``400``. ``POST /v1/systemone`` requests are rewritten like any other: vLLM schedules each read by the priority, and SGLang ignores the field.
 
 .. note::
 
@@ -1187,7 +1188,7 @@ Routing and Error Debugging Headers
    * - ``x-error-invalid-routing-strategy``
      - Indicates that an unsupported routing strategy was specified.
    * - ``x-error-pd-prefill``
-     - Marks a gateway-generated error because the prefill leg of a ``pd`` request failed. See :doc:`pd-disaggregation`.
+     - Marks an error caused by the prefill leg of a ``pd`` request. 4xx engine answers are returned without it. See :doc:`pd-disaggregation`.
    * - ``x-error-pd-decode``
      - Marks a gateway-generated error because the decode watchdog fired after a successful prefill. See :doc:`pd-disaggregation`.
    * - ``x-error-model-rps-exceeded``

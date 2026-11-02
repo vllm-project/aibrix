@@ -1740,6 +1740,9 @@ func Test_ValidateRequestBody_Classify(t *testing.T) {
 
 func Test_ValidateRequestBody_Decisions(t *testing.T) {
 	const questions = `[{"id": "q1", "type": "choice", "question": "Which?", "options": [{"name": "a"}, {"name": "b"}]}]`
+	const questionsOpenAI = `[{"type": "predicate", "name": "urgent", "instructions": "Is it urgent?"}, ` +
+		`{"type": "choice", "name": "team", "instructions": "Which team?", "choices": [{"value": "billing"}, {"value": "shipping"}]}, ` +
+		`{"type": "score", "instructions": "How upset?", "levels": [{"label": "calm"}, {"label": "furious"}]}]`
 
 	testCases := []struct {
 		message     string
@@ -1791,6 +1794,34 @@ func Test_ValidateRequestBody_Decisions(t *testing.T) {
 			model:       "decider",
 			messages:    "describe",
 			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			// vLLM serves OpenAI's format, where input is a string or an array of user
+			// messages. The gateway routes on the compact JSON of the messages.
+			message:     "/v1/decisions OpenAI format: input as user messages with input_text parts",
+			requestBody: `{"model": "decider", "input": [ {"role": "user", "content": [{"type": "input_text", "text": "Charged twice"}]} ], "questions": ` + questionsOpenAI + `}`,
+			model:       "decider",
+			messages:    `[{"role":"user","content":[{"type":"input_text","text":"Charged twice"}]}]`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions OpenAI format: string input with named predicate, choice and score questions",
+			requestBody: `{"model": "decider", "input": "Charged twice", "safety_identifier": "user-1", "questions": ` + questionsOpenAI + `}`,
+			model:       "decider",
+			messages:    "Charged twice",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions OpenAI format: missing model",
+			requestBody: `{"input": "Charged twice", "questions": ` + questionsOpenAI + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/decisions OpenAI format: questions as an object",
+			requestBody: `{"model": "decider", "input": "Charged twice", "questions": {"urgent": {"type": "predicate"}}}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
 		},
 		{
 			message:     "/v1/decisions query string does not break path matching",
@@ -1996,6 +2027,22 @@ func Test_ValidateRequestBody_SystemOne(t *testing.T) {
 			model:       "decider",
 			messages:    "describe",
 			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			// vLLM declares these on /v1/systemone and rejects any other top-level field.
+			message:     "/v1/systemone vLLM fields are forwarded, not inspected",
+			requestBody: `{"model": "decider", "state": {"ticket": "Charged twice"}, "instructions": "Be brief", "priority": 3, "cache_salt": "tenant-a", "joint": false, "audio": ["data:audio/wav;base64,AAAA"], "videos": ["https://example.com/a.mp4"], "chat_template_kwargs": {"enable_thinking": false}, "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    `{"ticket":"Charged twice"}`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			// vLLM treats model as optional and answers with its served model. The
+			// gateway selects a pod by it, so the request is refused.
+			message:     "/v1/systemone vLLM request that leaves out model",
+			requestBody: `{"state": "Charged twice", "priority": 3, "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
 		},
 		{
 			message:     "/v1/systemone query string does not break path matching",
@@ -2531,6 +2578,89 @@ func TestApplyConfigProfile_AuthoritativePolicyUsesDefaultProfile(t *testing.T) 
 			assert.NotContains(t, ctx.RespHeaders, HeaderAIBrixConfigProfile)
 		})
 	}
+}
+
+func TestApplyConfigProfile_ModelConfig(t *testing.T) {
+	modelConfig := `{
+		"defaultProfile":"default",
+		"profiles":{
+			"default":{"routingStrategy":"least-request"},
+			"cache-friendly":{"routingStrategy":"prefix-cache","requestsPerSecond":7}
+		}
+	}`
+	annotated := &v1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "pod-a",
+		Annotations: map[string]string{
+			constants.ModelAnnoConfig: `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"random"}}}`,
+		},
+	}}
+	plain := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-b"}}
+
+	tests := []struct {
+		name             string
+		modelConfig      string
+		reqConfigProfile string
+		pods             []*v1.Pod
+		wantStrategy     string
+		wantRPS          int64
+	}{
+		{
+			name:         "model config default profile",
+			modelConfig:  modelConfig,
+			pods:         []*v1.Pod{plain},
+			wantStrategy: "least-request",
+		},
+		{
+			name:             "config-profile picks a model config profile",
+			modelConfig:      modelConfig,
+			reqConfigProfile: "cache-friendly",
+			pods:             []*v1.Pod{plain},
+			wantStrategy:     "prefix-cache",
+			wantRPS:          7,
+		},
+		{
+			name:         "model config wins over a pod annotation",
+			modelConfig:  modelConfig,
+			pods:         []*v1.Pod{annotated},
+			wantStrategy: "least-request",
+		},
+		{
+			name:         "no model config keeps the pod annotation",
+			pods:         []*v1.Pod{annotated},
+			wantStrategy: "random",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := types.NewRoutingContext(context.Background(), "", "model", "", "request-1", "")
+			ctx.ModelConfig = tt.modelConfig
+			ctx.ReqConfigProfile = tt.reqConfigProfile
+
+			applyConfigProfile(ctx, tt.pods)
+
+			require.NotNil(t, ctx.ConfigProfile)
+			assert.Equal(t, tt.wantStrategy, ctx.ConfigProfile.RoutingStrategy)
+			assert.Equal(t, tt.wantRPS, ctx.ConfigProfile.RequestsPerSecond)
+		})
+	}
+}
+
+// modelConfigTestCache adds cache.ModelConfigCache to MockCache.
+type modelConfigTestCache struct {
+	*MockCache
+	configs map[string]string
+}
+
+func (c modelConfigTestCache) ModelConfig(model string) (string, bool) {
+	cfg, ok := c.configs[model]
+	return cfg, ok
+}
+
+func TestModelConfigFromCache(t *testing.T) {
+	withConfigs := modelConfigTestCache{MockCache: &MockCache{}, configs: map[string]string{"model": `{"profiles":{}}`}}
+	assert.Equal(t, `{"profiles":{}}`, modelConfigFromCache(withConfigs, "model"))
+	assert.Empty(t, modelConfigFromCache(withConfigs, "other-model"))
+	assert.Empty(t, modelConfigFromCache(&MockCache{}, "model"), "a cache without ModelConfigCache has no model config")
 }
 
 func TestMaxTokensFromRequestBody(t *testing.T) {

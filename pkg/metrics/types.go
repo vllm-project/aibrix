@@ -215,6 +215,11 @@ func (h *HistogramMetricValue) GetPercentile(percentile float64) (float64, error
 	if totalCount <= 0 || totalCount < maxCount {
 		totalCount = maxCount
 	}
+	// With no observations every bucket count is 0, so the first bucket would match
+	// and its upper bound would be returned as if it had been observed.
+	if totalCount <= 0 {
+		return 0, fmt.Errorf("histogram has no observations")
+	}
 
 	target := percentile / 100.0 * totalCount
 

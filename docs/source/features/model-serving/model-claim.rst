@@ -560,15 +560,19 @@ A model that wakes then needs room again:
 * If its GPU has room, it wakes at once.
 * Otherwise, the controller puts other models on the GPU to sleep, the longest
   idle first and one at a time, until the waking model fits. It takes only
-  models that have been idle for ``sleepToMakeRoomAfterSeconds``. Meanwhile,
-  the waking model's claim reads ``WaitingForRoom``, and each model put to
-  sleep gets a ``SleptToMakeRoom`` Event.
+  models that have been idle for ``sleepToMakeRoomAfterSeconds`` and whose
+  claims have the same or a lower priority than the waking model's claim.
+  Meanwhile, the waking model's claim reads ``WaitingForRoom``, and each model
+  put to sleep gets a ``SleptToMakeRoom`` Event.
 * If no model can be put to sleep for it, and another Pod has room, the model
   moves there. A new engine loads it on that Pod.
 * Otherwise, it waits for room for up to five minutes, and the next request
   asks again.
 
 In such a pool, a new claim that no Pod has room for gets room the same way.
+With the default ``preemptionPolicy: Never``, making room this way does not
+compare priorities, so an idle model of any priority may be put to sleep for
+the claim.
 The controller puts idle models to sleep on one Pod, and the claim's
 ``Scheduled`` condition reads ``MakingRoom`` until the claim is placed.
 ``SleepLowerPriority`` uses the same pool safety rules and reservation, but

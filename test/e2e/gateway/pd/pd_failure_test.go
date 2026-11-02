@@ -39,6 +39,19 @@ func requirePDGatewayFailure(t *testing.T, result PDRequestResult) {
 	require.NotEmpty(t, errorBody["message"])
 }
 
+// requirePrefillEngineError asserts the client got the engine's own OpenAI-shaped
+// error, with the message the engine wrote and no gateway envelope around it.
+func requirePrefillEngineError(t *testing.T, result PDRequestResult, message string) map[string]any {
+	t.Helper()
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(result.Body, &response))
+	errorBody := requireNestedMap(t, response, "error")
+	body, ok := errorBody["message"].(string)
+	require.True(t, ok, "error message must be a string, got %T", errorBody["message"])
+	require.Contains(t, body, message)
+	return errorBody
+}
+
 func requireNoSuccessfulPDLeg(t *testing.T, records []MockRequestRecord, role string) {
 	t.Helper()
 	for _, record := range records {
@@ -92,7 +105,16 @@ func runSynchronousPrefillFailure(
 		http.Header{mockPrefillFailureHeader: []string{"prefill"}},
 	)
 	require.Error(t, err)
-	requirePDGatewayFailure(t, result)
+	// The prefill engine answered, so its status and payload are the client's
+	// answer: no routing-failure 503, and the marker says which leg failed.
+	require.Equal(t, http.StatusInternalServerError, result.StatusCode,
+		"the prefill engine's status must reach the client unchanged")
+	require.Equal(t, "true", result.Headers.Get(prefillFailFastHeader),
+		"the gateway must mark the engine error as a prefill failure")
+	require.Empty(t, result.Headers.Get("x-error-routing"),
+		"an engine answer is not a routing failure")
+	errorBody := requirePrefillEngineError(t, result, "mock failure injected for role prefill")
+	require.Equal(t, "api_error", errorBody["type"])
 	gatewayRequestID := requireGatewayRequestID(t, result)
 
 	k8sClient := initializeKubernetesClient(t)
@@ -124,6 +146,35 @@ func TestPDFailureTRTLLMSynchronousPrefill(t *testing.T) {
 		"max_tokens":8,
 		"stream":false
 	}`))
+}
+
+// TestPDFailureVLLMSynchronousPrefillRejected covers the engine rejecting the
+// request itself: the prefill leg answers 400, and the client must see that same
+// 400 and payload. No marker is added, because the request would be rejected
+// the same way wherever it was routed.
+func TestPDFailureVLLMSynchronousPrefillRejected(t *testing.T) {
+	waitForPDDisaggregationRouting(t, modelNameVLLM)
+	requestID := newRequestID("vllm-prefill-rejected")
+	result, err := sendPDRequestWithHeaders(
+		context.Background(), e2eConfig, "pd", requestID, []byte(`{
+			"model":"llama2-7b-vllm",
+			"messages":[{"role":"user","content":"trigger a vLLM prefill rejection"}],
+			"max_tokens":8,
+			"stream":false
+		}`),
+		// The mock validates its fault headers before serving the prefill request
+		// and answers 400 for an unparsable one.
+		http.Header{"x-aibrix-mock-delay-ms": []string{"not-a-number"}},
+	)
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, result.StatusCode,
+		"the engine's 400 must reach the client unchanged")
+	require.Empty(t, result.Headers.Get(prefillFailFastHeader),
+		"a rejected request must not carry the prefill failure marker")
+	require.Empty(t, result.Headers.Get("x-error-routing"),
+		"a rejected request must not be reported as a routing failure")
+	errorBody := requirePrefillEngineError(t, result, "invalid x-aibrix-mock-delay-ms")
+	require.Equal(t, "invalid_request_error", errorBody["type"])
 }
 
 func TestPDFailureSGLangAsyncPrefillHandoff(t *testing.T) {

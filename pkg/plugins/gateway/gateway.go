@@ -844,6 +844,11 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	ctx, span = tracer.Start(ctx, "process.select_target_pod")
 	defer span.End()
 
+	// Seeding and scoring share prefix matches only within this decision. A retry
+	// must see index updates made since the previous attempt.
+	routeCtx.SetSeededPrefixMatch(nil)
+	defer routeCtx.SetSeededPrefixMatch(nil)
+
 	if pods.Len() == 0 {
 		return "", fmt.Errorf("no pods for routing")
 	}
