@@ -26,6 +26,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace"
 	v1 "k8s.io/api/core/v1"
@@ -129,7 +130,7 @@ func TestRateLimitingDisabledKeepsReplicaInflight(t *testing.T) {
 	assert.Nil(t, server.enforceModelRPS(context.Background(), "model", routingCtx))
 	assert.Empty(t, redisServer.Keys())
 
-	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, false, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1), mock.Anything).Return(false, false, nil).Once()
 	routingCtx.SetTargetPod(pod)
 	resp := server.enforceReplicaInflight(context.Background(), "model", routingCtx)
 	require.NotNil(t, resp.GetImmediateResponse())

@@ -130,10 +130,12 @@ func (c *fakeCache) GetMetricValueByPodModel(pod, _, _, metric string) (metrics.
 func (c *fakeCache) GetPodRunningRequests(podName, podNamespace string) (int64, error) {
 	return int64(c.metricValue(podName, metrics.RealtimeNumRequestsRunning).GetSimpleValue()), nil
 }
-func (c *fakeCache) AdmitPodRunningRequest(podName, podNamespace string, limit int64) (bool, bool, error) {
+func (c *fakeCache) AdmitPodRunningRequest(
+	podName, podNamespace string, limit int64, _ *types.RoutingContext,
+) (bool, bool, error) {
 	return int64(c.metricValue(podName, metrics.RealtimeNumRequestsRunning).GetSimpleValue()) < limit, false, nil
 }
-func (c *fakeCache) ReleasePodRunningRequest(podName, podNamespace string) {}
+func (c *fakeCache) ReleasePodRunningRequest(podName, podNamespace string, counted bool, reservedGen int64) {}
 func (c *fakeCache) GetPodsRunningRequests(pods []*corev1.Pod) (map[string]int64, error) {
 	result := make(map[string]int64, len(pods))
 	for _, pod := range pods {

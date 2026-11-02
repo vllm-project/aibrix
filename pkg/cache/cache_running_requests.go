@@ -19,6 +19,7 @@ package cache
 import (
 	"context"
 	"errors"
+	"math"
 	"net"
 	"strconv"
 	"sync/atomic"
@@ -267,7 +268,11 @@ func (c *Store) decrPodRunningRequests(namespace, name string) {
 // ARGV[2] = live-gateway cutoff (unix ms, inclusive lower bound) -- see liveGatewaysCutoffMillis
 // ARGV[3] = inflight limit
 // ARGV[4] = hash key TTL in milliseconds
-// ARGV[5] = this gateway's local atomic running-request count for the pod
+// ARGV[5] = this gateway's local atomic running-request count for the pod as of the call
+// (post-admission-reservation callers pass the pre-reservation value -- see
+// reserveLocalRunningSlot -- so this request's own claim is not double-counted; the value
+// still includes other callers' outstanding reservations, which is what makes them visible
+// to the sum before their hash increment, if any, has landed)
 // Returns {1, sum} and increments if sum < limit, else {0, sum} with no increment -- sum is
 // always the live total *before* this call's own increment (if any).
 const runningRequestsAdmitScript = `
@@ -317,18 +322,21 @@ return {1, sum}
 // admitScriptDidNotRun). A nil client, a pre-send failure and, as a fallback policy, an
 // unusable reply leave the increment to normal request tracking.
 //
-// localRunning is the caller's already-known local atomic count for the pod (addPodStats
-// will still increment it normally regardless of this call's outcome -- that counter is
-// local bookkeeping, not part of this Redis-backed cap). Two roles: (1) the fallback
-// decision when Redis is unavailable -- failing open to a local-only decision (rather than
-// blocking admission, or admitting unconditionally) matches this package's
-// degrade-gracefully-under-a-slow/dead-Redis philosophy everywhere else, at the cost of the
-// cap being only best-effort for the duration of an actual outage; (2) passed into
-// runningRequestsAdmitScript as a floor on this gateway's own hash field -- a max(), not a
-// substitution like overlaySelfRunningRequests uses for reads, because that field's own
-// prior writes can come from this very script, which updates it before localRunning
-// catches up -- see the script's doc comment for why an unconditional substitution would
-// be wrong here specifically.
+// localRunning is the caller's already-known local atomic count for the pod at the moment
+// of the call (post-admission-reservation callers pass the pre-reservation value, see
+// reserveLocalRunningSlot). Two roles: (1) the fallback decision when Redis is unavailable
+// -- failing open to a local-only decision (rather than blocking admission, or admitting
+// unconditionally) matches this package's degrade-gracefully-under-a-slow/dead-Redis
+// philosophy everywhere else, at the cost of the cap being only best-effort for the
+// duration of an actual outage; callers that reserve a slot first (see
+// AdmitPodRunningRequest) make that fallback safe under concurrency, because the slot
+// claim is what serializes concurrent fallback admissions, and localRunning already
+// includes every other outstanding reservation; (2) passed into runningRequestsAdmitScript
+// as a floor on this gateway's own hash field -- a max(), not a substitution like
+// overlaySelfRunningRequests uses for reads, because that field's own prior writes can
+// come from this very script, which updates it before localRunning catches up -- see the
+// script's doc comment for why an unconditional substitution would be wrong here
+// specifically.
 func (c *Store) admitRunningRequest(namespace, name string, limit, localRunning int64) (admitted, counted bool, running int64) {
 	if c.redisClient == nil {
 		return localRunning < limit, false, localRunning
@@ -347,7 +355,8 @@ func (c *Store) admitRunningRequest(namespace, name string, limit, localRunning 
 		runningRequestsGatewayInstanceID, c.liveGatewaysCutoffMillis(), strconv.FormatInt(limit, 10),
 		strconv.FormatInt(runningRequestsTTL.Milliseconds(), 10), strconv.FormatInt(localRunning, 10)).Result()
 	if err != nil {
-		klog.V(4).ErrorS(err, "failed to atomically admit against running-requests inflight cap; falling back to local count", "key", key)
+		klog.V(2).ErrorS(err, "failed to atomically admit against running-requests inflight cap; falling back to local count",
+			"key", key)
 		// After a timeout or a dropped connection the script may still have applied its +1, so
 		// keep treating it as applied: completion's one decrement then removes it. If the script
 		// never ran, that decrement undercounts a positive field; zero-clamping prevents negative
@@ -358,13 +367,15 @@ func (c *Store) admitRunningRequest(namespace, name string, limit, localRunning 
 	}
 	arr, ok := res.([]interface{})
 	if !ok || len(arr) != 2 {
-		klog.V(4).InfoS("unexpected running-requests admit script result shape; falling back to local count", "key", key)
+		klog.V(2).InfoS("unexpected running-requests admit script result shape; falling back to local count",
+			"key", key)
 		return localRunning < limit, false, localRunning
 	}
 	admittedFlag, flagOK := arr[0].(int64)
 	running, runningOK := arr[1].(int64)
 	if !flagOK || !runningOK || (admittedFlag != 0 && admittedFlag != 1) {
-		klog.V(4).InfoS("unexpected running-requests admit script result values; falling back to local count", "key", key)
+		klog.V(2).InfoS("unexpected running-requests admit script result values; falling back to local count",
+			"key", key)
 		return localRunning < limit, false, localRunning
 	}
 	return admittedFlag == 1, admittedFlag == 1, running
@@ -394,6 +405,80 @@ func admitRunningRequestsClient(client *redis.Client) *redis.Client {
 	options := *client.Options()
 	options.MaxRetries = -1
 	return redis.NewClient(&options)
+}
+
+// SetAdmitRedisClientForTest overrides admitRedisClient for testing fallback behaviors.
+func (c *Store) SetAdmitRedisClientForTest(client *redis.Client) {
+	c.admitRedisClient = client
+}
+
+// CloseAdmitRedisClientForTest closes the derived admit client so only the admit script fails.
+func (c *Store) CloseAdmitRedisClientForTest() {
+	if c.admitRedisClient != nil {
+		_ = c.admitRedisClient.Close()
+	}
+}
+
+// reserveLocalRunningSlot atomically claims one inflight-cap slot on pod's local
+// running-requests counter, when that counter (which includes every other outstanding
+// admission reservation, since the slot is claimed on the same counter a tracked request
+// would later occupy -- see AdmitPodRunningRequest) is still under limit. This is what makes
+// the admission safe to decide locally: without a claim, every concurrent caller on this
+// gateway observes the same un-incremented count -- most importantly the
+// admitRunningRequest fallback, which on a Redis round-trip error decides from
+// localRunning alone and cannot see the Redis-side increment (if any) a concurrent caller
+// committed -- so with a tight limit, all of them can be admitted at once (issue #3346's
+// flaky e2e). The claim lands BEFORE any Redis round trip, on the request path, so it is
+// the one admission bookkeeping step that is not asynchronous.
+//
+// It reports the counter's value BEFORE the claim, for the caller to pass on as the admit
+// script's local floor (ARGV[5]): excluding this request's own claim (the script itself
+// applies the request's +1) while still including other callers' outstanding claims, which
+// the Redis sum must not miss. ok is false when the pod is at or over limit at claim time;
+// no slot was claimed and there is nothing to unwind.
+func reserveLocalRunningSlot(pod *Pod, limit int64) (local int64, ok bool) {
+	// runningRequests is a 32-bit counter like everywhere else in this package; an inflight
+	// limit beyond its range is unsatisfiable by real traffic, so clamp rather than let the
+	// wrap make every claim look "at cap".
+	capped := limit
+	if capped > math.MaxInt32 {
+		capped = math.MaxInt32
+	}
+	for {
+		cur := atomic.LoadInt32(&pod.runningRequests)
+		if int64(cur) >= capped {
+			return int64(cur), false
+		}
+		if atomic.CompareAndSwapInt32(&pod.runningRequests, cur, cur+1) {
+			return int64(cur), true
+		}
+	}
+}
+
+// releaseLocalRunningSlot undoes one reserveLocalRunningSlot claim, for an admission whose
+// Redis round trip rejected it (finds the slot taken between claim and script) or
+// ReleasePodRunningRequest unclaiming a request that never reached request tracking. The
+// counter arithmetic treats claims and their releases as ordinary +1/-1 against the same
+// counter tracking adds and completions use, so interleavings with concurrent tracking
+// still reconcile; the zero floor exists for the same defense-in-depth reason as
+// donePodStats's decrementClamped, and here also covers a claimed slot orphaned by a
+// delete/re-add flap (the claim was made on the pre-flap object, whose counter is
+// unreachable via metaPods afterwards).
+// releaseLocalRunningCounter decrements counter by 1 down to a floor of 0.
+func releaseLocalRunningCounter(counter *int32) {
+	for {
+		cur := atomic.LoadInt32(counter)
+		if cur == 0 {
+			return
+		}
+		if atomic.CompareAndSwapInt32(counter, cur, cur-1) {
+			return
+		}
+	}
+}
+
+func releaseLocalRunningSlot(pod *Pod) {
+	releaseLocalRunningCounter(&pod.runningRequests)
 }
 
 // heartbeatRunningRequestsLiveness refreshes this gateway instance's entry in

@@ -963,7 +963,18 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 			}
 		}
 		s.encodeMedia(routeCtx, encoders)
-		return routeCtx.TargetAddress(), nil
+		targetAddr := routeCtx.TargetAddress()
+		if targetAddr == "" && (routeCtx.ReplicaInflightAdmitted || routeCtx.ReplicaInflightReserved) {
+			var gen int64
+			if routeCtx.ReplicaInflightReserved {
+				gen = routeCtx.ReplicaInflightReservedGen
+			}
+			s.cache.ReleasePodRunningRequest(readyPods[0].Name, readyPods[0].Namespace, routeCtx.ReplicaInflightAdmitted, gen)
+			routeCtx.ReplicaInflightAdmitted = false
+			routeCtx.ReplicaInflightReserved = false
+			routeCtx.ReplicaInflightReservedGen = 0
+		}
+		return targetAddr, nil
 	}
 	// The order only breaks ties between equally scored pods, so it needs to be unbiased, not
 	// unpredictable: crypto/rand here cost a syscall per pod on every request.
@@ -976,6 +987,19 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	var addr string
 	if limit := replicaInflightLimit(routeCtx); limit > 0 {
 		addr, err = s.routeWithEarlyAdmission(routeCtx, router, &utils.PodArray{Pods: readyPods}, limit)
+		if err == nil && addr == "" && routeCtx.TargetPod() != nil &&
+			(routeCtx.ReplicaInflightAdmitted || routeCtx.ReplicaInflightReserved) {
+			var gen int64
+			if routeCtx.ReplicaInflightReserved {
+				gen = routeCtx.ReplicaInflightReservedGen
+			}
+			targetPod := routeCtx.TargetPod()
+			s.cache.ReleasePodRunningRequest(targetPod.Name, targetPod.Namespace,
+				routeCtx.ReplicaInflightAdmitted, gen)
+			routeCtx.ReplicaInflightAdmitted = false
+			routeCtx.ReplicaInflightReserved = false
+			routeCtx.ReplicaInflightReservedGen = 0
+		}
 	} else {
 		addr, err = router.Route(routeCtx, &utils.PodArray{Pods: readyPods})
 	}
