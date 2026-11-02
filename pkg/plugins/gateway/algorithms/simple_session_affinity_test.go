@@ -566,15 +566,19 @@ func TestSessionAffinityStartNilRedisIsNoop(t *testing.T) {
 }
 
 func TestSessionAffinityStartWiresClient(t *testing.T) {
-	router, _ := newTestSessionAffinityRedis(t)
-	client := router.redisClient
-	router.redisClient = nil
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr(), Password: "s3cret", DB: 2})
+	t.Cleanup(func() { _ = client.Close() })
+	router := &sessionAffinityRouter{}
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })
 	router.Start(stop, client)
 	wired := router.redisClient
 	require.NotNil(t, wired)
+	t.Cleanup(func() { _ = wired.Close() })
 	assert.Equal(t, client.Options().Addr, wired.Options().Addr)
+	assert.Equal(t, client.Options().Password, wired.Options().Password, "the derived client must keep the shared credentials")
+	assert.Equal(t, client.Options().DB, wired.Options().DB, "the derived client must keep the shared database")
 	assert.True(t, wired.Options().ContextTimeoutEnabled, "the router's client must honor the context deadline")
 	router.Start(stop, &redis.Client{})
 	assert.Same(t, wired, router.redisClient, "Start is idempotent")
@@ -1169,6 +1173,7 @@ func TestSessionKeyReadBudgetOnSilentTCPConnection(t *testing.T) {
 	t.Cleanup(func() { _ = shared.Close() })
 	router := &sessionAffinityRouter{}
 	router.Start(stop, shared)
+	t.Cleanup(func() { _ = router.redisClient.Close() })
 
 	labels := map[string]string{"model.aibrix.ai/port": "8000"}
 	pods := []*v1.Pod{
