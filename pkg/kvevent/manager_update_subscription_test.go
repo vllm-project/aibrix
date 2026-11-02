@@ -31,7 +31,43 @@ import (
 func updateTestPod() *v1.Pod {
 	return &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "relabeled", Namespace: "default", Labels: map[string]string{
 		constants.ModelLabelName: "old-model", constants.LoraIDLabel: "11", constants.KVEventsEnabledLabel: "true",
-	}}, Status: v1.PodStatus{Phase: v1.PodRunning, PodIP: "127.0.0.1"}}
+	}}, Status: v1.PodStatus{Phase: v1.PodRunning, PodIP: "127.0.0.1",
+		Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}}
+}
+
+func setPodReady(pod *v1.Pod, ready bool) {
+	status := v1.ConditionFalse
+	if ready {
+		status = v1.ConditionTrue
+	}
+	pod.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: status}}
+}
+
+// countSubscriberStarts makes m start real clients, as the other tests here do
+// (no publisher is needed), and counts the starts.
+func countSubscriberStarts(m *Manager) *int {
+	starts := 0
+	m.startSubscriber = func(c *kvcache.ZMQClientConfig, h kvcache.EventHandler) (*kvcache.ZMQClient, error) {
+		c.ReplayTimeout = time.Millisecond
+		starts++
+		return startZMQSubscriber(c, h)
+	}
+	return &starts
+}
+
+// testPodProvider serves pods to OnPodAdd as the store does.
+type testPodProvider map[string]*v1.Pod
+
+func (p testPodProvider) GetPod(_ context.Context, podKey string) (*PodInfo, bool) {
+	pod, ok := p[podKey]
+	if !ok {
+		return nil, false
+	}
+	return podInfoFromPod(pod), true
+}
+
+func (p testPodProvider) RangePods(context.Context, func(string, *PodInfo) bool) error {
+	return nil
 }
 
 func newUpdateTestManager(t *testing.T) (*Manager, *mockSyncIndexerWithErrors) {
@@ -153,5 +189,110 @@ func TestManagerPodUpdateSubscribeInterleavesStop(t *testing.T) {
 	if startedClient.IsConnected() {
 		startedClient.Stop()
 		t.Fatal("subscriber stored after Stop must have its sockets closed, not only be removed from the map")
+	}
+}
+
+// TestManagerSubscribesWhenPodTurnsReady checks that a pod is first subscribed
+// when it turns Ready, not when it starts Running: vLLM binds its replay
+// socket only after loading the model, while the pod is Running but not Ready.
+func TestManagerSubscribesWhenPodTurnsReady(t *testing.T) {
+	m, indexer := newUpdateTestManager(t)
+	starts := countSubscriberStarts(m)
+	key := "default/relabeled"
+
+	pending := updateTestPod()
+	pending.Status.Phase = v1.PodPending
+	setPodReady(pending, false)
+	loading := pending.DeepCopy()
+	loading.Status.Phase = v1.PodRunning
+	m.OnPodUpdate(pending, loading)
+	if _, exists := m.subscribers.Load(key); exists || *starts != 0 {
+		t.Fatalf("subscribed to a pod that is Running but not Ready (starts=%d)", *starts)
+	}
+
+	ready := loading.DeepCopy()
+	setPodReady(ready, true)
+	m.OnPodUpdate(loading, ready)
+	client, exists := m.subscribers.Load(key)
+	if !exists || *starts != 1 {
+		t.Fatalf("pod turned Ready: subscribed=%v, starts=%d; want one subscription", exists, *starts)
+	}
+
+	// Losing readiness later (a slow probe under load) keeps the subscription
+	// and the pod's prefixes; turning Ready again starts no second client.
+	notReady := ready.DeepCopy()
+	setPodReady(notReady, false)
+	m.OnPodUpdate(ready, notReady)
+	m.OnPodUpdate(notReady, ready)
+	if now, _ := m.subscribers.Load(key); now != client || *starts != 1 || !client.IsConnected() {
+		t.Fatalf("a NotReady flap replaced or stopped the subscription (starts=%d)", *starts)
+	}
+	if len(indexer.removePrefixCalls) != 0 {
+		t.Fatalf("a NotReady flap purged the pod's prefixes: %+v", indexer.removePrefixCalls)
+	}
+}
+
+func TestManagerPodAddSubscribesOnlyWhenReady(t *testing.T) {
+	m, _ := newUpdateTestManager(t)
+	starts := countSubscriberStarts(m)
+	key := "default/relabeled"
+	pod := updateTestPod()
+	m.podProvider = testPodProvider{key: pod}
+
+	setPodReady(pod, false)
+	m.OnPodAdd(pod)
+	if _, exists := m.subscribers.Load(key); exists || *starts != 0 {
+		t.Fatalf("subscribed to an added pod that is not Ready (starts=%d)", *starts)
+	}
+
+	setPodReady(pod, true)
+	m.OnPodAdd(pod)
+	if _, exists := m.subscribers.Load(key); !exists || *starts != 1 {
+		t.Fatalf("added Ready pod: subscribed=%v, starts=%d; want one subscription", exists, *starts)
+	}
+}
+
+// TestManagerPodRelabeledWhileNotReadyWaitsForReady checks that a model change
+// on a pod that is not Ready still ends the old subscription and purges the old
+// context at once, and starts the new subscription when the pod is Ready.
+func TestManagerPodRelabeledWhileNotReadyWaitsForReady(t *testing.T) {
+	m, indexer := newUpdateTestManager(t)
+	starts := countSubscriberStarts(m)
+	key := "default/relabeled"
+	oldPod := updateTestPod()
+	if err := m.subscribeToPod(m.ctx, key, podInfoFromPod(oldPod)); err != nil {
+		t.Fatal(err)
+	}
+	oldClient, _ := m.subscribers.Load(key)
+
+	notReady := oldPod.DeepCopy()
+	setPodReady(notReady, false)
+	m.OnPodUpdate(oldPod, notReady)
+	relabeled := notReady.DeepCopy()
+	relabeled.Labels[constants.ModelLabelName] = "new-model"
+	m.OnPodUpdate(notReady, relabeled)
+	if _, exists := m.subscribers.Load(key); exists || *starts != 1 {
+		t.Fatalf("relabeled pod that is not Ready: subscribed=%v, starts=%d; want the old client stopped and no new one", exists, *starts)
+	}
+	if oldClient.IsConnected() {
+		t.Fatal("old subscriber was not stopped")
+	}
+	wantPurge := []removePrefixCall{{"old-model", 11, key}}
+	if !reflect.DeepEqual(indexer.removePrefixCalls, wantPurge) {
+		t.Fatalf("purges = %+v, want %+v", indexer.removePrefixCalls, wantPurge)
+	}
+
+	ready := relabeled.DeepCopy()
+	setPodReady(ready, true)
+	m.OnPodUpdate(relabeled, ready)
+	client, exists := m.subscribers.Load(key)
+	if !exists || *starts != 2 {
+		t.Fatalf("relabeled pod turned Ready: subscribed=%v, starts=%d; want a new subscription", exists, *starts)
+	}
+	if client == oldClient {
+		t.Fatal("the old subscriber was reused for the new model")
+	}
+	if !reflect.DeepEqual(indexer.removePrefixCalls, wantPurge) {
+		t.Fatalf("purges = %+v, want only %+v", indexer.removePrefixCalls, wantPurge)
 	}
 }
