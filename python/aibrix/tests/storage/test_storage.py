@@ -218,6 +218,34 @@ def _ordered_keys_for_backend(storage: BaseStorage, keys: list[str]) -> list[str
     return sorted(keys)
 
 
+async def _list_all_objects_with_prefix(storage: BaseStorage, prefix: str) -> list[str]:
+    objects: list[str] = []
+    continuation_token: str | None = None
+    while True:
+        page, next_token = await storage.list_objects(
+            prefix, continuation_token=continuation_token
+        )
+        objects.extend(page)
+        if not next_token or next_token == continuation_token:
+            return objects
+        continuation_token = next_token
+
+
+async def _upload_small_parts(
+    storage: BaseStorage, key: str, upload_id: str, part_count: int
+) -> None:
+    upload_concurrency = max(1, storage.config.max_session_concurrency)
+    upload_semaphore = asyncio.Semaphore(upload_concurrency)
+
+    async def upload_part(part_number: int) -> None:
+        async with upload_semaphore:
+            await storage.upload_part(key, upload_id, part_number, b"test data")
+
+    await asyncio.gather(
+        *(upload_part(part_number) for part_number in range(1, part_count + 1))
+    )
+
+
 class TestStorageFunctionality:
     """Test storage functionality that should work for all implementations."""
 
@@ -846,9 +874,12 @@ class TestStorageFunctionality:
         await storage.delete_object(key)
 
     @pytest.mark.asyncio
-    async def test_abort_multipart_upload(self, storage: BaseStorage):
-        """Test aborting a multipart upload."""
-        key = "test/abort_multipart.txt"
+    async def test_native_abort_multipart_upload(self, storage: BaseStorage):
+        """Test aborting a native multipart upload."""
+        if not storage.is_native_multipart_supported():
+            pytest.skip("Native multipart upload is not supported")
+
+        key = "test/native_abort_multipart.txt"
 
         # Create multipart upload
         upload_id = await storage.create_multipart_upload(key)
@@ -861,6 +892,38 @@ class TestStorageFunctionality:
 
         # Verify the file was not created
         assert not await storage.object_exists(key)
+
+    @pytest.mark.asyncio
+    async def test_small_parts_abort_multipart_upload_cleans_staged_files(
+        self, storage: BaseStorage
+    ):
+        """Test aborting a small-parts upload removes every staged object."""
+        key = "test/small_abort_multipart.txt"
+        upload_id = await storage.create_multipart_upload(key, small_parts=True)
+        multipart_prefix = storage._multipart_upload_key(upload_id, "")
+
+        try:
+            await _upload_small_parts(storage, key, upload_id, part_count=1001)
+
+            staged_objects = await _list_all_objects_with_prefix(
+                storage, multipart_prefix
+            )
+            assert len(staged_objects) > 1000
+
+            await storage.abort_multipart_upload(key, upload_id)
+
+            remaining_objects = await _list_all_objects_with_prefix(
+                storage, multipart_prefix
+            )
+            assert remaining_objects == []
+            assert not await storage.object_exists(key)
+        finally:
+            remaining_objects = await _list_all_objects_with_prefix(
+                storage, multipart_prefix
+            )
+            for obj_key in remaining_objects:
+                await storage.delete_object(obj_key)
+            await storage.delete_object(storage._multipart_upload_key(upload_id))
 
     @pytest.mark.asyncio
     async def test_multipart_upload_integration(self, storage: BaseStorage):

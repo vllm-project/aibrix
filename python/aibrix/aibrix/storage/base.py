@@ -254,7 +254,10 @@ class BaseStorage(ABC):
         Args:
             prefix: Key prefix to filter objects
             delimiter: Delimiter for hierarchical listing
-            limit: Maximum number of objects to return (None for no limit)
+            limit: Maximum number of objects to request in one page. ``None`` means
+                no caller-specified page size; it does not mean an unlimited
+                listing. Backends may still apply their default or maximum page
+                size and return a continuation token.
             continuation_token: Token to continue from previous pagination call
             after_key: Key from the previous page to translate into a backend
                 continuation position when continuation_token is not provided
