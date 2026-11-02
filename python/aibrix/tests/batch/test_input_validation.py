@@ -70,6 +70,17 @@ def test_reject_duplicate_custom_ids(lines, line_num, custom_id):
     )
 
 
+@pytest.mark.parametrize(
+    "custom_id, error",
+    [
+        ("a'b", 'Line 2: Duplicate custom_id "a\'b"'),
+        ("a\nb", r"Line 2: Duplicate custom_id 'a\nb'"),
+    ],
+)
+def test_duplicate_custom_id_error_quotes_and_escapes_id(custom_id, error):
+    assert _validate([_request(custom_id), _request(custom_id)]) == (0, error)
+
+
 def test_distinct_custom_ids_remain_case_and_whitespace_sensitive():
     assert _validate([_request("id"), "", _request("ID"), _request("id ")]) == (
         3,

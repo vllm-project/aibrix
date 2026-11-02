@@ -89,7 +89,7 @@ async def validate_batch_input_file(
 
             custom_id = request["custom_id"]
             if custom_id in seen_custom_ids:
-                return 0, f"Line {line_num}: Duplicate custom_id '{custom_id}'"
+                return 0, f"Line {line_num}: Duplicate custom_id {custom_id!r}"
             seen_custom_ids.add(custom_id)
 
             if not isinstance(request.get("method"), str):

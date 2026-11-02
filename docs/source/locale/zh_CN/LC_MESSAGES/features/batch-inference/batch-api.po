@@ -586,6 +586,12 @@ msgstr "``url`` ：端点路径，例如 \"/v1/chat/completions\"（必填）"
 msgid "``body``: Request payload matching the endpoint's format (required)"
 msgstr "``body`` ：与端点格式匹配的请求负载（必填）"
 
+#: ../../source/features/batch-inference/batch-api.rst:715
+msgid ""
+"Repeated ``custom_id`` values within one input file cause the batch to fail "
+"validation with the ``validation_error`` code."
+msgstr "同一输入文件中重复的 ``custom_id`` 会导致批次校验失败，错误代码为 ``validation_error``。"
+
 #: ../../source/features/batch-inference/batch-api.rst:708
 msgid "**Example batch_input.jsonl:**"
 msgstr "**batch_input.jsonl 示例：**"
