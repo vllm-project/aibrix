@@ -610,7 +610,12 @@ func (c *ZMQClient) replayOnStartup() {
 			c.recoverStalledGap()
 			return
 		}
-		if err != nil && !errors.Is(err, errReplayCancelled) {
+		if err == nil {
+			// Another replay owns the socket and will apply the startup
+			// batches; retrying here would only find it in flight again.
+			return
+		}
+		if !errors.Is(err, errReplayCancelled) {
 			klog.Warningf("Failed to request initial replay for %s: %v", c.config.PodKey, err)
 		}
 		c.retryReplay(0, 3)
@@ -633,21 +638,24 @@ func (c *ZMQClient) requestReplayAsync(fromSeq int64) {
 		_, ran, err := c.runReplay(fromSeq)
 		if errors.Is(err, errReplaySocketUnavailable) {
 			// A transient failure to reopen the socket must not stop replay.
-			// Retry once, then fail the gap open: recoverStalledGap clears the
-			// view when the retry could not fill it either.
+			// Retry once, then fail the gap open when the retry could not run
+			// either. A retry that was skipped because another replay owns the
+			// socket must not clear the view on its behalf.
 			klog.Warningf("Replay from seq %d has no socket for %s: %v",
 				fromSeq, c.config.PodKey, err)
-			c.retryReplay(fromSeq, 1)
-			c.recoverStalledGap()
+			if _, retryErr := c.retryReplay(fromSeq, 1); retryErr != nil {
+				c.recoverStalledGap()
+			}
 			return
 		}
 		if err != nil && !errors.Is(err, errReplayCancelled) {
 			klog.Warningf("Replay from seq %d failed for %s: %v",
 				fromSeq, c.config.PodKey, err)
 		}
-		if ran {
+		if ran && !errors.Is(err, errReplayCancelled) {
 			// The replay may have applied the missing batches or may have
 			// found nothing; only the guard knows whether a gap is still open.
+			// A cancelled replay is not a failed gap: Stop drops the view.
 			c.recoverStalledGap()
 		}
 	}()
@@ -705,19 +713,21 @@ func (c *ZMQClient) runReplay(fromSeq int64) (applied int, ran bool, err error) 
 	return applied, true, err
 }
 
-// retryReplay retries a failed replay with the reconnect delay between
-// attempts, so a first replay that failed at startup is not lost.
-func (c *ZMQClient) retryReplay(fromSeq int64, attempts int) {
+// retryReplay retries the replay up to attempts times. ran reports whether the
+// last attempt owned the replay socket; err is that attempt's result. A retry
+// that never ran (shutdown, or another replay in flight) returns ran=false and
+// err=nil so the caller does not fail a gap open on its behalf.
+func (c *ZMQClient) retryReplay(fromSeq int64, attempts int) (ran bool, err error) {
 	for i := 0; i < attempts; i++ {
 		select {
 		case <-c.ctx.Done():
-			return
+			return false, nil
 		case <-time.After(c.config.ReconnectDelay):
 		}
-		_, ran, err := c.runReplay(fromSeq)
+		_, ran, err = c.runReplay(fromSeq)
 		if err == nil && ran {
 			c.recoverStalledGap()
-			return
+			return true, nil
 		}
 		if err != nil {
 			if !errors.Is(err, errReplayCancelled) {
@@ -731,6 +741,7 @@ func (c *ZMQClient) retryReplay(fromSeq int64, attempts int) {
 		klog.V(4).Infof("Replay retry %d/%d from seq %d skipped for %s: replay in flight",
 			i+1, attempts, fromSeq, c.config.PodKey)
 	}
+	return ran, err
 }
 
 // requestReplay asks the publisher to resend its buffered batches from fromSeq
