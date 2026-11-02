@@ -533,12 +533,11 @@ The Files API manages input and output files for batch processing. ENDPOINT is t
 
 **List Files**
 
-List files with optional filtering and pagination. Each request considers
-up to the first 1,000 non-hidden file keys in storage order, then applies
-``purpose``, ``after``, and ``limit``. ``has_more`` describes only this
-window and can be false even when additional files exist outside it.
-Internal keys do not consume the allowance, but skipping them can require
-additional storage reads and increase listing latency.
+List files with optional filtering and pagination. Each request reads storage
+in order until it has enough matching files after ``after`` or the listing
+ends. ``has_more`` is true only if another matching file exists beyond
+``limit``. Skipping internal keys or filtering by ``purpose`` can require
+more storage reads and increase listing latency.
 
 .. code-block:: bash
 
