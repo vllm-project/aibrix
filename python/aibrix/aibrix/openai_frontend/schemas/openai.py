@@ -51,6 +51,7 @@ from aibrix.openai_frontend.schemas.media import (
     ChatCompletionRequestMessageContentPartRefusal,
     ChatCompletionRequestMessageContentPartVideo,
 )
+from aibrix.openai_frontend.schemas.output import OutputRequest, OutputResponse
 from aibrix.openai_frontend.schemas.sglang import (
     SglangChatCompletionEngineExtensionFields,
     SglangCompletionEngineExtensionFields,
@@ -455,6 +456,12 @@ class ChatCompletionRequestMessage(RootModel):
         return self.root.content
 
 
+def _reject_streamed_output(stream: Optional[bool], output: Any) -> None:
+    # ``output`` persists one complete response; streaming is not supported.
+    if stream and output is not None:
+        raise ValueError("'output' cannot be combined with 'stream': true")
+
+
 # ===========================================================================
 # Requests
 # ===========================================================================
@@ -485,10 +492,21 @@ class CreateCompletionRequest(
     top_p: Optional[confloat(ge=0.0, le=1.0)] = 1
     user: Optional[str] = None
 
+    output: Optional[OutputRequest] = Field(
+        None,
+        description="AIBrix extension: persist the response to tos://, s3://, a "
+        "local directory, or an http(s) PUT URL. Not forwarded to the engine.",
+    )
+
     @model_validator(mode="after")
     def _require_prompt(self):
         if self.prompt is None and getattr(self, "prompt_embeds", None) is None:
             raise ValueError("'prompt' is required (or vLLM 'prompt_embeds')")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_output(self) -> CreateCompletionRequest:
+        _reject_streamed_output(self.stream, self.output)
         return self
 
 
@@ -545,10 +563,21 @@ class CreateChatCompletionRequest(
         None, max_length=128, min_length=1
     )
 
+    output: Optional[OutputRequest] = Field(
+        None,
+        description="AIBrix extension: persist the response to tos://, s3://, a "
+        "local directory, or an http(s) PUT URL. Not forwarded to the engine.",
+    )
+
     @model_validator(mode="after")
     def _validate_logprobs(self) -> CreateChatCompletionRequest:
         if self.top_logprobs is not None and not self.logprobs:
             raise ValueError("logprobs must be True if top_logprobs is specified")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_output(self) -> CreateChatCompletionRequest:
+        _reject_streamed_output(self.stream, self.output)
         return self
 
 
@@ -576,6 +605,12 @@ class CreateEmbeddingRequest(
         "float"
     )
     user: Optional[str] = None
+
+    output: Optional[OutputRequest] = Field(
+        None,
+        description="AIBrix extension: persist the response to tos://, s3://, a "
+        "local directory, or an http(s) PUT URL. Not forwarded to the engine.",
+    )
 
     @model_validator(mode="after")
     def _require_input_or_messages(self):
@@ -627,6 +662,8 @@ class CreateCompletionResponse(BaseModel):
     object: ObjectTypeTextCompletion = "text_completion"
     system_fingerprint: Optional[str] = None
     usage: Optional[Usage] = None
+    # Set instead of the result when the request carried an ``output`` spec.
+    output: Optional[OutputResponse] = None
 
 
 # ===========================================================================
@@ -659,6 +696,8 @@ class CreateChatCompletionResponse(BaseModel):
     object: ObjectTypeChatCompletion = "chat.completion"
     system_fingerprint: Optional[str] = None
     usage: Optional[Usage] = None
+    # Set instead of the result when the request carried an ``output`` spec.
+    output: Optional[OutputResponse] = None
 
 
 class ChatCompletionStreamResponseDelta(BaseModel):
@@ -700,3 +739,5 @@ class CreateEmbeddingResponse(BaseModel):
     data: List[EmbeddingObject]
     model: str
     usage: Optional[Usage] = None
+    # Set instead of the result when the request carried an ``output`` spec.
+    output: Optional[OutputResponse] = None
