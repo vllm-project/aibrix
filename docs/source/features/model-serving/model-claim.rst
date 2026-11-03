@@ -803,8 +803,8 @@ You set the first four keys. AIBrix writes the others, so leave them alone.
    * - ``model.aibrix.ai/modelclaim-finalizer``
      - Finalizer on ModelClaims
      - Controller
-     - Keeps a deleted claim until the controller has asked the runtime agent
-       to stop its engine.
+     - Keeps a deleted claim while runtime cleanup requests fail; removed after
+       successful cleanup requests, without waiting for process exit.
 
 Monitoring
 ----------
