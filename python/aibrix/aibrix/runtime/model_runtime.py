@@ -1460,6 +1460,8 @@ class ModelRuntime:
             next_restart_at=self._registry_timestamp(
                 record.get("next_restart_at"), None
             ),
+            was_ready=record.get("was_ready") is True,
+            unready_since=self._registry_timestamp(record.get("unready_since"), None),
             sleeping_footprint_bytes=self._registry_sleeping_footprint(
                 record.get("sleeping_footprint_bytes"), phase
             ),
@@ -1523,6 +1525,10 @@ class ModelRuntime:
             "last_transition": inst.last_transition.isoformat(),
             "next_restart_at": (
                 inst.next_restart_at.isoformat() if inst.next_restart_at else None
+            ),
+            "was_ready": inst.was_ready,
+            "unready_since": (
+                inst.unready_since.isoformat() if inst.unready_since else None
             ),
             "sleeping_footprint_bytes": inst.sleeping_footprint_bytes,
             "kv_initial_capacity_bytes": inst.kv_initial_capacity_bytes,
@@ -1732,7 +1738,9 @@ class ModelRuntime:
             if self._process_handle_alive(inst):
                 if inst.phase != "sleeping":
                     if ready.get(id(inst), False):
-                        inst.was_ready = True
+                        if not inst.was_ready:
+                            inst.was_ready = True
+                            changed = True
                         if inst.phase != "active" or inst.last_error is not None:
                             self._transition(inst, "active")
                             inst.last_error = None
@@ -1744,6 +1752,7 @@ class ModelRuntime:
                         if inst.was_ready:
                             if inst.unready_since is None:
                                 inst.unready_since = now
+                                changed = True
                             unready = (now - inst.unready_since).total_seconds()
                             if unready >= ENGINE_UNREADY_RESTART_SECONDS:
                                 self._schedule_restart(
