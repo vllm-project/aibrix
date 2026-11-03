@@ -36,6 +36,10 @@ type PodSetSpec struct {
 	// +optional
 	Stateful bool `json:"stateful,omitempty"`
 
+	// Drain configures a grace period before controller-managed pod deletion.
+	// +optional
+	Drain *RoleDrainSpec `json:"drain,omitempty"`
+
 	// RecoveryPolicy defines how pods in the set are recreated when failures happen
 	// +kubebuilder:default=ReplaceUnhealthy
 	// +kubebuilder:validation:Enum={ReplaceUnhealthy,Recreate}

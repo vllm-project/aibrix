@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from datetime import timezone
 from io import BytesIO, TextIOBase
 from typing import BinaryIO, Optional, TextIO, Union
 
@@ -24,6 +25,8 @@ from aibrix.storage.base import PutObjectOptions, StorageConfig, StorageType
 from aibrix.storage.base2 import BaseStorage2
 from aibrix.storage.reader import Reader
 from aibrix.storage.utils import ObjectMetadata
+
+S3_LIST_OBJECTS_DEFAULT_LIMIT = 1000
 
 
 class S3Storage(BaseStorage2):
@@ -104,21 +107,30 @@ class S3Storage(BaseStorage2):
                 size = reader.get_size()
             else:
                 size = len(reader)
+        except (OSError, IOError, ValueError):
+            # Can't determine size, give up multipart upload
+            pass
+        else:
+            # Outside the try: a failed upload (botocore timeouts are OSErrors)
+            # must raise, not fall through to a single PUT of the unread rest.
             if size >= self.config.multipart_threshold:
                 # ``bysize`` is required: ``BaseStorage.multipart_upload``
                 # falls back to ``put_object`` when no chunking strategy
                 # is given, which would re-enter this branch and recurse.
-                await self.multipart_upload(
-                    key,
-                    reader,
-                    content_type,
-                    metadata,
-                    bysize=self.config.multipart_threshold,
-                )
+                try:
+                    await self.multipart_upload(
+                        key,
+                        reader,
+                        content_type,
+                        metadata,
+                        bysize=self.config.multipart_threshold,
+                    )
+                finally:
+                    # Close the reader if we created it, also when the
+                    # upload fails.
+                    if isinstance(reader, Reader) and not isinstance(data, Reader):
+                        reader.close()
                 return True
-        except (OSError, IOError, ValueError):
-            # Can't determine size, give up multipart upload
-            pass
 
         # SigV4 always signs the request body and calls ``tell()`` on the
         # fileobj to remember its start position (botocore auth.py:343).
@@ -225,7 +237,7 @@ class S3Storage(BaseStorage2):
         continuation_token: Optional[str] = None,
         after_key: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
-        """List objects with given prefix using native S3 continuation tokens."""
+        """List one S3 page with given prefix using native continuation tokens."""
 
         def _list_objects():
             kwargs = {
@@ -242,9 +254,11 @@ class S3Storage(BaseStorage2):
             elif after_key:
                 kwargs["StartAfter"] = after_key
 
-            # Set MaxKeys for limit (S3 native pagination)
-            if limit is not None:
-                kwargs["MaxKeys"] = limit
+            # MaxKeys defaults to 1000 on S3. Set it explicitly so limit=None
+            # means "use backend default page size", not "return everything".
+            kwargs["MaxKeys"] = (
+                limit if limit is not None else S3_LIST_OBJECTS_DEFAULT_LIMIT
+            )
 
             objects = []
 
@@ -305,8 +319,11 @@ class S3Storage(BaseStorage2):
                 # Parse last modified time
                 last_modified = response.get("LastModified")
                 if last_modified and hasattr(last_modified, "replace"):
-                    # Convert AWS datetime to naive datetime (remove timezone info)
-                    last_modified = last_modified.replace(tzinfo=None)
+                    # SDK timestamps without a timezone come from an HTTP date in GMT.
+                    if last_modified.tzinfo is None:
+                        last_modified = last_modified.replace(tzinfo=timezone.utc)
+                    else:
+                        last_modified = last_modified.astimezone(timezone.utc)
 
                 # Extract user metadata (remove 'x-amz-meta-' prefix)
                 user_metadata = {}

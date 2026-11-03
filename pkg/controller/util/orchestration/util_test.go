@@ -137,6 +137,49 @@ func TestSlowStartBatch_WithFailure(t *testing.T) {
 	assert.Less(t, succeeded, count)
 }
 
+func TestSlowStartBatch_PanicIsNotASuccess(t *testing.T) {
+	count := 3
+	for name, panicValue := range map[string]any{"string": "boom", "nil": nil} {
+		t.Run(name, func(t *testing.T) {
+			panicFn := func(i int) error {
+				if i == 1 {
+					panic(panicValue) // panic(nil) is a runtime.PanicNilError since Go 1.21.
+				}
+				return nil
+			}
+			// Run it repeatedly: the panic must be recorded before the batch is counted.
+			for run := 0; run < 50; run++ {
+				succeeded, err := SlowStartBatch(count, 1, panicFn)
+				assert.Error(t, err)
+				assert.Less(t, succeeded, count)
+			}
+		})
+	}
+}
+
+func TestCallRecovered(t *testing.T) {
+	boom := errors.New("boom")
+	for name, tc := range map[string]struct {
+		fn      func(int) error
+		wantErr string
+	}{
+		"success":      {func(int) error { return nil }, ""},
+		"error":        {func(int) error { return boom }, "boom"},
+		"panic string": {func(int) error { panic("kaput") }, "slowStartBatch panic: kaput"},
+		// panic(nil) is a runtime.PanicNilError since Go 1.21.
+		"panic nil": {func(int) error { panic(nil) }, "slowStartBatch panic: panic called with nil argument"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := callRecovered(tc.fn, 0)
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			assert.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
+
 func TestMinIntHelpers(t *testing.T) {
 	assert.Equal(t, int32(3), MinInt32(3, 4))
 	assert.Equal(t, int32(-1), MinInt32(-1, 5))

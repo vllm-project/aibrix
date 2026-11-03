@@ -13,13 +13,36 @@
 # limitations under the License.
 
 import json
+import os
+import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from io import BytesIO
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
 
 from aibrix.metadata.setting.config import settings as metadata_settings
+from aibrix.storage.s3 import S3Storage
 from tests.metadata.conftest import create_test_app as _create_app
+
+
+@pytest.fixture
+def non_utc_timezone():
+    if not hasattr(time, "tzset"):
+        pytest.skip("time.tzset is unavailable")
+    previous = os.environ.get("TZ")
+    os.environ["TZ"] = "<-07>7"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
 
 
 def create_test_app():
@@ -53,6 +76,44 @@ def _upload(client: TestClient, *, filename="test.jsonl", purpose="batch", body=
         data={"purpose": purpose},
     )
     return response
+
+
+def _s3_listing_storage(keys, *, purposes=None, max_calls=10):
+    """S3 storage with an in-memory, lexicographic listing client."""
+    storage = object.__new__(S3Storage)
+    storage.bucket_name = "bucket"
+    storage.client = Mock()
+    storage.client.head_object.return_value = {
+        "ContentLength": 1,
+        "ETag": '"etag"',
+        "Metadata": {"purpose": "batch", "created_at": "1"},
+    }
+    if purposes is not None:
+        response = storage.client.head_object.return_value
+
+        def head_object(**kwargs):
+            return {
+                **response,
+                "Metadata": {
+                    **response["Metadata"],
+                    "purpose": purposes.get(kwargs["Key"], "batch"),
+                },
+            }
+
+        storage.client.head_object.side_effect = head_object
+    keys = sorted(keys)
+
+    def list_objects_v2(**kwargs):
+        assert storage.client.list_objects_v2.call_count <= max_calls
+        offset = int(kwargs.get("ContinuationToken", "0"))
+        page = keys[offset : offset + kwargs["MaxKeys"]]
+        response = {"Contents": [{"Key": key} for key in page]}
+        if offset + len(page) < len(keys):
+            response["NextContinuationToken"] = str(offset + len(page))
+        return response
+
+    storage.client.list_objects_v2.side_effect = list_objects_v2
+    return storage
 
 
 class TestFilesAPI:
@@ -218,6 +279,80 @@ class TestFilesAPI:
             assert head_headers["X-File-Status"] == get_metadata["status"]
 
 
+class TestFileTimestamps:
+    def test_local_head_last_modified_matches_mtime(self, non_utc_timezone):
+        app = create_test_app()
+        with TestClient(app) as client:
+            file_id = _upload(client).json()["id"]
+            path = app.state.storage._get_full_path(file_id, "application/jsonl")
+            epoch = int(path.stat().st_mtime)
+
+            response = client.head(f"/v1/files/{file_id}")
+            assert response.status_code == 200
+            parsed = parsedate_to_datetime(response.headers["Last-Modified"])
+            assert int(parsed.timestamp()) == epoch
+            assert response.headers["Last-Modified"].endswith(" GMT")
+            metadata = client.get(f"/v1/files/{file_id}").json()
+            assert metadata["last_modified"] == epoch
+
+    @pytest.mark.parametrize("created_at", [None, "42", "invalid"])
+    def test_s3_created_at_fallback_preserves_epoch(self, non_utc_timezone, created_at):
+        instant = datetime(2026, 6, 15, 18, 30, tzinfo=timezone.utc)
+        expected = 42 if created_at == "42" else int(instant.timestamp())
+        user_metadata = {"purpose": "batch"}
+        if created_at is not None:
+            user_metadata["created_at"] = created_at
+        storage = object.__new__(S3Storage)
+        storage.bucket_name = "bucket"
+        storage.client = Mock()
+        storage.client.head_object.return_value = {
+            "ContentLength": 7,
+            "ETag": '"etag"',
+            "LastModified": instant,
+            "Metadata": user_metadata,
+        }
+        storage.list_objects = AsyncMock(return_value=(["file-timestamp"], None))
+
+        app = create_test_app()
+        with TestClient(app) as client:
+            app.state.storage = storage
+            response = client.get("/v1/files/file-timestamp")
+            assert response.status_code == 200
+            assert response.json()["created_at"] == expected
+            assert response.json()["last_modified"] == int(instant.timestamp())
+            listed = client.get("/v1/files").json()["data"]
+            assert len(listed) == 1
+            assert listed[0]["created_at"] == expected
+            head = client.head("/v1/files/file-timestamp")
+            assert head.status_code == 200
+            assert int(head.headers["X-File-Created-At"]) == expected
+            assert parsedate_to_datetime(head.headers["Last-Modified"]) == instant
+
+    @pytest.mark.parametrize(
+        "last_modified", [None, "invalid", "9999-12-31T23:59:59-01:00"]
+    )
+    def test_local_missing_or_invalid_last_modified(
+        self, non_utc_timezone, last_modified
+    ):
+        app = create_test_app()
+        with TestClient(app) as client:
+            uploaded = _upload(client).json()
+            file_id = uploaded["id"]
+            storage = app.state.storage
+            sidecar_path = storage._get_metadata_path(file_id)
+            sidecar = storage._read_json_file(sidecar_path)
+            sidecar["last_modified"] = last_modified
+            storage._write_json_file(sidecar_path, sidecar)
+
+            response = client.get(f"/v1/files/{file_id}")
+            assert response.status_code == 200
+            assert response.json()["last_modified"] is None
+            assert response.json()["created_at"] == uploaded["created_at"]
+            head = client.head(f"/v1/files/{file_id}")
+            assert head.status_code == 200
+            assert "Last-Modified" not in head.headers
+
+
 class TestUploadErrors:
     def test_upload_rejects_unknown_extension(self):
         with TestClient(create_test_app()) as client:
@@ -257,17 +392,6 @@ class TestUploadErrors:
             )
             assert response.status_code == 422
 
-    @pytest.mark.xfail(
-        reason=(
-            "Reader.size_limiter only checks before reads, and a single "
-            "read-all (bytes_to_read=-1, bytes_read=0) trivially passes "
-            "(0 + 0 <= limit), so an oversize payload uploaded in one "
-            "shot bypasses the limit. Tracking as a separate fix in the "
-            "storage Reader; this case is kept to lock in the wire "
-            "contract once the limiter is corrected."
-        ),
-        strict=True,
-    )
     def test_upload_rejects_oversized_file(self, monkeypatch):
         monkeypatch.setattr(metadata_settings, "MAX_FILE_SIZE", 16)
         with TestClient(create_test_app()) as client:
@@ -303,6 +427,18 @@ class TestListFiles:
             body = response.json()
             ids = [item["id"] for item in body["data"]]
             assert file_id in ids
+
+    def test_list_hides_local_metastore(self):
+        app = create_test_app()
+        with TestClient(app) as client:
+            file_id = _upload(client).json()["id"]
+            client.portal.call(
+                app.state.storage.put_object, ".metastore/batchjob/job", b"{}"
+            )
+            response = client.get("/v1/files")
+            assert response.status_code == 200
+            assert [item["id"] for item in response.json()["data"]] == [file_id]
+            assert response.json()["has_more"] is False
 
     def test_list_rejects_out_of_range_limit(self):
         with TestClient(create_test_app()) as client:
@@ -344,6 +480,217 @@ class TestListFiles:
             for item in page2["data"]:
                 assert item["id"] not in page1_ids
 
+    @pytest.mark.parametrize("hidden_count", [999, 1000, 1001, 2001])
+    def test_list_skips_hidden_storage_pages(self, hidden_count):
+        visible = ["file-a", "file-b", "file-c"]
+        hidden = [f".multipart/{index:04d}" for index in range(hidden_count)]
+        storage = _s3_listing_storage(hidden + visible)
+        app = create_test_app()
+        with TestClient(app) as client:
+            app.state.storage = storage
+            response = client.get("/v1/files")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert [item["id"] for item in body["data"]] == visible
+        assert body["has_more"] is False
+        assert [
+            call.kwargs["Key"] for call in storage.client.head_object.call_args_list
+        ] == visible
+
+    def test_list_after_cursor_across_storage_pages(self):
+        visible = [f"file-{index:04d}" for index in range(1005)]
+        matching = [visible[index] for index in (1, 999, 1000, 1002, 1004)]
+        purposes = {key: "assistants" for key in visible if key not in matching}
+        hidden = [f".multipart/{index:04d}" for index in range(999)]
+        storage = _s3_listing_storage(hidden + visible, purposes=purposes)
+        app = create_test_app()
+        with TestClient(app) as client:
+            app.state.storage = storage
+            listed = []
+            params = {"limit": 2, "purpose": "batch"}
+            for offset in range(0, len(matching), 2):
+                storage.client.head_object.reset_mock()
+                response = client.get("/v1/files", params=params)
+                assert response.status_code == 200
+                body = response.json()
+                ids = [item["id"] for item in body["data"]]
+                assert ids == matching[offset : offset + 2]
+                assert body["has_more"] is (offset + 2 < len(matching))
+                start = visible.index(params["after"]) if "after" in params else 0
+                stop = (
+                    visible.index(matching[offset + 2]) + 1
+                    if offset + 2 < len(matching)
+                    else len(visible)
+                )
+                assert [
+                    call.kwargs["Key"]
+                    for call in storage.client.head_object.call_args_list
+                ] == visible[start:stop]
+                listed.extend(ids)
+                params["after"] = ids[-1]
+            assert listed == matching
+            assert storage.client.list_objects_v2.call_count == 8
+
+    @pytest.mark.parametrize("after", ["missing", "file-a"])
+    def test_list_missing_or_filtered_cursor_returns_empty_page(self, after):
+        storage = _s3_listing_storage(
+            ["file-a", "file-b", "file-c"], purposes={"file-a": "assistants"}
+        )
+        app = create_test_app()
+        with TestClient(app) as client:
+            app.state.storage = storage
+            response = client.get(
+                "/v1/files", params={"purpose": "batch", "limit": 1, "after": after}
+            )
+
+        assert response.status_code == 200
+        assert response.json()["data"] == []
+        assert response.json()["has_more"] is False
+        assert [
+            call.kwargs["Key"] for call in storage.client.head_object.call_args_list
+        ] == ([after] if after == "file-a" else [])
+
+    @pytest.mark.parametrize("matching_count", [0, 2, 3, 4])
+    def test_list_fills_page_after_nonmatching_storage_pages(self, matching_count):
+        other = [f"file-{index:04d}" for index in range(1001)]
+        matching = [f"match-{index}" for index in range(matching_count)]
+        storage = _s3_listing_storage(
+            other + matching, purposes={key: "assistants" for key in other}
+        )
+        app = create_test_app()
+        with TestClient(app) as client:
+            app.state.storage = storage
+            response = client.get("/v1/files", params={"purpose": "batch", "limit": 2})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert [item["id"] for item in body["data"]] == matching[:2]
+        assert body["has_more"] is (matching_count > 2)
+        assert [
+            call.kwargs["Key"] for call in storage.client.head_object.call_args_list
+        ] == other + matching[:3]
+        assert [
+            call.kwargs["MaxKeys"]
+            for call in storage.client.list_objects_v2.call_args_list
+        ] == [1000, 1000]
+
+    def test_list_stops_after_extra_match(self):
+        visible = [f"file-{index:04d}" for index in range(1001)]
+        storage = _s3_listing_storage([".multipart/hidden"] + visible, max_calls=3)
+        app = create_test_app()
+        with TestClient(app) as client:
+            app.state.storage = storage
+            response = client.get("/v1/files", params={"limit": 100})
+            assert response.status_code == 200
+            body = response.json()
+            assert [item["id"] for item in body["data"]] == visible[:100]
+            assert body["has_more"] is True
+            assert [
+                call.kwargs["Key"] for call in storage.client.head_object.call_args_list
+            ] == visible[:101]
+            assert [
+                call.kwargs["MaxKeys"]
+                for call in storage.client.list_objects_v2.call_args_list
+            ] == [1000]
+
+            storage.client.head_object.reset_mock()
+            response = client.get(
+                "/v1/files", params={"limit": 100, "after": visible[998]}
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert [item["id"] for item in body["data"]] == visible[999:]
+            assert body["has_more"] is False
+            assert [
+                call.kwargs["Key"] for call in storage.client.head_object.call_args_list
+            ] == visible[998:]
+            assert [
+                call.kwargs["MaxKeys"]
+                for call in storage.client.list_objects_v2.call_args_list
+            ] == [1000, 1000, 1000]
+
+    @pytest.mark.parametrize(
+        "error", [FileNotFoundError("deleted"), RuntimeError("bad")]
+    )
+    def test_list_skips_metadata_errors(self, error):
+        storage = _s3_listing_storage(["file-a", "file-b", "file-c", "file-d"])
+        metadata = storage.client.head_object.return_value
+        storage.client.head_object.side_effect = [error, metadata, metadata, metadata]
+        app = create_test_app()
+        with TestClient(app) as client:
+            app.state.storage = storage
+            response = client.get("/v1/files", params={"limit": 1})
+
+        assert response.status_code == 200
+        assert [item["id"] for item in response.json()["data"]] == ["file-b"]
+        assert response.json()["has_more"] is True
+        assert [
+            call.kwargs["Key"] for call in storage.client.head_object.call_args_list
+        ] == ["file-a", "file-b", "file-c"]
+
+    def test_list_later_storage_page_failure(self):
+        storage = _s3_listing_storage([])
+        storage.client.list_objects_v2.side_effect = [
+            {"Contents": [{"Key": "file-a"}], "NextContinuationToken": "next"},
+            RuntimeError("later page failed"),
+        ]
+        app = create_test_app()
+        with TestClient(app) as client:
+            app.state.storage = storage
+            response = client.get("/v1/files")
+
+        assert response.status_code == 500
+        assert response.json()["error"]["message"] == "Failed to list files"
+        storage.client.head_object.assert_called_once_with(
+            Bucket="bucket", Key="file-a"
+        )
+
+    def test_list_stops_on_repeated_storage_token(self):
+        storage = _s3_listing_storage([])
+        storage.client.list_objects_v2.side_effect = [
+            {
+                "Contents": [{"Key": ".multipart/hidden"}],
+                "NextContinuationToken": "same",
+            },
+            {"Contents": [{"Key": "file-a"}], "NextContinuationToken": "same"},
+            AssertionError("listing exceeded two calls"),
+        ]
+        app = create_test_app()
+        with TestClient(app) as client:
+            app.state.storage = storage
+            response = client.get("/v1/files")
+
+        assert response.status_code == 200
+        assert [item["id"] for item in response.json()["data"]] == ["file-a"]
+        assert response.json()["has_more"] is False
+        assert storage.client.list_objects_v2.call_count == 2
+        assert (
+            storage.client.list_objects_v2.call_args.kwargs["ContinuationToken"]
+            == "same"
+        )
+
+    def test_list_continues_through_empty_storage_pages(self):
+        storage = _s3_listing_storage([])
+        storage.client.list_objects_v2.side_effect = [
+            {"NextContinuationToken": "one"},
+            {"NextContinuationToken": "two"},
+            {"Contents": [{"Key": "file-a"}], "NextContinuationToken": ""},
+            AssertionError("listing continued past a falsy token"),
+        ]
+        app = create_test_app()
+        with TestClient(app) as client:
+            app.state.storage = storage
+            response = client.get("/v1/files")
+
+        assert response.status_code == 200
+        assert [item["id"] for item in response.json()["data"]] == ["file-a"]
+        assert response.json()["has_more"] is False
+        assert [
+            call.kwargs.get("ContinuationToken")
+            for call in storage.client.list_objects_v2.call_args_list
+        ] == [None, "one", "two"]
+
 
 class TestDownloadFile:
     def test_content_round_trip(self):
@@ -363,6 +710,39 @@ class TestDownloadFile:
             # Content-Disposition must carry a filename so SDKs can
             # save the result with the original name.
             assert "data.json" in response.headers.get("content-disposition", "")
+
+    def test_content_unicode_filename_does_not_error(self):
+        """A non-ASCII filename must not turn a download into a 500.
+
+        The stored filename is reflected into the ``Content-Disposition``
+        and ``X-File-Name`` headers, whose values must be latin-1
+        encodable. A raw Unicode filename used to raise UnicodeEncodeError
+        and return 500 for an otherwise valid file.
+        """
+        with TestClient(create_test_app()) as client:
+            payload = b'{"hello":"world"}'
+            filename = "\u6d4b\u8bd5.json"
+            upload = client.post(
+                "/v1/files",
+                files={"file": (filename, BytesIO(payload), "application/json")},
+                data={"purpose": "batch"},
+            )
+            assert upload.status_code == 200
+            file_id = upload.json()["id"]
+
+            response = client.get(f"/v1/files/{file_id}/content")
+            assert response.status_code == 200
+            assert response.content == payload
+
+            disposition = response.headers["content-disposition"]
+            # Header value must stay HTTP-safe while preserving the name.
+            disposition.encode("latin-1")
+            assert "filename*=UTF-8''" in disposition
+            assert "%E6%B5%8B%E8%AF%95.json" in disposition
+
+            head_response = client.head(f"/v1/files/{file_id}")
+            assert head_response.status_code == 200
+            assert head_response.headers["X-File-Name"] == "%E6%B5%8B%E8%AF%95.json"
 
     def test_content_unknown_id_returns_404(self):
         with TestClient(create_test_app()) as client:

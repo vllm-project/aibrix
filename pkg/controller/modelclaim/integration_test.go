@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -90,6 +91,12 @@ func TestModelClaimControllerIntegration(t *testing.T) {
 			PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{constants.ModelPoolLabelName: "pool-a"}},
 			ArtifactURL: "huggingface://Qwen/Qwen2-7B-Instruct",
 			Engine:      "vllm",
+			// Every claim has to declare its per-GPU cost to be placed. The pool
+			// pod here exposes no GPU, so any positive figures will do.
+			PerGPU: &modelv1alpha1.ModelClaimPerGPU{
+				MaximumFootprint: resource.MustParse("1Gi"),
+				KVFloor:          resource.MustParse("1Gi"),
+			},
 		},
 	}
 	require.NoError(t, k8sClient.Create(ctx, pm))

@@ -29,6 +29,7 @@ import (
 const AuthModeDev = "dev"
 
 const defaultMetadataFileUploadTimeout = 30 * time.Minute
+const defaultPlannerWorkerQueueSize = 1000
 
 // KubernetesProviderConfig identifies the cluster and namespace used by the
 // Kubernetes deployment provider.
@@ -80,6 +81,9 @@ type Config struct {
 	// PlannerWorkerCount is the number of worker threads to use for the planner.
 	// Defaults to 10.
 	PlannerWorkerCount int
+	// PlannerWorkerQueueSize bounds queued planner work without blocking the
+	// planning loop. Defaults to 1000.
+	PlannerWorkerQueueSize int
 
 	// GRPCAddr is the listen address for the gRPC server.
 	GRPCAddr string
@@ -194,6 +198,16 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	plannerWorkerQueueSize, err := strconv.Atoi(envOrDefault(
+		"PLANNER_WORKER_QUEUE_SIZE",
+		strconv.Itoa(defaultPlannerWorkerQueueSize),
+	))
+	if err != nil {
+		return nil, fmt.Errorf("PLANNER_WORKER_QUEUE_SIZE must be a positive integer: %w", err)
+	}
+	if plannerWorkerQueueSize <= 0 {
+		return nil, fmt.Errorf("PLANNER_WORKER_QUEUE_SIZE must be a positive integer")
+	}
 	metadataFileUploadTimeout, err := envDurationOrDefault(
 		"METADATA_FILE_UPLOAD_TIMEOUT",
 		defaultMetadataFileUploadTimeout,
@@ -211,6 +225,7 @@ func Load() (*Config, error) {
 		Provisioner:                         envOrDefault("PROVISIONER", "kubernetes"),
 		PlanningPolicy:                      envOrDefault("PLANNING_POLICY", "simple"),
 		PlannerWorkerCount:                  plannerWorkerCount,
+		PlannerWorkerQueueSize:              plannerWorkerQueueSize,
 		GRPCAddr:                            envOrDefault("GRPC_ADDR", ":50060"),
 		HTTPAddr:                            envOrDefault("HTTP_ADDR", ":8080"),
 		AuthMode:                            authMode,

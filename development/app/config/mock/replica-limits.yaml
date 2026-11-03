@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-qwen3-8b-replica-rps
+  labels:
+    model.aibrix.ai/name: "qwen3-8b-replica-rps"
+    model.aibrix.ai/port: "8000"
+    adapter.model.aibrix.ai/enabled: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      adapter.model.aibrix.ai/enabled: "true"
+      model.aibrix.ai/name: "qwen3-8b-replica-rps"
+      app: "mock-qwen3-8b-replica-rps"
+  template:
+    metadata:
+      labels:
+        adapter.model.aibrix.ai/enabled: "true"
+        model.aibrix.ai/name: "qwen3-8b-replica-rps"
+        model.aibrix.ai/port: "8000"
+        app: "mock-qwen3-8b-replica-rps"
+      annotations:
+        model.aibrix.ai/config: |
+          {
+            "defaultProfile": "default",
+            "profiles": {
+              "default": {
+                "routingStrategy": "least-request",
+                "requestsPerSecondPerReplica": 1
+              }
+            }
+          }
+    spec:
+      serviceAccountName: mocked-app-sa
+      containers:
+        - name: llm-engine
+          image: aibrix/vllm-mock:nightly
+          command:
+            - python3
+            - app.py
+            - --api_key
+            - test-key-1234567890
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-qwen3-8b-replica-inflight
+  labels:
+    model.aibrix.ai/name: "qwen3-8b-replica-inflight"
+    model.aibrix.ai/port: "8000"
+    adapter.model.aibrix.ai/enabled: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      adapter.model.aibrix.ai/enabled: "true"
+      model.aibrix.ai/name: "qwen3-8b-replica-inflight"
+      app: "mock-qwen3-8b-replica-inflight"
+  template:
+    metadata:
+      labels:
+        adapter.model.aibrix.ai/enabled: "true"
+        model.aibrix.ai/name: "qwen3-8b-replica-inflight"
+        model.aibrix.ai/port: "8000"
+        app: "mock-qwen3-8b-replica-inflight"
+      annotations:
+        # Only one concurrent request is allowed on this single replica at a time.
+        model.aibrix.ai/config: |
+          {
+            "defaultProfile": "default",
+            "profiles": {
+              "default": {
+                "routingStrategy": "least-request",
+                "requestsInflight": 1
+              }
+            }
+          }
+    spec:
+      serviceAccountName: mocked-app-sa
+      containers:
+        - name: llm-engine
+          image: aibrix/vllm-mock:nightly
+          command:
+            - python3
+            - app.py
+            - --api_key
+            - test-key-1234567890

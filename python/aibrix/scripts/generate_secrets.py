@@ -138,6 +138,8 @@ Examples:
         help="Kubernetes namespace (default: default)",
     )
 
+    # Only an explicitly supplied subcommand option should override the global
+    # namespace; a subparser default would overwrite it during parsing.
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # S3 secret command
@@ -149,7 +151,7 @@ Examples:
     s3_parser.add_argument(
         "--namespace",
         "-n",
-        default="default",
+        default=argparse.SUPPRESS,
         help="Kubernetes namespace (default: default)",
     )
 
@@ -162,7 +164,7 @@ Examples:
     tos_parser.add_argument(
         "--namespace",
         "-n",
-        default="default",
+        default=argparse.SUPPRESS,
         help="Kubernetes namespace (default: default)",
     )
 
@@ -172,7 +174,7 @@ Examples:
     delete_parser.add_argument(
         "--namespace",
         "-n",
-        default="default",
+        default=argparse.SUPPRESS,
         help="Kubernetes namespace (default: default)",
     )
 
@@ -181,7 +183,7 @@ Examples:
     list_parser.add_argument(
         "--namespace",
         "-n",
-        default="default",
+        default=argparse.SUPPRESS,
         help="Kubernetes namespace (default: default)",
     )
 

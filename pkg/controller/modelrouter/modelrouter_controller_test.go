@@ -18,6 +18,7 @@ package modelrouter
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -56,7 +57,7 @@ func TestCreateHTTPRouteSupportsAnnotatedModelAndServiceNames(t *testing.T) {
 	)
 
 	routes := &gatewayv1.HTTPRouteList{}
-	if err := m.Client.List(context.Background(), routes, client.InNamespace(aibrixEnvoyGatewayNamespace)); err != nil {
+	if err := m.List(context.Background(), routes, client.InNamespace(aibrixEnvoyGatewayNamespace)); err != nil {
 		t.Fatal(err)
 	}
 	if len(routes.Items) != 1 {
@@ -92,11 +93,19 @@ func TestCreateHTTPRouteSupportsAnnotatedModelAndServiceNames(t *testing.T) {
 	}
 
 	grant := &gatewayv1beta1.ReferenceGrant{}
-	if err := m.Client.Get(context.Background(), client.ObjectKey{
+	if err := m.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
 		Name:      "aibrix-system-reserved-referencegrant-in-default",
 	}, grant); err != nil {
 		t.Errorf("ReferenceGrant was not created: %v", err)
+	}
+}
+
+func TestBuildHTTPRouteMatchesImageGenerations(t *testing.T) {
+	route := buildHTTPRoute("default", "demo", nil, nil)
+	paths := routeMatchPaths(route)
+	if !slices.Contains(paths, "/v1/images/generations") {
+		t.Errorf("per-model HTTPRoute does not match /v1/images/generations, got %v", paths)
 	}
 }
 
@@ -162,6 +171,30 @@ func TestAppendCustomModelRouterPaths(t *testing.T) {
 				modelRouterCustomPath: "/f oo, /bar , ,/ba z /",
 			},
 			wantPaths:    []string{"/origin", "/foo", "/bar", "/baz/"},
+			checkHeaders: true,
+		},
+		{
+			name: "repeated paths are added once",
+			httpRoute: &gatewayv1.HTTPRoute{
+				Spec: gatewayv1.HTTPRouteSpec{
+					Rules: []gatewayv1.HTTPRouteRule{
+						{
+							Matches: []gatewayv1.HTTPRouteMatch{
+								{
+									Path: &gatewayv1.HTTPPathMatch{
+										Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+										Value: ptr.To("/origin"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			annotations: map[string]string{
+				modelRouterCustomPath: "/foo,/bar,/foo, /f oo ,/bar,/origin",
+			},
+			wantPaths:    []string{"/origin", "/foo", "/bar"},
 			checkHeaders: true,
 		},
 		{

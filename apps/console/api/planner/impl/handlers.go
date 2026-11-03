@@ -184,9 +184,13 @@ func handleProvisioning(p *Planner, job *queuedJob) {
 		logger.LogProvisionResponse(jobID, provResult, *spec)
 	}
 
+	// Add before changing the state so admission accounting always observes the
+	// job in at least one queue during migration.
+	p.runningQueue.Push(job, 0)
 	job.mu.Lock()
 	if job.provisionID != "" || job.status.IsTerminal() {
 		job.mu.Unlock()
+		p.runningQueue.Remove(jobID)
 		if err := p.prov.Release(ctx, provResult.ProvisionID); err != nil {
 			klog.Warningf("[planner] Cancel provision failed for provision_id=%q: %v", provResult.ProvisionID, err)
 		} else {
@@ -199,6 +203,7 @@ func handleProvisioning(p *Planner, job *queuedJob) {
 	job.resourcePreparingAt = time.Now().UTC()
 	if job.status == plannerapi.JobStatusCancelling {
 		job.mu.Unlock()
+		p.runningQueue.Remove(jobID)
 		handleCleanup(ctx, p, job, plannerapi.JobStatusCancelling, plannerapi.JobStatusCancelled)
 		return
 	}
@@ -207,12 +212,8 @@ func handleProvisioning(p *Planner, job *queuedJob) {
 	// Job is now in running queue
 	job.queue = p.runningQueue
 	job.mu.Unlock()
-	p.persist(ctx, job)
-	// It's ok if the job's status has changed in between, the processing logic
-	// of running queue will handle it
 	p.pendingQueue.Remove(jobID)
-	// RunningQueue is a fifo queue, using 0 as priority
-	p.runningQueue.Push(job, 0)
+	p.persist(ctx, job)
 }
 
 // handleResourcePreparing queries provision status and records the ready

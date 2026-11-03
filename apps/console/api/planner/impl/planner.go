@@ -82,8 +82,9 @@ type Planner struct {
 	// planning worker
 	planningLoop *planningLoop
 
-	baseCtx    context.Context
-	baseCancel context.CancelFunc
+	baseCtx     context.Context
+	baseCancel  context.CancelFunc
+	lifecycleMu sync.Mutex
 
 	mu   sync.RWMutex          // guards jobs
 	jobs map[string]*queuedJob // JobID -> state
@@ -99,6 +100,7 @@ type PlannerConfig struct {
 	Store                  store.Store
 	PolicyType             PlanningPolicyType
 	WorkerCount            int                      // concurrent job processing, default 10
+	WorkerQueueSize        int                      // pending worker tasks, default 1000
 	PlanningInterval       time.Duration            // planning loop interval, default 60s
 	MaxConcurrentProvision int                      // max concurrent provisioning jobs, default 1
 	Injector               error_injection.Injector // error injection for testing
@@ -108,6 +110,7 @@ type PlannerConfig struct {
 func DefaultPlannerConfig() PlannerConfig {
 	return PlannerConfig{
 		WorkerCount:            defaultWorkerCount,
+		WorkerQueueSize:        pu.DefaultWorkerQueueSize,
 		PlanningInterval:       defaultPlanningInterval,
 		PolicyType:             PlanningPolicyTypeSimple,
 		MaxConcurrentProvision: DefaultPolicyConfig().MaxConcurrentProvisioning,
@@ -120,6 +123,9 @@ func NewPlanner(cfg PlannerConfig) *Planner {
 	// Apply defaults
 	if cfg.WorkerCount < 1 {
 		cfg.WorkerCount = DefaultPlannerConfig().WorkerCount
+	}
+	if cfg.WorkerQueueSize < 1 {
+		cfg.WorkerQueueSize = DefaultPlannerConfig().WorkerQueueSize
 	}
 	if cfg.PlanningInterval <= 0 {
 		cfg.PlanningInterval = DefaultPlannerConfig().PlanningInterval
@@ -154,16 +160,28 @@ func NewPlanner(cfg PlannerConfig) *Planner {
 	}
 
 	// Planning loop
-	q.planningLoop = newPlanningLoop(q, cfg.PlanningInterval, cfg.WorkerCount)
+	q.planningLoop = newPlanningLoop(
+		q,
+		cfg.PlanningInterval,
+		cfg.WorkerCount,
+		cfg.WorkerQueueSize,
+	)
 
-	klog.Infof("[planner] created planning loop interval=%v worker_pool_size=%d",
-		cfg.PlanningInterval, cfg.WorkerCount)
+	klog.Infof(
+		"[planner] created planning loop interval=%v worker_pool_size=%d worker_queue_size=%d",
+		cfg.PlanningInterval,
+		cfg.WorkerCount,
+		cfg.WorkerQueueSize,
+	)
 	return q
 }
 
 var _ plannerapi.Planner = (*Planner)(nil)
 
 func (q *Planner) Start(ctx context.Context) error {
+	q.lifecycleMu.Lock()
+	defer q.lifecycleMu.Unlock()
+
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -183,6 +201,9 @@ func (q *Planner) Start(ctx context.Context) error {
 
 // Close cancels in-flight work and waits for all workers to exit.
 func (q *Planner) Close() error {
+	q.lifecycleMu.Lock()
+	defer q.lifecycleMu.Unlock()
+
 	if q.baseCancel != nil {
 		q.baseCancel()
 	}

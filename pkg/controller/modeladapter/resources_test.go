@@ -23,6 +23,7 @@ import (
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -50,6 +51,7 @@ func TestBuildModelAdapterEndpointSlice(t *testing.T) {
 
 	// Check EndpointSlice metadata
 	assert.Equal(t, "test-instance", endpointSlice.Name)
+	assert.Equal(t, discoveryv1.AddressTypeIPv4, endpointSlice.AddressType)
 	assert.Equal(t, "default", endpointSlice.Namespace)
 	assert.Equal(t, map[string]string{
 		"kubernetes.io/service-name": "test-instance",
@@ -68,6 +70,20 @@ func TestBuildModelAdapterEndpointSlice(t *testing.T) {
 	// Check owner references
 	assert.Len(t, endpointSlice.OwnerReferences, 1)
 	assert.Equal(t, instance.Name, endpointSlice.OwnerReferences[0].Name)
+}
+
+func TestBuildModelAdapterEndpointSliceIPv6(t *testing.T) {
+	instance := &modelv1alpha1.ModelAdapter{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default"},
+	}
+	pods := []corev1.Pod{{
+		Status: corev1.PodStatus{PodIP: "2001:db8::1"},
+	}}
+
+	endpointSlice := buildModelAdapterEndpointSlice(instance, pods)
+
+	assert.Equal(t, discoveryv1.AddressTypeIPv6, endpointSlice.AddressType)
+	assert.Equal(t, []string{"2001:db8::1"}, endpointSlice.Endpoints[0].Addresses)
 }
 
 func TestBuildModelAdapterService(t *testing.T) {

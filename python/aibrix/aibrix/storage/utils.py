@@ -39,6 +39,7 @@ class ObjectMetadata:
     content_length: int
     content_type: Optional[str] = None
     etag: str = ""
+    # Aware UTC when present (S3, TOS and local storage).
     last_modified: Optional[datetime] = None
     metadata: Optional[dict[str, str]] = None
 

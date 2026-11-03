@@ -102,15 +102,13 @@ class Reader:
 
         # Size limiter for controlling read operations
         self._size_limiter: Optional[Callable[[int, int], bool]] = None
+        # Byte budget for the integer form of the limiter. A pre-read check
+        # cannot bound a read-all (size == -1), whose length is unknown until
+        # the read completes, so the integer budget is enforced against the
+        # bytes actually read (see read()).
+        self._max_bytes: Optional[int] = None
         if isinstance(size_limiter, int):
-            # Default implementation:
-            # if bytes_to_read == -1: # read all
-            #   bytes_read <= size_limiter
-            # else:
-            #   bytes_read + bytes_to_read <= size_limiter
-            self._size_limiter = lambda bytes_read, bytes_to_read: (
-                bytes_read + (bytes_to_read if bytes_read > 0 else 0) <= size_limiter
-            )
+            self._max_bytes = size_limiter
         else:
             self._size_limiter = size_limiter
 
@@ -288,6 +286,16 @@ class Reader:
 
             # Ensure we always return bytes for binary data
             data = data if isinstance(data, bytes) else bytes(data)
+
+        # Enforce the integer byte budget against the bytes actually read so a
+        # read-all or an oversized chunk cannot slip past the limit.
+        if (
+            self._max_bytes is not None
+            and self._bytes_read + len(data) > self._max_bytes
+        ):
+            raise SizeExceededError(
+                f"Read operation rejected by size limiter: {self._bytes_read} bytes already read, attempted to read {len(data)} more bytes"
+            )
 
         # Track bytes read for size calculation
         self._bytes_read += len(data)
@@ -645,6 +653,12 @@ class Reader:
             # Read all content
             return self.read_all()
 
+        except SizeExceededError:
+            # A size-limit rejection is a deliberate control-flow signal, not a
+            # benign conversion failure: let it propagate so callers (e.g.
+            # storage.put_object) can reject the payload instead of silently
+            # treating it as empty.
+            raise
         except Exception:
             # If anything fails, return empty bytes
             return b""
@@ -717,6 +731,8 @@ class Reader:
         try:
             data = bytes(self)
             return data.decode("utf-8")
+        except SizeExceededError:
+            raise
         except Exception:
             return ""
 

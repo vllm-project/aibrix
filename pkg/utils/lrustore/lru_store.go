@@ -53,7 +53,12 @@ func NewLRUStore[K comparable, V any](cap int, ttl, interval time.Duration, f ge
 	store.lruList.head.next = store.lruList.tail
 	store.lruList.tail.prev = store.lruList.head
 
-	go store.startEviction()
+	// time.NewTicker panics when the interval is not positive. A
+	// non-positive interval disables background eviction. Put and Get
+	// still work, and they do not check TTL, so entries do not expire.
+	if interval > 0 {
+		go store.startEviction()
+	}
 	return store
 }
 

@@ -17,6 +17,7 @@ import json
 import time
 
 import pytest
+import redis
 
 from aibrix_kvcache.l2.connectors import ConnectorConfig
 from aibrix_kvcache.l2.placement import Placement, PlacementConfig
@@ -146,6 +147,87 @@ def test_select(simple_cluster_data):
         assert status.is_ok()
         member = status.get()
         assert member.meta["addr"] == expected_addr
+
+
+def test_missing_cluster_metadata(redis_server):
+    redis_host, redis_port = redis_server
+    config = MetaServiceConfig(
+        url=f"redis://{redis_host}:{redis_port}",
+        cluster_meta_key="missing_key",
+    )
+    redis_ms = RedisMetaService(config)
+    assert redis_ms.open().is_ok()
+    placement = None
+    try:
+        status = redis_ms.get_cluster_metadata()
+        assert not status.is_ok()
+
+        config = copy.deepcopy(PLACEMENT_CONFIG)
+        config.meta_service = redis_ms
+        config.refresh_interval_s = 2
+        placement = Placement.create(config=config)
+        assert not placement.open().is_ok()
+    finally:
+        if placement is not None:
+            placement.close()
+        redis_ms.close()
+
+
+def test_background_refresh_survives_missing_key(redis_server):
+    """Test that the refresh thread keeps running while the key is missing."""
+    data = {
+        "nodes": [
+            {
+                "addr": "initial.host",
+                "port": 1234,
+                "slots": [{"start": 0, "end": 100}],
+            }
+        ]
+    }
+
+    redis_key = "test_missing_during_refresh"
+    redis_host, redis_port = redis_server
+    config = MetaServiceConfig(
+        url=f"redis://{redis_host}:{redis_port}",
+        cluster_meta_key=redis_key,
+    )
+    redis_ms = RedisMetaService(config)
+    assert redis_ms.open().is_ok()
+    # Closed in finally: an open client keeps the fake server's handler
+    # thread alive, which blocks pytest from exiting after a failure.
+    redis_client = None
+    placement = None
+    try:
+        redis_client = redis.Redis(host=redis_host, port=redis_port)
+        redis_client.set(redis_key, json.dumps(data))
+
+        config = copy.deepcopy(PLACEMENT_CONFIG)
+        config.meta_service = redis_ms
+        config.refresh_interval_s = 1
+        placement = Placement.create(config=config)
+        assert placement.open().is_ok()
+
+        # The key disappears for at least one refresh, then comes back.
+        redis_client.delete(redis_key)
+        time.sleep(1.5)
+        data["nodes"][0]["addr"] = "updated.host"
+        redis_client.set(redis_key, json.dumps(data))
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if placement.members[0].meta["addr"] == "updated.host":
+                break
+            time.sleep(0.1)
+
+        assert placement._refresh_thread is not None
+        assert placement._refresh_thread.is_alive()
+        assert placement.members[0].meta["addr"] == "updated.host"
+    finally:
+        if placement is not None:
+            placement.close()
+        redis_ms.close()
+        if redis_client is not None:
+            redis_client.delete(redis_key)
+            redis_client.close()
 
 
 def test_background_refresh(redis_server, redis_client):

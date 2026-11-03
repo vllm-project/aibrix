@@ -100,17 +100,24 @@ type BlockStoredEvent struct {
 	ParentBlockHash *int64    // Decoded from vLLM, supports both old and new formats
 	TokenIDs        [][]byte
 
-	// Optional fields carried by newer vLLM builds (positions 5-9). Decoded
-	// best-effort; nil when the connected vLLM does not emit them. These are
-	// exposed here so prefix-cache routing can key and score on them; see
-	// issue #2285. Consumption is handled separately.
-	LoraID   *int64  // position 5; deprecated upstream in favor of LoraName
-	Medium   *string // position 6; storage tier, e.g. "GPU"/"cpu" (nil = unspecified)
-	LoraName *string // position 7; canonical adapter id
-	// position 8 (extra_keys) is intentionally not decoded here; it is consumed
-	// in the follow-up PR for block-hash reconstruction. GroupIdx is read at its
-	// fixed position 9 regardless.
-	GroupIdx *int64 // position 9; KV-cache group for hybrid-attention models
+	// Optional fields carried by newer vLLM builds. Decoded best-effort; nil
+	// when the connected vLLM does not emit them. These are exposed here so
+	// prefix-cache routing can key and score on them; see issue #2285.
+	// Consumption is handled separately.
+	LoraID   *int64  // deprecated upstream in favor of LoraName
+	Medium   *string // storage tier, e.g. "GPU"/"CPU"/"STORAGE" (nil = unspecified)
+	LoraName *string // canonical adapter id
+	// ExtraKeys carries one entry per block in BlockHashes (may be nil per
+	// block). It is used for block-hash reconstruction on the KV-event
+	// consumer side; retained here instead of being dropped at decode time.
+	ExtraKeys [][]interface{}
+	GroupIdx  *int64 // KV-cache group for hybrid-attention models
+
+	// Cache-spec metadata (hybrid attention: sliding window info).
+	KVCacheSpecKind          *string
+	KVCacheSpecSlidingWindow *int64
+	// Locality of the blocks relative to the publisher ("LOCAL"/"REMOTE").
+	Locality *string
 
 	// NOTE: These are NOT part of msgpack
 	Timestamp time.Time `msgpack:"-"`
@@ -141,6 +148,12 @@ type BlockRemovedEvent struct {
 	_           struct{}  `msgpack:",array"`
 	Type        EventType `msgpack:"-"`
 	BlockHashes []int64   // Decoded from vLLM, supports both old and new formats
+
+	// Optional fields carried by newer vLLM builds. Used to scope removals to
+	// the correct storage tier / KV-cache group.
+	Medium   *string
+	GroupIdx *int64
+	Locality *string
 
 	// NOTE: These are NOT part of msgpack
 	Timestamp time.Time `msgpack:"-"`

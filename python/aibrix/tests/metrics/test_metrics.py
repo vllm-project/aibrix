@@ -45,7 +45,7 @@ def test_get_metric_standard_rules_trtllm_support():
     # Check core metrics
     assert "e2e_request_latency_seconds" in rules
     assert "time_to_first_token_seconds" in rules
-    assert "request_success_total" in rules
+    assert "request_success" in rules
 
 
 def test_get_metric_standard_rules_sglang_support():
@@ -255,6 +255,39 @@ test_metric{label="original_value"} 42
         # But different metric names
         assert original_metric.samples[0].name == "test_metric_total"
         assert renamed_metric.samples[0].name == "test_metric_renamed_total"
+
+    @pytest.mark.parametrize(
+        "engine,name,standard_name",
+        [
+            ("vllm", "vllm:prompt_tokens_total", "aibrix:prompt_tokens_total"),
+            ("vllm", "vllm:generation_tokens_total", "aibrix:generation_tokens_total"),
+            ("vllm", "vllm:request_success_total", "aibrix:request_success_total"),
+            ("sglang", "sglang:prompt_tokens_total", "aibrix:prompt_tokens_total"),
+            (
+                "sglang",
+                "sglang:generation_tokens_total",
+                "aibrix:generation_tokens_total",
+            ),
+            ("trtllm", "request_success_total", "aibrix:request_success_total"),
+        ],
+    )
+    @patch("aibrix.metrics.http_collector.requests.Session")
+    def test_collect_engine_counters_are_standardized(
+        self, mock_session, engine, name, standard_name
+    ):
+        """The parser drops _total from a counter's name, rules are keyed without it."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = f"# TYPE {name} counter\n{name} 12.0\n"
+        mock_session.return_value.get.return_value = mock_response
+
+        collector = HTTPCollector(
+            endpoint="http://fake.metrics.url",
+            metrics_rules=get_metric_standard_rules(engine),
+        )
+
+        samples = [s for m in collector.collect() for s in m.samples]
+        assert (standard_name, 12.0) in [(s.name, s.value) for s in samples]
 
     @patch("aibrix.metrics.http_collector.requests.Session")
     def test_collect_request_failure(self, mock_session):

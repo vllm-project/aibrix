@@ -4,7 +4,7 @@
 # metadata-service image and must not acquire an engine-specific supervisor or
 # a CUDA/vLLM dependency. The base image owns the kvcached-vLLM compatibility
 # matrix; this layer only adds the AIBrix runtime agent and its restart loop.
-ARG BASE_IMAGE=ghcr.io/ovg-project/kvcached-vllm:latest
+ARG BASE_IMAGE=ghcr.io/ovg-project/kvcached-vllm:kvcached-v0.1.6-vllm-v0.30.0
 FROM ${BASE_IMAGE}
 
 WORKDIR /app

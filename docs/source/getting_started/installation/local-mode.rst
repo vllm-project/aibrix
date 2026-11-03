@@ -79,12 +79,12 @@ this:
 
    models:
      - name: Qwen/Qwen2.5-1.5B-Instruct
-       endpoints:
+       workers:
          - "127.0.0.1:8000"
 
 The request model name must match the configured model name.
 
-The same file can also describe prefill and decode role sets for
+The same file can also describe prefill and decode workers for
 prefill/decode disaggregation testing:
 
 .. code-block:: yaml
@@ -92,12 +92,57 @@ prefill/decode disaggregation testing:
    models:
      - name: Qwen/Qwen2.5-72B
        engine: vllm
-       rolesets:
-         - name: qwen-pd
-           prefill:
-             - "127.0.0.1:8100"
-           decode:
-             - "127.0.0.1:8200"
+       prefill_workers:
+         - "127.0.0.1:8100"
+       decode_workers:
+         - "127.0.0.1:8200"
+
+The shorthand labels the group ``default``. Use ``rolesets`` when a custom
+name or more than one group is needed.
+
+Config profiles
+^^^^^^^^^^^^^^^
+
+A model entry can set ``config`` to the same JSON that the
+``model.aibrix.ai/config`` pod annotation holds in Kubernetes, as a string or
+as a YAML mapping. See :ref:`config_profiles` for the fields. The gateway
+checks the JSON when it loads the file, so a config that does not parse, has
+no profiles, or names a ``defaultProfile`` it does not define stops startup
+with an error that names the model. A key of the endpoints file that the
+gateway does not know, such as a misspelled ``config``, is ignored and logged
+as a warning.
+
+.. code-block:: yaml
+
+   models:
+     - name: Qwen/Qwen2.5-1.5B-Instruct
+       workers:
+         - "127.0.0.1:8000"
+         - "127.0.0.1:8001"
+       config: |
+         {"defaultProfile": "default",
+          "profiles": {"default": {"routingStrategy": "least-request-top-k"},
+                       "cache-friendly": {"routingStrategy": "prefix-cache"}}}
+
+A request uses ``defaultProfile`` unless it names another profile in the
+``config-profile`` header:
+
+.. code-block:: bash
+
+   curl http://localhost:10080/v1/chat/completions \
+     -H "Content-Type: application/json" \
+     -H "config-profile: cache-friendly" \
+     -d '{
+       "model": "Qwen/Qwen2.5-1.5B-Instruct",
+       "messages": [{"role": "user", "content": "Hello from AIBrix local mode"}]
+     }'
+
+The config applies to all workers of the model, including every roleset in
+prefill/decode mode, so routing settings such as ``promptLenBucket*`` or
+``combined`` cannot differ between rolesets in local mode. If a model is listed
+in more than one entry, only one of them may set ``config``, and it applies to
+the whole model. A profile's ``routingStrategy`` takes precedence over
+``ROUTING_ALGORITHM``; see :ref:`routing_strategy_priority` for the full order.
 
 Run local mode
 --------------
@@ -183,6 +228,10 @@ Ports and logs
    * - Gateway plugin metrics
      - ``localhost:8080/metrics``
      - Gateway plugin metrics endpoint.
+   * - Gateway plugin profiling
+     - ``localhost:6060/debug/pprof/``
+     - Go pprof endpoints. Set ``--pprof-bind-address`` to move them, or to an
+       empty value to disable them, when running several gateway plugins on one host.
    * - Health check
      - ``localhost:10080/healthz``
      - Local gateway health check.

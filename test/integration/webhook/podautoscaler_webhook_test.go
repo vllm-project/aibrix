@@ -21,10 +21,11 @@ import (
 	"github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/utils/ptr"
 
 	autoscalingapi "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	webhookutils "github.com/vllm-project/aibrix/test/utils/webhook"
 	"github.com/vllm-project/aibrix/test/utils/wrapper"
 )
 
@@ -32,18 +33,12 @@ var _ = ginkgo.Describe("podautoscaler default and validation", func() {
 	var ns *corev1.Namespace
 
 	ginkgo.BeforeEach(func() {
-		// Create test namespace before each test.
-		ns = &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "test-ns-",
-			},
-		}
-
-		gomega.Expect(k8sClient.Create(ctx, ns)).To(gomega.Succeed())
+		ns = nil
+		ns = webhookutils.CreateNamespace(ctx, k8sClient, "test-ns-")
 	})
 
 	ginkgo.AfterEach(func() {
-		gomega.Expect(k8sClient.Delete(ctx, ns)).To(gomega.Succeed())
+		webhookutils.DeleteNamespace(ctx, k8sClient, ns)
 		var podautoscalerList autoscalingapi.PodAutoscalerList
 		gomega.Expect(k8sClient.List(ctx, &podautoscalerList)).To(gomega.Succeed())
 
@@ -431,4 +426,29 @@ var _ = ginkgo.Describe("podautoscaler default and validation", func() {
 			failed: true,
 		}),
 	)
+
+	ginkgo.It("rejects a scalingStrategy change and accepts an update that keeps it", func() {
+		pa := wrapper.MakePodAutoscaler("strategy-immutable").
+			Namespace(ns.Name).
+			ScalingStrategy(autoscalingapi.HPA).
+			MinReplicas(1).
+			MaxReplicas(5).
+			MetricSource(wrapper.MakeMetricSourceResource("cpu", "50")).
+			ScaleTargetRefWithKind("Deployment", "apps/v1", "test-deploy").
+			Obj()
+		gomega.Expect(k8sClient.Create(ctx, pa)).To(gomega.Succeed())
+
+		resized := pa.DeepCopy()
+		resized.Spec.MaxReplicas = 8
+		gomega.Expect(k8sClient.Update(ctx, resized)).To(gomega.Succeed())
+
+		switched := resized.DeepCopy()
+		switched.Spec.ScalingStrategy = autoscalingapi.KPA
+		switched.Spec.MetricsSources = []autoscalingapi.MetricSource{
+			wrapper.MakeMetricSourcePod(autoscalingapi.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.5"),
+		}
+		err := k8sClient.Update(ctx, switched)
+		gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "a switch to KPA: %v", err)
+		gomega.Expect(err.Error()).To(gomega.ContainSubstring("scalingStrategy is immutable"))
+	})
 })

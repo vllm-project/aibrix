@@ -19,6 +19,7 @@ import signal
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -81,7 +82,17 @@ def test_gpu_memory_snapshots_serializes_nvml_lifecycle(monkeypatch):
 
     assert (
         snapshots
-        == [[{"id": "GPU-0", "hbm_total_bytes": 100, "hbm_free_bytes": 50}]] * 4
+        == [
+            [
+                {
+                    "id": "GPU-0",
+                    "hbm_total_bytes": 100,
+                    "hbm_free_bytes": 50,
+                    "hbm_usable_bytes": -1,
+                }
+            ]
+        ]
+        * 4
     )
     assert init_calls == 4
     assert shutdown_calls == 4
@@ -114,13 +125,108 @@ def test_gpu_memory_observation_reports_process_memory_by_gpu(monkeypatch):
     accelerators, process_hbm = runtime_module.gpu_memory_observation()
 
     assert accelerators == [
-        {"id": "GPU-0", "hbm_total_bytes": 1000, "hbm_free_bytes": 700},
-        {"id": "GPU-1", "hbm_total_bytes": 1000, "hbm_free_bytes": 600},
+        {
+            "id": "GPU-0",
+            "hbm_total_bytes": 1000,
+            "hbm_free_bytes": 700,
+            "hbm_usable_bytes": -1,
+        },
+        {
+            "id": "GPU-1",
+            "hbm_total_bytes": 1000,
+            "hbm_free_bytes": 600,
+            "hbm_usable_bytes": -1,
+        },
     ]
     assert process_hbm == {
         101: {"GPU-0": 111, "GPU-1": 222},
         202: {"GPU-1": 333},
     }
+
+
+def _nvml_with_v2(memory_info, count=1):
+    """A pynvml stand-in whose v2 memory query is the only place the driver's
+    own reservation shows up."""
+    return SimpleNamespace(
+        nvmlInit=lambda: None,
+        nvmlShutdown=lambda: None,
+        nvmlDeviceGetCount=lambda: count,
+        nvmlDeviceGetHandleByIndex=lambda index: index,
+        nvmlDeviceGetMemoryInfo=memory_info,
+        nvmlDeviceGetUUID=lambda handle: f"GPU-{handle}",
+        nvmlMemory_v2=2,
+    )
+
+
+def test_usable_memory_is_the_total_less_the_driver_reservation(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_hbm_usable_by_device", {})
+
+    def memory_info(handle, version=None):
+        if version is None:
+            return SimpleNamespace(total=1000, free=400)
+        return SimpleNamespace(total=1000, free=400, reserved=40)
+
+    monkeypatch.setitem(sys.modules, "pynvml", _nvml_with_v2(memory_info))
+
+    accelerators, _ = runtime_module.gpu_memory_observation()
+
+    assert accelerators == [
+        {
+            "id": "GPU-0",
+            "hbm_total_bytes": 1000,
+            "hbm_free_bytes": 400,
+            "hbm_usable_bytes": 960,
+        }
+    ]
+
+
+def test_usable_memory_is_measured_once_per_card(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_hbm_usable_by_device", {})
+    v2_calls = 0
+
+    def memory_info(handle, version=None):
+        nonlocal v2_calls
+        if version is None:
+            return SimpleNamespace(total=1000, free=400)
+        v2_calls += 1
+        return SimpleNamespace(total=1000, free=400, reserved=40)
+
+    monkeypatch.setitem(sys.modules, "pynvml", _nvml_with_v2(memory_info))
+
+    first, _ = runtime_module.gpu_memory_observation()
+    second, _ = runtime_module.gpu_memory_observation()
+
+    assert v2_calls == 1
+    assert first[0]["hbm_usable_bytes"] == 960
+    assert second[0]["hbm_usable_bytes"] == 960
+
+
+def test_a_card_that_could_not_be_measured_is_tried_again(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_hbm_usable_by_device", {})
+    attempts = 0
+
+    def memory_info(handle, version=None):
+        nonlocal attempts
+        if version is None:
+            return SimpleNamespace(total=1000, free=400)
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("the driver is not ready yet")
+        return SimpleNamespace(total=1000, free=400, reserved=40)
+
+    monkeypatch.setitem(sys.modules, "pynvml", _nvml_with_v2(memory_info))
+
+    failed, _ = runtime_module.gpu_memory_observation()
+    recovered, _ = runtime_module.gpu_memory_observation()
+
+    assert failed[0]["hbm_usable_bytes"] == runtime_module.HBM_USABLE_UNKNOWN
+    assert recovered[0]["hbm_usable_bytes"] == 960
 
 
 class _RecordingKVController:
@@ -140,6 +246,7 @@ def test_set_kv_limit_is_idempotent_by_operation_id():
         artifact_url="hf://Qwen/Qwen3-0.6B",
         ipc_name="kvc_qwen3-0.6b",
     )
+    inst.kv_initial_capacity_bytes = 4096
 
     first = agent.set_kv_limit(inst.model_name, 4096, operation_id="limit-1")
     duplicate = agent.set_kv_limit(inst.model_name, 4096, operation_id="limit-1")
@@ -162,6 +269,7 @@ def test_failed_kv_limit_operation_is_retriable():
     kv_controller = _FlakyKVController()
     agent = ModelRuntime(MockEngineLauncher(), kv_controller=kv_controller)
     inst = agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    inst.kv_initial_capacity_bytes = 4096
 
     with pytest.raises(RuntimeError, match="kvctl failed"):
         agent.set_kv_limit("m1", 4096, operation_id="limit-1")
@@ -237,28 +345,283 @@ def test_wake_restores_active_phase_and_readiness():
     assert launcher.woken == ["m1"]
 
 
-def test_kvctl_controller_uses_checked_limit_command(monkeypatch):
-    import subprocess
+GIB = 1 << 30
 
-    from aibrix.runtime.model_runtime import KvctlController
 
+def _readings(*maps):
+    """Stand in for gpu_memory_observation, giving these per-process readings
+    in turn, and the last one from then on."""
     calls = []
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
+
+    def observe():
+        calls.append(None)
+        return [], maps[min(len(calls), len(maps)) - 1]
+
+    return observe
+
+
+def test_sleeping_footprint_matches_the_engines_own_processes():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    before = {100: {"GPU-0": 19 * GIB}, 200: {"GPU-0": 18 * GIB}}
+    after = {100: {"GPU-0": 2 * GIB}, 200: {"GPU-0": 18 * GIB}}
+
+    assert sleeping_footprint_bytes({100}, before, after) == 2 * GIB
+
+
+def test_sleeping_footprint_finds_the_engine_by_its_drop_under_host_pids():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    # NVML reports host PIDs, so none of the engine's own PIDs appear. The
+    # neighbour on the card mapped one more KV page at the same moment.
+    before = {900: {"GPU-0": 19 * GIB}, 901: {"GPU-0": 18 * GIB}}
+    after = {900: {"GPU-0": 2 * GIB}, 901: {"GPU-0": 18 * GIB + 128 * 2**20}}
+
+    assert sleeping_footprint_bytes({100, 101}, before, after) == 2 * GIB
+
+
+def test_sleeping_footprint_is_unknown_when_no_drop_stands_out():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    before = {900: {"GPU-0": 19 * GIB}, 901: {"GPU-0": 18 * GIB}}
+    after = {900: {"GPU-0": 2 * GIB}, 901: {"GPU-0": 6 * GIB}}
+
+    assert sleeping_footprint_bytes({100}, before, after) is None
+
+
+def test_sleeping_footprint_is_unknown_for_a_small_drop_or_a_zero_reading():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    small = sleeping_footprint_bytes(
+        {100}, {100: {"GPU-0": 2 * GIB}}, {100: {"GPU-0": 2 * GIB - 2**20}}
+    )
+    # Some drivers report zero for every process in a container.
+    zero = sleeping_footprint_bytes(
+        {100},
+        {100: {"GPU-0": 0}, 900: {"GPU-0": 0}},
+        {100: {"GPU-0": 0}, 900: {"GPU-0": 0}},
     )
 
-    KvctlController().set_limit("kvc_m1", 4096)
+    assert small is None
+    assert zero is None
 
-    assert calls == [
-        ((["kvctl", "limit", "kvc_m1", "4096"],), {"check": True, "timeout": 10})
-    ]
+
+def test_sleeping_footprint_never_takes_another_process_drop_for_the_engines():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    # The engine's own process is found, but its memory has not fallen like a
+    # sleep yet. Another process fell far more at the same moment. Its figure
+    # would charge the engine too little, so there is none.
+    before = {100: {"GPU-0": 6 * GIB}, 900: {"GPU-0": 19 * GIB}}
+    after = {100: {"GPU-0": 6 * GIB - 512 * 2**20}, 900: {"GPU-0": 2 * GIB}}
+
+    assert sleeping_footprint_bytes({100}, before, after) is None
+
+
+def test_sleeping_footprint_is_unknown_when_the_engines_process_is_gone():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    before = {100: {"GPU-0": 19 * GIB}, 900: {"GPU-0": 18 * GIB}}
+    after = {900: {"GPU-0": 2 * GIB}}
+
+    assert sleeping_footprint_bytes({100}, before, after) is None
+
+
+def test_sleeping_footprint_of_an_engine_on_two_cards_is_its_heaviest_card():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    # One worker on each card, and a neighbour engine on both.
+    before = {
+        100: {"GPU-0": 19 * GIB},
+        101: {"GPU-1": 19 * GIB},
+        200: {"GPU-0": 9 * GIB},
+        201: {"GPU-1": 9 * GIB},
+    }
+    after = {
+        100: {"GPU-0": 2 * GIB},
+        101: {"GPU-1": 3 * GIB},
+        200: {"GPU-0": 9 * GIB},
+        201: {"GPU-1": 9 * GIB},
+    }
+
+    assert sleeping_footprint_bytes({100, 101}, before, after) == 3 * GIB
+
+
+def test_sleeping_footprint_of_an_engine_on_two_cards_under_host_pids():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    before = {
+        900: {"GPU-0": 19 * GIB},
+        901: {"GPU-1": 19 * GIB},
+        902: {"GPU-0": 9 * GIB},
+        903: {"GPU-1": 9 * GIB},
+    }
+    after = {
+        900: {"GPU-0": 2 * GIB},
+        901: {"GPU-1": 3 * GIB},
+        902: {"GPU-0": 9 * GIB + 128 * 2**20},
+        903: {"GPU-1": 9 * GIB},
+    }
+
+    assert sleeping_footprint_bytes({100, 101}, before, after) == 3 * GIB
+
+
+def test_sleeping_footprint_is_unknown_when_one_of_two_cards_did_not_fall():
+    from aibrix.runtime.model_runtime import sleeping_footprint_bytes
+
+    before = {100: {"GPU-0": 19 * GIB}, 101: {"GPU-1": 19 * GIB}}
+    after = {100: {"GPU-0": 2 * GIB}, 101: {"GPU-1": 19 * GIB}}
+    host_before = {900: {"GPU-0": 19 * GIB}, 901: {"GPU-1": 19 * GIB}}
+    host_after = {900: {"GPU-0": 2 * GIB}, 901: {"GPU-1": 19 * GIB}}
+
+    assert sleeping_footprint_bytes({100, 101}, before, after) is None
+    assert sleeping_footprint_bytes({100, 101}, host_before, host_after) is None
+
+
+def test_sleep_records_the_footprint_and_wake_forgets_it(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent = make_agent()
+    inst = agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    monkeypatch.setattr(
+        runtime_module,
+        "gpu_memory_observation",
+        _readings({inst.pid: {"GPU-0": 19 * GIB}}, {inst.pid: {"GPU-0": 2 * GIB}}),
+    )
+    monkeypatch.setattr(runtime_module, "process_tree_pids", lambda pid: {pid})
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda ipc_name: None)
+    monkeypatch.setattr(
+        runtime_module,
+        "engine_request_activity",
+        lambda inst: runtime_module.EngineRequestActivity(),
+    )
+
+    agent.sleep("m1", level=1, operation_id="sleep-1")
+
+    assert inst.sleeping_footprint_bytes == 2 * GIB
+    assert agent.snapshot()["models"][0]["sleeping_footprint_bytes"] == 2 * GIB
+
+    agent.wake("m1", operation_id="wake-1")
+
+    assert inst.sleeping_footprint_bytes is None
+    assert agent.snapshot()["models"][0]["sleeping_footprint_bytes"] is None
+
+
+def test_a_failed_wake_forgets_the_footprint(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    class _FailingWakeLauncher(MockEngineLauncher):
+        def wake(self, inst):
+            raise RuntimeError("vllm wake failed")
+
+    agent = ModelRuntime(_FailingWakeLauncher())
+    inst = agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    monkeypatch.setattr(
+        runtime_module,
+        "gpu_memory_observation",
+        _readings({inst.pid: {"GPU-0": 19 * GIB}}, {inst.pid: {"GPU-0": 2 * GIB}}),
+    )
+    monkeypatch.setattr(runtime_module, "process_tree_pids", lambda pid: {pid})
+    agent.sleep("m1", level=1, operation_id="sleep-1")
+
+    with pytest.raises(RuntimeError, match="vllm wake failed"):
+        agent.wake("m1", operation_id="wake-1")
+
+    # vLLM may have taken memory back before it failed.
+    assert inst.phase == "sleeping"
+    assert inst.sleeping_footprint_bytes is None
+
+
+def test_registry_keeps_the_footprint_of_a_sleeping_engine():
+    agent = make_agent()
+    inst = agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    inst.phase = "sleeping"
+    inst.sleeping_footprint_bytes = 2 * GIB
+
+    record = agent._registry_record(inst)
+    restored = agent._instance_from_registry_record(record)
+
+    assert record["sleeping_footprint_bytes"] == 2 * GIB
+    assert restored is not None
+    assert restored.sleeping_footprint_bytes == 2 * GIB
+    # A reading that cannot be used is dropped, and the engine is kept.
+    for unusable in ("2147483648", -1, 0, True):
+        restored = agent._instance_from_registry_record(
+            {**record, "sleeping_footprint_bytes": unusable}
+        )
+        assert restored is not None
+        assert restored.sleeping_footprint_bytes is None
+    awake = agent._instance_from_registry_record({**record, "phase": "active"})
+    assert awake is not None
+    assert awake.sleeping_footprint_bytes is None
+
+
+def test_write_kv_limit_sets_the_limit_and_keeps_what_the_engine_wrote(tmp_path):
+    import struct
+
+    from aibrix.runtime.model_runtime import read_kv_segment, write_kv_limit
+
+    (tmp_path / "kvc_m1").write_bytes(struct.pack("<3q", 100, 40, 10))
+
+    assert write_kv_limit("kvc_m1", 4096, shm_dir=str(tmp_path))
+    assert read_kv_segment("kvc_m1", shm_dir=str(tmp_path)) == (4096, 40, 10)
+
+
+def test_write_kv_limit_leaves_a_missing_segment_alone(tmp_path):
+    from aibrix.runtime.model_runtime import write_kv_limit
+
+    assert not write_kv_limit("kvc_missing", 4096, shm_dir=str(tmp_path))
+    assert not (tmp_path / "kvc_missing").exists()
+
+
+def test_write_kv_limit_waits_for_the_lock_the_engine_takes(tmp_path):
+    import fcntl
+    import struct
+
+    from aibrix.runtime.model_runtime import read_kv_segment, write_kv_limit
+
+    segment = tmp_path / "kvc_m1"
+    segment.write_bytes(struct.pack("<3q", 100, 40, 10))
+    written = threading.Event()
+
+    def write():
+        if write_kv_limit("kvc_m1", 4096, shm_dir=str(tmp_path)):
+            written.set()
+
+    with open(segment, "r+b") as engine:
+        # kvcached rewrites the whole struct under an exclusive flock.
+        fcntl.flock(engine, fcntl.LOCK_EX)
+        writer = threading.Thread(target=write)
+        writer.start()
+        assert not written.wait(0.2)
+        fcntl.flock(engine, fcntl.LOCK_UN)
+    writer.join(timeout=5)
+
+    assert written.is_set()
+    assert read_kv_segment("kvc_m1", shm_dir=str(tmp_path)) == (4096, 40, 10)
+
+
+def test_write_kv_limit_gives_up_on_a_lock_that_stays_held(tmp_path, monkeypatch):
+    import fcntl
+    import struct
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.model_runtime import read_kv_segment, write_kv_limit
+
+    monkeypatch.setattr(runtime_module, "KV_LIMIT_LOCK_TIMEOUT_SECONDS", 0.1)
+    segment = tmp_path / "kvc_m1"
+    segment.write_bytes(struct.pack("<3q", 100, 40, 10))
+    with open(segment, "r+b") as engine:
+        fcntl.flock(engine, fcntl.LOCK_EX)
+        with pytest.raises(TimeoutError, match="kvc_m1"):
+            write_kv_limit("kvc_m1", 4096, shm_dir=str(tmp_path))
+
+    assert read_kv_segment("kvc_m1", shm_dir=str(tmp_path)) == (100, 40, 10)
 
 
 def test_vllm_lifecycle_controls_use_checked_localhost_requests(monkeypatch):
-    import httpx
 
+    import aibrix.runtime.model_runtime as runtime_module
     from aibrix.runtime.model_runtime import ModelInstance, SubprocessEngineLauncher
 
     calls = []
@@ -271,7 +634,9 @@ def test_vllm_lifecycle_controls_use_checked_localhost_requests(monkeypatch):
         calls.append({"url": url, "timeout": timeout})
         return _Response()
 
-    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(
+        runtime_module, "_localhost", lambda: SimpleNamespace(post=fake_post)
+    )
     inst = ModelInstance(model_name="m1", port=30123, ipc_name="kvc_m1")
     launcher = SubprocessEngineLauncher()
 
@@ -280,16 +645,129 @@ def test_vllm_lifecycle_controls_use_checked_localhost_requests(monkeypatch):
 
     assert calls == [
         {
+            "url": "http://127.0.0.1:30123/sleep?level=0&mode=wait",
+            "timeout": 1.0,
+            "checked": True,
+        },
+        {
             "url": "http://127.0.0.1:30123/sleep?level=2",
-            "timeout": 10.0,
+            "timeout": 50.0,
             "checked": True,
         },
         {
             "url": "http://127.0.0.1:30123/wake_up",
-            "timeout": 10.0,
+            "timeout": 50.0,
             "checked": True,
         },
     ]
+
+
+class _VLLMSleeps:
+    """A vLLM that answers each sleep request with the next status code given,
+    or raises the next exception given."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.asked = []
+
+    def post(self, url, timeout):
+        import httpx
+
+        self.asked.append(url)
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return httpx.Response(answer, request=httpx.Request("POST", url))
+
+
+def _launcher_asking(monkeypatch, vllm):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_localhost", lambda: vllm)
+    monkeypatch.setattr(runtime_module.time, "sleep", lambda seconds: None)
+    inst = runtime_module.ModelInstance(model_name="m1", port=30123, ipc_name="kvc_m1")
+    return runtime_module.SubprocessEngineLauncher(), inst
+
+
+_DRAIN = "http://127.0.0.1:30123/sleep?level=0&mode=wait"
+_SLEEP = "http://127.0.0.1:30123/sleep?level=1"
+
+
+def test_a_sleep_lets_the_requests_an_engine_serves_finish_first(monkeypatch):
+    vllm = _VLLMSleeps(200, 200)
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    launcher.sleep(inst, level=1)
+
+    assert vllm.asked == [_DRAIN, _SLEEP]
+
+
+def test_an_engine_that_still_serves_is_not_put_to_sleep(monkeypatch):
+    import httpx
+
+    from aibrix.runtime.model_runtime import EngineServingError
+
+    vllm = _VLLMSleeps(httpx.ReadTimeout("still serving"), 200)
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    with pytest.raises(EngineServingError):
+        launcher.sleep(inst, level=1)
+
+    assert vllm.asked == [_DRAIN, "http://127.0.0.1:30123/wake_up?tags=scheduling"]
+
+
+def test_an_engine_that_cannot_pause_is_put_to_sleep(monkeypatch):
+    vllm = _VLLMSleeps(400, 200)
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    launcher.sleep(inst, level=1)
+
+    assert vllm.asked == [_DRAIN, _SLEEP]
+
+
+def test_a_refused_sleep_is_a_conflict():
+    from fastapi import HTTPException
+
+    from aibrix.runtime.model_runtime import EngineServingError
+    from aibrix.runtime.model_runtime_api import _control_error
+
+    with pytest.raises(HTTPException) as refused:
+        _control_error(EngineServingError("model m1 still serves requests"))
+
+    assert refused.value.status_code == 409
+
+
+def test_a_sleep_vllm_failed_is_asked_for_again(monkeypatch):
+    vllm = _VLLMSleeps(200, 500, 200)
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    launcher.sleep(inst, level=1)
+
+    assert vllm.asked == [_DRAIN, _SLEEP, _SLEEP]
+
+
+def test_a_sleep_vllm_keeps_failing_fails(monkeypatch):
+    import httpx
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    vllm = _VLLMSleeps(200, *[500] * runtime_module.VLLM_SLEEP_ATTEMPTS)
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        launcher.sleep(inst, level=1)
+    assert vllm.asked == [_DRAIN] + [_SLEEP] * runtime_module.VLLM_SLEEP_ATTEMPTS
+
+
+def test_a_sleep_vllm_did_not_answer_is_not_asked_for_again(monkeypatch):
+    import httpx
+
+    vllm = _VLLMSleeps(200, httpx.ReadTimeout("no answer"))
+    launcher, inst = _launcher_asking(monkeypatch, vllm)
+
+    with pytest.raises(httpx.ReadTimeout):
+        launcher.sleep(inst, level=1)
+    assert vllm.asked == [_DRAIN, _SLEEP]
 
 
 def test_subprocess_launcher_stops_group_after_api_server_exits(monkeypatch):
@@ -318,6 +796,7 @@ def test_completed_operation_ids_are_bounded():
     kv_controller = _RecordingKVController()
     agent = ModelRuntime(MockEngineLauncher(), kv_controller=kv_controller)
     inst = agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    inst.kv_initial_capacity_bytes = 4096
 
     for index in range(130):
         agent.set_kv_limit("m1", index, operation_id=f"limit-{index}")
@@ -363,6 +842,52 @@ def test_engine_config_args_are_structured():
     ) == {"--max-model-len": "2048", "--enforce-eager": ""}
 
 
+@pytest.mark.parametrize(
+    "engine, module, own_flags",
+    [
+        (
+            "vllm",
+            "vllm.entrypoints.openai.api_server",
+            ["--model", "Org/M1", "--served-model-name", "m1", "--host", "0.0.0.0"]
+            + ["--port", "20000", "--enable-sleep-mode"],
+        ),
+        (
+            "sglang",
+            "sglang.launch_server",
+            ["--model-path", "Org/M1", "--served-model-name", "m1", "--host", "0.0.0.0"]
+            + ["--port", "20000", "--enable-memory-saver"],
+        ),
+    ],
+)
+def test_launch_passes_its_own_flags_after_the_claims(
+    monkeypatch, engine, module, own_flags
+):
+    # Both engines keep the last value given for a flag, so the launcher's
+    # flags win however a claim spells them.
+    import subprocess
+
+    from aibrix.runtime.model_runtime import ModelInstance, SubprocessEngineLauncher
+
+    launched = []
+
+    def fake_popen(cmd, env, start_new_session):
+        launched.append(cmd)
+        return SimpleNamespace(pid=4321)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    inst = ModelInstance(model_name="m1", port=20000, ipc_name="kvc_m1", engine=engine)
+    claim_args = {
+        "--port=9000": "",
+        "--no-enable-sleep-mode": "",
+        "--max-model-len": "2048",
+    }
+
+    SubprocessEngineLauncher().launch(inst, "hf://Org/M1", {"args": claim_args}, None)
+
+    claim_flags = ["--port=9000", "--no-enable-sleep-mode", "--max-model-len", "2048"]
+    assert launched == [[sys.executable, "-m", module] + claim_flags + own_flags]
+
+
 def test_vllm_parallelism_defaults_and_combines_tp_pp():
     from aibrix.runtime.model_runtime import vllm_parallelism
 
@@ -376,12 +901,29 @@ def test_vllm_parallelism_defaults_and_combines_tp_pp():
     )
 
 
+def test_vllm_parallelism_reads_flags_the_way_vllm_does():
+    from aibrix.runtime.model_runtime import vllm_parallelism
+
+    assert vllm_parallelism({"args": {"--tensor-parallel-size=2": ""}}, None) == 2
+    assert (
+        vllm_parallelism(
+            {"args": {"--tensor_parallel_size": "2", "--pipeline_parallel_size": "2"}},
+            None,
+        )
+        == 4
+    )
+    assert vllm_parallelism({"args": {"-tp": "2", "-pp=2": ""}}, None) == 4
+
+
 @pytest.mark.parametrize(
     "args",
     [
         {"--tensor-parallel-size": "0"},
         {"--pipeline-parallel-size": "not-a-number"},
         {"--data-parallel-size": "2"},
+        {"--data-parallel-size=2": ""},
+        {"--gpu-memory-utilization=0.9": ""},
+        {"--gpu_memory_utilization": "0.9"},
     ],
 )
 def test_vllm_parallelism_rejects_unsupported_or_invalid_args(args):
@@ -389,6 +931,18 @@ def test_vllm_parallelism_rejects_unsupported_or_invalid_args(args):
 
     with pytest.raises(ValueError):
         vllm_parallelism({"args": args}, None)
+
+
+def test_vllm_parallelism_refuses_a_flag_set_twice():
+    from aibrix.runtime.model_runtime import vllm_parallelism
+
+    with pytest.raises(
+        ValueError, match="--tensor-parallel-size is set more than once"
+    ):
+        vllm_parallelism(
+            {"args": {"--tensor-parallel-size": "2", "--tensor_parallel_size": "4"}},
+            None,
+        )
 
 
 def test_activate_rejects_vllm_parallelism_that_does_not_match_visible_gpus(
@@ -452,7 +1006,7 @@ def test_explicit_port_and_ipc_respected():
 
 def test_activate_sanitizes_ipc_name():
     # kvcached normalizes the IPC name (dots/slashes -> '-'); the agent must do
-    # the same so kvctl targets the segment the engine actually creates.
+    # the same so limit writes target the segment the engine actually creates.
     agent = make_agent()
     inst = agent.activate(model_name="qwen3-0.6b", artifact_url="hf://x")
     assert inst.ipc_name == "kvc_qwen3-0-6b"
@@ -524,6 +1078,102 @@ def test_endpoints_activate_list_deactivate():
     assert all(m["model_name"] != "ep1" for m in listed["models"])
 
 
+def test_a_deactivate_that_waits_does_not_stall_the_other_endpoints():
+    # A deactivate waits for the runtime's operation lock, which an activation
+    # that downloads weights, or a sleep, can hold for a minute. Waiting on the
+    # event loop would hold up every other endpoint until the lock is released,
+    # the controller's snapshot reads included.
+    import asyncio
+
+    import httpx
+
+    client = _make_test_client()
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent = runtime_module.get_model_runtime()
+    agent.activate(model_name="m1", artifact_url="hf://x")
+
+    held = threading.Event()
+    released = threading.Event()
+
+    def hold_operation_lock():
+        with agent._operation_lock:
+            held.set()
+            released.wait(10)
+
+    holder = threading.Thread(target=hold_operation_lock)
+    holder.start()
+    assert held.wait(5)
+    # The lock is let go after a while either way, so a deactivate that blocks
+    # the event loop makes this test fail rather than hang.
+    letting_go = threading.Timer(5.0, released.set)
+    letting_go.start()
+
+    async def deactivate_while_listing():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://runtime"
+        ) as http:
+            stopping = asyncio.create_task(
+                http.post(
+                    "/v1/runtime/models/deactivate",
+                    json={"model_name": "m1", "mode": "stop"},
+                )
+            )
+            # Give the deactivate time to reach the lock and wait there.
+            await asyncio.sleep(0.2)
+            listed = await http.get("/v1/runtime/models")
+            listed_while_held = not released.is_set()
+            released.set()
+            return listed, listed_while_held, await stopping
+
+    try:
+        listed, listed_while_held, stopped = asyncio.run(deactivate_while_listing())
+    finally:
+        released.set()
+        letting_go.cancel()
+        holder.join(5)
+
+    assert listed.status_code == 200
+    assert listed_while_held, "the listing waited for the deactivate's lock"
+    assert stopped.status_code == 200
+    assert agent.list_models() == []
+
+
+def test_wake_endpoint_reports_a_wake_that_failed(monkeypatch):
+    client = _make_test_client()
+    import aibrix.runtime.model_runtime as runtime_module
+
+    def wake_that_fails(model_name, operation_id):
+        raise RuntimeError("the engine did not come back")
+
+    monkeypatch.setattr(runtime_module.get_model_runtime(), "wake", wake_that_fails)
+
+    resp = client.post(
+        "/v1/runtime/models/wake",
+        json={"model_name": "ep1", "operation_id": "op-1"},
+    )
+
+    # The controller tells this report from a bare server error, which a proxy
+    # on the way could send as well.
+    assert resp.status_code == 500
+    body = resp.json()
+    assert body["status"] == "error"
+    assert body["model_name"] == "ep1"
+    assert "did not come back" in body["message"]
+
+
+def test_wake_endpoint_still_refuses_a_model_it_does_not_run():
+    client = _make_test_client()
+
+    resp = client.post(
+        "/v1/runtime/models/wake",
+        json={"model_name": "nobody-runs-this", "operation_id": "op-2"},
+    )
+
+    assert resp.status_code == 404, resp.text
+
+
 def test_activate_endpoint_rejects_mismatched_vllm_parallelism(monkeypatch):
     import aibrix.runtime.model_runtime as runtime_module
 
@@ -586,7 +1236,6 @@ def test_control_endpoints_apply_kv_sleep_and_wake():
         json={"model_name": "ep-control", "artifact_url": "hf://Org/Model"},
     )
     assert activated.status_code == 200, activated.text
-
     limited = client.post(
         "/v1/runtime/models/kv-limit",
         json={
@@ -630,6 +1279,53 @@ def test_control_endpoints_apply_kv_sleep_and_wake():
     assert woken.status_code == 200, woken.text
     assert woken.json()["phase"] == "active"
     assert woken.json()["applied"] is True
+
+
+def test_mock_mode_kv_limit_api_without_captured_capacity(monkeypatch, tmp_path):
+    import json
+
+    import aibrix.runtime.model_runtime as runtime_module
+    import aibrix.runtime.model_runtime_api as api
+    from aibrix.openapi.protocol import (
+        ActivateRuntimeModelRequest,
+        SetRuntimeModelKVLimitRequest,
+    )
+
+    monkeypatch.setenv("AIBRIX_MODEL_RUNTIME_MOCK", "1")
+    monkeypatch.setenv("AIBRIX_WEIGHT_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(runtime_module, "_AGENT", None)
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    activated = api.activate_runtime_model(
+        ActivateRuntimeModelRequest(
+            model_name="mock-kv-no-segment",
+            artifact_url="hf://Org/Model",
+            port=20000,
+        )
+    )
+    assert activated.status_code == 200
+    ipc_name = json.loads(activated.body)["ipc_name"]
+    agent = runtime_module.get_model_runtime()
+    assert isinstance(agent._kv_controller, runtime_module.MockKVController)
+    assert runtime_module.read_kv_segment(ipc_name) is None
+
+    limits = (4096, 8192, 2048)
+    for index, limit in enumerate(limits):
+        observed = agent.snapshot()["models"][0]
+        assert observed["ready"] is True
+        assert observed["kv_capacity_bytes"] == -1
+        assert observed["kv_initial_capacity_bytes"] is None
+        response = api.set_runtime_model_kv_limit(
+            SetRuntimeModelKVLimitRequest(
+                model_name=observed["model_name"],
+                limit_bytes=limit,
+                operation_id=f"limit-{index}",
+            )
+        )
+        assert response.status_code == 200
+        assert json.loads(response.body)["applied"] is True
+        assert agent._kv_controller.limits == [
+            (ipc_name, value) for value in limits[: index + 1]
+        ]
 
 
 def test_control_endpoints_reject_unknown_unsupported_and_invalid_requests():
@@ -728,7 +1424,9 @@ def test_snapshot_reports_runtime_state(monkeypatch, tmp_path):
         "last_error": None,
         "kv_used_bytes": 25,
         "kv_capacity_bytes": 100,
+        "kv_initial_capacity_bytes": 100,
         "hbm_peak_bytes": 0,
+        "sleeping_footprint_bytes": None,
         "request_metrics_observed": True,
         "requests_running": 2,
         "requests_waiting": 1,
@@ -772,7 +1470,6 @@ def test_snapshot_reports_hbm_peak_for_engine_process_tree(monkeypatch):
 
 
 def test_engine_request_activity_accepts_vllm_metric_name_variants(monkeypatch):
-    import httpx
 
     import aibrix.runtime.model_runtime as runtime_module
 
@@ -787,7 +1484,11 @@ vllm:request_success_total{model_name=\"m1\",finished_reason=\"length\"} 7
         def raise_for_status(self):
             return None
 
-    monkeypatch.setattr(httpx, "get", lambda url, timeout: Response())
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: Response()),
+    )
     inst = runtime_module.ModelInstance(
         model_name="m1",
         port=20000,
@@ -803,8 +1504,214 @@ vllm:request_success_total{model_name=\"m1\",finished_reason=\"length\"} 7
     assert activity.request_success_total == 12
 
 
+def test_engine_request_activity_finds_its_metrics_among_all_others(monkeypatch):
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    class Response:
+        text = """# HELP vllm:time_to_first_token_seconds Histogram of TTFT.
+# TYPE vllm:time_to_first_token_seconds histogram
+vllm:time_to_first_token_seconds_bucket{le=\"0.1\",model_name=\"m1\"} 4.0
+vllm:time_to_first_token_seconds_bucket{le=\"+Inf\",model_name=\"m1\"} 9.0
+vllm:time_to_first_token_seconds_count{model_name=\"m1\"} 9.0
+vllm:time_to_first_token_seconds_sum{model_name=\"m1\"} 1.5
+# HELP vllm:num_requests_running Number of requests in model execution batches.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{engine=\"0\",model_name=\"m1\"} 2.0
+# HELP vllm:kv_cache_usage_perc KV-cache usage.
+# TYPE vllm:kv_cache_usage_perc gauge
+vllm:kv_cache_usage_perc{engine=\"0\",model_name=\"m1\"} 0.25
+# HELP vllm:num_requests_waiting Number of requests waiting to be processed.
+# TYPE vllm:num_requests_waiting gauge
+vllm:num_requests_waiting{engine=\"0\",model_name=\"m1\"} 1.0
+# HELP vllm:request_success_total Count of successfully processed requests.
+# TYPE vllm:request_success_total counter
+vllm:request_success_total{finished_reason=\"stop\",model_name=\"m1\"} 5.0
+vllm:request_success_total{finished_reason=\"length\",model_name=\"m1\"} 7.0
+vllm:request_success_created{finished_reason=\"stop\",model_name=\"m1\"} 1.7e9
+"""
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: Response()),
+    )
+    inst = runtime_module.ModelInstance(
+        model_name="m1", port=20000, ipc_name="kvc_m1", proc=object()
+    )
+
+    activity = runtime_module.engine_request_activity(inst)
+
+    assert activity.observed is True
+    assert activity.requests_running == 2
+    assert activity.requests_waiting == 1
+    assert activity.request_success_total == 12
+
+
+def test_snapshot_asks_the_engines_side_by_side(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent = make_agent()
+    agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    agent.activate(model_name="m2", artifact_url="hf://Org/M2")
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda ipc_name: None)
+    both_asked = threading.Barrier(2, timeout=2)
+
+    def answer_once_both_are_asked(inst):
+        # Asked one after another, the first engine waits alone and gives up.
+        try:
+            both_asked.wait()
+        except threading.BrokenBarrierError:
+            return runtime_module.EngineRequestActivity()
+        return runtime_module.EngineRequestActivity(
+            observed=True, requests_running=1, requests_waiting=0
+        )
+
+    monkeypatch.setattr(
+        runtime_module, "engine_request_activity", answer_once_both_are_asked
+    )
+
+    models = agent.snapshot()["models"]
+
+    assert [m["model_name"] for m in models] == ["m1", "m2"]
+    assert all(m["request_metrics_observed"] for m in models)
+    assert all(m["requests_running"] == 1 for m in models)
+
+
+def test_the_engines_on_a_pod_are_asked_through_one_client(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_LOCALHOST", None)
+
+    assert runtime_module._localhost() is runtime_module._localhost()
+
+
+class _SlowSleepLauncher(MockEngineLauncher):
+    """Holds a sleep until the test lets it finish."""
+
+    def __init__(self):
+        super().__init__()
+        self.falling_asleep = threading.Event()
+        self.let_it_finish = threading.Event()
+
+    def sleep(self, inst, level):
+        self.falling_asleep.set()
+        assert self.let_it_finish.wait(5)
+        super().sleep(inst, level)
+
+
+def _agent_with_a_slow_sleep(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda ipc_name: None)
+    launcher = _SlowSleepLauncher()
+    agent = ModelRuntime(launcher)
+    agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    sleeper = threading.Thread(
+        target=lambda: agent.sleep("m1", level=1, operation_id="op-1")
+    )
+    sleeper.start()
+    assert launcher.falling_asleep.wait(5)
+    return agent, launcher, sleeper
+
+
+def test_a_snapshot_does_not_wait_for_an_engine_to_fall_asleep(monkeypatch):
+    agent, launcher, sleeper = _agent_with_a_slow_sleep(monkeypatch)
+    taken = threading.Event()
+    threading.Thread(target=lambda: (agent.snapshot(), taken.set())).start()
+    try:
+        assert taken.wait(2), "a snapshot waited for the sleep"
+    finally:
+        launcher.let_it_finish.set()
+    sleeper.join(5)
+
+    assert agent.list_models()[0].phase == "sleeping"
+
+
+def test_a_change_of_an_engine_waits_for_its_sleep(monkeypatch):
+    agent, launcher, sleeper = _agent_with_a_slow_sleep(monkeypatch)
+    stopped = threading.Event()
+    stopper = threading.Thread(target=lambda: (agent.deactivate("m1"), stopped.set()))
+    stopper.start()
+    try:
+        assert not stopped.wait(0.2), "a deactivate ran while the engine fell asleep"
+    finally:
+        launcher.let_it_finish.set()
+    sleeper.join(5)
+    stopper.join(5)
+
+    assert stopped.is_set()
+    assert launcher.slept == [("m1", 1)]
+    assert launcher.stopped == ["m1"]
+    assert agent.list_models() == []
+
+
+def test_a_snapshot_does_not_wait_for_a_kv_limit_write(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda ipc_name: None)
+    writing, let_it_finish = threading.Event(), threading.Event()
+
+    class _SlowKVController:
+        def set_limit(self, ipc_name, limit_bytes):
+            writing.set()
+            assert let_it_finish.wait(5)
+
+    agent = ModelRuntime(MockEngineLauncher(), kv_controller=_SlowKVController())
+    inst = agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    inst.kv_initial_capacity_bytes = 4096
+    writer = threading.Thread(
+        target=lambda: agent.set_kv_limit("m1", 4096, operation_id="limit-1")
+    )
+    writer.start()
+    assert writing.wait(5)
+    taken = threading.Event()
+    threading.Thread(target=lambda: (agent.snapshot(), taken.set())).start()
+    try:
+        assert taken.wait(2), "a snapshot waited for a KV limit write"
+    finally:
+        let_it_finish.set()
+    writer.join(5)
+
+    assert agent.snapshot_metrics().kv_limit_applied_bytes == {"m1": 4096}
+
+
+def test_a_snapshot_does_not_wait_for_a_health_probe(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda ipc_name: None)
+    agent = make_agent()
+    agent.activate(model_name="m1", artifact_url="hf://Org/M1")
+    probing, answer, calls = threading.Event(), threading.Event(), []
+
+    def first_probe_is_slow(inst):
+        calls.append(inst.model_name)
+        if len(calls) == 1:
+            probing.set()
+            answer.wait(5)
+        return True
+
+    monkeypatch.setattr(runtime_module, "instance_ready", first_probe_is_slow)
+    supervisor = threading.Thread(target=agent.supervise_once)
+    supervisor.start()
+    assert probing.wait(5)
+    taken = threading.Event()
+    threading.Thread(target=lambda: (agent.snapshot(), taken.set())).start()
+    try:
+        assert taken.wait(2), "a snapshot waited for the supervisor's health probe"
+    finally:
+        answer.set()
+    supervisor.join(5)
+
+
 def test_engine_request_activity_scrapes_external_runtime_mock(monkeypatch):
-    import httpx
 
     import aibrix.runtime.model_runtime as runtime_module
 
@@ -819,7 +1726,11 @@ vllm:request_success_total{model_name=\"m1\"} 7
 
     monkeypatch.setenv("AIBRIX_MODEL_RUNTIME_MOCK", "1")
     monkeypatch.setenv("AIBRIX_MODEL_RUNTIME_MOCK_EXTERNAL_ENGINES", "1")
-    monkeypatch.setattr(httpx, "get", lambda url, timeout: Response())
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: Response()),
+    )
     inst = runtime_module.ModelInstance(
         model_name="m1",
         port=20000,
@@ -836,7 +1747,6 @@ vllm:request_success_total{model_name=\"m1\"} 7
 
 
 def test_engine_request_activity_ignores_other_models_from_shared_metrics(monkeypatch):
-    import httpx
 
     import aibrix.runtime.model_runtime as runtime_module
 
@@ -852,7 +1762,11 @@ vllm:request_success_total{model_name=\"m2\",finished_reason=\"stop\"} 17
         def raise_for_status(self):
             return None
 
-    monkeypatch.setattr(httpx, "get", lambda url, timeout: Response())
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: Response()),
+    )
     inst = runtime_module.ModelInstance(
         model_name="m1",
         port=20000,
@@ -1142,36 +2056,1082 @@ def test_instance_ready_live_process_probes_health(monkeypatch):
 
 
 def test_engine_ready_health_200(monkeypatch):
-    import httpx
 
+    import aibrix.runtime.model_runtime as runtime_module
     from aibrix.runtime.model_runtime import engine_ready
 
     class _Resp:
         status_code = 200
 
-    monkeypatch.setattr(httpx, "get", lambda url, timeout: _Resp())
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: _Resp()),
+    )
     assert engine_ready(29000) is True
 
 
 def test_engine_ready_non_200(monkeypatch):
-    import httpx
 
+    import aibrix.runtime.model_runtime as runtime_module
     from aibrix.runtime.model_runtime import engine_ready
 
     class _Resp:
         status_code = 503
 
-    monkeypatch.setattr(httpx, "get", lambda url, timeout: _Resp())
+    monkeypatch.setattr(
+        runtime_module,
+        "_localhost",
+        lambda: SimpleNamespace(get=lambda url, timeout: _Resp()),
+    )
     assert engine_ready(29000) is False
 
 
 def test_engine_ready_connection_refused(monkeypatch):
     import httpx
 
+    import aibrix.runtime.model_runtime as runtime_module
     from aibrix.runtime.model_runtime import engine_ready
 
     def boom(url, timeout):
         raise httpx.ConnectError("connection refused")
 
-    monkeypatch.setattr(httpx, "get", boom)
+    monkeypatch.setattr(runtime_module, "_localhost", lambda: SimpleNamespace(get=boom))
     assert engine_ready(29000) is False, "still-booting engine reads as not ready"
+
+
+def test_snapshot_reports_unknown_kv_before_the_segment_exists(monkeypatch, tmp_path):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setenv("AIBRIX_WEIGHT_CACHE_DIR", str(tmp_path))
+    agent = make_agent()
+    agent.activate(
+        model_name="qwen",
+        artifact_url="hf://Qwen/Qwen3-0.6B",
+        claim_ref={"namespace": "default", "name": "qwen", "uid": "claim-uid"},
+    )
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda ipc_name: None)
+
+    observed = agent.snapshot()["models"][0]
+
+    assert observed["kv_used_bytes"] == runtime_module.KV_UNKNOWN
+    assert observed["kv_capacity_bytes"] == runtime_module.KV_UNKNOWN
+
+
+@pytest.fixture
+def initial_kv(monkeypatch, tmp_path):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setenv("AIBRIX_WEIGHT_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(runtime_module, "gpu_memory_observation", lambda: ([], {}))
+    monkeypatch.setattr(
+        runtime_module,
+        "engine_request_activity",
+        lambda inst: runtime_module.EngineRequestActivity(),
+    )
+    read, write = runtime_module.read_kv_segment, runtime_module.write_kv_limit
+    monkeypatch.setattr(
+        runtime_module, "read_kv_segment", lambda name: read(name, str(tmp_path))
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "write_kv_limit",
+        lambda name, size: write(name, size, str(tmp_path)),
+    )
+    agent = make_agent()
+    inst = agent.activate(model_name="m1", artifact_url="hf://x", port=20000)
+    return agent, inst, tmp_path / inst.ipc_name
+
+
+def test_initial_kv_capture_after_ready(initial_kv, monkeypatch):
+    import struct
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.openapi.protocol import RuntimeSnapshotResponse
+
+    agent, inst, segment = initial_kv
+    segment.write_bytes(struct.pack("<3q", 100, 20, 5))
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: False)
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: True)
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    agent.set_kv_limit(inst.model_name, 200, operation_id="grow")
+    model = RuntimeSnapshotResponse(**agent.snapshot()).models[0]
+    assert model.kv_capacity_bytes == 100
+    assert model.kv_initial_capacity_bytes == 100
+
+
+@pytest.mark.parametrize("replace", [False, True])
+def test_initial_kv_rejects_detached_instance(initial_kv, monkeypatch, replace):
+    from dataclasses import replace as replace_instance
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent, inst, segment = initial_kv
+
+    def detached_read(name):
+        # Construct detachment: deactivate() also changes phase to stopping,
+        # which would independently block capture and mask the identity guard.
+        monkeypatch.delitem(agent._models, inst.model_name)
+        if replace:
+            monkeypatch.setitem(agent._models, inst.model_name, replace_instance(inst))
+        return (100, 0, 0)
+
+    monkeypatch.setattr(runtime_module, "read_kv_segment", detached_read)
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+    assert inst.kv_initial_capacity_bytes is None
+
+
+def test_initial_kv_rejects_capture_after_stop_starts(initial_kv, monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent, inst, segment = initial_kv
+
+    def failed_stop(inst):
+        raise RuntimeError("stop failed")
+
+    def stopping_read(name):
+        with pytest.raises(RuntimeError, match="stop failed"):
+            agent.deactivate(inst.model_name)
+        return (100, 0, 0)
+
+    monkeypatch.setattr(agent._launcher, "stop", failed_stop)
+    monkeypatch.setattr(runtime_module, "read_kv_segment", stopping_read)
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+    assert inst.phase == "stopping"
+
+
+def test_initial_kv_is_not_recaptured_after_segment_changes(initial_kv):
+    import struct
+
+    agent, inst, segment = initial_kv
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    # Change the engine's segment without a runtime limit write, which would
+    # independently mark startup capacity unavailable and mask recapture.
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    observed = agent.snapshot()["models"][0]
+    assert observed["kv_capacity_bytes"] == 80
+    assert observed["kv_initial_capacity_bytes"] == 100
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [None, "unreadable", b"short", b"", (-1).to_bytes(8, "little", signed=True) * 3],
+)
+def test_initial_kv_retries_unknown_segment(initial_kv, raw):
+    import struct
+
+    agent, inst, segment = initial_kv
+    if raw == "unreadable":
+        segment.mkdir()
+    elif raw is not None:
+        segment.write_bytes(raw)
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+    if segment.is_dir():
+        segment.rmdir()
+    segment.write_bytes(struct.pack("<3q", 0, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 0
+
+
+def test_initial_kv_write_before_capture_and_restart(initial_kv):
+    import struct
+
+    agent, inst, segment = initial_kv
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    with pytest.raises(RuntimeError, match="startup KV capacity"):
+        agent.set_kv_limit(inst.model_name, 200, operation_id="grow")
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    agent._schedule_restart(inst, "engine exited")
+    agent._now = lambda: inst.next_restart_at
+    agent.supervise_once()
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 80
+    agent._schedule_restart(inst, "replacement exited")
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_initial_kv_survives_sleep_wake(initial_kv, monkeypatch, fail):
+    import struct
+
+    agent, inst, segment = initial_kv
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    agent.sleep(inst.model_name, level=1, operation_id="sleep")
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    if fail:
+
+        def failed_wake(inst):
+            raise RuntimeError("wake failed")
+
+        monkeypatch.setattr(agent._launcher, "wake", failed_wake)
+        with pytest.raises(RuntimeError, match="wake failed"):
+            agent.wake(inst.model_name, operation_id="wake")
+    else:
+        agent.wake(inst.model_name, operation_id="wake")
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+
+
+def test_initial_kv_rejects_a_stale_restart_read(initial_kv, monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent, inst, segment = initial_kv
+
+    def stale_read(name):
+        agent._schedule_restart(inst, "engine exited during observation")
+        agent._now = lambda: inst.next_restart_at
+        agent.supervise_once()
+        return (100, 0, 0)
+
+    monkeypatch.setattr(runtime_module, "read_kv_segment", stale_read)
+    model = agent.snapshot()["models"][0]
+    assert model["kv_initial_capacity_bytes"] is None
+    assert model["ready"] is False
+    assert model["kv_capacity_bytes"] == model["kv_used_bytes"] == -1
+    monkeypatch.setattr(runtime_module, "read_kv_segment", lambda name: (80, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 80
+
+
+def test_initial_kv_missing_write_does_not_prevent_capture(initial_kv):
+    import struct
+
+    agent, inst, segment = initial_kv
+    with pytest.raises(RuntimeError, match="startup KV capacity"):
+        agent.set_kv_limit(inst.model_name, 200, operation_id="no-segment")
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+
+
+@pytest.mark.parametrize("pending_restart", [False, True])
+def test_initial_kv_recovered_restart(initial_kv, monkeypatch, pending_restart):
+    import struct
+    from datetime import timedelta
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    agent, inst, segment = initial_kv
+    record = agent._registry_record(inst)
+    record.pop("kv_initial_capacity_bytes", None)  # Pre-field registry format.
+    if pending_restart:
+        record.update(
+            phase="restarting",
+            restart_count=1,
+            next_restart_at=(agent._now() - timedelta(seconds=1)).isoformat(),
+        )
+    registry = EngineRegistry(segment.parent / "engines.json")
+    registry.save([record])
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: not pending_restart)
+    monkeypatch.setattr(
+        runtime_module, "process_start_time", lambda pid: inst.pid_start_time
+    )
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: True)
+    launcher = MockEngineLauncher()
+    recovered = ModelRuntime(launcher, registry=registry)
+    recovered.supervise_once()
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+
+    model = recovered.snapshot()["models"][0]
+    assert model["phase"] == "active"
+    if pending_restart:
+        assert launcher.launched == [inst.model_name]
+        assert model["kv_initial_capacity_bytes"] == 80
+    else:
+        assert launcher.launched == []
+        assert model["kv_initial_capacity_bytes"] is None
+
+
+@pytest.mark.parametrize("capacity", [0, 100])
+def test_initial_kv_persisted_across_agent_restart(initial_kv, monkeypatch, capacity):
+    import struct
+    from unittest.mock import Mock
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    agent, inst, segment = initial_kv
+    registry = EngineRegistry(segment.parent / "engines.json")
+    agent._registry = registry
+    inst.pid_start_time = "start"
+    assert agent._registry_record(inst)["kv_initial_capacity_bytes"] is None
+    monkeypatch.setattr(registry, "save", Mock(wraps=registry.save))
+    segment.write_bytes(struct.pack("<3q", capacity, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == capacity
+    assert registry.load()[0]["kv_initial_capacity_bytes"] == capacity
+    agent.snapshot()
+    registry.save.assert_called_once()
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: True)
+    monkeypatch.setattr(
+        runtime_module, "process_start_time", lambda pid: inst.pid_start_time
+    )
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: True)
+    recovered = ModelRuntime(MockEngineLauncher(), registry=registry)
+    assert recovered.snapshot()["models"][0]["kv_initial_capacity_bytes"] == capacity
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    model = recovered.snapshot()["models"][0]
+    assert model["kv_capacity_bytes"] == 80
+    assert model["kv_initial_capacity_bytes"] == capacity
+    assert recovered._models[inst.model_name].kv_initial_capacity_unavailable
+    assert recovered._launcher.launched == []
+    registry.save.assert_called_once()
+
+
+@pytest.mark.parametrize("phase", ["active", "sleeping"])
+@pytest.mark.parametrize(
+    "saved,current",
+    [
+        (None, "start"),
+        ("start", None),
+        (None, None),
+        ("start", "start"),
+        ("old", "new"),
+    ],
+)
+def test_initial_kv_registry_requires_identity(
+    initial_kv, monkeypatch, phase, saved, current
+):
+    import struct
+    from unittest.mock import Mock
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    agent, inst, segment = initial_kv
+    registry = EngineRegistry(segment.parent / "engines.json")
+    registry.save(
+        [
+            {
+                **agent._registry_record(inst),
+                "phase": phase,
+                "pid_start_time": saved,
+                "kv_initial_capacity_bytes": 100,
+            }
+        ]
+    )
+    monkeypatch.setattr(registry, "save", Mock(wraps=registry.save))
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: True)
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda pid: current)
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: True)
+    recovered = ModelRuntime(MockEngineLauncher(), registry=registry)
+    expected = 100 if saved is not None and saved == current else None
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    model = recovered.snapshot()["models"][0]
+    assert model["kv_initial_capacity_bytes"] == expected
+    persisted = 100 if saved == "start" and current is None else expected
+    assert registry.load()[0]["kv_initial_capacity_bytes"] == persisted
+    assert recovered._launcher.launched == []
+    if saved is not None and current is not None and saved != current:
+        assert model["phase"] == "restarting"
+    else:
+        assert model["phase"] == phase
+        assert recovered._models[inst.model_name].kv_initial_capacity_unavailable
+    assert registry.save.call_count == (expected is None)
+
+
+@pytest.mark.parametrize("phase", ["failed", "stopping"])
+def test_initial_kv_registry_early_branches(initial_kv, monkeypatch, phase):
+    from unittest.mock import Mock
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    agent, inst, segment = initial_kv
+    registry = EngineRegistry(segment.parent / "engines.json")
+    registry.save(
+        [
+            {
+                **agent._registry_record(inst),
+                "phase": phase,
+                "pid_start_time": "start",
+                "kv_initial_capacity_bytes": 100,
+            }
+        ]
+    )
+    # Even matching identity must not retain a terminal failed capacity.
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: phase == "failed")
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda pid: "start")
+    monkeypatch.setattr(
+        runtime_module, "process_group_is_alive", lambda pid: phase == "stopping"
+    )
+    launcher = MockEngineLauncher()
+    monkeypatch.setattr(launcher, "stop", Mock())
+    recovered = ModelRuntime(launcher, registry=registry)
+    model = recovered.snapshot()["models"][0]
+    assert model["kv_initial_capacity_bytes"] is None
+    assert registry.load()[0]["kv_initial_capacity_bytes"] is None
+    assert model["phase"] == phase
+    assert not model["alive"]
+    assert recovered._models[inst.model_name].kv_initial_capacity_unavailable
+    assert launcher.stop.call_count == (phase == "stopping")
+    assert launcher.launched == []
+
+
+def test_initial_kv_capture_save_retried(initial_kv, monkeypatch, caplog):
+    import struct
+    from unittest.mock import Mock
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    agent, inst, segment = initial_kv
+    registry = EngineRegistry(segment.parent / "engines.json")
+    agent._registry = registry
+    inst.pid_start_time = "start"
+    agent._persist_locked()
+    save = registry.save
+    monkeypatch.setattr(
+        registry, "save", Mock(side_effect=OSError("transient failure"))
+    )
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    assert "could not persist startup KV capacity" in caplog.text
+    assert registry.load()[0]["kv_initial_capacity_bytes"] is None
+    registry.save.assert_called_once()
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    monkeypatch.setattr(registry, "save", Mock(wraps=save))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    assert registry.load()[0]["kv_initial_capacity_bytes"] == 100
+    agent.snapshot()
+    registry.save.assert_called_once()
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: True)
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda pid: "start")
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: True)
+    recovered = ModelRuntime(MockEngineLauncher(), registry=registry)
+    assert recovered.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    assert recovered._launcher.launched == []
+    registry.save.assert_called_once()
+
+
+@pytest.mark.parametrize("replacement", ["gone", "pid_reused", "pending_restart"])
+def test_initial_kv_registry_capacity_cleared_for_replacement(
+    initial_kv, monkeypatch, replacement
+):
+    import struct
+
+    import aibrix.runtime.model_runtime as runtime_module
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    agent, inst, segment = initial_kv
+    inst.pid_start_time = "old"
+    record = {**agent._registry_record(inst), "kv_initial_capacity_bytes": 100}
+    if replacement == "pending_restart":
+        record.update(phase="restarting", restart_count=1, next_restart_at="2000-01-01")
+    registry = EngineRegistry(segment.parent / "engines.json")
+    registry.save([record])
+    monkeypatch.setattr(
+        runtime_module, "pid_is_alive", lambda pid: replacement == "pid_reused"
+    )
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda pid: "new")
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
+    recovered = ModelRuntime(MockEngineLauncher(), registry=registry)
+    assert recovered.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+    restored = recovered._models[inst.model_name]
+    restart_at = restored.next_restart_at
+    recovered._now = lambda: restart_at
+    recovered.supervise_once()
+    assert recovered._launcher.launched == [inst.model_name]
+    assert recovered.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    assert recovered.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 80
+
+
+@pytest.mark.parametrize("value", [None, -1, True, False, "100", 1.5, [], {}, 0, 100])
+def test_initial_kv_registry_validates_optional_capacity(initial_kv, value):
+    agent, inst, _ = initial_kv
+    record = {**agent._registry_record(inst), "kv_initial_capacity_bytes": value}
+    restored = agent._instance_from_registry_record(record)
+    assert restored is not None
+    expected = value if type(value) is int and value >= 0 else None
+    assert restored.kv_initial_capacity_bytes == expected
+    assert restored.kv_initial_capacity_unavailable
+
+
+def test_initial_kv_restart_after_backoff_write(initial_kv, monkeypatch):
+    import struct
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent, inst, segment = initial_kv
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
+    inst.proc = SimpleNamespace(poll=lambda: 1)
+    agent.supervise_once()
+    assert inst.phase == "restarting"
+    assert inst.kv_initial_capacity_bytes is None
+    with pytest.raises(RuntimeError, match="startup KV capacity"):
+        agent.set_kv_limit(inst.model_name, 200, operation_id="backoff-write")
+    assert not inst.kv_initial_capacity_unavailable
+    restart_at = inst.next_restart_at
+    agent._now = lambda: restart_at
+    agent.supervise_once()
+    assert agent._launcher.launched == [inst.model_name, inst.model_name]
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 80
+
+
+@pytest.mark.parametrize("failure", [None, "sleep", "wake"])
+def test_initial_kv_sleep_before_capture(initial_kv, monkeypatch, failure):
+    import struct
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent, inst, segment = initial_kv
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+
+    def failed_operation(inst, *args):
+        raise RuntimeError(f"{failure} failed")
+
+    if failure:
+        original_operation = getattr(agent._launcher, failure)
+        monkeypatch.setattr(agent._launcher, failure, failed_operation)
+    if failure == "sleep":
+        with pytest.raises(RuntimeError, match="sleep failed"):
+            agent.sleep(inst.model_name, level=1, operation_id="sleep")
+    else:
+        agent.sleep(inst.model_name, level=1, operation_id="sleep")
+        if failure == "wake":
+            with pytest.raises(RuntimeError, match="wake failed"):
+                agent.wake(inst.model_name, operation_id="wake")
+            monkeypatch.setattr(agent._launcher, "wake", original_operation)
+            agent.wake(inst.model_name, operation_id="wake-retry")
+        else:
+            agent.wake(inst.model_name, operation_id="wake")
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+
+    agent.set_kv_limit(inst.model_name, 200, operation_id="unavailable-growth")
+    assert struct.unpack("<3q", segment.read_bytes())[0] == 200
+
+    # Only a replacement generation restores startup provenance.
+    inst.proc = SimpleNamespace(poll=lambda: 1)
+    inst.phase = "active"
+    agent.supervise_once()
+    restart_at = inst.next_restart_at
+    agent._now = lambda: restart_at
+    agent.supervise_once()
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 80
+
+
+def test_initial_kv_capture_during_sleep(initial_kv, monkeypatch):
+    import struct
+
+    agent, inst, segment = initial_kv
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    during_sleep = []
+
+    def observe_sleep(inst, level):
+        during_sleep.append(agent.snapshot()["models"][0]["kv_initial_capacity_bytes"])
+
+    monkeypatch.setattr(agent._launcher, "sleep", observe_sleep)
+    agent.sleep(inst.model_name, level=1, operation_id="sleep")
+    assert during_sleep == [None]
+    agent.wake(inst.model_name, operation_id="wake")
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] is None
+
+
+@pytest.mark.parametrize("captured", [False, True])
+def test_initial_kv_delayed_generation_request(initial_kv, captured):
+    import struct
+
+    from aibrix.runtime.model_runtime import UnsupportedModelControlError
+
+    agent, inst, segment = initial_kv
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    agent.set_kv_limit(inst.model_name, 60, operation_id="shrink")
+    agent._schedule_restart(inst, "old generation exited")
+    agent._now = lambda: inst.next_restart_at
+    agent.supervise_once()
+    segment.write_bytes(struct.pack("<3q", 80, 0, 0))
+    if captured:
+        assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 80
+    else:
+        with pytest.raises(UnsupportedModelControlError, match="startup KV capacity"):
+            agent.set_kv_limit(inst.model_name, 100, operation_id="delayed-grow")
+        assert inst.kv_initial_capacity_bytes is None
+        assert not inst.kv_initial_capacity_unavailable
+        assert struct.unpack("<3q", segment.read_bytes())[0] == 80
+        assert "delayed-grow" not in inst.completed_operation_ids.get("kv-limit", [])
+        assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 80
+    result = agent.set_kv_limit(inst.model_name, 100, operation_id="delayed-grow")
+    assert struct.unpack("<3q", segment.read_bytes())[0] == 80
+    assert result.limit_bytes == 80
+    assert agent.snapshot_metrics().kv_limit_applied_bytes[inst.model_name] == 80
+
+
+@pytest.mark.parametrize("captured", [False, True])
+def test_initial_kv_direct_api_ceiling(initial_kv, monkeypatch, captured):
+    import json
+    import struct
+
+    from fastapi import HTTPException
+
+    import aibrix.runtime.model_runtime_api as api
+    from aibrix.openapi.protocol import SetRuntimeModelKVLimitRequest
+
+    agent, inst, segment = initial_kv
+    segment.write_bytes(struct.pack("<3q", 100, 0, 0))
+    monkeypatch.setattr(api, "get_model_runtime", lambda: agent)
+    request = SetRuntimeModelKVLimitRequest(
+        model_name=inst.model_name, limit_bytes=200, operation_id="direct"
+    )
+    if not captured:
+        with pytest.raises(HTTPException) as exc:
+            api.set_runtime_model_kv_limit(request)
+        assert exc.value.status_code == 409
+        assert "startup KV capacity" in exc.value.detail
+        assert struct.unpack("<3q", segment.read_bytes())[0] == 100
+        return
+    assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
+    response = api.set_runtime_model_kv_limit(request)
+    assert response.status_code == 200
+    assert struct.unpack("<3q", segment.read_bytes())[0] == 100
+    assert json.loads(response.body)["limit_bytes"] == 100
+    assert agent.snapshot_metrics().kv_limit_applied_bytes[inst.model_name] == 100
+
+
+@pytest.fixture
+def dormant_kv(initial_kv, monkeypatch, request):
+    import json
+    import struct
+    from datetime import datetime, timezone
+
+    import aibrix.openapi.protocol as protocol
+    import aibrix.runtime.model_runtime as runtime_module
+    import aibrix.runtime.model_runtime_api as api
+    from aibrix.runtime.engine_registry import EngineRegistry
+
+    _, _, segment = initial_kv
+    state = SimpleNamespace(
+        now=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        identity="start",
+        alive=True,
+        ready=True,
+        capacity=getattr(request, "param", 100),
+    )
+    registry = EngineRegistry(segment.parent / "engines.json")
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: state.alive)
+    monkeypatch.setattr(
+        runtime_module, "process_start_time", lambda pid: state.identity
+    )
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
+    monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: state.ready)
+    monkeypatch.setattr(api, "get_model_runtime", lambda: state.runtime)
+
+    def adopt():
+        state.launcher = MockEngineLauncher()
+        state.runtime = ModelRuntime(
+            state.launcher, registry=registry, now=lambda: state.now
+        )
+
+    def control(action, **kwargs):
+        req = getattr(protocol, action.title() + "RuntimeModelRequest")
+        return getattr(api, action + "_runtime_model")(
+            req(model_name="m1", operation_id=action, **kwargs)
+        )
+
+    state.adopt, state.control, state.registry = adopt, control, registry
+    state.record = lambda: next(r for r in registry.load() if r["model_name"] == "m1")
+    state.snapshot = lambda: api.runtime_snapshot().models[0]
+    state.segment = lambda: struct.unpack("<3q", segment.read_bytes())[0]
+    state.remove_segment = segment.unlink
+    state.kv = lambda size, op="grow": json.loads(
+        api.set_runtime_model_kv_limit(
+            protocol.SetRuntimeModelKVLimitRequest(
+                model_name="m1", limit_bytes=size, operation_id=op
+            )
+        ).body
+    )
+    adopt()
+    activation = protocol.ActivateRuntimeModelRequest(
+        model_name="m1", artifact_url="hf://x", port=20000
+    )
+    assert api.activate_runtime_model(activation).status_code == 200
+    segment.write_bytes(struct.pack("<3q", state.capacity, 0, 0))
+    assert state.snapshot().kv_initial_capacity_bytes == state.capacity
+    state.kv(min(80, state.capacity), "shrink")
+    state.identity = None
+    adopt()
+    return state
+
+
+@pytest.mark.parametrize("dormant_kv", [0, 100], indirect=True)
+@pytest.mark.parametrize("restart", [False, True])
+def test_dormant_kv_restarts_and_writes(dormant_kv, restart):
+    from datetime import timedelta
+
+    from fastapi import HTTPException
+
+    s = dormant_kv
+    assert s.snapshot().kv_initial_capacity_bytes is None
+    assert s.record()["pid_start_time"] == "start"
+    deadline = (s.now + timedelta(seconds=5)).isoformat()
+    assert s.record().get("kv_capacity_verify_until") == deadline
+    s.now += timedelta(seconds=2)
+    s.adopt()
+    assert s.record().get("kv_capacity_verify_until") == deadline
+    with pytest.raises(HTTPException, match="pending.*identity verification") as exc:
+        s.kv(s.capacity + 100)
+    assert exc.value.status_code == 409
+    assert s.segment() == min(80, s.capacity)
+    assert s.runtime.snapshot_metrics().kv_limit_outcomes == {("m1", "failed"): 1}
+    for i, size in enumerate([s.capacity, s.capacity // 2, 0]):
+        assert s.kv(size, str(i))["limit_bytes"] == s.segment() == size
+        assert s.snapshot().kv_initial_capacity_bytes is None
+        assert s.record()["kv_initial_capacity_bytes"] == s.capacity
+    s.identity = "start"
+    if restart:
+        s.adopt()
+    assert s.snapshot().kv_initial_capacity_bytes == s.capacity
+    assert s.kv(s.capacity + 100)["limit_bytes"] == s.segment() == s.capacity
+    assert not s.kv(s.capacity + 100)["applied"]
+
+
+@pytest.mark.parametrize(
+    "restart", ["_schedule_restart", "_restart_instance", "re_adopt"]
+)
+def test_dormant_kv_restart_clears_verification(dormant_kv, monkeypatch, restart):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    s = dormant_kv
+    assert s.record()["kv_capacity_verify_until"] is not None
+    # Keep PID evidence dormant while the process handle reports an exit.
+    monkeypatch.setattr(runtime_module.AdoptedProcess, "poll", lambda self: 1)
+    if restart == "re_adopt":
+        s.registry.save(
+            [
+                {
+                    **s.record(),
+                    "phase": "restarting",
+                    "next_restart_at": s.now.isoformat(),
+                }
+            ]
+        )
+        s.adopt()
+    else:
+        if restart == "_restart_instance":
+            inst = s.runtime._models["m1"]
+            inst.phase = "restarting"
+            inst.next_restart_at = s.now
+        s.runtime.supervise_once()
+    record = s.record()
+    assert record["phase"] == (
+        "active" if restart == "_restart_instance" else "restarting"
+    )
+    assert record["kv_initial_capacity_bytes"] is None
+    assert record["kv_capacity_verify_until"] is None
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_dormant_kv_expiry(dormant_kv, caplog, restart):
+    from datetime import timedelta
+
+    from fastapi import HTTPException
+
+    s = dormant_kv
+    s.now += timedelta(seconds=4.999)
+    with pytest.raises(HTTPException):
+        s.kv(200)
+    s.now += timedelta(seconds=0.001)
+    if restart:
+        s.adopt()
+    assert s.kv(200)["limit_bytes"] == s.segment() == 200
+    s.identity = "start"  # A match after the ceiling expired cannot bring it back.
+    for _ in range(2):
+        assert s.snapshot().kv_initial_capacity_bytes is None
+        s.runtime.supervise_once()
+    assert s.record()["kv_initial_capacity_bytes"] is None
+    assert s.record().get("kv_capacity_verify_until") is None
+    assert caplog.text.count("verification expired for model m1 (PID 10001)") == 1
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_dormant_kv_late_match_restores(dormant_kv, restart):
+    from datetime import timedelta
+
+    s = dormant_kv
+    # Nothing checked the engine before the deadline passed.
+    s.now += timedelta(seconds=30)
+    s.identity = "start"
+    if restart:
+        s.adopt()
+    assert s.snapshot().kv_initial_capacity_bytes == 100
+    assert s.kv(200)["limit_bytes"] == s.segment() == 100
+    assert s.record().get("kv_capacity_verify_until") is None
+
+
+@pytest.mark.parametrize("trigger", ["snapshot", "kv", "sleep", "wake", "supervisor"])
+@pytest.mark.parametrize("phase", ["active", "booting", "sleeping"])
+@pytest.mark.parametrize("observation", ["match", "dead", "mismatch"])
+def test_dormant_kv_refresh(dormant_kv, trigger, phase, observation):
+    from datetime import timedelta
+
+    s = dormant_kv
+    if phase == "sleeping":
+        s.control("sleep", level=1)
+    s.ready = phase != "booting"
+    s.adopt()
+    if phase == "booting" and trigger == "snapshot":
+        s.remove_segment()
+    s.alive = observation != "dead"
+    s.identity = {"match": "start", "dead": None, "mismatch": "new"}[observation]
+    if trigger == "supervisor":
+        s.runtime.supervise_once()
+    elif trigger == "snapshot":
+        s.snapshot()
+    elif trigger == "kv":
+        s.kv(60)
+    else:
+        s.control(trigger, **({"level": 1} if trigger == "sleep" else {}))
+    expected = 100 if observation == "match" else None
+    assert s.record()["kv_initial_capacity_bytes"] == expected
+    assert s.record().get("kv_capacity_verify_until") is None
+    s.alive, s.identity = True, "start"
+    assert s.snapshot().kv_initial_capacity_bytes == expected
+    if observation == "dead" and trigger == "supervisor":
+        s.alive = False
+        s.now += timedelta(seconds=2)
+        s.runtime.supervise_once()
+        s.ready = True
+        assert s.snapshot().kv_initial_capacity_bytes == 80
+
+
+@pytest.mark.parametrize("failure", [None, "sleep", "wake", "other-save", "stop"])
+def test_dormant_kv_lifecycle_saves(dormant_kv, monkeypatch, failure):
+    s = dormant_kv
+    before = s.record()
+
+    def fail(*args):
+        raise RuntimeError("lifecycle failed")
+
+    if failure in ("sleep", "wake"):
+        monkeypatch.setattr(s.launcher, failure, fail)
+    if failure == "stop":
+        s.runtime.deactivate("m1")
+        assert s.record()["kv_initial_capacity_bytes"] is None
+        assert s.record().get("kv_capacity_verify_until") is None
+        return
+    if failure == "other-save":
+        s.runtime.activate(model_name="m2", artifact_url="hf://y", port=20001)
+    elif failure == "sleep":
+        with pytest.raises(RuntimeError, match="lifecycle failed"):
+            s.control("sleep", level=1)
+    else:
+        s.control("sleep", level=1)
+        assert s.control("wake").status_code == (500 if failure else 200)
+    assert s.snapshot().kv_initial_capacity_bytes is None
+    for key in ("kv_initial_capacity_bytes", "kv_capacity_verify_until"):
+        assert s.record().get(key) == before.get(key)
+    s.identity = "start"
+    assert s.snapshot().kv_initial_capacity_bytes == 100
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("kv_capacity_verify_until", "bad"),
+        ("kv_capacity_verify_until", 123),
+        ("kv_initial_capacity_bytes", None),
+        ("kv_initial_capacity_bytes", True),
+        ("pid_start_time", None),
+        ("phase", "failed"),
+        ("phase", "stopping"),
+    ],
+)
+def test_dormant_kv_invalid_evidence(dormant_kv, field, value):
+    s = dormant_kv
+    s.registry.save([{**s.record(), field: value}])
+    s.adopt()
+    s.runtime.activate(model_name="m2", artifact_url="hf://y", port=20001)
+    assert s.snapshot().kv_initial_capacity_bytes is None
+    assert s.record()["kv_initial_capacity_bytes"] is None
+    assert s.record().get("kv_capacity_verify_until") is None
+    if field != "phase":
+        assert s.kv(200)["limit_bytes"] == 200
+
+
+def test_resolve_model_path_raises_download_errors(monkeypatch):
+    import aibrix.downloader
+    import aibrix.runtime.model_runtime as runtime_module
+
+    def fail(model_uri, *args, **kwargs):
+        raise PermissionError("403 Forbidden")
+
+    monkeypatch.setattr(aibrix.downloader, "download_model", fail)
+    with pytest.raises(PermissionError):
+        runtime_module._resolve_model_path("s3://bucket/models/m")
+
+
+def test_resolve_model_path_raises_a_missing_backend_dependency(monkeypatch):
+    import aibrix.downloader
+    import aibrix.runtime.model_runtime as runtime_module
+
+    def fail(model_uri, *args, **kwargs):
+        raise ImportError("No module named 'boto3'")
+
+    monkeypatch.setattr(aibrix.downloader, "download_model", fail)
+    with pytest.raises(ImportError):
+        runtime_module._resolve_model_path("s3://bucket/models/m")
+
+
+def test_resolve_model_path_returns_the_downloaded_path(monkeypatch):
+    import aibrix.downloader
+    import aibrix.runtime.model_runtime as runtime_module
+
+    # The real downloader returns a pathlib.Path.
+    monkeypatch.setattr(
+        aibrix.downloader, "download_model", lambda model_uri: Path("/models/m")
+    )
+    resolved = runtime_module._resolve_model_path("s3://bucket/models/m")
+    assert isinstance(resolved, str)
+    assert resolved == "/models/m"
+
+
+def test_launch_passes_a_downloaded_model_path_as_a_string(monkeypatch):
+    import subprocess
+
+    import aibrix.downloader
+    from aibrix.runtime.model_runtime import ModelInstance, SubprocessEngineLauncher
+
+    launched = []
+
+    def fake_popen(cmd, **kwargs):
+        launched.append(cmd)
+        return SimpleNamespace(pid=4321)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        aibrix.downloader, "download_model", lambda model_uri: Path("/models/m")
+    )
+    inst = ModelInstance(model_name="m1", port=20000, ipc_name="kvc_m1", engine="vllm")
+
+    assert (
+        SubprocessEngineLauncher().launch(inst, "s3://bucket/models/m", None, None)
+        == 4321
+    )
+    cmd = launched[0]
+    assert cmd[cmd.index("--model") + 1] == "/models/m"
+    assert all(isinstance(arg, str) for arg in cmd)
+
+
+def test_resolve_model_path_raises_without_a_downloader(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    monkeypatch.setitem(sys.modules, "aibrix.downloader", None)
+    with pytest.raises(ImportError):
+        runtime_module._resolve_model_path("s3://bucket/models/m")
+
+
+def test_resolve_model_path_raises_other_import_time_errors(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    class BrokenModule:
+        def __getattr__(self, name):
+            raise RuntimeError("downloader failed to initialize")
+
+    monkeypatch.setitem(sys.modules, "aibrix.downloader", BrokenModule())
+    with pytest.raises(RuntimeError):
+        runtime_module._resolve_model_path("s3://bucket/models/m")
+
+
+@pytest.mark.parametrize("scheme", ["gcs", "gs"])
+def test_resolve_model_path_downloads_from_gcs(monkeypatch, tmp_path, scheme):
+    import requests
+
+    import aibrix.downloader.gcs as gcs_module
+    import aibrix.envs
+    import aibrix.runtime.model_runtime as runtime_module
+
+    objects = {"models/m/config.json": b"{}"}
+
+    class Blob:
+        def __init__(self, name):
+            self.name, self.size, self.etag = name, len(objects[name]), "etag"
+
+        def download_to_filename(self, filename):
+            with open(filename, "wb") as f:
+                f.write(objects[self.name])
+
+    class Client:
+        _http = requests.Session()
+
+        def bucket(self, bucket_name):
+            assert bucket_name == "bucket"
+            return SimpleNamespace(
+                get_blob=lambda name: Blob(name) if name in objects else None
+            )
+
+        def list_blobs(self, bucket_name, prefix=None, max_results=None):
+            names = [n for n in objects if n.startswith(prefix)][:max_results]
+            return iter(Blob(n) for n in names)
+
+    monkeypatch.setattr(
+        gcs_module, "storage", SimpleNamespace(Client=lambda project=None: Client())
+    )
+    monkeypatch.setattr(aibrix.envs, "DOWNLOADER_LOCAL_DIR", str(tmp_path))
+
+    model_path = runtime_module._resolve_model_path(f"{scheme}://bucket/models/m")
+    assert (tmp_path / "m" / "config.json").read_bytes() == b"{}"
+    assert str(model_path) == str(tmp_path / "m")
+
+
+def test_resolve_model_path_names_an_unsupported_scheme():
+    import aibrix.runtime.model_runtime as runtime_module
+
+    with pytest.raises(ValueError, match="`azure://`"):
+        runtime_module._resolve_model_path("azure://container/models/m")
+
+
+class _DownloadingLauncher(MockEngineLauncher):
+    """Resolves the artifact URL first, as SubprocessEngineLauncher does."""
+
+    def launch(self, inst, artifact_url, engine_config, additional_config):
+        import aibrix.runtime.model_runtime as runtime_module
+
+        runtime_module._resolve_model_path(artifact_url)
+        return super().launch(inst, artifact_url, engine_config, additional_config)
+
+
+def _fail_download(model_uri, *args, **kwargs):
+    raise PermissionError("403 Forbidden")
+
+
+def test_activate_registers_no_model_when_the_download_fails(monkeypatch):
+    import aibrix.downloader
+
+    agent = ModelRuntime(_DownloadingLauncher())
+    monkeypatch.setattr(aibrix.downloader, "download_model", _fail_download)
+    with pytest.raises(PermissionError):
+        agent.activate(model_name="m1", artifact_url="s3://bucket/models/m")
+    assert "m1" not in agent._models
+
+    monkeypatch.setattr(
+        aibrix.downloader, "download_model", lambda model_uri: "/models/m"
+    )
+    inst = agent.activate(model_name="m1", artifact_url="s3://bucket/models/m")
+    assert inst.phase == "active"
+    assert agent._launcher.launched == ["m1"]
+
+
+def test_restart_records_a_failed_download(monkeypatch):
+    import aibrix.downloader
+
+    agent = ModelRuntime(_DownloadingLauncher())
+    monkeypatch.setattr(
+        aibrix.downloader, "download_model", lambda model_uri: "/models/m"
+    )
+    inst = agent.activate(model_name="m1", artifact_url="s3://bucket/models/m")
+    inst.pid = None  # the old engine is gone; no process group to stop
+
+    monkeypatch.setattr(aibrix.downloader, "download_model", _fail_download)
+    agent._restart_instance(inst)
+    assert inst.phase == "restarting"
+    assert inst.restart_count == 1
+    assert inst.last_error == "restart launch failed: 403 Forbidden"
+    assert agent._launcher.launched == ["m1"]

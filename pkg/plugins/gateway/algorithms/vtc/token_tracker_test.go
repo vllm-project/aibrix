@@ -17,8 +17,10 @@ limitations under the License.
 package vtc
 
 import (
+	"container/heap"
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -147,7 +149,7 @@ func TestSlidingWindowTokenTracker_UpdateTokenCount_WithCustomWeights(t *testing
 func TestTokenTrackerInterface(t *testing.T) {
 	config := DefaultVTCConfig()
 
-	var tracker TokenTracker = NewInMemorySlidingWindowTokenTracker(&config)
+	var tracker = NewInMemorySlidingWindowTokenTracker(&config)
 
 	ctx := context.Background()
 	_, err := tracker.GetTokenCount(ctx, "user")
@@ -212,6 +214,44 @@ func TestGetMinMaxTokenCount(t *testing.T) {
 	maxVal, _ = tracker.GetMaxTokenCount(ctx)
 	assert.Equal(t, float64(500), minVal, "min after user2 update")
 	assert.Equal(t, float64(1000), maxVal, "max after user2 update")
+}
+
+// backdateOldestBucket moves the user's oldest bucket d into the past, so a
+// test can expire it without sleeping. The tracker must use Milliseconds.
+func backdateOldestBucket(tracker *InMemorySlidingWindowTokenTracker, user string, d time.Duration) {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	data := tracker.userBucketStore[user]
+	element := data.buckets.Front()
+	node := element.Value.(*bucketNode)
+	delete(data.lookup, node.timestamp)
+	node.timestamp -= d.Milliseconds()
+	data.lookup[node.timestamp] = element
+	heap.Init(&tracker.expirations)
+}
+
+func TestUpdateTokenCountAfterPartialPruneKeepsMinMax(t *testing.T) {
+	config := DefaultVTCConfig()
+	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds)).(*InMemorySlidingWindowTokenTracker)
+	ctx := context.Background()
+
+	// Two buckets in the window: 100 tokens, then 30 tokens.
+	assert.NoError(t, tracker.UpdateTokenCount(ctx, "user1", 100, 0))
+	backdateOldestBucket(tracker, "user1", 10*time.Millisecond)
+	assert.NoError(t, tracker.UpdateTokenCount(ctx, "user1", 30, 0))
+
+	// The next update prunes only the 100-token bucket and adds 50 tokens.
+	backdateOldestBucket(tracker, "user1", time.Second)
+	assert.NoError(t, tracker.UpdateTokenCount(ctx, "user1", 50, 0))
+
+	total, err := tracker.GetTokenCount(ctx, "user1")
+	assert.NoError(t, err)
+	assert.Equal(t, float64(80), total)
+	minVal, _ := tracker.GetMinTokenCount(ctx)
+	maxVal, _ := tracker.GetMaxTokenCount(ctx)
+	assert.Equal(t, float64(80), minVal, "min is the only user's total")
+	assert.Equal(t, float64(80), maxVal, "max is the only user's total")
+	assert.Equal(t, map[float64]map[string]struct{}{80: {"user1": {}}}, tracker.totalsToUsers)
 }
 
 func TestTokenTrackerThreadSafety(t *testing.T) {
@@ -448,6 +488,7 @@ func TestTokenExpirationScenarios(t *testing.T) {
 		setupFunc    func(TokenTracker, context.Context) error
 		verifyFunc   func(TokenTracker, context.Context, *testing.T)
 		expiryWaitMs int
+		liveMax      float64
 	}{
 		{
 			name: "MultipleUsersExpiration",
@@ -460,13 +501,13 @@ func TestTokenExpirationScenarios(t *testing.T) {
 				return tracker.UpdateTokenCount(ctx, "user2", 200, 0)
 			},
 			verifyFunc: func(tracker TokenTracker, ctx context.Context, t *testing.T) {
-				// Verify min and max are set correctly before expiration
+				// Global extrema must expire usage without per-user reads.
 				min, err := tracker.GetMinTokenCount(ctx)
 				assert.NoError(t, err)
-				assert.Equal(t, float64(100), min, "min should be 100")
+				assert.Equal(t, tokenTrackerMinTokens, min)
 				max, err := tracker.GetMaxTokenCount(ctx)
 				assert.NoError(t, err)
-				assert.Equal(t, float64(200), max, "max should be 200")
+				assert.Equal(t, tokenTrackerMaxTokens, max)
 
 				// After all tokens expire, GetTokenCount should return 0 for both users
 				tokensUser1, err := tracker.GetTokenCount(ctx, "user1")
@@ -477,6 +518,7 @@ func TestTokenExpirationScenarios(t *testing.T) {
 				assert.Equal(t, float64(0), tokensUser2, "user2 tokens should be 0 after expiration")
 			},
 			expiryWaitMs: 110,
+			liveMax:      200,
 		},
 		{
 			name: "SingleUserExpiration",
@@ -485,13 +527,13 @@ func TestTokenExpirationScenarios(t *testing.T) {
 				return tracker.UpdateTokenCount(ctx, "user1", 100, 0)
 			},
 			verifyFunc: func(tracker TokenTracker, ctx context.Context, t *testing.T) {
-				// Verify min and max are set correctly before expiration
+				// Global extrema must expire usage without per-user reads.
 				min, err := tracker.GetMinTokenCount(ctx)
 				assert.NoError(t, err)
-				assert.Equal(t, float64(100), min, "min should be 100")
+				assert.Equal(t, tokenTrackerMinTokens, min)
 				max, err := tracker.GetMaxTokenCount(ctx)
 				assert.NoError(t, err)
-				assert.Equal(t, float64(100), max, "max should be 100")
+				assert.Equal(t, tokenTrackerMaxTokens, max)
 
 				// After tokens expire, token count should be 0
 				tokens, err := tracker.GetTokenCount(ctx, "user1")
@@ -499,6 +541,7 @@ func TestTokenExpirationScenarios(t *testing.T) {
 				assert.Equal(t, float64(0), tokens, "tokens should be 0 after expiration")
 			},
 			expiryWaitMs: 110,
+			liveMax:      100,
 		},
 	}
 
@@ -511,6 +554,12 @@ func TestTokenExpirationScenarios(t *testing.T) {
 			// Run setup
 			err := tc.setupFunc(tracker, ctx)
 			assert.NoError(t, err)
+			minimum, err := tracker.GetMinTokenCount(ctx)
+			assert.NoError(t, err)
+			assert.Equal(t, 100.0, minimum)
+			maximum, err := tracker.GetMaxTokenCount(ctx)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.liveMax, maximum)
 
 			// Wait for tokens to expire
 			time.Sleep(time.Duration(tc.expiryWaitMs) * time.Millisecond)
@@ -697,4 +746,16 @@ func TestTokenTrackerWindowSizeThroughConstructor(t *testing.T) {
 	assert.Equal(t, expectedWindowSize, windowSize, "Window size should be initialized with the default value of 5 minutes")
 
 	assert.Equal(t, Minutes, bucketUnit, "Bucket unit should be initialized with the default value of Minutes")
+}
+
+// TestWindowSizeOverflowSaturates verifies that an extremely large configured
+// window saturates instead of wrapping around into a negative duration.
+func TestWindowSizeOverflowSaturates(t *testing.T) {
+	config := DefaultVTCConfig()
+	hugeBuckets := int(math.MaxInt64/int64(time.Millisecond)) + 1
+	tracker := NewInMemorySlidingWindowTokenTracker(&config,
+		WithWindowSize(hugeBuckets), WithTimeUnit(Milliseconds))
+
+	vtcTracker := tracker.(*InMemorySlidingWindowTokenTracker)
+	assert.Equal(t, time.Duration(math.MaxInt64), vtcTracker.windowSize)
 }

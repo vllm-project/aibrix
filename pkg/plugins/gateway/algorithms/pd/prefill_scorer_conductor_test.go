@@ -91,6 +91,20 @@ func (m *mockMetricCache) AddSubscriber(subscriber metrics.MetricSubscriber) {
 	// no-op for testing
 }
 
+func (m *mockMetricCache) GetPodRunningRequests(podName, podNamespace string) (int64, error) {
+	return 0, fmt.Errorf("not implemented in mock")
+}
+
+func (m *mockMetricCache) AdmitPodRunningRequest(podName, podNamespace string, limit int64) (bool, bool, error) {
+	return false, false, fmt.Errorf("not implemented in mock")
+}
+
+func (m *mockMetricCache) ReleasePodRunningRequest(podName, podNamespace string) {}
+
+func (m *mockMetricCache) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {
+	return nil, nil
+}
+
 // Helper to create a test pod
 func makeTestPod(name, namespace string) *v1.Pod {
 	return &v1.Pod{
@@ -155,7 +169,7 @@ func TestConductorPrepare_Basic(t *testing.T) {
 // Test: ScorePod with valid histogram metric
 // ============================================================
 // Verifies that ScorePod correctly extracts avgPrefillTime from
-// a histogram metric using GetMean().
+// a histogram metric using GetMean() when the cache has no recent mean.
 func TestConductorScorePod_WithHistogramMetric(t *testing.T) {
 	tok := tokenizer.NewCharacterTokenizer()
 	pt := prefixcacheindexer.NewPrefixHashTable()
@@ -181,6 +195,26 @@ func TestConductorScorePod_WithHistogramMetric(t *testing.T) {
 	// prefill = 0.001 * 4^1.5 + 5 = 5.008ms
 	// total = 6 + 0 + 5.008 = 11.008ms
 	assert.InDelta(t, 11.008, score, 1e-9)
+}
+
+// A pod whose prefill slowed down in the last minute is scored by that recent mean, not
+// by the lifetime mean of its cumulative histogram.
+func TestConductorScorePod_UsesRecentPrefillMean(t *testing.T) {
+	tok := tokenizer.NewCharacterTokenizer()
+	pt := prefixcacheindexer.NewPrefixHashTable()
+	mc := newMockMetricCache()
+	policy := NewConductorPrefillPolicy(tok, pt, mc, NewConductorPrefillPolicyConfig())
+	pod := makeTestPod(testPodName, testNamespace)
+
+	// Lifetime mean 2ms, recent mean 10ms.
+	mc.SetHistogram(testPodName, testNamespace, testModelName, metrics.RequestPrefillTimeSeconds, 0.2, 100.0)
+	mc.SetSimple(testPodName, testNamespace, testModelName, cache.RecentMeanMetricName(metrics.RequestPrefillTimeSeconds), 0.01)
+
+	scorer, err := policy.Prepare(makePrefillRoutingContext(testMessage), []*v1.Pod{pod}, map[string]struct{}{testPodName: {}})
+	assert.NoError(t, err)
+
+	// queue 3 * 10ms = 30ms, prefix 0ms, prefill 0.001 * 4^1.5 + 5 = 5.008ms
+	assert.InDelta(t, 35.008, scorer.ScorePod(pod, 3.0, 10.0), 1e-9)
 }
 
 // ============================================================

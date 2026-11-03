@@ -65,3 +65,22 @@ poetry run python scripts/upgrade_redis_storage.py
 ```bash
 poetry run python scripts/upgrade_redis_storage.py
 ```
+
+## Local Batch Metastore Upgrade
+
+Metadata-service startup also upgrades the batch metastore when it is a `LocalStorage` (other local roots are left
+alone). Run it with no other writers using that root.
+
+- Legacy jobs are top-level `batchjob:*.metadata` sidecars and their payloads. They move to the `batchjob/` layout
+  with payload and sidecar bytes, including `created_at`, unchanged; sidecars are copied through a temporary file, so
+  a crash never leaves a partial one.
+- If any legacy job has a payload to move, the current recovery watermark is deleted first, so recovery scans every
+  page. If that delete fails, the upgrade stops before changing files. Orphan sidecars with no payload in either
+  layout are only logged and left in place.
+- An interrupted move resumes when the destination sidecar matches the legacy one, and byte-identical pairs converge.
+  Any other existing destination is a conflict: its files are kept and startup fails, naming the root and the keys,
+  until they are resolved by hand.
+- Top-level files starting with `batchstatus_copies:` or `batchjob_meta:` are removed, as the Redis upgrade drops
+  status copies. Nested legacy copies and current worker copies are kept.
+- A deletion acknowledged by an unfixed v0.8.0 can't be honoured if it left the legacy pair behind; that job reappears
+  after the migration.

@@ -1,0 +1,270 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/getting_started/installation/aws.rst:5
+msgid "Amazon Web Services (AWS)"
+msgstr "Amazon Web Services (AWS)"
+
+#: ../../source/getting_started/installation/aws.rst:8
+msgid "Introduction"
+msgstr "简介"
+
+#: ../../source/getting_started/installation/aws.rst:10
+msgid ""
+"An AIBrix cluster can either be deployed using the `AI on EKS "
+"<https://awslabs.github.io/ai-on-eks/>`_ project, which offers a simple "
+"deployment that will create a VPC, EKS cluster, and deploy AIBrix, or "
+"manually step-by-step."
+msgstr ""
+"AIBrix 集群既可以通过 `AI on EKS <https://awslabs.github.io/ai-on-eks/>`_ 项目部署"
+"（该项目提供一键部署，会创建 VPC、EKS 集群并部署 AIBrix），也可以逐步手动部署。"
+
+#: ../../source/getting_started/installation/aws.rst:13
+msgid "AI on EKS"
+msgstr "AI on EKS"
+
+#: ../../source/getting_started/installation/aws.rst:15
+msgid ""
+"`AI on EKS <https://awslabs.github.io/ai-on-eks/>`_ provides a one-line "
+"`deployment <https://awslabs.github.io/ai-on-eks/docs/infra/aibrix>`_ of "
+"AIBrix."
+msgstr ""
+"`AI on EKS <https://awslabs.github.io/ai-on-eks/>`_ 提供一行命令完成 AIBrix `deployment "
+"<https://awslabs.github.io/ai-on-eks/docs/infra/aibrix>`_ 。"
+
+#: ../../source/getting_started/installation/aws.rst:17
+msgid ""
+"This deployment will create a VPC, subnets, EKS environment and deploy "
+"AIBrix."
+msgstr "该部署会创建 VPC、子网、EKS 环境并部署 AIBrix。"
+
+#: ../../source/getting_started/installation/aws.rst:19
+msgid ""
+"AI on EKS also includes `inference charts <https://awslabs.github.io/ai-"
+"on-eks/docs/blueprints/inference/inference-charts>`_ that can deploy "
+"models to be served by AIBrix."
+msgstr ""
+"AI on EKS 还包含 `inference charts <https://awslabs.github.io/ai-on-eks/docs/blueprints/inference/inference-charts>`_ "
+"，可用于部署由 AIBrix 提供服务的模型。"
+
+#: ../../source/getting_started/installation/aws.rst:22
+msgid "Manually"
+msgstr "手动部署"
+
+#: ../../source/getting_started/installation/aws.rst:25
+#: ../../source/getting_started/installation/aws.rst:81
+msgid "Prerequisites"
+msgstr "前置条件"
+
+#: ../../source/getting_started/installation/aws.rst:27
+msgid "`eksctl <https://eksctl.io/installation/>`_"
+msgstr "`eksctl <https://eksctl.io/installation/>`_"
+
+#: ../../source/getting_started/installation/aws.rst:28
+msgid "A quota of at least 1 GPU within your AWS project."
+msgstr "AWS 项目中至少有 1 个 GPU 配额。"
+
+#: ../../source/getting_started/installation/aws.rst:31
+msgid "Steps"
+msgstr "步骤"
+
+#: ../../source/getting_started/installation/aws.rst:33
+msgid "Create an eks cluster:"
+msgstr "创建 EKS 集群："
+
+#: ../../source/getting_started/installation/aws.rst:39
+msgid ""
+"Clone AIBrix code repo ``git clone https://github.com/vllm-"
+"project/aibrix.git``."
+msgstr "克隆 AIBrix 代码仓库 ``git clone https://github.com/vllm-project/aibrix.git`` 。"
+
+#: ../../source/getting_started/installation/aws.rst:40
+msgid "Install AIBrix dependencies, CRDs, and core components:"
+msgstr "安装 AIBrix 依赖、CRD 和核心组件："
+
+#: ../../source/getting_started/installation/aws.rst:47
+msgid "Wait for components to complete running."
+msgstr "等待组件运行完成。"
+
+#: ../../source/getting_started/installation/aws.rst:48
+msgid "Deploy a model by following the instructions in :doc:`../quickstart`."
+msgstr "按照 :doc:`../quickstart` 中的说明部署模型。"
+
+#: ../../source/getting_started/installation/aws.rst:49
+msgid "Once the model is ready and running, you can test it by running:"
+msgstr "模型就绪并运行后，可运行以下命令进行测试："
+
+#: ../../source/getting_started/installation/aws.rst:66
+msgid ""
+"When you are finished testing and no longer want the resources, run "
+"``eksctl delete cluster --name aibrix``."
+msgstr "测试结束且不再需要这些资源时，运行 ``eksctl delete cluster --name aibrix`` 。"
+
+#: ../../source/getting_started/installation/aws.rst:69
+msgid "AWS Neuron (Trainium) with Dynamic Resource Allocation"
+msgstr "AWS Neuron（Trainium）与 Dynamic Resource Allocation"
+
+#: ../../source/getting_started/installation/aws.rst:71
+msgid ""
+"AIBrix supports disaggregated inference (prefill/decode separation) on "
+"AWS Trainium (Trn2 / Trn3) using the ``pd`` routing algorithm. On Neuron,"
+" the KV cache is transferred from prefill to decode over NIXL on the "
+"``LIBFABRIC`` backend, which rides EFA (Elastic Fabric Adapter). This "
+"requires each serving pod to be allocated **both** a set of NeuronCores "
+"**and** EFA devices — and, critically, from the **same PCIe/NUMA group** "
+"so the fabric path between pods is valid. The recommended way to request "
+"them together is Kubernetes **Dynamic Resource Allocation (DRA)**."
+msgstr ""
+"AIBrix 支持在 AWS Trainium（Trn2 / Trn3）上使用 ``pd`` 路由算法进行分离式推理（prefill/decode "
+"分离）。在 Neuron 上，KV cache 通过 NIXL 的 ``LIBFABRIC`` 后端从 prefill 传到 decode，该后端运行在 "
+"EFA（Elastic Fabric Adapter）之上。这要求每个服务 pod **同时** 分配一组 NeuronCores **和** "
+"EFA 设备，并且关键的是它们必须来自**同一 PCIe/NUMA 组** ，才能保证 pod 之间的 fabric 路径有效。推荐用 Kubernetes "
+"**Dynamic Resource Allocation (DRA)** 一并申请这两类资源。"
+
+#: ../../source/getting_started/installation/aws.rst:83
+msgid ""
+"Kubernetes **1.34 or later**, where Dynamic Resource Allocation is GA and"
+" the API group is ``resource.k8s.io/v1`` (a fixed device request is "
+"wrapped in ``exactly:``). On 1.30–1.33 DRA is beta "
+"(``resource.k8s.io/v1beta1``) with a different request schema."
+msgstr ""
+"Kubernetes **1.34 或更高版本** ，此时 Dynamic Resource Allocation 已 GA，API 组为 ``resource.k8s.io/v1`` "
+"（固定设备请求包在 ``exactly:`` 中）。在 1.30–1.33 上 DRA 为 beta（``resource.k8s.io/v1beta1`` "
+"），请求 schema 不同。"
+
+#: ../../source/getting_started/installation/aws.rst:87
+msgid ""
+"An EKS nodegroup of ``trn2.48xlarge`` (or ``trn3-dev1.48xlarge``) with "
+"EFA enabled (``efaEnabled: true`` and ``privateNetworking: true`` in the "
+"eksctl nodegroup config). EFA capacity is typically obtained through an "
+"on-demand capacity reservation (ODCR)."
+msgstr ""
+"启用 EFA 的 ``trn2.48xlarge`` （或 ``trn3-dev1.48xlarge`` ）EKS nodegroup（eksctl "
+"nodegroup 配置中 ``efaEnabled: true`` 且 ``privateNetworking: true`` ）。EFA 容量通常通过按需容量预留（ODCR）获取。"
+
+#: ../../source/getting_started/installation/aws.rst:91
+msgid "Two DRA drivers installed:"
+msgstr "安装两个 DRA 驱动："
+
+#: ../../source/getting_started/installation/aws.rst:93
+msgid ""
+"**Neuron DRA driver** — publishes ``neuron.aws.com`` devices. Install per"
+" the `Neuron DRA guide <https://awsdocs-neuron.readthedocs-"
+"hosted.com/en/latest/containers/neuron-dra.html>`_. Do not also run the "
+"Neuron device plugin on the same cluster."
+msgstr ""
+"**Neuron DRA driver** — 发布 ``neuron.aws.com`` 设备。按 `Neuron DRA guide "
+"<https://awsdocs-neuron.readthedocs-hosted.com/en/latest/containers/neuron-dra.html>`_ "
+"安装。不要在同一集群上再运行 Neuron device plugin。"
+
+#: ../../source/getting_started/installation/aws.rst:96
+msgid ""
+"**EFA DRA driver** (``aws-dranet``) — publishes "
+"``efa.networking.k8s.aws`` devices. Install per the `Amazon EKS DRA "
+"device-management guide <https://docs.aws.amazon.com/eks/latest/userguide"
+"/device-management-efa.html>`_."
+msgstr ""
+"**EFA DRA driver** （``aws-dranet`` ）— 发布 ``efa.networking.k8s.aws`` 设备。按 "
+"`Amazon EKS DRA device-management guide <https://docs.aws.amazon.com/eks/latest/userguide/device-management-efa.html>`_ "
+"安装。"
+
+#: ../../source/getting_started/installation/aws.rst:100
+msgid "Verify both device classes are discovered:"
+msgstr "确认两类设备均已被发现："
+
+#: ../../source/getting_started/installation/aws.rst:108
+msgid "Allocate Neuron + EFA together with a ResourceClaimTemplate"
+msgstr "用 ResourceClaimTemplate 同时分配 Neuron 和 EFA"
+
+#: ../../source/getting_started/installation/aws.rst:110
+msgid ""
+"A single claim requests both device classes and, via a ``constraints`` "
+"block, pins them to the **same device group** — this is what keeps the "
+"NeuronCores and EFA NICs on the same PCIe/NUMA locality so the "
+"NIXL/LIBFABRIC path between pods is valid. Only the ``48xlarge`` Trn size"
+" is EFA-enabled."
+msgstr ""
+"单个 claim 同时申请两类设备，并通过 ``constraints`` 块将它们固定到**同一设备组**——"
+"这样才能让 NeuronCores 和 EFA NIC 处于同一 PCIe/NUMA 局部性，保证 pod 之间的 "
+"NIXL/LIBFABRIC 路径有效。只有 ``48xlarge`` 规格的 Trainium 实例启用了 EFA。"
+
+#: ../../source/getting_started/installation/aws.rst:115
+msgid ""
+"Two ready-to-use templates are provided in `samples/disaggregation/neuron"
+" <https://github.com/vllm-"
+"project/aibrix/tree/main/samples/disaggregation/neuron>`_:"
+msgstr ""
+"`samples/disaggregation/neuron <https://github.com/vllm-"
+"project/aibrix/tree/main/samples/disaggregation/neuron>`_ 中提供了两份可直接使用的模板："
+
+#: ../../source/getting_started/installation/aws.rst:118
+msgid ""
+"``xl-lnc2-trn2-efa-rct.yaml`` — **half an instance**: 8 NeuronCores + 8 "
+"EFA from one ``devicegroup8``. A ``trn2.48xlarge`` has 16 Neuron devices "
+"in two such groups, so this template carves the node into two 8-device "
+"chunks — one per pod — letting a prefill and a decode pod co-reside on "
+"one node, each with an aligned, mutually-routable Neuron + EFA set."
+msgstr ""
+"``xl-lnc2-trn2-efa-rct.yaml`` — **半个实例** ：来自一个 ``devicegroup8`` 的 8 个 NeuronCores "
+"+ 8 个 EFA。一台 ``trn2.48xlarge`` 有 16 个 Neuron 设备，分成两组，因此该模板把节点切成两块各 8 个设备——每个 "
+"pod 一块——让 prefill 和 decode pod 可以共驻同一节点，且各自拥有对齐、可互路由的 Neuron + EFA 集合。"
+
+#: ../../source/getting_started/installation/aws.rst:123
+msgid ""
+"``xxl-lnc2-trn2-efa-rct.yaml`` — **a full instance**: all 16 NeuronCores "
+"+ 16 EFA aligned on one ``devicegroup16`` (a single pod owns the whole "
+"node)."
+msgstr ""
+"``xxl-lnc2-trn2-efa-rct.yaml`` — **整个实例** ：全部 16 个 NeuronCores + 16 个 EFA "
+"对齐到一个 ``devicegroup16`` （单个 pod 独占整台节点）。"
+
+#: ../../source/getting_started/installation/aws.rst:126
+msgid "The essential shape (see the files for the full manifest):"
+msgstr "核心形态如下（完整清单见文件）："
+
+#: ../../source/getting_started/installation/aws.rst:153
+msgid ""
+"A pod references the template via ``resourceClaims`` and "
+"``resources.claims``. For Trn3, use the ``trn3-dev1.48xlarge`` selector."
+msgstr ""
+"pod 通过 ``resourceClaims`` 和 ``resources.claims`` 引用该模板。对于 Trn3，使用 "
+"``trn3-dev1.48xlarge`` selector。"
+
+#: ../../source/getting_started/installation/aws.rst:158
+msgid ""
+"Validate the fabric before serving — run "
+"``/opt/amazon/efa/bin/fi_pingpong -p efa`` (server) in one pod and "
+"``fi_pingpong -p efa <server-pod-ip>`` (client) in the other. A bandwidth"
+" table confirms EFA works pod-to-pod."
+msgstr ""
+"提供服务前先验证 fabric：在一个 pod 中运行 ``/opt/amazon/efa/bin/fi_pingpong -p efa`` （服务端），在另一个 "
+"pod 中运行 ``fi_pingpong -p efa <server-pod-ip>`` （客户端）。出现带宽表即说明 EFA 在 pod "
+"之间可用。"
+
+#: ../../source/getting_started/installation/aws.rst:162
+msgid ""
+"Once the prefill/decode Deployments are running with these claims and the"
+" ``role-name: prefill|decode`` labels, enable disaggregated routing on "
+"the gateway with ``ROUTING_ALGORITHM=pd`` and deploy a model as in the "
+"steps above."
+msgstr ""
+"当带有这些 claim 以及 ``role-name: prefill|decode`` 标签的 prefill/decode "
+"Deployment 运行起来后，在网关上用 ``ROUTING_ALGORITHM=pd`` 启用分离路由，"
+"并按上文步骤部署模型。"

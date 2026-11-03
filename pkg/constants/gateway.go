@@ -20,6 +20,7 @@ const (
 	// HeaderSessionID identifies the backend selected for session-affinity routing.
 	HeaderSessionID = "x-session-id"
 
-	// HeaderSessionKey carries a caller-owned opaque key for session-affinity routing.
+	// HeaderSessionKey carries a caller-owned opaque key, used by session-affinity
+	// routing and by the PD router's session-delta prefill charge.
 	HeaderSessionKey = "x-aibrix-session-key"
 )

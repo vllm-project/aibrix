@@ -19,13 +19,22 @@ package gateway
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 func TestCheckRPM(t *testing.T) {
@@ -95,6 +104,221 @@ func TestIncrRPM(t *testing.T) {
 		assert.NoError(t, err)
 		rl.AssertExpectations(t)
 	})
+}
+
+func TestCheckLimitsRPMAdmission(t *testing.T) {
+	user := utils.User{Name: "alice", Rpm: 1, Tpm: 100}
+
+	t.Run("request within the limit is admitted", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Get", mock.Anything, "alice_RPM_CURRENT").Return(int64(0), nil).Once()
+		rl.On("Incr", mock.Anything, "alice_RPM_CURRENT", int64(1)).Return(int64(1), nil).Once()
+		rl.On("Get", mock.Anything, "alice_TPM_CURRENT").Return(int64(0), nil).Once()
+
+		s := &Server{ratelimiter: rl}
+		rpm, resp, err := s.checkLimits(context.Background(), user)
+
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+		assert.Equal(t, int64(1), rpm)
+		rl.AssertExpectations(t)
+	})
+
+	t.Run("increment past the limit returns 429 and refunds it", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		// Another request incremented the counter after this one read it.
+		rl.On("Get", mock.Anything, "alice_RPM_CURRENT").Return(int64(0), nil).Once()
+		rl.On("Incr", mock.Anything, "alice_RPM_CURRENT", int64(1)).Return(int64(2), nil).Once()
+		rl.On("Incr", mock.Anything, "alice_RPM_CURRENT", int64(-1)).Return(int64(1), nil).Once()
+		rl.On("Get", mock.Anything, "alice_TPM_CURRENT").Return(int64(0), nil).Maybe()
+
+		s := &Server{ratelimiter: rl}
+		rpm, resp, err := s.checkLimits(context.Background(), user)
+
+		if assert.Error(t, err) {
+			assert.Contains(t, err.Error(), "has exceeded RPM")
+		}
+		assert.Equal(t, int64(0), rpm)
+		assertRPMExceeded(t, resp)
+		rl.AssertExpectations(t)
+	})
+
+	t.Run("failed refund still returns 429", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Get", mock.Anything, "alice_RPM_CURRENT").Return(int64(0), nil).Once()
+		rl.On("Incr", mock.Anything, "alice_RPM_CURRENT", int64(1)).Return(int64(2), nil).Once()
+		rl.On("Incr", mock.Anything, "alice_RPM_CURRENT", int64(-1)).Return(int64(0), errors.New("redis down")).Once()
+		rl.On("Get", mock.Anything, "alice_TPM_CURRENT").Return(int64(0), nil).Maybe()
+
+		s := &Server{ratelimiter: rl}
+		rpm, resp, err := s.checkLimits(context.Background(), user)
+
+		assert.Error(t, err)
+		assert.Equal(t, int64(0), rpm)
+		assertRPMExceeded(t, resp)
+		rl.AssertExpectations(t)
+	})
+
+	t.Run("request rejected for TPM keeps no RPM slot", func(t *testing.T) {
+		redisServer := miniredis.RunT(t)
+		redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+		t.Cleanup(func() { _ = redisClient.Close() })
+		rl := ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, time.Minute)
+		_, err := rl.Incr(context.Background(), "alice_TPM_CURRENT", user.Tpm)
+		require.NoError(t, err)
+		s := &Server{ratelimiter: rl}
+
+		for range 3 {
+			rpm, resp, err := s.checkLimits(context.Background(), user)
+			if assert.Error(t, err) {
+				assert.Contains(t, err.Error(), "has exceeded TPM")
+			}
+			assert.Equal(t, int64(0), rpm)
+			imm := resp.GetImmediateResponse()
+			require.NotNil(t, imm)
+			assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
+			assert.Contains(t, imm.GetBody(), ErrorCodeRateLimitExceeded)
+			if assert.NotEmpty(t, imm.GetHeaders().GetSetHeaders()) {
+				assert.Equal(t, HeaderErrorTPMExceeded, imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetKey())
+				assert.Equal(t, "true", string(imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetRawValue()))
+			}
+		}
+		usage, err := rl.Get(context.Background(), "alice_RPM_CURRENT")
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), usage, "a request rejected for TPM must not use up the user's RPM")
+	})
+
+	t.Run("TPM read failure takes no RPM slot", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Get", mock.Anything, "alice_RPM_CURRENT").Return(int64(0), nil).Once()
+		rl.On("Get", mock.Anything, "alice_TPM_CURRENT").Return(int64(0), errors.New("redis down")).Once()
+
+		s := &Server{ratelimiter: rl}
+		rpm, resp, err := s.checkLimits(context.Background(), user)
+
+		assert.Error(t, err)
+		assert.Equal(t, int64(0), rpm)
+		require.NotNil(t, resp.GetImmediateResponse())
+		assert.Equal(t, envoyTypePb.StatusCode_InternalServerError, resp.GetImmediateResponse().GetStatus().GetCode())
+		rl.AssertExpectations(t)
+		rl.AssertNotCalled(t, "Incr", mock.Anything, "alice_RPM_CURRENT", int64(1))
+	})
+
+	t.Run("request already over RPM is told so", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Get", mock.Anything, "alice_RPM_CURRENT").Return(int64(1), nil).Once()
+
+		s := &Server{ratelimiter: rl}
+		_, resp, err := s.checkLimits(context.Background(), user)
+
+		assert.Error(t, err)
+		assertRPMExceeded(t, resp)
+		rl.AssertExpectations(t)
+	})
+
+	// A failed counter read is an outage, not a rate limit: the client must not
+	// be told it exceeded a limit, or it may back off as if it had.
+	for _, tt := range []struct {
+		name       string
+		failKey    string
+		wantHeader string
+	}{
+		{name: "RPM", failKey: "alice_RPM_CURRENT", wantHeader: HeaderErrorGetRPM},
+		{name: "TPM", failKey: "alice_TPM_CURRENT", wantHeader: HeaderErrorGetTPM},
+	} {
+		t.Run(tt.name+" read failure is not reported as over the limit", func(t *testing.T) {
+			rl := &mockRateLimiter{}
+			for _, key := range []string{"alice_RPM_CURRENT", "alice_TPM_CURRENT"} {
+				if key == tt.failKey {
+					rl.On("Get", mock.Anything, key).Return(int64(0), errors.New("redis down")).Maybe()
+				} else {
+					rl.On("Get", mock.Anything, key).Return(int64(0), nil).Maybe()
+				}
+			}
+
+			s := &Server{ratelimiter: rl}
+			_, resp, err := s.checkLimits(context.Background(), user)
+
+			assert.Error(t, err)
+			imm := resp.GetImmediateResponse()
+			require.NotNil(t, imm)
+			assert.Equal(t, envoyTypePb.StatusCode_InternalServerError, imm.GetStatus().GetCode())
+			assert.NotContains(t, imm.GetBody(), ErrorCodeRateLimitExceeded)
+			keys := []string{}
+			for _, h := range imm.GetHeaders().GetSetHeaders() {
+				keys = append(keys, h.GetHeader().GetKey())
+			}
+			assert.Contains(t, keys, tt.wantHeader)
+			assert.NotContains(t, keys, HeaderErrorRPMExceeded)
+			assert.NotContains(t, keys, HeaderErrorTPMExceeded)
+			rl.AssertNotCalled(t, "Incr", mock.Anything, "alice_RPM_CURRENT", int64(1))
+		})
+	}
+
+	t.Run("concurrent requests admit no more than the limit", func(t *testing.T) {
+		redisServer := miniredis.RunT(t)
+		redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+		t.Cleanup(func() { _ = redisClient.Close() })
+
+		const callers = 4
+		rl := &rpmReadBarrier{RateLimiter: ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, time.Minute)}
+		rl.reads.Add(callers)
+		s := &Server{ratelimiter: rl}
+
+		var admitted, rejected atomic.Int32
+		var wg sync.WaitGroup
+		for i := 0; i < callers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, resp, err := s.checkLimits(context.Background(), user)
+				switch {
+				case err == nil && resp == nil:
+					admitted.Add(1)
+				case resp.GetImmediateResponse().GetStatus().GetCode() == envoyTypePb.StatusCode_TooManyRequests:
+					rejected.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+
+		assert.Equal(t, int32(1), admitted.Load())
+		assert.Equal(t, int32(callers-1), rejected.Load())
+		usage, err := rl.RateLimiter.Get(context.Background(), "alice_RPM_CURRENT")
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), usage)
+	})
+}
+
+func assertRPMExceeded(t *testing.T, resp *extProcPb.ProcessingResponse) {
+	t.Helper()
+	if !assert.NotNil(t, resp) {
+		return
+	}
+	imm := resp.GetImmediateResponse()
+	require.NotNil(t, imm)
+	assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
+	assert.Contains(t, imm.GetBody(), ErrorCodeRateLimitExceeded)
+	if assert.NotEmpty(t, imm.GetHeaders().GetSetHeaders()) {
+		assert.Equal(t, HeaderErrorRPMExceeded, imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetKey())
+		assert.Equal(t, "true", string(imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetRawValue()))
+	}
+}
+
+// rpmReadBarrier holds every RPM read until all callers have read, so all of them
+// pass the pre-check before any of them increments the counter.
+type rpmReadBarrier struct {
+	ratelimiter.RateLimiter
+	reads sync.WaitGroup
+}
+
+func (l *rpmReadBarrier) Get(ctx context.Context, key string) (int64, error) {
+	v, err := l.RateLimiter.Get(ctx, key)
+	if strings.HasSuffix(key, "_RPM_CURRENT") {
+		l.reads.Done()
+		l.reads.Wait()
+	}
+	return v, err
 }
 
 func TestCheckTPM(t *testing.T) {
@@ -189,9 +413,14 @@ func TestEnforceModelRPS(t *testing.T) {
 		rl.AssertExpectations(t)
 	})
 
-	t.Run("exceeding limit returns 429", func(t *testing.T) {
+	t.Run("exceeding limit returns 429 and refunds the rejected increment", func(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(3), nil).Once()
+		// The overflowing increment never admitted a request, so it must be refunded
+		// immediately -- not left for HandleRequestBody's needsRollback defer, which is
+		// never registered because this call returns before reaching it (see
+		// TestHandleRequestBody in gateway_req_body_test.go for the end-to-end case).
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(-1)).Return(int64(2), nil).Once()
 
 		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
@@ -211,6 +440,23 @@ func TestEnforceModelRPS(t *testing.T) {
 		rl.AssertExpectations(t)
 	})
 
+	t.Run("exceeding limit still returns 429 even if the refund itself fails", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(3), nil).Once()
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(-1)).Return(int64(0), errors.New("redis down")).Once()
+
+		s := &Server{modelRateLimiter: rl}
+		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
+
+		resp := s.enforceModelRPS(context.Background(), "llama", rc)
+		if assert.NotNil(t, resp) {
+			imm := resp.GetImmediateResponse()
+			require.NotNil(t, imm)
+			assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
+		}
+		rl.AssertExpectations(t)
+	})
+
 	t.Run("below limit increments and returns nil", func(t *testing.T) {
 		rl := &mockRateLimiter{}
 		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT", int64(1)).Return(int64(2), nil).Once()
@@ -222,6 +468,32 @@ func TestEnforceModelRPS(t *testing.T) {
 		assert.Nil(t, resp)
 		rl.AssertExpectations(t)
 	})
+}
+
+// TestEnforceModelRPS_RejectDoesNotPostponeNextWindow is the end-to-end regression test for
+// the TTL bug: a 429 inside a window (here 2s, the kind of long window
+// requestsPerSecondPerReplica can produce for sub-1 rps limits, see rpsToLimitWindow) must
+// not push that window's expiry back out. If it did, a client that retries immediately after
+// being rejected would keep the model rate-limited long after the window should have reset.
+func TestEnforceModelRPS_RejectDoesNotPostponeNextWindow(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	s := &Server{modelRateLimiter: ratelimiter.NewRedisAccountRateLimiter("aibrix_model_test", client, time.Second)}
+	rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 1, RateWindowSeconds: 2}}
+
+	require.Nil(t, s.enforceModelRPS(context.Background(), "m", rc), "first request should be admitted")
+
+	mr.FastForward(500 * time.Millisecond)
+	resp := s.enforceModelRPS(context.Background(), "m", rc)
+	require.NotNil(t, resp, "immediate retry should be rejected by the still-open window")
+
+	// Advance to just past the *original* 2-second window. If the reject above had reset the
+	// TTL, the window would still be open here and this request would also be rejected.
+	mr.FastForward(1600 * time.Millisecond)
+	assert.Nil(t, s.enforceModelRPS(context.Background(), "m", rc),
+		"the original window must have expired on schedule despite the earlier reject")
 }
 
 func TestDecrModelRPS(t *testing.T) {

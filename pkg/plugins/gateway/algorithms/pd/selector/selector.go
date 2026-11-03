@@ -30,6 +30,10 @@ import (
 
 // PodSelector picks a prefill/decode pod pair from the full ready-pod list.
 // A nil prefill pod signals combined-role routing (decode pod handles both phases).
+//
+// A successful Select also registers the chosen pods with the request trackers
+// it consulted, atomically with the decision, so that concurrent selections
+// observe each other; the caller (Route) owns the matching removals.
 type PodSelector interface {
 	Select(routingCtx *types.RoutingContext, readyPods []*v1.Pod) (prefill *v1.Pod, decode *v1.Pod, err error)
 }

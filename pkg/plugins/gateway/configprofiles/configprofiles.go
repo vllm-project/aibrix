@@ -24,11 +24,13 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/types"
 )
 
 const (
@@ -38,9 +40,25 @@ const (
 
 // ModelConfigProfile holds gateway options for a single profile.
 type ModelConfigProfile struct {
-	RoutingStrategy   string          `json:"routingStrategy"`
-	RoutingConfig     json.RawMessage `json:"routingConfig,omitempty"`
-	RequestsPerSecond int64           `json:"requestsPerSecond,omitempty"`
+	RoutingStrategy string          `json:"routingStrategy"`
+	RoutingConfig   json.RawMessage `json:"routingConfig,omitempty"`
+	// RequestsPerSecond caps the aggregate request rate for the model across all
+	// replicas. Superseded by RequestsPerSecondPerReplica when both are set.
+	RequestsPerSecond int64 `json:"requestsPerSecond,omitempty"`
+	// RequestsPerSecondPerReplica sets a per-replica request-per-second limit; the gateway
+	// multiplies it by the model's current routable replica count to derive the effective
+	// aggregate rate, so throughput scales automatically with replica count. Takes
+	// precedence over RequestsPerSecond when both are set. Supports fractional values
+	// (e.g. 0.5) for sub-1 rps limits, expressed as "1 request every N seconds".
+	RequestsPerSecondPerReplica float64 `json:"requestsPerSecondPerReplica,omitempty"`
+	// RequestsInflight caps the number of concurrent (in-flight) requests allowed on a
+	// single replica. Unlike RequestsPerSecond this is enforced per pod, not as an
+	// aggregate, so it needs no replica-count scaling.
+	RequestsInflight int64 `json:"requestsInflight,omitempty"`
+	// TTFTThresholdS overrides AIBRIX_TTFT_THRESHOLD_S for requests routed with this
+	// profile: the time-to-first-token threshold, in seconds, above which the gateway
+	// classifies the first token as delayed. Zero or unset keeps the env default.
+	TTFTThresholdS int64 `json:"ttftThresholdS,omitempty"`
 }
 
 // autoProfileRoutingConfig holds request-local profile selection hints embedded
@@ -63,9 +81,14 @@ type ModelConfigProfiles struct {
 	// LockedRoutingStrategy, when set, pins the routing strategy model-wide.
 	// It takes precedence over the routing-strategy request header, the per-profile
 	// routingStrategy and the ROUTING_ALGORITHM environment variable.
-	LockedRoutingStrategy string                        `json:"lockedRoutingStrategy,omitempty"`
-	DefaultProfile        string                        `json:"defaultProfile"`
-	Profiles              map[string]ModelConfigProfile `json:"profiles"`
+	LockedRoutingStrategy string `json:"lockedRoutingStrategy,omitempty"`
+	// AuthoritativeRoutingPolicy makes model configuration authoritative for
+	// request routing. When true, the gateway ignores application-supplied routing
+	// controls and omits routing diagnostics from the client response while
+	// preserving its internally generated routing headers.
+	AuthoritativeRoutingPolicy bool                          `json:"authoritativeRoutingPolicy,omitempty"`
+	DefaultProfile             string                        `json:"defaultProfile"`
+	Profiles                   map[string]ModelConfigProfile `json:"profiles"`
 }
 
 // GetProfile returns the profile for the given name, or the default profile.
@@ -252,6 +275,20 @@ func ResolveProfileFromPod(pod *v1.Pod, headerProfile string) *ModelConfigProfil
 	return cfg.GetProfile(headerProfile)
 }
 
+// ResolveProfileFrom is ResolveProfileFromPod with a model-level config
+// consulted first: when modelConfig is set and valid, the profile comes from it
+// and the pod annotation is not read. See ResolveModelConfigFrom.
+func ResolveProfileFrom(modelConfig string, pod *v1.Pod, headerProfile string) *ModelConfigProfile {
+	cfg := parseModelLevelConfig(modelConfig)
+	if cfg == nil {
+		cfg = parseConfigFromPod(pod)
+	}
+	if cfg == nil {
+		return nil
+	}
+	return cfg.GetProfile(headerProfile)
+}
+
 // ResolveConfig resolves the model config from the first pod carrying a
 // model.aibrix.ai/config annotation. It returns the profile selected by
 // headerProfile (nil when no selectable profile exists) together with the
@@ -262,33 +299,61 @@ func ResolveConfig(pods []*v1.Pod, headerProfile string) (*ModelConfigProfile, s
 	return profile, locked
 }
 
+// ResolveModelConfig returns the model config from the first pod carrying a
+// valid model.aibrix.ai/config annotation. It returns nil when no pod has a
+// valid config.
+func ResolveModelConfig(pods []*v1.Pod) *ModelConfigProfiles {
+	for _, pod := range pods {
+		if cfg := parseConfigFromPod(pod); cfg != nil {
+			return cfg
+		}
+	}
+	return nil
+}
+
+// ResolveModelConfigFrom returns the config parsed from modelConfig, the JSON
+// that discovery supplied for the model as a whole (the config field of a
+// local-mode endpoints file), and falls back to ResolveModelConfig(pods) when
+// modelConfig is empty or invalid. A model-level config is used as a whole:
+// it is not merged with pod annotations.
+func ResolveModelConfigFrom(modelConfig string, pods []*v1.Pod) *ModelConfigProfiles {
+	if cfg := parseModelLevelConfig(modelConfig); cfg != nil {
+		return cfg
+	}
+	return ResolveModelConfig(pods)
+}
+
 // ResolveConfigForRequest resolves the model config from the first pod carrying a
 // model.aibrix.ai/config annotation. If headerProfile is "auto", request-local
 // hints in each profile's routingConfig are evaluated and the returned
 // profileName is the concrete profile selected for this request.
 func ResolveConfigForRequest(pods []*v1.Pod, headerProfile string, features RequestFeatures) (*ModelConfigProfile, string, string) {
-	for _, pod := range pods {
-		cfg := parseConfigFromPod(pod)
-		if cfg == nil {
-			continue
-		}
-		profileName := strings.TrimSpace(headerProfile)
-		if strings.EqualFold(profileName, "auto") {
-			selectedName := cfg.ResolveAutoProfileName(features)
-			if profile := cfg.GetProfileExact(selectedName); profile != nil {
-				return profile, selectedName, cfg.LockedRoutingStrategy
-			}
-			fallbackName := cfg.DefaultProfileOrName()
-			klog.Warningf("auto profile selection referenced missing profile %q; falling back to %q", selectedName, fallbackName)
-			return cfg.GetProfileExact(fallbackName), fallbackName, cfg.LockedRoutingStrategy
-		}
-		if profile := cfg.GetProfileExact(profileName); profile != nil {
-			return profile, profileName, cfg.LockedRoutingStrategy
-		}
-		fallbackName := cfg.DefaultProfileOrName()
-		return cfg.GetProfileExact(fallbackName), fallbackName, cfg.LockedRoutingStrategy
+	return ResolveModelConfig(pods).ResolveForRequest(headerProfile, features)
+}
+
+// ResolveForRequest selects a profile from c for one request. An empty profile
+// name selects defaultProfile (or "default"). The authoritative routing policy
+// is enforced by the caller clearing client routing inputs before calling this
+// method; profile resolution itself retains the standard selection semantics.
+func (c *ModelConfigProfiles) ResolveForRequest(headerProfile string, features RequestFeatures) (*ModelConfigProfile, string, string) {
+	if c == nil {
+		return nil, "", ""
 	}
-	return nil, "", ""
+	profileName := strings.TrimSpace(headerProfile)
+	if strings.EqualFold(profileName, "auto") {
+		selectedName := c.ResolveAutoProfileName(features)
+		if profile := c.GetProfileExact(selectedName); profile != nil {
+			return profile, selectedName, c.LockedRoutingStrategy
+		}
+		fallbackName := c.DefaultProfileOrName()
+		klog.Warningf("auto profile selection referenced missing profile %q; falling back to %q", selectedName, fallbackName)
+		return c.GetProfileExact(fallbackName), fallbackName, c.LockedRoutingStrategy
+	}
+	if profile := c.GetProfileExact(profileName); profile != nil {
+		return profile, profileName, c.LockedRoutingStrategy
+	}
+	fallbackName := c.DefaultProfileOrName()
+	return c.GetProfileExact(fallbackName), fallbackName, c.LockedRoutingStrategy
 }
 
 // parseConfigFromPod parses the model config from a single pod annotation.
@@ -309,6 +374,34 @@ func parseConfigFromPod(pod *v1.Pod) *ModelConfigProfiles {
 	return cfg
 }
 
+// modelLevelConfigs memoizes parseModelLevelConfig by the config JSON. The
+// gateway resolves a model's config several times per request (twice per pod
+// in the PD router), while discovery supplies each model-level config once, so
+// this holds one entry per model that sets one.
+var modelLevelConfigs sync.Map // string -> *ModelConfigProfiles
+
+// parseModelLevelConfig parses a model-level config. It returns nil when the
+// config is empty or invalid. The static provider rejects an invalid config
+// when it loads, so a parse error here can only come from another source.
+// Callers share the returned config and must not modify it.
+func parseModelLevelConfig(modelConfig string) *ModelConfigProfiles {
+	if modelConfig == "" {
+		return nil
+	}
+	if cfg, ok := modelLevelConfigs.Load(modelConfig); ok {
+		return cfg.(*ModelConfigProfiles)
+	}
+	cfg, err := ParseModelConfig(modelConfig)
+	if err != nil {
+		klog.V(4).InfoS("failed to parse model-level config", "err", err)
+		return nil
+	}
+	if cfg != nil {
+		modelLevelConfigs.Store(modelConfig, cfg)
+	}
+	return cfg
+}
+
 // ParseModelConfig parses the JSON from annotation data.
 // Returns nil if jsonStr is empty or invalid.
 func ParseModelConfig(jsonStr string) (*ModelConfigProfiles, error) {
@@ -324,4 +417,21 @@ func ParseModelConfig(jsonStr string) (*ModelConfigProfiles, error) {
 		return nil, fmt.Errorf("model config has no profiles")
 	}
 	return &cfg, nil
+}
+
+// ParseRoutingConfig parses a profile's routingConfig into its typed form. It
+// returns nil when the raw config is empty or unparsable, which leaves every
+// knob at its process default; a value the matching AIBRIX_* variable would
+// reject is dropped later, when the routing algorithm package resolves the
+// request's overrides (routingalgorithms.ResolveRoutingOverrides).
+func ParseRoutingConfig(raw json.RawMessage) *types.RoutingConfig {
+	if len(raw) == 0 {
+		return nil
+	}
+	var cfg types.RoutingConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		klog.ErrorS(err, "failed to unmarshal routingConfig, using process defaults", "rawConfig", string(raw))
+		return nil
+	}
+	return &cfg
 }

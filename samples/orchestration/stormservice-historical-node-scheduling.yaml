@@ -1,0 +1,106 @@
+# Historical-node replacement scheduling is configured from the StormService's
+# RoleSet template. The generated RoleSet persists the remembered nodes in the
+# controller-owned annotation:
+#   orchestration.aibrix.ai/historical-node-bindings
+#
+# Apply the stateful example and wait for the Pod to be scheduled:
+#   kubectl apply -f samples/orchestration/stormservice-historical-node-scheduling.yaml
+#   kubectl get pods -l storm-service-name=stormservice-history-stateful -o wide
+#
+# Then change the image or another Pod-template field that forces replacement:
+#   kubectl patch stormservice stormservice-history-stateful --type=json -p='[
+#     {"op":"replace","path":"/spec/template/spec/roles/0/template/spec/containers/0/image",
+#      "value":"registry.k8s.io/e2e-test-images/agnhost:2.54"}
+#   ]'
+#
+# Watch the replacement Pod. It receives preferred node affinity for the
+# historical node when this does not conflict with stronger scheduling intent:
+#   kubectl get pod -l storm-service-name=stormservice-history-stateful -o yaml
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: stormservice-history-stateful
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stormservice-history-stateful
+  template:
+    metadata:
+      labels:
+        app: stormservice-history-stateful
+    spec:
+      updateStrategy: Parallel
+      roles:
+        - name: worker
+          replicas: 1
+          stateful: true
+          updateStrategy:
+            type: Recreate
+            maxSurge: 0
+            maxUnavailable: 1
+            replacementScheduling:
+              historicalNode:
+                # mode=Preferred means the RoleSet controller injects preferred
+                # kubernetes.io/hostname node affinity for replacement Pods.
+                # This is a preference, not a hard requirement; Kubernetes may
+                # schedule elsewhere if the remembered node is unavailable.
+                mode: Preferred
+          template:
+            spec:
+              containers:
+                - name: worker
+                  image: registry.k8s.io/e2e-test-images/agnhost:2.53
+                  args: ["pause"]
+---
+# Stateless roles can also use historical-node replacement scheduling during
+# rollout replacement. Because stateless roles do not have stable per-replica
+# identity, the generated RoleSet remembers recent nodes at role scope instead
+# of binding history to replica slots.
+#
+# Notes:
+# - Stateful roles remember nodes per replica slot, for example worker/0.
+# - Stateless roles remember a recent-node list per role.
+# - The scheduler chooses among those recent nodes. The controller does not
+#   pick one node from the list, and multiple replacement Pods may still land on
+#   the same node when scheduler scoring makes that node the best fit.
+# - Stateless scale-up is not treated as replacement and does not use this
+#   history; rollouts and replacement-style updates do.
+# - The remembered history survives controller restarts because it is stored on
+#   the generated RoleSet annotation, not in controller memory.
+# - If the Pod template already has required node affinity, or the RoleSet has
+#   a required hostname topology policy, the controller skips injecting this
+#   preferred affinity to avoid conflicting scheduling intent. Check controller
+#   logs for the skip reason.
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: stormservice-history-stateless
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stormservice-history-stateless
+  template:
+    metadata:
+      labels:
+        app: stormservice-history-stateless
+    spec:
+      updateStrategy: Parallel
+      roles:
+        - name: worker
+          replicas: 2
+          stateful: false
+          updateStrategy:
+            type: Recreate
+            maxSurge: 1
+            maxUnavailable: 0
+            replacementScheduling:
+              historicalNode:
+                mode: Preferred
+          template:
+            spec:
+              containers:
+                - name: worker
+                  image: registry.k8s.io/e2e-test-images/agnhost:2.53
+                  args: ["pause"]

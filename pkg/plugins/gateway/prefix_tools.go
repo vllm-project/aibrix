@@ -1,0 +1,157 @@
+/*
+Copyright 2026 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package gateway
+
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+	"sync/atomic"
+
+	"github.com/bytedance/sonic"
+	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/utils"
+	"k8s.io/klog/v2"
+)
+
+// prefixCacheIncludeTools is loaded once at startup from AIBRIX_PREFIX_CACHE_INCLUDE_TOOLS.
+// Many chat templates render the tool definitions ahead of the conversation, so the
+// prompt the engine actually caches starts with the tools block. Without tools in the
+// prefix-match text, two requests that share their messages but carry different tools
+// look like a full prefix match. It is atomic only so tests can flip it safely.
+var prefixCacheIncludeTools atomic.Bool
+
+func init() {
+	prefixCacheIncludeTools.Store(utils.LoadEnvBool(constants.EnvPrefixCacheIncludeTools, true))
+}
+
+// canonicalJSON re-encodes JSON values deterministically: object keys are sorted at every
+// level, output is compact, HTML characters are not escaped (matching the `tojson` filter
+// used by chat templates) and numbers keep their original spelling.
+var canonicalJSON = sonic.Config{
+	SortMapKeys: true,
+	UseNumber:   true,
+	EscapeHTML:  false,
+}.Froze()
+
+func combinePrefixText(message, systemText, toolsText string) string {
+	if systemText == "" && toolsText == "" {
+		return ""
+	}
+	if systemText == "" {
+		return toolsText + " " + message
+	}
+	if toolsText == "" {
+		return systemText + " " + message
+	}
+	return systemText + " " + toolsText + " " + message
+}
+
+func requestPromptText(requestID string, field json.RawMessage) string {
+	raw := bytes.TrimSpace(field)
+	if len(raw) == 0 || bytes.Equal(raw, []byte(jsonNull)) {
+		return ""
+	}
+
+	if raw[0] == '"' {
+		if len(raw) >= 2 && raw[len(raw)-1] == '"' && bytes.IndexByte(raw[1:len(raw)-1], '\\') == -1 {
+			return string(raw[1 : len(raw)-1])
+		}
+		var text string
+		if err := sonic.Unmarshal(raw, &text); err != nil {
+			klog.V(4).InfoS("failed to decode request prompt text, using raw bytes", "requestID", requestID, "error", err)
+			return string(raw)
+		}
+		return text
+	}
+
+	if raw[0] == '[' {
+		var blocks []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := sonic.Unmarshal(raw, &blocks); err == nil {
+			var builder strings.Builder
+			hasText := false
+			for _, block := range blocks {
+				if block.Type != "text" {
+					return canonicalRequestFieldText(requestID, raw)
+				}
+				if block.Text == "" {
+					continue
+				}
+				if hasText {
+					builder.WriteByte(' ')
+				}
+				builder.WriteString(block.Text)
+				hasText = true
+			}
+			return builder.String()
+		}
+	}
+
+	return canonicalRequestFieldText(requestID, raw)
+}
+
+func canonicalRequestFieldText(requestID string, field json.RawMessage) string {
+	raw := bytes.TrimSpace(field)
+	if len(raw) == 0 || bytes.Equal(raw, []byte(jsonNull)) {
+		return ""
+	}
+
+	var value interface{}
+	if err := canonicalJSON.Unmarshal(raw, &value); err != nil {
+		klog.V(4).InfoS("failed to canonicalize request field, using raw bytes", "requestID", requestID, "error", err)
+		return string(raw)
+	}
+	canonical, err := canonicalJSON.Marshal(value)
+	if err != nil {
+		klog.V(4).InfoS("failed to canonicalize request field, using raw bytes", "requestID", requestID, "error", err)
+		return string(raw)
+	}
+	return string(canonical)
+}
+
+// canonicalToolsText renders the raw "tools" value of a chat request. It returns "" when
+// tools must not contribute: the feature is disabled, or the field is absent, null, an
+// empty array or not an array at all. The rendering is schema-agnostic, so it works for
+// both OpenAI and Anthropic style tool definitions.
+func canonicalToolsText(requestID string, tools json.RawMessage) string {
+	if !prefixCacheIncludeTools.Load() {
+		return ""
+	}
+	raw := bytes.TrimSpace(tools)
+	if len(raw) == 0 || raw[0] != '[' {
+		return ""
+	}
+
+	var v []interface{}
+	if err := canonicalJSON.Unmarshal(raw, &v); err != nil {
+		// Never reject a request over its tools: fall back to the bytes as sent.
+		klog.V(4).InfoS("failed to canonicalize tools, using raw bytes", "requestID", requestID, "error", err)
+		return string(raw)
+	}
+	if len(v) == 0 {
+		return ""
+	}
+	canonical, err := canonicalJSON.Marshal(v)
+	if err != nil {
+		klog.V(4).InfoS("failed to canonicalize tools, using raw bytes", "requestID", requestID, "error", err)
+		return string(raw)
+	}
+	return string(canonical)
+}

@@ -8,7 +8,7 @@ controllerManager:
   container:
     image:
       repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/controller-manager
-      tag: v0.7.0
+      tag: v0.8.0
       imagePullPolicy: IfNotPresent
     resources:
       limits:
@@ -41,10 +41,11 @@ gatewayPlugin:
     image:
       repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/busybox
       tag: stable
+      imagePullPolicy: IfNotPresent
   container:
     image:
       repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
-      tag: v0.7.0
+      tag: v0.8.0
       imagePullPolicy: IfNotPresent
     resources:
       limits:
@@ -57,7 +58,7 @@ gatewayPlugin:
       AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"
       AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE: "character"
       AIBRIX_PREFIX_CACHE_BLOCK_SIZE: "128"
-      AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT: "16"
+      AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP: "16"
       AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR: "2"
       AIBRIX_PREFILL_REQUEST_TIMEOUT: "60"
   dependencies:
@@ -88,7 +89,8 @@ gpuOptimizer:
   container:
     image:
       repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/runtime
-      tag: v0.7.0
+      tag: v0.8.0
+      imagePullPolicy: IfNotPresent
     resources:
       limits:
         cpu: 500m
@@ -209,10 +211,11 @@ metadata:
       image:
         repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/busybox
         tag: stable
+        imagePullPolicy: IfNotPresent
     container:
       image:
         repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/metadata-service
-        tag: v0.7.0
+        tag: v0.8.0
         imagePullPolicy: IfNotPresent
       resources:
         limits:

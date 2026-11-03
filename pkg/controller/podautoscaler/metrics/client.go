@@ -17,6 +17,7 @@ package metrics
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -146,6 +147,40 @@ func (c *MetricsClient) ConfigureMetricWindows(metricKey types.MetricKey, stable
 
 	klog.V(4).InfoS("Configured metric windows", "metricKey", metricKeyStr, "stableDuration", stableDuration, "panicDuration", panicDuration)
 	return nil
+}
+
+// DeleteMetrics drops every window and history kept for one PodAutoscaler,
+// across all of its metrics. Nothing else removes these entries, so without
+// it they stay for the life of the controller, and a PodAutoscaler recreated
+// under the same name would start from its predecessor's samples.
+func (c *MetricsClient) DeleteMetrics(paNamespace, paName string) {
+	// Every key is "paNamespace/paName/metricName". Neither a namespace nor a
+	// name can contain "/", so the prefix matches this PodAutoscaler only.
+	prefix := types.MetricKey{PaNamespace: paNamespace, PaName: paName}.String()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for key := range c.stableWindows {
+		if strings.HasPrefix(key, prefix) {
+			delete(c.stableWindows, key)
+		}
+	}
+	for key := range c.panicWindows {
+		if strings.HasPrefix(key, prefix) {
+			delete(c.panicWindows, key)
+		}
+	}
+	for key := range c.stableHistory {
+		if strings.HasPrefix(key, prefix) {
+			delete(c.stableHistory, key)
+		}
+	}
+	for key := range c.panicHistory {
+		if strings.HasPrefix(key, prefix) {
+			delete(c.panicHistory, key)
+		}
+	}
 }
 
 // UpdateMetrics records metrics to all configured windows for the given metricKey

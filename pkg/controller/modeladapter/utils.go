@@ -19,6 +19,7 @@ package modeladapter
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 
@@ -52,9 +53,9 @@ func extractHuggingFacePath(artifactURL string) (string, error) {
 		return "", fmt.Errorf("failed to parse URL: %w", err)
 	}
 
-	// Check if the scheme is "huggingface"
-	if parsedURL.Scheme != "huggingface" {
-		return "", errors.New("unsupported protocol, only huggingface:// is allowed")
+	// Check if the scheme is "huggingface" or its short alias "hf"
+	if parsedURL.Scheme != "huggingface" && parsedURL.Scheme != "hf" {
+		return "", errors.New("unsupported protocol, only huggingface:// or hf:// is allowed")
 	}
 
 	// Extract the path part (xxx/yyy) and trim any leading slashes
@@ -120,11 +121,11 @@ func DetectRuntimeSidecar(pod *corev1.Pod) bool {
 func BuildURLs(podIP string, config config.RuntimeConfig, useSidecar bool, engineType string) URLConfig {
 	var host string
 	if config.DebugMode {
-		host = fmt.Sprintf("http://%s:%s", "localhost", DefaultDebugInferenceEnginePort)
+		host = "http://" + net.JoinHostPort("localhost", DefaultDebugInferenceEnginePort)
 	} else if useSidecar {
-		host = fmt.Sprintf("http://%s:%s", podIP, DefaultRuntimeAPIPort)
+		host = "http://" + net.JoinHostPort(podIP, DefaultRuntimeAPIPort)
 	} else {
-		host = fmt.Sprintf("http://%s:%s", podIP, DefaultInferenceEnginePort)
+		host = "http://" + net.JoinHostPort(podIP, DefaultInferenceEnginePort)
 	}
 
 	var apiPath, loadPath, unloadPath string

@@ -68,3 +68,10 @@ func (m *KVEventManager) OnPodUpdate(oldPod, newPod *v1.Pod) {}
 
 // OnPodDelete is a no-op
 func (m *KVEventManager) OnPodDelete(pod *v1.Pod) {}
+
+// CheckSleepStateBackstop is a no-op: the metric-driven prefix-cache backstop
+// this delegates to in the zmq build (kvevent.Manager.CheckSleepStateBackstop)
+// requires the sync indexer KV event sync provides, which this build does not
+// have.
+func (m *KVEventManager) CheckSleepStateBackstop(ctx context.Context, podKey, modelName string, loraID int64, awake float64) {
+}

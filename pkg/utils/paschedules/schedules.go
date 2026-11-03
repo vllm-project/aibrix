@@ -269,14 +269,17 @@ func (s parsedSchedule) activeAt(now time.Time) bool {
 
 func (s parsedSchedule) nextTransitionAfter(now time.Time) (time.Time, bool) {
 	local := now.In(s.location)
-	startOfDay := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, s.location)
+	// Iterate calendar dates in UTC because local midnight may not exist across DST.
+	startDate := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.UTC)
 	for day := 0; day <= 7; day++ {
-		base := startOfDay.AddDate(0, 0, day)
+		base := startDate.AddDate(0, 0, day)
 		if !s.weekdays[base.Weekday()] {
 			continue
 		}
+		year, month, dayOfMonth := base.Date()
 		for _, minute := range []int{s.startMinute, s.endMinute} {
-			candidate := base.Add(time.Duration(minute) * time.Minute)
+			// Elapsed hours from midnight can differ from local clock time across DST.
+			candidate := time.Date(year, month, dayOfMonth, minute/60, minute%60, 0, 0, s.location)
 			if candidate.After(local) {
 				return candidate.In(time.UTC), true
 			}

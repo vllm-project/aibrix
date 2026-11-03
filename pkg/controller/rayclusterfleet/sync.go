@@ -98,7 +98,7 @@ func (r *RayClusterFleetReconciler) checkPausedConditions(ctx context.Context, d
 		return nil
 	}
 
-	err := r.Update(ctx, d)
+	err := r.Status().Update(ctx, d)
 	return err
 }
 
@@ -458,7 +458,7 @@ func (r *RayClusterFleetReconciler) cleanupDeployment(ctx context.Context, oldRS
 
 	// Avoid deleting replica set with deletion timestamp set
 	aliveFilter := func(rs *orchestrationv1alpha1.RayClusterReplicaSet) bool {
-		return rs != nil && rs.ObjectMeta.DeletionTimestamp == nil
+		return rs != nil && rs.DeletionTimestamp == nil
 	}
 	cleanableRSes := util.FilterReplicaSets(oldRSs, aliveFilter)
 

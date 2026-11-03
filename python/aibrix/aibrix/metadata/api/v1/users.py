@@ -98,9 +98,12 @@ async def create_user(request: Request, user: User) -> UserResponse:
     key = _gen_key(user.name)
 
     # Check if user exists
-    if await store.exists(key):
+    data = await store.get(key)
+    if data is not None:
         logger.info(f"User already exists: {user.name}")
-        return UserResponse(message=f"User: {user.name} exists", user=user)
+        return UserResponse(
+            message=f"User: {user.name} exists", user=User.model_validate_json(data)
+        )
 
     # Store user as JSON
     await store.set(key, user.model_dump_json())

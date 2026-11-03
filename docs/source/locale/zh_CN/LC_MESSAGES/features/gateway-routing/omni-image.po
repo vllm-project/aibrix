@@ -1,0 +1,117 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version:  AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-13 12:33-0700\n"
+"PO-Revision-Date: 2026-09-10 18:55+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../source/features/gateway-routing/omni-image.rst:5
+msgid "Image"
+msgstr "图像"
+
+#: ../../source/features/gateway-routing/omni-image.rst:7
+msgid ""
+"This guide covers image generation and editing through AIBrix's gateway. "
+"``POST /v1/images/generations`` and ``POST /v1/images/edits`` are the "
+"endpoints AIBrix supports. vLLM-Omni supports both, while SGLang-Omni "
+"does not support the image endpoints; see the :ref:`supported endpoints "
+"<multimodal-supported-endpoints>`. Before you start, finish the "
+":ref:`prerequisites <omni-prerequisites>` and :ref:`gateway access <omni-"
+"access-gateway>` steps on the Multi-Modal Serving page, and deploy your "
+"model the way the :ref:`video guide <omni-video-deploy>` describes, "
+"swapping in an image model."
+msgstr ""
+"本指南介绍通过 AIBrix 网关生成和编辑图像。AIBrix 支持 ``POST /v1/images/generations`` 和 "
+"``POST /v1/images/edits`` 端点。vLLM-Omni 两者都支持，而 SGLang-Omni 不支持图像端点；参见 "
+":ref:`支持的端点 <multimodal-supported-endpoints>` 。开始之前，请先完成多模态服务页面上的 "
+":ref:`前置条件 <omni-prerequisites>` 和 :ref:`访问网关 <omni-access-gateway>` "
+"步骤，并按照 :ref:`视频指南 <omni-video-deploy>` 所述方式部署模型，换成图像模型。"
+
+#: ../../source/features/gateway-routing/omni-image.rst:12
+msgid "Generate an Image"
+msgstr "生成图像"
+
+#: ../../source/features/gateway-routing/omni-image.rst:14
+msgid ""
+"``POST /v1/images/generations`` is a JSON request. Set ``model`` to the "
+"name of your deployment, the value of its ``model.aibrix.ai/name`` label:"
+msgstr ""
+"``POST /v1/images/generations`` 是 JSON 请求。将 ``model`` 设置为你的部署名称，即其 "
+"``model.aibrix.ai/name`` 标签的值："
+
+#: ../../source/features/gateway-routing/omni-image.rst:29
+msgid "What the gateway does with it:"
+msgstr "网关如何处理它："
+
+#: ../../source/features/gateway-routing/omni-image.rst:31
+msgid ""
+"It reads only ``model``, to select a pod, and forwards the body as sent. "
+"``prompt``, ``size``, ``n`` and every other field are validated by the "
+"engine."
+msgstr ""
+"网关只读取 ``model`` 来选择 Pod，并原样转发请求体。 ``prompt`` 、 ``size`` 、 ``n`` "
+"及其他所有字段都由引擎校验。"
+
+#: ../../source/features/gateway-routing/omni-image.rst:32
+msgid ""
+"The response is forwarded without being parsed as a language response, so"
+" no token usage is reported."
+msgstr "响应不会作为语言类响应被解析，直接转发，因此不上报 token 用量。"
+
+#: ../../source/features/gateway-routing/omni-image.rst:33
+msgid ""
+"If the model's pods carry the ``model.aibrix.ai/engine: xdit`` label or "
+"annotation, the gateway rewrites the path to xDiT's native ``/generate`` "
+"endpoint."
+msgstr ""
+"如果模型的 Pod 带有 ``model.aibrix.ai/engine: xdit`` 标签或注解，网关会把路径改写为 xDiT 原生的 "
+"``/generate`` 端点。"
+
+#: ../../source/features/gateway-routing/omni-image.rst:37
+msgid "Edit an Image"
+msgstr "编辑图像"
+
+#: ../../source/features/gateway-routing/omni-image.rst:40
+msgid "``POST /v1/images/edits`` is the OpenAI-style image edit endpoint. Unlike generation it takes ``multipart/form-data``, with the source image in an ``image`` part, so — like the ``/v1/videos`` and audio transcription endpoints — do **not** set ``-H \"Content-Type: application/json\"``:"
+msgstr "``POST /v1/images/edits`` 是 OpenAI 风格的图像编辑端点。与图像生成不同，它接收 ``multipart/form-data`` ，源图像放在 ``image`` 部分，因此——与 ``/v1/videos`` 和音频转写端点一样—— **不要** 设置 ``-H \"Content-Type: application/json\"`` ："
+
+#: ../../source/features/gateway-routing/omni-image.rst:53
+msgid "``model`` is required as a form field. The gateway needs the name to select a pod, so a request without one is rejected with ``400``."
+msgstr "``model`` 必须作为表单字段提供。网关需要模型名来选择 Pod，因此缺少该字段的请求会以 ``400`` 被拒绝。"
+
+#: ../../source/features/gateway-routing/omni-image.rst:54
+msgid "A JSON body is rejected with ``400`` and the message ``image edit requests must use multipart/form-data content-type``."
+msgstr "JSON 请求体会以 ``400`` 被拒绝，消息为 ``image edit requests must use multipart/form-data content-type`` 。"
+
+#: ../../source/features/gateway-routing/omni-image.rst:55
+msgid "Every other field, including the ``image`` part, ``prompt``, ``mask_image``, ``n`` and ``size``, is forwarded as sent and validated by the engine."
+msgstr "其他字段（包括 ``image`` 部分、 ``prompt`` 、 ``mask_image`` 、 ``n`` 和 ``size`` ）都会原样转发，由引擎校验。"
+
+#: ../../source/features/gateway-routing/omni-image.rst:56
+msgid "A ``stream`` form field set to ``true`` or ``1`` makes the gateway handle the response as an SSE stream. vLLM-Omni accepts it only for multi-stage image editing pipelines."
+msgstr "将 ``stream`` 表单字段设为 ``true`` 或 ``1`` ，网关会把响应作为 SSE 流处理。vLLM-Omni 仅在多阶段图像编辑流水线中接受该参数。"
+
+#: ../../source/features/gateway-routing/omni-image.rst:57
+msgid "Otherwise the response is forwarded without being parsed as a language response, so no token usage is reported."
+msgstr "否则响应不会作为语言类响应被解析，直接转发，因此不上报 token 用量。"
+
+#: ../../source/features/gateway-routing/omni-image.rst:58
+msgid "The whole request, source images included, counts against the gateway's request size limit, 4 MiB by default; see Message Size Configuration in :doc:`gateway-plugins`. Raise it if your images are larger."
+msgstr "整个请求（包括源图像）计入网关的请求大小上限，默认 4 MiB；参见 :doc:`gateway-plugins` 中的消息大小配置。如果图像更大，请调高该上限。"
+
+#: ../../source/features/gateway-routing/omni-image.rst:59
+msgid "The path is never rewritten, so the model's engine must serve ``/v1/images/edits`` itself. The ``xdit`` rewrite above applies to generation only."
+msgstr "路径不会被改写，因此模型的引擎必须自行提供 ``/v1/images/edits`` 。上文的 ``xdit`` 改写仅适用于图像生成。"

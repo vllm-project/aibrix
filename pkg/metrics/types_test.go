@@ -182,3 +182,22 @@ func TestMetric(t *testing.T) {
 		assert.Equal(t, "A test metric", metric.Description)
 	})
 }
+
+func TestHistogramPercentileWithoutObservations(t *testing.T) {
+	// Scraped before the engine served a request: every bucket is still 0.
+	empty := &HistogramMetricValue{
+		Buckets: map[string]float64{"0.300000": 0, "0.500000": 0, "0.800000": 0, "+Inf": 0},
+	}
+	for _, percentile := range []float64{50, 90, 99} {
+		_, err := empty.GetPercentile(percentile)
+		assert.Error(t, err, "p%v of a histogram with no observations", percentile)
+	}
+
+	// A missing count still falls back to the bucket counts.
+	noCount := &HistogramMetricValue{
+		Buckets: map[string]float64{"0.300000": 2, "0.500000": 4, "+Inf": 4},
+	}
+	p50, err := noCount.GetPercentile(50)
+	assert.NoError(t, err)
+	assert.Equal(t, 0.3, p50)
+}

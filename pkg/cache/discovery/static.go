@@ -17,6 +17,8 @@ limitations under the License.
 package discovery
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -24,12 +26,19 @@ import (
 	"strings"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/yaml"
 )
 
 const standaloneNamespace = "standalone"
+
+// defaultRoleSetName is the roleset name assigned to the shorthand
+// prefill_workers/decode_workers form. The roleset name is the pairing key
+// used by PD routing, and single-roleset deployments use "default".
+const defaultRoleSetName = "default"
 
 // RoleSetConfig defines a group of prefill and decode workers that can be paired together.
 // The PD routing algorithm scores prefill and decode pods within the same roleset
@@ -50,17 +59,113 @@ type StaticModelConfig struct {
 	// Engine is the inference engine type (e.g., "vllm", "sglang", "trtllm"). Optional.
 	Engine string `json:"engine,omitempty"`
 	// Endpoints lists worker addresses for non-disaggregated serving.
-	// Each entry is a "host:port" string. Mutually exclusive with RoleSets.
+	// Each entry is a "host:port" string. Workers is the preferred spelling;
+	// the two are aliases and must not be combined. Mutually exclusive with
+	// the disaggregated forms below.
 	Endpoints []string `json:"endpoints,omitempty"`
+	// Workers is the TRT-LLM style spelling of Endpoints.
+	Workers []string `json:"workers,omitempty"`
 	// RoleSets defines prefill/decode worker groups for disaggregated serving.
-	// Mutually exclusive with Endpoints.
+	// Mutually exclusive with Endpoints/Workers and with the shorthand below.
 	RoleSets []RoleSetConfig `json:"rolesets,omitempty"`
+	// PrefillWorkers and DecodeWorkers are the TRT-LLM style shorthand for a
+	// single disaggregated roleset, named "default". Use RoleSets for multiple
+	// rolesets or when the roleset name matters.
+	PrefillWorkers []string `json:"prefill_workers,omitempty"`
+	DecodeWorkers  []string `json:"decode_workers,omitempty"`
+	// Config holds config profiles for this model, as the JSON the
+	// model.aibrix.ai/config pod annotation holds. Optional. The gateway reads
+	// it ahead of pod annotations when it resolves a request's profile.
+	Config ModelConfigJSON `json:"config,omitempty"`
+}
+
+// ModelConfigJSON is the config field of a model entry: the JSON as a string,
+// as the annotation holds it (config: |), or the same object written as a YAML
+// mapping.
+type ModelConfigJSON string
+
+// UnmarshalJSON accepts the config as a JSON string or as a JSON object.
+func (c *ModelConfigJSON) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*c = ModelConfigJSON(s)
+		return nil
+	}
+	if trimmed := bytes.TrimSpace(data); len(trimmed) > 0 && trimmed[0] == '{' {
+		*c = ModelConfigJSON(trimmed)
+		return nil
+	}
+	return fmt.Errorf("config must be the profiles JSON, as a string or a mapping, not %s", data)
 }
 
 // StaticConfig represents the complete static endpoints configuration.
 type StaticConfig struct {
 	// Models is the list of models and their workers.
 	Models []StaticModelConfig `json:"models"`
+}
+
+// resolve normalizes the supported config spellings into the internal
+// endpoints/rolesets pair. The TRT-LLM style workers, prefill_workers and
+// decode_workers keys are aliases for what endpoints and rolesets express;
+// role labels stay an implementation detail of the provider. A model has to
+// name itself, declare at least one backend, and list both sides of the
+// prefill_workers/decode_workers shorthand. The spellings that cannot be
+// reconciled are rejected here.
+func (m StaticModelConfig) resolve(index int) ([]string, []RoleSetConfig, error) {
+	if strings.TrimSpace(m.Name) == "" {
+		return nil, nil, fmt.Errorf("models[%d]: name is required", index)
+	}
+	if len(m.Endpoints) > 0 && len(m.Workers) > 0 {
+		return nil, nil, fmt.Errorf(
+			"model %q: endpoints and workers are aliases, use one of them", m.Name)
+	}
+	endpoints := m.Endpoints
+	if len(endpoints) == 0 {
+		endpoints = m.Workers
+	}
+
+	workerRoles := len(m.PrefillWorkers) > 0 || len(m.DecodeWorkers) > 0
+	if len(m.RoleSets) > 0 && workerRoles {
+		return nil, nil, fmt.Errorf(
+			"model %q: rolesets and prefill_workers/decode_workers are mutually exclusive", m.Name)
+	}
+	roleSets := m.RoleSets
+	if workerRoles {
+		// The shorthand always describes a single roleset; the check above
+		// already rejected the combination with explicit rolesets.
+		roleSets = []RoleSetConfig{{
+			Name:    defaultRoleSetName,
+			Prefill: m.PrefillWorkers,
+			Decode:  m.DecodeWorkers,
+		}}
+	}
+
+	if len(endpoints) > 0 && len(roleSets) > 0 {
+		return nil, nil, fmt.Errorf(
+			"model %q: endpoints/workers and rolesets/prefill_workers/decode_workers are mutually exclusive",
+			m.Name)
+	}
+	if workerRoles && (len(m.PrefillWorkers) == 0 || len(m.DecodeWorkers) == 0) {
+		// The shorthand copies the TRT-LLM shape, which lists both sides. A
+		// one-sided group can never be paired, so reject it here instead of
+		// loading a config that PD routing will never select.
+		return nil, nil, fmt.Errorf(
+			"model %q: prefill_workers and decode_workers must both list at least one worker",
+			m.Name)
+	}
+	// Count addresses after normalization so a named roleset without any
+	// worker fails exactly like an engine-only model. The rolesets form
+	// still accepts a partial group so an existing file keeps loading.
+	addresses := len(endpoints)
+	for _, rs := range roleSets {
+		addresses += len(rs.Prefill) + len(rs.Decode)
+	}
+	if addresses == 0 {
+		return nil, nil, fmt.Errorf(
+			"model %q: at least one of endpoints, workers, rolesets, or prefill_workers/decode_workers is required",
+			m.Name)
+	}
+	return endpoints, roleSets, nil
 }
 
 // StaticProvider implements Provider by loading a static YAML configuration file.
@@ -94,7 +199,8 @@ func (p *StaticProvider) Watch(handler EventHandler, _ <-chan struct{}) error {
 	return nil
 }
 
-// load reads the config file and returns all endpoints as synthetic pods.
+// load reads the config file and returns all endpoints as synthetic pods,
+// preceded by a *ModelConfig for each model that sets config.
 func (p *StaticProvider) load() ([]any, error) {
 	data, err := os.ReadFile(p.configPath)
 	if err != nil {
@@ -105,18 +211,45 @@ func (p *StaticProvider) load() ([]any, error) {
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
+	// Unknown keys stay allowed so that an existing file keeps loading, but a
+	// misspelled one (confg: for config:) would otherwise be dropped silently.
+	if err := yaml.UnmarshalStrict(data, &StaticConfig{}); err != nil {
+		klog.Warningf("static discovery: %s: %v (loaded anyway)", p.configPath, err)
+	}
 
-	var pods []any
+	var configs, pods []any
+	configured := make(map[string]bool)
 	idx := 0
 
-	for _, model := range config.Models {
-		if len(model.Endpoints) > 0 && len(model.RoleSets) > 0 {
-			return nil, fmt.Errorf(
-				"model %q: endpoints and rolesets are mutually exclusive", model.Name)
+	for i, model := range config.Models {
+		endpoints, roleSets, err := model.resolve(i)
+		if err != nil {
+			return nil, err
 		}
 
-		// Non-disaggregated: plain endpoints
-		for _, addr := range model.Endpoints {
+		if strings.TrimSpace(string(model.Config)) != "" {
+			if configured[model.Name] {
+				return nil, fmt.Errorf("model %q: config is set on more than one entry", model.Name)
+			}
+			// The gateway applies this check to the annotation on every
+			// request and skips a config that fails it. Run it once here so
+			// that a bad profile stops startup instead.
+			cfg, err := configprofiles.ParseModelConfig(string(model.Config))
+			if err != nil {
+				return nil, fmt.Errorf("model %q: invalid config: %w", model.Name, err)
+			}
+			// At request time a missing default profile just leaves requests
+			// without a config-profile header unprofiled.
+			if cfg.DefaultProfile != "" && cfg.GetProfileExact(cfg.DefaultProfile) == nil {
+				return nil, fmt.Errorf("model %q: invalid config: defaultProfile %q is not one of its profiles",
+					model.Name, cfg.DefaultProfile)
+			}
+			configured[model.Name] = true
+			configs = append(configs, &ModelConfig{ModelName: model.Name, Config: string(model.Config)})
+		}
+
+		// Non-disaggregated: plain endpoints (or the workers alias)
+		for _, addr := range endpoints {
 			pod, err := addressToPod(model.Name, model.Engine, nil, idx, addr)
 			if err != nil {
 				return nil, fmt.Errorf("model %q endpoint %q: %w", model.Name, addr, err)
@@ -125,8 +258,8 @@ func (p *StaticProvider) load() ([]any, error) {
 			idx++
 		}
 
-		// Disaggregated: rolesets with prefill/decode
-		for _, rs := range model.RoleSets {
+		// Disaggregated: prefill/decode worker groups
+		for _, rs := range roleSets {
 			if rs.Name == "" {
 				return nil, fmt.Errorf("model %q: roleset name is required", model.Name)
 			}
@@ -156,7 +289,7 @@ func (p *StaticProvider) load() ([]any, error) {
 		}
 	}
 
-	return pods, nil
+	return append(configs, pods...), nil
 }
 
 // addressToPod creates a synthetic v1.Pod from an address string and optional labels.
@@ -178,9 +311,12 @@ func addressToPod(
 	safeName := strings.ReplaceAll(host, ".", "-")
 	podName := fmt.Sprintf("%s-%s-%d", sanitizeName(modelName), safeName, index)
 
+	// The engine serves its metrics on the same port as the API, so scrape
+	// that port rather than the cache's default metric port.
 	labels := map[string]string{
-		constants.ModelLabelName: modelName,
-		constants.ModelLabelPort: portStr,
+		constants.ModelLabelName:       modelName,
+		constants.ModelLabelPort:       portStr,
+		constants.ModelLabelMetricPort: portStr,
 	}
 	if engine != "" {
 		labels[constants.ModelLabelEngine] = engine

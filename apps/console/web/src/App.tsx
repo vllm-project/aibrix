@@ -27,10 +27,14 @@ import { DeploymentDetail } from './components/DeploymentDetail';
 import { LoraAdapters } from './components/LoraAdapters';
 import { CreateLoraAdapter } from './components/CreateLoraAdapter';
 import { LoraAdapterDetail } from './components/LoraAdapterDetail';
+import { ModelClaims } from './components/ModelClaims';
+import { CreateModelClaim } from './components/CreateModelClaim';
+import { ModelClaimDetail } from './components/ModelClaimDetail';
 import { ApiKeysPage } from './components/settings/ApiKeysPage';
 import { SecretsPage } from './components/settings/SecretsPage';
 import { Toast } from './components/settings/Toast';
 import { features } from './config/features';
+import { playgroundHref } from './utils/deploymentDetail';
 
 // ── Route adapters: each one reads useParams/useNavigate and forwards to the
 // existing component. Keeps the leaf components unchanged.
@@ -117,7 +121,9 @@ function PlaygroundRoute() {
   return (
     <Playground
       initialDeploymentId={searchParams.get('deployment') ?? undefined}
+      initialModelClaim={searchParams.get('model-claim') ?? undefined}
       onNavigateToDeployment={(id) => navigate(`/deployments/${id}`)}
+      onNavigateToModelClaim={(name) => navigate(`/model-claims/${encodeURIComponent(name)}`)}
     />
   );
 }
@@ -149,7 +155,7 @@ function DeploymentDetailRoute() {
     <DeploymentDetail
       deploymentId={deploymentId ?? null}
       onBack={() => navigate('/deployments')}
-      onOpenPlayground={(deployment) => navigate(`/playground?deployment=${encodeURIComponent(deployment.id)}`)}
+      onOpenPlayground={(deployment) => navigate(playgroundHref(deployment))}
     />
   );
 }
@@ -182,6 +188,41 @@ function LoraAdapterDetailRoute() {
     <LoraAdapterDetail
       adapterName={adapterName}
       onBack={() => navigate('/lora')}
+    />
+  );
+}
+
+function ModelClaimsRoute() {
+  const navigate = useNavigate();
+  return (
+    <ModelClaims
+      onSelectClaim={(name) => navigate(`/model-claims/${name}`)}
+      onCreateClaim={() => navigate('/model-claims/new')}
+    />
+  );
+}
+
+function CreateModelClaimRoute() {
+  const navigate = useNavigate();
+  return (
+    <CreateModelClaim
+      onBack={() => navigate('/model-claims')}
+      onCreated={(name) => navigate(`/model-claims/${name}`)}
+    />
+  );
+}
+
+function ModelClaimDetailRoute() {
+  const { claimName } = useParams<{ claimName: string }>();
+  const navigate = useNavigate();
+  if (!claimName) return <Navigate to="/model-claims" replace />;
+  return (
+    <ModelClaimDetail
+      claimName={claimName}
+      onBack={() => navigate('/model-claims')}
+      onOpenPlayground={features.playground
+        ? (name) => navigate(`/playground?model-claim=${encodeURIComponent(name)}`)
+        : undefined}
     />
   );
 }
@@ -341,6 +382,9 @@ export default function App() {
             <Route path="/lora" element={<LoraAdaptersRoute />} />
             <Route path="/lora/new" element={<CreateLoraAdapterRoute />} />
             <Route path="/lora/:adapterName" element={<LoraAdapterDetailRoute />} />
+            <Route path="/model-claims" element={<ModelClaimsRoute />} />
+            <Route path="/model-claims/new" element={<CreateModelClaimRoute />} />
+            <Route path="/model-claims/:claimName" element={<ModelClaimDetailRoute />} />
 
             <Route path="/settings" element={<Navigate to="/settings/api-keys" replace />} />
             <Route path="/settings/api-keys" element={<SettingsRoute tab="api-keys" showToast={showToast} />} />

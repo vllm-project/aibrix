@@ -1,11 +1,11 @@
 # AIBrix Gateway Endpoints Configuration - P/D Disaggregation Mode
-# This file defines separate prefill and decode engines grouped by roleset.
+# This file defines separate prefill and decode engines.
 #
-# Each roleset represents a group of prefill and decode workers that can be
-# paired together (e.g., single node P/D leverage nvlink based kv transfer).
-# The PD routing algorithm selects the roleset first and then best 
-# prefill+decode pair within a roleset.
-# Note: You do not need multiple rolesets in most of the case.
+# prefill_workers and decode_workers form a single roleset (named "default").
+# The PD routing algorithm selects the roleset first and then the best
+# prefill+decode pair within it. A roleset serves traffic only when both
+# sides have at least one worker.
+# For multiple rolesets, use the rolesets: form instead.
 #
 # NETWORKING:
 # Uses hostnames that work for both Docker Compose and local development.
@@ -13,9 +13,7 @@
 
 models:
   - name: "Qwen/Qwen2.5-1.5B-Instruct"
-    rolesets:
-      - name: default
-        prefill:
-          - "prefill-engine:8000"
-        decode:
-          - "decode-engine:8000"
+    prefill_workers:
+      - "prefill-engine:8000"
+    decode_workers:
+      - "decode-engine:8000"

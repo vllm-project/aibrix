@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: external-router-e2e
+  namespace: aibrix-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: external-router-e2e
+  template:
+    metadata:
+      labels:
+        app: external-router-e2e
+    spec:
+      containers:
+      - name: router
+        image: aibrix/external-router-e2e:nightly
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-router-e2e
+  namespace: aibrix-system
+spec:
+  selector:
+    app: external-router-e2e
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http
+

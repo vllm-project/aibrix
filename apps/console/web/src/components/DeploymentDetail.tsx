@@ -6,6 +6,7 @@ import { copyToClipboard } from '../utils/clipboard';
 import {
   canOpenInPlayground,
   deploymentCodeExample,
+  deploymentExamplesAvailable,
   formatDeploymentCreatedAt,
   type DeploymentExampleLanguage,
 } from '../utils/deploymentDetail';
@@ -27,6 +28,7 @@ export function DeploymentDetail({
   const [error, setError] = useState<string | null>(null);
   const [selectedLanguage, setSelectedLanguage] = useState<DeploymentExampleLanguage>('python');
   const [copied, setCopied] = useState<string | null>(null);
+  const [showMore, setShowMore] = useState(false);
 
   useEffect(() => {
     if (!deploymentId) {
@@ -85,7 +87,8 @@ export function DeploymentDetail({
 
   const deploymentStatus = normalizeDeploymentStatus(deployment.status);
   const playgroundReady = canOpenInPlayground(deployment);
-  const code = deploymentCodeExample(deployment, selectedLanguage);
+  const examplesAvailable = deploymentExamplesAvailable(deployment);
+  const code = examplesAvailable ? deploymentCodeExample(deployment, selectedLanguage) : '';
 
   return (
     <div className="p-8">
@@ -141,38 +144,90 @@ export function DeploymentDetail({
               Send an OpenAI-compatible chat completion request to the shared AIBrix Gateway.
             </p>
 
-            <div className="flex items-center gap-2 mb-4">
-              {(['python', 'shell'] as const).map((language) => (
-                <button
-                  key={language}
-                  onClick={() => setSelectedLanguage(language)}
-                  className={`px-3 py-1.5 text-sm rounded-lg capitalize transition-colors ${
-                    selectedLanguage === language
-                      ? 'bg-slate-800 text-white'
-                      : 'text-gray-500 hover:bg-gray-100'
-                  }`}
-                >
-                  {language}
-                </button>
-              ))}
+            <div className="mb-4 rounded-xl border border-gray-100 bg-gray-50 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-500 mb-1">Inference URL</div>
+                  <code className="text-sm text-gray-900 break-all">
+                    {deployment.inferenceUrl || 'Not available'}
+                  </code>
+                </div>
+                {deployment.inferenceUrl && (
+                  <button
+                    onClick={() => copy(deployment.inferenceUrl || '', 'inference-url')}
+                    className="text-gray-400 hover:text-gray-700 flex-shrink-0"
+                    title="Copy inference URL"
+                    aria-label="Copy inference URL"
+                  >
+                    <Copy className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+              {copied === 'inference-url' && <div className="text-xs text-teal-600 mt-2">Copied</div>}
             </div>
 
-            <div className="relative bg-slate-900 rounded-xl p-4">
-              <button
-                onClick={() => copy(code, 'example')}
-                className="absolute top-4 right-4 text-gray-400 hover:text-white"
-                title="Copy example"
-                aria-label="Copy API example"
-              >
-                <Copy className="w-4 h-4" />
-              </button>
-              {copied === 'example' && (
-                <span className="absolute top-4 right-10 text-xs text-teal-300">Copied</span>
+            <div className="flex items-center justify-between gap-3 mb-4">
+              {examplesAvailable ? (
+                <div className="flex items-center gap-2">
+                  {(['python', 'shell'] as const).map((language) => (
+                    <button
+                      key={language}
+                      onClick={() => setSelectedLanguage(language)}
+                      className={`px-3 py-1.5 text-sm rounded-lg capitalize transition-colors ${
+                        selectedLanguage === language
+                          ? 'bg-slate-800 text-white'
+                          : 'text-gray-500 hover:bg-gray-100'
+                      }`}
+                    >
+                      {language}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500">
+                  Code examples stay hidden until this deployment has a serving name and inference URL.
+                </p>
               )}
-              <pre className="text-sm text-gray-300 overflow-x-auto pr-10">
-                <code>{code}</code>
-              </pre>
+              <button
+                onClick={() => setShowMore((open) => !open)}
+                className="px-3 py-1.5 text-sm text-teal-700 hover:bg-teal-50 rounded-lg"
+                aria-expanded={showMore}
+              >
+                {showMore ? 'View Less' : 'View More'}
+              </button>
             </div>
+
+            {showMore && (
+              <dl className="mb-4 rounded-xl border border-gray-100 p-4 space-y-3 text-sm">
+                <Detail label="Serving name">
+                  <code className="break-all">{deployment.servingName || 'Not available'}</code>
+                </Detail>
+                <Detail label="Runtime resource">
+                  <code className="break-all">{deployment.deploymentId || 'Not available'}</code>
+                </Detail>
+                <Detail label="Base model">{deployment.baseModel || 'Not available'}</Detail>
+                <Detail label="Created at">{formatDeploymentCreatedAt(deployment.createdAt)}</Detail>
+              </dl>
+            )}
+
+            {examplesAvailable && (
+              <div className="relative bg-slate-900 rounded-xl p-4">
+                <button
+                  onClick={() => copy(code, 'example')}
+                  className="absolute top-4 right-4 text-gray-400 hover:text-white"
+                  title="Copy example"
+                  aria-label="Copy API example"
+                >
+                  <Copy className="w-4 h-4" />
+                </button>
+                {copied === 'example' && (
+                  <span className="absolute top-4 right-10 text-xs text-teal-300">Copied</span>
+                )}
+                <pre className="text-sm text-gray-300 overflow-x-auto pr-10">
+                  <code>{code}</code>
+                </pre>
+              </div>
+            )}
           </div>
 
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
@@ -199,6 +254,9 @@ export function DeploymentDetail({
               <Detail label="Base model">{deployment.baseModel || 'Not available'}</Detail>
               <Detail label="Serving name">
                 <code className="break-all">{deployment.servingName || 'Not available'}</code>
+              </Detail>
+              <Detail label="Inference URL">
+                <code className="break-all">{deployment.inferenceUrl || 'Not available'}</code>
               </Detail>
               <Detail label="Created by">{deployment.createdBy || 'Not available'}</Detail>
               <Detail label="Created at">{formatDeploymentCreatedAt(deployment.createdAt)}</Detail>

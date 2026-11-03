@@ -23,6 +23,7 @@ spec:
       containers:
         - name: master
           image: {{ .Values.metadata.redis.container.image.repository }}:{{ .Values.metadata.redis.container.image.tag }}
+          imagePullPolicy: {{ .Values.metadata.redis.container.image.imagePullPolicy }}
           ports:
             - containerPort: 6379
           resources: {{ toYaml .Values.metadata.redis.container.resources | nindent 12 }}
@@ -65,6 +66,9 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: {{ include "aibrix.fullname" . }}-redis
+  labels:
+    {{- include "aibrix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-metadata-redis
 type: Opaque
 data:
   {{- $sharedPass := dig "redis" "password" "" .Values.metadata -}}

@@ -10,17 +10,104 @@ and is now manually maintained under `dist/chart`.
 
 ## Limitations
 
-1. Missing Standard Labels
-Common Kubernetes labels such as `app.kubernetes.io/managed-by` and `app.kubernetes.io/name` are currently not included. These should be added to improve consistency and observability.
-
-2. Third-Party Dependencies Not Included
+1. Third-Party Dependencies Not Included
 Dependencies like `Envoy Gateway` and `KubeRay` have their own Helm charts. This AIBrix chart focuses only on core AIBrix components and does not package or manage external dependencies.
 
-3. Not Compatible with Previous Kustomize-Based Installs
+2. Not Compatible with Previous Kustomize-Based Installs
 This chart is not intended for upgrades from earlier deployments that used Kustomize. Transitioning requires a clean install.
 
 
 ## Development 
+
+### Envoy Service NodePorts
+
+The default `gateway.envoyProxy.service: {}` preserves Envoy Gateway's Service
+defaults. To expose enabled listeners on fixed NodePorts, override:
+
+```yaml
+gateway:
+  envoyProxy:
+    service:
+      type: NodePort
+      externalTrafficPolicy: Cluster
+      nodePorts:
+        http: 32080
+        https: 32443
+```
+
+HTTP uses listener port 80; HTTPS uses `gateway.tls.port`. Only enabled
+listeners receive a fixed NodePort patch. Omit either `nodePorts` entry to let
+Kubernetes allocate that listener's NodePort. Fixed ports must be available and
+within the cluster's configured NodePort range, and must differ when both
+listeners are enabled.
+
+`nodePorts` requires `service.type: NodePort` and cannot be combined with
+`service.patch`. Raw patches remain unchanged; use them instead of `nodePorts`
+for advanced Service customization.
+
+### Diagnostic Envoy access logs
+
+Set `gateway.envoyProxy.accessLog.enabled=true` to add request/response timings
+and ext_proc call statistics to the default JSON stdout log for Envoy
+OpenTelemetry tracing. `gateway.envoyProxy.accessLog.extProcFilterName` optionally
+overrides the filter-state key; otherwise it is derived from the namespace and
+the chart's EnvoyExtensionPolicy name.
+
+```json
+{
+  ":authority": "127.0.0.1:8888",
+  "bytes_received": 971858,
+  "bytes_sent": 6818,
+  "connection_termination_details": null,
+  "downstream_local_address": "127.0.0.1:10080",
+  "downstream_remote_address": "127.0.0.1:34464",
+  "duration": 37095,
+  "ext_proc_request_body_call_count": "1",
+  "ext_proc_request_body_last_call_status": "0",
+  "ext_proc_request_body_max_latency_us": "27798",
+  "ext_proc_request_body_total_latency_us": "27798",
+  "ext_proc_request_header_call_status": "0",
+  "ext_proc_request_header_latency_us": "1362",
+  "ext_proc_response_body_call_count": "33",
+  "ext_proc_response_body_last_call_status": "0",
+  "ext_proc_response_body_max_latency_us": "816",
+  "ext_proc_response_body_total_latency_us": "16925",
+  "ext_proc_response_header_call_status": "0",
+  "ext_proc_response_header_latency_us": "628",
+  "method": "POST",
+  "protocol": "HTTP/1.1",
+  "request_duration_ms": 877,
+  "request_tx_duration_ms": 907,
+  "requested_server_name": null,
+  "response_code": 200,
+  "response_code_details": "via_upstream",
+  "response_duration_ms": 2444,
+  "response_flags": "-",
+  "response_tx_duration_ms": 34650,
+  "route_name": "original_route",
+  "start_time": "2026-09-22T07:45:25.637Z",
+  "start_time_precise": "2026-09-22T07:45:25.637745000Z",
+  "traceparent": "00-xxxxxxxxxxx-d0bed7ad907df883-01",
+  "upstream_cluster": "original_destination_cluster",
+  "upstream_connection_pool_ready_duration_ms": 0,
+  "upstream_host": "10.xx.xx.xx:8000",
+  "upstream_local_address": "10.xx.xx.xx:55322",
+  "upstream_transport_failure_reason": null,
+  "user-agent": "curl/8.7.1",
+  "x-envoy-origin-path": "/v1/chat/completions",
+  "x-envoy-upstream-service-time": null,
+  "x-forwarded-for": "10.xx.xx.xx",
+  "x-request-id": "xxxxxxxxx"
+}
+```
+
+### Circuit breaker resource gauges
+
+Set `gateway.envoyPatchPolicy.circuitBreakers.trackRemaining=true` to expose
+gauges for resources remaining before the original destination cluster's
+circuit breakers open. Set it to `false` to disable these gauges. This boolean
+option does not change circuit breaker limits; if the key is absent, the
+template falls back to `false`.
 
 ### Helm Lint
 
@@ -44,9 +131,10 @@ resolve the issue and retry until you get:
 
 ### helm unittest
 
-test cases in dist/chart/tests
+Test cases live in `dist/chart/tests`. The common-label suite uses `documentSelector.matchMany` and `skipEmptyTemplates`, which require helm-unittest 1.0 or newer. helm-unittest 0.7.x fails that suite with `label expected to exist`.
+
 ```
-helm plugin install https://github.com/helm-unittest/helm-unittest.git
+helm plugin install https://github.com/helm-unittest/helm-unittest.git --version v1.1.2
 
 helm unittest dist/chart
 ### Chart [ aibrix ] dist/chart

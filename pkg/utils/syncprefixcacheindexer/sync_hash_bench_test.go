@@ -98,6 +98,48 @@ func BenchmarkMatchPrefix(b *testing.B) {
 	}
 }
 
+// BenchmarkMatchPrefixSharedPrefix measures MatchPrefix when every candidate pod
+// holds the full prompt prefix, the worst case for the per-block walk over pods.
+// BenchmarkMatchPrefix gives each pod its own context, so it never exercises
+// that path.
+func BenchmarkMatchPrefixSharedPrefix(b *testing.B) {
+	const (
+		promptTokens = 240000
+		bytesPerTok  = 4   // tokens are encoded as big-endian int32
+		blockBytes   = 256 // 64 tokens per block, 3,750 blocks for this prompt
+	)
+
+	for _, numPods := range []int{8, 96} {
+		b.Run(fmt.Sprintf("pods=%d", numPods), func(b *testing.B) {
+			table := NewSyncPrefixHashTable()
+			defer table.Close()
+			table.blockSize = blockBytes
+
+			tokens := make([]byte, promptTokens*bytesPerTok)
+			_, _ = crand.Read(tokens)
+			hashes := table.GetPrefixHashes(tokens)
+
+			readyPods := make(map[string]struct{}, numPods)
+			for i := 0; i < numPods; i++ {
+				podName := fmt.Sprintf("default/pod-%d", i)
+				readyPods[podName] = struct{}{}
+				if err := table.AddPrefix("model", -1, podName, hashes); err != nil {
+					b.Fatal(err)
+				}
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				matched, _ := table.MatchPrefix("model", -1, tokens, readyPods)
+				if len(matched) != numPods {
+					b.Fatalf("matched %d pods, want %d", len(matched), numPods)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkAddPrefix measures write performance
 func BenchmarkAddPrefix(b *testing.B) {
 	benchmarks := []struct {

@@ -22,7 +22,11 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
+	"github.com/vllm-project/aibrix/pkg/types"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -77,6 +81,34 @@ func TestSetupMetricsForTest(t *testing.T) {
 
 	value = testutil.ToFloat64(testGauge.WithLabelValues(testLabelValue))
 	assert.Equal(t, testValue, value, "Metric value should not change after cleanup")
+}
+
+func TestDeleteGaugeMetric(t *testing.T) {
+	prometheus.DefaultRegisterer = prometheus.NewRegistry()
+	const name = "test_delete_gauge_metric"
+
+	// Deleting before the gauge exists is a no-op.
+	DeleteGaugeMetric(name, []string{testLabelName, testLabelName2}, testLabelValue, testLabelValue2)
+
+	defaultSetGaugeMetric(name, testMetricHelp, 1, []string{testLabelName, testLabelName2}, "a", "b")
+	defaultSetGaugeMetric(name, testMetricHelp, 2, []string{testLabelName, testLabelName2}, "c", "d")
+	customGaugesMu.RLock()
+	gauge := customGauges[name]
+	customGaugesMu.RUnlock()
+	assert.Equal(t, 2, testutil.CollectAndCount(gauge))
+
+	// Label order need not match the registration order.
+	DeleteGaugeMetric(name, []string{testLabelName2, testLabelName}, "b", "a")
+	assert.Equal(t, 1, testutil.CollectAndCount(gauge))
+	assert.Equal(t, 2.0, testutil.ToFloat64(gauge.WithLabelValues("c", "d")))
+
+	// Mismatched or unknown labels do nothing.
+	DeleteGaugeMetric(name, []string{testLabelName}, "c", "d")
+	DeleteGaugeMetric(name, []string{testLabelName, testLabelName2}, "x", "y")
+	assert.Equal(t, 1, testutil.CollectAndCount(gauge))
+
+	DeleteGaugeMetric(name, []string{testLabelName, testLabelName2}, "c", "d")
+	assert.Equal(t, 0, testutil.CollectAndCount(gauge))
 }
 
 func TestMetricRegistrationOnlyOnce(t *testing.T) {
@@ -218,4 +250,83 @@ func TestSetHistogramMetric(t *testing.T) {
 		assert.InDelta(t, 3.0, h.GetSampleSum(), 1e-9)
 	}
 	assert.True(t, found)
+}
+
+func TestBuildMetricLabels_LoraVsBase(t *testing.T) {
+	t.Setenv("POD_NAME", "gw-0")
+	gatewayPodName = "gw-0"
+
+	loraCtx := &types.RoutingContext{Model: "hip-adapter", BaseModel: "qwen3-8b"}
+	names, values := buildMetricLabels(nil, loraCtx, nil)
+	got := zipLabels(names, values)
+	assert.Equal(t, "qwen3-8b", got["model"])
+	assert.Equal(t, "hip-adapter", got["lora_adapter"])
+
+	baseCtx := &types.RoutingContext{Model: "qwen3-8b"}
+	names, values = buildMetricLabels(nil, baseCtx, nil)
+	got = zipLabels(names, values)
+	assert.Equal(t, "qwen3-8b", got["model"])
+	assert.Equal(t, "", got["lora_adapter"])
+}
+
+func zipLabels(names, values []string) map[string]string {
+	out := make(map[string]string, len(names))
+	for i, n := range names {
+		out[n] = values[i]
+	}
+	return out
+}
+
+// podQuantileSeries counts the series of the custom gauge name that belong to pod.
+func podQuantileSeries(t *testing.T, name, pod string) int {
+	customGaugesMu.RLock()
+	gauge := customGauges[name]
+	customGaugesMu.RUnlock()
+	if gauge == nil {
+		return 0
+	}
+	ch := make(chan prometheus.Metric)
+	go func() {
+		gauge.Collect(ch)
+		close(ch)
+	}()
+	n := 0
+	for m := range ch {
+		var out dto.Metric
+		assert.NoError(t, m.Write(&out))
+		for _, l := range out.Label {
+			if l.GetName() == "pod" && l.GetValue() == pod {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func TestEmitHistogramWithoutObservationsExportsNoQuantiles(t *testing.T) {
+	prometheus.DefaultRegisterer = prometheus.NewRegistry()
+	ctx := &types.RoutingContext{}
+	quantiles := []string{"_p50", "_p90", "_p99"}
+	empty := func() *HistogramMetricValue {
+		return &HistogramMetricValue{Buckets: map[string]float64{"0.300000": 0, "0.800000": 0, "+Inf": 0}}
+	}
+
+	// A pod that has not served a request yet.
+	fresh := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "quantile-fresh-pod", Namespace: "ns1"}}
+	EmitMetricToPrometheus(ctx, fresh, TimeToFirstTokenSeconds, empty(), nil)
+	for _, q := range quantiles {
+		assert.Equal(t, 0, podQuantileSeries(t, TimeToFirstTokenSeconds+q, fresh.Name), q)
+	}
+
+	// A pod with observations, then the same pod after its engine restarted.
+	served := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "quantile-served-pod", Namespace: "ns1"}}
+	withData := &HistogramMetricValue{Sum: 1.2, Count: 2, Buckets: map[string]float64{"0.300000": 0, "0.800000": 2, "+Inf": 2}}
+	EmitMetricToPrometheus(ctx, served, TimeToFirstTokenSeconds, withData, nil)
+	for _, q := range quantiles {
+		assert.Equal(t, 1, podQuantileSeries(t, TimeToFirstTokenSeconds+q, served.Name), q)
+	}
+	EmitMetricToPrometheus(ctx, served, TimeToFirstTokenSeconds, empty(), nil)
+	for _, q := range quantiles {
+		assert.Equal(t, 0, podQuantileSeries(t, TimeToFirstTokenSeconds+q, served.Name), q)
+	}
 }

@@ -17,11 +17,16 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from io import BytesIO, StringIO
-from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
+from typing import AsyncIterator, Awaitable, BinaryIO, Callable, Optional, TextIO, Union
 
 from aibrix.storage.reader import Reader
 from aibrix.storage.types import StorageListOrdering, StorageType
 from aibrix.storage.utils import ObjectMetadata
+
+# Internal multipart part flag: only parts carrying this marker may source their
+# bytes from a caller-provided local callback instead of remote staged storage.
+LOCAL_PART_PROVIDER_MARKER = "__aibrix_local_part__"
+LOCAL_PART_PROVIDER_MARKER_VALUE = 1
 
 
 @dataclass
@@ -249,7 +254,10 @@ class BaseStorage(ABC):
         Args:
             prefix: Key prefix to filter objects
             delimiter: Delimiter for hierarchical listing
-            limit: Maximum number of objects to return (None for no limit)
+            limit: Maximum number of objects to request in one page. ``None`` means
+                no caller-specified page size; it does not mean an unlimited
+                listing. Backends may still apply their default or maximum page
+                size and return a continuation token.
             continuation_token: Token to continue from previous pagination call
             after_key: Key from the previous page to translate into a backend
                 continuation position when continuation_token is not provided
@@ -437,6 +445,7 @@ class BaseStorage(ABC):
 
         upload_parts: list[dict[str, Union[str, int]]] = []
         small_parts = False
+        upload_id: Optional[str] = None
 
         reader = self._wrap_data(data)
 
@@ -481,6 +490,9 @@ class BaseStorage(ABC):
                 await self.complete_multipart_upload(key, upload_id, upload_parts)
 
         except Exception:
+            if upload_id is None:
+                # Preserve the original error if creating the upload failed.
+                raise
             if small_parts:
                 # Abort small parts upload on error
                 await self.abort_multipart_upload(key, upload_id)
@@ -582,60 +594,32 @@ class BaseStorage(ABC):
         key: str,
         upload_id: str,
         parts: list[dict[str, Union[str, int]]],
+        *,
+        tolerate_part_get_error: bool = False,
+        local_part_provider: Callable[
+            [dict[str, Union[str, int]]], Awaitable[bytes | str | None]
+        ]
+        | None = None,
+    ) -> list[dict[str, Union[str, int]]]:
+        _ = (key, upload_id, parts, tolerate_part_get_error, local_part_provider)
+        raise NotImplementedError(
+            "BaseStorage.complete_multipart_upload() must not be called; "
+            "use BaseStorage2-backed storage implementations instead."
+        )
+
+    async def _collect_multipart_upload_objects(
+        self, prefix: str, objects: list[str]
     ) -> None:
-        """Default implementation for completing multipart upload.
-
-        Downloads all part objects, aggregates them locally, and uploads the final object.
-        Suitable for S3/TOS backends that don't have native multipart support for small files.
-
-        Args:
-            key: Object key/path
-            upload_id: Upload ID from create_multipart_upload
-            parts: List of parts with 'part_number' and 'etag' keys
-        """
-        try:
-            # Get upload metadata
-            metadata_data = await self.get_object(self._multipart_upload_key(upload_id))
-            upload_metadata = eval(
-                metadata_data.decode("utf-8")
-            )  # Simple parsing for dict
-        except Exception:
-            # Use _native_complete_multipart_upload if metadata object doesn't exist
-            if self.is_native_multipart_supported():
-                return await self._native_complete_multipart_upload(
-                    key, upload_id, parts
-                )
-            raise ValueError(f"Upload ID {upload_id} not found or corrupted")
-
-        content_type = upload_metadata.get("content_type")
-        metadata = upload_metadata.get("metadata", {})
-
-        # Sort parts by part number
-        sorted_parts = sorted(parts, key=lambda p: p["part_number"])
-
-        # Download and aggregate all parts locally
-        aggregated_data = BytesIO()
-
-        for part in sorted_parts:
-            part_number = part["part_number"]
-            try:
-                part_data = await self.get_object(
-                    self._multipart_upload_part_key(upload_id, int(part_number))
-                )
-                aggregated_data.write(part_data)
-            except Exception:
-                # Clean up and raise error
-                await self.abort_multipart_upload(key, upload_id)
-                raise ValueError(
-                    f"Failed to retrieve part {part_number} for upload {upload_id}"
-                )
-
-        # Upload the final aggregated object
-        aggregated_data.seek(0)
-        await self.put_object(key, aggregated_data, content_type, metadata)
-
-        # Clean up multipart upload objects
-        await self.abort_multipart_upload(key, upload_id)
+        """Collect before deleting so offset-based pagination stays stable."""
+        continuation_token = None
+        while True:
+            page, next_token = await self.list_objects(
+                prefix, continuation_token=continuation_token
+            )
+            objects.extend(page)
+            if not next_token or next_token == continuation_token:
+                return
+            continuation_token = next_token
 
     async def abort_multipart_upload(
         self,
@@ -654,23 +638,24 @@ class BaseStorage(ABC):
         # List and delete all objects related to this upload
         prefix = self._multipart_upload_key(upload_id, "")
         no_multipart_data = True
+        objects_to_delete: list[str] = []
         try:
-            objects_to_delete, _ = await self.list_objects(prefix)
-
-            # Delete all related objects
-            for obj_key in objects_to_delete:
-                try:
-                    no_multipart_data = False
-                    await self.delete_object(obj_key)
-                except Exception:
-                    # Continue deletion even if some objects fail
-                    pass
+            await self._collect_multipart_upload_objects(prefix, objects_to_delete)
         except Exception:
             # If listing fails, try to delete known objects
             try:
                 await self.delete_object(self._multipart_upload_key(upload_id))
                 no_multipart_data = False
             except Exception:
+                pass
+
+        # Delete all related objects, including keys collected before a listing failure
+        for obj_key in objects_to_delete:
+            try:
+                no_multipart_data = False
+                await self.delete_object(obj_key)
+            except Exception:
+                # Continue deletion even if some objects fail
                 pass
 
         # Last attempt, nothing we can do for small parts

@@ -6,7 +6,7 @@ metadata:
   labels:
     app.kubernetes.io/name: aibrix
   annotations:
-    kpa.autoscaling.aibrix.ai/scale-down-delay: 1m
+    autoscaling.aibrix.ai/scale-down-cooldown-window: 1m
 spec:
   scalingStrategy: KPA
   minReplicas: 1

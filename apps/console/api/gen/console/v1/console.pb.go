@@ -124,6 +124,7 @@ type Deployment struct {
 	ImplementationKind string                 `protobuf:"bytes,14,opt,name=implementation_kind,json=implementationKind,proto3" json:"implementation_kind,omitempty"` // "kubernetes", "stormservice"
 	ServingName        string                 `protobuf:"bytes,15,opt,name=serving_name,json=servingName,proto3" json:"serving_name,omitempty"`                      // model value used for inference requests
 	CreatedAt          string                 `protobuf:"bytes,16,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`                            // RFC3339 creation timestamp
+	InferenceUrl       string                 `protobuf:"bytes,17,opt,name=inference_url,json=inferenceUrl,proto3" json:"inference_url,omitempty"`                   // OpenAI-compatible chat completions URL for this deployment
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -266,6 +267,13 @@ func (x *Deployment) GetServingName() string {
 func (x *Deployment) GetCreatedAt() string {
 	if x != nil {
 		return x.CreatedAt
+	}
+	return ""
+}
+
+func (x *Deployment) GetInferenceUrl() string {
+	if x != nil {
+		return x.InferenceUrl
 	}
 	return ""
 }
@@ -5770,7 +5778,7 @@ var File_console_v1_console_proto protoreflect.FileDescriptor
 const file_console_v1_console_proto_rawDesc = "" +
 	"\n" +
 	"\x18console/v1/console.proto\x12\n" +
-	"console.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1cgoogle/protobuf/struct.proto\"\x87\x04\n" +
+	"console.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xac\x04\n" +
 	"\n" +
 	"Deployment\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
@@ -5793,7 +5801,8 @@ const file_console_v1_console_proto_rawDesc = "" +
 	"\x13implementation_kind\x18\x0e \x01(\tR\x12implementationKind\x12!\n" +
 	"\fserving_name\x18\x0f \x01(\tR\vservingName\x12\x1d\n" +
 	"\n" +
-	"created_at\x18\x10 \x01(\tR\tcreatedAt\"0\n" +
+	"created_at\x18\x10 \x01(\tR\tcreatedAt\x12#\n" +
+	"\rinference_url\x18\x11 \x01(\tR\finferenceUrl\"0\n" +
 	"\x16ListDeploymentsRequest\x12\x16\n" +
 	"\x06search\x18\x01 \x01(\tR\x06search\"S\n" +
 	"\x17ListDeploymentsResponse\x128\n" +

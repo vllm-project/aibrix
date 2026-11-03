@@ -153,6 +153,11 @@ class TestUsersAPI:
         assert response.status_code == 200
         data = response.json()
         assert "exists" in data["message"]
+        assert data["user"] == user.model_dump()
+        assert (
+            mock_store._data["aibrix-users/test-user"]
+            == user.model_dump_json().encode()
+        )
 
     def test_read_user(self, app_with_store, mock_store):
         """Test reading a user."""

@@ -287,7 +287,7 @@ kubectl rollout status deployment/aibrix-controller-manager -n aibrix-system
 
 ## 4. Code Changes to Aibrix Fork
 
-### File: `pkg/plugins/gateway/algorithms/pd_disaggregation.go`
+### File: `pkg/plugins/gateway/algorithms/pd/router/router.go`
 
 Key changes:
 

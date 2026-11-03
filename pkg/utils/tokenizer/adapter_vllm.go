@@ -84,6 +84,7 @@ func (va *vllmAdapter) PrepareTokenizeRequest(input TokenizeInput) (interface{},
 			AddSpecialTokens:    &input.AddSpecialTokens,
 			AddGenerationPrompt: &input.AddGenerationPrompt,
 			ReturnTokenStrs:     &input.ReturnTokenStrings,
+			Tools:               input.Tools,
 		}
 		if va.model != "" {
 			req.Model = va.model

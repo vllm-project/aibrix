@@ -81,7 +81,7 @@ images:
     newTag: nightly
   - name: redis
     newName: redis
-    newTag: latest
+    newTag: "7.4"
   - name: busybox
     newName: busybox
     newTag: stable

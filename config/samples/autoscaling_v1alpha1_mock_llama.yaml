@@ -8,7 +8,7 @@ metadata:
   annotations:
     autoscaling.aibrix.ai/max-scale-up-rate: "2"
     autoscaling.aibrix.ai/max-scale-down-rate: "2"
-    kpa.autoscaling.aibrix.ai/scale-down-delay: "60s"
+    autoscaling.aibrix.ai/scale-down-cooldown-window: "60s"
   namespace: aibrix-system
 spec:
   scaleTargetRef:

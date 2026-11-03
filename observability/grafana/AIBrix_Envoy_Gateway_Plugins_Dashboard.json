@@ -1969,7 +1969,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (model, using_kv_sync) (rate(aibrix_prefix_cache_load_imbalance_total{model=~\"$model\"}[1m]))",
+          "expr": "sum by (model, using_kv_sync) (rate(aibrix_load_imbalance_total{model=~\"$model\"}[1m]))",
           "hide": false,
           "instant": false,
           "legendFormat": "{{model}} kv_sync={{using_kv_sync}}",

@@ -3,8 +3,21 @@ import { normalizeDeploymentStatus } from './deploymentStatus';
 
 export type DeploymentExampleLanguage = 'python' | 'shell';
 
+function trimmed(value?: string): string {
+  return value?.trim() ?? '';
+}
+
 export function canOpenInPlayground(deployment: Deployment): boolean {
-  return normalizeDeploymentStatus(deployment.status) === 'Ready' && deployment.servingName.trim() !== '';
+  return normalizeDeploymentStatus(deployment.status) === 'Ready' && trimmed(deployment.servingName) !== '';
+}
+
+export function deploymentExamplesAvailable(deployment: Deployment): boolean {
+  return trimmed(deployment.servingName) !== '' && trimmed(deployment.inferenceUrl) !== '';
+}
+
+export function playgroundHref(deployment: Pick<Deployment, 'id' | 'servingName'>): string {
+  const selected = trimmed(deployment.id) || trimmed(deployment.servingName);
+  return `/playground?deployment=${encodeURIComponent(selected)}`;
 }
 
 export function formatDeploymentCreatedAt(createdAt: string): string {
@@ -22,9 +35,12 @@ export function deploymentCodeExample(
   deployment: Deployment,
   language: DeploymentExampleLanguage,
 ): string {
-  const servingName = deployment.servingName || '<serving-name>';
+  const servingName = trimmed(deployment.servingName) || '<serving-name>';
+  const url = trimmed(deployment.inferenceUrl);
   if (language === 'shell') {
-    return `curl "$AIBRIX_GATEWAY_URL/v1/chat/completions" \\
+    const target = url || '"$AIBRIX_GATEWAY_URL/v1/chat/completions"';
+    const quotedTarget = url ? `"${url}"` : target;
+    return `curl ${quotedTarget} \\
   -H "Content-Type: application/json" \\
   -d '{
     "model": "${servingName}",
@@ -32,11 +48,15 @@ export function deploymentCodeExample(
   }'`;
   }
 
-  return `import os
-import requests
+  const pythonUrl = url
+    ? `"${url}"`
+    : `f"{os.environ['AIBRIX_GATEWAY_URL']}/v1/chat/completions"`;
+  const imports = url ? 'import requests' : `import os
+import requests`;
+  return `${imports}
 
 response = requests.post(
-    f"{os.environ['AIBRIX_GATEWAY_URL']}/v1/chat/completions",
+    ${pythonUrl},
     json={
         "model": "${servingName}",
         "messages": [{"role": "user", "content": "Hello!"}],

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import argparse
 import asyncio
 import copy
 import json
@@ -38,7 +37,7 @@ from aibrix.batch.client.errors import InferenceError, InferenceErrorCode
 from aibrix.batch.client.sources import NoopEndpointSource
 from aibrix.batch.job_driver.base import BaseJobDriver
 from aibrix.logger import init_logger
-from aibrix.metadata.app import build_app
+from aibrix.metadata.app import build_app, build_app_args
 from aibrix.metadata.setting import settings
 from aibrix.storage import StorageType
 from tests.batch.job_driver.runtime.deployment_backend import (
@@ -478,10 +477,7 @@ def create_test_app(
     settings.STORAGE_TYPE, settings.METASTORE_TYPE = storage_type, metastore_type
     # Create app
     app = build_app(
-        argparse.Namespace(
-            host=None,
-            port=8090,
-            enable_fastapi_docs=False,
+        build_app_args(
             disable_batch_api=False,
             disable_file_api=False,
             enable_k8s_support=enable_k8s_support,

@@ -180,8 +180,166 @@ func TestManagerPodLifecycle(t *testing.T) {
 	removedCount := len(syncIndexer.removedPrefixes)
 	syncIndexer.mu.Unlock()
 
-	if removedCount != 1 {
-		t.Errorf("Expected 1 pod cleanup, got: %d", removedCount)
+	// The IP change purges the previous incarnation's entries, then deletion
+	// purges the current one.
+	if removedCount != 2 {
+		t.Errorf("Expected 2 pod cleanups, got: %d", removedCount)
+	}
+}
+
+// TestManagerPodUpdateModelChangeAndDisablePurgesOldContext checks cleanup
+// when a relabeled pod also disables KV events.
+func TestManagerPodUpdateModelChangeAndDisablePurgesOldContext(t *testing.T) {
+	t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
+
+	var mu sync.Mutex
+	var removed []string
+	indexer := &mockSyncIndexerWithCallbacks{
+		onRemovePrefix: func(_ context.Context, modelName string, loraID int64, podKey string) error {
+			mu.Lock()
+			removed = append(removed, fmt.Sprintf("%s/%d/%s", modelName, loraID, podKey))
+			mu.Unlock()
+			return nil
+		},
+	}
+	manager := kvevent.NewManager(
+		&mockPodProvider{pods: map[string]*kvevent.PodInfo{}},
+		&mockSyncIndexProvider{indexer: indexer},
+	)
+	if err := manager.Start(); err != nil {
+		t.Fatalf("Failed to start manager: %v", err)
+	}
+	defer manager.Stop()
+
+	oldPod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "relabeled",
+			Namespace: "default",
+			Labels: map[string]string{
+				constants.ModelLabelName:       "old-model",
+				constants.KVEventsEnabledLabel: "true",
+			},
+		},
+		Status: v1.PodStatus{Phase: v1.PodRunning, PodIP: "10.0.0.7"},
+	}
+	newPod := oldPod.DeepCopy()
+	newPod.Labels[constants.ModelLabelName] = "new-model"
+	// Keep the test offline: a subscribable pod would start a real ZMQ client.
+	newPod.Labels[constants.KVEventsEnabledLabel] = "false"
+
+	manager.OnPodUpdate(oldPod, newPod)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(removed) != 1 {
+		t.Fatalf("expected one purge of the old context, got %v", removed)
+	}
+	if removed[0] != "old-model/-1/default/relabeled" {
+		t.Errorf("unexpected purge target: %s", removed[0])
+	}
+}
+
+// TestManagerPodUpdatePhaseChangePurgesContext checks that a pod leaving a
+// Running phase drops the prefixes it can no longer report.
+func TestManagerPodUpdatePhaseChangePurgesContext(t *testing.T) {
+	t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
+
+	var mu sync.Mutex
+	purged := 0
+	indexer := &mockSyncIndexerWithCallbacks{
+		onRemovePrefix: func(context.Context, string, int64, string) error {
+			mu.Lock()
+			purged++
+			mu.Unlock()
+			return nil
+		},
+	}
+	manager := kvevent.NewManager(
+		&mockPodProvider{pods: map[string]*kvevent.PodInfo{}},
+		&mockSyncIndexProvider{indexer: indexer},
+	)
+	if err := manager.Start(); err != nil {
+		t.Fatalf("Failed to start manager: %v", err)
+	}
+	defer manager.Stop()
+
+	oldPod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "running-then-pending",
+			Namespace: "default",
+			Labels: map[string]string{
+				constants.ModelLabelName:       "test-model",
+				constants.KVEventsEnabledLabel: "true",
+			},
+		},
+		Status: v1.PodStatus{Phase: v1.PodRunning, PodIP: "10.0.0.8"},
+	}
+	newPod := oldPod.DeepCopy()
+	newPod.Status.Phase = v1.PodPending
+
+	manager.OnPodUpdate(oldPod, newPod)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if purged != 1 {
+		t.Errorf("a phase change must purge the context once, purged %d", purged)
+	}
+}
+
+// TestManagerPodUpdateConditionChangeKeepsContext checks that a readiness
+// condition change does not throw away a Running pod's cached prefixes.
+func TestManagerPodUpdateConditionChangeKeepsContext(t *testing.T) {
+	t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
+
+	var mu sync.Mutex
+	purged := 0
+	indexer := &mockSyncIndexerWithCallbacks{
+		onRemovePrefix: func(context.Context, string, int64, string) error {
+			mu.Lock()
+			purged++
+			mu.Unlock()
+			return nil
+		},
+	}
+	manager := kvevent.NewManager(
+		&mockPodProvider{pods: map[string]*kvevent.PodInfo{}},
+		&mockSyncIndexProvider{indexer: indexer},
+	)
+	if err := manager.Start(); err != nil {
+		t.Fatalf("Failed to start manager: %v", err)
+	}
+	defer manager.Stop()
+
+	oldPod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "condition-only",
+			Namespace: "default",
+			Labels: map[string]string{
+				constants.ModelLabelName:       "test-model",
+				constants.KVEventsEnabledLabel: "true",
+			},
+		},
+		Status: v1.PodStatus{
+			Phase: v1.PodRunning,
+			PodIP: "10.0.0.9",
+			Conditions: []v1.PodCondition{{
+				Type:   v1.PodReady,
+				Status: v1.ConditionTrue,
+			}},
+		},
+	}
+	newPod := oldPod.DeepCopy()
+	newPod.Status.Conditions[0].Status = v1.ConditionFalse
+
+	manager.OnPodUpdate(oldPod, newPod)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if purged != 0 {
+		t.Errorf("a readiness-only change must not purge the context, purged %d", purged)
 	}
 }
 

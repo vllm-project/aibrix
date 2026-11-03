@@ -31,6 +31,7 @@ type PodList interface {
 	// ListByIndex returns a slice of pods that match the given index.
 	ListByIndex(index string) []*v1.Pod
 
-	// ListPortsForPod returns a map of portList that bind with pod, key podname
+	// ListPortsForPod returns the ports each pod serves on, keyed by pod key
+	// (namespace/name, see utils.GeneratePodKey).
 	ListPortsForPod() map[string][]int
 }

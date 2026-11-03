@@ -31,8 +31,11 @@ import (
 )
 
 var (
-	nilPod       = &v1.Pod{}
-	unknownError = errors.New("unknown error")
+	nilPod     = &v1.Pod{}
+	ErrUnknown = errors.New("unknown error")
+	// ErrTargetReplicaInflightExceeded is returned through AdmitTarget when the chosen
+	// target is already at its config profile's requestsInflight cap.
+	ErrTargetReplicaInflightExceeded = errors.New("target replica has reached inflight limit")
 )
 
 const (
@@ -51,9 +54,33 @@ type ResolvedConfigProfile struct {
 	// It takes precedence over the routing-strategy request header, the profile
 	// RoutingStrategy and the ROUTING_ALGORITHM environment variable.
 	LockedRoutingStrategy string
-	RoutingStrategy       string
-	RoutingConfig         json.RawMessage
-	RequestsPerSecond     int64
+	// AuthoritativeRoutingPolicy records that routing diagnostics must be omitted
+	// from the client response. Client routing inputs are cleared before the
+	// resolved profile is stored here.
+	AuthoritativeRoutingPolicy bool
+	RoutingStrategy            string
+	RoutingConfig              json.RawMessage
+	// Routing is RoutingConfig in its typed form, parsed once when this profile
+	// is resolved. Nil when the profile sets no routingConfig or it does not
+	// parse; routingalgorithms.ResolveRoutingOverrides turns it into the
+	// request's concrete overrides.
+	Routing *RoutingConfig
+	// RequestsPerSecond is the per-model request-rate limit enforced by enforceModelRPS,
+	// resolved from the profile's requestsPerSecond or from its requestsPerSecondPerReplica
+	// (which takes precedence and scales it by the model's current routable replica count).
+	// Zero means unset/unlimited.
+	RequestsPerSecond int64
+	// RateWindowSeconds is the window size, in seconds, that RequestsPerSecond is enforced
+	// over. Defaults to a 1s window (0 or 1 both mean "1s") when unset; set above 1 for
+	// sub-1 RPS values expressed as "1 request every N seconds".
+	RateWindowSeconds int64
+	// RequestsInflight is the maximum number of concurrent (in-flight) requests allowed on
+	// a single replica, enforced per pod rather than as an aggregate. Zero means unset.
+	RequestsInflight int64
+	// TTFTThresholdS is the per-model time-to-first-token threshold in seconds, resolved
+	// from the profile's ttftThresholdS. Zero means unset, in which case the response-body
+	// path keeps using the process-wide AIBRIX_TTFT_THRESHOLD_S default.
+	TTFTThresholdS int64
 }
 
 // RoutingAlgorithm defines the routing algorithms
@@ -83,8 +110,20 @@ type PostRouteUpdater interface {
 // It can be extended with more fields as needed in the future.
 type RoutingContext struct {
 	context.Context
-	Algorithm      RoutingAlgorithm
-	Model          string
+	Algorithm RoutingAlgorithm
+	// ResolvedStrategy is the actual multi-strategy composite RouterManager.Select
+	// constructed for this request, including the silent load-balance/least-request-top-k
+	// auto-blend when one was added (see appendLoadBalanceBlend) -- e.g.
+	// "least-kv-cache,load-balance:1,least-request-top-k:1" for a plain "least-kv-cache"
+	// Algorithm. Equal to string(Algorithm) when nothing was blended in, and empty until
+	// Select runs (RouterNotSet requests, or a request that errors before selectTargetPod).
+	// Algorithm itself is never rewritten to this -- headers, Validate(), and error
+	// messages must keep reflecting exactly what the caller asked for.
+	ResolvedStrategy string
+	Model            string
+	// BaseModel is the served base-model name when Model is a LoRA adapter.
+	// Empty for base-model requests.
+	BaseModel      string
 	Engine         string
 	Stream         bool
 	Message        string
@@ -97,10 +136,26 @@ type RoutingContext struct {
 	TraceTerm      int64      // Trace term identifier, available after AddRequestCount call.
 	RoutedTime     time.Time  // Time consumed during routing.
 
+	// PrefixMatchText, when set, replaces Message as the text prefix-matching policies
+	// hash. The gateway sets it when request-level system/instructions or tools
+	// contribute to the prompt before the conversation. Prompt-size estimates keep
+	// using Message. Read it through PrefixText.
+	PrefixMatchText string
+
 	ReqHeaders       map[string]string
 	ReqBody          []byte
 	ReqPath          string
 	ReqConfigProfile string
+	// ModelConfig is the model config JSON that discovery supplied for Model as
+	// a whole (the config field of a local-mode endpoints file), or empty. The
+	// gateway sets it from the cache before it resolves ConfigProfile, and
+	// profile resolution reads it ahead of pod annotations.
+	ModelConfig string
+	// AsyncJobBackendID is the backend-private identifier used for a pinned
+	// asynchronous job request. It is retained only for the lifetime of this
+	// routing context so gateway error processing can replace it with the public
+	// ID in an upstream error body.
+	AsyncJobBackendID string
 
 	PrefillStartTime time.Time // Time when prefill request is started.
 	PrefillEndTime   time.Time // Time consumed during prefill.
@@ -118,18 +173,65 @@ type RoutingContext struct {
 	RespHeaders map[string]string
 
 	// ConfigProfile holds the resolved model config profile for this request.
-	// Set in HandleRequestBody from model.aibrix.ai/config (annotation)
-	// based on config-profile header. Nil when no config is present.
+	// Set in HandleRequestBody from ModelConfig, or else the
+	// model.aibrix.ai/config pod annotation, based on the config-profile
+	// header. Nil when no config is present.
 	ConfigProfile *ResolvedConfigProfile
+
+	// ReplicaInflightAdmitted tells request tracking to skip its Redis increment and keep the
+	// completion decrement. The gateway's replica-inflight admission check (enforceReplicaInflight,
+	// backed by cache.Store.AdmitPodRunningRequest) sets it once it has admitted this request
+	// and this gateway's own +1 was confirmed, or may already be applied, on the target pod's
+	// cross-gateway running-requests counter. Consumers that also increment
+	// that counter (addPodStats) must check this first and skip their own increment, or the
+	// pod's count would be inflated by an extra, never-decremented +1 for this request.
+	ReplicaInflightAdmitted bool
+	// ReplicaInflightChecked records that the replica-inflight admission already ran for this
+	// request, through AdmitTarget, before the router returned its target. The gateway's
+	// post-routing check (enforceReplicaInflight) must then not admit the request a second time.
+	ReplicaInflightChecked bool
+
+	// targetAdmitter is the gateway's replica-inflight admission, installed for routers that
+	// start work on a request's behalf before returning its target. See AdmitTarget.
+	targetAdmitter func(pod *v1.Pod) error
 
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]
 	targetPort   atomic.Int32
 	lastError    atomic.Pointer[error]
-	tokens       []int           // Cache of tokenized prompts
-	predictor    OutputPredictor // OutputPredictor gained from cache
-	statsUpdated int32           // Use to flag if in-memory realtime statistics has been updated for the request.
-	traceAdded   int32           // Use to flag if trace has been added to cache
+
+	// routingOverrides holds the resolved routing overrides of this request's
+	// model config profile. The gateway's routing entry resolves them once per
+	// request so every strategy on the routing path reads the same validated
+	// values. Nil when the profile sets none, and reads then fall back to the
+	// process defaults. Written on the request goroutine before routing starts
+	// and read by that same goroutine, so no atomic is needed here (the PD leg
+	// keeps one for the async prefill and abort paths).
+	routingOverrides *RoutingOverrides
+	// runningRequests holds the running-request counts read during the current routing
+	// decision, shared by every reader in it. Nil outside a decision. See RunningRequests.
+	runningRequests   atomic.Pointer[runningRequestsSnapshot]
+	seededPrefixMatch atomic.Pointer[SeededPrefixMatch]
+	// trustedPolicyAttributes contains request policy inputs populated by trusted
+	// in-process producers. External routers must still apply their operator
+	// allowlist before serializing any entry.
+	trustedPolicyAttributes map[string]string
+	tokens                  []int           // Cache of tokenized prompts
+	prefixTokens            []byte          // Cache of the prefix-cache router's tokens, see PrefixTokens
+	predictor               OutputPredictor // OutputPredictor gained from cache
+	statsUpdated            int32           // Use to flag if in-memory realtime statistics has been updated for the request.
+	statsMu                 sync.Mutex      // Held by WithStatsUpdate; reused across pool tenants, not reset.
+	traceAdded              int32           // Use to flag if trace has been added to cache
+
+	predictedOutputTokens int
+	hasOutputPrediction   bool
+
+	// pdLeg holds the prefill/decode leg state of the current incarnation of
+	// this request. It is a separate heap object, replaced wholesale on reset,
+	// because the async prefill leg outlives the client stream and must not
+	// report onto whichever request next takes this pooled object. See
+	// PDLegState.
+	pdLeg atomic.Pointer[PDLegState]
 
 	// Fields for unit tests
 	debugDelay time.Duration
@@ -153,10 +255,13 @@ func NewRoutingContext(ctx context.Context, algorithms RoutingAlgorithm, model, 
 	return request
 }
 
-// SetOutputPreditor enables RoutingContext to use existing OutputPredictor to predict output length.
-func (r *RoutingContext) SetOutputPreditor(predictor OutputPredictor) (old OutputPredictor) {
+// SetOutputPredictor enables RoutingContext to use existing OutputPredictor to predict output length.
+// Attaching a predictor starts a new prediction for subsequent feature reads.
+func (r *RoutingContext) SetOutputPredictor(predictor OutputPredictor) (old OutputPredictor) {
 	old = r.predictor
 	r.predictor = predictor
+	r.predictedOutputTokens = 0
+	r.hasOutputPrediction = false
 	return
 }
 
@@ -171,6 +276,37 @@ func (r *RoutingContext) Elapsed(currentTime time.Time) time.Duration {
 	return currentTime.Sub(r.RequestTime)
 }
 
+// PrefixText returns the text prefix-matching policies should hash: PrefixMatchText
+// when set, Message otherwise.
+func (r *RoutingContext) PrefixText() string {
+	if r.PrefixMatchText != "" {
+		return r.PrefixMatchText
+	}
+	return r.Message
+}
+
+// SetTrustedPolicyAttribute records a policy attribute produced by trusted
+// Gateway code. It is intentionally separate from ReqHeaders so external
+// routing can never treat arbitrary client headers as trusted policy input.
+func (r *RoutingContext) SetTrustedPolicyAttribute(key, value string) {
+	if r.trustedPolicyAttributes == nil {
+		r.trustedPolicyAttributes = make(map[string]string)
+	}
+	r.trustedPolicyAttributes[key] = value
+}
+
+// TrustedPolicyAttributes returns a defensive copy containing only allowlisted
+// names. An empty result is returned when no trusted producer populated a name.
+func (r *RoutingContext) TrustedPolicyAttributes(allowlist []string) map[string]string {
+	attributes := make(map[string]string)
+	for _, key := range allowlist {
+		if value, ok := r.trustedPolicyAttributes[key]; ok {
+			attributes[key] = value
+		}
+	}
+	return attributes
+}
+
 // PromptTokens returns the tokenized prompt of the request.
 func (r *RoutingContext) PromptTokens() ([]int, error) {
 	if r.tokens == nil {
@@ -183,6 +319,19 @@ func (r *RoutingContext) PromptTokens() ([]int, error) {
 	return r.tokens, nil
 }
 
+// PrefixTokens returns the tokens stored by SetPrefixTokens. A blended route
+// scores, routes and indexes one request through the prefix-cache router, and
+// every step needs the same tokens.
+func (r *RoutingContext) PrefixTokens() []byte {
+	return r.prefixTokens
+}
+
+func (r *RoutingContext) SetPrefixTokens(tokens []byte) {
+	// A new tokenization invalidates any match computed from the previous tokens.
+	r.SetSeededPrefixMatch(nil)
+	r.prefixTokens = tokens
+}
+
 // PromptLength returns the length of the prompt of the request.
 func (r *RoutingContext) PromptLength() (int, error) {
 	tokens, err := r.PromptTokens()
@@ -192,7 +341,7 @@ func (r *RoutingContext) PromptLength() (int, error) {
 	return len(tokens), nil
 }
 
-// TokenLength returns the predicted output token length.
+// TokenLength returns one sampled output length until the predictor or request is reset.
 func (r *RoutingContext) TokenLength() (int, error) {
 	promptLen, err := r.PromptLength()
 	if err != nil {
@@ -203,7 +352,13 @@ func (r *RoutingContext) TokenLength() (int, error) {
 		return 0, fmt.Errorf("output predictor not set")
 	}
 
-	return r.predictor.Predict(promptLen), nil
+	// Keep the sampled workload stable while the queue and candidate profiles
+	// evaluate this request. Resampling would compare different workloads.
+	if !r.hasOutputPrediction {
+		r.predictedOutputTokens = r.predictor.Predict(promptLen)
+		r.hasOutputPrediction = true
+	}
+	return r.predictedOutputTokens, nil
 }
 
 // Features returns the features corresponding to the request.
@@ -222,6 +377,24 @@ func (r *RoutingContext) Features() (RequestFeatures, error) {
 	return RequestFeatures{float64(outputLen), float64(promptLen)}, nil
 }
 
+// SetTargetAdmitter installs the gateway's replica-inflight admission, which AdmitTarget runs.
+func (r *RoutingContext) SetTargetAdmitter(admit func(pod *v1.Pod) error) {
+	r.targetAdmitter = admit
+}
+
+// AdmitTarget admits pod as this request's target against the gateway's per-replica
+// in-flight cap, and returns nil when no admission is installed. A router that starts work
+// or records state on the request's behalf before it returns (the PD prefill leg, a
+// prefix-cache index entry) calls it as soon as the target is chosen, so a request the
+// target has no room for is rejected before any of that happens. The error wraps
+// ErrTargetReplicaInflightExceeded when the target is full.
+func (r *RoutingContext) AdmitTarget(pod *v1.Pod) error {
+	if r.targetAdmitter == nil {
+		return nil
+	}
+	return r.targetAdmitter(pod)
+}
+
 // SetTargetPod sets the target pod of the routing context. All routers call this to set the target pod.
 func (r *RoutingContext) SetTargetPod(pod *v1.Pod) {
 	if r.targetPod.CompareAndSwap(nilPod, pod) { // Use CompareAndSwap to ensure close channel only once
@@ -234,7 +407,7 @@ func (r *RoutingContext) SetTargetPod(pod *v1.Pod) {
 // Do not call this function from synchronize routers. Asynchronize routers call this to set an error.
 func (r *RoutingContext) SetError(err error) {
 	if err == nil {
-		r.lastError.Store(&unknownError)
+		r.lastError.Store(&ErrUnknown)
 	} else {
 		r.lastError.Store(&err)
 	}
@@ -248,8 +421,8 @@ func (r *RoutingContext) TargetPod() *v1.Pod {
 	if targetPod == nilPod {
 		r.debugWait()
 		select {
-		case <-r.Context.Done():
-			r.SetError(r.Context.Err())
+		case <-r.Done():
+			r.SetError(r.Err())
 		case <-r.targetPodSet: // No blocking if targetPod is set after last "targetPod == nil"
 		}
 		targetPod = r.targetPod.Load()
@@ -305,6 +478,14 @@ func (r *RoutingContext) CanAddStats() bool {
 	return atomic.CompareAndSwapInt32(&r.statsUpdated, statusInitial, statusAdded)
 }
 
+// WithStatsUpdate runs fn while holding the request's statistics lock, so a caller that
+// loses CanAddStats inside fn returns only after the winner's update has finished.
+func (r *RoutingContext) WithStatsUpdate(fn func()) {
+	r.statsMu.Lock()
+	defer r.statsMu.Unlock()
+	fn()
+}
+
 func (r *RoutingContext) CanDoneStats() bool {
 	return atomic.CompareAndSwapInt32(&r.statsUpdated, statusAdded, statusDone)
 }
@@ -348,6 +529,27 @@ func (r *RoutingContext) targetAddressWithPort(podIP string, port int) string {
 	return fmt.Sprintf("%v:%v", podIP, port)
 }
 
+// MetricModel returns the model name to emit on gateway metrics.
+// For a LoRA request this is the attached base model; otherwise the requested name.
+func (r *RoutingContext) MetricModel() string {
+	if r == nil {
+		return ""
+	}
+	if r.BaseModel != "" {
+		return r.BaseModel
+	}
+	return r.Model
+}
+
+// MetricLoraAdapter returns the adapter name for gateway metrics.
+// Empty for base-model requests.
+func (r *RoutingContext) MetricLoraAdapter() string {
+	if r == nil || r.BaseModel == "" || r.BaseModel == r.Model {
+		return ""
+	}
+	return r.Model
+}
+
 func (r *RoutingContext) getError() (err error) {
 	errAddr := r.lastError.Load()
 	if errAddr != nil {
@@ -359,10 +561,15 @@ func (r *RoutingContext) getError() (err error) {
 func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, model, message, requestID, user string) {
 	r.Context = ctx
 	r.Algorithm = algorithms
+	// Select sets this only on success, so a pooled context must not hand the previous
+	// request's composite to one that never reaches Select.
+	r.ResolvedStrategy = ""
 	r.Model = model
+	r.BaseModel = ""
 	r.Engine = ""
 	r.Stream = false
 	r.Message = message
+	r.PrefixMatchText = ""
 	r.RequestID = requestID
 	if user != "" {
 		r.User = &user
@@ -377,7 +584,9 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.ReqHeaders = map[string]string{}
 	r.ReqPath = ""
 	r.ReqConfigProfile = ""
+	r.ModelConfig = ""
 	r.ReqBody = []byte{}
+	r.AsyncJobBackendID = ""
 	r.PrefillStartTime = time.Time{}
 	r.PrefillEndTime = time.Time{}
 	r.FirstTokenTime = time.Time{}
@@ -386,15 +595,40 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.Span = nil
 	r.RespHeaders = map[string]string{}
 	r.ConfigProfile = nil
+	// The profile is gone, so the overrides derived from it must go too: a
+	// pooled context handed to the next request would otherwise steer models
+	// the new profile never configured (ResolveRoutingOverrides sets them once
+	// per request, and a request without a profile leaves them unset).
+	r.ClearRoutingOverrides()
+	r.StopRunningRequestsSnapshot()
+	r.SetSeededPrefixMatch(nil)
+	clear(r.trustedPolicyAttributes)
+	r.ReplicaInflightAdmitted = false
+	r.ReplicaInflightChecked = false
+	r.targetAdmitter = nil
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
 	r.targetPort.Store(0)
 	r.lastError.Store(nil)
 	// debugDelay will be reset by tests.
 	r.tokens = nil
+	r.prefixTokens = nil
 	r.predictor = nil
+	r.predictedOutputTokens = 0
+	r.hasOutputPrediction = false
 	r.statsUpdated = statusInitial
 	r.traceAdded = statusInitial
+	// A fresh leg per incarnation: any prefill goroutine still holding the
+	// previous one can then only mutate an object nothing reads any more.
+	//
+	// The retired leg is deliberately not cancelled here. Its decode abort is
+	// exactly the work that has to outlive the client stream, and this object
+	// can be handed to a new request microseconds after that stream ended, so
+	// cancelling on reuse would routinely kill the abort that fail-fast exists
+	// to send. It stops on its own: both the abort POST and the retry delay
+	// are bounded, and the goroutine releases the leg's abort context when it
+	// exits (PDLegState.FinishDecodeAbort).
+	r.pdLeg.Store(newPDLegState())
 }
 
 func (r *RoutingContext) debugWait() {

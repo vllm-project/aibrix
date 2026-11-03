@@ -54,6 +54,7 @@ gatewayPlugin:
     image:
       repository: busybox
       tag: stable
+      imagePullPolicy: IfNotPresent
   container:
     image:
       repository: aibrix/gateway-plugins
@@ -85,7 +86,7 @@ gatewayPlugin:
       AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"
       AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE: "character"
       AIBRIX_PREFIX_CACHE_BLOCK_SIZE: "128"
-      AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT: "16"
+      AIBRIX_LOAD_BALANCE_IMBALANCE_MIN_GAP: "16"
       AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR: "2"
       AIBRIX_PREFILL_REQUEST_TIMEOUT: "60"
       AIBRIX_STATESYNC_ENABLED: "false"
@@ -131,6 +132,7 @@ gpuOptimizer:
     image:
       repository: aibrix/metadata-service
       tag: nightly
+      imagePullPolicy: IfNotPresent
     resources:
       limits:
         cpu: 500m
@@ -177,6 +179,12 @@ gateway:
     ports:
       http: 10080
   envoyProxy:
+    accessLog:
+      # Add request/response timing and ext_proc fields to the default JSON log.
+      # Applies to Envoy Gateway-managed proxies; uses Envoy v1.35+ ext_proc fields.
+      enabled: false
+      # Empty derives the filter name from the release namespace and policy name.
+      extProcFilterName: ""
     replicas: 1
     imagePullSecrets: []
     tolerations: []
@@ -217,6 +225,16 @@ gateway:
           requests:
             cpu: 10m
             memory: 32Mi
+    # Optional Envoy Service overrides; empty preserves Envoy Gateway defaults.
+    service: {}
+    # service:
+    #   type: NodePort
+    #   externalTrafficPolicy: Cluster
+    #   nodePorts:
+    #     http: 32080
+    #     https: 32443
+    # Omit either NodePort to let Kubernetes allocate it for that listener.
+    # Fixed NodePorts apply only to enabled listeners and cannot coexist with patch.
   clientTrafficPolicy:
     connection:
       bufferLimit: 4194304  # 4MiB — keep in sync with AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES
@@ -251,6 +269,8 @@ gateway:
       maxRequests: 1024
       # The maximum number of pending requests to the original destination cluster.
       maxPendingRequests: 1024
+      # If True, expose the number of resources remaining until the circuit breakers open
+      trackRemaining: true
     preserveExternalRequestID: false
 
 metadata:
@@ -265,6 +285,7 @@ metadata:
       image:
         repository: busybox
         tag: stable
+        imagePullPolicy: IfNotPresent
     container:
       image:
         repository: aibrix/metadata-service
@@ -291,6 +312,7 @@ metadata:
       image:
         repository: redis
         tag: "7.4"
+        imagePullPolicy: IfNotPresent
       resources:
         requests:
           cpu: 100m

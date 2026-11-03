@@ -22,19 +22,228 @@ core functionality like put/get operations, range reads, multipart upload APIs, 
 import asyncio
 import io
 import os
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Union
+from unittest.mock import Mock
 
 import pytest
 
 from aibrix.storage.base import BaseStorage
+from aibrix.storage.s3 import S3Storage
+from aibrix.storage.tos import TOSStorage
 from aibrix.storage.types import StorageListOrdering
+from tests.storage.conftest import NativeMultipartTestStorage
+
+
+class TestBaseStorageMultipartCleanup:
+    @pytest.mark.asyncio
+    async def test_collect_multipart_upload_objects_stops_on_repeated_token(
+        self, monkeypatch
+    ):
+        storage = NativeMultipartTestStorage()
+        prefix = ".multipart/upload/"
+        tokens: list[str | None] = []
+
+        async def list_objects(prefix, *, continuation_token=None):
+            tokens.append(continuation_token)
+            if len(tokens) > 3:
+                raise AssertionError("Multipart listing exceeded call limit")
+            return [f"{prefix}part_{len(tokens)}"], "repeated-token"
+
+        monkeypatch.setattr(storage, "list_objects", list_objects)
+        objects = ["already-collected"]
+
+        await storage._collect_multipart_upload_objects(prefix, objects)
+
+        assert tokens == [None, "repeated-token"]
+        assert objects == [
+            "already-collected",
+            f"{prefix}part_1",
+            f"{prefix}part_2",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_collect_multipart_upload_objects_continues_past_empty_page(
+        self, monkeypatch
+    ):
+        storage = NativeMultipartTestStorage()
+        prefix = ".multipart/upload/"
+        pages = iter(
+            [
+                ([f"{prefix}part_1"], "token-1"),
+                ([], "token-2"),
+                ([f"{prefix}part_2"], None),
+            ]
+        )
+        tokens: list[str | None] = []
+
+        async def list_objects(prefix, *, continuation_token=None):
+            tokens.append(continuation_token)
+            return next(pages)
+
+        monkeypatch.setattr(storage, "list_objects", list_objects)
+        objects = ["already-collected"]
+
+        await storage._collect_multipart_upload_objects(prefix, objects)
+
+        assert tokens == [None, "token-1", "token-2"]
+        assert objects == [
+            "already-collected",
+            f"{prefix}part_1",
+            f"{prefix}part_2",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_legacy_abort_multipart_upload_cleans_all_listing_pages(self):
+        storage = NativeMultipartTestStorage()
+        key = "test/legacy_paginated_abort.txt"
+        upload_id = await storage.create_multipart_upload(key, small_parts=True)
+        for part_number in range(1, 1206):
+            await storage.upload_part(key, upload_id, part_number, b"part")
+        await storage.put_object("unrelated", b"keep")
+        other_part_key = storage._multipart_upload_part_key("other-upload", 1)
+        await storage.put_object(other_part_key, b"keep part")
+
+        await BaseStorage.abort_multipart_upload(storage, key, upload_id)
+
+        assert storage.objects == {"unrelated": b"keep", other_part_key: b"keep part"}
+        multipart_prefix = storage._multipart_upload_key(upload_id, "")
+        assert storage.list_objects_calls == [multipart_prefix, multipart_prefix]
+        assert storage.native_abort_calls == []
+
+
+@pytest.fixture
+def non_utc_timezone():
+    if not hasattr(time, "tzset"):
+        pytest.skip("time.tzset is unavailable")
+    previous = os.environ.get("TZ")
+    os.environ["TZ"] = "<-07>7"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+
+class TestStorageTimestamps:
+    @pytest.mark.asyncio
+    async def test_local_last_modified_matches_mtime(
+        self, local_storage, non_utc_timezone
+    ):
+        key = "test/timestamp.txt"
+        await local_storage.put_object(key, b"payload")
+
+        metadata = await local_storage.head_object(key)
+        mtime = local_storage._get_full_path(key).stat().st_mtime
+        assert metadata.last_modified == datetime.fromtimestamp(mtime, timezone.utc)
+        assert metadata.last_modified.tzinfo == timezone.utc
+
+        sidecar = local_storage._read_json_file(local_storage._get_metadata_path(key))
+        assert sidecar["last_modified"].endswith("+00:00")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reader_tz,legacy_iso",
+        [
+            ("<-07>7", "2026-06-15T11:30:00"),
+            # 02:30 does not exist on this spring-forward day.
+            ("EST5EDT,M3.2.0/2,M11.1.0/2", "2026-03-08T02:30:00"),
+        ],
+    )
+    async def test_local_legacy_last_modified_preserves_epoch(
+        self, local_storage, non_utc_timezone, reader_tz, legacy_iso
+    ):
+        os.environ["TZ"] = reader_tz
+        time.tzset()
+        key = "test/legacy.txt"
+        legacy = datetime.fromisoformat(legacy_iso)
+        sidecar_path = local_storage._get_metadata_path(key)
+        sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+        local_storage._write_json_file(
+            sidecar_path,
+            {"content_length": 7, "last_modified": legacy.isoformat()},
+        )
+        original = sidecar_path.read_bytes()
+
+        metadata = await local_storage.head_object(key)
+        assert metadata.last_modified.timestamp() == legacy.timestamp()
+        assert metadata.last_modified.tzinfo == timezone.utc
+        assert sidecar_path.read_bytes() == original
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("backend", [S3Storage, TOSStorage])
+    @pytest.mark.parametrize("timestamp_kind", ["utc", "offset", "naive", "missing"])
+    async def test_cloud_last_modified_preserves_instant(
+        self, backend, timestamp_kind, non_utc_timezone
+    ):
+        instant = datetime(2026, 6, 15, 18, 30, tzinfo=timezone.utc)
+        sdk_value = {
+            "utc": instant,
+            "offset": instant.astimezone(timezone(timedelta(hours=5, minutes=30))),
+            "naive": instant.replace(tzinfo=None),
+            "missing": None,
+        }[timestamp_kind]
+        storage = object.__new__(backend)
+        storage.bucket_name = "bucket"
+        storage.client = Mock()
+        if backend is S3Storage:
+            storage.client.head_object.return_value = {
+                "ContentLength": 7,
+                "ETag": '"etag"',
+                "LastModified": sdk_value,
+            }
+        else:
+            storage.client.head_object.return_value = SimpleNamespace(
+                content_length=7, etag='"etag"', last_modified=sdk_value
+            )
+
+        metadata = await storage.head_object("file-timestamp")
+        if sdk_value is None:
+            assert metadata.last_modified is None
+        else:
+            assert metadata.last_modified == instant
+            assert metadata.last_modified.tzinfo == timezone.utc
 
 
 def _ordered_keys_for_backend(storage: BaseStorage, keys: list[str]) -> list[str]:
     if storage.get_list_ordering() == StorageListOrdering.CREATED_AT_DESC:
         return list(reversed(keys))
     return sorted(keys)
+
+
+async def _list_all_objects_with_prefix(storage: BaseStorage, prefix: str) -> list[str]:
+    objects: list[str] = []
+    continuation_token: str | None = None
+    while True:
+        page, next_token = await storage.list_objects(
+            prefix, continuation_token=continuation_token
+        )
+        objects.extend(page)
+        if not next_token or next_token == continuation_token:
+            return objects
+        continuation_token = next_token
+
+
+async def _upload_small_parts(
+    storage: BaseStorage, key: str, upload_id: str, part_count: int
+) -> None:
+    upload_concurrency = max(1, storage.config.max_session_concurrency)
+    upload_semaphore = asyncio.Semaphore(upload_concurrency)
+
+    async def upload_part(part_number: int) -> None:
+        async with upload_semaphore:
+            await storage.upload_part(key, upload_id, part_number, b"test data")
+
+    await asyncio.gather(
+        *(upload_part(part_number) for part_number in range(1, part_count + 1))
+    )
 
 
 class TestStorageFunctionality:
@@ -665,9 +874,12 @@ class TestStorageFunctionality:
         await storage.delete_object(key)
 
     @pytest.mark.asyncio
-    async def test_abort_multipart_upload(self, storage: BaseStorage):
-        """Test aborting a multipart upload."""
-        key = "test/abort_multipart.txt"
+    async def test_native_abort_multipart_upload(self, storage: BaseStorage):
+        """Test aborting a native multipart upload."""
+        if not storage.is_native_multipart_supported():
+            pytest.skip("Native multipart upload is not supported")
+
+        key = "test/native_abort_multipart.txt"
 
         # Create multipart upload
         upload_id = await storage.create_multipart_upload(key)
@@ -680,6 +892,38 @@ class TestStorageFunctionality:
 
         # Verify the file was not created
         assert not await storage.object_exists(key)
+
+    @pytest.mark.asyncio
+    async def test_small_parts_abort_multipart_upload_cleans_staged_files(
+        self, storage: BaseStorage
+    ):
+        """Test aborting a small-parts upload removes every staged object."""
+        key = "test/small_abort_multipart.txt"
+        upload_id = await storage.create_multipart_upload(key, small_parts=True)
+        multipart_prefix = storage._multipart_upload_key(upload_id, "")
+
+        try:
+            await _upload_small_parts(storage, key, upload_id, part_count=1001)
+
+            staged_objects = await _list_all_objects_with_prefix(
+                storage, multipart_prefix
+            )
+            assert len(staged_objects) > 1000
+
+            await storage.abort_multipart_upload(key, upload_id)
+
+            remaining_objects = await _list_all_objects_with_prefix(
+                storage, multipart_prefix
+            )
+            assert remaining_objects == []
+            assert not await storage.object_exists(key)
+        finally:
+            remaining_objects = await _list_all_objects_with_prefix(
+                storage, multipart_prefix
+            )
+            for obj_key in remaining_objects:
+                await storage.delete_object(obj_key)
+            await storage.delete_object(storage._multipart_upload_key(upload_id))
 
     @pytest.mark.asyncio
     async def test_multipart_upload_integration(self, storage: BaseStorage):

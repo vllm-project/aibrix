@@ -27,6 +27,11 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// playgroundRoutingStrategyHeader is passed through to the gateway. A model
+// served by a ModelClaim has no HTTPRoute, so the gateway only routes a
+// request for it when the request names a routing strategy.
+const playgroundRoutingStrategyHeader = "routing-strategy"
+
 // PlaygroundHandler proxies chat completion requests to the AIBrix gateway as SSE.
 type PlaygroundHandler struct {
 	gatewayEndpoint string
@@ -97,6 +102,9 @@ func (h *PlaygroundHandler) HandleChatCompletion(w http.ResponseWriter, r *http.
 	if auth := r.Header.Get("Authorization"); auth != "" {
 		proxyReq.Header.Set("Authorization", auth)
 	}
+	if strategy := strings.TrimSpace(r.Header.Get(playgroundRoutingStrategyHeader)); strategy != "" {
+		proxyReq.Header.Set(playgroundRoutingStrategyHeader, strategy)
+	}
 
 	resp, err := h.httpClient.Do(proxyReq)
 	if err != nil {
@@ -108,6 +116,10 @@ func (h *PlaygroundHandler) HandleChatCompletion(w http.ResponseWriter, r *http.
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		if contentType := resp.Header.Get("Content-Type"); contentType != "" {
 			w.Header().Set("Content-Type", contentType)
+		}
+		// A sleeping ModelClaim answers 503 with Retry-After while it wakes.
+		if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
+			w.Header().Set("Retry-After", retryAfter)
 		}
 		w.WriteHeader(resp.StatusCode)
 		if _, copyErr := io.Copy(w, resp.Body); copyErr != nil {

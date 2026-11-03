@@ -3,6 +3,8 @@
 # For the full list of built-in configuration values, see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
+import os
+
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
@@ -30,7 +32,25 @@ extensions = [
 ]
 
 templates_path = ['_templates']
-exclude_patterns = []
+exclude_patterns = ['locale']
+
+# -- Internationalization ----------------------------------------------------
+# https://www.sphinx-doc.org/en/master/usage/advanced/intl.html
+locale_dirs = ['locale/']
+gettext_compact = False
+
+_EN_LANGUAGE = {'id': 'en', 'slug': 'en', 'label': 'English'}
+_ZH_LANGUAGE = {'id': 'zh_CN', 'slug': 'zh-cn', 'label': '中文'}
+
+
+def _is_zh_language(language):
+    return (language or '').replace('-', '_').lower() in ('zh_cn', 'zh')
+
+
+html_context = {
+    'docs_hosted': os.environ.get('READTHEDOCS') == 'True',
+    'docs_languages': [_EN_LANGUAGE, _ZH_LANGUAGE],
+}
 
 # Exclude the prompt "$" when copying code
 copybutton_prompt_text = r"\$ "
@@ -44,6 +64,8 @@ html_title = project
 html_theme = 'sphinx_book_theme'
 html_logo = 'assets/logos/aibrix-logo.jpeg'
 html_static_path = ['_static']
+html_css_files = ['language-switcher.css']
+html_js_files = ['language-switcher.js']
 html_theme_options = {
     # repository level setting
     'repository_url': 'https://github.com/vllm-project/aibrix',
@@ -65,6 +87,7 @@ html_theme_options = {
     ],
     'navigation_depth': 3,
     'primary_sidebar_end': [],
+    'navbar_end': ['language-switcher', 'theme-switcher', 'navbar-icon-links'],
 
     # article
 
@@ -80,3 +103,16 @@ intersphinx_mapping = {
     "pillow": ("https://pillow.readthedocs.io/en/stable", None),
     "psutil": ("https://psutil.readthedocs.io/en/stable", None),
 }
+
+
+def setup(app):
+    def on_config(app, config):
+        if _is_zh_language(config.language):
+            config.language = 'zh_CN'
+            config.html_search_language = 'zh'
+        elif not config.language:
+            config.language = 'en'
+            config.html_search_language = 'en'
+        config.html_context['docs_language'] = config.language
+
+    app.connect('config-inited', on_config)

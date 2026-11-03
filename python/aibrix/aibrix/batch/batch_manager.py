@@ -454,7 +454,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
         # Keep cancel initiation on the live in-memory job/driver path.
         # If we later decide to seed this from persisted state again, we must
         # re-check the reloaded status before applying cancellation.
-        job_cancelled = self._build_cancelled_job_update(job)
+        job_cancelled = self._build_cancelled_job_update(
+            job, has_live_driver=job_driver is not None
+        )
         cancelling_at = job_cancelled.status.cancelling_at
         assert cancelling_at is not None
 
@@ -631,7 +633,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 # Leave job_updated_handler to update job location in queues
             except Exception as e:
                 logger.error("Job execution failed", job_id=job_id, exc_info=True)  # type: ignore[call-arg]
-                error = ensure_batch_job_error(e, BatchJobErrorCode.INFERENCE_FAILED)
+                error = ensure_batch_job_error(
+                    e, BatchJobErrorCode.INFERENCE_FAILED, job=job
+                )
                 await self.mark_job_failed(
                     job_id,
                     error,
@@ -639,6 +643,32 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 # No need to stop job because only update_job_ready will start job.
 
         return True
+
+    async def _finish_recovered_expired_job(self, job_id: str) -> None:
+        """Finish an expired in-progress job that has no driver and no execution.
+
+        expire_job leaves an in-progress job to its live driver, and only reruns
+        orphan cleanup when durable execution metadata exists. A recovered job
+        with no execution metadata has neither, so it would stay in-progress
+        with the expired condition forever.
+        """
+        job = self._in_progress_jobs.get(job_id)
+        if (
+            job is None
+            or job.status.state != BatchJobState.IN_PROGRESS
+            or job.status.execution is not None
+            or getattr(job, "job_driver", None) is not None
+        ):
+            return
+        cleanup_driver = create_job_driver(
+            self._context,
+            self,
+            self._job_entity_manager,
+            job,
+            self._endpoint_source,
+        )
+        await cleanup_driver.cleanup(job)
+        logger.info("Recovered expired job finished", job_id=job_id)  # type: ignore[call-arg]
 
     async def job_updated_handler(self, old_job: BatchJob, new_job: BatchJob) -> bool:
         """
@@ -664,13 +694,27 @@ class BatchManager(RunningJobs, SchedulableJobs):
             # Load cache job, possibily with local metainfo.
             old_job_in_category = old_category.get(job_id)
             if old_job_in_category is None:
-                logger.warning(
-                    "Job is not in old category, ignore updating",
-                    job_id=job_id,
-                    old_category=old_name,
-                    new_category=new_name,
-                )  # type: ignore[call-arg]
-                return False
+                if job_id in self._pending_jobs:
+                    old_job = self._pending_jobs[job_id]
+                    old_category, old_name = self._pending_jobs, "_pending_jobs"
+                    old_job_in_category = old_job
+                elif job_id in self._in_progress_jobs:
+                    old_job = self._in_progress_jobs[job_id]
+                    old_category, old_name = self._in_progress_jobs, "_in_progress_jobs"
+                    old_job_in_category = old_job
+                elif job_id in self._done_jobs:
+                    old_job = self._done_jobs[job_id]
+                    old_category, old_name = self._done_jobs, "_done_jobs"
+                    old_job_in_category = old_job
+
+                if old_job_in_category is None:
+                    logger.warning(
+                        "Job is not in old category, ignore updating",
+                        job_id=job_id,
+                        old_category=old_name,
+                        new_category=new_name,
+                    )  # type: ignore[call-arg]
+                    return False
             old_job = old_job_in_category
             was_finished = old_job.status.finished
             had_in_progress_at = old_job.status.in_progress_at is not None
@@ -773,7 +817,11 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 BatchJobState.CANCELLING,
                 BatchJobState.FINALIZING,
             ):
-                job_cancelled = self._build_cancelled_job_update(in_progress_job)
+                # The driver was already terminated with the entity manager's job above;
+                # entity deletion keeps its immediate finalization.
+                job_cancelled = self._build_cancelled_job_update(
+                    in_progress_job, has_live_driver=False
+                )
                 await self.job_updated_handler(in_progress_job, job_cancelled)
             return True
 
@@ -914,7 +962,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
                         meta_data.status = reloaded_job.status  # Update status
         except Exception as e:
             logger.error("Job validation failed", job_id=job_id, exc_info=True)  # type: ignore[call-arg]
-            error = ensure_batch_job_error(e, BatchJobErrorCode.VALIDATION_ERROR)
+            error = ensure_batch_job_error(
+                e, BatchJobErrorCode.VALIDATION_ERROR, job_id=job_id
+            )
             await self.mark_job_failed(
                 job_id,
                 error,
@@ -934,6 +984,16 @@ class BatchManager(RunningJobs, SchedulableJobs):
         return str(job.spec.endpoint)
 
     async def mark_job_validated(self, job_id: str, status: BatchJobStatus) -> BatchJob:
+        current_job = await self.get_job(job_id)
+        if current_job is not None and (
+            current_job.status.state
+            in (BatchJobState.CANCELLING, BatchJobState.FINALIZING)
+            or current_job.status.finished
+        ):
+            # Validation may finish after cancellation or expiry; keep the current
+            # lifecycle state. The validated request count is not published, so a
+            # job cancelled during validation keeps request_counts.total at 0.
+            return current_job
         meta_data = await self._meta_from_in_progress_job(job_id)
         validated = meta_data.copy(status)
         if validated.status.state == BatchJobState.VALIDATING:
@@ -1196,6 +1256,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
             old_job.status.state == BatchJobState.IN_PROGRESS
             and old_job.status.check_condition(ConditionType.EXPIRED)
         ):
+            # A driverless job without execution metadata has nobody else to
+            # finish it, so each pass retries a failed finish.
+            await self._finish_recovered_expired_job(job_id)
             return True
 
         if old_job.status.state == BatchJobState.FINALIZING:
@@ -1250,6 +1313,8 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 "Expired job cleaned orphaned execution",
                 job_id=job_id,
             )  # type: ignore[call-arg]
+        else:
+            await self._finish_recovered_expired_job(job_id)
 
         logger.info("Job expired", job_id=job_id)  # type: ignore[call-arg]
         return True
@@ -1349,7 +1414,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
         else:
             return self._in_progress_jobs, "_in_progress_jobs"
 
-    def _build_cancelled_job_update(self, job: BatchJob) -> BatchJob:
+    def _build_cancelled_job_update(
+        self, job: BatchJob, *, has_live_driver: bool
+    ) -> BatchJob:
         cancelling_at = datetime.now(timezone.utc)
         job_cancelled = job.copy()
         job_cancelled.status.cancelling_at = cancelling_at
@@ -1360,7 +1427,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 lastTransitionTime=cancelling_at,
             )
         )
-        if job.status.state in (BatchJobState.CREATED, BatchJobState.VALIDATING):
+        if job.status.state == BatchJobState.CREATED or (
+            job.status.state == BatchJobState.VALIDATING and not has_live_driver
+        ):
             job_cancelled.status.state = BatchJobState.FINALIZED
             job_cancelled.status.finalized_at = cancelling_at
             job_cancelled.status.cancelled_at = cancelling_at

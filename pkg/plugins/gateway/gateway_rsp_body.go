@@ -34,17 +34,32 @@ import (
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 const (
 	defaultTTFTThreshold = 1
+	// maxStreamBufferSize bounds the trailing partial SSE line carried over between
+	// HandleResponseBody calls, so a malformed or malicious upstream that never emits
+	// a newline cannot grow streamBuffers without bound.
+	maxStreamBufferSize = 1024 * 1024 // 1MB
 )
 
 var (
 	ttftThreshold = time.Duration(utils.LoadEnvInt("AIBRIX_TTFT_THRESHOLD_S", defaultTTFTThreshold)) * time.Second
 )
+
+// effectiveTTFTThreshold returns the first-token delay threshold for this request:
+// the model config profile's ttftThresholdS when set, otherwise the process-wide
+// AIBRIX_TTFT_THRESHOLD_S default.
+func effectiveTTFTThreshold(routingCtx *types.RoutingContext) time.Duration {
+	if routingCtx != nil && routingCtx.ConfigProfile != nil && routingCtx.ConfigProfile.TTFTThresholdS > 0 {
+		return time.Duration(routingCtx.ConfigProfile.TTFTThresholdS) * time.Second
+	}
+	return ttftThreshold
+}
 
 type OpenAIResponse struct {
 	Model string `json:"model"`
@@ -74,19 +89,116 @@ type TokenUsage struct {
 	TotalTokens      int64
 }
 
-func processStreamingResponse(requestID string, bodyBytes []byte) (TokenUsage, *extProcPb.ProcessingResponse) {
+// streamBufferOverflow is stored in streamBuffers (in place of the actual trailing bytes)
+// to mark that a request's current SSE line grew past maxStreamBufferSize. It is a
+// zero-length, non-nil slice, which is otherwise never stored (the normal path only stores
+// a tail once len(tail) > 0), so it is unambiguous as a sentinel.
+var streamBufferOverflow = []byte{}
+
+// processStreamingResponse scans one response body chunk of a streaming request. It
+// returns the latest usage the stream has reported and whether the stream has reached
+// its final usage: a usage event without choices (the OpenAI/vLLM usage-only chunk,
+// the Responses API "response.completed" event, an Anthropic message_delta), "[DONE]"
+// after usage was reported, or the end of the stream. Usage reported earlier, as with
+// stream_options.continuous_usage_stats where every chunk carries a running count, is
+// kept until then so the request is not finalized while it is still generating.
+func processStreamingResponse(requestID string, bodyBytes []byte, endOfStream bool) (TokenUsage, bool, *extProcPb.ProcessingResponse) {
 	var usage TokenUsage
+	seenUsage := false
+	if v, ok := streamUsage.Load(requestID); ok {
+		if latest, ok := v.(TokenUsage); ok {
+			usage, seenUsage = latest, true
+		}
+	}
+	final := endOfStream
+	defer func() {
+		if final {
+			streamUsage.Delete(requestID)
+		} else if seenUsage {
+			streamUsage.Store(requestID, usage)
+		}
+	}()
+
+	// HandleResponseBody runs once per ext_proc callback, and Envoy delivers response
+	// body chunks as TCP data arrives rather than aligned to SSE line boundaries. A
+	// "data: {...}" line (and the "usage" field inside it) can therefore be split
+	// across two consecutive calls, and the split can land anywhere in the line --
+	// not only after "usage" has already appeared. Reassemble any trailing partial
+	// line carried over from the previous chunk before scanning.
+	if v, ok := streamBuffers.LoadAndDelete(requestID); ok {
+		buf, ok := v.([]byte)
+		if !ok {
+			klog.Warningf("streamBuffers held unexpected type %T for requestID %s; discarding", v, requestID)
+		} else if len(buf) == 0 {
+			// A previous call gave up on this line after it exceeded maxStreamBufferSize
+			// (see below). Discard bytes up to and including the next newline -- the rest
+			// of that same oversized line -- without attempting to validate/parse it, since
+			// its beginning was already dropped, then resume normal processing on whatever
+			// follows.
+			if idx := bytes.IndexByte(bodyBytes, '\n'); idx >= 0 {
+				bodyBytes = bodyBytes[idx+1:]
+			} else {
+				if !endOfStream {
+					streamBuffers.Store(requestID, streamBufferOverflow)
+				}
+				return usage, final, nil
+			}
+		} else {
+			bodyBytes = append(buf, bodyBytes...)
+		}
+	}
+
+	// Unless this is the final chunk, carve off any trailing line that isn't yet
+	// newline-terminated and carry it over to the next call, regardless of whether
+	// it currently contains "usage" -- the "usage" key itself may not have arrived
+	// yet. This keeps the scanning below operating only on complete lines, so a
+	// chunk boundary landing mid-JSON never gets misreported as malformed JSON.
+	//
+	// The carried-over tail is capped so a malformed upstream that never emits a newline
+	// cannot grow this buffer without bound. A single SSE event legitimately exceeding the
+	// cap (e.g. a large tool-call/reasoning/multimodal delta arriving as one long line) must
+	// not abort the client's stream with a 500 -- that reproduces the original bug this
+	// buffering was added to fix. So instead of erroring, drop the oversized tail, skip usage
+	// extraction for that one line, and let the stream continue; the loss is logged.
+	if !endOfStream {
+		if idx := bytes.LastIndexByte(bodyBytes, '\n'); idx >= 0 {
+			if tail := bodyBytes[idx+1:]; len(tail) > 0 {
+				if len(tail) > maxStreamBufferSize {
+					klog.Warningf("requestID %s: buffered SSE line exceeded %d bytes; dropping remainder, usage extraction for that line may be lost", requestID, maxStreamBufferSize)
+					streamBuffers.Store(requestID, streamBufferOverflow)
+				} else {
+					streamBuffers.Store(requestID, bytes.Clone(tail))
+				}
+				bodyBytes = bodyBytes[:idx+1]
+			}
+		} else if len(bodyBytes) > 0 {
+			if len(bodyBytes) > maxStreamBufferSize {
+				klog.Warningf("requestID %s: buffered SSE line exceeded %d bytes; dropping remainder, usage extraction for that line may be lost", requestID, maxStreamBufferSize)
+				streamBuffers.Store(requestID, streamBufferOverflow)
+			} else {
+				streamBuffers.Store(requestID, bytes.Clone(bodyBytes))
+			}
+			bodyBytes = nil
+		}
+	}
 
 	// The previous implementation unmarshalled every single SSE chunk into a struct (openai.ChatCompletionChunk).
 	// This caused significant CPU overhead and high GC pressure under heavy concurrency.
 	// The new implementation uses zero-allocation  byte scanning and pre-filtering,
-	// selectively extracting only the "usage" metadata via gjson for the final chunks.
-	if bytes.Contains(bodyBytes, []byte(`"usage"`)) {
+	// selectively extracting only the "usage" metadata via gjson for chunks that carry it
+	// (only the final chunk, unless the client set continuous_usage_stats).
+	// After a running usage was reported, "[DONE]" ends the stream even in a chunk
+	// that carries no usage of its own.
+	hasUsageKey := bytes.Contains(bodyBytes, []byte(`"usage"`))
+	if hasUsageKey || (seenUsage && bytes.Contains(bodyBytes, []byte("[DONE]"))) {
 		remaining := bodyBytes
 
 		for len(remaining) > 0 {
 			var line []byte
-			// Manually find the newline to avoid the allocations of bytes.Split
+			// Manually find the newline to avoid the allocations of bytes.Split.
+			// Every line here is guaranteed complete: bodyBytes was trimmed to a
+			// newline boundary above unless this is the final chunk, in which case
+			// a trailing line with no newline is legitimately the last line.
 			if idx := bytes.IndexByte(remaining, '\n'); idx >= 0 {
 				line = remaining[:idx]
 				remaining = remaining[idx+1:]
@@ -106,14 +218,17 @@ func processStreamingResponse(requestID string, bodyBytes []byte) (TokenUsage, *
 
 				// Check for the end of the stream
 				if bytes.Equal(jsonBytes, []byte("[DONE]")) {
+					if seenUsage {
+						final = true
+					}
 					continue
 				}
 
 				// While gjson.ValidBytes is O(N), it does not degrade gateway throughput.
 				// Guarded by the bytes.Contains pre-filter, it bypasses the hot path of streaming standard text
-				// and only executes on final chunks, ensuring strict correctness.
+				// and only executes on chunks that carry usage, ensuring strict correctness.
 				if !gjson.ValidBytes(jsonBytes) {
-					return usage, generateErrorResponse(
+					return usage, final, generateErrorResponse(
 						envoyTypePb.StatusCode_InternalServerError,
 						[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 							Key: HeaderErrorStreaming, RawValue: []byte("true"),
@@ -121,43 +236,82 @@ func processStreamingResponse(requestID string, bodyBytes []byte) (TokenUsage, *
 						"malformed JSON in SSE stream", "", "")
 				}
 
-				// gjson avoids full deserialization by only extracting the usage field.
-				usageResult := gjson.GetBytes(jsonBytes, "usage")
-				if !usageResult.Exists() {
-					// The Responses API (/v1/responses) emits usage nested inside the
-					// terminal "response.completed" SSE event, where the full response
-					// object (including its "usage" field) lives under "response".
-					// Hence the usage path there is "response.usage".
-					usageResult = gjson.GetBytes(jsonBytes, "response.usage")
-				}
-				if usageResult.Exists() && usageResult.IsObject() {
-					// Assumption: The upstream sends the usage object only in the final chunk
-					// (standard vLLM/OpenAI behavior). We overwrite/set the values here.
-					// The Responses API uses input_tokens/output_tokens instead of
-					// prompt_tokens/completion_tokens, so fall back to those names only when
-					// the primary field is genuinely absent (Exists() == false), since a
-					// zero count is a semantically valid value.
-					if pt := usageResult.Get("prompt_tokens"); pt.Exists() {
-						usage.PromptTokens = pt.Int()
-					} else {
-						usage.PromptTokens = usageResult.Get("input_tokens").Int()
+				if eventUsage, ok, isFinal := parseSSEUsage(jsonBytes, usage); ok {
+					// Counts are cumulative, not increments. Anthropic message deltas
+					// retain input usage from message_start when only output is reported.
+					usage, seenUsage = eventUsage, true
+					if isFinal {
+						final = true
 					}
-					if ct := usageResult.Get("completion_tokens"); ct.Exists() {
-						usage.CompletionTokens = ct.Int()
-					} else {
-						usage.CompletionTokens = usageResult.Get("output_tokens").Int()
-					}
-					usage.TotalTokens = usageResult.Get("total_tokens").Int()
 				}
 			}
 		}
 		// warnings when "usage" is triggered by a false positive in generated content.
-		if usage.PromptTokens == 0 && usage.TotalTokens == 0 {
+		if !seenUsage && hasUsageKey {
 			klog.V(4).Infof("usage string detected but no valid tokens parsed (likely generated text), requestID: %s", requestID)
 		}
 	}
 
-	return usage, nil
+	return usage, final, nil
+}
+
+// parseSSEUsage extracts the usage object from one SSE event's JSON. ok reports
+// whether the event carries usage; final reports whether it is the stream's final
+// usage rather than a running count. Anthropic deltas retain counts omitted
+// from that event; other response formats report complete usage snapshots.
+func parseSSEUsage(jsonBytes []byte, previous TokenUsage) (usage TokenUsage, ok bool, final bool) {
+	// Anthropic streams split usage between message_start.message.usage and
+	// message_delta.usage. Deltas are cumulative and may omit input_tokens;
+	// preserve absent counts while allowing an explicitly reported zero to replace them.
+	eventType := gjson.GetBytes(jsonBytes, "type").String()
+	usagePath := "usage"
+	switch eventType {
+	case "message_start":
+		usagePath = "message.usage"
+	case "message_delta":
+		usage = previous
+	}
+	usageResult := gjson.GetBytes(jsonBytes, usagePath)
+	if !usageResult.Exists() {
+		// The Responses API nests its terminal usage under response.
+		usageResult = gjson.GetBytes(jsonBytes, "response.usage")
+	}
+	if !usageResult.Exists() || !usageResult.IsObject() {
+		return usage, false, false
+	}
+	switch eventType {
+	case "message_start":
+		// Recording the prompt must not finalize accounting before generation.
+		final = false
+	case "message_delta":
+		stopReason := gjson.GetBytes(jsonBytes, "delta.stop_reason")
+		final = stopReason.Exists() && stopReason.Type != gjson.Null
+	default:
+		// An OpenAI usage object beside choices is a running count.
+		choices := gjson.GetBytes(jsonBytes, "choices")
+		final = !choices.IsArray() || !choices.Get("0").Exists()
+	}
+
+	// The Responses API uses input_tokens/output_tokens instead of
+	// prompt_tokens/completion_tokens, so fall back to those names only when
+	// the primary field is genuinely absent (Exists() == false), since a
+	// zero count is a semantically valid value.
+	if pt := usageResult.Get("prompt_tokens"); pt.Exists() {
+		usage.PromptTokens = pt.Int()
+	} else if it := usageResult.Get("input_tokens"); it.Exists() {
+		usage.PromptTokens = it.Int()
+	}
+	if ct := usageResult.Get("completion_tokens"); ct.Exists() {
+		usage.CompletionTokens = ct.Int()
+	} else if ot := usageResult.Get("output_tokens"); ot.Exists() {
+		usage.CompletionTokens = ot.Int()
+	}
+	if tt := usageResult.Get("total_tokens"); tt.Exists() && tt.Type != gjson.Null {
+		usage.TotalTokens = tt.Int()
+	} else {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+	return usage, true, final
 }
 
 // HandleResponseBody parses and accounts for a response body but deliberately
@@ -192,10 +346,15 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 
 	if stream {
 		var streamRes *extProcPb.ProcessingResponse
-		usage, streamRes = processStreamingResponse(requestID, b.ResponseBody.GetBody())
+		var final bool
+		usage, final, streamRes = processStreamingResponse(requestID, b.ResponseBody.GetBody(), b.ResponseBody.EndOfStream)
 		if streamRes != nil {
 			complete = true
 			return streamRes, complete, usage
+		}
+		if !final {
+			// Usage seen so far is a running count; account for it once the stream ends.
+			usage = TokenUsage{}
 		}
 	} else {
 		if isLanguageRequest(routerCtx.ReqPath) {
@@ -203,27 +362,43 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 			if processingRes != nil {
 				return processingRes, complete, usage
 			}
+		} else if videoResp, videoComplete, handled := s.handleVideoJobResponseBody(ctx, requestID, routerCtx, b); handled {
+			// Video create/status responses carry ids the client must never see, so
+			// they are held and rewritten instead of forwarded as-is. /content and
+			// /v1/videos/sync are not handled here: they keep streaming untouched.
+			return videoResp, videoComplete, usage
 		}
 	}
 
 	if usage.TotalTokens != 0 {
 		complete = true
 
-		// Count token per user.
+		// Count token per user. The response is already generated and the client
+		// is already receiving it, so a failed increment is reported but must not
+		// replace it: an ImmediateResponse now would reset a response that has
+		// been served.
 		if user.Name != "" {
 			tpm, err := s.ratelimiter.Incr(routerCtx, fmt.Sprintf("%v_TPM_CURRENT", user.Name), usage.TotalTokens)
 			if err != nil {
-				return generateErrorResponse(
-					envoyTypePb.StatusCode_InternalServerError,
-					[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-						Key: HeaderErrorIncrTPM, RawValue: []byte("true"),
-					}}},
-					err.Error(), "", ""), complete, usage
+				reason := "error"
+				if routerCtx.Err() != nil {
+					// The request was cancelled or timed out, typically a client
+					// that went away; not worth an error line each time.
+					reason = "cancelled"
+					klog.V(3).InfoS("TPM increment abandoned with the request", "user", user.Name, "requestID", requestID, "tokens", usage.TotalTokens, "err", err)
+				} else {
+					klog.ErrorS(err, "fail to increment TPM for user", "user", user.Name, "requestID", requestID, "tokens", usage.TotalTokens)
+				}
+				// With a streamed response body the header below may never reach
+				// a client, so the counter is what shows the uncharged tokens.
+				metrics.EmitMetricToPrometheus(routerCtx, nil, metrics.GatewayTPMIncrementFailuresTotal,
+					&metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"reason": reason})
+				headers = buildEnvoyProxyHeaders(headers, HeaderErrorIncrTPM, "true")
+			} else {
+				headers = buildEnvoyProxyHeaders(headers,
+					HeaderUpdateRPM, strconv.FormatInt(rpm, 10),
+					HeaderUpdateTPM, strconv.FormatInt(tpm, 10))
 			}
-
-			headers = buildEnvoyProxyHeaders(headers,
-				HeaderUpdateRPM, strconv.FormatInt(rpm, 10),
-				HeaderUpdateTPM, strconv.FormatInt(tpm, 10))
 		}
 
 		headers = buildEnvoyProxyHeaders(headers, HeaderRequestID, routerCtx.RequestID)
@@ -255,10 +430,32 @@ func (s *Server) HandleResponseBody(ctx context.Context, routerCtx *types.Routin
 
 func isLanguageRequest(requestPath string) bool {
 	nonLanguagePrefixes := []string{
+		// Image
 		PathImagesGenerations,
+		PathImagesEdits,
+
+		// Video
 		PathVideoGenerations,
+		// Prefix match: also covers /v1/videos/sync and the GET/DELETE sub-resources
+		// (/v1/videos/{id}, /v1/videos/{id}/content).
+		PathVideos,
+
+		// Audio
 		PathAudioTranscriptions,
 		PathAudioTranslations,
+		// Speech generation returns binary audio, which may arrive in several chunks, so its
+		// response is forwarded byte-for-byte and never parsed as JSON or SSE. The prefix also
+		// covers PathAudioSpeechBatch, whose JSON body inlines every item's base64 audio and can
+		// run to many megabytes; its HTTP 200 does not say whether individual items failed.
+		PathAudioSpeech,
+		// The voice catalog answers with small JSON documents (a list, an upload receipt, a
+		// delete message) that are not completions and carry no usage. The prefix also covers
+		// DELETE /v1/audio/voices/{name}.
+		PathAudioVoices,
+
+		// Tokenization and token counting
+		PathTokenize,
+		PathMessagesCountTokens,
 	}
 	for _, prefix := range nonLanguagePrefixes {
 		if strings.HasPrefix(requestPath, prefix) {
@@ -352,6 +549,12 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 		}
 		if res.Usage.TotalTokens != nil {
 			totalTokens = *res.Usage.TotalTokens
+		} else {
+			// Some engines report no total (/v1/systemone, on vLLM and SGLang, sends only
+			// input_tokens/output_tokens). HandleResponseBody skips TPM accounting and
+			// request_end for a zero total, so derive it rather than leave the request
+			// unmetered. An explicit total_tokens, even 0, is trusted as sent.
+			totalTokens = promptTokens + completionTokens
 		}
 	}
 	return
@@ -493,6 +696,14 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 			"target_pod", targetPod.Name,
 			"outstanding_request_count", outstandingRequestCount)
 	}
+	// Same keys and values as request_start, so a request's start and end lines can be
+	// filtered by strategy without joining them. Omitted when routing is delegated to the
+	// HTTPRoute (RouterNotSet), as request_start omits them too. resolved_strategy is the
+	// actual (possibly load-balance/least-request-top-k blended) composite RouterManager.Select
+	// used -- see ResolvedStrategy's doc comment.
+	if routingCtx.Algorithm != "" {
+		fields = append(fields, "routing_strategy", routingCtx.Algorithm, "resolved_strategy", routingCtx.ResolvedStrategy)
+	}
 
 	ttft := arrival.Sub(routingCtx.RequestTime)
 	if routingCtx.Stream && !routingCtx.FirstTokenTime.IsZero() {
@@ -503,7 +714,7 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 		metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTTFTBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": ttftBucket})
 	}
 
-	if routingCtx.Algorithm == "pd" {
+	if resolved, _ := routing.ResolveExclusiveStrategy(string(routingCtx.Algorithm)); resolved == string(routing.RouterPD) {
 		routingTime := routingCtx.PrefillStartTime.Sub(routingCtx.RequestTime)
 		fields = append(fields,
 			"routing_time_taken", routingTime,
@@ -533,16 +744,18 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 				tpot := time.Duration(decodeTime.Nanoseconds() / completionTokens)
 				metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTPOTBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": durationBucketLabel(tpot)})
 			}
-			if ttft > ttftThreshold {
+			if ttft > effectiveTTFTThreshold(routingCtx) {
+				// Keep every label bounded: request_id and raw per-phase
+				// durations are unique per request, so using them as labels
+				// creates unbounded series. The exact values are already on
+				// the request_end log line and OTel span.
 				metrics.EmitMetricToPrometheus(routingCtx, nil, metrics.GatewayFirstTokenDelayOver1sTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{
-					"request_id": requestID,
-					"p_bucket":   pBucket, "c_bucket": cBucket,
-					"routing_time_taken":     fmt.Sprintf("%v", routingTime),
-					"prefill_time_taken":     fmt.Sprintf("%v", prefillTime),
-					"kv_transfer_time_taken": fmt.Sprintf("%v", kvTransferTime),
-					"ttft":                   fmt.Sprintf("%v", ttft),
-					"decode_time_taken":      fmt.Sprintf("%v", decodeTime),
+					"p_bucket":      pBucket,
+					"c_bucket":      cBucket,
+					"ttft_bucket":   durationBucketLabel(ttft),
+					"slowest_stage": slowestTTFTStage(routingTime, prefillTime, kvTransferTime),
 				})
+				fields = append(fields, "slow_ttft", true)
 			}
 		}
 	} else if routingCtx.Algorithm != "" {
@@ -558,6 +771,20 @@ func (s *Server) requestEndHelper(routingCtx *types.RoutingContext, arrival time
 	fields = append(fields, "total_time_taken", routingCtx.Elapsed(time.Now()))
 	metrics.EmitMetricToPrometheus(routingCtx, targetPod, metrics.GatewayTotalTimeBucketTotal, &metrics.SimpleMetricValue{Value: 1.0}, map[string]string{"bucket": totalTimeBucketLabel(routingCtx.Elapsed(time.Now()))})
 	return fields
+}
+
+// slowestTTFTStage returns the PD phase with the largest share of TTFT.
+// The three phases sum to TTFT, and the result is a bounded 3-value label.
+func slowestTTFTStage(routingTime, prefillTime, kvTransferTime time.Duration) string {
+	stage := "routing"
+	slowest := routingTime
+	if prefillTime > slowest {
+		stage, slowest = "prefill", prefillTime
+	}
+	if kvTransferTime > slowest {
+		stage = "kv_transfer"
+	}
+	return stage
 }
 
 // tokenBucketLabel returns a human-readable bucket label for token counts.

@@ -178,7 +178,7 @@ func GetLabelValueForKey(metric *dto.Metric, key string) (string, error) {
 			return labelPair.GetValue(), nil
 		}
 	}
-	return "", fmt.Errorf("Label %s not found", key)
+	return "", fmt.Errorf("label %s not found", key)
 }
 
 func GetCounterGaugeValue(metric *dto.Metric, metricType dto.MetricType) (*SimpleMetricValue, error) {
@@ -203,7 +203,7 @@ func GetHistogramValue(metric *dto.Metric) (*HistogramMetricValue, error) {
 	}
 	histogramMetric := metric.GetHistogram()
 	if histogramMetric == nil {
-		return nil, fmt.Errorf("Histogram metric not found")
+		return nil, fmt.Errorf("histogram metric not found")
 	}
 
 	histogram.Sum = histogramMetric.GetSampleSum()
@@ -221,12 +221,12 @@ func GetHistogramValue(metric *dto.Metric) (*HistogramMetricValue, error) {
 func ParseMetricsURLWithContext(ctx context.Context, url string) (map[string]*dto.MetricFamily, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to create request for %s: %v\n", url, err)
+		return nil, fmt.Errorf("failed to create request for %s: %v", url, err)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to fetch metrics from %s: %v\n", url, err)
+		return nil, fmt.Errorf("failed to fetch metrics from %s: %v", url, err)
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -235,13 +235,13 @@ func ParseMetricsURLWithContext(ctx context.Context, url string) (map[string]*dt
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Bad status code while fetching metrics from %s: %d\n", url, resp.StatusCode)
+		return nil, fmt.Errorf("bad status code while fetching metrics from %s: %d", url, resp.StatusCode)
 	}
 
 	var parser expfmt.TextParser
 	allMetrics, err := parser.TextToMetricFamilies(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("Error parsing metric families: %v\n", err)
+		return nil, fmt.Errorf("error parsing metric families: %v", err)
 	}
 	return allMetrics, nil
 }
@@ -262,7 +262,7 @@ func GetEngineType(pod v1.Pod) string {
 	if engineType, exists := pod.Labels[constants.ModelLabelEngine]; exists && engineType != "" {
 		return engineType
 	}
-	return "vllm" // Default to vllm for backward compatibility
+	return EngineNameVLLM // Default to vllm for backward compatibility
 }
 
 func HttpFailureStatusCode(ctx context.Context, err error, resp *http.Response) (string, string) {

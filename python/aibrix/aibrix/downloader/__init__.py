@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
 from typing import Dict, Optional
 
 from aibrix.downloader.base import get_downloader
@@ -23,7 +24,7 @@ def download_model(
     model_name: Optional[str] = None,
     download_extra_config: Optional[Dict] = None,
     enable_progress_bar: bool = False,
-):
+) -> Path:
     """Download model from model_uri to local_path.
 
     Args:

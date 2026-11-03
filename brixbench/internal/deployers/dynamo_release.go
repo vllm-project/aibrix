@@ -27,6 +27,7 @@ import (
 )
 
 const dynamoRepoURL = "https://github.com/ai-dynamo/dynamo.git"
+const dynamoGitLFSSkipSmudgeEnv = "GIT_LFS_SKIP_SMUDGE=1"
 
 var stableDynamoReleaseTagPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
 
@@ -111,7 +112,7 @@ func (s *GitDynamoReleaseSource) PrepareRelease(ctx context.Context, projectRoot
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create Dynamo release cache directory: %w", err)
 	}
-	output, err := s.runner.Run(ctx, "git", "clone", "--depth=1", "--branch", version, s.repoURL, repoPath)
+	output, err := runDynamoGitWithoutLFSSmudge(ctx, s.runner, "clone", "--depth=1", "--branch", version, s.repoURL, repoPath)
 	if err != nil {
 		output = strings.TrimSpace(output)
 		if output != "" {
@@ -154,28 +155,28 @@ func validateDynamoReleaseTag(ctx context.Context, runner commandRunner, repoURL
 
 func syncDynamoReleaseCheckout(ctx context.Context, runner commandRunner, repoPath string, repoURL string, version string) error {
 	tagRef := "refs/tags/" + version
-	if output, err := runner.Run(ctx, "git", "-C", repoPath, "fetch", "--filter=blob:none", "--force", repoURL, "+"+tagRef+":"+tagRef); err != nil {
+	if output, err := runDynamoGitWithoutLFSSmudge(ctx, runner, "-C", repoPath, "fetch", "--filter=blob:none", "--force", repoURL, "+"+tagRef+":"+tagRef); err != nil {
 		output = strings.TrimSpace(output)
 		if output != "" {
 			return fmt.Errorf("failed to sync Dynamo release tag %s from %s: %w: %s", version, repoURL, err, output)
 		}
 		return fmt.Errorf("failed to sync Dynamo release tag %s from %s: %w", version, repoURL, err)
 	}
-	if output, err := runner.Run(ctx, "git", "-C", repoPath, "checkout", "--force", "--detach", version+"^{commit}"); err != nil {
+	if output, err := runDynamoGitWithoutLFSSmudge(ctx, runner, "-C", repoPath, "checkout", "--force", "--detach", version+"^{commit}"); err != nil {
 		output = strings.TrimSpace(output)
 		if output != "" {
 			return fmt.Errorf("failed to checkout Dynamo release tag %s in %s: %w: %s", version, repoPath, err, output)
 		}
 		return fmt.Errorf("failed to checkout Dynamo release tag %s in %s: %w", version, repoPath, err)
 	}
-	if output, err := runner.Run(ctx, "git", "-C", repoPath, "reset", "--hard", version+"^{commit}"); err != nil {
+	if output, err := runDynamoGitWithoutLFSSmudge(ctx, runner, "-C", repoPath, "reset", "--hard", version+"^{commit}"); err != nil {
 		output = strings.TrimSpace(output)
 		if output != "" {
 			return fmt.Errorf("failed to reset Dynamo release checkout %s to %s: %w: %s", repoPath, version, err, output)
 		}
 		return fmt.Errorf("failed to reset Dynamo release checkout %s to %s: %w", repoPath, version, err)
 	}
-	if output, err := runner.Run(ctx, "git", "-C", repoPath, "clean", "-ffdx"); err != nil {
+	if output, err := runDynamoGitWithoutLFSSmudge(ctx, runner, "-C", repoPath, "clean", "-ffdx"); err != nil {
 		output = strings.TrimSpace(output)
 		if output != "" {
 			return fmt.Errorf("failed to clean Dynamo release checkout %s: %w: %s", repoPath, err, output)
@@ -183,6 +184,11 @@ func syncDynamoReleaseCheckout(ctx context.Context, runner commandRunner, repoPa
 		return fmt.Errorf("failed to clean Dynamo release checkout %s: %w", repoPath, err)
 	}
 	return nil
+}
+
+func runDynamoGitWithoutLFSSmudge(ctx context.Context, runner commandRunner, args ...string) (string, error) {
+	commandArgs := append([]string{dynamoGitLFSSkipSmudgeEnv, "git"}, args...)
+	return runner.Run(ctx, "env", commandArgs...)
 }
 
 func lsRemoteOutputHasExactTag(output string, version string) bool {

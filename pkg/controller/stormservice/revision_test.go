@@ -26,7 +26,6 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	apps "k8s.io/api/apps/v1"
-	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -186,7 +185,7 @@ func TestNewRevision(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, revision)
 	assert.Equal(t, int64(1), revision.Revision)
-	assert.NotNil(t, revision.ObjectMeta.Annotations)
+	assert.NotNil(t, revision.Annotations)
 	assert.NotEmpty(t, revision.Data.Raw)
 }
 
@@ -231,9 +230,9 @@ func TestTruncateHistory(t *testing.T) {
 	tests := []struct {
 		name         string
 		stormService *orchestrationv1alpha1.StormService
-		revisions    []*appsv1.ControllerRevision
-		current      *appsv1.ControllerRevision
-		update       *appsv1.ControllerRevision
+		revisions    []*apps.ControllerRevision
+		current      *apps.ControllerRevision
+		update       *apps.ControllerRevision
 		mockSetup    func(mockClient *MockClient)
 		wantErr      bool
 	}{
@@ -246,7 +245,7 @@ func TestTruncateHistory(t *testing.T) {
 					},
 				},
 			},
-			revisions: []*appsv1.ControllerRevision{},
+			revisions: []*apps.ControllerRevision{},
 			mockSetup: func(m *MockClient) {
 				m.On("List", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 			},
@@ -261,10 +260,10 @@ func TestTruncateHistory(t *testing.T) {
 					},
 				},
 			},
-			revisions: []*appsv1.ControllerRevision{
+			revisions: []*apps.ControllerRevision{
 				{ObjectMeta: metav1.ObjectMeta{Name: "rev1"}},
 			},
-			current: &appsv1.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "current"}},
+			current: &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "current"}},
 			mockSetup: func(m *MockClient) {
 				m.On("List", mock.Anything, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
 					list := args.Get(1).(*orchestrationv1alpha1.RoleSetList)
@@ -285,12 +284,12 @@ func TestTruncateHistory(t *testing.T) {
 					RevisionHistoryLimit: func() *int32 { i := int32(1); return &i }(),
 				},
 			},
-			revisions: []*appsv1.ControllerRevision{
+			revisions: []*apps.ControllerRevision{
 				{ObjectMeta: metav1.ObjectMeta{Name: "rev1"}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "rev2"}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "rev3"}},
 			},
-			current: &appsv1.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "current"}},
+			current: &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "current"}},
 			mockSetup: func(m *MockClient) {
 				m.On("List", mock.Anything, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
 					list := args.Get(1).(*orchestrationv1alpha1.RoleSetList)
@@ -326,12 +325,12 @@ func TestTruncateHistory(t *testing.T) {
 					RevisionHistoryLimit: func() *int32 { i := int32(1); return &i }(),
 				},
 			},
-			revisions: []*appsv1.ControllerRevision{
+			revisions: []*apps.ControllerRevision{
 				{ObjectMeta: metav1.ObjectMeta{Name: "rev1"}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "rev2"}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "rev3"}},
 			},
-			current: &appsv1.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "current"}},
+			current: &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "current"}},
 			mockSetup: func(m *MockClient) {
 				m.On("List", mock.Anything, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
 					list := args.Get(1).(*orchestrationv1alpha1.RoleSetList)
@@ -353,13 +352,13 @@ func TestTruncateHistory(t *testing.T) {
 					RevisionHistoryLimit: func() *int32 { i := int32(1); return &i }(),
 				},
 			},
-			revisions: []*appsv1.ControllerRevision{
+			revisions: []*apps.ControllerRevision{
 				{ObjectMeta: metav1.ObjectMeta{Name: "rev1"}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "rev2"}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "rev3"}},
 			},
-			current: &appsv1.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "current"}},
-			update:  &appsv1.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "update-rev"}},
+			current: &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "current"}},
+			update:  &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "update-rev"}},
 			mockSetup: func(m *MockClient) {
 				m.On("List", mock.Anything, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
 					list := args.Get(1).(*orchestrationv1alpha1.RoleSetList)
@@ -567,7 +566,7 @@ func TestGetControllerRevision(t *testing.T) {
 		name        string
 		setupMock   func(*MockClient, metav1.Object)
 		obj         metav1.Object
-		expected    []*appsv1.ControllerRevision
+		expected    []*apps.ControllerRevision
 		expectedErr string
 	}{
 		{
@@ -578,8 +577,8 @@ func TestGetControllerRevision(t *testing.T) {
 				UID:       "test-uid",
 			},
 			setupMock: func(m *MockClient, obj metav1.Object) {
-				revisionList := &appsv1.ControllerRevisionList{
-					Items: []appsv1.ControllerRevision{
+				revisionList := &apps.ControllerRevisionList{
+					Items: []apps.ControllerRevision{
 						{
 							ObjectMeta: metav1.ObjectMeta{
 								Name:      "rev1",
@@ -617,12 +616,12 @@ func TestGetControllerRevision(t *testing.T) {
 				}
 				m.On("List", mock.Anything, mock.AnythingOfType("*v1.ControllerRevisionList"), mock.Anything).
 					Run(func(args mock.Arguments) {
-						list := args.Get(1).(*appsv1.ControllerRevisionList)
+						list := args.Get(1).(*apps.ControllerRevisionList)
 						list.Items = revisionList.Items
 					}).
 					Return(nil)
 			},
-			expected: []*appsv1.ControllerRevision{
+			expected: []*apps.ControllerRevision{
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "rev1",
@@ -655,8 +654,8 @@ func TestGetControllerRevision(t *testing.T) {
 				UID:       "test-uid",
 			},
 			setupMock: func(m *MockClient, obj metav1.Object) {
-				revisionList := &appsv1.ControllerRevisionList{
-					Items: []appsv1.ControllerRevision{
+				revisionList := &apps.ControllerRevisionList{
+					Items: []apps.ControllerRevision{
 						{
 							ObjectMeta: metav1.ObjectMeta{
 								Name:      "rev1",
@@ -683,12 +682,12 @@ func TestGetControllerRevision(t *testing.T) {
 				}
 				m.On("List", mock.Anything, mock.AnythingOfType("*v1.ControllerRevisionList"), mock.Anything).
 					Run(func(args mock.Arguments) {
-						list := args.Get(1).(*appsv1.ControllerRevisionList)
+						list := args.Get(1).(*apps.ControllerRevisionList)
 						list.Items = revisionList.Items
 					}).
 					Return(nil)
 			},
-			expected: []*appsv1.ControllerRevision{},
+			expected: []*apps.ControllerRevision{},
 		},
 		{
 			name: "empty revision list",
@@ -701,7 +700,7 @@ func TestGetControllerRevision(t *testing.T) {
 				m.On("List", mock.Anything, mock.AnythingOfType("*v1.ControllerRevisionList"), mock.Anything).
 					Return(nil)
 			},
-			expected: []*appsv1.ControllerRevision{},
+			expected: []*apps.ControllerRevision{},
 		},
 		{
 			name: "client list error",

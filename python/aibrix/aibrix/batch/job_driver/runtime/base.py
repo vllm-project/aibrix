@@ -123,6 +123,10 @@ class RuntimeOwnershipConflictError(BatchJobError):
             current_worker_id=self.current_worker_id,
             retry_after_s=self.retry_after_s,
         )
+        # Keep any retry suffix appended after __init__; reconstructing via
+        # original fields would otherwise regenerate the base message.
+        new_copy.message = self.message
+        new_copy.args = self.args
         memo[id(self)] = new_copy
         return new_copy
 
@@ -152,6 +156,10 @@ class RuntimeDeleteInProgressError(BatchJobError):
             runtime_key=self.runtime_key,
             retry_after_s=self.retry_after_s,
         )
+        # Keep any retry suffix appended after __init__; reconstructing via
+        # original fields would otherwise regenerate the base message.
+        new_copy.message = self.message
+        new_copy.args = self.args
         memo[id(self)] = new_copy
         return new_copy
 
@@ -184,6 +192,8 @@ class Endpoint:
 
     source: Optional[EndpointSource]
     model_name: Optional[str] = None
+    # Desired backend width when all configured replicas are available.
+    configured_capacity: Optional[int] = None
 
 
 @runtime_checkable
@@ -227,8 +237,18 @@ class Runtime(Protocol):
         implement it."""
         ...
 
-    async def terminate(self, deleted_job: BatchJob) -> TerminateResult:
-        """Terminate a job execution, no more job_entity_manager hijacks."""
+    async def terminate(
+        self,
+        deleted_job: BatchJob,
+        *,
+        progress_manager: Optional[RunningJobs] = None,
+    ) -> TerminateResult:
+        """Terminate a job execution, no more job_entity_manager hijacks.
+
+        Implementers must accept the ``progress_manager`` keyword argument.
+        An active session uses ``self._progress_manager``; the argument only
+        matters when no session is bound.
+        """
         ...
 
     async def cleanup(self, job: BatchJob) -> None:
@@ -266,8 +286,13 @@ class RuntimeBase:
     """
 
     provisions: bool = False
-    session_retry_attempts: int = 5
-    session_retry_base_delay_s: float = 2.0
+    # Batch session retries cover failed provision/reconnect attempts before the
+    # job driver gives up and reports the session setup failure.
+    session_retry_attempts: int = envs.BATCH_SESSION_RETRY_ATTEMPTS
+    # Initial exponential-backoff delay between failed batch session attempts.
+    session_retry_base_delay_s: float = envs.BATCH_SESSION_RETRY_BASE_DELAY_S
+    # Maximum exponential-backoff delay between failed batch session attempts.
+    session_retry_max_delay_s: float = envs.BATCH_SESSION_RETRY_MAX_DELAY_S
     session_liveness_check_interval_s: float = 30.0
     session_liveness_failure_threshold: Optional[int] = None
 
@@ -425,7 +450,12 @@ class RuntimeBase:
             "(Endpoint(source=None) + provisions=True)"
         )
 
-    async def terminate(self, deleted_job: BatchJob) -> TerminateResult:
+    async def terminate(
+        self,
+        deleted_job: BatchJob,
+        *,
+        progress_manager: Optional[RunningJobs] = None,
+    ) -> TerminateResult:
         """Handle job deletion events, no more job_entity_manager hijacks."""
         # Runtime lifecycle state is mutated only by tasks scheduled onto the
         # same event loop as the driver/runtime. Under that single-loop model,
@@ -441,6 +471,16 @@ class RuntimeBase:
         if self._active_task is None:
             if self._active_job_id not in (None, deleted_job.job_id):
                 return TerminateResult.REJECTED
+            if progress_manager is not None and deleted_job.status.check_condition(
+                ConditionType.CANCELLED
+            ):
+                # Honour accepted cancels with no active session, both before it
+                # starts and after it ends but before finalization, even if all
+                # requests finished. Persist cancelling before raising the stop signal.
+                await progress_manager.update_job_status(
+                    deleted_job.job_id,
+                    deleted_job.status,
+                )
             self._stop_job_id = deleted_job.job_id
             self._stop_requested.set()
             return TerminateResult.ACCEPTED
@@ -1003,17 +1043,46 @@ class RuntimeBase:
         # meaningful left to tear down; retry by provisioning a fresh resource.
         return not self._is_not_found_error(exc)
 
-    async def _sleep_before_session_retry(self, attempt: int) -> None:
-        await asyncio.sleep(self.session_retry_base_delay_s * (2**attempt))
+    def _get_session_retry_delay_s(self, attempt: int) -> float:
+        # set a hard-coded cap for avoiding OverflowError
+        safe_attempt = min(attempt, 10)
+        return min(
+            self.session_retry_base_delay_s * (2**safe_attempt),
+            self.session_retry_max_delay_s,
+        )
+
+    def _annotate_exhausted_session_error(
+        self, exc: Exception, *, retries_completed: int
+    ) -> Exception:
+        if retries_completed <= 0:
+            return exc
+        suffix = (
+            f" [session_retries={retries_completed}, "
+            f"session_attempts={retries_completed + 1}]"
+        )
+        if isinstance(exc, BatchJobError):
+            if suffix not in exc.message:
+                exc.message = f"{exc.message}{suffix}"
+                exc.args = (exc.message,)
+            return exc
+        if exc.args and isinstance(exc.args[0], str):
+            if suffix not in exc.args[0]:
+                exc.args = (f"{exc.args[0]}{suffix}", *exc.args[1:])
+        else:
+            exc.args = (*exc.args, suffix)
+        return exc
 
     async def _sleep_before_session_error_retry(
         self, attempt: int, exc: Exception
     ) -> None:
-        delay = self.session_retry_base_delay_s * (2**attempt)
+        delay = self._get_session_retry_delay_s(attempt)
         if isinstance(
             exc, (RuntimeOwnershipConflictError, RuntimeDeleteInProgressError)
         ):
-            delay = max(delay, exc.retry_after_s)
+            delay = min(
+                max(delay, exc.retry_after_s),
+                self.session_retry_max_delay_s,
+            )
         await asyncio.sleep(delay)
 
     def _should_run_session_liveness_checks(self, handle: Any) -> bool:
@@ -1050,10 +1119,17 @@ class RuntimeBase:
                             job_id=job_id,
                             consecutive_failures=consecutive_failures,
                             abort_after_failures=liveness_failure_threshold,
-                            error=str(exc),
+                            error=repr(exc),
                         )  # type: ignore[call-arg]
                         continue
                     error_sink["error"] = exc
+                    logger.warning(
+                        "Runtime liveness check failed; cancelling session",
+                        job_id=job_id,
+                        consecutive_failures=consecutive_failures,
+                        abort_after_failures=liveness_failure_threshold,
+                        error=repr(exc),
+                    )  # type: ignore[call-arg]
                     current_task.cancel()
                     return
 
@@ -1067,7 +1143,7 @@ class RuntimeBase:
                     logger.warning(
                         "Failed to refresh runtime ref heartbeat",
                         job_id=job_id,
-                        error=str(exc),
+                        error=repr(exc),
                     )  # type: ignore[call-arg]
         except asyncio.CancelledError:
             raise
@@ -1244,6 +1320,12 @@ class RuntimeBase:
                     elif not should_retry:
                         handle = None
                     if not should_retry:
+                        self._annotate_exhausted_session_error(
+                            exc,
+                            retries_completed=attempt,
+                        )
+                        # Re-raise the active exception so its original
+                        # traceback is preserved after in-place annotation.
                         raise
                     handle = None
                     runtimeRef = None

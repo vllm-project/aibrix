@@ -21,8 +21,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
@@ -78,8 +80,31 @@ func TestModelClaimBindingsFromPodIncludesObservedState(t *testing.T) {
 
 	got := ModelClaimBindingsFromPod(pod)
 	assert.Equal(t, ModelClaimBinding{
-		Model: "served-m1", Port: 0, State: constants.ModelClaimRoutingStateSleeping,
+		Model: "served-m1", Port: 0, State: constants.ModelClaimRoutingStateSleeping, Claim: "m1",
 	}, got["served-m1"])
+}
+
+func TestModelClaimBindingsFromPodReadsWhetherTheControllerWakes(t *testing.T) {
+	pod := podWithModelClaimAnnotations(map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + "m1": `{"model":"served-m1","port":0,"state":"sleeping","wakeByRequest":true}`,
+		// A wake request is not a binding, and is not read as one.
+		constants.ModelClaimWakeAnnotationPrefix + "m1": "2026-10-01T08:00:00Z",
+	})
+
+	got := ModelClaimBindingsFromPod(pod)
+
+	assert.Equal(t, map[string]ModelClaimBinding{"served-m1": {
+		Model: "served-m1", Port: 0, State: constants.ModelClaimRoutingStateSleeping, Claim: "m1",
+		WakeByRequest: true,
+	}}, got)
+}
+
+func TestModelClaimBindingsFromPodReadsTheReasonTheControllerGives(t *testing.T) {
+	pod := podWithModelClaimAnnotations(map[string]string{
+		constants.ModelClaimPodAnnotationPrefix + "m1": `{"model":"served-m1","port":0,"state":"sleeping","wakeByRequest":true,"reason":"WaitingForRoom"}`,
+	})
+
+	assert.Equal(t, "WaitingForRoom", ModelClaimBindingsFromPod(pod)["served-m1"].Reason)
 }
 
 func TestModelClaimBindingsFromPodRejectsInconsistentStateAndPort(t *testing.T) {
@@ -89,4 +114,91 @@ func TestModelClaimBindingsFromPodRejectsInconsistentStateAndPort(t *testing.T) 
 	})
 
 	assert.Nil(t, ModelClaimBindingsFromPod(pod))
+}
+
+func TestModelClaimVLLMParallelism(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    map[string]string
+		want    int64
+		wantErr string
+	}{
+		{name: "no args is one card", want: 1},
+		{name: "tp times pp", args: map[string]string{"--tensor-parallel-size": "2", "--pipeline-parallel-size": "2"}, want: 4},
+		{name: "explicit dp of one", args: map[string]string{"--data-parallel-size": "1"}, want: 1},
+		{name: "gpu memory utilization", args: map[string]string{"--gpu-memory-utilization": "0.9"}, wantErr: "incompatible with kvcached"},
+		{name: "data parallelism", args: map[string]string{"--data-parallel-size": "2"}, wantErr: "unsupported by fixed topology pools"},
+		{name: "not a number", args: map[string]string{"--tensor-parallel-size": "two"}, wantErr: "must be a positive integer"},
+		{name: "zero", args: map[string]string{"--pipeline-parallel-size": "0"}, wantErr: "must be a positive integer"},
+		{name: "empty", args: map[string]string{"--tensor-parallel-size": ""}, wantErr: "must be a positive integer"},
+		{name: "empty after equals", args: map[string]string{"--tensor-parallel-size=": ""}, wantErr: "must be a positive integer"},
+		{name: "value after equals", args: map[string]string{"--tensor-parallel-size=2": ""}, want: 2},
+		{name: "underscores", args: map[string]string{"--tensor_parallel_size": "2", "--pipeline_parallel_size": "2"}, want: 4},
+		{name: "short aliases", args: map[string]string{"-tp": "2", "-pp=2": ""}, want: 4},
+		{name: "gpu memory utilization after equals", args: map[string]string{"--gpu-memory-utilization=0.9": ""}, wantErr: "incompatible with kvcached"},
+		{name: "gpu memory utilization with underscores", args: map[string]string{"--gpu_memory_utilization": "0.9"}, wantErr: "incompatible with kvcached"},
+		{name: "data parallelism after equals", args: map[string]string{"--data-parallel-size=2": ""}, wantErr: "unsupported by fixed topology pools"},
+		{name: "one flag in two spellings", args: map[string]string{"--tensor-parallel-size": "2", "--tensor_parallel_size": "4"}, wantErr: "--tensor-parallel-size is set more than once, as --tensor-parallel-size and --tensor_parallel_size"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ModelClaimVLLMParallelism(&modelv1alpha1.ModelClaimEngineConfig{Args: tc.args})
+			if tc.wantErr != "" {
+				assert.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+
+	got, err := ModelClaimVLLMParallelism(nil)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), got)
+}
+
+func TestModelClaimEngineFlag(t *testing.T) {
+	cases := []struct {
+		key, flag, value string
+		hasValue         bool
+	}{
+		{key: "--max-model-len", flag: "--max-model-len"},
+		{key: " --max_model_len ", flag: "--max-model-len"},
+		{key: "--port=9000", flag: "--port", value: "9000", hasValue: true},
+		{key: "--served_model_name=a=b", flag: "--served-model-name", value: "a=b", hasValue: true},
+		{key: "--enforce-eager=", flag: "--enforce-eager", hasValue: true},
+		{key: "-tp", flag: "--tensor-parallel-size"},
+		{key: "-q", flag: "-q"},
+	}
+	for _, tc := range cases {
+		flag, value, hasValue := ModelClaimEngineFlag(tc.key)
+		assert.Equal(t, []any{tc.flag, tc.value, tc.hasValue}, []any{flag, value, hasValue}, tc.key)
+	}
+}
+
+func TestModelClaimDeclaredBytes(t *testing.T) {
+	got, err := ModelClaimDeclaredBytes("kvFloor", resource.MustParse("1Gi"))
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1<<30), got)
+
+	// A decimal fraction of a binary unit is rounded up to whole bytes.
+	fractional := resource.MustParse("5.6Gi")
+	got, err = ModelClaimDeclaredBytes("maximumFootprint", fractional)
+	assert.NoError(t, err)
+	assert.Equal(t, fractional.Value(), got)
+
+	for _, refused := range []string{"0", "-1Gi", "2Pi", "30m"} {
+		_, err := ModelClaimDeclaredBytes("kvFloor", resource.MustParse(refused))
+		assert.Error(t, err, refused)
+	}
+}
+
+func TestModelClaimPodGPUCount(t *testing.T) {
+	spec := &v1.PodSpec{Containers: []v1.Container{
+		{Resources: v1.ResourceRequirements{Limits: v1.ResourceList{NVIDIAGPUResourceName: resource.MustParse("2")}}},
+		{Resources: v1.ResourceRequirements{Requests: v1.ResourceList{NVIDIAGPUResourceName: resource.MustParse("1")}}},
+		{},
+	}}
+	assert.Equal(t, int64(3), ModelClaimPodGPUCount(spec))
+	assert.Equal(t, int64(0), ModelClaimPodGPUCount(nil))
 }

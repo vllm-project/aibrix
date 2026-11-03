@@ -3,7 +3,8 @@ name: Multimodality Chat App CI
 on:
   workflow_dispatch:
   push:
-    branches: ["main", "release-*"]
+    # PRs already test against the latest main, so merges don't re-run this.
+    branches: ["release-*"]
     paths:
       - "apps/chat/**"
       - ".github/workflows/apps-chat-ci.yml"
@@ -13,10 +14,16 @@ on:
       - "apps/chat/**"
       - ".github/workflows/apps-chat-ci.yml"
 
+# Cancel superseded pull-request runs so the newest push starts first.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   frontend-lint:
     name: Frontend Lint & Typecheck
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: apps/chat/web
@@ -39,6 +46,7 @@ jobs:
   backend-lint:
     name: Backend Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: apps/chat/api

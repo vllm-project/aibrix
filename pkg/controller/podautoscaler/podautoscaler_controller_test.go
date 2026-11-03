@@ -18,20 +18,26 @@ package podautoscaler
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
+	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
@@ -45,6 +51,8 @@ const ns = "ns1"
 // fakeWorkloadScaleClient implements the subset of the WorkloadScaleClient used by the reconciler.
 type fakeWorkloadScaleClient struct {
 	selector labels.Selector
+	// replicasErr, when set, is returned by GetCurrentReplicasFromScale.
+	replicasErr error
 }
 
 func (f *fakeWorkloadScaleClient) Validate(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler) error {
@@ -55,8 +63,11 @@ func (f *fakeWorkloadScaleClient) SetDesiredReplicas(ctx context.Context, pa *au
 	return nil
 }
 
-func (f *fakeWorkloadScaleClient) GetCurrentReplicasFromScale(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, scaleObj *unstructured.Unstructured) (int32, error) {
-	return 1, nil
+func (f *fakeWorkloadScaleClient) GetCurrentReplicasFromScale(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, scaleObj *unstructured.Unstructured) (ReplicaCounts, error) {
+	if f.replicasErr != nil {
+		return ReplicaCounts{}, f.replicasErr
+	}
+	return ReplicaCounts{Configured: 1, Observed: 1}, nil
 }
 
 func (f *fakeWorkloadScaleClient) GetPodSelectorFromScale(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, scaleObj *unstructured.Unstructured) (labels.Selector, error) {
@@ -73,6 +84,11 @@ type fakeAutoScaler struct {
 	lastRequest *ReplicaComputeRequest
 	result      *ReplicaComputeResult
 	err         error
+	forgotten   []ktypes.NamespacedName
+}
+
+func (f *fakeAutoScaler) ForgetPodAutoscaler(namespace, name string) {
+	f.forgotten = append(f.forgotten, ktypes.NamespacedName{Namespace: namespace, Name: name})
 }
 
 func (f *fakeAutoScaler) ComputeDesiredReplicas(ctx context.Context, req ReplicaComputeRequest) (*ReplicaComputeResult, error) {
@@ -84,6 +100,24 @@ func (f *fakeAutoScaler) ComputeDesiredReplicas(ctx context.Context, req Replica
 		return &ReplicaComputeResult{DesiredReplicas: req.CurrentReplicas, Valid: true}, nil
 	}
 	return f.result, f.err
+}
+
+func readyPod(ns, name string, lbls map[string]string) *corev1.Pod {
+	pod := buildPod(ns, name, lbls)
+	pod.Status.Conditions = []corev1.PodCondition{{
+		Type:   corev1.PodReady,
+		Status: corev1.ConditionTrue,
+	}}
+	return pod
+}
+
+func notReadyPod(ns, name string, lbls map[string]string) *corev1.Pod {
+	pod := buildPod(ns, name, lbls)
+	pod.Status.Conditions = []corev1.PodCondition{{
+		Type:   corev1.PodReady,
+		Status: corev1.ConditionFalse,
+	}}
+	return pod
 }
 
 func TestValidateMetricsSourcesAllowsK8sExternalMetrics(t *testing.T) {
@@ -431,6 +465,265 @@ func TestValidateSpecRejectsInvalidBaseReplicaBounds(t *testing.T) {
 	}
 }
 
+func TestValidateSpecRejectsInvalidTargetValue(t *testing.T) {
+	tests := map[string]struct {
+		targetValue string
+		wantReason  string
+		wantMessage string
+	}{
+		"kubernetes quantity format": {
+			targetValue: "100m",
+			wantReason:  ReasonMetricsConfigError,
+			wantMessage: `metricsSource[0]: targetValue "100m" must be a valid number`,
+		},
+		"non-numeric": {
+			targetValue: "abc",
+			wantReason:  ReasonMetricsConfigError,
+			wantMessage: `metricsSource[0]: targetValue "abc" must be a valid number`,
+		},
+		"zero": {
+			targetValue: "0",
+			wantReason:  ReasonMetricsConfigError,
+			wantMessage: `metricsSource[0]: targetValue "0" must be a finite number greater than 0`,
+		},
+		"negative": {
+			targetValue: "-5",
+			wantReason:  ReasonMetricsConfigError,
+			wantMessage: `metricsSource[0]: targetValue "-5" must be a finite number greater than 0`,
+		},
+		"NaN": {
+			targetValue: "NaN",
+			wantReason:  ReasonMetricsConfigError,
+			wantMessage: `metricsSource[0]: targetValue "NaN" must be a finite number greater than 0`,
+		},
+		"positive infinity": {
+			targetValue: "+Inf",
+			wantReason:  ReasonMetricsConfigError,
+			wantMessage: `metricsSource[0]: targetValue "+Inf" must be a finite number greater than 0`,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			pa := validPodAutoscalerForSpec()
+			pa.Spec.MetricsSources[0].TargetValue = tt.targetValue
+
+			result := (&PodAutoscalerReconciler{}).validateSpec(pa)
+
+			if result.Valid {
+				t.Fatalf("expected targetValue %q to be rejected", tt.targetValue)
+			}
+			if result.Reason != tt.wantReason {
+				t.Fatalf("expected reason=%s, got %s", tt.wantReason, result.Reason)
+			}
+			if result.Message != tt.wantMessage {
+				t.Fatalf("expected message %q, got %q", tt.wantMessage, result.Message)
+			}
+		})
+	}
+}
+
+func TestValidateSpecRejectsHPATargetValueOverflow(t *testing.T) {
+	tests := map[string]struct {
+		targetMetric string
+		targetValue  string
+	}{
+		"cpu":    {targetMetric: "cpu", targetValue: "2147483647.1"},
+		"memory": {targetMetric: "memory", targetValue: "8796093022207.1"},
+		"pods":   {targetMetric: "requests", targetValue: "9223372036854775808"},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			pa := validPodAutoscalerForSpec()
+			pa.Spec.ScalingStrategy = autoscalingv1alpha1.HPA
+			pa.Spec.MetricsSources[0].TargetMetric = tt.targetMetric
+			pa.Spec.MetricsSources[0].TargetValue = tt.targetValue
+			if tt.targetMetric != "cpu" && tt.targetMetric != "memory" {
+				pa.Spec.MetricsSources[0].MetricSourceType = autoscalingv1alpha1.CUSTOM
+			}
+
+			result := (&PodAutoscalerReconciler{}).validateSpec(pa)
+
+			if result.Valid {
+				t.Fatalf("expected HPA targetValue %q for %s to be rejected", tt.targetValue, tt.targetMetric)
+			}
+			if result.Reason != ReasonMetricsConfigError {
+				t.Fatalf("expected reason=%s, got %s", ReasonMetricsConfigError, result.Reason)
+			}
+			if !strings.Contains(result.Message, "must be representable as an HPA metric target") {
+				t.Fatalf("unexpected message: %q", result.Message)
+			}
+		})
+	}
+}
+
+func TestSetInvalidSpecStatusPersistsConditions(t *testing.T) {
+	ctx := context.Background()
+
+	sch := runtime.NewScheme()
+	_ = scheme.AddToScheme(sch)
+	_ = corev1.AddToScheme(sch)
+	_ = autoscalingv1alpha1.AddToScheme(sch)
+
+	pa := validPodAutoscalerForSpec()
+	pa.APIVersion = autoscalingv1alpha1.GroupVersion.String()
+	pa.Kind = "PodAutoscaler"
+	pa.Namespace = ns
+	pa.Name = "test-pa"
+	pa.Generation = 7
+	pa.Status.ScalingHistory = []autoscalingv1alpha1.ScalingDecision{{
+		Timestamp:     metav1.NewTime(time.Date(2026, time.August, 23, 12, 0, 0, 0, time.UTC)),
+		PreviousScale: 1,
+		NewScale:      2,
+		Reason:        "test scaling decision",
+		Success:       true,
+	}}
+	wantScalingHistory := append([]autoscalingv1alpha1.ScalingDecision(nil), pa.Status.ScalingHistory...)
+	// Simulate an existing PodAutoscaler after a successful reconcile. In this
+	// case every condition updated by setInvalidSpecStatus already exists, so no
+	// append can accidentally hide a shared Conditions backing array.
+	for _, condition := range []metav1.Condition{
+		{Type: ConditionValidSpec, Status: metav1.ConditionTrue, Reason: ReasonAsExpected},
+		{Type: ConditionScalingActive, Status: metav1.ConditionFalse, Reason: ReasonStable},
+		{Type: ConditionAbleToScale, Status: metav1.ConditionTrue, Reason: ReasonConfigured},
+		{Type: ConditionReady, Status: metav1.ConditionTrue, Reason: ReasonAsExpected},
+	} {
+		apimeta.SetStatusCondition(&pa.Status.Conditions, condition)
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(sch).
+		WithStatusSubresource(&autoscalingv1alpha1.PodAutoscaler{}).
+		WithObjects(pa).
+		Build()
+	r := &PodAutoscalerReconciler{Client: cl}
+
+	if err := r.setInvalidSpecStatus(ctx, pa, ReasonMetricsConfigError, "boom"); err != nil {
+		t.Fatalf("setInvalidSpecStatus returned error: %v", err)
+	}
+
+	latest := &autoscalingv1alpha1.PodAutoscaler{}
+	if err := cl.Get(ctx, ktypes.NamespacedName{Namespace: ns, Name: "test-pa"}, latest); err != nil {
+		t.Fatalf("failed to get updated PodAutoscaler: %v", err)
+	}
+	validSpec := apimeta.FindStatusCondition(latest.Status.Conditions, ConditionValidSpec)
+	if validSpec == nil || validSpec.Status != metav1.ConditionFalse {
+		t.Fatalf("expected ValidSpec=False to be persisted, got %+v", validSpec)
+	}
+	if validSpec.Reason != ReasonMetricsConfigError {
+		t.Fatalf("expected reason=%s, got %s", ReasonMetricsConfigError, validSpec.Reason)
+	}
+	if validSpec.ObservedGeneration != pa.Generation {
+		t.Fatalf("expected observedGeneration=%d, got %d", pa.Generation, validSpec.ObservedGeneration)
+	}
+	ableToScale := apimeta.FindStatusCondition(latest.Status.Conditions, ConditionAbleToScale)
+	if ableToScale == nil || ableToScale.Status != metav1.ConditionFalse {
+		t.Fatalf("expected AbleToScale=False to be persisted, got %+v", ableToScale)
+	}
+	ready := apimeta.FindStatusCondition(latest.Status.Conditions, ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionFalse {
+		t.Fatalf("expected Ready=False to be persisted, got %+v", ready)
+	}
+	if len(latest.Status.ScalingHistory) != len(wantScalingHistory) {
+		t.Fatalf("scaling history length changed: got %d, want %d", len(latest.Status.ScalingHistory), len(wantScalingHistory))
+	}
+	gotDecision, wantDecision := latest.Status.ScalingHistory[0], wantScalingHistory[0]
+	if !gotDecision.Timestamp.Time.Equal(wantDecision.Timestamp.Time) ||
+		gotDecision.PreviousScale != wantDecision.PreviousScale ||
+		gotDecision.NewScale != wantDecision.NewScale ||
+		gotDecision.Reason != wantDecision.Reason ||
+		gotDecision.Success != wantDecision.Success ||
+		gotDecision.Error != wantDecision.Error {
+		t.Fatalf("scaling history changed: got %+v, want %+v", latest.Status.ScalingHistory, wantScalingHistory)
+	}
+	if !hasObservedInvalidSpec(latest) {
+		t.Fatal("expected invalid spec to be gated for the observed generation")
+	}
+	latest.Generation++
+	if hasObservedInvalidSpec(latest) {
+		t.Fatal("expected a new spec generation to be reconciled")
+	}
+}
+
+func TestComputeStatusDoesNotMutateInputConditions(t *testing.T) {
+	pa := validPodAutoscalerForSpec()
+	pa.Status.ScalingHistory = []autoscalingv1alpha1.ScalingDecision{{
+		Timestamp:     metav1.NewTime(time.Date(2026, time.August, 23, 12, 0, 0, 0, time.UTC)),
+		PreviousScale: 1,
+		NewScale:      2,
+		Reason:        "test scaling decision",
+		Success:       true,
+	}}
+	for _, condition := range []metav1.Condition{
+		{Type: ConditionValidSpec, Status: metav1.ConditionTrue, Reason: ReasonAsExpected},
+		{Type: ConditionScalingActive, Status: metav1.ConditionFalse, Reason: ReasonStable},
+		{Type: ConditionAbleToScale, Status: metav1.ConditionTrue, Reason: ReasonConfigured},
+		{Type: ConditionReady, Status: metav1.ConditionTrue, Reason: ReasonAsExpected},
+	} {
+		apimeta.SetStatusCondition(&pa.Status.Conditions, condition)
+	}
+	originalStatus := pa.Status.DeepCopy()
+
+	newStatus := computeStatus(
+		context.Background(),
+		*pa,
+		invalid(ReasonMetricsConfigError, "invalid targetValue"),
+		validOK(),
+	)
+
+	if !reflect.DeepEqual(pa.Status, *originalStatus) {
+		t.Fatalf("computeStatus mutated its input status: got %+v, want %+v", pa.Status, *originalStatus)
+	}
+	validSpec := apimeta.FindStatusCondition(newStatus.Conditions, ConditionValidSpec)
+	if validSpec == nil || validSpec.Status != metav1.ConditionFalse {
+		t.Fatalf("expected computed ValidSpec=False, got %+v", validSpec)
+	}
+	ready := apimeta.FindStatusCondition(newStatus.Conditions, ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionFalse {
+		t.Fatalf("expected computed Ready=False, got %+v", ready)
+	}
+	if !reflect.DeepEqual(newStatus.ScalingHistory, pa.Status.ScalingHistory) {
+		t.Fatalf("computeStatus did not preserve scaling history: got %+v, want %+v", newStatus.ScalingHistory, pa.Status.ScalingHistory)
+	}
+}
+
+// A PodAutoscaler that is not reconciled at all reports why on Ready, not a
+// scale difference.
+func TestComputeStatusReadyNamesWhyItIsNotReconciling(t *testing.T) {
+	tests := []struct {
+		name        string
+		spec        ValidationResult
+		conflict    ValidationResult
+		wantReason  string
+		wantMessage string
+	}{
+		{
+			name:        "invalid spec",
+			spec:        invalid(ReasonMetricsConfigError, "invalid targetValue"),
+			conflict:    validOK(),
+			wantReason:  ReasonMetricsConfigError,
+			wantMessage: "invalid targetValue",
+		},
+		{
+			name:        "conflict",
+			spec:        validOK(),
+			conflict:    invalid("MultiplePodAutoscalers", "another PodAutoscaler targets this workload"),
+			wantReason:  "MultiplePodAutoscalers",
+			wantMessage: "another PodAutoscaler targets this workload",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			newStatus := computeStatus(context.Background(), *validPodAutoscalerForSpec(), tt.spec, tt.conflict)
+			ready := apimeta.FindStatusCondition(newStatus.Conditions, ConditionReady)
+			if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != tt.wantReason || ready.Message != tt.wantMessage {
+				t.Fatalf("Ready = %+v, want False/%s %q", ready, tt.wantReason, tt.wantMessage)
+			}
+		})
+	}
+}
+
 func validPodAutoscalerForSpec() *autoscalingv1alpha1.PodAutoscaler {
 	return &autoscalingv1alpha1.PodAutoscaler{Spec: autoscalingv1alpha1.PodAutoscalerSpec{
 		ScaleTargetRef:  corev1.ObjectReference{Name: "test-deployment", Kind: "Deployment"},
@@ -498,6 +791,149 @@ func TestComputeScaleDecisionAllowsScheduledMinReplicasFromZero(t *testing.T) {
 				t.Fatalf("ShouldScale=%t, want %t", decision.ShouldScale, tt.wantShouldRun)
 			}
 		})
+	}
+}
+
+func TestComputeScaleDecisionPendingGuardDoesNotOverrideHardBounds(t *testing.T) {
+	sch := runtime.NewScheme()
+	_ = scheme.AddToScheme(sch)
+	_ = corev1.AddToScheme(sch)
+	_ = autoscalingv1alpha1.AddToScheme(sch)
+
+	r := &PodAutoscalerReconciler{
+		Client:              fake.NewClientBuilder().WithScheme(sch).Build(),
+		workloadScaleClient: &fakeWorkloadScaleClient{},
+		autoScaler: &fakeAutoScaler{
+			result: &ReplicaComputeResult{
+				DesiredReplicas:           12,
+				Algorithm:                 "apa",
+				Reason:                    "scale-up suppressed: pending replicas have no metrics yet",
+				Valid:                     true,
+				PendingReplicaGuardActive: true,
+			},
+		},
+	}
+	pa := *validPodAutoscalerForSpec()
+	pa.Namespace = ns
+	pa.Spec.ScalingStrategy = autoscalingv1alpha1.APA
+	pa.Spec.MinReplicas = ptr.To[int32](6)
+	pa.Spec.MaxReplicas = 10
+
+	scaleObj := buildScaleObject("apps/v1", "Deployment", ns, "test-deployment")
+
+	decision, err := r.computeScaleDecision(context.Background(), pa, scaleObj, 12)
+
+	if err != nil {
+		t.Fatalf("computeScaleDecision returned error: %v", err)
+	}
+	if decision.DesiredReplicas != 10 {
+		t.Fatalf("DesiredReplicas=%d, want 10", decision.DesiredReplicas)
+	}
+	if !decision.ShouldScale {
+		t.Fatal("expected maxReplicas boundary to override pending guard")
+	}
+	if decision.Reason != "All metrics below target" {
+		t.Fatalf("Reason=%q", decision.Reason)
+	}
+}
+
+func TestComputeScaleDecisionAppliesHardBoundsWhenMetricsFail(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		currentReplicas int32
+		minReplicas     int32
+		maxReplicas     int32
+		wantReplicas    int32
+		wantReason      string
+	}{
+		{
+			name:            "above max",
+			currentReplicas: 12,
+			minReplicas:     1,
+			maxReplicas:     10,
+			wantReplicas:    10,
+			wantReason:      "current replicas above maximum",
+		},
+		{
+			name:            "below min",
+			currentReplicas: 2,
+			minReplicas:     4,
+			maxReplicas:     10,
+			wantReplicas:    4,
+			wantReason:      "current replicas below minimum",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sch := runtime.NewScheme()
+			_ = scheme.AddToScheme(sch)
+			_ = corev1.AddToScheme(sch)
+			_ = autoscalingv1alpha1.AddToScheme(sch)
+
+			r := &PodAutoscalerReconciler{
+				Client:              fake.NewClientBuilder().WithScheme(sch).Build(),
+				workloadScaleClient: &fakeWorkloadScaleClient{},
+				autoScaler: &fakeAutoScaler{
+					err: errors.New("metrics unavailable"),
+				},
+			}
+			pa := *validPodAutoscalerForSpec()
+			pa.Namespace = ns
+			pa.Spec.ScalingStrategy = autoscalingv1alpha1.APA
+			pa.Spec.MinReplicas = ptr.To(tt.minReplicas)
+			pa.Spec.MaxReplicas = tt.maxReplicas
+
+			scaleObj := buildScaleObject("apps/v1", "Deployment", ns, "test-deployment")
+
+			decision, err := r.computeScaleDecision(context.Background(), pa, scaleObj, tt.currentReplicas)
+
+			if err != nil {
+				t.Fatalf("computeScaleDecision returned error: %v", err)
+			}
+			if decision.DesiredReplicas != tt.wantReplicas {
+				t.Fatalf("DesiredReplicas=%d, want %d", decision.DesiredReplicas, tt.wantReplicas)
+			}
+			if !decision.ShouldScale {
+				t.Fatal("expected hard boundary to apply when metrics fail")
+			}
+			if decision.Reason != tt.wantReason {
+				t.Fatalf("Reason=%q", decision.Reason)
+			}
+		})
+	}
+}
+
+func TestReplicaStateFromPodsUsesCurrentReplicasMinusReadyPodsAsPending(t *testing.T) {
+	labels := map[string]string{"app": "foo"}
+	state := replicaStateFromPods([]corev1.Pod{
+		*readyPod(ns, "old-ready-1", labels),
+		*readyPod(ns, "old-ready-2", labels),
+		*readyPod(ns, "old-ready-3", labels),
+		*readyPod(ns, "old-ready-4", labels),
+		*readyPod(ns, "old-ready-5", labels),
+		*notReadyPod(ns, "new-pending-1", labels),
+		*notReadyPod(ns, "new-pending-2", labels),
+	}, 4)
+
+	if state.ReadyReplicas != 4 {
+		t.Fatalf("ReadyReplicas=%d, want 4", state.ReadyReplicas)
+	}
+	if state.PendingReplicas != 0 {
+		t.Fatalf("PendingReplicas=%d, want 0", state.PendingReplicas)
+	}
+}
+
+func TestReplicaStateFromPodsTreatsMissingPodsAsPending(t *testing.T) {
+	labels := map[string]string{"app": "foo"}
+	state := replicaStateFromPods([]corev1.Pod{
+		*readyPod(ns, "ready-1", labels),
+		*readyPod(ns, "ready-2", labels),
+	}, 4)
+
+	if state.ReadyReplicas != 2 {
+		t.Fatalf("ReadyReplicas=%d, want 2", state.ReadyReplicas)
+	}
+	if state.PendingReplicas != 2 {
+		t.Fatalf("PendingReplicas=%d, want 2", state.PendingReplicas)
 	}
 }
 
@@ -840,6 +1276,232 @@ func TestComputeMetricBasedReplicas_RayClusterFleet_FiltersHeadOnly(t *testing.T
 	want := []string{"ray-head-index0", "ray-head-index1"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("filtered pods mismatch, got=%v want=%v", got, want)
+	}
+}
+
+func TestStabilizeRecommendationHoldsWithinCooldownWindows(t *testing.T) {
+	type step struct {
+		offset         time.Duration
+		recommendation int32
+		current        int32
+		want           int32
+	}
+	tests := []struct {
+		name            string
+		scaleUpWindow   time.Duration
+		scaleDownWindow time.Duration
+		steps           []step
+	}{
+		{
+			name:            "brief dip is held by scale-down window",
+			scaleDownWindow: 5 * time.Minute,
+			steps: []step{
+				{offset: 0, recommendation: 10, current: 10, want: 10},
+				{offset: 30 * time.Second, recommendation: 2, current: 10, want: 10},
+				{offset: 60 * time.Second, recommendation: 10, current: 10, want: 10},
+			},
+		},
+		{
+			name:            "scale down to highest recommendation once window expires",
+			scaleDownWindow: 5 * time.Minute,
+			steps: []step{
+				{offset: 0, recommendation: 10, current: 10, want: 10},
+				{offset: 1 * time.Minute, recommendation: 4, current: 10, want: 10},
+				{offset: 2 * time.Minute, recommendation: 2, current: 10, want: 10},
+				{offset: 5*time.Minute + time.Second, recommendation: 3, current: 10, want: 4},
+			},
+		},
+		{
+			name:          "brief spike is held by scale-up window",
+			scaleUpWindow: 1 * time.Minute,
+			steps: []step{
+				{offset: 0, recommendation: 2, current: 2, want: 2},
+				{offset: 30 * time.Second, recommendation: 10, current: 2, want: 2},
+				{offset: 61 * time.Second, recommendation: 8, current: 2, want: 8},
+			},
+		},
+		{
+			name: "zero windows follow the recommendation",
+			steps: []step{
+				{offset: 0, recommendation: 10, current: 10, want: 10},
+				{offset: 30 * time.Second, recommendation: 2, current: 10, want: 2},
+				{offset: 60 * time.Second, recommendation: 6, current: 2, want: 6},
+			},
+		},
+		{
+			name:            "zero scale-up window scales up immediately",
+			scaleDownWindow: 5 * time.Minute,
+			steps: []step{
+				{offset: 0, recommendation: 2, current: 2, want: 2},
+				{offset: 30 * time.Second, recommendation: 10, current: 2, want: 10},
+			},
+		},
+		{
+			name:            "both windows clamp current replicas",
+			scaleUpWindow:   1 * time.Minute,
+			scaleDownWindow: 5 * time.Minute,
+			steps: []step{
+				{offset: 0, recommendation: 10, current: 10, want: 10},
+				{offset: 30 * time.Second, recommendation: 2, current: 10, want: 10},
+				// The dip to 2 is still in the scale-up window, so the up bound stays at 2.
+				{offset: 60 * time.Second, recommendation: 12, current: 10, want: 10},
+				// The dip has left the scale-up window, so replicas rise to 12.
+				{offset: 91 * time.Second, recommendation: 12, current: 10, want: 12},
+				// The scale-down window still holds the recommendations of 12.
+				{offset: 120 * time.Second, recommendation: 3, current: 12, want: 12},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := mustParseTime(t, "2026-08-03T09:30:00Z")
+			var now time.Time
+			r := &PodAutoscalerReconciler{now: func() time.Time { return now }}
+			pa := validPodAutoscalerForSpec()
+			scalingCtx := scalingctx.NewBaseScalingContext()
+			scalingCtx.ScaleUpCooldownWindow = tt.scaleUpWindow
+			scalingCtx.ScaleDownCooldownWindow = tt.scaleDownWindow
+
+			for i, s := range tt.steps {
+				now = base.Add(s.offset)
+				got := r.stabilizeRecommendation(pa, scalingCtx, s.recommendation, s.current)
+				if got != s.want {
+					t.Fatalf("step %d: stabilizeRecommendation(rec=%d, current=%d)=%d, want %d",
+						i, s.recommendation, s.current, got, s.want)
+				}
+			}
+		})
+	}
+}
+
+func TestFilterHPAObjectEnqueuesOwningPodAutoscaler(t *testing.T) {
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: "llm-pa", Namespace: ns, UID: "pa-uid"},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{APIVersion: "apps/v1", Kind: "Deployment", Name: "llm"},
+			MaxReplicas:    3,
+			MetricsSources: []autoscalingv1alpha1.MetricSource{{
+				MetricSourceType: autoscalingv1alpha1.RESOURCE,
+				TargetMetric:     autoscalingv1alpha1.CPU,
+				TargetValue:      "50",
+			}},
+			ScalingStrategy: autoscalingv1alpha1.HPA,
+		},
+	}
+	// Build the HPA the same way the reconciler does, so the owner reference
+	// written by makeHPA and the one filterHPAObject looks for cannot drift.
+	hpa, err := makeHPA(pa, scalingctx.NewBaseScalingContext())
+	if err != nil {
+		t.Fatalf("makeHPA: %v", err)
+	}
+
+	got := filterHPAObject(context.Background(), hpa)
+	want := []reconcile.Request{{NamespacedName: ktypes.NamespacedName{Namespace: ns, Name: "llm-pa"}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("filterHPAObject() = %v, want %v", got, want)
+	}
+}
+
+func TestFilterHPAObjectIgnoresUnmanagedHPA(t *testing.T) {
+	tests := []struct {
+		name   string
+		owners []metav1.OwnerReference
+	}{
+		{name: "no owner"},
+		{
+			name: "controlled by another kind",
+			owners: []metav1.OwnerReference{{
+				APIVersion: "apps/v1", Kind: "Deployment", Name: "llm", Controller: ptr.To(true),
+			}},
+		},
+		{
+			name: "PodAutoscaler owner that is not the controller",
+			owners: []metav1.OwnerReference{{
+				APIVersion: autoscalingv1alpha1.GroupVersion.String(), Kind: podAutoscalerKind, Name: "llm-pa",
+			}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hpa := &autoscalingv2.HorizontalPodAutoscaler{
+				ObjectMeta: metav1.ObjectMeta{Name: "llm-pa-hpa", Namespace: ns, OwnerReferences: tt.owners},
+			}
+			if got := filterHPAObject(context.Background(), hpa); len(got) != 0 {
+				t.Fatalf("filterHPAObject() = %v, want no requests", got)
+			}
+		})
+	}
+}
+
+// fakeMonitor records which PodAutoscalers had their metric series removed.
+type fakeMonitor struct {
+	forgotten []ktypes.NamespacedName
+}
+
+func (f *fakeMonitor) RecordScaleAction(string, string, string, string, int32) {}
+
+func (f *fakeMonitor) ForgetScaleAction(namespace, name string) {
+	f.forgotten = append(f.forgotten, ktypes.NamespacedName{Namespace: namespace, Name: name})
+}
+
+func TestReconcileDeletedPodAutoscalerReleasesState(t *testing.T) {
+	sch := runtime.NewScheme()
+	_ = scheme.AddToScheme(sch)
+	_ = autoscalingv1alpha1.AddToScheme(sch)
+
+	deleted := ktypes.NamespacedName{Namespace: ns, Name: "deleted-pa"}
+	other := ktypes.NamespacedName{Namespace: ns, Name: "other-pa"}
+	recommendation := []timestampedRecommendation{{recommendation: 3, timestamp: time.Now()}}
+
+	as := &fakeAutoScaler{}
+	mon := &fakeMonitor{}
+	r := &PodAutoscalerReconciler{
+		// No PodAutoscaler exists in the cluster, as after a delete.
+		Client:     fake.NewClientBuilder().WithScheme(sch).Build(),
+		autoScaler: as,
+		monitor:    mon,
+		recommendations: map[string][]timestampedRecommendation{
+			deleted.String(): recommendation,
+			other.String():   recommendation,
+		},
+		scalingTargetToPA: map[string]ktypes.NamespacedName{
+			"apps/v1.Deployment/ns1/deleted": deleted,
+			"apps/v1.Deployment/ns1/other":   other,
+		},
+		paToScalingKey: map[ktypes.NamespacedName]string{
+			deleted: "apps/v1.Deployment/ns1/deleted",
+			other:   "apps/v1.Deployment/ns1/other",
+		},
+	}
+
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: deleted}); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+
+	if _, ok := r.recommendations[deleted.String()]; ok {
+		t.Errorf("recommendation history for %s was not released", deleted)
+	}
+	if _, ok := r.paToScalingKey[deleted]; ok {
+		t.Errorf("scaling target claim for %s was not released", deleted)
+	}
+	if _, ok := r.scalingTargetToPA["apps/v1.Deployment/ns1/deleted"]; ok {
+		t.Errorf("scaling target of %s is still claimed", deleted)
+	}
+	if want := []ktypes.NamespacedName{deleted}; !reflect.DeepEqual(as.forgotten, want) {
+		t.Errorf("autoscaler forgot %v, want %v", as.forgotten, want)
+	}
+	if want := []ktypes.NamespacedName{deleted}; !reflect.DeepEqual(mon.forgotten, want) {
+		t.Errorf("monitor forgot %v, want %v", mon.forgotten, want)
+	}
+
+	// State of a PodAutoscaler that still exists must not be touched.
+	if _, ok := r.recommendations[other.String()]; !ok {
+		t.Errorf("recommendation history for %s was removed", other)
+	}
+	if r.paToScalingKey[other] != "apps/v1.Deployment/ns1/other" ||
+		r.scalingTargetToPA["apps/v1.Deployment/ns1/other"] != other {
+		t.Errorf("scaling target claim for %s was removed", other)
 	}
 }
 

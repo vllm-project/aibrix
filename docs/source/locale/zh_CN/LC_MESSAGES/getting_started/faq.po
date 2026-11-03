@@ -1,0 +1,182 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/getting_started/faq.rst:5
+msgid "FAQ"
+msgstr "常见问题"
+
+#: ../../source/getting_started/faq.rst:8
+msgid "FAQ - Installation"
+msgstr "常见问题 - 安装"
+
+#: ../../source/getting_started/faq.rst:11
+msgid "Failed to delete the AIBrix"
+msgstr "无法删除 AIBrix"
+
+#: ../../source/getting_started/faq.rst:13
+#: ../../source/getting_started/faq.rst:18
+msgid "aibrix-architecture-v1"
+msgstr "aibrix-architecture-v1"
+
+#: ../../source/getting_started/faq.rst:23
+msgid ""
+"In this case, you just need to find the model adapter, edit the object, "
+"and remove the ``finalizer`` pair. the pod would be deleted "
+"automatically."
+msgstr ""
+"此时只需找到 model adapter，编辑该对象并移除 ``finalizer`` 字段，pod 就会自动删除。"
+
+#: ../../source/getting_started/faq.rst:27
+msgid "Gateway error messages"
+msgstr "网关错误信息"
+
+#: ../../source/getting_started/faq.rst:29
+msgid "model does not exist"
+msgstr "model does not exist"
+
+#: ../../source/getting_started/faq.rst:31
+msgid "model-error"
+msgstr "model-error"
+
+#: ../../source/getting_started/faq.rst:36
+msgid "routing strategy is incorrect"
+msgstr "routing strategy is incorrect"
+
+#: ../../source/getting_started/faq.rst:38
+msgid "no ready pods"
+msgstr "no ready pods"
+
+#: ../../source/getting_started/faq.rst:41
+msgid "Gateway ReferenceGrant Issue"
+msgstr "网关 ReferenceGrant 问题"
+
+#: ../../source/getting_started/faq.rst:43
+msgid ""
+"When using multi-node inference with RayClusterFleet (as described in the"
+" :ref:`multi-node inference guide <distributed_inference>`), you might "
+"encounter a 500 error when accessing the model through the Envoy gateway,"
+" while direct access via port-forward works fine."
+msgstr ""
+"使用 RayClusterFleet 进行多节点推理时（参见 :ref:`multi-node inference guide <distributed_inference>` "
+"），通过 Envoy 网关访问模型可能出现 500 错误，而通过 port-forward 直接访问则正常。"
+
+#: ../../source/getting_started/faq.rst:45
+msgid ""
+"This issue occurs because the gateway (in aibrix-system namespace) needs "
+"explicit permission to access services in other namespaces (e.g., default"
+" namespace). To resolve this, you need to create a ReferenceGrant:"
+msgstr ""
+"原因是网关（位于 aibrix-system 命名空间）需要显式权限才能访问其他命名空间中的服务"
+"（例如 default 命名空间）。解决方法是创建 ReferenceGrant："
+
+#: ../../source/getting_started/faq.rst:63
+msgid ""
+"After applying this ReferenceGrant, the gateway should be able to "
+"properly route requests to your model service."
+msgstr "应用该 ReferenceGrant 后，网关应能正确将请求路由到模型服务。"
+
+#: ../../source/getting_started/faq.rst:65
+msgid ""
+"Note: This is typically only needed for multi-node deployments. Simple "
+"model deployments usually work without requiring this additional "
+"configuration."
+msgstr ""
+"注意：这通常只在多节点部署时需要。简单的模型部署一般不需要这项额外配置。"
+
+#: ../../source/getting_started/faq.rst:68
+msgid "Using NodePort or ClusterIP to Expose the Gateway API"
+msgstr "使用 NodePort 或 ClusterIP 暴露网关 API"
+
+#: ../../source/getting_started/faq.rst:70
+msgid ""
+"In the :ref:`quickstart` guide, model endpoints are typically accessed "
+"using either ``kubectl port-forward`` or through a LoadBalancer service. "
+"However, in some environments (e.g., local clusters without external load"
+" balancers), you may prefer to expose the Envoy gateway using a "
+"``NodePort`` service or rely on the default ``ClusterIP`` service type."
+msgstr ""
+"在 :ref:`quickstart` 指南中，模型端点通常通过 ``kubectl port-forward`` 或 "
+"LoadBalancer 服务访问。但在某些环境（例如没有外部负载均衡器的本地集群）中，"
+"你可能更希望用 ``NodePort`` 服务暴露 Envoy 网关，或沿用默认的 ``ClusterIP`` 服务类型。"
+
+#: ../../source/getting_started/faq.rst:73
+msgid ""
+"**Important:** You should not modify the ``svc/envoy-aibrix-system-"
+"aibrix-eg-903790dc`` service directly, since it is managed by the "
+"EnvoyProxy controller. Instead, update the EnvoyProxy configuration to "
+"set the service type."
+msgstr ""
+"**重要：** 不要直接修改 ``svc/envoy-aibrix-system-aibrix-eg-903790dc`` 服务，"
+"因为它由 EnvoyProxy 控制器管理。应更新 EnvoyProxy 配置来设置服务类型。"
+
+#: ../../source/getting_started/faq.rst:76
+msgid "**Option 1**: NodePort (Expose Outside the Cluster)"
+msgstr "**选项 1** ：NodePort（暴露到集群外）"
+
+#: ../../source/getting_started/faq.rst:78
+msgid "Update the spec to ``NodePort``:"
+msgstr "将 spec 更新为 ``NodePort`` ："
+
+#: ../../source/getting_started/faq.rst:91
+msgid "After applying the change, the gateway service will be updated:"
+msgstr "应用更改后，网关服务会更新为："
+
+#: ../../source/getting_started/faq.rst:99
+msgid "You can then regenerate the model endpoint:"
+msgstr "然后可以重新生成模型端点："
+
+#: ../../source/getting_started/faq.rst:107
+msgid ""
+"Your model endpoint is now accessible from outside the cluster via "
+"NodePort."
+msgstr "现在可以通过 NodePort 从集群外访问模型端点。"
+
+#: ../../source/getting_started/faq.rst:109
+msgid "**Option 2**: ClusterIP (Internal Access Only)"
+msgstr "**选项 2** ：ClusterIP（仅集群内访问）"
+
+#: ../../source/getting_started/faq.rst:111
+msgid "By default, the Envoy gateway service type is ``ClusterIP``:"
+msgstr "默认情况下，Envoy 网关服务类型为 ``ClusterIP`` ："
+
+#: ../../source/getting_started/faq.rst:124
+msgid "The gateway service looks like this:"
+msgstr "网关服务类似如下："
+
+#: ../../source/getting_started/faq.rst:132
+msgid ""
+"You can then regenerate the model endpoint (accessible only inside the "
+"cluster):"
+msgstr "然后可以重新生成模型端点（仅集群内可访问）："
+
+#: ../../source/getting_started/faq.rst:140
+msgid ""
+"This endpoint works only within the Kubernetes cluster (e.g., when other "
+"services communicate with the gateway internally)."
+msgstr ""
+"该端点仅在 Kubernetes 集群内可用（例如其他服务在集群内部与网关通信）。"
+
+#: ../../source/getting_started/faq.rst:142
+msgid ""
+"Get more configurations in the `Envoy Gateway docs "
+"<https://gateway.envoyproxy.io/latest/api/extension_types/#kubernetesservicespec>`__."
+msgstr ""
+"更多配置见 `Envoy Gateway docs "
+"<https://gateway.envoyproxy.io/latest/api/extension_types/#kubernetesservicespec>`__。"

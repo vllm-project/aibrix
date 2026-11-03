@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from pathlib import Path
-from typing import List, Optional
+from typing import ClassVar, List, Optional
 
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
@@ -28,6 +28,7 @@ from aibrix.downloader.base import (
     BaseDownloader,
     DownloadExtraConfig,
 )
+from aibrix.downloader.entity import RemoteSource
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -38,6 +39,8 @@ def _parse_model_name_from_uri(model_uri: str) -> str:
 
 
 class HuggingFaceDownloader(BaseDownloader):
+    _source: ClassVar[RemoteSource] = RemoteSource.HUGGINGFACE
+
     def __init__(
         self,
         model_uri: str,
@@ -71,10 +74,14 @@ class HuggingFaceDownloader(BaseDownloader):
 
         # Dependent on the attributes generated in the base class,
         # so place it after the super().__init__() call.
+        # ``effective_allow_file_suffix`` merges the always-download suffixes
+        # for small runtime-critical files (remote code, tokenizer files,
+        # chat templates) into the user-specified filter. See #834.
+        effective_suffix = self.effective_allow_file_suffix
         self.allow_patterns = (
             None
-            if self.allow_file_suffix is None or len(self.allow_file_suffix) == 0
-            else [f"*.{suffix}" for suffix in self.allow_file_suffix]
+            if effective_suffix is None
+            else [f"*.{suffix}" for suffix in effective_suffix]
         )
         logger.debug(
             f"Downloader {self.__class__.__name__} initialized."

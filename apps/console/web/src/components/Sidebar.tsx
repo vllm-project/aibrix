@@ -1,4 +1,4 @@
-import { Home, Rocket, Boxes, Library, Gamepad2, Layers } from 'lucide-react';
+import { Home, Rocket, Boxes, Library, Gamepad2, Layers, Cpu } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import type { ComponentType, SVGProps } from 'react';
@@ -37,6 +37,7 @@ export function Sidebar() {
     { path: '/batch', icon: Boxes, label: 'Batch API' },
     { path: '/deployments', icon: Rocket, label: 'Deployments' },
     { path: '/lora', icon: Layers, label: 'LoRA' },
+    { path: '/model-claims', icon: Cpu, label: 'ModelClaim' },
   ];
 
   const exploreItems: NavItem[] = [

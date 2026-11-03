@@ -1,0 +1,86 @@
+suite: Test Gateway Circuit Breaker Resource Gauges
+templates:
+  - gateway-instance/gateway.yaml
+tests:
+  - it: should enable resource gauges and preserve the HTTP listener patch
+    release:
+      name: aibrix
+      namespace: aibrix-system
+    set:
+      gateway.http.enabled: true
+      gateway.tls.enabled: false
+      gateway.envoyPatchPolicy.circuitBreakers.trackRemaining: true
+    documentSelector:
+      path: kind
+      value: EnvoyPatchPolicy
+    asserts:
+      - equal:
+          path: spec.jsonPatches[1].operation.value.circuit_breakers.thresholds[0].track_remaining
+          value: true
+      - equal:
+          path: spec.jsonPatches[2].type
+          value: type.googleapis.com/envoy.config.listener.v3.Listener
+      - equal:
+          path: spec.jsonPatches[2].name
+          value: aibrix-system/aibrix-eg/http
+
+  - it: should disable resource gauges and preserve the HTTP listener patch
+    release:
+      name: aibrix
+      namespace: aibrix-system
+    set:
+      gateway.http.enabled: true
+      gateway.tls.enabled: false
+      gateway.envoyPatchPolicy.circuitBreakers.trackRemaining: false
+    documentSelector:
+      path: kind
+      value: EnvoyPatchPolicy
+    asserts:
+      - equal:
+          path: spec.jsonPatches[1].operation.value.circuit_breakers.thresholds[0].track_remaining
+          value: false
+      - equal:
+          path: spec.jsonPatches[2].type
+          value: type.googleapis.com/envoy.config.listener.v3.Listener
+      - equal:
+          path: spec.jsonPatches[2].name
+          value: aibrix-system/aibrix-eg/http
+
+  - it: should fall back to false when trackRemaining is absent
+    set:
+      gateway.http.enabled: true
+      gateway.tls.enabled: false
+      gateway.envoyPatchPolicy.circuitBreakers.trackRemaining: null
+    documentSelector:
+      path: kind
+      value: EnvoyPatchPolicy
+    asserts:
+      - equal:
+          path: spec.jsonPatches[1].operation.value.circuit_breakers.thresholds[0].track_remaining
+          value: false
+
+  - it: should preserve HTTPS patches when HTTP is disabled
+    release:
+      name: aibrix
+      namespace: aibrix-system
+    set:
+      gateway.http.enabled: false
+      gateway.tls.enabled: true
+      gateway.tls.secretName: aibrix-gateway-tls
+      gateway.envoyPatchPolicy.circuitBreakers.trackRemaining: true
+    documentSelector:
+      path: kind
+      value: EnvoyPatchPolicy
+    asserts:
+      - lengthEqual:
+          path: spec.jsonPatches
+          count: 3
+      - equal:
+          path: spec.jsonPatches[1].operation.value.circuit_breakers.thresholds[0].track_remaining
+          value: true
+      - equal:
+          path: spec.jsonPatches[2].type
+          value: type.googleapis.com/envoy.config.listener.v3.Listener
+      - equal:
+          path: spec.jsonPatches[2].name
+          value: aibrix-system/aibrix-eg/https

@@ -23,6 +23,11 @@ build:
         then
           exit 183;
         fi
+    build:
+      html:
+        - mkdir -p "$READTHEDOCS_OUTPUT/html"
+        - $READTHEDOCS_VIRTUALENV_PATH/bin/sphinx-build -b html docs/source "$READTHEDOCS_OUTPUT/html"
+        - $READTHEDOCS_VIRTUALENV_PATH/bin/sphinx-build -b html -D language=zh_CN docs/source "$READTHEDOCS_OUTPUT/html/zh-cn"
 
 # Build documentation in the "docs/" directory with Sphinx
 sphinx:

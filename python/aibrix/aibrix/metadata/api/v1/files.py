@@ -14,8 +14,11 @@
 
 import time
 import uuid
+from datetime import timezone
+from email.utils import format_datetime
 from enum import Enum
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import Field
@@ -34,11 +37,7 @@ supported_extensions = {
     "jsonl",
 }
 
-# Upper bound on how many file keys list_files inspects per request.
-# The route applies purpose-filter + cursor + limit in-process, so this
-# is the largest result set we can paginate over without an indexed
-# list backend. Mirrors the equivalent compromise in batches /v1/batches.
-_LIST_FILES_FETCH_CEILING = 1000
+_LIST_FILES_PAGE_SIZE = 1000
 
 
 # OpenAI Files API models
@@ -134,6 +133,34 @@ def _create_error_response(
     return {"error": error_data}
 
 
+def _header_safe_filename(filename: str) -> str:
+    """Return a filename that is safe to place in an HTTP header value.
+
+    Uploaded filenames are arbitrary Unicode, but response header values
+    must be latin-1 encodable (Starlette raises ``UnicodeEncodeError``
+    otherwise). Percent-encode anything outside ASCII so a download or
+    HEAD request for a valid file never turns into a 500.
+    """
+    if filename.isascii():
+        return filename
+    return quote(filename, safe="")
+
+
+def _content_disposition(filename: str) -> str:
+    """Build an attachment ``Content-Disposition`` value for a download.
+
+    The plain ``filename=`` carries an ASCII fallback for legacy clients,
+    while the RFC 5987 ``filename*=UTF-8''`` form preserves the original
+    Unicode name. Both are latin-1 encodable, so the response header stays
+    valid regardless of the uploaded filename.
+    """
+    ascii_fallback = filename.encode("ascii", "ignore").decode("ascii") or "file"
+    return (
+        f'attachment; filename="{ascii_fallback}"; '
+        f"filename*=UTF-8''{quote(filename, safe='')}"
+    )
+
+
 @router.post("/", include_in_schema=False)
 @router.post("")
 async def create_file(
@@ -207,6 +234,68 @@ async def create_file(
         raise  # HTTPException(status_code=500, detail=error_response)
 
 
+async def _file_object_from_key(
+    storage: BaseStorage, file_id: str, purpose: Optional[str]
+) -> Optional[FileObject]:
+    """Build a matching file object, skipping unavailable or invalid metadata."""
+    try:
+        head_object = await storage.head_object(file_id)
+        metadata = head_object.metadata or {}
+
+        if purpose and metadata.get("purpose") != purpose:
+            return None
+
+        created_at = None
+        if "created_at" in metadata:
+            try:
+                created_at = int(metadata["created_at"])
+            except (ValueError, TypeError):
+                pass
+
+        if created_at is None and head_object.last_modified:
+            created_at = int(head_object.last_modified.timestamp())
+
+        if created_at is None:
+            created_at = int(time.time())
+
+        filename = metadata.get(
+            "filename", generate_filename(file_id, head_object.content_type, metadata)
+        )
+
+        file_purpose_enum = None
+        if "purpose" in metadata:
+            try:
+                file_purpose_enum = FilePurpose(metadata["purpose"])
+            except ValueError:
+                pass
+
+        file_status = FileStatus.UPLOADED
+        if "status" in metadata:
+            try:
+                file_status = FileStatus(metadata["status"])
+            except ValueError:
+                pass
+
+        return FileObject(
+            id=file_id,
+            bytes=head_object.content_length or 0,
+            created_at=created_at,
+            filename=filename,
+            purpose=file_purpose_enum or FilePurpose.BATCH,
+            status=file_status,
+        )
+
+    except FileNotFoundError:
+        logger.warning("File not found during listing", file_id=file_id)  # type: ignore[call-arg]
+    except Exception as e:
+        logger.error(
+            "Error retrieving file metadata during listing",
+            file_id=file_id,
+            error=str(e),
+        )  # type: ignore[call-arg]
+    return None
+
+
 @router.get("", include_in_schema=True)
 @router.get("/", include_in_schema=False)
 async def list_files(
@@ -237,107 +326,42 @@ async def list_files(
 
         storage: BaseStorage = request.app.state.storage
 
-        # Mirror /v1/batches list pagination semantics: ``after`` is a
-        # file_id, not a storage continuation token. We fetch a generous
-        # page from storage and apply purpose-filter + cursor + limit in
-        # the route. This intentionally caps total visible files at
-        # ``_LIST_FILES_FETCH_CEILING`` per request — same compromise the
-        # batches list endpoint makes; revisit when an indexed list
-        # backend lands.
-        all_keys, _ = await storage.list_objects(
-            prefix="", limit=_LIST_FILES_FETCH_CEILING
-        )
-
-        # Build file objects (with purpose filter applied inline so we
-        # only pay head_object for what's relevant when a filter is set).
+        # Walk storage until enough matches are found; a purpose-aware layout
+        # will replace this scan.
         file_objects: list[FileObject] = []
-        for file_id in all_keys:
-            # Skip internal/hidden keys (e.g. the co-located ``.metastore``
-            # document store under a shared LOCAL storage root). The files API
-            # lists only user-uploaded blobs, never internal storage artifacts.
-            if file_id.startswith("."):
-                continue
-            try:
-                head_object = await storage.head_object(file_id)
-                metadata = head_object.metadata or {}
-
-                if purpose and metadata.get("purpose") != purpose:
+        continuation_token: Optional[str] = None
+        cursor_found = after is None
+        while len(file_objects) < limit + 1:
+            page, next_token = await storage.list_objects(
+                prefix="",
+                limit=_LIST_FILES_PAGE_SIZE,
+                continuation_token=continuation_token,
+            )
+            for file_id in page:
+                if file_id.startswith("."):
+                    continue
+                if not cursor_found and file_id != after:
                     continue
 
-                created_at = None
-                if "created_at" in metadata:
-                    try:
-                        created_at = int(metadata["created_at"])
-                    except (ValueError, TypeError):
-                        pass
+                file_object = await _file_object_from_key(storage, file_id, purpose)
+                if file_object is None:
+                    continue
+                if not cursor_found:
+                    # The cursor must itself pass the purpose filter, as before.
+                    cursor_found = True
+                    continue
 
-                if created_at is None and head_object.last_modified:
-                    created_at = int(head_object.last_modified.timestamp())
-
-                if created_at is None:
-                    created_at = int(time.time())
-
-                filename = metadata.get(
-                    "filename",
-                    generate_filename(file_id, head_object.content_type, metadata),
-                )
-
-                file_purpose_enum = None
-                if "purpose" in metadata:
-                    try:
-                        file_purpose_enum = FilePurpose(metadata["purpose"])
-                    except ValueError:
-                        pass
-
-                file_status = FileStatus.UPLOADED
-                if "status" in metadata:
-                    try:
-                        file_status = FileStatus(metadata["status"])
-                    except ValueError:
-                        pass
-
-                file_objects.append(
-                    FileObject(
-                        id=file_id,
-                        bytes=head_object.content_length or 0,
-                        created_at=created_at,
-                        filename=filename,
-                        purpose=file_purpose_enum or FilePurpose.BATCH,
-                        status=file_status,
-                    )
-                )
-
-            except FileNotFoundError:
-                logger.warning("File not found during listing", file_id=file_id)  # type: ignore[call-arg]
-                continue
-            except Exception as e:
-                logger.error(
-                    "Error retrieving file metadata during listing",
-                    file_id=file_id,
-                    error=str(e),
-                )  # type: ignore[call-arg]
-                continue
-
-        # ``after`` cursor: file_id-based. If the cursor isn't found
-        # (e.g. caller passed a stale id), return an empty page rather
-        # than the entire list — that matches the batches endpoint and
-        # prevents accidental "rewind to start".
-        if after is not None:
-            for idx, fobj in enumerate(file_objects):
-                if fobj.id == after:
-                    file_objects = file_objects[idx + 1 :]
+                file_objects.append(file_object)
+                if len(file_objects) == limit + 1:
                     break
-            else:
-                file_objects = []
 
-        # has_more is computed after both the purpose filter and the
-        # cursor have been applied; otherwise the prior code reported
-        # has_more=True any time storage held more than ``limit`` keys
-        # even when the filtered result fit on one page.
-        has_more = len(file_objects) > limit
-        file_objects = file_objects[:limit]
+            if not next_token or next_token == continuation_token:
+                break
+            continuation_token = next_token
 
-        return FileListResponse(data=file_objects, has_more=has_more)
+        return FileListResponse(
+            data=file_objects[:limit], has_more=len(file_objects) > limit
+        )
 
     except HTTPException:
         raise
@@ -378,7 +402,7 @@ async def retrieve_file_content(request: Request, file_id: str) -> Response:
         return Response(
             content=file_content,
             media_type=content_type,
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
+            headers={"Content-Disposition": _content_disposition(filename)},
         )
 
     except FileNotFoundError:
@@ -527,7 +551,7 @@ async def head_file_metadata(request: Request, file_id: str) -> Response:
         headers = {
             "Content-Length": str(head_object.content_length),
             "X-File-ID": file_id,
-            "X-File-Name": filename,
+            "X-File-Name": _header_safe_filename(filename),
             "X-File-Created-At": str(created_at),
             "X-File-Status": FileStatus.UPLOADED.value,
         }
@@ -540,8 +564,8 @@ async def head_file_metadata(request: Request, file_id: str) -> Response:
             headers["ETag"] = head_object.etag
 
         if head_object.last_modified:
-            headers["Last-Modified"] = head_object.last_modified.strftime(
-                "%a, %d %b %Y %H:%M:%S GMT"
+            headers["Last-Modified"] = format_datetime(
+                head_object.last_modified.astimezone(timezone.utc), usegmt=True
             )
 
         if "purpose" in metadata:

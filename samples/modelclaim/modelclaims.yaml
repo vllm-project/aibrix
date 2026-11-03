@@ -1,3 +1,4 @@
+# Two small models that share the GPU of the warm-runtime-pool sample.
 apiVersion: model.aibrix.ai/v1alpha1
 kind: ModelClaim
 metadata:
@@ -7,10 +8,22 @@ spec:
   modelName: qwen3-0.6b
   podSelector:
     matchLabels:
-      pool.aibrix.ai/name: b300-pool-a
+      claim.model.aibrix.ai/pool: pool-a
   artifactURL: huggingface://Qwen/Qwen3-0.6B
   engine: vllm
   replicas: 1
+  # Higher values get the next placement opportunity when unplaced claims
+  # compete for this pool.
+  priority: 10
+  # If no card has room, this claim may put strictly lower-priority,
+  # request-idle vLLM claims to sleep. Omit this field to use Never.
+  preemptionPolicy: SleepLowerPriority
+  # What one instance needs on a GPU: its footprint besides the KV cache, and
+  # the KV cache for one request of the maximum length. Both leave room to
+  # spare for this model with these engine arguments.
+  perGPU:
+    maximumFootprint: 6Gi
+    kvFloor: 1Gi
   engineConfig:
     args:
       --max-model-len: "2048"
@@ -24,10 +37,14 @@ spec:
   modelName: qwen2.5-0.5b
   podSelector:
     matchLabels:
-      pool.aibrix.ai/name: b300-pool-a
+      claim.model.aibrix.ai/pool: pool-a
   artifactURL: huggingface://Qwen/Qwen2.5-0.5B-Instruct
   engine: vllm
   replicas: 1
+  # priority is omitted, so this claim uses the default of 0.
+  perGPU:
+    maximumFootprint: 6Gi
+    kvFloor: 1Gi
   engineConfig:
     args:
       --max-model-len: "2048"

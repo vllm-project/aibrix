@@ -13,8 +13,12 @@
 # limitations under the License.
 
 
+import pytest
+import torch
+
 from aibrix_kvcache import TokenListView
 from aibrix_kvcache.memory import ManagedMemoryRegion, TensorPoolAllocator
+from aibrix_kvcache.memory.allocator import MemoryRegionFooter
 
 from .conftest import randomize_mrs
 
@@ -63,6 +67,124 @@ def test_pack_unpack_basic(compact_layout_enabled):
     assert prefix_from_mr == orig_prefix
     assert len(tokens_from_mr) == len(orig_tokens)
     assert tokens_from_mr == orig_tokens
+
+
+@pytest.mark.parametrize(
+    "compact_layout_enabled", ["without_compact_layout"], indirect=True
+)
+def test_unpack_tokens_from_bytes(compact_layout_enabled):
+    block_nbytes = 16
+    mr_nbytes = 256
+    allocator = TensorPoolAllocator.create(capacity_nbytes=1024)
+    src = allocator.alloc(mr_nbytes).get()[0]
+    dst = allocator.alloc(mr_nbytes).get()[0]
+    src.block_nbytes = block_nbytes
+    dst.block_nbytes = block_nbytes
+    randomize_mrs([src])
+    temp = tuple(range(128, 128 + 16)) + tuple(range(256, 256 + 16))
+    all = TokenListView(temp)
+    orig_prefix = all[:16]
+    orig_tokens = all[16:]
+    src.pack_tokens(prefix=orig_prefix, query=orig_tokens)
+    src.seal()
+
+    # A MR filled from bytes, e.g. by an L2 get, has no tokens cached and
+    # must decode them from its own buffer.
+    dst.slab[dst.addr : dst.addr + mr_nbytes].copy_(
+        src.slab[src.addr : src.addr + mr_nbytes]
+    )
+    prefix_from_mr, tokens_from_mr = dst.unpack_tokens()
+    assert prefix_from_mr == orig_prefix
+    assert tokens_from_mr == orig_tokens
+
+    # Without a prefix
+    src2 = allocator.alloc(mr_nbytes).get()[0]
+    dst2 = allocator.alloc(mr_nbytes).get()[0]
+    src2.block_nbytes = block_nbytes
+    dst2.block_nbytes = block_nbytes
+    src2.pack_tokens(query=orig_tokens)
+    src2.seal()
+    dst2.slab[dst2.addr : dst2.addr + mr_nbytes].copy_(
+        src2.slab[src2.addr : src2.addr + mr_nbytes]
+    )
+    prefix_from_mr, tokens_from_mr = dst2.unpack_tokens()
+    assert prefix_from_mr is None
+    assert tokens_from_mr == orig_tokens
+
+
+def _pack_exact_fit_mr(allocator, prefix, query):
+    # No slack after the tokens: block + magic + footer + prefix + query.
+    block_nbytes = 20
+    bytes_per_token = 4
+    mr_nbytes = (
+        block_nbytes
+        + bytes_per_token
+        + MemoryRegionFooter.nbytes()
+        + bytes_per_token * (len(prefix) + len(query))
+    )
+    mr = allocator.alloc(mr_nbytes).get()[0]
+    assert mr.length == mr_nbytes
+    mr.block_nbytes = block_nbytes
+    randomize_mrs([mr])
+    mr.pack_tokens(prefix=prefix, query=query)
+    mr.seal()
+    return mr
+
+
+def _drop_cached_tokens(allocator, mr):
+    # Copy the bytes into a fresh MR so unpack_tokens() reads the buffer.
+    dst = allocator.alloc(mr.length).get()[0]
+    dst.block_nbytes = mr.block_nbytes
+    dst.slab[dst.addr : dst.addr + mr.length].copy_(
+        mr.slab[mr.addr : mr.addr + mr.length]
+    )
+    return dst
+
+
+@pytest.mark.parametrize(
+    "compact_layout_enabled", ["without_compact_layout"], indirect=True
+)
+def test_unpack_tokens_exact_fit(compact_layout_enabled):
+    allocator = TensorPoolAllocator.create(capacity_nbytes=1024)
+    all = TokenListView(tuple(range(128, 128 + 32)))
+    mr = _pack_exact_fit_mr(allocator, all[:16], all[16:])
+    prefix_from_mr, tokens_from_mr = _drop_cached_tokens(
+        allocator, mr
+    ).unpack_tokens()
+    assert prefix_from_mr == all[:16]
+    assert tokens_from_mr == all[16:]
+
+
+@pytest.mark.parametrize(
+    "compact_layout_enabled", ["without_compact_layout"], indirect=True
+)
+@pytest.mark.parametrize(
+    "prefix_length, query_length",
+    [
+        (-1, 16),
+        (-16, 32),
+        (10**6, 16),
+        (0, 10**6),
+        (16, 0),
+        (16, -1),
+        (2**31 - 1, 2**31 - 1),
+        (32, 1),
+    ],
+)
+def test_unpack_tokens_corrupted_footer(
+    compact_layout_enabled, prefix_length, query_length
+):
+    allocator = TensorPoolAllocator.create(capacity_nbytes=1024)
+    all = TokenListView(tuple(range(128, 128 + 32)))
+    mr = _drop_cached_tokens(
+        allocator, _pack_exact_fit_mr(allocator, all[:16], all[16:])
+    )
+    start = mr.addr + mr.block_nbytes + 4
+    stop = start + MemoryRegionFooter.nbytes()
+    mr.slab[start:stop].view(torch.int32).copy_(
+        torch.tensor([prefix_length, query_length], dtype=torch.int32)
+    )
+    assert mr.unpack_tokens() == (None, None)
 
 
 def test_pack_unpack_max(compact_layout_enabled):

@@ -1,0 +1,58 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: vllm-pd-volcano-gang
+spec:
+  replicas: 1
+  mode: Pooled
+  stateful: true
+  selector:
+    matchLabels:
+      app: vllm-pd-volcano-gang
+  template:
+    metadata:
+      labels:
+        app: vllm-pd-volcano-gang
+    spec:
+      schedulingStrategy:
+        volcanoSchedulingStrategy:
+          minMember: 6
+          minTaskMember:
+            prefill: 4
+            decode: 2
+          queue: default
+      roles:
+        # minTaskMember values are pod counts, not replica counts. With
+        # podGroupSize: 2, prefill: 4 means at least 2 prefill replicas.
+        # This is approximate role-level gang scheduling, not subgroup-level
+        # gang scheduling.
+        - name: prefill
+          replicas: 2
+          podGroupSize: 2
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: qwen3-8B
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+            spec:
+              containers:
+                - name: prefill
+                  image: busybox:1.36
+                  command: ["sh", "-c", "sleep 3600"]
+        - name: decode
+          replicas: 1
+          podGroupSize: 2
+          stateful: true
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: qwen3-8B
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+            spec:
+              containers:
+                - name: decode
+                  image: busybox:1.36
+                  command: ["sh", "-c", "sleep 3600"]

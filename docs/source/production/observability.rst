@@ -57,7 +57,7 @@ To activate metric collection for each component:
    :language: yaml
 
 4. **ModelClaim Runtime**
-   - Scrapes the warm-pool `aibrix-runtime` sidecar `/metrics` endpoint. Services must be labeled ``aibrix.ai/metrics: modelclaim-runtime`` (see ``samples/modelclaim/warm-runtime-pool.yaml``). The monitor attaches a bounded ``pool`` label from ``pool.aibrix.ai/name``.
+   - Scrapes the warm-pool `aibrix-runtime` sidecar `/metrics` endpoint. Services must be labeled ``aibrix.ai/metrics: modelclaim-runtime`` (see ``samples/modelclaim/warm-runtime-pool.yaml``). The monitor attaches a bounded ``pool`` label from ``claim.model.aibrix.ai/pool``.
 
 .. literalinclude:: ../../../observability/monitor/service_monitor_modelclaim_runtime.yaml
    :language: yaml
@@ -86,3 +86,10 @@ OpenTelemetry
 -------------
 
 To enable the telemetry components, please refer to :ref:`observability_telemetry` for details.
+
+.. card:: What's next?
+   :class-card: sd-border-1
+
+   * :doc:`gateway`: gateway configuration that produces these metrics
+   * :doc:`model-deployment`: the signals worth alerting on
+   * :doc:`../features/benchmark/benchmark-and-generator`: generate load to exercise them

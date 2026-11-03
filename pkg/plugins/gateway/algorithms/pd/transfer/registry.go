@@ -54,6 +54,26 @@ func ValidAgentNames() []string {
 	return validNames()
 }
 
+// AllControlledFields returns the sorted, de-duplicated union of
+// ControlledFields over every registered agent. It is used to validate a
+// request before the prefill pod (and therefore the connector) is known.
+func AllControlledFields() []string {
+	mu.RLock()
+	defer mu.RUnlock()
+	seen := map[string]bool{}
+	for _, factory := range registry {
+		for _, f := range factory().ControlledFields() {
+			seen[f] = true
+		}
+	}
+	fields := make([]string, 0, len(seen))
+	for f := range seen {
+		fields = append(fields, f)
+	}
+	sort.Strings(fields)
+	return fields
+}
+
 func validNames() []string {
 	names := make([]string, 0, len(registry))
 	for k := range registry {

@@ -40,11 +40,13 @@ func TestJSONPatch_NewAppendLen(t *testing.T) {
 
 func TestJSONPatch_MarshalAndToClientPatch(t *testing.T) {
 	p := NewJSONPatch(JSONPatchItem{Operation: Replace, Path: "/a", Value: "b"})
+	assert.Equal(t, int32(1), p.Len())
 	bytes, err := p.Marshal()
 	assert.NoError(t, err)
 	// ensure valid JSON array
 	assert.True(t, json.Valid(bytes))
 	assert.True(t, strings.HasPrefix(string(bytes), "["))
+	assert.JSONEq(t, `[{"op":"replace","path":"/a","value":"b"}]`, string(bytes))
 
 	patch, err := p.ToClientPatch()
 	assert.NoError(t, err)

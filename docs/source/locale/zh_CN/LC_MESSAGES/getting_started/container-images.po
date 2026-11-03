@@ -1,0 +1,358 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 18:51+0800\n"
+"PO-Revision-Date: 2026-09-10 19:00+0800\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.17.0\n"
+
+#: ../../source/getting_started/container-images.rst:5
+msgid "AIBrix Container Images"
+msgstr "AIBrix 容器镜像"
+
+#: ../../source/getting_started/container-images.rst:8
+msgid "Overview"
+msgstr "概述"
+
+#: ../../source/getting_started/container-images.rst:10
+msgid ""
+"AIBrix provides enhanced container images for **vLLM** and **SGLang** "
+"that include additional capabilities for distributed inference and KV "
+"cache disaggregation:"
+msgstr ""
+"AIBrix 为 **vLLM** 和 **SGLang** 提供增强容器镜像，额外支持分布式推理和 "
+"KV cache 分离："
+
+#: ../../source/getting_started/container-images.rst:12
+msgid "**aibrix_kvcache** - Built from source for KV cache disaggregation support"
+msgstr "**aibrix_kvcache** - 从源码构建，用于支持 KV cache 分离"
+
+#: ../../source/getting_started/container-images.rst:13
+msgid ""
+"**nixl + nixl-cu12** - UCX-based high-performance networking libraries "
+"for RDMA"
+msgstr "**nixl + nixl-cu12** - 基于 UCX 的高性能 RDMA 网络库"
+
+#: ../../source/getting_started/container-images.rst:14
+msgid ""
+"**UCX tooling** - Pre-installed debugging and performance testing "
+"utilities"
+msgstr "**UCX tooling** - 预装的调试和性能测试工具"
+
+#: ../../source/getting_started/container-images.rst:17
+msgid "Image Naming Convention"
+msgstr "镜像命名约定"
+
+#: ../../source/getting_started/container-images.rst:19
+msgid ""
+"AIBrix images extend upstream inference engines with additional "
+"capabilities:"
+msgstr "AIBrix 镜像在上游推理引擎之上扩展了额外能力："
+
+#: ../../source/getting_started/container-images.rst:21
+msgid "Upstream vs. AIBrix Images"
+msgstr "上游镜像与 AIBrix 镜像"
+
+#: ../../source/getting_started/container-images.rst:25
+msgid "Upstream Image"
+msgstr "上游镜像"
+
+#: ../../source/getting_started/container-images.rst:26
+msgid "AIBrix Enhanced Image"
+msgstr "AIBrix 增强镜像"
+
+#: ../../source/getting_started/container-images.rst:27
+msgid "Use Case"
+msgstr "用途"
+
+#: ../../source/getting_started/container-images.rst:28
+msgid "``vllm/vllm-openai:v0.10.2``"
+msgstr "``vllm/vllm-openai:v0.10.2``"
+
+#: ../../source/getting_started/container-images.rst:29
+msgid "``aibrix/vllm-openai:v0.10.2-aibrix-v0.5.0-nixl-0.7.1-20251123``"
+msgstr "``aibrix/vllm-openai:v0.10.2-aibrix-v0.5.0-nixl-0.7.1-20251123``"
+
+#: ../../source/getting_started/container-images.rst:30
+msgid "vLLM + KVCache + RDMA"
+msgstr "vLLM + KVCache + RDMA"
+
+#: ../../source/getting_started/container-images.rst:31
+msgid "``lmsysorg/sglang:v0.5.5.post3``"
+msgstr "``lmsysorg/sglang:v0.5.5.post3``"
+
+#: ../../source/getting_started/container-images.rst:32
+msgid "``aibrix/sglang:v0.5.5.post3-aibrix-v0.5.0-nixl-0.7.1-20251123``"
+msgstr "``aibrix/sglang:v0.5.5.post3-aibrix-v0.5.0-nixl-0.7.1-20251123``"
+
+#: ../../source/getting_started/container-images.rst:33
+msgid "SGLang + KVCache + RDMA"
+msgstr "SGLang + KVCache + RDMA"
+
+#: ../../source/getting_started/container-images.rst:36
+msgid "When to Use AIBrix Images"
+msgstr "何时使用 AIBrix 镜像"
+
+#: ../../source/getting_started/container-images.rst:38
+msgid "Use **AIBrix-enhanced images** when you need:"
+msgstr "在需要以下能力时使用 **AIBrix 增强镜像** ："
+
+#: ../../source/getting_started/container-images.rst:40
+msgid "**KV Cache Offloading**: KV cache offload to Host memory or remote storage"
+msgstr "**KV Cache 卸载** ：将 KV cache 卸载到主机内存或远程存储"
+
+#: ../../source/getting_started/container-images.rst:41
+msgid ""
+"**Prefill-Decode Disaggregation**: Separate prefill and decode workloads "
+"via NIXL"
+msgstr "**Prefill-Decode 分离** ：通过 NIXL 将 prefill 与 decode 工作负载分开"
+
+#: ../../source/getting_started/container-images.rst:43
+msgid "Use **upstream images** for:"
+msgstr "在以下场景使用 **上游镜像** ："
+
+#: ../../source/getting_started/container-images.rst:45
+msgid "Standard single-node inference without disaggregation"
+msgstr "无需分离的标准单节点推理"
+
+#: ../../source/getting_started/container-images.rst:46
+msgid "Development and testing without specialized networking"
+msgstr "不需要专用网络的开发和测试"
+
+#: ../../source/getting_started/container-images.rst:49
+msgid "Compatibility Matrix"
+msgstr "兼容性矩阵"
+
+#: ../../source/getting_started/container-images.rst:51
+msgid "The following table shows tested component versions for AIBrix v0.5.0:"
+msgstr "下表列出 AIBrix v0.5.0 已测试的组件版本："
+
+#: ../../source/getting_started/container-images.rst:53
+msgid "Component Versions"
+msgstr "组件版本"
+
+#: ../../source/getting_started/container-images.rst:57
+msgid "Component"
+msgstr "组件"
+
+#: ../../source/getting_started/container-images.rst:58
+msgid "vLLM Image"
+msgstr "vLLM 镜像"
+
+#: ../../source/getting_started/container-images.rst:59
+msgid "SGLang Image"
+msgstr "SGLang 镜像"
+
+#: ../../source/getting_started/container-images.rst:60
+msgid "Notes"
+msgstr "说明"
+
+#: ../../source/getting_started/container-images.rst:61
+msgid "Engine Version"
+msgstr "引擎版本"
+
+#: ../../source/getting_started/container-images.rst:62
+msgid "v0.10.2"
+msgstr "v0.10.2"
+
+#: ../../source/getting_started/container-images.rst:63
+msgid "v0.5.5.post3"
+msgstr "v0.5.5.post3"
+
+#: ../../source/getting_started/container-images.rst:64
+msgid "Stable inference engines"
+msgstr "稳定的推理引擎"
+
+#: ../../source/getting_started/container-images.rst:65
+msgid "CUDA Version"
+msgstr "CUDA 版本"
+
+#: ../../source/getting_started/container-images.rst:66
+msgid "12.8"
+msgstr "12.8"
+
+#: ../../source/getting_started/container-images.rst:67
+msgid "12.9"
+msgstr "12.9"
+
+#: ../../source/getting_started/container-images.rst:68
+msgid "CUDA toolkit version"
+msgstr "CUDA toolkit 版本"
+
+#: ../../source/getting_started/container-images.rst:69
+msgid "PyTorch Version"
+msgstr "PyTorch 版本"
+
+#: ../../source/getting_started/container-images.rst:70
+msgid "2.8"
+msgstr "2.8"
+
+#: ../../source/getting_started/container-images.rst:71
+msgid "2.9"
+msgstr "2.9"
+
+#: ../../source/getting_started/container-images.rst:72
+msgid "Auto-detected from base image"
+msgstr "从基础镜像自动检测"
+
+#: ../../source/getting_started/container-images.rst:73
+msgid "AIBrix KVCache"
+msgstr "AIBrix KVCache"
+
+#: ../../source/getting_started/container-images.rst:74
+#: ../../source/getting_started/container-images.rst:75
+#: ../../source/getting_started/container-images.rst:116
+msgid "v0.5.0"
+msgstr "v0.5.0"
+
+#: ../../source/getting_started/container-images.rst:76
+msgid "KV cache disaggregation support"
+msgstr "KV cache 分离支持"
+
+#: ../../source/getting_started/container-images.rst:77
+msgid "NIXL Version"
+msgstr "NIXL 版本"
+
+#: ../../source/getting_started/container-images.rst:78
+#: ../../source/getting_started/container-images.rst:79
+msgid "0.7.1"
+msgstr "0.7.1"
+
+#: ../../source/getting_started/container-images.rst:80
+msgid "UCX-based RDMA networking"
+msgstr "基于 UCX 的 RDMA 网络"
+
+#: ../../source/getting_started/container-images.rst:81
+msgid "UCX Version"
+msgstr "UCX 版本"
+
+#: ../../source/getting_started/container-images.rst:82
+#: ../../source/getting_started/container-images.rst:83
+msgid "1.19.0"
+msgstr "1.19.0"
+
+#: ../../source/getting_started/container-images.rst:84
+msgid "Unified Communication X"
+msgstr "Unified Communication X"
+
+#: ../../source/getting_started/container-images.rst:87
+msgid ""
+"PyTorch version is automatically extracted from the upstream base image "
+"to ensure compatibility. AIBrix KVCache is built against the exact "
+"PyTorch version from the base image."
+msgstr ""
+"PyTorch 版本会从上游基础镜像自动提取，以确保兼容性。AIBrix KVCache 针对基础镜像中的"
+"精确 PyTorch 版本构建。"
+
+#: ../../source/getting_started/container-images.rst:91
+msgid "Released Images (v0.5.0)"
+msgstr "已发布镜像（v0.5.0）"
+
+#: ../../source/getting_started/container-images.rst:93
+msgid "The following pre-built images are available for immediate use:"
+msgstr "以下预构建镜像可直接使用："
+
+#: ../../source/getting_started/container-images.rst:95
+msgid "**vLLM Image:**"
+msgstr "**vLLM 镜像：**"
+
+#: ../../source/getting_started/container-images.rst:101
+msgid "**SGLang Image:**"
+msgstr "**SGLang 镜像：**"
+
+#: ../../source/getting_started/container-images.rst:108
+msgid "Building Custom Images"
+msgstr "构建自定义镜像"
+
+#: ../../source/getting_started/container-images.rst:110
+msgid ""
+"For detailed build instructions and troubleshooting, see "
+"`build/container/README.md <https://github.com/vllm-"
+"project/aibrix/blob/main/build/container/README.md>`_."
+msgstr ""
+"详细构建说明和故障排查参见 `build/container/README.md <https://github.com/vllm-project/aibrix/blob/main/build/container/README.md>`_ "
+"。"
+
+#: ../../source/getting_started/container-images.rst:113
+msgid "Version History"
+msgstr "版本历史"
+
+#: ../../source/getting_started/container-images.rst:118
+msgid "**vLLM**: v0.10.2 with CUDA 12.8, PyTorch 2.8"
+msgstr "**vLLM** ：v0.10.2，CUDA 12.8，PyTorch 2.8"
+
+#: ../../source/getting_started/container-images.rst:119
+msgid "**SGLang**: v0.5.5.post3 with CUDA 12.9, PyTorch 2.9"
+msgstr "**SGLang** ：v0.5.5.post3，CUDA 12.9，PyTorch 2.9"
+
+#: ../../source/getting_started/container-images.rst:120
+msgid "**AIBrix KVCache**: v0.5.0"
+msgstr "**AIBrix KVCache** ：v0.5.0"
+
+#: ../../source/getting_started/container-images.rst:121
+msgid "**NIXL**: 0.7.1"
+msgstr "**NIXL** ：0.7.1"
+
+#: ../../source/getting_started/container-images.rst:122
+msgid "**UCX**: 1.19.0"
+msgstr "**UCX** ：1.19.0"
+
+#: ../../source/getting_started/container-images.rst:124
+msgid "Features:"
+msgstr "功能："
+
+#: ../../source/getting_started/container-images.rst:126
+msgid "Full KV cache offloading support"
+msgstr "完整的 KV cache 卸载支持"
+
+#: ../../source/getting_started/container-images.rst:127
+msgid "RDMA networking for distributed inference"
+msgstr "用于分布式推理的 RDMA 网络"
+
+#: ../../source/getting_started/container-images.rst:128
+msgid "Prefill-Decode disaggregation support"
+msgstr "Prefill-Decode 分离支持"
+
+#: ../../source/getting_started/container-images.rst:131
+msgid "Troubleshooting"
+msgstr "故障排查"
+
+#: ../../source/getting_started/container-images.rst:134
+msgid "Performance Issues"
+msgstr "性能问题"
+
+#: ../../source/getting_started/container-images.rst:136
+msgid "For RDMA networking issues:"
+msgstr "RDMA 网络问题："
+
+#: ../../source/getting_started/container-images.rst:138
+msgid "Verify RDMA devices are available: ``ibv_devices``"
+msgstr "确认 RDMA 设备可用：``ibv_devices``"
+
+#: ../../source/getting_started/container-images.rst:139
+msgid "Check UCX configuration: ``ucx_info -d``"
+msgstr "检查 UCX 配置：``ucx_info -d``"
+
+#: ../../source/getting_started/container-images.rst:140
+msgid "Test RDMA bandwidth: ``ib_write_bw``"
+msgstr "测试 RDMA 带宽：``ib_write_bw``"
+
+#: ../../source/getting_started/container-images.rst:141
+msgid "Ensure security policies allow RDMA access"
+msgstr "确保安全策略允许 RDMA 访问"
+
+#: ../../source/getting_started/container-images.rst:143
+msgid "For debugging utilities included in the image, run:"
+msgstr "镜像中包含的调试工具可运行："

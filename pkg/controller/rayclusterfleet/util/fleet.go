@@ -110,11 +110,12 @@ const (
 
 // NewDeploymentCondition creates a new deployment condition.
 func NewDeploymentCondition(condType orchestrationv1alpha1.RayClusterFleetConditionType, status v1.ConditionStatus, reason, message string) *orchestrationv1alpha1.RayClusterFleetCondition {
+	now := metav1.NewTime(NowFn())
 	return &orchestrationv1alpha1.RayClusterFleetCondition{
 		Type:               condType,
 		Status:             status,
-		LastUpdateTime:     metav1.Now(),
-		LastTransitionTime: metav1.Now(),
+		LastUpdateTime:     now,
+		LastTransitionTime: now,
 		Reason:             reason,
 		Message:            message,
 	}
@@ -448,7 +449,8 @@ func MaxUnavailable(deployment orchestrationv1alpha1.RayClusterFleet) int32 {
 		return int32(0)
 	}
 	// Error caught by validation
-	_, maxUnavailable, _ := ResolveFenceposts(deployment.Spec.Strategy.RollingUpdate.MaxSurge, deployment.Spec.Strategy.RollingUpdate.MaxUnavailable, *(deployment.Spec.Replicas))
+	surge, unavailable := rollingFenceposts(&deployment)
+	_, maxUnavailable, _ := ResolveFenceposts(surge, unavailable, *(deployment.Spec.Replicas))
 	if maxUnavailable > *deployment.Spec.Replicas {
 		return *deployment.Spec.Replicas
 	}
@@ -469,7 +471,8 @@ func MaxSurge(deployment orchestrationv1alpha1.RayClusterFleet) int32 {
 		return int32(0)
 	}
 	// Error caught by validation
-	maxSurge, _, _ := ResolveFenceposts(deployment.Spec.Strategy.RollingUpdate.MaxSurge, deployment.Spec.Strategy.RollingUpdate.MaxUnavailable, *(deployment.Spec.Replicas))
+	surge, unavailable := rollingFenceposts(&deployment)
+	maxSurge, _, _ := ResolveFenceposts(surge, unavailable, *(deployment.Spec.Replicas))
 	return maxSurge
 }
 
@@ -670,8 +673,8 @@ func FindOldReplicaSets(deployment *orchestrationv1alpha1.RayClusterFleet, rsLis
 func SetFromReplicaSetTemplate(fleet *orchestrationv1alpha1.RayClusterFleet, template orchestrationv1alpha1.RayClusterTemplateSpec) *orchestrationv1alpha1.RayClusterFleet {
 	fleet.Spec.Template.ObjectMeta = template.ObjectMeta
 	fleet.Spec.Template.Spec = template.Spec
-	fleet.Spec.Template.ObjectMeta.Labels = labelsutil.CloneAndRemoveLabel(
-		fleet.Spec.Template.ObjectMeta.Labels,
+	fleet.Spec.Template.Labels = labelsutil.CloneAndRemoveLabel(
+		fleet.Spec.Template.Labels,
 		appsv1.DefaultDeploymentUniqueLabelKey)
 	return fleet
 }
@@ -720,9 +723,34 @@ func GetAvailableReplicaCountForReplicaSets(replicaSets []*orchestrationv1alpha1
 	return totalAvailableReplicas
 }
 
+// StrategyType returns the strategy type of the fleet. An empty type is a rolling update, as
+// it is for a Deployment.
+func StrategyType(deployment *orchestrationv1alpha1.RayClusterFleet) appsv1.DeploymentStrategyType {
+	if deployment.Spec.Strategy.Type == "" {
+		return appsv1.RollingUpdateDeploymentStrategyType
+	}
+	return deployment.Spec.Strategy.Type
+}
+
+// rollingFenceposts returns the maxSurge and maxUnavailable of a rolling update. Each one that is
+// not set is 25%, as it is for a Deployment.
+func rollingFenceposts(deployment *orchestrationv1alpha1.RayClusterFleet) (maxSurge, maxUnavailable *intstrutil.IntOrString) {
+	surge, unavailable := intstrutil.FromString("25%"), intstrutil.FromString("25%")
+	maxSurge, maxUnavailable = &surge, &unavailable
+	if ru := deployment.Spec.Strategy.RollingUpdate; ru != nil {
+		if ru.MaxSurge != nil {
+			maxSurge = ru.MaxSurge
+		}
+		if ru.MaxUnavailable != nil {
+			maxUnavailable = ru.MaxUnavailable
+		}
+	}
+	return maxSurge, maxUnavailable
+}
+
 // IsRollingUpdate returns true if the strategy type is a rolling update.
 func IsRollingUpdate(deployment *orchestrationv1alpha1.RayClusterFleet) bool {
-	return deployment.Spec.Strategy.Type == appsv1.RollingUpdateDeploymentStrategyType
+	return StrategyType(deployment) == appsv1.RollingUpdateDeploymentStrategyType
 }
 
 // DeploymentComplete considers a deployment to be complete once all of its desired replicas
@@ -804,10 +832,11 @@ func DeploymentTimedOut(ctx context.Context, deployment *orchestrationv1alpha1.R
 // 1) The new RS is saturated: newRS's replicas == deployment's replicas
 // 2) Max number of pods allowed is reached: deployment's replicas + maxSurge == all RSs' replicas
 func NewRSNewReplicas(deployment *orchestrationv1alpha1.RayClusterFleet, allRSs []*orchestrationv1alpha1.RayClusterReplicaSet, newRS *orchestrationv1alpha1.RayClusterReplicaSet) (int32, error) {
-	switch deployment.Spec.Strategy.Type {
+	switch StrategyType(deployment) {
 	case appsv1.RollingUpdateDeploymentStrategyType:
 		// Check if we can scale up.
-		maxSurge, err := intstrutil.GetScaledValueFromIntOrPercent(deployment.Spec.Strategy.RollingUpdate.MaxSurge, int(*(deployment.Spec.Replicas)), true)
+		maxSurgeValue, _ := rollingFenceposts(deployment)
+		maxSurge, err := intstrutil.GetScaledValueFromIntOrPercent(maxSurgeValue, int(*(deployment.Spec.Replicas)), true)
 		if err != nil {
 			return 0, err
 		}
@@ -1056,7 +1085,7 @@ func ComputeHash(template *orchestrationv1alpha1.RayClusterTemplateSpec, collisi
 // Copied from k8s.io/kubernetes/pkg/util/hash/hash.go#DeepHashObject
 func DeepHashObject(hasher hash.Hash, objectToWrite interface{}) {
 	hasher.Reset()
-	fmt.Fprintf(hasher, "%v", dump.ForHash(objectToWrite))
+	_, _ = fmt.Fprintf(hasher, "%v", dump.ForHash(objectToWrite))
 }
 
 // self options

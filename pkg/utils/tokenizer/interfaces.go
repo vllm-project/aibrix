@@ -23,6 +23,14 @@ type Tokenizer interface {
 	TokenizeInputText(string) ([]byte, error)
 }
 
+// ContextTokenizer optionally supports canceling text tokenization while retaining
+// the tokenizer's configured options. Existing Tokenizer implementations need not
+// implement this interface.
+type ContextTokenizer interface {
+	Tokenizer
+	TokenizeInputTextWithContext(context.Context, string) ([]byte, error)
+}
+
 // ExtendedTokenizer represents an extended tokenizer interface with advanced features
 // Advanced features include:
 //   - Context-aware tokenization with cancellation support

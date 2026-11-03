@@ -17,12 +17,86 @@ limitations under the License.
 package util
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
+	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 )
+
+func TestNewDeploymentCondition(t *testing.T) {
+	now := time.Date(2025, 1, 1, 0, 0, 0, 123456789, time.UTC)
+	oldNowFn, calls := NowFn, 0
+	NowFn = func() time.Time {
+		calls++
+		return now.Add(time.Duration(calls-1) * time.Second)
+	}
+	t.Cleanup(func() { NowFn = oldNowFn })
+	cond := NewDeploymentCondition(orchestrationv1alpha1.RayClusterFleetProgressing, corev1.ConditionUnknown, PausedDeployReason, "Deployment is paused")
+	want := orchestrationv1alpha1.RayClusterFleetCondition{
+		Type: orchestrationv1alpha1.RayClusterFleetProgressing, Status: corev1.ConditionUnknown,
+		Reason: PausedDeployReason, Message: "Deployment is paused",
+		LastUpdateTime: metav1.NewTime(now), LastTransitionTime: metav1.NewTime(now),
+	}
+	if calls != 1 || !reflect.DeepEqual(*cond, want) {
+		t.Fatalf("condition = %+v, clock calls = %d, want %+v and one call", cond, calls, want)
+	}
+	data, err := json.Marshal(cond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored orchestrationv1alpha1.RayClusterFleetCondition
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatal(err)
+	}
+	want.LastUpdateTime, want.LastTransitionTime = metav1.NewTime(now.Truncate(time.Second)), metav1.NewTime(now.Truncate(time.Second))
+	if stored.Type != want.Type || stored.Status != want.Status || stored.Reason != want.Reason || stored.Message != want.Message ||
+		!stored.LastUpdateTime.Equal(&want.LastUpdateTime) || !stored.LastTransitionTime.Equal(&want.LastTransitionTime) {
+		t.Errorf("serialized condition = %+v, want %+v", stored, want)
+	}
+}
+
+func TestSetDeploymentCondition(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		status corev1.ConditionStatus
+		reason string
+	}{
+		{"same status and reason", corev1.ConditionUnknown, PausedDeployReason},
+		{"same status, new reason", corev1.ConditionUnknown, ResumedDeployReason},
+		{"new status", corev1.ConditionTrue, ReplicaSetUpdatedReason},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+			oldNowFn := NowFn
+			NowFn = func() time.Time { return now }
+			t.Cleanup(func() { NowFn = oldNowFn })
+			initial := NewDeploymentCondition(orchestrationv1alpha1.RayClusterFleetProgressing, corev1.ConditionUnknown, PausedDeployReason, "Deployment is paused")
+			status := orchestrationv1alpha1.RayClusterFleetStatus{}
+			SetDeploymentCondition(&status, *initial)
+			now = now.Add(time.Hour)
+			candidate := NewDeploymentCondition(initial.Type, tt.status, tt.reason, "new message")
+			want := *candidate
+			if tt.status == initial.Status {
+				want.LastTransitionTime = initial.LastTransitionTime
+				if tt.reason == initial.Reason {
+					want = *initial
+				}
+			}
+			SetDeploymentCondition(&status, *candidate)
+			if len(status.Conditions) != 1 || !reflect.DeepEqual(status.Conditions[0], want) {
+				t.Errorf("conditions = %+v, want only %+v", status.Conditions, want)
+			}
+		})
+	}
+}
 
 func newRS(annotations map[string]string) *orchestrationv1alpha1.RayClusterReplicaSet {
 	rs := &orchestrationv1alpha1.RayClusterReplicaSet{ObjectMeta: metav1.ObjectMeta{}}
@@ -139,6 +213,42 @@ func TestReplicasAnnotationsNeedUpdate(t *testing.T) {
 			got := ReplicasAnnotationsNeedUpdate(rs, tt.desired, tt.max)
 			if got != tt.want {
 				t.Errorf("needsUpdate = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// An unset strategy field takes the Deployment default: a rolling update with 25% for maxSurge and maxUnavailable.
+func TestStrategyDefaults(t *testing.T) {
+	tests := []struct {
+		name            string
+		strategy        appsv1.DeploymentStrategy
+		wantRolling     bool
+		wantSurge       int32
+		wantUnavailable int32
+	}{
+		{name: "empty strategy", wantRolling: true, wantSurge: 5, wantUnavailable: 5},
+		{name: "type without rollingUpdate", strategy: appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType}, wantRolling: true, wantSurge: 5, wantUnavailable: 5},
+		{name: "empty rollingUpdate", strategy: appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType, RollingUpdate: &appsv1.RollingUpdateDeployment{}}, wantRolling: true, wantSurge: 5, wantUnavailable: 5},
+		{name: "maxSurge only", strategy: appsv1.DeploymentStrategy{RollingUpdate: &appsv1.RollingUpdateDeployment{MaxSurge: ptr.To(intstr.FromInt32(1))}}, wantRolling: true, wantSurge: 1, wantUnavailable: 5},
+		{name: "both set", strategy: appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType, RollingUpdate: &appsv1.RollingUpdateDeployment{MaxSurge: ptr.To(intstr.FromInt32(1)), MaxUnavailable: ptr.To(intstr.FromInt32(0))}}, wantRolling: true, wantSurge: 1, wantUnavailable: 0},
+		{name: "recreate", strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fleet := orchestrationv1alpha1.RayClusterFleet{Spec: orchestrationv1alpha1.RayClusterFleetSpec{Replicas: ptr.To(int32(20)), Strategy: tt.strategy}}
+			if got := IsRollingUpdate(&fleet); got != tt.wantRolling {
+				t.Errorf("IsRollingUpdate = %v, want %v", got, tt.wantRolling)
+			}
+			if got := MaxSurge(fleet); got != tt.wantSurge {
+				t.Errorf("MaxSurge = %d, want %d", got, tt.wantSurge)
+			}
+			if got := MaxUnavailable(fleet); got != tt.wantUnavailable {
+				t.Errorf("MaxUnavailable = %d, want %d", got, tt.wantUnavailable)
+			}
+			newRS := &orchestrationv1alpha1.RayClusterReplicaSet{Spec: orchestrationv1alpha1.RayClusterReplicaSetSpec{Replicas: ptr.To(int32(0))}}
+			if got, err := NewRSNewReplicas(&fleet, nil, newRS); err != nil || got != 20 {
+				t.Errorf("NewRSNewReplicas = %d, %v, want 20, nil", got, err)
 			}
 		})
 	}

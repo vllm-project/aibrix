@@ -16,6 +16,17 @@ metrics (typically via `kube-prometheus-stack` and the ServiceMonitors under
 Official import URLs are also listed in
 [Observability](../../docs/source/production/observability.rst).
 
+For requests with an identified model, gRPC Canceled preserves an already-recorded
+response outcome. Otherwise, completed requests record `gateway_request_success`/200
+and incomplete requests record `client_cancelled`/499. Outside shutdown,
+incomplete EOF without a recorded outcome records `client_cancelled_eof`/499.
+These are metric classifications; the Canceled branch still returns gRPC Canceled.
+A completed ImmediateResponse failure (for example, malformed non-streaming
+upstream JSON) also prevents a later success increment at proactive completion
+or in the completed-EOF fallback. A recorded response outcome also suppresses
+later incomplete-EOF, gRPC receive-error, and pre-receive context-cancel counters.
+Send-failure and shutdown accounting are unchanged.
+
 ## Import
 
 1. Open Grafana → **Dashboards** → **New** → **Import**.
@@ -65,7 +76,7 @@ Note the naming split: Go controller metrics use underscores
 ### Enable runtime scraping
 
 ```bash
-# ServiceMonitor (attaches bounded `pool` label from pool.aibrix.ai/name)
+# ServiceMonitor (attaches bounded `pool` label from claim.model.aibrix.ai/pool)
 kubectl apply -f observability/monitor/service_monitor_modelclaim_runtime.yaml
 
 # Sample warm pool includes a Service labeled aibrix.ai/metrics=modelclaim-runtime
@@ -74,10 +85,10 @@ kubectl apply -f samples/modelclaim/warm-runtime-pool.yaml
 
 Dashboard variables cascade as **namespace → pool → pod → model**. The `pool`
 label is produced by the ServiceMonitor relabel rule (Prometheus cannot use
-`pool.aibrix.ai/name` as a label name). The **Pool Policy Valid** tile is keyed
-by `namespace`/`deployment` (not `pool`/`pod`/`model`), so it follows only the
-`namespace` variable and reports the worst-case validity across warm-pool
-Deployments in the selected namespace(s).
+`claim.model.aibrix.ai/pool` as a label name). The **Pool Policy Valid** tile
+is keyed by `namespace`/`deployment` (not `pool`/`pod`/`model`), so it follows
+only the `namespace` variable and reports the worst-case validity across
+warm-pool Deployments in the selected namespace(s).
 
 ### Operational panels
 

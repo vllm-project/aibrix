@@ -21,11 +21,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
 )
@@ -38,7 +40,7 @@ func testPod() *v1.Pod {
 
 func TestPrepareSGLangRequestBodies_ToolsByteIdentity(t *testing.T) {
 	original := []byte(toolRequestBody)
-	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345)
+	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	// Extract the tools array from each body and compare byte-for-byte.
@@ -59,7 +61,7 @@ func TestPrepareSGLangRequestBodies_ToolsByteIdentity(t *testing.T) {
 
 func TestPrepareSGLangRequestBodies_BootstrapFields(t *testing.T) {
 	original := []byte(toolRequestBody)
-	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345)
+	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	// Bootstrap fields must be present and equal in both bodies.
@@ -72,7 +74,7 @@ func TestPrepareSGLangRequestBodies_BootstrapFields(t *testing.T) {
 
 func TestPrepareSGLangRequestBodies_BootstrapOverwritesClientValue(t *testing.T) {
 	original := []byte(`{"model":"m","messages":[],"bootstrap_host":"client-value","bootstrap_port":1111,"bootstrap_room":2222}`)
-	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 99999)
+	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 99999, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	assert.Equal(t, "10.0.0.1", gjson.GetBytes(decodeBody, "bootstrap_host").String())
@@ -84,7 +86,7 @@ func TestPrepareSGLangRequestBodies_BootstrapOverwritesClientValue(t *testing.T)
 
 func TestPrepareSGLangRequestBodies_DecodeRetainsGenerationParams(t *testing.T) {
 	original := []byte(toolRequestBody)
-	_, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345)
+	_, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	// Decode body should retain the client's generation parameters.
@@ -96,7 +98,7 @@ func TestPrepareSGLangRequestBodies_DecodeRetainsGenerationParams(t *testing.T) 
 
 func TestPrepareSGLangRequestBodies_PrefillControlFields(t *testing.T) {
 	original := []byte(toolRequestBody)
-	prefillBody, _, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345)
+	prefillBody, _, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	assert.Equal(t, int64(1), gjson.GetBytes(prefillBody, "max_tokens").Int())
@@ -108,7 +110,7 @@ func TestPrepareSGLangRequestBodies_PrefillControlFields(t *testing.T) {
 
 func TestPrepareSGLangRequestBodies_MissingOptionalFields(t *testing.T) {
 	original := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
-	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345)
+	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	// Should still set prefill control fields even if they were absent.
@@ -124,13 +126,13 @@ func TestPrepareSGLangRequestBodies_MissingOptionalFields(t *testing.T) {
 }
 
 func TestPrepareSGLangRequestBodies_InvalidJSON(t *testing.T) {
-	_, _, err := prepareSGLangRequestBodies([]byte(`{not json`), "10.0.0.1", 8998, 12345)
+	_, _, err := prepareSGLangRequestBodies([]byte(`{not json`), "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	assert.Error(t, err)
 }
 
 func TestPrepareSGLangRequestBodies_NonObjectJSON(t *testing.T) {
 	// A JSON array is valid JSON but not an object.
-	_, _, err := prepareSGLangRequestBodies([]byte(`[1,2,3]`), "10.0.0.1", 8998, 12345)
+	_, _, err := prepareSGLangRequestBodies([]byte(`[1,2,3]`), "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	assert.Error(t, err)
 }
 
@@ -145,7 +147,7 @@ func TestPrepareSGLangRequestBodies_LargeRequestBody(t *testing.T) {
 	}
 	large += `],"max_tokens":512}`
 
-	prefillBody, decodeBody, err := prepareSGLangRequestBodies([]byte(large), "10.0.0.1", 8998, 12345)
+	prefillBody, decodeBody, err := prepareSGLangRequestBodies([]byte(large), "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	// Verify messages are byte-identical.
@@ -155,7 +157,7 @@ func TestPrepareSGLangRequestBodies_LargeRequestBody(t *testing.T) {
 
 func TestPrepareSGLangRequestBodies_SameRoomInBothBodies(t *testing.T) {
 	original := []byte(toolRequestBody)
-	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 77777)
+	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 77777, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	prefillRoom := gjson.GetBytes(prefillBody, "bootstrap_room").Int()
@@ -163,10 +165,10 @@ func TestPrepareSGLangRequestBodies_SameRoomInBothBodies(t *testing.T) {
 	assert.Equal(t, prefillRoom, decodeRoom, "bootstrap_room must be the same in prefill and decode")
 }
 
-func TestPreparePrefillPayload_ErrorDoesNotModifyReqBody(t *testing.T) {
-	// PreparePrefillPayload does not call ValidateSGLangRequest itself (Route()
-	// does that). The defense-in-depth guard in prepareSGLangRequestBodies
-	// catches invalid JSON and returns an error without modifying ReqBody.
+func TestAugmentPrefillRequest_ErrorDoesNotModifyReqBody(t *testing.T) {
+	// AugmentPrefillRequest does not call ValidateSGLangRequest itself (Route()
+	// does that). The defense-in-depth guard in sglangDecodeBody catches
+	// invalid JSON and returns an error without modifying ReqBody.
 	originalBody := []byte(`{not json`)
 	routingCtx := &types.RoutingContext{
 		ReqBody: originalBody,
@@ -175,14 +177,14 @@ func TestPreparePrefillPayload_ErrorDoesNotModifyReqBody(t *testing.T) {
 	handler := &SGLangHandler{}
 	pod := testPod()
 
-	_, err := handler.PreparePrefillPayload(routingCtx, pod)
+	_, err := handler.AugmentPrefillRequest(routingCtx, pod, routingCtx.ReqBody)
 	assert.Error(t, err)
 
 	// ReqBody should be unchanged on error.
 	assert.Equal(t, originalBody, routingCtx.ReqBody)
 }
 
-func TestPreparePrefillPayload_SuccessUpdatesReqBody(t *testing.T) {
+func TestAugmentPrefillRequest_SuccessUpdatesReqBody(t *testing.T) {
 	originalBody := []byte(toolRequestBody)
 	routingCtx := &types.RoutingContext{
 		ReqBody: originalBody,
@@ -191,16 +193,22 @@ func TestPreparePrefillPayload_SuccessUpdatesReqBody(t *testing.T) {
 	handler := &SGLangHandler{}
 	pod := testPod()
 
-	prefillBody, err := handler.PreparePrefillPayload(routingCtx, pod)
+	prefillBase, err := handler.AugmentPrefillRequest(routingCtx, pod, routingCtx.ReqBody)
 	require.NoError(t, err)
 
-	// After success, ReqBody should be the decode body (with bootstrap fields).
+	// After success, ReqBody should be the decode body (with bootstrap fields),
+	// and the returned prefill base body is that same decode body: the common
+	// prefill control fields are applied by prefill.PreparePayload on top.
 	assert.NotEqual(t, originalBody, routingCtx.ReqBody, "ReqBody should be updated to decode body")
+	assert.Equal(t, routingCtx.ReqBody, prefillBase)
 	assert.Equal(t, "10.0.0.1", gjson.GetBytes(routingCtx.ReqBody, "bootstrap_host").String())
+	assert.Equal(t, int64(8998), gjson.GetBytes(routingCtx.ReqBody, "bootstrap_port").Int())
+	assert.True(t, gjson.GetBytes(routingCtx.ReqBody, "bootstrap_room").Exists())
 
-	// Prefill body should have the prefill control fields.
-	assert.Equal(t, int64(1), gjson.GetBytes(prefillBody, "max_tokens").Int())
-	assert.False(t, gjson.GetBytes(prefillBody, "stream").Bool())
+	// Client generation params are untouched on the decode body.
+	assert.Equal(t, gjson.GetBytes(originalBody, "max_tokens").Raw, gjson.GetBytes(routingCtx.ReqBody, "max_tokens").Raw)
+	assert.Equal(t, gjson.GetBytes(originalBody, "messages").Raw, gjson.GetBytes(routingCtx.ReqBody, "messages").Raw)
+	assert.Equal(t, gjson.GetBytes(originalBody, "tools").Raw, gjson.GetBytes(routingCtx.ReqBody, "tools").Raw)
 }
 
 func TestPrepareSGLangRequestBodies_SHA256Stability_100Iterations(t *testing.T) {
@@ -209,7 +217,7 @@ func TestPrepareSGLangRequestBodies_SHA256Stability_100Iterations(t *testing.T) 
 	var firstPrefillHash, firstDecodeHash string
 
 	for i := 0; i < 100; i++ {
-		prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345)
+		prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 		require.NoError(t, err)
 
 		// Hash only the non-bootstrap, non-control fields to check stability.
@@ -229,28 +237,6 @@ func TestPrepareSGLangRequestBodies_SHA256Stability_100Iterations(t *testing.T) 
 			assert.Equal(t, firstPrefillHash, prefillHex, "prefill prompt hash must be stable across iterations")
 			assert.Equal(t, firstDecodeHash, decodeHex, "decode prompt hash must be stable across iterations")
 		}
-	}
-}
-
-func TestSGLangHandlerImplementsRawPreparer(t *testing.T) {
-	// Verify SGLangHandler satisfies the RawPrefillPayloadPreparer interface.
-	handler := &SGLangHandler{}
-	var _ RawPrefillPayloadPreparer = handler
-	assert.NotNil(t, handler)
-}
-
-// Verify that non-SGLang handlers (DefaultHandler, VLLMHandler, TRTLLMHandler)
-// do NOT implement RawPrefillPayloadPreparer, ensuring they keep using the
-// unmarshal/marshal path.
-func TestOtherHandlersDoNotImplementRawPreparer(t *testing.T) {
-	handlers := []EngineHandler{
-		&DefaultHandler{},
-		&VLLMHandler{},
-		&TRTLLMHandler{},
-	}
-	for _, h := range handlers {
-		_, ok := h.(RawPrefillPayloadPreparer)
-		assert.False(t, ok, "%s should not implement RawPrefillPayloadPreparer", h.Name())
 	}
 }
 
@@ -334,7 +320,7 @@ func TestPrepareSGLangRequestBodies_DuplicateNonControlledKeyAllowed(t *testing.
 	// Duplicate keys that are NOT controlled by the gateway should not cause rejection.
 	// (This is valid JSON per RFC 8259, though unusual.)
 	original := []byte(`{"model":"m","messages":[],"extra":"a","extra":"b"}`)
-	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345)
+	prefillBody, decodeBody, err := prepareSGLangRequestBodies(original, "10.0.0.1", 8998, 12345, "test-rid-0000000000000000")
 	require.NoError(t, err)
 
 	// Bootstrap fields must still be set correctly.
@@ -344,4 +330,57 @@ func TestPrepareSGLangRequestBodies_DuplicateNonControlledKeyAllowed(t *testing.
 	assert.Equal(t, 1, countTopLevelKeyOccurrences(prefillBody, "max_tokens"))
 	assert.Equal(t, 1, countTopLevelKeyOccurrences(prefillBody, "stream"))
 	assert.Equal(t, 0, countTopLevelKeyOccurrences(prefillBody, "stream_options"))
+}
+
+func TestAugmentPrefillRequest_ResponsesUsesRequestID(t *testing.T) {
+	originalBody := []byte(`{"model":"m","input":"hello","instructions":"be brief","max_output_tokens":128,"max_tokens":256,"max_completion_tokens":256,"stream":true,"stream_options":{"include_usage":true},"min_tokens":5,"store":true,"rid":"client-rid"}`)
+	routingCtx := types.NewRoutingContext(context.Background(), "", "m", "", "req-responses-1", "")
+	routingCtx.ReqBody = originalBody
+	routingCtx.ReqPath = pd.ResponsesPath
+	handler := &SGLangHandler{}
+	pod := testPod()
+
+	prefillBase, err := handler.AugmentPrefillRequest(routingCtx, pod, routingCtx.ReqBody)
+	require.NoError(t, err)
+
+	requestID := gjson.GetBytes(routingCtx.ReqBody, "request_id").String()
+	require.NotEmpty(t, requestID)
+	assert.True(t, strings.HasPrefix(requestID, "resp_req-responses-1-"),
+		"SGLang Responses ids must start with resp_ and retain the gateway request id: %q", requestID)
+	assert.Equal(t, requestID, routingCtx.PDRequestID(),
+		"the abort rid must be the engine-visible Responses request_id")
+	assert.False(t, gjson.GetBytes(routingCtx.ReqBody, "rid").Exists(),
+		"Responses does not use rid; a client value must not survive")
+	assert.True(t, gjson.GetBytes(routingCtx.ReqBody, "store").Bool(),
+		"the client decode body keeps its store value")
+	assert.Equal(t, int64(128), gjson.GetBytes(routingCtx.ReqBody, "max_output_tokens").Int(),
+		"the decode body keeps the client max_output_tokens")
+	assert.Equal(t, requestID, gjson.GetBytes(prefillBase, "request_id").String())
+	assert.Equal(t, "10.0.0.1", gjson.GetBytes(prefillBase, "bootstrap_host").String())
+	assert.Equal(t, int64(8998), gjson.GetBytes(prefillBase, "bootstrap_port").Int())
+	assert.True(t, gjson.GetBytes(prefillBase, "bootstrap_room").Exists())
+	assert.Equal(t, "hello", gjson.GetBytes(routingCtx.ReqBody, "input").String())
+	assert.Equal(t, "be brief", gjson.GetBytes(routingCtx.ReqBody, "instructions").String())
+
+	// The common prefill controls must use max_output_tokens, and SGLang needs 3
+	// because it subtracts two tokens for BOS/EOS.
+	prefillBody, err := pd.ApplyPrefillControlFieldsForPath(prefillBase, pd.EngineSGLang, pd.ResponsesPath)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), gjson.GetBytes(prefillBody, "max_output_tokens").Int())
+	assert.False(t, gjson.GetBytes(prefillBody, "stream").Bool())
+	assert.False(t, gjson.GetBytes(prefillBody, "max_tokens").Exists())
+	assert.False(t, gjson.GetBytes(prefillBody, "max_completion_tokens").Exists())
+	assert.False(t, gjson.GetBytes(prefillBody, "stream_options").Exists())
+	assert.False(t, gjson.GetBytes(prefillBody, "min_tokens").Exists())
+	store := gjson.GetBytes(prefillBody, "store")
+	assert.True(t, store.Exists(), "the prefill body must carry an explicit store value")
+	assert.False(t, store.Bool(), "the internal prefill response must not be stored")
+	assert.False(t, gjson.GetBytes(prefillBody, "rid").Exists())
+}
+
+func TestValidateSGLangRequest_DuplicateResponsesRequestID(t *testing.T) {
+	body := []byte(`{"model":"m","input":"hi","request_id":"a","request_id":"b"}`)
+	err := ValidateSGLangRequest(body)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate")
 }

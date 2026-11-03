@@ -33,17 +33,16 @@ install(CODE "set(CMAKE_INSTALL_LOCAL_ONLY TRUE)" ALL_COMPONENTS)
 set(PYTHON_SUPPORTED_VERSIONS "3.9" "3.10" "3.11" "3.12")
 
 #
-# Supported/expected torch versions for CUDA/ROCm.
+# Minimum supported torch versions for CUDA/ROCm.
 #
-# Currently, having an incorrect pytorch version results in a warning
-# rather than an error.
+# Versions below the minimum produce a warning rather than an error.
 #
 # Note: the CUDA torch version is derived from pyproject.toml and various
 # requirements.txt files and should be kept consistent.  The ROCm torch
 # versions are derived from docker/Dockerfile.rocm
 #
-set(TORCH_SUPPORTED_VERSION_CUDA "2.7.0")
-set(TORCH_SUPPORTED_VERSION_ROCM "2.7.0")
+set(TORCH_MIN_VERSION_CUDA "2.7.0")
+set(TORCH_MIN_VERSION_ROCM "2.7.0")
 
 #
 # Try to find python package with an executable that exactly matches
@@ -79,7 +78,12 @@ find_package(Torch REQUIRED)
 # Supported NVIDIA architectures.
 # This check must happen after find_package(Torch) because that's when CMAKE_CUDA_COMPILER_VERSION gets defined
 if(DEFINED CMAKE_CUDA_COMPILER_VERSION AND
-   CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.8)
+   CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
+  # CUDA 13 removes offline compilation support for Volta (7.0/7.2)
+  # and older GPU architectures.
+  set(CUDA_SUPPORTED_ARCHS "7.5;8.0;8.6;8.7;8.9;9.0;10.0;10.1;12.0")
+elseif(DEFINED CMAKE_CUDA_COMPILER_VERSION AND
+       CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.8)
   set(CUDA_SUPPORTED_ARCHS "7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0;10.0;10.1;12.0")
 else()
   set(CUDA_SUPPORTED_ARCHS "7.0;7.2;7.5;8.0;8.6;8.7;8.9;9.0")
@@ -92,9 +96,9 @@ endif()
 if (CUDA_FOUND)
   set(AIBRIX_GPU_LANG "CUDA")
 
-  if (NOT Torch_VERSION VERSION_EQUAL ${TORCH_SUPPORTED_VERSION_CUDA})
-    message(WARNING "Pytorch version ${TORCH_SUPPORTED_VERSION_CUDA} "
-      "expected for CUDA build, saw ${Torch_VERSION} instead.")
+  if (Torch_VERSION VERSION_LESS ${TORCH_MIN_VERSION_CUDA})
+    message(WARNING "Pytorch version ${TORCH_MIN_VERSION_CUDA} or newer "
+      "required for CUDA build, saw ${Torch_VERSION} instead.")
   endif()
 else()
   message(FATAL_ERROR "Can't find CUDA installation.")

@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -48,6 +49,34 @@ vllm_time_to_first_token_seconds_bucket{model_name="meta-llama/Llama-2-7b-chat-h
 vllm_time_to_first_token_seconds_bucket{model_name="meta-llama/Llama-2-7b-chat-hf",le="+Inf"} 5.0
 vllm_time_to_first_token_seconds_sum{model_name="meta-llama/Llama-2-7b-chat-hf"} 0.15
 vllm_time_to_first_token_seconds_count{model_name="meta-llama/Llama-2-7b-chat-hf"} 5.0
+`
+
+// mockVllmSleepStateMetrics deliberately lists the "awake" instance last, the
+// order a naive Metric[0] read would get wrong: vLLM registers the three
+// sleep_state series in "awake", "weights_offloaded", "discard_all" order
+// today, but nothing in the Prometheus exposition format guarantees a scrape
+// preserves that, and this fixture must not rely on it either. The first
+// listed instance (weights_offloaded=1.0) also deliberately differs from the
+// correct awake=0.0 answer: a fixture whose first instance happens to share
+// the awake series' value would pass even without label filtering.
+const mockVllmSleepStateMetrics = `# HELP vllm:engine_sleep_state Engine sleep state.
+# TYPE vllm:engine_sleep_state gauge
+vllm:engine_sleep_state{model_name="meta-llama/Llama-2-7b-chat-hf",sleep_state="weights_offloaded"} 1.0
+vllm:engine_sleep_state{model_name="meta-llama/Llama-2-7b-chat-hf",sleep_state="discard_all"} 0.0
+vllm:engine_sleep_state{model_name="meta-llama/Llama-2-7b-chat-hf",sleep_state="awake"} 0.0
+`
+
+// mockVllmSleepLevel2Metrics is the same family as mockVllmSleepStateMetrics
+// but at sleep level 2 (discard_all=1, awake=0), with discard_all listed
+// last. aggregateModelMetric's gauge folding keeps whichever instance a
+// scrape lists last; without a label filter in the model-scoped path,
+// discard_all=1 folding in last would read as "awake" (1 == awake's own
+// truthy encoding) and hide the very state this metric exists to report.
+const mockVllmSleepLevel2Metrics = `# HELP vllm:engine_sleep_state Engine sleep state.
+# TYPE vllm:engine_sleep_state gauge
+vllm:engine_sleep_state{model_name="meta-llama/Llama-2-7b-chat-hf",sleep_state="awake"} 0.0
+vllm:engine_sleep_state{model_name="meta-llama/Llama-2-7b-chat-hf",sleep_state="weights_offloaded"} 0.0
+vllm:engine_sleep_state{model_name="meta-llama/Llama-2-7b-chat-hf",sleep_state="discard_all"} 1.0
 `
 
 const mockSglangMetrics = `# HELP sglang_running_requests Number of running requests.
@@ -98,7 +127,7 @@ func setupMockServer(metrics string, statusCode int, delay time.Duration) *httpt
 		}
 		w.WriteHeader(statusCode)
 		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprint(w, metrics)
+		_, _ = fmt.Fprint(w, metrics)
 	}))
 }
 
@@ -278,6 +307,67 @@ func TestEngineMetricsFetcher_FetchTypedMetric(t *testing.T) {
 	}
 }
 
+// TestEngineMetricsFetcher_FetchTypedMetric_SleepStateLabelFilter covers the
+// label-filtered read path (RequiredLabelKey/RequiredLabelValue) that
+// EngineSleepState relies on: vllm:engine_sleep_state reports three instances
+// under the same name, distinguished only by the sleep_state label, and the
+// mock fixture lists "awake" last so a Metric[0] read (the previous,
+// unfiltered behavior) would return the wrong series.
+func TestEngineMetricsFetcher_FetchTypedMetric_SleepStateLabelFilter(t *testing.T) {
+	setupMockMetrics()
+
+	server := setupMockServer(mockVllmSleepStateMetrics, 200, 0)
+	defer server.Close()
+
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+	fetcher := NewEngineMetricsFetcher()
+
+	value, err := fetcher.FetchTypedMetric(context.Background(), endpoint, "vllm", "test-pod", EngineSleepState)
+	require.NoError(t, err)
+	require.NotNil(t, value)
+	assert.Equal(t, 0.0, value.GetSimpleValue(), "must read the awake=0 series, not whichever instance the scrape listed first")
+}
+
+// TestEngineMetricsFetcher_FetchAllTypedMetrics_SleepStateLabelFilter covers
+// the path the cache worker actually calls for EngineSleepState: it is
+// registered as PodModelMetricScope, so FetchAllTypedMetrics dispatches to
+// parseModelMetricsFromFamily, not parseMetricFromFamily / FetchTypedMetric
+// above. That model-scoped path folds same-named instances per model_name
+// with aggregateModelMetric, which for a gauge keeps whichever instance a
+// scrape lists last; without RequiredLabelKey filtering there too, the
+// backstop this metric feeds stays scrape-order dependent, the exact bug it
+// exists to fix (review on #2735).
+func TestEngineMetricsFetcher_FetchAllTypedMetrics_SleepStateLabelFilter(t *testing.T) {
+	setupMockMetrics()
+	fetcher := NewEngineMetricsFetcher()
+	ctx := context.Background()
+	const key = "meta-llama/Llama-2-7b-chat-hf/engine_sleep_state"
+
+	t.Run("awake listed last, weights_offloaded first", func(t *testing.T) {
+		server := setupMockServer(mockVllmSleepStateMetrics, 200, 0)
+		defer server.Close()
+		endpoint := strings.TrimPrefix(server.URL, "http://")
+
+		result, err := fetcher.FetchAllTypedMetrics(ctx, endpoint, "vllm", "test-pod", []string{EngineSleepState})
+		require.NoError(t, err)
+		require.Contains(t, result.ModelMetrics, key)
+		assert.Equal(t, 0.0, result.ModelMetrics[key].GetSimpleValue(),
+			"must read the awake series regardless of which instance the scrape lists last")
+	})
+
+	t.Run("sleep level 2, discard_all listed last", func(t *testing.T) {
+		server := setupMockServer(mockVllmSleepLevel2Metrics, 200, 0)
+		defer server.Close()
+		endpoint := strings.TrimPrefix(server.URL, "http://")
+
+		result, err := fetcher.FetchAllTypedMetrics(ctx, endpoint, "vllm", "test-pod", []string{EngineSleepState})
+		require.NoError(t, err)
+		require.Contains(t, result.ModelMetrics, key)
+		assert.Equal(t, 0.0, result.ModelMetrics[key].GetSimpleValue(),
+			"discard_all=1 folding in last must not read as awake=1: the engine is asleep at level 2")
+	})
+}
+
 func TestEngineMetricsFetcher_FetchAllTypedMetrics(t *testing.T) {
 	setupMockMetrics()
 
@@ -430,7 +520,7 @@ func TestEngineMetricsFetcher_RetryLogic(t *testing.T) {
 				return
 			}
 			w.WriteHeader(200)
-			fmt.Fprint(w, mockVllmMetrics)
+			_, _ = fmt.Fprint(w, mockVllmMetrics)
 		}))
 		defer server.Close()
 
@@ -474,6 +564,205 @@ func TestEngineMetricsFetcher_RetryLogic(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "after 3 attempts")
 	})
+}
+
+func TestEngineMetricsFetcher_FetchRawMetric(t *testing.T) {
+	optimizerMetrics := `# HELP vllm:deployment_replicas Number of suggested replicas.
+# TYPE vllm:deployment_replicas gauge
+vllm:deployment_replicas{model_name="deepseek-r1-distill-llama-8b"} 3
+`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metrics/default/deepseek-r1-distill-llama-8b" {
+			w.WriteHeader(404)
+			return
+		}
+		w.WriteHeader(200)
+		_, _ = fmt.Fprint(w, optimizerMetrics)
+	}))
+	defer server.Close()
+
+	config := EngineMetricsFetcherConfig{
+		Timeout:     5 * time.Second,
+		MaxRetries:  0,
+		BaseDelay:   10 * time.Millisecond,
+		MaxDelay:    100 * time.Millisecond,
+		InsecureTLS: true,
+	}
+	fetcher := NewEngineMetricsFetcherWithConfig(config)
+	ctx := context.Background()
+
+	t.Run("FetchUnregisteredMetricFromExplicitPath", func(t *testing.T) {
+		url := server.URL + "/metrics/default/deepseek-r1-distill-llama-8b"
+		value, err := fetcher.FetchRawMetric(ctx, url, "gpu-optimizer", "vllm:deployment_replicas")
+
+		require.NoError(t, err)
+		assert.Equal(t, 3.0, value.GetSimpleValue())
+	})
+
+	t.Run("MetricMissingFromResponse", func(t *testing.T) {
+		url := server.URL + "/metrics/default/deepseek-r1-distill-llama-8b"
+		_, err := fetcher.FetchRawMetric(ctx, url, "gpu-optimizer", "vllm:missing_metric")
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to fetch raw metric")
+	})
+
+	t.Run("WrongPathReturnsError", func(t *testing.T) {
+		url := server.URL + "/metrics"
+		_, err := fetcher.FetchRawMetric(ctx, url, "gpu-optimizer", "vllm:deployment_replicas")
+
+		require.Error(t, err)
+	})
+
+	t.Run("TransportFailureIsNotCountedAsEngineQueryFailure", func(t *testing.T) {
+		counter, cleanup := SetupCounterMetricsForTest(LLMEngineMetricsQueryFail, []string{"gateway_pod", "model"})
+		defer cleanup()
+
+		// A closed server yields a connection error, the only path that emits the counter.
+		deadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		deadURL := deadServer.URL
+		deadServer.Close()
+
+		_, err := fetcher.FetchRawMetric(ctx, deadURL+"/metrics/default/model", "gpu-optimizer", "vllm:deployment_replicas")
+		require.Error(t, err)
+		assert.Equal(t, 0, testutil.CollectAndCount(counter),
+			"external metric fetch failures must not increment llm_engine_metrics_query_fail")
+
+		// The engine path must keep counting, so the counter is still useful for engine scrapes.
+		_, err = fetcher.FetchTypedMetric(ctx, strings.TrimPrefix(deadURL, "http://"), "vllm", "test-pod", NumRequestsRunning)
+		require.Error(t, err)
+		assert.Equal(t, 1, testutil.CollectAndCount(counter),
+			"engine metric fetch failures should still increment llm_engine_metrics_query_fail")
+	})
+}
+
+func TestEngineMetricsFetcher_SGLangPriorityQueueTotals(t *testing.T) {
+	fetcher := NewEngineMetricsFetcher()
+	for _, metricName := range []string{NumRequestsRunning, NumRequestsWaiting, NumDecodePreallocQueueReqs} {
+		t.Run(metricName, func(t *testing.T) {
+			metric := Metrics[metricName]
+			rawMetricName := metric.EngineMetricsNameMapping[EngineNameSGLang]
+			series := func(labels string, value int) string {
+				return fmt.Sprintf("%s{model_name=\"model-a\"%s} %d\n", rawMetricName, labels, value)
+			}
+			total := series(`,priority=""`, 10)
+			high := series(`,priority="1"`, 8)
+			low := series(`,priority="5"`, 2)
+			tests := []struct {
+				name          string
+				metrics       string
+				expectedFirst float64
+				expectedModel float64
+			}{
+				{"TotalFirst", total + high + low, 10, 10},
+				{"TotalLast", low + high + total, 10, 10},
+				{"LegacyWithoutPriority", series("", 10), 10, 10},
+				{"BreakdownsOnly", high + low, 8, 2},
+				{"ZeroTotal", high + series(`,priority=""`, 0) + low, 0, 0},
+				{"LegacyAlongsideTotal", total + high + low + fmt.Sprintf("%s{model_name=\"model-b\"} 7\n", rawMetricName), 10, 10},
+			}
+
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					families, err := ParseMetricsFromReader(strings.NewReader("# TYPE " + rawMetricName + " gauge\n" + tt.metrics))
+					require.NoError(t, err)
+
+					t.Run("SingleMetric", func(t *testing.T) {
+						value, err := fetcher.parseMetricFromFamily(families, rawMetricName, metric)
+						require.NoError(t, err)
+						assert.Equal(t, tt.expectedFirst, value.GetSimpleValue())
+					})
+					t.Run("ModelMetrics", func(t *testing.T) {
+						values, err := fetcher.parseModelMetricsFromFamily(families, rawMetricName, metric)
+						require.NoError(t, err)
+						require.Contains(t, values, "model-a")
+						assert.Equal(t, tt.expectedModel, values["model-a"].GetSimpleValue())
+						if tt.name == "LegacyAlongsideTotal" {
+							require.Contains(t, values, "model-b")
+							assert.Equal(t, 7.0, values["model-b"].GetSimpleValue())
+						}
+					})
+				})
+			}
+		})
+	}
+}
+
+// In SGLang's request counters and latency histograms priority="" marks requests without an
+// explicit priority, not a total, so their priority series must still be combined.
+// A merged family where only model-a has a total: model-b keeps its breakdowns (and today's
+// last-series behavior) in the per-model parser, while the pod-scoped read uses the total.
+func TestEngineMetricsFetcher_SGLangPriorityTotalsPerModel(t *testing.T) {
+	fetcher := NewEngineMetricsFetcher()
+	metric := Metrics[NumRequestsWaiting]
+	rawMetricName := metric.EngineMetricsNameMapping[EngineNameSGLang]
+	series := func(model, priority string, value int) string {
+		return fmt.Sprintf("%s{model_name=%q,priority=%q} %d\n", rawMetricName, model, priority, value)
+	}
+	families, err := ParseMetricsFromReader(strings.NewReader("# TYPE " + rawMetricName + " gauge\n" +
+		series("model-a", "", 10) + series("model-a", "1", 8) + series("model-a", "5", 2) +
+		series("model-b", "1", 3) + series("model-b", "5", 4)))
+	require.NoError(t, err)
+
+	values, err := fetcher.parseModelMetricsFromFamily(families, rawMetricName, metric)
+	require.NoError(t, err)
+	assert.Equal(t, 10.0, values["model-a"].GetSimpleValue())
+	require.Contains(t, values, "model-b")
+	assert.Equal(t, 4.0, values["model-b"].GetSimpleValue())
+
+	value, err := fetcher.parseMetricFromFamily(families, rawMetricName, metric)
+	require.NoError(t, err)
+	assert.Equal(t, 10.0, value.GetSimpleValue())
+}
+
+func TestEngineMetricsFetcher_SGLangPriorityLabelOutsideQueues(t *testing.T) {
+	fetcher := NewEngineMetricsFetcher()
+
+	counter := Metrics[RequestSuccessTotal]
+	counterName := counter.EngineMetricsNameMapping[EngineNameSGLang]
+	families, err := ParseMetricsFromReader(strings.NewReader(fmt.Sprintf("# TYPE %[1]s counter\n"+
+		"%[1]s{model_name=\"model-a\",priority=\"\"} 4\n"+
+		"%[1]s{model_name=\"model-a\",priority=\"1\"} 6\n", counterName)))
+	require.NoError(t, err)
+	values, err := fetcher.parseModelMetricsFromFamily(families, counterName, counter)
+	require.NoError(t, err)
+	assert.Equal(t, 10.0, values["model-a"].GetSimpleValue())
+
+	histogram := Metrics[E2ERequestLatencySeconds]
+	histogramName := histogram.EngineMetricsNameMapping[EngineNameSGLang]
+	series := func(priority string, sum int) string {
+		return fmt.Sprintf("%[1]s_bucket{model_name=\"model-a\",priority=\"%[2]s\",le=\"+Inf\"} 1\n"+
+			"%[1]s_sum{model_name=\"model-a\",priority=\"%[2]s\"} %[3]d\n"+
+			"%[1]s_count{model_name=\"model-a\",priority=\"%[2]s\"} 1\n", histogramName, priority, sum)
+	}
+	families, err = ParseMetricsFromReader(strings.NewReader("# TYPE " + histogramName + " histogram\n" +
+		series("", 4) + series("1", 6)))
+	require.NoError(t, err)
+	values, err = fetcher.parseModelMetricsFromFamily(families, histogramName, histogram)
+	require.NoError(t, err)
+	hist := values["model-a"].GetHistogramValue()
+	require.NotNil(t, hist)
+	assert.Equal(t, 10.0, hist.Sum)
+	assert.Equal(t, 2.0, hist.Count)
+}
+
+func TestEngineMetricsFetcher_ParseVllmSleepState(t *testing.T) {
+	fetcher := NewEngineMetricsFetcher()
+	metric := Metrics[EngineSleepState]
+	rawMetricName := metric.EngineMetricsNameMapping[EngineNameVLLM]
+	for _, metrics := range []string{mockVllmSleepStateMetrics, mockVllmSleepLevel2Metrics} {
+		families, err := ParseMetricsFromReader(strings.NewReader(metrics))
+		require.NoError(t, err)
+
+		value, err := fetcher.parseMetricFromFamily(families, rawMetricName, metric)
+		require.NoError(t, err)
+		assert.Equal(t, 0.0, value.GetSimpleValue())
+
+		values, err := fetcher.parseModelMetricsFromFamily(families, rawMetricName, metric)
+		require.NoError(t, err)
+		require.Contains(t, values, "meta-llama/Llama-2-7b-chat-hf")
+		assert.Equal(t, 0.0, values["meta-llama/Llama-2-7b-chat-hf"].GetSimpleValue())
+	}
 }
 
 func TestEngineMetricsFetcher_BackoffDelay(t *testing.T) {
@@ -575,4 +864,305 @@ func TestEngineMetricsResult(t *testing.T) {
 	assert.Equal(t, 2.0, result.ModelMetrics["model1/running_requests"].GetSimpleValue())
 	assert.Len(t, result.Errors, 1)
 	assert.Equal(t, "test error", result.Errors[0].Error())
+}
+
+// vLLM reports its KV cache size as labels of an info gauge; SGLang as a gauge.
+func TestEngineMetricsFetcher_FetchAllTypedMetrics_KVCacheCapacity(t *testing.T) {
+	fetcher := NewEngineMetricsFetcher()
+	ctx := context.Background()
+
+	t.Run("vllm cache_config_info labels", func(t *testing.T) {
+		server := setupMockServer(`# HELP vllm:cache_config_info Information of the LLMEngine CacheConfig
+# TYPE vllm:cache_config_info gauge
+vllm:cache_config_info{block_size="16",cache_dtype="auto",enable_prefix_caching="True",engine="0",gpu_memory_utilization="0.9",num_gpu_blocks="10000",num_gpu_blocks_override="None"} 1.0
+`, 200, 0)
+		defer server.Close()
+		endpoint := strings.TrimPrefix(server.URL, "http://")
+
+		result, err := fetcher.FetchAllTypedMetrics(ctx, endpoint, "vllm", "test-pod",
+			[]string{KVCacheNumGPUBlocks, KVCacheBlockSize, KVCacheCapacityTokens})
+		require.NoError(t, err)
+		require.Contains(t, result.Metrics, KVCacheNumGPUBlocks)
+		require.Contains(t, result.Metrics, KVCacheBlockSize)
+		assert.Equal(t, "10000", result.Metrics[KVCacheNumGPUBlocks].(*LabelValueMetricValue).Value)
+		assert.Equal(t, "16", result.Metrics[KVCacheBlockSize].(*LabelValueMetricValue).Value)
+		assert.NotContains(t, result.Metrics, KVCacheCapacityTokens, "vLLM has no capacity gauge")
+	})
+
+	t.Run("sglang max_total_num_tokens", func(t *testing.T) {
+		server := setupMockServer(`# HELP sglang:max_total_num_tokens Maximum total number of tokens in the KV cache pool.
+# TYPE sglang:max_total_num_tokens gauge
+sglang:max_total_num_tokens{model_name="m"} 160000.0
+`, 200, 0)
+		defer server.Close()
+		endpoint := strings.TrimPrefix(server.URL, "http://")
+
+		result, err := fetcher.FetchAllTypedMetrics(ctx, endpoint, "sglang", "test-pod",
+			[]string{KVCacheNumGPUBlocks, KVCacheBlockSize, KVCacheCapacityTokens})
+		require.NoError(t, err)
+		require.Contains(t, result.Metrics, KVCacheCapacityTokens)
+		assert.Equal(t, 160000.0, result.Metrics[KVCacheCapacityTokens].GetSimpleValue())
+		assert.NotContains(t, result.Metrics, KVCacheNumGPUBlocks)
+	})
+}
+
+// vLLM started with --data-parallel-size N reports one series per engine, labeled engine="<rank>".
+func TestEngineMetricsFetcher_DataParallelEngines(t *testing.T) {
+	server := setupMockServer(`# TYPE vllm:num_requests_waiting gauge
+vllm:num_requests_waiting{engine="0",model_name="m"} 5.0
+vllm:num_requests_waiting{engine="1",model_name="m"} 7.0
+vllm:num_requests_waiting{engine="2",model_name="m"} 3.0
+vllm:num_requests_waiting{engine="3",model_name="m"} 5.0
+# TYPE vllm:kv_cache_usage_perc gauge
+vllm:kv_cache_usage_perc{engine="0",model_name="m"} 0.9
+vllm:kv_cache_usage_perc{engine="1",model_name="m"} 0.8
+vllm:kv_cache_usage_perc{engine="2",model_name="m"} 0.7
+vllm:kv_cache_usage_perc{engine="3",model_name="m"} 0.2
+# TYPE vllm:generation_tokens_total counter
+vllm:generation_tokens_total{engine="0",model_name="m"} 100.0
+vllm:generation_tokens_total{engine="1",model_name="m"} 50.0
+vllm:generation_tokens_total{engine="2",model_name="m"} 30.0
+vllm:generation_tokens_total{engine="3",model_name="m"} 20.0
+# TYPE vllm:time_to_first_token_seconds histogram
+vllm:time_to_first_token_seconds_bucket{engine="0",le="0.1",model_name="m"} 1.0
+vllm:time_to_first_token_seconds_bucket{engine="0",le="+Inf",model_name="m"} 2.0
+vllm:time_to_first_token_seconds_sum{engine="0",model_name="m"} 0.5
+vllm:time_to_first_token_seconds_count{engine="0",model_name="m"} 2.0
+vllm:time_to_first_token_seconds_bucket{engine="1",le="0.1",model_name="m"} 3.0
+vllm:time_to_first_token_seconds_bucket{engine="1",le="+Inf",model_name="m"} 3.0
+vllm:time_to_first_token_seconds_sum{engine="1",model_name="m"} 0.2
+vllm:time_to_first_token_seconds_count{engine="1",model_name="m"} 3.0
+`, 200, 0)
+	defer server.Close()
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+	fetcher := NewEngineMetricsFetcher()
+	ctx := context.Background()
+	want := map[string]float64{
+		NumRequestsWaiting:   20,
+		KVCacheUsagePerc:     0.65,
+		GenerationTokenTotal: 200,
+	}
+
+	result, err := fetcher.FetchAllTypedMetrics(ctx, endpoint, "vllm", "test-pod",
+		[]string{NumRequestsWaiting, KVCacheUsagePerc, GenerationTokenTotal, TimeToFirstTokenSeconds})
+	require.NoError(t, err)
+	for name, v := range want {
+		require.Contains(t, result.ModelMetrics, "m/"+name)
+		assert.InDelta(t, v, result.ModelMetrics["m/"+name].GetSimpleValue(), 1e-9, name)
+
+		single, err := fetcher.FetchTypedMetric(ctx, endpoint, "vllm", "test-pod", name)
+		require.NoError(t, err)
+		assert.InDelta(t, v, single.GetSimpleValue(), 1e-9, name)
+	}
+
+	ttft, ok := result.ModelMetrics["m/"+TimeToFirstTokenSeconds].(*HistogramMetricValue)
+	require.True(t, ok)
+	assert.Equal(t, 5.0, ttft.Count)
+	assert.InDelta(t, 0.7, ttft.Sum, 1e-9)
+	assert.Equal(t, 4.0, ttft.Buckets["0.100000"])
+}
+
+// A single-engine vLLM still labels every series engine="0". The value stays the same,
+// but the merged series no longer carries the engine label.
+func TestEngineMetricsFetcher_SingleEngineDropsEngineLabel(t *testing.T) {
+	server := setupMockServer(`# TYPE vllm:num_requests_waiting gauge
+vllm:num_requests_waiting{engine="0",model_name="m"} 5.0
+`, 200, 0)
+	defer server.Close()
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+
+	result, err := NewEngineMetricsFetcher().FetchAllTypedMetrics(context.Background(), endpoint, "vllm", "test-pod",
+		[]string{NumRequestsWaiting})
+	require.NoError(t, err)
+	require.Contains(t, result.ModelMetrics, "m/"+NumRequestsWaiting)
+	value := result.ModelMetrics["m/"+NumRequestsWaiting]
+	assert.Equal(t, 5.0, value.GetSimpleValue())
+	assert.Equal(t, map[string]string{"model_name": "m"}, value.GetLabelValues())
+}
+
+func TestEngineMetricsFetcher_DataParallelSleepStateIsAveraged(t *testing.T) {
+	server := setupMockServer(`# TYPE vllm:engine_sleep_state gauge
+vllm:engine_sleep_state{engine="0",model_name="m",sleep_state="awake"} 1.0
+vllm:engine_sleep_state{engine="0",model_name="m",sleep_state="weights_offloaded"} 0.0
+vllm:engine_sleep_state{engine="1",model_name="m",sleep_state="awake"} 0.0
+vllm:engine_sleep_state{engine="1",model_name="m",sleep_state="weights_offloaded"} 1.0
+`, 200, 0)
+	defer server.Close()
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+
+	result, err := NewEngineMetricsFetcher().FetchAllTypedMetrics(context.Background(), endpoint, "vllm", "test-pod",
+		[]string{EngineSleepState})
+	require.NoError(t, err)
+	require.Contains(t, result.ModelMetrics, "m/"+EngineSleepState)
+	value := result.ModelMetrics["m/"+EngineSleepState]
+	assert.Equal(t, 0.5, value.GetSimpleValue(), "one of two engines is awake")
+	assert.Equal(t, "awake", value.GetLabelValues()["sleep_state"])
+}
+
+// Synthetic subset of SGLang v0.5.21 metrics for:
+// --tp 2 --dp 2 --enable-dp-attention --enable-metrics (default EP=1, PP=1; no priority scheduling).
+// Two independent, equal-capacity pools; these values are not a recorded scrape.
+const sglangDPAttentionRepro = `# HELP sglang:num_running_reqs The number of running requests.
+# TYPE sglang:num_running_reqs gauge
+sglang:num_running_reqs{dp_rank="1",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 1.0
+sglang:num_running_reqs{dp_rank="0",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 3.0
+# HELP sglang:num_queue_reqs The number of requests in the waiting queue.
+# TYPE sglang:num_queue_reqs gauge
+sglang:num_queue_reqs{dp_rank="1",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 1.0
+sglang:num_queue_reqs{dp_rank="0",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 7.0
+# HELP sglang:token_usage The token usage.
+# TYPE sglang:token_usage gauge
+sglang:token_usage{dp_rank="1",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 0.1
+sglang:token_usage{dp_rank="0",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 0.9
+# HELP sglang:max_total_num_tokens Maximum total number of tokens in the KV cache pool.
+# TYPE sglang:max_total_num_tokens gauge
+sglang:max_total_num_tokens{dp_rank="1",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 100000.0
+sglang:max_total_num_tokens{dp_rank="0",engine_type="unified",model_name="Qwen/Qwen3-8B",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 100000.0
+`
+
+func TestEngineMetricsFetcher_SGLangDPPools(t *testing.T) {
+	duplicateRanks := func(input string) string {
+		var lines []string
+		for _, line := range strings.Split(input, "\n") {
+			lines = append(lines, line)
+			if strings.HasPrefix(line, "sglang:") {
+				lines = append(lines, strings.Replace(line, `pp_rank="0"`, `pp_rank="1"`, 1))
+				lines = append(lines, strings.Replace(line, `tp_rank="0"`, `tp_rank="2"`, 1))
+				lines = append(lines, strings.Replace(line, `moe_ep_rank="0"`, `moe_ep_rank="1"`, 1))
+			}
+		}
+		return strings.Join(lines, "\n")
+	}
+	reverseSamples := func(input string) string {
+		var headers, samples []string
+		for _, line := range strings.Split(input, "\n") {
+			if strings.HasPrefix(line, "sglang:") {
+				samples = append(samples, line)
+			} else {
+				headers = append(headers, line)
+			}
+		}
+		for i, j := 0, len(samples)-1; i < j; i, j = i+1, j-1 {
+			samples[i], samples[j] = samples[j], samples[i]
+		}
+		return strings.Join(append(headers, samples...), "\n") + "\n"
+	}
+	unequal := strings.ReplaceAll(sglangDPAttentionRepro, `tp_rank="1"} 100000.0`, `tp_rank="1"} 300000.0`)
+	tests := []struct {
+		name, input     string
+		usage, capacity float64
+	}{
+		{"ordinary", sglangDPAttentionRepro, 0.5, 200000},
+		{"reversed", reverseSamples(sglangDPAttentionRepro), 0.5, 200000},
+		{"replicated_pp_ep", duplicateRanks(sglangDPAttentionRepro), 0.5, 200000},
+		{"replicated_reversed", reverseSamples(duplicateRanks(sglangDPAttentionRepro)), 0.5, 200000},
+		{"unequal_capacity", unequal, 0.3, 400000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := setupMockServer(tt.input, http.StatusOK, 0)
+			defer server.Close()
+			endpoint := strings.TrimPrefix(server.URL, "http://")
+			fetcher := NewEngineMetricsFetcher()
+			want := map[string]float64{NumRequestsRunning: 4, NumRequestsWaiting: 8,
+				KVCacheUsagePerc: tt.usage, KVCacheCapacityTokens: tt.capacity}
+			result, err := fetcher.FetchAllTypedMetrics(context.Background(), endpoint, "sglang", "pod-0",
+				[]string{NumRequestsRunning, NumRequestsWaiting, KVCacheUsagePerc, KVCacheCapacityTokens})
+			require.NoError(t, err)
+			require.Empty(t, result.Errors)
+			for name, expected := range want {
+				value := result.Metrics[name]
+				if name != KVCacheCapacityTokens {
+					value = result.ModelMetrics["Qwen/Qwen3-8B/"+name]
+				}
+				require.NotNil(t, value, name)
+				assert.InDelta(t, expected, value.GetSimpleValue(), 1e-9, name)
+				assert.NotContains(t, value.GetLabelValues(), "dp_rank")
+				assert.NotContains(t, value.GetLabelValues(), "pp_rank")
+				single, err := fetcher.FetchTypedMetric(context.Background(), endpoint, "sglang", "pod-0", name)
+				require.NoError(t, err)
+				assert.InDelta(t, expected, single.GetSimpleValue(), 1e-9, name)
+			}
+		})
+	}
+}
+
+func TestSGLangDPPriorityScopesAndLegacy(t *testing.T) {
+	families, err := ParseMetricsFromReader(strings.NewReader(`# TYPE sglang:num_queue_reqs gauge
+sglang:num_queue_reqs{model_name="a",dp_rank="0",priority=""} 7
+sglang:num_queue_reqs{model_name="a",dp_rank="1",priority=""} 1
+sglang:num_queue_reqs{model_name="a",dp_rank="0",priority="high"} 5
+sglang:num_queue_reqs{model_name="a",dp_rank="1",priority="high"} 1
+sglang:num_queue_reqs{model_name="b",dp_rank="0",priority=""} 2
+sglang:num_queue_reqs{model_name="b",dp_rank="1",priority=""} 3
+sglang:num_queue_reqs{model_name="legacy"} 4
+# TYPE sglang:gen_throughput gauge
+sglang:gen_throughput{model_name="a",dp_rank="0"} 10
+sglang:gen_throughput{model_name="a",dp_rank="1"} 20
+`))
+	require.NoError(t, err)
+	original := families["sglang:num_queue_reqs"].Metric[0]
+	mergeSGLangDPSeries(families)
+	values := map[string]float64{}
+	for _, m := range families["sglang:num_queue_reqs"].Metric {
+		model, _ := GetLabelValueForKey(m, "model_name")
+		priority, _ := GetLabelValueForKey(m, "priority")
+		values[model+"/"+priority] = m.Gauge.GetValue()
+	}
+	assert.Equal(t, map[string]float64{"a/": 8, "a/high": 6, "b/": 5, "legacy/": 4}, values)
+	assert.Len(t, families["sglang:gen_throughput"].Metric, 2, "do not guess aggregation for other gauges")
+	assert.Equal(t, 7.0, original.Gauge.GetValue(), "do not change original rank values")
+	assert.Len(t, original.Label, 3)
+}
+
+func TestSGLangDPUsageCapacityIsScoped(t *testing.T) {
+	for _, label := range []string{"model_name", "engine_type"} {
+		t.Run(label, func(t *testing.T) {
+			families, err := ParseMetricsFromReader(strings.NewReader(fmt.Sprintf(`# TYPE sglang:token_usage gauge
+sglang:token_usage{%s="a",dp_rank="0"} 0.9
+sglang:token_usage{%s="a",dp_rank="1"} 0.1
+sglang:token_usage{%s="b",dp_rank="0"} 0.9
+sglang:token_usage{%s="b",dp_rank="1"} 0.1
+# TYPE sglang:max_total_num_tokens gauge
+sglang:max_total_num_tokens{%s="a",dp_rank="0"} 100
+sglang:max_total_num_tokens{%s="a",dp_rank="1"} 300
+sglang:max_total_num_tokens{%s="b",dp_rank="0"} 300
+sglang:max_total_num_tokens{%s="b",dp_rank="1"} 100
+`, label, label, label, label, label, label, label, label)))
+			require.NoError(t, err)
+			mergeSGLangDPSeries(families)
+
+			usage := families["sglang:token_usage"].Metric
+			require.Len(t, usage, 2)
+			values := map[string]float64{}
+			for _, metric := range usage {
+				scope, _ := GetLabelValueForKey(metric, label)
+				values[scope] = metric.Gauge.GetValue()
+			}
+			// Identical rank IDs and utilizations need each scope's own capacities.
+			assert.InDelta(t, 0.3, values["a"], 1e-9)
+			assert.InDelta(t, 0.7, values["b"], 1e-9)
+		})
+	}
+}
+
+func TestSGLangDPUsageWithoutCompleteCapacityIsUnchanged(t *testing.T) {
+	for _, capacity := range []string{"", `sglang:max_total_num_tokens{model_name="m",dp_rank="0"} 100`,
+		`sglang:max_total_num_tokens{model_name="m",dp_rank="0"} 100
+sglang:max_total_num_tokens{model_name="m",dp_rank="1"} 0`} {
+		for _, missingGauge := range []bool{false, true} {
+			families, err := ParseMetricsFromReader(strings.NewReader(`# TYPE sglang:token_usage gauge
+sglang:token_usage{model_name="m",dp_rank="0"} 0.9
+sglang:token_usage{model_name="m",dp_rank="1"} 0.1
+# TYPE sglang:max_total_num_tokens gauge
+` + capacity + "\n"))
+			require.NoError(t, err)
+			original := families["sglang:token_usage"].Metric
+			if missingGauge {
+				original[0].Gauge = nil
+			}
+			mergeSGLangDPSeries(families)
+			assert.ElementsMatch(t, original, families["sglang:token_usage"].Metric)
+		}
+	}
 }

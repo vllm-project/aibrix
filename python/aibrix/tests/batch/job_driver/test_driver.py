@@ -40,6 +40,11 @@ constant.EXPIRE_INTERVAL = 0.1
 constant.SCHEDULE_IDLE_INTERVAL = 0.1
 
 
+@pytest.fixture(autouse=True)
+def isolate_local_storage(tmp_path, monkeypatch):
+    monkeypatch.setenv("STORAGE_LOCAL_PATH", str(tmp_path / "storage"))
+
+
 class LifecycleEntityManager(JobEntityManager):
     def __init__(self):
         super().__init__()

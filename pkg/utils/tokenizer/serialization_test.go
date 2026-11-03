@@ -17,6 +17,7 @@ limitations under the License.
 package tokenizer
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -65,9 +66,16 @@ func TestSonicSerializationWithRawMessage(t *testing.T) {
 				t.Errorf("Role mismatch: got %v, want %v", result.Role, tt.message.Role)
 			}
 
-			// Content should be preserved as-is
-			if string(result.Content) != string(tt.message.Content) {
-				t.Errorf("Content mismatch:\ngot:  %s\nwant: %s", string(result.Content), string(tt.message.Content))
+			// Content must survive the round trip. Compare compacted forms:
+			// whitespace between JSON tokens is insignificant and the
+			// marshaller may drop it (encoding/json compacts a
+			// json.RawMessage, sonic copies it verbatim), so a byte-for-byte
+			// comparison would assert which implementation is active rather
+			// than whether the content is intact.
+			got := mustCompact(t, result.Content)
+			want := mustCompact(t, tt.message.Content)
+			if got != want {
+				t.Errorf("Content mismatch:\ngot:  %s\nwant: %s", got, want)
 			}
 		})
 	}
@@ -132,4 +140,16 @@ func TestVLLMRequestSerialization(t *testing.T) {
 	if len(content) != 2 {
 		t.Fatalf("Expected 2 content parts, got %d", len(content))
 	}
+}
+
+// mustCompact strips insignificant whitespace so comparisons do not depend
+// on which JSON implementation produced the bytes.
+func mustCompact(t *testing.T, raw json.RawMessage) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		t.Fatalf("json.Compact failed on %s: %v", raw, err)
+	}
+	return buf.String()
 }

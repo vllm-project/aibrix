@@ -14,12 +14,14 @@
 """Unit tests for the Runtime seam + registry (job lifecycle axis A)."""
 
 import asyncio
+import copy
 import inspect
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 
+from aibrix.batch.job_driver import BaseJobDriver
 from aibrix.batch.job_driver.driver import TerminateResult
 from aibrix.batch.job_driver.runtime import (
     RUNTIME_WAIT_MODE_PROVISION,
@@ -40,6 +42,9 @@ from aibrix.batch.job_entity import (
     BatchJobState,
     BatchJobStatus,
     BatchJobStatusCopy,
+    Condition,
+    ConditionStatus,
+    ConditionType,
     JobRuntimeRef,
     RequestCountStats,
 )
@@ -297,6 +302,47 @@ async def test_runtime_base_terminate_before_session_start_short_circuits_sessio
 
     assert calls == []
     assert runtime.cancelled() is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_base_terminate_before_session_persistence_failure(monkeypatch):
+    job = _make_test_job()
+    job.status.state = BatchJobState.IN_PROGRESS
+    original_status = job.status.model_copy(deep=True)
+    deleted_job = copy.deepcopy(job)
+    deleted_job.status.state = BatchJobState.CANCELLING
+    deleted_job.status.add_condition(
+        Condition(
+            type=ConditionType.CANCELLED,
+            status=ConditionStatus.TRUE,
+            lastTransitionTime=datetime.now(timezone.utc),
+        )
+    )
+    progress_manager = _FakeProgressManager()
+
+    async def get_job(job_id):
+        return job if job_id == job.job_id else None
+
+    async def update_job_status(job_id, status):
+        assert job_id == job.job_id
+        assert status.check_condition(ConditionType.CANCELLED)
+        raise RuntimeError("status persistence failed")
+
+    monkeypatch.setattr(progress_manager, "get_job", get_job)
+    monkeypatch.setattr(
+        progress_manager, "update_job_status", update_job_status, raising=False
+    )
+    runtime = _R()
+    driver = BaseJobDriver(InfrastructureContext(), progress_manager, runtime)
+
+    with pytest.raises(RuntimeError, match="status persistence failed"):
+        await driver.terminate(deleted_job)
+
+    assert runtime._stop_requested.is_set() is False
+    assert runtime._stop_job_id is None
+    stored = await progress_manager.get_job(job.job_id)
+    assert stored is not None
+    assert stored.status == original_status
 
 
 @pytest.mark.asyncio
@@ -724,6 +770,7 @@ async def test_runtime_base_session_periodically_checks_liveness_and_surfaces_fa
 
     class _LivenessRuntime(_R):
         session_liveness_check_interval_s = 0.01
+        session_liveness_failure_threshold = 3
 
     runtime = _LivenessRuntime(
         check_liveness=_check_liveness,
@@ -865,6 +912,47 @@ async def test_runtime_base_session_preserves_liveness_error_when_teardown_fails
 
 
 @pytest.mark.asyncio
+async def test_runtime_base_session_logs_terminal_liveness_cancellation(caplog):
+    liveness_failure_seen = asyncio.Event()
+
+    async def _check_liveness(handle, reason="unspecified"):
+        del handle, reason
+        liveness_failure_seen.set()
+        raise RuntimeError("runtime lost")
+
+    async def _teardown(handle):
+        del handle
+
+    class _LivenessRuntime(_R):
+        session_liveness_check_interval_s = 0.01
+        session_liveness_failure_threshold = 1
+
+    runtime = _LivenessRuntime(
+        check_liveness=_check_liveness,
+        teardown=_teardown,
+    )
+
+    with caplog.at_level("WARNING"):
+        with pytest.raises(RuntimeError, match="runtime lost"):
+            async with runtime.session(
+                job=_make_test_job(job_id="job-1"),
+                job_id="job-1",
+                progress_manager=_FakeProgressManager(),
+                worker_id_generator=_fake_worker_id_generator,
+            ):
+                await asyncio.wait_for(liveness_failure_seen.wait(), timeout=1)
+                await asyncio.sleep(1)
+
+    assert any(
+        '"event": "Runtime liveness check failed; cancelling session"' in record.message
+        and '"job_id": "job-1"' in record.message
+        and '"consecutive_failures": 1' in record.message
+        and '"abort_after_failures": 1' in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
 async def test_runtime_base_session_reprovisions_after_reconnect_not_found(
     monkeypatch,
 ):
@@ -955,10 +1043,18 @@ async def test_runtime_base_session_reprovisions_after_reconnect_not_found(
 
 
 @pytest.mark.asyncio
-async def test_runtime_base_session_raises_if_execution_tracking_not_bound():
+async def test_runtime_base_session_raises_if_execution_tracking_not_bound(monkeypatch):
     job = _make_test_job(job_id="job-1")
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(runtime_base_mod.asyncio, "sleep", _fake_sleep)
 
     class _PersistingRuntime(_R):
+        session_retry_attempts = 1
+
         def _build_runtime_ref(self, job):
             existing = self._load_runtime_ref(job)
             now = datetime.now(timezone.utc)
@@ -974,10 +1070,16 @@ async def test_runtime_base_session_raises_if_execution_tracking_not_bound():
     runtime = _PersistingRuntime(provision=lambda job, job_id: "handle")
     with pytest.raises(
         RuntimeError,
-        match="Execution tracking is not configured for session\\(\\)",
-    ):
+        match=(
+            "Execution tracking is not configured for session\\(\\).*"
+            "session_retries=1.*session_attempts=2"
+        ),
+    ) as exc_info:
         async with runtime.session(job=job, job_id="job-1"):
             pytest.fail("session should fail before entering body")
+
+    assert "session_retries=1" in str(exc_info.value)
+    assert sleeps == [2.0]
 
 
 @pytest.mark.asyncio
@@ -1417,6 +1519,94 @@ def test_runtime_target_enum_values_are_registered():
     registered = set(registered_runtimes())
     missing = {p.value for p in RuntimeTarget} - registered
     assert not missing, f"RuntimeTarget values not registered: {missing}"
+
+
+def test_runtime_base_uses_env_session_retry_attempts():
+    assert (
+        RuntimeBase.session_retry_attempts
+        == runtime_base_mod.envs.BATCH_SESSION_RETRY_ATTEMPTS
+    )
+    assert (
+        RuntimeBase.session_retry_base_delay_s
+        == runtime_base_mod.envs.BATCH_SESSION_RETRY_BASE_DELAY_S
+    )
+    assert (
+        RuntimeBase.session_retry_max_delay_s
+        == runtime_base_mod.envs.BATCH_SESSION_RETRY_MAX_DELAY_S
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_error_retry_delay_is_capped(monkeypatch):
+    delays: list[float] = []
+
+    async def _capture_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(runtime_base_mod.asyncio, "sleep", _capture_sleep)
+    runtime = _R()
+
+    await runtime._sleep_before_session_error_retry(10, Exception("boom"))
+
+    assert delays == [60.0]
+
+
+@pytest.mark.asyncio
+async def test_session_error_retry_after_is_capped(monkeypatch):
+    delays: list[float] = []
+
+    async def _capture_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(runtime_base_mod.asyncio, "sleep", _capture_sleep)
+    runtime = _R()
+    exc = runtime_base_mod.RuntimeDeleteInProgressError(
+        job_id="job-1",
+        runtime_key="base",
+        retry_after_s=120.0,
+    )
+
+    await runtime._sleep_before_session_error_retry(1, exc)
+
+    assert delays == [60.0]
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected_message_bits"),
+    [
+        (
+            runtime_base_mod.RuntimeOwnershipConflictError(
+                job_id="job-1",
+                runtime_key="base",
+                owner_worker_id="worker-a",
+                current_worker_id="worker-b",
+                retry_after_s=2.5,
+            ),
+            ["owner_worker_id=worker-a", "current_worker_id=worker-b"],
+        ),
+        (
+            runtime_base_mod.RuntimeDeleteInProgressError(
+                job_id="job-1",
+                runtime_key="base",
+                retry_after_s=2.5,
+            ),
+            ["runtime=base", "retry_after_s=2.50"],
+        ),
+    ],
+)
+def test_runtime_session_error_deepcopy_preserves_annotated_suffix(
+    exc, expected_message_bits
+):
+    runtime = _R()
+
+    annotated = runtime._annotate_exhausted_session_error(exc, retries_completed=2)
+    copied = copy.deepcopy(annotated)
+
+    assert copied.message == annotated.message
+    assert copied.args == annotated.args
+    assert "[session_retries=2, session_attempts=3]" in copied.message
+    for expected_bit in expected_message_bits:
+        assert expected_bit in copied.message
 
 
 def test_registry_create_and_unknown_key():

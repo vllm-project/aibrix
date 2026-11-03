@@ -385,7 +385,7 @@ endpoint: ...
 - **api_key**: `str` — API key to the service. Set through environment variable: `${API_KEY}`.
 - **target_model**: `str` — Default target model (used if workload does not contain a target model). Default: `None`.
 - **time_scale**: `float` — Scaling factor for workload’s logical time. Default: `1.0`. The timestamp associated with requests will be multiplied by the scaling factor for quick compressing/expanding the request intervals. 
-- **routing_strategy**: `str` — Routing strategy to use. Find out [latest policies supported by AIBrix](https://aibrix.readthedocs.io/latest/designs/aibrix-router.html). Default: `"random"`.
+- **routing_strategy**: `str` — Routing strategy to use. Find out [latest policies supported by AIBrix](https://aibrix.readthedocs.io/latest/designs/aibrix-gateway.html). Default: `"random"`.
 - **streaming_enabled**: `bool` — Use streaming client if flag is set. Default: `true`.
 - **output_token_limit**: `int` — Limit the maximum number of output tokens. Default: `128`.
 - **timeout_second**: `float` — Timeout for each request in seconds. Default: `60.0`.

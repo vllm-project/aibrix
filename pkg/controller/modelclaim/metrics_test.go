@@ -211,3 +211,53 @@ func TestPoolPolicyMetricLabelsAreBounded(t *testing.T) {
 		poolPolicyActionsTotal.WithLabelValues(actionLabels...),
 	))
 }
+
+func TestPreemptionMetricsRegisteredAndBounded(t *testing.T) {
+	attemptLabels := []string{preemptionPolicySleepLowerPriority, preemptionResultFailed, policyReasonInternalError}
+	victimLabels := []string{preemptionActionSleep, preemptionResultFailed}
+	defer preemptionAttemptsTotal.DeleteLabelValues(attemptLabels...)
+	defer preemptionVictimsTotal.DeleteLabelValues(victimLabels...)
+	attemptsBefore := testutil.ToFloat64(preemptionAttemptsTotal.WithLabelValues(attemptLabels...))
+	victimsBefore := testutil.ToFloat64(preemptionVictimsTotal.WithLabelValues(victimLabels...))
+
+	recordPreemptionAttempt("unexpected-policy", "unexpected-result", "claim default/private on pod warm-1")
+	recordPreemptionVictim("unexpected-action", "unexpected-result")
+
+	assert.Equal(t, attemptsBefore+1, testutil.ToFloat64(preemptionAttemptsTotal.WithLabelValues(attemptLabels...)))
+	assert.Equal(t, victimsBefore+1, testutil.ToFloat64(preemptionVictimsTotal.WithLabelValues(victimLabels...)))
+	families, err := crmetrics.Registry.Gather()
+	require.NoError(t, err)
+	wantLabels := map[string]map[string]struct{}{
+		"aibrix_modelclaim_preemption_attempts_total": {"policy": {}, "result": {}, "reason": {}},
+		"aibrix_modelclaim_preemption_victims_total":  {"action": {}, "result": {}},
+	}
+	for _, family := range families {
+		want, found := wantLabels[family.GetName()]
+		if !found {
+			continue
+		}
+		require.NotEmpty(t, family.GetMetric())
+		got := map[string]struct{}{}
+		for _, label := range family.GetMetric()[0].GetLabel() {
+			got[label.GetName()] = struct{}{}
+		}
+		assert.Equal(t, want, got)
+		delete(wantLabels, family.GetName())
+	}
+	assert.Empty(t, wantLabels, "both preemption collectors must be registered")
+}
+
+func TestRecordPreemptionMetrics(t *testing.T) {
+	attemptLabels := []string{preemptionPolicySleepLowerPriority, preemptionResultSuccess, policyReasonApplied}
+	victimLabels := []string{preemptionActionSleep, preemptionResultSuccess}
+	defer preemptionAttemptsTotal.DeleteLabelValues(attemptLabels...)
+	defer preemptionVictimsTotal.DeleteLabelValues(victimLabels...)
+	attemptsBefore := testutil.ToFloat64(preemptionAttemptsTotal.WithLabelValues(attemptLabels...))
+	victimsBefore := testutil.ToFloat64(preemptionVictimsTotal.WithLabelValues(victimLabels...))
+
+	recordPreemptionAttempt(preemptionPolicySleepLowerPriority, preemptionResultSuccess, policyReasonApplied)
+	recordPreemptionVictim(preemptionActionSleep, preemptionResultSuccess)
+
+	assert.Equal(t, attemptsBefore+1, testutil.ToFloat64(preemptionAttemptsTotal.WithLabelValues(attemptLabels...)))
+	assert.Equal(t, victimsBefore+1, testutil.ToFloat64(preemptionVictimsTotal.WithLabelValues(victimLabels...)))
+}

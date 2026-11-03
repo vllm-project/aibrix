@@ -28,6 +28,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/util/expectation"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -108,7 +109,7 @@ type RayClusterReplicaSetReconciler struct {
 // Reconcile method moves the RayClusterReplicaSet to desired State
 func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	replicaset := &orchestrationv1alpha1.RayClusterReplicaSet{}
-	rsKey := req.NamespacedName.String()
+	rsKey := req.String()
 	if err := r.Get(ctx, req.NamespacedName, replicaset); err != nil {
 		klog.ErrorS(err, "unable to fetch object", "RayClusterReplicaSet", req.NamespacedName)
 		// deletion & recreation will find the exception exist, even it always return true (result is same) but the logic is different.
@@ -119,19 +120,26 @@ func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl
 
 	rsNeedsSync := r.Expectations.SatisfiedExpectations(rsKey)
 	// fetch current ray cluster associated with this replicaset
+	if replicaset.Spec.Selector == nil {
+		return ctrl.Result{}, fmt.Errorf("replicaset %s/%s has no selector", replicaset.Namespace, replicaset.Name)
+	}
+	selector, err := metav1.LabelSelectorAsSelector(replicaset.Spec.Selector)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("replicaset %s/%s has invalid label selector: %v", replicaset.Namespace, replicaset.Name, err)
+	}
 	rayClusterList := &rayclusterv1.RayClusterList{}
 	ListOps := []client.ListOption{
 		client.InNamespace(replicaset.Namespace),
-		client.MatchingLabels(replicaset.Spec.Selector.MatchLabels),
+		client.MatchingLabelsSelector{Selector: selector},
 	}
 
-	if err := r.Client.List(ctx, rayClusterList, ListOps...); err != nil {
+	if err := r.List(ctx, rayClusterList, ListOps...); err != nil {
 		klog.ErrorS(err, "unable to list ray clusters")
 		return ctrl.Result{}, err
 	}
 
-	// ignore inactive clusters.
-	filteredClusters := filterActiveClusters(rayClusterList.Items)
+	// ignore clusters controlled by another object, and inactive clusters.
+	filteredClusters := filterActiveClusters(filterOwnedClusters(replicaset, rayClusterList.Items))
 
 	// manage replica differences
 	var scaleError error
@@ -157,17 +165,20 @@ func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl
 		return reconcile.Result{}, err
 	}
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, scaleError
 }
 
 // scaleUp handles RayCluster creation logic when scaling up
 func (r *RayClusterReplicaSetReconciler) scaleUp(ctx context.Context, replicaset *orchestrationv1alpha1.RayClusterReplicaSet, diff int) error {
+	rsKey := types.NamespacedName{Namespace: replicaset.Namespace, Name: replicaset.Name}.String()
 	for i := 0; i < diff; i++ {
 		newCluster := constructRayCluster(replicaset)
 		if err := r.Create(ctx, newCluster); err != nil {
+			// The failed and the skipped creations will never be observed, so stop expecting them.
+			r.Expectations.LowerExpectations(rsKey, diff-i, 0)
 			return fmt.Errorf("failed to create pod: %w", err)
 		}
-		r.Expectations.CreationObserved(types.NamespacedName{Namespace: replicaset.Namespace, Name: replicaset.Name}.String())
+		r.Expectations.CreationObserved(rsKey)
 	}
 	return nil
 }

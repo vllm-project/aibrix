@@ -17,8 +17,12 @@ limitations under the License.
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +31,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -52,7 +57,7 @@ func (m *mockRateLimiter) GetLimit(ctx context.Context, key string) (int64, erro
 	return args.Get(0).(int64), args.Error(1)
 }
 
-func (m *mockRateLimiter) Incr(ctx context.Context, key string, val int64) (int64, error) {
+func (m *mockRateLimiter) Incr(ctx context.Context, key string, val int64, window ...time.Duration) (int64, error) {
 	args := m.Called(ctx, key, val)
 	return args.Get(0).(int64), args.Error(1)
 }
@@ -66,6 +71,11 @@ func TestIsLanguageRequest(t *testing.T) {
 		{
 			name:        "chat completions is language",
 			requestPath: "/v1/chat/completions",
+			want:        true,
+		},
+		{
+			name:        "chat completions batch is language",
+			requestPath: "/v1/chat/completions/batch",
 			want:        true,
 		},
 		{
@@ -89,6 +99,11 @@ func TestIsLanguageRequest(t *testing.T) {
 			want:        false,
 		},
 		{
+			name:        "images edits is not language",
+			requestPath: "/v1/images/edits",
+			want:        false,
+		},
+		{
 			name:        "video generations is not language",
 			requestPath: "/v1/video/generations",
 			want:        false,
@@ -104,6 +119,66 @@ func TestIsLanguageRequest(t *testing.T) {
 			want:        false,
 		},
 		{
+			name:        "videos create is not language",
+			requestPath: "/v1/videos",
+			want:        false,
+		},
+		{
+			name:        "videos sync is not language",
+			requestPath: "/v1/videos/sync",
+			want:        false,
+		},
+		{
+			name:        "videos status poll is not language",
+			requestPath: "/v1/videos/video_gen_abc123",
+			want:        false,
+		},
+		{
+			name:        "videos content download is not language",
+			requestPath: "/v1/videos/video_gen_abc123/content",
+			want:        false,
+		},
+		{
+			name:        "tokenize is not language",
+			requestPath: "/tokenize",
+			want:        false,
+		},
+		{
+			name:        "messages count_tokens is not language",
+			requestPath: "/v1/messages/count_tokens",
+			want:        false,
+		},
+		{
+			name:        "pooling is language",
+			requestPath: "/pooling",
+			want:        true,
+		},
+		{
+			name:        "decisions is language",
+			requestPath: "/v1/decisions",
+			want:        true,
+		},
+		{
+			name:        "systemone is language",
+			requestPath: "/v1/systemone",
+			want:        true,
+		},
+		{
+			name:        "score is language",
+			requestPath: "/v1/score",
+			want:        true,
+		},
+		{
+			name:        "audio speech is not language",
+			requestPath: "/v1/audio/speech",
+			want:        false,
+		},
+		{
+			name:        "audio speech batch is not language",
+			requestPath: "/v1/audio/speech/batch",
+			want:        false,
+		},
+		{
 			name:        "empty path is language",
 			requestPath: "",
 			want:        true,
@@ -115,6 +190,58 @@ func TestIsLanguageRequest(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestSlowestTTFTStage(t *testing.T) {
+	tests := []struct {
+		name       string
+		routing    time.Duration
+		prefill    time.Duration
+		kvTransfer time.Duration
+		want       string
+	}{
+		{"routing dominates", 5 * time.Second, time.Second, 500 * time.Millisecond, "routing"},
+		{"prefill dominates", time.Second, 5 * time.Second, 500 * time.Millisecond, "prefill"},
+		{"kv transfer dominates", time.Second, 500 * time.Millisecond, 5 * time.Second, "kv_transfer"},
+		{"all zero falls back to routing", 0, 0, 0, "routing"},
+		{"negative kv transfer never wins", time.Second, time.Second, -time.Second, "routing"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, slowestTTFTStage(tt.routing, tt.prefill, tt.kvTransfer))
+		})
+	}
+}
+
+// TestRequestEndHelperSlowTTFLabelsAreBounded ensures per-request values never
+// become Prometheus labels. The former high-cardinality labels are still
+// registered, so re-adding one produces more than one series.
+func TestRequestEndHelperSlowTTFLabelsAreBounded(t *testing.T) {
+	labelNames := []string{
+		"gateway_pod", "model", "lora_adapter",
+		"request_id", "routing_time_taken", "prefill_time_taken",
+		"kv_transfer_time_taken", "ttft", "decode_time_taken",
+		"p_bucket", "c_bucket", "ttft_bucket", "slowest_stage",
+	}
+	counter, cleanup := metrics.SetupCounterMetricsForTest(metrics.GatewayFirstTokenDelayOver1sTotal, labelNames)
+	defer cleanup()
+
+	server := &Server{}
+	now := time.Now()
+	for i := 0; i < 64; i++ {
+		requestTime := now.Add(-3*time.Second - time.Duration(i)*time.Millisecond)
+		ctx := types.NewRoutingContext(context.Background(), "pd", "test-model", "", fmt.Sprintf("req-%d", i), "")
+		ctx.Stream = true
+		ctx.RequestTime = requestTime
+		ctx.PrefillStartTime = requestTime.Add(10*time.Millisecond + time.Duration(i)*time.Microsecond)
+		ctx.PrefillEndTime = ctx.PrefillStartTime.Add(20*time.Millisecond + time.Duration(i)*time.Microsecond)
+		ctx.FirstTokenTime = ctx.PrefillEndTime.Add(2*time.Second + time.Duration(i)*time.Microsecond)
+		server.requestEndHelper(ctx, now, 100, 10, 110)
+		ctx.Delete()
+	}
+
+	assert.Equal(t, 1, testutil.CollectAndCount(counter),
+		"64 requests with distinct IDs and timings must share one bounded series")
 }
 
 func TestTokenBucketLabel(t *testing.T) {
@@ -239,6 +366,217 @@ func TestProcessLanguageResponse_ValidFullResponse(t *testing.T) {
 	assert.Nil(t, res) // No error response for valid case
 }
 
+// TestProcessLanguageResponse_DecisionsResponse locks in that SGLang's /v1/decisions body
+// needs no special handling: it carries "model" and a usage block of prompt_tokens and
+// total_tokens (equal, nothing is generated), so it is metered like any language response.
+func TestProcessLanguageResponse_DecisionsResponse(t *testing.T) {
+	requestID := "test-decisions-" + time.Now().Format("150405.000")
+	body := []byte(`{"object": "decisions", "model": "decider", "prompt_format_version": 1, "answers": {"q1": {"type": "choice", "probabilities": {"a": 0.7, "b": 0.3}, "label_mass": 0.99, "choice": "a"}}, "usage": {"prompt_tokens": 42, "completion_tokens": 0, "total_tokens": 42}}`)
+
+	req := &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{
+			Body:        body,
+			EndOfStream: true,
+		},
+	}
+
+	res, complete, promptTokens, completionTokens, totalTokens := processLanguageResponse(requestID, req)
+
+	assert.False(t, complete)
+	assert.Nil(t, res)
+	assert.Equal(t, int64(42), promptTokens)
+	assert.Equal(t, int64(0), completionTokens)
+	assert.Equal(t, int64(42), totalTokens)
+}
+
+// TestProcessLanguageResponse_ScoreResponse locks in that SGLang's /v1/score body needs no
+// special handling: it carries "model" and an optional usage block, so it is metered like
+// any language response, and the nil response leaves the body, score matrices included,
+// to reach the client as the engine sent it.
+func TestProcessLanguageResponse_ScoreResponse(t *testing.T) {
+	tests := []struct {
+		name                      string
+		chunks                    []string
+		prompt, completion, total int64
+	}{
+		{
+			name:   "pointwise",
+			chunks: []string{`{"scores": [[0.91, 0.09], [0.12, 0.88]], "model": "scorer", "usage": {"prompt_tokens": 30, "completion_tokens": 0, "total_tokens": 30}, "object": "scoring"}`},
+			prompt: 30, total: 30,
+		},
+		{
+			name:   "setwise with pooled hidden states",
+			chunks: []string{`{"scores": [[[0.7, 0.3], [0.4, 0.6]], [[0.2, 0.8]]], "pooled_hidden_states": [[[0.1, 0.2], null], [[0.3, 0.4]]], "model": "scorer", "usage": {"prompt_tokens": 51, "completion_tokens": 0, "total_tokens": 51}, "object": "scoring"}`},
+			prompt: 51, total: 51,
+		},
+		{
+			name:   "split across chunks",
+			chunks: []string{`{"scores": [[0.5, 0.5]], "model": "sco`, `rer", "usage": {"prompt_tokens": 8, "total_tokens": 8}}`},
+			prompt: 8, total: 8,
+		},
+		{
+			name:   "no usage",
+			chunks: []string{`{"scores": [[1.0]], "model": "scorer", "object": "scoring"}`},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requestID := "test-score-" + tt.name + "-" + time.Now().Format("150405.000")
+
+			var res *extProcPb.ProcessingResponse
+			var complete bool
+			var prompt, completion, total int64
+			for i, chunk := range tt.chunks {
+				req := &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        []byte(chunk),
+						EndOfStream: i == len(tt.chunks)-1,
+					},
+				}
+				res, complete, prompt, completion, total = processLanguageResponse(requestID, req)
+				if i < len(tt.chunks)-1 {
+					assert.Nil(t, res.GetResponseBody().GetResponse().GetBodyMutation(), "a partial chunk must pass through unchanged")
+				}
+			}
+
+			assert.False(t, complete)
+			assert.Nil(t, res, "a nil response forwards the engine's body untouched")
+			assert.Equal(t, tt.prompt, prompt)
+			assert.Equal(t, tt.completion, completion)
+			assert.Equal(t, tt.total, total)
+		})
+	}
+}
+
+// systemOneResponseBody is SGLang's /v1/systemone body: "model" and a usage block of
+// input_tokens/output_tokens only, with no total_tokens.
+const systemOneResponseBody = `{"model": "decider", "answers": {"team": {"type": "choice", "choice": "billing", "confidence": 0.8, "probabilities": {"billing": 0.9, "support": 0.1}, "x_label_mass": 0.99}}, "usage": {"input_tokens": 120, "output_tokens": 0}}`
+
+// TestProcessLanguageResponse_SystemOneResponse locks in that a usage block without
+// total_tokens is still metered: the prompt count comes from input_tokens and the total
+// is derived, because HandleResponseBody skips accounting for a zero total.
+func TestProcessLanguageResponse_SystemOneResponse(t *testing.T) {
+	requestID := "test-systemone-" + time.Now().Format("150405.000")
+
+	req := &extProcPb.ProcessingRequest_ResponseBody{
+		ResponseBody: &extProcPb.HttpBody{
+			Body:        []byte(systemOneResponseBody),
+			EndOfStream: true,
+		},
+	}
+
+	res, complete, promptTokens, completionTokens, totalTokens := processLanguageResponse(requestID, req)
+
+	assert.False(t, complete)
+	assert.Nil(t, res)
+	assert.Equal(t, int64(120), promptTokens)
+	assert.Equal(t, int64(0), completionTokens)
+	assert.Equal(t, int64(120), totalTokens)
+}
+
+// vLLM's /v1/decisions body is OpenAI's format: "answers" is an array, and the usage block
+// names input_tokens, output_tokens and total_tokens next to two detail objects.
+const vllmDecisionsResponseBody = `{"model": "decider", "answers": [{"type": "predicate", "name": "urgent", "probability": 0.12}, {"type": "choice", "name": "team", "choice": "billing", "probabilities": [{"value": "billing", "probability": 0.9}, {"value": "shipping", "probability": 0.1}], "confidence": 0.88}], "usage": {"input_tokens": 254, "input_tokens_details": {"cached_tokens": 128, "cache_write_tokens": 0}, "output_tokens": 2, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 256}}`
+
+// vLLM's /v1/systemone body: input_tokens and output_tokens with no total_tokens, where
+// output_tokens counts the label tokens read, and a diagnostics block next to the answers.
+const vllmSystemOneResponseBody = `{"id": "decision-1", "object": "structured_decision", "created": 1790000000, "model": "decider", "answers": {"team": {"type": "choice", "choice": "billing", "probabilities": {"billing": 0.97, "shipping": 0.03}, "confidence": 0.9}}, "usage": {"input_tokens": 142, "output_tokens": 3}, "diagnostics": {"team": {"label_mass": 0.93, "argmax_is_label": true}}}`
+
+// TestProcessLanguageResponse_VLLMDecisionResponses locks in that the bodies vLLM sends for
+// both decision APIs are metered like any language response: the detail objects and the
+// array-valued answers are ignored, an explicit total is kept, and a missing one is derived.
+func TestProcessLanguageResponse_VLLMDecisionResponses(t *testing.T) {
+	tests := []struct {
+		name                      string
+		body                      string
+		prompt, completion, total int64
+	}{
+		{name: "decisions", body: vllmDecisionsResponseBody, prompt: 254, completion: 2, total: 256},
+		{name: "systemone", body: vllmSystemOneResponseBody, prompt: 142, completion: 3, total: 145},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requestID := "test-vllm-" + tt.name + "-" + time.Now().Format("150405.000")
+			req := &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        []byte(tt.body),
+					EndOfStream: true,
+				},
+			}
+
+			res, complete, prompt, completion, total := processLanguageResponse(requestID, req)
+
+			assert.False(t, complete)
+			assert.Nil(t, res, "a nil response forwards the engine's body untouched")
+			assert.Equal(t, tt.prompt, prompt)
+			assert.Equal(t, tt.completion, completion)
+			assert.Equal(t, tt.total, total)
+		})
+	}
+}
+
+func TestProcessLanguageResponse_TotalTokens(t *testing.T) {
+	tests := []struct {
+		name                      string
+		usage                     string
+		prompt, completion, total int64
+	}{
+		{
+			name:       "derived from prompt and completion when absent",
+			usage:      `{"prompt_tokens": 10, "completion_tokens": 5}`,
+			prompt:     10,
+			completion: 5,
+			total:      15,
+		},
+		{
+			name:       "derived from input and output aliases when absent",
+			usage:      `{"input_tokens": 7, "output_tokens": 3}`,
+			prompt:     7,
+			completion: 3,
+			total:      10,
+		},
+		{
+			name:       "explicit total is kept even when it differs from the sum",
+			usage:      `{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 20}`,
+			prompt:     10,
+			completion: 5,
+			total:      20,
+		},
+		{
+			name:       "explicit zero total is not overridden",
+			usage:      `{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 0}`,
+			prompt:     10,
+			completion: 5,
+			total:      0,
+		},
+		{
+			name:  "empty usage stays unmetered",
+			usage: `{}`,
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requestID := fmt.Sprintf("test-total-tokens-%d-%s", i, time.Now().Format("150405.000"))
+			req := &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        []byte(`{"model": "m", "usage": ` + tt.usage + `}`),
+					EndOfStream: true,
+				},
+			}
+
+			res, _, promptTokens, completionTokens, totalTokens := processLanguageResponse(requestID, req)
+
+			assert.Nil(t, res)
+			assert.Equal(t, tt.prompt, promptTokens)
+			assert.Equal(t, tt.completion, completionTokens)
+			assert.Equal(t, tt.total, totalTokens)
+		})
+	}
+}
+
 func TestProcessLanguageResponse_InvalidJSON(t *testing.T) {
 	requestID := "test-invalid-json-" + time.Now().Format("150405.000")
 	body := []byte(`{invalid json}`)
@@ -349,6 +687,27 @@ func TestProcessLanguageResponse_UpstreamErrorNormalization(t *testing.T) {
 			wantCode:  envoyTypePb.StatusCode_BadRequest,
 			wantMsg:   "max_new_tokens must be at least 0, got -1.",
 			wantType:  "BadRequestError",
+			wantParam: sentinelNull,
+		},
+		{
+			name: "score error passthrough",
+			chunks: [][]byte{[]byte(
+				`{"object": "error", "message": "label_token_ids must not be empty", "type": "BadRequestError", "param": null, "code": 400}`,
+			)},
+			wantCode:  envoyTypePb.StatusCode_BadRequest,
+			wantMsg:   "label_token_ids must not be empty",
+			wantType:  "BadRequestError",
+			wantParam: sentinelNull,
+		},
+		{
+			// vLLM answers 501 when the model has no supported read strategy.
+			name: "vllm decision API on a model without a read strategy",
+			chunks: [][]byte{[]byte(
+				`{"error": {"message": "model does not support structured decisions", "type": "NotImplementedError", "param": null, "code": 501}}`,
+			)},
+			wantCode:  envoyTypePb.StatusCode_NotImplemented,
+			wantMsg:   "model does not support structured decisions",
+			wantType:  "NotImplementedError",
 			wantParam: sentinelNull,
 		},
 		{
@@ -594,20 +953,44 @@ func TestHandleResponseBody_NilRoutingContext(t *testing.T) {
 func TestHandleResponseBody_PDPrefillTimingMetricsRequirePrefillEndTime(t *testing.T) {
 	tests := []struct {
 		name             string
+		algorithm        types.RoutingAlgorithm
 		prefillEndOffset time.Duration
 		wantBucket       string
 		wantCount        float64
 	}{
 		{
 			name:       "skips prefill timing metric when prefill end is unset",
+			algorithm:  "pd",
 			wantBucket: "0-1ms",
 			wantCount:  0.0,
 		},
 		{
 			name:             "emits prefill timing metric when prefill end is set",
+			algorithm:        "pd",
 			prefillEndOffset: 50 * time.Millisecond,
 			wantBucket:       "50-100ms",
 			wantCount:        1.0,
+		},
+		{
+			name:             "emits prefill timing metric for a weighted pd strategy",
+			algorithm:        "pd:1,least-request:1",
+			prefillEndOffset: 50 * time.Millisecond,
+			wantBucket:       "50-100ms",
+			wantCount:        1.0,
+		},
+		{
+			name:             "skips prefill timing metric for a non-pd strategy",
+			algorithm:        "least-request",
+			prefillEndOffset: 50 * time.Millisecond,
+			wantBucket:       "50-100ms",
+			wantCount:        0.0,
+		},
+		{
+			name:             "skips prefill timing metric for an slo strategy",
+			algorithm:        "slo-least-load",
+			prefillEndOffset: 50 * time.Millisecond,
+			wantBucket:       "50-100ms",
+			wantCount:        0.0,
 		},
 	}
 
@@ -622,7 +1005,7 @@ func TestHandleResponseBody_PDPrefillTimingMetricsRequirePrefillEndTime(t *testi
 			server := &Server{}
 			requestTime := time.Now().Add(-200 * time.Millisecond)
 			prefillStartTime := requestTime.Add(20 * time.Millisecond)
-			routerCtx := types.NewRoutingContext(context.Background(), "pd", "test-model", "", "test-req-id", "")
+			routerCtx := types.NewRoutingContext(context.Background(), tt.algorithm, "test-model", "", "test-req-id", "")
 			routerCtx.ReqPath = PathChatCompletions
 			routerCtx.RequestTime = requestTime
 			routerCtx.PrefillStartTime = prefillStartTime
@@ -705,6 +1088,15 @@ func TestHandleResponseBody_PDStreamingDecodeTimeAndTPOT(t *testing.T) {
 }
 
 func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
+	var failures float64
+	originalFn := metrics.IncrementCounterMetricFnForTest
+	defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
+	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		if name == metrics.GatewayTPMIncrementFailuresTotal {
+			failures += value
+		}
+	}
+
 	mockRL := &mockRateLimiter{}
 	mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(15)).Return(int64(100), nil)
 
@@ -750,8 +1142,257 @@ func TestHandleResponseBody_WithUserAndTPM(t *testing.T) {
 	}
 	assert.True(t, foundTPM, "expected HeaderUpdateTPM in response")
 	assert.True(t, foundRPM, "expected HeaderUpdateRPM in response")
+	assert.Zero(t, failures, "a successful increment must not count a failure")
 	assert.True(t, foundReqID, "expected request-id in response")
 	mockRL.AssertExpectations(t)
+}
+
+// TestHandleResponseBody_SystemOneIsMetered is the end-to-end half of the total_tokens
+// derivation: without it a /v1/systemone response never reaches TPM accounting.
+func TestHandleResponseBody_SystemOneIsMetered(t *testing.T) {
+	mockRL := &mockRateLimiter{}
+	mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(120)).Return(int64(500), nil)
+
+	server := &Server{
+		ratelimiter: mockRL,
+	}
+
+	requestID := "test-req-systemone-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "decider", "", requestID, "test-user")
+	routerCtx.ReqPath = PathSystemOne
+	routerCtx.RequestTime = time.Now()
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(systemOneResponseBody),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 42, "decider", false, false)
+
+	assert.True(t, complete)
+	assert.NotNil(t, resp)
+	assert.Equal(t, TokenUsage{PromptTokens: 120, CompletionTokens: 0, TotalTokens: 120}, usage)
+	foundTPM := false
+	for _, h := range resp.GetResponseBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
+		if h.Header.Key == HeaderUpdateTPM {
+			foundTPM = true
+			assert.Equal(t, []byte("500"), h.Header.RawValue)
+		}
+	}
+	assert.True(t, foundTPM, "expected HeaderUpdateTPM in response")
+	mockRL.AssertExpectations(t)
+}
+
+// TestHandleResponseBody_VLLMDecisionsAreMetered is the end-to-end half of
+// TestProcessLanguageResponse_VLLMDecisionResponses: both vLLM bodies reach TPM accounting
+// with the total the engine sent or, for /v1/systemone, the derived one.
+func TestHandleResponseBody_VLLMDecisionsAreMetered(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		body    string
+		usage   TokenUsage
+		wantTPM int64
+	}{
+		{name: "decisions", path: PathDecisions, body: vllmDecisionsResponseBody, usage: TokenUsage{PromptTokens: 254, CompletionTokens: 2, TotalTokens: 256}, wantTPM: 256},
+		{name: "systemone", path: PathSystemOne, body: vllmSystemOneResponseBody, usage: TokenUsage{PromptTokens: 142, CompletionTokens: 3, TotalTokens: 145}, wantTPM: 145},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockRL := &mockRateLimiter{}
+			mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", tt.wantTPM).Return(int64(500), nil)
+			server := &Server{ratelimiter: mockRL}
+
+			requestID := "test-req-vllm-" + tt.name + "-" + time.Now().Format("150405.000")
+			routerCtx := types.NewRoutingContext(context.Background(), "random", "decider", "", requestID, "test-user")
+			routerCtx.ReqPath = tt.path
+			routerCtx.RequestTime = time.Now()
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{Body: []byte(tt.body), EndOfStream: true},
+				},
+			}
+
+			resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 42, "decider", false, false)
+
+			assert.True(t, complete)
+			assert.NotNil(t, resp)
+			assert.Equal(t, tt.usage, usage)
+			mockRL.AssertExpectations(t)
+		})
+	}
+}
+
+// Shaped like vLLM's /v1/messages stream, which sends no total_tokens.
+func messagesStreamBody(finalUsage string) string {
+	return "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[],"usage":{"input_tokens":25,"output_tokens":0}}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":` + finalUsage + `}` + "\n\n" +
+		"event: message_stop\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+}
+
+func TestHandleResponseBody_MessagesStreamIsMetered(t *testing.T) {
+	tests := []struct {
+		name  string
+		usage string
+	}{
+		{
+			name:  "no total_tokens",
+			usage: `{"input_tokens":25,"output_tokens":15}`,
+		},
+		{
+			name:  "null total_tokens",
+			usage: `{"input_tokens":25,"output_tokens":15,"total_tokens":null}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockRL := &mockRateLimiter{}
+			mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(40)).Return(int64(40), nil)
+
+			server := &Server{
+				ratelimiter: mockRL,
+			}
+
+			requestID := "test-req-messages-stream-" + tt.name + "-" + time.Now().Format("150405.000")
+			routerCtx := types.NewRoutingContext(context.Background(), "random", "m", "", requestID, "test-user")
+			routerCtx.ReqPath = PathMessages
+			routerCtx.RequestTime = time.Now()
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        []byte(messagesStreamBody(tt.usage)),
+						EndOfStream: true,
+					},
+				},
+			}
+
+			_, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user", Tpm: 1000}, 1, "m", true, false)
+
+			assert.True(t, complete)
+			assert.Equal(t, TokenUsage{PromptTokens: 25, CompletionTokens: 15, TotalTokens: 40}, usage)
+			mockRL.AssertExpectations(t)
+		})
+	}
+}
+
+// SGLang sends input usage in message_start and only output usage in message_delta.
+func TestHandleResponseBody_MessagesSplitUsageIsMetered(t *testing.T) {
+	for _, name := range []string{"one_callback", "separate_callbacks", "cumulative_deltas", "byte_chunks"} {
+		separateCallbacks := name != "one_callback"
+		t.Run(name, func(t *testing.T) {
+			requestID := "messages-split-usage-" + name
+			t.Cleanup(func() {
+				streamUsage.Delete(requestID)
+				streamBuffers.Delete(requestID)
+			})
+			limiter := &mockRateLimiter{}
+			limiter.Test(t)
+			limiter.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(40)).Return(int64(40), nil).Once()
+			server := &Server{ratelimiter: limiter}
+			routingCtx := types.NewRoutingContext(context.Background(), "random", "m", "", requestID, "test-user")
+			routingCtx.ReqPath = PathMessages
+			routingCtx.RequestTime = time.Now()
+			body := messagesStreamBody(`{"output_tokens":15}`)
+			if name == "cumulative_deltas" {
+				// Duplicate running counts must replace each other, never add.
+				running := `data: {"type":"message_delta","delta":{"stop_reason":null},"usage":{"output_tokens":5}}` + "\n\n"
+				body = strings.Replace(body, "event: message_delta\n", running+running+"event: message_delta\n", 1)
+			}
+			chunks := []string{body}
+			if name == "byte_chunks" {
+				chunks = strings.Split(body, "")
+			} else if separateCallbacks {
+				chunks = strings.SplitAfter(strings.TrimSuffix(body, "\n\n"), "\n\n")
+			}
+			var complete bool
+			var finalUsage TokenUsage
+			for i, chunk := range chunks {
+				if chunk == "" {
+					continue
+				}
+				req := &extProcPb.ProcessingRequest{Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{Body: []byte(chunk), EndOfStream: i == len(chunks)-1},
+				}}
+				response, done, usage := server.HandleResponseBody(context.Background(), routingCtx, requestID, req,
+					utils.User{Name: "test-user", Tpm: 1000}, 1, "m", true, complete)
+				require.Nil(t, response.GetImmediateResponse())
+				if i == 0 && separateCallbacks {
+					assert.False(t, done, "message_start must not finalize token accounting")
+					assert.Zero(t, usage)
+				}
+				complete = done
+				if usage.TotalTokens != 0 {
+					finalUsage = usage
+				}
+			}
+			assert.True(t, complete)
+			assert.Equal(t, TokenUsage{PromptTokens: 25, CompletionTokens: 15, TotalTokens: 40}, finalUsage)
+			limiter.AssertExpectations(t)
+		})
+	}
+}
+
+func TestProcessStreamingResponse_MessagesUsageFields(t *testing.T) {
+	tests := []struct {
+		name  string
+		delta string
+		want  TokenUsage
+	}{
+		{"output_only", `{"output_tokens":15}`, TokenUsage{25, 15, 40}},
+		{"full_snapshot", `{"input_tokens":7,"output_tokens":15}`, TokenUsage{7, 15, 22}},
+		{"explicit_zero_input", `{"input_tokens":0,"output_tokens":15}`, TokenUsage{0, 15, 15}},
+		{"explicit_zero_output", `{"output_tokens":0}`, TokenUsage{25, 0, 25}},
+		{"null_total", `{"output_tokens":15,"total_tokens":null}`, TokenUsage{25, 15, 40}},
+		{"explicit_total", `{"output_tokens":15,"total_tokens":100}`, TokenUsage{25, 15, 100}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requestID := "messages-usage-fields-" + tt.name
+			t.Cleanup(func() { streamUsage.Delete(requestID); streamBuffers.Delete(requestID) })
+			body := messagesStreamBody(tt.delta)
+			// Exercise every possible transport split, including inside usage keys.
+			for split := 0; split <= len(body); split++ {
+				firstUsage, firstFinal, response := processStreamingResponse(requestID, []byte(body[:split]), false)
+				require.Nil(t, response)
+				got, final, response := processStreamingResponse(requestID, []byte(body[split:]), true)
+				require.Nil(t, response)
+				require.True(t, final)
+				if firstFinal {
+					require.Equal(t, tt.want, firstUsage, "final usage before split at byte %d", split)
+					require.Zero(t, got, "terminal usage must not be charged again at byte %d", split)
+				} else {
+					require.Equal(t, tt.want, got, "split at byte %d", split)
+				}
+			}
+		})
+	}
+}
+
+func TestProcessStreamingResponse_OpenAIUsageStillReplaces(t *testing.T) {
+	requestID := "openai-usage-replaces"
+	t.Cleanup(func() { streamUsage.Delete(requestID); streamBuffers.Delete(requestID) })
+	running := `data: {"choices":[{"delta":{"content":"hi"}}],"usage":{"input_tokens":25,"output_tokens":5}}` + "\n\n"
+	_, final, response := processStreamingResponse(requestID, []byte(running), false)
+	require.Nil(t, response)
+	require.False(t, final)
+	terminal := `data: {"choices":[],"usage":{"output_tokens":15}}` + "\n\n"
+	usage, final, response := processStreamingResponse(requestID, []byte(terminal), true)
+	require.Nil(t, response)
+	require.True(t, final)
+	assert.Equal(t, TokenUsage{PromptTokens: 0, CompletionTokens: 15, TotalTokens: 15}, usage)
 }
 
 func TestHandleResponseBody_NonLanguageRequest(t *testing.T) {
@@ -778,6 +1419,146 @@ func TestHandleResponseBody_NonLanguageRequest(t *testing.T) {
 	assert.Equal(t, TokenUsage{}, usage)
 }
 
+func TestHandleResponseBody_MessagesCountTokensPassesThrough(t *testing.T) {
+	server := &Server{}
+
+	requestID := "test-req-count-tokens-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+	routerCtx.ReqPath = "/v1/messages/count_tokens?beta=true"
+	routerCtx.RequestTime = time.Now()
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"input_tokens": 12}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{}, 0, "test-model", false, false)
+
+	assert.True(t, complete)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.NotNil(t, resp.GetResponseBody())
+	assert.Equal(t, TokenUsage{}, usage)
+}
+
+// TestHandleResponseBody_AudioSpeechPassesThrough: /v1/audio/speech returns binary audio, often
+// in several chunks, so the gateway must forward every chunk byte for byte, parse no tokens from
+// it and meter no usage, while still completing on the last chunk.
+func TestHandleResponseBody_AudioSpeechPassesThrough(t *testing.T) {
+	server := &Server{}
+
+	requestID := "test-req-speech-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "tts-model", "", requestID, "test-user")
+	routerCtx.ReqPath = PathAudioSpeech
+	routerCtx.RequestTime = time.Now()
+
+	chunks := [][]byte{
+		{0xff, 0xf3, 0x60, 0xc4, 0x00, 0x10}, // raw MP3 bytes, not text
+		{0x30, 0x31, 0x32, 0x33},             // a second audio chunk
+	}
+
+	for i, chunk := range chunks {
+		req := &extProcPb.ProcessingRequest{
+			Request: &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        chunk,
+					EndOfStream: i == len(chunks)-1,
+				},
+			},
+		}
+
+		resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "tts-model", false, false)
+
+		assert.Equal(t, i == len(chunks)-1, complete)
+		assert.NotNil(t, resp)
+		assert.Equal(t, TokenUsage{}, usage, "binary audio carries no token usage")
+		assert.Nil(t, resp.GetResponseBody().GetResponse().GetBodyMutation(), "audio chunks must pass through unchanged")
+	}
+}
+
+// TestHandleResponseBody_AudioSpeechBatchPassesThrough: /v1/audio/speech/batch returns one JSON
+// document that inlines every item's base64 audio, possibly across several chunks. It looks like
+// a language response (JSON with an id and a usage-free body), so the gateway must still forward
+// every chunk untouched, buffer nothing, meter no usage, and leave a batch whose items all failed
+// as the HTTP 200 the engine sent rather than turning it into an error.
+func TestHandleResponseBody_AudioSpeechBatchPassesThrough(t *testing.T) {
+	server := &Server{}
+
+	requestID := "test-req-speech-batch-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "tts-model", "", requestID, "test-user")
+	routerCtx.ReqPath = PathAudioSpeechBatch
+	routerCtx.RequestTime = time.Now()
+
+	chunks := [][]byte{
+		[]byte(`{"id":"speech-batch-1","results":[{"index":0,"status":"success","audio_data":"UklGR`),
+		[]byte(`iQ=","format":"wav"},{"index":1,"status":"error","error":{"message":"bad","param":"items.1.input"}}],`),
+		[]byte(`"total":2,"succeeded":1,"failed":1}`),
+	}
+
+	for i, chunk := range chunks {
+		req := &extProcPb.ProcessingRequest{
+			Request: &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        chunk,
+					EndOfStream: i == len(chunks)-1,
+				},
+			},
+		}
+
+		resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "tts-model", false, false)
+
+		assert.Equal(t, i == len(chunks)-1, complete)
+		if assert.NotNil(t, resp) {
+			assert.Nil(t, resp.GetImmediateResponse(), "a partially failed batch must not become an error response")
+			assert.Nil(t, resp.GetResponseBody().GetResponse().GetBodyMutation(), "batch chunks must pass through unchanged")
+		}
+		assert.Equal(t, TokenUsage{}, usage, "a speech batch carries no token usage")
+	}
+
+	_, buffered := requestBuffers.Load(requestID)
+	assert.False(t, buffered, "the response must not be held in the language-response buffer")
+}
+
+// TestHandleResponseBody_ChatCompletionsBatchIsMetered: the engine answers a batch with one
+// chat completion holding a choice per conversation and the usage summed over all of them, so a
+// TPM-limited user is charged for the whole batch from that one document.
+func TestHandleResponseBody_ChatCompletionsBatchIsMetered(t *testing.T) {
+	mockRL := &mockRateLimiter{}
+	mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(40)).Return(int64(500), nil)
+
+	server := &Server{
+		ratelimiter: mockRL,
+	}
+
+	requestID := "test-req-chat-batch-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "chat-model", "", requestID, "test-user")
+	routerCtx.ReqPath = PathChatCompletionsBatch
+	routerCtx.RequestTime = time.Now()
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body: []byte(`{"id":"chatcmpl-1","object":"chat.completion","model":"chat-model","choices":[` +
+					`{"index":0,"message":{"role":"assistant","content":"Paris."},"finish_reason":"stop"},` +
+					`{"index":1,"message":{"role":"assistant","content":"Tokyo."},"finish_reason":"stop"}],` +
+					`"usage":{"prompt_tokens":30,"completion_tokens":10,"total_tokens":40}}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 42, "chat-model", false, false)
+
+	assert.True(t, complete)
+	assert.NotNil(t, resp)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, TokenUsage{PromptTokens: 30, CompletionTokens: 10, TotalTokens: 40}, usage)
+	mockRL.AssertExpectations(t)
+}
+
 func TestHandleResponseBody_EndOfStreamNoTokens(t *testing.T) {
 	server := &Server{}
 
@@ -801,45 +1582,103 @@ func TestHandleResponseBody_EndOfStreamNoTokens(t *testing.T) {
 	assert.Equal(t, TokenUsage{}, usage)
 }
 
+// The response is already generated and on its way to the client when TPM is
+// counted, so a failed increment must be reported without replacing it: an
+// ImmediateResponse at this point would reset a response that has been served.
 func TestHandleResponseBody_TPMIncrError(t *testing.T) {
-	mockRL := &mockRateLimiter{}
-	mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(15)).Return(int64(0), errors.New("mock error"))
-	server := &Server{
-		ratelimiter: mockRL,
-	}
-
-	requestID := "test-req-tpm-err-" + time.Now().Format("150405.000")
-	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "test-user")
-	routerCtx.ReqPath = PathChatCompletions
-	routerCtx.RequestTime = time.Now()
-
-	req := &extProcPb.ProcessingRequest{
-		Request: &extProcPb.ProcessingRequest_ResponseBody{
-			ResponseBody: &extProcPb.HttpBody{
-				Body:        []byte(`{"model": "test-model", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}`),
-				EndOfStream: true,
-			},
+	nonStreamingBody := `{"model": "test-model", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}`
+	for _, tt := range []struct {
+		name       string
+		stream     bool
+		cancelled  bool
+		body       string
+		wantReason string
+	}{
+		{
+			name:       "non-streaming",
+			body:       nonStreamingBody,
+			wantReason: "error",
 		},
-	}
+		{
+			name:   "streaming",
+			stream: true,
+			body: "data: {\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+				"data: {\"model\":\"test-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n" +
+				"data: [DONE]\n\n",
+			wantReason: "error",
+		},
+		{
+			name:       "request cancelled",
+			cancelled:  true,
+			body:       nonStreamingBody,
+			wantReason: "cancelled",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var requestsWithUsage, failures float64
+			var failureReasons []string
+			originalFn := metrics.IncrementCounterMetricFnForTest
+			defer func() { metrics.IncrementCounterMetricFnForTest = originalFn }()
+			metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+				switch name {
+				case metrics.GatewayRequestsWithUsageTotal:
+					requestsWithUsage += value
+				case metrics.GatewayTPMIncrementFailuresTotal:
+					failures += value
+					for i, l := range labelNames {
+						if l == "reason" {
+							failureReasons = append(failureReasons, labelValues[i])
+						}
+					}
+				}
+			}
 
-	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "test-model", false, false)
+			mockRL := &mockRateLimiter{}
+			mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(15)).Return(int64(0), errors.New("mock error"))
+			server := &Server{
+				ratelimiter: mockRL,
+			}
 
-	assert.True(t, complete)
-	assert.NotNil(t, resp)
-	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, usage)
-	// Error response uses ImmediateResponse
-	immResp := resp.GetImmediateResponse()
-	assert.NotNil(t, immResp)
-	headers := immResp.GetHeaders().GetSetHeaders()
-	found := false
-	for _, h := range headers {
-		if h.Header.Key == HeaderErrorIncrTPM {
-			found = true
-			break
-		}
+			requestID := "test-req-tpm-err-" + tt.name + "-" + time.Now().Format("150405.000")
+			reqCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tt.cancelled {
+				cancel()
+			}
+			routerCtx := types.NewRoutingContext(reqCtx, "random", "test-model", "", requestID, "test-user")
+			routerCtx.ReqPath = PathChatCompletions
+			routerCtx.RequestTime = time.Now()
+			routerCtx.Stream = tt.stream
+
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        []byte(tt.body),
+						EndOfStream: true,
+					},
+				},
+			}
+
+			resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "test-model", tt.stream, false)
+
+			assert.True(t, complete)
+			assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, usage)
+			require.NotNil(t, resp)
+			assert.Nil(t, resp.GetImmediateResponse(), "the served response must not be replaced")
+			headers := map[string]string{}
+			for _, h := range resp.GetResponseBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
+				headers[h.Header.Key] = string(h.Header.RawValue)
+			}
+			assert.Equal(t, "true", headers[HeaderErrorIncrTPM])
+			assert.NotContains(t, headers, HeaderUpdateRPM)
+			assert.NotContains(t, headers, HeaderUpdateTPM)
+			assert.Equal(t, requestID, headers[HeaderRequestID])
+			assert.Equal(t, 1.0, requestsWithUsage, "request_end must still run")
+			assert.Equal(t, []string{tt.wantReason}, failureReasons, "the failed increment must be counted once, by reason")
+			assert.Equal(t, 1.0, failures, "the failed increment must add exactly 1")
+			mockRL.AssertExpectations(t)
+		})
 	}
-	assert.True(t, found, "expected HeaderErrorIncrTPM in response")
-	mockRL.AssertExpectations(t)
 }
 
 func TestHandleResponseBody_LanguagePartialResponse(t *testing.T) {
@@ -1081,6 +1920,248 @@ func TestHandleResponseBody_SSEParsing(t *testing.T) {
 	}
 }
 
+// TestHandleResponseBody_SSEChunkSplitAcrossCallbacks reproduces
+// https://github.com/vllm-project/aibrix/issues/2638: Envoy ext_proc delivers
+// response body chunks as TCP data arrives, so a single SSE "data: {...}" line
+// carrying the final usage payload can be split across two HandleResponseBody
+// invocations, and the split can land anywhere in the line -- including before
+// the "usage" key itself has arrived. The first (non-final) call must not treat
+// its truncated tail as malformed JSON; the second call should complete the
+// line and extract usage.
+func TestHandleResponseBody_SSEChunkSplitAcrossCallbacks(t *testing.T) {
+	full := []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 20, \"total_tokens\": 30}}\n\n")
+
+	tests := []struct {
+		name    string
+		splitAt int
+	}{
+		{name: "split after the usage key has appeared", splitAt: 40},
+		{name: "split before the usage key appears", splitAt: 10},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requestID := "test-req-id-" + tt.name + "-" + time.Now().Format("150405.000000")
+			t.Cleanup(func() { streamBuffers.Delete(requestID) })
+
+			server := &Server{}
+
+			routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+			routerCtx.ReqPath = PathChatCompletions
+			routerCtx.RequestTime = time.Now()
+
+			firstHalf, secondHalf := full[:tt.splitAt], full[tt.splitAt:]
+
+			firstReq := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        firstHalf,
+						EndOfStream: false,
+					},
+				},
+			}
+			resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, firstReq, utils.User{}, 0, "test-model", true, false)
+			assert.False(t, complete, "stream is not complete after the first partial chunk")
+			assert.Equal(t, TokenUsage{}, usage)
+			assert.Nil(t, resp.GetImmediateResponse(), "a mid-stream chunk boundary must not be reported as malformed JSON")
+
+			secondReq := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_ResponseBody{
+					ResponseBody: &extProcPb.HttpBody{
+						Body:        secondHalf,
+						EndOfStream: true,
+					},
+				},
+			}
+			resp, complete, usage = server.HandleResponseBody(context.Background(), routerCtx, requestID, secondReq, utils.User{}, 0, "test-model", true, false)
+			assert.True(t, complete)
+			assert.Nil(t, resp.GetImmediateResponse())
+			assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30}, usage)
+		})
+	}
+}
+
+// TestHandleResponseBody_SSEEmptyEOSChunkAfterBufferedTail covers a standard Envoy
+// ext_proc pattern that TestHandleResponseBody_SSEChunkSplitAcrossCallbacks does not: the
+// final chunk carrying EndOfStream can itself have an empty body, with the actual last
+// bytes of the line having arrived in the previous (non-final) chunk. The buffered tail
+// must still be reassembled and scanned on EOS even though the EOS chunk contributes no
+// new bytes.
+func TestHandleResponseBody_SSEEmptyEOSChunkAfterBufferedTail(t *testing.T) {
+	// No trailing "\n\n": the whole line arrives with no newline terminator at all, so it
+	// is entirely carried over into streamBuffers rather than scanned on this call.
+	noTerminator := []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 20, \"total_tokens\": 30}}")
+
+	requestID := "test-req-id-empty-eos-" + time.Now().Format("150405.000000")
+	t.Cleanup(func() { streamBuffers.Delete(requestID) })
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	firstReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        noTerminator,
+				EndOfStream: false,
+			},
+		},
+	}
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, firstReq, utils.User{}, 0, "test-model", true, false)
+	assert.False(t, complete)
+	assert.Equal(t, TokenUsage{}, usage)
+	assert.Nil(t, resp.GetImmediateResponse())
+
+	eosReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte{},
+				EndOfStream: true,
+			},
+		},
+	}
+	resp, complete, usage = server.HandleResponseBody(context.Background(), routerCtx, requestID, eosReq, utils.User{}, 0, "test-model", true, false)
+	assert.True(t, complete)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30}, usage)
+}
+
+// TestHandleResponseBody_SSEChunkSplitThreeWays covers a line split across three (not just
+// two) consecutive HandleResponseBody calls, chaining the trailing-buffer carry-over twice.
+func TestHandleResponseBody_SSEChunkSplitThreeWays(t *testing.T) {
+	full := []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 20, \"total_tokens\": 30}}\n\n")
+
+	requestID := "test-req-id-three-way-" + time.Now().Format("150405.000000")
+	t.Cleanup(func() { streamBuffers.Delete(requestID) })
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	part1, part2, part3 := full[:10], full[10:40], full[40:]
+
+	for i, part := range [][]byte{part1, part2} {
+		req := &extProcPb.ProcessingRequest{
+			Request: &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        part,
+					EndOfStream: false,
+				},
+			},
+		}
+		resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{}, 0, "test-model", true, false)
+		assert.False(t, complete, "part %d should not complete the stream", i)
+		assert.Equal(t, TokenUsage{}, usage)
+		assert.Nil(t, resp.GetImmediateResponse(), "part %d must not be reported as malformed JSON", i)
+	}
+
+	finalReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        part3,
+				EndOfStream: true,
+			},
+		},
+	}
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, finalReq, utils.User{}, 0, "test-model", true, false)
+	assert.True(t, complete)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30}, usage)
+}
+
+// TestHandleResponseBody_SSECarriageReturnSplitAcrossCallbacks covers the line terminator
+// itself being split across callbacks: one chunk ends with '\r' and the next begins with
+// '\n'. bytes.TrimSpace strips a trailing '\r' from the line content either way, but the
+// buffering must not treat the dangling '\r' as part of an unterminated next line.
+func TestHandleResponseBody_SSECarriageReturnSplitAcrossCallbacks(t *testing.T) {
+	full := []byte("data: {\"id\": \"1\", \"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 20, \"total_tokens\": 30}}\r\n\r\n")
+	splitAt := bytes.IndexByte(full, '\r') + 1 // split right after the '\r', before the '\n'
+
+	requestID := "test-req-id-crlf-split-" + time.Now().Format("150405.000000")
+	t.Cleanup(func() { streamBuffers.Delete(requestID) })
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	firstReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        full[:splitAt],
+				EndOfStream: false,
+			},
+		},
+	}
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, firstReq, utils.User{}, 0, "test-model", true, false)
+	assert.False(t, complete)
+	assert.Equal(t, TokenUsage{}, usage)
+	assert.Nil(t, resp.GetImmediateResponse())
+
+	secondReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        full[splitAt:],
+				EndOfStream: true,
+			},
+		},
+	}
+	resp, complete, usage = server.HandleResponseBody(context.Background(), routerCtx, requestID, secondReq, utils.User{}, 0, "test-model", true, false)
+	assert.True(t, complete)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, TokenUsage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30}, usage)
+}
+
+// TestHandleResponseBody_SSELineExceedsBufferLimit reproduces a single SSE event (e.g. a
+// large tool-call/reasoning/multimodal delta) that exceeds maxStreamBufferSize before a
+// newline arrives. Per https://github.com/vllm-project/aibrix/pull/2653#issuecomment
+// feedback, this must not abort the client's stream with a 500 -- that reproduces the
+// original bug (issue #2638) for a different reason. The gateway should drop the oversized
+// line and let the stream continue; only usage extraction for that one line is lost.
+func TestHandleResponseBody_SSELineExceedsBufferLimit(t *testing.T) {
+	requestID := "test-req-id-oversized-line-" + time.Now().Format("150405.000000")
+	t.Cleanup(func() { streamBuffers.Delete(requestID) })
+
+	server := &Server{}
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", requestID, "")
+	routerCtx.ReqPath = PathChatCompletions
+	routerCtx.RequestTime = time.Now()
+
+	// A single line, no newline yet, larger than maxStreamBufferSize.
+	oversizedChunk := append([]byte("data: "), bytes.Repeat([]byte("a"), maxStreamBufferSize+1)...)
+
+	firstReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        oversizedChunk,
+				EndOfStream: false,
+			},
+		},
+	}
+	resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, firstReq, utils.User{}, 0, "test-model", true, false)
+	assert.False(t, complete)
+	assert.Equal(t, TokenUsage{}, usage)
+	assert.Nil(t, resp.GetImmediateResponse(), "an oversized single-line SSE event must not abort the client stream with a 500")
+
+	// The line finally terminates, along with a well-formed subsequent usage line. The
+	// terminator here only closes out (and discards) the oversized line; usage extraction
+	// for that dropped line is lost, but the stream must still complete cleanly.
+	finalReq := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte("\n\ndata: {\"id\": \"2\", \"usage\": {\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2}}\n\n"),
+				EndOfStream: true,
+			},
+		},
+	}
+	resp, complete, usage = server.HandleResponseBody(context.Background(), routerCtx, requestID, finalReq, utils.User{}, 0, "test-model", true, false)
+	assert.True(t, complete)
+	assert.Nil(t, resp.GetImmediateResponse())
+	assert.Equal(t, TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}, usage)
+}
+
 func TestRequestEndHelper_EmitsTokenUsageMetrics(t *testing.T) {
 	var counterCalls []struct {
 		name  string
@@ -1181,5 +2262,230 @@ func TestRequestEndHelper_SkipsTTFTForNonStreaming(t *testing.T) {
 
 	for _, name := range counterCalls {
 		assert.NotEqual(t, metrics.GatewayTTFTBucketTotal, name)
+	}
+}
+
+func TestRequestEndHelper_LogsRoutingAndResolvedStrategy(t *testing.T) {
+	fieldValue := func(fields []interface{}, key string) (interface{}, bool) {
+		for i := 0; i+1 < len(fields); i += 2 {
+			if fields[i] == key {
+				return fields[i+1], true
+			}
+		}
+		return nil, false
+	}
+
+	t.Run("blended", func(t *testing.T) {
+		routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("least-kv-cache"), "test-model", "", "req-1", "")
+		routerCtx.ResolvedStrategy = "least-kv-cache,load-balance:1,least-request-top-k:1"
+
+		fields := (&Server{}).requestEndHelper(routerCtx, time.Now(), 100, 50, 150)
+
+		got, ok := fieldValue(fields, "routing_strategy")
+		assert.True(t, ok)
+		assert.Equal(t, types.RoutingAlgorithm("least-kv-cache"), got, "routing_strategy stays what the caller asked for")
+		got, ok = fieldValue(fields, "resolved_strategy")
+		assert.True(t, ok)
+		assert.Equal(t, "least-kv-cache,load-balance:1,least-request-top-k:1", got)
+	})
+
+	t.Run("omitted when the request was never routed", func(t *testing.T) {
+		routerCtx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(""), "test-model", "", "req-3", "")
+
+		fields := (&Server{}).requestEndHelper(routerCtx, time.Now(), 100, 50, 150)
+
+		_, ok := fieldValue(fields, "routing_strategy")
+		assert.False(t, ok)
+		_, ok = fieldValue(fields, "resolved_strategy")
+		assert.False(t, ok)
+	})
+}
+
+// TestHandleResponseBody_VideoCreateRegistersAndRewritesID drives the create
+// path through the real entry point, since only HandleResponseBody decides
+// whether a response body is a video job response at all.
+func TestHandleResponseBody_VideoCreateRegistersAndRewritesID(t *testing.T) {
+	s, mockCache, registry := newTestVideoJobServer(t)
+	pod := readyPod("pod-a", "ns-a", "10.0.0.5")
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "wan2.1-vace-1.3b", "", "req-create", "")
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodPost}
+	routerCtx.ReqPath = PathVideos
+	routerCtx.SetTargetPod(pod)
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"id":"video_gen_abc","status":"queued"}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, _, _ := s.HandleResponseBody(context.Background(), routerCtx, "req-create", req, utils.User{}, 0, "wan2.1-vace-1.3b", false, false)
+
+	body := resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody()
+	publicJobID := gjson.GetBytes(body, "id").String()
+	assert.True(t, strings.HasPrefix(publicJobID, asyncJobPublicIDPrefix), "client must never see the backend id: %s", publicJobID)
+	assert.Equal(t, "queued", gjson.GetBytes(body, "status").String())
+
+	record, err := listTestAsyncJobs(context.Background(), registry, asyncJobOwnerShared, asyncJobTypeVideo)
+	require.NoError(t, err)
+	require.Len(t, record, 1)
+	assert.Equal(t, publicJobID, record[0].PublicJobID)
+	assert.Equal(t, "video_gen_abc", record[0].BackendJobID)
+	mockCache.AssertExpectations(t)
+}
+
+// TestHandleResponseBody_VideoStatusRewritesIDBackToPublic: the backend answers
+// a status poll with its own id, which the client has never seen and cannot use.
+func TestHandleResponseBody_VideoStatusRewritesIDBackToPublic(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+		readyPod("pod-a", "ns-a", "10.0.0.5"))
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "wan2.1-vace-1.3b", "", "req-status", "")
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte(`{"id":"video_gen_abc","status":"completed"}`),
+				EndOfStream: true,
+			},
+		},
+	}
+
+	resp, _, _ := s.HandleResponseBody(context.Background(), routerCtx, "req-status", req, utils.User{}, 0, "wan2.1-vace-1.3b", false, false)
+
+	body := resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody()
+	assert.Equal(t, record.PublicJobID, gjson.GetBytes(body, "id").String())
+	assert.Equal(t, "completed", gjson.GetBytes(body, "status").String())
+}
+
+// TestHandleResponseBody_VideoContentStaysStreaming guards the one video
+// response that must never be buffered: the video file itself.
+func TestHandleResponseBody_VideoContentStaysStreaming(t *testing.T) {
+	s, _, registry := newTestVideoJobServer(t)
+	record := registerTestVideoJob(t, registry, asyncJobOwnerShared, "wan2.1-vace-1.3b", "video_gen_abc",
+		readyPod("pod-a", "ns-a", "10.0.0.5"))
+
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "wan2.1-vace-1.3b", "", "req-content", "")
+	routerCtx.ReqHeaders = map[string]string{methodKey: http.MethodGet}
+	routerCtx.ReqPath = PathVideos + "/" + record.PublicJobID + "/content"
+
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_ResponseBody{
+			ResponseBody: &extProcPb.HttpBody{
+				Body:        []byte{0x00, 0x00, 0x00, 0x18},
+				EndOfStream: false,
+			},
+		},
+	}
+
+	resp, _, _ := s.HandleResponseBody(context.Background(), routerCtx, "req-content", req, utils.User{}, 0, "wan2.1-vace-1.3b", false, false)
+
+	assert.Nil(t, resp.GetResponseBody().GetResponse().GetBodyMutation())
+	assert.False(t, HasRequestBuffers("req-content"))
+}
+
+func TestEffectiveTTFTThreshold(t *testing.T) {
+	if got := effectiveTTFTThreshold(nil); got != ttftThreshold {
+		t.Errorf("effectiveTTFTThreshold(nil) = %v, want env default %v", got, ttftThreshold)
+	}
+	rc := &types.RoutingContext{}
+	if got := effectiveTTFTThreshold(rc); got != ttftThreshold {
+		t.Errorf("effectiveTTFTThreshold(no profile) = %v, want env default %v", got, ttftThreshold)
+	}
+	rc.ConfigProfile = &types.ResolvedConfigProfile{TTFTThresholdS: 2}
+	if got := effectiveTTFTThreshold(rc); got != 2*time.Second {
+		t.Errorf("effectiveTTFTThreshold(profile=2s) = %v, want 2s", got)
+	}
+	rc.ConfigProfile.TTFTThresholdS = 0
+	if got := effectiveTTFTThreshold(rc); got != ttftThreshold {
+		t.Errorf("effectiveTTFTThreshold(profile=0) = %v, want env default %v", got, ttftThreshold)
+	}
+}
+
+// TestHandleResponseBody_ContinuousUsageStatsFinalizesAtStreamEnd covers
+// stream_options.continuous_usage_stats (vLLM, SGLang), where every chunk carries the
+// running usage. The request must not be finalized or metered on the first such chunk,
+// only once the stream reports its final usage, and then with the final counts.
+func TestHandleResponseBody_ContinuousUsageStatsFinalizesAtStreamEnd(t *testing.T) {
+	chunk := func(choices string, prompt, completion int) string {
+		return fmt.Sprintf(`data: {"id":"c","object":"chat.completion.chunk","choices":%s,"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d}}`+"\n\n",
+			choices, prompt, completion, prompt+completion)
+	}
+	role := chunk(`[{"index":0,"delta":{"role":"assistant"}}]`, 20, 0)
+	content := chunk(`[{"index":0,"delta":{"content":"Hi"}}]`, 20, 5)
+	finish := chunk(`[{"index":0,"delta":{},"finish_reason":"stop"}]`, 20, 7)
+	usageOnly := chunk(`[]`, 20, 7)
+	done := "data: [DONE]\n\n"
+	final := TokenUsage{PromptTokens: 20, CompletionTokens: 7, TotalTokens: 27}
+
+	tests := []struct {
+		name string
+		// The body of each callback; the last one carries EndOfStream.
+		bodies []string
+		// Index of the callback that should finalize the request.
+		finalAt int
+	}{
+		{
+			name:    "usage-only chunk ends the stream",
+			bodies:  []string{role, content, finish, usageOnly + done, ""},
+			finalAt: 3,
+		},
+		{
+			name:    "usage on the finish chunk, then [DONE]",
+			bodies:  []string{role, content, finish, done, ""},
+			finalAt: 3,
+		},
+		{
+			name:    "no [DONE] before end of stream",
+			bodies:  []string{role, content, finish, ""},
+			finalAt: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockRL := &mockRateLimiter{}
+			mockRL.On("Incr", mock.Anything, "test-user_TPM_CURRENT", int64(27)).Return(int64(27), nil).Once()
+			server := &Server{ratelimiter: mockRL}
+
+			requestID := "test-req-continuous-usage-" + tt.name + "-" + time.Now().Format("150405.000000")
+			t.Cleanup(func() {
+				streamBuffers.Delete(requestID)
+				streamUsage.Delete(requestID)
+			})
+			routerCtx := types.NewRoutingContext(context.Background(), "random", "m", "", requestID, "test-user")
+			routerCtx.ReqPath = PathChatCompletions
+			routerCtx.RequestTime = time.Now()
+			user := utils.User{Name: "test-user", Tpm: 1000}
+
+			for i, body := range tt.bodies[:tt.finalAt+1] {
+				req := &extProcPb.ProcessingRequest{
+					Request: &extProcPb.ProcessingRequest_ResponseBody{
+						ResponseBody: &extProcPb.HttpBody{
+							Body:        []byte(body),
+							EndOfStream: i == len(tt.bodies)-1,
+						},
+					},
+				}
+				resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, user, 1, "m", true, false)
+				assert.Nil(t, resp.GetImmediateResponse())
+				if i < tt.finalAt {
+					assert.False(t, complete, "callback %d carries a running count, not the final usage", i)
+					assert.Equal(t, TokenUsage{}, usage, "callback %d", i)
+					continue
+				}
+				assert.True(t, complete)
+				assert.Equal(t, final, usage)
+			}
+			mockRL.AssertExpectations(t)
+			_, pending := streamUsage.Load(requestID)
+			assert.False(t, pending, "the running usage is dropped once the request is finalized")
+		})
 	}
 }

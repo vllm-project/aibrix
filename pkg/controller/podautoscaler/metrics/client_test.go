@@ -126,3 +126,58 @@ func TestConfigureMetricWindowsClampsHistoryDuration(t *testing.T) {
 	assert.Equal(t, maxDuration, historyDuration(largeWindow))
 	assert.Equal(t, 10*time.Second, historyDuration(time.Second))
 }
+
+func TestDeleteMetricsRemovesOnlyThatPodAutoscaler(t *testing.T) {
+	client := NewMetricsClient(time.Second)
+	now := time.Now()
+
+	deleted := []types.MetricKey{
+		{PaNamespace: "default", PaName: "llm", MetricName: "cpu"},
+		{PaNamespace: "default", PaName: "llm", MetricName: "gpu_cache_usage_perc"},
+	}
+	kept := []types.MetricKey{
+		// Shares the deleted name as a prefix.
+		{PaNamespace: "default", PaName: "llm-canary", MetricName: "cpu"},
+		// Same name in another namespace.
+		{PaNamespace: "prod", PaName: "llm", MetricName: "cpu"},
+	}
+	for _, key := range append(append([]types.MetricKey{}, deleted...), kept...) {
+		require.NoError(t, client.UpdateMetrics(now, key, 10.0))
+	}
+
+	client.DeleteMetrics("default", "llm")
+
+	for _, key := range deleted {
+		_, _, err := client.GetMetricValue(key, now)
+		assert.Error(t, err, "windows for %s should be gone", key)
+		assert.NotContains(t, client.stableHistory, key.String())
+		assert.NotContains(t, client.panicHistory, key.String())
+	}
+	for _, key := range kept {
+		stable, panicValue, err := client.GetMetricValue(key, now)
+		require.NoError(t, err, "windows for %s should be untouched", key)
+		assert.Equal(t, 10.0, stable)
+		assert.Equal(t, 10.0, panicValue)
+	}
+	assert.Len(t, client.stableWindows, len(kept))
+	assert.Len(t, client.panicWindows, len(kept))
+	assert.Len(t, client.stableHistory, len(kept))
+	assert.Len(t, client.panicHistory, len(kept))
+}
+
+// A PodAutoscaler recreated under the same name must not inherit the samples
+// its predecessor recorded.
+func TestDeleteMetricsLetsARecreatedPodAutoscalerStartClean(t *testing.T) {
+	client := NewMetricsClient(time.Second)
+	key := types.MetricKey{PaNamespace: "default", PaName: "llm", MetricName: "cpu"}
+	now := time.Now()
+
+	require.NoError(t, client.UpdateMetrics(now, key, 90.0))
+	client.DeleteMetrics("default", "llm")
+	require.NoError(t, client.UpdateMetrics(now.Add(2*time.Second), key, 10.0))
+
+	stable, panicValue, err := client.GetMetricValue(key, now.Add(2*time.Second))
+	require.NoError(t, err)
+	assert.Equal(t, 10.0, stable)
+	assert.Equal(t, 10.0, panicValue)
+}

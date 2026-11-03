@@ -21,6 +21,7 @@ import (
 	"math/rand"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cespare/xxhash/v2"
@@ -62,11 +63,17 @@ type PrefixHashTable struct {
 	mu       sync.RWMutex
 	seed     uint64
 	store    lrustore.Store[uint64, Block]
-	dirtyIds map[string]struct{} // block hash as string, for delta sync
+	dirtyIds map[string]uint64 // block hash as string -> dirtySeq of its last change, for delta sync
+	dirtySeq uint64
+	// deltaSeq is dirtySeq as of the last GetDeltaForSync. It is written under
+	// the read lock, so it must be atomic.
+	deltaSeq atomic.Uint64
+	// now is the clock for pod access times; tests replace it.
+	now func() time.Time
 }
 
 type Block struct {
-	modelToPods map[string]map[string]time.Time // model_name: map[pod_name]pod_last_access_time
+	modelToPods map[string]map[string]time.Time // model_name: map[pod_key]pod_last_access_time, pod_key is namespace/name
 }
 
 func randomPrefixCacheHashSeed() uint64 {
@@ -108,6 +115,7 @@ func NewPrefixHashTable() *PrefixHashTable {
 		"prefix_cache_block_eviction_duration_minutes", prefixCacheEvictionDuration)
 	instance := &PrefixHashTable{
 		seed:  seed,
+		now:   time.Now,
 		store: lrustore.NewLRUStore[uint64, Block](prefixCacheBlockNumber, prefixCacheEvictionDuration, prefixCacheEvictionInterval, func() time.Time { return time.Now() }),
 	}
 	return instance
@@ -120,12 +128,14 @@ func (c *PrefixHashTable) EnableDeltaSync() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.dirtyIds == nil {
-		c.dirtyIds = make(map[string]struct{})
+		c.dirtyIds = make(map[string]uint64)
 	}
 }
 
 // MatchPrefix matches the input token prefix's if already cached
-// returns map[podname]%prefixmatch along with all prefix hashes
+// returns map[podkey]%prefixmatch along with all prefix hashes. readyPods and the
+// returned map use the same pod keys that AddPrefix stored, namespace/name
+// (utils.GeneratePodKey), so same-named pods in different namespaces stay apart.
 func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, readyPods map[string]struct{}) (map[string]int, []uint64) {
 	prefixHashes := getPrefixHashes(c.seed, tokens)
 	return c.seqSearchPrefix(prefixHashes, model, readyPods)
@@ -135,8 +145,12 @@ func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, r
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	// podname -> %prefixmatch
-	prefixMatchPods := make(map[string]int, len(readyPods))
+	// A pod that has not been routed this prefix for the eviction duration has
+	// most likely evicted it, even if the block stays cached for other pods.
+	staleBefore := c.now().Add(-prefixCacheEvictionDuration)
+	// podkey -> %prefixmatch
+	prefixMatchPods := make(map[string]int)
+	alive := readyPods
 	for i := 0; i < len(prefixHashes); i++ {
 		prefixHash := prefixHashes[i]
 		block, ok := c.store.Get(prefixHash)
@@ -150,19 +164,25 @@ func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, r
 		}
 
 		prefixMatchPercent := (i + 1) * 100 / len(prefixHashes)
-		if !matchPods(blockPods, readyPods, prefixMatchPods, prefixMatchPercent) {
+		// Integer division drops a real hit on a long prompt to 0, which then
+		// ties with pods that matched nothing. Keep the hit visible.
+		if prefixMatchPercent == 0 {
+			prefixMatchPercent = 1
+		}
+		if alive = matchPods(blockPods, alive, i > 0, prefixMatchPods, prefixMatchPercent, staleBefore); len(alive) == 0 {
 			break
 		}
 	}
 	return prefixMatchPods, prefixHashes
 }
 
-// AddPrefix add prefix hashes for input tokens
+// AddPrefix add prefix hashes for input tokens. pod is the pod key, namespace/name.
 func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	now := time.Now()
+	now := c.now()
+	staleBefore := now.Add(-prefixCacheEvictionDuration)
 	for i := 0; i < len(prefixHashes); i++ {
 		prefixHash := prefixHashes[i]
 
@@ -178,29 +198,62 @@ func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 			if !ok {
 				blockPods = map[string]time.Time{}
 			}
+			// Each Put refreshes the whole block, so a block that stays hot would
+			// otherwise keep every pod it was ever routed to.
+			for p, accessed := range blockPods {
+				if accessed.Before(staleBefore) {
+					delete(blockPods, p)
+				}
+			}
 			blockPods[pod] = now
 			block.modelToPods[model] = blockPods
 		}
 
 		c.store.Put(prefixHash, block)
 		if c.dirtyIds != nil {
-			c.dirtyIds[strconv.FormatUint(prefixHash, 10)] = struct{}{}
+			c.dirtySeq++
+			c.dirtyIds[strconv.FormatUint(prefixHash, 10)] = c.dirtySeq
 		}
 	}
 }
 
-// matchPods returns ready pods that intersect with pods on which prefix tokens are catched.
-func matchPods(blockPods map[string]time.Time, readyPods map[string]struct{}, prefixMatchPods map[string]int, prefixMatchPercent int) bool {
-	var isMatch bool
-	for pod := range readyPods {
-		if _, ok := blockPods[pod]; ok {
+// matchPods records prefixMatchPercent for the pods in alive that also hold this block, and
+// returns them: only they can match the next block. A pod last routed the block before
+// staleBefore does not count. It walks the smaller of the block's holders and alive, so a block
+// costs O(min(holders, alive)) instead of O(ready pods). alive is narrowed in place only when
+// owned, i.e. when an earlier call built it; the caller's ready-pod set is never modified.
+func matchPods(blockPods map[string]time.Time, alive map[string]struct{}, owned bool, prefixMatchPods map[string]int, prefixMatchPercent int, staleBefore time.Time) map[string]struct{} {
+	if owned && len(alive) <= len(blockPods) {
+		for pod := range alive {
+			if accessed, ok := blockPods[pod]; ok && !accessed.Before(staleBefore) {
+				prefixMatchPods[pod] = prefixMatchPercent
+			} else {
+				delete(alive, pod)
+			}
+		}
+		return alive
+	}
+	next := make(map[string]struct{}, min(len(blockPods), len(alive)))
+	keep := func(pod string, accessed time.Time) {
+		if !accessed.Before(staleBefore) {
 			prefixMatchPods[pod] = prefixMatchPercent
-			isMatch = true
-		} else {
-			delete(readyPods, pod)
+			next[pod] = struct{}{}
 		}
 	}
-	return isMatch
+	if len(blockPods) < len(alive) {
+		for pod, accessed := range blockPods {
+			if _, ok := alive[pod]; ok {
+				keep(pod, accessed)
+			}
+		}
+	} else {
+		for pod := range alive {
+			if accessed, ok := blockPods[pod]; ok {
+				keep(pod, accessed)
+			}
+		}
+	}
+	return next
 }
 
 func getPrefixHashes(seed uint64, tokens []byte) []uint64 {
@@ -242,4 +295,11 @@ func getPrefixHashes(seed uint64, tokens []byte) []uint64 {
 
 func (c *PrefixHashTable) GetPrefixHashes(tokens []byte) []uint64 {
 	return getPrefixHashes(c.seed, tokens)
+}
+
+// Len returns the number of cached prefix blocks.
+func (c *PrefixHashTable) Len() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.store.Len()
 }

@@ -61,12 +61,13 @@ def build_cache_value(
     allocator: TensorPoolAllocator,
     block_nbytes: int,
     key: TokenCacheKey,
+    alloc_nbytes: int = TEST_ALLOC_SIZE,
 ) -> MemoryRegion:
-    status = allocator.alloc(TEST_ALLOC_SIZE)
+    status = allocator.alloc(alloc_nbytes)
     assert status.is_ok()
     mr = status.get()[0]
     check_ref_count(mr, 1)
-    assert mr.length == TEST_ALLOC_SIZE
+    assert mr.length == alloc_nbytes
     mr.block_nbytes = block_nbytes
     randomize_mrs([mr])
     mr.pack_tokens(prefix=key.prefix, query=key.query)
@@ -147,6 +148,47 @@ def test_eviction(small_capacity_policy):
     assert small_capacity_policy.evict().is_ok()
     assert len(small_capacity_policy) == TEST_ALLOC_SIZE
     small_capacity_policy.assert_consistency()
+
+
+def test_s3fifo_ghost_fifo_is_bounded():
+    policy = S3FIFO(10 * TEST_ALLOC_SIZE)
+    allocator = TensorPoolAllocator.create(
+        capacity_nbytes=256 * TEST_ALLOC_SIZE
+    )
+    for i in range(50):
+        key = TokenCacheKey(None, tuple(range(i, i + 16)))
+        assert policy.put(key, build_cache_value(allocator, 16, key)).is_ok()
+
+    # Ghost entries keep only their keys, but the ghost fifo is still trimmed
+    # to the main fifo's byte capacity.
+    ghost_capacity_nbytes = policy._main_fifo_capacity_nbytes
+    assert policy._ghost_fifo.nbytes() <= ghost_capacity_nbytes
+    assert len(policy._ghost_fifo) <= ghost_capacity_nbytes // TEST_ALLOC_SIZE
+    policy.assert_consistency()
+
+
+def test_s3fifo_reput_with_new_size():
+    policy = S3FIFO(10 * TEST_ALLOC_SIZE)
+    allocator = TensorPoolAllocator.create(
+        capacity_nbytes=256 * TEST_ALLOC_SIZE
+    )
+    keys = [TokenCacheKey(None, tuple(range(16)))]
+
+    # Hit on the small fifo with a larger value.
+    value = build_cache_value(allocator, 16, keys[0])
+    assert policy.put(keys[0], value).is_ok()
+    larger = build_cache_value(allocator, 16, keys[0], 2 * TEST_ALLOC_SIZE)
+    assert policy.put(keys[0], larger).is_ok()
+    policy.assert_consistency()
+
+    # keys[0] moves to the ghost fifo; a larger re-put promotes it to main.
+    assert policy.evict(TEST_ALLOC_SIZE).is_ok()
+    assert policy._hashmap[keys[0]].queue is policy._ghost_fifo
+    larger = build_cache_value(allocator, 16, keys[0], 3 * TEST_ALLOC_SIZE)
+    assert policy.put(keys[0], larger).is_ok()
+    assert policy._hashmap[keys[0]].queue is policy._main_fifo
+    assert policy._main_fifo.nbytes() == 3 * TEST_ALLOC_SIZE
+    policy.assert_consistency()
 
 
 def test_multiple_evictions(policy):

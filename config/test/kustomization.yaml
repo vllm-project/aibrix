@@ -3,9 +3,15 @@ kind: Kustomization
 
 resources:
 - ../default
+- gateway/external-router.yaml
 
 patches:
 - path: gateway/vtc-test-env-patch.yaml
+  target:
+    kind: Deployment
+    name: aibrix-gateway-plugins
+    namespace: aibrix-system
+- path: gateway/external-router-env-patch.yaml
   target:
     kind: Deployment
     name: aibrix-gateway-plugins

@@ -17,7 +17,10 @@ limitations under the License.
 package context
 
 import (
+	"errors"
 	"fmt"
+	"math"
+	"sort"
 	"strconv"
 	"time"
 
@@ -30,6 +33,7 @@ import (
 // This is the single source of truth for all scaling configuration, extracted per-PodAutoscaler.
 type ScalingContext interface {
 	GetTargetValueForMetric(metricName string) (float64, bool)
+	GetMetricSourceTypeForMetric(metricName string) (autoscalingv1alpha1.MetricSourceType, bool)
 	GetUpFluctuationTolerance() float64
 	GetDownFluctuationTolerance() float64
 	GetMaxScaleUpRate() float64
@@ -46,10 +50,6 @@ type ScalingContext interface {
 	SetActivationScale(value int32)
 	GetActivationScale() int32
 	GetPanicThreshold() float64
-	GetInPanicMode() bool
-	SetInPanicMode(bool)
-	GetMaxPanicPods() int32
-	SetMaxPanicPods(int32)
 	GetScaleUpCooldownWindow() time.Duration
 	GetScaleDownCooldownWindow() time.Duration
 	GetScaleToZero() bool
@@ -84,8 +84,6 @@ type baseScalingContext struct {
 	StableValue float64
 	PanicValue  float64
 
-	// Panic mode state
-	InPanicMode bool
 	// MetricTargets used to store multiple metrics
 	MetricTargets map[string]MetricTarget // key: metric name (e.g., "cpu", "gpu_cache_usage_perc")
 }
@@ -117,55 +115,61 @@ func NewBaseScalingContext() *baseScalingContext {
 	}
 }
 
-// annotationParser is a function type for parsing annotation values
+// annotationParser parses one annotation value, checks that the autoscaler can
+// use it, and stores it on the context. It must leave the context untouched
+// when it returns an error.
 type annotationParser func(b *baseScalingContext, value string) error
 
 // annotationParsers maps annotation keys to their parsing functions
 var annotationParsers = map[string]annotationParser{
 	types.MaxScaleUpRateLabel: func(b *baseScalingContext, value string) error {
-		v, err := strconv.ParseFloat(value, 64)
+		v, err := parseScaleRate(value)
 		if err == nil {
 			b.MaxScaleUpRate = v
 		}
 		return err
 	},
 	types.MaxScaleDownRateLabel: func(b *baseScalingContext, value string) error {
-		v, err := strconv.ParseFloat(value, 64)
+		v, err := parseScaleRate(value)
 		if err == nil {
 			b.MaxScaleDownRate = v
 		}
 		return err
 	},
 	types.ScaleUpToleranceLabel: func(b *baseScalingContext, value string) error {
-		v, err := strconv.ParseFloat(value, 64)
+		v, err := parseTolerance(value)
 		if err == nil {
 			b.UpFluctuationTolerance = v
 		}
 		return err
 	},
 	types.ScaleDownToleranceLabel: func(b *baseScalingContext, value string) error {
-		v, err := strconv.ParseFloat(value, 64)
+		v, err := parseTolerance(value)
 		if err == nil {
 			b.DownFluctuationTolerance = v
 		}
 		return err
 	},
 	types.PanicThresholdLabel: func(b *baseScalingContext, value string) error {
-		v, err := strconv.ParseFloat(value, 64)
-		if err == nil {
-			b.PanicThreshold = v
+		v, err := parseFiniteFloat(value)
+		if err != nil {
+			return err
 		}
-		return err
+		if v <= 0 {
+			return fmt.Errorf("must be greater than 0")
+		}
+		b.PanicThreshold = v
+		return nil
 	},
 	types.ScaleUpCooldownWindowLabel: func(b *baseScalingContext, value string) error {
-		v, err := time.ParseDuration(value)
+		v, err := parseCooldownWindow(value)
 		if err == nil {
 			b.ScaleUpCooldownWindow = v
 		}
 		return err
 	},
 	types.ScaleDownCooldownWindowLabel: func(b *baseScalingContext, value string) error {
-		v, err := time.ParseDuration(value)
+		v, err := parseCooldownWindow(value)
 		if err == nil {
 			b.ScaleDownCooldownWindow = v
 		}
@@ -173,11 +177,106 @@ var annotationParsers = map[string]annotationParser{
 	},
 	types.ScaleToZeroLabel: func(b *baseScalingContext, value string) error {
 		v, err := strconv.ParseBool(value)
-		if err == nil {
-			b.ScaleToZero = v
+		if err != nil {
+			return fmt.Errorf("must be a boolean")
 		}
-		return err
+		b.ScaleToZero = v
+		return nil
 	},
+}
+
+// parseFiniteFloat rejects NaN and infinities, which strconv.ParseFloat accepts
+// and which would otherwise flow into every replica calculation.
+func parseFiniteFloat(value string) (float64, error) {
+	v, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("must be a number")
+	}
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, fmt.Errorf("must be a finite number")
+	}
+	return v, nil
+}
+
+// parseScaleRate parses a max scale-up or scale-down rate. A rate is the factor
+// by which replicas may change in one decision, so 1 means "no change" and
+// anything lower has no meaning: KPA and APA divide by the scale-down rate and
+// use the scale-up rate as an upper bound on the next replica count.
+func parseScaleRate(value string) (float64, error) {
+	v, err := parseFiniteFloat(value)
+	if err != nil {
+		return 0, err
+	}
+	if v < 1 {
+		return 0, fmt.Errorf("must be greater than or equal to 1")
+	}
+	return v, nil
+}
+
+func parseTolerance(value string) (float64, error) {
+	v, err := parseFiniteFloat(value)
+	if err != nil {
+		return 0, err
+	}
+	if v < 0 {
+		return 0, fmt.Errorf("must not be negative")
+	}
+	return v, nil
+}
+
+func parseCooldownWindow(value string) (time.Duration, error) {
+	v, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("must be a duration such as 30s or 5m")
+	}
+	if v < 0 {
+		return 0, fmt.Errorf("must not be negative")
+	}
+	return v, nil
+}
+
+// AnnotationError reports one autoscaling annotation whose value cannot be used.
+type AnnotationError struct {
+	Key   string
+	Value string
+	Err   error
+}
+
+func (e AnnotationError) Error() string {
+	return fmt.Sprintf("annotation %s: invalid value %q: %v", e.Key, e.Value, e.Err)
+}
+
+func (e AnnotationError) Unwrap() error {
+	return e.Err
+}
+
+// ValidateAnnotations checks every autoscaling annotation the controller
+// understands and returns one error per unusable value, ordered by key.
+// Annotations the controller does not read are ignored.
+func ValidateAnnotations(annotations map[string]string) []AnnotationError {
+	return applyAnnotations(NewBaseScalingContext(), annotations)
+}
+
+// applyAnnotations stores every usable annotation value on b and returns the
+// unusable ones. Keys are visited in sorted order and each key is independent
+// of the others, so the outcome does not depend on map iteration order.
+func applyAnnotations(b *baseScalingContext, annotations map[string]string) []AnnotationError {
+	keys := make([]string, 0, len(annotations))
+	for key := range annotations {
+		if _, ok := annotationParsers[key]; ok {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+
+	var errs []AnnotationError
+	for _, key := range keys {
+		value := annotations[key]
+		if err := annotationParsers[key](b, value); err != nil {
+			errs = append(errs, AnnotationError{Key: key, Value: value, Err: err})
+		}
+	}
+	return errs
 }
 
 // UpdateByPaTypes should be invoked in any scaling context that embeds BaseScalingContext.
@@ -187,6 +286,9 @@ func (b *baseScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscal
 		if err != nil {
 			klog.ErrorS(err, "Failed to parse target value", "metric", ms.TargetMetric, "value", ms.TargetValue)
 			return fmt.Errorf("invalid targetValue for metric %q: %w", ms.TargetMetric, err)
+		}
+		if math.IsNaN(targetValue) || math.IsInf(targetValue, 0) {
+			return fmt.Errorf("targetValue for metric %q must be a finite number, got %f", ms.TargetMetric, targetValue)
 		}
 		if targetValue <= 0 {
 			return fmt.Errorf("targetValue for metric %q must be greater than 0, got %f", ms.TargetMetric, targetValue)
@@ -200,13 +302,14 @@ func (b *baseScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscal
 		}
 	}
 
-	// Parse annotations using registered parsers
-	for key, value := range pa.Annotations {
-		if parser, ok := annotationParsers[key]; ok {
-			if err := parser(b, value); err != nil {
-				return err
-			}
+	// Apply every usable annotation. An unusable value keeps the default for
+	// that one setting and is reported, without affecting the others.
+	if annotationErrs := applyAnnotations(b, pa.Annotations); len(annotationErrs) > 0 {
+		errs := make([]error, 0, len(annotationErrs))
+		for _, annotationErr := range annotationErrs {
+			errs = append(errs, annotationErr)
 		}
+		return errors.Join(errs...)
 	}
 	return nil
 }
@@ -250,6 +353,13 @@ func (b *baseScalingContext) GetTargetValueForMetric(metricName string) (float64
 	return 0, false
 }
 
+func (b *baseScalingContext) GetMetricSourceTypeForMetric(metricName string) (autoscalingv1alpha1.MetricSourceType, bool) {
+	if target, ok := b.MetricTargets[metricName]; ok {
+		return target.MetricType, true
+	}
+	return "", false
+}
+
 func (b *baseScalingContext) GetScalingTolerance() (up float64, down float64) {
 	return b.MaxScaleUpRate, b.MaxScaleDownRate
 }
@@ -288,22 +398,6 @@ func (b *baseScalingContext) SetActivationScale(value int32) {
 
 func (b *baseScalingContext) GetPanicThreshold() float64 {
 	return b.PanicThreshold
-}
-
-func (b *baseScalingContext) GetInPanicMode() bool {
-	return b.InPanicMode
-}
-
-func (b *baseScalingContext) SetInPanicMode(inPanic bool) {
-	b.InPanicMode = inPanic
-}
-
-func (b *baseScalingContext) GetMaxPanicPods() int32 {
-	return 0
-}
-
-func (b *baseScalingContext) SetMaxPanicPods(pods int32) {
-	// No-op in base implementation
 }
 
 func (b *baseScalingContext) GetScaleUpCooldownWindow() time.Duration {

@@ -30,11 +30,10 @@ import (
 )
 
 func Test_LPRadixCacheE2E(t *testing.T) {
-	t.SkipNow()
 	cache := NewLPRadixCache(2) // assuming 2 GPUs
 	pods := []*v1.Pod{
-		{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p2"}},
 	}
 
 	inputText := "Hello World! What a Good Day! Good Morning! 你好世界！多么美好的一天啊！早上好！"
@@ -50,7 +49,7 @@ func Test_LPRadixCacheE2E(t *testing.T) {
 	assert.Equal(t, 0, len(matchPods))
 
 	// Add prefix and verify it can be matched
-	cache.AddPrefix(unMatchedTokens, "m1", "p1")
+	cache.AddPrefix(unMatchedTokens, "m1", "default/p1")
 	matchedTokens, unMatchedTokens, matchPods = cache.MatchPrefix(tokens, "m1", pods)
 	assert.Equal(t,
 		[]int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 7839, 29084, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447, 6079, 102, 17905, 53901, 6447},
@@ -67,8 +66,63 @@ func Test_LPRadixCacheE2E(t *testing.T) {
 	assert.Equal(t, 0, len(matchPods))
 }
 
+func Test_LPRadixCacheEvictKeepsPodsOfRemainingChildren(t *testing.T) {
+	cache := NewLPRadixCache(2)
+	p1 := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}}
+	p2 := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p2"}}
+
+	// p1 caches both [1 2 3] and [1 2 4]; p2 only caches [1 2 4].
+	cache.AddPrefix([]int{1, 2, 3}, "m1", "default/p1")
+	cache.AddPrefix([]int{1, 2, 4}, "m1", "default/p1")
+	stale, _, _ := cache.AddPrefix([]int{1, 2, 4}, "m1", "default/p2")
+	stale.lastAccess = time.Now().Add(-2 * evictionDuration)
+
+	evicted := cache.Evict(time.Now())
+	assert.Equal(t, []*TreeNode{stale}, evicted)
+
+	// [1 2] is still cached on p1 through [1 2 3], but p2 only had it
+	// through the evicted [1 2 4].
+	matchedTokens, _, matchPods := cache.MatchPrefix([]int{1, 2, 9}, "m1", []*v1.Pod{p1, p2})
+	assert.Equal(t, []int{1, 2}, matchedTokens)
+	assert.Equal(t, []*v1.Pod{p1}, matchPods)
+}
+
+func Test_LPRadixCacheEvictKeepsPodsCachedOnTheParent(t *testing.T) {
+	cache := NewLPRadixCache(1)
+	p1 := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}}
+
+	// p1 caches [1 2] itself and [1 2 4] below it.
+	parent, _, _ := cache.AddPrefix([]int{1, 2}, "m1", "default/p1")
+	stale, _, _ := cache.AddPrefix([]int{1, 2, 4}, "m1", "default/p1")
+	stale.lastAccess = time.Now().Add(-2 * evictionDuration)
+
+	evicted := cache.Evict(time.Now())
+	assert.Equal(t, []*TreeNode{stale}, evicted)
+
+	// [1 2] has no children left, but p1 still caches it directly.
+	assert.True(t, parent.HasPodForModel("m1", "default/p1"))
+	matchedTokens, _, matchPods := cache.MatchPrefix([]int{1, 2, 9}, "m1", []*v1.Pod{p1})
+	assert.Equal(t, []int{1, 2}, matchedTokens)
+	assert.Equal(t, []*v1.Pod{p1}, matchPods)
+}
+
+func Test_LPRadixCacheEvictDropsPodsRemovedFromThePodSet(t *testing.T) {
+	cache := NewLPRadixCache(1)
+
+	// p1 caches [1 2], leaves the pod set, and comes back only caching [1 2 4].
+	parent, _, _ := cache.AddPrefix([]int{1, 2}, "m1", "default/p1")
+	for _, node := range cache.GetAllNodes() {
+		node.RemovePodsNotInSet(map[string]bool{})
+	}
+	stale, _, _ := cache.AddPrefix([]int{1, 2, 4}, "m1", "default/p1")
+	stale.lastAccess = time.Now().Add(-2 * evictionDuration)
+
+	evicted := cache.Evict(time.Now())
+	assert.Equal(t, []*TreeNode{stale}, evicted)
+	assert.False(t, parent.HasPodForModel("m1", "default/p1"))
+}
+
 func Test_RadixMatchPrefix(t *testing.T) {
-	t.SkipNow()
 	tests := []*struct {
 		name          string
 		inputText     string
@@ -87,8 +141,8 @@ func Test_RadixMatchPrefix(t *testing.T) {
 			},
 			model: "m1",
 			pods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
+				{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}},
+				{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p2"}},
 			},
 			matchTokens:   []int{},
 			unMatchTokens: []int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447},
@@ -100,18 +154,40 @@ func Test_RadixMatchPrefix(t *testing.T) {
 			setupCache: func() *LPRadixCache {
 				cache := NewLPRadixCache(2)
 				tokens := []int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 220}
-				cache.AddPrefix(tokens, "m1", "p1")
+				cache.AddPrefix(tokens, "m1", "default/p1")
 				return cache
 			},
 			model: "m1",
 			pods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
+				{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}},
+				{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p2"}},
 			},
 			matchTokens:   []int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 220},
 			unMatchTokens: []int{57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447},
 			matchPods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
+				{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}},
+			},
+		},
+		{
+			// The tree is keyed by pod key, so a same-named pod in another
+			// namespace must not match a prefix recorded for team-a/p1.
+			name:      "same-named pods in two namespaces - only the recorded one matches",
+			inputText: "Hello World! What a Good Day! 你好世界！多么美好的一天啊！",
+			setupCache: func() *LPRadixCache {
+				cache := NewLPRadixCache(2)
+				tokens := []int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 220}
+				cache.AddPrefix(tokens, "m1", "team-a/p1")
+				return cache
+			},
+			model: "m1",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Namespace: "team-b", Name: "p1"}},
+				{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "p1"}},
+			},
+			matchTokens:   []int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 220},
+			unMatchTokens: []int{57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447},
+			matchPods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "p1"}},
 			},
 		},
 	}
@@ -135,9 +211,9 @@ func Test_LPRadixCacheConcurrency(t *testing.T) {
 	cache := NewLPRadixCache(2) // assuming 2 GPUs
 	model := "m1"
 	pods := []*v1.Pod{
-		{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "p3"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p2"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p3"}},
 	}
 
 	var wg sync.WaitGroup
@@ -152,7 +228,7 @@ func Test_LPRadixCacheConcurrency(t *testing.T) {
 			// Match prefix and add to cache
 			_, unMatchedTokens, _ := cache.MatchPrefix(inputTokens, model, pods)
 			if len(unMatchedTokens) > 0 {
-				cache.AddPrefix(unMatchedTokens, model, "p1")
+				cache.AddPrefix(unMatchedTokens, model, "default/p1")
 			}
 		}(i)
 	}

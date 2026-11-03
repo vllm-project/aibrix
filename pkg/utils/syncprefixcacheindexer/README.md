@@ -66,7 +66,7 @@ Environment variables:
 - `AIBRIX_SYNC_MAX_PREFIXES_PER_CONTEXT`: Max prefixes per context (default: 10000)
 - `AIBRIX_SYNC_EVICTION_INTERVAL_SECONDS`: Eviction check interval (default: 60)
 - `AIBRIX_SYNC_EVICTION_DURATION_MINUTES`: Time before eviction (default: 20)
-- `AIBRIX_PREFIX_CACHE_BLOCK_SIZE`: Token block size (default: 16)
+- `AIBRIX_PREFIX_CACHE_BLOCK_SIZE`: Block size in bytes of the request's encoded tokens (default: 16), used only until a model's first BlockStored event; after that requests are split by the engine's own block size
 
 ## Performance
 
@@ -92,6 +92,11 @@ All operations are thread-safe through:
 - Read-write mutexes for each model context
 - Atomic operations for statistics
 - Safe iteration during eviction
+
+Block-store updates check whether their context is being evicted while holding
+the mapping lock. Updates to a retiring context are skipped so they cannot add
+reverse-index entries after cleanup. A later event can recreate the context
+once eviction has removed it.
 
 ## Testing
 

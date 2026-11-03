@@ -6,7 +6,7 @@ This file captures repository-specific guidance for AI coding agents working in 
 
 ```bash
 # Install development dependencies
-poetry install --no-root --with dev
+poetry install --no-root --with dev --extras gpu-optimizer
 
 # Development install inside the Poetry environment
 poetry run pip install -e .
@@ -55,7 +55,7 @@ Defined in `pyproject.toml`:
 - Includes driver, manager, scheduler, proxy, and storage integration layers
 
 ### Downloader (`aibrix/downloader/`)
-- Supports HuggingFace, S3, and TOS backends
+- Supports HuggingFace, S3, TOS, and GCS backends
 - Handles caching, file locking, and download directory management
 
 ### Metadata Service (`aibrix/metadata/`)

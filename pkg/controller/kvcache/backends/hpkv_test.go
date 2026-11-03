@@ -194,7 +194,7 @@ func TestBuildCacheStatefulSet_HP(t *testing.T) {
 
 	// Volumes
 	vol := ss.Spec.Template.Spec.Volumes[0]
-	assert.Equal(t, corev1.StorageMediumMemory, vol.VolumeSource.EmptyDir.Medium)
+	assert.Equal(t, corev1.StorageMediumMemory, vol.EmptyDir.Medium)
 	assert.Equal(t, "shared-mem", vol.Name)
 }
 

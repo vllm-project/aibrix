@@ -46,6 +46,9 @@ var (
 
 // InitOptions configures the cache initialization behavior
 type InitOptions struct {
+	// IsGateway marks the caller as the gateway-plugins service.
+	IsGateway bool
+
 	// EnableKVSync configures whether to start the ZMQ KV event sync
 	EnableKVSync bool
 
@@ -59,6 +62,15 @@ type InitOptions struct {
 	// If set, it will be used instead of Kubernetes informers.
 	// This enables standalone/development mode without Kubernetes.
 	DiscoveryProvider discovery.Provider
+
+	// DisableModelClaimPodBindings omits models advertised only through
+	// ModelClaim runtime annotations on Pods. Use with a provider that does
+	// not watch ModelClaims when claim discovery is disabled.
+	DisableModelClaimPodBindings bool
+
+	// ModelListMaxAge enables on-demand Kubernetes discovery verification for
+	// the gateway model list when positive. Zero preserves the existing behavior.
+	ModelListMaxAge time.Duration
 }
 
 const (
@@ -73,8 +85,11 @@ type Store struct {
 	mu                  sync.RWMutex            // Read-write lock for concurrency safety
 	initialized         bool                    // Initialization status flag
 	redisClient         *redis.Client           // Redis client instance
+	admitRedisClient    *redis.Client           // redisClient without go-redis retries, for the admit script
 	prometheusApi       prometheusv1.API        // Prometheus API client
 	modelRouterProvider ModelRouterProviderFunc // Function to get model router
+
+	disableModelClaimBindings bool // Whether to ignore ModelClaim Pod annotations
 
 	// Metrics related fields
 	subscribers          []metrics.MetricSubscriber    // List of metric subscribers
@@ -91,11 +106,35 @@ type Store struct {
 	// Pod related storage
 	metaPods utils.SyncMap[string, *Pod] // pod_namespace/pod_name -> *Pod
 
+	// recentlyDeletedPods holds realtime-counter snapshots for pods just removed
+	// from metaPods, keyed the same way, so a fast re-add of the same pod key
+	// (see deletedPodSnapshot in informers.go) can resume its request-tracking
+	// counters instead of restarting at zero.
+	recentlyDeletedPods utils.SyncMap[string, *deletedPodSnapshot]
+	// nextStatsGeneration issues statsGeneration values for freshly added
+	// cache pods (not resumes). Never reused for the process lifetime so a
+	// stale completion cannot match a later generation of the same pod key.
+	nextStatsGeneration atomic.Int64
+
+	// lastPodReadySince is the running max of Pod.readySince (see storeIfGreater), which backs
+	// LatestPodReadySince's O(1) check for whether any pod can still be ramping.
+	lastPodReadySince atomic.Int64
+
+	// podStatsMu stripes per-pod-key locks (see podStatsLockFor in cache_trace.go),
+	// synchronizing running-request counter mutations (addPodStats/donePodStats) against
+	// the pod delete/re-add resume cycle (deletePodLocked/addPodLocked in informers.go)
+	// for the same pod identity. A fixed-size stripe -- rather than a lock per pod key --
+	// avoids unbounded growth as distinct pod keys accumulate over the process lifetime.
+	podStatsMu [podStatsLockStripes]sync.Mutex
+
 	// Model related storage
 	metaModels utils.SyncMap[string, *Model] // model_name -> *Model
 	// ModelClaim advertisements include non-routable port-0 states and are kept
 	// separate from metaModels by construction.
 	modelClaims modelClaimState
+	// modelConfigs holds the model config JSON that discovery supplied per
+	// model (model_name -> config), read through ModelConfigCache.
+	modelConfigs utils.SyncMap[string, string]
 
 	// Deploymnent related storage
 	enableProfileCaching bool                                    // Default to load from enableModelGPUProfileCaching, can be configured.
@@ -111,6 +150,12 @@ type Store struct {
 
 	// podMetricsJobs Channel for sending Pod metrics update jobs to workers
 	podMetricsJobs chan *Pod
+
+	// podMetricsBackoff tracks per-pod fetch failure backoff for metrics collection.
+	podMetricsBackoff utils.SyncMap[string, *podMetricsBackoffState]
+
+	// podMetricsScheduling tracks queued or in-flight pod metrics jobs.
+	podMetricsScheduling utils.SyncMap[string, *podMetricsSchedulingState]
 
 	// Sync prefix indexer - only created when KV sync is enabled
 	syncPrefixIndexer *syncindexer.SyncPrefixHashTable
@@ -128,9 +173,42 @@ type Store struct {
 	// from Redis, grouped by pod key (namespace/name) → []fields. Swapped atomically by
 	// initGatewaySnapshotSync. Readers call Load() to get map[string][]map[string]string.
 	gatewaySnapshotCache atomic.Value
+	// gatewaySnapshotErrorLog rate-limits the Error-level log of failing snapshot ticks. Nil
+	// means initGatewaySnapshotSync creates one; tests set it to capture lines.
+	gatewaySnapshotErrorLog *rateLimitedErrorLog
 
 	// modelReplicaEmitted tracks pods currently exported via model_replicas for stale-series cleanup.
 	modelReplicaEmitted utils.SyncMap[string, modelReplicaState]
+
+	// modelListHealth is set only for opt-in Kubernetes model-list verification.
+	modelListHealth *discovery.ModelListHealth
+
+	// runningRequestsPendingPrunes is Redis hash key -> gateway IDs that a read
+	// excluded from a live sum. Reads only enqueue; heartbeat hygiene drains this
+	// (see enqueueDeadRunningRequestsPrune / flushPendingRunningRequestsPrunes).
+	runningRequestsPendingPrunes utils.SyncMap[string, []string]
+	// runningRequestsHygieneBusy is true while one coalesced async hygiene pass
+	// (PEXPIRE in-flight hashes + drain pending prunes + repair drifted own fields) is
+	// running. Extra heartbeat ticks skip rather than stacking goroutines.
+	runningRequestsHygieneBusy atomic.Bool
+	// runningRequestsDrift is, per pod hash key, how long this gateway's own Redis
+	// field has disagreed with its local running count (see reconcileOwnRunningRequests).
+	// Only the hygiene pass touches it, and runningRequestsHygieneBusy keeps that to one
+	// at a time, so it needs no lock.
+	runningRequestsDrift map[string]runningRequestsDriftState
+	// runningRequestsClockOffsetMillis is (Redis server time - this process's local
+	// time), in milliseconds, as of the most recent successful liveness heartbeat.
+	// Every gateway instance stamps its heartbeat and computes liveness cutoffs from
+	// time.Now().UnixMilli()+offset instead of raw time.Now() -- see
+	// writeRunningRequestsLivenessHeartbeat / redisNowMillis -- so that clock skew
+	// between gateway pods' local clocks cannot make one instance look live or dead
+	// to another under the tight runningRequestsLivenessWindow. Zero until the first
+	// heartbeat completes, which just reproduces pre-sync (assume-synced) behavior
+	// for that one tick.
+	runningRequestsClockOffsetMillis atomic.Int64
+	// decodeLedger publishes this gateway's token_load decode ledger to Redis once
+	// a router registers it (see PublishDecodeLedger); nil until then.
+	decodeLedger atomic.Pointer[decodeLedgerPublisher]
 }
 
 // Get retrieves the cache instance
@@ -155,16 +233,19 @@ func Get() (Cache, error) {
 //
 //	Store: Initialized cache store instance
 func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterProvider ModelRouterProviderFunc) *Store {
+	podMetricsWorkerCount := loadPodMetricsWorkerCount()
+	podMetricsJobQueueSize := loadPodMetricsJobQueueSize(podMetricsWorkerCount)
 
 	store = &Store{
 		initialized:           true,
 		redisClient:           redisClient,
+		admitRedisClient:      admitRunningRequestsClient(redisClient),
 		prometheusApi:         prometheusApi,
 		enableTracing:         enableGPUOptimizerTracing,
 		requestTrace:          &utils.SyncMap[string, *RequestTrace]{},
 		modelRouterProvider:   modelRouterProvider,
-		podMetricsWorkerCount: defaultPodMetricsWorkerCount,
-		podMetricsJobs:        make(chan *Pod, 100),              // Initialize the job channel with a buffer size of 100
+		podMetricsWorkerCount: podMetricsWorkerCount,
+		podMetricsJobs:        make(chan *Pod, podMetricsJobQueueSize),
 		engineMetricsFetcher:  metrics.NewEngineMetricsFetcher(), // Initialize centralized typed metrics fetcher
 		enableProfileCaching:  enableModelGPUProfileCaching,
 	}
@@ -279,6 +360,14 @@ func InitWithPodsMetrics(st *Store, podMetrics map[string]map[string]metrics.Met
 				if err := st.updatePodRecord(metaPod, "", metricName, metrics.PodMetricScope, metric); err != nil {
 					return false
 				}
+				// Keep the local running-requests atomic in sync with any
+				// RealtimeNumRequestsRunning value tests configure here: it's the
+				// source of truth for GetPodRunningRequests/GetPodsRunningRequests
+				// (the cross-gateway aggregate's local fallback), which routing code
+				// reads instead of this metric map -- see cache_running_requests.go.
+				if metricName == metrics.RealtimeNumRequestsRunning {
+					atomic.StoreInt32(&metaPod.runningRequests, int32(metric.GetSimpleValue()))
+				}
 			}
 		}
 		return true
@@ -294,7 +383,7 @@ func InitWithPodsModelMetrics(st *Store, podMetrics map[string]map[string]metric
 			return true
 		}
 		if podmetrics, ok := podMetrics[podName]; ok {
-			modelName, _ := constants.ModelNameFromMetadata(metaPod.Pod.Labels, metaPod.Pod.Annotations)
+			modelName, _ := constants.ModelNameFromMetadata(metaPod.Labels, metaPod.Annotations)
 			for metricName, metric := range podmetrics {
 				if err := st.updatePodRecord(metaPod, modelName, metricName, metrics.PodModelMetricScope, metric); err != nil {
 					return false
@@ -325,14 +414,7 @@ func InitForTest() *Store {
 func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptions) *Store {
 	once.Do(func() {
 		// Log initialization based on configuration
-		var service string
-		if opts.EnableKVSync {
-			service = "gateway"
-		} else if opts.RedisClient != nil {
-			service = "metadata"
-		} else {
-			service = "controllers"
-		}
+		service := serviceIdentity(opts)
 
 		klog.InfoS("initialize cache",
 			"service", service,
@@ -350,12 +432,29 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 
 		// Create store with provided dependencies
 		store = New(opts.RedisClient, initPrometheusAPI(config), opts.ModelRouterProvider)
+		store.disableModelClaimBindings = opts.DisableModelClaimPodBindings
 
 		// Initialize service discovery — all modes go through the Provider interface
 		provider := opts.DiscoveryProvider
 		if provider == nil {
-			// Default: Kubernetes informer-based discovery
-			provider = discovery.NewKubernetesProvider(config)
+			// Default: Kubernetes informer-based discovery. Only the gateway
+			// watches ModelClaims, to answer for a claimed model that no pod
+			// advertises yet.
+			kubernetesProvider := discovery.NewKubernetesProvider(config)
+			if opts.IsGateway {
+				kubernetesProvider.WithModelClaims()
+			}
+			provider = kubernetesProvider
+		}
+		if opts.ModelListMaxAge > 0 {
+			switch selected := provider.(type) {
+			case *discovery.KubernetesProvider:
+				selected.WithModelListHealth(opts.ModelListMaxAge)
+			case *discovery.StaticProvider:
+				// Static discovery has no continuing watch after its file is loaded.
+			default:
+				klog.Fatalf("Model-list verification is unsupported by discovery provider %q", provider.Type())
+			}
 		}
 		if err := initDiscoveryProvider(store, provider, stopCh); err != nil {
 			klog.Fatalf("Failed to initialize discovery provider: %v", err)
@@ -379,6 +478,13 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 			initGatewaySnapshotSync(store, stopCh)
 		}
 
+		// Initialize the real-time running-requests liveness heartbeat if Redis is
+		// available -- see cache_running_requests.go.
+		if opts.RedisClient != nil {
+			klog.Info("Initializing running-requests liveness heartbeat")
+			initRunningRequestsLiveness(store, stopCh)
+		}
+
 		// Initialize KV event sync if enabled
 		if opts.EnableKVSync {
 			if opts.RedisClient == nil {
@@ -392,6 +498,18 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 	})
 
 	return store
+}
+
+// serviceIdentity returns the component identity implied by opts.
+func serviceIdentity(opts InitOptions) string {
+	switch {
+	case opts.IsGateway:
+		return "gateway"
+	case opts.RedisClient != nil:
+		return "metadata"
+	default:
+		return "controllers"
+	}
 }
 
 // initMetricsCache initializes metrics cache update loop
@@ -423,15 +541,25 @@ func initMetricsCache(store *Store, stopCh <-chan struct{}) {
 // initDiscoveryProvider initializes the cache using a discovery provider.
 // All initial state and ongoing changes are delivered through Watch().
 func initDiscoveryProvider(store *Store, provider discovery.Provider, stopCh <-chan struct{}) error {
-	if err := provider.Watch(func(ev discovery.WatchEvent) {
-		handleDiscoveryObject(store, ev.Type, ev.Object, ev.OldObject)
-	}, stopCh); err != nil {
+	apply := func(ev discovery.WatchEvent) bool {
+		return handleDiscoveryObject(store, ev.Type, ev.Object, ev.OldObject)
+	}
+	var err error
+	if kubernetesProvider, ok := provider.(*discovery.KubernetesProvider); ok && kubernetesProvider.ModelListHealth() != nil {
+		err = kubernetesProvider.WatchApplied(apply, stopCh)
+		if err == nil {
+			store.modelListHealth = kubernetesProvider.ModelListHealth()
+		}
+	} else {
+		err = provider.Watch(func(ev discovery.WatchEvent) { apply(ev) }, stopCh)
+	}
+	if err != nil {
 		return fmt.Errorf("failed to initialize discovery provider: %w", err)
 	}
 	return nil
 }
 
-func handleDiscoveryObject(store *Store, evType discovery.EventType, obj, oldObj any) {
+func handleDiscoveryObject(store *Store, evType discovery.EventType, obj, oldObj any) bool {
 	switch o := obj.(type) {
 	case *v1.Pod:
 		switch evType {
@@ -441,7 +569,7 @@ func handleDiscoveryObject(store *Store, evType discovery.EventType, obj, oldObj
 			oldPod, ok := oldObj.(*v1.Pod)
 			if !ok {
 				klog.Errorf("Pod update event for %s/%s with incorrect old object type: %T", o.Namespace, o.Name, oldObj)
-				return
+				return false
 			}
 			store.updatePod(oldPod, o)
 		case discovery.EventDelete:
@@ -455,15 +583,31 @@ func handleDiscoveryObject(store *Store, evType discovery.EventType, obj, oldObj
 			oldAdapter, ok := oldObj.(*modelv1alpha1.ModelAdapter)
 			if !ok {
 				klog.Errorf("ModelAdapter update event for %s/%s with incorrect old object type: %T", o.Namespace, o.Name, oldObj)
-				return
+				return false
 			}
 			store.updateModelAdapter(oldAdapter, o)
 		case discovery.EventDelete:
 			store.deleteModelAdapter(o)
 		}
+	case *modelv1alpha1.ModelClaim:
+		switch evType {
+		case discovery.EventAdd, discovery.EventUpdate:
+			store.setModelClaim(o)
+		case discovery.EventDelete:
+			store.deleteModelClaim(o)
+		}
+	case *discovery.ModelConfig:
+		switch evType {
+		case discovery.EventAdd, discovery.EventUpdate:
+			store.setModelConfig(o)
+		case discovery.EventDelete:
+			store.deleteModelConfig(o)
+		}
 	default:
 		klog.Warningf("Discovery event with unknown object type: %T", obj)
+		return false
 	}
+	return true
 }
 
 // initMetricsCache initializes metrics cache update loop
@@ -477,6 +621,14 @@ func initProfileCache(store *Store, stopCh <-chan struct{}, forTesting bool) {
 		return
 	}
 	// Skip initialization below during testing
+	if store.redisClient == nil {
+		// Deployment profiles are stored in Redis by the GPU optimizer.
+		// Without Redis (e.g. gateway-plugin standalone mode) there is
+		// nothing to sync, so skip the refresh loop instead of crashing
+		// on the first tick in updateDeploymentProfiles.
+		klog.Warning("Redis client is nil, skipping deployment profile cache updates")
+		return
+	}
 	ticker := time.NewTicker(defaultModelGPUProfileRefreshInterval)
 	go func() {
 		for {
@@ -579,6 +731,7 @@ func (s *Store) initKVEventSync() error {
 	}
 
 	// Validate configuration before allocating more resources
+	//nolint:staticcheck // SA4023: always true in non-ZMQ build, but required for ZMQ build
 	if err := s.kvEventManager.validateConfiguration(); err != nil {
 		return fmt.Errorf("invalid KV event sync configuration: %w", err)
 	}
@@ -635,6 +788,11 @@ func (s *Store) Close() {
 	// Clean up KV event sync resources
 	s.cleanupKVEventSync()
 
+	// Stop publishing the decode ledger.
+	if p := s.decodeLedger.Load(); p != nil {
+		p.close()
+	}
+
 	// Other cleanup can be added here in the future
 }
 
@@ -676,7 +834,7 @@ func (c *Store) promQueryLoop(stopCh <-chan struct{}) {
 	podKey := func(p *Pod) string {
 		ns := p.Namespace
 		if ns == "" && p.Pod != nil {
-			ns = p.Pod.Namespace
+			ns = p.Namespace
 		}
 		return ns + "/" + p.Name
 	}

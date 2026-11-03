@@ -19,7 +19,6 @@ package webhook
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -31,6 +30,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
+	"github.com/vllm-project/aibrix/pkg/utils/pametrics"
 	"github.com/vllm-project/aibrix/pkg/utils/paschedules"
 )
 
@@ -110,7 +111,9 @@ func (v *PodAutoscalerCustomValidator) ValidateUpdate(_ context.Context, oldObj,
 	}
 	podautoscalerlog.Info("Validation for PodAutoscaler upon update", "name", podautoscaler.GetName())
 
-	return nil, v.validatePodAutoscaler(podautoscaler)
+	// A nil old object only disables the annotation ratchet, so every value is checked.
+	oldPodAutoscaler, _ := oldObj.(*autoscalingv1alpha1.PodAutoscaler)
+	return nil, v.validatePodAutoscalerUpdate(oldPodAutoscaler, podautoscaler)
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type PodAutoscaler.
@@ -123,10 +126,18 @@ func (v *PodAutoscalerCustomValidator) ValidateDelete(ctx context.Context, obj r
 	return nil, nil
 }
 
-// validatePodAutoscaler performs all spec validations.
+// validatePodAutoscaler performs all validations for a new PodAutoscaler.
 func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1alpha1.PodAutoscaler) error {
+	return v.validatePodAutoscalerUpdate(nil, pa)
+}
+
+// validatePodAutoscalerUpdate performs all validations for pa. old is the
+// stored object on update and nil on create.
+func (v *PodAutoscalerCustomValidator) validatePodAutoscalerUpdate(old, pa *autoscalingv1alpha1.PodAutoscaler) error {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
+
+	allErrs = append(allErrs, validateAnnotations(old, pa)...)
 
 	allErrs = append(allErrs, validateScaleTargetRef(pa, specPath)...)
 	allErrs = append(allErrs, validateReplicaBounds(pa, specPath)...)
@@ -134,6 +145,7 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 	allErrs = append(allErrs, validateSchedules(pa, specPath)...)
 	allErrs = append(allErrs, validateScalingStrategy(pa, specPath)...)
 	allErrs = append(allErrs, validateMetricsSources(pa, specPath)...)
+	allErrs = append(allErrs, validatePredictive(pa, specPath)...)
 
 	if len(allErrs) == 0 {
 		return nil
@@ -144,6 +156,27 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 		pa.Name,
 		allErrs,
 	)
+}
+
+// validateAnnotations rejects autoscaling annotations whose value the
+// controller cannot use, such as a scale rate below 1 or a non-finite number.
+//
+// These values were accepted before this check existed, so an update only
+// fails on a value it adds or changes. An object that already carries an
+// unusable value can still be updated; the controller ignores that value and
+// keeps the default for the setting.
+func validateAnnotations(old, pa *autoscalingv1alpha1.PodAutoscaler) field.ErrorList {
+	var errs field.ErrorList
+	annotationsPath := field.NewPath("metadata", "annotations")
+	for _, annotationErr := range scalingctx.ValidateAnnotations(pa.Annotations) {
+		if old != nil {
+			if oldValue, ok := old.Annotations[annotationErr.Key]; ok && oldValue == annotationErr.Value {
+				continue
+			}
+		}
+		errs = append(errs, field.Invalid(annotationsPath.Key(annotationErr.Key), annotationErr.Value, annotationErr.Err.Error()))
+	}
+	return errs
 }
 
 func validateScaleTargetRef(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) field.ErrorList {
@@ -213,17 +246,17 @@ func validateMetricsSources(pa *autoscalingv1alpha1.PodAutoscaler, specPath *fie
 	}
 	for i := range pa.Spec.MetricsSources {
 		ms := &pa.Spec.MetricsSources[i]
-		errs = append(errs, validateMetricSource(ms, metricsPath.Index(i))...)
+		errs = append(errs, validateMetricSource(ms, pa.Spec.ScalingStrategy, metricsPath.Index(i))...)
 	}
 	return errs
 }
 
-func validateMetricSource(ms *autoscalingv1alpha1.MetricSource, msPath *field.Path) field.ErrorList {
+func validateMetricSource(ms *autoscalingv1alpha1.MetricSource, strategy autoscalingv1alpha1.ScalingStrategyType, msPath *field.Path) field.ErrorList {
 	var errs field.ErrorList
 	if ms.TargetMetric == "" {
 		errs = append(errs, field.Required(msPath.Child("targetMetric"), "must be set"))
 	}
-	errs = append(errs, validateMetricTargetValue(ms, msPath)...)
+	errs = append(errs, validateMetricTargetValue(ms, strategy, msPath)...)
 
 	switch ms.MetricSourceType {
 	case autoscalingv1alpha1.POD:
@@ -246,17 +279,19 @@ func validateMetricSource(ms *autoscalingv1alpha1.MetricSource, msPath *field.Pa
 	return errs
 }
 
-func validateMetricTargetValue(ms *autoscalingv1alpha1.MetricSource, msPath *field.Path) field.ErrorList {
+func validateMetricTargetValue(ms *autoscalingv1alpha1.MetricSource, strategy autoscalingv1alpha1.ScalingStrategyType, msPath *field.Path) field.ErrorList {
 	if ms.TargetValue == "" {
 		return field.ErrorList{field.Required(msPath.Child("targetValue"), "must be set")}
 	}
 
-	targetValue, err := strconv.ParseFloat(ms.TargetValue, 64)
-	if err != nil {
-		return field.ErrorList{field.Invalid(msPath.Child("targetValue"), ms.TargetValue, "must be a valid number")}
+	var err error
+	if strategy == autoscalingv1alpha1.HPA {
+		_, err = pametrics.ParseHPATargetValue(ms.TargetValue, ms.TargetMetric)
+	} else {
+		_, err = pametrics.ParseTargetValue(ms.TargetValue)
 	}
-	if targetValue <= 0 {
-		return field.ErrorList{field.Invalid(msPath.Child("targetValue"), ms.TargetValue, "must be greater than 0")}
+	if err != nil {
+		return field.ErrorList{field.Invalid(msPath.Child("targetValue"), ms.TargetValue, err.Error())}
 	}
 	return nil
 }
@@ -317,6 +352,40 @@ func validateResourceMetricSource(ms *autoscalingv1alpha1.MetricSource, msPath *
 			field.Forbidden(msPath.Child("protocolType"), "not allowed for metricSourceType=resource"),
 		)
 	}
+	return errs
+}
+
+// validatePredictive checks the predictive block. The mode and horizon bounds
+// are also enforced by the CRD schema; validating them here keeps the error
+// messages consistent with the rest of the spec validation.
+func validatePredictive(pa *autoscalingv1alpha1.PodAutoscaler, specPath *field.Path) field.ErrorList {
+	spec := pa.Spec.Predictive
+	if spec == nil {
+		return nil
+	}
+
+	var errs field.ErrorList
+	predictivePath := specPath.Child("predictive")
+
+	if pa.Spec.ScalingStrategy == autoscalingv1alpha1.HPA {
+		errs = append(errs, field.Forbidden(predictivePath,
+			"not supported with scalingStrategy=HPA; the HPA strategy delegates the decision to the native HPA resource"))
+	}
+
+	if spec.Mode != "" &&
+		spec.Mode != autoscalingv1alpha1.PredictiveModePreview &&
+		spec.Mode != autoscalingv1alpha1.PredictiveModeAuto {
+		errs = append(errs, field.NotSupported(predictivePath.Child("mode"), spec.Mode, []string{
+			string(autoscalingv1alpha1.PredictiveModePreview),
+			string(autoscalingv1alpha1.PredictiveModeAuto),
+		}))
+	}
+
+	if spec.HorizonSeconds != nil && (*spec.HorizonSeconds < 1 || *spec.HorizonSeconds > maxMetricWindowSeconds) {
+		errs = append(errs, field.Invalid(predictivePath.Child("horizonSeconds"), *spec.HorizonSeconds,
+			fmt.Sprintf("must be between 1 and %d", maxMetricWindowSeconds)))
+	}
+
 	return errs
 }
 

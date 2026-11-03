@@ -19,6 +19,7 @@ package impl
 import (
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/openai/openai-go/v3"
@@ -66,7 +67,10 @@ type queuedJob struct {
 	// readyToSubmit indicates provision is ready and job can be submitted to MDS
 	// This is a runtime-only flag, not persisted to database
 	readyToSubmit bool
-	extraBody     json.RawMessage
+	// workInFlight prevents overlapping provision, provider/MDS poll, submit,
+	// and cleanup tasks for the same job.
+	workInFlight atomic.Bool
+	extraBody    json.RawMessage
 }
 
 func (j *queuedJob) Key() string {

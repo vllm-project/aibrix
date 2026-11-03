@@ -23,6 +23,7 @@ import (
 	"net"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
@@ -33,6 +34,7 @@ import (
 
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	"k8s.io/client-go/rest"
@@ -107,6 +109,8 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	err = appsv1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
+	err = autoscalingv1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
 
 	//+kubebuilder:scaffold:scheme
 
@@ -130,6 +134,8 @@ var _ = BeforeSuite(func() {
 
 	err = apiwebhook.SetupModelAdapterWebhook(mgr)
 	Expect(err).NotTo(HaveOccurred())
+	err = apiwebhook.SetupModelWarmupWebhook(mgr)
+	Expect(err).NotTo(HaveOccurred())
 	err = apiwebhook.SetupKVCacheWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 	err = apiwebhook.SetupStormServiceWebhookWithManager(mgr)
@@ -137,6 +143,8 @@ var _ = BeforeSuite(func() {
 	err = apiwebhook.SetupDeploymentWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 	err = apiwebhook.SetupPodAutoscalerWebhookWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+	err = apiwebhook.SetupRayClusterFleetWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
 	//+kubebuilder:scaffold:webhook
@@ -149,7 +157,10 @@ var _ = BeforeSuite(func() {
 
 	// wait for the webhook server to get ready
 	dialer := &net.Dialer{Timeout: time.Second}
-	addrPort := fmt.Sprintf("%s:%d", webhookInstallOptions.LocalServingHost, webhookInstallOptions.LocalServingPort)
+	addrPort := net.JoinHostPort(
+		webhookInstallOptions.LocalServingHost,
+		strconv.Itoa(webhookInstallOptions.LocalServingPort),
+	)
 	Eventually(func() error {
 		conn, err := tls.DialWithDialer(dialer, "tcp", addrPort, &tls.Config{InsecureSkipVerify: true})
 		if err != nil {

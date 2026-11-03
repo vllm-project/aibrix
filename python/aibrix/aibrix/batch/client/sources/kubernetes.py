@@ -197,18 +197,27 @@ class PortForwardEndpointSource:
 
     async def channels(self) -> List[Channel]:
         async with self._lock:
-            if self._channel is None or not self._port_forward_running():
-                if self._channel is not None:
-                    await self._channel.aclose()
-                    self._channel = None
-                if self._process is not None:
-                    logger.warning(
-                        "port-forward process exited; restarting",
-                        target=f"service/{self._service_name}:{self._service_port}",
-                        namespace=self._namespace,
-                    )  # type: ignore[call-arg]
-                    await asyncio.to_thread(self._terminate)
-                self._channel = await asyncio.to_thread(self._start)
+            try:
+                if self._channel is None or not self._port_forward_running():
+                    if self._channel is not None:
+                        await self._channel.aclose()
+                        self._channel = None
+                    if self._process is not None:
+                        logger.warning(
+                            "port-forward process exited; restarting",
+                            target=f"service/{self._service_name}:{self._service_port}",
+                            namespace=self._namespace,
+                        )  # type: ignore[call-arg]
+                        await asyncio.to_thread(self._terminate)
+                    self._channel = await asyncio.to_thread(self._start)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to establish port-forward endpoint source",
+                    target=f"service/{self._service_name}:{self._service_port}",
+                    namespace=self._namespace,
+                    error=repr(exc),
+                )  # type: ignore[call-arg]
+                return []
             return [self._channel]
 
     async def capacity(self) -> CapacitySignal:

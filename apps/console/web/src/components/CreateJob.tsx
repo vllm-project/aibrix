@@ -56,6 +56,7 @@ import {
   getCreateJobReadiness,
 } from '../utils/batchProduct';
 import { Model } from '../data/mockData';
+import { ExistingDatasetSummary } from './ExistingDatasetSummary';
 import {
   getCreateJobResourcePlugin,
   type CreateJobResourceConfig,
@@ -76,6 +77,13 @@ const STEP_INDEX: Record<Step, number> = { model: 1, template: 2, dataset: 3, se
 const MIN_CLIENT_MAX_CONCURRENCY = 1;
 const MAX_CLIENT_MAX_CONCURRENCY = 1024;
 const MIN_ADAPTIVE_MAX_FACTOR = 1;
+const MIN_ADAPTIVE_HEALTHY_WINDOW = 1;
+const MIN_ADAPTIVE_ADDITIVE_INCREASE = 1;
+const ADAPTIVE_CLIENT_PARAM_FIELDS = new Set([
+  'adaptiveMaxFactor',
+  'adaptiveHealthyWindow',
+  'adaptiveAdditiveIncrease',
+]);
 const BYTES_PER_MEBIBYTE = 1024 * 1024;
 const FULL_PARSE_CACHE_MAX_BYTES = 20 * BYTES_PER_MEBIBYTE;
 
@@ -100,6 +108,8 @@ export function CreateJob({ onBack }: CreateJobProps) {
   const [maxConcurrency, setMaxConcurrency] = useState('');
   const [adaptiveConcurrency, setAdaptiveConcurrency] = useState(true);
   const [adaptiveMaxFactor, setAdaptiveMaxFactor] = useState('');
+  const [adaptiveHealthyWindow, setAdaptiveHealthyWindow] = useState('');
+  const [adaptiveAdditiveIncrease, setAdaptiveAdditiveIncrease] = useState('');
   const [retryMaxRetries, setRetryMaxRetries] = useState('');
   const [retryBaseDelay, setRetryBaseDelay] = useState('');
   const [retryMaxDelay, setRetryMaxDelay] = useState('');
@@ -404,7 +414,9 @@ export function CreateJob({ onBack }: CreateJobProps) {
     setParamErrors(prev => ({ ...prev, replicas: err }));
   }, [replicaLimits, replicas]);
 
-  const hasParamErrors = Object.values(paramErrors).some(e => e !== '');
+  const hasParamErrors = Object.entries(paramErrors).some(([field, error]) => (
+    error !== '' && (adaptiveConcurrency || !ADAPTIVE_CLIENT_PARAM_FIELDS.has(field))
+  ));
 
   // Assemble extra_body.aibrix.client from the Settings inputs, omitting blanks
   // so unset fields fall back to metadata-service defaults. Returns undefined
@@ -421,7 +433,9 @@ export function CreateJob({ onBack }: CreateJobProps) {
       maxConcurrency: parseNumber(maxConcurrency),
       // Only forward the toggle when the user diverged from the default (on).
       adaptiveConcurrency: adaptiveConcurrency ? undefined : false,
-      adaptiveMaxFactor: parseNumber(adaptiveMaxFactor),
+      adaptiveMaxFactor: adaptiveConcurrency ? parseNumber(adaptiveMaxFactor) : undefined,
+      adaptiveHealthyWindow: adaptiveConcurrency ? parseNumber(adaptiveHealthyWindow) : undefined,
+      adaptiveAdditiveIncrease: adaptiveConcurrency ? parseNumber(adaptiveAdditiveIncrease) : undefined,
       retryPolicy: hasRetry ? retry : undefined,
     };
     const hasAny = Object.values(client).some(v => v !== undefined);
@@ -840,25 +854,33 @@ export function CreateJob({ onBack }: CreateJobProps) {
                 </div>
 
                 {selectedExistingFile ? (
-                  <div className="border border-teal-200 bg-teal-50 rounded-xl p-4 flex items-center justify-between">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <FileText className="w-5 h-5 text-teal-600 shrink-0" />
-                      <div className="min-w-0">
-                        <div className="text-sm text-gray-900 truncate">
-                          {selectedExistingFile.name || selectedExistingFile.id}
-                        </div>
-                        <div className="text-xs text-gray-500 truncate">
-                          {selectedExistingFile.id} · {formatBytes(selectedExistingFile.size)}
+                  <div className="border border-teal-200 bg-teal-50 rounded-xl p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <FileText className="w-5 h-5 text-teal-600 shrink-0" />
+                        <div className="min-w-0">
+                          <div className="text-sm text-gray-900 truncate">
+                            {selectedExistingFile.name || selectedExistingFile.id}
+                          </div>
+                          <div className="text-xs text-gray-500 truncate">
+                            {selectedExistingFile.id} · {formatBytes(selectedExistingFile.size)}
+                          </div>
                         </div>
                       </div>
+                      <button
+                        onClick={handleClearExistingFile}
+                        className="text-gray-400 hover:text-gray-600"
+                        title="Clear selected dataset"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
                     </div>
-                    <button
-                      onClick={handleClearExistingFile}
-                      className="text-gray-400 hover:text-gray-600"
-                      title="Clear selected dataset"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
+                    <ExistingDatasetSummary
+                      key={selectedExistingFile.id}
+                      fileId={selectedExistingFile.id}
+                      expectedModel={selectedServingName}
+                      supportedEndpoints={selectedTemplate?.spec?.supportedEndpoints ?? []}
+                    />
                   </div>
                 ) : (
                   <button
@@ -930,7 +952,7 @@ export function CreateJob({ onBack }: CreateJobProps) {
                       )}
                     </div>
                     <div className="px-3 py-2 border-t border-gray-100 text-xs text-gray-500">
-                      Existing files are not re-read in the browser; make sure the JSONL endpoint matches the selected template.
+                      Select a dataset to preview its request count, models, and endpoints.
                     </div>
                   </div>
                 )}
@@ -1077,7 +1099,24 @@ export function CreateJob({ onBack }: CreateJobProps) {
                     Optional smart-client concurrency and retry controls. Leave blank to use service defaults.
                   </p>
 
-                  <div className="grid grid-cols-2 gap-4">
+                  <label className="flex items-center gap-2 mb-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={adaptiveConcurrency}
+                      onChange={(e) => setAdaptiveConcurrency(e.target.checked)}
+                      className="rounded border-gray-300 text-teal-600 focus:ring-teal-500/30"
+                    />
+                    Adaptive concurrency
+                    <span className="text-xs text-gray-400">
+                      (grow toward Max Concurrency; off = fixed concurrency)
+                    </span>
+                  </label>
+
+                  <p className="text-xs text-gray-400 mb-4">
+                    Initial probing grows by at least 25%; after the first decrease, growth uses the Additive Increase step.
+                  </p>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm mb-1">Max Concurrency</label>
                       <p className="text-xs text-gray-400 mb-1">{MIN_CLIENT_MAX_CONCURRENCY} - {MAX_CLIENT_MAX_CONCURRENCY}</p>
@@ -1101,33 +1140,71 @@ export function CreateJob({ onBack }: CreateJobProps) {
                       <input
                         type="text"
                         value={adaptiveMaxFactor}
+                        disabled={!adaptiveConcurrency}
                         onChange={(e) => handleParamChange('adaptiveMaxFactor', e.target.value, setAdaptiveMaxFactor, MIN_ADAPTIVE_MAX_FACTOR, undefined, false)}
                         placeholder="e.g. 8"
-                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 ${
-                          paramErrors.adaptiveMaxFactor ? 'border-red-300' : 'border-gray-200'
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed ${
+                          adaptiveConcurrency && paramErrors.adaptiveMaxFactor ? 'border-red-300' : 'border-gray-200'
                         }`}
                       />
-                      {paramErrors.adaptiveMaxFactor && (
+                      {adaptiveConcurrency && paramErrors.adaptiveMaxFactor && (
                         <p className="text-xs text-red-500 mt-1">{paramErrors.adaptiveMaxFactor}</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm mb-1">Adaptive Healthy Window</label>
+                      <p className="text-xs text-gray-400 mb-1">Healthy completions before each increase, &ge; 1</p>
+                      <input
+                        type="text"
+                        value={adaptiveHealthyWindow}
+                        disabled={!adaptiveConcurrency}
+                        onChange={(e) => handleParamChange(
+                          'adaptiveHealthyWindow',
+                          e.target.value,
+                          setAdaptiveHealthyWindow,
+                          MIN_ADAPTIVE_HEALTHY_WINDOW,
+                          undefined,
+                          true,
+                        )}
+                        placeholder="e.g. 8"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed ${
+                          adaptiveConcurrency && paramErrors.adaptiveHealthyWindow ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {adaptiveConcurrency && paramErrors.adaptiveHealthyWindow && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.adaptiveHealthyWindow}</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm mb-1">Adaptive Additive Increase</label>
+                      <p className="text-xs text-gray-400 mb-1">Fixed growth step after the first decrease, &ge; 1</p>
+                      <input
+                        type="text"
+                        value={adaptiveAdditiveIncrease}
+                        disabled={!adaptiveConcurrency}
+                        onChange={(e) => handleParamChange(
+                          'adaptiveAdditiveIncrease',
+                          e.target.value,
+                          setAdaptiveAdditiveIncrease,
+                          MIN_ADAPTIVE_ADDITIVE_INCREASE,
+                          undefined,
+                          true,
+                        )}
+                        placeholder="e.g. 1"
+                        className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500 disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed ${
+                          adaptiveConcurrency && paramErrors.adaptiveAdditiveIncrease ? 'border-red-300' : 'border-gray-200'
+                        }`}
+                      />
+                      {adaptiveConcurrency && paramErrors.adaptiveAdditiveIncrease && (
+                        <p className="text-xs text-red-500 mt-1">{paramErrors.adaptiveAdditiveIncrease}</p>
                       )}
                     </div>
                   </div>
 
-                  <label className="flex items-center gap-2 mt-3 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={adaptiveConcurrency}
-                      onChange={(e) => setAdaptiveConcurrency(e.target.checked)}
-                      className="rounded border-gray-300 text-teal-600 focus:ring-teal-500/30"
-                    />
-                    Adaptive concurrency
-                    <span className="text-xs text-gray-400">
-                      (grow toward Max Concurrency; off = fixed concurrency)
-                    </span>
-                  </label>
-
                   <h4 className="text-sm font-medium mt-4 mb-2">Retry Policy</h4>
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm mb-1">Max Retries</label>
                       <p className="text-xs text-gray-400 mb-1">&ge; 0</p>

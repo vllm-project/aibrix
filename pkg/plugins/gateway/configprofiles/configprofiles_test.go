@@ -266,6 +266,43 @@ func TestResolveConfigForRequestAutoFallbacks(t *testing.T) {
 	}
 }
 
+func TestResolveConfigForRequestDoesNotApplyAuthoritativePolicy(t *testing.T) {
+	configJSON := `{
+		"authoritativeRoutingPolicy":true,
+		"defaultProfile":"default",
+		"profiles":{
+			"default":{"routingStrategy":"least-request","routingConfig":{"marker":"default"}},
+			"batch":{"routingStrategy":"throughput","routingConfig":{"promptTokensGte":1,"marker":"batch"}}
+		}
+	}`
+	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{constants.ModelAnnoConfig: configJSON}}}
+
+	cfg := ResolveModelConfig([]*v1.Pod{pod})
+	if cfg == nil {
+		t.Fatal("ResolveModelConfig() = nil")
+	}
+	if !cfg.AuthoritativeRoutingPolicy {
+		t.Fatal("ResolveModelConfig().AuthoritativeRoutingPolicy = false, want true")
+	}
+
+	profile, name, locked := ResolveConfigForRequest([]*v1.Pod{pod}, "batch", RequestFeatures{PromptTokens: intPtr(100)})
+	if profile == nil {
+		t.Fatal("ResolveForRequest() profile = nil")
+	}
+	if profile.RoutingStrategy != "throughput" {
+		t.Errorf("ResolveForRequest().RoutingStrategy = %s, want throughput", profile.RoutingStrategy)
+	}
+	if !strings.Contains(string(profile.RoutingConfig), `"marker":"batch"`) {
+		t.Errorf("ResolveForRequest().RoutingConfig = %s, want batch profile config", profile.RoutingConfig)
+	}
+	if name != "batch" {
+		t.Errorf("ResolveForRequest() name = %q, want batch", name)
+	}
+	if locked != "" {
+		t.Errorf("ResolveForRequest() locked = %q, want empty", locked)
+	}
+}
+
 func TestGetProfile(t *testing.T) {
 	json := `{"defaultProfile":"pd","profiles":{"default":{"routingStrategy":"random","routingConfig":{"promptLenBucketMinLength":0,"promptLenBucketMaxLength":4096}},"pd":{"routingStrategy":"pd","routingConfig":{"promptLenBucketMinLength":0,"promptLenBucketMaxLength":2048}}}}`
 
@@ -350,6 +387,123 @@ func TestResolveProfileFromPod(t *testing.T) {
 	}
 }
 
+func TestResolveProfileFrom(t *testing.T) {
+	modelConfig := `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"least-request"},"cache-friendly":{"routingStrategy":"prefix-cache"}}}`
+	annoConfig := `{"defaultProfile":"pd","profiles":{"default":{"routingStrategy":"random"},"pd":{"routingStrategy":"pd"}}}`
+	podWithAnno := &v1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:        "pod1",
+		Annotations: map[string]string{constants.ModelAnnoConfig: annoConfig},
+	}}
+	podNoAnno := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod2"}}
+
+	tests := []struct {
+		name          string
+		modelConfig   string
+		pod           *v1.Pod
+		headerProfile string
+		wantProfile   string
+	}{
+		{"model config, no header", modelConfig, podNoAnno, "", "least-request"},
+		{"model config, header picks a profile", modelConfig, podNoAnno, "cache-friendly", "prefix-cache"},
+		{"model config, unknown header falls back to its default", modelConfig, podNoAnno, "missing", "least-request"},
+		{"model config is not merged with the pod annotation", modelConfig, podWithAnno, "pd", "least-request"},
+		{"model config wins over the pod annotation", modelConfig, podWithAnno, "", "least-request"},
+		{"model config without a pod", modelConfig, nil, "cache-friendly", "prefix-cache"},
+		{"no model config uses the pod annotation", "", podWithAnno, "", "pd"},
+		{"invalid model config uses the pod annotation", "{", podWithAnno, "default", "random"},
+		{"no config anywhere", "", podNoAnno, "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := ResolveProfileFrom(tt.modelConfig, tt.pod, tt.headerProfile)
+			if tt.wantProfile == "" {
+				if p != nil {
+					t.Errorf("ResolveProfileFrom() = %v, want nil", p)
+				}
+				return
+			}
+			if p == nil {
+				t.Fatalf("ResolveProfileFrom() = nil, want profile with routingStrategy=%s", tt.wantProfile)
+			}
+			if p.RoutingStrategy != tt.wantProfile {
+				t.Errorf("ResolveProfileFrom().RoutingStrategy = %s, want %s", p.RoutingStrategy, tt.wantProfile)
+			}
+		})
+	}
+}
+
+func TestResolveModelConfigFrom(t *testing.T) {
+	modelConfig := `{"lockedRoutingStrategy":"random","defaultProfile":"default","profiles":{"default":{"routingStrategy":"least-request"}}}`
+	podWithAnno := &v1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:        "pod1",
+		Annotations: map[string]string{constants.ModelAnnoConfig: `{"defaultProfile":"pd","profiles":{"pd":{"routingStrategy":"pd"}}}`},
+	}}
+	podNoAnno := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod2"}}
+
+	tests := []struct {
+		name         string
+		modelConfig  string
+		pods         []*v1.Pod
+		wantStrategy string // routingStrategy of the default profile; "" wants no config
+		wantLocked   string
+	}{
+		{"model config without annotated pods", modelConfig, []*v1.Pod{podNoAnno}, "least-request", "random"},
+		{"model config wins over pod annotations", modelConfig, []*v1.Pod{podNoAnno, podWithAnno}, "least-request", "random"},
+		{"model config without pods", modelConfig, nil, "least-request", "random"},
+		{"no model config uses the first annotated pod", "", []*v1.Pod{podNoAnno, podWithAnno}, "pd", ""},
+		{"blank model config uses pod annotations", "  ", []*v1.Pod{podWithAnno}, "pd", ""},
+		{"invalid model config uses pod annotations", `{"profiles":`, []*v1.Pod{podWithAnno}, "pd", ""},
+		{"no config anywhere", "", []*v1.Pod{podNoAnno}, "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := ResolveModelConfigFrom(tt.modelConfig, tt.pods)
+			if tt.wantStrategy == "" {
+				if cfg != nil {
+					t.Errorf("ResolveModelConfigFrom() = %v, want nil", cfg)
+				}
+				return
+			}
+			if cfg == nil {
+				t.Fatal("ResolveModelConfigFrom() = nil, want a config")
+			}
+			if p := cfg.GetProfile(""); p == nil || p.RoutingStrategy != tt.wantStrategy {
+				t.Errorf("ResolveModelConfigFrom() default profile = %v, want routingStrategy=%s", p, tt.wantStrategy)
+			}
+			if cfg.LockedRoutingStrategy != tt.wantLocked {
+				t.Errorf("ResolveModelConfigFrom().LockedRoutingStrategy = %q, want %q", cfg.LockedRoutingStrategy, tt.wantLocked)
+			}
+		})
+	}
+}
+
+// The gateway resolves a model-level config for every pod of every request in
+// the PD router, so the same config JSON is parsed once and then shared.
+func TestModelLevelConfigIsParsedOnce(t *testing.T) {
+	modelConfig := `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"least-request"}}}`
+	first := ResolveModelConfigFrom(modelConfig, nil)
+	if first == nil {
+		t.Fatal("ResolveModelConfigFrom() = nil, want a config")
+	}
+	if again := ResolveModelConfigFrom(modelConfig, nil); again != first {
+		t.Error("ResolveModelConfigFrom() parsed the same config again")
+	}
+	if p := ResolveProfileFrom(modelConfig, nil, ""); p == nil || p.RoutingStrategy != "least-request" {
+		t.Errorf("ResolveProfileFrom() = %v, want routingStrategy=least-request", p)
+	}
+}
+
+func BenchmarkResolveProfileFromModelConfig(b *testing.B) {
+	modelConfig := `{"defaultProfile":"pd","profiles":{"pd":{"routingStrategy":"pd","routingConfig":` +
+		`{"promptLenBucketMinLength":0,"promptLenBucketMaxLength":4096,"combined":true}}}}`
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if ResolveProfileFrom(modelConfig, nil, "") == nil {
+			b.Fatal("no profile")
+		}
+	}
+}
+
 func TestParseModelConfigWithRoutingConfig(t *testing.T) {
 	jsonStr := `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"pd","routingConfig":{"promptLenBucketMinLength":0,"promptLenBucketMaxLength":4096,"combined":true,"prefillScorePolicy":"least_request","decodeScorePolicy":"least_request"}}}}`
 	cfg, err := ParseModelConfig(jsonStr)
@@ -371,6 +525,21 @@ func TestParseModelConfigWithRoutingConfig(t *testing.T) {
 	}
 	if !strings.Contains(string(profile.RoutingConfig), "prefillScorePolicy") || !strings.Contains(string(profile.RoutingConfig), "decodeScorePolicy") {
 		t.Errorf("RoutingConfig should carry PD score policy fields, got %s", string(profile.RoutingConfig))
+	}
+}
+
+func TestParseModelConfigWithTTFTThreshold(t *testing.T) {
+	jsonStr := `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"least-request","ttftThresholdS":3}}}`
+	cfg, err := ParseModelConfig(jsonStr)
+	if err != nil {
+		t.Fatalf("ParseModelConfig() err=%v", err)
+	}
+	profile := cfg.GetProfile("default")
+	if profile == nil {
+		t.Fatal("GetProfile(default) = nil")
+	}
+	if profile.TTFTThresholdS != 3 {
+		t.Errorf("TTFTThresholdS = %d, want 3", profile.TTFTThresholdS)
 	}
 }
 

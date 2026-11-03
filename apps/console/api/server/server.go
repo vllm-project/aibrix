@@ -34,6 +34,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/apps/console/api/deployment/provider"
+	gatewayprovider "github.com/vllm-project/aibrix/apps/console/api/gateway/provider"
 	pb "github.com/vllm-project/aibrix/apps/console/api/gen/console/v1"
 	"github.com/vllm-project/aibrix/apps/console/api/handler"
 	"github.com/vllm-project/aibrix/apps/console/api/metrics"
@@ -150,12 +151,13 @@ func (s *Server) StartGRPC(addr string) error {
 		return fmt.Errorf("resource manager init: %w", err)
 	}
 	s.planner = plannerimpl.NewPlanner(plannerimpl.PlannerConfig{
-		BatchClient: batchClient,
-		Provisioner: rm.Provisioner,
-		Store:       s.store,
-		PolicyType:  plannerimpl.PlanningPolicyType(s.cfg.PlanningPolicy),
-		WorkerCount: s.cfg.PlannerWorkerCount,
-		Injector:    s.injector,
+		BatchClient:     batchClient,
+		Provisioner:     rm.Provisioner,
+		Store:           s.store,
+		PolicyType:      plannerimpl.PlanningPolicyType(s.cfg.PlanningPolicy),
+		WorkerCount:     s.cfg.PlannerWorkerCount,
+		WorkerQueueSize: s.cfg.PlannerWorkerQueueSize,
+		Injector:        s.injector,
 	})
 	if err := s.planner.Recover(context.Background()); err != nil {
 		klog.Warningf("planner recovery failed (continuing without recovered jobs): %v", err)
@@ -168,7 +170,9 @@ func (s *Server) StartGRPC(addr string) error {
 	)
 
 	// Register all service handlers
-	pb.RegisterDeploymentServiceServer(s.grpcServer, handler.NewDeploymentHandler(s.store, deploymentProviders))
+	deploymentHandler := handler.NewDeploymentHandler(s.store, deploymentProviders)
+	deploymentHandler.SetGatewayEndpoint(s.cfg.GatewayEndpoint)
+	pb.RegisterDeploymentServiceServer(s.grpcServer, deploymentHandler)
 	pb.RegisterJobServiceServer(s.grpcServer, handler.NewJobHandler(s.store, s.planner, s.cfg.DefaultBatchModelDeploymentTemplate, s.cfg.DevMode, s.injector))
 	pb.RegisterModelServiceServer(s.grpcServer, handler.NewModelHandler(s.store))
 	pb.RegisterModelDeploymentTemplateServiceServer(s.grpcServer, handler.NewModelDeploymentTemplateHandler(s.store))
@@ -246,6 +250,19 @@ func (s *Server) StartHTTP(httpAddr, grpcAddr string) error {
 	// Register the Kubernetes-backed ModelAdapter BFF.
 	modelAdapterHandler := handler.NewModelAdapterHandler(s.clusterClients)
 	if err := modelAdapterHandler.RegisterRoutes(mux); err != nil {
+		return err
+	}
+
+	// Register the Kubernetes-backed ModelClaim BFF.
+	modelClaimHandler := handler.NewModelClaimHandler(s.clusterClients)
+	if err := modelClaimHandler.RegisterRoutes(mux); err != nil {
+		return err
+	}
+
+	gatewayHandler := handler.NewGatewayInstanceHandler(
+		gatewayprovider.NewKubernetes(provider.NewGatewayClientProvider(s.cfg.KubernetesProvider)),
+	)
+	if err := gatewayHandler.RegisterRoutes(mux); err != nil {
 		return err
 	}
 

@@ -33,6 +33,7 @@ type PodAutoscalerSpecApplyConfiguration struct {
 	MetricsSources       []MetricSourceApplyConfiguration          `json:"metricsSources,omitempty"`
 	ObserveWindowSeconds *int64                                    `json:"observeWindowSeconds,omitempty"`
 	PanicWindowSeconds   *int64                                    `json:"panicWindowSeconds,omitempty"`
+	Predictive           *PredictiveSpecApplyConfiguration         `json:"predictive,omitempty"`
 	ScalingStrategy      *autoscalingv1alpha1.ScalingStrategyType  `json:"scalingStrategy,omitempty"`
 }
 
@@ -113,6 +114,14 @@ func (b *PodAutoscalerSpecApplyConfiguration) WithObserveWindowSeconds(value int
 // If called multiple times, the PanicWindowSeconds field is set to the value of the last call.
 func (b *PodAutoscalerSpecApplyConfiguration) WithPanicWindowSeconds(value int64) *PodAutoscalerSpecApplyConfiguration {
 	b.PanicWindowSeconds = &value
+	return b
+}
+
+// WithPredictive sets the Predictive field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Predictive field is set to the value of the last call.
+func (b *PodAutoscalerSpecApplyConfiguration) WithPredictive(value *PredictiveSpecApplyConfiguration) *PodAutoscalerSpecApplyConfiguration {
+	b.Predictive = value
 	return b
 }
 

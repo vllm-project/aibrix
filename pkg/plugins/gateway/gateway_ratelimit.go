@@ -19,6 +19,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -29,23 +30,38 @@ import (
 )
 
 func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extProcPb.ProcessingResponse, error) {
-	if user.Rpm == 0 {
-		user.Rpm = int64(DefaultRPM)
-	}
-	if user.Tpm == 0 {
-		user.Tpm = user.Rpm * int64(DefaultTPMMultiplier)
-	}
+	user = applyDefaultUserLimits(user)
 
 	code, err := s.checkRPM(ctx, user.Name, user.Rpm)
 	if err != nil {
-		errorCode := ""
+		// Only a request over the limit is told it exceeded it; a failed read
+		// is an outage the client should not take as a rate-limit signal.
+		errorHeader, errorCode := HeaderErrorGetRPM, ""
 		if code == envoyTypePb.StatusCode_TooManyRequests {
-			errorCode = ErrorCodeRateLimitExceeded
+			errorHeader, errorCode = HeaderErrorRPMExceeded, ErrorCodeRateLimitExceeded
 		}
 		return 0, generateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderErrorRPMExceeded, RawValue: []byte("true"),
+				Key: errorHeader, RawValue: []byte("true"),
+			}}},
+			err.Error(), errorCode, ""), err
+	}
+
+	// Run every read-only check before the increment: a request rejected after
+	// it would keep the RPM slot it took without ever being served.
+	code, err = s.checkTPM(ctx, user.Name, user.Tpm)
+	if err != nil {
+		// Only a request over the limit is told it exceeded it; a failed read
+		// is an outage the client should not take as a rate-limit signal.
+		errorHeader, errorCode := HeaderErrorGetTPM, ""
+		if code == envoyTypePb.StatusCode_TooManyRequests {
+			errorHeader, errorCode = HeaderErrorTPMExceeded, ErrorCodeRateLimitExceeded
+		}
+		return 0, generateErrorResponse(
+			code,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: errorHeader, RawValue: []byte("true"),
 			}}},
 			err.Error(), errorCode, ""), err
 	}
@@ -59,19 +75,20 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 			}}},
 			err.Error(), "", ""), err
 	}
-
-	code, err = s.checkTPM(ctx, user.Name, user.Tpm)
-	if err != nil {
-		errorCode := ""
-		if code == envoyTypePb.StatusCode_TooManyRequests {
-			errorCode = ErrorCodeRateLimitExceeded
+	// checkRPM is a pre-check; use the incremented value for RPM admission.
+	// Refund rejected increments on a best-effort basis. If the window expires
+	// before the refund, it can decrement the next window's counter.
+	if rpm > user.Rpm {
+		if _, derr := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_RPM_CURRENT", user.Name), -1); derr != nil {
+			klog.ErrorS(derr, "fail to refund rejected RPM increment for user", "user", user.Name)
 		}
+		exceeded := fmt.Errorf("user: %v has exceeded RPM: %v", user.Name, user.Rpm)
 		return 0, generateErrorResponse(
-			code,
+			envoyTypePb.StatusCode_TooManyRequests,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderErrorTPMExceeded, RawValue: []byte("true"),
+				Key: HeaderErrorRPMExceeded, RawValue: []byte("true"),
 			}}},
-			err.Error(), errorCode, ""), err
+			exceeded.Error(), ErrorCodeRateLimitExceeded, ""), exceeded
 	}
 
 	return rpm, nil, nil
@@ -113,19 +130,26 @@ func (s *Server) checkTPM(ctx context.Context, username string, tpmLimit int64) 
 }
 
 // enforceModelRPS atomically increments the per-model RPS counter and rejects the request
-// if the new value exceeds the limit.
+// if the new value exceeds the limit. A rejected increment never admitted a request, so it
+// is refunded immediately (rather than left for HandleRequestBody's needsRollback defer,
+// which is not registered until after this returns) -- otherwise every 429 would
+// permanently consume a slot in the window it was rejected from.
 func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *types.RoutingContext) *extProcPb.ProcessingResponse {
 	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
 		return nil
 	}
 	limit := routingCtx.ConfigProfile.RequestsPerSecond
-	newVal, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), 1)
+	window := rateWindow(routingCtx.ConfigProfile.RateWindowSeconds)
+	newVal, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), 1, window...)
 	if err != nil {
 		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			fmt.Sprintf("fail to increment RPS for model: %v", model),
 			"", "", HeaderErrorIncrModelRPS, "true")
 	}
 	if newVal > limit {
+		if _, derr := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), -1, window...); derr != nil {
+			klog.ErrorS(derr, "fail to refund rejected RPS increment for model", "model", model)
+		}
 		return buildErrorResponse(envoyTypePb.StatusCode_TooManyRequests,
 			fmt.Sprintf("model: %v has exceeded RPS: %v", model, limit),
 			ErrorCodeRateLimitExceeded, "", HeaderErrorModelRPSExceeded, "true")
@@ -144,11 +168,34 @@ func (s *Server) decrModelRPS(ctx context.Context, model string, routingCtx *typ
 	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
 		return
 	}
-	if _, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), -1); err != nil {
+	if _, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), -1, rateWindow(routingCtx.ConfigProfile.RateWindowSeconds)...); err != nil {
 		klog.ErrorS(err, "fail to decrement RPS for model", "model", model)
 	}
 }
 
 func modelRPSKey(model string) string {
 	return fmt.Sprintf("%v_MODEL_RPS_CURRENT", model)
+}
+
+// rateWindow converts RateWindowSeconds into the variadic window override accepted by
+// ratelimiter.RateLimiter.Incr. A window of 1s or less means "use the limiter's default",
+// so it's represented as no override at all.
+func rateWindow(seconds int64) []time.Duration {
+	if seconds <= 1 {
+		return nil
+	}
+	return []time.Duration{time.Duration(seconds) * time.Second}
+}
+
+// applyDefaultUserLimits fills in the default RPM and TPM used by checkLimits.
+// Request-body validation reads user.Tpm to decide whether a stream has to ask
+// the engine for a usage chunk, so the resolved user has to carry them too.
+func applyDefaultUserLimits(user utils.User) utils.User {
+	if user.Rpm == 0 {
+		user.Rpm = int64(DefaultRPM)
+	}
+	if user.Tpm == 0 {
+		user.Tpm = user.Rpm * int64(DefaultTPMMultiplier)
+	}
+	return user
 }

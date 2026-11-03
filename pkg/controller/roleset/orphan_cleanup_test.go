@@ -244,7 +244,7 @@ func TestPodSetRoleSyncer_Scale_CleansUpOrphanPods(t *testing.T) {
 
 			scaled, err := syncer.Scale(ctx, roleSet, role)
 			require.NoError(t, err, tt.description)
-			assert.Equal(t, tt.expectedScaled, scaled, tt.description)
+			assert.Equal(t, tt.expectedScaled, scaled.Changed, tt.description)
 
 			finalPods := &v1.PodList{}
 			err = fakeClient.List(ctx, finalPods, client.InNamespace("test-ns"))
@@ -339,7 +339,7 @@ func TestStatefulRoleSyncer_Scale_CleansUpOrphanPodSets(t *testing.T) {
 
 			scaled, err := syncer.Scale(ctx, roleSet, role)
 			require.NoError(t, err, tt.description)
-			assert.Equal(t, tt.expectedScaled, scaled, tt.description)
+			assert.Equal(t, tt.expectedScaled, scaled.Changed, tt.description)
 
 			finalPodSets := &orchestrationv1alpha1.PodSetList{}
 			err = fakeClient.List(ctx, finalPodSets, client.InNamespace("test-ns"))
@@ -428,7 +428,7 @@ func TestStatelessRoleSyncer_Scale_CleansUpOrphanPodSets(t *testing.T) {
 
 			scaled, err := syncer.Scale(ctx, roleSet, role)
 			require.NoError(t, err, tt.description)
-			assert.Equal(t, tt.expectedScaled, scaled, tt.description)
+			assert.Equal(t, tt.expectedScaled, scaled.Changed, tt.description)
 
 			finalPodSets := &orchestrationv1alpha1.PodSetList{}
 			err = fakeClient.List(ctx, finalPodSets, client.InNamespace("test-ns"))

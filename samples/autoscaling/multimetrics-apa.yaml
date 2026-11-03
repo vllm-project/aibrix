@@ -7,11 +7,12 @@ metadata:
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
   annotations:
-    autoscaling.aibrix.ai/up-fluctuation-tolerance: '0.1'
-    autoscaling.aibrix.ai/down-fluctuation-tolerance: '0.2'
-    apa.autoscaling.aibrix.ai/window: 30s
+    autoscaling.aibrix.ai/scale-up-tolerance: '0.1'
+    autoscaling.aibrix.ai/scale-down-tolerance: '0.2'
 spec:
   scalingStrategy: APA
+  observeWindowSeconds: 30
+  panicWindowSeconds: 10
   minReplicas: 1
   maxReplicas: 3
   metricsSources:

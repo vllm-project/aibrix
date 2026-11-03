@@ -36,13 +36,19 @@ func TestValidateArtifactURL(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
-	// Case 3: Valid huggingface URL
+	// Case 3: Valid gs URL, the scheme gsutil and the GCS docs use
+	t.Run("valid gs URL", func(t *testing.T) {
+		err := ValidateArtifactURL("gs://bucket/path")
+		assert.NoError(t, err)
+	})
+
+	// Case 4: Valid huggingface URL
 	t.Run("valid huggingface URL", func(t *testing.T) {
 		err := ValidateArtifactURL("huggingface://path/to/model")
 		assert.NoError(t, err)
 	})
 
-	// Case 4: Invalid scheme
+	// Case 5: Invalid scheme
 	t.Run("invalid scheme", func(t *testing.T) {
 		err := ValidateArtifactURL("ftp://bucket/path")
 		assert.Error(t, err)

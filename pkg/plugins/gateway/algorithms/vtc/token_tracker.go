@@ -17,6 +17,7 @@ limitations under the License.
 package vtc
 
 import (
+	"container/heap"
 	"container/list"
 	"context"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -78,37 +80,85 @@ type bucketNode struct {
 
 // userBucketData holds the token tracking data structures for a single user.
 type userBucketData struct {
+	user    string
 	buckets *list.List              // Doubly linked list of *bucketNode, ordered by timestamp
 	lookup  map[int64]*list.Element // Maps timestamp to list element for O(1) access
 }
 
+// One entry per nonempty user lets reads find expired usage without scanning
+// unrelated users. The oldest bucket is the next one that can expire.
+type userExpirationHeap []*userBucketData
+
+func (h userExpirationHeap) Len() int { return len(h) }
+func (h userExpirationHeap) Less(i, j int) bool {
+	return h[i].buckets.Front().Value.(*bucketNode).timestamp < h[j].buckets.Front().Value.(*bucketNode).timestamp
+}
+func (h userExpirationHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+}
+func (h *userExpirationHeap) Push(x any) {
+	data := x.(*userBucketData)
+	*h = append(*h, data)
+}
+func (h *userExpirationHeap) Pop() any {
+	last := len(*h) - 1
+	data := (*h)[last]
+	(*h)[last] = nil
+	*h = (*h)[:last]
+	return data
+}
+
 // InMemorySlidingWindowTokenTracker tracks tokens per user in a fixed-size sliding window (in-memory, thread-safe).
 type InMemorySlidingWindowTokenTracker struct {
-	mu              sync.RWMutex
-	windowSize      time.Duration
+	mu         sync.RWMutex
+	windowSize time.Duration
+	// windowBuckets is the window size in units of bucketUnit, kept so a time
+	// unit change can recompute windowSize.
+	windowBuckets   int
 	bucketUnit      TimeUnit
 	userBucketStore map[string]*userBucketData // Stores bucket list and lookup map per user
 	userTotals      map[string]float64
+	expirations     userExpirationHeap
 	// Efficient Min/Max Tracking
 	totalsToUsers   map[float64]map[string]struct{} // total -> set of users
 	minTrackedToken float64
 	maxTrackedToken float64
 	config          *VTCConfig
+	// minTokens and maxTokens are the floors reported while the window holds
+	// too little activity to derive them from. They are per tracker rather
+	// than process-wide because a model config profile may lower or raise them
+	// for the tracker it scoped to itself.
+	minTokens float64
+	maxTokens float64
 }
 
 // TokenTrackerOption is a function that configures a token tracker
 type TokenTrackerOption func(*InMemorySlidingWindowTokenTracker)
 
+// windowSizeDuration converts a bucket count and a time unit into a window
+// duration. An extremely large configuration saturates at the maximum
+// duration instead of wrapping the multiplication around into a negative
+// window.
+func windowSizeDuration(buckets int, unit TimeUnit) time.Duration {
+	d := timeUnitDuration[unit]
+	if buckets > 0 && d > 0 && time.Duration(buckets) > time.Duration(math.MaxInt64)/d {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(buckets) * d
+}
+
 // updateWindowSize recalculates the window size based on time unit
 func (t *InMemorySlidingWindowTokenTracker) updateWindowSize() {
 	// Set window size based on configured size and time unit
-	t.windowSize = time.Duration(tokenTrackerWindowSize) * timeUnitDuration[t.bucketUnit]
+	t.windowSize = windowSizeDuration(t.windowBuckets, t.bucketUnit)
 }
 
 func WithWindowSize(size int) TokenTrackerOption {
 	return func(t *InMemorySlidingWindowTokenTracker) {
-		// Override the default window size with the provided value
-		tokenTrackerWindowSize = size
+		// Override this tracker's window size with the provided value. The
+		// process-wide default is left alone: it belongs to the trackers the
+		// environment configured, not to this one.
+		t.windowBuckets = size
 		t.updateWindowSize()
 	}
 }
@@ -120,27 +170,72 @@ func WithTimeUnit(unit TimeUnit) TokenTrackerOption {
 	}
 }
 
+// TimeUnitName canonicalizes a time unit name the environment or a model
+// config profile configures, so that callers carry the name of a unit the
+// tracker has instead of an arbitrary string. An unknown name falls back to
+// minutes, which is what the environment loader has always done.
+func TimeUnitName(name string) string {
+	switch name {
+	case "seconds":
+		return "seconds"
+	case "milliseconds":
+		return "milliseconds"
+	default:
+		return defaultTimeUnit
+	}
+}
+
+// timeUnitFromName maps a canonical time unit name to its TimeUnit.
+func timeUnitFromName(name string) TimeUnit {
+	switch TimeUnitName(name) {
+	case "seconds":
+		return Seconds
+	case "milliseconds":
+		return Milliseconds
+	default:
+		return Minutes
+	}
+}
+
+// EnvTokenTrackerKnobs returns the window, time unit and token floors the
+// environment configures. The routing algorithm package folds them into the
+// process default table at startup, and a request whose model config profile
+// sets none of them shares the tracker built from them.
+func EnvTokenTrackerKnobs() types.VTCTokenTrackerOverrides {
+	return types.VTCTokenTrackerOverrides{
+		WindowSize: tokenTrackerWindowSize,
+		TimeUnit:   TimeUnitName(timeUnitStr),
+		MinTokens:  tokenTrackerMinTokens,
+		MaxTokens:  tokenTrackerMaxTokens,
+	}
+}
+
 // TODO: add redis token tracker so that state is shared across plugin instances
 // NewInMemorySlidingWindowTokenTracker creates a new token tracker with configurable options
 func NewInMemorySlidingWindowTokenTracker(config *VTCConfig, opts ...TokenTrackerOption) TokenTracker {
-	defaultUnit := Minutes
-	// Set default time unit from environment variable
-	switch timeUnitStr {
-	case "seconds":
-		defaultUnit = Seconds
-	case "milliseconds":
-		defaultUnit = Milliseconds
-	}
+	return NewScopedInMemorySlidingWindowTokenTracker(config, EnvTokenTrackerKnobs(), opts...)
+}
+
+// NewScopedInMemorySlidingWindowTokenTracker creates a tracker whose window,
+// bucket size and token floors come from knobs instead of the process-wide
+// environment variables. It backs the tracker a model config profile scopes to
+// itself, so the profile's window, weights and floors are read from and
+// written to that tracker alone.
+func NewScopedInMemorySlidingWindowTokenTracker(config *VTCConfig, knobs types.VTCTokenTrackerOverrides, opts ...TokenTrackerOption) TokenTracker {
+	unit := timeUnitFromName(knobs.TimeUnit)
 
 	tracker := &InMemorySlidingWindowTokenTracker{
-		bucketUnit:      defaultUnit,
+		bucketUnit:      unit,
+		windowBuckets:   knobs.WindowSize,
+		windowSize:      windowSizeDuration(knobs.WindowSize, unit),
 		userBucketStore: make(map[string]*userBucketData),
 		userTotals:      make(map[string]float64),
 		totalsToUsers:   make(map[float64]map[string]struct{}),
 		minTrackedToken: math.MaxFloat64, // Start high so first positive value becomes min
 		maxTrackedToken: 0.0,             // Start with zero as default max
+		minTokens:       knobs.MinTokens,
+		maxTokens:       knobs.MaxTokens,
 		config:          config,
-		windowSize:      time.Duration(tokenTrackerWindowSize) * timeUnitDuration[defaultUnit], // Initialize window size directly
 	}
 
 	for _, opt := range opts {
@@ -155,117 +250,116 @@ func (t *InMemorySlidingWindowTokenTracker) getCutoffTimestamp() int64 {
 	return t.bucketUnit.toTimestamp(cutoffTime)
 }
 
-// Caller must hold the write lock
-func (t *InMemorySlidingWindowTokenTracker) pruneExpiredBucketsAndUpdateState(user string, cutoff int64) {
+// Caller must hold at least the read lock.
+func (t *InMemorySlidingWindowTokenTracker) hasExpiredUsers(cutoff int64) bool {
+	return len(t.expirations) > 0 && t.expirations[0].buckets.Front().Value.(*bucketNode).timestamp < cutoff
+}
+
+// Caller must hold the write lock. Recalculate invalidated extrema once per
+// batch, rather than rescanning the totals after each expired user.
+func (t *InMemorySlidingWindowTokenTracker) expireUsers(cutoff int64) {
+	if !t.hasExpiredUsers(cutoff) {
+		return
+	}
+	oldMin, oldMax := t.minTrackedToken, t.maxTrackedToken
+	newMin := math.MaxFloat64
+	for t.hasExpiredUsers(cutoff) {
+		data := heap.Pop(&t.expirations).(*userBucketData)
+		user := data.user
+		oldTotal := t.userTotals[user]
+		newTotal := t.pruneExpiredBuckets(user, cutoff)
+		t.removeFromTotals(oldTotal, user)
+		if data.buckets.Len() == 0 {
+			delete(t.userBucketStore, user)
+			delete(t.userTotals, user)
+		} else {
+			t.userTotals[user] = newTotal
+			t.addToTotals(newTotal, user)
+			if newTotal > 0 {
+				newMin = min(newMin, newTotal)
+			}
+			heap.Push(&t.expirations, data)
+		}
+	}
+	t.recalcMin(oldMin, newMin)
+	t.recalcMax(oldMax, 0)
+}
+
+// Return with the read lock held. Most reads only inspect the heap root;
+// acquiring the write lock is necessary only when some usage has expired.
+func (t *InMemorySlidingWindowTokenTracker) rlockCurrentWindow() {
+	t.mu.RLock()
+	if !t.hasExpiredUsers(t.getCutoffTimestamp()) {
+		return
+	}
+	t.mu.RUnlock()
+	t.mu.Lock()
+	t.expireUsers(t.getCutoffTimestamp())
+	t.mu.Unlock()
+	t.mu.RLock()
+}
+
+// pruneExpiredBuckets removes the user's buckets older than cutoff and returns
+// the user's total without them. It leaves userTotals and the min/max tracking
+// to the caller. Caller must hold the write lock.
+func (t *InMemorySlidingWindowTokenTracker) pruneExpiredBuckets(user string, cutoff int64) float64 {
+	total := t.userTotals[user]
 	_, ok := t.userBucketStore[user]
 	if !ok {
-		return // User doesn't exist or has no buckets
+		return total // User doesn't exist or has no buckets
 	}
 
 	bucketsList := t.userBucketStore[user].buckets
 	lookupMap := t.userBucketStore[user].lookup
-	modified := false
-	oldTotal := t.userTotals[user]
-	newTotal := oldTotal
 
 	// Iterate from the front (oldest) of the list
 	for el := bucketsList.Front(); el != nil; {
 		node := el.Value.(*bucketNode)
 		if node.timestamp < cutoff {
 			// Remove expired bucket
-			newTotal -= node.tokenCount
+			total -= node.tokenCount
 			delete(lookupMap, node.timestamp)
 			next := el.Next()
 			bucketsList.Remove(el)
 			el = next
-			modified = true
 		} else {
 			// Stop as soon as we find a non-expired bucket (list is ordered)
 			break
 		}
 	}
-
-	if modified {
-		// Update user total and min/max tracking with correct old and new values
-		t.updateUserTotalAndMinMax(user, oldTotal, newTotal)
-	}
+	return max(0, total)
 }
 
-// Time: Avg O(1) (amortized), Worst O(B_u) where B_u = buckets for user u | Space: O(1)
+// Reads are O(1) unless usage has expired; cleanup is shared across all users.
 func (t *InMemorySlidingWindowTokenTracker) GetTokenCount(ctx context.Context, user string) (float64, error) {
-	t.mu.RLock()
-
-	if user == "" {
-		t.mu.RUnlock()
-		return 0, nil
-	}
-
-	_, ok := t.userBucketStore[user]
-	if !ok || t.userBucketStore[user].buckets.Len() == 0 {
-		t.mu.RUnlock()
-		// Return cached total if user exists but has no buckets currently, else 0
-		if ok {
-			return t.userTotals[user], nil
-		}
-		return 0, nil
-	}
-
-	total := t.userTotals[user]
-
-	cutoff := t.getCutoffTimestamp()
-	needsPruning := false
-
-	oldestElement := t.userBucketStore[user].buckets.Front()
-	if oldestElement != nil {
-		oldestNode := oldestElement.Value.(*bucketNode)
-		if oldestNode.timestamp < cutoff {
-			needsPruning = true
-		}
-	}
-
-	t.mu.RUnlock()
-
-	// Only acquire write lock if we need to prune
-	if needsPruning {
-		t.mu.Lock()
-		// Re-check user data existence in case it was deleted between RUnlock and Lock
-		_, ok = t.userBucketStore[user]
-		if ok {
-			t.pruneExpiredBucketsAndUpdateState(user, cutoff)
-			// Get the potentially updated total after pruning
-			total = t.userTotals[user]
-		}
-		t.mu.Unlock()
-	}
-
-	return total, nil
+	t.rlockCurrentWindow()
+	defer t.mu.RUnlock()
+	return t.userTotals[user], nil
 }
 
-// Time: O(1) | Space: O(1)
 func (t *InMemorySlidingWindowTokenTracker) GetMinTokenCount(ctx context.Context) (float64, error) {
-	t.mu.RLock()
+	t.rlockCurrentWindow()
 	defer t.mu.RUnlock()
 
-	// Return default min if no active users (minTrackedToken is still at initialization value)
+	// Return the configured floor if no active users (minTrackedToken is still
+	// at its initialization value)
 	if t.minTrackedToken == math.MaxFloat64 {
-		return tokenTrackerMinTokens, nil
+		return t.minTokens, nil
 	}
 	return t.minTrackedToken, nil
 }
 
-// Time: O(1) | Space: O(1)
 func (t *InMemorySlidingWindowTokenTracker) GetMaxTokenCount(ctx context.Context) (float64, error) {
-	t.mu.RLock()
+	t.rlockCurrentWindow()
 	defer t.mu.RUnlock()
 
-	// If no active users or all have zero tokens, return default max
+	// If no active users or all have zero tokens, return the configured floor
 	if t.maxTrackedToken == 0 {
-		return tokenTrackerMaxTokens, nil
+		return t.maxTokens, nil
 	}
 	return t.maxTrackedToken, nil
 }
 
-// Time: Avg O(1) (amortized), Worst O(B_u) where B_u = buckets for user u | Space: O(1)
 func (t *InMemorySlidingWindowTokenTracker) UpdateTokenCount(ctx context.Context, user string, inputTokens, outputTokens float64) error {
 	if user == "" {
 		return fmt.Errorf("user ID cannot be empty")
@@ -276,22 +370,18 @@ func (t *InMemorySlidingWindowTokenTracker) UpdateTokenCount(ctx context.Context
 
 	now := time.Now()
 	currentTimestamp := t.bucketUnit.toTimestamp(now)
-	cutoff := t.getCutoffTimestamp()
+	t.expireUsers(t.bucketUnit.toTimestamp(now.Add(-t.windowSize)))
 
 	_, ok := t.userBucketStore[user]
 	if !ok {
 		t.userBucketStore[user] = &userBucketData{
+			user:    user,
 			buckets: list.New(),
 			lookup:  make(map[int64]*list.Element),
 		}
 	}
 
 	oldTotal := t.userTotals[user]
-
-	// Prune first before adding/updating to maintain window size constraint accurately
-	t.pruneExpiredBucketsAndUpdateState(user, cutoff)
-
-	totalAfterPruning := t.userTotals[user]
 
 	// Clamp negative tokens to zero
 	inputTokens = max(0, inputTokens)
@@ -308,9 +398,12 @@ func (t *InMemorySlidingWindowTokenTracker) UpdateTokenCount(ctx context.Context
 		element := t.userBucketStore[user].buckets.PushBack(node)
 		t.userBucketStore[user].lookup[currentTimestamp] = element
 	}
+	if !ok {
+		heap.Push(&t.expirations, t.userBucketStore[user])
+	}
 
 	// Calculate the final new total
-	newTotal := totalAfterPruning + newTokens
+	newTotal := oldTotal + newTokens
 
 	// Update user total and global min/max efficiently
 	t.updateUserTotalAndMinMax(user, oldTotal, newTotal)

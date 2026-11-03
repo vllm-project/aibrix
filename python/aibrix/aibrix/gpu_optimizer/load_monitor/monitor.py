@@ -326,20 +326,21 @@ class ModelMonitor:
             deployment_key = None
             # slow path, find deployment by deployment_name
             # noted that the profile.gpu is not formalized if the code reaches here.
-            for key, states in self.deployments.items():
+            for name_key, states in self.deployments.items():
                 if states.name != profile.gpu:
                     continue
 
-                deployment_key = profile.gpu = key  # formalize the gpu field
+                deployment_key = profile.gpu = name_key  # formalize the gpu field
                 break
         # deployment existed
         if deployment_key is not None:
             try:
                 self._lock.acquire(blocking=True)
-                if profile.gpu in self.deployments:  # double check
-                    self.deployments[key].profile = profile
+                if deployment_key in self.deployments:  # double check
+                    deployment = self.deployments[deployment_key]
+                    deployment.profile = profile
                     self._optimizer.set_profile(profile)
-                    self._cost += cost_diff * self.deployments[key].replicas
+                    self._cost += cost_diff * deployment.replicas
                 else:
                     log_event = False
             except Exception as e:

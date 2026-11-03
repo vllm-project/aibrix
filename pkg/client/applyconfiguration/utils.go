@@ -45,6 +45,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &autoscalingv1alpha1.PodAutoscalerSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PodAutoscalerStatus"):
 		return &autoscalingv1alpha1.PodAutoscalerStatusApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("PredictiveSpec"):
+		return &autoscalingv1alpha1.PredictiveSpecApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("PredictiveStatus"):
+		return &autoscalingv1alpha1.PredictiveStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ScalingDecision"):
 		return &autoscalingv1alpha1.ScalingDecisionApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ScheduledBoundsStatus"):
@@ -65,10 +69,32 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationmodelv1alpha1.ModelClaimEngineConfigApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimInstance"):
 		return &applyconfigurationmodelv1alpha1.ModelClaimInstanceApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimPerGPU"):
+		return &applyconfigurationmodelv1alpha1.ModelClaimPerGPUApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimSpec"):
 		return &applyconfigurationmodelv1alpha1.ModelClaimSpecApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelClaimStatus"):
 		return &applyconfigurationmodelv1alpha1.ModelClaimStatusApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmup"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupCustomAction"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupCustomActionApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupImage"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupImageApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupImagePreload"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupImagePreloadApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupNodesTarget"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupNodesTargetApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupPolicies"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupPoliciesApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupSpec"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupSpecApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupStatus"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupStatusApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupTarget"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupTargetApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelWarmupTargetStatus"):
+		return &applyconfigurationmodelv1alpha1.ModelWarmupTargetStatusApplyConfiguration{}
 
 		// Group=orchestration, Version=v1alpha1
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("Condition"):
@@ -79,6 +105,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationorchestrationv1alpha1.DisruptionToleranceApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("GodelSchedulingStrategySpec"):
 		return &applyconfigurationorchestrationv1alpha1.GodelSchedulingStrategySpecApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("HistoricalNodeSchedulingPolicy"):
+		return &applyconfigurationorchestrationv1alpha1.HistoricalNodeSchedulingPolicyApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleet"):
 		return &applyconfigurationorchestrationv1alpha1.RayClusterFleetApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleetCondition"):
@@ -95,6 +123,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationorchestrationv1alpha1.RayClusterReplicaSetStatusApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterTemplateSpec"):
 		return &applyconfigurationorchestrationv1alpha1.RayClusterTemplateSpecApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleDrainSpec"):
+		return &applyconfigurationorchestrationv1alpha1.RoleDrainSpecApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleReplacementScheduling"):
+		return &applyconfigurationorchestrationv1alpha1.RoleReplacementSchedulingApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleSetSpec"):
 		return &applyconfigurationorchestrationv1alpha1.RoleSetSpecApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleSetTemplateSpec"):

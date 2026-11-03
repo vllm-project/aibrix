@@ -1,0 +1,417 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2024, AIBrix Team
+# This file is distributed under the same license as the AIBrix package.
+# AIBrix Team, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AIBrix\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-11 15:45-0700\n"
+"PO-Revision-Date: 2026-10-11 15:45-0700\n"
+"Last-Translator: AIBrix Team\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../source/designs/architecture.rst:5
+msgid "AIBrix Architecture"
+msgstr "AIBrix 架构"
+
+#: ../../source/designs/architecture.rst:7
+msgid ""
+"An overview of AIBrix’s architecture. This guide introduces the AIBrix "
+"ecosystem and explains how its components integrate into the LLM "
+"inference lifecycle."
+msgstr "本文概述 AIBrix 架构，介绍 AIBrix 生态系统，并说明各组件如何融入 LLM 推理生命周期。"
+
+#: ../../source/designs/architecture.rst:9
+msgid ""
+"AIBrix contains both :strong:`control plane` components and :strong:`data"
+" plane` components. The control plane decides what runs and where: it "
+"turns AIBrix custom resources into workloads, routes, caches and scaling "
+"decisions, and it hosts the management services around them. The data "
+"plane carries the traffic: inference requests and responses, and the KV "
+"cache data that engines share. Envoy forwards each request directly to an"
+" engine pod, so inference traffic does not pass through the controllers."
+msgstr ""
+"AIBrix 同时包含 :strong:`控制面` 组件和 :strong:`数据面` 组件。控制面决定运行什么、在哪里运行：它将 AIBrix "
+"自定义资源转化为工作负载、路由、缓存和扩缩容决策，并承载周边的管理服务。数据面承载流量：推理请求与响应，以及引擎之间共享的 KVCache "
+"数据。Envoy 将每个请求直接转发到引擎 Pod，因此推理流量不会经过控制器。"
+
+#: ../../source/designs/architecture.rst:11
+msgid "The following diagram shows how the two planes fit together on Kubernetes."
+msgstr "下图展示了这两个面如何在 Kubernetes 上协同工作。"
+
+#: ../../source/designs/architecture.rst:13
+msgid "aibrix-architecture-v2"
+msgstr "aibrix-architecture-v2"
+
+#: ../../source/designs/architecture.rst:19
+msgid "AIBrix Control Plane"
+msgstr "AIBrix 控制面"
+
+#: ../../source/designs/architecture.rst:21
+msgid ""
+"Most control plane logic runs in one controller manager, ``aibrix-"
+"controller-manager`` in the ``aibrix-system`` namespace. Each controller "
+"in the table below can be turned on or off with the manager's "
+"``--controllers`` flag, for example ``--controllers=*,-model-claim-"
+"controller``. The manager also serves the validating and defaulting "
+"admission webhooks for the AIBrix custom resources. A mutating webhook on"
+" Deployments injects the AI Engine Runtime sidecar into Deployments "
+"annotated with ``model.aibrix.ai/sidecar-injection: \"true\"``."
+msgstr ""
+"大部分控制面逻辑运行在同一个控制器管理器中，即 ``aibrix-system`` 命名空间下的 ``aibrix-controller-"
+"manager`` 。下表中的每个控制器都可以通过管理器的 ``--controllers`` 参数启用或禁用，例如 "
+"``--controllers=*,-model-claim-controller`` 。管理器还为 AIBrix "
+"自定义资源提供校验和默认值设置的准入 webhook。Deployment 上的变更 webhook 会为带有 ``model.aibrix.ai"
+"/sidecar-injection: \"true\"`` 注解的 Deployment 注入 AI Engine Runtime "
+"sidecar。"
+
+#: ../../source/designs/architecture.rst:27
+msgid "Controller"
+msgstr "控制器"
+
+#: ../../source/designs/architecture.rst:28
+msgid "Resources"
+msgstr "资源"
+
+#: ../../source/designs/architecture.rst:29
+msgid "What it does"
+msgstr "作用"
+
+#: ../../source/designs/architecture.rst:30
+msgid "``model-route-controller``"
+msgstr "``model-route-controller``"
+
+#: ../../source/designs/architecture.rst:31
+msgid ""
+"Deployment, ModelAdapter, RayClusterFleet, LeaderWorkerSet (when its CRD "
+"is installed)"
+msgstr "Deployment、ModelAdapter、RayClusterFleet、LeaderWorkerSet（已安装其 CRD 时）"
+
+#: ../../source/designs/architecture.rst:32
+msgid ""
+"Creates and removes the Gateway API ``HTTPRoute`` for each served model, "
+"so the gateway can reach new models without manual configuration."
+msgstr "为每个对外提供服务的模型创建和删除 Gateway API ``HTTPRoute`` ，使网关无需手动配置即可访问新模型。"
+
+#: ../../source/designs/architecture.rst:33
+msgid "``model-adapter-controller``"
+msgstr "``model-adapter-controller``"
+
+#: ../../source/designs/architecture.rst:34
+msgid "ModelAdapter"
+msgstr "ModelAdapter"
+
+#: ../../source/designs/architecture.rst:35
+msgid ""
+"Registers a LoRA adapter on the matching pods through the AI Engine "
+"Runtime, configures service discovery and reports the adapter's status. "
+"This enables multi-LoRA-per-pod deployments."
+msgstr ""
+"通过 AI Engine Runtime 将 LoRA 适配器注册到匹配的 Pod，配置服务发现并上报适配器状态，从而支持单 Pod 部署多个 "
+"LoRA。"
+
+#: ../../source/designs/architecture.rst:36
+msgid "``stormservice-controller``"
+msgstr "``stormservice-controller``"
+
+#: ../../source/designs/architecture.rst:37
+msgid "StormService, RoleSet, PodSet"
+msgstr "StormService, RoleSet, PodSet"
+
+#: ../../source/designs/architecture.rst:38
+msgid ""
+"Manages multi-role inference services such as prefill/decode "
+"disaggregation. Updates flow from StormService to RoleSets to roles and "
+"Pods, with rolling and in-place updates and graceful Pod draining on "
+"rollout and scale-in."
+msgstr ""
+"管理多角色推理服务，例如 Prefill/Decode 分离。更新自 StormService 依次传递到 RoleSet、角色和 "
+"Pod，支持滚动更新与原地更新，并在发布和缩容时对 Pod 执行 Drain（优雅排空）。"
+
+#: ../../source/designs/architecture.rst:39
+msgid "``pod-autoscaler-controller``"
+msgstr "``pod-autoscaler-controller``"
+
+#: ../../source/designs/architecture.rst:40
+msgid "PodAutoscaler"
+msgstr "PodAutoscaler"
+
+#: ../../source/designs/architecture.rst:41
+msgid ""
+"Scales Deployments, RayClusterFleets and StormService roles with the HPA,"
+" KPA or APA strategy, using inference-aware engine metrics. It also "
+"supports daily scheduled replica bounds and optional predictive scaling."
+msgstr ""
+"使用 HPA、KPA 或 APA 策略，基于推理相关的引擎指标对 Deployment、RayClusterFleet 和 "
+"StormService 角色进行扩缩容。同时支持按天定时设置副本上下限，以及可选的预测式扩缩容。"
+
+#: ../../source/designs/architecture.rst:42
+msgid "``distributed-inference-controller``"
+msgstr "``distributed-inference-controller``"
+
+#: ../../source/designs/architecture.rst:43
+msgid "RayClusterFleet, RayClusterReplicaSet"
+msgstr "RayClusterFleet, RayClusterReplicaSet"
+
+#: ../../source/designs/architecture.rst:44
+msgid ""
+"Orchestrates multi-node inference on KubeRay. It starts only when the "
+"KubeRay CRD (``rayclusters.ray.io``) is installed."
+msgstr "基于 KubeRay 编排多节点推理。仅在已安装 KubeRay CRD（ ``rayclusters.ray.io`` ）时启动。"
+
+#: ../../source/designs/architecture.rst:45
+msgid "``kv-cache-controller``"
+msgstr "``kv-cache-controller``"
+
+#: ../../source/designs/architecture.rst:46
+msgid "KVCache"
+msgstr "KVCache"
+
+#: ../../source/designs/architecture.rst:47
+msgid ""
+"Deploys and manages a distributed KV cache cluster with an InfiniStore, "
+"HPKV or Vineyard backend. For InfiniStore and HPKV, an optional watcher "
+"Pod records the cache-node membership in Redis."
+msgstr ""
+"部署并管理使用 InfiniStore、HPKV 或 Vineyard 后端的分布式 KVCache 集群。对于 InfiniStore 和 "
+"HPKV，可选的 watcher Pod 会将缓存节点成员信息记录到 Redis。"
+
+#: ../../source/designs/architecture.rst:48
+msgid "``model-claim-controller`` (experimental)"
+msgstr "``model-claim-controller`` （实验性）"
+
+#: ../../source/designs/architecture.rst:49
+msgid "ModelClaim"
+msgstr "ModelClaim"
+
+#: ../../source/designs/architecture.rst:50
+msgid ""
+"Serves several models from the same GPUs. It places each claim on a warm-"
+"pool Pod with room for it, starts the engine through the runtime agent, "
+"and can put idle models to sleep. The gateway asks it to wake a sleeping "
+"model when a request arrives."
+msgstr ""
+"让多个模型共用同一批 GPU。它将每个 claim 放置到有空余容量的热池 Pod 上，通过 runtime agent "
+"启动引擎，并可让空闲模型进入休眠。请求到达时，网关会请求它唤醒处于休眠状态的模型。"
+
+#: ../../source/designs/architecture.rst:51
+msgid "``model-warmup-controller`` (experimental)"
+msgstr "``model-warmup-controller`` （实验性）"
+
+#: ../../source/designs/architecture.rst:52
+msgid "ModelWarmup"
+msgstr "ModelWarmup"
+
+#: ../../source/designs/architecture.rst:53
+msgid ""
+"Runs a one-time, node-pinned Job on each selected node to pull images or "
+"download artifacts ahead of use. It does not start an engine."
+msgstr "在每个选定节点上运行一次性的、绑定到该节点的 Job，用于提前拉取镜像或下载制品。它不会启动引擎。"
+
+#: ../../source/designs/architecture.rst:55
+msgid "Several control plane components run outside the controller manager:"
+msgstr "有几个控制面组件运行在控制器管理器之外："
+
+#: ../../source/designs/architecture.rst:57
+msgid ""
+":strong:`AI Engine Runtime`: a lightweight sidecar next to each engine. "
+"It standardizes engine metrics, downloads model weights from HuggingFace,"
+" S3 or TOS, loads and unloads LoRA adapters, and starts, sleeps and wakes"
+" engine processes for ModelClaim. It does not proxy inference traffic."
+msgstr ""
+":strong:`AI Engine Runtime` ：与每个引擎部署在一起的轻量 sidecar。它负责标准化引擎指标，从 "
+"HuggingFace、S3 或 TOS 下载模型权重，加载和卸载 LoRA 适配器，并为 ModelClaim "
+"启动、休眠和唤醒引擎进程。它不代理推理流量。"
+
+#: ../../source/designs/architecture.rst:58
+msgid ""
+":strong:`GPU Optimizer`: a profiler-based optimizer for heterogeneous GPU"
+" serving. It adjusts allocations to maximize cost-efficiency while "
+"maintaining service guarantees."
+msgstr ""
+":strong:`GPU Optimizer` ：基于性能剖析的优化器，面向异构 GPU "
+"推理服务。它动态调整资源分配，在满足服务保障的同时提升成本效率。"
+
+#: ../../source/designs/architecture.rst:59
+msgid ""
+":strong:`Metadata service`: serves the OpenAI-compatible Files and Batch "
+"APIs and runs batches as Kubernetes Jobs."
+msgstr ""
+":strong:`元数据服务` ：提供与 OpenAI 兼容的 Files 和 Batch API，并以 Kubernetes Job "
+"的方式运行批处理任务。"
+
+#: ../../source/designs/architecture.rst:60
+msgid ""
+":strong:`Console`: a web UI with a Go gRPC and REST backend. It manages "
+"the model catalog, deployments, batch jobs, API keys, secrets and quotas,"
+" and offers a chat playground that proxies to the gateway."
+msgstr ""
+":strong:`控制台` ：Web UI 加 Go 编写的 gRPC 和 REST 后端。用于管理模型目录、部署、批处理作业、API "
+"Key、Secret 和配额，并提供经由网关代理的对话 playground。"
+
+#: ../../source/designs/architecture.rst:63
+msgid "AIBrix Data Plane"
+msgstr "AIBrix 数据面"
+
+#: ../../source/designs/architecture.rst:65
+msgid "AIBrix currently provides several data plane components:"
+msgstr "AIBrix 当前提供以下数据面组件："
+
+#: ../../source/designs/architecture.rst:67
+msgid ""
+":strong:`AIBrix gateway`: built on Envoy Gateway, with the AIBrix gateway"
+" plugin attached as an external-processing (``ext_proc``) extension. It "
+"is the single entry point for inference requests. It routes from a local "
+"cache of ready pods and engine metrics, so most strategies need no live "
+"query to a pod. Gateway replicas share rate-limit counters, and "
+"optionally the prefix cache index, through Redis."
+msgstr ""
+":strong:`AIBrix 网关` ：基于 Envoy Gateway 构建，AIBrix 网关插件以外部处理（ ``ext_proc`` "
+"）扩展的方式接入。它是推理请求的唯一入口。它基于本地缓存的就绪 Pod 和引擎指标进行路由，因此大多数策略无需实时查询 Pod。网关副本通过 "
+"Redis 共享限流计数器，也可选择共享前缀缓存索引。"
+
+#: ../../source/designs/architecture.rst:68
+msgid ""
+":strong:`Inference engines`: the Pods that serve the model. AIBrix "
+"supports vLLM, SGLang, xLLM and TRT-LLM, selected with the "
+"``model.aibrix.ai/engine`` label. In prefill/decode disaggregation, "
+"dedicated prefill and decode Pods split the two phases of a request."
+msgstr ""
+":strong:`推理引擎` ：承载模型服务的 Pod。AIBrix 支持 vLLM、SGLang、xLLM 和 TRT-LLM，通过 "
+"``model.aibrix.ai/engine`` 标签选择。在 Prefill/Decode 分离中，专用的 Prefill Pod 和 "
+"Decode Pod 分别负责请求的两个阶段。"
+
+#: ../../source/designs/architecture.rst:69
+msgid ""
+":strong:`Distributed KV Cache Runtime`: provides scalable, low-latency "
+"cache access across nodes. Engines connect through the AIBrix KV cache "
+"offloading framework, with an L1 DRAM cache and an optional L2 "
+"distributed cache. The L2 cache lets engines reuse each other's KV cache "
+"entries and avoid redundant computation."
+msgstr ""
+":strong:`分布式 KVCache 运行时` ：在节点间提供可扩展、低延迟的缓存访问。引擎通过 AIBrix KVCache "
+"卸载框架接入，包含 L1 DRAM 缓存和可选的 L2 分布式缓存。L2 缓存使引擎可以复用彼此的 KVCache 条目，避免重复计算。"
+
+#: ../../source/designs/architecture.rst:70
+msgid ""
+":strong:`KV event sync`: an optional feature in which engines publish KV "
+"cache events over ZMQ. The gateway builds a global prefix index from "
+"them, so prefix-cache routing follows the real state of each engine."
+msgstr ""
+":strong:`KV Cache 事件同步` ：可选功能，引擎通过 ZMQ 发布 KVCache "
+"事件。网关据此构建全局前缀索引，使前缀缓存路由能够反映各引擎的真实状态。"
+
+#: ../../source/designs/architecture.rst:72
+msgid "A request passes through the data plane as follows:"
+msgstr "请求在数据面中的流转过程如下："
+
+#: ../../source/designs/architecture.rst:74
+msgid "Envoy passes the request to the gateway plugin over ``ext_proc``."
+msgstr "Envoy 通过 ``ext_proc`` 将请求交给网关插件。"
+
+#: ../../source/designs/architecture.rst:75
+msgid ""
+"The plugin identifies the model. When configured, it also checks the "
+"bearer token."
+msgstr "插件识别请求的模型。在已配置时，还会检查 Bearer 令牌。"
+
+#: ../../source/designs/architecture.rst:76
+msgid ""
+"The plugin selects a ready pod with a routing strategy and returns it to "
+"Envoy in the ``target-pod`` header. Strategies fall into these groups:"
+msgstr "插件使用路由策略选择一个就绪的 Pod，并通过 ``target-pod`` 请求头将其返回给 Envoy。策略分为以下几类："
+
+#: ../../source/designs/architecture.rst:78
+msgid ""
+"load balancing, such as ``random``, ``least-request``, ``load-balance`` "
+"and ``power-of-two``"
+msgstr ""
+"负载均衡，例如 ``random`` 、 ``least-request`` 、 ``load-balance`` 和 ``power-of-"
+"two``"
+
+#: ../../source/designs/architecture.rst:79
+msgid "KV-cache aware, such as ``prefix-cache``"
+msgstr "KVCache 感知，例如 ``prefix-cache``"
+
+#: ../../source/designs/architecture.rst:80
+msgid "fairness, ``vtc-basic``"
+msgstr "公平性， ``vtc-basic``"
+
+#: ../../source/designs/architecture.rst:81
+msgid "SLO-aware, such as ``slo``"
+msgstr "SLO 感知，例如 ``slo``"
+
+#: ../../source/designs/architecture.rst:82
+msgid "session affinity, ``session-affinity``"
+msgstr "会话亲和， ``session-affinity``"
+
+#: ../../source/designs/architecture.rst:83
+msgid "prefill/decode disaggregation, ``pd``"
+msgstr "Prefill/Decode 分离， ``pd``"
+
+#: ../../source/designs/architecture.rst:84
+msgid "delegation to an operator-run service, ``external``"
+msgstr "委托给运维方运行的服务， ``external``"
+
+#: ../../source/designs/architecture.rst:86
+msgid ""
+"Envoy forwards the request straight to that engine pod, which uses the KV"
+" cache layers when they are enabled."
+msgstr "Envoy 将请求直接转发到该引擎 Pod；启用 KVCache 层时，引擎会使用这些缓存层。"
+
+#: ../../source/designs/architecture.rst:87
+msgid "The response returns through the plugin."
+msgstr "响应经由插件返回。"
+
+#: ../../source/designs/architecture.rst:90
+msgid "Where to go next"
+msgstr "延伸阅读"
+
+#: ../../source/designs/architecture.rst:92
+msgid ":doc:`aibrix-gateway`: the gateway and its routing strategies in detail."
+msgstr ":doc:`aibrix-gateway` ：网关及其路由策略的详细说明。"
+
+#: ../../source/designs/architecture.rst:93
+msgid ""
+":doc:`../features/batch-inference/batch-api`: asynchronous, "
+"OpenAI-compatible batch inference."
+msgstr ":doc:`../features/batch-inference/batch-api` ：与 OpenAI 兼容的异步批处理推理。"
+
+#: ../../source/designs/architecture.rst:94
+msgid ""
+":doc:`aibrix-stormservice`: StormService, RoleSet and prefill/decode "
+"orchestration."
+msgstr ":doc:`aibrix-stormservice` ：StormService、RoleSet 与 Prefill/Decode 编排。"
+
+#: ../../source/designs/architecture.rst:95
+msgid ":doc:`aibrix-autoscaler`: the autoscaling mechanisms."
+msgstr ":doc:`aibrix-autoscaler` ：自动扩缩容机制。"
+
+#: ../../source/designs/architecture.rst:96
+msgid ":doc:`aibrix-engine-runtime`: the AI Engine Runtime sidecar."
+msgstr ":doc:`aibrix-engine-runtime` ：AI Engine Runtime sidecar。"
+
+#: ../../source/designs/architecture.rst:97
+msgid ""
+":doc:`aibrix-kvcache-offloading-framework`: KV cache offloading and "
+"cross-engine reuse."
+msgstr ":doc:`aibrix-kvcache-offloading-framework` ：KVCache 卸载与跨引擎复用。"
+
+#: ../../source/designs/architecture.rst:98
+msgid ""
+":doc:`../features/model-serving/model-claim` and "
+":doc:`../features/model-serving/model-warmup`: ModelClaim and "
+"ModelWarmup."
+msgstr ""
+":doc:`../features/model-serving/model-claim` 和 "
+":doc:`../features/model-serving/model-warmup` ：ModelClaim 与 "
+"ModelWarmup。"
+

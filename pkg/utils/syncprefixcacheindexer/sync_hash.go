@@ -39,6 +39,36 @@ const (
 	evictionBatchSize              = 100 // Process contexts in batches
 )
 
+// Storage tier constants mirroring vLLM's kv_events.py (MEDIUM_GPU/CPU/STORAGE).
+// A prefix held only on a slower tier is a weaker routing signal than one on
+// GPU, so match scores are weighted by tier (see mediumWeight).
+const (
+	MediumGPU     = "GPU"
+	MediumCPU     = "CPU"
+	MediumStorage = "STORAGE"
+)
+
+// A pod can hold a prefix on several tiers at once: with CPU offloading, vLLM
+// copies a block to CPU while the GPU copy stays cached, and it publishes
+// stores and removals per tier and per KV-cache group. PodInfo.tiers keeps one
+// bit per (group, tier) holding the prefix, so a removal only clears its own
+// tier and group (see tierBit).
+const (
+	tierGPU     = iota // also an empty medium, from GPU-only vLLM builds and AddPrefix
+	tierCPU            // MediumCPU
+	tierStorage        // MediumStorage
+	tierOther          // a medium this version does not know, weighted like GPU
+	numTiers
+
+	// maxTrackedGroups is how many KV-cache groups get their own bits. Higher
+	// group indexes share them (group % maxTrackedGroups).
+	maxTrackedGroups = 64 / numTiers
+
+	// tierMask sets the tierGPU bit of every group (one nibble per group).
+	// Shifted left by a tier, it selects that tier in all groups.
+	tierMask uint64 = 0x1111111111111111
+)
+
 var (
 	maxContexts           = utils.LoadEnvInt("AIBRIX_SYNC_MAX_CONTEXTS", defaultMaxContexts)
 	maxPrefixesPerContext = utils.LoadEnvInt("AIBRIX_SYNC_MAX_PREFIXES_PER_CONTEXT", defaultMaxPrefixesPerContext)
@@ -67,10 +97,23 @@ type ModelContext struct {
 	LoraID    int64 // -1 represents no LoRA adapter
 }
 
+// LoraIDFromName returns the LoraID that indexes a LoRA adapter's blocks.
+// vLLM names the adapter in BlockStored events, and the gateway routes it by
+// the same name, so both sides derive the ID from it. "" is the base model.
+func LoraIDFromName(name string) int64 {
+	if name == "" {
+		return -1
+	}
+	return int64(xxhash.Sum64String(name) >> 1)
+}
+
 // PodInfo stores pod access information
 type PodInfo struct {
 	LastAccessTime atomic.Int64 // Unix timestamp (lock-free update)
 	SourcePod      string
+	// tiers has a bit for each (KV-cache group, storage tier) holding the
+	// prefix on this pod, see tierBit. Guarded by the context's prefixMu.
+	tiers uint64
 }
 
 // PrefixStore manages prefix hashes for a specific (model, lora_id) context
@@ -101,6 +144,14 @@ type ContextData struct {
 
 	// Eviction tracking (lock-free)
 	markedForEviction atomic.Bool
+
+	// blockSize is the byte length of the engine's KV blocks, learned from
+	// BlockStored events; 0 until one arrives. Requests must be split into
+	// blocks of this size to hash like the engine's blocks.
+	blockSize atomic.Int64
+	// blockSizeFromMulti is set once blockSize comes from a multi-block event.
+	// Guarded by mappingMu.
+	blockSizeFromMulti bool
 }
 
 // SyncPrefixHashTable is the main structure
@@ -186,16 +237,20 @@ func (s *SyncPrefixHashTable) MatchPrefix(modelName string, loraID int64, tokens
 		LoraID:    loraID,
 	}
 
-	// Compute hashes outside any lock
-	prefixHashes := s.GetPrefixHashes(tokens)
-
 	// Lock-free context lookup
 	value, exists := s.contextMap.Load(ctx)
 	if !exists {
-		return map[string]int{}, prefixHashes
+		return map[string]int{}, s.GetPrefixHashes(tokens)
 	}
 
 	contextData := value.(*ContextData)
+
+	// Compute hashes outside any lock
+	blockSize := int(contextData.blockSize.Load())
+	if blockSize == 0 {
+		blockSize = s.blockSize
+	}
+	prefixHashes := s.prefixHashes(tokens, blockSize)
 
 	// Check if marked for eviction (lock-free)
 	if contextData.markedForEviction.Load() {
@@ -206,9 +261,18 @@ func (s *SyncPrefixHashTable) MatchPrefix(modelName string, loraID int64, tokens
 	contextData.prefixMu.RLock()
 	defer contextData.prefixMu.RUnlock()
 
-	// Sequential prefix matching
-	prefixMatchPods := map[string]int{}
+	// Sequential prefix matching. A pod scores the share of the prompt's blocks
+	// it holds from the start, each block weighted by the fastest tier holding
+	// it (issue #2285): a block on GPU counts fully, one only on CPU or STORAGE
+	// counts less. A pod stops counting at the first block it lacks, since the
+	// engine can only reuse a prefix.
+	type podMatch struct {
+		blocks int
+		weight float64
+	}
+	matches := map[string]podMatch{}
 	prefixStore := contextData.prefixStore
+	now := time.Now().Unix()
 
 	for i, prefixHash := range prefixHashes {
 		pods, exists := prefixStore.prefixMap[prefixHash]
@@ -216,15 +280,31 @@ func (s *SyncPrefixHashTable) MatchPrefix(modelName string, loraID int64, tokens
 			break
 		}
 
-		prefixMatchPercent := (i + 1) * 100 / len(prefixHashes)
-
-		// Find ready pods with this prefix
 		hasMatch := false
-		for podName := range pods {
-			if _, isReady := readyPods[podName]; isReady {
-				prefixMatchPods[podName] = prefixMatchPercent
-				hasMatch = true
+		for podName, podInfo := range pods {
+			// Readiness only needs checking at block 0: matches holds just the
+			// ready pods that reached this block, and a pod absent from it at a
+			// later block reads back as zero blocks, so the check below skips it.
+			if i == 0 {
+				if _, isReady := readyPods[podName]; !isReady {
+					continue
+				}
 			}
+			match := matches[podName]
+			if match.blocks != i {
+				continue
+			}
+			match.blocks++
+			match.weight += podInfo.weight()
+			matches[podName] = match
+			hasMatch = true
+			// A match is genuine use of this pod's cached block: refresh
+			// its own access time too, not just the context's. Nothing
+			// else does, since a KV event only fires on store/remove, not
+			// on every subsequent hit, so without this a pod holding a
+			// long-lived, heavily matched block would still look expired
+			// to evictExpiredPodsInBatch.
+			podInfo.LastAccessTime.Store(now)
 		}
 
 		if !hasMatch {
@@ -233,7 +313,12 @@ func (s *SyncPrefixHashTable) MatchPrefix(modelName string, loraID int64, tokens
 	}
 
 	// Update access time (lock-free)
-	prefixStore.lastAccess.Store(time.Now().Unix())
+	prefixStore.lastAccess.Store(now)
+
+	prefixMatchPods := make(map[string]int, len(matches))
+	for podName, match := range matches {
+		prefixMatchPods[podName] = int(match.weight * 100 / float64(len(prefixHashes)))
+	}
 
 	return prefixMatchPods, prefixHashes
 }
@@ -252,6 +337,9 @@ func (s *SyncPrefixHashTable) ProcessBlockStored(event BlockStored) error {
 		ModelName: event.ModelName,
 		LoraID:    event.LoraID,
 	}
+	if event.LoraName != "" {
+		ctx.LoraID = LoraIDFromName(event.LoraName)
+	}
 
 	// Get or create context data
 	contextData := s.getOrCreateContextData(ctx)
@@ -260,13 +348,54 @@ func (s *SyncPrefixHashTable) ProcessBlockStored(event BlockStored) error {
 	contextData.mappingMu.Lock()
 	defer contextData.mappingMu.Unlock()
 
+	// Eviction marks the context before snapshotting its block mappings.
+	// A late store must not add reverse-index entries after that snapshot;
+	// the context will be deleted, leaving those entries without an owner.
+	if contextData.markedForEviction.Load() {
+		klog.V(4).InfoS("Skipping block stored event for evicted context",
+			"model", ctx.ModelName, "loraID", ctx.LoraID, "blocks", len(event.BlockHashes))
+		return nil
+	}
+
+	// Only GPU blocks set the size: offload tiers can use larger chunks. Partial-block
+	// events (vLLM hybrid models) carry a single short block, so a multi-block
+	// event's size wins, and the smaller one if groups differ. Until then the
+	// longest single block wins, as a partial block is never the longer one.
+	if size := int64(len(event.Tokens[0])); size > 0 && (event.Medium == "" || event.Medium == MediumGPU) {
+		current := contextData.blockSize.Load()
+		multi := len(event.Tokens) > 1
+		fromMulti := contextData.blockSizeFromMulti
+		if current == 0 || (multi && (!fromMulti || size < current)) || (!multi && !fromMulti && size > current) {
+			contextData.blockSize.Store(size)
+			contextData.blockSizeFromMulti = fromMulti || multi
+			// Prefixes added with the old size can't match any more; eviction drops them.
+			if size != current {
+				klog.InfoS("sync prefix index uses the engine block size", "model", event.ModelName,
+					"lora_id", event.LoraID, "block_size_bytes", size, "configured_bytes", s.blockSize)
+			}
+		}
+	}
+
 	hashMapping := contextData.hashMapping
 	prefixUpdates := make([]struct {
 		hash uint64
 		pod  string
 	}, 0)
 
-	// Process blocks with consistent parent hash lookup
+	// ParentBlockHash is the parent of the first block only; each later block
+	// chains from the one before it, matching GetPrefixHashes.
+	parentAibrixHash := s.seed
+	if event.ParentBlockHash != nil {
+		ph, exists := hashMapping.engineToAibrix[*event.ParentBlockHash]
+		if !exists {
+			// Chaining from the seed would index this suffix as a full prefix, so skip it.
+			klog.Warningf("block stored event has unknown parent, skipping: model=%s, lora_id=%d, parent=%d, blocks=%d",
+				event.ModelName, event.LoraID, *event.ParentBlockHash, len(event.BlockHashes))
+			return nil
+		}
+		parentAibrixHash = ph
+	}
+
 	for i, engineBlockHash := range event.BlockHashes {
 		// Check if already exists (idempotent)
 		if existingHash, exists := hashMapping.engineToAibrix[engineBlockHash]; exists {
@@ -275,20 +404,14 @@ func (s *SyncPrefixHashTable) ProcessBlockStored(event BlockStored) error {
 				hash uint64
 				pod  string
 			}{existingHash, event.SourcePod})
+			parentAibrixHash = existingHash
 			continue
-		}
-
-		// Compute hash with proper parent lookup
-		var parentAibrixHash uint64 = s.seed
-		if event.ParentBlockHash != nil {
-			if ph, exists := hashMapping.engineToAibrix[*event.ParentBlockHash]; exists {
-				parentAibrixHash = ph
-			}
 		}
 
 		// Compute AIBrix hash
 		blockTokens := s.getBlockTokens(event, i)
 		aibrixHash := s.computeHash(parentAibrixHash, blockTokens)
+		parentAibrixHash = aibrixHash
 
 		// Store mapping
 		hashMapping.engineToAibrix[engineBlockHash] = aibrixHash
@@ -309,9 +432,15 @@ func (s *SyncPrefixHashTable) ProcessBlockStored(event BlockStored) error {
 		defer contextData.prefixMu.Unlock()
 
 		prefixStore := contextData.prefixStore
+		tier := tierBit(event.Medium, event.GroupIdx)
 		for _, update := range prefixUpdates {
-			s.addPrefixToPodLocked(prefixStore, update.hash, update.pod)
+			s.addPrefixToPodLocked(prefixStore, update.hash, update.pod, tier)
 		}
+		// A context fed only by KV events (no AddPrefix/MatchPrefix caller)
+		// still needs its own lastAccess refreshed, or enforceContextLimit
+		// ranks it as idle since creation and evicts it first regardless of
+		// how much real traffic it is carrying.
+		prefixStore.lastAccess.Store(time.Now().Unix())
 	}
 
 	return nil
@@ -323,46 +452,93 @@ func (s *SyncPrefixHashTable) ProcessBlockRemoved(event BlockRemoved) error {
 		return nil
 	}
 
-	ctx := ModelContext{
-		ModelName: event.ModelName,
-		LoraID:    event.LoraID,
+	// BlockRemoved does not name the adapter, so remove each block from every
+	// context of the model that indexed it: the base model and its adapters.
+	byContext := make(map[ModelContext][]int64)
+	s.blockIndexMu.RLock()
+	for _, engineBlockHash := range event.BlockHashes {
+		for _, ctx := range s.blockIndex[engineBlockHash] {
+			if ctx.ModelName == event.ModelName {
+				byContext[ctx] = append(byContext[ctx], engineBlockHash)
+			}
+		}
 	}
+	s.blockIndexMu.RUnlock()
 
-	// Can now target specific context instead of searching all contexts
+	for ctx, blockHashes := range byContext {
+		s.removeBlocksFromContext(ctx, blockHashes, event)
+	}
+	return nil
+}
+
+func (s *SyncPrefixHashTable) removeBlocksFromContext(ctx ModelContext, blockHashes []int64, event BlockRemoved) {
 	value, exists := s.contextMap.Load(ctx)
 	if !exists {
-		return nil
+		return
 	}
 
 	contextData := value.(*ContextData)
 	if contextData.markedForEviction.Load() {
-		return nil
+		return
 	}
 
-	// First, check what needs to be removed using mapping lock
+	// First, resolve the affected prefixes using the mapping lock. The mapping
+	// can only be dropped once no pod holds the block, so resolve without
+	// mutating here.
 	contextData.mappingMu.Lock()
-	toRemove := make(map[uint64]bool)
-	for _, engineBlockHash := range event.BlockHashes {
+	defer contextData.mappingMu.Unlock()
+
+	toRemove := make(map[uint64][]int64) // aibrix prefix hash → engine block hashes
+	for _, engineBlockHash := range blockHashes {
 		if aibrixHash, exists := contextData.hashMapping.engineToAibrix[engineBlockHash]; exists {
-			toRemove[aibrixHash] = true
-			delete(contextData.hashMapping.engineToAibrix, engineBlockHash)
+			toRemove[aibrixHash] = append(toRemove[aibrixHash], engineBlockHash)
 		}
+	}
+	if len(toRemove) == 0 {
+		return
+	}
+
+	// Then update prefix store, clearing only the tier and KV-cache group the
+	// removal names on the pod that reported it. The pod keeps the prefix while
+	// another tier or group still holds it, e.g. the CPU copy after the GPU one
+	// is evicted. An empty SourcePod means the caller did not scope the event,
+	// so drop the whole entry as before.
+	if event.SourcePod == "" {
+		klog.Warningf("block removed event has no source pod, evicting prefixes for every pod: model=%s, lora_id=%d, block_hashes=%d",
+			ctx.ModelName, ctx.LoraID, len(blockHashes))
+	}
+	orphaned := make([]int64, 0, len(blockHashes))
+	tier := tierBit(event.Medium, event.GroupIdx)
+	contextData.prefixMu.Lock()
+	prefixStore := contextData.prefixStore
+	prefixStore.lastAccess.Store(time.Now().Unix())
+	for aibrixHash, engineBlockHashes := range toRemove {
+		pods, exists := prefixStore.prefixMap[aibrixHash]
+		if exists && event.SourcePod != "" {
+			if podInfo, ok := pods[event.SourcePod]; ok {
+				podInfo.tiers &^= tier
+				if podInfo.tiers == 0 {
+					delete(pods, event.SourcePod)
+				}
+			}
+			if len(pods) > 0 {
+				continue
+			}
+		}
+		if exists {
+			delete(prefixStore.prefixMap, aibrixHash)
+			prefixStore.totalPrefixes--
+		}
+		orphaned = append(orphaned, engineBlockHashes...)
+	}
+	contextData.prefixMu.Unlock()
+
+	// Finally drop the mappings no pod references any more
+	for _, engineBlockHash := range orphaned {
+		delete(contextData.hashMapping.engineToAibrix, engineBlockHash)
 		// Update reverse index
 		s.updateBlockIndex(engineBlockHash, ctx, false)
 	}
-	contextData.mappingMu.Unlock()
-
-	// Then update prefix store if needed
-	if len(toRemove) > 0 {
-		contextData.prefixMu.Lock()
-		for aibrixHash := range toRemove {
-			delete(contextData.prefixStore.prefixMap, aibrixHash)
-			contextData.prefixStore.totalPrefixes--
-		}
-		contextData.prefixMu.Unlock()
-	}
-
-	return nil
 }
 
 // ProcessAllBlocksCleared handles AllBlocksCleared events (placeholder implementation)
@@ -371,8 +547,18 @@ func (s *SyncPrefixHashTable) ProcessAllBlocksCleared(event AllBlocksCleared) er
 	return nil
 }
 
-// AddPrefix adds prefix hashes for a specific model/lora context and pod
+// AddPrefix adds prefix hashes for a specific model/lora context and pod.
+// The medium is unknown here (callers without tier information), so entries
+// are stored as unspecified, which scores as a full-strength GPU hit for
+// backward compatibility.
 func (s *SyncPrefixHashTable) AddPrefix(modelName string, loraID int64, podName string, prefixHashes []uint64) error {
+	return s.AddPrefixWithMedium(modelName, loraID, podName, "", prefixHashes)
+}
+
+// AddPrefixWithMedium is AddPrefix with the storage tier the pod holds the
+// prefixes on. The tier is added to the ones recorded per (prefix, pod) so
+// MatchPrefix can score non-GPU prefixes lower.
+func (s *SyncPrefixHashTable) AddPrefixWithMedium(modelName string, loraID int64, podName, medium string, prefixHashes []uint64) error {
 	ctx := ModelContext{
 		ModelName: modelName,
 		LoraID:    loraID,
@@ -387,6 +573,7 @@ func (s *SyncPrefixHashTable) AddPrefix(modelName string, loraID int64, podName 
 
 	prefixStore := contextData.prefixStore
 	now := time.Now().Unix()
+	tier := tierBit(medium, -1)
 
 	// Update access time
 	prefixStore.lastAccess.Store(now)
@@ -408,9 +595,11 @@ func (s *SyncPrefixHashTable) AddPrefix(modelName string, loraID int64, podName 
 		// Update pod info
 		if podInfo, exists := pods[podName]; exists {
 			podInfo.LastAccessTime.Store(now)
+			podInfo.tiers |= tier
 		} else {
 			pods[podName] = &PodInfo{
 				SourcePod: podName,
+				tiers:     tier,
 			}
 			pods[podName].LastAccessTime.Store(now)
 		}
@@ -419,39 +608,103 @@ func (s *SyncPrefixHashTable) AddPrefix(modelName string, loraID int64, podName 
 	return nil
 }
 
-// RemovePrefix removes a specific pod from all prefix entries
+// RemovePrefix removes a specific pod from all prefix entries of the model.
+// Callers drop a pod whose whole cache is gone, so the pod is removed from the
+// model's adapter contexts too, whatever loraID is passed.
 func (s *SyncPrefixHashTable) RemovePrefix(modelName string, loraID int64, podName string) error {
-	ctx := ModelContext{
-		ModelName: modelName,
-		LoraID:    loraID,
-	}
+	s.contextMap.Range(func(key, value any) bool {
+		ctx := key.(ModelContext)
+		if ctx.ModelName == modelName {
+			s.prunePodFromContext(ctx, value.(*ContextData), podName)
+		}
+		return true
+	})
+	return nil
+}
 
-	value, exists := s.contextMap.Load(ctx)
-	if !exists {
-		return nil
-	}
+// prunePodFromContext removes podName from every prefix of one context and
+// drops the engine-block mappings of the prefixes it was the last holder of.
+// The mapping and reverse index are part of the same invariant as
+// ProcessBlockRemoved: once no pod holds a block, no context block entry may
+// keep referencing it.
+func (s *SyncPrefixHashTable) prunePodFromContext(ctx ModelContext, contextData *ContextData, podName string) {
+	contextData.mappingMu.Lock()
+	defer contextData.mappingMu.Unlock()
 
-	contextData := value.(*ContextData)
+	orphaned := make(map[uint64]struct{})
 	contextData.prefixMu.Lock()
-	defer contextData.prefixMu.Unlock()
-
 	prefixStore := contextData.prefixStore
-
-	// Remove pod from all prefix entries
 	for prefixHash, pods := range prefixStore.prefixMap {
+		if _, held := pods[podName]; !held {
+			continue
+		}
 		delete(pods, podName)
 		if len(pods) == 0 {
 			delete(prefixStore.prefixMap, prefixHash)
 			prefixStore.totalPrefixes--
+			orphaned[prefixHash] = struct{}{}
 		}
 	}
+	contextData.prefixMu.Unlock()
 
-	return nil
+	s.dropOrphanedBlocks(ctx, contextData, orphaned)
+}
+
+// dropOrphanedBlocks deletes the engine-to-aibrix mappings whose aibrix prefix
+// no pod holds any more, and mirrors that removal into the reverse index.
+// Callers hold mappingMu.
+func (s *SyncPrefixHashTable) dropOrphanedBlocks(
+	ctx ModelContext,
+	contextData *ContextData,
+	orphaned map[uint64]struct{},
+) {
+	if len(orphaned) == 0 {
+		return
+	}
+	blocks := make([]int64, 0)
+	for engineBlockHash, aibrixHash := range contextData.hashMapping.engineToAibrix {
+		if _, gone := orphaned[aibrixHash]; !gone {
+			continue
+		}
+		delete(contextData.hashMapping.engineToAibrix, engineBlockHash)
+		blocks = append(blocks, engineBlockHash)
+	}
+	s.removeBlockIndexEntries(ctx, blocks)
+}
+
+// removeBlockIndexEntries deletes ctx from the reverse-index entries of blocks
+// under a single lock acquisition, so a bulk pod or context removal does not
+// take and release blockIndexMu once per block.
+func (s *SyncPrefixHashTable) removeBlockIndexEntries(ctx ModelContext, blocks []int64) {
+	if len(blocks) == 0 {
+		return
+	}
+	s.blockIndexMu.Lock()
+	defer s.blockIndexMu.Unlock()
+	for _, blockHash := range blocks {
+		contexts := s.blockIndex[blockHash]
+		for i, existingCtx := range contexts {
+			if existingCtx != ctx {
+				continue
+			}
+			contexts = append(contexts[:i], contexts[i+1:]...)
+			if len(contexts) == 0 {
+				delete(s.blockIndex, blockHash)
+			} else {
+				s.blockIndex[blockHash] = contexts
+			}
+			break
+		}
+	}
 }
 
 // GetPrefixHashes computes prefix hashes for given tokens
 func (s *SyncPrefixHashTable) GetPrefixHashes(tokens []byte) []uint64 {
-	numBlocks := len(tokens) / s.blockSize
+	return s.prefixHashes(tokens, s.blockSize)
+}
+
+func (s *SyncPrefixHashTable) prefixHashes(tokens []byte, blockSize int) []uint64 {
+	numBlocks := len(tokens) / blockSize
 	prefixHashes := make([]uint64, 0, numBlocks)
 	digest := xxhash.NewWithSeed(s.seed)
 
@@ -460,8 +713,8 @@ func (s *SyncPrefixHashTable) GetPrefixHashes(tokens []byte) []uint64 {
 
 	var parentHashBytes [8]byte
 
-	for i := 0; i < len(tokens); i += s.blockSize {
-		end := i + s.blockSize
+	for i := 0; i < len(tokens); i += blockSize {
+		end := i + blockSize
 		if end > len(tokens) {
 			// Don't hash incomplete blocks
 			break
@@ -535,8 +788,9 @@ func (s *SyncPrefixHashTable) computeHash(parentHash uint64, blockTokens []byte)
 	return digest.Sum64()
 }
 
-// addPrefixToPodLocked adds or updates pod info for a prefix (caller must hold lock)
-func (s *SyncPrefixHashTable) addPrefixToPodLocked(prefixStore *PrefixStore, prefixHash uint64, podName string) {
+// addPrefixToPodLocked adds or updates pod info for a prefix and records that
+// the given tier bit holds it (caller must hold lock)
+func (s *SyncPrefixHashTable) addPrefixToPodLocked(prefixStore *PrefixStore, prefixHash uint64, podName string, tier uint64) {
 	now := time.Now().Unix()
 
 	pods, exists := prefixStore.prefixMap[prefixHash]
@@ -548,11 +802,63 @@ func (s *SyncPrefixHashTable) addPrefixToPodLocked(prefixStore *PrefixStore, pre
 
 	if podInfo, exists := pods[podName]; exists {
 		podInfo.LastAccessTime.Store(now)
+		podInfo.tiers |= tier
 	} else {
 		pods[podName] = &PodInfo{
 			SourcePod: podName,
+			tiers:     tier,
 		}
 		pods[podName].LastAccessTime.Store(now)
+	}
+}
+
+// tierBit returns the PodInfo.tiers bit of a storage tier in a KV-cache
+// group. An unspecified group (-1) is group 0.
+func tierBit(medium string, groupIdx int64) uint64 {
+	tier := tierOther
+	switch medium {
+	case "", MediumGPU:
+		tier = tierGPU
+	case MediumCPU:
+		tier = tierCPU
+	case MediumStorage:
+		tier = tierStorage
+	}
+	var group int64
+	if groupIdx > 0 {
+		group = groupIdx % maxTrackedGroups
+	}
+	return uint64(1) << (uint(group)*numTiers + uint(tier))
+}
+
+// weight returns the routing score weight of the fastest tier holding the
+// prefix on this pod, in any KV-cache group.
+func (p *PodInfo) weight() float64 {
+	switch {
+	case p.tiers&(tierMask<<tierGPU|tierMask<<tierOther) != 0:
+		return mediumWeight(MediumGPU)
+	case p.tiers&(tierMask<<tierCPU) != 0:
+		return mediumWeight(MediumCPU)
+	case p.tiers&(tierMask<<tierStorage) != 0:
+		return mediumWeight(MediumStorage)
+	default:
+		return 0
+	}
+}
+
+// mediumWeight returns the routing score weight for a storage tier. Entries
+// without tier information (empty medium, e.g. from older vLLM or the plain
+// AddPrefix path) score at full strength to preserve legacy behavior.
+func mediumWeight(medium string) float64 {
+	switch medium {
+	case MediumGPU:
+		return 1.0
+	case MediumCPU:
+		return 0.5
+	case MediumStorage:
+		return 0.25
+	default:
+		return 1.0
 	}
 }
 
@@ -609,52 +915,88 @@ func (s *SyncPrefixHashTable) performEviction() {
 	expiredBefore := now - int64(s.evictionDuration.Seconds())
 
 	// Phase 1: Mark contexts for eviction (lock-free)
-	evictionCandidates := make([]interface{}, 0)
+	type evictionCandidate struct {
+		key         ModelContext
+		contextData *ContextData
+	}
+	evictionCandidates := make([]evictionCandidate, 0)
 
 	s.contextMap.Range(func(key, value interface{}) bool {
+		ctx := key.(ModelContext)
 		contextData := value.(*ContextData)
 		lastAccess := contextData.prefixStore.lastAccess.Load()
 
 		if lastAccess < expiredBefore {
 			contextData.markedForEviction.Store(true)
-			evictionCandidates = append(evictionCandidates, key)
+			evictionCandidates = append(evictionCandidates, evictionCandidate{key: ctx, contextData: contextData})
 		}
 
 		return true
 	})
 
 	// Phase 2: Remove marked contexts
-	for _, key := range evictionCandidates {
-		s.contextMap.Delete(key)
+	for _, candidate := range evictionCandidates {
+		s.dropContextBlockIndex(candidate.key, candidate.contextData)
+		s.contextMap.Delete(candidate.key)
 		s.contextCount.Add(-1)
 	}
 
-	// Phase 3: Clean up expired pods within active contexts
+	// Phase 2.5: enforce the context count cap on whatever remains. Phase 1/2
+	// only remove contexts that have been idle past evictionDuration, so a
+	// count over maxContexts made entirely of active contexts is otherwise
+	// never trimmed.
+	if excess := int(s.contextCount.Load()) - s.maxContexts; excess > 0 {
+		s.enforceContextLimit(excess)
+	}
+
+	// Phase 3: clean up expired pods within active (non-evicted) contexts, in
+	// batches so one eviction pass does not hold every context's prefixMu at
+	// once.
+	activeContexts := make([]evictionContext, 0, evictionBatchSize)
 	s.contextMap.Range(func(key, value interface{}) bool {
 		contextData := value.(*ContextData)
 		if contextData.markedForEviction.Load() {
-			return true // Skip marked contexts
+			return true // Skip contexts Phase 2 already removed.
 		}
 
+		activeContexts = append(activeContexts, evictionContext{
+			ctx:  key.(ModelContext),
+			data: contextData,
+		})
+		if len(activeContexts) >= evictionBatchSize {
+			s.evictExpiredPodsInBatch(activeContexts, expiredBefore)
+			activeContexts = activeContexts[:0]
+		}
 		return true
 	})
+	if len(activeContexts) > 0 {
+		s.evictExpiredPodsInBatch(activeContexts, expiredBefore)
+	}
 }
 
-// evictExpiredPodsInBatch processes multiple contexts to remove expired pods
-func (s *SyncPrefixHashTable) evictExpiredPodsInBatch(contexts []*ContextData, expiredBefore int64) {
-	for _, contextData := range contexts {
+// evictionContext identifies a context included in a pod eviction batch.
+type evictionContext struct {
+	ctx  ModelContext
+	data *ContextData
+}
+
+// evictExpiredPodsInBatch removes idle routing entries. Idle time does not
+// prove that the engine released a block: the router may AddPrefix again
+// without a new BlockStored event. Keep its engine mapping so a later
+// BlockRemoved can still find it; confirmed removals and context eviction
+// reclaim those mappings.
+func (s *SyncPrefixHashTable) evictExpiredPodsInBatch(contexts []evictionContext, expiredBefore int64) {
+	for _, entry := range contexts {
+		contextData := entry.data
 		contextData.prefixMu.Lock()
 		prefixStore := contextData.prefixStore
 
 		for prefixHash, pods := range prefixStore.prefixMap {
-			// Remove expired pods
 			for podName, podInfo := range pods {
 				if podInfo.LastAccessTime.Load() < expiredBefore {
 					delete(pods, podName)
 				}
 			}
-
-			// Remove empty prefix entries
 			if len(pods) == 0 {
 				delete(prefixStore.prefixMap, prefixHash)
 				prefixStore.totalPrefixes--
@@ -667,19 +1009,28 @@ func (s *SyncPrefixHashTable) evictExpiredPodsInBatch(contexts []*ContextData, e
 // enforceContextLimit removes oldest contexts to stay within limit
 func (s *SyncPrefixHashTable) enforceContextLimit(excess int) {
 	type contextAge struct {
-		key        interface{}
-		lastAccess int64
+		key         ModelContext
+		contextData *ContextData
+		lastAccess  int64
 	}
 
-	ages := make([]contextAge, 0, excess*2)
+	// contextCount is maintained separately from contextMap (Add/-1 pairs
+	// around each insert/delete), so it can be briefly out of step with the
+	// map's actual size, and a negative value would panic make's cap
+	// argument. A nil slice growing through append sidesteps both: it never
+	// panics, and it costs no more than a correctly-sized preallocation would
+	// have, since every active context is appended before any are dropped.
+	var ages []contextAge
 
 	// Collect context ages
 	s.contextMap.Range(func(key, value interface{}) bool {
+		ctx := key.(ModelContext)
 		contextData := value.(*ContextData)
 		if !contextData.markedForEviction.Load() {
 			ages = append(ages, contextAge{
-				key:        key,
-				lastAccess: contextData.prefixStore.lastAccess.Load(),
+				key:         ctx,
+				contextData: contextData,
+				lastAccess:  contextData.prefixStore.lastAccess.Load(),
 			})
 		}
 		return true
@@ -696,9 +1047,30 @@ func (s *SyncPrefixHashTable) enforceContextLimit(excess int) {
 		if removed >= excess {
 			break
 		}
+		age.contextData.markedForEviction.Store(true)
+		s.dropContextBlockIndex(age.key, age.contextData)
 		s.contextMap.Delete(age.key)
 		s.contextCount.Add(-1)
 		removed++
+	}
+}
+
+// dropContextBlockIndex removes every blockIndex entry that points at ctx, as
+// ProcessBlockRemoved already does per block when a pod's last hold on it is
+// released. A whole-context eviction (idle Phase 2, or the maxContexts cap in
+// enforceContextLimit) skipped this before, so blockIndex kept a ctx entry
+// for every engine block hash the context had ever seen, and repeated
+// evict-recreate churn on one (model, lora) pair grew it without bound.
+func (s *SyncPrefixHashTable) dropContextBlockIndex(ctx ModelContext, contextData *ContextData) {
+	contextData.mappingMu.RLock()
+	engineBlockHashes := make([]int64, 0, len(contextData.hashMapping.engineToAibrix))
+	for engineBlockHash := range contextData.hashMapping.engineToAibrix {
+		engineBlockHashes = append(engineBlockHashes, engineBlockHash)
+	}
+	contextData.mappingMu.RUnlock()
+
+	for _, engineBlockHash := range engineBlockHashes {
+		s.updateBlockIndex(engineBlockHash, ctx, false)
 	}
 }
 

@@ -1,0 +1,16 @@
+# Most gateway E2E tests send many sequential requests to this model without max_tokens, so the
+# mock samples 10-500 output tokens per request. At the default 2ms per token that averages about
+# 0.55s a request; a lower per-token cost keeps those tests fast. Deployments whose tests depend
+# on requests overlapping in flight keep the default.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-llama2-7b
+spec:
+  template:
+    spec:
+      containers:
+        - name: llm-engine
+          env:
+            - name: MOCK_DECODE_SECONDS_PER_TOKEN
+              value: "0.0005"

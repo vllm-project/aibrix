@@ -26,8 +26,8 @@ spec:
   # Using a real Hugging Face model for this example
   artifactURL: "huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora"
   
-  # Optional: Scheduler for pod selection (defaults to "default")
-  # "least-adapters" scheduler distributes adapters evenly across pods
+  # The controller does not read schedulerName. With replicas omitted,
+  # the adapter is loaded on every matching pod, so no scheduler runs.
   schedulerName: least-adapters
   
   # Optional: Additional configuration for the LoRA adapter

@@ -38,7 +38,7 @@ Loads endpoints from a YAML config file. No dynamic updates.
 ```yaml
 models:
   - name: "Qwen/Qwen2.5-1.5B-Instruct"
-    endpoints:
+    workers:
       - "vllm-0:8000"
       - "vllm-1:8000"
 ```
@@ -49,16 +49,29 @@ models:
 models:
   - name: "Qwen/Qwen2.5-72B"
     engine: vllm
+    prefill_workers:
+      - "prefill-0:8000"
+      - "prefill-1:8000"
+    decode_workers:
+      - "decode-0:8000"
+```
+
+`prefill_workers` and `decode_workers` describe a single roleset (named `default`). The PD routing algorithm selects the roleset first and then chooses the best prefill+decode pair within it; a roleset serves traffic only when both sides have at least one worker.
+
+Use `rolesets` when you need multiple rolesets or explicit roleset names:
+
+```yaml
+models:
+  - name: "Qwen/Qwen2.5-72B"
     rolesets:
-      - name: default
+      - name: group-a
         prefill:
           - "prefill-0:8000"
-          - "prefill-1:8000"
         decode:
           - "decode-0:8000"
 ```
 
-The `rolesets` structure expresses the pairing between prefill and decode workers. The PD routing algorithm selects the roleset first and then chooses the best prefill+decode pair within the same roleset. `endpoints` and `rolesets` are mutually exclusive per model.
+`workers` is the preferred spelling of `endpoints`; both keep working. `rolesets` stays the way to name a group or declare more than one. Per model, the non-disaggregated form (`endpoints`/`workers`) and the disaggregated form (`rolesets`/`prefill_workers` + `decode_workers`) are mutually exclusive.
 
 ### KubernetesProvider (`kubernetes.go`)
 
@@ -66,11 +79,30 @@ Watches Pods and ModelAdapters via K8s informers. This is the default when no `D
 
 The handler is wired directly into K8s informer callbacks — events flow from the start, including during the initial list phase. No intermediate channel, no buffer, no snapshot replay.
 
-1. Registers handler on Pod and ModelAdapter informers.
+1. Registers handlers on the Pod informer and enabled optional informers.
 2. Starts informers — initial objects arrive via `AddFunc` as part of the informer's list+watch.
 3. Waits for cache sync (`WaitForCacheSync`).
-4. Post-sync reconcile: re-emits all ModelAdapters as `EventAdd` to fix ordering (Pod and ModelAdapter informers list concurrently, so an adapter may arrive before its pods).
+4. When adapters are enabled, post-sync reconcile re-emits all ModelAdapters as `EventAdd` to fix ordering (Pod and ModelAdapter informers list concurrently, so an adapter may arrive before its pods).
 5. Returns — informer callbacks continue delivering ongoing changes.
+
+The gateway CLI enables adapter and ModelClaim discovery by default. In Kubernetes
+mode, `--watch-model-adapters=false` skips the adapter informer, its initial
+sync, and all adapter API requests. `--watch-model-claims=false` skips the
+claim informer and also prevents ModelClaim runtime annotations on Pods from
+adding model names to the gateway cache. Pod discovery stays enabled. The
+options leave the default discovery behavior unchanged.
+
+`--model-list-mode=ready-pods` changes the gateway's own `GET /v1/models`
+handler to include a model only when an associated Pod has an address, is
+Ready, and is neither terminating nor draining. The default `known` mode
+continues listing every cached model name. The ready-pods mode checks Pod
+eligibility; it does not validate HTTPRoute acceptance, adapter load status,
+or complete prefill/decode pairs. The standard Kubernetes Envoy route for
+`/v1/models` still points to the metadata service; deployments that want
+this gateway handler must route that path to the plugin HTTP port. This mode
+does not report ongoing discovery failures; an empty list alone does not prove
+that discovery is healthy. See the production gateway guide for an opt-in
+HTTPRoute example.
 
 ## Architecture
 

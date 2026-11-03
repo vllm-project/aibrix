@@ -44,8 +44,20 @@ type ScalingRequest struct {
 	Target            types.ScaleTarget
 	CurrentReplicas   int32
 	AggregatedMetrics *types.AggregatedMetrics
+	MetricSourceType  autoscalingv1alpha1.MetricSourceType
 	ScalingContext    scalingctx.ScalingContext
 	Timestamp         time.Time
+	// StableWindow is the stable metric window. KPA ends a panic once a whole
+	// stable window has passed below the panic threshold.
+	StableWindow time.Duration
+	// Panic is the KPA panic state of this target, kept by the caller across
+	// recommendations. Other algorithms ignore it.
+	Panic *PanicState
+	// LoadPods is the pod count a per-pod value is spread over, so the total
+	// load is the value times LoadPods. Pods that are still starting carry
+	// none of it. Zero means CurrentReplicas. KPA uses it; APA leaves pending
+	// pods to the pending-replica guard.
+	LoadPods float64
 }
 
 // ScalingRecommendation contains the scaling decision

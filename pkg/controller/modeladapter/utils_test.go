@@ -66,6 +66,12 @@ func TestExtractHuggingFacePath(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name:        "Valid hf alias URL",
+			artifactURL: "hf://xxx/yyy",
+			expected:    "xxx/yyy",
+			expectError: false,
+		},
+		{
 			name:        "Empty path in HuggingFace URL",
 			artifactURL: "huggingface://",
 			expectError: true,
@@ -279,6 +285,40 @@ func TestBuildURLs(t *testing.T) {
 				ListModelsURL:    fmt.Sprintf("http://%s:%s%s", "192.168.1.5", DefaultInferenceEnginePort, ModelListSGLangAPIPath),
 				LoadAdapterURL:   fmt.Sprintf("http://%s:%s%s", "192.168.1.5", DefaultInferenceEnginePort, LoadLoraAdapterSGLangAPIPath),
 				UnloadAdapterURL: fmt.Sprintf("http://%s:%s%s", "192.168.1.5", DefaultInferenceEnginePort, UnloadLoraAdapterSGLangAPIPath),
+			},
+			expectError: false,
+		},
+		{
+			name:  "IPv6 pod address",
+			podIP: "2001:db8::1",
+			config: config.RuntimeConfig{
+				DebugMode:            false,
+				EnableRuntimeSidecar: false,
+			},
+			useSidecar: false,
+			engineType: VLLMEngine,
+			expectedURLs: URLConfig{
+				BaseURL:          "http://[2001:db8::1]:8000",
+				ListModelsURL:    "http://[2001:db8::1]:8000" + ModelListVLLMAPIPath,
+				LoadAdapterURL:   "http://[2001:db8::1]:8000" + LoadLoraAdapterVLLMAPIPath,
+				UnloadAdapterURL: "http://[2001:db8::1]:8000" + UnloadLoraAdapterVLLMAPIPath,
+			},
+			expectError: false,
+		},
+		{
+			name:  "IPv6 pod address with sidecar",
+			podIP: "2001:db8::2",
+			config: config.RuntimeConfig{
+				DebugMode:            false,
+				EnableRuntimeSidecar: true,
+			},
+			useSidecar: true,
+			engineType: VLLMEngine,
+			expectedURLs: URLConfig{
+				BaseURL:          "http://[2001:db8::2]:8080",
+				ListModelsURL:    "http://[2001:db8::2]:8080" + ModelListRuntimeAPIPath,
+				LoadAdapterURL:   "http://[2001:db8::2]:8080" + LoadLoraRuntimeAPIPath,
+				UnloadAdapterURL: "http://[2001:db8::2]:8080" + UnloadLoraRuntimeAPIPath,
 			},
 			expectError: false,
 		},

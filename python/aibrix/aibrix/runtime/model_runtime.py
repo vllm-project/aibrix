@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shlex
 import signal
 import socket
 import sys
@@ -38,7 +39,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, overload
+from typing import Any, Callable, Dict, List, Optional, Tuple, overload
 
 from aibrix.runtime.engine_registry import EngineRegistry
 
@@ -47,7 +48,7 @@ def sanitize_ipc_name(name: str) -> str:
     """Match kvcached's KVCACHED_IPC_NAME normalization: characters outside
     [A-Za-z0-9_-] become '-'. Verified on real hardware that kvcached rewrites
     e.g. "kvc_qwen3-0.6b" to "kvc_qwen3-0-6b"; without sanitizing on our side,
-    kvctl operations would target a different segment than the engine created.
+    limit writes would target a different segment than the engine created.
     """
     return re.sub(r"[^A-Za-z0-9_-]", "-", name)
 
@@ -57,6 +58,20 @@ logger = logging.getLogger(__name__)
 # NVML owns a process-global initialization state. Snapshot requests can run
 # concurrently, so init/query/shutdown must be one uninterrupted operation.
 _nvml_lock = threading.Lock()
+
+# What a card can ever hold, kept per device for the life of this process. The
+# figure belongs to the card and its driver rather than to the load, so reading
+# it again would return the same number. Only a successful reading is kept, so
+# a card that could not be sized yet is tried again on the next snapshot.
+HBM_USABLE_UNKNOWN = -1
+_hbm_usable_by_device: Dict[str, int] = {}
+
+# What a snapshot reports for an engine's KV figures while its kvcached segment
+# does not exist yet, which an engine that is still starting has in common with
+# one that never built a segment at all. Zero would read as a measured zero, and
+# a control plane deciding on it would treat a card as emptier than it is.
+KV_UNKNOWN = -1
+KV_CAPACITY_VERIFY_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass
@@ -75,11 +90,20 @@ class ModelInstance:
     pid: Optional[int] = None
     pid_start_time: Optional[str] = None
     restart_count: int = 0
+    kv_initial_capacity_bytes: Optional[int] = None
+    kv_capacity_verify_until: Optional[datetime] = None
+    # A control write can replace the startup size before a snapshot sees it.
+    kv_initial_capacity_unavailable: bool = False
+    kv_initial_capacity_persist_pending: bool = field(default=False, repr=False)
     last_error: Optional[str] = None
     last_transition: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
     next_restart_at: Optional[datetime] = None
+    # The GPU memory the engine still held right after its last sleep. It is
+    # None while the engine is awake, and when no reading could be attributed
+    # to it.
+    sleeping_footprint_bytes: Optional[int] = None
     completed_operation_ids: Dict[str, List[str]] = field(
         default_factory=dict, repr=False
     )
@@ -95,6 +119,7 @@ class RuntimeOperationResult:
     operation_id: str
     applied: bool
     phase: str
+    limit_bytes: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +145,10 @@ class ModelNotFoundError(LookupError):
 
 class UnsupportedModelControlError(RuntimeError):
     """Raised when an engine does not implement a requested lifecycle control."""
+
+
+class EngineServingError(RuntimeError):
+    """Raised when an engine asked to sleep is still serving requests."""
 
 
 @dataclass(frozen=True)
@@ -170,21 +199,23 @@ class KVController(ABC):
     """Applies kvcached controls to a model's shared-memory segment."""
 
     @abstractmethod
-    def set_limit(self, ipc_name: str, limit_bytes: int) -> None:
-        """Set the kvcached limit for one normalized IPC segment."""
+    def set_limit(self, ipc_name: str, limit_bytes: int) -> Optional[bool]:
+        """Set the limit; False means no write, None allows legacy actuators."""
 
 
-class KvctlController(KVController):
-    """Production kvcached control plane backed by the kvctl CLI."""
+class SharedMemoryKVController(KVController):
+    """Production kvcached control plane: writes a limit into the engine's
+    kvcached segment, as `kvctl limit` does, without starting kvctl. Starting
+    it imports kvcached, which takes over a second, and every other change of
+    an engine on the Pod waits while a limit is set."""
 
-    def set_limit(self, ipc_name: str, limit_bytes: int) -> None:
-        import subprocess
-
-        subprocess.run(
-            ["kvctl", "limit", ipc_name, str(limit_bytes)],
-            check=True,
-            timeout=10,
-        )
+    def set_limit(self, ipc_name: str, limit_bytes: int) -> bool:
+        written = write_kv_limit(ipc_name, limit_bytes)
+        if not written:
+            logger.warning(
+                "kvcached segment %s not found; its limit was not set", ipc_name
+            )
+        return written
 
 
 # --------------------------------------------------------------------------- #
@@ -257,6 +288,48 @@ def _nvml_compute_processes(pynvml, handle):
     return []
 
 
+def _hbm_usable_bytes(pynvml, handle, device_id: str) -> int:
+    """Memory an engine can take on this card: the total less what the driver
+    and firmware keep for themselves.
+
+    NVML's v2 memory query reports that reservation as a field of its own, and
+    it does not move with traffic, so the answer is the same whether the card
+    is idle or busy. Free memory plus per-process usage was considered and
+    rejected: the two readings are not taken at once, so memory released
+    between them is counted twice, and usage NVML does not attribute to a
+    process is missed. That figure can land on either side of the truth, and a
+    card reported larger than it is lets the control plane place a model that
+    does not fit.
+
+    Callers hold ``_nvml_lock``, which is also what keeps the cache below to
+    one writer.
+    """
+    cached = _hbm_usable_by_device.get(device_id)
+    if cached is not None:
+        return cached
+    version = getattr(pynvml, "nvmlMemory_v2", None)
+    if version is None:
+        return HBM_USABLE_UNKNOWN
+    try:
+        info = pynvml.nvmlDeviceGetMemoryInfo(handle, version=version)
+        total, reserved = int(info.total), int(info.reserved)
+    except Exception as exc:
+        logger.debug("v2 memory query failed for %s: %s", device_id, exc)
+        return HBM_USABLE_UNKNOWN
+    if reserved < 0 or reserved >= total:
+        return HBM_USABLE_UNKNOWN
+    usable = total - reserved
+    _hbm_usable_by_device[device_id] = usable
+    logger.info(
+        "card %s holds %d bytes for engines: %d total less %d the driver reserves",
+        device_id,
+        usable,
+        total,
+        reserved,
+    )
+    return usable
+
+
 def gpu_memory_observation() -> tuple[
     List[Dict[str, object]], Dict[int, Dict[str, int]]
 ]:
@@ -292,6 +365,9 @@ def gpu_memory_observation() -> tuple[
                         "id": device_id,
                         "hbm_total_bytes": int(info.total),
                         "hbm_free_bytes": int(info.free),
+                        "hbm_usable_bytes": _hbm_usable_bytes(
+                            pynvml, handle, device_id
+                        ),
                     }
                 )
                 for process in _nvml_compute_processes(pynvml, handle):
@@ -363,6 +439,102 @@ def engine_hbm_peak_bytes(
     return max(by_accelerator.values(), default=0)
 
 
+# A sleep gives back an engine's weights, so the memory of its process falls by
+# at least this much, and by at least this share of what it held.
+SLEEP_DROP_MIN_BYTES = 1 << 30
+SLEEP_DROP_MIN_SHARE = 0.4
+# Another process on the card can change at the same moment, but not like that:
+# the engine's drop is at least this many times the next largest one.
+SLEEP_DROP_MARGIN = 2
+
+
+def sleeping_footprint_bytes(
+    tree_pids: set[int],
+    before: Dict[int, Dict[str, int]],
+    after: Dict[int, Dict[str, int]],
+) -> Optional[int]:
+    """Return the GPU memory an engine holds on a card right after it went to
+    sleep.
+
+    ``before`` and ``after`` are NVML's per-process readings, keyed by process
+    ID and GPU UUID, taken just before the engine was asked to sleep and just
+    after it did. The result is None when the reading cannot be attributed.
+
+    The engine's own processes are matched first. That works when the driver
+    reports processes in this container's PID namespace. Some drivers report
+    host PIDs instead, and then nothing matches. The engine is then told apart
+    by what the sleep did: it gave back its weights, so on each card its
+    process is the one whose memory fell by far the most. The runtime puts one
+    engine to sleep at a time, so no other process on the card falls like that
+    in the same moment. Only that process is counted then. An engine keeps its
+    GPU memory on a card in one process: its engine core, or under tensor or
+    pipeline parallelism the worker on that card.
+
+    When the engine's own processes are found, their memory is the answer, or
+    there is none. Another process's drop is never taken for theirs, even when
+    theirs has not fallen like a sleep yet: a figure too small would give the
+    rest of the engine's reservation to other models, while no figure keeps
+    it.
+
+    An engine on several cards is read on each of them, and holds what it
+    holds on the heaviest one, as a claim declares its cost for the heaviest
+    device. A card on which it cannot be told leaves no figure.
+
+    A drop too small, or one that does not stand out from the next one, says
+    nothing, and the reading is unknown. So is a reading of zero: an engine
+    that sleeps still holds its CUDA context, and some drivers report zero for
+    every process in a container.
+    """
+
+    def falls_like_a_sleep(was: int, held: int, runner_up: int = 0) -> bool:
+        drop = was - held
+        return (
+            held > 0
+            and drop >= SLEEP_DROP_MIN_BYTES
+            and drop >= SLEEP_DROP_MIN_SHARE * was
+            and drop >= SLEEP_DROP_MARGIN * max(runner_up, 0)
+        )
+
+    def tree_on(readings: Dict[int, Dict[str, int]]) -> Dict[str, int]:
+        by_accelerator: Dict[str, int] = {}
+        for pid in tree_pids:
+            for accelerator, used in readings.get(pid, {}).items():
+                by_accelerator[accelerator] = by_accelerator.get(accelerator, 0) + used
+        return by_accelerator
+
+    held_before = tree_on(before)
+    held_after = tree_on(after)
+    if held_before or held_after:
+        held = []
+        for accelerator in set(held_before) | set(held_after):
+            before_sleep = held_before.get(accelerator, 0)
+            after_sleep = held_after.get(accelerator, 0)
+            if not falls_like_a_sleep(before_sleep, after_sleep):
+                return None
+            held.append(after_sleep)
+        return max(held)
+
+    drops_on: Dict[str, list[tuple[int, int, int]]] = {}
+    for pid, readings in after.items():
+        for accelerator, held_now in readings.items():
+            was = before.get(pid, {}).get(accelerator)
+            if was is not None:
+                drops_on.setdefault(accelerator, []).append(
+                    (was - held_now, was, held_now)
+                )
+    if not drops_on:
+        return None
+    held = []
+    for drops in drops_on.values():
+        drops.sort(reverse=True)
+        _, was, held_now = drops[0]
+        runner_up = drops[1][0] if len(drops) > 1 else 0
+        if not falls_like_a_sleep(was, held_now, runner_up):
+            return None
+        held.append(held_now)
+    return max(held)
+
+
 def write_cache_marker(
     model_name: str, artifact_url: str, cache_dir: Optional[str] = None
 ) -> Optional[str]:
@@ -397,9 +569,7 @@ def engine_ready(port: int) -> bool:
     Connection-refused (engine still starting) and timeouts read as not-ready.
     """
     try:
-        import httpx
-
-        resp = httpx.get(f"http://127.0.0.1:{port}/health", timeout=1.0)
+        resp = _localhost().get(f"http://127.0.0.1:{port}/health", timeout=1.0)
         return resp.status_code == 200
     except Exception:
         return False
@@ -482,11 +652,41 @@ class AdoptedProcess:
         return None
 
 
-def _vllm_control_post(port: int, path: str) -> None:
-    """Invoke a vLLM development lifecycle endpoint through localhost only."""
-    import httpx
+# How long vLLM is given to put an engine to sleep or wake it. A first sleep
+# copies the model's weights to host memory, which took 11.7 s for
+# Qwen3-32B-FP8 on an H20. The controller waits 60 seconds for the runtime, so
+# one call stays below that.
+VLLM_SLEEP_WAKE_TIMEOUT_SECONDS = 50.0
+# How many times a sleep that vLLM answers with an error is asked for.
+VLLM_SLEEP_ATTEMPTS = 3
+# How long a sleep waits for an engine to finish the requests it is serving. An
+# engine still serving after that is not idle, and is not put to sleep.
+VLLM_SLEEP_DRAIN_SECONDS = 1.0
 
-    response = httpx.post(f"http://127.0.0.1:{port}{path}", timeout=10.0)
+
+_LOCALHOST: Any = None
+
+
+def _localhost() -> Any:
+    """The HTTP client for the engines on this Pod. httpx.get builds a client
+    for each call, which takes longer than a local engine takes to answer, so
+    one client serves every call. It keeps no connection between calls, so an
+    engine started again on the same port is never asked through a connection
+    to the one before it. Two threads that both build it at first leave one of
+    the two unused, which is harmless, so no lock guards it."""
+    global _LOCALHOST
+    if _LOCALHOST is None:
+        import httpx
+
+        _LOCALHOST = httpx.Client(limits=httpx.Limits(max_keepalive_connections=0))
+    return _LOCALHOST
+
+
+def _vllm_control_post(
+    port: int, path: str, timeout: float = VLLM_SLEEP_WAKE_TIMEOUT_SECONDS
+) -> None:
+    """Invoke a vLLM development lifecycle endpoint through localhost only."""
+    response = _localhost().post(f"http://127.0.0.1:{port}{path}", timeout=timeout)
     response.raise_for_status()
 
 
@@ -504,6 +704,23 @@ _request_success_metrics = {
     "vllm:num_requests_success_total",
     "vllm_num_requests_success_total",
 }
+# An engine's /metrics page can hold the metrics of every engine on the Pod,
+# about 200 KB with seven engines, and parsing all of it takes about as long as
+# fetching it. Only the lines of the request metrics above are parsed.
+_REQUEST_METRIC_STEMS = (
+    "num_requests_running",
+    "num_requests_waiting",
+    "request_success",
+    "num_requests_success",
+)
+
+
+def _request_metric_lines(text: str) -> str:
+    return "\n".join(
+        line
+        for line in text.splitlines()
+        if any(stem in line for stem in _REQUEST_METRIC_STEMS)
+    )
 
 
 def _external_runtime_mock_enabled() -> bool:
@@ -528,10 +745,11 @@ def engine_request_activity(inst: "ModelInstance") -> EngineRequestActivity:
     if inst.proc is None and not _external_runtime_mock_enabled():
         return EngineRequestActivity()
     try:
-        import httpx
         from prometheus_client.parser import text_string_to_metric_families
 
-        response = httpx.get(f"http://127.0.0.1:{inst.port}/metrics", timeout=0.5)
+        response = _localhost().get(
+            f"http://127.0.0.1:{inst.port}/metrics", timeout=0.5
+        )
         response.raise_for_status()
     except Exception:
         return EngineRequestActivity()
@@ -539,7 +757,9 @@ def engine_request_activity(inst: "ModelInstance") -> EngineRequestActivity:
     values = {"running": 0.0, "waiting": 0.0, "success": 0.0}
     found = {"running": False, "waiting": False, "success": False}
     try:
-        for family in text_string_to_metric_families(response.text):
+        for family in text_string_to_metric_families(
+            _request_metric_lines(response.text)
+        ):
             for sample in family.samples:
                 if sample.labels.get("model_name") != inst.model_name:
                     continue
@@ -563,6 +783,31 @@ def engine_request_activity(inst: "ModelInstance") -> EngineRequestActivity:
             max(0, int(values["success"])) if found["success"] else None
         ),
     )
+
+
+def _probe_engines(
+    instances: List["ModelInstance"], alive: Dict[int, bool]
+) -> Dict[int, tuple[EngineRequestActivity, bool]]:
+    """Ask each engine what requests it has and whether it is ready, all at
+    once. Each answer waits on the engine's own HTTP server, about a tenth of a
+    second for a serving vLLM engine, so a pod's engines are asked concurrently.
+    """
+
+    def probe(inst: "ModelInstance") -> tuple[EngineRequestActivity, bool]:
+        activity = (
+            engine_request_activity(inst)
+            if alive[id(inst)]
+            else EngineRequestActivity()
+        )
+        return activity, instance_ready(inst)
+
+    if len(instances) < 2:
+        return {id(inst): probe(inst) for inst in instances}
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=len(instances)) as pool:
+        answers = list(pool.map(probe, instances))
+    return {id(inst): answer for inst, answer in zip(instances, answers)}
 
 
 def instance_ready(inst: "ModelInstance") -> bool:
@@ -602,6 +847,48 @@ def read_kv_segment(ipc_name: str, shm_dir: str = "/dev/shm"):
         return None
 
 
+# How long write_kv_limit waits for a segment's lock. The engine holds it only
+# while it rewrites a small struct, so a lock held this long means something is
+# stuck, and the write fails rather than wait for it.
+KV_LIMIT_LOCK_TIMEOUT_SECONDS = 5.0
+
+
+def write_kv_limit(ipc_name: str, limit_bytes: int, shm_dir: str = "/dev/shm") -> bool:
+    """Set total_size, the first field of a model's kvcached segment, the way
+    kvcached's own update_kv_cache_limit does: under an exclusive flock on the
+    segment file. The engine takes the same lock to rewrite the struct with
+    what it uses, so neither write is lost. Returns False, and writes nothing,
+    when the segment does not exist, as kvctl leaves a missing segment alone.
+    Raises TimeoutError, and writes nothing, when the lock stays held for
+    KV_LIMIT_LOCK_TIMEOUT_SECONDS.
+    """
+    import fcntl
+    import struct
+
+    path = os.path.join(shm_dir, ipc_name)
+    try:
+        fd = os.open(path, os.O_RDWR)
+    except FileNotFoundError:
+        return False
+    try:
+        deadline = time.monotonic() + KV_LIMIT_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"kvcached segment {ipc_name} stayed locked for "
+                        f"{KV_LIMIT_LOCK_TIMEOUT_SECONDS:g} seconds"
+                    )
+                time.sleep(0.01)
+        os.pwrite(fd, struct.pack("<q", limit_bytes), 0)
+    finally:
+        os.close(fd)
+    return True
+
+
 class SubprocessEngineLauncher(EngineLauncher):
     """Spawns a real vLLM/SGLang process with kvcached enabled, each in its own
     session (process group) so the kvcached IPC names do not collide."""
@@ -613,10 +900,8 @@ class SubprocessEngineLauncher(EngineLauncher):
         # Serve under the logical model name (not the artifact path) so the
         # gateway routes the claimed served name to this engine.
         if inst.engine == "sglang":
-            cmd = [
-                sys.executable,
-                "-m",
-                "sglang.launch_server",
+            module = "sglang.launch_server"
+            own_flags = [
                 "--model-path",
                 model_path,
                 "--served-model-name",
@@ -628,10 +913,8 @@ class SubprocessEngineLauncher(EngineLauncher):
                 "--enable-memory-saver",
             ]
         else:  # vllm
-            cmd = [
-                sys.executable,
-                "-m",
-                "vllm.entrypoints.openai.api_server",
+            module = "vllm.entrypoints.openai.api_server"
+            own_flags = [
                 "--model",
                 model_path,
                 "--served-model-name",
@@ -644,16 +927,21 @@ class SubprocessEngineLauncher(EngineLauncher):
             ]
         env = kvcached_env(inst.ipc_name)
         env.setdefault("VLLM_SERVER_DEV_MODE", "1")  # enable /sleep, /wake_up
+        cmd = [sys.executable, "-m", module]
         for key, value in _engine_args(engine_config, additional_config).items():
             cmd.append(key)
             if value:
                 cmd.append(value)
+        # The launcher's own flags go last. Both engines keep the last value
+        # given for a flag, so a claim that sets one again, in any spelling,
+        # cannot move the engine off its port, rename it or turn sleep off.
+        cmd += own_flags
 
         logger.info(
             "launching %s engine for %s: %s",
             inst.engine,
             inst.model_name,
-            " ".join(cmd),
+            shlex.join(map(str, cmd)),
         )
         proc = subprocess.Popen(cmd, env=env, start_new_session=True)
         inst.proc = proc
@@ -674,7 +962,41 @@ class SubprocessEngineLauncher(EngineLauncher):
             pass
 
     def sleep(self, inst, level):
-        _vllm_control_post(inst.port, f"/sleep?level={level}")
+        import httpx
+
+        # vLLM aborts the requests an engine is serving when it sleeps. A
+        # request can reach the engine after the controller last read it, and
+        # no metric shows it while its first prompt chunk runs. So vLLM is
+        # first asked to stop taking new requests and to finish the ones it is
+        # serving. An engine that has not finished them within
+        # VLLM_SLEEP_DRAIN_SECONDS is not idle: it takes requests again,
+        # including any that arrived meanwhile, and is not put to sleep. An
+        # engine that cannot pause is put to sleep at once.
+        try:
+            _vllm_control_post(
+                inst.port, "/sleep?level=0&mode=wait", timeout=VLLM_SLEEP_DRAIN_SECONDS
+            )
+        except httpx.TimeoutException:
+            _vllm_control_post(inst.port, "/wake_up?tags=scheduling")
+            raise EngineServingError(
+                f"model {inst.model_name} is still serving requests, so it is not put to sleep"
+            )
+        except httpx.HTTPError:
+            pass
+        for attempt in range(1, VLLM_SLEEP_ATTEMPTS + 1):
+            try:
+                _vllm_control_post(inst.port, f"/sleep?level={level}")
+                return
+            except httpx.HTTPStatusError:
+                # vLLM fails a sleep when the card has less free memory after
+                # it than before, which another engine on the card can cause
+                # while this engine's weights are being offloaded. The weights
+                # are then offloaded, but vLLM still holds the engine awake,
+                # and a wake would leave them offloaded. Asked again, vLLM
+                # finishes the sleep, since there is nothing left to offload.
+                if attempt == VLLM_SLEEP_ATTEMPTS:
+                    raise
+                time.sleep(1.0)
 
     def wake(self, inst):
         _vllm_control_post(inst.port, "/wake_up")
@@ -686,21 +1008,21 @@ def _resolve_model_path(artifact_url: str) -> str:
     - Local paths and bare model names pass through unchanged.
     - ``huggingface://`` / ``hf://`` hand the bare repo id to the engine, which
       downloads from the Hugging Face Hub natively (no aibrix downloader needed).
-    - Other remote stores (``s3://``, ``gcs://``, ``tos://``, ...) that the
-      engine can't fetch are staged locally via the aibrix downloader, falling
-      back to the raw path if the downloader/deps are unavailable.
+    - Remote stores the engine can't fetch (``s3://``, ``tos://``,
+      ``gcs://``/``gs://``) are staged locally via the aibrix downloader.
+      Download errors (bad URL, unsupported scheme, missing credentials,
+      missing object, a missing backend dependency) are raised.
     """
     if "://" not in artifact_url:
         return artifact_url
     scheme, rest = artifact_url.split("://", 1)
     if scheme in ("huggingface", "hf"):
         return rest
-    try:
-        from aibrix.downloader import download_model  # type: ignore
+    from aibrix.downloader import download_model
 
-        return download_model(artifact_url)
-    except Exception:  # pragma: no cover - depends on runtime deps
-        return rest
+    # The downloader returns a pathlib.Path; the engine command line is built
+    # from strings.
+    return str(download_model(artifact_url))
 
 
 def _engine_args(
@@ -721,8 +1043,44 @@ def _engine_args(
     return args
 
 
+# vLLM's short names for the flags read below.
+_VLLM_FLAG_ALIASES = {
+    "-tp": "--tensor-parallel-size",
+    "-pp": "--pipeline-parallel-size",
+    "-dp": "--data-parallel-size",
+}
+
+
+def _engine_flag(key: str) -> Tuple[str, Optional[str]]:
+    """Mirror the controller's ModelClaimEngineFlag. Return the flag's long
+    name, with "_" read as "-", and the value written after "=", or None
+    without one."""
+    name, equals, value = key.strip().partition("=")
+    if name in _VLLM_FLAG_ALIASES:
+        name = _VLLM_FLAG_ALIASES[name]
+    elif name.startswith("--"):
+        name = "--" + name[2:].replace("_", "-")
+    return name, value if equals else None
+
+
+def _engine_arg(args: Dict[str, str], name: str) -> Optional[str]:
+    """The value args give flag ``name``, however they spell it, or None.
+
+    A flag set more than once is refused, since the engine keeps the last value
+    it is given and a claim's args have no order."""
+    keys = sorted(key for key in args if _engine_flag(key)[0] == name)
+    if not keys:
+        return None
+    if len(keys) > 1:
+        raise ValueError(f"{name} is set more than once, as {' and '.join(keys)}")
+    value_after_equals = _engine_flag(keys[0])[1]
+    return args[keys[0]] if value_after_equals is None else value_after_equals
+
+
 def _positive_engine_arg(args: Dict[str, str], name: str) -> int:
-    raw = args.get(name, "1")
+    raw = _engine_arg(args, name)
+    if raw is None:
+        raw = "1"
     try:
         value = int(raw)
     except (TypeError, ValueError) as exc:
@@ -737,7 +1095,7 @@ def vllm_parallelism(
 ) -> int:
     """Return the fixed GPU group size required by vLLM TP and PP."""
     args = _engine_args(engine_config, additional_config)
-    if "--gpu-memory-utilization" in args:
+    if _engine_arg(args, "--gpu-memory-utilization") is not None:
         raise ValueError(
             "--gpu-memory-utilization is incompatible with kvcached; use the pool KV policy instead"
         )
@@ -839,9 +1197,17 @@ class ModelRuntime:
         if supervisor_interval_seconds <= 0:
             raise ValueError("supervisor_interval_seconds must be positive")
         self._launcher = launcher
-        self._kv_controller = kv_controller or KvctlController()
+        self._kv_controller = kv_controller or SharedMemoryKVController()
         self._models: Dict[str, ModelInstance] = {}
+        # _lock guards the records of the engines. Sleeps, wakes, KV-limit
+        # writes and health probes do their slow work without it, so a
+        # snapshot does not wait for them. Activate and deactivate hold it
+        # while they start or stop an engine, which is quick unless the
+        # weights have to be downloaded first. _operation_lock is taken first
+        # by every change of an engine (activate, deactivate, KV limit, sleep,
+        # wake and the supervisor), so changes happen one at a time.
         self._lock = threading.RLock()
+        self._operation_lock = threading.RLock()
         self._port_lo, self._port_hi = port_range
         self._registry = registry
         self._now = now
@@ -911,7 +1277,7 @@ class ModelRuntime:
         """Restore locally-owned engines after the runtime agent restarts."""
         if self._registry is None:
             return
-        with self._lock:
+        with self._operation_lock, self._lock:
             changed = False
             for record in self._registry.load():
                 inst = self._instance_from_registry_record(record)
@@ -922,6 +1288,8 @@ class ModelRuntime:
                     self._increment_metric(self._re_adoption_outcomes, "duplicate")
                     continue
                 self._models[inst.model_name] = inst
+
+                self._refresh_kv_capacity_locked(inst, adopting=True)
 
                 if inst.phase == "failed":
                     self._increment_metric(self._re_adoption_outcomes, "terminal")
@@ -955,6 +1323,11 @@ class ModelRuntime:
                             changed = True
                     continue
 
+                # A pending restart can bypass _schedule_restart below.
+                if inst.kv_initial_capacity_bytes is not None:
+                    inst.kv_initial_capacity_bytes = None
+                    inst.kv_capacity_verify_until = None
+                    changed = True
                 if inst.phase != "restarting" or inst.next_restart_at is None:
                     self._schedule_restart(
                         inst, "engine unavailable during runtime re-adoption"
@@ -962,7 +1335,10 @@ class ModelRuntime:
                     changed = True
                 self._increment_metric(self._re_adoption_outcomes, "restart_scheduled")
 
-            if changed:
+            if changed or any(
+                inst.kv_initial_capacity_persist_pending
+                for inst in self._models.values()
+            ):
                 self._persist_locked()
 
     @staticmethod
@@ -1034,6 +1410,21 @@ class ModelRuntime:
         last_transition = self._registry_timestamp(
             record.get("last_transition"), self._now()
         )
+        initial_capacity = record.get("kv_initial_capacity_bytes")
+        if (
+            isinstance(initial_capacity, bool)
+            or not isinstance(initial_capacity, int)
+            or initial_capacity < 0
+        ):
+            initial_capacity = None
+        verify_until = self._registry_timestamp(
+            record.get("kv_capacity_verify_until"), None
+        )
+        malformed_deadline = (
+            record.get("kv_capacity_verify_until") is not None and verify_until is None
+        )
+        if malformed_deadline:
+            initial_capacity = None
         return ModelInstance(
             model_name=model_name,
             port=port,
@@ -1058,8 +1449,27 @@ class ModelRuntime:
             next_restart_at=self._registry_timestamp(
                 record.get("next_restart_at"), None
             ),
+            sleeping_footprint_bytes=self._registry_sleeping_footprint(
+                record.get("sleeping_footprint_bytes"), phase
+            ),
+            kv_initial_capacity_bytes=initial_capacity,
+            kv_capacity_verify_until=verify_until
+            if initial_capacity is not None
+            else None,
+            kv_initial_capacity_persist_pending=malformed_deadline,
+            # Re-adoption cannot establish whether this segment was already changed.
+            kv_initial_capacity_unavailable=True,
             proc=AdoptedProcess(pid, pid_start_time),
         )
+
+    @staticmethod
+    def _registry_sleeping_footprint(value: Any, phase: str) -> Optional[int]:
+        # A reading that cannot be used is dropped, and the engine is kept: the
+        # record says nothing wrong about the engine itself. A reading kept for
+        # an engine that is not asleep would be stale.
+        if phase != "sleeping" or isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value if value > 0 else None
 
     @overload
     def _registry_timestamp(self, value: Any, fallback: datetime) -> datetime: ...
@@ -1103,6 +1513,13 @@ class ModelRuntime:
             "next_restart_at": (
                 inst.next_restart_at.isoformat() if inst.next_restart_at else None
             ),
+            "sleeping_footprint_bytes": inst.sleeping_footprint_bytes,
+            "kv_initial_capacity_bytes": inst.kv_initial_capacity_bytes,
+            "kv_capacity_verify_until": (
+                inst.kv_capacity_verify_until.isoformat()
+                if inst.kv_capacity_verify_until
+                else None
+            ),
         }
 
     def _persist_locked(self) -> None:
@@ -1110,10 +1527,61 @@ class ModelRuntime:
             self._registry.save(
                 [self._registry_record(inst) for inst in self._models.values()]
             )
+            for inst in self._models.values():
+                inst.kv_initial_capacity_persist_pending = False
+
+    def _refresh_kv_capacity_locked(
+        self, inst: ModelInstance, *, adopting: bool = False
+    ) -> None:
+        """Verify saved provenance without ever measuring the mutable segment."""
+        if inst.kv_initial_capacity_bytes is None or (
+            inst.kv_capacity_verify_until is None and not adopting
+        ):
+            return
+        before = (inst.kv_initial_capacity_bytes, inst.kv_capacity_verify_until)
+        current = process_start_time(inst.pid)
+        if (
+            inst.phase in {"failed", "stopping"}
+            or inst.pid_start_time is None
+            or not pid_is_alive(inst.pid)
+            or (current is not None and current != inst.pid_start_time)
+        ):
+            inst.kv_initial_capacity_bytes = None
+            inst.kv_capacity_verify_until = None
+        elif current == inst.pid_start_time:
+            # A match proves the same engine even after the deadline, which only bounds the deferral.
+            inst.kv_capacity_verify_until = None
+        elif (
+            inst.kv_capacity_verify_until is not None
+            and self._now() >= inst.kv_capacity_verify_until
+        ):
+            logger.warning(
+                "startup KV capacity verification expired for model %s (PID %s)",
+                inst.model_name,
+                inst.pid,
+            )
+            inst.kv_initial_capacity_bytes = None
+            inst.kv_capacity_verify_until = None
+        elif inst.kv_capacity_verify_until is None:
+            inst.kv_capacity_verify_until = self._now() + timedelta(
+                seconds=KV_CAPACITY_VERIFY_TIMEOUT_SECONDS
+            )
+        if before != (inst.kv_initial_capacity_bytes, inst.kv_capacity_verify_until):
+            inst.kv_initial_capacity_persist_pending = self._registry is not None
+
+    def _persist_kv_capacity_locked(self, inst: ModelInstance) -> None:
+        if inst.kv_initial_capacity_persist_pending:
+            try:
+                self._persist_locked()
+            except Exception:
+                logger.exception("could not persist startup KV capacity")
 
     def _transition(self, inst: ModelInstance, phase: str) -> bool:
         if inst.phase == phase:
             return False
+        if inst.phase == "sleeping":
+            # What the engine held asleep says nothing once it is not asleep.
+            inst.sleeping_footprint_bytes = None
         inst.phase = phase
         inst.last_transition = self._now()
         return True
@@ -1151,6 +1619,9 @@ class ModelRuntime:
         # Release worker-owned HBM as soon as the API parent is observed dead;
         # the exponential backoff governs relaunches, not resource cleanup.
         self._terminate_stale_process_group(inst)
+        inst.kv_initial_capacity_bytes = None
+        inst.kv_capacity_verify_until = None
+        inst.kv_initial_capacity_unavailable = False
         inst.last_error = error
         if inst.restart_count >= self._max_restarts:
             if self._transition(inst, "failed"):
@@ -1177,6 +1648,11 @@ class ModelRuntime:
         inst.proc = None
         inst.pid = None
         inst.pid_start_time = None
+        # Re-adoption or a limit write during backoff may have blocked capture.
+        # Cleanup succeeded, so the replacement starts with fresh provenance.
+        inst.kv_initial_capacity_bytes = None
+        inst.kv_capacity_verify_until = None
+        inst.kv_initial_capacity_unavailable = False
         try:
             self._increment_metric(self._restart_attempts, inst.model_name)
             inst.pid = self._launcher.launch(
@@ -1195,55 +1671,70 @@ class ModelRuntime:
 
     def supervise_once(self) -> None:
         """Advance each engine independently through its local failure state."""
-        with self._lock:
-            changed = False
-            remove = []
-            now = self._now()
-            for model_name, inst in self._models.items():
-                if inst.phase == "failed":
-                    continue
-                if inst.phase == "stopping":
-                    if self._process_handle_alive(inst) or process_group_is_alive(
-                        inst.pid
-                    ):
-                        try:
-                            self._launcher.stop(inst)
-                        except Exception as exc:
-                            inst.last_error = f"stop failed: {exc}"
-                            inst.last_transition = now
-                            changed = True
-                    else:
-                        remove.append(model_name)
+        with self._operation_lock:
+            with self._lock:
+                probed = [
+                    inst
+                    for inst in self._models.values()
+                    if inst.phase not in ("failed", "stopping", "sleeping")
+                    and self._process_handle_alive(inst)
+                ]
+            # Each health probe waits on its engine, so the probes are made
+            # without _lock, and a snapshot does not wait for them.
+            ready = {id(inst): instance_ready(inst) for inst in probed}
+            with self._lock:
+                self._supervise_locked(ready)
+
+    def _supervise_locked(self, ready: Dict[int, bool]) -> None:
+        changed = False
+        remove = []
+        now = self._now()
+        for model_name, inst in self._models.items():
+            self._refresh_kv_capacity_locked(inst)
+            if inst.phase == "failed":
+                continue
+            if inst.phase == "stopping":
+                if self._process_handle_alive(inst) or process_group_is_alive(inst.pid):
+                    try:
+                        self._launcher.stop(inst)
+                    except Exception as exc:
+                        inst.last_error = f"stop failed: {exc}"
+                        inst.last_transition = now
                         changed = True
-                    continue
-
-                if self._process_handle_alive(inst):
-                    if inst.phase != "sleeping":
-                        if instance_ready(inst):
-                            if inst.phase != "active" or inst.last_error is not None:
-                                self._transition(inst, "active")
-                                inst.last_error = None
-                                changed = True
-                        elif inst.phase != "booting":
-                            self._transition(inst, "booting")
-                            changed = True
-                    continue
-
-                if inst.phase == "restarting" and inst.next_restart_at is not None:
-                    if now < inst.next_restart_at:
-                        continue
-                    self._restart_instance(inst)
+                else:
+                    remove.append(model_name)
                     changed = True
+                continue
+
+            if self._process_handle_alive(inst):
+                if inst.phase != "sleeping":
+                    if ready.get(id(inst), False):
+                        if inst.phase != "active" or inst.last_error is not None:
+                            self._transition(inst, "active")
+                            inst.last_error = None
+                            changed = True
+                    elif inst.phase != "booting":
+                        self._transition(inst, "booting")
+                        changed = True
+                continue
+
+            if inst.phase == "restarting" and inst.next_restart_at is not None:
+                if now < inst.next_restart_at:
                     continue
-
-                self._schedule_restart(inst, "engine exited")
+                self._restart_instance(inst)
                 changed = True
+                continue
 
-            for model_name in remove:
-                self._models.pop(model_name, None)
-                self._clear_model_metric_gauges(model_name)
-            if changed:
-                self._persist_locked()
+            self._schedule_restart(inst, "engine exited")
+            changed = True
+
+        for model_name in remove:
+            self._models.pop(model_name, None)
+            self._clear_model_metric_gauges(model_name)
+        if changed or any(
+            inst.kv_initial_capacity_persist_pending for inst in self._models.values()
+        ):
+            self._persist_locked()
 
     def activate(
         self,
@@ -1257,7 +1748,7 @@ class ModelRuntime:
         additional_config: Optional[Dict[str, str]] = None,
         claim_ref: Optional[Dict[str, str]] = None,
     ) -> ModelInstance:
-        with self._lock:
+        with self._operation_lock, self._lock:
             if engine == "vllm":
                 validate_vllm_parallelism(engine_config, additional_config)
             existing = self._models.get(model_name)
@@ -1321,13 +1812,15 @@ class ModelRuntime:
             return inst
 
     def deactivate(self, model_name: str, mode: str = "stop") -> None:
-        with self._lock:
+        with self._operation_lock, self._lock:
             inst = self._models.get(model_name)
             if inst is None:
                 return
             if mode != "stop":
                 logger.info("deactivate mode %s is treated as stop", mode)
             self._transition(inst, "stopping")
+            inst.kv_initial_capacity_bytes = None
+            inst.kv_capacity_verify_until = None
             self._persist_locked()
             try:
                 self._launcher.stop(inst)
@@ -1355,31 +1848,72 @@ class ModelRuntime:
             raise ValueError("limit_bytes must be non-negative")
         if not operation_id:
             raise ValueError("operation_id must not be empty")
-        with self._lock:
-            inst = self._require_instance(model_name)
-            self._kv_limit_requested_bytes[model_name] = limit_bytes
-            if self._operation_completed(inst, "kv-limit", operation_id):
-                self._increment_metric(self._kv_limit_outcomes, (model_name, "skipped"))
+        with self._operation_lock:
+            with self._lock:
+                inst = self._require_instance(model_name)
+                self._refresh_kv_capacity_locked(inst)
+                self._persist_kv_capacity_locked(inst)
+                self._kv_limit_requested_bytes[model_name] = limit_bytes
+                if self._operation_completed(inst, "kv-limit", operation_id):
+                    self._increment_metric(
+                        self._kv_limit_outcomes, (model_name, "skipped")
+                    )
+                    return RuntimeOperationResult(
+                        model_name=model_name,
+                        operation_id=operation_id,
+                        applied=False,
+                        phase=inst.phase,
+                    )
+                capacity = inst.kv_initial_capacity_bytes
+                if (
+                    inst.kv_capacity_verify_until is not None
+                    and capacity is not None
+                    and limit_bytes > capacity
+                ):
+                    self._increment_metric(
+                        self._kv_limit_outcomes, (model_name, "failed")
+                    )
+                    raise UnsupportedModelControlError(
+                        f"startup KV capacity for {model_name!r} has pending "
+                        "identity verification"
+                    )
+                if capacity is not None:
+                    limit_bytes = min(limit_bytes, capacity)
+                elif not inst.kv_initial_capacity_unavailable and not isinstance(
+                    self._kv_controller, MockKVController
+                ):
+                    self._increment_metric(
+                        self._kv_limit_outcomes, (model_name, "failed")
+                    )
+                    raise UnsupportedModelControlError(
+                        f"startup KV capacity for {model_name!r} is not known yet"
+                    )
+                # Guard before releasing the lock: a snapshot may race the write.
+                was_unavailable = inst.kv_initial_capacity_unavailable
+                inst.kv_initial_capacity_unavailable = True
+            # The write may wait for the lock the engine takes on its segment, so
+            # it runs without _lock, and a snapshot never waits for it.
+            try:
+                written = self._kv_controller.set_limit(inst.ipc_name, limit_bytes)
+            except Exception:
+                with self._lock:
+                    self._increment_metric(
+                        self._kv_limit_outcomes, (model_name, "failed")
+                    )
+                raise
+            with self._lock:
+                if written is False:
+                    inst.kv_initial_capacity_unavailable = was_unavailable
+                self._kv_limit_applied_bytes[model_name] = limit_bytes
+                self._increment_metric(self._kv_limit_outcomes, (model_name, "applied"))
+                self._remember_operation(inst, "kv-limit", operation_id)
                 return RuntimeOperationResult(
                     model_name=model_name,
                     operation_id=operation_id,
-                    applied=False,
+                    applied=True,
                     phase=inst.phase,
+                    limit_bytes=limit_bytes,
                 )
-            try:
-                self._kv_controller.set_limit(inst.ipc_name, limit_bytes)
-            except Exception:
-                self._increment_metric(self._kv_limit_outcomes, (model_name, "failed"))
-                raise
-            self._kv_limit_applied_bytes[model_name] = limit_bytes
-            self._increment_metric(self._kv_limit_outcomes, (model_name, "applied"))
-            self._remember_operation(inst, "kv-limit", operation_id)
-            return RuntimeOperationResult(
-                model_name=model_name,
-                operation_id=operation_id,
-                applied=True,
-                phase=inst.phase,
-            )
 
     def sleep(
         self, model_name: str, *, level: int, operation_id: str
@@ -1393,41 +1927,71 @@ class ModelRuntime:
         result = "failed"
         tracked = False
         try:
-            with self._lock:
-                inst = self._require_instance(model_name)
-                tracked = True
-                if inst.engine != "vllm":
-                    raise UnsupportedModelControlError(
-                        f"sleep is unsupported for engine {inst.engine!r}"
-                    )
-                if self._operation_completed(inst, "sleep", operation_id):
-                    result = "skipped"
-                    return RuntimeOperationResult(
-                        model_name=model_name,
-                        operation_id=operation_id,
-                        applied=False,
-                        phase=inst.phase,
-                    )
-                if inst.phase == "sleeping":
-                    self._remember_operation(inst, "sleep", operation_id)
-                    result = "skipped"
-                    return RuntimeOperationResult(
-                        model_name=model_name,
-                        operation_id=operation_id,
-                        applied=False,
-                        phase=inst.phase,
-                    )
+            with self._operation_lock:
+                with self._lock:
+                    inst = self._require_instance(model_name)
+                    self._refresh_kv_capacity_locked(inst)
+                    self._persist_kv_capacity_locked(inst)
+                    tracked = True
+                    if inst.engine != "vllm":
+                        raise UnsupportedModelControlError(
+                            f"sleep is unsupported for engine {inst.engine!r}"
+                        )
+                    if self._operation_completed(inst, "sleep", operation_id):
+                        result = "skipped"
+                        return RuntimeOperationResult(
+                            model_name=model_name,
+                            operation_id=operation_id,
+                            applied=False,
+                            phase=inst.phase,
+                        )
+                    if inst.phase == "sleeping":
+                        self._remember_operation(inst, "sleep", operation_id)
+                        result = "skipped"
+                        return RuntimeOperationResult(
+                            model_name=model_name,
+                            operation_id=operation_id,
+                            applied=False,
+                            phase=inst.phase,
+                        )
+                    if inst.kv_initial_capacity_bytes is None:
+                        inst.kv_initial_capacity_unavailable = True
+                # The card is read just before and just after the sleep, so
+                # what the engine still holds can be told apart even when NVML
+                # reports host PIDs. The operation lock keeps any other sleep
+                # or wake on this Pod out of the moment between the two
+                # readings. _lock is not held, so a snapshot need not wait for
+                # the engine to fall asleep.
+                _, before = gpu_memory_observation()
                 self._launcher.sleep(inst, level)
-                self._transition(inst, "sleeping")
-                self._remember_operation(inst, "sleep", operation_id)
-                self._persist_locked()
-                result = "applied"
-                return RuntimeOperationResult(
-                    model_name=model_name,
-                    operation_id=operation_id,
-                    applied=True,
-                    phase=inst.phase,
+                _, after = gpu_memory_observation()
+                footprint = sleeping_footprint_bytes(
+                    process_tree_pids(inst.pid), before, after
                 )
+                with self._lock:
+                    self._transition(inst, "sleeping")
+                    inst.sleeping_footprint_bytes = footprint
+                    if footprint is None:
+                        # The controller then keeps the engine's whole seat, so
+                        # the card gains no room from this sleep.
+                        logger.warning(
+                            "model %s sleeps, and the memory it holds could not be "
+                            "attributed to it",
+                            model_name,
+                        )
+                    else:
+                        logger.info(
+                            "model %s sleeps holding %d bytes", model_name, footprint
+                        )
+                    self._remember_operation(inst, "sleep", operation_id)
+                    self._persist_locked()
+                    result = "applied"
+                    return RuntimeOperationResult(
+                        model_name=model_name,
+                        operation_id=operation_id,
+                        applied=True,
+                        phase=inst.phase,
+                    )
         finally:
             if tracked:
                 self._record_lifecycle_operation(
@@ -1442,41 +2006,55 @@ class ModelRuntime:
         result = "failed"
         tracked = False
         try:
-            with self._lock:
-                inst = self._require_instance(model_name)
-                tracked = True
-                if inst.engine != "vllm":
-                    raise UnsupportedModelControlError(
-                        f"wake is unsupported for engine {inst.engine!r}"
+            with self._operation_lock:
+                with self._lock:
+                    inst = self._require_instance(model_name)
+                    self._refresh_kv_capacity_locked(inst)
+                    self._persist_kv_capacity_locked(inst)
+                    tracked = True
+                    if inst.engine != "vllm":
+                        raise UnsupportedModelControlError(
+                            f"wake is unsupported for engine {inst.engine!r}"
+                        )
+                    if self._operation_completed(inst, "wake", operation_id):
+                        result = "skipped"
+                        return RuntimeOperationResult(
+                            model_name=model_name,
+                            operation_id=operation_id,
+                            applied=False,
+                            phase=inst.phase,
+                        )
+                    if inst.phase != "sleeping":
+                        self._remember_operation(inst, "wake", operation_id)
+                        result = "skipped"
+                        return RuntimeOperationResult(
+                            model_name=model_name,
+                            operation_id=operation_id,
+                            applied=False,
+                            phase=inst.phase,
+                        )
+                try:
+                    self._launcher.wake(inst)
+                except Exception:
+                    # vLLM may have taken some memory back before the wake
+                    # failed, so what the engine held asleep is no longer known.
+                    with self._lock:
+                        inst.sleeping_footprint_bytes = None
+                        self._persist_locked()
+                    raise
+                with self._lock:
+                    self._transition(
+                        inst, "booting" if inst.proc is not None else "active"
                     )
-                if self._operation_completed(inst, "wake", operation_id):
-                    result = "skipped"
-                    return RuntimeOperationResult(
-                        model_name=model_name,
-                        operation_id=operation_id,
-                        applied=False,
-                        phase=inst.phase,
-                    )
-                if inst.phase != "sleeping":
                     self._remember_operation(inst, "wake", operation_id)
-                    result = "skipped"
+                    self._persist_locked()
+                    result = "applied"
                     return RuntimeOperationResult(
                         model_name=model_name,
                         operation_id=operation_id,
-                        applied=False,
+                        applied=True,
                         phase=inst.phase,
                     )
-                self._launcher.wake(inst)
-                self._transition(inst, "booting" if inst.proc is not None else "active")
-                self._remember_operation(inst, "wake", operation_id)
-                self._persist_locked()
-                result = "applied"
-                return RuntimeOperationResult(
-                    model_name=model_name,
-                    operation_id=operation_id,
-                    applied=True,
-                    phase=inst.phase,
-                )
         finally:
             if tracked:
                 self._record_lifecycle_operation(
@@ -1521,12 +2099,22 @@ class ModelRuntime:
     def snapshot(self) -> Dict[str, object]:
         """Return the sidecar's point-in-time scheduling observation.
 
-        Instance bookkeeping is copied while holding the runtime lock. The
-        potentially slow hardware, filesystem, and readiness reads happen
-        afterwards so an observation never blocks activate/deactivate.
+        Hardware, segment and readiness reads happen outside the runtime lock.
+        Capturing startup capacity persists the registry while holding the lock.
         """
         with self._lock:
             instances = list(self._models.values())
+            identities = {
+                id(inst): (inst.pid, inst.pid_start_time, inst.restart_count)
+                for inst in instances
+            }
+            # A wake clears the reading as it leaves sleep, so the reading is
+            # taken together with the phase it belongs to.
+            asleep_holding = {
+                id(inst): inst.sleeping_footprint_bytes
+                for inst in instances
+                if inst.phase == "sleeping"
+            }
         accelerators, process_hbm = gpu_memory_observation()
         if (
             not accelerators
@@ -1540,14 +2128,49 @@ class ModelRuntime:
                     "hbm_free_bytes": 0,
                 }
             ]
+        alive = {id(inst): self._instance_alive(inst) for inst in instances}
+        probes = _probe_engines(instances, alive)
         models = []
         for inst in instances:
             segment = read_kv_segment(inst.ipc_name)
-            total, used, prealloc = segment if segment else (0, 0, 0)
-            alive = self._instance_alive(inst)
-            activity = (
-                engine_request_activity(inst) if alive else EngineRequestActivity()
-            )
+            if segment is None:
+                kv_used = kv_capacity = KV_UNKNOWN
+            else:
+                total, used, prealloc = segment
+                kv_used, kv_capacity = used + prealloc, total
+            activity, ready = probes[id(inst)]
+            with self._lock:
+                identity_changed = self._models.get(
+                    inst.model_name
+                ) is not inst or identities[id(inst)] != (
+                    inst.pid,
+                    inst.pid_start_time,
+                    inst.restart_count,
+                )
+                if identity_changed:
+                    # Discard probes from a different engine generation.
+                    ready = False
+                    kv_used = kv_capacity = KV_UNKNOWN
+                    activity = EngineRequestActivity()
+                if not identity_changed:
+                    self._refresh_kv_capacity_locked(inst)
+                if (
+                    ready
+                    and kv_capacity >= 0
+                    and inst.phase in {"active", "booting"}
+                    and not inst.kv_initial_capacity_unavailable
+                    and inst.kv_initial_capacity_bytes is None
+                ):
+                    inst.kv_initial_capacity_bytes = kv_capacity
+                    inst.kv_initial_capacity_persist_pending = (
+                        self._registry is not None
+                    )
+                self._persist_kv_capacity_locked(inst)
+                initial_capacity = (
+                    None
+                    if identity_changed or inst.kv_capacity_verify_until is not None
+                    else inst.kv_initial_capacity_bytes
+                )
             models.append(
                 {
                     "model_name": inst.model_name,
@@ -1556,14 +2179,20 @@ class ModelRuntime:
                     "port": inst.port,
                     "ipc_name": inst.ipc_name,
                     "phase": inst.phase,
-                    "alive": alive,
-                    "ready": instance_ready(inst),
+                    "alive": alive[id(inst)],
+                    "ready": ready,
                     "restart_count": inst.restart_count,
                     "last_error": inst.last_error,
                     "last_transition": inst.last_transition,
-                    "kv_used_bytes": used + prealloc,
-                    "kv_capacity_bytes": total,
+                    "kv_used_bytes": kv_used,
+                    "kv_capacity_bytes": kv_capacity,
+                    "kv_initial_capacity_bytes": initial_capacity,
                     "hbm_peak_bytes": engine_hbm_peak_bytes(inst, process_hbm),
+                    "sleeping_footprint_bytes": (
+                        asleep_holding.get(id(inst))
+                        if inst.phase == "sleeping"
+                        else None
+                    ),
                     "request_metrics_observed": activity.observed,
                     "requests_running": activity.requests_running,
                     "requests_waiting": activity.requests_waiting,
@@ -1658,7 +2287,7 @@ def get_model_runtime() -> ModelRuntime:
         else:
             _AGENT = ModelRuntime(
                 SubprocessEngineLauncher(),
-                kv_controller=KvctlController(),
+                kv_controller=SharedMemoryKVController(),
                 registry=EngineRegistry(
                     os.environ.get(
                         "AIBRIX_ENGINE_REGISTRY_PATH", _DEFAULT_ENGINE_REGISTRY_PATH

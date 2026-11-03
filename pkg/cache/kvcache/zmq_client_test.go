@@ -226,7 +226,7 @@ func TestMockZMQPublisher(t *testing.T) {
 
 	// Publish message after client has started
 	seq := make([]byte, 8)
-	binary.BigEndian.PutUint64(seq, 1)
+	binary.BigEndian.PutUint64(seq, 0)
 	_, err = publisher.SendBytes([]byte("test-topic"), zmq.SNDMORE)
 	require.NoError(t, err)
 	_, err = publisher.SendBytes(seq, zmq.SNDMORE)
@@ -472,9 +472,105 @@ func TestZMQClientReconnectionFlow(t *testing.T) {
 	// Wait for processing
 	time.Sleep(300 * time.Millisecond)
 
-	// Verify both events were received
+	// The restarted publisher reuses sequence 0, so the client clears the old
+	// pod view before applying the new event.
 	events := handler.GetEvents()
-	assert.Len(t, events, 2)
+	require.Len(t, events, 3)
+	_, cleared := events[1].(*AllBlocksClearedEvent)
+	assert.True(t, cleared, "a publisher restart must clear the stale pod view")
+	_, stored := events[2].(*BlockRemovedEvent)
+	assert.True(t, stored)
+}
+
+// TestZMQClientBuffersOutOfOrderBatches checks that a batch ahead of the next
+// expected sequence is held, not applied, until the gap is filled.
+func TestZMQClientBuffersOutOfOrderBatches(t *testing.T) {
+	handler := NewMockEventHandler()
+	client := NewZMQClient(&ZMQClientConfig{
+		PodKey:         "test-pod",
+		ModelName:      "test-model",
+		ReconnectDelay: 10 * time.Millisecond,
+	}, handler)
+	defer client.Stop()
+
+	apply := func(seq int64, hash int64) {
+		t.Helper()
+		_, err := client.applyEventBatch(seq, encodeBlockStored(t, hash), false)
+		require.NoError(t, err)
+	}
+
+	apply(0, 100)
+	apply(2, 300) // held: sequence 1 is missing
+	require.Equal(t, int64(0), client.GetLastSequence())
+	require.Len(t, handler.GetEvents(), 1)
+
+	apply(1, 200) // fills the gap and drains the held batch in order
+	require.Equal(t, int64(2), client.GetLastSequence())
+
+	events := handler.GetEvents()
+	require.Len(t, events, 3)
+	assert.Equal(t, []int64{100}, events[0].(*BlockStoredEvent).BlockHashes)
+	assert.Equal(t, []int64{200}, events[1].(*BlockStoredEvent).BlockHashes)
+	assert.Equal(t, []int64{300}, events[2].(*BlockStoredEvent).BlockHashes)
+}
+
+// TestZMQClientResetsViewWhenPendingOverflows checks the bound on held
+// batches: when the gap outgrows it, the untrusted view is cleared and the
+// stream continues from the newest batch instead of stalling.
+func TestZMQClientResetsViewWhenPendingOverflows(t *testing.T) {
+	oldLimit := maxPendingBatches
+	maxPendingBatches = 2
+	defer func() { maxPendingBatches = oldLimit }()
+
+	handler := NewMockEventHandler()
+	client := NewZMQClient(&ZMQClientConfig{
+		PodKey:         "test-pod",
+		ModelName:      "test-model",
+		ReconnectDelay: 10 * time.Millisecond,
+	}, handler)
+	defer client.Stop()
+
+	apply := func(seq int64, hash int64) {
+		t.Helper()
+		_, err := client.applyEventBatch(seq, encodeBlockStored(t, hash), false)
+		require.NoError(t, err)
+	}
+
+	apply(0, 100)
+	apply(2, 300)
+	apply(3, 400)
+	apply(4, 500) // the buffer is full now: clear and continue from 4
+	require.Equal(t, int64(4), client.GetLastSequence())
+
+	events := handler.GetEvents()
+	require.Len(t, events, 3)
+	_, cleared := events[1].(*AllBlocksClearedEvent)
+	assert.True(t, cleared, "an overflowing gap must clear the stale view")
+	assert.Equal(t, []int64{500}, events[2].(*BlockStoredEvent).BlockHashes)
+}
+
+// TestZMQClientDropsStaleReplayBatch checks a replayed batch at sequence 0 is
+// dropped as stale instead of being mistaken for a publisher restart.
+func TestZMQClientDropsStaleReplayBatch(t *testing.T) {
+	handler := NewMockEventHandler()
+	client := NewZMQClient(&ZMQClientConfig{
+		PodKey:         "test-pod",
+		ModelName:      "test-model",
+		ReconnectDelay: 10 * time.Millisecond,
+	}, handler)
+	defer client.Stop()
+
+	apply := func(seq int64, hash int64, replay bool) {
+		t.Helper()
+		_, err := client.applyEventBatch(seq, encodeBlockStored(t, hash), replay)
+		require.NoError(t, err)
+	}
+
+	apply(0, 100, false)
+	apply(1, 200, false)
+	apply(0, 999, true) // a replay must not restart the sequence space
+	require.Equal(t, int64(1), client.GetLastSequence())
+	require.Len(t, handler.GetEvents(), 2)
 }
 
 // TestZMQClientSequenceHandling tests sequence number tracking and gap detection
@@ -512,7 +608,9 @@ func TestZMQClientSequenceHandling(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		if i == 5 || i == 6 {
 			// Skip sequences 5 and 6 to create a gap
-			publisher.sequence += 2
+			publisher.mu.Lock()
+			publisher.sequence++
+			publisher.mu.Unlock()
 			continue
 		}
 
@@ -531,14 +629,211 @@ func TestZMQClientSequenceHandling(t *testing.T) {
 	// Wait for processing
 	time.Sleep(300 * time.Millisecond)
 
-	// Should have received 8 events (10 - 2 skipped)
+	// The skipped sequences cannot be replayed, so the client drops the
+	// untrusted view and continues from the first buffered batch. It receives
+	// the 5 batches before the gap, one clear, and the 3 batches after it.
 	events := handler.GetEvents()
-	assert.Len(t, events, 8)
+	require.Len(t, events, 9)
+	_, cleared := events[5].(*AllBlocksClearedEvent)
+	assert.True(t, cleared, "an unrecoverable gap must clear the stale view")
 
-	// Verify sequence tracking
+	// Verify sequence tracking.
 	lastSeq := client.GetLastSequence()
-	assert.GreaterOrEqual(t, lastSeq, int64(9))
+	assert.Equal(t, int64(9), lastSeq)
 }
+
+// TestZMQClientStartAppliesReplayedBatches tests that a client that subscribes
+// after the engine has published batches gets them from the initial replay
+func TestZMQClientStartAppliesReplayedBatches(t *testing.T) {
+	skipIfZMQUnavailable(t)
+
+	tests := []struct {
+		name         string
+		pubPort      int
+		routerPort   int
+		withoutTopic bool
+	}{
+		{name: "vLLM v0.26+ framing", pubPort: 25581, routerPort: 25582},
+		{name: "vLLM v0.25 and earlier framing", pubPort: 25583, routerPort: 25584, withoutTopic: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			publisher := createMockPublisher(t, tt.pubPort, tt.routerPort)
+			defer publisher.Close()
+			publisher.mu.Lock()
+			publisher.replayWithoutTopic = tt.withoutTopic
+			publisher.mu.Unlock()
+
+			// Published before the client connects, so they only reach it by replay
+			publishBlockStored(t, publisher, 100, 200, 300)
+
+			client, handler := newReplayTestClient(tt.pubPort, tt.routerPort, time.Second)
+			defer client.Stop()
+
+			// Start requests the replay from seq 0 and returns when it is done
+			require.NoError(t, client.Start())
+
+			assert.Equal(t, []int64{100, 200, 300}, storedHashes(handler))
+			assert.Equal(t, int64(2), client.GetLastSequence())
+			requireNoPendingReplayFrames(t, client)
+		})
+	}
+}
+
+// TestZMQClientReplaySkipsAppliedBatches tests that replayed batches at or
+// below lastSeq are not applied again
+func TestZMQClientReplaySkipsAppliedBatches(t *testing.T) {
+	skipIfZMQUnavailable(t)
+
+	publisher := createMockPublisher(t, 25585, 25586)
+	defer publisher.Close()
+	publishBlockStored(t, publisher, 100, 200, 300)
+
+	client, handler := newReplayTestClient(25585, 25586, time.Second)
+	defer client.Stop()
+	require.NoError(t, client.Connect())
+
+	client.mu.Lock()
+	client.lastSeq = 1
+	client.mu.Unlock()
+
+	_, replayErr := client.requestReplay(0)
+	require.NoError(t, replayErr)
+
+	assert.Equal(t, []int64{300}, storedHashes(handler))
+	assert.Equal(t, int64(2), client.GetLastSequence())
+	requireNoPendingReplayFrames(t, client)
+}
+
+// TestZMQClientReplayEndMarkerOnly tests a replay with nothing to resend
+func TestZMQClientReplayEndMarkerOnly(t *testing.T) {
+	skipIfZMQUnavailable(t)
+
+	publisher := createMockPublisher(t, 25587, 25588)
+	defer publisher.Close()
+
+	client, handler := newReplayTestClient(25587, 25588, time.Second)
+	defer client.Stop()
+	require.NoError(t, client.Connect())
+
+	_, replayErr := client.requestReplay(0)
+	require.NoError(t, replayErr)
+
+	assert.Empty(t, handler.GetEvents())
+	assert.Equal(t, int64(-1), client.GetLastSequence())
+	requireNoPendingReplayFrames(t, client)
+}
+
+// TestZMQClientReplayTimeoutRecreatesSocket tests that a reply cut off by
+// ReplayTimeout keeps the batches applied so far, and that its late frames are
+// not read as the reply to the next request
+func TestZMQClientReplayTimeoutRecreatesSocket(t *testing.T) {
+	skipIfZMQUnavailable(t)
+
+	publisher := createMockPublisher(t, 25589, 25590)
+	defer publisher.Close()
+	publishBlockStored(t, publisher, 100, 200, 300)
+
+	// Hold the first reply after its first batch until the client gave up
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseReply := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseReply()
+	stalled := false
+	publisher.mu.Lock()
+	publisher.beforeReplayBatch = func(n int) {
+		if n == 1 && !stalled {
+			stalled = true
+			<-release
+		}
+	}
+	publisher.mu.Unlock()
+
+	client, handler := newReplayTestClient(25589, 25590, 500*time.Millisecond)
+	defer client.Stop()
+	require.NoError(t, client.Connect())
+	firstSocket := replaySocketOf(client)
+
+	_, err := client.requestReplay(0)
+	require.Error(t, err, "requestReplay returned before the end of the replay")
+	assert.Contains(t, err.Error(), "timed out")
+	assert.Equal(t, []int64{100}, storedHashes(handler), "the batch received before the timeout stays applied")
+	assert.Equal(t, int64(0), client.GetLastSequence())
+	assert.NotSame(t, firstSocket, replaySocketOf(client), "replay socket was not recreated after the timeout")
+
+	// The rest of the first reply now goes to the closed socket
+	releaseReply()
+
+	_, replayErr := client.requestReplay(client.GetLastSequence() + 1)
+	require.NoError(t, replayErr)
+	assert.Equal(t, []int64{100, 200, 300}, storedHashes(handler))
+	assert.Equal(t, int64(2), client.GetLastSequence())
+	requireNoPendingReplayFrames(t, client)
+}
+
+// TestZMQClientReplayRejectsMalformedReply tests that a malformed replay
+// message fails the replay without applying it or anything after it
+func TestZMQClientReplayRejectsMalformedReply(t *testing.T) {
+	skipIfZMQUnavailable(t)
+
+	end := replayMessage(mockReplayEndSeq, []byte{})
+	tests := []struct {
+		name        string
+		routerPort  int
+		reply       [][][]byte
+		wantHashes  []int64
+		wantLastSeq int64
+	}{
+		{
+			name:       "undecodable payload",
+			routerPort: 25591,
+			reply: [][][]byte{
+				replayMessage(0, encodeBlockStored(t, 100)),
+				replayMessage(1, []byte{0xc1}), // 0xc1 is never used in msgpack
+				replayMessage(2, encodeBlockStored(t, 300)),
+				end,
+			},
+			wantHashes:  []int64{100},
+			wantLastSeq: 0,
+		},
+		{
+			name:        "too few frames",
+			routerPort:  25592,
+			reply:       [][][]byte{{{}, encodeSeq(1)}, end},
+			wantLastSeq: -1,
+		},
+		{
+			name:        "short sequence frame",
+			routerPort:  25593,
+			reply:       [][][]byte{{{}, {}, {0, 0, 0, 1}, encodeBlockStored(t, 100)}, end},
+			wantLastSeq: -1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			serveReplayOnce(t, tt.routerPort, tt.reply...)
+
+			client, handler := newReplayTestClient(25599, tt.routerPort, time.Second)
+			defer client.Stop()
+			require.NoError(t, client.Connect())
+			firstSocket := replaySocketOf(client)
+
+			_, err := client.requestReplay(0)
+			require.Error(t, err, "malformed replay reply was accepted")
+			assert.Equal(t, tt.wantHashes, storedHashes(handler))
+			assert.Equal(t, tt.wantLastSeq, client.GetLastSequence())
+			assert.NotSame(t, firstSocket, replaySocketOf(client), "replay socket was not recreated after the error")
+		})
+	}
+}
+
+// Match vLLM's ZmqEventPublisher: the default buffer_steps and END_SEQ
+const (
+	mockReplayBufferSteps       = 10000
+	mockReplayEndSeq      int64 = -1
+)
 
 // Mock publisher helper implementation
 type mockPublisher struct {
@@ -547,7 +842,22 @@ type mockPublisher struct {
 	pubSock  *zmq.Socket
 	repSock  *zmq.Socket
 	sequence int64
-	mu       sync.Mutex
+	// buffer holds the published batches for replay, oldest first
+	buffer []bufferedBatch
+	// replayWithoutTopic makes replay replies use the framing of vLLM v0.25
+	// and earlier, which had no topic frame
+	replayWithoutTopic bool
+	// beforeReplayBatch, if set, runs before each batch of a replay reply is
+	// sent; n is the number of batches already sent in that reply
+	beforeReplayBatch func(n int)
+	// replayDone is closed when handleReplay returns
+	replayDone chan struct{}
+	mu         sync.Mutex
+}
+
+type bufferedBatch struct {
+	seq     int64
+	payload []byte
 }
 
 func createMockPublisher(t testing.TB, pubPort, repPort int) *mockPublisher {
@@ -578,10 +888,11 @@ func createMockPublisher(t testing.TB, pubPort, repPort int) *mockPublisher {
 	require.NoError(t, err)
 
 	mp := &mockPublisher{
-		ctx:     ctx,
-		cancel:  cancel,
-		pubSock: pubSock,
-		repSock: repSock,
+		ctx:        ctx,
+		cancel:     cancel,
+		pubSock:    pubSock,
+		repSock:    repSock,
+		replayDone: make(chan struct{}),
 	}
 
 	// Start replay handler
@@ -600,24 +911,35 @@ func (mp *mockPublisher) PublishEvent(event KVEvent) error {
 
 	// Send multipart message
 	mp.mu.Lock()
-	mp.sequence++
 	seq := mp.sequence
+	mp.sequence++
 	mp.mu.Unlock()
 
 	seqBytes := make([]byte, 8)
 	binary.BigEndian.PutUint64(seqBytes, uint64(seq))
 
 	_, err = mp.pubSock.SendMessage("", seqBytes, data)
+
+	mp.mu.Lock()
+	mp.buffer = append(mp.buffer, bufferedBatch{seq: seq, payload: data})
+	if len(mp.buffer) > mockReplayBufferSteps {
+		mp.buffer = mp.buffer[1:]
+	}
+	mp.mu.Unlock()
 	return err
 }
 
 func (mp *mockPublisher) Close() {
 	mp.cancel()
+	// ZMQ sockets are not thread safe: let handleReplay stop using repSock
+	// before it is closed
+	<-mp.replayDone
 	_ = mp.pubSock.Close()
 	_ = mp.repSock.Close()
 }
 
 func (mp *mockPublisher) handleReplay() {
+	defer close(mp.replayDone)
 	for {
 		select {
 		case <-mp.ctx.Done():
@@ -630,12 +952,157 @@ func (mp *mockPublisher) handleReplay() {
 				continue
 			}
 
-			if len(msg) >= 2 {
-				// Send acknowledgment
-				_, _ = mp.repSock.SendMessage(msg[0], "OK")
-			}
+			mp.serviceReplay(msg)
 		}
 	}
+}
+
+// serviceReplay answers a replay request the way vLLM's
+// ZmqEventPublisher._service_replay (vllm/distributed/kv_events.py) does: one
+// [identity, "", topic, seq, payload] message per buffered batch with
+// seq >= the requested start, then [identity, "", "", END_SEQ, ""]. vLLM v0.25
+// and earlier sent the same messages without the topic frame.
+func (mp *mockPublisher) serviceReplay(frame [][]byte) {
+	if len(frame) != 3 {
+		// vLLM logs "Invalid replay request" and sends nothing
+		return
+	}
+	clientID := frame[0]
+	startSeq := int64(binary.BigEndian.Uint64(frame[2]))
+
+	mp.mu.Lock()
+	buffer := append([]bufferedBatch(nil), mp.buffer...)
+	hook := mp.beforeReplayBatch
+	withoutTopic := mp.replayWithoutTopic
+	mp.mu.Unlock()
+
+	// The mock publishes with an empty topic, so the topic frame is empty
+	send := func(seq int64, payload []byte) {
+		if withoutTopic {
+			_, _ = mp.repSock.SendMessage(clientID, []byte{}, encodeSeq(seq), payload)
+		} else {
+			_, _ = mp.repSock.SendMessage(clientID, []byte{}, []byte{}, encodeSeq(seq), payload)
+		}
+	}
+
+	sent := 0
+	for _, b := range buffer {
+		if b.seq >= startSeq {
+			if hook != nil {
+				hook(sent)
+			}
+			send(b.seq, b.payload)
+			sent++
+		}
+	}
+	send(mockReplayEndSeq, []byte{})
+}
+
+func encodeSeq(seq int64) []byte {
+	b := make([]byte, 8)
+	binary.BigEndian.PutUint64(b, uint64(seq))
+	return b
+}
+
+// replayMessage is one message of a vLLM replay reply as the DEALER receives
+// it: [empty_delimiter, topic, sequence, payload]
+func replayMessage(seq int64, payload []byte) [][]byte {
+	return [][]byte{{}, {}, encodeSeq(seq), payload}
+}
+
+// serveReplayOnce binds a ROUTER that answers the first replay request with
+// the given messages, for replies the mock publisher does not produce
+func serveReplayOnce(t *testing.T, port int, messages ...[][]byte) {
+	t.Helper()
+
+	sock, err := zmq.NewSocket(zmq.ROUTER)
+	require.NoError(t, err)
+	require.NoError(t, sock.SetIpv6(true))
+	require.NoError(t, sock.Bind(formatZMQBindEndpoint("::", port)))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = sock.SetRcvtimeo(5 * time.Second)
+		request, err := sock.RecvMessageBytes(0)
+		if err != nil {
+			return
+		}
+		for _, message := range messages {
+			_, _ = sock.SendMessage(request[0], message)
+		}
+	}()
+	t.Cleanup(func() {
+		<-done
+		_ = sock.Close()
+	})
+}
+
+func newReplayTestClient(pubPort, routerPort int, replayTimeout time.Duration) (*ZMQClient, *MockEventHandler) {
+	handler := NewMockEventHandler()
+	config := &ZMQClientConfig{
+		PodKey:         "test-pod",
+		PodIP:          "127.0.0.1",
+		ModelName:      "test-model",
+		PubPort:        pubPort,
+		RouterPort:     routerPort,
+		PollTimeout:    100 * time.Millisecond,
+		ReplayTimeout:  replayTimeout,
+		ReconnectDelay: 100 * time.Millisecond,
+	}
+	return NewZMQClient(config, handler), handler
+}
+
+func blockStoredEvent(hash int64) *BlockStoredEvent {
+	return &BlockStoredEvent{
+		Type:        EventTypeBlockStored,
+		BlockHashes: []int64{hash},
+		TokenIDs:    [][]byte{tokenIDsToBytes([]uint32{uint32(hash)})},
+	}
+}
+
+func encodeBlockStored(t *testing.T, hash int64) []byte {
+	payload, err := EncodeEventBatch(&EventBatch{Events: []KVEvent{blockStoredEvent(hash)}})
+	require.NoError(t, err)
+	return payload
+}
+
+// publishBlockStored publishes one batch per hash, with seq 0, 1, ...
+func publishBlockStored(t *testing.T, publisher *mockPublisher, hashes ...int64) {
+	for _, hash := range hashes {
+		require.NoError(t, publisher.PublishEvent(blockStoredEvent(hash)))
+	}
+}
+
+// storedHashes returns the block hashes of the BlockStored events the
+// handler received, in order
+func storedHashes(handler *MockEventHandler) []int64 {
+	var hashes []int64
+	for _, event := range handler.GetEvents() {
+		if e, ok := event.(*BlockStoredEvent); ok {
+			hashes = append(hashes, e.BlockHashes...)
+		}
+	}
+	return hashes
+}
+
+func replaySocketOf(client *ZMQClient) *zmq.Socket {
+	client.mu.RLock()
+	defer client.mu.RUnlock()
+	return client.replaySocket
+}
+
+// requireNoPendingReplayFrames fails if a message is left in the replay
+// socket, where the next replay request would read it as its reply
+func requireNoPendingReplayFrames(t *testing.T, client *ZMQClient) {
+	t.Helper()
+	socket := replaySocketOf(client)
+	require.NotNil(t, socket)
+
+	// Give frames still in flight time to arrive
+	time.Sleep(100 * time.Millisecond)
+	frames, err := socket.RecvMessageBytes(zmq.DONTWAIT)
+	require.Error(t, err, "replay socket holds an unread message: %q", frames)
 }
 
 // Helper function to skip tests if ZMQ is not available
@@ -780,4 +1247,79 @@ func TestZMQClientWithMockHandler(t *testing.T) {
 
 	// Verify handler was called
 	handler.AssertExpectations(t)
+}
+
+// TestZMQClientDropsDuplicateAndStaleBatches checks the sequence guard: a
+// replayed or duplicated batch must not be applied twice, and lastSeq must
+// never move backwards.
+func TestZMQClientDropsDuplicateAndStaleBatches(t *testing.T) {
+	handler := NewMockEventHandler()
+	client := NewZMQClient(&ZMQClientConfig{
+		PodKey:         "test-pod",
+		ModelName:      "test-model",
+		ReconnectDelay: 10 * time.Millisecond,
+	}, handler)
+	defer client.Stop()
+
+	apply := func(seq int64, hash int64) {
+		t.Helper()
+		_, err := client.applyEventBatch(seq, encodeBlockStored(t, hash), false)
+		require.NoError(t, err)
+	}
+
+	// The publisher may have already evicted batches 0 and 1 from replay.
+	_, err := client.applyEventBatch(2, encodeBlockStored(t, 100), true)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), client.GetLastSequence())
+	require.Len(t, handler.GetEvents(), 1)
+
+	// The same batch delivered again (a live duplicate or a replay) is dropped.
+	apply(2, 100)
+	require.Equal(t, int64(2), client.GetLastSequence())
+	require.Len(t, handler.GetEvents(), 1)
+
+	// A stale batch below lastSeq is dropped instead of moving lastSeq back.
+	apply(3, 300)
+	require.Equal(t, int64(3), client.GetLastSequence())
+	require.Len(t, handler.GetEvents(), 2)
+
+	apply(2, 200)
+	require.Equal(t, int64(3), client.GetLastSequence())
+	require.Len(t, handler.GetEvents(), 2)
+}
+
+// TestZMQClientRecoversAfterPublisherRestart checks that a live batch at
+// sequence 0 after the sequence space moved on is treated as a publisher
+// restart: the stale cache view is cleared and the batch is applied.
+func TestZMQClientRecoversAfterPublisherRestart(t *testing.T) {
+	handler := NewMockEventHandler()
+	client := NewZMQClient(&ZMQClientConfig{
+		PodKey:         "test-pod",
+		ModelName:      "test-model",
+		ReconnectDelay: 10 * time.Millisecond,
+	}, handler)
+	defer client.Stop()
+
+	apply := func(seq int64, hash int64, replay bool) {
+		t.Helper()
+		_, err := client.applyEventBatch(seq, encodeBlockStored(t, hash), replay)
+		require.NoError(t, err)
+	}
+
+	apply(0, 100, false)
+	apply(1, 200, false)
+	require.Equal(t, int64(1), client.GetLastSequence())
+
+	// The publisher restarted while the subscription stayed up: its sequence
+	// space starts again at 0.
+	apply(0, 300, false)
+	require.Equal(t, int64(0), client.GetLastSequence())
+
+	events := handler.GetEvents()
+	require.Len(t, events, 4, "two stored events, one clear, one after the restart")
+	_, cleared := events[2].(*AllBlocksClearedEvent)
+	require.True(t, cleared, "the stale pod view must be cleared on restart")
+	stored, ok := events[3].(*BlockStoredEvent)
+	require.True(t, ok)
+	require.Equal(t, []int64{300}, stored.BlockHashes)
 }
