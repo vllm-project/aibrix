@@ -181,19 +181,22 @@ class TestCheckWorkerHealth:
         engine._req_worker_map["req-xyz"] = 0
 
         loop = asyncio.new_event_loop()
-        future = loop.create_future()
-        engine._pending["req-xyz"] = future
+        try:
+            future = loop.create_future()
+            engine._pending["req-xyz"] = future
 
-        with patch.object(
-            engine,
-            "_create_and_start_worker",
-            return_value=(MagicMock(), MagicMock(), MagicMock()),
-        ):
-            await engine._check_worker_health()
+            with patch.object(
+                engine,
+                "_create_and_start_worker",
+                return_value=(MagicMock(), MagicMock(), MagicMock()),
+            ):
+                await engine._check_worker_health()
 
-        assert future.done()
-        with pytest.raises((ClientError, ServerError)):
-            future.result()
+            assert future.done()
+            with pytest.raises((ClientError, ServerError)):
+                future.result()
+        finally:
+            loop.close()
 
     @pytest.mark.asyncio
     async def test_dead_worker_sets_backoff(self, engine):
@@ -433,7 +436,7 @@ class TestDispatchSkipsBackoff:
 
 class TestShutdownAndCleanup:
     @pytest.mark.asyncio
-    async def test_stop_cancels_listener_and_terminates_workers(self, engine):
+    async def test_aclose_cancels_listener_and_terminates_workers(self, engine):
         task = asyncio.create_task(asyncio.sleep(5))
         engine._result_listener_task = task
 
@@ -450,7 +453,7 @@ class TestShutdownAndCleanup:
         engine._workers = [alive_worker, dead_worker]
         engine._request_queues = [MagicMock(), MagicMock()]
 
-        engine.stop()
+        await engine.aclose()
 
         assert engine._stopping is True
         with pytest.raises(asyncio.CancelledError):
@@ -526,8 +529,9 @@ class TestShutdownAndCleanup:
 
         assert len(engine._active_tmpdirs) == 0
 
-    def test_stop_fails_pending_and_cleans_tmpdirs(self, engine):
-        loop = asyncio.new_event_loop()
+    @pytest.mark.asyncio
+    async def test_aclose_fails_pending_and_cleans_tmpdirs(self, engine):
+        loop = asyncio.get_running_loop()
 
         future = loop.create_future()
         req_id = "req-stop"
@@ -554,7 +558,7 @@ class TestShutdownAndCleanup:
         engine._workers = [worker]
         engine._request_queues = [MagicMock()]
 
-        engine.stop()
+        await engine.aclose()
 
         assert future.done()
         with pytest.raises((ClientError, ServerError)):
@@ -790,4 +794,4 @@ class TestChaosHangE2E:
             assert eng._dispatched_items == {}
             assert eng._active_tmpdirs == {}
         finally:
-            eng.stop()
+            await eng.aclose()

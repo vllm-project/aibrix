@@ -35,9 +35,3 @@ class OpenAIFrontend(Protocol):
         Starts the OpenAI-compatible service.
         """
         pass
-
-    def stop(self) -> None:
-        """
-        Stops the OpenAI-compatible service.
-        """
-        pass
