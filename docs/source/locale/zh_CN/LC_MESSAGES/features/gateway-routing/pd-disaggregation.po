@@ -180,7 +180,63 @@ msgstr ""
 "roleset 因 decode Pod 宕机而不完整——则在已配置且 prompt 长度范围匹配时，请求会回退到本地同时运行两个阶段的 "
 "**标准推理 Pod** （``combined: true`` ）。"
 
-#: ../../source/features/gateway-routing/pd-disaggregation.rst:93
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:91
+msgid "Prefill Engine Errors"
+msgstr "prefill 引擎错误"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:94
+msgid ""
+"With vLLM and TensorRT-LLM, the prefill request is synchronous: the gateway "
+"sends it to the prefill pod before any decode pod runs. A request the "
+"prefill engine refuses therefore never reaches the decode pod, and its "
+"rejection is not a routing failure: the prefill pod was selected and "
+"reachable, and the engine rejected the request body itself — a sampling "
+"parameter outside its range, or media the model cannot accept."
+msgstr ""
+"使用 vLLM 与 TensorRT-LLM 时，prefill 请求是同步的：网关先把请求发给 prefill Pod，之后才轮到 decode "
+"Pod。因此被 prefill 引擎拒绝的请求不会到达 decode Pod；这种拒绝并非路由失败：prefill Pod "
+"已成功选中且可访问，真正被拒绝的是请求体本身——例如采样参数超出引擎允许范围，或模型无法接受的媒体内容。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:101
+msgid ""
+"Such a rejection is returned to the client unchanged: the prefill pod's HTTP "
+"status and its error payload (``message``, ``type``, ``param``, ``code``) "
+"reach the client as they were sent. No ``x-error-pd-prefill`` marker is "
+"added: the payload is the engine's own answer, so a disaggregated request "
+"fails with the same error and status a standard inference pod would have "
+"returned."
+msgstr ""
+"这类拒绝会原样返回给客户端：prefill Pod 的 HTTP "
+"状态码及其错误载荷（``message``、``type``、``param``、``code``）保持不变。不会附加 "
+"``x-error-pd-prefill`` 标记：这是引擎自身的应答，因此同一个请求体在 PD 部署下会以与标准推理 Pod "
+"相同的状态码和错误失败。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:107
+msgid ""
+"A ``5xx`` from the prefill engine keeps the engine's status and message and "
+"carries the ``x-error-pd-prefill: true`` marker, because a server-side error "
+"says nothing about the request and the status alone cannot tell which leg "
+"failed. A standard inference pod instead answers an engine ``500`` with a "
+"fixed ``Internal server error`` body."
+msgstr ""
+"prefill 引擎返回的 ``5xx`` 会保留引擎的状态码和消息，并携带 ``x-error-pd-prefill: true`` "
+"标记：服务端错误并不说明请求本身有问题，仅凭状态码也无法判断是哪条腿失败。标准推理 Pod "
+"则对引擎的 ``500`` 回复固定的 ``Internal server error`` 响应体。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:113
+msgid ""
+"A prefill pod the gateway cannot reach (connection refused or reset, or a "
+"timeout on the call) keeps the ``503`` status but carries the marker and the "
+"transport error in its message. This describes the HTTP call only: a KV "
+"transfer failing inside the engine, as with a push-based connector such as "
+"NIXL or Mooncake, surfaces as the engine's own ``5xx``, and a pull-based "
+"handoff such as SGLang fails on the decode side."
+msgstr ""
+"网关无法连通的 prefill Pod（连接被拒绝或重置，或调用超时）仍返回 ``503`` 状态，但会附加该标记，"
+"并在消息中给出传输错误。这只描述 HTTP 调用本身：引擎内部的 KV 传输失败（例如 NIXL、Mooncake "
+"这类 push 型连接器）会体现为引擎自身的 ``5xx``，而 pull 型交接（如 SGLang）则在 decode 侧失败。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:121
 msgid "Supported Engines"
 msgstr "支持的引擎"
 
@@ -625,6 +681,21 @@ msgstr ""
 "用同一哈希找到它。如果某一项的输出不存在（例如其 encode 请求失败），prefill Pod 会自行编码该项，因此 encode "
 "失败只会增加延迟，不会导致请求失败。每个 encode 请求使用 prefill 请求超时， ``gateway_pd_encode_request_total`` "
 "按 ``status`` 统计这些请求。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:351
+msgid ""
+"By default the gateway sends the items to the selected roleset's encode "
+"pods in turn. With ``AIBRIX_ENCODE_SELECTION_POLICY=least_request`` it "
+"sends each item to the encode pod with the fewest items it has in flight, "
+"so an encode pod that is still working on large images does not receive "
+"the next ones while others are idle. Each gateway replica counts "
+"separately, and within a replica the ``pd`` routing strategy and the other"
+" strategies keep separate counts."
+msgstr ""
+"默认情况下，网关把各媒体项依次发给所选 roleset 的 encode Pod。设置 "
+"``AIBRIX_ENCODE_SELECTION_POLICY=least_request`` 后，网关会把每一项发给在途项最少的 encode "
+"Pod，这样仍在处理大图的 encode Pod 不会在其他 Pod 空闲时继续接收新的项。每个网关副本分别计数，同一副本内 ``pd`` "
+"路由策略与其他策略也各自计数。"
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:336
 msgid ""
@@ -1820,6 +1891,23 @@ msgid ""
 "Objective of the adaptive cut points: ``throughput`` (prompt token mass) "
 "or ``rps`` (request counts). An unknown value keeps the default."
 msgstr "自适应切分点的目标：``throughput`` （prompt token 质量）或 ``rps`` （请求数）。无法识别的值保持默认。"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:835
+msgid "``AIBRIX_ENCODE_SELECTION_POLICY``"
+msgstr "``AIBRIX_ENCODE_SELECTION_POLICY``"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:836
+msgid "``round_robin``"
+msgstr "``round_robin``"
+
+#: ../../source/features/gateway-routing/pd-disaggregation.rst:852
+msgid ""
+"How the encode stage picks an encode pod for each media item: "
+"``round_robin``, or ``least_request`` for the encode pod with the fewest "
+"items in flight. Environment only."
+msgstr ""
+"encode 阶段为每个媒体项选择 encode Pod 的方式：``round_robin``，或 "
+"``least_request``（选择在途项最少的 encode Pod）。仅支持环境变量。"
 
 #: ../../source/features/gateway-routing/pd-disaggregation.rst:806
 msgid "``AIBRIX_PREFILL_REQUEST_TIMEOUT``"

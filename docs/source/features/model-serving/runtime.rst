@@ -13,7 +13,7 @@ that otherwise differ from engine to engine:
 
 * **Metric standardization**: it scrapes the engine's ``/metrics`` and re-exports them on its
   own port with a consistent naming, so the autoscaler and the gateway can read one shape.
-* **Model and adapter management**: it downloads model weights from HuggingFace, S3 or TOS and
+* **Model and adapter management**: it downloads model weights from HuggingFace, S3, TOS or GCS and
   loads or unloads LoRA adapters on the engine. The :doc:`lora-dynamic-loading` controller
   calls these endpoints.
 * **Runtime model lifecycle**: an experimental set of endpoints used by :doc:`model-claim` to
@@ -361,7 +361,7 @@ metrics. A sample of the vLLM output as served by the runtime:
 Model Downloading
 -----------------
 
-The AI Engine Runtime supports downloading models from multiple remote sources, including HuggingFace, S3, and TOS.
+The AI Engine Runtime supports downloading models from multiple remote sources, including HuggingFace, S3, TOS, and GCS.
 This is extremely useful when the control plane needs to interact with the pod to dynamically load new models.
 
 
@@ -435,6 +435,29 @@ Then use AI Runtime to download the model from TOS:
     python -m aibrix.downloader \
         --model-uri tos://aibrix-model-artifacts/deepseek-coder-6.7b-instruct/ \
         --local-dir /tmp/aibrix/models_tos/
+
+
+Download From GCS
+^^^^^^^^^^^^^^^^^
+GCS uses Google Application Default Credentials, for example a service account key file or
+GKE Workload Identity. Both ``gcs://`` and ``gs://`` URIs are accepted.
+
+.. code-block:: bash
+
+    # General settings
+    export DOWNLOADER_ALLOW_FILE_SUFFIX="json, safetensors"
+    export DOWNLOADER_NUM_THREADS=16
+    # GCS settings, not needed with GKE Workload Identity
+    export GOOGLE_APPLICATION_CREDENTIALS=<PATH TO YOUR SERVICE ACCOUNT KEY FILE>
+
+
+Then use AI Runtime to download the model from GCS:
+
+.. code-block:: bash
+
+    python -m aibrix.downloader \
+        --model-uri gs://aibrix-model-artifacts/deepseek-coder-6.7b-instruct/ \
+        --local-dir /tmp/aibrix/models_gcs/
 
 
 Model Configuration API

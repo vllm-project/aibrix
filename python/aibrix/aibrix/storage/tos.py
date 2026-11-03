@@ -26,6 +26,8 @@ from aibrix.storage.base2 import BaseStorage2
 from aibrix.storage.reader import Reader
 from aibrix.storage.utils import ObjectMetadata
 
+TOS_LIST_OBJECTS_DEFAULT_LIMIT = 1000
+
 
 class TOSPart:
     """Simple wrapper for TOS multipart upload part data."""
@@ -48,6 +50,9 @@ class TOSStorage(BaseStorage2):
         config: Optional[StorageConfig] = None,
     ):
         resolved_config = config or StorageConfig()
+        # A nonpositive chunk size would re-enter the base class's fallback.
+        if resolved_config.multipart_threshold <= 0:
+            raise ValueError("multipart_threshold must be greater than 0")
         if resolved_config.strict_multipart_min_part_size is None:
             resolved_config = replace(
                 resolved_config, strict_multipart_min_part_size=True
@@ -83,19 +88,33 @@ class TOSStorage(BaseStorage2):
         # Unify all data types using Reader wrapper
         reader = self._wrap_data(data)
 
-        # Check if we should use multipart upload
         try:
-            size = reader.get_size()
-            if size >= self.config.multipart_threshold:
-                await self.multipart_upload(key, reader, content_type, metadata)
-                return True
-        except (OSError, IOError, ValueError):
-            # Can't determine size, give up multipart upload
-            pass
+            # Check if we should use multipart upload
+            try:
+                size = reader.get_size()
+            except (OSError, IOError, ValueError):
+                # Can't determine size, give up multipart upload
+                pass
+            else:
+                if size >= self.config.multipart_threshold:
+                    # Explicit chunking avoids the base class's fallback to put_object.
+                    await self.multipart_upload(
+                        key,
+                        reader,
+                        content_type,
+                        metadata,
+                        bysize=self.config.multipart_threshold,
+                    )
+                    return True
 
-        # For small files, read all data and upload directly as BytesIO
-        # TOS client has issues with custom file-like objects for CRC calculation
-        file_content = reader.read_all()
+            # For small files, read all data and upload directly as BytesIO
+            # TOS client has issues with custom file-like objects for CRC calculation
+            file_content = reader.read_all()
+        finally:
+            # Close only the wrapper we created, including on multipart failures.
+            if not isinstance(data, Reader):
+                reader.close()
+
         tos_content = BytesIO(file_content)
 
         put_kwargs = {
@@ -117,10 +136,6 @@ class TOSStorage(BaseStorage2):
                 raise ValueError(f"Failed to put object {key}: {e}")
 
         await asyncio.get_event_loop().run_in_executor(None, _put_object)
-
-        # Close the reader if we created it
-        if not isinstance(data, Reader):
-            reader.close()
 
         return True  # TOS storage always succeeds
 
@@ -204,7 +219,7 @@ class TOSStorage(BaseStorage2):
         continuation_token: Optional[str] = None,
         after_key: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
-        """List objects with given prefix."""
+        """List one TOS page with given prefix using native continuation tokens."""
 
         def _list_objects():
             objects = []
@@ -223,9 +238,14 @@ class TOSStorage(BaseStorage2):
             if after_key:
                 kwargs["start_after"] = after_key
 
-            # Set max_keys for limit (TOS native pagination)
-            if limit is not None:
-                kwargs["max_keys"] = min(limit, 1000)  # TOS max is typically 1000
+            # The TOS SDK defaults max_keys to 1000. Set it explicitly so
+            # limit=None means "use backend default page size", not
+            # "return everything".
+            kwargs["max_keys"] = (
+                min(limit, TOS_LIST_OBJECTS_DEFAULT_LIMIT)
+                if limit is not None
+                else TOS_LIST_OBJECTS_DEFAULT_LIMIT
+            )
 
             try:
                 # Use list_objects_type2 for hierarchical listing

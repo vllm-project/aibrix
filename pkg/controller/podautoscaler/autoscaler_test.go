@@ -407,6 +407,102 @@ func TestComputeDesiredReplicasAdjustsKPAAPAConservativelyWhenReplicasPending(t 
 	}
 }
 
+// TestComputeDesiredReplicasGuardsEachMetricBeforeTakingTheMax checks that the pending-replica
+// guard runs on each metric before the max is taken, as Kubernetes HPA adjusts each metric for
+// missing pods. On a scale-up, guarding only the winner could drop the result below what an
+// external metric asks for; on a scale-down, whether the guard held the pods depended on which
+// metric happened to win.
+func TestComputeDesiredReplicasGuardsEachMetricBeforeTakingTheMax(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		strategy     autoscalingv1alpha1.ScalingStrategyType
+		currentPods  int32
+		readyPods    int32
+		podValue     float64
+		externalVal  float64
+		wantReplicas int32
+		wantMetric   string
+		wantGuard    bool
+	}{
+		{
+			// The pod metric asks for 12 and wins, but its guarded value is 6.
+			name:         "scale-up keeps the external metric's 7",
+			strategy:     autoscalingv1alpha1.APA,
+			currentPods:  4,
+			readyPods:    2,
+			podValue:     150,
+			externalVal:  350,
+			wantReplicas: 7,
+			wantMetric:   "queue_length",
+			wantGuard:    false,
+		},
+		{
+			// The external metric asks for 3 and wins, but the pod metric's guarded value is 4.
+			name:         "APA scale-down holds for the pending pods",
+			strategy:     autoscalingv1alpha1.APA,
+			currentPods:  4,
+			readyPods:    1,
+			podValue:     10,
+			externalVal:  150,
+			wantReplicas: 4,
+			wantMetric:   "gpu_cache_usage_perc",
+			wantGuard:    true,
+		},
+		{
+			name:         "KPA scale-down holds for the pending pods",
+			strategy:     autoscalingv1alpha1.KPA,
+			currentPods:  4,
+			readyPods:    1,
+			podValue:     10,
+			externalVal:  150,
+			wantReplicas: 4,
+			wantMetric:   "gpu_cache_usage_perc",
+			wantGuard:    true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pa := testPodAutoscaler(tt.strategy)
+			pa.Spec.MetricsSources = append(pa.Spec.MetricsSources, autoscalingv1alpha1.MetricSource{
+				MetricSourceType: autoscalingv1alpha1.EXTERNAL,
+				TargetMetric:     "queue_length",
+				TargetValue:      "50",
+			})
+			autoScaler := NewDefaultAutoScaler(&mockMetricFetcherFactory{
+				mockMetricFetcher: mockMetricFetcher{metricsValues: map[string]float64{
+					"gpu_cache_usage_perc": tt.podValue,
+					"queue_length":         tt.externalVal,
+				}},
+			}, fake.NewClientBuilder().Build())
+			scalingContext := testScalingContext(t, &pa)
+
+			pods := make([]corev1.Pod, tt.readyPods)
+			for i := range pods {
+				pods[i].Name = fmt.Sprintf("ready-%d", i)
+			}
+			result, err := autoScaler.ComputeDesiredReplicas(context.TODO(), ReplicaComputeRequest{
+				PodAutoscaler:   pa,
+				ScalingContext:  scalingContext,
+				CurrentReplicas: tt.currentPods,
+				ReplicaState: ReplicaState{
+					ReadyReplicas:   tt.readyPods,
+					PendingReplicas: tt.currentPods - tt.readyPods,
+				},
+				Pods:      pods,
+				Timestamp: time.Now(),
+			})
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.Equal(t, tt.wantReplicas, result.DesiredReplicas)
+			assert.Equal(t, tt.wantMetric, result.MetricName)
+			assert.Equal(t, tt.wantGuard, result.PendingReplicaGuardActive)
+			if tt.wantGuard {
+				assert.Equal(t, "scale-down adjusted: pending replicas treated at target utilization", result.Reason)
+			}
+		})
+	}
+}
+
 func TestComputeDesiredReplicasDoesNotHoldWhenNoReplicasPending(t *testing.T) {
 	pa := testPodAutoscaler(autoscalingv1alpha1.APA)
 	autoScaler := NewDefaultAutoScaler(&mockMetricFetcherFactory{
@@ -499,6 +595,8 @@ func (f *mockMetricFetcherFactory) For(source autoscalingv1alpha1.MetricSource) 
 
 type mockMetricFetcher struct {
 	metricsValue float64
+	// metricsValues, when set, gives the value for each target metric instead.
+	metricsValues map[string]float64
 	// unscrapable pods fail to report, as a pod that is not serving yet does.
 	unscrapable map[string]bool
 }
@@ -506,6 +604,9 @@ type mockMetricFetcher struct {
 func (f *mockMetricFetcher) FetchPodMetrics(ctx context.Context, pod corev1.Pod, source autoscalingv1alpha1.MetricSource) (float64, error) {
 	if f.unscrapable[pod.Name] {
 		return 0, fmt.Errorf("pod %s is not serving", pod.Name)
+	}
+	if v, ok := f.metricsValues[source.TargetMetric]; ok {
+		return v, nil
 	}
 	return f.metricsValue, nil
 }

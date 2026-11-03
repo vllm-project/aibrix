@@ -77,8 +77,9 @@ func (c *cardReservations) hold(card types.NamespacedName, claim string, bytes i
 }
 
 // holdPreemption holds a card for priority Sleep. Unlike an ordinary
-// make-room hold, it also keeps a request-triggered wake from consuming the
-// room promised to the preemptor.
+// make-room hold, it also keeps equal- and lower-priority request-triggered
+// wakes from consuming the room promised to the preemptor. A strictly
+// higher-priority wake follows ordinary wake admission.
 func (c *cardReservations) holdPreemption(card types.NamespacedName, claim string, bytes int64, now time.Time) bool {
 	return c.holdWithWakeProtection(card, claim, bytes, now, true)
 }
@@ -114,15 +115,45 @@ func (c *cardReservations) holdWithWakeProtection(
 	return true
 }
 
-// takePreemptionsFrom charges only reservations made by priority Sleep. An
-// ordinary make-room reservation preserves the historical rule that a request
-// to wake an existing engine goes before a claim that has never served.
-func (c *cardReservations) takePreemptionsFrom(ledgers map[string]podLedger, namespace string, now time.Time) {
+// modelClaimPriority finds a claim's priority in the authoritative listing
+// used to build a card account.
+func modelClaimPriority(
+	claims *modelv1alpha1.ModelClaimList,
+	namespace, name string,
+) (int32, bool) {
+	if claims == nil {
+		return 0, false
+	}
+	for i := range claims.Items {
+		claim := &claims.Items[i]
+		if claim.Namespace == namespace && claim.Name == name {
+			return claim.Spec.Priority, true
+		}
+	}
+	return 0, false
+}
+
+// takePreemptionsFrom charges reservations made by priority Sleep unless the
+// waking claim has a strictly higher priority. An ordinary make-room
+// reservation preserves the historical rule that a request to wake an
+// existing engine goes before a claim that has never served.
+func (c *cardReservations) takePreemptionsFrom(
+	ledgers map[string]podLedger,
+	claims *modelv1alpha1.ModelClaimList,
+	waker *modelv1alpha1.ModelClaim,
+	now time.Time,
+) {
+	if waker == nil {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.pruneLocked(now)
 	for card, current := range c.held {
-		if card.Namespace != namespace || !current.protectsWake {
+		if card.Namespace != waker.Namespace || !current.protectsWake {
+			continue
+		}
+		if ownerPriority, found := modelClaimPriority(claims, card.Namespace, current.claim); found && waker.Spec.Priority > ownerPriority {
 			continue
 		}
 		if ledger, found := ledgers[card.Name]; found && ledger.judgeable {
@@ -159,14 +190,18 @@ func (c *cardReservations) preemptionHeldFor(namespace, claim string, now time.T
 }
 
 // keepWakesOutOfPreemption restores the reservation owner's account to the
-// state before later wake requests put sleeping victims' full reserves back.
-// Wake admission still sees and waits on the reservation itself.
+// state before equal- or lower-priority wake requests put sleeping engines'
+// full reserves back. A strictly higher-priority wake keeps its reserve.
 func (c *cardReservations) keepWakesOutOfPreemption(
 	ledgers map[string]podLedger,
-	namespace, claim string,
+	claims *modelv1alpha1.ModelClaimList,
+	preemptor *modelv1alpha1.ModelClaim,
 	now time.Time,
 ) {
-	card, held := c.preemptionHeldFor(namespace, claim, now)
+	if preemptor == nil {
+		return
+	}
+	card, held := c.preemptionHeldFor(preemptor.Namespace, preemptor.Name, now)
 	if !held {
 		return
 	}
@@ -175,7 +210,11 @@ func (c *cardReservations) keepWakesOutOfPreemption(
 		return
 	}
 	for _, engine := range ledger.engines {
-		if engine.asleep && engine.wakeReserveAsked {
+		if !engine.asleep || !engine.wakeReserveAsked {
+			continue
+		}
+		wakerPriority, found := modelClaimPriority(claims, card.Namespace, engine.claimName)
+		if found && wakerPriority <= preemptor.Spec.Priority {
 			ledger = ledger.withWakeReserve(engine.claimName, false)
 		}
 	}
@@ -496,6 +535,8 @@ func (r *ModelClaimReconciler) firstToMakeRoomFor(
 // be met there, now or once room is made. Such a card is left to that request:
 // a request to wake an engine goes before a claim that has not served yet.
 func (r *ModelClaimReconciler) wakeWaitsOn(ctx context.Context, pod *corev1.Pod, ledger podLedger, readings *runtimeReadings) bool {
+	claims := &modelv1alpha1.ModelClaimList{}
+	var wakers []*modelv1alpha1.ModelClaim
 	for _, engine := range ledger.engines {
 		if !engine.asleep || !wakeAsked(pod, engine.claimName) {
 			continue
@@ -504,7 +545,11 @@ func (r *ModelClaimReconciler) wakeWaitsOn(ctx context.Context, pod *corev1.Pod,
 		if err := r.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: engine.claimName}, waker); err != nil {
 			continue
 		}
-		if turn, _ := r.wakeTurnOn(ctx, waker, pod, ledger, readings); turn != wakeCannotFit {
+		claims.Items = append(claims.Items, *waker)
+		wakers = append(wakers, waker)
+	}
+	for _, waker := range wakers {
+		if turn, _ := r.wakeTurnOn(ctx, waker, pod, ledger, claims, readings); turn != wakeCannotFit {
 			return true
 		}
 	}

@@ -66,9 +66,13 @@ const (
 
 	// sessionKeyRedisReadTimeout bounds the synchronous, must-read Redis
 	// lookup on a local cache miss, so an unresponsive Redis degrades to
-	// rendezvousPod instead of stalling the request. Matches the read
-	// timeout cache.GetPodsRunningRequests already uses on this same hot path.
-	sessionKeyRedisReadTimeout = 100 * time.Millisecond
+	// rendezvousPod instead of stalling the request. Longer than the 100ms
+	// read timeout cache.GetPodsRunningRequests uses on its own hot path: a
+	// miss here silently reroutes an already-pinned session to a different
+	// pod (falling through to rendezvousPod) instead of just returning a
+	// slightly stale number, so it gets more headroom against ordinary Redis
+	// round-trip jitter.
+	sessionKeyRedisReadTimeout = 500 * time.Millisecond
 
 	// sessionKeyRedisWriteTimeout bounds the background persist call. It runs
 	// in its own goroutine off the request path, so this only guards against

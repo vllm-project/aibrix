@@ -390,12 +390,35 @@ TRT-LLM Limitations
 - **No queue-depth metrics**: TRT-LLM does not expose ``num_requests_running`` or ``num_requests_waiting``, so anything that reads engine queue depth sees zero for TRT-LLM pods, such as the optional queued-request term of ``load-balance``. ``least-request`` is not affected: it counts in-flight requests at the gateway.
 - **Metrics require explicit config**: Performance metrics are only emitted when ``return_perf_metrics: true``, ``enable_iter_perf_stats: true``, and ``enable_iter_req_stats: true`` are set in the TRT-LLM server configuration.
 
-SGLang Decisions API
---------------------
+Decisions API
+-------------
 
-SGLang serves ``POST /v1/decisions``, which answers typed ``choice``, ``score`` and ``yes_no``
-questions about an input by scoring answer labels, without generating text. The gateway routes
-it to the pods of the requested model, like the other model endpoints:
+``POST /v1/decisions`` answers typed questions about an input by scoring answer labels, without
+generating text. vLLM and SGLang both serve it, but in different request formats. The gateway
+routes it to the pods of the requested model, like the other model endpoints.
+
+vLLM serves OpenAI's Decisions API:
+
+.. code-block:: bash
+
+    curl http://${GATEWAY}/v1/decisions \
+      -H "Authorization: Bearer ${API_KEY}" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "model": "qwen3-0.6b",
+        "input": "The customer reports a double charge on their last invoice.",
+        "questions": [
+          {"type": "predicate", "name": "urgent", "instructions": "Does the customer need an answer today?"},
+          {
+            "type": "choice",
+            "name": "team",
+            "instructions": "Which team should handle this?",
+            "choices": [{"value": "billing"}, {"value": "support"}]
+          }
+        ]
+      }'
+
+SGLang serves its own format, an SGLang extension that is not part of the OpenAI API:
 
 .. code-block:: bash
 
@@ -417,24 +440,36 @@ What differs from the other endpoints:
 
 - ``model`` is required. SGLang treats it as optional and echoes a default, but the gateway needs
   it to select a pod, so a request without one is rejected with ``400``.
-- ``input`` is required and may be a string, an object or an array. The gateway uses it, with
+- ``input`` is required. In SGLang's format it may be a string, an object or an array; in OpenAI's
+  format it is a string or an array of user messages. The gateway accepts both, and uses it, with
   objects and arrays compacted to JSON text, as the routing text for prefix-cache-aware routing.
-  ``questions`` must be a non-empty array. The question schema itself is validated by SGLang.
-- There is no streaming and no generation. Usage reports ``prompt_tokens`` and ``total_tokens``
-  only, with ``completion_tokens`` at ``0``.
-- ``images`` are forwarded as sent. The gateway buffers the whole request body, so large base64
-  images count against the ``bufferLimit`` of the gateway's ``ClientTrafficPolicy`` (4 MiB by
+  For user messages that text is the JSON of the array, not the prompt the engine renders, so the
+  cache-affinity estimate is only approximate. ``questions`` must be a non-empty array in both
+  formats. The question schema itself is validated by the engine.
+- There is no streaming and no generation. SGLang reports ``prompt_tokens`` and ``total_tokens``
+  only, with ``completion_tokens`` at ``0``. vLLM reports ``input_tokens``, ``output_tokens`` and
+  ``total_tokens``. The gateway meters both.
+- Neither engine accepts a ``priority`` field here, and both reject unknown fields with ``400``.
+  The gateway therefore never applies the :ref:`priority tier <request_priority_tier>` to this
+  endpoint, and a ``priority`` the client sends is rejected by the engine.
+- SGLang's ``images`` are forwarded as sent. The gateway buffers the whole request body, so large
+  base64 images count against the ``bufferLimit`` of the gateway's ``ClientTrafficPolicy`` (4 MiB by
   default). Raise it, together with ``AIBRIX_GRPC_MAX_MESSAGE_SIZE_BYTES``, if you send big images.
+  vLLM serves text only and rejects image input.
 
-The gateway does not check the engine, so a decisions request for a model served by another engine
-is forwarded and fails at the pod. Only route it to ``model.aibrix.ai/engine: sglang`` models.
+The gateway does not translate between the two formats and does not check the engine, so a request
+for a model served by an engine that expects the other format is forwarded and fails at the pod.
+Route OpenAI's format only to ``model.aibrix.ai/engine: vllm`` models and SGLang's format only to
+``model.aibrix.ai/engine: sglang`` models, and run a single engine across all the pods of a model
+that serves ``/v1/decisions``. vLLM answers ``501`` for a model without a supported read strategy.
 
-SGLang System One API
----------------------
+System One API
+--------------
 
-SGLang's ``POST /v1/systemone`` serves the same decisions in the System One request shape: a
-``state`` and a map of ``noul``, ``choice`` and ``score`` questions keyed by your own ids. The
-gateway routes it to the pods of the requested model, like ``/v1/decisions``:
+``POST /v1/systemone`` serves the same decisions in the System One request shape: a ``state`` and a
+map of ``noul``, ``choice`` and ``score`` questions keyed by your own ids. vLLM and SGLang both
+serve it in that shape. The gateway routes it to the pods of the requested model, like
+``/v1/decisions``:
 
 .. code-block:: bash
 
@@ -456,29 +491,42 @@ gateway routes it to the pods of the requested model, like ``/v1/decisions``:
 
 What differs from ``/v1/decisions``:
 
-- ``model`` is required and must be a model the gateway serves. SGLang accepts any name, but the
-  gateway selects a pod with it, so a model that is not deployed is rejected with ``400``
-  ``model_not_found``. A client library that sends a default model name, such as the TypeSafe
-  SDKs' ``jev-latest``, has to be told to send your model's name instead.
+- ``model`` is required and must be a model the gateway serves. vLLM accepts a request without one
+  and SGLang accepts any name, but the gateway selects a pod with it, so a request without one is
+  rejected with ``400``, and so is a model that is not deployed (``model_not_found``). A client
+  library that sends a default model name, such as the TypeSafe SDKs' ``jev-latest``, has to be
+  told to send your model's name instead.
 - ``state`` is required and may be a string, an object or an array. Unlike a decisions ``input`` it
   may be empty, because SGLang accepts an empty state. The gateway uses it, with objects and arrays
-  compacted to JSON text, as the routing text for prefix-cache-aware routing: SGLang puts the state
-  at the head of every question's prompt, so it is the part the questions share. A pod serving a
-  decision checkpoint renders an object state with spaces after the JSON separators, so the routing
-  text then differs from the prompt by whitespace; this only affects the cache-affinity estimate.
+  compacted to JSON text, as the routing text for prefix-cache-aware routing: both engines put the
+  state at the head of every question's prompt, so it is the part the questions share. An SGLang pod
+  serving a decision checkpoint renders an object state with spaces after the JSON separators, so
+  the routing text then differs from the prompt by whitespace; this only affects the cache-affinity
+  estimate.
 - ``questions`` must be a non-empty object keyed by your ids. An array, the ``/v1/decisions``
-  shape, is rejected with ``400``. The question schema itself is validated by SGLang.
-- There is no streaming and no generation. Usage reports ``input_tokens``, which counts the prompt
-  of every question, so the state is counted once per question, and ``output_tokens`` at ``0``.
-  There is no ``total_tokens``: the gateway counts input plus output as the total for rate-limit
-  and request metrics, and forwards the usage block unchanged.
-- ``images`` are forwarded as sent, with the same ``bufferLimit`` caveat as for ``/v1/decisions``.
+  shape, is rejected with ``400``. The question schema itself is validated by the engine.
+- There is no streaming and no generation. Usage reports ``input_tokens`` and ``output_tokens``.
+  On SGLang, ``input_tokens`` counts the prompt of every question, so the state is counted once per
+  question, and ``output_tokens`` is ``0``; vLLM reports its own counts, with a non-zero
+  ``output_tokens``. Neither engine sends ``total_tokens``: the gateway counts input plus output as
+  the total for rate-limit and request metrics, and forwards the usage block unchanged.
+- vLLM declares a top-level ``priority`` here and schedules each question's read by it; SGLang
+  ignores the field. When the :ref:`priority tier <request_priority_tier>` is enabled, the gateway
+  writes the tier's priority into the request body, unless the caller set one. vLLM also reads
+  ``cache_salt``, which the gateway forwards as sent.
+- ``images`` are forwarded as sent, and so are the ``audio`` and ``videos`` that vLLM accepts, with
+  the same ``bufferLimit`` caveat as for ``/v1/decisions``.
+- vLLM rejects any top-level field it does not declare with ``400``, where SGLang ignores unknown
+  fields. Other request errors the engine finds come back as ``400`` from vLLM and ``422`` from
+  SGLang.
 - The TypeSafe SDKs time out after 10 seconds and retry. Each retry reaches the gateway as a
   separate request, so request counts and token usage include the retries.
 
-The same engine caveat applies: a request for a model served by another engine is forwarded and
-fails at the pod. SGLang also serves the route only for models with a Jinja chat template; its
-decision-models documentation lists what it refuses.
+Both engines read the same request shape, so a model may run either one. Send only fields the
+engine serving the model accepts: ``temperature``, for example, is refused by SGLang on this
+endpoint. SGLang also serves the route only for models with a Jinja chat template (its
+decision-models documentation lists what it refuses), and vLLM answers ``501`` for a model without
+a supported read strategy.
 
 SGLang Score API
 ----------------

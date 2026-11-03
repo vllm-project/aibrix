@@ -386,9 +386,14 @@ per reconcile pass. When a victim's sleeping footprint is unknown, it sleeps
 that victim alone, reads a fresh Runtime snapshot, and replans instead of
 assuming all declared memory was released. The preemptor stays ``Pending``
 with Scheduled reason ``MakingRoom`` until physical room is available. Any
-request-triggered wake on that card, regardless of the sleeping claim's
-priority, cannot consume reserved room, but resumes ordinary wake admission
-after the reservation is released or expires.
+request-triggered wake whose claim has a strictly higher priority than the
+preemptor keeps its capacity reserve and is judged by ordinary wake admission.
+Equal- and lower-priority wakes cannot consume the reserved room until the
+reservation is released or expires. After ordinary wake admission resumes, a
+waking claim that must make room can sleep only idle neighbours with equal or
+lower priority; strictly higher-priority claims remain protected. Eligible
+victims keep the existing longest-idle ordering, followed by claim name. Wake
+requests retain their existing FIFO ordering relative to one another.
 
 No cross-claim ownership is stored in Status. After a controller restart, an
 already sleeping victim remains authoritative in Runtime and claim Status;
@@ -555,15 +560,19 @@ A model that wakes then needs room again:
 * If its GPU has room, it wakes at once.
 * Otherwise, the controller puts other models on the GPU to sleep, the longest
   idle first and one at a time, until the waking model fits. It takes only
-  models that have been idle for ``sleepToMakeRoomAfterSeconds``. Meanwhile,
-  the waking model's claim reads ``WaitingForRoom``, and each model put to
-  sleep gets a ``SleptToMakeRoom`` Event.
+  models that have been idle for ``sleepToMakeRoomAfterSeconds`` and whose
+  claims have the same or a lower priority than the waking model's claim.
+  Meanwhile, the waking model's claim reads ``WaitingForRoom``, and each model
+  put to sleep gets a ``SleptToMakeRoom`` Event.
 * If no model can be put to sleep for it, and another Pod has room, the model
   moves there. A new engine loads it on that Pod.
 * Otherwise, it waits for room for up to five minutes, and the next request
   asks again.
 
 In such a pool, a new claim that no Pod has room for gets room the same way.
+With the default ``preemptionPolicy: Never``, making room this way does not
+compare priorities, so an idle model of any priority may be put to sleep for
+the claim.
 The controller puts idle models to sleep on one Pod, and the claim's
 ``Scheduled`` condition reads ``MakingRoom`` until the claim is placed.
 ``SleepLowerPriority`` uses the same pool safety rules and reservation, but
@@ -794,8 +803,8 @@ You set the first four keys. AIBrix writes the others, so leave them alone.
    * - ``model.aibrix.ai/modelclaim-finalizer``
      - Finalizer on ModelClaims
      - Controller
-     - Keeps a deleted claim until the controller has asked the runtime agent
-       to stop its engine.
+     - Keeps a deleted claim while runtime cleanup requests fail; removed after
+       successful cleanup requests, without waiting for process exit.
 
 Monitoring
 ----------

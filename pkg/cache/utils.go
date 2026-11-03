@@ -239,43 +239,19 @@ func (c *Store) calculateRate1m(pod *Pod, metricName string, currentValue float6
 	key := rateHistoryKey(pod, "", metricName)
 	now := time.Now()
 
-	const (
-		snapshotInterval = 5 * time.Second // throttle to avoid snapshot flood
-		windowTarget     = 1 * time.Minute // desired look-back window
-		historyMaxAge    = 3 * time.Minute // keep 3 minutes of history
-		historyMaxCount  = 36              // 5s × 36 = 3 minutes
-		minElapsed       = 10.0            // seconds; discard rates with too little data
-	)
-
 	rateCalculator.mu.Lock()
 	defer rateCalculator.mu.Unlock()
 
-	history := rateCalculator.history[key]
-
-	// Only append a new snapshot when enough time has elapsed since the last one.
-	if len(history) == 0 || now.Sub(history[len(history)-1].Timestamp) >= snapshotInterval {
-		history = append(history, MetricSnapshot{Value: currentValue, Timestamp: now})
-	}
-	history = cleanupOldSnapshots(history, now, historyMaxAge, historyMaxCount)
+	history := appendSnapshot1m(rateCalculator.history[key], MetricSnapshot{Value: currentValue, Timestamp: now})
 	rateCalculator.history[key] = history
 
 	if len(history) < 2 {
 		return -1
 	}
 
-	// Find the snapshot whose timestamp is closest to (now - 1 minute).
-	// If we have less than 1 minute of history, this naturally falls back
-	// to the oldest snapshot in the buffer.
-	target := now.Add(-windowTarget)
-	base := &history[0]
-	for i := 1; i < len(history)-1; i++ {
-		if absDuration(history[i].Timestamp.Sub(target)) < absDuration(base.Timestamp.Sub(target)) {
-			base = &history[i]
-		}
-	}
-
+	base := baseSnapshot1m(history, now)
 	elapsed := now.Sub(base.Timestamp).Seconds()
-	if elapsed < minElapsed {
+	if elapsed < window1mMinElapsed {
 		return -1
 	}
 
@@ -286,6 +262,38 @@ func (c *Store) calculateRate1m(pod *Pod, metricName string, currentValue float6
 	}
 
 	return delta / elapsed
+}
+
+// The ~1-minute window shared by calculateRate1m and calculateMean1m.
+const (
+	window1mSnapshotInterval = 5 * time.Second // throttle to avoid snapshot flood
+	window1mTarget           = 1 * time.Minute // desired look-back window
+	window1mHistoryMaxAge    = 3 * time.Minute // keep 3 minutes of history
+	window1mHistoryMaxCount  = 36              // 5s × 36 = 3 minutes
+	window1mMinElapsed       = 10.0            // seconds; discard results with too little data
+)
+
+// appendSnapshot1m appends snapshot unless the last one is more recent than the snapshot
+// interval, then drops the snapshots that fall out of the history.
+func appendSnapshot1m(history []MetricSnapshot, snapshot MetricSnapshot) []MetricSnapshot {
+	if len(history) == 0 || snapshot.Timestamp.Sub(history[len(history)-1].Timestamp) >= window1mSnapshotInterval {
+		history = append(history, snapshot)
+	}
+	return cleanupOldSnapshots(history, snapshot.Timestamp, window1mHistoryMaxAge, window1mHistoryMaxCount)
+}
+
+// baseSnapshot1m returns the snapshot whose timestamp is closest to (now - 1 minute).
+// If we have less than 1 minute of history, this naturally falls back to the oldest
+// snapshot in the buffer. history must hold at least 2 snapshots.
+func baseSnapshot1m(history []MetricSnapshot, now time.Time) *MetricSnapshot {
+	target := now.Add(-window1mTarget)
+	base := &history[0]
+	for i := 1; i < len(history)-1; i++ {
+		if absDuration(history[i].Timestamp.Sub(target)) < absDuration(base.Timestamp.Sub(target)) {
+			base = &history[i]
+		}
+	}
+	return base
 }
 
 func absDuration(d time.Duration) time.Duration {

@@ -30,6 +30,7 @@ logger = init_logger(__name__)
 class RemoteSource(Enum):
     S3 = "s3"
     TOS = "tos"
+    GCS = "gcs"
     HUGGINGFACE = "huggingface"
     UNKNOWN = "unknown"
 

@@ -92,6 +92,7 @@ func probeRoutingDefaults() *types.RoutingOverrides {
 			BucketServeMode:       string(pd.BucketModeRPS),
 			PrefillRequestTimeout: 30 * time.Second,
 		},
+		Candidate: types.CandidateOverrides{K: 0, PrefixM: 16},
 	}
 }
 
@@ -154,6 +155,15 @@ func TestResolveRoutingOverridesFromRoutingConfig(t *testing.T) {
 				assert.Equal(t, 3, ov.AutoBlend.LeastRequestWeight)
 				assert.Equal(t, 7, ov.AutoBlend.PrefixCacheWeight)
 				assert.Equal(t, 2, ov.AutoBlend.PrefixCacheLoadBalanceWeight)
+			},
+		},
+		{
+			name:          "candidate stage",
+			routingConfig: `{"candidate":{"k":16,"prefixM":0}}`,
+			check: func(t *testing.T, ov *types.RoutingOverrides) {
+				assert.Equal(t, 16, ov.Candidate.K)
+				assert.Equal(t, 0, ov.Candidate.PrefixM, "zero turns off the seeded pods")
+				assert.Equal(t, probeRoutingDefaults().LoadBalance, ov.LoadBalance)
 			},
 		},
 		{
@@ -224,6 +234,7 @@ func TestResolveRoutingOverridesFromRoutingConfig(t *testing.T) {
 					"inputTokenWeight":0,"outputTokenWeight":-1,"tokenTrackerWindowSize":0,"tokenTrackerTimeUnit":"fortnights",
 					"tokenTrackerMinTokens":-1,"tokenTrackerMaxTokens":0},
 				"autoBlend":{"loadBalanceWeight":-1,"leastRequestWeight":-1,"prefixCacheWeight":0,"prefixCacheLoadBalanceWeight":-1},
+				"candidate":{"k":-1,"prefixM":-1},
 				"pd":{"decodeAbortTimeout":-1,"decodeAbortRetryDelay":-1,"prefillRequestTimeout":0,"prefillLoadImbalanceMinSpread":0,
 					"decodeLoadImbalanceMinSpread":-1,"decodeThroughputImbalanceMinSpread":0,"decodeScoreRatioThreshold":-1,
 					"decodeLBWeightRunning":0,"decodeLBWeightThroughput":-1,"hybridCacheLoadFactor":1.5,"minMatchPct":101,
@@ -396,6 +407,26 @@ func TestLoadImbalanceGateHonorsProfileOverrides(t *testing.T) {
 	assert.Len(t, ApplyLoadImbalanceGate(wideGap, c, pods), 4)
 
 	assert.Len(t, ApplyLoadImbalanceGate(routingOverridesContext(t, ""), c, pods), 3, "another request's profile must not change this one")
+}
+
+func TestCandidateStageHonorsProfileOverrides(t *testing.T) {
+	withDefaultOverrides(t, probeRoutingDefaults())
+	pods := make([]*v1.Pod, 40)
+	for i := range pods {
+		pods[i] = makeLBPod(fmt.Sprintf("pod-%d", i), fmt.Sprintf("10.0.0.%d", i))
+	}
+
+	plain := routingOverridesContext(t, "")
+	plain.Algorithm = RouterLeastRequest
+	ResolveRoutingOverrides(plain)
+	assert.Len(t, SelectCandidates(plain, nil, pods), len(pods), "the process default K=0 keeps every ready pod")
+
+	sampled := routingOverridesContext(t, `{"candidate":{"k":8}}`)
+	sampled.Algorithm = RouterLeastRequest
+	ResolveRoutingOverrides(sampled)
+	assert.Len(t, SelectCandidates(sampled, nil, pods), 8)
+
+	assert.Len(t, SelectCandidates(plain, nil, pods), len(pods), "another request's profile must not change this one")
 }
 
 func TestAutoBlendWeightsHonorProfileOverrides(t *testing.T) {

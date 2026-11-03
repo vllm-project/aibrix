@@ -579,24 +579,40 @@ func TestHandleRequestHeadersBearerTokenAuth(t *testing.T) {
 	})
 }
 
-func TestHandleRequestHeadersPreservesMockPDFailureHeader(t *testing.T) {
-	server := &Server{}
-	req := &extProcPb.ProcessingRequest{
-		Request: &extProcPb.ProcessingRequest_RequestHeaders{
-			RequestHeaders: &extProcPb.HttpHeaders{
-				Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
-					{Key: pathKey, RawValue: []byte(PathCompletions)},
-					{Key: HeaderMockPDFailure, RawValue: []byte("prefill")},
-				}},
-			},
-		},
+func TestHandleRequestHeadersPreservesMockHeaders(t *testing.T) {
+	for _, key := range []string{
+		HeaderMockPDFailure,
+		"x-aibrix-mock-delay-ms",
+		"x-aibrix-mock-delay-role",
+		"x-aibrix-mock-stream-stall-ms",
+		"x-aibrix-mock-first-token-stall-ms",
+		"x-aibrix-mock-future-fault",
+	} {
+		t.Run(key, func(t *testing.T) {
+			for _, incomingKey := range []string{key, strings.ToUpper(key)} {
+				req := &extProcPb.ProcessingRequest{
+					Request: &extProcPb.ProcessingRequest_RequestHeaders{
+						RequestHeaders: &extProcPb.HttpHeaders{
+							Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
+								{Key: pathKey, RawValue: []byte(PathCompletions)},
+								{Key: incomingKey, RawValue: []byte("test-value")},
+								{Key: "x-unrelated-header", RawValue: []byte("ignored")},
+								{Key: "x-aibrix-mockish-header", RawValue: []byte("ignored")},
+								{Key: "x-forwarded-x-aibrix-mock-delay-ms", RawValue: []byte("ignored")},
+							}},
+						},
+					},
+				}
+				server := &Server{}
+				resp, _, _, routingCtx, _ := server.HandleRequestHeaders(
+					context.Background(), "request-id", trace.SpanFromContext(context.Background()), req,
+				)
+				require.NotNil(t, resp.GetRequestHeaders())
+				require.NotNil(t, routingCtx)
+				assert.Equal(t, map[string]string{key: "test-value"}, routingCtx.ReqHeaders)
+			}
+		})
 	}
-
-	_, _, _, routingCtx, _ := server.HandleRequestHeaders(
-		context.Background(), "request-id", trace.SpanFromContext(context.Background()), req,
-	)
-
-	assert.Equal(t, "prefill", routingCtx.ReqHeaders[HeaderMockPDFailure])
 }
 
 // TestHandleRequestHeaders_VideoCreateWithoutRoutingStrategyForcesRematch

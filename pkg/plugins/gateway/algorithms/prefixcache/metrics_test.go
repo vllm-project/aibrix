@@ -42,6 +42,7 @@ func TestPrefixCacheMetricsAlwaysRegistered(t *testing.T) {
 	recordRoutingDecision("test-model", 50, false)
 	recordRoutingSelection("test-model", "prefix_match", false)
 	recordRoutingError("test-model", "no_target_pod", false)
+	recordPrefixMatchOperation("test-model", prefixMatchReuse)
 }
 
 func TestPrefixCacheMetricsNoOpWhenNotInitialized(t *testing.T) {
@@ -52,6 +53,7 @@ func TestPrefixCacheMetricsNoOpWhenNotInitialized(t *testing.T) {
 	recordRoutingDecision("test-model", 50, false)
 	recordRoutingSelection("test-model", "prefix_match", false)
 	recordRoutingError("test-model", "no_target_pod", false)
+	recordPrefixMatchOperation("test-model", prefixMatchLookup)
 
 	// Confirm that no helper silently initialised the global.
 	if prefixCacheMetrics != nil {

@@ -99,6 +99,16 @@ type VerifiedModelCache interface {
 	ListModelsVerified(ctx context.Context, readyPods bool) ([]string, error)
 }
 
+// ModelConfigCache is an optional model extension. It returns the config that
+// discovery supplied for a model as a whole, as the JSON the
+// model.aibrix.ai/config pod annotation holds. Only the static provider
+// supplies one today, from the config field of a local-mode endpoints file, so
+// the gateway reads it ahead of pod annotations and falls back to them when
+// found is false.
+type ModelConfigCache interface {
+	ModelConfig(modelName string) (config string, found bool)
+}
+
 // ModelClaimBindingProvider is an optional cache extension used by the
 // gateway when a ModelClaim is known but intentionally non-routable. Dormant
 // bindings stay separate from ModelCache so normal routing never sees port 0.

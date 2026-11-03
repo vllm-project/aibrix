@@ -23,6 +23,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 
@@ -101,7 +102,15 @@ func SelectTargetPortForPodWithLeastRequestCount(cache cache.Cache, pod *v1.Pod,
 // which is a periodically synced cache that, between scrape ticks, only reflects this
 // gateway's local view.
 func GetRequestCounts(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
-	counts, err := cache.GetPodsRunningRequests(readyPods)
+	return RequestCounts(nil, cache, readyPods)
+}
+
+// RequestCounts is GetRequestCounts for a read inside routing decision ctx: during the
+// decision, pods an earlier reader already read are answered from its counts instead of
+// Redis (see types.RoutingContext.RunningRequests). A nil ctx reads live, like
+// GetRequestCounts.
+func RequestCounts(ctx *types.RoutingContext, cache cache.Cache, readyPods []*v1.Pod) map[string]int {
+	counts, err := ctx.RunningRequests(readyPods, cache.GetPodsRunningRequests)
 	podRequestCount := make(map[string]int, len(readyPods))
 	for _, pod := range readyPods {
 		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)

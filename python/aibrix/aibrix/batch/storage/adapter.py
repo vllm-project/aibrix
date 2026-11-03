@@ -107,12 +107,13 @@ class BatchStorageAdapter:
 
         Args:
             job: BatchJob
-            start_index: Starting line index
+            start_index: Index of the first request to read. Blank lines
+                are not requests, so they are not counted.
 
         Returns:
             AsyncIterator of lines that were successfully locked for processing
         """
-        idx = start_index
+        idx = 0
         done = 0  # Track done requests so far
         # Locking relies on TTL + set-if-not-exists, which some metastore
         # backends (e.g. the LOCAL dev/test metastore) do not support. Probe
@@ -125,12 +126,14 @@ class BatchStorageAdapter:
                 "processing all requests without dedup",
                 job_id=job.job_id,
             )  # type:ignore[call-arg]
-        # Use 'async for' to iterate and 'yield' each item.
-        async for line in self.storage.readline_iter(
-            job.spec.input_file_id, start_index
-        ):
+        # Request indices count non-blank lines, as input validation does, so
+        # read from the first line and skip the requests before start_index.
+        async for line in self.storage.readline_iter(job.spec.input_file_id):
             line = line.strip()
             if len(line) == 0:
+                continue
+            if idx < start_index:
+                idx += 1
                 continue
 
             # Try to lock this request before processing.

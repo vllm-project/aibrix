@@ -132,6 +132,9 @@ type Store struct {
 	// ModelClaim advertisements include non-routable port-0 states and are kept
 	// separate from metaModels by construction.
 	modelClaims modelClaimState
+	// modelConfigs holds the model config JSON that discovery supplied per
+	// model (model_name -> config), read through ModelConfigCache.
+	modelConfigs utils.SyncMap[string, string]
 
 	// Deploymnent related storage
 	enableProfileCaching bool                                    // Default to load from enableModelGPUProfileCaching, can be configured.
@@ -170,6 +173,9 @@ type Store struct {
 	// from Redis, grouped by pod key (namespace/name) → []fields. Swapped atomically by
 	// initGatewaySnapshotSync. Readers call Load() to get map[string][]map[string]string.
 	gatewaySnapshotCache atomic.Value
+	// gatewaySnapshotErrorLog rate-limits the Error-level log of failing snapshot ticks. Nil
+	// means initGatewaySnapshotSync creates one; tests set it to capture lines.
+	gatewaySnapshotErrorLog *rateLimitedErrorLog
 
 	// modelReplicaEmitted tracks pods currently exported via model_replicas for stale-series cleanup.
 	modelReplicaEmitted utils.SyncMap[string, modelReplicaState]
@@ -182,9 +188,14 @@ type Store struct {
 	// (see enqueueDeadRunningRequestsPrune / flushPendingRunningRequestsPrunes).
 	runningRequestsPendingPrunes utils.SyncMap[string, []string]
 	// runningRequestsHygieneBusy is true while one coalesced async hygiene pass
-	// (PEXPIRE in-flight hashes + drain pending prunes) is running. Extra heartbeat
-	// ticks skip rather than stacking goroutines.
+	// (PEXPIRE in-flight hashes + drain pending prunes + repair drifted own fields) is
+	// running. Extra heartbeat ticks skip rather than stacking goroutines.
 	runningRequestsHygieneBusy atomic.Bool
+	// runningRequestsDrift is, per pod hash key, how long this gateway's own Redis
+	// field has disagreed with its local running count (see reconcileOwnRunningRequests).
+	// Only the hygiene pass touches it, and runningRequestsHygieneBusy keeps that to one
+	// at a time, so it needs no lock.
+	runningRequestsDrift map[string]runningRequestsDriftState
 	// runningRequestsClockOffsetMillis is (Redis server time - this process's local
 	// time), in milliseconds, as of the most recent successful liveness heartbeat.
 	// Every gateway instance stamps its heartbeat and computes liveness cutoffs from
@@ -584,6 +595,13 @@ func handleDiscoveryObject(store *Store, evType discovery.EventType, obj, oldObj
 			store.setModelClaim(o)
 		case discovery.EventDelete:
 			store.deleteModelClaim(o)
+		}
+	case *discovery.ModelConfig:
+		switch evType {
+		case discovery.EventAdd, discovery.EventUpdate:
+			store.setModelConfig(o)
+		case discovery.EventDelete:
+			store.deleteModelConfig(o)
 		}
 	default:
 		klog.Warningf("Discovery event with unknown object type: %T", obj)

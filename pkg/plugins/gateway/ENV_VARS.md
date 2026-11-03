@@ -21,7 +21,8 @@ request header to the `priority` field of the backend request body: `batch` beco
 de-prioritizes a request and never pulls one ahead of another; the values sit below the engine
 default of `0`. Requests without the header, or with a tier outside the table, are forwarded
 unchanged, and a `priority` the caller already set in the body is kept. Tier names are matched
-case-insensitively. The deployment has to run a priority-aware vLLM scheduler
+case-insensitively. `POST /v1/decisions` requests are never rewritten, because neither vLLM nor
+SGLang accepts a `priority` field there. The deployment has to run a priority-aware vLLM scheduler
 (`--scheduling-policy=priority`). With the default `false`, the header is ignored and request
 bodies are forwarded byte for byte.
 
@@ -64,7 +65,7 @@ between callers in this mode.
 | `AIBRIX_PREFIX_CACHE_INCLUDE_TOOLS` | bool | `true` | Prepend a canonical rendering of the chat request `tools` (keys sorted, compact) to the text used for prefix matching, since chat templates commonly render tools ahead of the messages. For templates that render tools later in the prompt (e.g. near the last user turn), requests sharing tools but not messages can see a partial match the engine does not have; such deployments can set this to `false`. Requests without tools (absent, `null`, `[]` or not an array) are unaffected. Set to `false` to match on messages only. The tools text goes into a separate prefix-match text (`RoutingContext.PrefixText()`), which feeds prefix matching in `prefix-cache`, `prefix-cache-preble` and the PD prefill policies `prefix_cache`, `conductor` (including its matched/unmatched token estimate) and `hybrid_cache_load`. The routing message (`routingCtx.Message`) stays messages-only, so token estimates (VTC, `PromptTokens`/`PromptLength`, config-profile `promptTokensGte`/`promptTokensLt`) are unchanged. In KV-sync mode, chat requests tokenized through the remote chat template always forward the raw `tools` to the tokenizer, independent of this flag, since the template itself decides where tools go. | [prefix_tools.go](prefix_tools.go) |
 | `AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER` | bool | `false` | Use a remote HTTP tokenizer service instead of the local tokenizer. Requires `AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE=remote`. | [algorithms/prefixcache/router.go](algorithms/prefixcache/router.go) |
 | `AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED` | bool | `false` | Enable KV cache event synchronization across gateway replicas. When `true`, also requires `AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER=true`. | [algorithms/prefixcache/router.go](algorithms/prefixcache/router.go) |
-| `AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT` | string | `""` | Remote tokenizer service endpoint URL. Required when `AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true`. | [pkg/constants/kv_event_sync.go](../../constants/kv_event_sync.go) |
+| `AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT` | string | `""` | Optional fixed remote tokenizer endpoint URL (e.g. a Service in front of the inference pods) that every model's tokenizer uses, taking precedence over per-pod discovery. Global: only set when all models share one tokenizer endpoint. | [pkg/constants/kv_event_sync.go](../../constants/kv_event_sync.go) |
 | `AIBRIX_PREFIX_CACHE_KV_EVENT_PUBLISH_ADDR` | string | `""` | ZMQ publish address for KV cache events. Used when KV event sync is enabled. | [pkg/constants/kv_event_sync.go](../../constants/kv_event_sync.go) |
 | `AIBRIX_PREFIX_CACHE_KV_EVENT_SUBSCRIBE_ADDRS` | string | `""` | ZMQ subscribe addresses for KV cache events (comma-separated). Used when KV event sync is enabled. | [pkg/constants/kv_event_sync.go](../../constants/kv_event_sync.go) |
 
@@ -184,6 +185,38 @@ The four `AIBRIX_ROUTING_AUTO_BLEND_*` weights can also be set per request by th
 
 ---
 
+## Candidate Stage (`algorithms/candidates.go`)
+
+Off by default. When `AIBRIX_ROUTING_CANDIDATE_K` is above 0, `selectTargetPod` narrows the ready
+pods to K pods drawn uniformly at random, plus up to `AIBRIX_ROUTING_CANDIDATE_PREFIX_M` pods the
+router seeds, before the load-imbalance gate and the router run. `prefix-cache` seeds the pods
+holding the longest cached prefix of the request, so cache affinity is kept. The gate and every
+strategy then read running counts, from Redis when it is configured, for those pods only, which
+bounds the per-request routing work by K + M instead of the number of ready pods (RFC #3188).
+
+The stage applies only when every strategy in the resolved strategy, including the auto-blend,
+is candidate-safe: it judges pods only by the pods it is given, with no fleet-wide state of its
+own. These are `least-request`, `least-request-top-k`, `load-balance`, `prefix-cache`, `random`,
+`power-of-two` and the other `least-*` strategies. Any other strategy, such as `vtc-basic`,
+`session-affinity`, the queue router, `external`, `throughput`, `pd` or `slo*`, keeps every ready
+pod. It also does nothing when K plus the pods the router seeds is at least the number of ready pods. When a per-replica
+inflight cap is set, its saturation filter still runs over every ready pod first.
+
+The scoring formulas are unchanged, but checks that compare a pod with the rest of its pool now
+compare it with the sample: the load-imbalance gate's spread, `prefix-cache`'s standard-deviation
+check, and the blend's min-max normalization and winsorizing. Use K of at least 2. With K = 1 and
+no seeded pods, the set has one pod, and the gateway routes to it without scoring, which is a
+random pick.
+
+| Variable | Type | Default | Description | Source |
+|---|---|---|---|---|
+| `AIBRIX_ROUTING_CANDIDATE_K` | int | `0` | Number of ready pods, drawn at random, that the gate and the router consider. `0` disables the candidate stage. | [algorithms/candidates.go](algorithms/candidates.go) |
+| `AIBRIX_ROUTING_CANDIDATE_PREFIX_M` | int | `16` | Maximum number of pods the router may seed into the candidate set on top of the K random pods. A hot prefix is held by more pods in a larger fleet, and the router can only prefer the least loaded of the holders it is given, so keep this near K. `0` or a negative value turns seeding off. | [algorithms/candidates.go](algorithms/candidates.go) |
+
+Both can also be set per request by the model config profile (`routingConfig.candidate.*`); see [Model Config Profile Overrides](#model-config-profile-overrides).
+
+---
+
 ## External Replica Router (`algorithms/external*.go`)
 
 The optional `external` strategy sends the already-filtered candidate snapshot to one
@@ -258,6 +291,7 @@ Scoring formula: `score = (fairnessWeight * normFairness + utilizationWeight * n
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `AIBRIX_PREFILL_REQUEST_TIMEOUT` | int (seconds) | `30` | HTTP request timeout for prefill pod calls. |
+| `AIBRIX_ENCODE_SELECTION_POLICY` | string | `round_robin` | How the encode stage (`algorithms/pd/encode`) picks an encode pod for each media item, for `pd` routing and for E+PD under other strategies: `round_robin`, or `least_request` for the encode pod with the fewest items in flight. The counts are per executor: one for `pd` routing and one for the other strategies, on each gateway replica. Environment-only; an unknown value uses `round_robin`. |
 | `AIBRIX_PREFILL_LOAD_IMBALANCE_MIN_SPREAD` | int32 | `16` | Minimum (max − min) running-request spread across prefill pods to trigger load-imbalance routing. |
 | `AIBRIX_PREFILL_LOAD_CAP_FACTOR` | float64 | `1.5` | Prefill pods with more than `c × (mean + 1)` in-flight prefill requests are skipped, where `c` is this factor. Unlike the `AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR` check, it applies to pools of any size. Values between `0` and `1` are treated as `1`; `0`, negative or unparsable values use the default `1.5`. To effectively disable the cap, set a large value such as `100`. Lower values give up more prefix-cache affinity: with random (Poisson) load and no hot pod, `1.5` skips at least one pod on up to about 10% of requests with 4 prefill pods and about 20% with 6. `2` skips less often but cannot fire in a two-pod pool. |
 | `AIBRIX_DECODE_LOAD_IMBALANCE_MIN_SPREAD` | float64 | `16.0` | Minimum (max − min) running-request spread across decode pods to trigger load-imbalance routing. |
@@ -422,6 +456,8 @@ description and examples live in the Config Profiles section of the gateway plug
 | `AIBRIX_ROUTING_AUTO_BLEND_LEAST_REQUEST_WEIGHT` | `routingConfig.autoBlend.leastRequestWeight` | |
 | `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_WEIGHT` | `routingConfig.autoBlend.prefixCacheWeight` | `0` is rejected with a warning and the environment value is kept; it would drop the caller's own strategy from the blend. |
 | `AIBRIX_ROUTING_AUTO_BLEND_PREFIX_CACHE_LOAD_BALANCE_WEIGHT` | `routingConfig.autoBlend.prefixCacheLoadBalanceWeight` | `0` leaves those requests with prefix-cache scoring alone. |
+| `AIBRIX_ROUTING_CANDIDATE_K` | `routingConfig.candidate.k` | `0` disables the candidate stage for the profile's requests. |
+| `AIBRIX_ROUTING_CANDIDATE_PREFIX_M` | `routingConfig.candidate.prefixM` | `0` turns seeding off. |
 | `AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT` | `routingConfig.vtc.inputTokenWeight` | Also scopes the VTC token tracker: this weight is baked into the tracker, so the profile's requests get one of their own. |
 | `AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT` | `routingConfig.vtc.outputTokenWeight` | Scopes the tracker the same way as the input weight. |
 | `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE` | `routingConfig.vtc.tokenTrackerWindowSize` | Sliding window of the profile's tracker, in `tokenTrackerTimeUnit` units. |
@@ -463,8 +499,8 @@ The following variables have interdependencies that must be satisfied together:
   AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true
   AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER=true
   AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE=remote
-  AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT=<url>
   ```
+  `AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT` is optional; when set, it overrides per-pod discovery for all models.
 
 - **Remote tokenizer pool** is initialized whenever `AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER=true`. The pool variables (`AIBRIX_VLLM_TOKENIZER_ENDPOINT_TEMPLATE`, `AIBRIX_TOKENIZER_*`, `AIBRIX_MAX_TOKENIZERS_PER_POOL`) all apply in that case.
 

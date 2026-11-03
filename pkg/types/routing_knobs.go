@@ -54,6 +54,18 @@ type RoutingOverrides struct {
 	VTC         VTCOverrides
 	AutoBlend   AutoBlendOverrides
 	PD          PDOverrides
+	Candidate   CandidateOverrides
+}
+
+// CandidateOverrides mirrors the AIBRIX_ROUTING_CANDIDATE_* knobs of the candidate stage
+// (routingalgorithms.SelectCandidates).
+type CandidateOverrides struct {
+	// K overrides AIBRIX_ROUTING_CANDIDATE_K: how many ready pods, drawn at random, the gate and
+	// the router consider. 0 disables the candidate stage.
+	K int
+	// PrefixM overrides AIBRIX_ROUTING_CANDIDATE_PREFIX_M: how many pods the router may seed into
+	// the candidate set on top of the K random ones, such as the prefix-cache holders.
+	PrefixM int
 }
 
 // LoadBalanceOverrides mirrors the AIBRIX_LOAD_BALANCE_* knobs of the

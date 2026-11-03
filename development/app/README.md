@@ -221,8 +221,9 @@ vllm/distributed/kv_transfer/
         └── mooncake_connector.py
 ```
 
-The HTTP extension is defined in
-[`vllm/entrypoints/openai/protocol.py`](https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/protocol.py).
+The HTTP extension (`kv_transfer_params`) is defined in
+[`vllm/entrypoints/openai/completion/protocol.py`](https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/completion/protocol.py)
+and [`vllm/entrypoints/openai/chat_completion/protocol.py`](https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/chat_completion/protocol.py).
 The connector implementations are under the
 [`v1 kv_connector directory`](https://github.com/vllm-project/vllm/tree/main/vllm/distributed/kv_transfer/kv_connector/v1).
 

@@ -92,6 +92,26 @@ func routeFleetOnce(b *testing.B, rm *RouterManager, c cache.Cache, all []*v1.Po
 	}
 }
 
+// routeFleetCandidatesOnce follows selectTargetPod with the candidate stage on: Select, then
+// SelectCandidates (K random pods plus up to M prefix holders), then the gate, the shuffle and
+// Route over the candidates only. The cost of drawing and seeding the candidates is included.
+func routeFleetCandidatesOnce(b *testing.B, rm *RouterManager, c cache.Cache, all []*v1.Pod, strategy, message string, k, m int) {
+	ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(strategy), "m1", message, "req", "")
+	defer ctx.Delete()
+	ResolveRoutingOverrides(ctx)
+
+	router, err := rm.Select(ctx)
+	if err != nil {
+		b.Fatal(err)
+	}
+	pods := selectCandidates(ctx, router, all, k, m)
+	pods = ApplyLoadImbalanceGate(ctx, c, pods)
+	utils.Shuffle(pods)
+	if _, err := router.Route(ctx, &utils.PodArray{Pods: pods}); err != nil {
+		b.Fatal(err)
+	}
+}
+
 // fleetBenchPrompts rotates a fixed set of distinct prompts so that the prefix
 // table reaches a steady size instead of matching one prompt on every pod.
 var fleetBenchPrompts = func() []string {
@@ -152,6 +172,27 @@ func BenchmarkFleetRouting_NoShuffle(b *testing.B) { benchmarkFleetRouting(b, 0,
 // BenchmarkFleetRouting_K16 scores only 16 shuffled candidates. It still shuffles
 // the whole list, so it shows the scoring saving alone.
 func BenchmarkFleetRouting_K16(b *testing.B) { benchmarkFleetRouting(b, 16, utils.Shuffle[*v1.Pod]) }
+
+// BenchmarkFleetRouting_CandidateStage runs the candidate stage at its documented sizes,
+// K=16 and M=16, so it can be read against BenchmarkFleetRouting_Full.
+func BenchmarkFleetRouting_CandidateStage(b *testing.B) {
+	silenceKlog(b)
+	for _, n := range fleetBenchSizes {
+		c, all := newFleetBenchCache(n)
+		for _, strategy := range fleetBenchStrategies {
+			b.Run(fmt.Sprintf("N=%d/%s", n, strategy), func(b *testing.B) {
+				rm := NewRouterManagerWithCache(c)
+				rm.Init()
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					prompt := fleetBenchPrompts[i%len(fleetBenchPrompts)]
+					routeFleetCandidatesOnce(b, rm, c, all, strategy, prompt, 16, 16)
+				}
+			})
+		}
+	}
+}
 
 // BenchmarkShuffle compares the full-list shuffles: crypto/rand, which the gateway used
 // before, and math/rand/v2, which it uses now.

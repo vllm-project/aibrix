@@ -550,7 +550,7 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 		if res.Usage.TotalTokens != nil {
 			totalTokens = *res.Usage.TotalTokens
 		} else {
-			// Some engines report no total (SGLang's /v1/systemone sends only
+			// Some engines report no total (/v1/systemone, on vLLM and SGLang, sends only
 			// input_tokens/output_tokens). HandleResponseBody skips TPM accounting and
 			// request_end for a zero total, so derive it rather than leave the request
 			// unmetered. An explicit total_tokens, even 0, is trusted as sent.

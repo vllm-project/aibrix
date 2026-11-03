@@ -15,8 +15,10 @@
 """Tests for the alternative BaseStorage2 aggregation path."""
 
 import asyncio
+from io import BytesIO
 from types import SimpleNamespace
-from typing import Any, Union
+from typing import Union
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import tos
@@ -31,8 +33,7 @@ from aibrix.storage.base2 import BaseStorage2
 from aibrix.storage.reader import Reader
 from aibrix.storage.s3 import S3Storage
 from aibrix.storage.tos import TOSStorage
-from aibrix.storage.types import StorageType
-from aibrix.storage.utils import ObjectMetadata
+from tests.storage.conftest import NativeMultipartTestStorage
 
 
 class FakeS3Client:
@@ -53,191 +54,6 @@ class FakeTOSClient:
     def delete_multi_objects(self, **kwargs):
         self.calls.append(kwargs)
         return self.responses.pop(0)
-
-
-class NativeMultipartTestStorage(BaseStorage2):
-    """In-memory storage double for the alternative buffered aggregation path."""
-
-    def __init__(
-        self,
-        multipart_threshold: int = 8,
-        fail_native_complete: bool = False,
-        strict_multipart_min_part_size: bool | None = None,
-    ) -> None:
-        super().__init__(
-            StorageConfig(
-                multipart_threshold=multipart_threshold,
-                strict_multipart_min_part_size=strict_multipart_min_part_size,
-            )
-        )
-        self.fail_native_complete = fail_native_complete
-        self.objects: dict[str, bytes] = {}
-        self.object_metadata: dict[str, ObjectMetadata] = {}
-        self.put_object_calls: list[str] = []
-        self.delete_object_calls: list[str] = []
-        self.list_objects_calls: list[str] = []
-        self.native_create_calls: list[dict[str, object]] = []
-        self.native_upload_part_calls: list[dict[str, object]] = []
-        self.native_complete_calls: list[dict[str, object]] = []
-        self.native_abort_calls: list[dict[str, str]] = []
-        self.native_uploads: dict[str, dict[str, object]] = {}
-        self._native_upload_counter = 0
-
-    def get_type(self) -> StorageType:
-        return StorageType.LOCAL
-
-    async def put_object(
-        self,
-        key: str,
-        data: Any,
-        content_type: str | None = None,
-        metadata: dict[str, str] | None = None,
-        options: Any = None,
-    ) -> bool:
-        reader = self._wrap_data(data)
-        payload = reader.read_all()
-        if not isinstance(data, Reader):
-            reader.close()
-
-        self.put_object_calls.append(key)
-        self.objects[key] = payload
-        self.object_metadata[key] = ObjectMetadata(
-            content_length=len(payload),
-            content_type=content_type,
-            metadata=metadata or {},
-        )
-        return True
-
-    async def get_object(
-        self,
-        key: str,
-        range_start: int | None = None,
-        range_end: int | None = None,
-    ) -> bytes:
-        if key not in self.objects:
-            raise FileNotFoundError(f"Object not found: {key}")
-
-        data = self.objects[key]
-        start = 0 if range_start is None else range_start
-        end = len(data) - 1 if range_end is None else range_end
-        return data[start : end + 1]
-
-    async def delete_object(self, key: str) -> None:
-        self.delete_object_calls.append(key)
-        self.objects.pop(key, None)
-        self.object_metadata.pop(key, None)
-
-    async def list_objects(
-        self,
-        prefix: str = "",
-        delimiter: str | None = None,
-        limit: int | None = None,
-        continuation_token: str | None = None,
-        after_key: str | None = None,
-    ) -> tuple[list[str], str | None]:
-        self.list_objects_calls.append(prefix)
-        keys = sorted(key for key in self.objects if key.startswith(prefix))
-        if limit is not None:
-            keys = keys[:limit]
-        return keys, None
-
-    async def object_exists(self, key: str) -> bool:
-        return key in self.objects
-
-    async def get_object_size(self, key: str) -> int:
-        return len(await self.get_object(key))
-
-    async def head_object(self, key: str) -> ObjectMetadata:
-        if key not in self.object_metadata:
-            raise FileNotFoundError(f"Object not found: {key}")
-        return self.object_metadata[key]
-
-    def is_native_multipart_supported(self) -> bool:
-        return True
-
-    async def _native_create_multipart_upload(
-        self,
-        key: str,
-        content_type: str | None = None,
-        metadata: dict[str, str] | None = None,
-    ) -> str:
-        self._native_upload_counter += 1
-        upload_id = f"native-{self._native_upload_counter}"
-        self.native_create_calls.append(
-            {
-                "key": key,
-                "content_type": content_type,
-                "metadata": metadata or {},
-                "upload_id": upload_id,
-            }
-        )
-        self.native_uploads[upload_id] = {
-            "key": key,
-            "content_type": content_type,
-            "metadata": metadata or {},
-            "parts": {},
-        }
-        return upload_id
-
-    async def _native_upload_part(
-        self,
-        key: str,
-        upload_id: str,
-        part_number: int,
-        data: Any,
-    ) -> str:
-        reader = self._wrap_data(data)
-        payload = reader.read_all()
-        if not isinstance(data, Reader):
-            reader.close()
-
-        self.native_upload_part_calls.append(
-            {
-                "key": key,
-                "upload_id": upload_id,
-                "part_number": part_number,
-                "size": len(payload),
-            }
-        )
-        upload = self.native_uploads[upload_id]
-        upload_parts = upload["parts"]
-        assert isinstance(upload_parts, dict)
-        upload_parts[part_number] = payload
-        return f"native-etag-{part_number}"
-
-    async def _native_complete_multipart_upload(
-        self,
-        key: str,
-        upload_id: str,
-        parts: list[dict[str, Union[str, int]]],
-    ) -> None:
-        self.native_complete_calls.append(
-            {"key": key, "upload_id": upload_id, "parts": list(parts)}
-        )
-        if self.fail_native_complete:
-            raise ValueError("native completion failed")
-
-        upload = self.native_uploads[upload_id]
-        upload_parts = upload["parts"]
-        assert isinstance(upload_parts, dict)
-        final_data = b"".join(
-            upload_parts[int(part["part_number"])]
-            for part in sorted(parts, key=lambda item: int(item["part_number"]))
-        )
-        self.objects[key] = final_data
-        self.object_metadata[key] = ObjectMetadata(
-            content_length=len(final_data),
-            content_type=upload["content_type"]
-            if isinstance(upload["content_type"], str) or upload["content_type"] is None
-            else None,
-            metadata=upload["metadata"]
-            if isinstance(upload["metadata"], dict)
-            else None,
-        )
-
-    async def _native_abort_multipart_upload(self, key: str, upload_id: str) -> None:
-        self.native_abort_calls.append({"key": key, "upload_id": upload_id})
-        self.native_uploads.pop(upload_id, None)
 
 
 class DelayedMultipartTestStorage(NativeMultipartTestStorage):
@@ -272,6 +88,39 @@ class DelayedMultipartTestStorage(NativeMultipartTestStorage):
 
 
 class TestBaseStorage2:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("strategy", [{"byline": 1}, {"bysize": 4}, {"bysize": 8}])
+    @pytest.mark.parametrize("fail_create", [True, False])
+    async def test_multipart_upload_failure_cleanup(
+        self, monkeypatch, strategy, fail_create
+    ):
+        storage = NativeMultipartTestStorage(multipart_threshold=8)
+        error = RuntimeError("multipart upload failed")
+        create = AsyncMock(
+            return_value="upload", side_effect=error if fail_create else None
+        )
+        abort = AsyncMock()
+        native_abort = AsyncMock()
+        monkeypatch.setattr(storage, "create_multipart_upload", create)
+        monkeypatch.setattr(storage, "abort_multipart_upload", abort)
+        monkeypatch.setattr(storage, "_native_abort_multipart_upload", native_abort)
+        monkeypatch.setattr(storage, "_upload_by_lines", AsyncMock(side_effect=error))
+        monkeypatch.setattr(storage, "_upload_by_size", AsyncMock(side_effect=error))
+
+        with pytest.raises(RuntimeError) as raised:
+            await storage.multipart_upload("key", b"data", **strategy)
+
+        assert raised.value is error
+        if fail_create:
+            abort.assert_not_awaited()
+            native_abort.assert_not_awaited()
+        elif strategy.get("bysize", 0) >= 8:
+            native_abort.assert_awaited_once_with("key", "upload")
+            abort.assert_not_awaited()
+        else:
+            abort.assert_awaited_once_with("key", "upload")
+            native_abort.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_small_parts_completion_uses_native_buffered_aggregation(self):
         storage = NativeMultipartTestStorage(multipart_threshold=8)
@@ -314,6 +163,133 @@ class TestBaseStorage2:
             storage._multipart_upload_part_key(upload_id, 3),
             storage._multipart_upload_part_key(upload_id, 4),
         ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("part_count", [900, 999, 1000, 1205, 5000])
+    async def test_small_parts_completion_cleans_all_listing_pages(self, part_count):
+        storage = NativeMultipartTestStorage(multipart_threshold=64)
+        key = "test/paginated_small_parts.txt"
+        upload_id = await storage.create_multipart_upload(key, small_parts=True)
+        payloads = [f"part-{number}\n".encode() for number in range(part_count)]
+        parts: list[dict[str, Union[str, int]]] = []
+        for part_number, payload in enumerate(payloads, start=1):
+            etag = await storage.upload_part(key, upload_id, part_number, payload)
+            parts.append({"part_number": part_number, "etag": etag})
+
+        failed_parts = await storage.complete_multipart_upload(key, upload_id, parts)
+
+        assert failed_parts == []
+        assert await storage.get_object(key) == b"".join(payloads)
+        assert not any(obj_key.startswith(".multipart/") for obj_key in storage.objects)
+        multipart_prefix = storage._multipart_upload_key(upload_id, "")
+        assert storage.list_objects_calls == [multipart_prefix] * (
+            part_count // 1000 + 1
+        )
+        assert storage.native_abort_calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "abort_upload",
+        [BaseStorage.abort_multipart_upload, BaseStorage2.abort_multipart_upload],
+        ids=["legacy", "base2"],
+    )
+    async def test_abort_multipart_upload_cleans_collected_keys_on_listing_failure(
+        self, monkeypatch, abort_upload
+    ):
+        storage = NativeMultipartTestStorage()
+        key = "test/listing_failure.txt"
+        upload_id = await storage.create_multipart_upload(key, small_parts=True)
+        part_keys = [
+            storage._multipart_upload_part_key(upload_id, number)
+            for number in range(1, 1206)
+        ]
+        storage.objects.update(dict.fromkeys(part_keys, b"part"))
+        first_page = part_keys[:1000]
+        listing = AsyncMock(
+            side_effect=[(first_page, "1000"), OSError("listing failed")]
+        )
+        monkeypatch.setattr(storage, "list_objects", listing)
+
+        await abort_upload(storage, key, upload_id)
+
+        assert listing.await_count == 2
+        assert not any(obj_key in storage.objects for obj_key in first_page)
+        assert storage._multipart_upload_key(upload_id) not in storage.objects
+        assert set(storage.objects) == set(part_keys[1000:])
+        assert storage.native_abort_calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "abort_upload",
+        [BaseStorage.abort_multipart_upload, BaseStorage2.abort_multipart_upload],
+        ids=["legacy", "base2"],
+    )
+    @pytest.mark.parametrize("metadata_delete_fails", [False, True])
+    async def test_abort_multipart_upload_falls_back_when_first_listing_fails(
+        self, monkeypatch, abort_upload, metadata_delete_fails
+    ):
+        storage = NativeMultipartTestStorage()
+        key = "test/first_listing_failure.txt"
+        upload_id = "upload-id"
+        metadata_key = storage._multipart_upload_key(upload_id)
+        deletion = AsyncMock(side_effect=OSError() if metadata_delete_fails else None)
+        monkeypatch.setattr(storage, "list_objects", AsyncMock(side_effect=OSError()))
+        monkeypatch.setattr(storage, "delete_object", deletion)
+
+        await abort_upload(storage, key, upload_id)
+
+        deletion.assert_awaited_once_with(metadata_key)
+        assert storage.native_abort_calls == (
+            [{"key": key, "upload_id": upload_id}] if metadata_delete_fails else []
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "abort_upload",
+        [BaseStorage.abort_multipart_upload, BaseStorage2.abort_multipart_upload],
+        ids=["legacy", "base2"],
+    )
+    async def test_abort_multipart_upload_uses_native_abort_for_empty_listing(
+        self, abort_upload
+    ):
+        storage = NativeMultipartTestStorage()
+        key = "test/native_abort.txt"
+        upload_id = await storage.create_multipart_upload(key)
+
+        await abort_upload(storage, key, upload_id)
+
+        assert storage.native_abort_calls == [{"key": key, "upload_id": upload_id}]
+        assert storage.delete_object_calls == []
+
+    @pytest.mark.asyncio
+    async def test_abort_multipart_upload_falls_back_after_batch_delete_failure(
+        self, monkeypatch
+    ):
+        storage = NativeMultipartTestStorage()
+        key = "test/batch_delete_failure.txt"
+        upload_id = await storage.create_multipart_upload(key, small_parts=True)
+        part_keys = [
+            storage._multipart_upload_part_key(upload_id, number)
+            for number in range(1, 1206)
+        ]
+        storage.objects.update(dict.fromkeys(part_keys, b"part"))
+        objects_to_delete = sorted(storage.objects)
+        batch_delete = AsyncMock(side_effect=OSError("batch delete failed"))
+        delete_object = storage.delete_object
+
+        async def fail_one_delete(obj_key):
+            if obj_key == part_keys[0]:
+                raise OSError("part delete failed")
+            await delete_object(obj_key)
+
+        monkeypatch.setattr(storage, "delete_objects", batch_delete)
+        monkeypatch.setattr(storage, "delete_object", fail_one_delete)
+
+        await storage.abort_multipart_upload(key, upload_id)
+
+        batch_delete.assert_awaited_once_with(objects_to_delete)
+        assert set(storage.objects) == {part_keys[0]}
+        assert storage.native_abort_calls == []
 
     @pytest.mark.asyncio
     async def test_small_parts_native_completion_failure_preserves_staged_parts(self):
@@ -639,6 +615,27 @@ class TestBaseStorage2:
 
 
 class TestTOSStorageConfig:
+    @pytest.mark.parametrize("threshold", [0, -1])
+    def test_tos_storage_rejects_nonpositive_multipart_threshold(
+        self, monkeypatch, threshold
+    ):
+        client_factory = Mock()
+        monkeypatch.setattr(tos, "TosClientV2", client_factory)
+
+        with pytest.raises(
+            ValueError, match="multipart_threshold must be greater than 0"
+        ):
+            TOSStorage(
+                "bucket",
+                "ak",
+                "sk",
+                "https://tos.example.com",
+                "cn-beijing",
+                config=StorageConfig(multipart_threshold=threshold),
+            )
+
+        client_factory.assert_not_called()
+
     def test_tos_storage_enables_strict_min_part_size_by_default(self, monkeypatch):
         mock_client = object()
         monkeypatch.setattr(tos, "TosClientV2", lambda *args: mock_client)
@@ -667,6 +664,146 @@ class TestTOSStorageConfig:
         )
 
         assert storage.config.strict_multipart_min_part_size is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size_delta", [-1, 0, 1])
+async def test_tos_put_object_at_multipart_threshold(monkeypatch, size_delta):
+    client = Mock()
+    chunks: list[bytes] = []
+
+    def upload_part(**kwargs):
+        chunks.append(kwargs["content"].read())
+        return SimpleNamespace(etag="etag")
+
+    client.create_multipart_upload.return_value = SimpleNamespace(upload_id="upload")
+    client.upload_part.side_effect = upload_part
+    monkeypatch.setattr(tos, "TosClientV2", lambda *args: client)
+    storage = TOSStorage("bucket", "ak", "sk", "https://tos.example.com", "cn-beijing")
+    threshold = storage.config.multipart_threshold
+    data = b"x" * (threshold + size_delta)
+
+    assert await storage.put_object("key", data) is True
+
+    if size_delta < 0:
+        client.put_object.assert_called_once()
+        assert client.put_object.call_args.kwargs["content"].getvalue() == data
+        client.create_multipart_upload.assert_not_called()
+    else:
+        client.put_object.assert_not_called()
+        client.create_multipart_upload.assert_called_once()
+        assert b"".join(chunks) == data
+        assert [len(chunk) for chunk in chunks] == [threshold] + (
+            [1] if size_delta > 0 else []
+        )
+        client.complete_multipart_upload.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_stage",
+    ["create_multipart_upload", "upload_part", "complete_multipart_upload"],
+)
+async def test_tos_put_object_multipart_failure_does_not_fall_back(
+    monkeypatch, failure_stage
+):
+    client = Mock()
+    client.create_multipart_upload.return_value = SimpleNamespace(upload_id="upload")
+    client.upload_part.return_value = SimpleNamespace(etag="etag")
+    error = tos.exceptions.TosClientError("injected multipart failure")
+    getattr(client, failure_stage).side_effect = error
+    monkeypatch.setattr(tos, "TosClientV2", lambda *args: client)
+    storage = TOSStorage("bucket", "ak", "sk", "https://tos.example.com", "cn-beijing")
+    data = b"x" * storage.config.multipart_threshold + b"TAIL"
+
+    with pytest.raises(ValueError, match="injected multipart failure") as raised:
+        await storage.put_object("key", data)
+
+    assert raised.value.__context__ is error
+    client.put_object.assert_not_called()
+    if failure_stage == "create_multipart_upload":
+        client.abort_multipart_upload.assert_not_called()
+    else:
+        client.abort_multipart_upload.assert_called_once_with(
+            bucket="bucket", key="key", upload_id="upload"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_kind", ["bytes", "stream", "reader"])
+@pytest.mark.parametrize("multipart", [False, True], ids=["single-put", "multipart"])
+@pytest.mark.parametrize("fail_upload", [False, True], ids=["success", "failure"])
+async def test_tos_put_object_reader_ownership(
+    monkeypatch, input_kind, multipart, fail_upload
+):
+    client = Mock()
+    client.create_multipart_upload.return_value = SimpleNamespace(upload_id="upload")
+    client.upload_part.return_value = SimpleNamespace(etag="etag")
+    upload = client.upload_part if multipart else client.put_object
+    if fail_upload:
+        upload.side_effect = tos.exceptions.TosClientError("injected upload failure")
+    monkeypatch.setattr(tos, "TosClientV2", lambda *args: client)
+    storage = TOSStorage(
+        "bucket",
+        "ak",
+        "sk",
+        "https://tos.example.com",
+        "cn-beijing",
+        config=StorageConfig(multipart_threshold=8),
+    )
+
+    payload = b"payload!" if multipart else b"data"
+    stream = BytesIO(payload) if input_kind != "bytes" else None
+    data = payload
+    if stream is not None:
+        # A caller-owned Reader must stay open even when it owns its stream.
+        data = Reader(stream, cascade_close=True) if input_kind == "reader" else stream
+
+    readers: list[Reader] = []
+    closed_readers: list[Reader] = []
+    original_wrap_data = storage._wrap_data
+    original_close = Reader.close
+
+    def track_wrap_data(data):
+        reader = original_wrap_data(data)
+        readers.append(reader)
+        return reader
+
+    def track_close(reader):
+        closed_readers.append(reader)
+        original_close(reader)
+
+    monkeypatch.setattr(storage, "_wrap_data", track_wrap_data)
+    monkeypatch.setattr(Reader, "close", track_close)
+
+    if fail_upload:
+        with pytest.raises(ValueError, match="injected upload failure"):
+            await storage.put_object("key", data)
+    else:
+        assert await storage.put_object("key", data) is True
+    upload.assert_called_once()
+    if multipart:
+        client.put_object.assert_not_called()
+    else:
+        client.create_multipart_upload.assert_not_called()
+
+    # Multipart part uploads create their own wrappers; check the input wrapper.
+    reader = readers[0]
+    close_count = sum(closed_reader is reader for closed_reader in closed_readers)
+    if input_kind == "reader":
+        assert reader is data
+        assert close_count == 0
+        assert not reader.closed
+        reader.seek(0)
+        assert reader.read_all() == payload
+    else:
+        assert close_count == 1
+        assert reader.closed
+
+    if stream is not None:
+        assert not stream.closed
+        stream.seek(0)
+        assert stream.read() == payload
 
 
 class TestBackendBulkDelete:

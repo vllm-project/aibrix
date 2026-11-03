@@ -32,9 +32,10 @@ const (
 	HeaderErrorRequestBodyProcessing = "x-error-request-body-processing"
 	HeaderErrorResponseUnmarshal     = "x-error-response-unmarshal"
 	HeaderErrorResponseUnknown       = "x-error-response-unknown"
-	// HeaderErrorPDPrefill marks a response the gateway generated because the
-	// prefill leg of a PD request failed, so the failure is distinguishable
-	// from a 5xx the decode pod produced itself.
+	// HeaderErrorPDPrefill marks a response caused by the prefill leg of a PD
+	// request, so the failure is distinguishable from a 5xx the decode pod
+	// produced itself. It is set for transport failures and 5xx engine
+	// answers, but not for a 4xx the engine answered itself.
 	HeaderErrorPDPrefill = "x-error-pd-prefill"
 	// HeaderErrorPDDecode marks a response the gateway generated because the
 	// decode leg of a PD request stopped responding after its prefill leg
@@ -76,8 +77,10 @@ const (
 	// HeaderSessionKey aliases the shared opaque session-key header.
 	HeaderSessionKey  = constants.HeaderSessionKey
 	HeaderTraceParent = "traceparent"
-	// HeaderMockPDFailure is a test-only header forwarded to mock PD backends.
-	HeaderMockPDFailure = "x-aibrix-mock-fail"
+	// HeaderMockPrefix identifies fault controls forwarded to mock backends.
+	HeaderMockPrefix = "x-aibrix-mock-"
+	// HeaderMockPDFailure injects a failure on the selected mock PD role.
+	HeaderMockPDFailure = HeaderMockPrefix + "fail"
 
 	// RPM & TPM Update Errors
 	HeaderUpdateTPM        = "x-update-tpm"
@@ -147,12 +150,13 @@ const (
 	// PathNativeClassify is where vLLM serves classification; PathClassify is SGLang's
 	// OpenAI-style route.
 	PathNativeClassify = "/classify"
-	// PathDecisions is SGLang's typed-question scoring endpoint (choice, score, yes_no).
-	// It does not stream and generates no tokens.
+	// PathDecisions is the typed-question scoring endpoint (choice, score, yes_no) served by
+	// vLLM and SGLang. It does not stream and generates no tokens.
 	PathDecisions = "/v1/decisions"
-	// PathSystemOne is SGLang's System One compatible form of PathDecisions: a "state" and a
-	// map of noul, choice and score questions keyed by caller ids. It does not stream, and its
-	// usage reports input_tokens/output_tokens with no total.
+	// PathSystemOne is the System One compatible form of PathDecisions, served by vLLM and
+	// SGLang: a "state" and a map of noul, choice and score questions keyed by caller ids. It
+	// does not stream, and neither engine's usage reports a total, only
+	// input_tokens/output_tokens.
 	PathSystemOne = "/v1/systemone"
 	// PathScore is SGLang's scoring endpoint: label-token probabilities or classifier
 	// logits for each query/item pair, pointwise or setwise. It does not stream.

@@ -144,8 +144,9 @@ func replicaInflightExceededResponse(model string, limit int64) *extProcPb.Proce
 // filterSaturatedReplicaInflight drops pods whose current running-request count is
 // already at the cap. A pod missing from the batch result (not yet scraped, or not
 // found in the cache) is kept so enforceReplicaInflight can fail-open on it later.
-// Uses GetPodsRunningRequests (one Redis round trip for every candidate) rather than
-// looping a single-pod read.
+// Reads the counts through routeCtx.RunningRequests (one Redis round trip for every
+// candidate, shared with the rest of the routing decision) rather than looping a
+// single-pod read.
 //
 // This is only a best-effort pre-filter to steer selection away from saturated
 // replicas -- the actual hard cap is enforced later by enforceReplicaInflight's atomic
@@ -153,11 +154,11 @@ func replicaInflightExceededResponse(model string, limit int64) *extProcPb.Proce
 // failing open here (returning every candidate unfiltered) can at worst route to an
 // already-saturated pod, which enforceReplicaInflight will then reject; it does not
 // bypass the cap itself.
-func (s *Server) filterSaturatedReplicaInflight(pods []*v1.Pod, limit int64) []*v1.Pod {
+func (s *Server) filterSaturatedReplicaInflight(routeCtx *types.RoutingContext, pods []*v1.Pod, limit int64) []*v1.Pod {
 	if limit <= 0 || len(pods) == 0 {
 		return pods
 	}
-	running, err := s.cache.GetPodsRunningRequests(pods)
+	running, err := routeCtx.RunningRequests(pods, s.cache.GetPodsRunningRequests)
 	if err != nil {
 		return pods
 	}
