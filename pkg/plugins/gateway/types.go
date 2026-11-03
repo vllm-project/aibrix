@@ -77,8 +77,10 @@ const (
 	// HeaderSessionKey aliases the shared opaque session-key header.
 	HeaderSessionKey  = constants.HeaderSessionKey
 	HeaderTraceParent = "traceparent"
-	// HeaderMockPDFailure is a test-only header forwarded to mock PD backends.
-	HeaderMockPDFailure = "x-aibrix-mock-fail"
+	// HeaderMockPrefix identifies fault controls forwarded to mock backends.
+	HeaderMockPrefix = "x-aibrix-mock-"
+	// HeaderMockPDFailure injects a failure on the selected mock PD role.
+	HeaderMockPDFailure = HeaderMockPrefix + "fail"
 
 	// RPM & TPM Update Errors
 	HeaderUpdateTPM        = "x-update-tpm"

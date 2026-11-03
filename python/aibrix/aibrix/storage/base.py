@@ -254,7 +254,10 @@ class BaseStorage(ABC):
         Args:
             prefix: Key prefix to filter objects
             delimiter: Delimiter for hierarchical listing
-            limit: Maximum number of objects to return (None for no limit)
+            limit: Maximum number of objects to request in one page. ``None`` means
+                no caller-specified page size; it does not mean an unlimited
+                listing. Backends may still apply their default or maximum page
+                size and return a continuation token.
             continuation_token: Token to continue from previous pagination call
             after_key: Key from the previous page to translate into a backend
                 continuation position when continuation_token is not provided
@@ -604,6 +607,20 @@ class BaseStorage(ABC):
             "use BaseStorage2-backed storage implementations instead."
         )
 
+    async def _collect_multipart_upload_objects(
+        self, prefix: str, objects: list[str]
+    ) -> None:
+        """Collect before deleting so offset-based pagination stays stable."""
+        continuation_token = None
+        while True:
+            page, next_token = await self.list_objects(
+                prefix, continuation_token=continuation_token
+            )
+            objects.extend(page)
+            if not next_token or next_token == continuation_token:
+                return
+            continuation_token = next_token
+
     async def abort_multipart_upload(
         self,
         key: str,
@@ -621,23 +638,24 @@ class BaseStorage(ABC):
         # List and delete all objects related to this upload
         prefix = self._multipart_upload_key(upload_id, "")
         no_multipart_data = True
+        objects_to_delete: list[str] = []
         try:
-            objects_to_delete, _ = await self.list_objects(prefix)
-
-            # Delete all related objects
-            for obj_key in objects_to_delete:
-                try:
-                    no_multipart_data = False
-                    await self.delete_object(obj_key)
-                except Exception:
-                    # Continue deletion even if some objects fail
-                    pass
+            await self._collect_multipart_upload_objects(prefix, objects_to_delete)
         except Exception:
             # If listing fails, try to delete known objects
             try:
                 await self.delete_object(self._multipart_upload_key(upload_id))
                 no_multipart_data = False
             except Exception:
+                pass
+
+        # Delete all related objects, including keys collected before a listing failure
+        for obj_key in objects_to_delete:
+            try:
+                no_multipart_data = False
+                await self.delete_object(obj_key)
+            except Exception:
+                # Continue deletion even if some objects fail
                 pass
 
         # Last attempt, nothing we can do for small parts
