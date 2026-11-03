@@ -184,6 +184,16 @@ func comparableHPASpec(spec autoscalingv2.HorizontalPodAutoscalerSpec) *autoscal
 	return out
 }
 
+// policyPercent converts the change a scale rate allows, as a fraction of the current
+// replicas, to an HPA percent policy value. It rounds down, so the policy never allows
+// more than the rate, after absorbing the float error in fractions such as 1.2-1, which is
+// 0.19999999999999996 and would otherwise truncate to 19. HPA policy values must be
+// positive, so a rate just above 1 still allows 1%, and an int32, so a huge rate is capped
+// at math.MaxInt32 instead of overflowing.
+func policyPercent(fraction float64) int32 {
+	return int32(min(max(math.Floor(fraction*100+1e-9), 1), math.MaxInt32))
+}
+
 // buildHPABehavior creates HPA behavior configuration from ScalingContext
 func buildHPABehavior(scalingContext scalingctx.ScalingContext) *autoscalingv2.HorizontalPodAutoscalerBehavior {
 	// Extract configuration from ScalingContext (single source of truth)
@@ -194,17 +204,21 @@ func buildHPABehavior(scalingContext scalingctx.ScalingContext) *autoscalingv2.H
 
 	// Convert rate to percent for K8s HPA
 	// max-scale-up-rate: 2.0 means "can double" -> 100% increase
-	scaleUpPercent := int32((maxScaleUpRate - 1.0) * 100)
-	if scaleUpPercent < 0 {
+	var scaleUpPercent int32
+	if maxScaleUpRate < 1 {
 		klog.Warningf("max-scale-up-rate is %f, which is invalid (must be >= 1.0). Defaulting scale-up percentage to 100%%.", maxScaleUpRate)
 		scaleUpPercent = 100 // Minimum 100% to allow scaling
+	} else {
+		scaleUpPercent = policyPercent(maxScaleUpRate - 1.0)
 	}
 
 	// max-scale-down-rate: 2.0 means "can halve" -> 50% decrease
-	scaleDownPercent := int32((1.0 - 1.0/maxScaleDownRate) * 100)
-	if scaleDownPercent < 0 {
+	var scaleDownPercent int32
+	if maxScaleDownRate < 1 {
 		klog.Warningf("max-scale-down-rate is %f, which is invalid (must be >= 1.0). Defaulting scale-down percentage to 100%%.", maxScaleDownRate)
 		scaleDownPercent = 100 // Minimum 100% to allow scaling
+	} else {
+		scaleDownPercent = policyPercent(1.0 - 1.0/maxScaleDownRate)
 	}
 
 	// Build behavior spec
