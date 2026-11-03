@@ -269,6 +269,12 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 		}
 	}
 
+	// Charge the user only for a pod that admitted the request. A 429 from the
+	// gateway's inflight cap must not leave tokens in the user's window.
+	if err := ctx.AdmitTarget(targetPod); err != nil {
+		return "", err
+	}
+
 	chargeUserTokens(ctx, tracker, *user, inputTokens, outputTokens)
 
 	ctx.SetTargetPod(targetPod)

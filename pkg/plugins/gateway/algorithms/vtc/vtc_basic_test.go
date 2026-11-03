@@ -717,3 +717,47 @@ func TestVTCBasic_PostRouteUpdateChargesUser(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Zero(t, tokens, "a request without a user charges nobody")
 }
+
+// A request the gateway rejects with 429 (the chosen pod is at its inflight cap)
+// must not change the user's token window. Route admits the target before it
+// charges, and returns the admitter's error. An admitted request is still charged once.
+func TestVTCBasicChargesOnlyAdmittedRequests(t *testing.T) {
+	config := &VTCConfig{InputTokenWeight: 1.0, OutputTokenWeight: 1.0, Variant: RouterVTCBasic}
+	tracker := NewInMemorySlidingWindowTokenTracker(config)
+	router := &BasicVTCRouter{
+		cache:          NewSimpleCache(),
+		tokenTracker:   tracker,
+		tokenEstimator: NewSimpleTokenEstimator(),
+		config:         config,
+	}
+	pods := NewSimplePodList(createTestPodsForMetrics(2))
+	ctx := context.Background()
+	const message = "a request the full pod rejects"
+
+	for i := 0; i < 5; i++ {
+		rc := types.NewRoutingContext(ctx, RouterVTCBasic, "model1", message, "req", "user1")
+		rc.SetTargetAdmitter(func(*v1.Pod) error { return types.ErrTargetReplicaInflightExceeded })
+		_, err := router.Route(rc, pods)
+		rc.Delete()
+		assert.ErrorIs(t, err, types.ErrTargetReplicaInflightExceeded)
+	}
+	tokens, err := tracker.GetTokenCount(ctx, "user1")
+	assert.NoError(t, err)
+	assert.Zero(t, tokens, "rejected requests must not be charged")
+
+	var admitted int
+	rc := types.NewRoutingContext(ctx, RouterVTCBasic, "model1", message, "req-ok", "user2")
+	defer rc.Delete()
+	rc.SetTargetAdmitter(func(*v1.Pod) error {
+		admitted++
+		return nil
+	})
+	addr, err := router.Route(rc, pods)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, addr)
+	assert.Equal(t, 1, admitted, "the chosen pod is admitted once")
+	tokens, err = tracker.GetTokenCount(ctx, "user2")
+	assert.NoError(t, err)
+	want := router.tokenEstimator.EstimateInputTokens(message) + router.tokenEstimator.EstimateOutputTokens(message)
+	assert.InDelta(t, want, tokens, 1e-9, "an admitted request is charged once")
+}
