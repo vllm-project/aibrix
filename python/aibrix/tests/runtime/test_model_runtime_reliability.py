@@ -119,6 +119,36 @@ def test_re_adopt_rejects_a_reused_pid(tmp_path, monkeypatch):
     assert runtime.snapshot_metrics().re_adoption_outcomes == {"restart_scheduled": 1}
 
 
+@pytest.mark.parametrize(
+    "phase, saved, was_ready",
+    [
+        # Records saved before was_ready existed.
+        ("active", None, True),
+        ("sleeping", None, True),
+        ("booting", None, False),
+        # A saved value wins.
+        ("active", False, False),
+        ("booting", True, True),
+    ],
+)
+def test_re_adopt_restores_whether_an_engine_was_ready(
+    tmp_path, monkeypatch, phase, saved, was_ready
+):
+    record = _record()
+    record["phase"] = phase
+    if saved is not None:
+        record["was_ready"] = saved
+    registry = EngineRegistry(tmp_path / "engines.json")
+    registry.save([record])
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: pid == 4321)
+    monkeypatch.setattr(runtime_module, "process_start_time", lambda pid: "123456")
+    monkeypatch.setattr(runtime_module, "engine_ready", lambda port: False)
+
+    runtime = ModelRuntime(_ControlledLauncher(), registry=registry)
+
+    assert runtime.list_models()[0].was_ready is was_ready
+
+
 def test_supervisor_restarts_only_the_dead_engine_after_backoff(tmp_path):
     clock = [datetime(2026, 7, 14, tzinfo=timezone.utc)]
     launcher = _ControlledLauncher()

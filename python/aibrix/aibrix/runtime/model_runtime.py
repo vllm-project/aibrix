@@ -1436,6 +1436,13 @@ class ModelRuntime:
         )
         if malformed_deadline:
             initial_capacity = None
+        # A record saved before was_ready existed tells only the phase, and an
+        # active or sleeping engine has been ready.
+        was_ready = (
+            record["was_ready"] is True
+            if "was_ready" in record
+            else phase in {"active", "sleeping"}
+        )
         return ModelInstance(
             model_name=model_name,
             port=port,
@@ -1460,7 +1467,7 @@ class ModelRuntime:
             next_restart_at=self._registry_timestamp(
                 record.get("next_restart_at"), None
             ),
-            was_ready=record.get("was_ready") is True,
+            was_ready=was_ready,
             unready_since=self._registry_timestamp(record.get("unready_since"), None),
             sleeping_footprint_bytes=self._registry_sleeping_footprint(
                 record.get("sleeping_footprint_bytes"), phase
