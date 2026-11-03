@@ -2176,7 +2176,9 @@ func (r *ModelClaimReconciler) finalize(
 	if wait := r.drainBeforeStop(ctx, pm); wait > 0 {
 		return ctrl.Result{RequeueAfter: wait}, nil
 	}
-	r.deactivateInstances(ctx, pm)
+	if err := r.deactivateInstances(ctx, pm); err != nil {
+		return ctrl.Result{}, err
+	}
 	clearClaimMetrics(pm.Namespace, servedModelName(pm))
 	r.forgetClaim(key)
 	controllerutil.RemoveFinalizer(pm, ModelClaimFinalizer)
@@ -2187,6 +2189,10 @@ func (r *ModelClaimReconciler) finalize(
 }
 
 const (
+	// deletionStopTimeout bounds each stop on the controller's only worker.
+	// Deletion retains the finalizer and retries when the answer times out.
+	deletionStopTimeout = 10 * time.Second
+
 	// deletionDrainGrace is how long the engine of a deleted claim that served
 	// keeps running after its route is taken back, before it may be stopped:
 	// the time the gateway takes to stop sending it requests.
@@ -2244,22 +2250,33 @@ func (r *ModelClaimReconciler) drainBeforeStop(ctx context.Context, pm *modelv1a
 	return 0
 }
 
-// deactivateInstances best-effort stops every engine instance of the model,
-// used on deletion before the finalizer is removed.
-func (r *ModelClaimReconciler) deactivateInstances(ctx context.Context, pm *modelv1alpha1.ModelClaim) {
+// deactivateInstances stops the model's engines before removing its finalizer.
+// A failed stop must be retried while the claim still owns its instances.
+func (r *ModelClaimReconciler) deactivateInstances(ctx context.Context, pm *modelv1alpha1.ModelClaim) error {
+	var errs []error
 	for _, inst := range pm.Status.Instances {
 		r.deannotateWarmPod(ctx, pm.Namespace, inst.Pod, pm.Name)
 		ip := r.podIP(ctx, pm.Namespace, inst.Pod)
 		if ip == "" {
 			continue // pod already gone; nothing to stop
 		}
-		if err := r.Runtime.Deactivate(ctx, ip, DefaultRuntimePort, &DeactivateRequest{
+		// Deletion retries must respect the client's silence window. Stop itself
+		// bypasses it because one-shot callers such as scale-down still need it.
+		if _, err := r.Runtime.Snapshot(ctx, ip, DefaultRuntimePort); err != nil {
+			errs = append(errs, fmt.Errorf("read runtime before deactivating model %s on pod %s: %w", servedModelName(pm), inst.Pod, err))
+			continue
+		}
+		stopCtx, cancel := context.WithTimeout(ctx, deletionStopTimeout)
+		err := r.Runtime.Deactivate(stopCtx, ip, DefaultRuntimePort, &DeactivateRequest{
 			ModelName: servedModelName(pm),
 			Mode:      DeactivateStop,
-		}); err != nil {
-			klog.ErrorS(err, "deactivate on delete failed", "pod", inst.Pod, "model", pm.Name)
+		})
+		cancel()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("deactivate model %s on pod %s: %w", servedModelName(pm), inst.Pod, err))
 		}
 	}
+	return errors.Join(errs...)
 }
 
 // podLoadFrom tallies how many model instances each warm pod currently hosts,
