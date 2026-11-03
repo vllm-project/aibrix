@@ -175,6 +175,21 @@ func TestPDFailureVLLMSynchronousPrefillRejected(t *testing.T) {
 		"a rejected request must not be reported as a routing failure")
 	errorBody := requirePrefillEngineError(t, result, "invalid x-aibrix-mock-delay-ms")
 	require.Equal(t, "invalid_request_error", errorBody["type"])
+
+	// The decode pod validates the same headers, so the client error alone
+	// cannot establish that the synchronous prefill error path was exercised.
+	gatewayRequestID := requireGatewayRequestID(t, result)
+	k8sClient := initializeKubernetesClient(t)
+	prefill := waitForPDLegOutcomeOnPods(
+		t, k8sClient, e2eConfig.Namespace,
+		modelRolePods(t, k8sClient, modelNameVLLM, "prefill"),
+		gatewayRequestID, "vllm", "prefill", "rejected",
+	)
+	require.Equal(t, http.StatusBadRequest, prefill.StatusCode)
+	require.Contains(t, prefill.Error, "invalid x-aibrix-mock-delay-ms")
+	requireNoSuccessfulPDLegOnPods(
+		t, k8sClient, modelRolePods(t, k8sClient, modelNameVLLM, "decode"), gatewayRequestID, "decode",
+	)
 }
 
 func TestPDFailureSGLangAsyncPrefillHandoff(t *testing.T) {
