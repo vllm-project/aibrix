@@ -1063,6 +1063,20 @@ msgstr ""
 "在引擎的整个生命周期内最多重启五次。重启期间，该模型退出路由，同一 Pod "
 "上的其他模型继续服务。"
 
+#: ../../source/features/model-serving/model-claim.rst:596
+msgid ""
+"An engine also counts as crashed when it fails its health check for a "
+"minute after it was ready. This happens, for example, when vLLM's "
+"EngineCore dies while its API server keeps running. The runtime agent "
+"then stops all of the engine's processes and restarts it the same way. An"
+" engine that is still starting has no such limit, since loading a model "
+"can take a while."
+msgstr ""
+"引擎在就绪之后，如果连续一分钟没有通过健康检查，也算作崩溃。例如，vLLM 的 "
+"EngineCore 已经退出，而它的 API 服务器仍在运行时，就会出现这种情况。这时 "
+"runtime agent 会停止该引擎的所有进程，并按同样的方式重启它。"
+"仍在启动的引擎没有这个时限，因为加载模型可能需要一段时间。"
+
 #: ../../source/features/model-serving/model-claim.rst:512
 msgid ""
 "An engine that crashes again after its fifth restart has failed "

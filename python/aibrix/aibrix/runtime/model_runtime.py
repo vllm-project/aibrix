@@ -100,6 +100,10 @@ class ModelInstance:
         default_factory=lambda: datetime.now(timezone.utc)
     )
     next_restart_at: Optional[datetime] = None
+    # Whether the engine has been ready since its launch, and since when it has
+    # failed its health check after that. A change of phase resets the time.
+    was_ready: bool = field(default=False, repr=False)
+    unready_since: Optional[datetime] = field(default=None, repr=False)
     # The GPU memory the engine still held right after its last sleep. It is
     # None while the engine is awake, and when no reading could be attributed
     # to it.
@@ -573,6 +577,13 @@ def engine_ready(port: int) -> bool:
         return resp.status_code == 200
     except Exception:
         return False
+
+
+# How long an engine that has been ready may then fail its health check before
+# the supervisor restarts it. vLLM's API server can outlive its EngineCore, and
+# such an engine never gets ready again. A first boot has no such limit, since
+# loading a model can take long.
+ENGINE_UNREADY_RESTART_SECONDS = 60.0
 
 
 def pid_is_alive(pid: Optional[int]) -> bool:
@@ -1584,6 +1595,7 @@ class ModelRuntime:
             inst.sleeping_footprint_bytes = None
         inst.phase = phase
         inst.last_transition = self._now()
+        inst.unready_since = None
         return True
 
     def _terminate_stale_process_group(self, inst: ModelInstance) -> bool:
@@ -1626,7 +1638,7 @@ class ModelRuntime:
         if inst.restart_count >= self._max_restarts:
             if self._transition(inst, "failed"):
                 self._increment_metric(self._restart_budget_exhausted, inst.model_name)
-            inst.last_error = "engine exited; restart budget exhausted"
+            inst.last_error = f"{error}; restart budget exhausted"
             inst.next_restart_at = None
             return
         inst.restart_count += 1
@@ -1648,6 +1660,7 @@ class ModelRuntime:
         inst.proc = None
         inst.pid = None
         inst.pid_start_time = None
+        inst.was_ready = False
         # Re-adoption or a limit write during backoff may have blocked capture.
         # Cleanup succeeded, so the replacement starts with fresh provenance.
         inst.kv_initial_capacity_bytes = None
@@ -1706,23 +1719,39 @@ class ModelRuntime:
                     changed = True
                 continue
 
-            if self._process_handle_alive(inst):
-                if inst.phase != "sleeping":
-                    if ready.get(id(inst), False):
-                        if inst.phase != "active" or inst.last_error is not None:
-                            self._transition(inst, "active")
-                            inst.last_error = None
-                            changed = True
-                    elif inst.phase != "booting":
-                        self._transition(inst, "booting")
-                        changed = True
-                continue
-
+            # A due restart relaunches the engine once its old process group is
+            # gone. This comes first, since an engine stopped because it hung
+            # may still be exiting.
             if inst.phase == "restarting" and inst.next_restart_at is not None:
                 if now < inst.next_restart_at:
                     continue
                 self._restart_instance(inst)
                 changed = True
+                continue
+
+            if self._process_handle_alive(inst):
+                if inst.phase != "sleeping":
+                    if ready.get(id(inst), False):
+                        inst.was_ready = True
+                        if inst.phase != "active" or inst.last_error is not None:
+                            self._transition(inst, "active")
+                            inst.last_error = None
+                            changed = True
+                    else:
+                        if inst.phase != "booting":
+                            self._transition(inst, "booting")
+                            changed = True
+                        if inst.was_ready:
+                            if inst.unready_since is None:
+                                inst.unready_since = now
+                            unready = (now - inst.unready_since).total_seconds()
+                            if unready >= ENGINE_UNREADY_RESTART_SECONDS:
+                                self._schedule_restart(
+                                    inst,
+                                    f"engine not ready for {unready:.0f}s"
+                                    " after it was ready",
+                                )
+                                changed = True
                 continue
 
             self._schedule_restart(inst, "engine exited")

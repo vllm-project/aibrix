@@ -235,6 +235,136 @@ def test_supervisor_cleans_an_orphaned_process_group_before_backoff(
     assert launcher.launches == ["failed", "failed"]
 
 
+def _hanging_engine(tmp_path, monkeypatch, **kwargs):
+    """A runtime with one live engine whose health check the test controls.
+    Its process group lives as long as its process."""
+    clock = [datetime(2026, 7, 14, tzinfo=timezone.utc)]
+    launcher = _ControlledLauncher()
+    runtime = ModelRuntime(
+        launcher,
+        registry=EngineRegistry(tmp_path / "engines.json"),
+        now=lambda: clock[0],
+        **kwargs,
+    )
+    inst = runtime.activate(
+        model_name="hung", artifact_url="hf://Org/Hung", engine="sglang"
+    )
+    ready = [True]
+    monkeypatch.setattr(runtime_module, "engine_ready", lambda port: ready[0])
+    monkeypatch.setattr(
+        runtime_module,
+        "process_group_is_alive",
+        lambda process_group_id: inst.proc is not None and inst.proc.alive,
+    )
+    killed = []
+    monkeypatch.setattr(
+        runtime_module.os,
+        "killpg",
+        lambda process_group_id, signum: killed.append((process_group_id, signum)),
+    )
+    return clock, launcher, runtime, inst, ready, killed
+
+
+def test_supervisor_restarts_an_engine_that_stays_unready_after_being_ready(
+    tmp_path, monkeypatch
+):
+    clock, launcher, runtime, inst, ready, killed = _hanging_engine(
+        tmp_path, monkeypatch
+    )
+    runtime.supervise_once()
+    assert inst.phase == "active"
+
+    ready[0] = False
+    runtime.supervise_once()
+    clock[0] += timedelta(seconds=59)
+    runtime.supervise_once()
+
+    assert inst.phase == "booting"
+    assert launcher.stopped == []
+
+    clock[0] += timedelta(seconds=1)
+    runtime.supervise_once()
+
+    assert launcher.stopped == ["hung"]
+    assert killed == []
+    assert inst.phase == "restarting"
+    assert inst.restart_count == 1
+    assert inst.last_error == "engine not ready for 60s after it was ready"
+
+    clock[0] += timedelta(seconds=2)
+    runtime.supervise_once()
+
+    assert launcher.launches == ["hung", "hung"]
+    assert inst.phase == "booting"
+    # The replacement loads the model again, for as long as that takes.
+    clock[0] += timedelta(minutes=10)
+    runtime.supervise_once()
+    assert inst.phase == "booting"
+    assert launcher.stopped == ["hung"]
+
+
+def test_supervisor_gives_a_first_boot_no_deadline(tmp_path, monkeypatch):
+    clock, launcher, runtime, inst, ready, _ = _hanging_engine(tmp_path, monkeypatch)
+    ready[0] = False
+
+    runtime.supervise_once()
+    clock[0] += timedelta(minutes=30)
+    runtime.supervise_once()
+
+    assert inst.phase == "booting"
+    assert launcher.stopped == []
+    assert launcher.launches == ["hung"]
+
+
+def test_supervisor_counts_unready_time_from_the_latest_phase_change(
+    tmp_path, monkeypatch
+):
+    clock, launcher, runtime, inst, ready, _ = _hanging_engine(tmp_path, monkeypatch)
+    runtime.supervise_once()
+    ready[0] = False
+    runtime.supervise_once()
+    clock[0] += timedelta(seconds=30)
+    with runtime._lock:
+        runtime._transition(inst, "sleeping")
+    clock[0] += timedelta(hours=1)
+    with runtime._lock:
+        runtime._transition(inst, "booting")
+
+    runtime.supervise_once()
+    clock[0] += timedelta(seconds=59)
+    runtime.supervise_once()
+
+    assert inst.phase == "booting"
+    assert launcher.stopped == []
+
+    clock[0] += timedelta(seconds=1)
+    runtime.supervise_once()
+
+    assert launcher.stopped == ["hung"]
+    assert inst.phase == "restarting"
+
+
+def test_supervisor_says_why_a_hanging_engine_failed(tmp_path, monkeypatch):
+    clock, launcher, runtime, inst, ready, _ = _hanging_engine(
+        tmp_path, monkeypatch, max_restarts=1
+    )
+    for _ in range(2):
+        ready[0] = True
+        runtime.supervise_once()
+        ready[0] = False
+        runtime.supervise_once()
+        clock[0] += timedelta(seconds=60)
+        runtime.supervise_once()
+        clock[0] += timedelta(seconds=2)
+        runtime.supervise_once()
+
+    assert launcher.launches == ["hung", "hung"]
+    assert inst.phase == "failed"
+    assert inst.last_error == (
+        "engine not ready for 60s after it was ready; restart budget exhausted"
+    )
+
+
 def test_supervisor_treats_missing_process_group_id_as_clean(tmp_path, monkeypatch):
     launcher = _ControlledLauncher()
     runtime = ModelRuntime(launcher, registry=EngineRegistry(tmp_path / "engines.json"))
