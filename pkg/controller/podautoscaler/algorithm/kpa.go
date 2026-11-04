@@ -156,27 +156,6 @@ func IsPerPodSource(t autoscalingv1alpha1.MetricSourceType) bool {
 	return t != autoscalingv1alpha1.EXTERNAL && t != autoscalingv1alpha1.DOMAIN
 }
 
-// podCountEpsilon absorbs floating-point error in a desired pod count before
-// it is rounded up: 10 × 0.84 / 0.7 evaluates to 12.000000000000002, and a
-// plain math.Ceil would ask for 13 pods instead of 12.
-const podCountEpsilon = 1e-9
-
-// ceilPodCount rounds a desired pod count up to a whole pod, treating a value
-// within podCountEpsilon of an integer as that integer. A count in
-// (0, podCountEpsilon] therefore rounds to 0 pods, not 1; that is far below any
-// real demand.
-func ceilPodCount(pods float64) float64 {
-	return math.Ceil(pods - podCountEpsilon)
-}
-
-// floorPodCount rounds a pod count down to a whole pod, treating a value within
-// podCountEpsilon of an integer as that integer: 55 / 1.1 evaluates to
-// 49.99999999999999, and a plain math.Floor would allow scaling down to 49 pods
-// instead of 50.
-func floorPodCount(pods float64) float64 {
-	return math.Floor(pods + podCountEpsilon)
-}
-
 // desiredPodCounts computes the pod counts the stable and panic windows ask
 // for. Tolerance is applied to prevent scaling for minor metric fluctuations.
 // ok is false when the context has no target for the metric.
