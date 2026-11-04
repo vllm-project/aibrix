@@ -17,9 +17,11 @@
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+import torch
 
 from aibrix_kvcache.l2.connectors import Connector, ConnectorConfig
 from aibrix_kvcache.l2.connectors.memory import MemoryConnector
+from aibrix_kvcache.memory.external_memory_region import ExternalMemoryRegion
 
 
 @pytest.mark.asyncio
@@ -89,6 +91,58 @@ async def test_close_rejects_active_lease_then_succeeds():
         assert (await connector.get_bytes(b"key")).get() == b"data"
 
     assert connector.close().is_ok()
+
+
+@pytest.mark.asyncio
+async def test_memory_region_put_get_round_trip_preserves_surrounding_bytes():
+    connector = MemoryConnector(capacity_bytes=8)
+    connector.open().raise_if_not_ok()
+    source = torch.tensor([1, 2, 3, 4], dtype=torch.uint8)
+    source_mr = ExternalMemoryRegion(source, addr=0, length=4)
+    assert (await connector.put(b"key", source_mr)).is_ok()
+
+    destination = torch.full((6,), 0xA5, dtype=torch.uint8)
+    destination_mr = ExternalMemoryRegion(destination, addr=1, length=4)
+    assert (await connector.get(b"key", destination_mr)).is_ok()
+    assert destination.tolist() == [0xA5, 1, 2, 3, 4, 0xA5]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [b"abc", b"abcde"])
+async def test_get_rejects_payload_length_mismatch_without_writing(payload):
+    connector = MemoryConnector(capacity_bytes=8)
+    connector.open().raise_if_not_ok()
+    assert (await connector.put_bytes(b"key", payload)).is_ok()
+
+    destination = torch.full((6,), 0xA5, dtype=torch.uint8)
+    mr = ExternalMemoryRegion(destination, addr=1, length=4)
+    status = await connector.get(b"key", mr)
+
+    assert status.is_invalid()
+    assert destination.tolist() == [0xA5] * 6
+
+
+@pytest.mark.asyncio
+async def test_get_missing_key_does_not_write_memory_region():
+    connector = MemoryConnector(capacity_bytes=8)
+    connector.open().raise_if_not_ok()
+    destination = torch.full((4,), 0xA5, dtype=torch.uint8)
+    mr = ExternalMemoryRegion(destination, addr=0, length=4)
+
+    status = await connector.get(b"missing", mr)
+
+    assert status.is_not_found()
+    assert destination.tolist() == [0xA5] * 4
+
+
+@pytest.mark.asyncio
+async def test_zero_length_memory_region_round_trip():
+    connector = MemoryConnector(capacity_bytes=8)
+    connector.open().raise_if_not_ok()
+    empty_mr = ExternalMemoryRegion(torch.empty(0, dtype=torch.uint8), 0, 0)
+
+    assert (await connector.put(b"empty", empty_mr)).is_ok()
+    assert (await connector.get(b"empty", empty_mr)).is_ok()
 
 
 def test_factory_requires_positive_memory_capacity(monkeypatch):

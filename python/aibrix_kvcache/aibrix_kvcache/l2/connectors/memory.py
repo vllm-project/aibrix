@@ -189,7 +189,11 @@ class MemoryConnector(Connector[bytes, torch.Tensor]):
         status = await self.get_bytes(key)
         if not status.is_ok():
             return Status(status)
-        mr.fill(bytes(status.get()))
+        payload = bytes(status.get())
+        if len(payload) != mr.length:
+            return Status(StatusCodes.INVALID)
+        if payload:
+            mr.fill(payload)
         return Status.ok()
 
     async def put(
