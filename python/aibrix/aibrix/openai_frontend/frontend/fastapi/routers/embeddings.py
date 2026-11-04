@@ -24,44 +24,29 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import traceback
+from fastapi import APIRouter, Depends
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
-
+from aibrix.openai_frontend.engine.engine import LLMEngine
+from aibrix.openai_frontend.frontend.fastapi.errors import get_engine
 from aibrix.openai_frontend.schemas.openai import (
     CreateEmbeddingRequest,
     CreateEmbeddingResponse,
 )
-from aibrix.openai_frontend.utils.utils import ClientError, ServerError, StatusCode
 
 router = APIRouter()
 
 
 @router.post(
-    "/v1/embeddings", response_model=CreateEmbeddingResponse, tags=["Embeddings"]
+    "/v1/embeddings",
+    response_model=CreateEmbeddingResponse,
+    response_model_exclude_unset=True,
+    tags=["Embeddings"],
 )
 async def create_embedding(
-    request: CreateEmbeddingRequest, raw_request: Request
-) -> CreateEmbeddingResponse | StreamingResponse:
+    request: CreateEmbeddingRequest,
+    engine: LLMEngine = Depends(get_engine),
+) -> CreateEmbeddingResponse:
     """
     Creates embedding for the provided input text.
     """
-    if not raw_request.app.engine:
-        raise HTTPException(
-            status_code=StatusCode.SERVER_ERROR, detail="No attached inference engine"
-        )
-
-    try:
-        response = await raw_request.app.engine.embedding(request)
-        return response
-    except ClientError as e:
-        raise HTTPException(status_code=StatusCode.CLIENT_ERROR, detail=f"{e}")
-    except NotImplementedError as e:
-        raise HTTPException(status_code=StatusCode.NOT_FOUND, detail=f"{e}")
-    except ServerError as e:
-        print(traceback.format_exc())
-        raise HTTPException(status_code=StatusCode.SERVER_ERROR, detail=f"{e}")
-    except Exception as e:
-        print(traceback.format_exc())
-        raise HTTPException(status_code=StatusCode.SERVER_ERROR, detail=f"{e}")
+    return await engine.embedding(request)

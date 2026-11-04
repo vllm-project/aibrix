@@ -24,10 +24,10 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from typing import List
+from fastapi import APIRouter, Depends, HTTPException
 
-from fastapi import APIRouter, HTTPException, Request
-
+from aibrix.openai_frontend.engine.engine import LLMEngine
+from aibrix.openai_frontend.frontend.fastapi.errors import get_engine
 from aibrix.openai_frontend.schemas.openai import ListModelsResponse, Model, ObjectType
 from aibrix.openai_frontend.utils.utils import StatusCode
 
@@ -36,33 +36,29 @@ router = APIRouter()
 OWNED_BY = "Inference Server"
 
 
-@router.get("/v1/models", response_model=ListModelsResponse, tags=["Models"])
-async def list_models(request: Request) -> ListModelsResponse:
+@router.get(
+    "/v1/models",
+    response_model=ListModelsResponse,
+    response_model_exclude_unset=True,
+    tags=["Models"],
+)
+async def list_models(
+    engine: LLMEngine = Depends(get_engine),
+) -> ListModelsResponse:
     """
     Lists the currently available models, and provides basic information about each one such as the owner and availability.
     """
-    if not request.app.engine:
-        raise HTTPException(
-            status_code=StatusCode.SERVER_ERROR, detail="No attached inference engine"
-        )
-
-    models: List[Model] = await request.app.engine.models()
-    return ListModelsResponse(object=ObjectType.list, data=models)
+    return ListModelsResponse(object=ObjectType.list, data=await engine.models())
 
 
 @router.get("/v1/models/{model_name}", response_model=Model, tags=["Models"])
-async def retrieve_model(request: Request, model_name: str) -> Model:
+async def retrieve_model(
+    model_name: str, engine: LLMEngine = Depends(get_engine)
+) -> Model:
     """
     Retrieves a model instance, providing basic information about the model such as the owner and permissioning.
     """
-    if not request.app.engine:
-        raise HTTPException(
-            status_code=StatusCode.SERVER_ERROR, detail="No attached inference engine"
-        )
-
-    # TODO: Return model directly from engine instead of searching models
-    models: List[Model] = await request.app.engine.models()
-    for model in models:
+    for model in await engine.models():
         if model.id == model_name:
             return model
 
