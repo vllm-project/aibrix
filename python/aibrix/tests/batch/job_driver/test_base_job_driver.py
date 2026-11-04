@@ -637,22 +637,25 @@ async def test_validate_job_rejects_empty_input_file(monkeypatch):
 
 
 def test_result_ids_preserve_distinct_uuid_values(monkeypatch):
-    from types import SimpleNamespace
+    """Result ids must keep the full UUID, not a truncated prefix.
+
+    The id used to be ``uuid.uuid4().hex[:5]``. Five hex digits are only
+    ~1M values, so ids repeated within a batch of a few thousand lines (about
+    38% at 1,000 lines, 98.6% at 3,000; see #3368), and consumers indexing
+    results by ``id`` merged unrelated records.
+
+    The two UUIDs below share their first five hex digits, so a ``[:5]``
+    truncation yields the same id for both and this test fails; the full
+    ``.hex`` keeps them distinct.
+    """
     from uuid import UUID
 
     job = _make_job()
     driver = _make_driver(job)
-    values = iter(
-        [
-            UUID("12345000-0000-4000-8000-000000000001"),
-            UUID("12345fff-ffff-4fff-8fff-ffffffffffff"),
-        ]
-    )
-    monkeypatch.setattr(
-        base_module,
-        "uuid",
-        SimpleNamespace(uuid4=lambda: next(values)),
-    )
+    first = UUID("12345000-0000-4000-8000-000000000001")
+    second = UUID("12345fff-ffff-4fff-8fff-ffffffffffff")
+    values = iter([first, second])
+    monkeypatch.setattr(base_module.uuid, "uuid4", lambda: next(values))
 
     ids = [
         driver._build_response(
@@ -665,4 +668,4 @@ def test_result_ids_preserve_distinct_uuid_values(monkeypatch):
         for i in range(2)
     ]
 
-    assert ids[0] != ids[1]
+    assert ids == [first.hex, second.hex]
