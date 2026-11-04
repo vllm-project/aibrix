@@ -19,6 +19,7 @@ package routingalgorithms
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"sync/atomic"
@@ -582,6 +583,24 @@ func TestSessionAffinityStartWiresClient(t *testing.T) {
 	assert.True(t, wired.Options().ContextTimeoutEnabled, "the router's client must honor the context deadline")
 	router.Start(stop, &redis.Client{})
 	assert.Same(t, wired, router.redisClient, "Start is idempotent")
+}
+
+func TestSessionAffinityStartClosesDerivedClientOnStop(t *testing.T) {
+	mr := miniredis.RunT(t)
+	shared := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = shared.Close() })
+	router := &sessionAffinityRouter{}
+	stop := make(chan struct{})
+	router.Start(stop, shared)
+	derived := router.redisClient
+	require.NoError(t, derived.Ping(context.Background()).Err())
+
+	close(stop)
+
+	require.Eventually(t, func() bool {
+		return errors.Is(derived.Ping(context.Background()).Err(), redis.ErrClosed)
+	}, time.Second, 5*time.Millisecond, "the derived client's pool must be released when the router stops")
+	assert.NoError(t, shared.Ping(context.Background()).Err(), "the shared client belongs to the gateway and must stay usable")
 }
 
 // BenchmarkSessionAffinityRouterConcurrent hammers one router instance from many goroutines at

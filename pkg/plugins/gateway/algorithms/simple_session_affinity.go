@@ -187,6 +187,8 @@ func (r *sessionAffinityRouter) Start(stopCh <-chan struct{}, redisClient *redis
 					r.syncSessionKeyPodsFromRedis()
 				case <-stopCh:
 					ticker.Stop()
+					// The derived client owns its own pool; release it with the router.
+					_ = r.redisClient.Close()
 					return
 				}
 			}
