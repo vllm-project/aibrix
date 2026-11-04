@@ -12,24 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Extension request fields shared by vLLM and SGLang.
+"""Extension fields shared by vLLM and SGLang.
 
-Fields both engines accept are declared once here, grouped by the request
-types they apply to; fields only one engine knows live in ``vllm.py`` /
-``sglang.py``.  The inheritance hierarchy follows applicability so a field
-is declared exactly once:
+Fields both engines use are declared once here, grouped by the models they
+apply to; fields only one engine knows live in ``vllm.py`` / ``sglang.py``.
+The inheritance hierarchy follows applicability so a field is declared
+exactly once.
 
-    CommonExtensionFields (chat + completion + embedding)
-      -> GenerationExtensionFields (+ chat & completion)
+Requests::
+
+    CommonEngineExtensionFields (chat + completion + embedding)
+      -> GenerationEngineExtensionFields (+ chat & completion)
         -> SharedChatCompletionFields / SharedCompletionFields
       -> SharedEmbeddingFields
+
+Responses: ``SharedCompletionChoiceFields`` and ``SharedModelFields``.
 
 References: vLLM tag ``v0.33.0rc1``, SGLang tag ``v0.5.22``.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, conint
 
@@ -72,3 +76,23 @@ class SharedEmbeddingFields(CommonEngineExtensionFields):
     """Shared embedding-only fields."""
 
     pass
+
+
+# ---------------------------------------------------------------------------
+# Responses
+# ---------------------------------------------------------------------------
+
+
+class SharedCompletionChoiceFields(BaseModel):
+    """Shared fields on a /v1/completions choice (and stream choice)."""
+
+    prompt_token_ids: Optional[List[int]] = None
+    token_ids: Optional[List[int]] = None
+
+
+class SharedModelFields(BaseModel):
+    """Shared fields on a ``/v1/models`` entry."""
+
+    root: Optional[str] = None
+    parent: Optional[str] = None
+    max_model_len: Optional[int] = None

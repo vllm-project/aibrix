@@ -70,7 +70,8 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 	h := req.Request.(*extProcPb.ProcessingRequest_RequestHeaders)
 	reqHeaders := map[string]string{}
 	for _, n := range h.RequestHeaders.Headers.Headers {
-		switch strings.ToLower(n.Key) {
+		key := strings.ToLower(n.Key)
+		switch key {
 		case userKey:
 			username = string(n.RawValue)
 		case pathKey:
@@ -91,12 +92,18 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, roo
 			reqConfigProfile = strings.TrimSpace(string(n.RawValue))
 		case constants.HeaderSessionID:
 			reqHeaders[constants.HeaderSessionID] = string(n.RawValue)
-		case constants.HeaderSessionKey, HeaderMockPDFailure:
-			reqHeaders[strings.ToLower(n.Key)] = string(n.RawValue)
+		case constants.HeaderSessionKey:
+			reqHeaders[constants.HeaderSessionKey] = string(n.RawValue)
 		case HeaderTraceParent: // Preserve the trace context for requests initiated by the gateway plugin. like PD
 			reqHeaders[HeaderTraceParent] = string(n.RawValue)
 			if !rootSpan.SpanContext().HasTraceID() { // prefers rootSpan traceID over traceparent
 				requestID = GetTraceID(string(n.RawValue), requestID)
+			}
+		default:
+			// Preserve mock fault controls for gateway-initiated prefill and encode
+			// requests, which forward only the headers retained in ReqHeaders.
+			if strings.HasPrefix(key, HeaderMockPrefix) {
+				reqHeaders[key] = string(n.RawValue)
 			}
 		}
 	}
