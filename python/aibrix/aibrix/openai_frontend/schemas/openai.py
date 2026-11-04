@@ -53,6 +53,7 @@ from pydantic import (
 )
 
 from aibrix.openai_frontend.schemas.media import (
+    MEDIA_URL,
     ChatCompletionRequestMessageContentPartAudio,
     ChatCompletionRequestMessageContentPartFile,
     ChatCompletionRequestMessageContentPartInputAudio,
@@ -428,7 +429,7 @@ class ChatCompletionRequestMessageContentPartImage(BaseModel):
     model_config = ConfigDict(use_enum_values=True, extra="allow")
 
     type: Literal["image_url"] = "image_url"
-    image_url: _ImageUrl = Field(json_schema_extra={"media_url": "url"})
+    image_url: _ImageUrl = Field(json_schema_extra={MEDIA_URL: "url"})
     uuid: Optional[str] = None
 
 

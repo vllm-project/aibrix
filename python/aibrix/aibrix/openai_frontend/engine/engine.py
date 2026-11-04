@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from typing import AsyncIterator, List, Protocol, Union
 
+from pydantic import BaseModel
 from starlette.responses import Response
 
 from aibrix.openai_frontend.schemas.openai import (
@@ -104,6 +105,21 @@ class LLMEngine(Protocol):
         If request.stream is False, this returns a CreateCompletionResponse.
         """
         pass
+
+    async def responses(
+        self,
+        operation: str,
+        request: BaseModel | None = None,
+        *,
+        response_id: str | None = None,
+        query: list[tuple[str, str]] | None = None,
+    ) -> BaseModel | AsyncIterator[str] | Response | None:
+        """Serve a declared Responses operation, or explicitly reject it.
+
+        The default is used by engines (such as ViPE) without Responses support;
+        it must not silently return None like an unimplemented protocol stub.
+        """
+        raise NotImplementedError("This engine does not implement the Responses API")
 
     async def embedding(
         self, request: CreateEmbeddingRequest
