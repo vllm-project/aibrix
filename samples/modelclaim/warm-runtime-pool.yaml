@@ -44,6 +44,10 @@ spec:
               value: "false"
             - name: KVCACHED_AUTOPATCH
               value: "0"
+            - name: HF_HUB_CACHE
+              value: /root/.cache/huggingface/hub
+            - name: DOWNLOADER_LOCAL_DIR
+              value: /models
             - name: AIBRIX_WEIGHT_CACHE_DIR
               value: /root/.cache/huggingface
           resources:
@@ -59,6 +63,8 @@ spec:
               mountPath: /dev/shm
             - name: hf-cache
               mountPath: /root/.cache/huggingface
+            - name: object-model-cache
+              mountPath: /models
             - name: engine-registry
               mountPath: /var/run/aibrix
       volumes:
@@ -70,6 +76,10 @@ spec:
         - name: hf-cache
           hostPath:
             path: /var/cache/aibrix/huggingface
+            type: DirectoryOrCreate
+        - name: object-model-cache
+          hostPath:
+            path: /var/cache/aibrix/models
             type: DirectoryOrCreate
         # The agent's list of engines, which it reads again after a restart.
         - name: engine-registry
