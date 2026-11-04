@@ -28,6 +28,7 @@ import time
 import weakref
 from typing import IO, Any, Deque, Dict, List, Optional
 
+import anyio
 import httpx
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -40,6 +41,7 @@ from aibrix.openai_frontend.proxy.process_tree import (
     snapshot_tree,
 )
 from aibrix.openai_frontend.utils.utils import prefix_line
+from aibrix.runtime.downloaders import await_thread_completion
 
 logger = logging.getLogger(__name__)
 
@@ -554,6 +556,8 @@ class SubprocessEngine:
         *,
         json: Optional[Dict[str, Any]] = None,
         stream: bool = False,
+        headers: Optional[Dict[str, str]] = None,
+        raw_body: bool = False,
     ) -> httpx.Response:
         """Send one request to ``endpoint`` on the inner engine.
 
@@ -565,8 +569,54 @@ class SubprocessEngine:
         kwargs: Dict[str, Any] = {}
         if json is not None:
             kwargs["json"] = json
+        if headers is not None:
+            kwargs["headers"] = headers
         request = client.build_request(method, endpoint, **kwargs)
-        resp = await client.send(request, stream=stream)
+        resp = await client.send(request, stream=stream or raw_body)
+        if raw_body:
+            read_scope = anyio.CancelScope()
+
+            async def read_raw() -> httpx.Response:
+                with read_scope:
+                    try:
+                        if resp.is_stream_consumed:
+                            content = resp.content
+                        else:
+                            # Avoid aiter_raw()'s unshielded Response.aclose() at EOF.
+                            assert isinstance(resp.stream, httpx.AsyncByteStream)
+                            content = b"".join([chunk async for chunk in resp.stream])
+                        headers = dict(resp.headers)
+                        encoding = headers.pop("content-encoding", None)
+                        result = httpx.Response(
+                            resp.status_code,
+                            content=content,
+                            headers=headers,
+                            request=request,
+                        )
+                        if encoding is not None:
+                            result.headers["content-encoding"] = encoding
+                        return result
+                    finally:
+                        await await_thread_completion(resp.aclose())
+                raise asyncio.CancelledError()
+
+            # HTTPX shields internal read-error cleanup with an AnyIO scope.
+            # Cancel through that scope so an already-started close stays shielded.
+            task = asyncio.create_task(read_raw())
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                read_scope.cancel()
+                try:
+                    await await_thread_completion(task)
+                except BaseException:
+                    pass  # Preserve caller cancellation, including late close errors.
+                # A pre-start cancellation never enters read_raw()'s finally.
+                try:
+                    await await_thread_completion(resp.aclose())
+                except BaseException:
+                    pass
+                raise
         if stream and resp.status_code >= 300:
             try:
                 await resp.aread()

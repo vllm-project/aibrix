@@ -46,6 +46,7 @@ from aibrix.openai_frontend.frontend.fastapi.routers import (
     chat,
     completions,
     embeddings,
+    generation,
     models,
     observability,
 )
@@ -115,6 +116,7 @@ class FastApiFrontend(OpenAIFrontend):
         app.include_router(completions.router)
         app.include_router(chat.router)
         app.include_router(embeddings.router)
+        app.include_router(generation.router)
 
         # NOTE: For debugging purposes, should generally be restricted or removed
         self._add_cors_middleware(app)

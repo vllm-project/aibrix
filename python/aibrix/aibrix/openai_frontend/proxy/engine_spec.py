@@ -81,6 +81,10 @@ class EngineSpec:
     host_arg: str = "--host"
     port_arg: str = "--port"
 
+    # --- local-media rewriting -----------------------------------------
+    supports_local_media: bool = False
+    local_media_args: Tuple[str, ...] = ()
+
     # --- routing --------------------------------------------------------
     def kind(self, path: str) -> Optional[ForwardKind]:
         """How to forward ``path``, or None if the engine does not expose it."""
@@ -129,6 +133,11 @@ class EngineSpec:
         """Static paths, kept for callers that enumerate endpoints."""
         return frozenset(p for p in self.endpoints.paths() if "{" not in p)
 
+    def spawn_args(self, media_dir: Optional[str]) -> Tuple[str, ...]:
+        if not self.supports_local_media or not media_dir:
+            return ()
+        return tuple(a.replace("{dir}", media_dir) for a in self.local_media_args)
+
 
 def _matches(template: str, path: str) -> bool:
     """True if a concrete ``path`` matches a FastAPI-style ``{var}`` template."""
@@ -142,12 +151,25 @@ def _matches(template: str, path: str) -> bool:
     )
 
 
-VLLM_SPEC = EngineSpec(name="vllm")
-SGLANG_SPEC = EngineSpec(name="sglang")
-# TensorRT-LLM: embedding only with `trtllm-serve embeddings`.
+# vLLM: file:// media requires --allowed-local-media-path
+# (vllm/multimodal/media/connector.py).
+VLLM_SPEC = EngineSpec(
+    name="vllm",
+    supports_local_media=True,
+    local_media_args=("--allowed-local-media-path", "{dir}"),
+)
+# SGLang: load_image/load_video/load_audio accept file:// directly
+# (python/sglang/srt/utils/common.py); no flag needed.
+SGLANG_SPEC = EngineSpec(
+    name="sglang",
+    supports_local_media=True,
+)
+# TensorRT-LLM: load_image accepts "" / file:// schemes
+# (tensorrt_llm/inputs/utils.py). Embedding only with `trtllm-serve embeddings`.
 TRTLLM_SPEC = EngineSpec(
     name="trtllm",
     endpoints=EndpointSet(MODELS + CHAT + COMPLETION),
+    supports_local_media=True,
 )
 
 ENGINE_SPECS: dict[str, EngineSpec] = {
