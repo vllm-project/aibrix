@@ -42,6 +42,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple, overload
 
 from aibrix.runtime.engine_registry import EngineRegistry
+from aibrix.runtime.model_cache import PreparedCacheIndex
 
 
 def sanitize_ipc_name(name: str) -> str:
@@ -1197,6 +1198,7 @@ class ModelRuntime:
         if supervisor_interval_seconds <= 0:
             raise ValueError("supervisor_interval_seconds must be positive")
         self._launcher = launcher
+        self._cache_index = PreparedCacheIndex()
         self._kv_controller = kv_controller or SharedMemoryKVController()
         self._models: Dict[str, ModelInstance] = {}
         # _lock guards the records of the engines. Sleeps, wakes, KV-limit
@@ -1245,6 +1247,7 @@ class ModelRuntime:
 
     def start_supervisor(self) -> None:
         """Start the per-engine supervisor once for this runtime instance."""
+        self._cache_index.refresh_if_due()
         with self._lock:
             if (
                 self._supervisor_thread is not None
@@ -1269,6 +1272,7 @@ class ModelRuntime:
     def _supervisor_loop(self) -> None:
         while not self._supervisor_stop.wait(self._supervisor_interval_seconds):
             try:
+                self._cache_index.refresh_if_due()
                 self.supervise_once()
             except Exception:
                 logger.exception("engine supervisor iteration failed")
@@ -2203,7 +2207,9 @@ class ModelRuntime:
             "observed_at": datetime.now(timezone.utc),
             "accelerators": accelerators,
             "models": models,
-            "cached_artifacts": cached_artifacts(),
+            "cached_artifacts": sorted(
+                set(cached_artifacts()) | set(self._cache_index.get_artifacts())
+            ),
         }
 
     @staticmethod

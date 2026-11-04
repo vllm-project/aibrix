@@ -44,6 +44,7 @@ patterns = [
 [tool.poetry.scripts]
 aibrix_runtime = 'aibrix.app:main'
 aibrix_download = 'aibrix.downloader.__main__:main'
+aibrix_prepare_model_cache = 'aibrix.downloader.model_cache:main'
 aibrix_batch_worker = 'aibrix.batch.worker:main'
 aibrix_metadata = 'aibrix.metadata.app:main'
 aibrix_openai_frontend = 'aibrix.openai_frontend.main:main'
