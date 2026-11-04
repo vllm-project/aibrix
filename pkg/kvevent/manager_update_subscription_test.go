@@ -55,7 +55,7 @@ func countSubscriberStarts(m *Manager) *int {
 	return &starts
 }
 
-// testPodProvider serves pods to OnPodAdd as the store does.
+// testPodProvider serves pods to OnPodAdd and Start as the store does.
 type testPodProvider map[string]*v1.Pod
 
 func (p testPodProvider) GetPod(_ context.Context, podKey string) (*PodInfo, bool) {
@@ -66,7 +66,12 @@ func (p testPodProvider) GetPod(_ context.Context, podKey string) (*PodInfo, boo
 	return podInfoFromPod(pod), true
 }
 
-func (p testPodProvider) RangePods(context.Context, func(string, *PodInfo) bool) error {
+func (p testPodProvider) RangePods(_ context.Context, f func(string, *PodInfo) bool) error {
+	for key, pod := range p {
+		if !f(key, podInfoFromPod(pod)) {
+			break
+		}
+	}
 	return nil
 }
 
@@ -294,5 +299,33 @@ func TestManagerPodRelabeledWhileNotReadyWaitsForReady(t *testing.T) {
 	}
 	if !reflect.DeepEqual(indexer.removePrefixCalls, wantPurge) {
 		t.Fatalf("purges = %+v, want only %+v", indexer.removePrefixCalls, wantPurge)
+	}
+}
+
+// TestManagerStartWaitsForReady checks that Start, which subscribes the pods
+// already in the store when the gateway starts, skips a pod that is not Ready
+// and leaves it to the update that makes it Ready.
+func TestManagerStartWaitsForReady(t *testing.T) {
+	m, _ := newUpdateTestManager(t)
+	starts := countSubscriberStarts(m)
+	ready := updateTestPod()
+	ready.Name = "ready"
+	loading := updateTestPod()
+	loading.Name = "loading"
+	setPodReady(loading, false)
+	m.podProvider = testPodProvider{"default/ready": ready, "default/loading": loading}
+
+	if err := m.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := m.subscribers.Load("default/ready"); !exists || *starts != 1 {
+		t.Fatalf("Start: ready pod subscribed=%v, starts=%d; want only the Ready pod", exists, *starts)
+	}
+
+	nowReady := loading.DeepCopy()
+	setPodReady(nowReady, true)
+	m.OnPodUpdate(loading, nowReady)
+	if _, exists := m.subscribers.Load("default/loading"); !exists || *starts != 2 {
+		t.Fatalf("pod turned Ready after Start: subscribed=%v, starts=%d; want a subscription", exists, *starts)
 	}
 }

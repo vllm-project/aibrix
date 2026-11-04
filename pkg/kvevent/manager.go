@@ -218,7 +218,8 @@ func (m *Manager) OnPodUpdate(oldPod, newPod *v1.Pod) {
 	// A pod that turns Ready gets its first subscription here. A pod that was
 	// subscribed before a NotReady flap still has it, and subscribeToPod
 	// returns at once.
-	becameReady := isPodReadyToSubscribe(newPod) && !utils.IsPodReady(oldPod)
+	newReady := newSubscribable && utils.IsPodReady(newPod)
+	becameReady := newReady && !utils.IsPodReady(oldPod)
 	if !stale && !becameReady {
 		return
 	}
@@ -234,7 +235,7 @@ func (m *Manager) OnPodUpdate(oldPod, newPod *v1.Pod) {
 	}
 	// Not subscribable, or not Ready yet: the update that makes it Ready
 	// subscribes it.
-	if !isPodReadyToSubscribe(newPod) {
+	if !newReady {
 		return
 	}
 
@@ -302,6 +303,7 @@ func podInfoFromPod(pod *v1.Pod) *PodInfo {
 		PodIP:     pod.Status.PodIP,
 		ModelName: modelName,
 		Labels:    pod.Labels,
+		Ready:     utils.IsPodReady(pod),
 	}
 }
 
@@ -337,7 +339,8 @@ func (m *Manager) purgePodPrefixCache(modelName string, loraID int64, podKey str
 func canSubscribeToPod(podInfo *PodInfo) bool {
 	return podInfo.Labels[constants.KVEventsEnabledLabel] == "true" &&
 		podInfo.PodIP != "" &&
-		podInfo.ModelName != ""
+		podInfo.ModelName != "" &&
+		podInfo.Ready
 }
 
 // Check if the pod can be subscribed

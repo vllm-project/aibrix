@@ -52,6 +52,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/kvevent"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	syncindexer "github.com/vllm-project/aibrix/pkg/utils/syncprefixcacheindexer"
 )
 
@@ -98,6 +99,7 @@ func (a *storeProviderAdapter) GetPod(ctx context.Context, podKey string) (*kvev
 		ModelName: modelName,
 		Labels:    metaPod.Pod.Labels, // Shallow copy - labels are read-only
 		Models:    metaPod.Models.Array(),
+		Ready:     utils.IsPodReady(metaPod.Pod),
 	}, true
 }
 
@@ -124,6 +126,7 @@ func (a *storeProviderAdapter) RangePods(ctx context.Context, f func(key string,
 			ModelName: modelName,
 			Labels:    metaPod.Pod.Labels,
 			Models:    metaPod.Models.Array(),
+			Ready:     utils.IsPodReady(metaPod.Pod),
 		}
 
 		return f(key, podInfo)

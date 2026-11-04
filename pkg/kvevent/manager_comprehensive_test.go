@@ -137,6 +137,7 @@ func TestManagerPodLifecycle(t *testing.T) {
 			constants.ModelLabelName:       "test-model",
 			constants.KVEventsEnabledLabel: "true",
 		},
+		Ready: true,
 	}
 
 	podProvider := &mockPodProvider{
