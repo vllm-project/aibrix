@@ -46,6 +46,8 @@ spec:
               value: "0"
             - name: HF_HUB_CACHE
               value: /root/.cache/huggingface/hub
+            - name: AIBRIX_MODEL_CACHE_METADATA_DIR
+              value: /models/.aibrix/download-metadata
             - name: DOWNLOADER_LOCAL_DIR
               value: /models
             - name: AIBRIX_WEIGHT_CACHE_DIR
