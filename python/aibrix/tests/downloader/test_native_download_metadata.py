@@ -29,8 +29,9 @@ import pytest
 import requests
 from huggingface_hub import constants, file_download, hf_api, hf_hub_download
 
-from aibrix.downloader.hf_cache import discover_cached_hf_artifacts
-from aibrix.downloader.model_cache import prepare_model_cache
+from aibrix import envs
+from aibrix.downloader import download_model
+from aibrix.downloader.metadata import discover_download_metadata
 from aibrix.runtime.model_runtime import _resolve_model_path
 
 FILES = {
@@ -42,8 +43,14 @@ FILES = {
 COMMIT = "a" * 40
 
 
+def prepare_model_cache(uri, root):
+    return download_model(
+        uri, local_path=root, download_extra_config={"prepare_cache": True}
+    )
+
+
 @pytest.fixture
-def hub(monkeypatch):
+def hub(monkeypatch, tmp_path):
     state = SimpleNamespace(payloads=[], fail=False)
 
     class Handler(BaseHTTPRequestHandler):
@@ -58,7 +65,9 @@ def hub(monkeypatch):
 
         def respond(self, body):
             path = unquote(self.path.split("?", 1)[0])
-            if path.startswith("/api/models/Org/Qwen/revision/"):
+            if path == "/api/models/Org/Qwen" or path.startswith(
+                "/api/models/Org/Qwen/revision/"
+            ):
                 data = json.dumps(
                     {
                         "id": "Org/Qwen",
@@ -98,6 +107,9 @@ def hub(monkeypatch):
         return original_request(session, method, url, *args, **kwargs)
 
     monkeypatch.setattr(requests.Session, "request", local_only)
+    monkeypatch.setenv("AIBRIX_MODEL_CACHE_METADATA_DIR", str(tmp_path / "metadata"))
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(envs, "DOWNLOADER_HF_ENDPOINT", state.endpoint)
     monkeypatch.setattr(constants, "ENDPOINT", state.endpoint)
     monkeypatch.setattr(hf_api, "ENDPOINT", state.endpoint)
     monkeypatch.setattr(
@@ -127,7 +139,7 @@ def test_prepare_is_reused_by_unchanged_native_repo_loader(hub, tmp_path):
         file = hf_hub_download(repo, name, cache_dir=str(tmp_path))
         assert Path(file).read_bytes() == data
     assert sorted(hub.payloads) == sorted(FILES), "native consumer repeated payload GET"
-    assert "huggingface://Org/Qwen" in discover_cached_hf_artifacts(tmp_path)
+    assert "huggingface://Org/Qwen" in discover_download_metadata()
 
 
 def test_concurrent_native_preparers_share_client_locks(hub, tmp_path):
@@ -145,11 +157,11 @@ def test_interrupted_native_download_is_not_advertised_and_recovers(hub, tmp_pat
     hub.fail = True
     with pytest.raises(Exception):
         prepare_model_cache("hf://Org/Qwen", str(tmp_path))
-    assert discover_cached_hf_artifacts(tmp_path) == []
+    assert discover_download_metadata() == []
     hub.fail = False
     result = prepare_model_cache("hf://Org/Qwen", str(tmp_path))
     assert (result / "model.safetensors").read_bytes() == FILES["model.safetensors"]
-    assert "hf://Org/Qwen" in discover_cached_hf_artifacts(tmp_path)
+    assert "hf://Org/Qwen" in discover_download_metadata()
 
 
 def test_prepare_cli_uses_native_cache_without_a_revision_argument(hub, tmp_path):
@@ -158,10 +170,11 @@ def test_prepare_cli_uses_native_cache_without_a_revision_argument(hub, tmp_path
         [
             sys.executable,
             "-m",
-            "aibrix.downloader.model_cache",
+            "aibrix.downloader",
+            "--prepare-cache",
             "--model-uri",
             "hf://Org/Qwen",
-            "--cache-dir",
+            "--local-dir",
             str(tmp_path),
         ],
         env=env,
@@ -171,7 +184,7 @@ def test_prepare_cli_uses_native_cache_without_a_revision_argument(hub, tmp_path
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().endswith(COMMIT)
-    assert "hf://Org/Qwen" in discover_cached_hf_artifacts(tmp_path)
+    assert "hf://Org/Qwen" in discover_download_metadata()
 
 
 def test_prepare_cli_rejects_unknown_scheme(tmp_path):
@@ -179,10 +192,11 @@ def test_prepare_cli_rejects_unknown_scheme(tmp_path):
         [
             sys.executable,
             "-m",
-            "aibrix.downloader.model_cache",
+            "aibrix.downloader",
+            "--prepare-cache",
             "--model-uri",
             "azure://bucket/model",
-            "--cache-dir",
+            "--local-dir",
             str(tmp_path),
         ],
         capture_output=True,
@@ -203,10 +217,11 @@ def test_prepare_job_and_native_consumer_process_share_weight_download(hub, tmp_
     prepare = [
         sys.executable,
         "-m",
-        "aibrix.downloader.model_cache",
+        "aibrix.downloader",
+        "--prepare-cache",
         "--model-uri",
         "hf://Org/Qwen",
-        "--cache-dir",
+        "--local-dir",
         str(tmp_path),
     ]
     consume = [
@@ -228,7 +243,7 @@ def test_prepare_job_and_native_consumer_process_share_weight_download(hub, tmp_
         r.stderr for r in outcomes
     ]
     assert hub.payloads.count("model.safetensors") == 1
-    assert "hf://Org/Qwen" in discover_cached_hf_artifacts(tmp_path)
+    assert "hf://Org/Qwen" in discover_download_metadata()
 
 
 def test_prepared_files_reach_existing_runtime_snapshot_http_field(
@@ -261,3 +276,59 @@ def test_prepared_files_reach_existing_runtime_snapshot_http_field(
         else:
             pytest.fail("prepared files never appeared in the unchanged snapshot field")
     assert sorted(hub.payloads) == sorted(FILES), "discovery must not download remotely"
+
+
+def test_native_hf_files_without_registration_are_not_discovered(hub, tmp_path):
+    from huggingface_hub import snapshot_download
+
+    snapshot_download("Org/Qwen", cache_dir=str(tmp_path))
+    assert discover_download_metadata() == []
+
+
+def test_ordinary_hf_local_dir_result_is_recorded_without_wrong_repo_hint(
+    hub, tmp_path
+):
+    path = download_model("Org/Qwen", local_path=str(tmp_path / "plain"))
+    assert path == tmp_path / "plain/Org/Qwen"
+    record = json.loads(next((tmp_path / "metadata").glob("*.json")).read_text())
+    assert record["layout"] == "directory"
+    assert record["relative_path"] == "Org/Qwen"
+    assert discover_download_metadata() == []
+
+
+def test_failed_hf_metadata_publication_does_not_fail_ordinary_download(hub, tmp_path):
+    (tmp_path / "metadata").write_text("not a directory")
+    assert download_model("Org/Qwen", local_path=str(tmp_path / "plain")).is_dir()
+    with pytest.raises((OSError, ValueError)):
+        prepare_model_cache("hf://Org/Qwen", str(tmp_path))
+
+
+def test_runtime_does_not_inventory_unregistered_hf_cache(hub, tmp_path):
+    from huggingface_hub import snapshot_download
+
+    from aibrix.runtime.model_cache import scan_prepared_artifacts
+
+    snapshot_download("Org/Qwen", cache_dir=str(tmp_path))
+    assert scan_prepared_artifacts() == [], (
+        "runtime must consume metadata, not scan native caches"
+    )
+
+
+@pytest.mark.parametrize("revision", ["release", COMMIT])
+def test_nondefault_hf_result_is_recorded_without_default_repo_hint(
+    hub, tmp_path, revision
+):
+    result = download_model(
+        "Org/Qwen",
+        str(tmp_path),
+        download_extra_config={"prepare_cache": True, "hf_revision": revision},
+    )
+    assert result.name == COMMIT
+    assert list((tmp_path / "metadata").glob("*.json"))
+    assert discover_download_metadata() == []
+
+
+def test_default_hf_reference_change_withdraws_registered_hint(hub, tmp_path):
+    prepare_model_cache("hf://Org/Qwen", str(tmp_path))
+    (tmp_path / "models--Org--Qwen/refs/main").write_text("b" * 40)
+    assert discover_download_metadata() == []

@@ -14,6 +14,7 @@
 
 # Build an image containing this feature and make it available on target nodes.
 # Authorize namespace/node pool membership as described in README.md.
+# Shared metadata indexes generic downloader results; Claim URLs stay unchanged.
 # Matches the host paths in samples/modelclaim/warm-runtime-pool.yaml.
 apiVersion: model.aibrix.ai/v1alpha1
 kind: ModelWarmup
@@ -31,11 +32,13 @@ spec:
       - name: prepare
         image: aibrix/runtime:cache-prepare
         imagePullPolicy: IfNotPresent
-        command: [aibrix_prepare_model_cache]
-        args: [--model-uri, "huggingface://Qwen/Qwen3-0.6B"]
+        command: [aibrix_download]
+        args: [--prepare-cache, --model-uri, "huggingface://Qwen/Qwen3-0.6B"]
         env:
           - name: HF_HUB_CACHE
             value: /model-cache/huggingface/hub
+          - name: AIBRIX_MODEL_CACHE_METADATA_DIR
+            value: /model-cache/objects/.aibrix/download-metadata
           - name: DOWNLOADER_LOCAL_DIR
             value: /model-cache/objects
         volumeMounts:

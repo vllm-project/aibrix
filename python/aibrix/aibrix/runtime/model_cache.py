@@ -16,7 +16,6 @@
 
 import threading
 import time
-from pathlib import Path
 from typing import Callable, List, Optional
 
 from aibrix.logger import init_logger
@@ -25,26 +24,10 @@ logger = init_logger(__name__)
 
 
 def scan_prepared_artifacts() -> List[str]:
-    # These imports and all filesystem traversal stay off snapshot threads.
-    from aibrix import envs
-    from aibrix.downloader.hf_cache import (
-        default_hf_cache_dir,
-        discover_cached_hf_artifacts,
-    )
-    from aibrix.downloader.model_cache import discover_prepared_artifacts
+    # One registered-result index for all backends; never inventory model caches.
+    from aibrix.downloader.metadata import discover_download_metadata
 
-    artifacts = set()
-    for scanner, root in [
-        (discover_cached_hf_artifacts, default_hf_cache_dir()),
-        (discover_prepared_artifacts, Path(envs.DOWNLOADER_LOCAL_DIR)),
-    ]:
-        try:
-            artifacts.update(scanner(root))
-        except Exception:
-            # One failed mount/backend must not discard the other backend's
-            # fresh observations. Nothing from the failed scan is retained.
-            logger.warning("model cache discovery failed", exc_info=True)
-    return sorted(artifacts)
+    return discover_download_metadata()
 
 
 class PreparedCacheIndex:
@@ -95,7 +78,9 @@ class PreparedCacheIndex:
         except Exception:
             with self._lock:
                 self._scanning = False
-            raise
+                self._artifacts = []
+                self._completed = self._clock()
+            logger.warning("could not start model metadata scan", exc_info=True)
 
     def _refresh(self) -> None:
         try:

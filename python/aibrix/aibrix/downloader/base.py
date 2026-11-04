@@ -18,11 +18,15 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, Dict, List, Optional
+from typing import ClassVar, Dict, List, Optional, Tuple
 
 from aibrix import envs
 from aibrix.common.errors import InvalidArgumentError, ModelNotFoundError
-from aibrix.downloader.entity import RemoteSource
+from aibrix.downloader.entity import (
+    FileDownloadStatus,
+    RemoteSource,
+    get_local_download_paths,
+)
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -49,6 +53,9 @@ class DownloadExtraConfig:
     io_chunksize: Optional[int] = None
     part_threshold: Optional[int] = None
     part_chunksize: Optional[int] = None
+
+    # Opt-in cache preparation; ordinary downloads retain their output layout.
+    prepare_cache: bool = False
 
     # other config
     allow_file_suffix: Optional[List[str]] = None
@@ -78,6 +85,7 @@ class BaseDownloader(ABC):
     _source: ClassVar[RemoteSource] = RemoteSource.UNKNOWN
 
     def __post_init__(self):
+        self._downloaded_files: List[str] = []
         # valid downloader config
         self._valid_config()
         self.model_name_path = self.model_name
@@ -209,6 +217,12 @@ class BaseDownloader(ABC):
                 file for file in files if self._matches_allow_file_suffix(file)
             ]
 
+        prefix = self.bucket_path.rstrip("/") + "/"
+        self._downloaded_files = [
+            file[len(prefix) :] if file.startswith(prefix) else file
+            for file in filtered_files
+        ]
+
         if not self._support_range_download():
             # download using multi threads
             num_threads = (
@@ -247,6 +261,7 @@ class BaseDownloader(ABC):
                 self.download(local_path, file, self.bucket_name, True)
 
     def download_model(self, local_path: Optional[str] = None) -> Path:
+        self._downloaded_files = []
         if local_path is None:
             local_path = envs.DOWNLOADER_LOCAL_DIR
             Path(local_path).mkdir(parents=True, exist_ok=True)
@@ -260,6 +275,7 @@ class BaseDownloader(ABC):
         if self._is_directory():
             self.download_directory(local_path=model_path)
         else:
+            self._downloaded_files = [self.bucket_path.split("/")[-1]]
             self.download(
                 local_path=model_path,
                 bucket_path=self.bucket_path,
@@ -273,7 +289,33 @@ class BaseDownloader(ABC):
             f"duration: {duration:.2f} seconds."
         )
 
+        self._publish_metadata(model_path, Path(local_path))
         return model_path
+
+    def _metadata_files(self, path: Path, layout: str) -> Tuple[List[Path], bool]:
+        # Only this invocation's inventory: historical locks/files may belong to
+        # removed objects or older sources sharing the same legacy destination.
+        downloaded = [
+            get_local_download_paths(path, name, self.source)
+            for name in self._downloaded_files
+        ]
+        if any(file.status != FileDownloadStatus.DOWNLOADED for file in downloaded):
+            raise ValueError("Downloader did not complete its file inventory")
+        return [
+            p for file in downloaded for p in (file.file_path, file.metadata_path)
+        ], True
+
+    def _publish_metadata(
+        self, path: Path, root: Path, layout: str = "directory"
+    ) -> None:
+        from aibrix.downloader.metadata import publish_download_metadata
+
+        try:
+            publish_download_metadata(self, path, root, layout)
+        except Exception:
+            if self.download_extra_config.prepare_cache:
+                raise
+            logger.warning("Could not register download metadata", exc_info=True)
 
     def __hash__(self):
         return hash(tuple(self.__dict__))
@@ -291,6 +333,21 @@ def get_downloader(
         if download_extra_config is None
         else DownloadExtraConfig(**download_extra_config)
     )
+
+    if download_config.prepare_cache:
+        from aibrix.downloader.metadata import metadata_directory, normalize_source
+
+        backend, canonical = normalize_source(model_uri)
+        if metadata_directory() is None:
+            raise ValueError("--prepare-cache requires AIBRIX_MODEL_CACHE_METADATA_DIR")
+        if download_config.allow_file_suffix or envs.DOWNLOADER_ALLOW_FILE_SUFFIX:
+            raise ValueError("--prepare-cache requires an unfiltered model source")
+        if model_name is not None:
+            raise ValueError(
+                "--prepare-cache uses the existing loader destination; omit --model-name"
+            )
+        if backend == "huggingface":
+            model_uri = canonical.split("://", 1)[1]
 
     if re.match(envs.DOWNLOADER_S3_REGEX, model_uri):
         from aibrix.downloader.s3 import S3Downloader

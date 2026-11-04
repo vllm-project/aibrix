@@ -119,12 +119,3 @@ Automatic service-account token mounting is disabled, but explicit projected
 permissions (normally the namespace default service account); secret volumes can
 also expose namespace credentials. Keep service-account permissions minimal and
 restrict the token and secret volumes that ModelWarmup authors may request.
-
-## Prepare model caches for unchanged ModelClaims
-
-[model-cache.yaml](model-cache.yaml) uses `aibrix_prepare_model_cache` to fill
-the cache consumed by the existing runtime. HF uses the native Hub cache;
-S3, TOS, and GCS reuse their existing downloader directories and ETag checks.
-See [model-cache.md](model-cache.md) for matching warm-pool mounts, credentials,
-source aliases, and the cache-discovery contract. This differs from
-`model-download.yaml`, which demonstrates a plain output directory.

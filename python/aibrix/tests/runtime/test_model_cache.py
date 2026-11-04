@@ -142,3 +142,12 @@ async def test_app_lifecycle_discovers_before_first_snapshot_and_stops(monkeypat
         assert scanned.wait(1), "discovery must not wait for a Claim's first snapshot"
         assert agent._supervisor_thread.is_alive()
     assert not agent._supervisor_thread.is_alive()
+
+
+def test_worker_start_failure_does_not_fail_runtime_snapshot(monkeypatch):
+    def fail_start(self):
+        raise RuntimeError("cannot start worker")
+
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+    index = PreparedCacheIndex(scanner=lambda: ["s3://bucket/model"])
+    assert index.get_artifacts() == []

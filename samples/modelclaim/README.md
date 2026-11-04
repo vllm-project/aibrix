@@ -32,24 +32,3 @@ engines:
 kubectl delete -f samples/modelclaim/modelclaims.yaml
 kubectl delete -f samples/modelclaim/warm-runtime-pool.yaml
 ```
-
-## Reuse models prepared by ModelWarmup
-
-The pool explicitly mounts the native HF Hub cache and the existing object-store
-downloader directory. Use the [model-cache preparation sample](../modelwarmup/model-cache.yaml)
-on the same authorized nodes before creating the **unchanged** ModelClaims.
-Both the preparation image and the pool runtime must include this feature.
-
-The runtime discovers supported complete caches in the background and merges
-URL hints into its existing `cached_artifacts` snapshot field. Existing placement
-then prefers a feasible cached Pod; caches never bypass capacity or pool
-constraints. Discovery refreshes every 10 seconds and is eventually visible,
-not a guarantee that the first Claim after a Warmup succeeds will see a hint.
-No new ModelClaim fields, controller changes, or activation protocol are needed.
-
-For S3/TOS/GCS Claims, configure the runtime with the same endpoint/region and
-normal backend credentials as the prepare Job. The existing downloader still
-checks remote metadata and skips payload transfer only when its ETag and size
-checks match. Cache hits are not an offline-access guarantee. See the
-[preparation guide](../modelwarmup/model-cache.md) for layout, permission, and
-version limitations.
