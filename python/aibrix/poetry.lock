@@ -974,6 +974,69 @@ all = ["email-validator (>=2.0.0)", "fastapi-cli[standard] (>=0.0.5)", "httpx (>
 standard = ["email-validator (>=2.0.0)", "fastapi-cli[standard] (>=0.0.5)", "httpx (>=0.23.0)", "jinja2 (>=2.11.2)", "python-multipart (>=0.0.7)", "uvicorn[standard] (>=0.12.0)"]
 
 [[package]]
+name = "fastpybase64"
+version = "0.1.1"
+description = "Fast Base64 encoding and decoding for Python, built on simdutf"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "fastpybase64-0.1.1-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:c9f4699c95ab3543988610d342dd99e73aca949c3035efbf47b1ca7f41fe8c44"},
+    {file = "fastpybase64-0.1.1-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:1049f0b9c418af8395d8b1bd9332f3ed6f9359d0716cd42a4e8a66e2b94c9622"},
+    {file = "fastpybase64-0.1.1-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:276a2325d00f342f2a87d7840ce73e6c7d70ca7a84fa58bcd7e2a4e180d68eb1"},
+    {file = "fastpybase64-0.1.1-cp310-cp310-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:1bb59577506d19c494b1dafa1e5ddeeacf091a98576823a8f62acf93479c9395"},
+    {file = "fastpybase64-0.1.1-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:c4eacf6b970870749c254921ef95b841bca80433f35b2244feebaec2472fee8d"},
+    {file = "fastpybase64-0.1.1-cp310-cp310-musllinux_1_2_aarch64.whl", hash = "sha256:7bc04e62224369e7ea4d6bae9803fbda321a42e6cd0284582907b383aba4b590"},
+    {file = "fastpybase64-0.1.1-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:88892afbd27942b7f77a3b8c5f18eaba1f1e6cfab2c3c03058e1660bb76a6cea"},
+    {file = "fastpybase64-0.1.1-cp310-cp310-win_amd64.whl", hash = "sha256:02760837cf51a7a2f048bc2dcbe7cbf45a26786cd13da9fdd0a5f359b105ceb4"},
+    {file = "fastpybase64-0.1.1-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:5a9666998a18bee4bf2cc346a37c1f1b74df1397a85711da167d3d6cd1210df4"},
+    {file = "fastpybase64-0.1.1-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:7cb7db0e083865631de32fe3d9775558017e92e196bb4a7ec58d3c2010058b76"},
+    {file = "fastpybase64-0.1.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:8e7fbfda948ed64bc74f391d18e910632530cd11b7ade194c0287a67e659432f"},
+    {file = "fastpybase64-0.1.1-cp311-cp311-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:2250914c0ddbc06ac13d61cf98ee8bc29145d628f26506d135cf5c3c9fbae356"},
+    {file = "fastpybase64-0.1.1-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:6b4176292da875437972ddfe49d0833521491c8063fd68f02ef063dfa39e122d"},
+    {file = "fastpybase64-0.1.1-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:e2eb12e0fd1d36846a8b16937c55245e275f0e6f988dad4d13c21f09d2fc3e2e"},
+    {file = "fastpybase64-0.1.1-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:291e35bf8b96cce34a4bf0483df68b7e64805bc95a3e8d557bd6a5027a1e1063"},
+    {file = "fastpybase64-0.1.1-cp311-cp311-win_amd64.whl", hash = "sha256:bfd2272a4a1bb3f1eae9d632284a7efa85aad9dd7a978b5973fe9a518adabe55"},
+    {file = "fastpybase64-0.1.1-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:4d78a27cd017b0ded622b8a0b2c00476894ad9190fb7759f7f3f2ecae46b32c3"},
+    {file = "fastpybase64-0.1.1-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:515c9aad33a19891a8bea566395e910d8940b0c882305c651e5fe3e9673bf465"},
+    {file = "fastpybase64-0.1.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:32b3f5b34b99545cccec30572a8228b7e38bec05a721b028b6ff4c6b6b24d8d9"},
+    {file = "fastpybase64-0.1.1-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:3661541218ce15557ba5c925bab1ce2a0d1e06a8fd9117721119e71a2c4e0f60"},
+    {file = "fastpybase64-0.1.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:d7c2e16fd203cdada40624c908ca0fb8dd7e95824660d3f7bad162fad0706714"},
+    {file = "fastpybase64-0.1.1-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:99bd54e8cc74ee2d8c39cd2880ea056f39840b6f0921641395b9916faa9a7d8d"},
+    {file = "fastpybase64-0.1.1-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:9b278d8f2108581b59fe70bb5a845e9d34deade019c88565a01eab8f67e61fd2"},
+    {file = "fastpybase64-0.1.1-cp312-cp312-win_amd64.whl", hash = "sha256:16f34d7042ec26d90b8ae39cca9fb80eec719125d7667c6bb16e80136f3888ea"},
+    {file = "fastpybase64-0.1.1-cp313-cp313-macosx_10_13_universal2.whl", hash = "sha256:0b6447c41808ceb9f4b12ed7ad8cdc0dd073b6be133694b8dc010845456d7bff"},
+    {file = "fastpybase64-0.1.1-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:d17103e41b1625212e3bbe00be51542b6ab09e9351f881f04e34819c4d3b4d7b"},
+    {file = "fastpybase64-0.1.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:9dc9a88e7d6fd0c220f1bee97bcb66601a1fdcaf4fc535baaf50e036b66f63e1"},
+    {file = "fastpybase64-0.1.1-cp313-cp313-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:311a245776919b6ec8f0e024f8e0a8ccce2d367812f49941d8cf6ec0841929cf"},
+    {file = "fastpybase64-0.1.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:9b6a78b42b872c59bcbb2517ed595000d6023feb4ede1431b05b4a06aa866618"},
+    {file = "fastpybase64-0.1.1-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:5dcca7b507c8895d58b43e310874a4edc158581adc08820a701bb6d8734a36d0"},
+    {file = "fastpybase64-0.1.1-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:0117ca3f6defa548b2dc2ab22f9ba983f371f0a4984243805c752518ba18a796"},
+    {file = "fastpybase64-0.1.1-cp313-cp313-win_amd64.whl", hash = "sha256:cf9622a23febee00fa4e774e9f777bd3900aa612e798074ec34fb8ee3d9926f8"},
+    {file = "fastpybase64-0.1.1-cp314-cp314-macosx_10_15_universal2.whl", hash = "sha256:62b61f1debd8a93138680d8b9101378e0d7354bea7423f0f1c1ff3408bf8b76d"},
+    {file = "fastpybase64-0.1.1-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:9ea7cee56451cb0f417359ee3e831cfee342803a448f7a8f0273977b3cac09af"},
+    {file = "fastpybase64-0.1.1-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:a136ba821e2d548b1af167887c4765664c8b734197af4344a45ff0b2ee7aa72c"},
+    {file = "fastpybase64-0.1.1-cp314-cp314-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:36f4ed1da5dd68a80a4e4b2804a0f48b0be068c043b514bfe03bef1c2d4567d2"},
+    {file = "fastpybase64-0.1.1-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:41c9b3eb79307d2540ca448e49cdc893841dde53cff00502397d56f3f72f1c8b"},
+    {file = "fastpybase64-0.1.1-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:de0ac1c98a5e57767a966ab08c4039591b1a345e695c4a83269b68f2dcb3d0f1"},
+    {file = "fastpybase64-0.1.1-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:71fae9c3bf61c4695940fa51685eb87302855d6a257ba6917313f4f87ef1187d"},
+    {file = "fastpybase64-0.1.1-cp314-cp314-win_amd64.whl", hash = "sha256:bbb7dd0cc0f1be370f4daa603a1fb58374bc690556f6565e3b8779d1d1e83d25"},
+    {file = "fastpybase64-0.1.1-cp314-cp314t-macosx_10_15_universal2.whl", hash = "sha256:e807e6430f3dfdc9fb7726a91c98e13f1c20101e5c0f91b31323880492557a37"},
+    {file = "fastpybase64-0.1.1-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:15d75dc337745da4e6a8b8a22b6d071d17d00fc8a0b21a7b1d54155a6c8489d4"},
+    {file = "fastpybase64-0.1.1-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:7c653503ad5704e4ea97e111a6f0fd97567dcc672bf20aa7fb76121fbbb374b4"},
+    {file = "fastpybase64-0.1.1-cp314-cp314t-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:508ead4af8f73818da4d91d46d914c5c5f7f8927efa7c46780aaeab5428eb61f"},
+    {file = "fastpybase64-0.1.1-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:63d861aebb0946428054e2c0b417a6c29590905bf2dfe50a20dac68e91933179"},
+    {file = "fastpybase64-0.1.1-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:e12b58f6fa375a6cfac219832dd4de6d0a76117ed49992edc9b2c9b09183576a"},
+    {file = "fastpybase64-0.1.1-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:1010151948278842f04b661d0925991c8954ccf864fb14faff604b05e301225b"},
+    {file = "fastpybase64-0.1.1-cp314-cp314t-win_amd64.whl", hash = "sha256:c88c102dfdbdeed9d9c147521ea9676101ed45398bcd9e6a6cf972f5b3e48a75"},
+    {file = "fastpybase64-0.1.1.tar.gz", hash = "sha256:834859ef8e573eadbf94954f4d74bdc74a4ebd81f19d0bb564c3bcd3ea182795"},
+]
+
+[package.extras]
+bench = ["pybase64"]
+test = ["pytest"]
+
+[[package]]
 name = "filelock"
 version = "3.25.2"
 description = "A platform independent file lock."
@@ -5091,4 +5154,4 @@ gpu-optimizer = ["dash", "incdbscan", "matplotlib", "numpy", "pandas", "pulp"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.13"
-content-hash = "da934f489f63615a74a937cb43427dda0be6027c2fd9e7bfd92c06dac0dc97fe"
+content-hash = "a2b1db955c66b05c0b3c0cd2577a94e92d63e82257d6eaf2efa23518aba2222b"

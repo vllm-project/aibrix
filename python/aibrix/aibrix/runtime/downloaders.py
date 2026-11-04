@@ -19,7 +19,7 @@ import functools
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Awaitable, Dict, Optional, TypeVar
 from urllib.parse import urlparse
 
 from aibrix.logger import init_logger
@@ -27,6 +27,30 @@ from aibrix.logger import init_logger
 logger = init_logger(__name__)
 
 PART_SUFFIX = ".part"
+
+_T = TypeVar("_T")
+
+
+async def await_thread_completion(operation: Awaitable[_T]) -> _T:
+    """Propagate cancellation only after a non-cancellable thread stops writing.
+
+    Shield the worker future, not the caller. Repeated caller cancellations
+    cannot abandon it, and a late worker error cannot replace CancelledError.
+    """
+    future = asyncio.ensure_future(operation)
+    try:
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        while not future.done():
+            try:
+                await asyncio.shield(future)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not future.cancelled():
+            future.exception()  # Retrieve a late failure before propagating cancellation.
+        raise
 
 
 class ArtifactDownloader(ABC):
@@ -67,9 +91,13 @@ class S3ArtifactDownloader(ArtifactDownloader):
         Download from S3 (Async wrapper).
         """
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None,
-            functools.partial(self._download_sync, source_url, local_path, credentials),
+        return await await_thread_completion(
+            loop.run_in_executor(
+                None,
+                functools.partial(
+                    self._download_sync, source_url, local_path, credentials
+                ),
+            )
         )
 
     def _download_sync(
@@ -204,9 +232,13 @@ class GCSArtifactDownloader(ArtifactDownloader):
         Download from GCS (Async wrapper).
         """
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None,
-            functools.partial(self._download_sync, source_url, local_path, credentials),
+        return await await_thread_completion(
+            loop.run_in_executor(
+                None,
+                functools.partial(
+                    self._download_sync, source_url, local_path, credentials
+                ),
+            )
         )
 
     def _download_sync(
@@ -393,23 +425,27 @@ class TOSArtifactDownloader(ArtifactDownloader):
 
         try:
             if object_key.endswith("/"):
-                await asyncio.to_thread(
-                    self._download_tos_directory,
-                    client,
-                    bucket_name,
-                    object_key,
-                    local_path,
+                await await_thread_completion(
+                    asyncio.to_thread(
+                        self._download_tos_directory,
+                        client,
+                        bucket_name,
+                        object_key,
+                        local_path,
+                    )
                 )
             else:
                 destination_file = os.path.join(
                     local_path, os.path.basename(object_key)
                 )
                 tmp_file = destination_file + PART_SUFFIX
-                await asyncio.to_thread(
-                    client.download_file,
-                    bucket=bucket_name,
-                    key=object_key,
-                    file_path=tmp_file,
+                await await_thread_completion(
+                    asyncio.to_thread(
+                        client.download_file,
+                        bucket=bucket_name,
+                        key=object_key,
+                        file_path=tmp_file,
+                    )
                 )
                 os.replace(tmp_file, destination_file)
                 logger.info(f"Downloaded TOS file to {destination_file}")
@@ -477,9 +513,13 @@ class HuggingFaceArtifactDownloader(ArtifactDownloader):
         Download from HuggingFace Hub (Async wrapper).
         """
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None,
-            functools.partial(self._download_sync, source_url, local_path, credentials),
+        return await await_thread_completion(
+            loop.run_in_executor(
+                None,
+                functools.partial(
+                    self._download_sync, source_url, local_path, credentials
+                ),
+            )
         )
 
     def _download_sync(

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from aibrix.openai_frontend.schemas.engine_common import (
     SharedChatCompletionFields,
@@ -32,6 +32,22 @@ from aibrix.openai_frontend.schemas.engine_common import (
     SharedCompletionFields,
     SharedEmbeddingFields,
 )
+
+
+class SglangGenerateMediaFields(BaseModel):
+    """Native media fields; raw engine input shapes are preserved."""
+
+    model_config = ConfigDict(extra="allow")
+
+    image_data: Optional[Any] = Field(
+        None, json_schema_extra={"media_type": "image_url"}
+    )
+    video_data: Optional[Any] = Field(
+        None, json_schema_extra={"media_type": "video_url"}
+    )
+    audio_data: Optional[Any] = Field(
+        None, json_schema_extra={"media_type": "audio_url"}
+    )
 
 
 class SglangChatCompletionEngineExtensionFields(SharedChatCompletionFields):

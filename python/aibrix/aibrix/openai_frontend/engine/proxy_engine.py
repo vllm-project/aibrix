@@ -559,7 +559,7 @@ class ProxyEngine(LLMEngine):
         self._check_available()
         payload = request.model_dump(exclude_unset=True, mode="json")
         stream = bool(payload.get("stream")) and chunk_model is not None
-        req_id, t0 = self._requests_begin(kind)
+        req_id, t0 = self._requests_begin()
         handed_off = False
         try:
             raw_resp = await self._forward(
@@ -615,7 +615,7 @@ class ProxyEngine(LLMEngine):
                 f"Inner engine unreachable: {type(exc).__name__}"
             ) from exc
 
-    def _requests_begin(self, kind: str) -> "tuple[str, float]":
+    def _requests_begin(self) -> "tuple[str, float]":
         self._requests_total.inc()
         return self._track_request(), time.monotonic()
 
