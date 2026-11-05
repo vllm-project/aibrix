@@ -33,7 +33,11 @@ import (
 func TestLeastLatencySchedulerScoresRecentMean(t *testing.T) {
 	newPod := func(name, ip string) *v1.Pod {
 		return &v1.Pod{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", Labels: map[string]string{"model.aibrix.ai/name": "m1"}},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+				Labels:    map[string]string{"model.aibrix.ai/name": "m1"},
+			},
 			Status: v1.PodStatus{
 				Phase:      v1.PodRunning,
 				PodIP:      ip,
@@ -65,4 +69,84 @@ func TestLeastLatencySchedulerScoresRecentMean(t *testing.T) {
 	require.Equal(t, "p1", selected(nil), "lifetime means decide without a recent mean")
 	require.Equal(t, "p2", selected(map[string]float64{metrics.RequestQueueTimeSeconds: 50}), "p1's queue time grew")
 	require.Equal(t, "p2", selected(map[string]float64{metrics.RequestInferenceTimeSeconds: 50}), "p1's inference time grew")
+}
+
+func TestLeastLatencySchedulerSkipsUnscoredPods(t *testing.T) {
+	newPod := func(name, ip string) *v1.Pod {
+		return &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+				Labels:    map[string]string{"model.aibrix.ai/name": "m1"},
+			},
+			Status: v1.PodStatus{
+				Phase:      v1.PodRunning,
+				PodIP:      ip,
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		}
+	}
+	podMetrics := func(queueMean, inferenceMean float64) map[string]metrics.MetricValue {
+		return map[string]metrics.MetricValue{
+			metrics.RequestQueueTimeSeconds:     &metrics.HistogramMetricValue{Sum: queueMean, Count: 1},
+			metrics.RequestInferenceTimeSeconds: &metrics.HistogramMetricValue{Sum: inferenceMean, Count: 1},
+		}
+	}
+
+	t.Run("passes over pod with missing metrics", func(t *testing.T) {
+		pods := []*v1.Pod{newPod("p1", "1.1.1.1"), newPod("p2", "2.2.2.2")}
+		// p1 has no metrics in cache, p2 has valid metrics
+		c := cache.NewWithPodsModelMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
+			"p2": podMetrics(0.2, 2),
+		})
+		pod, err := NewLeastLatencyScheduler(c).SelectPod(context.Background(), "m1", []v1.Pod{*pods[0], *pods[1]})
+		require.NoError(t, err)
+		require.Equal(t, "p2", pod.Name, "pod with valid metrics should be selected over pod with missing metrics")
+	})
+
+	t.Run("passes over pod with non-histogram metric value", func(t *testing.T) {
+		pods := []*v1.Pod{newPod("p1", "1.1.1.1"), newPod("p2", "2.2.2.2")}
+		// p1 has a simple metric value instead of histogram for inference time
+		p1 := map[string]metrics.MetricValue{
+			metrics.RequestQueueTimeSeconds:     &metrics.HistogramMetricValue{Sum: 0.1, Count: 1},
+			metrics.RequestInferenceTimeSeconds: &metrics.SimpleMetricValue{Value: 1.0},
+		}
+		c := cache.NewWithPodsModelMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
+			"p1": p1,
+			"p2": podMetrics(0.2, 2),
+		})
+		pod, err := NewLeastLatencyScheduler(c).SelectPod(context.Background(), "m1", []v1.Pod{*pods[0], *pods[1]})
+		require.NoError(t, err)
+		require.Equal(t, "p2", pod.Name, "pod with valid histograms should be selected over pod with non-histogram metric")
+	})
+}
+
+func TestLeastLatencySchedulerNoScoredPods(t *testing.T) {
+	newPod := func(name, ip string) *v1.Pod {
+		return &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+				Labels:    map[string]string{"model.aibrix.ai/name": "m1"},
+			},
+			Status: v1.PodStatus{
+				Phase:      v1.PodRunning,
+				PodIP:      ip,
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		}
+	}
+	pods := []*v1.Pod{newPod("p1", "1.1.1.1"), newPod("p2", "2.2.2.2")}
+	c := cache.NewWithPodsModelMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{})
+
+	_, err := NewLeastLatencyScheduler(c).SelectPod(context.Background(), "m1", []v1.Pod{*pods[0], *pods[1]})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no ready pod has latency metrics")
+}
+
+func TestLeastLatencySchedulerNoReadyPods(t *testing.T) {
+	c := cache.NewWithPodsModelMetricsForTest(nil, "m1", map[string]map[string]metrics.MetricValue{})
+	_, err := NewLeastLatencyScheduler(c).SelectPod(context.Background(), "m1", nil)
+	require.Error(t, err)
+	require.Equal(t, "no ready pods to schedule on", err.Error())
 }
