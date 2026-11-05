@@ -86,6 +86,16 @@ class LifecycleEntityManager(JobEntityManager):
         return []
 
 
+class CloseTrackingEndpointSource(NoopEndpointSource):
+    def __init__(self):
+        super().__init__(delay=0.0)
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+        await super().aclose()
+
+
 def generate_input_data(num_requests, local_file):
     input_name = Path(__file__).parents[1] / "testdata" / "sample_job_input.jsonl"
     data = None
@@ -172,6 +182,22 @@ async def test_batch_driver_starts_and_stops_entity_manager():
 
     assert entity_manager.started is True
     assert entity_manager.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_batch_driver_stop_closes_injected_endpoint_source():
+    endpoint_source = CloseTrackingEndpointSource()
+    driver = BatchDriver(
+        context=InfrastructureContext(),
+        storage_type=StorageType.LOCAL,
+        metastore_type=StorageType.LOCAL,
+        endpoint_source=endpoint_source,
+    )
+
+    await driver.start()
+    await driver.stop()
+
+    assert endpoint_source.closed is True
 
 
 @pytest.mark.asyncio

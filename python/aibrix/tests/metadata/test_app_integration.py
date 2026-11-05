@@ -100,6 +100,7 @@ def test_build_app_wires_httpx_telemetry_settings(_mock_k8s_config_loading):
 
     assert app.state.httpx_client_wrapper._telemetry_enabled is True
     assert app.state.httpx_client_wrapper._telemetry_interval_seconds == 12.5
+    assert app.state.httpx_client_wrapper.client_id == "app_shared_httpx_client"
 
 
 def test_build_app_batch_no_global_inference_endpoint(

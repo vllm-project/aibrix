@@ -25,14 +25,18 @@ like an OS scheduler); the per-job execution itself lives in the JobDriver.
 
 import asyncio
 import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
 import aibrix.batch.constant as constant
 from aibrix.batch.job_entity import BatchJobState
+from aibrix.batch.metrics import tags_for_job_latency_log, tags_from_job
+from aibrix.batch.metrics.common import metric_duration_ms
 from aibrix.batch.scheduling_policy import FIFOScheduling, SchedulingPolicy
 from aibrix.batch.state import SchedulableJobs
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
+from aibrix.metadata.core.metrics import Emitter, T, metrics_names
 
 if TYPE_CHECKING:
     from aibrix.batch.job_driver import JobDriver
@@ -78,6 +82,35 @@ class BatchScheduler:
         # derived from the registry's pending pool, so no due-time is tracked.
         self._policy.add(job_id)
 
+    async def _emit_scheduling_metric(
+        self,
+        job_id: str,
+        *,
+        scheduling_ended_at: datetime,
+    ) -> None:
+        try:
+            job = await self._job_progress_manager.get_job(job_id)
+            scheduling_started_at = getattr(job, "scheduling_started_at", None)
+            phase_ms = metric_duration_ms(scheduling_started_at, scheduling_ended_at)
+            if job is None or phase_ms is None or phase_ms < 0:
+                return
+            phase = "scheduling"
+            Emitter.timer(
+                f"{metrics_names.METRIC_METADATA_BATCH_API_JOB_EXECUTION_PHASE_TIME}.ms",
+                phase_ms,
+                *tags_from_job(job),
+                *tags_for_job_latency_log(job),
+                T("phase", phase),
+                T("log_map", "phase_duration_ms"),
+                T("log_key", phase),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to emit scheduling phase metric",
+                job_id=job_id,
+                exc_info=True,
+            )  # type: ignore[call-arg]
+
     async def schedule_next_job(self) -> Optional[str]:
         # Pop the next job without awaiting admission so validation can run in
         # the pool alongside other jobs.
@@ -92,6 +125,11 @@ class BatchScheduler:
 
     async def _admit_and_execute_scheduled_job(self, job_id: str) -> None:
         try:
+            scheduling_ended_at = datetime.now(timezone.utc)
+            await self._emit_scheduling_metric(
+                job_id,
+                scheduling_ended_at=scheduling_ended_at,
+            )
             driver = await self._job_progress_manager.admit(job_id)
         except asyncio.CancelledError:
             raise

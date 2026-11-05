@@ -14,7 +14,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import cast
 from unittest.mock import patch
 
@@ -339,6 +339,36 @@ def test_make_failure_error_prefers_explicit_job_context_for_normalization_log()
     assert kwargs["job_id"] == "job-explicit"
 
 
+def test_emit_finalization_phase_metric_uses_driver_boundary(monkeypatch):
+    metric_calls: list[tuple[str, float, dict[str, str]]] = []
+
+    def _record_timer(name, value, *tags):
+        metric_calls.append((name, value, {tag.name: tag.value for tag in tags}))
+
+    monkeypatch.setattr(Emitter, "timer", _record_timer)
+    job = _make_job()
+    driver = _make_driver(job)
+    finalizing_at = datetime(2024, 1, 1, 0, 0, 0)
+    finalization_done_at = finalizing_at + timedelta(seconds=7)
+
+    driver._emit_finalization_phase_metric(
+        job,
+        finalization_started_at=finalizing_at,
+        finalization_ended_at=finalization_done_at,
+    )
+
+    assert len(metric_calls) == 1
+    name, value, tags = metric_calls[0]
+    assert (
+        name == f"{metrics_names.METRIC_METADATA_BATCH_API_JOB_EXECUTION_PHASE_TIME}.ms"
+    )
+    assert value == 7000.0
+    assert tags["phase"] == "finalization"
+    assert tags["event"] == "Batch job latency telemetry"
+    assert tags["log_map"] == "phase_duration_ms"
+    assert tags["log_key"] == "finalization"
+
+
 class _DeadlineStopRuntime:
     provisions = True
 
@@ -517,12 +547,29 @@ async def test_validate_job_records_request_count_after_success(monkeypatch):
     job = _make_job()
     driver = _make_driver(job)
     _patch_validation(monkeypatch, total=3)
+    metric_calls: list[tuple[str, float, dict[str, str]]] = []
+
+    def _record_timer(name, value, *tags):
+        metric_calls.append((name, value, {tag.name: tag.value for tag in tags}))
+
+    monkeypatch.setattr(Emitter, "timer", _record_timer)
 
     await driver.validate_job(job)
 
     validated = await driver._progress_manager.get_job(job.job_id)
     assert validated is not None
     assert validated.status.request_counts.total == 3
+    assert len(metric_calls) == 1
+    name, value, tags = metric_calls[0]
+    assert (
+        name == f"{metrics_names.METRIC_METADATA_BATCH_API_JOB_EXECUTION_PHASE_TIME}.ms"
+    )
+    assert value >= 0
+    assert tags["job_id"] == job.job_id
+    assert tags["phase"] == "validation"
+    assert tags["event"] == "Batch job latency telemetry"
+    assert tags["log_map"] == "phase_duration_ms"
+    assert tags["log_key"] == "validation"
 
 
 @pytest.mark.asyncio

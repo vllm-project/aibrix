@@ -35,6 +35,8 @@ from aibrix.batch.client import (
     RetryConfig,
 )
 from aibrix.batch.client.engine import _ConcurrencyAdmission
+from aibrix.metadata.core import JsonProfiler
+from aibrix.metadata.core.httpx_client import HTTPXClientWrapper
 
 
 class _FakeChannel:
@@ -215,7 +217,7 @@ async def test_http_channel_preserves_status_body_and_retryable_hint():
     async def handler(request):
         return httpx.Response(400, json={"error": "bad request"})
 
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = HTTPXClientWrapper(transport=httpx.MockTransport(handler))
     channel = HttpChannel("http://engine", client=client)
     try:
         with pytest.raises(InferenceError) as excinfo:
@@ -238,7 +240,7 @@ async def test_http_channel_truncates_large_error_body():
     async def handler(request):
         return httpx.Response(503, text=body)
 
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = HTTPXClientWrapper(transport=httpx.MockTransport(handler))
     channel = HttpChannel("http://engine", client=client)
     try:
         with pytest.raises(InferenceError) as excinfo:
@@ -275,6 +277,47 @@ async def test_http_channel_uses_request_timeout_for_read():
     # Only the read timeout follows the request; fractions are kept.
     other = {"connect": 10.0, "write": 60.0, "pool": 30.0}
     assert timeouts == [{**other, "read": 30.0}, {**other, "read": 1.5}]
+
+
+@pytest.mark.asyncio
+async def test_http_channel_profiles_success_response_json_decode(monkeypatch):
+    async def handler(request):
+        return httpx.Response(200, json={"ok": True})
+
+    profiler = JsonProfiler(
+        purpose="test-batch-json-channel",
+        telemetry_enabled=True,
+        telemetry_interval_seconds=0,
+    )
+    monkeypatch.setattr("aibrix.batch.client.channel.JSON_PROFILER", profiler)
+    client = HTTPXClientWrapper(transport=httpx.MockTransport(handler))
+    channel = HttpChannel("http://engine", client=client)
+    try:
+        response = await channel.send(InferenceRequest("/v1/x", {}))
+    finally:
+        await channel.aclose()
+        await client.aclose()
+
+    assert response == {"ok": True}
+    snapshot = profiler.snapshot(reset_window=False)
+    assert snapshot.started == 1
+    assert snapshot.failed == 0
+    assert snapshot.operations[0].operation == "batch.runtime.response_json"
+
+
+@pytest.mark.asyncio
+async def test_http_channel_default_connection_pool_allows_100_connections():
+    channel = HttpChannel("http://engine")
+    try:
+        client = channel._ensure_client()
+        assert client.purpose == "batch_runtime_http"
+        client.start()
+        assert client.async_client is not None
+        assert client.async_client.connector is not None
+        assert client.async_client.connector.limit == 100
+        assert client.async_client.connector.limit_per_host == 100
+    finally:
+        await channel.aclose()
 
 
 def test_retry_config_rejects_invalid_values():
@@ -1253,6 +1296,61 @@ async def test_dispatch_stats_tracks_qps_inputs_and_limit():
     assert final.avg_latency_seconds is not None
 
 
+def test_dispatch_stats_tracks_stage_latencies():
+    stats = DispatchStats()
+
+    stats.record_start(
+        limit=4,
+        inflight=1,
+        queue_wait_seconds=0.1,
+        qps_wait_seconds=0.2,
+    )
+    stats.record_complete(
+        success=True,
+        latency_seconds=1.0,
+        send_latency_seconds=0.7,
+        limit=4,
+        inflight=0,
+    )
+
+    snapshot = stats.snapshot(reset_window=True)
+
+    assert snapshot.avg_queue_wait_seconds == 0.1
+    assert snapshot.p95_queue_wait_seconds == 0.1
+    assert snapshot.avg_qps_wait_seconds == 0.2
+    assert snapshot.p95_qps_wait_seconds == 0.2
+    assert snapshot.avg_send_latency_seconds == 0.7
+    assert snapshot.p95_send_latency_seconds == 0.7
+
+
+@pytest.mark.asyncio
+async def test_dispatch_stats_records_admission_queue_wait_from_run_loop():
+    class _SlowChannel(_FakeChannel):
+        async def send(self, request):
+            await asyncio.sleep(0.05)
+            return await super().send(request)
+
+    stats = DispatchStats()
+    engine = DispatchEngine(_FakeSource([_SlowChannel("s")]), max_retries=0)
+    results = []
+
+    async def feed():
+        for request in _reqs(2):
+            yield request
+
+    async def on_result(req, resp, err):
+        results.append((req.ref, resp, err))
+
+    await engine.run(feed(), on_result, max_concurrency=1, stats=stats)
+
+    snapshot = stats.snapshot()
+    assert len(results) == 2
+    assert snapshot.avg_queue_wait_seconds is not None
+    assert snapshot.avg_queue_wait_seconds > 0
+    assert snapshot.p95_send_latency_seconds is not None
+    assert snapshot.p95_send_latency_seconds >= 0.05
+
+
 @pytest.mark.asyncio
 async def test_noop_source_echoes_payload():
     source = NoopEndpointSource()
@@ -1632,7 +1730,7 @@ async def test_discovery_source_defers_closing_removed_channels(monkeypatch):
 
     created = []
 
-    def make_channel(url, timeout):
+    def make_channel(url, timeout, **kwargs):
         channel = _FakeChannel(url)
         created.append(channel)
         return channel
@@ -1679,6 +1777,101 @@ async def test_discovery_source_defers_closing_removed_channels(monkeypatch):
 
     assert bad.closed == 1
     assert good.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_discovery_source_shares_one_http_client_across_channels(monkeypatch):
+    from aibrix.batch.client.sources import DiscoveryEndpointSource
+    from aibrix.batch.client.sources import discovery as discovery_module
+
+    class _FakeClient:
+        def __init__(self, max_connections, limit_per_host):
+            self.max_connections = max_connections
+            self.limit_per_host = limit_per_host
+            self.closed = 0
+
+        async def aclose(self):
+            self.closed += 1
+
+    class _FakeHttpChannel(_FakeChannel):
+        def __init__(self, url, timeout, client=None):
+            super().__init__(url)
+            self.timeout = timeout
+            self.client = client
+
+    created = []
+    shared_clients = []
+
+    def make_client(client_id, *, max_connections=None, limit_per_host=None):
+        assert client_id == "discovery-source-model-batch-runtime-http"
+        client = _FakeClient(max_connections, limit_per_host)
+        shared_clients.append(client)
+        return client
+
+    def make_channel(url, timeout, client=None):
+        channel = _FakeHttpChannel(url, timeout, client=client)
+        created.append(channel)
+        return channel
+
+    monkeypatch.setattr(
+        discovery_module,
+        "create_batch_runtime_http_client",
+        make_client,
+        raising=False,
+    )
+    monkeypatch.setattr(discovery_module, "HttpChannel", make_channel)
+    discovery = _SequenceDiscovery(
+        [
+            _DiscoverySnapshot(
+                1,
+                [
+                    _DiscoveredEndpoint("http://one"),
+                    _DiscoveredEndpoint("http://two"),
+                ],
+            ),
+            _DiscoverySnapshot(
+                2,
+                [
+                    _DiscoveredEndpoint("http://one"),
+                    _DiscoveredEndpoint("http://two"),
+                    _DiscoveredEndpoint("http://three"),
+                ],
+            ),
+        ]
+    )
+    source = DiscoveryEndpointSource(
+        discovery,
+        "model",
+        refresh_interval_seconds=20.0,
+        clock=lambda: 100.0,
+    )
+
+    try:
+        assert [channel.id for channel in await source.channels()] == [
+            "http://one",
+            "http://two",
+        ]
+        assert len(shared_clients) == 1
+        assert shared_clients[0].max_connections == 200
+        assert shared_clients[0].limit_per_host == 100
+        assert {channel.client for channel in created} == {shared_clients[0]}
+
+        await source.refresh()
+
+        assert [channel.id for channel in await source.channels()] == [
+            "http://one",
+            "http://two",
+            "http://three",
+        ]
+        assert len(shared_clients) == 2
+        assert shared_clients[1].max_connections == 300
+        assert shared_clients[1].limit_per_host == 100
+        assert {channel.client for channel in created[-3:]} == {shared_clients[1]}
+        assert [client.closed for client in shared_clients] == [0, 0]
+    finally:
+        await source.aclose()
+
+    assert [client.closed for client in shared_clients] == [1, 1]
 
 
 @pytest.mark.asyncio

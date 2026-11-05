@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from aibrix.batch.metrics.batch_job import (
+    tags_for_job_latency_log,
     tags_from_finalized_job,
     tags_from_job,
 )
@@ -23,4 +24,5 @@ __all__ = [
     "normalize_metric_time",
     "tags_from_finalized_job",
     "tags_from_job",
+    "tags_for_job_latency_log",
 ]

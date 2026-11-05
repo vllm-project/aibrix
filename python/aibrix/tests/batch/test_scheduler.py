@@ -22,6 +22,7 @@ import pytest
 from aibrix.batch.batch_scheduler import BatchScheduler
 from aibrix.batch.job_entity import BatchJobState, BatchJobStatus
 from aibrix.context import InfrastructureContext
+from aibrix.metadata.core.metrics import Emitter, metrics_names
 
 # Stand-in for the JobDriver admit() returns; the scheduler only forwards it.
 _SENTINEL_DRIVER = object()
@@ -35,7 +36,11 @@ def _pending_job(job_id, due_epoch):
             state=BatchJobState.CREATED,
             created_at=datetime.fromtimestamp(0, tz=timezone.utc),
         ),
-        spec=SimpleNamespace(completion_window=due_epoch),
+        spec=SimpleNamespace(
+            endpoint="/v1/chat/completions",
+            completion_window=due_epoch,
+            aibrix=None,
+        ),
         expiration_timestamp=lambda: due_epoch,
     )
 
@@ -48,6 +53,12 @@ class FakeProgressManager:
         self.failed_errors = {}
         self._pending = list(pending or [])
         self._in_progress = list(in_progress or [])
+
+    async def get_job(self, job_id):
+        for job in [*self._pending, *self._in_progress]:
+            if job.job_id == job_id:
+                return job
+        return None
 
     async def get_job_status(self, job_id):
         if job_id not in self.job_id_status:
@@ -115,10 +126,49 @@ async def test_schedule_next_job_pops_fifo_without_admitting():
 async def test_admit_and_execute_skips_unadmittable_job():
     progress_manager = FakeProgressManager()
     scheduler = _make_scheduler(progress_manager)
+    scheduler.append_job("gone-job")
 
     await scheduler._admit_and_execute_scheduled_job("gone-job")
 
     assert progress_manager.validated_job_ids == ["gone-job"]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_emits_scheduling_metric_before_admit(monkeypatch):
+    metric_calls: list[tuple[str, float, dict[str, str]]] = []
+
+    def _record_timer(name, value, *tags):
+        metric_calls.append((name, value, {tag.name: tag.value for tag in tags}))
+
+    async def _skip_execute(job_id, job_driver):
+        del job_id, job_driver
+
+    monkeypatch.setattr(Emitter, "timer", _record_timer)
+    now = time.time()
+    pending_job = _pending_job("job-1", now + 600)
+    pending_job.scheduling_started_at = datetime.now(timezone.utc)
+    progress_manager = FakeProgressManager(
+        {"job-1": BatchJobState.CREATED},
+        pending=[pending_job],
+    )
+    scheduler = _make_scheduler(progress_manager)
+    scheduler._execute_scheduled_job = _skip_execute  # type: ignore[method-assign]
+    scheduler.append_job("job-1")
+
+    await scheduler._admit_and_execute_scheduled_job("job-1")
+
+    assert progress_manager.validated_job_ids == ["job-1"]
+    assert len(metric_calls) == 1
+    name, value, tags = metric_calls[0]
+    assert (
+        name == f"{metrics_names.METRIC_METADATA_BATCH_API_JOB_EXECUTION_PHASE_TIME}.ms"
+    )
+    assert value >= 0
+    assert tags["job_id"] == "job-1"
+    assert tags["phase"] == "scheduling"
+    assert tags["event"] == "Batch job latency telemetry"
+    assert tags["log_map"] == "phase_duration_ms"
+    assert tags["log_key"] == "scheduling"
 
 
 @pytest.mark.asyncio

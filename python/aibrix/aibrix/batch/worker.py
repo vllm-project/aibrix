@@ -48,7 +48,7 @@ from aibrix.batch.job_entity import (
 from aibrix.batch.state import JobMetaInfo
 from aibrix.context.infra import InfrastructureContext
 from aibrix.logger import init_logger
-from aibrix.metadata.core import HTTPXClientWrapper
+from aibrix.metadata.core import HTTPClient
 
 logger = init_logger(__name__)
 
@@ -75,7 +75,7 @@ class LLMHealthChecker:
         start_time = time.time()
         # Since wait_for_ready is a one-off startup polling loop for in-pod execution,
         # enabling telemetry for this ephemeral client is unnecessary.
-        async with HTTPXClientWrapper(
+        async with HTTPClient(
             client_id="batch-worker-health", telemetry_enabled=False
         ) as client:
             while time.time() - start_time < self.timeout:
