@@ -19,7 +19,7 @@ from typing import Any, List, Optional
 from aibrix.batch.client.sources.static import GatewayEndpointSource
 from aibrix.batch.job_driver.runtime import Endpoint, RuntimeBase
 from aibrix.batch.job_entity import BatchJob
-from aibrix.metadata.core import HTTPXClientWrapper
+from aibrix.metadata.core import HTTPClient
 
 
 @dataclass(slots=True)
@@ -176,7 +176,7 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
         # this ephemeral client is unnecessary and will flood the logs with
         # telemetry summaries and task lifecycle logs.
         # We should disable telemetry for this client by setting telemetry_enabled=False.
-        async with HTTPXClientWrapper(
+        async with HTTPClient(
             client_id="ssh-launch-ready",
             timeout=10.0,
             telemetry_enabled=False,
@@ -200,7 +200,7 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
         del reason
         url = self._base_url(handle) + "/health"
         # For the same reason as _wait_ready, we disable telemetry for this client.
-        async with HTTPXClientWrapper(
+        async with HTTPClient(
             client_id="ssh-launch-liveness",
             timeout=10.0,
             telemetry_enabled=False,

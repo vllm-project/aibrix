@@ -117,6 +117,12 @@ class DispatchStatsSnapshot:
     window_failed: int
     avg_latency_seconds: Optional[float]
     p95_latency_seconds: Optional[float]
+    avg_queue_wait_seconds: Optional[float]
+    p95_queue_wait_seconds: Optional[float]
+    avg_qps_wait_seconds: Optional[float]
+    p95_qps_wait_seconds: Optional[float]
+    avg_send_latency_seconds: Optional[float]
+    p95_send_latency_seconds: Optional[float]
 
 
 class DispatchStats:
@@ -134,20 +140,33 @@ class DispatchStats:
         self._window_completed = 0
         self._window_failed = 0
         self._window_latencies: list[float] = []
+        self._window_queue_waits: list[float] = []
+        self._window_qps_waits: list[float] = []
+        self._window_send_latencies: list[float] = []
 
-    def record_start(self, *, limit: int, inflight: int) -> None:
+    def record_start(
+        self,
+        *,
+        limit: int,
+        inflight: int,
+        queue_wait_seconds: float = 0.0,
+        qps_wait_seconds: float = 0.0,
+    ) -> None:
         with self._lock:
             self._started += 1
             self._window_started += 1
             self._limit = max(int(limit), 1)
             self._inflight = max(int(inflight), 0)
             self._max_inflight = max(self._max_inflight, self._inflight)
+            self._window_queue_waits.append(max(float(queue_wait_seconds), 0.0))
+            self._window_qps_waits.append(max(float(qps_wait_seconds), 0.0))
 
     def record_complete(
         self,
         *,
         success: bool,
         latency_seconds: float,
+        send_latency_seconds: float = 0.0,
         limit: int,
         inflight: int,
     ) -> None:
@@ -160,10 +179,14 @@ class DispatchStats:
             self._limit = max(int(limit), 1)
             self._inflight = max(int(inflight), 0)
             self._window_latencies.append(max(float(latency_seconds), 0.0))
+            self._window_send_latencies.append(max(float(send_latency_seconds), 0.0))
 
     def snapshot(self, *, reset_window: bool = False) -> DispatchStatsSnapshot:
         with self._lock:
             latencies = list(self._window_latencies)
+            queue_waits = list(self._window_queue_waits)
+            qps_waits = list(self._window_qps_waits)
+            send_latencies = list(self._window_send_latencies)
             snapshot = DispatchStatsSnapshot(
                 started=self._started,
                 completed=self._completed,
@@ -176,12 +199,21 @@ class DispatchStats:
                 window_failed=self._window_failed,
                 avg_latency_seconds=_average(latencies),
                 p95_latency_seconds=_percentile(latencies, 0.95),
+                avg_queue_wait_seconds=_average(queue_waits),
+                p95_queue_wait_seconds=_percentile(queue_waits, 0.95),
+                avg_qps_wait_seconds=_average(qps_waits),
+                p95_qps_wait_seconds=_percentile(qps_waits, 0.95),
+                avg_send_latency_seconds=_average(send_latencies),
+                p95_send_latency_seconds=_percentile(send_latencies, 0.95),
             )
             if reset_window:
                 self._window_started = 0
                 self._window_completed = 0
                 self._window_failed = 0
                 self._window_latencies = []
+                self._window_queue_waits = []
+                self._window_qps_waits = []
+                self._window_send_latencies = []
             return snapshot
 
 
@@ -339,13 +371,22 @@ class DispatchEngine:
             scheduled = self._scheduler.schedule(requests).__aiter__()
             try:
                 while not first_error:
+                    queue_wait_started = asyncio.get_running_loop().time()
                     await admission.acquire()
+                    queue_wait_seconds = (
+                        asyncio.get_running_loop().time() - queue_wait_started
+                    )
                     if first_error:
                         await admission.release()
                         break
                     try:
+                        qps_wait_seconds = 0.0
                         if gate is not None:
+                            qps_wait_started = asyncio.get_running_loop().time()
                             await gate.wait()
+                            qps_wait_seconds = (
+                                asyncio.get_running_loop().time() - qps_wait_started
+                            )
                         request = await scheduled.__anext__()
                     except StopAsyncIteration:
                         await admission.release()
@@ -360,6 +401,8 @@ class DispatchEngine:
                         stats.record_start(
                             limit=admission.limit(),
                             inflight=admission.inflight(),
+                            queue_wait_seconds=queue_wait_seconds,
+                            qps_wait_seconds=qps_wait_seconds,
                         )
                     task = asyncio.create_task(
                         self._process(
@@ -398,10 +441,14 @@ class DispatchEngine:
     ) -> None:
         outcome = None
         started = asyncio.get_running_loop().time()
+        send_latency = 0.0
         try:
             try:
+                send_started = asyncio.get_running_loop().time()
                 response = await self._send_with_failover(request)
+                send_latency = asyncio.get_running_loop().time() - send_started
             except InferenceError as err:
+                send_latency = asyncio.get_running_loop().time() - started
                 outcome = concurrency_outcome_from_result(
                     None,
                     err,
@@ -426,6 +473,7 @@ class DispatchEngine:
                 stats.record_complete(
                     success=outcome.success if outcome is not None else False,
                     latency_seconds=latency,
+                    send_latency_seconds=send_latency,
                     limit=limit,
                     inflight=inflight,
                 )

@@ -18,6 +18,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -36,7 +37,9 @@ from aibrix.batch.job_entity import (
     RequestCountStats,
     TypeMeta,
 )
+from aibrix.batch.storage import adapter as adapter_module
 from aibrix.batch.storage.adapter import BatchStorageAdapter
+from aibrix.metadata.core import JsonProfiler
 from aibrix.storage import create_storage
 from aibrix.storage.base import (
     LOCAL_PART_PROVIDER_MARKER,
@@ -263,6 +266,130 @@ async def test_read_job_next_input_data_resumes_after_blank_line(
         (2, "c"),
         (3, "d"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_read_job_next_input_data_profiles_json_line_decode(
+    mock_storage, monkeypatch
+):
+    adapter = BatchStorageAdapter(mock_storage)
+    job = create_test_batch_job(total=1)
+    mock_storage.readline_iter.side_effect = _readline_iter_from_lines(
+        ['{"custom_id":"a","body":{"i":0}}']
+    )
+    profiler = JsonProfiler(
+        purpose="test-batch-json-storage",
+        telemetry_enabled=True,
+        telemetry_interval_seconds=0,
+    )
+    monkeypatch.setattr("aibrix.batch.storage.adapter.JSON_PROFILER", profiler)
+
+    with (
+        patch(
+            "aibrix.batch.storage.adapter.is_request_locking_supported",
+            return_value=False,
+        ),
+    ):
+        requests = [
+            item async for item in adapter.read_job_next_input_data(job, start_index=0)
+        ]
+
+    assert requests[0]["custom_id"] == "a"
+    snapshot = profiler.snapshot(reset_window=False)
+    assert snapshot.started == 1
+    assert snapshot.failed == 0
+    assert snapshot.operations[0].operation == "batch.input.json_loads"
+
+
+@pytest.mark.asyncio
+async def test_finalize_job_output_data_emits_stage_metrics(mock_storage, monkeypatch):
+    adapter = BatchStorageAdapter(mock_storage)
+    batch_job = create_test_batch_job(job_id="job-stage-metrics")
+    expected_keys = [
+        f"batch:{batch_job.job_id}:done/0",
+        f"batch:{batch_job.job_id}:done/1",
+    ]
+    timers = []
+    gauges = []
+
+    monkeypatch.setattr(
+        adapter_module,
+        "Emitter",
+        SimpleNamespace(
+            timer=lambda name, value, *tags: timers.append((name, value, tags)),
+            gauge=lambda name, value, *tags: gauges.append((name, value, tags)),
+        ),
+        raising=False,
+    )
+
+    with (
+        patch(
+            "aibrix.batch.storage.adapter.list_metastore_keys",
+            new_callable=AsyncMock,
+        ) as mock_list_keys,
+        patch(
+            "aibrix.batch.storage.adapter.get_metadata",
+            new_callable=AsyncMock,
+        ) as mock_get_metadata,
+        patch(
+            "aibrix.batch.storage.adapter.delete_metadata",
+            new_callable=AsyncMock,
+        ),
+    ):
+        mock_list_keys.return_value = (expected_keys, None)
+        mock_get_metadata.side_effect = [
+            ("output:etag0", True),
+            ("error:etag1", True),
+        ]
+        mock_storage.complete_multipart_upload.return_value = None
+
+        finalized_job = await adapter.finalize_job_output_data(batch_job)
+
+    assert finalized_job is batch_job
+    assert any(name == "batch_finalize_stage_duration_ms" for name, _, _ in timers)
+    assert any(name == "batch_finalize_job_total_duration_ms" for name, _, _ in timers)
+    assert any(
+        any(tag.name == "job_id" and tag.value == batch_job.job_id for tag in tags)
+        for name, _, tags in timers
+        if name == "batch_finalize_job_total_duration_ms"
+    )
+    assert any(
+        any(tag.name == "stage" and tag.value == "assemble_parts" for tag in tags)
+        for name, _, tags in timers
+        if name == "batch_finalize_stage_duration_ms"
+    )
+    assert any(
+        any(tag.name == "log_map" and tag.value == "stage_duration_ms" for tag in tags)
+        for name, _, tags in timers
+        if name == "batch_finalize_stage_duration_ms"
+    )
+    assert any(
+        any(tag.name == "stage" and tag.value == "total" for tag in tags)
+        for name, _, tags in timers
+        if name == "batch_finalize_stage_duration_ms"
+    )
+    assert any(name == "batch_finalize_stage_items" for name, _, _ in gauges)
+    assert any(
+        any(tag.name == "log_nested_map" and tag.value == "stage_items" for tag in tags)
+        for name, _, tags in gauges
+        if name == "batch_finalize_stage_items"
+    )
+    assert any(
+        any(
+            tag.name == "log_nested_map" and tag.value == "stage_fields" for tag in tags
+        )
+        for name, _, tags in gauges
+        if name == "batch_finalize_stage_field"
+    )
+    summary_gauges = [
+        tags for name, _, tags in gauges if name == "batch_finalize_job_summary"
+    ]
+    assert len(summary_gauges) == 1
+    assert any(tag.name == "flush" and tag.value == "true" for tag in summary_gauges[0])
+    assert any(
+        tag.name == "event" and tag.value == "Batch finalize telemetry summary"
+        for tag in summary_gauges[0]
+    )
 
 
 @pytest.mark.asyncio

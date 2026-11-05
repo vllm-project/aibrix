@@ -19,6 +19,11 @@ from typing import Optional
 from aibrix.batch.job_entity import BatchJob, ConditionType
 from aibrix.metadata.core.metrics import T, Tag
 
+BATCH_JOB_LATENCY_LOG_EVENT = "Batch job latency telemetry"
+_BATCH_JOB_LATENCY_LOG_CONTEXT = (
+    "job_id,console_job_id,endpoint,completion_window,finalize_type,error_code"
+)
+
 
 def _finalize_type(job: BatchJob) -> str:
     condition = job.status.condition
@@ -60,4 +65,12 @@ def tags_from_finalized_job(job: BatchJob) -> tuple[Tag, ...]:
         *tags_from_job(job),
         T("finalize_type", _finalize_type(job)),
         T("error_code", _terminal_error_code(job)),
+    )
+
+
+def tags_for_job_latency_log(job: Optional[BatchJob]) -> tuple[Tag, ...]:
+    return (
+        T("event", BATCH_JOB_LATENCY_LOG_EVENT),
+        T("log_group", job.job_id if job is not None else "none"),
+        T("log_context", _BATCH_JOB_LATENCY_LOG_CONTEXT),
     )

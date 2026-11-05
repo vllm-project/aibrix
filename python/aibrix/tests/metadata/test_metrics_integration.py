@@ -67,6 +67,7 @@ def test_load_metrics_config_defaults_metrics_off(monkeypatch):
     monkeypatch.setattr(envs, "METRICS_STATSD_ADDR", "")
     monkeypatch.setattr(envs, "METRICS_STATSITE_ADDR", "")
     monkeypatch.setattr(envs, "METRICS_DOGSTATSD_ADDR", "")
+    monkeypatch.setattr(envs, "METRICS_LOG_ENABLED", False)
 
     assert load_metrics_config() is None
 
