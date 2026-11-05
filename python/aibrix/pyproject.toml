@@ -77,6 +77,8 @@ PyYAML = "^6.0.1"
 types-PyYAML = "^6.0.12.20240917"
 python-multipart = "^0.0.20"
 tenacity = "^9.0.0"
+# SIMD base64 decoding for inline data: media materialised by the frontend.
+fastpybase64 = "^0.1.1"
 # Dependencies required by aibrix.gpu_optimizer (load monitor, visualizer, solver).
 # Optional so aibrix/runtime skips them; install with `pip install aibrix[gpu-optimizer]`.
 # aibrix/metadata-service installs them because it hosts the GPU Optimizer service.

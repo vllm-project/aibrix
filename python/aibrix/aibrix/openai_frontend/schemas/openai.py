@@ -428,7 +428,7 @@ class ChatCompletionRequestMessageContentPartImage(BaseModel):
     model_config = ConfigDict(use_enum_values=True, extra="allow")
 
     type: Literal["image_url"] = "image_url"
-    image_url: _ImageUrl
+    image_url: _ImageUrl = Field(json_schema_extra={"media_url": "url"})
     uuid: Optional[str] = None
 
 
