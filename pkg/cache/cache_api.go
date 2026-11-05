@@ -186,8 +186,9 @@ type MetricCache interface {
 	//   podName: Name of the pod
 	//   podNamespace: Namespace of the pod
 	//   limit: Maximum concurrent live requests to admit
-	//   routingCtx: This request's routing context, to stamp the reservation on; nil to
-	//   skip stamping (the reservation still applies to the local counter)
+	//   routingCtx: This request's routing context, to stamp the reservation on; nil, or
+	//   a ctx whose stats were already added, makes no reservation and decides from the
+	//   live local count, as before
 	// Returns:
 	//   admitted: Whether this request was admitted (Redis or local fallback)
 	//   counted: Whether this request's own increment is, or may be, already applied

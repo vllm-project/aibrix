@@ -813,3 +813,131 @@ func TestHandleRequestBody_ReplicaInflightCoexistsWithReplicaRPS(t *testing.T) {
 	assert.Contains(t, resp.GetImmediateResponse().GetBody(), ErrorCodeRateLimitExceeded,
 		"aggregate replica RPS of 1 should reject the second request even though inflight cap is 2")
 }
+
+// TestSelectTargetPod_SingleCandidateEmptyAddressReleasesAdmission verifies that in the single-candidate
+// fast path, when a pod is admitted but its target address evaluates to empty (e.g. ModelClaim pod with
+// port 0), the admission is released and both counters and routing context flags return to baseline.
+func TestSelectTargetPod_SingleCandidateEmptyAddressReleasesAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		simulateDown bool
+	}{
+		{name: "counted", simulateDown: false},
+		{name: "reserved_only", simulateDown: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mr := miniredis.RunT(t)
+			redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+			t.Cleanup(func() { _ = redisClient.Close() })
+
+			pod := podWithReplicaInflight("a", 2)
+			pod.Annotations[constants.ModelClaimPodAnnotationPrefix+"m"] = `{"model":"m","port":0}`
+
+			store := cache.InitWithPods(cache.New(redisClient, nil, nil), []*v1.Pod{pod}, "m")
+			if tc.simulateDown {
+				store.CloseAdmitRedisClientForTest()
+			}
+
+			router := &postRouteFunc{routeFunc: func(*types.RoutingContext, types.PodList) (string, error) {
+				t.Fatal("the single-candidate fast path must not call Route")
+				return "", nil
+			}}
+			manager := routing.NewRouterManager()
+			manager.RegisterProvider(routing.RouterPrefixCache, func(*types.RoutingContext) (types.Router, error) {
+				return router, nil
+			})
+			s := &Server{cache: store, routerManager: manager}
+
+			routingCtx := types.NewRoutingContext(context.Background(), routing.RouterPrefixCache, "m", "", "r1", "")
+			applyConfigProfile(routingCtx, []*v1.Pod{pod})
+
+			addr, err := s.selectTargetPod(context.Background(), routingCtx, &utils.PodArray{Pods: []*v1.Pod{pod}}, "")
+			require.NoError(t, err)
+			assert.Equal(t, "", addr, "target address should be empty")
+
+			assert.False(t, routingCtx.ReplicaInflightAdmitted, "ReplicaInflightAdmitted should be reset")
+			assert.False(t, routingCtx.ReplicaInflightReserved, "ReplicaInflightReserved should be reset")
+			assert.EqualValues(t, 0, routingCtx.ReplicaInflightReservedGen, "ReplicaInflightReservedGen should be reset to 0")
+
+			count, err := store.GetPodRunningRequests(pod.Name, pod.Namespace)
+			require.NoError(t, err)
+			assert.EqualValues(t, 0, count, "local counter should return to 0")
+
+			key := "aibrix:rrq:" + utils.GeneratePodKey(pod.Namespace, pod.Name)
+			if mr.Exists(key) {
+				fields, err := mr.HKeys(key)
+				require.NoError(t, err)
+				if len(fields) > 0 {
+					assert.Equal(t, "0", mr.HGet(key, fields[0]), "redis field should be 0")
+				}
+			}
+		})
+	}
+}
+
+// TestSelectTargetPod_EarlyAdmissionEmptyAddressReleasesAdmission verifies that in early admission,
+// when a target pod is admitted by the router but its target address evaluates to empty
+// (e.g. ModelClaim pod with port 0), selectTargetPod unwinds the admission and resets both counters
+// and routing context flags.
+func TestSelectTargetPod_EarlyAdmissionEmptyAddressReleasesAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		simulateDown bool
+	}{
+		{name: "counted", simulateDown: false},
+		{name: "reserved_only", simulateDown: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mr := miniredis.RunT(t)
+			redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+			t.Cleanup(func() { _ = redisClient.Close() })
+
+			// Two pods so single-candidate bypass is not taken
+			podA := podWithReplicaInflight("a", 2)
+			podA.Annotations[constants.ModelClaimPodAnnotationPrefix+"m"] = `{"model":"m","port":0}`
+			podB := podWithReplicaInflight("b", 2)
+			pods := []*v1.Pod{podA, podB}
+
+			store := cache.InitWithPods(cache.New(redisClient, nil, nil), pods, "m")
+			if tc.simulateDown {
+				store.CloseAdmitRedisClientForTest()
+			}
+
+			manager := routing.NewRouterManager()
+			manager.RegisterProvider(routing.RouterPD, func(*types.RoutingContext) (types.Router, error) {
+				return routeFunc(func(ctx *types.RoutingContext, _ types.PodList) (string, error) {
+					if err := ctx.AdmitTarget(podA); err != nil {
+						return "", err
+					}
+					ctx.SetTargetPod(podA)
+					return ctx.TargetAddress(), nil
+				}), nil
+			})
+			s := &Server{cache: store, routerManager: manager}
+
+			routingCtx := types.NewRoutingContext(context.Background(), routing.RouterPD, "m", "", "r1", "")
+			applyConfigProfile(routingCtx, pods)
+
+			addr, err := s.selectTargetPod(context.Background(), routingCtx, &utils.PodArray{Pods: pods}, "")
+			require.NoError(t, err)
+			assert.Equal(t, "", addr, "target address should be empty")
+
+			assert.False(t, routingCtx.ReplicaInflightAdmitted, "ReplicaInflightAdmitted should be reset")
+			assert.False(t, routingCtx.ReplicaInflightReserved, "ReplicaInflightReserved should be reset")
+			assert.EqualValues(t, 0, routingCtx.ReplicaInflightReservedGen, "ReplicaInflightReservedGen should be reset to 0")
+
+			count, err := store.GetPodRunningRequests(podA.Name, podA.Namespace)
+			require.NoError(t, err)
+			assert.EqualValues(t, 0, count, "local counter should return to 0")
+
+			key := "aibrix:rrq:" + utils.GeneratePodKey(podA.Namespace, podA.Name)
+			if mr.Exists(key) {
+				fields, err := mr.HKeys(key)
+				require.NoError(t, err)
+				if len(fields) > 0 {
+					assert.Equal(t, "0", mr.HGet(key, fields[0]), "redis field should be 0")
+				}
+			}
+		})
+	}
+}

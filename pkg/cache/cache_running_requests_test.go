@@ -17,11 +17,11 @@ limitations under the License.
 package cache
 
 import (
-	"math"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"strconv"
 	"sync"
@@ -942,6 +942,8 @@ func TestAdmitPodRunningRequest_FlapBranches(t *testing.T) {
 
 		var wg sync.WaitGroup
 		stopCh := make(chan struct{})
+		var spuriousRejections atomic.Int32
+		var admitCount atomic.Int32
 
 		// Goroutine 1: Flapper (deletes and re-adds pod)
 		wg.Add(1)
@@ -965,11 +967,22 @@ func TestAdmitPodRunningRequest_FlapBranches(t *testing.T) {
 			wg.Add(1)
 			go func(workerID int) {
 				defer wg.Done()
-				for j := 0; j < 20; j++ {
+				j := 0
+				for {
+					select {
+					case <-stopCh:
+						return
+					default:
+					}
+					j++
 					reqID := fmt.Sprintf("req-race-%d-%d", workerID, j)
 					ctx := types.NewRoutingContext(context.Background(), "least-request", "test-model", "", reqID, "")
-					admitted, counted, _ := store.AdmitPodRunningRequest(testPodName, testNamespace, 10, ctx)
+					admitted, counted, err := store.AdmitPodRunningRequest(testPodName, testNamespace, 10, ctx)
+					if !admitted && err == nil {
+						spuriousRejections.Add(1)
+					}
 					if admitted {
+						admitCount.Add(1)
 						ctx.ReplicaInflightAdmitted = counted
 						ctx.SetTargetPod(pod)
 						store.AddRequestCount(ctx, reqID, "test-model")
@@ -980,10 +993,77 @@ func TestAdmitPodRunningRequest_FlapBranches(t *testing.T) {
 			}(i)
 		}
 
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 		close(stopCh)
 		wg.Wait()
+
+		// Re-add pod if the flapper terminated right after a delete
+		store.addPod(pod)
+
+		require.Zero(t, spuriousRejections.Load(), "no admit should return admitted=false, err=nil when under cap")
+		require.Greater(t, admitCount.Load(), int32(0), "some requests should have been admitted during the run")
+
+		livePod, ok := store.metaPods.Load(utils.GeneratePodKey(testNamespace, testPodName))
+		require.True(t, ok)
+		require.EqualValues(t, 0, atomic.LoadInt32(&livePod.runningRequests), "local counter should return to baseline")
+
+		require.Eventually(t, func() bool {
+			rKey := runningRequestsKey(testNamespace, testPodName)
+			val, err := client.HGet(context.Background(), rKey, runningRequestsGatewayInstanceID).Result()
+			if err == redis.Nil {
+				return true
+			}
+			if err != nil {
+				return false
+			}
+			count, _ := strconv.ParseInt(val, 10, 64)
+			return count == 0
+		}, 2*time.Second, 10*time.Millisecond, "redis field should drain to 0")
 	})
+}
+
+// TestAdmitPodRunningRequest_MissingOnLockedReloadReturnsError verifies that if a pod is present
+// during the initial load but removed before the stripe lock is acquired, AdmitPodRunningRequest
+// returns an error (fail-open) rather than a spurious at-capacity rejection (admitted=false, err=nil).
+func TestAdmitPodRunningRequest_MissingOnLockedReloadReturnsError(t *testing.T) {
+	client := newTestRunningRequestsClient(t)
+	seedLiveGateway(t, client)
+	store := NewForTest()
+	store.redisClient = client
+	pod := requestTrackerTestPod(testPodName, testNamespace, "test-model", "10.0.0.1")
+	store.addPod(pod)
+
+	key := utils.GeneratePodKey(testNamespace, testPodName)
+	mu := store.podStatsLockFor(key)
+
+	// Hold the stripe lock so AdmitPodRunningRequest blocks after its initial Load.
+	mu.Lock()
+
+	done := make(chan struct{})
+	var (
+		admitted bool
+		counted  bool
+		err      error
+	)
+	routingCtx := types.NewRoutingContext(context.Background(), "least-request", "test-model", "", "req-miss", "")
+	go func() {
+		admitted, counted, err = store.AdmitPodRunningRequest(testPodName, testNamespace, 10, routingCtx)
+		close(done)
+	}()
+
+	// Give the goroutine a brief moment to execute the initial Load and block on mu.Lock().
+	time.Sleep(10 * time.Millisecond)
+
+	// Delete the pod while the lock is held, so curMeta, ok := c.metaPods.Load(key) returns false.
+	store.metaPods.Delete(key)
+	mu.Unlock()
+
+	<-done
+	require.Error(t, err, "should return an error when pod vanished on locked reload")
+	require.Contains(t, err.Error(), "key does not exist in the cache")
+	require.False(t, admitted)
+	require.False(t, counted)
+	require.False(t, routingCtx.ReplicaInflightReserved)
 }
 
 // TestReleasePodRunningRequest_FreshGenerationIgnored verifies that ReleasePodRunningRequest

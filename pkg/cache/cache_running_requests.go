@@ -407,11 +407,6 @@ func admitRunningRequestsClient(client *redis.Client) *redis.Client {
 	return redis.NewClient(&options)
 }
 
-// SetAdmitRedisClientForTest overrides admitRedisClient for testing fallback behaviors.
-func (c *Store) SetAdmitRedisClientForTest(client *redis.Client) {
-	c.admitRedisClient = client
-}
-
 // CloseAdmitRedisClientForTest closes the derived admit client so only the admit script fails.
 func (c *Store) CloseAdmitRedisClientForTest() {
 	if c.admitRedisClient != nil {
@@ -455,15 +450,6 @@ func reserveLocalRunningSlot(pod *Pod, limit int64) (local int64, ok bool) {
 	}
 }
 
-// releaseLocalRunningSlot undoes one reserveLocalRunningSlot claim, for an admission whose
-// Redis round trip rejected it (finds the slot taken between claim and script) or
-// ReleasePodRunningRequest unclaiming a request that never reached request tracking. The
-// counter arithmetic treats claims and their releases as ordinary +1/-1 against the same
-// counter tracking adds and completions use, so interleavings with concurrent tracking
-// still reconcile; the zero floor exists for the same defense-in-depth reason as
-// donePodStats's decrementClamped, and here also covers a claimed slot orphaned by a
-// delete/re-add flap (the claim was made on the pre-flap object, whose counter is
-// unreachable via metaPods afterwards).
 // releaseLocalRunningCounter decrements counter by 1 down to a floor of 0.
 func releaseLocalRunningCounter(counter *int32) {
 	for {
@@ -477,6 +463,15 @@ func releaseLocalRunningCounter(counter *int32) {
 	}
 }
 
+// releaseLocalRunningSlot undoes one reserveLocalRunningSlot claim, for an admission whose
+// Redis round trip rejected it (finds the slot taken between claim and script) or
+// ReleasePodRunningRequest unclaiming a request that never reached request tracking. The
+// counter arithmetic treats claims and their releases as ordinary +1/-1 against the same
+// counter tracking adds and completions use, so interleavings with concurrent tracking
+// still reconcile; the zero floor exists for the same defense-in-depth reason as
+// donePodStats's decrementClamped, and here also covers a claimed slot orphaned by a
+// delete/re-add flap (the claim was made on the pre-flap object, whose counter is
+// unreachable via metaPods afterwards).
 func releaseLocalRunningSlot(pod *Pod) {
 	releaseLocalRunningCounter(&pod.runningRequests)
 }

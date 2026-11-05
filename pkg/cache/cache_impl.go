@@ -251,10 +251,13 @@ func (c *Store) AdmitPodRunningRequest(podName, podNamespace string, limit int64
 	if routingCtx != nil && !routingCtx.StatsAdded() {
 		mu := c.podStatsLockFor(key)
 		mu.Lock()
-		if curMeta, ok := c.metaPods.Load(key); ok {
-			metaPod = curMeta
-			localRunning, claimed = reserveLocalRunningSlot(metaPod, limit)
+		curMeta, ok := c.metaPods.Load(key)
+		if !ok {
+			mu.Unlock()
+			return false, false, fmt.Errorf("key does not exist in the cache: %s", key)
 		}
+		metaPod = curMeta
+		localRunning, claimed = reserveLocalRunningSlot(metaPod, limit)
 		mu.Unlock()
 		if !claimed {
 			return false, false, nil
@@ -295,11 +298,11 @@ func (c *Store) ReleasePodRunningRequest(podName, podNamespace string, counted b
 		mu := c.podStatsLockFor(key)
 		mu.Lock()
 		if metaPod, ok := c.metaPods.Load(key); ok {
-			if reservedGen < 0 || sameStatsGeneration(reservedGen, metaPod.statsGeneration) {
+			if sameStatsGeneration(reservedGen, metaPod.statsGeneration) {
 				releaseLocalRunningSlot(metaPod)
 			}
 		} else if snap, ok := c.recentlyDeletedPods.Load(key); ok {
-			if reservedGen < 0 || sameStatsGeneration(reservedGen, snap.statsGeneration) {
+			if sameStatsGeneration(reservedGen, snap.statsGeneration) {
 				releaseLocalRunningCounter(&snap.runningRequests)
 			}
 		}
