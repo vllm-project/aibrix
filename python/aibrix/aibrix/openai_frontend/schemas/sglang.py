@@ -12,23 +12,42 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""SGLang-specific extension fields for the OpenAI request models.
+"""SGLang-specific extension fields for the OpenAI request and response models.
 
-Only fields SGLang accepts beyond the OpenAI schema and the fields shared
-with the other engine (``engine_common.py``) are declared here.
+Only fields SGLang accepts or returns beyond the OpenAI schema and the fields
+shared with the other engine (``engine_common.py``) are declared here.
 
 Reference: the SGLang OpenAI entrypoint protocol at tag ``v0.5.22``.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional, Union
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from aibrix.openai_frontend.schemas.engine_common import (
     SharedChatCompletionFields,
+    SharedCompletionChoiceFields,
     SharedCompletionFields,
     SharedEmbeddingFields,
 )
+
+
+class SglangGenerateMediaFields(BaseModel):
+    """Native media fields; raw engine input shapes are preserved."""
+
+    model_config = ConfigDict(extra="allow")
+
+    image_data: Optional[Any] = Field(
+        None, json_schema_extra={"media_type": "image_url"}
+    )
+    video_data: Optional[Any] = Field(
+        None, json_schema_extra={"media_type": "video_url"}
+    )
+    audio_data: Optional[Any] = Field(
+        None, json_schema_extra={"media_type": "audio_url"}
+    )
 
 
 class SglangChatCompletionEngineExtensionFields(SharedChatCompletionFields):
@@ -112,3 +131,70 @@ class SglangEmbeddingEngineExtensionFields(SharedEmbeddingFields):
     embed_overrides: Optional[Any] = None
     lora_path: Optional[Any] = None
     rid: Optional[Any] = None
+
+
+# ---------------------------------------------------------------------------
+# Responses
+# ---------------------------------------------------------------------------
+
+
+class SglangChatCompletionMessageExtensionFields(BaseModel):
+    """SGLang fields on a chat response message."""
+
+    reasoning_content: Optional[str] = None
+
+
+class SglangChatCompletionStreamDeltaExtensionFields(
+    SglangChatCompletionMessageExtensionFields
+):
+    """SGLang fields on a chat stream delta."""
+
+    hidden_states: Optional[Any] = None
+
+
+class SglangChatCompletionStreamChoiceExtensionFields(BaseModel):
+    """SGLang fields on a /v1/chat/completions stream choice."""
+
+    matched_stop: Optional[Union[int, str]] = None
+
+
+class SglangChatCompletionChoiceExtensionFields(
+    SglangChatCompletionStreamChoiceExtensionFields
+):
+    """SGLang fields on a /v1/chat/completions choice."""
+
+    hidden_states: Optional[Any] = None
+    prompt_token_ids: Optional[List[int]] = None
+    response_token_ids: Optional[List[int]] = None
+    meta_info: Optional[Dict[str, Any]] = None
+
+
+class SglangResponseExtensionFields(BaseModel):
+    """SGLang top-level fields on chat/completion responses and chunks."""
+
+    sglext: Optional[Dict[str, Any]] = None
+
+
+class SglangCompletionChoiceExtensionFields(SharedCompletionChoiceFields):
+    """SGLang fields on a /v1/completions choice (and stream choice)."""
+
+    matched_stop: Optional[Union[int, str]] = None
+    hidden_states: Optional[Any] = None
+
+
+class SglangCompletionResponseExtensionFields(SglangResponseExtensionFields):
+    """SGLang top-level fields on a /v1/completions response (and chunk)."""
+
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class SglangUsageExtensionFields(BaseModel):
+    """SGLang fields on ``usage``."""
+
+    reasoning_tokens: Optional[int] = None
+
+
+class SglangPromptTokensDetailsExtensionFields(BaseModel):
+    """SGLang fields on ``usage.prompt_tokens_details``."""
+
+    video_tokens: Optional[int] = None

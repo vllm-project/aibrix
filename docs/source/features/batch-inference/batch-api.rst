@@ -533,7 +533,11 @@ The Files API manages input and output files for batch processing. ENDPOINT is t
 
 **List Files**
 
-List all files with optional filtering and pagination:
+List files with optional filtering and pagination. Each request reads storage
+in order until it has enough matching files after ``after`` or the listing
+ends. ``has_more`` is true only if another matching file exists beyond
+``limit``. Skipping internal keys or filtering by ``purpose`` can require
+more storage reads and increase listing latency.
 
 .. code-block:: bash
 
@@ -711,6 +715,9 @@ Input files must be in JSONL format with one request per line. Each request requ
 - ``method``: HTTP method, typically "POST" (required)
 - ``url``: Endpoint path, e.g., "/v1/chat/completions" (required)
 - ``body``: Request payload matching the endpoint's format (required)
+
+Repeated ``custom_id`` values within one input file cause the batch to fail
+validation with the ``validation_error`` code.
 
 **Example batch_input.jsonl:**
 

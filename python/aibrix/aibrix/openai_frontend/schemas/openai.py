@@ -21,10 +21,16 @@ Structure, in request-lifecycle order:
   (``/v1/completions``, ``/v1/chat/completions``, ``/v1/embeddings``)
 * response models (text/chat/streaming/embeddings) and model listing
 
-Standard request fields track openai-python's public type definitions at tag
+Standard fields track openai-python's public type definitions at tag
 ``v3.41.0``. Engine-specific fields live on the mixins in ``schemas/vllm.py``
-(vLLM tag ``v0.33.0rc1``) and ``schemas/sglang.py`` (SGLang tag ``v0.5.22``)
-and are forwarded to the engine verbatim.
+(vLLM tag ``v0.33.0rc1``) and ``schemas/sglang.py`` (SGLang tag ``v0.5.22``):
+on requests they are forwarded to the engine verbatim, on responses they are
+what the engine returns.
+
+Response models accept everything those engines return at their pinned tags:
+a field takes the widest type any of the three declares, and becomes optional
+when any of them may omit it or return ``null``. They also allow undeclared
+fields, so a newer engine's additions pass through unchanged.
 """
 
 # mypy: disable-error-code="valid-type,misc,assignment"
@@ -37,8 +43,10 @@ from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Discriminator,
     Field,
     RootModel,
+    Tag,
     confloat,
     conint,
     model_validator,
@@ -53,11 +61,32 @@ from aibrix.openai_frontend.schemas.media import (
 )
 from aibrix.openai_frontend.schemas.output import OutputRequest, OutputResponse
 from aibrix.openai_frontend.schemas.sglang import (
+    SglangChatCompletionChoiceExtensionFields,
     SglangChatCompletionEngineExtensionFields,
+    SglangChatCompletionMessageExtensionFields,
+    SglangChatCompletionStreamChoiceExtensionFields,
+    SglangChatCompletionStreamDeltaExtensionFields,
+    SglangCompletionChoiceExtensionFields,
     SglangCompletionEngineExtensionFields,
+    SglangCompletionResponseExtensionFields,
     SglangEmbeddingEngineExtensionFields,
+    SglangPromptTokensDetailsExtensionFields,
+    SglangResponseExtensionFields,
+    SglangUsageExtensionFields,
 )
 from aibrix.openai_frontend.schemas.vipe import ViPERequest, ViPEResponse
+from aibrix.openai_frontend.schemas.vllm import (
+    VllmChatCompletionChoiceExtensionFields,
+    VllmChatCompletionMessageExtensionFields,
+    VllmChatCompletionResponseExtensionFields,
+    VllmChatCompletionStreamChoiceExtensionFields,
+    VllmChatCompletionStreamResponseExtensionFields,
+    VllmCompletionChoiceExtensionFields,
+    VllmCompletionResponseExtensionFields,
+    VllmEmbeddingResponseExtensionFields,
+    VllmModelExtensionFields,
+    VllmPromptTokensDetailsExtensionFields,
+)
 from aibrix.openai_frontend.schemas.vllm import (
     VllmChatCompletionEngineExtensionFields as ChatCompletionEngineExtensionFields,
 )
@@ -98,6 +127,11 @@ class FinishReason(str, Enum):
     stop = "stop"
     length = "length"
     content_filter = "content_filter"
+    # vLLM and SGLang.
+    abort = "abort"
+    # vLLM.
+    error = "error"
+    repetition = "repetition"
 
 
 class ChatCompletionFinishReason(str, Enum):
@@ -108,6 +142,14 @@ class ChatCompletionFinishReason(str, Enum):
     content_filter = "content_filter"
     tool_calls = "tool_calls"
     function_call = "function_call"
+    # vLLM and SGLang.
+    abort = "abort"
+    # vLLM.
+    error = "error"
+    repetition = "repetition"
+
+
+ServiceTier = Literal["auto", "default", "flex", "scale", "priority", "fast"]
 
 
 ImageDetail = Literal["auto", "low", "high", "original"]
@@ -141,30 +183,36 @@ class DeleteModelResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class PromptTokensDetails(BaseModel):
+class PromptTokensDetails(
+    VllmPromptTokensDetailsExtensionFields, SglangPromptTokensDetailsExtensionFields
+):
     model_config = ConfigDict(extra="allow")
 
-    cached_tokens: Optional[int] = None
     audio_tokens: Optional[int] = None
+    cache_write_tokens: Optional[int] = None
+    cached_tokens: Optional[int] = None
+    image_tokens: Optional[int] = None
+    text_tokens: Optional[int] = None
 
 
 class CompletionTokensDetails(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    reasoning_tokens: Optional[int] = None
-    audio_tokens: Optional[int] = None
     accepted_prediction_tokens: Optional[int] = None
+    audio_tokens: Optional[int] = None
+    reasoning_tokens: Optional[int] = None
     rejected_prediction_tokens: Optional[int] = None
+    text_tokens: Optional[int] = None
 
 
-class Usage(BaseModel):
+class Usage(SglangUsageExtensionFields):
     model_config = ConfigDict(extra="allow")
 
     prompt_tokens: int = Field(..., description="Number of tokens in the prompt.")
     total_tokens: int = Field(
         ..., description="Total number of tokens used (prompt + completion)."
     )
-    completion_tokens: int = Field(
+    completion_tokens: Optional[int] = Field(
         0, description="Number of tokens in the generated completion."
     )
     prompt_tokens_details: Optional[PromptTokensDetails] = None
@@ -234,8 +282,13 @@ class FunctionCall(BaseModel):
 
 
 class ToolCallFunction(BaseModel):
+    """The function of a response tool call; partial when streamed."""
+
+    model_config = ConfigDict(extra="allow")
+
     name: Optional[str] = None
-    arguments: Optional[str] = None
+
+    arguments: Optional[Union[str, Dict[str, Any]]] = None
 
 
 class ToolCall(BaseModel):
@@ -245,7 +298,9 @@ class ToolCall(BaseModel):
 
 
 class ToolCallChunk(BaseModel):
-    index: int
+    model_config = ConfigDict(extra="allow")
+
+    index: Optional[int] = None
     id: Optional[str] = None
     type: Optional[str] = None
     function: Optional[ToolCallFunction] = None
@@ -306,12 +361,16 @@ class StreamOptions(BaseModel):
 
 
 class TopLogprob(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     token: str
     logprob: float
     bytes: Optional[List[int]] = None
 
 
 class TokenLogprob(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     token: str
     logprob: float
     bytes: Optional[List[int]] = None
@@ -321,14 +380,24 @@ class TokenLogprob(BaseModel):
 class Logprobs(BaseModel):
     """Token logprobs for text completions."""
 
+    model_config = ConfigDict(extra="allow")
+
     text_offset: Optional[List[int]] = None
-    token_logprobs: Optional[List[float]] = None
+    # vLLM reports ``null`` for positions without a logprob.
+    token_logprobs: Optional[List[Optional[float]]] = None
     tokens: Optional[List[str]] = None
-    top_logprobs: Optional[List[Dict[str, float]]] = None
+    top_logprobs: Optional[List[Optional[Dict[str, float]]]] = None
 
 
 class ChatCompletionLogprobs(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     content: Optional[List[TokenLogprob]] = None
+    refusal: Optional[List[TokenLogprob]] = None
+
+
+# SGLang may answer a chat request with completion-style logprobs.
+ChatCompletionChoiceLogprobs = Union[ChatCompletionLogprobs, Logprobs]
 
 
 # ===========================================================================
@@ -359,7 +428,7 @@ class ChatCompletionRequestMessageContentPartImage(BaseModel):
     model_config = ConfigDict(use_enum_values=True, extra="allow")
 
     type: Literal["image_url"] = "image_url"
-    image_url: _ImageUrl
+    image_url: _ImageUrl = Field(json_schema_extra={"media_url": "url"})
     uuid: Optional[str] = None
 
 
@@ -626,18 +695,19 @@ class CreateEmbeddingRequest(
 # ===========================================================================
 
 
-class Model(BaseModel):
+class Model(VllmModelExtensionFields):
+    model_config = ConfigDict(extra="allow")
+
     id: str
     created: int
     object: ObjectTypeModel = "model"
     owned_by: str
-    # vLLM extensions.
-    root: Optional[str] = None
-    parent: Optional[str] = None
-    max_model_len: Optional[int] = None
+    shutdown_date: Optional[str] = None
 
 
 class ListModelsResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     object: ObjectTypeList = "list"
     data: List[Model]
 
@@ -647,14 +717,24 @@ class ListModelsResponse(BaseModel):
 # ===========================================================================
 
 
-class CompletionChoice(BaseModel):
+class CompletionChoice(
+    VllmCompletionChoiceExtensionFields, SglangCompletionChoiceExtensionFields
+):
+    model_config = ConfigDict(extra="allow")
+
     text: str
     index: int
     logprobs: Optional[Logprobs] = None
     finish_reason: Optional[FinishReason] = None
 
 
-class CreateCompletionResponse(BaseModel):
+class CreateCompletionResponse(
+    VllmCompletionResponseExtensionFields, SglangCompletionResponseExtensionFields
+):
+    """A text completion; also each chunk of a streamed one."""
+
+    model_config = ConfigDict(extra="allow")
+
     id: str
     choices: List[CompletionChoice]
     created: int
@@ -671,58 +751,156 @@ class CreateCompletionResponse(BaseModel):
 # ===========================================================================
 
 
-class ChatCompletionResponseMessage(BaseModel):
-    role: str = "assistant"
+class AnnotationURLCitation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    end_index: int
+    start_index: int
+    title: str
+    url: str
+
+
+class Annotation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["url_citation"]
+    url_citation: AnnotationURLCitation
+
+
+class ChatCompletionAudio(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: Optional[str] = None
+    data: Optional[str] = None
+    expires_at: Optional[int] = None
+    transcript: Optional[str] = None
+
+
+class ChatCompletionMessageFunctionToolCall(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: Optional[str] = None
+    type: Literal["function"] = "function"
+    function: ToolCallFunction
+    # SGLang: position of the call in the message.
+    index: Optional[int] = None
+
+
+class CustomToolCall(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    input: str
+    name: str
+
+
+class ChatCompletionMessageCustomToolCall(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    type: Literal["custom"]
+    custom: CustomToolCall
+
+
+def _tool_call_type(value: Any) -> str:
+    if isinstance(value, dict):
+        return value.get("type", "function")
+    return getattr(value, "type", "function")
+
+
+ChatCompletionMessageToolCall = Annotated[
+    Union[
+        Annotated[ChatCompletionMessageFunctionToolCall, Tag("function")],
+        Annotated[ChatCompletionMessageCustomToolCall, Tag("custom")],
+    ],
+    Discriminator(_tool_call_type),
+]
+
+
+class ChatCompletionResponseMessage(
+    VllmChatCompletionMessageExtensionFields,
+    SglangChatCompletionMessageExtensionFields,
+):
+    model_config = ConfigDict(extra="allow")
+
+    role: Optional[str] = "assistant"
     content: Optional[Union[str, ViPEResponse]] = None
     refusal: Optional[str] = None
-    reasoning: Optional[str] = None
-    reasoning_content: Optional[str] = None
-    tool_calls: Optional[List[ToolCall]] = None
+    # vLLM reports a single annotation object rather than a list.
+    annotations: Optional[Union[List[Annotation], Annotation]] = None
+    audio: Optional[ChatCompletionAudio] = None
+    tool_calls: Optional[List[ChatCompletionMessageToolCall]] = None
     function_call: Optional[FunctionCall] = None  # deprecated
 
 
-class ChatCompletionChoice(BaseModel):
+class ChatCompletionChoice(
+    VllmChatCompletionChoiceExtensionFields, SglangChatCompletionChoiceExtensionFields
+):
+    model_config = ConfigDict(extra="allow")
+
     index: int
     message: ChatCompletionResponseMessage
     finish_reason: Optional[ChatCompletionFinishReason] = None
-    logprobs: Optional[ChatCompletionLogprobs] = None
+    logprobs: Optional[ChatCompletionChoiceLogprobs] = None
 
 
-class CreateChatCompletionResponse(BaseModel):
+class CreateChatCompletionResponse(
+    VllmChatCompletionResponseExtensionFields, SglangResponseExtensionFields
+):
+    model_config = ConfigDict(extra="allow")
+
     id: str
     choices: List[ChatCompletionChoice]
     created: int
     model: str
     object: ObjectTypeChatCompletion = "chat.completion"
+    metadata: Optional[Dict[str, Any]] = None
+    moderation: Optional[Dict[str, Any]] = None
+    service_tier: Optional[ServiceTier] = None
     system_fingerprint: Optional[str] = None
     usage: Optional[Usage] = None
     # Set instead of the result when the request carried an ``output`` spec.
     output: Optional[OutputResponse] = None
 
 
-class ChatCompletionStreamResponseDelta(BaseModel):
+class ChatCompletionStreamResponseDelta(
+    VllmChatCompletionMessageExtensionFields,
+    SglangChatCompletionStreamDeltaExtensionFields,
+):
+    model_config = ConfigDict(extra="allow")
+
     role: Optional[str] = None
     content: Optional[Union[str, ViPEResponse]] = None
     refusal: Optional[str] = None
-    reasoning: Optional[str] = None
-    reasoning_content: Optional[str] = None
+    audio: Optional[ChatCompletionAudio] = None
     tool_calls: Optional[List[ToolCallChunk]] = None
     function_call: Optional[ToolCallFunction] = None  # deprecated
 
 
-class ChatCompletionStreamingResponseChoice(BaseModel):
+class ChatCompletionStreamingResponseChoice(
+    VllmChatCompletionStreamChoiceExtensionFields,
+    SglangChatCompletionStreamChoiceExtensionFields,
+):
+    model_config = ConfigDict(extra="allow")
+
     index: int
     delta: ChatCompletionStreamResponseDelta
-    logprobs: Optional[ChatCompletionLogprobs] = None
+    logprobs: Optional[ChatCompletionChoiceLogprobs] = None
     finish_reason: Optional[ChatCompletionFinishReason] = None
 
 
-class CreateChatCompletionStreamResponse(BaseModel):
+class CreateChatCompletionStreamResponse(
+    VllmChatCompletionStreamResponseExtensionFields, SglangResponseExtensionFields
+):
+    model_config = ConfigDict(extra="allow")
+
     id: str
     choices: List[ChatCompletionStreamingResponseChoice]
     created: int
     model: str
     object: ObjectTypeChatCompletionChunk = "chat.completion.chunk"
+    moderation: Optional[Dict[str, Any]] = None
+    obfuscation: Optional[str] = None
+    service_tier: Optional[ServiceTier] = None
     system_fingerprint: Optional[str] = None
     usage: Optional[Usage] = None
 
@@ -732,12 +910,12 @@ class CreateChatCompletionStreamResponse(BaseModel):
 # ===========================================================================
 
 
-class CreateEmbeddingResponse(BaseModel):
+class CreateEmbeddingResponse(VllmEmbeddingResponseExtensionFields):
     model_config = ConfigDict(extra="allow")
 
     object: ObjectTypeList = "list"
     data: List[EmbeddingObject]
-    model: str
+    model: Optional[str] = None
     usage: Optional[Usage] = None
     # Set instead of the result when the request carried an ``output`` spec.
     output: Optional[OutputResponse] = None

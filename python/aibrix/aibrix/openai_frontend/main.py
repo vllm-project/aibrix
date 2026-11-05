@@ -17,9 +17,10 @@ import argparse
 import importlib
 import logging
 import os
+import re
+import shlex
 import signal
 import sys
-from functools import partial
 from typing import Callable, Dict, Optional, Sequence, Tuple
 
 from aibrix.openai_frontend.engine.engine import LLMEngine
@@ -32,18 +33,68 @@ from aibrix.openai_frontend.utils.utils import (
 
 EngineBuilder = Callable[[argparse.Namespace], LLMEngine]
 
+# Names set on --setenv are upper-cased with hyphens -> underscores, matching
+# the convention already used by --vipe-storage-tos.
+_ENV_NAME_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
 
-def signal_handler(openai_frontend, signal_num, frame):
-    print(f"Received signal={signal_num}, frame={frame}")
-    shutdown(openai_frontend)
+
+class SetenvError(ValueError):
+    """Raised for a malformed ``--setenv KEY VALUE`` argument."""
 
 
-def shutdown(openai_frontend):
-    print("Shutting down AIBrix OpenAI-Compatible Frontend...")
-    openai_frontend.stop()
+def _apply_setenv_args(args: argparse.Namespace) -> None:
+    """Apply ``--setenv KEY VALUE`` pairs to the process environment.
+
+    Keys are upper-cased with ``-`` -> ``_`` (``--setenv tos-endpoint X`` sets
+    ``TOS_ENDPOINT``). The shared parsing path applies these variables before
+    any engine is built; subprocess engines inherit the same environment.
+    """
+    items = getattr(args, "setenv", None)
+    if not items:
+        return
+    # Validate each occurrence before applying any environment changes.
+    updates: Dict[str, str] = {}
+    for group in items:
+        if len(group) % 2 != 0:
+            raise SetenvError(
+                f"--setenv expects KEY VALUE pairs, got {len(group)} items"
+            )
+        for i in range(0, len(group), 2):
+            raw_key, value = group[i], group[i + 1]
+            name = raw_key.upper().replace("-", "_")
+            if not _ENV_NAME_RE.fullmatch(name):
+                raise SetenvError(f"invalid environment variable name {raw_key!r}")
+            updates[name] = value
+    os.environ.update(updates)
+
+
+def _reset_inherited_signal_state() -> None:
+    """Undo a SIGTERM/SIGINT mask or SIG_IGN inherited from the parent.
+
+    Both survive exec(): a supervisor or wrapper script that blocked or
+    ignored these signals would otherwise leave the server -- and uvicorn's
+    graceful shutdown -- deaf to ``kill`` / pod termination.
+    """
+    handled = {signal.SIGINT, signal.SIGTERM}
+    if hasattr(signal, "pthread_sigmask"):
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, handled)
+    for sig in handled:
+        if signal.getsignal(sig) == signal.SIG_IGN:
+            signal.signal(sig, signal.SIG_DFL)
 
 
 def add_common_args(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--setenv",
+        type=str,
+        nargs="+",
+        action="append",
+        metavar="KEY VALUE",
+        help="Set environment variables (KEY upper-cased, '-' -> '_') before "
+        "any engine is built, e.g. --setenv tos-endpoint "
+        "https://tos.example.com sets TOS_ENDPOINT. Repeated flags and "
+        "KEY VALUE pairs in one flag are both supported.",
+    )
     parser.add_argument(
         "--host",
         type=str,
@@ -162,10 +213,81 @@ def build_vipe_engine(args: argparse.Namespace) -> LLMEngine:
     )
 
 
+def add_proxy_args(parser: argparse.ArgumentParser):
+    proxy_group = parser.add_argument_group("Proxy engine arguments")
+    proxy_group.add_argument(
+        "--proxy-engine-cmd",
+        type=str,
+        nargs="+",
+        required=True,
+        help="Command to launch the inner engine as a subprocess. Quote the whole "
+        "command when it contains options, e.g. --proxy-engine-cmd "
+        "'python -m vllm.entrypoints.openai.api_server'. Parsed as argv, not a shell.",
+    )
+    proxy_group.add_argument(
+        "--proxy-engine-host",
+        type=str,
+        default="127.0.0.1",
+        help="Host for the inner engine HTTP server (default: 127.0.0.1)",
+    )
+    proxy_group.add_argument(
+        "--proxy-engine-port",
+        type=int,
+        default=8001,
+        help="Port for the inner engine HTTP server (default: 8001)",
+    )
+    proxy_group.add_argument(
+        "--proxy-engine-spec",
+        type=str,
+        default="vllm",
+        help="Engine spec for endpoint mapping (default: vllm). "
+        "Determines which OpenAI APIs the inner engine supports "
+        "and their endpoint paths.",
+    )
+    proxy_group.add_argument(
+        "--proxy-startup-timeout",
+        type=validate_positive_double,
+        default=1800.0,
+        help="Seconds to wait for the inner engine to become healthy (default: 1800).",
+    )
+    proxy_group.add_argument(
+        "--proxy-health-check-interval",
+        type=validate_positive_double,
+        default=10.0,
+        help="Seconds between inner-engine liveness checks. Determines how "
+        "quickly a crashed engine is detected and the proxy marked failed "
+        "(default: 10).",
+    )
+    proxy_group.add_argument(
+        "--proxy-shutdown-grace",
+        type=validate_positive_double,
+        default=30.0,
+        help="Seconds between SIGTERM and SIGKILL when stopping the inner "
+        "engine process tree (default: 30).",
+    )
+
+
+def build_proxy_engine(args: argparse.Namespace) -> LLMEngine:
+    from aibrix.openai_frontend.engine.proxy_engine import ProxyEngine
+    from aibrix.openai_frontend.proxy.engine_spec import get_engine_spec
+
+    spec = get_engine_spec(args.proxy_engine_spec)
+    return ProxyEngine(
+        engine_cmd=args.proxy_engine_cmd,
+        engine_port=args.proxy_engine_port,
+        engine_host=args.proxy_engine_host,
+        spec=spec,
+        health_check_interval=getattr(args, "proxy_health_check_interval", 10.0),
+        startup_timeout=getattr(args, "proxy_startup_timeout", 1800.0),
+        shutdown_grace_seconds=getattr(args, "proxy_shutdown_grace", 30.0),
+    )
+
+
 ENGINE_REGISTRY: Dict[
     str, Tuple[EngineBuilder, Callable[[argparse.ArgumentParser], None]]
 ] = {
     "vipe": (build_vipe_engine, add_vipe_args),
+    "proxy": (build_proxy_engine, add_proxy_args),
 }
 
 
@@ -202,7 +324,19 @@ def parse_args(argv: Optional[Sequence[str]] = None):
         return parser.parse_args(argv)
 
     parser = _build_parser(selected_engine)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if selected_engine == "proxy" and len(args.proxy_engine_cmd) == 1:
+        try:
+            args.proxy_engine_cmd = shlex.split(args.proxy_engine_cmd[0])
+        except ValueError as e:
+            parser.error(f"Invalid --proxy-engine-cmd: {e}")
+        if not args.proxy_engine_cmd:
+            parser.error("--proxy-engine-cmd must not be empty")
+    try:
+        _apply_setenv_args(args)
+    except SetenvError as e:
+        parser.error(str(e))
+    return args
 
 
 def build_engine(args: argparse.Namespace) -> LLMEngine:
@@ -213,7 +347,10 @@ def build_engine(args: argparse.Namespace) -> LLMEngine:
 
 
 def main():
-    args = parse_args()
+    try:
+        args = parse_args()
+    except SystemExit:
+        raise
     log_level = getattr(logging, args.uvicorn_log_level.upper(), logging.INFO)
     logging.basicConfig(
         level=log_level,
@@ -237,10 +374,13 @@ def main():
         )
         sys.exit(1)
 
-    signal.signal(signal.SIGINT, partial(signal_handler, openai_frontend))
-    signal.signal(signal.SIGTERM, partial(signal_handler, openai_frontend))
-
-    openai_frontend.start()
+    # Uvicorn owns SIGINT/SIGTERM and drives the engine's async lifespan cleanup.
+    _reset_inherited_signal_state()
+    try:
+        openai_frontend.start()
+    except KeyboardInterrupt:
+        # Uvicorn re-raises SIGINT after lifespan cleanup has completed.
+        pass
 
 
 if __name__ == "__main__":

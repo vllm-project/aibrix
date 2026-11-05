@@ -27,7 +27,7 @@
 
 from __future__ import annotations
 
-from typing import AsyncIterator, Iterator, List, Protocol, Union
+from typing import AsyncIterator, List, Protocol, Union
 
 from aibrix.openai_frontend.schemas.openai import (
     CreateChatCompletionRequest,
@@ -49,6 +49,14 @@ class LLMEngine(Protocol):
           generic rather than the current 1:1 with OpenAI endpoints over time.
     """
 
+    async def start(self) -> None:
+        """Initialize engine resources before serving requests."""
+        ...
+
+    async def aclose(self) -> None:
+        """Stop the engine and await resource cleanup; safe to call repeatedly."""
+        ...
+
     async def health(self) -> bool:
         """
         Returns True if the engine is ready to accept inference requests, or False otherwise.
@@ -69,7 +77,7 @@ class LLMEngine(Protocol):
 
     async def chat(
         self, request: CreateChatCompletionRequest
-    ) -> Union[CreateChatCompletionResponse, Iterator[str], AsyncIterator[str]]:
+    ) -> Union[CreateChatCompletionResponse, AsyncIterator[str]]:
         """
         If request.stream is True, this returns an Iterator (or Generator) that
         produces server-sent-event (SSE) strings in the following form:
@@ -83,7 +91,7 @@ class LLMEngine(Protocol):
 
     async def completion(
         self, request: CreateCompletionRequest
-    ) -> Union[CreateCompletionResponse, Iterator[str], AsyncIterator[str]]:
+    ) -> Union[CreateCompletionResponse, AsyncIterator[str]]:
         """
         If request.stream is True, this returns an Iterator (or Generator) that
         produces server-sent-event (SSE) strings in the following form:
@@ -100,27 +108,5 @@ class LLMEngine(Protocol):
     ) -> CreateEmbeddingResponse:
         """
         Returns a CreateEmbeddingResponse.
-        """
-        pass
-
-    async def load_model(self, model_name: str) -> Model:
-        """
-        Loads a model by name. Only available in EXPLICIT model control mode.
-        Blocks until the model is fully loaded and ready.
-        """
-        pass
-
-    async def unload_model(self, model_name: str) -> None:
-        """
-        Unloads a model by name. Only available in EXPLICIT model control mode.
-        Blocks until the model is fully unloaded. In-flight requests complete
-        before unload.
-        """
-        pass
-
-    async def start(self) -> None:
-        """
-        Perform async initialization after construction (e.g. pre-warming
-        resources, creating pipeline instances). Called once at server startup.
         """
         pass
