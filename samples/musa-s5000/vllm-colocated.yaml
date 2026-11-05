@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: musa-vllm-qwen3-8b
+  namespace: default
+  labels:
+    app: musa-vllm-qwen3-8b
+    model.aibrix.ai/name: qwen3-8b
+    model.aibrix.ai/port: "8000"
+    model.aibrix.ai/metric-port: "8000"
+    model.aibrix.ai/engine: vllm
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: musa-vllm-qwen3-8b
+  template:
+    metadata:
+      labels:
+        app: musa-vllm-qwen3-8b
+        model.aibrix.ai/name: qwen3-8b
+        model.aibrix.ai/port: "8000"
+        model.aibrix.ai/metric-port: "8000"
+        model.aibrix.ai/engine: vllm
+    spec:
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: model-server
+          image: registry.mthreads.com/mcconline/inference/vllm:v0.28.0-ph1-5.2.0-torch2.11.0.post1-20260915
+          imagePullPolicy: IfNotPresent
+          command: ["vllm", "serve"]
+          args:
+            - Qwen/Qwen3-8B
+            - --served-model-name=qwen3-8b
+            - --host=0.0.0.0
+            - --port=8000
+            - --tensor-parallel-size=1
+            - --enforce-eager
+            - --max-model-len=2048
+            - --max-num-seqs=16
+            - --max-num-batched-tokens=2048
+            - --gpu-memory-utilization=0.8
+            - --disable-access-log-for-endpoints=/health,/metrics,/v1/models
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: musa-hf-token
+                  key: HF_TOKEN
+                  optional: true
+          ports:
+            - name: model-server
+              containerPort: 8000
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "8"
+              memory: 32Gi
+              mthreads.com/gpu: "1"
+            limits:
+              cpu: "16"
+              memory: 64Gi
+              mthreads.com/gpu: "1"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: model-server
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 180
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: model-server
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 6
+          securityContext:
+            capabilities:
+              add: [IPC_LOCK]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: shared-memory
+              mountPath: /dev/shm
+      volumes:
+        - name: shared-memory
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
