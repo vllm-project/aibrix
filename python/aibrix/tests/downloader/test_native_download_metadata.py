@@ -41,6 +41,8 @@ FILES = {
     "model.safetensors": b"complete-model-weights",
 }
 COMMIT = "a" * 40
+# CI installs dependencies with --no-root and invokes pytest from tests/.
+PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
 
 def prepare_model_cache(uri, root):
@@ -164,7 +166,10 @@ def test_interrupted_native_download_is_not_advertised_and_recovers(hub, tmp_pat
     assert "hf://Org/Qwen" in discover_download_metadata()
 
 
-def test_prepare_cli_uses_native_cache_without_a_revision_argument(hub, tmp_path):
+def test_prepare_cli_uses_native_cache_without_a_revision_argument(
+    hub, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
     env = dict(os.environ, HF_ENDPOINT=hub.endpoint, HF_HUB_DISABLE_TELEMETRY="1")
     result = subprocess.run(
         [
@@ -178,6 +183,7 @@ def test_prepare_cli_uses_native_cache_without_a_revision_argument(hub, tmp_path
             str(tmp_path),
         ],
         env=env,
+        cwd=PACKAGE_ROOT,
         capture_output=True,
         text=True,
         timeout=30,
@@ -199,11 +205,15 @@ def test_prepare_cli_rejects_unknown_scheme(tmp_path):
             "--local-dir",
             str(tmp_path),
         ],
+        cwd=PACKAGE_ROOT,
         capture_output=True,
         text=True,
         timeout=30,
     )
     assert result.returncode != 0
+    assert "ValueError:" in result.stderr, (
+        "must reach argument validation, not fail to import aibrix"
+    )
     assert not list(tmp_path.iterdir())
 
 
@@ -234,7 +244,12 @@ def test_prepare_job_and_native_consumer_process_share_weight_download(hub, tmp_
         outcomes = list(
             pool.map(
                 lambda cmd: subprocess.run(
-                    cmd, env=env, capture_output=True, text=True, timeout=30
+                    cmd,
+                    env=env,
+                    cwd=PACKAGE_ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 ),
                 [prepare, consume],
             )
