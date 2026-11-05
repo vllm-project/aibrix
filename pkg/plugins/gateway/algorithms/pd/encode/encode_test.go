@@ -269,6 +269,28 @@ func TestEncodeMediaKeepsBodyWhenParamsCannotBeSet(t *testing.T) {
 	assert.Equal(t, body, string(ctx.ReqBody))
 }
 
+func TestEncodeMediaDropsClientParamsWithoutEncoders(t *testing.T) {
+	const image = `{"role":"user","content":[{"type":"image_url","image_url":{"url":"a"}}]}`
+	for name, labels := range map[string]map[string]string{
+		"no encoders in the roleset": {"roleset-name": "rs-0", "role-name": "prefill"},
+		"no roleset":                 {"role-name": "prefill"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			target := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "prefill-0", Labels: labels}}
+			ctx := types.NewRoutingContext(context.Background(), "test", "qwen-vl", "", "req-ec", "user")
+			defer ctx.Delete()
+			ctx.ReqPath = "/v1/chat/completions"
+			ctx.ReqBody = []byte(`{"model":"qwen-vl","messages":[` + image + `],` +
+				`"ec_transfer_params":{"a":{"peer_host":"10.9.9.9"}}}`)
+
+			NewExecutor(&http.Client{}).EncodeMedia(ctx, []*v1.Pod{target}, target, time.Second)
+
+			assert.False(t, gjson.GetBytes(ctx.ReqBody, "ec_transfer_params").Exists())
+			assert.Len(t, MediaItems(ctx.ReqBody), 1)
+		})
+	}
+}
+
 func TestSetTransferParamsDropsEveryClientCopy(t *testing.T) {
 	var b strings.Builder
 	b.WriteString(`{"model":"m"`)
