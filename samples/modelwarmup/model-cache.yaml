@@ -14,8 +14,11 @@
 
 # Build an image containing this feature and make it available on target nodes.
 # Authorize namespace/node pool membership as described in README.md.
-# Shared metadata indexes generic downloader results; Claim URLs stay unchanged.
-# Matches the host paths in samples/modelclaim/warm-runtime-pool.yaml.
+# This HF example reuses the existing warm-runtime-pool.yaml cache mount.
+# Apply this resource, wait for its Complete condition, then apply the original
+# ModelClaim YAML. Both preparation and runtime images must contain this feature.
+# For other backends, reuse the pool's existing downloader cache and credentials;
+# share that cache with the Job rather than changing the Claim or its cache settings.
 apiVersion: model.aibrix.ai/v1alpha1
 kind: ModelWarmup
 metadata:
@@ -35,25 +38,15 @@ spec:
         command: [aibrix_download]
         args: [--prepare-cache, --model-uri, "huggingface://Qwen/Qwen3-0.6B"]
         env:
-          - name: HF_HUB_CACHE
-            value: /model-cache/huggingface/hub
           - name: AIBRIX_MODEL_CACHE_METADATA_DIR
-            value: /model-cache/objects/.aibrix/download-metadata
-          - name: DOWNLOADER_LOCAL_DIR
-            value: /model-cache/objects
+            value: /root/.cache/huggingface/.aibrix/download-metadata
         volumeMounts:
           - name: hf-cache
-            mountPath: /model-cache/huggingface
-          - name: object-cache
-            mountPath: /model-cache/objects
+            mountPath: /root/.cache/huggingface
     volumes:
       - name: hf-cache
         hostPath:
           path: /var/cache/aibrix/huggingface
-          type: DirectoryOrCreate
-      - name: object-cache
-        hostPath:
-          path: /var/cache/aibrix/models
           type: DirectoryOrCreate
   policies:
     parallelism: 2
