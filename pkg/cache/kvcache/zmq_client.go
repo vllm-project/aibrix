@@ -19,6 +19,7 @@ package kvcache
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sync"
 	"syscall"
@@ -31,6 +32,19 @@ import (
 // replayEndSeq is the sequence number of the message that ends a replay reply
 // (ZmqEventPublisher.END_SEQ in vLLM's vllm/distributed/kv_events.py).
 const replayEndSeq int64 = -1
+
+// replayPollInterval bounds how long receiveReplay blocks in one receive, so a
+// cancelled client does not wait out ReplayTimeout for a reply that Stop will
+// never read.
+const replayPollInterval = 100 * time.Millisecond
+
+// errReplayCancelled reports that the client is shutting down and the rest of a
+// replay reply will not be read.
+var errReplayCancelled = errors.New("replay cancelled")
+
+// errReplaySocketUnavailable reports that a lost replay socket could not be
+// reopened, so the replay did not run.
+var errReplaySocketUnavailable = errors.New("replay socket unavailable")
 
 // maxPendingBatches bounds the live batches held while a sequence gap is being
 // repaired. When it is exceeded, the gap is treated as unrecoverable: the
@@ -66,6 +80,12 @@ type ZMQClient struct {
 	// replayInFlight prevents concurrent replay requests on the single replay
 	// socket. Guarded by mu.
 	replayInFlight bool
+
+	// replaySocketLost is set when a replay socket existed and could not be
+	// replaced after a failed replay. runReplay retries opening it only in this
+	// state, and a gap that still cannot be replayed is failed open. Guarded by
+	// mu.
+	replaySocketLost bool
 
 	// replayWg tracks background replay goroutines. stopped is set by Stop so
 	// no new background replay starts once shutdown began. Both are guarded by
@@ -148,6 +168,7 @@ func (c *ZMQClient) Connect() error {
 
 	c.subSocket = subSocket
 	c.replaySocket = replaySocket
+	c.replaySocketLost = false
 	c.connected = true
 
 	// Reset reconnect delay on successful connection
@@ -188,14 +209,14 @@ func (c *ZMQClient) Start() error {
 		return fmt.Errorf("initial connection failed: %w", err)
 	}
 
-	// Request full replay on startup
-	if _, err := c.requestReplay(0); err != nil {
-		klog.Warningf("Failed to request initial replay for %s: %v", c.config.PodKey, err)
-		// Retry in the background: without the replay the index misses every
-		// batch published before the subscription, and the consumer only
-		// retries on reconnect.
-		c.retryReplayAsync(0, 3)
-	}
+	// Request full replay on startup without waiting for the reply. A pod is
+	// subscribed as soon as it is Running with an IP, which is before vLLM has
+	// loaded its model and bound the replay socket, so the reply usually
+	// arrives only after ReplayTimeout. Start runs inside the store's pod event
+	// handlers with the store write lock held, so waiting here stalls every
+	// pod event queued behind it. The retry below covers a publisher that is
+	// not ready yet; a gap in the live stream asks for the replay again.
+	c.replayOnStartup()
 
 	// Start event consumption goroutine
 	c.wg.Add(1)
@@ -569,6 +590,38 @@ func (c *ZMQClient) setLastSequence(seq int64) {
 	c.mu.Unlock()
 }
 
+// replayOnStartup asks for the batches published before the subscription
+// without holding the pod event that started this client. A publisher that has
+// not bound its replay socket yet fails the first attempt, so the request is
+// retried in the background instead of being dropped.
+func (c *ZMQClient) replayOnStartup() {
+	c.mu.Lock()
+	if c.stopped {
+		c.mu.Unlock()
+		return
+	}
+	c.replayWg.Add(1)
+	c.mu.Unlock()
+
+	go func() {
+		defer c.replayWg.Done()
+		_, ran, err := c.runReplay(0)
+		if err == nil && ran {
+			c.recoverStalledGap()
+			return
+		}
+		if err == nil {
+			// Another replay owns the socket and will apply the startup
+			// batches; retrying here would only find it in flight again.
+			return
+		}
+		if !errors.Is(err, errReplayCancelled) {
+			klog.Warningf("Failed to request initial replay for %s: %v", c.config.PodKey, err)
+		}
+		c.retryReplay(0, 3)
+	}()
+}
+
 // requestReplayAsync asks the publisher for the batches missing after fromSeq
 // without blocking the event path.
 func (c *ZMQClient) requestReplayAsync(fromSeq int64) {
@@ -583,13 +636,26 @@ func (c *ZMQClient) requestReplayAsync(fromSeq int64) {
 	go func() {
 		defer c.replayWg.Done()
 		_, ran, err := c.runReplay(fromSeq)
-		if err != nil {
+		if errors.Is(err, errReplaySocketUnavailable) {
+			// A transient failure to reopen the socket must not stop replay.
+			// Retry once, then fail the gap open when the retry could not run
+			// either. A retry that was skipped because another replay owns the
+			// socket must not clear the view on its behalf.
+			klog.Warningf("Replay from seq %d has no socket for %s: %v",
+				fromSeq, c.config.PodKey, err)
+			if _, retryErr := c.retryReplay(fromSeq, 1); retryErr != nil {
+				c.recoverStalledGap()
+			}
+			return
+		}
+		if err != nil && !errors.Is(err, errReplayCancelled) {
 			klog.Warningf("Replay from seq %d failed for %s: %v",
 				fromSeq, c.config.PodKey, err)
 		}
-		if ran {
+		if ran && !errors.Is(err, errReplayCancelled) {
 			// The replay may have applied the missing batches or may have
 			// found nothing; only the guard knows whether a gap is still open.
+			// A cancelled replay is not a failed gap: Stop drops the view.
 			c.recoverStalledGap()
 		}
 	}()
@@ -614,12 +680,26 @@ func (c *ZMQClient) retryReplayAsync(fromSeq int64, attempts int) {
 
 // runReplay serializes replay requests on the single replay socket. ran reports
 // whether this call owned the socket; a call that found another replay in
-// flight returns ran=false and must not interpret applied=0.
+// flight returns ran=false and must not interpret applied=0. A missing socket
+// is recreated here, so a recreate that failed once does not stop replay until
+// the client reconnects.
 func (c *ZMQClient) runReplay(fromSeq int64) (applied int, ran bool, err error) {
 	c.mu.Lock()
-	if c.replayInFlight || c.replaySocket == nil {
+	if c.replayInFlight {
 		c.mu.Unlock()
 		return 0, false, nil
+	}
+	if c.replaySocket == nil {
+		if !c.replaySocketLost {
+			// The client has not connected yet. There is nothing to replay on,
+			// and the gap keeps waiting for a retry.
+			c.mu.Unlock()
+			return 0, false, nil
+		}
+		if err := c.openReplaySocketLocked(); err != nil {
+			c.mu.Unlock()
+			return 0, false, fmt.Errorf("%w: %v", errReplaySocketUnavailable, err)
+		}
 	}
 	c.replayInFlight = true
 	c.mu.Unlock()
@@ -633,23 +713,27 @@ func (c *ZMQClient) runReplay(fromSeq int64) (applied int, ran bool, err error) 
 	return applied, true, err
 }
 
-// retryReplay retries a failed replay with the reconnect delay between
-// attempts, so a first replay that failed at startup is not lost.
-func (c *ZMQClient) retryReplay(fromSeq int64, attempts int) {
+// retryReplay retries the replay up to attempts times. ran reports whether the
+// last attempt owned the replay socket; err is that attempt's result. A retry
+// that never ran (shutdown, or another replay in flight) returns ran=false and
+// err=nil so the caller does not fail a gap open on its behalf.
+func (c *ZMQClient) retryReplay(fromSeq int64, attempts int) (ran bool, err error) {
 	for i := 0; i < attempts; i++ {
 		select {
 		case <-c.ctx.Done():
-			return
+			return false, nil
 		case <-time.After(c.config.ReconnectDelay):
 		}
-		_, ran, err := c.runReplay(fromSeq)
+		_, ran, err = c.runReplay(fromSeq)
 		if err == nil && ran {
 			c.recoverStalledGap()
-			return
+			return true, nil
 		}
 		if err != nil {
-			klog.Warningf("Replay retry %d/%d from seq %d failed for %s: %v",
-				i+1, attempts, fromSeq, c.config.PodKey, err)
+			if !errors.Is(err, errReplayCancelled) {
+				klog.Warningf("Replay retry %d/%d from seq %d failed for %s: %v",
+					i+1, attempts, fromSeq, c.config.PodKey, err)
+			}
 			continue
 		}
 		// Another replay owned the socket; this attempt did not run, so keep
@@ -657,6 +741,7 @@ func (c *ZMQClient) retryReplay(fromSeq int64, attempts int) {
 		klog.V(4).Infof("Replay retry %d/%d from seq %d skipped for %s: replay in flight",
 			i+1, attempts, fromSeq, c.config.PodKey)
 	}
+	return ran, err
 }
 
 // requestReplay asks the publisher to resend its buffered batches from fromSeq
@@ -688,6 +773,11 @@ func (c *ZMQClient) requestReplay(fromSeq int64) (int, error) {
 	applied, err := c.receiveReplay(socket)
 	if err != nil {
 		c.metrics.IncrementReplayFailure()
+		if errors.Is(err, errReplayCancelled) {
+			// Stop is closing the sockets; the unread reply goes with the old
+			// socket instead of being read as the reply to the next request.
+			return applied, err
+		}
 		// The rest of this reply can still arrive. Replace the socket so that
 		// it is not read as the reply to the next request.
 		c.resetReplaySocket(socket)
@@ -707,12 +797,19 @@ func (c *ZMQClient) receiveReplay(socket *zmq.Socket) (int, error) {
 	applied := 0
 
 	for {
+		select {
+		case <-c.ctx.Done():
+			return applied, errReplayCancelled
+		default:
+		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			return applied, fmt.Errorf("timed out after %v waiting for the end of the replay",
 				c.config.ReplayTimeout)
 		}
-		_ = socket.SetRcvtimeo(remaining)
+		// Wake up regularly to notice cancellation; RecvMessageBytes would
+		// otherwise block for the whole remaining budget.
+		_ = socket.SetRcvtimeo(min(remaining, replayPollInterval))
 
 		frames, err := socket.RecvMessageBytes(0)
 		if err != nil {
@@ -767,12 +864,23 @@ func (c *ZMQClient) resetReplaySocket(old *zmq.Socket) {
 	_ = old.Close()
 	c.replaySocket = nil
 
+	if err := c.openReplaySocketLocked(); err != nil {
+		// runReplay retries this on the next replay, and fails the gap open
+		// when the socket still cannot be reopened.
+		c.replaySocketLost = true
+		klog.Errorf("Failed to recreate replay socket for %s: %v", c.config.PodKey, err)
+	}
+}
+
+// openReplaySocketLocked opens a replay socket and stores it. Callers hold mu.
+func (c *ZMQClient) openReplaySocketLocked() error {
 	replaySocket, err := c.newReplaySocket()
 	if err != nil {
-		klog.Errorf("Failed to recreate replay socket for %s: %v", c.config.PodKey, err)
-		return
+		return err
 	}
 	c.replaySocket = replaySocket
+	c.replaySocketLost = false
+	return nil
 }
 
 // markDisconnected marks the client as disconnected
