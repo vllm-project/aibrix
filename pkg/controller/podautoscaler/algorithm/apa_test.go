@@ -318,3 +318,57 @@ func TestAPAAlgorithm_ComputeRecommendation_SharedMetricName(t *testing.T) {
 		})
 	}
 }
+
+// Regression test for #3386: fractional scale rates must bound at the exact
+// integer limit, not one pod past it. In binary floating point 50*1.1 is
+// 55.000000000000004 and 55/1.1 is 49.99999999999999, so plain
+// math.Ceil/math.Floor would allow 56 scale-up pods or 49 scale-down pods.
+func TestAPAAlgorithm_FractionalScaleRateBounds(t *testing.T) {
+	algorithm := &APAAlgorithm{}
+	metricsName := "test-metrics"
+
+	tests := []struct {
+		name            string
+		currentPodCount float64
+		context         *mockScalingContext
+		expected        int32
+	}{
+		{
+			name:            "scale_up_capped_at_exact_rate_bound",
+			currentPodCount: 50.0,
+			context: &mockScalingContext{
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {TargetValue: 10.0},
+				},
+				CurrentUsePerPod:         6000.0, // asks for 600 pods, above the rate bound
+				UpFluctuationTolerance:   0.1,
+				DownFluctuationTolerance: 0.1,
+				MaxScaleUpRate:           1.1,
+				MaxScaleDownRate:         2.0,
+			},
+			expected: 55, // 50 * 1.1 == 55.000000000000004 must bound at 55, not 56
+		},
+		{
+			name:            "scale_down_floored_at_exact_rate_bound",
+			currentPodCount: 55.0,
+			context: &mockScalingContext{
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {TargetValue: 10.0},
+				},
+				CurrentUsePerPod:         5.5, // asks for 1 pod, below the rate bound
+				UpFluctuationTolerance:   0.1,
+				DownFluctuationTolerance: 0.1,
+				MaxScaleUpRate:           2.0,
+				MaxScaleDownRate:         1.1,
+			},
+			expected: 50, // 55 / 1.1 == 49.99999999999999 must bound at 50, not 49
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := algorithm.computeTargetReplicas(tt.currentPodCount, tt.context, metricsName, "")
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}

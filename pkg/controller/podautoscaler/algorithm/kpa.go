@@ -169,6 +169,13 @@ func ceilPodCount(pods float64) float64 {
 	return math.Ceil(pods - podCountEpsilon)
 }
 
+// floorPodCount rounds a bounded pod count down to a whole pod, treating a
+// value within podCountEpsilon of an integer as that integer. It is the floor
+// counterpart of ceilPodCount for bounds like the scale-down rate.
+func floorPodCount(pods float64) float64 {
+	return math.Floor(pods + podCountEpsilon)
+}
+
 // desiredPodCounts computes the pod counts the stable and panic windows ask
 // for. Tolerance is applied to prevent scaling for minor metric fluctuations.
 // ok is false when the context has no target for the metric.
@@ -185,9 +192,9 @@ func (a *KPAAlgorithm) desiredPodCounts(currentPodCount, loadPodCount float64, c
 	upTolerance := context.GetUpFluctuationTolerance()
 	downTolerance := context.GetDownFluctuationTolerance()
 	// Original scaling rate calculations
-	readyPodsCount := math.Max(0, currentPodCount)                                   // A little sanitizing.
-	maxScaleUp := math.Max(1, math.Ceil(context.GetMaxScaleUpRate()*readyPodsCount)) // Keep scale up non zero
-	maxScaleDown := math.Floor(readyPodsCount / context.GetMaxScaleDownRate())       // Make scale down zero-able
+	readyPodsCount := math.Max(0, currentPodCount)                                      // A little sanitizing.
+	maxScaleUp := math.Max(1, ceilPodCount(context.GetMaxScaleUpRate()*readyPodsCount)) // Keep scale up non zero
+	maxScaleDown := floorPodCount(readyPodsCount / context.GetMaxScaleDownRate())       // Make scale down zero-able
 
 	// Establish scale-up and scale-down thresholds using tolerances
 	scaleUpThreshold := targetValue * (1 + upTolerance)
