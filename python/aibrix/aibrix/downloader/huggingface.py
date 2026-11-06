@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import threading
 from pathlib import Path
-from typing import ClassVar, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
-from huggingface_hub import HfApi, hf_hub_download, snapshot_download
+from huggingface_hub import HfApi, constants, hf_hub_download, snapshot_download
+from huggingface_hub.utils import filter_repo_objects
 
 from aibrix import envs
 from aibrix.common.errors import (
@@ -32,6 +34,8 @@ from aibrix.downloader.entity import RemoteSource
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
+# Hub 0.24.x snapshot progress uses mutable process-global tqdm state.
+_snapshot_lock = threading.Lock()
 
 
 def _parse_model_name_from_uri(model_uri: str) -> str:
@@ -130,18 +134,61 @@ class HuggingFaceDownloader(BaseDownloader):
             force_download=self.force_download,
         )
 
-    def download_directory(self, local_path: Path):
+    def _download_snapshot(self, path: Path, *, native_cache: bool = False) -> Path:
         max_workers = (
             self.download_extra_config.num_threads or envs.DOWNLOADER_NUM_THREADS
         )
-        snapshot_download(
-            self.model_uri,
-            local_dir=local_path,
-            revision=self.hf_revision,
-            token=self.hf_token,
-            allow_patterns=self.allow_patterns,
-            max_workers=max_workers,
-            endpoint=self.hf_endpoint,
-            local_dir_use_symlinks=False,
-            force_download=self.force_download,
+        location: Dict[str, Any] = (
+            {"cache_dir": path}
+            if native_cache
+            else {"local_dir": path, "local_dir_use_symlinks": False}
         )
+        with _snapshot_lock:
+            return Path(
+                snapshot_download(
+                    self.model_uri,
+                    revision=self.hf_revision,
+                    token=self.hf_token,
+                    allow_patterns=self.allow_patterns,
+                    max_workers=max_workers,
+                    endpoint=self.hf_endpoint,
+                    force_download=self.force_download,
+                    **location,
+                )
+            )
+
+    def download_directory(self, local_path: Path):
+        self._download_snapshot(local_path)
+
+    def download_model(self, local_path: Optional[str] = None) -> Path:
+        if not self.download_extra_config.prepare_cache:
+            return super().download_model(local_path)
+        root = Path(local_path or constants.HF_HUB_CACHE).expanduser().absolute()
+        path = self._download_snapshot(root, native_cache=True)
+        self._publish_metadata(path, root, "hf_hub")
+        return path
+
+    def _metadata_files(self, path: Path, layout: str) -> Tuple[List[Path], bool]:
+        # Validate this snapshot's expected inventory, including when an older
+        # Hub client fell back to a partially populated cache after an API error.
+        revision = path.name if layout == "hf_hub" else self.hf_revision
+        info = self.hf_api.repo_info(repo_id=self.model_uri, revision=revision)
+        files = [
+            path / name
+            for name in filter_repo_objects(
+                [item.rfilename for item in (info.siblings or [])],
+                allow_patterns=self.allow_patterns,
+            )
+        ]
+        compatible = False
+        if layout == "hf_hub":
+            reference = path.parent.parent / "refs/main"
+            try:
+                compatible = (
+                    reference.is_file() and reference.read_text().strip() == path.name
+                )
+            except (OSError, UnicodeError):
+                pass
+            if compatible:
+                files.append(reference)
+        return files, compatible

@@ -92,8 +92,10 @@ Limitations
   for ``linux/amd64`` only. It is published from ``main`` and is not part of
   AIBrix releases. ``engine: sglang`` needs your own image with SGLang and
   kvcached, and has not been tested.
-* **Model sources.** Only Hugging Face artifacts (``huggingface://``) have been
-  tested.
+* **Model sources.** The GPU serving walkthrough has been verified with
+  Hugging Face artifacts (``huggingface://``). Downloader metadata supports
+  HF, S3, TOS, and GCS; this does not imply live-cloud or GPU serving
+  verification for every backend.
 * **Claim names.** A claim's name can be at most 63 characters, because it is
   part of annotation keys on the Pod.
 * **No access control.** The runtime agent's API on port 8080 has no
@@ -249,6 +251,16 @@ The ``hf-cache`` volume and ``AIBRIX_WEIGHT_CACHE_DIR``
    ``AIBRIX_WEIGHT_CACHE_DIR`` points the runtime agent at the same directory,
    where it notes the models it has served. The controller prefers Pods that
    have served a model before.
+
+``AIBRIX_MODEL_CACHE_METADATA_DIR``
+   Enables the downloader's shared metadata index. In this sample it is
+   ``/root/.cache/huggingface/.aibrix/download-metadata``, inside the existing
+   ``hf-cache`` volume. A ModelWarmup Job can prepare model files and register
+   them there; the runtime checks the records and adds hints to its existing
+   ``cached_artifacts`` field. The Claim YAML and controller are unchanged.
+   Keep existing cache settings and mounts rather than overriding them for
+   this feature. Follow :ref:`model-warmup-model-cache` for authorization,
+   preparation, discovery checks, and the unchanged Claim creation steps.
 
 ``/var/run/aibrix``
    The runtime agent keeps its list of engines here. When the agent restarts,
