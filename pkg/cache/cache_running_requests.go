@@ -921,12 +921,7 @@ func (c *Store) readPodRunningRequests(namespace, name string) (count int64, ok 
 	key := runningRequestsKey(namespace, name)
 	ctx, cancel := context.WithTimeout(context.Background(), runningRequestsReadTimeout)
 	defer cancel()
-	client := c.readRedisClient
-	if client == nil {
-		// Test stores built without New may supply their own client and hooks here.
-		client = c.redisClient
-	}
-	pipe := client.Pipeline()
+	pipe := c.readClient().Pipeline()
 	liveCmd := pipe.ZRangeByScore(ctx, runningRequestsGatewaysKey, &redis.ZRangeBy{Min: c.liveGatewaysCutoffMillis(), Max: "+inf"})
 	hashCmd := pipe.HGetAll(ctx, key)
 	if _, err := pipe.Exec(ctx); err != nil {

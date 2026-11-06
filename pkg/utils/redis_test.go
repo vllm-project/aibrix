@@ -18,6 +18,7 @@ package utils
 
 import (
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -64,5 +65,39 @@ func TestNewRedisClientWithContextTimeout(t *testing.T) {
 		require.Equal(t, before.WriteTimeout, client.Options().WriteTimeout)
 		require.Equal(t, before.MaxRetries, shared.Options().MaxRetries, "the source retry count is unchanged")
 		require.Equal(t, before.ContextTimeoutEnabled, shared.Options().ContextTimeoutEnabled, "the source deadline behavior is unchanged")
+	}
+}
+
+func TestNewRedisClientWithContextTimeout_PreservesTimeoutsAndBackoff(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		options redis.Options
+	}{
+		{"defaults", redis.Options{}},
+		{"custom", redis.Options{ReadTimeout: 2 * time.Second, WriteTimeout: 4 * time.Second, MinRetryBackoff: 12 * time.Millisecond, MaxRetryBackoff: 700 * time.Millisecond}},
+		{"read disabled", redis.Options{ReadTimeout: -1}},
+		{"read no deadline", redis.Options{ReadTimeout: -2}},
+		{"write disabled", redis.Options{WriteTimeout: -1}},
+		{"write no deadline", redis.Options{WriteTimeout: -2}},
+		{"min backoff disabled", redis.Options{MinRetryBackoff: -1}},
+		{"max backoff disabled", redis.Options{MaxRetryBackoff: -1}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			shared := redis.NewClient(&tt.options)
+			t.Cleanup(func() { _ = shared.Close() })
+			before := *shared.Options()
+			client := NewRedisClientWithContextTimeout(shared.Options())
+			t.Cleanup(func() { _ = client.Close() })
+
+			require.True(t, client.Options().ContextTimeoutEnabled)
+			require.Equal(t, before.ReadTimeout, client.Options().ReadTimeout)
+			require.Equal(t, before.WriteTimeout, client.Options().WriteTimeout)
+			require.Equal(t, before.MinRetryBackoff, client.Options().MinRetryBackoff)
+			require.Equal(t, before.MaxRetryBackoff, client.Options().MaxRetryBackoff)
+			require.Equal(t, before.ReadTimeout, shared.Options().ReadTimeout)
+			require.Equal(t, before.WriteTimeout, shared.Options().WriteTimeout)
+			require.Equal(t, before.MinRetryBackoff, shared.Options().MinRetryBackoff)
+			require.Equal(t, before.MaxRetryBackoff, shared.Options().MaxRetryBackoff)
+		})
 	}
 }

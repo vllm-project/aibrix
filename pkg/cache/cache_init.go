@@ -84,9 +84,9 @@ const (
 type Store struct {
 	mu                  sync.RWMutex            // Read-write lock for concurrency safety
 	initialized         bool                    // Initialization status flag
-	redisClient         *redis.Client           // Redis client instance
-	admitRedisClient    *redis.Client           // redisClient with context deadlines and no retries, for the admit script
-	readRedisClient     *redis.Client           // redisClient with context deadlines, for routing reads
+	redisClient         *redis.Client           // Shared client; context deadlines are off by default. The derived clients below enable them.
+	admitRedisClient    *redis.Client           // Context deadlines and no retries for admission; hooks added with AddHook are not inherited.
+	readRedisClient     *redis.Client           // Context deadlines for routing reads; hooks added with AddHook are not inherited.
 	prometheusApi       prometheusv1.API        // Prometheus API client
 	modelRouterProvider ModelRouterProviderFunc // Function to get model router
 
@@ -262,6 +262,13 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterP
 	}
 
 	return store
+}
+
+func (c *Store) readClient() *redis.Client {
+	if c.readRedisClient != nil {
+		return c.readRedisClient
+	}
+	return c.redisClient // Test stores built without New may supply their own client and hooks.
 }
 
 // NewForTest initializes the cache store for testing purposes, it can be repeated call for reset.
