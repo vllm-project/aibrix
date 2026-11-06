@@ -18,6 +18,7 @@ package scheduling
 
 import (
 	"context"
+	"fmt"
 	"math"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
@@ -39,15 +40,27 @@ func (r leastAdapters) SelectPod(ctx context.Context, model string, readyPods []
 	selectedPod := v1.Pod{}
 	modelAdapterCountMin := math.MaxInt
 
+	var lastErr error
 	for _, pod := range readyPods {
 		models, err := r.cache.ListModelsByPod(pod.Name, pod.Namespace)
 		if err != nil {
-			return nil, err
+			// A pod missing from the cache (e.g. deleted between candidate listing
+			// and selection) cannot be scored, so pass over it instead of failing
+			// the whole selection, mirroring leastThroughput (#3299) and
+			// leastLatency (#3405).
+			lastErr = err
+			continue
 		}
 		if len(models) < modelAdapterCountMin {
 			selectedPod = pod
 			modelAdapterCountMin = len(models)
 		}
+	}
+	if modelAdapterCountMin == math.MaxInt {
+		if lastErr == nil {
+			return nil, fmt.Errorf("no ready pods to schedule on")
+		}
+		return nil, fmt.Errorf("no ready pod has adapter info: %w", lastErr)
 	}
 
 	klog.InfoS("pod selected with least model adapters", "pod", klog.KObj(&selectedPod))
