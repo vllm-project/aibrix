@@ -34,7 +34,7 @@ from aibrix.metadata.core.metrics.sink import (
 from aibrix.metadata.core.metrics.udp import DogStatsdSink, StatsdSink, StatsiteSink
 from aibrix.metadata.setting import (
     MetricsConfig,
-    load_metrics_config,
+    settings,
 )
 
 logger = init_logger(__name__)
@@ -49,7 +49,7 @@ class MetricsRuntime:
 
 
 def setup_metrics(config: MetricsConfig | None = None) -> MetricsRuntime:
-    config = config if config is not None else load_metrics_config()
+    config = config if config is not None else settings.METRICS
     if config is None:
         sink: Sink = NoopSink()
         Emitter.set_sink(sink)

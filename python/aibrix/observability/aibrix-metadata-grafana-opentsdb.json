@@ -1,0 +1,1654 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 0,
+  "id": 1,
+  "links": [],
+  "panels": [
+    {
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "focusCursor": 1,
+            "gradientMode": "none",
+            "hideFrom": {
+              "graph": false,
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "tooltipOptions": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "aggregator": "sum",
+          "alias": "incoming",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "sum",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": true,
+          "filters": [],
+          "isCounter": true,
+          "metric": "metadata.batch.api.job.incoming",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeDelta": true,
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        },
+        {
+          "aggregator": "sum",
+          "alias": "finalized",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "sum",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": true,
+          "filters": [],
+          "isCounter": true,
+          "metric": "metadata.batch.api.job.finished",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "B",
+          "shouldComputeDelta": true,
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "title": "Batch Intake vs Finalized",
+      "type": "timeseries"
+    },
+    {
+      "cacheTimeout": null,
+      "cards": {
+        "cardHSpacing": 2,
+        "cardMinWidth": 5,
+        "cardRound": null,
+        "cardVSpacing": 2
+      },
+      "color": {
+        "cardColor": "#FADE2A",
+        "colorScale": "sqrt",
+        "colorScheme": "interpolateGnYlRd",
+        "defaultColor": "#757575",
+        "exponent": 0.5,
+        "mode": "spectrum",
+        "thresholds": [
+          {
+            "$$hashKey": "object:834",
+            "color": "#73BF69",
+            "value": "completed"
+          },
+          {
+            "$$hashKey": "object:838",
+            "color": "#F2495C",
+            "value": "failed"
+          }
+        ]
+      },
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "hideBranding": false,
+      "highlightCards": true,
+      "id": 2,
+      "interval": null,
+      "legend": {
+        "show": true
+      },
+      "links": [],
+      "maxDataPoints": 100,
+      "nullPointMode": "as empty",
+      "pageSize": 15,
+      "pluginVersion": "7.5.3",
+      "seriesFilterIndex": -1,
+      "statusmap": {
+        "ConfigVersion": "v1"
+      },
+      "targets": [
+        {
+          "aggregator": "sum",
+          "alias": "$tag_finalize_type",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "sum",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": true,
+          "filters": [
+            {
+              "filter": "*",
+              "groupBy": true,
+              "tagk": "finalize_type",
+              "type": "wildcard"
+            }
+          ],
+          "isCounter": true,
+          "metric": "metadata.batch.api.job.finished",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeDelta": true,
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "timeFrom": null,
+      "timeShift": null,
+      "title": "Batch Finalize Outcomes",
+      "tooltip": {
+        "extraInfo": "",
+        "freezeOnClick": true,
+        "items": [],
+        "show": true,
+        "showExtraInfo": false,
+        "showItems": false
+      },
+      "type": "flant-statusmap-panel",
+      "useMax": true,
+      "usingPagination": false,
+      "xAxis": {
+        "show": true
+      },
+      "yAxis": {
+        "maxWidth": -1,
+        "minWidth": -1,
+        "show": true
+      },
+      "yAxisSort": "metrics",
+      "yLabel": {
+        "delimiter": "",
+        "labelTemplate": "",
+        "usingSplitLabel": false
+      }
+    },
+    {
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "focusCursor": 1,
+            "gradientMode": "none",
+            "hideFrom": {
+              "graph": false,
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "tooltipOptions": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "aggregator": "sum",
+          "alias": "$tag_error_code",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "sum",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": false,
+          "filters": [
+            {
+              "filter": "failed",
+              "groupBy": false,
+              "tagk": "finalize_type",
+              "type": "literal_or"
+            },
+            {
+              "filter": "*",
+              "groupBy": true,
+              "tagk": "error_code",
+              "type": "wildcard"
+            }
+          ],
+          "isCounter": true,
+          "metric": "metadata.batch.api.job.finished",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeDelta": true,
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "title": "Batch Failure Codes",
+      "type": "timeseries"
+    },
+    {
+      "cacheTimeout": null,
+      "cards": {
+        "cardPadding": null,
+        "cardRound": null
+      },
+      "color": {
+        "cardColor": "#F2495C",
+        "colorScale": "sqrt",
+        "colorScheme": "interpolateCool",
+        "exponent": 0.2,
+        "mode": "opacity"
+      },
+      "dataFormat": "timeseries",
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "heatmap": {},
+      "hideZeroBuckets": false,
+      "highlightCards": true,
+      "id": 4,
+      "interval": null,
+      "legend": {
+        "show": true
+      },
+      "links": [],
+      "pluginVersion": "7.5.3",
+      "reverseYBuckets": false,
+      "targets": [
+        {
+          "aggregator": "avg",
+          "alias": "p90",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": true,
+          "filters": [],
+          "metric": "metadata.batch.api.job.execution_time.ms.pct90",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        },
+        {
+          "aggregator": "avg",
+          "alias": "avg $tag_finalize_type",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": true,
+          "filters": [
+            {
+              "filter": "*",
+              "groupBy": true,
+              "tagk": "finalize_type",
+              "type": "wildcard"
+            }
+          ],
+          "hide": true,
+          "metric": "metadata.batch.api.job.execution_time.ms.avg",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "B",
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "timeFrom": null,
+      "timeShift": null,
+      "title": "Batch Execution Time",
+      "tooltip": {
+        "show": true,
+        "showHistogram": true
+      },
+      "type": "heatmap",
+      "xAxis": {
+        "show": true
+      },
+      "xBucketNumber": null,
+      "xBucketSize": null,
+      "yAxis": {
+        "decimals": null,
+        "format": "dtdurationms",
+        "logBase": 1,
+        "max": null,
+        "min": null,
+        "show": true,
+        "splitFactor": null
+      },
+      "yBucketBound": "auto",
+      "yBucketNumber": null,
+      "yBucketSize": null
+    },
+    {
+      "datasource": "${datasource}",
+      "description": "Average batch execution breakdown across the currently selected job IDs.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "id": 12,
+      "options": {
+        "displayLabels": [
+          "name",
+          "percent",
+          "value"
+        ],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "pieType": "pie",
+        "reduceOptions": {
+          "calcs": [
+            "mean"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "text": {},
+        "tooltip": {
+          "mode": "single",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "aggregator": "sum",
+          "alias": "$tag_phase",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": true,
+          "filters": [
+            {
+              "filter": "*",
+              "groupBy": true,
+              "tagk": "phase",
+              "type": "wildcard"
+            },
+            {
+              "filter": "$job_id",
+              "groupBy": false,
+              "tagk": "job_id",
+              "type": "iliteral_or"
+            }
+          ],
+          "metric": "metadata.batch.api.job.execution_phase_time.ms.avg",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "title": "Batch Execution Breakdown Share",
+      "type": "piechart"
+    },
+    {
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "focusCursor": 1,
+            "gradientMode": "none",
+            "hideFrom": {
+              "graph": false,
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "rps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "tooltipOptions": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "aggregator": "sum",
+          "alias": "requests",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": true,
+          "filters": [
+            {
+              "filter": "$job_id",
+              "groupBy": false,
+              "tagk": "job_id",
+              "type": "iliteral_or"
+            }
+          ],
+          "isCounter": true,
+          "metric": "metadata.batch.driver.request.completed",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeMulti": false,
+          "shouldComputeRate": true,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "title": "Driver Request Throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "focusCursor": 1,
+            "gradientMode": "none",
+            "hideFrom": {
+              "graph": false,
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "tooltipOptions": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "aggregator": "sum",
+          "alias": "$tag_result",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": true,
+          "filters": [
+            {
+              "filter": "*",
+              "groupBy": true,
+              "tagk": "result",
+              "type": "wildcard"
+            }
+          ],
+          "isCounter": true,
+          "metric": "metadata.batch.driver.request.completed",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeMulti": false,
+          "shouldComputeRate": true,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "title": "Driver Request Outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "focusCursor": 1,
+            "gradientMode": "none",
+            "hideFrom": {
+              "graph": false,
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "tps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "tooltipOptions": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "aggregator": "sum",
+          "alias": "$tag_token_type",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": true,
+          "filters": [
+            {
+              "filter": "*",
+              "groupBy": true,
+              "tagk": "token_type",
+              "type": "iliteral_or"
+            },
+            {
+              "filter": "$job_id",
+              "groupBy": false,
+              "tagk": "job_id",
+              "type": "literal_or"
+            }
+          ],
+          "isCounter": true,
+          "metric": "metadata.batch.driver.request.usage.tokens",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeMulti": false,
+          "shouldComputeRate": true,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        },
+        {
+          "aggregator": "sum",
+          "alias": "cached_tokens",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": true,
+          "filters": [
+            {
+              "filter": "$job_id",
+              "groupBy": false,
+              "tagk": "job_id",
+              "type": "iliteral_or"
+            }
+          ],
+          "isCounter": true,
+          "metric": "metadata.batch.driver.request.cached_tokens",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "B",
+          "shouldComputeMulti": false,
+          "shouldComputeRate": true,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        },
+        {
+          "aggregator": "sum",
+          "alias": "reasoning_tokens",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": true,
+          "filters": [
+            {
+              "filter": "$job_id",
+              "groupBy": false,
+              "tagk": "job_id",
+              "type": "iliteral_or"
+            }
+          ],
+          "isCounter": true,
+          "metric": "metadata.batch.driver.request.reasoning_tokens",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "C",
+          "shouldComputeMulti": false,
+          "shouldComputeRate": true,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "title": "Driver Request Token Throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "focusCursor": 1,
+            "gradientMode": "none",
+            "hideFrom": {
+              "graph": false,
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "tooltipOptions": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "aggregator": "sum",
+          "alias": "$tag_injection_type / $tag_breakpoint / $tag_action",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": true,
+          "filters": [
+            {
+              "filter": "*",
+              "groupBy": true,
+              "tagk": "injection_type",
+              "type": "wildcard"
+            },
+            {
+              "filter": "*",
+              "groupBy": true,
+              "tagk": "breakpoint",
+              "type": "wildcard"
+            },
+            {
+              "filter": "*",
+              "groupBy": true,
+              "tagk": "action",
+              "type": "wildcard"
+            }
+          ],
+          "isCounter": true,
+          "metric": "metadata.batch.driver.failure_injection",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeMulti": false,
+          "shouldComputeRate": true,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "title": "Failure Injection Events",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "${bosun_source}",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "focusCursor": 1,
+            "gradientMode": "none",
+            "hideFrom": {
+              "graph": false,
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "tooltipOptions": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "alias": "unteared_down",
+          "expandHelper": 0,
+          "expr": "q(\"sum:30m-max:[default]metadata.batch.runtime.started{runtime_type=*}\", \"$start\", \"\") - q(\"sum:30m-max:[default]metadata.batch.runtime.torn_down{runtime_type=*}\", \"$start\", \"\")",
+          "refId": "A",
+          "target": "Bosun Query",
+          "useTimestamp": false
+        }
+      ],
+      "title": "Runtime Unteared Down",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "focusCursor": 1,
+            "gradientMode": "none",
+            "hideFrom": {
+              "graph": false,
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "tooltipOptions": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "aggregator": "sum",
+          "alias": "started $tag_runtime_type",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": true,
+          "filters": [
+            {
+              "filter": "*",
+              "groupBy": true,
+              "tagk": "runtime_type",
+              "type": "wildcard"
+            }
+          ],
+          "isCounter": true,
+          "metric": "metadata.batch.runtime.started",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeDelta": true,
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        },
+        {
+          "aggregator": "sum",
+          "alias": "torn down $tag_runtime_type",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "sum",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": true,
+          "filters": [
+            {
+              "filter": "*",
+              "groupBy": true,
+              "tagk": "runtime_type",
+              "type": "wildcard"
+            }
+          ],
+          "isCounter": true,
+          "metric": "metadata.batch.runtime.torn_down",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "B",
+          "shouldComputeDelta": true,
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "title": "Runtime Lifecycle Counts",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "${datasource}",
+      "description": "Tracks per-operation backend and logical JobStore activity using native OpenTSDB counters.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "focusCursor": 1,
+            "gradientMode": "none",
+            "hideFrom": {
+              "graph": false,
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 48
+      },
+      "id": 11,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "tooltipOptions": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "aggregator": "sum",
+          "alias": "backend $tag_operation / $tag_storage_type",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": true,
+          "filters": [
+            {
+              "filter": "*",
+              "groupBy": true,
+              "tagk": "operation",
+              "type": "wildcard"
+            },
+            {
+              "filter": "*",
+              "groupBy": true,
+              "tagk": "storage_type",
+              "type": "wildcard"
+            }
+          ],
+          "isCounter": true,
+          "metric": "metadata.job_store.storage.operations",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeMulti": false,
+          "shouldComputeRate": true,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        },
+        {
+          "aggregator": "sum",
+          "alias": "logical $tag_operation / $tag_storage_type",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": true,
+          "filters": [
+            {
+              "filter": "*",
+              "groupBy": true,
+              "tagk": "operation",
+              "type": "wildcard"
+            },
+            {
+              "filter": "*",
+              "groupBy": true,
+              "tagk": "storage_type",
+              "type": "wildcard"
+            }
+          ],
+          "isCounter": true,
+          "metric": "metadata.job_store.operation",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "B",
+          "shouldComputeMulti": false,
+          "shouldComputeRate": true,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "title": "JobStore Operation Activity",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 27,
+  "style": "dark",
+  "sync_vregion": true,
+  "tags": [
+    "aibrix",
+    "metadata"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false
+        },
+        "description": null,
+        "error": null,
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "opentsdb",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {
+          "selected": false
+        },
+        "description": null,
+        "error": null,
+        "hide": 0,
+        "includeAll": false,
+        "label": "Bosun Datasource",
+        "multi": false,
+        "name": "bosun_source",
+        "options": [],
+        "query": "bosun-datasource",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "allValue": "*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": "${datasource}",
+        "definition": "tag_values(metadata.batch.api.job.incoming, job_id)",
+        "description": null,
+        "error": null,
+        "extra": "",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Job ID",
+        "lazyLoad": false,
+        "multi": true,
+        "name": "job_id",
+        "options": [],
+        "query": "tag_values(metadata.batch.api.job.incoming, job_id)",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "tagValuesQuery": "",
+        "tags": [],
+        "tagsQuery": "",
+        "type": "query",
+        "useTags": false
+      }
+    ]
+  },
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "AIBrix Metadata",
+  "uid": "aibrix-metadata",
+  "version": 1
+}
