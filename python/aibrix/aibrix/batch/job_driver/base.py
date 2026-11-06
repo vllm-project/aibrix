@@ -1693,9 +1693,13 @@ class BaseJobDriver:
             request_id, custom_id, input_line_data = request.ref
             input_line_no = request_id
             try:
+                emitted_usage = None
                 if error is None and isinstance(response, dict):
                     async with self._usage_lock:
-                        self._accumulate_usage(job_id, custom_id, response.get("usage"))
+                        emitted_usage = self._accumulate_usage(
+                            job_id, custom_id, response.get("usage")
+                        )
+                self._emit_request_usage_metrics(job, emitted_usage)
 
                 record = self._build_response(
                     custom_id,

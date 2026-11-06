@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from aibrix import envs
 
@@ -34,6 +34,8 @@ class MetricsConfig:
     emit_observation_enabled: bool = False
     emit_observation_interval_seconds: float = 10.0
 
+    def get_metrics_by_provider(self, provider: str) -> Any | None:
+        return None
 
 def load_public_metrics_config() -> Optional[MetricsConfig]:
     config = MetricsConfig(
