@@ -50,6 +50,12 @@ func (r leastExpectedLatencyRouter) Polarity() types.Polarity {
 	return types.PolarityLeast // The lower the expected latency, the better
 }
 
+// CandidateScores implements [types.CandidateScorer]. ScoreAll reads only scraped metrics held
+// in memory, so it already is the estimate.
+func (r leastExpectedLatencyRouter) CandidateScores(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	return r.ScoreAll(ctx, readyPodList)
+}
+
 // ScoreAll computes the expected latency for all pods
 func (r leastExpectedLatencyRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
 	pods := readyPodList.All()

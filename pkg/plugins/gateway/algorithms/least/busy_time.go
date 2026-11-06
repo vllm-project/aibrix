@@ -41,6 +41,12 @@ func NewLeastBusyTimeRouter() (types.Router, error) {
 	}, nil
 }
 
+// CandidateScores implements [types.CandidateScorer]. ScoreAll reads only scraped metrics held
+// in memory, so it already is the estimate.
+func (r leastBusyTimeRouter) CandidateScores(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	return r.ScoreAll(ctx, readyPodList)
+}
+
 // ScoreAll fetches the GPU busy time ratio for all ready pods in a single batch operation.
 // This provides the multi-strategy aggregator with a quantifiable metric representing the recent compute load on each pod.
 func (r leastBusyTimeRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
