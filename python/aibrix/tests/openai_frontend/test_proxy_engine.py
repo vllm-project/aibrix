@@ -160,6 +160,7 @@ class TestBuildProxyEngine:
             proxy_engine_port=8001,
             proxy_startup_timeout=60.0,
             proxy_engine_spec="vllm",
+            proxy_credentials='{"https://cdn.example.com": {"headers": {"Authorization": "Bearer tok"}}}',
         )
         engine = build_proxy_engine(args)
         from aibrix.openai_frontend.engine.proxy_engine import ProxyEngine
@@ -167,11 +168,16 @@ class TestBuildProxyEngine:
         assert isinstance(engine, ProxyEngine)
         assert engine._subprocess._port == 8001
         assert engine._subprocess._host == "127.0.0.1"
-        assert engine._subprocess._cmd == [
+        # vLLM reads file:// media only under --allowed-local-media-path, so the
+        # proxy appends it, pointing at the directory it downloads media into.
+        cmd = engine._subprocess._cmd
+        assert cmd[:3] == [
             "python",
             "-m",
             "vllm.entrypoints.openai.api_server",
         ]
+        assert cmd[3:] == ["--allowed-local-media-path", engine._media_dir]
+        assert engine._fetch_media is True
         assert engine._startup_timeout == 60.0
         asyncio.run(engine.aclose())
 
@@ -588,6 +594,186 @@ class TestStreamDelivery:
 
         asyncio.run(_run())
 
+    @pytest.mark.parametrize("phase", ["before_iteration", "read", "send", "normal"])
+    def test_disconnect_releases_media_temp_file(self, monkeypatch, phase, tmp_path):
+        """Real ASGI disconnect across before_iteration/read/send phases must
+        release inline-materialized media temp files immediately via the shared
+        close_response callback, before engine.aclose()."""
+
+        from pathlib import Path
+
+        from aibrix.openai_frontend.common.artifact_fetcher import (
+            DefaultArtifactFetcher,
+        )
+        from aibrix.openai_frontend.engine.proxy_engine import EngineState, ProxyEngine
+        from aibrix.openai_frontend.frontend.fastapi.routers.chat import (
+            create_chat_completion,
+        )
+        from aibrix.openai_frontend.schemas.openai import CreateChatCompletionRequest
+
+        async def _run():
+            handlers = []
+            disconnected = asyncio.Event()
+            upstream_eof = asyncio.Event()
+            requests = 0
+            media_dir = str(tmp_path / "media")
+            import os
+
+            os.makedirs(media_dir)
+
+            async def serve(reader, writer):
+                nonlocal requests
+                task = asyncio.current_task()
+                handlers.append(task)
+                try:
+                    await reader.readuntil(b"\r\n\r\n")
+                    requests += 1
+                    if requests == 1:
+                        writer.write(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+                        )
+                        if phase == "send":
+                            writer.write(b'data: {"vendor":1}\n\n')
+                        elif phase == "normal":
+                            writer.write(
+                                b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+                                b"data: [DONE]\n\n"
+                            )
+                        await writer.drain()
+                        if phase != "normal":
+                            await reader.read()
+                        upstream_eof.set()
+                    else:
+                        writer.write(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                        )
+                        await writer.drain()
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+
+            server = await asyncio.start_server(serve, "127.0.0.1", 0)
+            engine = ProxyEngine(
+                engine_cmd=["unused"], engine_port=server.sockets[0].getsockname()[1]
+            )
+            monkeypatch.setenv("AIBRIX_PROXY_MAX_CONNECTIONS", "1")
+            await engine._subprocess.start_client()
+            engine._set_state(EngineState.READY)
+            # Enable media materialization against a real fetcher.
+            from aibrix.openai_frontend.proxy.request_inspector import (
+                MediaURLInspector,
+            )
+
+            engine._fetch_media = True
+            engine._fetcher = DefaultArtifactFetcher(base_temp_dir=media_dir)
+            engine._media_dir = media_dir
+            engine._owned_media_dir = None
+            engine._chat_inspector = MediaURLInspector(materialize_inline=True)
+            cleanup_calls = 0
+            real_cleanup = engine._fetcher.cleanup
+
+            async def spy_cleanup(results):
+                nonlocal cleanup_calls
+                cleanup_calls += 1
+                await real_cleanup(results)
+
+            engine._fetcher.cleanup = spy_cleanup  # type: ignore[method-assign]
+
+            response = None
+            try:
+                response = await create_chat_completion(
+                    CreateChatCompletionRequest(
+                        model="m",
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "hi"},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": "data:image/png;base64,SU5MSU5FLU1FRElB"
+                                        },
+                                    },
+                                ],
+                            }
+                        ],
+                        stream=True,
+                    ),
+                    engine,
+                )
+
+                async def send(message):
+                    if phase == "normal":
+                        return  # deliver start/body naturally, no block
+                    if (
+                        phase == "before_iteration"
+                        and message["type"] == "http.response.start"
+                    ):
+                        disconnected.set()
+                        await asyncio.Event().wait()
+                    elif phase == "read" and message["type"] == "http.response.start":
+                        asyncio.get_running_loop().call_later(0.02, disconnected.set)
+                    elif message["type"] == "http.response.body":
+                        disconnected.set()
+                        await asyncio.Event().wait()
+
+                async def receive():
+                    if phase == "normal":
+                        await (
+                            asyncio.Event().wait()
+                        )  # no disconnect; stream ends naturally
+                    await disconnected.wait()
+                    return {"type": "http.disconnect"}
+
+                # The temp file must exist before disconnect.
+                inline_before = list(Path(media_dir).rglob("inline_*"))
+                assert inline_before, "inline media was not materialized"
+                assert engine._metrics_registry.get_sample_value(
+                    "proxy_fetch_bytes_total"
+                ) == len(b"INLINE-MEDIA")
+
+                await asyncio.wait_for(response({"type": "http"}, receive, send), 3)
+                await asyncio.wait_for(upstream_eof.wait(), 1)
+                assert engine._in_flight == {}
+                assert engine._in_flight_tasks == {}
+
+                # Media temp file must be released before engine.aclose().
+                inline_after = list(Path(media_dir).rglob("inline_*"))
+                assert inline_after == [], (
+                    f"media temp files leaked after ASGI disconnect: {inline_after}"
+                )
+                assert engine._metrics_registry.get_sample_value(
+                    "proxy_fetch_bytes_total"
+                ) == len(b"INLINE-MEDIA")
+                assert cleanup_calls == 1, (
+                    f"media cleanup ran {cleanup_calls} times (expected exactly once)"
+                )
+
+                # Single-slot pool must be reusable for the next request.
+                assert (
+                    await asyncio.wait_for(
+                        engine._subprocess.forward("GET", "/next"), 1
+                    )
+                ).text == "ok"
+            finally:
+                if response is not None:
+                    close = getattr(response.body_iterator, "aclose", None)
+                    if close is not None:
+                        await close()
+                await engine.aclose()
+                server.close()
+                await server.wait_closed()
+                for task in handlers:
+                    if task is not None and not task.done():
+                        task.cancel()
+                await asyncio.gather(
+                    *[task for task in handlers if task is not None],
+                    return_exceptions=True,
+                )
+
+        asyncio.run(_run())
+
     def test_multiline_typed_event_and_unknown_event_are_preserved(self):
         import json
 
@@ -698,6 +884,7 @@ class TestProxyEngineE2E:
 
         async def _async():
             inner_port = 18765
+
             from aibrix.openai_frontend.engine.proxy_engine import ProxyEngine
 
             spec = EngineSpec(name="test")
@@ -779,6 +966,8 @@ class TestProxyEngineE2E:
                 metrics_text = await engine.metrics()
                 assert "proxy_requests_total" in metrics_text
                 assert "proxy_engine_state" in metrics_text
+                assert "proxy_fetch_total" in metrics_text
+                assert "proxy_fetch_errors" in metrics_text
             finally:
                 await engine.aclose()
 

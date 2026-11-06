@@ -50,6 +50,21 @@ class SglangGenerateMediaFields(BaseModel):
     )
 
 
+class SglangImageResponseDataFields(BaseModel):
+    """SGLang diffusion image output; not a request/input media field."""
+
+    file_path: Optional[str] = Field(None, json_schema_extra={"output_media": "image"})
+
+
+class SglangVideoResponseFields(BaseModel):
+    """SGLang completed video job output paths (multimodal_gen API)."""
+
+    file_path: Optional[str] = Field(None, json_schema_extra={"output_media": "video"})
+    file_paths: Optional[List[Optional[str]]] = Field(
+        None, json_schema_extra={"output_media": "video"}
+    )
+
+
 class SglangChatCompletionEngineExtensionFields(SharedChatCompletionFields):
     """SGLang /v1/chat/completions extensions."""
 

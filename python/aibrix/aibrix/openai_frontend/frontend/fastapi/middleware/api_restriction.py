@@ -38,6 +38,9 @@ ENDPOINT_MAPPING = {
         "POST /v1/chat/completions",
         "POST /v1/completions",
         "POST /v1/embeddings",
+        "POST /v1/images/generations",
+        "POST /v1/videos",
+        "GET /v1/videos/",
     ],
     "model-repository": [
         "GET /v1/models",

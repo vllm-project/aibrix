@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import copy
+from fnmatch import fnmatchcase
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import urlsplit
 
 from aibrix.openai_frontend.common.artifact_fetcher import (
     ArtifactFetcher,
@@ -47,7 +49,7 @@ class RequestRewriter:
         url_creds: Dict[str, Dict] = {
             u: creds
             for u in unique_urls
-            if (creds := self._credentials_map.get(u)) is not None
+            if (creds := self._credentials_for(u)) is not None
         }
         fetch_results = await self._fetcher.fetch_many(unique_urls, url_creds or None)
 
@@ -62,6 +64,59 @@ class RequestRewriter:
                 _set_at_path(rewritten, loc.path, local_path)
 
         return rewritten, fetch_results
+
+    def _credentials_for(self, url: str) -> Optional[Dict]:
+        # Exact URLs win; otherwise the first case-sensitive glob wins.
+        if url in self._credentials_map:
+            return self._credentials_map[url]
+        return next(
+            (
+                creds
+                for pattern, creds in self._credentials_map.items()
+                if _matches_credential_url(url, pattern)
+            ),
+            None,
+        )
+
+
+def _matches_credential_url(url: str, pattern: str) -> bool:
+    """Confine glob matching to authority and individual path segments.
+
+    Query/fragment do not select credentials; signed URLs still support exact
+    overrides. A wildcard must never cross from the host into attacker-owned
+    path/query text. Invalid URLs fail closed rather than select credentials.
+    """
+    try:
+        target, rule = urlsplit(url), urlsplit(pattern)
+        # Query '?' is a URL delimiter, not a glob. IPv6 brackets alone are not
+        # a character class; look for glob syntax only in host/path components.
+        host_pattern = "" if rule.netloc.startswith("[") else rule.netloc
+        if not any(char in host_pattern + rule.path for char in "*?["):
+            return False  # Literal URLs participated only in the exact lookup.
+        if (
+            not target.scheme
+            or not target.netloc
+            or not rule.netloc
+            or "@" in target.netloc
+            or "@" in rule.netloc
+            or "\\" in target.netloc
+        ):
+            return False
+        target_path, rule_path = target.path.split("/"), rule.path.split("/")
+        return (
+            target.scheme == rule.scheme
+            and (
+                target.netloc == rule.netloc
+                if rule.netloc.startswith("[")
+                else fnmatchcase(target.netloc, rule.netloc)
+            )
+            and len(target_path) == len(rule_path)
+            and all(
+                fnmatchcase(part, glob) for part, glob in zip(target_path, rule_path)
+            )
+        )
+    except ValueError:
+        return False
 
 
 def _set_at_path(
