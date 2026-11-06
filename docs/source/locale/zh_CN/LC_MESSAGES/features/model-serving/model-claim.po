@@ -1960,3 +1960,7 @@ msgid ""
 "``aibrix_modelclaim_preemption_victims_total``, by bounded action and "
 "result."
 msgstr "``aibrix_modelclaim_preemption_victims_total``，按有界的动作和结果统计。"
+
+
+msgid "The runtime sends SIGTERM when engine stopping begins. If the engine process or its process group remains alive after 30 seconds, the supervisor attempts SIGKILL for that engine's process group. This grace period is separate from the controller's drain timeout; it is a signal-escalation threshold, not a guarantee of process exit or Claim deletion within a fixed time."
+msgstr "runtime 开始停止引擎时发送 SIGTERM。如果 30 秒后引擎进程或其进程组仍然存活，supervisor 会尝试向该引擎的进程组发送 SIGKILL。此宽限期独立于 controller 的排空超时；它是信号升级的时间阈值，并不保证进程退出或 Claim 删除会在固定时间内完成。"

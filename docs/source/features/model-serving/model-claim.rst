@@ -655,6 +655,12 @@ from the deletion to finish the requests in progress, and asks the runtime
 agent to stop it. A sleeping or starting engine is stopped at once. Delete
 claims before their pool, so that the controller can stop their engines.
 
+The runtime sends SIGTERM when engine stopping begins. If the engine process
+or its process group remains alive after 30 seconds, the supervisor attempts
+SIGKILL for that engine's process group. This grace period is separate from the
+controller's drain timeout; it is a signal-escalation threshold, not a guarantee
+of process exit or Claim deletion within a fixed time.
+
 Status
 ------
 
