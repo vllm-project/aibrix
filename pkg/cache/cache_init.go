@@ -85,7 +85,8 @@ type Store struct {
 	mu                  sync.RWMutex            // Read-write lock for concurrency safety
 	initialized         bool                    // Initialization status flag
 	redisClient         *redis.Client           // Redis client instance
-	admitRedisClient    *redis.Client           // redisClient without go-redis retries, for the admit script
+	admitRedisClient    *redis.Client           // redisClient with context deadlines and no retries, for the admit script
+	readRedisClient     *redis.Client           // redisClient with context deadlines, for routing reads
 	prometheusApi       prometheusv1.API        // Prometheus API client
 	modelRouterProvider ModelRouterProviderFunc // Function to get model router
 
@@ -236,10 +237,15 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterP
 	podMetricsWorkerCount := loadPodMetricsWorkerCount()
 	podMetricsJobQueueSize := loadPodMetricsJobQueueSize(podMetricsWorkerCount)
 
+	var readRedisClient *redis.Client
+	if redisClient != nil {
+		readRedisClient = utils.NewRedisClientWithContextTimeout(redisClient.Options())
+	}
 	store = &Store{
 		initialized:           true,
 		redisClient:           redisClient,
 		admitRedisClient:      admitRunningRequestsClient(redisClient),
+		readRedisClient:       readRedisClient,
 		prometheusApi:         prometheusApi,
 		enableTracing:         enableGPUOptimizerTracing,
 		requestTrace:          &utils.SyncMap[string, *RequestTrace]{},
@@ -791,6 +797,14 @@ func (s *Store) Close() {
 	// Stop publishing the decode ledger.
 	if p := s.decodeLedger.Load(); p != nil {
 		p.close()
+	}
+
+	// Close the derived clients owned by this store.
+	if s.admitRedisClient != nil {
+		_ = s.admitRedisClient.Close()
+	}
+	if s.readRedisClient != nil {
+		_ = s.readRedisClient.Close()
 	}
 
 	// Other cleanup can be added here in the future

@@ -383,7 +383,7 @@ func admitScriptDidNotRun(err error) bool {
 }
 
 // admitRunningRequestsClient derives the client admitRunningRequest uses from the shared one,
-// with go-redis' own retry loop switched off (as asyncJobStoreClient does for its store). The
+// with context deadlines enabled and go-redis' own retry loop switched off. The
 // admit script is not idempotent: a retry after an attempt that ran but lost its reply applies a
 // second +1, and the error that comes back describes only the last attempt. MaxRetries is -1
 // because go-redis reads 0 as "use the default".
@@ -393,7 +393,7 @@ func admitRunningRequestsClient(client *redis.Client) *redis.Client {
 	}
 	options := *client.Options()
 	options.MaxRetries = -1
-	return redis.NewClient(&options)
+	return utils.NewRedisClientWithContextTimeout(&options)
 }
 
 // heartbeatRunningRequestsLiveness refreshes this gateway instance's entry in
@@ -921,7 +921,11 @@ func (c *Store) readPodRunningRequests(namespace, name string) (count int64, ok 
 	key := runningRequestsKey(namespace, name)
 	ctx, cancel := context.WithTimeout(context.Background(), runningRequestsReadTimeout)
 	defer cancel()
-	client := c.redisClient
+	client := c.readRedisClient
+	if client == nil {
+		// Test stores built without New may supply their own client and hooks here.
+		client = c.redisClient
+	}
 	pipe := client.Pipeline()
 	liveCmd := pipe.ZRangeByScore(ctx, runningRequestsGatewaysKey, &redis.ZRangeBy{Min: c.liveGatewaysCutoffMillis(), Max: "+inf"})
 	hashCmd := pipe.HGetAll(ctx, key)

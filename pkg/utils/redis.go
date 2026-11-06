@@ -34,6 +34,22 @@ func redisAddress(host, port string) string {
 	return net.JoinHostPort(host, port)
 }
 
+// NewRedisClientWithContextTimeout copies options from Client.Options and enables
+// context deadlines while preserving the retry count. The caller owns and must close
+// the returned client. Nil options return nil.
+func NewRedisClientWithContextTimeout(clientOptions *redis.Options) *redis.Client {
+	if clientOptions == nil {
+		return nil
+	}
+	options := *clientOptions
+	options.ContextTimeoutEnabled = true
+	// NewClient normalizes disabled retries to 0, but reads 0 as the default on input.
+	if options.MaxRetries == 0 {
+		options.MaxRetries = -1
+	}
+	return redis.NewClient(&options)
+}
+
 func GetRedisClient() *redis.Client {
 	redisHost := LoadEnv("REDIS_HOST", "localhost")
 	redisPort := LoadEnv("REDIS_PORT", "6379")

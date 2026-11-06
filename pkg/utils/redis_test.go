@@ -16,7 +16,12 @@ limitations under the License.
 
 package utils
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
+)
 
 func TestRedisAddress(t *testing.T) {
 	tests := []struct {
@@ -39,5 +44,25 @@ func TestRedisAddress(t *testing.T) {
 				t.Fatalf("redisAddress(%q, %q) = %q, want %q", tt.host, tt.port, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNewRedisClientWithContextTimeout(t *testing.T) {
+	require.Nil(t, NewRedisClientWithContextTimeout(nil))
+	for _, retries := range []int{0, -1, 5} {
+		shared := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0", MaxRetries: retries})
+		t.Cleanup(func() { _ = shared.Close() })
+		before := *shared.Options()
+		client := NewRedisClientWithContextTimeout(shared.Options())
+		t.Cleanup(func() { _ = client.Close() })
+
+		require.NotSame(t, shared, client)
+		require.True(t, client.Options().ContextTimeoutEnabled)
+		require.Equal(t, before.MaxRetries, client.Options().MaxRetries, "preserve the effective retry count")
+		require.Equal(t, before.Addr, client.Options().Addr)
+		require.Equal(t, before.ReadTimeout, client.Options().ReadTimeout)
+		require.Equal(t, before.WriteTimeout, client.Options().WriteTimeout)
+		require.Equal(t, before.MaxRetries, shared.Options().MaxRetries, "the source retry count is unchanged")
+		require.Equal(t, before.ContextTimeoutEnabled, shared.Options().ContextTimeoutEnabled, "the source deadline behavior is unchanged")
 	}
 }
