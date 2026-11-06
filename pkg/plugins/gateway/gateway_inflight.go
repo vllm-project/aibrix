@@ -78,11 +78,18 @@ func (s *Server) enforceReplicaInflight(ctx context.Context, model string, routi
 	return nil
 }
 
-// admitReplicaInflight runs the atomic admission for pod and records a counted admission on
-// routingCtx. It reports false only when pod is at its cap; a pod missing from the cache
-// fails open, as described on enforceReplicaInflight.
+// admitReplicaInflight runs the atomic admission for pod and records the admission state on
+// routingCtx: counted as ReplicaInflightAdmitted (the Redis half, exactly as before) and, if
+// the cache claimed the request's local slot, the cache-side stamping of
+// ReplicaInflightReserved/ReplicaInflightReservedGen that addPodStats respects. It reports
+// false only when pod is at its cap; a pod missing from the cache fails open, as described
+// on enforceReplicaInflight.
 func (s *Server) admitReplicaInflight(routingCtx *types.RoutingContext, pod *v1.Pod, limit int64) bool {
-	admitted, counted, err := s.cache.AdmitPodRunningRequest(pod.Name, pod.Namespace, limit)
+	// routingCtx is passed in so the cache can stamp the admission-time reservation it
+	// makes on the pod's local running-requests counter (reserveLocalRunningSlot): each
+	// admission holds exactly one claim on exactly one pod, which release() and
+	// addPodStats unwind; a failed-open pod (err != nil) claims nothing.
+	admitted, counted, err := s.cache.AdmitPodRunningRequest(pod.Name, pod.Namespace, limit, routingCtx)
 	if err != nil {
 		return true
 	}
@@ -107,16 +114,26 @@ func (s *Server) admitReplicaInflight(routingCtx *types.RoutingContext, pod *v1.
 //
 // A counted admission whose Route then fails (the prefill leg failed) never reaches
 // AddRequestCount, so request tracking's completion decrement will not release it; it is
-// released here instead. A router that admits a second target releases the first one's
-// slot, so only the last admitted target holds one.
+// released here instead. Same for a counted=false one (the admit fell back to the local
+// decision): its reservation claims the pod's local running-requests counter, which
+// nothing else would undo. So the guard covers every admission that still holds a slot --
+// counted, or reserved-but-uncounted -- and release is idempotent through both flags'
+// reset below. A router that admits a second target releases the first one's slot, so
+// only the last admitted target holds one.
 func (s *Server) routeWithEarlyAdmission(routeCtx *types.RoutingContext, router types.Router, pods types.PodList, limit int64) (string, error) {
 	var admittedPod *v1.Pod
 	release := func() {
-		if admittedPod != nil && routeCtx.ReplicaInflightAdmitted {
-			s.cache.ReleasePodRunningRequest(admittedPod.Name, admittedPod.Namespace)
+		if admittedPod != nil && (routeCtx.ReplicaInflightAdmitted || routeCtx.ReplicaInflightReserved) {
+			var gen int64
+			if routeCtx.ReplicaInflightReserved {
+				gen = routeCtx.ReplicaInflightReservedGen
+			}
+			s.cache.ReleasePodRunningRequest(admittedPod.Name, admittedPod.Namespace, routeCtx.ReplicaInflightAdmitted, gen)
 		}
 		admittedPod = nil
 		routeCtx.ReplicaInflightAdmitted = false
+		routeCtx.ReplicaInflightReserved = false
+		routeCtx.ReplicaInflightReservedGen = 0
 	}
 	routeCtx.SetTargetAdmitter(func(pod *v1.Pod) error {
 		routeCtx.ReplicaInflightChecked = true

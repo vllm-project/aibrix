@@ -138,7 +138,7 @@ func TestEnforceReplicaInflight_AdmitThenReject(t *testing.T) {
 	s := &Server{cache: mockCache}
 	pod := podWithReplicaInflight("a", 1)
 
-	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, true, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1), mock.Anything).Return(true, true, nil).Once()
 	routingCtx := types.NewRoutingContext(context.Background(), "", "m", "", "r1", "")
 	applyConfigProfile(routingCtx, []*v1.Pod{pod})
 	routingCtx.SetTargetPod(pod)
@@ -146,7 +146,7 @@ func TestEnforceReplicaInflight_AdmitThenReject(t *testing.T) {
 	assert.True(t, routingCtx.ReplicaInflightAdmitted,
 		"a successful admission must be recorded so addPodStats does not double-increment")
 
-	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, false, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1), mock.Anything).Return(false, false, nil).Once()
 	routingCtx2 := types.NewRoutingContext(context.Background(), "", "m", "", "r2", "")
 	applyConfigProfile(routingCtx2, []*v1.Pod{pod})
 	routingCtx2.SetTargetPod(pod)
@@ -224,25 +224,25 @@ func TestEnforceReplicaInflight_TwoPodsIndependent(t *testing.T) {
 	podB := podWithReplicaInflight("b", 1)
 	pods := []*v1.Pod{podA, podB}
 
-	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, true, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1), mock.Anything).Return(true, true, nil).Once()
 	ctxA := types.NewRoutingContext(context.Background(), "", "m", "", "r1", "")
 	applyConfigProfile(ctxA, pods)
 	ctxA.SetTargetPod(podA)
 	assert.Nil(t, s.enforceReplicaInflight(context.Background(), "m", ctxA))
 
-	mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1)).Return(true, true, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1), mock.Anything).Return(true, true, nil).Once()
 	ctxB := types.NewRoutingContext(context.Background(), "", "m", "", "r2", "")
 	applyConfigProfile(ctxB, pods)
 	ctxB.SetTargetPod(podB)
 	assert.Nil(t, s.enforceReplicaInflight(context.Background(), "m", ctxB))
 
-	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, false, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1), mock.Anything).Return(false, false, nil).Once()
 	ctxA2 := types.NewRoutingContext(context.Background(), "", "m", "", "r3", "")
 	applyConfigProfile(ctxA2, pods)
 	ctxA2.SetTargetPod(podA)
 	assert.NotNil(t, s.enforceReplicaInflight(context.Background(), "m", ctxA2))
 
-	mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1)).Return(false, false, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1), mock.Anything).Return(false, false, nil).Once()
 	ctxB2 := types.NewRoutingContext(context.Background(), "", "m", "", "r4", "")
 	applyConfigProfile(ctxB2, pods)
 	ctxB2.SetTargetPod(podB)
@@ -256,7 +256,7 @@ func TestEnforceReplicaInflight_TwoPodsIndependent(t *testing.T) {
 // admits the request.
 func TestEnforceReplicaInflight_MetricLookupErrorFailsOpen(t *testing.T) {
 	mockCache := &MockCache{}
-	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, false, assert.AnError)
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1), mock.Anything).Return(false, false, assert.AnError)
 	s := &Server{cache: mockCache}
 	pod := podWithReplicaInflight("a", 1)
 	routingCtx := types.NewRoutingContext(context.Background(), "", "m", "", "r1", "")
@@ -304,7 +304,7 @@ func TestRouteWithEarlyAdmission_AdmitsOnce(t *testing.T) {
 	mockCache := &MockCache{}
 	s := &Server{cache: mockCache}
 	pod := podWithReplicaInflight("a", 1)
-	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, true, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1), mock.Anything).Return(true, true, nil).Once()
 
 	routingCtx := earlyAdmissionContext(pod, "r1")
 	router := routeFunc(func(ctx *types.RoutingContext, _ types.PodList) (string, error) {
@@ -327,7 +327,7 @@ func TestRouteWithEarlyAdmission_FullTargetIs429(t *testing.T) {
 	mockCache := &MockCache{}
 	s := &Server{cache: mockCache}
 	pod := podWithReplicaInflight("a", 1)
-	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(false, false, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1), mock.Anything).Return(false, false, nil).Once()
 
 	routingCtx := earlyAdmissionContext(pod, "r1")
 	routed := false
@@ -348,7 +348,7 @@ func TestRouteWithEarlyAdmission_FullTargetIs429(t *testing.T) {
 	require.NotNil(t, imm)
 	assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
 	assert.Contains(t, imm.GetBody(), ErrorCodeReplicaInflightExceeded)
-	mockCache.AssertNotCalled(t, "ReleasePodRunningRequest", mock.Anything, mock.Anything)
+	mockCache.AssertNotCalled(t, "ReleasePodRunningRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	mockCache.AssertExpectations(t)
 }
 
@@ -367,13 +367,13 @@ func TestRouteWithEarlyAdmission_ReleasesWhenRouteFails(t *testing.T) {
 			mockCache := &MockCache{}
 			s := &Server{cache: mockCache}
 			pod := podWithReplicaInflight("a", 1)
-			mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, tc.counted, nil).Once()
+			mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1), mock.Anything).Return(true, tc.counted, nil).Once()
 			if tc.wantRelease {
-				mockCache.On("ReleasePodRunningRequest", "a", "ns").Return().Once()
+				mockCache.On("ReleasePodRunningRequest", "a", "ns", mock.Anything, mock.Anything).Return().Once()
 			} else {
 				// Without an expectation the mock returns before recording the call, and
 				// AssertNotCalled below could never fail.
-				mockCache.On("ReleasePodRunningRequest", "a", "ns").Return().Maybe()
+				mockCache.On("ReleasePodRunningRequest", "a", "ns", mock.Anything, mock.Anything).Return().Maybe()
 			}
 
 			routingCtx := earlyAdmissionContext(pod, "r1")
@@ -388,7 +388,7 @@ func TestRouteWithEarlyAdmission_ReleasesWhenRouteFails(t *testing.T) {
 			require.ErrorIs(t, err, prefillErr)
 			assert.False(t, routingCtx.ReplicaInflightAdmitted)
 			if !tc.wantRelease {
-				mockCache.AssertNotCalled(t, "ReleasePodRunningRequest", mock.Anything, mock.Anything)
+				mockCache.AssertNotCalled(t, "ReleasePodRunningRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 			}
 			mockCache.AssertExpectations(t)
 		})
@@ -409,9 +409,9 @@ func TestRouteWithEarlyAdmission_ReadmitReleasesPrevious(t *testing.T) {
 			mockCache := &MockCache{}
 			s := &Server{cache: mockCache}
 			first, second := podWithReplicaInflight("a", 1), podWithReplicaInflight("b", 1)
-			mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, true, nil).Once()
-			mockCache.On("ReleasePodRunningRequest", "a", "ns").Return().Once()
-			mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1)).Return(tc.secondAdmits, tc.secondAdmits, nil).Once()
+			mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1), mock.Anything).Return(true, true, nil).Once()
+			mockCache.On("ReleasePodRunningRequest", "a", "ns", mock.Anything, mock.Anything).Return().Once()
+			mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1), mock.Anything).Return(tc.secondAdmits, tc.secondAdmits, nil).Once()
 
 			routingCtx := earlyAdmissionContext(first, "r1")
 			router := routeFunc(func(ctx *types.RoutingContext, _ types.PodList) (string, error) {
@@ -467,9 +467,164 @@ func TestRouteWithEarlyAdmission_ReleaseRestoresRedisCount(t *testing.T) {
 	assert.Equal(t, "0", mr.HGet(key, fields[0]), "the failed request must not keep its slot")
 
 	// The slot is free again: the next request is admitted.
-	admitted, _, err := store.AdmitPodRunningRequest("a", "ns", 1)
+	admitted, _, err := store.AdmitPodRunningRequest("a", "ns", 1, nil)
 	require.NoError(t, err)
 	assert.True(t, admitted)
+}
+
+// TestRouteWithEarlyAdmission_ReleaseUnclaimsAdmissionReservation is the local-counter
+// half of TestRouteWithEarlyAdmission_ReleaseRestoresRedisCount: a released early
+// admission must also free the slot that admission claimed on the pod's local
+// running-requests counter (cache.Store.AdmitPodRunningRequest's reservation), for both
+// a confirmed (counted) admission and one that fell back to the local decision. Until
+// release guarded only counted admissions, a request whose prefill failed after a
+// failed-over admit consumed cap on every route retry and nothing ever undid it --
+// request tracking, whose completion decrement releases a tracked request, never runs
+// for a routing failure. GetPodRunningRequests observes the count either way: the live
+// Redis sum while Redis answers, the local counter fallback once it does not.
+func TestRouteWithEarlyAdmission_ReleaseUnclaimsAdmissionReservation(t *testing.T) {
+	mr := miniredis.RunT(t)
+	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = redisClient.Close() })
+	pod := podWithReplicaInflight("a", 1)
+	require.NoError(t, redisClient.Ping(context.Background()).Err())
+	store := cache.InitWithPods(cache.New(redisClient, nil, nil), []*v1.Pod{pod}, "m")
+	s := &Server{cache: store}
+	podCount := func() int64 {
+		count, err := store.GetPodRunningRequests(pod.Name, pod.Namespace)
+		require.NoError(t, err)
+		return count
+	}
+
+	routeFailingPrefill := func(requestID string, wantCounted, wantReserved bool) *types.RoutingContext {
+		router := routeFunc(func(ctx *types.RoutingContext, _ types.PodList) (string, error) {
+			if err := ctx.AdmitTarget(pod); err != nil {
+				return "", err
+			}
+			require.EqualValues(t, int64(1), podCount(),
+				"the admitted request holds its slot while the prefill runs")
+			require.Equal(t, wantCounted, ctx.ReplicaInflightAdmitted, "the counted stamp mid-route")
+			require.Equal(t, wantReserved, ctx.ReplicaInflightReserved, "the reservation stamp mid-route")
+			return "", errors.New("prefill request failed")
+		})
+		routingCtx := earlyAdmissionContext(pod, requestID)
+		_, err := s.routeWithEarlyAdmission(routingCtx, router, &utils.PodArray{Pods: []*v1.Pod{pod}}, 1)
+		require.Error(t, err)
+		return routingCtx
+	}
+
+	// A confirmed admission: the script committed the +1 to the hash as well, both halves
+	// of the slot must release.
+	routingCtx := routeFailingPrefill("r1", true, true)
+	require.False(t, routingCtx.ReplicaInflightReserved,
+		"the release must have reset the reservation stamp for the next target")
+	require.False(t, routingCtx.ReplicaInflightAdmitted)
+	require.EqualValues(t, int64(0), podCount(),
+		"the released request must not keep a slot on the pod's live count")
+
+	// A failed-over admission with Redis ALIVE: close only the derived admit client,
+	// so the admit script fails (closed client) and falls back locally with counted=false,
+	// while the shared client and Redis server remain fully operational.
+	store.CloseAdmitRedisClientForTest()
+	routingCtx = routeFailingPrefill("r2", false, true)
+	require.False(t, routingCtx.ReplicaInflightReserved)
+	require.False(t, routingCtx.ReplicaInflightAdmitted)
+	require.EqualValues(t, int64(0), podCount(),
+		"the released fallback admission must not keep a slot on the pod's local count")
+	require.NoError(t, redisClient.Ping(context.Background()).Err(), "Redis must remain alive")
+}
+
+// TestReplicaInflight_Lifecycle asserts that for both counted and uncounted admissions,
+// as well as the admit-after-track ordering (queue router / SLO path),
+// the full admit -> AddRequestCount -> DoneRequestCount lifecycle returns both the
+// local counter and the Redis hash to their baseline.
+func TestReplicaInflight_Lifecycle(t *testing.T) {
+	t.Run("counted_lifecycle", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		t.Cleanup(func() { _ = redisClient.Close() })
+		pod := podWithReplicaInflight("a", 2)
+		store := cache.InitWithPods(cache.New(redisClient, nil, nil), []*v1.Pod{pod}, "m")
+		s := &Server{cache: store}
+
+		ctx := earlyAdmissionContext(pod, "req-counted")
+		require.True(t, s.admitReplicaInflight(ctx, pod, 2))
+		require.True(t, ctx.ReplicaInflightAdmitted)
+		require.True(t, ctx.ReplicaInflightReserved)
+
+		// AddRequestCount: skips Redis increment because ReplicaInflightAdmitted=true
+		ctx.SetTargetPod(pod)
+		store.AddRequestCount(ctx, ctx.RequestID, "m")
+		count, err := store.GetPodRunningRequests(pod.Name, pod.Namespace)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, count)
+
+		// DoneRequestCount: decrements both local and Redis
+		store.DoneRequestCount(ctx, ctx.RequestID, "m", 0)
+		countAfter, err := store.GetPodRunningRequests(pod.Name, pod.Namespace)
+		require.NoError(t, err)
+		require.EqualValues(t, 0, countAfter, "both local and Redis must return to 0")
+	})
+
+	t.Run("uncounted_fallback_lifecycle", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		t.Cleanup(func() { _ = redisClient.Close() })
+		pod := podWithReplicaInflight("a", 2)
+		store := cache.InitWithPods(cache.New(redisClient, nil, nil), []*v1.Pod{pod}, "m")
+		s := &Server{cache: store}
+
+		store.CloseAdmitRedisClientForTest()
+		ctx := earlyAdmissionContext(pod, "req-uncounted")
+		require.True(t, s.admitReplicaInflight(ctx, pod, 2))
+		require.False(t, ctx.ReplicaInflightAdmitted)
+		require.True(t, ctx.ReplicaInflightReserved)
+
+		// AddRequestCount: increments Redis because ReplicaInflightAdmitted=false,
+		// but skips local increment because ReplicaInflightReserved=true
+		ctx.SetTargetPod(pod)
+		store.AddRequestCount(ctx, ctx.RequestID, "m")
+		time.Sleep(50 * time.Millisecond) // wait for async redis incr
+
+		// DoneRequestCount: decrements both local and Redis
+		store.DoneRequestCount(ctx, ctx.RequestID, "m", 0)
+		time.Sleep(50 * time.Millisecond) // wait for async redis decr
+
+		countAfter, err := store.GetPodRunningRequests(pod.Name, pod.Namespace)
+		require.NoError(t, err)
+		require.EqualValues(t, 0, countAfter, "both local and Redis must return to 0")
+	})
+
+	t.Run("admit_after_track_ordering", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		t.Cleanup(func() { _ = redisClient.Close() })
+		pod := podWithReplicaInflight("a", 2)
+		store := cache.InitWithPods(cache.New(redisClient, nil, nil), []*v1.Pod{pod}, "m")
+		s := &Server{cache: store}
+
+		ctx := earlyAdmissionContext(pod, "req-slo")
+		ctx.SetTargetPod(pod)
+
+		// 1. Initial track before admission (e.g. queueRouter.Route)
+		store.AddRequestCount(ctx, ctx.RequestID, "m")
+		time.Sleep(50 * time.Millisecond)
+
+		// 2. Admission runs after track: skips reservation because StatsAdded() is true
+		require.True(t, s.admitReplicaInflight(ctx, pod, 2))
+		require.False(t, ctx.ReplicaInflightReserved, "must skip reservation when stats already added")
+
+		// 3. Downstream AddRequestCount is a no-op dedup
+		store.AddRequestCount(ctx, ctx.RequestID, "m")
+
+		// 4. DoneRequestCount returns counters to baseline
+		store.DoneRequestCount(ctx, ctx.RequestID, "m", 0)
+		time.Sleep(50 * time.Millisecond)
+
+		countAfter, err := store.GetPodRunningRequests(pod.Name, pod.Namespace)
+		require.NoError(t, err)
+		require.EqualValues(t, 0, countAfter, "both local and Redis must return to baseline 0")
+	})
 }
 
 // selectTargetPod gives a PD request with a requestsInflight cap the early admission, so the
@@ -480,7 +635,7 @@ func Test_selectTargetPod_PDAdmitsTargetInsideRoute(t *testing.T) {
 	pods := []*v1.Pod{podA, podB}
 	mockCache := &MockCache{}
 	mockCache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{"ns/a": 0, "ns/b": 0}, nil)
-	mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1)).Return(true, true, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1), mock.Anything).Return(true, true, nil).Once()
 
 	var admitErr error
 	manager := routing.NewRouterManager()
@@ -535,7 +690,7 @@ func TestHandleRequestBody_ReplicaInflightAdmitThenReject(t *testing.T) {
 	// now sees the pod at the limit and rejects it before enforceReplicaInflight or
 	// request_start is ever reached.
 	mockCache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{"ns/a": 0}, nil).Once()
-	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(true, true, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1), mock.Anything).Return(true, true, nil).Once()
 	mockCache.On("GetMetricValueByPod", "a", "ns", metrics.RealtimeNumRequestsRunning).
 		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Once()
 	mockCache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{"ns/a": 1}, nil).Once()
@@ -657,4 +812,132 @@ func TestHandleRequestBody_ReplicaInflightCoexistsWithReplicaRPS(t *testing.T) {
 	assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, resp.GetImmediateResponse().GetStatus().GetCode())
 	assert.Contains(t, resp.GetImmediateResponse().GetBody(), ErrorCodeRateLimitExceeded,
 		"aggregate replica RPS of 1 should reject the second request even though inflight cap is 2")
+}
+
+// TestSelectTargetPod_SingleCandidateEmptyAddressReleasesAdmission verifies that in the single-candidate
+// fast path, when a pod is admitted but its target address evaluates to empty (e.g. ModelClaim pod with
+// port 0), the admission is released and both counters and routing context flags return to baseline.
+func TestSelectTargetPod_SingleCandidateEmptyAddressReleasesAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		simulateDown bool
+	}{
+		{name: "counted", simulateDown: false},
+		{name: "reserved_only", simulateDown: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mr := miniredis.RunT(t)
+			redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+			t.Cleanup(func() { _ = redisClient.Close() })
+
+			pod := podWithReplicaInflight("a", 2)
+			pod.Annotations[constants.ModelClaimPodAnnotationPrefix+"m"] = `{"model":"m","port":0}`
+
+			store := cache.InitWithPods(cache.New(redisClient, nil, nil), []*v1.Pod{pod}, "m")
+			if tc.simulateDown {
+				store.CloseAdmitRedisClientForTest()
+			}
+
+			router := &postRouteFunc{routeFunc: func(*types.RoutingContext, types.PodList) (string, error) {
+				t.Fatal("the single-candidate fast path must not call Route")
+				return "", nil
+			}}
+			manager := routing.NewRouterManager()
+			manager.RegisterProvider(routing.RouterPrefixCache, func(*types.RoutingContext) (types.Router, error) {
+				return router, nil
+			})
+			s := &Server{cache: store, routerManager: manager}
+
+			routingCtx := types.NewRoutingContext(context.Background(), routing.RouterPrefixCache, "m", "", "r1", "")
+			applyConfigProfile(routingCtx, []*v1.Pod{pod})
+
+			addr, err := s.selectTargetPod(context.Background(), routingCtx, &utils.PodArray{Pods: []*v1.Pod{pod}}, "")
+			require.NoError(t, err)
+			assert.Equal(t, "", addr, "target address should be empty")
+
+			assert.False(t, routingCtx.ReplicaInflightAdmitted, "ReplicaInflightAdmitted should be reset")
+			assert.False(t, routingCtx.ReplicaInflightReserved, "ReplicaInflightReserved should be reset")
+			assert.EqualValues(t, 0, routingCtx.ReplicaInflightReservedGen, "ReplicaInflightReservedGen should be reset to 0")
+
+			count, err := store.GetPodRunningRequests(pod.Name, pod.Namespace)
+			require.NoError(t, err)
+			assert.EqualValues(t, 0, count, "local counter should return to 0")
+
+			key := "aibrix:rrq:" + utils.GeneratePodKey(pod.Namespace, pod.Name)
+			if mr.Exists(key) {
+				fields, err := mr.HKeys(key)
+				require.NoError(t, err)
+				if len(fields) > 0 {
+					assert.Equal(t, "0", mr.HGet(key, fields[0]), "redis field should be 0")
+				}
+			}
+		})
+	}
+}
+
+// TestSelectTargetPod_EarlyAdmissionEmptyAddressReleasesAdmission verifies that in early admission,
+// when a target pod is admitted by the router but its target address evaluates to empty
+// (e.g. ModelClaim pod with port 0), selectTargetPod unwinds the admission and resets both counters
+// and routing context flags.
+func TestSelectTargetPod_EarlyAdmissionEmptyAddressReleasesAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		simulateDown bool
+	}{
+		{name: "counted", simulateDown: false},
+		{name: "reserved_only", simulateDown: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mr := miniredis.RunT(t)
+			redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+			t.Cleanup(func() { _ = redisClient.Close() })
+
+			// Two pods so single-candidate bypass is not taken
+			podA := podWithReplicaInflight("a", 2)
+			podA.Annotations[constants.ModelClaimPodAnnotationPrefix+"m"] = `{"model":"m","port":0}`
+			podB := podWithReplicaInflight("b", 2)
+			pods := []*v1.Pod{podA, podB}
+
+			store := cache.InitWithPods(cache.New(redisClient, nil, nil), pods, "m")
+			if tc.simulateDown {
+				store.CloseAdmitRedisClientForTest()
+			}
+
+			manager := routing.NewRouterManager()
+			manager.RegisterProvider(routing.RouterPD, func(*types.RoutingContext) (types.Router, error) {
+				return routeFunc(func(ctx *types.RoutingContext, _ types.PodList) (string, error) {
+					if err := ctx.AdmitTarget(podA); err != nil {
+						return "", err
+					}
+					ctx.SetTargetPod(podA)
+					return ctx.TargetAddress(), nil
+				}), nil
+			})
+			s := &Server{cache: store, routerManager: manager}
+
+			routingCtx := types.NewRoutingContext(context.Background(), routing.RouterPD, "m", "", "r1", "")
+			applyConfigProfile(routingCtx, pods)
+
+			addr, err := s.selectTargetPod(context.Background(), routingCtx, &utils.PodArray{Pods: pods}, "")
+			require.NoError(t, err)
+			assert.Equal(t, "", addr, "target address should be empty")
+
+			assert.False(t, routingCtx.ReplicaInflightAdmitted, "ReplicaInflightAdmitted should be reset")
+			assert.False(t, routingCtx.ReplicaInflightReserved, "ReplicaInflightReserved should be reset")
+			assert.EqualValues(t, 0, routingCtx.ReplicaInflightReservedGen, "ReplicaInflightReservedGen should be reset to 0")
+
+			count, err := store.GetPodRunningRequests(podA.Name, podA.Namespace)
+			require.NoError(t, err)
+			assert.EqualValues(t, 0, count, "local counter should return to 0")
+
+			key := "aibrix:rrq:" + utils.GeneratePodKey(podA.Namespace, podA.Name)
+			if mr.Exists(key) {
+				fields, err := mr.HKeys(key)
+				require.NoError(t, err)
+				if len(fields) > 0 {
+					assert.Equal(t, "0", mr.HGet(key, fields[0]), "redis field should be 0")
+				}
+			}
+		})
+	}
 }
