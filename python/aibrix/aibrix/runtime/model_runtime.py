@@ -579,9 +579,12 @@ def engine_ready(port: int) -> bool:
         return False
 
 
-# How long an engine that has been ready may then fail its health check before
-# the supervisor restarts it. vLLM's API server can outlive its EngineCore, and
-# such an engine never gets ready again. A first boot has no such limit, since
+# How long a vLLM engine that has been ready may then fail its health check
+# before the supervisor restarts it. vLLM's API server can outlive its
+# EngineCore, and such an engine never gets ready again. vLLM's /health does not
+# wait on the EngineCore, so a busy engine still passes it. SGLang's /health
+# waits for a generation step, for up to 20 seconds by default, so SGLang
+# engines are not restarted this way. A first boot has no such limit, since
 # loading a model can take long.
 ENGINE_UNREADY_RESTART_SECONDS = 60.0
 
@@ -1756,7 +1759,7 @@ class ModelRuntime:
                         if inst.phase != "booting":
                             self._transition(inst, "booting")
                             changed = True
-                        if inst.was_ready:
+                        if inst.was_ready and inst.engine == "vllm":
                             if inst.unready_since is None:
                                 inst.unready_since = now
                                 changed = True

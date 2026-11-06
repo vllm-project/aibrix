@@ -265,7 +265,7 @@ def test_supervisor_cleans_an_orphaned_process_group_before_backoff(
     assert launcher.launches == ["failed", "failed"]
 
 
-def _hanging_engine(tmp_path, monkeypatch, **kwargs):
+def _hanging_engine(tmp_path, monkeypatch, engine="vllm", **kwargs):
     """A runtime with one live engine whose health check the test controls.
     Its process group lives as long as its process."""
     clock = [datetime(2026, 7, 14, tzinfo=timezone.utc)]
@@ -277,7 +277,7 @@ def _hanging_engine(tmp_path, monkeypatch, **kwargs):
         **kwargs,
     )
     inst = runtime.activate(
-        model_name="hung", artifact_url="hf://Org/Hung", engine="sglang"
+        model_name="hung", artifact_url="hf://Org/Hung", engine=engine
     )
     ready = [True]
     monkeypatch.setattr(runtime_module, "engine_ready", lambda port: ready[0])
@@ -331,6 +331,50 @@ def test_supervisor_restarts_an_engine_that_stays_unready_after_being_ready(
     runtime.supervise_once()
     assert inst.phase == "booting"
     assert launcher.stopped == ["hung"]
+
+
+def test_supervisor_kills_a_hanging_engine_that_ignores_sigterm(tmp_path, monkeypatch):
+    clock, launcher, runtime, inst, ready, _ = _hanging_engine(tmp_path, monkeypatch)
+    # The launcher's stop stands for SIGTERM, which this engine ignores.
+    launcher.stop_exits = False
+    hung_pid = inst.pid
+    killed = []
+
+    def killpg(process_group_id, signum):
+        killed.append((process_group_id, signum, list(launcher.stopped)))
+        inst.proc.alive = False
+
+    monkeypatch.setattr(runtime_module.os, "killpg", killpg)
+    runtime.supervise_once()
+    ready[0] = False
+    runtime.supervise_once()
+    clock[0] += timedelta(seconds=60)
+    runtime.supervise_once()
+
+    assert killed == [(hung_pid, signal.SIGKILL, ["hung"])]
+    assert inst.phase == "restarting"
+
+    clock[0] += timedelta(seconds=2)
+    runtime.supervise_once()
+
+    assert launcher.launches == ["hung", "hung"]
+    assert inst.phase == "booting"
+
+
+def test_supervisor_does_not_restart_an_unready_sglang_engine(tmp_path, monkeypatch):
+    clock, launcher, runtime, inst, ready, _ = _hanging_engine(
+        tmp_path, monkeypatch, engine="sglang"
+    )
+    runtime.supervise_once()
+    assert inst.phase == "active"
+
+    ready[0] = False
+    runtime.supervise_once()
+    clock[0] += timedelta(minutes=10)
+    runtime.supervise_once()
+
+    assert inst.phase == "booting"
+    assert launcher.stopped == []
 
 
 def test_supervisor_gives_a_first_boot_no_deadline(tmp_path, monkeypatch):
