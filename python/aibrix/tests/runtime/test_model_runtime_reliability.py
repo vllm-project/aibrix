@@ -482,6 +482,48 @@ def test_supervisor_restarts_a_hanging_engine_after_the_agent_restarts(
     assert adopted.last_error == "engine not ready for 60s after it was ready"
 
 
+def test_supervisor_restarts_an_engine_that_hangs_right_after_re_adoption(
+    tmp_path, monkeypatch
+):
+    clock, _, runtime, inst, ready, _ = _hanging_engine(tmp_path, monkeypatch)
+    # The agent restarts while the engine is still on its first boot.
+    ready[0] = False
+    runtime.supervise_once()
+    assert not inst.was_ready
+
+    group = {"alive": True}
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: group["alive"])
+    monkeypatch.setattr(
+        runtime_module, "process_start_time", lambda pid: inst.pid_start_time
+    )
+    monkeypatch.setattr(
+        runtime_module, "process_group_is_alive", lambda pid: group["alive"]
+    )
+    monkeypatch.setattr(
+        runtime_module.os,
+        "killpg",
+        lambda process_group_id, signum: group.update(alive=False),
+    )
+    # Re-adoption finds the engine ready, and it hangs before the next pass.
+    ready[0] = True
+    launcher = _ControlledLauncher()
+    agent = ModelRuntime(
+        launcher,
+        registry=EngineRegistry(tmp_path / "engines.json"),
+        now=lambda: clock[0],
+    )
+    adopted = agent.list_models()[0]
+    assert adopted.phase == "active"
+    ready[0] = False
+
+    agent.supervise_once()
+    clock[0] += timedelta(seconds=60)
+    agent.supervise_once()
+
+    assert launcher.stopped == ["hung"]
+    assert adopted.phase == "restarting"
+
+
 def test_supervisor_treats_missing_process_group_id_as_clean(tmp_path, monkeypatch):
     launcher = _ControlledLauncher()
     runtime = ModelRuntime(launcher, registry=EngineRegistry(tmp_path / "engines.json"))

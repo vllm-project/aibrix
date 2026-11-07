@@ -1330,6 +1330,7 @@ class ModelRuntime:
                         if instance_ready(inst):
                             if inst.phase != "active" or inst.last_error is not None:
                                 self._transition(inst, "active")
+                                inst.was_ready = True
                                 inst.last_error = None
                                 changed = True
                         elif inst.phase != "booting":
