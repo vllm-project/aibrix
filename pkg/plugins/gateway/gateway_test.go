@@ -1321,11 +1321,11 @@ func TestHandleProcessingRequest_ResponseBody_ErrorFromPreviousStage_UsesErrorPr
 	resp, err := s.handleProcessingRequest(st, req)
 
 	assert.NoError(t, err)
-	if assert.NotNil(t, resp) {
-		imm := resp.GetImmediateResponse()
-		assert.NotNil(t, imm, "expected ImmediateResponse for error path")
-		assert.Equal(t, envoyTypePb.StatusCode(401), imm.GetStatus().GetCode())
-	}
+	require.Nil(t, resp.GetImmediateResponse())
+	body := resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody()
+	assert.Contains(t, string(body), "boom")
+	assert.Equal(t, 401, st.respErrorCode)
+	assert.True(t, st.completed)
 	// metricLabel should be set for response body processing
 	assert.Equal(t, gatewayRespBody, st.metricLabel)
 }
@@ -1357,11 +1357,11 @@ func TestHandleProcessingRequest_ResponseBody_ErrorRewritesPinnedVideoBackendID(
 
 	resp, err := s.handleProcessingRequest(st, req)
 	require.NoError(t, err)
-	imm := resp.GetImmediateResponse()
-	require.NotNil(t, imm)
-	assert.Equal(t, envoyTypePb.StatusCode_NotFound, imm.GetStatus().GetCode())
-	assert.Contains(t, imm.GetBody(), publicID)
-	assert.NotContains(t, imm.GetBody(), backendID)
+	require.Nil(t, resp.GetImmediateResponse())
+	body := resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody()
+	assert.Equal(t, http.StatusNotFound, st.respErrorCode)
+	assert.Contains(t, string(body), publicID)
+	assert.NotContains(t, string(body), backendID)
 }
 
 // TestHandleProcessingRequest_Non200ResponseHeadersThenErrorBody is the end-to-end
@@ -1425,24 +1425,18 @@ func TestHandleProcessingRequest_Non200ResponseHeadersThenErrorBody(t *testing.T
 
 	resp, err = s.handleProcessingRequest(st, bodyReq)
 	assert.NoError(t, err)
-	if assert.NotNil(t, resp) {
-		imm := resp.GetImmediateResponse()
-		if assert.NotNil(t, imm, "expected ImmediateResponse for error path") {
-			assert.Equal(t, envoyTypePb.StatusCode(400), imm.GetStatus().GetCode())
-
-			var parsed map[string]any
-			require.NoError(t, json.Unmarshal([]byte(imm.GetBody()), &parsed))
-			errObj, ok := parsed["error"].(map[string]any)
-			require.True(t, ok, "expected nested error object, got: %s", imm.GetBody())
-
-			// The upstream message must NOT be re-wrapped into a stringified JSON.
-			assert.Equal(t, "top_p must be in (0, 1], got 2.0. (parameter=top_p, value=2.0)", errObj["message"])
-			assert.Equal(t, "BadRequestError", errObj["type"])
-			assert.Equal(t, "top_p", errObj["param"])
-			// code is preserved as the upstream integer 400 (rendered by normalizeUpstreamErrorBody).
-			assert.EqualValues(t, 400, errObj["code"])
-		}
-	}
+	require.Nil(t, resp.GetImmediateResponse())
+	body := resp.GetResponseBody().GetResponse().GetBodyMutation().GetBody()
+	assert.Equal(t, 400, st.respErrorCode)
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	errObj, ok := parsed["error"].(map[string]any)
+	require.True(t, ok, "expected nested error object, got: %s", body)
+	// The upstream message must not be wrapped into a stringified JSON.
+	assert.Equal(t, "top_p must be in (0, 1], got 2.0. (parameter=top_p, value=2.0)", errObj["message"])
+	assert.Equal(t, "BadRequestError", errObj["type"])
+	assert.Equal(t, "top_p", errObj["param"])
+	assert.EqualValues(t, 400, errObj["code"])
 	assert.Equal(t, gatewayRespBody, st.metricLabel)
 }
 
@@ -1604,6 +1598,7 @@ func TestHandleProcessingRequest_ResponseHeaders_NonOK(t *testing.T) {
 		assert.Equal(t, envoyTypePb.StatusCode(401), imm.GetStatus().GetCode())
 	}
 	assert.True(t, st.isRespError)
+	assert.True(t, st.completed, "header-stage local replies must finish processing")
 	assert.Equal(t, 401, st.respErrorCode)
 	assert.Equal(t, gatewayRespHeaders, st.metricLabel)
 
@@ -2370,9 +2365,9 @@ func TestProcess_TerminalOutcome(t *testing.T) {
 		name, requestBody, upstreamStatus, responseBody, wantStatus, wantCode string
 		end                                                                   error
 	}{
-		{"StreamingEngine400ThenCanceled", strings.TrimSuffix(requestBody, "}") + `,"stream":true}`, "400", errorBody, "gateway_rsp_body_fail", "400", canceled},
+		{"StreamingEngine400Completes", strings.TrimSuffix(requestBody, "}") + `,"stream":true}`, "400", errorBody, "gateway_rsp_body_fail", "400", nil},
 		{"CompletedImmediateResponseProactiveExit", requestBody, "200", `{"model":`, "gateway_rsp_body_fail", "500", nil},
-		{"Engine400ThenCanceled", requestBody, "400", errorBody, "gateway_rsp_body_fail", "400", canceled},
+		{"Engine400Completes", requestBody, "400", errorBody, "gateway_rsp_body_fail", "400", nil},
 		{"ModelNotFoundThenCanceled", missingBody, "", "", "gateway_req_body_fail", "400", canceled},
 		{"CompletedBeforeCanceled", requestBody, "200", successBody, "gateway_rsp_body_success", "200", nil},
 		{"ClientDisconnectEOF", requestBody, "", "", "client_cancelled_eof", "499", io.EOF},
@@ -2396,7 +2391,10 @@ func TestProcess_TerminalOutcome(t *testing.T) {
 					&extProcPb.ProcessingRequest{Request: &extProcPb.ProcessingRequest_ResponseHeaders{ResponseHeaders: &extProcPb.HttpHeaders{Headers: &configPb.HeaderMap{Headers: []*configPb.HeaderValue{
 						{Key: ":status", RawValue: []byte(tt.upstreamStatus)},
 					}}}}},
-					&extProcPb.ProcessingRequest{Request: &extProcPb.ProcessingRequest_ResponseBody{ResponseBody: &extProcPb.HttpBody{Body: []byte(tt.responseBody), EndOfStream: true}}})
+					&extProcPb.ProcessingRequest{Request: &extProcPb.ProcessingRequest_ResponseBody{ResponseBody: &extProcPb.HttpBody{Body: []byte(tt.responseBody), EndOfStream: tt.upstreamStatus != "400"}}})
+				if tt.upstreamStatus == "400" {
+					requests = append(requests, errorBodyChunk("", true))
+				}
 			}
 			for _, req := range requests {
 				srv.On("Recv").Return(req, nil).Once()
@@ -2425,7 +2423,7 @@ func TestProcess_TerminalOutcome(t *testing.T) {
 				assert.Equal(t, codes.Canceled, status.Code(err))
 			}
 			wantImmediate := 0
-			if strings.HasSuffix(tt.wantStatus, "_fail") {
+			if strings.HasSuffix(tt.wantStatus, "_fail") && tt.upstreamStatus != "400" {
 				wantImmediate = 1
 			}
 			assert.Equal(t, wantImmediate, immediateResponses)
@@ -2527,7 +2525,7 @@ func TestSendProcessingResponse_AfterResponseOutcome(t *testing.T) {
 			}}
 			resp, err := s.handleProcessingRequest(st, req)
 			require.NoError(t, err)
-			require.Equal(t, !completed, resp.GetImmediateResponse() != nil)
+			require.Nil(t, resp.GetImmediateResponse())
 			sendErr := errors.New("transport closed")
 			srv := &mockProcessServer{ctx: st.ctx}
 			srv.On("Send", resp).Return(sendErr).Once()
