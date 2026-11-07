@@ -175,6 +175,11 @@ Prometheus will expose them with normalized names such as:
 - `metadata_batch_api_job_execution_time_ms_bucket`
 - `metadata_batch_api_job_execution_phase_time_ms_bucket`
 
+Batch execution phase metrics also carry:
+
+- `phase`
+- `phase_order`
+
 The dashboard queries must use the Prometheus-normalized names, not the raw
 Python constants.
 
@@ -203,6 +208,8 @@ The dashboard currently focuses on summary views for:
 - batch execution breakdown across scheduling, runtime provision, task execution, and finalization
 - request completion throughput
 - request token throughput
+- dispatch telemetry fields such as inflight request count and p90 queue wait
+- JSON parser telemetry including average latency
 
 Execution phase breakdown timers are emitted when each phase completes and carry
 the base job labels plus a `phase` label. Current phases are:

@@ -53,8 +53,8 @@ async def test_httpx_wrapper_request_records_telemetry():
     assert (
         snapshot.call_sites[0].call_site == "tests.metadata.test_httpx_client.success"
     )
-    assert snapshot.p50_latency_seconds is not None
-    assert snapshot.p95_latency_seconds is not None
+    assert snapshot.avg_latency_seconds is not None
+    assert snapshot.p90_latency_seconds is not None
     assert sum(snapshot.latency_histogram) == 1
 
     await wrapper.stop()
@@ -123,15 +123,15 @@ async def test_httpx_wrapper_flushes_shared_purpose_final_telemetry_once():
     summary_gauges = [
         (value, tags)
         for name, value, tags in gauges
-        if name == "metadata_http_client_telemetry_summary"
+        if name == "metadata.http.client.telemetry.summary"
     ]
     assert len(summary_gauges) == 1
     assert T("purpose", "shared-httpx-purpose-final") in summary_gauges[0][1]
     assert T("flush", "true") in summary_gauges[0][1]
     metric_values = {name: value for name, value, _ in gauges}
-    assert metric_values["metadata_http_client_telemetry_registered_clients"] == 0.0
-    assert metric_values["metadata_http_client_telemetry_window_started"] == 2.0
-    assert metric_values["metadata_http_client_telemetry_window_completed"] == 2.0
+    assert metric_values["metadata.http.client.telemetry.registered_clients"] == 0.0
+    assert metric_values["metadata.http.client.telemetry.window_started"] == 2.0
+    assert metric_values["metadata.http.client.telemetry.window_completed"] == 2.0
 
 
 @pytest.mark.asyncio
@@ -224,19 +224,19 @@ def test_httpx_wrapper_emits_telemetry_numeric_metrics(monkeypatch):
     wrapper._emit_telemetry(final=False, elapsed=1.0)
 
     emitted_names = {name for name, _, _ in gauges}
-    assert "metadata_http_client_telemetry_completed" in emitted_names
-    assert "metadata_http_client_telemetry_completed_qps" in emitted_names
-    assert "metadata_http_client_telemetry_summary" in emitted_names
+    assert "metadata.http.client.telemetry.completed" in emitted_names
+    assert "metadata.http.client.telemetry.completed_qps" in emitted_names
+    assert "metadata.http.client.telemetry.summary" in emitted_names
     completed_tags = next(
         tags
         for name, _, tags in gauges
-        if name == "metadata_http_client_telemetry_completed"
+        if name == "metadata.http.client.telemetry.completed"
     )
     assert T("log_field", "completed") in completed_tags
     summary_gauges = [
         (value, tags)
         for name, value, tags in gauges
-        if name == "metadata_http_client_telemetry_summary"
+        if name == "metadata.http.client.telemetry.summary"
     ]
     assert summary_gauges
     assert summary_gauges[0][0] == 1.0
@@ -403,14 +403,14 @@ async def test_httpx_wrapper_stop_uses_actual_elapsed_time_for_final_telemetry()
     summary_gauge = next(
         tags
         for name, _, tags in gauges
-        if name == "metadata_http_client_telemetry_summary"
+        if name == "metadata.http.client.telemetry.summary"
     )
     assert T("final", "true") in summary_gauge
     assert T("purpose", "") in summary_gauge
     metric_values = {name: value for name, value, _ in gauges}
-    assert metric_values["metadata_http_client_telemetry_started_qps"] == 4.0
-    assert metric_values["metadata_http_client_telemetry_completed_qps"] == 4.0
-    assert metric_values["metadata_http_client_telemetry_failed_qps"] == 0.0
+    assert metric_values["metadata.http.client.telemetry.started_qps"] == 4.0
+    assert metric_values["metadata.http.client.telemetry.completed_qps"] == 4.0
+    assert metric_values["metadata.http.client.telemetry.failed_qps"] == 0.0
 
 
 @pytest.mark.asyncio

@@ -15,13 +15,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-from prometheus_client import CollectorRegistry, make_asgi_app
-from starlette.types import ASGIApp
+from typing import TYPE_CHECKING
 
 from aibrix.logger import init_logger
-from aibrix.metadata.core.metrics.log import LogSink
-from aibrix.metadata.core.metrics.prometheus import PrometheusSink
 from aibrix.metadata.core.metrics.sink import (
     Emitter,
     FanoutSink,
@@ -29,13 +25,17 @@ from aibrix.metadata.core.metrics.sink import (
     NoopSink,
     ObservedSink,
     Sink,
+    Tag,
     describe_sink,
 )
-from aibrix.metadata.core.metrics.udp import DogStatsdSink, StatsdSink, StatsiteSink
 from aibrix.metadata.setting import (
     MetricsConfig,
     settings,
 )
+
+if TYPE_CHECKING:
+    from prometheus_client import CollectorRegistry
+    from starlette.types import ASGIApp
 
 logger = init_logger(__name__)
 
@@ -60,17 +60,27 @@ def setup_metrics(config: MetricsConfig | None = None) -> MetricsRuntime:
     metrics_app = None
 
     if config.prometheus_enabled:
+        from prometheus_client import CollectorRegistry, make_asgi_app
+
+        from aibrix.metadata.core.metrics.prometheus import PrometheusSink
+
         registry = CollectorRegistry()
         sinks.append(PrometheusSink(registry))
         metrics_app = make_asgi_app(registry=registry)
 
     if config.statsite_addr:
+        from aibrix.metadata.core.metrics.udp import StatsiteSink
+
         sinks.append(StatsiteSink(config.statsite_addr, prefix=config.service_name))
 
     if config.statsd_addr:
+        from aibrix.metadata.core.metrics.udp import StatsdSink
+
         sinks.append(StatsdSink(config.statsd_addr, prefix=config.service_name))
 
     if config.dogstatsd_addr:
+        from aibrix.metadata.core.metrics.udp import DogStatsdSink
+
         sinks.append(
             DogStatsdSink(
                 config.dogstatsd_addr,
@@ -79,7 +89,21 @@ def setup_metrics(config: MetricsConfig | None = None) -> MetricsRuntime:
             )
         )
 
+    if config.opentsdb_addr:
+        from aibrix.metadata.core.metrics.opentsdb import OpenTSDBSink
+
+        sinks.append(
+            OpenTSDBSink(
+                config.opentsdb_addr,
+                prefix=config.opentsdb_prefix,
+                timeout_seconds=config.opentsdb_timeout_seconds,
+                global_tags=(Tag("service", config.service_name),),
+            )
+        )
+
     if config.log_enabled:
+        from aibrix.metadata.core.metrics.log import LogSink
+
         sinks.append(
             LogSink(
                 include_patterns=config.log_include_patterns,

@@ -30,7 +30,11 @@ from typing import TYPE_CHECKING, Optional
 
 import aibrix.batch.constant as constant
 from aibrix.batch.job_entity import BatchJobState
-from aibrix.batch.metrics import tags_for_job_latency_log, tags_from_job
+from aibrix.batch.metrics import (
+    tags_for_execution_phase,
+    tags_for_job_latency_log,
+    tags_from_job,
+)
 from aibrix.batch.metrics.common import metric_duration_ms
 from aibrix.batch.scheduling_policy import FIFOScheduling, SchedulingPolicy
 from aibrix.batch.state import SchedulableJobs
@@ -100,7 +104,7 @@ class BatchScheduler:
                 phase_ms,
                 *tags_from_job(job),
                 *tags_for_job_latency_log(job),
-                T("phase", phase),
+                *tags_for_execution_phase(phase),
                 T("log_map", "phase_duration_ms"),
                 T("log_key", phase),
             )

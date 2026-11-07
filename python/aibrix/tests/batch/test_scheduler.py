@@ -166,6 +166,7 @@ async def test_scheduler_emits_scheduling_metric_before_admit(monkeypatch):
     assert value >= 0
     assert tags["job_id"] == "job-1"
     assert tags["phase"] == "scheduling"
+    assert tags["phase_order"] == "010"
     assert tags["event"] == "Batch job latency telemetry"
     assert tags["log_map"] == "phase_duration_ms"
     assert tags["log_key"] == "scheduling"

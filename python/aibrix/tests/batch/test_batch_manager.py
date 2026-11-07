@@ -1855,6 +1855,7 @@ async def test_mark_job_finalizing_emits_task_execution_metric(monkeypatch):
     assert value >= 0
     assert tags["job_id"] == "job-finalizing"
     assert tags["phase"] == "task_execution"
+    assert tags["phase_order"] == "050"
     assert tags["event"] == "Batch job latency telemetry"
     assert tags["log_map"] == "phase_duration_ms"
     assert tags["log_key"] == "task_execution"

@@ -47,6 +47,7 @@ from aibrix.batch.job_entity import (
 )
 from aibrix.batch.metrics import (
     metric_duration_ms,
+    tags_for_execution_phase,
     tags_for_job_latency_log,
     tags_from_finalized_job,
     tags_from_job,
@@ -252,7 +253,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 phase_ms,
                 *tags_from_job(job),
                 *tags_for_job_latency_log(job),
-                T("phase", phase),
+                *tags_for_execution_phase(phase),
                 T("log_map", "phase_duration_ms"),
                 T("log_key", phase),
             )

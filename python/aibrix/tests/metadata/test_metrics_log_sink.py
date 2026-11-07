@@ -53,7 +53,7 @@ def test_log_sink_logs_included_metric(caplog):
 
 
 def test_log_sink_aggregates_httpx_numeric_metrics(caplog):
-    sink = LogSink(include_patterns=("metadata_http_client_telemetry_*",))
+    sink = LogSink(include_patterns=("metadata.http.client.telemetry.*",))
     base_tags = (
         T("event", "HTTPX client telemetry summary"),
         T("client_id", "client-1"),
@@ -66,27 +66,27 @@ def test_log_sink_aggregates_httpx_numeric_metrics(caplog):
 
     with caplog.at_level(logging.INFO):
         sink.gauge(
-            "metadata_http_client_telemetry_started_qps",
+            "metadata.http.client.telemetry.started_qps",
             1.5,
             *base_tags,
             T("log_field", "started_qps"),
         )
         sink.gauge(
-            "metadata_http_client_telemetry_exception_count",
+            "metadata.http.client.telemetry.exception_count",
             2,
             *base_tags,
             T("log_map", "exception_types"),
             T("log_key", "TimeoutError"),
         )
         sink.gauge(
-            "metadata_http_client_telemetry_latency_bucket_count",
+            "metadata.http.client.telemetry.latency_bucket_count",
             3,
             *base_tags,
             T("log_list", "latency_histogram"),
             T("log_index", "1"),
         )
         sink.gauge(
-            "metadata_http_client_telemetry_summary",
+            "metadata.http.client.telemetry.summary",
             1.0,
             *base_tags,
             T("flush", "true"),
@@ -94,7 +94,7 @@ def test_log_sink_aggregates_httpx_numeric_metrics(caplog):
 
     payload = json.loads(caplog.records[-1].message)
     assert payload["event"] == "HTTPX client telemetry summary"
-    assert payload["metric_name"] == "metadata_http_client_telemetry_summary"
+    assert payload["metric_name"] == "metadata.http.client.telemetry.summary"
     assert payload["client_id"] == "client-1"
     assert payload["purpose"] == "batch_runtime_http"
     assert payload["final"] is False
@@ -105,11 +105,11 @@ def test_log_sink_aggregates_httpx_numeric_metrics(caplog):
 
 
 def test_log_sink_converts_empty_context_tag_to_null(caplog):
-    sink = LogSink(include_patterns=("metadata_http_client_telemetry_*",))
+    sink = LogSink(include_patterns=("metadata.http.client.telemetry.*",))
 
     with caplog.at_level(logging.INFO):
         sink.gauge(
-            "metadata_http_client_telemetry_summary",
+            "metadata.http.client.telemetry.summary",
             1.0,
             T("event", "HTTPX client telemetry summary"),
             T("client_id", "client-1"),
@@ -124,23 +124,23 @@ def test_log_sink_converts_empty_context_tag_to_null(caplog):
 
 
 def test_log_sink_applies_flush_defaults(caplog):
-    sink = LogSink(include_patterns=("metadata_json_telemetry_*",))
+    sink = LogSink(include_patterns=("metadata.json.telemetry.*",))
 
     with caplog.at_level(logging.INFO):
         sink.gauge(
-            "metadata_json_telemetry_summary",
+            "metadata.json.telemetry.summary",
             1.0,
             T("event", "JSON profiler telemetry summary"),
             T("purpose", "json"),
             T("log_context", "purpose"),
-            T("log_default_null", "p50_latency_seconds,p95_latency_seconds"),
+            T("log_default_null", "avg_latency_seconds,p90_latency_seconds"),
             T("log_default_map", "exception_types"),
             T("flush", "true"),
         )
 
     payload = json.loads(caplog.records[-1].message)
-    assert payload["p50_latency_seconds"] is None
-    assert payload["p95_latency_seconds"] is None
+    assert payload["avg_latency_seconds"] is None
+    assert payload["p90_latency_seconds"] is None
     assert payload["exception_types"] == {}
 
 
@@ -234,6 +234,7 @@ def test_log_sink_aggregates_batch_job_latency_metrics_once(caplog):
             12.5,
             *base_tags,
             T("phase", "scheduling"),
+            T("phase_order", "010"),
             T("log_map", "phase_duration_ms"),
             T("log_key", "scheduling"),
         )
@@ -242,6 +243,7 @@ def test_log_sink_aggregates_batch_job_latency_metrics_once(caplog):
             30.0,
             *base_tags,
             T("phase", "task_execution"),
+            T("phase_order", "050"),
             T("log_map", "phase_duration_ms"),
             T("log_key", "task_execution"),
         )
@@ -250,6 +252,7 @@ def test_log_sink_aggregates_batch_job_latency_metrics_once(caplog):
             7.5,
             *base_tags,
             T("phase", "finalization"),
+            T("phase_order", "060"),
             T("log_map", "phase_duration_ms"),
             T("log_key", "finalization"),
         )
@@ -290,7 +293,7 @@ def test_setup_metrics_routes_httpx_summary_through_log_sink(caplog):
     setup_metrics(
         MetricsConfig(
             log_enabled=True,
-            log_include_patterns=["metadata_http_client_telemetry_*"],
+            log_include_patterns=["metadata.http.client.telemetry.*"],
         )
     )
     try:
@@ -313,7 +316,7 @@ def test_setup_metrics_routes_httpx_summary_through_log_sink(caplog):
 
         payloads = _payloads_for_metric(
             caplog,
-            "metadata_http_client_telemetry_summary",
+            "metadata.http.client.telemetry.summary",
         )
         assert len(payloads) == 1
         payload = payloads[0]
@@ -333,7 +336,7 @@ def test_setup_metrics_routes_json_summary_through_log_sink(caplog):
     setup_metrics(
         MetricsConfig(
             log_enabled=True,
-            log_include_patterns=["metadata_json_telemetry_*"],
+            log_include_patterns=["metadata.json.telemetry.*"],
         )
     )
     try:
@@ -347,7 +350,7 @@ def test_setup_metrics_routes_json_summary_through_log_sink(caplog):
         with caplog.at_level(logging.INFO):
             profiler.emit_telemetry(final=False, elapsed=1.0)
 
-        payloads = _payloads_for_metric(caplog, "metadata_json_telemetry_summary")
+        payloads = _payloads_for_metric(caplog, "metadata.json.telemetry.summary")
         assert len(payloads) == 1
         payload = payloads[0]
         assert payload["event"] == "JSON profiler telemetry summary"
@@ -364,7 +367,7 @@ def test_setup_metrics_routes_empty_httpx_summary_defaults_through_log_sink(capl
     setup_metrics(
         MetricsConfig(
             log_enabled=True,
-            log_include_patterns=["metadata_http_client_telemetry_*"],
+            log_include_patterns=["metadata.http.client.telemetry.*"],
         )
     )
     try:
@@ -380,15 +383,15 @@ def test_setup_metrics_routes_empty_httpx_summary_defaults_through_log_sink(capl
 
         payloads = _payloads_for_metric(
             caplog,
-            "metadata_http_client_telemetry_summary",
+            "metadata.http.client.telemetry.summary",
         )
         assert len(payloads) == 1
         payload = payloads[0]
         assert payload["purpose"] is None
         assert payload["final"] is True
         assert payload["is_closed"] is True
-        assert payload["p50_latency_seconds"] is None
-        assert payload["p95_latency_seconds"] is None
+        assert payload["avg_latency_seconds"] is None
+        assert payload["p90_latency_seconds"] is None
         assert payload["exception_types"] == {}
     finally:
         shutdown_metrics()
@@ -398,7 +401,7 @@ def test_setup_metrics_routes_empty_json_summary_defaults_through_log_sink(caplo
     setup_metrics(
         MetricsConfig(
             log_enabled=True,
-            log_include_patterns=["metadata_json_telemetry_*"],
+            log_include_patterns=["metadata.json.telemetry.*"],
         )
     )
     try:
@@ -411,12 +414,12 @@ def test_setup_metrics_routes_empty_json_summary_defaults_through_log_sink(caplo
         with caplog.at_level(logging.INFO):
             profiler.emit_telemetry(final=True, elapsed=1.0)
 
-        payloads = _payloads_for_metric(caplog, "metadata_json_telemetry_summary")
+        payloads = _payloads_for_metric(caplog, "metadata.json.telemetry.summary")
         assert len(payloads) == 1
         payload = payloads[0]
         assert payload["final"] is True
-        assert payload["p50_latency_seconds"] is None
-        assert payload["p95_latency_seconds"] is None
+        assert payload["avg_latency_seconds"] is None
+        assert payload["p90_latency_seconds"] is None
         assert payload["exception_types"] == {}
     finally:
         shutdown_metrics()
@@ -438,7 +441,7 @@ def test_setup_metrics_attaches_log_sink():
     runtime = setup_metrics(
         MetricsConfig(
             log_enabled=True,
-            log_include_patterns=["metadata_http_client_telemetry_*"],
+            log_include_patterns=["metadata.http.client.telemetry.*"],
         )
     )
     try:
@@ -452,7 +455,7 @@ def test_setup_metrics_fans_out_prometheus_and_log_sink():
         MetricsConfig(
             prometheus_enabled=True,
             log_enabled=True,
-            log_include_patterns=["metadata_http_client_telemetry_*"],
+            log_include_patterns=["metadata.http.client.telemetry.*"],
         )
     )
     try:

@@ -27,6 +27,9 @@ class MetricsConfig:
     statsd_addr: str = ""
     statsite_addr: str = ""
     dogstatsd_addr: str = ""
+    opentsdb_addr: str = ""
+    opentsdb_prefix: str = ""
+    opentsdb_timeout_seconds: float = 0.2
     dogstatsd_tags: list[str] = field(default_factory=list)
     log_enabled: bool = False
     log_include_patterns: list[str] = field(default_factory=list)
@@ -37,6 +40,7 @@ class MetricsConfig:
     def get_metrics_by_provider(self, provider: str) -> Any | None:
         return None
 
+
 def load_public_metrics_config() -> Optional[MetricsConfig]:
     config = MetricsConfig(
         service_name=envs.METRICS_SERVICE_NAME,
@@ -44,6 +48,9 @@ def load_public_metrics_config() -> Optional[MetricsConfig]:
         statsd_addr=envs.METRICS_STATSD_ADDR,
         statsite_addr=envs.METRICS_STATSITE_ADDR,
         dogstatsd_addr=envs.METRICS_DOGSTATSD_ADDR,
+        opentsdb_addr=envs.METRICS_OPENTSDB_ADDR,
+        opentsdb_prefix=envs.METRICS_OPENTSDB_PREFIX,
+        opentsdb_timeout_seconds=envs.METRICS_OPENTSDB_TIMEOUT_SECONDS,
         dogstatsd_tags=list(envs.METRICS_DOGSTATSD_TAGS),
         log_enabled=envs.METRICS_LOG_ENABLED,
         log_include_patterns=list(envs.METRICS_LOG_INCLUDE),
@@ -57,6 +64,7 @@ def load_public_metrics_config() -> Optional[MetricsConfig]:
         and not config.statsd_addr
         and not config.statsite_addr
         and not config.dogstatsd_addr
+        and not config.opentsdb_addr
         and not config.log_enabled
         and not config.emit_observation_enabled
     ):

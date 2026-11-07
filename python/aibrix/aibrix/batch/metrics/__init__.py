@@ -13,6 +13,8 @@
 # limitations under the License.
 
 from aibrix.batch.metrics.batch_job import (
+    BATCH_EXECUTION_PHASE_ORDERS,
+    tags_for_execution_phase,
     tags_for_job_latency_log,
     tags_from_finalized_job,
     tags_from_job,
@@ -22,6 +24,8 @@ from aibrix.batch.metrics.common import metric_duration_ms, normalize_metric_tim
 __all__ = [
     "metric_duration_ms",
     "normalize_metric_time",
+    "BATCH_EXECUTION_PHASE_ORDERS",
+    "tags_for_execution_phase",
     "tags_from_finalized_job",
     "tags_from_job",
     "tags_for_job_latency_log",
