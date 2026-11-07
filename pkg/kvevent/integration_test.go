@@ -201,8 +201,9 @@ func TestIntegrationFullEventFlow(t *testing.T) {
 			},
 		},
 		Status: v1.PodStatus{
-			Phase: v1.PodRunning,
-			PodIP: "10.0.0.2",
+			Phase:      v1.PodRunning,
+			PodIP:      "10.0.0.2",
+			Conditions: readyConditions(),
 		},
 	}
 
