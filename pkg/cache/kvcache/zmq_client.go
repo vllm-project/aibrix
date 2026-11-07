@@ -614,12 +614,28 @@ func (c *ZMQClient) retryReplayAsync(fromSeq int64, attempts int) {
 
 // runReplay serializes replay requests on the single replay socket. ran reports
 // whether this call owned the socket; a call that found another replay in
-// flight returns ran=false and must not interpret applied=0.
+// flight, or no socket on a disconnected client, returns ran=false and must
+// not interpret applied=0.
+//
+// A connected client without a replay socket lost it when resetReplaySocket
+// could not open a new one. runReplay opens it again. If that fails too, the
+// replay counts as run and failed, so the caller treats the gap as
+// unrecoverable instead of buffering it until the pending limit.
 func (c *ZMQClient) runReplay(fromSeq int64) (applied int, ran bool, err error) {
 	c.mu.Lock()
-	if c.replayInFlight || c.replaySocket == nil {
+	if c.replayInFlight || (c.replaySocket == nil && (!c.connected || c.stopped)) {
 		c.mu.Unlock()
 		return 0, false, nil
+	}
+	if c.replaySocket == nil {
+		socket, openErr := c.newReplaySocket()
+		if openErr != nil {
+			c.mu.Unlock()
+			c.metrics.IncrementReplayFailure()
+			return 0, true, fmt.Errorf("replay socket could not be reopened: %w", openErr)
+		}
+		klog.Infof("Reopened the replay socket for %s", c.config.PodKey)
+		c.replaySocket = socket
 	}
 	c.replayInFlight = true
 	c.mu.Unlock()
@@ -752,7 +768,8 @@ func (c *ZMQClient) receiveReplay(socket *zmq.Socket) (int, error) {
 
 // resetReplaySocket closes the replay socket after a failed replay and opens
 // a new one. Frames of the abandoned reply that arrive later are dropped with
-// the old socket.
+// the old socket. If the new socket cannot be opened, replaySocket stays nil
+// and the next runReplay tries again.
 func (c *ZMQClient) resetReplaySocket(old *zmq.Socket) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
