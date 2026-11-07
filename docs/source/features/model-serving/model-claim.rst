@@ -366,7 +366,9 @@ to ``Never``. A claim created before this field existed behaves as ``Never``.
 
 A victim must be in the same namespace and on a selected Pod, have a strictly
 lower numeric priority, and be a vLLM engine whose claim and Runtime state are
-Active, Alive and Ready. The Runtime snapshot must contain authoritative
+Active, Alive and Ready. The victim's own ``preemptionPolicy`` does not
+matter. ``Never`` only stops a claim from preempting others, and does not
+protect it from preemption. The Runtime snapshot must contain authoritative
 request metrics with both running and waiting counts equal to zero. A missing
 metric is never treated as idleness. Pool sleep eligibility still applies;
 soft preemption requires ``noWakeReserveWhileAsleep: true`` and bypasses only
