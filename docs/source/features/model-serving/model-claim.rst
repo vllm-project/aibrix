@@ -569,12 +569,14 @@ A model that wakes then needs room again:
 * Otherwise, it waits for room for up to five minutes, and the next request
   asks again.
 
-In such a pool, a new claim that no Pod has room for gets room the same way.
-With the default ``preemptionPolicy: Never``, making room this way does not
-compare priorities, so an idle model of any priority may be put to sleep for
-the claim.
-The controller puts idle models to sleep on one Pod, and the claim's
-``Scheduled`` condition reads ``MakingRoom`` until the claim is placed.
+In such a pool, a new claim that no Pod has room for can get room too. The
+controller puts idle models to sleep on one Pod, and the claim's
+``Scheduled`` condition reads ``MakingRoom`` until the claim is placed. Unlike
+when a model wakes, the controller does not compare the idle model's priority
+with the claim's if the claim has the default ``preemptionPolicy: Never``. An
+idle model of any priority may then be put to sleep for the claim. The claim's
+priority only decides its placement turn among the waiting claims, as
+`Placement priority`_ describes.
 ``SleepLowerPriority`` uses the same pool safety rules and reservation, but
 may sleep a strictly lower-priority request-idle engine before the ordinary
 ``sleepToMakeRoomAfterSeconds`` duration has elapsed.
