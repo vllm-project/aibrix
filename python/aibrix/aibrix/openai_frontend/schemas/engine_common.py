@@ -34,7 +34,7 @@ References: vLLM tag ``v0.33.0rc1``, SGLang tag ``v0.5.22``.
 from __future__ import annotations
 
 from types import UnionType
-from typing import Any, Final, List, Optional, get_args, get_origin
+from typing import Any, Final, List, Optional, Union, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, conint
 
@@ -146,7 +146,7 @@ def split_native_result(envelope: Any, schema: Any) -> tuple[Any, Any]:
     TypeAdapter(schema).validate_python(envelope, strict=True)
 
     def split(value: Any, contract: Any) -> tuple[Any, Any, bool]:
-        if get_origin(contract) is UnionType:
+        if get_origin(contract) in (UnionType, Union):
             contract = next(
                 member
                 for member in get_args(contract)
