@@ -339,14 +339,16 @@ event happens first. The controller uses BestEffortFIFO: a higher-priority or
 earlier claim that cannot fit now and cannot make room does not block a
 feasible claim behind it. Claims that select different pools do not compete.
 
-With the default ``preemptionPolicy: Never``, priority only chooses which
-unplaced claim gets the next placement opportunity and does not stop or move
-an existing instance. Normal placement may still resize KV limits or sleep
-eligible idle engines to make room. Once a claim has begun making room and
-holds a valid reservation, it keeps that placement turn until it is placed,
-releases the reservation, the reservation expires, or the claim is deleted;
-a later, higher-priority claim cannot take it. Strict priority can starve a
-low-priority claim when feasible higher-priority claims continue to arrive.
+With the default ``preemptionPolicy: Never``, priority chooses which unplaced
+claim gets the next placement opportunity and does not stop or move an
+existing instance. Normal placement may still resize KV limits to make room.
+It may also sleep eligible idle engines, but only those whose claims have the
+same or a lower priority than the claim being placed. Once a claim has begun
+making room and holds a valid reservation, it keeps that placement turn until
+it is placed, releases the reservation, the reservation expires, or the claim
+is deleted; a later, higher-priority claim cannot take it. Strict priority can
+starve a low-priority claim when feasible higher-priority claims continue to
+arrive.
 
 A zero-instance claim whose engine could not be activated remains ``Failed``
 during its activation-failure backoff and does not block a later feasible
@@ -358,13 +360,15 @@ Soft preemption
 
 Set ``preemptionPolicy: SleepLowerPriority`` on an unplaced claim to let it
 make room by sleeping lower-priority engines. This replaces ordinary make-room
-for that claim; it does not fall back to sleeping equal- or higher-priority
-engines after their normal idle threshold. The field is immutable and defaults
+for that claim; it does not fall back to sleeping equal-priority engines
+after their normal idle threshold. The field is immutable and defaults
 to ``Never``. A claim created before this field existed behaves as ``Never``.
 
 A victim must be in the same namespace and on a selected Pod, have a strictly
 lower numeric priority, and be a vLLM engine whose claim and Runtime state are
-Active, Alive and Ready. The Runtime snapshot must contain authoritative
+Active, Alive and Ready. The victim's own ``preemptionPolicy`` does not
+matter. ``Never`` only stops a claim from preempting others, and does not
+protect it from preemption. The Runtime snapshot must contain authoritative
 request metrics with both running and waiting counts equal to zero. A missing
 metric is never treated as idleness. Pool sleep eligibility still applies;
 soft preemption requires ``noWakeReserveWhileAsleep: true`` and bypasses only
@@ -571,11 +575,14 @@ A model that wakes then needs room again:
 
 In such a pool, a new claim that no Pod has room for can get room too. The
 controller puts idle models to sleep on one Pod, and the claim's
-``Scheduled`` condition reads ``MakingRoom`` until the claim is placed. Unlike
-when a model wakes, the controller does not compare the idle model's priority
-with the claim's if the claim has the default ``preemptionPolicy: Never``. An
-idle model of any priority may then be put to sleep for the claim. The claim's
-priority only decides its placement turn among the waiting claims, as
+``Scheduled`` condition reads ``MakingRoom`` until the claim is placed. As
+when a model wakes, the controller takes only models whose claims have the
+same or a lower priority than the new claim. It makes no room for the new
+claim on a Pod where a wake request can be met, now or once room is made.
+This holds whatever the waking model's priority. If only higher-priority
+models could make room for the new claim, its ``Scheduled`` condition reads
+``NoMatchingPods``, and the message says so. The claim's priority also
+decides its placement turn among the waiting claims, as
 `Placement priority`_ describes.
 ``SleepLowerPriority`` uses the same pool safety rules and reservation, but
 may sleep a strictly lower-priority request-idle engine before the ordinary

@@ -334,6 +334,10 @@ type roomPlan struct {
 	known  bool
 	// room is what the pod's card offers now, without anything given back.
 	room int64
+	// onlyHigherPriority marks a pod where no room can be made for the claim,
+	// though putting idle engines of a higher priority to sleep as well would
+	// make it.
+	onlyHigherPriority bool
 }
 
 // betterPlan reports whether a plan makes room more surely than another. A
@@ -355,7 +359,8 @@ func betterPlan(plan, than roomPlan) bool {
 
 // makeRoomToPlace makes room for a claim that no pod has room for, and returns
 // what it does, worded for the claim's Scheduled condition. It reports false
-// when no room can be made for the claim now.
+// when no room can be made for the claim now. If only idle models of a higher
+// priority could make room, it then says so.
 //
 // Room is made for one claim in a pool at a time: the one that has waited
 // longest of those that room can be made for, as firstToMakeRoomFor says. It
@@ -383,6 +388,7 @@ func (r *ModelClaimReconciler) makeRoomToPlace(
 	seat := perGPU.minimumReserveBytes()
 	held, holding := r.reservations().heldFor(pm.Namespace, pm.Name, now)
 	var best *roomPlan
+	onlyHigherPriority := false
 	for i := range candidates {
 		pod := &candidates[i]
 		if holding && pod.Name != held.Name {
@@ -390,6 +396,7 @@ func (r *ModelClaimReconciler) makeRoomToPlace(
 		}
 		plan, found := r.planRoom(ctx, pm, pod, ledgers[pod.Name], seat, readings)
 		if !found {
+			onlyHigherPriority = onlyHigherPriority || plan.onlyHigherPriority
 			continue
 		}
 		if best == nil || betterPlan(plan, *best) {
@@ -398,6 +405,9 @@ func (r *ModelClaimReconciler) makeRoomToPlace(
 	}
 	if best == nil {
 		r.reservations().release(pm.Namespace, pm.Name)
+		if onlyHigherPriority {
+			return "only higher-priority idle models could make room, and they are not put to sleep for this model", false
+		}
 		return "", false
 	}
 	if !r.reservations().hold(cardOf(best.pod), pm.Name, seat, now) {
@@ -424,6 +434,9 @@ func (r *ModelClaimReconciler) makeRoomToPlace(
 // charged, less what it held the last time it slept. The claim has to pass
 // both checks that placement makes: the floors, and what the engines hold now.
 // An engine that has not been seen asleep ends the plan, as roomPlan says.
+// As for a wake, only engines whose claims have the same or a lower priority
+// than the claim may be put to sleep for it. If putting the higher-priority
+// ones to sleep too would make room, the plan returned with false says so.
 func (r *ModelClaimReconciler) planRoom(
 	ctx context.Context,
 	pm *modelv1alpha1.ModelClaim,
@@ -441,11 +454,12 @@ func (r *ModelClaimReconciler) planRoom(
 	if !can || r.wakeWaitsOn(ctx, pod, ledger, readings) {
 		return roomPlan{}, false
 	}
-	idle := r.idleEngines(ctx, pm, pod, lifecycle.sleepToMakeRoomAfter(), readings)
+	all := r.idleEngines(ctx, pm, pod, lifecycle.sleepToMakeRoomAfter(), readings)
+	idle := idleEnginesAtOrBelowPriority(all, pm.Spec.Priority)
 	// No sleep is made for a claim that even every idle engine asleep would
 	// leave without room.
 	if !r.sleepsMakeRoom(ledger, idle, seat) {
-		return roomPlan{}, false
+		return roomPlan{onlyHigherPriority: len(idle) < len(all) && r.sleepsMakeRoom(ledger, all, seat)}, false
 	}
 	charged := make(map[string]engineOnPod, len(ledger.engines))
 	for _, engine := range ledger.engines {
