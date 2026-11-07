@@ -23,6 +23,16 @@ METRIC_METADATA_HTTP_REQUEST = "metadata.http.request"
 # Latency of inbound metadata HTTP requests, emitted in milliseconds.
 METRIC_METADATA_HTTP_DURATION = "metadata.http.duration"
 
+# Structured HTTP client telemetry family.
+METRIC_METADATA_HTTP_CLIENT_TELEMETRY = "metadata.http.client.telemetry"
+METRIC_METADATA_HTTP_CLIENT_TELEMETRY_EXCEPTION_COUNT = (
+    "metadata.http.client.telemetry.exception_count"
+)
+METRIC_METADATA_HTTP_CLIENT_TELEMETRY_LATENCY_BUCKET_COUNT = (
+    "metadata.http.client.telemetry.latency_bucket_count"
+)
+METRIC_METADATA_HTTP_CLIENT_TELEMETRY_SUMMARY = "metadata.http.client.telemetry.summary"
+
 # Count of accepted batch job create requests at the API boundary.
 METRIC_METADATA_BATCH_API_JOB_INCOMING = "metadata.batch.api.job.incoming"
 
@@ -61,6 +71,12 @@ METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_REASONING_TOKENS = (
     "metadata.batch.driver.request.reasoning_tokens"
 )
 
+# Structured batch dispatch telemetry family.
+METRIC_METADATA_BATCH_DISPATCH_TELEMETRY = "metadata.batch.dispatch.telemetry"
+METRIC_METADATA_BATCH_DISPATCH_TELEMETRY_SUMMARY = (
+    "metadata.batch.dispatch.telemetry.summary"
+)
+
 # Count of failure injection events, tagged by injection type, breakpoint, and action.
 METRIC_METADATA_BATCH_DRIVER_FAILURE_INJECTION = (
     "metadata.batch.driver.failure_injection"
@@ -95,3 +111,10 @@ METRIC_METADATA_STORE_ERROR = "metadata.store.error"
 
 # Latency of metadata store operations, emitted in milliseconds.
 METRIC_METADATA_STORE_DURATION = "metadata.store.duration"
+
+# Structured JSON profiler telemetry family.
+METRIC_METADATA_JSON_TELEMETRY = "metadata.json.telemetry"
+METRIC_METADATA_JSON_TELEMETRY_EXCEPTION_COUNT = (
+    "metadata.json.telemetry.exception_count"
+)
+METRIC_METADATA_JSON_TELEMETRY_SUMMARY = "metadata.json.telemetry.summary"

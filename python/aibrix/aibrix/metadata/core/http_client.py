@@ -25,7 +25,7 @@ import httpx
 
 from aibrix import envs
 from aibrix.logger import init_logger
-from aibrix.metadata.core.metrics import Emitter, T
+from aibrix.metadata.core.metrics import Emitter, T, metrics_names
 
 logger = init_logger(__name__)
 
@@ -70,8 +70,8 @@ class _HTTPTelemetrySnapshot:
     window_started: int
     window_completed: int
     window_failed: int
-    p50_latency_seconds: Optional[float]
-    p95_latency_seconds: Optional[float]
+    avg_latency_seconds: Optional[float]
+    p90_latency_seconds: Optional[float]
     exception_types: dict[str, int]
     latency_histogram: tuple[int, ...]
     call_sites: tuple["_HTTPTelemetryCallSiteSnapshot", ...]
@@ -109,6 +109,7 @@ class HTTPTelemetryStats:
     _window_latency_histogram: list[int] = field(
         default_factory=lambda: [0] * (len(_LATENCY_BUCKET_UPPER_BOUNDS_SECONDS) + 1)
     )
+    _window_latency_sum_seconds: float = 0.0
     _window_exception_types: Counter[str] = field(default_factory=Counter)
     _call_sites: dict[str, _HTTPTelemetryCallSiteStats] = field(default_factory=dict)
 
@@ -145,6 +146,7 @@ class HTTPTelemetryStats:
             normalized_latency,
         )
         self._window_latency_histogram[bucket_index] += 1
+        self._window_latency_sum_seconds += normalized_latency
         if failed and exception_type is not None:
             self._window_exception_types[exception_type] += 1
         if call_site is not None:
@@ -169,8 +171,8 @@ class HTTPTelemetryStats:
             window_started=self.window_started,
             window_completed=self.window_completed,
             window_failed=self.window_failed,
-            p50_latency_seconds=self._histogram_percentile(0.50),
-            p95_latency_seconds=self._histogram_percentile(0.95),
+            avg_latency_seconds=self._window_average_latency(),
+            p90_latency_seconds=self._histogram_percentile(0.90),
             exception_types=dict(sorted(self._window_exception_types.items())),
             latency_histogram=tuple(self._window_latency_histogram),
             call_sites=tuple(self._call_site_snapshots()),
@@ -182,9 +184,16 @@ class HTTPTelemetryStats:
             self._window_latency_histogram = [0] * (
                 len(_LATENCY_BUCKET_UPPER_BOUNDS_SECONDS) + 1
             )
+            self._window_latency_sum_seconds = 0.0
             self._window_exception_types = Counter()
             self._call_sites = {}
         return snapshot
+
+    def _window_average_latency(self) -> Optional[float]:
+        total = sum(self._window_latency_histogram)
+        if total <= 0:
+            return None
+        return self._window_latency_sum_seconds / total
 
     def _histogram_percentile(self, percentile: float) -> Optional[float]:
         total = sum(self._window_latency_histogram)
@@ -253,9 +262,7 @@ class _HTTPClientMeta(type):
                 from aibrix.metadata.core.httpx_client import HTTPXClientWrapper
 
                 return HTTPXClientWrapper(**client_kwargs)
-            raise ValueError(
-                "AIBRIX_BATCH_RUNTIME_HTTP_CLIENT must be 'httpx_client'"
-            )
+            raise ValueError("AIBRIX_BATCH_RUNTIME_HTTP_CLIENT must be 'httpx_client'")
         return super().__call__(**client_kwargs)
 
 
@@ -594,26 +601,26 @@ class HTTPClient(metaclass=_HTTPClientMeta):
             "window_failed": snapshot.window_failed,
             "registered_clients": self._registered_clients(),
         }
-        if snapshot.p50_latency_seconds is not None:
-            numeric_fields["p50_latency_seconds"] = round(
-                snapshot.p50_latency_seconds,
+        if snapshot.avg_latency_seconds is not None:
+            numeric_fields["avg_latency_seconds"] = round(
+                snapshot.avg_latency_seconds,
                 6,
             )
-        if snapshot.p95_latency_seconds is not None:
-            numeric_fields["p95_latency_seconds"] = round(
-                snapshot.p95_latency_seconds,
+        if snapshot.p90_latency_seconds is not None:
+            numeric_fields["p90_latency_seconds"] = round(
+                snapshot.p90_latency_seconds,
                 6,
             )
         for metric_field, value in numeric_fields.items():
             Emitter.gauge(
-                f"metadata_http_client_telemetry_{metric_field}",
+                f"{metrics_names.METRIC_METADATA_HTTP_CLIENT_TELEMETRY}.{metric_field}",
                 float(value),
                 *base_tags,
                 T("log_field", metric_field),
             )
         for exception_type, exception_count in snapshot.exception_types.items():
             Emitter.gauge(
-                "metadata_http_client_telemetry_exception_count",
+                metrics_names.METRIC_METADATA_HTTP_CLIENT_TELEMETRY_EXCEPTION_COUNT,
                 float(exception_count),
                 *base_tags,
                 T("log_map", "exception_types"),
@@ -622,7 +629,7 @@ class HTTPClient(metaclass=_HTTPClientMeta):
             )
         for bucket_index, bucket_count in enumerate(snapshot.latency_histogram):
             Emitter.gauge(
-                "metadata_http_client_telemetry_latency_bucket_count",
+                metrics_names.METRIC_METADATA_HTTP_CLIENT_TELEMETRY_LATENCY_BUCKET_COUNT,
                 float(bucket_count),
                 *base_tags,
                 T("log_list", "latency_histogram"),
@@ -630,10 +637,10 @@ class HTTPClient(metaclass=_HTTPClientMeta):
                 T("latency_histogram_bucket", str(bucket_index)),
             )
         Emitter.gauge(
-            "metadata_http_client_telemetry_summary",
+            metrics_names.METRIC_METADATA_HTTP_CLIENT_TELEMETRY_SUMMARY,
             1.0,
             *base_tags,
-            T("log_default_null", "p50_latency_seconds,p95_latency_seconds"),
+            T("log_default_null", "avg_latency_seconds,p90_latency_seconds"),
             T("log_default_map", "exception_types"),
             T("flush", "true"),
         )

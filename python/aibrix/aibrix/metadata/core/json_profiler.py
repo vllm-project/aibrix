@@ -23,12 +23,18 @@ from typing import Callable, Optional, ParamSpec, TypeVar
 
 from aibrix import envs
 from aibrix.logger import init_logger
-from aibrix.metadata.core.metrics import Emitter, T
+from aibrix.metadata.core.metrics import Emitter, T, metrics_names
 
 logger = init_logger(__name__)
 
 P = ParamSpec("P")
 R = TypeVar("R")
+
+
+def _average(samples: list[float]) -> Optional[float]:
+    if not samples:
+        return None
+    return sum(samples) / len(samples)
 
 
 def _telemetry_enabled() -> bool:
@@ -64,8 +70,8 @@ class JsonProfilerSnapshot:
     window_started: int
     window_completed: int
     window_failed: int
-    p50_latency_seconds: Optional[float]
-    p95_latency_seconds: Optional[float]
+    avg_latency_seconds: Optional[float]
+    p90_latency_seconds: Optional[float]
     exception_types: dict[str, int]
     operations: tuple[JsonProfilerOperationSnapshot, ...]
 
@@ -137,8 +143,8 @@ class _JsonProfilerStats:
                 window_started=self.window_started,
                 window_completed=self.window_completed,
                 window_failed=self.window_failed,
-                p50_latency_seconds=_percentile(self._window_latencies_seconds, 0.50),
-                p95_latency_seconds=_percentile(self._window_latencies_seconds, 0.95),
+                avg_latency_seconds=_average(self._window_latencies_seconds),
+                p90_latency_seconds=_percentile(self._window_latencies_seconds, 0.90),
                 exception_types=dict(sorted(self._window_exception_types.items())),
                 operations=tuple(self._operation_snapshots()),
             )
@@ -261,26 +267,26 @@ class JsonProfiler:
             "window_completed": snapshot.window_completed,
             "window_failed": snapshot.window_failed,
         }
-        if snapshot.p50_latency_seconds is not None:
-            numeric_fields["p50_latency_seconds"] = round(
-                snapshot.p50_latency_seconds,
+        if snapshot.avg_latency_seconds is not None:
+            numeric_fields["avg_latency_seconds"] = round(
+                snapshot.avg_latency_seconds,
                 6,
             )
-        if snapshot.p95_latency_seconds is not None:
-            numeric_fields["p95_latency_seconds"] = round(
-                snapshot.p95_latency_seconds,
+        if snapshot.p90_latency_seconds is not None:
+            numeric_fields["p90_latency_seconds"] = round(
+                snapshot.p90_latency_seconds,
                 6,
             )
         for metric_field, value in numeric_fields.items():
             Emitter.gauge(
-                f"metadata_json_telemetry_{metric_field}",
+                f"{metrics_names.METRIC_METADATA_JSON_TELEMETRY}.{metric_field}",
                 float(value),
                 *base_tags,
                 T("log_field", metric_field),
             )
         for exception_type, exception_count in snapshot.exception_types.items():
             Emitter.gauge(
-                "metadata_json_telemetry_exception_count",
+                metrics_names.METRIC_METADATA_JSON_TELEMETRY_EXCEPTION_COUNT,
                 float(exception_count),
                 *base_tags,
                 T("log_map", "exception_types"),
@@ -288,10 +294,13 @@ class JsonProfiler:
                 T("exception_type", exception_type),
             )
         Emitter.gauge(
-            "metadata_json_telemetry_summary",
+            metrics_names.METRIC_METADATA_JSON_TELEMETRY_SUMMARY,
             1.0,
             *base_tags,
-            T("log_default_null", "p50_latency_seconds,p95_latency_seconds"),
+            T(
+                "log_default_null",
+                "avg_latency_seconds,p90_latency_seconds",
+            ),
             T("log_default_map", "exception_types"),
             T("flush", "true"),
         )

@@ -67,6 +67,7 @@ def test_load_metrics_config_defaults_metrics_off(monkeypatch):
     monkeypatch.setattr(envs, "METRICS_STATSD_ADDR", "")
     monkeypatch.setattr(envs, "METRICS_STATSITE_ADDR", "")
     monkeypatch.setattr(envs, "METRICS_DOGSTATSD_ADDR", "")
+    monkeypatch.setattr(envs, "METRICS_OPENTSDB_ADDR", "")
     monkeypatch.setattr(envs, "METRICS_LOG_ENABLED", False)
 
     assert load_metrics_config() is None
@@ -74,9 +75,6 @@ def test_load_metrics_config_defaults_metrics_off(monkeypatch):
 
 def test_build_app_uses_noop_metrics_runtime_when_disabled(monkeypatch):
     monkeypatch.setattr(settings, "METRICS", None)
-    monkeypatch.setattr(
-        "aibrix.metadata.core.metrics.setup.load_metrics_config", lambda: None
-    )
 
     with patch(
         "aibrix.metadata.store.redis.get_redis_client",

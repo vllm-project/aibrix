@@ -1316,11 +1316,11 @@ def test_dispatch_stats_tracks_stage_latencies():
     snapshot = stats.snapshot(reset_window=True)
 
     assert snapshot.avg_queue_wait_seconds == 0.1
-    assert snapshot.p95_queue_wait_seconds == 0.1
+    assert snapshot.p90_queue_wait_seconds == 0.1
     assert snapshot.avg_qps_wait_seconds == 0.2
-    assert snapshot.p95_qps_wait_seconds == 0.2
+    assert snapshot.p90_qps_wait_seconds == 0.2
     assert snapshot.avg_send_latency_seconds == 0.7
-    assert snapshot.p95_send_latency_seconds == 0.7
+    assert snapshot.p90_send_latency_seconds == 0.7
 
 
 @pytest.mark.asyncio
@@ -1347,8 +1347,8 @@ async def test_dispatch_stats_records_admission_queue_wait_from_run_loop():
     assert len(results) == 2
     assert snapshot.avg_queue_wait_seconds is not None
     assert snapshot.avg_queue_wait_seconds > 0
-    assert snapshot.p95_send_latency_seconds is not None
-    assert snapshot.p95_send_latency_seconds >= 0.05
+    assert snapshot.p90_send_latency_seconds is not None
+    assert snapshot.p90_send_latency_seconds >= 0.05
 
 
 @pytest.mark.asyncio

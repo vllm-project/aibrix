@@ -50,15 +50,16 @@ def test_json_profiler_emits_summary_gauge_with_purpose():
         profiler.emit_telemetry(final=False, elapsed=1.0)
 
     summary_gauge = next(
-        tags for name, _, tags in gauges if name == "metadata_json_telemetry_summary"
+        tags for name, _, tags in gauges if name == "metadata.json.telemetry.summary"
     )
     assert T("purpose", "test-json-log") in summary_gauge
     assert T("flush", "true") in summary_gauge
     metric_values = {name: value for name, value, _ in gauges}
-    assert metric_values["metadata_json_telemetry_started_qps"] == 1.0
-    assert metric_values["metadata_json_telemetry_completed_qps"] == 1.0
-    assert metric_values["metadata_json_telemetry_failed_qps"] == 0.0
-    assert "metadata_json_telemetry_p50_latency_seconds" in metric_values
+    assert metric_values["metadata.json.telemetry.started_qps"] == 1.0
+    assert metric_values["metadata.json.telemetry.completed_qps"] == 1.0
+    assert metric_values["metadata.json.telemetry.failed_qps"] == 0.0
+    assert "metadata.json.telemetry.avg_latency_seconds" in metric_values
+    assert "metadata.json.telemetry.p90_latency_seconds" in metric_values
 
 
 def test_json_profiler_emits_telemetry_numeric_metrics(monkeypatch):
@@ -78,17 +79,18 @@ def test_json_profiler_emits_telemetry_numeric_metrics(monkeypatch):
     profiler.emit_telemetry(final=False, elapsed=1.0)
 
     emitted_names = {name for name, _, _ in gauges}
-    assert "metadata_json_telemetry_completed" in emitted_names
-    assert "metadata_json_telemetry_completed_qps" in emitted_names
-    assert "metadata_json_telemetry_summary" in emitted_names
+    assert "metadata.json.telemetry.avg_latency_seconds" in emitted_names
+    assert "metadata.json.telemetry.completed" in emitted_names
+    assert "metadata.json.telemetry.completed_qps" in emitted_names
+    assert "metadata.json.telemetry.summary" in emitted_names
     completed_tags = next(
-        tags for name, _, tags in gauges if name == "metadata_json_telemetry_completed"
+        tags for name, _, tags in gauges if name == "metadata.json.telemetry.completed"
     )
     assert T("log_field", "completed") in completed_tags
     summary_gauges = [
         (value, tags)
         for name, value, tags in gauges
-        if name == "metadata_json_telemetry_summary"
+        if name == "metadata.json.telemetry.summary"
     ]
     assert summary_gauges
     assert summary_gauges[0][0] == 1.0
@@ -124,10 +126,10 @@ def test_json_profiler_shares_periodic_emit_clock_by_purpose():
         second.profile("json.loads", json.loads, '{"second": true}')
 
     summary_gauges = [
-        tags for name, _, tags in gauges if name == "metadata_json_telemetry_summary"
+        tags for name, _, tags in gauges if name == "metadata.json.telemetry.summary"
     ]
     assert len(summary_gauges) == 1
     assert T("purpose", "test-json-periodic-shared") in summary_gauges[0]
     metric_values = {name: value for name, value, _ in gauges}
-    assert metric_values["metadata_json_telemetry_window_completed"] == 1.0
+    assert metric_values["metadata.json.telemetry.window_completed"] == 1.0
     assert second.snapshot(reset_window=False).window_completed == 1

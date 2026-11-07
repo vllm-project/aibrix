@@ -116,13 +116,13 @@ class DispatchStatsSnapshot:
     window_completed: int
     window_failed: int
     avg_latency_seconds: Optional[float]
-    p95_latency_seconds: Optional[float]
+    p90_latency_seconds: Optional[float]
     avg_queue_wait_seconds: Optional[float]
-    p95_queue_wait_seconds: Optional[float]
+    p90_queue_wait_seconds: Optional[float]
     avg_qps_wait_seconds: Optional[float]
-    p95_qps_wait_seconds: Optional[float]
+    p90_qps_wait_seconds: Optional[float]
     avg_send_latency_seconds: Optional[float]
-    p95_send_latency_seconds: Optional[float]
+    p90_send_latency_seconds: Optional[float]
 
 
 class DispatchStats:
@@ -198,13 +198,13 @@ class DispatchStats:
                 window_completed=self._window_completed,
                 window_failed=self._window_failed,
                 avg_latency_seconds=_average(latencies),
-                p95_latency_seconds=_percentile(latencies, 0.95),
+                p90_latency_seconds=_percentile(latencies, 0.90),
                 avg_queue_wait_seconds=_average(queue_waits),
-                p95_queue_wait_seconds=_percentile(queue_waits, 0.95),
+                p90_queue_wait_seconds=_percentile(queue_waits, 0.90),
                 avg_qps_wait_seconds=_average(qps_waits),
-                p95_qps_wait_seconds=_percentile(qps_waits, 0.95),
+                p90_qps_wait_seconds=_percentile(qps_waits, 0.90),
                 avg_send_latency_seconds=_average(send_latencies),
-                p95_send_latency_seconds=_percentile(send_latencies, 0.95),
+                p90_send_latency_seconds=_percentile(send_latencies, 0.90),
             )
             if reset_window:
                 self._window_started = 0

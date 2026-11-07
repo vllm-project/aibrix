@@ -704,6 +704,7 @@ async def test_execute_worker_reconciles_storage_done_requests(monkeypatch):
     assert read_starts == [1]
     assert result.status.request_counts.completed == 1
 
+
 @pytest.mark.asyncio
 async def test_execute_worker_emits_usage_metrics_in_concurrent_path(monkeypatch):
     job = _make_job(total=1)

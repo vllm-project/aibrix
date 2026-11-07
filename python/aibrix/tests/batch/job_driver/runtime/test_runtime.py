@@ -317,6 +317,10 @@ async def test_runtime_base_session_emits_runtime_phase_metrics(monkeypatch):
         )
         assert value >= 0
         assert tags["job_id"] == "job-runtime-phases"
+        assert tags["phase_order"] == {
+            "runtime_provision": "030",
+            "runtime_ready": "040",
+        }[phase]
         assert tags["event"] == "Batch job latency telemetry"
         assert tags["log_map"] == "phase_duration_ms"
         assert tags["log_key"] == phase
@@ -368,6 +372,7 @@ def test_runtime_provision_metric_emits_after_delete_started_ref(monkeypatch):
     assert value == 3000.0
     assert tags["job_id"] == "job-reprovision"
     assert tags["phase"] == "runtime_provision"
+    assert tags["phase_order"] == "030"
     assert tags["log_key"] == "runtime_provision"
 
 

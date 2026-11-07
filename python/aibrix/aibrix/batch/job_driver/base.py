@@ -38,7 +38,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
-from math import ceil, isfinite
+from math import isfinite
 from typing import Any, Dict, Iterable, Optional, Set, Tuple
 
 import aibrix.batch.storage as storage
@@ -80,7 +80,11 @@ from aibrix.batch.job_entity import (
     RequestCountStats,
     ensure_batch_job_error,
 )
-from aibrix.batch.metrics import tags_for_job_latency_log, tags_from_job
+from aibrix.batch.metrics import (
+    tags_for_execution_phase,
+    tags_for_job_latency_log,
+    tags_from_job,
+)
 from aibrix.batch.metrics.common import metric_duration_ms
 from aibrix.context.infra import InfrastructureContext
 from aibrix.logger import init_logger
@@ -245,12 +249,6 @@ def _int_env(name: str, default: int) -> int:
         )  # type: ignore[call-arg]
         return default
     return value
-
-
-def _round_optional(value: Optional[float]) -> Optional[float]:
-    if value is None:
-        return None
-    return round(value, 6)
 
 
 class BaseJobDriver:
@@ -679,7 +677,7 @@ class BaseJobDriver:
                 phase_ms,
                 *tags_from_job(job),
                 *tags_for_job_latency_log(job),
-                T("phase", phase),
+                *tags_for_execution_phase(phase),
                 T("log_map", "phase_duration_ms"),
                 T("log_key", phase),
             )
@@ -709,7 +707,7 @@ class BaseJobDriver:
                 phase_ms,
                 *tags_from_job(job),
                 *tags_for_job_latency_log(job),
-                T("phase", phase),
+                *tags_for_execution_phase(phase),
                 T("log_map", "phase_duration_ms"),
                 T("log_key", phase),
             )
@@ -1822,31 +1820,57 @@ class BaseJobDriver:
         final: bool,
     ) -> None:
         window_seconds = max(window_seconds, 1e-9)
-        logger.info(
-            "Batch dispatch telemetry",
-            job_id=job_id,
-            final=final,
-            started_qps=round(snapshot.window_started / window_seconds, 3),
-            completed_qps=round(snapshot.window_completed / window_seconds, 3),
-            failed_qps=round(snapshot.window_failed / window_seconds, 3),
-            inflight=snapshot.inflight,
-            concurrency_limit=snapshot.limit,
-            max_inflight=snapshot.max_inflight,
-            started=snapshot.started,
-            completed=snapshot.completed,
-            failed=snapshot.failed,
-            window_started=snapshot.window_started,
-            window_completed=snapshot.window_completed,
-            window_failed=snapshot.window_failed,
-            avg_latency_seconds=_round_optional(snapshot.avg_latency_seconds),
-            p95_latency_seconds=_round_optional(snapshot.p95_latency_seconds),
-            avg_queue_wait_seconds=_round_optional(snapshot.avg_queue_wait_seconds),
-            p95_queue_wait_seconds=_round_optional(snapshot.p95_queue_wait_seconds),
-            avg_qps_wait_seconds=_round_optional(snapshot.avg_qps_wait_seconds),
-            p95_qps_wait_seconds=_round_optional(snapshot.p95_qps_wait_seconds),
-            avg_send_latency_seconds=_round_optional(snapshot.avg_send_latency_seconds),
-            p95_send_latency_seconds=_round_optional(snapshot.p95_send_latency_seconds),
-        )  # type: ignore[call-arg]
+        event = "Batch dispatch telemetry summary"
+        base_tags = (
+            T("event", event),
+            T("job_id", job_id),
+            T("log_context", "job_id"),
+        )
+        numeric_fields = {
+            "started_qps": round(snapshot.window_started / window_seconds, 3),
+            "completed_qps": round(snapshot.window_completed / window_seconds, 3),
+            "failed_qps": round(snapshot.window_failed / window_seconds, 3),
+            "inflight": snapshot.inflight,
+            "concurrency_limit": snapshot.limit,
+            "max_inflight": snapshot.max_inflight,
+            "started": snapshot.started,
+            "completed": snapshot.completed,
+            "failed": snapshot.failed,
+            "window_started": snapshot.window_started,
+            "window_completed": snapshot.window_completed,
+            "window_failed": snapshot.window_failed,
+        }
+        optional_fields = {
+            "avg_latency_seconds": snapshot.avg_latency_seconds,
+            "p90_latency_seconds": snapshot.p90_latency_seconds,
+            "avg_queue_wait_seconds": snapshot.avg_queue_wait_seconds,
+            "p90_queue_wait_seconds": snapshot.p90_queue_wait_seconds,
+            "avg_qps_wait_seconds": snapshot.avg_qps_wait_seconds,
+            "p90_qps_wait_seconds": snapshot.p90_qps_wait_seconds,
+            "avg_send_latency_seconds": snapshot.avg_send_latency_seconds,
+            "p90_send_latency_seconds": snapshot.p90_send_latency_seconds,
+        }
+        for metric_field, value in optional_fields.items():
+            if value is not None:
+                numeric_fields[metric_field] = round(value, 6)
+        for metric_field, value in numeric_fields.items():
+            Emitter.gauge(
+                f"{metrics_names.METRIC_METADATA_BATCH_DISPATCH_TELEMETRY}.{metric_field}",
+                float(value),
+                *base_tags,
+                T("log_field", metric_field),
+            )
+        Emitter.gauge(
+            metrics_names.METRIC_METADATA_BATCH_DISPATCH_TELEMETRY_SUMMARY,
+            1.0,
+            *base_tags,
+            T("final", str(final).lower()),
+            T(
+                "log_default_null",
+                ",".join(optional_fields.keys()),
+            ),
+            T("flush", "true"),
+        )
 
     async def _send_one(
         self,
