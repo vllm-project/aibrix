@@ -93,13 +93,11 @@ func (r *queueRouter) Route(ctx *types.RoutingContext, pods types.PodList) (stri
 	r.cache.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
 
 	now := time.Now()
-	// Freeze the residency metadata before the request becomes visible to the serve
-	// goroutine: it can pick the entry up as soon as it is enqueued, hand it to the
-	// router, and the requester can then be unblocked and recycle its context while
-	// the entry is still queued. The departure metrics therefore read the entry, not
-	// the context.
+	// Retain the context before handing it to the worker. Cancellation can
+	// finish the caller while this entry still needs routing or accounting.
 	entry := types.NewQueueEntry(ctx, now)
 	if err := r.queue.Enqueue(entry, now); err != nil {
+		entry.ReleaseRoutingContext()
 		return "", err
 	}
 	r.updateQueuePendingMetric(entry)
@@ -117,6 +115,11 @@ func (r *queueRouter) Route(ctx *types.RoutingContext, pods types.PodList) (stri
 	// uses a CAS so addPodStats runs exactly once regardless of which caller wins, and
 	// AddRequestCount returns only after the winner's addPodStats has returned.
 	r.cache.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
+	if ctx.Err() != nil {
+		// Capacity may not change after a client leaves. Wake the worker so
+		// canceled entries can depart without waiting for another request.
+		r.tryRoute(pods)
+	}
 
 	return ctx.TargetAddress(), ctx.GetError()
 }
@@ -169,13 +172,21 @@ var errRouteRecovered = errors.New("gateway routing recovered from an internal e
 // every queued request waiting for a target pod that never comes.
 func (r *queueRouter) routeNext(pods types.PodList) (advance bool) {
 	var (
-		entry *types.QueueEntry
-		err   error
+		entry    *types.QueueEntry
+		err      error
+		departed bool
 	)
 	step := routeStepPeek
 	defer func() {
+		// Panic reporting still reads the context. Release only after all
+		// recovery has finished, including a panic in departure reporting.
+		defer func() {
+			if departed {
+				entry.ReleaseRoutingContext()
+			}
+		}()
 		if v := recover(); v != nil {
-			advance = r.recoverCandidate(v, entry, step)
+			advance = r.recoverCandidate(v, entry, step, &departed)
 		}
 	}()
 
@@ -193,7 +204,10 @@ func (r *queueRouter) routeNext(pods types.PodList) (advance bool) {
 
 	step = routeStepRoute
 	ctx := entry.RoutingContext
-	_, routeErr := r.router.Route(ctx, pods)
+	routeErr := ctx.Err()
+	if routeErr == nil {
+		_, routeErr = r.router.Route(ctx, pods)
+	}
 	if routeErr != nil {
 		// Necessary if Router has not set the error. No harm to set twice.
 		ctx.SetError(routeErr)
@@ -211,12 +225,11 @@ func (r *queueRouter) routeNext(pods types.PodList) (advance bool) {
 	} else if dequeued != entry {
 		klog.Error("unexpected request dequeued")
 	} else {
+		departed = true
 		// Report the departure only once the request actually left the queue: a
 		// failed Dequeue leaves it enqueued, so the next Peek would route the same
 		// entry again and emitting here would count that departure twice. The
-		// emission reads the entry's frozen metadata: the requester may already
-		// have been unblocked, and its context recycled, by the time the router
-		// above set the target pod.
+		// emission reads the entry's frozen reporting metadata.
 		emitQueueOutcomeMetrics(entry, routeErr)
 	}
 	r.updateQueuePendingMetric(entry)
@@ -232,7 +245,7 @@ func (r *queueRouter) routeNext(pods types.PodList) (advance bool) {
 // Every action below calls back into the queue or the metrics pipeline, which is the code
 // that raised the first panic, so all of them run under one recover here: a second panic
 // must not take the serve goroutine down either.
-func (r *queueRouter) recoverCandidate(v any, entry *types.QueueEntry, step string) (advance bool) {
+func (r *queueRouter) recoverCandidate(v any, entry *types.QueueEntry, step string, departed *bool) (advance bool) {
 	defer func() {
 		if nested := recover(); nested != nil {
 			reportRoutePanic(nested, entry, routeStepRecovery)
@@ -271,6 +284,7 @@ func (r *queueRouter) recoverCandidate(v any, entry *types.QueueEntry, step stri
 			r.updateQueuePendingMetric(entry)
 			return false
 		}
+		*departed = true
 		emitQueueOutcomeMetrics(entry, errRouteRecovered)
 		r.updateQueuePendingMetric(entry)
 		return true
@@ -354,7 +368,7 @@ func queueOutcomeLabel(err error) string {
 // on is already covered by the request-path metrics.
 //
 // The labels and the wait start come from the queue entry, not from its routing
-// context: the requester may have been unblocked already, and its context recycled.
+// context, so reporting remains independent of the context's ownership.
 func emitQueueOutcomeMetrics(entry *types.QueueEntry, routeErr error) {
 	labels := entryMetricLabels(entry)
 	metrics.EmitMetricToPrometheus(labels, nil, metrics.GatewayQueueWaitTimeBucketTotal,
