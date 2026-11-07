@@ -84,8 +84,9 @@ const (
 type Store struct {
 	mu                  sync.RWMutex            // Read-write lock for concurrency safety
 	initialized         bool                    // Initialization status flag
-	redisClient         *redis.Client           // Redis client instance
-	admitRedisClient    *redis.Client           // redisClient without go-redis retries, for the admit script
+	redisClient         *redis.Client           // Shared client; context deadlines are off by default. The derived clients below enable them.
+	admitRedisClient    *redis.Client           // Context deadlines and no retries for admission; hooks added with AddHook are not inherited.
+	readRedisClient     *redis.Client           // Context deadlines for routing reads; hooks added with AddHook are not inherited.
 	prometheusApi       prometheusv1.API        // Prometheus API client
 	modelRouterProvider ModelRouterProviderFunc // Function to get model router
 
@@ -236,10 +237,15 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterP
 	podMetricsWorkerCount := loadPodMetricsWorkerCount()
 	podMetricsJobQueueSize := loadPodMetricsJobQueueSize(podMetricsWorkerCount)
 
+	var readRedisClient *redis.Client
+	if redisClient != nil {
+		readRedisClient = utils.NewRedisClientWithContextTimeout(redisClient.Options())
+	}
 	store = &Store{
 		initialized:           true,
 		redisClient:           redisClient,
 		admitRedisClient:      admitRunningRequestsClient(redisClient),
+		readRedisClient:       readRedisClient,
 		prometheusApi:         prometheusApi,
 		enableTracing:         enableGPUOptimizerTracing,
 		requestTrace:          &utils.SyncMap[string, *RequestTrace]{},
@@ -256,6 +262,13 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterP
 	}
 
 	return store
+}
+
+func (c *Store) readClient() *redis.Client {
+	if c.readRedisClient != nil {
+		return c.readRedisClient
+	}
+	return c.redisClient // Test stores built without New may supply their own client and hooks.
 }
 
 // NewForTest initializes the cache store for testing purposes, it can be repeated call for reset.
@@ -791,6 +804,14 @@ func (s *Store) Close() {
 	// Stop publishing the decode ledger.
 	if p := s.decodeLedger.Load(); p != nil {
 		p.close()
+	}
+
+	// Close the derived clients owned by this store.
+	if s.admitRedisClient != nil {
+		_ = s.admitRedisClient.Close()
+	}
+	if s.readRedisClient != nil {
+		_ = s.readRedisClient.Close()
 	}
 
 	// Other cleanup can be added here in the future

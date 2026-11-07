@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import FrozenSet, List
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -49,6 +49,12 @@ def object_store_schemes() -> FrozenSet[str]:
     return frozenset(
         st.value for st in StorageType if st.value not in _NON_OBJECT_STORAGE_TYPES
     )
+
+
+def local_output_path(url: str) -> str:
+    """Decode file URIs once; plain filesystem paths keep literal percent signs."""
+    parsed = urlparse(url)
+    return unquote(parsed.path, errors="strict") if parsed.scheme == "file" else url
 
 
 class OutputRequest(BaseModel):
@@ -81,6 +87,11 @@ class OutputRequest(BaseModel):
                 f"{', '.join(sorted(s + '://' for s in object_store_schemes()))}, "
                 "file://, http(s)://, or an absolute path"
             )
+        # Prefix URIs have no query/fragment semantics; joining an artifact would
+        # put its name outside the path. Plain paths keep literal '?' and '#', and
+        # HTTP PUT destinations retain their exact signed URL, including queries.
+        if scheme and scheme not in HTTP_SCHEMES and ("?" in v or "#" in v):
+            raise ValueError("non-HTTP 'output.url' must not contain query or fragment")
         if scheme in object_store_schemes() and not parsed.netloc:
             raise ValueError(f"'output.url' must include a bucket: {v}")
         if scheme in HTTP_SCHEMES and not parsed.hostname:
@@ -92,9 +103,9 @@ class OutputRequest(BaseModel):
                         f"local 'output.url' with file:// scheme must have an "
                         f"empty host or 'localhost', got '{parsed.netloc}'"
                     )
-                path = parsed.path
-            else:
-                path = v
+            path = local_output_path(v)
+            if "\x00" in path:
+                raise ValueError("local 'output.url' must not contain NUL")
             if not path.startswith("/"):
                 raise ValueError("local 'output.url' must be an absolute path")
             if any(part == ".." for part in path.split("/")):
@@ -105,7 +116,7 @@ class OutputRequest(BaseModel):
 class OutputResponse(BaseModel):
     """What the frontend wrote for a request with an ``output`` spec.
 
-    Returned as the ``output`` block of the response, in place of the result.
+    Returned as the ``output`` block; other response fields remain present.
     """
 
     url: str = Field(

@@ -26,6 +26,7 @@ import os
 import signal
 import subprocess
 import sys
+from urllib.parse import urlparse
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -33,6 +34,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 app = FastAPI()
 app.last_chat_request = None  # type: ignore[attr-defined]
+app.allowed_media_dir = None  # type: ignore[attr-defined]
 
 
 @app.get("/health")
@@ -65,6 +67,37 @@ async def spawn_worker(request: Request):
     return JSONResponse({"pid": child.pid})
 
 
+def _read_local_media(url: str) -> dict:
+    """Mimic vLLM's file:// loader: only files under the allowed dir."""
+    parsed = urlparse(url)
+    if parsed.scheme != "file":
+        return {"url": url, "local": False}
+    path = os.path.realpath(parsed.path)
+    allowed = app.allowed_media_dir  # type: ignore[attr-defined]
+    if allowed is None or not path.startswith(os.path.realpath(allowed) + os.sep):
+        return {"url": url, "local": True, "error": "outside allowed dir"}
+    with open(path, "rb") as f:
+        return {"url": url, "local": True, "content": f.read().decode()}
+
+
+def _collect_media(node, out):
+    if isinstance(node, list):
+        for item in node:
+            _collect_media(item, out)
+    elif isinstance(node, dict):
+        t = node.get("type")
+        if t in ("image_url", "video_url", "audio_url"):
+            payload = node.get(t)
+            url = payload.get("url") if isinstance(payload, dict) else payload
+            out.append(_read_local_media(url))
+            return
+        if t == "input_image":
+            out.append(_read_local_media(node.get("image_url")))
+            return
+        for v in node.values():
+            _collect_media(v, out)
+
+
 @app.get("/_test/env")
 async def echo_env(request: Request):
     names = request.query_params.getlist("name")
@@ -92,6 +125,12 @@ async def list_models():
 async def chat_completions(request: Request):
     body = await request.json()
     app.last_chat_request = body  # type: ignore[attr-defined]
+    if body.get("user") == "force-error":
+        return JSONResponse(
+            {"error": {"message": "forced engine error"}}, status_code=400
+        )
+    media: list = []
+    _collect_media(body.get("messages"), media)
     is_stream = body.get("stream", False)
     if is_stream:
 
@@ -128,6 +167,7 @@ async def chat_completions(request: Request):
         ],
         "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
         # Not part of the OpenAI schema: lets tests see what the engine got.
+        "media": media,
         "received": {k: v for k, v in body.items() if k != "messages"},
     }
     return JSONResponse(resp)
@@ -175,6 +215,7 @@ def main():
     parser = argparse.ArgumentParser(description="Mock engine for E2E tests")
     parser.add_argument("--port", type=int, default=18761)
     parser.add_argument("--host", type=str, default="127.0.0.1")
+    parser.add_argument("--allowed-local-media-path", type=str, default=None)
     parser.add_argument(
         "--startup-delay", type=float, default=0.0, help="Seconds before serving"
     )
@@ -188,6 +229,7 @@ def main():
     if args.exit_immediately is not None:
         print("mock engine: fatal startup error (CUDA out of memory)", flush=True)
         sys.exit(args.exit_immediately)
+    app.allowed_media_dir = args.allowed_local_media_path  # type: ignore[attr-defined]
     if args.startup_delay:
         import time
 
