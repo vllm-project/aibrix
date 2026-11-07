@@ -21,6 +21,7 @@ from aibrix.openai_frontend.schemas.output import (
     OutputRequest,
     OutputResponse,
 )
+from aibrix.openai_frontend.schemas.processors import ProcessorPipeline
 from aibrix.openai_frontend.schemas.sglang import (
     SglangImageResponseDataFields,
     SglangVideoResponseFields,
@@ -59,6 +60,7 @@ class ImageGenerationRequest(BaseModel):
     prompt: str
     model: Optional[str] = None
     output: Optional[OutputRequest] = None
+    processors: Optional[ProcessorPipeline] = None
 
     @model_validator(mode="after")
     def _validate_output(self) -> "ImageGenerationRequest":
@@ -90,6 +92,7 @@ class VideoGenerationRequest(BaseModel):
     prompt: str
     model: Optional[str] = None
     output: Optional[OutputRequest] = None
+    processors: Optional[ProcessorPipeline] = None
 
     @model_validator(mode="after")
     def _validate_output(self) -> "VideoGenerationRequest":

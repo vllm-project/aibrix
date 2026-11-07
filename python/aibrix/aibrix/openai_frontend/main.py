@@ -23,10 +23,11 @@ import re
 import shlex
 import signal
 import sys
-from typing import Callable, Dict, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from aibrix.openai_frontend.engine.engine import LLMEngine
 from aibrix.openai_frontend.frontend.fastapi_frontend import FastApiFrontend
+from aibrix.openai_frontend.schemas.processors import DEFAULT_PROCESSOR_TIMEOUT_SECONDS
 from aibrix.openai_frontend.utils.utils import (
     HTTP_DEFAULT_MAX_INPUT_SIZE,
     validate_positive_double,
@@ -237,6 +238,13 @@ def _parse_video_output_timeout(value: str) -> float:
     return timeout
 
 
+def _parse_processor_timeout(value: str) -> float:
+    timeout = validate_positive_double(value)
+    if not math.isfinite(timeout):
+        raise argparse.ArgumentTypeError("processor timeout must be finite")
+    return timeout
+
+
 def add_proxy_args(parser: argparse.ArgumentParser):
     proxy_group = parser.add_argument_group("Proxy engine arguments")
     proxy_group.add_argument(
@@ -328,11 +336,34 @@ def add_proxy_args(parser: argparse.ArgumentParser):
         "engine file:// paths. Implicitly enables --proxy-fetch-media. Off by "
         "default, so inline payloads are passed through to the engine.",
     )
+    proxy_group.add_argument(
+        "--proxy-enable-processors",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Accept the 'processors' pre/post request extension. Off by "
+        "default; while off, requests carrying it are rejected.",
+    )
+    proxy_group.add_argument(
+        "--proxy-processor-timeout",
+        type=_parse_processor_timeout,
+        default=DEFAULT_PROCESSOR_TIMEOUT_SECONDS,
+        help="Default timeout in seconds for each processor invocation "
+        f"(default: {DEFAULT_PROCESSOR_TIMEOUT_SECONDS:g}). "
+        "Overridden by processor.timeout_seconds in the request.",
+    )
+    proxy_group.add_argument(
+        "--proxy-processor-allowlist",
+        type=str,
+        default=None,
+        help="Comma-separated processor names this deployment exposes "
+        "(default: every registered name).",
+    )
 
 
 def build_proxy_engine(args: argparse.Namespace) -> LLMEngine:
     from aibrix.openai_frontend.engine.proxy_engine import ProxyEngine
     from aibrix.openai_frontend.proxy.engine_spec import get_engine_spec
+    from aibrix.openai_frontend.proxy.processors import ProcessorRegistry
 
     credentials_map = args.proxy_credentials
     if isinstance(credentials_map, str):  # Also support direct Namespace callers.
@@ -351,7 +382,22 @@ def build_proxy_engine(args: argparse.Namespace) -> LLMEngine:
         media_dir=getattr(args, "proxy_media_dir", None),
         fetch_media=getattr(args, "proxy_fetch_media", None),
         materialize_inline_media=getattr(args, "proxy_materialize_inline_media", False),
+        enable_processors=getattr(args, "proxy_enable_processors", False),
+        processor_timeout_seconds=getattr(
+            args, "proxy_processor_timeout", DEFAULT_PROCESSOR_TIMEOUT_SECONDS
+        ),
+        processor_registry=ProcessorRegistry(
+            allowlist=_processor_allowlist(
+                getattr(args, "proxy_processor_allowlist", None)
+            )
+        ),
     )
+
+
+def _processor_allowlist(value: Optional[str]) -> Optional[List[str]]:
+    if not value:
+        return None
+    return [name.strip() for name in value.split(",") if name.strip()]
 
 
 ENGINE_REGISTRY: Dict[

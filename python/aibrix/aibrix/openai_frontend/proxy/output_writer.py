@@ -52,6 +52,7 @@ from aibrix.openai_frontend.schemas.output import (
     local_output_path,
     object_store_schemes,
 )
+from aibrix.openai_frontend.schemas.processors import PROCESSOR_ARCHIVE_FORMATS
 from aibrix.runtime.downloaders import await_thread_completion
 
 logger = logging.getLogger(__name__)
@@ -168,6 +169,8 @@ class OutputWriter:
         name: str,
         media_paths: Sequence[str],
         sources: Optional[SourceIdentities] = None,
+        *,
+        processor_workdir: Optional[Path] = None,
     ) -> tuple[OutputResponse, int]:
         """Copy explicitly declared local media; HTTP multi-file outputs use ZIP.
 
@@ -191,10 +194,28 @@ class OutputWriter:
                 for index, path in enumerate(dict.fromkeys(media_paths)):
                     source = Path(path)
                     media_type = mimetypes.guess_type(source.name)[0] or ""
+                    # Archives are allowed only when produced inside this request's
+                    # processor workspace; never broaden engine output discovery.
+                    archive_suffix = next(
+                        (
+                            "." + fmt
+                            for fmt in PROCESSOR_ARCHIVE_FORMATS
+                            if source.name.endswith("." + fmt)
+                        ),
+                        None,
+                    )
+                    processor_archive = (
+                        archive_suffix is not None
+                        and processor_workdir is not None
+                        and source.resolve().is_relative_to(processor_workdir.resolve())
+                    )
                     if (
                         not source.is_absolute()
                         or ".." in source.parts
-                        or not media_type.startswith(("image/", "video/"))
+                        or (
+                            not media_type.startswith(("image/", "video/"))
+                            and not processor_archive
+                        )
                     ):
                         raise OutputWriteError(
                             "Engine output must name an absolute image/video file"
@@ -222,7 +243,14 @@ class OutputWriter:
                     ):
                         raise OutputWriteError(f"Engine output was replaced: {source}")
                     sources[source] = info
-                    artifact_name = f"{Path(name).stem}-{index}{source.suffix.lower()}"
+                    if processor_archive and archive_suffix == ".tar.gz":
+                        # guess_type returns application/x-tar plus gzip encoding;
+                        # these are compressed archive bytes, not a plain TAR body.
+                        media_type = "application/gzip"
+                    suffix = (
+                        archive_suffix if processor_archive else source.suffix.lower()
+                    )
+                    artifact_name = f"{Path(name).stem}-{index}{suffix}"
                     entries.append((artifact_name, reader, media_type))
                     total += info.st_size
                 if not entries:
