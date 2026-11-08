@@ -760,11 +760,21 @@ func (r *ModelAdapterReconciler) schedulePods(ctx context.Context, instance *mod
 		return nil, nil
 	}
 
+	// Engine metrics are labeled with the served base-model name, while the
+	// adapter name is only a scheduling key. Score latency against the base model
+	// so a pod can be selected before status.instances is populated.
+	metricModel := instance.Name
+	if instance.Spec.BaseModel != nil && strings.TrimSpace(*instance.Spec.BaseModel) != "" {
+		metricModel = strings.TrimSpace(*instance.Spec.BaseModel)
+	} else if base := availablePods[0].Labels[constants.ModelLabelName]; base != "" {
+		metricModel = base
+	}
+
 	selectedPods := []corev1.Pod{}
 	remainingPods := append([]corev1.Pod{}, availablePods...)
 
 	for i := 0; i < count && len(remainingPods) > 0; i++ {
-		pod, err := r.scheduler.SelectPod(ctx, instance.Name, remainingPods)
+		pod, err := r.scheduler.SelectPod(ctx, metricModel, remainingPods)
 		if err != nil {
 			return nil, err
 		}
