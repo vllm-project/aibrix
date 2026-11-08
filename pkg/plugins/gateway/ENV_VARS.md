@@ -531,3 +531,31 @@ The gateway plugins feature built-in support for distributed tracing via OpenTel
 
 > **Note on OpenTelemetry Configuration:**
 > Aibrix supports the standard OpenTelemetry Protocol Exporter environment variables. For advanced OTLP configurations (such as `_CERTIFICATE`, `_CLIENT_KEY`, or specific `_COMPRESSION` settings), please refer to the [OpenTelemetry Protocol Exporter](https://opentelemetry.io/docs/specs/otel/protocol/exporter/)
+
+---
+
+## KV metric freshness (`algorithms/least/kv_cache.go`)
+
+| Variable | Type | Default | Description | Source |
+|---|---|---|---|---|
+| `AIBRIX_ROUTING_METRIC_STALE_THRESHOLD_MS` | int (milliseconds) | `max(5000, 3 * AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS)` | Maximum age of a successfully updated KV metric used by the shared least-KV scorer. Positive values override the default; zero, negative, malformed or overflowing values use the default. Read at gateway startup. Environment-only; no model config profile override. | [metric_record.go](../../cache/metric_record.go), [algorithms/least/kv_cache.go](algorithms/least/kv_cache.go) |
+
+For example, set `AIBRIX_ROUTING_METRIC_STALE_THRESHOLD_MS=15000` to accept KV
+samples up to 15 seconds old. Age equal to the threshold is accepted. The age
+measures when this gateway last updated that individual metric, not when the
+engine computed its value. A failed scrape or a successful response that omits
+that metric does not refresh its timestamp.
+
+`least-kv-cache`, its deprecated `least-gpu-cache` alias, and the KV tie-breaker
+in `load-balance` skip scoring a pod whose GPU KV metric is missing or stale.
+A CPU KV metric that has never been reported contributes zero, preserving vLLM
+V1 compatibility; a previously reported CPU metric that becomes stale makes
+the combined KV score unavailable. If no pod has a usable score, the existing
+random fallback still routes to a ready pod. This rule excludes stale evidence
+from scoring; it does not eject pods from the serving fleet.
+
+The built-in cache stores each value and timestamp together. Custom caches that
+implement only the existing value getters keep their previous scoring behavior;
+they can implement `cache.MetricRecordCache` to opt into freshness checks.
+Collection allowlists, other independent scoring strategies, and Prometheus
+staleness visibility are outside this change.
