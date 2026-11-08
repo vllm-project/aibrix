@@ -423,8 +423,8 @@ description and examples live in the Config Profiles section of the gateway plug
 | `AIBRIX_PROMPT_LENGTH_BUCKETING` | `routingConfig.promptLengthBucketing` | Turns bucketing on or off for the profile's requests. |
 | `AIBRIX_BUCKET_SERVE` | `routingConfig.bucketServe` | Turns the adaptive plan on or off for the profile's requests. |
 | `AIBRIX_BUCKET_SERVE_MODE` | `routingConfig.bucketServeMode` | `throughput` or `rps`; a name the planner does not know keeps the environment default. |
-| `AIBRIX_DECODE_ABORT_TIMEOUT` | `routingConfig.pd.decodeAbortTimeout` | `0` sends the abort without waiting. |
-| `AIBRIX_DECODE_ABORT_RETRY_DELAY` | `routingConfig.pd.decodeAbortRetryDelay` | `0` repeats the abort immediately. |
+| `AIBRIX_DECODE_ABORT_TIMEOUT` | `routingConfig.pd.decodeAbortTimeout` | `0` disables decode aborts. |
+| `AIBRIX_DECODE_ABORT_RETRY_DELAY` | `routingConfig.pd.decodeAbortRetryDelay` | `0` sends a single attempt. |
 | `AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT` | `routingConfig.pd.decodeFirstResponseTimeout` | Seconds; `0` disables the decode watchdog for the profile's streaming requests. |
 | `AIBRIX_DECODE_RESPONSE_TIMEOUT` | `routingConfig.pd.decodeResponseTimeout` | Seconds; `0` disables the decode watchdog for the profile's non-streaming requests. |
 | `AIBRIX_DECODE_STREAM_IDLE_TIMEOUT` | `routingConfig.pd.decodeStreamIdleTimeout` | Seconds; `0` disables the stream-idle phase for the profile. |

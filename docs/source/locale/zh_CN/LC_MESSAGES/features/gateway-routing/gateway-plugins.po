@@ -1153,8 +1153,8 @@ msgstr "``AIBRIX_DECODE_ABORT_TIMEOUT``"
 #: ../../source/features/gateway-routing/gateway-plugins.rst:565
 msgid ""
 "Seconds the gateway waits for the decode pod to accept the abort POST "
-"after a prefill failure. ``0`` sends the abort without waiting."
-msgstr "prefill 失败后，网关等待 decode Pod 接受中止（abort）POST 请求的秒数。 ``0`` 表示发送中止请求但不等待。"
+"after a prefill failure. ``0`` disables decode aborts."
+msgstr "prefill 失败后，网关等待 decode Pod 接受中止（abort）POST 请求的秒数。 ``0`` 表示禁用 decode 中止。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:566
 msgid "``pd.decodeAbortRetryDelay``"
@@ -1165,10 +1165,8 @@ msgid "``AIBRIX_DECODE_ABORT_RETRY_DELAY``"
 msgstr "``AIBRIX_DECODE_ABORT_RETRY_DELAY``"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:568
-msgid ""
-"Seconds between the two abort attempts. ``0`` repeats the abort "
-"immediately."
-msgstr "两次中止尝试之间的间隔秒数。 ``0`` 表示立即重试中止。"
+msgid "Seconds between the two abort attempts. ``0`` sends a single attempt."
+msgstr "两次中止尝试之间的间隔秒数。 ``0`` 表示只发送一次中止尝试。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:569
 msgid "``pd.decodeFirstResponseTimeout``"
