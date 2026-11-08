@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  AIBrix\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-31 16:42-0700\n"
+"POT-Creation-Date: 2026-11-06 11:00-0800\n"
 "PO-Revision-Date: 2026-09-10 18:55+0800\n"
 "Last-Translator: AIBrix Team\n"
 "Language: zh_CN\n"
@@ -142,6 +142,7 @@ msgstr "✅ SGLang-Omni"
 #: ../../source/features/gateway-routing/omni.rst:55
 #: ../../source/features/gateway-routing/omni.rst:63
 #: ../../source/features/gateway-routing/omni.rst:67
+#: ../../source/features/gateway-routing/omni.rst:71
 #: ../../source/features/gateway-routing/omni.rst:75
 #: ../../source/features/gateway-routing/omni.rst:79
 #: ../../source/features/gateway-routing/omni.rst:83
@@ -186,7 +187,6 @@ msgid "``GET /v1/audio/speech/stream``"
 msgstr "``GET /v1/audio/speech/stream``"
 
 #: ../../source/features/gateway-routing/omni.rst:59
-#: ../../source/features/gateway-routing/omni.rst:71
 msgid "❌ Not supported"
 msgstr "❌ 不支持"
 
@@ -306,9 +306,15 @@ msgstr "``GET /v1/audio/speech/stream`` 是 WebSocket 端点，网关没有对�
 
 #: ../../source/features/gateway-routing/omni.rst:126
 msgid ""
-"``/v1/audio/generate`` does not match any of the gateway's reserved "
-"routes."
-msgstr "``/v1/audio/generate`` 不匹配网关的任何保留路由。"
+"``POST /v1/audio/generate`` is routed like ``POST /v1/audio/speech``: the"
+" request is a JSON object with a non-empty ``model`` and ``input``, and "
+"the audio the engine returns is forwarded unchanged. vLLM-Omni treats "
+"``model`` as optional, but the gateway chooses the pod by model, so "
+"always send it."
+msgstr ""
+"``POST /v1/audio/generate`` 与 ``POST /v1/audio/speech`` 的路由方式相同：请求是包含非空 "
+"``model`` 和 ``input`` 的 JSON 对象，引擎返回的音频会原样转发。vLLM-Omni 将 ``model`` "
+"视为可选，但网关按模型选择 Pod，因此请始终携带它。"
 
 #: ../../source/features/gateway-routing/omni.rst:127
 msgid ""
@@ -503,4 +509,9 @@ msgstr "网关路由、用于任务归属的 ``user`` 头，以及消息大小�
 #~ "instead of polling one by ID "
 #~ "(``model`` is required):"
 #~ msgstr "**列出某模型的全部任务** ，而不是按 ID 轮询单个任务（``model`` 必填）："
+
+#~ msgid ""
+#~ "``/v1/audio/generate`` does not match any "
+#~ "of the gateway's reserved routes."
+#~ msgstr "``/v1/audio/generate`` 不匹配网关的任何保留路由。"
 

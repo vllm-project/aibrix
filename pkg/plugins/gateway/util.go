@@ -276,7 +276,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		// Audio transcription and translation require multipart/form-data content-type, not JSON
 		// This case handles the error when JSON is sent to these audio endpoints
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "audio requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
-	case PathAudioSpeech:
+	case PathAudioSpeech, PathAudioGenerate:
 		model, message, errRes = validateAudioSpeechRequest(requestID, requestBody)
 	case PathAudioSpeechBatch:
 		model, message, errRes = validateAudioSpeechBatchRequest(requestID, requestBody)
@@ -1074,8 +1074,9 @@ func jsonString(value json.RawMessage) (string, bool) {
 }
 
 // validateAudioSpeechRequest parses and validates a vLLM-Omni /v1/audio/speech request body.
-// Only what the gateway itself needs is checked: a JSON object with a non-empty "model" to
-// route on and a non-empty textual "input" to synthesize. The speech options (voice,
+// /v1/audio/generate shares it: its body has the same envelope, with "input" holding the prompt
+// that describes the audio. Only what the gateway itself needs is checked: a JSON object with a
+// non-empty "model" to route on and a non-empty textual "input" to synthesize. The speech options (voice,
 // response_format, speed, instructions, language, stream_format, ...) belong to the engine and
 // are forwarded as sent. A request-level "stream" field is deliberately not surfaced as a stream
 // here: the response is binary audio, so the gateway must never treat it as an SSE stream.
@@ -1091,7 +1092,7 @@ func validateAudioSpeechRequest(requestID string, requestBody []byte) (model, me
 	}
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
 		// The body can hold customer text, so log its size, not its content.
-		klog.ErrorS(nil, "error to unmarshal audio speech object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		klog.ErrorS(nil, "error to unmarshal audio speech or generate object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}

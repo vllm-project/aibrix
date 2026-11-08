@@ -68,7 +68,7 @@ The vLLM-Omni and SGLang columns show what each engine documents upstream. The S
    * - ``POST /v1/audio/generate``
      - ✅
      - Not supported
-     - ❌ Not supported
+     - ✅ Supported
    * - ``GET /v1/audio/voices``
      - ✅
      - ✅ SGLang-Omni
@@ -123,7 +123,7 @@ In the engine columns, *Model-dependent* means the engine serves the endpoint on
 - ``GET /v1/models`` is answered by AIBrix's metadata service from the models it discovers (pod labels and ``ModelAdapter`` resources) instead of being forwarded to an engine, so it lists every model AIBrix knows about, whichever engine serves it.
 - ``POST /v1/chat/completions/batch`` is routed like a chat completion, and the engine answers with one JSON document that holds a choice per conversation; see :ref:`omni-chat-batch`.
 - ``GET /v1/audio/speech/stream`` is a WebSocket endpoint, and the gateway has no handler for it.
-- ``/v1/audio/generate`` does not match any of the gateway's reserved routes.
+- ``POST /v1/audio/generate`` is routed like ``POST /v1/audio/speech``: the request is a JSON object with a non-empty ``model`` and ``input``, and the audio the engine returns is forwarded unchanged. vLLM-Omni treats ``model`` as optional, but the gateway chooses the pod by model, so always send it.
 - The three ``/v1/audio/voices`` calls name no model, so AIBrix reads it from a ``model`` query parameter, and the voices they manage live on the pod that served the upload; see :ref:`omni-audio-voices`.
 - SGLang Diffusion's upstream documentation shows ``POST /v1/videos`` taking a JSON body, but the gateway reads the model for that route from a ``multipart/form-data`` body and does not accept JSON there, so send a video create to AIBrix as a form, the way :doc:`omni-video` does.
 - AIBrix also serves ``GET /v1/videos`` itself, a catalog of your own video jobs kept in the gateway's registry. It is not an engine endpoint, so it is not listed above; see :ref:`omni-video-endpoint-reference`.
