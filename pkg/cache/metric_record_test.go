@@ -145,6 +145,11 @@ func TestRoutingMetricStaleThreshold(t *testing.T) {
 		{"1000", "", 5 * time.Second}, {"2500", "", 7500 * time.Millisecond}, {"1000", "9000", 9 * time.Second},
 		{"1000", "0", 5 * time.Second}, {"1000", "-1", 5 * time.Second}, {"1000", "bad", 5 * time.Second},
 		{"1000", "9223372036854775807", 5 * time.Second},
+		// Millisecond-to-duration and 3x-refresh overflow must not wrap.
+		{"7000000000000", "", 5 * time.Second},
+		{"18446744083710", "", 5 * time.Second},
+		{"1000", "9223372036854", 9223372036854 * time.Millisecond},
+		{"1000", "9223372036855", 5 * time.Second},
 	} {
 		t.Run(tc.refresh+"_"+tc.override, func(t *testing.T) {
 			t.Setenv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", tc.refresh)
@@ -152,4 +157,18 @@ func TestRoutingMetricStaleThreshold(t *testing.T) {
 			require.Equal(t, tc.want, loadRoutingMetricStaleThreshold())
 		})
 	}
+}
+
+func TestMetricRecordEmptyEWMACanRecover(t *testing.T) {
+	c := &Store{}
+	pod := newReadyMetricsPod("empty-ewma", "empty-ewma")
+	seedCompletedOutputTokensHistory(t, pod, 0, 30*time.Second)
+	atomic.StoreInt64(&pod.completedOutputTokens, 3000)
+	pod.Metrics.Store(metrics.RealtimeOutputTokenRateEWMA, MetricRecord{})
+	require.NotPanics(t, func() { c.updateRealtimeOutputTokenRateEWMA(pod) })
+	record, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
+	require.True(t, ok)
+	require.NotNil(t, record.Value)
+	require.InDelta(t, 100, record.Value.GetSimpleValue(), 1)
+	require.False(t, record.Timestamp.IsZero())
 }

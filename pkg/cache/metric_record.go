@@ -44,9 +44,16 @@ var routingMetricStaleThreshold = loadRoutingMetricStaleThreshold()
 func RoutingMetricStaleThreshold() time.Duration { return routingMetricStaleThreshold }
 
 func loadRoutingMetricStaleThreshold() time.Duration {
-	fallback := max(5*time.Second, 3*loadPodMetricRefreshInterval())
+	// Validate in milliseconds before either multiplication can overflow Duration.
+	const maxMilliseconds = math.MaxInt64 / int64(time.Millisecond)
+	refreshMS := utils.LoadEnvInt("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", defaultPodMetricRefreshIntervalInMS)
+	fallback := 5 * time.Second
+	if int64(refreshMS) <= maxMilliseconds/3 {
+		fallback = max(fallback, 3*time.Duration(refreshMS)*time.Millisecond)
+	}
+	// LoadEnvInt already rejects zero, negative and malformed overrides.
 	ms := utils.LoadEnvInt("AIBRIX_ROUTING_METRIC_STALE_THRESHOLD_MS", int(fallback/time.Millisecond))
-	if int64(ms) > math.MaxInt64/int64(time.Millisecond) {
+	if int64(ms) > maxMilliseconds {
 		return fallback
 	}
 	return time.Duration(ms) * time.Millisecond

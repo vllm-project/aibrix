@@ -540,6 +540,10 @@ The gateway plugins feature built-in support for distributed tracing via OpenTel
 |---|---|---|---|---|
 | `AIBRIX_ROUTING_METRIC_STALE_THRESHOLD_MS` | int (milliseconds) | `max(5000, 3 * AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS)` | Maximum age of a successfully updated KV metric used by the shared least-KV scorer. Positive values override the default; zero, negative, malformed or overflowing values use the default. Read at gateway startup. Environment-only; no model config profile override. | [metric_record.go](../../cache/metric_record.go), [algorithms/least/kv_cache.go](algorithms/least/kv_cache.go) |
 
+If three times the configured refresh interval cannot fit in a Go duration, the
+stale-threshold default falls back to 5000 ms. This does not change validation of
+the collection refresh interval itself.
+
 For example, set `AIBRIX_ROUTING_METRIC_STALE_THRESHOLD_MS=15000` to accept KV
 samples up to 15 seconds old. Age equal to the threshold is accepted. The age
 measures when this gateway last updated that individual metric, not when the
