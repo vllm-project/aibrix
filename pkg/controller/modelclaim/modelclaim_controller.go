@@ -1044,7 +1044,8 @@ type placementRefused struct {
 
 // refusePlacement words why a claim was not placed in this pass. A claim no pod
 // has room for, in a pool that keeps no wake reserve, may have room made for
-// it by a sleep, and is then told so. A failed instance that cannot be
+// it by a sleep, and is then told so. One that only idle models of a higher
+// priority could make room for is told that. A failed instance that cannot be
 // replaced stays as it is, so the claim stays Failed.
 func (r *ModelClaimReconciler) refusePlacement(
 	ctx context.Context,
@@ -1084,6 +1085,8 @@ func (r *ModelClaimReconciler) refusePlacement(
 		}
 		if making {
 			refused.reason, refused.message, refused.eventType = scheduledReasonMakingRoom, why, corev1.EventTypeNormal
+		} else if why != "" {
+			refused.message += "; " + why
 		}
 	}
 	refused.eventReason = refused.reason
