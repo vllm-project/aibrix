@@ -14,8 +14,18 @@
 
 """What the proxy needs to know about an inner inference engine.
 
-An :class:`EngineSpec` declares the paths the engine exposes (an
-:class:`EndpointSet`) and how the proxy launches it.
+An :class:`EngineSpec` is a *declarative* description: the set of paths the
+engine exposes and how each is forwarded (JSON body, multipart upload,
+SSE stream, WebSocket).
+
+Versions the catalog was compiled against:
+
+* vLLM / vLLM-omni  -- tag ``v0.33.0rc1``
+* SGLang / SGLang-omni -- tag ``v0.5.22``
+
+The ``*-omni`` specs add the audio/speech surface (multipart
+``/v1/audio/transcriptions``, ``/v1/audio/translations`` and the
+``/v1/realtime`` WebSocket) on top of the text/pooling surface.
 """
 
 from __future__ import annotations
@@ -39,6 +49,10 @@ class EndpointSet:
     """Immutable catalog of (path, forwarding kind) pairs."""
 
     routes: Tuple[Tuple[str, ForwardKind], ...] = ()
+    method_overrides: Tuple[Tuple[str, Tuple[str, ...]], ...] = ()
+
+    def methods(self, path: str) -> Tuple[str, ...]:
+        return dict(self.method_overrides).get(path, ("POST",))
 
     def kinds(self) -> Mapping[str, ForwardKind]:
         return dict(self.routes)
@@ -49,7 +63,7 @@ class EndpointSet:
     def with_(self, *extra: Tuple[str, ForwardKind]) -> "EndpointSet":
         known = dict(self.routes)
         known.update(extra)
-        return EndpointSet(tuple(sorted(known.items())))
+        return EndpointSet(tuple(sorted(known.items())), self.method_overrides)
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +76,102 @@ COMPLETION: Tuple[Tuple[str, ForwardKind], ...] = (
     ("/v1/completions", ForwardKind.SSE),
 )
 EMBEDDING: Tuple[Tuple[str, ForwardKind], ...] = (("/v1/embeddings", ForwardKind.JSON),)
+
+# ---------------------------------------------------------------------------
+# vLLM surface (v0.33.0rc1)
+# ---------------------------------------------------------------------------
+
+# OpenAI Responses API, structured decisions, Anthropic Messages.
+VLLM_OPENAI_EXTRA: Tuple[Tuple[str, ForwardKind], ...] = (
+    ("/v1/responses", ForwardKind.SSE),
+    ("/v1/responses/{response_id}", ForwardKind.JSON),
+    ("/v1/responses/{response_id}/cancel", ForwardKind.JSON),
+    ("/v1/decisions", ForwardKind.JSON),
+    ("/v1/messages", ForwardKind.SSE),
+    ("/v1/messages/count_tokens", ForwardKind.JSON),
+)
+# Pooling (embedding-class) models.
+VLLM_POOLING: Tuple[Tuple[str, ForwardKind], ...] = (
+    ("/v1/score", ForwardKind.JSON),
+    ("/v1/rerank", ForwardKind.JSON),
+    ("/v2/rerank", ForwardKind.JSON),
+    ("/v2/embed", ForwardKind.JSON),
+    ("/score", ForwardKind.JSON),
+    ("/rerank", ForwardKind.JSON),
+    ("/pooling", ForwardKind.JSON),
+    ("/classify", ForwardKind.JSON),
+)
+# Tokenizer helpers, native generate, structured/system APIs.
+VLLM_TEXT_EXTRA: Tuple[Tuple[str, ForwardKind], ...] = (
+    ("/tokenize", ForwardKind.JSON),
+    ("/detokenize", ForwardKind.JSON),
+    ("/tokenizer_info", ForwardKind.JSON),
+    ("/inference/v1/generate", ForwardKind.SSE),
+    ("/generative_scoring", ForwardKind.JSON),
+    ("/v1/systemone", ForwardKind.SSE),
+    ("/cohere/v2/chat", ForwardKind.SSE),
+)
+# Speech / omni surface.
+VLLM_SPEECH: Tuple[Tuple[str, ForwardKind], ...] = (
+    ("/v1/audio/transcriptions", ForwardKind.MULTIPART),
+    ("/v1/audio/translations", ForwardKind.MULTIPART),
+    ("/v1/realtime", ForwardKind.WEBSOCKET),
+)
+
+VLLM_ROUTES = EndpointSet(
+    MODELS
+    + CHAT
+    + COMPLETION
+    + EMBEDDING
+    + VLLM_OPENAI_EXTRA
+    + VLLM_POOLING
+    + VLLM_TEXT_EXTRA,
+    method_overrides=(("/tokenizer_info", ("GET",)),),
+)
+VLLM_OMNI_ROUTES = VLLM_ROUTES.with_(*VLLM_SPEECH)
+
+# ---------------------------------------------------------------------------
+# SGLang surface (v0.5.22)
+# ---------------------------------------------------------------------------
+
+SGLANG_OPENAI_EXTRA: Tuple[Tuple[str, ForwardKind], ...] = (
+    ("/v1/responses", ForwardKind.SSE),
+    ("/v1/responses/{response_id}", ForwardKind.JSON),
+    ("/v1/responses/{response_id}/cancel", ForwardKind.JSON),
+    ("/v1/decisions", ForwardKind.JSON),
+    ("/v1/messages", ForwardKind.SSE),
+    ("/v1/messages/count_tokens", ForwardKind.JSON),
+    ("/v1/score", ForwardKind.JSON),
+    ("/v1/rerank", ForwardKind.JSON),
+    ("/v1/classify", ForwardKind.JSON),
+    ("/v1/tokenize", ForwardKind.JSON),
+    ("/v1/detokenize", ForwardKind.JSON),
+    ("/v1/systemone", ForwardKind.SSE),
+    ("/v1/loads", ForwardKind.JSON),
+)
+# SGLang-native HTTP API.
+SGLANG_NATIVE: Tuple[Tuple[str, ForwardKind], ...] = (
+    ("/generate", ForwardKind.SSE),
+    ("/encode", ForwardKind.JSON),
+    ("/classify", ForwardKind.JSON),
+    ("/tokenize", ForwardKind.JSON),
+    ("/detokenize", ForwardKind.JSON),
+)
+SGLANG_SPEECH: Tuple[Tuple[str, ForwardKind], ...] = (
+    ("/v1/audio/transcriptions", ForwardKind.MULTIPART),
+    ("/v1/realtime", ForwardKind.WEBSOCKET),
+)
+
+SGLANG_ROUTES = EndpointSet(
+    MODELS + CHAT + COMPLETION + EMBEDDING + SGLANG_OPENAI_EXTRA + SGLANG_NATIVE,
+    method_overrides=(("/v1/loads", ("GET",)),)
+    + tuple(
+        (path, ("POST", "PUT"))
+        for path in ("/generate", "/encode", "/classify", "/v1/rerank")
+    ),
+)
+SGLANG_OMNI_ROUTES = SGLANG_ROUTES.with_(*SGLANG_SPEECH)
+
 
 # Standard OpenAI surface enabled on a bare EngineSpec (the old default
 # behaviour). Engine-specific specs pass a larger EndpointSet.
@@ -95,6 +205,22 @@ class EngineSpec:
             if "{" in template and _matches(template, path):
                 return kind
         return None
+
+    def methods(self, path: str) -> Tuple[str, ...]:
+        """Allowed HTTP methods for a declared native endpoint."""
+        self.require(path)
+        return self.endpoints.methods(path)
+
+    def native_response_schema(self, path: str):
+        """Result contract for this engine's native endpoint (not its aliases)."""
+        from aibrix.openai_frontend.schemas.sglang import SGLANG_NATIVE_RESPONSES
+        from aibrix.openai_frontend.schemas.vllm import VLLM_NATIVE_RESPONSES
+
+        catalog = {
+            "vllm": VLLM_NATIVE_RESPONSES,
+            "sglang": SGLANG_NATIVE_RESPONSES,
+        }.get(self.name.removesuffix("-omni"), {})
+        return catalog.get(path)
 
     def supports(self, path: str) -> bool:
         return self.kind(path) is not None
@@ -155,26 +281,45 @@ def _matches(template: str, path: str) -> bool:
 # (vllm/multimodal/media/connector.py).
 VLLM_SPEC = EngineSpec(
     name="vllm",
+    endpoints=VLLM_ROUTES,
     supports_local_media=True,
     local_media_args=("--allowed-local-media-path", "{dir}"),
 )
+VLLM_OMNI_SPEC = EngineSpec(
+    name="vllm-omni",
+    endpoints=VLLM_OMNI_ROUTES,
+    supports_local_media=True,
+    local_media_args=("--allowed-local-media-path", "{dir}"),
+)
+
 # SGLang: load_image/load_video/load_audio accept file:// directly
 # (python/sglang/srt/utils/common.py); no flag needed.
 SGLANG_SPEC = EngineSpec(
     name="sglang",
+    endpoints=SGLANG_ROUTES,
     supports_local_media=True,
 )
+SGLANG_OMNI_SPEC = EngineSpec(
+    name="sglang-omni",
+    endpoints=SGLANG_OMNI_ROUTES,
+    supports_local_media=True,
+)
+
 # TensorRT-LLM: load_image accepts "" / file:// schemes
 # (tensorrt_llm/inputs/utils.py). Embedding only with `trtllm-serve embeddings`.
 TRTLLM_SPEC = EngineSpec(
     name="trtllm",
-    endpoints=EndpointSet(MODELS + CHAT + COMPLETION),
+    endpoints=EndpointSet(
+        MODELS + CHAT + COMPLETION + (("/v1/responses", ForwardKind.SSE),)
+    ),
     supports_local_media=True,
 )
 
 ENGINE_SPECS: dict[str, EngineSpec] = {
     "vllm": VLLM_SPEC,
+    "vllm-omni": VLLM_OMNI_SPEC,
     "sglang": SGLANG_SPEC,
+    "sglang-omni": SGLANG_OMNI_SPEC,
     "trtllm": TRTLLM_SPEC,
 }
 

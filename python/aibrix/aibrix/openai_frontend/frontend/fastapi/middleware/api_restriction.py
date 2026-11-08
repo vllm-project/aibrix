@@ -24,11 +24,14 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from typing import Dict
+from typing import Any, Dict
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import HTTPConnection
+from starlette.types import Receive, Scope, Send
+from starlette.websockets import WebSocket
 
 from aibrix.openai_frontend.utils.utils import StatusCode
 
@@ -152,7 +155,7 @@ class APIRestrictionMiddleware(BaseHTTPMiddleware):
     authentication headers before allowing the request to proceed.
     """
 
-    def __init__(self, app, restricted_apis: RestrictedFeatures):
+    def __init__(self, app, restricted_apis: RestrictedFeatures, engine: Any = None):
         """
         Initialize the API restriction middleware.
 
@@ -162,10 +165,49 @@ class APIRestrictionMiddleware(BaseHTTPMiddleware):
         """
         super().__init__(app)
         self.restricted_apis = restricted_apis
+        self.engine = engine
 
-    def _get_auth_header(self, request: Request) -> tuple[str, str] | None:
-        request_method = request.method
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "websocket":
+            ws = WebSocket(scope, receive, send)
+            auth = self._get_auth_header(ws)
+            if auth is not None and not self._check_authentication(ws, auth)["valid"]:
+                from aibrix.openai_frontend.proxy.ws_bridge import deny_websocket
+
+                await deny_websocket(
+                    ws,
+                    401,
+                    b'{"error":{"type":"authentication_error","code":"invalid_auth"}}',
+                )
+                return
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+    def _get_auth_header(self, request: HTTPConnection) -> tuple[str, str] | None:
+        request_method = request.scope.get("method", "GET")
+        if (
+            request_method == "OPTIONS"
+            and "origin" in request.headers
+            and "access-control-request-method" in request.headers
+        ):
+            # CORS validates preflights; actual requests still need authentication.
+            return None
         request_path = request.url.path
+        restrictions = self.restricted_apis.RestrictionDict()
+        # New inference routes follow the engine catalog rather than a second
+        # hand-maintained list. Responses routes are available on every engine.
+        if "inference" in restrictions and (
+            request_path == "/v1/responses"
+            or request_path.startswith("/v1/responses/")
+            or (
+                self.engine is not None
+                and hasattr(self.engine, "endpoint_kind")
+                and self.engine.endpoint_kind(request_path) is not None
+                and request_path != "/v1/models"
+            )
+        ):
+            return restrictions["inference"]
 
         # Check each restricted API to see if the request matches
         for (
@@ -219,7 +261,9 @@ class APIRestrictionMiddleware(BaseHTTPMiddleware):
                 },
             )
 
-    def _check_authentication(self, request: Request, auth_header: tuple[str, str]):
+    def _check_authentication(
+        self, request: HTTPConnection, auth_header: tuple[str, str]
+    ):
         """
         Check if the request contains valid authentication headers.
 

@@ -1,5 +1,17 @@
 # Copyright 2026 The Aibrix Team.
-# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Minimal Responses wire contracts, not a complete SDK schema mirror.
 
 Model the common request/response envelope and URL media inputs. Tool calls,
@@ -15,6 +27,11 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from aibrix.openai_frontend.schemas.media import MEDIA_URL
+
+# Accepted true spellings for the Responses GET stream query (Pydantic bool).
+RESPONSE_STREAM_TRUE_VALUES = frozenset({"1", "true", "t", "on", "y", "yes"})
+
 
 class ResponseInputText(BaseModel):
     model_config = ConfigDict(extra="allow")
@@ -25,7 +42,7 @@ class ResponseInputText(BaseModel):
 class ResponseInputImage(BaseModel):
     model_config = ConfigDict(extra="allow")
     type: Literal["input_image"] = "input_image"
-    image_url: str | None = Field(None, json_schema_extra={"media_url": ""})
+    image_url: str | None = Field(None, json_schema_extra={MEDIA_URL: ""})
     file_id: str | None = None
     detail: str | None = None
 
@@ -33,7 +50,7 @@ class ResponseInputImage(BaseModel):
 class ResponseInputFile(BaseModel):
     model_config = ConfigDict(extra="allow")
     type: Literal["input_file"] = "input_file"
-    file_url: str | None = Field(None, json_schema_extra={"media_url": ""})
+    file_url: str | None = Field(None, json_schema_extra={MEDIA_URL: ""})
     file_id: str | None = None
     file_data: str | None = None
     filename: str | None = None

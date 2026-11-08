@@ -1,125 +1,142 @@
 # The `output` Extension
 
-The OpenAI API returns a result only in the HTTP response body. Batch and
-offline workloads usually need the result somewhere else: in an object-store
-bucket, on a shared volume, or behind a pre-signed upload URL, so that
-downstream jobs can pick it up.
+The OpenAI API delivers inference results in the HTTP response body. Batch and
+offline workloads often also need those results in durable storage: an
+object-store bucket, a shared volume, or a destination accessible through a
+pre-signed upload URL. This lets downstream jobs consume results without relying
+on the client to save the response.
 
-`output` is an optional AIBrix field that lets a request **name where its
-result should be stored**. The frontend persists the response payload and any
-explicitly declared local image/video outputs. The HTTP response retains all
-non-payload fields, empties `choices`/`data`, and adds `output`. This extension
-is removed before forwarding the request to the engine.
+`output` is an optional AIBrix request field that **specifies where inference
+results should be stored**. Add `"output": {"url": "..."}` to an eligible request.
+The proxy removes this field before forwarding to the inner engine, persists
+the schema-declared result payload and any explicitly declared local image/video
+outputs, and returns a receipt identifying the written artifacts.
+
+Persistence changes where the client reads the result, not which metadata it
+receives. The HTTP response retains non-payload fields, including IDs, usage and
+vendor metadata, while clearing persisted result fields and adding the `output`
+receipt. For OpenAI responses, `choices`/`data` become empty arrays; for Responses,
+the native `output` array is replaced by the receipt. The complete result is
+available in the stored artifact rather than duplicated in the HTTP body.
+Without the extension, the response keeps its native result shape.
 
 ![Proxy engine overview](https://github.com/user-attachments/assets/2c48db97-6fc5-46eb-af0c-9ba7aa06eae7)
 
-*Where `output` fits: the proxy can resolve media inputs to local files before
-inference. It persists response payloads and explicitly referenced local outputs
-to the destination; uploaded source files are then removed (steps 5–8).*
+*The proxy may resolve media inputs to local files before inference. After
+inference, it persists the result payload and explicitly declared local outputs
+to the requested destination, then returns the artifact receipt. Uploaded output
+source files are cleaned up after use (steps 5–8).*
 
-This document describes the schema. It is defined in
-[`schemas/output.py`](schemas/output.py) and used by the request and response
-models in [`schemas/openai.py`](schemas/openai.py) and
-[`schemas/generation.py`](schemas/generation.py).
+## Features
 
----
+### Supported requests
 
-## Request: `OutputRequest`
+- `POST /v1/chat/completions`, `/v1/completions`, `/v1/embeddings`
+- `POST /v1/images/generations`, `/v1/videos`
+- `POST /v1/responses`, `/v1/responses/compact`
+- Declared engine-native JSON endpoints with a result schema; SGLang `/generate`,
+  `/encode`, `/classify`, and `/v1/rerank` support both `POST` and `PUT`.
 
-`output` is accepted on:
+The inner engine must support the requested endpoint. Video requests with
+`output` wait for generation and persistence instead of returning an early job
+receipt.
 
-- `POST /v1/chat/completions`
-- `POST /v1/completions`
-- `POST /v1/embeddings`
-- `POST /v1/images/generations`
-- `POST /v1/videos`: wait for engine generation and output persistence,
-  then return the completed response with `output`. No early creation receipt
-  is returned for requests with `output`.
+### Destinations
 
-```json
-{
-  "model": "my-model",
-  "messages": [{"role": "user", "content": "Summarise this document."}],
-  "output": {"url": "tos://my-bucket/results/run-1"}
-}
+- **Local:** `/data/out` or `file:///data/out` — an absolute directory; created
+  if missing.
+- **Object storage:** `tos://bucket/prefix`, `s3://bucket/prefix`, or another
+  supported object-storage scheme — requires a matching configured backend and
+  bucket.
+- **HTTP:** `https://host/upload?signature=...` — one `PUT` to the exact URL;
+  multiple output files are packaged as a ZIP. Any `2xx` is success.
+
+`url` is required and is the only request field. Artifact names are generated
+from the response ID, or the proxy request ID when none is available.
+
+### Stored results and HTTP responses
+
+- **OpenAI:** store the original `choices`/`data` arrays; clear them to `[]` in
+  HTTP. Metadata stays in HTTP, not in the stored JSON.
+- **Responses:** store `{"output": [...]}`; replace the native HTTP `output`
+  array with the persistence receipt.
+- **Native JSON:** store only schema-marked results, such as SGLang
+  `text`/`output_ids`, embeddings and output logprobs, rerank results, scores,
+  or Anthropic/Cohere message content. Preserve IDs, usage, counters and vendor
+  metadata in HTTP. Clear result lists to `[]`, objects to `{}`, strings to
+  `""`, and other scalars to `null`; explicit nulls stay null. Fields marked for
+  retention, such as rerank indices and logprob dtypes, remain in both copies.
+- **Native batches:** store the ordered list of per-item results; return
+  `{"data": [<per-item metadata>], "output": <receipt>}`.
+- **Local image/video outputs:** upload only paths explicitly declared by the
+  response schema. Uploaded source files are cleaned up after use.
+
+The receipt contains the requested `url` and an `artifacts` list. Join each
+artifact with the local directory or object-storage prefix to read the result.
+For HTTP destinations, each artifact is already the full upload URL.
+
+## Examples
+
+### Chat completion to a local directory
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "my-model",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "output": {"url": "/data/results"}
+  }'
 ```
 
-| Field | Required | Description |
-|---|---|---|
-| `url` | yes | Destination **prefix** for the result. |
-
-`url` takes one of these forms:
-
-| Form | Example | Meaning |
-|---|---|---|
-| Object storage | `tos://my-bucket/results`, `s3://my-bucket/results` | Bucket plus key prefix. Every object-storage backend AIBrix supports is accepted, using its name as the scheme. |
-| Local directory | `/data/out`, `file:///data/out` | Absolute directory on the serving host. |
-| HTTP `PUT` | `https://host/upload?signature=...` | The result is uploaded to this exact URL, for example a pre-signed URL. |
-
-There is deliberately **no file-name field**. The name is derived from the
-response id (for example `chatcmpl-123.json`), so concurrent requests writing
-to the same prefix never collide.
-
-Requests are rejected with a validation error when:
-
-- the scheme is not one of the forms above;
-- an object-storage URL has no bucket, or an HTTP URL has no host;
-- a local path is relative or contains `..`;
-- `output` contains any field other than `url` (for example `filename`);
-- the request also sets `"stream": true`. `output` stores one complete
-  response, so it cannot be combined with streaming.
-
----
-
-## Response: `OutputResponse`
-
-When a request carries `output`, the stored JSON contains only the complete
-`choices` and/or `data` arrays that were present, e.g. `{"choices":[...]}`.
-Text, token IDs, tool calls, logprobs, and base64 strings inside those arrays
-are preserved; base64 is **not** decoded into media files. The request and
-response metadata are not persisted in that JSON.
-
-The HTTP response keeps **every non-payload field**, including unknown engine
-extensions and explicit nulls, without a metadata whitelist. It sets the existing
-`choices`/`data` fields to `[]` and adds `output`:
+HTTP response (other metadata omitted):
 
 ```json
 {
   "id": "chatcmpl-123",
-  "object": "chat.completion",
-  "created": 1730000000,
-  "model": "my-model",
-  "usage": {"prompt_tokens": 12, "completion_tokens": 34, "total_tokens": 46},
   "choices": [],
   "output": {
-    "url": "tos://my-bucket/results/run-1",
+    "url": "/data/results",
     "artifacts": ["chatcmpl-123.json"]
   }
 }
 ```
 
-Read the real result from the stored artifact. Existing payload array fields
-remain present but empty; absent fields are not added.
+`/data/results/chatcmpl-123.json` contains the original result:
 
-| Field | Description |
-|---|---|
-| `url` | The destination prefix, exactly as requested. It is not the location of a file on its own. |
-| `artifacts` | What was written, relative to `url`. Join each entry with `url` to get the full location, e.g. `tos://my-bucket/results/run-1/chatcmpl-123.json`. For an HTTP `PUT` target the entry is already the full URL. |
+```json
+{
+  "choices": [{
+    "index": 0,
+    "message": {"role": "assistant", "content": "Hello!"},
+    "finish_reason": "stop"
+  }]
+}
+```
 
-The `output` block is available on chat completion, text completion, embedding,
-image-generation and successfully uploaded video responses.
-
----
-
-## Configuring storage
-
-Results are written through AIBrix's shared storage layer. Configure the backend
-when starting the frontend with `--setenv KEY VALUE`. The bucket in `output.url`
-must match the configured bucket.
-
-TOS:
+### Responses to object storage
 
 ```bash
+curl http://localhost:8000/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "my-model",
+    "input": "Hello",
+    "store": false,
+    "output": {"url": "tos://my-bucket/results"}
+  }'
+```
+
+HTTP `output` becomes `{"url":"tos://my-bucket/results","artifacts":["resp_123.json"]}`.
+The stored file contains `{"output":[...]}`, not the receipt.
+
+### Storage configuration
+
+Local and HTTP destinations need no storage configuration. Configure object
+storage with `--setenv KEY VALUE` when starting the proxy:
+
+```bash
+# TOS; replace the example model and credentials.
 python -m aibrix.openai_frontend.main \
   --engine proxy \
   --proxy-engine-cmd 'python -m vllm.entrypoints.openai.api_server --model my-model' \
@@ -131,71 +148,27 @@ python -m aibrix.openai_frontend.main \
   --setenv STORAGE_TOS_REGION cn-beijing
 ```
 
-S3:
+For S3, use `STORAGE_TYPE=s3`, `STORAGE_AWS_BUCKET`,
+`STORAGE_AWS_ACCESS_KEY_ID`, `STORAGE_AWS_SECRET_ACCESS_KEY`, and
+`STORAGE_AWS_REGION`. S3-compatible gateways also use
+`STORAGE_AWS_ENDPOINT_URL`. For example, embeddings can target
+`"output": {"url": "s3://vectors/results"}` when the configured bucket is `vectors`.
 
-```bash
-python -m aibrix.openai_frontend.main \
-  --engine proxy \
-  --proxy-engine-cmd 'python -m vllm.entrypoints.openai.api_server --model my-model' \
-  --setenv STORAGE_TYPE s3 \
-  --setenv STORAGE_AWS_BUCKET vectors \
-  --setenv STORAGE_AWS_ACCESS_KEY_ID 'AK...' \
-  --setenv STORAGE_AWS_SECRET_ACCESS_KEY 'SK...' \
-  --setenv STORAGE_AWS_REGION us-east-1
-```
+## Limitations
 
-Replace `my-model` and the example credentials with your deployment's values.
-For an S3-compatible gateway, also add
-`--setenv STORAGE_AWS_ENDPOINT_URL https://your-s3-endpoint` to the command.
-The examples configure buckets matching the TOS and S3 requests below.
+- No persistence for streaming, `background=true` Responses, GET-only metadata,
+  multipart or WebSocket requests. Ordinary background Responses still forward;
+  the proxy does not poll them for persistence.
+- Responses persistence changes the HTTP `output` type from an array to a
+  receipt object; it is an opt-in AIBrix extension, not the standard SDK shape.
+- Native results require declared schema fields. Empty results and zero values
+  are valid; missing or all-null results are errors. The full response envelope
+  is not stored, arbitrary paths/URLs are not fetched, and result base64 strings
+  are not decoded into media files.
 
-Local directories need no storage configuration; missing parent directories are
-created. HTTP `PUT` targets need no storage configuration; any `2xx` counts as success.
+## Schema references
 
----
-
-## Examples
-
-Chat completion to TOS:
-
-```bash
-curl -X POST http://localhost:8000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "my-model",
-    "messages": [{"role": "user", "content": "Hello"}],
-    "output": {"url": "tos://my-bucket/jobs/2026-10-28"}
-  }'
-```
-
-The result is written to `tos://my-bucket/jobs/2026-10-28/<chatcmpl-id>.json`.
-
-Chat completion to a local directory:
-
-```python
-import httpx
-
-resp = httpx.post(
-    "http://localhost:8000/v1/chat/completions",
-    json={
-        "model": "my-model",
-        "messages": [{"role": "user", "content": "Write a haiku about GPUs."}],
-        "output": {"url": "/data/results"},
-    },
-    timeout=60,
-)
-resp.raise_for_status()
-print(resp.json()["output"]["artifacts"])  # ['chatcmpl-....json']
-```
-
-Embeddings to S3:
-
-```bash
-curl -X POST http://localhost:8000/v1/embeddings \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "bge-large",
-    "input": ["hello world", "goodbye world"],
-    "output": {"url": "s3://vectors/jobs"}
-  }'
-```
+[Output](schemas/output.py) · [OpenAI](schemas/openai.py) ·
+[Responses](schemas/responses.py) · [Image/video](schemas/generation.py) ·
+[Native common](schemas/engine_common.py) · [vLLM](schemas/vllm.py) ·
+[SGLang](schemas/sglang.py)

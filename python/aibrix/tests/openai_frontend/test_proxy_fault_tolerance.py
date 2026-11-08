@@ -41,8 +41,12 @@ from aibrix.openai_frontend.common.artifact_fetcher import (
     FetchResult,
 )
 from aibrix.openai_frontend.proxy.engine_spec import (
+    SGLANG_SPEC,
     TRTLLM_SPEC,
+    VLLM_SPEC,
+    EndpointSet,
     EngineSpec,
+    ForwardKind,
 )
 from aibrix.openai_frontend.proxy.output_writer import OutputWriteError, OutputWriter
 from aibrix.openai_frontend.proxy.process_tree import (
@@ -70,6 +74,21 @@ MOCK_SPEC = EngineSpec(
     name="mock",
     supports_local_media=True,
     local_media_args=("--allowed-local-media-path", "{dir}"),
+    endpoints=EndpointSet(
+        (
+            ("/v1/chat/completions", ForwardKind.SSE),
+            ("/v1/completions", ForwardKind.SSE),
+            ("/v1/embeddings", ForwardKind.JSON),
+            ("/v1/models", ForwardKind.JSON),
+            ("/v1/responses", ForwardKind.SSE),
+            ("/v1/responses/{response_id}", ForwardKind.JSON),
+            ("/v1/responses/{response_id}/cancel", ForwardKind.JSON),
+            ("/v1/rerank", ForwardKind.JSON),
+            ("/v1/audio/transcriptions", ForwardKind.MULTIPART),
+            ("/v1/audio/translations", ForwardKind.MULTIPART),
+            ("/v1/realtime", ForwardKind.WEBSOCKET),
+        )
+    ),
 )
 
 
@@ -289,6 +308,13 @@ class TestKillTree:
             kill_tree(snap, grace_seconds=0.2, reap=lambda t: None)
             signal_group.assert_not_called()
             assert bystander.poll() is None, "recycled pid was killed"
+
+            # A group we cannot inspect still exists; never infer it stopped.
+            def denied_group(pgid, sig):
+                raise PermissionError("cannot inspect group")
+
+            monkeypatch.setattr(process_tree.os, "killpg", denied_group)
+            assert process_tree._group_exists(bystander.pid) is True
         finally:
             bystander.kill()
             bystander.wait()
@@ -1548,7 +1574,7 @@ class TestProxyEngineOutputE2E:
             if failure == "rejected":
                 assert caught.value.response.status_code == 422
             assert paths and not paths[0].exists()
-            assert not engine._video_inputs and not engine._request_done
+            assert not engine._retained.video_inputs and not engine._request_done
             assert not engine._fetcher._active_tmpdirs
             assert (
                 len(attempts)
@@ -1839,7 +1865,7 @@ class TestProxyEngineOutputE2E:
             elif plain and outcome != "cancel_plain" and not server_error:
                 response = await post
                 assert json.loads(response.body) == post_body
-                assert inputs[0].exists() and engine._video_inputs
+                assert inputs[0].exists() and engine._retained.video_inputs
                 assert calls == ["POST"] and not engine._video_tasks
                 read_later.set()
                 await worker
@@ -1864,7 +1890,9 @@ class TestProxyEngineOutputE2E:
                         closing = asyncio.create_task(engine.aclose())
                         await asyncio.sleep(0.01)
                         assert not closing.done() and inputs[0].exists()
-                        assert engine._request_done and not engine._video_inputs
+                        assert (
+                            engine._request_done and not engine._retained.video_inputs
+                        )
                         closing.cancel()
                         await asyncio.sleep(0)
                         closing.cancel()
@@ -1931,7 +1959,7 @@ class TestProxyEngineOutputE2E:
                     assert caught.value.response.status_code == (
                         500 if outcome.startswith("post_500") else 503
                     )
-                assert engine._video_inputs and inputs[0].exists()
+                assert engine._retained.video_inputs and inputs[0].exists()
                 read_later.set()
                 await worker
                 assert not engine._video_tasks and calls == ["POST"]
@@ -1939,10 +1967,10 @@ class TestProxyEngineOutputE2E:
                     await asyncio.wait_for(engine._handle_engine_exit(), 2)
                 else:
                     await asyncio.wait_for(engine.aclose(), 2)
-            assert not inputs[0].exists() and not engine._video_inputs
+            assert not inputs[0].exists() and not engine._retained.video_inputs
             assert len(cleanups) == 1 and not engine._request_done
             if server_error and not plain:
-                assert not output_file.exists() and not engine._video_sources
+                assert not output_file.exists() and not engine._retained.video_sources
             else:
                 assert output_file.read_bytes() == b"engine output must remain"
         finally:
@@ -2034,9 +2062,13 @@ class TestProxyEngineOutputE2E:
                     )
                 )
             if outcome == "late_stop":
-                assert stopped and not engine._video_sources and not source.exists()
+                assert (
+                    stopped
+                    and not engine._retained.video_sources
+                    and not source.exists()
+                )
                 return
-            assert engine._video_sources and not engine._video_inputs
+            assert engine._retained.video_sources and not engine._retained.video_inputs
             assert not stopped and not engine._video_tasks and not engine._request_done
             read_later.set()
             await worker
@@ -2078,7 +2110,7 @@ class TestProxyEngineOutputE2E:
                 await engine._handle_engine_exit()
             else:
                 await engine.aclose()
-            assert stopped and not engine._video_sources
+            assert stopped and not engine._retained.video_sources
             if outcome == "replaced":
                 assert source.read_bytes() == b"another job"
             else:
@@ -2958,10 +2990,10 @@ class TestProxyEngineOutputE2E:
                     await asyncio.wait_for(engine.aclose(), 2)
                 elif kind == "invalid_metadata":
                     # An invalid identity cannot establish trusted job termination.
-                    assert source.exists() and engine._video_sources
+                    assert source.exists() and engine._retained.video_sources
                     assert not engine._video_tasks and not engine._request_done
                     await asyncio.wait_for(engine.aclose(), 2)
-                    assert not engine._video_sources
+                    assert not engine._retained.video_sources
                 assert not source.exists()
                 assert not engine._request_done
         finally:
@@ -3412,3 +3444,159 @@ class TestProxyEngineOutputE2E:
             CreateCompletionRequest(
                 model="m", prompt="hi", stream=True, output={"url": "/tmp/out"}
             )
+
+
+# ---------------------------------------------------------------------------
+# Passthrough endpoints through the FastAPI app
+# ---------------------------------------------------------------------------
+
+
+class TestPassthroughRouter:
+    def test_responses_api_with_media_and_output(self, tmp_path):
+        from fastapi.testclient import TestClient
+
+        from aibrix.openai_frontend.frontend.fastapi_frontend import FastApiFrontend
+
+        media_dir = str(tmp_path / "media")
+        os.makedirs(media_dir)
+        engine = _make_engine(
+            _free_port(), media_dir=media_dir, artifact_fetcher=_DirFetcher(media_dir)
+        )
+        frontend = FastApiFrontend(engine=engine)
+        try:
+            with TestClient(frontend.app) as client:
+                r = client.post(
+                    "/v1/responses",
+                    json={
+                        "model": "m",
+                        "input": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "input_text", "text": "describe"},
+                                    {
+                                        "type": "input_image",
+                                        "image_url": "tos://b/p.png",
+                                    },
+                                ],
+                            }
+                        ],
+                        "output": {"url": str(tmp_path / "out")},
+                    },
+                )
+                assert r.status_code == 200, r.text
+                body = r.json()
+                # Only native Responses output is persisted; metadata stays in HTTP.
+                assert body["media"][0]["content"] == "content-of:tos://b/p.png"
+                assert "output" not in body["echo"]
+                out_url = body["output"]["url"]
+                artifact_rel = body["output"]["artifacts"][0]
+                assert not artifact_rel.startswith("/")
+                stored = json.loads(Path(out_url, artifact_rel).read_text())
+                assert set(stored) == {"output"}
+                assert stored["output"][0]["content"][0]["text"] == "hello"
+
+        finally:
+            # TestClient lifespan already awaited engine.aclose().
+            assert not engine._in_flight
+
+
+# ---------------------------------------------------------------------------
+# Omni endpoints: multipart audio + realtime websocket + templated paths
+# and the four built-in specs' endpoint catalogs
+# ---------------------------------------------------------------------------
+
+
+class TestEngineSpecCatalog:
+    def test_builtin_catalogs_and_media_capabilities(self):
+        from aibrix.openai_frontend.proxy.engine_spec import (
+            SGLANG_OMNI_SPEC,
+            VLLM_OMNI_SPEC,
+        )
+
+        assert VLLM_SPEC.spawn_args("/m") == ("--allowed-local-media-path", "/m")
+        assert SGLANG_SPEC.supports_local_media and SGLANG_SPEC.spawn_args("/m") == ()
+        assert "/v1/responses" in VLLM_SPEC.passthrough_endpoints
+        assert "/generate" in SGLANG_SPEC.passthrough_endpoints
+        assert EngineSpec(name="x").spawn_args("/m") == ()
+        speech = {"/v1/audio/transcriptions", "/v1/realtime"}
+        assert speech <= VLLM_OMNI_SPEC.passthrough_endpoints
+        assert not speech <= VLLM_SPEC.passthrough_endpoints
+        assert {"/v1/audio/transcriptions", "/v1/realtime"} <= (
+            SGLANG_OMNI_SPEC.passthrough_endpoints
+        )
+        assert "/v1/audio/translations" in VLLM_OMNI_SPEC.passthrough_endpoints
+        assert "/v1/audio/translations" not in SGLANG_OMNI_SPEC.passthrough_endpoints
+        assert not SGLANG_SPEC.passthrough_endpoints & speech
+        for path in (
+            "/v1/chat/completions",
+            "/v1/completions",
+            "/v1/embeddings",
+            "/v1/models",
+            "/v1/responses",
+            "/v1/messages",
+            "/v1/score",
+            "/v1/rerank",
+            "/tokenize",
+            "/detokenize",
+        ):
+            assert VLLM_OMNI_SPEC.supports(path), path
+        for path in ("/generate", "/encode", "/v1/classify", "/v1/loads"):
+            assert SGLANG_OMNI_SPEC.supports(path), path
+        assert VLLM_OMNI_SPEC.kind("/v1/audio/transcriptions") == ForwardKind.MULTIPART
+        assert VLLM_OMNI_SPEC.kind("/v1/realtime") == ForwardKind.WEBSOCKET
+        assert VLLM_OMNI_SPEC.kind("/v1/chat/completions") == ForwardKind.SSE
+        assert VLLM_OMNI_SPEC.kind("/v1/rerank") == ForwardKind.JSON
+        assert VLLM_OMNI_SPEC.kind("/v1/responses/abc") == ForwardKind.JSON
+        assert VLLM_OMNI_SPEC.kind("/v1/responses/abc/cancel") == ForwardKind.JSON
+        assert VLLM_OMNI_SPEC.kind("/v1/nope") is None
+
+
+class TestOmniEndpointsE2E:
+    def test_templated_routes_match_correctly(self):
+        """Pure routing check: GET /cancel/unknown must not falsely match."""
+        from aibrix.openai_frontend.proxy.engine_spec import _matches
+
+        tpl = "/v1/responses/{response_id}"
+        assert _matches(tpl, "/v1/responses/resp-123")
+        assert not _matches(tpl, "/v1/responses/resp-123/cancel")
+        cancel = "/v1/responses/{response_id}/cancel"
+        assert _matches(cancel, "/v1/responses/resp-123/cancel")
+        assert not _matches(cancel, "/v1/responses/resp-123/missing")
+        assert MOCK_SPEC.kind("/v1/responses/resp-123") == ForwardKind.JSON
+        assert MOCK_SPEC.kind("/v1/responses/resp-123/cancel") == ForwardKind.JSON
+        assert MOCK_SPEC.kind("/v1/responses/resp-123/missing") is None
+
+
+class TestEngineMediaPolicy:
+    def test_engine_spec_does_not_filter_media_types(self):
+        from aibrix.openai_frontend.engine.proxy_engine import ProxyEngine
+
+        req = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": "tos://b/a.png"}},
+                        {"type": "video_url", "video_url": {"url": "tos://b/v.mp4"}},
+                        {"type": "audio_url", "audio_url": {"url": "tos://b/a.wav"}},
+                    ],
+                }
+            ],
+            "input": [{"type": "input_file", "file_url": "https://h/document.pdf"}],
+        }
+
+        async def _run():
+            engine = ProxyEngine(engine_cmd=["unused"], spec=TRTLLM_SPEC)
+            try:
+                locs = engine._chat_inspector.extract_urls(req)
+                assert [loc.media_type for loc in locs] == [
+                    "image_url",
+                    "video_url",
+                    "audio_url",
+                    "file_url",
+                ]
+            finally:
+                await engine.aclose()
+
+        asyncio.run(_run())

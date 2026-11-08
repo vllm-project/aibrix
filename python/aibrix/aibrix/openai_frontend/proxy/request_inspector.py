@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Union
 
 from aibrix.openai_frontend.common.data_url import is_data_url
-from aibrix.openai_frontend.schemas.media import media_url_fields
+from aibrix.openai_frontend.schemas.media import MEDIA_TYPE, media_url_fields
 from aibrix.openai_frontend.schemas.openai import (
     ChatCompletionRequestMessageContentPart,
 )
@@ -150,7 +150,7 @@ class SglangGenerateInspector(MediaURLInspector):
             metadata = field.json_schema_extra
             if not isinstance(metadata, dict):
                 continue
-            media_type = metadata.get("media_type")
+            media_type = metadata.get(MEDIA_TYPE)
             if (
                 isinstance(media_type, str)
                 and media_type in self._media_types

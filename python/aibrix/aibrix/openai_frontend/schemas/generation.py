@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from aibrix.openai_frontend.schemas.media import OUTPUT_MEDIA
 from aibrix.openai_frontend.schemas.output import (
     HTTP_SCHEMES,
     OutputRequest,
@@ -235,7 +236,7 @@ def output_media_paths(
                     else node.get(name)
                 )
                 metadata = field.json_schema_extra
-                if isinstance(metadata, dict) and metadata.get("output_media"):
+                if isinstance(metadata, dict) and metadata.get(OUTPUT_MEDIA):
                     values = value if isinstance(value, list) else [value]
                     paths.extend(
                         path for path in values if isinstance(path, str) and path
