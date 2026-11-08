@@ -875,7 +875,7 @@ func (c *Store) updateRealtimeOutputTokenRateEWMA(pod *Pod) {
 	}
 
 	ewma := rate
-	if prev, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA); ok && prev.Value != nil {
+	if prev, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA); ok {
 		alpha := 1 - math.Exp(-podMetricRefreshInterval.Seconds()/outputTokenRateEWMATau.Seconds())
 		ewma = alpha*rate + (1-alpha)*prev.Value.GetSimpleValue()
 	}

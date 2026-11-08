@@ -31,11 +31,14 @@ type MetricRecord struct {
 }
 
 // MetricRecordCache is an optional extension for freshness-sensitive readers.
-// Keeping it separate from Cache preserves compatibility with external cache implementations.
+// Value-only adapters retain legacy behavior, with a one-time warning in the KV reader.
+// This does not preserve source compatibility for users of the exported Pod metric maps.
 type MetricRecordCache interface {
 	GetMetricRecordByPod(podName, podNamespace, metricName string) (MetricRecord, error)
 	GetMetricRecordByPodModel(podName, podNamespace, modelName, metricName string) (MetricRecord, error)
 }
+
+var _ MetricRecordCache = (*Store)(nil)
 
 var routingMetricStaleThreshold = loadRoutingMetricStaleThreshold()
 
@@ -44,16 +47,10 @@ var routingMetricStaleThreshold = loadRoutingMetricStaleThreshold()
 func RoutingMetricStaleThreshold() time.Duration { return routingMetricStaleThreshold }
 
 func loadRoutingMetricStaleThreshold() time.Duration {
-	// Validate in milliseconds before either multiplication can overflow Duration.
-	const maxMilliseconds = math.MaxInt64 / int64(time.Millisecond)
-	refreshMS := utils.LoadEnvInt("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", defaultPodMetricRefreshIntervalInMS)
-	fallback := 5 * time.Second
-	if int64(refreshMS) <= maxMilliseconds/3 {
-		fallback = max(fallback, 3*time.Duration(refreshMS)*time.Millisecond)
-	}
+	fallback := max(5*time.Second, 3*podMetricRefreshInterval, podMetricsFetchTimeout+podMetricRefreshInterval)
 	// LoadEnvInt already rejects zero, negative and malformed overrides.
 	ms := utils.LoadEnvInt("AIBRIX_ROUTING_METRIC_STALE_THRESHOLD_MS", int(fallback/time.Millisecond))
-	if int64(ms) > maxMilliseconds {
+	if int64(ms) > math.MaxInt64/int64(time.Millisecond) {
 		return fallback
 	}
 	return time.Duration(ms) * time.Millisecond

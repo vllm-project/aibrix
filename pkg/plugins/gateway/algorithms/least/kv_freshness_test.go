@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -171,5 +172,51 @@ func TestKVFreshnessCPULookupErrors(t *testing.T) {
 				require.Equal(t, []float64{0.2}, scores)
 			}
 		})
+	}
+}
+
+// Exercise real Store timestamps and writes, without overriding record getters.
+func TestKVFreshnessStoreIntegrationAndConcurrentUpdates(t *testing.T) {
+	pod := newPod("p", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	values := func(v float64) map[string]map[string]metrics.MetricValue {
+		return map[string]map[string]metrics.MetricValue{"p": {metrics.KVCacheUsagePerc: &metrics.SimpleMetricValue{Value: v}}}
+	}
+	store := cache.NewWithPodsModelMetricsForTest([]*v1.Pod{pod}, "m1", values(0.2))
+	record, err := store.GetMetricRecordByPodModel(pod.Name, pod.Namespace, "m1", metrics.KVCacheUsagePerc)
+	require.NoError(t, err)
+	threshold := time.Second
+	now := record.Timestamp.Add(threshold)
+	router := leastKvCacheRouter{cache: store, now: func() time.Time { return now }, staleThreshold: threshold}
+	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "input", "req", "")
+	list := &utils.PodArray{Pods: []*v1.Pod{pod}}
+	_, scored, err := router.ScoreAll(ctx, list)
+	require.NoError(t, err)
+	require.Equal(t, []bool{true}, scored)
+	now = now.Add(time.Nanosecond)
+	_, scored, err = router.ScoreAll(ctx, list)
+	require.NoError(t, err)
+	require.Equal(t, []bool{false}, scored)
+	cache.InitWithPodsModelMetrics(store, values(0.4))
+	now = time.Now()
+	scores, scored, err := router.ScoreAll(ctx, list)
+	require.NoError(t, err)
+	require.Equal(t, []bool{true}, scored)
+	require.Equal(t, []float64{0.4}, scores)
+	// now stays fixed while successful writes advance timestamps. Race runs
+	// exercise the atomic value/timestamp pair, including negative age reads.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			cache.InitWithPodsModelMetrics(store, values(float64(i%2)*0.2+0.2))
+		}
+	}()
+	defer wg.Wait()
+	for i := 0; i < 1000; i++ {
+		scores, scored, err := router.ScoreAll(ctx, list)
+		require.NoError(t, err)
+		require.Equal(t, []bool{true}, scored)
+		require.Contains(t, []float64{0.2, 0.4}, scores[0])
 	}
 }

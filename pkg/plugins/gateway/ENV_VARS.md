@@ -534,32 +534,51 @@ The gateway plugins feature built-in support for distributed tracing via OpenTel
 
 ---
 
-## KV metric freshness (`algorithms/least/kv_cache.go`)
+## KV metric freshness (`algorithms/routeutil/kv_freshness.go`)
 
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
-| `AIBRIX_ROUTING_METRIC_STALE_THRESHOLD_MS` | int (milliseconds) | `max(5000, 3 * AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS)` | Maximum age of a successfully updated KV metric used by the shared least-KV scorer. Positive values override the default; zero, negative, malformed or overflowing values use the default. Read at gateway startup. Environment-only; no model config profile override. | [metric_record.go](../../cache/metric_record.go), [algorithms/least/kv_cache.go](algorithms/least/kv_cache.go) |
-
-If three times the configured refresh interval cannot fit in a Go duration, the
-stale-threshold default falls back to 5000 ms. This does not change validation of
-the collection refresh interval itself.
+| `AIBRIX_ROUTING_METRIC_STALE_THRESHOLD_MS` | int (milliseconds) | `max(5000, 3 * refresh_ms, fetch_timeout_ms + refresh_ms)` | Maximum age of a successfully collected KV metric. Uses the initialized collection refresh interval and fetch timeout (defaults: 1000 ms and 5000 ms, yielding 6000 ms). Positive values override the default; zero, negative, malformed or overflowing values use the default. Read at gateway startup. Environment-only; no model config profile override. | [metric_record.go](../../cache/metric_record.go), [kv_freshness.go](algorithms/routeutil/kv_freshness.go) |
 
 For example, set `AIBRIX_ROUTING_METRIC_STALE_THRESHOLD_MS=15000` to accept KV
 samples up to 15 seconds old. Age equal to the threshold is accepted. The age
-measures when this gateway last updated that individual metric, not when the
-engine computed its value. A failed scrape or a successful response that omits
-that metric does not refresh its timestamp.
+starts when this gateway completes a successful scrape, not when the engine
+computed its value. A failed scrape or a successful response that omits that
+metric does not refresh its timestamp. A healthy HTTP endpoint returning frozen
+gauges is still fresh under this rule; this is not an engine liveness probe.
 
 `least-kv-cache`, its deprecated `least-gpu-cache` alias, and the KV tie-breaker
 in `load-balance` skip scoring a pod whose GPU KV metric is missing or stale.
 A CPU KV metric that has never been reported contributes zero, preserving vLLM
 V1 compatibility; a previously reported CPU metric that becomes stale makes
 the combined KV score unavailable. If no pod has a usable score, the existing
-random fallback still routes to a ready pod. This rule excludes stale evidence
-from scoring; it does not eject pods from the serving fleet.
+random fallback still routes to a ready pod.
 
-The built-in cache stores each value and timestamp together. Custom caches that
-implement only the existing value getters keep their previous scoring behavior;
-they can implement `cache.MetricRecordCache` to opt into freshness checks.
-Collection allowlists, other independent scoring strategies, and Prometheus
-staleness visibility are outside this change.
+The `load-balance` **primary** KV penalty and guardrail use the same age check.
+Unavailable GPU KV usage is neutral (`kvFree = 1`), just like a missing metric:
+it applies neither a KV penalty nor the KV-critical guardrail. This deliberately
+avoids retaining an obsolete low or high pressure reading. Load and capacity
+still affect the primary score. Freshness does not eject a pod from the fleet.
+Independent `pd` scoring and other metric consumers are outside this change.
+
+The default is a minimum allowance for a slow successful fetch, not a fleet-wide
+collection deadline. With many pods, bounded worker/queue capacity and backoff
+can make healthy samples exceed it. Tune workers, queue size and this threshold
+using observed collection age and saturation; do not assume three refresh ticks
+refresh every pod. There is no boolean off switch: a large positive override
+(e.g. `86400000` for 24 hours) relaxes age rejection, but does not disable checks
+for missing/invalid records. Zero uses the default, not infinity.
+
+`aibrix_routing_kv_metric_rejections_total{reason,metric}` counts rejected metric
+reads, not unique pods or requests. `reason` is `stale`, `missing`, `invalid`, or
+`lookup_error`; `metric` is `gpu`, `cpu`, or `other`. An absent optional CPU metric
+is not counted. V(4) logs include pod, metric, reason, age and threshold. A request
+may read a metric in both primary scoring and tie-breaking and count twice.
+
+The built-in Store atomically stores each value and timestamp together. Value-only
+custom cache adapters retain legacy behavior with a once-per-process warning;
+implement `cache.MetricRecordCache` to enforce freshness. Existing value getter
+signatures remain unchanged, but the exported `Pod.Metrics` and `Pod.ModelMetrics`
+map element types change to `MetricRecord`. Direct map consumers must unwrap
+`record.Value` (or use the getters). This is not blanket Go source compatibility.
+Collection allowlists and Prometheus series staleness remain unchanged.

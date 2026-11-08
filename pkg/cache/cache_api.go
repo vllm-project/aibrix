@@ -139,7 +139,8 @@ type PodReadySinceProvider interface {
 	LatestPodReadySince() int64
 }
 
-// MetricCache defines operations for metric data caching
+// MetricCache defines operations for metric data caching. Value getters do not
+// enforce age; freshness-sensitive consumers should use MetricRecordCache.
 type MetricCache interface {
 	// GetMetricValueByPod returns the last-written metric slot for a pod (scraped engine
 	// gauges, PromQL results, or gateway-derived values such as RealtimeNumRequestsRunning).

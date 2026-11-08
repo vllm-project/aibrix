@@ -20,6 +20,7 @@ import (
 	"math"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/vllm-project/aibrix/pkg/cache"
@@ -311,16 +312,15 @@ func (r *loadBalanceRouter) capacities(pods []*v1.Pod) []float64 {
 }
 
 // kvFreeFraction returns the pod's free KV-cache fraction in [0, 1]. A pod whose engine does not
-// report KV usage is treated as fully free: no penalty and no guardrail, rather than penalizing
+// report fresh KV usage is treated as fully free: no penalty and no guardrail, rather than penalizing
 // engines that simply lack the metric. A NaN reading (e.g. 0/0 in the engine) is treated the same
 // way: math.Min/Max propagate NaN, and a NaN free fraction would compare false against the
 // guardrail and turn the pod's score into NaN, which never wins a comparison in Route.
 func (r *loadBalanceRouter) kvFreeFraction(ctx *types.RoutingContext, pod *v1.Pod) float64 {
-	v, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.KVCacheUsagePerc)
-	if err != nil || v == nil {
+	usage, ok := routeutil.FreshKVUsage(r.cache, pod, ctx.Model, metrics.KVCacheUsagePerc, time.Now(), cache.RoutingMetricStaleThreshold())
+	if !ok {
 		return 1.0
 	}
-	usage := v.GetSimpleValue()
 	if math.IsNaN(usage) {
 		return 1.0
 	}

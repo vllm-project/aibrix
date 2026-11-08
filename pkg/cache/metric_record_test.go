@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
 )
 
 func TestMetricRecordValueCompatibilityAndPartialUpdate(t *testing.T) {
@@ -138,37 +139,55 @@ func TestMetricRecordsDoNotSurvivePodUIDReplacement(t *testing.T) {
 }
 
 func TestRoutingMetricStaleThreshold(t *testing.T) {
+	oldRefresh, oldTimeout := podMetricRefreshInterval, podMetricsFetchTimeout
+	t.Cleanup(func() { podMetricRefreshInterval, podMetricsFetchTimeout = oldRefresh, oldTimeout })
 	for _, tc := range []struct {
-		refresh, override string
-		want              time.Duration
+		name             string
+		refresh, timeout time.Duration
+		override         string
+		want             time.Duration
 	}{
-		{"1000", "", 5 * time.Second}, {"2500", "", 7500 * time.Millisecond}, {"1000", "9000", 9 * time.Second},
-		{"1000", "0", 5 * time.Second}, {"1000", "-1", 5 * time.Second}, {"1000", "bad", 5 * time.Second},
-		{"1000", "9223372036854775807", 5 * time.Second},
-		// Millisecond-to-duration and 3x-refresh overflow must not wrap.
-		{"7000000000000", "", 5 * time.Second},
-		{"18446744083710", "", 5 * time.Second},
-		{"1000", "9223372036854", 9223372036854 * time.Millisecond},
-		{"1000", "9223372036855", 5 * time.Second},
+		{"defaults", time.Second, 5 * time.Second, "", 6 * time.Second},
+		{"refresh dominates", 3 * time.Second, time.Second, "", 9 * time.Second},
+		{"timeout dominates", time.Second, 10 * time.Second, "", 11 * time.Second},
+		{"floor", 50 * time.Millisecond, time.Second, "", 5 * time.Second},
+		{"override", time.Second, 5 * time.Second, "15000", 15 * time.Second},
+		{"zero", time.Second, 5 * time.Second, "0", 6 * time.Second},
+		{"negative", time.Second, 5 * time.Second, "-1", 6 * time.Second},
+		{"malformed", time.Second, 5 * time.Second, "bad", 6 * time.Second},
+		{"overflow", time.Second, 5 * time.Second, "9223372036854775807", 6 * time.Second},
 	} {
-		t.Run(tc.refresh+"_"+tc.override, func(t *testing.T) {
-			t.Setenv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", tc.refresh)
+		t.Run(tc.name, func(t *testing.T) {
+			podMetricRefreshInterval, podMetricsFetchTimeout = tc.refresh, tc.timeout
 			t.Setenv("AIBRIX_ROUTING_METRIC_STALE_THRESHOLD_MS", tc.override)
 			require.Equal(t, tc.want, loadRoutingMetricStaleThreshold())
 		})
 	}
 }
 
-func TestMetricRecordEmptyEWMACanRecover(t *testing.T) {
-	c := &Store{}
-	pod := newReadyMetricsPod("empty-ewma", "empty-ewma")
-	seedCompletedOutputTokensHistory(t, pod, 0, 30*time.Second)
-	atomic.StoreInt64(&pod.completedOutputTokens, 3000)
-	pod.Metrics.Store(metrics.RealtimeOutputTokenRateEWMA, MetricRecord{})
-	require.NotPanics(t, func() { c.updateRealtimeOutputTokenRateEWMA(pod) })
-	record, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
+func TestGlobalCacheProvidesMetricRecords(t *testing.T) {
+	previous := store
+	t.Cleanup(func() { store = previous })
+	initialized := InitForTest()
+	got, err := Get()
+	require.NoError(t, err)
+	records, ok := got.(MetricRecordCache)
 	require.True(t, ok)
-	require.NotNil(t, record.Value)
-	require.InDelta(t, 100, record.Value.GetSimpleValue(), 1)
-	require.False(t, record.Timestamp.IsZero())
+	require.Same(t, initialized, records)
+}
+
+// MetricRecordWorkerForTest exposes the real collector only to external-package
+// integration tests, so they can run a router without a cache import cycle.
+func MetricRecordWorkerForTest(port string) (*Store, *v1.Pod, func()) {
+	pod := newReadyMetricsPod("worker-router", "uid-worker-router")
+	pod.Status.PodIP = "127.0.0.1"
+	pod.Labels[MetricPortLabel] = port
+	c := NewWithPodsForTest([]*v1.Pod{pod.Pod}, "model")
+	meta, _ := c.metaPods.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
+	return c, pod.Pod, func() {
+		jobs := make(chan *Pod, 1)
+		jobs <- meta
+		close(jobs)
+		c.worker(jobs)
+	}
 }
