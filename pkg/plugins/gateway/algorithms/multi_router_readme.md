@@ -14,7 +14,7 @@ AIBrix Gateway supports multi-strategy routing, allowing you to combine multiple
 
 ## Configuration Format
 
-You can configure multi-strategy routing by setting the `AIBRIX_ROUTING_ALGORITHM` environment variable using a comma-separated list of `strategy:weight` pairs.
+You can configure multi-strategy routing by setting the `ROUTING_ALGORITHM` environment variable using a comma-separated list of `strategy:weight` pairs.
 
 * **Format:** `strategy1:weight1,strategy2:weight2,...`
 * If `:weight` is omitted, it defaults to `1`.
@@ -34,7 +34,7 @@ Assume we have two pods serving a model:
 
 ### Example 1: `least-request` Dominates
 ```yaml
-AIBRIX_ROUTING_ALGORITHM: "least-request:10,throughput:1"
+ROUTING_ALGORITHM: "least-request:10,throughput:1"
 ```
 * `least-request` (weight 10): Pod B is much better (2 vs 10). Normalized: Pod A = 0.0, Pod B = 1.0. Weighted Score: A = 0.0 * 10/11 = 0.0, B = 1.0 * 10/11 ≈ 0.91.
 * `throughput` (weight 1): Pod A is much better (100 vs 10). Normalized: Pod A = 1.0, Pod B = 0.0. Weighted Score: A = 1.0 * 1/11 ≈ 0.09, B = 0.0 * 1/11 = 0.0.
@@ -42,7 +42,7 @@ AIBRIX_ROUTING_ALGORITHM: "least-request:10,throughput:1"
 
 ### Example 2: `throughput` Dominates
 ```yaml
-AIBRIX_ROUTING_ALGORITHM: "least-request:1,throughput:10"
+ROUTING_ALGORITHM: "least-request:1,throughput:10"
 ```
 * `least-request` (weight 1): Weighted Score: A = 0.0 * 1/11 = 0.0, B = 1.0 * 1/11 ≈ 0.09.
 * `throughput` (weight 10): Weighted Score: A = 1.0 * 10/11 ≈ 0.91, B = 0.0 * 10/11 = 0.0.
@@ -50,7 +50,7 @@ AIBRIX_ROUTING_ALGORITHM: "least-request:1,throughput:10"
 
 ### Example 3: Complex Scenario with Corner Cases (3 Strategies)
 ```yaml
-AIBRIX_ROUTING_ALGORITHM: "least-request,throughput:2,least-latency:0"
+ROUTING_ALGORITHM: "least-request,throughput:2,least-latency:0"
 ```
 * `least-request`: No weight specified, **defaults to 1**. Weighted Score: A = 0.0 * 1/3 = 0.0, B = 1.0 * 1/3 ≈ 0.33.
 * `throughput`: Explicitly set to weight **2**. Weighted Score: A = 1.0 * 2/3 ≈ 0.67, B = 0.0 * 2/3 = 0.0.
@@ -59,7 +59,7 @@ AIBRIX_ROUTING_ALGORITHM: "least-request,throughput:2,least-latency:0"
 
 ### Example 4: Invalid Configuration Fallback
 ```yaml
-AIBRIX_ROUTING_ALGORITHM: "least-request:1,invalid-strategy:1"
+ROUTING_ALGORITHM: "least-request:1,invalid-strategy:1"
 ```
 * Because `invalid-strategy` is not a registered algorithm, the multi-strategy parser will fail. To preserve the API contract, the Gateway will reject the request with a **400 Bad Request** error rather than silently falling back to a random router.
 
@@ -72,12 +72,12 @@ Assume three pods with the following metrics:
 * **Pod C**: The "Sweet Spot" - Medium active requests (10 req), and medium historical load (150 tokens).
 
 **Single Strategy Flaws:**
-* `AIBRIX_ROUTING_ALGORITHM="least-request"`: Completely ignores historical load and picks **Pod A** (which is exhausted).
-* `AIBRIX_ROUTING_ALGORITHM="throughput"`: Completely ignores current spikes and picks **Pod B** (which is currently slammed).
+* `ROUTING_ALGORITHM="least-request"`: Completely ignores historical load and picks **Pod A** (which is exhausted).
+* `ROUTING_ALGORITHM="throughput"`: Completely ignores current spikes and picks **Pod B** (which is currently slammed).
 
 **Multi-Strategy Solution:**
 ```yaml
-AIBRIX_ROUTING_ALGORITHM: "least-request:1,throughput:1"
+ROUTING_ALGORITHM: "least-request:1,throughput:1"
 ```
 * `least-request` (weight 1): Normalizes active requests [1, 50]. 
   * Pod A: 1.0
