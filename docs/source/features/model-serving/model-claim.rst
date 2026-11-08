@@ -595,6 +595,12 @@ runtime agent restarts it on the same port after 2, 4, 8, 16 and 32 seconds,
 up to five times over the engine's life. While it restarts, the model is off
 the route, and the other models on the Pod keep serving.
 
+A vLLM engine also counts as crashed when it fails its health check for a
+minute after it was ready. This happens, for example, when the EngineCore dies
+while the API server keeps running. The runtime agent then stops all of the
+engine's processes and restarts it the same way. An engine that is still
+starting has no such limit, since loading a model can take a while.
+
 An engine that crashes again after its fifth restart has failed permanently,
 and its claim gets an ``EngineFailed`` Event. If another Pod has room, the
 controller stops the engine and starts the claim there at once. Otherwise, the

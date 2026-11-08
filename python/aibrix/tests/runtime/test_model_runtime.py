@@ -2244,7 +2244,9 @@ def test_initial_kv_write_before_capture_and_restart(initial_kv):
         agent.set_kv_limit(inst.model_name, 200, operation_id="grow")
     assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
     agent._schedule_restart(inst, "engine exited")
-    agent._now = lambda: inst.next_restart_at
+    # The restart clears next_restart_at, so the clock keeps the due time.
+    due = inst.next_restart_at
+    agent._now = lambda: due
     agent.supervise_once()
     segment.write_bytes(struct.pack("<3q", 80, 0, 0))
     assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 80
