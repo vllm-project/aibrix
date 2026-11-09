@@ -33,7 +33,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 )
 
-// A seed cap of one still retains partial and zero matches for random candidates.
+// The candidate estimate retains partial and zero matches for every ready pod.
 // Changing the live index after seeding makes a second lookup observable: final
 // scoring must keep the seeding result until the decision is cleared.
 func TestSeededPrefixMatchSharesRawScores(t *testing.T) {
@@ -53,7 +53,9 @@ func TestSeededPrefixMatchSharesRawScores(t *testing.T) {
 			require.Zero(t, before[2])
 			require.Nil(t, ctx.SeededPrefixMatch(), "ordinary scoring does not retain a snapshot")
 
-			require.Equal(t, []*v1.Pod{all.Pods[0]}, r.SeedCandidates(ctx, all, 1))
+			estimates, _, err := r.CandidateScores(ctx, all)
+			require.NoError(t, err)
+			require.Equal(t, before, estimates, "the estimate is the exact prefix score")
 			require.NotNil(t, ctx.SeededPrefixMatch())
 			addSeededMatch(t, r, all, all.Pods[1], prompt)
 			addSeededMatch(t, r, all, all.Pods[2], prompt)
@@ -80,14 +82,15 @@ func TestSeededPrefixMatchPreservesAdmissionAndPrefixCredit(t *testing.T) {
 			addSeededMatch(t, r, all, all.Pods[0], prompt)
 			ctx := newSeededMatchContext(prompt)
 			defer ctx.Delete()
-			r.SeedCandidates(ctx, all, 1)
+			_, _, err := r.CandidateScores(ctx, all)
+			require.NoError(t, err)
 			require.NotNil(t, ctx.SeededPrefixMatch())
 			// The matched pod was filtered out; the remaining pod must not inherit
 			// its match, and is credited only if it admits the request.
 			remaining := &utils.PodArray{Pods: all.Pods[1:2]}
 			denied := errors.New("admission denied")
 			ctx.SetTargetAdmitter(func(*v1.Pod) error { return denied })
-			_, err := r.Route(ctx, remaining)
+			_, err = r.Route(ctx, remaining)
 			require.ErrorIs(t, err, denied)
 			fresh := newSeededMatchContext(prompt)
 			defer fresh.Delete()
@@ -174,10 +177,13 @@ func TestSeededPrefixMatchDoesNotCacheFailures(t *testing.T) {
 			}
 			ctx := newSeededMatchContext("hello prefix")
 			defer ctx.Delete()
-			assert.Empty(t, r.SeedCandidates(ctx, pods, 2))
+			_, _, err := r.CandidateScores(ctx, pods)
+			assert.Error(t, err)
 			require.Nil(t, ctx.SeededPrefixMatch())
 			tok.fail = false
-			assert.Empty(t, r.SeedCandidates(ctx, pods, 2), "a successful all-miss lookup seeds no pods")
+			estimates, _, err := r.CandidateScores(ctx, pods)
+			require.NoError(t, err)
+			assert.Equal(t, []float64{0, 0, 0}, estimates, "a successful all-miss lookup estimates no match")
 			require.NotNil(t, ctx.SeededPrefixMatch(), "successful misses are retained, unlike failures")
 			addSeededMatch(t, r, pods, pods.Pods[0], "hello prefix")
 			scores, _, err := r.ScoreAll(ctx, pods)
@@ -240,7 +246,8 @@ func TestSeededPrefixMatchDifferentialSubsets(t *testing.T) {
 			for trial := 0; trial < 400; trial++ {
 				prompt := prompts[rng.Intn(len(prompts))]
 				ctx, live := newSeededMatchContext(prompt), newSeededMatchContext(prompt)
-				r.SeedCandidates(ctx, all, 1+rng.Intn(all.Len()))
+				_, _, err := r.CandidateScores(ctx, all)
+				require.NoError(t, err)
 				require.NotNil(t, ctx.SeededPrefixMatch())
 				require.Equal(t, coverage, ctx.SeededPrefixMatch().Pods, "index lookup must not mutate the coverage input")
 				order := rng.Perm(all.Len())[:1+rng.Intn(all.Len())]

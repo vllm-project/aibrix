@@ -123,6 +123,19 @@ type ModelClaimStatusProvider interface {
 	ModelClaimStatus(modelName string) (phase, reason string, found bool)
 }
 
+// ApproxRunningRequestsProvider is an optional Cache capability: a running-request count for
+// every pod that is read from process memory only. Callers type-assert for it, like
+// PodReadySinceProvider, and treat a failed assertion as "no estimate".
+type ApproxRunningRequestsProvider interface {
+	// GetPodsRunningRequestsApprox returns, keyed by utils.GeneratePodKey, this gateway's own
+	// running count of each pod (exact) plus the other gateways' counts from the latest
+	// gateway snapshot (refreshed every 100ms when Redis is configured). It never calls Redis,
+	// so it can be read for every ready pod on each request. A snapshot older than one second
+	// (a stalled sync) is ignored, leaving this gateway's own counts. Without Redis it equals
+	// GetPodsRunningRequests. Pods not in the cache are omitted.
+	GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64
+}
+
 // PodReadySinceProvider is an optional cache extension exposing when this gateway first saw each
 // pod routable (see readySince in pod.go). Callers type-assert for it, like
 // ModelClaimBindingProvider, and treat a failed assertion as "no ramp info"; it stays off Cache

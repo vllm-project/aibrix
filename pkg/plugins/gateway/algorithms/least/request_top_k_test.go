@@ -862,3 +862,43 @@ func TestLeastRequestTopKScoreAll_EmptyPodList(t *testing.T) {
 	assert.Empty(t, scores)
 	assert.Empty(t, scored)
 }
+
+// approxFakeCache answers the candidate stage's in-memory counts from Approx, and its exact
+// counts and ramp state from the embedded fake.
+type approxFakeCache struct {
+	*po2FakeCache
+	Approx map[string]int64 // by pod name
+}
+
+func (c *approxFakeCache) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
+	counts := make(map[string]int64, len(pods))
+	for _, pod := range pods {
+		if n, ok := c.Approx[pod.Name]; ok {
+			counts[utils.GeneratePodKey(pod.Namespace, pod.Name)] = n
+		}
+	}
+	return counts
+}
+
+// CandidateScores applies the same ramp adjustment as ScoreAll, to the in-memory counts: a pod
+// that just became ready looks about as loaded as the warm pods, not idle. It reads no exact
+// counts.
+func TestLeastRequestTopKRouter_CandidateScoresAppliesRampAdjustment(t *testing.T) {
+	withTopK(t, 5, 4)
+	withRamp(t, 300*time.Second)
+	clock := newFakeClock()
+	fake := &approxFakeCache{
+		po2FakeCache: &po2FakeCache{ReadySince: map[string]int64{"podA": clock.Now().UnixNano()}},
+		Approx:       map[string]int64{"podA": 0, "podB": 32},
+	}
+	router := newLeastRequestTopKRouterWithCacheAndClock(fake, clock.Now)
+	pods := po2TestPods("podA", "podB")
+
+	scores, scored, err := router.CandidateScores(newLrtkCtx("req-estimate"), newPo2PodList(pods, nil))
+
+	require.NoError(t, err)
+	require.Equal(t, []bool{true, true}, scored)
+	assert.InDelta(t, 32, scores[0], 1, "the ramping pod is charged the warm floor, not 0: %v", scores)
+	assert.Equal(t, float64(32), scores[1])
+	assert.Empty(t, fake.Batches, "the estimate reads no exact counts")
+}

@@ -80,8 +80,7 @@ func processRoutingOverrides() *types.RoutingOverrides {
 		},
 		PD: pdrouter.EnvOverrides(),
 		Candidate: types.CandidateOverrides{
-			K:       routingCandidateK,
-			PrefixM: routingCandidatePrefixM,
+			K: routingCandidateK,
 		},
 	}
 }
@@ -151,7 +150,6 @@ func resolveRoutingOverrides(cfg *types.RoutingConfig) *types.RoutingOverrides {
 	}
 	if c := cfg.Candidate; c != nil {
 		set(apply(&ov.Candidate.K, "candidate.k", c.K, nonNegative[int]))
-		set(apply(&ov.Candidate.PrefixM, "candidate.prefixM", c.PrefixM, nonNegative[int]))
 	}
 	set(applyAny(&ov.PD.PromptLengthBucketing, cfg.PromptLengthBucketing))
 	set(applyAny(&ov.PD.BucketServe, cfg.BucketServe))
