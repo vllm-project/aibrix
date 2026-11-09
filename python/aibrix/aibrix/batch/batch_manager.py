@@ -640,9 +640,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 pending_job.scheduling_started_at = scheduling_started_at
                 self._pending_jobs[job_id] = pending_job
             elif job_id in self._in_progress_jobs:
-                self._in_progress_jobs[
-                    job_id
-                ].scheduling_started_at = scheduling_started_at
+                in_progress_job = self._as_job_meta(self._in_progress_jobs[job_id])
+                in_progress_job.scheduling_started_at = scheduling_started_at
+                self._in_progress_jobs[job_id] = in_progress_job
             self._job_scheduler.append_job(job_id)
         # For metadata server (no scheduler): prepare job output files when job is committed
         elif (

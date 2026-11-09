@@ -42,9 +42,14 @@ from typing import (
     runtime_checkable,
 )
 
-from aibrix.batch.client.channel import Channel, HttpChannel
+from aibrix.batch.client.channel import (
+    Channel,
+    HttpChannel,
+    create_batch_runtime_http_client,
+)
 from aibrix.batch.client.source import CapacitySignal
 from aibrix.logger import init_logger
+from aibrix.metadata.core.http_client import HTTPClient
 
 logger = init_logger(__name__)
 
@@ -94,6 +99,8 @@ class DiscoveryEndpointSource:
         self._channels: List[Channel] = []
         self._by_url: Dict[str, Channel] = {}
         self._retired_channels: List[Channel] = []
+        self._shared_client: Optional[HTTPClient] = None
+        self._retired_clients: List[HTTPClient] = []
         self._lock = asyncio.Lock()
         self._refresh_lock = asyncio.Lock()
         self._last_refresh_at: Optional[float] = None
@@ -219,16 +226,28 @@ class DiscoveryEndpointSource:
             if set(new_urls) == set(self._by_url):
                 self._version = snapshot.version
                 return
+            shared_client: Optional[HTTPClient] = (
+                create_batch_runtime_http_client(
+                    f"discovery-source-{self._model}-batch-runtime-http",
+                    max_connections=max(len(new_urls), 1) * 100,
+                    limit_per_host=100,
+                )
+                if new_urls
+                else None
+            )
             keep: Dict[str, Channel] = {}
             for url in new_urls:
-                keep[url] = self._by_url.get(url) or HttpChannel(
-                    url, timeout=self._timeout
+                keep[url] = HttpChannel(
+                    url, timeout=self._timeout, client=shared_client
                 )
+            self._retired_channels.extend(self._by_url.values())
             retired_urls: list[str] = []
-            for url, channel in self._by_url.items():
+            for url in self._by_url:
                 if url not in keep:
-                    self._retired_channels.append(channel)
                     retired_urls.append(url)
+            if self._shared_client is not None:
+                self._retired_clients.append(self._shared_client)
+            self._shared_client = shared_client
             self._by_url = keep
             self._channels = [keep[url] for url in new_urls]
             self._version = snapshot.version
@@ -254,6 +273,11 @@ class DiscoveryEndpointSource:
     async def aclose(self) -> None:
         for channel in [*self._channels, *self._retired_channels]:
             await channel.aclose()
+        for client in [*self._retired_clients, self._shared_client]:
+            if client is not None:
+                await client.aclose()
         self._channels = []
         self._by_url = {}
         self._retired_channels = []
+        self._shared_client = None
+        self._retired_clients = []

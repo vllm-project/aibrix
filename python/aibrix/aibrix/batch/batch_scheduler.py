@@ -94,9 +94,11 @@ class BatchScheduler:
     ) -> None:
         try:
             job = await self._job_progress_manager.get_job(job_id)
+            if job is None:
+                return
             scheduling_started_at = getattr(job, "scheduling_started_at", None)
             phase_ms = metric_duration_ms(scheduling_started_at, scheduling_ended_at)
-            if job is None or phase_ms is None or phase_ms < 0:
+            if phase_ms is None or phase_ms < 0:
                 return
             phase = "scheduling"
             Emitter.timer(
