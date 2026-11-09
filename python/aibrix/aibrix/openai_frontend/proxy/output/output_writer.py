@@ -14,9 +14,10 @@
 
 """Persist a response to the destination named by an ``OutputRequest``.
 
-Object-store and local destinations both go through a storage built with
+Object-store destinations go through the env storage built by
 ``create_storage_from_env``, so credentials, endpoint and CRC settings are
-configured once via ``STORAGE_*`` env vars:
+configured once via ``STORAGE_*`` env vars.  Local destinations instead get a
+fresh ``LocalStorage`` rooted at the requested directory:
 
 * ``tos://bucket/prefix`` / ``s3://bucket/prefix`` -- the env storage must be
   of the matching type and bucket; anything else is rejected rather than
@@ -37,6 +38,7 @@ import os
 import stat
 import tempfile
 import zipfile
+from collections.abc import MutableMapping
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Optional, Sequence, Union
@@ -44,6 +46,11 @@ from urllib.parse import quote, unquote, urlparse
 
 import httpx
 
+from aibrix.openai_frontend.proxy.output.path_ref import (
+    PathOwnership,
+    PathRef,
+    PathRefs,
+)
 from aibrix.openai_frontend.schemas.output import (
     HTTP_SCHEMES,
     LOCAL_SCHEMES,
@@ -60,11 +67,43 @@ logger = logging.getLogger(__name__)
 OUTPUT_CHUNK_SIZE_BYTES = 1024 * 1024
 
 StorageFactory = Callable[[], object]
-SourceIdentities = dict[Path, Optional[os.stat_result]]
+SourceIdentities = MutableMapping[Path, Optional[os.stat_result]]
 
 
 class OutputWriteError(RuntimeError):
     """The response could not be written to the requested destination."""
+
+
+def protected_refs(sources: Optional[SourceIdentities]) -> tuple[PathRef, ...]:
+    """External and retained inputs share identities, not immediate cleanup rights."""
+    if not isinstance(sources, PathRefs):
+        return ()
+    refs = sources.protected()
+    for ref in refs:
+        if ref.ownership is PathOwnership.EXTERNAL and ref.identity is None:
+            try:
+                sources[ref.path] = ref.path.stat()
+            except OSError:
+                pass  # Path protection remains even when an inode is unavailable.
+    return sources.protected()
+
+
+def destination_matches_ref(
+    refs: Sequence[PathRef], parent_fd: int, filename: str
+) -> bool:
+    """Match a protected file's declared directory entry or current inode alias."""
+    parent = os.fstat(parent_fd)
+    if any(
+        ref.parent_identity == (parent.st_dev, parent.st_ino)
+        and ref.path.name == filename
+        for ref in refs
+    ):
+        return True
+    try:
+        identity = os.stat(filename, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return False
+    return any(ref.matches(Path(filename), identity) for ref in refs)
 
 
 def storage_type_for_scheme(scheme: str):
@@ -95,13 +134,12 @@ def _strip_prefix_once(value: str, prefix: str) -> str:
 
 
 def relative_artifact(base_url: str, artifact_url: str) -> str:
-    """Return ``artifact_url`` relative to the requested destination prefix.
+    """Return ``artifact_url`` relative to the requested object-store prefix.
 
     ``OutputResponse.url`` keeps the user's exact destination; ``artifacts`` are
-    the keys/paths written *under* it, without repeating that prefix::
+    the keys written *under* it, without repeating that prefix::
 
         url=tos://b/run  -> artifact tos://b/run/out.json  -> "out.json"
-        url=/data/out    -> artifact /data/out/sub/x.json  -> "sub/x.json"
 
     Single-object HTTP PUT destinations are not prefixes, so the full URL is
     returned unchanged.
@@ -110,22 +148,17 @@ def relative_artifact(base_url: str, artifact_url: str) -> str:
     parsed_art = urlparse(artifact_url)
     if parsed_art.scheme in HTTP_SCHEMES:
         return artifact_url
-    if parsed_base.scheme in object_store_schemes():
-        # Bucket + key prefix: tos://bkt/pref -> strip tos://bkt/pref
-        prefix = f"{parsed_base.scheme.lower()}://{parsed_base.netloc}{parsed_base.path}".rstrip(
+    # Bucket + key prefix: tos://bkt/pref -> strip tos://bkt/pref
+    prefix = (
+        f"{parsed_base.scheme.lower()}://{parsed_base.netloc}{parsed_base.path}".rstrip(
             "/"
         )
-        rest = _strip_prefix_once(
-            f"{parsed_art.scheme.lower()}://{parsed_art.netloc}{parsed_art.path}",
-            prefix,
-        ).lstrip("/")
-        return rest or ""
-    # Local destination: an absolute directory or a file:// directory.
-    base_dir = Path(local_output_path(base_url)).resolve()
-    art_path = Path(local_output_path(artifact_url)).resolve()
-    relative = str(art_path.relative_to(base_dir))
-    # file:// receipts are URIs; encode literal filename '%' characters as well.
-    return quote(relative, safe="/") if parsed_base.scheme == "file" else relative
+    )
+    rest = _strip_prefix_once(
+        f"{parsed_art.scheme.lower()}://{parsed_art.netloc}{parsed_art.path}",
+        prefix,
+    ).lstrip("/")
+    return rest or ""
 
 
 class OutputWriter:
@@ -184,10 +217,20 @@ class OutputWriter:
         result = OutputResponse(url=spec.url)
         error: Optional[BaseException] = None
         try:
+            refs = protected_refs(sources)
             self.remember_sources(
-                [*media_paths, *(str(path) for path in sources)], sources
+                [
+                    *media_paths,
+                    *(
+                        str(path)
+                        for path in sources
+                        if not any(ref.path == path for ref in refs)
+                    ),
+                ],
+                sources,
             )
             with ExitStack() as stack:
+                readers: list[tuple[BinaryIO, os.stat_result]] = []
                 if data is not None:
                     entries.append((name, data, "application/json"))
                     total += len(data)
@@ -243,6 +286,7 @@ class OutputWriter:
                     ):
                         raise OutputWriteError(f"Engine output was replaced: {source}")
                     sources[source] = info
+                    readers.append((reader, info))
                     if processor_archive and archive_suffix == ".tar.gz":
                         # guess_type returns application/x-tar plus gzip encoding;
                         # these are compressed archive bytes, not a plain TAR body.
@@ -284,12 +328,38 @@ class OutputWriter:
                     result = await self.write(
                         spec, archive, f"{Path(name).stem}.zip", "application/zip"
                     )
+                elif urlparse(spec.url).scheme.lower() in LOCAL_SCHEMES:
+                    result = await self._write_local_entries(spec, entries, sources)
                 else:
                     artifacts: list[str] = []
                     for entry_name, content, media_type in entries:
-                        result = await self.write(spec, content, entry_name, media_type)
+                        result = await self.write(
+                            spec,
+                            content,
+                            entry_name,
+                            media_type,
+                            sources=sources,
+                        )
                         artifacts.extend(result.artifacts)
                     result = OutputResponse(url=spec.url, artifacts=artifacts)
+                # Cleanup is best-effort; source changes must fail the receipt
+                # while the actual readers are still open, not only log later.
+                for source_reader, before in readers:
+                    after = os.fstat(source_reader.fileno())
+                    if (
+                        before.st_dev,
+                        before.st_ino,
+                        before.st_size,
+                        before.st_mtime_ns,
+                    ) != (
+                        after.st_dev,
+                        after.st_ino,
+                        after.st_size,
+                        after.st_mtime_ns,
+                    ):
+                        raise OutputWriteError(
+                            "Engine output changed during persistence"
+                        )
             return result, total
         except BaseException as exc:
             error = exc
@@ -359,7 +429,15 @@ class OutputWriter:
         Error precedence belongs to the lifecycle caller.
         """
         try:
-            self.remember_sources([str(path) for path in sources], sources)
+            refs = protected_refs(sources)
+            self.remember_sources(
+                [
+                    str(path)
+                    for path in sources
+                    if not any(ref.path == path for ref in refs)
+                ],
+                sources,
+            )
         finally:
             await self.cleanup_sources(sources, spec, artifacts)
 
@@ -392,9 +470,10 @@ class OutputWriter:
                 (base / (unquote(name) if parsed.scheme == "file" else name)).resolve()
                 for name in result.artifacts
             }
+        refs = protected_refs(sources)
         cleanup_error: Optional[Exception] = None
         for path, saved in sources.items():
-            if saved is None:
+            if saved is None or any(ref.path == path for ref in refs):
                 continue
             try:
                 if path.resolve() in destinations:
@@ -403,6 +482,8 @@ class OutputWriter:
                     current = path.lstat()
                 except FileNotFoundError:
                     continue
+                if any(ref.matches(path, current) for ref in refs):
+                    continue  # External inputs and retained history outlive persistence.
                 if (
                     current.st_dev,
                     current.st_ino,
@@ -420,12 +501,43 @@ class OutputWriter:
         if cleanup_error is not None:
             raise cleanup_error
 
+    @staticmethod
+    def _check_local_destinations(
+        spec: OutputRequest,
+        entries: Sequence[tuple[str, str]],
+        refs: Sequence[PathRef],
+    ) -> None:
+        """Reject a batch that overwrites a protected input before any write."""
+        if not refs or urlparse(spec.url).scheme.lower() not in LOCAL_SCHEMES:
+            return
+        from aibrix.openai_frontend.proxy.output.local_output import object_names
+
+        base = Path(local_output_path(spec.url)).resolve()
+        for name, content_type in entries:
+            # The storage key is encoded; its sidecar can also overlap an input.
+            for filename in object_names(name, content_type):
+                destination = base / filename
+                if any(ref.path == destination.resolve() for ref in refs):
+                    raise OutputWriteError(
+                        "Local output would overwrite an external input or retained input"
+                    )
+                try:
+                    identity = destination.stat()
+                except FileNotFoundError:
+                    continue
+                if any(ref.matches(destination, identity) for ref in refs):
+                    raise OutputWriteError(
+                        "Local output would overwrite an external input or retained input"
+                    )
+
     async def write(
         self,
         spec: OutputRequest,
         data: Union[bytes, BinaryIO],
         name: str,
         content_type: str = "application/json",
+        *,
+        sources: Optional[SourceIdentities] = None,
     ) -> OutputResponse:
         parsed = urlparse(spec.url)
         scheme = parsed.scheme.lower()
@@ -434,14 +546,16 @@ class OutputWriter:
                 artifact = await self._write_object_store(
                     scheme, parsed.netloc, parsed.path, name, data, content_type
                 )
+                relative = relative_artifact(spec.url, artifact)
             elif scheme in LOCAL_SCHEMES:
-                base = local_output_path(spec.url)
-                artifact = await self._write_local(base, name, data, content_type)
+                return await self._write_local_entries(
+                    spec, [(name, data, content_type)], sources
+                )
             elif scheme in HTTP_SCHEMES:
                 artifact = await self._write_http(spec.url, data, content_type)
+                relative = relative_artifact(spec.url, artifact)
             else:  # pragma: no cover - rejected by OutputRequest validation
                 raise OutputWriteError(f"Unsupported output scheme: {scheme}")
-            relative = relative_artifact(spec.url, artifact)
         except OutputWriteError:
             raise
         except Exception as exc:
@@ -484,21 +598,57 @@ class OutputWriter:
             raise OutputWriteError("Object storage rejected output")
         return f"{scheme}://{bucket}/{key}"
 
-    async def _write_local(
-        self, base: str, name: str, data: Union[bytes, BinaryIO], content_type: str
-    ) -> str:
-        from aibrix.storage import create_storage
-        from aibrix.storage.utils import generate_filename
+    async def _write_local_entries(
+        self,
+        spec: OutputRequest,
+        entries: list[tuple[str, Union[bytes, BinaryIO], str]],
+        sources: Optional[SourceIdentities] = None,
+    ) -> OutputResponse:
+        """Persist a local batch through one pinned directory fd.
 
-        if not isinstance(data, bytes):
-            data = await await_thread_completion(asyncio.to_thread(data.read))
-        storage = await asyncio.to_thread(create_storage, "local", base_path=base)
-        if not await await_thread_completion(
-            storage.put_object(name, data, content_type=content_type)
-        ):
-            raise OutputWriteError("Local storage rejected output")
-        # Use the same key encoding and extension rule as LocalStorage.
-        return str(Path(base).resolve() / generate_filename(name, content_type))
+        A fixed fd keeps every data and sidecar write inside the directory that
+        was resolved before writing, and the advertised locations are verified
+        afterwards. External input references, when any, are excluded by
+        destination identity; without them the batch still cannot follow a changed link.
+        """
+        from aibrix.openai_frontend.proxy.output.local_output import (
+            PinnedLocalOutput,
+            object_names,
+        )
+        from aibrix.storage import LocalStorage, create_storage
+
+        refs = protected_refs(sources)
+        self._check_local_destinations(
+            spec, [(name, content_type) for name, _, content_type in entries], refs
+        )
+        storage = await await_thread_completion(
+            asyncio.to_thread(
+                create_storage, "local", base_path=local_output_path(spec.url)
+            )
+        )
+        if not isinstance(storage, LocalStorage):
+            raise OutputWriteError("Local storage cannot pin output destinations")
+
+        def check_destination(parent_fd: int, filename: str) -> None:
+            if refs and destination_matches_ref(refs, parent_fd, filename):
+                raise OutputWriteError(
+                    "Local output would overwrite an external input or retained input"
+                )
+
+        try:
+            if not await await_thread_completion(
+                PinnedLocalOutput(storage).put_objects_at(entries, check_destination)
+            ):
+                raise OutputWriteError("Local storage rejected output")
+        except OutputWriteError:
+            raise
+        except Exception as exc:
+            raise OutputWriteError(f"Failed to persist local output: {exc}") from exc
+        filenames = [object_names(name, mime)[0] for name, _, mime in entries]
+        if urlparse(spec.url).scheme == "file":
+            filenames = [quote(name, safe="/") for name in filenames]
+        logger.info("Wrote output to %s: %s", spec.url, ", ".join(filenames))
+        return OutputResponse(url=spec.url, artifacts=filenames)
 
     async def _write_http(
         self, url: str, data: Union[bytes, BinaryIO], content_type: str

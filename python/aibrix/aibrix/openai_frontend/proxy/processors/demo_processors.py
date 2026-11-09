@@ -12,12 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Small, opt-in processor examples shared by demos and contract tests.
-
-Register ``DEMO_PROCESSORS`` explicitly; they are never added to the default
-catalog. These examples do not decode or transcode media. File selection uses filename MIME hints for demo
-purposes only, not content validation or a security boundary.
-"""
+"""Small, opt-in processor examples shared by demos and contract tests."""
 
 from __future__ import annotations
 
@@ -46,12 +41,7 @@ async def noop(ctx: ProcessorContext) -> ProcessorOutput:
 
 
 async def copy_media(ctx: ProcessorContext) -> ProcessorOutput:
-    """Copy selected files to the invocation directory in their original order.
-
-    An index-based filename prevents collisions between equally named sources.
-    Unselected files stay unchanged; cancellation closes the handles and removes
-    this invocation's partial copies before propagating to the executor.
-    """
+    """Copy selected files to the invocation directory in their original order."""
     if not isinstance(ctx.target, ProcessorMedia):
         raise ClientError("copy_media requires local media")
     paths = []

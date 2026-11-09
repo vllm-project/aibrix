@@ -21,7 +21,7 @@ import sys
 
 import pytest
 
-from aibrix.openai_frontend.proxy.engine_spec import (
+from aibrix.openai_frontend.proxy.runtime.engine_spec import (
     EndpointSet,
     EngineSpec,
     ForwardKind,
@@ -140,7 +140,7 @@ class TestEngineSpec:
             spec.require_embedding()
 
     def test_get_engine_spec(self):
-        from aibrix.openai_frontend.proxy.engine_spec import get_engine_spec
+        from aibrix.openai_frontend.proxy.runtime.engine_spec import get_engine_spec
 
         vllm = get_engine_spec("vllm")
         assert vllm.name == "vllm"
@@ -187,7 +187,9 @@ class TestProxyClientLifecycle:
     def test_shutdown_closes_pool_once(self, monkeypatch, from_thread):
         from unittest.mock import AsyncMock
 
-        from aibrix.openai_frontend.proxy.subprocess_engine import SubprocessEngine
+        from aibrix.openai_frontend.proxy.runtime.subprocess_engine import (
+            SubprocessEngine,
+        )
 
         async def _run():
             engine = SubprocessEngine(cmd=["unused"])
@@ -224,7 +226,9 @@ class TestProxyClientLifecycle:
         asyncio.run(_run())
 
     def test_shutdown_closes_real_keepalive_connection(self):
-        from aibrix.openai_frontend.proxy.subprocess_engine import SubprocessEngine
+        from aibrix.openai_frontend.proxy.runtime.subprocess_engine import (
+            SubprocessEngine,
+        )
 
         async def _run():
             disconnected = asyncio.Event()
@@ -474,7 +478,9 @@ class TestProxyPoolEnvironment:
     def test_invalid_env_fails_before_client_creation(self, monkeypatch, name, value):
         from pydantic import ValidationError
 
-        from aibrix.openai_frontend.proxy.subprocess_engine import SubprocessEngine
+        from aibrix.openai_frontend.proxy.runtime.subprocess_engine import (
+            SubprocessEngine,
+        )
 
         monkeypatch.setenv(name, value)
 
@@ -566,7 +572,7 @@ class TestStreamDelivery:
             await engine._subprocess.start_client()
             engine._set_state(EngineState.READY)
             # Enable media materialization against a real fetcher.
-            from aibrix.openai_frontend.proxy.request_inspector import (
+            from aibrix.openai_frontend.proxy.media.request_inspector import (
                 MediaURLInspector,
             )
 

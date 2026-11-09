@@ -29,11 +29,11 @@ from aibrix.openai_frontend.common.artifact_fetcher import (
     DefaultArtifactFetcher,
     FetchResult,
 )
-from aibrix.openai_frontend.proxy.request_inspector import (
+from aibrix.openai_frontend.proxy.media.request_inspector import (
     MediaURLInspector,
     SglangGenerateInspector,
 )
-from aibrix.openai_frontend.proxy.request_rewriter import RequestRewriter
+from aibrix.openai_frontend.proxy.media.request_rewriter import RequestRewriter
 
 
 class TestMediaURLInspector:
@@ -44,7 +44,7 @@ class TestMediaURLInspector:
 
         from pydantic import BaseModel, Field
 
-        from aibrix.openai_frontend.proxy import request_inspector
+        from aibrix.openai_frontend.proxy.media import request_inspector
         from aibrix.openai_frontend.schemas.media import media_url_fields
 
         class ExtraMedia(BaseModel):
@@ -99,7 +99,7 @@ class TestMediaURLInspector:
     ):
         from pydantic import TypeAdapter
 
-        from aibrix.openai_frontend.proxy.request_rewriter import RequestRewriter
+        from aibrix.openai_frontend.proxy.media.request_rewriter import RequestRewriter
         from aibrix.openai_frontend.schemas.responses import (
             ResponseInputFile,
             ResponseInputImage,

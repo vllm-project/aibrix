@@ -33,8 +33,8 @@ import httpx
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from aibrix.openai_frontend.proxy.engine_spec import EngineSpec
-from aibrix.openai_frontend.proxy.process_tree import (
+from aibrix.openai_frontend.proxy.runtime.engine_spec import EngineSpec
+from aibrix.openai_frontend.proxy.runtime.process_tree import (
     TreeSnapshot,
     describe_returncode,
     kill_tree,

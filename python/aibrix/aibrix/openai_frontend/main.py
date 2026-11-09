@@ -362,8 +362,8 @@ def add_proxy_args(parser: argparse.ArgumentParser):
 
 def build_proxy_engine(args: argparse.Namespace) -> LLMEngine:
     from aibrix.openai_frontend.engine.proxy_engine import ProxyEngine
-    from aibrix.openai_frontend.proxy.engine_spec import get_engine_spec
     from aibrix.openai_frontend.proxy.processors import ProcessorRegistry
+    from aibrix.openai_frontend.proxy.runtime.engine_spec import get_engine_spec
 
     credentials_map = args.proxy_credentials
     if isinstance(credentials_map, str):  # Also support direct Namespace callers.

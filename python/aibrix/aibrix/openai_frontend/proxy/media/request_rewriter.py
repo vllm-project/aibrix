@@ -23,7 +23,10 @@ from aibrix.openai_frontend.common.artifact_fetcher import (
     ArtifactFetcher,
     FetchResult,
 )
-from aibrix.openai_frontend.proxy.request_inspector import RequestInspector
+from aibrix.openai_frontend.proxy.media.request_inspector import (
+    RequestInspector,
+    URLLocation,
+)
 
 
 class RequestRewriter:
@@ -40,18 +43,33 @@ class RequestRewriter:
     async def rewrite(
         self,
         request_dict: Dict[str, Any],
+        *,
+        locations: Optional[List[URLLocation]] = None,
+        skip_local_media: bool = False,
     ) -> tuple[Dict[str, Any], List[FetchResult]]:
-        locations = self._inspector.extract_urls(request_dict)
+        if locations is None:
+            locations = self._inspector.extract_urls(request_dict)
         if not locations:
             return request_dict, []
 
-        unique_urls = list({loc.url for loc in locations})
+        # Pre processing uses external local references; other callers retain their fetch policy.
+        unique_urls = list(
+            dict.fromkeys(
+                loc.url
+                for loc in locations
+                if not (skip_local_media and loc.url.startswith(("file://", "/")))
+            )
+        )
         url_creds: Dict[str, Dict] = {
             u: creds
             for u in unique_urls
             if (creds := self._credentials_for(u)) is not None
         }
-        fetch_results = await self._fetcher.fetch_many(unique_urls, url_creds or None)
+        fetch_results = (
+            await self._fetcher.fetch_many(unique_urls, url_creds or None)
+            if unique_urls or not skip_local_media
+            else []
+        )
 
         url_to_local: Dict[str, str] = {}
         for result in fetch_results:

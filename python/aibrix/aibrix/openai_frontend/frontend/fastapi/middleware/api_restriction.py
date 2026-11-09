@@ -172,7 +172,9 @@ class APIRestrictionMiddleware(BaseHTTPMiddleware):
             ws = WebSocket(scope, receive, send)
             auth = self._get_auth_header(ws)
             if auth is not None and not self._check_authentication(ws, auth)["valid"]:
-                from aibrix.openai_frontend.proxy.ws_bridge import deny_websocket
+                from aibrix.openai_frontend.proxy.runtime.ws_bridge import (
+                    deny_websocket,
+                )
 
                 await deny_websocket(
                     ws,
