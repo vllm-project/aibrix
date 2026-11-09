@@ -62,11 +62,6 @@ The namespace and target nodes must share the
 applies after a Job is created. ``retryLimit`` and
 ``ttlSecondsAfterFinished`` bound retry and retention behavior.
 
-For an excluded control-plane node, ``Once`` retains the
-``NodeNotAuthorized`` target reason but names the role restriction in its
-message. If all matched ``Continuous`` targets are control-plane nodes, the
-``Ready`` condition message names that restriction too.
-
 This authorization applies to both lifecycle modes. If the Namespace has no
 non-empty resource-pool label, matching Nodes are not authorized. ``Once``
 reports unavailable or unauthorized configured targets and does not reopen

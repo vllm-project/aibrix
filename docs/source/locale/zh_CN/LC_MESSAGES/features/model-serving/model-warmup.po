@@ -113,17 +113,6 @@ msgstr ""
 
 #: ../../source/features/model-serving/model-warmup.rst:65
 msgid ""
-"For an excluded control-plane node, ``Once`` retains the "
-"``NodeNotAuthorized`` target reason but names the role restriction in its "
-"message. If all matched ``Continuous`` targets are control-plane nodes, the "
-"``Ready`` condition message names that restriction too."
-msgstr ""
-"对于被排除的控制平面节点，``Once`` 的目标 reason 仍为 ``NodeNotAuthorized``，"
-"但消息会明确指出节点角色限制。如果 ``Continuous`` 匹配的目标全部是控制平面节点，"
-"其 ``Ready`` condition 的消息也会指出这一限制。"
-
-#: ../../source/features/model-serving/model-warmup.rst:65
-msgid ""
 "This authorization applies to both lifecycle modes. If the Namespace has no "
 "non-empty resource-pool label, matching Nodes are not authorized. ``Once`` "
 "reports unavailable or unauthorized configured targets and does not reopen "
