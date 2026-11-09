@@ -85,8 +85,11 @@ func (r leastKvCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 
 	for i, pod := range pods {
 		gpu, gpuOK := routeutil.FreshKVUsage(r.cache, pod, ctx.Model, metrics.KVCacheUsagePerc, now, threshold)
+		if !gpuOK {
+			continue
+		}
 		cpu, cpuOK := routeutil.FreshKVUsage(r.cache, pod, ctx.Model, metrics.CPUCacheUsagePerc, now, threshold)
-		if !gpuOK || !cpuOK {
+		if !cpuOK {
 			continue
 		}
 		scores[i] = gpu + cpu

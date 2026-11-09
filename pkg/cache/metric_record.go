@@ -16,7 +16,10 @@ limitations under the License.
 package cache
 
 import (
+	"k8s.io/klog/v2"
 	"math"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -50,8 +53,20 @@ func loadRoutingMetricStaleThreshold() time.Duration {
 	fallback := max(5*time.Second, 3*podMetricRefreshInterval, podMetricsFetchTimeout+podMetricRefreshInterval)
 	// LoadEnvInt already rejects zero, negative and malformed overrides.
 	ms := utils.LoadEnvInt("AIBRIX_ROUTING_METRIC_STALE_THRESHOLD_MS", int(fallback/time.Millisecond))
-	if int64(ms) > math.MaxInt64/int64(time.Millisecond) {
-		return fallback
+	source := "default"
+	if raw := os.Getenv("AIBRIX_ROUTING_METRIC_STALE_THRESHOLD_MS"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err == nil && parsed > 0 && parsed <= math.MaxInt64/int64(time.Millisecond) {
+			source = "env"
+		}
 	}
-	return time.Duration(ms) * time.Millisecond
+	value := fallback
+	if int64(ms) <= math.MaxInt64/int64(time.Millisecond) {
+		value = time.Duration(ms) * time.Millisecond
+	}
+	if value < fallback {
+		klog.Warningf("KV routing freshness threshold %s is below recommended %s (refresh %s, fetch timeout %s)", value, fallback, podMetricRefreshInterval, podMetricsFetchTimeout)
+	}
+	klog.Infof("KV routing freshness threshold=%s source=%s refresh=%s fetch_timeout=%s", value, source, podMetricRefreshInterval, podMetricsFetchTimeout)
+	return value
 }

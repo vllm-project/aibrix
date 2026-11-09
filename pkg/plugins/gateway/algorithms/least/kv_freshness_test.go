@@ -220,3 +220,28 @@ func TestKVFreshnessStoreIntegrationAndConcurrentUpdates(t *testing.T) {
 		require.Contains(t, []float64{0.2, 0.4}, scores[0])
 	}
 }
+
+type countingKVRecords struct {
+	*kvRecordCache
+	reads []string
+}
+
+func (c *countingKVRecords) GetMetricRecordByPodModel(pod, ns, model, metric string) (cache.MetricRecord, error) {
+	c.reads = append(c.reads, metric)
+	return c.kvRecordCache.GetMetricRecordByPodModel(pod, ns, model, metric)
+}
+
+func TestStaleGPUSkipsCPURead(t *testing.T) {
+	now := time.Unix(1000, 0)
+	pod := newPod("a", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
+	base := cache.NewWithPodsModelMetricsForTest([]*v1.Pod{pod}, "m1", map[string]map[string]metrics.MetricValue{})
+	c := &countingKVRecords{kvRecordCache: &kvRecordCache{Cache: base, records: map[string]cache.MetricRecord{
+		"a/" + metrics.KVCacheUsagePerc: {Value: &metrics.SimpleMetricValue{Value: 0.9}, Timestamp: now.Add(-2 * time.Second)},
+	}}}
+	router := leastKvCacheRouter{cache: c, now: func() time.Time { return now }, staleThreshold: time.Second}
+	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "input", "req", "")
+	_, scored, err := router.ScoreAll(ctx, &utils.PodArray{Pods: []*v1.Pod{pod}})
+	require.NoError(t, err)
+	require.Equal(t, []bool{false}, scored)
+	require.Equal(t, []string{metrics.KVCacheUsagePerc}, c.reads)
+}

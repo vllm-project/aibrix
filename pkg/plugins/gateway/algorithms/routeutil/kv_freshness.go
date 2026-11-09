@@ -34,6 +34,16 @@ var kvMetricRejections = promauto.NewCounterVec(prometheus.CounterOpts{
 	Help: "KV metric reads rejected by routing freshness checks (not distinct pods or requests).",
 }, []string{"reason", "metric"})
 
+var rejectionCounters = func() map[string]prometheus.Counter {
+	counters := make(map[string]prometheus.Counter)
+	for _, reason := range []string{"stale", "missing", "invalid", "lookup_error"} {
+		for _, metric := range []string{"gpu", "cpu", "other"} {
+			counters[reason+":"+metric] = kvMetricRejections.WithLabelValues(reason, metric)
+		}
+	}
+	return counters
+}()
+
 var legacyKVCacheWarning sync.Once
 
 // FreshKVUsage reads a KV metric with collection-age validation. Only a missing
@@ -41,6 +51,12 @@ var legacyKVCacheWarning sync.Once
 // Callers decide whether an unavailable metric excludes a score or is neutral.
 // A collection completed after now was captured is fresh, not invalid.
 func FreshKVUsage(c cache.Cache, pod *v1.Pod, model, metric string, now time.Time, threshold time.Duration) (float64, bool) {
+	value, ok, _ := ReadKVUsage(c, pod, model, metric, now, threshold)
+	return value, ok
+}
+
+// ReadKVUsage also returns the bounded rejection reason for routing policy decisions.
+func ReadKVUsage(c cache.Cache, pod *v1.Pod, model, metric string, now time.Time, threshold time.Duration) (float64, bool, string) {
 	if records, ok := c.(cache.MetricRecordCache); ok {
 		record, err := records.GetMetricRecordByPodModel(pod.Name, pod.Namespace, model, metric)
 		reason := ""
@@ -49,7 +65,7 @@ func FreshKVUsage(c cache.Cache, pod *v1.Pod, model, metric string, now time.Tim
 			var missing *cache.MetricNotFoundError
 			if errors.As(err, &missing) {
 				if metric == metrics.CPUCacheUsagePerc {
-					return 0, true
+					return 0, true, ""
 				}
 				reason = "missing"
 			} else {
@@ -60,7 +76,7 @@ func FreshKVUsage(c cache.Cache, pod *v1.Pod, model, metric string, now time.Tim
 		case now.Sub(record.Timestamp) > threshold:
 			reason = "stale"
 		default:
-			return record.Value.GetSimpleValue(), true
+			return record.Value.GetSimpleValue(), true, ""
 		}
 		// Bound label cardinality even if a caller passes a custom metric name.
 		label := "other"
@@ -70,11 +86,13 @@ func FreshKVUsage(c cache.Cache, pod *v1.Pod, model, metric string, now time.Tim
 		case metrics.CPUCacheUsagePerc:
 			label = "cpu"
 		}
-		kvMetricRejections.WithLabelValues(reason, label).Inc()
-		klog.V(4).InfoS("KV routing metric unavailable", "pod", klog.KObj(pod),
-			"metric", metric, "reason", reason, "age", now.Sub(record.Timestamp),
-			"threshold", threshold, "error", err)
-		return 0, false
+		rejectionCounters[reason+":"+label].Inc()
+		if klog.V(4).Enabled() {
+			klog.V(4).InfoS("KV routing metric unavailable", "pod", klog.KObj(pod),
+				"metric", metric, "reason", reason, "age", now.Sub(record.Timestamp),
+				"threshold", threshold, "error", err)
+		}
+		return 0, false, reason
 	}
 	// External value-only adapters retain historical semantics, but cannot
 	// enforce freshness. Warn once per process so this degradation is visible.
@@ -83,10 +101,14 @@ func FreshKVUsage(c cache.Cache, pod *v1.Pod, model, metric string, now time.Tim
 	})
 	value, err := c.GetMetricValueByPodModel(pod.Name, pod.Namespace, model, metric)
 	if err != nil {
-		return 0, metric == metrics.CPUCacheUsagePerc
+		var missing *cache.MetricNotFoundError
+		if metric == metrics.CPUCacheUsagePerc && errors.As(err, &missing) {
+			return 0, true, ""
+		}
+		return 0, false, "lookup_error"
 	}
 	if value == nil {
-		return 0, false
+		return 0, false, "invalid"
 	}
-	return value.GetSimpleValue(), true
+	return value.GetSimpleValue(), true, ""
 }

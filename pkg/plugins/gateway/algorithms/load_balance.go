@@ -167,7 +167,11 @@ func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 			load += queuedWeight * queued
 		}
 		kvFree := r.kvFreeFraction(ctx, pod)
-		scores[i] = loadBalanceScore(load, capacities[i], kvFree, kvPressureAlpha, kvCriticalFree)
+		if math.IsNaN(kvFree) {
+			scores[i] = math.Inf(1)
+		} else {
+			scores[i] = loadBalanceScore(load, capacities[i], kvFree, kvPressureAlpha, kvCriticalFree)
+		}
 		scored[i] = true
 
 		if klog.V(4).Enabled() {
@@ -176,7 +180,7 @@ func (r *loadBalanceRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 				"pod", pod.Name,
 				"running_requests", running,
 				"capacity", capacities[i],
-				"kv_free", kvFree,
+				"kv_free", formatLoadBalanceScore(kvFree),
 				"score", formatLoadBalanceScore(scores[i]))
 		}
 	}
@@ -311,13 +315,16 @@ func (r *loadBalanceRouter) capacities(pods []*v1.Pod) []float64 {
 	return caps
 }
 
-// kvFreeFraction returns the pod's free KV-cache fraction in [0, 1]. A pod whose engine does not
-// report fresh KV usage is treated as fully free: no penalty and no guardrail, rather than penalizing
-// engines that simply lack the metric. A NaN reading (e.g. 0/0 in the engine) is treated the same
-// way: math.Min/Max propagate NaN, and a NaN free fraction would compare false against the
-// guardrail and turn the pod's score into NaN, which never wins a comparison in Route.
+// kvFreeFraction returns free KV in [0, 1], or NaN as the internal stale-record
+// sentinel. Never-reported KV and invalid NaN readings remain neutral (fully free).
+// ScoreAll converts the stale sentinel to +Inf, preferring fresh peers while retaining
+// the existing all-candidates fallback.
 func (r *loadBalanceRouter) kvFreeFraction(ctx *types.RoutingContext, pod *v1.Pod) float64 {
-	usage, ok := routeutil.FreshKVUsage(r.cache, pod, ctx.Model, metrics.KVCacheUsagePerc, time.Now(), cache.RoutingMetricStaleThreshold())
+	usage, ok, reason := routeutil.ReadKVUsage(r.cache, pod, ctx.Model, metrics.KVCacheUsagePerc, time.Now(), cache.RoutingMetricStaleThreshold())
+	if reason == "stale" {
+		// NaN is an internal sentinel; ScoreAll emits +Inf, including when the guardrail is disabled.
+		return math.NaN()
+	}
 	if !ok {
 		return 1.0
 	}

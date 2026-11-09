@@ -174,7 +174,9 @@ with a once-per-process warning that freshness checks are unavailable.
 
 `AIBRIX_ROUTING_METRIC_STALE_THRESHOLD_MS` is a positive millisecond override read
 at startup. Its default is `max(5s, 3 * refreshInterval, fetchTimeout + refreshInterval)`
-(6s with the default 1s refresh and 5s timeout). Zero is not a disable switch.
+(6s with the default 1s refresh and 5s timeout). Zero is not a disable switch. An override below the derived default is honored
+but logs a warning. A value such as `86400000` relaxes the age limit to 24 hours;
+it does not disable missing or invalid record checks. Changes require restart.
 The default does not guarantee freshness at arbitrary pod counts; bounded
 collection capacity and backoff must be considered when tuning it. See the
 [gateway freshness configuration](../plugins/gateway/ENV_VARS.md#kv-metric-freshness-algorithmsrouteutilkv_freshnessgo)

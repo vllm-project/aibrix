@@ -97,7 +97,9 @@ gateway: DoneRequestTrace(outputTokens) ──► Pod.completedOutputTokens   (m
 
 The primary KV penalty/guardrail and the tie-breaker share the
 [KV freshness check](../ENV_VARS.md#kv-metric-freshness-algorithmsrouteutilkv_freshnessgo).
-Stale primary KV usage is neutral, like a missing reading; it does not eject the pod.
+Stale primary KV usage receives a `+Inf` score; when load-balance routes alone it
+prefers a fresh peer, with a fallback if all candidates are unscorable. In a blend,
+it is a penalty rather than a hard exclusion. Never-reported KV remains neutral.
 
 KV usage is clamped to `[0, 1]` before use, so an engine that reports a value above 1 is treated
 as full rather than producing a negative free fraction.

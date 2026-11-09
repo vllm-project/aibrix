@@ -111,3 +111,14 @@ func TestFreshKVUsageWarnsOnceForLegacyAdapter(t *testing.T) {
 	klog.Flush()
 	require.Equal(t, 1, strings.Count(logs.String(), "does not implement MetricRecordCache"))
 }
+
+func BenchmarkFreshKVUsageStale(b *testing.B) {
+	now := time.Now()
+	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"}}
+	var reader cache.Cache = recordReader{record: cache.MetricRecord{Value: &metrics.SimpleMetricValue{Value: 0.9}, Timestamp: now.Add(-2 * time.Second)}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		FreshKVUsage(reader, pod, "model", metrics.KVCacheUsagePerc, now, time.Second)
+	}
+}

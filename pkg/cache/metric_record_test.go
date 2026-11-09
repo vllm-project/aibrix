@@ -16,6 +16,7 @@ limitations under the License.
 package cache
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
@@ -29,6 +30,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 )
 
 func TestMetricRecordValueCompatibilityAndPartialUpdate(t *testing.T) {
@@ -152,6 +154,7 @@ func TestRoutingMetricStaleThreshold(t *testing.T) {
 		{"timeout dominates", time.Second, 10 * time.Second, "", 11 * time.Second},
 		{"floor", 50 * time.Millisecond, time.Second, "", 5 * time.Second},
 		{"override", time.Second, 5 * time.Second, "15000", 15 * time.Second},
+		{"short override remains honored", time.Second, 5 * time.Second, "500", 500 * time.Millisecond},
 		{"zero", time.Second, 5 * time.Second, "0", 6 * time.Second},
 		{"negative", time.Second, 5 * time.Second, "-1", 6 * time.Second},
 		{"malformed", time.Second, 5 * time.Second, "bad", 6 * time.Second},
@@ -190,4 +193,16 @@ func MetricRecordWorkerForTest(port string) (*Store, *v1.Pod, func()) {
 		close(jobs)
 		c.worker(jobs)
 	}
+}
+
+func TestShortFreshnessThresholdWarns(t *testing.T) {
+	state := klog.CaptureState()
+	defer state.Restore()
+	var logs bytes.Buffer
+	klog.LogToStderr(false)
+	klog.SetOutputBySeverity("WARNING", &logs)
+	t.Setenv("AIBRIX_ROUTING_METRIC_STALE_THRESHOLD_MS", "500")
+	require.Equal(t, 500*time.Millisecond, loadRoutingMetricStaleThreshold())
+	klog.Flush()
+	require.Contains(t, logs.String(), "below recommended")
 }

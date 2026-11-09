@@ -555,10 +555,11 @@ the combined KV score unavailable. If no pod has a usable score, the existing
 random fallback still routes to a ready pod.
 
 The `load-balance` **primary** KV penalty and guardrail use the same age check.
-Unavailable GPU KV usage is neutral (`kvFree = 1`), just like a missing metric:
-it applies neither a KV penalty nor the KV-critical guardrail. This deliberately
-avoids retaining an obsolete low or high pressure reading. Load and capacity
-still affect the primary score. Freshness does not eject a pod from the fleet.
+A previously reported GPU KV metric that becomes stale receives a `+Inf` primary
+score, preferring a fresh or never-reporting peer when load-balance routes alone.
+If all candidates are unavailable, the existing tie-break/fallback still routes.
+In a multi-strategy blend `+Inf` is a penalty rather than a hard exclusion. Missing
+GPU KV usage remains neutral to preserve support for engines without the metric.
 Independent `pd` scoring and other metric consumers are outside this change.
 
 The default is a minimum allowance for a slow successful fetch, not a fleet-wide
@@ -567,7 +568,9 @@ can make healthy samples exceed it. Tune workers, queue size and this threshold
 using observed collection age and saturation; do not assume three refresh ticks
 refresh every pod. There is no boolean off switch: a large positive override
 (e.g. `86400000` for 24 hours) relaxes age rejection, but does not disable checks
-for missing/invalid records. Zero uses the default, not infinity.
+for missing/invalid records. Zero uses the default, not infinity. The gateway logs
+its effective threshold at startup and warns when an override is below the derived
+default; the override remains honored. Restart to apply changes.
 
 `aibrix_routing_kv_metric_rejections_total{reason,metric}` counts rejected metric
 reads, not unique pods or requests. `reason` is `stale`, `missing`, `invalid`, or

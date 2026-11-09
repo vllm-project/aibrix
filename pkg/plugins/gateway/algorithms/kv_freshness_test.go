@@ -26,6 +26,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -66,8 +67,7 @@ func TestKVFreshnessSharedConsumers(t *testing.T) {
 	}
 }
 
-// A stale high reading must not exclude a pod; stale low readings must not
-// apply a primary KV penalty either. Both use the existing missing-KV policy.
+// A stale record is excluded from primary scoring while fresh records retain their values.
 func TestLoadBalancePrimaryIgnoresRetainedKV(t *testing.T) {
 	for _, usage := range []float64{0.01, 0.8, 0.99} {
 		pod := newPod("a", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
@@ -76,12 +76,33 @@ func TestLoadBalancePrimaryIgnoresRetainedKV(t *testing.T) {
 		})
 		ctx := types.NewRoutingContext(context.Background(), "test", "m1", "input", "req", "")
 		stale := &loadBalanceRouter{cache: &retainedKVCache{Store: base}}
-		require.Equal(t, 1.0, stale.kvFreeFraction(ctx, pod))
+		require.True(t, math.IsNaN(stale.kvFreeFraction(ctx, pod)))
 		scores, scored, err := stale.ScoreAll(ctx, podsFromCache(base))
 		require.NoError(t, err)
 		require.Equal(t, []bool{true}, scored)
-		require.False(t, math.IsInf(scores[0], 0))
+		require.True(t, math.IsInf(scores[0], 1))
 		fresh := &loadBalanceRouter{cache: base}
 		require.InDelta(t, 1-usage, fresh.kvFreeFraction(ctx, pod), 1e-10)
 	}
+}
+
+func TestLoadBalanceStalePodWithFreshPeer(t *testing.T) {
+	pods := []*v1.Pod{
+		newPod("a", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("b", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+	}
+	base := cache.NewWithPodsModelMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
+		"a": {metrics.KVCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.98}},
+		"b": {metrics.KVCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.3}},
+	})
+	router := &loadBalanceRouter{cache: &retainedKVCache{Store: base}}
+	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "input", "req", "")
+	list := &utils.PodArray{Pods: pods}
+	scores, _, err := router.ScoreAll(ctx, list)
+	require.NoError(t, err)
+	require.True(t, math.IsInf(scores[0], 1))
+	require.False(t, math.IsInf(scores[1], 1))
+	target, err := router.Route(ctx, list)
+	require.NoError(t, err)
+	require.Equal(t, "2.2.2.2:8000", target)
 }
