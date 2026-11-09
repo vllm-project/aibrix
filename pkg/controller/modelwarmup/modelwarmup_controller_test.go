@@ -162,6 +162,26 @@ func TestReconcileOnceDoesNotRereadAFailureItRecorded(t *testing.T) {
 	require.Zero(t, live.reads)
 }
 
+func TestReconcileOnceDoesNotRereadRecordedControlPlaneExclusion(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 2)
+	warmup.Spec.Targets[0].Nodes.Names = []string{nodes[0].Name, nodes[1].Name}
+	nodes[1].Labels["node-role.kubernetes.io/control-plane"] = ""
+	warmup.Status.Phase = modelv1alpha1.ModelWarmupRunning
+	warmup.Status.ObservedRevision = revisionFor(warmup)
+	warmup.Status.Targets = []modelv1alpha1.ModelWarmupTargetStatus{{
+		NodeName: nodes[1].Name, Revision: revisionFor(warmup),
+		Phase: modelv1alpha1.ModelWarmupTargetFailed, Reason: "NodeNotAuthorized",
+	}}
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes)
+	live := &countingReader{Reader: fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(namespace.DeepCopy(), nodes[0].DeepCopy(), nodes[1].DeepCopy()).Build()}
+	r := &ModelWarmupReconciler{Client: counting, APIReader: live, Scheme: scheme}
+
+	require.NoError(t, reconcileOnce(r, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}))
+
+	require.Zero(t, live.reads)
+}
+
 // More nodes than maxNodeRereads are read in one list of the nodes that the
 // Namespace's pool authorizes, rather than one request each.
 func TestReconcileOnceListsThePoolsNodesWhenManyNeedRereading(t *testing.T) {

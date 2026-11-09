@@ -86,6 +86,13 @@ var controlPlaneLabelKeys = []string{
 // preserving the existing NodeNotAuthorized reason in target status.
 const controlPlaneNodeExcluded = "ControlPlaneNodeExcluded"
 
+func targetStatusReason(reason string) string {
+	if reason == controlPlaneNodeExcluded {
+		return "NodeNotAuthorized"
+	}
+	return reason
+}
+
 type ModelWarmupReconciler struct {
 	client.Client
 	// APIReader reads from the API server rather than the cache.
@@ -417,7 +424,7 @@ func unrecordedFailures(warmup *modelv1alpha1.ModelWarmup, missing map[string]st
 	}
 	var names []string
 	for name, reason := range missing {
-		if recorded[name] != reason {
+		if recorded[name] != targetStatusReason(reason) {
 			names = append(names, name)
 		}
 	}
@@ -759,17 +766,15 @@ func (r *ModelWarmupReconciler) updateStatus(
 	}
 	for node, reason := range missing {
 		message := "node was not found"
-		statusReason := reason
 		switch reason {
 		case "NodeNotAuthorized":
 			message = "node is not authorized for this namespace"
 		case controlPlaneNodeExcluded:
-			statusReason = "NodeNotAuthorized"
 			message = "control-plane nodes are not eligible for ModelWarmup"
 		}
 		item := modelv1alpha1.ModelWarmupTargetStatus{
 			NodeName: node, Revision: revision,
-			Phase: modelv1alpha1.ModelWarmupTargetFailed, Reason: statusReason, Message: boundedDiagnostic(message),
+			Phase: modelv1alpha1.ModelWarmupTargetFailed, Reason: targetStatusReason(reason), Message: boundedDiagnostic(message),
 		}
 		preserveTargetTransition(&item, previousTargets[node].LastTransitionTime, previousTargets[node].Phase,
 			previousTargets[node].Reason, previousTargets[node].Message, now)
