@@ -608,12 +608,20 @@ while the API server keeps running. The runtime agent then stops all of the
 engine's processes and restarts it the same way. An engine that is still
 starting has no such limit, since loading a model can take a while.
 
+A vLLM engine can also die while it wakes, for example when its EngineCore
+runs out of memory. The wake then fails, and the runtime agent checks the
+engine. If its process has exited or it fails its health check, the agent
+stops all of its processes and marks it failed at once. It does not restart
+the engine in place, since the engine would come back awake without the room
+that the controller makes for a wake.
+
 An engine that crashes again after its fifth restart has failed permanently,
-and its claim gets an ``EngineFailed`` Event. If another Pod has room, the
-controller stops the engine and starts the claim there at once. Otherwise, the
-claim reads ``Failed`` with ``EngineFailed``, and its ``Scheduled`` condition
-says why it cannot move. The engine's ``last_error`` in the runtime snapshot
-says why it crashed.
+and so has an engine that died during a wake. Its claim gets an
+``EngineFailed`` Event. If another Pod has room, the controller stops the
+engine and starts the claim there at once. Otherwise, the claim reads
+``Failed`` with ``EngineFailed``, and its ``Scheduled`` condition says why it
+cannot move. The engine's ``last_error`` in the runtime snapshot says why it
+crashed.
 
 If the runtime agent crashes, its engines keep running. The image restarts the
 agent, which takes the engines back from ``/var/run/aibrix`` with their ports

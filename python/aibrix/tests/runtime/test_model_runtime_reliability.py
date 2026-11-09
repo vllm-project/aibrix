@@ -524,6 +524,59 @@ def test_supervisor_restarts_an_engine_that_hangs_right_after_re_adoption(
     assert adopted.phase == "restarting"
 
 
+class _WakeFailingLauncher(_ControlledLauncher):
+    """A launcher whose engines sleep, and whose wakes all fail."""
+
+    def sleep(self, inst, level):
+        pass
+
+    def wake(self, inst):
+        raise RuntimeError("wake timed out")
+
+
+@pytest.mark.parametrize(
+    "process_alive,healthy,fails",
+    [
+        pytest.param(True, False, True, id="api-server-up-engine-dead"),
+        pytest.param(False, True, True, id="process-exited"),
+        pytest.param(True, True, False, id="engine-healthy"),
+    ],
+)
+def test_a_failed_wake_fails_an_engine_that_died(
+    tmp_path, monkeypatch, process_alive, healthy, fails
+):
+    launcher = _WakeFailingLauncher()
+    registry = EngineRegistry(tmp_path / "engines.json")
+    runtime = ModelRuntime(launcher, registry=registry)
+    inst = runtime.activate(model_name="m", artifact_url="hf://Org/M")
+    with runtime._lock:
+        runtime._transition(inst, "sleeping")
+    inst.proc.alive = process_alive
+    monkeypatch.setattr(runtime_module, "engine_ready", lambda port: healthy)
+    monkeypatch.setattr(
+        runtime_module,
+        "process_group_is_alive",
+        lambda process_group_id: inst.proc.alive,
+    )
+
+    with pytest.raises(RuntimeError, match="wake timed out"):
+        runtime.wake("m", operation_id="wake-1")
+
+    if not fails:
+        assert inst.phase == "sleeping"
+        assert launcher.stopped == []
+        return
+    assert inst.phase == "failed"
+    assert inst.last_error == "engine died during a wake: wake timed out"
+    # A process that is still running is stopped first.
+    assert launcher.stopped == (["m"] if process_alive else [])
+    assert registry.load()[0]["phase"] == "failed"
+    # The supervisor leaves a failed engine alone, so it is not restarted in place.
+    runtime.supervise_once()
+    assert launcher.launches == ["m"]
+    assert inst.phase == "failed"
+
+
 def test_supervisor_treats_missing_process_group_id_as_clean(tmp_path, monkeypatch):
     launcher = _ControlledLauncher()
     runtime = ModelRuntime(launcher, registry=EngineRegistry(tmp_path / "engines.json"))

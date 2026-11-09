@@ -2724,6 +2724,7 @@ def dormant_kv(initial_kv, monkeypatch, request):
     )
     monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
     monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: state.ready)
+    monkeypatch.setattr(runtime_module, "engine_ready", lambda port: state.ready)
     monkeypatch.setattr(api, "get_model_runtime", lambda: state.runtime)
 
     def adopt():

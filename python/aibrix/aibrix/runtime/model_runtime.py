@@ -842,6 +842,19 @@ def instance_ready(inst: "ModelInstance") -> bool:
     return engine_ready(inst.port)
 
 
+def engine_gone(inst: "ModelInstance") -> bool:
+    """Whether a real engine has died: its process has exited, or it no longer
+    passes its health check. vLLM answers /health while asleep, so this holds
+    for a sleeping engine too. A mock/handle-less instance is never gone."""
+    proc = inst.proc
+    poll = getattr(proc, "poll", None)
+    if proc is None or poll is None:
+        return False  # mock launcher: nothing to probe
+    if poll() is not None:
+        return True  # process exited
+    return not engine_ready(inst.port)
+
+
 def read_kv_segment(ipc_name: str, shm_dir: str = "/dev/shm"):
     """Read a model's kvcached MemInfoStruct: 3 little-endian int64s
     (total_size, used_size, prealloc_size) at the start of /dev/shm/<ipc_name>
@@ -2084,11 +2097,23 @@ class ModelRuntime:
                         )
                 try:
                     self._launcher.wake(inst)
-                except Exception:
-                    # vLLM may have taken some memory back before the wake
-                    # failed, so what the engine held asleep is no longer known.
+                except Exception as exc:
+                    # An engine that died during the wake would stay asleep for
+                    # good, since the supervisor does not probe sleeping
+                    # engines. It is stopped and marked failed, so that the
+                    # controller moves its claim. Restarted in place, it would
+                    # come back awake without the room made for a wake.
+                    gone = engine_gone(inst)
                     with self._lock:
+                        # vLLM may have taken some memory back before the wake
+                        # failed, so what the engine held asleep is no longer
+                        # known.
                         inst.sleeping_footprint_bytes = None
+                        if gone:
+                            self._terminate_stale_process_group(inst)
+                            self._transition(inst, "failed")
+                            inst.last_error = f"engine died during a wake: {exc}"
+                            inst.next_restart_at = None
                         self._persist_locked()
                     raise
                 with self._lock:
