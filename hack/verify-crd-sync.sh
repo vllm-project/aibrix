@@ -168,12 +168,17 @@ verify_helm_crd_sync() {
 # Run verification for each module
 all_ok=true
 
-# Indexed arrays, since the bash 3.2 that ships with macOS has no associative arrays.
-modules=("orchestration" "autoscaling" "model")
-module_dirs=("${ORCHESTRATION_DIR}" "${AUTOSCALING_DIR}" "${MODEL_DIR}")
+# name:dir pairs, since the bash 3.2 that ships with macOS has no associative arrays.
+modules=(
+  "orchestration:${ORCHESTRATION_DIR}"
+  "autoscaling:${AUTOSCALING_DIR}"
+  "model:${MODEL_DIR}"
+)
 
-for i in "${!modules[@]}"; do
-  if ! verify_crd_sync "${BASES_DIR}" "${module_dirs[$i]}" "${modules[$i]}"; then
+for item in "${modules[@]}"; do
+  module="${item%%:*}"
+  module_dir="${item#*:}"
+  if ! verify_crd_sync "${BASES_DIR}" "${module_dir}" "${module}"; then
     all_ok=false
   fi
 done
