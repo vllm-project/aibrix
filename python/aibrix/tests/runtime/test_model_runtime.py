@@ -3137,3 +3137,64 @@ def test_restart_records_a_failed_download(monkeypatch):
     assert inst.restart_count == 1
     assert inst.last_error == "restart launch failed: 403 Forbidden"
     assert agent._launcher.launched == ["m1"]
+
+
+def test_sglang_readiness_probe_outlasts_the_health_sleep(monkeypatch):
+    """SGLang's /health generates a token and sleeps 1 s before answering."""
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent = make_agent()
+    inst = agent.activate(model_name="sglang-probe", artifact_url="hf://x")
+    inst.proc = _LiveProc()
+    inst.engine = "sglang"
+    inst.port = 28124
+    probes = []
+
+    def fake_get(url, *, timeout):
+        probes.append((url, timeout))
+        return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(
+        runtime_module, "_localhost", lambda: SimpleNamespace(get=fake_get)
+    )
+    assert runtime_module.instance_ready(inst) is True
+    assert probes == [("http://127.0.0.1:28124/health", 3.0)]
+
+
+def test_vllm_readiness_keeps_the_one_second_probe(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent = make_agent()
+    inst = agent.activate(model_name="vllm-probe", artifact_url="hf://x")
+    inst.proc = _LiveProc()
+    inst.engine = "vllm"
+    inst.port = 28125
+    probes = []
+
+    def fake_get(url, *, timeout):
+        probes.append((url, timeout))
+        return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(
+        runtime_module, "_localhost", lambda: SimpleNamespace(get=fake_get)
+    )
+    assert runtime_module.instance_ready(inst) is True
+    assert probes == [("http://127.0.0.1:28125/health", 1.0)]
+
+
+def test_sglang_readiness_still_fails_when_health_times_out(monkeypatch):
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent = make_agent()
+    inst = agent.activate(model_name="sglang-hung", artifact_url="hf://x")
+    inst.proc = _LiveProc()
+    inst.engine = "sglang"
+    inst.port = 28126
+
+    def timeout(*args, **kwargs):
+        raise TimeoutError("health probe took too long")
+
+    monkeypatch.setattr(
+        runtime_module, "_localhost", lambda: SimpleNamespace(get=timeout)
+    )
+    assert runtime_module.instance_ready(inst) is False

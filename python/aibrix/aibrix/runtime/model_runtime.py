@@ -568,12 +568,19 @@ def write_cache_marker(
         return None
 
 
-def engine_ready(port: int) -> bool:
-    """Whether the engine on this port can serve, via a short /health probe.
+# SGLang runs a one-token generation in /health and then sleeps 1 s before it
+# answers, so a 1 s probe reports a healthy engine as not ready. vLLM does not
+# generate there, so it keeps the short probe.
+HEALTH_PROBE_TIMEOUT_SECONDS = 1.0
+SGLANG_HEALTH_PROBE_TIMEOUT_SECONDS = 3.0
+
+
+def engine_ready(port: int, timeout: float = HEALTH_PROBE_TIMEOUT_SECONDS) -> bool:
+    """Whether the engine on this port can serve, via a /health probe.
     Connection-refused (engine still starting) and timeouts read as not-ready.
     """
     try:
-        resp = _localhost().get(f"http://127.0.0.1:{port}/health", timeout=1.0)
+        resp = _localhost().get(f"http://127.0.0.1:{port}/health", timeout=timeout)
         return resp.status_code == 200
     except Exception:
         return False
@@ -839,6 +846,8 @@ def instance_ready(inst: "ModelInstance") -> bool:
         return True  # mock launcher: nothing to probe
     if poll() is not None:
         return False  # process exited
+    if inst.engine == "sglang":
+        return engine_ready(inst.port, SGLANG_HEALTH_PROBE_TIMEOUT_SECONDS)
     return engine_ready(inst.port)
 
 
