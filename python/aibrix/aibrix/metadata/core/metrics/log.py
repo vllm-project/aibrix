@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from fnmatch import fnmatchcase
 from typing import Any, Iterable
 
@@ -22,6 +23,7 @@ from aibrix.metadata.core.metrics.sink import Sink, Tag, normalize_tags
 
 logger = init_logger(__name__)
 
+_DEFAULT_MAX_PENDING_EVENTS = 1024
 _CONTROL_TAGS = {
     "flush",
     "log_context",
@@ -47,6 +49,7 @@ class LogSink(Sink):
         *,
         include_patterns: Iterable[str] = (),
         exclude_patterns: Iterable[str] = (),
+        max_pending_events: int = _DEFAULT_MAX_PENDING_EVENTS,
     ) -> None:
         self._include_patterns = tuple(
             pattern for pattern in include_patterns if pattern
@@ -54,10 +57,11 @@ class LogSink(Sink):
         self._exclude_patterns = tuple(
             pattern for pattern in exclude_patterns if pattern
         )
-        self._pending: dict[
+        self._max_pending_events = max(1, max_pending_events)
+        self._pending: OrderedDict[
             tuple[str, tuple[tuple[str, str | bool | None], ...]],
             dict[str, Any],
-        ] = {}
+        ] = OrderedDict()
 
     def counter(self, name: str, value: float, *tags: Tag) -> None:
         self._log_metric("counter", name, value, *tags)
@@ -129,10 +133,14 @@ class LogSink(Sink):
     ) -> None:
         _ = metric_type
         event = tags["event"]
-        payload = self._pending.setdefault(
-            self._group_key(event, tags),
-            self._base_payload(tags),
-        )
+        group_key = self._group_key(event, tags)
+        payload = self._pending.get(group_key)
+        if payload is None:
+            self._evict_pending_if_full()
+            payload = self._base_payload(tags)
+            self._pending[group_key] = payload
+        else:
+            self._pending.move_to_end(group_key)
         if "log_nested_map" in tags and "log_outer" in tags and "log_inner" in tags:
             payload.setdefault(tags["log_nested_map"], {}).setdefault(
                 tags["log_outer"],
@@ -172,6 +180,16 @@ class LogSink(Sink):
         self._apply_flush_defaults(payload, tags)
         payload["metric_name"] = name
         return payload
+
+    def _evict_pending_if_full(self) -> None:
+        if len(self._pending) < self._max_pending_events:
+            return
+        group_key, _ = self._pending.popitem(last=False)
+        logger.warning(
+            "Dropped pending log metric aggregation",
+            metric_event=group_key[0],
+            pending_limit=self._max_pending_events,
+        )  # type: ignore[call-arg]
 
     def _base_payload(self, tags: dict[str, str]) -> dict[str, Any]:
         if "log_context" in tags:

@@ -320,6 +320,11 @@ class JsonProfiler:
         if not self._telemetry_enabled or self._telemetry_interval_seconds <= 0:
             return
         now = time.perf_counter()
+        if (
+            now - self._purpose_state.last_telemetry_emitted_at
+            < self._telemetry_interval_seconds
+        ):
+            return
         with self._purpose_state.emit_lock:
             elapsed = now - self._purpose_state.last_telemetry_emitted_at
             if elapsed < self._telemetry_interval_seconds:

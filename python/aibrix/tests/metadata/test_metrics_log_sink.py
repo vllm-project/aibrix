@@ -216,6 +216,38 @@ def test_log_sink_aggregates_batch_finalize_numeric_metrics_once(caplog):
     assert payload["job_total_duration_ms"] == 20.0
 
 
+def test_log_sink_bounds_pending_aggregations(caplog):
+    sink = LogSink(include_patterns=("batch_finalize_*",), max_pending_events=2)
+
+    with caplog.at_level(logging.WARNING):
+        for job_id in ("job-1", "job-2", "job-3"):
+            sink.timer(
+                "batch_finalize_stage_duration_ms",
+                12.5,
+                T("event", "Batch finalize telemetry summary"),
+                T("job_id", job_id),
+                T("log_context", "job_id"),
+                T("log_group", job_id),
+                T("log_map", "stage_duration_ms"),
+                T("log_key", "list_metastore_keys"),
+            )
+
+    assert len(sink._pending) == 2
+    assert (
+        "Batch finalize telemetry summary",
+        (("log_group", "job-1"),),
+    ) not in sink._pending
+    assert (
+        "Batch finalize telemetry summary",
+        (("log_group", "job-2"),),
+    ) in sink._pending
+    assert (
+        "Batch finalize telemetry summary",
+        (("log_group", "job-3"),),
+    ) in sink._pending
+    assert "Dropped pending log metric aggregation" in caplog.records[-1].message
+
+
 def test_log_sink_aggregates_batch_job_latency_metrics_once(caplog):
     sink = LogSink(include_patterns=("metadata.batch.api.job.execution*ms",))
     base_tags = (

@@ -306,6 +306,7 @@ class HTTPClient(metaclass=_HTTPClientMeta):
         )
         self._last_telemetry_emitted_at: Optional[float] = None
         self._stopped = False
+        self.async_client: Any = None
 
     def start(self):
         """Instantiate the client. Call from the FastAPI startup hook."""

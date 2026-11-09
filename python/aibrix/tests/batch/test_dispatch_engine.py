@@ -265,14 +265,13 @@ async def test_http_channel_uses_request_timeout_for_read():
         timeouts.append(request.extensions["timeout"])
         return httpx.Response(200, json={})
 
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = HTTPXClientWrapper(transport=httpx.MockTransport(handler))
     channel = HttpChannel("http://engine", timeout=30.0, client=client)
     try:
         await channel.send(InferenceRequest("/v1/x", {}))
         await channel.send(InferenceRequest("/v1/x", {}, read_timeout=1.5))
     finally:
         await channel.aclose()
-        await client.aclose()
 
     # Only the read timeout follows the request; fractions are kept.
     other = {"connect": 10.0, "write": 60.0, "pool": 30.0}
@@ -311,11 +310,12 @@ async def test_http_channel_default_connection_pool_allows_100_connections():
     try:
         client = channel._ensure_client()
         assert client.purpose == "batch_runtime_http"
+        limits = client._client_kwargs["limits"]
+        assert isinstance(limits, httpx.Limits)
+        assert limits.max_connections == 100
         client.start()
         assert client.async_client is not None
-        assert client.async_client.connector is not None
-        assert client.async_client.connector.limit == 100
-        assert client.async_client.connector.limit_per_host == 100
+        assert client.async_client.is_closed is False
     finally:
         await channel.aclose()
 

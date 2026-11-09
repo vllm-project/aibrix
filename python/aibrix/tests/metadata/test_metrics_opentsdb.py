@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 from unittest.mock import patch
 
 from aibrix.metadata.core.metrics import (
@@ -42,6 +43,69 @@ def test_opentsdb_sink_formats_telnet_put_line():
         "put aibrix_metadata.prod.metadata.batch.api.job.incoming 1234 1 "
         "endpoint=/v1/batch job_id=job_1 service=aibrix-metadata\n"
     )
+
+
+def test_opentsdb_sink_enqueues_without_network_io_on_caller_thread():
+    class FakeThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+            self.started = False
+
+        def start(self):
+            self.started = True
+
+        def is_alive(self):
+            return False
+
+        def join(self, timeout=None):
+            self.join_timeout = timeout
+
+    with (
+        patch("aibrix.metadata.core.metrics.opentsdb.threading.Thread", FakeThread),
+        patch.object(
+            OpenTSDBSink,
+            "_destination",
+            side_effect=AssertionError("network IO must stay on the worker"),
+        ),
+    ):
+        sink = OpenTSDBSink("opentsdb:4242")
+        sink.gauge("metadata.batch.api.job.incoming", 1, T("job_id", "job-1"))
+
+        payload = sink._queue.get_nowait()
+        assert payload.startswith("put metadata.batch.api.job.incoming ")
+        assert "job_id=job-1" in payload
+
+        sink.close()
+
+
+def test_opentsdb_sink_drops_payloads_when_queue_is_full(caplog):
+    class FakeThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return False
+
+        def join(self, timeout=None):
+            self.join_timeout = timeout
+
+    with patch("aibrix.metadata.core.metrics.opentsdb.threading.Thread", FakeThread):
+        sink = OpenTSDBSink("opentsdb:4242", queue_size=1)
+
+        with caplog.at_level(logging.WARNING):
+            sink.gauge("metric.one", 1)
+            sink.gauge("metric.two", 2)
+
+        assert sink._queue.qsize() == 1
+        assert "sink queue is full" in caplog.records[-1].message
+        sink.close()
 
 
 def test_setup_metrics_uses_opentsdb_sink_when_configured():
