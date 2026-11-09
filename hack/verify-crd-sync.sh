@@ -35,7 +35,9 @@ HELM_CRDS_DIR="${SCRIPT_ROOT}/dist/chart/crds"
 # Temporary directory for diff
 TMP_DIFFROOT="$(mktemp -d -t verify-crd-sync.XXXXXX)"
 cleanup() {
+  local rc=$?
   rm -rf "${TMP_DIFFROOT}"
+  exit "${rc}"
 }
 trap cleanup EXIT
 
@@ -161,14 +163,13 @@ verify_helm_crd_sync() {
 # Run verification for each module
 all_ok=true
 
-declare -A modules=(
-  ["orchestration"]="${ORCHESTRATION_DIR}"
-  ["autoscaling"]="${AUTOSCALING_DIR}"
-  ["model"]="${MODEL_DIR}"
-)
+# Indexed arrays rather than `declare -A`: macOS ships bash 3.2, which has no
+# associative arrays.
+module_names=(orchestration autoscaling model)
+module_dirs=("${ORCHESTRATION_DIR}" "${AUTOSCALING_DIR}" "${MODEL_DIR}")
 
-for module in "${!modules[@]}"; do
-  if ! verify_crd_sync "${BASES_DIR}" "${modules[$module]}" "${module}"; then
+for i in "${!module_names[@]}"; do
+  if ! verify_crd_sync "${BASES_DIR}" "${module_dirs[$i]}" "${module_names[$i]}"; then
     all_ok=false
   fi
 done
