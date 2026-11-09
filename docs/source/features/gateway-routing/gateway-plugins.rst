@@ -562,10 +562,10 @@ PD timeouts and aborts
      - Description
    * - ``pd.decodeAbortTimeout``
      - ``AIBRIX_DECODE_ABORT_TIMEOUT``
-     - Seconds the gateway waits for the decode pod to accept the abort POST after a prefill failure. ``0`` sends the abort without waiting.
+     - Seconds the gateway waits for the decode pod to accept the abort POST after a prefill failure. ``0`` disables decode aborts.
    * - ``pd.decodeAbortRetryDelay``
      - ``AIBRIX_DECODE_ABORT_RETRY_DELAY``
-     - Seconds between the two abort attempts. ``0`` repeats the abort immediately.
+     - Seconds between the two abort attempts. ``0`` sends a single attempt.
    * - ``pd.decodeFirstResponseTimeout``
      - ``AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT``
      - Seconds a streaming SGLang PD request waits, after its prefill leg succeeded, for the decode pod's first token (its first response body chunk) before the gateway fails it. ``0`` disables the watchdog.
