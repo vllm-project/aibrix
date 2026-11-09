@@ -36,9 +36,14 @@ type resolvedTarget struct {
 	Sources  []string
 }
 
+type missingTarget struct {
+	Reason  string
+	Message string
+}
+
 type reconcileSnapshot struct {
 	Targets         map[string]resolvedTarget
-	Missing         map[string]string
+	Missing         map[string]missingTarget
 	JobsByNode      map[string]batchv1.Job
 	StaleActiveJobs []batchv1.Job
 	ActiveJobs      int32
@@ -53,7 +58,7 @@ func buildReconcileSnapshot(
 	w *modelv1alpha1.ModelWarmup,
 	revision string,
 	targets map[string]resolvedTarget,
-	missing map[string]string,
+	missing map[string]missingTarget,
 	jobs []batchv1.Job,
 ) reconcileSnapshot {
 	snapshot := reconcileSnapshot{
@@ -107,7 +112,7 @@ func resolveTargetsFromNodes(
 	w *modelv1alpha1.ModelWarmup,
 	namespace *corev1.Namespace,
 	nodes []corev1.Node,
-) (map[string]resolvedTarget, map[string]string, error) {
+) (map[string]resolvedTarget, map[string]missingTarget, error) {
 	if w == nil || namespace == nil {
 		return nil, nil, fmt.Errorf("modelwarmup and namespace must not be nil")
 	}
@@ -118,7 +123,7 @@ func resolveTargetsFromNodes(
 	}
 
 	targets := make(map[string]resolvedTarget)
-	missing := make(map[string]string)
+	missing := make(map[string]missingTarget)
 	unauthorizedReason := "NodeNotAuthorized"
 	if effectiveMode(w) == modelv1alpha1.ModelWarmupModeContinuous && namespace.Labels[ResourcePoolLabelKey] == "" {
 		unauthorizedReason = "NamespacePoolNotConfigured"
@@ -137,11 +142,11 @@ func resolveTargetsFromNodes(
 			for _, name := range target.Nodes.Names {
 				node, ok := nodesByName[name]
 				if !ok {
-					missing[name] = "NodeNotFound"
+					missing[name] = missingTarget{Reason: "NodeNotFound", Message: "node was not found"}
 					continue
 				}
-				if reason := nodeExclusionReason(namespace, node, unauthorizedReason); reason != "" {
-					missing[name] = reason
+				if exclusion := nodeExclusion(namespace, node, unauthorizedReason); exclusion.Reason != "" {
+					missing[name] = exclusion
 					continue
 				}
 				addTarget(node, source)
@@ -157,8 +162,8 @@ func resolveTargetsFromNodes(
 				if !selector.Matches(labels.Set(node.Labels)) {
 					continue
 				}
-				if reason := nodeExclusionReason(namespace, node, unauthorizedReason); reason != "" {
-					missing[node.Name] = reason
+				if exclusion := nodeExclusion(namespace, node, unauthorizedReason); exclusion.Reason != "" {
+					missing[node.Name] = exclusion
 					continue
 				}
 				addTarget(node, source)

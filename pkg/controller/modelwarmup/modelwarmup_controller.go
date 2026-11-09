@@ -82,16 +82,7 @@ var controlPlaneLabelKeys = []string{
 	"node-role.kubernetes.io/master",
 }
 
-// controlPlaneNodeExcluded distinguishes a role exclusion internally while
-// preserving the existing NodeNotAuthorized reason in target status.
-const controlPlaneNodeExcluded = "ControlPlaneNodeExcluded"
-
-func targetStatusReason(reason string) string {
-	if reason == controlPlaneNodeExcluded {
-		return "NodeNotAuthorized"
-	}
-	return reason
-}
+const controlPlaneExclusionMessage = "control-plane nodes are not eligible for ModelWarmup"
 
 type ModelWarmupReconciler struct {
 	client.Client
@@ -293,14 +284,14 @@ func (r *ModelWarmupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return ctrl.Result{}, nil
 }
 
-func withinTargetLimit(targets map[string]resolvedTarget, missing map[string]string) bool {
+func withinTargetLimit(targets map[string]resolvedTarget, missing map[string]missingTarget) bool {
 	return len(targets)+len(missing) <= modelv1alpha1.MaxModelWarmupTargets
 }
 
-func summarizeMissingReasons(missing map[string]string) map[string]int {
+func summarizeMissingReasons(missing map[string]missingTarget) map[string]int {
 	result := make(map[string]int)
-	for _, reason := range missing {
-		result[reason]++
+	for _, target := range missing {
+		result[target.Reason]++
 	}
 	return result
 }
@@ -369,7 +360,7 @@ const maxNodeRereads = 10
 func (r *ModelWarmupReconciler) resolveTargets(
 	ctx context.Context,
 	warmup *modelv1alpha1.ModelWarmup,
-) (map[string]resolvedTarget, map[string]string, error) {
+) (map[string]resolvedTarget, map[string]missingTarget, error) {
 	var namespace corev1.Namespace
 	if err := r.Get(ctx, types.NamespacedName{Name: warmup.Namespace}, &namespace); err != nil {
 		return nil, nil, err
@@ -411,7 +402,7 @@ func (r *ModelWarmupReconciler) resolveTargets(
 // unrecordedFailures returns the missing nodes whose failure the warmup's
 // status does not show yet for its current revision. A failure it shows was
 // checked with the API server when it was recorded.
-func unrecordedFailures(warmup *modelv1alpha1.ModelWarmup, missing map[string]string) []string {
+func unrecordedFailures(warmup *modelv1alpha1.ModelWarmup, missing map[string]missingTarget) []string {
 	if len(missing) == 0 {
 		return nil
 	}
@@ -423,8 +414,8 @@ func unrecordedFailures(warmup *modelv1alpha1.ModelWarmup, missing map[string]st
 		}
 	}
 	var names []string
-	for name, reason := range missing {
-		if recorded[name] != targetStatusReason(reason) {
+	for name, target := range missing {
+		if recorded[name] != target.Reason {
 			names = append(names, name)
 		}
 	}
@@ -479,20 +470,21 @@ func (r *ModelWarmupReconciler) readNodes(
 	return nodes, nil
 }
 
-func nodeExclusionReason(namespace *corev1.Namespace, node *corev1.Node, unauthorizedReason string) string {
+func nodeExclusion(namespace *corev1.Namespace, node *corev1.Node, unauthorizedReason string) missingTarget {
+	unauthorized := missingTarget{Reason: unauthorizedReason, Message: "node is not authorized for this namespace"}
 	if node.Labels[WarmupEnabledLabelKey] != WarmupEnabledLabelValue {
-		return unauthorizedReason
+		return unauthorized
 	}
 	pool := namespace.Labels[ResourcePoolLabelKey]
 	if pool == "" || node.Labels[ResourcePoolLabelKey] != pool {
-		return unauthorizedReason
+		return unauthorized
 	}
 	for _, key := range controlPlaneLabelKeys {
 		if _, exists := node.Labels[key]; exists {
-			return controlPlaneNodeExcluded
+			return missingTarget{Reason: "NodeNotAuthorized", Message: controlPlaneExclusionMessage}
 		}
 	}
-	return ""
+	return missingTarget{}
 }
 
 func revisionFor(w *modelv1alpha1.ModelWarmup) string {
@@ -709,7 +701,7 @@ func (r *ModelWarmupReconciler) updateStatus(
 	w *modelv1alpha1.ModelWarmup,
 	revision string,
 	targets map[string]resolvedTarget,
-	missing map[string]string,
+	missing map[string]missingTarget,
 	statusJobs []batchv1.Job,
 	ttlJobs []batchv1.Job,
 	limitReason, limitMessage string,
@@ -764,17 +756,10 @@ func (r *ModelWarmupReconciler) updateStatus(
 			previousTargets[node].Reason, previousTargets[node].Message, now)
 		details = append(details, item)
 	}
-	for node, reason := range missing {
-		message := "node was not found"
-		switch reason {
-		case "NodeNotAuthorized":
-			message = "node is not authorized for this namespace"
-		case controlPlaneNodeExcluded:
-			message = "control-plane nodes are not eligible for ModelWarmup"
-		}
+	for node, target := range missing {
 		item := modelv1alpha1.ModelWarmupTargetStatus{
 			NodeName: node, Revision: revision,
-			Phase: modelv1alpha1.ModelWarmupTargetFailed, Reason: targetStatusReason(reason), Message: boundedDiagnostic(message),
+			Phase: modelv1alpha1.ModelWarmupTargetFailed, Reason: target.Reason, Message: boundedDiagnostic(target.Message),
 		}
 		preserveTargetTransition(&item, previousTargets[node].LastTransitionTime, previousTargets[node].Phase,
 			previousTargets[node].Reason, previousTargets[node].Message, now)
