@@ -73,3 +73,6 @@ samples/multimodality/xDiT/xDiT-integration/xDiT
 
 # setuptools-scm generated version files
 **/_version.py
+docs/superpowers
+python/aibrix/superpowers
+python/aibrix/artifacts

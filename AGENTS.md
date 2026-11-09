@@ -48,3 +48,32 @@ this task. Rules in a deeper `AGENTS.md` take precedence for that directory.
 - Tests: [Test guide](test/README.md).
 - Documentation and translations: [Documentation guide](docs/README.md#documentation-changes).
 - Python runtime: [python/aibrix/AGENTS.md](python/aibrix/AGENTS.md).
+- When present, `docs/superpowers/agent-workflow.md` is the detailed source of
+  truth for repo-level and Go-root superpowers spec and plan workflow.
+- When that workflow is available and requires a formal design, write it under
+  `docs/superpowers/specs/`.
+- When that workflow is available and requires a formal implementation plan,
+  write it under `docs/superpowers/plans/`.
+
+## Do not do this
+
+- Do not replace existing AIBrix lint, format, or test entrypoints with ad hoc
+  one-off commands in documentation or handoff notes.
+- Do not place Python-runtime superpowers specs or plans under
+  `docs/superpowers/` when that directory exists; keep them under
+  `python/aibrix/superpowers/`.
+- Do not let subagent or reviewer conclusions drift beyond the scoped task.
+
+## Codebase freshness rule
+
+Do not assume the codebase is unchanged between tasks, even within the same
+session.
+
+Before making edits or reasoning about behavior:
+
+- Re-open the relevant files to confirm their current contents and surrounding
+  context.
+- Re-verify key call sites, signatures, and invariants through code reading or
+  repository history.
+- Use Git tools such as diff, blame, log, or show to confirm what changed since
+  the last task and to validate any assumptions that depend on prior state.
