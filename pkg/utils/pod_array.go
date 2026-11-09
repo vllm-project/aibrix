@@ -85,12 +85,12 @@ func (arr *PodArray) initDeployments() {
 	if len(deployments) == 1 {
 		// Every pod is in the one deployment, so share Pods instead of a copy.
 		podsByDeployment[deployments[0]] = arr.Pods
-	} else {
-		// Clip each list so that a caller appending to it cannot write into
-		// spare capacity another caller of ListByIndex also sees.
-		for name, pods := range podsByDeployment {
-			podsByDeployment[name] = slices.Clip(pods)
-		}
+	}
+	// Clip each list so that a caller appending to it cannot write into spare
+	// capacity another caller of ListByIndex also sees. Pods itself may have
+	// spare capacity when the caller built it with append.
+	for name, pods := range podsByDeployment {
+		podsByDeployment[name] = slices.Clip(pods)
 	}
 
 	arr.deployments = deployments

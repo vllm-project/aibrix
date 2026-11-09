@@ -106,16 +106,26 @@ func TestPodArrayConcurrentIndexAndRead(t *testing.T) {
 }
 
 // Each deployment list is clipped, so a caller appending to one cannot write into
-// spare capacity that another caller of ListByIndex sees.
+// spare capacity that another caller of ListByIndex sees. Pods built with append
+// can carry spare capacity of their own, which the single-deployment case shares.
 func TestPodArrayListByIndexIsClipped(t *testing.T) {
-	arr := &PodArray{Pods: snapshotTestPods(8, 2)}
-	first := arr.ListByIndex("deployment-0")
-	if len(first) != cap(first) {
-		t.Fatalf("ListByIndex returned len %d cap %d, want a clipped slice", len(first), cap(first))
-	}
-	extra := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "extra"}}
-	_ = append(first, extra)
-	if again := arr.ListByIndex("deployment-0"); slices.Contains(again[:cap(again)], extra) {
-		t.Fatalf("appending to a ListByIndex result changed the index")
+	for _, deployments := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%d deployments", deployments), func(t *testing.T) {
+			pods := make([]*v1.Pod, 0, 16)
+			pods = append(pods, snapshotTestPods(8, deployments)...)
+			arr := &PodArray{Pods: pods}
+			first := arr.ListByIndex("deployment-0")
+			if len(first) != cap(first) {
+				t.Fatalf("ListByIndex returned len %d cap %d, want a clipped slice", len(first), cap(first))
+			}
+			extra := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "extra"}}
+			_ = append(first, extra)
+			if again := arr.ListByIndex("deployment-0"); slices.Contains(again[:cap(again)], extra) {
+				t.Fatalf("appending to a ListByIndex result changed the index")
+			}
+			if slices.Contains(pods[:cap(pods)], extra) {
+				t.Fatalf("appending to a ListByIndex result wrote into the capacity of Pods")
+			}
+		})
 	}
 }
