@@ -25,6 +25,7 @@ import uuid
 from collections.abc import AsyncIterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import (
     Any,
     AsyncIterator,
@@ -39,7 +40,7 @@ from typing import (
     Type,
     Union,
 )
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, unquote, urlencode, urlparse
 
 import anyio
 import httpx
@@ -69,6 +70,12 @@ from aibrix.openai_frontend.proxy.output_writer import (
     OutputWriteError,
     OutputWriter,
     SourceIdentities,
+)
+from aibrix.openai_frontend.proxy.processors import (
+    DEFAULT_PROCESSOR_TIMEOUT_SECONDS,
+    ProcessorExecutor,
+    ProcessorRegistry,
+    ProcessorState,
 )
 from aibrix.openai_frontend.proxy.request_inspector import (
     MediaURLInspector,
@@ -113,6 +120,7 @@ from aibrix.openai_frontend.schemas.openai import (
     Model,
 )
 from aibrix.openai_frontend.schemas.output import OutputRequest, OutputResponse
+from aibrix.openai_frontend.schemas.processors import ProcessorPipeline
 from aibrix.openai_frontend.schemas.responses import (
     RESPONSE_STREAM_TRUE_VALUES,
     CompactedResponse,
@@ -294,10 +302,16 @@ class _RetainedMedia:
         self.video_inputs: Dict[str, _RetainedVideoInputs] = {}
         self.video_sources: Dict[str, _RetainedVideoSources] = {}
         self.response_inputs: Dict[str, List[FetchResult]] = {}
+        self.processor_dirs: Dict[str, tempfile.TemporaryDirectory] = {}
 
     def pending(self) -> bool:
         """Whether any retained media is still waiting for a release trigger."""
-        return bool(self.video_inputs or self.video_sources or self.response_inputs)
+        return bool(
+            self.video_inputs
+            or self.video_sources
+            or self.response_inputs
+            or self.processor_dirs
+        )
 
     def retain_video_inputs(self, req_id: str, entry: _RetainedVideoInputs) -> None:
         self.video_inputs[req_id] = entry
@@ -307,6 +321,19 @@ class _RetainedMedia:
 
     def retain_response_inputs(self, req_id: str, results: List[FetchResult]) -> None:
         self.response_inputs[req_id] = results
+
+    def retain_processor_dir(
+        self, req_id: str, directory: tempfile.TemporaryDirectory
+    ) -> None:
+        self.processor_dirs[req_id] = directory
+
+    def detach_processor_dirs(
+        self,
+    ) -> Iterator[Tuple[str, tempfile.TemporaryDirectory]]:
+        for req_id in list(self.processor_dirs):
+            directory = self.processor_dirs.pop(req_id, None)
+            if directory is not None:
+                yield req_id, directory
 
     def detach_video_inputs(
         self, video_id: Optional[str]
@@ -339,6 +366,8 @@ class _ProxyRequestContext:
     output: Optional[OutputRequest]
     inputs: List[FetchResult] = field(default_factory=list)
     sources: SourceIdentities = field(default_factory=dict)
+    processors: Optional[ProcessorPipeline] = None
+    processor_dir: Optional[tempfile.TemporaryDirectory] = None
     submitted: bool = False
     response_submitted: bool = False
     video: Optional[VideoResponse] = None
@@ -494,10 +523,18 @@ class ProxyEngine(LLMEngine):
         shutdown_grace_seconds: float = DEFAULT_SHUTDOWN_GRACE_SECONDS,
         health_check_interval: float = HEALTH_CHECK_INTERVAL_SECONDS,
         video_output_timeout: float = DEFAULT_VIDEO_OUTPUT_TIMEOUT_SECONDS,
+        processor_registry: Optional[ProcessorRegistry] = None,
+        enable_processors: bool = False,
+        processor_timeout_seconds: float = DEFAULT_PROCESSOR_TIMEOUT_SECONDS,
     ):
         if not math.isfinite(video_output_timeout) or video_output_timeout <= 0:
             raise ValueError("video_output_timeout must be a finite positive number")
         self._spec = spec or EngineSpec(name="default")
+        self._processor_registry = processor_registry or ProcessorRegistry()
+        self._enable_processors = enable_processors
+        self._processor_executor = ProcessorExecutor(
+            self._processor_registry, processor_timeout_seconds
+        )
 
         # Remote media is fetched by the proxy only when the engine can read
         # local files; otherwise URLs pass through and the engine fetches them.
@@ -1284,6 +1321,8 @@ class ProxyEngine(LLMEngine):
                 await self._release_unknown_video_sources()
                 for req_id, inputs in self._retained.detach_response_inputs():
                     await self._release(req_id, inputs)
+                for _, directory in self._retained.detach_processor_dirs():
+                    self._cleanup_processor_dir(directory)
             await self._release_video_inputs(video_id)
 
         cleanup_id = uuid.uuid4().hex
@@ -1421,8 +1460,21 @@ class ProxyEngine(LLMEngine):
             and payload.get("background")
         ):
             raise ClientError("'output' cannot be combined with 'background': true")
+        processors = self._parse_processors(
+            payload.pop("processors", None),
+            stream=stream,
+            has_output=output is not None,
+            background=bool(payload.get("background")),
+            response_model=response_model,
+        )
         req_id, t0 = self._requests_begin()
-        context = _ProxyRequestContext(req_id, t0, output)
+        context = _ProxyRequestContext(
+            req_id,
+            t0,
+            output,
+            processors=processors,
+            processor_dir=self._new_processor_dir(req_id, processors),
+        )
         try:
             raw, envelope = await self._forward_request(
                 context,
@@ -1532,6 +1584,8 @@ class ProxyEngine(LLMEngine):
             payload, context.inputs = await self._fetch_media_for(
                 context.req_id, payload, inspector
             )
+        if context.processors is not None and context.processors.pre:
+            payload = await self._apply_pre_processors(context, payload)
         is_video = isinstance(request, VideoGenerationRequest)
         retains_response = self._retains_response_inputs(
             request, response_model, endpoint, payload
@@ -1715,6 +1769,8 @@ class ProxyEngine(LLMEngine):
             if response_model in (ResponsesResponse, CompactedResponse)
             else _OPENAI_RESULT_KEYS,
             result_schema=result_schema,
+            processors=context.processors,
+            processor_dir=context.processor_dir,
         )
 
     def _retain_response_inputs(self, context: _ProxyRequestContext) -> None:
@@ -1723,6 +1779,12 @@ class ProxyEngine(LLMEngine):
             context.inputs = []
 
     async def _finish_request(self, context: _ProxyRequestContext) -> None:
+        try:
+            await self._finish_request_body(context)
+        finally:
+            self._close_processor_dir(context)
+
+    async def _finish_request_body(self, context: _ProxyRequestContext) -> None:
         self._retain_response_inputs(context)
         if context.owner != "request":
             return
@@ -1864,6 +1926,157 @@ class ProxyEngine(LLMEngine):
         except Exception:
             logger.exception("[req-%s] failed to clean up fetched media", req_id)
 
+    # ------------------------------------------------------------------
+    # Processor stages
+    # ------------------------------------------------------------------
+
+    def _parse_processors(
+        self,
+        raw: Any,
+        *,
+        stream: bool,
+        has_output: bool,
+        background: bool,
+        response_model: Optional[Type[Any]],
+    ) -> Optional[ProcessorPipeline]:
+        """Validate the control-plane extension before any forwarding."""
+        if raw is None:
+            return None
+        if not self._enable_processors:
+            raise ClientError("'processors' is not enabled on this server")
+        try:
+            pipeline = ProcessorPipeline.model_validate(raw)
+        except ValueError as exc:
+            raise ClientError(f"Invalid 'processors': {exc}") from exc
+        if stream:
+            raise ClientError("'processors' cannot be combined with 'stream': true")
+        if background:
+            raise ClientError("'processors' cannot be combined with 'background': true")
+        if pipeline.post and not has_output:
+            raise ClientError("'processors.post' requires 'output'")
+        if response_model is VideoResponse:
+            raise ClientError("'processors' is not supported for video generation")
+        if response_model is None:
+            raise ClientError(
+                "'processors' is not supported on engine-native endpoints"
+            )
+        try:
+            self._processor_registry.validate(pipeline)
+        except ValueError as exc:
+            raise ClientError(f"Invalid 'processors': {exc}") from exc
+        return pipeline
+
+    @staticmethod
+    def _new_processor_dir(
+        req_id: str, pipeline: Optional[ProcessorPipeline]
+    ) -> Optional[tempfile.TemporaryDirectory]:
+        if pipeline is None:
+            return None
+        return tempfile.TemporaryDirectory(prefix=f"aibrix-proc-{req_id}-")
+
+    def _close_processor_dir(self, context: "_ProxyRequestContext") -> None:
+        directory, context.processor_dir = context.processor_dir, None
+        if directory is None:
+            return
+        if context.response_submitted and not self._video_writers_stopped.is_set():
+            # Stored Responses inputs live until this engine generation stops.
+            self._retained.retain_processor_dir(context.req_id, directory)
+            return
+        self._cleanup_processor_dir(directory)
+
+    @staticmethod
+    def _cleanup_processor_dir(directory: tempfile.TemporaryDirectory) -> None:
+        try:
+            directory.cleanup()
+        except Exception:
+            logger.warning("failed to clean up processor workdir", exc_info=True)
+
+    @staticmethod
+    def _local_processor_path(value: str) -> Optional[Path]:
+        if value.startswith("file://"):
+            return Path(unquote(urlparse(value).path))
+        if value.startswith("/"):
+            return Path(value)
+        return None
+
+    async def _apply_pre_processors(
+        self, context: "_ProxyRequestContext", payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Adapt staged media to the executor, then rewrite request references."""
+        pipeline = context.processors
+        if pipeline is None or not pipeline.pre:
+            return payload
+        if context.processor_dir is None:
+            raise ServerError("Processor work directory is missing")
+        originals = [
+            (fetched.local_path, path)
+            for fetched in context.inputs
+            if (path := self._local_processor_path(fetched.local_path)) is not None
+        ]
+        state = await self._processor_executor.execute(
+            context.req_id,
+            Path(context.processor_dir.name),
+            pipeline,
+            "pre",
+            ProcessorState(paths=tuple(path for _, path in originals)),
+        )
+        mapping = {
+            uri: state.replacements[path].as_uri()
+            for uri, path in originals
+            if path in state.replacements and state.replacements[path] != path
+        }
+        return self._rewrite_processor_paths(payload, mapping) if mapping else payload
+
+    @classmethod
+    def _rewrite_processor_paths(cls, node: Any, mapping: Dict[str, str]) -> Any:
+        if isinstance(node, str):
+            return mapping.get(node, node)
+        if isinstance(node, dict):
+            return {
+                key: cls._rewrite_processor_paths(value, mapping)
+                for key, value in node.items()
+            }
+        if isinstance(node, list):
+            return [cls._rewrite_processor_paths(value, mapping) for value in node]
+        return node
+
+    async def _apply_post_processors(
+        self,
+        req_id: str,
+        directory: Optional[tempfile.TemporaryDirectory],
+        pipeline: Optional[ProcessorPipeline],
+        content: Optional[bytes],
+        media_paths: List[str],
+        *,
+        sources: Optional[SourceIdentities] = None,
+    ) -> Tuple[Optional[bytes], List[str]]:
+        """Adapt extracted results to the executor before any output write."""
+        if pipeline is None or not pipeline.post:
+            return content, media_paths
+        if directory is None:
+            raise ServerError("Processor work directory is missing")
+        paths = tuple(
+            path
+            for value in media_paths
+            if (path := self._local_processor_path(value)) is not None
+        )
+        state = await self._processor_executor.execute(
+            req_id,
+            Path(directory.name),
+            pipeline,
+            "post",
+            ProcessorState(paths=paths, payload=content),
+            source_identities=sources,
+        )
+        if sources is not None:
+            for path, identity in state.source_identities.items():
+                sources.setdefault(path, identity)  # Never re-claim a replaced file.
+        # Payload-only calls must preserve the original media URI spelling.
+        result_paths = (
+            media_paths if state.paths == paths else [str(p) for p in state.paths]
+        )
+        return state.payload, result_paths
+
     async def _persist_output(
         self,
         req_id: str,
@@ -1875,6 +2088,8 @@ class ProxyEngine(LLMEngine):
         envelope: Any = None,
         result_keys: tuple[str, ...] = _OPENAI_RESULT_KEYS,
         result_schema: Any = None,
+        processors: Optional[ProcessorPipeline] = None,
+        processor_dir: Optional[tempfile.TemporaryDirectory] = None,
     ) -> Any:
         """Persist declared results; preserve every other response field."""
         if envelope is None:
@@ -1884,6 +2099,11 @@ class ProxyEngine(LLMEngine):
         )
         # Upload only terminal-declared paths; historical sources are cleanup-only.
         media_paths = output_media_paths(parsed) if parsed is not None else []
+        if processors is not None and processors.post and sources is None:
+            sources = {}
+        content, media_paths = await self._apply_post_processors(
+            req_id, processor_dir, processors, content, media_paths, sources=sources
+        )
         if isinstance(parsed, VideoResponse) and content is None and not media_paths:
             # The video job's finally still owns historical source cleanup.
             return self._video_receipt(
@@ -1898,7 +2118,17 @@ class ProxyEngine(LLMEngine):
         response_id = envelope.get("id") if isinstance(envelope, dict) else None
         name = f"{_safe_name(response_id) or req_id}.json"
         result = await self._write_output(
-            req_id, spec, name, content, media_paths, sources
+            req_id,
+            spec,
+            name,
+            content,
+            media_paths,
+            sources,
+            **(
+                {"processor_workdir": Path(processor_dir.name)}
+                if processor_dir is not None
+                else {}
+            ),
         )
         if result_schema is None:
             for key in payload:
@@ -1949,6 +2179,8 @@ class ProxyEngine(LLMEngine):
         content: Optional[bytes],
         media_paths: List[str],
         sources: Optional[SourceIdentities],
+        *,
+        processor_workdir: Optional[Path] = None,
     ) -> OutputResponse:
         """Write the payload and its declared media, owning cleanup either way."""
         scheme = urlparse(spec.url).scheme.lower() or "file"
@@ -1958,7 +2190,16 @@ class ProxyEngine(LLMEngine):
             if media_paths or sources:
                 try:
                     result, output_bytes = await self._output_writer.write_bundle(
-                        spec, content, name, media_paths, sources
+                        spec,
+                        content,
+                        name,
+                        media_paths,
+                        sources,
+                        **(
+                            {"processor_workdir": processor_workdir}
+                            if processor_workdir is not None
+                            else {}
+                        ),
                     )
                 finally:
                     if sources is not None:

@@ -28,6 +28,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from aibrix.openai_frontend.schemas.media import MEDIA_URL
+from aibrix.openai_frontend.schemas.processors import ProcessorPipeline
 
 # Accepted true spellings for the Responses GET stream query (Pydantic bool).
 RESPONSE_STREAM_TRUE_VALUES = frozenset({"1", "true", "t", "on", "y", "yes"})
@@ -90,6 +91,7 @@ class CreateResponseRequest(BaseModel):
     metadata: dict[str, Any] | None = None
     include: list[str] | None = None
     truncation: str | None = None
+    processors: ProcessorPipeline | None = None
     service_tier: str | None = None
     user: str | None = None
 

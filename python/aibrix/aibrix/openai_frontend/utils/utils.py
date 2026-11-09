@@ -39,6 +39,7 @@ class StatusCode(IntEnum):
     NOT_FOUND = 404
     CONTENT_TOO_LARGE = 413
     SERVER_ERROR = 500
+    BAD_GATEWAY = 502
     SERVICE_UNAVAILABLE = 503
 
 
