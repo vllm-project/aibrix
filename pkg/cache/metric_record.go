@@ -16,7 +16,6 @@ limitations under the License.
 package cache
 
 import (
-	"k8s.io/klog/v2"
 	"math"
 	"os"
 	"strconv"
@@ -24,6 +23,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"k8s.io/klog/v2"
 )
 
 // MetricRecord keeps a value and its local successful-update time in one cache slot.
