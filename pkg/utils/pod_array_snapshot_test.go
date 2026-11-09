@@ -61,8 +61,8 @@ func TestPodArrayIndexingKeepsTheSharedSnapshot(t *testing.T) {
 	if !slices.Equal(reg.Registry.Array(), registrySnapshot) {
 		t.Fatalf("indexing reordered the Registry snapshot")
 	}
-	if got := len(deployments); got != 2 {
-		t.Fatalf("Indexes() = %v, want 2 deployments", deployments)
+	if want := []string{"deployment-0", "deployment-1"}; !slices.Equal(deployments, want) {
+		t.Fatalf("Indexes() = %v, want the deployments in first-seen order %v", deployments, want)
 	}
 	for _, name := range deployments {
 		var want []*v1.Pod
@@ -77,32 +77,40 @@ func TestPodArrayIndexingKeepsTheSharedSnapshot(t *testing.T) {
 	}
 }
 
-// Run with -race: a request goroutine reads the snapshot while another indexes it.
+// Run with -race: a request goroutine reads the snapshot while another indexes
+// it, through either entry point to the lazy index.
 func TestPodArrayConcurrentIndexAndRead(t *testing.T) {
-	pods := snapshotTestPods(64, 4)
-	published := slices.Clone(pods)
-	arr := &PodArray{Pods: pods}
-
-	var wg sync.WaitGroup
-	start := make(chan struct{})
-	for i := 0; i < 4; i++ {
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			<-start
-			_ = arr.Indexes()
-			_ = arr.ListByIndex("deployment-0")
-		}()
-		go func() {
-			defer wg.Done()
-			<-start
-			if !slices.Equal(arr.All(), published) {
-				t.Error("a reader saw the pod snapshot change while it was indexed")
-			}
-		}()
+	entryPoints := map[string]func(*PodArray){
+		"Indexes":     func(arr *PodArray) { _ = arr.Indexes() },
+		"ListByIndex": func(arr *PodArray) { _ = arr.ListByIndex("deployment-0") },
 	}
-	close(start)
-	wg.Wait()
+	for name, index := range entryPoints {
+		t.Run(name, func(t *testing.T) {
+			pods := snapshotTestPods(64, 4)
+			published := slices.Clone(pods)
+			arr := &PodArray{Pods: pods}
+
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for i := 0; i < 4; i++ {
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					<-start
+					index(arr)
+				}()
+				go func() {
+					defer wg.Done()
+					<-start
+					if !slices.Equal(arr.All(), published) {
+						t.Error("a reader saw the pod snapshot change while it was indexed")
+					}
+				}()
+			}
+			close(start)
+			wg.Wait()
+		})
+	}
 }
 
 // Each deployment list is clipped, so a caller appending to one cannot write into

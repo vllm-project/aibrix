@@ -125,7 +125,7 @@ var _ = Describe("PodArray", func() {
 			getPodWithDeployment(deployment),
 		}
 		podArray := &PodArray{Pods: pods}
-		Expect(&podArray.ListByIndex("deployment-1")[0]).To(Equal(&pods[0]))
+		Expect(&podArray.ListByIndex("deployment-1")[0]).To(BeIdenticalTo(&pods[0]))
 	})
 
 	It("Should ListByIndex() group heterogeneous deployments without reordering Pods", func() {
