@@ -16,19 +16,23 @@ limitations under the License.
 package utils
 
 import (
-	"sort"
+	"slices"
 	"sync"
 
 	v1 "k8s.io/api/core/v1"
 )
 
-// PodArray is a simple implementation of types.PodList indexed by deployment names
+// PodArray is a simple implementation of types.PodList indexed by deployment names.
+//
+// Pods may be a snapshot shared with other readers, such as the per-model
+// Registry snapshot that every request reads through All(). Indexing therefore
+// never writes to Pods: the per-deployment lists are built in their own slices.
 type PodArray struct {
 	Pods []*v1.Pod
 
 	deployments      []string
 	podsByDeployment map[string][]*v1.Pod
-	mu               sync.Mutex
+	indexOnce        sync.Once
 }
 
 func (arr *PodArray) Len() int {
@@ -50,9 +54,7 @@ func (arr *PodArray) ListByIndex(deploymentName string) []*v1.Pod {
 		return nil
 	}
 
-	if arr.podsByDeployment == nil {
-		arr.initDeployments()
-	}
+	arr.indexOnce.Do(arr.initDeployments)
 
 	return arr.podsByDeployment[deploymentName]
 }
@@ -62,62 +64,35 @@ func (arr *PodArray) Indexes() []string {
 		return nil
 	}
 
-	if arr.podsByDeployment == nil {
-		arr.initDeployments()
-	}
+	arr.indexOnce.Do(arr.initDeployments)
 
 	return arr.deployments
 }
 
+// initDeployments groups the pods by deployment, keeping the first-seen order of
+// the deployments and the original order of the pods within each one. It runs
+// once, under indexOnce, so the index fields are published fully built.
 func (arr *PodArray) initDeployments() {
-	arr.mu.Lock()
-	defer arr.mu.Unlock()
-
-	if arr.podsByDeployment != nil {
-		return
-	}
-
-	// Sort by deploymentName. Pods are keyed by namespace/name: a pod name is only
-	// unique within its namespace.
-	podClasses := make(map[string]int)
-	podIndexes := make(map[string]int, len(arr.Pods))
-	seen := 0
+	podsByDeployment := make(map[string][]*v1.Pod)
+	var deployments []string
 	for _, pod := range arr.Pods {
 		deploymentName := DeploymentNameFromPod(pod) // Count "" in.
-		idx, ok := podClasses[deploymentName]
-		if !ok {
-			idx = seen
-			podClasses[deploymentName] = seen
-			seen++
+		if _, ok := podsByDeployment[deploymentName]; !ok {
+			deployments = append(deployments, deploymentName)
 		}
-		podIndexes[GeneratePodKey(pod.Namespace, pod.Name)] = idx
+		podsByDeployment[deploymentName] = append(podsByDeployment[deploymentName], pod)
 	}
-	// Sort by podClasses
-	sort.Slice(arr.Pods, func(i, j int) bool {
-		return podIndexes[GeneratePodKey(arr.Pods[i].Namespace, arr.Pods[i].Name)] <
-			podIndexes[GeneratePodKey(arr.Pods[j].Namespace, arr.Pods[j].Name)]
-	})
-
-	// Split and map Pods to deployments
-	podsByDeployment := make(map[string][]*v1.Pod, len(podClasses))
-	deployments := make([]string, 0, len(podClasses))
-	offset := 0
-	lastClass := podIndexes[GeneratePodKey(arr.Pods[0].Namespace, arr.Pods[0].Name)]
-	lastDeploymentName := DeploymentNameFromPod(arr.Pods[0])
-	for i, pod := range arr.Pods {
-		podIdx := podIndexes[GeneratePodKey(pod.Namespace, pod.Name)]
-		if podIdx != lastClass {
-			podsByDeployment[lastDeploymentName] = arr.Pods[offset:i]
-			offset = i
-			lastClass = podIdx
-			deployments = append(deployments, lastDeploymentName)
-			lastDeploymentName = DeploymentNameFromPod(pod)
+	if len(deployments) == 1 {
+		// Every pod is in the one deployment, so share Pods instead of a copy.
+		podsByDeployment[deployments[0]] = arr.Pods
+	} else {
+		// Clip each list so that a caller appending to it cannot write into
+		// spare capacity another caller of ListByIndex also sees.
+		for name, pods := range podsByDeployment {
+			podsByDeployment[name] = slices.Clip(pods)
 		}
 	}
-	podsByDeployment[lastDeploymentName] = arr.Pods[offset:]
-	deployments = append(deployments, lastDeploymentName)
 
-	// Set arr.podsByDeployment at last
 	arr.deployments = deployments
 	arr.podsByDeployment = podsByDeployment
 }
