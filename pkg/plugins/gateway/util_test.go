@@ -3676,3 +3676,123 @@ func Test_ValidateRequestBody_AudioSpeech(t *testing.T) {
 		})
 	}
 }
+
+// Test_ValidateRequestBody_AudioGenerate: /v1/audio/generate has the same envelope as speech, a
+// model to route on and an input to generate from, so the gateway checks only those two and
+// forwards everything else (audio_length, negative_prompt, seed, ...) for the engine to judge.
+func Test_ValidateRequestBody_AudioGenerate(t *testing.T) {
+	testCases := []struct {
+		message     string
+		requestPath string // defaults to PathAudioGenerate
+		requestBody string
+		input       string
+		statusCode  envoyTypePb.StatusCode
+		param       string
+	}{
+		{
+			message:     "/v1/audio/generate routes on the model and generates from the input",
+			requestBody: `{"model": "stable-audio", "input": "The sound of a hammer hitting a wooden surface", "audio_length": 10.0}`,
+			input:       "The sound of a hammer hitting a wooden surface",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/generate generation options are forwarded, not inspected",
+			requestBody: `{"model": "stable-audio", "input": "Rain", "audio_length": 5, "negative_prompt": "low quality", "guidance_scale": 7.0, "num_inference_steps": 100, "seed": 42, "response_format": "wav", "x_future_option": {"k": 1}}`,
+			input:       "Rain",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/generate a request-level stream field does not make it an SSE stream",
+			requestBody: `{"model": "stable-audio", "input": "Rain", "stream": true}`,
+			input:       "Rain",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/generate query string does not break path matching",
+			requestPath: PathAudioGenerate + "?api-version=1",
+			requestBody: `{"model": "stable-audio", "input": "Rain"}`,
+			input:       "Rain",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/generate missing model",
+			requestBody: `{"input": "Rain"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/audio/generate blank model",
+			requestBody: `{"model": " ", "input": "Rain"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/audio/generate missing input",
+			requestBody: `{"model": "stable-audio", "audio_length": 10}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/audio/generate blank input",
+			requestBody: `{"model": "stable-audio", "input": "   "}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/audio/generate non-string input",
+			requestBody: `{"model": "stable-audio", "input": 42}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/generate malformed JSON",
+			requestBody: `{"model": "stable-audio", "input": "Rain"`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/generate array root",
+			requestBody: `[{"model": "stable-audio", "input": "Rain"}]`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/generate empty body",
+			requestBody: ``,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.message, func(t *testing.T) {
+			requestPath := tt.requestPath
+			if requestPath == "" {
+				requestPath = PathAudioGenerate
+			}
+			model, messages, prefixText, stream, errRes := validateRequestBody("test-request-id", requestPath, []byte(tt.requestBody), utils.User{})
+
+			// Binary audio is never treated as an SSE stream and carries no separate prefix text.
+			assert.False(t, stream)
+			assert.Empty(t, prefixText)
+
+			if tt.statusCode == envoyTypePb.StatusCode_OK {
+				assert.Nil(t, errRes)
+				assert.Equal(t, "stable-audio", model)
+				assert.Equal(t, tt.input, messages)
+				return
+			}
+
+			if !assert.NotNil(t, errRes) {
+				return
+			}
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, model)
+			assert.Empty(t, messages)
+
+			var errResponse map[string]any
+			require.NoError(t, sonic.Unmarshal([]byte(errRes.GetImmediateResponse().GetBody()), &errResponse))
+			errObj, ok := errResponse["error"].(map[string]any)
+			require.True(t, ok, "response should have an 'error' object")
+			if tt.param != "" {
+				assert.Equal(t, tt.param, errObj["param"])
+			}
+		})
+	}
+}

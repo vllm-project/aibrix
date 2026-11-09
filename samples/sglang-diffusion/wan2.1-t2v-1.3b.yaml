@@ -1,0 +1,117 @@
+# SGLang Diffusion serving Wan2.1 text-to-video through its OpenAI-compatible Videos API.
+# Upstream docs: https://docs.sglang.io/diffusion/index.html
+#
+# Video generation is an async job. Through the AIBrix gateway (see
+# docs/source/features/gateway-routing/omni.rst for $BASE), send the request as
+# multipart/form-data with a `model` form field, which the gateway reads to route:
+#   job_id=$(curl -s $BASE/v1/videos \
+#     -F "model=wan21-t2v-13b" \
+#     -F "prompt=A calico cat playing a piano on stage" \
+#     -F "size=832x480" | jq -r '.id')
+#   curl -s $BASE/v1/videos/$job_id                       # poll until `status` is `completed`
+#   curl -s $BASE/v1/videos/$job_id/content -o cat.mp4    # fetch the MP4
+# The gateway hands back its own job id and pins the follow-up calls to the pod that
+# owns the job; see docs/source/features/gateway-routing/omni-video.rst.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    model.aibrix.ai/name: wan21-t2v-13b # Note: The label value `model.aibrix.ai/name` here must match with the service name.
+    model.aibrix.ai/port: "30000"
+  name: wan21-t2v-13b
+  namespace: default
+spec:
+  replicas: 1 # Note: SGLang keeps job metadata in the server process, so it does not survive a pod restart.
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: wan21-t2v-13b
+      model.aibrix.ai/port: "30000"
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: wan21-t2v-13b
+        model.aibrix.ai/port: "30000"
+    spec:
+      containers:
+        - name: sglang-diffusion
+          image: lmsysorg/sglang:latest # Note: Pin a release tag for production; upstream's diffusion install guide names `latest`.
+          command:
+            - sglang
+            - serve
+            - --model-path
+            - Wan-AI/Wan2.1-T2V-1.3B-Diffusers
+            - --served-model-name
+            # Note: The `--served-model-name` argument value must also match the Service name and the Deployment label `model.aibrix.ai/name`
+            - wan21-t2v-13b
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "30000"
+            - --num-gpus # Note: Must not exceed the GPU limit below. Parallelism flags such as `--ulysses-degree` apply when it is above 1.
+            - "1"
+          env:
+            - name: HF_HOME # Note: Keeps the downloaded weights on the host across restarts.
+              value: /models/huggingface
+          ports:
+            - containerPort: 30000
+              protocol: TCP
+          volumeMounts:
+            - mountPath: /models
+              name: models
+            - mountPath: /dev/shm
+              name: shm
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"
+          livenessProbe:
+            httpGet:
+              path: /v1/models # Note: Upstream documents no dedicated health endpoint; `GET /v1/models` answers once the model is served.
+              port: 30000
+              scheme: HTTP
+            failureThreshold: 3
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /v1/models
+              port: 30000
+              scheme: HTTP
+            failureThreshold: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 3
+          startupProbe:
+            httpGet:
+              path: /v1/models
+              port: 30000
+              scheme: HTTP
+            failureThreshold: 120 # Note: Allows up to 20 minutes for the weight download and model load.
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 3
+      volumes:
+        - name: models
+          hostPath:
+            path: /root/models
+            type: DirectoryOrCreate
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wan21-t2v-13b
+  namespace: default
+spec:
+  selector:
+    model.aibrix.ai/name: wan21-t2v-13b
+  ports:
+    - name: serve
+      port: 30000
+      protocol: TCP
+      targetPort: 30000

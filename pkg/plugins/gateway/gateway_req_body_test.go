@@ -1410,6 +1410,55 @@ func TestHandleRequestBody_AudioSpeechReachesABackendPodUnchanged(t *testing.T) 
 	assert.Equal(t, "1.2.3.4:8000", targetPod)
 }
 
+// TestHandleRequestBody_AudioGenerateReachesABackendPodUnchanged: a /v1/audio/generate request is
+// routed on its model like a speech request, and the body is forwarded byte for byte, so the
+// generation options and any field the gateway does not know reach the engine.
+func TestHandleRequestBody_AudioGenerateReachesABackendPodUnchanged(t *testing.T) {
+	cache.InitForTest()
+	routingalgorithms.Init()
+
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	pod := readyPod("pod-a", "ns-a", "1.2.3.4")
+	mockCache.On("HasModel", "stable-audio").Return(true)
+	mockCache.On("ListPodsByModel", "stable-audio").Return(&utils.PodArray{Pods: []*v1.Pod{pod}}, nil)
+	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "stable-audio").Return(int64(1))
+	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
+		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
+
+	server := &Server{cache: mockCache}
+
+	body := []byte(`{"model":"stable-audio","input":"The sound of rain","audio_length":10,"negative_prompt":"low quality","seed":42,"x_future_option":{"k":1}}`)
+	req := &extProcPb.ProcessingRequest{
+		Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: body},
+		},
+	}
+
+	routingCtx := types.NewRoutingContext(context.Background(), "", "", "", "test-request-id", "test-user")
+	routingCtx.ReqPath = PathAudioGenerate + "?api-version=1"
+	routingCtx.ReqHeaders[contentTypeKey] = "application/json"
+	routingCtx.ReqHeaders[methodKey] = http.MethodPost
+	routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(routingalgorithms.RouterLeastRequest)
+
+	resp, model, stream, _ := server.HandleRequestBody(context.Background(), routingCtx, "test-request-id", req, utils.User{Name: "test-user"})
+
+	require.NotNil(t, resp)
+	require.Nil(t, resp.GetImmediateResponse(), "the request must not be rejected")
+	assert.Equal(t, "stable-audio", model)
+	assert.False(t, stream)
+	assert.Equal(t, "The sound of rain", routingCtx.Message)
+
+	common := resp.GetRequestBody().GetResponse()
+	assert.Equal(t, body, common.GetBodyMutation().GetBody())
+	var targetPod string
+	for _, h := range common.GetHeaderMutation().GetSetHeaders() {
+		if h.Header.Key == HeaderTargetPod {
+			targetPod = string(h.Header.RawValue)
+		}
+	}
+	assert.Equal(t, "1.2.3.4:8000", targetPod)
+}
+
 // TestHandleRequestBody_AudioSpeechBatchReachesABackendPodUnchanged: a /v1/audio/speech/batch
 // request is routed on its top-level model, and the body is forwarded byte for byte, so the
 // shared defaults, per-item overrides and reference clips all reach the engine as sent.
