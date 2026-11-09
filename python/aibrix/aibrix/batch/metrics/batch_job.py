@@ -91,5 +91,10 @@ def tags_for_job_latency_log(job: Optional[BatchJob]) -> tuple[Tag, ...]:
 def tags_for_execution_phase(phase: str) -> tuple[Tag, ...]:
     return (
         T("phase", phase),
-        T("phase_order", BATCH_EXECUTION_PHASE_ORDERS.get(phase, _DEFAULT_BATCH_EXECUTION_PHASE_ORDER)),
+        T(
+            "phase_order",
+            BATCH_EXECUTION_PHASE_ORDERS.get(
+                phase, _DEFAULT_BATCH_EXECUTION_PHASE_ORDER
+            ),
+        ),
     )

@@ -317,10 +317,13 @@ async def test_runtime_base_session_emits_runtime_phase_metrics(monkeypatch):
         )
         assert value >= 0
         assert tags["job_id"] == "job-runtime-phases"
-        assert tags["phase_order"] == {
-            "runtime_provision": "030",
-            "runtime_ready": "040",
-        }[phase]
+        assert (
+            tags["phase_order"]
+            == {
+                "runtime_provision": "030",
+                "runtime_ready": "040",
+            }[phase]
+        )
         assert tags["event"] == "Batch job latency telemetry"
         assert tags["log_map"] == "phase_duration_ms"
         assert tags["log_key"] == phase
