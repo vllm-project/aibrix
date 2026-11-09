@@ -61,8 +61,16 @@ func TestPodArrayIndexingKeepsTheSharedSnapshot(t *testing.T) {
 	if !slices.Equal(reg.Registry.Array(), registrySnapshot) {
 		t.Fatalf("indexing reordered the Registry snapshot")
 	}
-	if want := []string{"deployment-0", "deployment-1"}; !slices.Equal(deployments, want) {
-		t.Fatalf("Indexes() = %v, want the deployments in first-seen order %v", deployments, want)
+	// The Registry builds its snapshot from a map, so the first-seen order of
+	// the deployments comes from the published snapshot, not from Store order.
+	var firstSeen []string
+	for _, pod := range published {
+		if name := DeploymentNameFromPod(pod); !slices.Contains(firstSeen, name) {
+			firstSeen = append(firstSeen, name)
+		}
+	}
+	if len(firstSeen) != 2 || !slices.Equal(deployments, firstSeen) {
+		t.Fatalf("Indexes() = %v, want the 2 deployments in first-seen order %v", deployments, firstSeen)
 	}
 	for _, name := range deployments {
 		var want []*v1.Pod
