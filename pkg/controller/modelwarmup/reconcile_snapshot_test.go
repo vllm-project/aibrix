@@ -374,8 +374,8 @@ func TestResolveTargetsFromNodes(t *testing.T) {
 		require.NoError(t, err)
 		require.Empty(t, targets)
 		require.Equal(t, map[string]string{
-			"node-control-plane": "NodeNotAuthorized",
-			"node-master":        "NodeNotAuthorized",
+			"node-control-plane": controlPlaneNodeExcluded,
+			"node-master":        controlPlaneNodeExcluded,
 		}, missing)
 	})
 

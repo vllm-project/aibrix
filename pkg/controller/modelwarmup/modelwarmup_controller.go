@@ -82,6 +82,10 @@ var controlPlaneLabelKeys = []string{
 	"node-role.kubernetes.io/master",
 }
 
+// controlPlaneNodeExcluded distinguishes a role exclusion internally while
+// preserving the existing NodeNotAuthorized reason in target status.
+const controlPlaneNodeExcluded = "ControlPlaneNodeExcluded"
+
 type ModelWarmupReconciler struct {
 	client.Client
 	// APIReader reads from the API server rather than the cache.
@@ -468,20 +472,20 @@ func (r *ModelWarmupReconciler) readNodes(
 	return nodes, nil
 }
 
-func isNodeAuthorized(namespace *corev1.Namespace, node *corev1.Node) bool {
+func nodeExclusionReason(namespace *corev1.Namespace, node *corev1.Node, unauthorizedReason string) string {
 	if node.Labels[WarmupEnabledLabelKey] != WarmupEnabledLabelValue {
-		return false
+		return unauthorizedReason
 	}
 	pool := namespace.Labels[ResourcePoolLabelKey]
 	if pool == "" || node.Labels[ResourcePoolLabelKey] != pool {
-		return false
+		return unauthorizedReason
 	}
 	for _, key := range controlPlaneLabelKeys {
 		if _, exists := node.Labels[key]; exists {
-			return false
+			return controlPlaneNodeExcluded
 		}
 	}
-	return true
+	return ""
 }
 
 func revisionFor(w *modelv1alpha1.ModelWarmup) string {
@@ -755,12 +759,17 @@ func (r *ModelWarmupReconciler) updateStatus(
 	}
 	for node, reason := range missing {
 		message := "node was not found"
-		if reason == "NodeNotAuthorized" {
+		statusReason := reason
+		switch reason {
+		case "NodeNotAuthorized":
 			message = "node is not authorized for this namespace"
+		case controlPlaneNodeExcluded:
+			statusReason = "NodeNotAuthorized"
+			message = "control-plane nodes are not eligible for ModelWarmup"
 		}
 		item := modelv1alpha1.ModelWarmupTargetStatus{
 			NodeName: node, Revision: revision,
-			Phase: modelv1alpha1.ModelWarmupTargetFailed, Reason: reason, Message: boundedDiagnostic(message),
+			Phase: modelv1alpha1.ModelWarmupTargetFailed, Reason: statusReason, Message: boundedDiagnostic(message),
 		}
 		preserveTargetTransition(&item, previousTargets[node].LastTransitionTime, previousTargets[node].Phase,
 			previousTargets[node].Reason, previousTargets[node].Message, now)

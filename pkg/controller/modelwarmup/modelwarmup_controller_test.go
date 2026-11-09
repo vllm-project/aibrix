@@ -417,6 +417,60 @@ func TestReconcileContinuousIgnoresMissingAndUnauthorizedTargets(t *testing.T) {
 	require.Equal(t, "TargetsUnavailableOrUnauthorized", mustCondition(updated.Status.Conditions, "Ready").Reason)
 }
 
+func TestReconcileContinuousExplainsControlPlaneExclusion(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+	warmup.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous
+	nodes[0].Labels["node-role.kubernetes.io/control-plane"] = ""
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+	require.NoError(t, reconcileOnce(r, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}))
+	updated := &modelv1alpha1.ModelWarmup{}
+	require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+	require.Equal(t, modelv1alpha1.ModelWarmupPending, updated.Status.Phase)
+	require.Contains(t, mustCondition(updated.Status.Conditions, "Ready").Message,
+		"control-plane nodes are not eligible for ModelWarmup")
+	require.Zero(t, counting.createCalls)
+}
+
+func TestReconcileExplainsControlPlaneTargetExclusion(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		roleLabel   string
+		wrongPool   bool
+		wantMessage string
+	}{
+		{"control-plane role", "node-role.kubernetes.io/control-plane", false, "control-plane nodes are not eligible for ModelWarmup"},
+		{"master role", "node-role.kubernetes.io/master", false, "control-plane nodes are not eligible for ModelWarmup"},
+		{"pool mismatch", "", true, "node is not authorized for this namespace"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+			warmup.Spec.Targets = []modelv1alpha1.ModelWarmupTarget{{
+				Nodes: &modelv1alpha1.ModelWarmupNodesTarget{Names: []string{nodes[0].Name}},
+			}}
+			if tc.roleLabel != "" {
+				nodes[0].Labels[tc.roleLabel] = ""
+			}
+			if tc.wrongPool {
+				nodes[0].Labels[ResourcePoolLabelKey] = "other"
+			}
+			counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes)
+			r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+			require.NoError(t, reconcileOnce(r, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}))
+			updated := &modelv1alpha1.ModelWarmup{}
+			require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+			require.Len(t, updated.Status.Targets, 1)
+			status := updated.Status.Targets[0]
+			require.Equal(t, modelv1alpha1.ModelWarmupTargetFailed, status.Phase)
+			require.Equal(t, "NodeNotAuthorized", status.Reason)
+			require.Equal(t, tc.wantMessage, status.Message)
+			require.Zero(t, counting.createCalls)
+		})
+	}
+}
+
 func TestReconcileContinuousReportsMissingNamespacePool(t *testing.T) {
 	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
 	warmup.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous

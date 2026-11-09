@@ -140,8 +140,8 @@ func resolveTargetsFromNodes(
 					missing[name] = "NodeNotFound"
 					continue
 				}
-				if !isNodeAuthorized(namespace, node) {
-					missing[name] = unauthorizedReason
+				if reason := nodeExclusionReason(namespace, node, unauthorizedReason); reason != "" {
+					missing[name] = reason
 					continue
 				}
 				addTarget(node, source)
@@ -157,8 +157,8 @@ func resolveTargetsFromNodes(
 				if !selector.Matches(labels.Set(node.Labels)) {
 					continue
 				}
-				if !isNodeAuthorized(namespace, node) {
-					missing[node.Name] = unauthorizedReason
+				if reason := nodeExclusionReason(namespace, node, unauthorizedReason); reason != "" {
+					missing[node.Name] = reason
 					continue
 				}
 				addTarget(node, source)

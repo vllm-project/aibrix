@@ -440,6 +440,7 @@ func setContinuousConditions(
 }
 
 func continuousNoTargetsDiagnostic(missing map[string]string) (string, string) {
+	controlPlaneOnly := len(missing) > 0
 	for _, missingReason := range missing {
 		if missingReason == "NamespacePoolNotConfigured" {
 			return "NamespacePoolNotConfigured", fmt.Sprintf(
@@ -447,6 +448,12 @@ func continuousNoTargetsDiagnostic(missing map[string]string) (string, string) {
 				ResourcePoolLabelKey,
 			)
 		}
+		if missingReason != controlPlaneNodeExcluded {
+			controlPlaneOnly = false
+		}
+	}
+	if controlPlaneOnly {
+		return "TargetsUnavailableOrUnauthorized", "no eligible targets resolved; control-plane nodes are not eligible for ModelWarmup"
 	}
 	if len(missing) > 0 {
 		return "TargetsUnavailableOrUnauthorized", fmt.Sprintf(
