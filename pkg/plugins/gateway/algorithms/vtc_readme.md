@@ -86,8 +86,8 @@ End-to-end tests: [vtc_routing_test.go](../../../../test/e2e/vtc_routing_test.go
 
 | Environment Variable                          | Description                                                                  | Default        |
 |-----------------------------------------------|------------------------------------------------------------------------------|----------------|
-| `AIBRIX_ROUTING_ALGORITHM`                    | Set to `vtc-basic` to enable this routing strategy.                          | `prefix-aware` |
-| `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_TIME_UNIT`   | Time unit for the sliding window. Options: `seconds`, `minutes`, `hours`.    | `minutes`      |
+| `ROUTING_ALGORITHM`                           | Set to `vtc-basic` to enable this routing strategy.                          | (unset)        |
+| `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_TIME_UNIT`   | Time unit for the sliding window. Options: `milliseconds`, `seconds`, `minutes`; any other value falls back to `minutes`. | `minutes` |
 | `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE` | Number of time units in the sliding window.                                  | `5`            |
 | `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MIN_TOKENS`  | Minimum token floor for adaptive tracking — prevents division by near-zero.  | `1000`         |
 | `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MAX_TOKENS`  | Maximum token cap for adaptive tracking.                                     | `8000`         |
