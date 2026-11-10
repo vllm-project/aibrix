@@ -37,9 +37,16 @@ import (
 // their last known values over, but publishes the result with that tick's start time, so a
 // count that has not been read for any length of time still looks fresh.
 
-func addTestMetaPod(store *Store, name string) *v1.Pod {
+// addTestMetaPod adds a pod to store.metaPods and removes it again when the test ends. The sync
+// reads gatewayPodName only to write this gateway's snapshot of each pod in metaPods, and it
+// sees its stop channel only between ticks, so it may run a tick or two after the test; without
+// the pod those ticks no longer touch the variable that later tests reassign.
+func addTestMetaPod(t *testing.T, store *Store, name string) *v1.Pod {
+	t.Helper()
 	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace}}
-	store.metaPods.Store(utils.GeneratePodKey(testNamespace, name), &Pod{Pod: pod})
+	key := utils.GeneratePodKey(testNamespace, name)
+	store.metaPods.Store(key, &Pod{Pod: pod})
+	t.Cleanup(func() { store.metaPods.Delete(key) })
 	return pod
 }
 
@@ -51,7 +58,7 @@ func approxRunning(store *Store, pod *v1.Pod) int64 {
 // older than remoteRunningMaxAge it must no longer be added.
 func TestRemoteRunningApprox_DropsCountsNotReadWithinMaxAge(t *testing.T) {
 	store, client, hook, remoteKey := newSnapshotSyncUnderTest(t)
-	pod := addTestMetaPod(store, testPodName)
+	pod := addTestMetaPod(t, store, testPodName)
 	require.Eventually(t, func() bool { return approxRunning(store, pod) == 2 },
 		2*time.Second, 20*time.Millisecond, "the remote count must be read before the failure")
 
@@ -66,10 +73,28 @@ func TestRemoteRunningApprox_DropsCountsNotReadWithinMaxAge(t *testing.T) {
 
 // tailTimeoutHook makes the HGETALL batch holding tailKey run into the tick's deadline, as a
 // tick that has more keys to read than its 100 ms allow does: the batches before it succeed and
-// the rest fail with context.DeadlineExceeded.
+// the rest fail with context.DeadlineExceeded. It is active between slow and release being
+// closed. Closing release also ends the wait of a batch in flight, so ticks the sync still runs
+// after the test are as quick as in any other test (it sees its stop channel only between
+// ticks) instead of each lasting until its deadline.
 type tailTimeoutHook struct {
 	tailKey string
-	enabled func() bool
+	slow    chan struct{}
+	release chan struct{}
+}
+
+func (h *tailTimeoutHook) active() bool {
+	select {
+	case <-h.release:
+		return false
+	default:
+	}
+	select {
+	case <-h.slow:
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *tailTimeoutHook) DialHook(next redis.DialHook) redis.DialHook { return next }
@@ -78,10 +103,14 @@ func (h *tailTimeoutHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook 
 
 func (h *tailTimeoutHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
-		if h.enabled() {
+		if h.active() {
 			for _, cmd := range cmds {
 				if cmd.Name() == "hgetall" && len(cmd.Args()) > 1 && cmd.Args()[1] == h.tailKey {
-					<-ctx.Done()
+					select {
+					case <-ctx.Done():
+					case <-h.release:
+						return next(ctx, cmds)
+					}
 					for _, c := range cmds {
 						c.SetErr(ctx.Err())
 					}
@@ -101,9 +130,9 @@ func TestRemoteRunningApprox_DropsCountsOfBatchThatKeepsTimingOut(t *testing.T) 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
-	oldGatewayPodName := gatewayPodName
-	gatewayPodName = testGatewaySelf
-	t.Cleanup(func() { gatewayPodName = oldGatewayPodName })
+	// gatewayPodName is left as it is: the remote keys belong to "gw-remote", never to this
+	// gateway, and the sync reads gatewayPodName on every tick, which this test keeps running
+	// until its deadline.
 
 	// More remote keys than one HGETALL batch, so the first and the last pod are read in
 	// different batches.
@@ -122,30 +151,23 @@ func TestRemoteRunningApprox_DropsCountsOfBatchThatKeepsTimingOut(t *testing.T) 
 		setRemote(i, "3")
 	}
 
-	slowCh := make(chan struct{})
 	hook := &tailTimeoutHook{
 		tailKey: gatewayPodSnapshotKey("gw-remote", testNamespace, podName(n-1)),
-		enabled: func() bool {
-			select {
-			case <-slowCh:
-				return true
-			default:
-				return false
-			}
-		},
+		slow:    make(chan struct{}),
+		release: make(chan struct{}),
 	}
 	client.AddHook(hook)
 
 	store := &Store{redisClient: client}
-	head, tail := addTestMetaPod(store, podName(0)), addTestMetaPod(store, podName(n-1))
 	stopCh := make(chan struct{})
+	t.Cleanup(func() { close(hook.release); close(stopCh) })
+	head, tail := addTestMetaPod(t, store, podName(0)), addTestMetaPod(t, store, podName(n-1))
 	initGatewaySnapshotSync(store, stopCh)
-	t.Cleanup(func() { close(stopCh) })
 
 	require.Eventually(t, func() bool { return approxRunning(store, head) == 3 && approxRunning(store, tail) == 3 },
 		2*time.Second, 20*time.Millisecond, "every remote count must be read before the slowdown")
 
-	close(slowCh)
+	close(hook.slow)
 	for i := range n {
 		setRemote(i, "0")
 	}
