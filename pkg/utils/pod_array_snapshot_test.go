@@ -145,3 +145,23 @@ func TestPodArrayListByIndexIsClipped(t *testing.T) {
 		})
 	}
 }
+
+// A panic while indexing, such as a nil pod, must surface on every call rather
+// than leave the index silently empty after the first one.
+func TestPodArrayIndexPanicRepeats(t *testing.T) {
+	arr := &PodArray{Pods: []*v1.Pod{nil}}
+	for i, call := range []func(){
+		func() { arr.ListByIndex("deployment-0") },
+		func() { arr.Indexes() },
+		func() { arr.ListByIndex("deployment-0") },
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("call %d did not panic", i)
+				}
+			}()
+			call()
+		}()
+	}
+}

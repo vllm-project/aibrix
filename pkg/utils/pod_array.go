@@ -33,6 +33,10 @@ type PodArray struct {
 	deployments      []string
 	podsByDeployment map[string][]*v1.Pod
 	indexOnce        sync.Once
+	// indexPanic keeps a panic raised while indexing so that every later
+	// ListByIndex or Indexes call re-panics with it, instead of the Once leaving
+	// the index silently empty.
+	indexPanic any
 }
 
 func (arr *PodArray) Len() int {
@@ -42,6 +46,8 @@ func (arr *PodArray) Len() int {
 	return len(arr.Pods)
 }
 
+// All returns Pods itself, not a copy. Callers must treat it as read-only: it may
+// be a snapshot shared by concurrent requests.
 func (arr *PodArray) All() []*v1.Pod {
 	if arr == nil {
 		return nil
@@ -49,12 +55,16 @@ func (arr *PodArray) All() []*v1.Pod {
 	return arr.Pods
 }
 
+// ListByIndex returns the pods of one deployment. Callers must treat the result
+// as read-only: when all pods are in one deployment it is Pods itself, the same
+// shared snapshot All returns, so an in-place writer such as
+// FilterRoutablePodsInPlace must copy it first.
 func (arr *PodArray) ListByIndex(deploymentName string) []*v1.Pod {
 	if len(arr.Pods) == 0 {
 		return nil
 	}
 
-	arr.indexOnce.Do(arr.initDeployments)
+	arr.buildIndex()
 
 	return arr.podsByDeployment[deploymentName]
 }
@@ -64,14 +74,30 @@ func (arr *PodArray) Indexes() []string {
 		return nil
 	}
 
-	arr.indexOnce.Do(arr.initDeployments)
+	arr.buildIndex()
 
 	return arr.deployments
 }
 
+// buildIndex runs initDeployments once and re-raises its panic, if any, on every
+// call, as the index did before it used sync.Once.
+func (arr *PodArray) buildIndex() {
+	arr.indexOnce.Do(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				arr.indexPanic = r
+			}
+		}()
+		arr.initDeployments()
+	})
+	if arr.indexPanic != nil {
+		panic(arr.indexPanic)
+	}
+}
+
 // initDeployments groups the pods by deployment, keeping the first-seen order of
 // the deployments and the original order of the pods within each one. It runs
-// once, under indexOnce, so the index fields are published fully built.
+// once, through buildIndex, so the index fields are published fully built.
 func (arr *PodArray) initDeployments() {
 	podsByDeployment := make(map[string][]*v1.Pod)
 	var deployments []string
