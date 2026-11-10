@@ -34,8 +34,18 @@ HELM_CRDS_DIR="${SCRIPT_ROOT}/dist/chart/crds"
 
 # Temporary directory for diff
 TMP_DIFFROOT="$(mktemp -d -t verify-crd-sync.XXXXXX)"
+# The EXIT trap fails the run unless the success path sets this to true.
+verified=false
 cleanup() {
+  local status=$?
   rm -rf "${TMP_DIFFROOT}"
+  # bash 3.2 enters this trap with status 0 after an unbound variable error,
+  # so only the success path below may exit 0.
+  if [[ "${status}" -eq 0 && "${verified}" != "true" ]]; then
+    echo "❌ verify-crd-sync.sh exited before completing verification" >&2
+    status=1
+  fi
+  exit "${status}"
 }
 trap cleanup EXIT
 
@@ -161,14 +171,17 @@ verify_helm_crd_sync() {
 # Run verification for each module
 all_ok=true
 
-declare -A modules=(
-  ["orchestration"]="${ORCHESTRATION_DIR}"
-  ["autoscaling"]="${AUTOSCALING_DIR}"
-  ["model"]="${MODEL_DIR}"
+# name:dir pairs, since the bash 3.2 that ships with macOS has no associative arrays.
+modules=(
+  "orchestration:${ORCHESTRATION_DIR}"
+  "autoscaling:${AUTOSCALING_DIR}"
+  "model:${MODEL_DIR}"
 )
 
-for module in "${!modules[@]}"; do
-  if ! verify_crd_sync "${BASES_DIR}" "${modules[$module]}" "${module}"; then
+for item in "${modules[@]}"; do
+  module="${item%%:*}"
+  module_dir="${item#*:}"
+  if ! verify_crd_sync "${BASES_DIR}" "${module_dir}" "${module}"; then
     all_ok=false
   fi
 done
@@ -179,6 +192,8 @@ fi
 
 if [[ "${all_ok}" == "true" ]]; then
   echo "🎉 All CRD modules and the Helm chart are synchronized with bases/."
+  # Set immediately before exit 0; any other success path must set it too.
+  verified=true
   exit 0
 else
   echo "❌ CRD synchronization verification failed."
