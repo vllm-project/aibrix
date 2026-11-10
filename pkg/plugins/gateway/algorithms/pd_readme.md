@@ -325,12 +325,12 @@ When the selected prefill pod's roleset has `role-name: encode` pods and a vLLM 
 
 ```
 Gateway ──POST /v1/chat/completions {messages:[{role:user, content:[item i]}]}──► Encode Pod   (one per item, in parallel)
-         ◄── 200 ──────────────────────────────────────────────────────────────── Encode Pod   (output stored by the EC connector)
+         ◄── 200 {ec_transfer_params?} ────────────────────────────────────────── Encode Pod   (output stored by the EC connector)
 
-Gateway ──prefill as below, request body unchanged──────────────────────────────► Prefill Pod  (finds the output by the item's hash)
+Gateway ──prefill as below, plus the encoders' ec_transfer_params──────────────► Prefill Pod  (finds the output by the item's hash, or pulls it)
 ```
 
-Items are spread round-robin over the roleset's encode pods. The body is not rewritten: the encoder and the prefill pod hash the same item bytes, so the prefill pod's EC connector finds the output, and encodes the item itself when it can't. A failed encode is therefore logged and counted, not returned. Each call uses the prefill request timeout. Connectors that need transfer handles passed through the request (vLLM's `*_embeds` rewrite in `disagg_epd_proxy.py`) are not supported.
+Items are spread round-robin over the roleset's encode pods. The media items are not rewritten: the encoder and the prefill pod hash the same item bytes, so the prefill pod's EC connector finds the output, and encodes the item itself when it can't. Any `ec_transfer_params` the client sent are dropped. When the encode responses carry them (`ECCPUConnector` with NIXL), they are merged and set on the prefill body, so the prefill pod can pull the output from the encoder. A failed encode is therefore logged and counted, not returned. Each call uses the prefill request timeout. Rewriting items to `*_embeds` (the default of vLLM's `disagg_epd_proxy.py`) and connectors that need the consumer picked before encoding (`ECMooncakeConnector`) are not supported.
 
 When bucketing routes the request to a combined pod instead, `Route` runs the same stage on the combined pod's roleset. For E+PD rolesets, where encode pods sit in front of pods that serve the whole request, the gateway runs it outside the PD router: with any other routing strategy, `selectTargetPod` drops encode pods from the candidates and encodes on the chosen pod's roleset before returning it.
 
