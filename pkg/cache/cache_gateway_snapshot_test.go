@@ -208,28 +208,37 @@ func TestGetPodsRunningRequestsApproxAddsRemoteSnapshot(t *testing.T) {
 	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns"}}}
 	atomic.StoreInt32(&pod.runningRequests, 4)
 	store.metaPods.Store("ns/a", pod)
-	store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{counts: map[string]int64{"ns/a": 2}, readStart: time.Now()})
+	store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{counts: map[string]int64{"ns/a": 2},
+		readAt: map[string]time.Time{"ns/a": time.Now()}})
 	assert.Equal(t, int64(6), store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})["ns/a"])
 	// This gateway's own count is read live, not from what it last wrote to Redis.
 	atomic.StoreInt32(&pod.runningRequests, 9)
 	assert.Equal(t, int64(11), store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})["ns/a"])
-	// A snapshot from a stalled sync is ignored.
+	// A count last read longer ago than remoteRunningMaxAge is ignored.
 	store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{counts: map[string]int64{"ns/a": 2},
-		readStart: time.Now().Add(-remoteRunningMaxAge - time.Millisecond)})
+		readAt: map[string]time.Time{"ns/a": time.Now().Add(-remoteRunningMaxAge - time.Millisecond)}})
 	assert.Equal(t, int64(9), store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})["ns/a"])
 }
 
 func TestRemoteRunningByPodSkipsSelfAndSumsOthers(t *testing.T) {
-	grouped := map[string][]map[string]string{
-		"ns/a": {
-			{"gateway_instance_id": "self", "requests_running": "5"},
-			{"gateway_instance_id": "gw-1", "requests_running": "2"},
-			{"gateway_instance_id": "gw-2", "requests_running": "3"},
-		},
-		"ns/b": {{"gateway_instance_id": "self", "requests_running": "7"}},
-		"ns/c": {{"gateway_instance_id": "gw-1", "requests_running": "not a number"}},
+	snapshot := func(gw, pod, running string) map[string]string {
+		return map[string]string{"gateway_instance_id": gw, "namespace": "ns", "pod_name": pod, "requests_running": running}
 	}
-	assert.Equal(t, map[string]int64{"ns/a": 5}, remoteRunningByPod(grouped, "self"))
+	raw := map[string]map[string]string{
+		"self/a": snapshot("self", "a", "5"),
+		"gw-1/a": snapshot("gw-1", "a", "2"),
+		"gw-2/a": snapshot("gw-2", "a", "3"),
+		"self/b": snapshot("self", "b", "7"),
+		"gw-1/c": snapshot("gw-1", "c", "not a number"),
+		"gw-1/?": {"gateway_instance_id": "gw-1", "requests_running": "4"},
+	}
+	fresh, stale := time.Now(), time.Now().Add(-time.Second)
+	readAt := map[string]time.Time{"self/a": stale, "gw-1/a": fresh, "gw-2/a": stale, "self/b": fresh, "gw-1/c": fresh, "gw-1/?": fresh}
+	snap := remoteRunningByPod(raw, readAt, "self")
+	assert.Equal(t, map[string]int64{"ns/a": 5}, snap.counts)
+	// A pod's read time is that of the oldest other-gateway snapshot summed into it; this
+	// gateway's own snapshot does not count.
+	assert.Equal(t, map[string]time.Time{"ns/a": stale}, snap.readAt)
 }
 
 func TestGetPodsRunningRequestsApproxWithoutSnapshot(t *testing.T) {
