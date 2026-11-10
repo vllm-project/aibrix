@@ -34,8 +34,8 @@ const (
 // TokenizeInput represents a unified input structure for tokenization
 type TokenizeInput struct {
 	Type                TokenizeInputType
-	Text                string        // For completion input
-	Messages            []ChatMessage // For chat input
+	Text                string          // For completion input
+	Messages            json.RawMessage // For chat input only: the request's raw "messages" array
 	AddSpecialTokens    bool
 	ReturnTokenStrings  bool
 	AddGenerationPrompt bool            // For chat input only
@@ -79,7 +79,7 @@ type vllmTokenizeCompletionRequest struct {
 // vllmTokenizeChatRequest represents a request to tokenize chat messages
 type vllmTokenizeChatRequest struct {
 	Model                string                 `json:"model,omitempty"`
-	Messages             []ChatMessage          `json:"messages"`
+	Messages             json.RawMessage        `json:"messages"`
 	AddSpecialTokens     *bool                  `json:"add_special_tokens,omitempty"`
 	AddGenerationPrompt  *bool                  `json:"add_generation_prompt,omitempty"`
 	ContinueFinalMessage *bool                  `json:"continue_final_message,omitempty"`

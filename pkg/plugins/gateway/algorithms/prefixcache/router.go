@@ -734,58 +734,91 @@ func (p prefixCacheRouter) Cleanup() error {
 	return nil
 }
 
+type rawChatMessageValidation struct {
+	Role         string          `json:"role"`
+	Content      json.RawMessage `json:"content"`
+	ToolCalls    json.RawMessage `json:"tool_calls"`
+	FunctionCall json.RawMessage `json:"function_call"`
+}
+
+func isEmptyJSONContainer(b []byte, open, close byte) bool {
+	if len(b) < 2 || b[0] != open || b[len(b)-1] != close {
+		return false
+	}
+	return len(bytes.TrimSpace(b[1:len(b)-1])) == 0
+}
+
+func hasPayload(raw json.RawMessage, isContainer bool, open, close byte) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return false
+	}
+	if isContainer && isEmptyJSONContainer(trimmed, open, close) {
+		return false
+	}
+	return true
+}
+
 // buildTokenizeInputFromChatRequest converts ChatCompletionRequest to TokenizeInput
-// preserving multimodal content and vLLM-specific parameters. tools is the raw "tools"
-// array of the request, forwarded so the chat template renders the tool definitions.
-func buildTokenizeInputFromChatRequest(chatReq *types.ChatCompletionRequest, tools json.RawMessage) (*tokenizer.TokenizeInput, error) {
-	if len(chatReq.Messages) == 0 {
+// using rawMsgs and tools byte slices when available to forward unmodelled fields verbatim
+// and preserve wire fidelity (#3307).
+func buildTokenizeInputFromChatRequest(chatReq *types.ChatCompletionRequest, rawMsgs json.RawMessage, tools json.RawMessage) (*tokenizer.TokenizeInput, error) {
+	if len(rawMsgs) == 0 && (chatReq == nil || len(chatReq.Messages) == 0) {
 		return nil, fmt.Errorf("no messages in chat completion request")
 	}
 
-	// Convert OpenAI messages to tokenizer messages, preserving content structure
-	messages := make([]tokenizer.ChatMessage, len(chatReq.Messages))
-	for i, msg := range chatReq.Messages {
-		role := msg.GetRole()
-		if role == nil {
+	if len(rawMsgs) == 0 {
+		var err error
+		rawMsgs, err = json.Marshal(chatReq.Messages)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal messages: %w", err)
+		}
+	}
+
+	var validationMsgs []rawChatMessageValidation
+	if err := json.Unmarshal(rawMsgs, &validationMsgs); err != nil {
+		return nil, fmt.Errorf("failed to parse messages: %w", err)
+	}
+
+	if len(validationMsgs) == 0 {
+		return nil, fmt.Errorf("no messages in chat completion request")
+	}
+
+	for i, msg := range validationMsgs {
+		if msg.Role == "" {
 			return nil, fmt.Errorf("message at index %d has no role", i)
 		}
-
-		// Directly marshal the content to preserve its structure
-		content := msg.GetContent()
-		contentAny := content.AsAny()
-		if contentAny == nil {
+		hasContent := len(bytes.TrimSpace(msg.Content)) > 0 && !bytes.Equal(bytes.TrimSpace(msg.Content), []byte("null"))
+		hasToolCalls := hasPayload(msg.ToolCalls, true, '[', ']')
+		hasFunctionCall := hasPayload(msg.FunctionCall, true, '{', '}')
+		if !hasContent && !hasToolCalls && !hasFunctionCall {
 			return nil, fmt.Errorf("message at index %d has nil content", i)
 		}
-		contentJSON, err := json.Marshal(contentAny)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal message content at index %d: %w", i, err)
-		}
+	}
 
-		messages[i] = tokenizer.ChatMessage{
-			Role:    *role,
-			Content: contentJSON,
-		}
+	if chatReq != nil && len(chatReq.Messages) > 0 && len(validationMsgs) != len(chatReq.Messages) {
+		return nil, fmt.Errorf("message count mismatch: %d in raw payload vs %d in parsed request", len(validationMsgs), len(chatReq.Messages))
 	}
 
 	// Extract vLLM-specific parameters with defaults matching vLLM behavior
 	addSpecialTokens := false
-	if chatReq.AddSpecialTokens != nil {
+	if chatReq != nil && chatReq.AddSpecialTokens != nil {
 		addSpecialTokens = *chatReq.AddSpecialTokens
 	}
 
 	addGenerationPrompt := true
-	if chatReq.AddGenerationPrompt != nil {
+	if chatReq != nil && chatReq.AddGenerationPrompt != nil {
 		addGenerationPrompt = *chatReq.AddGenerationPrompt
 	}
 
 	returnTokenStrings := false
-	if chatReq.ReturnTokenStrings != nil {
+	if chatReq != nil && chatReq.ReturnTokenStrings != nil {
 		returnTokenStrings = *chatReq.ReturnTokenStrings
 	}
 
 	return &tokenizer.TokenizeInput{
 		Type:                tokenizer.ChatInput,
-		Messages:            messages,
+		Messages:            rawMsgs,
 		AddSpecialTokens:    addSpecialTokens,
 		AddGenerationPrompt: addGenerationPrompt,
 		ReturnTokenStrings:  returnTokenStrings,
@@ -793,23 +826,42 @@ func buildTokenizeInputFromChatRequest(chatReq *types.ChatCompletionRequest, too
 	}, nil
 }
 
+// rawChatPayload extracts the "messages" and "tools" arrays of a chat request body
+// in a single unmarshal pass, preserving unmodelled fields and exact wire bytes (#3307).
+func rawChatPayload(body []byte) (messages json.RawMessage, tools json.RawMessage) {
+	if !bytes.Contains(body, []byte(`"messages"`)) && !bytes.Contains(body, []byte(`"tools"`)) {
+		return nil, nil
+	}
+	var req struct {
+		Messages json.RawMessage `json:"messages"`
+		Tools    json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, nil
+	}
+	m := bytes.TrimSpace(req.Messages)
+	if len(m) > 0 && m[0] == '[' {
+		messages = m
+	}
+	t := bytes.TrimSpace(req.Tools)
+	if len(t) > 0 && t[0] == '[' {
+		tools = t
+	}
+	return messages, tools
+}
+
+// rawChatMessages returns the "messages" array of a chat request body exactly as sent, or nil
+// when the field is absent, null or not an array.
+func rawChatMessages(body []byte) json.RawMessage {
+	msgs, _ := rawChatPayload(body)
+	return msgs
+}
+
 // rawChatTools returns the "tools" array of a chat request body exactly as sent, or nil
 // when the field is absent, null or not an array. The raw bytes are forwarded instead of
 // re-encoding the parsed request, which would drop fields the OpenAI types do not model.
 func rawChatTools(body []byte) json.RawMessage {
-	if !bytes.Contains(body, []byte(`"tools"`)) {
-		return nil
-	}
-	var req struct {
-		Tools json.RawMessage `json:"tools"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		return nil
-	}
-	tools := bytes.TrimSpace(req.Tools)
-	if len(tools) == 0 || tools[0] != '[' {
-		return nil
-	}
+	_, tools := rawChatPayload(body)
 	return tools
 }
 
@@ -841,7 +893,8 @@ func (k *kvSyncPrefixCacheRouter) tokenizeChatRequest(ctx *types.RoutingContext,
 	}
 
 	// Build TokenizeInput from request
-	input, err := buildTokenizeInputFromChatRequest(&chatReq, rawChatTools(ctx.ReqBody))
+	rawMsgs, tools := rawChatPayload(ctx.ReqBody)
+	input, err := buildTokenizeInputFromChatRequest(&chatReq, rawMsgs, tools)
 	if err != nil {
 		klog.V(4).InfoS("failed to build tokenize input, falling back to text",
 			"request_id", ctx.RequestID,
@@ -862,7 +915,7 @@ func (k *kvSyncPrefixCacheRouter) tokenizeChatRequest(ctx *types.RoutingContext,
 	tokens := tokenizer.IntToByteArray(result.Tokens)
 	klog.V(4).InfoS("tokenized using chat template",
 		"request_id", ctx.RequestID,
-		"message_count", len(input.Messages),
+		"message_count", len(chatReq.Messages),
 		"tools_included", len(input.Tools) > 0,
 		"token_count", len(result.Tokens),
 		"add_generation_prompt", input.AddGenerationPrompt,
