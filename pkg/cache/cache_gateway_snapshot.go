@@ -65,8 +65,9 @@ var gatewayPodName = func() string {
 // has been published there are no last known values to keep, so a tick that cannot
 // read every key publishes nothing and the cache stays nil.
 //
-// Consumers call AggregateGatewaySnapshotsForPod to read from the in-memory cache
-// without touching Redis.
+// Each published tick also stores gatewayRemoteRunning, the other gateways' counts per pod
+// with when they were read. GetPodsRunningRequestsApprox and syncRunningRequestsGlobally read
+// that without touching Redis.
 func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 	if store.redisClient == nil {
 		return
@@ -135,8 +136,8 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 					}
 					// Until one tick has read every key, there is no earlier snapshot to be wrong
 					// relative to, and an empty or partial one would be taken as a full picture:
-					// syncRunningRequestsGlobally skips only a nil cache. Leave the cache nil and
-					// prevRaw unset, as a failed scan does, and try again next tick.
+					// syncRunningRequestsGlobally skips only an unset gatewayRemoteRunning. Leave
+					// both unset and prevRaw too, as a failed scan does, and try again next tick.
 					if unread && prevRaw == nil {
 						klog.V(4).InfoS("not publishing the first gateway snapshot: some keys could not be read", "keys", len(allKeys))
 						return
@@ -366,6 +367,18 @@ const remoteRunningMaxAge = 10 * gatewaySnapshotSyncInterval
 type remoteRunningSnapshot struct {
 	counts map[string]int64
 	readAt map[string]time.Time
+}
+
+// freshCount is the other gateways' running count for podKey, or 0 when it was last actually
+// read longer than remoteRunningMaxAge before now. The candidate stage's estimate and the
+// realtime_num_requests_running gauge both go through it, so the two never disagree about
+// which counts are too old to use.
+func (s *remoteRunningSnapshot) freshCount(podKey string, now time.Time) int64 {
+	count, ok := s.counts[podKey]
+	if !ok || now.Sub(s.readAt[podKey]) > remoteRunningMaxAge {
+		return 0
+	}
+	return count
 }
 
 // remoteRunningByPod sums requests_running over the snapshots of every gateway instance other

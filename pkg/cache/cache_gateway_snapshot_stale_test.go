@@ -28,6 +28,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -177,4 +178,14 @@ func TestRemoteRunningApprox_DropsCountsOfBatchThatKeepsTimingOut(t *testing.T) 
 	time.Sleep(remoteRunningMaxAge + 5*gatewaySnapshotSyncInterval)
 	require.Equal(t, int64(0), approxRunning(store, tail),
 		"a pod whose batch has not been read for more than remoteRunningMaxAge must not keep its old remote count")
+
+	// The realtime_num_requests_running gauge takes its remote counts from the same snapshot, so
+	// it must drop the frozen count too and report this gateway's own count (0) alone.
+	tailPod, ok := store.metaPods.Load(utils.GeneratePodKey(testNamespace, tail.Name))
+	require.True(t, ok)
+	store.syncRunningRequestsGlobally(tailPod)
+	got, ok := tailPod.Metrics.Load(metrics.RealtimeNumRequestsRunning)
+	require.True(t, ok)
+	require.Equal(t, 0.0, got.Value.GetSimpleValue(),
+		"the gauge must not report a remote count that has not been read for more than remoteRunningMaxAge")
 }
