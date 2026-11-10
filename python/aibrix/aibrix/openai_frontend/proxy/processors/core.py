@@ -47,6 +47,7 @@ from typing import (
 from jsonschema.exceptions import ValidationError
 from jsonschema.validators import validator_for
 
+from aibrix.openai_frontend.proxy.output.path_ref import PathRef, PathRefs
 from aibrix.openai_frontend.schemas.processors import (
     DEFAULT_PROCESSOR_TIMEOUT_SECONDS,
     PROCESSOR_MEDIA_TYPES,
@@ -62,6 +63,7 @@ from aibrix.openai_frontend.schemas.processors import (
     ProcessorStage,
 )
 from aibrix.openai_frontend.utils.utils import ClientError, ServerError, StatusCode
+from aibrix.runtime.downloaders import await_thread_completion
 
 
 class ProcessorExecutionError(ServerError):
@@ -81,6 +83,10 @@ class ProcessorMedia:
         default_factory=dict, repr=False, compare=False
     )
 
+    input_roots: Mapping[Path, Path] = field(
+        default_factory=dict, repr=False, compare=False
+    )
+
     @contextmanager
     def open(self, path: Path) -> Iterator[BinaryIO]:
         """Open an input read-only and check its declared identity on the actual fd.
@@ -91,7 +97,23 @@ class ProcessorMedia:
         """
         if path not in self.paths or not path.is_absolute() or ".." in path.parts:
             raise ClientError("processor requires a scoped absolute local file")
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        root = self.input_roots.get(path)
+        if root is None:
+            fd = os.open(path, flags)
+        else:
+            # Open each parent relative to the allowed root without following
+            # links: a resolve/check followed by an ordinary open has a race.
+            parts = path.relative_to(root).parts
+            directory_fd = os.open(root, flags | os.O_DIRECTORY)
+            try:
+                for part in parts[:-1]:
+                    next_fd = os.open(part, flags | os.O_DIRECTORY, dir_fd=directory_fd)
+                    os.close(directory_fd)
+                    directory_fd = next_fd
+                fd = os.open(parts[-1], flags, dir_fd=directory_fd)
+            finally:
+                os.close(directory_fd)
         with os.fdopen(fd, "rb") as reader:
             before = os.fstat(reader.fileno())
             if not stat.S_ISREG(before.st_mode):
@@ -238,7 +260,7 @@ class ProcessorRegistry:
     ):
         if definitions is None:
             # Lazy import avoids a contract/implementation import cycle.
-            from aibrix.openai_frontend.proxy.builtin_processors import (
+            from aibrix.openai_frontend.proxy.processors.builtin_processors import (
                 BUILTIN_PROCESSORS,
             )
 
@@ -394,10 +416,11 @@ class ProcessorExecutor:
         state: ProcessorState,
         *,
         source_identities: Optional[Mapping[Path, Optional[os.stat_result]]] = None,
+        input_roots: Optional[Mapping[Path, Path]] = None,
     ) -> ProcessorState:
-        identities = dict(state.source_identities)
-        for path, identity in (source_identities or {}).items():
-            identities.setdefault(path, identity)
+        identities = PathRefs()
+        identities.remember(state.source_identities)
+        identities.remember(source_identities or {})
         for index, call in enumerate(pipeline.calls(stage)):
             definition = self.registry.resolve(call.processor.name, stage)
             if definition.scope == PROCESSOR_SCOPE_OUTPUT_PAYLOAD:
@@ -419,6 +442,11 @@ class ProcessorExecutor:
                 target = ProcessorMedia(
                     state.paths,
                     {p: identities[p] for p in state.paths if p in identities},
+                    {
+                        p: input_roots[p]
+                        for p in state.paths
+                        if input_roots and p in input_roots
+                    },
                 )
             outdir = workdir / stage / f"{index:02d}-{definition.name}"
             outdir.mkdir(parents=True, exist_ok=True)
@@ -436,11 +464,16 @@ class ProcessorExecutor:
                 media_types=tuple(call.processor.media_types or ()),
             )
             result = await self._run(definition, ctx)
-            state = self._replace(state, stage, target, result.target, outdir)
-            if stage == PROCESSOR_STAGE_POST and isinstance(target, ProcessorMedia):
-                for path in state.paths:
-                    if path not in target.paths and path not in identities:
-                        identities[path] = path.lstat()
+            try:
+                state = self._replace(state, stage, target, result.target, outdir)
+                if isinstance(target, ProcessorMedia):
+                    for path in state.paths:
+                        if path not in target.paths and path not in identities:
+                            identities.add(PathRef.from_path(path, path.lstat()))
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ProcessorExecutionError(
+                    f"Processor '{definition.name}' returned an unavailable output"
+                ) from exc
         return replace(state, source_identities=identities)
 
     async def _run(
@@ -451,9 +484,22 @@ class ProcessorExecutor:
                 f"Processor '{definition.name}' is declared but not implemented"
             )
         try:
-            result = await asyncio.wait_for(
-                definition.run(ctx), timeout=max(0.0, ctx.deadline - time.monotonic())
-            )
+            if ctx.deadline <= time.monotonic():
+                raise asyncio.TimeoutError
+            task = asyncio.ensure_future(definition.run(ctx))
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.shield(task),
+                    timeout=max(0.0, ctx.deadline - time.monotonic()),
+                )
+            finally:
+                # wait_for's cancellation wait can itself be cancelled on 3.10/3.11.
+                # The real handler still owns its files until its child work stops.
+                if not task.done():
+                    task.cancel()
+                await await_thread_completion(
+                    asyncio.gather(task, return_exceptions=True)
+                )
             if not isinstance(result, ProcessorOutput):
                 raise TypeError("processor must return ProcessorOutput")
             return result

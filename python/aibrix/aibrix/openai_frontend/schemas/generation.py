@@ -188,10 +188,11 @@ class VideoResponse(SglangVideoResponseFields):
         *,
         has_payload: bool,
         has_media: bool,
+        media_removed: bool = False,
     ) -> "VideoResponse":
-        """Map only persisted media to output locations; retain remote-only metadata."""
+        """Map persisted or explicitly removed media; retain remote-only metadata."""
         body = {**envelope, "output": result.model_dump()}
-        if has_payload or has_media:
+        if has_payload or has_media or media_removed:
             is_http = urlparse(spec.url).scheme.lower() in HTTP_SCHEMES
             artifacts = (
                 (

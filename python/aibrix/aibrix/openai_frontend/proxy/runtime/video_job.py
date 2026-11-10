@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import tempfile
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -26,7 +27,7 @@ import httpx
 from fastapi.responses import Response
 
 from aibrix.openai_frontend.common.artifact_fetcher import FetchResult
-from aibrix.openai_frontend.proxy.output_writer import SourceIdentities
+from aibrix.openai_frontend.proxy.output.output_writer import SourceIdentities
 from aibrix.openai_frontend.schemas.generation import (
     VIDEO_JOB_UNAVAILABLE_STATUS_CODES,
     VIDEO_TERMINAL_STATUSES,
@@ -34,6 +35,7 @@ from aibrix.openai_frontend.schemas.generation import (
     VideoStatus,
 )
 from aibrix.openai_frontend.schemas.output import OutputRequest
+from aibrix.openai_frontend.schemas.processors import ProcessorPipeline
 from aibrix.openai_frontend.utils.utils import ServerError
 from aibrix.runtime.downloaders import await_thread_completion
 
@@ -53,6 +55,8 @@ class VideoJobContext:
     output: OutputRequest
     inputs: list[FetchResult]
     sources: SourceIdentities
+    processors: ProcessorPipeline | None = None
+    processor_dir: tempfile.TemporaryDirectory | None = None
 
 
 class VideoJobPort(Protocol):
@@ -169,10 +173,7 @@ class VideoOutputJob:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise asyncio.TimeoutError("Video output generation timed out")
-                raw = await asyncio.wait_for(
-                    self.port.poll(self.video_id),
-                    timeout=min(VIDEO_POLL_REQUEST_TIMEOUT_SECONDS, remaining),
-                )
+                raw = await self._poll(remaining)
                 observed = self.port.observe(raw, self.video_id)
                 if observed is not None:
                     current = current.model_copy(update={"status": observed.status})
@@ -207,6 +208,20 @@ class VideoOutputJob:
             cleanup = self.schedule_cleanup(current, background=background)
             if not background:
                 await await_thread_completion(cleanup)
+
+    async def _poll(self, remaining: float) -> httpx.Response:
+        poll = asyncio.create_task(self.port.poll(self.video_id))
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(poll),
+                timeout=min(VIDEO_POLL_REQUEST_TIMEOUT_SECONDS, remaining),
+            )
+        finally:
+            # wait_for's cancellation wait can itself be cancelled on 3.10/3.11.
+            # Keep the real poll owned until it closes, even after repeated cancel.
+            if not poll.done():
+                poll.cancel()
+            await await_thread_completion(asyncio.gather(poll, return_exceptions=True))
 
     @staticmethod
     async def _poll_delay(deadline: float) -> None:
@@ -288,7 +303,9 @@ class VideoOutputJob:
             for task in (poll, stopped):
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(poll, stopped, return_exceptions=True)
+            await await_thread_completion(
+                asyncio.gather(poll, stopped, return_exceptions=True)
+            )
 
     async def _finish(self, response: VideoResponse) -> None:
         try:

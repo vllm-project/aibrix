@@ -135,27 +135,52 @@ async def test_responses_routes_forward_methods_queries_and_bodies():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "mode",
+    "mode,pre_output",
     [
-        "stored",
-        "default",
-        "ephemeral",
-        "background",
-        "stream",
-        "rejected",
-        "server_error",
-        "connect_error",
-        "cancelled",
-        "shutdown",
+        (mode, False)
+        for mode in (
+            "stored",
+            "default",
+            "ephemeral",
+            "background",
+            "stream",
+            "rejected",
+            "server_error",
+            "connect_error",
+            "cancelled",
+            "shutdown",
+        )
+    ]
+    + [
+        (mode, True)
+        for mode in (
+            "stored",
+            "default",
+            "ephemeral",
+            "rejected",
+            "cancelled",
+            "shutdown",
+            "write_error",
+        )
     ],
 )
-async def test_responses_media_outlives_stored_and_background_requests(tmp_path, mode):
+async def test_responses_media_outlives_stored_and_background_requests(
+    tmp_path, mode, pre_output
+):
     import asyncio
     import json
     from pathlib import Path
 
+    from aibrix.openai_frontend.proxy.output.output_writer import OutputWriteError
+    from aibrix.openai_frontend.proxy.processors import ProcessorRegistry
+    from aibrix.openai_frontend.proxy.processors.demo_processors import DEMO_PROCESSORS
+
     engine = ProxyEngine(
-        ["unused"], media_dir=str(tmp_path), materialize_inline_media=True
+        ["unused"],
+        media_dir=str(tmp_path),
+        materialize_inline_media=True,
+        enable_processors=pre_output,
+        processor_registry=ProcessorRegistry(DEMO_PROCESSORS),
     )
     engine._set_state(EngineState.READY)
     paths = []
@@ -225,6 +250,15 @@ async def test_responses_media_outlives_stored_and_background_requests(tmp_path,
         body["background"] = True
     if mode == "stream":
         body["stream"] = True
+    if pre_output:
+        body["processors"] = {
+            "pre": [{"type": "processor", "processor": {"name": "demo.pre.copy"}}]
+        }
+        body["output"] = {"url": str(tmp_path / "out")}
+        if mode == "write_error":
+            engine._output_writer._write_local_entries = AsyncMock(
+                side_effect=OutputWriteError("injected write failure")
+            )
     retained = mode not in ("ephemeral", "rejected", "connect_error")
 
     def shutdown():
@@ -258,14 +292,17 @@ async def test_responses_media_outlives_stored_and_background_requests(tmp_path,
                     400
                     if mode == "rejected"
                     else 500
-                    if mode in ("server_error", "connect_error")
+                    if mode in ("server_error", "connect_error", "write_error")
                     else 200
                 )
                 assert response.status_code == expected, response.text
             assert paths and all(path.exists() == retained for path in paths)
             assert bool(engine._retained.response_inputs) == retained
+            if pre_output:
+                assert bool(engine._retained.processor_dirs) == retained
+                assert all(path.parent.exists() == retained for path in paths)
             assert not engine._request_done
-            if mode in ("stored", "default", "background", "stream"):
+            if mode in ("stored", "default", "background", "stream", "write_error"):
                 followup = await client.post(
                     "/v1/responses",
                     json={"input": "continue", "previous_response_id": "resp_test"},
@@ -273,8 +310,11 @@ async def test_responses_media_outlives_stored_and_background_requests(tmp_path,
                 assert followup.status_code == 200, followup.text
 
             await engine.aclose()
-            assert not engine._retained.response_inputs and not engine._request_done
-            assert not list(tmp_path.iterdir())
+            assert not engine._retained.pending() and not engine._request_done
+            assert not list(tmp_path.glob("aibrix-*"))
+            assert not any(path.exists() for path in paths)
+            if not pre_output:
+                assert not list(tmp_path.iterdir())
     finally:
         await engine.aclose()
 
@@ -394,7 +434,7 @@ async def test_responses_upstream_error_is_preserved(tmp_path, native):
         from aibrix.openai_frontend.frontend.fastapi.routers.engine_routes import (
             create_router,
         )
-        from aibrix.openai_frontend.proxy.engine_spec import VLLM_SPEC
+        from aibrix.openai_frontend.proxy.runtime.engine_spec import VLLM_SPEC
 
         engine._spec = VLLM_SPEC
         app.include_router(create_router(engine))
@@ -430,7 +470,7 @@ async def test_responses_upstream_error_is_preserved(tmp_path, native):
 )
 async def test_native_media_is_rewritten_only_on_generate(tmp_path, spec_name, path):
     from aibrix.openai_frontend.frontend.fastapi.routers import chat, engine_routes
-    from aibrix.openai_frontend.proxy.engine_spec import get_engine_spec
+    from aibrix.openai_frontend.proxy.runtime.engine_spec import get_engine_spec
 
     engine = ProxyEngine(
         engine_cmd=["unused"],
@@ -818,7 +858,7 @@ async def test_native_result_persistence_contract(
     from aibrix.openai_frontend.frontend.fastapi.routers.engine_routes import (
         create_router,
     )
-    from aibrix.openai_frontend.proxy.engine_spec import get_engine_spec
+    from aibrix.openai_frontend.proxy.runtime.engine_spec import get_engine_spec
 
     writer_failure_case = path == "/v1/rerank" and bool(
         body.get("results") if isinstance(body, dict) else body
@@ -868,9 +908,11 @@ async def test_native_result_persistence_contract(
             # Writer failure is independent of the result shape. Keep one object
             # and one batch representative rather than repeating every contract.
             if writer_failure_case:
-                from aibrix.openai_frontend.proxy.output_writer import OutputWriteError
+                from aibrix.openai_frontend.proxy.output.output_writer import (
+                    OutputWriteError,
+                )
 
-                engine._output_writer.write = AsyncMock(
+                engine._output_writer._write_local_entries = AsyncMock(
                     side_effect=OutputWriteError("upload failed")
                 )
                 failed = await client.post(
@@ -899,7 +941,7 @@ async def test_native_result_persistence_contract(
     ],
 )
 async def test_native_missing_result_is_not_persisted(tmp_path, spec_name, path, body):
-    from aibrix.openai_frontend.proxy.engine_spec import get_engine_spec
+    from aibrix.openai_frontend.proxy.runtime.engine_spec import get_engine_spec
     from aibrix.openai_frontend.utils.utils import ServerError
 
     engine = ProxyEngine(["unused"], spec=get_engine_spec(spec_name), fetch_media=False)
@@ -909,11 +951,11 @@ async def test_native_missing_result_is_not_persisted(tmp_path, spec_name, path,
             200, json=body, request=httpx.Request("POST", "http://inner" + path)
         )
     )
-    engine._output_writer.write = AsyncMock()
+    engine._output_writer._write_local_entries = AsyncMock()
     try:
         with pytest.raises(ServerError):
             await engine.forward_json(path, {"output": {"url": str(tmp_path)}})
-        engine._output_writer.write.assert_not_awaited()
+        engine._output_writer._write_local_entries.assert_not_awaited()
         assert not list(tmp_path.iterdir()) and not engine._request_done
     finally:
         await engine.aclose()

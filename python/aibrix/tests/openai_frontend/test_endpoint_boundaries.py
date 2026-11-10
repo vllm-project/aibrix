@@ -31,7 +31,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from aibrix.openai_frontend.engine.proxy_engine import EngineState, ProxyEngine
 from aibrix.openai_frontend.frontend.fastapi_frontend import FastApiFrontend
-from aibrix.openai_frontend.proxy.engine_spec import (
+from aibrix.openai_frontend.proxy.runtime.engine_spec import (
     SGLANG_OMNI_SPEC,
     SGLANG_SPEC,
     VLLM_OMNI_SPEC,
@@ -639,7 +639,7 @@ def test_realtime_respects_inference_auth(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cancel_at", ["waiting", "draining"])
 async def test_websocket_cancel_drains_both_directions(monkeypatch, cancel_at):
-    from aibrix.openai_frontend.proxy import ws_bridge
+    from aibrix.openai_frontend.proxy.runtime import ws_bridge
 
     entered, release = asyncio.Event(), asyncio.Event()
 
