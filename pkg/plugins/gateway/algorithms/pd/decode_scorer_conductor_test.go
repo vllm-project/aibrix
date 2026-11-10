@@ -73,11 +73,11 @@ func TestConductorDecodePolicy_BasicTBT(t *testing.T) {
 
 	score := p.ScoreDecodePod(ctx, pod, in)
 
-	// currentTBTMs = 1000 / 50 = 20ms
-	// estimatedTBT = 20 * (1 + 1/4) = 20 * 1.25 = 25ms
+	// tokenGap = 1000 / 50 = 20ms
+	// estimatedTBT = (runningReqs + 1) * tokenGap = (4 + 1) * 20 = 100ms
 	// gpuCacheUsage = 1 - 5/100 = 0.95 > 0.9 -> penalty x1.5
-	// final = 25 * 1.5 = 37.5ms
-	assert.InDelta(t, 37.5, score, 1e-9)
+	// final = 100 * 1.5 = 150ms
+	assert.InDelta(t, 150.0, score, 1e-9)
 }
 
 // ============================================================
@@ -100,10 +100,10 @@ func TestConductorDecodePolicy_ZeroThroughputFallback(t *testing.T) {
 
 	score := p.ScoreDecodePod(ctx, pod, in)
 
-	// currentTBTMs = DefaultDecodeTBTFallbackMs = 20ms
-	// estimatedTBT = 20 * (1 + 1/2) = 20 * 1.5 = 30ms
+	// fallback = DefaultDecodeTBTFallbackMs = 20ms
+	// estimatedTBT = (runningReqs + 1) * fallback = (2 + 1) * 20 = 60ms
 	// gpuCacheUsage = 0.5 < 0.9 -> no penalty
-	assert.InDelta(t, 30.0, score, 1e-9)
+	assert.InDelta(t, 60.0, score, 1e-9)
 }
 
 // ============================================================
@@ -127,7 +127,52 @@ func TestConductorDecodePolicy_ZeroRunningReqsFloor(t *testing.T) {
 	score := p.ScoreDecodePod(ctx, pod, in)
 
 	// runningReqs = max(0, 1) = 1
-	// currentTBTMs = 1000 / 50 = 20ms
-	// estimatedTBT = 20 * (1 + 1/1) = 20 * 2 = 40ms
+	// tokenGap = 1000 / 50 = 20ms
+	// estimatedTBT = (1 + 1) * 20 = 40ms
 	assert.InDelta(t, 40.0, score, 1e-9)
+}
+
+// ============================================================
+// ConductorDecodePolicy: ScoreDecodePod — prefers lightly loaded pod
+// ============================================================
+
+func TestConductorDecodePolicy_PrefersLightlyLoadedPod(t *testing.T) {
+	p := ConductorDecodePolicy{}
+	ctx := makeDecodeRoutingContext()
+	pod := makeDecodePod(testPodName, testNamespace)
+
+	// Pod A: lightly loaded (1 request running, 50 tok/s)
+	// Score: (1 + 1) * (1000 / 50) = 40ms
+	scoreA := p.ScoreDecodePod(ctx, pod, DecodePodInput{
+		RunningReqs:    1.0,
+		Throughput:     50.0,
+		FreeGPUPercent: 50.0,
+	})
+
+	// Pod B: heavily loaded (40 requests running, 800 tok/s)
+	// Score: (40 + 1) * (1000 / 800) = 41 * 1.25 = 51.25ms
+	scoreB := p.ScoreDecodePod(ctx, pod, DecodePodInput{
+		RunningReqs:    40.0,
+		Throughput:     800.0,
+		FreeGPUPercent: 50.0,
+	})
+
+	assert.InDelta(t, 40.0, scoreA, 1e-9)
+	assert.InDelta(t, 51.25, scoreB, 1e-9)
+	assert.Less(t, scoreA, scoreB, "lightly-loaded pod must have lower (better) score than busy pod")
+
+	// Same with zero throughput fallback
+	scoreA0 := p.ScoreDecodePod(ctx, pod, DecodePodInput{
+		RunningReqs:    1.0,
+		Throughput:     0.0,
+		FreeGPUPercent: 50.0,
+	})
+	scoreB0 := p.ScoreDecodePod(ctx, pod, DecodePodInput{
+		RunningReqs:    40.0,
+		Throughput:     0.0,
+		FreeGPUPercent: 50.0,
+	})
+	assert.InDelta(t, 40.0, scoreA0, 1e-9)
+	assert.InDelta(t, 820.0, scoreB0, 1e-9)
+	assert.Less(t, scoreA0, scoreB0, "lightly-loaded pod must have lower (better) score under fallback")
 }
