@@ -125,10 +125,10 @@ var _ = Describe("PodArray", func() {
 			getPodWithDeployment(deployment),
 		}
 		podArray := &PodArray{Pods: pods}
-		Expect(&podArray.ListByIndex("deployment-1")[0]).To(Equal(&pods[0]))
+		Expect(&podArray.ListByIndex("deployment-1")[0]).To(BeIdenticalTo(&pods[0]))
 	})
 
-	It("Should InListByIndex() reuse pods array for heterogneous deployments", func() {
+	It("Should ListByIndex() group heterogeneous deployments without reordering Pods", func() {
 		deployments := []string{"deployment-1", "deployment-2"}
 		pods := []*v1.Pod{
 			getPodWithDeployment(deployments[0]),
@@ -137,9 +137,15 @@ var _ = Describe("PodArray", func() {
 			getPodWithDeployment(deployments[0]),
 			getPodWithDeployment(deployments[0]),
 		}
+		original := append([]*v1.Pod(nil), pods...)
 		podArray := &PodArray{Pods: pods}
-		Expect(&podArray.ListByIndex("deployment-1")[0]).To(Equal(&pods[0]))
-		Expect(&podArray.ListByIndex("deployment-2")[0]).To(Equal(&pods[3]))
+		Expect(podArray.ListByIndex("deployment-1")).To(HaveExactElements(
+			BeIdenticalTo(original[0]), BeIdenticalTo(original[3]), BeIdenticalTo(original[4])))
+		Expect(podArray.ListByIndex("deployment-2")).To(HaveExactElements(
+			BeIdenticalTo(original[1]), BeIdenticalTo(original[2])))
+		for i := range original {
+			Expect(podArray.All()[i]).To(BeIdenticalTo(original[i]))
+		}
 	})
 
 	It("Should perform current PodsByDeployments call correctly", func() {
