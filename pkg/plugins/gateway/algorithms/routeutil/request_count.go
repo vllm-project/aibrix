@@ -17,12 +17,14 @@ limitations under the License.
 package routeutil
 
 import (
+	"errors"
 	"math"
 	"math/rand"
 	"strconv"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 
@@ -101,7 +103,15 @@ func SelectTargetPortForPodWithLeastRequestCount(cache cache.Cache, pod *v1.Pod,
 // which is a periodically synced cache that, between scrape ticks, only reflects this
 // gateway's local view.
 func GetRequestCounts(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
-	counts, err := cache.GetPodsRunningRequests(readyPods)
+	return RequestCounts(nil, cache, readyPods)
+}
+
+// RequestCounts is GetRequestCounts for a read inside routing decision ctx: during the
+// decision, pods an earlier reader already read are answered from its counts instead of
+// Redis (see types.RoutingContext.RunningRequests). A nil ctx reads live, like
+// GetRequestCounts.
+func RequestCounts(ctx *types.RoutingContext, cache cache.Cache, readyPods []*v1.Pod) map[string]int {
+	counts, err := ctx.RunningRequests(readyPods, cache.GetPodsRunningRequests)
 	podRequestCount := make(map[string]int, len(readyPods))
 	for _, pod := range readyPods {
 		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
@@ -113,6 +123,22 @@ func GetRequestCounts(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
 	}
 
 	return podRequestCount
+}
+
+// ErrNoRunningRequestsEstimate is returned by a candidate estimate that needs running counts
+// when the cache cannot answer them from memory.
+var ErrNoRunningRequestsEstimate = errors.New("cache has no in-memory running-request estimate")
+
+// ApproxRunningRequests returns the running count of each pod read from process memory only
+// (see cache.ApproxRunningRequestsProvider), keyed by utils.GeneratePodKey. ok is false when c
+// does not provide it. Unlike RequestCounts, it never touches the routing decision's shared
+// counts: an estimate must not be served to a later reader that asked for the exact value.
+func ApproxRunningRequests(c cache.Cache, pods []*v1.Pod) (map[string]int64, bool) {
+	provider, ok := c.(cache.ApproxRunningRequestsProvider)
+	if !ok {
+		return nil, false
+	}
+	return provider.GetPodsRunningRequestsApprox(pods), true
 }
 
 // PodsByKey maps each pod's key (namespace/name) to the pod, so a key picked from a

@@ -190,34 +190,52 @@ msgstr "``model-adapter-controller`` ：LoRA adapter 管理"
 
 #: ../../source/getting_started/installation/installation.rst:192
 msgid ""
+"``model-route-controller``: Gateway API ``HTTPRoute`` creation for each "
+"served model"
+msgstr "``model-route-controller`` ：为每个服务中的模型创建 Gateway API ``HTTPRoute``"
+
+#: ../../source/getting_started/installation/installation.rst:193
+msgid ""
 "``kv-cache-controller``: Distributed KV cache server orchestration with "
 "consistent hashing"
 msgstr "``kv-cache-controller`` ：带一致性哈希的分布式 KV cache 服务编排"
 
-#: ../../source/getting_started/installation/installation.rst:193
+#: ../../source/getting_started/installation/installation.rst:194
+msgid ""
+"``model-claim-controller``: Multiple models sharing GPUs through "
+"ModelClaim (experimental)"
+msgstr "``model-claim-controller`` ：通过 ModelClaim 让多个模型共享 GPU（实验性）"
+
+#: ../../source/getting_started/installation/installation.rst:195
+msgid ""
+"``model-warmup-controller``: Node preparation ahead of use through "
+"ModelWarmup (experimental)"
+msgstr "``model-warmup-controller`` ：通过 ModelWarmup 提前准备节点（实验性）"
+
+#: ../../source/getting_started/installation/installation.rst:196
 msgid ""
 "``stormservice-controller``: Multi-node orchestration with P/D and AFD "
 "support"
 msgstr "``stormservice-controller`` ：支持 P/D 和 AFD 的多节点编排"
 
-#: ../../source/getting_started/installation/installation.rst:195
+#: ../../source/getting_started/installation/installation.rst:198
 msgid "What's next?"
 msgstr "下一步"
 
-#: ../../source/getting_started/installation/installation.rst:198
+#: ../../source/getting_started/installation/installation.rst:201
 msgid ":doc:`../quickstart`: deploy your first model"
 msgstr ":doc:`../quickstart` ：部署第一个模型"
 
-#: ../../source/getting_started/installation/installation.rst:199
+#: ../../source/getting_started/installation/installation.rst:202
 msgid ""
 ":doc:`../../production/model-deployment`: production model deployment "
 "guidance"
 msgstr ":doc:`../../production/model-deployment` ：生产环境模型部署指南"
 
-#: ../../source/getting_started/installation/installation.rst:200
+#: ../../source/getting_started/installation/installation.rst:203
 msgid ":doc:`../../production/gateway`: production gateway configuration"
 msgstr ":doc:`../../production/gateway` ：生产环境网关配置"
 
-#: ../../source/getting_started/installation/installation.rst:201
+#: ../../source/getting_started/installation/installation.rst:204
 msgid ":doc:`../../production/observability`: metrics, dashboards, and telemetry"
 msgstr ":doc:`../../production/observability` ：指标、仪表盘和遥测"

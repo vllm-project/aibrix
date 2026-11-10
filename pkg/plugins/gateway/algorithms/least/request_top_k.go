@@ -130,7 +130,7 @@ func (r *LeastRequestTopKRouter) Route(ctx *types.RoutingContext, readyPodList t
 		return "", fmt.Errorf("no ready pods available")
 	}
 
-	eligible, counts, minCount := r.eligibleLeastLoaded(readyPods)
+	eligible, counts, minCount := r.eligibleLeastLoaded(ctx, readyPods)
 	target := eligible[rand.IntN(len(eligible))]
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("least_request_top_k_selection",
@@ -240,8 +240,8 @@ func applyRampAdjustment(c cache.Cache, now time.Time, readyPods []*v1.Pod, coun
 // utils.GeneratePodKey) and the minimum. Pods are shuffled before ranking so ties don't favor
 // readyPods order. Counts are ramp-adjusted first, so a new pod's zero doesn't anchor the
 // epsilon window. Shared by Route and ScoreAll.
-func (r *LeastRequestTopKRouter) eligibleLeastLoaded(readyPods []*v1.Pod) (eligible []*v1.Pod, counts map[string]int, minCount int) {
-	counts = routeutil.GetRequestCounts(r.cache, readyPods)
+func (r *LeastRequestTopKRouter) eligibleLeastLoaded(ctx *types.RoutingContext, readyPods []*v1.Pod) (eligible []*v1.Pod, counts map[string]int, minCount int) {
+	counts = routeutil.RequestCounts(ctx, r.cache, readyPods)
 	counts = applyRampAdjustment(r.cache, r.now(), readyPods, counts)
 	if len(readyPods) == 0 {
 		return nil, counts, 0
@@ -321,7 +321,7 @@ func (r *LeastRequestTopKRouter) ScoreAll(ctx *types.RoutingContext, readyPodLis
 	scores := make([]float64, len(pods))
 	scored := make([]bool, len(pods))
 
-	eligible, counts, _ := r.eligibleLeastLoaded(pods)
+	eligible, counts, _ := r.eligibleLeastLoaded(ctx, pods)
 	eligibleSet := make(map[string]struct{}, len(eligible))
 	for _, pod := range eligible {
 		eligibleSet[utils.GeneratePodKey(pod.Namespace, pod.Name)] = struct{}{}
@@ -335,6 +335,32 @@ func (r *LeastRequestTopKRouter) ScoreAll(ctx *types.RoutingContext, readyPodLis
 			score -= rand.Float64() * float64(epsilon)
 		}
 		scores[i] = score
+		scored[i] = true
+	}
+	return scores, scored, nil
+}
+
+// CandidateScores implements [types.CandidateScorer]: each pod's running count, with the same
+// ramp adjustment as ScoreAll, read from memory (this gateway's own counts plus the last gateway
+// snapshot) instead of Redis. It leaves out ScoreAll's tie-breaking jitter: the candidate stage
+// already orders equal estimates at random.
+func (r *LeastRequestTopKRouter) CandidateScores(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	pods := readyPodList.All()
+	approx, ok := routeutil.ApproxRunningRequests(r.cache, pods)
+	if !ok {
+		return nil, nil, routeutil.ErrNoRunningRequestsEstimate
+	}
+	counts := make(map[string]int, len(pods))
+	keys := make([]string, len(pods))
+	for i, pod := range pods {
+		keys[i] = utils.GeneratePodKey(pod.Namespace, pod.Name)
+		counts[keys[i]] = int(approx[keys[i]])
+	}
+	counts = applyRampAdjustment(r.cache, r.now(), pods, counts)
+	scores := make([]float64, len(pods))
+	scored := make([]bool, len(pods))
+	for i := range pods {
+		scores[i] = float64(counts[keys[i]])
 		scored[i] = true
 	}
 	return scores, scored, nil

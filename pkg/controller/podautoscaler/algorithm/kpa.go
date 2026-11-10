@@ -156,19 +156,6 @@ func IsPerPodSource(t autoscalingv1alpha1.MetricSourceType) bool {
 	return t != autoscalingv1alpha1.EXTERNAL && t != autoscalingv1alpha1.DOMAIN
 }
 
-// podCountEpsilon absorbs floating-point error in a desired pod count before
-// it is rounded up: 10 × 0.84 / 0.7 evaluates to 12.000000000000002, and a
-// plain math.Ceil would ask for 13 pods instead of 12.
-const podCountEpsilon = 1e-9
-
-// CeilPodCount rounds a desired pod count up to a whole pod, treating a value
-// within podCountEpsilon of an integer as that integer. A count in
-// (0, podCountEpsilon] therefore rounds to 0 pods, not 1; that is far below any
-// real demand.
-func CeilPodCount(pods float64) float64 {
-	return math.Ceil(pods - podCountEpsilon)
-}
-
 // desiredPodCounts computes the pod counts the stable and panic windows ask
 // for. Tolerance is applied to prevent scaling for minor metric fluctuations.
 // ok is false when the context has no target for the metric.
@@ -185,9 +172,9 @@ func (a *KPAAlgorithm) desiredPodCounts(currentPodCount, loadPodCount float64, c
 	upTolerance := context.GetUpFluctuationTolerance()
 	downTolerance := context.GetDownFluctuationTolerance()
 	// Original scaling rate calculations
-	readyPodsCount := math.Max(0, currentPodCount)                                   // A little sanitizing.
-	maxScaleUp := math.Max(1, math.Ceil(context.GetMaxScaleUpRate()*readyPodsCount)) // Keep scale up non zero
-	maxScaleDown := math.Floor(readyPodsCount / context.GetMaxScaleDownRate())       // Make scale down zero-able
+	readyPodsCount := math.Max(0, currentPodCount)                                      // A little sanitizing.
+	maxScaleUp := math.Max(1, CeilPodCount(context.GetMaxScaleUpRate()*readyPodsCount)) // Keep scale up non zero
+	maxScaleDown := floorPodCount(readyPodsCount / context.GetMaxScaleDownRate())       // Make scale down zero-able
 
 	// Establish scale-up and scale-down thresholds using tolerances
 	scaleUpThreshold := targetValue * (1 + upTolerance)

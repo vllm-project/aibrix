@@ -345,7 +345,7 @@ func (c *Store) readPodsSharedRoutingState(pods []*v1.Pod, withLedger bool) (map
 
 	ctx, cancel := context.WithTimeout(context.Background(), runningRequestsReadTimeout)
 	defer cancel()
-	pipe := c.redisClient.Pipeline()
+	pipe := c.readClient().Pipeline()
 	liveCmd := pipe.ZRangeByScore(ctx, runningRequestsGatewaysKey, &redis.ZRangeBy{Min: c.liveGatewaysCutoffMillis(), Max: "+inf"})
 	podKeys := make([]string, len(valid))
 	redisKeys := make([]string, len(valid))

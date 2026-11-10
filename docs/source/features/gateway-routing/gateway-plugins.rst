@@ -562,10 +562,10 @@ PD timeouts and aborts
      - Description
    * - ``pd.decodeAbortTimeout``
      - ``AIBRIX_DECODE_ABORT_TIMEOUT``
-     - Seconds the gateway waits for the decode pod to accept the abort POST after a prefill failure. ``0`` sends the abort without waiting.
+     - Seconds the gateway waits for the decode pod to accept the abort POST after a prefill failure. ``0`` disables decode aborts.
    * - ``pd.decodeAbortRetryDelay``
      - ``AIBRIX_DECODE_ABORT_RETRY_DELAY``
-     - Seconds between the two abort attempts. ``0`` repeats the abort immediately.
+     - Seconds between the two abort attempts. ``0`` sends a single attempt.
    * - ``pd.decodeFirstResponseTimeout``
      - ``AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT``
      - Seconds a streaming SGLang PD request waits, after its prefill leg succeeded, for the decode pod's first token (its first response body chunk) before the gateway fails it. ``0`` disables the watchdog.
@@ -682,6 +682,20 @@ Prefix cache and Preble
    * - ``preble.decodingLength``
      - ``AIBRIX_ROUTER_PREBLE_DECODING_LENGTH``
      - Assumed number of decoding tokens per request in the preble cost model.
+
+Candidate stage
+~~~~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 26 40
+
+   * - Field
+     - Overrides
+     - Description
+   * - ``candidate.k``
+     - ``AIBRIX_ROUTING_CANDIDATE_K``
+     - Number of ready pods the load-imbalance gate and the router score, so each request reads per-pod load for ``k`` pods instead of all of them. The strategies pick them: ``4k`` random ready pods, plus the pods holding the prompt's longest cached prefix, are scored from in-memory estimates (prefix index, local and snapshot running counts, scraped metrics) with the router's blend weights; the best half are kept and the rest are drawn at random. ``0`` scores every ready pod. Applies only when every resolved strategy is candidate-safe (see ``pkg/plugins/gateway/ENV_VARS.md``). Checks that compare a pod with the rest of its pool, such as the gate's spread, the prefix-cache standard-deviation check and blend normalization, then compare it with the candidates. Use at least ``2``: with ``1``, the one candidate is routed to without scoring.
 
 VTC fairness
 ~~~~~~~~~~~~
@@ -851,6 +865,7 @@ Behavior notes:
 - Requests that already carry a ``priority`` in their body keep the value the caller set, which makes an explicit per-request choice possible even for a tier the table maps.
 - Tier names are matched case-insensitively.
 - A request that the gateway does not map is forwarded byte for byte, so callers that send something else in this header see no change in behavior.
+- ``POST /v1/decisions`` requests are never rewritten: neither vLLM nor SGLang accepts a ``priority`` field there, and both reject unknown fields with ``400``. ``POST /v1/systemone`` requests are rewritten like any other: vLLM schedules each read by the priority, and SGLang ignores the field.
 
 .. note::
 
@@ -1170,7 +1185,7 @@ Routing and Error Debugging Headers
    * - ``x-error-invalid-routing-strategy``
      - Indicates that an unsupported routing strategy was specified.
    * - ``x-error-pd-prefill``
-     - Marks a gateway-generated error because the prefill leg of a ``pd`` request failed. See :doc:`pd-disaggregation`.
+     - Marks an error caused by the prefill leg of a ``pd`` request. 4xx engine answers are returned without it. See :doc:`pd-disaggregation`.
    * - ``x-error-pd-decode``
      - Marks a gateway-generated error because the decode watchdog fired after a successful prefill. See :doc:`pd-disaggregation`.
    * - ``x-error-model-rps-exceeded``

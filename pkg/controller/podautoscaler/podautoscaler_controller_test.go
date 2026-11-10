@@ -63,11 +63,11 @@ func (f *fakeWorkloadScaleClient) SetDesiredReplicas(ctx context.Context, pa *au
 	return nil
 }
 
-func (f *fakeWorkloadScaleClient) GetCurrentReplicasFromScale(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, scaleObj *unstructured.Unstructured) (int32, error) {
+func (f *fakeWorkloadScaleClient) GetCurrentReplicasFromScale(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, scaleObj *unstructured.Unstructured) (ReplicaCounts, error) {
 	if f.replicasErr != nil {
-		return 0, f.replicasErr
+		return ReplicaCounts{}, f.replicasErr
 	}
-	return 1, nil
+	return ReplicaCounts{Configured: 1, Observed: 1}, nil
 }
 
 func (f *fakeWorkloadScaleClient) GetPodSelectorFromScale(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, scaleObj *unstructured.Unstructured) (labels.Selector, error) {

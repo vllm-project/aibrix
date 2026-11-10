@@ -55,7 +55,7 @@ Defined in `pyproject.toml`:
 - Includes driver, manager, scheduler, proxy, and storage integration layers
 
 ### Downloader (`aibrix/downloader/`)
-- Supports HuggingFace, S3, and TOS backends
+- Supports HuggingFace, S3, TOS, and GCS backends
 - Handles caching, file locking, and download directory management
 
 ### Metadata Service (`aibrix/metadata/`)

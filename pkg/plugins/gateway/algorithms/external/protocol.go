@@ -140,7 +140,7 @@ func buildExternalDecisionRequest(cfg externalRouterConfig, metricCache cache.Ca
 
 	var running map[string]int64
 	if _, enabled := cfg.candidateMetrics[externalMetricRunningRequests]; enabled && metricCache != nil {
-		counts, err := metricCache.GetPodsRunningRequests(readyPods)
+		counts, err := ctx.RunningRequests(readyPods, metricCache.GetPodsRunningRequests)
 		if err == nil {
 			running = counts
 		}

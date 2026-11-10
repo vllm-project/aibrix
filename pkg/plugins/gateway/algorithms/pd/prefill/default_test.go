@@ -59,6 +59,44 @@ func TestExecuteHTTPSkipsEnvoyPseudoHeaders(t *testing.T) {
 	assert.Equal(t, "pd", gotStrategy)
 }
 
+func TestExecuteHTTPClassifiesCallFailures(t *testing.T) {
+	newContext := func() *types.RoutingContext {
+		return &types.RoutingContext{Context: context.Background(), RequestID: "req-1"}
+	}
+
+	t.Run("connection failure", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		url := srv.URL
+		srv.Close()
+
+		exec := NewDefaultExecutor(srv.Client(), pd.NewPrefillRequestTracker()).(*DefaultExecutor)
+		_, err := exec.executeHTTP(url, newContext(), []byte(`{"model":"m"}`), 5*time.Second)
+
+		var transportErr *pd.PrefillTransportError
+		require.ErrorAs(t, err, &transportErr)
+	})
+
+	t.Run("response body read failure", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			// Flush the headers first so the client fails while reading the body,
+			// not while waiting for the response.
+			w.Header().Set("Content-Length", "100")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			_, _ = io.WriteString(w, `{"partial":`)
+			panic(http.ErrAbortHandler)
+		}))
+		defer srv.Close()
+
+		exec := NewDefaultExecutor(srv.Client(), pd.NewPrefillRequestTracker()).(*DefaultExecutor)
+		_, err := exec.executeHTTP(srv.URL, newContext(), []byte(`{"model":"m"}`), 5*time.Second)
+
+		var transportErr *pd.PrefillTransportError
+		require.ErrorAs(t, err, &transportErr)
+		assert.Contains(t, err.Error(), "failed to read prefill response body")
+	})
+}
+
 func TestResponsePromptTokens(t *testing.T) {
 	assert.Equal(t, 42.0, responsePromptTokens([]byte(`{"usage":{"prompt_tokens":42}}`)))
 	assert.Equal(t, 29.0, responsePromptTokens([]byte(`{"usage":{"input_tokens":29}}`)),
@@ -66,4 +104,28 @@ func TestResponsePromptTokens(t *testing.T) {
 	assert.Equal(t, 11.0, responsePromptTokens([]byte(`{"usage":{"prompt_tokens":11,"input_tokens":22}}`)))
 	assert.Equal(t, 22.0, responsePromptTokens([]byte(`{"usage":{"prompt_tokens":0,"input_tokens":22}}`)))
 	assert.Equal(t, 0.0, responsePromptTokens([]byte(`{"usage":{"prompt_tokens":"11"}}`)))
+}
+
+func TestExecuteHTTPForwardsMockFaultHeaders(t *testing.T) {
+	headers := map[string]string{
+		"x-aibrix-mock-fail":                 "prefill",
+		"x-aibrix-mock-delay-ms":             "25",
+		"x-aibrix-mock-delay-role":           "prefill",
+		"x-aibrix-mock-stream-stall-ms":      "50",
+		"x-aibrix-mock-first-token-stall-ms": "75",
+	}
+	var received http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received = r.Header.Clone()
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer srv.Close()
+	executor := NewDefaultExecutor(srv.Client(), pd.NewPrefillRequestTracker()).(*DefaultExecutor)
+	_, err := executor.executeHTTP(srv.URL, &types.RoutingContext{
+		Context: context.Background(), RequestID: "mock-prefill", ReqHeaders: headers,
+	}, []byte(`{"model":"m"}`), time.Second)
+	require.NoError(t, err)
+	for key, value := range headers {
+		assert.Equal(t, value, received.Get(key), "outbound header %s", key)
+	}
 }

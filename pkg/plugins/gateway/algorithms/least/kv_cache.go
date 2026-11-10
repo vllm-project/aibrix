@@ -79,6 +79,12 @@ func cpuCacheUsage(c cache.Cache, pod *v1.Pod, model string) float64 {
 	return cpuCache.GetSimpleValue()
 }
 
+// CandidateScores implements [types.CandidateScorer]. ScoreAll reads only scraped metrics held
+// in memory, so it already is the estimate.
+func (r leastKvCacheRouter) CandidateScores(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	return r.ScoreAll(ctx, readyPodList)
+}
+
 // ScoreAll computes the combined GPU and CPU cache usage percentage for all ready pods in a single batch operation.
 // This combined metric allows the multi-strategy aggregator to evaluate the overall KV cache pressure on each pod.
 func (r leastKvCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {

@@ -50,6 +50,12 @@ func (r leastExpectedLatencyRouter) Polarity() types.Polarity {
 	return types.PolarityLeast // The lower the expected latency, the better
 }
 
+// CandidateScores implements [types.CandidateScorer]. ScoreAll reads only scraped metrics held
+// in memory, so it already is the estimate.
+func (r leastExpectedLatencyRouter) CandidateScores(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	return r.ScoreAll(ctx, readyPodList)
+}
+
 // ScoreAll computes the expected latency for all pods
 func (r leastExpectedLatencyRouter) ScoreAll(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
 	pods := readyPodList.All()
@@ -63,15 +69,18 @@ func (r leastExpectedLatencyRouter) ScoreAll(ctx *types.RoutingContext, readyPod
 	cntPromt := 0
 	cntGeneration := 0
 	for _, p := range pods {
-		avgPromptTokens, err := r.cache.GetMetricValueByPodModel(p.Name, p.Namespace, ctx.Model, metrics.AvgPromptToksPerReq)
-		if err == nil && avgPromptTokens.GetSimpleValue() > 0 {
-			sumPromptTokens += avgPromptTokens.GetSimpleValue()
-			cntPromt += 1
+		// The token averages are PromQL results; their simple value is always 0.
+		if avgPromptTokens, err := r.cache.GetMetricValueByPodModel(p.Name, p.Namespace, ctx.Model, metrics.AvgPromptToksPerReq); err == nil {
+			if v, ok := metrics.NumericValue(avgPromptTokens); ok && v > 0 {
+				sumPromptTokens += v
+				cntPromt += 1
+			}
 		}
-		avgGenerationTokens, err := r.cache.GetMetricValueByPodModel(p.Name, p.Namespace, ctx.Model, metrics.AvgGenerationToksPerReq)
-		if err == nil && avgGenerationTokens.GetSimpleValue() > 0 {
-			sumGenerationTokens += avgGenerationTokens.GetSimpleValue()
-			cntGeneration += 1
+		if avgGenerationTokens, err := r.cache.GetMetricValueByPodModel(p.Name, p.Namespace, ctx.Model, metrics.AvgGenerationToksPerReq); err == nil {
+			if v, ok := metrics.NumericValue(avgGenerationTokens); ok && v > 0 {
+				sumGenerationTokens += v
+				cntGeneration += 1
+			}
 		}
 	}
 
@@ -104,8 +113,8 @@ func (r leastExpectedLatencyRouter) ScoreAll(ctx *types.RoutingContext, readyPod
 			continue
 		}
 		avgPromptTokens := guessPromptTokens
-		if avgPromptTokensMetric.GetSimpleValue() > 0 {
-			avgPromptTokens = avgPromptTokensMetric.GetSimpleValue()
+		if v, ok := metrics.NumericValue(avgPromptTokensMetric); ok && v > 0 {
+			avgPromptTokens = v
 		}
 
 		prefillTimeMetric, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.RequestPrefillTimeSeconds)
@@ -118,7 +127,8 @@ func (r leastExpectedLatencyRouter) ScoreAll(ctx *types.RoutingContext, readyPod
 			scored[i] = false
 			continue
 		}
-		prefillLatency := prefillTimeHistogram.GetMean() / avgPromptTokens * guessPromptTokens
+		prefillTime := cache.RecentHistogramMean(r.cache, pod.Name, pod.Namespace, ctx.Model, metrics.RequestPrefillTimeSeconds, prefillTimeHistogram)
+		prefillLatency := prefillTime / avgPromptTokens * guessPromptTokens
 
 		avgGenTokensMetric, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgGenerationToksPerReq)
 		if err != nil {
@@ -126,8 +136,8 @@ func (r leastExpectedLatencyRouter) ScoreAll(ctx *types.RoutingContext, readyPod
 			continue
 		}
 		avgGenerationTokens := guessGenerationTokens
-		if avgGenTokensMetric.GetSimpleValue() > 0 {
-			avgGenerationTokens = avgGenTokensMetric.GetSimpleValue()
+		if v, ok := metrics.NumericValue(avgGenTokensMetric); ok && v > 0 {
+			avgGenerationTokens = v
 		}
 
 		decodeTimeMetric, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.RequestDecodeTimeSeconds)
@@ -140,9 +150,11 @@ func (r leastExpectedLatencyRouter) ScoreAll(ctx *types.RoutingContext, readyPod
 			scored[i] = false
 			continue
 		}
-		decodeLatency := decodeTimeHistogram.GetMean() / avgGenerationTokens * guessGenerationTokens
+		decodeTime := cache.RecentHistogramMean(r.cache, pod.Name, pod.Namespace, ctx.Model, metrics.RequestDecodeTimeSeconds, decodeTimeHistogram)
+		decodeLatency := decodeTime / avgGenerationTokens * guessGenerationTokens
 
-		scores[i] = queuingLatencyHistogram.GetMean() + prefillLatency + decodeLatency
+		queuingLatency := cache.RecentHistogramMean(r.cache, pod.Name, pod.Namespace, ctx.Model, metrics.RequestQueueTimeSeconds, queuingLatencyHistogram)
+		scores[i] = queuingLatency + prefillLatency + decodeLatency
 		scored[i] = true
 	}
 

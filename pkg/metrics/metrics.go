@@ -680,7 +680,7 @@ var (
 			MetricType: MetricType{
 				Query: PromQL,
 			},
-			PromQL:      `increase(vllm:time_per_output_token_seconds_sum{instance="${instance}", job="pods"}[5m]) / increase(vllm:time_per_output_token_seconds_sum{instance="${instance}", job="pods"}[5m])`,
+			PromQL:      `increase(vllm:time_per_output_token_seconds_sum{instance="${instance}", job="pods"}[5m]) / increase(vllm:time_per_output_token_seconds_count{instance="${instance}", job="pods"}[5m])`,
 			Description: "Average tpot in last 5 mins",
 		},
 		AvgPromptToksPerReq: {

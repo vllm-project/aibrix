@@ -1740,6 +1740,9 @@ func Test_ValidateRequestBody_Classify(t *testing.T) {
 
 func Test_ValidateRequestBody_Decisions(t *testing.T) {
 	const questions = `[{"id": "q1", "type": "choice", "question": "Which?", "options": [{"name": "a"}, {"name": "b"}]}]`
+	const questionsOpenAI = `[{"type": "predicate", "name": "urgent", "instructions": "Is it urgent?"}, ` +
+		`{"type": "choice", "name": "team", "instructions": "Which team?", "choices": [{"value": "billing"}, {"value": "shipping"}]}, ` +
+		`{"type": "score", "instructions": "How upset?", "levels": [{"label": "calm"}, {"label": "furious"}]}]`
 
 	testCases := []struct {
 		message     string
@@ -1791,6 +1794,34 @@ func Test_ValidateRequestBody_Decisions(t *testing.T) {
 			model:       "decider",
 			messages:    "describe",
 			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			// vLLM serves OpenAI's format, where input is a string or an array of user
+			// messages. The gateway routes on the compact JSON of the messages.
+			message:     "/v1/decisions OpenAI format: input as user messages with input_text parts",
+			requestBody: `{"model": "decider", "input": [ {"role": "user", "content": [{"type": "input_text", "text": "Charged twice"}]} ], "questions": ` + questionsOpenAI + `}`,
+			model:       "decider",
+			messages:    `[{"role":"user","content":[{"type":"input_text","text":"Charged twice"}]}]`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions OpenAI format: string input with named predicate, choice and score questions",
+			requestBody: `{"model": "decider", "input": "Charged twice", "safety_identifier": "user-1", "questions": ` + questionsOpenAI + `}`,
+			model:       "decider",
+			messages:    "Charged twice",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/decisions OpenAI format: missing model",
+			requestBody: `{"input": "Charged twice", "questions": ` + questionsOpenAI + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/decisions OpenAI format: questions as an object",
+			requestBody: `{"model": "decider", "input": "Charged twice", "questions": {"urgent": {"type": "predicate"}}}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "questions",
 		},
 		{
 			message:     "/v1/decisions query string does not break path matching",
@@ -1996,6 +2027,22 @@ func Test_ValidateRequestBody_SystemOne(t *testing.T) {
 			model:       "decider",
 			messages:    "describe",
 			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			// vLLM declares these on /v1/systemone and rejects any other top-level field.
+			message:     "/v1/systemone vLLM fields are forwarded, not inspected",
+			requestBody: `{"model": "decider", "state": {"ticket": "Charged twice"}, "instructions": "Be brief", "priority": 3, "cache_salt": "tenant-a", "joint": false, "audio": ["data:audio/wav;base64,AAAA"], "videos": ["https://example.com/a.mp4"], "chat_template_kwargs": {"enable_thinking": false}, "questions": ` + questions + `}`,
+			model:       "decider",
+			messages:    `{"ticket":"Charged twice"}`,
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			// vLLM treats model as optional and answers with its served model. The
+			// gateway selects a pod by it, so the request is refused.
+			message:     "/v1/systemone vLLM request that leaves out model",
+			requestBody: `{"state": "Charged twice", "priority": 3, "questions": ` + questions + `}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
 		},
 		{
 			message:     "/v1/systemone query string does not break path matching",
@@ -2531,6 +2578,89 @@ func TestApplyConfigProfile_AuthoritativePolicyUsesDefaultProfile(t *testing.T) 
 			assert.NotContains(t, ctx.RespHeaders, HeaderAIBrixConfigProfile)
 		})
 	}
+}
+
+func TestApplyConfigProfile_ModelConfig(t *testing.T) {
+	modelConfig := `{
+		"defaultProfile":"default",
+		"profiles":{
+			"default":{"routingStrategy":"least-request"},
+			"cache-friendly":{"routingStrategy":"prefix-cache","requestsPerSecond":7}
+		}
+	}`
+	annotated := &v1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "pod-a",
+		Annotations: map[string]string{
+			constants.ModelAnnoConfig: `{"defaultProfile":"default","profiles":{"default":{"routingStrategy":"random"}}}`,
+		},
+	}}
+	plain := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-b"}}
+
+	tests := []struct {
+		name             string
+		modelConfig      string
+		reqConfigProfile string
+		pods             []*v1.Pod
+		wantStrategy     string
+		wantRPS          int64
+	}{
+		{
+			name:         "model config default profile",
+			modelConfig:  modelConfig,
+			pods:         []*v1.Pod{plain},
+			wantStrategy: "least-request",
+		},
+		{
+			name:             "config-profile picks a model config profile",
+			modelConfig:      modelConfig,
+			reqConfigProfile: "cache-friendly",
+			pods:             []*v1.Pod{plain},
+			wantStrategy:     "prefix-cache",
+			wantRPS:          7,
+		},
+		{
+			name:         "model config wins over a pod annotation",
+			modelConfig:  modelConfig,
+			pods:         []*v1.Pod{annotated},
+			wantStrategy: "least-request",
+		},
+		{
+			name:         "no model config keeps the pod annotation",
+			pods:         []*v1.Pod{annotated},
+			wantStrategy: "random",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := types.NewRoutingContext(context.Background(), "", "model", "", "request-1", "")
+			ctx.ModelConfig = tt.modelConfig
+			ctx.ReqConfigProfile = tt.reqConfigProfile
+
+			applyConfigProfile(ctx, tt.pods)
+
+			require.NotNil(t, ctx.ConfigProfile)
+			assert.Equal(t, tt.wantStrategy, ctx.ConfigProfile.RoutingStrategy)
+			assert.Equal(t, tt.wantRPS, ctx.ConfigProfile.RequestsPerSecond)
+		})
+	}
+}
+
+// modelConfigTestCache adds cache.ModelConfigCache to MockCache.
+type modelConfigTestCache struct {
+	*MockCache
+	configs map[string]string
+}
+
+func (c modelConfigTestCache) ModelConfig(model string) (string, bool) {
+	cfg, ok := c.configs[model]
+	return cfg, ok
+}
+
+func TestModelConfigFromCache(t *testing.T) {
+	withConfigs := modelConfigTestCache{MockCache: &MockCache{}, configs: map[string]string{"model": `{"profiles":{}}`}}
+	assert.Equal(t, `{"profiles":{}}`, modelConfigFromCache(withConfigs, "model"))
+	assert.Empty(t, modelConfigFromCache(withConfigs, "other-model"))
+	assert.Empty(t, modelConfigFromCache(&MockCache{}, "model"), "a cache without ModelConfigCache has no model config")
 }
 
 func TestMaxTokensFromRequestBody(t *testing.T) {
@@ -3525,6 +3655,126 @@ func Test_ValidateRequestBody_AudioSpeech(t *testing.T) {
 			if tt.statusCode == envoyTypePb.StatusCode_OK {
 				assert.Nil(t, errRes)
 				assert.Equal(t, "tts-1", model)
+				assert.Equal(t, tt.input, messages)
+				return
+			}
+
+			if !assert.NotNil(t, errRes) {
+				return
+			}
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().GetStatus().GetCode())
+			assert.Empty(t, model)
+			assert.Empty(t, messages)
+
+			var errResponse map[string]any
+			require.NoError(t, sonic.Unmarshal([]byte(errRes.GetImmediateResponse().GetBody()), &errResponse))
+			errObj, ok := errResponse["error"].(map[string]any)
+			require.True(t, ok, "response should have an 'error' object")
+			if tt.param != "" {
+				assert.Equal(t, tt.param, errObj["param"])
+			}
+		})
+	}
+}
+
+// Test_ValidateRequestBody_AudioGenerate: /v1/audio/generate has the same envelope as speech, a
+// model to route on and an input to generate from, so the gateway checks only those two and
+// forwards everything else (audio_length, negative_prompt, seed, ...) for the engine to judge.
+func Test_ValidateRequestBody_AudioGenerate(t *testing.T) {
+	testCases := []struct {
+		message     string
+		requestPath string // defaults to PathAudioGenerate
+		requestBody string
+		input       string
+		statusCode  envoyTypePb.StatusCode
+		param       string
+	}{
+		{
+			message:     "/v1/audio/generate routes on the model and generates from the input",
+			requestBody: `{"model": "stable-audio", "input": "The sound of a hammer hitting a wooden surface", "audio_length": 10.0}`,
+			input:       "The sound of a hammer hitting a wooden surface",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/generate generation options are forwarded, not inspected",
+			requestBody: `{"model": "stable-audio", "input": "Rain", "audio_length": 5, "negative_prompt": "low quality", "guidance_scale": 7.0, "num_inference_steps": 100, "seed": 42, "response_format": "wav", "x_future_option": {"k": 1}}`,
+			input:       "Rain",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/generate a request-level stream field does not make it an SSE stream",
+			requestBody: `{"model": "stable-audio", "input": "Rain", "stream": true}`,
+			input:       "Rain",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/generate query string does not break path matching",
+			requestPath: PathAudioGenerate + "?api-version=1",
+			requestBody: `{"model": "stable-audio", "input": "Rain"}`,
+			input:       "Rain",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/audio/generate missing model",
+			requestBody: `{"input": "Rain"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/audio/generate blank model",
+			requestBody: `{"model": " ", "input": "Rain"}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "model",
+		},
+		{
+			message:     "/v1/audio/generate missing input",
+			requestBody: `{"model": "stable-audio", "audio_length": 10}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/audio/generate blank input",
+			requestBody: `{"model": "stable-audio", "input": "   "}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+			param:       "input",
+		},
+		{
+			message:     "/v1/audio/generate non-string input",
+			requestBody: `{"model": "stable-audio", "input": 42}`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/generate malformed JSON",
+			requestBody: `{"model": "stable-audio", "input": "Rain"`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/generate array root",
+			requestBody: `[{"model": "stable-audio", "input": "Rain"}]`,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/audio/generate empty body",
+			requestBody: ``,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.message, func(t *testing.T) {
+			requestPath := tt.requestPath
+			if requestPath == "" {
+				requestPath = PathAudioGenerate
+			}
+			model, messages, prefixText, stream, errRes := validateRequestBody("test-request-id", requestPath, []byte(tt.requestBody), utils.User{})
+
+			// Binary audio is never treated as an SSE stream and carries no separate prefix text.
+			assert.False(t, stream)
+			assert.Empty(t, prefixText)
+
+			if tt.statusCode == envoyTypePb.StatusCode_OK {
+				assert.Nil(t, errRes)
+				assert.Equal(t, "stable-audio", model)
 				assert.Equal(t, tt.input, messages)
 				return
 			}

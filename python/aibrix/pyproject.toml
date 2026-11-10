@@ -61,6 +61,7 @@ google-cloud-storage = "^2.10.0"
 fastapi = "^0.112.2"
 gunicorn = "^23.0.0"
 uvicorn = "^0.30.6"
+websockets = ">=14.0,<16.0"
 prometheus-client = "^0.20.0"
 types-requests = "^2.31.0"
 httpx = "^0.27.2"
@@ -77,6 +78,12 @@ PyYAML = "^6.0.1"
 types-PyYAML = "^6.0.12.20240917"
 python-multipart = "^0.0.20"
 tenacity = "^9.0.0"
+# Registered processor arguments are validated against JSON Schema.
+jsonschema = "^4.23.0"
+# Executable image.resize processor, also available without gpu-optimizer extras.
+pillow = "^12.1.1"
+# SIMD base64 decoding for inline data: media materialised by the frontend.
+fastpybase64 = "^0.1.1"
 # Dependencies required by aibrix.gpu_optimizer (load monitor, visualizer, solver).
 # Optional so aibrix/runtime skips them; install with `pip install aibrix[gpu-optimizer]`.
 # aibrix/metadata-service installs them because it hosts the GPU Optimizer service.

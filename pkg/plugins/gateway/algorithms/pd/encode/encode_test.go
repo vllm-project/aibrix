@@ -19,7 +19,9 @@ package encode
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -108,5 +110,35 @@ func TestEncodeUsesBracketedIPv6Host(t *testing.T) {
 	require.NoError(t, executor.encode(ctx, pod, 0, item, time.Second))
 	if transport.host != "[2001:db8::1]:8000" {
 		t.Fatalf("encode request host = %q, want %q", transport.host, "[2001:db8::1]:8000")
+	}
+}
+
+func TestEncodeForwardsMockFaultHeaders(t *testing.T) {
+	headers := map[string]string{
+		"x-aibrix-mock-fail":                 "encode",
+		"x-aibrix-mock-delay-ms":             "25",
+		"x-aibrix-mock-delay-role":           "encode",
+		"x-aibrix-mock-stream-stall-ms":      "50",
+		"x-aibrix-mock-first-token-stall-ms": "75",
+	}
+	var received http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received = r.Header.Clone()
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	require.NoError(t, err)
+	executor := NewExecutor(srv.Client())
+	ctx := types.NewRoutingContext(context.Background(), "test", "qwen-vl", "", "mock-encode", "")
+	defer ctx.Delete()
+	ctx.ReqPath = "/v1/chat/completions"
+	ctx.ReqBody = []byte(`{"model":"qwen-vl","messages":[{"role":"user","content":"describe the image"}]}`)
+	ctx.ReqHeaders = headers
+	item := `{"type":"image_url","image_url":{"url":"https://x/a.png"}}`
+	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "encode-0", Labels: map[string]string{constants.ModelLabelPort: port}}, Status: v1.PodStatus{PodIP: host}}
+	require.NoError(t, executor.encode(ctx, pod, 0, item, time.Second))
+	for key, value := range headers {
+		assert.Equal(t, value, received.Get(key), "outbound header %s", key)
 	}
 }

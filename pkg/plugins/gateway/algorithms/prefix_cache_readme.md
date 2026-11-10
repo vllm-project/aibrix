@@ -10,7 +10,7 @@ ahead of whichever strategy actually routes the request (prefix-cache included),
 `readyPods` before this router ever sees them. This replaced an older prefix-cache-specific gate
 that lived in this file; see [ENV_VARS.md](../ENV_VARS.md#variable-dependency-notes) for the
 migration note. The gate applies the same way when combining strategies via multi-strategy
-soft-scoring (`AIBRIX_ROUTING_ALGORITHM=prefix-cache:W1,load-balance:W2`, see
+soft-scoring (`ROUTING_ALGORITHM=prefix-cache:W1,load-balance:W2`, see
 [multi_router_readme.md](multi_router_readme.md)): `selectTargetPod` narrows `readyPods` once,
 before resolving and calling into the multi-strategy router, so every sub-strategy's `ScoreAll`
 — this one included — only ever sees the already-gated pod list. It is skipped only for
@@ -24,6 +24,39 @@ Two routing modes are supported, selected automatically at startup:
 | **KV Sync** | `AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true` | Distributed sync indexer fed by real-time block-stored/removed events from vLLM pods |
 
 Both modes share the same stddev-based pod selection logic described below.
+
+When the optional candidate stage estimates prefix-cache scores over every ready
+pod, it retains the raw match percentages and prefix hashes for that routing decision. Scoring, standalone
+routing and post-route updates reuse this result for covered pod subsets in the
+same index/model partition, including pods that had no prefix match. Blended
+scores are still normalized on the final candidate pool. Index changes during
+the decision are observed by the next decision; retries and pooled context reuse
+clear the retained result. Tokenization or index errors are not cached, and
+ordinary routing without the candidate stage does not retain a match snapshot.
+
+The index contract requires each pod's raw match to be independent of the other
+queried pods, and the ready-set input map to remain unchanged. Hash elements
+returned by the router are read-only; slice capacity is restricted so an append
+cannot overwrite the array retained by the decision.
+
+### Observing match reuse
+
+`aibrix_prefix_cache_match_operations_total{model,result}` records each prefix
+matching operation. The fixed `result` values are:
+
+| Result | Meaning |
+| --- | --- |
+| `lookup` | Read the index without a retained result, including the candidate-stage estimate. |
+| `reuse` | Project a retained result onto a covered subset. |
+| `fallback_identity` | Read the index because its identity, model or adapter changed. |
+| `fallback_uncovered` | Read the index because the requested set contains an uncovered pod. |
+
+All results except `reuse` perform an index lookup. Ordinary routing with the
+candidate stage disabled also reports `lookup`; compare reuse rates only for
+traffic where the candidate stage is enabled. Replacing prefix tokens clears the
+snapshot, so subsequent operations report `lookup` until the candidate stage runs again.
+Identity and coverage fallbacks also emit a V(4) log with the request ID and
+reason, without logging prompt contents.
 
 ## Routing Flow
 
@@ -108,7 +141,7 @@ any pod in a pool of five or fewer.
 | Environment Variable | Description | Default |
 |---|---|---|
 | `AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE` | Tokenizer used to split the prompt. Options: `character`, `tiktoken`. | `character` |
-| `AIBRIX_PREFIX_CACHE_BLOCK_SIZE` | Number of tokens per prefix block. Smaller blocks = finer-grained matching but more hash overhead. | `128` |
+| `AIBRIX_PREFIX_CACHE_BLOCK_SIZE` | Size of a prefix block, in bytes of the tokenized prompt (each `tiktoken` token counts as 4 bytes). Smaller blocks = finer-grained matching but more hash overhead. The shipped gateway manifest sets `128`. | `4` |
 | `AIBRIX_PREFIX_CACHE_BLOCK_NUMBER` | Maximum number of prefix cache blocks tracked per pod. | `200000` |
 | `AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR` | `load_factor` in `mean + load_factor × σ`. Higher value tolerates more load on a high-cache-hit pod. | `1` |
 | `AIBRIX_PREFIX_CACHE_LOAD_CAP_FACTOR` | `load_cap_factor` in `max(load_cap_factor, 1) × (mean + 1)`. Higher value tolerates more load on a high-cache-hit pod; set a large value such as `100` to effectively disable it. Applies only when `prefix-cache` routes on its own, with the auto-blend off (`AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT=0`). | `1.5` |

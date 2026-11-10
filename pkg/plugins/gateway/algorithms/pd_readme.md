@@ -298,7 +298,7 @@ When the gateway resolves a model config profile (`routingCtx.ConfigProfile` fro
 
 | Field | Values | Effect |
 |-------|--------|--------|
-| `prefillScorePolicy` | `prefix_cache`, `least_request` | Overrides `AIBRIX_PREFILL_SCORE_POLICY` for that request |
+| `prefillScorePolicy` | `prefix_cache`, `least_request`, `conductor`, `token_load`, `hybrid_cache_load` | Overrides `AIBRIX_PREFILL_SCORE_POLICY` for that request |
 | `decodeScorePolicy` | `load_balancing`, `least_request`, `conductor`, `token_load` (or any name registered via `pd.RegisterDecodePolicy`) | Overrides `AIBRIX_DECODE_SCORE_POLICY` for that request |
 
 Example fragment inside a profile:
@@ -706,7 +706,7 @@ Metrics: `pd_bucket_serve_band_total` and `pd_bucket_serve_prompt_tokens_total` 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AIBRIX_PREFILL_SCORE_POLICY` | `prefix_cache` | Prefill pod scoring: `prefix_cache` or `least_request`. Any other value logs a warning and falls back to `prefix_cache`. |
+| `AIBRIX_PREFILL_SCORE_POLICY` | `prefix_cache` | Prefill pod scoring: `prefix_cache`, `least_request`, `conductor`, `token_load` or `hybrid_cache_load`. Any other value logs a warning and falls back to `prefix_cache`. |
 | `AIBRIX_DECODE_SCORE_POLICY` | `load_balancing` | Decode pod scoring for `finalPDScore`: `load_balancing`, `least_request`, `conductor` or `token_load`. Any other value logs a warning and falls back to `load_balancing`. |
 | `AIBRIX_KV_CONNECTOR_TYPE` | `shfs` | KV transfer backend: `shfs` (GPU/SHFS), `nixl` (Neuron/NIXL), or `mooncake` (Mooncake) |
 | `AIBRIX_PREFILL_REQUEST_TIMEOUT` | `30` | Prefill HTTP request timeout in seconds. Exceeding it is a terminal `timeout` prefill failure. |

@@ -18,6 +18,7 @@ package scheduling
 
 import (
 	"context"
+	"fmt"
 	"math"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
@@ -37,25 +38,72 @@ func NewLeastLatencyScheduler(c cache.Cache) Scheduler {
 }
 
 func (r leastLatencyScheduler) SelectPod(ctx context.Context, model string, readyPods []v1.Pod) (*v1.Pod, error) {
+	if len(readyPods) == 0 {
+		return nil, fmt.Errorf("no ready pods to schedule on")
+	}
+
 	selectedPod := v1.Pod{}
 	podLatencyMin := math.MaxFloat64
 
+	var lastErr error
 	for _, pod := range readyPods {
-		queueTime, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, model, metrics.RequestQueueTimeSeconds)
+		podLatency, err := r.podLatency(pod, model)
 		if err != nil {
-			return nil, err
+			lastErr = err
+			klog.V(4).InfoS("Skipping pod without usable latency metrics",
+				"pod", klog.KObj(&pod), "model", model, "reason", err)
+			continue
 		}
-		inferenceTime, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, model, metrics.RequestInferenceTimeSeconds)
-		if err != nil {
-			return nil, err
-		}
-		podLatency := queueTime.GetHistogramValue().GetMean() + inferenceTime.GetHistogramValue().GetMean()
 		if podLatency < podLatencyMin {
 			selectedPod = pod
 			podLatencyMin = podLatency
 		}
 	}
+	if podLatencyMin == math.MaxFloat64 {
+		if lastErr == nil {
+			return nil, fmt.Errorf("no ready pod has latency metrics")
+		}
+		return nil, fmt.Errorf("no ready pod has latency metrics: %w", lastErr)
+	}
 
-	klog.InfoS("pod selected with least latency", "pod", klog.KObj(&selectedPod))
+	klog.InfoS("pod selected with least latency", "pod", klog.KObj(&selectedPod), "model", model)
 	return &selectedPod, nil
+}
+
+// podLatency returns the pod's recent queue + inference mean, failing when either
+// metric is missing, is not a histogram, or the total is not finite.
+func (r leastLatencyScheduler) podLatency(pod v1.Pod, model string) (float64, error) {
+	queueTime, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, model, metrics.RequestQueueTimeSeconds)
+	if err != nil {
+		return 0, err
+	}
+	if queueTime == nil {
+		return 0, fmt.Errorf("pod %s/%s has no %s", pod.Namespace, pod.Name, metrics.RequestQueueTimeSeconds)
+	}
+	queueHist := queueTime.GetHistogramValue()
+	if queueHist == nil {
+		return 0, fmt.Errorf("metric is not a histogram: %s", metrics.RequestQueueTimeSeconds)
+	}
+
+	inferenceTime, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, model, metrics.RequestInferenceTimeSeconds)
+	if err != nil {
+		return 0, err
+	}
+	if inferenceTime == nil {
+		return 0, fmt.Errorf("pod %s/%s has no %s", pod.Namespace, pod.Name, metrics.RequestInferenceTimeSeconds)
+	}
+	inferenceHist := inferenceTime.GetHistogramValue()
+	if inferenceHist == nil {
+		return 0, fmt.Errorf("metric is not a histogram: %s", metrics.RequestInferenceTimeSeconds)
+	}
+
+	queueMean := cache.RecentHistogramMean(
+		r.cache, pod.Name, pod.Namespace, model, metrics.RequestQueueTimeSeconds, queueHist)
+	inferenceMean := cache.RecentHistogramMean(
+		r.cache, pod.Name, pod.Namespace, model, metrics.RequestInferenceTimeSeconds, inferenceHist)
+	total := queueMean + inferenceMean
+	if math.IsNaN(total) || math.IsInf(total, 0) {
+		return 0, fmt.Errorf("pod %s/%s has non-finite latency: %v", pod.Namespace, pod.Name, total)
+	}
+	return total, nil
 }

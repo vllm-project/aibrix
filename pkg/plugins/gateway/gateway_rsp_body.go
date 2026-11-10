@@ -448,6 +448,8 @@ func isLanguageRequest(requestPath string) bool {
 		// covers PathAudioSpeechBatch, whose JSON body inlines every item's base64 audio and can
 		// run to many megabytes; its HTTP 200 does not say whether individual items failed.
 		PathAudioSpeech,
+		// Audio generation returns binary audio just as speech does, and it is a different prefix.
+		PathAudioGenerate,
 		// The voice catalog answers with small JSON documents (a list, an upload receipt, a
 		// delete message) that are not completions and carry no usage. The prefix also covers
 		// DELETE /v1/audio/voices/{name}.
@@ -550,7 +552,7 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 		if res.Usage.TotalTokens != nil {
 			totalTokens = *res.Usage.TotalTokens
 		} else {
-			// Some engines report no total (SGLang's /v1/systemone sends only
+			// Some engines report no total (/v1/systemone, on vLLM and SGLang, sends only
 			// input_tokens/output_tokens). HandleResponseBody skips TPM accounting and
 			// request_end for a zero total, so derive it rather than leave the request
 			// unmetered. An explicit total_tokens, even 0, is trusted as sent.

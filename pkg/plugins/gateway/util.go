@@ -37,6 +37,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/packages/param"
+	"github.com/vllm-project/aibrix/pkg/cache"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/configprofiles"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -275,8 +276,8 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		// Audio transcription and translation require multipart/form-data content-type, not JSON
 		// This case handles the error when JSON is sent to these audio endpoints
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "audio requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
-	case PathAudioSpeech:
-		model, message, errRes = validateAudioSpeechRequest(requestID, requestBody)
+	case PathAudioSpeech, PathAudioGenerate:
+		model, message, errRes = validateAudioInputRequest(requestID, requestBody)
 	case PathAudioSpeechBatch:
 		model, message, errRes = validateAudioSpeechBatchRequest(requestID, requestBody)
 	default:
@@ -896,13 +897,15 @@ func validateClassifyRequest(requestID string, requestBody []byte) (model, messa
 	return
 }
 
-// validateDecisionsRequest parses and validates an SGLang /v1/decisions request body.
-// "model" is required although SGLang treats it as optional, because the gateway routes on
-// it. "input" and a non-empty "questions" array are required too, so a body the engine would
-// reject fails at the edge; the question schema is left to the engine.
+// validateDecisionsRequest parses and validates a /v1/decisions request body in either
+// engine's format (SGLang's, or OpenAI's as served by vLLM). "model" is required although
+// SGLang treats it as optional, because the gateway routes on it. "input" and a non-empty
+// "questions" array are required too, so a body the engine would reject fails at the edge;
+// the question schema is left to the engine.
 //
-// The routing message is "input" alone: SGLang renders it ahead of the questions, so it is
-// the shared prefix that prefix-cache-aware routing should see.
+// The routing message is "input" alone: the engine renders it ahead of the questions, so it
+// is the shared prefix that prefix-cache-aware routing should see. For vLLM's user-message
+// array it is the JSON of the array rather than the rendered prompt, so only approximate.
 // nolint:nakedret
 func validateDecisionsRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
 	var req struct {
@@ -942,13 +945,13 @@ func validateDecisionsRequest(requestID string, requestBody []byte) (model, mess
 	return
 }
 
-// validateSystemOneRequest parses and validates an SGLang /v1/systemone request body.
+// validateSystemOneRequest parses and validates a /v1/systemone request body (vLLM or SGLang).
 // Unlike a decisions "input", "state" may be blank: SGLang accepts an empty state, so the
 // gateway does not refuse what the engine would answer. The question schema is left to the
 // engine.
 //
-// The routing message is the state alone: SGLang puts it at the head of every question's
-// prompt, so it is the prefix that prefix-cache-aware routing should see.
+// The routing message is the state alone: both engines put it at the head of every
+// question's prompt, so it is the prefix that prefix-cache-aware routing should see.
 // nolint:nakedret
 func validateSystemOneRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
 	var req struct {
@@ -1070,14 +1073,16 @@ func jsonString(value json.RawMessage) (string, bool) {
 	return text, true
 }
 
-// validateAudioSpeechRequest parses and validates a vLLM-Omni /v1/audio/speech request body.
-// Only what the gateway itself needs is checked: a JSON object with a non-empty "model" to
-// route on and a non-empty textual "input" to synthesize. The speech options (voice,
-// response_format, speed, instructions, language, stream_format, ...) belong to the engine and
-// are forwarded as sent. A request-level "stream" field is deliberately not surfaced as a stream
-// here: the response is binary audio, so the gateway must never treat it as an SSE stream.
+// validateAudioInputRequest parses and validates the body of a vLLM-Omni request that takes a
+// model and a text input and answers with binary audio: /v1/audio/speech, where "input" is the
+// text to synthesize, and /v1/audio/generate, where it is the prompt that describes the audio.
+// Only what the gateway itself needs is checked: a JSON object with a non-empty "model" to route
+// on and a non-empty textual "input". The remaining options (voice, response_format, speed,
+// instructions, language, stream_format, ...) belong to the engine and are forwarded as sent.
+// A request-level "stream" field is deliberately not surfaced as a stream here: the response is
+// binary audio, so the gateway must never treat it as an SSE stream.
 // nolint:nakedret
-func validateAudioSpeechRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+func validateAudioInputRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
 	if trimmed := bytes.TrimSpace(requestBody); len(trimmed) == 0 || trimmed[0] != '{' {
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
@@ -1088,7 +1093,7 @@ func validateAudioSpeechRequest(requestID string, requestBody []byte) (model, me
 	}
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
 		// The body can hold customer text, so log its size, not its content.
-		klog.ErrorS(nil, "error to unmarshal audio speech object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		klog.ErrorS(nil, "error to unmarshal audio speech or generate object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -1454,9 +1459,22 @@ func rpsToLimitWindow(rps float64) (limit int64, windowSeconds int64) {
 	return 1, windowSeconds
 }
 
-// applyConfigProfile resolves the model config from the pod annotation
-// (model.aibrix.ai/config) and applies the selected profile plus the model-wide
-// locked routing strategy onto routingCtx.ConfigProfile.
+// modelConfigFromCache returns the model config c holds for model when c
+// implements cache.ModelConfigCache, and "" otherwise.
+func modelConfigFromCache(c cache.Cache, model string) string {
+	if provider, ok := c.(cache.ModelConfigCache); ok {
+		if cfg, found := provider.ModelConfig(model); found {
+			return cfg
+		}
+	}
+	return ""
+}
+
+// applyConfigProfile resolves the model config and applies the selected profile
+// plus the model-wide locked routing strategy onto routingCtx.ConfigProfile.
+// The config is routingCtx.ModelConfig when discovery supplied one for the
+// model (the config field of a local-mode endpoints file), and otherwise the
+// pod annotation (model.aibrix.ai/config).
 //   - The profile is selected by the config-profile header, falling back to
 //     defaultProfile (or "default") in the JSON.
 //   - config-profile: auto evaluates request-local hints in profile routingConfig
@@ -1485,7 +1503,7 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 	if routingCtx == nil {
 		return
 	}
-	cfg := configprofiles.ResolveModelConfig(pods)
+	cfg := configprofiles.ResolveModelConfigFrom(routingCtx.ModelConfig, pods)
 	if cfg == nil {
 		return
 	}

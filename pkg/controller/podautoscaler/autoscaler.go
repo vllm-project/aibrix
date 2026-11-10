@@ -239,6 +239,9 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 
 		if result.Valid {
 			anyValid = true
+			// Guard each metric before taking the max, so trimming the winner for pending
+			// replicas never drops the result below what another metric asks for.
+			result = applyPendingReplicaGuard(request, result)
 			validResults = append(validResults, result)
 			klog.V(4).InfoS("Computed replicas for metric",
 				"PodAutoscaler", klog.KObj(&pa),
@@ -277,8 +280,6 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 		"currentReplicas", request.CurrentReplicas,
 	)
 
-	bestResult = applyPendingReplicaGuard(request, bestResult)
-
 	return &ReplicaComputeResult{
 		DesiredReplicas:           bestResult.DesiredReplicas,
 		Algorithm:                 bestResult.Algorithm,
@@ -299,8 +300,7 @@ func applyPendingReplicaGuard(request ReplicaComputeRequest, result *ReplicaComp
 		request.PodAutoscaler.Spec.ScalingStrategy != autoscalingv1alpha1.APA {
 		return result
 	}
-	if result.MetricSourceType != autoscalingv1alpha1.POD &&
-		result.MetricSourceType != autoscalingv1alpha1.RESOURCE {
+	if !algorithm.IsPerPodSource(result.MetricSourceType) {
 		return result
 	}
 	if request.ReplicaState.PendingReplicas <= 0 || result.DesiredReplicas == request.CurrentReplicas {

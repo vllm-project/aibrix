@@ -168,6 +168,48 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			description: "Should be limited by max scale up rate",
 		},
 		{
+			name:            "max_scale_up_rate_limit_without_float_error",
+			currentPodCount: 50.0,
+			context: &mockScalingContext{
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 10.0,
+					},
+				},
+				MaxScaleUpRate:   1.1,
+				MaxScaleDownRate: 2.0,
+				StableValue:      10000.0,
+				PanicValue:       10000.0,
+				ActivationScale:  1,
+				PanicThreshold:   2.0,
+				MinReplicas:      0,
+				MaxReplicas:      1000,
+			},
+			expected:    55,
+			description: "50 * 1.1 evaluates to 55.00000000000001, which must still cap the scale-up at 55",
+		},
+		{
+			name:            "max_scale_down_rate_limit_without_float_error",
+			currentPodCount: 55.0,
+			context: &mockScalingContext{
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 10.0,
+					},
+				},
+				MaxScaleUpRate:   2.0,
+				MaxScaleDownRate: 1.1,
+				StableValue:      0.01,
+				PanicValue:       0.01,
+				ActivationScale:  1,
+				PanicThreshold:   2.0,
+				MinReplicas:      0,
+				MaxReplicas:      1000,
+			},
+			expected:    50,
+			description: "55 / 1.1 evaluates to 49.99999999999999, which must still hold the scale-down at 50",
+		},
+		{
 			name:            "max_scale_down_rate_limit",
 			currentPodCount: 4.0,
 			context: &mockScalingContext{

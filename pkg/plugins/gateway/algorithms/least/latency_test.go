@@ -21,6 +21,7 @@ import (
 
 	"testing"
 
+	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -330,4 +331,141 @@ func TestLeastLatencyScoreAllHandlesNonHistogramMetrics(t *testing.T) {
 	assert.True(t, scored[2])
 	assert.Greater(t, scores[2], 0.0)
 	assert.False(t, scored[3], "a queue time that is not a histogram leaves the pod unscored")
+}
+
+func TestLeastLatencyReadsPromQLTokenAverages(t *testing.T) {
+	promqlAverage := func(v float64) *metrics.PrometheusMetricValue {
+		var result model.Value = model.Vector{&model.Sample{Value: model.SampleValue(v)}}
+		return &metrics.PrometheusMetricValue{Result: &result}
+	}
+	pods := []*v1.Pod{
+		newPod("p1", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("p2", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("p3", "3.3.3.3", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+	}
+	// p1 takes longer per request but serves requests ten times as long, so per token it is the
+	// faster pod: prefill 1s/1000 tokens against 0.5s/100, decode 2s/1000 tokens against 0.5s/100.
+	// p3 has served nothing, so its averages are 0 and stay out of the pool averages, which are
+	// 550 prompt and 550 generation tokens. Scaled to them, p1's prefill and decode estimates are
+	// 0.55s and 1.1s, and p2's are 2.75s each. Without the token averages every pod falls back to
+	// the same guess and the raw means decide, which favours p2.
+	c := cache.NewWithPodsModelMetricsForTest(pods, testModelName, map[string]map[string]metrics.MetricValue{
+		"p1": {
+			metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 1, Count: 1},
+			metrics.AvgPromptToksPerReq:       promqlAverage(1000),
+			metrics.AvgGenerationToksPerReq:   promqlAverage(1000),
+			metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 1, Count: 1},
+			metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 2, Count: 1},
+		},
+		"p2": {
+			metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 1, Count: 1},
+			metrics.AvgPromptToksPerReq:       promqlAverage(100),
+			metrics.AvgGenerationToksPerReq:   promqlAverage(100),
+			metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 0.5, Count: 1},
+			metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 0.5, Count: 1},
+		},
+		"p3": {
+			metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 1, Count: 1},
+			metrics.AvgPromptToksPerReq:       promqlAverage(0),
+			metrics.AvgGenerationToksPerReq:   promqlAverage(0),
+			metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 3, Count: 1},
+			metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 3, Count: 1},
+		},
+	})
+	podList := podsFromCache(c)
+	r := leastExpectedLatencyRouter{cache: c}
+
+	ctx := types.NewRoutingContext(context.Background(), "least-latency", testModelName, "message", "request", "user")
+	scores, scored, err := r.ScoreAll(ctx, podList)
+	assert.NoError(t, err)
+	got := map[string]float64{}
+	for i, pod := range podList.All() {
+		if scored[i] {
+			got[pod.Name] = scores[i]
+		}
+	}
+	assert.InDelta(t, 1+0.55+1.1, got["p1"], 1e-9)
+	assert.InDelta(t, 1+2.75+2.75, got["p2"], 1e-9)
+	assert.InDelta(t, 1+3+3, got["p3"], 1e-9, "a pod without averages uses the pool's")
+
+	target, err := r.Route(ctx, podList)
+	assert.NoError(t, err)
+	assert.Equal(t, "1.1.1.1:8000", target)
+}
+
+// A pod that served many fast requests and then slowed down still has a low lifetime
+// mean queue time. least-latency must score it by its recent queue time instead (#3297).
+func TestLeastLatencyScoresRecentMean(t *testing.T) {
+	podMetrics := func(queue *metrics.HistogramMetricValue, recentQueue metrics.MetricValue) map[string]metrics.MetricValue {
+		podMetrics := map[string]metrics.MetricValue{
+			metrics.RequestQueueTimeSeconds:   queue,
+			metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
+			metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
+			metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: 0.2, Count: 1},
+			metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: 2, Count: 1},
+		}
+		if recentQueue != nil {
+			podMetrics[cache.RecentMeanMetricName(metrics.RequestQueueTimeSeconds)] = recentQueue
+		}
+		return podMetrics
+	}
+	route := func(p1RecentQueue metrics.MetricValue) string {
+		readyPods := []*v1.Pod{
+			newPod("p1", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+			newPod("p2", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		}
+		c := cache.NewWithPodsModelMetricsForTest(readyPods, "m1", map[string]map[string]metrics.MetricValue{
+			// 100000 requests queued 0.05 s, then 300 queued 2 s in the last minute.
+			"p1": podMetrics(&metrics.HistogramMetricValue{Sum: 100000*0.05 + 300*2, Count: 100300}, p1RecentQueue),
+			"p2": podMetrics(&metrics.HistogramMetricValue{Sum: 1000 * 0.5, Count: 1000}, nil),
+		})
+		router := leastExpectedLatencyRouter{cache: c}
+		ctx := types.NewRoutingContext(context.Background(), "test", "m1", "message", "request", "user")
+		target, err := router.Route(ctx, newMockPodList(readyPods, nil))
+		assert.NoError(t, err)
+		return target
+	}
+
+	// No recent mean yet (first minute of history): the lifetime mean (0.056 s) decides.
+	assert.Equal(t, "1.1.1.1:8000", route(nil))
+	// The recent mean shows p1 queueing 2 s against p2's 0.5 s.
+	assert.Equal(t, "2.2.2.2:8000", route(&metrics.SimpleMetricValue{Value: 2}))
+}
+
+// The prefill and decode terms are scored by the recent mean too, not only the queue term.
+func TestLeastLatencyScoresRecentPrefillAndDecodeMeans(t *testing.T) {
+	for _, recentMetric := range []string{metrics.RequestPrefillTimeSeconds, metrics.RequestDecodeTimeSeconds} {
+		t.Run(recentMetric, func(t *testing.T) {
+			podMetrics := func(prefillMean, decodeMean float64) map[string]metrics.MetricValue {
+				return map[string]metrics.MetricValue{
+					metrics.RequestQueueTimeSeconds:   &metrics.HistogramMetricValue{Sum: 0.1, Count: 1},
+					metrics.AvgPromptToksPerReq:       &metrics.SimpleMetricValue{Value: 10},
+					metrics.AvgGenerationToksPerReq:   &metrics.SimpleMetricValue{Value: 100},
+					metrics.RequestPrefillTimeSeconds: &metrics.HistogramMetricValue{Sum: prefillMean, Count: 1},
+					metrics.RequestDecodeTimeSeconds:  &metrics.HistogramMetricValue{Sum: decodeMean, Count: 1},
+				}
+			}
+			route := func(p1Recent metrics.MetricValue) string {
+				readyPods := []*v1.Pod{
+					newPod("p1", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+					newPod("p2", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+				}
+				// p1 is faster than p2 over its lifetime.
+				p1, p2 := podMetrics(0.1, 1), podMetrics(0.2, 2)
+				if p1Recent != nil {
+					p1[cache.RecentMeanMetricName(recentMetric)] = p1Recent
+				}
+				c := cache.NewWithPodsModelMetricsForTest(readyPods, "m1", map[string]map[string]metrics.MetricValue{"p1": p1, "p2": p2})
+				router := leastExpectedLatencyRouter{cache: c}
+				ctx := types.NewRoutingContext(context.Background(), "test", "m1", "message", "request", "user")
+				target, err := router.Route(ctx, newMockPodList(readyPods, nil))
+				assert.NoError(t, err)
+				return target
+			}
+
+			assert.Equal(t, "1.1.1.1:8000", route(nil), "lifetime means decide without a recent mean")
+			assert.Equal(t, "2.2.2.2:8000", route(&metrics.SimpleMetricValue{Value: 50}),
+				"p1 has slowed down in the last minute")
+		})
+	}
 }

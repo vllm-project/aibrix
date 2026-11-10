@@ -19,6 +19,7 @@ import signal
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -2243,7 +2244,9 @@ def test_initial_kv_write_before_capture_and_restart(initial_kv):
         agent.set_kv_limit(inst.model_name, 200, operation_id="grow")
     assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 100
     agent._schedule_restart(inst, "engine exited")
-    agent._now = lambda: inst.next_restart_at
+    # The restart clears next_restart_at, so the clock keeps the due time.
+    due = inst.next_restart_at
+    agent._now = lambda: due
     agent.supervise_once()
     segment.write_bytes(struct.pack("<3q", 80, 0, 0))
     assert agent.snapshot()["models"][0]["kv_initial_capacity_bytes"] == 80
@@ -2983,10 +2986,40 @@ def test_resolve_model_path_returns_the_downloaded_path(monkeypatch):
     import aibrix.downloader
     import aibrix.runtime.model_runtime as runtime_module
 
+    # The real downloader returns a pathlib.Path.
     monkeypatch.setattr(
-        aibrix.downloader, "download_model", lambda model_uri: "/models/m"
+        aibrix.downloader, "download_model", lambda model_uri: Path("/models/m")
     )
-    assert runtime_module._resolve_model_path("s3://bucket/models/m") == "/models/m"
+    resolved = runtime_module._resolve_model_path("s3://bucket/models/m")
+    assert isinstance(resolved, str)
+    assert resolved == "/models/m"
+
+
+def test_launch_passes_a_downloaded_model_path_as_a_string(monkeypatch):
+    import subprocess
+
+    import aibrix.downloader
+    from aibrix.runtime.model_runtime import ModelInstance, SubprocessEngineLauncher
+
+    launched = []
+
+    def fake_popen(cmd, **kwargs):
+        launched.append(cmd)
+        return SimpleNamespace(pid=4321)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        aibrix.downloader, "download_model", lambda model_uri: Path("/models/m")
+    )
+    inst = ModelInstance(model_name="m1", port=20000, ipc_name="kvc_m1", engine="vllm")
+
+    assert (
+        SubprocessEngineLauncher().launch(inst, "s3://bucket/models/m", None, None)
+        == 4321
+    )
+    cmd = launched[0]
+    assert cmd[cmd.index("--model") + 1] == "/models/m"
+    assert all(isinstance(arg, str) for arg in cmd)
 
 
 def test_resolve_model_path_raises_without_a_downloader(monkeypatch):
@@ -3007,6 +3040,54 @@ def test_resolve_model_path_raises_other_import_time_errors(monkeypatch):
     monkeypatch.setitem(sys.modules, "aibrix.downloader", BrokenModule())
     with pytest.raises(RuntimeError):
         runtime_module._resolve_model_path("s3://bucket/models/m")
+
+
+@pytest.mark.parametrize("scheme", ["gcs", "gs"])
+def test_resolve_model_path_downloads_from_gcs(monkeypatch, tmp_path, scheme):
+    import requests
+
+    import aibrix.downloader.gcs as gcs_module
+    import aibrix.envs
+    import aibrix.runtime.model_runtime as runtime_module
+
+    objects = {"models/m/config.json": b"{}"}
+
+    class Blob:
+        def __init__(self, name):
+            self.name, self.size, self.etag = name, len(objects[name]), "etag"
+
+        def download_to_filename(self, filename):
+            with open(filename, "wb") as f:
+                f.write(objects[self.name])
+
+    class Client:
+        _http = requests.Session()
+
+        def bucket(self, bucket_name):
+            assert bucket_name == "bucket"
+            return SimpleNamespace(
+                get_blob=lambda name: Blob(name) if name in objects else None
+            )
+
+        def list_blobs(self, bucket_name, prefix=None, max_results=None):
+            names = [n for n in objects if n.startswith(prefix)][:max_results]
+            return iter(Blob(n) for n in names)
+
+    monkeypatch.setattr(
+        gcs_module, "storage", SimpleNamespace(Client=lambda project=None: Client())
+    )
+    monkeypatch.setattr(aibrix.envs, "DOWNLOADER_LOCAL_DIR", str(tmp_path))
+
+    model_path = runtime_module._resolve_model_path(f"{scheme}://bucket/models/m")
+    assert (tmp_path / "m" / "config.json").read_bytes() == b"{}"
+    assert str(model_path) == str(tmp_path / "m")
+
+
+def test_resolve_model_path_names_an_unsupported_scheme():
+    import aibrix.runtime.model_runtime as runtime_module
+
+    with pytest.raises(ValueError, match="`azure://`"):
+        runtime_module._resolve_model_path("azure://container/models/m")
 
 
 class _DownloadingLauncher(MockEngineLauncher):

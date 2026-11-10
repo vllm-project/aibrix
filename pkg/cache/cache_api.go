@@ -99,6 +99,16 @@ type VerifiedModelCache interface {
 	ListModelsVerified(ctx context.Context, readyPods bool) ([]string, error)
 }
 
+// ModelConfigCache is an optional model extension. It returns the config that
+// discovery supplied for a model as a whole, as the JSON the
+// model.aibrix.ai/config pod annotation holds. Only the static provider
+// supplies one today, from the config field of a local-mode endpoints file, so
+// the gateway reads it ahead of pod annotations and falls back to them when
+// found is false.
+type ModelConfigCache interface {
+	ModelConfig(modelName string) (config string, found bool)
+}
+
 // ModelClaimBindingProvider is an optional cache extension used by the
 // gateway when a ModelClaim is known but intentionally non-routable. Dormant
 // bindings stay separate from ModelCache so normal routing never sees port 0.
@@ -111,6 +121,19 @@ type ModelClaimBindingProvider interface {
 // placed yet, which no pod advertises, from one that no claim serves.
 type ModelClaimStatusProvider interface {
 	ModelClaimStatus(modelName string) (phase, reason string, found bool)
+}
+
+// ApproxRunningRequestsProvider is an optional Cache capability: a running-request count for
+// every pod that is read from process memory only. Callers type-assert for it, like
+// PodReadySinceProvider, and treat a failed assertion as "no estimate".
+type ApproxRunningRequestsProvider interface {
+	// GetPodsRunningRequestsApprox returns, keyed by utils.GeneratePodKey, this gateway's own
+	// running count of each pod (exact) plus the other gateways' counts from the latest
+	// gateway snapshot (refreshed every 100ms when Redis is configured). It never calls Redis,
+	// so it can be read for every ready pod on each request. A snapshot older than one second
+	// (a stalled sync) is ignored, leaving this gateway's own counts. Without Redis it equals
+	// GetPodsRunningRequests. Pods not in the cache are omitted.
+	GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64
 }
 
 // PodReadySinceProvider is an optional cache extension exposing when this gateway first saw each

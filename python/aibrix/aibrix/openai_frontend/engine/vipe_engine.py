@@ -60,6 +60,7 @@ from prometheus_client import (
     Histogram,
     generate_latest,
 )
+from pydantic import BaseModel
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -74,7 +75,6 @@ from aibrix.openai_frontend.schemas.openai import (
     ChatCompletionResponseMessage,
     ChatCompletionStreamingResponseChoice,
     ChatCompletionStreamResponseDelta,
-    CompletionUsage,
     CreateChatCompletionRequest,
     CreateChatCompletionResponse,
     CreateChatCompletionStreamResponse,
@@ -84,6 +84,7 @@ from aibrix.openai_frontend.schemas.openai import (
     CreateEmbeddingResponse,
     Model,
     ObjectType,
+    Usage,
 )
 from aibrix.openai_frontend.schemas.vipe import (
     ViPEOutputResult,
@@ -443,6 +444,7 @@ class ViPEEngine(LLMEngine):
         self._oom_retry_counts: Dict[str, int] = {}
         self._result_listener_task: Optional[asyncio.Task] = None
         self._stopping: bool = False
+        self._close_task: Optional[asyncio.Task[None]] = None
 
         # Shared temp dirs for each active request (kept alive until upload finishes)
         self._active_tmpdirs: Dict[str, tempfile.TemporaryDirectory] = {}
@@ -476,6 +478,8 @@ class ViPEEngine(LLMEngine):
 
     async def start(self) -> None:
         """Spawn worker-0 so it creates its pipeline while the server warms up."""
+        if self._close_task is not None:
+            raise RuntimeError("ViPE engine is closed")
         self._stopping = False
         await self._ensure_result_listener()
         self._spawn_worker(worker_id=0)
@@ -508,14 +512,20 @@ class ViPEEngine(LLMEngine):
         logger.info("Spawned worker-%d (pid=%d)", worker_id, p.pid)
         return p
 
-    def stop(self) -> None:
-        """Send shutdown sentinels to all workers and join them."""
-        self._stopping = True
+    async def aclose(self) -> None:
+        """Stop workers and await listener cleanup exactly once."""
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close_resources())
+        await asyncio.shield(self._close_task)
 
-        task = self._result_listener_task
+    async def _close_resources(self) -> None:
+        self._stopping = True
+        self._ready = False
+
+        task, self._result_listener_task = self._result_listener_task, None
         if task is not None:
             task.cancel()
-            self._result_listener_task = None
+            await asyncio.gather(task, return_exceptions=True)
 
         shutdown_exc = ClientError("ViPE engine is stopping")
         for req_id, future in list(self._pending.items()):
@@ -533,6 +543,12 @@ class ViPEEngine(LLMEngine):
         for req_id in list(self._active_tmpdirs.keys()):
             self._cleanup_request_tmpdir(req_id)
 
+        await asyncio.to_thread(self._stop_workers)
+        self._active_workers.set(0)
+        logger.info("All workers stopped")
+
+    def _stop_workers(self) -> None:
+        """Send shutdown sentinels and join workers without blocking the event loop."""
         for q in self._request_queues:
             try:
                 put_nowait = getattr(q, "put_nowait", None)
@@ -551,7 +567,6 @@ class ViPEEngine(LLMEngine):
                 )
                 w.terminate()
                 w.join(timeout=5)
-        logger.info("All workers stopped")
 
     async def _ensure_result_listener(self) -> None:
         if self._result_listener_task is not None:
@@ -1031,24 +1046,15 @@ class ViPEEngine(LLMEngine):
             for model_name, created in self._loaded_models.items()
         ]
 
-    async def load_model(self, model_name: str) -> Model:
-        if model_name in self._loaded_models:
-            raise ServerError(f"Model '{model_name}' is already loaded")
-        created = int(time.time())
-        self._loaded_models[model_name] = created
-        return Model(
-            id=model_name,
-            created=created,
-            object=ObjectType.model,
-            owned_by="ViPE Engine",
-        )
-
-    async def unload_model(self, model_name: str) -> None:
-        if model_name not in self._loaded_models:
-            raise ServerError(f"Unknown model: {model_name}")
-        if model_name == self.default_model and len(self._loaded_models) == 1:
-            raise ServerError("Cannot unload the last available model")
-        del self._loaded_models[model_name]
+    async def responses(
+        self,
+        operation: str,
+        request: BaseModel | None = None,
+        *,
+        response_id: str | None = None,
+        query: list[tuple[str, str]] | None = None,
+    ) -> BaseModel | AsyncIterator[str]:
+        raise NotImplementedError("Responses are not supported by ViPE engine")
 
     async def embedding(
         self, request: CreateEmbeddingRequest
@@ -1636,12 +1642,12 @@ class ViPEEngine(LLMEngine):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _build_usage(self, prompt: str, completion: str) -> CompletionUsage:
+    def _build_usage(self, prompt: str, completion: str) -> Usage:
         import re
 
         prompt_tokens = len(re.split(r"[^a-zA-Z0-9]+", prompt))
         completion_tokens = len(re.split(r"[^a-zA-Z0-9]+", completion))
-        return CompletionUsage(
+        return Usage(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=prompt_tokens + completion_tokens,

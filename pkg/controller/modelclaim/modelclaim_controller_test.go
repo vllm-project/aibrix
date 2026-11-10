@@ -23,9 +23,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -65,6 +68,9 @@ type fakeRuntime struct {
 	mu              sync.Mutex
 	activateCalls   []ActivateRequest
 	deactivateCalls []DeactivateRequest
+	deactivateErr   error
+	deactivateErrOn map[string]error
+	deactivatedOn   []string
 	kvLimitCalls    []SetKVLimitRequest
 	sleepCalls      []SleepRequest
 	// onSleep, when set, runs on every sleep, as a runtime changes what its
@@ -74,6 +80,7 @@ type fakeRuntime struct {
 	sleepErr      error
 	listCalls     int
 	snapshotCalls int
+	snapshotErrOn map[string]error
 	// snapshotCallsTo counts the snapshot reads of each runtime, by pod IP.
 	snapshotCallsTo map[string]int
 	portSeq         int32
@@ -149,8 +156,15 @@ func (f *fakeRuntime) Activate(_ context.Context, podIP string, runtimePort int,
 	return &ActivateResponse{Status: "success", ModelName: req.ModelName, Port: port, IPCName: req.IPCName}, nil
 }
 
-func (f *fakeRuntime) Deactivate(_ context.Context, _ string, _ int, req *DeactivateRequest) error {
+func (f *fakeRuntime) Deactivate(_ context.Context, podIP string, _ int, req *DeactivateRequest) error {
 	f.deactivateCalls = append(f.deactivateCalls, *req)
+	f.deactivatedOn = append(f.deactivatedOn, podIP)
+	if f.deactivateErr != nil {
+		return f.deactivateErr
+	}
+	if err := f.deactivateErrOn[podIP]; err != nil {
+		return err
+	}
 	delete(f.models, req.ModelName)
 	return nil
 }
@@ -224,6 +238,9 @@ func (f *fakeRuntime) Snapshot(_ context.Context, podIP string, _ int) (*Runtime
 		f.snapshotCallsTo = map[string]int{}
 	}
 	f.snapshotCallsTo[podIP]++
+	if err := f.snapshotErrOn[podIP]; err != nil {
+		return nil, err
+	}
 	if f.nilSnapshots[podIP] {
 		return nil, nil
 	}
@@ -2374,6 +2391,230 @@ func TestReconcileDeletionDeactivates(t *testing.T) {
 	err := r.Get(context.Background(),
 		types.NamespacedName{Namespace: testNamespace, Name: pm.Name}, got)
 	assert.True(t, err != nil || !controllerutil.ContainsFinalizer(got, ModelClaimFinalizer))
+}
+
+func TestReconcileDeletionRetriesAfterDeactivateFailure(t *testing.T) {
+	now := time.Date(2026, time.October, 30, 0, 0, 0, 0, time.UTC)
+	pm := deletingClaim(now.Add(-deletionDrainTimeout))
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	routeKey := constants.ModelClaimPodAnnotationPrefix + pm.Name
+	wakeKey := constants.ModelClaimWakeAnnotationPrefix + pm.Name
+	pod.Annotations = map[string]string{
+		routeKey: `{"model":"qwen2-7b","port":9001,"state":"active"}`,
+		wakeKey:  now.Format(time.RFC3339),
+	}
+	r, runtime := newReconciler(t, pm, pod)
+	r.Now = func() time.Time { return now }
+	modelName := servedModelName(pm)
+	runtime.models = map[string]ModelInfo{
+		modelName: {ModelName: modelName, Port: 9001, Phase: "active", Ready: true},
+	}
+	stopErr := errors.New("runtime unavailable")
+	runtime.deactivateErr = stopErr
+	ctx := context.Background()
+	key := types.NamespacedName{Namespace: testNamespace, Name: pm.Name}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+		require.ErrorIs(t, err, stopErr)
+		got := getModel(t, r, pm.Name)
+		assert.False(t, got.DeletionTimestamp.IsZero())
+		assert.True(t, controllerutil.ContainsFinalizer(got, ModelClaimFinalizer))
+		assert.Equal(t, pm.Status.Instances, got.Status.Instances)
+		assert.Contains(t, runtime.models, modelName)
+		require.Len(t, runtime.deactivateCalls, attempt)
+		assert.Equal(t, DeactivateRequest{ModelName: modelName, Mode: DeactivateStop}, runtime.deactivateCalls[attempt-1])
+
+		gotPod := &corev1.Pod{}
+		require.NoError(t, r.Get(ctx, client.ObjectKeyFromObject(pod), gotPod))
+		assert.NotContains(t, gotPod.Annotations, routeKey)
+		assert.NotContains(t, gotPod.Annotations, wakeKey)
+	}
+
+	runtime.deactivateErr = nil
+	_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+	require.NoError(t, err)
+	require.Len(t, runtime.deactivateCalls, 3)
+	assert.NotContains(t, runtime.models, modelName)
+	err = r.Get(ctx, key, &modelv1alpha1.ModelClaim{})
+	require.True(t, apierrors.IsNotFound(err), "claim should be deleted after the stop succeeds: %v", err)
+}
+
+func TestReconcileDeletionAttemptsAllInstancesAfterDeactivateFailure(t *testing.T) {
+	for _, secondFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("second_runtime_fails=%t", secondFails), func(t *testing.T) {
+			now := time.Date(2026, time.October, 30, 0, 0, 0, 0, time.UTC)
+			pm := deletingClaim(now.Add(-deletionDrainTimeout))
+			pm.Status.Instances = append(pm.Status.Instances, modelv1alpha1.ModelClaimInstance{
+				Pod: "warm-2", Port: 9001, Phase: modelv1alpha1.ModelClaimActive,
+			})
+			first := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+			second := warmPod("warm-2", "b300-pool-a", true, corev1.PodRunning)
+			second.Status.PodIP = testPeerIP
+			routeKey := constants.ModelClaimPodAnnotationPrefix + pm.Name
+			wakeKey := constants.ModelClaimWakeAnnotationPrefix + pm.Name
+			for _, pod := range []*corev1.Pod{first, second} {
+				pod.Annotations = map[string]string{
+					routeKey: `{"model":"qwen2-7b","port":9001,"state":"active"}`,
+					wakeKey:  now.Format(time.RFC3339),
+				}
+			}
+			r, runtime := newReconciler(t, pm, first, second)
+			r.Now = func() time.Time { return now }
+			firstErr := errors.New("first runtime unavailable")
+			secondErr := errors.New("second runtime unavailable")
+			runtime.deactivateErrOn = map[string]error{first.Status.PodIP: firstErr}
+			if secondFails {
+				runtime.deactivateErrOn[second.Status.PodIP] = secondErr
+			}
+			ctx := context.Background()
+			key := types.NamespacedName{Namespace: testNamespace, Name: pm.Name}
+
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			require.ErrorIs(t, err, firstErr)
+			assert.Equal(t, []string{first.Status.PodIP, second.Status.PodIP}, runtime.deactivatedOn)
+			if secondFails {
+				assert.ErrorIs(t, err, secondErr)
+			}
+			got := getModel(t, r, pm.Name)
+			assert.True(t, controllerutil.ContainsFinalizer(got, ModelClaimFinalizer))
+			assert.Equal(t, pm.Status.Instances, got.Status.Instances)
+			for _, pod := range []*corev1.Pod{first, second} {
+				gotPod := &corev1.Pod{}
+				require.NoError(t, r.Get(ctx, client.ObjectKeyFromObject(pod), gotPod))
+				assert.NotContains(t, gotPod.Annotations, routeKey)
+				assert.NotContains(t, gotPod.Annotations, wakeKey)
+			}
+
+			runtime.deactivateErrOn = nil
+			_, err = r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			require.NoError(t, err)
+			assert.Equal(t, []string{first.Status.PodIP, second.Status.PodIP, first.Status.PodIP, second.Status.PodIP}, runtime.deactivatedOn)
+			err = r.Get(ctx, key, &modelv1alpha1.ModelClaim{})
+			require.True(t, apierrors.IsNotFound(err), "claim should be deleted after all stops succeed: %v", err)
+		})
+	}
+}
+
+func TestDeletionSnapshotFailureRetainsClaimAndAttemptsOtherInstances(t *testing.T) {
+	now := time.Now()
+	pm := deletingClaim(now.Add(-deletionDrainTimeout))
+	pm.Status.Instances = append(pm.Status.Instances, modelv1alpha1.ModelClaimInstance{Pod: "warm-2", Port: 9001, Phase: modelv1alpha1.ModelClaimActive})
+	first := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	second := warmPod("warm-2", "b300-pool-a", true, corev1.PodRunning)
+	second.Status.PodIP = testPeerIP
+	r, runtime := newReconciler(t, pm, first, second)
+	r.Now = func() time.Time { return now }
+	snapshotErr := errors.New("snapshot unavailable")
+	runtime.snapshotErrOn = map[string]error{first.Status.PodIP: snapshotErr}
+	key := types.NamespacedName{Namespace: testNamespace, Name: pm.Name}
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+	require.ErrorIs(t, err, snapshotErr)
+	assert.Equal(t, []string{second.Status.PodIP}, runtime.deactivatedOn)
+	got := getModel(t, r, pm.Name)
+	assert.True(t, controllerutil.ContainsFinalizer(got, ModelClaimFinalizer))
+	assert.Equal(t, pm.Status.Instances, got.Status.Instances)
+	runtime.snapshotErrOn = nil
+	_, err = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+	require.NoError(t, err)
+	require.True(t, apierrors.IsNotFound(r.Get(context.Background(), key, &modelv1alpha1.ModelClaim{})))
+}
+
+func TestDeletionHonorsRuntimeSilenceAndRecovers(t *testing.T) {
+	now := time.Now()
+	var recovered atomic.Bool
+	var snapshots, stops atomic.Int32
+	released := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case snapshotPath:
+			snapshots.Add(1)
+		case deactivatePath:
+			stops.Add(1)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if !recovered.Load() {
+			<-released
+			return
+		}
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+	defer close(released)
+	transport := &http.Transport{DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+	}}
+	defer transport.CloseIdleConnections()
+	runtime := newHTTPRuntimeClient(100*time.Millisecond, func() time.Time { return now })
+	runtime.httpClient = &http.Client{Transport: transport, Timeout: time.Second}
+	pm := deletingClaim(now.Add(-deletionDrainTimeout))
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	r, _ := newReconciler(t, pm, pod)
+	r.Runtime = runtime
+	r.Now = func() time.Time { return now }
+	key := types.NamespacedName{Namespace: testNamespace, Name: pm.Name}
+	for attempt := 0; attempt < 2; attempt++ {
+		_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+		require.ErrorIs(t, err, errRuntimeSilent)
+		got := getModel(t, r, pm.Name)
+		assert.True(t, controllerutil.ContainsFinalizer(got, ModelClaimFinalizer))
+		assert.Equal(t, pm.Status.Instances, got.Status.Instances)
+		assert.EqualValues(t, 1, snapshots.Load())
+		assert.Zero(t, stops.Load())
+	}
+	recovered.Store(true)
+	now = now.Add(shortestRuntimeSilence)
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, stops.Load())
+	require.True(t, apierrors.IsNotFound(r.Get(context.Background(), key, &modelv1alpha1.ModelClaim{})))
+}
+
+func TestDeletionStopDeadlineRetainsClaimAndRecovers(t *testing.T) {
+	now := time.Now()
+	var recovered atomic.Bool
+	var stops atomic.Int32
+	released := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == deactivatePath {
+			stops.Add(1)
+			if !recovered.Load() {
+				<-released
+				return
+			}
+		}
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+	defer close(released)
+	transport := &http.Transport{DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+	}}
+	defer transport.CloseIdleConnections()
+	runtime := newHTTPRuntimeClient(time.Second, func() time.Time { return now })
+	// The HTTP timeout is longer than the deletion budget, but bounds a regression.
+	runtime.httpClient = &http.Client{Transport: transport, Timeout: 15 * time.Second}
+	pm := deletingClaim(now.Add(-deletionDrainTimeout))
+	pod := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+	r, _ := newReconciler(t, pm, pod)
+	r.Runtime = runtime
+	r.Now = func() time.Time { return now }
+	key := types.NamespacedName{Namespace: testNamespace, Name: pm.Name}
+	start := time.Now()
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(start), 13*time.Second)
+	got := getModel(t, r, pm.Name)
+	assert.True(t, controllerutil.ContainsFinalizer(got, ModelClaimFinalizer))
+	assert.Equal(t, pm.Status.Instances, got.Status.Instances)
+	recovered.Store(true)
+	now = now.Add(shortestRuntimeSilence)
+	_, err = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, stops.Load())
+	require.True(t, apierrors.IsNotFound(r.Get(context.Background(), key, &modelv1alpha1.ModelClaim{})))
 }
 
 // deletingClaim is the sample claim, deleted at the given time, with its engine

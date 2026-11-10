@@ -18,8 +18,10 @@ package routingalgorithms
 
 import (
 	"context"
+	"math"
 	"testing"
 
+	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -164,5 +166,62 @@ func TestThroughput(t *testing.T) {
 				assert.Contains(t, tt.expectMsgs, targetPod)
 			}
 		})
+	}
+}
+
+// promqlAverage is how the cache stores a PromQL average such as avg_prompt_toks_per_req: a query
+// result, not a simple value.
+func promqlAverage(v float64) *metrics.PrometheusMetricValue {
+	var result model.Value = model.Vector{&model.Sample{Value: model.SampleValue(v)}}
+	return &metrics.PrometheusMetricValue{Result: &result}
+}
+
+func TestThroughputReadsPromQLAverages(t *testing.T) {
+	pods := []*v1.Pod{
+		newPod("p1", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("p2", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("p3", "3.3.3.3", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+		newPod("p4", "4.4.4.4", true, map[string]string{"model.aibrix.ai/port": "8000"}),
+	}
+	c := cache.NewWithPodsModelMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
+		"p1": {
+			metrics.AvgPromptToksPerReq:     promqlAverage(100),
+			metrics.AvgGenerationToksPerReq: promqlAverage(50),
+		},
+		"p2": {
+			metrics.AvgPromptToksPerReq:     promqlAverage(10),
+			metrics.AvgGenerationToksPerReq: promqlAverage(5),
+		},
+		// A pod that served nothing in the window: the averaging query divides 0 by 0.
+		"p3": {
+			metrics.AvgPromptToksPerReq:     promqlAverage(math.NaN()),
+			metrics.AvgGenerationToksPerReq: promqlAverage(math.NaN()),
+		},
+		// Only one of the two averages is usable, which is not enough to score the pod.
+		"p4": {
+			metrics.AvgPromptToksPerReq:     promqlAverage(1),
+			metrics.AvgGenerationToksPerReq: promqlAverage(math.NaN()),
+		},
+	})
+	podList := podsFromCache(c)
+	r := throughputRouter{cache: c}
+
+	ctx := types.NewRoutingContext(context.Background(), "test", "m1", "message", "request", "user")
+	scores, scored, err := r.ScoreAll(ctx, podList)
+	assert.NoError(t, err)
+	got := map[string]float64{}
+	for i, pod := range podList.All() {
+		if scored[i] {
+			got[pod.Name] = scores[i]
+		}
+	}
+	assert.Equal(t, map[string]float64{"p1": 250, "p2": 25}, got,
+		"PromQL averages score as 2*prompt + generation, and a NaN in either average leaves the pod unscored")
+
+	for i := 0; i < 20; i++ {
+		ctx := types.NewRoutingContext(context.Background(), "test", "m1", "message", "request", "user")
+		target, err := r.Route(ctx, podList)
+		assert.NoError(t, err)
+		assert.Equal(t, "2.2.2.2:8000", target)
 	}
 }

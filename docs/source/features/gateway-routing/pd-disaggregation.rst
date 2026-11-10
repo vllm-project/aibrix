@@ -88,6 +88,35 @@ How PD Disaggregation Works
 
 If no complete prefill/decode pair is available for the request's prompt length — for example the prompt is outside all configured buckets, or the matching roleset is incomplete because a decode pod is down — the request falls back to a **standard inference pod** (``combined: true``) that runs both phases locally, when one is configured and its prompt-length range matches.
 
+Prefill Engine Errors
+---------------------
+
+With vLLM and TensorRT-LLM, the prefill request is synchronous: the gateway
+sends it to the prefill pod before any decode pod runs. A request the prefill
+engine refuses therefore never reaches the decode pod, and its rejection is not
+a routing failure: the prefill pod was selected and reachable, and the engine
+rejected the request body itself — a sampling parameter outside its range, or
+media the model cannot accept.
+
+Such a rejection is returned to the client unchanged: the prefill pod's HTTP
+status and its error payload (``message``, ``type``, ``param``, ``code``) reach
+the client as they were sent. No ``x-error-pd-prefill`` marker is added: the
+payload is the engine's own answer, so a disaggregated request fails with the
+same error and status a standard inference pod would have returned.
+
+A ``5xx`` from the prefill engine keeps the engine's status and message and
+carries the ``x-error-pd-prefill: true`` marker, because a server-side error
+says nothing about the request and the status alone cannot tell which leg
+failed. A standard inference pod instead answers an engine ``500`` with a
+fixed ``Internal server error`` body.
+
+A prefill pod the gateway cannot reach (connection refused or reset, or a
+timeout on the call) keeps the ``503`` status but carries the marker and the
+transport error in its message. This describes the HTTP call only: a KV
+transfer failing inside the engine, as with a push-based connector such as
+NIXL or Mooncake, surfaces as the engine's own ``5xx``, and a pull-based
+handoff such as SGLang fails on the decode side.
+
 
 Supported Engines
 -----------------
@@ -347,6 +376,8 @@ Encode Pods for Multimodal Requests (EPD)
 With vLLM, a roleset can also run the vision or audio encoder on its own pods, labeled ``role-name: encode`` with the same ``roleset-name`` as the prefill and decode pods. For a ``/v1/chat/completions`` request that carries ``image_url``, ``audio_url``, ``input_audio`` or ``video_url`` items, the gateway first sends each item to one of the selected roleset's encode pods, in parallel, and waits for them before the prefill request. Text-only requests, other endpoints and rolesets without encode pods route exactly as before. Encode pods are never picked as prefill, decode or standard inference pods.
 
 The request body is not changed. The encode pods store their output through vLLM's EC connector, keyed by the hash of each media item, and the prefill pod finds it under the same hash. If an item's output is not there, for example because its encode request failed, the prefill pod encodes the item itself, so a failed encode costs latency but not the request. Each encode request uses the prefill request timeout, and ``gateway_pd_encode_request_total`` counts them by ``status``.
+
+By default the gateway sends the items to the selected roleset's encode pods in turn. With ``AIBRIX_ENCODE_SELECTION_POLICY=least_request`` it sends each item to the encode pod with the fewest items it has in flight, so an encode pod that is still working on large images does not receive the next ones while others are idle. Each gateway replica counts separately, and within a replica the ``pd`` routing strategy and the other strategies keep separate counts.
 
 Start the encode pods as encoder-only producers and the prefill pods as consumers of the same EC connector. With ``ECExampleConnector``, the encode and prefill pods must mount the same volume, such as a ``ReadWriteMany`` PVC or a ``hostPath`` on one node. Otherwise the prefill pod never finds the encoder output and encodes every item itself. ``samples/disaggregation/vllm/1e1p1d.yaml`` is a complete example:
 
@@ -845,6 +876,9 @@ These are set on the **gateway plugin** deployment.
    * - ``AIBRIX_BUCKET_SERVE_MODE``
      - ``throughput``
      - Objective of the adaptive cut points: ``throughput`` (prompt token mass) or ``rps`` (request counts). An unknown value keeps the default.
+   * - ``AIBRIX_ENCODE_SELECTION_POLICY``
+     - ``round_robin``
+     - How the encode stage picks an encode pod for each media item: ``round_robin``, or ``least_request`` for the encode pod with the fewest items in flight. Environment only.
    * - ``AIBRIX_PREFILL_REQUEST_TIMEOUT``
      - ``30``
      - Seconds before a prefill request to a prefill pod times out.

@@ -37,22 +37,21 @@ import (
 func TestModelReplicaRequestsInflightLimit(t *testing.T) {
 	msg := "replica inflight limit test message"
 
-	// A large MaxTokens keeps the mock backend's simulated decode latency (see
-	// MOCK_DECODE_SECONDS_PER_TOKEN in development/app/app.py) long enough that two
-	// concurrently-issued requests are guaranteed to genuinely overlap in flight, rather
-	// than racing to complete before the second one is even sent.
-	sendRequest := func() error {
-		client := createOpenAIClient(gatewayURL, apiKey)
+	sendRequest := func(client openai.Client, maxTokens int64) error {
 		_, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 			Messages:  []openai.ChatCompletionMessageParamUnion{openai.UserMessage(msg)},
 			Model:     modelNameQwen3ReplicaInflight,
-			MaxTokens: openai.Int(400),
+			MaxTokens: openai.Int(maxTokens),
 		})
 		return err
 	}
 
-	sendConcurrentRequests := func(count int) []error {
+	sendConcurrentRequests := func(count int, maxTokens int64) []error {
 		errs := make([]error, count)
+		clients := make([]openai.Client, count)
+		for i := range count {
+			clients[i] = createOpenAIClient(gatewayURL, apiKey)
+		}
 		start := make(chan struct{})
 		var wg sync.WaitGroup
 		wg.Add(count)
@@ -60,7 +59,7 @@ func TestModelReplicaRequestsInflightLimit(t *testing.T) {
 			go func(index int) {
 				defer wg.Done()
 				<-start
-				errs[index] = sendRequest()
+				errs[index] = sendRequest(clients[index], maxTokens)
 			}(i)
 		}
 		close(start)
@@ -69,12 +68,15 @@ func TestModelReplicaRequestsInflightLimit(t *testing.T) {
 	}
 
 	t.Run("single_request_succeeds", func(t *testing.T) {
-		err := sendRequest()
+		err := sendRequest(createOpenAIClient(gatewayURL, apiKey), 1)
 		require.NoError(t, err, "a single request within the inflight cap should succeed")
 	})
 
 	t.Run("concurrent_requests_beyond_cap_are_rejected", func(t *testing.T) {
-		errs := sendConcurrentRequests(2)
+		// A 600-token decode (~1.2s at 2ms/token simulated decode latency in development/app/app.py)
+		// widens the mock backend's response time so the concurrent requests are guaranteed to
+		// genuinely overlap in flight, even under CI runner scheduling jitter.
+		errs := sendConcurrentRequests(2, 600)
 		require.Len(t, errs, 2)
 
 		var allowed, rejected int
@@ -98,7 +100,7 @@ func TestModelReplicaRequestsInflightLimit(t *testing.T) {
 		// Sequential requests never overlap, so each one sees the replica idle again by
 		// the time it is admitted.
 		for i := 0; i < 2; i++ {
-			err := sendRequest()
+			err := sendRequest(createOpenAIClient(gatewayURL, apiKey), 1)
 			require.NoError(t, err, "sequential request %d should succeed once the prior one has completed", i+1)
 		}
 	})

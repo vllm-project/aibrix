@@ -84,8 +84,9 @@ const (
 type Store struct {
 	mu                  sync.RWMutex            // Read-write lock for concurrency safety
 	initialized         bool                    // Initialization status flag
-	redisClient         *redis.Client           // Redis client instance
-	admitRedisClient    *redis.Client           // redisClient without go-redis retries, for the admit script
+	redisClient         *redis.Client           // Shared client; context deadlines are off by default. The derived clients below enable them.
+	admitRedisClient    *redis.Client           // Context deadlines and no retries for admission; hooks added with AddHook are not inherited.
+	readRedisClient     *redis.Client           // Context deadlines for routing reads; hooks added with AddHook are not inherited.
 	prometheusApi       prometheusv1.API        // Prometheus API client
 	modelRouterProvider ModelRouterProviderFunc // Function to get model router
 
@@ -132,6 +133,9 @@ type Store struct {
 	// ModelClaim advertisements include non-routable port-0 states and are kept
 	// separate from metaModels by construction.
 	modelClaims modelClaimState
+	// modelConfigs holds the model config JSON that discovery supplied per
+	// model (model_name -> config), read through ModelConfigCache.
+	modelConfigs utils.SyncMap[string, string]
 
 	// Deploymnent related storage
 	enableProfileCaching bool                                    // Default to load from enableModelGPUProfileCaching, can be configured.
@@ -170,6 +174,14 @@ type Store struct {
 	// from Redis, grouped by pod key (namespace/name) → []fields. Swapped atomically by
 	// initGatewaySnapshotSync. Readers call Load() to get map[string][]map[string]string.
 	gatewaySnapshotCache atomic.Value
+	// gatewayRemoteRunning holds, for each pod key, the sum of requests_running that the
+	// other gateway instances reported in the latest snapshot. It is derived from
+	// gatewaySnapshotCache when that is swapped, so GetPodsRunningRequestsApprox answers with
+	// one map lookup per pod instead of parsing every gateway's fields on each request.
+	gatewayRemoteRunning atomic.Pointer[remoteRunningSnapshot]
+	// gatewaySnapshotErrorLog rate-limits the Error-level log of failing snapshot ticks. Nil
+	// means initGatewaySnapshotSync creates one; tests set it to capture lines.
+	gatewaySnapshotErrorLog *rateLimitedErrorLog
 
 	// modelReplicaEmitted tracks pods currently exported via model_replicas for stale-series cleanup.
 	modelReplicaEmitted utils.SyncMap[string, modelReplicaState]
@@ -182,9 +194,14 @@ type Store struct {
 	// (see enqueueDeadRunningRequestsPrune / flushPendingRunningRequestsPrunes).
 	runningRequestsPendingPrunes utils.SyncMap[string, []string]
 	// runningRequestsHygieneBusy is true while one coalesced async hygiene pass
-	// (PEXPIRE in-flight hashes + drain pending prunes) is running. Extra heartbeat
-	// ticks skip rather than stacking goroutines.
+	// (PEXPIRE in-flight hashes + drain pending prunes + repair drifted own fields) is
+	// running. Extra heartbeat ticks skip rather than stacking goroutines.
 	runningRequestsHygieneBusy atomic.Bool
+	// runningRequestsDrift is, per pod hash key, how long this gateway's own Redis
+	// field has disagreed with its local running count (see reconcileOwnRunningRequests).
+	// Only the hygiene pass touches it, and runningRequestsHygieneBusy keeps that to one
+	// at a time, so it needs no lock.
+	runningRequestsDrift map[string]runningRequestsDriftState
 	// runningRequestsClockOffsetMillis is (Redis server time - this process's local
 	// time), in milliseconds, as of the most recent successful liveness heartbeat.
 	// Every gateway instance stamps its heartbeat and computes liveness cutoffs from
@@ -225,10 +242,15 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterP
 	podMetricsWorkerCount := loadPodMetricsWorkerCount()
 	podMetricsJobQueueSize := loadPodMetricsJobQueueSize(podMetricsWorkerCount)
 
+	var readRedisClient *redis.Client
+	if redisClient != nil {
+		readRedisClient = utils.NewRedisClientWithContextTimeout(redisClient.Options())
+	}
 	store = &Store{
 		initialized:           true,
 		redisClient:           redisClient,
 		admitRedisClient:      admitRunningRequestsClient(redisClient),
+		readRedisClient:       readRedisClient,
 		prometheusApi:         prometheusApi,
 		enableTracing:         enableGPUOptimizerTracing,
 		requestTrace:          &utils.SyncMap[string, *RequestTrace]{},
@@ -245,6 +267,13 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterP
 	}
 
 	return store
+}
+
+func (c *Store) readClient() *redis.Client {
+	if c.readRedisClient != nil {
+		return c.readRedisClient
+	}
+	return c.redisClient // Test stores built without New may supply their own client and hooks.
 }
 
 // NewForTest initializes the cache store for testing purposes, it can be repeated call for reset.
@@ -585,6 +614,13 @@ func handleDiscoveryObject(store *Store, evType discovery.EventType, obj, oldObj
 		case discovery.EventDelete:
 			store.deleteModelClaim(o)
 		}
+	case *discovery.ModelConfig:
+		switch evType {
+		case discovery.EventAdd, discovery.EventUpdate:
+			store.setModelConfig(o)
+		case discovery.EventDelete:
+			store.deleteModelConfig(o)
+		}
 	default:
 		klog.Warningf("Discovery event with unknown object type: %T", obj)
 		return false
@@ -773,6 +809,14 @@ func (s *Store) Close() {
 	// Stop publishing the decode ledger.
 	if p := s.decodeLedger.Load(); p != nil {
 		p.close()
+	}
+
+	// Close the derived clients owned by this store.
+	if s.admitRedisClient != nil {
+		_ = s.admitRedisClient.Close()
+	}
+	if s.readRedisClient != nil {
+		_ = s.readRedisClient.Close()
 	}
 
 	// Other cleanup can be added here in the future

@@ -189,7 +189,10 @@ Available controllers:
 - ``pod-autoscaler-controller``: HPA/KPA-style autoscaling
 - ``distributed-inference-controller``: Ray-based distributed inference (requires KubeRay)
 - ``model-adapter-controller``: LoRA adapter management
+- ``model-route-controller``: Gateway API ``HTTPRoute`` creation for each served model
 - ``kv-cache-controller``: Distributed KV cache server orchestration with consistent hashing
+- ``model-claim-controller``: Multiple models sharing GPUs through ModelClaim (experimental)
+- ``model-warmup-controller``: Node preparation ahead of use through ModelWarmup (experimental)
 - ``stormservice-controller``: Multi-node orchestration with P/D and AFD support
 
 .. card:: What's next?

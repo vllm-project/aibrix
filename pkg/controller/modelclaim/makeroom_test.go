@@ -357,6 +357,104 @@ func TestPreemptionReservationSurvivesVictimWakeRequest(t *testing.T) {
 	assert.False(t, held, "successful activation releases the reservation")
 }
 
+func TestHigherPriorityWakeKeepsItsReserveWhenPreemptorReconcilesFirst(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"low", "warm-1", 300, 100, at0758},
+		serving{"busy", "warm-1", 300, 100, at0759},
+		serving{"high", "warm-1", 300, 100, at0759})
+	setClaimPriority(t, r, "low", 1)
+	setClaimPriority(t, r, "busy", 10)
+	setClaimPriority(t, r, "high", 50)
+	high := getModel(t, r, "high")
+	high.Status.Instances[0].Phase = modelv1alpha1.ModelClaimSleeping
+	high.Status.Instances[0].KVLimitBytes = 20
+	require.NoError(t, r.Status().Update(context.Background(), high))
+	snapshot := runtime.snapshots[podNamed(t, r, "warm-1").Status.PodIP]
+	for i := range snapshot.Models {
+		if snapshot.Models[i].ModelName == "high" {
+			snapshot.Models[i].Phase = runtimePhaseSleeping
+			snapshot.Models[i].Ready = false
+			snapshot.Models[i].KVUsedBytes = 20
+			snapshot.Models[i].KVCapacityBytes = 20
+			snapshot.Models[i].SleepingFootprintBytes = bytesOf(60)
+		}
+	}
+	newPrioritySleepClaim(t, r, "preemptor", 10, at0759)
+
+	reconcileOnce(t, r, "preemptor")
+
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "low", runtime.sleepCalls[0].ModelName)
+	_, held := r.reservations().heldFor(testNamespace, "preemptor", r.now())
+	require.True(t, held)
+	askWake(t, r, "warm-1", "high", "2026-10-01T08:00:06Z")
+
+	reconcileOnce(t, r, "preemptor")
+
+	assert.Empty(t, runtime.activateCalls, "the preemptor must account for the higher-priority wake reserve")
+	_, held = r.reservations().heldFor(testNamespace, "preemptor", r.now())
+	assert.False(t, held, "a hold that cannot reclaim more lower-priority room is released")
+
+	reconcileOnce(t, r, "high")
+
+	require.Len(t, runtime.wakeCalls, 1)
+	assert.Equal(t, "high", runtime.wakeCalls[0].ModelName)
+	assert.Empty(t, getModel(t, r, "preemptor").Status.Instances)
+}
+
+func TestPreemptorAccountsForWakeReserveByPriority(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		wakerPriority      int32
+		includeWakerClaim  bool
+		wantMinimumReserve int64
+	}{
+		{name: "lower priority reserve is removed", wakerPriority: 1, includeWakerClaim: true, wantMinimumReserve: 60},
+		{name: "nearer lower priority reserve is removed", wakerPriority: 9, includeWakerClaim: true, wantMinimumReserve: 60},
+		{name: "equal priority reserve is removed", wakerPriority: 10, includeWakerClaim: true, wantMinimumReserve: 60},
+		{name: "higher priority reserve is kept", wakerPriority: 11, includeWakerClaim: true, wantMinimumReserve: 400},
+		{name: "much higher priority reserve is kept", wakerPriority: 50, includeWakerClaim: true, wantMinimumReserve: 400},
+		{name: "unknown waker reserve is kept", wantMinimumReserve: 400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			preemptor := priorityTestClaim("preemptor", 10, at0759)
+			claims := &modelv1alpha1.ModelClaimList{}
+			if tc.includeWakerClaim {
+				waker := priorityTestClaim("waker", tc.wakerPriority, at0758)
+				claims.Items = append(claims.Items, *waker)
+			}
+			ledgers := map[string]podLedger{
+				"warm-1": {
+					judgeable:                true,
+					hbmUsableBytes:           1000,
+					totalMinimumReserveBytes: 400,
+					totalHeldBytes:           400,
+					engines: []engineOnPod{{
+						claimName: "waker",
+						perGPUBytes: perGPUBytes{
+							maximumFootprintBytes: 300,
+							kvFloorBytes:          100,
+						},
+						kvUsedBytes:            20,
+						kvCapacityBytes:        20,
+						asleep:                 true,
+						sleepingFootprintBytes: 60,
+						wakeReserveAsked:       true,
+					}},
+				},
+			}
+			reservations := newCardReservations()
+			now := time.Date(2026, time.October, 1, 8, 0, 5, 0, time.UTC)
+			require.True(t, reservations.holdPreemption(
+				types.NamespacedName{Namespace: testNamespace, Name: "warm-1"}, preemptor.Name, 400, now))
+
+			reservations.keepWakesOutOfPreemption(ledgers, claims, preemptor, now)
+
+			assert.Equal(t, tc.wantMinimumReserve, ledgers["warm-1"].totalMinimumReserveBytes)
+		})
+	}
+}
+
 func TestPrioritySleepRestartReplansWithoutDurableOwnership(t *testing.T) {
 	r, runtime := servingPool(t, keepNoWakeReserve, 1,
 		serving{"a", "warm-1", 280, 50, at0758},
@@ -431,19 +529,21 @@ func TestPreemptionSleepFailureLetsLaterFeasibleClaimProceed(t *testing.T) {
 func TestInfeasiblePrioritySleepPredecessorDoesNotBlockNeverMakeRoom(t *testing.T) {
 	r, runtime := servingPool(t, keepNoWakeReserve, 1,
 		serving{"resident-a", "warm-1", 300, 100, at0758}, serving{"resident-b", "warm-1", 300, 100, at0759})
-	setClaimPriority(t, r, "resident-a", 20)
-	setClaimPriority(t, r, "resident-b", 20)
-	high := priorityTestClaim("high", 10, at0758)
-	high.Spec.PreemptionPolicy = modelv1alpha1.ModelClaimPreemptionSleepLowerPriority
-	low := priorityTestClaim("low", 0, at0759)
-	low.Spec.PreemptionPolicy = modelv1alpha1.ModelClaimPreemptionNever
-	require.NoError(t, r.Create(context.Background(), withFinalizer(high)))
-	require.NoError(t, r.Create(context.Background(), withFinalizer(low)))
+	setClaimPriority(t, r, "resident-a", 10)
+	setClaimPriority(t, r, "resident-b", 10)
+	// All have priority 10: the predecessor may not preempt the residents,
+	// while the claimant may put them to sleep, as Never does at equal priority.
+	predecessor := priorityTestClaim("predecessor", 10, at0758)
+	predecessor.Spec.PreemptionPolicy = modelv1alpha1.ModelClaimPreemptionSleepLowerPriority
+	claimant := priorityTestClaim("claimant", 10, at0759)
+	claimant.Spec.PreemptionPolicy = modelv1alpha1.ModelClaimPreemptionNever
+	require.NoError(t, r.Create(context.Background(), withFinalizer(predecessor)))
+	require.NoError(t, r.Create(context.Background(), withFinalizer(claimant)))
 
-	reconcileOnce(t, r, low.Name)
+	reconcileOnce(t, r, claimant.Name)
 
 	require.Len(t, runtime.sleepCalls, 1, "the infeasible policy-specific predecessor must not keep the ordinary claimant's turn")
-	assert.Equal(t, scheduledReasonMakingRoom, scheduledOf(t, r, low.Name).Reason)
+	assert.Equal(t, scheduledReasonMakingRoom, scheduledOf(t, r, claimant.Name).Reason)
 }
 
 func TestPreemptionActivationFailureReleasesReservationForVictimWake(t *testing.T) {
@@ -574,6 +674,100 @@ func TestReconcileMakesRoomForLowerPriorityClaimWhenHighPriorityClaimIsInfeasibl
 	require.Len(t, runtime.sleepCalls, 1, "the infeasible higher-priority claim does not block lower")
 	assert.Equal(t, "a", runtime.sleepCalls[0].ModelName)
 	assert.Equal(t, scheduledReasonMakingRoom, scheduledOf(t, r, lower.Name).Reason)
+}
+
+func TestReconcileMakesNoRoomByPuttingAHigherPriorityModelToSleep(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+	setClaimPriority(t, r, "a", 5)
+	setClaimPriority(t, r, "b", 5)
+	newClaim(t, r, "x", at0759)
+
+	reconcileOnce(t, r, "x")
+
+	assert.Empty(t, runtime.sleepCalls, "x has priority 0, below both idle models")
+	assert.Equal(t, "NoMatchingPods", scheduledOf(t, r, "x").Reason)
+	_, held := r.reservations().heldFor(testNamespace, "x", r.now())
+	assert.False(t, held)
+}
+
+func TestReconcileSaysWhenOnlyHigherPriorityModelsCouldMakeRoom(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		footprint int64
+		told      bool
+	}{
+		{"their sleep would make room", 300, true},
+		{"their sleep would not make room", 600, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, runtime := servingPool(t, keepNoWakeReserve, 1,
+				serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+			setClaimPriority(t, r, "a", 5)
+			// b is busy, so a, above x's priority, is the only idle model.
+			for _, snapshot := range runtime.snapshots {
+				for i := range snapshot.Models {
+					if snapshot.Models[i].ModelName == "b" {
+						snapshot.Models[i].RequestsRunning = 1
+					}
+				}
+			}
+			x := withFinalizer(claimOnPod("x", "", modelv1alpha1.ModelClaimActive, tc.footprint, 100))
+			x.Status.Instances = nil
+			x.CreationTimestamp = metav1.NewTime(at0759)
+			require.NoError(t, r.Create(context.Background(), x))
+
+			reconcileOnce(t, r, "x")
+
+			assert.Empty(t, runtime.sleepCalls)
+			scheduled := scheduledOf(t, r, "x")
+			assert.Equal(t, "NoMatchingPods", scheduled.Reason)
+			told := strings.Contains(scheduled.Message, "only higher-priority idle models could make room")
+			assert.Equal(t, tc.told, told, scheduled.Message)
+		})
+	}
+}
+
+func TestReconcileMakesRoomOnlyFromModelsOfTheSameOrALowerPriority(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 1,
+		serving{"a", "warm-1", 300, 100, at0758}, serving{"b", "warm-1", 300, 100, at0759})
+	setClaimPriority(t, r, "a", 5)
+	setClaimPriority(t, r, "b", 3)
+	newClaim(t, r, "x", at0759)
+	setClaimPriority(t, r, "x", 3)
+
+	reconcileOnce(t, r, "x")
+
+	require.Len(t, runtime.sleepCalls, 1)
+	assert.Equal(t, "b", runtime.sleepCalls[0].ModelName, "a idled longer, but its priority is above x's")
+	assert.Equal(t, scheduledReasonMakingRoom, scheduledOf(t, r, "x").Reason)
+}
+
+func TestReconcileClaimThatCannotMakeRoomBelowItsPriorityKeepsNoTurn(t *testing.T) {
+	r, runtime := servingPool(t, keepNoWakeReserve, 2,
+		serving{"top-1", "warm-1", 300, 100, at0758}, serving{"top-2", "warm-1", 300, 100, at0758},
+		serving{"base-1", "warm-2", 300, 100, at0758}, serving{"base-2", "warm-2", 300, 100, at0759})
+	setClaimPriority(t, r, "top-1", 9)
+	setClaimPriority(t, r, "top-2", 9)
+	warm1 := podNamed(t, r, "warm-1")
+	warm1.Labels["placement-test"] = "first"
+	require.NoError(t, r.Update(context.Background(), warm1))
+	// "first" goes first by priority, but it selects only warm-1, where only
+	// models of a higher priority than its own could make room for it.
+	first := withFinalizer(claimOnPod("first", "", modelv1alpha1.ModelClaimActive, 300, 100))
+	first.Status.Instances = nil
+	first.CreationTimestamp = metav1.NewTime(at0758)
+	first.Spec.Priority = 5
+	first.Spec.PodSelector = &metav1.LabelSelector{MatchLabels: map[string]string{"placement-test": "first"}}
+	require.NoError(t, r.Create(context.Background(), first))
+	newClaim(t, r, "second", at0759)
+	setClaimPriority(t, r, "second", 1)
+
+	reconcileOnce(t, r, "second")
+
+	require.Len(t, runtime.sleepCalls, 1, "first cannot make room, so it does not hold second's turn")
+	assert.Equal(t, "base-1", runtime.sleepCalls[0].ModelName)
+	assert.Equal(t, scheduledReasonMakingRoom, scheduledOf(t, r, "second").Reason)
 }
 
 func TestReconcileUnsuitableParallelismDoesNotStallPlacement(t *testing.T) {

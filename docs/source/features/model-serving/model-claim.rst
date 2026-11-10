@@ -339,14 +339,16 @@ event happens first. The controller uses BestEffortFIFO: a higher-priority or
 earlier claim that cannot fit now and cannot make room does not block a
 feasible claim behind it. Claims that select different pools do not compete.
 
-With the default ``preemptionPolicy: Never``, priority only chooses which
-unplaced claim gets the next placement opportunity and does not stop or move
-an existing instance. Normal placement may still resize KV limits or sleep
-eligible idle engines to make room. Once a claim has begun making room and
-holds a valid reservation, it keeps that placement turn until it is placed,
-releases the reservation, the reservation expires, or the claim is deleted;
-a later, higher-priority claim cannot take it. Strict priority can starve a
-low-priority claim when feasible higher-priority claims continue to arrive.
+With the default ``preemptionPolicy: Never``, priority chooses which unplaced
+claim gets the next placement opportunity and does not stop or move an
+existing instance. Normal placement may still resize KV limits to make room.
+It may also sleep eligible idle engines, but only those whose claims have the
+same or a lower priority than the claim being placed. Once a claim has begun
+making room and holds a valid reservation, it keeps that placement turn until
+it is placed, releases the reservation, the reservation expires, or the claim
+is deleted; a later, higher-priority claim cannot take it. Strict priority can
+starve a low-priority claim when feasible higher-priority claims continue to
+arrive.
 
 A zero-instance claim whose engine could not be activated remains ``Failed``
 during its activation-failure backoff and does not block a later feasible
@@ -358,13 +360,15 @@ Soft preemption
 
 Set ``preemptionPolicy: SleepLowerPriority`` on an unplaced claim to let it
 make room by sleeping lower-priority engines. This replaces ordinary make-room
-for that claim; it does not fall back to sleeping equal- or higher-priority
-engines after their normal idle threshold. The field is immutable and defaults
+for that claim; it does not fall back to sleeping equal-priority engines
+after their normal idle threshold. The field is immutable and defaults
 to ``Never``. A claim created before this field existed behaves as ``Never``.
 
 A victim must be in the same namespace and on a selected Pod, have a strictly
 lower numeric priority, and be a vLLM engine whose claim and Runtime state are
-Active, Alive and Ready. The Runtime snapshot must contain authoritative
+Active, Alive and Ready. The victim's own ``preemptionPolicy`` does not
+matter. ``Never`` only stops a claim from preempting others, and does not
+protect it from preemption. The Runtime snapshot must contain authoritative
 request metrics with both running and waiting counts equal to zero. A missing
 metric is never treated as idleness. Pool sleep eligibility still applies;
 soft preemption requires ``noWakeReserveWhileAsleep: true`` and bypasses only
@@ -386,9 +390,14 @@ per reconcile pass. When a victim's sleeping footprint is unknown, it sleeps
 that victim alone, reads a fresh Runtime snapshot, and replans instead of
 assuming all declared memory was released. The preemptor stays ``Pending``
 with Scheduled reason ``MakingRoom`` until physical room is available. Any
-request-triggered wake on that card, regardless of the sleeping claim's
-priority, cannot consume reserved room, but resumes ordinary wake admission
-after the reservation is released or expires.
+request-triggered wake whose claim has a strictly higher priority than the
+preemptor keeps its capacity reserve and is judged by ordinary wake admission.
+Equal- and lower-priority wakes cannot consume the reserved room until the
+reservation is released or expires. After ordinary wake admission resumes, a
+waking claim that must make room can sleep only idle neighbours with equal or
+lower priority; strictly higher-priority claims remain protected. Eligible
+victims keep the existing longest-idle ordering, followed by claim name. Wake
+requests retain their existing FIFO ordering relative to one another.
 
 No cross-claim ownership is stored in Status. After a controller restart, an
 already sleeping victim remains authoritative in Runtime and claim Status;
@@ -555,17 +564,26 @@ A model that wakes then needs room again:
 * If its GPU has room, it wakes at once.
 * Otherwise, the controller puts other models on the GPU to sleep, the longest
   idle first and one at a time, until the waking model fits. It takes only
-  models that have been idle for ``sleepToMakeRoomAfterSeconds``. Meanwhile,
-  the waking model's claim reads ``WaitingForRoom``, and each model put to
-  sleep gets a ``SleptToMakeRoom`` Event.
+  models that have been idle for ``sleepToMakeRoomAfterSeconds`` and whose
+  claims have the same or a lower priority than the waking model's claim.
+  Meanwhile, the waking model's claim reads ``WaitingForRoom``, and each model
+  put to sleep gets a ``SleptToMakeRoom`` Event.
 * If no model can be put to sleep for it, and another Pod has room, the model
   moves there. A new engine loads it on that Pod.
 * Otherwise, it waits for room for up to five minutes, and the next request
   asks again.
 
-In such a pool, a new claim that no Pod has room for gets room the same way.
-The controller puts idle models to sleep on one Pod, and the claim's
-``Scheduled`` condition reads ``MakingRoom`` until the claim is placed.
+In such a pool, a new claim that no Pod has room for can get room too. The
+controller puts idle models to sleep on one Pod, and the claim's
+``Scheduled`` condition reads ``MakingRoom`` until the claim is placed. As
+when a model wakes, the controller takes only models whose claims have the
+same or a lower priority than the new claim. It makes no room for the new
+claim on a Pod where a wake request can be met, now or once room is made.
+This holds whatever the waking model's priority. If only higher-priority
+models could make room for the new claim, its ``Scheduled`` condition reads
+``NoMatchingPods``, and the message says so. The claim's priority also
+decides its placement turn among the waiting claims, as
+`Placement priority`_ describes.
 ``SleepLowerPriority`` uses the same pool safety rules and reservation, but
 may sleep a strictly lower-priority request-idle engine before the ordinary
 ``sleepToMakeRoomAfterSeconds`` duration has elapsed.
@@ -583,6 +601,12 @@ Each engine is a separate process, so a crash stops only that engine. The
 runtime agent restarts it on the same port after 2, 4, 8, 16 and 32 seconds,
 up to five times over the engine's life. While it restarts, the model is off
 the route, and the other models on the Pod keep serving.
+
+A vLLM engine also counts as crashed when it fails its health check for a
+minute after it was ready. This happens, for example, when the EngineCore dies
+while the API server keeps running. The runtime agent then stops all of the
+engine's processes and restarts it the same way. An engine that is still
+starting has no such limit, since loading a model can take a while.
 
 An engine that crashes again after its fifth restart has failed permanently,
 and its claim gets an ``EngineFailed`` Event. If another Pod has room, the
@@ -794,8 +818,8 @@ You set the first four keys. AIBrix writes the others, so leave them alone.
    * - ``model.aibrix.ai/modelclaim-finalizer``
      - Finalizer on ModelClaims
      - Controller
-     - Keeps a deleted claim until the controller has asked the runtime agent
-       to stop its engine.
+     - Keeps a deleted claim while runtime cleanup requests fail; removed after
+       successful cleanup requests, without waiting for process exit.
 
 Monitoring
 ----------

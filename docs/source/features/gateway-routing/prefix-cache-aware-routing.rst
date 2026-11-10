@@ -99,7 +99,7 @@ Set these variables on the gateway plugin deployment. The defaults are the built
      - Local tokenizer: ``character`` (the UTF-8 bytes of the text) or ``tiktoken``.
    * - ``AIBRIX_PREFIX_CACHE_BLOCK_SIZE``
      - ``4``
-     - Size of a prefix block, in bytes of the tokenized prompt. With ``tiktoken`` each token counts as 4 bytes. Smaller blocks match finer prefixes but create more blocks to hash and store.
+     - Size of a prefix block, in bytes of the tokenized prompt. With ``tiktoken`` each token counts as 4 bytes. Smaller blocks match finer prefixes but create more blocks to hash and store. With KV event sync, it only applies until a model's first KV event; after that the engine's block size is used.
    * - ``AIBRIX_PREFIX_CACHE_BLOCK_NUMBER``
      - ``200000``
      - Maximum number of blocks in the index. The least recently updated blocks are evicted first.
