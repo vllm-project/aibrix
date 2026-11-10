@@ -158,3 +158,38 @@ All cache operations are thread-safe through:
 - Read-write mutexes for data structures
 - Atomic operations for counters
 - Channel-based event processing
+## Routing metric records and freshness
+
+`Store` implements `MetricRecordCache`, which returns a metric value together
+with the local successful-collection timestamp. The pair is stored atomically.
+Scrape failures and metrics omitted from a successful scrape retain their old
+timestamps. A new pod UID starts without the previous pod's records.
+
+Value-only getters still return `metrics.MetricValue` and do not enforce an age
+limit. Freshness-sensitive routing uses the record getters through
+`routeutil.FreshKVUsage`. The exported `Pod.Metrics` / `Pod.ModelMetrics` maps now
+store `MetricRecord`, so code accessing those maps directly must adapt; use the
+value getters when age does not matter. Value-only custom adapters are supported
+with a once-per-process warning that freshness checks are unavailable.
+
+`AIBRIX_ROUTING_METRIC_STALE_THRESHOLD_MS` is a positive millisecond override read
+at startup. Its default is `max(5s, 3 * refreshInterval, fetchTimeout + refreshInterval)`
+(6s with the default 1s refresh and 5s timeout). Zero is not a disable switch. An override below the derived default is honored
+but logs a warning. A value such as `86400000` relaxes the age limit to 24 hours;
+it does not disable missing or invalid record checks. Changes require restart.
+The default does not guarantee freshness at arbitrary pod counts; bounded
+collection capacity and backoff must be considered when tuning it. See the
+[gateway freshness configuration](../plugins/gateway/ENV_VARS.md#kv-metric-freshness-algorithmsrouteutilkv_freshnessgo)
+for routing fallback policies, diagnostic counters and tuning limitations.
+
+The opt-in fake HTTP collection experiment exercises the real bounded queue,
+workers and record writes for 1k/3k/5k logical pods at 20/50/200ms latency:
+
+```sh
+AIBRIX_TEST_METRIC_FRESHNESS_SCALE=1 go test ./pkg/cache \
+  -run '^TestMetricFreshnessCollectionScale$' -count=1 -parallel 9 -timeout 15m -v
+```
+
+It reports missing/stale fractions and eligibility transitions in two observation
+windows after warmup. These are local collection measurements, not Kubernetes,
+GPU serving performance, or proof that the scheduler converges to a fair sweep.

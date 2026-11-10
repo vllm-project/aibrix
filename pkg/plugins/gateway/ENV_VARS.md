@@ -549,3 +549,57 @@ The gateway plugins feature built-in support for distributed tracing via OpenTel
 
 > **Note on OpenTelemetry Configuration:**
 > Aibrix supports the standard OpenTelemetry Protocol Exporter environment variables. For advanced OTLP configurations (such as `_CERTIFICATE`, `_CLIENT_KEY`, or specific `_COMPRESSION` settings), please refer to the [OpenTelemetry Protocol Exporter](https://opentelemetry.io/docs/specs/otel/protocol/exporter/)
+
+---
+
+## KV metric freshness (`algorithms/routeutil/kv_freshness.go`)
+
+| Variable | Type | Default | Description | Source |
+|---|---|---|---|---|
+| `AIBRIX_ROUTING_METRIC_STALE_THRESHOLD_MS` | int (milliseconds) | `max(5000, 3 * refresh_ms, fetch_timeout_ms + refresh_ms)` | Maximum age of a successfully collected KV metric. Uses the initialized collection refresh interval and fetch timeout (defaults: 1000 ms and 5000 ms, yielding 6000 ms). Positive values override the default; zero, negative, malformed or overflowing values use the default. Read at gateway startup. Environment-only; no model config profile override. | [metric_record.go](../../cache/metric_record.go), [kv_freshness.go](algorithms/routeutil/kv_freshness.go) |
+
+For example, set `AIBRIX_ROUTING_METRIC_STALE_THRESHOLD_MS=15000` to accept KV
+samples up to 15 seconds old. Age equal to the threshold is accepted. The age
+starts when this gateway completes a successful scrape, not when the engine
+computed its value. A failed scrape or a successful response that omits that
+metric does not refresh its timestamp. A healthy HTTP endpoint returning frozen
+gauges is still fresh under this rule; this is not an engine liveness probe.
+
+`least-kv-cache`, its deprecated `least-gpu-cache` alias, and the KV tie-breaker
+in `load-balance` skip scoring a pod whose GPU KV metric is missing or stale.
+A CPU KV metric that has never been reported contributes zero, preserving vLLM
+V1 compatibility; a previously reported CPU metric that becomes stale makes
+the combined KV score unavailable. If no pod has a usable score, the existing
+random fallback still routes to a ready pod.
+
+The `load-balance` **primary** KV penalty and guardrail use the same age check.
+A previously reported GPU KV metric that becomes stale receives a `+Inf` primary
+score, preferring a fresh or never-reporting peer when load-balance routes alone.
+If all candidates are unavailable, the existing tie-break/fallback still routes.
+In a multi-strategy blend `+Inf` is a penalty rather than a hard exclusion. Missing
+GPU KV usage remains neutral to preserve support for engines without the metric.
+Independent `pd` scoring and other metric consumers are outside this change.
+
+The default is a minimum allowance for a slow successful fetch, not a fleet-wide
+collection deadline. With many pods, bounded worker/queue capacity and backoff
+can make healthy samples exceed it. Tune workers, queue size and this threshold
+using observed collection age and saturation; do not assume three refresh ticks
+refresh every pod. There is no boolean off switch: a large positive override
+(e.g. `86400000` for 24 hours) relaxes age rejection, but does not disable checks
+for missing/invalid records. Zero uses the default, not infinity. The gateway logs
+its effective threshold at startup and warns when an override is below the derived
+default; the override remains honored. Restart to apply changes.
+
+`aibrix_routing_kv_metric_rejections_total{reason,metric}` counts rejected metric
+reads, not unique pods or requests. `reason` is `stale`, `missing`, `invalid`, or
+`lookup_error`; `metric` is `gpu`, `cpu`, or `other`. An absent optional CPU metric
+is not counted. V(4) logs include pod, metric, reason, age and threshold. A request
+may read a metric in both primary scoring and tie-breaking and count twice.
+
+The built-in Store atomically stores each value and timestamp together. Value-only
+custom cache adapters retain legacy behavior with a once-per-process warning;
+implement `cache.MetricRecordCache` to enforce freshness. Existing value getter
+signatures remain unchanged, but the exported `Pod.Metrics` and `Pod.ModelMetrics`
+map element types change to `MetricRecord`. Direct map consumers must unwrap
+`record.Value` (or use the getters). This is not blanket Go source compatibility.
+Collection allowlists and Prometheus series staleness remain unchanged.

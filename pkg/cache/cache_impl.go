@@ -165,10 +165,16 @@ func (c *Store) ModelBaseModel(modelName string) (string, bool) {
 //	metrics.MetricValue: The metric value
 //	error: Error if Pod or metric doesn't exist
 func (c *Store) GetMetricValueByPod(podName, podNamespace, metricName string) (metrics.MetricValue, error) {
+	record, err := c.GetMetricRecordByPod(podName, podNamespace, metricName)
+	return record.Value, err
+}
+
+// GetMetricRecordByPod returns the last successful local update, including its age metadata.
+func (c *Store) GetMetricRecordByPod(podName, podNamespace, metricName string) (MetricRecord, error) {
 	key := utils.GeneratePodKey(podNamespace, podName)
 	metaPod, ok := c.metaPods.Load(key)
 	if !ok {
-		return nil, fmt.Errorf("key does not exist in the cache: %s", key)
+		return MetricRecord{}, fmt.Errorf("key does not exist in the cache: %s", key)
 	}
 
 	return c.getPodMetricImpl(podName, &metaPod.Metrics, metricName)
@@ -187,10 +193,16 @@ func (c *Store) GetMetricValueByPod(podName, podNamespace, metricName string) (m
 //	metrics.MetricValue: The metric value
 //	error: Error if Pod, model or metric doesn't exist
 func (c *Store) GetMetricValueByPodModel(podName, podNamespace, modelName string, metricName string) (metrics.MetricValue, error) {
+	record, err := c.GetMetricRecordByPodModel(podName, podNamespace, modelName, metricName)
+	return record.Value, err
+}
+
+// GetMetricRecordByPodModel returns the last successful update for one pod/model metric.
+func (c *Store) GetMetricRecordByPodModel(podName, podNamespace, modelName, metricName string) (MetricRecord, error) {
 	key := utils.GeneratePodKey(podNamespace, podName)
 	metaPod, ok := c.metaPods.Load(key)
 	if !ok {
-		return nil, fmt.Errorf("key does not exist in the cache: %s", key)
+		return MetricRecord{}, fmt.Errorf("key does not exist in the cache: %s", key)
 	}
 
 	return c.getPodMetricImpl(podName, &metaPod.ModelMetrics, c.getPodModelMetricName(modelName, metricName))

@@ -679,13 +679,13 @@ func TestSyncRunningRequestsGlobally_SnapshotCacheContract(t *testing.T) {
 				store.gatewaySnapshotCache.Store(tt.cache)
 			}
 			pod := newTestPod(3)
-			pod.Metrics.Store(metrics.RealtimeNumRequestsRunning, &metrics.SimpleMetricValue{Value: stale})
+			pod.Metrics.Store(metrics.RealtimeNumRequestsRunning, MetricRecord{Value: &metrics.SimpleMetricValue{Value: stale}, Timestamp: time.Now()})
 
 			store.syncRunningRequestsGlobally(pod)
 
 			got, ok := pod.Metrics.Load(metrics.RealtimeNumRequestsRunning)
 			require.True(t, ok)
-			require.Equal(t, tt.want, got.GetSimpleValue())
+			require.Equal(t, tt.want, got.Value.GetSimpleValue())
 		})
 	}
 }
