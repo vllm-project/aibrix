@@ -534,47 +534,158 @@ class _WakeFailingLauncher(_ControlledLauncher):
         raise RuntimeError("wake timed out")
 
 
-@pytest.mark.parametrize(
-    "process_alive,healthy,fails",
-    [
-        pytest.param(True, False, True, id="api-server-up-engine-dead"),
-        pytest.param(False, True, True, id="process-exited"),
-        pytest.param(True, True, False, id="engine-healthy"),
-    ],
-)
-def test_a_failed_wake_fails_an_engine_that_died(
-    tmp_path, monkeypatch, process_alive, healthy, fails
-):
+def _engine_asleep(tmp_path, monkeypatch):
+    """A runtime with one sleeping vLLM engine whose wakes fail. Its process
+    group lives as long as its process, and the waits between health checks and
+    after a kill take no time."""
     launcher = _WakeFailingLauncher()
     registry = EngineRegistry(tmp_path / "engines.json")
     runtime = ModelRuntime(launcher, registry=registry)
     inst = runtime.activate(model_name="m", artifact_url="hf://Org/M")
     with runtime._lock:
         runtime._transition(inst, "sleeping")
-    inst.proc.alive = process_alive
-    monkeypatch.setattr(runtime_module, "engine_ready", lambda port: healthy)
+    monkeypatch.setattr(runtime_module, "ENGINE_GONE_PROBE_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(runtime_module, "ENGINE_STOP_WAIT_SECONDS", 0)
     monkeypatch.setattr(
         runtime_module,
         "process_group_is_alive",
         lambda process_group_id: inst.proc.alive,
     )
+    return runtime, launcher, registry, inst
+
+
+@pytest.mark.parametrize(
+    "process_alive,healthy,why",
+    [
+        pytest.param(True, False, "it failed 3 health checks in a row", id="api-up"),
+        pytest.param(False, True, "its process exited", id="process-exited"),
+        pytest.param(True, True, None, id="engine-healthy"),
+    ],
+)
+def test_a_failed_wake_fails_an_engine_that_died(
+    tmp_path, monkeypatch, process_alive, healthy, why
+):
+    runtime, launcher, registry, inst = _engine_asleep(tmp_path, monkeypatch)
+    inst.proc.alive = process_alive
+    monkeypatch.setattr(runtime_module, "engine_ready", lambda port: healthy)
 
     with pytest.raises(RuntimeError, match="wake timed out"):
         runtime.wake("m", operation_id="wake-1")
 
-    if not fails:
+    outcomes = runtime.snapshot_metrics().lifecycle_outcomes
+    if why is None:
         assert inst.phase == "sleeping"
         assert launcher.stopped == []
+        assert outcomes == {("m", "wake", "failed"): 1}
         return
     assert inst.phase == "failed"
-    assert inst.last_error == "engine died during a wake: wake timed out"
+    assert (
+        inst.last_error == f"engine failed during a wake, since {why}: wake timed out"
+    )
+    assert outcomes == {("m", "wake", "engine_failed"): 1}
     # A process that is still running is stopped first.
     assert launcher.stopped == (["m"] if process_alive else [])
+    assert not inst.stop_pending
     assert registry.load()[0]["phase"] == "failed"
-    # The supervisor leaves a failed engine alone, so it is not restarted in place.
+    # The supervisor does not restart a failed engine in place.
     runtime.supervise_once()
     assert launcher.launches == ["m"]
     assert inst.phase == "failed"
+
+
+def test_a_failed_wake_keeps_an_engine_that_passes_a_later_health_check(
+    tmp_path, monkeypatch
+):
+    runtime, launcher, _, inst = _engine_asleep(tmp_path, monkeypatch)
+    answers = iter([False, True])
+    monkeypatch.setattr(runtime_module, "engine_ready", lambda port: next(answers))
+
+    with pytest.raises(RuntimeError, match="wake timed out"):
+        runtime.wake("m", operation_id="wake-1")
+
+    assert inst.phase == "sleeping"
+    assert launcher.stopped == []
+    assert next(answers, None) is None
+
+
+def test_supervisor_stops_a_failed_engine_whose_processes_outlived_the_stop(
+    tmp_path, monkeypatch
+):
+    runtime, launcher, _, inst = _engine_asleep(tmp_path, monkeypatch)
+    # Neither SIGTERM nor SIGKILL ends the group at first.
+    launcher.stop_exits = False
+    monkeypatch.setattr(runtime_module.os, "killpg", lambda *_: None)
+    monkeypatch.setattr(runtime_module, "engine_ready", lambda port: False)
+
+    with pytest.raises(RuntimeError, match="wake timed out"):
+        runtime.wake("m", operation_id="wake-1")
+
+    assert inst.phase == "failed"
+    assert inst.stop_pending
+    assert launcher.stopped == ["m"]
+
+    runtime.supervise_once()
+    assert launcher.stopped == ["m", "m"]
+    assert inst.stop_pending
+
+    inst.proc.alive = False
+    runtime.supervise_once()
+    assert not inst.stop_pending
+    runtime.supervise_once()
+    assert launcher.stopped == ["m", "m"]
+    assert launcher.launches == ["m"]
+
+
+def test_restart_budget_failure_stops_processes_that_outlived_the_stop(
+    tmp_path, monkeypatch
+):
+    runtime, launcher, _, inst = _engine_asleep(tmp_path, monkeypatch)
+    with runtime._lock:
+        runtime._transition(inst, "active")
+    inst.restart_count = runtime._max_restarts
+    launcher.stop_exits = False
+    monkeypatch.setattr(runtime_module.os, "killpg", lambda *_: None)
+
+    with runtime._lock:
+        runtime._schedule_restart(inst, "engine exited")
+
+    assert inst.phase == "failed"
+    assert inst.stop_pending
+    inst.proc.alive = False
+    runtime.supervise_once()
+    assert not inst.stop_pending
+
+
+def test_supervisor_fails_a_sleeping_engine_that_exits(tmp_path, monkeypatch):
+    runtime, launcher, registry, inst = _engine_asleep(tmp_path, monkeypatch)
+    inst.proc.alive = False
+
+    runtime.supervise_once()
+
+    assert inst.phase == "failed"
+    assert inst.last_error == "engine exited while asleep"
+    assert registry.load()[0]["phase"] == "failed"
+    runtime.supervise_once()
+    assert launcher.launches == ["m"]
+    assert inst.phase == "failed"
+
+
+def test_re_adoption_fails_a_sleeping_engine_that_is_gone(tmp_path, monkeypatch):
+    record = _record()
+    record["phase"] = "sleeping"
+    registry = EngineRegistry(tmp_path / "engines.json")
+    registry.save([record])
+    launcher = _ControlledLauncher()
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: False)
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
+
+    runtime = ModelRuntime(launcher, registry=registry)
+
+    adopted = runtime.list_models()[0]
+    assert adopted.phase == "failed"
+    assert adopted.last_error == "engine exited while asleep"
+    assert launcher.launches == []
+    assert registry.load()[0]["phase"] == "failed"
 
 
 def test_supervisor_treats_missing_process_group_id_as_clean(tmp_path, monkeypatch):

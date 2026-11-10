@@ -597,10 +597,11 @@ room.
 Failures
 --------
 
-Each engine is a separate process, so a crash stops only that engine. The
-runtime agent restarts it on the same port after 2, 4, 8, 16 and 32 seconds,
-up to five times over the engine's life. While it restarts, the model is off
-the route, and the other models on the Pod keep serving.
+Each engine is a separate process, so a crash stops only that engine. If an
+engine crashes while it is awake, the runtime agent restarts it on the same
+port after 2, 4, 8, 16 and 32 seconds. This happens up to five times over the
+engine's life. While it restarts, the model is off the route, and the other
+models on the Pod keep serving.
 
 A vLLM engine also counts as crashed when it fails its health check for a
 minute after it was ready. This happens, for example, when the EngineCore dies
@@ -608,15 +609,16 @@ while the API server keeps running. The runtime agent then stops all of the
 engine's processes and restarts it the same way. An engine that is still
 starting has no such limit, since loading a model can take a while.
 
-A vLLM engine can also die while it wakes, for example when its EngineCore
-runs out of memory. The wake then fails, and the runtime agent checks the
-engine. If its process has exited or it fails its health check, the agent
-stops all of its processes and marks it failed at once. It does not restart
-the engine in place, since the engine would come back awake without the room
-that the controller makes for a wake.
+A sleeping engine is not restarted in place, since it would come back awake
+without the room that the controller makes for a wake. If its process exits
+while it sleeps, the runtime agent marks it failed. An engine can also die
+while it wakes, for example when its EngineCore runs out of memory. The wake
+then fails, and the agent checks the engine. If its process has exited, or it
+fails three health checks in a row, the agent stops all of its processes and
+marks it failed.
 
 An engine that crashes again after its fifth restart has failed permanently,
-and so has an engine that died during a wake. Its claim gets an
+and so has a sleeping or waking engine that died. Its claim gets an
 ``EngineFailed`` Event. If another Pod has room, the controller stops the
 engine and starts the claim there at once. Otherwise, the claim reads
 ``Failed`` with ``EngineFailed``, and its ``Scheduled`` condition says why it
