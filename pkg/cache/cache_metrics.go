@@ -817,7 +817,7 @@ func (c *Store) syncRunningRequestsGlobally(pod *Pod) {
 		return
 	}
 	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
-	remoteRunning := float64(snap.freshCount(podKey, time.Now()))
+	remoteRunning := float64(snap.freshCount(podKey, c.snapshotNow()))
 
 	localRunning := float64(atomic.LoadInt32(&pod.runningRequests))
 	total := localRunning + remoteRunning

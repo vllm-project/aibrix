@@ -367,6 +367,13 @@ func (h *snapshotFaultHook) ProcessPipelineHook(next redis.ProcessPipelineHook) 
 // gateway's snapshot of testPodName, with failures injectable through the returned hook.
 func newSnapshotSyncUnderTest(t *testing.T) (store *Store, client *redis.Client, hook *snapshotFaultHook, remoteKey string) {
 	t.Helper()
+	return newSnapshotSyncUnderTestWithClock(t, nil)
+}
+
+// newSnapshotSyncUnderTestWithClock is newSnapshotSyncUnderTest with the store's snapshot clock
+// set before the sync starts (nil keeps time.Now).
+func newSnapshotSyncUnderTestWithClock(t *testing.T, clock func() time.Time) (store *Store, client *redis.Client, hook *snapshotFaultHook, remoteKey string) {
+	t.Helper()
 	mr := miniredis.RunT(t)
 	client = redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
@@ -380,7 +387,7 @@ func newSnapshotSyncUnderTest(t *testing.T) (store *Store, client *redis.Client,
 	remoteKey = gatewayPodSnapshotKey("gw-remote", testNamespace, testPodName)
 	setRemoteRunning(t, client, remoteKey, "2")
 
-	store = &Store{redisClient: client}
+	store = &Store{redisClient: client, snapshotClock: clock}
 	stopCh := make(chan struct{})
 	initGatewaySnapshotSync(store, stopCh)
 	t.Cleanup(func() { close(stopCh) })

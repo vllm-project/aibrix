@@ -19,6 +19,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,32 +48,58 @@ func addTestMetaPod(t *testing.T, store *Store, name string) *v1.Pod {
 	return pod
 }
 
+// fakeClock is a snapshot clock the test moves by hand, so counts can be aged past
+// remoteRunningMaxAge without sleeping. Safe for the sync goroutine to read concurrently.
+type fakeClock struct{ nanos atomic.Int64 }
+
+func newFakeClock() *fakeClock {
+	c := &fakeClock{}
+	c.nanos.Store(time.Now().UnixNano())
+	return c
+}
+
+func (c *fakeClock) now() time.Time          { return time.Unix(0, c.nanos.Load()) }
+func (c *fakeClock) advance(d time.Duration) { c.nanos.Add(int64(d)) }
+
+// waitForPublishes waits until the sync has published n more snapshots. Each publish swaps
+// gatewayRemoteRunning for a new pointer, and loading it is what orders this goroutine after
+// the tick that published it.
+func waitForPublishes(t *testing.T, store *Store, n int) {
+	t.Helper()
+	for range n {
+		prev := store.gatewayRemoteRunning.Load()
+		require.Eventually(t, func() bool { return store.gatewayRemoteRunning.Load() != prev },
+			2*time.Second, 5*time.Millisecond, "the sync must keep publishing")
+	}
+}
+
 func approxRunning(store *Store, pod *v1.Pod) int64 {
 	return store.GetPodsRunningRequestsApprox([]*v1.Pod{pod})[utils.GeneratePodKey(pod.Namespace, pod.Name)]
 }
 
 // Every read fails from some point on. A single failed read keeps the last value (#3325): the
 // count read moments ago is still added. But it stops being refreshed, so once it is older than
-// remoteRunningMaxAge it must no longer be added.
+// remoteRunningMaxAge it must no longer be added, even though every tick republishes it.
 func TestRemoteRunningApprox_DropsCountsNotReadWithinMaxAge(t *testing.T) {
-	store, client, hook, remoteKey := newSnapshotSyncUnderTest(t)
+	clk := newFakeClock()
+	store, client, hook, remoteKey := newSnapshotSyncUnderTestWithClock(t, clk.now)
 	pod := addTestMetaPod(t, store, testPodName)
 	require.Eventually(t, func() bool { return approxRunning(store, pod) == 2 },
 		2*time.Second, 20*time.Millisecond, "the remote count must be read before the failure")
 
 	hook.failReads.Store(true)
-	// The last successful read was at most one tick before the failure, so for the next three
-	// ticks the carried value is well within remoteRunningMaxAge and must still be added. The
-	// value in Redis stays 2 meanwhile, so a read already in flight when the failure began
-	// cannot make this pass or fail for the wrong reason.
-	require.Never(t, func() bool { return approxRunning(store, pod) != 2 },
-		3*gatewaySnapshotSyncInterval, 20*time.Millisecond,
-		"a count read moments ago must still be added after a failed read")
+	// The clock has not moved, so the carried value is within remoteRunningMaxAge on every one
+	// of these ticks and must still be added. The value in Redis stays 2 meanwhile, so a read
+	// already in flight when the failure began cannot make this pass or fail for the wrong reason.
+	waitForPublishes(t, store, 3)
+	require.Equal(t, int64(2), approxRunning(store, pod), "a count read moments ago must still be added after a failed read")
 
-	// The remote gateway's requests finish while this gateway cannot read them.
+	// The remote gateway's requests finish while this gateway cannot read them, and time passes
+	// beyond the limit. Ticks after that republish the carried value with their own start; it
+	// must be judged by when it was read.
 	setRemoteRunning(t, client, remoteKey, "0")
-	// Two more ticks past the limit, so a slow tick cannot leave the last read just inside it.
-	time.Sleep(remoteRunningMaxAge + 2*gatewaySnapshotSyncInterval)
+	clk.advance(remoteRunningMaxAge + time.Millisecond)
+	waitForPublishes(t, store, 2)
 	require.Equal(t, int64(0), approxRunning(store, pod),
 		"a remote count last read more than remoteRunningMaxAge ago must not be added")
 }
@@ -163,7 +190,8 @@ func TestRemoteRunningApprox_DropsCountsOfBatchThatKeepsTimingOut(t *testing.T) 
 	}
 	client.AddHook(hook)
 
-	store := &Store{redisClient: client}
+	clk := newFakeClock()
+	store := &Store{redisClient: client, snapshotClock: clk.now}
 	stopCh := make(chan struct{})
 	t.Cleanup(func() { close(hook.release); close(stopCh) })
 	head, tail := addTestMetaPod(t, store, podName(0)), addTestMetaPod(t, store, podName(n-1))
@@ -179,7 +207,10 @@ func TestRemoteRunningApprox_DropsCountsOfBatchThatKeepsTimingOut(t *testing.T) 
 
 	require.Eventually(t, func() bool { return approxRunning(store, head) == 0 },
 		2*time.Second, 20*time.Millisecond, "the batches that still fit in the tick keep being refreshed")
-	time.Sleep(remoteRunningMaxAge + 5*gatewaySnapshotSyncInterval)
+	// Time passes beyond the limit while the tail batch keeps timing out; the ticks after that
+	// republish the tail pod's carried count with their own start.
+	clk.advance(remoteRunningMaxAge + time.Millisecond)
+	waitForPublishes(t, store, 2)
 	require.Equal(t, int64(0), approxRunning(store, tail),
 		"a pod whose batch has not been read for more than remoteRunningMaxAge must not keep its old remote count")
 

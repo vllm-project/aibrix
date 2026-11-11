@@ -182,6 +182,10 @@ type Store struct {
 	// GetPodsRunningRequestsApprox and syncRunningRequestsGlobally answer with one map lookup
 	// per pod instead of parsing every gateway's fields.
 	gatewayRemoteRunning atomic.Pointer[remoteRunningSnapshot]
+	// snapshotClock is the clock the snapshot sync stamps read times with and that
+	// GetPodsRunningRequestsApprox and syncRunningRequestsGlobally judge their age by. Nil means
+	// time.Now; tests set it, before starting the sync, to age counts without sleeping.
+	snapshotClock func() time.Time
 	// gatewaySnapshotErrorLog rate-limits the Error-level log of failing snapshot ticks. Nil
 	// means initGatewaySnapshotSync creates one; tests set it to capture lines.
 	gatewaySnapshotErrorLog *rateLimitedErrorLog

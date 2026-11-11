@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"sort"
 	"sync/atomic"
-	"time"
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -318,7 +317,7 @@ func (c *Store) runningRequestsWithLocalFallback(pods []*v1.Pod, live map[string
 // count is added only while its snapshot was read within remoteRunningMaxAge (see freshCount).
 func (c *Store) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
 	snap := c.gatewayRemoteRunning.Load()
-	now := time.Now()
+	now := c.snapshotNow()
 	result := make(map[string]int64, len(pods))
 	for _, pod := range pods {
 		if pod == nil {

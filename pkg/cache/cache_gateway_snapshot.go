@@ -101,7 +101,7 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 				func() {
 					ctx, cancel := context.WithTimeout(context.Background(), gatewaySnapshotSyncInterval)
 					defer cancel()
-					start := time.Now()
+					start := store.snapshotNow()
 
 					// Phase 1 (write): push all pods' snapshots in one pipeline.
 					writePipe := store.redisClient.Pipeline()
@@ -157,6 +157,7 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 					// Atomically replace the snapshot cache so readers always see a consistent map.
 					store.gatewaySnapshotCache.Store(newRaw)
 					store.gatewayRemoteRunning.Store(remoteRunningByPod(newRaw, newReadAt, self))
+					recordSnapshotFreshness(newRaw, newReadAt, self, start)
 					klog.V(5).InfoS("refreshed gateway snapshot cache", "keys", len(newRaw), "duration", time.Since(start))
 				}()
 
@@ -166,6 +167,14 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 			}
 		}
 	}()
+}
+
+// snapshotNow is snapshotClock, or time.Now when it is unset.
+func (c *Store) snapshotNow() time.Time {
+	if c.snapshotClock != nil {
+		return c.snapshotClock()
+	}
+	return time.Now()
 }
 
 // UpsertGatewayPodSnapshot writes this gateway instance's snapshot for a single pod to Redis.
