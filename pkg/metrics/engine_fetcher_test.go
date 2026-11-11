@@ -1096,9 +1096,9 @@ sglang:num_queue_reqs{model_name="a",dp_rank="1",priority="high"} 1
 sglang:num_queue_reqs{model_name="b",dp_rank="0",priority=""} 2
 sglang:num_queue_reqs{model_name="b",dp_rank="1",priority=""} 3
 sglang:num_queue_reqs{model_name="legacy"} 4
-# TYPE sglang:gen_throughput gauge
-sglang:gen_throughput{model_name="a",dp_rank="0"} 10
-sglang:gen_throughput{model_name="a",dp_rank="1"} 20
+# TYPE sglang:cache_hit_rate gauge
+sglang:cache_hit_rate{model_name="a",dp_rank="0"} 0.5
+sglang:cache_hit_rate{model_name="a",dp_rank="1"} 0.25
 `))
 	require.NoError(t, err)
 	original := families["sglang:num_queue_reqs"].Metric[0]
@@ -1110,9 +1110,33 @@ sglang:gen_throughput{model_name="a",dp_rank="1"} 20
 		values[model+"/"+priority] = m.Gauge.GetValue()
 	}
 	assert.Equal(t, map[string]float64{"a/": 8, "a/high": 6, "b/": 5, "legacy/": 4}, values)
-	assert.Len(t, families["sglang:gen_throughput"].Metric, 2, "do not guess aggregation for other gauges")
+	assert.Len(t, families["sglang:cache_hit_rate"].Metric, 2, "do not guess aggregation for other gauges")
 	assert.Equal(t, 7.0, original.Gauge.GetValue(), "do not change original rank values")
 	assert.Len(t, original.Label, 3)
+}
+
+// gen_throughput is reported per DP rank, and each rank generates for its own
+// requests, so the pod's throughput is their sum. TP replicas of a rank are
+// counted once, and the model-scoped and pod-scoped reads both see the sum.
+func TestSGLangDPGenThroughputIsSummed(t *testing.T) {
+	families, err := ParseMetricsFromReader(strings.NewReader(`# TYPE sglang:gen_throughput gauge
+sglang:gen_throughput{model_name="m",dp_rank="0",tp_rank="0"} 100
+sglang:gen_throughput{model_name="m",dp_rank="0",tp_rank="1"} 100
+sglang:gen_throughput{model_name="m",dp_rank="1",tp_rank="0"} 120
+sglang:gen_throughput{model_name="m",dp_rank="2",tp_rank="0"} 80
+sglang:gen_throughput{model_name="m",dp_rank="3",tp_rank="0"} 90
+`))
+	require.NoError(t, err)
+	mergeSGLangDPSeries(families)
+
+	ef := &EngineMetricsFetcher{}
+	metric := Metrics[AvgGenerationThroughputToksPerS]
+	perModel, err := ef.parseModelMetricsFromFamily(families, "sglang:gen_throughput", metric)
+	require.NoError(t, err)
+	assert.Equal(t, 390.0, perModel["m"].GetSimpleValue())
+	podScoped, err := ef.parseMetricFromFamily(families, "sglang:gen_throughput", metric)
+	require.NoError(t, err)
+	assert.Equal(t, 390.0, podScoped.GetSimpleValue())
 }
 
 func TestSGLangDPUsageCapacityIsScoped(t *testing.T) {
