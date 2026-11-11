@@ -106,6 +106,7 @@ func TestParseFamiliesKeepsUndeclaredAndMalformedLines(t *testing.T) {
 		"<html>error</html>\n",
 		"# HELP OK\nOK\n",
 		"# TYPE other\nother{x=\"1\" 1\n",
+		"# HELP other{ x\n",
 		"# TYPE vllm:num_requests_running gauge\nvllm:num_requests_running 1",
 	} {
 		_, _, _, fullErr, filteredErr := parseBothWays(text, keep)
@@ -127,8 +128,8 @@ func TestParseFamiliesMatchesFullParseOnRandomText(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	names := []string{"a", "a_sum", "a_count", "a_bucket", "a_total", "b", "b_sum", "b_bucket", "c_count",
 		"c", "vllm:x", "vllm:x_bucket", "vllm:x_created", "_sum", "x_count_sum"}
-	types := []string{"counter", "gauge", "histogram", "summary", "untyped", "Gauge", "HISTOGRAM", `summ\ary`,
-		"gauge ", "bogus", ""}
+	types := []string{"counter", "gauge", "histogram", "summary", "untyped", "Gauge", "HISTOGRAM", "Summary",
+		"Histogram", `summ\ary`, "gauge ", "bogus", ""}
 	pick := func(items []string) string { return items[rng.Intn(len(items))] }
 	sample := func(name string) string {
 		var labels []string

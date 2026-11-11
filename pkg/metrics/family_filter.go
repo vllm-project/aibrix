@@ -65,8 +65,8 @@ type familyState struct {
 	passthrough bool
 }
 
-// familyLineFilter assigns each line to a metric family the way
-// expfmt.TextParser does, so the families it keeps parse exactly as before.
+// familyLineFilter assigns each line to a metric family the way expfmt.TextParser in
+// prometheus/common v0.55.0 does, so kept families parse as before; re-check it on upgrades.
 type familyLineFilter struct {
 	keepFamilies map[string]struct{}
 	seen         map[string]familyState
