@@ -167,11 +167,7 @@ func TestInitGatewaySnapshotSyncRefreshesCache(t *testing.T) {
 
 	var cache map[string][]map[string]string
 	require.Eventually(t, func() bool {
-		raw := store.gatewaySnapshotCache.Load()
-		if raw == nil {
-			return false
-		}
-		cache = raw.(map[string][]map[string]string)
+		cache = groupedSnapshotCache(store)
 		return len(cache[utils.GeneratePodKey(testNamespace, testPodName)]) >= 2
 	}, 2*time.Second, 50*time.Millisecond)
 
@@ -195,9 +191,9 @@ func TestInitGatewaySnapshotSyncRefreshesCache(t *testing.T) {
 
 	// The tick that published the snapshot also published the other gateways' sums.
 	require.Eventually(t, func() bool { return store.gatewayRemoteRunning.Load() != nil }, 2*time.Second, 10*time.Millisecond)
-	assert.Equal(t, map[string]int64{utils.GeneratePodKey(testNamespace, testPodName): 2}, store.gatewayRemoteRunning.Load().counts)
+	assert.Equal(t, int64(2), store.gatewayRemoteRunning.Load().freshCount(utils.GeneratePodKey(testNamespace, testPodName), time.Now()))
 	// End to end through the tick: the estimate the candidate stage reads adds the remote
-	// gateway's 2 to this gateway's own 4. A tick that published a stale or zero readStart
+	// gateway's 2 to this gateway's own 4. A tick that published a stale or zero read time
 	// would make the estimate drop the remote count and report 4.
 	assert.Equal(t, int64(6), store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})[utils.GeneratePodKey(testNamespace, testPodName)])
 }
@@ -208,15 +204,15 @@ func TestGetPodsRunningRequestsApproxAddsRemoteSnapshot(t *testing.T) {
 	pod := &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns"}}}
 	atomic.StoreInt32(&pod.runningRequests, 4)
 	store.metaPods.Store("ns/a", pod)
-	store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{counts: map[string]int64{"ns/a": 2},
-		readAt: map[string]time.Time{"ns/a": time.Now()}})
+	store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{entries: map[string][]remoteRunningEntry{
+		"ns/a": {{count: 2, readAt: time.Now()}}}})
 	assert.Equal(t, int64(6), store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})["ns/a"])
 	// This gateway's own count is read live, not from what it last wrote to Redis.
 	atomic.StoreInt32(&pod.runningRequests, 9)
 	assert.Equal(t, int64(11), store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})["ns/a"])
 	// A count last read longer ago than remoteRunningMaxAge is ignored.
-	store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{counts: map[string]int64{"ns/a": 2},
-		readAt: map[string]time.Time{"ns/a": time.Now().Add(-remoteRunningMaxAge - time.Millisecond)}})
+	store.gatewayRemoteRunning.Store(&remoteRunningSnapshot{entries: map[string][]remoteRunningEntry{
+		"ns/a": {{count: 2, readAt: time.Now().Add(-remoteRunningMaxAge - time.Millisecond)}}}})
 	assert.Equal(t, int64(9), store.GetPodsRunningRequestsApprox([]*v1.Pod{pod.Pod})["ns/a"])
 }
 
@@ -232,13 +228,32 @@ func TestRemoteRunningByPodSkipsSelfAndSumsOthers(t *testing.T) {
 		"gw-1/c": snapshot("gw-1", "c", "not a number"),
 		"gw-1/?": {"gateway_instance_id": "gw-1", "requests_running": "4"},
 	}
-	fresh, stale := time.Now(), time.Now().Add(-time.Second)
-	readAt := map[string]time.Time{"self/a": stale, "gw-1/a": fresh, "gw-2/a": stale, "self/b": fresh, "gw-1/c": fresh, "gw-1/?": fresh}
+	now := time.Now()
+	fresh, stale := now, now.Add(-remoteRunningMaxAge-time.Millisecond)
+	readAt := map[string]time.Time{"self/a": stale, "gw-1/a": fresh, "gw-2/a": fresh, "self/b": fresh, "gw-1/c": fresh, "gw-1/?": fresh}
 	snap := remoteRunningByPod(raw, readAt, "self")
-	assert.Equal(t, map[string]int64{"ns/a": 5}, snap.counts)
-	// A pod's read time is that of the oldest other-gateway snapshot summed into it; this
-	// gateway's own snapshot does not count.
-	assert.Equal(t, map[string]time.Time{"ns/a": stale}, snap.readAt)
+	// Only the other gateways' snapshots of pods with an identity and a positive count are kept,
+	// each with its own read time.
+	assert.ElementsMatch(t, []remoteRunningEntry{{count: 2, readAt: fresh}, {count: 3, readAt: fresh}}, snap.entries["ns/a"])
+	assert.Len(t, snap.entries, 1)
+	assert.Equal(t, int64(5), snap.freshCount("ns/a", now))
+}
+
+// freshCount judges each other-gateway snapshot of a pod on its own read time: a tick that runs
+// out of time leaves a scattered share of keys unread, and dropping a pod's whole remote count
+// because one of its G-1 snapshots is stale would drop most pods once there are several gateways
+// (#3448 review). Only a pod whose snapshots are all stale falls back to 0.
+func TestRemoteRunningSnapshotFreshCountJudgesEachSnapshot(t *testing.T) {
+	now := time.Now()
+	fresh := now.Add(-remoteRunningMaxAge)                    // still within the limit
+	stale := now.Add(-remoteRunningMaxAge - time.Millisecond) // just past it
+	snap := &remoteRunningSnapshot{entries: map[string][]remoteRunningEntry{
+		"ns/mixed":     {{count: 2, readAt: fresh}, {count: 3, readAt: stale}, {count: 4, readAt: now}},
+		"ns/all-stale": {{count: 5, readAt: stale}, {count: 6, readAt: stale}},
+	}}
+	assert.Equal(t, int64(6), snap.freshCount("ns/mixed", now), "the stale snapshot alone is left out")
+	assert.Equal(t, int64(0), snap.freshCount("ns/all-stale", now), "a pod with no fresh snapshot falls back to 0")
+	assert.Equal(t, int64(0), snap.freshCount("ns/unknown", now))
 }
 
 func TestGetPodsRunningRequestsApproxWithoutSnapshot(t *testing.T) {
@@ -279,17 +294,9 @@ func TestInitGatewaySnapshotSyncHGetAllBatchingLoadsAllKeys(t *testing.T) {
 	initGatewaySnapshotSync(store, stopCh)
 	t.Cleanup(func() { close(stopCh) })
 
-	require.Eventually(t, func() bool {
-		raw := store.gatewaySnapshotCache.Load()
-		if raw == nil {
-			return false
-		}
-		cache := raw.(map[string][]map[string]string)
-		return len(cache) >= n
-	}, 3*time.Second, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return len(groupedSnapshotCache(store)) >= n }, 3*time.Second, 50*time.Millisecond)
 
-	raw := store.gatewaySnapshotCache.Load()
-	cache := raw.(map[string][]map[string]string)
+	cache := groupedSnapshotCache(store)
 	require.Len(t, cache, n)
 	for i := range n {
 		pk := utils.GeneratePodKey(testNamespace, fmt.Sprintf("pod-batch-%d", i))
@@ -363,14 +370,41 @@ func setRemoteRunning(t *testing.T, client *redis.Client, key, running string) {
 	}).Err())
 }
 
+// groupedSnapshotCache groups the published raw snapshot (Redis key -> fields) by pod key, the view
+// most of these tests assert on; nil while nothing has been published.
+func groupedSnapshotCache(store *Store) map[string][]map[string]string {
+	raw := store.gatewaySnapshotCache.Load()
+	if raw == nil {
+		return nil
+	}
+	return groupSnapshotsByPod(raw.(map[string]map[string]string))
+}
+
+// groupSnapshotsByPod keys the per-gateway snapshots by pod key (namespace/name) so tests can
+// look up all snapshots for a pod in O(1) without scanning the full cache. A hash under the
+// snapshot prefix that lacks either field was not written by a gateway (or is malformed); it has
+// no pod to attach to, so grouping it would only add a bogus key such as "/".
+func groupSnapshotsByPod(raw map[string]map[string]string) map[string][]map[string]string {
+	grouped := make(map[string][]map[string]string, len(raw))
+	for _, fields := range raw {
+		namespace, podName := fields["namespace"], fields["pod_name"]
+		if namespace == "" || podName == "" {
+			continue
+		}
+		pKey := utils.GeneratePodKey(namespace, podName)
+		grouped[pKey] = append(grouped[pKey], fields)
+	}
+	return grouped
+}
+
 // cachedRemoteRunning is the requests_running the sync cache currently holds for the remote
 // gateway's snapshot of testPodName; ok is false when the cache or that entry is absent.
 func cachedRemoteRunning(store *Store) (running string, ok bool) {
-	raw := store.gatewaySnapshotCache.Load()
-	if raw == nil {
+	cache := groupedSnapshotCache(store)
+	if cache == nil {
 		return "", false
 	}
-	entries := raw.(map[string][]map[string]string)[utils.GeneratePodKey(testNamespace, testPodName)]
+	entries := cache[utils.GeneratePodKey(testNamespace, testPodName)]
 	if len(entries) != 1 {
 		return "", false
 	}
@@ -421,8 +455,8 @@ func TestInitGatewaySnapshotSync_DropsKeyThatLeftRedis(t *testing.T) {
 	require.NoError(t, client.Del(context.Background(), remoteKey).Err())
 
 	require.Eventually(t, func() bool {
-		raw := store.gatewaySnapshotCache.Load()
-		return raw != nil && len(raw.(map[string][]map[string]string)) == 0
+		cache := groupedSnapshotCache(store)
+		return cache != nil && len(cache) == 0
 	}, 2*time.Second, 20*time.Millisecond, "a key absent from a successful scan must not be carried over")
 }
 
@@ -472,10 +506,14 @@ func TestInitGatewaySnapshotSync_SkipsSnapshotsMissingPodIdentity(t *testing.T) 
 	require.Eventually(t, func() bool { v, ok := cachedRemoteRunning(store); return ok && v == "3" },
 		2*time.Second, 20*time.Millisecond)
 
-	cache := store.gatewaySnapshotCache.Load().(map[string][]map[string]string)
+	cache := groupedSnapshotCache(store)
 	require.Len(t, cache, 1, "only the well-formed snapshot is grouped; got keys %v", cache)
 	require.Contains(t, cache, utils.GeneratePodKey(testNamespace, testPodName))
 	require.Len(t, cache[utils.GeneratePodKey(testNamespace, testPodName)], 1)
+	// The remote counts are built from the same raw read and must skip the same hashes.
+	entries := store.gatewayRemoteRunning.Load().entries
+	require.Len(t, entries, 1, "only the well-formed snapshot is counted; got pods %v", entries)
+	require.Equal(t, int64(3), store.gatewayRemoteRunning.Load().freshCount(utils.GeneratePodKey(testNamespace, testPodName), time.Now()))
 }
 
 // The scan-failure twin of PublishesNothingBeforeFirstSuccessfulScan: when every read fails on the
@@ -529,7 +567,7 @@ func TestInitGatewaySnapshotSync_SkipsKeysRedisRejects(t *testing.T) {
 	setRemoteRunning(t, client, remoteKey, "9")
 	require.Eventually(t, func() bool { v, ok := cachedRemoteRunning(store); return ok && v == "9" },
 		2*time.Second, 20*time.Millisecond, "nor may it freeze the keys read in the same pipeline")
-	cache := store.gatewaySnapshotCache.Load().(map[string][]map[string]string)
+	cache := store.gatewaySnapshotCache.Load().(map[string]map[string]string)
 	require.Len(t, cache, 1, "the rejected key is not a snapshot and must not appear in the cache")
 }
 
@@ -653,7 +691,7 @@ func TestInitGatewaySnapshotSync_LogsReadFailureAfterHealthyTicks(t *testing.T) 
 		5*gatewaySnapshotSyncInterval, 20*time.Millisecond, "a healthy sync must not log at Error level")
 
 	hook.failReads.Store(true)
-	requireOneErrorLine(t, captured, "using their previous values")
+	requireOneErrorLine(t, captured, "carrying their last values over")
 }
 
 // syncRunningRequestsGlobally reads gatewayRemoteRunning, and the first-tick fix depends on how
@@ -675,14 +713,20 @@ func TestSyncRunningRequestsGlobally_RemoteRunningContract(t *testing.T) {
 		{name: "published empty snapshot counts only the local requests", snap: &remoteRunningSnapshot{}, want: 3},
 		{
 			name: "adds other gateways' count read within remoteRunningMaxAge",
-			snap: &remoteRunningSnapshot{counts: map[string]int64{podKey: 5}, readAt: map[string]time.Time{podKey: now}},
+			snap: &remoteRunningSnapshot{entries: map[string][]remoteRunningEntry{podKey: {{count: 5, readAt: now}}}},
 			want: 8,
 		},
 		{
 			name: "leaves out other gateways' count read longer than remoteRunningMaxAge ago",
-			snap: &remoteRunningSnapshot{counts: map[string]int64{podKey: 5},
-				readAt: map[string]time.Time{podKey: now.Add(-remoteRunningMaxAge - time.Millisecond)}},
+			snap: &remoteRunningSnapshot{entries: map[string][]remoteRunningEntry{podKey: {
+				{count: 5, readAt: now.Add(-remoteRunningMaxAge - time.Millisecond)}}}},
 			want: 3,
+		},
+		{
+			name: "adds only the other gateways' snapshots read within remoteRunningMaxAge",
+			snap: &remoteRunningSnapshot{entries: map[string][]remoteRunningEntry{podKey: {
+				{count: 5, readAt: now.Add(-remoteRunningMaxAge - time.Millisecond)}, {count: 2, readAt: now}}}},
+			want: 5,
 		},
 	}
 	for _, tt := range tests {

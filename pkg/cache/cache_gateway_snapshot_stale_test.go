@@ -38,16 +38,12 @@ import (
 // their last known values over, but publishes the result with that tick's start time, so a
 // count that has not been read for any length of time still looks fresh.
 
-// addTestMetaPod adds a pod to store.metaPods and removes it again when the test ends. The sync
-// reads gatewayPodName only to write this gateway's snapshot of each pod in metaPods, and it
-// sees its stop channel only between ticks, so it may run a tick or two after the test; without
-// the pod those ticks no longer touch the variable that later tests reassign.
+// addTestMetaPod adds a pod to store.metaPods, so the sync also writes this gateway's snapshot of
+// it and GetPodsRunningRequestsApprox reports it.
 func addTestMetaPod(t *testing.T, store *Store, name string) *v1.Pod {
 	t.Helper()
 	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace}}
-	key := utils.GeneratePodKey(testNamespace, name)
-	store.metaPods.Store(key, &Pod{Pod: pod})
-	t.Cleanup(func() { store.metaPods.Delete(key) })
+	store.metaPods.Store(utils.GeneratePodKey(testNamespace, name), &Pod{Pod: pod})
 	return pod
 }
 
@@ -55,8 +51,9 @@ func approxRunning(store *Store, pod *v1.Pod) int64 {
 	return store.GetPodsRunningRequestsApprox([]*v1.Pod{pod})[utils.GeneratePodKey(pod.Namespace, pod.Name)]
 }
 
-// Every read fails from some point on. The remote count stops being refreshed, so once it is
-// older than remoteRunningMaxAge it must no longer be added.
+// Every read fails from some point on. A single failed read keeps the last value (#3325): the
+// count read moments ago is still added. But it stops being refreshed, so once it is older than
+// remoteRunningMaxAge it must no longer be added.
 func TestRemoteRunningApprox_DropsCountsNotReadWithinMaxAge(t *testing.T) {
 	store, client, hook, remoteKey := newSnapshotSyncUnderTest(t)
 	pod := addTestMetaPod(t, store, testPodName)
@@ -64,10 +61,17 @@ func TestRemoteRunningApprox_DropsCountsNotReadWithinMaxAge(t *testing.T) {
 		2*time.Second, 20*time.Millisecond, "the remote count must be read before the failure")
 
 	hook.failReads.Store(true)
+	// The last successful read was at most one tick before the failure, so for the next three
+	// ticks the carried value is well within remoteRunningMaxAge and must still be added. The
+	// value in Redis stays 2 meanwhile, so a read already in flight when the failure began
+	// cannot make this pass or fail for the wrong reason.
+	require.Never(t, func() bool { return approxRunning(store, pod) != 2 },
+		3*gatewaySnapshotSyncInterval, 20*time.Millisecond,
+		"a count read moments ago must still be added after a failed read")
+
 	// The remote gateway's requests finish while this gateway cannot read them.
 	setRemoteRunning(t, client, remoteKey, "0")
-
-	time.Sleep(remoteRunningMaxAge + 5*gatewaySnapshotSyncInterval)
+	time.Sleep(remoteRunningMaxAge)
 	require.Equal(t, int64(0), approxRunning(store, pod),
 		"a remote count last read more than remoteRunningMaxAge ago must not be added")
 }

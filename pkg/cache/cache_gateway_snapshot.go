@@ -56,7 +56,8 @@ var gatewayPodName = func() string {
 // initGatewaySnapshotSync starts a background goroutine that every 100ms:
 //  1. Writes this gateway's per-pod snapshots to Redis (one pipeline, one round-trip).
 //  2. Scans all gateway snapshot keys (aibrix:pod:*) and pipelines HGetAll for every key.
-//  3. Stores the resulting map[redisKey]fields atomically in store.gatewaySnapshotCache.
+//  3. Stores the resulting map[redisKey]fields atomically in store.gatewaySnapshotCache, and the
+//     other gateways' counts per pod, with when each was read, in store.gatewayRemoteRunning.
 //
 // A scan failure keeps the previous snapshot untouched, and a read failure for one
 // batch of keys keeps only those keys' last known values -- neither replaces the
@@ -104,7 +105,7 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 					// Phase 1 (write): push all pods' snapshots in one pipeline.
 					writePipe := store.redisClient.Pipeline()
 					store.metaPods.Range(func(_ string, pod *Pod) bool {
-						appendGatewayPodSnapshotToPipeline(ctx, writePipe, pod)
+						appendGatewayPodSnapshotToPipeline(ctx, writePipe, pod, self)
 						return true
 					})
 					if _, err := writePipe.Exec(ctx); err != nil {
@@ -128,7 +129,7 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 					// for exactly the keys that could not be read (see readGatewaySnapshots).
 					newRaw, carried, unread, readErr := readGatewaySnapshots(ctx, store.redisClient, allKeys, prevRaw)
 					if readErr != nil {
-						msg := "gateway snapshot sync cannot read some keys; using their previous values where there are any"
+						msg := "gateway snapshot sync cannot read some keys; carrying their last values over, which stop counting once older than remoteRunningMaxAge"
 						if unread && prevRaw == nil {
 							msg = "gateway snapshot sync cannot read some keys; not publishing the first snapshot yet"
 						}
@@ -151,12 +152,11 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 						}
 					}
 					prevRaw, prevReadAt = newRaw, newReadAt
-					newCache := groupSnapshotsByPod(newRaw)
 
 					// Atomically replace the snapshot cache so readers always see a consistent map.
-					store.gatewaySnapshotCache.Store(newCache)
+					store.gatewaySnapshotCache.Store(newRaw)
 					store.gatewayRemoteRunning.Store(remoteRunningByPod(newRaw, newReadAt, self))
-					klog.V(5).InfoS("refreshed gateway snapshot cache", "keys", len(newCache), "duration", time.Since(start))
+					klog.V(5).InfoS("refreshed gateway snapshot cache", "keys", len(newRaw), "duration", time.Since(start))
 				}()
 
 			case <-stopCh:
@@ -174,7 +174,7 @@ func (c *Store) UpsertGatewayPodSnapshot(ctx context.Context, pod *Pod) error {
 		return nil
 	}
 	pipe := c.redisClient.Pipeline()
-	appendGatewayPodSnapshotToPipeline(ctx, pipe, pod)
+	appendGatewayPodSnapshotToPipeline(ctx, pipe, pod, gatewayPodName)
 	_, err := pipe.Exec(ctx)
 	return err
 }
@@ -224,12 +224,13 @@ func (c *Store) GetAllGatewayPodSnapshots(ctx context.Context, pod *Pod) ([]map[
 	return snapshots, nil
 }
 
-// appendGatewayPodSnapshotToPipeline queues HSET + EXPIRE for a single pod onto an existing pipeline.
-// The caller is responsible for calling pipe.Exec.
-func appendGatewayPodSnapshotToPipeline(ctx context.Context, pipe redis.Pipeliner, pod *Pod) {
-	key := gatewayPodSnapshotKey(gatewayPodName, pod.Namespace, pod.Name)
+// appendGatewayPodSnapshotToPipeline queues HSET + EXPIRE for a single pod onto an existing pipeline,
+// as gateway instance gatewayName. The sync loop passes the name it read once at startup, so its
+// goroutine never reads gatewayPodName again. The caller is responsible for calling pipe.Exec.
+func appendGatewayPodSnapshotToPipeline(ctx context.Context, pipe redis.Pipeliner, pod *Pod, gatewayName string) {
+	key := gatewayPodSnapshotKey(gatewayName, pod.Namespace, pod.Name)
 	fields := map[string]any{
-		"gateway_instance_id": gatewayPodName,
+		"gateway_instance_id": gatewayName,
 		"pod_uid":             string(pod.UID),
 		"pod_name":            pod.Name,
 		"namespace":           pod.Namespace,
@@ -336,23 +337,6 @@ func readGatewaySnapshots(ctx context.Context, client *redis.Client, allKeys []s
 	return raw, carried, unread, readErr
 }
 
-// groupSnapshotsByPod keys the per-gateway snapshots by pod key (namespace/name) so consumers can
-// look up all snapshots for a pod in O(1) without scanning the full cache. A hash under the
-// snapshot prefix that lacks either field was not written by a gateway (or is malformed); it has
-// no pod to attach to, so grouping it would only add a bogus key such as "/".
-func groupSnapshotsByPod(raw map[string]map[string]string) map[string][]map[string]string {
-	grouped := make(map[string][]map[string]string, len(raw))
-	for _, fields := range raw {
-		namespace, podName := fields["namespace"], fields["pod_name"]
-		if namespace == "" || podName == "" {
-			continue
-		}
-		pKey := utils.GeneratePodKey(namespace, podName)
-		grouped[pKey] = append(grouped[pKey], fields)
-	}
-	return grouped
-}
-
 // remoteRunningMaxAge is how old the other gateways' counts for a pod may be before
 // GetPodsRunningRequestsApprox stops adding them. Ten sync intervals: a few missed ticks are
 // tolerated, a stalled sync is not, so a gateway that cannot reach Redis falls back to its own
@@ -362,57 +346,60 @@ func groupSnapshotsByPod(raw map[string]map[string]string) map[string][]map[stri
 // same keys every time (#3441).
 const remoteRunningMaxAge = 10 * gatewaySnapshotSyncInterval
 
-// remoteRunningSnapshot is the other gateways' running counts per pod key, and for each pod the
-// start of the tick that read the oldest of the snapshots summed into its count.
+// remoteRunningSnapshot is the other gateways' running counts per pod key: one entry per other
+// gateway's snapshot of the pod (at most G-1), each with the start of the tick that actually read
+// it. Snapshots reporting no running requests are left out.
 type remoteRunningSnapshot struct {
-	counts map[string]int64
-	readAt map[string]time.Time
+	entries map[string][]remoteRunningEntry
 }
 
-// freshCount is the other gateways' running count for podKey, or 0 when it was last actually
-// read longer than remoteRunningMaxAge before now. The candidate stage's estimate and the
-// realtime_num_requests_running gauge both go through it, so the two never disagree about
-// which counts are too old to use.
+type remoteRunningEntry struct {
+	count  int64
+	readAt time.Time
+}
+
+// freshCount is the other gateways' running count for podKey: the sum over its snapshots that
+// were actually read within remoteRunningMaxAge before now. Each snapshot is judged on its own,
+// because a tick that runs out of time leaves a scattered share of keys unread: judging a pod by
+// its oldest snapshot would drop the remote count of most pods once there are several gateways,
+// while summing only the fresh ones keeps what was read. A pod whose snapshots are all stale
+// (a stalled sync) gets 0, so it falls back to this gateway's own count. The candidate stage's
+// estimate and the realtime_num_requests_running gauge both go through it, so the two never
+// disagree about which counts are too old to use.
 func (s *remoteRunningSnapshot) freshCount(podKey string, now time.Time) int64 {
-	count, ok := s.counts[podKey]
-	if !ok || now.Sub(s.readAt[podKey]) > remoteRunningMaxAge {
-		return 0
+	var sum int64
+	for _, e := range s.entries[podKey] {
+		if now.Sub(e.readAt) <= remoteRunningMaxAge {
+			sum += e.count
+		}
 	}
-	return count
+	return sum
 }
 
-// remoteRunningByPod sums requests_running over the snapshots of every gateway instance other
+// remoteRunningByPod collects requests_running from the snapshots of every gateway instance other
 // than self, per pod key, from raw (Redis key -> fields) and readAt (Redis key -> start of the
-// tick that read it). A pod's read time is its oldest snapshot's, so a count that mixes a fresh
-// snapshot with one that has not been read for a while is judged by the stale one. This
-// gateway's own count is left out because its local atomic is always fresher than what it last
-// wrote to Redis. A snapshot without pod identity is skipped, as groupSnapshotsByPod does.
+// tick that read it), keeping each snapshot's read time so freshCount can judge it on its own.
+// This gateway's own count is left out because its local atomic is always fresher than what it
+// last wrote to Redis. A snapshot without pod identity was not written by a gateway (or is
+// malformed) and has no pod to attach to, so it is skipped.
 //
 // These per-pod remote counts have a second consumer besides the realtime_num_requests_running
 // gauge: the routing candidate stage reads them through GetPodsRunningRequestsApprox to rank
 // candidates. A change that replaces or slows this sync (#3322) must keep publishing them, or
 // the stage quietly ranks on this gateway's own counts alone.
 func remoteRunningByPod(raw map[string]map[string]string, readAt map[string]time.Time, self string) *remoteRunningSnapshot {
-	sums := make(map[string]float64, len(raw))
-	oldest := make(map[string]time.Time, len(raw))
+	snap := &remoteRunningSnapshot{entries: make(map[string][]remoteRunningEntry)}
 	for key, fields := range raw {
 		namespace, podName := fields["namespace"], fields["pod_name"]
 		if namespace == "" || podName == "" || fields["gateway_instance_id"] == self {
 			continue
 		}
-		podKey := utils.GeneratePodKey(namespace, podName)
 		running, _ := strconv.ParseFloat(fields["requests_running"], 64)
-		sums[podKey] += running
-		if t, seen := oldest[podKey]; !seen || readAt[key].Before(t) {
-			oldest[podKey] = readAt[key]
+		if running <= 0 {
+			continue
 		}
-	}
-	snap := &remoteRunningSnapshot{counts: make(map[string]int64, len(sums)), readAt: make(map[string]time.Time, len(sums))}
-	for podKey, sum := range sums {
-		if sum > 0 {
-			snap.counts[podKey] = int64(sum)
-			snap.readAt[podKey] = oldest[podKey]
-		}
+		podKey := utils.GeneratePodKey(namespace, podName)
+		snap.entries[podKey] = append(snap.entries[podKey], remoteRunningEntry{count: int64(running), readAt: readAt[key]})
 	}
 	return snap
 }

@@ -170,14 +170,14 @@ type Store struct {
 	// List of registered request trackers
 	requestTrackers []RequestTracker
 
-	// gatewaySnapshotCache holds a periodically refreshed snapshot of all gateway pod entries
-	// from Redis, grouped by pod key (namespace/name) → []fields. Swapped atomically by
-	// initGatewaySnapshotSync; Load() returns map[string][]map[string]string. Production code
-	// reads gatewayRemoteRunning instead, which carries per-pod read times; this raw view is
-	// kept for tests and debugging until the snapshot sync is replaced (#3442).
+	// gatewaySnapshotCache holds the last published snapshot of all gateway pod entries from
+	// Redis, keyed by Redis key → fields. Swapped atomically by initGatewaySnapshotSync; Load()
+	// returns map[string]map[string]string, the map the tick reads anyway, so storing it costs
+	// nothing. Production code reads gatewayRemoteRunning instead, which carries read times; this
+	// raw view is kept for tests and debugging until the snapshot sync is replaced (#3442).
 	gatewaySnapshotCache atomic.Value
-	// gatewayRemoteRunning holds, for each pod key, the sum of requests_running that the
-	// other gateway instances reported in the latest snapshot, and when those were read. It is
+	// gatewayRemoteRunning holds, for each pod key, the requests_running that the other gateway
+	// instances reported in the latest snapshot, each with when it was read. It is
 	// derived from the same read as gatewaySnapshotCache when that is swapped, so
 	// GetPodsRunningRequestsApprox and syncRunningRequestsGlobally answer with one map lookup
 	// per pod instead of parsing every gateway's fields.
