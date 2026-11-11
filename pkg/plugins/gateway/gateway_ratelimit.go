@@ -143,13 +143,14 @@ func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *
 	key := modelRPSKey(model, routingCtx.ConfigProfile.ProfileName)
 	newVal, err := s.modelRateLimiter.Incr(ctx, key, 1, window...)
 	if err != nil {
+		klog.ErrorS(err, "fail to increment RPS for model", "model", model, "profile", routingCtx.ConfigProfile.ProfileName)
 		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			fmt.Sprintf("fail to increment RPS for model: %v", model),
 			"", "", HeaderErrorIncrModelRPS, "true")
 	}
 	if newVal > limit {
 		if _, derr := s.modelRateLimiter.Incr(ctx, key, -1, window...); derr != nil {
-			klog.ErrorS(derr, "fail to refund rejected RPS increment for model", "model", model)
+			klog.ErrorS(derr, "fail to refund rejected RPS increment for model", "model", model, "profile", routingCtx.ConfigProfile.ProfileName)
 		}
 		return buildErrorResponse(envoyTypePb.StatusCode_TooManyRequests,
 			fmt.Sprintf("model: %v has exceeded RPS: %v", model, limit),
@@ -171,7 +172,7 @@ func (s *Server) decrModelRPS(ctx context.Context, model string, routingCtx *typ
 	}
 	key := modelRPSKey(model, routingCtx.ConfigProfile.ProfileName)
 	if _, err := s.modelRateLimiter.Incr(ctx, key, -1, rateWindow(routingCtx.ConfigProfile.RateWindowSeconds)...); err != nil {
-		klog.ErrorS(err, "fail to decrement RPS for model", "model", model)
+		klog.ErrorS(err, "fail to decrement RPS for model", "model", model, "profile", routingCtx.ConfigProfile.ProfileName)
 	}
 }
 
