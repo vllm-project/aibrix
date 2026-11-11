@@ -138,8 +138,13 @@ var _ = Describe("PodArray", func() {
 			getPodWithDeployment(deployments[0]),
 		}
 		podArray := &PodArray{Pods: pods}
-		Expect(&podArray.ListByIndex("deployment-1")[0]).To(Equal(&pods[0]))
-		Expect(&podArray.ListByIndex("deployment-2")[0]).To(Equal(&pods[3]))
+		// initDeployments copies and sorts, so verify pod identity not backing-array address.
+		d1Pods := podArray.ListByIndex("deployment-1")
+		d2Pods := podArray.ListByIndex("deployment-2")
+		Expect(d1Pods).To(HaveLen(3))
+		Expect(d2Pods).To(HaveLen(2))
+		Expect(d1Pods[0]).To(BeIdenticalTo(pods[0]))
+		Expect(d2Pods[0]).To(BeIdenticalTo(pods[1]))
 	})
 
 	It("Should perform current PodsByDeployments call correctly", func() {

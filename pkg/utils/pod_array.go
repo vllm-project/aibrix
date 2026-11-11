@@ -92,6 +92,12 @@ func (arr *PodArray) initDeployments() {
 		}
 		podIndexes[GeneratePodKey(pod.Namespace, pod.Name)] = idx
 	}
+	// Copy the slice before sorting so we never mutate the shared Registry
+	// snapshot that readers access without a lock (All, Len).
+	pods := make([]*v1.Pod, len(arr.Pods))
+	copy(pods, arr.Pods)
+	arr.Pods = pods
+
 	// Sort by podClasses
 	sort.Slice(arr.Pods, func(i, j int) bool {
 		return podIndexes[GeneratePodKey(arr.Pods[i].Namespace, arr.Pods[i].Name)] <
