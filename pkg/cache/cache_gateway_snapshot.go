@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"sync/atomic"
@@ -369,9 +370,13 @@ type remoteRunningEntry struct {
 func (s *remoteRunningSnapshot) freshCount(podKey string, now time.Time) int64 {
 	var sum int64
 	for _, e := range s.entries[podKey] {
-		if now.Sub(e.readAt) <= remoteRunningMaxAge {
-			sum += e.count
+		if now.Sub(e.readAt) > remoteRunningMaxAge {
+			continue
 		}
+		if e.count > math.MaxInt64-sum {
+			return math.MaxInt64 // saturate rather than wrap to a negative count
+		}
+		sum += e.count
 	}
 	return sum
 }
@@ -394,12 +399,16 @@ func remoteRunningByPod(raw map[string]map[string]string, readAt map[string]time
 		if namespace == "" || podName == "" || fields["gateway_instance_id"] == self {
 			continue
 		}
-		running, _ := strconv.ParseFloat(fields["requests_running"], 64)
-		if running <= 0 {
+		// Gateways write requests_running with strconv.Itoa, so it is parsed as an integer. A
+		// value that is not one (NaN, Inf, a fraction, out of int64 range, from some other
+		// writer or a corrupt hash) is skipped rather than converted, which would make the pod
+		// look like the emptiest candidate.
+		running, err := strconv.ParseInt(fields["requests_running"], 10, 64)
+		if err != nil || running <= 0 {
 			continue
 		}
 		podKey := utils.GeneratePodKey(namespace, podName)
-		snap.entries[podKey] = append(snap.entries[podKey], remoteRunningEntry{count: int64(running), readAt: readAt[key]})
+		snap.entries[podKey] = append(snap.entries[podKey], remoteRunningEntry{count: running, readAt: readAt[key]})
 	}
 	return snap
 }

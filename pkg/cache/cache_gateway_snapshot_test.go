@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -237,6 +238,32 @@ func TestRemoteRunningByPodSkipsSelfAndSumsOthers(t *testing.T) {
 	assert.ElementsMatch(t, []remoteRunningEntry{{count: 2, readAt: fresh}, {count: 3, readAt: fresh}}, snap.entries["ns/a"])
 	assert.Len(t, snap.entries, 1)
 	assert.Equal(t, int64(5), snap.freshCount("ns/a", now))
+}
+
+// requests_running is written with strconv.Itoa. A value that is not an int64 (from another writer
+// or a corrupt hash) must be skipped, not converted: int64(NaN) or int64(+Inf) is a huge negative
+// number that would make the pod look like the emptiest candidate (#3448 review).
+func TestRemoteRunningByPodSkipsCountsThatAreNotPositiveIntegers(t *testing.T) {
+	now := time.Now()
+	raw := map[string]map[string]string{}
+	readAt := map[string]time.Time{}
+	for i, v := range []string{"NaN", "+Inf", "-Inf", "1e30", "9223372036854775808", "2.5", "-3", "0", "", "2"} {
+		key := fmt.Sprintf("gw-%d/a", i)
+		raw[key] = map[string]string{"gateway_instance_id": fmt.Sprintf("gw-%d", i), "namespace": "ns", "pod_name": "a", "requests_running": v}
+		readAt[key] = now
+	}
+	snap := remoteRunningByPod(raw, readAt, "self")
+	assert.Equal(t, []remoteRunningEntry{{count: 2, readAt: now}}, snap.entries["ns/a"], "only the integer 2 is a count")
+	assert.Equal(t, int64(2), snap.freshCount("ns/a", now))
+}
+
+// freshCount saturates instead of wrapping when the counts it sums exceed int64.
+func TestRemoteRunningSnapshotFreshCountSaturates(t *testing.T) {
+	now := time.Now()
+	snap := &remoteRunningSnapshot{entries: map[string][]remoteRunningEntry{
+		"ns/a": {{count: math.MaxInt64, readAt: now}, {count: 1, readAt: now}},
+	}}
+	assert.Equal(t, int64(math.MaxInt64), snap.freshCount("ns/a", now))
 }
 
 // freshCount judges each other-gateway snapshot of a pod on its own read time: a tick that runs
