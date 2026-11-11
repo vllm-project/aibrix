@@ -183,7 +183,11 @@ def test_supervisor_restarts_only_the_dead_engine_after_backoff(tmp_path):
     assert runtime.snapshot_metrics().restart_attempts == {"failed": 1}
 
 
-def test_supervisor_reports_terminal_failure_after_restart_budget(tmp_path):
+def test_supervisor_reports_terminal_failure_after_restart_budget(
+    tmp_path, monkeypatch
+):
+    # The engines' PIDs are made up, so no process group of the host is asked.
+    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
     clock = [datetime(2026, 7, 14, tzinfo=timezone.utc)]
     launcher = _ControlledLauncher()
     runtime = ModelRuntime(
@@ -623,6 +627,8 @@ def test_supervisor_stops_a_failed_engine_whose_processes_outlived_the_stop(
     assert inst.phase == "failed"
     assert inst.stop_pending
     assert launcher.stopped == ["m"]
+    # Its processes may still hold its memory, so it is reported alive.
+    assert runtime.snapshot()["models"][0]["alive"] is True
 
     runtime.supervise_once()
     assert launcher.stopped == ["m", "m"]
@@ -631,13 +637,14 @@ def test_supervisor_stops_a_failed_engine_whose_processes_outlived_the_stop(
     inst.proc.alive = False
     runtime.supervise_once()
     assert not inst.stop_pending
+    assert runtime.snapshot()["models"][0]["alive"] is False
     runtime.supervise_once()
     assert launcher.stopped == ["m", "m"]
     assert launcher.launches == ["m"]
 
 
 def test_restart_budget_failure_stops_processes_that_outlived_the_stop(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, caplog
 ):
     runtime, launcher, _, inst = _engine_asleep(tmp_path, monkeypatch)
     with runtime._lock:
@@ -650,10 +657,16 @@ def test_restart_budget_failure_stops_processes_that_outlived_the_stop(
         runtime._schedule_restart(inst, "engine exited")
 
     assert inst.phase == "failed"
+    assert inst.last_error == "engine exited; restart budget exhausted"
+    assert runtime.snapshot_metrics().restart_budget_exhausted == {"m": 1}
+    assert "failed: engine exited; restart budget exhausted" in caplog.text
+    assert "still has processes after its stop" in caplog.text
     assert inst.stop_pending
+    assert runtime.snapshot()["models"][0]["alive"] is True
     inst.proc.alive = False
     runtime.supervise_once()
     assert not inst.stop_pending
+    assert runtime.snapshot()["models"][0]["alive"] is False
 
 
 def test_supervisor_fails_a_sleeping_engine_that_exits(tmp_path, monkeypatch):
@@ -711,13 +724,29 @@ def test_re_adopt_stops_an_orphaned_group_for_a_terminal_engine(tmp_path, monkey
     registry = EngineRegistry(tmp_path / "engines.json")
     registry.save([record])
     launcher = _ControlledLauncher()
-    monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda _: True)
+    group = {"alive": True}
+    monkeypatch.setattr(runtime_module, "pid_is_alive", lambda pid: group["alive"])
+    monkeypatch.setattr(
+        runtime_module, "process_group_is_alive", lambda pid: group["alive"]
+    )
     monkeypatch.setattr(runtime_module.os, "killpg", lambda *_: None)
 
     runtime = ModelRuntime(launcher, registry=registry)
 
-    assert runtime.list_models()[0].phase == "failed"
+    adopted = runtime.list_models()[0]
+    assert adopted.phase == "failed"
     assert launcher.stopped == ["qwen"]
+    # The group outlived the stop. The supervisor stops it again, and the
+    # engine is reported alive until the group is gone.
+    assert adopted.stop_pending
+    assert runtime.snapshot()["models"][0]["alive"] is True
+    runtime.supervise_once()
+    assert launcher.stopped == ["qwen", "qwen"]
+
+    group["alive"] = False
+    runtime.supervise_once()
+    assert not adopted.stop_pending
+    assert runtime.snapshot()["models"][0]["alive"] is False
 
 
 def test_deactivate_keeps_real_process_in_stopping_state_until_exit(tmp_path):

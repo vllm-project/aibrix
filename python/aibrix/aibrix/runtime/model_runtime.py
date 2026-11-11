@@ -105,7 +105,8 @@ class ModelInstance:
     was_ready: bool = field(default=False, repr=False)
     unready_since: Optional[datetime] = field(default=None, repr=False)
     # Whether a failed engine's process group outlived its stop. The supervisor
-    # stops it again until it is gone.
+    # stops it again until it is gone, and the engine counts as alive until
+    # then.
     stop_pending: bool = field(default=False, repr=False)
     # The GPU memory the engine still held right after its last sleep. It is
     # None while the engine is awake, and when no reading could be attributed
@@ -1280,9 +1281,12 @@ class ModelRuntime:
     @staticmethod
     def _instance_alive(inst: ModelInstance) -> bool:
         """Whether the instance's engine process is still running. Instances
-        without a process handle (mock launcher) count as alive."""
+        without a process handle (mock launcher) count as alive. A failed
+        engine counts as alive only while its process group outlives its stop,
+        since the processes left may still hold its memory. The controller then
+        keeps charging that memory to its instance."""
         if inst.phase == "failed":
-            return False
+            return inst.stop_pending
         proc = inst.proc
         poll = getattr(proc, "poll", None)
         if proc is None or poll is None:
@@ -1341,7 +1345,9 @@ class ModelRuntime:
                     self._increment_metric(self._re_adoption_outcomes, "terminal")
                     # A terminal record is never routed or relaunched. If a
                     # stale process unexpectedly remains, clean it on recovery.
-                    self._terminate_stale_process_group(inst)
+                    # A group that outlives this stop is stopped again by the
+                    # supervisor until it is gone.
+                    inst.stop_pending = not self._terminate_stale_process_group(inst)
                     continue
                 if inst.phase == "stopping":
                     if self._process_handle_alive(inst) or process_group_is_alive(
@@ -1730,11 +1736,9 @@ class ModelRuntime:
         inst.kv_initial_capacity_unavailable = False
         inst.last_error = error
         if inst.restart_count >= self._max_restarts:
-            if self._transition(inst, "failed"):
+            if inst.phase != "failed":
                 self._increment_metric(self._restart_budget_exhausted, inst.model_name)
-            inst.last_error = f"{error}; restart budget exhausted"
-            inst.next_restart_at = None
-            inst.stop_pending = not stopped
+            self._fail_engine(inst, f"{error}; restart budget exhausted", stopped)
             return
         inst.restart_count += 1
         delay_seconds = min(
