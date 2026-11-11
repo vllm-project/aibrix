@@ -1542,6 +1542,7 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 		AuthoritativeRoutingPolicy: cfg.AuthoritativeRoutingPolicy,
 	}
 	if profile != nil {
+		cp.ProfileName = profileName
 		cp.RoutingStrategy = profile.RoutingStrategy
 		cp.RoutingConfig = profile.RoutingConfig
 		cp.Routing = configprofiles.ParseRoutingConfig(profile.RoutingConfig)

@@ -129,7 +129,7 @@ func (s *Server) checkTPM(ctx context.Context, username string, tpmLimit int64) 
 	return envoyTypePb.StatusCode_OK, nil
 }
 
-// enforceModelRPS atomically increments the per-model RPS counter and rejects the request
+// enforceModelRPS atomically increments the per-profile RPS counter and rejects the request
 // if the new value exceeds the limit. A rejected increment never admitted a request, so it
 // is refunded immediately (rather than left for HandleRequestBody's needsRollback defer,
 // which is not registered until after this returns) -- otherwise every 429 would
@@ -140,14 +140,15 @@ func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *
 	}
 	limit := routingCtx.ConfigProfile.RequestsPerSecond
 	window := rateWindow(routingCtx.ConfigProfile.RateWindowSeconds)
-	newVal, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), 1, window...)
+	key := modelRPSKey(model, routingCtx.ConfigProfile.ProfileName)
+	newVal, err := s.modelRateLimiter.Incr(ctx, key, 1, window...)
 	if err != nil {
 		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			fmt.Sprintf("fail to increment RPS for model: %v", model),
 			"", "", HeaderErrorIncrModelRPS, "true")
 	}
 	if newVal > limit {
-		if _, derr := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), -1, window...); derr != nil {
+		if _, derr := s.modelRateLimiter.Incr(ctx, key, -1, window...); derr != nil {
 			klog.ErrorS(derr, "fail to refund rejected RPS increment for model", "model", model)
 		}
 		return buildErrorResponse(envoyTypePb.StatusCode_TooManyRequests,
@@ -157,7 +158,7 @@ func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *
 	return nil
 }
 
-// decrModelRPS decrements the per-model RPS counter by 1. Call this when a routing
+// decrModelRPS decrements the per-profile RPS counter by 1. Call this when a routing
 // failure occurs after enforceModelRPS has already incremented the counter, so that
 // requests which never reached the backend do not consume quota.
 // Note: if the 1-second window expires between the increment and this decrement, the
@@ -168,13 +169,19 @@ func (s *Server) decrModelRPS(ctx context.Context, model string, routingCtx *typ
 	if routingCtx.ConfigProfile == nil || routingCtx.ConfigProfile.RequestsPerSecond <= 0 {
 		return
 	}
-	if _, err := s.modelRateLimiter.Incr(ctx, modelRPSKey(model), -1, rateWindow(routingCtx.ConfigProfile.RateWindowSeconds)...); err != nil {
+	key := modelRPSKey(model, routingCtx.ConfigProfile.ProfileName)
+	if _, err := s.modelRateLimiter.Incr(ctx, key, -1, rateWindow(routingCtx.ConfigProfile.RateWindowSeconds)...); err != nil {
 		klog.ErrorS(err, "fail to decrement RPS for model", "model", model)
 	}
 }
 
-func modelRPSKey(model string) string {
-	return fmt.Sprintf("%v_MODEL_RPS_CURRENT", model)
+// modelRPSKey returns the RPS counter key for model and profile. An empty profile
+// keeps the per-model key.
+func modelRPSKey(model, profile string) string {
+	if profile == "" {
+		return fmt.Sprintf("%v_MODEL_RPS_CURRENT", model)
+	}
+	return fmt.Sprintf("%v_MODEL_RPS_CURRENT:%v", model, profile)
 }
 
 // rateWindow converts RateWindowSeconds into the variadic window override accepted by

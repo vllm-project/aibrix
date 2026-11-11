@@ -51,7 +51,7 @@ Counter keys follow the pattern `aibrix:{username}_{RPM|TPM}_CURRENT:60000:count
 
 ### Per-model RPS
 
-Counter keys follow the pattern `aibrix_model:{modelName}_MODEL_RPS_CURRENT:{windowMilliseconds}:counter`. The RPS limit is configured per model via the `requestsPerSecond` field in a config profile:
+Counter keys follow the pattern `aibrix_model:{modelName}_MODEL_RPS_CURRENT:{profileName}:{windowMilliseconds}:counter`, so each profile of a model has its own counter. The RPS limit is configured per profile via the `requestsPerSecond` field in a config profile:
 
 ```json
 {
