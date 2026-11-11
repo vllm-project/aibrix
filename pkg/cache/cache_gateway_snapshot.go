@@ -337,13 +337,13 @@ func readGatewaySnapshots(ctx context.Context, client *redis.Client, allKeys []s
 	return raw, carried, unread, readErr
 }
 
-// remoteRunningMaxAge is how old the other gateways' counts for a pod may be before
-// GetPodsRunningRequestsApprox stops adding them. Ten sync intervals: a few missed ticks are
-// tolerated, a stalled sync is not, so a gateway that cannot reach Redis falls back to its own
-// counts instead of steering by a picture that keeps getting older. The age is judged per pod,
-// from when its counts were actually read: a tick that cannot read some keys still publishes,
-// carrying their last known values over, and a tick that keeps running out of time misses the
-// same keys every time (#3441).
+// remoteRunningMaxAge is how old another gateway's snapshot of a pod may be before
+// GetPodsRunningRequestsApprox and the realtime_num_requests_running gauge stop adding its count.
+// Ten sync intervals: a few missed ticks are tolerated, a stalled sync is not, so a gateway that
+// cannot reach Redis falls back to its own counts instead of steering by a picture that keeps
+// getting older. The age is judged per snapshot, from when it was actually read: a tick that
+// cannot read some keys still publishes, carrying their last known values over, and a tick that
+// keeps running out of time misses the same keys every time (#3441). See freshCount.
 const remoteRunningMaxAge = 10 * gatewaySnapshotSyncInterval
 
 // remoteRunningSnapshot is the other gateways' running counts per pod key: one entry per other

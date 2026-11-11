@@ -71,7 +71,8 @@ func TestRemoteRunningApprox_DropsCountsNotReadWithinMaxAge(t *testing.T) {
 
 	// The remote gateway's requests finish while this gateway cannot read them.
 	setRemoteRunning(t, client, remoteKey, "0")
-	time.Sleep(remoteRunningMaxAge)
+	// Two more ticks past the limit, so a slow tick cannot leave the last read just inside it.
+	time.Sleep(remoteRunningMaxAge + 2*gatewaySnapshotSyncInterval)
 	require.Equal(t, int64(0), approxRunning(store, pod),
 		"a remote count last read more than remoteRunningMaxAge ago must not be added")
 }
@@ -136,8 +137,7 @@ func TestRemoteRunningApprox_DropsCountsOfBatchThatKeepsTimingOut(t *testing.T) 
 	t.Cleanup(func() { _ = client.Close() })
 
 	// gatewayPodName is left as it is: the remote keys belong to "gw-remote", never to this
-	// gateway, and the sync reads gatewayPodName on every tick, which this test keeps running
-	// until its deadline.
+	// gateway, so the test has no reason to reassign it.
 
 	// More remote keys than one HGETALL batch, so the first and the last pod are read in
 	// different batches.
