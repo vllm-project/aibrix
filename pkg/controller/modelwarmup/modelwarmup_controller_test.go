@@ -1128,6 +1128,111 @@ func TestUpdateStatusPreservesJobFailureDiagnostics(t *testing.T) {
 	require.Equal(t, "image pull failed", warmup.Status.Targets[0].Message)
 }
 
+func TestUpdateStatusDescribesFailuresByKind(t *testing.T) {
+	jobFor := func(warmup *modelv1alpha1.ModelWarmup, complete bool) *batchv1.Job {
+		job := &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{Name: "node-a-job", Namespace: "default",
+				Labels:          map[string]string{WarmupLabelKey: string(warmup.UID), RevisionLabelKey: "rev"},
+				OwnerReferences: []metav1.OwnerReference{controllerOwnerReference(warmup)}},
+			Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{NodeName: "node-a"}}},
+		}
+		if complete {
+			job.Status = batchv1.JobStatus{Succeeded: 1, Conditions: []batchv1.JobCondition{{
+				Type: batchv1.JobComplete, Status: corev1.ConditionTrue,
+			}}}
+			return job
+		}
+		job.Status = batchv1.JobStatus{Failed: 1, Conditions: []batchv1.JobCondition{{
+			Type: batchv1.JobFailed, Status: corev1.ConditionTrue,
+			Reason: "BackoffLimitExceeded", Message: "image pull failed",
+		}}}
+		return job
+	}
+
+	for _, tc := range []struct {
+		name        string
+		targets     map[string][]string
+		missing     map[string]string
+		jobs        func(*modelv1alpha1.ModelWarmup) []batchv1.Job
+		wantPhase   modelv1alpha1.ModelWarmupPhase
+		wantMessage string
+		wantJobName string
+	}{
+		{
+			name:        "excluded target",
+			missing:     map[string]string{"node-a": "NodeNotAuthorized"},
+			wantPhase:   modelv1alpha1.ModelWarmupFailed,
+			wantMessage: noAuthorizedTargetsMessage,
+		},
+		{
+			name:        "missing node",
+			missing:     map[string]string{"node-a": "NodeNotFound"},
+			wantPhase:   modelv1alpha1.ModelWarmupFailed,
+			wantMessage: noAuthorizedTargetsMessage,
+		},
+		{
+			name:        "warmed and excluded",
+			targets:     map[string][]string{"node-a": {"target[0]"}},
+			missing:     map[string]string{"node-b": "NodeNotAuthorized"},
+			jobs:        func(w *modelv1alpha1.ModelWarmup) []batchv1.Job { return []batchv1.Job{*jobFor(w, true)} },
+			wantPhase:   modelv1alpha1.ModelWarmupDegraded,
+			wantMessage: "1 of 2 targets warmed; 1 excluded before a warmup job was created",
+			wantJobName: "node-a-job",
+		},
+		{
+			name:        "failed job and excluded",
+			targets:     map[string][]string{"node-a": {"target[0]"}},
+			missing:     map[string]string{"node-b": "NodeNotAuthorized"},
+			jobs:        func(w *modelv1alpha1.ModelWarmup) []batchv1.Job { return []batchv1.Job{*jobFor(w, false)} },
+			wantPhase:   modelv1alpha1.ModelWarmupFailed,
+			wantMessage: "one or more warmup jobs failed; 1 excluded before a warmup job was created",
+			wantJobName: "node-a-job",
+		},
+		{
+			name:        "failed job",
+			targets:     map[string][]string{"node-a": {"target[0]"}},
+			jobs:        func(w *modelv1alpha1.ModelWarmup) []batchv1.Job { return []batchv1.Job{*jobFor(w, false)} },
+			wantPhase:   modelv1alpha1.ModelWarmupFailed,
+			wantMessage: "one or more warmup jobs failed",
+			wantJobName: "node-a-job",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			warmup := &modelv1alpha1.ModelWarmup{ObjectMeta: metav1.ObjectMeta{
+				Name: "warmup", Namespace: "default", UID: "warmup-uid",
+			}}
+			var jobs []batchv1.Job
+			if tc.jobs != nil {
+				jobs = tc.jobs(warmup)
+			}
+			scheme := runtime.NewScheme()
+			require.NoError(t, modelv1alpha1.AddToScheme(scheme))
+			require.NoError(t, batchv1.AddToScheme(scheme))
+			objects := []client.Object{warmup}
+			for i := range jobs {
+				objects = append(objects, &jobs[i])
+			}
+			r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
+				WithStatusSubresource(warmup).WithObjects(objects...).Build()}
+
+			_, err := r.updateStatus(context.Background(), warmup, "rev",
+				testResolvedTargets(tc.targets), tc.missing, jobs, jobs, "", "")
+
+			require.NoError(t, err)
+			require.Equal(t, tc.wantPhase, warmup.Status.Phase)
+			degraded := mustCondition(warmup.Status.Conditions, "Degraded")
+			require.Equal(t, metav1.ConditionTrue, degraded.Status)
+			require.Equal(t, "NodeFailed", degraded.Reason)
+			require.Equal(t, tc.wantMessage, degraded.Message)
+			for _, target := range warmup.Status.Targets {
+				if target.NodeName == "node-a" {
+					require.Equal(t, tc.wantJobName, target.JobName)
+				}
+			}
+		})
+	}
+}
+
 func TestResolveTargetsDeduplicatesAndPreservesStableSources(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))

@@ -77,6 +77,12 @@ const (
 	ResourcePoolLabelKey = "resource-pool.aibrix.ai/name"
 )
 
+// noAuthorizedTargetsMessage explains that no target passed the namespace pool
+// and warmup opt-in checks. Once reports it when every failure is an excluded
+// or unresolved target; Continuous uses it for the same boundary.
+const noAuthorizedTargetsMessage = "no authorized targets resolved; verify Node names, " +
+	ResourcePoolLabelKey + " labels, and " + WarmupEnabledLabelKey + "=" + WarmupEnabledLabelValue
+
 var controlPlaneLabelKeys = []string{
 	"node-role.kubernetes.io/control-plane",
 	"node-role.kubernetes.io/master",
@@ -723,6 +729,9 @@ func (r *ModelWarmupReconciler) updateStatus(
 	}
 	details := make([]modelv1alpha1.ModelWarmupTargetStatus, 0, len(targets)+len(missing))
 	active, pending, succeeded, failed := int32(0), int32(0), int32(0), int32(0)
+	// excluded counts failures that never had a Job, so the aggregate condition
+	// does not claim a Job failure when none was created.
+	var excluded int32
 	for node, target := range targets {
 		sources := target.Sources
 		item := modelv1alpha1.ModelWarmupTargetStatus{
@@ -766,6 +775,7 @@ func (r *ModelWarmupReconciler) updateStatus(
 			previousTargets[node].Reason, previousTargets[node].Message, now)
 		details = append(details, item)
 		failed++
+		excluded++
 	}
 	sort.Slice(details, func(i, j int) bool {
 		leftPriority := targetDetailPriority(details[i].Phase)
@@ -813,7 +823,23 @@ func (r *ModelWarmupReconciler) updateStatus(
 			desired.Status.Phase = modelv1alpha1.ModelWarmupDegraded
 		}
 		setCompletionTime(desired, now)
-		setCondition(desired, "Degraded", metav1.ConditionTrue, "NodeFailed", "one or more warmup jobs failed", now)
+		// Excluded targets never ran a Job, so describe them separately from
+		// failed Jobs. The reason stays NodeFailed so existing alerts keep
+		// working; only the message names what actually happened.
+		jobFailures := failed - excluded
+		var message string
+		switch {
+		case jobFailures == 0 && succeeded == 0:
+			message = noAuthorizedTargetsMessage
+		case jobFailures == 0:
+			message = fmt.Sprintf("%d of %d targets warmed; %d excluded before a warmup job was created",
+				succeeded, desired.Status.DesiredNodes, excluded)
+		case excluded == 0:
+			message = "one or more warmup jobs failed"
+		default:
+			message = fmt.Sprintf("one or more warmup jobs failed; %d excluded before a warmup job was created", excluded)
+		}
+		setCondition(desired, "Degraded", metav1.ConditionTrue, "NodeFailed", message, now)
 	} else if succeeded == desired.Status.DesiredNodes {
 		desired.Status.Phase = modelv1alpha1.ModelWarmupSucceeded
 		setCompletionTime(desired, now)
