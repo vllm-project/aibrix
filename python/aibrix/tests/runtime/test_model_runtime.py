@@ -3137,3 +3137,196 @@ def test_restart_records_a_failed_download(monkeypatch):
     assert inst.restart_count == 1
     assert inst.last_error == "restart launch failed: 403 Forbidden"
     assert agent._launcher.launched == ["m1"]
+
+
+class _HealthServer:
+    """A real /health endpoint that answers after `delay` seconds.
+
+    The probe is a generation round trip in SGLang, so the test needs an HTTP
+    server that actually takes time to answer: a fake client only proves which
+    timeout was passed, not that the probe outlasts the sleep.
+    """
+
+    def __init__(self, delay: float):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                time.sleep(delay)
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+            def log_message(self, *args):
+                pass
+
+            def handle_one_request(self):
+                try:
+                    super().handle_one_request()
+                except (BrokenPipeError, ConnectionResetError):
+                    outer.disconnects += 1
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.disconnects = 0
+
+    @property
+    def port(self) -> int:
+        return self.server.server_address[1]
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=10)
+        return False
+
+
+def _sglang_instance(agent, port: int, name: str = "sglang-probe"):
+    inst = agent.activate(model_name=name, artifact_url="hf://x", engine="sglang")
+    inst.proc = _LiveProc()
+    inst.port = port
+    return inst
+
+
+def _vllm_instance(agent, port: int, name: str = "vllm-probe"):
+    inst = agent.activate(model_name=name, artifact_url="hf://x", engine="vllm")
+    inst.proc = _LiveProc()
+    inst.port = port
+    return inst
+
+
+def test_sglang_readiness_probe_outlasts_the_health_sleep():
+    """A /health that answers after the 1 s server-side sleep reads ready."""
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent = make_agent()
+    with _HealthServer(1.5) as server:
+        inst = _sglang_instance(agent, server.port)
+        started = time.monotonic()
+        assert runtime_module.instance_ready(inst) is True
+        elapsed = time.monotonic() - started
+    # It waited past the sleep instead of giving up at the vLLM budget.
+    assert elapsed >= 1.5
+    assert elapsed < runtime_module.SGLANG_HEALTH_PROBE_TIMEOUT_SECONDS + 1.0
+
+
+def test_vllm_readiness_keeps_the_one_second_probe():
+    """The same slow /health reads not ready for vLLM, at the 1 s budget."""
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent = make_agent()
+    with _HealthServer(1.5) as server:
+        inst = _vllm_instance(agent, server.port)
+        started = time.monotonic()
+        assert runtime_module.instance_ready(inst) is False
+        elapsed = time.monotonic() - started
+    assert elapsed < 1.5
+    assert runtime_module.HEALTH_PROBE_TIMEOUT_SECONDS == 1.0
+
+
+def test_sglang_readiness_budget_is_bounded():
+    """A wedged engine is given up on at the SGLang budget, not at 20 s."""
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent = make_agent()
+    with _HealthServer(6.0) as server:
+        inst = _sglang_instance(agent, server.port, name="sglang-hung")
+        started = time.monotonic()
+        assert runtime_module.instance_ready(inst) is False
+        elapsed = time.monotonic() - started
+    budget = runtime_module.SGLANG_HEALTH_PROBE_TIMEOUT_SECONDS
+    assert elapsed >= budget - 0.2
+    assert elapsed < budget + 1.0
+
+
+def test_sglang_active_engine_survives_one_failed_probe(monkeypatch):
+    """One slow probe does not take a ready SGLang engine off the router."""
+    agent = make_agent()
+    inst = _sglang_instance(agent, 1, name="sglang-slow")
+    inst.phase = "active"
+    inst.was_ready = True
+    inst.unready_since = None
+
+    agent.supervise_once()
+
+    assert inst.phase == "active"
+    assert inst.was_ready is True
+    # The grace window starts on the first failure, so a second one can age out.
+    assert inst.unready_since is not None
+
+
+def test_sglang_ready_engine_is_demoted_after_the_grace_window():
+    """An engine that stays unready past the grace window stops being routed."""
+    from datetime import timedelta
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    agent = make_agent()
+    inst = _sglang_instance(agent, 1, name="sglang-stuck")
+    inst.phase = "active"
+    inst.was_ready = True
+    inst.unready_since = agent._now() - timedelta(
+        seconds=runtime_module.SGLANG_UNREADY_DEMOTE_SECONDS + 1
+    )
+
+    agent.supervise_once()
+
+    assert inst.phase == "booting"
+    # A SGLang demotion is routability only: the restart path stays vLLM-only.
+    assert inst.next_restart_at is None
+    assert inst.restart_count == 0
+
+
+def test_sglang_grace_restarts_after_a_recovered_probe():
+    """A healthy probe clears the pending demotion window.
+
+    An active SGLang engine that fails one probe, recovers, then fails again
+    must start a fresh grace window. ``_transition`` is a no-op while the phase
+    stays ``active``, so the stamp set by the first failure used to survive a
+    healthy probe and a later failure could demote the engine off a window it
+    had already recovered from.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    agent = ModelRuntime(MockEngineLauncher(), now=lambda: clock["now"])
+    inst = _sglang_instance(agent, 1, name="sglang-recovered")
+    inst.phase = "active"
+    inst.was_ready = True
+    inst.last_error = None
+    inst.unready_since = None
+
+    # One failed probe opens the grace window but keeps the engine routed.
+    agent._supervise_locked({id(inst): False})
+    assert inst.phase == "active"
+    assert inst.unready_since == clock["now"]
+
+    # A successful probe must clear that stamp even though the phase stays
+    # "active" (where _transition would not run).
+    clock["now"] += timedelta(seconds=2)
+    agent._supervise_locked({id(inst): True})
+    assert inst.phase == "active"
+    assert inst.was_ready is True
+    assert inst.unready_since is None
+
+    # A later failure therefore starts a brand new window, not the stale one.
+    clock["now"] += timedelta(seconds=1)
+    agent._supervise_locked({id(inst): False})
+    assert inst.phase == "active"
+    assert inst.unready_since == clock["now"]
+
+    # Only once that new window ages out does the engine lose routability.
+    clock["now"] += timedelta(seconds=runtime_module.SGLANG_UNREADY_DEMOTE_SECONDS + 1)
+    agent._supervise_locked({id(inst): False})
+    assert inst.phase == "booting"
+    assert inst.next_restart_at is None
+    assert inst.restart_count == 0

@@ -568,12 +568,32 @@ def write_cache_marker(
         return None
 
 
-def engine_ready(port: int) -> bool:
-    """Whether the engine on this port can serve, via a short /health probe.
+# SGLang runs a one-token generation in /health, sleeps 1 s and then polls the
+# request at 1 s steps, so a healthy answer lands on ~1.0x/2.0x/3.0x s
+# boundaries. A 1 s probe reports a healthy engine as not ready, and a 3.0 s
+# budget cuts exactly at the third poll, which is the boundary race the issue
+# measured at 1 s moved to a different multiple; sit half a poll past it and
+# admit three server-side polls. vLLM does not generate there, so it keeps the
+# short probe. SGLang's own server-side limit is 20 s, so an engine that is
+# healthy but slow to reach its first scheduler output still reads not ready
+# here; that is the trade-off this budget makes.
+HEALTH_PROBE_TIMEOUT_SECONDS = 1.0
+SGLANG_HEALTH_PROBE_TIMEOUT_SECONDS = 3.5
+
+# /health is a generation round trip through the scheduler, so one slow answer
+# (long prefill, graph capture, memory-saver wake) does not mean the engine
+# stopped serving. An engine that was already ready keeps its routability
+# until it has been unready for this long, so a single probe cannot flap it;
+# vLLM keeps demoting on the first failed probe, since its /health is cheap.
+SGLANG_UNREADY_DEMOTE_SECONDS = 6.0
+
+
+def engine_ready(port: int, timeout: float = HEALTH_PROBE_TIMEOUT_SECONDS) -> bool:
+    """Whether the engine on this port can serve, via a /health probe.
     Connection-refused (engine still starting) and timeouts read as not-ready.
     """
     try:
-        resp = _localhost().get(f"http://127.0.0.1:{port}/health", timeout=1.0)
+        resp = _localhost().get(f"http://127.0.0.1:{port}/health", timeout=timeout)
         return resp.status_code == 200
     except Exception:
         return False
@@ -839,6 +859,8 @@ def instance_ready(inst: "ModelInstance") -> bool:
         return True  # mock launcher: nothing to probe
     if poll() is not None:
         return False  # process exited
+    if inst.engine == "sglang":
+        return engine_ready(inst.port, timeout=SGLANG_HEALTH_PROBE_TIMEOUT_SECONDS)
     return engine_ready(inst.port)
 
 
@@ -1711,7 +1733,16 @@ class ModelRuntime:
                 ]
             # Each health probe waits on its engine, so the probes are made
             # without _lock, and a snapshot does not wait for them.
-            ready = {id(inst): instance_ready(inst) for inst in probed}
+            # A wedged SGLang spends its whole probe budget, so several of
+            # them must not queue up behind each other inside the lock.
+            if len(probed) < 2:
+                ready = {id(inst): instance_ready(inst) for inst in probed}
+            else:
+                from concurrent.futures import ThreadPoolExecutor
+
+                with ThreadPoolExecutor(max_workers=len(probed)) as pool:
+                    answers = list(pool.map(instance_ready, probed))
+                ready = {id(inst): answer for inst, answer in zip(probed, answers)}
             with self._lock:
                 self._supervise_locked(ready)
 
@@ -1752,14 +1783,36 @@ class ModelRuntime:
                         if not inst.was_ready:
                             inst.was_ready = True
                             changed = True
+                        # A healthy probe starts a fresh demotion window. The
+                        # phase may already be "active", where _transition is a
+                        # no-op and would leave the stamp from an earlier
+                        # failure in place; fail -> recover -> fail would then
+                        # demote off a window the engine had recovered from.
+                        if inst.unready_since is not None:
+                            inst.unready_since = None
+                            changed = True
                         if inst.phase != "active" or inst.last_error is not None:
                             self._transition(inst, "active")
                             inst.last_error = None
                             changed = True
                     else:
-                        if inst.phase != "booting":
-                            self._transition(inst, "booting")
-                            changed = True
+                        demote = True
+                        if (
+                            inst.engine == "sglang"
+                            and inst.was_ready
+                            and inst.phase == "active"
+                        ):
+                            if inst.unready_since is None:
+                                inst.unready_since = now
+                                changed = True
+                            unready = (now - inst.unready_since).total_seconds()
+                            demote = unready >= SGLANG_UNREADY_DEMOTE_SECONDS
+                        if demote:
+                            if inst.phase != "booting":
+                                self._transition(inst, "booting")
+                                changed = True
+                        # Restart stays vLLM-only: SGLang's /health can wait up
+                        # to 20 s server-side, so a slow answer is not a hang.
                         if inst.was_ready and inst.engine == "vllm":
                             if inst.unready_since is None:
                                 inst.unready_since = now

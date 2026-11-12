@@ -280,7 +280,10 @@ def _hanging_engine(tmp_path, monkeypatch, engine="vllm", **kwargs):
         model_name="hung", artifact_url="hf://Org/Hung", engine=engine
     )
     ready = [True]
-    monkeypatch.setattr(runtime_module, "engine_ready", lambda port: ready[0])
+    # The probe takes an optional timeout, so keep the stub tolerant of it.
+    monkeypatch.setattr(
+        runtime_module, "engine_ready", lambda port, *_args, **_kwargs: ready[0]
+    )
     monkeypatch.setattr(
         runtime_module,
         "process_group_is_alive",
