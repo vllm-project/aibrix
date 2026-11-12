@@ -48,8 +48,8 @@ type Pod struct {
 	// readySince is the UnixNano time this gateway first saw the pod routable
 	// (utils.FilterReadyPod), not when it was added, so time spent Pending or NotReady doesn't
 	// count against the ramp. 0 means never routable yet. It is kept across same-IP re-adds and
-	// NotReady flaps (see addPodLocked) and restarts on a new IP. Read only by
-	// LeastRequestTopKRouter's ramp.
+	// NotReady flaps (see addPodLocked) and restarts on a new IP. Read by
+	// LeastRequestTopKRouter's ramp and by the load-balance capacity warm-up.
 	readySince atomic.Int64
 }
 

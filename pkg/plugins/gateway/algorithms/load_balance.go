@@ -306,8 +306,18 @@ func (r *loadBalanceRouter) Route(ctx *types.RoutingContext, readyPodList types.
 // fixed fallback such as 1.0 would be off by the tokens/sec scale (thousands) against measured pods
 // and shut the new pod out of the traffic it needs to be measured. With no estimate anywhere every
 // pod gets 1.0, which makes the score plain load × KV penalty.
+//
+// The same uniform 1.0 applies while any candidate is still warming up (see
+// capacityWarmingUp): its estimate covers less than one rate window, so it reflects the few
+// requests that happened to land first rather than the pod's speed.
 func (r *loadBalanceRouter) capacities(pods []*v1.Pod) []float64 {
 	caps := make([]float64, len(pods))
+	if r.capacityWarmingUp(pods, time.Now()) {
+		for i := range caps {
+			caps[i] = 1.0
+		}
+		return caps
+	}
 	sum, known := 0.0, 0
 	for i, pod := range pods {
 		v, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeOutputTokenRateEWMA)
@@ -331,6 +341,45 @@ func (r *loadBalanceRouter) capacities(pods []*v1.Pod) []float64 {
 		}
 	}
 	return caps
+}
+
+// loadBalanceCapacityWarmup is how long after a pod becomes routable its capacity estimate is
+// not trusted: one full window of the 1-minute output-token rate behind
+// RealtimeOutputTokenRateEWMA. Until then the rate is computed over the few seconds since the
+// pod started taking traffic, so it is roughly that pod's share of the first requests. Trusting
+// it lets that early, random share decide the split and then hold it (#3450: after a rollout
+// the first ~10 s set a 73:27 split that never recovered). A variable so tests can shorten it.
+var loadBalanceCapacityWarmup = time.Minute
+
+// capacityWarmingUp reports whether any of pods became routable less than
+// loadBalanceCapacityWarmup ago. It uses the readySince the cache keeps for
+// LeastRequestTopKRouter's ramp, so a cache without it (cache.PodReadySinceProvider), or a pod it
+// has no time for, counts as warm. LatestPodReadySince keeps the per-pod read off the hot path
+// once the whole fleet is warm.
+func (r *loadBalanceRouter) capacityWarmingUp(pods []*v1.Pod, now time.Time) bool {
+	window := loadBalanceCapacityWarmup
+	if window <= 0 {
+		return false
+	}
+	provider, ok := r.cache.(cache.PodReadySinceProvider)
+	if !ok {
+		return false
+	}
+	nowNanos := now.UnixNano()
+	if latest := provider.LatestPodReadySince(); latest == 0 || time.Duration(nowNanos-latest) >= window {
+		return false
+	}
+	readySince, err := provider.GetPodsReadySince(pods)
+	if err != nil {
+		return false
+	}
+	for _, pod := range pods {
+		rs := readySince[utils.GeneratePodKey(pod.Namespace, pod.Name)]
+		if rs != 0 && time.Duration(nowNanos-rs) < window {
+			return true
+		}
+	}
+	return false
 }
 
 // kvFreeFraction returns free KV in [0, 1], or NaN as the internal stale-record
