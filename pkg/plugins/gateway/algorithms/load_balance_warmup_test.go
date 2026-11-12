@@ -18,6 +18,7 @@ package routingalgorithms
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -42,11 +43,15 @@ func withCapacityWarmup(t *testing.T, window time.Duration) {
 type readySinceStore struct {
 	*cache.Store
 	readySince map[string]int64
+	err        error
 	calls      int
 }
 
 func (s *readySinceStore) GetPodsReadySince(pods []*v1.Pod) (map[string]int64, error) {
 	s.calls++
+	if s.err != nil {
+		return nil, s.err
+	}
 	out := make(map[string]int64, len(pods))
 	for _, pod := range pods {
 		if rs, ok := s.readySince[pod.Name]; ok {
@@ -116,9 +121,91 @@ func TestLoadBalanceCapacityWarmup_OneYoungPodMakesEveryCapacityUniform(t *testi
 		"idle": now.Add(-10 * time.Second).UnixNano(),
 	}}
 
-	scores := lbScoresByName(t, &loadBalanceRouter{cache: s}, pods)
-	assert.InDelta(t, 5.0, scores["busy"], 1e-9)
-	assert.InDelta(t, 2.0, scores["idle"], 1e-9)
+	// The young pod must be found wherever it is in the candidate list.
+	byName := map[string]*v1.Pod{}
+	for _, pod := range pods.All() {
+		byName[pod.Name] = pod
+	}
+	for _, order := range [][]string{{"idle", "busy"}, {"busy", "idle"}} {
+		ordered := &utils.PodArray{Pods: []*v1.Pod{byName[order[0]], byName[order[1]]}}
+		scores := lbScoresByName(t, &loadBalanceRouter{cache: s}, ordered)
+		assert.InDelta(t, 5.0, scores["busy"], 1e-9, "young pod at %v", order)
+		assert.InDelta(t, 2.0, scores["idle"], 1e-9, "young pod at %v", order)
+	}
+}
+
+// TestLoadBalanceCapacityWarmup_WindowBoundary pins the window length: a pod routable for less
+// than the window keeps every capacity uniform, one routable for longer does not.
+func TestLoadBalanceCapacityWarmup_WindowBoundary(t *testing.T) {
+	withCapacityWarmup(t, time.Minute)
+	old := time.Now().Add(-10 * time.Minute).UnixNano()
+
+	for name, tc := range map[string]struct {
+		age     time.Duration
+		uniform bool
+	}{
+		"40s old, inside the window": {age: 40 * time.Second, uniform: true},
+		"61s old, past the window":   {age: 61 * time.Second, uniform: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, pods := skewedAfterRollout()
+			s := &readySinceStore{Store: c, readySince: map[string]int64{
+				"busy": old,
+				"idle": time.Now().Add(-tc.age).UnixNano(),
+			}}
+			scores := lbScoresByName(t, &loadBalanceRouter{cache: s}, pods)
+			if tc.uniform {
+				assert.InDelta(t, 5.0, scores["busy"], 1e-9)
+				assert.InDelta(t, 2.0, scores["idle"], 1e-9)
+			} else {
+				assert.InDelta(t, 5.0/271, scores["busy"], 1e-9)
+				assert.InDelta(t, 2.0/96, scores["idle"], 1e-9)
+			}
+		})
+	}
+}
+
+// storeWithoutReadySince hides the store's cache.PodReadySinceProvider methods.
+type storeWithoutReadySince struct{ cache.Cache }
+
+// TestLoadBalanceCapacityWarmup_NoReadySinceCountsAsWarm: a cache that cannot say when a pod
+// became routable, or fails to, leaves the estimates in use rather than blanking them.
+func TestLoadBalanceCapacityWarmup_NoReadySinceCountsAsWarm(t *testing.T) {
+	withCapacityWarmup(t, time.Minute)
+	young := time.Now().Add(-5 * time.Second).UnixNano()
+
+	c, pods := skewedAfterRollout()
+	for name, lbCache := range map[string]cache.Cache{
+		"cache without the provider": storeWithoutReadySince{Cache: c},
+		"read error": &readySinceStore{Store: c, err: errors.New("boom"),
+			readySince: map[string]int64{"busy": young, "idle": young}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			scores := lbScoresByName(t, &loadBalanceRouter{cache: lbCache}, pods)
+			assert.InDelta(t, 5.0/271, scores["busy"], 1e-9)
+			assert.InDelta(t, 2.0/96, scores["idle"], 1e-9)
+		})
+	}
+}
+
+// TestLoadLoadBalanceCapacityWarmup pins the default (TestMain turns the warm-up off for the
+// package, so no other test sees it) and the env parsing: "0" is the off switch.
+func TestLoadLoadBalanceCapacityWarmup(t *testing.T) {
+	assert.Equal(t, time.Minute, loadBalanceCapacityWarmupDefault, "one rate window (window1mTarget in pkg/cache)")
+	for value, want := range map[string]time.Duration{
+		"":     time.Minute,
+		"0":    0,
+		"0s":   0,
+		"30s":  30 * time.Second,
+		"2m":   2 * time.Minute,
+		"-5s":  time.Minute,
+		"junk": time.Minute,
+	} {
+		t.Run("value="+value, func(t *testing.T) {
+			t.Setenv(loadBalanceCapacityWarmupEnv, value)
+			assert.Equal(t, want, loadLoadBalanceCapacityWarmup())
+		})
+	}
 }
 
 // TestLoadBalanceCapacityWarmup_WarmFleetUsesEstimates checks that the warm-up does not touch a

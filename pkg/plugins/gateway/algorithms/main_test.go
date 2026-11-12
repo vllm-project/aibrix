@@ -24,7 +24,8 @@ import (
 func TestMain(m *testing.M) {
 	// Test caches stamp every Ready pod routable at the moment it is added, which would put every
 	// load-balance test inside the capacity warm-up and replace its capacities with 1.0. The
-	// tests that cover the warm-up turn it back on (see withCapacityWarmup).
+	// tests that cover the warm-up turn it back on (see withCapacityWarmup), and
+	// TestLoadLoadBalanceCapacityWarmup pins the production default.
 	loadBalanceCapacityWarmup = 0
 	os.Exit(m.Run())
 }

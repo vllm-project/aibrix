@@ -267,7 +267,7 @@ func (c *Store) calculateRate1m(pod *Pod, metricName string, currentValue float6
 // The ~1-minute window shared by calculateRate1m and calculateMean1m.
 const (
 	window1mSnapshotInterval = 5 * time.Second // throttle to avoid snapshot flood
-	window1mTarget           = 1 * time.Minute // desired look-back window
+	window1mTarget           = 1 * time.Minute // desired look-back window; load-balance's capacity warm-up default (loadBalanceCapacityWarmupDefault) matches it
 	window1mHistoryMaxAge    = 3 * time.Minute // keep 3 minutes of history
 	window1mHistoryMaxCount  = 36              // 5s × 36 = 3 minutes
 	window1mMinElapsed       = 10.0            // seconds; discard results with too little data
