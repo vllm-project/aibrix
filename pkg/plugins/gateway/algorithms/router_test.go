@@ -667,6 +667,7 @@ func TestScoreAndRankTieBreakFallsBackToName(t *testing.T) {
 		"read error":   {RunningErr: fmt.Errorf("redis down")},
 		"equal counts": {Running: map[string]int64{"pod-a": 3, "pod-b": 3}},
 		"missing pod":  {Running: map[string]int64{"pod-a": 5}},
+		"nil counts":   {NilCounts: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			m, busy, idle := blendTieRouter(c)
@@ -727,12 +728,37 @@ func TestTieBreakCacheComesFromTheStrategies(t *testing.T) {
 	assert.Same(t, lbCache, tieBreakCache(items("prefix-cache", "load-balance"), scorers),
 		"the default prefix-cache blend has only load-balance to take the cache from")
 
-	global, err := cache.Get()
-	got := tieBreakCache(items("prefix-cache"), scorers)
-	if err != nil {
-		assert.Nil(t, got, "no strategy holds a cache and the global one is not initialized")
-	} else {
-		assert.Equal(t, global, got, "no strategy holds a cache: the global one")
+	// Initialize the global cache here, so the fallback is checked whether or not an earlier
+	// test in the package did.
+	global := cache.InitForTest()
+	assert.Same(t, global, tieBreakCache(items("prefix-cache"), scorers), "no strategy holds a cache: the global one")
+}
+
+// TestIsolatedManagerBlendRoutesDisagreementTieToIdlePod is #3450 end to end with the real
+// strategies on a manager built on its own cache: p1 runs 6 at capacity 300 and p2 runs 2 at
+// capacity 96, so least-request prefers p2 and load-balance p1 (6/300 < 2/96). The
+// least-request,load-balance:1 blend ties, and the tie must go to the idle p2 on every request,
+// read from the decision's running-requests snapshot as the gateway does.
+func TestIsolatedManagerBlendRoutesDisagreementTieToIdlePod(t *testing.T) {
+	pods := []*v1.Pod{makeLBPod("p1", "1.1.1.1"), makeLBPod("p2", "2.2.2.2")}
+	c := cache.NewWithPodsMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
+		"p1": lbPodMetrics(6, 300, 0),
+		"p2": lbPodMetrics(2, 96, 0),
+	})
+	rm := NewRouterManagerWithCache(c)
+	rm.Init()
+
+	for i := 0; i < 50; i++ {
+		ctx := types.NewRoutingContext(context.Background(), RouterLeastRequest, "m1", "", fmt.Sprintf("r%d", i), "")
+		router, err := rm.Select(ctx)
+		require.NoError(t, err)
+		require.Equal(t, "least-request,load-balance:1", ctx.ResolvedStrategy)
+
+		ctx.StartRunningRequestsSnapshot()
+		target, err := router.Route(ctx, podsFromCache(c))
+		ctx.StopRunningRequestsSnapshot()
+		require.NoError(t, err)
+		require.Equal(t, "2.2.2.2:8000", target, "request %d went to the busy pod", i)
 	}
 }
 

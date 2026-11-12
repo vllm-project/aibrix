@@ -620,7 +620,9 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 	// name alone hands every such request to the same pod, busier or not (#3450). The counts
 	// come from ctx.RunningRequests, the same per-decision snapshot the scorers read, so the
 	// tie-break agrees with what least-request and load-balance saw. Unless every tied pod has
-	// a count, the name alone decides as before.
+	// a count, the name alone decides as before. These are raw counts, not the ramp-adjusted
+	// ones least-request votes on (least.applyRampAdjustment), so a tie can go to a
+	// just-routable pod that the ramp alone would still hold back.
 	if len(topPods) > 1 {
 		running := m.tieBreakRunningCounts(ctx, topPods) // nil: order by name only
 		sort.Slice(topPods, func(i, j int) bool {
