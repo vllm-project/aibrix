@@ -82,3 +82,7 @@ Using incr-then-check (rather than check-then-increment) means the `INCRBY` is t
 ### Upgrading from wall-clock bucket keys
 
 The counter key format changed from `{name}:{key}:{timebin}` to `{name}:{key}:{windowMilliseconds}:counter`. Existing bucket keys expire on their own TTL, but the new limiter does not read their counts. A deployment therefore starts a new counter window for each key. During a rolling upgrade, old and new gateway instances count requests separately and may collectively admit more than the configured limit. Deployments that require uninterrupted strict limits should avoid serving rate-limited traffic from both versions at the same time; a cutover to the new version still starts fresh counters.
+
+### Upgrading to per-profile model RPS keys
+
+Per-model RPS counter keys changed from `{modelName}_MODEL_RPS_CURRENT` to `{modelName}_MODEL_RPS_CURRENT:{profileName}` for every model with a limit, including models with a single profile. The old counters expire within their window. During a rolling upgrade, old and new gateway instances count on different keys, so each profile can admit up to twice its limit until every instance runs the new version.

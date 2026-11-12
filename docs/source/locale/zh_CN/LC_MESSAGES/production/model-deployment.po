@@ -184,18 +184,18 @@ msgstr "它是什么"
 #: ../../source/production/model-deployment.rst:116
 msgid ""
 "``requestsPerSecond`` sets a hard cap on how many requests per second the"
-" gateway will forward to a given model. Requests that exceed the limit "
-"are rejected immediately with HTTP ``429 Too Many Requests`` before any "
-"routing or inference work is done."
+" gateway will forward to a model under one config profile. Requests that "
+"exceed the limit are rejected immediately with HTTP ``429 Too Many "
+"Requests`` before any routing or inference work is done."
 msgstr ""
-"``requestsPerSecond`` 为网关向指定模型转发的每秒请求数设置硬上限。超出限制的请求会立即以 HTTP ``429 Too "
-"Many Requests`` 拒绝，不会进行任何路由或推理。"
+"``requestsPerSecond`` 为网关在一个 config profile 下向模型转发的每秒请求数设置硬上限。超出限制的请求会立即以"
+" HTTP ``429 Too Many Requests`` 拒绝，不会进行任何路由或推理。"
 
 #: ../../source/production/model-deployment.rst:118
 msgid ""
-"This is a **model-level** cap (all users combined), distinct from the "
+"This is a **per-profile** cap (all users combined), distinct from the "
 "per-user RPM/TPM limits. Use it to:"
-msgstr "这是 **模型级** 上限（所有用户合计），不同于按用户的 RPM/TPM 限制。可用于："
+msgstr "这是 **按 profile** 的上限（所有用户合计），不同于按用户的 RPM/TPM 限制。可用于："
 
 #: ../../source/production/model-deployment.rst:120
 msgid "Protect a model from accidental traffic spikes."
@@ -228,8 +228,15 @@ msgstr "要按流量类别应用不同限制，请按 profile 分别设置："
 #: ../../source/production/model-deployment.rst:162
 msgid ""
 "Here, interactive traffic (``default`` profile) is capped at 100 RPS "
-"while batch traffic is limited to 20 RPS."
-msgstr "此处，交互流量（``default`` profile）上限为 100 RPS，批处理流量限制为 20 RPS。"
+"while batch traffic is limited to 20 RPS. Each profile counts only its "
+"own requests, so the model can receive up to 120 RPS in total. Clients "
+"choose the profile with the ``config-profile`` header; when "
+"``authoritativeRoutingPolicy`` is ``true``, the gateway ignores the "
+"header and counts every request against the default profile."
+msgstr ""
+"此处，交互流量（``default`` profile）上限为 100 RPS，批处理流量限制为 20 RPS。每个 profile "
+"只统计自己的请求，因此该模型合计最多可接收 120 RPS。客户端通过 ``config-profile`` 请求头选择 profile；当 "
+"``authoritativeRoutingPolicy`` 为 ``true`` 时，网关会忽略该请求头，并将所有请求计入默认 profile。"
 
 #: ../../source/production/model-deployment.rst:165
 #: ../../source/production/model-deployment.rst:218
@@ -248,13 +255,13 @@ msgstr "内部工作方式"
 
 #: ../../source/production/model-deployment.rst:179
 msgid ""
-"The counter is stored in Redis and incremented atomically on each "
-"request. The 1-second window resets automatically. If routing fails after"
-" the counter is incremented (e.g. no ready pods), the increment is rolled"
-" back so failed requests do not consume quota."
+"Each model and profile has its own counter in Redis, incremented "
+"atomically on each request. The 1-second window resets automatically. If "
+"routing fails after the counter is incremented (e.g. no ready pods), the "
+"increment is rolled back so failed requests do not consume quota."
 msgstr ""
-"计数器存储在 Redis 中，并在每次请求时原子递增。1 秒窗口会自动重置。如果计数器递增后路由失败（例如没有就绪 "
-"Pod），该增量会回滚，因此失败请求不会消耗配额。"
+"每个模型和 profile 在 Redis 中都有各自的计数器，并在每次请求时原子递增。1 "
+"秒窗口会自动重置。如果计数器递增后路由失败（例如没有就绪 Pod），该增量会回滚，因此失败请求不会消耗配额。"
 
 #: ../../source/production/model-deployment.rst:182
 msgid ""

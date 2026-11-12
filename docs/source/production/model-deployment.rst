@@ -113,9 +113,9 @@ Capping Model Throughput (RPS Limiting)
 What it is
 ~~~~~~~~~~
 
-``requestsPerSecond`` sets a hard cap on how many requests per second the gateway will forward to a given model. Requests that exceed the limit are rejected immediately with HTTP ``429 Too Many Requests`` before any routing or inference work is done.
+``requestsPerSecond`` sets a hard cap on how many requests per second the gateway will forward to a model under one config profile. Requests that exceed the limit are rejected immediately with HTTP ``429 Too Many Requests`` before any routing or inference work is done.
 
-This is a **model-level** cap (all users combined), distinct from the per-user RPM/TPM limits. Use it to:
+This is a **per-profile** cap (all users combined), distinct from the per-user RPM/TPM limits. Use it to:
 
 - Protect a model from accidental traffic spikes.
 - Enforce a cost budget (GPU-hours) for a model in a shared cluster.
@@ -159,7 +159,7 @@ To apply different limits per traffic class, set it per profile:
           }
         }
 
-Here, interactive traffic (``default`` profile) is capped at 100 RPS while batch traffic is limited to 20 RPS.
+Here, interactive traffic (``default`` profile) is capped at 100 RPS while batch traffic is limited to 20 RPS. Each profile counts only its own requests, so the model can receive up to 120 RPS in total. Clients choose the profile with the ``config-profile`` header; when ``authoritativeRoutingPolicy`` is ``true``, the gateway ignores the header and counts every request against the default profile.
 
 What clients see when the limit is hit
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -176,7 +176,7 @@ The gateway returns:
 How it works internally
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-The counter is stored in Redis and incremented atomically on each request. The 1-second window resets automatically. If routing fails after the counter is incremented (e.g. no ready pods), the increment is rolled back so failed requests do not consume quota.
+Each model and profile has its own counter in Redis, incremented atomically on each request. The 1-second window resets automatically. If routing fails after the counter is incremented (e.g. no ready pods), the increment is rolled back so failed requests do not consume quota.
 
 .. note::
     ``requestsPerSecond`` requires Redis to be enabled on the gateway plugin. Without Redis, the counter is in-process and is not shared across gateway replicas. See the `Deploying Gateway <gateway.html>`_ guide — Enabling Redis for Multi-Replica Deployments.
