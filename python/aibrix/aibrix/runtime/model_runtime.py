@@ -1783,6 +1783,14 @@ class ModelRuntime:
                         if not inst.was_ready:
                             inst.was_ready = True
                             changed = True
+                        # A healthy probe starts a fresh demotion window. The
+                        # phase may already be "active", where _transition is a
+                        # no-op and would leave the stamp from an earlier
+                        # failure in place; fail -> recover -> fail would then
+                        # demote off a window the engine had recovered from.
+                        if inst.unready_since is not None:
+                            inst.unready_since = None
+                            changed = True
                         if inst.phase != "active" or inst.last_error is not None:
                             self._transition(inst, "active")
                             inst.last_error = None

@@ -3282,3 +3282,51 @@ def test_sglang_ready_engine_is_demoted_after_the_grace_window():
     # A SGLang demotion is routability only: the restart path stays vLLM-only.
     assert inst.next_restart_at is None
     assert inst.restart_count == 0
+
+
+def test_sglang_grace_restarts_after_a_recovered_probe():
+    """A healthy probe clears the pending demotion window.
+
+    An active SGLang engine that fails one probe, recovers, then fails again
+    must start a fresh grace window. ``_transition`` is a no-op while the phase
+    stays ``active``, so the stamp set by the first failure used to survive a
+    healthy probe and a later failure could demote the engine off a window it
+    had already recovered from.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    import aibrix.runtime.model_runtime as runtime_module
+
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    agent = ModelRuntime(MockEngineLauncher(), now=lambda: clock["now"])
+    inst = _sglang_instance(agent, 1, name="sglang-recovered")
+    inst.phase = "active"
+    inst.was_ready = True
+    inst.last_error = None
+    inst.unready_since = None
+
+    # One failed probe opens the grace window but keeps the engine routed.
+    agent._supervise_locked({id(inst): False})
+    assert inst.phase == "active"
+    assert inst.unready_since == clock["now"]
+
+    # A successful probe must clear that stamp even though the phase stays
+    # "active" (where _transition would not run).
+    clock["now"] += timedelta(seconds=2)
+    agent._supervise_locked({id(inst): True})
+    assert inst.phase == "active"
+    assert inst.was_ready is True
+    assert inst.unready_since is None
+
+    # A later failure therefore starts a brand new window, not the stale one.
+    clock["now"] += timedelta(seconds=1)
+    agent._supervise_locked({id(inst): False})
+    assert inst.phase == "active"
+    assert inst.unready_since == clock["now"]
+
+    # Only once that new window ages out does the engine lose routability.
+    clock["now"] += timedelta(seconds=runtime_module.SGLANG_UNREADY_DEMOTE_SECONDS + 1)
+    agent._supervise_locked({id(inst): False})
+    assert inst.phase == "booting"
+    assert inst.next_restart_at is None
+    assert inst.restart_count == 0
