@@ -179,7 +179,7 @@ How it works internally
 Each model and profile has its own counter in Redis, incremented atomically on each request. The 1-second window resets automatically. If routing fails after the counter is incremented (e.g. no ready pods), the increment is rolled back so failed requests do not consume quota.
 
 .. note::
-    ``requestsPerSecond`` requires Redis to be enabled on the gateway plugin. Without Redis, the counter is in-process and is not shared across gateway replicas. See the `Deploying Gateway <gateway.html>`_ guide — Enabling Redis for Multi-Replica Deployments.
+    ``requestsPerSecond`` requires Redis to be enabled on the gateway plugin. All gateway replicas share the counters in Redis; a gateway running without Redis does not enforce the limit. See the `Deploying Gateway <gateway.html>`_ guide — Enabling Redis for Multi-Replica Deployments.
 
 Omit ``requestsPerSecond`` or set it to ``0`` to disable the limit.
 

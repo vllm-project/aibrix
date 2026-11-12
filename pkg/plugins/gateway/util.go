@@ -1496,9 +1496,9 @@ func modelConfigFromCache(c cache.Cache, model string) string {
 //     requestsInflight and requestsPerSecondPerReplica are independent, user-configured
 //     limits: when inflight is set below the resolved replica RPS, it is left as configured
 //     (only logged via warnIfReplicaInflightBelowRPS) rather than raised, since silently
-//     loosening the concurrency cap the user set would defeat its purpose. Unlike
-//     RequestsPerSecond, neither requestsPerSecondPerReplica nor requestsInflight has an
-//     env-var form: both are configured directly in the profile.
+//     loosening the concurrency cap the user set would defeat its purpose. Neither
+//     requestsPerSecondPerReplica nor requestsInflight has an env-var form: both are
+//     configured directly in the profile.
 func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 	if routingCtx == nil {
 		return

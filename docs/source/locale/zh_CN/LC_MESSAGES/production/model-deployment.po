@@ -266,12 +266,12 @@ msgstr ""
 #: ../../source/production/model-deployment.rst:182
 msgid ""
 "``requestsPerSecond`` requires Redis to be enabled on the gateway plugin."
-" Without Redis, the counter is in-process and is not shared across "
-"gateway replicas. See the `Deploying Gateway <gateway.html>`_ guide — "
-"Enabling Redis for Multi-Replica Deployments."
+" All gateway replicas share the counters in Redis; a gateway running "
+"without Redis does not enforce the limit. See the `Deploying Gateway "
+"<gateway.html>`_ guide — Enabling Redis for Multi-Replica Deployments."
 msgstr ""
-"``requestsPerSecond`` 要求在网关插件上启用 Redis。没有 Redis 时，计数器位于进程内，不会在网关副本之间共享。参见"
-" `Deploying Gateway <gateway.html>`_ 指南 — 为多副本部署启用 Redis。"
+"``requestsPerSecond`` 要求在网关插件上启用 Redis。所有网关副本共享 Redis 中的计数器；没有 Redis "
+"运行的网关不会执行该限制。参见 `Deploying Gateway <gateway.html>`_ 指南 — 为多副本部署启用 Redis。"
 
 #: ../../source/production/model-deployment.rst:184
 msgid "Omit ``requestsPerSecond`` or set it to ``0`` to disable the limit."
