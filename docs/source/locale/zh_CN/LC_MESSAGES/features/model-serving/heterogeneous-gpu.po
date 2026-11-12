@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  AIBrix\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-11 19:16-0700\n"
+"POT-Creation-Date: 2026-11-13 08:00+0900\n"
 "PO-Revision-Date: 2026-09-10 18:55+0800\n"
 "Last-Translator: AIBrix Team\n"
 "Language: zh_CN\n"
@@ -75,11 +75,14 @@ msgid ""
 " the request to the replica with the lowest score. It needs no hardware "
 "labels and no static table of GPU performance: a mixed pool teaches the "
 "gateway its relative speeds from production traffic, and faster replicas "
-"receive proportionally more requests."
+"receive proportionally more requests. The capacity term is switched off "
+"for a short warm-up whenever a replica becomes routable; see *How "
+"Capacity Is Learned*."
 msgstr ""
 "``load-balance`` "
 "路由策略通过依据每个副本当前负载与其观测容量的比值对副本打分，并将请求路由到得分最低的副本来解决该问题。它不需要硬件标签，也不需要静态的 GPU "
-"性能表：网关会从生产流量中学习混合资源池中各副本的相对速度，更快的副本会按比例获得更多请求。"
+"性能表：网关会从生产流量中学习混合资源池中各副本的相对速度，更快的副本会按比例获得更多请求。每当有副本变为可路由时，容量项会在一段较短的预热期内关闭，参见"
+"*容量如何学习*。"
 
 #: ../../source/features/model-serving/heterogeneous-gpu.rst:19
 msgid "Scoring"
@@ -119,7 +122,7 @@ msgstr "项"
 
 #: ../../source/features/model-serving/heterogeneous-gpu.rst:35
 #: ../../source/features/model-serving/heterogeneous-gpu.rst:55
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:348
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:351
 msgid "Meaning"
 msgstr "含义"
 
@@ -398,7 +401,23 @@ msgstr ""
 "尚无估计值的新副本，按已有估计值的副本的平均值打分，因此在收集到足够测量数据之前，它会作为一个平均水平的副本参与竞争。如果所有副本都没有估计值，则所有副本容量相同，得分退化为负载乘以"
 " KV 惩罚项。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:113
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:112
+msgid ""
+"While any candidate replica became routable less than one rate window ago"
+" (``AIBRIX_LOAD_BALANCE_CAPACITY_WARMUP``, default ``60s``; ``0`` "
+"disables it; environment-only), every candidate gets the same capacity "
+"and the score reduces to load multiplied by the KV penalty. Until a "
+"replica has a full window of history, its rate is divided by the time "
+"since its own first measurement, so replicas that became routable at "
+"different times are not comparable and the newer one looks faster. This "
+"lasts for a whole rolling update or scale-up plus one window; during that"
+" time a mixed pool does not send its faster replicas more requests."
+msgstr ""
+"只要有候选副本变为可路由的时间还不到一个速率窗口（``AIBRIX_LOAD_BALANCE_CAPACITY_WARMUP``，默认 "
+"``60s``；``0`` 表示关闭；仅支持环境变量），所有候选副本就使用相同的容量，得分退化为负载乘以 KV "
+"惩罚项。在副本积累满一个完整窗口的历史之前，它的速率是用自身首次测量以来的时间去除的，因此在不同时间变为可路由的副本之间不可比较，较新的副本会显得更快。这一状态会持续整个滚动更新或扩容过程再加一个窗口；在此期间，混合资源池不会向更快的副本发送更多请求。"
+
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:114
 msgid ""
 "The learned value is the *observed serving capacity under the current "
 "workload mix*, not a fixed property of the GPU. Request shape can "
@@ -410,11 +429,11 @@ msgstr ""
 "学习到的值是 *当前工作负载组合下观测到的服务容量* ，而不是 GPU "
 "的固有属性。即使在相同硬件上，请求形态也会显著影响吞吐，尤其是输入较长和多模态的工作负载，估计值会随负载组合而变化。由于它跟随约一分钟的窗口，突变会在几十秒内体现，而不是立即体现。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:116
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:117
 msgid "Production Results"
 msgstr "生产环境效果"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:118
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:119
 msgid ""
 "The figure and table below show two GPU types serving the same model, "
 "before and after capacity-aware routing was rolled out. Before, a least-"
@@ -427,67 +446,67 @@ msgstr ""
 "Deployment 发送大致相同的 QPS，导致较慢的 GPU 过载，而较快的 GPU 利用率不足。上线后，网关向较快的 GPU "
 "发送了更多流量，利用率趋于一致。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:120
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:121
 msgid "Capacity-aware routing aligns GPU utilization across different GPU types"
 msgstr "容量感知路由使不同 GPU 类型的利用率趋于一致"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:130
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:131
 msgid "Before"
 msgstr "之前"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:131
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:132
 msgid "After"
 msgstr "之后"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:132
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:133
 msgid "GPU-A (slower), average utilization"
 msgstr "GPU-A（较慢），平均利用率"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:133
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:134
 msgid "58.4%"
 msgstr "58.4%"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:134
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:135
 msgid "52.7%"
 msgstr "52.7%"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:135
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:136
 msgid "GPU-B (faster), average utilization"
 msgstr "GPU-B（较快），平均利用率"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:136
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:137
 msgid "24.3%"
 msgstr "24.3%"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:137
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:138
 msgid "53.6%"
 msgstr "53.6%"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:138
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:139
 msgid "GPU-A (slower), average QPS"
 msgstr "GPU-A（较慢），平均 QPS"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:139
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:140
 msgid "100"
 msgstr "100"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:140
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:141
 msgid "78"
 msgstr "78"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:141
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:142
 msgid "GPU-B (faster), average QPS"
 msgstr "GPU-B（较快），平均 QPS"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:142
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:143
 msgid "102"
 msgstr "102"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:143
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:144
 msgid "142"
 msgstr "142"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:145
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:146
 msgid ""
 "Balanced load does not mean equal request counts. In a heterogeneous "
 "fleet, routing should distribute work according to the capacity available"
@@ -498,11 +517,11 @@ msgstr ""
 "均衡的负载并不意味着请求数相等。在异构集群中，路由应当按各自处理工作的可用容量来分配工作，而不是平均分摊流量。较快的 GPU "
 "自然承接更多请求，不同 GPU 类型的利用率趋于一致，整体集群吞吐提升，同时不会让较慢的 GPU 过载。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:148
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:149
 msgid "Using Load-Balance Routing"
 msgstr "使用 load-balance 路由"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:150
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:151
 msgid ""
 "Replicas of one model, such as one ``Deployment`` per GPU type that share"
 " the same ``model.aibrix.ai/name`` label, are scored together. Select the"
@@ -511,7 +530,7 @@ msgstr ""
 "同一模型的各副本（例如每种 GPU 类型一个 ``Deployment`` 且共享相同的 ``model.aibrix.ai/name`` "
 "标签）会放在一起打分。通过 ``routing-strategy`` 请求头显式选择该策略："
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:165
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:166
 msgid ""
 "``load-balance`` is also blended in behind other strategies by default, "
 "so its scoring influences most requests even when it is not selected "
@@ -523,41 +542,54 @@ msgstr ""
 ":`../gateway-routing/gateway-plugins` 中的 *Auto-blended capacity "
 "awareness* 和 ``AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT`` 。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:168
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:169
 msgid "Behavior in Edge Cases"
 msgstr "边界情况下的行为"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:174
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:175
 msgid "Situation"
 msgstr "情形"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:175
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:176
 msgid "Behavior"
 msgstr "行为"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:176
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:177
 msgid "Replica has no capacity estimate yet"
 msgstr "副本尚无容量估计值"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:177
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:178
 msgid "Scored at the mean estimate of the replicas that have one."
 msgstr "按已有估计值的副本的平均值打分。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:178
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:179
+msgid ""
+"Any candidate replica became routable less than "
+"``AIBRIX_LOAD_BALANCE_CAPACITY_WARMUP`` ago"
+msgstr "有候选副本变为可路由的时间不到 ``AIBRIX_LOAD_BALANCE_CAPACITY_WARMUP``"
+
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:180
+msgid ""
+"Every candidate gets the same capacity, so the score is load multiplied "
+"by the KV penalty. Lasts for a whole rolling update or scale-up plus the "
+"window."
+msgstr "所有候选副本使用相同的容量，因此得分为负载乘以 KV 惩罚项。持续整个滚动更新或扩容过程再加一个窗口。"
+
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:181
 msgid "Engine reports no KV usage, or ``NaN``"
 msgstr "引擎未上报 KV 使用率，或为 ``NaN``"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:179
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:182
 msgid ""
 "Treated as fully free: no penalty and no guardrail, so engines that lack "
 "the metric are not penalized."
 msgstr "视为完全空闲：既无惩罚也无保护阈值，因此缺少该指标的引擎不会被惩罚。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:180
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:183
 msgid "``kvFree < kvCritical``"
 msgstr "``kvFree < kvCritical``"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:181
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:184
 msgid ""
 "Score is ``+Inf``. When ``load-balance`` routes alone, the replica is "
 "skipped until it recovers. When ``load-balance`` is blended with other "
@@ -567,39 +599,39 @@ msgstr ""
 "得分为 ``+Inf`` 。当 ``load-balance`` 单独路由时，该副本会被跳过，直到恢复。当 ``load-balance`` "
 "与其他策略混合时， ``+Inf`` 只是较强的惩罚：对该副本打高分的其他策略仍可能选中它。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:182
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:185
 msgid "Every replica is below ``kvCritical``"
 msgstr "所有副本都低于 ``kvCritical``"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:183
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:186
 msgid ""
 "The request does not fail. It is routed to the replica with the most KV "
 "headroom."
 msgstr "请求不会失败，而是路由到 KV 余量最多的副本。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:184
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:187
 msgid "Replica is idle (``running = 0``)"
 msgstr "副本空闲（ ``running = 0`` ）"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:185
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:188
 msgid "Score is ``0`` regardless of capacity, so idle replicas are preferred."
 msgstr "无论容量如何，得分均为 ``0`` ，因此空闲副本优先。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:186
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:189
 msgid "Several replicas share the lowest score"
 msgstr "多个副本得分并列最低"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:187
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:190
 msgid ""
 "Ties are broken by least combined GPU and CPU KV-cache usage, then at "
 "random."
 msgstr "并列时按 GPU 与 CPU 合计 KV cache 使用量最少者优先，仍并列则随机选择。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:190
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:193
 msgid "Known Limitations"
 msgstr "已知限制"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:192
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:195
 msgid ""
 "**Load-imbalance gate ignores capacity.** The gateway applies a load-"
 "imbalance gate ahead of whichever strategy routes the request. It "
@@ -610,7 +642,7 @@ msgstr ""
 "**负载不均衡门限忽略容量。** "
 "网关会在任何策略路由请求之前先应用负载不均衡门限。该门限比较的是原始的运行中请求数，因此，本就应承载更多并发请求的较快副本可能被判定为热点，并在计算容量感知得分之前被排除。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:193
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:196
 msgid ""
 "**Single output-token rate.** Capacity is not split into prefill and "
 "decode throughput, so hardware whose relative performance differs between"
@@ -623,7 +655,7 @@ msgstr ""
 "的工作负载上相对性能不同的硬件无法被建模。不上报输出 token "
 "的请求不会对估计值产生贡献，因此只服务此类请求的资源池没有容量信号，副本仅按负载和 KV 压力打分。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:194
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:197
 msgid ""
 "**Multiple gateway replicas.** The token counter is local to each gateway"
 " while the running count is the cross-gateway total, so each gateway "
@@ -635,7 +667,7 @@ msgstr ""
 "**多个网关副本。** token 计数器是各网关本地的，而运行中请求数是跨网关的总数，因此每个网关大约只能测得副本输出的 ``1/N`` "
 "。当各网关分流流量相近时，相对排序得以保留，但在网关数量不同的部署之间，绝对得分不可比较。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:195
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:198
 msgid ""
 "**Not used on purpose.** GPU utilization and SM-active are useful for "
 "observability but make a generic scheduler unstable, so the score uses "
@@ -644,11 +676,11 @@ msgstr ""
 "**有意不使用。** GPU 利用率和 SM-active 对可观测性有用，但会让通用调度器不稳定，因此得分只使用排空速率、已分配工作量和 KV "
 "压力。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:198
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:201
 msgid "GPU Optimizer and SLO Routing (experimental)"
 msgstr "GPU Optimizer 与 SLO 路由（实验性）"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:200
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:203
 msgid ""
 "The sections below describe what the heterogeneous GPU feature provides "
 "today beyond load-balance routing: the GPU optimizer, which decides how "
@@ -657,11 +689,11 @@ msgstr ""
 "以下各节介绍除 load-balance 路由之外，异构 GPU 特性目前提供的能力：GPU optimizer（决定每种 GPU "
 "类型运行多少副本）和 SLO 感知路由策略。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:203
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:206
 msgid "Design Overview"
 msgstr "设计概览"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:205
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:208
 msgid ""
 "There are three main components in Heterogeneous GPU Inference Feature: "
 "(1) LLM Request Monitoring, (2) Heterogeneous GPU Optimizer, (3) Request "
@@ -676,11 +708,11 @@ msgstr ""
 " 请求监控负责观察历史推理请求及其模式。其次，异构 GPU Optimizer 负责选择最优 GPU "
 "类型及对应数量。第三，请求路由负责将请求路由到最优 GPU。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:207
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:210
 msgid "heterogeneous-gpu-diagram"
 msgstr "heterogeneous-gpu-diagram"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:213
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:216
 msgid ""
 "This feature is the heterogeneous form of :doc:`../scaling-"
 "performance/autoscaling/optimizer-based-autoscaling`: the same GPU "
@@ -693,11 +725,11 @@ msgstr ""
 "autoscaling` 的异构形态：同一 GPU optimizer 为每种 GPU 类型提供一份基准 "
 "profile，并据此决定各类型运行多少副本。请先阅读该页了解请求追踪与 profiling 流程；本页仅说明混用 GPU 类型时的差异。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:219
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:222
 msgid "Prerequisites"
 msgstr "前置条件"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:221
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:224
 msgid ""
 "One ``Deployment`` per GPU type, all carrying the same "
 "``model.aibrix.ai/name`` label and each pinned to its GPU type through "
@@ -706,13 +738,13 @@ msgstr ""
 "每种 GPU 类型对应一个 ``Deployment`` ，均带有相同的 ``model.aibrix.ai/name`` "
 "标签，并通过节点选择器或亲和性绑定到对应 GPU 类型。网关将其视为同一模型。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:224
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:227
 msgid ""
 "One ``PodAutoscaler`` per deployment, each reading the optimizer's metric"
 " for its own deployment."
 msgstr "每个 Deployment 对应一个 ``PodAutoscaler`` ，各自读取 optimizer 针对该 Deployment 的指标。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:226
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:229
 msgid ""
 "Request tracing enabled on the gateway plugin and the ``aibrix`` Python "
 "package installed locally for benchmarking, as described in :doc"
@@ -721,7 +753,7 @@ msgstr ""
 "网关插件已启用请求追踪，并且本机已安装用于基准测试的 ``aibrix`` Python 包，详见 :doc:`../scaling-"
 "performance/autoscaling/optimizer-based-autoscaling` 。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:228
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:231
 msgid ""
 "For SLO-aware routing across the GPU types, profiling data for each "
 "workload on each GPU type (see `Routing Support`_)."
@@ -729,17 +761,17 @@ msgstr ""
 "若要在 GPU 类型之间做 SLO 感知路由，需要每种工作负载在每种 GPU 类型上的 profiling 数据（见 `Routing "
 "Support`_ ）。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:232
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:235
 msgid "Example"
 msgstr "示例"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:234
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:237
 msgid ""
 "**Preparation: Enable related components, including request tracking at "
 "the gateway.**"
 msgstr "**准备：启用相关组件，包括网关上的请求追踪。**"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:243
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:246
 msgid ""
 "Alternatively, add the variable to the existing gateway plugin deployment"
 " with ``kubectl edit deployment aibrix-gateway-plugins -n aibrix-"
@@ -748,11 +780,11 @@ msgstr ""
 "也可以用 ``kubectl edit deployment aibrix-gateway-plugins -n aibrix-system`` "
 "把该变量加到现有的网关插件 Deployment："
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:251
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:254
 msgid "**Step 1: Deploy the heterogeneous deployments.**"
 msgstr "**步骤 1：部署异构 Deployment。**"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:253
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:256
 msgid ""
 "One deployment and corresponding PodAutoscaler should be deployed for "
 "each GPU type. See `sample heterogeneous configuration "
@@ -766,7 +798,7 @@ msgstr ""
 "project/aibrix/tree/main/samples/heterogeneous>`_ 。以下命令使用 L20 和 V100 GPU "
 "部署异构 Deployment。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:261
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:264
 msgid ""
 "The sample is a kustomization that creates one Service and two "
 "deployments, ``deepseek-coder-7b-l20`` (4 replicas) and ``deepseek-coder-"
@@ -780,17 +812,17 @@ msgstr ""
 "``machine.cluster.vke.volcengine.com/gpu-name`` 标签的节点亲和性绑定到对应 GPU "
 "类型。请按集群情况调整亲和性与副本数。以下输出来自每种 GPU 类型各有一个 Pod 的测试环境："
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:274
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:277
 msgid ""
 "Incoming requests are routed through the gateway and directed to the "
 "optimal pod based on request patterns:"
 msgstr "入站请求经网关路由，并根据请求模式定向到最优 Pod："
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:283
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:286
 msgid "**Step 2: Install aibrix python module.**"
 msgstr "**步骤 2：安装 aibrix Python 模块。**"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:289
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:292
 msgid ""
 "The GPU Optimizer runs continuously in the background, dynamically "
 "adjusting GPU allocation for each model based on workload patterns. Note "
@@ -800,7 +832,7 @@ msgstr ""
 "GPU Optimizer 在后台持续运行，根据负载模式动态调整每个模型的 GPU 分配。注意：GPU optimizer 需要每种 GPU "
 "在每个具体 LLM 模型上的离线推理性能基准数据。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:292
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:295
 msgid ""
 "The profiles checked in under "
 "`python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/ "
@@ -817,11 +849,11 @@ msgstr ""
 " 中签入的 profile 是 ``llama2-7b`` 在 A100 和 A40 上的模拟结果。它们与 deepseek-coder 的 "
 "L20 和 V100 示例并不对应，因此该示例仍需执行步骤 3。只有在这两种 GPU 上部署 ``llama2-7b`` 时才使用这些签入文件。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:294
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:297
 msgid "**Step 3: Benchmark model.**"
 msgstr "**步骤 3：对模型做基准测试。**"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:296
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:299
 msgid ""
 "For each type of GPU, run ``aibrix_benchmark``. See `benchmark.sh "
 "<https://github.com/vllm-"
@@ -833,15 +865,15 @@ msgstr ""
 "project/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/benchmark.sh>`_"
 " 。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:304
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:307
 msgid "**Step 4: Decide SLO and generate profile.**"
 msgstr "**步骤 4：确定 SLO 并生成 profile。**"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:306
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:309
 msgid "Run ``aibrix_gen_profile -h`` for help."
 msgstr "运行 ``aibrix_gen_profile -h`` 查看帮助。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:315
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:318
 msgid ""
 "Now the GPU Optimizer is ready to work. You should observe that the "
 "number of workload pods changes in response to the requests sent to the "
@@ -854,15 +886,15 @@ msgstr ""
 "完成扩缩容优化后，其输出会作为 metricSource，经指定 HTTP 端点传给 PodAutoscaler 以做出最终扩缩容决策。以下是 "
 "PodAutoscaler spec 示例。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:317
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:320
 msgid "A simple example of PodAutoscaler spec for v100 GPU is as follows:"
 msgstr "v100 GPU 的简单 PodAutoscaler spec 示例如下："
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:323
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:326
 msgid "Miscellaneous"
 msgstr "其他说明"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:325
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:328
 msgid ""
 "The ``model.aibrix.ai/min_replicas`` label sets how many replicas of that"
 " GPU type to keep when there is no workload. Set it to ``\"1\"`` on at "
@@ -877,7 +909,7 @@ msgstr ""
 " 0 个副本，而 ``model.aibrix.ai/min_replicas: \"1\"`` 会保留一个 V100 "
 "副本。该标签只在没有负载时生效。有活跃请求时会忽略它。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:338
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:341
 #, python-brace-format
 msgid ""
 "Important: The ``minReplicas`` field in the PodAutoscaler spec must be "
@@ -891,69 +923,69 @@ msgstr ""
 "GPU optimizer 的扩缩容决策。例如，若 GPU optimizer 给出最优配置 ``{v100: 0, l20: 4}`` ，而 "
 "v100 的 PodAutoscaler 设置了 ``minReplicas: 1`` ，系统将无法按建议将 v100 缩到 0。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:341
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:344
 msgid "Configuration reference"
 msgstr "配置参考"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:347
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:350
 msgid "Setting"
 msgstr "配置项"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:349
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:352
 msgid ""
 "``AIBRIX_GPU_OPTIMIZER_TRACING_FLAG`` (gateway plugin env, default "
 "``false``)"
 msgstr "``AIBRIX_GPU_OPTIMIZER_TRACING_FLAG`` （网关插件环境变量，默认 ``false`` ）"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:350
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:353
 msgid "Records per-request token statistics for the optimizer. Required."
 msgstr "为 optimizer 记录每请求 token 统计。必需。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:351
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:354
 msgid "``model.aibrix.ai/name`` (label on every deployment)"
 msgstr "``model.aibrix.ai/name`` （每个 Deployment 上的标签）"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:352
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:355
 msgid ""
 "The shared model name. Must match the ``model`` used when profiles were "
 "stored."
 msgstr "共享模型名。必须与存储 profile 时使用的 ``model`` 一致。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:353
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:356
 msgid "``model.aibrix.ai/min_replicas`` (label on a deployment)"
 msgstr "``model.aibrix.ai/min_replicas`` （Deployment 上的标签）"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:354
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:357
 msgid ""
 "Replicas to keep for that GPU type when there is no traffic. Set it to "
 "``\"1\"`` on at least one deployment so the model always has a ready pod."
 msgstr "无流量时该 GPU 类型保留的副本数。至少在一个 Deployment 上设为 ``\"1\"`` ，以确保模型始终有就绪 Pod。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:356
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:359
 msgid "``spec.minReplicas: 0`` (on each PodAutoscaler)"
 msgstr "``spec.minReplicas: 0`` （每个 PodAutoscaler）"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:357
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:360
 msgid ""
 "Required. Any higher value prevents the optimizer from scaling that GPU "
 "type to zero."
 msgstr "必需。设为更高值会阻止 optimizer 将该 GPU 类型缩到 0。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:358
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:361
 msgid "``aibrix_gen_profile ... --cost <n>``"
 msgstr "``aibrix_gen_profile ... --cost <n>``"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:359
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:362
 msgid ""
 "Relative cost of the GPU type. The optimizer minimizes total cost, so "
 "give each GPU type its own value."
 msgstr "该 GPU 类型的相对成本。optimizer 会最小化总成本，因此每种 GPU 类型应设置各自的值。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:361
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:364
 msgid "``routing-strategy: slo`` (request header)"
 msgstr "``routing-strategy: slo`` （请求头）"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:362
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:365
 msgid ""
 "Turn on SLO-aware routing for the request. Variants: ``slo-pack-load``, "
 "``slo-least-load``, ``slo-least-load-pulling`` (the default for ``slo``)."
@@ -961,11 +993,11 @@ msgstr ""
 "为该请求启用 SLO 感知路由。变体：``slo-pack-load`` 、``slo-least-load`` 、``slo-least-"
 "load-pulling`` （``slo`` 的默认值）。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:366
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:369
 msgid "Routing Support"
 msgstr "路由支持"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:368
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:371
 msgid ""
 "During the performance evaluation, we observed that the existing routing "
 "policy does not adequately account for the varying serving capacities of "
@@ -977,21 +1009,21 @@ msgstr ""
 "性能评估中发现，现有路由策略未能充分反映异构 GPU "
 "不同的服务能力。下图表明当前路由策略无法满足指定的服务水平目标（SLO）。该评估早于上文所述的容量感知 ``load-balance`` 策略。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:370
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:402
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:415
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:373
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:405
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:418
 msgid "SLO Routing Motivation Plot"
 msgstr "SLO 路由动机图"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:375
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:378
 msgid "The experimental configuration is as follows:"
 msgstr "实验配置如下："
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:377
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:380
 msgid "SLO: P99 latency per token ≤ 0.05 seconds."
 msgstr "SLO：每 token 的 P99 延迟 ≤ 0.05 秒。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:378
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:381
 msgid ""
 "Workloads: A mixed workload comprising `ShareGPT "
 "<https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered>`_"
@@ -1003,13 +1035,13 @@ msgstr ""
 " （7 RPS）和 CodeGeneration 任务（4 RPS）组成的混合负载，特征为长 prompt（超过 4K "
 "token）和短响应（32-64 token）。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:379
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:382
 msgid ""
 "GPUs: A heterogeneous GPU environment consisting of NVIDIA A10 and NVIDIA"
 " L20 GPUs."
 msgstr "GPU：由 NVIDIA A10 和 NVIDIA L20 组成的异构 GPU 环境。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:381
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:384
 msgid ""
 "Our experiments indicate that an ideal routing scenario (Oracle) would "
 "assign ShareGPT workloads exclusively to A10 GPUs and CodeGeneration "
@@ -1029,7 +1061,7 @@ msgstr ""
 " optimizer 能找出最优 GPU 配置（Oracle Cost），当前路由策略仍会导致明显性能下降、网关排队积压、GPU "
 "配置不稳定，并持续违反 SLO。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:383
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:386
 msgid ""
 "SLO routing policy was introduced in version v0.4.0 to address "
 "performance issues in heterogeneous GPU deployments. Requests must "
@@ -1040,17 +1072,17 @@ msgstr ""
 "SLO 路由策略在 v0.4.0 引入，用于解决异构 GPU 部署中的性能问题。请求必须显式指定 ``routing-strategy: "
 "slo`` 请求头才能启用该策略。此外，每种工作负载在每种 GPU 上的 profiling 数据也是有效启用该策略所必需的。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:385
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:388
 msgid "An example request applying the SLO routing policy is shown below:"
 msgstr "应用 SLO 路由策略的请求示例如下："
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:400
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:403
 msgid ""
 "In the same experimental settings, the SLO routing policy demonstrated "
 "its capability to achieve the targeted performance objectives."
 msgstr "在相同实验设置下，SLO 路由策略能够达到目标性能。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:407
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:410
 msgid ""
 "The SLO routing policy currently supports three variations: ``slo-pack-"
 "load``, ``slo-least-load``, and ``slo-least-load-pulling``(default policy"
@@ -1062,19 +1094,19 @@ msgstr ""
 "load-pulling`` （指定 ``slo`` 时的默认策略）。各变体都会将请求路由到更可能满足对应 SLO 的 GPU，但在同类型 GPU"
 " 之间的分配方式不同："
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:409
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:412
 msgid ""
 "``slo-pack-load``: Prefers consolidating requests onto a single GPU if "
 "profiling suggests no SLO violation."
 msgstr "``slo-pack-load`` ：若 profiling 表明不会违反 SLO，优先将请求集中到单个 GPU。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:410
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:413
 msgid ""
 "``slo-least-load``: Prefers routing requests to the least-loaded GPU of "
 "the same type, ignoring SLO violation predictions from profiling."
 msgstr "``slo-least-load`` ：优先将请求路由到同类型中负载最低的 GPU，忽略 profiling 对 SLO 违反的预测。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:411
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:414
 msgid ""
 "``slo-least-load-pulling``: Prefers routing requests to the least-loaded "
 "GPU of the same type. Requests predicted to violate the SLO are queued at"
@@ -1083,7 +1115,7 @@ msgstr ""
 "``slo-least-load-pulling`` ：优先将请求路由到同类型中负载最低的 GPU。预测会违反 SLO 的请求在网关排队，若 "
 "SLO 已被突破则拒绝。"
 
-#: ../../source/features/model-serving/heterogeneous-gpu.rst:413
+#: ../../source/features/model-serving/heterogeneous-gpu.rst:416
 msgid ""
 "The following figure compares the performance of the ``slo/slo-least-"
 "load-pulling`` and ``slo-pack-load`` variations. ``least-request`` policy"
