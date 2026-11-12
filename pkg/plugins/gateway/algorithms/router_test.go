@@ -677,6 +677,85 @@ func TestScoreAndRankTieBreakFallsBackToName(t *testing.T) {
 	}
 }
 
+// TestScoreAndRankTieBreakIgnoresPartialCounts: with a count for only some of three tied pods,
+// comparing counts for one pair and names for the others is not a consistent order (a before b
+// and b before c by name, c before a by count), so the winner would depend on the input order.
+// The counts are used only when every tied pod has one.
+func TestScoreAndRankTieBreakIgnoresPartialCounts(t *testing.T) {
+	podA := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "default"}}
+	podB := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-b", Namespace: "default"}}
+	podC := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-c", Namespace: "default"}}
+	m := &multiStrategyRouter{
+		config: &MultiRouterConfig{Items: []RouterItem{{Name: "s1", Coefficient: 1}}},
+		scorers: map[string]types.PodScorer{
+			"s1": &fakeScorer{polarity: types.PolarityMost, scores: map[*v1.Pod]float64{podA: 1, podB: 1, podC: 1}},
+		},
+		cache: &po2FakeCache{Running: map[string]int64{"pod-a": 5, "pod-c": 2}}, // pod-b has no count
+	}
+
+	for _, order := range [][]*v1.Pod{
+		{podA, podB, podC}, {podA, podC, podB}, {podB, podA, podC},
+		{podB, podC, podA}, {podC, podA, podB}, {podC, podB, podA},
+	} {
+		winner, _, err := m.scoreAndRank(&types.RoutingContext{}, wrapper{pods: order})
+		require.NoError(t, err)
+		assert.Same(t, podA, winner, "the name decides, whatever the input order")
+	}
+}
+
+// TestTieBreakCacheComesFromTheStrategies: the tie-break must read the cache its strategies
+// score with, not the process-global one, or a manager built on its own cache
+// (NewRouterManagerWithCache) would break ties with another cache's counts. The first strategy
+// in config order that holds a cache decides.
+func TestTieBreakCacheComesFromTheStrategies(t *testing.T) {
+	leastCache, lbCache := &po2FakeCache{}, &po2FakeCache{}
+	scorers := map[string]types.PodScorer{
+		"least-request": least.NewLeastRequestTopKRouterWithCache(leastCache),
+		"load-balance":  &loadBalanceRouter{cache: lbCache},
+		"prefix-cache":  &fakeScorer{polarity: types.PolarityMost}, // holds no cache
+	}
+	items := func(names ...string) *MultiRouterConfig {
+		cfg := &MultiRouterConfig{}
+		for _, name := range names {
+			cfg.Items = append(cfg.Items, RouterItem{Name: name, Coefficient: 1})
+		}
+		return cfg
+	}
+
+	assert.Same(t, leastCache, tieBreakCache(items("least-request", "load-balance"), scorers))
+	assert.Same(t, lbCache, tieBreakCache(items("load-balance", "least-request"), scorers), "config order decides")
+	assert.Same(t, lbCache, tieBreakCache(items("prefix-cache", "load-balance"), scorers),
+		"the default prefix-cache blend has only load-balance to take the cache from")
+
+	global, err := cache.Get()
+	got := tieBreakCache(items("prefix-cache"), scorers)
+	if err != nil {
+		assert.Nil(t, got, "no strategy holds a cache and the global one is not initialized")
+	} else {
+		assert.Equal(t, global, got, "no strategy holds a cache: the global one")
+	}
+}
+
+// TestIsolatedManagerBlendBreaksTiesOnItsOwnCache covers the same through RouterManager.Select,
+// for both auto-blends.
+func TestIsolatedManagerBlendBreaksTiesOnItsOwnCache(t *testing.T) {
+	pods := []*v1.Pod{newPod("p1", "1.1.1.1", true, nil), newPod("p2", "2.2.2.2", true, nil)}
+	c := cache.NewWithPodsModelMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{})
+	rm := NewRouterManagerWithCache(c)
+	rm.Init()
+
+	for _, strategy := range []string{"least-request", "prefix-cache"} {
+		t.Run(strategy, func(t *testing.T) {
+			ctx := types.NewRoutingContext(context.Background(), types.RoutingAlgorithm(strategy), "m1", "", "r1", "")
+			router, err := rm.Select(ctx)
+			require.NoError(t, err)
+			m, ok := router.(*multiStrategyRouter)
+			require.True(t, ok, "expected the auto-blended router, got %T (%s)", router, ctx.ResolvedStrategy)
+			assert.Same(t, c, m.cache)
+		})
+	}
+}
+
 func TestMultiStrategyRouterRoute_PostRouteUpdate(t *testing.T) {
 	podA := newPod("pod-a", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
 	podB := newPod("pod-b", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"})

@@ -131,6 +131,10 @@ func NewLoadBalanceRouterWithCache(c cache.Cache) (types.Router, error) {
 	return &loadBalanceRouter{cache: c}, nil
 }
 
+// Cache returns the cache this router reads running-request counts from, so a multi-strategy
+// blend can break score ties with the same counts (see tieBreakCache in router.go).
+func (r *loadBalanceRouter) Cache() cache.Cache { return r.cache }
+
 // ScoreAll returns the effective load of each pod (see loadBalanceScore):
 //
 //	(running + λ·queued) / EWMA(output tokens/sec) × (1 + α·(1−kvFree)²)
