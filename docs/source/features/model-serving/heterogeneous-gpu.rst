@@ -25,7 +25,7 @@ Scoring
    \times
    \left( 1 + \alpha \, (1 - \text{kvFree})^2 \right)
 
-A lower score is a better routing candidate. The first term normalizes the work already committed to a replica by how quickly that replica can process it. The second term increasingly penalizes a replica as its free KV-cache fraction shrinks. Capacity and load are deliberately kept apart: a saturated GPU shows high token throughput *because* it is busy, so throughput only sets the denominator and is never used as a measure of load.
+A lower score is a better routing candidate. The first term normalizes the work already committed to a replica by how quickly that replica can process it. The second term increasingly penalizes a replica as its free KV-cache fraction shrinks. Capacity and load are deliberately kept apart: a saturated GPU shows high token throughput *because* it is busy, so throughput only sets the denominator and is never used as a measure of load. Capacity is a per-request rate, not the replica's total tokens per second: below saturation the total only reflects how much traffic the replica receives.
 
 .. list-table::
    :header-rows: 1
@@ -35,8 +35,8 @@ A lower score is a better routing candidate. The first term normalizes the work 
      - Meaning
      - Source
    * - ``capacity``
-     - How fast the replica drains work, in output tokens per second.
-     - Gateway-observed output-token rate, smoothed with an EWMA.
+     - How fast the replica drains work, in output tokens per second of a request's time on the replica.
+     - Gateway-observed per-request output-token rate, smoothed with an EWMA.
    * - ``running``
      - Requests currently in flight on the replica, counted across all gateway replicas.
      - Gateway request tracking.
@@ -77,7 +77,7 @@ The three values can also be set per model through a model config profile (``rou
 
    * - Replica
      - Running
-     - Tokens/s
+     - Capacity
      - KV free
      - Calculation
      - Score
@@ -105,11 +105,11 @@ How Capacity Is Learned
 
 Rather than relying on a static table of GPU performance, the gateway learns each replica's capacity from the traffic it serves:
 
-* The gateway counts the output tokens each replica completes. Because the counter is kept by the gateway, it works for every engine (vLLM, SGLang, TRT-LLM, xLLM) without depending on engine-specific metric names.
-* On every metrics refresh (default 1 second), the counter is converted to tokens per second over a window of about one minute and smoothed with an exponentially weighted moving average (time constant 10 seconds).
+* The gateway counts the output tokens each replica completes and the time those requests spent on the replica. Because the counters are kept by the gateway, they work for every engine (vLLM, SGLang, TRT-LLM, xLLM) without depending on engine-specific metric names.
+* On every metrics refresh (default 1 second), the output tokens of about the last minute are divided by the time those requests spent on the replica, and the result is smoothed with an exponentially weighted moving average (time constant 10 seconds). This is a per-request rate: it does not grow with the share of traffic a replica receives, it is higher on faster hardware, and it falls when requests queue on a saturated replica.
 * A window with no completed tokens carries no information about speed, because the replica was idle rather than slow. The previous estimate is kept instead of decaying toward zero, so a briefly idle replica is not starved of the traffic that would re-measure it.
-* A new replica with no estimate yet is scored at the mean estimate of the replicas that have one, so it competes as an average replica until enough measurements arrive. If no replica has an estimate, all replicas get the same capacity and the score reduces to load multiplied by the KV penalty.
-* While any candidate replica became routable less than one rate window ago (``AIBRIX_LOAD_BALANCE_CAPACITY_WARMUP``, default ``60s``; ``0`` disables it; environment-only), every candidate gets the same capacity and the score reduces to load multiplied by the KV penalty. Until a replica has a full window of history, its rate is divided by the time since its own first measurement, so replicas that became routable at different times are not comparable and the newer one looks faster. This lasts for a whole rolling update or scale-up plus one window; during that time a mixed pool does not send its faster replicas more requests.
+* A new replica with no estimate yet is scored at the mean estimate of the replicas that have one, so it competes as an average replica until enough measurements arrive. A replica has no estimate until it has completed ``AIBRIX_LOAD_BALANCE_CAPACITY_MIN_SAMPLES`` requests (default ``10``). If no replica has an estimate, all replicas get the same capacity and the score reduces to load multiplied by the KV penalty.
+* While any candidate replica became routable less than one rate window ago (``AIBRIX_LOAD_BALANCE_CAPACITY_WARMUP``, default ``60s``; ``0`` disables it; environment-only), every candidate gets the same capacity and the score reduces to load multiplied by the KV penalty. This lasts for a whole rolling update or scale-up plus one window; during that time a mixed pool does not send its faster replicas more requests.
 
 The learned value is the *observed serving capacity under the current workload mix*, not a fixed property of the GPU. Request shape can materially change throughput even on identical hardware, particularly for input-heavy and multimodal workloads, and the estimate moves with the mix. Because it follows a window of about one minute, a sudden change shows up within tens of seconds rather than immediately.
 
@@ -174,7 +174,7 @@ Behavior in Edge Cases
 
    * - Situation
      - Behavior
-   * - Replica has no capacity estimate yet
+   * - Replica has no capacity estimate yet (new, or fewer than ``AIBRIX_LOAD_BALANCE_CAPACITY_MIN_SAMPLES`` completed requests)
      - Scored at the mean estimate of the replicas that have one.
    * - Any candidate replica became routable less than ``AIBRIX_LOAD_BALANCE_CAPACITY_WARMUP`` ago
      - Every candidate gets the same capacity, so the score is load multiplied by the KV penalty. Lasts for a whole rolling update or scale-up plus the window.
@@ -194,7 +194,7 @@ Known Limitations
 
 * **Load-imbalance gate ignores capacity.** The gateway applies a load-imbalance gate ahead of whichever strategy routes the request. It compares raw running-request counts, so a faster replica that legitimately carries more concurrent requests can be flagged as a hotspot and excluded before the capacity-aware score is computed.
 * **Single output-token rate.** Capacity is not split into prefill and decode throughput, so hardware whose relative performance differs between prompt-heavy and decode-heavy workloads is not modeled. Requests that report no output tokens add nothing to the estimate, so a pool that serves only such requests has no capacity signal and replicas are scored on load and KV pressure alone.
-* **Multiple gateway replicas.** The token counter is local to each gateway while the running count is the cross-gateway total, so each gateway measures roughly ``1/N`` of a replica's output. Relative ranking is preserved when the gateways spread traffic similarly, but absolute score values are not comparable across deployments with different gateway counts.
+* **Multiple gateway replicas.** The counters behind the capacity estimate are local to each gateway. The estimate is the ratio of two of them, so it does not depend on how much of a replica's traffic a gateway sees, but each gateway learns it from its own requests only and needs its own samples before it has an estimate.
 * **Not used on purpose.** GPU utilization and SM-active are useful for observability but make a generic scheduler unstable, so the score uses only drain rate, committed work, and KV pressure.
 
 GPU Optimizer and SLO Routing (experimental)

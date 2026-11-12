@@ -437,6 +437,8 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 			c.bufferPod.runningRequests = atomic.LoadInt32(&snap.runningRequests)
 			c.bufferPod.completedRequests = atomic.LoadInt64(&snap.completedRequests)
 			c.bufferPod.completedOutputTokens = atomic.LoadInt64(&snap.completedOutputTokens)
+			c.bufferPod.completedOutputBusyNanos = atomic.LoadInt64(&snap.completedOutputBusyNanos)
+			c.bufferPod.completedOutputRequests = atomic.LoadInt64(&snap.completedOutputRequests)
 			c.bufferPod.pendingLoadUtilization.Store(snap.pendingLoadUtilization.Load())
 			c.bufferPod.statsGeneration = snap.statsGeneration
 			// A same-IP resume means the pod never stopped serving, so its ramp clock
@@ -472,6 +474,8 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 		c.bufferPod.runningRequests = 0
 		c.bufferPod.completedRequests = 0
 		c.bufferPod.completedOutputTokens = 0
+		c.bufferPod.completedOutputBusyNanos = 0
+		c.bufferPod.completedOutputRequests = 0
 		c.bufferPod.pendingLoadUtilization.Store(0)
 		c.bufferPod.statsGeneration = 0
 		c.bufferPod.readySince.Store(0)
@@ -551,6 +555,9 @@ type deletedPodSnapshot struct {
 	pendingLoadUtilization atomic_ext.Float64
 	readySince             atomic.Int64 // see Pod.readySince
 	deletedAt              time.Time
+
+	completedOutputBusyNanos int64 // atomic; see Pod.completedOutputBusyNanos
+	completedOutputRequests  int64 // atomic; see Pod.completedOutputRequests
 }
 
 // recentlyDeletedPodGracePeriod bounds how long a deletedPodSnapshot survives
@@ -578,6 +585,8 @@ func (c *Store) deletePodLocked(podName, podNamespace string) *Pod {
 			deletedAt:         time.Now(),
 		}
 		snap.completedOutputTokens = atomic.LoadInt64(&metaPod.completedOutputTokens)
+		snap.completedOutputBusyNanos = atomic.LoadInt64(&metaPod.completedOutputBusyNanos)
+		snap.completedOutputRequests = atomic.LoadInt64(&metaPod.completedOutputRequests)
 		snap.pendingLoadUtilization.Store(metaPod.pendingLoadUtilization.Load())
 		snap.readySince.Store(metaPod.readySince.Load())
 		c.recentlyDeletedPods.Store(key, snap)

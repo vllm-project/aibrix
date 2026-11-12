@@ -52,16 +52,16 @@ func TestLoadBalanceRoute_SelectsLowestEffectiveLoad(t *testing.T) {
 	// p3: 1 running / 1 = 1.0 — should win
 	podMetrics := map[string]map[string]metrics.MetricValue{
 		"p1": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1},
 		},
 		"p2": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 4},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 4},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 2},
 		},
 		"p3": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 1},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1},
 		},
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
@@ -108,12 +108,12 @@ func TestLoadBalanceRoute_TiesBrokenRandomly(t *testing.T) {
 	// Both have identical score: 2 running / 2 tokens-per-sec = 1.0
 	podMetrics := map[string]map[string]metrics.MetricValue{
 		"p1": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 2},
 		},
 		"p2": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 2},
 		},
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
@@ -139,16 +139,16 @@ func TestLoadBalanceRoute_TiesBrokenByLeastKvCache(t *testing.T) {
 	// cache pressure.
 	podMetrics := map[string]map[string]metrics.MetricValue{
 		"p1": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 2},
-			metrics.KVCacheUsagePerc:            &metrics.SimpleMetricValue{Value: 0.3},
-			metrics.CPUCacheUsagePerc:           &metrics.SimpleMetricValue{Value: 0.5},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 2},
+			metrics.KVCacheUsagePerc:                         &metrics.SimpleMetricValue{Value: 0.3},
+			metrics.CPUCacheUsagePerc:                        &metrics.SimpleMetricValue{Value: 0.5},
 		},
 		"p2": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 2},
-			metrics.KVCacheUsagePerc:            &metrics.SimpleMetricValue{Value: 0.3},
-			metrics.CPUCacheUsagePerc:           &metrics.SimpleMetricValue{Value: 0.1},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 2},
+			metrics.KVCacheUsagePerc:                         &metrics.SimpleMetricValue{Value: 0.3},
+			metrics.CPUCacheUsagePerc:                        &metrics.SimpleMetricValue{Value: 0.1},
 		},
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
@@ -169,12 +169,12 @@ func TestLoadBalanceRoute_ZeroTokenRateFallsBackToUniform(t *testing.T) {
 	// A token rate of 0 should be treated as unavailable and fall back to capacity 1.0
 	podMetrics := map[string]map[string]metrics.MetricValue{
 		"p1": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 3},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 0},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 3},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 0},
 		},
 		"p2": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 1},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 0},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 0},
 		},
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
@@ -213,12 +213,12 @@ func TestLoadBalanceRoute_HeterogeneousGPUs(t *testing.T) {
 	}
 	podMetrics := map[string]map[string]metrics.MetricValue{
 		"p1": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 8},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 4},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 8},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 4},
 		},
 		"p2": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 3},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 3},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1},
 		},
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
@@ -236,12 +236,12 @@ func TestLoadBalanceScoreAll_ReturnsScoreForEachPod(t *testing.T) {
 	}
 	podMetrics := map[string]map[string]metrics.MetricValue{
 		"p1": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 4},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 4},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 2},
 		},
 		"p2": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 6},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 3},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 6},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 3},
 		},
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
@@ -285,20 +285,20 @@ func TestLoadBalanceRoute_LoadImbalanceGateRestrictsCandidates(t *testing.T) {
 	// the light pods' score (2/1=2.0) on pure ScoreAll.
 	podMetrics := map[string]map[string]metrics.MetricValue{
 		"light-1": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1},
 		},
 		"light-2": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1},
 		},
 		"light-3": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1},
 		},
 		"busy": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 20},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1000},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 20},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1000},
 		},
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
@@ -323,12 +323,12 @@ func TestLoadBalanceRoute_TwoPodLoadImbalanceGateRestrictsToIdle(t *testing.T) {
 	// win on score (20/1000=0.02 vs idle 2/1=2.0).
 	podMetrics := map[string]map[string]metrics.MetricValue{
 		"idle": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 2},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 2},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1},
 		},
 		"busy": {
-			metrics.RealtimeNumRequestsRunning:  &metrics.SimpleMetricValue{Value: 20},
-			metrics.RealtimeOutputTokenRateEWMA: &metrics.SimpleMetricValue{Value: 1000},
+			metrics.RealtimeNumRequestsRunning:               &metrics.SimpleMetricValue{Value: 20},
+			metrics.RealtimeOutputTokensPerRequestSecondEWMA: &metrics.SimpleMetricValue{Value: 1000},
 		},
 	}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", podMetrics)
@@ -346,7 +346,7 @@ func lbPodMetrics(running, capacity, kvUsage float64) map[string]metrics.MetricV
 		metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: running},
 	}
 	if capacity > 0 {
-		m[metrics.RealtimeOutputTokenRateEWMA] = &metrics.SimpleMetricValue{Value: capacity}
+		m[metrics.RealtimeOutputTokensPerRequestSecondEWMA] = &metrics.SimpleMetricValue{Value: capacity}
 	}
 	if kvUsage > 0 {
 		m[metrics.KVCacheUsagePerc] = &metrics.SimpleMetricValue{Value: kvUsage}
@@ -650,4 +650,22 @@ func TestGetTargetPodListOnLoadImbalance(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLoadBalanceScoreAll_SkewedTrafficNoLongerLooksFaster replays the state #3450 measured one
+// minute into a 73:27 skew. The total output-token rates were 271 vs 96 tokens/s, which made the
+// scores equal and held the split. The per-request rate is ~46 on both pods, so the running counts
+// decide and the idle pod wins.
+func TestLoadBalanceScoreAll_SkewedTrafficNoLongerLooksFaster(t *testing.T) {
+	pods := []*v1.Pod{makeLBPod("busy", "1.1.1.1"), makeLBPod("idle", "2.2.2.2")}
+	c := cache.NewWithPodsMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{
+		"busy": lbPodMetrics(5, 46.0, 0),
+		"idle": lbPodMetrics(2, 45.8, 0),
+	})
+	r := &loadBalanceRouter{cache: c}
+	ctx := types.NewRoutingContext(context.Background(), RouterLoadBalance, "m1", "input", "req1", "")
+
+	target, err := r.Route(ctx, podsFromCache(c))
+	assert.NoError(t, err)
+	assert.Equal(t, "2.2.2.2:8000", target)
 }

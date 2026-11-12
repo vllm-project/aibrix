@@ -69,10 +69,11 @@ func (s *readySinceStore) LatestPodReadySince() int64 {
 	return latest
 }
 
-// skewedAfterRollout is the state #3450 measured one minute after a rollout: the pod that got
-// ~73% of the first requests runs 5 and has a capacity estimate of 271 tokens/s, the other runs
-// 2 at 96. Both estimates are just the traffic each pod happened to get, so their scores are
-// about equal (5/271 = 0.0185, 2/96 = 0.0208) and the busy pod keeps winning.
+// skewedAfterRollout is two pods with unequal load and unequal capacity estimates: one runs 5
+// with an estimate of 271, the other runs 2 with 96, so the busy pod has the lower score
+// (5/271 = 0.0185 against 2/96 = 0.0208) and wins unless the warm-up makes the capacities
+// uniform. The numbers are the ones #3450 measured for the total output-token rate, which the
+// warm-up was written for; the tests only need them to be unequal.
 func skewedAfterRollout() (*cache.Store, *utils.PodArray) {
 	pods := []*v1.Pod{makeLBPod("busy", "1.1.1.1"), makeLBPod("idle", "2.2.2.2")}
 	c := cache.NewWithPodsMetricsForTest(pods, "m1", map[string]map[string]metrics.MetricValue{

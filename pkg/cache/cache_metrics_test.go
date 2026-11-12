@@ -1047,6 +1047,183 @@ func TestUpdateRealtimeOutputTokenRateEWMA_NoHistoryStoresNothing(t *testing.T) 
 	require.False(t, ok, "a single sample has no window, so no capacity estimate yet")
 }
 
+// seedPerRequestRateHistory gives both counters behind RealtimeOutputTokensPerRequestSecondEWMA
+// a baseline snapshot age ago, so the next update has a window to compute rates over.
+func seedPerRequestRateHistory(t *testing.T, pod *Pod, tokens, busySeconds float64, age time.Duration) {
+	t.Helper()
+	at := time.Now().Add(-age)
+	keys := map[string]float64{"lb_completed_output_tokens": tokens, "lb_completed_output_busy_seconds": busySeconds}
+	rateCalculator.mu.Lock()
+	for name, v := range keys {
+		rateCalculator.history[rateHistoryKey(pod, "", name)] = []MetricSnapshot{{Value: v, Timestamp: at}}
+	}
+	rateCalculator.mu.Unlock()
+	t.Cleanup(func() {
+		rateCalculator.mu.Lock()
+		for name := range keys {
+			delete(rateCalculator.history, rateHistoryKey(pod, "", name))
+		}
+		rateCalculator.mu.Unlock()
+	})
+}
+
+// setCompleted sets the counters behind the per-request rate, with enough completed requests
+// for the estimate to be published (see setCompletedRequests for the sample threshold).
+func setCompleted(pod *Pod, tokens int64, busy time.Duration) {
+	atomic.StoreInt64(&pod.completedOutputTokens, tokens)
+	atomic.StoreInt64(&pod.completedOutputBusyNanos, int64(busy))
+	atomic.StoreInt64(&pod.completedOutputRequests, int64(loadBalanceCapacityMinSamples)+100)
+}
+
+func withCapacityMinSamples(t *testing.T, n int) {
+	t.Helper()
+	orig := loadBalanceCapacityMinSamples
+	loadBalanceCapacityMinSamples = n
+	t.Cleanup(func() { loadBalanceCapacityMinSamples = orig })
+}
+
+func perRequestRate(t *testing.T, pod *Pod) float64 {
+	t.Helper()
+	v, ok := pod.Metrics.Load(metrics.RealtimeOutputTokensPerRequestSecondEWMA)
+	require.True(t, ok)
+	return v.Value.GetSimpleValue()
+}
+
+// TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_IndependentOfTrafficShare is the #3450
+// property: two identical pods, one of which got 3x the traffic, measure the same per-request rate,
+// while RealtimeOutputTokenRateEWMA reads 3x higher on the busier one.
+func TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_IndependentOfTrafficShare(t *testing.T) {
+	c := &Store{}
+	busy := namespacedTestPod("default", "share-busy")
+	idle := namespacedTestPod("default", "share-idle")
+	for _, pod := range []*Pod{busy, idle} {
+		seedPerRequestRateHistory(t, pod, 0, 0, 30*time.Second)
+		seedCompletedOutputTokensHistory(t, pod, 0, 30*time.Second)
+	}
+	// Over 30 s each request decodes at 46 tokens/s. busy carried ~5 requests at a time, idle ~1.7.
+	setCompleted(busy, 46*150, 150*time.Second)
+	setCompleted(idle, 46*50, 50*time.Second)
+
+	for _, pod := range []*Pod{busy, idle} {
+		c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
+		c.updateRealtimeOutputTokenRateEWMA(pod)
+	}
+
+	require.InDelta(t, 46, perRequestRate(t, busy), 0.5)
+	require.InDelta(t, 46, perRequestRate(t, idle), 0.5)
+	total := func(pod *Pod) float64 {
+		v, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
+		require.True(t, ok)
+		return v.Value.GetSimpleValue()
+	}
+	require.InDelta(t, 3, total(busy)/total(idle), 0.05, "the total-rate signal follows the traffic share")
+}
+
+// A saturated pod's requests queue, so each spends longer on the pod for the same tokens and the
+// estimate falls. A faster pod's requests finish sooner and the estimate rises.
+func TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_FallsWithQueueingRisesWithSpeed(t *testing.T) {
+	c := &Store{}
+	slow := namespacedTestPod("default", "rate-saturated")
+	fast := namespacedTestPod("default", "rate-fast")
+	for _, pod := range []*Pod{slow, fast} {
+		seedPerRequestRateHistory(t, pod, 0, 0, 30*time.Second)
+	}
+	setCompleted(slow, 3000, 150*time.Second) // 20 tokens per request-second
+	setCompleted(fast, 3000, 30*time.Second)  // 100
+
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(slow)
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(fast)
+
+	require.InDelta(t, 20, perRequestRate(t, slow), 0.5)
+	require.InDelta(t, 100, perRequestRate(t, fast), 1)
+}
+
+// TestCalculateRatio1mPairsTheSameSnapshots: both counters are snapshotted at the same instants
+// and compared against the same baseline, so the ratio is exactly the tokens over the time of
+// one window, and the two histories never drift apart.
+func TestCalculateRatio1mPairsTheSameSnapshots(t *testing.T) {
+	c := &Store{}
+	pod := namespacedTestPod("default", "ratio-pair")
+	seedPerRequestRateHistory(t, pod, 100, 4, 30*time.Second)
+
+	// Since the baseline: 460 tokens over 10 request-seconds.
+	require.InDelta(t, 46, c.calculateRatio1m(pod, "lb_completed_output_tokens", "lb_completed_output_busy_seconds", 560, 14), 1e-9)
+	// A second call in the same tick adds no snapshot and reads the same baseline.
+	require.InDelta(t, 46, c.calculateRatio1m(pod, "lb_completed_output_tokens", "lb_completed_output_busy_seconds", 560, 14), 1e-9)
+
+	rateCalculator.mu.Lock()
+	tokens := rateCalculator.history[rateHistoryKey(pod, "", "lb_completed_output_tokens")]
+	busy := rateCalculator.history[rateHistoryKey(pod, "", "lb_completed_output_busy_seconds")]
+	rateCalculator.mu.Unlock()
+	require.Len(t, tokens, 2)
+	require.Len(t, busy, 2)
+	for i := range tokens {
+		require.Equal(t, tokens[i].Timestamp, busy[i].Timestamp, "snapshot %d", i)
+	}
+
+	// Neither counter moved: no ratio.
+	require.Equal(t, -1.0, c.calculateRatio1m(pod, "lb_completed_output_tokens", "lb_completed_output_busy_seconds", 100, 4))
+}
+
+// TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_NeedsMinSamples: no estimate is published
+// until the pod has completed the configured number of requests with known output tokens. The
+// first estimate then covers everything the pod has completed, not only the requests since the
+// threshold was reached.
+func TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_NeedsMinSamples(t *testing.T) {
+	withCapacityMinSamples(t, 10)
+	c := &Store{}
+	pod := namespacedTestPod("default", "rate-min-samples")
+	seedPerRequestRateHistory(t, pod, 0, 0, 30*time.Second)
+
+	// 9 requests: 9 x 32 tokens over 9 x 0.8 s on the pod = 40 tokens per request-second.
+	atomic.StoreInt64(&pod.completedOutputTokens, 9*32)
+	atomic.StoreInt64(&pod.completedOutputBusyNanos, int64(9*800*time.Millisecond))
+	atomic.StoreInt64(&pod.completedOutputRequests, 9)
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
+	_, ok := pod.Metrics.Load(metrics.RealtimeOutputTokensPerRequestSecondEWMA)
+	require.False(t, ok, "9 of 10 samples: the pod stays unmeasured")
+
+	// The 10th request publishes the estimate over all ten.
+	atomic.StoreInt64(&pod.completedOutputTokens, 10*32)
+	atomic.StoreInt64(&pod.completedOutputBusyNanos, int64(10*800*time.Millisecond))
+	atomic.StoreInt64(&pod.completedOutputRequests, 10)
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
+	require.InDelta(t, 40, perRequestRate(t, pod), 0.5)
+}
+
+// With the threshold at 0 the first completed request publishes an estimate.
+func TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_MinSamplesZero(t *testing.T) {
+	withCapacityMinSamples(t, 0)
+	c := &Store{}
+	pod := namespacedTestPod("default", "rate-min-samples-off")
+	seedPerRequestRateHistory(t, pod, 0, 0, 30*time.Second)
+	atomic.StoreInt64(&pod.completedOutputTokens, 32)
+	atomic.StoreInt64(&pod.completedOutputBusyNanos, int64(800*time.Millisecond))
+	atomic.StoreInt64(&pod.completedOutputRequests, 1)
+
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
+
+	require.InDelta(t, 40, perRequestRate(t, pod), 0.5)
+}
+
+// The default is pinned so a change to it is deliberate.
+func TestLoadBalanceCapacityMinSamplesDefault(t *testing.T) {
+	require.Equal(t, 10, loadBalanceCapacityMinSamplesDefault)
+}
+
+// No completed requests in the window, or none with known tokens, keeps the previous estimate.
+func TestUpdateRealtimeOutputTokensPerRequestSecondEWMA_EmptyWindowKeepsPrevious(t *testing.T) {
+	c := &Store{}
+	pod := namespacedTestPod("default", "rate-idle")
+	seedPerRequestRateHistory(t, pod, 500, 10, 30*time.Second)
+	setCompleted(pod, 500, 10*time.Second) // nothing new
+	require.NoError(t, c.updatePodRecord(pod, "", metrics.RealtimeOutputTokensPerRequestSecondEWMA, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: 42}))
+
+	c.updateRealtimeOutputTokensPerRequestSecondEWMA(pod)
+
+	require.Equal(t, 42.0, perRequestRate(t, pod))
+}
+
 func namespacedTestPod(namespace, name string) *Pod {
 	return &Pod{Pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}}
 }

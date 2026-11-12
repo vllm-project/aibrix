@@ -1388,6 +1388,85 @@ func TestDonePodStatsAccumulatesOutputTokens(t *testing.T) {
 	assert.Equal(t, int64(20), atomic.LoadInt64(&metaPod.completedOutputTokens))
 }
 
+// The busy time behind the per-request decode rate covers the same requests as the tokens:
+// a request whose usage is unknown adds neither, or it would bias the rate down.
+func TestDonePodStatsAccumulatesBusyTimeOnlyWithKnownTokens(t *testing.T) {
+	const (
+		modelName = "test-model"
+		namespace = "default"
+		podName   = "decode-0"
+	)
+
+	cache := NewForTest()
+	pod := requestTrackerTestPod(podName, namespace, modelName, "10.0.0.1")
+	cache.addPod(pod)
+	metaPod, ok := cache.metaPods.Load(namespace + "/" + podName)
+	assert.True(t, ok)
+
+	run := func(requestID string, hold time.Duration, done func(ctx *types.RoutingContext, traceTerm int64)) {
+		ctx := types.NewRoutingContext(context.Background(), "least-request", modelName, "", requestID, "")
+		ctx.SetTargetPod(pod)
+		traceTerm := cache.AddRequestCount(ctx, requestID, modelName)
+		time.Sleep(hold)
+		done(ctx, traceTerm)
+	}
+
+	run("with-usage", 30*time.Millisecond, func(ctx *types.RoutingContext, term int64) {
+		cache.DoneRequestTrace(ctx, "with-usage", modelName, 10, 20, term)
+	})
+	busy := atomic.LoadInt64(&metaPod.completedOutputBusyNanos)
+	assert.GreaterOrEqual(t, busy, int64(30*time.Millisecond), "the request's time on the pod is added")
+	assert.Less(t, busy, int64(5*time.Second))
+	assert.Equal(t, int64(1), atomic.LoadInt64(&metaPod.completedOutputRequests), "and it counts as one sample")
+
+	run("without-usage", 30*time.Millisecond, func(ctx *types.RoutingContext, term int64) {
+		cache.DoneRequestCount(ctx, "without-usage", modelName, term)
+	})
+	run("bogus-usage", 30*time.Millisecond, func(ctx *types.RoutingContext, term int64) {
+		cache.DoneRequestTrace(ctx, "bogus-usage", modelName, 10, -5, term)
+	})
+	assert.Equal(t, busy, atomic.LoadInt64(&metaPod.completedOutputBusyNanos), "no tokens counted, no time counted")
+	assert.Equal(t, int64(1), atomic.LoadInt64(&metaPod.completedOutputRequests), "and no sample counted")
+}
+
+// A request that finishes while its pod is briefly out of the cache (a same-IP flap) is credited
+// to the pending snapshot. The tokens, the time on the pod and the sample must all land there,
+// or the pod would resume with tokens that have no time behind them and read as faster than it is.
+func TestDonePodStatsDuringFlapGapCreditsOutputCounters(t *testing.T) {
+	const (
+		modelName = "test-model"
+		namespace = "default"
+		podName   = "decode-0"
+		requestID = "request-during-gap"
+		podIP     = "10.0.0.1"
+	)
+
+	cache := NewForTest()
+	pod := requestTrackerTestPod(podName, namespace, modelName, podIP)
+	cache.addPod(pod)
+
+	ctx := types.NewRoutingContext(context.Background(), "least-request", modelName, "", requestID, "")
+	ctx.SetTargetPod(pod)
+	traceTerm := cache.AddRequestCount(ctx, requestID, modelName)
+	time.Sleep(30 * time.Millisecond)
+
+	cache.deletePod(pod)
+	snap, ok := cache.recentlyDeletedPods.Load(namespace + "/" + podName)
+	require.True(t, ok)
+
+	cache.DoneRequestTrace(ctx, requestID, modelName, 10, 20, traceTerm)
+	assert.Equal(t, int64(20), atomic.LoadInt64(&snap.completedOutputTokens))
+	assert.GreaterOrEqual(t, atomic.LoadInt64(&snap.completedOutputBusyNanos), int64(30*time.Millisecond))
+	assert.Equal(t, int64(1), atomic.LoadInt64(&snap.completedOutputRequests))
+
+	cache.addPod(requestTrackerTestPod(podName, namespace, modelName, podIP))
+	resumed, ok := cache.metaPods.Load(namespace + "/" + podName)
+	require.True(t, ok)
+	assert.Equal(t, int64(20), atomic.LoadInt64(&resumed.completedOutputTokens))
+	assert.GreaterOrEqual(t, atomic.LoadInt64(&resumed.completedOutputBusyNanos), int64(30*time.Millisecond))
+	assert.Equal(t, int64(1), atomic.LoadInt64(&resumed.completedOutputRequests))
+}
+
 // A brief delete/re-add of the same pod (same IP, within the grace period) must carry the
 // completed-output-token counter over, exactly like completedRequests; a bare re-add after the
 // pod was never deleted must not reset it either.
@@ -1405,6 +1484,8 @@ func TestPodFlapPreservesCompletedOutputTokens(t *testing.T) {
 	assert.True(t, ok)
 	atomic.StoreInt64(&metaPod.completedRequests, 3)
 	atomic.StoreInt64(&metaPod.completedOutputTokens, 450)
+	atomic.StoreInt64(&metaPod.completedOutputBusyNanos, int64(9*time.Second))
+	atomic.StoreInt64(&metaPod.completedOutputRequests, 12)
 
 	cache.deletePod(pod)
 	cache.addPod(requestTrackerTestPod(podName, namespace, modelName, "10.0.0.1"))
@@ -1413,6 +1494,8 @@ func TestPodFlapPreservesCompletedOutputTokens(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, int64(3), atomic.LoadInt64(&resumed.completedRequests))
 	assert.Equal(t, int64(450), atomic.LoadInt64(&resumed.completedOutputTokens))
+	assert.Equal(t, int64(9*time.Second), atomic.LoadInt64(&resumed.completedOutputBusyNanos))
+	assert.Equal(t, int64(12), atomic.LoadInt64(&resumed.completedOutputRequests))
 }
 
 // blockingTestLoadProvider holds GetConsumption until release is closed, so a test can

@@ -264,7 +264,58 @@ func (c *Store) calculateRate1m(pod *Pod, metricName string, currentValue float6
 	return delta / elapsed
 }
 
-// The ~1-minute window shared by calculateRate1m and calculateMean1m.
+// calculateRatio1m returns the increase of num divided by the increase of den, two monotonically
+// increasing counters, over the same approximate 1-minute window as calculateRate1m. It returns
+// -1 when there is not enough history yet or either counter did not grow.
+//
+// Both counters are snapshotted at the same instants under one lock, and both deltas are taken
+// against the same baseline snapshot. Two independent calculateRate1m histories could each admit
+// their throttled snapshot on a different refresh tick, and the ratio would then mix two windows.
+func (c *Store) calculateRatio1m(pod *Pod, numName, denName string, num, den float64) float64 {
+	numKey := rateHistoryKey(pod, "", numName)
+	denKey := rateHistoryKey(pod, "", denName)
+	now := time.Now()
+
+	rateCalculator.mu.Lock()
+	defer rateCalculator.mu.Unlock()
+
+	numHist, denHist := rateCalculator.history[numKey], rateCalculator.history[denKey]
+	if len(numHist) != len(denHist) {
+		// The two are only written here, together. Start over rather than pair unrelated snapshots.
+		numHist, denHist = nil, nil
+	}
+	if len(numHist) == 0 || now.Sub(numHist[len(numHist)-1].Timestamp) >= window1mSnapshotInterval {
+		numHist = append(numHist, MetricSnapshot{Value: num, Timestamp: now})
+		denHist = append(denHist, MetricSnapshot{Value: den, Timestamp: now})
+	}
+	// Same timestamps in both, so the same snapshots are dropped from both.
+	numHist = cleanupOldSnapshots(numHist, now, window1mHistoryMaxAge, window1mHistoryMaxCount)
+	denHist = cleanupOldSnapshots(denHist, now, window1mHistoryMaxAge, window1mHistoryMaxCount)
+	rateCalculator.history[numKey], rateCalculator.history[denKey] = numHist, denHist
+
+	if len(numHist) < 2 || len(denHist) != len(numHist) {
+		return -1
+	}
+	base := baseSnapshot1m(numHist, now)
+	if now.Sub(base.Timestamp).Seconds() < window1mMinElapsed {
+		return -1
+	}
+	i := 0
+	for i < len(numHist)-1 && &numHist[i] != base {
+		i++
+	}
+	dNum, dDen := num-base.Value, den-denHist[i].Value
+	if dNum < 0 || dDen < 0 {
+		// Counters never decrease; treat it as a reset and use the current values as the deltas.
+		dNum, dDen = num, den
+	}
+	if dNum <= 0 || dDen <= 0 {
+		return -1
+	}
+	return dNum / dDen
+}
+
+// The ~1-minute window shared by calculateRate1m, calculateRatio1m and calculateMean1m.
 const (
 	window1mSnapshotInterval = 5 * time.Second // throttle to avoid snapshot flood
 	window1mTarget           = 1 * time.Minute // desired look-back window; load-balance's capacity warm-up default (loadBalanceCapacityWarmupDefault) matches it
