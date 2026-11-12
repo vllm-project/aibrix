@@ -607,6 +607,76 @@ func TestScoreAndRankTieBreakIsDeterministic(t *testing.T) {
 	assert.Same(t, winnerAB, winnerBA, "tie-break winner must not depend on input pod order")
 }
 
+// blendTieRouter is the least-request,load-balance:1 blend over two pods where the strategies
+// disagree: least-request votes for pod-b (fewer running), load-balance for pod-a (its capacity
+// estimate grew with the traffic it already received). Min-max makes each vote 0/1, so the
+// blend ties.
+func blendTieRouter(c *po2FakeCache) (*multiStrategyRouter, *v1.Pod, *v1.Pod) {
+	busy := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "default"}}
+	idle := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-b", Namespace: "default"}}
+	m := &multiStrategyRouter{
+		config: &MultiRouterConfig{Items: []RouterItem{{Name: "least-request", Coefficient: 1}, {Name: "load-balance", Coefficient: 1}}},
+		scorers: map[string]types.PodScorer{
+			"least-request": &fakeScorer{polarity: types.PolarityLeast, scores: map[*v1.Pod]float64{busy: 5, idle: 2}},
+			"load-balance":  &fakeScorer{polarity: types.PolarityLeast, scores: map[*v1.Pod]float64{busy: 0.0183, idle: 0.0185}},
+		},
+	}
+	if c != nil {
+		m.cache = c
+	}
+	return m, busy, idle
+}
+
+// TestScoreAndRankTieBreakPrefersFewerRunning is a regression test for #3450: a name-only
+// tie-break gave every disagreement tie to the pod whose name sorts first, even when it was the
+// busier pod, which locked a post-rollout skew in place.
+func TestScoreAndRankTieBreakPrefersFewerRunning(t *testing.T) {
+	m, busy, idle := blendTieRouter(&po2FakeCache{Running: map[string]int64{"pod-a": 5, "pod-b": 2}})
+
+	for _, order := range [][]*v1.Pod{{busy, idle}, {idle, busy}} {
+		winner, scores, err := m.scoreAndRank(&types.RoutingContext{}, wrapper{pods: order})
+		require.NoError(t, err)
+		assert.InDelta(t, scores[busy], scores[idle], 1e-9, "the strategies disagree, so the blend ties")
+		assert.Same(t, idle, winner, "the tie goes to the pod with fewer running requests, not the one whose name sorts first")
+	}
+}
+
+// TestScoreAndRankTieBreakReadsTheDecisionSnapshot checks that the tie-break uses the counts the
+// scorers already read in this routing decision, not a fresh read that could disagree with them.
+func TestScoreAndRankTieBreakReadsTheDecisionSnapshot(t *testing.T) {
+	c := &po2FakeCache{Running: map[string]int64{"pod-a": 5, "pod-b": 2}}
+	m, busy, idle := blendTieRouter(c)
+	ctx := &types.RoutingContext{}
+	ctx.StartRunningRequestsSnapshot()
+	defer ctx.StopRunningRequestsSnapshot()
+	_, err := ctx.RunningRequests([]*v1.Pod{busy, idle}, c.GetPodsRunningRequests) // what a scorer reads first
+	require.NoError(t, err)
+	c.Running = map[string]int64{"pod-a": 0, "pod-b": 9} // live counts move on after that read
+
+	winner, _, err := m.scoreAndRank(ctx, wrapper{pods: []*v1.Pod{busy, idle}})
+	require.NoError(t, err)
+	assert.Same(t, idle, winner, "the snapshot (5 vs 2) decides, not the later live read")
+	assert.Len(t, c.Batches, 1, "the tie-break must not read the counts again")
+}
+
+// TestScoreAndRankTieBreakFallsBackToName keeps the deterministic name order when the counts
+// cannot help: no cache, a failed read, or equal counts.
+func TestScoreAndRankTieBreakFallsBackToName(t *testing.T) {
+	for name, c := range map[string]*po2FakeCache{
+		"no cache":     nil,
+		"read error":   {RunningErr: fmt.Errorf("redis down")},
+		"equal counts": {Running: map[string]int64{"pod-a": 3, "pod-b": 3}},
+		"missing pod":  {Running: map[string]int64{"pod-a": 5}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, busy, idle := blendTieRouter(c)
+			winner, _, err := m.scoreAndRank(&types.RoutingContext{}, wrapper{pods: []*v1.Pod{idle, busy}})
+			require.NoError(t, err)
+			assert.Same(t, busy, winner, "pod-a sorts first by name")
+		})
+	}
+}
+
 func TestMultiStrategyRouterRoute_PostRouteUpdate(t *testing.T) {
 	podA := newPod("pod-a", "1.1.1.1", true, map[string]string{"model.aibrix.ai/port": "8000"})
 	podB := newPod("pod-b", "2.2.2.2", true, map[string]string{"model.aibrix.ai/port": "8000"})

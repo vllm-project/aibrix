@@ -377,6 +377,9 @@ func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig, weights autoB
 type multiStrategyRouter struct {
 	config  *MultiRouterConfig
 	scorers map[string]types.PodScorer
+	// cache supplies the running-request counts the tie-break in scoreAndRank prefers. nil
+	// (cache not initialized) falls back to breaking ties by pod name alone.
+	cache cache.Cache
 }
 
 // newMultiStrategyRouter initializes a new multiStrategyRouter based on the parsed config
@@ -404,10 +407,14 @@ func newMultiStrategyRouter(config *MultiRouterConfig, rm *RouterManager, ctx *t
 		scorers[item.Name] = scorer
 	}
 
-	return &multiStrategyRouter{
+	m := &multiStrategyRouter{
 		config:  config,
 		scorers: scorers,
-	}, nil
+	}
+	if c, err := cache.Get(); err == nil {
+		m.cache = c
+	}
+	return m, nil
 }
 
 // Route executes the multi-strategy scoring pipeline and returns the best pod IP
@@ -589,8 +596,24 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 	// tie across two pods (e.g. once prefix-cache match and load-balance load both equalize) can
 	// flip its winner from one call to the next for reasons unrelated to load or cache affinity,
 	// causing spurious reroutes/thrashing instead of a stable pick.
+	//
+	// Before the name, prefer the pod with fewer running requests. With two pods, min-max
+	// normalization turns each strategy into a 0/1 vote, so whenever two equally weighted
+	// strategies disagree (least-request,load-balance:1) the blend ties. Breaking that tie by
+	// name alone hands every such request to the same pod, busier or not (#3450). The counts
+	// come from ctx.RunningRequests, the same per-decision snapshot the scorers read, so the
+	// tie-break agrees with what least-request and load-balance saw. If they cannot be read,
+	// the name decides as before.
 	if len(topPods) > 1 {
-		sort.Slice(topPods, func(i, j int) bool { return topPods[i].Name < topPods[j].Name })
+		running := m.tieBreakRunningCounts(ctx, topPods)
+		sort.Slice(topPods, func(i, j int) bool {
+			ri, okI := running[utils.GeneratePodKey(topPods[i].Namespace, topPods[i].Name)]
+			rj, okJ := running[utils.GeneratePodKey(topPods[j].Namespace, topPods[j].Name)]
+			if okI && okJ && ri != rj {
+				return ri < rj
+			}
+			return topPods[i].Name < topPods[j].Name
+		})
 	}
 	winner := topPods[0]
 
@@ -680,6 +703,19 @@ func medianOf(values []float64) float64 {
 		return sorted[n/2]
 	}
 	return (sorted[n/2-1] + sorted[n/2]) / 2.0
+}
+
+// tieBreakRunningCounts returns the running-request counts of the tied pods, keyed by
+// utils.GeneratePodKey, or nil when the router has no cache or the read fails.
+func (m *multiStrategyRouter) tieBreakRunningCounts(ctx *types.RoutingContext, pods []*v1.Pod) map[string]int64 {
+	if m.cache == nil {
+		return nil
+	}
+	counts, err := ctx.RunningRequests(pods, m.cache.GetPodsRunningRequests)
+	if err != nil {
+		return nil
+	}
+	return counts
 }
 
 // normalizeScoresArray converts raw scores to [0,1] via min-max scaling, after first
