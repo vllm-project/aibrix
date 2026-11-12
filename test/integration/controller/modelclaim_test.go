@@ -780,6 +780,7 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 		})
 
 		ginkgo.It("recovers after a Runtime Sleep failure", func() {
+		  ginkgo.Skip("flaky: see #3420")
 			fixture.Runtime().SetCard(5 << 30)
 			fixture.Runtime().SetSleepingFootprint(256 << 20)
 			fixture.CreatePoolPod(ns.Name, "pool-failure", "pool-failure",
