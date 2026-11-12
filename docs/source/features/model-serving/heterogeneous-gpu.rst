@@ -13,7 +13,7 @@ Load-Balance Routing Across GPU Types
 
 Production GPU fleets are rarely homogeneous. When capacity on one GPU type is exhausted, workloads may need to spill over to hardware with very different performance characteristics. This breaks a basic assumption of traditional load balancing: equal request counts do not mean equal load. Sending the same QPS to a faster and a slower GPU can overload one deployment while leaving capacity unused on the other.
 
-The ``load-balance`` routing strategy addresses this by scoring each replica on its current load relative to its observed capacity and routing the request to the replica with the lowest score. It needs no hardware labels and no static table of GPU performance: a mixed pool teaches the gateway its relative speeds from production traffic, and faster replicas receive proportionally more requests.
+The ``load-balance`` routing strategy addresses this by scoring each replica on its current load relative to its observed capacity and routing the request to the replica with the lowest score. It needs no hardware labels and no static table of GPU performance: a mixed pool teaches the gateway its relative speeds from production traffic, and faster replicas receive proportionally more requests. The capacity term is switched off for a short warm-up whenever a replica becomes routable; see *How Capacity Is Learned*.
 
 Scoring
 -------
@@ -109,6 +109,7 @@ Rather than relying on a static table of GPU performance, the gateway learns eac
 * On every metrics refresh (default 1 second), the counter is converted to tokens per second over a window of about one minute and smoothed with an exponentially weighted moving average (time constant 10 seconds).
 * A window with no completed tokens carries no information about speed, because the replica was idle rather than slow. The previous estimate is kept instead of decaying toward zero, so a briefly idle replica is not starved of the traffic that would re-measure it.
 * A new replica with no estimate yet is scored at the mean estimate of the replicas that have one, so it competes as an average replica until enough measurements arrive. If no replica has an estimate, all replicas get the same capacity and the score reduces to load multiplied by the KV penalty.
+* While any candidate replica became routable less than one rate window ago (``AIBRIX_LOAD_BALANCE_CAPACITY_WARMUP``, default ``60s``; ``0`` disables it; environment-only), every candidate gets the same capacity and the score reduces to load multiplied by the KV penalty. Until a replica has a full window of history, its rate is divided by the time since its own first measurement, so replicas that became routable at different times are not comparable and the newer one looks faster. This lasts for a whole rolling update or scale-up plus one window; during that time a mixed pool does not send its faster replicas more requests.
 
 The learned value is the *observed serving capacity under the current workload mix*, not a fixed property of the GPU. Request shape can materially change throughput even on identical hardware, particularly for input-heavy and multimodal workloads, and the estimate moves with the mix. Because it follows a window of about one minute, a sudden change shows up within tens of seconds rather than immediately.
 
@@ -175,6 +176,8 @@ Behavior in Edge Cases
      - Behavior
    * - Replica has no capacity estimate yet
      - Scored at the mean estimate of the replicas that have one.
+   * - Any candidate replica became routable less than ``AIBRIX_LOAD_BALANCE_CAPACITY_WARMUP`` ago
+     - Every candidate gets the same capacity, so the score is load multiplied by the KV penalty. Lasts for a whole rolling update or scale-up plus the window.
    * - Engine reports no KV usage, or ``NaN``
      - Treated as fully free: no penalty and no guardrail, so engines that lack the metric are not penalized.
    * - ``kvFree < kvCritical``
