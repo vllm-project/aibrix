@@ -537,7 +537,9 @@ var _ = ginkgo.Describe("ModelClaim controller test", func() {
 		// finalizer in between cannot turn the expected Invalid into a Conflict.
 		policyPatch := client.MergeFrom(policyClaim.DeepCopy())
 		policyClaim.Spec.PreemptionPolicy = modelapi.ModelClaimPreemptionSleepLowerPriority
-		gomega.Expect(apierrors.IsInvalid(k8sClient.Patch(ctx, policyClaim, policyPatch))).To(gomega.BeTrue())
+		policyErr := k8sClient.Patch(ctx, policyClaim, policyPatch)
+		gomega.Expect(apierrors.IsInvalid(policyErr)).To(gomega.BeTrue(), "%v", policyErr)
+		gomega.Expect(policyErr.Error()).To(gomega.ContainSubstring("preemptionPolicy is immutable"))
 
 		for _, tc := range []struct {
 			name     string
