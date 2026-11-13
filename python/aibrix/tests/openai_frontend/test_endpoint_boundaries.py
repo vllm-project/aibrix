@@ -163,6 +163,122 @@ async def test_responses_output_rejected_before_forwarding(tmp_path, invalid):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [200, 422])
+async def test_vllm_omni_video_sync_preserves_multipart_and_response(status_code):
+    engine = ProxyEngine(["unused"], spec=VLLM_OMNI_SPEC, fetch_media=False)
+    engine._set_state(EngineState.READY)
+    path = "/v1/videos/sync?response_format=json&flag=a%2Fb&flag=c"
+    fields = {
+        "model": "minimax-h3",
+        "prompt": "参考图1与参考图2，生成视频。",
+        "short_edge": "768",
+        "aspect_ratio": "auto",
+        "num_inference_steps": "1",
+        "flow_shift": "12.0",
+        "quality": "lossless",
+        "seed": "0",
+        "extra_params": '{"task":"ref2va","duration":5,"audio_flow_shift":3.0,'
+        '"modalities":["video"],"stream":false}',
+    }
+    upload = httpx.Request(
+        "POST",
+        f"http://frontend{path}",
+        files=[
+            *((name, (None, value)) for name, value in fields.items()),
+            ("input_references", ("first.png", b"\x89PNG\r\n\x1a\nfirst", "image/png")),
+            (
+                "input_references",
+                ("second.png", b"\x89PNG\r\n\x1a\nsecond", "image/png"),
+            ),
+        ],
+    )
+    body = upload.read()
+    content = (
+        b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom\x00\xffvideo"
+        if status_code == 200
+        else b'{"detail":[{"loc":["body","model"],"msg":"Unknown model"}]}'
+    )
+    content_type = "video/mp4" if status_code == 200 else "application/json"
+
+    class Body(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self):
+            for offset in range(0, len(content), 7):
+                yield content[offset : offset + 7]
+
+        async def aclose(self):
+            self.closed = True
+
+    stream = Body()
+    forwarded = []
+
+    async def upstream(request):
+        forwarded.append(
+            (
+                request.method,
+                request.url.raw_path,
+                request.headers["content-type"],
+                request.headers["content-length"],
+                await request.aread(),
+            )
+        )
+        return httpx.Response(
+            status_code,
+            stream=stream,
+            headers={
+                "content-type": content_type,
+                "content-disposition": 'attachment; filename="video.mp4"',
+            },
+        )
+
+    engine._subprocess._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream), base_url="http://inner"
+    )
+    app = FastApiFrontend(
+        engine, restricted_apis=[["inference", "x-test-key", "expected"]]
+    ).app
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://frontend"
+        ) as client:
+            headers = {
+                "content-type": upload.headers["content-type"],
+                "content-length": upload.headers["content-length"],
+            }
+            denied = await client.post(path, content=body, headers=headers)
+            assert denied.status_code == 401 and not forwarded
+            headers["x-test-key"] = "expected"
+
+            async def chunks():
+                for offset in range(0, len(body), 64):
+                    yield body[offset : offset + 64]
+
+            response = await client.post(path, content=chunks(), headers=headers)
+            assert response.status_code == status_code, response.text
+            assert response.content == content
+            assert response.headers["content-type"] == content_type
+            if status_code == 200:
+                assert (
+                    response.headers["content-disposition"]
+                    == 'attachment; filename="video.mp4"'
+                )
+            assert forwarded == [
+                (
+                    "POST",
+                    path.encode(),
+                    upload.headers["content-type"],
+                    upload.headers["content-length"],
+                    body,
+                )
+            ]
+            assert stream.closed and not engine._request_done
+            assert not engine._stream_closers
+    finally:
+        await engine.aclose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("buffered", [False, True])
 async def test_native_stream_preserves_encoding_query_and_shutdown(buffered):
     engine = ProxyEngine(["unused"], spec=VLLM_OMNI_SPEC, fetch_media=False)

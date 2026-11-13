@@ -1059,13 +1059,13 @@ class ProxyEngine(LLMEngine):
         )
 
     async def forward_multipart(self, path: str, request: "Request") -> Response:
-        """Proxy a multipart/form upload (audio transcription/translation).
+        """Proxy a multipart/form upload (audio transcription or video generation).
 
         Both directions are streamed: the client's body is relayed to the
         engine chunk by chunk as it arrives (never buffered or re-encoded, so
         every form field and the query string survive byte-for-byte), and the
-        engine's response -- JSON or an SSE stream -- is relayed back the same
-        way. Peak memory per upload is one transport chunk, not the file.
+        engine's response -- JSON, SSE, or binary media -- is relayed back the
+        same way. Peak memory per upload is one transport chunk, not the file.
         """
         kind = self._spec.require(path)
         if kind != ForwardKind.MULTIPART:
