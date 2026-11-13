@@ -152,8 +152,12 @@ func (s *Server) enforceModelRPS(ctx context.Context, model string, routingCtx *
 		if _, derr := s.modelRateLimiter.Incr(ctx, key, -1, window...); derr != nil {
 			klog.ErrorS(derr, "fail to refund rejected RPS increment for model", "model", model, "profile", routingCtx.ConfigProfile.ProfileName)
 		}
-		return buildErrorResponse(envoyTypePb.StatusCode_TooManyRequests,
-			fmt.Sprintf("model: %v has exceeded RPS: %v", model, limit),
+		msg := fmt.Sprintf("model: %v has exceeded RPS: %v", model, limit)
+		// authoritativeRoutingPolicy keeps the profile name out of client responses.
+		if profile := routingCtx.ConfigProfile.ProfileName; profile != "" && !routingCtx.ConfigProfile.AuthoritativeRoutingPolicy {
+			msg = fmt.Sprintf("model: %v, profile: %v has exceeded RPS: %v", model, profile, limit)
+		}
+		return buildErrorResponse(envoyTypePb.StatusCode_TooManyRequests, msg,
 			ErrorCodeRateLimitExceeded, "", HeaderErrorModelRPSExceeded, "true")
 	}
 	return nil

@@ -431,7 +431,7 @@ func TestEnforceModelRPS(t *testing.T) {
 			require.NotNil(t, imm)
 			assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
 			assert.Contains(t, imm.GetBody(), ErrorCodeRateLimitExceeded)
-			assert.Contains(t, imm.GetBody(), "exceeded RPS")
+			assert.Contains(t, imm.GetBody(), "model: llama has exceeded RPS: 2")
 			if assert.NotEmpty(t, imm.GetHeaders().GetSetHeaders()) {
 				assert.Equal(t, HeaderErrorModelRPSExceeded, imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetKey())
 				assert.Equal(t, "true", string(imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetRawValue()))
@@ -478,7 +478,28 @@ func TestEnforceModelRPS(t *testing.T) {
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{ProfileName: "batch", RequestsPerSecond: 2}}
 
 		resp := s.enforceModelRPS(context.Background(), "llama", rc)
-		assert.NotNil(t, resp)
+		if assert.NotNil(t, resp) {
+			assert.Contains(t, resp.GetImmediateResponse().GetBody(), "model: llama, profile: batch has exceeded RPS: 2")
+		}
+		rl.AssertExpectations(t)
+	})
+
+	t.Run("authoritative policy keeps the profile out of the 429 message", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT:default", int64(1)).Return(int64(3), nil).Once()
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT:default", int64(-1)).Return(int64(2), nil).Once()
+
+		s := &Server{modelRateLimiter: rl}
+		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{
+			ProfileName: "default", AuthoritativeRoutingPolicy: true, RequestsPerSecond: 2,
+		}}
+
+		resp := s.enforceModelRPS(context.Background(), "llama", rc)
+		if assert.NotNil(t, resp) {
+			body := resp.GetImmediateResponse().GetBody()
+			assert.Contains(t, body, "model: llama has exceeded RPS: 2")
+			assert.NotContains(t, body, "profile")
+		}
 		rl.AssertExpectations(t)
 	})
 }

@@ -245,8 +245,10 @@ msgid "What clients see when the limit is hit"
 msgstr "达到限制时客户端看到的内容"
 
 #: ../../source/production/model-deployment.rst:167
-msgid "The gateway returns:"
-msgstr "网关返回："
+msgid ""
+"The gateway returns the response below. Its message names the profile "
+"unless ``authoritativeRoutingPolicy`` is ``true``:"
+msgstr "网关返回如下响应。除非 ``authoritativeRoutingPolicy`` 为 ``true``，消息中会注明 profile："
 
 #: ../../source/production/model-deployment.rst:177
 #: ../../source/production/model-deployment.rst:267
