@@ -517,15 +517,23 @@ func (r *RoutingContext) GetRoutingDelay() time.Duration {
 }
 
 func (r *RoutingContext) targetAddress(pod *v1.Pod) string {
-	if port, ok := utils.ModelClaimPortForPod(pod, r.Model); ok {
+	return PodTargetAddress(pod, r.Model, r.RequestID)
+}
+
+// PodTargetAddress is the ip:port at which pod serves model, or "" when the pod
+// is not yet routable for it. It is what RoutingContext.TargetAddress resolves
+// to, exposed so background work can reach a pod exactly as a request would.
+// requestID only tags log lines.
+func PodTargetAddress(pod *v1.Pod, model, requestID string) string {
+	if port, ok := utils.ModelClaimPortForPod(pod, model); ok {
 		if port > 0 {
-			return r.targetAddressWithPort(pod.Status.PodIP, port)
+			return fmt.Sprintf("%v:%v", pod.Status.PodIP, port)
 		}
 		// Known ModelClaim model that is not yet routable (port 0). Do not fall
 		// back to the default deployment port on this warm pool pod.
 		return ""
 	}
-	return fmt.Sprintf("%v:%v", pod.Status.PodIP, utils.GetModelPortForPod(r.RequestID, pod))
+	return fmt.Sprintf("%v:%v", pod.Status.PodIP, utils.GetModelPortForPod(requestID, pod))
 }
 
 func (r *RoutingContext) targetAddressWithPort(podIP string, port int) string {

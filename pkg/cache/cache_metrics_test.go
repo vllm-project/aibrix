@@ -1190,3 +1190,107 @@ func TestUpdateThroughputToksPerS_UsesRoleLabel(t *testing.T) {
 	_, ok = decode.ModelMetrics.Load(c.getPodModelMetricName("model", metrics.AvgPromptThroughputToksPerS))
 	require.False(t, ok)
 }
+
+// fakeQuarantine quarantines the pods named in the set.
+type fakeQuarantine map[string]bool
+
+func (q fakeQuarantine) IsQuarantined(pod *v1.Pod) bool { return q[pod.Name] }
+
+// pointerQuarantine is a comparable checker, as a real one (a pointer) is.
+type pointerQuarantine struct{ quarantined bool }
+
+func (q *pointerQuarantine) IsQuarantined(*v1.Pod) bool { return q.quarantined }
+
+func TestClearPodQuarantineChecker(t *testing.T) {
+	pod := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-1"}}
+	first, second := &pointerQuarantine{true}, &pointerQuarantine{true}
+	store := NewForTest()
+
+	store.SetPodQuarantineChecker(first)
+	require.True(t, store.isPodQuarantined(pod))
+	store.ClearPodQuarantineChecker(first)
+	require.False(t, store.isPodQuarantined(pod), "the checker that was set can clear itself")
+
+	// One slot, last set wins: an earlier checker clearing itself afterwards must not
+	// take the later one's registration with it.
+	store.SetPodQuarantineChecker(first)
+	store.SetPodQuarantineChecker(second)
+	store.ClearPodQuarantineChecker(first)
+	require.True(t, store.isPodQuarantined(pod), "clearing a checker that is no longer in the slot changes nothing")
+	store.ClearPodQuarantineChecker(second)
+	require.False(t, store.isPodQuarantined(pod))
+
+	// Clearing an empty slot, or with a checker of an uncomparable type, is harmless.
+	require.NotPanics(t, func() {
+		store.ClearPodQuarantineChecker(second)
+		store.SetPodQuarantineChecker(fakeQuarantine{"pod-1": true})
+		store.ClearPodQuarantineChecker(fakeQuarantine{"pod-1": true})
+	})
+}
+
+func TestUpdatePodMetricsSkipsQuarantinedPods(t *testing.T) {
+	var counters []counterCall
+	restore := captureCounterCalls(&counters)
+	defer restore()
+
+	store := &Store{podMetricsJobs: make(chan *Pod, 10)}
+	for _, name := range []string{"pod-0", "pod-1"} {
+		pod := newReadyMetricsPod(name, "uid-"+name)
+		store.metaPods.Store(utils.GeneratePodKey(pod.Namespace, pod.Name), pod)
+	}
+
+	store.updatePodMetrics()
+	require.Equal(t, 2, len(store.podMetricsJobs), "without a checker every ready pod is scraped")
+	for len(store.podMetricsJobs) > 0 {
+		store.finishPodMetricsScheduling(<-store.podMetricsJobs)
+	}
+
+	var checker PodQuarantineChecker = fakeQuarantine{"pod-1": true}
+	store.SetPodQuarantineChecker(checker)
+	store.updatePodMetrics()
+
+	require.Equal(t, 1, len(store.podMetricsJobs))
+	require.Equal(t, "pod-0", (<-store.podMetricsJobs).Name, "only the pod that is not quarantined is scraped")
+	require.Zero(t, countCounterCalls(counters, metrics.PodMetricsEnqueueDroppedTotal, "reason", metrics.PodMetricsDropReasonQueueFull))
+}
+
+func TestUpdateModelReplicaMetricsSkipsQuarantinedPods(t *testing.T) {
+	t.Setenv("POD_NAME", "gateway-0")
+
+	var emitted []string
+	originalFn := metrics.SetGaugeMetricFnForTest
+	defer func() { metrics.SetGaugeMetricFnForTest = originalFn }()
+	metrics.SetGaugeMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
+		if name != metrics.ModelReplicas {
+			return
+		}
+		for i, ln := range labelNames {
+			if ln == "pod" {
+				emitted = append(emitted, labelValues[i])
+			}
+		}
+	}
+
+	store := &Store{}
+	for _, name := range []string{"pod-0", "pod-1"} {
+		store.metaPods.Store("default/"+name, newReadyMetricsPod(name, "uid-"+name))
+	}
+
+	store.updateModelReplicaMetrics()
+	require.ElementsMatch(t, []string{"pod-0", "pod-1"}, emitted)
+	require.Equal(t, 2, store.modelReplicaEmitted.Len())
+
+	// pod-1 is quarantined: it stops counting as a replica and its series goes.
+	store.SetPodQuarantineChecker(fakeQuarantine{"pod-1": true})
+	emitted = nil
+	store.updateModelReplicaMetrics()
+	require.Equal(t, []string{"pod-0"}, emitted)
+	require.Equal(t, 1, store.modelReplicaEmitted.Len())
+
+	// The quarantine ends: it counts again.
+	store.SetPodQuarantineChecker(fakeQuarantine{})
+	emitted = nil
+	store.updateModelReplicaMetrics()
+	require.ElementsMatch(t, []string{"pod-0", "pod-1"}, emitted)
+	require.Equal(t, 2, store.modelReplicaEmitted.Len())
+}
