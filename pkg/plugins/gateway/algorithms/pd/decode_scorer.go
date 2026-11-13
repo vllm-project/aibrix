@@ -213,14 +213,15 @@ func (ConductorDecodePolicy) Describe() string {
 }
 
 func (ConductorDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext, pod *v1.Pod, in DecodePodInput) float64 {
-	currentTBTMs := DefaultDecodeTBTFallbackMs
-	if in.Throughput > 0 {
-		currentTBTMs = 1000.0 / in.Throughput
-	}
-
-	// TBT after adding one request to a decode pod.
+	// Throughput is the aggregate generation throughput across all running requests on the pod.
+	// Per-request TBT scales with batch size: (runningReqs + 1) * (1000 / Throughput).
 	runningReqs := math.Max(in.RunningReqs, 1.0)
-	estimatedTBT := currentTBTMs * (1.0 + 1.0/runningReqs)
+	var estimatedTBT float64
+	if in.Throughput > 0 {
+		estimatedTBT = (runningReqs + 1.0) * (1000.0 / in.Throughput)
+	} else {
+		estimatedTBT = (runningReqs + 1.0) * DefaultDecodeTBTFallbackMs
+	}
 
 	// GPU-cache pressure penalty.
 	gpuCacheUsage := 1.0 - in.FreeGPUPercent/100.0
@@ -231,9 +232,8 @@ func (ConductorDecodePolicy) ScoreDecodePod(routingCtx *types.RoutingContext, po
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
 			"policy", DecodePolicyConductor, "decode_score", estimatedTBT,
-			"current_tbt_ms", currentTBTMs, "running_reqs", in.RunningReqs,
-			"gpu_cache_usage", gpuCacheUsage, "throughput", in.Throughput,
-			"free_gpu_percent", in.FreeGPUPercent)
+			"running_reqs", in.RunningReqs, "gpu_cache_usage", gpuCacheUsage,
+			"throughput", in.Throughput, "free_gpu_percent", in.FreeGPUPercent)
 	}
 
 	return estimatedTBT
