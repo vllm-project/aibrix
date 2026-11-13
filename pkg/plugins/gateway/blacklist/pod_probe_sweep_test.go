@@ -405,6 +405,10 @@ func TestSweepPodProbes_ProbesAPodOnceEvenWhenItServesSeveralModels(t *testing.T
 	assert.Equal(t, int32(1), probes.Load())
 }
 
+func TestIsPDRolePod_NilIsNotAPDPod(t *testing.T) {
+	assert.False(t, isPDRolePod(nil))
+}
+
 func TestSweepPodProbes_SkipsPrefillAndDecodePods(t *testing.T) {
 	rolePod := func(name, role string) *v1.Pod {
 		pod := blacklistTestPod(name)
