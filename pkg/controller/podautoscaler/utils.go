@@ -22,9 +22,14 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/controller/constants"
 	podutils "github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -54,13 +59,40 @@ func isPodReady(pod corev1.Pod) bool {
 	return false
 }
 
-func replicaStateFromPods(pods []corev1.Pod, currentReplicas int32) ReplicaState {
+// replicaStateFromPods splits currentReplicas into ready and pending. When the
+// replicas are RoleSets (scalesRoleSets), a RoleSet is ready once expectedPods
+// of its selected pods are ready, so a RoleSet still starting, including one
+// whose pods are not all created yet, counts as pending. With expectedPods 0
+// (unknown), a RoleSet is ready once all of its selected pods are.
+func replicaStateFromPods(pods []corev1.Pod, currentReplicas int32, roleSets bool, expectedPods int32) ReplicaState {
 	var readyReplicas int32
+	readyPods := map[string]int32{}
+	allReady := map[string]bool{}
 	for _, pod := range pods {
-		if pod.DeletionTimestamp != nil || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		if !isPodLive(pod) {
+			continue
+		}
+		if roleSets {
+			roleSet := pod.Labels[constants.RoleSetNameLabelKey]
+			if roleSet == "" {
+				continue
+			}
+			ready, seen := allReady[roleSet]
+			allReady[roleSet] = isPodReady(pod) && (ready || !seen)
+			if isPodReady(pod) {
+				readyPods[roleSet]++
+			}
 			continue
 		}
 		if isPodReady(pod) {
+			readyReplicas++
+		}
+	}
+	for roleSet, ready := range allReady {
+		if expectedPods > 0 {
+			ready = readyPods[roleSet] >= expectedPods
+		}
+		if ready {
 			readyReplicas++
 		}
 	}
@@ -74,6 +106,107 @@ func replicaStateFromPods(pods []corev1.Pod, currentReplicas int32) ReplicaState
 		ReadyReplicas:   currentReplicas - pendingReplicas,
 		PendingReplicas: pendingReplicas,
 	}
+}
+
+func isPodLive(pod corev1.Pod) bool {
+	return pod.DeletionTimestamp == nil && pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed
+}
+
+// scalesRoleSets reports whether the scale target's replicas are RoleSets: a
+// StormService scaled through spec.replicas (any StormService without a
+// subTargetSelector, and a replica-mode one with it).
+func scalesRoleSets(pa *autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (bool, error) {
+	if scale.GetAPIVersion() != orchestrationv1alpha1.GroupVersion.String() || scale.GetKind() != StormService {
+		return false, nil
+	}
+	if pa.Spec.SubTargetSelector == nil {
+		return true, nil
+	}
+	ss := &orchestrationv1alpha1.StormService{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(scale.Object, ss); err != nil {
+		return false, fmt.Errorf("failed to read StormService %s: %w", scale.GetName(), err)
+	}
+	return stormServiceScalingMode(pa, ss) == orchestrationv1alpha1.StormServiceReplicaMode, nil
+}
+
+// selectedRoles returns the StormService template roles whose pods the
+// autoscaler selects: the role named by subTargetSelector, or every role.
+func selectedRoles(pa *autoscalingv1alpha1.PodAutoscaler, ss *orchestrationv1alpha1.StormService) []orchestrationv1alpha1.RoleSpec {
+	if ss.Spec.Template.Spec == nil {
+		return nil
+	}
+	var roles []orchestrationv1alpha1.RoleSpec
+	for _, role := range ss.Spec.Template.Spec.Roles {
+		if sel := pa.Spec.SubTargetSelector; sel != nil && sel.RoleName != "" && sel.RoleName != role.Name {
+			continue
+		}
+		roles = append(roles, role)
+	}
+	return roles
+}
+
+// selectsPodGroupLeaders reports whether the pod selector keeps only the
+// index-0 pod of each pod group (#1704), which it does when any selected role
+// has a pod group size above 1. Only pod group pods carry the index label.
+func selectsPodGroupLeaders(roles []orchestrationv1alpha1.RoleSpec) bool {
+	for _, role := range roles {
+		if role.PodGroupSize != nil && *role.PodGroupSize > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// expectedPodsPerRoleSet is how many selected pods one RoleSet of the
+// StormService runs, from its template: the replicas of each selected role.
+// When the selector keeps only pod group leaders, a role with pod groups
+// contributes one pod per replica and a role without them contributes none.
+func expectedPodsPerRoleSet(pa *autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (int32, error) {
+	ss := &orchestrationv1alpha1.StormService{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(scale.Object, ss); err != nil {
+		return 0, fmt.Errorf("failed to read StormService %s: %w", scale.GetName(), err)
+	}
+	roles := selectedRoles(pa, ss)
+	leadersOnly := selectsPodGroupLeaders(roles)
+	var pods int32
+	for _, role := range roles {
+		if role.Replicas == nil || *role.Replicas <= 0 {
+			continue
+		}
+		grouped := role.PodGroupSize != nil && *role.PodGroupSize > 1
+		if leadersOnly && !grouped {
+			continue
+		}
+		pods += *role.Replicas
+	}
+	return pods, nil
+}
+
+// podsPerReplica is how many of the selected pods make up one replica of the
+// scale target: 1, or the pods per RoleSet when the replicas are RoleSets, so
+// that a per-pod metric is sized in RoleSets rather than pods. It is
+// expectedPods when known, else the live selected pods per RoleSet.
+func podsPerReplica(roleSets bool, expectedPods int32, pods []corev1.Pod) float64 {
+	if !roleSets {
+		return 1
+	}
+	if expectedPods > 0 {
+		return float64(expectedPods)
+	}
+	selected := 0
+	names := map[string]struct{}{}
+	for _, pod := range pods {
+		roleSet := pod.Labels[constants.RoleSetNameLabelKey]
+		if roleSet == "" || !isPodLive(pod) {
+			continue
+		}
+		selected++
+		names[roleSet] = struct{}{}
+	}
+	if len(names) == 0 {
+		return 1
+	}
+	return float64(selected) / float64(len(names))
 }
 
 func minFloat64(a, b float64) float64 {
