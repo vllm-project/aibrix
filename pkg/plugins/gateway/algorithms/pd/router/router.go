@@ -54,8 +54,8 @@ const (
 	LLMEngineIdentifier          string                 = constants.ModelLabelEngine
 	PDRoleSetIdentifier          string                 = pd.RoleSetLabel
 	PDRoleIdentifier             string                 = pd.RoleLabel
-	PDRolePrefill                string                 = "prefill"
-	PDRoleDecode                 string                 = "decode"
+	PDRolePrefill                string                 = pd.RolePrefill
+	PDRoleDecode                 string                 = pd.RoleDecode
 	PDRoleEncode                 string                 = encode.Role
 	RoleReplicaIndex             string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
 	PodGroupIndex                string                 = pd.PodGroupIndexLabel

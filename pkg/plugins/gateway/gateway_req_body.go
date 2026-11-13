@@ -199,6 +199,12 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		if errRes = s.enforceReplicaInflight(ctx, model, routingCtx); errRes != nil {
 			return errRes, model, stream, term
 		}
+		// The request is now certain to reach the picked pod, so it may be that pod's
+		// half-open probe. The filter only admitted the pod as a candidate; claiming
+		// there would have spent the probe on every candidate the router passed over.
+		if routingCtx.HasRouted() {
+			s.podBlacklist.ClaimProbe(routingCtx.TargetPod())
+		}
 		headers = buildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routingAlgorithm),
 			HeaderTargetPod, targetPodIP,

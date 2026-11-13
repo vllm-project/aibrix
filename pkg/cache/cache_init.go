@@ -170,6 +170,13 @@ type Store struct {
 	// List of registered request trackers
 	requestTrackers []RequestTracker
 
+	// List of registered pod lifecycle listeners (see PodLifecycleListener).
+	podLifecycleListeners []PodLifecycleListener
+
+	// podQuarantine, when set, names pods whose scrape and series are paused
+	// (see PodQuarantineChecker). Read by the metrics loops, set at startup.
+	podQuarantine atomic.Pointer[PodQuarantineChecker]
+
 	// gatewaySnapshotCache holds the last published snapshot of all gateway pod entries from
 	// Redis, keyed by Redis key → fields. Swapped atomically by initGatewaySnapshotSync; Load()
 	// returns map[string]map[string]string, the map the tick reads anyway, so storing it costs
