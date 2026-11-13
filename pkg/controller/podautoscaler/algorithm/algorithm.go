@@ -102,11 +102,11 @@ func applyConstraints(replicas int32, context scalingctx.ScalingContext) int32 {
 // plain math.Ceil would ask for 13 pods instead of 12.
 const podCountEpsilon = 1e-9
 
-// ceilPodCount rounds a desired pod count up to a whole pod, treating a value
+// CeilPodCount rounds a desired pod count up to a whole pod, treating a value
 // within podCountEpsilon of an integer as that integer. A count in
 // (0, podCountEpsilon] therefore rounds to 0 pods, not 1; that is far below any
 // real demand.
-func ceilPodCount(pods float64) float64 {
+func CeilPodCount(pods float64) float64 {
 	return math.Ceil(pods - podCountEpsilon)
 }
 
