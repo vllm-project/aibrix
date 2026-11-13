@@ -193,6 +193,29 @@ type RoutingContext struct {
 	// request, through AdmitTarget, before the router returned its target. The gateway's
 	// post-routing check (enforceReplicaInflight) must then not admit the request a second time.
 	ReplicaInflightChecked bool
+	// ReplicaInflightReserved tells request tracking to skip its local running-requests
+	// increment: the admission check (cache.Store.AdmitPodRunningRequest) already claimed
+	// this request's slot on the target pod's local counter before its Redis round trip,
+	// so that a concurrent admission's Redis-unavailable fallback could not admit a second
+	// request past the cap while neither request's increment had landed. Consumers that
+	// also increment the local counter (addPodStats) must check this first and skip their
+	// own increment, or the pod's count would be inflated by one extra, never-matched +1
+	// per admitted request. Set together with ReplicaInflightAdmitted whenever admission
+	// admitted the request; a request that failed open (pod missing from the cache) holds
+	// no reservation and leaves it false, so tracking behaves exactly as it did before.
+	// Stamped by the cache, which owns reservation bookkeeping -- do not set it by hand
+	// except to simulate a completed admission in tests.
+	ReplicaInflightReserved bool
+	// ReplicaInflightReservedGen is the statsGeneration of the cache pod object on which
+	// ReplicaInflightReserved's slot was claimed. addPodStats uses it to detect a
+	// delete/re-add flap between admission and tracking: if the request ends up being
+	// tracked under a different generation (resumed-generation re-adds recreate the
+	// counter from the deleted pod's snapshot, which already carries the reservation, so
+	// there the reservation and the skip stay in sync; fresh-generation objects never
+	// saw the claim), skipping would leave the new counter permanently one short of
+	// reality, so such a request is tracked with a normal increment instead.
+	// 0 means no reservation was claimed on any generation-identified object.
+	ReplicaInflightReservedGen int64
 
 	// targetAdmitter is the gateway's replica-inflight admission, installed for routers that
 	// start work on a request's behalf before returning its target. See AdmitTarget.
@@ -481,6 +504,12 @@ func (r *RoutingContext) CanAddStats() bool {
 	return atomic.CompareAndSwapInt32(&r.statsUpdated, statusInitial, statusAdded)
 }
 
+// StatsAdded reports whether request tracking has already added this request's
+// realtime in-memory statistics (addPodStats has run or is running).
+func (r *RoutingContext) StatsAdded() bool {
+	return atomic.LoadInt32(&r.statsUpdated) != statusInitial
+}
+
 // WithStatsUpdate runs fn while holding the request's statistics lock, so a caller that
 // loses CanAddStats inside fn returns only after the winner's update has finished.
 func (r *RoutingContext) WithStatsUpdate(fn func()) {
@@ -608,6 +637,8 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	clear(r.trustedPolicyAttributes)
 	r.ReplicaInflightAdmitted = false
 	r.ReplicaInflightChecked = false
+	r.ReplicaInflightReserved = false
+	r.ReplicaInflightReservedGen = 0
 	r.targetAdmitter = nil
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)

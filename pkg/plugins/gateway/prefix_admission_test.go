@@ -59,7 +59,7 @@ func Test_selectTargetPod_PrefixCacheAdmitsTargetInsideRoute(t *testing.T) {
 	pods := []*v1.Pod{podA, podB}
 	mockCache := &MockCache{}
 	mockCache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{"ns/a": 0, "ns/b": 0}, nil)
-	mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1)).Return(false, false, nil).Once()
+	mockCache.On("AdmitPodRunningRequest", "b", "ns", int64(1), mock.Anything).Return(false, false, nil).Once()
 
 	indexed := false
 	router := routeFunc(func(ctx *types.RoutingContext, _ types.PodList) (string, error) {
@@ -97,7 +97,7 @@ func Test_selectTargetPod_SingleCandidateAdmitsBeforePostRouteUpdate(t *testing.
 			pod := podWithReplicaInflight("a", 1)
 			mockCache := &MockCache{}
 			mockCache.On("GetPodsRunningRequests", mock.Anything).Return(map[string]int64{"ns/a": 0}, nil)
-			mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1)).Return(tc.admit, tc.admit, nil).Once()
+			mockCache.On("AdmitPodRunningRequest", "a", "ns", int64(1), mock.Anything).Return(tc.admit, tc.admit, nil).Once()
 			router := &postRouteFunc{routeFunc: func(*types.RoutingContext, types.PodList) (string, error) {
 				t.Fatal("the single-candidate fast path must not call Route")
 				return "", nil

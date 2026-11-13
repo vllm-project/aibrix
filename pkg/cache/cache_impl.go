@@ -215,27 +215,114 @@ func (c *Store) GetMetricRecordByPodModel(podName, podNamespace, modelName, metr
 // requests can all observe the same pre-increment count and all be admitted regardless of
 // how tight limit is.
 //
+// Before the Redis round trip, this gateway reserves one slot on the pod's local
+// running-requests counter (reserveLocalRunningSlot). The claim is the admission decision
+// under a Redis outage -- where admitRunningRequest falls back to localRunning alone and
+// cannot see the script's increment (if any) that a concurrent caller committed -- and it
+// also raises a pending admission above everything else the fallback could miss: until
+// request tracking (addPodStats) runs for this request, the Redis sum and the local
+// counter both lag the slots this gateway has committed, and the claim is what closes
+// that window. Concurrency-safe by construction: the CAS either claims the free slot or
+// reports the pod at cap. An admission the script itself later rejects (another gateway
+// took the last slot between claim and script) rolls the claim back.
+//
+// On success, ReplicaInflightReserved and ReplicaInflightReservedGen are stamped on
+// routingCtx (the gateway additionally records counted as ReplicaInflightAdmitted): they
+// tell addPodStats to skip its local increment, which reserveLocalRunningSlot's claim on
+// the same counter makes redundant, so completion's decrement still pairs exactly once --
+// same shape as ReplicaInflightAdmitted's Redis-increment skip. Passing a nil routingCtx
+// (direct-cache callers) skips the stamping and the reservation alike: only the stamped
+// context drives an unclaim (donePodStats's pairing, and ReleasePodRunningRequest is for
+// a request that reached routing), so a claim on behalf of an untracked request would
+// strand one slot on the pod's counter per admit. The nil-ctx path keeps the
+// pre-reservation behavior: it reads the live local count as the script's floor and
+// decides from the script, or from that count alone when the round trip fails.
+//
 // admitted=false, err=nil means the pod is over its cap right now; err is non-nil only
 // when the pod itself isn't in the cache (mirrors GetPodRunningRequests), which the
-// caller should treat as fail-open, same as GetPodRunningRequests's error case.
-// For an admitted request, counted=true means request tracking skips its Redis increment and
-// keeps the completion decrement: the admit script's +1 was confirmed or may have been applied
-// (see admitRunningRequest). counted=false leaves the increment to normal request tracking.
-func (c *Store) AdmitPodRunningRequest(podName, podNamespace string, limit int64) (admitted, counted bool, err error) {
+// caller should treat as fail-open, same as GetPodRunningRequests's error case. For an
+// admitted request, counted=true means request tracking skips its Redis increment and
+// keeps the completion decrement: the admit script's +1 was confirmed or may have been
+// applied (see admitRunningRequest). counted=false leaves the increment to normal request
+// tracking.
+func (c *Store) AdmitPodRunningRequest(podName, podNamespace string, limit int64, routingCtx *types.RoutingContext) (admitted, counted bool, err error) {
 	key := utils.GeneratePodKey(podNamespace, podName)
 	metaPod, ok := c.metaPods.Load(key)
 	if !ok {
 		return false, false, fmt.Errorf("key does not exist in the cache: %s", key)
 	}
+	// localRunning doubles as the script's local floor (ARGV[5], pre-reservation value --
+	// this request's own claim must not turn up twice: the script applies its own +1 for
+	// it), and the claim itself is the fallback's admission decision, so its outcome gates
+	// whether the Redis round trip is even worth starting. A nil routingCtx (direct-cache
+	// callers) or a request that has already added its stats (queue router / SLO path)
+	// skips the claim: their admission decision reads the live local count and nothing will
+	// unclaim a second slot, so they keep the pre-reservation behavior.
 	localRunning := int64(atomic.LoadInt32(&metaPod.runningRequests))
+	claimed := false
+	if routingCtx != nil && !routingCtx.StatsAdded() {
+		mu := c.podStatsLockFor(key)
+		mu.Lock()
+		curMeta, ok := c.metaPods.Load(key)
+		if !ok {
+			mu.Unlock()
+			return false, false, fmt.Errorf("key does not exist in the cache: %s", key)
+		}
+		metaPod = curMeta
+		localRunning, claimed = reserveLocalRunningSlot(metaPod, limit)
+		mu.Unlock()
+		if !claimed {
+			return false, false, nil
+		}
+	}
 	admitted, counted, _ = c.admitRunningRequest(podNamespace, podName, limit, localRunning)
+	if !admitted {
+		// The sum was already at (or over) the limit when the script ran: no slot for this
+		// request, undo the claim. counted is false here by construction (a rejection
+		// never applied the script's +1), so no Redis-side unwind pairs with it.
+		if claimed {
+			mu := c.podStatsLockFor(key)
+			mu.Lock()
+			if curMeta, ok := c.metaPods.Load(key); ok && sameStatsGeneration(metaPod.statsGeneration, curMeta.statsGeneration) {
+				releaseLocalRunningSlot(curMeta)
+			} else if snap, ok := c.recentlyDeletedPods.Load(key); ok &&
+				sameStatsGeneration(metaPod.statsGeneration, snap.statsGeneration) {
+				releaseLocalRunningCounter(&snap.runningRequests)
+			}
+			mu.Unlock()
+		}
+		return false, false, nil
+	}
+	if claimed {
+		routingCtx.ReplicaInflightReserved = true
+		routingCtx.ReplicaInflightReservedGen = metaPod.statsGeneration
+	}
 	return admitted, counted, nil
 }
 
 // ReleasePodRunningRequest removes the +1 a counted AdmitPodRunningRequest applied, for a
 // request that never reached request tracking, whose completion decrement would have.
-func (c *Store) ReleasePodRunningRequest(podName, podNamespace string) {
-	c.decrPodRunningRequests(podNamespace, podName)
+// If a local admission slot was claimed on the pod's running-requests counter (reservedGen != 0),
+// that reservation is unclaimed as well.
+func (c *Store) ReleasePodRunningRequest(podName, podNamespace string, counted bool, reservedGen int64) {
+	if reservedGen != 0 {
+		key := utils.GeneratePodKey(podNamespace, podName)
+		mu := c.podStatsLockFor(key)
+		mu.Lock()
+		if metaPod, ok := c.metaPods.Load(key); ok {
+			if sameStatsGeneration(reservedGen, metaPod.statsGeneration) {
+				releaseLocalRunningSlot(metaPod)
+			}
+		} else if snap, ok := c.recentlyDeletedPods.Load(key); ok {
+			if sameStatsGeneration(reservedGen, snap.statsGeneration) {
+				releaseLocalRunningCounter(&snap.runningRequests)
+			}
+		}
+		mu.Unlock()
+	}
+	if counted {
+		c.decrPodRunningRequests(podNamespace, podName)
+	}
 }
 
 // realtimeRunningRequests is the live cross-gateway running-request total for one pod.

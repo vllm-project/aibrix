@@ -193,24 +193,36 @@ type MetricCache interface {
 	// from this call onward -- so concurrent callers cannot all observe the same
 	// pre-increment count and all be admitted past limit, unlike a plain
 	// GetPodRunningRequests read followed by a later, separate increment.
+	// Before the Redis round trip it also claims one slot on the pod's local
+	// running-requests counter, which both is the fallback's admission decision under a
+	// Redis outage and makes this gateway's just-committed admission visible
+	// synchronously to concurrent callers admitting against the same pod. On success it
+	// stamps the reservation's tracking state on routingCtx for addPodStats to respect.
 	// Parameters:
 	//   podName: Name of the pod
 	//   podNamespace: Namespace of the pod
 	//   limit: Maximum concurrent live requests to admit
+	//   routingCtx: This request's routing context, to stamp the reservation on; nil, or
+	//   a ctx whose stats were already added, makes no reservation and decides from the
+	//   live local count, as before
 	// Returns:
 	//   admitted: Whether this request was admitted (Redis or local fallback)
 	//   counted: Whether this request's own increment is, or may be, already applied
 	//   error: Error information if the pod is not found
-	AdmitPodRunningRequest(podName, podNamespace string, limit int64) (admitted, counted bool, err error)
+	AdmitPodRunningRequest(podName, podNamespace string, limit int64, routingCtx *types.RoutingContext) (admitted, counted bool, err error)
 
 	// ReleasePodRunningRequest undoes a counted AdmitPodRunningRequest (counted=true) for a
 	// request that ends before request tracking takes it over (AddRequestCount), for
 	// example because work the router started after admitting it failed. Request tracking's
 	// completion decrement never runs for such a request, so its +1 would otherwise stay.
+	// The admission's local running-requests slot claim (see reserveLocalRunningSlot in
+	// cache_running_requests.go) is unclaimed here too, for the same reason.
 	// Parameters:
 	//   podName: Name of the pod
 	//   podNamespace: Namespace of the pod
-	ReleasePodRunningRequest(podName, podNamespace string)
+	//   counted: Whether AdmitPodRunningRequest reported counted=true (decrements Redis)
+	//   reservedGen: statsGeneration for the admission reservation, or 0 if not claimed
+	ReleasePodRunningRequest(podName, podNamespace string, counted bool, reservedGen int64)
 
 	// GetPodRunningRequests is the single-pod live cross-gateway running-request count
 	// (Redis, falling back to this gateway's local atomic). Use GetPodsRunningRequests
