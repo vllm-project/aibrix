@@ -502,11 +502,13 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 			initTraceCache(opts.RedisClient, stopCh)
 		}
 
-		// Initialize gateway snapshot sync if Redis is available
+		// Initialize gateway snapshot sync if Redis is available.
+		// Start the remote running reader first so snapshot sync sees whether it is active and
+		// skips its SCAN + cross-gateway read phase.
 		if opts.RedisClient != nil {
+			initRemoteRunningReader(store, stopCh)
 			klog.Info("Initializing gateway snapshot sync")
 			initGatewaySnapshotSync(store, stopCh)
-			initRemoteRunningReader(store, stopCh)
 		}
 
 		// Initialize the real-time running-requests liveness heartbeat if Redis is

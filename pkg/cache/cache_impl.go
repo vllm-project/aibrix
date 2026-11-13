@@ -332,7 +332,8 @@ func (c *Store) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
 		}
 		count := int64(atomic.LoadInt32(&metaPod.runningRequests))
 		if reader != nil {
-			count += reader.freshCount(podKey, now)
+			remote, _ := reader.freshCount(podKey, now)
+			count += remote
 		} else if snap != nil {
 			count += snap.freshCount(podKey, now)
 		}

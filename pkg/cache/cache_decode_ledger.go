@@ -392,18 +392,20 @@ func (c *Store) readPodsSharedRoutingState(pods []*v1.Pod, withLedger bool) (map
 		if err != nil {
 			continue
 		}
-		if reader != nil {
-			// The other gateways' share of the total below, before this gateway's own field is
-			// overlaid; an empty hash is a read of 0.
-			reader.publish(podKeys[i], sumOtherLiveRunning(fields, live), readAt)
-		}
 		if len(fields) == 0 {
+			if reader != nil {
+				// An empty hash is a read of 0 for the other gateways' share.
+				reader.publish(podKeys[i], 0, readAt)
+			}
 			continue
 		}
 		// See overlaySelfRunningRequests: this gateway's own field must never be
 		// trusted stale just because it already exists in the hash.
 		c.overlaySelfRunningRequests(valid[i].Namespace, valid[i].Name, fields, live)
-		total, excluded := sumLiveFields(fields, live)
+		total, otherPositive, excluded := sumLiveFieldsAndOther(fields, live)
+		if reader != nil {
+			reader.publish(podKeys[i], otherPositive, readAt)
+		}
 		if len(excluded) > 0 {
 			c.enqueueDeadRunningRequestsPrune(redisKeys[i], excluded)
 		}

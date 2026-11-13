@@ -42,6 +42,9 @@ const (
 	// defaultRemoteRunningReaderInterval is the middle of the 500 ms-2 s range that cost the
 	// same in the candidate simulation of #3442.
 	defaultRemoteRunningReaderInterval = time.Second
+	// minRemoteRunningReaderInterval clamps mistyped small durations (e.g., "1ms" for "1s")
+	// so sweeps cannot degenerate into a tight continuous HGETALL loop.
+	minRemoteRunningReaderInterval = 100 * time.Millisecond
 	// remoteRunningReaderMaxAgeIntervals: a pod's remote count is used while it was read within
 	// this many intervals, so two consecutive failed sweeps (a GC pause, a Redis blip) are
 	// tolerated before the pod falls back to this gateway's own count.
@@ -87,6 +90,11 @@ func initRemoteRunningReader(store *Store, stopCh <-chan struct{}) {
 		return
 	}
 	interval := utils.LoadEnvDuration(remoteRunningReaderIntervalEnv, defaultRemoteRunningReaderInterval)
+	if interval < minRemoteRunningReaderInterval {
+		klog.Warningf("%s=%s is below minimum %s; clamping to %s",
+			remoteRunningReaderIntervalEnv, interval, minRemoteRunningReaderInterval, minRemoteRunningReaderInterval)
+		interval = minRemoteRunningReaderInterval
+	}
 	r := newRemoteRunningReader(store, interval)
 	store.remoteRunningReader.Store(r)
 	klog.InfoS("Initializing remote running reader (experimental)", "interval", interval, "maxAge", r.maxAge)
@@ -161,7 +169,7 @@ func (r *remoteRunningReader) sweep() {
 		pipe := client.Pipeline()
 		cmds := make([]*redis.MapStringStringCmd, len(chunk))
 		for i, podKey := range chunk {
-			cmds[i] = pipe.HGetAll(ctx, runningRequestsKeyPrefix+":"+podKey)
+			cmds[i] = pipe.HGetAll(ctx, runningRequestsKeyForPodKey(podKey))
 		}
 		// As in readGatewaySnapshots: a Redis error reply for one key does not make its
 		// batch-mates unread, but a timeout or dropped connection says nothing about any of them.
@@ -185,6 +193,9 @@ func (r *remoteRunningReader) sweep() {
 // read time is already there: a slow sweep batch must not overwrite a fresher request-path read,
 // nor the other way round. Equal read times keep the entry already published.
 func (r *remoteRunningReader) publish(podKey string, count int64, readAt time.Time) {
+	if old, loaded := r.entries.Load(podKey); loaded && !old.readAt.Before(readAt) {
+		return
+	}
 	e := &remoteRunningEntry{count: count, readAt: readAt}
 	for {
 		old, loaded := r.entries.LoadOrStore(podKey, e)
@@ -197,15 +208,20 @@ func (r *remoteRunningReader) publish(podKey string, count int64, readAt time.Ti
 	}
 }
 
-// freshCount is podKey's remote count while it was read within maxAge before now, and 0 after
-// that, so the pod falls back to this gateway's own count. A count exactly maxAge old still
-// counts, as in remoteRunningSnapshot.freshCount.
-func (r *remoteRunningReader) freshCount(podKey string, now time.Time) int64 {
+// freshCount returns podKey's remote count and whether an entry has been read for podKey yet.
+// Once read, the remote count is returned while within maxAge before now (exactly maxAge old
+// still counts, as in remoteRunningSnapshot.freshCount), and 0 after that so the pod falls back
+// to this gateway's own count. Callers emitting gauges (syncRunningRequestsGlobally) skip
+// unread pods, matching #3325.
+func (r *remoteRunningReader) freshCount(podKey string, now time.Time) (int64, bool) {
 	e, ok := r.entries.Load(podKey)
-	if !ok || now.Sub(e.readAt) > r.maxAge {
-		return 0
+	if !ok {
+		return 0, false
 	}
-	return e.count
+	if now.Sub(e.readAt) > r.maxAge {
+		return 0, true
+	}
+	return e.count, true
 }
 
 // pruneDeletedPods drops the entries of pods this gateway no longer knows.
