@@ -811,13 +811,20 @@ func (c *Store) updateThroughputToksPerS(pod *Pod, model, metric string, metricV
 // for the local instance). Remote counts last actually read more than remoteRunningMaxAge ago
 // are left out, as GetPodsRunningRequestsApprox leaves them out (#3441): a sync that keeps
 // missing a pod's keys would otherwise report counts frozen when it first missed them.
+// With the remote running reader on, the other gateways' counts come from it instead, and a pod
+// it has not read within its age limit reports this gateway's own count.
 func (c *Store) syncRunningRequestsGlobally(pod *Pod) {
-	snap := c.gatewayRemoteRunning.Load()
-	if snap == nil {
-		return
-	}
 	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
-	remoteRunning := float64(snap.freshCount(podKey, c.snapshotNow()))
+	var remoteRunning float64
+	if reader := c.remoteRunningReader.Load(); reader != nil {
+		remoteRunning = float64(reader.freshCount(podKey, c.snapshotNow()))
+	} else {
+		snap := c.gatewayRemoteRunning.Load()
+		if snap == nil {
+			return
+		}
+		remoteRunning = float64(snap.freshCount(podKey, c.snapshotNow()))
+	}
 
 	localRunning := float64(atomic.LoadInt32(&pod.runningRequests))
 	total := localRunning + remoteRunning

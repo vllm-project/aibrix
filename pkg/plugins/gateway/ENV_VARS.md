@@ -238,9 +238,27 @@ read (`fresh`), carried within the limit (`carried`), or carried past it (`stale
 `aibrix_gateway_snapshot_oldest_read_age_seconds` is the age of the least recently read one. A
 steady `carried` or `stale` share means ticks run out of time before reading every key.
 
+**Experimental, off by default (#3442):** with `AIBRIX_REMOTE_RUNNING_READER_ENABLED=true`, the
+estimates and the `realtime_num_requests_running` gauge take the other gateways' counts from the
+`aibrix:rrq:*` hashes instead of from the gateway snapshot. A background reader sweeps every pod
+this gateway knows once per `AIBRIX_REMOTE_RUNNING_READER_INTERVAL` (one `ZRANGEBYSCORE` for the
+live gateways, then one `HGETALL` per pod in pipelines of 100), and every exact read on the
+request path refreshes the pods it read at no extra Redis command. A pod's count is used while it
+was read within 3 × the interval (3 s at the default) and falls back to this gateway's own count
+after that. A sweep that runs out of time keeps what it read, and the next one starts with the
+pods it did not reach. Other gateways' fields are counted while their heartbeat is within the 3 s
+liveness window that the exact reads use, so a crashed gateway's counts stop being added within
+about 3 s plus one interval. The gateway snapshot sync keeps running with the reader on.
+`aibrix_gateway_remote_running_reader_pods{state}` counts the known pods at the end of each sweep
+by whether their count was read within the limit (`fresh`), longer ago (`stale`, not used) or
+never (`unread`), and `aibrix_gateway_remote_running_reader_oldest_read_age_seconds` is the age of
+the least recently read one.
+
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
 | `AIBRIX_ROUTING_CANDIDATE_K` | int | `0` | Number of ready pods the gate and the router consider: the best half of a 4K-pod scout (plus prefix holders) on the strategies' in-memory estimates, and half drawn at random. `0` disables the candidate stage. | [algorithms/candidates.go](algorithms/candidates.go) |
+| `AIBRIX_REMOTE_RUNNING_READER_ENABLED` | bool | `false` | Experimental. Read the other gateways' running counts for the candidate stage's estimates and the `realtime_num_requests_running` gauge from `aibrix:rrq:*` instead of the gateway snapshot. Needs Redis. Read at gateway startup. | [cache_remote_running_reader.go](../../cache/cache_remote_running_reader.go) |
+| `AIBRIX_REMOTE_RUNNING_READER_INTERVAL` | duration | `1s` | Experimental. How often the reader sweeps every known pod when `AIBRIX_REMOTE_RUNNING_READER_ENABLED=true`; also each sweep's time budget. A pod's count is used for 3 × this interval after it was read. Read at gateway startup. | [cache_remote_running_reader.go](../../cache/cache_remote_running_reader.go) |
 
 It can also be set per request by the model config profile (`routingConfig.candidate.k`); see [Model Config Profile Overrides](#model-config-profile-overrides).
 

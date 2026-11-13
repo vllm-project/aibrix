@@ -362,6 +362,13 @@ func (c *Store) readPodsSharedRoutingState(pods []*v1.Pod, withLedger bool) (map
 			ledgerCmds[i] = pipe.HGetAll(ctx, decodeLedgerKey(podKeys[i]))
 		}
 	}
+	// With the remote running reader on, this read also refreshes its entries, stamped with the
+	// read's start like a sweep batch, from the fields read below.
+	reader := c.remoteRunningReader.Load()
+	var readAt time.Time
+	if reader != nil {
+		readAt = c.snapshotNow()
+	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		klog.V(4).ErrorS(err, "failed to batch read running-requests counters", "pod_count", len(valid))
 		return nil, nil
@@ -382,7 +389,15 @@ func (c *Store) readPodsSharedRoutingState(pods []*v1.Pod, withLedger bool) (map
 	counts := make(map[string]int64, len(valid))
 	for i, cmd := range hashCmds {
 		fields, err := cmd.Result()
-		if err != nil || len(fields) == 0 {
+		if err != nil {
+			continue
+		}
+		if reader != nil {
+			// The other gateways' share of the total below, before this gateway's own field is
+			// overlaid; an empty hash is a read of 0.
+			reader.publish(podKeys[i], sumOtherLiveRunning(fields, live), readAt)
+		}
+		if len(fields) == 0 {
 			continue
 		}
 		// See overlaySelfRunningRequests: this gateway's own field must never be

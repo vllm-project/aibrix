@@ -186,6 +186,11 @@ type Store struct {
 	// GetPodsRunningRequestsApprox and syncRunningRequestsGlobally judge their age by. Nil means
 	// time.Now; tests set it, before starting the sync, to age counts without sleeping.
 	snapshotClock func() time.Time
+	// remoteRunningReader, when set, is where GetPodsRunningRequestsApprox and
+	// syncRunningRequestsGlobally take the other gateways' counts from instead of
+	// gatewayRemoteRunning, and what readPodsSharedRoutingState refreshes. Set once at startup,
+	// and only when AIBRIX_REMOTE_RUNNING_READER_ENABLED is true (#3442).
+	remoteRunningReader atomic.Pointer[remoteRunningReader]
 	// gatewaySnapshotErrorLog rate-limits the Error-level log of failing snapshot ticks. Nil
 	// means initGatewaySnapshotSync creates one; tests set it to capture lines.
 	gatewaySnapshotErrorLog *rateLimitedErrorLog
@@ -501,6 +506,7 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		if opts.RedisClient != nil {
 			klog.Info("Initializing gateway snapshot sync")
 			initGatewaySnapshotSync(store, stopCh)
+			initRemoteRunningReader(store, stopCh)
 		}
 
 		// Initialize the real-time running-requests liveness heartbeat if Redis is

@@ -315,7 +315,9 @@ func (c *Store) runningRequestsWithLocalFallback(pods []*v1.Pod, live map[string
 // GetPodsRunningRequestsApprox implements ApproxRunningRequestsProvider: the local atomic plus
 // the other gateways' counts from the latest snapshot, with no Redis call. Each other gateway's
 // count is added only while its snapshot was read within remoteRunningMaxAge (see freshCount).
+// With the remote running reader on, the other gateways' counts come from it instead.
 func (c *Store) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
+	reader := c.remoteRunningReader.Load()
 	snap := c.gatewayRemoteRunning.Load()
 	now := c.snapshotNow()
 	result := make(map[string]int64, len(pods))
@@ -329,7 +331,9 @@ func (c *Store) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
 			continue
 		}
 		count := int64(atomic.LoadInt32(&metaPod.runningRequests))
-		if snap != nil {
+		if reader != nil {
+			count += reader.freshCount(podKey, now)
+		} else if snap != nil {
 			count += snap.freshCount(podKey, now)
 		}
 		result[podKey] = count
