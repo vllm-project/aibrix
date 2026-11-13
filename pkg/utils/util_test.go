@@ -106,6 +106,42 @@ func TestShuffle(t *testing.T) {
 	})
 }
 
+func TestLoadEnvFloat(t *testing.T) {
+	const key = "AIBRIX_TEST_LOAD_ENV_FLOAT"
+	const defaultValue = 2.0
+
+	cases := []struct {
+		name     string
+		raw      string
+		set      bool
+		expected float64
+	}{
+		{name: "unset", set: false, expected: defaultValue},
+		{name: "empty", raw: "", set: true, expected: defaultValue},
+		{name: "NaN", raw: "NaN", set: true, expected: defaultValue},
+		{name: "Inf", raw: "Inf", set: true, expected: defaultValue},
+		{name: "+Inf", raw: "+Inf", set: true, expected: defaultValue},
+		{name: "-Inf", raw: "-Inf", set: true, expected: defaultValue},
+		{name: "zero", raw: "0", set: true, expected: defaultValue},
+		{name: "negative", raw: "-1", set: true, expected: defaultValue},
+		{name: "unparseable", raw: "abc", set: true, expected: defaultValue},
+		{name: "overflow", raw: "1e309", set: true, expected: defaultValue},
+		{name: "positive fraction", raw: "0.125", set: true, expected: 0.125},
+		{name: "greater than one", raw: "2.5", set: true, expected: 2.5},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Register cleanup before unsetting so the original environment is restored.
+			t.Setenv(key, tc.raw)
+			if !tc.set {
+				require.NoError(t, os.Unsetenv(key))
+			}
+			assert.Equal(t, tc.expected, LoadEnvFloat(key, defaultValue))
+		})
+	}
+}
+
 func TestLoadEnvDuration(t *testing.T) {
 	const key = "AIBRIX_TEST_LOAD_ENV_DURATION"
 	const def = 10 * time.Second
