@@ -286,11 +286,14 @@ msgstr ""
 #: ../../source/production/model-deployment.rst:193
 msgid ""
 "``requestsPerSecondPerReplica`` sets a **per-replica** RPS cap instead of"
-" a fixed model-wide one. The gateway multiplies it by the model's current"
-" routable replica count to derive the effective aggregate limit, so the "
-"cap scales automatically as the model is scaled up or down. When set, it "
-"takes precedence over ``requestsPerSecond`` on the same profile."
+" a fixed total for the profile. The gateway multiplies it by the model's "
+"current routable replica count to derive the effective aggregate limit, "
+"so the cap scales automatically as the model is scaled up or down. When "
+"set, it takes precedence over ``requestsPerSecond`` on the same profile."
 msgstr ""
+"``requestsPerSecondPerReplica`` 设置的是 **按副本** 的 RPS 上限，而不是该 profile "
+"的固定总量。网关将其乘以模型当前可路由的副本数，得到实际生效的总限制，因此上限会随模型扩缩容自动调整。设置后，它优先于同一 profile 上的 "
+"``requestsPerSecond``。"
 
 #: ../../source/production/model-deployment.rst:195
 msgid ""

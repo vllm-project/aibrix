@@ -438,7 +438,7 @@ Profile fields
    * - ``routingStrategy``
      - The routing algorithm for this profile (e.g. ``least-latency``, ``prefix-cache``, ``pd``). See the Routing Strategies section above for the full list.
    * - ``requestsPerSecondPerReplica``
-     - Per-replica RPS cap for this profile. The gateway multiplies it by the model's current routable replica count to derive the effective model-wide limit, so the cap scales automatically as replicas are added or removed. Supports fractional values (e.g. ``0.5`` for one request every two seconds). Requests that exceed the limit are rejected with HTTP 429. Also sets the profile's routing strategy to ``least-request``, so traffic is balanced evenly enough for the per-replica figure to hold in aggregate. Omit or set to ``0`` for no limit. It has no environment-variable form. See :doc:`Production Model Deployments <../../production/model-deployment>` for details.
+     - Per-replica RPS cap for this profile. The gateway multiplies it by the model's current routable replica count to derive the profile's effective limit, so the cap scales automatically as replicas are added or removed. Supports fractional values (e.g. ``0.5`` for one request every two seconds). Requests that exceed the limit are rejected with HTTP 429. Also sets the profile's routing strategy to ``least-request``, so traffic is balanced evenly enough for the per-replica figure to hold in aggregate. Omit or set to ``0`` for no limit. It has no environment-variable form. See :doc:`Production Model Deployments <../../production/model-deployment>` for details.
    * - ``requestsInflight``
      - Per-replica concurrency cap: the maximum number of in-flight requests allowed on a single replica. It is enforced per pod, so it needs no replica-count scaling. When every routable replica is at the cap, the request is rejected with HTTP 429 and the ``x-error-model-replica-inflight-exceeded`` header. Also sets the profile's routing strategy to ``least-request``. Independent of ``requestsPerSecondPerReplica``, and the two can be set together. Omit or set to ``0`` for no limit. It has no environment-variable form. See :doc:`Production Model Deployments <../../production/model-deployment>` for details.
    * - ``ttftThresholdS``
@@ -1189,7 +1189,7 @@ Routing and Error Debugging Headers
    * - ``x-error-pd-decode``
      - Marks a gateway-generated error because the decode watchdog fired after a successful prefill. See :doc:`pd-disaggregation`.
    * - ``x-error-model-rps-exceeded``
-     - The request exceeded the model's ``requestsPerSecondPerReplica`` cap. See :doc:`../../production/model-deployment`.
+     - The request exceeded the profile's ``requestsPerSecond`` or ``requestsPerSecondPerReplica`` cap. See :doc:`../../production/model-deployment`.
    * - ``x-error-incr-model-rps``
      - Error encountered while incrementing the model RPS counter.
    * - ``x-error-model-replica-inflight-exceeded``
