@@ -53,6 +53,9 @@ import (
 // instead of being handed a real half-open request every few minutes. See
 // PodBlacklist.RecordProbeResult.
 func (b *PodBlacklist) StartProbeSweep(src PodSource, stopCh <-chan struct{}) {
+	if !Enabled {
+		return
+	}
 	ticker := time.NewTicker(podProbeSweepInterval)
 	go func() {
 		defer func() {

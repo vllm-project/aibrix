@@ -93,6 +93,9 @@ type QueueDepthFunc func(pod *v1.Pod, model string) float64
 // pod_blacklist.go, there is no backoff or half-open probing here
 // -- the periodic recheck IS the recovery signal.
 func (b *PodBlacklist) StartLoadOutlierSweep(src PodSource, depth QueueDepthFunc, onRecovered func(*v1.Pod), stopCh <-chan struct{}) {
+	if !Enabled {
+		return
+	}
 	ticker := time.NewTicker(loadOutlierCheckInterval)
 	go func() {
 		defer func() {

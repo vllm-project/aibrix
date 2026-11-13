@@ -37,6 +37,12 @@ import (
 )
 
 const (
+	// EnvPodBlacklistEnabled is the master switch for the whole pod blacklist:
+	// failure breaker, probe sweep, load-outlier sweep, flaky re-add and
+	// quarantine. Unset, empty, false or 0 leaves every path a no-op so a
+	// healthy fleet matches pre-blacklist routing.
+	EnvPodBlacklistEnabled = "AIBRIX_POD_BLACKLIST_ENABLED"
+
 	// FailureThreshold failures within podBlacklistFailureWindow
 	// trips the breaker (subject to confirmHealthy). The window does not
 	// reset on an interleaved success — see isFailureStatus / RecordResult.
@@ -90,6 +96,13 @@ const (
 	// blacklisting for an hour.
 	podProbeTimeout = 5 * time.Second
 )
+
+// Enabled is the process-wide master switch for the pod blacklist. It is loaded
+// once from AIBRIX_POD_BLACKLIST_ENABLED (default false). When false, every
+// exported method is a no-op and the background sweeps never start, so routing
+// matches the pre-blacklist behaviour. Tests that exercise the feature set it
+// to true (see TestMain).
+var Enabled = utils.LoadEnvBool(EnvPodBlacklistEnabled, false)
 
 // StatusStreamClosed is passed to RecordResult when Envoy's ext_proc
 // stream closed before any ResponseHeaders arrived and the client was still
@@ -542,7 +555,7 @@ func backoffDuration(tripCount int) time.Duration {
 // podHealthCheckTimeout; state is re-checked afterwards so a concurrent
 // resolution is not overwritten.
 func (b *PodBlacklist) RecordResult(pod *v1.Pod, addr string, statusCode int, model ...string) {
-	if pod == nil {
+	if !Enabled || pod == nil {
 		return
 	}
 	key := PodKey(pod)
@@ -642,7 +655,7 @@ func (b *PodBlacklist) RecordResult(pod *v1.Pod, addr string, statusCode int, mo
 // would spend it on every candidate the router then passes over, and keep the
 // pod out of routing until probeDeadline.
 func (b *PodBlacklist) Allow(pod *v1.Pod) bool {
-	if pod == nil {
+	if !Enabled || pod == nil {
 		return true
 	}
 	key := PodKey(pod)
@@ -693,7 +706,7 @@ func (b *PodBlacklist) Allow(pod *v1.Pod) bool {
 // the pod again from the claim on, and whichever of those requests reports
 // first settles the breaker.
 func (b *PodBlacklist) ClaimProbe(pod *v1.Pod) (claimed bool) {
-	if pod == nil {
+	if !Enabled || pod == nil {
 		return false
 	}
 	v, ok := b.pods.Load(PodKey(pod))
@@ -733,7 +746,7 @@ func (b *PodBlacklist) ClaimProbe(pod *v1.Pod) (claimed bool) {
 // candidate: only an open pod before its deadline, or a load-excluded one,
 // is reported.
 func (b *PodBlacklist) IsBlacklisted(pod *v1.Pod) bool {
-	if pod == nil {
+	if !Enabled || pod == nil {
 		return false
 	}
 	key := PodKey(pod)
@@ -762,7 +775,7 @@ func (b *PodBlacklist) IsBlacklisted(pod *v1.Pod) bool {
 // backoff, a load exclusion or a flaky re-add exclusion is not quarantine.
 // It satisfies cache.PodQuarantineChecker.
 func (b *PodBlacklist) IsQuarantined(pod *v1.Pod) bool {
-	if pod == nil {
+	if !Enabled || pod == nil {
 		return false
 	}
 	v, ok := b.pods.Load(PodKey(pod))
@@ -840,7 +853,7 @@ func (b *PodBlacklist) BlacklistReasons(pods []*v1.Pod) []string {
 // reference and stays a plain, dependency-free breaker so it's cheap to construct
 // in tests.
 func (b *PodBlacklist) SetLoadExcluded(pod *v1.Pod, excluded bool) (changed bool) {
-	if pod == nil {
+	if !Enabled || pod == nil {
 		return false
 	}
 	key := PodKey(pod)
@@ -894,7 +907,7 @@ func (b *PodBlacklist) SetLoadExcluded(pod *v1.Pod, excluded bool) (changed bool
 // this only extends openUntil if the new deadline is later, and never disturbs an
 // in-progress half-open probe.
 func (b *PodBlacklist) OnPodFlakyReAdd(pod *v1.Pod) {
-	if pod == nil {
+	if !Enabled || pod == nil {
 		return
 	}
 	key := PodKey(pod)
@@ -958,7 +971,7 @@ func (b *PodBlacklist) OnPodFlakyReAdd(pod *v1.Pod) {
 //   - A healthy probe starts both counts over. It never lifts a blacklisting:
 //     that is left to the deadline.
 func (b *PodBlacklist) RecordProbeResult(pod *v1.Pod, result ProbeResult, failure string) (blacklisted bool) {
-	if pod == nil {
+	if !Enabled || pod == nil {
 		return false
 	}
 	key := PodKey(pod)
@@ -1066,7 +1079,7 @@ func (b *PodBlacklist) FailureCount(pod *v1.Pod) int {
 // all it returns pods itself, so the common case costs no lookup and no allocation;
 // callers must not modify the result in place.
 func (b *PodBlacklist) FilterBlacklisted(pods []*v1.Pod) []*v1.Pod {
-	if b.tracked.Load() == 0 {
+	if !Enabled || b.tracked.Load() == 0 {
 		return pods
 	}
 	out := make([]*v1.Pod, 0, len(pods))
@@ -1081,6 +1094,9 @@ func (b *PodBlacklist) FilterBlacklisted(pods []*v1.Pod) []*v1.Pod {
 // StartSweep starts the goroutine that prunes breaker entries that have not
 // been touched for podBlacklistEntryTTL.
 func (b *PodBlacklist) StartSweep(stopCh <-chan struct{}) {
+	if !Enabled {
+		return
+	}
 	ticker := time.NewTicker(podBlacklistSweepInterval)
 	go func() {
 		defer func() {
