@@ -117,6 +117,16 @@ func engineQueueMock(mc *MockCache, pod *v1.Pod, models []string, running, waiti
 	}
 }
 
+// The recovery callback is invoked from the sweep with a pod it was handed. A nil one logs
+// nothing and reads nothing from the cache (the mock has no expectations, so any call fails).
+func TestLogPodUnBlacklisted_NilPodIsHarmless(t *testing.T) {
+	server := &Server{cache: new(MockCache)}
+
+	assert.NotPanics(t, func() { server.logPodUnBlacklisted(nil) })
+	assert.Zero(t, server.getGlobalRunningRequestsByPod(nil))
+	assert.Zero(t, server.podEngineTotal(nil))
+}
+
 // The un-blacklist line has to carry the same pod/addr/model fields as the
 // "blacklisted" line it closes, so the two can be joined on a pod and model, and
 // the gateway-wide and engine totals the pod was judged on.

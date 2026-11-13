@@ -1121,13 +1121,17 @@ func (b *PodBlacklist) sweepStale(now time.Time) {
 		if state.openUntil.After(last) {
 			last = state.openUntil
 		}
-		stale := now.Sub(last) > podBlacklistEntryTTL
-		state.mu.Unlock()
-		if stale {
-			if _, deleted := b.pods.LoadAndDelete(key); deleted {
-				b.tracked.Add(-1)
-			}
+		// The delete happens under state.mu: a writer that refreshes the entry takes the
+		// same lock, so it either lands before this check and keeps the entry alive, or
+		// after the delete. CompareAndDelete removes only the state that was just
+		// checked, never a fresh one created under the same key in the meantime. A
+		// writer that had already loaded the pointer and is still waiting for the lock
+		// updates a state that is no longer stored; an entry that has been idle for the
+		// whole TTL holds nothing worth keeping, and the next event recreates it.
+		if now.Sub(last) > podBlacklistEntryTTL && b.pods.CompareAndDelete(key, value) {
+			b.tracked.Add(-1)
 		}
+		state.mu.Unlock()
 		return true
 	})
 }

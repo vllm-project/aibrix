@@ -235,6 +235,77 @@ func TestPodBlacklist_FilterBlacklisted(t *testing.T) {
 	assert.Equal(t, []*v1.Pod{other}, filtered)
 }
 
+// sweepStale checks an entry's age and deletes it under the entry's own lock, and deletes
+// only the state it checked. A fresh entry stored under the same key while the sweep was
+// waiting for the old one's lock is not its to remove.
+func TestPodBlacklist_SweepStaleNeverDeletesAReplacementEntry(t *testing.T) {
+	var b PodBlacklist
+	key := PodKey(blacklistTestPod("1"))
+	stale := &podFailureState{} // never updated, so far past the TTL
+	b.pods.Store(key, stale)
+	b.tracked.Add(1)
+
+	stale.mu.Lock() // the sweep finds the entry and then waits here
+	swept := make(chan struct{})
+	go func() {
+		defer close(swept)
+		b.sweepStale(time.Now())
+	}()
+	time.Sleep(100 * time.Millisecond) // let the sweep reach the lock
+	fresh := &podFailureState{lastUpdated: time.Now()}
+	b.pods.Store(key, fresh)
+	stale.mu.Unlock()
+	<-swept
+
+	got, ok := b.pods.Load(key)
+	require.True(t, ok, "the replacement entry must survive the sweep")
+	assert.Same(t, fresh, got)
+	assert.Equal(t, int64(1), b.tracked.Load())
+}
+
+// Entries are created by requests and pruned by the sweep on different goroutines. However
+// they interleave, tracked must equal the number of stored entries: FilterBlacklisted skips
+// every lookup when it reads zero, so an undercount would let a tripped pod through.
+func TestPodBlacklist_TrackedStaysExactWhileSweepRacesWithWriters(t *testing.T) {
+	var b PodBlacklist
+	pods := make([]*v1.Pod, 8)
+	for i := range pods {
+		pods[i] = blacklistTestPod(strconv.Itoa(i + 1))
+	}
+	everythingIsStale := time.Now().Add(2 * podBlacklistEntryTTL)
+
+	var writers sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		writers.Add(1)
+		go func(w int) {
+			defer writers.Done()
+			for i := 0; i < 500; i++ {
+				b.SetLoadExcluded(pods[(w+i)%len(pods)], i%2 == 0)
+			}
+		}(w)
+	}
+	stop := make(chan struct{})
+	sweeper := make(chan struct{})
+	go func() {
+		defer close(sweeper)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				b.sweepStale(everythingIsStale)
+			}
+		}
+	}()
+	writers.Wait()
+	close(stop)
+	<-sweeper
+
+	var stored int64
+	b.pods.Range(func(_, _ any) bool { stored++; return true })
+	assert.Equal(t, stored, b.tracked.Load())
+}
+
 // While nothing is tracked, which is a healthy fleet, FilterBlacklisted is on every
 // request's path and must cost neither a lookup nor an allocation per candidate.
 func TestPodBlacklist_FilterBlacklisted_NothingTrackedAllocatesNothing(t *testing.T) {

@@ -117,6 +117,9 @@ func (b *PodBlacklist) sweepPodProbes(src PodSource) {
 // isPDRolePod reports whether pod is the prefill or decode leg of a disaggregated
 // (PD) deployment, by the same role label the PD router groups pods by.
 func isPDRolePod(pod *v1.Pod) bool {
+	if pod == nil {
+		return false
+	}
 	switch pod.Labels[pd.RoleLabel] {
 	case pd.RolePrefill, pd.RoleDecode:
 		return true

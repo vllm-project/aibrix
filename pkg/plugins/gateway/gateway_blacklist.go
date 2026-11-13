@@ -87,6 +87,9 @@ func (s *Server) OnPodFlakyReAdd(pod *v1.Pod) {
 // pod. It is for background surfaces such as the un-blacklist log line, not the
 // request path.
 func (s *Server) getGlobalRunningRequestsByPod(pod *v1.Pod) float64 {
+	if pod == nil {
+		return 0
+	}
 	count, err := s.cache.GetPodRunningRequests(pod.Name, pod.Namespace)
 	if err != nil {
 		return 0
@@ -98,6 +101,9 @@ func (s *Server) getGlobalRunningRequestsByPod(pod *v1.Pod) float64 {
 // num_requests_waiting) for pod, summed over every model the pod serves. A missing
 // metric reads as 0.
 func (s *Server) podEngineTotal(pod *v1.Pod) float64 {
+	if pod == nil {
+		return 0
+	}
 	models, err := s.cache.ListModelsByPod(pod.Name, pod.Namespace)
 	if err != nil {
 		return 0
@@ -114,6 +120,9 @@ func (s *Server) podEngineTotal(pod *v1.Pod) float64 {
 // depth, so an operator investigating why a pod tripped and recovered doesn't have to
 // separately correlate them.
 func (s *Server) logPodUnBlacklisted(pod *v1.Pod) {
+	if pod == nil {
+		return
+	}
 	const msg = "pod un-blacklisted: running+waiting request count has converged back to normal range"
 	// Same pod/addr/model fields as the matching "blacklisted" line, so the two can be joined.
 	fields := blacklist.PodLogFields(pod)
