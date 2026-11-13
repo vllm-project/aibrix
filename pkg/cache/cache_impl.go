@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"sort"
 	"sync/atomic"
-	"time"
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -314,12 +313,11 @@ func (c *Store) runningRequestsWithLocalFallback(pods []*v1.Pod, live map[string
 }
 
 // GetPodsRunningRequestsApprox implements ApproxRunningRequestsProvider: the local atomic plus
-// the other gateways' counts from the latest snapshot, with no Redis call.
+// the other gateways' counts from the latest snapshot, with no Redis call. Each other gateway's
+// count is added only while its snapshot was read within remoteRunningMaxAge (see freshCount).
 func (c *Store) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
-	var remote map[string]int64
-	if snap := c.gatewayRemoteRunning.Load(); snap != nil && time.Since(snap.readStart) <= remoteRunningMaxAge {
-		remote = snap.counts
-	}
+	snap := c.gatewayRemoteRunning.Load()
+	now := c.snapshotNow()
 	result := make(map[string]int64, len(pods))
 	for _, pod := range pods {
 		if pod == nil {
@@ -330,7 +328,11 @@ func (c *Store) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
 		if !ok {
 			continue
 		}
-		result[podKey] = int64(atomic.LoadInt32(&metaPod.runningRequests)) + remote[podKey]
+		count := int64(atomic.LoadInt32(&metaPod.runningRequests))
+		if snap != nil {
+			count += snap.freshCount(podKey, now)
+		}
+		result[podKey] = count
 	}
 	return result
 }
