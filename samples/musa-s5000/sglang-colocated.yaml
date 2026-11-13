@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: musa-sglang-qwen3-8b
+  namespace: default
+  labels:
+    app: musa-sglang-qwen3-8b
+    model.aibrix.ai/name: qwen3-8b
+    model.aibrix.ai/port: "8000"
+    model.aibrix.ai/metric-port: "8000"
+    model.aibrix.ai/engine: sglang
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: musa-sglang-qwen3-8b
+  template:
+    metadata:
+      labels:
+        app: musa-sglang-qwen3-8b
+        model.aibrix.ai/name: qwen3-8b
+        model.aibrix.ai/port: "8000"
+        model.aibrix.ai/metric-port: "8000"
+        model.aibrix.ai/engine: sglang
+    spec:
+      runtimeClassName: mthreads
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: model-server
+          image: sglang:main-musa
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "-m", "sglang.launch_server"]
+          args:
+            - --model-path=Qwen/Qwen3-8B
+            - --served-model-name=qwen3-8b
+            - --host=0.0.0.0
+            - --port=8000
+            - --tp=1
+            - --mem-fraction-static=0.8
+            - --enable-metrics
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: musa-hf-token
+                  key: HF_TOKEN
+                  optional: true
+          ports:
+            - name: model-server
+              containerPort: 8000
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "8"
+              memory: 32Gi
+              mthreads.com/gpu: "1"
+            limits:
+              cpu: "16"
+              memory: 64Gi
+              mthreads.com/gpu: "1"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: model-server
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 180
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: model-server
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 6
+          securityContext:
+            capabilities:
+              add: [IPC_LOCK]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: shared-memory
+              mountPath: /dev/shm
+      volumes:
+        - name: shared-memory
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
