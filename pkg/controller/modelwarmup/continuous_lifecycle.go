@@ -449,10 +449,7 @@ func continuousNoTargetsDiagnostic(missing map[string]string) (string, string) {
 		}
 	}
 	if len(missing) > 0 {
-		return "TargetsUnavailableOrUnauthorized", fmt.Sprintf(
-			"no authorized targets resolved; verify Node names, %s labels, and %s=%s",
-			ResourcePoolLabelKey, WarmupEnabledLabelKey, WarmupEnabledLabelValue,
-		)
+		return "TargetsUnavailableOrUnauthorized", noAuthorizedTargetsMessage
 	}
 	return "NoTargetsResolved", "waiting for target nodes to match the configured selectors"
 }
