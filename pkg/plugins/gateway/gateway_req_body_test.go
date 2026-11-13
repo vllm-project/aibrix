@@ -1138,25 +1138,28 @@ func TestHandleRequestBody_ModelRPSCountedPerProfile(t *testing.T) {
 			requestCountTracker: map[string]int{},
 		}, mr
 	}
+	// send sends one request with the config-profile header set to profile.
+	send := func(s *Server, profile, requestID string) *extProcPb.ProcessingResponse {
+		routingCtx := types.NewRoutingContext(context.Background(), "", "", "", requestID, "")
+		routingCtx.ReqPath = PathChatCompletions
+		routingCtx.ReqConfigProfile = profile
+		req := &extProcPb.ProcessingRequest{
+			Request: &extProcPb.ProcessingRequest_RequestBody{
+				RequestBody: &extProcPb.HttpBody{
+					Body:        []byte(`{"model":"test-model","messages":[{"role":"user","content":"test"}]}`),
+					EndOfStream: true,
+				},
+			},
+		}
+		resp, _, _, _ := s.HandleRequestBody(context.Background(), routingCtx, requestID, req, utils.User{})
+		return resp
+	}
 	// admitted sends n requests with the config-profile header set to profile and
 	// returns how many were admitted.
 	admitted := func(s *Server, profile string, n int) int {
 		ok := 0
 		for i := 0; i < n; i++ {
-			requestID := fmt.Sprintf("%s-%d", profile, i)
-			routingCtx := types.NewRoutingContext(context.Background(), "", "", "", requestID, "")
-			routingCtx.ReqPath = PathChatCompletions
-			routingCtx.ReqConfigProfile = profile
-			req := &extProcPb.ProcessingRequest{
-				Request: &extProcPb.ProcessingRequest_RequestBody{
-					RequestBody: &extProcPb.HttpBody{
-						Body:        []byte(`{"model":"test-model","messages":[{"role":"user","content":"test"}]}`),
-						EndOfStream: true,
-					},
-				},
-			}
-			resp, _, _, _ := s.HandleRequestBody(context.Background(), routingCtx, requestID, req, utils.User{})
-			if resp.GetImmediateResponse() == nil {
+			if send(s, profile, fmt.Sprintf("%s-%d", profile, i)).GetImmediateResponse() == nil {
 				ok++
 			}
 		}
@@ -1192,7 +1195,9 @@ func TestHandleRequestBody_ModelRPSCountedPerProfile(t *testing.T) {
 		s, mr := newServer(t, `{"defaultProfile":"default","profiles":{"default":{"requestsPerSecond":100},`+
 			`"batch":{"requestsPerSecond":20,"routingConfig":{"promptTokensGte":1}}}}`)
 		assert.Equal(t, 20, admitted(s, "auto", 20))
-		assert.Equal(t, 0, admitted(s, "auto", 1))
+		if refused := send(s, "auto", "auto-20").GetImmediateResponse(); assert.NotNil(t, refused) {
+			assert.Contains(t, refused.GetBody(), "model: test-model, profile: batch has exceeded RPS: 20")
+		}
 		assert.Equal(t, []string{"aibrix_model:test-model_MODEL_RPS_CURRENT:batch:1000:counter"}, mr.Keys())
 	})
 }
