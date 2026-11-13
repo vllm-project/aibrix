@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND: str = ""
     AIBRIX_KV_CACHE_OL_L2_CACHE_NAMESPACE: str = "aibrix"
     AIBRIX_KV_CACHE_OL_L2_CACHE_COMPRESSION: str = ""
+    AIBRIX_KV_CACHE_OL_MEMORY_CAPACITY_BYTES: int = 10 * 1024**3
     AIBRIX_KV_CACHE_OL_L2_CACHE_OP_BATCH: int = 32
     AIBRIX_KV_CACHE_OL_L2_CACHE_PER_TOKEN_TIMEOUT_MS: int = 20
     # L2 cache placement policy. Defaults to "SIMPLE".
@@ -238,6 +239,9 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     ),
     "AIBRIX_KV_CACHE_OL_L2_CACHE_COMPRESSION": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_L2_CACHE_COMPRESSION", "").strip().upper()
+    ),
+    "AIBRIX_KV_CACHE_OL_MEMORY_CAPACITY_BYTES": lambda: int(
+        os.getenv("AIBRIX_KV_CACHE_OL_MEMORY_CAPACITY_BYTES", str(10 * 1024**3))
     ),
     "AIBRIX_KV_CACHE_OL_L2_CACHE_OP_BATCH": lambda: int(
         os.getenv("AIBRIX_KV_CACHE_OL_L2_CACHE_OP_BATCH", "32")
