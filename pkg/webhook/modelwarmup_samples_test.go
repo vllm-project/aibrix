@@ -32,6 +32,7 @@ func TestModelWarmupSamples(t *testing.T) {
 	samplePaths := []string{
 		"samples/modelwarmup/modelwarmup.yaml",
 		"samples/modelwarmup/model-download.yaml",
+		"samples/modelwarmup/model-cache.yaml",
 		"samples/modelwarmup/node-precheck.yaml",
 		"samples/modelwarmup/gpu-precheck.yaml",
 		"samples/modelwarmup/vllm-qwen-warmup.yaml",
