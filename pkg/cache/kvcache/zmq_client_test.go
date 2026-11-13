@@ -671,8 +671,10 @@ func TestZMQClientStartAppliesReplayedBatches(t *testing.T) {
 			client, handler := newReplayTestClient(tt.pubPort, tt.routerPort, time.Second)
 			defer client.Stop()
 
-			// Start requests the replay from seq 0 and returns when it is done
+			// Start returns without waiting for the replay from seq 0, which
+			// runs in the background
 			require.NoError(t, client.Start())
+			client.replayWg.Wait()
 
 			assert.Equal(t, []int64{100, 200, 300}, storedHashes(handler))
 			assert.Equal(t, int64(2), client.GetLastSequence())
