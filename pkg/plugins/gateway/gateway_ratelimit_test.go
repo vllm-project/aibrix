@@ -468,6 +468,19 @@ func TestEnforceModelRPS(t *testing.T) {
 		assert.Nil(t, resp)
 		rl.AssertExpectations(t)
 	})
+
+	t.Run("profile name selects the profile's counter", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT:batch", int64(1)).Return(int64(3), nil).Once()
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT:batch", int64(-1)).Return(int64(2), nil).Once()
+
+		s := &Server{modelRateLimiter: rl}
+		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{ProfileName: "batch", RequestsPerSecond: 2}}
+
+		resp := s.enforceModelRPS(context.Background(), "llama", rc)
+		assert.NotNil(t, resp)
+		rl.AssertExpectations(t)
+	})
 }
 
 // TestEnforceModelRPS_RejectDoesNotPostponeNextWindow is the end-to-end regression test for
@@ -521,6 +534,17 @@ func TestDecrModelRPS(t *testing.T) {
 
 		s := &Server{modelRateLimiter: rl}
 		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{RequestsPerSecond: 2}}
+
+		s.decrModelRPS(context.Background(), "llama", rc)
+		rl.AssertExpectations(t)
+	})
+
+	t.Run("decrement uses the profile's counter", func(t *testing.T) {
+		rl := &mockRateLimiter{}
+		rl.On("Incr", mock.Anything, "llama_MODEL_RPS_CURRENT:batch", int64(-1)).Return(int64(0), nil).Once()
+
+		s := &Server{modelRateLimiter: rl}
+		rc := &types.RoutingContext{ConfigProfile: &types.ResolvedConfigProfile{ProfileName: "batch", RequestsPerSecond: 2}}
 
 		s.decrModelRPS(context.Background(), "llama", rc)
 		rl.AssertExpectations(t)
