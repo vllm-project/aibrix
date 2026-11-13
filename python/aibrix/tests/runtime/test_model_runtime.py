@@ -2427,7 +2427,8 @@ def test_initial_kv_registry_requires_identity(
     assert registry.load()[0]["kv_initial_capacity_bytes"] == persisted
     assert recovered._launcher.launched == []
     if saved is not None and current is not None and saved != current:
-        assert model["phase"] == "restarting"
+        # A sleeping engine that is gone is failed rather than restarted.
+        assert model["phase"] == ("failed" if phase == "sleeping" else "restarting")
     else:
         assert model["phase"] == phase
         assert recovered._models[inst.model_name].kv_initial_capacity_unavailable
@@ -2724,6 +2725,7 @@ def dormant_kv(initial_kv, monkeypatch, request):
     )
     monkeypatch.setattr(runtime_module, "process_group_is_alive", lambda pid: False)
     monkeypatch.setattr(runtime_module, "instance_ready", lambda inst: state.ready)
+    monkeypatch.setattr(runtime_module, "engine_ready", lambda port: state.ready)
     monkeypatch.setattr(api, "get_model_runtime", lambda: state.runtime)
 
     def adopt():
@@ -2897,6 +2899,11 @@ def test_dormant_kv_refresh(dormant_kv, trigger, phase, observation):
     s.alive, s.identity = True, "start"
     assert s.snapshot().kv_initial_capacity_bytes == expected
     if observation == "dead" and trigger == "supervisor":
+        if phase == "sleeping":
+            # A sleeping engine that is gone is failed rather than restarted.
+            assert s.snapshot().phase == "failed"
+            assert s.launcher.launched == []
+            return
         s.alive = False
         s.now += timedelta(seconds=2)
         s.runtime.supervise_once()
