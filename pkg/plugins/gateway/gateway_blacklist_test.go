@@ -751,6 +751,29 @@ func TestNewServerWithOptions_WiresBlacklistIntoTheCache(t *testing.T) {
 	assert.True(t, spy.checker.IsQuarantined(pod), "the checker is the server's own blacklist")
 }
 
+// With AIBRIX_POD_BLACKLIST_ENABLED off (production default), NewServerWithOptions
+// must not start sweeps or register with the cache, so a healthy fleet matches
+// pre-blacklist behaviour.
+func TestNewServerWithOptions_SkipsBlacklistWiringWhenDisabled(t *testing.T) {
+	prev := blacklist.Enabled
+	blacklist.Enabled = false
+	t.Cleanup(func() { blacklist.Enabled = prev })
+
+	spy := &wiringSpyCache{Store: cache.NewForTest()}
+	server := NewServerWithOptions(nil, nil, nil, ServerOptions{Cache: spy})
+	t.Cleanup(server.Shutdown)
+
+	assert.Empty(t, spy.listeners, "flaky re-add listener is not registered while disabled")
+	assert.Nil(t, spy.checker, "quarantine checker is not registered while disabled")
+
+	pod := blacklistTestPod("1")
+	for i := 0; i < blacklist.FailureThreshold+1; i++ {
+		server.podBlacklist.RecordResult(pod, pod.Status.PodIP+":8000", 400)
+	}
+	assert.False(t, server.podBlacklist.IsBlacklisted(pod))
+	assert.Equal(t, []*v1.Pod{pod}, server.podBlacklist.FilterBlacklisted([]*v1.Pod{pod}))
+}
+
 // A server that shuts down takes itself out of the cache again, so a cache that outlives it
 // neither keeps it alive nor keeps asking its blacklist about pods.
 func TestShutdown_UnregistersFromTheCache(t *testing.T) {

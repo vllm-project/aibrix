@@ -37,7 +37,14 @@ import (
 
 // startBlacklistSweeps starts the blacklist's background goroutines: pruning
 // of untouched entries, the load-outlier sweep and the proactive probe sweep.
+// When AIBRIX_POD_BLACKLIST_ENABLED is off (the default) it returns without
+// starting any work, so a healthy fleet pays nothing for the feature.
 func (s *Server) startBlacklistSweeps(stopCh <-chan struct{}) {
+	if !blacklist.Enabled {
+		klog.InfoS("pod blacklist disabled; set AIBRIX_POD_BLACKLIST_ENABLED=true to enable",
+			"env", blacklist.EnvPodBlacklistEnabled)
+		return
+	}
 	s.podBlacklist.StartSweep(stopCh)
 	s.podBlacklist.StartLoadOutlierSweep(s.cache, s.podEngineQueueDepth, s.logPodUnBlacklisted, stopCh)
 	s.podBlacklist.StartProbeSweep(s.cache, stopCh)
@@ -45,8 +52,11 @@ func (s *Server) startBlacklistSweeps(stopCh <-chan struct{}) {
 
 // registerPodLifecycle lets the cache tell the blacklist when a pod flaps back in.
 // A cache that reports no pod lifecycle events simply does not implement
-// cache.PodLifecycleRegistry.
+// cache.PodLifecycleRegistry. Skipped while the master switch is off.
 func (s *Server) registerPodLifecycle() {
+	if !blacklist.Enabled {
+		return
+	}
 	if registry, ok := s.cache.(cache.PodLifecycleRegistry); ok {
 		registry.RegisterPodLifecycleListener(s)
 	}
@@ -55,8 +65,12 @@ func (s *Server) registerPodLifecycle() {
 // registerPodQuarantine lets the cache pause its metrics scrape and per-pod
 // series for a pod the blacklist has quarantined (found dead by the probe
 // sweep and blacklisted for an hour). A cache that does not do per-pod
-// scraping simply does not implement cache.PodQuarantineRegistry.
+// scraping simply does not implement cache.PodQuarantineRegistry. Skipped
+// while the master switch is off.
 func (s *Server) registerPodQuarantine() {
+	if !blacklist.Enabled {
+		return
+	}
 	if registry, ok := s.cache.(cache.PodQuarantineRegistry); ok {
 		registry.SetPodQuarantineChecker(&s.podBlacklist)
 	}

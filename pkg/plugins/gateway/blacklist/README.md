@@ -4,9 +4,13 @@ How the gateway stops routing to a pod that is broken, overloaded, or no longer 
 
 This directory is the Go package `blacklist`: the per-pod circuit breaker, its background sweeps and their tests. It does not depend on `gateway.Server`.
 
+## Enablement
+
+The feature is **off by default**. Set `AIBRIX_POD_BLACKLIST_ENABLED=true` (or `1`) on the gateway to turn on the whole stack together: failure breaker, background probe sweep, load-outlier sweep, flaky re-add and quarantine. There are no per-policy toggles. Unset, empty, `false` or `0` leaves every exported method a no-op and starts no background work, so healthy-fleet routing matches the pre-blacklist path. See [ENV_VARS.md](../ENV_VARS.md#pod-blacklist-blacklist).
+
 | File | Role |
 |---|---|
-| [`pod_blacklist.go`](pod_blacklist.go) | `PodBlacklist`, the per-pod circuit breaker: `Allow`, `ClaimProbe`, `RecordResult`, `confirmHealthy`, `RecordProbeResult`, `OnPodFlakyReAdd` |
+| [`pod_blacklist.go`](pod_blacklist.go) | `PodBlacklist`, the per-pod circuit breaker: `Allow`, `ClaimProbe`, `RecordResult`, `confirmHealthy`, `RecordProbeResult`, `OnPodFlakyReAdd`; master switch `AIBRIX_POD_BLACKLIST_ENABLED` |
 | [`pod_probe_sweep.go`](pod_probe_sweep.go) | The background probe sweep (every 300 s): `StartProbeSweep` |
 | [`pod_load_blacklist.go`](pod_load_blacklist.go) | The load-outlier sweep (every 30 s): `StartLoadOutlierSweep` |
 | [`../gateway_blacklist.go`](../gateway_blacklist.go) | Server-side glue: starts the sweeps, supplies the cache and queue-depth function, forwards `OnPodFlakyReAdd`, registers the blacklist as the cache's quarantine checker, reports early-closed ext_proc streams (`recordUncompletedRecv`) |
@@ -14,7 +18,7 @@ This directory is the Go package `blacklist`: the per-pod circuit breaker, its b
 | [`../gateway.go`](../gateway.go) | Reports the `-1`/`-2` sentinels when the ext_proc stream closes early (`handleRecvError`), and filters candidates (`FilterBlacklisted`) |
 | [`../gateway_req_body.go`](../gateway_req_body.go) | Claims the half-open probe for the pod the router picked (`claimBlacklistProbe`, which calls `ClaimProbe`) |
 
-**Wiring.** `Server` holds a `blacklist.PodBlacklist` by value; the zero value is ready to use. The sweeps take two small interfaces instead of `Server`: `blacklist.PodSource` (`ListModels`, `ListPodsByModel`; `cache.Cache` satisfies it) and `blacklist.QueueDepthFunc`. The probe hooks `HealthCheck`, `ModelCheck` and `IdentityCheck` are exported fields, so tests can replace the HTTP probes. `NewServerWithOptions` registers the server with the cache as its pod lifecycle listener and the blacklist as its quarantine checker, each only if the cache implements the matching optional registry (`cache.PodLifecycleRegistry`, `cache.PodQuarantineRegistry`). `Shutdown` undoes both. The quarantine checker is a single slot shared by everything using the cache, so `Shutdown` clears it only if it still holds this server's blacklist.
+**Wiring.** `Server` holds a `blacklist.PodBlacklist` by value; the zero value is ready to use. The sweeps take two small interfaces instead of `Server`: `blacklist.PodSource` (`ListModels`, `ListPodsByModel`; `cache.Cache` satisfies it) and `blacklist.QueueDepthFunc`. The probe hooks `HealthCheck`, `ModelCheck` and `IdentityCheck` are exported fields, so tests can replace the HTTP probes. When `AIBRIX_POD_BLACKLIST_ENABLED` is on, `NewServerWithOptions` starts the sweeps and registers the server with the cache as its pod lifecycle listener and the blacklist as its quarantine checker, each only if the cache implements the matching optional registry (`cache.PodLifecycleRegistry`, `cache.PodQuarantineRegistry`). While the switch is off those steps are skipped. `Shutdown` undoes both. The quarantine checker is a single slot shared by everything using the cache, so `Shutdown` clears it only if it still holds this server's blacklist.
 
 ## The whole picture
 
@@ -232,9 +236,12 @@ flowchart TD
 | `loadOutlierCheckInterval` | 30 s | Load-outlier sweep period |
 | `loadOutlierStdDevThreshold` | 2.0 | Standard deviations above the peer mean |
 | `loadOutlierMinPods` | 3 | Fewest ready pods for a model to be scored |
-| `AIBRIX_LOAD_OUTLIER_MIN_GAP` (env) | 16 | Minimum absolute running+waiting gap over the peer mean (see [ENV_VARS.md](../ENV_VARS.md#pod-blacklist-blacklist)) |
+| `AIBRIX_POD_BLACKLIST_ENABLED` (env) | `false` | Master switch for the whole feature (see [Enablement](#enablement) and [ENV_VARS.md](../ENV_VARS.md#pod-blacklist-blacklist)) |
+| `AIBRIX_LOAD_OUTLIER_MIN_GAP` (env) | 16 | Minimum absolute running+waiting gap over the peer mean (see [ENV_VARS.md](../ENV_VARS.md#pod-blacklist-blacklist)); only used when the master switch is on |
 
 ## Operating it
+
+**Turn it on.** Set `AIBRIX_POD_BLACKLIST_ENABLED=true` on every gateway replica that should exclude broken or overloaded pods. Restart (or roll) the gateway so the process picks up the env var. Leave it unset or `false` for the pre-blacklist routing path.
 
 **See what is excluded.** There is no query endpoint; read the log lines below. State is per replica, so look at the log of the replica that served the request.
 

@@ -34,6 +34,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 func blacklistTestPod(name string) *v1.Pod {
@@ -72,6 +73,70 @@ func alwaysHealthy(string) bool   { return true }
 
 func alwaysModelGone(string, string) bool   { return false }
 func alwaysModelServed(string, string) bool { return true }
+
+// TestPodBlacklist_DisabledIsNoOp covers the production default: with the
+// master switch off, nothing records failures, excludes pods, starts sweeps
+// or claims probes, so routing matches the pre-blacklist path.
+func TestPodBlacklist_DisabledIsNoOp(t *testing.T) {
+	prev := Enabled
+	Enabled = false
+	t.Cleanup(func() { Enabled = prev })
+
+	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
+	pod := blacklistTestPod("1")
+	other := blacklistTestPod("2")
+	pods := []*v1.Pod{pod, other}
+
+	for i := 0; i < FailureThreshold+2; i++ {
+		b.RecordResult(pod, podAddr(pod), 400)
+	}
+	assert.False(t, b.IsBlacklisted(pod))
+	assert.Zero(t, b.FailureCount(pod))
+	assert.True(t, b.Allow(pod))
+	assert.Equal(t, pods, b.FilterBlacklisted(pods))
+	assert.Zero(t, testing.AllocsPerRun(100, func() { _ = b.FilterBlacklisted(pods) }))
+
+	assert.False(t, b.SetLoadExcluded(pod, true))
+	assert.False(t, b.IsBlacklisted(pod))
+
+	b.OnPodFlakyReAdd(pod)
+	assert.False(t, b.IsBlacklisted(pod))
+	assert.False(t, b.ClaimProbe(pod))
+
+	for i := 0; i < podProbeFailureIterations; i++ {
+		assert.False(t, b.RecordProbeResult(pod, ProbeDead, "GET /health failed"))
+	}
+	assert.False(t, b.IsQuarantined(pod))
+	assert.False(t, b.IsBlacklisted(pod))
+	assert.Zero(t, b.tracked.Load(), "disabled paths must not create breaker entries")
+
+	stop := make(chan struct{})
+	close(stop)
+	assert.NotPanics(t, func() {
+		b.StartSweep(stop)
+		b.StartLoadOutlierSweep(nil, nil, nil, stop)
+		b.StartProbeSweep(nil, stop)
+	})
+}
+
+// TestEnvPodBlacklistEnabled_DefaultsOff documents the LoadEnvBool contract
+// for the master switch: unset / empty / false / 0 all mean off.
+func TestEnvPodBlacklistEnabled_DefaultsOff(t *testing.T) {
+	t.Setenv(EnvPodBlacklistEnabled, "")
+	assert.False(t, utils.LoadEnvBool(EnvPodBlacklistEnabled, false))
+
+	t.Setenv(EnvPodBlacklistEnabled, "false")
+	assert.False(t, utils.LoadEnvBool(EnvPodBlacklistEnabled, false))
+
+	t.Setenv(EnvPodBlacklistEnabled, "0")
+	assert.False(t, utils.LoadEnvBool(EnvPodBlacklistEnabled, false))
+
+	t.Setenv(EnvPodBlacklistEnabled, "true")
+	assert.True(t, utils.LoadEnvBool(EnvPodBlacklistEnabled, false))
+
+	t.Setenv(EnvPodBlacklistEnabled, "1")
+	assert.True(t, utils.LoadEnvBool(EnvPodBlacklistEnabled, false))
+}
 
 func TestPodBlacklist_TripsAfterConsecutive400s(t *testing.T) {
 	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
