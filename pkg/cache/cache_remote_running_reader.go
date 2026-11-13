@@ -118,6 +118,7 @@ func (r *remoteRunningReader) sweep() {
 	keys := c.metaPods.Keys()
 	if len(keys) == 0 {
 		r.pruneDeletedPods()
+		r.recordFreshness(keys)
 		return
 	}
 	// metaPods has no stable order, so sort to make "start where the last sweep stopped" mean
@@ -180,14 +181,14 @@ func (r *remoteRunningReader) sweep() {
 	}
 }
 
-// publish stores podKey's remote count read at readAt, unless an entry from a later read is
-// already there: a slow sweep batch must not overwrite a fresher request-path read, nor the other
-// way round.
+// publish stores podKey's remote count read at readAt, unless an entry from the same or a later
+// read time is already there: a slow sweep batch must not overwrite a fresher request-path read,
+// nor the other way round. Equal read times keep the entry already published.
 func (r *remoteRunningReader) publish(podKey string, count int64, readAt time.Time) {
 	e := &remoteRunningEntry{count: count, readAt: readAt}
 	for {
 		old, loaded := r.entries.LoadOrStore(podKey, e)
-		if !loaded || old.readAt.After(readAt) {
+		if !loaded || !old.readAt.Before(readAt) {
 			return
 		}
 		if r.entries.CompareAndSwap(podKey, old, e) {
@@ -263,6 +264,9 @@ func (r *remoteRunningReader) recordFreshness(podKeys []string) {
 	var fresh, stale, unread int
 	var oldest time.Duration
 	for _, podKey := range podKeys {
+		if _, ok := r.store.metaPods.Load(podKey); !ok {
+			continue
+		}
 		e, ok := r.entries.Load(podKey)
 		if !ok {
 			unread++

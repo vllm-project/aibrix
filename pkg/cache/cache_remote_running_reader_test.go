@@ -440,6 +440,19 @@ func TestRemoteRunningReader_RequestPathRefreshesWithoutExtraCommands(t *testing
 	require.Equal(t, remoteRunningEntry{count: 7, readAt: readAt}, *e, "a failed read must publish nothing")
 }
 
+// Reads with the same start time have no ordering: retain the entry already published.
+func TestRemoteRunningReader_EqualReadTimeKeepsExistingEntry(t *testing.T) {
+	u := newReaderUnderTest(t)
+	podKey := utils.GeneratePodKey(testNamespace, testPodName)
+	readAt := u.clk.now()
+	u.reader.publish(podKey, 3, readAt)
+	u.reader.publish(podKey, 5, readAt)
+
+	e, ok := u.entry(testPodName)
+	require.True(t, ok)
+	require.Equal(t, remoteRunningEntry{count: 3, readAt: readAt}, *e)
+}
+
 // Newest read wins: a sweep batch that started before a request-path read must not overwrite
 // it when it finishes later, and the other way round.
 func TestRemoteRunningReader_NewestReadWins(t *testing.T) {
@@ -509,6 +522,74 @@ func TestRemoteRunningReader_PrunesDeletedPodsAndRecordsFreshness(t *testing.T) 
 	require.Equal(t, 1.0, testutil.ToFloat64(remoteRunningReaderPods.WithLabelValues(remoteRunningPodStale)))
 	require.Equal(t, 1.0, testutil.ToFloat64(remoteRunningReaderPods.WithLabelValues(remoteRunningPodUnread)))
 	require.InDelta(t, (time.Hour + 2*time.Second).Seconds(), testutil.ToFloat64(remoteRunningReaderOldestAge), 1e-6)
+}
+
+// A pod deleted after the sweep snapshots its keys must not appear in its freshness gauges,
+// whether or not that sweep's read succeeds.
+func TestRemoteRunningReader_SweepSkipsPodsDeletedDuringRead(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		readErr error
+		wantAge float64
+	}{
+		{name: "successful read"},
+		{name: "failed read", readErr: context.DeadlineExceeded, wantAge: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newReaderUnderTest(t)
+			addTestMetaPod(t, u.store, "kept")
+			addTestMetaPod(t, u.store, "deleted")
+			u.reader.sweep()
+			u.clk.advance(time.Second)
+			u.client.AddHook(&pipelineHook{before: func(_ context.Context, cmds []redis.Cmder) error {
+				if isSweepBatch(cmds) {
+					u.store.metaPods.Delete(utils.GeneratePodKey(testNamespace, "deleted"))
+					return tc.readErr
+				}
+				return nil
+			}})
+			u.reader.sweep()
+
+			_, ok := u.entry("deleted")
+			require.False(t, ok)
+			require.Equal(t, 1.0, testutil.ToFloat64(remoteRunningReaderPods.WithLabelValues(remoteRunningPodFresh)))
+			require.Equal(t, 0.0, testutil.ToFloat64(remoteRunningReaderPods.WithLabelValues(remoteRunningPodStale)))
+			require.Equal(t, 0.0, testutil.ToFloat64(remoteRunningReaderPods.WithLabelValues(remoteRunningPodUnread)))
+			require.Equal(t, tc.wantAge, testutil.ToFloat64(remoteRunningReaderOldestAge))
+		})
+	}
+}
+
+// Removing the last pods clears every freshness state and the oldest age without reading Redis.
+func TestRemoteRunningReader_EmptySweepClearsFreshness(t *testing.T) {
+	u := newReaderUnderTest(t)
+	for _, name := range []string{"fresh", "stale", "unread"} {
+		addTestMetaPod(t, u.store, name)
+	}
+	u.reader.publish(utils.GeneratePodKey(testNamespace, "fresh"), 1, u.clk.now())
+	u.reader.publish(utils.GeneratePodKey(testNamespace, "stale"), 1, u.clk.now().Add(-time.Hour))
+	u.client.AddHook(&pipelineHook{before: func(context.Context, []redis.Cmder) error {
+		return context.DeadlineExceeded
+	}})
+	u.reader.sweep()
+	for _, state := range []string{remoteRunningPodFresh, remoteRunningPodStale, remoteRunningPodUnread} {
+		require.Equal(t, 1.0, testutil.ToFloat64(remoteRunningReaderPods.WithLabelValues(state)))
+	}
+	require.Equal(t, time.Hour.Seconds(), testutil.ToFloat64(remoteRunningReaderOldestAge))
+
+	for _, podKey := range u.store.metaPods.Keys() {
+		u.store.metaPods.Delete(podKey)
+	}
+	counter := &commandCounter{}
+	u.client.AddHook(counter)
+	u.reader.sweep()
+
+	require.Zero(t, u.reader.entries.Len())
+	require.Empty(t, counter.snapshot(), "an empty sweep must not send Redis commands")
+	for _, state := range []string{remoteRunningPodFresh, remoteRunningPodStale, remoteRunningPodUnread} {
+		require.Equal(t, 0.0, testutil.ToFloat64(remoteRunningReaderPods.WithLabelValues(state)))
+	}
+	require.Equal(t, 0.0, testutil.ToFloat64(remoteRunningReaderOldestAge))
 }
 
 // The reader, the request path and the consumers run at once; run with -race.
