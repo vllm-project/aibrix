@@ -95,6 +95,18 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.Rou
 	if routerCtx != nil && videoJobResponseNeedsBuffering(routerCtx.ReqHeaders[methodKey], routerCtx.ReqPath) {
 		removeHeaders = []string{"content-length"}
 	}
+	if isProcessingError {
+		// Error normalization can change the body length. In Streamed mode these
+		// headers are already downstream when the final body chunk is processed.
+		removeHeaders = []string{"content-length"}
+		headers = append(headers, &configPb.HeaderValueOption{
+			Header: &configPb.HeaderValue{
+				Key:      "content-type",
+				RawValue: []byte("application/json"),
+			},
+			AppendAction: configPb.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+		})
+	}
 
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ResponseHeaders{

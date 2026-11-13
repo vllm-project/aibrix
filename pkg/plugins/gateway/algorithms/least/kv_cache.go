@@ -17,11 +17,12 @@ limitations under the License.
 package least
 
 import (
+	"time"
+
 	"github.com/vllm-project/aibrix/pkg/cache"
 	metrics "github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/routeutil"
 	"github.com/vllm-project/aibrix/pkg/types"
-	v1 "k8s.io/api/core/v1"
 	klog "k8s.io/klog/v2"
 )
 
@@ -35,7 +36,9 @@ const RouterLeastKvCache types.RoutingAlgorithm = "least-kv-cache"
 const RouterLeastGpuCache types.RoutingAlgorithm = "least-gpu-cache"
 
 type leastKvCacheRouter struct {
-	cache cache.Cache
+	cache          cache.Cache
+	now            func() time.Time
+	staleThreshold time.Duration
 }
 
 func NewLeastKvCacheRouter() (types.Router, error) {
@@ -62,21 +65,13 @@ func NewLeastKvCacheScorer(c cache.Cache) types.PodScorer {
 // newLeastKvCacheRouter builds a leastKvCacheRouter around an existing cache handle, so
 // construction stays in one place if this struct's fields change.
 func newLeastKvCacheRouter(c cache.Cache) leastKvCacheRouter {
-	return leastKvCacheRouter{cache: c}
+	return leastKvCacheRouter{cache: c, staleThreshold: cache.RoutingMetricStaleThreshold()}
 }
 
-// cpuCacheUsage returns the pod's CPU KV-cache usage, or 0 when the engine does not report
-// it. vLLM's V1 engine dropped cpu_cache_usage_perc along with KV swapping (it recomputes
-// preempted requests instead), so on V1 the metric is simply absent and GPU usage alone
-// describes the pod's KV pressure. Treating that as fatal would mark every pod unscored and
-// drop this router to its random fallback, which is worse than the load-aware choice this
-// router exists for.
-func cpuCacheUsage(c cache.Cache, pod *v1.Pod, model string) float64 {
-	cpuCache, err := c.GetMetricValueByPodModel(pod.Name, pod.Namespace, model, metrics.CPUCacheUsagePerc)
-	if err != nil {
-		return 0
-	}
-	return cpuCache.GetSimpleValue()
+// CandidateScores implements [types.CandidateScorer]. ScoreAll reads only scraped metrics held
+// in memory, so it already is the estimate.
+func (r leastKvCacheRouter) CandidateScores(ctx *types.RoutingContext, readyPodList types.PodList) ([]float64, []bool, error) {
+	return r.ScoreAll(ctx, readyPodList)
 }
 
 // ScoreAll computes the combined GPU and CPU cache usage percentage for all ready pods in a single batch operation.
@@ -85,14 +80,25 @@ func (r leastKvCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodList typ
 	pods := readyPodList.All()
 	scores := make([]float64, len(pods))
 	scored := make([]bool, len(pods))
+	now := time.Now()
+	if r.now != nil {
+		now = r.now()
+	}
+	threshold := r.staleThreshold
+	if threshold <= 0 {
+		threshold = cache.RoutingMetricStaleThreshold()
+	}
 
 	for i, pod := range pods {
-		gpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.KVCacheUsagePerc)
-		if err != nil {
-			klog.V(4).ErrorS(err, "failed to get GPU cache metrics")
+		gpu, gpuOK := routeutil.FreshKVUsage(r.cache, pod, ctx.Model, metrics.KVCacheUsagePerc, now, threshold)
+		if !gpuOK {
 			continue
 		}
-		scores[i] = gpuCache.GetSimpleValue() + cpuCacheUsage(r.cache, pod, ctx.Model)
+		cpu, cpuOK := routeutil.FreshKVUsage(r.cache, pod, ctx.Model, metrics.CPUCacheUsagePerc, now, threshold)
+		if !cpuOK {
+			continue
+		}
+		scores[i] = gpu + cpu
 		scored[i] = true
 		if klog.V(4).Enabled() {
 			klog.V(4).Infof("pod: %v, podIP: %v, total cache: %v", pod.Name, pod.Status.PodIP, scores[i])

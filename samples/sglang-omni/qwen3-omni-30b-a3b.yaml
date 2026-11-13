@@ -1,0 +1,115 @@
+# SGLang-Omni serving Qwen3-Omni (text, image, audio, video in; text + speech out).
+# Upstream docs: https://sgl-project.github.io/sglang-omni/basic_usage/qwen3_omni.html
+#
+# Try it through the AIBrix gateway (see docs/source/features/gateway-routing/omni.rst for $BASE):
+#   curl -sS $BASE/v1/chat/completions -H "Content-Type: application/json" -d '{
+#     "model": "qwen3-omni",
+#     "messages": [{"role": "user", "content": "Say hello in one sentence."}],
+#     "modalities": ["text", "audio"],
+#     "max_tokens": 64
+#   }'
+# The audio comes back base64-encoded in `choices[0].message.audio.data`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    model.aibrix.ai/name: qwen3-omni # Note: The label value `model.aibrix.ai/name` here must match with the service name.
+    model.aibrix.ai/port: "8000"
+  name: qwen3-omni
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: qwen3-omni
+      model.aibrix.ai/port: "8000"
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: qwen3-omni
+        model.aibrix.ai/port: "8000"
+    spec:
+      containers:
+        - name: sglang-omni
+          image: hongccc/sglang-omni:dev # Note: Upstream publishes only this tag and it tracks main. Pin by digest for reproducible runs.
+          command:
+            - sh
+            - -c
+            - |
+              uv venv /opt/sglang-omni -p 3.12 && \
+              . /opt/sglang-omni/bin/activate && \
+              uv pip install --prerelease=allow "sglang-omni==0.2.0" && \
+              exec sgl-omni serve \
+                --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+                --model-name qwen3-omni \
+                --port 8000
+              # Note: This is the standard speech pipeline (text + audio output).
+              # `--model-name` must also match the Service name and the Deployment label `model.aibrix.ai/name`.
+              # For text output only, add `--text-only`, which runs on a single GPU.
+              # The sglang-omni package is installed at container start, as upstream's installation guide does inside the image.
+          env:
+            - name: HF_HOME # Note: Keeps the downloaded weights (about 60 GB in BF16) on the host across restarts.
+              value: /models/huggingface
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+          volumeMounts:
+            - mountPath: /models
+              name: models
+            - mountPath: /dev/shm
+              name: shm
+          resources:
+            limits:
+              nvidia.com/gpu: "2"
+            requests:
+              nvidia.com/gpu: "2"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 3
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /health # Note: Returns 503 until warmup requests have passed through every stage.
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 3
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 360 # Note: Allows up to an hour for the package install, weight download and warmup.
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 3
+      volumes:
+        - name: models
+          hostPath:
+            path: /root/models
+            type: DirectoryOrCreate
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen3-omni
+  namespace: default
+spec:
+  selector:
+    model.aibrix.ai/name: qwen3-omni
+  ports:
+    - name: serve
+      port: 8000
+      protocol: TCP
+      targetPort: 8000

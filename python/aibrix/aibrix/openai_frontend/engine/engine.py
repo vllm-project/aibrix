@@ -29,6 +29,9 @@ from __future__ import annotations
 
 from typing import AsyncIterator, List, Protocol, Union
 
+from pydantic import BaseModel
+from starlette.responses import Response
+
 from aibrix.openai_frontend.schemas.openai import (
     CreateChatCompletionRequest,
     CreateChatCompletionResponse,
@@ -77,7 +80,7 @@ class LLMEngine(Protocol):
 
     async def chat(
         self, request: CreateChatCompletionRequest
-    ) -> Union[CreateChatCompletionResponse, AsyncIterator[str]]:
+    ) -> Union[CreateChatCompletionResponse, AsyncIterator[str], Response]:
         """
         If request.stream is True, this returns an Iterator (or Generator) that
         produces server-sent-event (SSE) strings in the following form:
@@ -91,7 +94,7 @@ class LLMEngine(Protocol):
 
     async def completion(
         self, request: CreateCompletionRequest
-    ) -> Union[CreateCompletionResponse, AsyncIterator[str]]:
+    ) -> Union[CreateCompletionResponse, AsyncIterator[str], Response]:
         """
         If request.stream is True, this returns an Iterator (or Generator) that
         produces server-sent-event (SSE) strings in the following form:
@@ -103,9 +106,24 @@ class LLMEngine(Protocol):
         """
         pass
 
+    async def responses(
+        self,
+        operation: str,
+        request: BaseModel | None = None,
+        *,
+        response_id: str | None = None,
+        query: list[tuple[str, str]] | None = None,
+    ) -> BaseModel | AsyncIterator[str] | Response | None:
+        """Serve a declared Responses operation, or explicitly reject it.
+
+        The default is used by engines (such as ViPE) without Responses support;
+        it must not silently return None like an unimplemented protocol stub.
+        """
+        raise NotImplementedError("This engine does not implement the Responses API")
+
     async def embedding(
         self, request: CreateEmbeddingRequest
-    ) -> CreateEmbeddingResponse:
+    ) -> CreateEmbeddingResponse | Response:
         """
         Returns a CreateEmbeddingResponse.
         """

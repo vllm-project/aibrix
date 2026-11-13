@@ -280,6 +280,8 @@ func TestAdmitRunningRequestsClient_DisablesRetries(t *testing.T) {
 	require.Zero(t, admit.Options().MaxRetries, "go-redis normalises -1 to 0, meaning no retries")
 	require.Equal(t, 5, shared.Options().MaxRetries, "the shared client keeps its retries")
 	require.Equal(t, shared.Options().Addr, admit.Options().Addr)
+	require.True(t, admit.Options().ContextTimeoutEnabled)
+	require.False(t, shared.Options().ContextTimeoutEnabled, "the shared client's deadline behavior is unchanged")
 }
 
 func TestAdmitRunningRequest_MalformedRepliesFallBackToLocalCount(t *testing.T) {

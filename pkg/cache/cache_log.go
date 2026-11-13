@@ -18,7 +18,6 @@ package cache
 import (
 	"strings"
 
-	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
 )
@@ -35,12 +34,12 @@ func (c *Store) debugInfo() {
 			return true
 		}
 		klog.V(5).Infof("pod: %s, podIP: %v, models: %s", podName, pod.Status.PodIP, strings.Join(pod.Models.Array(), " "))
-		pod.Metrics.Range(func(metricName string, metricVal metrics.MetricValue) bool {
-			klog.V(5).Infof("%v_%v_%v", podName, metricName, metricVal)
+		pod.Metrics.Range(func(metricName string, record MetricRecord) bool {
+			klog.V(5).Infof("%v_%v_%v", podName, metricName, record.Value)
 			return true
 		})
-		pod.ModelMetrics.Range(func(metricName string, metricVal metrics.MetricValue) bool {
-			klog.V(5).Infof("%v_%v_%v", podName, metricName, metricVal)
+		pod.ModelMetrics.Range(func(metricName string, record MetricRecord) bool {
+			klog.V(5).Infof("%v_%v_%v", podName, metricName, record.Value)
 			return true
 		})
 		return true

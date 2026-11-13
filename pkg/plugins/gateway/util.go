@@ -276,8 +276,8 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		// Audio transcription and translation require multipart/form-data content-type, not JSON
 		// This case handles the error when JSON is sent to these audio endpoints
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "audio requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
-	case PathAudioSpeech:
-		model, message, errRes = validateAudioSpeechRequest(requestID, requestBody)
+	case PathAudioSpeech, PathAudioGenerate:
+		model, message, errRes = validateAudioInputRequest(requestID, requestBody)
 	case PathAudioSpeechBatch:
 		model, message, errRes = validateAudioSpeechBatchRequest(requestID, requestBody)
 	default:
@@ -1073,14 +1073,16 @@ func jsonString(value json.RawMessage) (string, bool) {
 	return text, true
 }
 
-// validateAudioSpeechRequest parses and validates a vLLM-Omni /v1/audio/speech request body.
-// Only what the gateway itself needs is checked: a JSON object with a non-empty "model" to
-// route on and a non-empty textual "input" to synthesize. The speech options (voice,
-// response_format, speed, instructions, language, stream_format, ...) belong to the engine and
-// are forwarded as sent. A request-level "stream" field is deliberately not surfaced as a stream
-// here: the response is binary audio, so the gateway must never treat it as an SSE stream.
+// validateAudioInputRequest parses and validates the body of a vLLM-Omni request that takes a
+// model and a text input and answers with binary audio: /v1/audio/speech, where "input" is the
+// text to synthesize, and /v1/audio/generate, where it is the prompt that describes the audio.
+// Only what the gateway itself needs is checked: a JSON object with a non-empty "model" to route
+// on and a non-empty textual "input". The remaining options (voice, response_format, speed,
+// instructions, language, stream_format, ...) belong to the engine and are forwarded as sent.
+// A request-level "stream" field is deliberately not surfaced as a stream here: the response is
+// binary audio, so the gateway must never treat it as an SSE stream.
 // nolint:nakedret
-func validateAudioSpeechRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+func validateAudioInputRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
 	if trimmed := bytes.TrimSpace(requestBody); len(trimmed) == 0 || trimmed[0] != '{' {
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "request body must be a JSON object", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
@@ -1091,7 +1093,7 @@ func validateAudioSpeechRequest(requestID string, requestBody []byte) (model, me
 	}
 	if err := sonic.Unmarshal(requestBody, &req); err != nil {
 		// The body can hold customer text, so log its size, not its content.
-		klog.ErrorS(nil, "error to unmarshal audio speech object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
+		klog.ErrorS(nil, "error to unmarshal audio speech or generate object", "requestID", requestID, "reason", jsonParseReason(err), "requestBodyBytes", len(requestBody))
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -1494,9 +1496,9 @@ func modelConfigFromCache(c cache.Cache, model string) string {
 //     requestsInflight and requestsPerSecondPerReplica are independent, user-configured
 //     limits: when inflight is set below the resolved replica RPS, it is left as configured
 //     (only logged via warnIfReplicaInflightBelowRPS) rather than raised, since silently
-//     loosening the concurrency cap the user set would defeat its purpose. Unlike
-//     RequestsPerSecond, neither requestsPerSecondPerReplica nor requestsInflight has an
-//     env-var form: both are configured directly in the profile.
+//     loosening the concurrency cap the user set would defeat its purpose. Neither
+//     requestsPerSecondPerReplica nor requestsInflight has an env-var form: both are
+//     configured directly in the profile.
 func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 	if routingCtx == nil {
 		return
@@ -1540,6 +1542,7 @@ func applyConfigProfile(routingCtx *types.RoutingContext, pods []*v1.Pod) {
 		AuthoritativeRoutingPolicy: cfg.AuthoritativeRoutingPolicy,
 	}
 	if profile != nil {
+		cp.ProfileName = profileName
 		cp.RoutingStrategy = profile.RoutingStrategy
 		cp.RoutingConfig = profile.RoutingConfig
 		cp.Routing = configprofiles.ParseRoutingConfig(profile.RoutingConfig)

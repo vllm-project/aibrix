@@ -23,7 +23,7 @@ Media URLs are plain strings rather than pydantic ``AnyUrl``: the proxy also
 accepts tos://, s3://, gs://, hf://, file:// and ``data:`` URIs, and
 ``AnyUrl`` would reject or silently normalise them.  URL content is
 rewritten to a local ``file://`` path by the proxy before forwarding when
-the engine can read local files (see ``proxy/engine_spec.py``).
+the engine can read local files (see ``proxy/runtime/engine_spec.py``).
 
 Reference: vLLM tag ``v0.33.0rc1``, SGLang tag ``v0.5.22``,
 openai-python tag ``v3.41.0``.
@@ -31,9 +31,14 @@ openai-python tag ``v3.41.0``.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Optional, get_args, get_origin
+from typing import Annotated, Any, Final, Literal, Optional, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field
+
+# Schema annotation keys shared by media declarations and inspection.
+MEDIA_URL: Final = "media_url"
+MEDIA_TYPE: Final = "media_type"
+OUTPUT_MEDIA: Final = "output_media"
 
 
 class VideoUrl(BaseModel):
@@ -67,7 +72,7 @@ class ChatCompletionRequestMessageContentPartVideo(BaseModel):
     model_config = ConfigDict(use_enum_values=True)
 
     type: Literal["video_url"] = Field(..., description="The type of the content part.")
-    video_url: VideoUrl = Field(json_schema_extra={"media_url": "url"})
+    video_url: VideoUrl = Field(json_schema_extra={MEDIA_URL: "url"})
     uuid: Optional[str] = Field(
         None, description="Optional unique identifier for the content part."
     )
@@ -77,7 +82,7 @@ class ChatCompletionRequestMessageContentPartAudio(BaseModel):
     model_config = ConfigDict(use_enum_values=True)
 
     type: Literal["audio_url"] = Field(..., description="The type of the content part.")
-    audio_url: AudioUrl = Field(json_schema_extra={"media_url": "url"})
+    audio_url: AudioUrl = Field(json_schema_extra={MEDIA_URL: "url"})
     uuid: Optional[str] = Field(
         None, description="Optional unique identifier for the content part."
     )
@@ -136,7 +141,7 @@ def media_url_fields(content_schema: Any) -> dict[str, tuple[str, str]]:
         for name, field in schema.model_fields.items():
             metadata = field.json_schema_extra
             if discriminator is not None and isinstance(metadata, dict):
-                nested_url = metadata.get("media_url")
+                nested_url = metadata.get(MEDIA_URL)
                 if isinstance(nested_url, str):
                     for tag in get_args(discriminator.annotation):
                         if isinstance(tag, str):

@@ -19,7 +19,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	atomic_ext "go.uber.org/atomic"
 	v1 "k8s.io/api/core/v1"
@@ -28,9 +27,9 @@ import (
 
 type Pod struct {
 	*v1.Pod
-	Models       *utils.Registry[string]                    // Model/adapter names that the pod is running
-	Metrics      utils.SyncMap[string, metrics.MetricValue] // Pod metrics (metric_name -> value)
-	ModelMetrics utils.SyncMap[string, metrics.MetricValue] // Pod-model metrics (model_name/metric_name -> value)
+	Models       *utils.Registry[string]             // Model/adapter names that the pod is running
+	Metrics      utils.SyncMap[string, MetricRecord] // Pod metrics (metric_name -> record)
+	ModelMetrics utils.SyncMap[string, MetricRecord] // Pod-model metrics (model_name/metric_name -> record)
 
 	// Realtime statstistic
 	runningRequests        int32 // Realtime running requests counter.

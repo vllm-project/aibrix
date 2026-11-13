@@ -4,7 +4,7 @@
 Audio
 =====
 
-This guide covers the audio endpoints exposed through AIBrix's gateway: text-to-speech, in single and batch form, the custom voices it can speak with, and speech-to-text through transcription and translation. The :ref:`supported endpoints <multimodal-supported-endpoints>` table shows which audio endpoints each engine offers and which of them AIBrix supports. Before you start, finish the :ref:`prerequisites <omni-prerequisites>` and :ref:`gateway access <omni-access-gateway>` steps on the Multi-Modal Serving page, and deploy your model the way the :ref:`video guide <omni-video-deploy>` describes, swapping in an audio model.
+This guide covers the audio endpoints exposed through AIBrix's gateway: text-to-speech, in single and batch form, audio generation, the custom voices it can speak with, and speech-to-text through transcription and translation. The :ref:`supported endpoints <multimodal-supported-endpoints>` table shows which audio endpoints each engine offers and which of them AIBrix supports. Before you start, finish the :ref:`prerequisites <omni-prerequisites>` and :ref:`gateway access <omni-access-gateway>` steps on the Multi-Modal Serving page, and deploy your model the way the :ref:`video guide <omni-video-deploy>` describes, swapping in an audio model.
 
 .. note::
     A text+audio example (`Qwen/Qwen2.5-Omni-7B <https://huggingface.co/Qwen/Qwen2.5-Omni-7B>`_) lives at `samples/vllm_omni/qwen2-5-omni-7b.yaml <https://github.com/vllm-project/aibrix/blob/main/samples/vllm_omni/qwen2-5-omni-7b.yaml>`_ in the AIBrix repository.
@@ -92,6 +92,35 @@ Things to know when calling it through the gateway:
 
 ----
 
+Audio Generation
+----------------
+
+``POST /v1/audio/generate`` generates audio, such as sound effects or music, from a text prompt instead of synthesizing speech. The gateway handles it like ``/v1/audio/speech``: a JSON request, a binary audio response, and routing to the pods of the requested model.
+
+.. code-block:: bash
+
+    curl -X POST "$BASE/v1/audio/generate" \
+      -H "Authorization: Bearer ${API_KEY}" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "model": "stable-audio",
+        "input": "The sound of rain on a tin roof"
+      }' \
+      -o generated_audio
+
+What the gateway checks, and returns ``400`` for:
+
+- The body must be a JSON object, and ``model`` is required. vLLM-Omni treats ``model`` as optional, but the gateway needs the name to select a pod, so always send it.
+- ``input`` is required and cannot be empty. It is the prompt that describes the audio and is also the routing text for prefix-cache-aware routing.
+
+Everything else is the engine's:
+
+- Every other field is forwarded as sent and validated by the engine, so generation options reach it unchanged, including any the gateway does not know about.
+- The response is binary audio, in whatever format the engine returns. The gateway forwards it byte for byte and never parses it as JSON or as an SSE stream, so a request-level ``stream`` field does not turn on SSE handling and no token usage is reported.
+- Like ``/v1/audio/speech``, this endpoint takes ``application/json``: do **not** send ``multipart/form-data``.
+
+----
+
 Transcription and Translation
 -----------------------------
 
@@ -175,6 +204,9 @@ Endpoint Reference
    * - ``/v1/audio/speech/batch``
      - POST
      - JSON request with an ``items`` array, one JSON response holding a base64 result per item. Routed by model; the gateway checks only ``model`` and ``items``, the response streams through unparsed, and ``200`` does not mean every item succeeded.
+   * - ``/v1/audio/generate``
+     - POST
+     - JSON request, binary audio response. Routed by model like ``/v1/audio/speech``; the gateway checks only ``model`` and ``input``, and the audio streams through unparsed, so no token usage is recorded and no job is registered.
    * - ``/v1/audio/transcriptions``, ``/v1/audio/translations``
      - POST
      - ``multipart/form-data`` request with the model in a ``model`` form field. Routed by model; a ``stream`` form field set to ``true`` or ``1`` makes the response an SSE stream.

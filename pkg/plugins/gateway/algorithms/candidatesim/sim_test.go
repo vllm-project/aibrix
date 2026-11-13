@@ -87,6 +87,14 @@ const (
 	policySnapshot
 	policyCountIndex
 	policyCountIndexMixed
+	// policyBlendRanked is the K-only candidate stage: a scout of 4K random pods plus up to K
+	// prefix holders is ranked on the blended score of the gateway's observed counts (the
+	// in-memory estimate); the best K/2 are kept and the other K/2 are drawn at random.
+	policyBlendRanked
+	// policyScoutRecommend approximates #3353: scout 4K random pods, recommend the best
+	// R = min(K/4, 4) of them on the observed blend, reserve max(min(K/2, R), K/2-4R) prefix
+	// holders, and fill the rest at random.
+	policyScoutRecommend
 )
 
 type policy struct {
@@ -101,6 +109,8 @@ type policy struct {
 	// gateway's candidate stage does: candidates first, then the gate and scoring on them only.
 	// With LiveScoring the gate then sees the candidates' exact counts.
 	GateSample bool
+	// Ranked is how many of the K slots policyBlendRanked fills by rank; 0 means K/2.
+	Ranked int
 }
 
 func (p policy) String() string {
@@ -127,6 +137,13 @@ func (p policy) String() string {
 		return fmt.Sprintf("C count index K=%d", p.K)
 	case policyCountIndexMixed:
 		return fmt.Sprintf("C+A index K/2 + random K/2, K=%d", p.K)
+	case policyBlendRanked:
+		if p.Ranked > 0 {
+			return fmt.Sprintf("K-only: scout 4K+holders, rank %d + random, K=%d", p.Ranked, p.K)
+		}
+		return fmt.Sprintf("K-only: scout 4K+holders, rank K/2 + random K/2, K=%d", p.K)
+	case policyScoutRecommend:
+		return fmt.Sprintf("scout 4K, R=min(K/4,4) + prefix reserve + random, K=%d", p.K)
 	}
 	return "unknown"
 }
@@ -428,8 +445,97 @@ func (s *sim) candidates(g, group int, universe []int, allowed map[int]bool) []i
 			s.rng.Shuffle(len(rest), func(a, b int) { rest[a], rest[b] = rest[b], rest[a] })
 		}
 		return union(s.prefixSeeds(g, group, allowed), order[:k])
+	case policyBlendRanked:
+		if n <= k {
+			return universe
+		}
+		scout := universe
+		if 8*k < n {
+			var holders []int
+			if s.cfg.PrefixOn {
+				for _, h := range s.holder[group] {
+					if allowed == nil || allowed[h] {
+						holders = append(holders, h)
+					}
+				}
+				s.rng.Shuffle(len(holders), func(a, b int) { holders[a], holders[b] = holders[b], holders[a] })
+				holders = holders[:min(k, len(holders))]
+			}
+			scout = s.fillRandom(universe, holders, len(holders)+4*k)
+		}
+		r := k / 2
+		if s.pol.Ranked > 0 {
+			r = min(s.pol.Ranked, k)
+		}
+		ranked := s.bestByEstimate(g, group, scout, r)
+		return s.fillRandom(universe, ranked, k)
+	case policyScoutRecommend:
+		if n <= k {
+			return universe
+		}
+		scout := make([]int, 0, 4*k)
+		for _, idx := range s.rng.Perm(n)[:min(4*k, n)] {
+			scout = append(scout, universe[idx])
+		}
+		r := min(k/4, 4)
+		picked := s.bestByEstimate(g, group, scout, r)
+		reserve := max(min(k/2, r), k/2-4*r)
+		if s.cfg.PrefixOn {
+			inUniverse := allowed
+			holders := make([]int, 0, len(s.holder[group]))
+			for _, h := range s.holder[group] {
+				if inUniverse == nil || inUniverse[h] {
+					holders = append(holders, h)
+				}
+			}
+			s.rng.Shuffle(len(holders), func(a, b int) { holders[a], holders[b] = holders[b], holders[a] })
+			before := len(picked)
+			for _, h := range union(picked, holders)[before:] {
+				if len(picked)-before >= reserve {
+					break
+				}
+				picked = append(picked, h)
+			}
+		}
+		return s.fillRandom(universe, picked, k)
 	}
 	return universe
+}
+
+// bestByEstimate returns the m pods of set with the best blended score on the counts gateway g
+// observes, ties broken at random.
+func (s *sim) bestByEstimate(g, group int, set []int, m int) []int {
+	order := append([]int(nil), set...)
+	s.rng.Shuffle(len(order), func(a, b int) { order[a], order[b] = order[b], order[a] })
+	scores := s.finalScores(g, group, order)
+	idx := make([]int, len(order))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool { return scores[idx[a]] > scores[idx[b]] })
+	out := make([]int, 0, m)
+	for _, i := range idx[:min(m, len(idx))] {
+		out = append(out, order[i])
+	}
+	return out
+}
+
+// fillRandom adds pods of universe not yet in picked, uniformly at random, until it holds k.
+func (s *sim) fillRandom(universe, picked []int, k int) []int {
+	seen := make(map[int]struct{}, k)
+	for _, i := range picked {
+		seen[i] = struct{}{}
+	}
+	for _, idx := range s.rng.Perm(len(universe)) {
+		if len(picked) >= k {
+			break
+		}
+		if _, dup := seen[universe[idx]]; !dup {
+			seen[universe[idx]] = struct{}{}
+			picked = append(picked, universe[idx])
+		}
+	}
+	return picked
 }
 
 func (s *sim) route(r *request, group int) {
@@ -799,6 +905,114 @@ func TestCandidateSelectionRobustness(t *testing.T) {
 			}
 			out.WriteString("\n")
 		}
+	}
+	t.Log(out.String())
+	if path := os.Getenv("CANDIDATE_SIM_OUT"); path != "" {
+		if err := os.WriteFile(path, []byte(out.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestCandidateSelectionKOnly compares the K-only candidate designs for Varun's second TODO on
+// #3292 with the stage on main (K random plus M prefix seeds) and full scoring, all with live
+// stage 2 and the gate on the candidates, as the gateway runs them. Run it with
+// CANDIDATE_SIM=konly; CANDIDATE_SIM_PODS=2000 runs the larger fleet.
+func TestCandidateSelectionKOnly(t *testing.T) {
+	if os.Getenv("CANDIDATE_SIM") != "konly" {
+		t.Skip("set CANDIDATE_SIM=konly to run the K-only comparison")
+	}
+	pods := 500
+	if v, err := strconv.Atoi(os.Getenv("CANDIDATE_SIM_PODS")); err == nil && v > 0 {
+		pods = v
+	}
+	live := func(p policy) policy { p.LiveScoring, p.GateSample = true, true; return p }
+	policies := []policy{
+		{Kind: policyFull},
+		live(policy{Kind: policyRandomSeeded, K: 16}),
+		live(policy{Kind: policyBlendRanked, K: 16}),
+		live(policy{Kind: policyScoutRecommend, K: 16}),
+		live(policy{Kind: policyRandomSeeded, K: 32}),
+		live(policy{Kind: policyBlendRanked, K: 32}),
+		live(policy{Kind: policyScoutRecommend, K: 32}),
+		// Ranking three quarters of the slots: the sample stops resembling the fleet, the gate
+		// on the sample fires against hot prefix holders, and prefix-on runs can destabilize.
+		live(policy{Kind: policyBlendRanked, K: 32, Ranked: 24}),
+	}
+	seeds := []uint64{1, 2, 3}
+	type scenario struct {
+		prefixOn bool
+		delay    time.Duration
+	}
+	var scenarios []scenario
+	for _, prefixOn := range []bool{false, true} {
+		for _, delay := range []time.Duration{100 * time.Millisecond, time.Second} {
+			scenarios = append(scenarios, scenario{prefixOn, delay})
+		}
+	}
+	results := make([][][]result, len(scenarios))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8)
+	for si, sc := range scenarios {
+		results[si] = make([][]result, len(seeds))
+		for ki, seed := range seeds {
+			results[si][ki] = make([]result, len(policies))
+			for pi, pol := range policies {
+				cfg := simConfig{
+					Pods: pods, Gateways: 4, Utilization: 0.85, MeanWork: 200,
+					PrefixOn: sc.prefixOn, PrefixGroups: 2000, PrefixPerPod: 32, PrefixSaving: 0.3,
+					SignalDelay: sc.delay, Step: 5 * time.Millisecond,
+					Warmup: 3 * time.Second, Duration: 15 * time.Second,
+					PrefixSeedMax: 16, SeedRandom: true, Seed: seed,
+					ImbalanceMinGap: 8, ImbalanceFactor: 2,
+				}
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
+					results[si][ki][pi] = newSim(cfg, pol).run()
+				}()
+			}
+		}
+	}
+	wg.Wait()
+
+	var out strings.Builder
+	fmt.Fprintf(&out, "\n### N=%d, 4 gateways, utilization 0.85, %d seeds\n\n", pods, len(seeds))
+	out.WriteString("Mean latency relative to full scoring on the same seed: mean (min to max); P99 ratio after the semicolon; prefix hit after the slash. Full scoring's mean latency in seconds in the first row.\n\n")
+	out.WriteString("| Policy |")
+	for _, sc := range scenarios {
+		fmt.Fprintf(&out, " prefix=%v delay=%v |", sc.prefixOn, sc.delay)
+	}
+	out.WriteString("\n| --- |" + strings.Repeat(" --- |", len(scenarios)) + "\n")
+	for pi, pol := range policies {
+		fmt.Fprintf(&out, "| %s |", pol)
+		for si, sc := range scenarios {
+			var sum, p99, hit float64
+			lo, hi := math.Inf(1), math.Inf(-1)
+			for ki := range seeds {
+				r, full := results[si][ki][pi], results[si][ki][0]
+				x := r.MeanLatency
+				if pi > 0 {
+					x /= full.MeanLatency
+					p99 += r.P99Latency / full.P99Latency
+				}
+				sum += x
+				lo, hi = math.Min(lo, x), math.Max(hi, x)
+				hit += r.PrefixHit
+			}
+			n := float64(len(seeds))
+			cell := fmt.Sprintf("%.3f s", sum/n)
+			if pi > 0 {
+				cell = fmt.Sprintf("%.2f (%.2f to %.2f); %.2f", sum/n, lo, hi, p99/n)
+			}
+			if sc.prefixOn {
+				cell += fmt.Sprintf(" / %.1f%%", 100*hit/n)
+			}
+			fmt.Fprintf(&out, " %s |", cell)
+		}
+		out.WriteString("\n")
 	}
 	t.Log(out.String())
 	if path := os.Getenv("CANDIDATE_SIM_OUT"); path != "" {

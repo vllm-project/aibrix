@@ -24,14 +24,21 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from aibrix.openai_frontend.schemas.engine_common import (
+    OUTPUT_RESULT,
+    ChoicesResponse,
+    CountTokensResponse,
+    DataResponse,
+    MessagesResponse,
+    NativeResponse,
     SharedChatCompletionFields,
     SharedCompletionChoiceFields,
     SharedCompletionFields,
     SharedEmbeddingFields,
     SharedModelFields,
+    SystemOneResponse,
 )
 
 
@@ -204,3 +211,61 @@ class VllmModelExtensionFields(SharedModelFields):
     """vLLM fields on a ``/v1/models`` entry."""
 
     permission: Optional[List[Dict[str, Any]]] = None
+
+
+# Native result contracts and endpoint bindings (same upstream version as above).
+class VllmRerankResponse(NativeResponse):
+    results: list[dict[str, Any]] = Field(json_schema_extra={OUTPUT_RESULT: True})
+
+
+class VllmTokenizeResponse(NativeResponse):
+    tokens: list[int] = Field(json_schema_extra={OUTPUT_RESULT: True})
+    token_strs: list[str] | None = Field(None, json_schema_extra={OUTPUT_RESULT: True})
+
+
+class VllmDetokenizeResponse(NativeResponse):
+    prompt: str = Field(json_schema_extra={OUTPUT_RESULT: True})
+
+
+class CohereMessage(NativeResponse):
+    content: list[dict[str, Any]] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+    tool_calls: list[dict[str, Any]] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+    tool_plan: str | None = Field(None, json_schema_extra={OUTPUT_RESULT: True})
+    citations: list[dict[str, Any]] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+
+
+class CohereChatResponse(NativeResponse):
+    message: CohereMessage
+    logprobs: list[dict[str, Any]] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+
+
+class CohereEmbedResponse(NativeResponse):
+    embeddings: dict[str, Any] = Field(json_schema_extra={OUTPUT_RESULT: True})
+
+
+class VllmDecisionResponse(NativeResponse):
+    answers: list[dict[str, Any]] = Field(json_schema_extra={OUTPUT_RESULT: True})
+
+
+VLLM_NATIVE_RESPONSES: dict[str, Any] = {
+    "/v1/decisions": VllmDecisionResponse,
+    "/v1/systemone": SystemOneResponse,
+    "/v1/messages": MessagesResponse,
+    "/v1/messages/count_tokens": CountTokensResponse,
+    "/cohere/v2/chat": CohereChatResponse,
+    "/v2/embed": CohereEmbedResponse,
+    "/inference/v1/generate": ChoicesResponse,
+    "/generative_scoring": DataResponse,
+    "/tokenize": VllmTokenizeResponse,
+    "/detokenize": VllmDetokenizeResponse,
+    **{path: VllmRerankResponse for path in ("/rerank", "/v1/rerank", "/v2/rerank")},
+    **{path: DataResponse for path in ("/score", "/v1/score", "/pooling", "/classify")},
+}

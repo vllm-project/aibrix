@@ -61,11 +61,13 @@ import (
 )
 
 const (
-	defaultAIBrixNamespace   = "aibrix-system"
-	metricHeaderErr          = "metric-header-err"
-	gatewayRespBody          = "gateway_rsp_body"
-	gatewayRespHeaders       = "gateway_rsp_headers"
-	gatewayReqBody           = "gateway_req_body"
+	defaultAIBrixNamespace = "aibrix-system"
+	metricHeaderErr        = "metric-header-err"
+	gatewayRespBody        = "gateway_rsp_body"
+	gatewayRespHeaders     = "gateway_rsp_headers"
+	gatewayReqBody         = "gateway_req_body"
+	// Keep error normalization bounded even when an upstream emits a large body.
+	maxUpstreamErrorBodySize = 64 * 1024
 	defaultHTTPRouteCacheTTL = 30 * time.Second
 	defaultHTTPRouteErrorTTL = 2 * time.Second
 	httpRouteLookupTimeout   = 5 * time.Second
@@ -133,21 +135,23 @@ type recvResult struct {
 }
 
 type processState struct {
-	ctx              context.Context
-	requestID        string
-	user             utils.User
-	rpm              int64
-	traceTerm        int64
-	respErrorCode    int
-	model            string
-	metricLabel      string
-	routerCtx        *types.RoutingContext
-	lastRespHeaders  []*configPb.HeaderValueOption
-	stream           bool
-	isRespError      bool
-	isGatewayRspDone bool // A response outcome was recorded, including an ImmediateResponse failure.
-	completed        bool
-	trackedModel     string
+	ctx                context.Context
+	requestID          string
+	user               utils.User
+	rpm                int64
+	traceTerm          int64
+	respErrorCode      int
+	respErrorBody      []byte
+	respErrorTruncated bool
+	model              string
+	metricLabel        string
+	routerCtx          *types.RoutingContext
+	lastRespHeaders    []*configPb.HeaderValueOption
+	stream             bool
+	isRespError        bool
+	isGatewayRspDone   bool // A response outcome was recorded, including an ImmediateResponse failure.
+	completed          bool
+	trackedModel       string
 	// recvCh carries the result of the srv.Recv() this stream already has in
 	// flight. It is kept across processOnce calls because a call can return
 	// without consuming its message (PD fail-fast), and ext_proc requires that
@@ -741,6 +745,24 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		if st.isRespError {
 			s.finishRequestCount(st)
 			resp = s.responseForResponseHeaderError(st, resp)
+			if resp.GetImmediateResponse() == nil && req.GetResponseHeaders().GetEndOfStream() && st.respErrorCode >= http.StatusBadRequest {
+				// No body callback will follow. A local reply is still safe before
+				// acknowledging these response headers to Envoy.
+				resp = s.responseErrorProcessingWithHeaders(st.ctx, st.routerCtx, st.lastRespHeaders,
+					st.respErrorCode, st.model, st.requestID, "")
+			}
+			if resp.GetImmediateResponse() != nil {
+				st.completed = true
+				normalizeErrorHeaderMutation(resp.GetImmediateResponse().GetHeaders())
+			} else {
+				// Streamed body callbacks cannot reliably mutate headers later.
+				mutation := resp.GetResponseHeaders().GetResponse().GetHeaderMutation()
+				mutation.SetHeaders = append(mutation.SetHeaders, &configPb.HeaderValueOption{
+					Header:       &configPb.HeaderValue{Key: HeaderErrorResponseUnknown, RawValue: []byte("true")},
+					AppendAction: configPb.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+				})
+				st.lastRespHeaders = mutation.SetHeaders
+			}
 		}
 		st.metricLabel = gatewayRespHeaders
 
@@ -764,9 +786,7 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 			}
 		}
 		if st.isRespError {
-			body := string(req.Request.(*extProcPb.ProcessingRequest_ResponseBody).ResponseBody.GetBody())
-			body = string(rewriteVideoJobErrorBody(st.routerCtx, []byte(body)))
-			resp = s.responseErrorProcessingWithHeaders(st.ctx, st.routerCtx, st.lastRespHeaders, st.respErrorCode, st.model, st.requestID, body)
+			resp = s.handleErrorResponseBody(st, req.GetResponseBody())
 		} else {
 			var usage TokenUsage
 			resp, st.completed, usage = s.HandleResponseBody(st.ctx, st.routerCtx, st.requestID, req, st.user, st.rpm, st.model, st.stream, st.completed)
@@ -799,7 +819,11 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		}
 		if st.completed && !st.isGatewayRspDone {
 			st.isGatewayRspDone = true
-			s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, st.metricLabel+"_success", "200", st.routerCtx)
+			if st.isRespError {
+				s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, st.metricLabel+"_fail", strconv.Itoa(st.respErrorCode), st.routerCtx)
+			} else {
+				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, st.metricLabel+"_success", "200", st.routerCtx)
+			}
 		}
 		return resp, nil
 	}
@@ -810,6 +834,60 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 	st.isGatewayRspDone = true
 
 	return resp, nil
+}
+
+func (s *Server) handleErrorResponseBody(st *processState, chunk *extProcPb.HttpBody) *extProcPb.ProcessingResponse {
+	// In Streamed mode each acknowledgement releases that chunk downstream.
+	// Clear intermediate chunks so only the complete, normalized error is sent.
+	common := &extProcPb.CommonResponse{
+		BodyMutation: &extProcPb.BodyMutation{Mutation: &extProcPb.BodyMutation_ClearBody{ClearBody: true}},
+	}
+	if !st.completed {
+		data := chunk.GetBody()
+		remaining := maxUpstreamErrorBodySize - len(st.respErrorBody)
+		if len(data) > remaining {
+			data = data[:remaining]
+			st.respErrorTruncated = true
+		}
+		st.respErrorBody = append(st.respErrorBody, data...)
+		if chunk.GetEndOfStream() {
+			body := rewriteVideoJobErrorBody(st.routerCtx, st.respErrorBody)
+			if st.respErrorTruncated {
+				body = append(body, []byte(fmt.Sprintf("\n[upstream error body truncated after %d bytes]", maxUpstreamErrorBodySize))...)
+			}
+			errResp := s.responseErrorProcessingWithHeaders(st.ctx, st.routerCtx, st.lastRespHeaders,
+				st.respErrorCode, st.model, st.requestID, string(body)).GetImmediateResponse()
+			st.respErrorBody = nil
+			st.completed = true
+			common.BodyMutation = &extProcPb.BodyMutation{Mutation: &extProcPb.BodyMutation_Body{Body: []byte(errResp.GetBody())}}
+			// Streamed responses normally rely on header-phase framing. Keep these
+			// mutations valid for buffered responses and the empty-body case.
+			common.HeaderMutation = errResp.GetHeaders()
+			normalizeErrorHeaderMutation(common.HeaderMutation)
+		}
+	}
+	// An ImmediateResponse after response headers have been released can reset
+	// the HTTP stream. Replace the final body chunk within the existing response.
+	return &extProcPb.ProcessingResponse{
+		Response: &extProcPb.ProcessingResponse_ResponseBody{
+			ResponseBody: &extProcPb.BodyResponse{Response: common},
+		},
+	}
+}
+
+func normalizeErrorHeaderMutation(mutation *extProcPb.HeaderMutation) {
+	// Envoy consumes RawValue for mutations. Buffered or empty responses may
+	// also apply the body-phase mutations after the header-phase mutations.
+	for _, header := range mutation.GetSetHeaders() {
+		switch strings.ToLower(header.GetHeader().GetKey()) {
+		case "content-type":
+			header.Header.Value = ""
+			header.Header.RawValue = []byte("application/json")
+			header.AppendAction = configPb.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD
+		case HeaderErrorResponseUnknown:
+			header.AppendAction = configPb.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD
+		}
+	}
 }
 
 func (s *Server) responseForResponseHeaderError(st *processState, resp *extProcPb.ProcessingResponse) *extProcPb.ProcessingResponse {

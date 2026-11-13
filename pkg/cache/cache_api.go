@@ -123,6 +123,21 @@ type ModelClaimStatusProvider interface {
 	ModelClaimStatus(modelName string) (phase, reason string, found bool)
 }
 
+// ApproxRunningRequestsProvider is an optional Cache capability: a running-request count for
+// every pod that is read from process memory only. Callers type-assert for it, like
+// PodReadySinceProvider, and treat a failed assertion as "no estimate".
+type ApproxRunningRequestsProvider interface {
+	// GetPodsRunningRequestsApprox returns, keyed by utils.GeneratePodKey, this gateway's own
+	// running count of each pod (exact) plus the other gateways' counts from the latest
+	// gateway snapshot (refreshed every 100ms when Redis is configured). It never calls Redis,
+	// so it can be read for every ready pod on each request. Each other gateway's count of a
+	// pod is added only while that snapshot was last actually read within one second; a stale
+	// one (a sync that keeps missing that key) is left out on its own, and a pod whose snapshots
+	// are all stale (a stalled sync) gets this gateway's own count only. Without Redis it equals
+	// GetPodsRunningRequests. Pods not in the cache are omitted.
+	GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64
+}
+
 // PodReadySinceProvider is an optional cache extension exposing when this gateway first saw each
 // pod routable (see readySince in pod.go). Callers type-assert for it, like
 // ModelClaimBindingProvider, and treat a failed assertion as "no ramp info"; it stays off Cache
@@ -139,7 +154,8 @@ type PodReadySinceProvider interface {
 	LatestPodReadySince() int64
 }
 
-// MetricCache defines operations for metric data caching
+// MetricCache defines operations for metric data caching. Value getters do not
+// enforce age; freshness-sensitive consumers should use MetricRecordCache.
 type MetricCache interface {
 	// GetMetricValueByPod returns the last-written metric slot for a pod (scraped engine
 	// gauges, PromQL results, or gateway-derived values such as RealtimeNumRequestsRunning).

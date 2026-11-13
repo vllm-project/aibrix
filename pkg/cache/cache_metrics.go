@@ -315,17 +315,12 @@ func loadPrometheusBasicAuth(kubeConfig *rest.Config) {
 	})
 }
 
-func (c *Store) getPodMetricImpl(podName string, metricStore *utils.SyncMap[string, metrics.MetricValue], metricName string) (metrics.MetricValue, error) {
-	metricVal, ok := metricStore.Load(metricName)
+func (c *Store) getPodMetricImpl(podName string, metricStore *utils.SyncMap[string, MetricRecord], metricName string) (MetricRecord, error) {
+	record, ok := metricStore.Load(metricName)
 	if !ok {
-		return nil, &MetricNotFoundError{
-			CacheError: ErrorTypeMetricNotFound,
-			PodName:    podName,
-			MetricName: metricName,
-		}
+		return MetricRecord{}, &MetricNotFoundError{CacheError: ErrorTypeMetricNotFound, PodName: podName, MetricName: metricName}
 	}
-
-	return metricVal, nil
+	return record, nil
 }
 
 func (c *Store) getPodModelMetricName(modelName string, metricName string) string {
@@ -391,6 +386,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 					"pod", pod.Name, "podIP", pod.Status.PodIP, "port", podMetricPort, "error", err)
 				return
 			}
+			fetchedAt := time.Now()
 			c.recordPodMetricsFetchSuccess(pod)
 
 			for metricName, metricValue := range result.Metrics {
@@ -437,7 +433,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 				}
 			}
 			// Update pod metrics using typed results
-			c.updatePodMetricsFromTypedResult(pod, result)
+			c.updatePodMetricsFromTypedResultAt(pod, result, fetchedAt)
 
 			c.syncRunningRequestsGlobally(pod)
 
@@ -649,9 +645,14 @@ func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Met
 // Update `PodMetrics` and `PodModelMetrics` according to the metric scope
 // TODO: replace in-place metric update podMetrics and podModelMetrics to fresh copy for preventing stale metric keys
 func (c *Store) updatePodRecord(pod *Pod, modelName string, metricName string, scope metrics.MetricScope, metricValue metrics.MetricValue) error {
+	return c.updatePodRecordAt(pod, modelName, metricName, scope, metricValue, time.Now())
+}
+
+func (c *Store) updatePodRecordAt(pod *Pod, modelName, metricName string, scope metrics.MetricScope, metricValue metrics.MetricValue, now time.Time) error {
+	record := MetricRecord{Value: metricValue, Timestamp: now}
 	switch scope {
 	case metrics.PodMetricScope:
-		pod.Metrics.Store(metricName, metricValue)
+		pod.Metrics.Store(metricName, record)
 	case metrics.PodModelMetricScope:
 		if modelName == "" {
 			var ok bool
@@ -660,7 +661,7 @@ func (c *Store) updatePodRecord(pod *Pod, modelName string, metricName string, s
 				return fmt.Errorf("modelName should not be empty for scope %v", scope)
 			}
 		}
-		pod.ModelMetrics.Store(c.getPodModelMetricName(modelName, metricName), metricValue)
+		pod.ModelMetrics.Store(c.getPodModelMetricName(modelName, metricName), record)
 	default:
 		return fmt.Errorf("scope %v is not supported", scope)
 	}
@@ -804,26 +805,19 @@ func (c *Store) updateThroughputToksPerS(pod *Pod, model, metric string, metricV
 }
 
 // syncRunningRequestsGlobally computes the cross-gateway running request count for a pod and
-// stores it so GetMetricValueByPod returns the global total. It reads the in-memory snapshot
-// cache (populated every 100ms by initGatewaySnapshotSync — no Redis call here), sums
-// requests_running from all other gateway instances, then adds this gateway's own local
-// atomic counter (always fresher than the Redis snapshot for the local instance).
+// stores it so GetMetricValueByPod returns the global total. It takes the other gateways' counts
+// from gatewayRemoteRunning (published every 100ms by initGatewaySnapshotSync — no Redis call
+// here) and adds this gateway's own local atomic counter (always fresher than the Redis snapshot
+// for the local instance). Remote counts last actually read more than remoteRunningMaxAge ago
+// are left out, as GetPodsRunningRequestsApprox leaves them out (#3441): a sync that keeps
+// missing a pod's keys would otherwise report counts frozen when it first missed them.
 func (c *Store) syncRunningRequestsGlobally(pod *Pod) {
-	raw := c.gatewaySnapshotCache.Load()
-	if raw == nil {
+	snap := c.gatewayRemoteRunning.Load()
+	if snap == nil {
 		return
 	}
-	snapshotCache := raw.(map[string][]map[string]string)
-
-	var remoteRunning float64
 	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
-	for _, fields := range snapshotCache[podKey] {
-		if fields["gateway_instance_id"] == gatewayPodName {
-			continue
-		}
-		running, _ := strconv.ParseFloat(fields["requests_running"], 64)
-		remoteRunning += running
-	}
+	remoteRunning := float64(snap.freshCount(podKey, c.snapshotNow()))
 
 	localRunning := float64(atomic.LoadInt32(&pod.runningRequests))
 	total := localRunning + remoteRunning
@@ -876,7 +870,7 @@ func (c *Store) updateRealtimeOutputTokenRateEWMA(pod *Pod) {
 	ewma := rate
 	if prev, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA); ok {
 		alpha := 1 - math.Exp(-podMetricRefreshInterval.Seconds()/outputTokenRateEWMATau.Seconds())
-		ewma = alpha*rate + (1-alpha)*prev.GetSimpleValue()
+		ewma = alpha*rate + (1-alpha)*prev.Value.GetSimpleValue()
 	}
 	_ = c.updatePodRecord(pod, "", metrics.RealtimeOutputTokenRateEWMA, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: ewma})
 	klog.V(4).InfoS("Updating output token rate metric", "pod", pod.Name,
@@ -889,10 +883,14 @@ func (c *Store) updateRealtimeOutputTokenRateEWMA(pod *Pod) {
 // function, so labels stored in pod.Metrics / pod.ModelMetrics carry resolved model_name /
 // engine_type values rather than the "undefined" sentinel emitted by some engines (e.g. trtllm).
 func (c *Store) updatePodMetricsFromTypedResult(pod *Pod, result *metrics.EngineMetricsResult) {
+	c.updatePodMetricsFromTypedResultAt(pod, result, time.Now())
+}
+
+func (c *Store) updatePodMetricsFromTypedResultAt(pod *Pod, result *metrics.EngineMetricsResult, now time.Time) {
 	// Process pod-scoped metrics
 	for metricName, metricValue := range result.Metrics {
 		if metricDef, exists := metrics.Metrics[metricName]; exists {
-			err := c.updatePodRecord(pod, "", metricName, metricDef.MetricScope, metricValue)
+			err := c.updatePodRecordAt(pod, "", metricName, metricDef.MetricScope, metricValue, now)
 			if err != nil {
 				klog.V(4).InfoS("Failed to update pod metric",
 					"pod", pod.Name, "metric", metricName, "error", err)
@@ -908,7 +906,7 @@ func (c *Store) updatePodMetricsFromTypedResult(pod *Pod, result *metrics.Engine
 		modelName = resolveMetricModelName(pod, modelName)
 
 		if metricDef, exists := metrics.Metrics[metricName]; exists {
-			err := c.updatePodRecord(pod, modelName, metricName, metricDef.MetricScope, metricValue)
+			err := c.updatePodRecordAt(pod, modelName, metricName, metricDef.MetricScope, metricValue, now)
 			if err != nil {
 				klog.V(4).InfoS("Failed to update model metric",
 					"pod", pod.Name, "model", modelName, "metric", metricName, "error", err)

@@ -562,10 +562,10 @@ PD timeouts and aborts
      - Description
    * - ``pd.decodeAbortTimeout``
      - ``AIBRIX_DECODE_ABORT_TIMEOUT``
-     - Seconds the gateway waits for the decode pod to accept the abort POST after a prefill failure. ``0`` sends the abort without waiting.
+     - Seconds the gateway waits for the decode pod to accept the abort POST after a prefill failure. ``0`` disables decode aborts.
    * - ``pd.decodeAbortRetryDelay``
      - ``AIBRIX_DECODE_ABORT_RETRY_DELAY``
-     - Seconds between the two abort attempts. ``0`` repeats the abort immediately.
+     - Seconds between the two abort attempts. ``0`` sends a single attempt.
    * - ``pd.decodeFirstResponseTimeout``
      - ``AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT``
      - Seconds a streaming SGLang PD request waits, after its prefill leg succeeded, for the decode pod's first token (its first response body chunk) before the gateway fails it. ``0`` disables the watchdog.
@@ -695,10 +695,7 @@ Candidate stage
      - Description
    * - ``candidate.k``
      - ``AIBRIX_ROUTING_CANDIDATE_K``
-     - Number of ready pods drawn at random for the load-imbalance gate and the router to score, so each request reads per-pod load for about ``k`` pods instead of all of them. ``0`` scores every ready pod. Applies only when every resolved strategy is candidate-safe (see ``pkg/plugins/gateway/ENV_VARS.md``). Checks that compare a pod with the rest of its pool, such as the gate's spread, the prefix-cache standard-deviation check and blend normalization, then compare it with the sample. Use at least ``2``: with ``1`` and no seeded pods, the one sampled pod is routed to without scoring.
-   * - ``candidate.prefixM``
-     - ``AIBRIX_ROUTING_CANDIDATE_PREFIX_M``
-     - Most pods the router may add to the sample; for ``prefix-cache`` these are the pods holding the longest cached prefix of the prompt.
+     - Number of ready pods the load-imbalance gate and the router score, so each request reads per-pod load for ``k`` pods instead of all of them. The strategies pick them: ``4k`` random ready pods, plus the pods holding the prompt's longest cached prefix, are scored from in-memory estimates (prefix index, local and snapshot running counts, scraped metrics) with the router's blend weights; the best half are kept and the rest are drawn at random. ``0`` scores every ready pod. Applies only when every resolved strategy is candidate-safe (see ``pkg/plugins/gateway/ENV_VARS.md``). Checks that compare a pod with the rest of its pool, such as the gate's spread, the prefix-cache standard-deviation check and blend normalization, then compare it with the candidates. Use at least ``2``: with ``1``, the one candidate is routed to without scoring.
 
 VTC fairness
 ~~~~~~~~~~~~

@@ -100,6 +100,14 @@ class ModelInstance:
         default_factory=lambda: datetime.now(timezone.utc)
     )
     next_restart_at: Optional[datetime] = None
+    # Whether the engine has been ready since its launch, and since when it has
+    # failed its health check after that. A change of phase resets the time.
+    was_ready: bool = field(default=False, repr=False)
+    unready_since: Optional[datetime] = field(default=None, repr=False)
+    # Whether a failed engine's process group outlived its stop. The supervisor
+    # stops it again until it is gone, and the engine counts as alive until
+    # then.
+    stop_pending: bool = field(default=False, repr=False)
     # The GPU memory the engine still held right after its last sleep. It is
     # None while the engine is awake, and when no reading could be attributed
     # to it.
@@ -575,6 +583,16 @@ def engine_ready(port: int) -> bool:
         return False
 
 
+# How long a vLLM engine that has been ready may then fail its health check
+# before the supervisor restarts it. vLLM's API server can outlive its
+# EngineCore, and such an engine never gets ready again. vLLM's /health does not
+# wait on the EngineCore, so a busy engine still passes it. SGLang's /health
+# waits for a generation step, for up to 20 seconds by default, so SGLang
+# engines are not restarted this way. A first boot has no such limit, since
+# loading a model can take long.
+ENGINE_UNREADY_RESTART_SECONDS = 60.0
+
+
 def pid_is_alive(pid: Optional[int]) -> bool:
     """Best-effort liveness check that treats a zombie as exited."""
     if pid is None or pid <= 0:
@@ -826,6 +844,35 @@ def instance_ready(inst: "ModelInstance") -> bool:
     if poll() is not None:
         return False  # process exited
     return engine_ready(inst.port)
+
+
+# A live engine counts as gone only after it fails this many health checks in a
+# row, this far apart. A single missed check, as after a slow wake, is not
+# enough.
+ENGINE_GONE_PROBES = 3
+ENGINE_GONE_PROBE_INTERVAL_SECONDS = 1.0
+# How long a failed engine's process group may take to exit after it is killed.
+# The supervisor stops a group that is still there after that.
+ENGINE_STOP_WAIT_SECONDS = 5.0
+
+
+def engine_gone(inst: "ModelInstance") -> Optional[str]:
+    """Why a real engine has died, or None if it may still be alive: its process
+    has exited, or it failed several health checks in a row. vLLM answers
+    /health while asleep, so this holds for a sleeping engine too. A
+    mock/handle-less instance is never gone."""
+    proc = inst.proc
+    poll = getattr(proc, "poll", None)
+    if proc is None or poll is None:
+        return None  # mock launcher: nothing to probe
+    for probe in range(ENGINE_GONE_PROBES):
+        if probe:
+            time.sleep(ENGINE_GONE_PROBE_INTERVAL_SECONDS)
+        if poll() is not None:
+            return "its process exited"
+        if engine_ready(inst.port):
+            return None
+    return f"it failed {ENGINE_GONE_PROBES} health checks in a row"
 
 
 def read_kv_segment(ipc_name: str, shm_dir: str = "/dev/shm"):
@@ -1234,9 +1281,12 @@ class ModelRuntime:
     @staticmethod
     def _instance_alive(inst: ModelInstance) -> bool:
         """Whether the instance's engine process is still running. Instances
-        without a process handle (mock launcher) count as alive."""
+        without a process handle (mock launcher) count as alive. A failed
+        engine counts as alive only while its process group outlives its stop,
+        since the processes left may still hold its memory. The controller then
+        keeps charging that memory to its instance."""
         if inst.phase == "failed":
-            return False
+            return inst.stop_pending
         proc = inst.proc
         poll = getattr(proc, "poll", None)
         if proc is None or poll is None:
@@ -1295,7 +1345,9 @@ class ModelRuntime:
                     self._increment_metric(self._re_adoption_outcomes, "terminal")
                     # A terminal record is never routed or relaunched. If a
                     # stale process unexpectedly remains, clean it on recovery.
-                    self._terminate_stale_process_group(inst)
+                    # A group that outlives this stop is stopped again by the
+                    # supervisor until it is gone.
+                    inst.stop_pending = not self._terminate_stale_process_group(inst)
                     continue
                 if inst.phase == "stopping":
                     if self._process_handle_alive(inst) or process_group_is_alive(
@@ -1316,11 +1368,21 @@ class ModelRuntime:
                         if instance_ready(inst):
                             if inst.phase != "active" or inst.last_error is not None:
                                 self._transition(inst, "active")
+                                inst.was_ready = True
                                 inst.last_error = None
                                 changed = True
                         elif inst.phase != "booting":
                             self._transition(inst, "booting")
                             changed = True
+                    continue
+
+                if inst.phase == "sleeping":
+                    # A sleeping engine that is gone is not restarted in place,
+                    # as when it exits while the agent runs.
+                    self._increment_metric(self._re_adoption_outcomes, "terminal")
+                    stopped = self._terminate_stale_process_group(inst)
+                    self._fail_engine(inst, "engine exited while asleep", stopped)
+                    changed = True
                     continue
 
                 # A pending restart can bypass _schedule_restart below.
@@ -1425,6 +1487,13 @@ class ModelRuntime:
         )
         if malformed_deadline:
             initial_capacity = None
+        # A record saved before was_ready existed tells only the phase, and an
+        # active or sleeping engine has been ready.
+        was_ready = (
+            record["was_ready"] is True
+            if "was_ready" in record
+            else phase in {"active", "sleeping"}
+        )
         return ModelInstance(
             model_name=model_name,
             port=port,
@@ -1449,6 +1518,8 @@ class ModelRuntime:
             next_restart_at=self._registry_timestamp(
                 record.get("next_restart_at"), None
             ),
+            was_ready=was_ready,
+            unready_since=self._registry_timestamp(record.get("unready_since"), None),
             sleeping_footprint_bytes=self._registry_sleeping_footprint(
                 record.get("sleeping_footprint_bytes"), phase
             ),
@@ -1512,6 +1583,10 @@ class ModelRuntime:
             "last_transition": inst.last_transition.isoformat(),
             "next_restart_at": (
                 inst.next_restart_at.isoformat() if inst.next_restart_at else None
+            ),
+            "was_ready": inst.was_ready,
+            "unready_since": (
+                inst.unready_since.isoformat() if inst.unready_since else None
             ),
             "sleeping_footprint_bytes": inst.sleeping_footprint_bytes,
             "kv_initial_capacity_bytes": inst.kv_initial_capacity_bytes,
@@ -1584,6 +1659,7 @@ class ModelRuntime:
             inst.sleeping_footprint_bytes = None
         inst.phase = phase
         inst.last_transition = self._now()
+        inst.unready_since = None
         return True
 
     def _terminate_stale_process_group(self, inst: ModelInstance) -> bool:
@@ -1615,19 +1691,54 @@ class ModelRuntime:
                 pass
         return not process_group_is_alive(process_group_id)
 
+    def _stop_failed_engine(self, inst: ModelInstance) -> bool:
+        """Stop the process group of an engine that has died, and wait a short
+        while for it to exit. Its API server is this agent's child, so it is
+        reaped here: unreaped, it would keep the group alive. Reports whether
+        the group is gone. Called without _lock, since it may wait."""
+        if self._terminate_stale_process_group(inst):
+            return True
+        deadline = time.monotonic() + ENGINE_STOP_WAIT_SECONDS
+        while True:
+            self._process_handle_alive(inst)  # reaps an API server that exited
+            if not process_group_is_alive(inst.pid):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.1)
+
+    def _fail_engine(self, inst: ModelInstance, error: str, stopped: bool) -> None:
+        """Mark an engine failed for good, without restarting it, so that the
+        controller moves its claim. A process group that outlived the stop is
+        stopped again by the supervisor until it is gone."""
+        logger.error("engine %s (pid %s) failed: %s", inst.model_name, inst.pid, error)
+        if not stopped:
+            logger.warning(
+                "engine %s (pid %s) still has processes after its stop; "
+                "the supervisor stops them again",
+                inst.model_name,
+                inst.pid,
+            )
+        inst.kv_initial_capacity_bytes = None
+        inst.kv_capacity_verify_until = None
+        inst.kv_initial_capacity_unavailable = False
+        self._transition(inst, "failed")
+        inst.last_error = error
+        inst.next_restart_at = None
+        inst.stop_pending = not stopped
+
     def _schedule_restart(self, inst: ModelInstance, error: str) -> None:
         # Release worker-owned HBM as soon as the API parent is observed dead;
         # the exponential backoff governs relaunches, not resource cleanup.
-        self._terminate_stale_process_group(inst)
+        stopped = self._terminate_stale_process_group(inst)
         inst.kv_initial_capacity_bytes = None
         inst.kv_capacity_verify_until = None
         inst.kv_initial_capacity_unavailable = False
         inst.last_error = error
         if inst.restart_count >= self._max_restarts:
-            if self._transition(inst, "failed"):
+            if inst.phase != "failed":
                 self._increment_metric(self._restart_budget_exhausted, inst.model_name)
-            inst.last_error = "engine exited; restart budget exhausted"
-            inst.next_restart_at = None
+            self._fail_engine(inst, f"{error}; restart budget exhausted", stopped)
             return
         inst.restart_count += 1
         delay_seconds = min(
@@ -1648,6 +1759,7 @@ class ModelRuntime:
         inst.proc = None
         inst.pid = None
         inst.pid_start_time = None
+        inst.was_ready = False
         # Re-adoption or a limit write during backoff may have blocked capture.
         # Cleanup succeeded, so the replacement starts with fresh provenance.
         inst.kv_initial_capacity_bytes = None
@@ -1692,6 +1804,13 @@ class ModelRuntime:
         for model_name, inst in self._models.items():
             self._refresh_kv_capacity_locked(inst)
             if inst.phase == "failed":
+                # A failed engine whose process group outlived its stop is
+                # stopped again until the group is gone, so that the memory it
+                # held goes back to the card.
+                if inst.stop_pending:
+                    self._process_handle_alive(inst)  # reaps an exited API server
+                    if self._terminate_stale_process_group(inst):
+                        inst.stop_pending = False
                 continue
             if inst.phase == "stopping":
                 if self._process_handle_alive(inst) or process_group_is_alive(inst.pid):
@@ -1706,18 +1825,9 @@ class ModelRuntime:
                     changed = True
                 continue
 
-            if self._process_handle_alive(inst):
-                if inst.phase != "sleeping":
-                    if ready.get(id(inst), False):
-                        if inst.phase != "active" or inst.last_error is not None:
-                            self._transition(inst, "active")
-                            inst.last_error = None
-                            changed = True
-                    elif inst.phase != "booting":
-                        self._transition(inst, "booting")
-                        changed = True
-                continue
-
+            # A due restart relaunches the engine once its old process group is
+            # gone. This comes first, since an engine stopped because it hung
+            # may still be exiting.
             if inst.phase == "restarting" and inst.next_restart_at is not None:
                 if now < inst.next_restart_at:
                     continue
@@ -1725,6 +1835,41 @@ class ModelRuntime:
                 changed = True
                 continue
 
+            if self._process_handle_alive(inst):
+                if inst.phase != "sleeping":
+                    if ready.get(id(inst), False):
+                        if not inst.was_ready:
+                            inst.was_ready = True
+                            changed = True
+                        if inst.phase != "active" or inst.last_error is not None:
+                            self._transition(inst, "active")
+                            inst.last_error = None
+                            changed = True
+                    else:
+                        if inst.phase != "booting":
+                            self._transition(inst, "booting")
+                            changed = True
+                        if inst.was_ready and inst.engine == "vllm":
+                            if inst.unready_since is None:
+                                inst.unready_since = now
+                                changed = True
+                            unready = (now - inst.unready_since).total_seconds()
+                            if unready >= ENGINE_UNREADY_RESTART_SECONDS:
+                                self._schedule_restart(
+                                    inst,
+                                    f"engine not ready for {unready:.0f}s"
+                                    " after it was ready",
+                                )
+                                changed = True
+                continue
+
+            if inst.phase == "sleeping":
+                # A sleeping engine that exited is not restarted in place: it
+                # would come back awake without the room made for a wake.
+                stopped = self._terminate_stale_process_group(inst)
+                self._fail_engine(inst, "engine exited while asleep", stopped)
+                changed = True
+                continue
             self._schedule_restart(inst, "engine exited")
             changed = True
 
@@ -1755,7 +1900,7 @@ class ModelRuntime:
             if existing is not None:
                 if existing.phase == "failed":
                     raise RuntimeError(
-                        f"model {model_name!r} exhausted its local restart budget; "
+                        f"model {model_name!r} has failed on this pod; "
                         "deactivate it before activating again"
                     )
                 return existing  # idempotent; the supervisor owns recovery
@@ -2035,11 +2180,26 @@ class ModelRuntime:
                         )
                 try:
                     self._launcher.wake(inst)
-                except Exception:
-                    # vLLM may have taken some memory back before the wake
-                    # failed, so what the engine held asleep is no longer known.
+                except Exception as exc:
+                    # An engine that died during the wake would stay asleep for
+                    # good, since the supervisor does not probe sleeping
+                    # engines. It is stopped and marked failed, so that the
+                    # controller moves its claim. Restarted in place, it would
+                    # come back awake without the room made for a wake.
+                    why = engine_gone(inst)
+                    stopped = why is None or self._stop_failed_engine(inst)
                     with self._lock:
+                        # vLLM may have taken some memory back before the wake
+                        # failed, so what the engine held asleep is no longer
+                        # known.
                         inst.sleeping_footprint_bytes = None
+                        if why is not None:
+                            self._fail_engine(
+                                inst,
+                                f"engine failed during a wake, since {why}: {exc}",
+                                stopped,
+                            )
+                            result = "engine_failed"
                         self._persist_locked()
                     raise
                 with self._lock:

@@ -29,11 +29,11 @@ from aibrix.openai_frontend.common.artifact_fetcher import (
     DefaultArtifactFetcher,
     FetchResult,
 )
-from aibrix.openai_frontend.proxy.request_inspector import (
+from aibrix.openai_frontend.proxy.media.request_inspector import (
     MediaURLInspector,
     SglangGenerateInspector,
 )
-from aibrix.openai_frontend.proxy.request_rewriter import RequestRewriter
+from aibrix.openai_frontend.proxy.media.request_rewriter import RequestRewriter
 
 
 class TestMediaURLInspector:
@@ -44,7 +44,7 @@ class TestMediaURLInspector:
 
         from pydantic import BaseModel, Field
 
-        from aibrix.openai_frontend.proxy import request_inspector
+        from aibrix.openai_frontend.proxy.media import request_inspector
         from aibrix.openai_frontend.schemas.media import media_url_fields
 
         class ExtraMedia(BaseModel):
@@ -99,7 +99,7 @@ class TestMediaURLInspector:
     ):
         from pydantic import TypeAdapter
 
-        from aibrix.openai_frontend.proxy.request_rewriter import RequestRewriter
+        from aibrix.openai_frontend.proxy.media.request_rewriter import RequestRewriter
         from aibrix.openai_frontend.schemas.responses import (
             ResponseInputFile,
             ResponseInputImage,
@@ -682,6 +682,70 @@ class _MockFetcher(ArtifactFetcher):
 
 
 class TestRequestRewriter:
+    @pytest.mark.asyncio
+    async def test_credential_patterns_exact_first_then_insertion_order(self):
+        urls = [
+            "https://cdn.example.com/private.png?sig=x",
+            "https://cdn.example.com/other.png",
+            "https://cdn.example.com/OTHER.PNG",
+            "https://unmatched.example.com/a.png",
+            "https://region.cdn.example.com/public.png?sig=x#fragment",
+            "https://foreign.example/.cdn.example.com/public.png",
+            "https://foreign.example/?u=.cdn.example.com/public.png",
+            "https://region.cdn.example.com@foreign.example/public.png",
+            "https://region.cdn.example.com/private/nested.png",
+            "https://region.cdn.example.com.evil.example/public.png",
+            "https://cdn.example.com/private.png?sig=y#other",
+            "https://cdn.example.com/private.png",
+        ]
+        seen = {}
+
+        class Fetcher(_MockFetcher):
+            async def fetch_many(self, urls, credentials_map=None):
+                seen.update(credentials_map or {})
+                return await super().fetch_many(urls, credentials_map)
+
+        exact, wildcard, later = (
+            {"token": "exact"},
+            {"token": "first"},
+            {"token": "later"},
+        )
+        rewriter = RequestRewriter(
+            MediaURLInspector(),
+            Fetcher({}),
+            {
+                urls[0]: exact,
+                "https://cdn.example.com/*.png*": wildcard,
+                "https://cdn.example.com/*": later,
+                "https://*.cdn.example.com/*.png*": wildcard,
+            },
+        )
+        await rewriter.rewrite(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": url}}
+                            for url in urls
+                        ],
+                    }
+                ]
+            }
+        )
+        assert seen == {
+            urls[0]: exact,
+            urls[1]: wildcard,
+            urls[2]: later,
+            urls[4]: wildcard,
+            urls[10]: wildcard,
+            urls[11]: wildcard,
+        }
+        # A literal signed URL never falls back to path-only matching.
+        exact_only = RequestRewriter(MediaURLInspector(), Fetcher({}), {urls[0]: exact})
+        assert exact_only._credentials_for(urls[10]) is None
+        assert exact_only._credentials_for(urls[11]) is None
+
     @pytest.mark.asyncio
     async def test_rewrites_single_image_url(self):
         fetcher = _MockFetcher(

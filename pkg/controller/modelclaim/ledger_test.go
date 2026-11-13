@@ -362,9 +362,9 @@ func TestLedgerAcceptsACardWhoseEnginesAllAnswerToAClaim(t *testing.T) {
 	assert.Equal(t, int64(600), ledger.maximumRoomBytes())
 }
 
-// The runtime stops an engine once its restarts run out, and goes on listing
-// it as failed. Such an engine has given its memory back, and does not come
-// back by itself.
+// The runtime stops an engine it gives up on, and goes on listing it as
+// failed. Once it is no longer alive, it has given its memory back, and it
+// does not come back by itself.
 func TestLedgerIgnoresAnEngineTheRuntimeHasGivenUp(t *testing.T) {
 	pod := warmPodWithGPUs("warm-1", "b300-pool-a", 1)
 	gone := engineHolding("stranger", 250, 400)
@@ -403,7 +403,7 @@ func TestLedgerHasAHoleWhileAnEngineNoClaimAnswersForIsNotAlive(t *testing.T) {
 		assert.Equal(t, "the engine serving stranger there answers to no claim", ledger.blocked, phase)
 	}
 
-	// One that the runtime reports as failed and alive has not been stopped.
+	// One that the runtime reports as failed and alive still has processes.
 	stranger := engineHolding("stranger", 250, 400)
 	stranger.Phase = runtimePhaseFailed
 	ledger := ledgerFor(t, pod, sizedPodSnapshots(pod.Name, 1000, stranger), declared)
