@@ -77,6 +77,9 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, routerCtx *types.Rou
 				isProcessingError = true
 				processingErrorCode = code
 			}
+			if routerCtx != nil && routerCtx.HasRouted() {
+				s.podBlacklist.RecordResult(routerCtx.TargetPod(), routerCtx.TargetAddress(), code, model)
+			}
 			// A DELETE that the backend honored (or that found nothing to delete) is
 			// the point at which the registry record becomes garbage. Failing to
 			// remove it is reported to the client so the DELETE can be retried.

@@ -199,6 +199,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, routingCtx *types.Routin
 		if errRes = s.enforceReplicaInflight(ctx, model, routingCtx); errRes != nil {
 			return errRes, model, stream, term
 		}
+		s.claimBlacklistProbe(routingCtx)
 		headers = buildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routingAlgorithm),
 			HeaderTargetPod, targetPodIP,

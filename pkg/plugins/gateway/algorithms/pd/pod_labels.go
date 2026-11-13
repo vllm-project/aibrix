@@ -25,6 +25,12 @@ const (
 	PodGroupIndexLabel = "stormservice.orchestration.aibrix.ai/pod-group-index"
 )
 
+// Values of RoleLabel for the two legs of a disaggregated (PD) request.
+const (
+	RolePrefill = "prefill"
+	RoleDecode  = "decode"
+)
+
 // IsPodWithHTTPServer checks if a pod should be selected for routing.
 // In multi-node tensor parallelism setups (e.g., TP=16 with node_rank=0 and node_rank=1),
 // only pods with stormservice.orchestration.aibrix.ai/pod-group-index="0" (corresponding to node_rank=0) run the HTTP server.

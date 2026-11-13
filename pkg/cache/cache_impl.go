@@ -18,6 +18,7 @@ package cache
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"sync/atomic"
 
@@ -559,4 +560,54 @@ func (c *Store) GetRouter(ctx *types.RoutingContext) (types.Router, error) {
 
 func (c *Store) RegisterRequestTracker(tracker RequestTracker) {
 	c.requestTrackers = append(c.requestTrackers, tracker)
+}
+
+// RegisterPodLifecycleListener implements PodLifecycleRegistry.
+func (c *Store) RegisterPodLifecycleListener(listener PodLifecycleListener) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.podLifecycleListeners = append(c.podLifecycleListeners, listener)
+}
+
+// UnregisterPodLifecycleListener implements PodLifecycleRegistry.
+func (c *Store) UnregisterPodLifecycleListener(listener PodLifecycleListener) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// A new slice, not an in-place filter: podLifecycleListenersLocked copies under
+	// c.mu, but a copy is cheap insurance against sharing the backing array.
+	kept := make([]PodLifecycleListener, 0, len(c.podLifecycleListeners))
+	for _, l := range c.podLifecycleListeners {
+		if !sameRegistration(l, listener) {
+			kept = append(kept, l)
+		}
+	}
+	c.podLifecycleListeners = kept
+}
+
+// SetPodQuarantineChecker implements PodQuarantineRegistry.
+func (c *Store) SetPodQuarantineChecker(checker PodQuarantineChecker) {
+	c.podQuarantine.Store(&checker)
+}
+
+// ClearPodQuarantineChecker implements PodQuarantineRegistry.
+func (c *Store) ClearPodQuarantineChecker(checker PodQuarantineChecker) {
+	if current := c.podQuarantine.Load(); current != nil && sameRegistration(*current, checker) {
+		c.podQuarantine.CompareAndSwap(current, nil)
+	}
+}
+
+// sameRegistration reports whether a and b are the same registered value. Values of
+// an uncomparable dynamic type never match instead of panicking in ==.
+func sameRegistration(a, b any) bool {
+	t := reflect.TypeOf(a)
+	return t != nil && t == reflect.TypeOf(b) && t.Comparable() && a == b
+}
+
+// isPodQuarantined is false when no checker is set.
+func (c *Store) isPodQuarantined(pod *v1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	checker := c.podQuarantine.Load()
+	return checker != nil && (*checker).IsQuarantined(pod)
 }

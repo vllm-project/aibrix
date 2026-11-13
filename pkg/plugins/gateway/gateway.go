@@ -51,6 +51,7 @@ import (
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
 	pdrouter "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/router"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/blacklist"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -110,6 +111,12 @@ type Server struct {
 	asyncJobsOnce sync.Once
 	// encodeExecutor runs the encode stage for E+PD rolesets. nil skips it.
 	encodeExecutor *encode.Executor
+	// podBlacklist is the per-pod circuit breaker and load-outlier flag that
+	// selectTargetPod consults before routing (see the blacklist package). Its
+	// zero value is ready to use.
+	podBlacklist blacklist.PodBlacklist
+	// allBlacklistedLog throttles the "every ready pod is blacklisted" line per model.
+	allBlacklistedLog allBlacklistedLogThrottle
 	// Broadcast channel for server-initiated shutdown
 	shutdownCh   <-chan struct{}
 	shutdown     chan struct{}
@@ -147,11 +154,18 @@ type processState struct {
 	metricLabel        string
 	routerCtx          *types.RoutingContext
 	lastRespHeaders    []*configPb.HeaderValueOption
-	stream             bool
-	isRespError        bool
-	isGatewayRspDone   bool // A response outcome was recorded, including an ImmediateResponse failure.
-	completed          bool
-	trackedModel       string
+	// respHeadersSeen records whether Envoy ever delivered ResponseHeaders for
+	// this request. It decides which pod-health signal an ext_proc stream that
+	// closes early is (see recordUncompletedRecv): a missing response is only
+	// meaningful as blacklist.StatusStreamClosed when none, successful or not,
+	// ever came back -- otherwise a status that did arrive was already recorded
+	// from the headers and must not be counted twice.
+	respHeadersSeen  bool
+	stream           bool
+	isRespError      bool
+	isGatewayRspDone bool // A response outcome was recorded, including an ImmediateResponse failure.
+	completed        bool
+	trackedModel     string
 	// recvCh carries the result of the srv.Recv() this stream already has in
 	// flight. It is kept across processOnce calls because a call can return
 	// without consuming its message (PD fail-fast), and ext_proc requires that
@@ -382,11 +396,14 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		shutdown:            shutdown,
 	}
 	s.asyncJobs = newAsyncJobRegistryForClient(redisClient, c)
+	s.startBlacklistSweeps(shutdown)
 	if sar, err := routerManager.Lookup(routing.RouterSessionAffinity); err == nil {
 		if rb, ok := sar.(routing.RedisBackedRouter); ok {
 			rb.Start(shutdown, redisClient)
 		}
 	}
+	s.registerPodLifecycle()
+	s.registerPodQuarantine()
 	return s
 }
 
@@ -670,6 +687,7 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 		// client closed stream (EOF)
 		if st.model != "" && !st.isGatewayRspDone {
 			st.isGatewayRspDone = true
+			s.recordUncompletedRecv(st)
 			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "client_cancelled_eof", "499", st.routerCtx)
 		}
 		klog.ErrorS(nil, "client closed stream (EOF) before completion", "requestID", st.requestID, "model", st.model)
@@ -685,6 +703,7 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 			if st.completed {
 				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200", st.routerCtx)
 			} else {
+				s.recordUncompletedRecv(st)
 				s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "client_cancelled", "499", st.routerCtx)
 			}
 		}
@@ -736,6 +755,7 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		}
 
 	case *extProcPb.ProcessingRequest_ResponseHeaders:
+		st.respHeadersSeen = true
 		// The decode pod has started answering: from here on a late PD prefill
 		// failure must not abort it, and must not fail a stream the client is
 		// already being served on.
@@ -763,6 +783,11 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 				})
 				st.lastRespHeaders = mutation.SetHeaders
 			}
+		} else if req.GetResponseHeaders().GetEndOfStream() {
+			// A headers-only success (a 204, an empty-body 200): no body callback
+			// will follow to mark it complete, and without this the stream closing
+			// afterwards would be taken for an upstream hang-up.
+			st.completed = true
 		}
 		st.metricLabel = gatewayRespHeaders
 
@@ -975,6 +1000,16 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods for routing")
+	}
+
+	// Drop pods the blacklist currently excludes (a tripped failure breaker, a pod
+	// the probe sweep found dead, or a load outlier). If that empties the list,
+	// route anyway rather than fail every request outright -- a blacklist is a
+	// soft preference, not a hard exclusion.
+	if filtered := s.podBlacklist.FilterBlacklisted(readyPods); len(filtered) > 0 {
+		readyPods = filtered
+	} else {
+		s.logAllPodsBlacklisted(routeCtx, readyPods)
 	}
 
 	if limit := replicaInflightLimit(routeCtx); limit > 0 {
@@ -1266,7 +1301,10 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) Shutdown() {
 	if s.shutdown != nil {
-		s.shutdownOnce.Do(func() { close(s.shutdown) })
+		s.shutdownOnce.Do(func() {
+			close(s.shutdown)
+			s.unregisterFromCache()
+		})
 	}
 	if s.httpServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

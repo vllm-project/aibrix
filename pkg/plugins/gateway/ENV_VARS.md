@@ -46,6 +46,17 @@ between callers in this mode.
 
 ---
 
+## Pod Blacklist (`blacklist/`)
+
+How the gateway stops routing to a broken or overloaded pod is described in [blacklist/README.md](blacklist/README.md).
+
+| Variable | Type | Default | Description | Source |
+|---|---|---|---|---|
+| `AIBRIX_POD_BLACKLIST_ENABLED` | bool | `false` | Master switch for the whole pod blacklist (failure breaker, background probe sweep, load-outlier sweep, flaky re-add and quarantine). Unset, empty, `false` or `0` leaves every path a no-op and starts no background work, so healthy-fleet routing matches the pre-blacklist behaviour. Set to `true` (or `1`) to enable. | [blacklist/pod_blacklist.go](blacklist/pod_blacklist.go), [gateway_blacklist.go](gateway_blacklist.go) |
+| `AIBRIX_LOAD_OUTLIER_MIN_GAP` | int | `16` | Minimum absolute gap in engine-reported running+waiting requests that a pod must have over the mean of its peers before the load-outlier sweep excludes it. Without it a pod a few standard deviations above identical, near-idle peers (for example loads `[0, 0, 1]`) would qualify. Only consulted when `AIBRIX_POD_BLACKLIST_ENABLED` is on. | [blacklist/pod_load_blacklist.go](blacklist/pod_load_blacklist.go) |
+
+---
+
 ## Redis Sync (`statesync/`)
 
 | Variable | Type | Default | Description | Source |

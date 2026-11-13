@@ -291,6 +291,62 @@ type RequestTrackerRegistry interface {
 	RegisterRequestTracker(tracker RequestTracker)
 }
 
+// PodLifecycleListener receives narrow, single-purpose notifications about pod
+// lifecycle transitions that matter to routing but don't fit any existing
+// PodCache/MetricCache operation -- mirrors the RequestTracker/RequestTrackerRegistry
+// pattern rather than a general pod-watch callback, so an implementation only has to
+// handle what it actually needs.
+type PodLifecycleListener interface {
+	// OnPodFlakyReAdd is called when a pod reappears in the cache at the same IP it
+	// had before a delete (the same backend, not a genuine recreation) after being
+	// genuinely absent for a measurable amount of time -- not the synchronous
+	// delete-then-add pair the pod informer's UpdateFunc handler performs for
+	// every in-place K8s pod update, which never leaves a real gap (see
+	// flakyReAddMinObservedGap, addPodLocked/deletePodLocked in informers.go). The
+	// pod was untracked for real (e.g. a watch gap or a transient service-discovery
+	// blip) and is rejoining the ready set with no confirmation it's actually
+	// healthy again.
+	//
+	// Called from the informer event handler after the cache's internal lock is
+	// released, so an implementation may call back into the Cache. It still blocks
+	// that handler, so it must return quickly and must not block on I/O.
+	OnPodFlakyReAdd(pod *v1.Pod)
+}
+
+// PodLifecycleRegistry can register multiple PodLifecycleListener implementations.
+// It is separate from Cache so a cache implementation that reports no pod lifecycle
+// events need not provide it; callers type-assert. Registration is expected at
+// startup, before traffic begins; a listener that stops running unregisters itself
+// so the cache does not keep it alive. Unregistering a listener that is not
+// registered does nothing.
+type PodLifecycleRegistry interface {
+	RegisterPodLifecycleListener(listener PodLifecycleListener)
+	UnregisterPodLifecycleListener(listener PodLifecycleListener)
+}
+
+// PodQuarantineChecker reports pods that are parked for a long stretch because
+// they were found dead (the gateway's pod blacklist quarantines a pod for an
+// hour that way). The cache stops scraping a quarantined pod and stops emitting
+// its per-pod series: there is nothing to see until the quarantine ends. The
+// pod stays in the cache, so routing, the pod listings and the blacklist's own
+// probes still see it. IsQuarantined is called from the metrics loops, so it
+// must be cheap and must not call back into the Cache.
+type PodQuarantineChecker interface {
+	IsQuarantined(pod *v1.Pod) bool
+}
+
+// PodQuarantineRegistry sets the PodQuarantineChecker. It is separate from
+// Cache so a cache implementation that does no per-pod scraping need not
+// provide it; callers type-assert. Registration is expected at startup.
+//
+// There is a single slot: the last checker set wins. ClearPodQuarantineChecker
+// empties it only if checker is still the one in it, so a checker that stops
+// running cannot remove a later one's registration.
+type PodQuarantineRegistry interface {
+	SetPodQuarantineChecker(checker PodQuarantineChecker)
+	ClearPodQuarantineChecker(checker PodQuarantineChecker)
+}
+
 // ProfileCache defines operations for model profiles
 type ProfileCache interface {
 	// GetModelProfileByPod gets model profile for a pod
