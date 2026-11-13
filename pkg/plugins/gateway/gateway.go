@@ -1003,11 +1003,20 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		if limit <= 0 {
 			return nil
 		}
+		considered := len(readyPods)
 		readyPods = s.filterSaturatedReplicaInflight(routeCtx, readyPods, limit)
 		if len(readyPods) == 0 {
 			// Every pod considered is at the cap. A full-fleet fallback would read every ready
 			// pod at the load where Redis is hottest, and a second K-pod sample would miss this
-			// decision's snapshot, so keep the existing 429 (#3463).
+			// decision's snapshot, so keep the existing 429 (#3463). The span records how many
+			// pods were considered, so a sampled-set rejection can be told from a fleet-wide
+			// one after the fact: ready_pods, set at the top of this function, is the fleet.
+			if routeCtx.Span != nil {
+				routeCtx.Span.SetAttributes(
+					attribute.Int("inflight_cap", int(limit)),
+					attribute.Int("inflight_considered_pods", considered),
+				)
+			}
 			return errReplicaInflightExceeded
 		}
 		return nil
