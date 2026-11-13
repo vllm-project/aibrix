@@ -27,6 +27,7 @@ import (
 	"time"
 
 	zmq "github.com/pebbe/zmq4"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -770,6 +771,149 @@ func TestZMQClientReplayTimeoutRecreatesSocket(t *testing.T) {
 	assert.Equal(t, []int64{100, 200, 300}, storedHashes(handler))
 	assert.Equal(t, int64(2), client.GetLastSequence())
 	requireNoPendingReplayFrames(t, client)
+}
+
+// TestZMQClientReplayAfterFailedSocketRecreate tests that a replay socket
+// that could not be recreated after a timeout does not stop replay: the next
+// replay opens it again, and if that fails too, the gap fails open and the
+// view is cleared, as after a replay that cannot fill the gap (#3363)
+func TestZMQClientReplayAfterFailedSocketRecreate(t *testing.T) {
+	skipIfZMQUnavailable(t)
+
+	tests := []struct {
+		name        string
+		pubPort     int
+		routerPort  int
+		reopenFails bool
+		want        []string
+		// the timed-out replay, plus the failed reopen if there is one
+		replayFailures float64
+	}{
+		{
+			name:           "reopen fails: the gap fails open",
+			pubPort:        25831,
+			routerPort:     25832,
+			reopenFails:    true,
+			want:           []string{"stored 100", "cleared", "stored 300"},
+			replayFailures: 2,
+		},
+		{
+			name:           "reopen works: the gap is replayed",
+			pubPort:        25833,
+			routerPort:     25834,
+			want:           []string{"stored 100", "stored 200", "stored 300"},
+			replayFailures: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			publisher := createMockPublisher(t, tt.pubPort, tt.routerPort)
+			defer publisher.Close()
+			publishBlockStored(t, publisher, 100, 200, 300)
+
+			// Hold the first reply until the client gave up on it
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			releaseReply := func() { releaseOnce.Do(func() { close(release) }) }
+			defer releaseReply()
+			held := false
+			publisher.mu.Lock()
+			publisher.beforeReplayBatch = func(int) {
+				if !held {
+					held = true
+					<-release
+				}
+			}
+			publisher.mu.Unlock()
+
+			client, handler := newReplayTestClient(tt.pubPort, tt.routerPort, 200*time.Millisecond)
+			defer client.Stop()
+			failures := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_replay_failures_total"}, []string{"pod"})
+			client.metrics = &ZMQClientMetrics{
+				podKey:         client.config.PodKey,
+				replayFailures: failures.WithLabelValues(client.config.PodKey),
+			}
+			require.NoError(t, client.Connect())
+
+			// From here on a new replay socket cannot be opened, as when
+			// zmq.NewSocket fails for lack of file descriptors
+			client.mu.Lock()
+			client.config.RouterPort = -1
+			client.mu.Unlock()
+			if socket, err := client.newReplaySocket(); err == nil {
+				_ = socket.Close()
+				t.Fatal("this libzmq accepts port -1, so the recreate cannot be made to fail this way")
+			}
+
+			_, ran, err := client.runReplay(0)
+			require.True(t, ran)
+			require.ErrorContains(t, err, "timed out")
+			require.Nil(t, replaySocketOf(client), "the replay socket was recreated on an invalid port")
+			require.True(t, client.IsConnected())
+			releaseReply()
+
+			if !tt.reopenFails {
+				client.mu.Lock()
+				client.config.RouterPort = tt.routerPort
+				client.mu.Unlock()
+			}
+
+			// A gap: batch 0 is applied, live batch 2 arrives before batch 1
+			_, err = client.applyEventBatch(0, encodeBlockStored(t, 100), true)
+			require.NoError(t, err)
+			_, err = client.applyEventBatch(2, encodeBlockStored(t, 300), false)
+			require.NoError(t, err)
+			client.replayWg.Wait()
+
+			var got []string
+			for _, event := range handler.GetEvents() {
+				switch e := event.(type) {
+				case *BlockStoredEvent:
+					got = append(got, fmt.Sprintf("stored %d", e.BlockHashes[0]))
+				case *AllBlocksClearedEvent:
+					got = append(got, "cleared")
+				}
+			}
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, int64(2), client.GetLastSequence(), "the gap was neither replayed nor failed open")
+			client.applyMu.Lock()
+			assert.Empty(t, client.pending)
+			client.applyMu.Unlock()
+			if tt.reopenFails {
+				assert.Nil(t, replaySocketOf(client))
+			} else {
+				requireNoPendingReplayFrames(t, client)
+			}
+			replayFailures, err := getMetricValue(failures, client.config.PodKey)
+			require.NoError(t, err)
+			assert.Equal(t, tt.replayFailures, replayFailures, "replay failures counted")
+		})
+	}
+}
+
+// TestZMQClientNoReplaySocketReopenWhileStopping tests that a stopping client
+// does not reopen a lost replay socket, which Stop would close right after
+func TestZMQClientNoReplaySocketReopenWhileStopping(t *testing.T) {
+	skipIfZMQUnavailable(t)
+
+	client, _ := newReplayTestClient(25835, 25836, 200*time.Millisecond)
+	defer client.Stop()
+	require.NoError(t, client.Connect())
+
+	// Connected, the replay socket lost in a failed recreate, and Stop
+	// already called
+	client.mu.Lock()
+	socket := client.replaySocket
+	client.replaySocket = nil
+	client.stopped = true
+	client.mu.Unlock()
+	require.NoError(t, socket.Close())
+
+	_, ran, err := client.runReplay(0)
+	assert.False(t, ran)
+	assert.NoError(t, err)
+	assert.Nil(t, replaySocketOf(client), "the replay socket was reopened while stopping")
 }
 
 // TestZMQClientReplayRejectsMalformedReply tests that a malformed replay
