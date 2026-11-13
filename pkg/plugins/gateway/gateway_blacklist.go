@@ -82,6 +82,17 @@ func (s *Server) OnPodFlakyReAdd(pod *v1.Pod) {
 	s.podBlacklist.OnPodFlakyReAdd(pod)
 }
 
+// claimBlacklistProbe makes the request just routed the half-open probe of the pod it
+// was routed to, if that pod is waiting for one (see blacklist.PodBlacklist.ClaimProbe).
+// HandleRequestBody calls it once the request is certain to reach the picked pod. The
+// routing filter only admits a pod as a candidate; claiming there would spend the probe
+// on every candidate the router then passed over.
+func (s *Server) claimBlacklistProbe(routingCtx *types.RoutingContext) {
+	if routingCtx.HasRouted() {
+		s.podBlacklist.ClaimProbe(routingCtx.TargetPod())
+	}
+}
+
 // getGlobalRunningRequestsByPod is the live cross-gateway running-request count of
 // pod (a Redis read when Redis is configured), 0 when the cache does not know the
 // pod. It is for background surfaces such as the un-blacklist log line, not the
