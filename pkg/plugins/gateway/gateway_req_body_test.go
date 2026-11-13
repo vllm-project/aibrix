@@ -1110,9 +1110,9 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 func TestHandleRequestBody_ModelRPSCountedPerProfile(t *testing.T) {
 	// The two-profile example from docs/source/production/model-deployment.rst,
 	// without routingStrategy so that no router is needed.
-	profileJSON := `{"defaultProfile":"default","profiles":{` +
+	twoProfiles := `{"defaultProfile":"default","profiles":{` +
 		`"default":{"requestsPerSecond":100},"batch":{"requestsPerSecond":20}}}`
-	newServer := func(t *testing.T) (*Server, *miniredis.Miniredis) {
+	newServer := func(t *testing.T, profileJSON string) (*Server, *miniredis.Miniredis) {
 		podList := &utils.PodArray{Pods: []*v1.Pod{{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        "pod-a",
@@ -1164,22 +1164,36 @@ func TestHandleRequestBody_ModelRPSCountedPerProfile(t *testing.T) {
 	}
 
 	t.Run("default traffic does not use up batch's limit", func(t *testing.T) {
-		s, _ := newServer(t)
+		s, _ := newServer(t, twoProfiles)
 		assert.Equal(t, 20, admitted(s, "default", 20))
 		assert.Equal(t, 20, admitted(s, "batch", 20))
 		assert.Equal(t, 0, admitted(s, "batch", 1))
 	})
 	t.Run("batch traffic does not use up default's limit", func(t *testing.T) {
-		s, _ := newServer(t)
+		s, _ := newServer(t, twoProfiles)
 		assert.Equal(t, 20, admitted(s, "batch", 20))
 		assert.Equal(t, 100, admitted(s, "default", 100))
 		assert.Equal(t, 0, admitted(s, "default", 1))
 	})
 	t.Run("unknown profile header counts against the default profile", func(t *testing.T) {
-		s, mr := newServer(t)
+		s, mr := newServer(t, twoProfiles)
 		assert.Equal(t, 100, admitted(s, "no-such-profile", 100))
 		assert.Equal(t, 0, admitted(s, "default", 1))
 		assert.Equal(t, []string{"aibrix_model:test-model_MODEL_RPS_CURRENT:default:1000:counter"}, mr.Keys())
+	})
+	t.Run("authoritative policy counts a profile header against the default profile", func(t *testing.T) {
+		s, mr := newServer(t, `{"authoritativeRoutingPolicy":true,"defaultProfile":"default","profiles":{`+
+			`"default":{"requestsPerSecond":100},"batch":{"requestsPerSecond":20}}}`)
+		assert.Equal(t, 100, admitted(s, "batch", 100))
+		assert.Equal(t, 0, admitted(s, "batch", 1))
+		assert.Equal(t, []string{"aibrix_model:test-model_MODEL_RPS_CURRENT:default:1000:counter"}, mr.Keys())
+	})
+	t.Run("auto counts against the profile it selects", func(t *testing.T) {
+		s, mr := newServer(t, `{"defaultProfile":"default","profiles":{"default":{"requestsPerSecond":100},`+
+			`"batch":{"requestsPerSecond":20,"routingConfig":{"promptTokensGte":1}}}}`)
+		assert.Equal(t, 20, admitted(s, "auto", 20))
+		assert.Equal(t, 0, admitted(s, "auto", 1))
+		assert.Equal(t, []string{"aibrix_model:test-model_MODEL_RPS_CURRENT:batch:1000:counter"}, mr.Keys())
 	})
 }
 
