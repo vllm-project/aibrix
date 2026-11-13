@@ -440,7 +440,7 @@ Profile fields
    * - ``requestsPerSecondPerReplica``
      - Per-replica RPS cap for this profile. The gateway multiplies it by the model's current routable replica count to derive the effective model-wide limit, so the cap scales automatically as replicas are added or removed. Supports fractional values (e.g. ``0.5`` for one request every two seconds). Requests that exceed the limit are rejected with HTTP 429. Also sets the profile's routing strategy to ``least-request``, so traffic is balanced evenly enough for the per-replica figure to hold in aggregate. Omit or set to ``0`` for no limit. It has no environment-variable form. See :doc:`Production Model Deployments <../../production/model-deployment>` for details.
    * - ``requestsInflight``
-     - Per-replica concurrency cap: the maximum number of in-flight requests allowed on a single replica. It is enforced per pod, so it needs no replica-count scaling. When every routable replica is at the cap, the request is rejected with HTTP 429 and the ``x-error-model-replica-inflight-exceeded`` header. Also sets the profile's routing strategy to ``least-request``. Independent of ``requestsPerSecondPerReplica``, and the two can be set together. Omit or set to ``0`` for no limit. It has no environment-variable form. See :doc:`Production Model Deployments <../../production/model-deployment>` for details.
+     - Per-replica concurrency cap: the maximum number of in-flight requests allowed on a single replica. It is enforced per pod, so it needs no replica-count scaling. When every routable replica is at the cap, the request is rejected with HTTP 429 and the ``x-error-model-replica-inflight-exceeded`` header; when ``AIBRIX_ROUTING_CANDIDATE_K`` narrows the ready pods, the cap is checked on that candidate set instead, so the request is rejected once every candidate pod is at the cap. Also sets the profile's routing strategy to ``least-request``. Independent of ``requestsPerSecondPerReplica``, and the two can be set together. Omit or set to ``0`` for no limit. It has no environment-variable form. See :doc:`Production Model Deployments <../../production/model-deployment>` for details.
    * - ``ttftThresholdS``
      - Time-to-first-token threshold in seconds for this profile's responses, overriding ``AIBRIX_TTFT_THRESHOLD_S``. A first token arriving above this value is classified as delayed in the gateway's first-token-delay metric. Omit it or set ``0`` to keep the process-wide default; ``0`` counts as unset, so a profile cannot set the threshold to zero, only to another positive value. This affects response classification only, not routing.
    * - ``routingConfig``
@@ -1193,7 +1193,7 @@ Routing and Error Debugging Headers
    * - ``x-error-incr-model-rps``
      - Error encountered while incrementing the model RPS counter.
    * - ``x-error-model-replica-inflight-exceeded``
-     - Every routable replica is at the profile's ``requestsInflight`` cap.
+     - Every pod considered is at the profile's ``requestsInflight`` cap: every routable replica, or the candidate set when ``AIBRIX_ROUTING_CANDIDATE_K`` narrows it.
    * - ``x-error-multipart-parsing``
      - The multipart/form-data body could not be parsed, typically on image, audio, or video endpoints. See :doc:`omni`.
    * - ``x-error-video-not-found``

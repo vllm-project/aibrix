@@ -215,7 +215,9 @@ own. These are `least-request`, `least-request-top-k`, `load-balance`, `prefix-c
 `power-of-two` and the other `least-*` strategies. Any other strategy, such as `vtc-basic`,
 `session-affinity`, the queue router, `external`, `throughput`, `pd` or `slo*`, keeps every ready
 pod. It also does nothing when there are K ready pods or fewer. When a per-replica inflight cap is
-set, its saturation filter still runs over every ready pod first.
+set, its saturation filter runs on the candidate set, not on every ready pod, so the capped
+deployment keeps the bounded read; if every candidate is at the cap, the request returns the usual
+429 instead of falling back to the full ready set.
 
 The scoring formulas are unchanged, but checks that compare a pod with the rest of its pool now
 compare it with the candidates: the load-imbalance gate's spread, `prefix-cache`'s
