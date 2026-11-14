@@ -998,7 +998,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	// stage nothing to save (#3463). For exclusive strategies the set is the full ready set,
 	// and the filter runs before engine validation so a request that will be rejected for
 	// saturation is not failed on a pod it never uses.
-	narrowToInflightCapacity := func() error {
+	narrowToInflightCapacity := func(scope string) error {
 		limit := replicaInflightLimit(routeCtx)
 		if limit <= 0 {
 			return nil
@@ -1009,8 +1009,10 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 			// Every pod considered is at the cap. A full-fleet fallback would read every ready
 			// pod at the load where Redis is hottest, and a second K-pod sample would miss this
 			// decision's snapshot, so keep the existing 429 (#3463). The span records how many
-			// pods were considered, so a sampled-set rejection can be told from a fleet-wide
-			// one after the fact: ready_pods, set at the top of this function, is the fleet.
+			// pods were considered, and the counter records which set that was, so a sampled-set
+			// rejection can be told from a fleet-wide one after the fact: ready_pods, set at the
+			// top of this function, is the fleet.
+			recordInflightRejection(routeCtx.Model, scope)
 			if routeCtx.Span != nil {
 				routeCtx.Span.SetAttributes(
 					attribute.Int("inflight_cap", int(limit)),
@@ -1023,7 +1025,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	}
 
 	if isExclusive {
-		if err := narrowToInflightCapacity(); err != nil {
+		if err := narrowToInflightCapacity(inflightScopeFleet); err != nil {
 			return "", err
 		}
 		if isPD {
@@ -1036,8 +1038,15 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	} else {
 		// Narrow the pods to a bounded candidate set when AIBRIX_ROUTING_CANDIDATE_K is set, so
 		// the filter, the gate and the router read running counts for those pods only (RFC #3188).
+		readyBeforeCandidates := len(readyPods)
 		readyPods = routing.SelectCandidates(routeCtx, router, readyPods)
-		if err := narrowToInflightCapacity(); err != nil {
+		// The scope is what the filter actually ran on, not which branch ran: with the candidate
+		// stage off, SelectCandidates returns the ready set unchanged and the cap is fleet-wide.
+		scope := inflightScopeFleet
+		if len(readyPods) < readyBeforeCandidates {
+			scope = inflightScopeCandidates
+		}
+		if err := narrowToInflightCapacity(scope); err != nil {
 			return "", err
 		}
 		// Apply the load-imbalance hotspot gate ahead of whichever strategy actually routes
