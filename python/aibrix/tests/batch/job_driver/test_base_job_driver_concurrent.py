@@ -363,7 +363,7 @@ async def test_execute_request_raises_after_consecutive_failed_active_buckets(
         {"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}},
     )
 
-    assert first_result == (0, None)
+    assert first_result == (0, None, None)
 
     with pytest.raises(BatchJobError, match="RuntimeError: retry later"):
         await driver._execute_request(
@@ -415,8 +415,8 @@ async def test_execute_request_counts_only_once_per_failed_bucket(
         {"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}},
     )
 
-    assert first_result == (0, None)
-    assert second_result == (0, None)
+    assert first_result == (0, None, None)
+    assert second_result == (0, None, None)
 
     with pytest.raises(BatchJobError, match="RuntimeError: retry later"):
         await driver._execute_request(
@@ -474,9 +474,9 @@ async def test_execute_request_success_resets_failed_active_bucket_streak(
         {"_request_index": 2, "custom_id": "req-2", "body": {"i": 2}},
     )
 
-    assert first_result == (0, None)
-    assert second_result == (1, False)
-    assert third_result == (2, None)
+    assert first_result == (0, None, None)
+    assert second_result == (1, False, None)
+    assert third_result == (2, None, None)
 
 
 @pytest.mark.asyncio
@@ -627,7 +627,7 @@ async def test_execute_request_sends_client_request_timeout(monkeypatch):
         {"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}},
     )
 
-    assert result == (0, False)
+    assert result == (0, False, None)
     assert timeouts == [5.0]
 
 
