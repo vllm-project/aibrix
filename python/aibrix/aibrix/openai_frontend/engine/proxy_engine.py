@@ -103,6 +103,7 @@ from aibrix.openai_frontend.proxy.runtime.video_job import (
     VideoJobContext,
     VideoOutputJob,
 )
+from aibrix.openai_frontend.proxy.runtime.video_sync import VideoSyncJob
 from aibrix.openai_frontend.proxy.runtime.ws_bridge import (
     bridge_websocket,
     deny_websocket,
@@ -1065,7 +1066,8 @@ class ProxyEngine(LLMEngine):
         engine chunk by chunk as it arrives (never buffered or re-encoded, so
         every form field and the query string survive byte-for-byte), and the
         engine's response -- JSON, SSE, or binary media -- is relayed back the
-        same way. Peak memory per upload is one transport chunk, not the file.
+        same way. vLLM-Omni sync video uses an internal async job so disconnect
+        can abort generation. Peak memory per upload is one transport chunk.
         """
         kind = self._spec.require(path)
         if kind != ForwardKind.MULTIPART:
@@ -1081,6 +1083,11 @@ class ProxyEngine(LLMEngine):
         label = self._kind_label(path)
         req_id, t0 = self._requests_begin()
         streamed_body = _StreamedBody(request)
+        video_job = (
+            VideoSyncJob(self._forward_with_retry, streamed_body.upload_done)
+            if self._spec.name == "vllm-omni" and path == "/v1/videos/sync"
+            else None
+        )
 
         headers: Dict[str, str] = {}
         if (length := request.headers.get("content-length")) is not None:
@@ -1106,14 +1113,20 @@ class ProxyEngine(LLMEngine):
         try:
             try:
                 with scope:
-                    raw_resp = await self._forward_with_retry(
-                        url,
-                        True,
+                    kwargs: Dict[str, Any] = dict(
                         method="POST",
                         content=streamed_body,
                         content_type=content_type,
                         headers=headers,
                         replayable=lambda: not streamed_body.started,
+                    )
+                    raw_resp = (
+                        await video_job.run(
+                            query=f"?{request.url.query}" if request.url.query else "",
+                            **kwargs,
+                        )
+                        if video_job is not None
+                        else await self._forward_with_retry(url, True, **kwargs)
                     )
                 if scope.cancel_called or raw_resp is None:
                     raise ClientDisconnect()
@@ -1154,7 +1167,11 @@ class ProxyEngine(LLMEngine):
             # accounting now belongs to the relayed stream, not this call.
             return ClosingStreamingResponse(
                 self._hand_off_stream(
-                    _ProxyRequestContext(req_id, t0, None), raw_resp, None, label
+                    _ProxyRequestContext(req_id, t0, None),
+                    raw_resp,
+                    None,
+                    label,
+                    on_close=video_job.aclose if video_job is not None else None,
                 ),
                 status_code=raw_resp.status_code,
                 media_type=raw_resp.headers.get("content-type", "application/json"),
@@ -1165,7 +1182,11 @@ class ProxyEngine(LLMEngine):
                 if raw_resp is not None:
                     await await_thread_completion(raw_resp.aclose())
             finally:
-                self._requests_end(req_id, t0)
+                try:
+                    if video_job is not None:
+                        await await_thread_completion(video_job.aclose())
+                finally:
+                    self._requests_end(req_id, t0)
             raise
 
     async def forward_websocket(self, path: str, websocket: "WebSocket") -> None:
@@ -1739,6 +1760,8 @@ class ProxyEngine(LLMEngine):
         raw: httpx.Response,
         chunk_model: Optional[Type[Any]],
         kind: str,
+        *,
+        on_close: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> AsyncIterator[Any]:
         close_task: Optional[asyncio.Task[None]] = None
         read_task: Optional[asyncio.Task[bytes]] = None
@@ -1758,9 +1781,13 @@ class ProxyEngine(LLMEngine):
                 await raw.aclose()
             finally:
                 try:
-                    await self._release(context.req_id, inputs)
+                    if on_close is not None:
+                        await on_close()
                 finally:
-                    self._requests_end(context.req_id, context.started_at)
+                    try:
+                        await self._release(context.req_id, inputs)
+                    finally:
+                        self._requests_end(context.req_id, context.started_at)
 
         async def close_stream() -> None:
             nonlocal close_task

@@ -215,15 +215,36 @@ async def test_vllm_omni_video_sync_preserves_multipart_and_response(status_code
     forwarded = []
 
     async def upstream(request):
-        forwarded.append(
-            (
-                request.method,
-                request.url.raw_path,
-                request.headers["content-type"],
-                request.headers["content-length"],
-                await request.aread(),
+        if request.method == "POST":
+            forwarded.append(
+                (
+                    request.method,
+                    request.url.raw_path,
+                    request.headers["content-type"],
+                    request.headers["content-length"],
+                    await request.aread(),
+                )
             )
-        )
+            if status_code == 200:
+                return httpx.Response(
+                    200, json={"id": "video_gen_test", "status": "queued"}
+                )
+        elif request.method == "DELETE":
+            return httpx.Response(200, json={"deleted": True})
+        elif request.url.path == "/v1/videos/video_gen_test":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "video_gen_test",
+                    "status": "completed",
+                    "model": "minimax-h3",
+                    "inference_time_s": 12.3456,
+                    "stage_durations": {"diffusion": 11.25},
+                    "peak_memory_mb": 1234.5678,
+                },
+            )
+        else:
+            assert request.url.path == "/v1/videos/video_gen_test/content"
         return httpx.Response(
             status_code,
             stream=stream,
@@ -260,14 +281,16 @@ async def test_vllm_omni_video_sync_preserves_multipart_and_response(status_code
             assert response.content == content
             assert response.headers["content-type"] == content_type
             if status_code == 200:
-                assert (
-                    response.headers["content-disposition"]
-                    == 'attachment; filename="video.mp4"'
-                )
+                assert "content-disposition" not in response.headers
+                assert response.headers["x-request-id"].startswith("video_sync-")
+                assert response.headers["x-model"] == "minimax-h3"
+                assert response.headers["x-inference-time-s"] == "12.346"
+                assert response.headers["x-stage-durations"] == '{"diffusion":11.25}'
+                assert response.headers["x-peak-memory-mb"] == "1234.568"
             assert forwarded == [
                 (
                     "POST",
-                    path.encode(),
+                    path.replace("/sync", "").encode(),
                     upload.headers["content-type"],
                     upload.headers["content-length"],
                     body,
@@ -313,7 +336,7 @@ async def test_multipart_abort_after_upload_closes_upstream(outcome):
         {
             "type": "http",
             "method": "POST",
-            "path": "/v1/videos/sync",
+            "path": "/v1/audio/transcriptions",
             "query_string": b"",
             "headers": [
                 (b"content-type", b"multipart/form-data; boundary=b"),
@@ -365,7 +388,7 @@ async def test_multipart_disconnect_closes_response_returned_during_cancellation
         {
             "type": "http",
             "method": "POST",
-            "path": "/v1/videos/sync",
+            "path": "/v1/audio/transcriptions",
             "query_string": b"",
             "headers": [(b"content-type", b"multipart/form-data; boundary=b")],
         },
