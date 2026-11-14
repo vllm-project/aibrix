@@ -37,6 +37,54 @@ def _payloads_for_metric(caplog, metric_name):
     return payloads
 
 
+def test_fanout_sink_isolates_child_emit_failures():
+    class FailingSink:
+        def counter(self, name, value, *tags):
+            raise RuntimeError("metrics sink failed")
+
+        gauge = counter
+        timer = counter
+        store = counter
+        rate = counter
+
+        def close(self):
+            return None
+
+    class RecordingSink:
+        def __init__(self):
+            self.samples = []
+
+        def _record(self, metric_type, name, value, *tags):
+            self.samples.append((metric_type, name, value, tags))
+
+        def counter(self, name, value, *tags):
+            self._record("counter", name, value, *tags)
+
+        def gauge(self, name, value, *tags):
+            self._record("gauge", name, value, *tags)
+
+        def timer(self, name, value, *tags):
+            self._record("timer", name, value, *tags)
+
+        def store(self, name, value, *tags):
+            self._record("store", name, value, *tags)
+
+        def rate(self, name, value, *tags):
+            self._record("rate", name, value, *tags)
+
+        def close(self):
+            return None
+
+    recording = RecordingSink()
+    sink = FanoutSink((FailingSink(), recording))
+
+    sink.gauge("metadata.example.metric", 1.0, T("tag", "value"))
+
+    assert recording.samples == [
+        ("gauge", "metadata.example.metric", 1.0, (T("tag", "value"),))
+    ]
+
+
 def test_log_sink_logs_included_metric(caplog):
     sink = LogSink(include_patterns=("batch_finalize_*",), exclude_patterns=())
 

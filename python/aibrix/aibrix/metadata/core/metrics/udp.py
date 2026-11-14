@@ -19,7 +19,7 @@ import time
 from typing import Iterable, Optional
 
 from aibrix.logger import init_logger
-from aibrix.metadata.core.metrics.sink import Sink, Tag, normalize_tags
+from aibrix.metadata.core.metrics.sink import Sink, Tag, normalize_metric_tags
 
 logger = init_logger(__name__)
 _UDP_ADDR_CACHE_TTL_SECONDS = 30.0
@@ -109,17 +109,23 @@ class _UDPSinkBase(Sink):
 
     def counter(self, name: str, value: float, *tags: Tag) -> None:
         self._send(
-            self._format(self._metric_name(name), value, "c", normalize_tags(tags))
+            self._format(
+                self._metric_name(name), value, "c", normalize_metric_tags(tags)
+            )
         )
 
     def gauge(self, name: str, value: float, *tags: Tag) -> None:
         self._send(
-            self._format(self._metric_name(name), value, "g", normalize_tags(tags))
+            self._format(
+                self._metric_name(name), value, "g", normalize_metric_tags(tags)
+            )
         )
 
     def timer(self, name: str, value: float, *tags: Tag) -> None:
         self._send(
-            self._format(self._metric_name(name), value, "ms", normalize_tags(tags))
+            self._format(
+                self._metric_name(name), value, "ms", normalize_metric_tags(tags)
+            )
         )
 
     def store(self, name: str, value: float, *tags: Tag) -> None:

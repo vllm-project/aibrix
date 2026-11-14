@@ -22,12 +22,14 @@ import time
 from typing import Iterable, Optional
 
 from aibrix.logger import init_logger
-from aibrix.metadata.core.metrics.sink import Sink, Tag, normalize_tags
+from aibrix.metadata.core.metrics.sink import Sink, Tag, normalize_metric_tags
 
 logger = init_logger(__name__)
 
 _ADDR_CACHE_TTL_SECONDS = 30.0
 _DEFAULT_QUEUE_SIZE = 1024
+_FAILURE_BACKOFF_SECONDS = 5.0
+_DROP_LOG_INTERVAL_SECONDS = 30.0
 _VALID_OPENTSDB_CHARS = re.compile(r"[^A-Za-z0-9_\-./]")
 
 
@@ -90,6 +92,11 @@ class OpenTSDBSink(Sink):
         self._sockaddr: Optional[tuple] = None
         self._socket: Optional[socket.socket] = None
         self._resolved_at = 0.0
+        self._backoff_until = 0.0
+        self._drop_lock = threading.Lock()
+        self._dropped_payloads_total = 0
+        self._dropped_payloads_since_log = 0
+        self._last_drop_log_at = 0.0
         self._worker = threading.Thread(
             target=self._worker_loop,
             name="aibrix-opentsdb-metrics-sink",
@@ -177,10 +184,7 @@ class OpenTSDBSink(Sink):
         try:
             self._queue.put_nowait(payload)
         except queue.Full:
-            logger.warning(
-                "Dropped OpenTSDB metrics payload because the sink queue is full",
-                address=self._address,
-            )  # type: ignore[call-arg]
+            self._record_drop("queue_full")
 
     def _worker_loop(self) -> None:
         while True:
@@ -191,8 +195,14 @@ class OpenTSDBSink(Sink):
         self._close_socket()
 
     def _send_payload(self, payload: str) -> None:
+        if self._in_backoff():
+            self._record_drop("backend_backoff")
+            return
+
         destination = self._destination()
         if destination is None:
+            self._enter_backoff()
+            self._record_drop("connect_failure")
             return
 
         try:
@@ -200,10 +210,12 @@ class OpenTSDBSink(Sink):
         except Exception:
             logger.exception("Failed to emit OpenTSDB metrics payload", payload=payload)
             self._close_socket()
+            self._enter_backoff()
+            self._record_drop("send_failure")
 
     def _format(self, name: str, value: float, tags: tuple[Tag, ...]) -> str:
         timestamp = int(time.time())
-        all_tags = normalize_tags((*self._global_tags, *tags))
+        all_tags = normalize_metric_tags((*self._global_tags, *tags))
         tag_text = " ".join(
             f"{_sanitize(tag.name)}={_sanitize(tag.value)}" for tag in all_tags
         )
@@ -213,3 +225,29 @@ class OpenTSDBSink(Sink):
         if self._socket is not None:
             self._socket.close()
             self._socket = None
+
+    def _in_backoff(self) -> bool:
+        return time.monotonic() < self._backoff_until
+
+    def _enter_backoff(self) -> None:
+        self._backoff_until = time.monotonic() + _FAILURE_BACKOFF_SECONDS
+
+    def _record_drop(self, reason: str) -> None:
+        now = time.monotonic()
+        with self._drop_lock:
+            self._dropped_payloads_total += 1
+            self._dropped_payloads_since_log += 1
+            if now - self._last_drop_log_at < _DROP_LOG_INTERVAL_SECONDS:
+                return
+            dropped_since_log = self._dropped_payloads_since_log
+            dropped_total = self._dropped_payloads_total
+            self._dropped_payloads_since_log = 0
+            self._last_drop_log_at = now
+
+        logger.warning(
+            "Dropped OpenTSDB metrics payloads",
+            address=self._address,
+            reason=reason,
+            dropped_since_log=dropped_since_log,
+            dropped_total=dropped_total,
+        )  # type: ignore[call-arg]

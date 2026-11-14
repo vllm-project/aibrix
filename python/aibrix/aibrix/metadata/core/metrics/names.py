@@ -53,6 +53,11 @@ METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_COMPLETED = (
     "metadata.batch.driver.request.completed"
 )
 
+# Count of failed batch requests as they finish in the driver, tagged by failure code.
+METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_FAILURE = (
+    "metadata.batch.driver.request.failure"
+)
+
 # Token usage reported when a driver request finishes, tagged by token type.
 # Use rate() on this counter to derive per-second token throughput.
 METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_USAGE_TOKENS = (
@@ -118,3 +123,34 @@ METRIC_METADATA_JSON_TELEMETRY_EXCEPTION_COUNT = (
     "metadata.json.telemetry.exception_count"
 )
 METRIC_METADATA_JSON_TELEMETRY_SUMMARY = "metadata.json.telemetry.summary"
+
+# Structured metric emission telemetry family.
+METRIC_METADATA_METRICS_EMIT_TELEMETRY_SUMMARY = "metadata.metrics.emit.summary"
+
+# Number of metric samples emitted in the observation window.
+METRIC_METADATA_METRICS_EMIT_COUNT = "metadata.metrics.emit.count"
+
+# Metric samples emitted per second in the observation window.
+METRIC_METADATA_METRICS_EMIT_PER_SECOND = "metadata.metrics.emit.per_second"
+
+# Total cost to emit metric samples in the observation window, emitted in milliseconds.
+METRIC_METADATA_METRICS_EMIT_TOTAL_MS = "metadata.metrics.emit.total_ms"
+
+# Average cost to emit one metadata metric sample, emitted in microseconds.
+METRIC_METADATA_METRICS_EMIT_AVG_US = "metadata.metrics.emit.avg_us"
+
+# P90 cost to emit one metadata metric sample, emitted in microseconds.
+METRIC_METADATA_METRICS_EMIT_P90_US = "metadata.metrics.emit.p90_us"
+
+# Current metadata-service process RSS, emitted in megabytes.
+METRIC_METADATA_PROCESS_RSS_MB = "metadata.process.rss_mb"
+
+# Python generation-0 GC count.
+METRIC_METADATA_GC_GEN0_COUNT = "metadata.gc.gen0.count"
+
+# Python generation-1 GC count.
+METRIC_METADATA_GC_GEN1_COUNT = "metadata.gc.gen1.count"
+
+# Python generation-2 GC count. Gen2 is the compact pressure signal because it
+# represents full-heap collection pressure rather than short-lived young-gen churn.
+METRIC_METADATA_GC_GEN2_COUNT = "metadata.gc.gen2.count"

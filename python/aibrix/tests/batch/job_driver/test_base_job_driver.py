@@ -22,6 +22,7 @@ import pytest
 
 from aibrix.batch.batch_manager import BatchManager
 from aibrix.batch.client.engine import DispatchStatsSnapshot
+from aibrix.batch.client.errors import InferenceError, InferenceErrorCode
 from aibrix.batch.job_driver import (
     BaseJobDriver,
     ExternalRuntime,
@@ -480,6 +481,98 @@ def test_emit_request_completion_metrics_counts_finished_requests(monkeypatch):
     ]
 
 
+@pytest.mark.asyncio
+async def test_sync_completed_request_tasks_aggregates_failure_metrics(monkeypatch):
+    job = _make_job()
+    driver = _make_driver(job)
+    metric_calls: list[tuple[str, float, dict[str, str]]] = []
+
+    def _record_counter(name, value, *tags):
+        metric_calls.append((name, value, {tag.name: tag.value for tag in tags}))
+
+    async def _persist_worker_status(current_job):
+        return current_job
+
+    monkeypatch.setattr(Emitter, "counter", _record_counter)
+    monkeypatch.setattr(driver, "_persist_worker_status", _persist_worker_status)
+
+    http_500_tags = driver._request_failure_metric_tags(
+        InferenceError(
+            InferenceErrorCode.HTTP_ERROR,
+            "backend rejected request",
+            status_code=500,
+        )
+    )
+    transport_tags = driver._request_failure_metric_tags(
+        InferenceError(
+            InferenceErrorCode.TRANSPORT_ERROR,
+            "connection reset",
+        )
+    )
+
+    synced, completed = await driver._sync_completed_request_tasks(
+        job,
+        [
+            (1, True, http_500_tags),
+            (2, True, http_500_tags),
+            (3, True, transport_tags),
+            (4, False, None),
+            (5, True, None),
+        ],
+    )
+
+    assert synced is job
+    assert completed == 5
+    assert metric_calls == [
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_COMPLETED,
+            1,
+            {
+                "endpoint": job.spec.endpoint,
+                "completion_window": str(job.spec.completion_window),
+                "job_id": job.job_id,
+                "console_job_id": "none",
+                "result": "success",
+            },
+        ),
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_COMPLETED,
+            4,
+            {
+                "endpoint": job.spec.endpoint,
+                "completion_window": str(job.spec.completion_window),
+                "job_id": job.job_id,
+                "console_job_id": "none",
+                "result": "fail",
+            },
+        ),
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_FAILURE,
+            2,
+            {
+                "endpoint": job.spec.endpoint,
+                "completion_window": str(job.spec.completion_window),
+                "job_id": job.job_id,
+                "console_job_id": "none",
+                "error_code": "http_error",
+                "status_code": "500",
+            },
+        ),
+        (
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_FAILURE,
+            1,
+            {
+                "endpoint": job.spec.endpoint,
+                "completion_window": str(job.spec.completion_window),
+                "job_id": job.job_id,
+                "console_job_id": "none",
+                "error_code": "transport_error",
+                "status_code": "none",
+            },
+        ),
+    ]
+
+
 def test_emit_dispatch_telemetry_emits_overview_gauges(monkeypatch):
     job = _make_job()
     driver = _make_driver(job)
@@ -542,6 +635,21 @@ def test_emit_dispatch_telemetry_emits_overview_gauges(monkeypatch):
     assert summary_tags["log_context"] == "job_id"
     assert summary_tags["final"] == "false"
     assert T("flush", "true").value == summary_tags["flush"]
+
+
+def test_dispatch_telemetry_enabled_uses_env_switch(monkeypatch):
+    monkeypatch.setattr(base_module.envs, "BATCH_DISPATCH_TELEMETRY_ENABLED", False)
+    assert base_module._dispatch_telemetry_enabled() is False
+
+    monkeypatch.setattr(base_module.envs, "BATCH_DISPATCH_TELEMETRY_ENABLED", True)
+    assert base_module._dispatch_telemetry_enabled() is True
+
+    monkeypatch.setattr(
+        base_module.envs,
+        "BATCH_DISPATCH_TELEMETRY_INTERVAL_SECONDS",
+        12.5,
+    )
+    assert base_module._telemetry_interval_seconds() == 12.5
 
 
 def test_request_usage_metrics_emit_when_request_finishes(monkeypatch):

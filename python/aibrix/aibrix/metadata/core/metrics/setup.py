@@ -21,10 +21,10 @@ from aibrix.logger import init_logger
 from aibrix.metadata.core.metrics.sink import (
     Emitter,
     FanoutSink,
-    MetricEmissionObserver,
     NoopSink,
     ObservedSink,
     Sink,
+    SystemTelemetry,
     Tag,
     describe_sink,
 )
@@ -45,7 +45,7 @@ class MetricsRuntime:
     sink: Sink
     registry: CollectorRegistry | None = None
     metrics_app: ASGIApp | None = None
-    observer: MetricEmissionObserver | None = None
+    observer: SystemTelemetry | None = None
 
 
 def setup_metrics(config: MetricsConfig | None = None) -> MetricsRuntime:
@@ -117,10 +117,11 @@ def setup_metrics(config: MetricsConfig | None = None) -> MetricsRuntime:
     else:
         sink = sinks[0] if len(sinks) == 1 else FanoutSink(sinks)
 
-    observer: MetricEmissionObserver | None = None
-    if config.emit_observation_enabled:
-        observer = MetricEmissionObserver(
-            interval_seconds=config.emit_observation_interval_seconds,
+    observer: SystemTelemetry | None = None
+    if config.system_telemetry_enabled:
+        observer = SystemTelemetry(
+            sink=sink,
+            interval_seconds=config.system_telemetry_interval_seconds,
             active_metric_backend=describe_sink(sink),
         )
         sink = ObservedSink(sink, observer)

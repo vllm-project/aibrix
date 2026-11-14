@@ -19,28 +19,17 @@ from fnmatch import fnmatchcase
 from typing import Any, Iterable
 
 from aibrix.logger import init_logger
-from aibrix.metadata.core.metrics.sink import Sink, Tag, normalize_tags
+from aibrix.metadata.core.metrics.sink import (
+    LOG_CONTROL_TAGS,
+    Sink,
+    Tag,
+    normalize_tags,
+)
 
 logger = init_logger(__name__)
 
 _DEFAULT_MAX_PENDING_EVENTS = 1024
-_CONTROL_TAGS = {
-    "flush",
-    "log_context",
-    "log_context_bool",
-    "log_context_null_if_empty",
-    "log_default_map",
-    "log_default_null",
-    "log_field",
-    "log_group",
-    "log_inner",
-    "log_index",
-    "log_key",
-    "log_list",
-    "log_map",
-    "log_nested_map",
-    "log_outer",
-}
+_CONTROL_TAGS = LOG_CONTROL_TAGS
 
 
 class LogSink(Sink):

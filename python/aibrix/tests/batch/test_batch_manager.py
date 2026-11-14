@@ -1331,6 +1331,60 @@ async def test_conclude_job_emits_finished_metrics_once_when_repeated(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_conclude_job_uses_entity_manager_old_job_for_bridge_verb():
+    class _RecordingEM(MockJobEntityManager):
+        def __init__(self) -> None:
+            super().__init__(delay=0.0)
+            self.update_calls = 0
+            self.cancel_calls = 0
+
+        async def update_job_status(self, job: BatchJob) -> None:
+            self.update_calls += 1
+            await super().update_job_status(job)
+
+        async def cancel_job(self, job: BatchJob):
+            self.cancel_calls += 1
+            await super().cancel_job(job)
+
+    _set_current_loop_name("test_conclude_job_uses_authoritative_old_job")
+    job_manager = _job_manager()
+    job_entity_manager = _RecordingEM()
+    await job_manager.set_job_entity_manager(job_entity_manager)
+
+    old_job = BatchJob(
+        sessionID="sess-supplied-old",
+        typeMeta=TypeMeta(apiVersion="v1", kind="BatchJob"),
+        metadata=ObjectMeta(resourceVersion="1", creationTimestamp=datetime.now()),
+        spec=BatchJobSpec(
+            input_file_id="f-supplied-old",
+            endpoint="/v1/chat/completions",
+            completion_window=86400,
+        ),
+        status=BatchJobStatus(
+            jobID="job-supplied-old",
+            state=BatchJobState.IN_PROGRESS,
+            createdAt=datetime.now(),
+            inProgressAt=datetime.now(),
+        ),
+    )
+    finished_job = old_job.copy()
+    finished_job.status.state = BatchJobState.FINALIZED
+    finished_job.status.finalized_at = datetime.now()
+    stale_supplied_old_job = old_job.copy()
+    stale_supplied_old_job.status.errors = [
+        BatchJobError(code=BatchJobErrorCode.UNKNOWN_ERROR, message="stale")
+    ]
+    job_entity_manager.jobs[old_job.job_id] = old_job.model_copy(deep=True)
+
+    assert await job_manager.conclude_job(finished_job, stale_supplied_old_job) is True
+    assert job_entity_manager.update_calls == 1
+    assert job_entity_manager.cancel_calls == 0
+    assert (
+        job_entity_manager.jobs[old_job.job_id].status.state == BatchJobState.FINALIZED
+    )
+
+
+@pytest.mark.asyncio
 async def test_admit_persists_in_progress_transition(monkeypatch):
     """The VALIDATING->IN_PROGRESS transition in admit() must be flushed to the
     metastore so the console reflects execution start. Without it the job

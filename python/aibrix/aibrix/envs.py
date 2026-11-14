@@ -167,6 +167,8 @@ METRICS_PROMETHEUS_ENABLED = _is_true(os.getenv("METRICS_PROMETHEUS_ENABLED", "0
 METRICS_STATSD_ADDR = os.getenv("METRICS_STATSD_ADDR", "")
 METRICS_STATSITE_ADDR = os.getenv("METRICS_STATSITE_ADDR", "")
 METRICS_DOGSTATSD_ADDR = os.getenv("METRICS_DOGSTATSD_ADDR", "")
+# OpenTSDB deployments must allow at least 8 tags per data point
+# (`tsd.storage.max_tags >= 8`) for AIBrix metadata telemetry.
 METRICS_OPENTSDB_ADDR = os.getenv("METRICS_OPENTSDB_ADDR", "")
 METRICS_OPENTSDB_PREFIX = os.getenv("METRICS_OPENTSDB_PREFIX", "")
 METRICS_OPENTSDB_TIMEOUT_SECONDS = float(
@@ -184,12 +186,6 @@ METRICS_LOG_INCLUDE = [
 METRICS_LOG_EXCLUDE = [
     item for item in (_parse_list_str(os.getenv("METRICS_LOG_EXCLUDE")) or []) if item
 ]
-METRICS_EMIT_OBSERVATION_ENABLED = _is_true(
-    os.getenv("METRICS_EMIT_OBSERVATION_ENABLED", "0")
-)
-METRICS_EMIT_OBSERVATION_INTERVAL_SECONDS = float(
-    os.getenv("METRICS_EMIT_OBSERVATION_INTERVAL_SECONDS", "10")
-)
 
 # Metrics transformation config
 METRICS_ENABLE_TRANSFORMATION = _is_true(
@@ -205,6 +201,20 @@ INFERENCE_ENGINE_ENDPOINT = os.getenv(
 )
 INFERENCE_ENGINE_API_KEY = os.getenv("INFERENCE_ENGINE_API_KEY")
 INFERENCE_TASK_TIMEOUT = int(os.getenv("INFERENCE_TASK_TIMEOUT", "600"))
+
+# Metadata service telemetry config.
+#
+# When enabled, metadata metrics are wrapped by SystemTelemetry. Each emitted
+# metric records metric-pipeline cost, and periodic snapshots are sent through
+# the configured metrics sinks. With METRICS_LOG_ENABLED, those snapshots become
+# structured log records that can be collected into CSV artifacts. With
+# Prometheus/OpenTSDB enabled, the same samples are exported as dashboard metrics.
+METADATA_SERVICE_TELEMETRY_ENABLE = _is_true(
+    os.getenv("METADATA_SERVICE_TELEMETRY_ENABLE", "0")
+)
+METADATA_SERVICE_TELEMETRY_INTERVAL_SECONDS = float(
+    os.getenv("METADATA_SERVICE_TELEMETRY_INTERVAL_SECONDS", "10")
+)
 
 # Metadata service HTTPX client config.
 #
@@ -249,4 +259,21 @@ JSON_PROFILER_TELEMETRY_INTERVAL_SECONDS = max(
         60.0,
     ),
     1.0,
+)
+
+# Batch dispatch engine telemetry used by stress experiments. It emits
+# aggregated dispatch windows through the metrics sink, which can also be logged
+# into CSV artifacts.
+BATCH_DISPATCH_TELEMETRY_ENABLED = _is_true(
+    os.getenv("AIBRIX_BATCH_DISPATCH_TELEMETRY_ENABLED", "0")
+)
+BATCH_DISPATCH_TELEMETRY_INTERVAL_SECONDS = max(
+    _parse_float(
+        os.getenv(
+            "AIBRIX_BATCH_DISPATCH_TELEMETRY_INTERVAL_SECONDS",
+            os.getenv("AIBRIX_BATCH_TELEMETRY_INTERVAL_SECONDS", "5.0"),
+        ),
+        5.0,
+    ),
+    0.0,
 )
