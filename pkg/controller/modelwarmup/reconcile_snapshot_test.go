@@ -111,9 +111,13 @@ func TestBuildReconcileSnapshotCalculatesMissingNodesAndCapacity(t *testing.T) {
 	completed.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
 	stale := snapshotJob(warmup, "stale", "node-d", "old")
 
-	snapshot := buildReconcileSnapshot(warmup, "rev", targets, map[string]string{"missing-node": "NodeNotFound"}, []batchv1.Job{*running, *completed, *stale})
+	snapshot := buildReconcileSnapshot(warmup, "rev", targets, map[string]missingTarget{
+		"missing-node": {Reason: "NodeNotFound", Message: "node was not found"},
+	}, []batchv1.Job{*running, *completed, *stale})
 
-	require.Equal(t, map[string]string{"missing-node": "NodeNotFound"}, snapshot.Missing)
+	require.Equal(t, map[string]missingTarget{
+		"missing-node": {Reason: "NodeNotFound", Message: "node was not found"},
+	}, snapshot.Missing)
 	require.Equal(t, []string{"node-c", "node-e"}, snapshot.MissingNodes)
 	require.Equal(t, []batchv1.Job{*stale}, snapshot.StaleActiveJobs)
 	require.Equal(t, int32(2), snapshot.ActiveJobs)
@@ -337,7 +341,9 @@ func TestResolveTargetsFromNodes(t *testing.T) {
 
 		require.NoError(t, err)
 		require.Empty(t, targets)
-		require.Equal(t, map[string]string{"missing-node": "NodeNotFound"}, missing)
+		require.Equal(t, map[string]missingTarget{
+			"missing-node": {Reason: "NodeNotFound", Message: "node was not found"},
+		}, missing)
 	})
 
 	t.Run("unauthorized explicit node", func(t *testing.T) {
@@ -349,7 +355,9 @@ func TestResolveTargetsFromNodes(t *testing.T) {
 
 		require.NoError(t, err)
 		require.Empty(t, targets)
-		require.Equal(t, map[string]string{"node-disabled": "NodeNotAuthorized"}, missing)
+		require.Equal(t, map[string]missingTarget{
+			"node-disabled": {Reason: "NodeNotAuthorized", Message: "node is not authorized for this namespace"},
+		}, missing)
 	})
 
 	t.Run("unauthorized selector match", func(t *testing.T) {
@@ -361,7 +369,9 @@ func TestResolveTargetsFromNodes(t *testing.T) {
 
 		require.NoError(t, err)
 		require.Empty(t, targets)
-		require.Equal(t, map[string]string{"node-disabled": "NodeNotAuthorized"}, missing)
+		require.Equal(t, map[string]missingTarget{
+			"node-disabled": {Reason: "NodeNotAuthorized", Message: "node is not authorized for this namespace"},
+		}, missing)
 	})
 
 	t.Run("control plane nodes are unauthorized", func(t *testing.T) {
@@ -373,9 +383,9 @@ func TestResolveTargetsFromNodes(t *testing.T) {
 
 		require.NoError(t, err)
 		require.Empty(t, targets)
-		require.Equal(t, map[string]string{
-			"node-control-plane": "NodeNotAuthorized",
-			"node-master":        "NodeNotAuthorized",
+		require.Equal(t, map[string]missingTarget{
+			"node-control-plane": {Reason: "NodeNotAuthorized", Message: controlPlaneExclusionMessage},
+			"node-master":        {Reason: "NodeNotAuthorized", Message: controlPlaneExclusionMessage},
 		}, missing)
 	})
 

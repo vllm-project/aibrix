@@ -162,6 +162,26 @@ func TestReconcileOnceDoesNotRereadAFailureItRecorded(t *testing.T) {
 	require.Zero(t, live.reads)
 }
 
+func TestReconcileOnceDoesNotRereadRecordedControlPlaneExclusion(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 2)
+	warmup.Spec.Targets[0].Nodes.Names = []string{nodes[0].Name, nodes[1].Name}
+	nodes[1].Labels["node-role.kubernetes.io/control-plane"] = ""
+	warmup.Status.Phase = modelv1alpha1.ModelWarmupRunning
+	warmup.Status.ObservedRevision = revisionFor(warmup)
+	warmup.Status.Targets = []modelv1alpha1.ModelWarmupTargetStatus{{
+		NodeName: nodes[1].Name, Revision: revisionFor(warmup),
+		Phase: modelv1alpha1.ModelWarmupTargetFailed, Reason: "NodeNotAuthorized",
+	}}
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes)
+	live := &countingReader{Reader: fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(namespace.DeepCopy(), nodes[0].DeepCopy(), nodes[1].DeepCopy()).Build()}
+	r := &ModelWarmupReconciler{Client: counting, APIReader: live, Scheme: scheme}
+
+	require.NoError(t, reconcileOnce(r, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}))
+
+	require.Zero(t, live.reads)
+}
+
 // More nodes than maxNodeRereads are read in one list of the nodes that the
 // Namespace's pool authorizes, rather than one request each.
 func TestReconcileOnceListsThePoolsNodesWhenManyNeedRereading(t *testing.T) {
@@ -415,6 +435,70 @@ func TestReconcileContinuousIgnoresMissingAndUnauthorizedTargets(t *testing.T) {
 	require.Zero(t, updated.Status.FailedNodes)
 	require.Empty(t, updated.Status.Targets)
 	require.Equal(t, "TargetsUnavailableOrUnauthorized", mustCondition(updated.Status.Conditions, "Ready").Reason)
+}
+
+func TestReconcileContinuousExplainsControlPlaneExclusion(t *testing.T) {
+	warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+	warmup.Spec.Mode = modelv1alpha1.ModelWarmupModeContinuous
+	nodes[0].Labels["node-role.kubernetes.io/control-plane"] = ""
+	counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes)
+	r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+	require.NoError(t, reconcileOnce(r, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}))
+	updated := &modelv1alpha1.ModelWarmup{}
+	require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+	require.Equal(t, modelv1alpha1.ModelWarmupPending, updated.Status.Phase)
+	require.Contains(t, mustCondition(updated.Status.Conditions, "Ready").Message,
+		"control-plane nodes are not eligible for ModelWarmup")
+	require.Zero(t, counting.createCalls)
+}
+
+func TestReconcileExplainsControlPlaneTargetExclusion(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		roleLabel   string
+		wrongPool   bool
+		wantMessage string
+	}{
+		{"control-plane role", "node-role.kubernetes.io/control-plane", false, "control-plane nodes are not eligible for ModelWarmup"},
+		{"master role", "node-role.kubernetes.io/master", false, "control-plane nodes are not eligible for ModelWarmup"},
+		{"pool mismatch", "", true, "node is not authorized for this namespace"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			warmup, namespace, nodes, scheme := reconcileTestObjects(t, 1)
+			warmup.Spec.Targets = []modelv1alpha1.ModelWarmupTarget{{
+				Nodes: &modelv1alpha1.ModelWarmupNodesTarget{Names: []string{nodes[0].Name}},
+			}}
+			if tc.roleLabel != "" {
+				nodes[0].Labels[tc.roleLabel] = ""
+			}
+			if tc.wrongPool {
+				nodes[0].Labels[ResourcePoolLabelKey] = "other"
+			}
+			counting := newCountingModelWarmupClient(scheme, warmup, namespace, nodes)
+			r := &ModelWarmupReconciler{Client: counting, Scheme: scheme}
+
+			require.NoError(t, reconcileOnce(r, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(warmup)}))
+			updated := &modelv1alpha1.ModelWarmup{}
+			require.NoError(t, r.Get(context.Background(), client.ObjectKeyFromObject(warmup), updated))
+			require.Len(t, updated.Status.Targets, 1)
+			status := updated.Status.Targets[0]
+			require.Equal(t, modelv1alpha1.ModelWarmupTargetFailed, status.Phase)
+			require.Equal(t, "NodeNotAuthorized", status.Reason)
+			require.Equal(t, tc.wantMessage, status.Message)
+			require.Zero(t, counting.createCalls)
+		})
+	}
+}
+
+func TestSummarizeMissingReasonsUsesRecordedControlPlaneReason(t *testing.T) {
+	warmup, namespace, nodes, _ := reconcileTestObjects(t, 1)
+	nodes[0].Labels["node-role.kubernetes.io/control-plane"] = ""
+
+	_, missing, err := resolveTargetsFromNodes(warmup, namespace, nodes)
+
+	require.NoError(t, err)
+	require.Equal(t, map[string]int{"NodeNotAuthorized": 1}, summarizeMissingReasons(missing))
 }
 
 func TestReconcileContinuousReportsMissingNamespacePool(t *testing.T) {
@@ -1167,7 +1251,7 @@ func TestResolveTargetsReportsMissingExplicitNode(t *testing.T) {
 	targets, missing, err := r.resolveTargets(context.Background(), warmup)
 	require.NoError(t, err)
 	require.Empty(t, targets)
-	require.Equal(t, "NodeNotFound", missing["missing-node"])
+	require.Equal(t, "NodeNotFound", missing["missing-node"].Reason)
 }
 
 func TestResolveTargetsRejectsUnauthorizedNodes(t *testing.T) {
@@ -1189,7 +1273,7 @@ func TestResolveTargetsRejectsUnauthorizedNodes(t *testing.T) {
 	targets, missing, err := r.resolveTargets(context.Background(), warmup)
 	require.NoError(t, err)
 	require.Empty(t, targets)
-	require.Equal(t, "NodeNotAuthorized", missing["node-b"])
+	require.Equal(t, "NodeNotAuthorized", missing["node-b"].Reason)
 }
 
 func TestTargetLimitIncludesMissingNodes(t *testing.T) {
@@ -1199,7 +1283,9 @@ func TestTargetLimitIncludesMissingNodes(t *testing.T) {
 		targets[name] = resolvedTarget{NodeName: name, Sources: []string{"target[0]"}}
 	}
 	require.True(t, withinTargetLimit(targets, nil))
-	require.False(t, withinTargetLimit(targets, map[string]string{"missing": "NodeNotFound"}))
+	require.False(t, withinTargetLimit(targets, map[string]missingTarget{
+		"missing": {Reason: "NodeNotFound", Message: "node was not found"},
+	}))
 }
 
 func TestRevisionChangesOnlyForImageWorkloadInputs(t *testing.T) {
@@ -1501,9 +1587,9 @@ func TestUpdateStatusBoundsDetailsAndSerializedSize(t *testing.T) {
 	require.NoError(t, batchv1.AddToScheme(scheme))
 	r := &ModelWarmupReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(warmup).WithObjects(warmup).Build()}
-	missing := make(map[string]string, modelv1alpha1.MaxModelWarmupTargets)
+	missing := make(map[string]missingTarget, modelv1alpha1.MaxModelWarmupTargets)
 	for i := 0; i < modelv1alpha1.MaxModelWarmupTargets; i++ {
-		missing[fmt.Sprintf("node-%04d", i)] = "NodeNotFound"
+		missing[fmt.Sprintf("node-%04d", i)] = missingTarget{Reason: "NodeNotFound", Message: "node was not found"}
 	}
 
 	_, err := r.updateStatus(context.Background(), warmup, "rev", nil, missing, nil, nil, "", "")
@@ -1543,7 +1629,7 @@ func TestUpdateStatusRetainsFailedDetailsBeforePendingWhenTruncated(t *testing.T
 	}
 
 	_, err := r.updateStatus(context.Background(), warmup, "rev", targets,
-		map[string]string{"zzz-failed": "NodeNotFound"}, nil, nil, "", "")
+		map[string]missingTarget{"zzz-failed": {Reason: "NodeNotFound", Message: "node was not found"}}, nil, nil, "", "")
 	require.NoError(t, err)
 	require.EqualValues(t, modelv1alpha1.MaxModelWarmupTargetDetails+1, warmup.Status.DesiredNodes)
 	require.Equal(t, int32(1), warmup.Status.FailedNodes)
