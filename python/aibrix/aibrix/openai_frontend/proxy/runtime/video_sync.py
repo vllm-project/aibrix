@@ -30,7 +30,7 @@ from aibrix.runtime.downloaders import await_thread_completion
 
 logger = logging.getLogger(__name__)
 
-VIDEO_SYNC_TIMEOUT_SECONDS = float(os.getenv("VLLM_OMNI_VIDEO_SYNC_TIMEOUT", "600"))
+VIDEO_SYNC_TIMEOUT_SECONDS = float(os.getenv("VLLM_OMNI_VIDEO_SYNC_TIMEOUT", "3600"))
 VIDEO_JOB_ID_TIMEOUT_SECONDS = 10.0
 VIDEO_DELETE_TIMEOUT_SECONDS = 30.0
 VIDEO_POLL_INTERVAL_SECONDS = 0.5
