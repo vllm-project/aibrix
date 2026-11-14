@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -86,9 +88,13 @@ func TestSelectTargetPod_AllCandidatesSaturated(t *testing.T) {
 	t.Cleanup(routeCtx.Delete)
 	routeCtx.ConfigProfile = inflightProfile(1, 2)
 
+	before := inflightRejectionCount(t, "m", inflightScopeCandidates)
 	_, err := s.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: pods}, "")
 	require.True(t, errors.Is(err, errReplicaInflightExceeded),
 		"every candidate is at the cap, so the request is rejected with the existing overload error")
+	require.NotNil(t, inflightRejections, "the rejection counter is registered on first use")
+	assert.Equal(t, before+1, inflightRejectionCount(t, "m", inflightScopeCandidates),
+		"the rejection is counted against the candidate set")
 	require.Len(t, readSizes, 1, "the decision reads the running counts once")
 	assert.LessOrEqual(t, readSizes[0], 2,
 		"the filter reads the candidate set, not the ready set: got %d pods of %d", readSizes[0], len(pods))
@@ -155,9 +161,13 @@ func TestSelectTargetPod_PDSaturatedRejectsBeforeEngineValidation(t *testing.T) 
 	t.Cleanup(routeCtx.Delete)
 	routeCtx.ConfigProfile = inflightProfile(1, 0)
 
+	before := inflightRejectionCount(t, "m", inflightScopeFleet)
 	_, err := s.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: pods}, "")
 	require.True(t, errors.Is(err, errReplicaInflightExceeded),
 		"the cap is checked before engine validation, so mixed engines do not mask the 429: %v", err)
+	require.NotNil(t, inflightRejections, "the rejection counter is registered on first use")
+	assert.Equal(t, before+1, inflightRejectionCount(t, "m", inflightScopeFleet),
+		"an exclusive strategy checks the cap on the ready set, so the rejection is fleet scoped")
 	assert.NotContains(t, err.Error(), "inconsistent LLM engines")
 }
 
@@ -193,3 +203,146 @@ func TestSelectTargetPod_CandidateReadErrorFailsOpen(t *testing.T) {
 	require.NoError(t, err, "a failed running-request read fails open, it does not reject the request")
 	assert.Equal(t, 2, routed, "the candidate set reaches the router unchanged")
 }
+
+// TestSelectTargetPod_PartialSaturationOnCandidateSet covers the narrowing path rather than the
+// plain filter: with K=2 the stage keeps one ranked pod and one random pod. The pod at the cap is
+// also the best estimated pod, so it takes the ranked slot and must be dropped by the filter,
+// leaving exactly one admissible pod for the router.
+func TestSelectTargetPod_PartialSaturationOnCandidateSet(t *testing.T) {
+	pods := []*v1.Pod{
+		podWithReplicaInflight("a", 1),
+		podWithReplicaInflight("b", 1),
+		podWithReplicaInflight("c", 1),
+		podWithReplicaInflight("d", 1),
+	}
+	mockCache := &MockCache{}
+	mockCache.On("GetPodsRunningRequests", mock.Anything).
+		Return(map[string]int64{"ns/a": 1, "ns/b": 0, "ns/c": 0, "ns/d": 0}, nil)
+
+	var routed []string
+	estimates := estimateRouter{scores: map[string]float64{"a": 100, "b": 1, "c": 0, "d": 0},
+		route: func(ctx *types.RoutingContext, list types.PodList) (string, error) {
+			for _, pod := range list.All() {
+				routed = append(routed, pod.Name)
+			}
+			ctx.SetTargetPod(list.All()[0])
+			return ctx.TargetAddress(), nil
+		}}
+	manager := routing.NewRouterManager()
+	manager.RegisterProvider(routing.RouterLeastRequest, func(*types.RoutingContext) (types.Router, error) {
+		return estimates, nil
+	})
+	s := &Server{cache: mockCache, routerManager: manager}
+
+	routeCtx := types.NewRoutingContext(context.Background(), routing.RouterLeastRequest, "m", "hello", "r5", "")
+	t.Cleanup(routeCtx.Delete)
+	routeCtx.ConfigProfile = inflightProfile(1, 2)
+
+	_, err := s.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: pods}, "")
+	require.NoError(t, err)
+	require.Len(t, routed, 1, "the ranked slot was the pod at the cap, so one pod is left")
+	assert.NotEqual(t, "a", routed[0], "a saturated pod never reaches the router")
+	assert.NotEqual(t, "a", routeCtx.TargetPod().Name)
+}
+
+// TestSelectTargetPod_GateRunsAfterFilter pins the order the gate depends on. The saturated pod
+// also carries the highest count, so a gate placed before the filter would see a spread of 1 over
+// the ready set, record a load-imbalance event, and trim the set. After the filter it sees two
+// idle pods, which is not imbalanced, and the counter stays put. The profile lowers
+// imbalanceFactor so a spread of 1 counts as imbalanced for the three-pod comparison.
+func TestSelectTargetPod_GateRunsAfterFilter(t *testing.T) {
+	const model = "gate-order-test"
+	pods := []*v1.Pod{
+		podWithReplicaInflight("a", 1),
+		podWithReplicaInflight("b", 1),
+		podWithReplicaInflight("c", 1),
+	}
+	mockCache := &MockCache{}
+	mockCache.On("GetPodsRunningRequests", mock.Anything).
+		Return(map[string]int64{"ns/a": 1, "ns/b": 0, "ns/c": 0}, nil)
+
+	manager := routing.NewRouterManager()
+	manager.RegisterProvider(routing.RouterLeastRequest, func(*types.RoutingContext) (types.Router, error) {
+		return routeFunc(func(ctx *types.RoutingContext, list types.PodList) (string, error) {
+			ctx.SetTargetPod(list.All()[0])
+			return ctx.TargetAddress(), nil
+		}), nil
+	})
+	s := &Server{cache: mockCache, routerManager: manager}
+
+	routeCtx := types.NewRoutingContext(context.Background(), routing.RouterLeastRequest, model, "hello", "r6", "")
+	t.Cleanup(routeCtx.Delete)
+	profile := inflightProfile(1, 0)
+	raw := json.RawMessage(`{"loadBalance":{"imbalanceFactor":0.5,"imbalanceMinGap":1}}`)
+	profile.RoutingConfig = raw
+	profile.Routing = configprofiles.ParseRoutingConfig(raw)
+	routeCtx.ConfigProfile = profile
+
+	before := loadImbalanceCount(t, model)
+	_, err := s.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: pods}, "")
+	require.NoError(t, err)
+	assert.Equal(t, before, loadImbalanceCount(t, model),
+		"the gate compares only the pods that can still admit, so the saturated pod cannot trigger it")
+}
+
+// inflightRejectionCount reads the rejection counter for one model and scope. The counter is
+// created on first use, and the test that calls this has already caused a rejection.
+func inflightRejectionCount(t *testing.T, model, scope string) float64 {
+	t.Helper()
+	if inflightRejections == nil {
+		return 0
+	}
+	return testutil.ToFloat64(inflightRejections.WithLabelValues(model, scope))
+}
+
+// loadImbalanceCount reads aibrix_load_imbalance_total for one model out of the default
+// registry, and reports 0 when the metric has never been recorded.
+func loadImbalanceCount(t *testing.T, model string) float64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	for _, family := range families {
+		if family.GetName() != "aibrix_load_imbalance_total" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == "model" && label.GetValue() == model {
+					return metric.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// estimateRouter routes to the first pod it is handed and reports a fixed estimate per pod name,
+// so the candidate stage's ranked slot is deterministic.
+type estimateRouter struct {
+	scores map[string]float64
+	route  func(ctx *types.RoutingContext, pods types.PodList) (string, error)
+}
+
+func (r estimateRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+	return r.route(ctx, pods)
+}
+
+func (r estimateRouter) ScoreAll(_ *types.RoutingContext, pods types.PodList) ([]float64, []bool, error) {
+	scores := make([]float64, pods.Len())
+	scored := make([]bool, pods.Len())
+	for i, pod := range pods.All() {
+		scores[i] = r.scores[pod.Name]
+		scored[i] = true
+	}
+	return scores, scored, nil
+}
+
+func (r estimateRouter) CandidateScores(ctx *types.RoutingContext, pods types.PodList) ([]float64, []bool, error) {
+	return r.ScoreAll(ctx, pods)
+}
+
+func (r estimateRouter) Polarity() types.Polarity { return types.PolarityMost }
+
+// The single-candidate fast path would skip Route for a one-pod set, and this test needs the
+// router to see the filtered set.
+func (r estimateRouter) BypassSingleCandidate() bool { return false }
