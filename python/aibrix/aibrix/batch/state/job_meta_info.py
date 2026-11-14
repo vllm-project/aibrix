@@ -20,7 +20,10 @@ and the single-job worker path — neither reimplements the progress bitmap;
 both delegate to the tracker here.
 """
 
+from datetime import datetime
 from typing import Optional
+
+from pydantic import PrivateAttr
 
 from aibrix.batch.job_driver.driver import JobDriver
 from aibrix.batch.job_entity import BatchJob
@@ -32,6 +35,8 @@ class JobMetaInfo(BatchJob):
     per-request JobProgressTracker. Progress operations delegate to the tracker
     (which mutates this job's status in place).
     """
+
+    _scheduling_started_at: Optional[datetime] = PrivateAttr(default=None)
 
     def __init__(self, job: BatchJob):
         """
@@ -52,6 +57,14 @@ class JobMetaInfo(BatchJob):
         # does NOT inherit BatchJob); JobMetaInfo just delegates to it. The
         # tracker mutates this job's status, so behavior is unchanged.
         self._tracker = JobProgressTracker(self)
+
+    @property
+    def scheduling_started_at(self) -> Optional[datetime]:
+        return self._scheduling_started_at
+
+    @scheduling_started_at.setter
+    def scheduling_started_at(self, value: Optional[datetime]) -> None:
+        self._scheduling_started_at = value
 
     @property
     def batch_job(self) -> BatchJob:

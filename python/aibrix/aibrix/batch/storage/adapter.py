@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import json
 import math
+import time
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, cast
 
@@ -34,6 +35,8 @@ from aibrix.batch.storage.batch_metastore import (
     unlock_request,
 )
 from aibrix.logger import init_logger
+from aibrix.metadata.core import JsonProfiler
+from aibrix.metadata.core.metrics import Emitter, T
 from aibrix.storage.base import (
     LOCAL_PART_PROVIDER_MARKER,
     LOCAL_PART_PROVIDER_MARKER_VALUE,
@@ -41,7 +44,9 @@ from aibrix.storage.base import (
 )
 
 logger = init_logger(__name__)
+JSON_PROFILER = JsonProfiler(purpose="batch_json")
 
+BATCH_FINALIZE_TELEMETRY_EVENT = "Batch finalize telemetry summary"
 UNREADABLE_COMPLETED_OUTPUT_PART_MESSAGE = (
     "Failed to read completed request output part during batch finalization"
 )
@@ -68,6 +73,102 @@ class BatchStorageAdapter:
         if request_timeout_seconds is None:
             return timeout_seconds
         return max(1, math.ceil(float(request_timeout_seconds)))
+
+    def _emit_finalize_stage_duration(
+        self,
+        job_id: str,
+        stage: str,
+        start: float,
+        **fields: int | float | str | bool | None,
+    ) -> None:
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        base_tags = (
+            T("event", BATCH_FINALIZE_TELEMETRY_EVENT),
+            T("job_id", job_id),
+            T("stage", stage),
+            T("log_context", "job_id"),
+            T("log_group", job_id),
+        )
+        Emitter.timer(
+            "batch_finalize_stage_duration_ms",
+            duration_ms,
+            *base_tags,
+            T("log_map", "stage_duration_ms"),
+            T("log_key", stage),
+        )
+        for field_name, field_value in fields.items():
+            numeric_value = self._numeric_metric_value(field_value)
+            if numeric_value is None:
+                continue
+            Emitter.gauge(
+                "batch_finalize_stage_field",
+                numeric_value,
+                *base_tags,
+                T("log_nested_map", "stage_fields"),
+                T("log_outer", stage),
+                T("log_inner", field_name),
+                T("field", field_name),
+            )
+
+    def _emit_finalize_stage_items(
+        self,
+        job_id: str,
+        stage: str,
+        item_name: str,
+        value: int,
+    ) -> None:
+        Emitter.gauge(
+            "batch_finalize_stage_items",
+            float(value),
+            T("event", BATCH_FINALIZE_TELEMETRY_EVENT),
+            T("job_id", job_id),
+            T("stage", stage),
+            T("item", item_name),
+            T("log_context", "job_id"),
+            T("log_group", job_id),
+            T("log_nested_map", "stage_items"),
+            T("log_outer", stage),
+            T("log_inner", item_name),
+        )
+
+    def _emit_finalize_job_total_duration(
+        self,
+        job_id: str,
+        start: float,
+        *,
+        failed_finalize: bool,
+    ) -> None:
+        failed_finalize_tag = T("failed_finalize", str(failed_finalize).lower())
+        Emitter.timer(
+            "batch_finalize_job_total_duration_ms",
+            (time.perf_counter() - start) * 1000.0,
+            T("event", BATCH_FINALIZE_TELEMETRY_EVENT),
+            T("job_id", job_id),
+            failed_finalize_tag,
+            T("log_context", "job_id"),
+            T("log_group", job_id),
+            T("log_field", "job_total_duration_ms"),
+        )
+        Emitter.gauge(
+            "batch_finalize_job_summary",
+            1.0,
+            T("event", BATCH_FINALIZE_TELEMETRY_EVENT),
+            T("job_id", job_id),
+            failed_finalize_tag,
+            T("log_context", "job_id,failed_finalize"),
+            T("log_group", job_id),
+            T("flush", "true"),
+        )
+
+    def _numeric_metric_value(
+        self,
+        value: int | float | str | bool | None,
+    ) -> float | None:
+        if value is None or isinstance(value, str):
+            return None
+        if isinstance(value, bool):
+            return 1.0 if value else 0.0
+        return float(value)
 
     async def write_job_input_data(
         self, file_id: str, input_data_file_name: str
@@ -160,7 +261,11 @@ class BatchStorageAdapter:
                     locked = True
 
             if locked:
-                request_data = json.loads(line)
+                request_data = JSON_PROFILER.profile(
+                    "batch.input.json_loads",
+                    json.loads,
+                    line,
+                )
                 request_data["_request_index"] = idx  # Add index for tracking
                 request_data["_done"] = done  # return done requests so far
                 logger.debug(
@@ -370,6 +475,7 @@ class BatchStorageAdapter:
             )  # type: ignore[call-arg]
             return job
 
+        total_start = time.perf_counter()
         prefix = self._get_request_meta_output_key(job, None)
         output: List[Dict[str, str | int]] = []
         error: List[Dict[str, str | int]] = []
@@ -385,212 +491,393 @@ class BatchStorageAdapter:
         missing_keys = 0
         pending_keys = 0
 
-        while True:
-            # 1. Get keys
-            keys, continuation_token = await list_metastore_keys(
-                prefix,
-                limit=METASTORE_LIST_PAGE_SIZE,
-                continuation_token=continuation_token,
-            )
-
-            logger.debug(
-                "Metastore key batch found during job finalizing",
-                job_id=job.job_id,
-                prefix=prefix,
-                key_count=len(keys),
-                continuation_token=continuation_token,
-            )  # type: ignore[call-arg]
-
-            # 2. Extract indices from keys and determine maximum index for total count
-            indexed_keys: List[Tuple[int, str]] = []
-            for key in keys:
-                try:
-                    idx = int(key[len(prefix) :])
-                    indexed_keys.append((idx, key))
-                except ValueError:
-                    logger.warning(
-                        "Invalid key format found in metastore",
-                        key=key,
-                        job_id=job.job_id,
-                    )  # type: ignore[call-arg]
-
-            if indexed_keys:
-                indexed_keys.sort(key=lambda item: item[0])
-                launched += len(indexed_keys)
-                max_index = max(max_index, indexed_keys[-1][0])
-
-                etag_results = await asyncio.gather(
-                    *[get_metadata(key) for _, key in indexed_keys]
+        total_emitted = False
+        try:
+            while True:
+                # 1. Get keys
+                stage_start = time.perf_counter()
+                keys, continuation_token = await list_metastore_keys(
+                    prefix,
+                    limit=METASTORE_LIST_PAGE_SIZE,
+                    continuation_token=continuation_token,
+                )
+                self._emit_finalize_stage_duration(
+                    job.job_id,
+                    "list_metastore_keys",
+                    stage_start,
+                    key_count=len(keys),
+                    has_continuation_token=continuation_token is not None,
+                )
+                self._emit_finalize_stage_items(
+                    job.job_id,
+                    "list_metastore_keys",
+                    "keys",
+                    len(keys),
                 )
 
-                # 3. Calculate actual counts based on metastore keys
-                for (idx, key), (meta_val, exist) in zip(indexed_keys, etag_results):
-                    if not exist:
-                        missing_keys += 1
-                        continue
+                logger.debug(
+                    "Metastore key batch found during job finalizing",
+                    job_id=job.job_id,
+                    prefix=prefix,
+                    key_count=len(keys),
+                    continuation_token=continuation_token,
+                )  # type: ignore[call-arg]
 
-                    etag, is_error, custom_id = self._parse_request_meta_output_val(
-                        meta_val
+                # 2. Extract indices from keys and determine maximum index for total count
+                indexed_keys: List[Tuple[int, str]] = []
+                for key in keys:
+                    try:
+                        idx = int(key[len(prefix) :])
+                        indexed_keys.append((idx, key))
+                    except ValueError:
+                        logger.warning(
+                            "Invalid key format found in metastore",
+                            key=key,
+                            job_id=job.job_id,
+                        )  # type: ignore[call-arg]
+
+                if indexed_keys:
+                    indexed_keys.sort(key=lambda item: item[0])
+                    launched += len(indexed_keys)
+                    max_index = max(max_index, indexed_keys[-1][0])
+
+                    stage_start = time.perf_counter()
+                    etag_results = await asyncio.gather(
+                        *[get_metadata(key) for _, key in indexed_keys]
                     )
-                    if etag == "":
-                        pending_keys += 1
-                        continue
+                    self._emit_finalize_stage_duration(
+                        job.job_id,
+                        "get_metastore_values",
+                        stage_start,
+                        key_count=len(indexed_keys),
+                    )
+                    self._emit_finalize_stage_items(
+                        job.job_id,
+                        "get_metastore_values",
+                        "keys",
+                        len(indexed_keys),
+                    )
 
-                    valid_keys.append(key)
-                    val: Dict[str, str | int] = {"etag": etag, "part_number": idx}
-                    if custom_id is not None:
-                        val["custom_id"] = custom_id
+                    # 3. Calculate actual counts based on metastore keys
+                    stage_start = time.perf_counter()
+                    for (idx, key), (meta_val, exist) in zip(
+                        indexed_keys, etag_results
+                    ):
+                        if not exist:
+                            missing_keys += 1
+                            continue
 
-                    if is_error:
-                        error.append(val)
-                        failed += 1
-                    else:
-                        output.append(val)
-                        completed += 1
+                        etag, is_error, custom_id = self._parse_request_meta_output_val(
+                            meta_val
+                        )
+                        if etag == "":
+                            pending_keys += 1
+                            continue
 
-            if continuation_token is None:
-                break
+                        valid_keys.append(key)
+                        val: Dict[str, str | int] = {"etag": etag, "part_number": idx}
+                        if custom_id is not None:
+                            val["custom_id"] = custom_id
 
-        metastore_total = max_index + 1 if launched > 0 else 0
-        total = max(authoritative_total, metastore_total)
+                        if is_error:
+                            error.append(val)
+                            failed += 1
+                        else:
+                            output.append(val)
+                            completed += 1
+                    self._emit_finalize_stage_duration(
+                        job.job_id,
+                        "assemble_parts",
+                        stage_start,
+                        key_count=len(indexed_keys),
+                        output_parts=len(output),
+                        error_parts=len(error),
+                        valid_key_count=len(valid_keys),
+                        missing_keys=missing_keys,
+                        pending_keys=pending_keys,
+                    )
 
-        logger.info(
-            "Finalizing job output data using metastore keys",
-            job_id=job.job_id,
-            launched=launched,
-            total=total,
-            metastore_total=metastore_total,
-            authoritative_total=authoritative_total,
-            missing_keys=missing_keys,
-            pending_keys=pending_keys,
-        )  # type: ignore[call-arg]
+                if continuation_token is None:
+                    break
 
-        if missing_keys or pending_keys:
-            # These requests are absent from the assembled output file and from
-            # the counts written below, so total will exceed completed + failed.
-            logger.warning(
-                "Dropped requests while assembling job output",
+            metastore_total = max_index + 1 if launched > 0 else 0
+            total = max(authoritative_total, metastore_total)
+
+            logger.info(
+                "Finalizing job output data using metastore keys",
                 job_id=job.job_id,
+                launched=launched,
+                total=total,
+                metastore_total=metastore_total,
+                authoritative_total=authoritative_total,
                 missing_keys=missing_keys,
                 pending_keys=pending_keys,
-                total=total,
-                completed=completed,
-                failed=failed,
             )  # type: ignore[call-arg]
 
-        # Aggregate results sequentially: parallel completes hammer
-        # MinIO bucket-level locks under small_parts mode (each complete
-        # does N list/delete/put_object calls under .multipart/).
-        failed_output_parts = await self.storage.complete_multipart_upload(
-            job.status.output_file_id,
-            job.status.temp_output_file_id,
-            output,
-            tolerate_part_get_error=True,
-        )
-        rerouted_output_parts: List[Dict[str, str | int]] = []
-        if failed_output_parts:
-            rerouted_output_parts, skipped_rerouted_parts = (
-                self._filter_rerouted_output_parts(error, failed_output_parts)
-            )
-            synthesized_error_parts = self._synthesize_unreadable_error_parts(
-                rerouted_output_parts,
-                message=UNREADABLE_COMPLETED_OUTPUT_PART_MESSAGE,
-            )
-            error, inserted_rerouted_parts, duplicate_rerouted_parts = (
-                self._merge_error_parts_by_part_number(error, synthesized_error_parts)
-            )
-            completed -= inserted_rerouted_parts
-            failed += inserted_rerouted_parts
-            logger.warning(
-                "Synthesizing error records for unreadable output parts",
-                job_id=job.job_id,
-                failed_output_part_count=len(rerouted_output_parts),
-                skipped_rerouted_part_count=skipped_rerouted_parts,
-                inserted_rerouted_part_count=inserted_rerouted_parts,
-                duplicate_rerouted_part_count=duplicate_rerouted_parts,
-                completed=completed,
-                failed=failed,
-            )  # type: ignore[call-arg]
+            if missing_keys or pending_keys:
+                # These requests are absent from the assembled output file and from
+                # the counts written below, so total will exceed completed + failed.
+                logger.warning(
+                    "Dropped requests while assembling job output",
+                    job_id=job.job_id,
+                    missing_keys=missing_keys,
+                    pending_keys=pending_keys,
+                    total=total,
+                    completed=completed,
+                    failed=failed,
+                )  # type: ignore[call-arg]
 
-        # 4. Update job object with calculated request counts if they differ.
-        # Preserve the validated input total when it is larger, but allow
-        # metastore truth to grow a stale lower total after restart recovery.
-        if (
-            job.status.request_counts.total != total
-            or job.status.request_counts.launched != launched
-            or job.status.request_counts.completed != completed
-            or job.status.request_counts.failed != failed
-        ):
-            logger.info(
-                "Updating job request counts based on metastore data",
-                job_id=job.job_id,
-                old_total=job.status.request_counts.total,
-                new_total=total,
-                old_launched=job.status.request_counts.launched,
-                new_launched=launched,
-                old_completed=job.status.request_counts.completed,
-                new_completed=completed,
-                old_failed=job.status.request_counts.failed,
-                new_failed=failed,
-            )  # type: ignore[call-arg]
-
-            if total > job.status.request_counts.total:
-                job.status.request_counts.total = total
-            job.status.request_counts.launched = launched
-            job.status.request_counts.completed = completed
-            job.status.request_counts.failed = failed
-
-        async def provide_local_error_part(
-            part: Dict[str, str | int],
-        ) -> bytes | None:
-            if part.get(LOCAL_PART_PROVIDER_MARKER) == LOCAL_PART_PROVIDER_MARKER_VALUE:
-                return self._build_unreadable_error_part_body(
-                    part,
-                    message=UNREADABLE_COMPLETED_OUTPUT_PART_MESSAGE,
-                )
-            return self._build_unreadable_error_part_body(
-                part,
-                message=UNREADABLE_FAILED_ERROR_PART_MESSAGE,
-            )
-
-        # The local provider is consulted only for parts carrying
-        # LOCAL_PART_PROVIDER_MARKER=LOCAL_PART_PROVIDER_MARKER_VALUE for the
-        # local-only rerouted output records. During tolerant reads, BaseStorage2
-        # also asks the provider for an unmarked error part if its staged object
-        # cannot be loaded, so unreadable original error records are synthesized
-        # in the same pass instead of requiring a second completion attempt.
-        unexpected_failed_error_parts = await self.storage.complete_multipart_upload(
-            job.status.error_file_id,
-            job.status.temp_error_file_id,
-            error,
-            tolerate_part_get_error=True,
-            local_part_provider=provide_local_error_part,
-        )
-        if unexpected_failed_error_parts:
-            raise RuntimeError(
-                "Error-file completion unexpectedly returned unreadable parts "
-                "after local fallback was enabled"
-            )
-        if rerouted_output_parts:
-            await self.storage.abort_multipart_upload(
+            # Aggregate results sequentially: parallel completes hammer
+            # MinIO bucket-level locks under small_parts mode (each complete
+            # does N list/delete/put_object calls under .multipart/).
+            stage_start = time.perf_counter()
+            failed_output_parts = await self.storage.complete_multipart_upload(
                 job.status.output_file_id,
                 job.status.temp_output_file_id,
+                output,
+                tolerate_part_get_error=True,
             )
-
-        # Sum usage from the assembled output file.
-        job.status.usage = await self._sum_usage_from_output(job.status.output_file_id)
-        if rerouted_output_parts:
-            self._merge_usage(
-                job.status.usage,
-                await self._sum_usage_from_output(job.status.error_file_id),
+            failed_output_parts = failed_output_parts or []
+            self._emit_finalize_stage_duration(
+                job.job_id,
+                "complete_output_upload",
+                stage_start,
+                output_parts=len(output),
+                failed_output_part_count=len(failed_output_parts),
             )
+            self._emit_finalize_stage_items(
+                job.job_id,
+                "complete_output_upload",
+                "output_parts",
+                len(output),
+            )
+            self._emit_finalize_stage_items(
+                job.job_id,
+                "complete_output_upload",
+                "failed_output_parts",
+                len(failed_output_parts),
+            )
+            rerouted_output_parts: List[Dict[str, str | int]] = []
+            if failed_output_parts:
+                rerouted_output_parts, skipped_rerouted_parts = (
+                    self._filter_rerouted_output_parts(error, failed_output_parts)
+                )
+                stage_start = time.perf_counter()
+                synthesized_error_parts = self._synthesize_unreadable_error_parts(
+                    rerouted_output_parts,
+                    message=UNREADABLE_COMPLETED_OUTPUT_PART_MESSAGE,
+                )
+                error, inserted_rerouted_parts, duplicate_rerouted_parts = (
+                    self._merge_error_parts_by_part_number(
+                        error, synthesized_error_parts
+                    )
+                )
+                self._emit_finalize_stage_duration(
+                    job.job_id,
+                    "assemble_parts",
+                    stage_start,
+                    rerouted_output_part_count=len(rerouted_output_parts),
+                    inserted_rerouted_part_count=inserted_rerouted_parts,
+                    duplicate_rerouted_part_count=duplicate_rerouted_parts,
+                    skipped_rerouted_part_count=skipped_rerouted_parts,
+                )
+                completed -= inserted_rerouted_parts
+                failed += inserted_rerouted_parts
+                logger.warning(
+                    "Synthesizing error records for unreadable output parts",
+                    job_id=job.job_id,
+                    failed_output_part_count=len(rerouted_output_parts),
+                    skipped_rerouted_part_count=skipped_rerouted_parts,
+                    inserted_rerouted_part_count=inserted_rerouted_parts,
+                    duplicate_rerouted_part_count=duplicate_rerouted_parts,
+                    completed=completed,
+                    failed=failed,
+                )  # type: ignore[call-arg]
 
-        # Delete metadata for valid keys only
-        if valid_keys:
-            for start in range(0, len(valid_keys), METASTORE_LIST_PAGE_SIZE):
-                batch = valid_keys[start : start + METASTORE_LIST_PAGE_SIZE]
-                await asyncio.gather(*[delete_metadata(key) for key in batch])
-        return job
+            # 4. Update job object with calculated request counts if they differ.
+            # Preserve the validated input total when it is larger, but allow
+            # metastore truth to grow a stale lower total after restart recovery.
+            if (
+                job.status.request_counts.total != total
+                or job.status.request_counts.launched != launched
+                or job.status.request_counts.completed != completed
+                or job.status.request_counts.failed != failed
+            ):
+                logger.info(
+                    "Updating job request counts based on metastore data",
+                    job_id=job.job_id,
+                    old_total=job.status.request_counts.total,
+                    new_total=total,
+                    old_launched=job.status.request_counts.launched,
+                    new_launched=launched,
+                    old_completed=job.status.request_counts.completed,
+                    new_completed=completed,
+                    old_failed=job.status.request_counts.failed,
+                    new_failed=failed,
+                )  # type: ignore[call-arg]
+
+                if total > job.status.request_counts.total:
+                    job.status.request_counts.total = total
+                job.status.request_counts.launched = launched
+                job.status.request_counts.completed = completed
+                job.status.request_counts.failed = failed
+
+            async def provide_local_error_part(
+                part: Dict[str, str | int],
+            ) -> bytes | None:
+                if (
+                    part.get(LOCAL_PART_PROVIDER_MARKER)
+                    == LOCAL_PART_PROVIDER_MARKER_VALUE
+                ):
+                    return self._build_unreadable_error_part_body(
+                        part,
+                        message=UNREADABLE_COMPLETED_OUTPUT_PART_MESSAGE,
+                    )
+                return self._build_unreadable_error_part_body(
+                    part,
+                    message=UNREADABLE_FAILED_ERROR_PART_MESSAGE,
+                )
+
+            # The local provider is consulted only for parts carrying
+            # LOCAL_PART_PROVIDER_MARKER=LOCAL_PART_PROVIDER_MARKER_VALUE for the
+            # local-only rerouted output records. During tolerant reads, BaseStorage2
+            # also asks the provider for an unmarked error part if its staged object
+            # cannot be loaded, so unreadable original error records are synthesized
+            # in the same pass instead of requiring a second completion attempt.
+            stage_start = time.perf_counter()
+            unexpected_failed_error_parts = (
+                await self.storage.complete_multipart_upload(
+                    job.status.error_file_id,
+                    job.status.temp_error_file_id,
+                    error,
+                    tolerate_part_get_error=True,
+                    local_part_provider=provide_local_error_part,
+                )
+            )
+            unexpected_failed_error_parts = unexpected_failed_error_parts or []
+            self._emit_finalize_stage_duration(
+                job.job_id,
+                "complete_error_upload",
+                stage_start,
+                error_parts=len(error),
+                unexpected_failed_error_part_count=len(unexpected_failed_error_parts),
+            )
+            self._emit_finalize_stage_items(
+                job.job_id,
+                "complete_error_upload",
+                "error_parts",
+                len(error),
+            )
+            self._emit_finalize_stage_items(
+                job.job_id,
+                "complete_error_upload",
+                "unexpected_failed_error_parts",
+                len(unexpected_failed_error_parts),
+            )
+            if unexpected_failed_error_parts:
+                raise RuntimeError(
+                    "Error-file completion unexpectedly returned unreadable parts "
+                    "after local fallback was enabled"
+                )
+            if rerouted_output_parts:
+                stage_start = time.perf_counter()
+                await self.storage.abort_multipart_upload(
+                    job.status.output_file_id,
+                    job.status.temp_output_file_id,
+                )
+                self._emit_finalize_stage_duration(
+                    job.job_id,
+                    "abort_rerouted_output_upload",
+                    stage_start,
+                    rerouted_output_part_count=len(rerouted_output_parts),
+                )
+
+            # Sum usage from the assembled output file.
+            stage_start = time.perf_counter()
+            job.status.usage = await self._sum_usage_from_output(
+                job.status.output_file_id
+            )
+            self._emit_finalize_stage_duration(
+                job.job_id,
+                "sum_usage_output",
+                stage_start,
+                input_tokens=job.status.usage.input_tokens,
+                output_tokens=job.status.usage.output_tokens,
+                total_tokens=job.status.usage.total_tokens,
+            )
+            if rerouted_output_parts:
+                stage_start = time.perf_counter()
+                self._merge_usage(
+                    job.status.usage,
+                    await self._sum_usage_from_output(job.status.error_file_id),
+                )
+                self._emit_finalize_stage_duration(
+                    job.job_id,
+                    "sum_usage_error",
+                    stage_start,
+                    input_tokens=job.status.usage.input_tokens,
+                    output_tokens=job.status.usage.output_tokens,
+                    total_tokens=job.status.usage.total_tokens,
+                )
+
+            # Delete metadata for valid keys only
+            if valid_keys:
+                stage_start = time.perf_counter()
+                for start in range(0, len(valid_keys), METASTORE_LIST_PAGE_SIZE):
+                    batch = valid_keys[start : start + METASTORE_LIST_PAGE_SIZE]
+                    await asyncio.gather(*[delete_metadata(key) for key in batch])
+                self._emit_finalize_stage_duration(
+                    job.job_id,
+                    "delete_metastore_keys",
+                    stage_start,
+                    key_count=len(valid_keys),
+                )
+                self._emit_finalize_stage_items(
+                    job.job_id,
+                    "delete_metastore_keys",
+                    "keys",
+                    len(valid_keys),
+                )
+            self._emit_finalize_stage_duration(
+                job.job_id,
+                "total",
+                total_start,
+                launched=launched,
+                completed=completed,
+                failed=failed,
+                total=total,
+                missing_keys=missing_keys,
+                pending_keys=pending_keys,
+                failed_finalize=False,
+            )
+            self._emit_finalize_job_total_duration(
+                job.job_id,
+                total_start,
+                failed_finalize=False,
+            )
+            total_emitted = True
+            return job
+        except Exception:
+            if not total_emitted:
+                metastore_total = max_index + 1 if launched > 0 else 0
+                self._emit_finalize_stage_duration(
+                    job.job_id,
+                    "total",
+                    total_start,
+                    launched=launched,
+                    completed=completed,
+                    failed=failed,
+                    total=max(authoritative_total, metastore_total),
+                    missing_keys=missing_keys,
+                    pending_keys=pending_keys,
+                    failed_finalize=True,
+                )
+                self._emit_finalize_job_total_duration(
+                    job.job_id,
+                    total_start,
+                    failed_finalize=True,
+                )
+            raise
 
     async def _sum_usage_from_output(self, output_file_id: str) -> BatchUsage:
         """Read the merged output JSONL and sum the per-line usage.

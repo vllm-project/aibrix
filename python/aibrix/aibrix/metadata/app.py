@@ -36,7 +36,7 @@ from aibrix.batch.state import JobStore
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger, logging_basic_config
 from aibrix.metadata.api.v1 import batch, files, models, users
-from aibrix.metadata.core import HTTPXClientWrapper
+from aibrix.metadata.core import HTTPClient
 from aibrix.metadata.core.metrics import (
     Emitter,
     T,
@@ -275,7 +275,8 @@ def build_app(args: argparse.Namespace, params={}):
             # Local debug
             config.load_kube_config()
 
-    app.state.httpx_client_wrapper = HTTPXClientWrapper(
+    app.state.httpx_client_wrapper = HTTPClient(
+        client_id="app_shared_httpx_client",
         timeout=envs.CORE_HTTPX_ASYNC_CLIENT_TIMEOUT_SECOND,
         telemetry_enabled=args.httpx_telemetry,
         telemetry_interval_seconds=args.httpx_telemetry_interval_seconds,

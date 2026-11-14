@@ -23,6 +23,16 @@ METRIC_METADATA_HTTP_REQUEST = "metadata.http.request"
 # Latency of inbound metadata HTTP requests, emitted in milliseconds.
 METRIC_METADATA_HTTP_DURATION = "metadata.http.duration"
 
+# Structured HTTP client telemetry family.
+METRIC_METADATA_HTTP_CLIENT_TELEMETRY = "metadata.http.client.telemetry"
+METRIC_METADATA_HTTP_CLIENT_TELEMETRY_EXCEPTION_COUNT = (
+    "metadata.http.client.telemetry.exception_count"
+)
+METRIC_METADATA_HTTP_CLIENT_TELEMETRY_LATENCY_BUCKET_COUNT = (
+    "metadata.http.client.telemetry.latency_bucket_count"
+)
+METRIC_METADATA_HTTP_CLIENT_TELEMETRY_SUMMARY = "metadata.http.client.telemetry.summary"
+
 # Count of accepted batch job create requests at the API boundary.
 METRIC_METADATA_BATCH_API_JOB_INCOMING = "metadata.batch.api.job.incoming"
 
@@ -43,6 +53,11 @@ METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_COMPLETED = (
     "metadata.batch.driver.request.completed"
 )
 
+# Count of failed batch requests as they finish in the driver, tagged by failure code.
+METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_FAILURE = (
+    "metadata.batch.driver.request.failure"
+)
+
 # Token usage reported when a driver request finishes, tagged by token type.
 # Use rate() on this counter to derive per-second token throughput.
 METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_USAGE_TOKENS = (
@@ -59,6 +74,12 @@ METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_CACHED_TOKENS = (
 # Use rate() on this counter to derive per-second reasoning-token throughput.
 METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_REASONING_TOKENS = (
     "metadata.batch.driver.request.reasoning_tokens"
+)
+
+# Structured batch dispatch telemetry family.
+METRIC_METADATA_BATCH_DISPATCH_TELEMETRY = "metadata.batch.dispatch.telemetry"
+METRIC_METADATA_BATCH_DISPATCH_TELEMETRY_SUMMARY = (
+    "metadata.batch.dispatch.telemetry.summary"
 )
 
 # Count of failure injection events, tagged by injection type, breakpoint, and action.
@@ -95,3 +116,41 @@ METRIC_METADATA_STORE_ERROR = "metadata.store.error"
 
 # Latency of metadata store operations, emitted in milliseconds.
 METRIC_METADATA_STORE_DURATION = "metadata.store.duration"
+
+# Structured JSON profiler telemetry family.
+METRIC_METADATA_JSON_TELEMETRY = "metadata.json.telemetry"
+METRIC_METADATA_JSON_TELEMETRY_EXCEPTION_COUNT = (
+    "metadata.json.telemetry.exception_count"
+)
+METRIC_METADATA_JSON_TELEMETRY_SUMMARY = "metadata.json.telemetry.summary"
+
+# Structured metric emission telemetry family.
+METRIC_METADATA_METRICS_EMIT_TELEMETRY_SUMMARY = "metadata.metrics.emit.summary"
+
+# Number of metric samples emitted in the observation window.
+METRIC_METADATA_METRICS_EMIT_COUNT = "metadata.metrics.emit.count"
+
+# Metric samples emitted per second in the observation window.
+METRIC_METADATA_METRICS_EMIT_PER_SECOND = "metadata.metrics.emit.per_second"
+
+# Total cost to emit metric samples in the observation window, emitted in milliseconds.
+METRIC_METADATA_METRICS_EMIT_TOTAL_MS = "metadata.metrics.emit.total_ms"
+
+# Average cost to emit one metadata metric sample, emitted in microseconds.
+METRIC_METADATA_METRICS_EMIT_AVG_US = "metadata.metrics.emit.avg_us"
+
+# P90 cost to emit one metadata metric sample, emitted in microseconds.
+METRIC_METADATA_METRICS_EMIT_P90_US = "metadata.metrics.emit.p90_us"
+
+# Current metadata-service process RSS, emitted in megabytes.
+METRIC_METADATA_PROCESS_RSS_MB = "metadata.process.rss_mb"
+
+# Python generation-0 GC count.
+METRIC_METADATA_GC_GEN0_COUNT = "metadata.gc.gen0.count"
+
+# Python generation-1 GC count.
+METRIC_METADATA_GC_GEN1_COUNT = "metadata.gc.gen1.count"
+
+# Python generation-2 GC count. Gen2 is the compact pressure signal because it
+# represents full-heap collection pressure rather than short-lived young-gen churn.
+METRIC_METADATA_GC_GEN2_COUNT = "metadata.gc.gen2.count"

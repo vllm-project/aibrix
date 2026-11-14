@@ -13,6 +13,12 @@
 # limitations under the License.
 
 from .asyncio_thread import AsyncLoopThread, T
-from .httpx_client import HTTPXClientWrapper
+from .http_client import HTTPClient
+from .json_profiler import JsonProfiler
 
-__all__ = ["AsyncLoopThread", "HTTPXClientWrapper", "T"]
+__all__ = [
+    "AsyncLoopThread",
+    "HTTPClient",
+    "JsonProfiler",
+    "T",
+]

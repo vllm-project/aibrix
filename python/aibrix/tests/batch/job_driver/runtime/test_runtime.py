@@ -49,6 +49,7 @@ from aibrix.batch.job_entity import (
     RequestCountStats,
 )
 from aibrix.context import InfrastructureContext
+from aibrix.metadata.core.metrics import Emitter, metrics_names
 
 
 class _FakeProgressManager:
@@ -60,7 +61,16 @@ class _FakeProgressManager:
         self, job_id: str, worker_id: str, status, update_keys=None
     ) -> object:
         del worker_id, update_keys
-        return SimpleNamespace(job_id=job_id, status=status)
+        return SimpleNamespace(
+            job_id=job_id,
+            status=status,
+            spec=SimpleNamespace(
+                endpoint="/v1/chat/completions",
+                completion_window=86400,
+                aibrix=None,
+                opts={},
+            ),
+        )
 
 
 def _fake_worker_id_generator(owner_ref: str) -> str:
@@ -87,7 +97,12 @@ def _make_test_job(
             usage=usage,
             execution=execution,
         ),
-        spec=SimpleNamespace(opts=dict(opts or {})),
+        spec=SimpleNamespace(
+            opts=dict(opts or {}),
+            endpoint="/v1/chat/completions",
+            completion_window=86400,
+            aibrix=None,
+        ),
     )
 
 
@@ -255,6 +270,113 @@ async def test_runtime_base_session_forwards_provision_wait_mode_on_initial_prov
         pass
 
     assert wait_modes == [RUNTIME_WAIT_MODE_PROVISION]
+
+
+@pytest.mark.asyncio
+async def test_runtime_base_session_emits_runtime_phase_metrics(monkeypatch):
+    metric_calls: list[tuple[str, float, dict[str, str]]] = []
+
+    def _record_timer(name, value, *tags):
+        metric_calls.append((name, value, {tag.name: tag.value for tag in tags}))
+
+    monkeypatch.setattr(Emitter, "timer", _record_timer)
+
+    class _TrackedRuntime(_R):
+        def _build_runtime_ref(self, job):
+            del job
+            return JobRuntimeRef(
+                driverType="base",
+                ownerRef="base",
+                reconnectPayload={},
+                connectedAt=datetime.now(timezone.utc),
+            )
+
+    status = BatchJobStatus(
+        jobID="job-runtime-phases",
+        state=BatchJobState.IN_PROGRESS,
+        createdAt=datetime.now(timezone.utc),
+        inProgressAt=datetime.now(timezone.utc),
+        requestCounts=RequestCountStats(),
+    )
+    runtime = _TrackedRuntime()
+
+    async with runtime.session(
+        job=_make_test_job(job_id="job-runtime-phases", status=status),
+        job_id="job-runtime-phases",
+        progress_manager=_FakeProgressManager(),
+        worker_id_generator=_fake_worker_id_generator,
+    ):
+        pass
+
+    phases = {tags["phase"]: (name, value, tags) for name, value, tags in metric_calls}
+    assert set(phases) == {"runtime_provision", "runtime_ready"}
+    for phase, (name, value, tags) in phases.items():
+        assert (
+            name
+            == f"{metrics_names.METRIC_METADATA_BATCH_API_JOB_EXECUTION_PHASE_TIME}.ms"
+        )
+        assert value >= 0
+        assert tags["job_id"] == "job-runtime-phases"
+        assert (
+            tags["phase_order"]
+            == {
+                "runtime_provision": "030",
+                "runtime_ready": "040",
+            }[phase]
+        )
+        assert tags["event"] == "Batch job latency telemetry"
+        assert tags["log_map"] == "phase_duration_ms"
+        assert tags["log_key"] == phase
+
+
+def test_runtime_provision_metric_emits_after_delete_started_ref(monkeypatch):
+    metric_calls: list[tuple[str, float, dict[str, str]]] = []
+
+    def _record_timer(name, value, *tags):
+        metric_calls.append((name, value, {tag.name: tag.value for tag in tags}))
+
+    monkeypatch.setattr(Emitter, "timer", _record_timer)
+
+    provision_started_at = datetime(2026, 10, 11, 0, 0, 0, tzinfo=timezone.utc)
+    previous_ref = JobRuntimeRef(
+        driverType="base",
+        ownerRef="old-owner",
+        connectedAt=provision_started_at,
+        deleteStartedAt=provision_started_at,
+    )
+    connected_at = datetime(2026, 10, 11, 0, 0, 3, tzinfo=timezone.utc)
+    current_ref = JobRuntimeRef(
+        driverType="base",
+        ownerRef="new-owner",
+        connectedAt=connected_at,
+    )
+    job = _make_test_job(
+        job_id="job-reprovision",
+        status=BatchJobStatus(
+            jobID="job-reprovision",
+            state=BatchJobState.IN_PROGRESS,
+            createdAt=provision_started_at,
+            inProgressAt=provision_started_at,
+            execution={"base": current_ref},
+        ),
+    )
+
+    _R()._emit_runtime_provision_metric(
+        job,
+        previous_runtime_ref=previous_ref,
+        provision_started_at=provision_started_at,
+    )
+
+    assert len(metric_calls) == 1
+    name, value, tags = metric_calls[0]
+    assert (
+        name == f"{metrics_names.METRIC_METADATA_BATCH_API_JOB_EXECUTION_PHASE_TIME}.ms"
+    )
+    assert value == 3000.0
+    assert tags["job_id"] == "job-reprovision"
+    assert tags["phase"] == "runtime_provision"
+    assert tags["phase_order"] == "030"
+    assert tags["log_key"] == "runtime_provision"
 
 
 @pytest.mark.asyncio

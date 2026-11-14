@@ -183,6 +183,8 @@ class BatchDriver:
             self._scheduler.reset_runtime_state()
 
         self._batch_manager.reset_runtime_state()
+        if self._endpoint_source is not None:
+            await self.run_coroutine(self._endpoint_source.aclose())
 
         if self._async_thread_loop is not None:
             self._async_thread_loop.stop()
