@@ -40,6 +40,7 @@ from aibrix.openai_frontend.schemas.responses import (
     CreateResponseRequest,
     ResponseCompactParams,
 )
+from aibrix.openai_frontend.utils.utils import ClientError
 
 
 @pytest.mark.asyncio
@@ -279,6 +280,138 @@ async def test_vllm_omni_video_sync_preserves_multipart_and_response(status_code
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["disconnect", "cancel", "shutdown"])
+async def test_multipart_abort_after_upload_closes_upstream(outcome):
+    uploaded, closed = asyncio.Event(), asyncio.Event()
+    body = b'--b\r\nContent-Disposition: form-data; name="model"\r\n\r\nm\r\n--b--\r\n'
+    received = []
+
+    async def upstream(reader, writer):
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            received.append(await reader.readexactly(len(body)))
+            uploaded.set()
+            assert await reader.read() == b""
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            closed.set()
+
+    server = await asyncio.start_server(upstream, "127.0.0.1", 0)
+    engine = ProxyEngine(
+        ["unused"],
+        engine_port=server.sockets[0].getsockname()[1],
+        spec=VLLM_OMNI_SPEC,
+        fetch_media=False,
+    )
+    messages = asyncio.Queue()
+    for chunk, more_body in ((body[:20], True), (body[20:], False)):
+        messages.put_nowait(
+            {"type": "http.request", "body": chunk, "more_body": more_body}
+        )
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/videos/sync",
+            "query_string": b"",
+            "headers": [
+                (b"content-type", b"multipart/form-data; boundary=b"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        },
+        messages.get,
+    )
+    task = None
+    try:
+        await engine._subprocess.start_client()
+        engine._set_state(EngineState.READY)
+        task = asyncio.create_task(engine.forward_multipart(request.url.path, request))
+        await asyncio.wait_for(uploaded.wait(), 2)
+        assert received == [body] and len(engine._in_flight) == 1
+
+        if outcome == "disconnect":
+            messages.put_nowait({"type": "http.disconnect"})
+        elif outcome == "shutdown":
+            await asyncio.wait_for(engine.aclose(), 2)
+        else:
+            task.cancel()
+        error = asyncio.CancelledError if outcome == "cancel" else ClientError
+        with pytest.raises(error):
+            await asyncio.wait_for(asyncio.shield(task), 2)
+        await asyncio.wait_for(closed.wait(), 2)
+        assert not engine._in_flight and not engine._request_done
+        if outcome != "shutdown":
+            # Abort only this request, preserving the shared connection pool.
+            assert not engine._subprocess._client.is_closed
+    finally:
+        await engine.aclose()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        server.close()
+        await server.wait_closed()
+        if uploaded.is_set():
+            await asyncio.wait_for(closed.wait(), 2)
+
+
+@pytest.mark.asyncio
+async def test_multipart_disconnect_closes_response_returned_during_cancellation():
+    uploaded = asyncio.Event()
+    messages = asyncio.Queue()
+    messages.put_nowait(
+        {"type": "http.request", "body": b"--b--\r\n", "more_body": False}
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/videos/sync",
+            "query_string": b"",
+            "headers": [(b"content-type", b"multipart/form-data; boundary=b")],
+        },
+        messages.get,
+    )
+
+    class Body(httpx.AsyncByteStream):
+        close_calls = 0
+
+        async def __aiter__(self):
+            yield b"video"
+
+        async def aclose(self):
+            self.close_calls += 1
+
+    stream = Body()
+    raw = httpx.Response(200, stream=stream)
+
+    async def upstream(request):
+        await request.aread()
+        uploaded.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # Model headers arriving as cancellation is delivered.
+            return raw
+
+    engine = ProxyEngine(["unused"], spec=VLLM_OMNI_SPEC, fetch_media=False)
+    engine._set_state(EngineState.READY)
+    engine._subprocess._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream), base_url="http://inner"
+    )
+    task = asyncio.create_task(engine.forward_multipart(request.url.path, request))
+    try:
+        await asyncio.wait_for(uploaded.wait(), 2)
+        messages.put_nowait({"type": "http.disconnect"})
+        with pytest.raises(ClientError, match="Client disconnected"):
+            await asyncio.wait_for(asyncio.shield(task), 2)
+        assert raw.is_closed and stream.close_calls == 1
+        assert not engine._in_flight and not engine._request_done
+    finally:
+        await engine.aclose()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("buffered", [False, True])
 async def test_native_stream_preserves_encoding_query_and_shutdown(buffered):
     engine = ProxyEngine(["unused"], spec=VLLM_OMNI_SPEC, fetch_media=False)
@@ -393,13 +526,14 @@ async def test_stream_close_survives_shutdown_and_repeated_cancel(
         async def consume():
             nonlocal iterator
             if mode == "multipart":
-
-                async def receive():
-                    return {
+                messages = asyncio.Queue()
+                messages.put_nowait(
+                    {
                         "type": "http.request",
                         "body": b"--b--\r\n",
                         "more_body": False,
                     }
+                )
 
                 request = Request(
                     {
@@ -413,7 +547,7 @@ async def test_stream_close_survives_shutdown_and_repeated_cancel(
                             (b"content-type", b"multipart/form-data; boundary=b")
                         ],
                     },
-                    receive,
+                    messages.get,
                 )
                 response = await engine.forward_multipart(request.url.path, request)
                 iterator = response.body_iterator

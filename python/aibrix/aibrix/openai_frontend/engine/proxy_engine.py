@@ -1090,17 +1090,33 @@ class ProxyEngine(LLMEngine):
         url = path
         if request.url.query:
             url = f"{path}?{request.url.query}"
+        raw_resp: Optional[httpx.Response] = None
+        scope = anyio.CancelScope()
+
+        async def cancel_on_disconnect() -> None:
+            # The upload must finish before a second coroutine reads receive().
+            await streamed_body.upload_done.wait()
+            while True:
+                message = await request.receive()
+                if message["type"] == "http.disconnect":
+                    scope.cancel()
+                    return
+
+        disconnect_task = asyncio.create_task(cancel_on_disconnect())
         try:
             try:
-                raw_resp = await self._forward_with_retry(
-                    url,
-                    True,
-                    method="POST",
-                    content=streamed_body,
-                    content_type=content_type,
-                    headers=headers,
-                    replayable=lambda: not streamed_body.started,
-                )
+                with scope:
+                    raw_resp = await self._forward_with_retry(
+                        url,
+                        True,
+                        method="POST",
+                        content=streamed_body,
+                        content_type=content_type,
+                        headers=headers,
+                        replayable=lambda: not streamed_body.started,
+                    )
+                if scope.cancel_called or raw_resp is None:
+                    raise ClientDisconnect()
             except ClientDisconnect:
                 raise ClientError(
                     f"Client disconnected after {streamed_body.bytes_sent} bytes "
@@ -1120,6 +1136,11 @@ class ProxyEngine(LLMEngine):
                     "Inner engine closed the connection during upload: "
                     f"{type(exc).__name__}"
                 ) from exc
+            finally:
+                disconnect_task.cancel()
+                await await_thread_completion(
+                    asyncio.gather(disconnect_task, return_exceptions=True)
+                )
 
             logger.info(
                 "[req-%s] %s upload relayed (%d bytes, %d chunks)",
@@ -1140,7 +1161,11 @@ class ProxyEngine(LLMEngine):
                 headers=self._forward_headers(raw_resp, encoded=True),
             )
         except BaseException:
-            self._requests_end(req_id, t0)
+            try:
+                if raw_resp is not None:
+                    await await_thread_completion(raw_resp.aclose())
+            finally:
+                self._requests_end(req_id, t0)
             raise
 
     async def forward_websocket(self, path: str, websocket: "WebSocket") -> None:
@@ -2628,6 +2653,7 @@ class _StreamedBody:
 
     def __init__(self, request: Request) -> None:
         self._request = request
+        self.upload_done = asyncio.Event()
         self.started = False
         self.bytes_sent = 0
         self.chunks = 0
@@ -2643,3 +2669,4 @@ class _StreamedBody:
             self.bytes_sent += len(chunk)
             self.chunks += 1
             yield chunk
+        self.upload_done.set()
