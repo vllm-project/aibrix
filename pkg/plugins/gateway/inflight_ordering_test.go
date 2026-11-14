@@ -96,6 +96,14 @@ func TestSelectTargetPod_RedisCommandsPerDecision(t *testing.T) {
 
 	// A cap far above the fleet's load, so the filter keeps every pod and only costs reads.
 	const limit = 100000
+
+	// The store builds a separate read client and a separate admit client, and the first command
+	// on each opens a new connection, which the counter sees as three setup commands. Warm both
+	// paths once so the rows below are the steady-state cost of a decision, which is what the
+	// table in #3463 quotes, rather than a first-call artifact.
+	route("warmup", 0, "")
+	route("warmup-cap", limit, "")
+
 	baseline := route("baseline", 0, "")
 	sampled := route("candidate", 0, `{"candidate":{"k":16}}`)
 	inflight := route("inflight", limit, "")
