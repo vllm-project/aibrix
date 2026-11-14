@@ -24,6 +24,8 @@ At present, `vLLM` engine is supported, and in the future, `SGLang` and other in
 
 For more details on integration with `vLLM`, please refer to our [Runtime docs](https://github.com/vllm-project/aibrix/blob/main/docs/source/features/model-serving/runtime.rst#metric-standardization).
 
+For vLLM-Omni, the OpenAI frontend provides `POST /v1/videos/sync` to return MP4 directly and request cancellation on client disconnect. This requires the engine's asynchronous Videos API with a single API worker.
+
 ## Contributing
 We welcome contributions from the community! Check out our [contributing guidelines](https://github.com/vllm-project/aibrix/blob/main/CONTRIBUTING.md) to see how you can make a difference.
 
