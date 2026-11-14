@@ -20,6 +20,7 @@ import (
 	"math/rand/v2"
 	"sort"
 
+	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/least"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -105,18 +106,23 @@ func candidateStageApplies(ctx *types.RoutingContext) bool {
 // readyPods when the candidate stage is off, does not apply to the strategy, or would not shrink
 // the set; otherwise K of them (see routingCandidateK). It reads no per-pod state from Redis.
 // router is the one Select returned for ctx.
-func SelectCandidates(ctx *types.RoutingContext, router types.Router, readyPods []*v1.Pod) []*v1.Pod {
-	return selectCandidates(ctx, router, readyPods, ctx.RoutingOverrides().Candidate.K)
+//
+// When the request has a per-replica inflight cap, the pods the stage is about to rank are first
+// filtered on this gateway's in-memory running counts, so the ranked slots do not go to pods the
+// Redis filter is about to drop. That read is process memory only and bounded by the scout; the
+// Redis filter stays the source of truth for the 429 (see excludeInflightSaturated).
+func SelectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod) []*v1.Pod {
+	return selectCandidates(ctx, c, router, readyPods, ctx.RoutingOverrides().Candidate.K)
 }
 
-func selectCandidates(ctx *types.RoutingContext, router types.Router, readyPods []*v1.Pod, k int) []*v1.Pod {
+func selectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod, k int) []*v1.Pod {
 	if k <= 0 || len(readyPods) <= k || !candidateStageApplies(ctx) {
 		return readyPods
 	}
 
 	candidates := make([]*v1.Pod, 0, k)
 	picked := make(map[*v1.Pod]struct{}, k)
-	ranked, scouted := 0, 0
+	ranked, scouted, excluded := 0, 0, 0
 	path := candidatePathNoEstimate
 	parts := candidateParts(router)
 	if candidateRankedSlots(k) == 0 {
@@ -126,6 +132,7 @@ func selectCandidates(ctx *types.RoutingContext, router types.Router, readyPods 
 		path = candidatePathEstimateFailed
 		scout := candidateScout(ctx, parts, readyPods, k)
 		scouted = len(scout)
+		scout, excluded = excludeInflightSaturated(ctx, c, scout)
 		if estimates, ok := candidateEstimates(ctx, parts, scout); ok {
 			path = candidatePathRanked
 			ranked = candidateRankedSlots(k)
@@ -140,9 +147,54 @@ func selectCandidates(ctx *types.RoutingContext, router types.Router, readyPods 
 
 	if klog.V(5).Enabled() {
 		klog.V(5).InfoS("routing candidate stage", "request_id", ctx.RequestID, "ready_pods", len(readyPods),
-			"candidates", len(candidates), "scouted", scouted, "ranked", ranked, "path", path, "strategy", ctx.ResolvedStrategy)
+			"candidates", len(candidates), "scouted", scouted, "excluded_at_cap", excluded, "ranked", ranked,
+			"path", path, "strategy", ctx.ResolvedStrategy)
 	}
 	return candidates
+}
+
+// inflightCap returns the request's per-replica inflight cap, or 0 when the request has none.
+func inflightCap(ctx *types.RoutingContext) int64 {
+	if ctx == nil || ctx.ConfigProfile == nil {
+		return 0
+	}
+	return ctx.ConfigProfile.RequestsInflight
+}
+
+// excludeInflightSaturated drops scouted pods whose approximate running-request count already
+// reaches the request's per-replica inflight cap. Those pods are about to be dropped by the Redis
+// filter, so letting them win the ranked slots only wastes them and pushes the request toward a
+// 429. The read is this gateway's process memory (ApproxRunningRequestsProvider), never Redis, and
+// it is bounded by len(scout), so the stage stays O(K) even at a large fleet size.
+//
+// Two conditions keep it soft. When the cache does not implement the provider, or returns an empty
+// map, nothing is excluded. When every scouted pod is at the cap, the whole scout set is returned
+// unchanged: the Redis filter still owns the final decision, and this check must never turn a
+// recoverable ranking into a hard failure. It returns the kept pods and how many it dropped.
+func excludeInflightSaturated(ctx *types.RoutingContext, c cache.Cache, scout []*v1.Pod) ([]*v1.Pod, int) {
+	limit := inflightCap(ctx)
+	if limit <= 0 || c == nil || len(scout) == 0 {
+		return scout, 0
+	}
+	provider, ok := c.(cache.ApproxRunningRequestsProvider)
+	if !ok {
+		return scout, 0
+	}
+	running := provider.GetPodsRunningRequestsApprox(scout)
+	if len(running) == 0 {
+		return scout, 0
+	}
+	kept := make([]*v1.Pod, 0, len(scout))
+	for _, pod := range scout {
+		if running[utils.GeneratePodKey(pod.Namespace, pod.Name)] >= limit {
+			continue
+		}
+		kept = append(kept, pod)
+	}
+	if len(kept) == 0 {
+		return scout, 0
+	}
+	return kept, len(scout) - len(kept)
 }
 
 // weightedScorer is one strategy of the router and its weight in the blend.

@@ -508,7 +508,12 @@ func Test_selectTargetPod_ReplicaInflightSaturated(t *testing.T) {
 	pod := podWithReplicaInflight("a", 1)
 	mockCache.On("GetPodsRunningRequests", []*v1.Pod{pod}).
 		Return(map[string]int64{"ns/a": 1}, nil)
-	s := &Server{cache: mockCache}
+	// The saturation filter now runs after routerManager.Select, so this test needs a manager
+	// that resolves least-request the same way production does, rather than the default one,
+	// which only knows the strategies some other test happened to register.
+	manager := routing.NewRouterManagerWithCache(mockCache)
+	manager.Init()
+	s := &Server{cache: mockCache, routerManager: manager}
 
 	routingCtx := types.NewRoutingContext(context.Background(), routing.RouterLeastRequest, "m", "", "r1", "")
 	applyConfigProfile(routingCtx, []*v1.Pod{pod})

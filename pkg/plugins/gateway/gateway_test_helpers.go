@@ -177,6 +177,20 @@ func (m *MockCache) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, er
 	return nil, args.Error(1)
 }
 
+// GetPodsRunningRequestsApprox exposes the optional in-memory provider so tests can drive the
+// candidate stage's pre-exclusion. Without an expectation it returns nil, which the stage reads
+// as "no estimate" and filters nothing, like a cache that does not implement the provider.
+func (m *MockCache) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
+	if !m.hasExpectation("GetPodsRunningRequestsApprox") {
+		return nil
+	}
+	args := m.Called(pods)
+	if v := args.Get(0); v != nil {
+		return v.(map[string]int64)
+	}
+	return nil
+}
+
 func (m *MockCache) GetPod(namespace string, podName string) (*v1.Pod, error) {
 	args := m.Called(namespace, podName)
 	return args.Get(0).(*v1.Pod), args.Error(1)

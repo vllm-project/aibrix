@@ -418,14 +418,14 @@ func TestCandidateStageHonorsProfileOverrides(t *testing.T) {
 	plain := routingOverridesContext(t, "")
 	plain.Algorithm = RouterLeastRequest
 	ResolveRoutingOverrides(plain)
-	assert.Len(t, SelectCandidates(plain, nil, pods), len(pods), "the process default K=0 keeps every ready pod")
+	assert.Len(t, SelectCandidates(plain, nil, nil, pods), len(pods), "the process default K=0 keeps every ready pod")
 
 	sampled := routingOverridesContext(t, `{"candidate":{"k":8}}`)
 	sampled.Algorithm = RouterLeastRequest
 	ResolveRoutingOverrides(sampled)
-	assert.Len(t, SelectCandidates(sampled, nil, pods), 8)
+	assert.Len(t, SelectCandidates(sampled, nil, nil, pods), 8)
 
-	assert.Len(t, SelectCandidates(plain, nil, pods), len(pods), "another request's profile must not change this one")
+	assert.Len(t, SelectCandidates(plain, nil, nil, pods), len(pods), "another request's profile must not change this one")
 }
 
 func TestAutoBlendWeightsHonorProfileOverrides(t *testing.T) {
