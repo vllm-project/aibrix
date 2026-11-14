@@ -35,6 +35,9 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -346,3 +349,51 @@ func (r estimateRouter) Polarity() types.Polarity { return types.PolarityMost }
 // The single-candidate fast path would skip Route for a one-pod set, and this test needs the
 // router to see the filtered set.
 func (r estimateRouter) BypassSingleCandidate() bool { return false }
+
+// TestSelectTargetPod_RejectionSpanAttributes pins the two attributes the rejection writes. They
+// are the per-request detail behind the scope counter: with a trace in hand, the cap and the
+// number of pods the filter considered say whether the sampled set or the fleet was exhausted.
+func TestSelectTargetPod_RejectionSpanAttributes(t *testing.T) {
+	pods := []*v1.Pod{
+		podWithReplicaInflight("a", 1),
+		podWithReplicaInflight("b", 1),
+		podWithReplicaInflight("c", 1),
+		podWithReplicaInflight("d", 1),
+	}
+	mockCache := &MockCache{}
+	mockCache.On("GetPodsRunningRequests", mock.Anything).
+		Return(map[string]int64{"ns/a": 1, "ns/b": 1, "ns/c": 1, "ns/d": 1}, nil)
+
+	manager := routing.NewRouterManager()
+	manager.RegisterProvider(routing.RouterLeastRequest, func(*types.RoutingContext) (types.Router, error) {
+		return routeFunc(func(*types.RoutingContext, types.PodList) (string, error) {
+			return "", errors.New("unexpected route call")
+		}), nil
+	})
+	s := &Server{cache: mockCache, routerManager: manager}
+
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	_, span := provider.Tracer("test").Start(context.Background(), "rejection")
+
+	routeCtx := types.NewRoutingContext(context.Background(), routing.RouterLeastRequest, "m", "hello", "r7", "")
+	t.Cleanup(routeCtx.Delete)
+	routeCtx.ConfigProfile = inflightProfile(1, 2)
+	routeCtx.Span = span
+
+	_, err := s.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: pods}, "")
+	require.True(t, errors.Is(err, errReplicaInflightExceeded))
+	span.End()
+
+	ended := recorder.Ended()
+	require.Len(t, ended, 1)
+	attrs := make(map[string]int64, len(ended[0].Attributes()))
+	for _, kv := range ended[0].Attributes() {
+		if kv.Value.Type() == attribute.INT64 {
+			attrs[string(kv.Key)] = kv.Value.AsInt64()
+		}
+	}
+	assert.Equal(t, int64(1), attrs["inflight_cap"])
+	assert.Equal(t, int64(2), attrs["inflight_considered_pods"],
+		"the attribute records the candidate set the filter read, not the ready set")
+}
