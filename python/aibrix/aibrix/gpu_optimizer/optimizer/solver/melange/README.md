@@ -34,7 +34,7 @@ The solver requires a json file with the following inputs:
 3. `total_request_rate`: A float value representing the total request rate of the workload.
 4. `slice_factor`: An integer multiplier for the number of slices each bucket is split into.
 
-Please kindly refer to [example.json](melange/config/example.json) for an example of the inputs and check out our paper for more details on our methodology. We have also provided the profiling scripts we used to obtain the GPU information in the [profiling](melange/profiling) directory. See the [profiling instructions](melange/profiling/profiling-instructions.md) for more details on how to use these scripts.
+Please kindly refer to [example.json](config_example.json) for an example of the inputs and check out our paper for more details on our methodology. We have also provided the profiling scripts we used to obtain the GPU information in the [profiling](melange/profiling) directory. See the [profiling instructions](melange/profiling/profiling-instructions.md) for more details on how to use these scripts.
 
 ### Outputs
 ### Solver Output
@@ -59,7 +59,7 @@ Melange currently supports the following output formats:
   * The solver output is saved as a JSON file at the root directory with the name `melange_result.json`.
 
 ## Run with Your Own Dataset or GPU Information
-The toy example at [script_code](melange/main.py) and [example_config](melange/config/example.json) includes examples of the four inputs to Mélange, which should be replaced to fit your setting's need.
+The toy example at [script_code](example.py) and [example_config](config_example.json) includes examples of the four inputs to Mélange, which should be replaced to fit your setting's need.
 
 ### Workload Distribution
    1. Determine the expected distribution of request sizes your LLM service expects. For example, you can use historical data of requests served by your service. In our evaluations, we used publicly available datasets (such as [Chatbot Arena](https://huggingface.co/datasets/lmsys/lmsys-chat-1m)) to determine a reasonable distribution of request sizes.
