@@ -27,7 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestModelRPSLimit verifies that the per-model requestsPerSecond limit defined in the
+// TestModelRPSLimit verifies that a config profile's requestsPerSecond limit defined in the
 // model.aibrix.ai/config annotation is enforced by the gateway across all instances.
 //
 // The "rps-limited" profile on qwen3-8b is configured with requestsPerSecond: 1,

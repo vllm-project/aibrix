@@ -1110,9 +1110,9 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 func TestHandleRequestBody_ModelRPSCountedPerProfile(t *testing.T) {
 	// The two-profile example from docs/source/production/model-deployment.rst,
 	// without routingStrategy so that no router is needed.
-	profileJSON := `{"defaultProfile":"default","profiles":{` +
+	twoProfiles := `{"defaultProfile":"default","profiles":{` +
 		`"default":{"requestsPerSecond":100},"batch":{"requestsPerSecond":20}}}`
-	newServer := func(t *testing.T) (*Server, *miniredis.Miniredis) {
+	newServer := func(t *testing.T, profileJSON string) (*Server, *miniredis.Miniredis) {
 		podList := &utils.PodArray{Pods: []*v1.Pod{{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        "pod-a",
@@ -1138,48 +1138,77 @@ func TestHandleRequestBody_ModelRPSCountedPerProfile(t *testing.T) {
 			requestCountTracker: map[string]int{},
 		}, mr
 	}
+	// send sends one request with the config-profile header set to profile.
+	send := func(s *Server, profile, requestID string) *extProcPb.ProcessingResponse {
+		routingCtx := types.NewRoutingContext(context.Background(), "", "", "", requestID, "")
+		routingCtx.ReqPath = PathChatCompletions
+		routingCtx.ReqConfigProfile = profile
+		req := &extProcPb.ProcessingRequest{
+			Request: &extProcPb.ProcessingRequest_RequestBody{
+				RequestBody: &extProcPb.HttpBody{
+					Body:        []byte(`{"model":"test-model","messages":[{"role":"user","content":"test"}]}`),
+					EndOfStream: true,
+				},
+			},
+		}
+		resp, _, _, _ := s.HandleRequestBody(context.Background(), routingCtx, requestID, req, utils.User{})
+		return resp
+	}
 	// admitted sends n requests with the config-profile header set to profile and
 	// returns how many were admitted.
 	admitted := func(s *Server, profile string, n int) int {
 		ok := 0
 		for i := 0; i < n; i++ {
-			requestID := fmt.Sprintf("%s-%d", profile, i)
-			routingCtx := types.NewRoutingContext(context.Background(), "", "", "", requestID, "")
-			routingCtx.ReqPath = PathChatCompletions
-			routingCtx.ReqConfigProfile = profile
-			req := &extProcPb.ProcessingRequest{
-				Request: &extProcPb.ProcessingRequest_RequestBody{
-					RequestBody: &extProcPb.HttpBody{
-						Body:        []byte(`{"model":"test-model","messages":[{"role":"user","content":"test"}]}`),
-						EndOfStream: true,
-					},
-				},
-			}
-			resp, _, _, _ := s.HandleRequestBody(context.Background(), routingCtx, requestID, req, utils.User{})
-			if resp.GetImmediateResponse() == nil {
+			if send(s, profile, fmt.Sprintf("%s-%d", profile, i)).GetImmediateResponse() == nil {
 				ok++
 			}
 		}
 		return ok
 	}
+	// refusedProfile sends one request that must be refused and returns the
+	// x-aibrix-config-profile header of the response, or "" if it has none.
+	refusedProfile := func(t *testing.T, s *Server, profile string) string {
+		refused := send(s, profile, profile+"-refused").GetImmediateResponse()
+		require.NotNil(t, refused)
+		for _, h := range refused.GetHeaders().GetSetHeaders() {
+			if h.GetHeader().GetKey() == HeaderAIBrixConfigProfile {
+				return string(h.GetHeader().GetRawValue())
+			}
+		}
+		return ""
+	}
 
 	t.Run("default traffic does not use up batch's limit", func(t *testing.T) {
-		s, _ := newServer(t)
+		s, _ := newServer(t, twoProfiles)
 		assert.Equal(t, 20, admitted(s, "default", 20))
 		assert.Equal(t, 20, admitted(s, "batch", 20))
-		assert.Equal(t, 0, admitted(s, "batch", 1))
+		assert.Equal(t, "", refusedProfile(t, s, "batch"))
 	})
 	t.Run("batch traffic does not use up default's limit", func(t *testing.T) {
-		s, _ := newServer(t)
+		s, _ := newServer(t, twoProfiles)
 		assert.Equal(t, 20, admitted(s, "batch", 20))
 		assert.Equal(t, 100, admitted(s, "default", 100))
 		assert.Equal(t, 0, admitted(s, "default", 1))
 	})
 	t.Run("unknown profile header counts against the default profile", func(t *testing.T) {
-		s, mr := newServer(t)
+		s, mr := newServer(t, twoProfiles)
 		assert.Equal(t, 100, admitted(s, "no-such-profile", 100))
 		assert.Equal(t, 0, admitted(s, "default", 1))
 		assert.Equal(t, []string{"aibrix_model:test-model_MODEL_RPS_CURRENT:default:1000:counter"}, mr.Keys())
+	})
+	t.Run("authoritative policy counts a profile header against the default profile", func(t *testing.T) {
+		s, mr := newServer(t, `{"authoritativeRoutingPolicy":true,"defaultProfile":"default","profiles":{`+
+			`"default":{"requestsPerSecond":100},"batch":{"requestsPerSecond":20}}}`)
+		assert.Equal(t, 100, admitted(s, "batch", 100))
+		assert.Equal(t, "", refusedProfile(t, s, "batch"))
+		assert.Equal(t, []string{"aibrix_model:test-model_MODEL_RPS_CURRENT:default:1000:counter"}, mr.Keys())
+	})
+	t.Run("auto counts against the profile it selects", func(t *testing.T) {
+		s, mr := newServer(t, `{"defaultProfile":"default","profiles":{"default":{"requestsPerSecond":100},`+
+			`"batch":{"requestsPerSecond":20,"routingConfig":{"promptTokensGte":1}}}}`)
+		assert.Equal(t, 20, admitted(s, "auto", 20))
+		assert.Equal(t, "batch", refusedProfile(t, s, "auto"))
+		assert.Equal(t, []string{"aibrix_model:test-model_MODEL_RPS_CURRENT:batch:1000:counter"}, mr.Keys())
 	})
 }
 

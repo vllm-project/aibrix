@@ -431,7 +431,7 @@ func TestEnforceModelRPS(t *testing.T) {
 			require.NotNil(t, imm)
 			assert.Equal(t, envoyTypePb.StatusCode_TooManyRequests, imm.GetStatus().GetCode())
 			assert.Contains(t, imm.GetBody(), ErrorCodeRateLimitExceeded)
-			assert.Contains(t, imm.GetBody(), "exceeded RPS")
+			assert.Contains(t, imm.GetBody(), "model: llama has exceeded RPS: 2")
 			if assert.NotEmpty(t, imm.GetHeaders().GetSetHeaders()) {
 				assert.Equal(t, HeaderErrorModelRPSExceeded, imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetKey())
 				assert.Equal(t, "true", string(imm.GetHeaders().GetSetHeaders()[0].GetHeader().GetRawValue()))

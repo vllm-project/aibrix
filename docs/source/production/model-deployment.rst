@@ -164,7 +164,7 @@ Here, interactive traffic (``default`` profile) is capped at 100 RPS while batch
 What clients see when the limit is hit
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The gateway returns:
+The gateway returns the response below. When ``config-profile`` is ``auto``, the response also carries ``x-aibrix-config-profile``, set to the profile whose limit was hit:
 
 .. code-block:: text
 
@@ -190,7 +190,7 @@ Scaling RPS Limits with Replica Count
 What it is
 ~~~~~~~~~~
 
-``requestsPerSecondPerReplica`` sets a **per-replica** RPS cap instead of a fixed model-wide one. The gateway multiplies it by the model's current routable replica count to derive the effective aggregate limit, so the cap scales automatically as the model is scaled up or down. When set, it takes precedence over ``requestsPerSecond`` on the same profile.
+``requestsPerSecondPerReplica`` sets a **per-replica** RPS cap instead of a fixed total for the profile. The gateway multiplies it by the model's current routable replica count to derive the effective aggregate limit, so the cap scales automatically as the model is scaled up or down. When set, it takes precedence over ``requestsPerSecond`` on the same profile.
 
 Setting ``requestsPerSecondPerReplica`` also forces the profile's routing strategy to ``least-request`` (overriding whatever ``routingStrategy`` the profile specifies), because the per-replica figure only holds in aggregate if traffic is balanced evenly across replicas.
 
