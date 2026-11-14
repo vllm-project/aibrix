@@ -18,6 +18,7 @@ package types
 
 import (
 	"errors"
+	"sync/atomic"
 	"time"
 )
 
@@ -37,11 +38,9 @@ type RouterQueue[V comparable] interface {
 // QueueEntry is one request's residency in a RouterQueue: the routing context a queue
 // hands a router, plus the metadata the queue reports from.
 //
-// The metadata lives here rather than on RoutingContext because that context is pooled:
-// as soon as the requester is unblocked - by a route that sets its target pod, or by
-// cancellation - the gateway can return the context to the pool and another request can
-// reset it, while this entry is still queued. Anything a queue reports after that point
-// (wait time, metric labels) reads these frozen fields, never the context.
+// The entry retains its pooled RoutingContext until ReleaseRoutingContext.
+// Reporting metadata is frozen separately so it remains valid even after the
+// queue has released that ownership and the context has been reused.
 type QueueEntry struct {
 	*RoutingContext
 
@@ -53,15 +52,27 @@ type QueueEntry struct {
 	// at enqueue time. Reading them never touches the pooled context.
 	Model     string
 	BaseModel string
+	lifetime  atomic.Pointer[routingContextQueueLifetime]
 }
 
-// NewQueueEntry freezes the metadata a queue reports from, before the requester can be
-// unblocked and its context recycled.
+// NewQueueEntry retains the context and freezes reporting metadata before the
+// entry becomes visible to the queue worker.
 func NewQueueEntry(ctx *RoutingContext, enqueuedAt time.Time) *QueueEntry {
-	return &QueueEntry{
+	entry := &QueueEntry{
 		RoutingContext: ctx,
 		EnqueuedAt:     enqueuedAt,
 		Model:          ctx.Model,
 		BaseModel:      ctx.BaseModel,
+	}
+	entry.lifetime.Store(ctx.retainForQueue())
+	return entry
+}
+
+// ReleaseRoutingContext releases the queue's ownership once it has finished all
+// routing and accounting work on this entry. Repeated calls are harmless. Frozen
+// entry metadata remains readable afterwards, but its RoutingContext may be reused.
+func (e *QueueEntry) ReleaseRoutingContext() {
+	if lifetime := e.lifetime.Swap(nil); lifetime != nil {
+		lifetime.release()
 	}
 }
