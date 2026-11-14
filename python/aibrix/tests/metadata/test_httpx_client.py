@@ -245,6 +245,30 @@ def test_httpx_wrapper_emits_telemetry_numeric_metrics(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_httpx_wrapper_stop_closes_client_when_final_telemetry_fails(
+    monkeypatch,
+):
+    wrapper = HTTPXClientWrapper(
+        client_id="test-httpx-telemetry-failure",
+        telemetry_enabled=True,
+        telemetry_interval_seconds=0,
+    )
+    wrapper.start()
+    assert wrapper.async_client is not None
+    async_client = wrapper.async_client
+
+    def fail_emit(*args, **kwargs):
+        raise RuntimeError("metrics sink failed")
+
+    monkeypatch.setattr("aibrix.metadata.core.http_client.Emitter.gauge", fail_emit)
+
+    await wrapper.stop()
+
+    assert wrapper.async_client is None
+    assert async_client.is_closed
+
+
+@pytest.mark.asyncio
 async def test_httpx_wrapper_context_manager_starts_and_stops():
     wrapper = HTTPXClientWrapper(
         client_id="test-wrapper-context",

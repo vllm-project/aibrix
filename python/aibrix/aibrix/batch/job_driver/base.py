@@ -37,11 +37,13 @@ import contextlib
 import os
 import time
 import uuid
+from collections import Counter
 from datetime import datetime, timezone
 from math import isfinite
-from typing import Any, Dict, Iterable, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, Mapping, Optional, Set, Tuple
 
 import aibrix.batch.storage as storage
+from aibrix import envs
 from aibrix.batch.client import (
     DispatchEngine,
     DispatchStats,
@@ -95,7 +97,6 @@ logger = init_logger(__name__)
 _ADAPTIVE_MAX_FACTOR_ENV = "AIBRIX_BATCH_ADAPTIVE_MAX_FACTOR"
 _ADAPTIVE_HEALTHY_WINDOW_ENV = "AIBRIX_BATCH_ADAPTIVE_HEALTHY_WINDOW"
 _ADAPTIVE_ADDITIVE_INCREASE_ENV = "AIBRIX_BATCH_ADAPTIVE_ADDITIVE_INCREASE"
-_TELEMETRY_INTERVAL_ENV = "AIBRIX_BATCH_TELEMETRY_INTERVAL_SECONDS"
 _INFERENCE_MAX_RETRIES_ENV = "AIBRIX_BATCH_INFERENCE_MAX_RETRIES"
 _NO_ENDPOINT_MAX_RETRIES_ENV = "AIBRIX_BATCH_NO_ENDPOINT_MAX_RETRIES"
 _RETRY_BASE_DELAY_ENV = "AIBRIX_BATCH_RETRY_BASE_DELAY_SECONDS"
@@ -107,13 +108,17 @@ _OUTPUT_PERSISTENCE_FAILURE_BUCKET_SECONDS_ENV = (
     "AIBRIX_BATCH_OUTPUT_PERSISTENCE_FAILURE_BUCKET_SECONDS"
 )
 _DEFAULT_ADAPTIVE_MAX_FACTOR = 8.0
-_DEFAULT_TELEMETRY_INTERVAL_SECONDS = 5.0
 _DEFAULT_INFERENCE_MAX_RETRIES = 5
 _DEFAULT_RETRY_BASE_DELAY_SECONDS = 0.5
 _DEFAULT_RETRY_MAX_DELAY_SECONDS = 5.0
 _DEFAULT_OUTPUT_PERSISTENCE_FAILURE_THRESHOLD = 3
 _DEFAULT_OUTPUT_PERSISTENCE_FAILURE_BUCKET_SECONDS = 15
 _DONE_RECONCILE_CHUNK_SIZE = 256
+_RequestFailureMetricTags = tuple[str, str]
+_CompletedRequestResult = (
+    tuple[int, Optional[bool]]
+    | tuple[int, Optional[bool], Optional[_RequestFailureMetricTags]]
+)
 
 
 def _adaptive_max_factor() -> float:
@@ -144,10 +149,11 @@ def _adaptive_additive_increase() -> int:
 
 
 def _telemetry_interval_seconds() -> float:
-    return max(
-        _float_env(_TELEMETRY_INTERVAL_ENV, _DEFAULT_TELEMETRY_INTERVAL_SECONDS),
-        0.0,
-    )
+    return envs.BATCH_DISPATCH_TELEMETRY_INTERVAL_SECONDS
+
+
+def _dispatch_telemetry_enabled() -> bool:
+    return envs.BATCH_DISPATCH_TELEMETRY_ENABLED
 
 
 def _no_endpoint_max_retries() -> Optional[int]:
@@ -660,6 +666,45 @@ class BaseJobDriver:
                 T("result", "fail"),
             )
 
+    @staticmethod
+    def _request_failure_metric_tags(
+        error: Optional[Exception],
+    ) -> Optional[_RequestFailureMetricTags]:
+        if error is None:
+            return None
+        if isinstance(error, InferenceError):
+            return (
+                error.code.value,
+                str(error.status_code) if error.status_code is not None else "none",
+            )
+        return ("unknown", "none")
+
+    @staticmethod
+    def _normalize_completed_request_result(
+        result: _CompletedRequestResult,
+    ) -> tuple[int, Optional[bool], Optional[_RequestFailureMetricTags]]:
+        if len(result) == 2:
+            request_id, failed = result
+            return request_id, failed, None
+        request_id, failed, failure_tags = result
+        return request_id, failed, failure_tags
+
+    def _emit_request_failure_metrics(
+        self,
+        job: BatchJob,
+        failure_tag_counts: Mapping[_RequestFailureMetricTags, int],
+    ) -> None:
+        for (error_code, status_code), count in failure_tag_counts.items():
+            if count <= 0:
+                continue
+            Emitter.counter(
+                metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_FAILURE,
+                count,
+                *tags_from_job(job),
+                T("error_code", error_code),
+                T("status_code", status_code),
+            )
+
     def _emit_validation_phase_metric(
         self,
         job: BatchJob,
@@ -1168,16 +1213,19 @@ class BaseJobDriver:
     async def _sync_completed_request_tasks(
         self,
         job: BatchJob,
-        completed_request_results: Iterable[tuple[int, Optional[bool]]],
+        completed_request_results: Iterable[_CompletedRequestResult],
     ) -> tuple[BatchJob, int]:
         """Compatibility seam for tests and drivers that sync completions after
         a pass or request batch."""
-        completed_results = list(completed_request_results)
+        completed_results = [
+            self._normalize_completed_request_result(result)
+            for result in completed_request_results
+        ]
         completed_request_ids = [
-            request_id for request_id, failed in completed_results if failed is False
+            result[0] for result in completed_results if result[1] is False
         ]
         failed_request_ids = [
-            request_id for request_id, failed in completed_results if failed is True
+            result[0] for result in completed_results if result[1] is True
         ]
         self._accumulate_done_requests(
             job.job_id,
@@ -1189,6 +1237,12 @@ class BaseJobDriver:
             completed=len(completed_request_ids),
             failed=len(failed_request_ids),
         )
+        failure_tag_counts: Counter[_RequestFailureMetricTags] = Counter()
+        for result in completed_results:
+            failure_tags = result[2]
+            if result[1] is True and failure_tags is not None:
+                failure_tag_counts[failure_tags] += 1
+        self._emit_request_failure_metrics(job, failure_tag_counts)
         job = await self._persist_worker_status(job)
         return job, len(completed_request_ids) + len(failed_request_ids)
 
@@ -1196,7 +1250,7 @@ class BaseJobDriver:
         self,
         job: BatchJob,
         request_input: dict[str, Any],
-    ) -> tuple[int, Optional[bool]]:
+    ) -> tuple[int, Optional[bool], Optional[_RequestFailureMetricTags]]:
         """Execute one request and persist its output record."""
         request_id = request_input.pop("_request_index")
         input_line_no = request_id
@@ -1247,10 +1301,14 @@ class BaseJobDriver:
                     custom_id=custom_id,
                     error=exc,
                 ):
-                    return request_id, None
+                    return request_id, None, None
                 raise
             self._record_output_persistence_success()
-            return request_id, last_error is not None
+            return (
+                request_id,
+                last_error is not None,
+                self._request_failure_metric_tags(last_error),
+            )
         except Exception as exc:
             raise self._ensure_batch_job_error(
                 exc,
@@ -1536,7 +1594,7 @@ class BaseJobDriver:
         job_id = job.job_id
         assert job_id is not None
 
-        completed_request_ids: asyncio.Queue[Optional[tuple[int, Optional[bool]]]] = (
+        completed_request_ids: asyncio.Queue[Optional[_CompletedRequestResult]] = (
             asyncio.Queue()
         )
         if start_index is None:
@@ -1651,7 +1709,7 @@ class BaseJobDriver:
             nonlocal job, pending_in_round
 
             async def sync_batch(
-                request_results: list[tuple[int, Optional[bool]]],
+                request_results: list[_CompletedRequestResult],
             ) -> None:
                 nonlocal job, pending_in_round
                 if not request_results:
@@ -1723,7 +1781,13 @@ class BaseJobDriver:
                         return
                     raise
                 self._record_output_persistence_success()
-                await completed_request_ids.put((request_id, error is not None))
+                await completed_request_ids.put(
+                    (
+                        request_id,
+                        error is not None,
+                        self._request_failure_metric_tags(error),
+                    )
+                )
                 processed_requests += 1
                 await self._apply_error_injector_breakpoint(
                     job,
@@ -1740,6 +1804,7 @@ class BaseJobDriver:
                 ) from exc
 
         stats = DispatchStats()
+        telemetry_enabled = _dispatch_telemetry_enabled()
         telemetry_interval = _telemetry_interval_seconds()
         sync_task = asyncio.create_task(sync_completed_requests())
         telemetry_task = (
@@ -1750,7 +1815,7 @@ class BaseJobDriver:
                     telemetry_interval,
                 )
             )
-            if telemetry_interval > 0
+            if telemetry_enabled and telemetry_interval > 0
             else None
         )
         try:
@@ -1774,12 +1839,13 @@ class BaseJobDriver:
                 telemetry_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await telemetry_task
-            self._emit_dispatch_telemetry(
-                job_id,
-                stats.snapshot(reset_window=True),
-                telemetry_interval if telemetry_interval > 0 else 1.0,
-                final=True,
-            )
+            if telemetry_enabled:
+                self._emit_dispatch_telemetry(
+                    job_id,
+                    stats.snapshot(reset_window=True),
+                    telemetry_interval if telemetry_interval > 0 else 1.0,
+                    final=True,
+                )
 
         reloaded_job = await self._progress_manager.get_job(job_id)
         if reloaded_job is None:

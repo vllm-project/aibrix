@@ -1349,7 +1349,10 @@ class BatchManager(RunningJobs, SchedulableJobs):
             job_id: Job ID to sync to storage
         """
         try:
-            # Call update directly
+            # Entity-manager state is the authoritative old snapshot. A caller
+            # may hold stale in-memory state, while the bridge needs the latest
+            # persisted state to choose the persistence verb and to suppress
+            # duplicate terminal-transition metrics.
             if self._job_entity_manager is not None:
                 persisted_job = await self._job_entity_manager.get_job(job.job_id)
                 if persisted_job is not None:
@@ -1376,6 +1379,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
             self._emit_finished_job_metrics_on_terminal_transition(old_job, job)
             return True
         except Exception as e:
+            # conclude_job is the persistence boundary for terminal state and
+            # associated finished-job metrics. If either step fails, report the
+            # conclusion attempt as failed so callers can retry/reconcile.
             logger.error(
                 "Failed to apply job changes",
                 job_id=job.job_id,

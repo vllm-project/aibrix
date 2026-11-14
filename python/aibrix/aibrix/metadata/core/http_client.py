@@ -340,8 +340,16 @@ class HTTPClient(metaclass=_HTTPClientMeta):
         self._stopped = True
         if self._telemetry_task is not None:
             self._telemetry_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            try:
                 await self._telemetry_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception(
+                    "HTTP client telemetry task failed during shutdown",
+                    client_id=self.client_id,
+                    purpose=self.purpose,
+                )  # type: ignore[call-arg]
             self._telemetry_task = None
         if self.async_client is None:
             return
@@ -356,20 +364,22 @@ class HTTPClient(metaclass=_HTTPClientMeta):
             client_id=self.client_id,
             purpose=self.purpose,
         )  # type: ignore[call-arg]
-        if self._telemetry_enabled and should_emit_final:
-            try:
-                now = asyncio.get_running_loop().time()
-                elapsed = max(
-                    now - (self._last_telemetry_emitted_at_or(now) or now),
-                    1e-9,
-                )
-            except RuntimeError:
-                now = None
-                elapsed = max(self._telemetry_interval_seconds, 1.0)
-            self._emit_telemetry(final=True, elapsed=elapsed)
-            self._set_last_telemetry_emitted_at(now)
-        await self._close_async_client()
-        self.async_client = None
+        try:
+            if self._telemetry_enabled and should_emit_final:
+                try:
+                    now = asyncio.get_running_loop().time()
+                    elapsed = max(
+                        now - (self._last_telemetry_emitted_at_or(now) or now),
+                        1e-9,
+                    )
+                except RuntimeError:
+                    now = None
+                    elapsed = max(self._telemetry_interval_seconds, 1.0)
+                self._try_emit_telemetry(final=True, elapsed=elapsed)
+                self._set_last_telemetry_emitted_at(now)
+        finally:
+            await self._close_async_client()
+            self.async_client = None
         logger.info(self.closed_log_message, client_id=self.client_id)  # type: ignore[call-arg]
 
     def __call__(self):
@@ -546,12 +556,22 @@ class HTTPClient(metaclass=_HTTPClientMeta):
         )
 
     def _ensure_telemetry_task(self) -> None:
-        if (
-            not self._telemetry_enabled
-            or self._telemetry_interval_seconds <= 0
-            or self._telemetry_task is not None
-        ):
+        if not self._telemetry_enabled or self._telemetry_interval_seconds <= 0:
             return
+        if self._telemetry_task is not None:
+            if not self._telemetry_task.done():
+                return
+            try:
+                self._telemetry_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception(
+                    "HTTP client telemetry task exited unexpectedly",
+                    client_id=self.client_id,
+                    purpose=self.purpose,
+                )  # type: ignore[call-arg]
+            self._telemetry_task = None
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -568,8 +588,19 @@ class HTTPClient(metaclass=_HTTPClientMeta):
             await asyncio.sleep(self._telemetry_interval_seconds)
             now = asyncio.get_running_loop().time()
             elapsed = max(now - (self._last_telemetry_emitted_at_or(now) or now), 1e-9)
-            self._emit_telemetry(final=False, elapsed=elapsed)
+            self._try_emit_telemetry(final=False, elapsed=elapsed)
             self._set_last_telemetry_emitted_at(now)
+
+    def _try_emit_telemetry(self, *, final: bool, elapsed: float) -> None:
+        try:
+            self._emit_telemetry(final=final, elapsed=elapsed)
+        except Exception:
+            logger.exception(
+                "Failed to emit HTTP client telemetry",
+                client_id=self.client_id,
+                purpose=self.purpose,
+                final=final,
+            )  # type: ignore[call-arg]
 
     def _emit_telemetry(self, *, final: bool, elapsed: float) -> None:
         if not self._telemetry_enabled:

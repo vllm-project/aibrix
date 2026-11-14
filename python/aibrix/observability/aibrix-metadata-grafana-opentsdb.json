@@ -2011,12 +2011,249 @@
       "type": "stat"
     },
     {
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 71
+      },
+      "id": 43,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "aggregator": "avg",
+          "alias": "avg us",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": false,
+          "filters": [],
+          "isCounter": false,
+          "metric": "metadata.metrics.emit.avg_us",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeDelta": false,
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "title": "Metric Emit Avg (us)",
+      "type": "stat"
+    },
+    {
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 71
+      },
+      "id": 44,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "aggregator": "avg",
+          "alias": "rss mb",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": false,
+          "filters": [],
+          "isCounter": false,
+          "metric": "metadata.process.rss_mb",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeDelta": false,
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "title": "Process RSS (MB)",
+      "type": "stat"
+    },
+    {
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 71
+      },
+      "id": 45,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "aggregator": "avg",
+          "alias": "gen2 count",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": false,
+          "filters": [],
+          "isCounter": false,
+          "metric": "metadata.gc.gen2.count",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeDelta": false,
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "title": "GC Gen2 Count",
+      "type": "stat"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 71
+        "y": 77
       },
       "id": 23,
       "panels": [],
@@ -2073,7 +2310,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 72
+        "y": 78
       },
       "id": 24,
       "options": {
@@ -2173,7 +2410,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 72
+        "y": 78
       },
       "id": 25,
       "options": {
@@ -2286,7 +2523,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 80
+        "y": 86
       },
       "id": 26,
       "options": {
@@ -2386,7 +2623,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 80
+        "y": 86
       },
       "id": 27,
       "options": {
@@ -2442,7 +2679,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 88
+        "y": 94
       },
       "id": 28,
       "panels": [],
@@ -2499,7 +2736,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 89
+        "y": 95
       },
       "id": 29,
       "options": {
@@ -2606,7 +2843,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 89
+        "y": 95
       },
       "id": 30,
       "options": {
@@ -2706,7 +2943,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 97
+        "y": 103
       },
       "id": 31,
       "options": {
@@ -2836,7 +3073,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 97
+        "y": 103
       },
       "id": 32,
       "options": {
@@ -2917,12 +3154,134 @@
       "type": "timeseries"
     },
     {
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 111
+      },
+      "id": 46,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "tooltipOptions": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "aggregator": "sum",
+          "alias": "$tag_error_code status=$tag_status_code",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "sum",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": false,
+          "filters": [
+            {
+              "filter": "$job_id",
+              "groupBy": false,
+              "tagk": "job_id",
+              "type": "literal_or"
+            },
+            {
+              "filter": "*",
+              "groupBy": true,
+              "tagk": "error_code",
+              "type": "wildcard"
+            },
+            {
+              "filter": "*",
+              "groupBy": true,
+              "tagk": "status_code",
+              "type": "wildcard"
+            }
+          ],
+          "isCounter": true,
+          "metric": "metadata.batch.driver.request.failure",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeDelta": true,
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "title": "Task Request Failure Codes",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 105
+        "y": 119
       },
       "id": 33,
       "panels": [],
@@ -2979,7 +3338,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 106
+        "y": 120
       },
       "id": 34,
       "options": {
@@ -3160,7 +3519,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 106
+        "y": 120
       },
       "id": 35,
       "options": {
@@ -3304,7 +3663,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 114
+        "y": 128
       },
       "id": 36,
       "options": {
@@ -3448,7 +3807,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 114
+        "y": 128
       },
       "id": 37,
       "options": {
@@ -3517,7 +3876,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 122
+        "y": 136
       },
       "id": 38,
       "panels": [],
@@ -3574,7 +3933,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 123
+        "y": 137
       },
       "id": 39,
       "options": {
@@ -3687,7 +4046,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 123
+        "y": 137
       },
       "id": 40,
       "options": {
@@ -3800,7 +4159,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 131
+        "y": 145
       },
       "id": 41,
       "options": {
@@ -3954,7 +4313,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 131
+        "y": 145
       },
       "id": 42,
       "options": {
@@ -3980,6 +4339,509 @@
         }
       ],
       "title": "JobStore Backend Amplification",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 153
+      },
+      "id": 47,
+      "panels": [],
+      "title": "System stress",
+      "type": "row"
+    },
+    {
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 154
+      },
+      "id": 48,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "aggregator": "avg",
+          "alias": "emit/s",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": false,
+          "filters": [],
+          "isCounter": false,
+          "metric": "metadata.metrics.emit.per_second",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeDelta": false,
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "title": "Metric Emit Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 154
+      },
+      "id": 49,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "aggregator": "avg",
+          "alias": "avg",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": false,
+          "filters": [],
+          "isCounter": false,
+          "metric": "metadata.metrics.emit.avg_us",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeDelta": false,
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        },
+        {
+          "aggregator": "p90",
+          "alias": "p90",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": false,
+          "filters": [],
+          "isCounter": false,
+          "metric": "metadata.metrics.emit.p90_us",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "B",
+          "shouldComputeDelta": false,
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "title": "Metric Emit Latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 162
+      },
+      "id": 50,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "aggregator": "avg",
+          "alias": "rss_mb",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": false,
+          "filters": [],
+          "isCounter": false,
+          "metric": "metadata.process.rss_mb",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeDelta": false,
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "title": "Process RSS (MB)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 162
+      },
+      "id": 51,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "aggregator": "avg",
+          "alias": "gen0",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": false,
+          "filters": [],
+          "isCounter": false,
+          "metric": "metadata.gc.gen0.count",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "A",
+          "shouldComputeDelta": false,
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        },
+        {
+          "aggregator": "avg",
+          "alias": "gen1",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": false,
+          "filters": [],
+          "isCounter": false,
+          "metric": "metadata.gc.gen1.count",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "B",
+          "shouldComputeDelta": false,
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        },
+        {
+          "aggregator": "avg",
+          "alias": "gen2",
+          "currentFilterGroupBy": false,
+          "currentFilterKey": "",
+          "currentFilterType": "literal_or",
+          "currentFilterValue": "",
+          "currentTagKey": "",
+          "currentTagValue": "",
+          "datasource": "${datasource}",
+          "downsampleAggregator": "avg",
+          "downsampleAggregatorDisabled": false,
+          "downsampleFillPolicy": "none",
+          "downsampleFillPolicyDisabled": false,
+          "downsampleInterval": "",
+          "explicitTags": false,
+          "filters": [],
+          "isCounter": false,
+          "metric": "metadata.gc.gen2.count",
+          "prevRateOrDelte": null,
+          "rateDownsampleType": "before_downsample",
+          "refId": "C",
+          "shouldComputeDelta": false,
+          "shouldComputeMulti": false,
+          "shouldComputeRate": false,
+          "shouldComputeTopK": false,
+          "tags": {},
+          "tenant": "default",
+          "topKType": "top"
+        }
+      ],
+      "title": "GC Counts",
       "type": "timeseries"
     }
   ],

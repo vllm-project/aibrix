@@ -18,11 +18,12 @@ from . import names as metrics_names
 from .log import LogSink
 from .setup import MetricsRuntime, setup_metrics, shutdown_metrics
 from .sink import (
+    LOG_CONTROL_TAGS,
     Emitter,
     FanoutSink,
-    MetricEmissionObserver,
     NoopSink,
     ObservedSink,
+    SystemTelemetry,
     T,
     Tag,
     duration_ms,
@@ -37,12 +38,13 @@ from .tracking import (
 __all__ = [
     "Emitter",
     "FanoutSink",
-    "MetricEmissionObserver",
+    "LOG_CONTROL_TAGS",
     "MetricsConfig",
     "MetricsRuntime",
     "LogSink",
     "NoopSink",
     "ObservedSink",
+    "SystemTelemetry",
     "T",
     "Tag",
     "begin_backend_operation_count",

@@ -313,6 +313,7 @@ async def test_http_channel_default_connection_pool_allows_100_connections():
         limits = client._client_kwargs["limits"]
         assert isinstance(limits, httpx.Limits)
         assert limits.max_connections == 100
+        assert limits.max_keepalive_connections == 20
         client.start()
         assert client.async_client is not None
         assert client.async_client.is_closed is False

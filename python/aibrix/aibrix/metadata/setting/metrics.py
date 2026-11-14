@@ -34,8 +34,8 @@ class MetricsConfig:
     log_enabled: bool = False
     log_include_patterns: list[str] = field(default_factory=list)
     log_exclude_patterns: list[str] = field(default_factory=list)
-    emit_observation_enabled: bool = False
-    emit_observation_interval_seconds: float = 10.0
+    system_telemetry_enabled: bool = False
+    system_telemetry_interval_seconds: float = 10.0
 
     def get_metrics_by_provider(self, provider: str) -> Any | None:
         return None
@@ -55,8 +55,8 @@ def load_public_metrics_config() -> Optional[MetricsConfig]:
         log_enabled=envs.METRICS_LOG_ENABLED,
         log_include_patterns=list(envs.METRICS_LOG_INCLUDE),
         log_exclude_patterns=list(envs.METRICS_LOG_EXCLUDE),
-        emit_observation_enabled=envs.METRICS_EMIT_OBSERVATION_ENABLED,
-        emit_observation_interval_seconds=envs.METRICS_EMIT_OBSERVATION_INTERVAL_SECONDS,
+        system_telemetry_enabled=envs.METADATA_SERVICE_TELEMETRY_ENABLE,
+        system_telemetry_interval_seconds=envs.METADATA_SERVICE_TELEMETRY_INTERVAL_SECONDS,
     )
 
     if (
@@ -66,7 +66,7 @@ def load_public_metrics_config() -> Optional[MetricsConfig]:
         and not config.dogstatsd_addr
         and not config.opentsdb_addr
         and not config.log_enabled
-        and not config.emit_observation_enabled
+        and not config.system_telemetry_enabled
     ):
         return None
 

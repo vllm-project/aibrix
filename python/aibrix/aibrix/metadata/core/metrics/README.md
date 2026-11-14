@@ -29,6 +29,8 @@ It has three goals:
 - `setup.py`: bootstrap and shutdown helpers, sink assembly, Prometheus registry creation
 - `prometheus.py`: Prometheus sink implementation
 - `udp.py`: StatsD, Statsite, and DogStatsD sinks
+- `opentsdb.py`: OpenTSDB telnet sink implementation
+- `log.py`: structured logging sink implementation
 - `bytedmetrics.py`: internal BytedMetrics sink
 - `names.py`: canonical metric name catalog
 - `tracking.py`: backend operation counting helpers used by JobStore read-amplification metrics
@@ -71,6 +73,9 @@ Supported public environment variables:
 - `METRICS_STATSITE_ADDR`
 - `METRICS_DOGSTATSD_ADDR`
 - `METRICS_DOGSTATSD_TAGS`
+- `METRICS_OPENTSDB_ADDR`
+- `METRICS_OPENTSDB_PREFIX`
+- `METRICS_OPENTSDB_TIMEOUT_SECONDS`
 
 If none of the public sinks are enabled, `load_metrics_config()` returns `None`
 and the metadata service falls back to a `NoopSink`.
@@ -182,6 +187,24 @@ Batch execution phase metrics also carry:
 
 The dashboard queries must use the Prometheus-normalized names, not the raw
 Python constants.
+
+## OpenTSDB
+
+When `METRICS_OPENTSDB_ADDR` is configured, `setup_metrics()` creates an
+OpenTSDB sink that emits telnet `put` lines to the configured `host:port`.
+`METRICS_OPENTSDB_PREFIX` optionally prefixes every metric name, and
+`METRICS_OPENTSDB_TIMEOUT_SECONDS` controls the TCP connect/write timeout.
+
+The sink removes LogSink-only control tags such as `log_field`, `log_map`,
+`log_context`, and `flush` before formatting time-series tags. These directives
+only shape structured log aggregation and are not meaningful labels for
+OpenTSDB, Prometheus, StatsD, Statsite, or DogStatsD.
+
+AIBrix OpenTSDB telemetry is tested against OpenTSDB's stock
+`tsd.storage.max_tags=8` limit. Keep that limit at `8` or higher when enabling
+`METRICS_OPENTSDB_ADDR`; lowering it can reject metadata-service telemetry.
+With the default global `service` tag, the widest supported metadata telemetry
+families use up to `8` OpenTSDB tags after control tags are stripped.
 
 ## Grafana Dashboard
 

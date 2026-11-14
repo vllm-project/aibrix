@@ -53,6 +53,7 @@ _KEEPALIVE_EXPIRY_SECONDS = 3.0
 _CONNECT_TIMEOUT_SECONDS = 10.0
 _WRITE_TIMEOUT_SECONDS = 60.0
 _POOL_TIMEOUT_SECONDS = 30.0
+_MAX_KEEPALIVE_CONNECTIONS = 20
 
 
 def _build_timeout(read_timeout: float) -> httpx.Timeout:
@@ -190,6 +191,7 @@ def create_batch_runtime_http_client(
     client_id: str,
     *,
     max_connections: int = 100,
+    max_keepalive_connections: int = _MAX_KEEPALIVE_CONNECTIONS,
     limit_per_host: int = 100,
 ) -> HTTPClient:
     return HTTPClient(
@@ -198,6 +200,7 @@ def create_batch_runtime_http_client(
         aiohttp_limit_per_host=limit_per_host,
         limits=httpx.Limits(
             max_connections=max_connections,
+            max_keepalive_connections=max_keepalive_connections,
             keepalive_expiry=_KEEPALIVE_EXPIRY_SECONDS,
         ),
     )
