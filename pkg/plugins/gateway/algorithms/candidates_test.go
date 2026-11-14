@@ -141,7 +141,7 @@ func TestSelectCandidates_KeepsAllPodsWhenNotApplicable(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := selectCandidates(candidateCtx(t, tc.resolved), router, pods, tc.k)
+			got := selectCandidates(candidateCtx(t, tc.resolved), nil, router, pods, tc.k)
 			assert.Equal(t, pods, got)
 		})
 	}
@@ -164,7 +164,7 @@ func TestSelectCandidates_KeepsBestEstimatesPlusRandomSlots(t *testing.T) {
 		nextBestAfterRanked := 0
 		const trials = 200
 		for trial := 0; trial < trials; trial++ {
-			got := selectCandidates(candidateCtx(t, "load-balance"), router, pods, 16)
+			got := selectCandidates(candidateCtx(t, "load-balance"), nil, router, pods, 16)
 			requireDistinctSubset(t, got, pods)
 			require.Len(t, got, 16)
 			for rank := 0; rank < 8; rank++ {
@@ -189,7 +189,7 @@ func TestSelectCandidates_KeepsBestEstimatesPlusRandomSlots(t *testing.T) {
 func TestSelectCandidates_KOneSkipsEstimates(t *testing.T) {
 	pods := candidatePods(10)
 	e := scoreByIndex(pods, types.PolarityMost)
-	got := selectCandidates(candidateCtx(t, "load-balance"), e, pods, 1)
+	got := selectCandidates(candidateCtx(t, "load-balance"), nil, e, pods, 1)
 	requireDistinctSubset(t, got, pods)
 	require.Len(t, got, 1)
 	assert.Zero(t, e.calls, "no estimate is computed when no slot is ranked")
@@ -199,7 +199,7 @@ func TestSelectCandidates_KOneSkipsEstimates(t *testing.T) {
 func TestSelectCandidates_SmallK(t *testing.T) {
 	pods := candidatePods(10) // a scout of 4K covers most of these, so every pod is estimated
 	for _, k := range []int{2, 3} {
-		got := selectCandidates(candidateCtx(t, "load-balance"), scoreByIndex(pods, types.PolarityLeast), pods, k)
+		got := selectCandidates(candidateCtx(t, "load-balance"), nil, scoreByIndex(pods, types.PolarityLeast), pods, k)
 		requireDistinctSubset(t, got, pods)
 		require.Len(t, got, k)
 		assert.Same(t, pods[0], got[0])
@@ -220,7 +220,7 @@ func TestSelectCandidates_BlendsStrategiesUnderOneBudget(t *testing.T) {
 	}
 	router := blendOf(map[string]types.PodScorer{"a": prefix, "b": load}, map[string]int{"a": 1, "b": 1})
 	for trial := 0; trial < 50; trial++ {
-		got := selectCandidates(candidateCtx(t, "prefix-cache:1,load-balance:1"), router, pods, 10)
+		got := selectCandidates(candidateCtx(t, "prefix-cache:1,load-balance:1"), nil, router, pods, 10)
 		requireDistinctSubset(t, got, pods)
 		require.Len(t, got, 10)
 		assert.ElementsMatch(t, pods[5:10], got[:5], "the idle holders rank first")
@@ -229,7 +229,7 @@ func TestSelectCandidates_BlendsStrategiesUnderOneBudget(t *testing.T) {
 	// A weight shifts the balance: with the load signal weighted 3:1, an idle pod without the
 	// prefix (0.75) outranks a busy holder (0.25) for the ranked slots after the idle holders (1.0).
 	router = blendOf(map[string]types.PodScorer{"a": prefix, "b": load}, map[string]int{"a": 1, "b": 3})
-	got := selectCandidates(candidateCtx(t, "prefix-cache:1,load-balance:3"), router, pods, 16)
+	got := selectCandidates(candidateCtx(t, "prefix-cache:1,load-balance:3"), nil, router, pods, 16)
 	assert.ElementsMatch(t, pods[5:10], got[:5])
 	for _, pod := range got[5:8] {
 		assert.NotContains(t, pods[:5], pod, "a busy holder does not take a ranked slot over an idle pod")
@@ -260,7 +260,7 @@ func TestSelectCandidates_WeightsOrderStrictly(t *testing.T) {
 	} {
 		router := blendOf(map[string]types.PodScorer{"a": prefix, "b": load}, tc.weights)
 		for trial := 0; trial < 50; trial++ {
-			got := selectCandidates(candidateCtx(t, tc.resolved), router, pods, 4)
+			got := selectCandidates(candidateCtx(t, tc.resolved), nil, router, pods, 4)
 			require.Len(t, got, 4)
 			require.Same(t, tc.first, got[0], "%s, trial %d", tc.resolved, trial)
 			require.Same(t, tc.second, got[1], "%s, trial %d", tc.resolved, trial)
@@ -277,7 +277,7 @@ func TestSelectCandidates_StrategiesWithoutEstimates(t *testing.T) {
 	failing := &estimator{err: errors.New("no counts"), polarity: types.PolarityLeast}
 
 	router := blendOf(map[string]types.PodScorer{"a": ranked, "b": plainScorer{}, "c": failing}, map[string]int{"a": 1, "b": 5, "c": 5})
-	got := selectCandidates(candidateCtx(t, "least-request:1,load-balance:1"), router, pods, 8)
+	got := selectCandidates(candidateCtx(t, "least-request:1,load-balance:1"), nil, router, pods, 8)
 	assert.Equal(t, []*v1.Pod{pods[59], pods[58], pods[57], pods[56]}, got[:4])
 	assert.Equal(t, 1, failing.calls)
 
@@ -286,7 +286,7 @@ func TestSelectCandidates_StrategiesWithoutEstimates(t *testing.T) {
 		nil,
 		blendOf(map[string]types.PodScorer{"a": plainScorer{}, "b": failing}, map[string]int{"a": 1, "b": 1}),
 	} {
-		got := selectCandidates(candidateCtx(t, "random"), router, pods, 8)
+		got := selectCandidates(candidateCtx(t, "random"), nil, router, pods, 8)
 		requireDistinctSubset(t, got, pods)
 		require.Len(t, got, 8)
 	}
@@ -302,7 +302,7 @@ func TestSelectCandidates_SpreadsEqualEstimates(t *testing.T) {
 	}
 	seen := map[*v1.Pod]bool{}
 	for trial := 0; trial < 300; trial++ {
-		got := selectCandidates(candidateCtx(t, "prefix-cache"), holders, pods, 6)
+		got := selectCandidates(candidateCtx(t, "prefix-cache"), nil, holders, pods, 6)
 		for _, pod := range got[:3] {
 			require.Contains(t, pods[:20], pod, "ranked slots go to holders")
 			seen[pod] = true
@@ -328,7 +328,7 @@ func TestSelectCandidates_EstimatesABoundedScout(t *testing.T) {
 	e := scoreByIndex(pods, types.PolarityMost)
 	f := finder{estimator: e, found: []*v1.Pod{pods[1999], pods[1998], pods[1999]}}
 	for trial := 0; trial < 50; trial++ {
-		got := selectCandidates(candidateCtx(t, "prefix-cache"), f, pods, 16)
+		got := selectCandidates(candidateCtx(t, "prefix-cache"), nil, f, pods, 16)
 		requireDistinctSubset(t, got, pods)
 		require.Len(t, got, 16)
 		assert.LessOrEqual(t, e.seen, 4*16+2, "the scout is 4K random pods plus the found ones")
@@ -342,7 +342,7 @@ func TestSelectCandidates_EstimatesABoundedScout(t *testing.T) {
 	// Without a finder, the scout is random: the best pod of the fleet is ranked only when the
 	// scout drew it, and the stage's work stays bounded by K.
 	plain := scoreByIndex(pods, types.PolarityMost)
-	got := selectCandidates(candidateCtx(t, "load-balance"), plain, pods, 16)
+	got := selectCandidates(candidateCtx(t, "load-balance"), nil, plain, pods, 16)
 	require.Len(t, got, 16)
 	assert.Equal(t, 4*16, plain.seen)
 }
@@ -353,7 +353,7 @@ func TestSelectCandidates_LargeSample(t *testing.T) {
 	pods := candidatePods(30)
 	for _, router := range []types.Router{plainRouter{}, scoreByIndex(pods, types.PolarityMost)} {
 		for trial := 0; trial < 200; trial++ {
-			got := selectCandidates(candidateCtx(t, "least-request"), router, pods, 25)
+			got := selectCandidates(candidateCtx(t, "least-request"), nil, router, pods, 25)
 			requireDistinctSubset(t, got, pods)
 			require.Len(t, got, 25)
 		}
@@ -367,13 +367,93 @@ func TestSelectCandidates_SamplesUniformly(t *testing.T) {
 	pods := candidatePods(n)
 	counts := make(map[*v1.Pod]int, n)
 	for trial := 0; trial < trials; trial++ {
-		for _, pod := range selectCandidates(candidateCtx(t, "random"), plainRouter{}, pods, k) {
+		for _, pod := range selectCandidates(candidateCtx(t, "random"), nil, plainRouter{}, pods, k) {
 			counts[pod]++
 		}
 	}
 	want := float64(trials*k) / n // 2000
 	for _, pod := range pods {
 		assert.InDelta(t, want, float64(counts[pod]), want*0.15, "pod %s", pod.Name)
+	}
+}
+
+// A pod that is already at the profile's inflight cap is about to be dropped by the Redis
+// filter, so the stage must not spend a ranked slot on it. In-memory counts say which pods those
+// are; the read is bounded by the scout, not the fleet.
+func TestSelectCandidates_ExcludesPodsAtInflightCapBeforeRanking(t *testing.T) {
+	const k, ranked = 8, 4
+	pods := candidatePods(200)
+	atCap := pods[196:200]
+	found := []*v1.Pod{pods[199], pods[198], pods[197], pods[196], pods[195], pods[194], pods[193], pods[192]}
+
+	approx := make(map[string]int64, len(pods))
+	for _, pod := range pods {
+		approx[utils.GeneratePodKey(pod.Namespace, pod.Name)] = 0
+	}
+	for _, pod := range atCap {
+		approx[utils.GeneratePodKey(pod.Namespace, pod.Name)] = 4
+	}
+	c := &countingCache{Cache: cache.NewWithPodsForTest(pods, "m1"), approx: approx}
+
+	ctx := candidateCtx(t, "prefix-cache")
+	ctx.ConfigProfile = &types.ResolvedConfigProfile{RequestsInflight: 4}
+	e := scoreByIndex(pods, types.PolarityMost)
+	got := selectCandidates(ctx, c, finder{estimator: e, found: found}, pods, k)
+
+	require.Len(t, got, k)
+	assert.Equal(t, []*v1.Pod{pods[195], pods[194], pods[193], pods[192]}, got[:ranked],
+		"the ranked slots skip the pods at the cap and go to the best pods below it")
+	for _, pod := range got[:ranked] {
+		assert.NotContains(t, atCap, pod)
+	}
+	require.Len(t, c.approxSizes, 1, "one in-memory read per stage")
+	assert.LessOrEqual(t, c.approxSizes[0], 4*k+k, "the read covers the scout only")
+	assert.Less(t, c.approxSizes[0], len(pods), "the read is smaller than the fleet")
+}
+
+// When every scouted pod looks saturated, the stage keeps the scout and still returns K pods.
+// The Redis filter owns the 429; this check must not turn a recoverable ranking into an empty set.
+func TestSelectCandidates_KeepsScoutWhenEveryPodIsAtCap(t *testing.T) {
+	pods := candidatePods(10)
+	approx := make(map[string]int64, len(pods))
+	for _, pod := range pods {
+		approx[utils.GeneratePodKey(pod.Namespace, pod.Name)] = 2
+	}
+	c := &countingCache{Cache: cache.NewWithPodsForTest(pods, "m1"), approx: approx}
+
+	ctx := candidateCtx(t, "load-balance")
+	ctx.ConfigProfile = &types.ResolvedConfigProfile{RequestsInflight: 2}
+	got := selectCandidates(ctx, c, scoreByIndex(pods, types.PolarityMost), pods, 4)
+
+	require.Len(t, got, 4, "the soft fallback still returns K candidates")
+	assert.Equal(t, []*v1.Pod{pods[9], pods[8]}, got[:2], "the fallback ranks the scout as usual")
+}
+
+// The check exists only when the request has a cap and the cache can answer from memory. With no
+// cap, no cache, or a cache without the optional provider, ranking is unchanged.
+func TestSelectCandidates_NoInflightCapSkipsTheCountRead(t *testing.T) {
+	pods := candidatePods(40)
+	approx := make(map[string]int64, len(pods))
+	for _, pod := range pods {
+		approx[utils.GeneratePodKey(pod.Namespace, pod.Name)] = 10
+	}
+	full := &countingCache{Cache: cache.NewWithPodsForTest(pods, "m1"), approx: approx}
+	e := scoreByIndex(pods, types.PolarityMost)
+	top := []*v1.Pod{pods[39], pods[38], pods[37], pods[36], pods[35], pods[34], pods[33], pods[32]}
+	want := []*v1.Pod{pods[39], pods[38], pods[37], pods[36]}
+
+	uncapped := candidateCtx(t, "load-balance")
+	got := selectCandidates(uncapped, full, e, pods, 8)
+	assert.Equal(t, want, got[:4])
+	assert.Empty(t, full.approxSizes, "no cap, so no in-memory count read")
+
+	noProvider := &struct{ cache.Cache }{cache.NewWithPodsForTest(pods, "m1")}
+	capped := candidateCtx(t, "load-balance")
+	capped.ConfigProfile = &types.ResolvedConfigProfile{RequestsInflight: 4}
+	for name, c := range map[string]cache.Cache{"nil cache": nil, "cache without provider": noProvider} {
+		e := scoreByIndex(pods, types.PolarityMost)
+		got := selectCandidates(capped, c, finder{estimator: e, found: top}, pods, 8)
+		assert.Equal(t, want, got[:4], name)
 	}
 }
 
@@ -392,6 +472,7 @@ type countingCache struct {
 	cache.Cache
 	exact, approx map[string]int64
 	exactReads    int
+	approxSizes   []int // pods passed to each in-memory count read
 }
 
 func (c *countingCache) GetPodsRunningRequests([]*v1.Pod) (map[string]int64, error) {
@@ -399,7 +480,10 @@ func (c *countingCache) GetPodsRunningRequests([]*v1.Pod) (map[string]int64, err
 	return c.exact, nil
 }
 
-func (c *countingCache) GetPodsRunningRequestsApprox([]*v1.Pod) map[string]int64 { return c.approx }
+func (c *countingCache) GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64 {
+	c.approxSizes = append(c.approxSizes, len(pods))
+	return c.approx
+}
 
 // The load estimates read memory, not Redis, and they never stand in for the exact counts that
 // the gate and the router read for the candidates afterwards.
@@ -490,7 +574,7 @@ func TestSelectCandidates_CountsPaths(t *testing.T) {
 		{scoreByIndex(pods, types.PolarityMost), "load-balance", 1, candidatePathNoRankedSlot},
 	} {
 		before := selectionCount(t, "metric-model", tc.path)
-		selectCandidates(ctxFor(tc.resolved), tc.router, pods, tc.k)
+		selectCandidates(ctxFor(tc.resolved), nil, tc.router, pods, tc.k)
 		assert.Equal(t, before+1, selectionCount(t, "metric-model", tc.path), tc.path)
 	}
 
@@ -499,9 +583,9 @@ func TestSelectCandidates_CountsPaths(t *testing.T) {
 	for _, path := range allPaths {
 		before += selectionCount(t, "metric-model", path)
 	}
-	selectCandidates(ctxFor("load-balance"), plainRouter{}, pods, 0)
-	selectCandidates(ctxFor("load-balance"), plainRouter{}, pods, 40)
-	selectCandidates(ctxFor("vtc-basic"), plainRouter{}, pods, 8)
+	selectCandidates(ctxFor("load-balance"), nil, plainRouter{}, pods, 0)
+	selectCandidates(ctxFor("load-balance"), nil, plainRouter{}, pods, 40)
+	selectCandidates(ctxFor("vtc-basic"), nil, plainRouter{}, pods, 8)
 	after := 0.0
 	for _, path := range allPaths {
 		after += selectionCount(t, "metric-model", path)

@@ -1038,8 +1038,10 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	} else {
 		// Narrow the pods to a bounded candidate set when AIBRIX_ROUTING_CANDIDATE_K is set, so
 		// the filter, the gate and the router read running counts for those pods only (RFC #3188).
+		// The cache lets the stage skip pods already at the profile's inflight cap before ranking
+		// them, from memory only; the Redis filter below still decides the 429.
 		readyBeforeCandidates := len(readyPods)
-		readyPods = routing.SelectCandidates(routeCtx, router, readyPods)
+		readyPods = routing.SelectCandidates(routeCtx, s.cache, router, readyPods)
 		// The scope is what the filter actually ran on, not which branch ran: with the candidate
 		// stage off, SelectCandidates returns the ready set unchanged and the cap is fleet-wide.
 		scope := inflightScopeFleet

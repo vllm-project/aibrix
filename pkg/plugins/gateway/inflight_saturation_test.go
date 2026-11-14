@@ -248,6 +248,52 @@ func TestSelectTargetPod_PartialSaturationOnCandidateSet(t *testing.T) {
 	assert.NotEqual(t, "a", routeCtx.TargetPod().Name)
 }
 
+// TestSelectTargetPod_StaleApproxCountsDoNotReject covers the false-429 path the pre-exclusion
+// must not create. The candidate stage's in-memory counts are a hint, not the decision: when they
+// say every candidate is at the cap but the Redis counts still show room, the request must route,
+// because the filter is the source of truth. This pins the soft fallback across the stage
+// boundary.
+func TestSelectTargetPod_StaleApproxCountsDoNotReject(t *testing.T) {
+	pods := []*v1.Pod{
+		podWithReplicaInflight("a", 1),
+		podWithReplicaInflight("b", 1),
+		podWithReplicaInflight("c", 1),
+		podWithReplicaInflight("d", 1),
+	}
+	mockCache := &MockCache{}
+	mockCache.On("GetPodsRunningRequestsApprox", mock.Anything).
+		Return(map[string]int64{"ns/a": 1, "ns/b": 1, "ns/c": 1, "ns/d": 1})
+	mockCache.On("GetPodsRunningRequests", mock.Anything).
+		Return(map[string]int64{"ns/a": 0, "ns/b": 0, "ns/c": 0, "ns/d": 0}, nil)
+
+	var routed []string
+	estimates := estimateRouter{scores: map[string]float64{"a": 100, "b": 1, "c": 0, "d": 0},
+		route: func(ctx *types.RoutingContext, list types.PodList) (string, error) {
+			for _, pod := range list.All() {
+				routed = append(routed, pod.Name)
+				if pod.Name == "a" {
+					ctx.SetTargetPod(pod)
+				}
+			}
+			return ctx.TargetAddress(), nil
+		}}
+	manager := routing.NewRouterManager()
+	manager.RegisterProvider(routing.RouterLeastRequest, func(*types.RoutingContext) (types.Router, error) {
+		return estimates, nil
+	})
+	s := &Server{cache: mockCache, routerManager: manager}
+
+	routeCtx := types.NewRoutingContext(context.Background(), routing.RouterLeastRequest, "m", "hello", "r6", "")
+	t.Cleanup(routeCtx.Delete)
+	routeCtx.ConfigProfile = inflightProfile(1, 2)
+
+	_, err := s.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: pods}, "")
+	require.NoError(t, err, "stale in-memory counts must not turn room in Redis into a 429")
+	require.Contains(t, routed, "a", "the best estimate survives the filter")
+	assert.Equal(t, "a", routeCtx.TargetPod().Name, "the best estimate still routes")
+	mockCache.AssertCalled(t, "GetPodsRunningRequestsApprox", mock.Anything)
+}
+
 // TestSelectTargetPod_GateRunsAfterFilter pins the order the gate depends on. The saturated pod
 // also carries the highest count, so a gate placed before the filter would see a spread of 1 over
 // the ready set, record a load-imbalance event, and trim the set. After the filter it sees two
