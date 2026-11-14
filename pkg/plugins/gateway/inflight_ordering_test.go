@@ -95,11 +95,11 @@ func TestSelectTargetPod_RedisCommandsPerDecision(t *testing.T) {
 	}
 
 	// A cap far above the fleet's load, so the filter keeps every pod and only costs reads.
-	const cap = 100000
+	const limit = 100000
 	baseline := route("baseline", 0, "")
 	sampled := route("candidate", 0, `{"candidate":{"k":16}}`)
-	inflight := route("inflight", cap, "")
-	both := route("both", cap, `{"candidate":{"k":16}}`)
+	inflight := route("inflight", limit, "")
+	both := route("both", limit, `{"candidate":{"k":16}}`)
 
 	t.Logf("Redis commands for one decision over %d ready pods:", n)
 	t.Logf("  neither setting            %5d", baseline)
@@ -108,12 +108,16 @@ func TestSelectTargetPod_RedisCommandsPerDecision(t *testing.T) {
 	t.Logf("  both                       %5d", both)
 
 	assert.GreaterOrEqual(t, baseline, n, "without any setting every ready pod is read")
+	assert.Less(t, baseline, 2*n, "one read of the ready set, not two")
 	assert.LessOrEqual(t, sampled, 40, "the candidate stage alone bounds the read")
 	assert.GreaterOrEqual(t, inflight, n,
 		"without the candidate stage the inflight filter reads every ready pod")
+	// The upper bound is what catches a filter that reads Redis itself instead of through the
+	// per-decision snapshot: that doubles the read, so the count would land near 2n.
+	assert.Less(t, inflight, 2*n, "the filter shares the snapshot instead of reading twice")
 	// Pinned current behavior, and the reason #3463 exists: the cap's filter reads the full
 	// ready set first, which fills the snapshot the candidate stage would have read, so the
-	// two settings do not compose. The ordering change proposes 22 here instead of 5,006.
+	// two settings do not compose. The ordering change proposes 22 here instead of 1,006.
 	assert.GreaterOrEqual(t, both, n,
 		"with requestsInflight the filter reads the full ready set before candidate selection, "+
 			"so the candidate stage does not bound the read")
