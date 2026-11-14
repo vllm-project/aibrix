@@ -1165,12 +1165,24 @@ func TestHandleRequestBody_ModelRPSCountedPerProfile(t *testing.T) {
 		}
 		return ok
 	}
+	// refusedProfile sends one request that must be refused and returns the
+	// x-aibrix-config-profile header of the response, or "" if it has none.
+	refusedProfile := func(t *testing.T, s *Server, profile string) string {
+		refused := send(s, profile, profile+"-refused").GetImmediateResponse()
+		require.NotNil(t, refused)
+		for _, h := range refused.GetHeaders().GetSetHeaders() {
+			if h.GetHeader().GetKey() == HeaderAIBrixConfigProfile {
+				return string(h.GetHeader().GetRawValue())
+			}
+		}
+		return ""
+	}
 
 	t.Run("default traffic does not use up batch's limit", func(t *testing.T) {
 		s, _ := newServer(t, twoProfiles)
 		assert.Equal(t, 20, admitted(s, "default", 20))
 		assert.Equal(t, 20, admitted(s, "batch", 20))
-		assert.Equal(t, 0, admitted(s, "batch", 1))
+		assert.Equal(t, "", refusedProfile(t, s, "batch"))
 	})
 	t.Run("batch traffic does not use up default's limit", func(t *testing.T) {
 		s, _ := newServer(t, twoProfiles)
@@ -1188,16 +1200,14 @@ func TestHandleRequestBody_ModelRPSCountedPerProfile(t *testing.T) {
 		s, mr := newServer(t, `{"authoritativeRoutingPolicy":true,"defaultProfile":"default","profiles":{`+
 			`"default":{"requestsPerSecond":100},"batch":{"requestsPerSecond":20}}}`)
 		assert.Equal(t, 100, admitted(s, "batch", 100))
-		assert.Equal(t, 0, admitted(s, "batch", 1))
+		assert.Equal(t, "", refusedProfile(t, s, "batch"))
 		assert.Equal(t, []string{"aibrix_model:test-model_MODEL_RPS_CURRENT:default:1000:counter"}, mr.Keys())
 	})
 	t.Run("auto counts against the profile it selects", func(t *testing.T) {
 		s, mr := newServer(t, `{"defaultProfile":"default","profiles":{"default":{"requestsPerSecond":100},`+
 			`"batch":{"requestsPerSecond":20,"routingConfig":{"promptTokensGte":1}}}}`)
 		assert.Equal(t, 20, admitted(s, "auto", 20))
-		if refused := send(s, "auto", "auto-20").GetImmediateResponse(); assert.NotNil(t, refused) {
-			assert.Contains(t, refused.GetBody(), "model: test-model, profile: batch has exceeded RPS: 20")
-		}
+		assert.Equal(t, "batch", refusedProfile(t, s, "auto"))
 		assert.Equal(t, []string{"aibrix_model:test-model_MODEL_RPS_CURRENT:batch:1000:counter"}, mr.Keys())
 	})
 }

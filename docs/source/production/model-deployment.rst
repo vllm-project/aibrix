@@ -164,14 +164,14 @@ Here, interactive traffic (``default`` profile) is capped at 100 RPS while batch
 What clients see when the limit is hit
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The gateway returns the response below. Its message names the profile unless ``authoritativeRoutingPolicy`` is ``true``:
+The gateway returns the response below. When ``config-profile`` is ``auto``, the response also carries ``x-aibrix-config-profile``, set to the profile whose limit was hit:
 
 .. code-block:: text
 
     HTTP/1.1 429 Too Many Requests
     x-error-model-rps-exceeded: true
 
-    {"error": {"message": "model: my-model, profile: default has exceeded RPS: 50", "type": "rate_limit_error", "code": "rate_limit_exceeded"}}
+    {"error": {"message": "model: my-model has exceeded RPS: 50", "type": "rate_limit_error", "code": "rate_limit_exceeded"}}
 
 How it works internally
 ~~~~~~~~~~~~~~~~~~~~~~~~

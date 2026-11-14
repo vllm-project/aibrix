@@ -246,9 +246,12 @@ msgstr "达到限制时客户端看到的内容"
 
 #: ../../source/production/model-deployment.rst:167
 msgid ""
-"The gateway returns the response below. Its message names the profile "
-"unless ``authoritativeRoutingPolicy`` is ``true``:"
-msgstr "网关返回如下响应。除非 ``authoritativeRoutingPolicy`` 为 ``true``，消息中会注明 profile："
+"The gateway returns the response below. When ``config-profile`` is "
+"``auto``, the response also carries ``x-aibrix-config-profile``, set to "
+"the profile whose limit was hit:"
+msgstr ""
+"网关返回如下响应。当 ``config-profile`` 为 ``auto`` 时，响应还会带上 ``x-aibrix-config-"
+"profile``，其值为触发限制的 profile："
 
 #: ../../source/production/model-deployment.rst:177
 #: ../../source/production/model-deployment.rst:267

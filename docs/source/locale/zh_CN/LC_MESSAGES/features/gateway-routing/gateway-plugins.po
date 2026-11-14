@@ -1040,11 +1040,10 @@ msgstr "保留网关在选出 Pod 之后自行生成的路由请求头；"
 #: ../../source/features/gateway-routing/gateway-plugins.rst:498
 msgid ""
 "omits ``routing-strategy``, ``target-pod``, ``target-pod-ip``, and ``x"
-"-aibrix-config-profile`` from the client response, and the profile name "
-"from the model RPS 429 message."
+"-aibrix-config-profile`` from the client response."
 msgstr ""
 "在返回给客户端的响应中省略 ``routing-strategy`` 、``target-pod`` 、``target-pod-ip`` 和 "
-"``x-aibrix-config-profile`` ，并在模型 RPS 的 429 消息中省略 profile 名称。"
+"``x-aibrix-config-profile`` 。"
 
 #: ../../source/features/gateway-routing/gateway-plugins.rst:519
 msgid ""

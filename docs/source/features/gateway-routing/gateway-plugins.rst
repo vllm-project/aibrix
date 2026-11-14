@@ -495,7 +495,7 @@ For platform-managed models whose routing policy must be authoritative, also set
 
 * uses ``defaultProfile``;
 * preserves the routing headers that the gateway itself generates after selecting a pod;
-* omits ``routing-strategy``, ``target-pod``, ``target-pod-ip``, and ``x-aibrix-config-profile`` from the client response, and the profile name from the model RPS 429 message.
+* omits ``routing-strategy``, ``target-pod``, ``target-pod-ip``, and ``x-aibrix-config-profile`` from the client response.
 
 .. code-block:: yaml
 
