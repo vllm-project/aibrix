@@ -84,6 +84,11 @@ func (m *Manager) Start() error {
 		return nil
 	}
 
+	// The aibrix_kvcache_zmq_* metrics exist only with KV event sync on.
+	// InitializeMetrics logs a registration failure; the ZMQ clients then use
+	// no-op metrics and sync carries on.
+	_ = kvcache.InitializeMetrics()
+
 	// Verify dependencies with retry logic
 	// Use 30s timeout for initialization as sync indexer startup can be slow
 	// during controller bootstrap when many resources are being initialized

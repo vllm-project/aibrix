@@ -27,17 +27,28 @@ import (
 func TestMetricsNotRegisteredByDefault(t *testing.T) {
 	// Reset global state for testing
 	kvCacheMetrics = nil
+	kvCacheMetricsOnce = sync.Once{}
 
-	// Create a new registry to check metrics
+	// Swap in an empty default registry (prometheus.Register and the gateway's
+	// /metrics use the default one), so collectors other tests registered
+	// cannot hide a registration made here.
 	registry := prometheus.NewRegistry()
+	defaultRegisterer, defaultGatherer := prometheus.DefaultRegisterer, prometheus.DefaultGatherer
+	prometheus.DefaultRegisterer, prometheus.DefaultGatherer = registry, registry
+	t.Cleanup(func() {
+		prometheus.DefaultRegisterer, prometheus.DefaultGatherer = defaultRegisterer, defaultGatherer
+	})
 
-	// Gather all metrics
-	metricFamilies, err := registry.Gather()
+	// Without InitializeMetrics (KV event sync off), a client's updates must
+	// not register anything.
+	client := NewZMQClientMetrics("default/sync-off-pod")
+	client.IncrementConnectionCount()
+	client.UpdateLastSequenceID(1)
+
+	metricFamilies, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
 		t.Fatalf("Failed to gather metrics: %v", err)
 	}
-
-	// Check that no KV cache metrics are registered
 	for _, mf := range metricFamilies {
 		if contains(mf.GetName(), "aibrix_kvcache_zmq") {
 			t.Errorf("Found KV cache metric %s when none should be registered", mf.GetName())
