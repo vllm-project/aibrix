@@ -204,6 +204,9 @@ func TestCompareFollowsKubernetesSortCases(t *testing.T) {
 func TestDeletionCostParsing(t *testing.T) {
 	for v, want := range map[string]int32{
 		"10": 10, "-3": -3, "0": 0, "": 0, "+10": 0, "008": 0, "abc": 0, "99999999999": 0,
+		// Kubernetes rejects a leading zero, but any value that starts with "-" goes to
+		// strconv.ParseInt, so "-01" is -1.
+		"01": 0, "-01": -1,
 	} {
 		p := testPod("p", testNow, deletionCostOf(v))
 		assert.Equal(t, want, deletionCost(p), "annotation %q", v)
@@ -374,6 +377,13 @@ func TestControllerOrderSkips(t *testing.T) {
 			k: 1, horizon: 10 * time.Second, want: SkipOrderChanges,
 		},
 		{
+			// x reaches y's bucket 37.44 s from now, after the 36 s horizon, but a controller
+			// whose clock is 2 s ahead already deletes y by the end of it.
+			name: "the order changes within the clock-skew allowance after the horizon",
+			pods: []*v1.Pod{testPod("a", twoDays), x, y},
+			k:    1, horizon: 36 * time.Second, want: SkipOrderChanges,
+		},
+		{
 			name: "the predicted pod is already draining",
 			pods: []*v1.Pod{testPod("a", twoDays), testPod("b", twoDays.Add(-time.Hour)), testPod("c", recent, draining)},
 			k:    1, want: SkipDraining,
@@ -485,7 +495,7 @@ func TestControllerOrderPredictionHoldsOverTheHorizon(t *testing.T) {
 		for _, p := range pods {
 			keys = append(keys, newPodKey(p, onNode[p.Spec.NodeName]))
 		}
-		from, to := testNow.Add(-clockSkew), testNow.Add(horizon)
+		from, to := testNow.Add(-clockSkew), testNow.Add(horizon+clockSkew)
 		var instants []time.Time
 		for _, e := range orderChanges(keys, from, to) {
 			instants = append(instants, e, e.Add(-time.Nanosecond))

@@ -37,8 +37,8 @@ const (
 	// default since Kubernetes 1.22).
 	podDeletionCostAnnotation = "controller.kubernetes.io/pod-deletion-cost"
 
-	// clockSkew starts the checked window a little before Now, so that a controller whose
-	// clock runs slightly behind the gateway's still sees the predicted order.
+	// clockSkew widens the checked window on both sides, so that a controller whose clock
+	// runs slightly behind or ahead of the gateway's still sees the predicted order.
 	clockSkew = 2 * time.Second
 )
 
@@ -55,8 +55,8 @@ func init() {
 // The controller sorts with its own clock when it scales in, possibly minutes after the
 // gateway decided, and it compares ready and creation times in power-of-two age buckets, so
 // the order changes as pods age. The policy sorts the pods at Now-clockSkew, then checks at
-// every bucket edge up to Now+Horizon that the same K pods are still each strictly ahead of
-// every other pod. Otherwise it skips the round.
+// every bucket edge up to Now+Horizon+clockSkew that the same K pods are still each strictly
+// ahead of every other pod. Otherwise it skips the round.
 //
 // Only Deployments are covered: every active pod of the model must be owned by one
 // ReplicaSet. StormService roles are deleted by the RoleSet controller in its own order.
@@ -100,7 +100,7 @@ func (controllerOrder) Candidates(req Request) Result {
 		keys = append(keys, newPodKey(p, onNode[p.Spec.NodeName]))
 	}
 
-	instants := orderChanges(keys, req.Now.Add(-clockSkew), req.Now.Add(req.Horizon))
+	instants := orderChanges(keys, req.Now.Add(-clockSkew), req.Now.Add(req.Horizon+clockSkew))
 	next, ok := firstK(keys, req.K, instants[0])
 	if !ok {
 		return Result{Skip: SkipTie}
