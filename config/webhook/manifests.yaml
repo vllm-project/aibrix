@@ -176,6 +176,27 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-model-aibrix-ai-v1alpha1-modelclaim
+  failurePolicy: Fail
+  name: vmodelclaim.kb.io
+  rules:
+  - apiGroups:
+    - model.aibrix.ai
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - modelclaims
+  sideEffects: None
+  timeoutSeconds: 5
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-model-aibrix-ai-v1alpha1-modelwarmup
   failurePolicy: Fail
   name: vmodelwarmup.kb.io
