@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -1503,4 +1504,52 @@ func TestEngineMetricsFetcher_PrefillQueueResolvedPerExposition(t *testing.T) {
 	assert.Equal(t, 4.0, value.GetSimpleValue())
 	_, ok = result.ModelMetrics["model-b/"+NumPrefillPreallocQueueReqs]
 	assert.False(t, ok, "a model that does not report the gauge must not get a value")
+}
+
+// Real expositions, captured from two SGLang releases serving Qwen/Qwen3-0.6B on
+// one RTX 4090 with a unified server. They sit in testdata rather than in inline
+// consts because the question is whether the fetcher resolves against what an
+// engine actually serves, and the two expositions differ in exactly the way the
+// alias exists for: 0.5.5.post3 exposes the prealloc name only (36 families, none
+// carrying the bootstrap name), 0.5.13 exposes the bootstrap name only (62
+// families, none carrying the prealloc name). 0.5.13 also needs --enable-metrics;
+// without it /metrics is a 404.
+func TestEngineMetricsFetcher_RealSglangExpositionsResolvePrefillQueue(t *testing.T) {
+	cases := []struct {
+		release string
+		fixture string
+		present string
+		absent  string
+	}{
+		{"v0.5.5.post3", "testdata/sglang-0.5.5.post3-unified.prom",
+			"sglang:num_prefill_prealloc_queue_reqs", "sglang:num_prefill_bootstrap_queue_reqs"},
+		{"v0.5.13", "testdata/sglang-0.5.13-unified.prom",
+			"sglang:num_prefill_bootstrap_queue_reqs", "sglang:num_prefill_prealloc_queue_reqs"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.release, func(t *testing.T) {
+			body, err := os.ReadFile(tc.fixture)
+			require.NoError(t, err)
+			require.Contains(t, string(body), "# HELP "+tc.present+" ")
+			require.NotContains(t, string(body), tc.absent,
+				"fixture no longer shows the %s exposition", tc.release)
+
+			server := setupMockServer(string(body), 200, 0)
+			defer server.Close()
+
+			endpoint := strings.TrimPrefix(server.URL, "http://")
+			fetcher := NewEngineMetricsFetcher()
+
+			result, err := fetcher.FetchAllTypedMetrics(context.Background(), endpoint, "sglang", "test-pod", []string{NumPrefillPreallocQueueReqs})
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Empty(t, result.Errors)
+
+			key := "Qwen/Qwen3-0.6B/" + NumPrefillPreallocQueueReqs
+			value, ok := result.ModelMetrics[key]
+			require.True(t, ok, "prefill queue did not resolve from a real %s exposition", tc.release)
+			assert.Equal(t, 0.0, value.GetSimpleValue(),
+				"the prefill queue gauge was idle, so the resolved value must be zero")
+		})
+	}
 }
