@@ -1190,3 +1190,79 @@ sglang:token_usage{model_name="m",dp_rank="1"} 0.1
 		}
 	}
 }
+
+// SGLang renamed its prefill preallocation queue gauge at v0.5.12: the
+// collector swapped num_prefill_prealloc_queue_reqs for
+// num_prefill_bootstrap_queue_reqs in the same slot, fed by the same QueueCount
+// field, while leaving num_prefill_inflight_queue_reqs and
+// num_decode_prealloc_queue_reqs untouched. Deployments before that tag still
+// expose the old name, and AIBrix's own container build uses a v0.5.5.post3
+// base, so the prefill queue mapping has to resolve under either name. When it
+// does not, the PD request-rate score counts the prefill backlog as zero.
+const mockSglangPrefillQueueRenamed = `# HELP sglang:num_prefill_bootstrap_queue_reqs Number of requests in the prefill bootstrap queue.
+# TYPE sglang:num_prefill_bootstrap_queue_reqs gauge
+sglang:num_prefill_bootstrap_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf"} 7.0
+`
+
+const mockSglangPrefillQueueLegacy = `# HELP sglang:num_prefill_prealloc_queue_reqs Number of requests in the prefill preallocation queue.
+# TYPE sglang:num_prefill_prealloc_queue_reqs gauge
+sglang:num_prefill_prealloc_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf"} 7.0
+`
+
+func TestEngineMetricsFetcher_PrefillQueueResolvesUnderBothSglangNames(t *testing.T) {
+	tests := []struct {
+		name     string
+		exposure string
+	}{
+		{name: "RenamedAtV0512", exposure: mockSglangPrefillQueueRenamed},
+		{name: "LegacyBeforeV0512", exposure: mockSglangPrefillQueueLegacy},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := setupMockServer(tt.exposure, 200, 0)
+			defer server.Close()
+
+			endpoint := strings.TrimPrefix(server.URL, "http://")
+			fetcher := NewEngineMetricsFetcher()
+
+			result, err := fetcher.FetchAllTypedMetrics(context.Background(), endpoint, "sglang", "test-pod", []string{NumPrefillPreallocQueueReqs})
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Empty(t, result.Errors)
+
+			key := "meta-llama/Llama-2-7b-chat-hf/" + NumPrefillPreallocQueueReqs
+			value, ok := result.ModelMetrics[key]
+			require.True(t, ok, "prefill queue did not resolve for %s", tt.name)
+			assert.Equal(t, 7.0, value.GetSimpleValue())
+		})
+	}
+}
+
+// The renamed gauge keeps the priority="" total plus per-priority breakdown
+// shape it had under its old name: both are written through
+// _log_gauge_queue_count. The breakdown is listed last so a read that folds
+// instances without the priority filter lands on high=3 instead of the total.
+const mockSglangPrefillQueueRenamedPriorities = `# HELP sglang:num_prefill_bootstrap_queue_reqs Number of requests in the prefill bootstrap queue.
+# TYPE sglang:num_prefill_bootstrap_queue_reqs gauge
+sglang:num_prefill_bootstrap_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf",priority=""} 7.0
+sglang:num_prefill_bootstrap_queue_reqs{model_name="meta-llama/Llama-2-7b-chat-hf",priority="high"} 3.0
+`
+
+func TestEngineMetricsFetcher_PrefillQueueRenamedKeepsPriorityTotal(t *testing.T) {
+	server := setupMockServer(mockSglangPrefillQueueRenamedPriorities, 200, 0)
+	defer server.Close()
+
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+	fetcher := NewEngineMetricsFetcher()
+
+	result, err := fetcher.FetchAllTypedMetrics(context.Background(), endpoint, "sglang", "test-pod", []string{NumPrefillPreallocQueueReqs})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Empty(t, result.Errors)
+
+	key := "meta-llama/Llama-2-7b-chat-hf/" + NumPrefillPreallocQueueReqs
+	value, ok := result.ModelMetrics[key]
+	require.True(t, ok, "prefill queue did not resolve")
+	assert.Equal(t, 7.0, value.GetSimpleValue(), "priority total must win over per-priority breakdowns")
+}

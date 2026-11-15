@@ -83,6 +83,11 @@ type Metric struct {
 	PromQL                   string            // Optional: Only applicable for PromQL-based metrics
 	LabelKey                 string            // Optional: Only applicable for QueryLabel-based metrics
 	EngineMetricsNameMapping map[string]string // Optional: Mapping from engine type to raw metric name.
+	// EngineMetricsNameAliases lists further raw metric names to try, in order,
+	// when the EngineMetricsNameMapping name is absent from an engine's
+	// exposition. It exists for gauges an engine renamed without changing what
+	// they report. Optional: metrics that do not set it behave exactly as before.
+	EngineMetricsNameAliases map[string][]string
 	Description              string
 	MetricScope              MetricScope
 	// RequiredLabelKey and RequiredLabelValue select one instance out of a raw
@@ -93,6 +98,21 @@ type Metric struct {
 	// first instance, unchanged for every metric that does not set this.
 	RequiredLabelKey   string
 	RequiredLabelValue string
+}
+
+// RawMetricNamesForEngine returns the raw metric names to try for engineType,
+// most preferred first. The second result is false when the metric has no
+// mapping for that engine at all, which is distinct from "mapped but absent
+// from this engine's exposition".
+func (m Metric) RawMetricNamesForEngine(engineType string) ([]string, bool) {
+	primary, ok := m.EngineMetricsNameMapping[engineType]
+	if !ok {
+		return nil, false
+	}
+	aliases := m.EngineMetricsNameAliases[engineType]
+	names := make([]string, 0, 1+len(aliases))
+	names = append(names, primary)
+	return append(names, aliases...), true
 }
 
 // MetricValue is the interface for all metric values.

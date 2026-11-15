@@ -109,8 +109,8 @@ func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, 
 		return nil, fmt.Errorf("metric %s is not a raw pod metric, use FetchAllTypedMetrics for complex queries", metricName)
 	}
 
-	// Get raw metric name for this engine
-	rawMetricName, exists := metricDef.EngineMetricsNameMapping[engineType]
+	// Get raw metric names to try for this engine, most preferred first
+	rawMetricNames, exists := metricDef.RawMetricNamesForEngine(engineType)
 	if !exists {
 		return nil, fmt.Errorf("metric %s not supported for engine type %s", metricName, engineType)
 	}
@@ -137,11 +137,17 @@ func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, 
 			continue
 		}
 
-		// Parse the specific metric we need
-		metricValue, err := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef)
-		if err != nil {
+		// Parse the first name this exposition actually carries
+		var metricValue MetricValue
+		var parseErr error
+		for _, rawMetricName := range rawMetricNames {
+			if metricValue, parseErr = ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef); parseErr == nil {
+				break
+			}
+		}
+		if parseErr != nil {
 			klog.V(4).InfoS("Failed to parse metric from engine endpoint",
-				"attempt", attempt+1, "identifier", identifier, "metric", metricName, "error", err)
+				"attempt", attempt+1, "identifier", identifier, "metric", metricName, "error", parseErr)
 			continue
 		}
 
@@ -262,27 +268,39 @@ func (ef *EngineMetricsFetcher) FetchAllTypedMetrics(ctx context.Context, endpoi
 			continue
 		}
 
-		// Get raw metric name for this engine
-		rawMetricName, exists := metricDef.EngineMetricsNameMapping[result.EngineType]
+		// Get raw metric names to try for this engine, most preferred first
+		rawMetricNames, exists := metricDef.RawMetricNamesForEngine(result.EngineType)
 		if !exists {
 			klog.V(5).InfoS("Metric not supported for engine type", "metric", metricName, "engine", result.EngineType)
 			continue
 		}
 
-		// Store in appropriate scope
+		// Store in appropriate scope, taking the first name this exposition carries
 		if metricDef.MetricScope == PodMetricScope {
-			metricValue, err := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef)
-			if err != nil {
-				result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, err, identifier))
+			var metricValue MetricValue
+			var parseErr error
+			for _, rawMetricName := range rawMetricNames {
+				if metricValue, parseErr = ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef); parseErr == nil {
+					break
+				}
+			}
+			if parseErr != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, parseErr, identifier))
 				continue
 			}
 			result.Metrics[metricName] = metricValue
 		} else if metricDef.MetricScope == PodModelMetricScope {
 			// Parse one value per model_name so models on a multi-model pod don't share a
 			// single instance taken from metricFamily.Metric[0].
-			modelMetrics, err := ef.parseModelMetricsFromFamily(allMetrics, rawMetricName, metricDef)
-			if err != nil {
-				result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, err, identifier))
+			var modelMetrics map[string]MetricValue
+			var parseErr error
+			for _, rawMetricName := range rawMetricNames {
+				if modelMetrics, parseErr = ef.parseModelMetricsFromFamily(allMetrics, rawMetricName, metricDef); parseErr == nil {
+					break
+				}
+			}
+			if parseErr != nil {
+				result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, parseErr, identifier))
 				continue
 			}
 			for modelName, value := range modelMetrics {
@@ -334,7 +352,7 @@ func (ef *EngineMetricsFetcher) getAvailableMetricsForEngine(engineType string) 
 	var availableMetrics []string
 	for metricName, metricDef := range Metrics {
 		if metricDef.MetricSource == PodRawMetrics {
-			if _, exists := metricDef.EngineMetricsNameMapping[engineType]; exists {
+			if _, exists := metricDef.RawMetricNamesForEngine(engineType); exists {
 				availableMetrics = append(availableMetrics, metricName)
 			}
 		}
@@ -387,13 +405,16 @@ func selectMetricInstance(instances []*dto.Metric, metric Metric, rawMetricName 
 // sglangPriorityQueueGauges are the SGLang queue gauges written as a priority="" total
 // followed by per-priority breakdowns. In SGLang's request counters and latency histograms
 // priority="" instead means "no priority set", so only these families are filtered. They are
-// the gauges mapped in metrics.go that SGLang v0.5.21 writes through _log_gauge_queue_count;
-// num_retracted_reqs is written without a priority label, and num_prefill_prealloc_queue_reqs
-// is not emitted by v0.5.21.
+// the gauges mapped in metrics.go that SGLang writes through _log_gauge_queue_count;
+// num_retracted_reqs is written without a priority label. The prefill queue appears under
+// both of its names: num_prefill_prealloc_queue_reqs through v0.5.11, and
+// num_prefill_bootstrap_queue_reqs from v0.5.12 on, written the same way in both.
 var sglangPriorityQueueGauges = map[string]bool{
-	"sglang:num_running_reqs":               true,
-	"sglang:num_queue_reqs":                 true,
-	"sglang:num_decode_prealloc_queue_reqs": true,
+	"sglang:num_running_reqs":                 true,
+	"sglang:num_queue_reqs":                   true,
+	"sglang:num_decode_prealloc_queue_reqs":   true,
+	"sglang:num_prefill_bootstrap_queue_reqs": true,
+	"sglang:num_prefill_prealloc_queue_reqs":  true,
 }
 
 // filterPriorityMetricInstances prefers SGLang's priority="" queue totals over per-priority

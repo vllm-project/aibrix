@@ -220,7 +220,15 @@ var (
 				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"sglang": "sglang:num_prefill_prealloc_queue_reqs",
+				"sglang": "sglang:num_prefill_bootstrap_queue_reqs",
+			},
+			// SGLang renamed this gauge at v0.5.12: the prefill preallocation
+			// queue became the prefill bootstrap queue, same QueueCount source
+			// and same priority="" total shape. Older releases, including the
+			// v0.5.5.post3 base AIBrix's container build uses, still emit the
+			// old name.
+			EngineMetricsNameAliases: map[string][]string{
+				"sglang": {"sglang:num_prefill_prealloc_queue_reqs"},
 			},
 			Description: "Number of prefill preallocation queue requests",
 		},
