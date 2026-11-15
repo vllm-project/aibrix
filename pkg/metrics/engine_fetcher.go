@@ -374,19 +374,20 @@ func (ef *EngineMetricsFetcher) getAvailableMetricsForEngine(engineType string) 
 // tried. Resolving by presence before parsing keeps a family that is present but
 // fails to parse from silently falling through to a different family.
 func resolveRawMetricName(metric Metric, engineType string, fams map[string]*dto.MetricFamily) (string, bool, bool) {
-	primary, mapped := metric.EngineMetricsNameMapping[engineType]
+	// RawMetricNamesForEngine is the one place that knows the order in which the
+	// names for an engine are tried, so a caller that keeps only the families it
+	// plans to read (as the gateway cache scrape does) can derive the same set
+	// from it instead of re-reading the alias map and dropping aliases by accident.
+	names, mapped := metric.RawMetricNamesForEngine(engineType)
 	if !mapped {
 		return "", false, false
 	}
-	if _, present := fams[primary]; present {
-		return primary, true, true
-	}
-	for _, alias := range metric.EngineMetricsNameAliases[engineType] {
-		if _, present := fams[alias]; present {
-			return alias, true, true
+	for _, name := range names {
+		if _, present := fams[name]; present {
+			return name, true, true
 		}
 	}
-	return primary, true, false
+	return names[0], true, false
 }
 
 // parseMetricFromFamily parses the first instance of a metric family. It is used for
