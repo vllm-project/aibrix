@@ -1415,17 +1415,28 @@ func TestEngineMetricsFetcher_PrefillQueuePrefersMappedNameWhenBothPresent(t *te
 	defer server.Close()
 
 	endpoint := strings.TrimPrefix(server.URL, "http://")
-	fetcher := NewEngineMetricsFetcher()
 
-	result, err := fetcher.FetchAllTypedMetrics(context.Background(), endpoint, "sglang", "test-pod", []string{NumPrefillPreallocQueueReqs})
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Empty(t, result.Errors)
+	t.Run("FetchTypedMetric", func(t *testing.T) {
+		fetcher := NewEngineMetricsFetcher()
 
-	key := "meta-llama/Llama-2-7b-chat-hf/" + NumPrefillPreallocQueueReqs
-	value, ok := result.ModelMetrics[key]
-	require.True(t, ok, "prefill queue did not resolve")
-	assert.Equal(t, 5.0, value.GetSimpleValue(), "the mapped name must win when the exposition carries both")
+		value, err := fetcher.FetchTypedMetric(context.Background(), endpoint, "sglang", "test-pod", NumPrefillPreallocQueueReqs)
+		require.NoError(t, err)
+		assert.Equal(t, 5.0, value.GetSimpleValue(), "the mapped name must win when the exposition carries both")
+	})
+
+	t.Run("FetchAllTypedMetrics", func(t *testing.T) {
+		fetcher := NewEngineMetricsFetcher()
+
+		result, err := fetcher.FetchAllTypedMetrics(context.Background(), endpoint, "sglang", "test-pod", []string{NumPrefillPreallocQueueReqs})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Empty(t, result.Errors)
+
+		key := "meta-llama/Llama-2-7b-chat-hf/" + NumPrefillPreallocQueueReqs
+		value, ok := result.ModelMetrics[key]
+		require.True(t, ok, "prefill queue did not resolve")
+		assert.Equal(t, 5.0, value.GetSimpleValue(), "the mapped name must win when the exposition carries both")
+	})
 }
 
 func TestEngineMetricsFetcher_PrefillQueueLegacyKeepsPriorityTotal(t *testing.T) {
