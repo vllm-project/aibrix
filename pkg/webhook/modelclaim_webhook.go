@@ -42,7 +42,7 @@ func SetupModelClaimWebhook(mgr ctrl.Manager) error {
 		Complete()
 }
 
-//+kubebuilder:webhook:path=/validate-model-aibrix-ai-v1alpha1-modelclaim,mutating=false,failurePolicy=fail,sideEffects=None,groups=model.aibrix.ai,resources=modelclaims,verbs=create;update,versions=v1alpha1,name=vmodelclaim.kb.io,admissionReviewVersions=v1,timeoutSeconds=5
+//+kubebuilder:webhook:path=/validate-model-aibrix-ai-v1alpha1-modelclaim,mutating=false,failurePolicy=ignore,sideEffects=None,groups=model.aibrix.ai,resources=modelclaims,verbs=create;update,versions=v1alpha1,name=vmodelclaim.kb.io,admissionReviewVersions=v1,timeoutSeconds=5
 
 var _ webhook.CustomValidator = &ModelClaimWebhook{}
 
@@ -91,8 +91,11 @@ func validateModelClaim(oldClaim, claim *modelapi.ModelClaim) error {
 			}
 		}
 	}
-	// Missing perGPU remains admissible so its declaration can be supplied
-	// later. The controller refuses placement until a valid cost is declared.
+	// Require a declaration for new claims without invalidating legacy objects
+	// on metadata updates or finalizer removal. Keep the schema optional.
+	if oldClaim == nil && spec.PerGPU == nil {
+		allErrs = append(allErrs, field.Required(path.Child("perGPU"), "a per-GPU cost declaration is required"))
+	}
 	if spec.PerGPU != nil && (oldClaim == nil || !equality.Semantic.DeepEqual(oldClaim.Spec.PerGPU, spec.PerGPU)) {
 		if _, err := utils.ModelClaimDeclaredBytes("maximumFootprint", spec.PerGPU.MaximumFootprint); err != nil {
 			allErrs = append(allErrs, field.Invalid(path.Child("perGPU", "maximumFootprint"), spec.PerGPU.MaximumFootprint.String(), err.Error()))

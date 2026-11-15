@@ -129,7 +129,7 @@ webhooks:
       name: aibrix-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /validate-model-aibrix-ai-v1alpha1-modelclaim
-  failurePolicy: Fail
+  failurePolicy: Ignore
   name: vmodelclaim.kb.io
   rules:
   - apiGroups:

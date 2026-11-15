@@ -17,7 +17,6 @@ limitations under the License.
 package webhook
 
 import (
-	"strings"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
@@ -67,6 +66,9 @@ var _ = ginkgo.Describe("ModelClaim admission", ginkgo.Serial, func() {
 		gomega.Expect(status.Status().Details).NotTo(gomega.BeNil())
 		gomega.Expect(status.Status().Details.Causes).To(gomega.ContainElement(gomega.HaveField("Field", field)))
 	},
+		ginkgo.Entry("missing perGPU", func(c *modelapi.ModelClaim) {
+			c.Spec.PerGPU = nil
+		}, "spec.perGPU"),
 		ginkgo.Entry("zero floor", func(c *modelapi.ModelClaim) {
 			c.Spec.PerGPU.KVFloor = resource.MustParse("0")
 		}, "spec.perGPU.kvFloor"),
@@ -86,18 +88,13 @@ var _ = ginkgo.Describe("ModelClaim admission", ginkgo.Serial, func() {
 		}, "spec.engineConfig.args"),
 	)
 
-	ginkgo.It("preserves defaults, optional perGPU, updates and CEL immutability", func() {
+	ginkgo.It("preserves defaults, perGPU updates and CEL immutability", func() {
 		claim := newClaim("valid")
 		claim.Spec.ArtifactURL = "/models/weights"
-		claim.Spec.PerGPU = nil
 		gomega.Expect(k8sClient.Create(ctx, claim)).To(gomega.Succeed())
 		gomega.Expect(claim.Spec.Engine).To(gomega.Equal("vllm"))
 		gomega.Expect(claim.Spec.ModelName).To(gomega.BeNil())
-		gomega.Expect(claim.Spec.PerGPU).To(gomega.BeNil())
 		before := claim.DeepCopy()
-		claim.Spec.PerGPU = newClaim("unused").Spec.PerGPU
-		gomega.Expect(k8sClient.Patch(ctx, claim, client.MergeFrom(before))).To(gomega.Succeed())
-		before = claim.DeepCopy()
 		claim.Spec.PerGPU.MaximumFootprint = resource.MustParse("5.6Gi")
 		gomega.Expect(k8sClient.Patch(ctx, claim, client.MergeFrom(before))).To(gomega.Succeed())
 		changed := claim.DeepCopy()
@@ -144,7 +141,7 @@ var _ = ginkgo.Describe("ModelClaim admission", ginkgo.Serial, func() {
 		}, 10*time.Second, 100*time.Millisecond).Should(gomega.BeTrue())
 	}
 
-	ginkgo.It("allows updates and deletion of claims stored before validation", func() {
+	ginkgo.DescribeTable("allows updates and deletion of claims stored before validation", func(missingPerGPU bool) {
 		config, index := findConfiguration()
 		original := *config.Webhooks[index].DeepCopy()
 		ginkgo.DeferCleanup(func() { setWebhook(config, index, original); waitForValidation() })
@@ -153,6 +150,9 @@ var _ = ginkgo.Describe("ModelClaim admission", ginkgo.Serial, func() {
 		setWebhook(config, index, disabled)
 		legacy := newClaim("legacy")
 		legacy.Spec.PerGPU.KVFloor = resource.MustParse("0")
+		if missingPerGPU {
+			legacy.Spec.PerGPU = nil
+		}
 		legacy.Spec.ArtifactURL = " "
 		legacy.Finalizers = []string{"test.aibrix.ai/cleanup"}
 		gomega.Eventually(func() error {
@@ -167,11 +167,16 @@ var _ = ginkgo.Describe("ModelClaim admission", ginkgo.Serial, func() {
 		legacy.Status.Phase = modelapi.ModelClaimPending
 		gomega.Expect(k8sClient.Status().Update(ctx, legacy)).To(gomega.Succeed())
 		invalid := legacy.DeepCopy()
+		if invalid.Spec.PerGPU == nil {
+			invalid.Spec.PerGPU = newClaim("unused").Spec.PerGPU
+		}
 		invalid.Spec.PerGPU.KVFloor = resource.MustParse("-1Gi")
 		gomega.Expect(apierrors.IsInvalid(k8sClient.Patch(ctx, invalid, client.MergeFrom(legacy)))).To(gomega.BeTrue())
-		before = legacy.DeepCopy()
-		legacy.Spec.PerGPU.KVFloor = resource.MustParse("1Gi")
-		gomega.Expect(k8sClient.Patch(ctx, legacy, client.MergeFrom(before))).To(gomega.Succeed())
+		if !missingPerGPU {
+			before = legacy.DeepCopy()
+			legacy.Spec.PerGPU.KVFloor = resource.MustParse("1Gi")
+			gomega.Expect(k8sClient.Patch(ctx, legacy, client.MergeFrom(before))).To(gomega.Succeed())
+		}
 		gomega.Expect(k8sClient.Delete(ctx, legacy)).To(gomega.Succeed())
 		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(legacy), legacy)).To(gomega.Succeed())
 		before = legacy.DeepCopy()
@@ -180,9 +185,15 @@ var _ = ginkgo.Describe("ModelClaim admission", ginkgo.Serial, func() {
 		gomega.Eventually(func() bool {
 			return apierrors.IsNotFound(k8sClient.Get(ctx, client.ObjectKeyFromObject(legacy), &modelapi.ModelClaim{}))
 		}).Should(gomega.BeTrue())
-	})
+	},
+		ginkgo.Entry("with missing perGPU", true),
+		ginkgo.Entry("with invalid perGPU", false),
+	)
 
-	ginkgo.It("fails closed while its endpoint is unavailable and recovers", func() {
+	ginkgo.It("admits writes while its endpoint is unavailable and resumes validation after recovery", func() {
+		claim := newClaim("outage")
+		claim.Finalizers = []string{"test.aibrix.ai/cleanup"}
+		gomega.Expect(k8sClient.Create(ctx, claim)).To(gomega.Succeed())
 		config, index := findConfiguration()
 		original := *config.Webhooks[index].DeepCopy()
 		ginkgo.DeferCleanup(func() { setWebhook(config, index, original); waitForValidation() })
@@ -190,10 +201,25 @@ var _ = ginkgo.Describe("ModelClaim admission", ginkgo.Serial, func() {
 		gomega.Expect(unavailable.ClientConfig.URL).NotTo(gomega.BeNil())
 		unavailable.ClientConfig.URL = ptr.To(*unavailable.ClientConfig.URL + "-unavailable")
 		setWebhook(config, index, unavailable)
+		// A healthy endpoint rejects this declaration. Its admission proves the
+		// new configuration has propagated and endpoint errors are ignored.
+		probe := newClaim("outage-probe")
+		probe.Spec.PerGPU.KVFloor = resource.MustParse("0")
+		gomega.Eventually(func() error {
+			return k8sClient.Create(ctx, probe.DeepCopy(), client.DryRunAll)
+		}, 10*time.Second, 100*time.Millisecond).Should(gomega.Succeed())
+		gomega.Expect(k8sClient.Create(ctx, probe)).To(gomega.Succeed())
+		before := claim.DeepCopy()
+		claim.Spec.PerGPU.KVFloor = resource.MustParse("0")
+		gomega.Expect(k8sClient.Patch(ctx, claim, client.MergeFrom(before))).To(gomega.Succeed())
+		gomega.Expect(k8sClient.Delete(ctx, claim)).To(gomega.Succeed())
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(claim), claim)).To(gomega.Succeed())
+		before = claim.DeepCopy()
+		claim.Finalizers = nil
+		gomega.Expect(k8sClient.Patch(ctx, claim, client.MergeFrom(before))).To(gomega.Succeed())
 		gomega.Eventually(func() bool {
-			err := k8sClient.Create(ctx, newClaim("outage"), client.DryRunAll)
-			return err != nil && strings.Contains(err.Error(), "failed calling webhook")
-		}, 10*time.Second, 100*time.Millisecond).Should(gomega.BeTrue())
+			return apierrors.IsNotFound(k8sClient.Get(ctx, client.ObjectKeyFromObject(claim), &modelapi.ModelClaim{}))
+		}).Should(gomega.BeTrue())
 		setWebhook(config, index, original)
 		waitForValidation()
 		gomega.Expect(k8sClient.Create(ctx, newClaim("recovered"))).To(gomega.Succeed())

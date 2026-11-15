@@ -43,7 +43,7 @@ func TestModelClaimWebhookCreate(t *testing.T) {
 		field  string
 	}{
 		{"valid", func(c *modelapi.ModelClaim) {}, ""},
-		{"missing perGPU", func(c *modelapi.ModelClaim) { c.Spec.PerGPU = nil }, ""},
+		{"missing perGPU", func(c *modelapi.ModelClaim) { c.Spec.PerGPU = nil }, "spec.perGPU"},
 		{"empty selector", func(c *modelapi.ModelClaim) { c.Spec.PodSelector = &metav1.LabelSelector{} }, ""},
 		{"missing selector", func(c *modelapi.ModelClaim) { c.Spec.PodSelector = nil }, "spec.podSelector"},
 		{"invalid label key", func(c *modelapi.ModelClaim) { c.Spec.PodSelector.MatchLabels = map[string]string{"bad key": "a"} }, "spec.podSelector.matchLabels"},

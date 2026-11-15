@@ -177,7 +177,7 @@ webhooks:
       name: webhook-service
       namespace: system
       path: /validate-model-aibrix-ai-v1alpha1-modelclaim
-  failurePolicy: Fail
+  failurePolicy: Ignore
   name: vmodelclaim.kb.io
   rules:
   - apiGroups:
