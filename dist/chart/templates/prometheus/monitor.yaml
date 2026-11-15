@@ -12,7 +12,6 @@ spec:
     - path: /metrics
       port: http
       scheme: http
-      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
   selector:
     matchLabels:
       control-plane: controller-manager

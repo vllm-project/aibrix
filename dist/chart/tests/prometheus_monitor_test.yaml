@@ -38,6 +38,14 @@ tests:
           value: http
         template: controller-manager/service.yaml
 
+  - it: should not send a ServiceAccount token over a plain http channel
+    set:
+      prometheus.enable: true
+    asserts:
+      - notExists:
+          path: spec.endpoints[0].bearerTokenFile
+        template: prometheus/monitor.yaml
+
   - it: should not request TLS for a metrics endpoint served over plain http
     set:
       prometheus.enable: true
