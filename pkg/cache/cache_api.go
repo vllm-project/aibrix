@@ -130,8 +130,10 @@ type ApproxRunningRequestsProvider interface {
 	// GetPodsRunningRequestsApprox returns, keyed by utils.GeneratePodKey, this gateway's own
 	// running count of each pod (exact) plus the other gateways' counts from the latest
 	// gateway snapshot (refreshed every 100ms when Redis is configured). It never calls Redis,
-	// so it can be read for every ready pod on each request. A snapshot older than one second
-	// (a stalled sync) is ignored, leaving this gateway's own counts. Without Redis it equals
+	// so it can be read for every ready pod on each request. Each other gateway's count of a
+	// pod is added only while that snapshot was last actually read within one second; a stale
+	// one (a sync that keeps missing that key) is left out on its own, and a pod whose snapshots
+	// are all stale (a stalled sync) gets this gateway's own count only. Without Redis it equals
 	// GetPodsRunningRequests. Pods not in the cache are omitted.
 	GetPodsRunningRequestsApprox(pods []*v1.Pod) map[string]int64
 }

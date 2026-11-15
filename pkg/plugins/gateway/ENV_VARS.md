@@ -228,6 +228,16 @@ strategy has none (`random`, `power-of-two`), and `random_estimate_failed` when 
 estimates but none could be computed, which means the stage is running without its ranking, and
 `random_no_ranked_slot` when K = 1 leaves no slot to rank.
 
+The other gateways' counts behind the estimates come from the gateway snapshot. A snapshot tick
+that cannot read some keys in time carries their last values over; each other gateway's count of
+a pod is used only while it was actually read within 1 s, and is left out after that, so a pod
+whose counts are all older gets this gateway's own count only. Two gauges, set at every
+published tick, show how fresh those counts are:
+`aibrix_gateway_snapshot_remote_keys{state}` counts the other gateways' snapshot keys the tick
+read (`fresh`), carried within the limit (`carried`), or carried past it (`stale`, left out), and
+`aibrix_gateway_snapshot_oldest_read_age_seconds` is the age of the least recently read one. A
+steady `carried` or `stale` share means ticks run out of time before reading every key.
+
 | Variable | Type | Default | Description | Source |
 |---|---|---|---|---|
 | `AIBRIX_ROUTING_CANDIDATE_K` | int | `0` | Number of ready pods the gate and the router consider: the best half of a 4K-pod scout (plus prefix holders) on the strategies' in-memory estimates, and half drawn at random. `0` disables the candidate stage. | [algorithms/candidates.go](algorithms/candidates.go) |

@@ -20,11 +20,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -40,6 +43,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -1066,9 +1070,9 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
 
 	// enforceModelRPS atomically pre-charges (+1); routing then fails so the deferred
-	// compensation refunds (-1).
-	mockModelRL.On("Incr", mock.Anything, "test-model_MODEL_RPS_CURRENT", int64(1)).Return(int64(1), nil).Once()
-	mockModelRL.On("Incr", mock.Anything, "test-model_MODEL_RPS_CURRENT", int64(-1)).Return(int64(0), nil).Once()
+	// compensation refunds (-1). Both hit the counter of the resolved profile.
+	mockModelRL.On("Incr", mock.Anything, "test-model_MODEL_RPS_CURRENT:rps-limited", int64(1)).Return(int64(1), nil).Once()
+	mockModelRL.On("Incr", mock.Anything, "test-model_MODEL_RPS_CURRENT:rps-limited", int64(-1)).Return(int64(0), nil).Once()
 	mockRouter.On("Route", mock.Anything, mock.Anything).Return("", errors.New("route selection failed")).Once()
 
 	server := &Server{
@@ -1099,6 +1103,84 @@ func TestHandleRequestBody_ModelRPSNotConsumedOnRoutingFailure(t *testing.T) {
 	mockCache.AssertExpectations(t)
 	mockRouter.AssertExpectations(t)
 	mockModelRL.AssertExpectations(t)
+}
+
+// TestHandleRequestBody_ModelRPSCountedPerProfile checks that each config profile's
+// requestsPerSecond counts only the requests that resolved to that profile.
+func TestHandleRequestBody_ModelRPSCountedPerProfile(t *testing.T) {
+	// The two-profile example from docs/source/production/model-deployment.rst,
+	// without routingStrategy so that no router is needed.
+	profileJSON := `{"defaultProfile":"default","profiles":{` +
+		`"default":{"requestsPerSecond":100},"batch":{"requestsPerSecond":20}}}`
+	newServer := func(t *testing.T) (*Server, *miniredis.Miniredis) {
+		podList := &utils.PodArray{Pods: []*v1.Pod{{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "pod-a",
+				Annotations: map[string]string{constants.ModelAnnoConfig: profileJSON},
+			},
+			Status: v1.PodStatus{
+				PodIP:      "1.2.3.4",
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		}}}
+		mockCache := &MockCache{Cache: cache.NewForTest()}
+		mockCache.On("HasModel", "test-model").Return(true)
+		mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+		mockCache.On("AddRequestCount", mock.Anything, mock.Anything, mock.Anything).Return(int64(1))
+		// miniredis does not advance its clock by itself, so every request lands in
+		// the same 1 s window.
+		mr := miniredis.RunT(t)
+		client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		t.Cleanup(func() { _ = client.Close() })
+		return &Server{
+			cache:               mockCache,
+			modelRateLimiter:    ratelimiter.NewRedisAccountRateLimiter("aibrix_model", client, time.Second),
+			requestCountTracker: map[string]int{},
+		}, mr
+	}
+	// admitted sends n requests with the config-profile header set to profile and
+	// returns how many were admitted.
+	admitted := func(s *Server, profile string, n int) int {
+		ok := 0
+		for i := 0; i < n; i++ {
+			requestID := fmt.Sprintf("%s-%d", profile, i)
+			routingCtx := types.NewRoutingContext(context.Background(), "", "", "", requestID, "")
+			routingCtx.ReqPath = PathChatCompletions
+			routingCtx.ReqConfigProfile = profile
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_RequestBody{
+					RequestBody: &extProcPb.HttpBody{
+						Body:        []byte(`{"model":"test-model","messages":[{"role":"user","content":"test"}]}`),
+						EndOfStream: true,
+					},
+				},
+			}
+			resp, _, _, _ := s.HandleRequestBody(context.Background(), routingCtx, requestID, req, utils.User{})
+			if resp.GetImmediateResponse() == nil {
+				ok++
+			}
+		}
+		return ok
+	}
+
+	t.Run("default traffic does not use up batch's limit", func(t *testing.T) {
+		s, _ := newServer(t)
+		assert.Equal(t, 20, admitted(s, "default", 20))
+		assert.Equal(t, 20, admitted(s, "batch", 20))
+		assert.Equal(t, 0, admitted(s, "batch", 1))
+	})
+	t.Run("batch traffic does not use up default's limit", func(t *testing.T) {
+		s, _ := newServer(t)
+		assert.Equal(t, 20, admitted(s, "batch", 20))
+		assert.Equal(t, 100, admitted(s, "default", 100))
+		assert.Equal(t, 0, admitted(s, "default", 1))
+	})
+	t.Run("unknown profile header counts against the default profile", func(t *testing.T) {
+		s, mr := newServer(t)
+		assert.Equal(t, 100, admitted(s, "no-such-profile", 100))
+		assert.Equal(t, 0, admitted(s, "default", 1))
+		assert.Equal(t, []string{"aibrix_model:test-model_MODEL_RPS_CURRENT:default:1000:counter"}, mr.Keys())
+	})
 }
 
 // TestHandleRequestBody_AsyncVideoJobWithoutRoutingStrategyGetsPinned guards against a

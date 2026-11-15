@@ -604,7 +604,7 @@ func (r *ModelClaimReconciler) recomputeReadiness(pm *modelv1alpha1.ModelClaim) 
 			Type:    string(modelv1alpha1.ModelClaimConditionReady),
 			Status:  metav1.ConditionFalse,
 			Reason:  "EngineFailed",
-			Message: "one or more model engine instances exhausted local restart attempts",
+			Message: "one or more model engine instances failed",
 		})
 	case len(pm.Status.Instances) > 0 && active == len(pm.Status.Instances):
 		pm.Status.Phase = modelv1alpha1.ModelClaimActive
