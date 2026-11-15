@@ -109,8 +109,8 @@ func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, 
 		return nil, fmt.Errorf("metric %s is not a raw pod metric, use FetchAllTypedMetrics for complex queries", metricName)
 	}
 
-	// Get raw metric names to try for this engine, most preferred first
-	rawMetricNames, exists := metricDef.RawMetricNamesForEngine(engineType)
+	// A metric with no mapping for this engine cannot be read from its exposition.
+	primaryRawMetricName, exists := metricDef.EngineMetricsNameMapping[engineType]
 	if !exists {
 		return nil, fmt.Errorf("metric %s not supported for engine type %s", metricName, engineType)
 	}
@@ -137,14 +137,17 @@ func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, 
 			continue
 		}
 
-		// Parse the first name this exposition actually carries
-		var metricValue MetricValue
-		var parseErr error
-		for _, rawMetricName := range rawMetricNames {
-			if metricValue, parseErr = ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef); parseErr == nil {
-				break
-			}
+		// Resolve the name by presence, then parse once. Parsing each candidate in
+		// turn would also fall through to a different family when the preferred one
+		// is present but fails to parse.
+		rawMetricName, _, present := resolveRawMetricName(metricDef, engineType, allMetrics)
+		if !present {
+			klog.V(4).InfoS("Raw metric missing from engine endpoint",
+				"attempt", attempt+1, "identifier", identifier, "metric", metricName, "rawMetric", rawMetricName)
+			continue
 		}
+
+		metricValue, parseErr := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef)
 		if parseErr != nil {
 			klog.V(4).InfoS("Failed to parse metric from engine endpoint",
 				"attempt", attempt+1, "identifier", identifier, "metric", metricName, "error", parseErr)
@@ -156,8 +159,8 @@ func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, 
 		return metricValue, nil
 	}
 
-	return nil, fmt.Errorf("failed to fetch typed metric %s from engine endpoint %s after %d attempts",
-		metricName, identifier, ef.config.MaxRetries+1)
+	return nil, fmt.Errorf("failed to fetch typed metric %s (raw metric %s) from engine endpoint %s after %d attempts",
+		metricName, primaryRawMetricName, identifier, ef.config.MaxRetries+1)
 }
 
 // FetchRawMetric fetches a metric by its raw Prometheus name from an explicit metrics URL,
@@ -268,22 +271,26 @@ func (ef *EngineMetricsFetcher) FetchAllTypedMetrics(ctx context.Context, endpoi
 			continue
 		}
 
-		// Get raw metric names to try for this engine, most preferred first
-		rawMetricNames, exists := metricDef.RawMetricNamesForEngine(result.EngineType)
-		if !exists {
+		// Resolve the raw name once against this exposition, then parse it. The
+		// resolution is per exposition rather than per model, so a pod that exposes
+		// the family for only some of its models resolves the same way for all.
+		rawMetricName, mapped, present := resolveRawMetricName(metricDef, result.EngineType, allMetrics)
+		if !mapped {
 			klog.V(5).InfoS("Metric not supported for engine type", "metric", metricName, "engine", result.EngineType)
 			continue
 		}
 
-		// Store in appropriate scope, taking the first name this exposition carries
+		// Report an absent family against the mapped name, which is the one an
+		// operator would search for, rather than against the last alias tried.
+		absentErr := fmt.Errorf("raw metric %s not found", rawMetricName)
+
+		// Store in appropriate scope
 		if metricDef.MetricScope == PodMetricScope {
-			var metricValue MetricValue
-			var parseErr error
-			for _, rawMetricName := range rawMetricNames {
-				if metricValue, parseErr = ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef); parseErr == nil {
-					break
-				}
+			if !present {
+				result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, absentErr, identifier))
+				continue
 			}
+			metricValue, parseErr := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef)
 			if parseErr != nil {
 				result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, parseErr, identifier))
 				continue
@@ -292,13 +299,11 @@ func (ef *EngineMetricsFetcher) FetchAllTypedMetrics(ctx context.Context, endpoi
 		} else if metricDef.MetricScope == PodModelMetricScope {
 			// Parse one value per model_name so models on a multi-model pod don't share a
 			// single instance taken from metricFamily.Metric[0].
-			var modelMetrics map[string]MetricValue
-			var parseErr error
-			for _, rawMetricName := range rawMetricNames {
-				if modelMetrics, parseErr = ef.parseModelMetricsFromFamily(allMetrics, rawMetricName, metricDef); parseErr == nil {
-					break
-				}
+			if !present {
+				result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, absentErr, identifier))
+				continue
 			}
+			modelMetrics, parseErr := ef.parseModelMetricsFromFamily(allMetrics, rawMetricName, metricDef)
 			if parseErr != nil {
 				result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, parseErr, identifier))
 				continue
@@ -358,6 +363,30 @@ func (ef *EngineMetricsFetcher) getAvailableMetricsForEngine(engineType string) 
 		}
 	}
 	return availableMetrics
+}
+
+// resolveRawMetricName picks the raw metric name to read for engineType out of one
+// exposition, preferring the mapped name and falling back to the aliases in order.
+// The second result is false when the metric has no mapping for that engine, which
+// is distinct from the third being false: mapped, but present under neither name.
+// In that last case the returned name is still the mapped one, so the caller's
+// error names the metric an operator would search for instead of the last alias
+// tried. Resolving by presence before parsing keeps a family that is present but
+// fails to parse from silently falling through to a different family.
+func resolveRawMetricName(metric Metric, engineType string, fams map[string]*dto.MetricFamily) (string, bool, bool) {
+	primary, mapped := metric.EngineMetricsNameMapping[engineType]
+	if !mapped {
+		return "", false, false
+	}
+	if _, present := fams[primary]; present {
+		return primary, true, true
+	}
+	for _, alias := range metric.EngineMetricsNameAliases[engineType] {
+		if _, present := fams[alias]; present {
+			return alias, true, true
+		}
+	}
+	return primary, true, false
 }
 
 // parseMetricFromFamily parses the first instance of a metric family. It is used for
