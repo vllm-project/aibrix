@@ -1,0 +1,56 @@
+suite: Test controller-manager metrics ServiceMonitor
+templates:
+  - controller-manager/service.yaml
+  - prometheus/monitor.yaml
+tests:
+  - it: should label the metrics Service with the selector the ServiceMonitor uses
+    set:
+      prometheus.enable: true
+    asserts:
+      - equal:
+          path: metadata.labels["control-plane"]
+          value: controller-manager
+        template: controller-manager/service.yaml
+
+  - it: should have the ServiceMonitor select that label
+    set:
+      prometheus.enable: true
+    asserts:
+      - equal:
+          path: spec.selector.matchLabels["control-plane"]
+          value: controller-manager
+        template: prometheus/monitor.yaml
+
+  - it: should scrape the http port of the metrics Service over http
+    set:
+      prometheus.enable: true
+    asserts:
+      - equal:
+          path: spec.endpoints[0].port
+          value: http
+        template: prometheus/monitor.yaml
+      - equal:
+          path: spec.endpoints[0].scheme
+          value: http
+        template: prometheus/monitor.yaml
+      - equal:
+          path: spec.ports[0].name
+          value: http
+        template: controller-manager/service.yaml
+
+  - it: should not request TLS for a metrics endpoint served over plain http
+    set:
+      prometheus.enable: true
+    asserts:
+      - notExists:
+          path: spec.endpoints[0].tlsConfig
+        template: prometheus/monitor.yaml
+
+  - it: should not reference a cert-manager secret the chart does not create
+    set:
+      prometheus.enable: true
+      certmanager.enable: true
+    asserts:
+      - notExists:
+          path: spec.endpoints[0].tlsConfig
+        template: prometheus/monitor.yaml
