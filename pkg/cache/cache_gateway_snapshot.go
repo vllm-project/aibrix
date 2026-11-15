@@ -114,6 +114,13 @@ func initGatewaySnapshotSync(store *Store, stopCh <-chan struct{}) {
 						errLog.log("flush", err, "gateway snapshot sync cannot write this gateway's snapshots to Redis; other gateways will see them expire")
 					}
 
+					// With the remote running reader enabled, keep the write phase above so
+					// reader-off gateways still see this gateway's snapshots during mixed rollouts,
+					// and skip the G²·N SCAN + HGETALL read phase whose consumers read aibrix:rrq.
+					if store.remoteRunningReader.Load() != nil {
+						return
+					}
+
 					// Phase 2 (scan): collect all gateway snapshot keys across all instances.
 					allKeys, err := scanGatewaySnapshotKeys(ctx, store.redisClient)
 					if err != nil {
