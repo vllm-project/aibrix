@@ -69,6 +69,8 @@ func validateModelClaim(oldClaim, claim *modelapi.ModelClaim) error {
 		if spec.PodSelector == nil {
 			allErrs = append(allErrs, field.Required(path.Child("podSelector"), "a pod selector is required"))
 		} else {
+			// Empty selectors intentionally span eligible warm pools in the
+			// namespace; the controller still applies its warm-pod checks.
 			allErrs = append(allErrs, metav1validation.ValidateLabelSelector(spec.PodSelector,
 				metav1validation.LabelSelectorValidationOptions{}, path.Child("podSelector"))...)
 		}
@@ -81,12 +83,16 @@ func validateModelClaim(oldClaim, claim *modelapi.ModelClaim) error {
 		allErrs = append(allErrs, field.Invalid(path.Child("modelName"), *spec.ModelName, "must not be blank when provided"))
 	}
 	if oldClaim == nil || oldClaim.Spec.Engine != spec.Engine || !equality.Semantic.DeepEqual(oldClaim.Spec.EngineConfig, spec.EngineConfig) {
-		if spec.Engine == "" || spec.Engine == "vllm" {
+		// An omitted engineConfig uses the default parallelism and has no
+		// arguments to validate or include in a field error.
+		if spec.EngineConfig != nil && (spec.Engine == "" || spec.Engine == "vllm") {
 			if _, err := utils.ModelClaimVLLMParallelism(spec.EngineConfig); err != nil {
 				allErrs = append(allErrs, field.Invalid(path.Child("engineConfig", "args"), spec.EngineConfig.Args, err.Error()))
 			}
 		}
 	}
+	// Missing perGPU remains admissible so its declaration can be supplied
+	// later. The controller refuses placement until a valid cost is declared.
 	if spec.PerGPU != nil && (oldClaim == nil || !equality.Semantic.DeepEqual(oldClaim.Spec.PerGPU, spec.PerGPU)) {
 		if _, err := utils.ModelClaimDeclaredBytes("maximumFootprint", spec.PerGPU.MaximumFootprint); err != nil {
 			allErrs = append(allErrs, field.Invalid(path.Child("perGPU", "maximumFootprint"), spec.PerGPU.MaximumFootprint.String(), err.Error()))
