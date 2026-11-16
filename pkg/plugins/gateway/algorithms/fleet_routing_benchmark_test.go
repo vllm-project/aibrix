@@ -105,7 +105,7 @@ func routeFleetCandidatesOnce(b *testing.B, rm *RouterManager, c cache.Cache, al
 	if err != nil {
 		b.Fatal(err)
 	}
-	pods := selectCandidates(ctx, router, all, k)
+	pods := selectCandidates(ctx, nil, router, all, k)
 	pods = ApplyLoadImbalanceGate(ctx, c, pods)
 	utils.Shuffle(pods)
 	if _, err := router.Route(ctx, &utils.PodArray{Pods: pods}); err != nil {
@@ -216,7 +216,7 @@ func BenchmarkCandidateSelection(b *testing.B) {
 					if err != nil {
 						b.Fatal(err)
 					}
-					if got := selectCandidates(ctx, router, all, 16); len(got) != 16 {
+					if got := selectCandidates(ctx, nil, router, all, 16); len(got) != 16 {
 						b.Fatalf("got %d candidates", len(got))
 					}
 					ctx.Delete()
