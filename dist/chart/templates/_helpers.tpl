@@ -206,8 +206,9 @@ Create the name of the metadata service service account
 {{- fail "gatewayPlugin.dependencies.redis.sentinel.addresses must contain host:port addresses." -}}
 {{- end -}}
 {{- end -}}
+{{- $gatewayEnvs := default dict .Values.gatewayPlugin.container.envs -}}
 {{- range $key := list "REDIS_SENTINEL_ENABLED" "REDIS_SENTINEL_MASTER_NAME" "REDIS_SENTINEL_ADDRESSES" "REDIS_SENTINEL_USERNAME" "REDIS_SENTINEL_PASSWORD" -}}
-{{- if hasKey $.Values.gatewayPlugin.container.envs $key -}}
+{{- if hasKey $gatewayEnvs $key -}}
 {{- fail (printf "%s is managed by gatewayPlugin.dependencies.redis.sentinel; do not also set it in container.envs." $key) -}}
 {{- end -}}
 {{- end -}}

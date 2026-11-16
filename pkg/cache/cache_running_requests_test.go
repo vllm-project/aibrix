@@ -351,7 +351,7 @@ func TestAdmitRunningRequestsClient_SentinelSwitchWithReachableOldMaster(t *test
 		return shared.Get(ctx, "marker").Val() == "new" &&
 			admit.Get(ctx, "marker").Val() == "new" &&
 			read.Get(ctx, "marker").Val() == "new"
-	}, time.Second, time.Millisecond, "all pools must discard old-master connections")
+	}, time.Second, 10*time.Millisecond, "all pools must discard old-master connections")
 
 	admitted, counted, running := testStore.admitRunningRequest(testNamespace, testPodName, 1, 0)
 	require.False(t, admitted, "the new master is already at capacity")

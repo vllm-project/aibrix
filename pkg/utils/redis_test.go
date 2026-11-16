@@ -174,16 +174,18 @@ func TestRedisSentinelConfigValidation(t *testing.T) {
 		enabled   string
 		master    string
 		addresses string
+		wantError string
 	}{
-		{"invalid enabled", "invalid", "mymaster", "localhost:26379"},
-		{"missing master", "true", "", "localhost:26379"},
-		{"missing addresses", "true", "mymaster", ""},
-		{"missing port", "true", "mymaster", "localhost"},
-		{"missing host", "true", "mymaster", ":26379"},
-		{"invalid port", "true", "mymaster", "localhost:abc"},
-		{"zero port", "true", "mymaster", "localhost:0"},
-		{"large port", "true", "mymaster", "localhost:65536"},
-		{"empty list entry", "true", "mymaster", "localhost:26379,"},
+		{"invalid enabled", "invalid", "mymaster", "localhost:26379", "REDIS_SENTINEL_ENABLED must be a boolean"},
+		{"missing master", "true", "", "localhost:26379", "REDIS_SENTINEL_MASTER_NAME is required"},
+		{"missing addresses", "true", "mymaster", "", "REDIS_SENTINEL_ADDRESSES is required"},
+		{"whitespace addresses", "true", "mymaster", " \t ", "REDIS_SENTINEL_ADDRESSES is required"},
+		{"missing port", "true", "mymaster", "localhost", "REDIS_SENTINEL_ADDRESSES must contain host:port addresses"},
+		{"missing host", "true", "mymaster", ":26379", "REDIS_SENTINEL_ADDRESSES must contain host:port addresses"},
+		{"invalid port", "true", "mymaster", "localhost:abc", "REDIS_SENTINEL_ADDRESSES contains an invalid port"},
+		{"zero port", "true", "mymaster", "localhost:0", "REDIS_SENTINEL_ADDRESSES contains an invalid port"},
+		{"large port", "true", "mymaster", "localhost:65536", "REDIS_SENTINEL_ADDRESSES contains an invalid port"},
+		{"empty list entry", "true", "mymaster", "localhost:26379,", "REDIS_SENTINEL_ADDRESSES must contain host:port addresses"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -192,7 +194,7 @@ func TestRedisSentinelConfigValidation(t *testing.T) {
 			t.Setenv("REDIS_SENTINEL_MASTER_NAME", tt.master)
 			t.Setenv("REDIS_SENTINEL_ADDRESSES", tt.addresses)
 			client, err := newRedisClientFromEnv()
-			require.Error(t, err)
+			require.EqualError(t, err, tt.wantError)
 			require.Nil(t, client)
 		})
 	}

@@ -1598,7 +1598,7 @@ func TestAsyncJobStoreClient_SentinelSwitchWithReachableOldMaster(t *testing.T) 
 	require.Eventually(t, func() bool {
 		counts, err := sentinelClient.PubSubNumSub(ctx, "+switch-master").Result()
 		return err == nil && counts["+switch-master"] == 2
-	}, time.Second, time.Millisecond)
+	}, time.Second, 10*time.Millisecond)
 	oldHost, oldPort, _ := net.SplitHostPort(oldMaster.Addr())
 	newHost, newPort, _ := net.SplitHostPort(newMaster.Addr())
 	address.Store(newMaster.Addr())
@@ -1606,13 +1606,13 @@ func TestAsyncJobStoreClient_SentinelSwitchWithReachableOldMaster(t *testing.T) 
 		fmt.Sprintf("mymaster %s %s %s %s", oldHost, oldPort, newHost, newPort)))
 	require.Eventually(t, func() bool {
 		return shared.Get(ctx, "marker").Val() == "new"
-	}, 2*time.Second, time.Millisecond)
+	}, 2*time.Second, 10*time.Millisecond)
 	// Keep the old master alive: successful reads must not pin the task store
 	// to its stale pool after Sentinel announces the new master.
 	require.Eventually(t, func() bool {
 		got, err := store.get(ctx, asyncJobOwnerShared, "job-1")
 		return err == nil && got.BackendJobID == "new-backend"
-	}, 2*time.Second, time.Millisecond)
+	}, 2*time.Second, 10*time.Millisecond)
 	got, err := store.get(ctx, asyncJobOwnerShared, "job-2")
 	require.NoError(t, err)
 	require.Equal(t, "new-only", got.BackendJobID)

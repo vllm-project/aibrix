@@ -145,6 +145,14 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: "gatewayPlugin.dependencies.redis.sentinel.masterName is required when Sentinel is enabled."
+  - it: should accept Sentinel with a null environment map
+    set:
+      <<: *sentinelValidation
+      metadata.redis.enabled: false
+      gatewayPlugin.container.envs: null
+    asserts:
+      - hasDocuments:
+          count: 0
   - it: should reject duplicate managed environment variables
     set:
       <<: *sentinelValidation

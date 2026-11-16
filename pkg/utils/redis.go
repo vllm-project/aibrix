@@ -134,7 +134,11 @@ func newRedisClientFactoryFromEnv() (RedisClientFactory, error) {
 		if masterName == "" {
 			return nil, fmt.Errorf("REDIS_SENTINEL_MASTER_NAME is required")
 		}
-		addresses := strings.Split(LoadEnv("REDIS_SENTINEL_ADDRESSES", ""), ",")
+		rawAddresses := strings.TrimSpace(LoadEnv("REDIS_SENTINEL_ADDRESSES", ""))
+		if rawAddresses == "" {
+			return nil, fmt.Errorf("REDIS_SENTINEL_ADDRESSES is required")
+		}
+		addresses := strings.Split(rawAddresses, ",")
 		for i, address := range addresses {
 			address = strings.TrimSpace(address)
 			host, port, err := net.SplitHostPort(address)
