@@ -17,8 +17,10 @@
 import asyncio
 import json
 
+import httpcore
 import httpx
 import pytest
+from httpcore._async.connection_pool import AsyncPoolRequest, PoolByteStream
 from starlette.requests import Request
 
 from aibrix.openai_frontend.engine.proxy_engine import EngineState, ProxyEngine
@@ -171,6 +173,93 @@ async def test_video_sync_abort_deletes_internal_job(monkeypatch, phase, outcome
         release.set()
         await engine.aclose()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_error", [False, True], ids=["cancel-read", "read-error"])
+async def test_video_sync_poll_read_drains_transport_before_close(
+    monkeypatch, read_error
+):
+    monkeypatch.setattr(video_sync, "VIDEO_POLL_INTERVAL_SECONDS", 0)
+    reading, closing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    calls = []
+
+    class PollBody(httpx.AsyncByteStream):
+        closed = False
+        close_calls = 0
+
+        async def __aiter__(self):
+            yield b'{"status":'
+            reading.set()
+            if read_error:
+                raise httpcore.ReadError("poll response read failed")
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            self.close_calls += 1
+            closing.set()
+            await release.wait()
+            self.closed = True
+
+    body = PollBody()
+    pool = httpcore.AsyncConnectionPool()
+    pool_request = AsyncPoolRequest(
+        httpcore.Request("GET", "http://inner/v1/videos/video_gen_test")
+    )
+    pool._requests.append(pool_request)
+    # Exercise httpcore's exception-time cleanup and connection-pool release.
+    pooled = PoolByteStream(body, pool_request, pool)
+
+    class TransportBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            async for chunk in pooled:
+                yield chunk
+
+        async def aclose(self):
+            await pooled.aclose()
+
+    poll_response = httpx.Response(200, stream=TransportBody())
+
+    async def upstream(request):
+        calls.append((request.method, request.url.path))
+        if request.method == "POST":
+            await request.aread()
+            return httpx.Response(200, json={**JOB, "status": "queued"})
+        if request.method == "DELETE":
+            return httpx.Response(200, json={"deleted": True})
+        return poll_response
+
+    engine = make_engine(upstream)
+    task = asyncio.create_task(
+        engine.forward_multipart("/v1/videos/sync", make_request(upload_messages()))
+    )
+    try:
+        await asyncio.wait_for(reading.wait(), 2)
+        if read_error:
+            await asyncio.wait_for(closing.wait(), 2)
+        task.cancel()
+        await asyncio.wait_for(closing.wait(), 2)
+        task.cancel("repeat cancellation during poll cleanup")
+        await asyncio.sleep(0)
+        assert not task.done() and engine._in_flight
+        assert not body.closed and body.close_calls == 1
+        assert ("DELETE", "/v1/videos/video_gen_test") not in calls
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+        assert body.closed and body.close_calls == 1
+        assert poll_response.is_closed and not pool._requests
+        assert calls.count(("DELETE", "/v1/videos/video_gen_test")) == 1
+        assert (
+            not engine._in_flight
+            and not engine._request_done
+            and not engine._stream_closers
+        )
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await engine.aclose()
+        await pool.aclose()
 
 
 @pytest.mark.asyncio

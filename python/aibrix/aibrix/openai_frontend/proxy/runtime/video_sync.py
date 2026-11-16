@@ -112,8 +112,17 @@ class VideoSyncJob:
                         )
                     await asyncio.sleep(VIDEO_POLL_INTERVAL_SECONDS)
                     response = await self._forward(self._path, True, method="GET")
+                    # Cancel the owned reader through AnyIO so httpcore can
+                    # finish its shielded cleanup before we close the response.
+                    read_scope = anyio.CancelScope()
+
+                    async def read_response() -> None:
+                        with read_scope:
+                            await response.aread()
+
+                    read_task = asyncio.create_task(read_response())
                     try:
-                        await response.aread()
+                        await asyncio.shield(read_task)
                         try:
                             self._job = self._metadata(response)
                         except ServerError:
@@ -121,7 +130,14 @@ class VideoSyncJob:
                                 raise
                             return response
                     finally:
-                        await await_thread_completion(response.aclose())
+                        if not read_task.done():
+                            read_scope.cancel()
+                        try:
+                            await await_thread_completion(
+                                asyncio.gather(read_task, return_exceptions=True)
+                            )
+                        finally:
+                            await await_thread_completion(response.aclose())
 
                 headers = {
                     "X-Request-Id": f"video_sync-{uuid.uuid4().hex}",
