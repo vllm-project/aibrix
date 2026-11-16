@@ -53,6 +53,16 @@ def sanitize_ipc_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "-", name)
 
 
+def _claim_uid(claim_ref: Optional[Dict[str, str]]) -> str:
+    """The UID of the claim an engine runs for, or "" when it is not known."""
+    return (claim_ref or {}).get("uid") or ""
+
+
+def _claim_label(claim_ref: Optional[Dict[str, str]]) -> str:
+    claim_ref = claim_ref or {}
+    return f"{claim_ref.get('namespace', '')}/{claim_ref.get('name', '')}"
+
+
 logger = logging.getLogger(__name__)
 
 # NVML owns a process-global initialization state. Snapshot requests can run
@@ -1898,6 +1908,15 @@ class ModelRuntime:
                 validate_vllm_parallelism(engine_config, additional_config)
             existing = self._models.get(model_name)
             if existing is not None:
+                # An engine runs for one claim. Another claim that asks for the
+                # same model name is refused rather than handed this engine,
+                # which it would share and stop when it goes.
+                owner = _claim_uid(existing.claim_ref)
+                if owner and _claim_uid(claim_ref) not in ("", owner):
+                    raise ValueError(
+                        f"model {model_name!r} already runs on this pod for ModelClaim "
+                        f"{_claim_label(existing.claim_ref)}"
+                    )
                 if existing.phase == "failed":
                     raise RuntimeError(
                         f"model {model_name!r} has failed on this pod; "

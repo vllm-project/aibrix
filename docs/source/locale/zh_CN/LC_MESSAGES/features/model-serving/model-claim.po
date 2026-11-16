@@ -531,11 +531,20 @@ msgstr "``modelName``"
 
 #: ../../source/features/model-serving/model-claim.rst:288
 msgid ""
-"The name clients send as ``model``. Defaults to the claim's name. Give "
-"each claim its own model name."
+"The name clients send as ``model``. Defaults to the claim's name. Each "
+"claim in a namespace needs its own model name. If two claims use one "
+"name, the claim that already has an engine keeps it, or the older claim "
+"if neither has one. The other claim stays ``Pending`` with ``Scheduled`` "
+"reason ``ModelNameInUse``. The gateway routes by model name across "
+"namespaces, so claims in different namespaces that use one name share the"
+" requests for it."
 msgstr ""
-"客户端在请求中作为 ``model`` 发送的名称，默认为 claim 的名称。请为每个 "
-"claim 设置不同的模型名。"
+"客户端在请求中作为 ``model`` 发送的名称，默认为 claim 的名称。"
+"同一命名空间中的每个 claim 都需要各自的模型名。如果两个 claim "
+"使用同一个名称，已有引擎的 claim 保留它；两者都没有引擎时，由较早创建的 "
+"claim 保留。另一个 claim 保持 ``Pending``，其 ``Scheduled`` 条件的原因为 "
+"``ModelNameInUse``。网关按模型名路由，不区分命名空间，"
+"因此不同命名空间中使用同一名称的 claim 会分担该名称的请求。"
 
 #: ../../source/features/model-serving/model-claim.rst:290
 msgid "``podSelector``"
@@ -1371,6 +1380,18 @@ msgid ""
 "Another feasible claim has an earlier priority/FIFO placement turn for "
 "the same pool."
 msgstr "另一个可行 claim 在同一热池具有更早的优先级/FIFO 放置轮次。"
+
+#: ../../source/features/model-serving/model-claim.rst:731
+msgid "``ModelNameInUse``"
+msgstr "``ModelNameInUse``"
+
+#: ../../source/features/model-serving/model-claim.rst:732
+msgid ""
+"Another claim in the namespace keeps the same ``modelName``, or an engine"
+" of a deleted claim still runs under it. The message names that claim."
+msgstr ""
+"命名空间中的另一个 claim 保留了相同的 ``modelName``，或者某个已删除 claim "
+"的引擎仍以该名称运行。消息中会给出该 claim 的名称。"
 
 #: ../../source/features/model-serving/model-claim.rst:620
 msgid ""

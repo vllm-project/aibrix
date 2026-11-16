@@ -289,8 +289,13 @@ The sample claims:
    * - Field
      - Meaning
    * - ``modelName``
-     - The name clients send as ``model``. Defaults to the claim's name. Give
-       each claim its own model name.
+     - The name clients send as ``model``. Defaults to the claim's name. Each
+       claim in a namespace needs its own model name. If two claims use one
+       name, the claim that already has an engine keeps it, or the older claim
+       if neither has one. The other claim stays ``Pending`` with ``Scheduled``
+       reason ``ModelNameInUse``. The gateway routes by model name across
+       namespaces, so claims in different namespaces that use one name share
+       the requests for it.
    * - ``podSelector``
      - Required. Selects the pool, usually by ``claim.model.aibrix.ai/pool``,
        among the Pods in the claim's namespace.
@@ -725,6 +730,9 @@ Until then, it gives one of these reasons:
    * - ``WaitingForPlacementTurn``
      - Another feasible claim has an earlier priority/FIFO placement turn for
        the same pool.
+   * - ``ModelNameInUse``
+     - Another claim in the namespace keeps the same ``modelName``, or an engine
+       of a deleted claim still runs under it. The message names that claim.
 
 The ``Ready`` condition is ``True`` with ``ModelClaimActive`` while the claim
 serves. Otherwise, its reason says what holds the claim back:

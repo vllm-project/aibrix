@@ -25,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -108,17 +109,22 @@ func (s *modelClaimState) clearClaim(key string) {
 }
 
 // claim returns the record of the first claim, by namespace and name, that
-// serves a model. It walks every claim. It is asked only about a model that no
-// pod advertises.
+// serves a model. A claim that waits while another claim keeps its model name
+// answers only when no other claim serves the name. It walks every claim. It is
+// asked only about a model that no pod advertises.
 func (s *modelClaimState) claim(model string) (modelClaimRecord, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var first string
 	var record modelClaimRecord
-	found := false
+	found, firstWaits := false, false
 	for key, candidate := range s.claims {
-		if candidate.model == model && (!found || key < first) {
-			first, record, found = key, candidate, true
+		if candidate.model != model {
+			continue
+		}
+		waits := candidate.reason == constants.ModelClaimReasonModelNameInUse
+		if !found || (firstWaits && !waits) || (waits == firstWaits && key < first) {
+			first, record, found, firstWaits = key, candidate, true, waits
 		}
 	}
 	return record, found
@@ -160,7 +166,7 @@ func (c *Store) deleteModelClaim(claim *modelv1alpha1.ModelClaim) {
 // ModelClaimStatus reports the phase of the ModelClaim that serves a model,
 // and why it does not serve yet, whether or not a pod advertises it. With
 // several claims for one name, the first by namespace and name answers, as for
-// bindings.
+// bindings, passing over a claim that waits for the name.
 func (c *Store) ModelClaimStatus(modelName string) (string, string, bool) {
 	record, found := c.modelClaims.claim(modelName)
 	return record.phase, record.reason, found

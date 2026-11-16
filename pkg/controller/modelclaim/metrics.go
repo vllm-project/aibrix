@@ -199,8 +199,12 @@ func b2f(b bool) float64 {
 
 // setClaimGauges refreshes the per-model gauges from the model's current
 // status. Called at the end of each reconcile so the gauges track the truth the
-// controller just computed.
+// controller just computed. A claim that waits for its model name leaves them
+// alone, since a claim that keeps the name has the same labels.
 func setClaimGauges(pm *modelv1alpha1.ModelClaim) {
+	if modelNameTaken(pm) {
+		return
+	}
 	setClaimGaugesAt(pm, time.Now())
 }
 

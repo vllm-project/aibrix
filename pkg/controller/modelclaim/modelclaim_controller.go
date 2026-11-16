@@ -712,13 +712,26 @@ func (r *ModelClaimReconciler) ensureActivated(
 		}
 		return 0, nil
 	}
+	claims, listErr := r.listClaimsForAccount(ctx, pm.Namespace)
+	// A claim whose model name another claim in its namespace uses first is
+	// not placed, initially or to replace a failed engine. Its engine would
+	// share the other claim's engine on a Pod, or take a share of the requests
+	// for that name. No runtime is read for it, since it waits for a claim, not
+	// for room.
+	if r.waitsForModelName(pm, claims, listErr) {
+		return DefaultRequeueDuration, nil
+	}
 	load := podLoadFrom(cached)
 	// The account and the ranking are made from the same reading of each
 	// runtime. So two admitted pods are never ordered by numbers that
 	// contradict the gate they just passed.
 	snapshots := readings.ofPods(ctx, candidates)
 	placementStates := placementStatesFrom(snapshots, candidates, pm.Spec.ArtifactURL, parallelism)
-	claims, listErr := r.listClaimsForAccount(ctx, pm.Namespace)
+	// Nor is it placed while an engine of a deleted claim still runs under its
+	// name on one of its Pods.
+	if r.waitsForEngineOfModelName(pm, candidates, snapshots) {
+		return DefaultRequeueDuration, nil
+	}
 	ledgers := podLedgersFrom(claims, listErr, candidates, snapshots, r.podsWithoutWakeReserve(ctx, candidates))
 	r.reservations().takeFrom(ledgers, pm.Namespace, pm.Name, r.now())
 	r.reservations().keepWakesOutOfPreemption(ledgers, claims, pm, r.now())
@@ -1488,6 +1501,18 @@ func (r *ModelClaimReconciler) reconcileInstanceHealth(
 			r.footprints().note(pm, footprint)
 		}
 
+		// Two claims with one model name could share an engine before names
+		// were kept apart. The runtime reports that engine as the other
+		// claim's, so this claim has no engine here. It lets go of the Pod and
+		// its route, and then waits for the name like any other claim. Starting
+		// an engine for it would be refused, or hand it the other claim's.
+		if observed == nil && engineOfAnotherClaim(snapshot, pm) != nil {
+			klog.InfoS("the engine for this model name runs for another claim, so this claim lets go of the pod",
+				"pod", inst.Pod, "model", served, "claim", pm.Name)
+			dropped[inst.Pod] = true
+			continue
+		}
+
 		if engineMissing(inst, snapshot, observed) {
 			stays, started := r.startMissingEngine(ctx, pm, inst, ip)
 			dropped[inst.Pod] = !stays
@@ -2182,7 +2207,10 @@ func (r *ModelClaimReconciler) finalize(
 	if err := r.deactivateInstances(ctx, pm); err != nil {
 		return ctrl.Result{}, err
 	}
-	clearClaimMetrics(pm.Namespace, servedModelName(pm))
+	// The gauges of a model name that another claim keeps are that claim's.
+	if !modelNameTaken(pm) {
+		clearClaimMetrics(pm.Namespace, servedModelName(pm))
+	}
 	r.forgetClaim(key)
 	controllerutil.RemoveFinalizer(pm, ModelClaimFinalizer)
 	if err := r.Update(ctx, pm); err != nil {
@@ -2265,12 +2293,21 @@ func (r *ModelClaimReconciler) deactivateInstances(ctx context.Context, pm *mode
 		}
 		// Deletion retries must respect the client's silence window. Stop itself
 		// bypasses it because one-shot callers such as scale-down still need it.
-		if _, err := r.Runtime.Snapshot(ctx, ip, DefaultRuntimePort); err != nil {
+		snapshot, err := r.Runtime.Snapshot(ctx, ip, DefaultRuntimePort)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("read runtime before deactivating model %s on pod %s: %w", servedModelName(pm), inst.Pod, err))
 			continue
 		}
+		// Two claims with one model name could share an engine before names
+		// were kept apart. An engine that runs for another claim is left to
+		// it, and only this claim's route is removed.
+		if engineOfAnotherClaim(snapshot, pm) != nil {
+			klog.InfoS("the engine for this model name runs for another claim, so it stays",
+				"pod", inst.Pod, "model", servedModelName(pm), "claim", pm.Name)
+			continue
+		}
 		stopCtx, cancel := context.WithTimeout(ctx, deletionStopTimeout)
-		err := r.Runtime.Deactivate(stopCtx, ip, DefaultRuntimePort, &DeactivateRequest{
+		err = r.Runtime.Deactivate(stopCtx, ip, DefaultRuntimePort, &DeactivateRequest{
 			ModelName: servedModelName(pm),
 			Mode:      DeactivateStop,
 		})

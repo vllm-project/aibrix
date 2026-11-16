@@ -53,8 +53,9 @@ func placementPriorityFirst(claims []modelv1alpha1.ModelClaim) {
 }
 
 // priorityEligible reports whether a claim can compete for a new placement in
-// the given candidate pods.
-func priorityEligible(claim *modelv1alpha1.ModelClaim, candidates []corev1.Pod) bool {
+// the given candidate pods. A claim that waits for its model name cannot, so it
+// holds up no claim behind it.
+func priorityEligible(claim *modelv1alpha1.ModelClaim, claims *modelv1alpha1.ModelClaimList, candidates []corev1.Pod) bool {
 	if claim == nil || !claim.DeletionTimestamp.IsZero() || len(claim.Status.Instances) != 0 ||
 		desiredReplicas(claim) <= 0 {
 		return false
@@ -63,7 +64,7 @@ func priorityEligible(claim *modelv1alpha1.ModelClaim, candidates []corev1.Pod) 
 		return false
 	}
 	shared, valid := candidatePodsForClaim(claim, candidates)
-	return valid && len(shared) > 0
+	return valid && len(shared) > 0 && modelNameHolder(claim, claims) == nil
 }
 
 // candidatePodsForClaim applies the same selector and declared GPU topology
@@ -177,7 +178,7 @@ func (r *ModelClaimReconciler) placementTurnBlocker(
 	waiting = append(waiting, *current)
 	for i := range claims.Items {
 		claim := &claims.Items[i]
-		if claim.Namespace == current.Namespace && claim.Name != current.Name && priorityEligible(claim, candidates) {
+		if claim.Namespace == current.Namespace && claim.Name != current.Name && priorityEligible(claim, claims, candidates) {
 			waiting = append(waiting, *claim)
 		}
 	}

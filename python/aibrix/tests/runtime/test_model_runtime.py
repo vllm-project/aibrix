@@ -824,6 +824,39 @@ def test_activate_is_idempotent():
     assert agent._launcher.launched == ["m1"]  # launched only once
 
 
+TEAM_A = {"namespace": "default", "name": "team-a", "uid": "uid-a"}
+TEAM_B = {"namespace": "default", "name": "team-b", "uid": "uid-b"}
+
+
+def test_activate_refuses_a_model_name_another_claim_runs():
+    agent = make_agent()
+    first = agent.activate(model_name="m1", artifact_url="hf://x", claim_ref=TEAM_A)
+
+    # The claim that runs the engine gets it back.
+    assert (
+        agent.activate(model_name="m1", artifact_url="hf://x", claim_ref=TEAM_A)
+        is first
+    )
+    with pytest.raises(
+        ValueError, match="'m1' already runs on this pod for ModelClaim default/team-a"
+    ):
+        agent.activate(model_name="m1", artifact_url="hf://x", claim_ref=TEAM_B)
+    assert agent._launcher.launched == ["m1"]
+    assert first.claim_ref == TEAM_A
+    # A request without a claim UID is not checked, as from an older controller.
+    assert agent.activate(model_name="m1", artifact_url="hf://x") is first
+
+
+def test_activate_does_not_check_an_engine_without_a_claim():
+    agent = make_agent()
+    first = agent.activate(model_name="m1", artifact_url="hf://x")
+
+    assert (
+        agent.activate(model_name="m1", artifact_url="hf://x", claim_ref=TEAM_B)
+        is first
+    )
+
+
 def test_activate_distinct_ports_and_ipc_per_model():
     agent = make_agent()
     a = agent.activate(model_name="m1", artifact_url="hf://x")
@@ -1206,6 +1239,30 @@ def test_activate_endpoint_rejects_mismatched_vllm_parallelism(monkeypatch):
     assert response.status_code == 400, response.text
     assert response.json()["status"] == "error"
     assert "must equal 1 GPU" in response.json()["message"]
+
+
+def test_activate_endpoint_refuses_a_model_name_another_claim_runs():
+    client = _make_test_client()
+    body = {
+        "model_name": "shared",
+        "artifact_url": "hf://Org/Model",
+        "engine": "sglang",
+    }
+
+    first = client.post(
+        "/v1/runtime/models/activate", json={**body, "claim_ref": TEAM_A}
+    )
+    second = client.post(
+        "/v1/runtime/models/activate", json={**body, "claim_ref": TEAM_B}
+    )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 400, second.text
+    assert second.json()["status"] == "error"
+    assert (
+        "already runs on this pod for ModelClaim default/team-a"
+        in second.json()["message"]
+    )
 
 
 def test_activate_endpoint_rejects_gpu_memory_utilization_for_kvcached():

@@ -590,7 +590,7 @@ func (r *ModelClaimReconciler) waitingClaims(
 		if claim.Name == pm.Name {
 			claim = *pm
 		}
-		if !priorityEligible(&claim, candidates) {
+		if !priorityEligible(&claim, claims, candidates) {
 			continue
 		}
 		waiting = append(waiting, claim)
