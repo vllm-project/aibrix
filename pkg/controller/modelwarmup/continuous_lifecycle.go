@@ -57,7 +57,7 @@ func (r *ModelWarmupReconciler) reconcileContinuous(
 	warmup *modelv1alpha1.ModelWarmup,
 	revision string,
 	targets map[string]resolvedTarget,
-	missing map[string]string,
+	missing map[string]missingTarget,
 	jobs []batchv1.Job,
 ) (ctrl.Result, error) {
 	now := time.Now()
@@ -279,7 +279,7 @@ func (r *ModelWarmupReconciler) updateContinuousStatus(
 	warmup *modelv1alpha1.ModelWarmup,
 	revision string,
 	targets map[string]resolvedTarget,
-	missing map[string]string,
+	missing map[string]missingTarget,
 	plan continuousPlan,
 	created []*batchv1.Job,
 	policies warmupPolicies,
@@ -439,14 +439,21 @@ func setContinuousConditions(
 	warmup.Status.Conditions = conditions
 }
 
-func continuousNoTargetsDiagnostic(missing map[string]string) (string, string) {
-	for _, missingReason := range missing {
-		if missingReason == "NamespacePoolNotConfigured" {
+func continuousNoTargetsDiagnostic(missing map[string]missingTarget) (string, string) {
+	controlPlaneOnly := len(missing) > 0
+	for _, target := range missing {
+		if target.Reason == "NamespacePoolNotConfigured" {
 			return "NamespacePoolNotConfigured", fmt.Sprintf(
 				"the ModelWarmup namespace must set a non-empty %s label matching its target Nodes",
 				ResourcePoolLabelKey,
 			)
 		}
+		if target.Message != controlPlaneExclusionMessage {
+			controlPlaneOnly = false
+		}
+	}
+	if controlPlaneOnly {
+		return "TargetsUnavailableOrUnauthorized", "no eligible targets resolved; control-plane nodes are not eligible for ModelWarmup"
 	}
 	if len(missing) > 0 {
 		return "TargetsUnavailableOrUnauthorized", fmt.Sprintf(

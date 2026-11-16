@@ -805,25 +805,30 @@ func (c *Store) updateThroughputToksPerS(pod *Pod, model, metric string, metricV
 }
 
 // syncRunningRequestsGlobally computes the cross-gateway running request count for a pod and
-// stores it so GetMetricValueByPod returns the global total. It reads the in-memory snapshot
-// cache (populated every 100ms by initGatewaySnapshotSync — no Redis call here), sums
-// requests_running from all other gateway instances, then adds this gateway's own local
-// atomic counter (always fresher than the Redis snapshot for the local instance).
+// stores it so GetMetricValueByPod returns the global total. It takes the other gateways' counts
+// from gatewayRemoteRunning (published every 100ms by initGatewaySnapshotSync — no Redis call
+// here) and adds this gateway's own local atomic counter (always fresher than the Redis snapshot
+// for the local instance). Remote counts last actually read more than remoteRunningMaxAge ago
+// are left out, as GetPodsRunningRequestsApprox leaves them out (#3441): a sync that keeps
+// missing a pod's keys would otherwise report counts frozen when it first missed them.
+// With the remote running reader on, the other gateways' counts come from it instead: an unread
+// pod skips emission (matching the snapshot hold-back above), while a stale count falls back to
+// this gateway's own count.
 func (c *Store) syncRunningRequestsGlobally(pod *Pod) {
-	raw := c.gatewaySnapshotCache.Load()
-	if raw == nil {
-		return
-	}
-	snapshotCache := raw.(map[string][]map[string]string)
-
-	var remoteRunning float64
 	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
-	for _, fields := range snapshotCache[podKey] {
-		if fields["gateway_instance_id"] == gatewayPodName {
-			continue
+	var remoteRunning float64
+	if reader := c.remoteRunningReader.Load(); reader != nil {
+		count, seen := reader.freshCount(podKey, c.snapshotNow())
+		if !seen {
+			return
 		}
-		running, _ := strconv.ParseFloat(fields["requests_running"], 64)
-		remoteRunning += running
+		remoteRunning = float64(count)
+	} else {
+		snap := c.gatewayRemoteRunning.Load()
+		if snap == nil {
+			return
+		}
+		remoteRunning = float64(snap.freshCount(podKey, c.snapshotNow()))
 	}
 
 	localRunning := float64(atomic.LoadInt32(&pod.runningRequests))

@@ -80,7 +80,7 @@ Incoming Request (with user identity)
 └──────────────────────────────────┘
 ```
 
-End-to-end tests: [vtc_routing_test.go](../../../../test/e2e/vtc_routing_test.go)
+End-to-end tests: [vtc_routing_test.go](../../../../test/e2e/gateway/routing/vtc_routing_test.go)
 
 ## Configuration
 
