@@ -49,6 +49,9 @@ func (c *podOutstandingCollector) Describe(ch chan<- *prometheus.Desc) {
 
 func (c *podOutstandingCollector) Collect(ch chan<- prometheus.Metric) {
 	c.store.metaPods.Range(func(_ string, pod *Pod) bool {
+		if pod == nil || pod.Pod == nil {
+			return true
+		}
 		modelName, _ := constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
 		ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue,
 			float64(atomic.LoadInt32(&pod.runningRequests)), pod.Namespace, pod.Name, modelName)

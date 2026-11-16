@@ -47,6 +47,27 @@ func assertOutstandingMetrics(t *testing.T, registry *prometheus.Registry, sampl
 	require.NoError(t, testutil.GatherAndCompare(registry, strings.NewReader(expected), "gateway_pod_outstanding_requests"))
 }
 
+func TestPodOutstandingCollector_SkipsInvalidPods(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		pod  *Pod
+	}{
+		{name: "nil pod"},
+		{name: "nil underlying pod", pod: &Pod{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cache := NewForTest()
+			cache.addPod(requestTrackerTestPod("model-0", "inference", "model", "10.0.0.1"))
+			cache.metaPods.Store("inference/invalid", tt.pod)
+			registry := prometheus.NewPedanticRegistry()
+			registry.MustRegister(newPodOutstandingCollector(cache, "coord-a"))
+
+			assertOutstandingMetrics(t, registry,
+				"gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model_name=\"model\",namespace=\"inference\",pod=\"model-0\"} 0\n")
+		})
+	}
+}
+
 func TestPodOutstandingCollector_ModelNameMetadata(t *testing.T) {
 	for _, tt := range []struct {
 		name       string
@@ -118,7 +139,10 @@ func TestPodOutstandingCollector_RequestLifecycle(t *testing.T) {
 			// the local request ledger even without Redis or an engine metrics fetch.
 			metaPod, ok := cache.metaPods.Load("inference/model-0")
 			require.True(t, ok)
-			metaPod.Metrics.Store(metrics.RealtimeNumRequestsRunning, &metrics.SimpleMetricValue{Value: 99})
+			metaPod.Metrics.Store(metrics.RealtimeNumRequestsRunning, MetricRecord{
+				Value:     &metrics.SimpleMetricValue{Value: 99},
+				Timestamp: time.Now(),
+			})
 			cache.gatewaySnapshotCache.Store(map[string][]map[string]string{
 				"inference/model-0": {{"gateway_instance_id": "coord-b", "requests_running": "20"}},
 			})
