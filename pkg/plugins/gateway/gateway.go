@@ -1017,42 +1017,11 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return "", err
 	}
 
-	// narrowToInflightCapacity drops the pods already at the per-replica cap and reports the
-	// existing overload error when none is left. For non-exclusive strategies it runs on the
-	// candidate set, so the read it performs is the bounded one; it is the first reader of the
-	// per-decision snapshot, so whatever the candidate stage kept is what the rest of the
-	// decision reuses. Filtering before SelectCandidates reads every ready pod and leaves the
-	// stage nothing to save (#3463). For exclusive strategies the set is the full ready set,
-	// and the filter runs before engine validation so a request that will be rejected for
-	// saturation is not failed on a pod it never uses.
-	narrowToInflightCapacity := func(scope string) error {
-		limit := replicaInflightLimit(routeCtx)
-		if limit <= 0 {
-			return nil
-		}
-		considered := len(readyPods)
-		readyPods = s.filterSaturatedReplicaInflight(routeCtx, readyPods, limit)
-		if len(readyPods) == 0 {
-			// Every pod considered is at the cap. A full-fleet fallback would read every ready
-			// pod at the load where Redis is hottest, and a second K-pod sample would miss this
-			// decision's snapshot, so keep the existing 429 (#3463). The span records how many
-			// pods were considered, and the counter records which set that was, so a sampled-set
-			// rejection can be told from a fleet-wide one after the fact: ready_pods, set at the
-			// top of this function, is the fleet.
-			recordInflightRejection(routeCtx.Model, scope)
-			if routeCtx.Span != nil {
-				routeCtx.Span.SetAttributes(
-					attribute.Int("inflight_cap", int(limit)),
-					attribute.Int("inflight_considered_pods", considered),
-				)
-			}
-			return errReplicaInflightExceeded
-		}
-		return nil
-	}
-
 	if isExclusive {
-		if err := narrowToInflightCapacity(inflightScopeFleet); err != nil {
+		// For exclusive strategies the set is the full ready set, and the filter runs before
+		// engine validation so a request that will be rejected for saturation is not failed on
+		// a pod it never uses.
+		if readyPods, err = s.narrowToInflightCapacity(routeCtx, readyPods, inflightScopeFleet); err != nil {
 			return "", err
 		}
 		if isPD {
@@ -1080,7 +1049,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		if !filterBeforeCandidates {
 			readyPods = s.excludeBlacklistedCandidates(routeCtx, router, allReady, readyPods)
 		}
-		if err := narrowToInflightCapacity(scope); err != nil {
+		if readyPods, err = s.narrowToInflightCapacity(routeCtx, readyPods, scope); err != nil {
 			return "", err
 		}
 		// Apply the load-imbalance hotspot gate ahead of whichever strategy actually routes
