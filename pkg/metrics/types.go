@@ -363,3 +363,27 @@ func NumericValue(metricValue MetricValue) (value float64, ok bool) {
 	}
 	return value, true
 }
+
+// RawMetricFamiliesForEngine returns every raw family name an engine of this type
+// may expose, deduplicated and sorted. A caller that keeps only some of a scrape's
+// families - the gateway cache scrape does exactly that - can build its keep-set
+// from here instead of from EngineMetricsNameMapping, so a family that exists only
+// under an alias cannot be filtered out before the name resolver sees it.
+func RawMetricFamiliesForEngine(engineType string) []string {
+	seen := make(map[string]struct{})
+	for _, metric := range Metrics {
+		names, mapped := metric.RawMetricNamesForEngine(engineType)
+		if !mapped {
+			continue
+		}
+		for _, name := range names {
+			seen[name] = struct{}{}
+		}
+	}
+	families := make([]string, 0, len(seen))
+	for name := range seen {
+		families = append(families, name)
+	}
+	sort.Strings(families)
+	return families
+}
