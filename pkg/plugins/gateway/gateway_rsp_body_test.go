@@ -179,6 +179,11 @@ func TestIsLanguageRequest(t *testing.T) {
 			want:        false,
 		},
 		{
+			name:        "audio generate is not language",
+			requestPath: "/v1/audio/generate",
+			want:        false,
+		},
+		{
 			name:        "empty path is language",
 			requestPath: "",
 			want:        true,
@@ -1471,6 +1476,41 @@ func TestHandleResponseBody_AudioSpeechPassesThrough(t *testing.T) {
 		}
 
 		resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "tts-model", false, false)
+
+		assert.Equal(t, i == len(chunks)-1, complete)
+		assert.NotNil(t, resp)
+		assert.Equal(t, TokenUsage{}, usage, "binary audio carries no token usage")
+		assert.Nil(t, resp.GetResponseBody().GetResponse().GetBodyMutation(), "audio chunks must pass through unchanged")
+	}
+}
+
+// TestHandleResponseBody_AudioGeneratePassesThrough: /v1/audio/generate returns binary audio,
+// often in several chunks, so the gateway must forward every chunk byte for byte, parse no tokens
+// from it and meter no usage, while still completing on the last chunk.
+func TestHandleResponseBody_AudioGeneratePassesThrough(t *testing.T) {
+	server := &Server{}
+
+	requestID := "test-req-generate-" + time.Now().Format("150405.000")
+	routerCtx := types.NewRoutingContext(context.Background(), "random", "stable-audio", "", requestID, "test-user")
+	routerCtx.ReqPath = PathAudioGenerate
+	routerCtx.RequestTime = time.Now()
+
+	chunks := [][]byte{
+		{0x52, 0x49, 0x46, 0x46, 0x24, 0x08}, // the start of a WAV file, not text
+		{0x00, 0x01, 0xfe, 0xff},             // a second audio chunk
+	}
+
+	for i, chunk := range chunks {
+		req := &extProcPb.ProcessingRequest{
+			Request: &extProcPb.ProcessingRequest_ResponseBody{
+				ResponseBody: &extProcPb.HttpBody{
+					Body:        chunk,
+					EndOfStream: i == len(chunks)-1,
+				},
+			},
+		}
+
+		resp, complete, usage := server.HandleResponseBody(context.Background(), routerCtx, requestID, req, utils.User{Name: "test-user"}, 0, "stable-audio", false, false)
 
 		assert.Equal(t, i == len(chunks)-1, complete)
 		assert.NotNil(t, resp)

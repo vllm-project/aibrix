@@ -19,6 +19,7 @@ package cache
 import (
 	"context"
 	"errors"
+	"math"
 	"net"
 	"strconv"
 	"sync/atomic"
@@ -178,8 +179,13 @@ return newVal
 // currently-live gateways (see readPodRunningRequests) -- unlike a single shared
 // integer INCR/DECR'd by every gateway, a dead gateway's field can be identified and
 // excluded independently of whatever other gateways keep doing to the same key.
+// runningRequestsKeyForPodKey returns the Redis key for podKey's running-requests hash.
+func runningRequestsKeyForPodKey(podKey string) string {
+	return runningRequestsKeyPrefix + ":" + podKey
+}
+
 func runningRequestsKey(namespace, name string) string {
-	return runningRequestsKeyPrefix + ":" + utils.GeneratePodKey(namespace, name)
+	return runningRequestsKeyForPodKey(utils.GeneratePodKey(namespace, name))
 }
 
 // incrPodRunningRequests applies this gateway's +1 to pod (namespace, name)'s
@@ -383,7 +389,7 @@ func admitScriptDidNotRun(err error) bool {
 }
 
 // admitRunningRequestsClient derives the client admitRunningRequest uses from the shared one,
-// with go-redis' own retry loop switched off (as asyncJobStoreClient does for its store). The
+// with context deadlines enabled and go-redis' own retry loop switched off. The
 // admit script is not idempotent: a retry after an attempt that ran but lost its reply applies a
 // second +1, and the error that comes back describes only the last attempt. MaxRetries is -1
 // because go-redis reads 0 as "use the default".
@@ -393,7 +399,7 @@ func admitRunningRequestsClient(client *redis.Client) *redis.Client {
 	}
 	options := *client.Options()
 	options.MaxRetries = -1
-	return redis.NewClient(&options)
+	return utils.NewRedisClientWithContextTimeout(&options)
 }
 
 // heartbeatRunningRequestsLiveness refreshes this gateway instance's entry in
@@ -771,6 +777,14 @@ func (c *Store) prunableGatewaysCutoffMillis() string {
 // here. Callers must re-check candidates against a much longer window before
 // deleting anything -- see flushPendingRunningRequestsPrunes.
 func sumLiveFields(fields map[string]string, live map[string]struct{}) (total int64, excluded []string) {
+	total, _, excluded = sumLiveFieldsAndOther(fields, live)
+	return total, excluded
+}
+
+// sumLiveFieldsAndOther sums live gateway fields in one pass, returning both the total live count
+// (matching sumLiveFields) and the saturated sum of positive live counts from gateways other than
+// runningRequestsGatewayInstanceID (matching sumOtherLiveRunning).
+func sumLiveFieldsAndOther(fields map[string]string, live map[string]struct{}) (total, otherPositive int64, excluded []string) {
 	for gatewayID, valStr := range fields {
 		if _, ok := live[gatewayID]; !ok {
 			excluded = append(excluded, gatewayID)
@@ -784,8 +798,15 @@ func sumLiveFields(fields map[string]string, live map[string]struct{}) (total in
 			n = 0
 		}
 		total += n
+		if gatewayID != runningRequestsGatewayInstanceID && n > 0 {
+			if n > math.MaxInt64-otherPositive {
+				otherPositive = math.MaxInt64
+			} else {
+				otherPositive += n
+			}
+		}
 	}
-	return total, excluded
+	return total, otherPositive, excluded
 }
 
 // overlaySelfRunningRequests replaces this gateway's own field in fields (creating it
@@ -921,8 +942,7 @@ func (c *Store) readPodRunningRequests(namespace, name string) (count int64, ok 
 	key := runningRequestsKey(namespace, name)
 	ctx, cancel := context.WithTimeout(context.Background(), runningRequestsReadTimeout)
 	defer cancel()
-	client := c.redisClient
-	pipe := client.Pipeline()
+	pipe := c.readClient().Pipeline()
 	liveCmd := pipe.ZRangeByScore(ctx, runningRequestsGatewaysKey, &redis.ZRangeBy{Min: c.liveGatewaysCutoffMillis(), Max: "+inf"})
 	hashCmd := pipe.HGetAll(ctx, key)
 	if _, err := pipe.Exec(ctx); err != nil {

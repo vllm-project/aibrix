@@ -23,7 +23,8 @@ import (
 	dto "github.com/prometheus/client_model/go"
 )
 
-// Only these gauges describe the independent request/KV pools of DP-attention.
+// Only these gauges describe the independent request/KV pools of DP-attention,
+// and gen_throughput the tokens each of those pools generates per second.
 // Other SGLang metrics can describe replicated work or different memory pools.
 func mergeSGLangDPSeries(families map[string]*dto.MetricFamily) {
 	capacity := families["sglang:max_total_num_tokens"]
@@ -31,6 +32,7 @@ func mergeSGLangDPSeries(families map[string]*dto.MetricFamily) {
 	for _, name := range []string{
 		"sglang:num_running_reqs", "sglang:num_queue_reqs",
 		"sglang:token_usage", "sglang:max_total_num_tokens",
+		"sglang:gen_throughput",
 	} {
 		family := families[name]
 		if family == nil || family.GetType() != dto.MetricType_GAUGE {

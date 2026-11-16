@@ -345,7 +345,7 @@ func (c *Store) readPodsSharedRoutingState(pods []*v1.Pod, withLedger bool) (map
 
 	ctx, cancel := context.WithTimeout(context.Background(), runningRequestsReadTimeout)
 	defer cancel()
-	pipe := c.redisClient.Pipeline()
+	pipe := c.readClient().Pipeline()
 	liveCmd := pipe.ZRangeByScore(ctx, runningRequestsGatewaysKey, &redis.ZRangeBy{Min: c.liveGatewaysCutoffMillis(), Max: "+inf"})
 	podKeys := make([]string, len(valid))
 	redisKeys := make([]string, len(valid))
@@ -361,6 +361,13 @@ func (c *Store) readPodsSharedRoutingState(pods []*v1.Pod, withLedger bool) (map
 		if withLedger {
 			ledgerCmds[i] = pipe.HGetAll(ctx, decodeLedgerKey(podKeys[i]))
 		}
+	}
+	// With the remote running reader on, this read also refreshes its entries, stamped with the
+	// read's start like a sweep batch, from the fields read below.
+	reader := c.remoteRunningReader.Load()
+	var readAt time.Time
+	if reader != nil {
+		readAt = c.snapshotNow()
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		klog.V(4).ErrorS(err, "failed to batch read running-requests counters", "pod_count", len(valid))
@@ -382,13 +389,23 @@ func (c *Store) readPodsSharedRoutingState(pods []*v1.Pod, withLedger bool) (map
 	counts := make(map[string]int64, len(valid))
 	for i, cmd := range hashCmds {
 		fields, err := cmd.Result()
-		if err != nil || len(fields) == 0 {
+		if err != nil {
+			continue
+		}
+		if len(fields) == 0 {
+			if reader != nil {
+				// An empty hash is a read of 0 for the other gateways' share.
+				reader.publish(podKeys[i], 0, readAt)
+			}
 			continue
 		}
 		// See overlaySelfRunningRequests: this gateway's own field must never be
 		// trusted stale just because it already exists in the hash.
 		c.overlaySelfRunningRequests(valid[i].Namespace, valid[i].Name, fields, live)
-		total, excluded := sumLiveFields(fields, live)
+		total, otherPositive, excluded := sumLiveFieldsAndOther(fields, live)
+		if reader != nil {
+			reader.publish(podKeys[i], otherPositive, readAt)
+		}
 		if len(excluded) > 0 {
 			c.enqueueDeadRunningRequestsPrune(redisKeys[i], excluded)
 		}

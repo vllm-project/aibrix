@@ -80,7 +80,7 @@ func TestWorkerStoresRecentMeanOfLatencyHistograms(t *testing.T) {
 	for _, name := range histograms {
 		stored, ok := pod.ModelMetrics.Load(c.getPodModelMetricName(model, RecentMeanMetricName(name)))
 		require.True(t, ok, "%s: the worker must store its recent mean", name)
-		require.InDelta(t, 2.0, stored.GetSimpleValue(), 1e-9,
+		require.InDelta(t, 2.0, stored.Value.GetSimpleValue(), 1e-9,
 			"%s: recent mean, not the lifetime mean %.4f", name, lifetimeSum/lifetimeCount)
 	}
 }

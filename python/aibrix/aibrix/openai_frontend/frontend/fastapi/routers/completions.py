@@ -24,46 +24,34 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import traceback
+from fastapi import APIRouter, Depends
+from fastapi.responses import Response
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
-
+from aibrix.openai_frontend.engine.engine import LLMEngine
+from aibrix.openai_frontend.frontend.fastapi.errors import get_engine
+from aibrix.openai_frontend.frontend.fastapi.responses import ClosingStreamingResponse
 from aibrix.openai_frontend.schemas.openai import (
     CreateCompletionRequest,
     CreateCompletionResponse,
 )
-from aibrix.openai_frontend.utils.utils import ClientError, ServerError, StatusCode
 
 router = APIRouter()
 
 
 @router.post(
-    "/v1/completions", response_model=CreateCompletionResponse, tags=["Completions"]
+    "/v1/completions",
+    response_model=CreateCompletionResponse,
+    response_model_exclude_unset=True,
+    tags=["Completions"],
 )
 async def create_completion(
-    request: CreateCompletionRequest, raw_request: Request
-) -> CreateCompletionResponse | StreamingResponse:
+    request: CreateCompletionRequest,
+    engine: LLMEngine = Depends(get_engine),
+) -> CreateCompletionResponse | Response:
     """
     Creates a completion for the provided prompt and parameters.
     """
-    if not raw_request.app.engine:
-        raise HTTPException(
-            status_code=StatusCode.SERVER_ERROR, detail="No attached inference engine"
-        )
-
-    try:
-        response = await raw_request.app.engine.completion(request)
-        if request.stream:
-            return StreamingResponse(response, media_type="text/event-stream")
+    response = await engine.completion(request)
+    if isinstance(response, (CreateCompletionResponse, Response)):
         return response
-    except ClientError as e:
-        raise HTTPException(status_code=StatusCode.CLIENT_ERROR, detail=f"{e}")
-    except NotImplementedError as e:
-        raise HTTPException(status_code=StatusCode.NOT_FOUND, detail=f"{e}")
-    except ServerError as e:
-        print(traceback.format_exc())
-        raise HTTPException(status_code=StatusCode.SERVER_ERROR, detail=f"{e}")
-    except Exception as e:
-        print(traceback.format_exc())
-        raise HTTPException(status_code=StatusCode.SERVER_ERROR, detail=f"{e}")
+    return ClosingStreamingResponse(response, media_type="text/event-stream")

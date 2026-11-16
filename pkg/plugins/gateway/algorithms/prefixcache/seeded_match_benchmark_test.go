@@ -88,10 +88,10 @@ func BenchmarkPrefixCandidateScores(b *testing.B) {
 			}
 			tokens := append([]byte(nil), setup.PrefixTokens()...)
 			setup.Delete()
-			for _, mode := range []string{"seed", "seed-and-score", "full-score"} {
+			for _, mode := range []string{"estimate", "estimate-and-score", "full-score"} {
 				b.Run(fmt.Sprintf("kvSync=%v/N=%d/%s", kvSync, n, mode), func(b *testing.B) {
 					b.ReportAllocs()
-					var candidates [32]*v1.Pod
+					candidates := &utils.PodArray{Pods: all.Pods[:32]}
 					for i := 0; i < b.N; i++ {
 						ctx := newSeededMatchContext(prompt)
 						ctx.SetPrefixTokens(tokens)
@@ -100,11 +100,11 @@ func BenchmarkPrefixCandidateScores(b *testing.B) {
 								b.Fatal(err)
 							}
 						} else {
-							seeds := r.SeedCandidates(ctx, all, 16)
-							if mode == "seed-and-score" {
-								copy(candidates[:16], seeds)
-								copy(candidates[16:], all.Pods[16:32])
-								if _, _, err := r.ScoreAll(ctx, &utils.PodArray{Pods: candidates[:]}); err != nil {
+							if _, _, err := r.CandidateScores(ctx, all); err != nil {
+								b.Fatal(err)
+							}
+							if mode == "estimate-and-score" {
+								if _, _, err := r.ScoreAll(ctx, candidates); err != nil {
 									b.Fatal(err)
 								}
 							}

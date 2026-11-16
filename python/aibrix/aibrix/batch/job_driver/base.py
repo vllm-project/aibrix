@@ -1911,7 +1911,7 @@ class BaseJobDriver:
         request_payload: Optional[Dict[str, Any]] = None,
     ) -> dict[str, Any]:
         response: dict[str, Any] = {
-            "id": uuid.uuid4().hex[:5],
+            "id": uuid.uuid4().hex,
             "error": None,
             "response": None,
             "custom_id": custom_id,
