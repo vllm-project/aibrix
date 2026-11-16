@@ -87,6 +87,15 @@ METRIC_METADATA_BATCH_DRIVER_FAILURE_INJECTION = (
     "metadata.batch.driver.failure_injection"
 )
 
+# Structured batch finalization telemetry family.
+METRIC_METADATA_BATCH_FINALIZE_STAGE_DURATION = "metadata.batch.finalize.stage.duration"
+METRIC_METADATA_BATCH_FINALIZE_STAGE_FIELD = "metadata.batch.finalize.stage.field"
+METRIC_METADATA_BATCH_FINALIZE_STAGE_ITEMS = "metadata.batch.finalize.stage.items"
+METRIC_METADATA_BATCH_FINALIZE_JOB_TOTAL_DURATION = (
+    "metadata.batch.finalize.job.total_duration"
+)
+METRIC_METADATA_BATCH_FINALIZE_JOB_SUMMARY = "metadata.batch.finalize.job.summary"
+
 # Count of runtimes that successfully start, tagged by runtime type.
 METRIC_METADATA_BATCH_RUNTIME_STARTED = "metadata.batch.runtime.started"
 

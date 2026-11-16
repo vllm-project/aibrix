@@ -16,6 +16,7 @@
 
 import json
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -40,6 +41,7 @@ from aibrix.batch.job_entity import (
 from aibrix.batch.storage import adapter as adapter_module
 from aibrix.batch.storage.adapter import BatchStorageAdapter
 from aibrix.metadata.core import JsonProfiler
+from aibrix.metadata.core.metrics import metrics_names
 from aibrix.storage import create_storage
 from aibrix.storage.base import (
     LOCAL_PART_PROVIDER_MARKER,
@@ -312,6 +314,7 @@ async def test_finalize_job_output_data_emits_stage_metrics(mock_storage, monkey
     timers = []
     gauges = []
 
+    monkeypatch.setattr(adapter_module.envs, "BATCH_FINALIZE_TELEMETRY_ENABLED", True)
     monkeypatch.setattr(
         adapter_module,
         "Emitter",
@@ -346,43 +349,54 @@ async def test_finalize_job_output_data_emits_stage_metrics(mock_storage, monkey
         finalized_job = await adapter.finalize_job_output_data(batch_job)
 
     assert finalized_job is batch_job
-    assert any(name == "batch_finalize_stage_duration_ms" for name, _, _ in timers)
-    assert any(name == "batch_finalize_job_total_duration_ms" for name, _, _ in timers)
+    assert any(
+        name == metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_DURATION
+        for name, _, _ in timers
+    )
+    assert any(
+        name == metrics_names.METRIC_METADATA_BATCH_FINALIZE_JOB_TOTAL_DURATION
+        for name, _, _ in timers
+    )
     assert any(
         any(tag.name == "job_id" and tag.value == batch_job.job_id for tag in tags)
         for name, _, tags in timers
-        if name == "batch_finalize_job_total_duration_ms"
+        if name == metrics_names.METRIC_METADATA_BATCH_FINALIZE_JOB_TOTAL_DURATION
     )
     assert any(
         any(tag.name == "stage" and tag.value == "assemble_parts" for tag in tags)
         for name, _, tags in timers
-        if name == "batch_finalize_stage_duration_ms"
+        if name == metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_DURATION
     )
     assert any(
         any(tag.name == "log_map" and tag.value == "stage_duration_ms" for tag in tags)
         for name, _, tags in timers
-        if name == "batch_finalize_stage_duration_ms"
+        if name == metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_DURATION
     )
     assert any(
         any(tag.name == "stage" and tag.value == "total" for tag in tags)
         for name, _, tags in timers
-        if name == "batch_finalize_stage_duration_ms"
+        if name == metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_DURATION
     )
-    assert any(name == "batch_finalize_stage_items" for name, _, _ in gauges)
+    assert any(
+        name == metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_ITEMS
+        for name, _, _ in gauges
+    )
     assert any(
         any(tag.name == "log_nested_map" and tag.value == "stage_items" for tag in tags)
         for name, _, tags in gauges
-        if name == "batch_finalize_stage_items"
+        if name == metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_ITEMS
     )
     assert any(
         any(
             tag.name == "log_nested_map" and tag.value == "stage_fields" for tag in tags
         )
         for name, _, tags in gauges
-        if name == "batch_finalize_stage_field"
+        if name == metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_FIELD
     )
     summary_gauges = [
-        tags for name, _, tags in gauges if name == "batch_finalize_job_summary"
+        tags
+        for name, _, tags in gauges
+        if name == metrics_names.METRIC_METADATA_BATCH_FINALIZE_JOB_SUMMARY
     ]
     assert len(summary_gauges) == 1
     assert any(tag.name == "flush" and tag.value == "true" for tag in summary_gauges[0])
@@ -390,6 +404,44 @@ async def test_finalize_job_output_data_emits_stage_metrics(mock_storage, monkey
         tag.name == "event" and tag.value == "Batch finalize telemetry summary"
         for tag in summary_gauges[0]
     )
+
+
+def test_finalize_telemetry_env_gate_suppresses_emits(mock_storage, monkeypatch):
+    adapter = BatchStorageAdapter(mock_storage)
+    timers = []
+    gauges = []
+
+    monkeypatch.setattr(adapter_module.envs, "BATCH_FINALIZE_TELEMETRY_ENABLED", False)
+    monkeypatch.setattr(
+        adapter_module,
+        "Emitter",
+        SimpleNamespace(
+            timer=lambda name, value, *tags: timers.append((name, value, tags)),
+            gauge=lambda name, value, *tags: gauges.append((name, value, tags)),
+        ),
+        raising=False,
+    )
+
+    adapter._emit_finalize_stage_duration(
+        "job-finalize-disabled",
+        "list_metastore_keys",
+        time.perf_counter(),
+        keys=1,
+    )
+    adapter._emit_finalize_stage_items(
+        "job-finalize-disabled",
+        "read_completed_parts",
+        "requests",
+        1,
+    )
+    adapter._emit_finalize_job_total_duration(
+        "job-finalize-disabled",
+        time.perf_counter(),
+        failed_finalize=False,
+    )
+
+    assert timers == []
+    assert gauges == []
 
 
 @pytest.mark.asyncio

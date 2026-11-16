@@ -39,7 +39,10 @@ def _parse_int_or_none(value: Optional[str]) -> Optional[int]:
 def _parse_float(value: Optional[str], default: float) -> float:
     if value is None:
         return default
-    return float(value)
+    try:
+        return float(value)
+    except ValueError:
+        return default
 
 
 # Model Download Related Config
@@ -171,8 +174,9 @@ METRICS_DOGSTATSD_ADDR = os.getenv("METRICS_DOGSTATSD_ADDR", "")
 # (`tsd.storage.max_tags >= 8`) for AIBrix metadata telemetry.
 METRICS_OPENTSDB_ADDR = os.getenv("METRICS_OPENTSDB_ADDR", "")
 METRICS_OPENTSDB_PREFIX = os.getenv("METRICS_OPENTSDB_PREFIX", "")
-METRICS_OPENTSDB_TIMEOUT_SECONDS = float(
-    os.getenv("METRICS_OPENTSDB_TIMEOUT_SECONDS", "0.2")
+METRICS_OPENTSDB_TIMEOUT_SECONDS = _parse_float(
+    os.getenv("METRICS_OPENTSDB_TIMEOUT_SECONDS"),
+    0.2,
 )
 METRICS_DOGSTATSD_TAGS = [
     item
@@ -187,10 +191,17 @@ METRICS_LOG_EXCLUDE = [
     item for item in (_parse_list_str(os.getenv("METRICS_LOG_EXCLUDE")) or []) if item
 ]
 
-# Metrics transformation config
+# HTTP metrics collector transformation config.
+#
+# When enabled, HTTPCollector applies the configured standardization rules to
+# scraped Prometheus text before exposing metrics. When disabled, HTTPCollector
+# forces raw passthrough and returns scraped metrics unchanged.
 METRICS_ENABLE_TRANSFORMATION = _is_true(
     os.getenv("METRICS_ENABLE_TRANSFORMATION", "1")
 )
+# Explicit raw passthrough bypasses transformation even when transformation is
+# globally enabled. This is useful when scraping endpoints that already expose
+# the desired metric names/labels or when debugging transformation rules.
 METRICS_RAW_PASSTHROUGH_MODE = _is_true(os.getenv("METRICS_RAW_PASSTHROUGH_MODE", "0"))
 
 # Inference Engine Config
@@ -276,4 +287,9 @@ BATCH_DISPATCH_TELEMETRY_INTERVAL_SECONDS = max(
         5.0,
     ),
     0.0,
+)
+
+# Batch finalization telemetry config.
+BATCH_FINALIZE_TELEMETRY_ENABLED = _is_true(
+    os.getenv("BATCH_FINALIZE_TELEMETRY_ENABLED", "0")
 )

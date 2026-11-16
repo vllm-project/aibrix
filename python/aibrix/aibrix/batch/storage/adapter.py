@@ -36,7 +36,7 @@ from aibrix.batch.storage.batch_metastore import (
 )
 from aibrix.logger import init_logger
 from aibrix.metadata.core import JsonProfiler
-from aibrix.metadata.core.metrics import Emitter, T
+from aibrix.metadata.core.metrics import Emitter, T, metrics_names
 from aibrix.storage.base import (
     LOCAL_PART_PROVIDER_MARKER,
     LOCAL_PART_PROVIDER_MARKER_VALUE,
@@ -81,6 +81,8 @@ class BatchStorageAdapter:
         start: float,
         **fields: int | float | str | bool | None,
     ) -> None:
+        if not envs.BATCH_FINALIZE_TELEMETRY_ENABLED:
+            return
         duration_ms = (time.perf_counter() - start) * 1000.0
         base_tags = (
             T("event", BATCH_FINALIZE_TELEMETRY_EVENT),
@@ -90,7 +92,7 @@ class BatchStorageAdapter:
             T("log_group", job_id),
         )
         Emitter.timer(
-            "batch_finalize_stage_duration_ms",
+            metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_DURATION,
             duration_ms,
             *base_tags,
             T("log_map", "stage_duration_ms"),
@@ -101,7 +103,7 @@ class BatchStorageAdapter:
             if numeric_value is None:
                 continue
             Emitter.gauge(
-                "batch_finalize_stage_field",
+                metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_FIELD,
                 numeric_value,
                 *base_tags,
                 T("log_nested_map", "stage_fields"),
@@ -117,8 +119,10 @@ class BatchStorageAdapter:
         item_name: str,
         value: int,
     ) -> None:
+        if not envs.BATCH_FINALIZE_TELEMETRY_ENABLED:
+            return
         Emitter.gauge(
-            "batch_finalize_stage_items",
+            metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_ITEMS,
             float(value),
             T("event", BATCH_FINALIZE_TELEMETRY_EVENT),
             T("job_id", job_id),
@@ -138,9 +142,11 @@ class BatchStorageAdapter:
         *,
         failed_finalize: bool,
     ) -> None:
+        if not envs.BATCH_FINALIZE_TELEMETRY_ENABLED:
+            return
         failed_finalize_tag = T("failed_finalize", str(failed_finalize).lower())
         Emitter.timer(
-            "batch_finalize_job_total_duration_ms",
+            metrics_names.METRIC_METADATA_BATCH_FINALIZE_JOB_TOTAL_DURATION,
             (time.perf_counter() - start) * 1000.0,
             T("event", BATCH_FINALIZE_TELEMETRY_EVENT),
             T("job_id", job_id),
@@ -150,7 +156,7 @@ class BatchStorageAdapter:
             T("log_field", "job_total_duration_ms"),
         )
         Emitter.gauge(
-            "batch_finalize_job_summary",
+            metrics_names.METRIC_METADATA_BATCH_FINALIZE_JOB_SUMMARY,
             1.0,
             T("event", BATCH_FINALIZE_TELEMETRY_EVENT),
             T("job_id", job_id),

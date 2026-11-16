@@ -123,16 +123,23 @@ def test_global_emitter_isolates_single_sink_failures_with_rate_limited_logs(
 
 
 def test_log_sink_logs_included_metric(caplog):
-    sink = LogSink(include_patterns=("batch_finalize_*",), exclude_patterns=())
+    sink = LogSink(include_patterns=("metadata.batch.finalize.*",), exclude_patterns=())
 
     with caplog.at_level(logging.INFO):
-        sink.timer("batch_finalize_stage_duration_ms", 12.5, T("stage", "total"))
+        sink.timer(
+            metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_DURATION,
+            12.5,
+            T("stage", "total"),
+        )
 
     assert len(caplog.records) == 1
     payload = json.loads(caplog.records[0].message)
     assert payload["event"] == "Metric sink sample"
     assert payload["metric_type"] == "timer"
-    assert payload["metric_name"] == "batch_finalize_stage_duration_ms"
+    assert (
+        payload["metric_name"]
+        == metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_DURATION
+    )
     assert payload["metric_value"] == 12.5
     assert payload["metric_tags"] == {"stage": "total"}
 
@@ -230,7 +237,7 @@ def test_log_sink_applies_flush_defaults(caplog):
 
 
 def test_log_sink_aggregates_batch_finalize_numeric_metrics_once(caplog):
-    sink = LogSink(include_patterns=("batch_finalize_*",))
+    sink = LogSink(include_patterns=("metadata.batch.finalize.*",))
     base_tags = (
         T("event", "Batch finalize telemetry summary"),
         T("job_id", "job-1"),
@@ -240,7 +247,7 @@ def test_log_sink_aggregates_batch_finalize_numeric_metrics_once(caplog):
 
     with caplog.at_level(logging.INFO):
         sink.timer(
-            "batch_finalize_stage_duration_ms",
+            metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_DURATION,
             12.5,
             *base_tags,
             T("stage", "list_metastore_keys"),
@@ -248,7 +255,7 @@ def test_log_sink_aggregates_batch_finalize_numeric_metrics_once(caplog):
             T("log_key", "list_metastore_keys"),
         )
         sink.gauge(
-            "batch_finalize_stage_items",
+            metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_ITEMS,
             10.0,
             *base_tags,
             T("stage", "list_metastore_keys"),
@@ -258,7 +265,7 @@ def test_log_sink_aggregates_batch_finalize_numeric_metrics_once(caplog):
             T("log_inner", "keys"),
         )
         sink.gauge(
-            "batch_finalize_stage_field",
+            metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_FIELD,
             2.0,
             *base_tags,
             T("stage", "assemble_parts"),
@@ -268,14 +275,14 @@ def test_log_sink_aggregates_batch_finalize_numeric_metrics_once(caplog):
             T("log_inner", "output_parts"),
         )
         sink.timer(
-            "batch_finalize_job_total_duration_ms",
+            metrics_names.METRIC_METADATA_BATCH_FINALIZE_JOB_TOTAL_DURATION,
             20.0,
             *base_tags,
             T("failed_finalize", "false"),
             T("log_field", "job_total_duration_ms"),
         )
         sink.gauge(
-            "batch_finalize_job_summary",
+            metrics_names.METRIC_METADATA_BATCH_FINALIZE_JOB_SUMMARY,
             1.0,
             *base_tags,
             T("failed_finalize", "false"),
@@ -286,7 +293,10 @@ def test_log_sink_aggregates_batch_finalize_numeric_metrics_once(caplog):
     assert len(caplog.records) == 1
     payload = json.loads(caplog.records[0].message)
     assert payload["event"] == "Batch finalize telemetry summary"
-    assert payload["metric_name"] == "batch_finalize_job_summary"
+    assert (
+        payload["metric_name"]
+        == metrics_names.METRIC_METADATA_BATCH_FINALIZE_JOB_SUMMARY
+    )
     assert payload["job_id"] == "job-1"
     assert payload["failed_finalize"] == "false"
     assert payload["stage_duration_ms"] == {
@@ -301,13 +311,52 @@ def test_log_sink_aggregates_batch_finalize_numeric_metrics_once(caplog):
     assert payload["job_total_duration_ms"] == 20.0
 
 
+def test_log_sink_accumulates_repeated_batch_finalize_pages(caplog):
+    sink = LogSink(include_patterns=("metadata.batch.finalize.*",))
+    base_tags = (
+        T("event", "Batch finalize telemetry summary"),
+        T("job_id", "job-1"),
+        T("log_context", "job_id"),
+        T("log_group", "job-1"),
+    )
+
+    with caplog.at_level(logging.INFO):
+        for value in (1000.0, 750.0):
+            sink.gauge(
+                metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_ITEMS,
+                value,
+                *base_tags,
+                T("stage", "read_completed_parts"),
+                T("item", "requests"),
+                T("log_nested_map", "stage_items"),
+                T("log_outer", "read_completed_parts"),
+                T("log_inner", "requests"),
+            )
+        sink.gauge(
+            metrics_names.METRIC_METADATA_BATCH_FINALIZE_JOB_SUMMARY,
+            1.0,
+            *base_tags,
+            T("failed_finalize", "false"),
+            T("log_context", "job_id,failed_finalize"),
+            T("flush", "true"),
+        )
+
+    payload = json.loads(caplog.records[0].message)
+    assert payload["stage_items"] == {
+        "read_completed_parts": {"requests": 1750.0},
+    }
+
+
 def test_log_sink_bounds_pending_aggregations(caplog):
-    sink = LogSink(include_patterns=("batch_finalize_*",), max_pending_events=2)
+    sink = LogSink(
+        include_patterns=("metadata.batch.finalize.*",),
+        max_pending_events=2,
+    )
 
     with caplog.at_level(logging.WARNING):
         for job_id in ("job-1", "job-2", "job-3"):
             sink.timer(
-                "batch_finalize_stage_duration_ms",
+                metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_DURATION,
                 12.5,
                 T("event", "Batch finalize telemetry summary"),
                 T("job_id", job_id),
@@ -544,12 +593,16 @@ def test_setup_metrics_routes_empty_json_summary_defaults_through_log_sink(caplo
 
 def test_log_sink_exclude_overrides_include(caplog):
     sink = LogSink(
-        include_patterns=("batch_finalize_*",),
-        exclude_patterns=("batch_finalize_stage_items",),
+        include_patterns=("metadata.batch.finalize.*",),
+        exclude_patterns=(metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_ITEMS,),
     )
 
     with caplog.at_level(logging.INFO):
-        sink.gauge("batch_finalize_stage_items", 1000.0, T("stage", "delete"))
+        sink.gauge(
+            metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_ITEMS,
+            1000.0,
+            T("stage", "delete"),
+        )
 
     assert caplog.records == []
 

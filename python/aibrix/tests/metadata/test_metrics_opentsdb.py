@@ -20,6 +20,7 @@ import pytest
 from aibrix.metadata.core.metrics import (
     MetricsConfig,
     T,
+    metrics_names,
     setup_metrics,
     shutdown_metrics,
 )
@@ -161,7 +162,7 @@ def test_opentsdb_sink_formats_telnet_put_line():
             ),
         ),
         (
-            "batch_finalize_stage_field",
+            metrics_names.METRIC_METADATA_BATCH_FINALIZE_STAGE_FIELD,
             (
                 T("event", "Batch finalize telemetry summary"),
                 T("job_id", "job-1"),

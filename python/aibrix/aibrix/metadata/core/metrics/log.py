@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections import OrderedDict
 from fnmatch import fnmatchcase
 from typing import Any, Iterable
@@ -51,6 +52,7 @@ class LogSink(Sink):
             tuple[str, tuple[tuple[str, str | bool | None], ...]],
             dict[str, Any],
         ] = OrderedDict()
+        self._pending_lock = threading.Lock()
 
     def counter(self, name: str, value: float, *tags: Tag) -> None:
         self._log_metric("counter", name, value, *tags)
@@ -77,14 +79,16 @@ class LogSink(Sink):
             return
         tags_dict = self._tag_dict(tags)
         if tags_dict.get("flush") == "true" and "event" in tags_dict:
-            if self._has_aggregate_field(tags_dict):
-                self._record_pending_metric(metric_type, name, value, tags_dict)
             event = tags_dict["event"]
-            payload = self._pop_pending_payload(event, name, tags_dict)
+            with self._pending_lock:
+                if self._has_aggregate_field(tags_dict):
+                    self._record_pending_metric(metric_type, name, value, tags_dict)
+                payload = self._pop_pending_payload(event, name, tags_dict)
             logger.info(event, **payload)  # type: ignore[call-arg]
             return
         if "event" in tags_dict:
-            self._record_pending_metric(metric_type, name, value, tags_dict)
+            with self._pending_lock:
+                self._record_pending_metric(metric_type, name, value, tags_dict)
             return
         self._emit_generic_metric(metric_type, name, value, tags_dict)
 
@@ -131,10 +135,11 @@ class LogSink(Sink):
         else:
             self._pending.move_to_end(group_key)
         if "log_nested_map" in tags and "log_outer" in tags and "log_inner" in tags:
-            payload.setdefault(tags["log_nested_map"], {}).setdefault(
+            nested_map = payload.setdefault(tags["log_nested_map"], {}).setdefault(
                 tags["log_outer"],
                 {},
-            )[tags["log_inner"]] = value
+            )
+            self._merge_aggregate_value(nested_map, tags["log_inner"], value)
         elif "log_list" in tags and "log_index" in tags:
             log_list = payload.setdefault(tags["log_list"], [])
             if not isinstance(log_list, list):
@@ -149,7 +154,11 @@ class LogSink(Sink):
                 log_list.append(0)
             log_list[index] = value
         elif "log_map" in tags and "log_key" in tags:
-            payload.setdefault(tags["log_map"], {})[tags["log_key"]] = value
+            self._merge_aggregate_value(
+                payload.setdefault(tags["log_map"], {}),
+                tags["log_key"],
+                value,
+            )
         elif "log_field" in tags:
             payload[tags["log_field"]] = value
         else:
@@ -251,6 +260,18 @@ class LogSink(Sink):
             payload.setdefault(field, None)
         for field in self._control_tag_set(tags, "log_default_map"):
             payload.setdefault(field, {})
+
+    def _merge_aggregate_value(
+        self,
+        target: dict[str, Any],
+        key: str,
+        value: float,
+    ) -> None:
+        previous = target.get(key)
+        if isinstance(previous, (int, float)):
+            target[key] = previous + value
+            return
+        target[key] = value
 
     def _should_log(self, name: str) -> bool:
         if not self._include_patterns:
