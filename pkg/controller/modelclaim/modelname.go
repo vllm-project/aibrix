@@ -44,37 +44,11 @@ func (r *ModelClaimReconciler) waitsForModelName(
 	if holder == nil {
 		return false
 	}
-	r.waitForModelName(pm, fmt.Sprintf("model name %s is already used by ModelClaim %s", servedModelName(pm), holder.Name))
-	return true
-}
-
-// waitsForEngineOfModelName reports whether pm waits to be placed because a
-// candidate Pod still runs an engine under its model name for another claim.
-// No claim in the namespace keeps the name by then, so that claim has gone,
-// and its engine is most likely stopping. A Pod runs one engine per model name,
-// so the runtime would refuse to start pm's engine there. The claim waits for
-// the engine to go, as it waits for a claim that keeps the name.
-func (r *ModelClaimReconciler) waitsForEngineOfModelName(
-	pm *modelv1alpha1.ModelClaim,
-	candidates []corev1.Pod,
-	snapshots map[string]*RuntimeSnapshot,
-) bool {
-	if !needsEngine(pm) {
-		return false
+	message := fmt.Sprintf("model name %s is already used by ModelClaim %s", servedModelName(pm), holder.Name)
+	if len(holder.Status.Instances) == 0 {
+		message = fmt.Sprintf("model name %s is reserved for ModelClaim %s, which waits to be placed",
+			servedModelName(pm), holder.Name)
 	}
-	for i := range candidates {
-		if owner := engineOfAnotherClaim(snapshots[candidates[i].Name], pm); owner != nil {
-			r.waitForModelName(pm, fmt.Sprintf("model name %s is still used on pod %s by an engine of ModelClaim %s",
-				servedModelName(pm), candidates[i].Name, owner.Name))
-			return true
-		}
-	}
-	return false
-}
-
-// waitForModelName records on pm's Scheduled condition why it waits for its
-// model name, and raises an Event when that changes.
-func (r *ModelClaimReconciler) waitForModelName(pm *modelv1alpha1.ModelClaim, message string) {
 	if meta.SetStatusCondition(&pm.Status.Conditions, metav1.Condition{
 		Type:    string(modelv1alpha1.ModelClaimConditionTypeScheduled),
 		Status:  metav1.ConditionFalse,
@@ -83,6 +57,7 @@ func (r *ModelClaimReconciler) waitForModelName(pm *modelv1alpha1.ModelClaim, me
 	}) {
 		r.Recorder.Event(pm, corev1.EventTypeWarning, constants.ModelClaimReasonModelNameInUse, message)
 	}
+	return true
 }
 
 // needsEngine reports whether pm has fewer engines than it asks for, counting
@@ -132,9 +107,10 @@ func modelNameHolder(pm *modelv1alpha1.ModelClaim, claims *modelv1alpha1.ModelCl
 
 // comesFirstForModelName orders two claims with the same model name. A claim
 // with an engine that has not failed comes first, so a claim that runs keeps its
-// name. A claim whose engines all failed comes next, so they are replaced, and a
-// claim with no engine comes last. Otherwise the claim created first comes
-// first, and the name breaks a tie, as for placement turns.
+// name. A claim whose engines all failed comes next, so they are replaced, and
+// then a claim with no engine. A claim that could not be placed at all comes
+// last, so it holds the name against no claim that could. Otherwise the claim
+// created first comes first, and the name breaks a tie, as for placement turns.
 func comesFirstForModelName(a, b *modelv1alpha1.ModelClaim) bool {
 	if aStanding, bStanding := modelNameStanding(a), modelNameStanding(b); aStanding != bStanding {
 		return aStanding > bStanding
@@ -146,9 +122,12 @@ func comesFirstForModelName(a, b *modelv1alpha1.ModelClaim) bool {
 }
 
 // modelNameStanding is 2 for a claim with an instance that has not failed, 1
-// for a claim whose instances all failed, and 0 for a claim with none.
+// for a claim whose instances all failed, 0 for a claim with none, and -1 for a
+// claim with none that could not be placed at all.
 func modelNameStanding(pm *modelv1alpha1.ModelClaim) int {
 	switch {
+	case len(pm.Status.Instances) == 0 && !placeable(pm):
+		return -1
 	case len(pm.Status.Instances) == 0:
 		return 0
 	case len(failedInstanceSlots(pm)) < len(pm.Status.Instances):
@@ -156,6 +135,16 @@ func modelNameStanding(pm *modelv1alpha1.ModelClaim) int {
 	default:
 		return 1
 	}
+}
+
+// placeable reports whether an engine could be placed for pm as it is written,
+// with a valid perGPU and engine parallelism.
+func placeable(pm *modelv1alpha1.ModelClaim) bool {
+	if _, err := perGPUBytesOf(pm); err != nil {
+		return false
+	}
+	_, err := modelParallelism(pm)
+	return err == nil
 }
 
 // engineOfAnotherClaim returns the claim that a runtime reading shows pm's
@@ -177,4 +166,36 @@ func engineOfAnotherClaim(snapshot *RuntimeSnapshot, pm *modelv1alpha1.ModelClai
 		}
 	}
 	return nil
+}
+
+// withoutTakenPods leaves out of admissible the Pods that still run an engine
+// under pm's model name for another claim, in any phase, and adds a refusal
+// that names that claim for each. A Pod runs one engine per model name, and the
+// runtime refuses to start pm's engine next to another claim's, even one that
+// failed, until that engine is stopped. pm is placed on another Pod, or is
+// refused as a claim that finds no room is, and tries again later.
+func withoutTakenPods(
+	pm *modelv1alpha1.ModelClaim,
+	admissible []corev1.Pod,
+	refusals []podRefusal,
+	snapshots map[string]*RuntimeSnapshot,
+	ledgers map[string]podLedger,
+) ([]corev1.Pod, []podRefusal) {
+	kept := make([]corev1.Pod, 0, len(admissible))
+	for i := range admissible {
+		pod := &admissible[i]
+		owner := engineOfAnotherClaim(snapshots[pod.Name], pm)
+		if owner == nil {
+			kept = append(kept, *pod)
+			continue
+		}
+		refusals = append(refusals, podRefusal{
+			pod:       pod.Name,
+			roomBytes: ledgers[pod.Name].maximumRoomBytes(),
+			known:     true,
+			couldHold: true,
+			reason:    fmt.Sprintf("%s still runs model %s for ModelClaim %s", pod.Name, servedModelName(pm), owner.Name),
+		})
+	}
+	return kept, refusals
 }

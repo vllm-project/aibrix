@@ -727,11 +727,6 @@ func (r *ModelClaimReconciler) ensureActivated(
 	// contradict the gate they just passed.
 	snapshots := readings.ofPods(ctx, candidates)
 	placementStates := placementStatesFrom(snapshots, candidates, pm.Spec.ArtifactURL, parallelism)
-	// Nor is it placed while an engine of a deleted claim still runs under its
-	// name on one of its Pods.
-	if r.waitsForEngineOfModelName(pm, candidates, snapshots) {
-		return DefaultRequeueDuration, nil
-	}
 	ledgers := podLedgersFrom(claims, listErr, candidates, snapshots, r.podsWithoutWakeReserve(ctx, candidates))
 	r.reservations().takeFrom(ledgers, pm.Namespace, pm.Name, r.now())
 	r.reservations().keepWakesOutOfPreemption(ledgers, claims, pm, r.now())
@@ -754,6 +749,7 @@ func (r *ModelClaimReconciler) ensureActivated(
 		}
 	}
 	admissible, refusals := admissibleCandidates(candidates, ledgers, perGPU.minimumReserveBytes(), instanceGPUCount(pm))
+	admissible, refusals = withoutTakenPods(pm, admissible, refusals, snapshots, ledgers)
 	rankByRoom(placementStates, ledgers)
 
 	// Every pod the claim is on stays out of the ranking, the pods where its

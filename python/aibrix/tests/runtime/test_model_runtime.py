@@ -838,13 +838,29 @@ def test_activate_refuses_a_model_name_another_claim_runs():
         is first
     )
     with pytest.raises(
-        ValueError, match="'m1' already runs on this pod for ModelClaim default/team-a"
+        ValueError, match="'m1' on this pod belongs to ModelClaim default/team-a"
     ):
         agent.activate(model_name="m1", artifact_url="hf://x", claim_ref=TEAM_B)
     assert agent._launcher.launched == ["m1"]
     assert first.claim_ref == TEAM_A
     # A request without a claim UID is not checked, as from an older controller.
     assert agent.activate(model_name="m1", artifact_url="hf://x") is first
+
+
+def test_activate_refuses_the_failed_engine_of_another_claim():
+    agent = make_agent()
+    first = agent.activate(model_name="m1", artifact_url="hf://x", claim_ref=TEAM_A)
+    first.phase = "failed"
+
+    # A failed engine still holds the name on this pod, so another claim is
+    # refused as for one that runs. Only its own claim is told to stop it first.
+    with pytest.raises(
+        ValueError, match="'m1' on this pod belongs to ModelClaim default/team-a"
+    ):
+        agent.activate(model_name="m1", artifact_url="hf://x", claim_ref=TEAM_B)
+    with pytest.raises(RuntimeError, match="has failed on this pod"):
+        agent.activate(model_name="m1", artifact_url="hf://x", claim_ref=TEAM_A)
+    assert agent._launcher.launched == ["m1"]
 
 
 def test_activate_does_not_check_an_engine_without_a_claim():
@@ -1260,8 +1276,7 @@ def test_activate_endpoint_refuses_a_model_name_another_claim_runs():
     assert second.status_code == 400, second.text
     assert second.json()["status"] == "error"
     assert (
-        "already runs on this pod for ModelClaim default/team-a"
-        in second.json()["message"]
+        "on this pod belongs to ModelClaim default/team-a" in second.json()["message"]
     )
 
 

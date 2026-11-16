@@ -1910,11 +1910,12 @@ class ModelRuntime:
             if existing is not None:
                 # An engine runs for one claim. Another claim that asks for the
                 # same model name is refused rather than handed this engine,
-                # which it would share and stop when it goes.
+                # which it would share and stop when it goes. The engine holds
+                # the name on this pod until it is stopped, even after it failed.
                 owner = _claim_uid(existing.claim_ref)
                 if owner and _claim_uid(claim_ref) not in ("", owner):
                     raise ValueError(
-                        f"model {model_name!r} already runs on this pod for ModelClaim "
+                        f"model {model_name!r} on this pod belongs to ModelClaim "
                         f"{_claim_label(existing.claim_ref)}"
                     )
                 if existing.phase == "failed":

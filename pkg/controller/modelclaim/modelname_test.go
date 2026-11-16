@@ -46,6 +46,11 @@ func modelNameClaim(name string, created time.Time) *modelv1alpha1.ModelClaim {
 	return pm
 }
 
+// invalidParallelism is an engineConfig whose tensor parallelism no Pod can run.
+func invalidParallelism() *modelv1alpha1.ModelClaimEngineConfig {
+	return &modelv1alpha1.ModelClaimEngineConfig{Args: map[string]string{"--tensor-parallel-size": "0"}}
+}
+
 // engineFor reports the shared model's engine on the warm Pods as started for
 // owner, as the runtime agent does.
 func engineFor(owner *modelv1alpha1.ModelClaim) map[string]*RuntimeSnapshot {
@@ -105,7 +110,8 @@ func TestTheOlderClaimComesFirstForAModelName(t *testing.T) {
 
 	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, newer.Name))
 	assert.Empty(t, runtime.activateCalls)
-	assert.Equal(t, "model name shared-model is already used by ModelClaim team-b", scheduled(t, r, newer.Name).Message)
+	assert.Equal(t, "model name shared-model is reserved for ModelClaim team-b, which waits to be placed",
+		scheduled(t, r, newer.Name).Message)
 
 	reconcileOnce(t, r, older.Name)
 	require.Len(t, getModel(t, r, older.Name).Status.Instances, 1)
@@ -138,8 +144,12 @@ func TestModelNameHolder(t *testing.T) {
 		pm.Status.Instances = instances
 		return *pm
 	}
-	deleting := claim("deleting", at0758, nil)
+	deleting := claim("deleting", at0759, live)
 	deleting.DeletionTimestamp = &metav1.Time{Time: at0759}
+	invalidPerGPU := claim("older", at0758, nil)
+	invalidPerGPU.Spec.PerGPU = nil
+	invalidEngine := claim("older", at0758, nil)
+	invalidEngine.Spec.EngineConfig = invalidParallelism()
 	renamed := claim("renamed", at0758, nil)
 	other := "other-model"
 	renamed.Spec.ModelName = &other
@@ -168,8 +178,12 @@ func TestModelNameHolder(t *testing.T) {
 			[]modelv1alpha1.ModelClaim{claim("newer", at0759, live)}, "newer"},
 		{"a placed claim beats an older unplaced one", claim("me", at0759, nil),
 			[]modelv1alpha1.ModelClaim{claim("oldest", time.Unix(0, 0), nil), claim("placed", at0759.Add(time.Hour), failed)}, "placed"},
-		{"a claim being deleted keeps its name until it is gone", claim("me", at0759, nil),
+		{"a claim being deleted keeps its name while its engine runs", claim("me", at0758, nil),
 			[]modelv1alpha1.ModelClaim{deleting}, "deleting"},
+		{"an older claim with an invalid perGPU does not keep the name", claim("me", at0759, nil),
+			[]modelv1alpha1.ModelClaim{invalidPerGPU}, ""},
+		{"an older claim with an invalid engineConfig does not keep the name", claim("me", at0759, nil),
+			[]modelv1alpha1.ModelClaim{invalidEngine}, ""},
 		{"another model name does not count", claim("me", at0759, nil),
 			[]modelv1alpha1.ModelClaim{renamed}, ""},
 		{"another namespace does not count", claim("me", at0759, nil),
@@ -287,7 +301,7 @@ func TestDeletingAClaimLeavesAnEngineThatRunsForAnotherClaim(t *testing.T) {
 // The same pair, but the claim deleted is team-a, which the engine runs for.
 // Its engine is stopped, though team-b records an instance there. While the
 // runtime still reports the engine as team-a's, team-b lets go of the Pod and
-// waits for that engine to go.
+// is not started there.
 func TestDeletingTheClaimAnEngineRunsForStopsIt(t *testing.T) {
 	gone := modelNameClaim("team-a", at0758)
 	deleted := metav1.NewTime(time.Now().Add(-deletionDrainGrace))
@@ -320,17 +334,17 @@ func TestDeletingTheClaimAnEngineRunsForStopsIt(t *testing.T) {
 	runtime.snapshots["10.0.0.1"].Models[0].Phase = "stopping"
 	reconcileOnce(t, r, sharer.Name)
 	assert.Empty(t, getModel(t, r, sharer.Name).Status.Instances)
-	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, sharer.Name))
-	assert.Equal(t, "model name shared-model is still used on pod warm-1 by an engine of ModelClaim team-a",
-		scheduled(t, r, sharer.Name).Message)
+	reconcileOnce(t, r, sharer.Name)
+	assert.Contains(t, scheduled(t, r, sharer.Name).Message, "warm-1 still runs model shared-model for ModelClaim team-a")
 	assert.Empty(t, runtime.activateCalls)
 }
 
 // team-b waits for the name that team-a keeps, and team-a is deleted. team-b
-// waits until team-a is gone, and then until team-a's engine has stopped, since
-// the runtime would refuse to start team-b's engine next to it. Then team-b is
-// placed.
-func TestAClaimTakesOverAModelNameOnlyOnceTheOtherClaimIsGone(t *testing.T) {
+// waits until team-a is gone. While the runtime still reports team-a's engine
+// stopping on the only Pod, team-b is refused there, since the runtime would
+// refuse to start team-b's engine next to it. Once the engine is gone, team-b
+// is placed.
+func TestAClaimTakesOverAModelNameOnceTheOtherClaimAndItsEngineAreGone(t *testing.T) {
 	gone := modelNameClaim("team-a", at0758)
 	deleted := metav1.NewTime(time.Now().Add(-deletionDrainGrace))
 	gone.DeletionTimestamp = &deleted
@@ -347,16 +361,67 @@ func TestAClaimTakesOverAModelNameOnlyOnceTheOtherClaimIsGone(t *testing.T) {
 	reconcileOnce(t, r, gone.Name)
 	require.Len(t, runtime.deactivateCalls, 1)
 	runtime.snapshots["10.0.0.1"].Models[0].Phase = "stopping"
-	assert.Equal(t, DefaultRequeueDuration, reconcileFor(t, r, next.Name))
+	reconcileOnce(t, r, next.Name)
 	assert.Empty(t, runtime.activateCalls, "nothing is started next to the engine that stops")
 	assert.Equal(t, modelv1alpha1.ModelClaimPending, getModel(t, r, next.Name).Status.Phase)
-	assert.Equal(t, "model name shared-model is still used on pod warm-1 by an engine of ModelClaim team-a",
-		scheduled(t, r, next.Name).Message)
+	assert.Contains(t, scheduled(t, r, next.Name).Message, "warm-1 still runs model shared-model for ModelClaim team-a")
 
 	runtime.snapshots = nil
+	r.backoff().startOver(types.NamespacedName{Namespace: testNamespace, Name: next.Name})
 	reconcileOnce(t, r, next.Name)
 	assert.Len(t, getModel(t, r, next.Name).Status.Instances, 1)
 	assert.Len(t, runtime.activateCalls, 1)
+}
+
+// A Pod still runs an engine under the name for a claim that is gone, in any
+// phase. The claim is placed on the other Pod of the pool, though the first
+// one has its artifact cached.
+func TestAClaimIsPlacedBesideAPodThatRunsAnotherClaimsEngine(t *testing.T) {
+	for _, phase := range []string{"active", "stopping", "failed"} {
+		t.Run(phase, func(t *testing.T) {
+			pm := modelNameClaim("team-b", at0759)
+			taken := warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning)
+			clean := warmPod("warm-2", "b300-pool-a", true, corev1.PodRunning)
+			clean.Status.PodIP = "10.0.0.2"
+			r, runtime := newReconciler(t, pm, taken, clean)
+			gone := modelNameClaim("gone", at0758)
+			runtime.snapshots = engineFor(gone)
+			runtime.snapshots["10.0.0.1"].Models[0].Phase = phase
+			runtime.snapshots["10.0.0.1"].Models[0].Alive = phase != "failed"
+			runtime.snapshots["10.0.0.1"].CachedArtifacts = []string{pm.Spec.ArtifactURL}
+
+			reconcileOnce(t, r, pm.Name)
+
+			got := getModel(t, r, pm.Name)
+			require.Len(t, got.Status.Instances, 1)
+			assert.Equal(t, "warm-2", got.Status.Instances[0].Pod)
+			assert.Equal(t, []string{"10.0.0.2"}, runtime.activatedOn)
+		})
+	}
+}
+
+// An older claim that could not be placed as it is written does not keep the
+// name from a newer claim that can be.
+func TestAnOlderClaimThatCannotBePlacedDoesNotKeepTheName(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(*modelv1alpha1.ModelClaim)
+	}{
+		{"invalid perGPU", func(pm *modelv1alpha1.ModelClaim) { pm.Spec.PerGPU = nil }},
+		{"invalid engineConfig", func(pm *modelv1alpha1.ModelClaim) { pm.Spec.EngineConfig = invalidParallelism() }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			older := modelNameClaim("team-a", at0758)
+			tt.mutate(older)
+			newer := modelNameClaim("team-b", at0759)
+			r, runtime := newReconciler(t, older, newer, warmPod("warm-1", "b300-pool-a", true, corev1.PodRunning))
+
+			reconcileOnce(t, r, newer.Name)
+
+			assert.Len(t, getModel(t, r, newer.Name).Status.Instances, 1)
+			assert.Len(t, runtime.activateCalls, 1)
+		})
+	}
 }
 
 // The gauges of a model name are labelled by namespace and name. A claim that
