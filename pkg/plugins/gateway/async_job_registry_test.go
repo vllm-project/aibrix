@@ -26,10 +26,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
+	"github.com/alicebob/miniredis/v2/server"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,6 +39,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
+	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -1483,7 +1486,9 @@ func TestAsyncJobStoreClient_DisablesGoRedisInternalRetries(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: server.addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
-	store := newRedisAsyncJobStore(asyncJobStoreClient(client))
+	derived := asyncJobStoreClient(client, nil)
+	t.Cleanup(func() { _ = derived.Close() })
+	store := newRedisAsyncJobStore(derived)
 	_, err := store.get(context.Background(), asyncJobOwnerShared, "job-1")
 	assert.ErrorIs(t, err, errAsyncJobStoreUnavailable)
 
@@ -1496,7 +1501,7 @@ func TestAsyncJobStoreClient_BoundsBlockedNetworkReadByContext(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: server.addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
-	derived := asyncJobStoreClient(client)
+	derived := asyncJobStoreClient(client, nil)
 	t.Cleanup(func() { _ = derived.Close() })
 	store := newRedisAsyncJobStore(derived)
 	store.retry = asyncJobRetryPolicy{maxAttempts: 1, baseBackoff: time.Millisecond, deadline: 80 * time.Millisecond}
@@ -1516,7 +1521,7 @@ func TestAsyncJobStoreClient_KeepsConnectionSettings(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: "10.0.0.9:6379", Password: "s3cret", DB: 3})
 	t.Cleanup(func() { _ = client.Close() })
 
-	derived := asyncJobStoreClient(client)
+	derived := asyncJobStoreClient(client, nil)
 	t.Cleanup(func() { _ = derived.Close() })
 
 	assert.Equal(t, "10.0.0.9:6379", derived.Options().Addr)
@@ -1524,4 +1529,93 @@ func TestAsyncJobStoreClient_KeepsConnectionSettings(t *testing.T) {
 	assert.Equal(t, 3, derived.Options().DB)
 	assert.Equal(t, 0, derived.Options().MaxRetries, "go-redis normalizes a disabled retry loop to zero retries")
 	assert.True(t, derived.Options().ContextTimeoutEnabled)
+}
+
+func TestAsyncJobStoreClient_SentinelSwitchWithReachableOldMaster(t *testing.T) {
+	ctx := context.Background()
+	oldMaster, newMaster, sentinel := miniredis.RunT(t), miniredis.RunT(t), miniredis.RunT(t)
+	oldMaster.RequireAuth("data-password")
+	newMaster.RequireAuth("data-password")
+	sentinel.RequireAuth("sentinel-password")
+	var address atomic.Value
+	address.Store(oldMaster.Addr())
+	require.NoError(t, sentinel.Server().Register("SENTINEL", func(c *server.Peer, _ string, args []string) {
+		if len(args) != 2 || args[1] != "mymaster" {
+			c.WriteError("ERR unknown master")
+			return
+		}
+		switch strings.ToLower(args[0]) {
+		case "get-master-addr-by-name":
+			host, port, _ := net.SplitHostPort(address.Load().(string))
+			c.WriteStrings([]string{host, port})
+		case "sentinels":
+			c.WriteLen(0)
+		default:
+			c.WriteError("ERR unsupported Sentinel command")
+		}
+	}))
+	for key, value := range map[string]string{
+		"REDIS_SENTINEL_ENABLED":     "true",
+		"REDIS_SENTINEL_MASTER_NAME": "mymaster",
+		"REDIS_SENTINEL_ADDRESSES":   sentinel.Addr(),
+		"REDIS_PASSWORD":             "data-password",
+		"REDIS_SENTINEL_USERNAME":    "",
+		"REDIS_SENTINEL_PASSWORD":    "sentinel-password",
+	} {
+		t.Setenv(key, value)
+	}
+	shared, factory := utils.GetRedisClientWithFactory()
+	require.NotNil(t, shared)
+	t.Cleanup(func() { _ = shared.Close() })
+	// The derived client must use the startup snapshot, not current env values.
+	t.Setenv("REDIS_SENTINEL_ENABLED", "false")
+	t.Setenv("REDIS_PASSWORD", "wrong-password")
+	cache.InitForTest()
+	gateway := NewServerWithOptions(shared, nil, nil, ServerOptions{
+		Cache:               &MockCache{},
+		RedisClientFactory:  factory,
+		DisableRateLimiting: true,
+	})
+	t.Cleanup(gateway.Shutdown)
+	store := gateway.asyncJobRegistry().(*redisAsyncJobRegistry).store.(*redisAsyncJobStore)
+	derived := store.client.(*redis.Client)
+	t.Cleanup(func() { _ = derived.Close() })
+	newClient := redis.NewClient(&redis.Options{Addr: newMaster.Addr(), Password: "data-password"})
+	t.Cleanup(func() { _ = newClient.Close() })
+	newStore := newRedisAsyncJobStore(newClient)
+	clock := &fakeClock{now: time.Now()}
+	record := testAsyncJobRecord(clock, asyncJobOwnerShared, "job-1", "old-backend")
+	require.NoError(t, store.put(ctx, record))
+	record.BackendJobID = "new-backend"
+	require.NoError(t, newStore.put(ctx, record))
+	require.NoError(t, newStore.put(ctx, testAsyncJobRecord(clock, asyncJobOwnerShared, "job-2", "new-only")))
+	require.NoError(t, oldMaster.Set("marker", "old"))
+	require.NoError(t, newMaster.Set("marker", "new"))
+	require.Equal(t, "old", shared.Get(ctx, "marker").Val())
+	require.Equal(t, "old", derived.Get(ctx, "marker").Val())
+	sentinelClient := redis.NewClient(&redis.Options{Addr: sentinel.Addr(), Password: "sentinel-password"})
+	t.Cleanup(func() { _ = sentinelClient.Close() })
+	require.Eventually(t, func() bool {
+		counts, err := sentinelClient.PubSubNumSub(ctx, "+switch-master").Result()
+		return err == nil && counts["+switch-master"] == 2
+	}, time.Second, time.Millisecond)
+	oldHost, oldPort, _ := net.SplitHostPort(oldMaster.Addr())
+	newHost, newPort, _ := net.SplitHostPort(newMaster.Addr())
+	address.Store(newMaster.Addr())
+	require.Positive(t, sentinel.Publish("+switch-master",
+		fmt.Sprintf("mymaster %s %s %s %s", oldHost, oldPort, newHost, newPort)))
+	require.Eventually(t, func() bool {
+		return shared.Get(ctx, "marker").Val() == "new"
+	}, 2*time.Second, time.Millisecond)
+	// Keep the old master alive: successful reads must not pin the task store
+	// to its stale pool after Sentinel announces the new master.
+	require.Eventually(t, func() bool {
+		got, err := store.get(ctx, asyncJobOwnerShared, "job-1")
+		return err == nil && got.BackendJobID == "new-backend"
+	}, 2*time.Second, time.Millisecond)
+	got, err := store.get(ctx, asyncJobOwnerShared, "job-2")
+	require.NoError(t, err)
+	require.Equal(t, "new-only", got.BackendJobID)
+	require.Equal(t, 0, derived.Options().MaxRetries)
+	require.True(t, derived.Options().ContextTimeoutEnabled)
 }

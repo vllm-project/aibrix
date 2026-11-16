@@ -46,6 +46,31 @@ between callers in this mode.
 
 ---
 
+## Redis Connections
+
+Direct connections normalize `REDIS_HOST` and `REDIS_PORT`, accepting both bare
+IPv6 hosts (for example, `::1`) and bracketed IPv6 hosts (`[::1]`).
+
+In Sentinel mode, the gateway's shared client, asynchronous job store, and cache
+admission client each have an independent failover client and connection pool.
+All use the startup Redis configuration snapshot, including data and Sentinel
+credentials. A `+switch-master` notification invalidates old-master connections
+in all three pools, even when the old master remains reachable. The asynchronous
+job store keeps go-redis internal retries disabled and context-based timeouts
+enabled.
+The cache admission client also disables internal retries to avoid counting a
+non-idempotent admission script twice, and preserves the shared client's timeout
+policy.
+
+Code embedding the gateway with a Sentinel client must use
+`utils.GetRedisClientWithFactory()` and pass the returned factory through
+`ServerOptions.RedisClientFactory` and `cache.InitOptions.RedisClientFactory`.
+Copying a failover client's `Options()` into `redis.NewClient()` does not preserve
+its pool invalidation callback. Direct clients injected without a factory retain
+the existing options-copy behavior.
+
+---
+
 ## Redis Sync (`statesync/`)
 
 | Variable | Type | Default | Description | Source |

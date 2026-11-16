@@ -18,13 +18,26 @@ package utils
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
 	"k8s.io/klog/v2"
 )
+
+// RedisClientSettings overrides the per-client command retry and timeout policy.
+type RedisClientSettings struct {
+	MaxRetries            int
+	ContextTimeoutEnabled bool
+}
+
+// RedisClientFactory creates independent pools from a Redis configuration
+// snapshot. A nil settings argument preserves the configured defaults.
+type RedisClientFactory func(settings *RedisClientSettings) *redis.Client
 
 func redisAddress(host, port string) string {
 	host = strings.TrimSpace(host)
@@ -75,23 +88,100 @@ func NewRedisClientWithContextTimeout(clientOptions *redis.Options) *redis.Clien
 }
 
 func GetRedisClient() *redis.Client {
-	redisHost := LoadEnv("REDIS_HOST", "localhost")
-	redisPort := LoadEnv("REDIS_PORT", "6379")
-	redisPassword := LoadEnv("REDIS_PASSWORD", "")
-	// Connect to Redis
-	client := redis.NewClient(&redis.Options{
-		Addr:     redisAddress(redisHost, redisPort),
-		Password: redisPassword,
-		DB:       0, // Default DB
-	})
-	pong, err := client.Ping(context.Background()).Result()
+	client, _ := GetRedisClientWithFactory()
+	return client
+}
+
+// GetRedisClientWithFactory returns a connected client and a factory for clients
+// with the same connection settings, including independent Sentinel failover.
+func GetRedisClientWithFactory() (*redis.Client, RedisClientFactory) {
+	factory, err := newRedisClientFactoryFromEnv()
+	if err != nil {
+		klog.Warningf("Invalid Redis configuration: %v", err)
+		return nil, nil
+	}
+	client := factory(nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pong, err := client.Ping(ctx).Result()
 	if err != nil {
 		klog.Warningf("Redis not available: %v", err)
 		if closeErr := client.Close(); closeErr != nil {
 			klog.Warningf("Error closing Redis client: %v", closeErr)
 		}
-		return nil
+		return nil, nil
 	}
 	klog.Infof("Connected to Redis: %s", pong)
-	return client
+	return client, factory
+}
+
+func newRedisClientFromEnv() (*redis.Client, error) {
+	factory, err := newRedisClientFactoryFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	return factory(nil), nil
+}
+
+func newRedisClientFactoryFromEnv() (RedisClientFactory, error) {
+	sentinelEnabled, err := strconv.ParseBool(LoadEnv("REDIS_SENTINEL_ENABLED", "false"))
+	if err != nil {
+		return nil, fmt.Errorf("REDIS_SENTINEL_ENABLED must be a boolean")
+	}
+	redisPassword := LoadEnv("REDIS_PASSWORD", "")
+	if sentinelEnabled {
+		masterName := strings.TrimSpace(LoadEnv("REDIS_SENTINEL_MASTER_NAME", ""))
+		if masterName == "" {
+			return nil, fmt.Errorf("REDIS_SENTINEL_MASTER_NAME is required")
+		}
+		addresses := strings.Split(LoadEnv("REDIS_SENTINEL_ADDRESSES", ""), ",")
+		for i, address := range addresses {
+			address = strings.TrimSpace(address)
+			host, port, err := net.SplitHostPort(address)
+			if err != nil || host == "" {
+				return nil, fmt.Errorf("REDIS_SENTINEL_ADDRESSES must contain host:port addresses")
+			}
+			portNumber, err := strconv.Atoi(port)
+			if err != nil || portNumber < 1 || portNumber > 65535 {
+				return nil, fmt.Errorf("REDIS_SENTINEL_ADDRESSES contains an invalid port")
+			}
+			addresses[i] = address
+		}
+		// All operations go to the discovered master; replicas cannot serve quota writes.
+		options := redis.FailoverOptions{
+			MasterName:            masterName,
+			SentinelAddrs:         addresses,
+			SentinelUsername:      LoadEnv("REDIS_SENTINEL_USERNAME", ""),
+			SentinelPassword:      LoadEnv("REDIS_SENTINEL_PASSWORD", ""),
+			Password:              redisPassword,
+			DB:                    0,
+			ContextTimeoutEnabled: true,
+		}
+		return func(settings *RedisClientSettings) *redis.Client {
+			opt := options
+			opt.SentinelAddrs = append([]string(nil), options.SentinelAddrs...)
+			if settings != nil {
+				opt.MaxRetries = settings.MaxRetries
+				opt.ContextTimeoutEnabled = settings.ContextTimeoutEnabled
+			}
+			// Copying a FailoverClient's Options only shares its Dialer, not
+			// its pool invalidation callback. Each pool needs its own failover.
+			return redis.NewFailoverClient(&opt)
+		}, nil
+	}
+	redisHost := LoadEnv("REDIS_HOST", "localhost")
+	redisPort := LoadEnv("REDIS_PORT", "6379")
+	options := redis.Options{
+		Addr:     redisAddress(redisHost, redisPort),
+		Password: redisPassword,
+		DB:       0,
+	}
+	return func(settings *RedisClientSettings) *redis.Client {
+		opt := options
+		if settings != nil {
+			opt.MaxRetries = settings.MaxRetries
+			opt.ContextTimeoutEnabled = settings.ContextTimeoutEnabled
+		}
+		return redis.NewClient(&opt)
+	}, nil
 }

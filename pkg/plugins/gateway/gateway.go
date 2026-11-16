@@ -106,8 +106,9 @@ type Server struct {
 	// per-replica job cache, so any replica can answer a follow-up for a job
 	// another replica created, with no reconciliation window. Built lazily by
 	// asyncJobRegistry() when not injected.
-	asyncJobs     AsyncJobRegistry
-	asyncJobsOnce sync.Once
+	asyncJobs          AsyncJobRegistry
+	asyncJobsOnce      sync.Once
+	redisClientFactory utils.RedisClientFactory
 	// encodeExecutor runs the encode stage for E+PD rolesets. nil skips it.
 	encodeExecutor *encode.Executor
 	// Broadcast channel for server-initiated shutdown
@@ -280,6 +281,9 @@ const (
 type ServerOptions struct {
 	Cache         cache.Cache
 	RouterManager *routing.RouterManager
+	// RedisClientFactory preserves Sentinel discovery and pool invalidation for
+	// the async job store. Required when RedisClient is a FailoverClient.
+	RedisClientFactory utils.RedisClientFactory
 	// ModelListMode defaults to ModelListKnown.
 	ModelListMode ModelListMode
 	// VerifyModelList returns 503 when a current discovery snapshot cannot be
@@ -361,6 +365,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 	shutdown := make(chan struct{})
 	s := &Server{
 		redisClient:         redisClient,
+		redisClientFactory:  options.RedisClientFactory,
 		ratelimiter:         r,
 		modelRateLimiter:    mr,
 		disableRateLimiting: options.DisableRateLimiting,
@@ -381,7 +386,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		shutdownCh:          shutdown,
 		shutdown:            shutdown,
 	}
-	s.asyncJobs = newAsyncJobRegistryForClient(redisClient, c)
+	s.asyncJobs = newAsyncJobRegistryForClient(redisClient, c, options.RedisClientFactory)
 	if sar, err := routerManager.Lookup(routing.RouterSessionAffinity); err == nil {
 		if rb, ok := sar.(routing.RedisBackedRouter); ok {
 			rb.Start(shutdown, redisClient)

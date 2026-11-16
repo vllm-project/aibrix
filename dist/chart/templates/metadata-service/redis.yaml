@@ -73,6 +73,7 @@ type: Opaque
 data:
   {{- $sharedPass := dig "redis" "password" "" .Values.metadata -}}
   {{- $gatewayPass := dig "dependencies" "redis" "password" "" .Values.gatewayPlugin -}}
+  {{- $sentinelPass := dig "dependencies" "redis" "sentinel" "password" "" .Values.gatewayPlugin -}}
   {{- $gpuPass := dig "dependencies" "redis" "password" "" .Values.gpuOptimizer -}}
   {{- $metaPass := dig "service" "redis" "password" "" .Values.metadata -}}
 
@@ -82,6 +83,9 @@ data:
 
   {{- if or $gatewayPass $sharedPass }}
   gateway-plugin-redis-password: {{ default $sharedPass $gatewayPass | b64enc }}
+  {{- end }}
+  {{- if $sentinelPass }}
+  gateway-plugin-redis-sentinel-password: {{ $sentinelPass | b64enc }}
   {{- end }}
   {{- if or $gpuPass $sharedPass }}
   gpu-optimizer-redis-password: {{ default $sharedPass $gpuPass | b64enc }}

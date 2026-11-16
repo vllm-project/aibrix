@@ -852,11 +852,11 @@ func newRedisAsyncJobStore(client redis.Cmdable) *redisAsyncJobStore {
 // Redis (tests and standalone local development), records live in this process
 // only. Production gateways use the Redis implementation so every replica sees
 // the same records.
-func newAsyncJobRegistryForClient(client *redis.Client, pods podResolver) AsyncJobRegistry {
+func newAsyncJobRegistryForClient(client *redis.Client, pods podResolver, factory utils.RedisClientFactory) AsyncJobRegistry {
 	if client == nil {
 		return newMemoryAsyncJobRegistry(pods)
 	}
-	return newRedisAsyncJobRegistry(asyncJobStoreClient(client), pods)
+	return newRedisAsyncJobRegistry(asyncJobStoreClient(client, factory), pods)
 }
 
 // asyncJobStoreClient derives the client the store uses from the gateway's
@@ -869,7 +869,15 @@ func newAsyncJobRegistryForClient(client *redis.Client, pods podResolver) AsyncJ
 // defaults - only this store owns a retry policy of its own.
 //
 // MaxRetries is -1 rather than 0 because go-redis reads 0 as "use the default".
-func asyncJobStoreClient(client *redis.Client) *redis.Client {
+// Sentinel clients must use the factory so the store's pool has its own
+// failover callback. Copying Options is only suitable for direct clients.
+func asyncJobStoreClient(client *redis.Client, factory utils.RedisClientFactory) *redis.Client {
+	if factory != nil {
+		return factory(&utils.RedisClientSettings{
+			MaxRetries:            -1,
+			ContextTimeoutEnabled: true,
+		})
+	}
 	options := *client.Options()
 	options.MaxRetries = -1
 	options.ContextTimeoutEnabled = true
@@ -882,7 +890,7 @@ func asyncJobStoreClient(client *redis.Client) *redis.Client {
 func (s *Server) asyncJobRegistry() AsyncJobRegistry {
 	s.asyncJobsOnce.Do(func() {
 		if s.asyncJobs == nil {
-			s.asyncJobs = newAsyncJobRegistryForClient(s.redisClient, s.cache)
+			s.asyncJobs = newAsyncJobRegistryForClient(s.redisClient, s.cache, s.redisClientFactory)
 		}
 	})
 	return s.asyncJobs

@@ -1,0 +1,193 @@
+suite: Gateway Redis Sentinel
+templates:
+  - gateway-plugin/deployment.yaml
+tests:
+  - it: should discover the master in both init and gateway containers
+    set: &sentinelConfig
+      metadata.redis.enabled: false
+      metadata.service.redis.host: "unused"
+      gpuOptimizer.dependencies.redis.host: "unused"
+      gatewayPlugin.dependencies.redis.host: ""
+      gatewayPlugin.dependencies.redis.sentinel.enabled: true
+      gatewayPlugin.dependencies.redis.sentinel.masterName: "mymaster"
+      gatewayPlugin.dependencies.redis.sentinel.addresses:
+        - "redis-0.redis-headless:26379"
+        - "redis-1.redis-headless:26379"
+      gatewayPlugin.container.image.repository: "example/gateway"
+      gatewayPlugin.container.image.tag: "sentinel"
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: "example/gateway:sentinel"
+      - equal:
+          path: spec.template.spec.initContainers[0].command
+          value: ["/gateway-plugins"]
+      - equal:
+          path: spec.template.spec.initContainers[0].args
+          value: ["--check-redis"]
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: REDIS_SENTINEL_ADDRESSES
+            value: "redis-0.redis-headless:26379,redis-1.redis-headless:26379"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_SENTINEL_MASTER_NAME
+            value: "mymaster"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_SENTINEL_ENABLED
+            value: "true"
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_HOST
+            value: "RELEASE-NAME-aibrix-redis-master"
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_SENTINEL_PASSWORD
+          any: true
+  - it: should reuse the shared Redis password for Sentinel in both containers
+    set:
+      <<: *sentinelConfig
+      metadata.redis.enablePassword: true
+      metadata.redis.password: "shared-secret"
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: REDIS_SENTINEL_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: RELEASE-NAME-aibrix-redis
+                key: gateway-plugin-redis-password
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_SENTINEL_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: RELEASE-NAME-aibrix-redis
+                key: gateway-plugin-redis-password
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: RELEASE-NAME-aibrix-redis
+                key: gateway-plugin-redis-password
+  - it: should reuse a component Redis password when no shared password is configured
+    set:
+      <<: *sentinelConfig
+      gatewayPlugin.dependencies.redis.password: "gateway-secret"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_SENTINEL_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: RELEASE-NAME-aibrix-redis
+                key: gateway-plugin-redis-password
+  - it: should use separate secret keys for data and Sentinel authentication
+    set:
+      <<: *sentinelConfig
+      gatewayPlugin.dependencies.redis.password: "data-secret"
+      gatewayPlugin.dependencies.redis.sentinel.password: "sentinel-secret"
+      gatewayPlugin.dependencies.redis.sentinel.username: "sentinel-user"
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: REDIS_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: RELEASE-NAME-aibrix-redis
+                key: gateway-plugin-redis-password
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_SENTINEL_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: RELEASE-NAME-aibrix-redis
+                key: gateway-plugin-redis-sentinel-password
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: REDIS_SENTINEL_USERNAME
+            value: "sentinel-user"
+---
+suite: Gateway Redis Sentinel Validation
+templates:
+  - validate.yaml
+tests:
+  - it: should reject Sentinel with built-in Redis
+    set: &sentinelValidation
+      metadata.redis.enabled: true
+      metadata.service.redis.host: "unused"
+      gpuOptimizer.dependencies.redis.host: "unused"
+      gatewayPlugin.dependencies.redis.sentinel.enabled: true
+      gatewayPlugin.dependencies.redis.sentinel.masterName: "mymaster"
+      gatewayPlugin.dependencies.redis.sentinel.addresses: ["sentinel:26379"]
+    asserts:
+      - failedTemplate:
+          errorMessage: "gatewayPlugin.dependencies.redis.sentinel.enabled=true requires metadata.redis.enabled=false."
+  - it: should reject an empty master name
+    set:
+      <<: *sentinelValidation
+      metadata.redis.enabled: false
+      gatewayPlugin.dependencies.redis.sentinel.masterName: " "
+    asserts:
+      - failedTemplate:
+          errorMessage: "gatewayPlugin.dependencies.redis.sentinel.masterName is required when Sentinel is enabled."
+  - it: should reject duplicate managed environment variables
+    set:
+      <<: *sentinelValidation
+      metadata.redis.enabled: false
+      gatewayPlugin.container.envs.REDIS_SENTINEL_ENABLED: "false"
+    asserts:
+      - failedTemplate:
+          errorMessage: "REDIS_SENTINEL_ENABLED is managed by gatewayPlugin.dependencies.redis.sentinel; do not also set it in container.envs."
+---
+suite: Gateway Redis Sentinel Secret
+templates:
+  - metadata-service/redis.yaml
+tests:
+  - it: should not duplicate the shared password for Sentinel
+    set:
+      metadata.redis.enabled: false
+      metadata.redis.enablePassword: true
+      metadata.redis.password: "shared-secret"
+      metadata.service.redis.host: "unused"
+      gpuOptimizer.dependencies.redis.host: "unused"
+      gatewayPlugin.dependencies.redis.sentinel.enabled: true
+      gatewayPlugin.dependencies.redis.sentinel.masterName: "mymaster"
+      gatewayPlugin.dependencies.redis.sentinel.addresses: ["sentinel:26379"]
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: data.gateway-plugin-redis-password
+          value: "c2hhcmVkLXNlY3JldA=="
+      - notExists:
+          path: data.gateway-plugin-redis-sentinel-password
+  - it: should render a Sentinel-only password without a data password
+    set:
+      metadata.redis.enabled: false
+      metadata.service.redis.host: "unused"
+      gpuOptimizer.dependencies.redis.host: "unused"
+      gatewayPlugin.dependencies.redis.sentinel.enabled: true
+      gatewayPlugin.dependencies.redis.sentinel.masterName: "mymaster"
+      gatewayPlugin.dependencies.redis.sentinel.addresses: ["sentinel:26379"]
+      gatewayPlugin.dependencies.redis.sentinel.password: "sentinel-secret"
+    asserts:
+      - equal:
+          path: data.gateway-plugin-redis-sentinel-password
+          value: "c2VudGluZWwtc2VjcmV0"
+      - notExists:
+          path: data.gateway-plugin-redis-password

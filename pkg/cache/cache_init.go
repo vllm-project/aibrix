@@ -55,6 +55,10 @@ type InitOptions struct {
 	// RedisClient is required for KVSync and other features. Can be nil.
 	RedisClient *redis.Client
 
+	// RedisClientFactory preserves independent Sentinel failover for the
+	// admission and read clients' pools. Required when RedisClient is a FailoverClient.
+	RedisClientFactory utils.RedisClientFactory
+
 	// ModelRouterProvider is needed only by the gateway. Can be nil.
 	ModelRouterProvider ModelRouterProviderFunc
 
@@ -251,17 +255,32 @@ func Get() (Cache, error) {
 //
 //	Store: Initialized cache store instance
 func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterProvider ModelRouterProviderFunc) *Store {
+	return newStore(redisClient, prometheusApi, modelRouterProvider, nil)
+}
+
+func newStore(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterProvider ModelRouterProviderFunc, redisClientFactory utils.RedisClientFactory) *Store {
 	podMetricsWorkerCount := loadPodMetricsWorkerCount()
 	podMetricsJobQueueSize := loadPodMetricsJobQueueSize(podMetricsWorkerCount)
 
 	var readRedisClient *redis.Client
 	if redisClient != nil {
-		readRedisClient = utils.NewRedisClientWithContextTimeout(redisClient.Options())
+		if redisClientFactory != nil {
+			maxRetries := redisClient.Options().MaxRetries
+			if maxRetries == 0 {
+				maxRetries = -1
+			}
+			readRedisClient = redisClientFactory(&utils.RedisClientSettings{
+				MaxRetries:            maxRetries,
+				ContextTimeoutEnabled: true,
+			})
+		} else {
+			readRedisClient = utils.NewRedisClientWithContextTimeout(redisClient.Options())
+		}
 	}
 	store = &Store{
 		initialized:           true,
 		redisClient:           redisClient,
-		admitRedisClient:      admitRunningRequestsClient(redisClient),
+		admitRedisClient:      admitRunningRequestsClient(redisClient, redisClientFactory),
 		readRedisClient:       readRedisClient,
 		prometheusApi:         prometheusApi,
 		enableTracing:         enableGPUOptimizerTracing,
@@ -461,7 +480,7 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		}
 
 		// Create store with provided dependencies
-		store = New(opts.RedisClient, initPrometheusAPI(config), opts.ModelRouterProvider)
+		store = newStore(opts.RedisClient, initPrometheusAPI(config), opts.ModelRouterProvider, opts.RedisClientFactory)
 		store.disableModelClaimBindings = opts.DisableModelClaimPodBindings
 
 		// Initialize service discovery — all modes go through the Provider interface
