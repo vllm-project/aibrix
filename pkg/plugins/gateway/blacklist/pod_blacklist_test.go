@@ -55,28 +55,49 @@ func blacklistTestEnginePod(name, engine string) *v1.Pod {
 	return pod
 }
 
-// podAddr returns a fake "ip:port" for pod, matching what
-// types.RoutingContext.TargetAddress() would hand RecordResult in
-// production. Its value is never actually dialed in these tests: every test
-// that trips the breaker stubs PodBlacklist.HealthCheck so the confirmation
-// step never makes a real network call.
-func podAddr(pod *v1.Pod) string {
-	return pod.Status.PodIP + ":8000"
-}
-
 // alwaysUnhealthy/alwaysHealthy stub PodBlacklist.HealthCheck so tests never
-// make a real network call: the confirmation step that gates an actual trip
-// (see RecordResult) always agrees with — respectively contradicts — the
-// tracked-failure-status signal.
+// make a real network call: every probe of a pod finds it dead, respectively
+// healthy.
 func alwaysUnhealthy(string) bool { return false }
 func alwaysHealthy(string) bool   { return true }
 
 func alwaysModelGone(string, string) bool   { return false }
 func alwaysModelServed(string, string) bool { return true }
 
+// tripBreaker opens pod's breaker the way the background sweep does: it finds
+// the pod degraded podProbeFailureIterations sweeps in a row, which blocks it
+// for the first backoff (a dead pod would be blocked for an hour instead).
+func tripBreaker(b *PodBlacklist, pod *v1.Pod) {
+	for i := 0; i < podProbeFailureIterations; i++ {
+		b.RecordProbeResult(pod, ProbeDegraded, "GET /v1/models did not list the model")
+	}
+}
+
+// failureStateFor returns the internal state tracked for pod, failing the test
+// if nothing has touched it. Tests use this to fast-forward time-based
+// transitions (backoff elapsed, entry gone stale) without actually sleeping.
+func failureStateFor(t *testing.T, b *PodBlacklist, pod *v1.Pod) *podFailureState {
+	t.Helper()
+	v, ok := b.pods.Load(PodKey(pod))
+	if !ok {
+		t.Fatalf("no failure state tracked for pod %s", pod.Name)
+	}
+	return v.(*podFailureState)
+}
+
+// lapseBlock fast-forwards past the end of pod's block without sleeping.
+func lapseBlock(t *testing.T, b *PodBlacklist, pod *v1.Pod) *podFailureState {
+	t.Helper()
+	state := failureStateFor(t, b, pod)
+	state.mu.Lock()
+	state.openUntil = time.Now().Add(-time.Second)
+	state.mu.Unlock()
+	return state
+}
+
 // TestPodBlacklist_DisabledIsNoOp covers the production default: with the
-// master switch off, nothing records failures, excludes pods, starts sweeps
-// or claims probes, so routing matches the pre-blacklist path.
+// master switch off, nothing excludes pods or starts sweeps, so routing
+// matches the pre-blacklist path.
 func TestPodBlacklist_DisabledIsNoOp(t *testing.T) {
 	prev := Enabled
 	Enabled = false
@@ -87,11 +108,7 @@ func TestPodBlacklist_DisabledIsNoOp(t *testing.T) {
 	other := blacklistTestPod("2")
 	pods := []*v1.Pod{pod, other}
 
-	for i := 0; i < FailureThreshold+2; i++ {
-		b.RecordResult(pod, podAddr(pod), 400)
-	}
 	assert.False(t, b.IsBlacklisted(pod))
-	assert.Zero(t, b.FailureCount(pod))
 	assert.True(t, b.Allow(pod))
 	assert.Equal(t, pods, b.FilterBlacklisted(pods))
 	assert.Zero(t, testing.AllocsPerRun(100, func() { _ = b.FilterBlacklisted(pods) }))
@@ -101,14 +118,13 @@ func TestPodBlacklist_DisabledIsNoOp(t *testing.T) {
 
 	b.OnPodFlakyReAdd(pod)
 	assert.False(t, b.IsBlacklisted(pod))
-	assert.False(t, b.ClaimProbe(pod))
 
 	for i := 0; i < podProbeFailureIterations; i++ {
 		assert.False(t, b.RecordProbeResult(pod, ProbeDead, "GET /health failed"))
 	}
 	assert.False(t, b.IsQuarantined(pod))
 	assert.False(t, b.IsBlacklisted(pod))
-	assert.Zero(t, b.tracked.Load(), "disabled paths must not create breaker entries")
+	assert.Zero(t, b.tracked.Load(), "disabled paths must not create entries")
 
 	stop := make(chan struct{})
 	close(stop)
@@ -138,115 +154,6 @@ func TestEnvPodBlacklistEnabled_DefaultsOff(t *testing.T) {
 	assert.True(t, utils.LoadEnvBool(EnvPodBlacklistEnabled, false))
 }
 
-func TestPodBlacklist_TripsAfterConsecutive400s(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
-	pod := blacklistTestPod("1")
-
-	for i := 0; i < FailureThreshold-1; i++ {
-		b.RecordResult(pod, podAddr(pod), 400)
-		assert.False(t, b.IsBlacklisted(pod), "should not blacklist before threshold is reached (i=%d)", i)
-	}
-
-	b.RecordResult(pod, podAddr(pod), 400)
-	assert.True(t, b.IsBlacklisted(pod), "should blacklist once the threshold is reached and /health also fails")
-}
-
-// TestPodBlacklist_SuccessInBetweenDoesNotClearTheWindow pins down a
-// deliberate policy change from the old consecutive-failure breaker: the
-// window counts failures within podBlacklistFailureWindow regardless of any
-// successes interleaved, so a pod that's merely flaky (some requests fine,
-// most failing) still trips instead of perpetually resetting to zero.
-func TestPodBlacklist_SuccessInBetweenDoesNotClearTheWindow(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
-	pod := blacklistTestPod("1")
-
-	for i := 0; i < FailureThreshold-1; i++ {
-		b.RecordResult(pod, podAddr(pod), 400)
-	}
-	b.RecordResult(pod, podAddr(pod), 200)
-	assert.False(t, b.IsBlacklisted(pod), "a success alone must not trip the breaker")
-
-	b.RecordResult(pod, podAddr(pod), 400)
-	assert.True(t, b.IsBlacklisted(pod), "a success interleaved with failures must not reset the failure window")
-}
-
-// TestPodBlacklist_AnyErrorStatusAccumulatesTowardTheWindow pins down the
-// other policy change: unlike the old breaker (which only tracked 400/404 and
-// the two stream sentinels, deliberately excluding 5xx/429), isFailureStatus
-// treats any non-2xx outcome as a failure, so a 500 counts toward the same
-// window as a 400.
-func TestPodBlacklist_AnyErrorStatusAccumulatesTowardTheWindow(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
-	pod := blacklistTestPod("1")
-
-	for i := 0; i < FailureThreshold-1; i++ {
-		b.RecordResult(pod, podAddr(pod), 400)
-	}
-	assert.False(t, b.IsBlacklisted(pod))
-
-	b.RecordResult(pod, podAddr(pod), 500)
-	assert.True(t, b.IsBlacklisted(pod), "a 500 must accumulate toward the same failure window as a 400")
-}
-
-// TestPodBlacklist_FailuresOutsideWindowDoNotAccumulate verifies the window
-// boundary itself: failures older than podBlacklistFailureWindow are pruned
-// on the next RecordResult call and do not count toward the threshold.
-func TestPodBlacklist_FailuresOutsideWindowDoNotAccumulate(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
-	pod := blacklistTestPod("1")
-
-	// Seed the window with failures already outside podBlacklistFailureWindow.
-	v, _ := b.pods.LoadOrStore(PodKey(pod), &podFailureState{})
-	state := v.(*podFailureState)
-	old := time.Now().Add(-podBlacklistFailureWindow - time.Second)
-	state.mu.Lock()
-	state.failureTimestamps = make([]time.Time, FailureThreshold-1)
-	for i := range state.failureTimestamps {
-		state.failureTimestamps[i] = old
-	}
-	state.mu.Unlock()
-
-	b.RecordResult(pod, podAddr(pod), 400) // one fresh failure
-	assert.False(t, b.IsBlacklisted(pod), "expired failures must not count toward the threshold")
-
-	state.mu.Lock()
-	count := len(state.failureTimestamps)
-	state.mu.Unlock()
-	assert.Equal(t, 1, count, "expired failures should have been pruned from the window")
-}
-
-func TestPodBlacklist_TripsAfterConsecutive404s(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
-	pod := blacklistTestPod("1")
-
-	for i := 0; i < FailureThreshold-1; i++ {
-		b.RecordResult(pod, podAddr(pod), 404)
-		assert.False(t, b.IsBlacklisted(pod), "should not blacklist before threshold is reached (i=%d)", i)
-	}
-
-	b.RecordResult(pod, podAddr(pod), 404)
-	assert.True(t, b.IsBlacklisted(pod), "should blacklist once the threshold is reached via 404s")
-}
-
-func TestPodBlacklist_400And404CountTowardTheSameStreak(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
-	pod := blacklistTestPod("1")
-
-	// Alternate between 400 and 404 - both are tracked failure statuses, so
-	// they should accumulate together toward the same streak.
-	for i := 0; i < FailureThreshold-1; i++ {
-		if i%2 == 0 {
-			b.RecordResult(pod, podAddr(pod), 400)
-		} else {
-			b.RecordResult(pod, podAddr(pod), 404)
-		}
-	}
-	assert.False(t, b.IsBlacklisted(pod))
-
-	b.RecordResult(pod, podAddr(pod), 404)
-	assert.True(t, b.IsBlacklisted(pod), "400s and 404s should accumulate toward the same consecutive-failure streak")
-}
-
 func TestPodBlacklist_OnlyTrippedPodIsBlacklisted(t *testing.T) {
 	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
 	tripped := blacklistTestPod("1")
@@ -269,8 +176,7 @@ func TestPodBlacklist_BlacklistReason(t *testing.T) {
 
 	tripBreaker(&b, tripped)
 	reason := b.BlacklistReason(tripped)
-	assert.Contains(t, reason, "failures within")
-	assert.Contains(t, reason, "confirmed unhealthy")
+	assert.Contains(t, reason, "background probe failed")
 	assert.NotContains(t, reason, "load outlier")
 
 	b.SetLoadExcluded(loadExcluded, true)
@@ -280,7 +186,7 @@ func TestPodBlacklist_BlacklistReason(t *testing.T) {
 	b.SetLoadExcluded(both, true)
 	combined := b.BlacklistReason(both)
 	assert.Contains(t, combined, "load outlier")
-	assert.Contains(t, combined, "failures within")
+	assert.Contains(t, combined, "background probe failed")
 
 	names := b.BlacklistReasons([]*v1.Pod{tripped, loadExcluded, untouched})
 	if assert.Len(t, names, 2) {
@@ -328,7 +234,7 @@ func TestPodBlacklist_SweepStaleNeverDeletesAReplacementEntry(t *testing.T) {
 	assert.Equal(t, int64(1), b.tracked.Load())
 }
 
-// Entries are created by requests and pruned by the sweep on different goroutines. However
+// Entries are created by the sweeps and pruned by sweepStale on different goroutines. However
 // they interleave, tracked must equal the number of stored entries: FilterBlacklisted skips
 // every lookup when it reads zero, so an undercount would let a tripped pod through.
 func TestPodBlacklist_TrackedStaysExactWhileSweepRacesWithWriters(t *testing.T) {
@@ -384,11 +290,11 @@ func TestPodBlacklist_FilterBlacklisted_NothingTrackedAllocatesNothing(t *testin
 // The fast path keys off tracked, so it has to count entries exactly: created once on
 // first use however many times the pod is touched, and gone again once pruned.
 func TestPodBlacklist_TrackedCountsEntriesThroughCreationAndPruning(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
+	var b PodBlacklist
 	pod1, pod2 := blacklistTestPod("1"), blacklistTestPod("2")
 
-	b.RecordResult(pod1, "10.0.0.1:8000", 500)
-	b.RecordResult(pod1, "10.0.0.1:8000", 500)
+	b.RecordProbeResult(pod1, ProbeDegraded, "x")
+	b.RecordProbeResult(pod1, ProbeDegraded, "x")
 	b.SetLoadExcluded(pod2, true)
 	b.SetLoadExcluded(pod2, false)
 	b.SetLoadExcluded(blacklistTestPod("3"), false) // clearing a never-excluded pod makes no entry
@@ -402,6 +308,218 @@ func TestPodBlacklist_TrackedCountsEntriesThroughCreationAndPruning(t *testing.T
 	assert.Zero(t, b.tracked.Load())
 	pods := []*v1.Pod{pod1, pod2}
 	assert.Equal(t, pods, b.FilterBlacklisted(pods))
+}
+
+// recountExcluded counts the stored entries that can exclude their pod, the number
+// PodBlacklist.excluded must equal.
+func recountExcluded(b *PodBlacklist) int64 {
+	var n int64
+	b.pods.Range(func(_, v any) bool {
+		state := v.(*podFailureState)
+		state.mu.RLock()
+		if state.excludingLocked() {
+			n++
+		}
+		state.mu.RUnlock()
+		return true
+	})
+	return n
+}
+
+// FilterBlacklisted skips every lookup while excluded reads zero, so excluded has to follow
+// every way a pod becomes, or stops being, excluded: an undercount would let an excluded
+// pod through.
+func TestPodBlacklist_ExcludedCountFollowsEveryTransition(t *testing.T) {
+	var b PodBlacklist
+	loaded, probed, flapped := blacklistTestPod("1"), blacklistTestPod("2"), blacklistTestPod("3")
+	check := func(want int64, when string) {
+		t.Helper()
+		assert.Equal(t, want, b.excluded.Load(), when)
+		assert.Equal(t, recountExcluded(&b), b.excluded.Load(), when+" (against a recount)")
+	}
+	check(0, "nothing tracked")
+
+	b.RecordProbeResult(probed, ProbeDegraded, "x")
+	check(0, "an entry that excludes nothing is not counted")
+
+	b.SetLoadExcluded(loaded, true)
+	check(1, "load-excluded")
+	b.SetLoadExcluded(loaded, true)
+	check(1, "flagging again counts nothing more")
+
+	tripBreaker(&b, probed)
+	check(2, "breaker opened by the sweep")
+	b.OnPodFlakyReAdd(flapped)
+	check(3, "flaky re-add")
+
+	b.SetLoadExcluded(loaded, false)
+	check(2, "load exclusion cleared")
+
+	lapseBlock(t, &b, probed)
+	check(2, "a block that has ended is counted until something closes the breaker")
+	b.RecordProbeResult(probed, ProbeHealthy, "")
+	check(1, "a healthy sweep closes a lapsed breaker")
+
+	for i := 0; i < podProbeRecoveryIterations; i++ {
+		b.RecordProbeResult(flapped, ProbeHealthy, "")
+	}
+	check(0, "healthy sweeps lift a running block")
+
+	b.SetLoadExcluded(loaded, true)
+	tripBreaker(&b, probed)
+	check(2, "excluded again")
+	b.sweepStale(time.Now().Add(2 * podBlacklistEntryTTL))
+	check(0, "pruned entries are taken off")
+	assert.Zero(t, b.tracked.Load())
+}
+
+// A writer that loaded an entry's pointer just before sweepStale deleted it updates a state
+// that is no longer stored. It must not leave excluded counting a pod nothing stores.
+func TestPodBlacklist_ExcludedCountIgnoresAWriterHoldingADeletedEntry(t *testing.T) {
+	var b PodBlacklist
+	pod := blacklistTestPod("1")
+	b.SetLoadExcluded(pod, true)
+	orphan := failureStateFor(t, &b, pod)
+	require.Equal(t, int64(1), b.excluded.Load())
+
+	b.sweepStale(time.Now().Add(2 * podBlacklistEntryTTL))
+	require.Zero(t, b.excluded.Load())
+
+	orphan.mu.Lock() // the late writer
+	orphan.loadExcluded = true
+	b.syncCountLocked(orphan)
+	orphan.mu.Unlock()
+
+	assert.Zero(t, b.excluded.Load(), "a deleted entry is never counted again")
+	assert.Zero(t, recountExcluded(&b))
+}
+
+// The same invariant while writers of every kind race with the sweep that prunes.
+func TestPodBlacklist_ExcludedCountStaysExactWhileSweepRacesWithWriters(t *testing.T) {
+	var b PodBlacklist
+	pods := make([]*v1.Pod, 8)
+	for i := range pods {
+		pods[i] = blacklistTestPod(strconv.Itoa(i + 1))
+	}
+	everythingIsStale := time.Now().Add(2 * podBlacklistEntryTTL)
+
+	var writers sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		writers.Add(1)
+		go func(w int) {
+			defer writers.Done()
+			for i := 0; i < 400; i++ {
+				pod := pods[(w+i)%len(pods)]
+				switch i % 5 {
+				case 0:
+					b.SetLoadExcluded(pod, true)
+				case 1:
+					b.SetLoadExcluded(pod, false)
+				case 2:
+					b.OnPodFlakyReAdd(pod)
+				case 3:
+					b.RecordProbeResult(pod, ProbeDead, "x")
+				default:
+					b.RecordProbeResult(pod, ProbeHealthy, "")
+				}
+			}
+		}(w)
+	}
+	stop := make(chan struct{})
+	sweeper := make(chan struct{})
+	go func() {
+		defer close(sweeper)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				b.sweepStale(everythingIsStale)
+			}
+		}
+	}()
+	writers.Wait()
+	close(stop)
+	<-sweeper
+
+	assert.Equal(t, recountExcluded(&b), b.excluded.Load())
+}
+
+// A pod that has failed one probe has an entry that excludes nothing. It must not put the
+// fleet on the per-pod path: FilterBlacklisted still costs no lookup and no allocation.
+func TestPodBlacklist_FilterBlacklisted_AClosedEntryKeepsTheFastPath(t *testing.T) {
+	var b PodBlacklist
+	pods := []*v1.Pod{blacklistTestPod("1"), blacklistTestPod("2"), blacklistTestPod("3")}
+	b.RecordProbeResult(pods[0], ProbeDegraded, "x")
+	require.Equal(t, int64(1), b.tracked.Load())
+
+	assert.Equal(t, pods, b.FilterBlacklisted(pods))
+	assert.Zero(t, testing.AllocsPerRun(100, func() { _ = b.FilterBlacklisted(pods) }))
+}
+
+// With an exclusion somewhere, a call whose pods are all admitted still allocates nothing,
+// and one that drops a pod allocates once.
+func TestPodBlacklist_FilterBlacklisted_AllocatesOnlyToDropAPod(t *testing.T) {
+	var b PodBlacklist
+	excluded := blacklistTestPod("x")
+	b.SetLoadExcluded(excluded, true)
+	healthy := []*v1.Pod{blacklistTestPod("1"), blacklistTestPod("2"), blacklistTestPod("3")}
+
+	assert.Equal(t, healthy, b.FilterBlacklisted(healthy))
+	assert.Zero(t, testing.AllocsPerRun(100, func() { _ = b.FilterBlacklisted(healthy) }))
+
+	mixed := []*v1.Pod{healthy[0], excluded, healthy[1], healthy[2]}
+	assert.Equal(t, healthy, b.FilterBlacklisted(mixed), "order is kept")
+	assert.Equal(t, []*v1.Pod{healthy[0], healthy[1]}, b.FilterBlacklisted([]*v1.Pod{healthy[0], healthy[1], excluded}))
+	assert.Equal(t, []*v1.Pod{healthy[0], healthy[1]}, b.FilterBlacklisted([]*v1.Pod{excluded, healthy[0], healthy[1]}))
+	assert.Empty(t, b.FilterBlacklisted([]*v1.Pod{excluded}))
+	assert.EqualValues(t, 1, testing.AllocsPerRun(100, func() { _ = b.FilterBlacklisted(mixed) }))
+}
+
+// Allow is a read: it must not count as a touch. An entry that routing keeps looking at but
+// nothing changes ages out like any other, so one old failure does not pin a pod's entry,
+// and with it the per-pod path, for as long as the pod is routable.
+func TestPodBlacklist_Allow_DoesNotKeepAnEntryFromAgingOut(t *testing.T) {
+	var b PodBlacklist
+	inspected, untouched := blacklistTestPod("inspected"), blacklistTestPod("untouched")
+	b.RecordProbeResult(inspected, ProbeDegraded, "x")
+	b.RecordProbeResult(untouched, ProbeDegraded, "x")
+	for _, pod := range []*v1.Pod{inspected, untouched} {
+		state := failureStateFor(t, &b, pod)
+		state.mu.Lock()
+		state.lastUpdated = time.Now().Add(-podBlacklistEntryTTL + 5*time.Minute)
+		state.mu.Unlock()
+	}
+
+	assert.True(t, b.Allow(inspected))
+	b.sweepStale(time.Now().Add(10 * time.Minute)) // past the TTL for an entry nothing changed
+
+	_, inspectedKept := b.pods.Load(PodKey(inspected))
+	_, untouchedKept := b.pods.Load(PodKey(untouched))
+	assert.False(t, untouchedKept)
+	assert.False(t, inspectedKept, "looking at an entry does not keep it")
+	assert.Zero(t, b.tracked.Load())
+}
+
+// Allow only takes the entry's read lock: requests do not queue on one another, or on a
+// reader that is slow, for a pod they all consider.
+func TestPodBlacklist_Allow_ReadersDoNotBlockEachOther(t *testing.T) {
+	var b PodBlacklist
+	pod := blacklistTestPod("1")
+	b.RecordProbeResult(pod, ProbeDegraded, "x")
+	state := failureStateFor(t, &b, pod)
+
+	state.mu.RLock() // another request is inside Allow
+	defer state.mu.RUnlock()
+	done := make(chan bool, 1)
+	go func() { done <- b.Allow(pod) }()
+
+	select {
+	case allowed := <-done:
+		assert.True(t, allowed)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Allow waited for another reader of the same entry")
+	}
 }
 
 func TestPodBlacklist_SetLoadExcluded(t *testing.T) {
@@ -425,11 +543,11 @@ func TestPodBlacklist_SetLoadExcluded(t *testing.T) {
 	assert.True(t, b.Allow(pod))
 }
 
-func TestPodBlacklist_LoadExcludedIndependentOfFailureBreaker(t *testing.T) {
+func TestPodBlacklist_LoadExcludedIndependentOfTheBreaker(t *testing.T) {
 	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
 	pod := blacklistTestPod("1")
 
-	// Trip the tracked-failure breaker, then also flag it as a load outlier.
+	// Open the breaker, then also flag it as a load outlier.
 	tripBreaker(&b, pod)
 	assert.True(t, b.IsBlacklisted(pod))
 
@@ -437,196 +555,9 @@ func TestPodBlacklist_LoadExcludedIndependentOfFailureBreaker(t *testing.T) {
 	assert.True(t, b.IsBlacklisted(pod))
 
 	// Clearing the load-outlier flag alone must not resurrect a pod whose
-	// failure breaker is still open.
+	// breaker is still open.
 	b.SetLoadExcluded(pod, false)
-	assert.True(t, b.IsBlacklisted(pod), "pod should remain blacklisted while its failure breaker is still open")
-}
-
-func TestPodBlacklist_HealthyPodIsNotBlacklisted_FalseAlarm(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysHealthy}
-	pod := blacklistTestPod("1")
-
-	// Enough consecutive tracked failures to cross the threshold, but the
-	// pod's own /health endpoint says it's fine — e.g. a client is sending
-	// consistently malformed requests to an otherwise-healthy pod.
-	tripBreaker(&b, pod)
-
-	assert.False(t, b.IsBlacklisted(pod), "a healthy /health check should veto blacklisting even after threshold consecutive tracked failures")
-
-	state := failureStateFor(t, &b, pod)
-	state.mu.Lock()
-	failures := len(state.failureTimestamps)
-	trip := state.tripCount
-	state.mu.Unlock()
-	assert.Equal(t, 0, failures, "the window should clear after a false alarm, same as a genuine reset")
-	assert.Equal(t, 0, trip, "a false alarm is not a real trip")
-}
-
-func TestPodBlacklist_405_BlacklistsEvenWhenHealthCheckIsHealthy(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysHealthy}
-	pod := blacklistTestPod("1")
-
-	for i := 0; i < FailureThreshold; i++ {
-		b.RecordResult(pod, podAddr(pod), http.StatusMethodNotAllowed, "test-model")
-	}
-
-	assert.True(t, b.IsBlacklisted(pod), "HTTP 405 must blacklist the pod even when GET /health is healthy")
-}
-
-func identityMustNotRun(t *testing.T) func(string, string) bool {
-	return func(string, string) bool {
-		t.Error("identity check must not run for this pod/model")
-		return true
-	}
-}
-
-func recordThreshold(b *PodBlacklist, pod *v1.Pod, status int, model string) {
-	for i := 0; i < FailureThreshold; i++ {
-		b.RecordResult(pod, podAddr(pod), status, model)
-	}
-}
-
-// TestPodBlacklist_Identity_TripsWhenListenerIsNotTheEngine is the stale
-// registration case: another process now owns the recycled ip:port, answers
-// GET /health 200 and rejects (or mangles) every inference request. For a
-// vLLM/SGLang pod the model list must catch it whatever status the imposter
-// returns, not only 405.
-func TestPodBlacklist_Identity_TripsWhenListenerIsNotTheEngine(t *testing.T) {
-	for _, status := range []int{400, 404, 405, 429, 500, 501, 503} {
-		t.Run(strconv.Itoa(status), func(t *testing.T) {
-			b := PodBlacklist{HealthCheck: alwaysHealthy, IdentityCheck: alwaysModelGone}
-			pod := blacklistTestEnginePod("1", "vllm")
-
-			recordThreshold(&b, pod, status, "test-model")
-
-			assert.True(t, b.IsBlacklisted(pod), "a listener that answers /health but is not the engine for the model must trip on HTTP %d", status)
-		})
-	}
-}
-
-// TestPodBlacklist_Identity_RouteRejectIsDecidedByIdentityAlone covers the
-// other side of the 405 rule: a client sending the wrong method to a healthy
-// engine makes it answer 405, and that must not blacklist the pod. /health is
-// stubbed unhealthy to prove it is not what decides route-reject statuses.
-func TestPodBlacklist_Identity_RouteRejectIsDecidedByIdentityAlone(t *testing.T) {
-	for _, status := range []int{404, 405, 501} {
-		t.Run(strconv.Itoa(status), func(t *testing.T) {
-			b := PodBlacklist{HealthCheck: alwaysUnhealthy, IdentityCheck: alwaysModelServed}
-			pod := blacklistTestEnginePod("1", "vllm")
-
-			recordThreshold(&b, pod, status, "test-model")
-
-			assert.False(t, b.IsBlacklisted(pod), "HTTP %d from an engine that still lists the model is a false alarm", status)
-		})
-	}
-}
-
-// TestPodBlacklist_Identity_OtherStatusesNeedHealthAndIdentity keeps /health
-// in the loop for statuses that say "sick" rather than "wrong API": a dead
-// engine core behind a live API server still lists its models, so only
-// /health can see it.
-func TestPodBlacklist_Identity_OtherStatusesNeedHealthAndIdentity(t *testing.T) {
-	t.Run("healthy and right engine is a false alarm", func(t *testing.T) {
-		b := PodBlacklist{HealthCheck: alwaysHealthy, IdentityCheck: alwaysModelServed}
-		pod := blacklistTestEnginePod("1", "sglang")
-
-		recordThreshold(&b, pod, 500, "test-model")
-
-		assert.False(t, b.IsBlacklisted(pod))
-	})
-
-	t.Run("engine core dead behind a live API server trips", func(t *testing.T) {
-		b := PodBlacklist{HealthCheck: alwaysUnhealthy, IdentityCheck: alwaysModelServed}
-		pod := blacklistTestEnginePod("1", "vllm")
-
-		recordThreshold(&b, pod, 500, "test-model")
-
-		assert.True(t, b.IsBlacklisted(pod), "a failing /health must still trip even though /v1/models lists the model")
-	})
-}
-
-// TestPodBlacklist_Identity_SkippedWhereItCannotApply pins down the cases
-// that must keep the pre-identity behavior: an engine that is not known to
-// list models (its /v1/models may have another shape), and a result recorded
-// without a model name to look for.
-func TestPodBlacklist_Identity_SkippedWhereItCannotApply(t *testing.T) {
-	t.Run("engine not known to list models", func(t *testing.T) {
-		b := PodBlacklist{HealthCheck: alwaysHealthy, IdentityCheck: identityMustNotRun(t)}
-		pod := blacklistTestEnginePod("1", "xdit")
-
-		recordThreshold(&b, pod, 500, "test-model")
-
-		assert.False(t, b.IsBlacklisted(pod), "confirmation for such an engine stays /health only")
-	})
-
-	t.Run("unlabeled pod", func(t *testing.T) {
-		b := PodBlacklist{HealthCheck: alwaysHealthy, IdentityCheck: identityMustNotRun(t)}
-		pod := blacklistTestPod("1")
-
-		recordThreshold(&b, pod, 500, "test-model")
-
-		assert.False(t, b.IsBlacklisted(pod))
-	})
-
-	t.Run("no model name", func(t *testing.T) {
-		b := PodBlacklist{HealthCheck: alwaysHealthy, IdentityCheck: identityMustNotRun(t)}
-		pod := blacklistTestEnginePod("1", "vllm")
-
-		for i := 0; i < FailureThreshold; i++ {
-			b.RecordResult(pod, podAddr(pod), 500)
-		}
-
-		assert.False(t, b.IsBlacklisted(pod))
-	})
-}
-
-// TestPodBlacklist_Identity_StaleEntryEndToEnd replays the incident with the
-// real probes (no stubbed checks): a recycled address whose new owner answers
-// every GET with an empty 200 and rejects POST with 405, versus a real engine
-// that also returns 405 to a client's wrong-method request.
-func TestPodBlacklist_Identity_StaleEntryEndToEnd(t *testing.T) {
-	const model = "test-model"
-
-	imposter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			return
-		}
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		_, _ = w.Write([]byte(`{"error":"Method Not Allowed"}`))
-	}))
-	defer imposter.Close()
-
-	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case podHealthCheckPath:
-			w.WriteHeader(http.StatusOK)
-		case podModelsCheckPath:
-			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"test-model"}]}`))
-		}
-	}))
-	defer engine.Close()
-
-	for name, tc := range map[string]struct {
-		srv         *httptest.Server
-		blacklisted bool
-	}{
-		"imposter on the recycled address is blacklisted": {imposter, true},
-		"real engine answering 405 is not":                {engine, false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			var b PodBlacklist
-			pod := blacklistTestEnginePod("1", "vllm")
-			addr := strings.TrimPrefix(tc.srv.URL, "http://")
-
-			for i := 0; i < FailureThreshold; i++ {
-				b.RecordResult(pod, addr, http.StatusMethodNotAllowed, model)
-			}
-
-			assert.Equal(t, tc.blacklisted, b.IsBlacklisted(pod))
-		})
-	}
+	assert.True(t, b.IsBlacklisted(pod), "pod should remain blacklisted while its breaker is still open")
 }
 
 func TestEngineListsModels(t *testing.T) {
@@ -642,132 +573,6 @@ func TestEngineListsModels(t *testing.T) {
 	}
 }
 
-// TestPodBlacklist_404_ModelAwareConfirmation_TripsWhenModelGone verifies
-// that a 404 streak with a model name is confirmed against ModelCheck (GET
-// /v1/models in production) instead of the generic /health endpoint. Generic
-// /health is stubbed healthy here (as vLLM/SGLang's typically is whenever
-// the engine process is merely up) to prove it is the engine model list --
-// not /health -- that decides the outcome: the engine no longer serves the
-// model, so the streak must still trip.
-func TestPodBlacklist_404_ModelAwareConfirmation_TripsWhenModelGone(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysHealthy, ModelCheck: alwaysModelGone}
-	pod := blacklistTestPod("1")
-
-	for i := 0; i < FailureThreshold-1; i++ {
-		b.RecordResult(pod, podAddr(pod), 404, "test-model")
-	}
-	b.RecordResult(pod, podAddr(pod), 404, "test-model")
-
-	assert.True(t, b.IsBlacklisted(pod), "a 404 streak must trip once the engine no longer lists the requested model, even though generic /health reports healthy")
-}
-
-// TestPodBlacklist_404_ModelAwareConfirmation_FalseAlarmWhenModelStillServed
-// is the converse: generic /health is stubbed unhealthy, but the engine
-// still lists the model that 404'd (e.g. a transient per-request issue
-// unrelated to routing), so the streak must reset instead of tripping.
-func TestPodBlacklist_404_ModelAwareConfirmation_FalseAlarmWhenModelStillServed(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy, ModelCheck: alwaysModelServed}
-	pod := blacklistTestPod("1")
-
-	for i := 0; i < FailureThreshold-1; i++ {
-		b.RecordResult(pod, podAddr(pod), 404, "test-model")
-	}
-	b.RecordResult(pod, podAddr(pod), 404, "test-model")
-
-	assert.False(t, b.IsBlacklisted(pod), "a 404 streak must not trip when the engine still lists the requested model, even though generic /health reports unhealthy")
-}
-
-// TestPodBlacklist_404_FallsBackToHealthCheckWithoutModelAwareness pins down
-// that callers who don't supply a model (the variadic argument omitted --
-// e.g. the StatusStreamClosed call site, or any pre-existing caller)
-// keep the old generic-/health confirmation for 404, same as every other
-// tracked status.
-func TestPodBlacklist_404_FallsBackToHealthCheckWithoutModelAwareness(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysHealthy}
-	pod := blacklistTestPod("1")
-
-	tripBreaker404(&b, pod)
-
-	assert.False(t, b.IsBlacklisted(pod), "without a model name, a 404 streak should fall back to the generic /health confirmation like before")
-}
-
-// TestPodBlacklist_RecordResult_DoesNotHoldLockDuringConfirmation is a
-// regression test for RecordResult previously holding the per-pod mutex for
-// the full duration of its /health (or model-aware) confirmation call, which
-// can take up to podHealthCheckTimeout. Every other concurrent caller
-// touching this pod -- Allow, in particular, which the routing hot path
-// calls on every candidate -- must not be stuck waiting on that same lock
-// while the confirmation is in flight.
-func TestPodBlacklist_RecordResult_DoesNotHoldLockDuringConfirmation(t *testing.T) {
-	confirmationStarted := make(chan struct{})
-	releaseConfirmation := make(chan struct{})
-	var once sync.Once
-	b := PodBlacklist{HealthCheck: func(string) bool {
-		once.Do(func() { close(confirmationStarted) })
-		<-releaseConfirmation
-		return false
-	}}
-	pod := blacklistTestPod("1")
-
-	for i := 0; i < FailureThreshold-1; i++ {
-		b.RecordResult(pod, podAddr(pod), 400)
-	}
-
-	recordDone := make(chan struct{})
-	go func() {
-		b.RecordResult(pod, podAddr(pod), 400) // crosses the threshold -- triggers the confirmation
-		close(recordDone)
-	}()
-
-	select {
-	case <-confirmationStarted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("confirmation check never started")
-	}
-
-	// The confirmation is now blocked in-flight on releaseConfirmation.
-	// Allow must not be stuck waiting on state.mu while that happens.
-	allowResult := make(chan bool, 1)
-	go func() { allowResult <- b.Allow(pod) }()
-
-	select {
-	case allowed := <-allowResult:
-		assert.True(t, allowed, "the breaker hasn't tripped yet -- the pod should still be allowed while confirmation is in flight")
-	case <-time.After(2 * time.Second):
-		t.Fatal("Allow blocked on state.mu while RecordResult's confirmation check was in flight -- the lock must be released during that call")
-	}
-
-	close(releaseConfirmation)
-	<-recordDone
-
-	assert.True(t, b.IsBlacklisted(pod), "pod should be blacklisted once the (failing) confirmation completes")
-}
-
-// failureStateFor returns the internal circuit-breaker state tracked for
-// pod, failing the test if RecordResult/Allow has never touched it. Tests
-// use this to fast-forward time-based transitions (backoff elapsed, probe
-// timed out, entry gone stale) without actually sleeping.
-func failureStateFor(t *testing.T, b *PodBlacklist, pod *v1.Pod) *podFailureState {
-	t.Helper()
-	v, ok := b.pods.Load(PodKey(pod))
-	if !ok {
-		t.Fatalf("no failure state tracked for pod %s", pod.Name)
-	}
-	return v.(*podFailureState)
-}
-
-func tripBreaker(b *PodBlacklist, pod *v1.Pod) {
-	for i := 0; i < FailureThreshold; i++ {
-		b.RecordResult(pod, podAddr(pod), 400)
-	}
-}
-
-func tripBreaker404(b *PodBlacklist, pod *v1.Pod) {
-	for i := 0; i < FailureThreshold; i++ {
-		b.RecordResult(pod, podAddr(pod), 404)
-	}
-}
-
 func TestPodBlacklist_BackoffDurationDoublesAndCaps(t *testing.T) {
 	assert.Equal(t, podBlacklistBaseDuration, backoffDuration(1))
 	assert.Equal(t, 2*podBlacklistBaseDuration, backoffDuration(2))
@@ -775,261 +580,147 @@ func TestPodBlacklist_BackoffDurationDoublesAndCaps(t *testing.T) {
 	assert.Equal(t, podBlacklistMaxDuration, backoffDuration(100), "backoff must cap at podBlacklistMaxDuration")
 }
 
-func TestPodBlacklist_HalfOpen_AdmitsExactlyOneProbeAfterBackoffElapses(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
+// TestPodBlacklist_BlockLapsesWithoutAProbeRequest covers recovery now that no
+// request reports its outcome: once a block ends the pod is a routing candidate
+// again and nothing claims or settles a probe.
+func TestPodBlacklist_BlockLapsesWithoutAProbeRequest(t *testing.T) {
+	var b PodBlacklist
 	pod := blacklistTestPod("1")
 	tripBreaker(&b, pod)
-	require := assert.New(t)
-	require.True(b.IsBlacklisted(pod))
+	require.False(t, b.Allow(pod))
 
-	// Fast-forward past the backoff window without sleeping.
-	state := failureStateFor(t, &b, pod)
+	state := lapseBlock(t, &b, pod)
+
+	assert.True(t, b.Allow(pod), "a pod whose block has ended is a candidate again")
+	assert.False(t, b.IsBlacklisted(pod))
+	assert.Empty(t, b.BlacklistReason(pod))
+	assert.Equal(t, []*v1.Pod{pod}, b.FilterBlacklisted([]*v1.Pod{pod}))
 	state.mu.Lock()
-	state.openUntil = time.Now().Add(-time.Second)
-	state.mu.Unlock()
-
-	assert.True(t, b.Allow(pod), "once the backoff elapses the pod is a routing candidate")
-	assert.True(t, b.ClaimProbe(pod), "the request routed to the pod claims the half-open probe")
-	assert.False(t, b.Allow(pod), "a concurrent caller must not get a second probe while one is already in flight")
-	assert.False(t, b.ClaimProbe(pod), "a second request routed to the pod cannot claim the probe again")
+	defer state.mu.Unlock()
+	assert.Equal(t, 1, state.tripCount, "Allow neither reads nor changes the trip count")
 }
 
-// Allow is called on every ready pod before the router picks one. If it claimed
-// the half-open probe, every candidate the router passed over would be stuck
-// half-open with a probe nobody reports back for, and excluded until
-// probeDeadline.
-func TestPodBlacklist_Allow_DoesNotClaimTheHalfOpenProbe(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
+// A healthy sweep never lifts a block that is still running, but once the block
+// has ended it starts the backoff over, which is what a successful half-open
+// request used to do.
+func TestPodBlacklist_ASingleHealthySweepRestartsTheBackoffOnlyOnceTheBlockHasEnded(t *testing.T) {
+	var b PodBlacklist
 	pod := blacklistTestPod("1")
 	tripBreaker(&b, pod)
-
 	state := failureStateFor(t, &b, pod)
+
+	b.RecordProbeResult(pod, ProbeHealthy, "")
+	assert.True(t, b.IsBlacklisted(pod), "one healthy probe must not lift a running block")
 	state.mu.Lock()
-	state.openUntil = time.Now().Add(-time.Second)
+	assert.Equal(t, 1, state.tripCount)
 	state.mu.Unlock()
 
-	for i := 0; i < 3; i++ {
-		assert.True(t, b.Allow(pod), "a candidate the router passes over leaves the pod a candidate for the next request")
-	}
-	state.mu.Lock()
-	assert.Equal(t, circuitOpen, state.state, "Allow must not move the breaker to half-open")
-	state.mu.Unlock()
+	lapseBlock(t, &b, pod)
+	b.RecordProbeResult(pod, ProbeHealthy, "")
 
-	assert.True(t, b.ClaimProbe(pod), "the first request that is actually routed to the pod claims the probe")
 	state.mu.Lock()
-	assert.Equal(t, circuitHalfOpen, state.state)
-	state.mu.Unlock()
+	defer state.mu.Unlock()
+	assert.Equal(t, circuitClosed, state.state)
+	assert.Equal(t, 0, state.tripCount, "a pod that probes healthy after its block is not punished for the earlier one")
 }
 
-func TestPodBlacklist_FilterBlacklisted_KeepsARecoveringPodForTheNextRequest(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
-	recovering := blacklistTestPod("recovering")
-	other := blacklistTestPod("other")
-	tripBreaker(&b, recovering)
-	state := failureStateFor(t, &b, recovering)
-	state.mu.Lock()
-	state.openUntil = time.Now().Add(-time.Second)
-	state.mu.Unlock()
-	pods := []*v1.Pod{recovering, other}
-
-	// The router picks `other`; nothing is claimed.
-	assert.Equal(t, pods, b.FilterBlacklisted(pods))
-	// So the next request still considers the recovering pod, rather than
-	// finding it excluded for the rest of the probe deadline.
-	assert.Equal(t, pods, b.FilterBlacklisted(pods))
-}
-
-func TestPodBlacklist_ClaimProbe_OnlyWhereAProbeIsDue(t *testing.T) {
-	t.Run("nil pod", func(t *testing.T) {
+// A block that is still running is lifted by podProbeRecoveryIterations healthy sweeps in a
+// row: a pod that has been answering correctly is not kept out for the rest of the hour.
+func TestPodBlacklist_HealthySweepsInARowLiftARunningBlock(t *testing.T) {
+	t.Run("a quarantine ends and the cache sees it", func(t *testing.T) {
 		var b PodBlacklist
-		assert.False(t, b.ClaimProbe(nil))
-	})
-
-	t.Run("pod with no entry", func(t *testing.T) {
-		var b PodBlacklist
-		assert.False(t, b.ClaimProbe(blacklistTestPod("1")))
-		assert.Zero(t, b.tracked.Load(), "claiming must not start tracking a pod")
-	})
-
-	t.Run("closed breaker", func(t *testing.T) {
-		b := PodBlacklist{HealthCheck: alwaysHealthy}
 		pod := blacklistTestPod("1")
-		b.RecordResult(pod, podAddr(pod), 400) // creates the entry, still closed
-		assert.False(t, b.ClaimProbe(pod))
+		for i := 0; i < podProbeFailureIterations; i++ {
+			b.RecordProbeResult(pod, ProbeDead, "GET /health failed")
+		}
+		require.True(t, b.IsQuarantined(pod))
+		require.False(t, b.Allow(pod))
+
+		for i := 0; i < podProbeRecoveryIterations-1; i++ {
+			b.RecordProbeResult(pod, ProbeHealthy, "")
+			assert.True(t, b.IsQuarantined(pod), "still quarantined after %d healthy sweeps", i+1)
+		}
+		b.RecordProbeResult(pod, ProbeHealthy, "")
+
+		assert.False(t, b.IsQuarantined(pod), "the cache scrapes the pod again")
+		assert.False(t, b.IsBlacklisted(pod))
+		assert.True(t, b.Allow(pod))
 		state := failureStateFor(t, &b, pod)
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		assert.Equal(t, circuitClosed, state.state)
+		assert.Zero(t, state.tripCount, "a recovered pod is not punished for its earlier block")
+		assert.True(t, state.quarantinedUntil.IsZero())
 	})
 
-	// Routing falls back to excluded pods when every pod is excluded. That
-	// request is not a probe: the pod's backoff is not over.
-	t.Run("open pod still inside its backoff", func(t *testing.T) {
-		b := PodBlacklist{HealthCheck: alwaysUnhealthy}
+	t.Run("a degraded backoff ends too", func(t *testing.T) {
+		var b PodBlacklist
 		pod := blacklistTestPod("1")
 		tripBreaker(&b, pod)
-		assert.False(t, b.ClaimProbe(pod))
-		state := failureStateFor(t, &b, pod)
-		state.mu.Lock()
-		defer state.mu.Unlock()
-		assert.Equal(t, circuitOpen, state.state)
+		require.True(t, b.IsBlacklisted(pod))
+
+		for i := 0; i < podProbeRecoveryIterations; i++ {
+			b.RecordProbeResult(pod, ProbeHealthy, "")
+		}
+
+		assert.False(t, b.IsBlacklisted(pod))
+		assert.True(t, b.Allow(pod))
 	})
 
-	t.Run("half-open pod whose probe is still in flight", func(t *testing.T) {
-		b := PodBlacklist{HealthCheck: alwaysUnhealthy}
+	t.Run("a failing sweep in between starts the count over", func(t *testing.T) {
+		var b PodBlacklist
 		pod := blacklistTestPod("1")
-		tripBreaker(&b, pod)
-		state := failureStateFor(t, &b, pod)
-		state.mu.Lock()
-		state.openUntil = time.Now().Add(-time.Second)
-		state.mu.Unlock()
-		require.True(t, b.ClaimProbe(pod))
-		state.mu.Lock()
-		deadline := state.probeDeadline
-		state.mu.Unlock()
+		for i := 0; i < podProbeFailureIterations; i++ {
+			b.RecordProbeResult(pod, ProbeDead, "GET /health failed")
+		}
 
-		assert.False(t, b.ClaimProbe(pod))
-		state.mu.Lock()
-		defer state.mu.Unlock()
-		assert.Equal(t, deadline, state.probeDeadline, "a refused claim must not extend the deadline")
+		for i := 0; i < podProbeRecoveryIterations-1; i++ {
+			b.RecordProbeResult(pod, ProbeHealthy, "")
+		}
+		b.RecordProbeResult(pod, ProbeDead, "GET /health failed")
+		b.RecordProbeResult(pod, ProbeHealthy, "")
+
+		assert.True(t, b.IsQuarantined(pod), "a flapping pod does not leave on one healthy sweep after a failing one")
 	})
 
-	t.Run("claim sets the probe deadline", func(t *testing.T) {
-		b := PodBlacklist{HealthCheck: alwaysUnhealthy}
+	t.Run("a load exclusion is not a sweep block", func(t *testing.T) {
+		var b PodBlacklist
 		pod := blacklistTestPod("1")
-		tripBreaker(&b, pod)
-		state := failureStateFor(t, &b, pod)
-		state.mu.Lock()
-		state.openUntil = time.Now().Add(-time.Second)
-		state.mu.Unlock()
+		b.SetLoadExcluded(pod, true)
 
-		require.True(t, b.ClaimProbe(pod))
-		state.mu.Lock()
-		defer state.mu.Unlock()
-		assert.WithinDuration(t, time.Now().Add(podBlacklistProbeTimeout), state.probeDeadline, 2*time.Second)
+		for i := 0; i < 2*podProbeRecoveryIterations; i++ {
+			b.RecordProbeResult(pod, ProbeHealthy, "")
+		}
+
+		assert.True(t, b.IsBlacklisted(pod), "only the next load sweep lifts a load exclusion")
 	})
 }
 
-// A load-excluded pod is out of routing whatever its breaker says. If routing
-// falls back to it anyway, that request is still a valid probe for the breaker.
-func TestPodBlacklist_ClaimProbe_LoadExcludedPodIsStillAdmittedByTheBreaker(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
+// A pod that is still degraded once its block has ended is blocked again after
+// another podProbeFailureIterations sweeps, for the next, longer backoff.
+func TestPodBlacklist_DegradedSweepsAfterTheBlockEscalateTheBackoff(t *testing.T) {
+	var b PodBlacklist
 	pod := blacklistTestPod("1")
 	tripBreaker(&b, pod)
-	state := failureStateFor(t, &b, pod)
-	state.mu.Lock()
-	state.openUntil = time.Now().Add(-time.Second)
-	state.mu.Unlock()
-	b.SetLoadExcluded(pod, true)
+	state := lapseBlock(t, &b, pod)
 
-	assert.False(t, b.Allow(pod), "a load-excluded pod is not a candidate")
-	assert.True(t, b.ClaimProbe(pod))
+	for i := 0; i < podProbeFailureIterations-1; i++ {
+		assert.False(t, b.RecordProbeResult(pod, ProbeDegraded, "x"))
+		assert.True(t, b.Allow(pod), "a lapsed pod stays routable while the sweeps build their count (i=%d)", i)
+	}
+	require.True(t, b.RecordProbeResult(pod, ProbeDegraded, "x"))
+
+	assert.False(t, b.Allow(pod))
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	assert.Equal(t, 2, state.tripCount)
+	assert.WithinDuration(t, time.Now().Add(backoffDuration(2)), state.openUntil, 2*time.Second)
 }
 
-func TestPodBlacklist_HalfOpenProbeSuccess_ClosesBreaker(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
-	pod := blacklistTestPod("1")
-	tripBreaker(&b, pod)
-
-	state := failureStateFor(t, &b, pod)
-	state.mu.Lock()
-	state.openUntil = time.Now().Add(-time.Second)
-	state.mu.Unlock()
-
-	assert.True(t, b.Allow(pod), "probe should be admitted")
-	require.True(t, b.ClaimProbe(pod))
-	b.RecordResult(pod, podAddr(pod), 200) // probe succeeds outright, no health check involved
-
-	assert.False(t, b.IsBlacklisted(pod), "a successful probe should close the breaker")
-	assert.True(t, b.Allow(pod), "closed breaker should admit normally")
-
-	state.mu.Lock()
-	trip := state.tripCount
-	state.mu.Unlock()
-	assert.Equal(t, 0, trip, "a successful probe should clear tripCount so a recovered pod isn't punished for its earlier failures")
-}
-
-func TestPodBlacklist_HalfOpenProbeFailure_ReopensWithLongerBackoff(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
-	pod := blacklistTestPod("1")
-	tripBreaker(&b, pod)
-
-	state := failureStateFor(t, &b, pod)
-	state.mu.Lock()
-	state.openUntil = time.Now().Add(-time.Second)
-	state.mu.Unlock()
-
-	assert.True(t, b.Allow(pod), "probe should be admitted")
-	require.True(t, b.ClaimProbe(pod))
-	b.RecordResult(pod, podAddr(pod), 400) // probe fails, and /health confirms unhealthy
-
-	assert.True(t, b.IsBlacklisted(pod), "a failed probe confirmed by /health should reopen the breaker")
-
-	state.mu.Lock()
-	trip := state.tripCount
-	openUntil := state.openUntil
-	state.mu.Unlock()
-	assert.Equal(t, 2, trip, "a failed probe should count as a second trip")
-	assert.WithinDuration(t, time.Now().Add(backoffDuration(2)), openUntil, 2*time.Second,
-		"the reopened window should reflect the doubled backoff for the second trip")
-}
-
-func TestPodBlacklist_HalfOpenProbeFailure_HealthyOverridesToClose(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
-	pod := blacklistTestPod("1")
-	tripBreaker(&b, pod)
-
-	state := failureStateFor(t, &b, pod)
-	state.mu.Lock()
-	state.openUntil = time.Now().Add(-time.Second)
-	state.mu.Unlock()
-
-	assert.True(t, b.Allow(pod), "probe should be admitted")
-	require.True(t, b.ClaimProbe(pod))
-
-	// The probe request itself got a 400, but /health now reports the pod
-	// healthy (e.g. the probe request was itself malformed).
-	b.HealthCheck = alwaysHealthy
-	b.RecordResult(pod, podAddr(pod), 400)
-
-	assert.False(t, b.IsBlacklisted(pod), "a healthy /health check should close the breaker even if the probe request itself failed")
-	state.mu.Lock()
-	trip := state.tripCount
-	state.mu.Unlock()
-	assert.Equal(t, 0, trip, "closing via a healthy override should clear tripCount, same as a genuine probe success")
-}
-
-func TestPodBlacklist_ProbeTimeout_AllowsFreshProbe(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
-	pod := blacklistTestPod("1")
-	tripBreaker(&b, pod)
-
-	state := failureStateFor(t, &b, pod)
-	state.mu.Lock()
-	state.openUntil = time.Now().Add(-time.Second)
-	state.mu.Unlock()
-
-	assert.True(t, b.Allow(pod), "pod is a candidate once its backoff elapses")
-	assert.True(t, b.ClaimProbe(pod), "first probe claimed")
-	assert.False(t, b.Allow(pod), "second caller blocked while probe is outstanding")
-	assert.False(t, b.ClaimProbe(pod), "second probe refused while the first is outstanding")
-
-	// Simulate the claimed probe request hanging forever (RecordResult is
-	// never called for it) by fast-forwarding past its deadline.
-	state.mu.Lock()
-	state.probeDeadline = time.Now().Add(-time.Second)
-	state.mu.Unlock()
-
-	assert.True(t, b.Allow(pod), "once the stuck probe's deadline lapses, the pod is a candidate again")
-	assert.True(t, b.ClaimProbe(pod), "and a new caller can claim a fresh probe")
-	assert.False(t, b.Allow(pod), "the fresh probe excludes the pod again")
-}
-
-// TestOnPodFlakyReAdd_ProactivelyOpensBreakerAndRecovers covers the fix for
-// requests routing to a pod immediately after a flaky delete/re-add, before any
-// health confirmation: OnPodFlakyReAdd (implementing cache.PodLifecycleListener)
-// should open the breaker for flakyReAddOpenDuration, then let it recover through
-// the exact same half-open probe path a reactive trip uses.
+// TestOnPodFlakyReAdd_ProactivelyOpensBreakerAndRecovers covers requests routing
+// to a pod immediately after a flaky delete/re-add: OnPodFlakyReAdd (implementing
+// cache.PodLifecycleListener) opens the breaker for flakyReAddOpenDuration, after
+// which the pod is a candidate again.
 func TestOnPodFlakyReAdd_ProactivelyOpensBreakerAndRecovers(t *testing.T) {
 	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
 	pod := blacklistTestPod("1")
@@ -1043,54 +734,39 @@ func TestOnPodFlakyReAdd_ProactivelyOpensBreakerAndRecovers(t *testing.T) {
 	state := failureStateFor(t, &b, pod)
 	state.mu.Lock()
 	assert.Equal(t, circuitOpen, state.state)
-	assert.Equal(t, 0, state.tripCount, "a proactive flaky-re-add open must not count as a confirmed-failure trip")
+	assert.Equal(t, 0, state.tripCount, "a proactive flaky-re-add open must not count as a trip")
 	openUntil := state.openUntil
 	state.mu.Unlock()
 	assert.WithinDuration(t, time.Now().Add(flakyReAddOpenDuration), openUntil, time.Second)
 
 	// Fast-forward past the (short) proactive window without sleeping.
-	state.mu.Lock()
-	state.openUntil = time.Now().Add(-time.Second)
-	state.mu.Unlock()
+	lapseBlock(t, &b, pod)
 
-	assert.True(t, b.Allow(pod), "exactly one probe should be admitted once the window elapses")
-	require.True(t, b.ClaimProbe(pod))
-	b.RecordResult(pod, podAddr(pod), 200) // the probe request succeeds
-
-	assert.False(t, b.IsBlacklisted(pod), "a successful probe should close the breaker")
-	assert.True(t, b.Allow(pod), "closed breaker should admit normally again")
+	assert.True(t, b.Allow(pod), "the pod is a candidate again once the window elapses")
+	assert.False(t, b.IsBlacklisted(pod))
 }
 
-// TestOnPodFlakyReAdd_FailedProbeReopensWithNormalBackoff covers the other half
-// of recovery: if the pod really is unhealthy, the probe RecordResult drives after
-// OnPodFlakyReAdd behaves identically to a reactively-tripped breaker's probe --
-// it re-opens with trip #1's normal backoff, not something special-cased.
-func TestOnPodFlakyReAdd_FailedProbeReopensWithNormalBackoff(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
+// A flap on a pod whose earlier block has already ended is a fresh exclusion,
+// reported as the flap and not under the old block's reason.
+func TestOnPodFlakyReAdd_AfterALapsedBlockIsAFreshExclusion(t *testing.T) {
+	var b PodBlacklist
 	pod := blacklistTestPod("1")
+	tripBreaker(&b, pod)
+	state := lapseBlock(t, &b, pod)
 
 	b.OnPodFlakyReAdd(pod)
-	state := failureStateFor(t, &b, pod)
-	state.mu.Lock()
-	state.openUntil = time.Now().Add(-time.Second)
-	state.mu.Unlock()
 
-	assert.True(t, b.Allow(pod))
-	require.True(t, b.ClaimProbe(pod))
-	b.RecordResult(pod, podAddr(pod), 400) // probe fails, /health confirms unhealthy
-
-	assert.True(t, b.IsBlacklisted(pod))
+	assert.False(t, b.Allow(pod))
+	assert.Contains(t, b.BlacklistReason(pod), "flaky delete/re-add")
 	state.mu.Lock()
-	trip := state.tripCount
-	openUntil := state.openUntil
-	state.mu.Unlock()
-	assert.Equal(t, 1, trip, "the first failed probe after a proactive open is trip #1, same as any first reactive trip")
-	assert.WithinDuration(t, time.Now().Add(backoffDuration(1)), openUntil, 2*time.Second)
+	defer state.mu.Unlock()
+	assert.Equal(t, 1, state.tripCount, "a flap leaves the trip count alone")
+	assert.WithinDuration(t, time.Now().Add(flakyReAddOpenDuration), state.openUntil, time.Second)
 }
 
 // TestOnPodFlakyReAdd_DoesNotShortenExistingExclusion covers a pod that was
-// already blacklisted for an unrelated, longer-running reason (a real failure
-// streak) when the flaky-re-add signal arrives: PodBlacklist is keyed by pod
+// already blacklisted for an unrelated, longer-running reason (a failed probe
+// sweep) when the flaky-re-add signal arrives: PodBlacklist is keyed by pod
 // name and untouched by the informer's delete/re-add cycle, so the two can
 // legitimately overlap. The proactive open must never shorten an existing,
 // later exclusion window.
@@ -1114,42 +790,13 @@ func TestOnPodFlakyReAdd_DoesNotShortenExistingExclusion(t *testing.T) {
 	assert.Equal(t, 1, afterTripCount, "an already-tripped pod's trip count must be untouched by a flaky-re-add signal")
 }
 
-// TestOnPodFlakyReAdd_DoesNotDisturbInProgressProbe covers a pod that is
-// mid-half-open-probe (a real caller already claimed the single probe slot) when
-// the flaky-re-add signal arrives: resetting state here would let a second
-// request slip through as an unaccounted-for extra probe.
-func TestOnPodFlakyReAdd_DoesNotDisturbInProgressProbe(t *testing.T) {
-	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
-	pod := blacklistTestPod("1")
-	tripBreaker(&b, pod)
-
-	state := failureStateFor(t, &b, pod)
-	state.mu.Lock()
-	state.openUntil = time.Now().Add(-time.Second)
-	state.mu.Unlock()
-	assert.True(t, b.Allow(pod))
-	require.True(t, b.ClaimProbe(pod), "claim the single half-open probe slot")
-
-	state.mu.Lock()
-	probeDeadline := state.probeDeadline
-	state.mu.Unlock()
-
-	b.OnPodFlakyReAdd(pod)
-
-	state.mu.Lock()
-	assert.Equal(t, circuitHalfOpen, state.state, "an in-progress probe must not be reset to circuitOpen")
-	assert.Equal(t, probeDeadline, state.probeDeadline)
-	state.mu.Unlock()
-	assert.False(t, b.Allow(pod), "a second caller must still not get a concurrent probe")
-}
-
 func TestPodBlacklist_SweepStale_RemovesOnlyOldEntries(t *testing.T) {
-	var b PodBlacklist // both calls stay well under threshold, so the health check is never consulted
+	var b PodBlacklist // one failed sweep each stays well under the trip count
 	stalePod := blacklistTestPod("stale")
 	freshPod := blacklistTestPod("fresh")
 
-	b.RecordResult(stalePod, podAddr(stalePod), 400)
-	b.RecordResult(freshPod, podAddr(freshPod), 400)
+	b.RecordProbeResult(stalePod, ProbeDegraded, "x")
+	b.RecordProbeResult(freshPod, ProbeDegraded, "x")
 
 	staleState := failureStateFor(t, &b, stalePod)
 	staleState.mu.Lock()
@@ -1164,14 +811,14 @@ func TestPodBlacklist_SweepStale_RemovesOnlyOldEntries(t *testing.T) {
 	assert.True(t, freshStillPresent, "a recently touched entry should survive the sweep")
 }
 
-func TestHTTPHealthCheck(t *testing.T) {
+func TestHTTPHealthCheckWithin(t *testing.T) {
 	t.Run("2xx response is healthy", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			assert.Equal(t, podHealthCheckPath, r.URL.Path)
 			w.WriteHeader(http.StatusOK)
 		}))
 		defer srv.Close()
-		assert.True(t, httpHealthCheck(strings.TrimPrefix(srv.URL, "http://")))
+		assert.True(t, httpHealthCheckWithin(strings.TrimPrefix(srv.URL, "http://"), time.Second))
 	})
 
 	t.Run("non-2xx response is unhealthy", func(t *testing.T) {
@@ -1179,15 +826,15 @@ func TestHTTPHealthCheck(t *testing.T) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}))
 		defer srv.Close()
-		assert.False(t, httpHealthCheck(strings.TrimPrefix(srv.URL, "http://")))
+		assert.False(t, httpHealthCheckWithin(strings.TrimPrefix(srv.URL, "http://"), time.Second))
 	})
 
 	t.Run("connection failure is unhealthy", func(t *testing.T) {
-		assert.False(t, httpHealthCheck("127.0.0.1:1")) // nothing listens on port 1
+		assert.False(t, httpHealthCheckWithin("127.0.0.1:1", time.Second)) // nothing listens on port 1
 	})
 
 	t.Run("empty address fails open (not blacklisted)", func(t *testing.T) {
-		assert.True(t, httpHealthCheck(""))
+		assert.True(t, httpHealthCheckWithin("", time.Second))
 	})
 }
 
@@ -1213,8 +860,10 @@ func TestHTTPListenerCheck(t *testing.T) {
 	})
 }
 
-// xLLM answers 404 on /health on every port while serving inference, so the
-// probe must not call it dead for that; every other engine still needs a 2xx.
+// Only an engine whose /health is known to be a 2xx while it is up (vLLM, SGLang) is
+// required to answer one. xLLM answers 404 on /health on every port while serving
+// inference and xDiT has no such route, so for those, and for a pod whose engine is not
+// known, the probe must not call the pod dead for that: it settles for an answer.
 func TestProbe_EngineWithoutHealthRoute(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -1223,73 +872,69 @@ func TestProbe_EngineWithoutHealthRoute(t *testing.T) {
 	addr := strings.TrimPrefix(srv.URL, "http://")
 
 	b := &PodBlacklist{}
-	for _, engine := range []string{"xllm", "XLLM"} {
+	for _, engine := range []string{"xllm", "XLLM", "xdit", "trtllm", ""} {
 		result, failure := b.probe(addr, "m", engine, time.Second)
-		assert.Equal(t, ProbeHealthy, result, "engine %q: %s", engine, failure)
+		assert.Equal(t, ProbeHealthy, result, "engine %q answers, so it is alive: %s", engine, failure)
 	}
-	for _, engine := range []string{"", "vllm", "sglang", "trtllm"} {
+	for _, engine := range []string{"vllm", "VLLM", "sglang"} {
 		result, _ := b.probe(addr, "", engine, time.Second)
 		assert.Equal(t, ProbeDead, result, "engine %q must still need a 2xx /health", engine)
 	}
 
-	// An xLLM pod with nothing listening is still dead.
-	result, _ := b.probe("127.0.0.1:1", "m", "xllm", time.Second)
-	assert.Equal(t, ProbeDead, result)
+	// A pod with nothing listening is dead whatever its engine.
+	for _, engine := range []string{"xllm", "xdit", "", "vllm"} {
+		result, _ := b.probe("127.0.0.1:1", "m", engine, time.Second)
+		assert.Equal(t, ProbeDead, result, "engine %q", engine)
+	}
 }
 
-func TestHTTPEngineServesModel(t *testing.T) {
-	const model = "test-model"
+// The probe must not go through a proxy taken from the environment: a proxy that cannot
+// reach the pod network answers like a dead pod, and the sweep would block every pod for
+// an hour. (httptest listens on loopback, which Go never proxies, so the transport is
+// checked directly.)
+func TestPodHealthHTTPClient_DoesNotUseTheEnvironmentProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	transport, ok := podHealthHTTPClient.Transport.(*http.Transport)
+	require.True(t, ok, "the probe client has a transport of its own, not http.DefaultTransport")
 
-	t.Run("model present in /v1/models is served", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			assert.Equal(t, http.MethodGet, r.Method)
-			assert.Equal(t, podModelsCheckPath, r.URL.Path)
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"other"},{"id":"test-model"}]}`))
-		}))
-		defer srv.Close()
-		assert.True(t, httpEngineServesModel(strings.TrimPrefix(srv.URL, "http://"), model))
-	})
-
-	t.Run("model absent from /v1/models is not served", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"other-model"}]}`))
-		}))
-		defer srv.Close()
-		assert.False(t, httpEngineServesModel(strings.TrimPrefix(srv.URL, "http://"), model))
-	})
-
-	t.Run("non-2xx response is not served", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusServiceUnavailable)
-		}))
-		defer srv.Close()
-		assert.False(t, httpEngineServesModel(strings.TrimPrefix(srv.URL, "http://"), model))
-	})
-
-	t.Run("unparseable 2xx body fails open", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, _ = w.Write([]byte(`not-json`))
-		}))
-		defer srv.Close()
-		assert.True(t, httpEngineServesModel(strings.TrimPrefix(srv.URL, "http://"), model))
-	})
-
-	t.Run("connection failure is not served", func(t *testing.T) {
-		assert.False(t, httpEngineServesModel("127.0.0.1:1", model))
-	})
-
-	t.Run("empty address fails open", func(t *testing.T) {
-		assert.True(t, httpEngineServesModel("", model))
-	})
-
-	t.Run("empty model fails open", func(t *testing.T) {
-		assert.True(t, httpEngineServesModel("127.0.0.1:8000", ""))
-	})
+	req, err := http.NewRequest(http.MethodGet, "http://10.1.2.3:8000/health", nil)
+	require.NoError(t, err)
+	if transport.Proxy != nil {
+		proxy, err := transport.Proxy(req)
+		require.NoError(t, err)
+		assert.Nil(t, proxy, "no proxy is used for a probe")
+	}
+	assert.NotSame(t, http.DefaultTransport, podHealthHTTPClient.Transport)
 }
 
-func TestHTTPEngineIsModelServer(t *testing.T) {
+// A pod whose /v1/models body is slow is degraded, which costs it a minute's backoff at
+// worst, not dead, which would block and quarantine it for an hour.
+func TestProbe_ASlowModelListIsDegradedNotDead(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == podHealthCheckPath {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set("Content-Length", "64")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	var b PodBlacklist
+	result, failure := b.probe(strings.TrimPrefix(srv.URL, "http://"), "test-model", "vllm", 150*time.Millisecond)
+
+	assert.Equal(t, ProbeDegraded, result, failure)
+}
+
+func TestFetchModelListWithin(t *testing.T) {
 	const model = "test-model"
 
 	serve := func(t *testing.T, h http.HandlerFunc) string {
@@ -1297,52 +942,80 @@ func TestHTTPEngineIsModelServer(t *testing.T) {
 		t.Cleanup(srv.Close)
 		return strings.TrimPrefix(srv.URL, "http://")
 	}
+	fetch := func(addr string) modelListState { return fetchModelListWithin(addr, model, time.Second) }
 
 	t.Run("model present in /v1/models is served", func(t *testing.T) {
 		addr := serve(t, func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodGet, r.Method)
 			assert.Equal(t, podModelsCheckPath, r.URL.Path)
 			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"other"},{"id":"test-model"}]}`))
 		})
-		assert.True(t, httpEngineIsModelServer(addr, model))
+		assert.Equal(t, modelListServed, fetch(addr))
 	})
 
 	t.Run("model absent is not served", func(t *testing.T) {
 		addr := serve(t, func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"other-model"}]}`))
 		})
-		assert.False(t, httpEngineIsModelServer(addr, model))
+		assert.Equal(t, modelListNotServed, fetch(addr))
 	})
 
 	// The stale-entry listener: 200 with no body, as seen on the recycled port.
-	t.Run("empty 2xx body is another listener, not served", func(t *testing.T) {
+	t.Run("empty 2xx body is another listener", func(t *testing.T) {
 		addr := serve(t, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		})
-		assert.False(t, httpEngineIsModelServer(addr, model))
-		assert.True(t, httpEngineServesModel(addr, model), "the lenient check still fails open on the same response")
+		assert.Equal(t, modelListUnparseable, fetch(addr))
 	})
 
-	t.Run("non-JSON 2xx body is not served", func(t *testing.T) {
+	t.Run("non-JSON 2xx body is another listener", func(t *testing.T) {
 		addr := serve(t, func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`not-json`))
 		})
-		assert.False(t, httpEngineIsModelServer(addr, model))
+		assert.Equal(t, modelListUnparseable, fetch(addr))
 	})
 
 	t.Run("non-2xx response is not served", func(t *testing.T) {
 		addr := serve(t, func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		})
-		assert.False(t, httpEngineIsModelServer(addr, model))
+		assert.Equal(t, modelListNotServed, fetch(addr))
 	})
 
 	t.Run("connection failure is not served", func(t *testing.T) {
-		assert.False(t, httpEngineIsModelServer("127.0.0.1:1", model))
+		assert.Equal(t, modelListNotServed, fetch("127.0.0.1:1"))
+	})
+
+	// A valid body that arrives after the wait ran out is a slow pod, not another process
+	// on the address: it must read as "not served" (degraded), never as "unparseable" (dead,
+	// an hour).
+	t.Run("a body that does not arrive in time is not another listener", func(t *testing.T) {
+		release := make(chan struct{})
+		t.Cleanup(func() { close(release) })
+		addr := serve(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", "64")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		})
+		assert.Equal(t, modelListNotServed, fetchModelListWithin(addr, model, 150*time.Millisecond))
+	})
+
+	t.Run("a body cut off by a broken connection is not another listener", func(t *testing.T) {
+		addr := serve(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", "64")
+			_, _ = w.Write([]byte(`{"data":[{"id":"test-m`))
+		})
+		assert.Equal(t, modelListNotServed, fetch(addr))
 	})
 
 	t.Run("empty address or model fails open", func(t *testing.T) {
-		assert.True(t, httpEngineIsModelServer("", model))
-		assert.True(t, httpEngineIsModelServer("127.0.0.1:8000", ""))
+		assert.Equal(t, modelListServed, fetch(""))
+		assert.Equal(t, modelListServed, fetchModelListWithin("127.0.0.1:8000", "", time.Second))
 	})
 }
 
@@ -1381,71 +1054,39 @@ func TestPodBlacklist_LogLinesNameTheAddressAndModel(t *testing.T) {
 	const model = "test-model"
 	newPod := func() *v1.Pod {
 		pod := blacklistTestPod("1")
-		pod.Labels = map[string]string{constants.ModelLabelName: model}
+		pod.Labels = map[string]string{constants.ModelLabelName: model, constants.ModelLabelPort: "8000"}
 		return pod
 	}
 	wantTarget := "(addr=10.0.0.1:8000, model=" + model + ")"
 
-	t.Run("tripped by failing requests", func(t *testing.T) {
+	t.Run("degraded for several sweeps", func(t *testing.T) {
 		logs := captureKlog(t)
-		b := PodBlacklist{HealthCheck: alwaysUnhealthy}
+		var b PodBlacklist
 		pod := newPod()
 
-		recordThreshold(&b, pod, 400, model)
+		tripBreaker(&b, pod)
 
 		assert.Contains(t, logs(), "pod ns/1 "+wantTarget+" blacklisted for")
+		assert.Contains(t, logs(), "background probe failed 3 sweeps in a row")
 	})
 
-	t.Run("re-blacklisted after a failed half-open probe", func(t *testing.T) {
+	t.Run("dead for several sweeps", func(t *testing.T) {
 		logs := captureKlog(t)
-		b := PodBlacklist{HealthCheck: alwaysUnhealthy}
-		pod := newPod()
-		recordThreshold(&b, pod, 400, model)
-		state := failureStateFor(t, &b, pod)
-		state.mu.Lock()
-		state.openUntil = time.Now().Add(-time.Second)
-		state.mu.Unlock()
-		require.True(t, b.Allow(pod))
-		require.True(t, b.ClaimProbe(pod))
-
-		b.RecordResult(pod, podAddr(pod), 400, model)
-
-		assert.Contains(t, logs(), "pod ns/1 "+wantTarget+" failed its half-open probe and its confirmation check reports it unhealthy")
-	})
-
-	t.Run("false alarm", func(t *testing.T) {
-		logs := captureKlog(t)
-		b := PodBlacklist{HealthCheck: alwaysHealthy}
+		var b PodBlacklist
 		pod := newPod()
 
-		recordThreshold(&b, pod, 400, model)
+		for i := 0; i < podProbeFailureIterations; i++ {
+			b.RecordProbeResult(pod, ProbeDead, "GET /health failed")
+		}
 
-		assert.Contains(t, logs(), "pod ns/1 "+wantTarget+" hit 3 failures")
+		assert.Contains(t, logs(), "pod ns/1 "+wantTarget+" blacklisted for 1h0m0s: background probe found it dead")
 	})
 
-	t.Run("recovered on a half-open probe", func(t *testing.T) {
-		logs := captureKlog(t)
-		b := PodBlacklist{HealthCheck: alwaysUnhealthy}
-		pod := newPod()
-		recordThreshold(&b, pod, 400, model)
-		state := failureStateFor(t, &b, pod)
-		state.mu.Lock()
-		state.openUntil = time.Now().Add(-time.Second)
-		state.mu.Unlock()
-		require.True(t, b.Allow(pod))
-		require.True(t, b.ClaimProbe(pod))
-
-		b.RecordResult(pod, podAddr(pod), 200, model)
-
-		assert.Contains(t, logs(), "pod ns/1 "+wantTarget+" passed its half-open probe and is un-blacklisted")
-	})
-
-	// Background paths have no request, so the address and model come from the pod.
+	// The address and model come from the pod: no request is involved.
 	t.Run("load outlier", func(t *testing.T) {
 		logs := captureKlog(t)
 		var b PodBlacklist
 		pod := newPod()
-		pod.Labels[constants.ModelLabelPort] = "8000"
 
 		b.SetLoadExcluded(pod, true)
 
@@ -1456,7 +1097,6 @@ func TestPodBlacklist_LogLinesNameTheAddressAndModel(t *testing.T) {
 		logs := captureKlog(t)
 		var b PodBlacklist
 		pod := newPod()
-		pod.Labels[constants.ModelLabelPort] = "8000"
 
 		b.OnPodFlakyReAdd(pod)
 

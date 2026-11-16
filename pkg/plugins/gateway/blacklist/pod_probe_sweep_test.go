@@ -128,9 +128,9 @@ func TestRecordProbeResult_HealthyProbeDoesNotTrackAPod(t *testing.T) {
 	assert.False(t, tracked, "a pod that has never failed should not get a breaker entry from a passing probe")
 }
 
-// The stale-entry case: failing requests already have the breaker cycling
-// through short open/half-open backoffs, so each cycle would hand the dead
-// address another real request. The sweep must move it to the long blacklist.
+// The stale-entry case: a pod already in a short backoff from degraded sweeps
+// would be handed real traffic every few minutes once each backoff ends. When
+// the sweep finds it dead it must move it to the long blacklist.
 func TestRecordProbeResult_DeadSweepsExtendAnAlreadyOpenPod(t *testing.T) {
 	b := PodBlacklist{HealthCheck: alwaysUnhealthy}
 	pod := blacklistTestPod("1")
@@ -148,22 +148,6 @@ func TestRecordProbeResult_DeadSweepsExtendAnAlreadyOpenPod(t *testing.T) {
 	assert.Equal(t, 1, state.tripCount, "the pod was already open, so this is not another trip")
 }
 
-func TestRecordProbeResult_DeadSweepsOverrideAHalfOpenProbe(t *testing.T) {
-	var b PodBlacklist
-	pod := blacklistTestPod("1")
-	b.RecordProbeResult(pod, ProbeDegraded, "x") // creates the entry
-	state := failureStateFor(t, &b, pod)
-	state.mu.Lock()
-	state.state = circuitHalfOpen
-	state.probeDeadline = time.Now().Add(podBlacklistProbeTimeout)
-	state.mu.Unlock()
-
-	failDead(&b, pod, podProbeFailureIterations)
-
-	assert.True(t, b.IsBlacklisted(pod))
-	assert.False(t, b.Allow(pod), "the hour ends the half-open probe that was in flight")
-}
-
 // An excluded pod would otherwise say nothing while the sweep counts up to the
 // hour, so it could not be told from a pod the sweep never probes.
 func TestRecordProbeResult_LogsDeadSweepsOfAnAlreadyExcludedPod(t *testing.T) {
@@ -173,43 +157,29 @@ func TestRecordProbeResult_LogsDeadSweepsOfAnAlreadyExcludedPod(t *testing.T) {
 		tripBreaker(b, pod)
 		return b, pod
 	}
-	halfOpenPod := func(t *testing.T) (*PodBlacklist, *v1.Pod) {
-		b, pod := openPod()
-		state := failureStateFor(t, b, pod)
-		state.mu.Lock()
-		state.state = circuitHalfOpen
-		state.probeDeadline = time.Now().Add(podBlacklistProbeTimeout)
-		state.mu.Unlock()
-		return b, pod
-	}
 	const excludedLine = "excluded pod failed a background probe as dead"
 
-	for name, setup := range map[string]func(*testing.T) (*PodBlacklist, *v1.Pod){
-		"open":      func(*testing.T) (*PodBlacklist, *v1.Pod) { return openPod() },
-		"half-open": halfOpenPod,
-	} {
-		t.Run(name+" pod logs each dead sweep short of the hour", func(t *testing.T) {
-			logs := captureKlog(t)
-			b, pod := setup(t)
-
-			for i := 1; i < podProbeFailureIterations; i++ {
-				b.RecordProbeResult(pod, ProbeDead, probeFailure)
-				assert.Contains(t, logs(), fmt.Sprintf("deadSweeps=%d", i))
-			}
-			assert.Contains(t, logs(), excludedLine)
-			assert.Contains(t, logs(), `pod="ns/1"`)
-			assert.Contains(t, logs(), `reason="`+probeFailure+`"`)
-
-			require.True(t, b.RecordProbeResult(pod, ProbeDead, probeFailure))
-			assert.Contains(t, logs(), "blacklisted for 1h0m0s")
-			assert.NotContains(t, logs(), fmt.Sprintf("deadSweeps=%d", podProbeFailureIterations),
-				"the sweep that reaches the threshold logs the blacklisting, not another count")
-		})
-	}
-
-	t.Run("degraded and healthy sweeps stay silent", func(t *testing.T) {
+	t.Run("open pod logs each dead sweep short of the hour", func(t *testing.T) {
 		logs := captureKlog(t)
 		b, pod := openPod()
+
+		for i := 1; i < podProbeFailureIterations; i++ {
+			b.RecordProbeResult(pod, ProbeDead, probeFailure)
+			assert.Contains(t, logs(), fmt.Sprintf("deadSweeps=%d", i))
+		}
+		assert.Contains(t, logs(), excludedLine)
+		assert.Contains(t, logs(), `pod="ns/1"`)
+		assert.Contains(t, logs(), `reason="`+probeFailure+`"`)
+
+		require.True(t, b.RecordProbeResult(pod, ProbeDead, probeFailure))
+		assert.Contains(t, logs(), "blacklisted for 1h0m0s")
+		assert.NotContains(t, logs(), fmt.Sprintf("deadSweeps=%d", podProbeFailureIterations),
+			"the sweep that reaches the threshold logs the blacklisting, not another count")
+	})
+
+	t.Run("degraded and healthy sweeps stay silent", func(t *testing.T) {
+		b, pod := openPod() // tripping it logs; only what follows is under test
+		logs := captureKlog(t)
 
 		b.RecordProbeResult(pod, ProbeDegraded, "GET /v1/models did not list the model")
 		b.RecordProbeResult(pod, ProbeHealthy, "")
@@ -261,39 +231,25 @@ func TestRecordProbeResult_DeadPodStaysOutWhileItStaysDead(t *testing.T) {
 		"another run of dead sweeps renews the hour")
 }
 
-// When the hour ends the ordinary half-open path takes over, so a pod that
-// recovered is let back in by its first real request.
-func TestRecordProbeResult_AfterTheHourTheHalfOpenPathTakesOver(t *testing.T) {
+// When the hour ends the pod is admitted again with no probe request. One that
+// is still dead is blacklisted again by fresh dead sweeps; one that recovered
+// simply stays in.
+func TestRecordProbeResult_AfterTheHourThePodIsAdmittedAgain(t *testing.T) {
 	var b PodBlacklist
 	pod := blacklistTestPod("1")
 	failDead(&b, pod, podProbeFailureIterations)
 	assert.False(t, b.Allow(pod))
 
-	state := failureStateFor(t, &b, pod)
-	state.mu.Lock()
-	state.openUntil = time.Now().Add(-time.Second)
-	state.mu.Unlock()
+	lapseBlock(t, &b, pod)
 
 	assert.True(t, b.Allow(pod), "the hour is over: the pod is a candidate again")
-	require.True(t, b.ClaimProbe(pod), "the next request routed to it is the half-open probe")
-	state.mu.Lock()
-	assert.Equal(t, circuitHalfOpen, state.state)
-	state.mu.Unlock()
-	b.RecordResult(pod, "10.0.0.1:8000", 200)
-	state.mu.Lock()
-	assert.Equal(t, circuitClosed, state.state, "the probe's success closes the breaker")
-	state.mu.Unlock()
 	assert.False(t, b.IsBlacklisted(pod))
-}
 
-func TestRecordProbeResult_InFlightRequestResultsDoNotEndTheHour(t *testing.T) {
-	var b PodBlacklist
-	pod := blacklistTestPod("1")
-	failDead(&b, pod, podProbeFailureIterations)
-
-	b.RecordResult(pod, "10.0.0.1:8000", 200)
-
-	assert.True(t, b.IsBlacklisted(pod), "results of requests already in flight are ignored while the pod is open")
+	failDead(&b, pod, podProbeFailureIterations-1)
+	assert.True(t, b.Allow(pod), "a lapsed pod stays routable while the dead sweeps build their count")
+	failDead(&b, pod, 1)
+	assert.False(t, b.Allow(pod), "still dead: blacklisted again after another run of dead sweeps")
+	assert.InDelta(t, podProbeDeadBlacklistDuration.Seconds(), blacklistedFor(t, &b, pod).Seconds(), 5)
 }
 
 // fakePods is a PodSource over a fixed model -> pods map.
@@ -551,10 +507,10 @@ func TestIsQuarantined_OnlyTheDeadPodsHourCounts(t *testing.T) {
 		state.openUntil = time.Now().Add(-time.Second)
 		state.mu.Unlock()
 
-		assert.False(t, b.IsQuarantined(pod), "after the hour the pod is back on the half-open path")
+		assert.False(t, b.IsQuarantined(pod), "after the hour the pod is back in routing")
 	})
 
-	t.Run("a healthy sweep does not end it", func(t *testing.T) {
+	t.Run("a single healthy sweep does not end it", func(t *testing.T) {
 		var b PodBlacklist
 		pod := blacklistTestPod("1")
 		failDead(&b, pod, podProbeFailureIterations)
@@ -620,18 +576,18 @@ func TestSweepStale_KeepsABlockedPodForItsWholeHour(t *testing.T) {
 
 // A pod that answers /health correctly but slowly is healthy, not dead. The
 // fleet's sglang pods take 1.4-1.7 s to answer /health, which the sweep once
-// judged dead (its wait was the 1 s a tripping request could afford), so it
-// blacklisted them for an hour, over and over. This one is slower than a
-// tripping request will wait but well inside what the sweep does.
+// judged dead (its wait was 1 s), so it blacklisted them for an hour, over and
+// over. This one answers in that range, well inside what the sweep waits.
 func TestSweepPodProbes_ASlowButHealthyEngineIsNotDead(t *testing.T) {
 	const model = "test-model"
+	const slowHealth = 1500 * time.Millisecond
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == podModelsCheckPath {
 			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"test-model"}]}`))
 			return
 		}
 		select {
-		case <-time.After(podHealthCheckTimeout + 300*time.Millisecond):
+		case <-time.After(slowHealth):
 			w.WriteHeader(http.StatusOK)
 		case <-r.Context().Done():
 		}
@@ -647,11 +603,10 @@ func TestSweepPodProbes_ASlowButHealthyEngineIsNotDead(t *testing.T) {
 	assert.False(t, tracked, "a healthy probe leaves no failure behind")
 	assert.False(t, bl.IsBlacklisted(pod))
 
-	// The same pod does fail within the wait a tripping request can afford; the
-	// sweep has its own, longer one because nothing waits on it. (A short wait
-	// here keeps the test quick: it only needs to be shorter than the pod.)
+	// The same pod does fail within a shorter wait: it is the sweep's longer one,
+	// which nothing waits on, that keeps it from being judged dead.
 	result, failure := bl.probe(addr, model, "sglang", 100*time.Millisecond)
 	assert.Equal(t, ProbeDead, result)
 	assert.Contains(t, failure, "/health")
-	assert.Greater(t, podProbeTimeout, podHealthCheckTimeout)
+	assert.Greater(t, podProbeTimeout, slowHealth)
 }

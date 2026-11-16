@@ -21,10 +21,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
-	"net/http"
-	"net/http/httptest"
-	"strconv"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -63,16 +60,11 @@ func blacklistTestPod(name string) *v1.Pod {
 	}
 }
 
-// alwaysUnhealthy/alwaysHealthy stub blacklist.PodBlacklist.HealthCheck so
-// tests never make a real network call when the breaker confirms a trip.
-func alwaysUnhealthy(string) bool { return false }
-func alwaysHealthy(string) bool   { return true }
-
-// tripBreaker reports blacklist.FailureThreshold failures for pod, the way
-// HandleResponseHeaders does.
+// tripBreaker blacklists pod the way the probe sweep does, by reporting it
+// degraded until the sweep's count trips the breaker.
 func tripBreaker(b *blacklist.PodBlacklist, pod *v1.Pod) {
-	for i := 0; i < blacklist.FailureThreshold; i++ {
-		b.RecordResult(pod, pod.Status.PodIP+":8000", 400)
+	for i := 0; i < 10 && !b.IsBlacklisted(pod); i++ {
+		b.RecordProbeResult(pod, blacklist.ProbeDegraded, "GET /v1/models did not list the model")
 	}
 }
 
@@ -176,7 +168,7 @@ func TestAllBlacklistedLogThrottle(t *testing.T) {
 
 func TestLogAllPodsBlacklisted_NamesModelAndReasonsOncePerInterval(t *testing.T) {
 	logs := captureKlogOutput(t)
-	server := &Server{podBlacklist: blacklist.PodBlacklist{HealthCheck: alwaysUnhealthy}}
+	server := &Server{}
 	pod := blacklistTestPod("1")
 	tripBreaker(&server.podBlacklist, pod)
 	require.True(t, server.podBlacklist.IsBlacklisted(pod))
@@ -209,8 +201,9 @@ func TestPodEngineQueueDepth_ReadsPodModelScopedMetric(t *testing.T) {
 	})
 
 	server := &Server{cache: store}
-	assert.Equal(t, 10.0, server.podEngineQueueDepth(pod, "test-model"),
-		"should read the pod+model-scoped metric, not silently contribute 0")
+	load, ok := server.podEngineQueueDepth(pod, "test-model")
+	assert.True(t, ok)
+	assert.Equal(t, 10.0, load, "should read the pod+model-scoped metric, not silently contribute 0")
 
 	// The exact miss that would make podEngineQueueDepth always read 0: the
 	// pod-only accessor genuinely does not have this metric.
@@ -218,16 +211,35 @@ func TestPodEngineQueueDepth_ReadsPodModelScopedMetric(t *testing.T) {
 	assert.Error(t, err, "num_requests_running is pod+model scoped and must not be visible via the pod-only accessor")
 }
 
-// A missing metric reads as 0: the load sweep only ever excludes a pod for being
-// too high, never for being unmeasured.
-func TestPodEngineQueueDepth_MissingMetricReadsAsZero(t *testing.T) {
+// A missing metric is an unmeasured pod, not an idle one: the load sweep leaves it out
+// instead of scoring it, or its peers, as load 0.
+func TestPodEngineQueueDepth_MissingMetricIsUnmeasured(t *testing.T) {
 	pod := blacklistTestPod("1")
-	mc := new(MockCache)
-	mc.On("GetMetricValueByPodModel", "1", "ns", "test-model", mock.Anything).
-		Return(&metrics.SimpleMetricValue{}, fmt.Errorf("metric not found"))
-	server := &Server{cache: mc}
 
-	assert.Equal(t, 0.0, server.podEngineQueueDepth(pod, "test-model"))
+	t.Run("neither metric", func(t *testing.T) {
+		mc := new(MockCache)
+		mc.On("GetMetricValueByPodModel", "1", "ns", "test-model", mock.Anything).
+			Return(&metrics.SimpleMetricValue{}, fmt.Errorf("metric not found"))
+		server := &Server{cache: mc}
+
+		load, ok := server.podEngineQueueDepth(pod, "test-model")
+
+		assert.False(t, ok)
+		assert.Zero(t, load)
+	})
+
+	t.Run("only one of them", func(t *testing.T) {
+		mc := new(MockCache)
+		mc.On("GetMetricValueByPodModel", "1", "ns", "test-model", metrics.NumRequestsRunning).
+			Return(&metrics.SimpleMetricValue{Value: 7}, nil)
+		mc.On("GetMetricValueByPodModel", "1", "ns", "test-model", metrics.NumRequestsWaiting).
+			Return(&metrics.SimpleMetricValue{}, fmt.Errorf("metric not found"))
+		server := &Server{cache: mc}
+
+		_, ok := server.podEngineQueueDepth(pod, "test-model")
+
+		assert.False(t, ok, "half a measurement is not a measurement")
+	})
 }
 
 // A pod that serves several models (a base model plus LoRA adapters) reports the
@@ -264,145 +276,22 @@ func handleResponseHeadersStatusReq(status string) *extProcPb.ProcessingRequest 
 	}
 }
 
-// Test_HandleResponseHeaders_TripsPodBlacklist verifies HandleResponseHeaders
-// feeds each request's upstream status code (and target address) into the
-// server's pod blacklist, and that blacklist.FailureThreshold 400s from the same
-// pod, confirmed unhealthy, trip it.
-func Test_HandleResponseHeaders_TripsPodBlacklist(t *testing.T) {
-	routing.Init()
-	server := &Server{podBlacklist: blacklist.PodBlacklist{HealthCheck: alwaysUnhealthy}}
-	pod := blacklistTestPod("1")
-
-	for i := 0; i < blacklist.FailureThreshold-1; i++ {
-		routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", fmt.Sprintf("req-%d", i), "test-user")
-		routerCtx.SetTargetPod(pod)
-		server.HandleResponseHeaders(context.Background(), routerCtx, routerCtx.RequestID, "test-model", handleResponseHeadersStatusReq("400"))
-		assert.False(t, server.podBlacklist.IsBlacklisted(pod))
-	}
-
-	routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", "req-final", "test-user")
-	routerCtx.SetTargetPod(pod)
-	server.HandleResponseHeaders(context.Background(), routerCtx, routerCtx.RequestID, "test-model", handleResponseHeadersStatusReq("400"))
-	assert.True(t, server.podBlacklist.IsBlacklisted(pod))
-}
-
-// A failing streak on a pod that confirmation finds healthy is a false alarm (a
-// client-side 400, say), so the pod stays in rotation.
-func Test_HandleResponseHeaders_FalseAlarmWhenPodConfirmedHealthy(t *testing.T) {
-	routing.Init()
-	server := &Server{podBlacklist: blacklist.PodBlacklist{HealthCheck: alwaysHealthy}}
-	pod := blacklistTestPod("1")
-
-	for i := 0; i < blacklist.FailureThreshold+2; i++ {
-		routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", fmt.Sprintf("req-%d", i), "test-user")
-		routerCtx.SetTargetPod(pod)
-		server.HandleResponseHeaders(context.Background(), routerCtx, routerCtx.RequestID, "test-model", handleResponseHeadersStatusReq("400"))
-	}
-
-	assert.False(t, server.podBlacklist.IsBlacklisted(pod), "a pod whose health check passes is not blacklisted by a streak of failures")
-}
-
-// A request that was never routed to a pod has nobody to blame.
-func Test_HandleResponseHeaders_UnroutedRequestRecordsNothing(t *testing.T) {
-	routing.Init()
-	server := &Server{podBlacklist: blacklist.PodBlacklist{HealthCheck: alwaysUnhealthy}}
-	pod := blacklistTestPod("1")
-
-	for i := 0; i < blacklist.FailureThreshold+1; i++ {
-		routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", fmt.Sprintf("req-%d", i), "test-user")
-		server.HandleResponseHeaders(context.Background(), routerCtx, routerCtx.RequestID, "test-model", handleResponseHeadersStatusReq("500"))
-	}
-
-	assert.False(t, server.podBlacklist.IsBlacklisted(pod))
-	assert.Zero(t, server.podBlacklist.FailureCount(pod))
-}
-
-// engineModelsServer serves GET /v1/models with the given OpenAI-style body
-// and 200 on every other path (including /health), so a 404 confirmation
-// that still consulted /health or the routing cache would not trip.
-func engineModelsServer(t *testing.T, body string) (string, int) {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/models" {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(body))
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(srv.Close)
-	host := strings.TrimPrefix(srv.URL, "http://")
-	ip, portStr, err := net.SplitHostPort(host)
-	assert.NoError(t, err)
-	port, err := strconv.Atoi(portStr)
-	assert.NoError(t, err)
-	return ip, port
-}
-
-func send404Streak(t *testing.T, server *Server, pod *v1.Pod, port int, model string) {
-	t.Helper()
-	for i := 0; i < blacklist.FailureThreshold-1; i++ {
-		routerCtx := types.NewRoutingContext(context.Background(), "random", model, "", fmt.Sprintf("req-%d", i), "test-user")
-		routerCtx.SetTargetPod(pod)
-		routerCtx.SetTargetPort(port)
-		server.HandleResponseHeaders(context.Background(), routerCtx, routerCtx.RequestID, model, handleResponseHeadersStatusReq("404"))
-		assert.False(t, server.podBlacklist.IsBlacklisted(pod), "should not blacklist before threshold (i=%d)", i)
-	}
-	routerCtx := types.NewRoutingContext(context.Background(), "random", model, "", "req-final", "test-user")
-	routerCtx.SetTargetPod(pod)
-	routerCtx.SetTargetPort(port)
-	server.HandleResponseHeaders(context.Background(), routerCtx, routerCtx.RequestID, model, handleResponseHeadersStatusReq("404"))
-}
-
-// Test_HandleResponseHeaders_404_TripsWhenEngineNoLongerListsModel is the
-// production path for 404 confirmation: HandleResponseHeaders always passes
-// the request model, and the zero-value blacklist confirms against GET
-// /v1/models on the routed address -- not the gateway cache that selected
-// the pod. /health is 200 on this server, so a leftover cache-membership
-// veto (or a /health fallback) would fail to trip.
-func Test_HandleResponseHeaders_404_TripsWhenEngineNoLongerListsModel(t *testing.T) {
-	routing.Init()
-	ip, port := engineModelsServer(t, `{"object":"list","data":[{"id":"other-model"}]}`)
-	pod := blacklistTestPod("1")
-	pod.Status.PodIP = ip
-	server := &Server{}
-
-	send404Streak(t, server, pod, port, "test-model")
-	assert.True(t, server.podBlacklist.IsBlacklisted(pod), "a 404 streak must trip once GET /v1/models confirms the engine no longer lists the requested model, even though /health is 200")
-}
-
-// Test_HandleResponseHeaders_404_FalseAlarmWhenEngineStillListsModel is the
-// converse production path: the engine still lists the model, so consecutive
-// 404s are a false alarm and must not blacklist the pod.
-func Test_HandleResponseHeaders_404_FalseAlarmWhenEngineStillListsModel(t *testing.T) {
-	routing.Init()
-	ip, port := engineModelsServer(t, `{"object":"list","data":[{"id":"test-model"}]}`)
-	pod := blacklistTestPod("1")
-	pod.Status.PodIP = ip
-	server := &Server{}
-
-	send404Streak(t, server, pod, port, "test-model")
-	assert.False(t, server.podBlacklist.IsBlacklisted(pod), "a 404 streak must not trip when GET /v1/models still lists the requested model")
-}
-
-// recvErrorServer is a Server wired for handleRecvError tests: a breaker that
-// confirms every trip as unhealthy, and a cache that accepts the request-count
-// release every exit path performs.
+// recvErrorServer is a Server wired for handleRecvError tests: a cache that
+// accepts the request-count release every exit path performs.
 func recvErrorServer() *Server {
 	mc := &MockCache{}
 	mc.On("DoneRequestCount", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	return &Server{
-		podBlacklist:        blacklist.PodBlacklist{HealthCheck: alwaysUnhealthy},
 		cache:               mc,
 		requestCountTracker: map[string]int{},
 	}
 }
 
 // routedState is the processState of a request already routed to pod.
-func routedState(ctx context.Context, pod *v1.Pod, reqID string, headersSeen bool) *processState {
+func routedState(ctx context.Context, pod *v1.Pod, reqID string) *processState {
 	routerCtx := types.NewRoutingContext(ctx, "random", "test-model", "", reqID, "test-user")
 	routerCtx.SetTargetPod(pod)
-	return &processState{ctx: ctx, requestID: reqID, model: "test-model", routerCtx: routerCtx, respHeadersSeen: headersSeen}
+	return &processState{ctx: ctx, requestID: reqID, model: "test-model", routerCtx: routerCtx}
 }
 
 // recvFailure is one way the ext_proc stream can end before the response completed.
@@ -419,122 +308,30 @@ var recvFailures = []recvFailure{
 	}},
 }
 
-// Test_handleRecvError_StreamClosedBeforeHeaders_TripsPodBlacklist verifies that an
-// ext_proc stream that closes with no ResponseHeaders ever seen (a stale
-// registration or an unreachable pod) feeds the pod blacklist the same way a
-// tracked HTTP status would, and that blacklist.FailureThreshold occurrences,
-// confirmed unhealthy, trip it.
-func Test_handleRecvError_StreamClosedBeforeHeaders_TripsPodBlacklist(t *testing.T) {
-	for _, tc := range recvFailures {
-		t.Run(tc.name, func(t *testing.T) {
-			pod := blacklistTestPod("1")
-			server := recvErrorServer()
-
-			for i := 0; i < blacklist.FailureThreshold-1; i++ {
-				tc.wantErr(t, server.handleRecvError(routedState(context.Background(), pod, fmt.Sprintf("req-%d", i), false), tc.recvErr))
-				assert.False(t, server.podBlacklist.IsBlacklisted(pod))
-			}
-
-			tc.wantErr(t, server.handleRecvError(routedState(context.Background(), pod, "req-final", false), tc.recvErr))
-			assert.True(t, server.podBlacklist.IsBlacklisted(pod), "a pod that never returns a response at all should trip the breaker just like consecutive 400/404s")
-		})
-	}
-}
-
-// Test_handleRecvError_ClosedAfterHeaders_RecordsIncompleteStream verifies that the
-// stream closing after ResponseHeaders, with the client still connected, is an
-// upstream reset: it records blacklist.StatusIncompleteStream (distinct from the
-// 200 already recorded at header time) rather than being ignored.
-func Test_handleRecvError_ClosedAfterHeaders_RecordsIncompleteStream(t *testing.T) {
-	for _, tc := range recvFailures {
-		t.Run(tc.name, func(t *testing.T) {
-			pod := blacklistTestPod("1")
-			server := recvErrorServer()
-
-			for i := 0; i < blacklist.FailureThreshold-1; i++ {
-				tc.wantErr(t, server.handleRecvError(routedState(context.Background(), pod, fmt.Sprintf("req-%d", i), true), tc.recvErr))
-				assert.False(t, server.podBlacklist.IsBlacklisted(pod))
-			}
-
-			tc.wantErr(t, server.handleRecvError(routedState(context.Background(), pod, "req-final", true), tc.recvErr))
-			assert.True(t, server.podBlacklist.IsBlacklisted(pod), "a close after 200 headers must accumulate as incomplete-stream failures")
-		})
-	}
-}
-
-// A client that left after the headers arrived is not the pod's fault, and the
-// headers already recorded the status.
-func Test_handleRecvError_ClientAbortAfterHeaders_DoesNotBlacklist(t *testing.T) {
-	for _, tc := range recvFailures {
-		t.Run(tc.name, func(t *testing.T) {
-			pod := blacklistTestPod("1")
-			server := recvErrorServer()
-
-			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
-			for i := 0; i < blacklist.FailureThreshold+2; i++ {
-				tc.wantErr(t, server.handleRecvError(routedState(ctx, pod, fmt.Sprintf("req-%d", i), true), tc.recvErr))
-			}
-
-			assert.False(t, server.podBlacklist.IsBlacklisted(pod), "client abort after ResponseHeaders must not incomplete-blacklist the pod")
-			assert.Zero(t, server.podBlacklist.FailureCount(pod))
-		})
-	}
-}
-
-// A client that gave up before any response headers arrived (a timeout while the pod is
-// still queuing or prefilling) says nothing about the pod: counting it would blacklist
-// a busy pod for the very load that made the clients time out.
-func Test_handleRecvError_ClientAbortBeforeHeaders_DoesNotBlacklist(t *testing.T) {
-	for _, tc := range recvFailures {
-		t.Run(tc.name, func(t *testing.T) {
-			pod := blacklistTestPod("1")
-			server := recvErrorServer()
-
-			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
-			for i := 0; i < blacklist.FailureThreshold+2; i++ {
-				tc.wantErr(t, server.handleRecvError(routedState(ctx, pod, fmt.Sprintf("req-%d", i), false), tc.recvErr))
-			}
-
-			assert.False(t, server.podBlacklist.IsBlacklisted(pod), "client abort before ResponseHeaders must not blacklist the pod")
-			assert.Zero(t, server.podBlacklist.FailureCount(pod))
-		})
-	}
-}
-
 // A success whose response headers end the message (a 204, an empty-body 200) has no body
 // callback to mark it complete. It must complete on the headers, or the stream closing
-// afterwards is recorded as an upstream hang-up against a pod that answered correctly.
-func Test_HeadersOnlySuccess_IsCompleteAndDoesNotBlacklist(t *testing.T) {
+// afterwards is counted as a cancelled request (499) for a request that was answered correctly.
+func Test_HeadersOnlySuccess_IsComplete(t *testing.T) {
 	for _, statusCode := range []string{"200", "204"} {
 		t.Run(statusCode, func(t *testing.T) {
-			pod := blacklistTestPod("1")
 			server := recvErrorServer()
+			st := routedState(context.Background(), blacklistTestPod("1"), "req-headers-only")
+			req := handleResponseHeadersStatusReq(statusCode)
+			req.GetResponseHeaders().EndOfStream = true
 
-			for i := 0; i < blacklist.FailureThreshold+2; i++ {
-				st := routedState(context.Background(), pod, fmt.Sprintf("req-%d", i), false)
-				req := handleResponseHeadersStatusReq(statusCode)
-				req.GetResponseHeaders().EndOfStream = true
+			_, err := server.handleProcessingRequest(st, req)
 
-				_, err := server.handleProcessingRequest(st, req)
-				require.NoError(t, err)
-				assert.True(t, st.completed, "a headers-only success is complete: no body callback will follow")
-
-				_ = server.handleRecvError(st, io.EOF)
-			}
-
-			assert.False(t, server.podBlacklist.IsBlacklisted(pod))
-			assert.Zero(t, server.podBlacklist.FailureCount(pod))
+			require.NoError(t, err)
+			assert.True(t, st.completed, "a headers-only success is complete: no body callback will follow")
+			assert.NoError(t, server.handleRecvError(st, io.EOF), "the stream closing afterwards is a normal end")
 		})
 	}
 }
 
 // With a body still to come, the response headers alone do not complete the request.
 func Test_ResponseHeaders_WithBodyToFollowIsNotComplete(t *testing.T) {
-	pod := blacklistTestPod("1")
 	server := recvErrorServer()
-	st := routedState(context.Background(), pod, "req-body", false)
+	st := routedState(context.Background(), blacklistTestPod("1"), "req-body")
 
 	_, err := server.handleProcessingRequest(st, handleResponseHeadersStatusReq("200"))
 
@@ -542,38 +339,126 @@ func Test_ResponseHeaders_WithBodyToFollowIsNotComplete(t *testing.T) {
 	assert.False(t, st.completed)
 }
 
-// A request that already completed ended normally; the stream closing afterwards says
-// nothing about the pod.
-func Test_handleRecvError_AfterCompletion_DoesNotBlacklist(t *testing.T) {
-	for _, tc := range recvFailures {
-		t.Run(tc.name, func(t *testing.T) {
-			pod := blacklistTestPod("1")
-			server := recvErrorServer()
-
-			for i := 0; i < blacklist.FailureThreshold+2; i++ {
-				st := routedState(context.Background(), pod, fmt.Sprintf("req-%d", i), true)
-				st.completed = true
-				_ = server.handleRecvError(st, tc.recvErr)
-			}
-
-			assert.False(t, server.podBlacklist.IsBlacklisted(pod))
-			assert.Zero(t, server.podBlacklist.FailureCount(pod))
-		})
-	}
+// fallbackCounts records the requests routed with the blacklist ignored, by reason.
+type fallbackCounts struct {
+	mu     sync.Mutex
+	counts map[string]int
 }
 
-// A stream that was never routed (rejected before a pod was picked) has no pod to blame.
-func Test_handleRecvError_UnroutedRequest_DoesNotBlacklist(t *testing.T) {
-	pod := blacklistTestPod("1")
-	server := recvErrorServer()
+func captureFallbackCounts(t *testing.T) *fallbackCounts {
+	t.Helper()
+	c := &fallbackCounts{counts: map[string]int{}}
+	prev := metrics.IncrementCounterMetricFnForTest
+	metrics.IncrementCounterMetricFnForTest = func(name, help string, value float64, names []string, values ...string) {
+		if name != metrics.GatewayPodBlacklistFallbackTotal {
+			return
+		}
+		for i, n := range names {
+			if n == "reason" {
+				c.mu.Lock()
+				c.counts[values[i]]++
+				c.mu.Unlock()
+			}
+		}
+	}
+	t.Cleanup(func() { metrics.IncrementCounterMetricFnForTest = prev })
+	return c
+}
 
-	for i := 0; i < blacklist.FailureThreshold+2; i++ {
-		routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", fmt.Sprintf("req-%d", i), "test-user")
-		st := &processState{ctx: context.Background(), requestID: routerCtx.RequestID, model: "test-model", routerCtx: routerCtx}
-		assert.Equal(t, io.EOF, server.handleRecvError(st, io.EOF))
+func (c *fallbackCounts) get(reason string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.counts[reason]
+}
+
+// The blacklist may exclude at most AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT of the pods a
+// request considers. Past that the pods are routed across as if none were excluded.
+func Test_excludeBlacklisted_RoutesAcrossAllPodsOverTheCap(t *testing.T) {
+	t.Cleanup(blacklist.SetMaxExcludedPercentForTest(50))
+	counts := captureFallbackCounts(t)
+	pods := []*v1.Pod{blacklistTestPod("1"), blacklistTestPod("2"), blacklistTestPod("3"), blacklistTestPod("4")}
+	ctx := types.NewRoutingContext(context.Background(), routing.RouterRandom, "m", "", "r1", "")
+	s := &Server{}
+
+	assert.Equal(t, pods, s.excludeBlacklisted(ctx, pods), "nothing excluded")
+
+	tripBreaker(&s.podBlacklist, pods[0])
+	assert.Equal(t, pods[1:], s.excludeBlacklisted(ctx, pods), "a quarter excluded is within the cap")
+
+	tripBreaker(&s.podBlacklist, pods[1])
+	assert.Equal(t, pods[2:], s.excludeBlacklisted(ctx, pods), "half excluded is at the cap, not over it")
+	assert.Zero(t, counts.get(fallbackOverCap))
+
+	tripBreaker(&s.podBlacklist, pods[2])
+	assert.Equal(t, pods, s.excludeBlacklisted(ctx, pods), "three quarters excluded is over the cap: every pod is routed across")
+	assert.Equal(t, 1, counts.get(fallbackOverCap))
+	assert.Zero(t, counts.get(fallbackAllExcluded))
+
+	tripBreaker(&s.podBlacklist, pods[3])
+	assert.Equal(t, pods, s.excludeBlacklisted(ctx, pods), "all excluded")
+	assert.Equal(t, 1, counts.get(fallbackAllExcluded), "counted as such, not as over the cap")
+}
+
+// With the cap at 100 only the case where every pod is excluded falls back.
+func Test_excludeBlacklisted_CapOffStillFallsBackWhenAllAreExcluded(t *testing.T) {
+	t.Cleanup(blacklist.SetMaxExcludedPercentForTest(100))
+	counts := captureFallbackCounts(t)
+	pods := []*v1.Pod{blacklistTestPod("1"), blacklistTestPod("2"), blacklistTestPod("3")}
+	ctx := types.NewRoutingContext(context.Background(), routing.RouterRandom, "m", "", "r1", "")
+	s := &Server{}
+	tripBreaker(&s.podBlacklist, pods[0])
+	tripBreaker(&s.podBlacklist, pods[1])
+
+	assert.Equal(t, pods[2:], s.excludeBlacklisted(ctx, pods), "two of three excluded, no cap")
+	assert.Zero(t, counts.get(fallbackOverCap))
+
+	tripBreaker(&s.podBlacklist, pods[2])
+	assert.Equal(t, pods, s.excludeBlacklisted(ctx, pods))
+	assert.Equal(t, 1, counts.get(fallbackAllExcluded))
+}
+
+// A single pod is the whole model: excluding it leaves nothing, so it is routed to anyway.
+func Test_excludeBlacklisted_ASinglePodIsAlwaysRoutedTo(t *testing.T) {
+	counts := captureFallbackCounts(t)
+	only := blacklistTestPod("only")
+	ctx := types.NewRoutingContext(context.Background(), routing.RouterRandom, "m", "", "r1", "")
+	s := &Server{}
+	tripBreaker(&s.podBlacklist, only)
+
+	assert.Equal(t, []*v1.Pod{only}, s.excludeBlacklisted(ctx, []*v1.Pod{only}))
+	assert.Equal(t, 1, counts.get(fallbackAllExcluded))
+}
+
+// The gateway does not blacklist a pod for how its requests end. A failing status, an
+// ext_proc stream that closes early and a client that leaves all leave the pod routable,
+// and none of them creates an entry, so a healthy fleet stays on FilterBlacklisted's
+// no-lookup, no-allocation path however much traffic it has served.
+func Test_RequestOutcomesDoNotBlacklistAPod(t *testing.T) {
+	routing.Init()
+	pod := blacklistTestPod("1")
+	pods := []*v1.Pod{pod}
+	server := recvErrorServer()
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for i := 0; i < 10; i++ {
+		for _, code := range []string{"200", "400", "404", "429", "500", "503"} {
+			routerCtx := types.NewRoutingContext(context.Background(), "random", "test-model", "", fmt.Sprintf("req-%s-%d", code, i), "test-user")
+			routerCtx.SetTargetPod(pod)
+			server.HandleResponseHeaders(context.Background(), routerCtx, routerCtx.RequestID, "test-model", handleResponseHeadersStatusReq(code))
+		}
+		for _, tc := range recvFailures {
+			for _, ctx := range []context.Context{context.Background(), cancelled} {
+				tc.wantErr(t, server.handleRecvError(routedState(ctx, pod, fmt.Sprintf("req-%s-%d", tc.name, i)), tc.recvErr))
+			}
+		}
 	}
 
 	assert.False(t, server.podBlacklist.IsBlacklisted(pod))
+	assert.True(t, server.podBlacklist.Allow(pod))
+	assert.Equal(t, pods, server.podBlacklist.FilterBlacklisted(pods))
+	assert.Zero(t, testing.AllocsPerRun(100, func() { _ = server.podBlacklist.FilterBlacklisted(pods) }),
+		"no request outcome creates an entry, so the healthy-fleet fast path is intact")
 }
 
 // Test_selectTargetPod_ExcludesBlacklistedPod verifies selectTargetPod drops a
@@ -586,7 +471,7 @@ func Test_selectTargetPod_ExcludesBlacklistedPod(t *testing.T) {
 	healthy1 := blacklistTestPod("healthy1")
 	healthy2 := blacklistTestPod("healthy2")
 
-	server := &Server{podBlacklist: blacklist.PodBlacklist{HealthCheck: alwaysUnhealthy}}
+	server := &Server{}
 	tripBreaker(&server.podBlacklist, blacklisted)
 	require.True(t, server.podBlacklist.IsBlacklisted(blacklisted))
 
@@ -617,6 +502,61 @@ func Test_selectTargetPod_ExcludesBlacklistedPod(t *testing.T) {
 	mockR.AssertExpectations(t)
 }
 
+// routedPodNames returns the names of the pods selectTargetPod hands the router
+// for a request over pods, in sorted order. running is each pod's current
+// running-request count, the number the load-imbalance gate reads.
+func routedPodNames(t *testing.T, server *Server, pods []*v1.Pod, running map[string]int64) []string {
+	t.Helper()
+	mockCache := &MockCache{Cache: cache.NewForTest()}
+	mockCache.On("GetPodsRunningRequests", mock.Anything).Return(running, nil)
+	server.cache = mockCache
+
+	var routed []string
+	mockR := new(mockRouter)
+	algo := types.RoutingAlgorithm("test-blacklist-gate-router")
+	routing.Register(algo, func() (types.Router, error) { return mockR, nil })
+	mockR.On("Route", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		for _, p := range args.Get(1).(types.PodList).All() {
+			routed = append(routed, p.Name)
+		}
+	}).Return("10.0.0.any:8000", nil).Once()
+	routing.Init()
+
+	routeCtx := types.NewRoutingContext(context.Background(), algo, "test-model", "test-message", "test-request", "test-user")
+	_, err := server.selectTargetPod(context.Background(), routeCtx, &utils.PodArray{Pods: pods}, "")
+	require.NoError(t, err)
+	sort.Strings(routed)
+	return routed
+}
+
+// Test_selectTargetPod_BlacklistReplacesLoadImbalanceGate verifies a request is
+// narrowed by load once, not twice. p0 was flagged a load outlier by a sweep
+// while busy and has since drained; p1 is the busy one now. The blacklist drops
+// p0 from its stale flag, and if the gate then ran on the same request it would
+// drop p1, leaving p2 as the only pod of three.
+func Test_selectTargetPod_BlacklistReplacesLoadImbalanceGate(t *testing.T) {
+	p0, p1, p2 := blacklistTestPod("p0"), blacklistTestPod("p1"), blacklistTestPod("p2")
+	pods := []*v1.Pod{p0, p1, p2}
+	running := map[string]int64{"ns/p0": 0, "ns/p1": 30, "ns/p2": 0}
+
+	t.Run("blacklist on skips the gate", func(t *testing.T) {
+		server := &Server{}
+		require.True(t, server.podBlacklist.SetLoadExcluded(p0, true))
+		require.True(t, server.podBlacklist.IsBlacklisted(p0))
+
+		assert.Equal(t, []string{"p1", "p2"}, routedPodNames(t, server, pods, running),
+			"only the blacklist narrows: p0 is dropped, and the busy p1 stays in the candidate set")
+	})
+
+	t.Run("blacklist off runs the gate", func(t *testing.T) {
+		disableBlacklist(t)
+
+		server := &Server{}
+		assert.Equal(t, []string{"p0", "p2"}, routedPodNames(t, server, pods, running),
+			"with the blacklist off nothing is excluded by it, and the gate drops the busy p1")
+	})
+}
+
 // Test_selectTargetPod_AllBlacklistedFallsBack verifies that when every ready
 // pod is currently blacklisted, selectTargetPod still routes (falls back to
 // the unfiltered set) instead of failing every request outright.
@@ -625,7 +565,7 @@ func Test_selectTargetPod_AllBlacklistedFallsBack(t *testing.T) {
 
 	pod := blacklistTestPod("only")
 
-	server := &Server{podBlacklist: blacklist.PodBlacklist{HealthCheck: alwaysUnhealthy}}
+	server := &Server{}
 	tripBreaker(&server.podBlacklist, pod)
 	assert.True(t, server.podBlacklist.IsBlacklisted(pod))
 
@@ -674,7 +614,6 @@ func TestRegisterPodQuarantine_CacheSeesTheBlacklistsQuarantine(t *testing.T) {
 	assert.True(t, fake.checker.IsQuarantined(pod), "the cache must see the pod the sweep found dead")
 
 	other := blacklistTestPod("2")
-	server.podBlacklist.HealthCheck = alwaysUnhealthy
 	tripBreaker(&server.podBlacklist, other)
 	require.True(t, server.podBlacklist.IsBlacklisted(other))
 	assert.False(t, fake.checker.IsQuarantined(other), "an ordinary trip keeps its metrics")
@@ -686,8 +625,8 @@ func TestRegisterPodQuarantine_CacheWithoutARegistryIsLeftAlone(t *testing.T) {
 	assert.NotPanics(t, server.registerPodQuarantine)
 }
 
-// The server is the cache's PodLifecycleListener: a flaky re-add opens the breaker so
-// the first request after it is the half-open probe.
+// The server is the cache's PodLifecycleListener: a flaky re-add opens the breaker for a
+// short hold.
 func TestOnPodFlakyReAdd_ExcludesThePodForAShortHold(t *testing.T) {
 	server := &Server{}
 	pod := blacklistTestPod("1")
@@ -767,9 +706,10 @@ func TestNewServerWithOptions_SkipsBlacklistWiringWhenDisabled(t *testing.T) {
 	assert.Nil(t, spy.checker, "quarantine checker is not registered while disabled")
 
 	pod := blacklistTestPod("1")
-	for i := 0; i < blacklist.FailureThreshold+1; i++ {
-		server.podBlacklist.RecordResult(pod, pod.Status.PodIP+":8000", 400)
+	for i := 0; i < 10; i++ {
+		server.podBlacklist.RecordProbeResult(pod, blacklist.ProbeDead, "GET /health failed")
 	}
+	assert.False(t, server.podBlacklist.SetLoadExcluded(pod, true))
 	assert.False(t, server.podBlacklist.IsBlacklisted(pod))
 	assert.Equal(t, []*v1.Pod{pod}, server.podBlacklist.FilterBlacklisted([]*v1.Pod{pod}))
 }
@@ -811,76 +751,4 @@ func TestShutdown_CacheWithoutRegistriesIsFine(t *testing.T) {
 	server := &Server{cache: new(MockCache), shutdown: make(chan struct{})}
 
 	assert.NotPanics(t, server.Shutdown)
-}
-
-// The half-open probe belongs to the request routed to the pod, not to every
-// candidate the filter admits. Two pods are recovering (their backoff has
-// elapsed) next to a healthy one. A request the router sends to the healthy pod
-// must leave both recovering pods available to the next request, and a request
-// the router sends to a recovering pod must make it, and only it, that pod's
-// probe.
-func TestHandleRequestBody_ClaimsTheHalfOpenProbeOnlyForThePickedPod(t *testing.T) {
-	mockCache := &MockCache{Cache: cache.NewForTest()}
-	router := new(mockRouter)
-	registerTestRouter(router)
-
-	recoveringA := readyPod("recovering-a", "ns", "1.2.3.1")
-	recoveringB := readyPod("recovering-b", "ns", "1.2.3.2")
-	healthy := readyPod("healthy", "ns", "1.2.3.3")
-	pods := []*v1.Pod{recoveringA, recoveringB, healthy}
-
-	server := &Server{cache: mockCache}
-	// A flaky re-add opens the breaker for a few seconds without confirming anything.
-	server.podBlacklist.OnPodFlakyReAdd(recoveringA)
-	server.podBlacklist.OnPodFlakyReAdd(recoveringB)
-	require.True(t, server.podBlacklist.IsBlacklisted(recoveringA))
-	// Allow only reports eligibility, so waiting on it does not spend the probe.
-	require.Eventually(t, func() bool {
-		return server.podBlacklist.Allow(recoveringA) && server.podBlacklist.Allow(recoveringB)
-	}, 10*time.Second, 50*time.Millisecond, "the backoffs should elapse")
-
-	mockCache.On("HasModel", "test-model").Return(true)
-	mockCache.On("ListPodsByModel", "test-model").Return(&utils.PodArray{Pods: pods}, nil)
-	mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, mock.Anything).
-		Return(&metrics.SimpleMetricValue{Value: 0}, nil).Maybe()
-	mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
-
-	var picked *v1.Pod
-	var candidates []*v1.Pod
-	router.On("Route", mock.Anything, mock.Anything).Return("1.2.3.4:8000", nil).
-		Run(func(args mock.Arguments) {
-			candidates = args.Get(1).(types.PodList).All()
-			args.Get(0).(*types.RoutingContext).SetTargetPod(picked)
-		})
-
-	send := func(requestID string) {
-		t.Helper()
-		req := &extProcPb.ProcessingRequest{
-			Request: &extProcPb.ProcessingRequest_RequestBody{
-				RequestBody: &extProcPb.HttpBody{Body: []byte(`{"model":"test-model","prompt":"hi"}`)},
-			},
-		}
-		routingCtx := types.NewRoutingContext(context.Background(), "", "", "", requestID, "test-user")
-		routingCtx.ReqPath = PathCompletions
-		routingCtx.ReqHeaders[HeaderRoutingStrategy] = string(TestRouterAlgorithm)
-		resp, _, _, _ := server.HandleRequestBody(context.Background(), routingCtx, requestID, req, utils.User{Name: "test-user"})
-		require.NotNil(t, resp)
-		require.Nil(t, resp.GetImmediateResponse(), "the request must be routed")
-	}
-
-	picked = healthy
-	send("passes-over-the-recovering-pods")
-	assert.ElementsMatch(t, pods, candidates, "both recovering pods were candidates")
-	assert.True(t, server.podBlacklist.Allow(recoveringA), "a pod the router passed over still has its probe to give")
-	assert.True(t, server.podBlacklist.Allow(recoveringB), "a pod the router passed over still has its probe to give")
-
-	picked = recoveringA
-	send("probes-recovering-a")
-	assert.False(t, server.podBlacklist.Allow(recoveringA), "the request routed to it is its half-open probe")
-	assert.True(t, server.podBlacklist.Allow(recoveringB), "claiming one pod's probe leaves the other's alone")
-
-	// The probe reports back like any request, and a success closes the breaker.
-	server.podBlacklist.RecordResult(recoveringA, "1.2.3.1:8000", 200)
-	assert.True(t, server.podBlacklist.Allow(recoveringA))
-	assert.False(t, server.podBlacklist.IsBlacklisted(recoveringA))
 }

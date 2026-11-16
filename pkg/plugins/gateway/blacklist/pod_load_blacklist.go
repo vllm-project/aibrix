@@ -65,10 +65,12 @@ const (
 var loadOutlierMinGap = float64(utils.LoadEnvInt("AIBRIX_LOAD_OUTLIER_MIN_GAP", 16))
 
 // QueueDepthFunc returns pod's real backend load for model: the engine's own
-// running+waiting request count. A genuinely missing metric should read as 0:
-// the load sweep only ever excludes a pod for being too high, never for being
-// unmeasured.
-type QueueDepthFunc func(pod *v1.Pod, model string) float64
+// running+waiting request count, and whether there is a measurement at all. A pod
+// with none (it joined after the last scrape, or its metrics are missing) is left
+// out of that model's scoring: it is not scored and is not a peer. Read as load 0
+// it would drag its peers' mean down, and a pod that is serving the traffic would
+// look like an outlier next to replicas that have simply not been measured yet.
+type QueueDepthFunc func(pod *v1.Pod, model string) (load float64, ok bool)
 
 // StartLoadOutlierSweep starts a background goroutine that every
 // loadOutlierCheckInterval scores each model's ready replicas by their
@@ -89,9 +91,8 @@ type QueueDepthFunc func(pod *v1.Pod, model string) float64
 // sees only a handful of concurrently open calls to it.
 //
 // A pod leaves exclusion the moment a later tick finds it back within
-// range: unlike the tracked-failure circuit breaker in
-// pod_blacklist.go, there is no backoff or half-open probing here
-// -- the periodic recheck IS the recovery signal.
+// range: unlike the probe sweep's backoff in pod_blacklist.go, there is none
+// here -- the periodic recheck IS the recovery signal.
 func (b *PodBlacklist) StartLoadOutlierSweep(src PodSource, depth QueueDepthFunc, onRecovered func(*v1.Pod), stopCh <-chan struct{}) {
 	if !Enabled {
 		return
@@ -136,6 +137,7 @@ func (b *PodBlacklist) StartLoadOutlierSweep(src PodSource, depth QueueDepthFunc
 // depending on cache.ListModels(), which is not guaranteed stable -- silently
 // overwrite an outlier verdict an earlier model just set for the same pod.
 func (b *PodBlacklist) sweepLoadOutliers(src PodSource, depth QueueDepthFunc, onRecovered func(*v1.Pod)) {
+	defer b.publishExcludedPods()
 	type podVerdict struct {
 		pod     *v1.Pod
 		outlier bool
@@ -155,7 +157,10 @@ func (b *PodBlacklist) sweepLoadOutliers(src PodSource, depth QueueDepthFunc, on
 		if err != nil || podsArr == nil {
 			continue
 		}
-		pods := b.withoutQuarantined(utils.FilterRoutablePods(podsArr.All()))
+		// An ignored pod (ignoredPod) is not scored and is not a peer either: it
+		// gets no verdict, and its load neither skews the mean and stddev the
+		// other pods are scored against nor counts toward loadOutlierMinPods.
+		pods := b.withoutQuarantined(withoutIgnored(utils.FilterRoutablePods(podsArr.All())))
 
 		if len(pods) < loadOutlierMinPods {
 			// Too few replicas for mean/stddev to mean anything -- from this
@@ -168,10 +173,27 @@ func (b *PodBlacklist) sweepLoadOutliers(src PodSource, depth QueueDepthFunc, on
 			continue
 		}
 
-		loads := make([]float64, len(pods))
-		for i, pod := range pods {
-			loads[i] = depth(pod, model)
+		// Only the pods that have a measurement are scored, and they are each other's peers.
+		// One without is given no verdict by this model (it has nothing demanding
+		// exclusion), and does not count toward loadOutlierMinPods.
+		scored := make([]*v1.Pod, 0, len(pods))
+		loads := make([]float64, 0, len(pods))
+		for _, pod := range pods {
+			load, ok := depth(pod, model)
+			if !ok {
+				mark(pod, false)
+				continue
+			}
+			scored = append(scored, pod)
+			loads = append(loads, load)
 		}
+		if len(scored) < loadOutlierMinPods {
+			for _, pod := range scored {
+				mark(pod, false)
+			}
+			continue
+		}
+		pods = scored
 
 		// Each pod is scored against the mean/stddev of its *peers*, not the
 		// whole group including itself: folding the candidate into its own

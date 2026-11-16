@@ -19,6 +19,7 @@ package blacklist
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -38,21 +39,22 @@ import (
 
 const (
 	// EnvPodBlacklistEnabled is the master switch for the whole pod blacklist:
-	// failure breaker, probe sweep, load-outlier sweep, flaky re-add and
-	// quarantine. Unset, empty, false or 0 leaves every path a no-op so a
-	// healthy fleet matches pre-blacklist routing.
+	// probe sweep, load-outlier sweep, flaky re-add and quarantine. Unset,
+	// empty, false or 0 leaves every path a no-op so a healthy fleet matches
+	// pre-blacklist routing.
 	EnvPodBlacklistEnabled = "AIBRIX_POD_BLACKLIST_ENABLED"
 
-	// FailureThreshold failures within podBlacklistFailureWindow
-	// trips the breaker (subject to confirmHealthy). The window does not
-	// reset on an interleaved success — see isFailureStatus / RecordResult.
-	FailureThreshold          = 3
-	podBlacklistFailureWindow = 30 * time.Second
-	podBlacklistBaseDuration  = 1 * time.Minute
-	podBlacklistMaxDuration   = 10 * time.Minute
-	// Claimed half-open probe expires if RecordResult never arrives, so a hung
-	// probe cannot exclude the pod forever.
-	podBlacklistProbeTimeout = 30 * time.Second
+	// EnvPodBlacklistMaxExcludedPercent caps how much of the pods a request considers the
+	// blacklist may exclude: when more than this share of them is excluded, the request is
+	// routed across all of them as if none were. Excluding most of a model's pods leaves the
+	// few that remain to carry all of its traffic, and a verdict wrong for many pods at once
+	// (the gateway's own network fault, say) is more likely than most of a fleet failing
+	// together. 100 turns the cap off; every pod excluded is still routed across.
+	EnvPodBlacklistMaxExcludedPercent = "AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT"
+	defaultMaxExcludedPercent         = 50
+
+	podBlacklistBaseDuration = 1 * time.Minute
+	podBlacklistMaxDuration  = 10 * time.Minute
 	// An entry is pruned once it has been untouched this long, counted from the
 	// later of its last update and its openUntil (sweepStale), so a live backoff
 	// or one-hour block is never pruned however quiet the pod is.
@@ -60,15 +62,13 @@ const (
 	podBlacklistSweepInterval = 5 * time.Minute
 	podHealthCheckPath        = "/health"
 	podModelsCheckPath        = "/v1/models"
-	podHealthCheckTimeout     = 3 * time.Second
 	// flakyReAddOpenDuration is how long a pod is proactively excluded from
 	// routing after OnPodFlakyReAdd fires -- i.e. it reappeared in the cache
 	// after being genuinely absent for a bit (see flakyReAddMinObservedGap in
-	// pkg/cache/informers.go), with no confirmation it's actually healthy
+	// pkg/cache/informers.go), with no check that it's actually healthy
 	// again. Deliberately much shorter than podBlacklistBaseDuration: this
-	// isn't a confirmed failure, just an unconfirmed reappearance, so the pod
-	// shouldn't sit out of rotation for long once the first real request
-	// after it (the half-open probe) confirms it's fine.
+	// isn't a confirmed failure, just a reappearance, so the pod shouldn't sit
+	// out of rotation for long.
 	flakyReAddOpenDuration = 3 * time.Second
 	// podProbeSweepInterval is how often the background sweep probes every
 	// routable pod (see startPodProbeSweep).
@@ -78,21 +78,26 @@ const (
 	// the next sweeps, so one blip (a probe timing out on a busy pod) does not
 	// exclude it. Set to 1 to blacklist on the first failed sweep.
 	podProbeFailureIterations = 3
+	// podProbeRecoveryIterations is how many consecutive healthy sweeps lift a
+	// block the sweep (or a flaky re-add) put on a pod before its deadline: the
+	// probe is paid every sweep anyway, and an hour is a long time to keep out a
+	// pod that has been answering correctly. More than one, so a pod that flaps
+	// does not leave on a single lucky probe.
+	podProbeRecoveryIterations = 2
 	// podProbeDeadBlacklistDuration is how long the sweep blacklists a pod it
 	// found dead: GET /health failing, or GET /v1/models answering 2xx with a
 	// body that is not a JSON model list (see ProbeDead). It is deliberately
-	// far longer than the request-driven backoff, so a stale registration is
-	// not handed a real half-open request every few minutes. Every further
+	// far longer than the degraded-pod backoff, so a stale registration is not
+	// handed real traffic every few minutes. Every further
 	// podProbeFailureIterations dead sweeps renew the hour, so a pod that stays
 	// dead stays out.
 	podProbeDeadBlacklistDuration = time.Hour
 	// podProbeConcurrency bounds the probes in flight during one sweep.
 	podProbeConcurrency = 16
 	// podProbeTimeout is how long the sweep waits for each request of a probe.
-	// It is longer than podHealthCheckTimeout, which a tripping request waits
-	// out synchronously: nothing waits on the sweep, and a pod that is merely
-	// slow to answer must not be judged dead. GET /health on the fleet's sglang
-	// pods takes 1.4-1.7 s, which the sweep's earlier 1 s timeout turned into a
+	// Nothing waits on the sweep, and a pod that is merely slow to answer must
+	// not be judged dead. GET /health on the fleet's sglang pods takes
+	// 1.4-1.7 s, which the sweep's earlier 1 s timeout turned into a
 	// blacklisting for an hour.
 	podProbeTimeout = 5 * time.Second
 )
@@ -104,41 +109,30 @@ const (
 // to true (see TestMain).
 var Enabled = utils.LoadEnvBool(EnvPodBlacklistEnabled, false)
 
-// StatusStreamClosed is passed to RecordResult when Envoy's ext_proc
-// stream closed before any ResponseHeaders arrived and the client was still
-// connected (see handleRecvError).
-const StatusStreamClosed = -1
+// maxExcludedPercent is the share of the pods a request considers that the blacklist may
+// exclude, loaded once from AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT (default 50, at most 100).
+var maxExcludedPercent = min(utils.LoadEnvNonNegativeInt(EnvPodBlacklistMaxExcludedPercent, defaultMaxExcludedPercent), 100)
 
-// StatusIncompleteStream is passed to RecordResult when Envoy's ext_proc
-// stream closed after the ResponseHeaders arrived fine (so HandleResponseHeaders
-// already recorded a 200 for this request) but before the response completed,
-// with the client still connected: the pod accepted the request and then
-// dropped the connection mid-response. This is a distinct signal from
-// StatusStreamClosed (which means no response was seen at all) and from the
-// 200 already recorded at header time, so it needs its own RecordResult call
-// rather than being folded into either (see recordUncompletedRecv).
-const StatusIncompleteStream = -2
+// MaxExcludedPercent is the cap ExclusionOverCap applies, for the log line that reports it.
+func MaxExcludedPercent() int { return maxExcludedPercent }
 
-// isFailureStatus is true for any outcome that is not a 2xx: real upstream
-// statuses (400, 404, 429, 5xx, ...) and the negative sentinels above alike.
-// Unlike an HTTP status code, which reflects one request's outcome,
-// isFailureStatus feeds the failure-rate window (see podBlacklistFailureWindow),
-// so it deliberately does not carve out any status as "not worth counting" -
-// a pod that is failing a lot, however it's failing, is what the window is
-// for.
-func isFailureStatus(statusCode int) bool {
-	return statusCode < 200 || statusCode >= 300
+// SetMaxExcludedPercentForTest sets the cap and returns a function that puts the previous one
+// back, for tests in other packages. It writes a process global: the test must not be parallel.
+func SetMaxExcludedPercentForTest(percent int) (restore func()) {
+	prev := maxExcludedPercent
+	maxExcludedPercent = percent
+	return func() { maxExcludedPercent = prev }
 }
 
-func failureDesc(statusCode int) string {
-	switch statusCode {
-	case StatusStreamClosed:
-		return "stream-closed-without-response"
-	case StatusIncompleteStream:
-		return "stream-cut-off-mid-generation"
-	default:
-		return fmt.Sprintf("HTTP %d", statusCode)
+// ExclusionOverCap reports whether keeping kept of total pods, so excluding the rest, excludes
+// more of them than AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT allows. The gateway then routes
+// across all total pods instead. It never reports it for a share at or under the cap, so with
+// the default 50, one pod of two or two of four may be excluded and two of three may not.
+func ExclusionOverCap(kept, total int) bool {
+	if total <= 0 {
+		return false
 	}
+	return (total-kept)*100 > maxExcludedPercent*total
 }
 
 type circuitState int
@@ -146,72 +140,91 @@ type circuitState int
 const (
 	circuitClosed circuitState = iota
 	circuitOpen
-	circuitHalfOpen
 )
 
+// podFailureState is the exclusion state of one pod. The pod is excluded while
+// its breaker is open and openUntil has not passed, or while loadExcluded is
+// set. Once openUntil passes the pod is admitted again with no probe request:
+// nothing reports a request's outcome, so the next background sweep (see
+// RecordProbeResult) is what decides whether it is excluded again.
 type podFailureState struct {
-	mu    sync.Mutex
+	// mu is a read-write lock: Allow, which routing calls for every candidate, only reads,
+	// so concurrent requests do not queue on a pod's entry. Everything that changes the
+	// state takes the write lock.
+	mu    sync.RWMutex
 	state circuitState
 
-	// failureTimestamps holds one entry per failure seen while closed, in
-	// increasing time order. RecordResult prunes entries older than
-	// podBlacklistFailureWindow on every call; a success is simply not
-	// appended -- it does NOT clear the window (that's a deliberate policy
-	// choice: a pod flaky enough to fail FailureThreshold times in 30s should trip even if
-	// a few requests in between happened to succeed).
-	failureTimestamps []time.Time
-	tripCount         int // consecutive open cycles; drives backoff; reset on a successful probe
-	openUntil         time.Time
-	probeDeadline     time.Time
+	// tripCount counts consecutive open cycles and drives the backoff. A healthy
+	// sweep after the block has lapsed starts it over.
+	tripCount int
+	openUntil time.Time
 	// openReason is a human-readable explanation set whenever state transitions
 	// to circuitOpen, surfaced via BlacklistReason. Stale once state leaves
 	// circuitOpen, but BlacklistReason only ever reads it while state is still
 	// circuitOpen, so it's never cleared on recovery.
 	openReason string
-	// Independent of the failure breaker; the next load-outlier sweep is the recovery check.
+	// Independent of the open/closed breaker; the next load-outlier sweep is the recovery check.
 	loadExcluded bool
 	// probeFailures counts consecutive background-sweep probes this pod has
 	// failed while its breaker was closed; probeDeadSweeps counts consecutive
 	// sweeps that found it dead (ProbeDead), in any breaker state. A passing
 	// probe starts both over, a non-dead failure restarts probeDeadSweeps, and
-	// probeFailures also restarts whenever the breaker is not closed.
+	// probeFailures also restarts whenever the breaker is not closed. Any
+	// failing probe starts probeHealthySweeps over.
 	probeFailures   int
 	probeDeadSweeps int
+	// probeHealthySweeps counts consecutive healthy sweeps while the pod is
+	// still blocked; podProbeRecoveryIterations of them lift the block.
+	probeHealthySweeps int
 	// quarantinedUntil is when the one-hour block the sweep gives a dead pod
 	// ends (zero for any other kind of exclusion). IsQuarantined reads it.
 	quarantinedUntil time.Time
-	lastUpdated      time.Time
+	// lastUpdated is when the entry was last changed by a sweep or an event. Reading it
+	// through Allow does not count: an entry that routing keeps looking at but nothing
+	// changes must still age out (see sweepStale).
+	lastUpdated time.Time
+
+	// counted is whether the entry is included in PodBlacklist.excluded, and removed is
+	// set once sweepStale has deleted it; see syncCountLocked.
+	counted bool
+	removed bool
 }
 
-// recordFailureLocked appends now to state.failureTimestamps and prunes
-// entries older than podBlacklistFailureWindow, returning the resulting
-// count. Caller must hold state.mu.
-func recordFailureLocked(state *podFailureState, now time.Time) int {
-	cutoff := now.Add(-podBlacklistFailureWindow)
-	n := 0
-	for _, t := range state.failureTimestamps {
-		if t.After(cutoff) {
-			state.failureTimestamps[n] = t
-			n++
-		}
+// excludingLocked reports whether state can exclude its pod: its breaker is open (even
+// if the block has ended and nothing has closed it yet) or it is load-excluded. Caller
+// must hold state.mu.
+func (state *podFailureState) excludingLocked() bool {
+	return !state.removed && (state.loadExcluded || state.state == circuitOpen)
+}
+
+// lapseLocked closes an open breaker whose block has ended, so the writers that
+// branch on the breaker state see a pod that is already admitted as closed. The
+// trip count is kept: a pod that is blocked again by the next sweeps still
+// escalates its backoff. Caller must hold state.mu.
+func (state *podFailureState) lapseLocked(now time.Time) {
+	if state.state == circuitOpen && !now.Before(state.openUntil) {
+		state.state = circuitClosed
 	}
-	state.failureTimestamps = append(state.failureTimestamps[:n], now)
-	return len(state.failureTimestamps)
 }
 
-// PodBlacklist is a per-pod circuit breaker keyed by namespace/name.
-// Zero value is ready to use.
+// PodBlacklist is a per-pod exclusion list keyed by namespace/name.
+// Zero value is ready to use. Pods created by a StormService and pods that
+// carry a ModelClaim binding are never tracked (see ignoredPod).
 type PodBlacklist struct {
 	pods sync.Map // "namespace/name" -> *podFailureState
-	// tracked is how many entries pods holds. FilterBlacklisted reads it to skip the
-	// per-pod lookups while nothing is tracked, which is the case for a healthy fleet.
+	// tracked is how many entries pods holds.
 	tracked atomic.Int64
+	// excluded is how many of those entries can exclude their pod (excludingLocked).
+	// FilterBlacklisted reads it to skip the per-pod lookups while it is zero, so one entry
+	// that excludes nothing, such as a pod that failed a probe once, does not put every
+	// request on the slow path. It is kept exact by syncCountLocked, which every change to
+	// an entry's state ends with.
+	excluded atomic.Int64
 
-	// Probe hooks. Nil uses the real HTTP probes (httpHealthCheck,
-	// httpEngineServesModel, httpEngineIsModelServer); tests set them so that
-	// confirmation never makes a network call.
+	// Probe hooks. Nil uses the real HTTP probes (httpHealthCheckWithin,
+	// httpListenerCheckWithin, fetchModelListWithin); tests set them so that
+	// a probe never makes a network call.
 	HealthCheck   func(addr string) bool
-	ModelCheck    func(addr, model string) bool
 	IdentityCheck func(addr, model string) bool
 }
 
@@ -227,6 +240,24 @@ func PodKey(pod *v1.Pod) string {
 	return utils.GeneratePodKey(pod.Namespace, pod.Name)
 }
 
+// syncCountLocked brings b.excluded in line with state, which has just changed: it adds
+// the entry when it has become able to exclude its pod and takes it off when it no longer
+// can, or has been deleted by sweepStale. A writer that still holds the pointer of an
+// entry sweepStale has deleted finds removed set and counts nothing. Caller must hold
+// state.mu for writing, and must call it before releasing it.
+func (b *PodBlacklist) syncCountLocked(state *podFailureState) {
+	want := state.excludingLocked()
+	if want == state.counted {
+		return
+	}
+	state.counted = want
+	if want {
+		b.excluded.Add(1)
+	} else {
+		b.excluded.Add(-1)
+	}
+}
+
 // entry returns the breaker entry stored under key, creating it on first use. Every
 // creation goes through here so tracked stays equal to the number of entries.
 func (b *PodBlacklist) entry(key string) any {
@@ -240,12 +271,9 @@ func (b *PodBlacklist) entry(key string) any {
 	return v
 }
 
-func (b *PodBlacklist) checkPodHealthy(addr, engine string) bool {
-	return b.checkPodHealthyWithin(addr, engine, podHealthCheckTimeout)
-}
-
-// checkPodHealthyWithin is checkPodHealthy with the wait for the real HTTP
-// probe set by the caller; a test hook ignores it.
+// checkPodHealthyWithin reports whether the pod at addr answers its health
+// check, waiting up to timeout for the real HTTP probe; a test hook ignores
+// the timeout.
 func (b *PodBlacklist) checkPodHealthyWithin(addr, engine string, timeout time.Duration) bool {
 	if b.HealthCheck != nil {
 		return b.HealthCheck(addr)
@@ -256,20 +284,16 @@ func (b *PodBlacklist) checkPodHealthyWithin(addr, engine string, timeout time.D
 	return httpHealthCheckWithin(addr, timeout)
 }
 
-// engineServesHealthRoute reports whether engine answers GET /health with a 2xx
-// while it is up. xLLM does not: it answers 404 on /health on every port, so a
-// 2xx requirement would judge every xLLM pod dead. For such an engine the probe
-// settles for an HTTP server answering at all (httpListenerCheckWithin).
+// engineServesHealthRoute reports whether engine is known to answer GET /health
+// with a 2xx while it is up, so that a 2xx can be required of it: vLLM and SGLang,
+// the engines whose model list is known too (engineListsModels). Any other engine,
+// and a pod with no engine label, is only required to answer at all
+// (httpListenerCheckWithin). xLLM answers 404 on /health while serving, xDiT has no
+// such route, and a pod whose engine is not known must not be judged dead, and
+// blocked for an hour, for a route it may not have. Like the identity check, an
+// engine joins the list once its /health has been verified.
 func engineServesHealthRoute(engine string) bool {
-	return !strings.EqualFold(engine, metrics.EngineNameXLLM)
-}
-
-func (b *PodBlacklist) checkEngineIdentity(addr, model string) bool {
-	check := b.IdentityCheck
-	if check == nil {
-		check = httpEngineIsModelServer
-	}
-	return check(addr, model)
+	return engineListsModels(engine)
 }
 
 // ProbeResult is the verdict of the status-independent pod check (see probe).
@@ -293,8 +317,8 @@ const (
 // when it is not healthy, what failed: GET /health must be 2xx and, for an
 // engine that lists its models (engineListsModels) with a known model, GET
 // /v1/models must return a JSON list naming it. It is the definition of
-// "healthy" shared by confirmHealthy and the background sweep. timeout is how
-// long each of its HTTP requests may take.
+// "healthy" the background sweep uses. timeout is how long each of its HTTP
+// requests may take.
 func (b *PodBlacklist) probe(addr, model, engine string, timeout time.Duration) (ProbeResult, string) {
 	if !b.checkPodHealthyWithin(addr, engine, timeout) {
 		return ProbeDead, "GET " + podHealthCheckPath + " failed"
@@ -322,8 +346,13 @@ func (b *PodBlacklist) probe(addr, model, engine string, timeout time.Duration) 
 
 // engineListsModels reports whether engine is known to answer GET /v1/models
 // with an OpenAI-style model list, so that list can identify the engine.
-// Unknown or unlabeled engines are left on the pre-identity confirmation path
-// rather than risk blacklisting a pod whose /v1/models has another shape.
+// Unknown or unlabeled engines are left to the /health check alone rather than
+// risk blacklisting a pod whose /v1/models has another shape.
+//
+// GET /health only proves that some process answers on the address. Under host
+// networking a port is recycled, so a stale registration can point at an
+// unrelated listener that answers /health 200 while serving nothing. For an
+// engine that lists its models the model list is the identity check.
 func engineListsModels(engine string) bool {
 	switch strings.ToLower(engine) {
 	case metrics.EngineNameVLLM, metrics.EngineNameSGLang:
@@ -332,63 +361,14 @@ func engineListsModels(engine string) bool {
 	return false
 }
 
-// isRouteRejectStatus is true for statuses a listener answers with when it
-// does not serve the requested route or model. GET /health cannot disprove
-// them: any process on the address can answer /health.
-func isRouteRejectStatus(statusCode int) bool {
-	switch statusCode {
-	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
-		return true
-	}
-	return false
-}
-
-// confirmHealthy is true for a false alarm (stay closed), false to trip.
-//
-// GET /health only proves that some process answers on addr. Under host
-// networking a port is recycled, so a stale registration can point at an
-// unrelated listener that answers /health 200 while failing every inference
-// request. For an engine that lists its models (engineListsModels) the model
-// list is the identity check: addr must serve one and it must name model.
-//
-//   - Route-reject statuses (404, 405, 501): only the identity check decides.
-//   - Any other tracked status: /health AND the identity check. /health still
-//     catches an engine core that died behind a live API server, which
-//     /v1/models does not.
-//
-// The identity check is deliberately not applied when there is no model name
-// to look for or the engine does not list models. There, 404 with a model is
-// confirmed via the lenient model list (the routing cache is the same
-// snapshot that selected this pod, so it is no use here), 405 trips on count
-// alone, and everything else uses /health.
-func (b *PodBlacklist) confirmHealthy(addr string, statusCode int, model, engine string) bool {
-	if model != "" && engineListsModels(engine) {
-		if isRouteRejectStatus(statusCode) {
-			return b.checkEngineIdentity(addr, model)
-		}
-		result, _ := b.probe(addr, model, engine, podHealthCheckTimeout)
-		return result == ProbeHealthy
-	}
-	if statusCode == http.StatusMethodNotAllowed {
-		return false
-	}
-	if statusCode == http.StatusNotFound && model != "" {
-		check := b.ModelCheck
-		if check == nil {
-			check = httpEngineServesModel
-		}
-		return check(addr, model)
-	}
-	return b.checkPodHealthy(addr, engine)
-}
-
 // podHealthHTTPClient has no timeout of its own: each probe sets its deadline
-// on the request context, which also bounds reading the body.
-var podHealthHTTPClient = &http.Client{}
-
-func httpHealthCheck(addr string) bool {
-	return httpHealthCheckWithin(addr, podHealthCheckTimeout)
-}
+// on the request context, which also bounds reading the body. It has a transport
+// of its own, with no proxy: http.DefaultTransport would honour HTTP_PROXY and
+// HTTPS_PROXY, and a proxy that cannot reach the pod network answers every probe
+// with an error that looks exactly like a dead pod, which the sweep would turn
+// into an hour-long block on every pod. A probe is rare per pod, so it keeps no
+// connection alive either.
+var podHealthHTTPClient = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 
 func httpHealthCheckWithin(addr string, timeout time.Duration) bool {
 	return httpGetHealthWithin(addr, timeout, func(status int) bool { return status >= 200 && status < 300 })
@@ -423,31 +403,6 @@ func httpGetHealthWithin(addr string, timeout time.Duration, healthy func(status
 	return healthy(resp.StatusCode)
 }
 
-// httpEngineServesModel reports whether GET addr/v1/models lists model.
-// Empty addr/model or unparseable 2xx: fail open. Transport error or non-2xx: not served.
-func httpEngineServesModel(addr, model string) bool {
-	return engineServesModel(addr, model, true)
-}
-
-// httpEngineIsModelServer is httpEngineServesModel for an engine known to
-// answer with an OpenAI-style list (engineListsModels): an empty or
-// unparseable 2xx body is another listener on a recycled address, not this
-// engine, so it counts as not served instead of failing open.
-func httpEngineIsModelServer(addr, model string) bool {
-	return engineServesModel(addr, model, false)
-}
-
-func engineServesModel(addr, model string, failOpenOnUnparseable bool) bool {
-	switch fetchModelList(addr, model) {
-	case modelListServed:
-		return true
-	case modelListUnparseable:
-		return failOpenOnUnparseable
-	default:
-		return false
-	}
-}
-
 // modelListState is what GET /v1/models says about a model.
 type modelListState int
 
@@ -461,10 +416,20 @@ const (
 	modelListUnparseable
 )
 
-func fetchModelList(addr, model string) modelListState {
-	return fetchModelListWithin(addr, model, podHealthCheckTimeout)
+// isMalformedModelList reports whether err from decoding a 2xx /v1/models body means the
+// body that arrived is not the JSON model list: empty, or not that JSON. An error from
+// reading it, or one that came with the request's wait running out, is not.
+func isMalformedModelList(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	var syntax *json.SyntaxError
+	var typed *json.UnmarshalTypeError
+	return errors.Is(err, io.EOF) || errors.As(err, &syntax) || errors.As(err, &typed)
 }
 
+// fetchModelListWithin reports what GET addr/v1/models says about model, waiting
+// up to timeout for the whole response. An empty address or model fails open.
 func fetchModelListWithin(addr, model string, timeout time.Duration) modelListState {
 	if addr == "" || model == "" {
 		return modelListServed
@@ -492,6 +457,11 @@ func fetchModelListWithin(addr, model string, timeout time.Duration) modelListSt
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		if !isMalformedModelList(ctx, err) {
+			// The answer did not finish arriving (the wait ran out, the connection broke):
+			// that says nothing about what is listening, so it is not "another process".
+			return modelListNotServed
+		}
 		return modelListUnparseable
 	}
 	for _, m := range body.Data {
@@ -502,10 +472,9 @@ func fetchModelListWithin(addr, model string, timeout time.Duration) modelListSt
 	return modelListNotServed
 }
 
-// podTarget is the ip:port and model requests to pod use, for log lines. The
-// request path passes the address it routed to and the model it asked for; an
-// empty addr or model (background paths have no request) is derived from the
-// pod, like the sweep derives its probe target.
+// podTarget is the ip:port and model requests to pod use, for log lines. An
+// empty addr or model is derived from the pod, like the sweep derives its
+// probe target.
 func podTarget(pod *v1.Pod, addr, model string) (string, string) {
 	if model == "" {
 		model = pod.Labels[constants.ModelLabelName]
@@ -548,112 +517,12 @@ func backoffDuration(tripCount int) time.Duration {
 	return d
 }
 
-// RecordResult updates the breaker for one completed request.
-// addr is the routed TargetAddress(); model and the pod's engine label decide
-// how a trip is confirmed (see confirmHealthy).
-// Confirmation runs without state.mu so Allow is not blocked for up to
-// podHealthCheckTimeout; state is re-checked afterwards so a concurrent
-// resolution is not overwritten.
-func (b *PodBlacklist) RecordResult(pod *v1.Pod, addr string, statusCode int, model ...string) {
-	if !Enabled || pod == nil {
-		return
-	}
-	key := PodKey(pod)
-	v := b.entry(key)
-	state, ok := v.(*podFailureState)
-	if !ok {
-		klog.Errorf("PodBlacklist: unexpected type %T stored for pod %s; skipping", v, podDesc(pod, "", ""))
-		return
-	}
-	modelName := ""
-	if len(model) > 0 {
-		modelName = model[0]
-	}
-
-	failed := isFailureStatus(statusCode)
-	now := time.Now()
-
-	state.mu.Lock()
-	state.lastUpdated = now
-	priorState := state.state
-	needsConfirmation := false
-
-	switch priorState {
-	case circuitHalfOpen:
-		if !failed {
-			state.state = circuitClosed
-			state.tripCount = 0
-			state.failureTimestamps = nil
-			state.mu.Unlock()
-			klog.Infof("pod %s passed its half-open probe and is un-blacklisted", podDesc(pod, addr, modelName))
-			return
-		}
-		needsConfirmation = true
-
-	case circuitOpen: // already excluded
-
-	default: // circuitClosed
-		if !failed {
-			// A success does not clear the window - see failureTimestamps' doc.
-			state.mu.Unlock()
-			return
-		}
-		count := recordFailureLocked(state, now)
-		needsConfirmation = count >= FailureThreshold
-	}
-	state.mu.Unlock()
-
-	if !needsConfirmation {
-		return
-	}
-
-	healthy := b.confirmHealthy(addr, statusCode, modelName, pod.Labels[constants.ModelLabelEngine])
-
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.state != priorState {
-		return
-	}
-
-	if priorState == circuitHalfOpen {
-		if healthy {
-			klog.Infof("pod %s failed its half-open probe with a failure status, but its confirmation check reports healthy; treating as a false alarm and closing the breaker", podDesc(pod, addr, modelName))
-			state.state = circuitClosed
-			state.tripCount = 0
-			state.failureTimestamps = nil
-			return
-		}
-		state.tripCount++
-		state.state = circuitOpen
-		state.openUntil = time.Now().Add(backoffDuration(state.tripCount))
-		state.failureTimestamps = nil
-		state.openReason = fmt.Sprintf("failed half-open probe, confirmed unhealthy (last: %s, trip #%d)", failureDesc(statusCode), state.tripCount)
-		klog.Warningf("pod %s failed its half-open probe and its confirmation check reports it unhealthy; re-blacklisted for %s (trip #%d)", podDesc(pod, addr, modelName), backoffDuration(state.tripCount), state.tripCount)
-		return
-	}
-
-	if len(state.failureTimestamps) < FailureThreshold {
-		return
-	}
-	if healthy {
-		klog.Infof("pod %s hit %d failures within %s (last: %s), but its confirmation check reports healthy; treating as a false alarm and not blacklisting", podDesc(pod, addr, modelName), FailureThreshold, podBlacklistFailureWindow, failureDesc(statusCode))
-		state.failureTimestamps = nil
-		return
-	}
-	state.tripCount++
-	state.state = circuitOpen
-	state.openUntil = time.Now().Add(backoffDuration(state.tripCount))
-	state.failureTimestamps = nil
-	state.openReason = fmt.Sprintf("%d failures within %s, confirmed unhealthy (last: %s, trip #%d)", FailureThreshold, podBlacklistFailureWindow, failureDesc(statusCode), state.tripCount)
-	klog.Warningf("pod %s blacklisted for %s after %d failures within %s (last: %s), confirmed unhealthy (trip #%d)", podDesc(pod, addr, modelName), backoffDuration(state.tripCount), FailureThreshold, podBlacklistFailureWindow, failureDesc(statusCode), state.tripCount)
-}
-
-// Allow reports whether pod may be a routing candidate. It does not change the
-// breaker: an open pod whose backoff has elapsed, or a half-open pod whose
-// probe deadline has lapsed, is a candidate, but the half-open probe is only
-// claimed by ClaimProbe for the pod the router actually picks. Claiming it here
-// would spend it on every candidate the router then passes over, and keep the
-// pod out of routing until probeDeadline.
+// Allow reports whether pod may be a routing candidate: not load-excluded, and
+// not open with a block that has yet to end. A pod whose block has ended is a
+// candidate again, with no probe request; the background sweep decides whether
+// it is excluded afresh. It only reads: it takes the entry's read lock and does
+// not count as a touch, so it neither contends with other requests nor keeps an
+// entry from aging out.
 func (b *PodBlacklist) Allow(pod *v1.Pod) bool {
 	if !Enabled || pod == nil {
 		return true
@@ -669,76 +538,13 @@ func (b *PodBlacklist) Allow(pod *v1.Pod) bool {
 		return true
 	}
 
-	state.mu.Lock()
-	defer state.mu.Unlock()
-
-	now := time.Now()
-	state.lastUpdated = now
+	state.mu.RLock()
+	defer state.mu.RUnlock()
 
 	if state.loadExcluded {
 		return false
 	}
-
-	switch state.state {
-	case circuitOpen:
-		return !now.Before(state.openUntil)
-	case circuitHalfOpen:
-		return now.After(state.probeDeadline)
-	default: // circuitClosed
-		return true
-	}
-}
-
-// ClaimProbe makes the request just routed to pod the half-open probe, and
-// reports whether it did. Call it once per request, for the pod the router
-// picked and only once the request is certain to be sent to it: the request's
-// RecordResult is then what closes or re-opens the breaker.
-//
-// An open pod whose backoff has elapsed becomes half-open with a probe
-// deadline podBlacklistProbeTimeout away; a half-open pod whose deadline has
-// lapsed (the probe it was waiting for never reported) gets a fresh deadline.
-// A closed pod, an open pod still inside its backoff (routing fell back to it
-// because every pod was excluded) and a half-open pod whose probe is still in
-// flight are left alone.
-//
-// Between Allow and this call a concurrent request can also pick the pod, so a
-// burst can send a few requests to it before the claim lands. Allow excludes
-// the pod again from the claim on, and whichever of those requests reports
-// first settles the breaker.
-func (b *PodBlacklist) ClaimProbe(pod *v1.Pod) (claimed bool) {
-	if !Enabled || pod == nil {
-		return false
-	}
-	v, ok := b.pods.Load(PodKey(pod))
-	if !ok {
-		return false
-	}
-	state, ok := v.(*podFailureState)
-	if !ok {
-		return false
-	}
-
-	state.mu.Lock()
-	defer state.mu.Unlock()
-
-	now := time.Now()
-	state.lastUpdated = now
-
-	switch state.state {
-	case circuitOpen:
-		if now.Before(state.openUntil) {
-			return false
-		}
-		state.state = circuitHalfOpen
-	case circuitHalfOpen:
-		if !now.After(state.probeDeadline) {
-			return false
-		}
-	default: // circuitClosed
-		return false
-	}
-	state.probeDeadline = now.Add(podBlacklistProbeTimeout)
-	return true
+	return state.state != circuitOpen || !time.Now().Before(state.openUntil)
 }
 
 // IsBlacklisted is a read-only exclusion check (open breaker or load-excluded).
@@ -760,8 +566,8 @@ func (b *PodBlacklist) IsBlacklisted(pod *v1.Pod) bool {
 		return false
 	}
 
-	state.mu.Lock()
-	defer state.mu.Unlock()
+	state.mu.RLock()
+	defer state.mu.RUnlock()
 	if state.loadExcluded {
 		return true
 	}
@@ -786,8 +592,8 @@ func (b *PodBlacklist) IsQuarantined(pod *v1.Pod) bool {
 	if !ok {
 		return false
 	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
+	state.mu.RLock()
+	defer state.mu.RUnlock()
 	return state.state == circuitOpen && time.Now().Before(state.quarantinedUntil)
 }
 
@@ -795,7 +601,7 @@ func (b *PodBlacklist) IsQuarantined(pod *v1.Pod) bool {
 // currently excluded from routing, or "" if it isn't excluded at all. Mirrors
 // the exclusion checks in IsBlacklisted; a pod can be excluded for both
 // reasons at once (e.g. flagged as a load outlier while also mid-backoff from
-// an earlier failure streak), in which case both are reported.
+// failed background probes), in which case both are reported.
 func (b *PodBlacklist) BlacklistReason(pod *v1.Pod) string {
 	if pod == nil {
 		return ""
@@ -810,8 +616,8 @@ func (b *PodBlacklist) BlacklistReason(pod *v1.Pod) string {
 		return ""
 	}
 
-	state.mu.Lock()
-	defer state.mu.Unlock()
+	state.mu.RLock()
+	defer state.mu.RUnlock()
 
 	var reasons []string
 	if state.loadExcluded {
@@ -843,7 +649,7 @@ func (b *PodBlacklist) BlacklistReasons(pods []*v1.Pod) []string {
 	return reasons
 }
 
-// SetLoadExcluded toggles load-outlier exclusion. Separate from the failure
+// SetLoadExcluded toggles load-outlier exclusion. Separate from the open/closed
 // breaker: the next sweep is the recovery check. Clearing a never-excluded
 // pod does not create a map entry.
 //
@@ -853,7 +659,7 @@ func (b *PodBlacklist) BlacklistReasons(pods []*v1.Pod) []string {
 // reference and stays a plain, dependency-free breaker so it's cheap to construct
 // in tests.
 func (b *PodBlacklist) SetLoadExcluded(pod *v1.Pod, excluded bool) (changed bool) {
-	if !Enabled || pod == nil {
+	if !Enabled || pod == nil || ignoredPod(pod) {
 		return false
 	}
 	key := PodKey(pod)
@@ -871,7 +677,11 @@ func (b *PodBlacklist) SetLoadExcluded(pod *v1.Pod, excluded bool) (changed bool
 		changed = state.loadExcluded
 		state.loadExcluded = false
 		state.lastUpdated = time.Now()
+		b.syncCountLocked(state)
 		state.mu.Unlock()
+		if changed {
+			emitRecovery(pod, recoverLoadNormal)
+		}
 		return changed
 	}
 
@@ -885,29 +695,28 @@ func (b *PodBlacklist) SetLoadExcluded(pod *v1.Pod, excluded bool) (changed bool
 	changed = !state.loadExcluded
 	state.loadExcluded = true
 	state.lastUpdated = time.Now()
+	b.syncCountLocked(state)
 	state.mu.Unlock()
 	if changed {
+		emitExclusion(pod, excludeLoadOutlier)
 		klog.Warningf("pod %s blacklisted: running+waiting request count is a statistical outlier among its replicas", podDesc(pod, "", ""))
 	}
 	return changed
 }
 
 // OnPodFlakyReAdd implements cache.PodLifecycleListener. It proactively opens the
-// pod's circuit breaker for flakyReAddOpenDuration, reusing the exact same
-// open -> half-open -> (closed | re-open with backoff) machinery RecordResult
-// drives for a confirmed failure streak -- just entered from a different trigger.
-// tripCount is deliberately left untouched: this isn't a confirmed failure, so if
-// the probe that follows does fail, backoff starts from trip #1 rather than
-// wherever an unrelated pre-existing streak left off.
+// pod's breaker for flakyReAddOpenDuration without confirming anything: a pod that
+// reappeared after being absent is kept out of routing briefly, then admitted again.
+// tripCount is deliberately left untouched: this isn't a confirmed failure, so it
+// neither escalates nor resets the backoff of an unrelated earlier block.
 //
 // The breaker is otherwise unaffected by the informer's delete/re-add cycle (it's
 // keyed by pod name, independent of the cache's *Pod object identity), so a pod
-// already open or half-open here means it was excluded for an unrelated reason
-// (e.g. it was mid-recovery from a real failure streak when this flap happened) --
-// this only extends openUntil if the new deadline is later, and never disturbs an
-// in-progress half-open probe.
+// already open here means it was excluded for an unrelated reason (e.g. a probe
+// sweep blocked it when this flap happened) -- this only extends openUntil if the
+// new deadline is later.
 func (b *PodBlacklist) OnPodFlakyReAdd(pod *v1.Pod) {
-	if !Enabled || pod == nil {
+	if !Enabled || pod == nil || ignoredPod(pod) {
 		return
 	}
 	key := PodKey(pod)
@@ -921,36 +730,75 @@ func (b *PodBlacklist) OnPodFlakyReAdd(pod *v1.Pod) {
 	state.mu.Lock()
 	now := time.Now()
 	state.lastUpdated = now
+	state.lapseLocked(now)
 	newOpenUntil := now.Add(flakyReAddOpenDuration)
-	changed := false
+	changed, newlyExcluded := false, false
 	switch state.state {
 	case circuitClosed:
 		state.state = circuitOpen
 		state.openUntil = newOpenUntil
-		state.openReason = "flaky delete/re-add reappearance, pending health confirmation"
-		changed = true
+		state.openReason = "flaky delete/re-add reappearance"
+		changed, newlyExcluded = true, true
 	case circuitOpen:
 		if newOpenUntil.After(state.openUntil) {
 			state.openUntil = newOpenUntil
 			changed = true
 		}
-	case circuitHalfOpen:
-		// A probe is already in flight (or about to be); let it resolve on its
-		// own rather than resetting state mid-probe.
 	}
+	b.syncCountLocked(state)
 	state.mu.Unlock()
 
-	// Logged only on an actual state change -- not on every call (e.g. the
-	// circuitHalfOpen no-op above, or circuitOpen where the existing window
-	// already outlasts this one) -- both to avoid noise and because
-	// PodLifecycleListener's contract (called synchronously from the informer
-	// event handler) means this I/O must stay off the hot path as much as
-	// possible even though c.mu itself is already released by the time this
+	// Logged only on an actual state change -- not on every call (e.g. circuitOpen
+	// where the existing window already outlasts this one) -- both to avoid noise
+	// and because PodLifecycleListener's contract (called synchronously from the
+	// informer event handler) means this I/O must stay off the hot path as much
+	// as possible even though c.mu itself is already released by the time this
 	// listener runs (see addPod/updatePod in pkg/cache/informers.go).
+	if newlyExcluded {
+		emitExclusion(pod, excludeFlakyReAdd)
+	}
 	if changed {
 		addr, model := podTarget(pod, "", "")
-		klog.InfoS("pod proactively excluded pending health confirmation after a flaky delete/re-add",
+		klog.InfoS("pod briefly excluded after a flaky delete/re-add",
 			"pod", key, "addr", addr, "model", model, "duration", flakyReAddOpenDuration)
+	}
+}
+
+// recordHealthySweep applies a healthy sweep to state, the entry stored for pod. It starts
+// the failure counts over and, once a block has ended, the backoff too. Healthy sweeps in
+// a row lift a block that is still running (podProbeRecoveryIterations of them), which
+// ends a quarantine as well.
+func (b *PodBlacklist) recordHealthySweep(pod *v1.Pod, key string, state *podFailureState) {
+	state.mu.Lock()
+	now := time.Now()
+	state.probeFailures = 0
+	state.probeDeadSweeps = 0
+	state.lapseLocked(now)
+	healthySweeps := 0
+	lifted := false
+	if state.state == circuitClosed {
+		state.tripCount = 0
+		state.probeHealthySweeps = 0
+	} else {
+		state.probeHealthySweeps++
+		healthySweeps = state.probeHealthySweeps
+		if state.probeHealthySweeps >= podProbeRecoveryIterations {
+			state.state = circuitClosed
+			state.openUntil = now
+			state.quarantinedUntil = time.Time{}
+			state.tripCount = 0
+			state.probeHealthySweeps = 0
+			state.lastUpdated = now
+			lifted = true
+		}
+	}
+	b.syncCountLocked(state)
+	state.mu.Unlock()
+	if lifted {
+		emitRecovery(pod, recoverProbeHealthy)
+		addr, model := podTarget(pod, "", "")
+		klog.InfoS("pod un-blacklisted: background probes found it healthy",
+			"pod", key, "addr", addr, "model", model, "healthySweeps", healthySweeps)
 	}
 }
 
@@ -960,28 +808,27 @@ func (b *PodBlacklist) OnPodFlakyReAdd(pod *v1.Pod) {
 //
 //   - A pod found dead (ProbeDead) podProbeFailureIterations sweeps in a row is
 //     blacklisted for podProbeDeadBlacklistDuration, whatever state its breaker
-//     is in: closed, or already open or half-open from failing requests. An
+//     is in: closed, or already open from an earlier sweep or a flaky re-add. An
 //     open pod's deadline is only ever extended, never shortened. While it stays
 //     dead each further run of dead sweeps renews the hour. When the hour ends
-//     the normal half-open path takes over: the next request routed to the pod
-//     is its probe.
+//     the pod is admitted again, and one that is still dead is blacklisted anew
+//     after another podProbeFailureIterations dead sweeps.
 //   - A pod that is merely degraded (ProbeDegraded) podProbeFailureIterations
-//     sweeps in a row, while its breaker is closed, is tripped with the
-//     ordinary backoff.
-//   - A healthy probe starts both counts over. It never lifts a blacklisting:
-//     that is left to the deadline.
+//     sweeps in a row, while its breaker is closed (an open one whose block has
+//     ended counts as closed), is tripped with the ordinary backoff.
+//   - A healthy probe starts both counts over, and once a block has ended it
+//     starts the backoff over too. A block that is still running is lifted by
+//     podProbeRecoveryIterations healthy sweeps in a row, so a pod that is
+//     answering correctly is not kept out for the rest of an hour.
 func (b *PodBlacklist) RecordProbeResult(pod *v1.Pod, result ProbeResult, failure string) (blacklisted bool) {
-	if !Enabled || pod == nil {
+	if !Enabled || pod == nil || ignoredPod(pod) {
 		return false
 	}
 	key := PodKey(pod)
 	if result == ProbeHealthy {
 		if v, ok := b.pods.Load(key); ok {
 			if state, ok := v.(*podFailureState); ok {
-				state.mu.Lock()
-				state.probeFailures = 0
-				state.probeDeadSweeps = 0
-				state.mu.Unlock()
+				b.recordHealthySweep(pod, key, state)
 			}
 		}
 		return false
@@ -993,10 +840,20 @@ func (b *PodBlacklist) RecordProbeResult(pod *v1.Pod, result ProbeResult, failur
 		klog.Errorf("PodBlacklist: unexpected type %T stored for pod %s; skipping", v, podDesc(pod, "", ""))
 		return false
 	}
+	exclusion := "" // set when this verdict newly excludes the pod; counted once the lock is released
+	defer func() {
+		if exclusion != "" {
+			emitExclusion(pod, exclusion)
+		}
+	}()
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	defer b.syncCountLocked(state) // deferred after the unlock, so it runs before it
 	now := time.Now()
 	state.lastUpdated = now
+	state.lapseLocked(now)
+	state.probeHealthySweeps = 0
+	wasExcluded := state.state == circuitOpen && now.Before(state.openUntil)
 
 	if result == ProbeDead {
 		state.probeDeadSweeps++
@@ -1021,9 +878,11 @@ func (b *PodBlacklist) RecordProbeResult(pod *v1.Pod, result ProbeResult, failur
 		if until.After(state.quarantinedUntil) {
 			state.quarantinedUntil = until
 		}
-		state.failureTimestamps = nil
 		state.probeFailures = 0
 		state.probeDeadSweeps = 0
+		if !wasExcluded {
+			exclusion = excludeProbeDead
+		}
 		state.openReason = fmt.Sprintf("background probe found it dead %d sweeps in a row (%s); blacklisted for %s", podProbeFailureIterations, failure, podProbeDeadBlacklistDuration)
 		klog.Warningf("pod %s blacklisted for %s: background probe found it dead %d sweeps in a row (%s)", podDesc(pod, "", ""), podProbeDeadBlacklistDuration, podProbeFailureIterations, failure)
 		return true
@@ -1049,44 +908,36 @@ func (b *PodBlacklist) RecordProbeResult(pod *v1.Pod, result ProbeResult, failur
 	state.tripCount++
 	state.state = circuitOpen
 	state.openUntil = now.Add(backoffDuration(state.tripCount))
-	state.failureTimestamps = nil
 	state.probeFailures = 0
+	exclusion = excludeProbeDegraded
 	state.openReason = fmt.Sprintf("background probe failed %d sweeps in a row (%s, trip #%d)", podProbeFailureIterations, failure, state.tripCount)
 	klog.Warningf("pod %s blacklisted for %s: background probe failed %d sweeps in a row (%s) (trip #%d)", podDesc(pod, "", ""), backoffDuration(state.tripCount), podProbeFailureIterations, failure, state.tripCount)
 	return true
 }
 
-// FailureCount is how many failures pod currently has recorded in its failure
-// window, for diagnostics and tests.
-func (b *PodBlacklist) FailureCount(pod *v1.Pod) int {
-	if pod == nil {
-		return 0
-	}
-	v, ok := b.pods.Load(PodKey(pod))
-	if !ok {
-		return 0
-	}
-	state, ok := v.(*podFailureState)
-	if !ok {
-		return 0
-	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	return len(state.failureTimestamps)
-}
-
-// FilterBlacklisted returns the pods Allow admits, in order. While no pod is tracked at
-// all it returns pods itself, so the common case costs no lookup and no allocation;
-// callers must not modify the result in place.
+// FilterBlacklisted returns the pods Allow admits, in order. While no entry can exclude
+// its pod it returns pods itself, so the common case costs no lookup and no allocation;
+// and when it does look, it allocates only if it finds a pod to drop. Callers must not
+// modify the result in place.
 func (b *PodBlacklist) FilterBlacklisted(pods []*v1.Pod) []*v1.Pod {
-	if !Enabled || b.tracked.Load() == 0 {
+	if !Enabled || b.excluded.Load() == 0 {
 		return pods
 	}
-	out := make([]*v1.Pod, 0, len(pods))
-	for _, pod := range pods {
+	var out []*v1.Pod // allocated at the first pod to drop
+	for i, pod := range pods {
 		if b.Allow(pod) {
-			out = append(out, pod)
+			if out != nil {
+				out = append(out, pod)
+			}
+			continue
 		}
+		if out == nil {
+			out = make([]*v1.Pod, i, len(pods))
+			copy(out, pods[:i])
+		}
+	}
+	if out == nil {
+		return pods
 	}
 	return out
 }
@@ -1114,6 +965,7 @@ func (b *PodBlacklist) StartSweep(stopCh <-chan struct{}) {
 						}
 					}()
 					b.sweepStale(time.Now())
+					b.publishExcludedPods()
 				}()
 			case <-stopCh:
 				ticker.Stop()
@@ -1146,6 +998,8 @@ func (b *PodBlacklist) sweepStale(now time.Time) {
 		// whole TTL holds nothing worth keeping, and the next event recreates it.
 		if now.Sub(last) > podBlacklistEntryTTL && b.pods.CompareAndDelete(key, value) {
 			b.tracked.Add(-1)
+			state.removed = true
+			b.syncCountLocked(state)
 		}
 		state.mu.Unlock()
 		return true

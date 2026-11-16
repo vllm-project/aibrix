@@ -24,33 +24,30 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 // StartProbeSweep starts a background goroutine that every
-// podProbeSweepInterval probes every routable pod, except prefill and decode
-// pods, with the same check the failure breaker uses to confirm a trip
-// (PodBlacklist.probe): GET /health must be 2xx and, for vllm/sglang pods,
-// GET /v1/models must return a JSON list naming the model.
+// podProbeSweepInterval probes every routable pod, except the pods the
+// blacklist ignores (ignoredPod; prefill and decode pods among them), with PodBlacklist.probe:
+// GET /health must be 2xx and, for vllm/sglang pods, GET /v1/models must
+// return a JSON list naming the model.
 //
-// The request-driven breaker only reacts to pods that are being sent traffic
-// and failing on it. This sweep also catches a pod that has gone bad while
-// idle, or a stale registration whose address is gone or now belongs to
-// another process, and blacklists it proactively:
+// Nothing else reports on a pod: the gateway does not record request outcomes.
+// This sweep catches a pod that has gone bad, or a stale registration whose
+// address is gone or now belongs to another process, and blacklists it:
 //
 //   - a pod found dead (GET /health failing, or GET /v1/models answering 2xx
 //     with a body that is not a JSON model list) for podProbeFailureIterations
 //     sweeps in a row is blacklisted for podProbeDeadBlacklistDuration (one
 //     hour), renewed while it stays dead;
 //   - a pod that is only degraded for that many sweeps gets the ordinary
-//     breaker backoff.
+//     backoff.
 //
 // A pod that fails is probed again on the next sweeps, so one blip does not
-// exclude it. Pods the breaker already excludes are probed too: that is how a
-// stale entry stuck in open/half-open backoff is moved to the long blacklist
-// instead of being handed a real half-open request every few minutes. See
+// exclude it. Pods that are already excluded are probed too: that is how a pod
+// in a short backoff is moved to the long blacklist once it is found dead. See
 // PodBlacklist.RecordProbeResult.
 func (b *PodBlacklist) StartProbeSweep(src PodSource, stopCh <-chan struct{}) {
 	if !Enabled {
@@ -92,6 +89,7 @@ type podProbeTarget struct {
 // sweepPodProbes probes each target with at most podProbeConcurrency probes in
 // flight and feeds every outcome to the pod blacklist.
 func (b *PodBlacklist) sweepPodProbes(src PodSource) {
+	defer b.publishExcludedPods()
 	targets := b.podProbeTargets(src)
 	if len(targets) == 0 {
 		return
@@ -111,28 +109,17 @@ func (b *PodBlacklist) sweepPodProbes(src PodSource) {
 				}
 			}()
 			result, failure := b.probe(t.addr, t.model, t.engine, podProbeTimeout)
+			emitProbeVerdict(t.pod, result)
 			b.RecordProbeResult(t.pod, result, failure)
 		}(t)
 	}
 	wg.Wait()
 }
 
-// isPDRolePod reports whether pod is the prefill or decode leg of a disaggregated
-// (PD) deployment, by the same role label the PD router groups pods by.
-func isPDRolePod(pod *v1.Pod) bool {
-	if pod == nil {
-		return false
-	}
-	switch pod.Labels[pd.RoleLabel] {
-	case pd.RolePrefill, pd.RoleDecode:
-		return true
-	}
-	return false
-}
-
 // podProbeTargets lists each routable pod once, however many models it serves
 // (a base model and its LoRA adapters share pods), with the address a request
-// would reach it on. Prefill and decode pods are not probed.
+// would reach it on. The pods the blacklist ignores (ignoredPod), prefill and
+// decode pods among them, are not probed.
 func (b *PodBlacklist) podProbeTargets(src PodSource) []podProbeTarget {
 	seen := make(map[string]struct{})
 	var targets []podProbeTarget
@@ -142,7 +129,7 @@ func (b *PodBlacklist) podProbeTargets(src PodSource) []podProbeTarget {
 			continue
 		}
 		for _, pod := range utils.FilterRoutablePods(podsArr.All()) {
-			if isPDRolePod(pod) {
+			if ignoredPod(pod) {
 				continue
 			}
 			key := PodKey(pod)

@@ -38,10 +38,14 @@ func TestMeanStdDev(t *testing.T) {
 	assert.Equal(t, 0.0, stddev)
 }
 
-// loadTable maps "model/pod" to a pod's engine running+waiting request count.
+// loadTable maps "model/pod" to a pod's engine running+waiting request count. A pod
+// with no entry is unmeasured.
 type loadTable map[string]float64
 
-func (l loadTable) depth(pod *v1.Pod, model string) float64 { return l[model+"/"+pod.Name] }
+func (l loadTable) depth(pod *v1.Pod, model string) (float64, bool) {
+	load, ok := l[model+"/"+pod.Name]
+	return load, ok
+}
 
 func TestSweepLoadOutliers_BlacklistsStatisticalOutlier(t *testing.T) {
 	var b PodBlacklist
@@ -92,14 +96,68 @@ func TestSweepLoadOutliers_RecoveryCallbackIsOptional(t *testing.T) {
 	assert.False(t, b.IsBlacklisted(pod3))
 }
 
+// A pod with no measurement (just scaled out, or its scrape is failing) is not idle. Read as
+// load 0 it would be the baseline the one pod that is serving the traffic is scored against:
+// [20, 0, 0, 0] flags the busy one, and its traffic, and its prefix cache, would move to
+// replicas that have never been measured.
+func TestSweepLoadOutliers_UnmeasuredPodsAreNotLoadZeroPeers(t *testing.T) {
+	busy, fresh1, fresh2, fresh3 := blacklistTestPod("1"), blacklistTestPod("2"), blacklistTestPod("3"), blacklistTestPod("4")
+	src := fakePods{"test-model": {busy, fresh1, fresh2, fresh3}}
+
+	t.Run("a scale-out does not flag the pod carrying the traffic", func(t *testing.T) {
+		var b PodBlacklist
+		b.sweepLoadOutliers(src, loadTable{"test-model/1": 20}.depth, nil)
+
+		assert.False(t, b.IsBlacklisted(busy))
+		assert.Zero(t, b.tracked.Load(), "with one measured pod there is nothing to score and nothing to track")
+	})
+
+	t.Run("the same loads, measured, do flag it", func(t *testing.T) {
+		var b PodBlacklist
+		b.sweepLoadOutliers(src, loadTable{"test-model/1": 20, "test-model/2": 0, "test-model/3": 0, "test-model/4": 0}.depth, nil)
+
+		assert.True(t, b.IsBlacklisted(busy), "control: a real [20, 0, 0, 0] is an outlier")
+	})
+
+	t.Run("unmeasured pods do not count toward the minimum", func(t *testing.T) {
+		var b PodBlacklist
+		loads := loadTable{"test-model/1": 100, "test-model/2": 0}
+		b.sweepLoadOutliers(src, loads.depth, nil)
+
+		assert.False(t, b.IsBlacklisted(busy), "two measured pods are fewer than loadOutlierMinPods")
+	})
+
+	t.Run("unmeasured pods are not part of the baseline", func(t *testing.T) {
+		var b PodBlacklist
+		// Pod 4 is unmeasured, so pods 1-3 are scored among themselves: 60 against peers at
+		// 40 and 40 is an outlier. Counting pod 4 as load 0 would make its peers [40, 40, 0],
+		// a mean of 26.7 and a stddev of 18.9, and 60 would no longer clear two of them.
+		loads := loadTable{"test-model/1": 60, "test-model/2": 40, "test-model/3": 40}
+		b.sweepLoadOutliers(src, loads.depth, nil)
+
+		assert.True(t, b.IsBlacklisted(busy))
+		assert.False(t, b.IsBlacklisted(fresh3), "the unmeasured pod is not flagged either")
+	})
+
+	t.Run("a pod that loses its measurement is no longer load-excluded", func(t *testing.T) {
+		var b PodBlacklist
+		b.sweepLoadOutliers(src, loadTable{"test-model/1": 100, "test-model/2": 20, "test-model/3": 20, "test-model/4": 20}.depth, nil)
+		require.True(t, b.IsBlacklisted(busy))
+
+		b.sweepLoadOutliers(src, loadTable{"test-model/2": 20, "test-model/3": 20, "test-model/4": 20}.depth, nil)
+
+		assert.False(t, b.IsBlacklisted(busy), "no data is no reason to keep excluding a pod")
+	})
+}
+
 func TestSweepLoadOutliers_SkipsModelsWithTooFewPods(t *testing.T) {
 	var b PodBlacklist
 	pod1, pod2 := blacklistTestPod("1"), blacklistTestPod("2")
 	src := fakePods{"test-model": {pod1, pod2}}
 
-	b.sweepLoadOutliers(src, func(*v1.Pod, string) float64 {
+	b.sweepLoadOutliers(src, func(*v1.Pod, string) (float64, bool) {
 		t.Error("load must not be read for a model with too few replicas")
-		return 0
+		return 0, false
 	}, nil)
 
 	assert.False(t, b.IsBlacklisted(pod1))
@@ -214,9 +272,9 @@ func TestSweepLoadOutliers_QuarantinedPodDoesNotCountTowardTheMinimumReplicas(t 
 	dead := quarantinedPod(t, &b, "dead")
 	src := fakePods{"test-model": {pod1, pod2, dead}}
 
-	b.sweepLoadOutliers(src, func(*v1.Pod, string) float64 {
+	b.sweepLoadOutliers(src, func(*v1.Pod, string) (float64, bool) {
 		t.Error("load must not be read for a model with too few live replicas")
-		return 0
+		return 0, false
 	}, nil)
 
 	assert.False(t, b.IsBlacklisted(pod1))

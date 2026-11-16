@@ -25,7 +25,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/routeutil"
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/blacklist"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
@@ -96,17 +96,6 @@ func (s *Server) OnPodFlakyReAdd(pod *v1.Pod) {
 	s.podBlacklist.OnPodFlakyReAdd(pod)
 }
 
-// claimBlacklistProbe makes the request just routed the half-open probe of the pod it
-// was routed to, if that pod is waiting for one (see blacklist.PodBlacklist.ClaimProbe).
-// HandleRequestBody calls it once the request is certain to reach the picked pod. The
-// routing filter only admits a pod as a candidate; claiming there would spend the probe
-// on every candidate the router then passed over.
-func (s *Server) claimBlacklistProbe(routingCtx *types.RoutingContext) {
-	if routingCtx.HasRouted() {
-		s.podBlacklist.ClaimProbe(routingCtx.TargetPod())
-	}
-}
-
 // getGlobalRunningRequestsByPod is the live cross-gateway running-request count of
 // pod (a Redis read when Redis is configured), 0 when the cache does not know the
 // pod. It is for background surfaces such as the un-blacklist log line, not the
@@ -135,7 +124,8 @@ func (s *Server) podEngineTotal(pod *v1.Pod) float64 {
 	}
 	var total float64
 	for _, model := range models {
-		total += s.podEngineQueueDepth(pod, model)
+		load, _ := s.podEngineQueueDepth(pod, model)
+		total += load
 	}
 	return total
 }
@@ -192,6 +182,102 @@ func (t *allBlacklistedLogThrottle) allow(model string, now time.Time) (suppress
 	return e.suppressed, true
 }
 
+// blacklistBeforeCandidateStage reports whether selectTargetPod filters the whole ready list
+// ahead of the candidate stage, instead of filtering the K candidates the stage picks. It must
+// when the stage does not run, as for the exclusive strategies, which see every ready pod. It
+// also must when the request has a replica-inflight limit: that filter reads the running count
+// of every ready pod, so the cost the later filter saves is not saved, and it must not see
+// excluded pods, which could otherwise be the only replicas with room left.
+func blacklistBeforeCandidateStage(routeCtx *types.RoutingContext, isExclusive bool) bool {
+	return isExclusive || replicaInflightLimit(routeCtx) > 0
+}
+
+// The reasons routing ignores the blacklist for a request, the reason label of
+// metrics.GatewayPodBlacklistFallbackTotal.
+const (
+	fallbackAllExcluded = "all_excluded"
+	fallbackOverCap     = "over_cap"
+)
+
+// blacklistFallbackReason says why the kept pods of total that FilterBlacklisted returned cannot
+// be routed across, or "" when they can. None are left when every pod is excluded, and too few
+// are when more than AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT of the pods are: the few that
+// remain would carry the whole model's traffic, on the word of verdicts that are more likely
+// wrong when they are that many.
+func blacklistFallbackReason(kept, total int) string {
+	switch {
+	case kept == 0:
+		return fallbackAllExcluded
+	case blacklist.ExclusionOverCap(kept, total):
+		return fallbackOverCap
+	}
+	return ""
+}
+
+// excludeBlacklisted drops the pods the blacklist currently excludes from pods. When that would
+// leave nothing, or leave too few (blacklistFallbackReason), it returns pods unchanged, so a
+// fully or mostly blacklisted model still routes rather than failing every request or piling
+// onto what is left: the blacklist is a soft preference, not a hard exclusion.
+func (s *Server) excludeBlacklisted(routeCtx *types.RoutingContext, pods []*v1.Pod) []*v1.Pod {
+	filtered := s.podBlacklist.FilterBlacklisted(pods)
+	reason := blacklistFallbackReason(len(filtered), len(pods))
+	if reason == "" {
+		return filtered
+	}
+	s.logBlacklistFallback(routeCtx, pods, len(filtered), reason)
+	return pods
+}
+
+// excludeBlacklistedCandidates is excludeBlacklisted for the candidates the candidate stage
+// picked out of ready. It looks up the candidates only, so a decision costs O(K) lookups
+// however many pods are ready or tracked; when the stage did not narrow, candidates is the
+// ready list itself and this is excludeBlacklisted.
+//
+// A pod the filter drops is not replaced, so a few excluded candidates leave the router a
+// smaller set. When every candidate is excluded, or too many (blacklistFallbackReason), but
+// the ready pods as a whole are not, the stage runs again over the ready pods that are not
+// excluded: the request must not go to an excluded pod while healthy ones exist, and an
+// unlucky sample is not the fleet. That pass looks up every ready pod, but it is reached only
+// when the candidates are mostly excluded, which for K candidates sampled from the fleet
+// means most of it is. When the fleet itself is over the cap the request is routed across the
+// candidates unfiltered.
+func (s *Server) excludeBlacklistedCandidates(routeCtx *types.RoutingContext, router types.Router, ready, candidates []*v1.Pod) []*v1.Pod {
+	filtered := s.podBlacklist.FilterBlacklisted(candidates)
+	reason := blacklistFallbackReason(len(filtered), len(candidates))
+	if reason == "" {
+		return filtered
+	}
+	scope, kept := candidates, len(filtered)
+	if len(candidates) < len(ready) {
+		allowed := s.podBlacklist.FilterBlacklisted(ready)
+		if reason = blacklistFallbackReason(len(allowed), len(ready)); reason == "" {
+			return routing.SelectCandidates(routeCtx, s.cache, router, allowed)
+		}
+		scope, kept = ready, len(allowed)
+	}
+	s.logBlacklistFallback(routeCtx, scope, kept, reason)
+	return candidates
+}
+
+// logBlacklistFallback counts a request routed with the blacklist ignored and, throttled per
+// model, logs why. pods is the set that was judged and kept how many of them survived.
+func (s *Server) logBlacklistFallback(routeCtx *types.RoutingContext, pods []*v1.Pod, kept int, reason string) {
+	metrics.EmitMetricToPrometheus(routeCtx, nil, metrics.GatewayPodBlacklistFallbackTotal,
+		&metrics.SimpleMetricValue{Value: 1}, map[string]string{"reason": reason})
+	if reason == fallbackAllExcluded {
+		s.logAllPodsBlacklisted(routeCtx, pods)
+		return
+	}
+	suppressed, ok := s.allBlacklistedLog.allow(routeCtx.Model+"/"+fallbackOverCap, time.Now())
+	if !ok {
+		return
+	}
+	klog.InfoS("too many pods are blacklisted; ignoring the blacklist for this request",
+		"requestID", routeCtx.RequestID, "model", routeCtx.Model, "pods", len(pods), "excluded", len(pods)-kept,
+		"maxExcludedPercent", blacklist.MaxExcludedPercent(),
+		"reasons", s.podBlacklist.BlacklistReasons(pods), "suppressedSinceLast", suppressed)
+}
+
 // logAllPodsBlacklisted records that routing fell back to blacklisted pods because every
 // ready pod of the request's model is excluded -- the one case where the blacklist is
 // deliberately ignored. It names the model and each pod's exclusion reason, throttled per
@@ -208,40 +294,18 @@ func (s *Server) logAllPodsBlacklisted(routeCtx *types.RoutingContext, readyPods
 
 // podEngineQueueDepth returns pod's real backend load for model: the engine's own
 // num_requests_running + num_requests_waiting, i.e. requests the engine has
-// actually admitted into a batch plus those still queued behind it. A genuinely
-// missing metric (e.g. before its first scrape lands) is treated the same as a pod
-// truly reporting 0: both count as "not overloaded" here, since the load sweep only
-// ever excludes a pod for being too high, never for being unmeasured.
-func (s *Server) podEngineQueueDepth(pod *v1.Pod, model string) float64 {
-	return routeutil.GetPodModelMetricsSimpleValue(s.cache, pod.Name, pod.Namespace, model, metrics.NumRequestsRunning) +
-		routeutil.GetPodModelMetricsSimpleValue(s.cache, pod.Name, pod.Namespace, model, metrics.NumRequestsWaiting)
-}
-
-// downstreamCanceled is true when the ext_proc stream context is already done --
-// the usual signal that the downstream client (or Envoy tearing the request down
-// because the client left) cancelled. When it is false while the stream is closing,
-// the client is still there and Envoy closed the processor because of an
-// upstream or reset problem.
-func downstreamCanceled(st *processState) bool {
-	return st != nil && st.ctx != nil && st.ctx.Err() != nil
-}
-
-// recordUncompletedRecv reports to the blacklist an ext_proc stream that ended
-// before the response completed, for a request that was routed to a pod:
-//
-//   - the client is gone (the stream context is done): a client abort or timeout.
-//     It says nothing about the pod, so nothing is recorded. If headers had
-//     arrived they already recorded the status;
-//   - no response headers ever arrived: blacklist.StatusStreamClosed;
-//   - headers arrived and the client is still connected: the upstream hung up
-//     mid-response, blacklist.StatusIncompleteStream.
-func (s *Server) recordUncompletedRecv(st *processState) {
-	if st == nil || st.routerCtx == nil || !st.routerCtx.HasRouted() || downstreamCanceled(st) {
-		return
+// actually admitted into a batch plus those still queued behind it. ok is false when
+// the cache has no value for either metric (a pod added after the last scrape, or one
+// whose scrape is failing): such a pod is unmeasured, not idle, and the load sweep
+// leaves it out instead of scoring it, or its peers, as load 0.
+func (s *Server) podEngineQueueDepth(pod *v1.Pod, model string) (load float64, ok bool) {
+	running, err := s.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, model, metrics.NumRequestsRunning)
+	if err != nil {
+		return 0, false
 	}
-	code := blacklist.StatusIncompleteStream
-	if !st.respHeadersSeen {
-		code = blacklist.StatusStreamClosed
+	waiting, err := s.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, model, metrics.NumRequestsWaiting)
+	if err != nil {
+		return 0, false
 	}
-	s.podBlacklist.RecordResult(st.routerCtx.TargetPod(), st.routerCtx.TargetAddress(), code, st.model)
+	return running.GetSimpleValue() + waiting.GetSimpleValue(), true
 }

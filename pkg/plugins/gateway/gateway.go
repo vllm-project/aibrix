@@ -111,8 +111,8 @@ type Server struct {
 	asyncJobsOnce sync.Once
 	// encodeExecutor runs the encode stage for E+PD rolesets. nil skips it.
 	encodeExecutor *encode.Executor
-	// podBlacklist is the per-pod circuit breaker and load-outlier flag that
-	// selectTargetPod consults before routing (see the blacklist package). Its
+	// podBlacklist is the per-pod exclusion list (probe sweep, load-outlier flag,
+	// flaky re-add) that selectTargetPod consults before routing (see the blacklist package). Its
 	// zero value is ready to use.
 	podBlacklist blacklist.PodBlacklist
 	// allBlacklistedLog throttles the "every ready pod is blacklisted" line per model.
@@ -154,18 +154,11 @@ type processState struct {
 	metricLabel        string
 	routerCtx          *types.RoutingContext
 	lastRespHeaders    []*configPb.HeaderValueOption
-	// respHeadersSeen records whether Envoy ever delivered ResponseHeaders for
-	// this request. It decides which pod-health signal an ext_proc stream that
-	// closes early is (see recordUncompletedRecv): a missing response is only
-	// meaningful as blacklist.StatusStreamClosed when none, successful or not,
-	// ever came back -- otherwise a status that did arrive was already recorded
-	// from the headers and must not be counted twice.
-	respHeadersSeen  bool
-	stream           bool
-	isRespError      bool
-	isGatewayRspDone bool // A response outcome was recorded, including an ImmediateResponse failure.
-	completed        bool
-	trackedModel     string
+	stream             bool
+	isRespError        bool
+	isGatewayRspDone   bool // A response outcome was recorded, including an ImmediateResponse failure.
+	completed          bool
+	trackedModel       string
 	// recvCh carries the result of the srv.Recv() this stream already has in
 	// flight. It is kept across processOnce calls because a call can return
 	// without consuming its message (PD fail-fast), and ext_proc requires that
@@ -687,7 +680,6 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 		// client closed stream (EOF)
 		if st.model != "" && !st.isGatewayRspDone {
 			st.isGatewayRspDone = true
-			s.recordUncompletedRecv(st)
 			s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "client_cancelled_eof", "499", st.routerCtx)
 		}
 		klog.ErrorS(nil, "client closed stream (EOF) before completion", "requestID", st.requestID, "model", st.model)
@@ -703,7 +695,6 @@ func (s *Server) handleRecvError(st *processState, err error) error {
 			if st.completed {
 				s.emitMetricsCounterHelper(metrics.GatewayRequestModelSuccessTotal, st.model, "gateway_request_success", "200", st.routerCtx)
 			} else {
-				s.recordUncompletedRecv(st)
 				s.emitMetricsCounterHelper(metrics.GatewayRequestModelFailTotal, st.model, "client_cancelled", "499", st.routerCtx)
 			}
 		}
@@ -755,7 +746,6 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 		}
 
 	case *extProcPb.ProcessingRequest_ResponseHeaders:
-		st.respHeadersSeen = true
 		// The decode pod has started answering: from here on a late PD prefill
 		// failure must not abort it, and must not fail a stream the client is
 		// already being served on.
@@ -1002,14 +992,16 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		return "", fmt.Errorf("no ready pods for routing")
 	}
 
-	// Drop pods the blacklist currently excludes (a tripped failure breaker, a pod
-	// the probe sweep found dead, or a load outlier). If that empties the list,
+	// Drop pods the blacklist currently excludes (a pod the probe sweep found dead or
+	// degraded, a load outlier, or one that just flapped back in). If that empties the list,
 	// route anyway rather than fail every request outright -- a blacklist is a
 	// soft preference, not a hard exclusion.
-	if filtered := s.podBlacklist.FilterBlacklisted(readyPods); len(filtered) > 0 {
-		readyPods = filtered
-	} else {
-		s.logAllPodsBlacklisted(routeCtx, readyPods)
+	//
+	// A request the candidate stage may narrow is filtered after it, on its K candidates
+	// only (below): filtering the ready list first costs a lookup per pod on every request.
+	filterBeforeCandidates := blacklistBeforeCandidateStage(routeCtx, isExclusive)
+	if filterBeforeCandidates {
+		readyPods = s.excludeBlacklisted(routeCtx, readyPods)
 	}
 
 	routerManager := s.routerManager
@@ -1075,13 +1067,18 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		// the filter, the gate and the router read running counts for those pods only (RFC #3188).
 		// The cache lets the stage skip pods already at the profile's inflight cap before ranking
 		// them, from memory only; the Redis filter below still decides the 429.
+		allReady := readyPods
 		readyBeforeCandidates := len(readyPods)
 		readyPods = routing.SelectCandidates(routeCtx, s.cache, router, readyPods)
 		// The scope is what the filter actually ran on, not which branch ran: with the candidate
 		// stage off, SelectCandidates returns the ready set unchanged and the cap is fleet-wide.
+		// It is read before the blacklist drops pods, which says nothing about what was sampled.
 		scope := inflightScopeFleet
 		if len(readyPods) < readyBeforeCandidates {
 			scope = inflightScopeCandidates
+		}
+		if !filterBeforeCandidates {
+			readyPods = s.excludeBlacklistedCandidates(routeCtx, router, allReady, readyPods)
 		}
 		if err := narrowToInflightCapacity(scope); err != nil {
 			return "", err
@@ -1091,7 +1088,16 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		// strategies (pd, slo*) are exempted above: they manage their own pod subsets
 		// (prefill/decode, SLO tiers), which a blanket running-request-count filter would
 		// distort.
-		readyPods = routing.ApplyLoadImbalanceGate(routeCtx, s.cache, readyPods)
+		//
+		// The gate runs only while the pod blacklist is off. With the blacklist on, its
+		// load-outlier sweep already narrows by load (via the blacklist filter), and running
+		// the gate on top would narrow twice from two different views of the same load: the
+		// sweep's flag can be a full sweep interval old, so a pod it flagged while busy and
+		// that has since drained is dropped by the blacklist while the gate drops the pod
+		// that is busy now, which can leave a 3-replica pool routing to a single pod.
+		if !blacklist.Enabled {
+			readyPods = routing.ApplyLoadImbalanceGate(routeCtx, s.cache, readyPods)
+		}
 	}
 
 	bypassSingleCandidate := true

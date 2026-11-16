@@ -114,7 +114,6 @@ const (
 	EngineNameVLLM   = "vllm"
 	EngineNameSGLang = "sglang"
 	EngineNameTRTLLM = "trtllm"
-	EngineNameXLLM   = "xllm"
 )
 
 var (
