@@ -214,3 +214,28 @@ func TestParseFamiliesMatchesFullParseOnRandomText(t *testing.T) {
 	t.Logf("full parse succeeded in %d cases; %d failed only on skipped lines", succeeded, filteredOnly)
 	require.Greater(t, succeeded, 500)
 }
+
+// Keep the declared legacy family through the filtered gateway scrape, including
+// when it becomes an alias. The malformed unread family ensures this exercises
+// filtering rather than silently falling back to the full parser.
+func TestFetchAllTypedMetricsKeepsLegacySGLangPrefillFamily(t *testing.T) {
+	const text = `# HELP sglang:num_prefill_prealloc_queue_reqs Number of prefill queue requests.
+# TYPE sglang:num_prefill_prealloc_queue_reqs gauge
+sglang:num_prefill_prealloc_queue_reqs{model_name="m"} 7
+# TYPE unrelated gauge
+unrelated not-a-number
+`
+	_, err := ParseMetricsFromReader(strings.NewReader(text))
+	require.Error(t, err, "the unread family must fail the full parser")
+
+	server := setupMockServer(text, 200, 0)
+	defer server.Close()
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+	result, err := NewEngineMetricsFetcher().FetchAllTypedMetrics(
+		context.Background(), endpoint, EngineNameSGLang, "pod", []string{NumPrefillPreallocQueueReqs})
+	require.NoError(t, err)
+	require.Empty(t, result.Errors)
+	value, ok := result.ModelMetrics["m/"+NumPrefillPreallocQueueReqs]
+	require.True(t, ok, "the filtered scrape must retain the legacy metric family")
+	assert.Equal(t, 7.0, value.GetSimpleValue())
+}
