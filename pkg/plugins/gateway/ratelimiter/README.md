@@ -1,6 +1,6 @@
 # ratelimiter
 
-Package `ratelimiter` provides a distributed, Redis-backed fixed-window rate limiter used by the Aibrix gateway to enforce per-user and per-model request limits across multiple gateway instances.
+Package `ratelimiter` provides a distributed, Redis-backed fixed-window rate limiter used by the Aibrix gateway to enforce per-user limits and per-profile model limits across multiple gateway instances.
 
 ## Interface
 
@@ -38,10 +38,10 @@ A no-op implementation that always allows requests. Used when Redis is unavailab
 
 Two limiter instances are created at server startup:
 
-| Instance           | Constructor arg `name` | `windowSize` | Purpose                          |
-|--------------------|------------------------|--------------|----------------------------------|
-| `ratelimiter`      | `"aibrix"`             | 1 minute     | Per-user RPM and TPM enforcement |
-| `modelRateLimiter` | `"aibrix_model"`       | 1 second     | Per-model RPS enforcement        |
+| Instance           | Constructor arg `name` | `windowSize` | Purpose                           |
+|--------------------|------------------------|--------------|-----------------------------------|
+| `ratelimiter`      | `"aibrix"`             | 1 minute     | Per-user RPM and TPM enforcement  |
+| `modelRateLimiter` | `"aibrix_model"`       | 1 second     | Per-profile model RPS enforcement |
 
 The separate `name` prefix ensures the two limiters' keys never collide in Redis.
 
@@ -49,9 +49,9 @@ The separate `name` prefix ensures the two limiters' keys never collide in Redis
 
 Counter keys follow the pattern `aibrix:{username}_{RPM|TPM}_CURRENT:60000:counter`. Limits are read from the user record resolved during request header processing.
 
-### Per-model RPS
+### Per-profile model RPS
 
-Counter keys follow the pattern `aibrix_model:{modelName}_MODEL_RPS_CURRENT:{windowMilliseconds}:counter`. The RPS limit is configured per model via the `requestsPerSecond` field in a config profile:
+Counter keys follow the pattern `aibrix_model:{modelName}_MODEL_RPS_CURRENT:{profileName}:{windowMilliseconds}:counter`, so each profile of a model has its own counter. The RPS limit is configured per profile via the `requestsPerSecond` field in a config profile:
 
 ```json
 {
@@ -68,7 +68,7 @@ The active profile is selected by passing the `config-profile` request header. I
 
 #### Enforcement flow
 
-Per-model RPS enforcement is handled in `HandleRequestBody` via `enforceModelRPS` and a deferred compensation step:
+Model RPS enforcement is handled in `HandleRequestBody` via `enforceModelRPS` and a deferred compensation step:
 
 1. **Pre-routing gate (`enforceModelRPS`)** — called before routing. It:
    - atomically increments the counter with `Incr(..., +1)` and receives the new value
@@ -82,3 +82,7 @@ Using incr-then-check (rather than check-then-increment) means the `INCRBY` is t
 ### Upgrading from wall-clock bucket keys
 
 The counter key format changed from `{name}:{key}:{timebin}` to `{name}:{key}:{windowMilliseconds}:counter`. Existing bucket keys expire on their own TTL, but the new limiter does not read their counts. A deployment therefore starts a new counter window for each key. During a rolling upgrade, old and new gateway instances count requests separately and may collectively admit more than the configured limit. Deployments that require uninterrupted strict limits should avoid serving rate-limited traffic from both versions at the same time; a cutover to the new version still starts fresh counters.
+
+### Upgrading to per-profile model RPS keys
+
+Model RPS counter keys changed from `{modelName}_MODEL_RPS_CURRENT` to `{modelName}_MODEL_RPS_CURRENT:{profileName}` for every model with a limit, including models with a single profile. The old counters expire within their window. During a rolling upgrade, or a rollback to an older version, old and new gateway instances count on different keys, so each profile can admit up to twice its limit until every instance runs the same version.
