@@ -26,20 +26,22 @@ import sys
 import threading
 import time
 import weakref
-from typing import IO, Any, Deque, Dict, List, Optional
+from typing import IO, Any, AsyncIterable, Deque, Dict, List, Optional, Union
 
+import anyio
 import httpx
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from aibrix.openai_frontend.proxy.engine_spec import EngineSpec
-from aibrix.openai_frontend.proxy.process_tree import (
+from aibrix.openai_frontend.proxy.runtime.engine_spec import EngineSpec
+from aibrix.openai_frontend.proxy.runtime.process_tree import (
     TreeSnapshot,
     describe_returncode,
     kill_tree,
     snapshot_tree,
 )
 from aibrix.openai_frontend.utils.utils import prefix_line
+from aibrix.runtime.downloaders import await_thread_completion
 
 logger = logging.getLogger(__name__)
 
@@ -553,25 +555,86 @@ class SubprocessEngine:
         endpoint: str,
         *,
         json: Optional[Dict[str, Any]] = None,
+        content: Optional[Union[bytes, AsyncIterable[bytes]]] = None,
+        content_type: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
         stream: bool = False,
+        raw_body: bool = False,
     ) -> httpx.Response:
         """Send one request to ``endpoint`` on the inner engine.
 
+        ``json`` sends an application/json body; ``content`` + ``content_type``
+        sends a raw body (used for multipart forms proxied byte-for-byte).
+        ``content`` may be an async iterable, in which case the body is
+        streamed upstream chunk by chunk (chunked transfer encoding unless the
+        caller supplies ``Content-Length`` in ``headers``).
         Non-2xx responses are returned, not raised, so the engine's own error
         body reaches the client. With ``stream=True`` the response body is not
         read; the caller iterates it and calls ``aclose()``.
         """
         client = self._require_client()
         kwargs: Dict[str, Any] = {}
+        if headers:
+            kwargs["headers"] = dict(headers)
         if json is not None:
             kwargs["json"] = json
+        elif content is not None:
+            kwargs["content"] = content
+            if content_type:
+                kwargs.setdefault("headers", {})
+                kwargs["headers"] = {
+                    **kwargs["headers"],
+                    "Content-Type": content_type,
+                }
         request = client.build_request(method, endpoint, **kwargs)
-        resp = await client.send(request, stream=stream)
-        if stream and resp.status_code >= 300:
+        resp = await client.send(request, stream=stream or raw_body)
+        if raw_body or (stream and resp.status_code >= 300):
+            read_scope = anyio.CancelScope()
+
+            async def read_body() -> httpx.Response:
+                with read_scope:
+                    try:
+                        if not raw_body:
+                            await resp.aread()
+                            return resp
+                        if resp.is_stream_consumed:
+                            content = resp.content
+                        else:
+                            # Avoid aiter_raw()'s unshielded Response.aclose() at EOF.
+                            assert isinstance(resp.stream, httpx.AsyncByteStream)
+                            content = b"".join([chunk async for chunk in resp.stream])
+                        headers = dict(resp.headers)
+                        encoding = headers.pop("content-encoding", None)
+                        result = httpx.Response(
+                            resp.status_code,
+                            content=content,
+                            headers=headers,
+                            request=request,
+                        )
+                        if encoding is not None:
+                            result.headers["content-encoding"] = encoding
+                        return result
+                    finally:
+                        await await_thread_completion(resp.aclose())
+                raise asyncio.CancelledError()
+
+            # HTTPX shields internal read-error cleanup with an AnyIO scope.
+            # Cancel through that scope so an already-started close stays shielded.
+            task = asyncio.create_task(read_body())
             try:
-                await resp.aread()
-            finally:
-                await resp.aclose()
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                read_scope.cancel()
+                try:
+                    await await_thread_completion(task)
+                except BaseException:
+                    pass  # Preserve caller cancellation, including late close errors.
+                # A pre-start cancellation never enters read_body()'s finally.
+                try:
+                    await await_thread_completion(resp.aclose())
+                except BaseException:
+                    pass
+                raise
         return resp
 
     async def forward_health(

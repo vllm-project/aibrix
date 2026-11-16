@@ -25,7 +25,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 
 from aibrix.openai_frontend.engine.engine import LLMEngine
 from aibrix.openai_frontend.frontend.fastapi.errors import get_engine
@@ -47,11 +47,11 @@ router = APIRouter()
 async def create_chat_completion(
     request: CreateChatCompletionRequest,
     engine: LLMEngine = Depends(get_engine),
-) -> CreateChatCompletionResponse | StreamingResponse:
+) -> CreateChatCompletionResponse | Response:
     """
     Creates a chat completion for the provided messages and parameters.
     """
     response = await engine.chat(request)
-    if isinstance(response, CreateChatCompletionResponse):
+    if isinstance(response, (CreateChatCompletionResponse, Response)):
         return response
     return ClosingStreamingResponse(response, media_type="text/event-stream")

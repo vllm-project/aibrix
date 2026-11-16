@@ -429,12 +429,13 @@ func podLedgersFrom(
 				}
 				accounted[instance.Pod][engine.snapshotKey] = struct{}{}
 			}
-			// A failed instance has exhausted its restarts, so its memory is
-			// back with the card unless its engine is somehow still there.
-			// Charging for an engine that is gone would take a slice of GPU out
-			// of circulation for as long as the claim exists, and nothing would
-			// put it back. The runtime goes on listing an engine it has given
-			// up on, not alive, so an engine listed but dead is gone as well.
+			// A failed instance's memory is back with the card unless its
+			// engine is still there. The runtime reports an engine it has
+			// failed as alive until its processes have exited. Charging for an
+			// engine that is gone would take a slice of GPU out of circulation
+			// for as long as the claim exists, and nothing would put it back.
+			// The runtime goes on listing an engine it has given up on, so one
+			// listed but not alive is gone as well.
 			// An activating instance is charged, and deliberately: placement has
 			// already committed those bytes, and waiting for readiness would
 			// let a second claim be placed against the same memory.
@@ -482,11 +483,11 @@ func podLedgersFrom(
 					"the engine that served %s there is still exiting", model.ModelName))
 				break
 			}
-			// The runtime stops an engine once its restarts run out, and goes
-			// on listing it as failed. That engine has given its memory back,
-			// and does not come back by itself. Any other engine counts, alive
-			// or not: one whose first process died is started again by the
-			// runtime, and takes its memory again.
+			// The runtime stops an engine it gives up on, and goes on listing
+			// it as failed. Once it is no longer alive, it has given its memory
+			// back, and it does not come back by itself. Any other engine
+			// counts, alive or not: one whose first process died is started
+			// again by the runtime, and takes its memory again.
 			if model.Phase == runtimePhaseFailed && !model.Alive {
 				continue
 			}

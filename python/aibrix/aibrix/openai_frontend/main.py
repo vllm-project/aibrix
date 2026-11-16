@@ -15,16 +15,19 @@
 
 import argparse
 import importlib
+import json
 import logging
+import math
 import os
 import re
 import shlex
 import signal
 import sys
-from typing import Callable, Dict, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from aibrix.openai_frontend.engine.engine import LLMEngine
 from aibrix.openai_frontend.frontend.fastapi_frontend import FastApiFrontend
+from aibrix.openai_frontend.schemas.processors import DEFAULT_PROCESSOR_TIMEOUT_SECONDS
 from aibrix.openai_frontend.utils.utils import (
     HTTP_DEFAULT_MAX_INPUT_SIZE,
     validate_positive_double,
@@ -213,6 +216,35 @@ def build_vipe_engine(args: argparse.Namespace) -> LLMEngine:
     )
 
 
+def _parse_proxy_credentials(value: str) -> Dict[str, Dict]:
+    try:
+        credentials = json.loads(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("credentials must be valid JSON") from exc
+    if not isinstance(credentials, dict) or any(
+        not isinstance(pattern, str) or not isinstance(config, dict)
+        for pattern, config in credentials.items()
+    ):
+        raise argparse.ArgumentTypeError(
+            "credentials must map URL patterns to credential objects"
+        )
+    return credentials
+
+
+def _parse_video_output_timeout(value: str) -> float:
+    timeout = validate_positive_double(value)
+    if not math.isfinite(timeout):
+        raise argparse.ArgumentTypeError("video output timeout must be finite")
+    return timeout
+
+
+def _parse_processor_timeout(value: str) -> float:
+    timeout = validate_positive_double(value)
+    if not math.isfinite(timeout):
+        raise argparse.ArgumentTypeError("processor timeout must be finite")
+    return timeout
+
+
 def add_proxy_args(parser: argparse.ArgumentParser):
     proxy_group = parser.add_argument_group("Proxy engine arguments")
     proxy_group.add_argument(
@@ -245,10 +277,25 @@ def add_proxy_args(parser: argparse.ArgumentParser):
         "and their endpoint paths.",
     )
     proxy_group.add_argument(
+        "--proxy-credentials",
+        type=_parse_proxy_credentials,
+        default="{}",
+        help="JSON string mapping URL patterns to credential dicts "
+        '(e.g. \'{"https://cdn.example.com/*": {"headers": {"Authorization": "Bearer token123"}}}\')',
+    )
+    proxy_group.add_argument(
         "--proxy-startup-timeout",
         type=validate_positive_double,
         default=1800.0,
         help="Seconds to wait for the inner engine to become healthy (default: 1800).",
+    )
+    proxy_group.add_argument(
+        "--proxy-video-output-timeout",
+        type=_parse_video_output_timeout,
+        default=1800.0,
+        help="Total seconds to wait for output-managed video generation (default: 1800). "
+        "After failure, cleanup polls for another 1800 seconds, then retains "
+        "unfinished file ownership until the engine stops.",
     )
     proxy_group.add_argument(
         "--proxy-health-check-interval",
@@ -265,22 +312,92 @@ def add_proxy_args(parser: argparse.ArgumentParser):
         help="Seconds between SIGTERM and SIGKILL when stopping the inner "
         "engine process tree (default: 30).",
     )
+    proxy_group.add_argument(
+        "--proxy-media-dir",
+        type=str,
+        default=None,
+        help="Directory for media the proxy downloads on behalf of the engine "
+        "(default: a private temp dir). Passed to vLLM as "
+        "--allowed-local-media-path.",
+    )
+    proxy_group.add_argument(
+        "--proxy-fetch-media",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Download remote *_url media (tos/s3/gs/hf/http) in the proxy and "
+        "feed the engine file:// paths. Defaults to on for engines that read "
+        "local files (vllm, sglang, trtllm).",
+    )
+    proxy_group.add_argument(
+        "--proxy-materialize-inline-media",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Decode inline data:;base64 media to local files and feed the "
+        "engine file:// paths. Implicitly enables --proxy-fetch-media. Off by "
+        "default, so inline payloads are passed through to the engine.",
+    )
+    proxy_group.add_argument(
+        "--proxy-enable-processors",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Accept the 'processors' pre/post request extension. Off by "
+        "default; while off, requests carrying it are rejected.",
+    )
+    proxy_group.add_argument(
+        "--proxy-processor-timeout",
+        type=_parse_processor_timeout,
+        default=DEFAULT_PROCESSOR_TIMEOUT_SECONDS,
+        help="Default timeout in seconds for each processor invocation "
+        f"(default: {DEFAULT_PROCESSOR_TIMEOUT_SECONDS:g}). "
+        "Overridden by processor.timeout_seconds in the request.",
+    )
+    proxy_group.add_argument(
+        "--proxy-processor-allowlist",
+        type=str,
+        default=None,
+        help="Comma-separated processor names this deployment exposes "
+        "(default: every registered name).",
+    )
 
 
 def build_proxy_engine(args: argparse.Namespace) -> LLMEngine:
     from aibrix.openai_frontend.engine.proxy_engine import ProxyEngine
-    from aibrix.openai_frontend.proxy.engine_spec import get_engine_spec
+    from aibrix.openai_frontend.proxy.processors import ProcessorRegistry
+    from aibrix.openai_frontend.proxy.runtime.engine_spec import get_engine_spec
 
+    credentials_map = args.proxy_credentials
+    if isinstance(credentials_map, str):  # Also support direct Namespace callers.
+        credentials_map = _parse_proxy_credentials(credentials_map)
     spec = get_engine_spec(args.proxy_engine_spec)
     return ProxyEngine(
         engine_cmd=args.proxy_engine_cmd,
         engine_port=args.proxy_engine_port,
         engine_host=args.proxy_engine_host,
         spec=spec,
+        credentials_map=credentials_map,
         health_check_interval=getattr(args, "proxy_health_check_interval", 10.0),
         startup_timeout=getattr(args, "proxy_startup_timeout", 1800.0),
+        video_output_timeout=getattr(args, "proxy_video_output_timeout", 1800.0),
         shutdown_grace_seconds=getattr(args, "proxy_shutdown_grace", 30.0),
+        media_dir=getattr(args, "proxy_media_dir", None),
+        fetch_media=getattr(args, "proxy_fetch_media", None),
+        materialize_inline_media=getattr(args, "proxy_materialize_inline_media", False),
+        enable_processors=getattr(args, "proxy_enable_processors", False),
+        processor_timeout_seconds=getattr(
+            args, "proxy_processor_timeout", DEFAULT_PROCESSOR_TIMEOUT_SECONDS
+        ),
+        processor_registry=ProcessorRegistry(
+            allowlist=_processor_allowlist(
+                getattr(args, "proxy_processor_allowlist", None)
+            )
+        ),
     )
+
+
+def _processor_allowlist(value: Optional[str]) -> Optional[List[str]]:
+    if not value:
+        return None
+    return [name.strip() for name in value.split(",") if name.strip()]
 
 
 ENGINE_REGISTRY: Dict[

@@ -377,36 +377,9 @@ func appendLoadBalanceBlend(algStr string, cfg *MultiRouterConfig, weights autoB
 type multiStrategyRouter struct {
 	config  *MultiRouterConfig
 	scorers map[string]types.PodScorer
-}
-
-// SeedCandidates collects the seeds of every blended strategy that has them, in config order,
-// up to max pods in total. See types.CandidateSeeder.
-func (m *multiStrategyRouter) SeedCandidates(ctx *types.RoutingContext, readyPodList types.PodList, max int) []*v1.Pod {
-	if max <= 0 {
-		return nil
-	}
-	var seeds []*v1.Pod
-	seen := make(map[*v1.Pod]struct{}, max)
-	for _, item := range m.config.Items {
-		if len(seeds) >= max {
-			break
-		}
-		seeder, ok := m.scorers[item.Name].(types.CandidateSeeder)
-		if !ok {
-			continue
-		}
-		// Cap here too: the total must stay within max even if a seeder returns more than asked.
-		for _, pod := range seeder.SeedCandidates(ctx, readyPodList, max-len(seeds)) {
-			if len(seeds) >= max {
-				break
-			}
-			if _, dup := seen[pod]; !dup {
-				seen[pod] = struct{}{}
-				seeds = append(seeds, pod)
-			}
-		}
-	}
-	return seeds
+	// cache supplies the running-request counts the tie-break in scoreAndRank prefers (see
+	// tieBreakCache). nil falls back to breaking ties by pod name alone.
+	cache cache.Cache
 }
 
 // newMultiStrategyRouter initializes a new multiStrategyRouter based on the parsed config
@@ -437,7 +410,27 @@ func newMultiStrategyRouter(config *MultiRouterConfig, rm *RouterManager, ctx *t
 	return &multiStrategyRouter{
 		config:  config,
 		scorers: scorers,
+		cache:   tieBreakCache(config, scorers),
 	}, nil
+}
+
+// tieBreakCache picks the cache scoreAndRank's tie-break reads running-request counts from: the
+// cache of the first strategy in config order that holds one (requestCacheHolder), so a manager
+// built on its own cache (NewRouterManagerWithCache) breaks ties with the counts its scorers see.
+// Config order, not map order, keeps the choice the same on every call. With no such strategy it
+// is the process-global cache, or nil when that is not initialized.
+func tieBreakCache(config *MultiRouterConfig, scorers map[string]types.PodScorer) cache.Cache {
+	for _, item := range config.Items {
+		if holder, ok := scorers[item.Name].(requestCacheHolder); ok {
+			if c := holder.Cache(); c != nil {
+				return c
+			}
+		}
+	}
+	if c, err := cache.Get(); err == nil {
+		return c
+	}
+	return nil
 }
 
 // Route executes the multi-strategy scoring pipeline and returns the best pod IP
@@ -495,7 +488,8 @@ func (m *multiStrategyRouter) portSelectionCache() cache.Cache {
 }
 
 // requestCacheHolder is implemented by least-request-top-k (and so its least-request alias), which
-// holds the cache its request counts (and so per-port counts) are read from.
+// holds the cache its request counts (and so per-port counts) are read from, and by load-balance.
+// portSelectionCache asks only the least-request strategies; tieBreakCache asks any strategy.
 type requestCacheHolder interface {
 	Cache() cache.Cache
 }
@@ -619,8 +613,24 @@ func (m *multiStrategyRouter) scoreAndRank(ctx *types.RoutingContext, readyPodLi
 	// tie across two pods (e.g. once prefix-cache match and load-balance load both equalize) can
 	// flip its winner from one call to the next for reasons unrelated to load or cache affinity,
 	// causing spurious reroutes/thrashing instead of a stable pick.
+	//
+	// Before the name, prefer the pod with fewer running requests. With two pods, min-max
+	// normalization turns each strategy into a 0/1 vote, so whenever two equally weighted
+	// strategies disagree (least-request,load-balance:1) the blend ties. Breaking that tie by
+	// name alone hands every such request to the same pod, busier or not (#3450). The counts
+	// come from ctx.RunningRequests, the same per-decision snapshot the scorers read, so the
+	// tie-break agrees with what least-request and load-balance saw. Unless every tied pod has
+	// a count, the name alone decides as before. These are raw counts, not the ramp-adjusted
+	// ones least-request votes on (least.applyRampAdjustment), so a tie can go to a
+	// just-routable pod that the ramp alone would still hold back.
 	if len(topPods) > 1 {
-		sort.Slice(topPods, func(i, j int) bool { return topPods[i].Name < topPods[j].Name })
+		running := m.tieBreakRunningCounts(ctx, topPods) // nil: order by name only
+		sort.Slice(topPods, func(i, j int) bool {
+			if ri, rj := running[topPods[i]], running[topPods[j]]; ri != rj {
+				return ri < rj
+			}
+			return topPods[i].Name < topPods[j].Name
+		})
 	}
 	winner := topPods[0]
 
@@ -712,6 +722,30 @@ func medianOf(values []float64) float64 {
 	return (sorted[n/2-1] + sorted[n/2]) / 2.0
 }
 
+// tieBreakRunningCounts returns the running-request count of each tied pod, or nil when the
+// router has no cache, the read fails, or any of the pods has no count. All or nothing: comparing
+// counts for some pairs and names for others is not a consistent order, so the winner among
+// three or more tied pods could depend on their input order again. Keyed by pod so the sort does
+// not rebuild pod keys on every comparison.
+func (m *multiStrategyRouter) tieBreakRunningCounts(ctx *types.RoutingContext, pods []*v1.Pod) map[*v1.Pod]int64 {
+	if m.cache == nil {
+		return nil
+	}
+	counts, err := ctx.RunningRequests(pods, m.cache.GetPodsRunningRequests)
+	if err != nil {
+		return nil
+	}
+	running := make(map[*v1.Pod]int64, len(pods))
+	for _, pod := range pods {
+		n, ok := counts[utils.GeneratePodKey(pod.Namespace, pod.Name)]
+		if !ok {
+			return nil
+		}
+		running[pod] = n
+	}
+	return running
+}
+
 // normalizeScoresArray converts raw scores to [0,1] via min-max scaling, after first
 // winsorizing outliers on the worse side (see winsorizeClip). Plain min-max scaling let one pod's extreme,
 // unrelated raw value (e.g. a collapsed drain-rate on an otherwise-unrelated pod) stretch the
@@ -724,6 +758,12 @@ func medianOf(values []float64) float64 {
 // magnitude-sensitive scoring for cases like a genuine proportional "sweet spot" pod that isn't
 // the best on any single strategy but is consistently close to the best on all of them.
 func (m *multiStrategyRouter) normalizeScoresArray(scores []float64, scored []bool, polarity types.Polarity) []float64 {
+	return normalizeScores(scores, scored, polarity)
+}
+
+// normalizeScores is normalizeScoresArray without a router, shared with the candidate stage so
+// it ranks pods on the same scale the blend scores them on.
+func normalizeScores(scores []float64, scored []bool, polarity types.Polarity) []float64 {
 	normScores := make([]float64, len(scores))
 
 	// Collect scored, finite raw values (and their original indices) to winsorize before

@@ -438,9 +438,9 @@ Profile fields
    * - ``routingStrategy``
      - The routing algorithm for this profile (e.g. ``least-latency``, ``prefix-cache``, ``pd``). See the Routing Strategies section above for the full list.
    * - ``requestsPerSecondPerReplica``
-     - Per-replica RPS cap for this profile. The gateway multiplies it by the model's current routable replica count to derive the effective model-wide limit, so the cap scales automatically as replicas are added or removed. Supports fractional values (e.g. ``0.5`` for one request every two seconds). Requests that exceed the limit are rejected with HTTP 429. Also sets the profile's routing strategy to ``least-request``, so traffic is balanced evenly enough for the per-replica figure to hold in aggregate. Omit or set to ``0`` for no limit. It has no environment-variable form. See :doc:`Production Model Deployments <../../production/model-deployment>` for details.
+     - Per-replica RPS cap for this profile. The gateway multiplies it by the model's current routable replica count to derive the profile's effective limit, so the cap scales automatically as replicas are added or removed. Supports fractional values (e.g. ``0.5`` for one request every two seconds). Requests that exceed the limit are rejected with HTTP 429. Also sets the profile's routing strategy to ``least-request``, so traffic is balanced evenly enough for the per-replica figure to hold in aggregate. Omit or set to ``0`` for no limit. It has no environment-variable form. See :doc:`Production Model Deployments <../../production/model-deployment>` for details.
    * - ``requestsInflight``
-     - Per-replica concurrency cap: the maximum number of in-flight requests allowed on a single replica. It is enforced per pod, so it needs no replica-count scaling. When every routable replica is at the cap, the request is rejected with HTTP 429 and the ``x-error-model-replica-inflight-exceeded`` header. Also sets the profile's routing strategy to ``least-request``. Independent of ``requestsPerSecondPerReplica``, and the two can be set together. Omit or set to ``0`` for no limit. It has no environment-variable form. See :doc:`Production Model Deployments <../../production/model-deployment>` for details.
+     - Per-replica concurrency cap: the maximum number of in-flight requests allowed on a single replica. It is enforced per pod, so it needs no replica-count scaling. When every routable replica is at the cap, the request is rejected with HTTP 429 and the ``x-error-model-replica-inflight-exceeded`` header; when ``AIBRIX_ROUTING_CANDIDATE_K`` narrows the ready pods, the cap is checked on that candidate set instead, so the request is rejected once every candidate pod is at the cap. Also sets the profile's routing strategy to ``least-request``. Independent of ``requestsPerSecondPerReplica``, and the two can be set together. Omit or set to ``0`` for no limit. It has no environment-variable form. See :doc:`Production Model Deployments <../../production/model-deployment>` for details.
    * - ``ttftThresholdS``
      - Time-to-first-token threshold in seconds for this profile's responses, overriding ``AIBRIX_TTFT_THRESHOLD_S``. A first token arriving above this value is classified as delayed in the gateway's first-token-delay metric. Omit it or set ``0`` to keep the process-wide default; ``0`` counts as unset, so a profile cannot set the threshold to zero, only to another positive value. This affects response classification only, not routing.
    * - ``routingConfig``
@@ -562,10 +562,10 @@ PD timeouts and aborts
      - Description
    * - ``pd.decodeAbortTimeout``
      - ``AIBRIX_DECODE_ABORT_TIMEOUT``
-     - Seconds the gateway waits for the decode pod to accept the abort POST after a prefill failure. ``0`` sends the abort without waiting.
+     - Seconds the gateway waits for the decode pod to accept the abort POST after a prefill failure. ``0`` disables decode aborts.
    * - ``pd.decodeAbortRetryDelay``
      - ``AIBRIX_DECODE_ABORT_RETRY_DELAY``
-     - Seconds between the two abort attempts. ``0`` repeats the abort immediately.
+     - Seconds between the two abort attempts. ``0`` sends a single attempt.
    * - ``pd.decodeFirstResponseTimeout``
      - ``AIBRIX_DECODE_FIRST_RESPONSE_TIMEOUT``
      - Seconds a streaming SGLang PD request waits, after its prefill leg succeeded, for the decode pod's first token (its first response body chunk) before the gateway fails it. ``0`` disables the watchdog.
@@ -695,10 +695,7 @@ Candidate stage
      - Description
    * - ``candidate.k``
      - ``AIBRIX_ROUTING_CANDIDATE_K``
-     - Number of ready pods drawn at random for the load-imbalance gate and the router to score, so each request reads per-pod load for about ``k`` pods instead of all of them. ``0`` scores every ready pod. Applies only when every resolved strategy is candidate-safe (see ``pkg/plugins/gateway/ENV_VARS.md``). Checks that compare a pod with the rest of its pool, such as the gate's spread, the prefix-cache standard-deviation check and blend normalization, then compare it with the sample. Use at least ``2``: with ``1`` and no seeded pods, the one sampled pod is routed to without scoring.
-   * - ``candidate.prefixM``
-     - ``AIBRIX_ROUTING_CANDIDATE_PREFIX_M``
-     - Most pods the router may add to the sample; for ``prefix-cache`` these are the pods holding the longest cached prefix of the prompt.
+     - Number of ready pods the load-imbalance gate and the router score, so each request reads per-pod load for ``k`` pods instead of all of them. The strategies pick them: ``4k`` random ready pods, plus the pods holding the prompt's longest cached prefix, are scored from in-memory estimates (prefix index, local and snapshot running counts, scraped metrics) with the router's blend weights; the best half are kept and the rest are drawn at random. ``0`` scores every ready pod. Applies only when every resolved strategy is candidate-safe (see ``pkg/plugins/gateway/ENV_VARS.md``). Checks that compare a pod with the rest of its pool, such as the gate's spread, the prefix-cache standard-deviation check and blend normalization, then compare it with the candidates. Use at least ``2``: with ``1``, the one candidate is routed to without scoring.
 
 VTC fairness
 ~~~~~~~~~~~~
@@ -1192,11 +1189,11 @@ Routing and Error Debugging Headers
    * - ``x-error-pd-decode``
      - Marks a gateway-generated error because the decode watchdog fired after a successful prefill. See :doc:`pd-disaggregation`.
    * - ``x-error-model-rps-exceeded``
-     - The request exceeded the model's ``requestsPerSecondPerReplica`` cap. See :doc:`../../production/model-deployment`.
+     - The request exceeded the profile's ``requestsPerSecond`` or ``requestsPerSecondPerReplica`` cap. See :doc:`../../production/model-deployment`.
    * - ``x-error-incr-model-rps``
      - Error encountered while incrementing the model RPS counter.
    * - ``x-error-model-replica-inflight-exceeded``
-     - Every routable replica is at the profile's ``requestsInflight`` cap.
+     - Every pod considered is at the profile's ``requestsInflight`` cap: every routable replica, or the candidate set when ``AIBRIX_ROUTING_CANDIDATE_K`` narrows it.
    * - ``x-error-multipart-parsing``
      - The multipart/form-data body could not be parsed, typically on image, audio, or video endpoints. See :doc:`omni`.
    * - ``x-error-video-not-found``

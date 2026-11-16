@@ -93,6 +93,44 @@ def test_quoted_engine_command_preserves_options_and_shared_setenv(
     assert os.environ["AIBRIX_TEST_SETENV"] == "on"
 
 
+@pytest.mark.parametrize(
+    "flag,value",
+    [("--proxy-credentials", value) for value in ("{", "[]", '{"https://cdn/*": []}')]
+    + [("--proxy-video-output-timeout", value) for value in ("0", "-1", "nan", "inf")],
+)
+def test_invalid_proxy_configuration_is_argparse_error(flag, value, capsys):
+    with pytest.raises(SystemExit) as exc:
+        parse_args(["--engine", "proxy", "--proxy-engine-cmd", "true", flag, value])
+    assert exc.value.code == 2
+    assert flag in capsys.readouterr().err
+
+
+def test_proxy_video_timeout_and_credentials_arguments():
+    import asyncio
+
+    from aibrix.openai_frontend.main import build_proxy_engine
+
+    base = ["--engine", "proxy", "--proxy-engine-cmd", "true", "--no-proxy-fetch-media"]
+    defaults = parse_args(base)
+    assert defaults.proxy_video_output_timeout == 1800.0
+    assert defaults.proxy_credentials == {}
+    args = parse_args(
+        [
+            *base,
+            "--proxy-video-output-timeout",
+            "120",
+            "--proxy-credentials",
+            '{"https://cdn/*": {"headers": {"X-Test": "on"}}}',
+        ]
+    )
+    engine = build_proxy_engine(args)
+    try:
+        assert engine._video_output_timeout == 120.0
+        assert engine._credentials_map == args.proxy_credentials
+    finally:
+        asyncio.run(engine.aclose())
+
+
 @pytest.mark.parametrize("command", ["", "python 'unterminated"])
 def test_invalid_quoted_command_is_argparse_error(command):
     with pytest.raises(SystemExit) as exc:

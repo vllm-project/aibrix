@@ -46,8 +46,11 @@ from aibrix.openai_frontend.frontend.fastapi.routers import (
     chat,
     completions,
     embeddings,
+    engine_routes,
+    generation,
     models,
     observability,
+    responses,
 )
 from aibrix.openai_frontend.frontend.frontend import OpenAIFrontend
 from aibrix.openai_frontend.utils.utils import HTTP_DEFAULT_MAX_INPUT_SIZE
@@ -115,6 +118,10 @@ class FastApiFrontend(OpenAIFrontend):
         app.include_router(completions.router)
         app.include_router(chat.router)
         app.include_router(embeddings.router)
+        app.include_router(generation.router)
+        app.include_router(responses.router)
+        if hasattr(self._engine, "endpoint_kinds"):
+            app.include_router(engine_routes.create_router(self._engine))
 
         # NOTE: For debugging purposes, should generally be restricted or removed
         self._add_cors_middleware(app)
@@ -142,7 +149,9 @@ class FastApiFrontend(OpenAIFrontend):
 
     def _add_api_restriction_middleware(self, app: FastAPI):
         app.add_middleware(
-            APIRestrictionMiddleware, restricted_apis=self.restricted_apis
+            APIRestrictionMiddleware,
+            restricted_apis=self.restricted_apis,
+            engine=self._engine,
         )
         print(
             f"[INFO] API restrictions enabled. Restricted API endpoints: {self.restricted_apis.RestrictionSummary()}"  # type: ignore[union-attr]

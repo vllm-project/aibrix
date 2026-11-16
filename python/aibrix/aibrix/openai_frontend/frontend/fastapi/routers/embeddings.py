@@ -25,6 +25,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import Response
 
 from aibrix.openai_frontend.engine.engine import LLMEngine
 from aibrix.openai_frontend.frontend.fastapi.errors import get_engine
@@ -45,7 +46,7 @@ router = APIRouter()
 async def create_embedding(
     request: CreateEmbeddingRequest,
     engine: LLMEngine = Depends(get_engine),
-) -> CreateEmbeddingResponse:
+) -> CreateEmbeddingResponse | Response:
     """
     Creates embedding for the provided input text.
     """

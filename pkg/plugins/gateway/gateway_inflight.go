@@ -30,9 +30,10 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-// errReplicaInflightExceeded is returned by selectTargetPod when every routable
-// replica is already at its config profile's requestsInflight cap.
-var errReplicaInflightExceeded = errors.New("all replicas have reached inflight limit")
+// errReplicaInflightExceeded is returned by selectTargetPod when every pod it considered is
+// already at its config profile's requestsInflight cap. The considered set is the candidate set
+// when the candidate stage narrowed it, and the ready set otherwise.
+var errReplicaInflightExceeded = errors.New("all considered replicas have reached inflight limit")
 
 func replicaInflightLimit(routingCtx *types.RoutingContext) int64 {
 	if routingCtx == nil || routingCtx.ConfigProfile == nil {

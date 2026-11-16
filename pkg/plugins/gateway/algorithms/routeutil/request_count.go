@@ -17,6 +17,7 @@ limitations under the License.
 package routeutil
 
 import (
+	"errors"
 	"math"
 	"math/rand"
 	"strconv"
@@ -122,6 +123,22 @@ func RequestCounts(ctx *types.RoutingContext, cache cache.Cache, readyPods []*v1
 	}
 
 	return podRequestCount
+}
+
+// ErrNoRunningRequestsEstimate is returned by a candidate estimate that needs running counts
+// when the cache cannot answer them from memory.
+var ErrNoRunningRequestsEstimate = errors.New("cache has no in-memory running-request estimate")
+
+// ApproxRunningRequests returns the running count of each pod read from process memory only
+// (see cache.ApproxRunningRequestsProvider), keyed by utils.GeneratePodKey. ok is false when c
+// does not provide it. Unlike RequestCounts, it never touches the routing decision's shared
+// counts: an estimate must not be served to a later reader that asked for the exact value.
+func ApproxRunningRequests(c cache.Cache, pods []*v1.Pod) (map[string]int64, bool) {
+	provider, ok := c.(cache.ApproxRunningRequestsProvider)
+	if !ok {
+		return nil, false
+	}
+	return provider.GetPodsRunningRequestsApprox(pods), true
 }
 
 // PodsByKey maps each pod's key (namespace/name) to the pod, so a key picked from a

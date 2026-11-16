@@ -31,6 +31,7 @@ import (
 	"k8s.io/klog/v2"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/prometheus/client_golang/prometheus"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/cache/discovery"
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -84,8 +85,9 @@ const (
 type Store struct {
 	mu                  sync.RWMutex            // Read-write lock for concurrency safety
 	initialized         bool                    // Initialization status flag
-	redisClient         *redis.Client           // Redis client instance
-	admitRedisClient    *redis.Client           // redisClient without go-redis retries, for the admit script
+	redisClient         *redis.Client           // Shared client; context deadlines are off by default. The derived clients below enable them.
+	admitRedisClient    *redis.Client           // Context deadlines and no retries for admission; hooks added with AddHook are not inherited.
+	readRedisClient     *redis.Client           // Context deadlines for routing reads; hooks added with AddHook are not inherited.
 	prometheusApi       prometheusv1.API        // Prometheus API client
 	modelRouterProvider ModelRouterProviderFunc // Function to get model router
 
@@ -169,10 +171,27 @@ type Store struct {
 	// List of registered request trackers
 	requestTrackers []RequestTracker
 
-	// gatewaySnapshotCache holds a periodically refreshed snapshot of all gateway pod entries
-	// from Redis, grouped by pod key (namespace/name) → []fields. Swapped atomically by
-	// initGatewaySnapshotSync. Readers call Load() to get map[string][]map[string]string.
+	// gatewaySnapshotCache holds the last published snapshot of all gateway pod entries from
+	// Redis, keyed by Redis key → fields. Swapped atomically by initGatewaySnapshotSync; Load()
+	// returns map[string]map[string]string, the map the tick reads anyway, so storing it costs
+	// nothing. Production code reads gatewayRemoteRunning instead, which carries read times; this
+	// raw view is kept for tests and debugging until the snapshot sync is replaced (#3442).
 	gatewaySnapshotCache atomic.Value
+	// gatewayRemoteRunning holds, for each pod key, the requests_running that the other gateway
+	// instances reported in the latest snapshot, each with when it was read. It is
+	// derived from the same read as gatewaySnapshotCache when that is swapped, so
+	// GetPodsRunningRequestsApprox and syncRunningRequestsGlobally answer with one map lookup
+	// per pod instead of parsing every gateway's fields.
+	gatewayRemoteRunning atomic.Pointer[remoteRunningSnapshot]
+	// snapshotClock is the clock the snapshot sync stamps read times with and that
+	// GetPodsRunningRequestsApprox and syncRunningRequestsGlobally judge their age by. Nil means
+	// time.Now; tests set it, before starting the sync, to age counts without sleeping.
+	snapshotClock func() time.Time
+	// remoteRunningReader, when set, is where GetPodsRunningRequestsApprox and
+	// syncRunningRequestsGlobally take the other gateways' counts from instead of
+	// gatewayRemoteRunning, and what readPodsSharedRoutingState refreshes. Set once at startup,
+	// and only when AIBRIX_REMOTE_RUNNING_READER_ENABLED is true (#3442).
+	remoteRunningReader atomic.Pointer[remoteRunningReader]
 	// gatewaySnapshotErrorLog rate-limits the Error-level log of failing snapshot ticks. Nil
 	// means initGatewaySnapshotSync creates one; tests set it to capture lines.
 	gatewaySnapshotErrorLog *rateLimitedErrorLog
@@ -236,10 +255,15 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterP
 	podMetricsWorkerCount := loadPodMetricsWorkerCount()
 	podMetricsJobQueueSize := loadPodMetricsJobQueueSize(podMetricsWorkerCount)
 
+	var readRedisClient *redis.Client
+	if redisClient != nil {
+		readRedisClient = utils.NewRedisClientWithContextTimeout(redisClient.Options())
+	}
 	store = &Store{
 		initialized:           true,
 		redisClient:           redisClient,
 		admitRedisClient:      admitRunningRequestsClient(redisClient),
+		readRedisClient:       readRedisClient,
 		prometheusApi:         prometheusApi,
 		enableTracing:         enableGPUOptimizerTracing,
 		requestTrace:          &utils.SyncMap[string, *RequestTrace]{},
@@ -256,6 +280,13 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterP
 	}
 
 	return store
+}
+
+func (c *Store) readClient() *redis.Client {
+	if c.readRedisClient != nil {
+		return c.readRedisClient
+	}
+	return c.redisClient // Test stores built without New may supply their own client and hooks.
 }
 
 // NewForTest initializes the cache store for testing purposes, it can be repeated call for reset.
@@ -460,6 +491,11 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 			klog.Fatalf("Failed to initialize discovery provider: %v", err)
 		}
 		klog.InfoS("Using discovery provider", "type", provider.Type())
+		if opts.IsGateway {
+			if err := initPodOutstandingCollector(store, prometheus.DefaultRegisterer, stopCh); err != nil {
+				klog.ErrorS(err, "Failed to register pod outstanding requests collector")
+			}
+		}
 		initMetricsCache(store, stopCh)
 
 		// Initialize profile cache if enabled
@@ -472,8 +508,11 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 			initTraceCache(opts.RedisClient, stopCh)
 		}
 
-		// Initialize gateway snapshot sync if Redis is available
+		// Initialize gateway snapshot sync if Redis is available.
+		// Start the remote running reader first so snapshot sync sees whether it is active and
+		// skips its SCAN + cross-gateway read phase.
 		if opts.RedisClient != nil {
+			initRemoteRunningReader(store, stopCh)
 			klog.Info("Initializing gateway snapshot sync")
 			initGatewaySnapshotSync(store, stopCh)
 		}
@@ -791,6 +830,14 @@ func (s *Store) Close() {
 	// Stop publishing the decode ledger.
 	if p := s.decodeLedger.Load(); p != nil {
 		p.close()
+	}
+
+	// Close the derived clients owned by this store.
+	if s.admitRedisClient != nil {
+		_ = s.admitRedisClient.Close()
+	}
+	if s.readRedisClient != nil {
+		_ = s.readRedisClient.Close()
 	}
 
 	// Other cleanup can be added here in the future

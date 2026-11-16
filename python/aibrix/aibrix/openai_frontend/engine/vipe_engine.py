@@ -60,6 +60,7 @@ from prometheus_client import (
     Histogram,
     generate_latest,
 )
+from pydantic import BaseModel
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -1044,6 +1045,16 @@ class ViPEEngine(LLMEngine):
             )
             for model_name, created in self._loaded_models.items()
         ]
+
+    async def responses(
+        self,
+        operation: str,
+        request: BaseModel | None = None,
+        *,
+        response_id: str | None = None,
+        query: list[tuple[str, str]] | None = None,
+    ) -> BaseModel | AsyncIterator[str]:
+        raise NotImplementedError("Responses are not supported by ViPE engine")
 
     async def embedding(
         self, request: CreateEmbeddingRequest
