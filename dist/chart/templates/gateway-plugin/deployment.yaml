@@ -1,6 +1,6 @@
 {{- if or .Values.gateway.enable .Values.gateway.envoyAsSideCar }}
 {{- $redisHost := default (printf "%s-redis-master" (include "aibrix.fullname" .)) .Values.gatewayPlugin.dependencies.redis.host }}
-{{- $shutdown := .Values.gatewayPlugin.gracefulShutdown }}
+{{- $shutdown := .Values.gatewayPlugin.gracefulShutdown | default dict }}
 {{- if $shutdown.enabled }}
 {{- if .Values.gateway.envoyAsSideCar }}
 {{- fail "gatewayPlugin.gracefulShutdown requires gateway.envoyAsSideCar=false; sidecar termination ordering is not covered." }}

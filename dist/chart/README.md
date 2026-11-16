@@ -48,6 +48,9 @@ Pods that have never accepted a request may lack the metric and wait until timeo
 SIGTERM then starts a bounded gRPC drain; remaining RPCs are stopped at its
 deadline. View hook progress with `kubectl logs -c gateway-plugin`.
 
+The metrics URL must point to this Pod directly. The hook matches the metric
+name without filtering labels and requires exactly one valid sample per scrape.
+
 All durations are integer seconds. The hook timeout includes propagation and
 fetches. Required constraints:
 

@@ -17,8 +17,8 @@ SCRIPT = Path(__file__).with_name("prestop.sh").resolve()
 IMAGE = os.environ.get("AIBRIX_PRESTOP_TEST_IMAGE", "busybox:1.37.0-musl")
 
 
-def sample(value, pod="gateway-test"):
-    return f'gateway_in_flight_requests{{gateway_pod="{pod}"}} {value}\n'
+def sample(value):
+    return f'gateway_in_flight_requests{{gateway_pod="gateway-test"}} {value}\n'
 
 
 class PreStopTests(unittest.TestCase):
@@ -37,10 +37,10 @@ class PreStopTests(unittest.TestCase):
         container_id = container.stdout.strip()
         try:
             # Like a lifecycle hook, exec has separate output from PID 1.
-            # Missing POD_NAME also checks that validation errors are visible.
+            # An extra argument checks that validation errors are visible.
             result = subprocess.run(
                 ["docker", "exec", "--user", "65532:65532", container_id,
-                 "/bin/busybox", "sh", "/prestop.sh"],
+                 "/bin/busybox", "sh", "/prestop.sh", "unused", "0", "5", "1", "extra"],
                 capture_output=True, text=True, timeout=15,
             )
             logs = subprocess.run(
@@ -68,7 +68,7 @@ class PreStopTests(unittest.TestCase):
         self.assertNotIn("gateway preStop:", log)
         self.assertNotIn("Permission denied", result.stderr)
 
-    def run_hook(self, responses, *, delay=0, timeout=8, poll=1, pod="gateway-test", expected_status=0):
+    def run_hook(self, responses, *, delay=0, timeout=8, poll=1, expected_status=0):
         requests = []
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -107,7 +107,6 @@ class PreStopTests(unittest.TestCase):
                     "--add-host=host.docker.internal:host-gateway",
                     "--user=65532:65532", "--read-only", "--cap-drop=ALL",
                     "--entrypoint=/bin/busybox",
-                    "-e", f"POD_NAME={pod}",
                     "-e", "AIBRIX_PRESTOP_BUSYBOX=/bin/busybox",
                     "-e", "http_proxy=http://127.0.0.1:1",
                     "-v", f"{SCRIPT}:/prestop.sh:ro",
@@ -139,16 +138,46 @@ class PreStopTests(unittest.TestCase):
         self.assertEqual(len(requests), 5)
 
     def test_invalid_or_missing_metrics_never_count_as_zero(self):
-        for body in ["", sample(0, pod="other-pod"), sample("NaN"),
-                     sample("-1"), sample("oops"), sample(0) + sample(0)]:
+        for body in ["", sample("NaN"),
+                     sample("-1"), sample("oops"), sample(0) + sample(0),
+                     sample(0) + sample(1),
+                     'gateway_in_flight_requests_extra{gateway_pod="gateway-test"} 0\n',
+                     sample(0) + 'gateway_in_flight_requests{gateway_pod="gateway-test",zone="a"} 0\n']:
             with self.subTest(body=body):
                 log, _, _ = self.run_hook([body], timeout=4)
                 self.assertIn("sample missing or invalid", log)
                 self.assertIn("deadline reached", log)
                 self.assertNotIn("drain complete", log)
 
+    def test_does_not_require_pod_name_or_metric_labels(self):
+        responses = [
+            'gateway_in_flight_requests 0\n',
+            'gateway_in_flight_requests{} 0\n',
+            'gateway_in_flight_requests{zone="a"} 0\n',
+        ]
+        log, requests, _ = self.run_hook(responses)
+        self.assertIn("drain complete", log)
+        self.assertEqual(len(requests), 3)
+
+    def test_zero_samples_with_additional_labels_in_any_order(self):
+        responses = [
+            'gateway_in_flight_requests{gateway_pod="gateway-test",zone="a"} 0\n',
+            'gateway_in_flight_requests{zone="a",gateway_pod="gateway-test",app="gateway"} 0\n',
+            'gateway_in_flight_requests{zone="a",gateway_pod="gateway-test"} 0\n',
+        ]
+        log, requests, _ = self.run_hook(responses)
+        self.assertIn("drain complete", log)
+        self.assertEqual(len(requests), 3)
+
+    def test_busy_sample_with_additional_labels_resets_zero_count(self):
+        body = 'gateway_in_flight_requests{zone="a",gateway_pod="gateway-test",app="gateway"} 2\n'
+        log, requests, _ = self.run_hook([sample(0), body, sample(0)])
+        self.assertIn("requests still in flight: 2\n", log)
+        self.assertIn("drain complete", log)
+        self.assertEqual(len(requests), 5)
+
     def test_zero_sample_with_other_metrics_and_scientific_notation(self):
-        body = sample("0e+00") + sample(9, pod="other-pod") + "other_metric 123\n"
+        body = sample("0e+00") + "other_metric 123\n"
         log, requests, _ = self.run_hook([body])
         self.assertIn("drain complete", log)
         self.assertNotIn("requests still in flight", log)
@@ -177,13 +206,10 @@ class PreStopTests(unittest.TestCase):
         self.assertIn("deadline reached", log)
 
     def test_invalid_configuration(self):
-        for delay, timeout, poll, pod in [(0, 5, 0, "gateway-test"),
-                                          (5, 5, 1, "gateway-test"),
-                                          ("01", 5, 1, "gateway-test"),
-                                          (0, 5, 1, "")]:
-            with self.subTest(delay=delay, timeout=timeout, poll=poll, pod=pod):
+        for delay, timeout, poll in [(0, 5, 0), (5, 5, 1), ("01", 5, 1)]:
+            with self.subTest(delay=delay, timeout=timeout, poll=poll):
                 _, requests, _ = self.run_hook(
-                    [sample(0)], delay=delay, timeout=timeout, poll=poll, pod=pod,
+                    [sample(0)], delay=delay, timeout=timeout, poll=poll,
                     expected_status=2,
                 )
                 self.assertEqual(requests, [])

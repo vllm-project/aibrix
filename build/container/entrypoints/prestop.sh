@@ -18,8 +18,8 @@ log() {
     fi
 }
 
-if [ "$#" -gt 4 ] || [ -z "${POD_NAME:-}" ]; then
-    log 'expected at most four arguments and a non-empty POD_NAME'
+if [ "$#" -gt 4 ]; then
+    log 'expected at most four arguments'
     exit 2
 fi
 for seconds in "$propagation_delay" "$timeout" "$poll_interval"; do
@@ -66,8 +66,9 @@ while :; do
     # Disable proxies because this must query the terminating Pod itself.
     if body=$("$busybox" timeout -s KILL "$fetch_timeout" \
         "$busybox" wget -Y off -q -O - "$metrics_url"); then
-        if in_flight=$(printf '%s\n' "$body" | "$busybox" awk -v pod="$POD_NAME" '
-            $1 == "gateway_in_flight_requests{gateway_pod=\"" pod "\"}" {
+        if in_flight=$(printf '%s\n' "$body" | "$busybox" awk '
+            # The endpoint is Pod-local; labels are not needed to identify it.
+            $1 == "gateway_in_flight_requests" || index($1, "gateway_in_flight_requests{") == 1 {
                 seen++
                 if (NF != 2 || $2 !~ /^[+]?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/) {
                     invalid = 1
