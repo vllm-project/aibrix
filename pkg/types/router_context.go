@@ -68,7 +68,7 @@ type ResolvedConfigProfile struct {
 	// ProfileName is the name of the profile the request resolved to, empty when no
 	// profile was resolved. enforceModelRPS keeps one counter per model and ProfileName.
 	ProfileName string
-	// RequestsPerSecond is the per-model request-rate limit enforced by enforceModelRPS,
+	// RequestsPerSecond is the profile's request-rate limit enforced by enforceModelRPS,
 	// resolved from the profile's requestsPerSecond or from its requestsPerSecondPerReplica
 	// (which takes precedence and scales it by the model's current routable replica count).
 	// Zero means unset/unlimited.
