@@ -706,6 +706,7 @@ func Test_handleRequestBody(t *testing.T) {
 			server := &Server{
 				cache:         mockCache,
 				gatewayClient: mockGW,
+				podNamespace:  defaultAIBrixNamespace,
 			}
 
 			// Create request for the test case
