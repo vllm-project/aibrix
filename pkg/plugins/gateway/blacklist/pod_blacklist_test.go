@@ -61,9 +61,6 @@ func blacklistTestEnginePod(name, engine string) *v1.Pod {
 func alwaysUnhealthy(string) bool { return false }
 func alwaysHealthy(string) bool   { return true }
 
-func alwaysModelGone(string, string) bool   { return false }
-func alwaysModelServed(string, string) bool { return true }
-
 // tripBreaker opens pod's breaker the way the background sweep does: it finds
 // the pod degraded podProbeFailureIterations sweeps in a row, which blocks it
 // for the first backoff (a dead pod would be blocked for an hour instead).
