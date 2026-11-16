@@ -712,7 +712,7 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 			model: "/models/mock",
 			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
 				gw.On("GatewayV1").Return(gwv1)
-				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+				gwv1.On("HTTPRoutes", "gateway-test").Return(http)
 
 				route := &gatewayv1.HTTPRoute{
 					Status: gatewayv1.HTTPRouteStatus{
@@ -740,7 +740,7 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 			model: "get-failed",
 			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
 				gw.On("GatewayV1").Return(gwv1)
-				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+				gwv1.On("HTTPRoutes", "gateway-test").Return(http)
 				http.On("Get", mock.Anything, "get-failed-router", mock.Anything).Return((*gatewayv1.HTTPRoute)(nil), errors.New("boom"))
 			},
 			wantErr:     true,
@@ -751,7 +751,7 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 			model: "no-conditions",
 			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
 				gw.On("GatewayV1").Return(gwv1)
-				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+				gwv1.On("HTTPRoutes", "gateway-test").Return(http)
 				route := &gatewayv1.HTTPRoute{
 					Status: gatewayv1.HTTPRouteStatus{
 						RouteStatus: gatewayv1.RouteStatus{
@@ -764,14 +764,14 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 				http.On("Get", mock.Anything, "no-conditions-router", mock.Anything).Return(route, nil)
 			},
 			wantErr:     true,
-			errContains: "does not have valid status",
+			errContains: "httproute: gateway-test/no-conditions-router, does not have valid status",
 		},
 		{
 			name:  "resolved refs not resolved",
 			model: "refs-not-resolved",
 			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
 				gw.On("GatewayV1").Return(gwv1)
-				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+				gwv1.On("HTTPRoutes", "gateway-test").Return(http)
 				route := &gatewayv1.HTTPRoute{
 					Status: gatewayv1.HTTPRouteStatus{
 						RouteStatus: gatewayv1.RouteStatus{
@@ -792,14 +792,14 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 				http.On("Get", mock.Anything, "refs-not-resolved-router", mock.Anything).Return(route, nil)
 			},
 			wantErr:     true,
-			errContains: "object references are not resolved",
+			errContains: "httproute: gateway-test/refs-not-resolved-router, route's object references are not resolved",
 		},
 		{
 			name:  "invalid route status",
 			model: "invalid-model",
 			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
 				gw.On("GatewayV1").Return(gwv1)
-				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+				gwv1.On("HTTPRoutes", "gateway-test").Return(http)
 
 				route := &gatewayv1.HTTPRoute{
 					Status: gatewayv1.HTTPRouteStatus{
@@ -816,7 +816,7 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 				http.On("Get", mock.Anything, "invalid-model-router", mock.Anything).Return(route, nil)
 			},
 			wantErr:     true,
-			errContains: "route is not accepted",
+			errContains: "httproute: gateway-test/invalid-model-router, route is not accepted",
 		},
 	}
 
@@ -831,6 +831,7 @@ func TestValidateHTTPRouteStatus(t *testing.T) {
 			// Create test server with mock client
 			s := &Server{
 				gatewayClient: mockGW,
+				podNamespace:  "gateway-test",
 			}
 
 			// Run test
@@ -942,6 +943,7 @@ func TestValidateHTTPRouteStatus_CachesResult(t *testing.T) {
 
 	s := &Server{
 		gatewayClient:     mockGW,
+		podNamespace:      defaultAIBrixNamespace,
 		httprouteCacheTTL: 30 * time.Second,
 	}
 
@@ -982,6 +984,7 @@ func TestValidateHTTPRouteStatus_CacheExpiry(t *testing.T) {
 
 	s := &Server{
 		gatewayClient:     mockGW,
+		podNamespace:      defaultAIBrixNamespace,
 		httprouteCacheTTL: 1 * time.Millisecond,
 	}
 
@@ -1030,6 +1033,7 @@ func TestValidateHTTPRouteStatus_ContextErrorNotCached(t *testing.T) {
 
 			s := &Server{
 				gatewayClient:     mockGW,
+				podNamespace:      defaultAIBrixNamespace,
 				httprouteCacheTTL: 30 * time.Second,
 			}
 
@@ -1075,6 +1079,7 @@ func TestValidateHTTPRouteStatus_TransientRouteErrorExpires(t *testing.T) {
 
 	s := &Server{
 		gatewayClient:     mockGW,
+		podNamespace:      defaultAIBrixNamespace,
 		httprouteCacheTTL: 30 * time.Second,
 		httprouteErrorTTL: time.Millisecond,
 	}
@@ -1123,7 +1128,7 @@ func checkHTTPRouteErrorExpiry(t *testing.T, invalidRoute *gatewayv1.HTTPRoute) 
 	mockHTTP.On("Get", mock.Anything, "unresolved-route-router", mock.Anything).Return(invalidRoute, nil).Once()
 	mockHTTP.On("Get", mock.Anything, "unresolved-route-router", mock.Anything).Return(validRoute, nil).Once()
 
-	s := &Server{gatewayClient: mockGW, httprouteCacheTTL: time.Second, httprouteErrorTTL: time.Millisecond}
+	s := &Server{gatewayClient: mockGW, podNamespace: defaultAIBrixNamespace, httprouteCacheTTL: time.Second, httprouteErrorTTL: time.Millisecond}
 	assert.Error(t, s.validateHTTPRouteStatus(context.Background(), "unresolved-route"))
 	entry, ok := s.httprouteCache.Load("unresolved-route")
 	require.True(t, ok, "pending status should use the error cache")
@@ -1159,7 +1164,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 		mockGWV1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP)
 		mockHTTP.On("Get", mock.Anything, "m-router", mock.Anything).Return((*gatewayv1.HTTPRoute)(nil), errors.New("httproute boom"))
 
-		s := &Server{gatewayClient: mockGW}
+		s := &Server{gatewayClient: mockGW, podNamespace: defaultAIBrixNamespace}
 		out := s.responseErrorProcessing(context.Background(), nil, baseResp, 401, "m", "rid", "Incorrect API key provided")
 		ir := out.GetImmediateResponse()
 		if assert.NotNil(t, ir) {
@@ -1181,7 +1186,7 @@ func Test_responseErrorProcessing_ErrorCodeAndMessage(t *testing.T) {
 
 	t.Run("explicit routing skips httproute on error path", func(t *testing.T) {
 		mockGW := &MockGatewayClient{}
-		s := &Server{gatewayClient: mockGW}
+		s := &Server{gatewayClient: mockGW, podNamespace: defaultAIBrixNamespace}
 		rctx := types.NewRoutingContext(context.Background(), routing.RouterLeastRequest, "m", "", "rid", "")
 		out := s.responseErrorProcessingWithHeaders(context.Background(), rctx, nil, 404, "m", "rid", `{"detail":"Not Found"}`)
 		ir := out.GetImmediateResponse()
