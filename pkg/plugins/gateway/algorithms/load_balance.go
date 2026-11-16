@@ -401,8 +401,8 @@ func ApplyLoadImbalanceGate(ctx *types.RoutingContext, c cache.Cache, readyPods 
 			"total_pod_count", len(readyPods),
 			"min_running_requests", minValue,
 			"max_running_requests", maxValue,
-			"factor", podRunningRequestImbalanceFactor,
-			"min_gap", podRunningRequestImbalanceMinGap,
+			"factor", imbalanceFactor,
+			"min_gap", imbalanceMinGap,
 			"selected_pods", selected,
 			"skipped_pods", skipped)
 	}
@@ -446,11 +446,35 @@ func getTargetPodListOnLoadImbalance(podRequestCount map[string]int, readyPods [
 		}
 	}
 
+	meanOfOthers := float64(0)
+	if n > 1 {
+		meanOfOthers = float64(sum-maxValue) / float64(n-1)
+	}
+	// Log every nonempty check, including early returns, to distinguish an
+	// untriggered gate from one that never observed the peak load.
+	if klog.V(4).Enabled() {
+		defer func() {
+			klog.V(4).InfoS("load_balance_imbalance_check",
+				"pod_request_counts", podRequestCount,
+				"total_pod_count", n,
+				"min_running_requests", minValue,
+				"max_running_requests", maxValue,
+				"mean_running_requests", float64(sum)/float64(n),
+				"mean_other_running_requests", meanOfOthers,
+				"running_requests_gap", maxValue-minValue,
+				"factor", imbalanceFactor,
+				"min_gap", imbalanceMinGap,
+				"relative_check_required", n > 2,
+				"relative_threshold", imbalanceFactor*(meanOfOthers+1),
+				"imbalanced", imbalanced,
+				"restricted_pod_count", len(targetPodList))
+		}()
+	}
+
 	if maxValue-minValue < imbalanceMinGap {
 		return nil, minValue, maxValue, false
 	}
 	if n > 2 {
-		meanOfOthers := float64(sum-maxValue) / float64(n-1)
 		if float64(maxValue) <= imbalanceFactor*(meanOfOthers+1) {
 			return nil, minValue, maxValue, false
 		}
