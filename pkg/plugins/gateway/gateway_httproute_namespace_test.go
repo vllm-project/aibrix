@@ -122,3 +122,63 @@ func TestHTTPRoutePodNamespace(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPRouteDefaultNamespaceForDirectServer(t *testing.T) {
+	tests := []struct {
+		name       string
+		conditions []metav1.Condition
+		wantErr    string
+	}{
+		{
+			name: "valid route",
+			conditions: []metav1.Condition{
+				{Type: string(gatewayv1.RouteConditionAccepted), Reason: string(gatewayv1.RouteReasonAccepted), Status: metav1.ConditionTrue},
+				{Type: string(gatewayv1.RouteConditionResolvedRefs), Reason: string(gatewayv1.RouteReasonResolvedRefs), Status: metav1.ConditionTrue},
+			},
+		},
+		{
+			name:    "missing conditions",
+			wantErr: "does not have valid status",
+		},
+		{
+			name: "route not accepted",
+			conditions: []metav1.Condition{
+				{Type: string(gatewayv1.RouteConditionAccepted), Reason: "InvalidReason", Status: metav1.ConditionFalse},
+			},
+			wantErr: "route is not accepted: InvalidReason",
+		},
+		{
+			name: "unresolved references",
+			conditions: []metav1.Condition{
+				{Type: string(gatewayv1.RouteConditionResolvedRefs), Reason: "InvalidRef", Status: metav1.ConditionFalse},
+			},
+			wantErr: "route's object references are not resolved: InvalidRef",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodGet, r.Method)
+				assert.Equal(t, "/apis/gateway.networking.k8s.io/v1/namespaces/aibrix-system/httproutes/test-model-router", r.URL.Path)
+				w.Header().Set("Content-Type", "application/json")
+				route := gatewayv1.HTTPRoute{
+					TypeMeta: metav1.TypeMeta{APIVersion: "gateway.networking.k8s.io/v1", Kind: "HTTPRoute"},
+					Status: gatewayv1.HTTPRouteStatus{RouteStatus: gatewayv1.RouteStatus{
+						Parents: []gatewayv1.RouteParentStatus{{Conditions: tt.conditions}},
+					}},
+				}
+				assert.NoError(t, json.NewEncoder(w).Encode(route))
+			}))
+			t.Cleanup(api.Close)
+			client, err := gatewayapi.NewForConfig(&rest.Config{Host: api.URL})
+			require.NoError(t, err)
+			server := &Server{gatewayClient: client}
+			err = server.validateHTTPRouteStatus(context.Background(), "test-model")
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+			} else {
+				assert.EqualError(t, err, "httproute: aibrix-system/test-model-router, "+tt.wantErr)
+			}
+		})
+	}
+}

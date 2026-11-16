@@ -1269,9 +1269,14 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		}
 
 		name := utils.ModelRouterName(model)
+		// Preserve the default for servers initialized without the constructor.
+		namespace := s.podNamespace
+		if namespace == "" {
+			namespace = defaultAIBrixNamespace
+		}
 		lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), httpRouteLookupTimeout)
 		defer cancel()
-		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(s.podNamespace).Get(lookupCtx, name, metav1.GetOptions{})
+		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(namespace).Get(lookupCtx, name, metav1.GetOptions{})
 		if err != nil {
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				ttl := s.httprouteErrorTTL
@@ -1283,7 +1288,7 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 			return nil, err
 		}
 
-		result := httpRouteStatusError(s.podNamespace, name, httproute.Status.Parents)
+		result := httpRouteStatusError(namespace, name, httproute.Status.Parents)
 		ttl := s.httprouteCacheTTL
 		if result != nil {
 			ttl = s.httprouteErrorTTL
