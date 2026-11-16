@@ -773,6 +773,11 @@ func (s *Server) handleProcessingRequest(st *processState, req *extProcPb.Proces
 				})
 				st.lastRespHeaders = mutation.SetHeaders
 			}
+		} else if req.GetResponseHeaders().GetEndOfStream() {
+			// A headers-only success (a 204, an empty-body 200): no body callback
+			// will follow to mark it complete, and without this the stream closing
+			// afterwards would be counted as a cancelled request (499).
+			st.completed = true
 		}
 		st.metricLabel = gatewayRespHeaders
 
