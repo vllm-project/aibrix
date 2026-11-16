@@ -164,6 +164,7 @@ func (o kubeAPIOptions) applyTo(config *rest.Config) {
 }
 
 func main() {
+	var gracefulShutdownTimeout time.Duration
 	var kubeAPI kubeAPIOptions
 	kubeAPI.addFlags(flag.CommandLine)
 	var modelDiscovery modelDiscoveryOptions
@@ -176,9 +177,14 @@ func main() {
 		"The address the pprof debug server binds to. Empty disables it.")
 	flag.StringVar(&endpointsConfig, "endpoints-config", "",
 		"Path to endpoints config file (required in standalone mode).")
+	flag.DurationVar(&gracefulShutdownTimeout, "graceful-shutdown-timeout", 30*time.Second,
+		"Maximum wait for existing gRPC requests after SIGTERM, before forcing them to stop.")
 	klog.InitFlags(flag.CommandLine)
 	defer klog.Flush()
 	flag.Parse()
+	if gracefulShutdownTimeout <= 0 {
+		klog.Fatal("--graceful-shutdown-timeout must be positive")
+	}
 	if err := kubeAPI.validate(); err != nil {
 		klog.Fatal(err)
 	}
@@ -216,9 +222,8 @@ func main() {
 		}()
 	}
 
-	// stopCh is closed either on normal return (via defer) or proactively in
-	// the signal handler before calling os.Exit. sync.Once guards against a
-	// double-close panic.
+	// Keep cache workers alive until requests drain. sync.Once guards shutdown
+	// cleanup and the normal-return defer against a double-close panic.
 	stopCh := make(chan struct{})
 	var stopOnce sync.Once
 	stopFn := func() { stopOnce.Do(func() { close(stopCh) }) }
@@ -356,27 +361,29 @@ func main() {
 
 	var gracefulStop = make(chan os.Signal, 1)
 	signal.Notify(gracefulStop, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(gracefulStop)
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		sig := <-gracefulStop
 		klog.Warningf("signal received: %v, initiating graceful shutdown...", sig)
+		shutdownGateway(s, gatewayServer, healthCheck, gracefulShutdownTimeout)
 		if syncManager != nil {
 			syncManager.Stop()
 		}
-		gatewayServer.Shutdown()
 		modelListGate.Shutdown()
-		s.GracefulStop()
 		if otelEnabled {
 			telApp.Shutdown()
 		}
-		// Close stopCh so that cache ticker goroutines and other consumers tied
-		// to this signal exit promptly; os.Exit below bypasses deferred calls.
 		stopFn()
-		os.Exit(0)
 	}()
 
-	if err := s.Serve(lis); err != nil {
+	if err := s.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 		panic(err)
 	}
+	// Serve can return before the signal handler finishes its cleanup. Keep
+	// Redis and cache workers available until that cleanup has completed.
+	<-shutdownDone
 }
 
 // startPprofServer serves the profiling endpoints (http.DefaultServeMux, where

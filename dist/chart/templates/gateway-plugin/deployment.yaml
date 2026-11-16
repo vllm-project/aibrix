@@ -1,5 +1,17 @@
 {{- if or .Values.gateway.enable .Values.gateway.envoyAsSideCar }}
 {{- $redisHost := default (printf "%s-redis-master" (include "aibrix.fullname" .)) .Values.gatewayPlugin.dependencies.redis.host }}
+{{- $shutdown := .Values.gatewayPlugin.gracefulShutdown }}
+{{- if $shutdown.enabled }}
+{{- if .Values.gateway.envoyAsSideCar }}
+{{- fail "gatewayPlugin.gracefulShutdown requires gateway.envoyAsSideCar=false; sidecar termination ordering is not covered." }}
+{{- end }}
+{{- if le (int $shutdown.timeoutSeconds) (int $shutdown.propagationDelaySeconds) }}
+{{- fail "gatewayPlugin.gracefulShutdown requires timeoutSeconds > propagationDelaySeconds." }}
+{{- end }}
+{{- if lt (int $shutdown.terminationGracePeriodSeconds) (int (add $shutdown.timeoutSeconds $shutdown.grpcDrainTimeoutSeconds 10)) }}
+{{- fail "gatewayPlugin.gracefulShutdown requires terminationGracePeriodSeconds >= timeoutSeconds + grpcDrainTimeoutSeconds + 10 (cleanup reserve)." }}
+{{- end }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -17,14 +29,18 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1
+      maxUnavailable: 0
       maxSurge: 1
+  minReadySeconds: 10
   template:
     metadata:
       labels:
         {{- include "aibrix.labels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-gateway-plugin
     spec:
+      {{- if $shutdown.enabled }}
+      terminationGracePeriodSeconds: {{ $shutdown.terminationGracePeriodSeconds }}
+      {{- end }}
       {{- with .Values.gatewayPlugin.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
@@ -74,6 +90,21 @@ spec:
         - name: gateway-plugin
           image: {{ .Values.gatewayPlugin.container.image.repository }}:{{ .Values.gatewayPlugin.container.image.tag }}
           imagePullPolicy: {{ .Values.gatewayPlugin.container.image.imagePullPolicy | default "IfNotPresent" }}
+          {{- if $shutdown.enabled }}
+          args:
+            - {{ printf "--graceful-shutdown-timeout=%ds" (int $shutdown.grpcDrainTimeoutSeconds) | quote }}
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /busybox
+                  - sh
+                  - /prestop.sh
+                  - {{ $shutdown.metricsURL | quote }}
+                  - {{ $shutdown.propagationDelaySeconds | quote }}
+                  - {{ $shutdown.timeoutSeconds | quote }}
+                  - {{ $shutdown.pollIntervalSeconds | quote }}
+          {{- end }}
           # Optional API server client throttling (client-go defaults shown).
           # Both values must be greater than zero and apply to the core
           # Kubernetes and Gateway API clients, each with its own limiter.

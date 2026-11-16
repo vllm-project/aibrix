@@ -1,0 +1,98 @@
+suite: Test Gateway Plugin Graceful Shutdown
+templates:
+  - gateway-plugin/deployment.yaml
+tests:
+  - it: preserves existing deployments by default
+    asserts:
+      - notExists:
+          path: spec.template.spec.terminationGracePeriodSeconds
+      - notExists:
+          path: spec.template.spec.containers[0].lifecycle
+      - notExists:
+          path: spec.template.spec.containers[0].args
+  - it: configures the hook on the gateway container
+    set:
+      gatewayPlugin.gracefulShutdown.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 340
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: ["--graceful-shutdown-timeout=30s"]
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value: ["/busybox", "sh", "/prestop.sh", "http://127.0.0.1:8080/metrics", "10", "300", "2"]
+      - notExists:
+          path: spec.template.spec.initContainers[0].lifecycle
+  - it: allows overriding hook settings
+    set:
+      gatewayPlugin.gracefulShutdown.enabled: true
+      gatewayPlugin.gracefulShutdown.terminationGracePeriodSeconds: 120
+      gatewayPlugin.gracefulShutdown.timeoutSeconds: 100
+      gatewayPlugin.gracefulShutdown.grpcDrainTimeoutSeconds: 10
+      gatewayPlugin.gracefulShutdown.propagationDelaySeconds: 5
+      gatewayPlugin.gracefulShutdown.pollIntervalSeconds: 1
+      gatewayPlugin.gracefulShutdown.metricsURL: http://127.0.0.1:9090/metrics
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: ["--graceful-shutdown-timeout=10s"]
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value: ["/busybox", "sh", "/prestop.sh", "http://127.0.0.1:9090/metrics", "5", "100", "1"]
+  - it: rejects a timeout consuming the entire Pod grace period
+    set:
+      gatewayPlugin.gracefulShutdown.enabled: true
+      gatewayPlugin.gracefulShutdown.timeoutSeconds: 340
+    asserts:
+      - failedTemplate:
+          errorMessage: gatewayPlugin.gracefulShutdown requires terminationGracePeriodSeconds >= timeoutSeconds + grpcDrainTimeoutSeconds + 10 (cleanup reserve).
+  - it: rejects a grace period one second short of the total budget
+    set:
+      gatewayPlugin.gracefulShutdown.enabled: true
+      gatewayPlugin.gracefulShutdown.terminationGracePeriodSeconds: 339
+    asserts:
+      - failedTemplate:
+          errorMessage: gatewayPlugin.gracefulShutdown requires terminationGracePeriodSeconds >= timeoutSeconds + grpcDrainTimeoutSeconds + 10 (cleanup reserve).
+  - it: rejects the previously accepted short grace period
+    set:
+      gatewayPlugin.gracefulShutdown.enabled: true
+      gatewayPlugin.gracefulShutdown.terminationGracePeriodSeconds: 11
+      gatewayPlugin.gracefulShutdown.timeoutSeconds: 10
+      gatewayPlugin.gracefulShutdown.propagationDelaySeconds: 0
+    asserts:
+      - failedTemplate:
+          errorMessage: gatewayPlugin.gracefulShutdown requires terminationGracePeriodSeconds >= timeoutSeconds + grpcDrainTimeoutSeconds + 10 (cleanup reserve).
+  - it: includes a custom gRPC drain timeout in the total budget
+    set:
+      gatewayPlugin.gracefulShutdown.enabled: true
+      gatewayPlugin.gracefulShutdown.grpcDrainTimeoutSeconds: 31
+    asserts:
+      - failedTemplate:
+          errorMessage: gatewayPlugin.gracefulShutdown requires terminationGracePeriodSeconds >= timeoutSeconds + grpcDrainTimeoutSeconds + 10 (cleanup reserve).
+  - it: skips the total budget check when the hook is disabled
+    set:
+      gatewayPlugin.gracefulShutdown.enabled: false
+      gatewayPlugin.gracefulShutdown.terminationGracePeriodSeconds: 11
+      gatewayPlugin.gracefulShutdown.timeoutSeconds: 10
+      gatewayPlugin.gracefulShutdown.propagationDelaySeconds: 0
+    asserts:
+      - notExists:
+          path: spec.template.spec.terminationGracePeriodSeconds
+      - notExists:
+          path: spec.template.spec.containers[0].args
+  - it: rejects a propagation delay consuming the entire hook timeout
+    set:
+      gatewayPlugin.gracefulShutdown.enabled: true
+      gatewayPlugin.gracefulShutdown.propagationDelaySeconds: 300
+    asserts:
+      - failedTemplate:
+          errorMessage: gatewayPlugin.gracefulShutdown requires timeoutSeconds > propagationDelaySeconds.
+  - it: rejects uncoordinated Envoy sidecar termination
+    set:
+      gateway.envoyAsSideCar: true
+      gatewayPlugin.gracefulShutdown.enabled: true
+    asserts:
+      - failedTemplate:
+          errorMessage: gatewayPlugin.gracefulShutdown requires gateway.envoyAsSideCar=false; sidecar termination ordering is not covered.

@@ -19,6 +19,83 @@ This chart is not intended for upgrades from earlier deployments that used Kusto
 
 ## Development 
 
+### Gateway plugin graceful shutdown
+
+Disabled by default; requires `gateway.envoyAsSideCar=false`. Rebuild the gateway
+image with `build/container/Dockerfile.gateway` to include `/prestop.sh` and
+`/busybox`, then configure:
+
+```yaml
+gatewayPlugin:
+  container:
+    image:
+      repository: your-registry/gateway-plugins
+      tag: your-rebuilt-tag
+  gracefulShutdown:
+    enabled: true
+    terminationGracePeriodSeconds: 340
+    propagationDelaySeconds: 10
+    timeoutSeconds: 300
+    grpcDrainTimeoutSeconds: 30
+    pollIntervalSeconds: 2
+    metricsURL: http://127.0.0.1:8080/metrics
+```
+
+The preStop hook waits for endpoint propagation, then polls this Pod's local
+`gateway_in_flight_requests` metric until three consecutive zero samples or the
+hook timeout. Missing or invalid metrics and fetch failures reset the zero count;
+Pods that have never accepted a request may lack the metric and wait until timeout.
+SIGTERM then starts a bounded gRPC drain; remaining RPCs are stopped at its
+deadline. View hook progress with `kubectl logs -c gateway-plugin`.
+
+All durations are integer seconds. The hook timeout includes propagation and
+fetches. Required constraints:
+
+- `timeoutSeconds > propagationDelaySeconds`
+- `terminationGracePeriodSeconds >= timeoutSeconds + grpcDrainTimeoutSeconds + 10`
+
+Update existing grace-period overrides to satisfy these constraints. Tune budgets
+for observed request durations, cleanup time, and endpoint update latency; the
+propagation delay does not confirm Envoy updates. Keep another ready plugin
+replica with spare capacity.
+This hook does not coordinate Envoy or model backend termination.
+
+### Envoy proxy graceful shutdown
+
+Disabled by default; applies only to Envoy Gateway-managed deployments with
+`gateway.enable=true` and `gateway.envoyAsSideCar=false`. Enable separately:
+
+```yaml
+gateway:
+  envoyProxy:
+    gracefulShutdown:
+      enabled: true
+      terminationGracePeriodSeconds: 300
+      drainTimeoutSeconds: 270
+      minDrainDurationSeconds: 10
+```
+
+Uses native `EnvoyProxy.spec.shutdown` and Envoy Gateway's lifecycle hooks; no
+custom image is needed. The shutdown-manager fails readiness and drains existing
+connections, including SSE streams. It waits at least `minDrainDurationSeconds`,
+then exits when connections drain or the timeout expires. Idle keepalive
+connections can prolong draining; requests still running at timeout may be cut off.
+
+All durations are integer seconds. Required constraints:
+
+- `terminationGracePeriodSeconds > drainTimeoutSeconds + 10`
+- `drainTimeoutSeconds > minDrainDurationSeconds`
+
+Enabling sets `maxUnavailable: 0` and `maxSurge: 1`; reserve capacity for an extra
+Pod. New Pods must stay Ready for 10 seconds before becoming available. Keep
+plugins and model backends available during draining; route and stream timeouts
+still apply.
+
+Before relying on either feature, test Envoy and plugin rolling updates separately
+with long SSE requests. Verify that existing streams finish, new requests succeed,
+and over-budget streams terminate within the configured budgets. Inspect Envoy's
+generated Deployment and `kubectl logs -c shutdown-manager` for drain behavior.
+
 ### Envoy Service NodePorts
 
 The default `gateway.envoyProxy.service: {}` preserves Envoy Gateway's Service

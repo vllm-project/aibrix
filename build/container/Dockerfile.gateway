@@ -21,6 +21,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libkrb5-dev \
     libzmq3-dev \
     libsodium-dev \
+    busybox-static \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
@@ -64,6 +65,8 @@ WORKDIR /
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /workspace/gateway-plugins .
 COPY --from=builder /workspace/deps /gateway-plugins-lib
+COPY --from=builder /bin/busybox /busybox
+COPY build/container/entrypoints/prestop.sh /prestop.sh
 ENV LD_LIBRARY_PATH=/gateway-plugins-lib
 USER 65532:65532
 
