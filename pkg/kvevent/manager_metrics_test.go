@@ -27,12 +27,42 @@ import (
 	"github.com/vllm-project/aibrix/pkg/kvevent"
 )
 
-// TestStartRegistersKVCacheMetrics checks that starting the manager with KV
-// event sync on registers the aibrix_kvcache_zmq_* metrics, so a ZMQ client's
-// updates reach the default registry that the gateway's /metrics serves.
-func TestStartRegistersKVCacheMetrics(t *testing.T) {
+// TestSyncOnRegistersKVCacheMetrics checks that a manager built with KV event
+// sync on registers the aibrix_kvcache_zmq_* metrics before Start, so a ZMQ
+// client created for a pod event that arrives before Start still reaches the
+// default registry that the gateway's /metrics serves.
+func TestSyncOnRegistersKVCacheMetrics(t *testing.T) {
+	kvcache.ResetMetricsForTest()
+	t.Cleanup(kvcache.ResetMetricsForTest)
 	t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
 	t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
+
+	podProvider := &mockPodProvider{pods: make(map[string]*kvevent.PodInfo)}
+	syncProvider := &mockSyncIndexProvider{indexer: &mockSyncIndexer{}}
+	manager := kvevent.NewManager(podProvider, syncProvider)
+
+	const podKey = "default/metrics-registration-pod"
+	metrics := kvcache.NewZMQClientMetrics(podKey)
+	defer metrics.Delete()
+	metrics.IncrementConnectionCount()
+
+	if err := manager.Start(); err != nil {
+		t.Fatalf("Failed to start manager: %v", err)
+	}
+	defer manager.Stop()
+
+	if got, ok := connectionCount(t, podKey); !ok || got != 1 {
+		t.Fatalf("aibrix_kvcache_zmq_connections_total{pod_key=%q} = %v (registered: %v), want 1", podKey, got, ok)
+	}
+}
+
+// TestSyncOffRegistersNoKVCacheMetrics checks the other half of the contract:
+// with KV event sync off, neither building nor starting the manager registers
+// the metrics, so a client's updates leave no series.
+func TestSyncOffRegistersNoKVCacheMetrics(t *testing.T) {
+	kvcache.ResetMetricsForTest()
+	t.Cleanup(kvcache.ResetMetricsForTest)
+	t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "false")
 
 	podProvider := &mockPodProvider{pods: make(map[string]*kvevent.PodInfo)}
 	syncProvider := &mockSyncIndexProvider{indexer: &mockSyncIndexer{}}
@@ -42,13 +72,20 @@ func TestStartRegistersKVCacheMetrics(t *testing.T) {
 	}
 	defer manager.Stop()
 
-	// A pod key no other test uses, so series left by other tests in the
-	// shared default registry cannot satisfy the check.
-	const podKey = "default/metrics-registration-pod"
-	metrics := kvcache.NewZMQClientMetrics(podKey)
-	defer metrics.Delete()
-	metrics.IncrementConnectionCount()
+	if kvcache.MetricsInitialized() {
+		t.Fatal("KV cache metrics are registered with KV event sync off")
+	}
+	const podKey = "default/sync-off-pod"
+	kvcache.NewZMQClientMetrics(podKey).IncrementConnectionCount()
+	if _, ok := connectionCount(t, podKey); ok {
+		t.Fatalf("aibrix_kvcache_zmq_connections_total{pod_key=%q} exists with KV event sync off", podKey)
+	}
+}
 
+// connectionCount returns aibrix_kvcache_zmq_connections_total for podKey from
+// the default registry, and whether that series exists.
+func connectionCount(t *testing.T, podKey string) (float64, bool) {
+	t.Helper()
 	metricFamilies, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
 		t.Fatalf("Failed to gather metrics: %v", err)
@@ -60,13 +97,10 @@ func TestStartRegistersKVCacheMetrics(t *testing.T) {
 		for _, m := range mf.GetMetric() {
 			for _, label := range m.GetLabel() {
 				if label.GetName() == kvcache.LabelPodKey && label.GetValue() == podKey {
-					if got := m.GetCounter().GetValue(); got != 1 {
-						t.Fatalf("aibrix_kvcache_zmq_connections_total{pod_key=%q} = %v, want 1", podKey, got)
-					}
-					return
+					return m.GetCounter().GetValue(), true
 				}
 			}
 		}
 	}
-	t.Fatalf("aibrix_kvcache_zmq_connections_total{pod_key=%q} is not registered", podKey)
+	return 0, false
 }
