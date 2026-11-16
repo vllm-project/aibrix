@@ -1001,7 +1001,7 @@ func TestUpdateRealtimeOutputTokenRateEWMA(t *testing.T) {
 	c.updateRealtimeOutputTokenRateEWMA(pod)
 	v, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
 	require.True(t, ok)
-	require.InDelta(t, 100, v.GetSimpleValue(), 1)
+	require.InDelta(t, 100, v.Value.GetSimpleValue(), 1)
 
 	// A higher window rate (~200 tokens/s) moves the estimate only part of the way toward it.
 	atomic.StoreInt64(&pod.completedOutputTokens, 6000)
@@ -1010,9 +1010,9 @@ func TestUpdateRealtimeOutputTokenRateEWMA(t *testing.T) {
 	require.True(t, ok)
 	alpha := 1 - math.Exp(-podMetricRefreshInterval.Seconds()/outputTokenRateEWMATau.Seconds())
 	want := alpha*200 + (1-alpha)*100
-	require.InDelta(t, want, v.GetSimpleValue(), 2)
-	require.Greater(t, v.GetSimpleValue(), 100.0)
-	require.Less(t, v.GetSimpleValue(), 200.0)
+	require.InDelta(t, want, v.Value.GetSimpleValue(), 2)
+	require.Greater(t, v.Value.GetSimpleValue(), 100.0)
+	require.Less(t, v.Value.GetSimpleValue(), 200.0)
 }
 
 // A window with no completed output tokens says nothing about capacity, so the previous
@@ -1028,7 +1028,7 @@ func TestUpdateRealtimeOutputTokenRateEWMA_IdleKeepsPreviousEstimate(t *testing.
 
 	v, ok := pod.Metrics.Load(metrics.RealtimeOutputTokenRateEWMA)
 	require.True(t, ok)
-	require.Equal(t, 123.0, v.GetSimpleValue())
+	require.Equal(t, 123.0, v.Value.GetSimpleValue())
 }
 
 func TestUpdateRealtimeOutputTokenRateEWMA_NoHistoryStoresNothing(t *testing.T) {
@@ -1181,10 +1181,10 @@ func TestUpdateThroughputToksPerS_UsesRoleLabel(t *testing.T) {
 
 	gen, ok := decode.ModelMetrics.Load(c.getPodModelMetricName("model", metrics.AvgGenerationThroughputToksPerS))
 	require.True(t, ok, "the decode pod must get a generation throughput")
-	require.InDelta(t, 100.0, gen.GetSimpleValue(), 5.0)
+	require.InDelta(t, 100.0, gen.Value.GetSimpleValue(), 5.0)
 	prompt, ok := prefill.ModelMetrics.Load(c.getPodModelMetricName("model", metrics.AvgPromptThroughputToksPerS))
 	require.True(t, ok, "the prefill pod must get a prompt throughput")
-	require.InDelta(t, 100.0, prompt.GetSimpleValue(), 5.0)
+	require.InDelta(t, 100.0, prompt.Value.GetSimpleValue(), 5.0)
 
 	// A role only gets the rate of its own counter.
 	_, ok = decode.ModelMetrics.Load(c.getPodModelMetricName("model", metrics.AvgPromptThroughputToksPerS))

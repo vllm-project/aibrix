@@ -40,11 +40,12 @@ their base64 payload to a local file for engines that only read ``file://``.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from copy import copy
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Union
 
 from aibrix.openai_frontend.common.data_url import is_data_url
-from aibrix.openai_frontend.schemas.media import media_url_fields
+from aibrix.openai_frontend.schemas.media import MEDIA_TYPE, media_url_fields
 from aibrix.openai_frontend.schemas.openai import (
     ChatCompletionRequestMessageContentPart,
 )
@@ -89,9 +90,26 @@ class MediaURLInspector(RequestInspector):
         # When set, inline data:;base64 media is also reported so the rewriter
         # can decode it to a local file; otherwise it passes through untouched.
         self._materialize_inline = materialize_inline
+        self._include_local = False
+
+    def with_local_media(self) -> MediaURLInspector:
+        """Report external local inputs without enabling fetch or changing defaults."""
+        inspector = copy(self)
+        inspector._include_local = True
+        return inspector
+
+    def with_inline_media(self) -> MediaURLInspector:
+        """Enable inline localization without mutating shared inspector settings."""
+        inspector = copy(self)
+        inspector._materialize_inline = True
+        return inspector
 
     def _is_handled_url(self, url: str) -> bool:
-        return (self._materialize_inline and is_data_url(url)) or _is_remote_url(url)
+        return (
+            (self._include_local and url.startswith(("file://", "/")))
+            or (self._materialize_inline and is_data_url(url))
+            or _is_remote_url(url)
+        )
 
     def extract_urls(self, request_dict: Dict[str, Any]) -> List[URLLocation]:
         locations: List[URLLocation] = []
@@ -150,7 +168,7 @@ class SglangGenerateInspector(MediaURLInspector):
             metadata = field.json_schema_extra
             if not isinstance(metadata, dict):
                 continue
-            media_type = metadata.get("media_type")
+            media_type = metadata.get(MEDIA_TYPE)
             if (
                 isinstance(media_type, str)
                 and media_type in self._media_types

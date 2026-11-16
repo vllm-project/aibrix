@@ -36,6 +36,13 @@ async def _disconnect_receive() -> Message:
     return {"type": "http.disconnect"}
 
 
+def _is_multipart(scope: Scope) -> bool:
+    for name, value in scope["headers"]:
+        if name == b"content-type":
+            return value.lower().startswith(b"multipart/")
+    return False
+
+
 class RequestSizeLimitMiddleware:
     """
     Reject HTTP requests whose body exceeds ``http_max_input_size`` bytes.
@@ -46,6 +53,11 @@ class RequestSizeLimitMiddleware:
     handlers that never read the body. The buffered body is released the
     moment the application consumes it, so the middleware contributes no
     sustained memory overhead.
+
+    Multipart uploads are the exception: they are relayed to the inner engine
+    as a stream, so their bytes are counted as the application pulls them
+    instead of being buffered here first. On overflow the application sees a
+    client disconnect and its response is replaced by the 413.
     """
 
     def __init__(self, app: ASGIApp, http_max_input_size: int) -> None:
@@ -94,6 +106,10 @@ class RequestSizeLimitMiddleware:
                 return
             break
 
+        if _is_multipart(scope):
+            await self._call_streaming(scope, receive, send)
+            return
+
         # Stage 2: count chunks as they arrive, reject if total exceeds limit.
         body_chunks: list[bytes] = []
         total = 0
@@ -104,13 +120,7 @@ class RequestSizeLimitMiddleware:
             chunk = message.get("body", b"")
             total += len(chunk)
             if total > self.http_max_input_size:
-                await self._send_error(
-                    scope,
-                    send,
-                    StatusCode.CONTENT_TOO_LARGE,
-                    "content_too_large",
-                    self._oversized_request_message(total, self.http_max_input_size),
-                )
+                await self._send_too_large(scope, send, total)
                 return
             body_chunks.append(chunk)
             if not message.get("more_body", False):
@@ -136,6 +146,49 @@ class RequestSizeLimitMiddleware:
             return await receive()
 
         await self.app(scope, replay_receive, send)
+
+    async def _call_streaming(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Count body bytes as the app pulls them; never buffer the body."""
+        total = 0
+        overflow: Optional[int] = None
+        response_started = False
+
+        async def counting_receive() -> Message:
+            nonlocal total, overflow
+            if overflow is not None:
+                return {"type": "http.disconnect"}
+            message = await receive()
+            if message["type"] == "http.request":
+                total += len(message.get("body", b""))
+                if total > self.http_max_input_size:
+                    overflow = total
+                    return {"type": "http.disconnect"}
+            return message
+
+        async def guarded_send(message: Message) -> None:
+            nonlocal response_started
+            if overflow is not None and not response_started:
+                return  # drop the app's answer; the 413 is sent below
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counting_receive, guarded_send)
+        except Exception:
+            if overflow is None or response_started:
+                raise
+        if overflow is not None and not response_started:
+            await self._send_too_large(scope, send, overflow)
+
+    async def _send_too_large(self, scope: Scope, send: Send, size: int) -> None:
+        await self._send_error(
+            scope,
+            send,
+            StatusCode.CONTENT_TOO_LARGE,
+            "content_too_large",
+            self._oversized_request_message(size, self.http_max_input_size),
+        )
 
     @staticmethod
     def _oversized_request_message(actual_bytes: int, max_bytes: int) -> str:

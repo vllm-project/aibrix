@@ -1,0 +1,114 @@
+# SGLang Diffusion serving Qwen-Image through its OpenAI-compatible Images API.
+# Upstream docs: https://docs.sglang.io/diffusion/index.html
+#
+# Try it through the AIBrix gateway (see docs/source/features/gateway-routing/omni.rst for $BASE):
+#   curl -sS $BASE/v1/images/generations -H "Content-Type: application/json" -d '{
+#     "model": "qwen-image",
+#     "prompt": "A calico cat playing a piano on stage",
+#     "size": "1024x1024",
+#     "n": 1,
+#     "response_format": "b64_json"
+#   }' | jq -r '.data[0].b64_json' | base64 -d > cat.png
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    model.aibrix.ai/name: qwen-image # Note: The label value `model.aibrix.ai/name` here must match with the service name.
+    model.aibrix.ai/port: "30000"
+  name: qwen-image
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: qwen-image
+      model.aibrix.ai/port: "30000"
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: qwen-image
+        model.aibrix.ai/port: "30000"
+    spec:
+      containers:
+        - name: sglang-diffusion
+          image: lmsysorg/sglang:latest # Note: Pin a release tag for production; upstream's diffusion install guide names `latest`.
+          command:
+            - sglang
+            - serve
+            - --model-path
+            - Qwen/Qwen-Image
+            - --served-model-name
+            # Note: The `--served-model-name` argument value must also match the Service name and the Deployment label `model.aibrix.ai/name`
+            - qwen-image
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "30000"
+            - --num-gpus # Note: Must not exceed the GPU limit below. Parallelism flags such as `--ulysses-degree` apply when it is above 1.
+            - "1"
+          env:
+            - name: HF_HOME # Note: Keeps the downloaded weights on the host across restarts.
+              value: /models/huggingface
+          ports:
+            - containerPort: 30000
+              protocol: TCP
+          volumeMounts:
+            - mountPath: /models
+              name: models
+            - mountPath: /dev/shm
+              name: shm
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"
+          livenessProbe:
+            httpGet:
+              path: /v1/models # Note: Upstream documents no dedicated health endpoint; `GET /v1/models` answers once the model is served.
+              port: 30000
+              scheme: HTTP
+            failureThreshold: 3
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /v1/models
+              port: 30000
+              scheme: HTTP
+            failureThreshold: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 3
+          startupProbe:
+            httpGet:
+              path: /v1/models
+              port: 30000
+              scheme: HTTP
+            failureThreshold: 120 # Note: Allows up to 20 minutes for the weight download and model load.
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 3
+      volumes:
+        - name: models
+          hostPath:
+            path: /root/models
+            type: DirectoryOrCreate
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen-image
+  namespace: default
+spec:
+  selector:
+    model.aibrix.ai/name: qwen-image
+  ports:
+    - name: serve
+      port: 30000
+      protocol: TCP
+      targetPort: 30000

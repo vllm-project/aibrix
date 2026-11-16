@@ -127,6 +127,7 @@ func Test_HandleResponseHeaders(t *testing.T) {
 					{Header: &configPb.HeaderValue{Key: HeaderTargetPod, RawValue: []byte("test-pod")}},
 					{Header: &configPb.HeaderValue{Key: HeaderTargetPodIP, RawValue: []byte("10.0.0.1:8000")}},
 					{Header: &configPb.HeaderValue{Key: ":status", RawValue: []byte("500")}},
+					{Header: &configPb.HeaderValue{Key: "content-type", RawValue: []byte("application/json")}, AppendAction: configPb.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD},
 				},
 			},
 		},

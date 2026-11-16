@@ -6,13 +6,13 @@ This directory contains the core documentation for KV Event Synchronization feat
 
 ### Core Documents
 
-1. **[KV Cache Events Guide](./kv-cache-events-guide.md)**
+1. **[KV Cache Events Guide](./source/features/scaling-performance/kv-event-sync.rst)**
    - Complete feature overview and architecture
    - Configuration and deployment instructions
    - Troubleshooting and best practices
    - Migration guide for existing deployments
 
-2. **[E2E Testing Guide](./testing/e2e-test-guide.md)**
+2. **[E2E Testing Guide](../test/kv-event-sync-e2e.rst)**
    - Comprehensive testing instructions
    - Test environment setup
    - Running and debugging tests
@@ -20,7 +20,7 @@ This directory contains the core documentation for KV Event Synchronization feat
 
 ### Related Documentation
 
-- **[Testing README](./testing/README.md)** - Overview of the complete testing framework
+- **[Testing README](../test/README.md)** - Overview of the complete testing framework
 - **[Package README](../pkg/cache/kvcache/README.md)** - Low-level implementation details
 
 ## Quick Links
@@ -31,9 +31,9 @@ This directory contains the core documentation for KV Event Synchronization feat
 
 ## Getting Started
 
-1. Read the [KV Cache Events Guide](./kv-cache-events-guide.md) for feature overview
+1. Read the [KV Cache Events Guide](./source/features/scaling-performance/kv-event-sync.rst) for feature overview
 2. Follow deployment instructions in the guide
-3. Use [E2E Testing Guide](./testing/e2e-test-guide.md) for validation
+3. Use [E2E Testing Guide](../test/kv-event-sync-e2e.rst) for validation
 
 ## Support
 

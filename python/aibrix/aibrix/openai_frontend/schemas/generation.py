@@ -15,11 +15,13 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from aibrix.openai_frontend.schemas.media import OUTPUT_MEDIA
 from aibrix.openai_frontend.schemas.output import (
     HTTP_SCHEMES,
     OutputRequest,
     OutputResponse,
 )
+from aibrix.openai_frontend.schemas.processors import ProcessorPipeline
 from aibrix.openai_frontend.schemas.sglang import (
     SglangImageResponseDataFields,
     SglangVideoResponseFields,
@@ -58,6 +60,7 @@ class ImageGenerationRequest(BaseModel):
     prompt: str
     model: Optional[str] = None
     output: Optional[OutputRequest] = None
+    processors: Optional[ProcessorPipeline] = None
 
     @model_validator(mode="after")
     def _validate_output(self) -> "ImageGenerationRequest":
@@ -89,6 +92,7 @@ class VideoGenerationRequest(BaseModel):
     prompt: str
     model: Optional[str] = None
     output: Optional[OutputRequest] = None
+    processors: Optional[ProcessorPipeline] = None
 
     @model_validator(mode="after")
     def _validate_output(self) -> "VideoGenerationRequest":
@@ -184,10 +188,11 @@ class VideoResponse(SglangVideoResponseFields):
         *,
         has_payload: bool,
         has_media: bool,
+        media_removed: bool = False,
     ) -> "VideoResponse":
-        """Map only persisted media to output locations; retain remote-only metadata."""
+        """Map persisted or explicitly removed media; retain remote-only metadata."""
         body = {**envelope, "output": result.model_dump()}
-        if has_payload or has_media:
+        if has_payload or has_media or media_removed:
             is_http = urlparse(spec.url).scheme.lower() in HTTP_SCHEMES
             artifacts = (
                 (
@@ -235,7 +240,7 @@ def output_media_paths(
                     else node.get(name)
                 )
                 metadata = field.json_schema_extra
-                if isinstance(metadata, dict) and metadata.get("output_media"):
+                if isinstance(metadata, dict) and metadata.get(OUTPUT_MEDIA):
                     values = value if isinstance(value, list) else [value]
                     paths.extend(
                         path for path in values if isinstance(path, str) and path

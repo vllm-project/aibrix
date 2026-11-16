@@ -40,18 +40,25 @@ from aibrix.openai_frontend.common.artifact_fetcher import (
     ArtifactFetchError,
     FetchResult,
 )
-from aibrix.openai_frontend.proxy.engine_spec import (
-    TRTLLM_SPEC,
-    EngineSpec,
+from aibrix.openai_frontend.proxy.media.request_inspector import MediaURLInspector
+from aibrix.openai_frontend.proxy.output.output_writer import (
+    OutputWriteError,
+    OutputWriter,
 )
-from aibrix.openai_frontend.proxy.output_writer import OutputWriteError, OutputWriter
-from aibrix.openai_frontend.proxy.process_tree import (
+from aibrix.openai_frontend.proxy.runtime.engine_spec import (
+    SGLANG_SPEC,
+    TRTLLM_SPEC,
+    VLLM_SPEC,
+    EndpointSet,
+    EngineSpec,
+    ForwardKind,
+)
+from aibrix.openai_frontend.proxy.runtime.process_tree import (
     describe_returncode,
     kill_tree,
     snapshot_tree,
 )
-from aibrix.openai_frontend.proxy.request_inspector import MediaURLInspector
-from aibrix.openai_frontend.proxy.subprocess_engine import (
+from aibrix.openai_frontend.proxy.runtime.subprocess_engine import (
     EngineStartupError,
     SubprocessEngine,
 )
@@ -70,6 +77,21 @@ MOCK_SPEC = EngineSpec(
     name="mock",
     supports_local_media=True,
     local_media_args=("--allowed-local-media-path", "{dir}"),
+    endpoints=EndpointSet(
+        (
+            ("/v1/chat/completions", ForwardKind.SSE),
+            ("/v1/completions", ForwardKind.SSE),
+            ("/v1/embeddings", ForwardKind.JSON),
+            ("/v1/models", ForwardKind.JSON),
+            ("/v1/responses", ForwardKind.SSE),
+            ("/v1/responses/{response_id}", ForwardKind.JSON),
+            ("/v1/responses/{response_id}/cancel", ForwardKind.JSON),
+            ("/v1/rerank", ForwardKind.JSON),
+            ("/v1/audio/transcriptions", ForwardKind.MULTIPART),
+            ("/v1/audio/translations", ForwardKind.MULTIPART),
+            ("/v1/realtime", ForwardKind.WEBSOCKET),
+        )
+    ),
 )
 
 
@@ -178,7 +200,7 @@ class TestKillTree:
     def test_without_psutil_kills_group_after_root_exit(self, monkeypatch):
         import subprocess
 
-        from aibrix.openai_frontend.proxy import process_tree
+        from aibrix.openai_frontend.proxy.runtime import process_tree
 
         code = (
             "import subprocess,sys,time\n"
@@ -275,7 +297,7 @@ class TestKillTree:
         import subprocess
         from unittest.mock import Mock
 
-        from aibrix.openai_frontend.proxy import process_tree
+        from aibrix.openai_frontend.proxy.runtime import process_tree
 
         bystander = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(60)"],
@@ -289,6 +311,13 @@ class TestKillTree:
             kill_tree(snap, grace_seconds=0.2, reap=lambda t: None)
             signal_group.assert_not_called()
             assert bystander.poll() is None, "recycled pid was killed"
+
+            # A group we cannot inspect still exists; never infer it stopped.
+            def denied_group(pgid, sig):
+                raise PermissionError("cannot inspect group")
+
+            monkeypatch.setattr(process_tree.os, "killpg", denied_group)
+            assert process_tree._group_exists(bystander.pid) is True
         finally:
             bystander.kill()
             bystander.wait()
@@ -363,7 +392,7 @@ class TestSubprocessEngine:
         from types import SimpleNamespace
         from unittest.mock import AsyncMock
 
-        from aibrix.openai_frontend.proxy import subprocess_engine
+        from aibrix.openai_frontend.proxy.runtime import subprocess_engine
 
         async def _run():
             eng = SubprocessEngine(cmd=["unused"])
@@ -1229,20 +1258,6 @@ class TestOutputWriter:
             await asyncio.gather(task, return_exceptions=True)
 
     @pytest.mark.asyncio
-    async def test_artifact_outside_destination_is_wrapped(self, monkeypatch, tmp_path):
-        writer = OutputWriter()
-
-        async def misplaced(*args):
-            return str(tmp_path / "elsewhere.json")
-
-        monkeypatch.setattr(writer, "_write_local", misplaced)
-        with pytest.raises(OutputWriteError) as caught:
-            await writer.write(
-                OutputRequest(url=str(tmp_path / "out")), b"{}", "job.json"
-            )
-        assert isinstance(caught.value.__cause__, ValueError)
-
-    @pytest.mark.asyncio
     @pytest.mark.parametrize("cancel", [False, True])
     async def test_failed_bundle_cleans_sources_after_writer_finishes(
         self, monkeypatch, tmp_path, cancel
@@ -1366,7 +1381,7 @@ class TestOutputWriter:
                     raise PermissionError("cleanup denied")
                 return unlink(path, *args, **kwargs)
 
-            monkeypatch.setattr(writer, "write", fail)
+            monkeypatch.setattr(writer, "_write_local_entries", fail)
             monkeypatch.setattr(Path, "unlink", remove)
             message = "primary upload failure"
         with pytest.raises(OutputWriteError, match=message):
@@ -1517,8 +1532,8 @@ class TestProxyEngineOutputE2E:
         )
         fetch = engine._fetch_media_for
 
-        async def fetched(*args):
-            result = await fetch(*args)
+        async def fetched(*args, **kwargs):
+            result = await fetch(*args, **kwargs)
             paths.append(Path(result[1][0].temp_dir.name))
             if failure == "expired":
                 await asyncio.sleep(0.03)
@@ -1548,7 +1563,7 @@ class TestProxyEngineOutputE2E:
             if failure == "rejected":
                 assert caught.value.response.status_code == 422
             assert paths and not paths[0].exists()
-            assert not engine._video_inputs and not engine._request_done
+            assert not engine._retained.video_inputs and not engine._request_done
             assert not engine._fetcher._active_tmpdirs
             assert (
                 len(attempts)
@@ -1702,6 +1717,7 @@ class TestProxyEngineOutputE2E:
             "post_503",
             "post_500_plain",
             "post_503_plain",
+            "post_invalid_output",
             "get_404",
             "get_410",
         ],
@@ -1711,6 +1727,10 @@ class TestProxyEngineOutputE2E:
     ):
         from urllib.parse import unquote, urlparse
 
+        from aibrix.openai_frontend.proxy.processors import ProcessorRegistry
+        from aibrix.openai_frontend.proxy.processors.demo_processors import (
+            DEMO_PROCESSORS,
+        )
         from aibrix.openai_frontend.schemas.generation import VideoGenerationRequest
         from aibrix.openai_frontend.utils.utils import ServerError
 
@@ -1784,17 +1804,39 @@ class TestProxyEngineOutputE2E:
                         "file_path": str(output_file),
                     },
                 )
-            if plain and outcome != "cancel_plain":
-                return httpx.Response(200, json=post_body)
+            if outcome == "post_terminal":
+                read_later.set()
+                await worker
+            if (
+                plain and outcome != "cancel_plain"
+            ) or outcome == "post_invalid_output":
+                return httpx.Response(
+                    200,
+                    json={"vendor": "unknown job"}
+                    if outcome == "post_invalid_output"
+                    else post_body,
+                )
             await asyncio.Event().wait()
 
         engine = _mock_engine(
             upstream,
-            fetch_media=True,
+            fetch_media=False,
+            enable_processors=True,
+            processor_registry=ProcessorRegistry(DEMO_PROCESSORS),
             media_dir=str(tmp_path / "media"),
-            materialize_inline_media=True,
+            materialize_inline_media=False,
             video_output_timeout=0.05,
         )
+        processor_paths = []
+        new_directory = engine._new_processor_dir
+
+        def track_directory(*args):
+            directory = new_directory(*args)
+            if directory is not None:
+                processor_paths.append(Path(directory.name))
+            return directory
+
+        monkeypatch.setattr(engine, "_new_processor_dir", track_directory)
         cleanup = engine._fetcher.cleanup
         cleanup_entered, cleanup_release = asyncio.Event(), asyncio.Event()
         exiting = closing = joined = None
@@ -1824,6 +1866,9 @@ class TestProxyEngineOutputE2E:
             input=[
                 {"type": "input_image", "image_url": "data:image/png;base64,UElYRUxT"}
             ],
+            processors={
+                "pre": [{"type": "processor", "processor": {"name": "demo.pre.copy"}}]
+            },
             **({} if plain else {"output": {"url": str(tmp_path / "out")}}),
         )
         post = asyncio.create_task(engine.video(request))
@@ -1839,7 +1884,12 @@ class TestProxyEngineOutputE2E:
             elif plain and outcome != "cancel_plain" and not server_error:
                 response = await post
                 assert json.loads(response.body) == post_body
-                assert inputs[0].exists() and engine._video_inputs
+                if outcome == "post_terminal":
+                    assert not inputs[0].exists() and not engine._retained.pending()
+                    assert all(not path.exists() for path in processor_paths)
+                    assert len(cleanups) == 1 and not engine._request_done
+                    return
+                assert inputs[0].exists() and engine._retained.video_inputs
                 assert calls == ["POST"] and not engine._video_tasks
                 read_later.set()
                 await worker
@@ -1864,7 +1914,9 @@ class TestProxyEngineOutputE2E:
                         closing = asyncio.create_task(engine.aclose())
                         await asyncio.sleep(0.01)
                         assert not closing.done() and inputs[0].exists()
-                        assert engine._request_done and not engine._video_inputs
+                        assert (
+                            engine._request_done and not engine._retained.video_inputs
+                        )
                         closing.cancel()
                         await asyncio.sleep(0)
                         closing.cancel()
@@ -1931,7 +1983,13 @@ class TestProxyEngineOutputE2E:
                     assert caught.value.response.status_code == (
                         500 if outcome.startswith("post_500") else 503
                     )
-                assert engine._video_inputs and inputs[0].exists()
+                assert engine._retained.video_inputs and inputs[0].exists()
+                assert all(path.exists() for path in processor_paths)
+                assert len(engine._retained.video_inputs) == len(processor_paths)
+                assert all(
+                    entry.processor_dir is not None
+                    for entry in engine._retained.video_inputs.values()
+                )
                 read_later.set()
                 await worker
                 assert not engine._video_tasks and calls == ["POST"]
@@ -1939,10 +1997,12 @@ class TestProxyEngineOutputE2E:
                     await asyncio.wait_for(engine._handle_engine_exit(), 2)
                 else:
                     await asyncio.wait_for(engine.aclose(), 2)
-            assert not inputs[0].exists() and not engine._video_inputs
+            assert not inputs[0].exists() and not engine._retained.video_inputs
+            assert all(not path.exists() for path in processor_paths)
+            assert not engine._retained.processor_dirs
             assert len(cleanups) == 1 and not engine._request_done
             if server_error and not plain:
-                assert not output_file.exists() and not engine._video_sources
+                assert not output_file.exists() and not engine._retained.video_sources
             else:
                 assert output_file.read_bytes() == b"engine output must remain"
         finally:
@@ -2004,10 +2064,20 @@ class TestProxyEngineOutputE2E:
                 json={"status": "queued", "file_path": str(source)},
             )
 
-        engine = _mock_engine(upstream)
+        engine = _mock_engine(upstream, enable_processors=True)
+        processor_paths = []
+        new_directory = engine._new_processor_dir
+
+        def track_directory(*args):
+            directory = new_directory(*args)
+            processor_paths.append(Path(directory.name))
+            return directory
+
+        monkeypatch.setattr(engine, "_new_processor_dir", track_directory)
 
         def stop():
             nonlocal stopped
+            assert processor_paths[0].exists()
             stopped = True
 
         monkeypatch.setattr(engine._subprocess, "shutdown", stop)
@@ -2030,13 +2100,29 @@ class TestProxyEngineOutputE2E:
             ):
                 await engine.video(
                     VideoGenerationRequest(
-                        prompt="video", output={"url": str(tmp_path / "out")}
+                        prompt="video",
+                        output={"url": str(tmp_path / "out")},
+                        processors={
+                            "post": [
+                                {
+                                    "type": "processor",
+                                    "processor": {"name": "files.compress"},
+                                }
+                            ]
+                        },
                     )
                 )
             if outcome == "late_stop":
-                assert stopped and not engine._video_sources and not source.exists()
+                assert (
+                    stopped
+                    and not engine._retained.video_sources
+                    and not source.exists()
+                    and not processor_paths[0].exists()
+                    and not engine._retained.pending()
+                )
                 return
-            assert engine._video_sources and not engine._video_inputs
+            assert engine._retained.video_sources and engine._retained.video_inputs
+            assert processor_paths[0].exists()
             assert not stopped and not engine._video_tasks and not engine._request_done
             read_later.set()
             await worker
@@ -2078,7 +2164,8 @@ class TestProxyEngineOutputE2E:
                 await engine._handle_engine_exit()
             else:
                 await engine.aclose()
-            assert stopped and not engine._video_sources
+            assert stopped and not engine._retained.video_sources
+            assert not processor_paths[0].exists() and not engine._retained.video_inputs
             if outcome == "replaced":
                 assert source.read_bytes() == b"another job"
             else:
@@ -2115,7 +2202,7 @@ class TestProxyEngineOutputE2E:
     async def test_video_poll_deadlines_keep_sources_until_shutdown(
         self, monkeypatch, tmp_path, poll_result
     ):
-        from aibrix.openai_frontend.proxy import video_job as proxy
+        from aibrix.openai_frontend.proxy.runtime import video_job as proxy
         from aibrix.openai_frontend.schemas.generation import VideoGenerationRequest
         from aibrix.openai_frontend.utils.utils import ServerError
 
@@ -2431,10 +2518,11 @@ class TestProxyEngineOutputE2E:
         from aibrix.openai_frontend.schemas.generation import VideoResponse
 
         monkeypatch.setattr(
-            "aibrix.openai_frontend.proxy.video_job.VIDEO_POLL_INTERVAL_SECONDS", 0
+            "aibrix.openai_frontend.proxy.runtime.video_job.VIDEO_POLL_INTERVAL_SECONDS",
+            0,
         )
         monkeypatch.setattr(
-            "aibrix.openai_frontend.proxy.video_job.VIDEO_POLL_REQUEST_TIMEOUT_SECONDS",
+            "aibrix.openai_frontend.proxy.runtime.video_job.VIDEO_POLL_REQUEST_TIMEOUT_SECONDS",
             2.0,
         )
         source = tmp_path / "video.mp4"
@@ -2515,7 +2603,7 @@ class TestProxyEngineOutputE2E:
             async def fail(*args, **kwargs):
                 raise OutputWriteError("upload failed")
 
-            monkeypatch.setattr(engine._output_writer, "write", fail)
+            monkeypatch.setattr(engine._output_writer, "_write_local_entries", fail)
         try:
             frontend = FastApiFrontend(engine=engine)
             async with httpx.AsyncClient(
@@ -2565,7 +2653,7 @@ class TestProxyEngineOutputE2E:
                 else:
                     if outcome == "timeout":
                         monkeypatch.setattr(
-                            "aibrix.openai_frontend.proxy.video_job.VIDEO_POLL_REQUEST_TIMEOUT_SECONDS",
+                            "aibrix.openai_frontend.proxy.runtime.video_job.VIDEO_POLL_REQUEST_TIMEOUT_SECONDS",
                             0.1,
                         )
                     proceed.set()
@@ -2679,14 +2767,22 @@ class TestProxyEngineOutputE2E:
         )
         req_id, started_at = engine._requests_begin()
         original_done = engine._request_done[req_id]
+        directory = tempfile.TemporaryDirectory()
+        processor_path = Path(directory.name)
         context = _ProxyRequestContext(
-            req_id, started_at, OutputRequest(url=str(tmp_path))
+            req_id,
+            started_at,
+            OutputRequest(url=str(tmp_path)),
+            processor_dir=directory,
         )
         response = VideoResponse.model_validate(
             {"id": "job", "status": "completed", "url": "https://engine/video.mp4"}
         )
         job = engine._new_video_job(context, response)
         assert job.resources_done is original_done
+        assert context.processor_dir is None and job.context.processor_dir is directory
+        await engine._finish_request(context)
+        assert processor_path.exists()
         assert engine._request_done == {req_id: original_done}
 
         async def finish_sources(*args, **kwargs):
@@ -2702,6 +2798,7 @@ class TestProxyEngineOutputE2E:
         successor = None
         try:
             await asyncio.wait_for(entered.wait(), 2)
+            assert processor_path.exists()
             assert not waiter.done() and not original_done.done()
             if cancel:
                 waiter.cancel()
@@ -2719,6 +2816,7 @@ class TestProxyEngineOutputE2E:
             else:
                 assert result.status_code == 200
             assert original_done.done() and not engine._request_done
+            assert not processor_path.exists()
             assert engine._video_tasks["job"] is successor
         finally:
             release.set()
@@ -2736,20 +2834,37 @@ class TestProxyEngineOutputE2E:
     async def test_video_cancel_or_timeout_releases_resources(
         self, monkeypatch, tmp_path, after_timeout, before_start
     ):
+        from urllib.parse import unquote, urlparse
+
         from aibrix.openai_frontend.engine.proxy_engine import EngineState, ProxyEngine
+        from aibrix.openai_frontend.proxy.processors import ProcessorRegistry
+        from aibrix.openai_frontend.proxy.processors.demo_processors import (
+            DEMO_PROCESSORS,
+        )
         from aibrix.openai_frontend.schemas.generation import VideoGenerationRequest
 
         source = tmp_path / "partial.mp4"
         # A worker finishes a file while the generation process is shutting down.
         body = {"id": "early", "status": "queued", "file_path": str(source)}
-        engine = ProxyEngine(["unused"], fetch_media=False)
+        engine = ProxyEngine(
+            ["unused"],
+            fetch_media=False,
+            enable_processors=True,
+            processor_registry=ProcessorRegistry(DEMO_PROCESSORS),
+        )
         engine._set_state(EngineState.READY)
         cleanup_poll = asyncio.Event()
         calls = 0
+        references = []
 
         async def upstream(request):
             nonlocal calls
             if request.method == "POST":
+                request_body = json.loads(request.content)
+                references.append(
+                    Path(unquote(urlparse(request_body["input"][0]["image_url"]).path))
+                )
+                assert references[0].read_bytes() == b"PIXELS"
                 return httpx.Response(200, json=body)
             calls += 1
             if after_timeout and calls == 1:
@@ -2763,11 +2878,12 @@ class TestProxyEngineOutputE2E:
         engine._subprocess._client_loop = asyncio.get_running_loop()
 
         def stop_generation():
+            assert references[0].read_bytes() == b"PIXELS"
             source.write_bytes(b"worker finished before shutdown returned")
 
         monkeypatch.setattr(engine._subprocess, "shutdown", stop_generation)
         if before_start:
-            from aibrix.openai_frontend.proxy.video_job import VideoOutputJob
+            from aibrix.openai_frontend.proxy.runtime.video_job import VideoOutputJob
 
             create_task = asyncio.create_task
             cancelled_before_start = asyncio.Event()
@@ -2784,11 +2900,27 @@ class TestProxyEngineOutputE2E:
             task = asyncio.create_task(
                 engine.video(
                     VideoGenerationRequest(
-                        prompt="video", output=OutputRequest(url=str(tmp_path / "out"))
+                        prompt="video",
+                        output=OutputRequest(url=str(tmp_path / "out")),
+                        input=[
+                            {
+                                "type": "input_image",
+                                "image_url": "data:image/png;base64,UElYRUxT",
+                            }
+                        ],
+                        processors={
+                            "pre": [
+                                {
+                                    "type": "processor",
+                                    "processor": {"name": "demo.pre.copy"},
+                                }
+                            ]
+                        },
                     )
                 )
             )
             await asyncio.wait_for(cleanup_poll.wait(), 2)
+            assert references[0].exists()
             if before_start:
                 assert cancelled_before_start.is_set()
             if after_timeout:
@@ -2808,7 +2940,7 @@ class TestProxyEngineOutputE2E:
             result = (await asyncio.gather(task, return_exceptions=True))[0]
             if not after_timeout:
                 assert isinstance(result, asyncio.CancelledError)
-            assert not source.exists()
+            assert not source.exists() and not references[0].exists()
             early = engine._uploaded_videos["early"]
             assert early is not None and early.status == "failed"
             assert (
@@ -2958,10 +3090,10 @@ class TestProxyEngineOutputE2E:
                     await asyncio.wait_for(engine.aclose(), 2)
                 elif kind == "invalid_metadata":
                     # An invalid identity cannot establish trusted job termination.
-                    assert source.exists() and engine._video_sources
+                    assert source.exists() and engine._retained.video_sources
                     assert not engine._video_tasks and not engine._request_done
                     await asyncio.wait_for(engine.aclose(), 2)
-                    assert not engine._video_sources
+                    assert not engine._retained.video_sources
                 assert not source.exists()
                 assert not engine._request_done
         finally:
@@ -2996,7 +3128,7 @@ class TestProxyEngineOutputE2E:
 
         engine = _mock_engine(upstream)
         entered, release = asyncio.Event(), asyncio.Event()
-        write = engine._output_writer.write
+        write = engine._output_writer._write_local_entries
         writes = 0
 
         async def blocked(*args, **kwargs):
@@ -3006,7 +3138,7 @@ class TestProxyEngineOutputE2E:
             await release.wait()
             return await write(*args, **kwargs)
 
-        monkeypatch.setattr(engine._output_writer, "write", blocked)
+        monkeypatch.setattr(engine._output_writer, "_write_local_entries", blocked)
         post = None
         try:
             async with httpx.AsyncClient(
@@ -3412,3 +3544,159 @@ class TestProxyEngineOutputE2E:
             CreateCompletionRequest(
                 model="m", prompt="hi", stream=True, output={"url": "/tmp/out"}
             )
+
+
+# ---------------------------------------------------------------------------
+# Passthrough endpoints through the FastAPI app
+# ---------------------------------------------------------------------------
+
+
+class TestPassthroughRouter:
+    def test_responses_api_with_media_and_output(self, tmp_path):
+        from fastapi.testclient import TestClient
+
+        from aibrix.openai_frontend.frontend.fastapi_frontend import FastApiFrontend
+
+        media_dir = str(tmp_path / "media")
+        os.makedirs(media_dir)
+        engine = _make_engine(
+            _free_port(), media_dir=media_dir, artifact_fetcher=_DirFetcher(media_dir)
+        )
+        frontend = FastApiFrontend(engine=engine)
+        try:
+            with TestClient(frontend.app) as client:
+                r = client.post(
+                    "/v1/responses",
+                    json={
+                        "model": "m",
+                        "input": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "input_text", "text": "describe"},
+                                    {
+                                        "type": "input_image",
+                                        "image_url": "tos://b/p.png",
+                                    },
+                                ],
+                            }
+                        ],
+                        "output": {"url": str(tmp_path / "out")},
+                    },
+                )
+                assert r.status_code == 200, r.text
+                body = r.json()
+                # Only native Responses output is persisted; metadata stays in HTTP.
+                assert body["media"][0]["content"] == "content-of:tos://b/p.png"
+                assert "output" not in body["echo"]
+                out_url = body["output"]["url"]
+                artifact_rel = body["output"]["artifacts"][0]
+                assert not artifact_rel.startswith("/")
+                stored = json.loads(Path(out_url, artifact_rel).read_text())
+                assert set(stored) == {"output"}
+                assert stored["output"][0]["content"][0]["text"] == "hello"
+
+        finally:
+            # TestClient lifespan already awaited engine.aclose().
+            assert not engine._in_flight
+
+
+# ---------------------------------------------------------------------------
+# Omni endpoints: multipart audio + realtime websocket + templated paths
+# and the four built-in specs' endpoint catalogs
+# ---------------------------------------------------------------------------
+
+
+class TestEngineSpecCatalog:
+    def test_builtin_catalogs_and_media_capabilities(self):
+        from aibrix.openai_frontend.proxy.runtime.engine_spec import (
+            SGLANG_OMNI_SPEC,
+            VLLM_OMNI_SPEC,
+        )
+
+        assert VLLM_SPEC.spawn_args("/m") == ("--allowed-local-media-path", "/m")
+        assert SGLANG_SPEC.supports_local_media and SGLANG_SPEC.spawn_args("/m") == ()
+        assert "/v1/responses" in VLLM_SPEC.passthrough_endpoints
+        assert "/generate" in SGLANG_SPEC.passthrough_endpoints
+        assert EngineSpec(name="x").spawn_args("/m") == ()
+        speech = {"/v1/audio/transcriptions", "/v1/realtime"}
+        assert speech <= VLLM_OMNI_SPEC.passthrough_endpoints
+        assert not speech <= VLLM_SPEC.passthrough_endpoints
+        assert {"/v1/audio/transcriptions", "/v1/realtime"} <= (
+            SGLANG_OMNI_SPEC.passthrough_endpoints
+        )
+        assert "/v1/audio/translations" in VLLM_OMNI_SPEC.passthrough_endpoints
+        assert "/v1/audio/translations" not in SGLANG_OMNI_SPEC.passthrough_endpoints
+        assert not SGLANG_SPEC.passthrough_endpoints & speech
+        for path in (
+            "/v1/chat/completions",
+            "/v1/completions",
+            "/v1/embeddings",
+            "/v1/models",
+            "/v1/responses",
+            "/v1/messages",
+            "/v1/score",
+            "/v1/rerank",
+            "/tokenize",
+            "/detokenize",
+        ):
+            assert VLLM_OMNI_SPEC.supports(path), path
+        for path in ("/generate", "/encode", "/v1/classify", "/v1/loads"):
+            assert SGLANG_OMNI_SPEC.supports(path), path
+        assert VLLM_OMNI_SPEC.kind("/v1/audio/transcriptions") == ForwardKind.MULTIPART
+        assert VLLM_OMNI_SPEC.kind("/v1/realtime") == ForwardKind.WEBSOCKET
+        assert VLLM_OMNI_SPEC.kind("/v1/chat/completions") == ForwardKind.SSE
+        assert VLLM_OMNI_SPEC.kind("/v1/rerank") == ForwardKind.JSON
+        assert VLLM_OMNI_SPEC.kind("/v1/responses/abc") == ForwardKind.JSON
+        assert VLLM_OMNI_SPEC.kind("/v1/responses/abc/cancel") == ForwardKind.JSON
+        assert VLLM_OMNI_SPEC.kind("/v1/nope") is None
+
+
+class TestOmniEndpointsE2E:
+    def test_templated_routes_match_correctly(self):
+        """Pure routing check: GET /cancel/unknown must not falsely match."""
+        from aibrix.openai_frontend.proxy.runtime.engine_spec import _matches
+
+        tpl = "/v1/responses/{response_id}"
+        assert _matches(tpl, "/v1/responses/resp-123")
+        assert not _matches(tpl, "/v1/responses/resp-123/cancel")
+        cancel = "/v1/responses/{response_id}/cancel"
+        assert _matches(cancel, "/v1/responses/resp-123/cancel")
+        assert not _matches(cancel, "/v1/responses/resp-123/missing")
+        assert MOCK_SPEC.kind("/v1/responses/resp-123") == ForwardKind.JSON
+        assert MOCK_SPEC.kind("/v1/responses/resp-123/cancel") == ForwardKind.JSON
+        assert MOCK_SPEC.kind("/v1/responses/resp-123/missing") is None
+
+
+class TestEngineMediaPolicy:
+    def test_engine_spec_does_not_filter_media_types(self):
+        from aibrix.openai_frontend.engine.proxy_engine import ProxyEngine
+
+        req = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": "tos://b/a.png"}},
+                        {"type": "video_url", "video_url": {"url": "tos://b/v.mp4"}},
+                        {"type": "audio_url", "audio_url": {"url": "tos://b/a.wav"}},
+                    ],
+                }
+            ],
+            "input": [{"type": "input_file", "file_url": "https://h/document.pdf"}],
+        }
+
+        async def _run():
+            engine = ProxyEngine(engine_cmd=["unused"], spec=TRTLLM_SPEC)
+            try:
+                locs = engine._chat_inspector.extract_urls(req)
+                assert [loc.media_type for loc in locs] == [
+                    "image_url",
+                    "video_url",
+                    "audio_url",
+                    "file_url",
+                ]
+            finally:
+                await engine.aclose()
+
+        asyncio.run(_run())

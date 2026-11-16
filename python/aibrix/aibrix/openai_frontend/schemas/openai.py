@@ -53,6 +53,7 @@ from pydantic import (
 )
 
 from aibrix.openai_frontend.schemas.media import (
+    MEDIA_URL,
     ChatCompletionRequestMessageContentPartAudio,
     ChatCompletionRequestMessageContentPartFile,
     ChatCompletionRequestMessageContentPartInputAudio,
@@ -60,6 +61,7 @@ from aibrix.openai_frontend.schemas.media import (
     ChatCompletionRequestMessageContentPartVideo,
 )
 from aibrix.openai_frontend.schemas.output import OutputRequest, OutputResponse
+from aibrix.openai_frontend.schemas.processors import ProcessorPipeline
 from aibrix.openai_frontend.schemas.sglang import (
     SglangChatCompletionChoiceExtensionFields,
     SglangChatCompletionEngineExtensionFields,
@@ -428,7 +430,7 @@ class ChatCompletionRequestMessageContentPartImage(BaseModel):
     model_config = ConfigDict(use_enum_values=True, extra="allow")
 
     type: Literal["image_url"] = "image_url"
-    image_url: _ImageUrl = Field(json_schema_extra={"media_url": "url"})
+    image_url: _ImageUrl = Field(json_schema_extra={MEDIA_URL: "url"})
     uuid: Optional[str] = None
 
 
@@ -567,6 +569,12 @@ class CreateCompletionRequest(
         "local directory, or an http(s) PUT URL. Not forwarded to the engine.",
     )
 
+    processors: Optional[ProcessorPipeline] = Field(
+        None,
+        description="AIBrix extension: ordered pre/post processors. Not forwarded "
+        "to the engine.",
+    )
+
     @model_validator(mode="after")
     def _require_prompt(self):
         if self.prompt is None and getattr(self, "prompt_embeds", None) is None:
@@ -638,6 +646,12 @@ class CreateChatCompletionRequest(
         "local directory, or an http(s) PUT URL. Not forwarded to the engine.",
     )
 
+    processors: Optional[ProcessorPipeline] = Field(
+        None,
+        description="AIBrix extension: ordered pre/post processors. Not forwarded "
+        "to the engine.",
+    )
+
     @model_validator(mode="after")
     def _validate_logprobs(self) -> CreateChatCompletionRequest:
         if self.top_logprobs is not None and not self.logprobs:
@@ -679,6 +693,12 @@ class CreateEmbeddingRequest(
         None,
         description="AIBrix extension: persist the response to tos://, s3://, a "
         "local directory, or an http(s) PUT URL. Not forwarded to the engine.",
+    )
+
+    processors: Optional[ProcessorPipeline] = Field(
+        None,
+        description="AIBrix extension: ordered pre/post processors. Not forwarded "
+        "to the engine.",
     )
 
     @model_validator(mode="after")

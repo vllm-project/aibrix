@@ -283,6 +283,15 @@ func TestGatewayPluginManifest_SharedRouteServesAudioSpeech(t *testing.T) {
 	assert.Contains(t, manifest.pathMatches(t, "reserved-router"), manifestPathMatch{Type: "PathPrefix", Value: PathAudioSpeech})
 }
 
+// TestGatewayPluginManifest_SharedRouteServesAudioGenerate: /v1/audio/generate is a sibling of
+// /v1/audio/speech, not a child, so the speech PathPrefix does not cover it and it needs a match
+// of its own on the shared route, whose streamed response mode passes the audio through unchanged.
+func TestGatewayPluginManifest_SharedRouteServesAudioGenerate(t *testing.T) {
+	manifest := loadGatewayPluginManifest(t)
+
+	assert.Contains(t, manifest.pathMatches(t, "reserved-router"), manifestPathMatch{Type: "PathPrefix", Value: PathAudioGenerate})
+}
+
 // TestGatewayPluginManifest_SharedRouteServesAudioSpeechBatch: the batch endpoint has no match of
 // its own. It relies on the /v1/audio/speech PathPrefix, which Envoy Gateway applies on path
 // segment boundaries, so the manifest must keep a prefix match that is a parent segment of it.

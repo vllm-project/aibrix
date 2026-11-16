@@ -1,8 +1,8 @@
 # Candidate-selection simulation results
 
-## What the candidate stage ships with
+## What the candidate stage first shipped with
 
-The gateway's candidate stage (#3292: `AIBRIX_ROUTING_CANDIDATE_K`, `AIBRIX_ROUTING_CANDIDATE_PREFIX_M`) is policy "A random+prefix" below: K pods drawn at random plus up to M prefix holders, seeded at random among equal matches, then the load-imbalance gate and scoring on those pods only, with exact running counts read for them ("live stage 2, gate on sample"). It needs no index. Defaults simulated: K=16, M=16.
+These results predate the K-only stage. The first candidate stage (#3292: `AIBRIX_ROUTING_CANDIDATE_K` plus `AIBRIX_ROUTING_CANDIDATE_PREFIX_M`, since removed) is policy "A random+prefix" below: K pods drawn at random plus up to M prefix holders, seeded at random among equal matches, then the load-imbalance gate and scoring on those pods only, with exact running counts read for them ("live stage 2, gate on sample"). It needs no index. Defaults simulated: K=16, M=16. The K-only stage that replaced it, policy "K-only" in `TestCandidateSelectionKOnly`, is compared there with this one.
 
 Output of `CANDIDATE_SIM=live go test -run TestCandidateSelectionLiveStage2 -v ./pkg/plugins/gateway/algorithms/candidatesim/` (500 pods, 4 gateways, utilization 0.85, 3 seeds) and policy A's row of the same with `CANDIDATE_SIM_PODS=2000` (3 seeds; add `CANDIDATE_SIM_QUICK=1` for seed 1 only). Mean request latency relative to today's full scoring on exact counts, same seed: mean (min to max); prefix hit ratio after the slash. Lower is better; 1.00 = same as today.
 
