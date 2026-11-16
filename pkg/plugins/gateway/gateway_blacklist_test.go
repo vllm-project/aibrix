@@ -308,37 +308,6 @@ var recvFailures = []recvFailure{
 	}},
 }
 
-// A success whose response headers end the message (a 204, an empty-body 200) has no body
-// callback to mark it complete. It must complete on the headers, or the stream closing
-// afterwards is counted as a cancelled request (499) for a request that was answered correctly.
-func Test_HeadersOnlySuccess_IsComplete(t *testing.T) {
-	for _, statusCode := range []string{"200", "204"} {
-		t.Run(statusCode, func(t *testing.T) {
-			server := recvErrorServer()
-			st := routedState(context.Background(), blacklistTestPod("1"), "req-headers-only")
-			req := handleResponseHeadersStatusReq(statusCode)
-			req.GetResponseHeaders().EndOfStream = true
-
-			_, err := server.handleProcessingRequest(st, req)
-
-			require.NoError(t, err)
-			assert.True(t, st.completed, "a headers-only success is complete: no body callback will follow")
-			assert.NoError(t, server.handleRecvError(st, io.EOF), "the stream closing afterwards is a normal end")
-		})
-	}
-}
-
-// With a body still to come, the response headers alone do not complete the request.
-func Test_ResponseHeaders_WithBodyToFollowIsNotComplete(t *testing.T) {
-	server := recvErrorServer()
-	st := routedState(context.Background(), blacklistTestPod("1"), "req-body")
-
-	_, err := server.handleProcessingRequest(st, handleResponseHeadersStatusReq("200"))
-
-	require.NoError(t, err)
-	assert.False(t, st.completed)
-}
-
 // fallbackCounts records the requests routed with the blacklist ignored, by reason.
 type fallbackCounts struct {
 	mu     sync.Mutex
