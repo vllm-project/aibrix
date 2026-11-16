@@ -107,9 +107,9 @@ Preble routers (this replaces the prefix-cache-specific gate that used to live i
 `prefixcache/router.go`; see the deprecation note under [Variable Dependency
 Notes](#variable-dependency-notes)). It is exempted only for exclusive strategies (`pd`,
 `slo*`), which manage their own pod subsets and would have that management disrupted by a
-blanket running-request-count filter applied ahead of time. It is also not applied while the
-pod blacklist is on (`AIBRIX_POD_BLACKLIST_ENABLED`): the blacklist's load-outlier sweep then
-narrows by load instead, and a request is never narrowed by both. It does not participate in
+blanket running-request-count filter applied ahead of time. It is applied whether or not the
+pod blacklist is on (`AIBRIX_POD_BLACKLIST_ENABLED`); with the blacklist on, pods it has
+excluded are removed first and the gate narrows the rest. It does not participate in
 multi-strategy soft-scoring (`ScoreAll`) for strategies blended alongside `load-balance` — see
 `AIBRIX_ROUTING_AUTO_BLEND_LOAD_BALANCE_WEIGHT` below for how `load-balance` itself gets
 silently blended into other strategies to compensate.

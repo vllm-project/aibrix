@@ -87,9 +87,6 @@ func prefixMatchOperations(t *testing.T, model string) map[string]float64 {
 // PostRouteUpdate. An all-miss first decision also proves that successful
 // admission still credits the selected pod while retaining the zero matches.
 func TestSelectTargetPodReusesPrefixMatchesThroughRealPipeline(t *testing.T) {
-	// The count read that cache.beforeCounts hooks is the gate's, and the gate runs only
-	// while the blacklist is off.
-	disableBlacklist(t)
 	for _, kvSync := range []bool{false, true} {
 		for _, tc := range []struct {
 			name       string

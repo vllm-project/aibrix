@@ -30,15 +30,3 @@ func TestMain(m *testing.M) {
 	blacklist.Enabled = true
 	os.Exit(m.Run())
 }
-
-// disableBlacklist turns the pod-blacklist master switch off for the test, as in
-// production by default. selectTargetPod applies the load-imbalance gate only
-// while the blacklist is off (the blacklist's load-outlier sweep replaces it), so
-// a test of the gate's own behaviour runs under this. It writes a process global:
-// the test must not call t.Parallel().
-func disableBlacklist(t *testing.T) {
-	t.Helper()
-	prev := blacklist.Enabled
-	blacklist.Enabled = false
-	t.Cleanup(func() { blacklist.Enabled = prev })
-}

@@ -441,10 +441,7 @@ func (r *loadBalanceRouter) kvFreeFraction(ctx *types.RoutingContext, pod *v1.Po
 // whose own Route() relies on the caller having already applied this gate rather than calling it
 // again. Callers should skip invoking this for exclusive strategies (pd, slo*), which manage
 // their own pod subsets and would have their role split disrupted by a blanket
-// running-request-count filter applied ahead of time. The gateway also skips it while the pod
-// blacklist is on, whose load-outlier sweep narrows by load instead: a request is narrowed by
-// one or the other, as the sweep's flag and this gate's live counts can disagree about which
-// pod is hot.
+// running-request-count filter applied ahead of time.
 func ApplyLoadImbalanceGate(ctx *types.RoutingContext, c cache.Cache, readyPods []*v1.Pod) []*v1.Pod {
 	if c == nil || len(readyPods) < 2 {
 		return readyPods

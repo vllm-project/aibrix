@@ -498,31 +498,33 @@ func routedPodNames(t *testing.T, server *Server, pods []*v1.Pod, running map[st
 	return routed
 }
 
-// Test_selectTargetPod_BlacklistReplacesLoadImbalanceGate verifies a request is
-// narrowed by load once, not twice. p0 was flagged a load outlier by a sweep
-// while busy and has since drained; p1 is the busy one now. The blacklist drops
-// p0 from its stale flag, and if the gate then ran on the same request it would
-// drop p1, leaving p2 as the only pod of three.
-func Test_selectTargetPod_BlacklistReplacesLoadImbalanceGate(t *testing.T) {
-	p0, p1, p2 := blacklistTestPod("p0"), blacklistTestPod("p1"), blacklistTestPod("p2")
-	pods := []*v1.Pod{p0, p1, p2}
-	running := map[string]int64{"ns/p0": 0, "ns/p1": 30, "ns/p2": 0}
+// Test_selectTargetPod_LoadImbalanceGateRunsWithBlacklistOn verifies that turning the
+// blacklist on does not switch the load-imbalance gate off. The gate is a separate,
+// per-request safeguard on live running counts; the blacklist only removes the pods it
+// excludes before the gate sees the rest. p1 is busy and the other pods are idle. Four
+// pods, so that two or more survive both filters and the router is still called: a lone
+// survivor is returned without consulting the router, and the test could not see it.
+func Test_selectTargetPod_LoadImbalanceGateRunsWithBlacklistOn(t *testing.T) {
+	require.True(t, blacklist.Enabled, "the package's TestMain turns the blacklist on")
+	p0, p1, p2, p3 := blacklistTestPod("p0"), blacklistTestPod("p1"), blacklistTestPod("p2"), blacklistTestPod("p3")
+	pods := []*v1.Pod{p0, p1, p2, p3}
+	running := map[string]int64{"ns/p0": 0, "ns/p1": 30, "ns/p2": 0, "ns/p3": 0}
 
-	t.Run("blacklist on skips the gate", func(t *testing.T) {
+	t.Run("nothing excluded: the gate still drops the busy pod", func(t *testing.T) {
+		server := &Server{}
+		require.False(t, server.podBlacklist.IsBlacklisted(p0))
+
+		assert.Equal(t, []string{"p0", "p2", "p3"}, routedPodNames(t, server, pods, running),
+			"with no exclusion the blacklist changes nothing, so the gate narrows exactly as it does with the blacklist off")
+	})
+
+	t.Run("one pod excluded: the gate narrows what is left", func(t *testing.T) {
 		server := &Server{}
 		require.True(t, server.podBlacklist.SetLoadExcluded(p0, true))
 		require.True(t, server.podBlacklist.IsBlacklisted(p0))
 
-		assert.Equal(t, []string{"p1", "p2"}, routedPodNames(t, server, pods, running),
-			"only the blacklist narrows: p0 is dropped, and the busy p1 stays in the candidate set")
-	})
-
-	t.Run("blacklist off runs the gate", func(t *testing.T) {
-		disableBlacklist(t)
-
-		server := &Server{}
-		assert.Equal(t, []string{"p0", "p2"}, routedPodNames(t, server, pods, running),
-			"with the blacklist off nothing is excluded by it, and the gate drops the busy p1")
+		assert.Equal(t, []string{"p2", "p3"}, routedPodNames(t, server, pods, running),
+			"the blacklist drops p0, then the gate drops the busy p1 from the remaining three")
 	})
 }
 

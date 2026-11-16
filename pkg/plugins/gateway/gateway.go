@@ -1084,15 +1084,10 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		// (prefill/decode, SLO tiers), which a blanket running-request-count filter would
 		// distort.
 		//
-		// The gate runs only while the pod blacklist is off. With the blacklist on, its
-		// load-outlier sweep already narrows by load (via the blacklist filter), and running
-		// the gate on top would narrow twice from two different views of the same load: the
-		// sweep's flag can be a full sweep interval old, so a pod it flagged while busy and
-		// that has since drained is dropped by the blacklist while the gate drops the pod
-		// that is busy now, which can leave a 3-replica pool routing to a single pod.
-		if !blacklist.Enabled {
-			readyPods = routing.ApplyLoadImbalanceGate(routeCtx, s.cache, readyPods)
-		}
+		// The gate does not depend on the pod blacklist and runs with it on or off. Pods the
+		// blacklist excluded are already out of readyPods here, and the gate narrows what is
+		// left from the live counts, exactly as it does without a blacklist.
+		readyPods = routing.ApplyLoadImbalanceGate(routeCtx, s.cache, readyPods)
 	}
 
 	bypassSingleCandidate := true

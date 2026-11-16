@@ -47,8 +47,6 @@ import (
 // pods' running counts; one routing decision must read them from Redis once (n HGETALLs plus
 // the live-gateways read), not once per reader.
 func TestSelectTargetPod_ReadsRunningRequestsOnce(t *testing.T) {
-	// The gate is one of the readers, and it runs only while the blacklist is off.
-	disableBlacklist(t)
 	const n = 100
 	mr := miniredis.RunT(t)
 	reads := &fleetReadCounter{}
