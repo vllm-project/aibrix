@@ -29,9 +29,11 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 0
+      maxUnavailable: {{ ternary 0 1 ($shutdown.enabled | default false) }}
       maxSurge: 1
+  {{- if $shutdown.enabled }}
   minReadySeconds: 10
+  {{- end }}
   template:
     metadata:
       labels:
@@ -97,13 +99,12 @@ spec:
             preStop:
               exec:
                 command:
-                  - /busybox
-                  - sh
-                  - /prestop.sh
-                  - {{ $shutdown.metricsURL | quote }}
-                  - {{ $shutdown.propagationDelaySeconds | quote }}
-                  - {{ $shutdown.timeoutSeconds | quote }}
-                  - {{ $shutdown.pollIntervalSeconds | quote }}
+                  - /gateway-plugins
+                  - prestop
+                  - {{ printf "--metrics-url=%s" $shutdown.metricsURL | quote }}
+                  - {{ printf "--propagation-delay=%ds" (int $shutdown.propagationDelaySeconds) | quote }}
+                  - {{ printf "--timeout=%ds" (int $shutdown.timeoutSeconds) | quote }}
+                  - {{ printf "--poll-interval=%ds" (int $shutdown.pollIntervalSeconds) | quote }}
           {{- end }}
           # Optional API server client throttling (client-go defaults shown).
           # Both values must be greater than zero and apply to the core

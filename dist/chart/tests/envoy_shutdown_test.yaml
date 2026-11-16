@@ -3,6 +3,8 @@ templates:
   - gateway-instance/gateway.yaml
 tests:
   - it: patches readiness stabilization into the generated Deployment
+    set:
+      gateway.envoyProxy.gracefulShutdown.enabled: true
     documentSelector:
       path: kind
       value: EnvoyProxy
@@ -18,9 +20,25 @@ tests:
       value: EnvoyProxy
     asserts:
       - notExists:
+          path: spec.provider.kubernetes.envoyDeployment.patch.value.spec.minReadySeconds
+      - notExists:
           path: spec.shutdown
       - notExists:
           path: spec.provider.kubernetes.envoyDeployment.patch.value.spec.template.spec.terminationGracePeriodSeconds
+      - equal:
+          path: spec.provider.kubernetes.envoyDeployment.strategy.rollingUpdate.maxUnavailable
+          value: 1
+  - it: accepts a null graceful shutdown configuration
+    set:
+      gateway.envoyProxy.gracefulShutdown: null
+    documentSelector:
+      path: kind
+      value: EnvoyProxy
+    asserts:
+      - notExists:
+          path: spec.shutdown
+      - notExists:
+          path: spec.provider.kubernetes.envoyDeployment.patch.value.spec.minReadySeconds
       - equal:
           path: spec.provider.kubernetes.envoyDeployment.strategy.rollingUpdate.maxUnavailable
           value: 1

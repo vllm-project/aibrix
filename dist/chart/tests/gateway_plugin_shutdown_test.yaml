@@ -4,6 +4,13 @@ templates:
 tests:
   - it: preserves existing deployments by default
     asserts:
+      - equal:
+          path: spec.strategy.rollingUpdate
+          value:
+            maxUnavailable: 1
+            maxSurge: 1
+      - notExists:
+          path: spec.minReadySeconds
       - notExists:
           path: spec.template.spec.terminationGracePeriodSeconds
       - notExists:
@@ -15,6 +22,12 @@ tests:
       gatewayPlugin.gracefulShutdown.enabled: true
     asserts:
       - equal:
+          path: spec.strategy.rollingUpdate.maxUnavailable
+          value: 0
+      - equal:
+          path: spec.minReadySeconds
+          value: 10
+      - equal:
           path: spec.template.spec.terminationGracePeriodSeconds
           value: 340
       - equal:
@@ -22,9 +35,20 @@ tests:
           value: ["--graceful-shutdown-timeout=30s"]
       - equal:
           path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
-          value: ["/busybox", "sh", "/prestop.sh", "http://127.0.0.1:8080/metrics", "10", "300", "2"]
+          value: ["/gateway-plugins", "prestop", "--metrics-url=http://127.0.0.1:8080/metrics", "--propagation-delay=10s", "--timeout=300s", "--poll-interval=2s"]
       - notExists:
           path: spec.template.spec.initContainers[0].lifecycle
+  - it: accepts a null graceful shutdown configuration
+    set:
+      gatewayPlugin.gracefulShutdown: null
+    asserts:
+      - equal:
+          path: spec.strategy.rollingUpdate.maxUnavailable
+          value: 1
+      - notExists:
+          path: spec.minReadySeconds
+      - notExists:
+          path: spec.template.spec.containers[0].lifecycle
   - it: allows overriding hook settings
     set:
       gatewayPlugin.gracefulShutdown.enabled: true
@@ -40,7 +64,7 @@ tests:
           value: ["--graceful-shutdown-timeout=10s"]
       - equal:
           path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
-          value: ["/busybox", "sh", "/prestop.sh", "http://127.0.0.1:9090/metrics", "5", "100", "1"]
+          value: ["/gateway-plugins", "prestop", "--metrics-url=http://127.0.0.1:9090/metrics", "--propagation-delay=5s", "--timeout=100s", "--poll-interval=1s"]
   - it: rejects a timeout consuming the entire Pod grace period
     set:
       gatewayPlugin.gracefulShutdown.enabled: true

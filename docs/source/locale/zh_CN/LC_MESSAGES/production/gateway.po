@@ -606,3 +606,31 @@ msgstr ""
 msgid ":doc:`../designs/aibrix-gateway`: how routing decisions are made"
 msgstr ":doc:`../designs/aibrix-gateway` ：路由决策如何产生"
 
+
+#: ../../source/production/gateway.rst:60
+msgid "Gateway Plugin Graceful Shutdown"
+msgstr "网关插件优雅关闭"
+
+#: ../../source/production/gateway.rst
+msgid "On SIGTERM or SIGINT, the plugin marks gRPC health as ``NOT_SERVING`` and drains existing gRPC streams before stopping gateway services, state synchronization, and cache workers. ``--graceful-shutdown-timeout`` bounds this drain and forces remaining RPCs to stop at its deadline. It defaults to ``20s`` and must be positive, leaving 10 seconds for cleanup within the default Kubernetes 30-second termination grace period."
+msgstr "收到 SIGTERM 或 SIGINT 后，插件先将 gRPC 健康状态标记为 ``NOT_SERVING``，等待现有 gRPC 流完成，再停止网关服务、状态同步和缓存工作线程。``--graceful-shutdown-timeout`` 限定此等待时间，到期后强制终止剩余 RPC。默认值为 ``20s``，且必须为正数，以便在 Kubernetes 默认 30 秒的终止宽限期内预留 10 秒用于清理。"
+
+#: ../../source/production/gateway.rst
+msgid "For longer streams, enable ``gatewayPlugin.gracefulShutdown.enabled`` in the Helm chart and set ``gateway.envoyAsSideCar=false``. This requires a rebuilt gateway image supporting ``/gateway-plugins prestop``. The Go subcommand waits for endpoint propagation, then polls the Pod-local ``gateway_in_flight_requests`` metric until three consecutive valid zero samples or its deadline. The plugin initializes the metric to zero so a Pod that has never served a request can drain. Missing or invalid samples and fetch failures reset the zero count."
+msgstr "对于持续时间较长的流，在 Helm chart 中启用 ``gatewayPlugin.gracefulShutdown.enabled``，并设置 ``gateway.envoyAsSideCar=false``。这需要重新构建支持 ``/gateway-plugins prestop`` 的网关镜像。Go 子命令首先等待端点变更传播，然后轮询 Pod 本地的 ``gateway_in_flight_requests`` 指标，直到连续三次获得有效的零值样本或达到截止时间。插件将指标初始化为零，使从未处理过请求的 Pod 也能完成排空。样本缺失、样本无效和抓取失败都会重置连续零值计数。"
+
+#: ../../source/production/gateway.rst
+msgid "The Helm hook defaults to a 300-second total budget, including a 10-second propagation delay, and polls every 2 seconds. When enabled, the chart sets ``--graceful-shutdown-timeout`` from ``grpcDrainTimeoutSeconds`` (30 seconds by default). Set ``terminationGracePeriodSeconds`` to at least ``timeoutSeconds + grpcDrainTimeoutSeconds + 10``. The 10-second cleanup reserve is a minimum: with ``AIBRIX_STATESYNC_ENABLED=true``, state synchronization alone can wait up to 90 seconds, while HTTP shutdown and the OpenTelemetry flush can each take another 5 seconds. Increase the Pod grace period to cover the enabled services."
+msgstr "Helm hook 的默认总预算为 300 秒，其中包含 10 秒的传播等待，每 2 秒轮询一次。启用后，chart 根据 ``grpcDrainTimeoutSeconds`` 设置 ``--graceful-shutdown-timeout``，默认值为 30 秒。``terminationGracePeriodSeconds`` 必须至少为 ``timeoutSeconds + grpcDrainTimeoutSeconds + 10``。10 秒的清理预留时间只是下限：当 ``AIBRIX_STATESYNC_ENABLED=true`` 时，仅状态同步就可能等待 90 秒，HTTP 关闭和 OpenTelemetry 刷新还各自可能需要 5 秒。请根据启用的服务增加 Pod 终止宽限期。"
+
+#: ../../source/production/gateway.rst
+msgid "The hook and its rollout settings are disabled by default. Enabling the hook sets ``maxUnavailable: 0``, ``maxSurge: 1``, and ``minReadySeconds: 10``; reserve capacity for the extra Pod. The bounded gRPC drain and shutdown ordering apply to rebuilt gateway images even when the Helm hook is disabled."
+msgstr "此 hook 及其滚动更新设置默认关闭。启用后将设置 ``maxUnavailable: 0``、``maxSurge: 1`` 和 ``minReadySeconds: 10``，需要为额外的 Pod 预留容量。重新构建的网关镜像即使未启用 Helm hook，也会采用有时限的 gRPC 排空和新的关闭顺序。"
+
+#: ../../source/production/gateway.rst
+msgid "Configure separately deployed Envoy proxies with ``gateway.envoyProxy.gracefulShutdown.enabled``. This uses Envoy Gateway's native shutdown manager and preserves its generated lifecycle hooks. See the `Helm chart shutdown settings <https://github.com/vllm-project/aibrix/blob/main/dist/chart/README.md#gateway-plugin-graceful-shutdown>`_ for configuration examples and budget constraints. Validate plugin and Envoy rolling updates separately with long SSE streams, including an idle Pod and an over-budget stream; keep the other gateway components and model backends available during each test."
+msgstr "对于独立部署的 Envoy 代理，使用 ``gateway.envoyProxy.gracefulShutdown.enabled`` 配置。此功能使用 Envoy Gateway 原生的 shutdown manager，并保留其生成的生命周期 hook。配置示例与预算约束请参阅 `Helm chart shutdown settings <https://github.com/vllm-project/aibrix/blob/main/dist/chart/README.md#gateway-plugin-graceful-shutdown>`_。请分别使用长时间运行的 SSE 流验证插件和 Envoy 的滚动更新，并覆盖空闲 Pod 和超预算流；每次测试期间保持其他网关组件和模型后端可用。"
+
+#: ../../source/production/gateway.rst
+msgid "The subcommand accepts ``--metrics-url``, ``--propagation-delay``, ``--timeout``, and ``--poll-interval``. The last three flags accept Go durations such as ``10s``; the Helm values remain integer seconds. Each fetch bypasses proxies, rejects redirects, and is limited to 5 seconds and the remaining hook budget. Responses larger than 8 MiB are treated as failed fetches. Upgrade the image and chart together; custom hooks invoking ``/prestop.sh`` must switch to the subcommand. The image no longer includes the shell hook or BusyBox."
+msgstr "此子命令接受 ``--metrics-url``、``--propagation-delay``、``--timeout`` 和 ``--poll-interval``。后三个参数接受 ``10s`` 等 Go 时长格式，Helm 值仍使用整数秒。每次抓取绕过代理、拒绝重定向，并同时受 5 秒上限和 hook 剩余预算约束。超过 8 MiB 的响应视为抓取失败。请同时升级镜像和 chart；调用 ``/prestop.sh`` 的自定义 hook 必须切换到此子命令。镜像中不再包含 shell hook 或 BusyBox。"

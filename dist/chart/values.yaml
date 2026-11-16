@@ -49,7 +49,7 @@ controllerManager:
 
 gatewayPlugin:
   replicaCount: 1
-  # Requires a rebuilt gateway image containing /busybox and /prestop.sh.
+  # Requires a gateway image supporting the /gateway-plugins prestop subcommand.
   # Only supported with a separate Envoy deployment (envoyAsSideCar=false).
   gracefulShutdown:
     enabled: false

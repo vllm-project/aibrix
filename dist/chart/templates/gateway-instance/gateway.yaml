@@ -1,5 +1,5 @@
 {{- if and .Values.gateway.enable (not .Values.gateway.envoyAsSideCar) }}
-{{- $shutdown := .Values.gateway.envoyProxy.gracefulShutdown }}
+{{- $shutdown := .Values.gateway.envoyProxy.gracefulShutdown | default dict }}
 {{- if $shutdown.enabled }}
 {{- /* Envoy Gateway v1.2 adds 10 seconds to the shutdown-manager readiness wait. */}}
 {{- if or (le (int $shutdown.terminationGracePeriodSeconds) (int (add $shutdown.drainTimeoutSeconds 10))) (le (int $shutdown.drainTimeoutSeconds) (int $shutdown.minDrainDurationSeconds)) }}
@@ -96,7 +96,7 @@ spec:
         strategy:
           type: RollingUpdate
           rollingUpdate:
-            maxUnavailable: {{ ternary 0 1 $shutdown.enabled }}
+            maxUnavailable: {{ ternary 0 1 ($shutdown.enabled | default false) }}
             maxSurge: 1
         pod:
           {{- with .Values.gateway.envoyProxy.tolerations }}
@@ -111,7 +111,9 @@ spec:
           type: StrategicMerge
           value:
             spec:
+              {{- if $shutdown.enabled }}
               minReadySeconds: 10
+              {{- end }}
               template:
                 metadata:
                   labels:

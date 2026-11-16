@@ -21,9 +21,9 @@ This chart is not intended for upgrades from earlier deployments that used Kusto
 
 ### Gateway plugin graceful shutdown
 
-Disabled by default; requires `gateway.envoyAsSideCar=false`. Rebuild the gateway
-image with `build/container/Dockerfile.gateway` to include `/prestop.sh` and
-`/busybox`, then configure:
+The Helm hook is disabled by default and requires `gateway.envoyAsSideCar=false`.
+Rebuild the gateway image with `build/container/Dockerfile.gateway` to include
+the `/gateway-plugins prestop` subcommand, then configure:
 
 ```yaml
 gatewayPlugin:
@@ -41,17 +41,28 @@ gatewayPlugin:
     metricsURL: http://127.0.0.1:8080/metrics
 ```
 
-The preStop hook waits for endpoint propagation, then polls this Pod's local
+The Go preStop subcommand waits for endpoint propagation, then polls this Pod's local
 `gateway_in_flight_requests` metric until three consecutive zero samples or the
-hook timeout. Missing or invalid metrics and fetch failures reset the zero count;
-Pods that have never accepted a request may lack the metric and wait until timeout.
+hook timeout. The plugin initializes the metric to zero before accepting RPCs,
+so an idle Pod can drain without waiting for the deadline. Missing or invalid
+metrics and fetch failures reset the zero count.
 SIGTERM then starts a bounded gRPC drain; remaining RPCs are stopped at its
 deadline. View hook progress with `kubectl logs -c gateway-plugin`.
 
+In rebuilt gateway images, SIGTERM always marks gRPC health NOT_SERVING and
+drains gRPC before stopping gateway services, state synchronization, and cache
+workers. Without an explicit flag, `--graceful-shutdown-timeout` defaults to `20s`
+and must be positive. This leaves 10 seconds of the default Kubernetes 30-second
+termination grace period for cleanup. Enabling the Helm hook supplies the
+independent `grpcDrainTimeoutSeconds` value (30 seconds by default).
+
 The metrics URL must point to this Pod directly. The hook matches the metric
 name without filtering labels and requires exactly one valid sample per scrape.
+Fetches bypass proxy environment variables and do not follow redirects. Each
+fetch is limited to 5 seconds and the remaining hook budget, with an 8 MiB
+response limit. Fetch errors and oversized responses reset the zero count.
 
-All durations are integer seconds. The hook timeout includes propagation and
+All Helm durations are integer seconds. The hook timeout includes propagation and
 fetches. Required constraints:
 
 - `timeoutSeconds > propagationDelaySeconds`
@@ -61,7 +72,34 @@ Update existing grace-period overrides to satisfy these constraints. Tune budget
 for observed request durations, cleanup time, and endpoint update latency; the
 propagation delay does not confirm Envoy updates. Keep another ready plugin
 replica with spare capacity.
+The 10-second cleanup reserve is only a minimum validation allowance. With
+`AIBRIX_STATESYNC_ENABLED=true`, `RedisSync.Stop()` alone can wait up to 90 seconds;
+HTTP shutdown and the OpenTelemetry flush can each take another 5 seconds.
+Increase the Pod grace period to cover these waits when those services are enabled.
+Enabling the hook sets `maxUnavailable: 0`, `maxSurge: 1`, and `minReadySeconds: 10`;
+reserve capacity for a surge Pod. With the hook disabled, the chart retains
+`maxUnavailable: 1`, `maxSurge: 1`, and no readiness stabilization delay.
 This hook does not coordinate Envoy or model backend termination.
+
+The Helm value names and budget rules are unchanged. Upgrade the chart and gateway
+image together. Custom hooks that invoke `/prestop.sh` must switch to the Go
+subcommand; the gateway image no longer includes that script or `/busybox`.
+
+Run the core drain and command tests without Docker:
+
+```sh
+go test ./pkg/plugins/gateway/drain ./cmd/plugins
+```
+
+Run image smoke tests for the command entrypoint, proxy bypass, and hook logging:
+
+```sh
+docker build -f build/container/Dockerfile.gateway -t aibrix/gateway-plugins:prestop-test .
+python3 build/container/entrypoints/test_prestop.py
+```
+
+The chart CI runs the smoke tests against its freshly built gateway image. Override
+`AIBRIX_PRESTOP_TEST_IMAGE` to test another rebuilt gateway image.
 
 ### Envoy proxy graceful shutdown
 

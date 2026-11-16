@@ -44,6 +44,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/cache/discovery"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/statesync"
@@ -123,6 +124,10 @@ func startEarlyModelListGate(enabled bool, addr string) (*gateway.ModelListGate,
 }
 
 func startGatewayHTTPServer(gate *gateway.ModelListGate, server *gateway.Server, addr string) error {
+	// A Pod that has never handled an RPC must still expose a valid idle sample
+	// so the preStop hook can finish without waiting for its entire budget.
+	metrics.SetGaugeMetric(metrics.GatewayInFlight, metrics.GetMetricHelp(metrics.GatewayInFlight),
+		0, []string{"gateway_pod"}, metrics.GatewayPodName())
 	if gate != nil {
 		gate.SetServer(server)
 		return nil
@@ -164,6 +169,13 @@ func (o kubeAPIOptions) applyTo(config *rest.Config) {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "prestop" {
+		os.Exit(runPreStop(os.Args[2:]))
+	}
+	runGateway()
+}
+
+func runGateway() {
 	var gracefulShutdownTimeout time.Duration
 	var kubeAPI kubeAPIOptions
 	kubeAPI.addFlags(flag.CommandLine)
@@ -177,7 +189,7 @@ func main() {
 		"The address the pprof debug server binds to. Empty disables it.")
 	flag.StringVar(&endpointsConfig, "endpoints-config", "",
 		"Path to endpoints config file (required in standalone mode).")
-	flag.DurationVar(&gracefulShutdownTimeout, "graceful-shutdown-timeout", 30*time.Second,
+	flag.DurationVar(&gracefulShutdownTimeout, "graceful-shutdown-timeout", 20*time.Second,
 		"Maximum wait for existing gRPC requests after SIGTERM, before forcing them to stop.")
 	klog.InitFlags(flag.CommandLine)
 	defer klog.Flush()

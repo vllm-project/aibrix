@@ -20,6 +20,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -32,6 +33,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
+	healthPb "google.golang.org/grpc/health/grpc_health_v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -64,6 +66,23 @@ func TestShutdownGateway(t *testing.T) {
 			store := cache.NewWithPodsForTest([]*v1.Pod{pod}, "test-model")
 			gw := gateway.NewServerWithOptions(nil, nil, nil, gateway.ServerOptions{Cache: store})
 			t.Cleanup(gw.Shutdown)
+			httpListener, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			httpAddr := httpListener.Addr().String()
+			require.NoError(t, httpListener.Close())
+			require.NoError(t, gw.StartHTTPServer(httpAddr))
+			httpClient := &http.Client{
+				Transport: &http.Transport{DisableKeepAlives: true},
+				Timeout:   time.Second,
+			}
+			checkHTTP := func() {
+				t.Helper()
+				resp, err := httpClient.Get("http://" + httpAddr + "/v1/models")
+				require.NoError(t, err)
+				require.NoError(t, resp.Body.Close())
+				require.Equal(t, http.StatusOK, resp.StatusCode)
+			}
+			checkHTTP()
 			server := grpc.NewServer()
 			t.Cleanup(server.Stop)
 			extProcPb.RegisterExternalProcessorServer(server, gw)
@@ -105,9 +124,11 @@ func TestShutdownGateway(t *testing.T) {
 				timeout = 50 * time.Millisecond
 			}
 			done := make(chan struct{})
+			healthCheck := health.NewServer()
+			healthCheck.SetServingStatus("gateway-plugin", healthPb.HealthCheckResponse_SERVING)
 			started := time.Now()
 			go func() {
-				shutdownGateway(server, gw, health.NewServer(), timeout)
+				shutdownGateway(server, gw, healthCheck, timeout)
 				close(done)
 			}()
 			select {
@@ -116,6 +137,7 @@ func TestShutdownGateway(t *testing.T) {
 				t.Fatal("shutdown did not stop accepting connections")
 			}
 			if !force {
+				checkHTTP()
 				exchange(&extProcPb.ProcessingRequest{Request: &extProcPb.ProcessingRequest_ResponseBody{
 					ResponseBody: &extProcPb.HttpBody{Body: []byte("data: [DONE]\n\n"), EndOfStream: true},
 				}})
@@ -132,6 +154,14 @@ func TestShutdownGateway(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("shutdown did not finish")
 			}
+			status, err := healthCheck.Check(ctx, &healthPb.HealthCheckRequest{Service: "gateway-plugin"})
+			require.NoError(t, err)
+			require.Equal(t, healthPb.HealthCheckResponse_NOT_SERVING, status.GetStatus())
+			resp, err := httpClient.Get("http://" + httpAddr + "/v1/models")
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			require.Error(t, err, "gateway HTTP listener must close before shutdown returns")
 		})
 	}
 }
