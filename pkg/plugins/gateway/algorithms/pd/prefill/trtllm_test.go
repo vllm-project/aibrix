@@ -125,8 +125,10 @@ func TestTRTAsyncPrefillFailures(t *testing.T) {
 			// Every class is terminal under reset-after-headers, bad_response
 			// included, so none of them may look like a prefill success.
 			assert.True(t, ctx.PrefillSucceededAt().IsZero())
-			active, _ := exec.tokenLoad.GetLoad(podKey)
-			assert.Zero(t, active)
+			require.Eventually(t, func() bool {
+				active, _ := exec.tokenLoad.GetLoad(podKey)
+				return active == 0
+			}, 5*time.Second, time.Millisecond)
 			if class == pd.PrefillFailureCanceled || class == pd.PrefillFailureTimeout {
 				select {
 				case <-disconnected:
