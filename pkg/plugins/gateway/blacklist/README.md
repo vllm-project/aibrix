@@ -14,7 +14,7 @@ The feature is **off by default**. Set `AIBRIX_POD_BLACKLIST_ENABLED=true` (or `
 |---|---|
 | [`pod_blacklist.go`](pod_blacklist.go) | `PodBlacklist`, the per-pod exclusion list: `Allow`, `RecordProbeResult`, `SetLoadExcluded`, `OnPodFlakyReAdd`, `probe`; master switch `AIBRIX_POD_BLACKLIST_ENABLED` and the exclusion cap `AIBRIX_POD_BLACKLIST_MAX_EXCLUDED_PERCENT` |
 | [`pod_blacklist_metrics.go`](pod_blacklist_metrics.go) | The Prometheus metrics (see Metrics) |
-| [`pod_ignore.go`](pod_ignore.go) | `ignoredPod`: the pods the blacklist never tracks (StormService pods, prefill and decode pods, ModelClaim pods) |
+| [`pod_ignore.go`](pod_ignore.go) | `ignoredPod`: the pods the blacklist never tracks (StormService pods, prefill, decode and encode pods, ModelClaim pods) |
 | [`pod_probe_sweep.go`](pod_probe_sweep.go) | The background probe sweep (every 300 s): `StartProbeSweep` |
 | [`pod_load_blacklist.go`](pod_load_blacklist.go) | The load-outlier sweep (every 30 s): `StartLoadOutlierSweep` |
 | [`../gateway_blacklist.go`](../gateway_blacklist.go) | Server-side glue: starts the sweeps, supplies the cache and queue-depth function, forwards `OnPodFlakyReAdd`, registers the blacklist as the cache's quarantine checker, applies the all-excluded and over-the-cap fallback, logs it and the un-blacklist line |
@@ -27,8 +27,20 @@ The feature is **off by default**. Set `AIBRIX_POD_BLACKLIST_ENABLED=true` (or `
 Three kinds of pod are never tracked, whatever the probe verdicts say (`ignoredPod`):
 
 - **Pods created by a StormService**, recognised by the `storm-service-name` label the StormService controller puts on every pod it renders. They are the prefill, decode and encode pods of a disaggregated deployment, which the PD router handles per role and RoleSet instead of by excluding one pod.
-- **Prefill and decode pods**, by the `role-name` label, whoever created them. The PD router pairs the roles within a RoleSet, so excluding every pod of one role leaves it nothing to pair while ready pods exist, which the blacklist's fallback (it only covers a model with nothing left, or too little) does not help with. The probe sweep never probed them either, and the load sweep and flaky re-add now leave them alone as well.
+- **Prefill, decode and encode pods**, by the `role-name` label (`prefill`, `decode` or `encode`), whoever created them. The PD router pairs the roles within a RoleSet, so excluding every pod of one role leaves it nothing to pair while ready pods exist, which the blacklist's fallback (it only covers a model with nothing left, or too little) does not help with. The probe sweep never probed them either, and the load sweep and flaky re-add now leave them alone as well.
 - **Pods that carry a ModelClaim binding**, recognised by an annotation with the prefix `route.claim.model.aibrix.ai/`. A warm pod runs one engine per claimed model, each on its own port. A verdict about the pod would mix those engines: one dead engine would take the healthy ones on the same pod out of routing.
+
+What that means for each kind of deployment:
+
+| Pods | Protected by the blacklist | Where the filter sees them |
+|---|---|---|
+| Plain engine pods (no StormService, role or ModelClaim) | Yes, by every source | Filtered on every strategy |
+| Prefill and decode pods (PD) | No, never tracked | The PD strategy filters the whole ready list first and admits them; the PD router handles failures per role |
+| Encode pods (E+PD) | No, never tracked | Split off before the filter on every strategy except PD, and handed to the encode stage as they are; the PD strategy keeps them in the list it filters, and admits them |
+| StormService pods | No, never tracked | Filtered like any other list entry, and always admitted |
+| ModelClaim pods | No, never tracked (the blacklist does not key by endpoint) | Always admitted |
+
+A request can therefore mix both kinds. A model whose pods are all ignored behaves as if the blacklist were off. This is deliberate rather than an oversight: for a pod that is part of a RoleSet the PD router, not a per-pod verdict, decides what is still usable.
 
 For such a pod `RecordProbeResult`, `SetLoadExcluded` and `OnPodFlakyReAdd` do nothing and create no entry, so `Allow` always admits it and it is never quarantined. The probe sweep does not probe it, and the load-outlier sweep leaves it out of both the scoring and the peer baseline (it does not count toward the 3-pod minimum either). The check is made when a verdict is recorded, so a pod that gains a ModelClaim annotation later keeps any entry it already had until the 30-minute pruning removes it; warm pods are not routed to before they hold a claim, so this does not arise in practice.
 
@@ -96,7 +108,7 @@ Which pods it is given depends on the candidate stage (`AIBRIX_ROUTING_CANDIDATE
 
 The sweep is the only thing that looks at a pod's health. It catches a pod that went bad, a stale registration whose engine is gone, and one whose address now belongs to another process, whether or not the pod is being sent traffic.
 
-Every **300 s** it probes every routable pod once, except prefill and decode pods (the `role-name` label is `prefill` or `decode`) and the pods the blacklist ignores (see above), which the sweep never probes. A pod serving several models, such as a base model and LoRA adapters, is probed once, against its own served model. Pods that are already open are probed too. A probe (`probe`) gives one of three verdicts:
+Every **300 s** it probes every routable pod once, except the pods the blacklist ignores (see above: prefill, decode and encode pods among them), which the sweep never probes. A pod serving several models, such as a base model and LoRA adapters, is probed once, against its own served model. Pods that are already open are probed too. A probe (`probe`) gives one of three verdicts:
 
 | Verdict | When | After 3 sweeps in a row |
 |---|---|---|

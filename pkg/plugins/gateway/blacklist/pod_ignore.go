@@ -24,6 +24,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	ctrlconstants "github.com/vllm-project/aibrix/pkg/controller/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
 )
 
 // ignoredPod reports whether the blacklist leaves pod alone. Three kinds of pod
@@ -35,11 +36,14 @@ import (
 //     prefill, decode and encode pods of a disaggregated deployment, whose
 //     failures are handled per role and RoleSet by the PD router rather than
 //     by excluding one pod.
-//   - A prefill or decode pod of a disaggregated deployment by its role label,
-//     whoever created it. The PD router pairs the roles within a RoleSet, and
-//     excluding every pod of one role would leave it with nothing to pair while
-//     ready pods exist: the blacklist's all-excluded fallback only covers the
-//     case where nothing is left at all.
+//   - A prefill, decode or encode pod of a disaggregated deployment by its role
+//     label, whoever created it. The PD router pairs the roles within a RoleSet,
+//     and excluding every pod of one role would leave it with nothing to pair
+//     while ready pods exist: the blacklist's all-excluded fallback only covers
+//     the case where nothing is left at all. An encoder is also split off before
+//     the blacklist filter on every strategy but PD, so ignoring it here is what
+//     makes the PD strategy, which does filter the list an encoder is in, treat
+//     it the same way.
 //   - A pod that carries a ModelClaim binding (a route.claim.model.aibrix.ai/
 //     annotation). A warm pod runs one engine per claimed model, each on its
 //     own port, so a verdict about the pod would mix engines: one dead engine
@@ -66,14 +70,15 @@ func ignoredPod(pod *v1.Pod) bool {
 	return false
 }
 
-// isPDRolePod reports whether pod is the prefill or decode leg of a disaggregated
-// (PD) deployment, by the same role label the PD router groups pods by.
+// isPDRolePod reports whether pod is the prefill, decode or encode leg of a
+// disaggregated (PD, or E+PD) deployment, by the same role label the PD router
+// groups pods by.
 func isPDRolePod(pod *v1.Pod) bool {
 	if pod == nil {
 		return false
 	}
 	switch pod.Labels[pd.RoleLabel] {
-	case pd.RolePrefill, pd.RoleDecode:
+	case pd.RolePrefill, pd.RoleDecode, encode.Role:
 		return true
 	}
 	return false

@@ -30,7 +30,7 @@ import (
 
 // StartProbeSweep starts a background goroutine that every
 // podProbeSweepInterval probes every routable pod, except the pods the
-// blacklist ignores (ignoredPod; prefill and decode pods among them), with PodBlacklist.probe:
+// blacklist ignores (ignoredPod; prefill, decode and encode pods among them), with PodBlacklist.probe:
 // GET /health must be 2xx and, for vllm/sglang pods, GET /v1/models must
 // return a JSON list naming the model.
 //
@@ -118,8 +118,8 @@ func (b *PodBlacklist) sweepPodProbes(src PodSource) {
 
 // podProbeTargets lists each routable pod once, however many models it serves
 // (a base model and its LoRA adapters share pods), with the address a request
-// would reach it on. The pods the blacklist ignores (ignoredPod), prefill and
-// decode pods among them, are not probed.
+// would reach it on. The pods the blacklist ignores (ignoredPod), prefill,
+// decode and encode pods among them, are not probed.
 func (b *PodBlacklist) podProbeTargets(src PodSource) []podProbeTarget {
 	seen := make(map[string]struct{})
 	var targets []podProbeTarget

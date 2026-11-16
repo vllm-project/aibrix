@@ -34,6 +34,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
@@ -365,14 +366,14 @@ func TestIsPDRolePod_NilIsNotAPDPod(t *testing.T) {
 	assert.False(t, isPDRolePod(nil))
 }
 
-func TestSweepPodProbes_SkipsPrefillAndDecodePods(t *testing.T) {
+func TestSweepPodProbes_SkipsPrefillDecodeAndEncodePods(t *testing.T) {
 	rolePod := func(name, role string) *v1.Pod {
 		pod := blacklistTestPod(name)
 		pod.Labels = map[string]string{pd.RoleLabel: role}
 		return pod
 	}
 	prefill, decode := rolePod("1", pd.RolePrefill), rolePod("2", pd.RoleDecode)
-	encode, plain := rolePod("3", "encode"), blacklistTestPod("4")
+	encoder, other, plain := rolePod("3", encode.Role), rolePod("4", "worker"), blacklistTestPod("5")
 
 	var mu sync.Mutex
 	probed := map[string]int{}
@@ -381,7 +382,7 @@ func TestSweepPodProbes_SkipsPrefillAndDecodePods(t *testing.T) {
 		defer mu.Unlock()
 		probed[addr]++
 		return false // every pod that is probed fails
-	}, nil, map[string][]*v1.Pod{"test-model": {prefill, decode, encode, plain}})
+	}, nil, map[string][]*v1.Pod{"test-model": {prefill, decode, encoder, other, plain}})
 
 	for i := 0; i < podProbeFailureIterations; i++ {
 		bl.sweepPodProbes(src)
@@ -389,11 +390,13 @@ func TestSweepPodProbes_SkipsPrefillAndDecodePods(t *testing.T) {
 
 	assert.Zero(t, probed["10.0.0.1:8000"], "a prefill pod is not probed")
 	assert.Zero(t, probed["10.0.0.2:8000"], "a decode pod is not probed")
-	assert.Equal(t, podProbeFailureIterations, probed["10.0.0.3:8000"], "any other role is still probed")
-	assert.Equal(t, podProbeFailureIterations, probed["10.0.0.4:8000"], "a pod with no role is still probed")
+	assert.Zero(t, probed["10.0.0.3:8000"], "an encode pod is not probed")
+	assert.Equal(t, podProbeFailureIterations, probed["10.0.0.4:8000"], "any other role is still probed")
+	assert.Equal(t, podProbeFailureIterations, probed["10.0.0.5:8000"], "a pod with no role is still probed")
 	assert.False(t, bl.IsBlacklisted(prefill))
 	assert.False(t, bl.IsBlacklisted(decode))
-	assert.True(t, bl.IsBlacklisted(encode))
+	assert.False(t, bl.IsBlacklisted(encoder))
+	assert.True(t, bl.IsBlacklisted(other))
 	assert.True(t, bl.IsBlacklisted(plain))
 }
 

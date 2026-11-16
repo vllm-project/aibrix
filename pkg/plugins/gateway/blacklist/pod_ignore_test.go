@@ -27,6 +27,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	ctrlconstants "github.com/vllm-project/aibrix/pkg/controller/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/pd/encode"
 )
 
 // stormServiceTestPod is a ready pod rendered by a StormService.
@@ -66,6 +67,7 @@ var ignoredPodKinds = []struct {
 	{"modelclaim", modelClaimTestPod},
 	{"pd-prefill", pdRoleTestPod(pd.RolePrefill)},
 	{"pd-decode", pdRoleTestPod(pd.RoleDecode)},
+	{"pd-encode", pdRoleTestPod(encode.Role)},
 }
 
 func TestIgnoredPod(t *testing.T) {
@@ -83,7 +85,8 @@ func TestIgnoredPod(t *testing.T) {
 	assert.True(t, ignoredPod(modelClaimTestPod("1")))
 	assert.True(t, ignoredPod(pdRoleTestPod(pd.RolePrefill)("1")), "a prefill pod is ignored whoever created it")
 	assert.True(t, ignoredPod(pdRoleTestPod(pd.RoleDecode)("1")))
-	assert.False(t, ignoredPod(pdRoleTestPod("other")("1")), "only the prefill and decode roles are ignored")
+	assert.True(t, ignoredPod(pdRoleTestPod(encode.Role)("1")), "an encoder is ignored whoever created it")
+	assert.False(t, ignoredPod(pdRoleTestPod("other")("1")), "only the prefill, decode and encode roles are ignored")
 }
 
 func TestFilterBlacklisted_KeepsIgnoredPods(t *testing.T) {
