@@ -1856,23 +1856,25 @@ async def test_discovery_source_shares_one_http_client_across_channels(monkeypat
         assert shared_clients[0].max_connections == 200
         assert shared_clients[0].limit_per_host == 100
         assert {channel.client for channel in created} == {shared_clients[0]}
+        first_channels = await source.channels()
 
         await source.refresh()
 
-        assert [channel.id for channel in await source.channels()] == [
+        second_channels = await source.channels()
+        assert [channel.id for channel in second_channels] == [
             "http://one",
             "http://two",
             "http://three",
         ]
-        assert len(shared_clients) == 2
-        assert shared_clients[1].max_connections == 300
-        assert shared_clients[1].limit_per_host == 100
-        assert {channel.client for channel in created[-3:]} == {shared_clients[1]}
-        assert [client.closed for client in shared_clients] == [0, 0]
+        assert second_channels[:2] == first_channels
+        assert len(created) == 3
+        assert len(shared_clients) == 1
+        assert {channel.client for channel in created} == {shared_clients[0]}
+        assert [client.closed for client in shared_clients] == [0]
     finally:
         await source.aclose()
 
-    assert [client.closed for client in shared_clients] == [1, 1]
+    assert [client.closed for client in shared_clients] == [1]
 
 
 @pytest.mark.asyncio

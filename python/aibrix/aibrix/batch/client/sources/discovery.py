@@ -221,33 +221,34 @@ class DiscoveryEndpointSource:
         return self._clock() - self._last_refresh_at >= self._refresh_interval_seconds
 
     async def _apply(self, snapshot: _Snapshot) -> None:
+        retired_client: Optional[HTTPClient] = None
         async with self._lock:
             new_urls = [endpoint.base_url for endpoint in snapshot.endpoints]
             if set(new_urls) == set(self._by_url):
+                self._channels = [self._by_url[url] for url in new_urls]
                 self._version = snapshot.version
                 return
-            shared_client: Optional[HTTPClient] = (
-                create_batch_runtime_http_client(
+
+            if new_urls and self._shared_client is None:
+                self._shared_client = create_batch_runtime_http_client(
                     f"discovery-source-{self._model}-batch-runtime-http",
                     max_connections=max(len(new_urls), 1) * 100,
                     limit_per_host=100,
                 )
-                if new_urls
-                else None
-            )
+
             keep: Dict[str, Channel] = {}
             for url in new_urls:
-                keep[url] = HttpChannel(
-                    url, timeout=self._timeout, client=shared_client
+                keep[url] = self._by_url.get(url) or HttpChannel(
+                    url, timeout=self._timeout, client=self._shared_client
                 )
-            self._retired_channels.extend(self._by_url.values())
             retired_urls: list[str] = []
-            for url in self._by_url:
+            for url, channel in self._by_url.items():
                 if url not in keep:
+                    self._retired_channels.append(channel)
                     retired_urls.append(url)
-            if self._shared_client is not None:
-                self._retired_clients.append(self._shared_client)
-            self._shared_client = shared_client
+            if not new_urls and self._shared_client is not None:
+                retired_client = self._shared_client
+                self._shared_client = None
             self._by_url = keep
             self._channels = [keep[url] for url in new_urls]
             self._version = snapshot.version
@@ -269,6 +270,8 @@ class DiscoveryEndpointSource:
                     "Discovery snapshot has no endpoints",
                     version=self._version,
                 )  # type: ignore[call-arg]
+        if retired_client is not None:
+            await retired_client.aclose()
 
     async def aclose(self) -> None:
         for channel in [*self._channels, *self._retired_channels]:

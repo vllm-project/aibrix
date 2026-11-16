@@ -25,7 +25,7 @@ from aibrix.metadata.core.metrics import (
     setup_metrics,
     shutdown_metrics,
 )
-from aibrix.metadata.core.metrics.sink import T
+from aibrix.metadata.core.metrics.sink import GlobalEmitter, T
 
 
 def _payloads_for_metric(caplog, metric_name):
@@ -83,6 +83,43 @@ def test_fanout_sink_isolates_child_emit_failures():
     assert recording.samples == [
         ("gauge", "metadata.example.metric", 1.0, (T("tag", "value"),))
     ]
+
+
+def test_global_emitter_isolates_single_sink_failures_with_rate_limited_logs(
+    caplog,
+    monkeypatch,
+):
+    class FailingSink:
+        def counter(self, name, value, *tags):
+            raise RuntimeError(f"metrics sink failed for {name}")
+
+        gauge = counter
+        timer = counter
+        store = counter
+        rate = counter
+
+        def close(self):
+            raise RuntimeError("metrics sink close failed")
+
+    timestamps = iter((0.0, 10.0, 61.0))
+    monkeypatch.setattr(
+        "aibrix.metadata.core.metrics.sink.perf_counter",
+        lambda: next(timestamps),
+    )
+    emitter = GlobalEmitter(failure_log_interval_seconds=60.0)
+    emitter.set_sink(FailingSink())
+
+    with caplog.at_level(logging.ERROR):
+        emitter.gauge("metadata.example.first", 1.0)
+        emitter.counter("metadata.example.suppressed", 1.0)
+        emitter.timer("metadata.example.third", 1.0)
+
+    records = [
+        record
+        for record in caplog.records
+        if "Metrics sink failed during global emission" in record.message
+    ]
+    assert len(records) == 2
 
 
 def test_log_sink_logs_included_metric(caplog):

@@ -380,8 +380,13 @@ class ObservedSink(Sink):
 
 
 class GlobalEmitter(Sink):
-    def __init__(self) -> None:
+    def __init__(self, *, failure_log_interval_seconds: float = 60.0) -> None:
         self._sink: Sink = NoopSink()
+        self._failure_log_interval_seconds = max(failure_log_interval_seconds, 0.0)
+        # Best-effort throttle only: avoid lock overhead in the emission failure
+        # path. Races may allow an extra log; no exact suppressed count is kept.
+        self._last_failure_attempt_at: float | None = None
+        self._last_failure_log_at: float | None = None
 
     def set_sink(self, sink: Sink) -> None:
         self._sink = sink
@@ -390,22 +395,69 @@ class GlobalEmitter(Sink):
         self._sink = NoopSink()
 
     def counter(self, name: str, value: float, *tags: Tag) -> None:
-        self._sink.counter(name, value, *tags)
+        self._emit("counter", name, value, *tags)
 
     def gauge(self, name: str, value: float, *tags: Tag) -> None:
-        self._sink.gauge(name, value, *tags)
+        self._emit("gauge", name, value, *tags)
 
     def timer(self, name: str, value: float, *tags: Tag) -> None:
-        self._sink.timer(name, value, *tags)
+        self._emit("timer", name, value, *tags)
 
     def store(self, name: str, value: float, *tags: Tag) -> None:
-        self._sink.store(name, value, *tags)
+        self._emit("store", name, value, *tags)
 
     def rate(self, name: str, value: float, *tags: Tag) -> None:
-        self._sink.rate(name, value, *tags)
+        self._emit("rate", name, value, *tags)
 
     def close(self) -> None:
-        self._sink.close()
+        try:
+            self._sink.close()
+        except Exception as exc:
+            self._record_sink_failure("close", None, exc)
+
+    def _emit(self, metric_type: str, name: str, value: float, *tags: Tag) -> None:
+        try:
+            getattr(self._sink, metric_type)(name, value, *tags)
+        except Exception as exc:
+            self._record_sink_failure(metric_type, name, exc)
+
+    def _record_sink_failure(
+        self,
+        metric_type: str,
+        metric_name: str | None,
+        exc: Exception,
+    ) -> None:
+        now = perf_counter()
+        # Best-effort previous/current attempt swap. CPython's GIL prevents
+        # simultaneous bytecode execution, but this is not a true CAS; races may
+        # observe a slightly stale attempt while still avoiding lock overhead.
+        last_attempt, self._last_failure_attempt_at = (
+            self._last_failure_attempt_at,
+            now,
+        )
+        last_log = self._last_failure_log_at
+        next_log_at = (
+            None if last_log is None else last_log + self._failure_log_interval_seconds
+        )
+        # Log the first failed emit that crosses the next fixed log deadline,
+        # while still preserving every failure attempt timestamp.
+        should_log = (
+            next_log_at is None
+            or (last_attempt is not None and last_attempt <= next_log_at <= now)
+            or (last_attempt is None and next_log_at is not None and now >= next_log_at)
+        )
+        if not should_log:
+            return
+
+        self._last_failure_log_at = now
+
+        logger.exception(
+            "Metrics sink failed during global emission",
+            last_sink=type(self._sink).__name__,
+            last_metric_type=metric_type,
+            last_metric=metric_name,
+            last_error=str(exc),
+        )  # type: ignore[call-arg]
 
 
 Emitter = GlobalEmitter()
