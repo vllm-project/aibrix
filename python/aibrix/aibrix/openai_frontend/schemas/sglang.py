@@ -12,23 +12,59 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""SGLang-specific extension fields for the OpenAI request models.
+"""SGLang-specific extension fields for the OpenAI request and response models.
 
-Only fields SGLang accepts beyond the OpenAI schema and the fields shared
-with the other engine (``engine_common.py``) are declared here.
+Only fields SGLang accepts or returns beyond the OpenAI schema and the fields
+shared with the other engine (``engine_common.py``) are declared here.
 
 Reference: the SGLang OpenAI entrypoint protocol at tag ``v0.5.22``.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional, Union
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from aibrix.openai_frontend.schemas.engine_common import (
+    OUTPUT_RESULT,
+    RETAIN_RESULT,
+    CountTokensResponse,
+    DataResponse,
+    MessagesResponse,
+    NativeResponse,
     SharedChatCompletionFields,
+    SharedCompletionChoiceFields,
     SharedCompletionFields,
     SharedEmbeddingFields,
+    SystemOneResponse,
 )
+from aibrix.openai_frontend.schemas.media import MEDIA_TYPE, OUTPUT_MEDIA
+
+
+class SglangGenerateMediaFields(BaseModel):
+    """Native media fields; raw engine input shapes are preserved."""
+
+    model_config = ConfigDict(extra="allow")
+
+    image_data: Optional[Any] = Field(None, json_schema_extra={MEDIA_TYPE: "image_url"})
+    video_data: Optional[Any] = Field(None, json_schema_extra={MEDIA_TYPE: "video_url"})
+    audio_data: Optional[Any] = Field(None, json_schema_extra={MEDIA_TYPE: "audio_url"})
+
+
+class SglangImageResponseDataFields(BaseModel):
+    """SGLang diffusion image output; not a request/input media field."""
+
+    file_path: Optional[str] = Field(None, json_schema_extra={OUTPUT_MEDIA: "image"})
+
+
+class SglangVideoResponseFields(BaseModel):
+    """SGLang completed video job output paths (multimodal_gen API)."""
+
+    file_path: Optional[str] = Field(None, json_schema_extra={OUTPUT_MEDIA: "video"})
+    file_paths: Optional[List[Optional[str]]] = Field(
+        None, json_schema_extra={OUTPUT_MEDIA: "video"}
+    )
 
 
 class SglangChatCompletionEngineExtensionFields(SharedChatCompletionFields):
@@ -112,3 +148,185 @@ class SglangEmbeddingEngineExtensionFields(SharedEmbeddingFields):
     embed_overrides: Optional[Any] = None
     lora_path: Optional[Any] = None
     rid: Optional[Any] = None
+
+
+# ---------------------------------------------------------------------------
+# Responses
+# ---------------------------------------------------------------------------
+
+
+class SglangChatCompletionMessageExtensionFields(BaseModel):
+    """SGLang fields on a chat response message."""
+
+    reasoning_content: Optional[str] = None
+
+
+class SglangChatCompletionStreamDeltaExtensionFields(
+    SglangChatCompletionMessageExtensionFields
+):
+    """SGLang fields on a chat stream delta."""
+
+    hidden_states: Optional[Any] = None
+
+
+class SglangChatCompletionStreamChoiceExtensionFields(BaseModel):
+    """SGLang fields on a /v1/chat/completions stream choice."""
+
+    matched_stop: Optional[Union[int, str]] = None
+
+
+class SglangChatCompletionChoiceExtensionFields(
+    SglangChatCompletionStreamChoiceExtensionFields
+):
+    """SGLang fields on a /v1/chat/completions choice."""
+
+    hidden_states: Optional[Any] = None
+    prompt_token_ids: Optional[List[int]] = None
+    response_token_ids: Optional[List[int]] = None
+    meta_info: Optional[Dict[str, Any]] = None
+
+
+class SglangResponseExtensionFields(BaseModel):
+    """SGLang top-level fields on chat/completion responses and chunks."""
+
+    sglext: Optional[Dict[str, Any]] = None
+
+
+class SglangCompletionChoiceExtensionFields(SharedCompletionChoiceFields):
+    """SGLang fields on a /v1/completions choice (and stream choice)."""
+
+    matched_stop: Optional[Union[int, str]] = None
+    hidden_states: Optional[Any] = None
+
+
+class SglangCompletionResponseExtensionFields(SglangResponseExtensionFields):
+    """SGLang top-level fields on a /v1/completions response (and chunk)."""
+
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class SglangUsageExtensionFields(BaseModel):
+    """SGLang fields on ``usage``."""
+
+    reasoning_tokens: Optional[int] = None
+
+
+class SglangPromptTokensDetailsExtensionFields(BaseModel):
+    """SGLang fields on ``usage.prompt_tokens_details``."""
+
+    video_tokens: Optional[int] = None
+
+
+# Native result contracts and endpoint bindings (same upstream version as above).
+class SglangTokenizeResponse(NativeResponse):
+    tokens: list[int] | list[list[int]] = Field(json_schema_extra={OUTPUT_RESULT: True})
+
+
+class SglangDetokenizeResponse(NativeResponse):
+    text: str | list[str] = Field(json_schema_extra={OUTPUT_RESULT: True})
+
+
+class SglangScoringResponse(NativeResponse):
+    scores: list[Any] = Field(json_schema_extra={OUTPUT_RESULT: True})
+    pooled_hidden_states: list[Any] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+    token_logprobs: list[Any] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+
+
+class SglangRerankResult(NativeResponse):
+    # Retain item identity in both the stored result and the HTTP metadata.
+    index: int = Field(json_schema_extra={OUTPUT_RESULT: True, RETAIN_RESULT: True})
+    score: float = Field(json_schema_extra={OUTPUT_RESULT: True})
+    document: str | None = Field(None, json_schema_extra={OUTPUT_RESULT: True})
+
+
+class SglangResultMetadata(NativeResponse):
+    # The engine puts optional generated data inside meta_info alongside counters.
+    output_token_logprobs: list[Any] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+    output_top_logprobs: list[Any] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+    # Flat output replaces the nested array; layout/dtypes travel with the result.
+    output_top_logprobs_val_flat: list[float] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+    output_top_logprobs_idx_flat: list[int] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+    output_top_logprobs_val_flat_b64: str | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+    output_top_logprobs_idx_flat_b64: str | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+    output_top_logprobs_val_flat_b64_dtype: str | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True, RETAIN_RESULT: True}
+    )
+    output_top_logprobs_idx_flat_b64_dtype: str | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True, RETAIN_RESULT: True}
+    )
+    output_top_logprobs_shape: list[int] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+    output_top_logprobs_null_prefix: int | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+    output_token_ids_logprobs: list[Any] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+    output_token_sampling_mask: list[Any] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+    output_token_sampling_logprobs: list[Any] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+    hidden_states: list[Any] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+    routed_experts: str | None = Field(None, json_schema_extra={OUTPUT_RESULT: True})
+    indexer_topk: str | None = Field(None, json_schema_extra={OUTPUT_RESULT: True})
+
+
+class SglangBeamResult(NativeResponse):
+    text: str | None = Field(None, json_schema_extra={OUTPUT_RESULT: True})
+    output_ids: list[int] = Field(json_schema_extra={OUTPUT_RESULT: True})
+    meta_info: SglangResultMetadata | None = None
+
+
+class SglangGenerateMetadata(SglangResultMetadata):
+    beam_results: list[SglangBeamResult] | None = None
+
+
+class SglangGenerateResponse(NativeResponse):
+    # skip_tokenizer_init yields output_ids without text; don't require text.
+    text: str | None = Field(None, json_schema_extra={OUTPUT_RESULT: True})
+    output_ids: list[int] | None = Field(None, json_schema_extra={OUTPUT_RESULT: True})
+    meta_info: SglangGenerateMetadata | None = None
+
+
+class SglangEncodeResponse(NativeResponse):
+    embedding: Any = Field(json_schema_extra={OUTPUT_RESULT: True})
+    pooled_hidden_state: list[Any] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+
+
+SGLANG_NATIVE_RESPONSES: dict[str, Any] = {
+    "/generate": SglangGenerateResponse | list[SglangGenerateResponse],
+    "/encode": SglangEncodeResponse | list[SglangEncodeResponse],
+    "/classify": SglangEncodeResponse | list[SglangEncodeResponse],
+    "/v1/classify": DataResponse,
+    "/v1/score": SglangScoringResponse,
+    "/v1/rerank": list[SglangRerankResult],
+    "/v1/decisions": SystemOneResponse,
+    "/v1/systemone": SystemOneResponse,
+    "/v1/messages": MessagesResponse,
+    "/v1/messages/count_tokens": CountTokensResponse,
+    **{path: SglangTokenizeResponse for path in ("/tokenize", "/v1/tokenize")},
+    **{path: SglangDetokenizeResponse for path in ("/detokenize", "/v1/detokenize")},
+}

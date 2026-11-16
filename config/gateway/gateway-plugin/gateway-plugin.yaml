@@ -253,6 +253,9 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/audio/voices
+        - path:
+            type: PathPrefix
+            value: /v1/audio/generate
         # Video (the Videos API has routes of its own below)
         - path:
             type: PathPrefix

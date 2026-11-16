@@ -105,3 +105,27 @@ func TestResponsePromptTokens(t *testing.T) {
 	assert.Equal(t, 22.0, responsePromptTokens([]byte(`{"usage":{"prompt_tokens":0,"input_tokens":22}}`)))
 	assert.Equal(t, 0.0, responsePromptTokens([]byte(`{"usage":{"prompt_tokens":"11"}}`)))
 }
+
+func TestExecuteHTTPForwardsMockFaultHeaders(t *testing.T) {
+	headers := map[string]string{
+		"x-aibrix-mock-fail":                 "prefill",
+		"x-aibrix-mock-delay-ms":             "25",
+		"x-aibrix-mock-delay-role":           "prefill",
+		"x-aibrix-mock-stream-stall-ms":      "50",
+		"x-aibrix-mock-first-token-stall-ms": "75",
+	}
+	var received http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received = r.Header.Clone()
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer srv.Close()
+	executor := NewDefaultExecutor(srv.Client(), pd.NewPrefillRequestTracker()).(*DefaultExecutor)
+	_, err := executor.executeHTTP(srv.URL, &types.RoutingContext{
+		Context: context.Background(), RequestID: "mock-prefill", ReqHeaders: headers,
+	}, []byte(`{"model":"m"}`), time.Second)
+	require.NoError(t, err)
+	for key, value := range headers {
+		assert.Equal(t, value, received.Get(key), "outbound header %s", key)
+	}
+}

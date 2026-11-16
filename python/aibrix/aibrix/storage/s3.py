@@ -26,6 +26,8 @@ from aibrix.storage.base2 import BaseStorage2
 from aibrix.storage.reader import Reader
 from aibrix.storage.utils import ObjectMetadata
 
+S3_LIST_OBJECTS_DEFAULT_LIMIT = 1000
+
 
 class S3Storage(BaseStorage2):
     """AWS S3 storage implementation with multipart upload and range get support."""
@@ -235,7 +237,7 @@ class S3Storage(BaseStorage2):
         continuation_token: Optional[str] = None,
         after_key: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
-        """List objects with given prefix using native S3 continuation tokens."""
+        """List one S3 page with given prefix using native continuation tokens."""
 
         def _list_objects():
             kwargs = {
@@ -252,9 +254,11 @@ class S3Storage(BaseStorage2):
             elif after_key:
                 kwargs["StartAfter"] = after_key
 
-            # Set MaxKeys for limit (S3 native pagination)
-            if limit is not None:
-                kwargs["MaxKeys"] = limit
+            # MaxKeys defaults to 1000 on S3. Set it explicitly so limit=None
+            # means "use backend default page size", not "return everything".
+            kwargs["MaxKeys"] = (
+                limit if limit is not None else S3_LIST_OBJECTS_DEFAULT_LIMIT
+            )
 
             objects = []
 

@@ -26,6 +26,8 @@ from aibrix.storage.base2 import BaseStorage2
 from aibrix.storage.reader import Reader
 from aibrix.storage.utils import ObjectMetadata
 
+TOS_LIST_OBJECTS_DEFAULT_LIMIT = 1000
+
 
 class TOSPart:
     """Simple wrapper for TOS multipart upload part data."""
@@ -217,7 +219,7 @@ class TOSStorage(BaseStorage2):
         continuation_token: Optional[str] = None,
         after_key: Optional[str] = None,
     ) -> tuple[list[str], Optional[str]]:
-        """List objects with given prefix."""
+        """List one TOS page with given prefix using native continuation tokens."""
 
         def _list_objects():
             objects = []
@@ -236,9 +238,14 @@ class TOSStorage(BaseStorage2):
             if after_key:
                 kwargs["start_after"] = after_key
 
-            # Set max_keys for limit (TOS native pagination)
-            if limit is not None:
-                kwargs["max_keys"] = min(limit, 1000)  # TOS max is typically 1000
+            # The TOS SDK defaults max_keys to 1000. Set it explicitly so
+            # limit=None means "use backend default page size", not
+            # "return everything".
+            kwargs["max_keys"] = (
+                min(limit, TOS_LIST_OBJECTS_DEFAULT_LIMIT)
+                if limit is not None
+                else TOS_LIST_OBJECTS_DEFAULT_LIMIT
+            )
 
             try:
                 # Use list_objects_type2 for hierarchical listing

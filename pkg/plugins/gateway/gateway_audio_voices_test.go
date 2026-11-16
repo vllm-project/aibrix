@@ -52,6 +52,7 @@ func Test_IsAudioVoicesPath(t *testing.T) {
 		PathAudioVoices + "/":                 true,
 		PathAudioSpeech:                       false,
 		PathAudioSpeechBatch:                  false,
+		PathAudioGenerate:                     false,
 		"/v1/audio/voicesfoo":                 false, // a different segment, not a sub-resource
 		"/v1/audio":                           false,
 		PathAudioTranscriptions:               false,

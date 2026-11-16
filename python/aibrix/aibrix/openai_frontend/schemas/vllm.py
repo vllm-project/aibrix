@@ -12,22 +12,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""vLLM-specific extension fields for the OpenAI request models.
+"""vLLM-specific extension fields for the OpenAI request and response models.
 
-Only fields vLLM accepts beyond the OpenAI schema and the fields shared
-with the other engine (``engine_common.py``) are declared here.
+Only fields vLLM accepts or returns beyond the OpenAI schema and the fields
+shared with the other engine (``engine_common.py``) are declared here.
 
 Reference: the vLLM OpenAI entrypoint protocols at tag ``v0.33.0rc1``.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional, Union
+
+from pydantic import BaseModel, Field
 
 from aibrix.openai_frontend.schemas.engine_common import (
+    OUTPUT_RESULT,
+    ChoicesResponse,
+    CountTokensResponse,
+    DataResponse,
+    MessagesResponse,
+    NativeResponse,
     SharedChatCompletionFields,
+    SharedCompletionChoiceFields,
     SharedCompletionFields,
     SharedEmbeddingFields,
+    SharedModelFields,
+    SystemOneResponse,
 )
 
 
@@ -117,3 +128,144 @@ class VllmEmbeddingEngineExtensionFields(SharedEmbeddingFields):
     truncate_prompt_tokens: Optional[Any] = None
     truncation_side: Optional[Any] = None
     use_activation: Optional[Any] = None
+
+
+# ---------------------------------------------------------------------------
+# Responses
+# ---------------------------------------------------------------------------
+
+
+class VllmChatCompletionMessageExtensionFields(BaseModel):
+    """vLLM fields on a chat response message and stream delta."""
+
+    reasoning: Optional[str] = None
+
+
+class VllmChatCompletionStreamChoiceExtensionFields(BaseModel):
+    """vLLM fields on a /v1/chat/completions stream choice."""
+
+    stop_reason: Optional[Union[int, str]] = None
+    token_ids: Optional[List[int]] = None
+    weight_versions: Optional[List[Dict[str, Any]]] = None
+
+
+class VllmChatCompletionChoiceExtensionFields(
+    VllmChatCompletionStreamChoiceExtensionFields
+):
+    """vLLM fields on a /v1/chat/completions choice."""
+
+    routed_experts: Optional[str] = None
+
+
+class VllmChatCompletionStreamResponseExtensionFields(BaseModel):
+    """vLLM top-level fields on a /v1/chat/completions stream chunk."""
+
+    prompt_token_ids: Optional[List[int]] = None
+    prompt_text: Optional[str] = None
+    kv_transfer_params: Optional[Dict[str, Any]] = None
+    metrics: Optional[Dict[str, Any]] = None
+
+
+class VllmChatCompletionResponseExtensionFields(
+    VllmChatCompletionStreamResponseExtensionFields
+):
+    """vLLM top-level fields on a /v1/chat/completions response."""
+
+    prompt_logprobs: Optional[List[Optional[Dict[str, Any]]]] = None
+    ec_transfer_params: Optional[Dict[str, Any]] = None
+
+
+class VllmCompletionChoiceExtensionFields(SharedCompletionChoiceFields):
+    """vLLM fields on a /v1/completions choice (and stream choice)."""
+
+    stop_reason: Optional[Union[int, str]] = None
+    prompt_logprobs: Optional[List[Optional[Dict[str, Any]]]] = None
+    routed_experts: Optional[str] = None
+    weight_versions: Optional[List[Dict[str, Any]]] = None
+
+
+class VllmCompletionResponseExtensionFields(BaseModel):
+    """vLLM top-level fields on a /v1/completions response (and chunk)."""
+
+    service_tier: Optional[str] = None
+    kv_transfer_params: Optional[Dict[str, Any]] = None
+    ec_transfer_params: Optional[Dict[str, Any]] = None
+    metrics: Optional[Dict[str, Any]] = None
+
+
+class VllmEmbeddingResponseExtensionFields(BaseModel):
+    """vLLM top-level fields on a /v1/embeddings response."""
+
+    id: Optional[str] = None
+    created: Optional[int] = None
+
+
+class VllmPromptTokensDetailsExtensionFields(BaseModel):
+    """vLLM fields on ``usage.prompt_tokens_details``."""
+
+    created_cache_tokens: Optional[int] = None
+    multimodal_tokens: Optional[Dict[str, int]] = None
+
+
+class VllmModelExtensionFields(SharedModelFields):
+    """vLLM fields on a ``/v1/models`` entry."""
+
+    permission: Optional[List[Dict[str, Any]]] = None
+
+
+# Native result contracts and endpoint bindings (same upstream version as above).
+class VllmRerankResponse(NativeResponse):
+    results: list[dict[str, Any]] = Field(json_schema_extra={OUTPUT_RESULT: True})
+
+
+class VllmTokenizeResponse(NativeResponse):
+    tokens: list[int] = Field(json_schema_extra={OUTPUT_RESULT: True})
+    token_strs: list[str] | None = Field(None, json_schema_extra={OUTPUT_RESULT: True})
+
+
+class VllmDetokenizeResponse(NativeResponse):
+    prompt: str = Field(json_schema_extra={OUTPUT_RESULT: True})
+
+
+class CohereMessage(NativeResponse):
+    content: list[dict[str, Any]] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+    tool_calls: list[dict[str, Any]] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+    tool_plan: str | None = Field(None, json_schema_extra={OUTPUT_RESULT: True})
+    citations: list[dict[str, Any]] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+
+
+class CohereChatResponse(NativeResponse):
+    message: CohereMessage
+    logprobs: list[dict[str, Any]] | None = Field(
+        None, json_schema_extra={OUTPUT_RESULT: True}
+    )
+
+
+class CohereEmbedResponse(NativeResponse):
+    embeddings: dict[str, Any] = Field(json_schema_extra={OUTPUT_RESULT: True})
+
+
+class VllmDecisionResponse(NativeResponse):
+    answers: list[dict[str, Any]] = Field(json_schema_extra={OUTPUT_RESULT: True})
+
+
+VLLM_NATIVE_RESPONSES: dict[str, Any] = {
+    "/v1/decisions": VllmDecisionResponse,
+    "/v1/systemone": SystemOneResponse,
+    "/v1/messages": MessagesResponse,
+    "/v1/messages/count_tokens": CountTokensResponse,
+    "/cohere/v2/chat": CohereChatResponse,
+    "/v2/embed": CohereEmbedResponse,
+    "/inference/v1/generate": ChoicesResponse,
+    "/generative_scoring": DataResponse,
+    "/tokenize": VllmTokenizeResponse,
+    "/detokenize": VllmDetokenizeResponse,
+    **{path: VllmRerankResponse for path in ("/rerank", "/v1/rerank", "/v2/rerank")},
+    **{path: DataResponse for path in ("/score", "/v1/score", "/pooling", "/classify")},
+}

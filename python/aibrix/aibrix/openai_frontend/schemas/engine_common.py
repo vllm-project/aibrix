@@ -12,26 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Extension request fields shared by vLLM and SGLang.
+"""Extension fields shared by vLLM and SGLang.
 
-Fields both engines accept are declared once here, grouped by the request
-types they apply to; fields only one engine knows live in ``vllm.py`` /
-``sglang.py``.  The inheritance hierarchy follows applicability so a field
-is declared exactly once:
+Fields both engines use are declared once here, grouped by the models they
+apply to; fields only one engine knows live in ``vllm.py`` / ``sglang.py``.
+The inheritance hierarchy follows applicability so a field is declared
+exactly once.
 
-    CommonExtensionFields (chat + completion + embedding)
-      -> GenerationExtensionFields (+ chat & completion)
+Requests::
+
+    CommonEngineExtensionFields (chat + completion + embedding)
+      -> GenerationEngineExtensionFields (+ chat & completion)
         -> SharedChatCompletionFields / SharedCompletionFields
       -> SharedEmbeddingFields
+
+Responses: ``SharedCompletionChoiceFields`` and ``SharedModelFields``.
 
 References: vLLM tag ``v0.33.0rc1``, SGLang tag ``v0.5.22``.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from types import UnionType
+from typing import Any, Final, List, Optional, Union, get_args, get_origin
 
-from pydantic import BaseModel, conint
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, conint
 
 
 class CommonEngineExtensionFields(BaseModel):
@@ -72,3 +77,119 @@ class SharedEmbeddingFields(CommonEngineExtensionFields):
     """Shared embedding-only fields."""
 
     pass
+
+
+# ---------------------------------------------------------------------------
+# Responses
+# ---------------------------------------------------------------------------
+
+
+class SharedCompletionChoiceFields(BaseModel):
+    """Shared fields on a /v1/completions choice (and stream choice)."""
+
+    prompt_token_ids: Optional[List[int]] = None
+    token_ids: Optional[List[int]] = None
+
+
+class SharedModelFields(BaseModel):
+    """Shared fields on a ``/v1/models`` entry."""
+
+    root: Optional[str] = None
+    parent: Optional[str] = None
+    max_model_len: Optional[int] = None
+
+
+# Schema annotation keys shared by result declarations and extraction.
+OUTPUT_RESULT: Final = "output_result"
+RETAIN_RESULT: Final = "retain_result"
+
+
+class NativeRequestOptions(BaseModel):
+    """Common forwarding controls; validate without rewriting the native body."""
+
+    stream: bool | None = False
+
+
+# Minimal native result contracts shared by the engine-specific bindings.
+class NativeResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class ChoicesResponse(NativeResponse):
+    choices: list[Any] = Field(json_schema_extra={OUTPUT_RESULT: True})
+
+
+class DataResponse(NativeResponse):
+    # Pooling plugins explicitly define a generic data payload, not just arrays.
+    data: Any = Field(json_schema_extra={OUTPUT_RESULT: True})
+
+
+class MessagesResponse(NativeResponse):
+    content: list[dict[str, Any]] = Field(json_schema_extra={OUTPUT_RESULT: True})
+
+
+class CountTokensResponse(NativeResponse):
+    input_tokens: int = Field(json_schema_extra={OUTPUT_RESULT: True})
+
+
+class SystemOneResponse(NativeResponse):
+    answers: dict[str, Any] = Field(json_schema_extra={OUTPUT_RESULT: True})
+
+
+def split_native_result(envelope: Any, schema: Any) -> tuple[Any, Any]:
+    """Validate and split original JSON without normalizing vendor metadata.
+
+    Only schema-marked result leaves are stored and cleared in the HTTP copy.
+    Preserve the native object/list structure, absent fields and explicit nulls.
+    Empty arrays and zero-valued results are valid, not missing payloads.
+    """
+    TypeAdapter(schema).validate_python(envelope, strict=True)
+
+    def split(value: Any, contract: Any) -> tuple[Any, Any, bool]:
+        if get_origin(contract) in (UnionType, Union):
+            contract = next(
+                member
+                for member in get_args(contract)
+                if (get_origin(member) is list) == isinstance(value, list)
+                and member is not type(None)
+            )
+        if get_origin(contract) is list:
+            parts = [split(item, get_args(contract)[0]) for item in value]
+            if any(not part[2] for part in parts):
+                raise ValueError("A native result item has no schema-declared result")
+            return [p[0] for p in parts], [p[1] for p in parts], True
+        if not isinstance(contract, type) or not issubclass(contract, BaseModel):
+            return {}, value, False
+        payload: dict[str, Any] = {}
+        remaining = dict(value)
+        found_result = False
+        for name, field in contract.model_fields.items():
+            key = field.alias or name
+            if key not in value:
+                continue
+            metadata = field.json_schema_extra
+            if isinstance(metadata, dict) and OUTPUT_RESULT in metadata:
+                payload[key] = value[key]
+                found_result |= value[key] is not None
+                if metadata.get(RETAIN_RESULT):
+                    continue
+                # Keep nulls and choose the empty shape from the actual wire value.
+                if isinstance(value[key], list):
+                    remaining[key] = []
+                elif isinstance(value[key], dict):
+                    remaining[key] = {}
+                elif isinstance(value[key], str):
+                    remaining[key] = ""
+                else:
+                    remaining[key] = None
+            elif value[key] is not None:
+                nested, cleared, found = split(value[key], field.annotation)
+                if found:
+                    payload[key], remaining[key] = nested, cleared
+                    found_result = True
+        return payload, remaining, found_result
+
+    payload, remaining, found = split(envelope, schema)
+    if not found:
+        raise ValueError("Engine response has no schema-declared native result")
+    return payload, remaining

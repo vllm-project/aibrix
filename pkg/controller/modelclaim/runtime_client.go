@@ -262,7 +262,8 @@ type RuntimeSnapshotModel struct {
 	IPCName     string         `json:"ipc_name"`
 	Phase       string         `json:"phase"`
 	// Alive is process liveness, separate from readiness: a booting engine is
-	// alive but not routable, while a restarting or terminal engine is not.
+	// alive but not routable, while a restarting engine is not. A failed
+	// engine is alive only until its processes have exited.
 	Alive          bool       `json:"alive"`
 	Ready          bool       `json:"ready"`
 	RestartCount   int        `json:"restart_count"`
@@ -481,8 +482,9 @@ func (c *httpRuntimeClient) Snapshot(ctx context.Context, podIP string, port int
 
 // do sends a request to a runtime and reads its answer, unless that runtime did
 // not answer in time a short while ago. Stopping an engine is sent even then: a
-// claim is deleted or scaled down only once, and an engine left running would
-// keep its memory.
+// scale-down sends its stop only once, and an engine left running would keep
+// its memory. Deletion can retry, so it reads a snapshot before stopping to
+// respect the silence window.
 //
 // An answer counts once all of it has arrived, or its first mebibyte. A
 // runtime that sends its headers and then stalls holds its caller until the
