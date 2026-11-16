@@ -493,7 +493,7 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		klog.InfoS("Using discovery provider", "type", provider.Type())
 		if opts.IsGateway {
 			if err := initPodOutstandingCollector(store, prometheus.DefaultRegisterer, stopCh); err != nil {
-				klog.Fatalf("Failed to register pod outstanding requests collector: %v", err)
+				klog.ErrorS(err, "Failed to register pod outstanding requests collector")
 			}
 		}
 		initMetricsCache(store, stopCh)

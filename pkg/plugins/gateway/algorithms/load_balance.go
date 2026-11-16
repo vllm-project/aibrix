@@ -401,8 +401,8 @@ func ApplyLoadImbalanceGate(ctx *types.RoutingContext, c cache.Cache, readyPods 
 			"total_pod_count", len(readyPods),
 			"min_running_requests", minValue,
 			"max_running_requests", maxValue,
-			"factor", imbalanceFactor,
-			"min_gap", imbalanceMinGap,
+			"factor", podRunningRequestImbalanceFactor,
+			"min_gap", podRunningRequestImbalanceMinGap,
 			"selected_pods", selected,
 			"skipped_pods", skipped)
 	}

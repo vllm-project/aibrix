@@ -63,7 +63,7 @@ func TestPodOutstandingCollector_SkipsInvalidPods(t *testing.T) {
 			registry.MustRegister(newPodOutstandingCollector(cache, "coord-a"))
 
 			assertOutstandingMetrics(t, registry,
-				"gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model_name=\"model\",namespace=\"inference\",pod=\"model-0\"} 0\n")
+				"gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model=\"model\",target_namespace=\"inference\",target_pod=\"model-0\"} 0\n")
 		})
 	}
 }
@@ -94,7 +94,7 @@ func TestPodOutstandingCollector_ModelNameMetadata(t *testing.T) {
 			registry.MustRegister(newPodOutstandingCollector(cache, "coord-a"))
 
 			assertOutstandingMetrics(t, registry, fmt.Sprintf(
-				"gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model_name=%q,namespace=\"inference\",pod=\"model-0\"} 3\n", tt.want))
+				"gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model=%q,target_namespace=\"inference\",target_pod=\"model-0\"} 3\n", tt.want))
 		})
 	}
 }
@@ -108,7 +108,7 @@ func TestPodOutstandingCollector_ModelNameUpdate(t *testing.T) {
 	atomic.StoreInt32(&metaPod.runningRequests, 3)
 	registry := prometheus.NewPedanticRegistry()
 	registry.MustRegister(newPodOutstandingCollector(cache, "coord-a"))
-	sample := "gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model_name=%q,namespace=\"inference\",pod=\"model-0\"} 3\n"
+	sample := "gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model=%q,target_namespace=\"inference\",target_pod=\"model-0\"} 3\n"
 	assertOutstandingMetrics(t, registry, fmt.Sprintf(sample, "old-model"))
 
 	updated := pod.DeepCopy()
@@ -116,6 +116,39 @@ func TestPodOutstandingCollector_ModelNameUpdate(t *testing.T) {
 	updated.Annotations = map[string]string{constants.ModelLabelName: "org/new-model"}
 	cache.updatePod(pod, updated)
 	assertOutstandingMetrics(t, registry, fmt.Sprintf(sample, "org/new-model"))
+}
+
+func TestPodOutstandingCollector_InvalidModelName(t *testing.T) {
+	for _, source := range []string{"label", "annotation"} {
+		t.Run(source, func(t *testing.T) {
+			cache := NewForTest()
+			cache.addPod(requestTrackerTestPod("model-0", "inference", "model", "10.0.0.1"))
+			pod := requestTrackerTestPod("invalid-0", "inference", "bad\xffname", "10.0.0.2")
+			if source == "annotation" {
+				delete(pod.Labels, constants.ModelLabelName)
+				pod.Annotations = map[string]string{constants.ModelLabelName: "bad\xffname"}
+			}
+			cache.addPod(pod)
+			registry := prometheus.NewPedanticRegistry()
+			registry.MustRegister(newPodOutstandingCollector(cache, "coord-a"))
+
+			// Gather runs Collect in a worker goroutine. Invalid metadata must
+			// report a collection error rather than panic and exit the process.
+			families, err := registry.Gather()
+			require.ErrorContains(t, err, "not valid UTF-8")
+			require.Len(t, families, 1)
+			require.Len(t, families[0].Metric, 1, "valid pods must still be collected")
+			labels := make(map[string]string)
+			for _, label := range families[0].Metric[0].Label {
+				labels[label.GetName()] = label.GetValue()
+			}
+			require.Equal(t, "model-0", labels["target_pod"])
+
+			cache.deletePod(pod)
+			assertOutstandingMetrics(t, registry,
+				"gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model=\"model\",target_namespace=\"inference\",target_pod=\"model-0\"} 0\n")
+		})
+	}
 }
 
 func TestPodOutstandingCollector_RequestLifecycle(t *testing.T) {
@@ -127,7 +160,7 @@ func TestPodOutstandingCollector_RequestLifecycle(t *testing.T) {
 			cache.addPod(pod)
 			registry := prometheus.NewPedanticRegistry()
 			registry.MustRegister(newPodOutstandingCollector(cache, "coord-a"))
-			sample := "gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model_name=\"model\",namespace=\"inference\",pod=\"model-0\"} %d\n"
+			sample := "gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model=\"model\",target_namespace=\"inference\",target_pod=\"model-0\"} %d\n"
 			assertOutstandingMetrics(t, registry, fmt.Sprintf(sample, 0))
 
 			ctx := types.NewRoutingContext(context.Background(), "least-request", "model", "", "req-1", "")
@@ -169,7 +202,7 @@ func TestPodOutstandingCollector_PodDeletionAndRecreation(t *testing.T) {
 	cache.addPod(pod)
 	registry := prometheus.NewPedanticRegistry()
 	registry.MustRegister(newPodOutstandingCollector(cache, "coord-a"))
-	sample := "gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model_name=\"model\",namespace=\"inference\",pod=\"model-0\"} %d\n"
+	sample := "gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model=\"model\",target_namespace=\"inference\",target_pod=\"model-0\"} %d\n"
 	ctx := types.NewRoutingContext(context.Background(), "least-request", "model", "", "req-1", "")
 	defer ctx.Delete()
 	ctx.SetTargetPod(pod)
@@ -184,7 +217,7 @@ func TestPodOutstandingCollector_PodDeletionAndRecreation(t *testing.T) {
 
 	cache.addPod(requestTrackerTestPod("model-0", "other", "model", "10.0.0.3"))
 	assertOutstandingMetrics(t, registry, fmt.Sprintf(sample, 0)+
-		"gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model_name=\"model\",namespace=\"other\",pod=\"model-0\"} 0\n")
+		"gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model=\"model\",target_namespace=\"other\",target_pod=\"model-0\"} 0\n")
 }
 
 func TestPodOutstandingCollector_GatewayReplicas(t *testing.T) {
@@ -201,8 +234,22 @@ func TestPodOutstandingCollector_GatewayReplicas(t *testing.T) {
 		registry.MustRegister(newPodOutstandingCollector(cache, gateway.name))
 	}
 	assertOutstandingMetrics(t, registry,
-		"gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model_name=\"model\",namespace=\"inference\",pod=\"model-0\"} 3\n"+
-			"gateway_pod_outstanding_requests{gateway_pod=\"coord-b\",model_name=\"model\",namespace=\"inference\",pod=\"model-0\"} 5\n")
+		"gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model=\"model\",target_namespace=\"inference\",target_pod=\"model-0\"} 3\n"+
+			"gateway_pod_outstanding_requests{gateway_pod=\"coord-b\",model=\"model\",target_namespace=\"inference\",target_pod=\"model-0\"} 5\n")
+}
+
+func TestPodOutstandingCollector_TargetLabels(t *testing.T) {
+	cache := NewForTest()
+	cache.addPod(requestTrackerTestPod("model-0", "inference", "model", "10.0.0.1"))
+	registry := prometheus.NewPedanticRegistry()
+	// Inference pod identity must coexist with the gateway's scrape target labels.
+	registerer := prometheus.WrapRegistererWith(prometheus.Labels{
+		"namespace": "aibrix-system",
+		"pod":       "coord-a",
+	}, registry)
+	require.NoError(t, registerer.Register(newPodOutstandingCollector(cache, "coord-a")))
+	assertOutstandingMetrics(t, registry,
+		"gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model=\"model\",namespace=\"aibrix-system\",pod=\"coord-a\",target_namespace=\"inference\",target_pod=\"model-0\"} 0\n")
 }
 
 func TestPodOutstandingCollector_ConcurrentRequestsAndScrapes(t *testing.T) {
@@ -252,7 +299,7 @@ func TestPodOutstandingCollector_ConcurrentRequestsAndScrapes(t *testing.T) {
 	close(start)
 	wg.Wait()
 	assertOutstandingMetrics(t, registry,
-		"gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model_name=\"model\",namespace=\"inference\",pod=\"model-0\"} 0\n")
+		"gateway_pod_outstanding_requests{gateway_pod=\"coord-a\",model=\"model\",target_namespace=\"inference\",target_pod=\"model-0\"} 0\n")
 }
 
 func TestInitPodOutstandingCollector_RegistrationLifecycle(t *testing.T) {

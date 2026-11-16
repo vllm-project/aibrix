@@ -36,7 +36,9 @@ Send-failure and shutdown accounting are unchanged.
 ## Query Gateway Pod Outstanding Requests
 
 Scrape each gateway plugin replica's `/metrics` endpoint once to collect
-`gateway_pod_outstanding_requests`. The Envoy `/stats/prometheus` endpoint
+`gateway_pod_outstanding_requests`, using the shipped
+[`service_monitor_gateway_plugin.yaml`](../monitor/service_monitor_gateway_plugin.yaml).
+The Envoy `/stats/prometheus` endpoint
 configured in [`service_monitor_gateway.yaml`](../monitor/service_monitor_gateway.yaml)
 does not expose this metric.
 
@@ -45,26 +47,38 @@ target inference pod and have not been finalized. It excludes requests sent
 directly to the engine or still waiting for pod selection. It is not the engine's
 GPU-running request count or the estimate from `realtime_num_requests_running`.
 
-Labels `namespace` and `pod` identify the target inference pod; `gateway_pod`
-identifies the reporting gateway. `model_name` comes from the pod's
+Labels `target_namespace` and `target_pod` identify the target inference pod;
+`gateway_pod` identifies the reporting gateway. `model` comes from the pod's
 `model.aibrix.ai/name` label, falling back to the same annotation or an empty
 value. The count is a pod total across all models and adapters, not a per-model
 request count.
 
+For prefill/decode (PD) disaggregated models, the ledger tracks the selected
+decode pod, not the prefill pod. Prefill-only pods therefore emit zero even
+while serving prefill requests; this metric cannot diagnose load imbalance
+between prefill pods. `gateway_prefill_outstanding_requests` tracks prefill
+requests separately per gateway, without a target pod label.
+
+Cardinality is one series per gateway per cached inference pod, including idle
+pods: G gateways caching the same N pods emit G × N series. Each scrape visits
+all cached pods, so collection work and response size grow with N.
+
+The shipped ServiceMonitor uses Prometheus' default `honor_labels: false`.
+The operator adds the gateway's `namespace` and `pod` target labels;
+`target_namespace` and `target_pod` remain the inference pod's identity without
+colliding with those labels.
+
 ```promql
 # Total outstanding requests per target pod across gateway replicas
-sum by (namespace, pod) (gateway_pod_outstanding_requests)
+sum by (target_namespace, target_pod) (gateway_pod_outstanding_requests)
 
 # Identify which gateway retains a count after traffic has drained
-sum by (gateway_pod, namespace, pod) (gateway_pod_outstanding_requests)
+sum by (gateway_pod, target_namespace, target_pod) (gateway_pod_outstanding_requests)
 
 # Aggregate by model only for single-model pods
-sum by (namespace, model_name) (gateway_pod_outstanding_requests)
+sum by (target_namespace, model) (gateway_pod_outstanding_requests)
 ```
 
-These queries use labels as exported by `/metrics`. If your scrape configuration
-adds conflicting `namespace` and `pod` labels with `honor_labels` disabled (the
-default), use `exported_namespace` and `exported_pod` in the grouping instead.
 For multiple clusters, also retain your cluster label.
 
 A persistent nonzero value reflects the gateway's local accounting state; it

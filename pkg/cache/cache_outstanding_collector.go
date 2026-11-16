@@ -37,7 +37,7 @@ func newPodOutstandingCollector(store *Store, gatewayName string) *podOutstandin
 		desc: prometheus.NewDesc(
 			"gateway_pod_outstanding_requests",
 			"Requests routed by this gateway to a pod that have not completed.",
-			[]string{"namespace", "pod", "model_name"},
+			[]string{"target_namespace", "target_pod", "model"},
 			prometheus.Labels{"gateway_pod": gatewayName},
 		),
 	}
@@ -53,8 +53,13 @@ func (c *podOutstandingCollector) Collect(ch chan<- prometheus.Metric) {
 			return true
 		}
 		modelName, _ := constants.ModelNameFromMetadata(pod.Labels, pod.Annotations)
-		ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue,
+		metric, err := prometheus.NewConstMetric(c.desc, prometheus.GaugeValue,
 			float64(atomic.LoadInt32(&pod.runningRequests)), pod.Namespace, pod.Name, modelName)
+		if err != nil {
+			ch <- prometheus.NewInvalidMetric(c.desc, err)
+			return true
+		}
+		ch <- metric
 		return true
 	})
 }
