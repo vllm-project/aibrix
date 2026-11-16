@@ -184,8 +184,22 @@ METRICS_DOGSTATSD_TAGS = [
     if item
 ]
 METRICS_LOG_ENABLED = _is_true(os.getenv("METRICS_LOG_ENABLED", "0"))
+DEFAULT_METRICS_LOG_INCLUDE = [
+    "metadata.metrics.emit.*",
+    "metadata.http.client.telemetry.*",
+    "metadata.batch.dispatch.telemetry.*",
+    "metadata.json.telemetry.*",
+    "metadata.batch.finalize.*",
+]
 METRICS_LOG_INCLUDE = [
-    item for item in (_parse_list_str(os.getenv("METRICS_LOG_INCLUDE")) or []) if item
+    item
+    for item in (
+        _parse_list_str(
+            os.getenv("METRICS_LOG_INCLUDE", ",".join(DEFAULT_METRICS_LOG_INCLUDE))
+        )
+        or []
+    )
+    if item
 ]
 METRICS_LOG_EXCLUDE = [
     item for item in (_parse_list_str(os.getenv("METRICS_LOG_EXCLUDE")) or []) if item
