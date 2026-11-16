@@ -33,6 +33,7 @@ import (
 	//+kubebuilder:scaffold:imports
 
 	admissionv1 "k8s.io/api/admission/v1"
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -105,6 +106,8 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	err = admissionv1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
+	err = admissionregistrationv1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
 	err = corev1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 	err = appsv1.AddToScheme(scheme.Scheme)
@@ -133,6 +136,8 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	err = apiwebhook.SetupModelAdapterWebhook(mgr)
+	Expect(err).NotTo(HaveOccurred())
+	err = apiwebhook.SetupModelClaimWebhook(mgr)
 	Expect(err).NotTo(HaveOccurred())
 	err = apiwebhook.SetupModelWarmupWebhook(mgr)
 	Expect(err).NotTo(HaveOccurred())

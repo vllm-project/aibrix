@@ -1471,6 +1471,32 @@ func TestListCandidateWarmPods(t *testing.T) {
 	assert.Equal(t, "ready", got[0].Name)
 }
 
+func TestListCandidateWarmPodsEmptySelectorKeepsWarmPoolEligibility(t *testing.T) {
+	// Legacy claims can carry an empty selector. It broadens the pool query,
+	// but must not bypass namespace or warm-pod eligibility checks.
+	claim := sampleModelClaim()
+	claim.Spec.PodSelector = &metav1.LabelSelector{}
+	otherNamespace := warmPod("other-namespace", "pool-a", true, corev1.PodRunning)
+	otherNamespace.Namespace = "another-namespace"
+	withoutIP := warmPod("without-ip", "pool-a", true, corev1.PodRunning)
+	withoutIP.Status.PodIP = ""
+	r, _ := newReconciler(t,
+		warmPod("pool-a", "pool-a", true, corev1.PodRunning),
+		warmPod("pool-b", "pool-b", true, corev1.PodRunning),
+		warmPod("not-enabled", "pool-a", false, corev1.PodRunning),
+		warmPod("pending", "pool-a", true, corev1.PodPending),
+		otherNamespace, withoutIP,
+	)
+
+	got, err := r.listCandidateWarmPods(context.Background(), claim)
+	require.NoError(t, err)
+	names := make([]string, 0, len(got))
+	for _, pod := range got {
+		names = append(names, pod.Name)
+	}
+	assert.ElementsMatch(t, []string{"pool-a", "pool-b"}, names)
+}
+
 func TestListCandidateWarmPodsFiltersMismatchedVLLMParallelism(t *testing.T) {
 	pm := sampleModelClaim()
 	pm.Spec.EngineConfig.Args["--tensor-parallel-size"] = "2"
