@@ -164,6 +164,16 @@ func (o kubeAPIOptions) applyTo(config *rest.Config) {
 	config.Burst = o.burst
 }
 
+func checkRedisConnectivity() {
+	client := utils.GetRedisClient()
+	if client == nil {
+		klog.Fatal("Redis connectivity check failed")
+	}
+	if err := client.Close(); err != nil {
+		klog.Fatalf("Error closing Redis client: %v", err)
+	}
+}
+
 func main() {
 	var kubeAPI kubeAPIOptions
 	kubeAPI.addFlags(flag.CommandLine)
@@ -189,13 +199,7 @@ func main() {
 	}
 
 	if checkRedis {
-		client := utils.GetRedisClient()
-		if client == nil {
-			klog.Fatal("Redis connectivity check failed")
-		}
-		if err := client.Close(); err != nil {
-			klog.Fatalf("Error closing Redis client: %v", err)
-		}
+		checkRedisConnectivity()
 		return
 	}
 
