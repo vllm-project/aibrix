@@ -17,8 +17,11 @@ limitations under the License.
 package gateway
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -46,11 +49,10 @@ import (
 func TestSelectTargetPod_ReadsRunningRequestsOnce(t *testing.T) {
 	const n = 100
 	mr := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	reads := &fleetReadCounter{}
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr(), Dialer: reads.dial})
 	t.Cleanup(func() { _ = client.Close() })
 	require.NoError(t, client.Ping(context.Background()).Err())
-	reads := &fleetReadCounter{}
-	client.AddHook(reads)
 
 	pods := make([]*v1.Pod, n)
 	for i := range pods {
@@ -63,6 +65,7 @@ func TestSelectTargetPod_ReadsRunningRequestsOnce(t *testing.T) {
 		}
 	}
 	store := cache.InitWithPods(cache.New(client, nil, nil), pods, "m")
+	t.Cleanup(store.Close)
 	rm := routing.NewRouterManagerWithCache(store)
 	rm.Init()
 	s := &Server{cache: store, routerManager: rm}
@@ -111,32 +114,43 @@ func TestSelectTargetPod_ReadsRunningRequestsOnce(t *testing.T) {
 	}
 }
 
-// fleetReadCounter counts ZRANGEBYSCORE commands, which every read of running-request counts
-// sends once, whatever the number of pods it reads.
+// fleetReadCounter counts ZRANGEBYSCORE commands on connections opened by the
+// copied dialer, including those owned by the store's derived Redis clients.
 type fleetReadCounter struct {
 	count atomic.Int64
 }
 
-func (c *fleetReadCounter) DialHook(next redis.DialHook) redis.DialHook { return next }
-
-func (c *fleetReadCounter) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
-	return func(ctx context.Context, cmd redis.Cmder) error {
-		c.observe(cmd)
-		return next(ctx, cmd)
+func (c *fleetReadCounter) dial(ctx context.Context, network, addr string) (net.Conn, error) {
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(ctx, network, addr)
+	if err != nil {
+		return nil, err
 	}
+	return &fleetReadConn{Conn: conn, reads: c}, nil
 }
 
-func (c *fleetReadCounter) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
-	return func(ctx context.Context, cmds []redis.Cmder) error {
-		for _, cmd := range cmds {
-			c.observe(cmd)
+type fleetReadConn struct {
+	net.Conn
+	reads   *fleetReadCounter
+	pending []byte
+}
+
+func (c *fleetReadConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	c.pending = append(c.pending, p[:n]...)
+	// A command may span socket writes; retain incomplete RESP frames.
+	for len(c.pending) > 0 {
+		input := bytes.NewReader(c.pending)
+		reader := bufio.NewReader(input)
+		command, parseErr := readRESPCommand(reader)
+		if parseErr != nil {
+			break
 		}
-		return next(ctx, cmds)
+		consumed := len(c.pending) - input.Len() - reader.Buffered()
+		c.pending = c.pending[consumed:]
+		if len(command) > 0 && strings.EqualFold(command[0], "zrangebyscore") {
+			c.reads.count.Add(1)
+		}
 	}
-}
-
-func (c *fleetReadCounter) observe(cmd redis.Cmder) {
-	if strings.EqualFold(cmd.Name(), "zrangebyscore") {
-		c.count.Add(1)
-	}
+	return n, err
 }

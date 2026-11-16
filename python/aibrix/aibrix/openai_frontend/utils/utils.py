@@ -32,18 +32,6 @@ from enum import IntEnum
 HTTP_DEFAULT_MAX_INPUT_SIZE: int = 1 << 26
 
 
-class ServerError(Exception):
-    """Exception raised for server errors."""
-
-    pass
-
-
-class ClientError(Exception):
-    """Exception raised for client errors."""
-
-    pass
-
-
 class StatusCode(IntEnum):
     SUCCESS = 200
     CLIENT_ERROR = 400
@@ -51,6 +39,38 @@ class StatusCode(IntEnum):
     NOT_FOUND = 404
     CONTENT_TOO_LARGE = 413
     SERVER_ERROR = 500
+    BAD_GATEWAY = 502
+    SERVICE_UNAVAILABLE = 503
+
+
+class FrontendError(Exception):
+    """Base for errors that map to an HTTP status.
+
+    Each subclass carries its own ``status_code``; the FastAPI exception
+    handlers turn any raised instance into a response, so routers do not
+    translate errors themselves.
+    """
+
+    status_code: int = StatusCode.SERVER_ERROR
+
+
+class ClientError(FrontendError):
+    """The request is invalid (400)."""
+
+    status_code = StatusCode.CLIENT_ERROR
+
+
+class ServerError(FrontendError):
+    """The frontend or engine failed to serve a valid request (500)."""
+
+
+class EngineUnavailableError(ServerError):
+    """The inner engine is starting, failed, or otherwise not serving (503).
+
+    Retryable, unlike a plain ``ServerError``.
+    """
+
+    status_code = StatusCode.SERVICE_UNAVAILABLE
 
 
 def validate_positive_int(value: object) -> int:

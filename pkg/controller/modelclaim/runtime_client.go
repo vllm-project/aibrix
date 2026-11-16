@@ -262,7 +262,8 @@ type RuntimeSnapshotModel struct {
 	IPCName     string         `json:"ipc_name"`
 	Phase       string         `json:"phase"`
 	// Alive is process liveness, separate from readiness: a booting engine is
-	// alive but not routable, while a restarting or terminal engine is not.
+	// alive but not routable, while a restarting engine is not. A failed
+	// engine is alive only until its processes have exited.
 	Alive          bool       `json:"alive"`
 	Ready          bool       `json:"ready"`
 	RestartCount   int        `json:"restart_count"`

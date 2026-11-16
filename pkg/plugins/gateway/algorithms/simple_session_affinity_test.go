@@ -19,6 +19,7 @@ package routingalgorithms
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"sync/atomic"
@@ -566,15 +567,40 @@ func TestSessionAffinityStartNilRedisIsNoop(t *testing.T) {
 }
 
 func TestSessionAffinityStartWiresClient(t *testing.T) {
-	router, _ := newTestSessionAffinityRedis(t)
-	client := router.redisClient
-	router.redisClient = nil
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr(), Password: "s3cret", DB: 2})
+	t.Cleanup(func() { _ = client.Close() })
+	router := &sessionAffinityRouter{}
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })
 	router.Start(stop, client)
-	assert.Same(t, client, router.redisClient)
+	wired := router.redisClient
+	require.NotNil(t, wired)
+	t.Cleanup(func() { _ = wired.Close() })
+	assert.Equal(t, client.Options().Addr, wired.Options().Addr)
+	assert.Equal(t, client.Options().Password, wired.Options().Password, "the derived client must keep the shared credentials")
+	assert.Equal(t, client.Options().DB, wired.Options().DB, "the derived client must keep the shared database")
+	assert.True(t, wired.Options().ContextTimeoutEnabled, "the router's client must honor the context deadline")
 	router.Start(stop, &redis.Client{})
-	assert.Same(t, client, router.redisClient, "Start is idempotent")
+	assert.Same(t, wired, router.redisClient, "Start is idempotent")
+}
+
+func TestSessionAffinityStartClosesDerivedClientOnStop(t *testing.T) {
+	mr := miniredis.RunT(t)
+	shared := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = shared.Close() })
+	router := &sessionAffinityRouter{}
+	stop := make(chan struct{})
+	router.Start(stop, shared)
+	derived := router.redisClient
+	require.NoError(t, derived.Ping(context.Background()).Err())
+
+	close(stop)
+
+	require.Eventually(t, func() bool {
+		return errors.Is(derived.Ping(context.Background()).Err(), redis.ErrClosed)
+	}, time.Second, 5*time.Millisecond, "the derived client's pool must be released when the router stops")
+	assert.NoError(t, shared.Ping(context.Background()).Err(), "the shared client belongs to the gateway and must stay usable")
 }
 
 // BenchmarkSessionAffinityRouterConcurrent hammers one router instance from many goroutines at
@@ -1135,4 +1161,46 @@ func TestSessionAffinityRedisReadGivesUpAtItsTimeout(t *testing.T) {
 
 	assert.Equal(t, rendezvousAddr, got, "an unanswered read must fall back to rendezvous")
 	assert.Less(t, elapsed, sessionKeyRedisReadTimeout+time.Second, "the request must not wait on Redis past its timeout")
+}
+
+// A Redis that accepts the connection but never answers must not hold a
+// request past sessionKeyRedisReadTimeout. The shared client leaves
+// ContextTimeoutEnabled off, so only the client Start derives bounds the
+// socket read by the context deadline.
+func TestSessionKeyReadBudgetOnSilentTCPConnection(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	stop := make(chan struct{})
+	t.Cleanup(func() {
+		_ = ln.Close()
+		close(stop)
+	})
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				<-stop
+				_ = c.Close()
+			}(conn)
+		}
+	}()
+
+	shared := redis.NewClient(&redis.Options{Addr: ln.Addr().String()})
+	t.Cleanup(func() { _ = shared.Close() })
+	router := &sessionAffinityRouter{}
+	router.Start(stop, shared)
+	t.Cleanup(func() { _ = router.redisClient.Close() })
+
+	labels := map[string]string{"model.aibrix.ai/port": "8000"}
+	pods := []*v1.Pod{
+		newPod("pod-a", "10.0.0.1", true, labels),
+		newPod("pod-b", "10.0.0.2", true, labels),
+	}
+	start := time.Now()
+	sessionAffinityRoute(t, router, "silent-redis", pods)
+	assert.Less(t, time.Since(start), sessionKeyRedisReadTimeout+time.Second,
+		"the request must degrade to rendezvousPod once the read budget is spent")
 }

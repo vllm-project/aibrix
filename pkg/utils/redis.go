@@ -34,6 +34,46 @@ func redisAddress(host, port string) string {
 	return net.JoinHostPort(host, port)
 }
 
+// NewRedisClientWithContextTimeout copies options from Client.Options and sets
+// ContextTimeoutEnabled while preserving effective timeouts, retry count and backoffs.
+// Timeout settings that disable socket deadline updates continue to do so.
+// Redis initialization commands (including HELLO and CLIENT SETINFO) share the caller's
+// deadline when socket deadline updates are enabled. A 100 ms budget assumes Redis RTT
+// well below about 30 ms; cold connections on slower links can exhaust it and prevent
+// the pool from growing.
+// The caller owns and must close the returned client. Nil options return nil.
+func NewRedisClientWithContextTimeout(clientOptions *redis.Options) *redis.Client {
+	if clientOptions == nil {
+		return nil
+	}
+	options := *clientOptions
+	options.ContextTimeoutEnabled = true
+	// NewClient normalizes disabled retries to 0, but reads 0 as the default on input.
+	if options.MaxRetries == 0 {
+		options.MaxRetries = -1
+	}
+	// Restore input sentinels so NewClient preserves normalized timeout/backoff values.
+	switch options.ReadTimeout {
+	case 0:
+		options.ReadTimeout = -1
+	case -1:
+		options.ReadTimeout = -2
+	}
+	switch options.WriteTimeout {
+	case 0:
+		options.WriteTimeout = -1
+	case -1:
+		options.WriteTimeout = -2
+	}
+	if options.MinRetryBackoff == 0 {
+		options.MinRetryBackoff = -1
+	}
+	if options.MaxRetryBackoff == 0 {
+		options.MaxRetryBackoff = -1
+	}
+	return redis.NewClient(&options)
+}
+
 func GetRedisClient() *redis.Client {
 	redisHost := LoadEnv("REDIS_HOST", "localhost")
 	redisPort := LoadEnv("REDIS_PORT", "6379")

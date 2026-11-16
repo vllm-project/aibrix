@@ -379,36 +379,6 @@ type multiStrategyRouter struct {
 	scorers map[string]types.PodScorer
 }
 
-// SeedCandidates collects the seeds of every blended strategy that has them, in config order,
-// up to max pods in total. See types.CandidateSeeder.
-func (m *multiStrategyRouter) SeedCandidates(ctx *types.RoutingContext, readyPodList types.PodList, max int) []*v1.Pod {
-	if max <= 0 {
-		return nil
-	}
-	var seeds []*v1.Pod
-	seen := make(map[*v1.Pod]struct{}, max)
-	for _, item := range m.config.Items {
-		if len(seeds) >= max {
-			break
-		}
-		seeder, ok := m.scorers[item.Name].(types.CandidateSeeder)
-		if !ok {
-			continue
-		}
-		// Cap here too: the total must stay within max even if a seeder returns more than asked.
-		for _, pod := range seeder.SeedCandidates(ctx, readyPodList, max-len(seeds)) {
-			if len(seeds) >= max {
-				break
-			}
-			if _, dup := seen[pod]; !dup {
-				seen[pod] = struct{}{}
-				seeds = append(seeds, pod)
-			}
-		}
-	}
-	return seeds
-}
-
 // newMultiStrategyRouter initializes a new multiStrategyRouter based on the parsed config
 func newMultiStrategyRouter(config *MultiRouterConfig, rm *RouterManager, ctx *types.RoutingContext) (*multiStrategyRouter, error) {
 	scorers := make(map[string]types.PodScorer)
@@ -724,6 +694,12 @@ func medianOf(values []float64) float64 {
 // magnitude-sensitive scoring for cases like a genuine proportional "sweet spot" pod that isn't
 // the best on any single strategy but is consistently close to the best on all of them.
 func (m *multiStrategyRouter) normalizeScoresArray(scores []float64, scored []bool, polarity types.Polarity) []float64 {
+	return normalizeScores(scores, scored, polarity)
+}
+
+// normalizeScores is normalizeScoresArray without a router, shared with the candidate stage so
+// it ranks pods on the same scale the blend scores them on.
+func normalizeScores(scores []float64, scored []bool, polarity types.Polarity) []float64 {
 	normScores := make([]float64, len(scores))
 
 	// Collect scored, finite raw values (and their original indices) to winsorize before

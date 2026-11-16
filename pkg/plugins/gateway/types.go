@@ -183,6 +183,10 @@ const (
 	// many items and the response is one JSON document with a base64-encoded result per item.
 	// isLanguageRequest matches it through the PathAudioSpeech prefix, so it is never parsed.
 	PathAudioSpeechBatch = "/v1/audio/speech/batch"
+	// PathAudioGenerate is vLLM-Omni's general audio generation endpoint (text to sound or music,
+	// as opposed to speech). Like PathAudioSpeech it takes a JSON request and returns binary audio,
+	// so its response is never parsed as JSON or SSE.
+	PathAudioGenerate = "/v1/audio/generate"
 	// PathAudioVoices is the engine's catalog of custom voices: GET lists them, POST uploads one
 	// as multipart/form-data and DELETE PathAudioVoices/{name} removes one. None of these requests
 	// names a model, and two of them have no body to carry one, so the gateway reads it from the

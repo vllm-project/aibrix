@@ -160,7 +160,7 @@ func TestUpdateRecentMean(t *testing.T) {
 		c.updateRecentMean(pod, model, metric, &metrics.HistogramMetricValue{Sum: 120, Count: 110})
 		stored, ok := pod.ModelMetrics.Load(c.getPodModelMetricName(model, recentName))
 		require.True(t, ok)
-		require.InDelta(t, 2.0, stored.GetSimpleValue(), 1e-9)
+		require.InDelta(t, 2.0, stored.Value.GetSimpleValue(), 1e-9)
 
 		// A new history in which the count did not move: nothing to average.
 		purgeRateHistoryNow(pod)
