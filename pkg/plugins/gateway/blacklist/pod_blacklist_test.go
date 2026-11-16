@@ -808,6 +808,79 @@ func TestPodBlacklist_SweepStale_RemovesOnlyOldEntries(t *testing.T) {
 	assert.True(t, freshStillPresent, "a recently touched entry should survive the sweep")
 }
 
+// FilterBlacklisted skips every lookup while PodBlacklist.excluded is zero, so a pod that
+// Allow rejects must always be one excludingLocked counts. This walks every combination of
+// the fields either reads, with the block's deadline before, at and after now, rather than
+// the states the sweeps happen to reach today.
+func TestPodFailureState_BlockingImpliesCounting(t *testing.T) {
+	now := time.Now()
+	deadlines := map[string]time.Time{
+		"never set":   {},
+		"ended":       now.Add(-time.Second),
+		"exactly now": now,
+		"running":     now.Add(time.Minute),
+	}
+	for _, breaker := range []circuitState{circuitClosed, circuitOpen} {
+		for _, loadExcluded := range []bool{false, true} {
+			for name, until := range deadlines {
+				state := &podFailureState{state: breaker, loadExcluded: loadExcluded, openUntil: until}
+				if state.blocksLocked(now) {
+					assert.True(t, state.excludingLocked(),
+						"breaker=%v loadExcluded=%v deadline %s: Allow would reject this pod, so the count must include it",
+						breaker, loadExcluded, name)
+				}
+			}
+		}
+	}
+
+	// And the two do differ where the comment says they do: a block that has ended is
+	// counted but no longer blocks.
+	ended := &podFailureState{state: circuitOpen, openUntil: now.Add(-time.Second)}
+	assert.True(t, ended.excludingLocked())
+	assert.False(t, ended.blocksLocked(now))
+}
+
+// An entry whose block has ended is still counted, which keeps every request off the
+// no-lookup path, and a pod that has left the fleet is no longer probed to close it. The
+// prune closes it, and the pod's trip count stays so a block it earns again still escalates.
+func TestPodBlacklist_SweepStale_StopsCountingABlockThatHasEnded(t *testing.T) {
+	var b PodBlacklist
+	pod := blacklistTestPod("gone")
+	tripBreaker(&b, pod)
+	require.True(t, b.IsBlacklisted(pod))
+	require.Equal(t, int64(1), b.excluded.Load())
+
+	state := lapseBlock(t, &b, pod)
+	assert.True(t, b.Allow(pod), "a block that has ended admits the pod")
+	assert.Equal(t, int64(1), b.excluded.Load(), "but nothing has written the entry, so it is still counted")
+
+	b.sweepStale(time.Now())
+
+	assert.Equal(t, int64(0), b.excluded.Load(), "the prune closes the block and takes it off the count")
+	assert.True(t, b.Allow(pod))
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	assert.Equal(t, circuitClosed, state.state)
+	assert.Equal(t, 1, state.tripCount, "closing the block keeps the trip count")
+}
+
+// The prune must not close a block that is still running, nor touch a load exclusion.
+func TestPodBlacklist_SweepStale_KeepsCountingWhatStillExcludes(t *testing.T) {
+	var b PodBlacklist
+	blocked, loaded := blacklistTestPod("blocked"), blacklistTestPod("loaded")
+	tripBreaker(&b, blocked)
+	require.True(t, b.SetLoadExcluded(loaded, true))
+	require.Equal(t, int64(2), b.excluded.Load())
+
+	b.sweepStale(time.Now())
+
+	assert.Equal(t, int64(2), b.excluded.Load())
+	assert.True(t, b.IsBlacklisted(blocked), "a block that is still running stays")
+	assert.True(t, b.IsBlacklisted(loaded), "a load exclusion is the load sweep's to lift")
+	assert.False(t, b.Allow(blocked))
+	assert.False(t, b.Allow(loaded))
+}
+
 func TestHTTPHealthCheckWithin(t *testing.T) {
 	t.Run("2xx response is healthy", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

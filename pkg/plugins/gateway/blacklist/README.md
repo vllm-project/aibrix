@@ -87,7 +87,7 @@ stateDiagram-v2
 
 ## 2. Routing gate: `Allow`
 
-`FilterBlacklisted` calls `Allow` on each pod it is given, before the routing algorithm runs. It does no network work. While no entry can exclude its pod (`excluded`, an exact count of the entries that are open or load-excluded, is zero) it returns the pods untouched without a lookup or an allocation, so a pod that has failed one probe, whose entry excludes nothing, does not put every request on the per-pod path. When it does look, it allocates only if it finds a pod to drop. An entry is created only by a failed sweep probe, a load exclusion or a flaky re-add, never by a request.
+`FilterBlacklisted` calls `Allow` on each pod it is given, before the routing algorithm runs. It does no network work. While no entry can exclude its pod (`excluded`, an exact count of the entries that are open or load-excluded, is zero) it returns the pods untouched without a lookup or an allocation, so a pod that has failed one probe, whose entry excludes nothing, does not put every request on the per-pod path. The count has no clock: it counts an open breaker even after its block has ended, so it can only over-count what `Allow` rejects, never under-count it, and `Allow` and `IsBlacklisted` answer from one deadline-aware check (`blocksLocked`). An entry whose block has ended stays counted, and keeps requests on the per-pod path, until the next probe result for the pod closes it or the 5-minute prune does; the prune is what ends it for a pod that has left the fleet and is no longer probed. When it does look, it allocates only if it finds a pod to drop. An entry is created only by a failed sweep probe, a load exclusion or a flaky re-add, never by a request.
 
 `Allow` only reads. It takes the entry's read lock, so one request never waits for another to finish with a pod's entry, and it does not count as a touch: an entry that routing keeps looking at but nothing changes ages out after `podBlacklistEntryTTL` like any other. The read lock's counter is still shared, so many goroutines asking about the same pod at once cost on the order of 100 ns each (measured: about 130 ns per call with 12 goroutines on one pod). What keeps routing cheap is not the lock but the `excluded` gate above, and with the candidate stage looking at K pods rather than all of them.
 
@@ -170,7 +170,7 @@ flowchart TD
 | `podProbeDeadBlacklistDuration` | 1 h | How long the sweep blacklists a pod it found dead |
 | `podProbeConcurrency` | 16 | Probes in flight during one sweep |
 | `flakyReAddOpenDuration` | 3 s | Hold after a flaky re-add |
-| `podBlacklistEntryTTL` / `podBlacklistSweepInterval` | 30 min / 5 min | An entry is pruned once it has been untouched this long, counted from the later of its last update and its `openUntil` |
+| `podBlacklistEntryTTL` / `podBlacklistSweepInterval` | 30 min / 5 min | An entry is pruned once it has been untouched this long, counted from the later of its last update and its `openUntil`. Each pass also closes a breaker whose block has ended, so it stops counting as excluded |
 | `loadOutlierCheckInterval` | 30 s | Load-outlier sweep period |
 | `loadOutlierStdDevThreshold` | 2.0 | Standard deviations above the peer mean |
 | `loadOutlierMinPods` | 3 | Fewest ready pods for a model to be scored |

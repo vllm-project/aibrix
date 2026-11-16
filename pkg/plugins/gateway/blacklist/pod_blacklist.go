@@ -191,9 +191,25 @@ type podFailureState struct {
 	removed bool
 }
 
+// blocksLocked reports whether state keeps its pod out of routing at now: it is
+// load-excluded, or its breaker is open with a block that has yet to end. Allow and
+// IsBlacklisted both answer from it, so routing has one definition of "excluded".
+// Caller must hold state.mu, for reading or writing.
+func (state *podFailureState) blocksLocked(now time.Time) bool {
+	return state.loadExcluded || (state.state == circuitOpen && now.Before(state.openUntil))
+}
+
 // excludingLocked reports whether state can exclude its pod: its breaker is open (even
 // if the block has ended and nothing has closed it yet) or it is load-excluded. Caller
 // must hold state.mu.
+//
+// It is what PodBlacklist.excluded counts, and it has no clock: the count only changes
+// when an entry is written, and nothing writes one when its block ends. It is therefore a
+// superset of blocksLocked at any instant, and must stay one: FilterBlacklisted skips
+// every lookup while the count is zero, so a pod that blocksLocked excludes but this does
+// not would be routed to. The other direction is the cost: an entry whose block has ended
+// is still counted, and keeps every request off the fast path, until a writer closes it
+// with lapseLocked (a probe sweep result, a flaky re-add) or sweepStale does.
 func (state *podFailureState) excludingLocked() bool {
 	return !state.removed && (state.loadExcluded || state.state == circuitOpen)
 }
@@ -540,11 +556,7 @@ func (b *PodBlacklist) Allow(pod *v1.Pod) bool {
 
 	state.mu.RLock()
 	defer state.mu.RUnlock()
-
-	if state.loadExcluded {
-		return false
-	}
-	return state.state != circuitOpen || !time.Now().Before(state.openUntil)
+	return !state.blocksLocked(time.Now())
 }
 
 // IsBlacklisted is a read-only exclusion check (open breaker or load-excluded).
@@ -568,10 +580,7 @@ func (b *PodBlacklist) IsBlacklisted(pod *v1.Pod) bool {
 
 	state.mu.RLock()
 	defer state.mu.RUnlock()
-	if state.loadExcluded {
-		return true
-	}
-	return state.state == circuitOpen && time.Now().Before(state.openUntil)
+	return state.blocksLocked(time.Now())
 }
 
 // IsQuarantined reports whether pod is inside the one-hour block the probe
@@ -999,6 +1008,16 @@ func (b *PodBlacklist) sweepStale(now time.Time) {
 		if now.Sub(last) > podBlacklistEntryTTL && b.pods.CompareAndDelete(key, value) {
 			b.tracked.Add(-1)
 			state.removed = true
+			b.syncCountLocked(state)
+		} else {
+			// A block that has ended still counts toward excluded, which keeps every request
+			// off FilterBlacklisted's no-lookup path. The sweeps close it when they next
+			// report on the pod, but a pod that has left the fleet is no longer probed and
+			// would otherwise stay counted until the entry's own TTL runs out. Closing it
+			// here is what the next writer would do; no reader's answer changes, since Allow
+			// and IsBlacklisted already look at the deadline and quarantinedUntil never
+			// outlasts openUntil.
+			state.lapseLocked(now)
 			b.syncCountLocked(state)
 		}
 		state.mu.Unlock()
