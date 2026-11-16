@@ -148,9 +148,10 @@ const (
 // nothing reports a request's outcome, so the next background sweep (see
 // RecordProbeResult) is what decides whether it is excluded again.
 type podFailureState struct {
-	// mu is a read-write lock: Allow, which routing calls for every candidate, only reads,
-	// so concurrent requests do not queue on a pod's entry. Everything that changes the
-	// state takes the write lock.
+	// mu is a read-write lock: Allow, which routing calls for every candidate, only reads, so
+	// one request never waits for another to finish with the entry. The lock's own counter is
+	// still shared, so many requests asking about the same pod at once still cost on the order
+	// of 100 ns each. Everything that changes the state takes the write lock.
 	mu    sync.RWMutex
 	state circuitState
 
@@ -521,8 +522,7 @@ func backoffDuration(tripCount int) time.Duration {
 // not open with a block that has yet to end. A pod whose block has ended is a
 // candidate again, with no probe request; the background sweep decides whether
 // it is excluded afresh. It only reads: it takes the entry's read lock and does
-// not count as a touch, so it neither contends with other requests nor keeps an
-// entry from aging out.
+// not count as a touch, so it does not keep an entry from aging out.
 func (b *PodBlacklist) Allow(pod *v1.Pod) bool {
 	if !Enabled || pod == nil {
 		return true
