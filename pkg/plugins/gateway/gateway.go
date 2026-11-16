@@ -1173,9 +1173,14 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		}
 
 		name := utils.ModelRouterName(model)
+		// Preserve the default for servers initialized without the constructor.
+		namespace := s.podNamespace
+		if namespace == "" {
+			namespace = defaultAIBrixNamespace
+		}
 		lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), httpRouteLookupTimeout)
 		defer cancel()
-		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(s.podNamespace).Get(lookupCtx, name, metav1.GetOptions{})
+		httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(namespace).Get(lookupCtx, name, metav1.GetOptions{})
 		if err != nil {
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				ttl := s.httprouteErrorTTL
@@ -1190,16 +1195,16 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		errMsg := []string{}
 		for _, status := range httproute.Status.Parents {
 			if len(status.Conditions) == 0 {
-				errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, does not have valid status", s.podNamespace, name))
+				errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, does not have valid status", namespace, name))
 				break
 			}
 			for _, condition := range status.Conditions {
 				if condition.Type == string(gatewayv1.RouteConditionAccepted) &&
 					condition.Reason != string(gatewayv1.RouteReasonAccepted) {
-					errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, route is not accepted: %s.", s.podNamespace, name, condition.Reason))
+					errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, route is not accepted: %s.", namespace, name, condition.Reason))
 				} else if condition.Type == string(gatewayv1.RouteConditionResolvedRefs) &&
 					condition.Reason != string(gatewayv1.RouteReasonResolvedRefs) {
-					errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, route's object references are not resolved: %s.", s.podNamespace, name, condition.Reason))
+					errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, route's object references are not resolved: %s.", namespace, name, condition.Reason))
 				}
 			}
 		}
