@@ -34,11 +34,11 @@ tests:
       - equal:
           path: spec.shutdown
           value:
-            drainTimeout: 270s
+            drainTimeout: 300s
             minDrainDuration: 10s
       - equal:
           path: spec.provider.kubernetes.envoyDeployment.patch.value.spec.template.spec.terminationGracePeriodSeconds
-          value: 300
+          value: 330
       - equal:
           path: spec.provider.kubernetes.envoyDeployment.strategy.rollingUpdate
           value:
@@ -72,6 +72,7 @@ tests:
   - it: rejects a drain consuming the readiness wait and cleanup budget
     set:
       gateway.envoyProxy.gracefulShutdown.enabled: true
+      gateway.envoyProxy.gracefulShutdown.terminationGracePeriodSeconds: 300
       gateway.envoyProxy.gracefulShutdown.drainTimeoutSeconds: 290
     asserts:
       - failedTemplate:
@@ -90,6 +91,7 @@ tests:
   - it: rejects a minimum duration consuming the entire drain timeout
     set:
       gateway.envoyProxy.gracefulShutdown.enabled: true
+      gateway.envoyProxy.gracefulShutdown.drainTimeoutSeconds: 270
       gateway.envoyProxy.gracefulShutdown.minDrainDurationSeconds: 270
     asserts:
       - failedTemplate:
