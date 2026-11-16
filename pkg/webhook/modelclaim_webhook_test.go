@@ -18,6 +18,7 @@ package webhook
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -163,7 +164,7 @@ func TestModelClaimWebhookUpdateCompatibility(t *testing.T) {
 		{"metadata", func(c *modelapi.ModelClaim) { c.Labels = map[string]string{"a": "b"} }, false},
 		{"finalizer", func(c *modelapi.ModelClaim) { c.Finalizers = nil }, false},
 		{"repair perGPU", func(c *modelapi.ModelClaim) { c.Spec.PerGPU.KVFloor = resource.MustParse("2Gi") }, false},
-		{"remove perGPU", func(c *modelapi.ModelClaim) { c.Spec.PerGPU = nil }, false},
+		{"remove invalid perGPU", func(c *modelapi.ModelClaim) { c.Spec.PerGPU = nil }, true},
 		{"new invalid perGPU", func(c *modelapi.ModelClaim) { c.Spec.PerGPU.KVFloor = resource.MustParse("-1Gi") }, true},
 		{"new blank artifact", func(c *modelapi.ModelClaim) { c.Spec.ArtifactURL = "\t" }, true},
 		{"new blank name", func(c *modelapi.ModelClaim) { c.Spec.ModelName = ptr.To(" ") }, true},
@@ -189,4 +190,67 @@ func TestModelClaimWebhookUpdateCompatibility(t *testing.T) {
 	}
 	_, err := (&ModelClaimWebhook{}).ValidateDelete(context.Background(), old)
 	require.NoError(t, err)
+}
+
+func TestModelClaimWebhookPerGPURemoval(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		perGPU  *modelapi.ModelClaimPerGPU
+		invalid bool
+	}{
+		{"valid declaration", validModelClaimForWebhookTest().Spec.PerGPU, true},
+		{"invalid declaration", &modelapi.ModelClaimPerGPU{MaximumFootprint: resource.MustParse("2Gi"), KVFloor: resource.MustParse("0")}, true},
+		{"legacy missing declaration", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old := validModelClaimForWebhookTest()
+			old.Spec.PerGPU = tc.perGPU
+			old.Finalizers = []string{"test/finalizer"}
+			updated := old.DeepCopy()
+			updated.Spec.PerGPU = nil
+			updated.Labels = map[string]string{"updated": "true"}
+			updated.Finalizers = nil
+			_, err := (&ModelClaimWebhook{}).ValidateUpdate(context.Background(), old, updated)
+			if !tc.invalid {
+				require.NoError(t, err)
+				return
+			}
+			require.True(t, apierrors.IsInvalid(err), "%v", err)
+			var status *apierrors.StatusError
+			require.ErrorAs(t, err, &status)
+			require.Len(t, status.ErrStatus.Details.Causes, 1)
+			require.Equal(t, "spec.perGPU", status.ErrStatus.Details.Causes[0].Field)
+			require.Equal(t, metav1.CauseTypeFieldValueRequired, status.ErrStatus.Details.Causes[0].Type)
+		})
+	}
+}
+
+func TestModelClaimWebhookEngineArgsRedacted(t *testing.T) {
+	for _, operation := range []string{"create", "update"} {
+		t.Run(operation, func(t *testing.T) {
+			old := validModelClaimForWebhookTest()
+			claim := old.DeepCopy()
+			claim.Spec.EngineConfig = &modelapi.ModelClaimEngineConfig{Args: map[string]string{
+				"--tensor-parallel-size":         "0",
+				"--api-key":                      "secret-api-key-value",
+				"--hf-token=secret-inline-token": "",
+			}}
+			var err error
+			if operation == "create" {
+				_, err = (&ModelClaimWebhook{}).ValidateCreate(context.Background(), claim)
+			} else {
+				_, err = (&ModelClaimWebhook{}).ValidateUpdate(context.Background(), old, claim)
+			}
+			var status *apierrors.StatusError
+			require.ErrorAs(t, err, &status)
+			require.Equal(t, "spec.engineConfig.args", status.ErrStatus.Details.Causes[0].Field)
+			require.Contains(t, err.Error(), "--tensor-parallel-size must be a positive integer")
+			encoded, marshalErr := json.Marshal(status.ErrStatus)
+			require.NoError(t, marshalErr)
+			for _, output := range []string{err.Error(), string(encoded)} {
+				require.NotContains(t, output, "secret-api-key-value")
+				require.NotContains(t, output, "secret-inline-token")
+			}
+		})
+	}
 }

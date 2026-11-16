@@ -104,7 +104,10 @@ var _ = ginkgo.Describe("ModelClaim admission", ginkgo.Serial, func() {
 		gomega.Expect(k8sClient.Status().Update(ctx, claim)).To(gomega.Succeed())
 		before = claim.DeepCopy()
 		claim.Spec.PerGPU = nil
-		gomega.Expect(k8sClient.Patch(ctx, claim, client.MergeFrom(before))).To(gomega.Succeed())
+		err := k8sClient.Patch(ctx, claim, client.MergeFrom(before))
+		gomega.Expect(apierrors.IsInvalid(err)).To(gomega.BeTrue(), "%v", err)
+		gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(claim), claim)).To(gomega.Succeed())
+		gomega.Expect(claim.Spec.PerGPU).NotTo(gomega.BeNil())
 	})
 
 	findConfiguration := func() (*admissionregistrationv1.ValidatingWebhookConfiguration, int) {
@@ -173,6 +176,9 @@ var _ = ginkgo.Describe("ModelClaim admission", ginkgo.Serial, func() {
 		invalid.Spec.PerGPU.KVFloor = resource.MustParse("-1Gi")
 		gomega.Expect(apierrors.IsInvalid(k8sClient.Patch(ctx, invalid, client.MergeFrom(legacy)))).To(gomega.BeTrue())
 		if !missingPerGPU {
+			removed := legacy.DeepCopy()
+			removed.Spec.PerGPU = nil
+			gomega.Expect(apierrors.IsInvalid(k8sClient.Patch(ctx, removed, client.MergeFrom(legacy)))).To(gomega.BeTrue())
 			before = legacy.DeepCopy()
 			legacy.Spec.PerGPU.KVFloor = resource.MustParse("1Gi")
 			gomega.Expect(k8sClient.Patch(ctx, legacy, client.MergeFrom(before))).To(gomega.Succeed())

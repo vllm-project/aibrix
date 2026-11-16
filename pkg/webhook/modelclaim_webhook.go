@@ -87,13 +87,13 @@ func validateModelClaim(oldClaim, claim *modelapi.ModelClaim) error {
 		// arguments to validate or include in a field error.
 		if spec.EngineConfig != nil && (spec.Engine == "" || spec.Engine == "vllm") {
 			if _, err := utils.ModelClaimVLLMParallelism(spec.EngineConfig); err != nil {
-				allErrs = append(allErrs, field.Invalid(path.Child("engineConfig", "args"), spec.EngineConfig.Args, err.Error()))
+				allErrs = append(allErrs, field.Invalid(path.Child("engineConfig", "args"), "<redacted>", err.Error()))
 			}
 		}
 	}
-	// Require a declaration for new claims without invalidating legacy objects
-	// on metadata updates or finalizer removal. Keep the schema optional.
-	if oldClaim == nil && spec.PerGPU == nil {
+	// Require a declaration on creation and prevent removal of an existing one.
+	// Grandfather absence only for legacy objects; keep the schema optional.
+	if spec.PerGPU == nil && (oldClaim == nil || oldClaim.Spec.PerGPU != nil) {
 		allErrs = append(allErrs, field.Required(path.Child("perGPU"), "a per-GPU cost declaration is required"))
 	}
 	if spec.PerGPU != nil && (oldClaim == nil || !equality.Semantic.DeepEqual(oldClaim.Spec.PerGPU, spec.PerGPU)) {
