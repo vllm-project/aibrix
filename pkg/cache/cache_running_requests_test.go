@@ -272,16 +272,58 @@ func TestAdmitRunningRequest_FailsOpenToLocalCountWhenEvalFails(t *testing.T) {
 }
 
 func TestAdmitRunningRequestsClient_DisablesRetries(t *testing.T) {
-	require.Nil(t, admitRunningRequestsClient(nil, nil))
+	require.Nil(t, admitRunningRequestsClient(nil))
 	shared := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0", MaxRetries: 5})
 	t.Cleanup(func() { _ = shared.Close() })
-	admit := admitRunningRequestsClient(shared, nil)
+	admit := admitRunningRequestsClient(utils.NewDirectRedisClients(shared))
 	t.Cleanup(func() { _ = admit.Close() })
 	require.Zero(t, admit.Options().MaxRetries, "go-redis normalises -1 to 0, meaning no retries")
 	require.Equal(t, 5, shared.Options().MaxRetries, "the shared client keeps its retries")
 	require.Equal(t, shared.Options().Addr, admit.Options().Addr)
 	require.True(t, admit.Options().ContextTimeoutEnabled)
 	require.False(t, shared.Options().ContextTimeoutEnabled, "the shared client's deadline behavior is unchanged")
+}
+
+func TestAdmitRunningRequestsClient_DirectClientsBoundsStalledEval(t *testing.T) {
+	mr := miniredis.RunT(t)
+	host, port, err := net.SplitHostPort(mr.Addr())
+	require.NoError(t, err)
+	t.Setenv("REDIS_SENTINEL_ENABLED", "false")
+	t.Setenv("REDIS_HOST", host)
+	t.Setenv("REDIS_PORT", port)
+	t.Setenv("REDIS_PASSWORD", "")
+	clients := utils.GetRedisClients()
+	shared := clients.Shared()
+	require.NotNil(t, shared)
+	t.Cleanup(func() { _ = shared.Close() })
+	previous := store
+	testStore := newStore(clients, nil, nil)
+	t.Cleanup(func() {
+		testStore.Close()
+		close(testStore.podMetricsJobs)
+		store = previous
+	})
+	require.False(t, shared.Options().ContextTimeoutEnabled)
+	require.True(t, testStore.admitRedisClient.Options().ContextTimeoutEnabled)
+	require.Zero(t, testStore.admitRedisClient.Options().MaxRetries)
+	require.NoError(t, testStore.admitRedisClient.Ping(context.Background()).Err())
+	var evals atomic.Int32
+	mr.Server().SetPreHook(func(_ *server.Peer, cmd string, _ ...string) bool {
+		if strings.EqualFold(cmd, "EVAL") {
+			evals.Add(1)
+			return true // Consume EVAL without replying; initialization commands still work.
+		}
+		return false
+	})
+	start := time.Now()
+	admitted, counted, running := testStore.admitRunningRequest(testNamespace, testPodName, 1, 0)
+	elapsed := time.Since(start)
+	t.Logf("stalled EVAL returned in %s with budget %s", elapsed, runningRequestsReadTimeout)
+	require.Less(t, elapsed, runningRequestsReadTimeout+time.Second)
+	require.EqualValues(t, 1, evals.Load(), "a non-idempotent EVAL must never be retried")
+	require.True(t, admitted)
+	require.True(t, counted, "a lost reply cannot prove EVAL did not run")
+	require.Zero(t, running)
 }
 
 func TestAdmitRunningRequestsClient_SentinelSwitchWithReachableOldMaster(t *testing.T) {
@@ -317,14 +359,15 @@ func TestAdmitRunningRequestsClient_SentinelSwitchWithReachableOldMaster(t *test
 	} {
 		t.Setenv(key, value)
 	}
-	shared, factory := utils.GetRedisClientWithFactory()
+	clients := utils.GetRedisClients()
+	shared := clients.Shared()
 	require.NotNil(t, shared)
 	t.Cleanup(func() { _ = shared.Close() })
 	t.Setenv("REDIS_SENTINEL_ENABLED", "false")
 	t.Setenv("REDIS_PASSWORD", "wrong-password")
 	previousStore := store
 	t.Cleanup(func() { store = previousStore })
-	testStore := newStore(shared, nil, nil, factory)
+	testStore := newStore(clients, nil, nil)
 	t.Cleanup(func() { close(testStore.podMetricsJobs) })
 	admit := testStore.admitRedisClient
 	t.Cleanup(func() { _ = admit.Close() })

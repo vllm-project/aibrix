@@ -192,6 +192,9 @@ Create the name of the metadata service service account
 {{- $gatewaySentinelEnabled := dig "enabled" false $gatewaySentinel -}}
 
 {{- if $gatewaySentinelEnabled -}}
+{{- if and (not (dig "authEnabled" true $gatewaySentinel)) (or (dig "username" "" $gatewaySentinel) (dig "password" "" $gatewaySentinel)) -}}
+{{- fail "gatewayPlugin.dependencies.redis.sentinel.authEnabled=false requires empty Sentinel username and password." -}}
+{{- end -}}
 {{- if $builtInRedisEnabled -}}
 {{- fail "gatewayPlugin.dependencies.redis.sentinel.enabled=true requires metadata.redis.enabled=false." -}}
 {{- end -}}
@@ -307,11 +310,11 @@ Use the same Redis environment for Sentinel discovery in the init and gateway co
   value: {{ $sentinel.masterName | trim | quote }}
 - name: REDIS_SENTINEL_ADDRESSES
   value: {{ join "," $sentinel.addresses | quote }}
-{{- if $sentinel.username }}
+{{- if and $sentinel.authEnabled $sentinel.username }}
 - name: REDIS_SENTINEL_USERNAME
   value: {{ $sentinel.username | quote }}
 {{- end }}
-{{- if or $sentinel.password $hasRedisPassword }}
+{{- if and $sentinel.authEnabled (or $sentinel.password $hasRedisPassword) }}
 - name: REDIS_SENTINEL_PASSWORD
   valueFrom:
     secretKeyRef:

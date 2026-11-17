@@ -106,9 +106,10 @@ type Server struct {
 	// per-replica job cache, so any replica can answer a follow-up for a job
 	// another replica created, with no reconciliation window. Built lazily by
 	// asyncJobRegistry() when not injected.
-	asyncJobs          AsyncJobRegistry
-	asyncJobsOnce      sync.Once
-	redisClientFactory utils.RedisClientFactory
+	asyncJobs        AsyncJobRegistry
+	asyncJobsOnce    sync.Once
+	redisClients     *utils.RedisClients
+	asyncRedisClient *redis.Client // Owned by this server; shared pool is borrowed.
 	// encodeExecutor runs the encode stage for E+PD rolesets. nil skips it.
 	encodeExecutor *encode.Executor
 	// Broadcast channel for server-initiated shutdown
@@ -281,9 +282,6 @@ const (
 type ServerOptions struct {
 	Cache         cache.Cache
 	RouterManager *routing.RouterManager
-	// RedisClientFactory preserves Sentinel discovery and pool invalidation for
-	// the async job store. Required when RedisClient is a FailoverClient.
-	RedisClientFactory utils.RedisClientFactory
 	// ModelListMode defaults to ModelListKnown.
 	ModelListMode ModelListMode
 	// VerifyModelList returns 503 when a current discovery snapshot cannot be
@@ -311,6 +309,12 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 // A supplied Cache without a RouterManager creates an isolated cache-aware
 // manager; with no options, production global cache and routing behavior apply.
 func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface, gatewayClient gatewayapi.Interface, options ServerOptions) *Server {
+	return NewServerWithRedisClients(utils.NewDirectRedisClients(redisClient), client, gatewayClient, options)
+}
+
+// NewServerWithRedisClients borrows the shared pool and owns its derived async pool.
+func NewServerWithRedisClients(clients *utils.RedisClients, client kubernetes.Interface, gatewayClient gatewayapi.Interface, options ServerOptions) *Server {
+	redisClient := clients.Shared()
 	c := options.Cache
 	if c == nil {
 		var err error
@@ -365,7 +369,7 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 	shutdown := make(chan struct{})
 	s := &Server{
 		redisClient:         redisClient,
-		redisClientFactory:  options.RedisClientFactory,
+		redisClients:        clients,
 		ratelimiter:         r,
 		modelRateLimiter:    mr,
 		disableRateLimiting: options.DisableRateLimiting,
@@ -386,9 +390,11 @@ func NewServerWithOptions(redisClient *redis.Client, client kubernetes.Interface
 		shutdownCh:          shutdown,
 		shutdown:            shutdown,
 	}
-	s.asyncJobs = newAsyncJobRegistryForClient(redisClient, c, options.RedisClientFactory)
+	s.asyncJobs, s.asyncRedisClient = newAsyncJobRegistryForClients(clients, c)
 	if sar, err := routerManager.Lookup(routing.RouterSessionAffinity); err == nil {
-		if rb, ok := sar.(routing.RedisBackedRouter); ok {
+		if rb, ok := sar.(routing.RedisClientsBackedRouter); ok {
+			rb.StartWithRedisClients(shutdown, clients)
+		} else if rb, ok := sar.(routing.RedisBackedRouter); ok {
 			rb.Start(shutdown, redisClient)
 		}
 	}
@@ -1279,6 +1285,15 @@ func (s *Server) Shutdown() {
 		if err := s.httpServer.Shutdown(ctx); err != nil {
 			klog.ErrorS(err, "Error stopping HTTP server")
 		}
+	}
+	// Synchronize with lazy initialization, and prevent a later call from opening a pool.
+	s.asyncJobsOnce.Do(func() {
+		if s.asyncJobs == nil {
+			s.asyncJobs = newMemoryAsyncJobRegistry(s.cache)
+		}
+	})
+	if s.asyncRedisClient != nil {
+		_ = s.asyncRedisClient.Close()
 	}
 }
 

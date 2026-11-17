@@ -121,6 +121,43 @@ tests:
           content:
             name: REDIS_SENTINEL_USERNAME
             value: "sentinel-user"
+  - it: should allow unauthenticated Sentinel with authenticated data nodes
+    set:
+      <<: *sentinelConfig
+      gatewayPlugin.dependencies.redis.password: "data-secret"
+      gatewayPlugin.dependencies.redis.sentinel.authEnabled: false
+    asserts:
+      - notContains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: REDIS_SENTINEL_PASSWORD
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_SENTINEL_PASSWORD
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_SENTINEL_USERNAME
+          any: true
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: REDIS_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: RELEASE-NAME-aibrix-redis
+                key: gateway-plugin-redis-password
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: RELEASE-NAME-aibrix-redis
+                key: gateway-plugin-redis-password
 ---
 suite: Gateway Redis Sentinel Validation
 templates:
@@ -153,6 +190,15 @@ tests:
     asserts:
       - hasDocuments:
           count: 0
+  - it: should reject credentials when Sentinel authentication is disabled
+    set:
+      <<: *sentinelValidation
+      metadata.redis.enabled: false
+      gatewayPlugin.dependencies.redis.sentinel.authEnabled: false
+      gatewayPlugin.dependencies.redis.sentinel.password: "sentinel-secret"
+    asserts:
+      - failedTemplate:
+          errorMessage: "gatewayPlugin.dependencies.redis.sentinel.authEnabled=false requires empty Sentinel username and password."
   - it: should reject duplicate managed environment variables
     set:
       <<: *sentinelValidation

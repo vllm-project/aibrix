@@ -247,12 +247,20 @@ and configure the gateway connection:
 metadata:
   redis:
     enabled: false
+  service:
+    redis:
+      host: "redis-master.example.svc.cluster.local"
+gpuOptimizer:
+  dependencies:
+    redis:
+      host: "redis-master.example.svc.cluster.local"
 gatewayPlugin:
   dependencies:
     redis:
       password: ""
       sentinel:
         enabled: true
+        authEnabled: true
         masterName: "mymaster"
         addresses:
           - "redis.redis-sentinel.svc.cluster.local:26379"
@@ -267,13 +275,17 @@ Sentinel port and the data-node port. In Sentinel mode, the gateway ignores the
 direct `host` and `port`; disabling Sentinel restores the existing direct mode.
 Other components retain their existing Redis configuration.
 
-When `sentinel.password` is empty, the chart reuses the gateway data-node
+With `sentinel.authEnabled=true` (the default), when `sentinel.password` is
+empty the chart reuses the gateway data-node
 password for Sentinel authentication, referencing the same Secret key in both
 containers. This includes the existing `metadata.redis.password` fallback, so
 one shared password configures both connections. An explicit `sentinel.password`
 overrides this fallback and uses a separate Secret key. If no password is
-configured, both connections are unauthenticated. Supply real passwords through
-a protected values file, not a committed file. `sentinel.username` optionally
+configured, both connections are unauthenticated. For unauthenticated Sentinel
+with authenticated data nodes, set `sentinel.authEnabled=false` and leave
+`sentinel.username` and `sentinel.password` empty; the data-node password still
+applies. Supply real passwords through a protected values file, not a committed
+file. `sentinel.username` optionally
 enables Sentinel ACL authentication. This password fallback is implemented by
 the chart; outside Helm, configure both password environment variables.
 
@@ -281,11 +293,17 @@ Sentinel mode requires a gateway image built with Sentinel support and the
 `--check-redis` flag. Build and publish that image, then update
 `gatewayPlugin.container.image.tag` before upgrading. The initContainer uses
 the same image and Redis settings as the gateway to discover and PING the
-master, without Kubernetes discovery or a shell. A failed check exits nonzero;
-Kubernetes retries the initContainer. Direct mode keeps the BusyBox check.
+master, without Kubernetes discovery or a shell. The check retries in the same
+process every two seconds after a failed attempt (each PING is bounded to ten
+seconds). It waits indefinitely by default; `--check-redis-timeout=60s` sets an
+overall limit and exits nonzero on expiry. SIGINT/SIGTERM cancel the check.
+Direct mode keeps the BusyBox check.
 
 The Go client receives master-switch notifications and rediscovers the master
-on reconnection. Requests depending on Redis can still fail during the failover
+on reconnection. Each pool logs successful connection address changes with its
+pool name and previous and current addresses; initial connections log at verbosity 2.
+These logs can help confirm that individual pools reconnect after a switch.
+Requests depending on Redis can still fail during the failover
 window; Sentinel does not guarantee zero data loss with asynchronous replication.
 This change does not migrate user records or configure Redis persistence.
 Back up and restore required records into the new cluster before switching.

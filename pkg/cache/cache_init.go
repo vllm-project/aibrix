@@ -55,9 +55,9 @@ type InitOptions struct {
 	// RedisClient is required for KVSync and other features. Can be nil.
 	RedisClient *redis.Client
 
-	// RedisClientFactory preserves independent Sentinel failover for the
-	// admission and read clients' pools. Required when RedisClient is a FailoverClient.
-	RedisClientFactory utils.RedisClientFactory
+	// RedisClients supplies shared and independent pools, including Sentinel discovery.
+	// Do not also supply RedisClient, which supports legacy direct clients only.
+	RedisClients *utils.RedisClients
 
 	// ModelRouterProvider is needed only by the gateway. Can be nil.
 	ModelRouterProvider ModelRouterProviderFunc
@@ -255,32 +255,22 @@ func Get() (Cache, error) {
 //
 //	Store: Initialized cache store instance
 func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterProvider ModelRouterProviderFunc) *Store {
-	return newStore(redisClient, prometheusApi, modelRouterProvider, nil)
+	return newStore(utils.NewDirectRedisClients(redisClient), prometheusApi, modelRouterProvider)
 }
 
-func newStore(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterProvider ModelRouterProviderFunc, redisClientFactory utils.RedisClientFactory) *Store {
+func newStore(clients *utils.RedisClients, prometheusApi prometheusv1.API, modelRouterProvider ModelRouterProviderFunc) *Store {
+	redisClient := clients.Shared()
 	podMetricsWorkerCount := loadPodMetricsWorkerCount()
 	podMetricsJobQueueSize := loadPodMetricsJobQueueSize(podMetricsWorkerCount)
 
 	var readRedisClient *redis.Client
 	if redisClient != nil {
-		if redisClientFactory != nil {
-			maxRetries := redisClient.Options().MaxRetries
-			if maxRetries == 0 {
-				maxRetries = -1
-			}
-			readRedisClient = redisClientFactory(&utils.RedisClientSettings{
-				MaxRetries:            maxRetries,
-				ContextTimeoutEnabled: true,
-			})
-		} else {
-			readRedisClient = utils.NewRedisClientWithContextTimeout(redisClient.Options())
-		}
+		readRedisClient = clients.Derive(&utils.RedisClientSettings{Name: "routing-read", MaxRetries: redisClient.Options().MaxRetries, ContextTimeoutEnabled: true})
 	}
 	store = &Store{
 		initialized:           true,
 		redisClient:           redisClient,
-		admitRedisClient:      admitRunningRequestsClient(redisClient, redisClientFactory),
+		admitRedisClient:      admitRunningRequestsClient(clients),
 		readRedisClient:       readRedisClient,
 		prometheusApi:         prometheusApi,
 		enableTracing:         enableGPUOptimizerTracing,
@@ -462,6 +452,15 @@ func InitForTest() *Store {
 //	*Store: Pointer to initialized store instance
 func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptions) *Store {
 	once.Do(func() {
+		clients := opts.RedisClients
+		if clients != nil && opts.RedisClient != nil {
+			panic("cache initialization requires either RedisClients or RedisClient")
+		}
+		if clients == nil {
+			clients = utils.NewDirectRedisClients(opts.RedisClient)
+		}
+		// All initialization paths use the same shared pool, including legacy checks.
+		opts.RedisClient = clients.Shared()
 		// Log initialization based on configuration
 		service := serviceIdentity(opts)
 
@@ -480,7 +479,7 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		}
 
 		// Create store with provided dependencies
-		store = newStore(opts.RedisClient, initPrometheusAPI(config), opts.ModelRouterProvider, opts.RedisClientFactory)
+		store = newStore(clients, initPrometheusAPI(config), opts.ModelRouterProvider)
 		store.disableModelClaimBindings = opts.DisableModelClaimPodBindings
 
 		// Initialize service discovery — all modes go through the Provider interface
@@ -557,7 +556,7 @@ func serviceIdentity(opts InitOptions) string {
 	switch {
 	case opts.IsGateway:
 		return "gateway"
-	case opts.RedisClient != nil:
+	case opts.RedisClient != nil || opts.RedisClients.Shared() != nil:
 		return "metadata"
 	default:
 		return "controllers"

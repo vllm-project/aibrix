@@ -95,6 +95,7 @@
                       "type": "object",
                       "properties": {
                         "enabled": { "type": "boolean" },
+                        "authEnabled": { "type": "boolean" },
                         "masterName": { "type": "string" },
                         "addresses": {
                           "type": "array",

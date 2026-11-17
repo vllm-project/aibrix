@@ -395,19 +395,8 @@ func admitScriptDidNotRun(err error) bool {
 // because go-redis reads 0 as "use the default".
 // Sentinel clients need their own failover callback; copying Options alone
 // leaves this pool connected to the old master after a switch notification.
-func admitRunningRequestsClient(client *redis.Client, factory utils.RedisClientFactory) *redis.Client {
-	if client == nil {
-		return nil
-	}
-	if factory != nil {
-		return factory(&utils.RedisClientSettings{
-			MaxRetries:            -1,
-			ContextTimeoutEnabled: client.Options().ContextTimeoutEnabled,
-		})
-	}
-	options := *client.Options()
-	options.MaxRetries = -1
-	return utils.NewRedisClientWithContextTimeout(&options)
+func admitRunningRequestsClient(clients *utils.RedisClients) *redis.Client {
+	return clients.Derive(&utils.RedisClientSettings{Name: "admission", ContextTimeoutEnabled: true})
 }
 
 // heartbeatRunningRequestsLiveness refreshes this gateway instance's entry in

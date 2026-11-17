@@ -40,6 +40,9 @@ import (
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -1486,7 +1489,7 @@ func TestAsyncJobStoreClient_DisablesGoRedisInternalRetries(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: server.addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
-	derived := asyncJobStoreClient(client, nil)
+	derived := asyncJobStoreClient(utils.NewDirectRedisClients(client))
 	t.Cleanup(func() { _ = derived.Close() })
 	store := newRedisAsyncJobStore(derived)
 	_, err := store.get(context.Background(), asyncJobOwnerShared, "job-1")
@@ -1501,7 +1504,7 @@ func TestAsyncJobStoreClient_BoundsBlockedNetworkReadByContext(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: server.addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
-	derived := asyncJobStoreClient(client, nil)
+	derived := asyncJobStoreClient(utils.NewDirectRedisClients(client))
 	t.Cleanup(func() { _ = derived.Close() })
 	store := newRedisAsyncJobStore(derived)
 	store.retry = asyncJobRetryPolicy{maxAttempts: 1, baseBackoff: time.Millisecond, deadline: 80 * time.Millisecond}
@@ -1521,7 +1524,7 @@ func TestAsyncJobStoreClient_KeepsConnectionSettings(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: "10.0.0.9:6379", Password: "s3cret", DB: 3})
 	t.Cleanup(func() { _ = client.Close() })
 
-	derived := asyncJobStoreClient(client, nil)
+	derived := asyncJobStoreClient(utils.NewDirectRedisClients(client))
 	t.Cleanup(func() { _ = derived.Close() })
 
 	assert.Equal(t, "10.0.0.9:6379", derived.Options().Addr)
@@ -1529,6 +1532,50 @@ func TestAsyncJobStoreClient_KeepsConnectionSettings(t *testing.T) {
 	assert.Equal(t, 3, derived.Options().DB)
 	assert.Equal(t, 0, derived.Options().MaxRetries, "go-redis normalizes a disabled retry loop to zero retries")
 	assert.True(t, derived.Options().ContextTimeoutEnabled)
+}
+
+func TestAsyncJobRegistryShutdownClosesOnlyOwnedPool(t *testing.T) {
+	mr := miniredis.RunT(t)
+	shared := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = shared.Close() })
+	s := &Server{redisClient: shared, cache: &MockCache{}}
+	registry := s.asyncJobRegistry()
+	owned := s.asyncRedisClient
+	require.NotNil(t, owned)
+	require.NoError(t, owned.Ping(context.Background()).Err())
+	s.Shutdown()
+	s.Shutdown()
+	require.ErrorIs(t, owned.Ping(context.Background()).Err(), redis.ErrClosed)
+	require.NoError(t, shared.Ping(context.Background()).Err())
+	require.Same(t, registry, s.asyncJobRegistry())
+
+	uninitialized := &Server{redisClient: shared, cache: &MockCache{}}
+	uninitialized.Shutdown()
+	require.IsType(t, &memoryAsyncJobRegistry{}, uninitialized.asyncJobRegistry())
+	require.Nil(t, uninitialized.asyncRedisClient, "no pool should open after shutdown")
+
+	injected := newRedisAsyncJobRegistry(shared, &MockCache{})
+	s = &Server{asyncJobs: injected, cache: &MockCache{}}
+	s.Shutdown()
+	require.Same(t, injected, s.asyncJobRegistry())
+	require.NoError(t, shared.Ping(context.Background()).Err(), "injected registry is borrowed")
+
+	concurrent := &Server{redisClient: shared, cache: &MockCache{}}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		concurrent.asyncJobRegistry()
+	}()
+	go func() {
+		defer wg.Done()
+		concurrent.Shutdown()
+	}()
+	wg.Wait()
+	if concurrent.asyncRedisClient != nil {
+		require.ErrorIs(t, concurrent.asyncRedisClient.Ping(context.Background()).Err(), redis.ErrClosed)
+	}
+	require.NoError(t, shared.Ping(context.Background()).Err())
 }
 
 func TestAsyncJobStoreClient_SentinelSwitchWithReachableOldMaster(t *testing.T) {
@@ -1564,19 +1611,32 @@ func TestAsyncJobStoreClient_SentinelSwitchWithReachableOldMaster(t *testing.T) 
 	} {
 		t.Setenv(key, value)
 	}
-	shared, factory := utils.GetRedisClientWithFactory()
+	clients := utils.GetRedisClients()
+	shared := clients.Shared()
 	require.NotNil(t, shared)
 	t.Cleanup(func() { _ = shared.Close() })
 	// The derived client must use the startup snapshot, not current env values.
 	t.Setenv("REDIS_SENTINEL_ENABLED", "false")
 	t.Setenv("REDIS_PASSWORD", "wrong-password")
 	cache.InitForTest()
-	gateway := NewServerWithOptions(shared, nil, nil, ServerOptions{
+	gateway := NewServerWithRedisClients(clients, nil, nil, ServerOptions{
 		Cache:               &MockCache{},
-		RedisClientFactory:  factory,
 		DisableRateLimiting: true,
 	})
 	t.Cleanup(gateway.Shutdown)
+	sessionRouter, err := gateway.routerManager.Lookup(routing.RouterSessionAffinity)
+	require.NoError(t, err)
+	probe := types.NewRoutingContext(ctx, "sentinel-wiring", "model", "", "", "")
+	probe.ReqHeaders = map[string]string{constants.HeaderSessionKey: "probe"}
+	_, _, err = sessionRouter.(types.PodScorer).ScoreAll(probe, &utils.PodArray{})
+	require.NoError(t, err)
+	var newMasterSessionReads atomic.Int32
+	newMaster.Server().SetPreHook(func(_ *server.Peer, cmd string, args ...string) bool {
+		if strings.EqualFold(cmd, "GET") && len(args) == 1 && strings.HasPrefix(args[0], "aibrix:gateway:session_affinity:") {
+			newMasterSessionReads.Add(1)
+		}
+		return false
+	})
 	store := gateway.asyncJobRegistry().(*redisAsyncJobRegistry).store.(*redisAsyncJobStore)
 	derived := store.client.(*redis.Client)
 	t.Cleanup(func() { _ = derived.Close() })
@@ -1597,7 +1657,7 @@ func TestAsyncJobStoreClient_SentinelSwitchWithReachableOldMaster(t *testing.T) 
 	t.Cleanup(func() { _ = sentinelClient.Close() })
 	require.Eventually(t, func() bool {
 		counts, err := sentinelClient.PubSubNumSub(ctx, "+switch-master").Result()
-		return err == nil && counts["+switch-master"] == 2
+		return err == nil && counts["+switch-master"] == 3
 	}, time.Second, 10*time.Millisecond)
 	oldHost, oldPort, _ := net.SplitHostPort(oldMaster.Addr())
 	newHost, newPort, _ := net.SplitHostPort(newMaster.Addr())
@@ -1605,7 +1665,8 @@ func TestAsyncJobStoreClient_SentinelSwitchWithReachableOldMaster(t *testing.T) 
 	require.Positive(t, sentinel.Publish("+switch-master",
 		fmt.Sprintf("mymaster %s %s %s %s", oldHost, oldPort, newHost, newPort)))
 	require.Eventually(t, func() bool {
-		return shared.Get(ctx, "marker").Val() == "new"
+		_, _, probeErr := sessionRouter.(types.PodScorer).ScoreAll(probe, &utils.PodArray{})
+		return probeErr == nil && newMasterSessionReads.Load() > 0 && shared.Get(ctx, "marker").Val() == "new"
 	}, 2*time.Second, 10*time.Millisecond)
 	// Keep the old master alive: successful reads must not pin the task store
 	// to its stale pool after Sentinel announces the new master.

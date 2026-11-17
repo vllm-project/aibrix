@@ -98,6 +98,7 @@ gatewayPlugin:
       password: ""
       sentinel:
         enabled: false
+        authEnabled: true # Set false for unauthenticated Sentinel with authenticated data nodes.
         masterName: ""
         addresses: []
         username: ""

@@ -1,0 +1,58 @@
+suite: Other components retain direct Redis with Sentinel gateway
+templates:
+  - metadata-service/deployment.yaml
+  - gpu-optimizer/deployment.yaml
+tests:
+  - it: should preserve each component host and password
+    set:
+      metadata.redis.enabled: false
+      metadata.service.redis.host: "metadata-redis"
+      metadata.service.redis.password: "metadata-secret"
+      gpuOptimizer.dependencies.redis.host: "optimizer-redis"
+      gpuOptimizer.dependencies.redis.password: "optimizer-secret"
+      gatewayPlugin.dependencies.redis.sentinel.enabled: true
+      gatewayPlugin.dependencies.redis.sentinel.masterName: "mymaster"
+      gatewayPlugin.dependencies.redis.sentinel.addresses: ["sentinel:26379"]
+    asserts:
+      - template: metadata-service/deployment.yaml
+        contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_HOST
+            value: "metadata-redis"
+      - template: metadata-service/deployment.yaml
+        contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: RELEASE-NAME-aibrix-redis
+                key: metadata-service-redis-password
+      - template: gpu-optimizer/deployment.yaml
+        contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_HOST
+            value: "optimizer-redis"
+      - template: gpu-optimizer/deployment.yaml
+        contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: RELEASE-NAME-aibrix-redis
+                key: gpu-optimizer-redis-password
+      - template: metadata-service/deployment.yaml
+        notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_SENTINEL_ENABLED
+          any: true
+      - template: gpu-optimizer/deployment.yaml
+        notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_SENTINEL_ENABLED
+          any: true

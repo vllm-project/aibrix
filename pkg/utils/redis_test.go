@@ -18,8 +18,11 @@ package utils
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -48,13 +51,13 @@ func TestRedisAddress(t *testing.T) {
 		port string
 		want string
 	}{
-		{"hostname", "localhost", "6379", "localhost:6379"},
-		{"IPv4", "127.0.0.1", "6379", "127.0.0.1:6379"},
-		{"IPv6", "::1", "6379", "[::1]:6379"},
-		{"bracketed IPv6", "[::1]", "6379", "[::1]:6379"},
-		{"IPv6 documentation", "2001:db8::1", "6379", "[2001:db8::1]:6379"},
-		{"bracketed IPv6 documentation", "[2001:db8::1]", "6379", "[2001:db8::1]:6379"},
-		{"padded hostname", " localhost ", "6379", "localhost:6379"},
+		{name: "hostname", host: "localhost", port: "6379", want: "localhost:6379"},
+		{name: "IPv4", host: "127.0.0.1", port: "6379", want: "127.0.0.1:6379"},
+		{name: "IPv6", host: "::1", port: "6379", want: "[::1]:6379"},
+		{name: "bracketed IPv6", host: "[::1]", port: "6379", want: "[::1]:6379"},
+		{name: "IPv6 documentation", host: "2001:db8::1", port: "6379", want: "[2001:db8::1]:6379"},
+		{name: "bracketed IPv6 documentation", host: "[2001:db8::1]", port: "6379", want: "[2001:db8::1]:6379"},
+		{name: "padded hostname", host: " localhost ", port: "6379", want: "localhost:6379"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -66,6 +69,38 @@ func TestRedisAddress(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = client.Close() })
 			require.Equal(t, tt.want, client.Options().Addr)
+		})
+	}
+}
+
+func TestCheckRedisConnectivityReleasesPool(t *testing.T) {
+	for _, stalled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stalled=%t", stalled), func(t *testing.T) {
+			resetRedisEnv(t)
+			mr := miniredis.RunT(t)
+			t.Setenv("REDIS_HOST", mr.Host())
+			t.Setenv("REDIS_PORT", mr.Port())
+			disconnected := make(chan struct{})
+			mr.Server().SetPreHook(func(peer *server.Peer, cmd string, _ ...string) bool {
+				if strings.EqualFold(cmd, "PING") {
+					peer.OnDisconnect(func() { close(disconnected) })
+					return stalled
+				}
+				return false
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			err := CheckRedisConnectivity(ctx)
+			if stalled {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			select {
+			case <-disconnected:
+			case <-time.After(time.Second):
+				t.Fatal("connectivity check leaked its Redis connection")
+			}
 		})
 	}
 }
@@ -143,20 +178,21 @@ func TestRedisDirectClient(t *testing.T) {
 	require.Equal(t, "ok", value)
 }
 
-func TestRedisDirectClientFactorySnapshot(t *testing.T) {
+func TestRedisDirectClientsSnapshot(t *testing.T) {
 	resetRedisEnv(t)
 	s := miniredis.RunT(t)
 	s.RequireAuth("data-password")
 	t.Setenv("REDIS_HOST", s.Host())
 	t.Setenv("REDIS_PORT", s.Port())
 	t.Setenv("REDIS_PASSWORD", "data-password")
-	client, factory := GetRedisClientWithFactory()
+	clients := GetRedisClients()
+	client := clients.Shared()
 	require.NotNil(t, client)
-	require.NotNil(t, factory)
+	require.NotNil(t, clients)
 	t.Cleanup(func() { _ = client.Close() })
 	t.Setenv("REDIS_HOST", "invalid")
 	t.Setenv("REDIS_PASSWORD", "wrong-password")
-	derived := factory(&RedisClientSettings{MaxRetries: -1, ContextTimeoutEnabled: true})
+	derived := clients.Derive(&RedisClientSettings{ContextTimeoutEnabled: true})
 	t.Cleanup(func() { _ = derived.Close() })
 	require.Equal(t, s.Addr(), derived.Options().Addr)
 	require.Equal(t, "data-password", derived.Options().Password)
@@ -252,4 +288,84 @@ func TestRedisSentinelDiscoveryAndReconnect(t *testing.T) {
 	value, err = newMaster.Get("after")
 	require.NoError(t, err)
 	require.Equal(t, "ok", value)
+}
+
+func TestRedisClientsOwnership(t *testing.T) {
+	var empty *RedisClients
+	require.Nil(t, empty.Shared())
+	require.Nil(t, empty.Derive(nil))
+	require.NoError(t, empty.Close())
+
+	mr := miniredis.RunT(t)
+	shared := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1, ReadTimeout: -2, MinRetryBackoff: -1})
+	clients := NewDirectRedisClients(shared)
+	t.Cleanup(func() { _ = clients.Close() })
+	original := *shared.Options()
+	first := clients.Derive(nil)
+	second := clients.Derive(&RedisClientSettings{ContextTimeoutEnabled: true})
+	t.Cleanup(func() { _ = first.Close(); _ = second.Close() })
+	require.Equal(t, original.MaxRetries, first.Options().MaxRetries)
+	require.Equal(t, original.ReadTimeout, first.Options().ReadTimeout)
+	require.Equal(t, original.MinRetryBackoff, first.Options().MinRetryBackoff)
+	require.Equal(t, original.ContextTimeoutEnabled, first.Options().ContextTimeoutEnabled)
+	require.NotSame(t, shared, first)
+	require.NotSame(t, first, second)
+	require.NoError(t, first.Close())
+	require.NoError(t, shared.Ping(context.Background()).Err())
+	require.NoError(t, second.Ping(context.Background()).Err())
+	require.NoError(t, clients.Close())
+	require.ErrorIs(t, shared.Ping(context.Background()).Err(), redis.ErrClosed)
+	require.NoError(t, second.Ping(context.Background()).Err())
+	require.Equal(t, original.ContextTimeoutEnabled, shared.Options().ContextTimeoutEnabled)
+}
+
+func TestRedisClientsRejectBareSentinel(t *testing.T) {
+	client := redis.NewFailoverClient(&redis.FailoverOptions{MasterName: "mymaster", SentinelAddrs: []string{"127.0.0.1:0"}})
+	t.Cleanup(func() { _ = client.Close() })
+	require.PanicsWithValue(t, "Sentinel clients require GetRedisClients; a bare FailoverClient cannot derive independent pools", func() {
+		NewDirectRedisClients(client)
+	})
+}
+
+type redisTestConn struct {
+	net.Conn
+	address net.Addr
+}
+
+func (c redisTestConn) RemoteAddr() net.Addr { return c.address }
+
+func TestRedisAddressHook(t *testing.T) {
+	var events [][3]string
+	hook := &redisAddressHook{name: "admission", emit: func(name, previous, current string) {
+		events = append(events, [3]string{name, previous, current})
+	}}
+	dial := func(port int, err error) redis.DialHook {
+		return hook.DialHook(func(context.Context, string, string) (net.Conn, error) {
+			if err != nil {
+				return nil, err
+			}
+			return redisTestConn{address: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}}, nil
+		})
+	}
+	ctx := context.Background()
+	_, err := dial(6379, nil)(ctx, "tcp", "master")
+	require.NoError(t, err)
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = dial(6379, nil)(ctx, "tcp", "master")
+		}()
+	}
+	wg.Wait()
+	failure := errors.New("dial failed")
+	_, err = dial(6380, failure)(ctx, "tcp", "master")
+	require.ErrorIs(t, err, failure)
+	_, err = dial(6380, nil)(ctx, "tcp", "master")
+	require.NoError(t, err)
+	require.Equal(t, [][3]string{
+		{"admission", "", "127.0.0.1:6379"},
+		{"admission", "127.0.0.1:6379", "127.0.0.1:6380"},
+	}, events, "failed dials and unchanged addresses must not emit switch logs")
 }

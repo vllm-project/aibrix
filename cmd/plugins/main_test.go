@@ -17,8 +17,10 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -36,6 +38,46 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 )
+
+func TestCheckRedisConnectivityRetriesUntilReady(t *testing.T) {
+	attempts := 0
+	err := checkRedisConnectivity(context.Background(), time.Millisecond, func(ctx context.Context) error {
+		require.NoError(t, ctx.Err())
+		_, bounded := ctx.Deadline()
+		require.True(t, bounded)
+		attempts++
+		if attempts < 3 {
+			return fmt.Errorf("master unavailable")
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, 3, attempts)
+}
+
+func TestCheckRedisConnectivityStops(t *testing.T) {
+	t.Run("cancel during retry", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		attempts := 0
+		err := checkRedisConnectivity(ctx, time.Hour, func(context.Context) error {
+			attempts++
+			cancel()
+			return fmt.Errorf("not ready")
+		})
+		require.ErrorIs(t, err, context.Canceled)
+		require.Equal(t, 1, attempts)
+	})
+	t.Run("deadline during ping", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+		err := checkRedisConnectivity(ctx, time.Hour, func(attemptCtx context.Context) error {
+			<-attemptCtx.Done()
+			return attemptCtx.Err()
+		})
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	})
+}
 
 func TestModelDiscoveryFlags(t *testing.T) {
 	for _, tc := range []struct {

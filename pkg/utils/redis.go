@@ -22,6 +22,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -31,13 +32,84 @@ import (
 
 // RedisClientSettings overrides the per-client command retry and timeout policy.
 type RedisClientSettings struct {
+	Name                  string
 	MaxRetries            int
 	ContextTimeoutEnabled bool
 }
 
-// RedisClientFactory creates independent pools from a Redis configuration
+// redisClientFactory creates independent pools from a Redis configuration
 // snapshot. A nil settings argument preserves the configured defaults.
-type RedisClientFactory func(settings *RedisClientSettings) *redis.Client
+type redisClientFactory func(settings *RedisClientSettings) *redis.Client
+
+// RedisClients holds the shared pool and its immutable connection configuration.
+// Close releases only Shared; each consumer owns and closes the pools it derives.
+type RedisClients struct {
+	shared  *redis.Client
+	factory redisClientFactory
+}
+
+func (c *RedisClients) Shared() *redis.Client {
+	if c == nil {
+		return nil
+	}
+	return c.shared
+}
+
+func (c *RedisClients) Close() error {
+	if c.Shared() == nil {
+		return nil
+	}
+	return c.shared.Close()
+}
+
+// Derive creates an independent pool. Zero MaxRetries means no command retries;
+// nil settings preserves the configured defaults.
+func (c *RedisClients) Derive(settings *RedisClientSettings) *redis.Client {
+	if c.Shared() == nil {
+		return nil
+	}
+	if settings != nil {
+		copySettings := *settings
+		if copySettings.MaxRetries == 0 {
+			copySettings.MaxRetries = -1
+		}
+		settings = &copySettings
+	}
+	return c.factory(settings)
+}
+
+// NewDirectRedisClients wraps a direct client without changing it.
+// Consumers borrow Shared; the original caller retains responsibility for closing it.
+// Use GetRedisClients for Sentinel: copying Options loses pool invalidation.
+func NewDirectRedisClients(client *redis.Client) *RedisClients {
+	if client == nil {
+		return nil
+	}
+	if client.Options().Addr == "FailoverClient" {
+		panic("Sentinel clients require GetRedisClients; a bare FailoverClient cannot derive independent pools")
+	}
+	options := *client.Options()
+	return &RedisClients{shared: client, factory: func(settings *RedisClientSettings) *redis.Client {
+		opt := redisOptionsInput(options)
+		if settings != nil {
+			opt.MaxRetries = settings.MaxRetries
+			opt.ContextTimeoutEnabled = settings.ContextTimeoutEnabled
+		}
+		return redis.NewClient(&opt)
+	}}
+}
+
+// CheckRedisConnectivity checks the configured master and releases its pool.
+// Unlike GetRedisClient, it honors cancellation and reports configuration errors.
+func CheckRedisConnectivity(ctx context.Context) error {
+	factory, err := newRedisClientFactoryFromEnv()
+	if err != nil {
+		return err
+	}
+	client := factory(&RedisClientSettings{MaxRetries: -1, ContextTimeoutEnabled: true})
+	defer func() { _ = client.Close() }()
+	return client.Ping(ctx).Err()
+}
 
 func redisAddress(host, port string) string {
 	host = strings.TrimSpace(host)
@@ -59,8 +131,12 @@ func NewRedisClientWithContextTimeout(clientOptions *redis.Options) *redis.Clien
 	if clientOptions == nil {
 		return nil
 	}
-	options := *clientOptions
+	options := redisOptionsInput(*clientOptions)
 	options.ContextTimeoutEnabled = true
+	return redis.NewClient(&options)
+}
+
+func redisOptionsInput(options redis.Options) redis.Options {
 	// NewClient normalizes disabled retries to 0, but reads 0 as the default on input.
 	if options.MaxRetries == 0 {
 		options.MaxRetries = -1
@@ -84,21 +160,19 @@ func NewRedisClientWithContextTimeout(clientOptions *redis.Options) *redis.Clien
 	if options.MaxRetryBackoff == 0 {
 		options.MaxRetryBackoff = -1
 	}
-	return redis.NewClient(&options)
+	return options
 }
 
 func GetRedisClient() *redis.Client {
-	client, _ := GetRedisClientWithFactory()
-	return client
+	return GetRedisClients().Shared()
 }
 
-// GetRedisClientWithFactory returns a connected client and a factory for clients
-// with the same connection settings, including independent Sentinel failover.
-func GetRedisClientWithFactory() (*redis.Client, RedisClientFactory) {
+// GetRedisClients returns the shared pool and independent-pool configuration.
+func GetRedisClients() *RedisClients {
 	factory, err := newRedisClientFactoryFromEnv()
 	if err != nil {
 		klog.Warningf("Invalid Redis configuration: %v", err)
-		return nil, nil
+		return nil
 	}
 	client := factory(nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -109,10 +183,10 @@ func GetRedisClientWithFactory() (*redis.Client, RedisClientFactory) {
 		if closeErr := client.Close(); closeErr != nil {
 			klog.Warningf("Error closing Redis client: %v", closeErr)
 		}
-		return nil, nil
+		return nil
 	}
 	klog.Infof("Connected to Redis: %s", pong)
-	return client, factory
+	return &RedisClients{shared: client, factory: factory}
 }
 
 func newRedisClientFromEnv() (*redis.Client, error) {
@@ -123,7 +197,7 @@ func newRedisClientFromEnv() (*redis.Client, error) {
 	return factory(nil), nil
 }
 
-func newRedisClientFactoryFromEnv() (RedisClientFactory, error) {
+func newRedisClientFactoryFromEnv() (redisClientFactory, error) {
 	sentinelEnabled, err := strconv.ParseBool(LoadEnv("REDIS_SENTINEL_ENABLED", "false"))
 	if err != nil {
 		return nil, fmt.Errorf("REDIS_SENTINEL_ENABLED must be a boolean")
@@ -170,7 +244,13 @@ func newRedisClientFactoryFromEnv() (RedisClientFactory, error) {
 			}
 			// Copying a FailoverClient's Options only shares its Dialer, not
 			// its pool invalidation callback. Each pool needs its own failover.
-			return redis.NewFailoverClient(&opt)
+			client := redis.NewFailoverClient(&opt)
+			name := "shared"
+			if settings != nil && settings.Name != "" {
+				name = settings.Name
+			}
+			client.AddHook(&redisAddressHook{name: name, emit: logRedisAddress})
+			return client
 		}, nil
 	}
 	redisHost := LoadEnv("REDIS_HOST", "localhost")
@@ -188,4 +268,45 @@ func newRedisClientFactoryFromEnv() (RedisClientFactory, error) {
 		}
 		return redis.NewClient(&opt)
 	}, nil
+}
+
+// Observe successful connections per pool, without replacing go-redis's global logger.
+// A notification alone does not imply that a pool has connected to the new master.
+type redisAddressHook struct {
+	mu      sync.Mutex
+	name    string
+	address string
+	emit    func(name, previous, current string)
+}
+
+func logRedisAddress(name, previous, current string) {
+	if previous == "" {
+		klog.V(2).InfoS("Redis pool connected", "pool", name, "address", current)
+		return
+	}
+	klog.InfoS("Redis pool connection address changed", "pool", name, "previousAddress", previous, "address", current)
+}
+
+func (h *redisAddressHook) DialHook(next redis.DialHook) redis.DialHook {
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := next(ctx, network, address)
+		if err == nil {
+			current := conn.RemoteAddr().String()
+			h.mu.Lock()
+			if current != h.address {
+				h.emit(h.name, h.address, current)
+				h.address = current
+			}
+			h.mu.Unlock()
+		}
+		return conn, err
+	}
+}
+
+func (h *redisAddressHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return next
+}
+
+func (h *redisAddressHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
 }
