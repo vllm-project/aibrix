@@ -128,7 +128,7 @@ func TestTRTAsyncPrefillFailures(t *testing.T) {
 			require.Eventually(t, func() bool {
 				active, _ := exec.tokenLoad.GetLoad(podKey)
 				return active == 0
-			}, 5*time.Second, time.Millisecond)
+			}, 5*time.Second, 100*time.Millisecond)
 			if class == pd.PrefillFailureCanceled || class == pd.PrefillFailureTimeout {
 				select {
 				case <-disconnected:
