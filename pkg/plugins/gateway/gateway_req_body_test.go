@@ -704,9 +704,9 @@ func Test_handleRequestBody(t *testing.T) {
 
 			// Create server with mock cache
 			server := &Server{
-				cache:         mockCache,
-				gatewayClient: mockGW,
-				podNamespace:  defaultAIBrixNamespace,
+				cache:            mockCache,
+				gatewayClient:    mockGW,
+				gatewayNamespace: "aibrix-system",
 			}
 
 			// Create request for the test case

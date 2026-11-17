@@ -12,9 +12,24 @@ Variables of type `duration` are parsed with Go's [`time.ParseDuration`](https:/
 |---|---|---|---|---|
 | `AIBRIX_DISABLE_RATE_LIMITING` | bool | `false` | Disable AIBrix user RPM/TPM and model RPS quota enforcement. Redis and `requestsInflight` remain active. | [cmd/plugins/main.go](../../../cmd/plugins/main.go), [gateway.go](gateway.go) |
 | `POD_NAME` | string | `""` | Kubernetes pod name. Used for logging and metric label tagging. | [gateway.go](gateway.go), [util.go](util.go) |
-| `POD_NAMESPACE` | string | `aibrix-system` | Gateway Pod namespace, normally supplied by the Downward API. Read once when constructing the server and used for model HTTPRoute lookups and their status diagnostics. An absent or empty value uses the default. This does not select the inference workload namespace or move HTTPRoutes. | [gateway.go](gateway.go) |
+| `AIBRIX_GATEWAY_NAMESPACE` | string | `aibrix-system` | Namespace of the Gateway and model HTTPRoutes, shared with ModelRouter. Read once at startup; absent or empty uses the default independently of `POD_NAMESPACE`. | [pkg/config/config.go](../../config/config.go), [gateway.go](gateway.go) |
 | `ROUTING_ALGORITHM` | string | _(none)_ | Default routing algorithm when no per-request override is set. | [types.go](types.go), [util.go](util.go) |
 | `AIBRIX_PRIORITY_TIER_ENABLED` | bool | `false` | Forward the priority tier declared by the `x-aibrix-priority-tier` request header as the upstream vLLM request priority. | [cmd/plugins/main.go](../../../cmd/plugins/main.go), [gateway_req_priority.go](gateway_req_priority.go) |
+
+Set `AIBRIX_GATEWAY_NAMESPACE` to the same value in the controller manager and
+plugin. ModelRouter creates, resyncs, and deletes model HTTPRoutes in that
+namespace, attaches them to `aibrix-eg` there, and creates cross-namespace
+ReferenceGrants for workload Services. The plugin validates those same routes.
+Moving only the plugin Pod leaves this setting unchanged; `POD_NAMESPACE`
+remains Pod metadata.
+
+The Helm chart supplies its release namespace to both components. For
+deployments managed directly or with Kustomize, configure both components
+explicitly when the Gateway is outside `aibrix-system`; changing Pod metadata
+alone is insufficient. Provision the Gateway and required API permissions in
+the selected namespace. Changing this setting requires restarting both
+components and does not migrate existing routes, change workload discovery, or
+make other components namespace-scoped.
 
 When `AIBRIX_PRIORITY_TIER_ENABLED=true`, the gateway maps the `x-aibrix-priority-tier`
 request header to the `priority` field of the backend request body: `batch` becomes `100` and
