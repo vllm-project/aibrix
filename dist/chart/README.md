@@ -56,6 +56,13 @@ and must be positive. This leaves 10 seconds of the default Kubernetes 30-second
 termination grace period for cleanup. Enabling the Helm hook supplies the
 independent `grpcDrainTimeoutSeconds` value (30 seconds by default).
 
+When customizing the gateway-plugin container's `args`, keep a single list. With
+`gatewayPlugin.gracefulShutdown.enabled=true`, append additional flags to the
+generated list and preserve `--graceful-shutdown-timeout`, whose value comes from
+`grpcDrainTimeoutSeconds`. Replacing the list without that flag falls back to the
+binary's 20-second default. When editing the template's commented QPS/burst
+example, add the flags to the existing list instead of adding another `args:` key.
+
 The metrics URL must point to this Pod directly. The hook matches the metric
 name without filtering labels and requires exactly one valid sample per scrape.
 Fetches bypass proxy environment variables and do not follow redirects. Each
@@ -117,8 +124,8 @@ gateway:
   envoyProxy:
     gracefulShutdown:
       enabled: true
-      terminationGracePeriodSeconds: 300
-      drainTimeoutSeconds: 270
+      terminationGracePeriodSeconds: 330
+      drainTimeoutSeconds: 300
       minDrainDurationSeconds: 10
 ```
 

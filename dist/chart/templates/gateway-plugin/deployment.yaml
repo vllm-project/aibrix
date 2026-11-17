@@ -108,6 +108,9 @@ spec:
           # Optional API server client throttling (client-go defaults shown).
           # Both values must be greater than zero and apply to the core
           # Kubernetes and Gateway API clients, each with its own limiter.
+          # With graceful shutdown enabled, append these flags to the args list
+          # above and preserve --graceful-shutdown-timeout; do not add a second
+          # args key. When overriding args, preserve that shutdown flag as well.
           # args:
           #   - --kube-api-qps=5
           #   - --kube-api-burst=10
