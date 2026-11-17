@@ -17,11 +17,14 @@ limitations under the License.
 package blacklist
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+
+	"github.com/vllm-project/aibrix/pkg/types"
 )
 
 func TestMeanStdDev(t *testing.T) {
@@ -350,4 +353,113 @@ func TestSweepLoadOutliers_ExclusionIsORAcrossModels(t *testing.T) {
 	assert.False(t, bl.IsBlacklisted(a3))
 	assert.False(t, bl.IsBlacklisted(b2))
 	assert.False(t, bl.IsBlacklisted(b3))
+}
+
+// A pod that is deleted while load-excluded is never scored again, so the sweep has to lift
+// its exclusion itself: left alone it holds excluded above zero, and with it every request off
+// the no-lookup path, until the entry's TTL runs out.
+func TestSweepLoadOutliers_DepartedPodsLoadExclusionIsLifted(t *testing.T) {
+	var b PodBlacklist
+	pod1, pod2, pod3 := blacklistTestPod("1"), blacklistTestPod("2"), blacklistTestPod("3")
+	src := fakePods{"test-model": {pod1, pod2, pod3}}
+	b.sweepLoadOutliers(src, loadTable{"test-model/1": 20, "test-model/2": 20, "test-model/3": 100}.depth, nil)
+	require.True(t, b.IsBlacklisted(pod3))
+	require.Equal(t, int64(1), b.excluded.Load())
+	state := failureStateFor(t, &b, pod3)
+	state.mu.RLock()
+	updated := state.lastUpdated
+	state.mu.RUnlock()
+	var recovered []string
+
+	// pod3 is scaled down.
+	remaining := fakePods{"test-model": {pod1, pod2}}
+	b.sweepLoadOutliers(remaining, loadTable{"test-model/1": 20, "test-model/2": 20}.depth,
+		func(pod *v1.Pod) { recovered = append(recovered, pod.Name) })
+
+	assert.Zero(t, b.excluded.Load(), "a pod that left no longer keeps requests off the no-lookup path")
+	assert.False(t, b.IsBlacklisted(pod3))
+	assert.Equal(t, []*v1.Pod{pod1, pod2}, b.FilterBlacklisted([]*v1.Pod{pod1, pod2}))
+	assert.Empty(t, recovered, "a pod that left did not recover")
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	assert.Equal(t, updated, state.lastUpdated, "the entry still ages out on its own")
+}
+
+// The same when the pod's last model leaves the cache: the sweep no longer lists it anywhere.
+func TestSweepLoadOutliers_PodOfARemovedModelIsLifted(t *testing.T) {
+	var b PodBlacklist
+	pod1, pod2, pod3 := blacklistTestPod("1"), blacklistTestPod("2"), blacklistTestPod("3")
+	src := fakePods{"test-model": {pod1, pod2, pod3}}
+	b.sweepLoadOutliers(src, loadTable{"test-model/1": 20, "test-model/2": 20, "test-model/3": 100}.depth, nil)
+	require.Equal(t, int64(1), b.excluded.Load())
+
+	b.sweepLoadOutliers(fakePods{}, loadTable{}.depth, nil)
+
+	assert.Zero(t, b.excluded.Load())
+}
+
+// Only a pod the cache no longer lists is lifted. One that is still there keeps its exclusion
+// however the sweep treats it: a quarantined pod and a pod that is not ready are left out of
+// scoring, but they have not left the fleet. A pod served under two models stays while either
+// lists it.
+func TestSweepLoadOutliers_PodsStillInTheFleetKeepTheirLoadExclusion(t *testing.T) {
+	var b PodBlacklist
+	pod1, pod2, pod3 := blacklistTestPod("1"), blacklistTestPod("2"), blacklistTestPod("3")
+	quarantined := blacklistTestPod("quarantined")
+	notReady := blacklistTestPod("not-ready")
+	shared := blacklistTestPod("shared")
+	for _, pod := range []*v1.Pod{quarantined, notReady, shared} {
+		b.SetLoadExcluded(pod, true)
+	}
+	failDead(&b, quarantined, podProbeFailureIterations)
+	require.True(t, b.IsQuarantined(quarantined))
+	notReady.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionFalse}}
+	require.Equal(t, int64(3), b.excluded.Load())
+	// shared is served under model-b only, and model-b has too few pods to be scored.
+	src := fakePods{
+		"model-a": {pod1, pod2, pod3, quarantined, notReady},
+		"model-b": {shared},
+	}
+
+	b.sweepLoadOutliers(src, func(pod *v1.Pod, _ string) (float64, bool) { return 20, true }, nil)
+
+	assert.Equal(t, int64(2), b.excluded.Load(), "only shared, which has a verdict, is lifted")
+	for _, pod := range []*v1.Pod{quarantined, notReady} {
+		state := failureStateFor(t, &b, pod)
+		state.mu.RLock()
+		assert.True(t, state.loadExcluded, pod.Name)
+		state.mu.RUnlock()
+	}
+}
+
+// brokenPods lists its models but fails to list the pods of one of them.
+type brokenPods struct {
+	fakePods
+	broken string
+}
+
+func (f brokenPods) ListPodsByModel(model string) (types.PodList, error) {
+	if model == f.broken {
+		return nil, errors.New("model not found")
+	}
+	return f.fakePods.ListPodsByModel(model)
+}
+
+// A model whose pods cannot be listed leaves those pods unknown, not departed: the sweep must
+// not lift an exclusion on the strength of a listing that failed.
+func TestSweepLoadOutliers_UnlistedModelDoesNotMakePodsDeparted(t *testing.T) {
+	var b PodBlacklist
+	pod1, pod2, pod3 := blacklistTestPod("1"), blacklistTestPod("2"), blacklistTestPod("3")
+	src := fakePods{"model-a": {pod1, pod2, pod3}, "model-b": {}}
+	b.sweepLoadOutliers(src, loadTable{"model-a/1": 20, "model-a/2": 20, "model-a/3": 100}.depth, nil)
+	require.True(t, b.IsBlacklisted(pod3))
+
+	// pod3 is not listed under model-a any more, but model-b's listing fails this time.
+	b.sweepLoadOutliers(brokenPods{fakePods: fakePods{"model-a": {pod1, pod2}, "model-b": {pod3}}, broken: "model-b"},
+		loadTable{"model-a/1": 20, "model-a/2": 20}.depth, nil)
+	assert.True(t, b.IsBlacklisted(pod3), "pod3 may be among model-b's pods")
+
+	// The next sweep lists everything, and pod3 is still gone.
+	b.sweepLoadOutliers(fakePods{"model-a": {pod1, pod2}, "model-b": {}}, loadTable{"model-a/1": 20, "model-a/2": 20}.depth, nil)
+	assert.False(t, b.IsBlacklisted(pod3))
 }

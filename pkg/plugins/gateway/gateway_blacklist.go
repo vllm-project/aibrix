@@ -182,16 +182,6 @@ func (t *allBlacklistedLogThrottle) allow(model string, now time.Time) (suppress
 	return e.suppressed, true
 }
 
-// blacklistBeforeCandidateStage reports whether selectTargetPod filters the whole ready list
-// ahead of the candidate stage, instead of filtering the K candidates the stage picks. It must
-// when the stage does not run, as for the exclusive strategies, which see every ready pod. It
-// also must when the request has a replica-inflight limit: that filter reads the running count
-// of every ready pod, so the cost the later filter saves is not saved, and it must not see
-// excluded pods, which could otherwise be the only replicas with room left.
-func blacklistBeforeCandidateStage(routeCtx *types.RoutingContext, isExclusive bool) bool {
-	return isExclusive || replicaInflightLimit(routeCtx) > 0
-}
-
 // The reasons routing ignores the blacklist for a request, the reason label of
 // metrics.GatewayPodBlacklistFallbackTotal.
 const (
@@ -240,7 +230,8 @@ func (s *Server) excludeBlacklisted(routeCtx *types.RoutingContext, pods []*v1.P
 // unlucky sample is not the fleet. That pass looks up every ready pod, but it is reached only
 // when the candidates are mostly excluded, which for K candidates sampled from the fleet
 // means most of it is. When the fleet itself is over the cap the request is routed across the
-// candidates unfiltered.
+// candidates unfiltered. The second run is routing.ReselectCandidates, so a request is still
+// counted as narrowed once.
 func (s *Server) excludeBlacklistedCandidates(routeCtx *types.RoutingContext, router types.Router, ready, candidates []*v1.Pod) []*v1.Pod {
 	filtered := s.podBlacklist.FilterBlacklisted(candidates)
 	reason := blacklistFallbackReason(len(filtered), len(candidates))
@@ -251,7 +242,7 @@ func (s *Server) excludeBlacklistedCandidates(routeCtx *types.RoutingContext, ro
 	if len(candidates) < len(ready) {
 		allowed := s.podBlacklist.FilterBlacklisted(ready)
 		if reason = blacklistFallbackReason(len(allowed), len(ready)); reason == "" {
-			return routing.SelectCandidates(routeCtx, s.cache, router, allowed)
+			return routing.ReselectCandidates(routeCtx, s.cache, router, allowed)
 		}
 		scope, kept = ready, len(allowed)
 	}

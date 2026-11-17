@@ -152,10 +152,29 @@ func (b *PodBlacklist) sweepLoadOutliers(src PodSource, depth QueueDepthFunc, on
 		verdicts[key] = &podVerdict{pod: pod, outlier: outlier}
 	}
 
+	// A pod that leaves the cache is never scored again, so nothing would lift its load
+	// exclusion, which would keep counting toward excluded (and so keep every request off
+	// FilterBlacklisted's no-lookup path) until the entry's TTL. present is every pod the cache
+	// still lists, whatever its state; it is only worth building while something is excluded.
+	var present map[string]struct{}
+	if b.excluded.Load() > 0 {
+		present = make(map[string]struct{})
+	}
+	listed := true
+
 	for _, model := range src.ListModels() {
 		podsArr, err := src.ListPodsByModel(model)
 		if err != nil || podsArr == nil {
+			// This model's pods are unknown, so no pod can be called departed this sweep.
+			listed = false
 			continue
+		}
+		// Taken before any filtering: a quarantined, ignored or not-ready pod is still in the
+		// fleet, and its exclusion is not this sweep's to lift.
+		for _, pod := range podsArr.All() {
+			if present != nil && pod != nil {
+				present[PodKey(pod)] = struct{}{}
+			}
 		}
 		// An ignored pod (ignoredPod) is not scored and is not a peer either: it
 		// gets no verdict, and its load neither skews the mean and stddev the
@@ -230,6 +249,38 @@ func (b *PodBlacklist) sweepLoadOutliers(src PodSource, depth QueueDepthFunc, on
 			onRecovered(v.pod)
 		}
 	}
+	if present != nil && listed {
+		b.clearDepartedLoadExclusions(present)
+	}
+}
+
+// clearDepartedLoadExclusions lifts the load exclusion of every entry whose pod is not in
+// present, the keys of the pods the cache still lists. Such a pod is gone, not recovered, so
+// this reports neither a recovery metric nor the recovery callback, and it leaves lastUpdated
+// alone: the entry ages out on its own, or is recreated if the name comes back.
+//
+// Only the load flag is cleared. A departed pod's open breaker is not touched: it is a block
+// with its own deadline, and sweepStale ends it after that.
+func (b *PodBlacklist) clearDepartedLoadExclusions(present map[string]struct{}) {
+	b.pods.Range(func(key, value any) bool {
+		if k, ok := key.(string); ok {
+			if _, here := present[k]; here {
+				return true
+			}
+		}
+		state, ok := value.(*podFailureState)
+		if !ok {
+			return true
+		}
+		state.mu.Lock()
+		if state.loadExcluded {
+			state.loadExcluded = false
+			b.syncCountLocked(state)
+			klog.V(2).InfoS("load exclusion dropped for a pod that left the fleet", "pod", key)
+		}
+		state.mu.Unlock()
+		return true
+	})
 }
 
 // withoutQuarantined drops the pods IsQuarantined reports. The cache stops

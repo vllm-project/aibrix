@@ -115,7 +115,21 @@ func SelectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Rou
 	return selectCandidates(ctx, c, router, readyPods, ctx.RoutingOverrides().Candidate.K)
 }
 
+// ReselectCandidates is SelectCandidates for a second pass over the same decision, such as the
+// gateway re-running the stage over the pods the blacklist did not exclude. It picks the same
+// way, but does not count the decision again: aibrix_routing_candidate_selections_total counts
+// one narrowing per request.
+func ReselectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod) []*v1.Pod {
+	return selectCandidatesWithMetric(ctx, c, router, readyPods, ctx.RoutingOverrides().Candidate.K, false)
+}
+
 func selectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod, k int) []*v1.Pod {
+	return selectCandidatesWithMetric(ctx, c, router, readyPods, k, true)
+}
+
+// selectCandidatesWithMetric is the stage itself. countDecision says whether a decision it
+// narrows is added to aibrix_routing_candidate_selections_total.
+func selectCandidatesWithMetric(ctx *types.RoutingContext, c cache.Cache, router types.Router, readyPods []*v1.Pod, k int, countDecision bool) []*v1.Pod {
 	if k <= 0 || len(readyPods) <= k || !candidateStageApplies(ctx) {
 		return readyPods
 	}
@@ -143,7 +157,9 @@ func selectCandidates(ctx *types.RoutingContext, c cache.Cache, router types.Rou
 		}
 	}
 	sampleCandidates(readyPods, k, picked, &candidates)
-	recordCandidateSelection(ctx.Model, path)
+	if countDecision {
+		recordCandidateSelection(ctx.Model, path)
+	}
 
 	if klog.V(5).Enabled() {
 		klog.V(5).InfoS("routing candidate stage", "request_id", ctx.RequestID, "ready_pods", len(readyPods),

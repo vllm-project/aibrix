@@ -21,8 +21,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
@@ -204,17 +206,24 @@ func Test_selectTargetPod_CandidateStageOverTheCapRoutesAcrossAllPods(t *testing
 	assert.Zero(t, counts.get(fallbackAllExcluded))
 }
 
-// A replica-inflight limit reads the running count of every ready pod, so the blacklist keeps
-// filtering ahead of it: the filter must not see an excluded pod, which could be the only replica
-// with room left. Here the one healthy replica is full and the excluded one is not; the request
-// is rejected rather than sent to the excluded pod.
+// The replica-inflight filter runs after the blacklist's, so it must not see an excluded pod,
+// which could be the only replica with room left. Here the one healthy replica is full and the
+// excluded one is not; the request is rejected rather than sent to the excluded pod. That holds
+// with the blacklist filtering after the candidate stage too: SelectCandidates returns both pods
+// when K is off, the blacklist then drops the excluded one, and the inflight filter reads only
+// what is left.
 func Test_selectTargetPod_BlacklistFiltersAheadOfReplicaInflight(t *testing.T) {
 	healthy := podWithReplicaInflight("a", 1)
 	excluded := podWithReplicaInflight("b", 1)
 	mockCache := &MockCache{}
 	// Exactly [healthy]: were the excluded pod still in the list, this call would not match.
 	mockCache.On("GetPodsRunningRequests", []*v1.Pod{healthy}).Return(map[string]int64{"ns/a": 1}, nil)
-	s := &Server{cache: mockCache, podBlacklist: blacklist.PodBlacklist{}}
+	// Same as Test_selectTargetPod_ReplicaInflightSaturated: Select needs a manager that
+	// resolves least-request, not the default one which only knows strategies other tests
+	// happened to register.
+	manager := routing.NewRouterManagerWithCache(mockCache)
+	manager.Init()
+	s := &Server{cache: mockCache, routerManager: manager, podBlacklist: blacklist.PodBlacklist{}}
 	tripBreaker(&s.podBlacklist, excluded)
 	require.True(t, s.podBlacklist.IsBlacklisted(excluded))
 
@@ -242,4 +251,119 @@ func Test_excludeBlacklistedCandidates_NotNarrowed(t *testing.T) {
 	tripBreaker(&s.podBlacklist, a)
 	assert.Equal(t, ready, s.excludeBlacklistedCandidates(ctx, nil, ready, ready),
 		"with every ready pod excluded the candidates are kept as they are")
+}
+
+// inflightReads is a cache that records how many pods the widest running-request read covered,
+// which is what the replica-inflight filter reads, and answers from running when it is set
+// instead of from the store's own counts, which are all zero.
+type inflightReads struct {
+	cache.Cache
+	running map[string]int64
+
+	mu     sync.Mutex
+	widest int
+}
+
+func (c *inflightReads) GetPodsRunningRequests(pods []*v1.Pod) (map[string]int64, error) {
+	c.mu.Lock()
+	if len(pods) > c.widest {
+		c.widest = len(pods)
+	}
+	c.mu.Unlock()
+	if c.running == nil {
+		return c.Cache.GetPodsRunningRequests(pods)
+	}
+	counts := make(map[string]int64, len(pods))
+	for _, pod := range pods {
+		key := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		counts[key] = c.running[key]
+	}
+	return counts, nil
+}
+
+// limitInflight gives the fleet's requests a per-replica inflight limit and the counts the
+// filter reads for them, and returns the cache that records those reads.
+func (f *candidateBlacklistFleet) limitInflight(limit int64, running map[string]int64) *inflightReads {
+	f.t.Helper()
+	f.profile.RequestsInflight = limit
+	reads := &inflightReads{Cache: f.server.cache, running: running}
+	f.server.cache = reads
+	return reads
+}
+
+// A replica-inflight limit does not take the blacklist off the candidate stage: the filter runs
+// on the K candidates after the blacklist's does, so the request still never reaches an excluded
+// pod, including when every one of its candidates is excluded and the stage runs again, and the
+// filter reads no more than the K candidates.
+func Test_selectTargetPod_CandidateStageWithReplicaInflightNeverRoutesToBlacklistedPod(t *testing.T) {
+	// One healthy pod of 50 with K=4: almost every request finds its whole candidate set excluded.
+	t.Cleanup(blacklist.SetMaxExcludedPercentForTest(100))
+	f := newCandidateBlacklistFleet(t, 50, 4)
+	f.blacklist(func(i int) bool { return i != 17 })
+	reads := f.limitInflight(1000, nil)
+
+	for i := 0; i < 300; i++ {
+		addr, err := f.route()
+		require.NoError(t, err)
+		require.Equal(t, f.addrOf(17), addr, "request %d was routed to an excluded pod", i)
+	}
+
+	reads.mu.Lock()
+	defer reads.mu.Unlock()
+	assert.Positive(t, reads.widest, "the limit is checked")
+	assert.LessOrEqual(t, reads.widest, 4, "the filter reads the candidates, not the ready pods")
+}
+
+// The same with the healthy replica full: the request is rejected, however the stage drew its
+// candidates, and never sent to an excluded pod that has room.
+func Test_selectTargetPod_CandidateStageWithReplicaInflightRejectsWhenOnlyTheHealthyPodIsFull(t *testing.T) {
+	t.Cleanup(blacklist.SetMaxExcludedPercentForTest(100))
+	f := newCandidateBlacklistFleet(t, 50, 4)
+	f.blacklist(func(i int) bool { return i != 17 })
+	f.limitInflight(2, map[string]int64{"ns/pod-017": 2})
+
+	for i := 0; i < 300; i++ {
+		addr, err := f.route()
+		require.True(t, errors.Is(err, errReplicaInflightExceeded), "request %d: got %q, %v", i, addr, err)
+	}
+}
+
+// candidateSelectionsFor is the sum of aibrix_routing_candidate_selections_total for model.
+func candidateSelectionsFor(t *testing.T, model string) float64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	total := 0.0
+	for _, family := range families {
+		if family.GetName() != "aibrix_routing_candidate_selections_total" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == "model" && label.GetValue() == model {
+					total += metric.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return total
+}
+
+// Running the stage again over the pods the blacklist did not exclude is part of the same
+// decision, so a request is counted as narrowed once, not once per pass.
+func Test_selectTargetPod_CandidateStageRerunIsCountedOnce(t *testing.T) {
+	t.Cleanup(blacklist.SetMaxExcludedPercentForTest(100))
+	// Ten healthy pods of 100 with K=4: the candidates of about two requests in three are all
+	// excluded, and the stage then runs again over ten pods, more than K, so it narrows again.
+	f := newCandidateBlacklistFleet(t, 100, 4)
+	f.blacklist(func(i int) bool { return i%10 != 0 })
+	const requests = 200
+
+	before := candidateSelectionsFor(t, "m")
+	for i := 0; i < requests; i++ {
+		_, err := f.route()
+		require.NoError(t, err)
+	}
+
+	assert.Equal(t, float64(requests), candidateSelectionsFor(t, "m")-before)
 }

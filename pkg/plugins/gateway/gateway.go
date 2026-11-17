@@ -997,10 +997,12 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 	// route anyway rather than fail every request outright -- a blacklist is a
 	// soft preference, not a hard exclusion.
 	//
-	// A request the candidate stage may narrow is filtered after it, on its K candidates
-	// only (below): filtering the ready list first costs a lookup per pod on every request.
-	filterBeforeCandidates := blacklistBeforeCandidateStage(routeCtx, isExclusive)
-	if filterBeforeCandidates {
+	// The exclusive strategies see every ready pod, so the whole list is filtered here. Every
+	// other request is filtered after the candidate stage, on its K candidates only (below):
+	// filtering the ready list first costs a lookup per pod on every request. That holds with a
+	// replica-inflight limit too, since its filter also runs on the candidates, after the
+	// blacklist's (narrowToInflightCapacity).
+	if isExclusive {
 		readyPods = s.excludeBlacklisted(routeCtx, readyPods)
 	}
 
@@ -1046,9 +1048,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routeCtx *types.RoutingCon
 		if len(readyPods) < readyBeforeCandidates {
 			scope = inflightScopeCandidates
 		}
-		if !filterBeforeCandidates {
-			readyPods = s.excludeBlacklistedCandidates(routeCtx, router, allReady, readyPods)
-		}
+		readyPods = s.excludeBlacklistedCandidates(routeCtx, router, allReady, readyPods)
 		if readyPods, err = s.narrowToInflightCapacity(routeCtx, readyPods, scope); err != nil {
 			return "", err
 		}
