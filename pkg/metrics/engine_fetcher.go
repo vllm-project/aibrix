@@ -365,7 +365,14 @@ func rawFamiliesToParse(metricNames []string, engineType string) map[string]stru
 		if !exists || metricDef.MetricSource != PodRawMetrics {
 			continue
 		}
-		if rawMetricName, exists := metricDef.EngineMetricsNameMapping[engineType]; exists {
+		// Keep every name the resolver may try, not only the primary mapping.
+		// A family that exists only under an alias would otherwise be dropped
+		// from the scrape before resolveRawMetricName can fall back to it.
+		rawMetricNames, mapped := metricDef.RawMetricNamesForEngine(engineType)
+		if !mapped {
+			continue
+		}
+		for _, rawMetricName := range rawMetricNames {
 			families[rawMetricName] = struct{}{}
 		}
 	}
